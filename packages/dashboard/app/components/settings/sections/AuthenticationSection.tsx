@@ -44,6 +44,32 @@ export interface AuthenticationSectionData {
 export interface AuthenticationSectionProps {
     auth: AuthenticationSectionData;
 }
+const ANTHROPIC_AUTH_PROVIDER_PRIORITY: Record<string, number> = {
+    "claude-cli": 0,
+    "anthropic-subscription": 1,
+    "anthropic-api-key": 2,
+    anthropic: 3,
+};
+const getAuthProviderPriority = (provider: AuthProvider) => ANTHROPIC_AUTH_PROVIDER_PRIORITY[provider.id] ?? Number.POSITIVE_INFINITY;
+/*
+FNXC:ProviderAuth 2026-07-02-11:26:
+Settings groups Anthropic-family auth surfaces near the top so the Claude CLI, subscription OAuth, and API-key paths stay discoverable after the provider split while each Authenticated/Available group keeps its own boundary.
+*/
+const compareAuthProviderDisplayOrder = (a: AuthProvider, b: AuthProvider) => {
+    if (a.authenticated !== b.authenticated) {
+        return a.authenticated ? -1 : 1;
+    }
+    const aPriority = getAuthProviderPriority(a);
+    const bPriority = getAuthProviderPriority(b);
+    if (aPriority !== bPriority) {
+        return aPriority - bPriority;
+    }
+    const nameDelta = a.name.localeCompare(b.name);
+    if (nameDelta !== 0) {
+        return nameDelta;
+    }
+    return a.id.localeCompare(b.id);
+};
 export function AuthenticationSection({ auth }: AuthenticationSectionProps) {
     const { t } = useTranslation("app");
     const { projectId, addToast, authProviders, authLoading, authActionInProgress, apiKeyInputs, setApiKeyInputs, apiKeyErrors, opencodeApiKeyRefreshStatus, deviceCodes, loginInstructions, manualCodeConfigs, manualCodeInputs, setManualCodeInputs, manualCodeSubmitInProgress, loadAuthStatus, handleLogin, handleLogout, handleCancelLogin, handleSaveApiKey, handleClearApiKey, handleSubmitManualCode, onReopenOnboarding, } = auth;
@@ -55,38 +81,33 @@ export function AuthenticationSection({ auth }: AuthenticationSectionProps) {
     const visibleAuthProviders = hasSeparatedAnthropicProvider
         ? authProviders.filter((p) => p.id !== "anthropic")
         : authProviders;
-    // CLI-backed providers render their own compact card; filter them out of the
-    // standard OAuth/API-key sort and render alongside.
-    const cliAuthProviders = visibleAuthProviders.filter((p) => p.type === "cli");
-    const nonCliProviders = visibleAuthProviders.filter((p) => p.type !== "cli");
-    const sortedProviders = [...nonCliProviders].sort((a, b) => {
-        if (a.authenticated !== b.authenticated) {
-            return a.authenticated ? -1 : 1;
-        }
-        return a.name.localeCompare(b.name);
-    });
+    const isSupportedCliProvider = (provider: AuthProvider) => provider.id === "claude-cli" || provider.id === "cursor-cli" || provider.id === "llama-cpp";
+    /*
+    FNXC:ProviderAuth 2026-07-02-12:20:
+    Authentication ordering must sort supported CLI and non-CLI provider cards in one list so Cursor CLI or llama.cpp cannot split Claude CLI from Anthropic subscription/API-key entries.
+    */
+    const sortedProviders = [...visibleAuthProviders]
+        .filter((p) => p.type !== "cli" || isSupportedCliProvider(p))
+        .sort(compareAuthProviderDisplayOrder);
     const authenticatedProviders = sortedProviders.filter((p) => p.authenticated);
     const unauthenticatedProviders = sortedProviders.filter((p) => !p.authenticated);
-    const claudeCliProvider = cliAuthProviders.find((p) => p.id === "claude-cli");
-    const cursorCliProvider = cliAuthProviders.find((p) => p.id === "cursor-cli");
-    const llamaCppProvider = cliAuthProviders.find((p) => p.id === "llama-cpp");
-    const claudeCliCard = claudeCliProvider ? (<ClaudeCliProviderCard compact authenticated={claudeCliProvider.authenticated} onToggled={() => {
-            void loadAuthStatus();
-        }}/>) : null;
-    const cursorCliCard = cursorCliProvider ? (<CursorCliProviderCard compact authenticated={cursorCliProvider.authenticated} onToggled={() => {
-            void loadAuthStatus();
-        }}/>) : null;
-    const llamaCppCard = llamaCppProvider ? (<LlamaCppProviderCard compact authenticated={llamaCppProvider.authenticated} onToggled={() => {
-            void loadAuthStatus();
-        }}/>) : null;
-    const showAuthenticatedGroup = authenticatedProviders.length > 0 ||
-        (claudeCliProvider?.authenticated ?? false) ||
-        (cursorCliProvider?.authenticated ?? false) ||
-        (llamaCppProvider?.authenticated ?? false);
-    const showAvailableGroup = unauthenticatedProviders.length > 0 ||
-        (claudeCliProvider && !claudeCliProvider.authenticated) ||
-        (cursorCliProvider && !cursorCliProvider.authenticated) ||
-        (llamaCppProvider && !llamaCppProvider.authenticated);
+    const renderCliProviderCard = (provider: AuthProvider) => {
+        if (provider.id === "claude-cli") {
+            return (<ClaudeCliProviderCard key={provider.id} compact authenticated={provider.authenticated} onToggled={() => {
+                    void loadAuthStatus();
+                }}/>);
+        }
+        if (provider.id === "cursor-cli") {
+            return (<CursorCliProviderCard key={provider.id} compact authenticated={provider.authenticated} onToggled={() => {
+                    void loadAuthStatus();
+                }}/>);
+        }
+        return (<LlamaCppProviderCard key={provider.id} compact authenticated={provider.authenticated} onToggled={() => {
+                void loadAuthStatus();
+            }}/>);
+    };
+    const showAuthenticatedGroup = authenticatedProviders.length > 0;
+    const showAvailableGroup = unauthenticatedProviders.length > 0;
     const providerSupportsApiKey = (provider: AuthProvider) => provider.type === "api_key";
     const renderApiKeySection = (provider: AuthProvider) => (<div className="auth-apikey-section">
       <div className="auth-apikey-input-row">
@@ -170,10 +191,7 @@ export function AuthenticationSection({ auth }: AuthenticationSectionProps) {
             </div>)}
           {showAuthenticatedGroup && (<div className="auth-provider-group">
               <div className="auth-group-label">{t("settings.auth.groupAuthenticated", "Authenticated")}</div>
-              {claudeCliProvider?.authenticated && claudeCliCard}
-              {cursorCliProvider?.authenticated && cursorCliCard}
-              {llamaCppProvider?.authenticated && llamaCppCard}
-              {authenticatedProviders.map((provider) => (<div key={provider.id} className="auth-provider-card auth-provider-card--authenticated">
+              {authenticatedProviders.map((provider) => provider.type === "cli" ? renderCliProviderCard(provider) : (<div key={provider.id} className="auth-provider-card auth-provider-card--authenticated">
                   <div className="auth-provider-header">
                     <div className="auth-provider-info">
                       {/* Stable icon wrapper contract for auth card tests: auth-provider-icon-<providerId> */}
@@ -193,10 +211,7 @@ export function AuthenticationSection({ auth }: AuthenticationSectionProps) {
             </div>)}
           {showAvailableGroup && (<div className="auth-provider-group">
               <div className="auth-group-label">{t("settings.auth.groupAvailable", "Available")}</div>
-              {claudeCliProvider && !claudeCliProvider.authenticated && claudeCliCard}
-              {cursorCliProvider && !cursorCliProvider.authenticated && cursorCliCard}
-              {llamaCppProvider && !llamaCppProvider.authenticated && llamaCppCard}
-              {unauthenticatedProviders.map((provider) => (<div key={provider.id} className="auth-provider-card">
+              {unauthenticatedProviders.map((provider) => provider.type === "cli" ? renderCliProviderCard(provider) : (<div key={provider.id} className="auth-provider-card">
                   <div className="auth-provider-header">
                     <div className="auth-provider-info">
                       {/* Stable icon wrapper contract for auth card tests: auth-provider-icon-<providerId> */}

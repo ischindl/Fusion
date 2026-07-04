@@ -154,6 +154,43 @@ export interface ChatMessageCreateInput {
   attachments?: ChatAttachment[];
 }
 
+export type ChatTokenUsageSourceKind = "chat" | "task-planner-chat" | "room-chat" | "cli-chat" | "chat-title";
+
+export interface ChatTokenUsageRecord {
+  id: string;
+  sourceKind: ChatTokenUsageSourceKind;
+  chatSessionId: string | null;
+  roomId: string | null;
+  messageId: string | null;
+  projectId: string | null;
+  agentId: string | null;
+  modelProvider: string | null;
+  modelId: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+  createdAt: string;
+}
+
+export interface ChatTokenUsageCreateInput {
+  sourceKind: ChatTokenUsageSourceKind;
+  chatSessionId?: string | null;
+  roomId?: string | null;
+  messageId?: string | null;
+  projectId?: string | null;
+  agentId?: string | null;
+  modelProvider?: string | null;
+  modelId?: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  cacheWriteTokens: number;
+  totalTokens?: number;
+  createdAt?: string;
+}
+
 /**
  * Input for creating a chat session.
  */

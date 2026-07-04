@@ -118,8 +118,10 @@ vi.mock("@fusion/core", async (importOriginal) => {
   const { createCoreMock } = await import("../test/mockCoreEngine.js");
   return createCoreMock(() => importOriginal<typeof import("@fusion/core")>(), {
     resolveGlobalDir: vi.fn().mockReturnValue("/tmp/fusion-test"),
+    GIT_INSTALL_URL: "https://git-scm.com/downloads",
     isGhAvailable: vi.fn(),
     isGhAuthenticated: vi.fn(),
+    probeGitCliStatus: vi.fn(),
     isQmdAvailable: vi.fn().mockResolvedValue(false),
     CentralCore: vi.fn().mockImplementation(function () { return {
       init: mockCentralInit,
@@ -175,11 +177,12 @@ vi.mock("@fusion/engine", async () => {
   });
 });
 
-import { AgentStore, Database, RoutineStore, isGhAvailable, isGhAuthenticated } from "@fusion/core";
+import { AgentStore, Database, RoutineStore, isGhAvailable, isGhAuthenticated, probeGitCliStatus } from "@fusion/core";
 import { createFnAgent } from "@fusion/engine";
 
 const mockIsGhAvailable = vi.mocked(isGhAvailable);
 const mockIsGhAuthenticated = vi.mocked(isGhAuthenticated);
+const mockProbeGitCliStatus = vi.mocked(probeGitCliStatus);
 
 function createMockGlobalSettingsStore() {
   return {
@@ -864,6 +867,14 @@ describe("GET /auth/status", () => {
   });
 
   beforeEach(() => {
+    mockProbeGitCliStatus.mockResolvedValue({
+      available: true,
+      version: "2.45.1",
+      installUrl: "https://git-scm.com/downloads",
+    });
+    mockIsGhAvailable.mockReturnValue(false);
+    mockIsGhAuthenticated.mockReturnValue(false);
+
     vi.spyOn(claudeCliProbeModule, "probeClaudeCli").mockResolvedValue({
       available: false,
       reason: "mocked unavailable",
@@ -927,6 +938,55 @@ describe("GET /auth/status", () => {
       { id: "kimi-coding", name: "Kimi", authenticated: false, type: "api_key" },
     ]);
     expect(authStorage.reload).toHaveBeenCalled();
+  });
+
+  it("includes git CLI status while preserving gh CLI status", async () => {
+    mockIsGhAvailable.mockReturnValue(true);
+    mockIsGhAuthenticated.mockReturnValue(true);
+    mockProbeGitCliStatus.mockResolvedValue({
+      available: true,
+      version: "2.45.1",
+      installUrl: "https://git-scm.com/downloads",
+    });
+
+    const res = await GET(app, "/api/auth/status");
+
+    expect(res.status).toBe(200);
+    expect(res.body.ghCli).toEqual({ available: true, authenticated: true });
+    expect(res.body.gitCli).toEqual({
+      available: true,
+      version: "2.45.1",
+      installUrl: "https://git-scm.com/downloads",
+    });
+  });
+
+  it("reports missing git CLI without changing provider readiness", async () => {
+    mockProbeGitCliStatus.mockResolvedValue({
+      available: false,
+      installUrl: "https://git-scm.com/downloads",
+    });
+
+    const res = await GET(app, "/api/auth/status");
+
+    expect(res.status).toBe(200);
+    expect(res.body.gitCli).toEqual({
+      available: false,
+      installUrl: "https://git-scm.com/downloads",
+    });
+    expect(res.body.providers).toEqual(expect.any(Array));
+    expect(res.body.ghCli).toEqual({ available: false, authenticated: false });
+  });
+
+  it("degrades git CLI probe errors to an unavailable status", async () => {
+    mockProbeGitCliStatus.mockRejectedValue(new Error("probe failed"));
+
+    const res = await GET(app, "/api/auth/status");
+
+    expect(res.status).toBe(200);
+    expect(res.body.gitCli).toEqual({
+      available: false,
+      installUrl: "https://git-scm.com/downloads",
+    });
   });
 
   it("includes GitHub Copilot as oauth when auth storage reports it", async () => {
@@ -1659,6 +1719,107 @@ describe("Droid CLI auth routes", () => {
     expect(store.updateGlobalSettings).toHaveBeenCalledWith({ useCursorCli: true });
   });
 
+  it("POST /auth/cursor-cli saves a validated binary path without toggling", async () => {
+    vi.spyOn(runtimeProviderProbesModule, "probeCursorCliProvider").mockResolvedValue({
+      available: true,
+      version: "cursor-agent 1.0.0",
+      binaryPath: "/opt/Cursor/cursor-agent",
+      configuredBinaryPath: "/opt/Cursor/cursor-agent",
+      usingConfiguredBinaryPath: true,
+      probeDurationMs: 8,
+    });
+    store.getGlobalSettingsStore = vi.fn().mockReturnValue({
+      ...createMockGlobalSettingsStore(),
+      getSettings: vi.fn().mockResolvedValue({ useCursorCli: false }),
+    });
+    store.updateGlobalSettings = vi.fn().mockResolvedValue({ useCursorCli: false, cursorCliBinaryPath: "/opt/Cursor/cursor-agent" });
+
+    const res = await REQUEST(buildApp(), "POST", "/api/auth/cursor-cli", JSON.stringify({ binaryPath: "  /opt/Cursor/cursor-agent  " }), {
+      "Content-Type": "application/json",
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ enabled: false, binaryPath: "/opt/Cursor/cursor-agent", restartRequired: false });
+    expect(runtimeProviderProbesModule.probeCursorCliProvider).toHaveBeenCalledWith({ binaryPath: "/opt/Cursor/cursor-agent" });
+    expect(store.updateGlobalSettings).toHaveBeenCalledWith({ cursorCliBinaryPath: "/opt/Cursor/cursor-agent" });
+  });
+
+  it("POST /auth/cursor-cli rejects invalid binaryPath values", async () => {
+    const res = await REQUEST(buildApp(), "POST", "/api/auth/cursor-cli", JSON.stringify({ enabled: false, binaryPath: 123 }), {
+      "Content-Type": "application/json",
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("binaryPath must be a string or null");
+  });
+
+  it("POST /auth/cursor-cli rejects configured paths that only succeed via PATH fallback", async () => {
+    vi.spyOn(runtimeProviderProbesModule, "probeCursorCliProvider").mockResolvedValue({
+      available: true,
+      version: "cursor-agent 1.0.0",
+      binaryPath: "cursor-agent",
+      configuredBinaryPath: "/missing/cursor-agent",
+      usingConfiguredBinaryPath: false,
+      reason: "Configured Cursor CLI binary '/missing/cursor-agent' failed; PATH fallback succeeded",
+      probeDurationMs: 8,
+    });
+
+    const res = await REQUEST(buildApp(), "POST", "/api/auth/cursor-cli", JSON.stringify({ binaryPath: "/missing/cursor-agent" }), {
+      "Content-Type": "application/json",
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Cannot save Cursor CLI binary path");
+    expect(store.updateGlobalSettings).not.toHaveBeenCalled();
+  });
+
+  it("POST /auth/cursor-cli clears the binary path and restores PATH auto-detection", async () => {
+    vi.spyOn(runtimeProviderProbesModule, "probeCursorCliProvider").mockResolvedValue({
+      available: true,
+      version: "cursor-agent 1.0.0",
+      binaryPath: "cursor-agent",
+      probeDurationMs: 8,
+    });
+    store.getGlobalSettingsStore = vi.fn().mockReturnValue({
+      ...createMockGlobalSettingsStore(),
+      getSettings: vi.fn().mockResolvedValue({ useCursorCli: true, cursorCliBinaryPath: "/opt/Cursor/cursor-agent" }),
+    });
+    store.updateGlobalSettings = vi.fn().mockResolvedValue({ useCursorCli: true });
+
+    const res = await REQUEST(buildApp(), "POST", "/api/auth/cursor-cli", JSON.stringify({ binaryPath: "   " }), {
+      "Content-Type": "application/json",
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ enabled: true, restartRequired: false });
+    expect(runtimeProviderProbesModule.probeCursorCliProvider).toHaveBeenCalledWith({ binaryPath: undefined });
+    expect(store.updateGlobalSettings).toHaveBeenCalledWith({ cursorCliBinaryPath: null });
+  });
+
+  it("POST /auth/cursor-cli enables using the stored binary override", async () => {
+    vi.spyOn(runtimeProviderProbesModule, "probeCursorCliProvider").mockResolvedValue({
+      available: true,
+      version: "cursor-agent 1.0.0",
+      binaryPath: "/opt/Cursor/cursor-agent",
+      configuredBinaryPath: "/opt/Cursor/cursor-agent",
+      usingConfiguredBinaryPath: true,
+      probeDurationMs: 8,
+    });
+    store.getGlobalSettingsStore = vi.fn().mockReturnValue({
+      ...createMockGlobalSettingsStore(),
+      getSettings: vi.fn().mockResolvedValue({ cursorCliBinaryPath: "/opt/Cursor/cursor-agent" }),
+    });
+    store.updateGlobalSettings = vi.fn().mockResolvedValue({ useCursorCli: true, cursorCliBinaryPath: "/opt/Cursor/cursor-agent" });
+
+    const res = await REQUEST(buildApp(), "POST", "/api/auth/cursor-cli", JSON.stringify({ enabled: true }), {
+      "Content-Type": "application/json",
+    });
+
+    expect(res.status).toBe(200);
+    expect(runtimeProviderProbesModule.probeCursorCliProvider).toHaveBeenCalledWith({ binaryPath: "/opt/Cursor/cursor-agent" });
+    expect(store.updateGlobalSettings).toHaveBeenCalledWith({ useCursorCli: true });
+  });
+
   it("POST /auth/cursor-cli returns 400 when enabling without binary", async () => {
     vi.spyOn(runtimeProviderProbesModule, "probeCursorCliProvider").mockResolvedValue({
       available: false,
@@ -1696,14 +1857,41 @@ describe("Droid CLI auth routes", () => {
     });
     store.getGlobalSettingsStore = vi.fn().mockReturnValue({
       ...createMockGlobalSettingsStore(),
-      getSettings: vi.fn().mockResolvedValue({ useCursorCli: true }),
+      getSettings: vi.fn().mockResolvedValue({ useCursorCli: true, cursorCliBinaryPath: "/opt/Cursor/cursor-agent" }),
     });
 
     const res = await GET(buildApp(), "/api/providers/cursor-cli/status");
     expect(res.status).toBe(200);
+    expect(runtimeProviderProbesModule.probeCursorCliProvider).toHaveBeenCalledWith({ binaryPath: "/opt/Cursor/cursor-agent" });
     expect(res.body.ready).toBe(true);
     expect(res.body.enabled).toBe(true);
+    expect(res.body.binaryPath).toBe("/opt/Cursor/cursor-agent");
     expect(res.body.binary.available).toBe(true);
+  });
+
+  it("GET /auth/status probes Cursor CLI with the stored override", async () => {
+    vi.spyOn(runtimeProviderProbesModule, "probeCursorCliProvider").mockResolvedValue({
+      available: true,
+      version: "cursor-agent 1.0.0",
+      binaryPath: "C:\\Users\\A User\\AppData\\Roaming\\npm\\cursor-agent.cmd",
+      configuredBinaryPath: "C:\\Users\\A User\\AppData\\Roaming\\npm\\cursor-agent.cmd",
+      usingConfiguredBinaryPath: true,
+      probeDurationMs: 8,
+    });
+    store.getGlobalSettingsStore = vi.fn().mockReturnValue({
+      ...createMockGlobalSettingsStore(),
+      getSettings: vi.fn().mockResolvedValue({ useCursorCli: true, cursorCliBinaryPath: "C:\\Users\\A User\\AppData\\Roaming\\npm\\cursor-agent.cmd" }),
+    });
+
+    const res = await GET(buildApp(), "/api/auth/status");
+
+    expect(res.status).toBe(200);
+    expect(runtimeProviderProbesModule.probeCursorCliProvider).toHaveBeenCalledWith({ binaryPath: "C:\\Users\\A User\\AppData\\Roaming\\npm\\cursor-agent.cmd" });
+    expect(res.body.providers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "cursor-cli", authenticated: true }),
+      ]),
+    );
   });
 
   it("GET /providers/cursor-cli/status returns ready false when binary unavailable", async () => {

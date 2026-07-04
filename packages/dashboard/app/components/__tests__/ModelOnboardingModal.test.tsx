@@ -22,6 +22,7 @@ const mockFetchCustomProviders = vi.fn();
 const mockCreateCustomProvider = vi.fn();
 const mockFetchCursorCliStatus = vi.fn();
 const mockSetCursorCliEnabled = vi.fn();
+const mockSetCursorCliBinaryPath = vi.fn();
 const mockUseShellConnection = vi.fn();
 const mockConfirm = vi.fn();
 
@@ -42,6 +43,7 @@ vi.mock("../../api", () => ({
   createCustomProvider: (...args: unknown[]) => mockCreateCustomProvider(...args),
   fetchCursorCliStatus: (...args: unknown[]) => mockFetchCursorCliStatus(...args),
   setCursorCliEnabled: (...args: unknown[]) => mockSetCursorCliEnabled(...args),
+  setCursorCliBinaryPath: (...args: unknown[]) => mockSetCursorCliBinaryPath(...args),
 }));
 
 // Mock CustomModelDropdown since it has complex portal behavior
@@ -223,6 +225,12 @@ async function navigateToFirstTaskStep() {
   });
 }
 
+function getProviderOrderInSection(container: HTMLElement): string[] {
+  return Array.from(container.querySelectorAll<HTMLElement>("[data-testid^='onboarding-provider-card-']"))
+    .map((card) => card.dataset.testid?.replace("onboarding-provider-card-", "") ?? "")
+    .filter(Boolean);
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   clearAuthToken();
@@ -330,11 +338,9 @@ describe("ModelOnboardingModal", () => {
       });
     });
 
-    it("shows research setup guidance in AI setup step", async () => {
-      render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
-
-      expect(await screen.findByText(/Research runs require provider credentials and an enabled Research View/i)).toBeInTheDocument();
-    });
+    // FNXC:Onboarding 2026-07-03: the "Research runs require provider credentials and an enabled
+    // Research View" note was intentionally removed from onboarding at the operator's request (it
+    // belongs in Settings, not first-run), so the assertion that it renders no longer applies.
 
     it("hides deprecated google CLI and antigravity providers while keeping supported Google/Gemini entries", async () => {
       mockFetchAuthStatus.mockResolvedValueOnce({
@@ -603,6 +609,43 @@ describe("ModelOnboardingModal", () => {
       expect(screen.getByRole("button", { name: /Advanced provider settings/ })).toBeTruthy();
     });
 
+    it("orders practical quick-start providers without showing filtered providers", async () => {
+      mockFetchAuthStatus.mockResolvedValueOnce({
+        providers: [
+          { id: "minimax", name: "MiniMax", authenticated: false, type: "api_key" },
+          { id: "ollama", name: "Ollama", authenticated: false, type: "api_key" },
+          { id: "openrouter", name: "OpenRouter", authenticated: false, type: "api_key" },
+          { id: "google-antigravity", name: "Google Antigravity", authenticated: false, type: "oauth" },
+          { id: "google", name: "Google", authenticated: false, type: "api_key" },
+          { id: "openai", name: "OpenAI", authenticated: false, type: "api_key" },
+          { id: "anthropic", name: "Anthropic", authenticated: false, type: "oauth" },
+        ],
+      });
+
+      render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
+
+      const quickStartSection = await screen.findByTestId("onboarding-quick-start-providers");
+      expect(getProviderOrderInSection(quickStartSection)).toEqual(["anthropic", "openai", "google", "openrouter", "ollama"]);
+      expect(screen.queryByTestId("onboarding-provider-card-google-antigravity")).toBeNull();
+    });
+
+    it("preserves split Anthropic quick-start cards and suppresses legacy Anthropic fallback", async () => {
+      mockFetchAuthStatus.mockResolvedValueOnce({
+        providers: [
+          { id: "openai", name: "OpenAI", authenticated: false, type: "api_key" },
+          { id: "anthropic", name: "Anthropic", authenticated: false, type: "oauth" },
+          { id: "anthropic-api-key", name: "Anthropic API Key", authenticated: false, type: "api_key" },
+          { id: "anthropic-subscription", name: "Anthropic Subscription", authenticated: false, type: "oauth" },
+        ],
+      });
+
+      render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
+
+      const quickStartSection = await screen.findByTestId("onboarding-quick-start-providers");
+      expect(getProviderOrderInSection(quickStartSection)).toEqual(["anthropic-subscription", "anthropic-api-key", "openai"]);
+      expect(within(quickStartSection).queryByTestId("onboarding-provider-card-anthropic")).toBeNull();
+    });
+
     it("keeps advanced providers hidden by default until advanced settings is expanded", async () => {
       mockFetchAuthStatus.mockResolvedValueOnce({
         providers: [
@@ -629,7 +672,7 @@ describe("ModelOnboardingModal", () => {
       mockFetchAuthStatus.mockResolvedValueOnce({
         providers: [
           { id: "anthropic", name: "Anthropic", authenticated: false, type: "oauth" },
-          { id: "openrouter", name: "OpenRouter", authenticated: true, type: "api_key" },
+          { id: "minimax", name: "MiniMax", authenticated: true, type: "api_key" },
         ],
       });
 
@@ -640,8 +683,8 @@ describe("ModelOnboardingModal", () => {
       });
 
       const connectedSection = screen.getByTestId("onboarding-connected-providers");
-      expect(within(connectedSection).getByText("OpenRouter")).toBeTruthy();
-      expect(screen.queryByTestId("onboarding-provider-card-openrouter")).toBeTruthy();
+      expect(within(connectedSection).getByText("MiniMax")).toBeTruthy();
+      expect(screen.queryByTestId("onboarding-provider-card-minimax")).toBeTruthy();
       expect(screen.queryByTestId("onboarding-advanced-provider-settings")).toBeNull();
     });
 
@@ -649,14 +692,75 @@ describe("ModelOnboardingModal", () => {
       mockFetchAuthStatus.mockResolvedValueOnce({
         providers: [
           { id: "anthropic", name: "Anthropic", authenticated: false, type: "oauth" },
-          { id: "openrouter", name: "OpenRouter", authenticated: true, type: "api_key" },
+          { id: "minimax", name: "MiniMax", authenticated: true, type: "api_key" },
         ],
       });
 
       render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
 
-      const openRouterWrapper = await screen.findByTestId("onboarding-provider-icon-openrouter");
-      expect(within(openRouterWrapper).getByTestId("provider-icon")).toHaveAttribute("data-provider", "openrouter");
+      const minimaxWrapper = await screen.findByTestId("onboarding-provider-icon-minimax");
+      expect(within(minimaxWrapper).getByTestId("provider-icon")).toHaveAttribute("data-provider", "minimax");
+    });
+
+    it("places the single advanced-provider disclosure inside quick start before default model selection", async () => {
+      render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
+
+      const quickStartSection = await screen.findByTestId("onboarding-quick-start-providers");
+      const advancedButtons = screen.getAllByRole("button", { name: /Advanced provider settings/ });
+      expect(advancedButtons).toHaveLength(1);
+      expect(quickStartSection).toContainElement(advancedButtons[0]);
+
+      const defaultModelHeading = screen.getByText("Default Model (Optional)");
+      expect(
+        quickStartSection.compareDocumentPosition(defaultModelHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    });
+
+    it("shows empty advanced state when every visible provider is already quick-start", async () => {
+      mockFetchAuthStatus.mockResolvedValueOnce({
+        providers: [
+          { id: "anthropic", name: "Anthropic", authenticated: false, type: "oauth" },
+          { id: "openai", name: "OpenAI", authenticated: false, type: "api_key" },
+        ],
+      });
+
+      render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
+
+      expect(await screen.findByTestId("onboarding-quick-start-providers")).toBeTruthy();
+      expect(screen.queryByTestId("onboarding-advanced-provider-settings")).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: /Advanced provider settings/ }));
+
+      expect(await screen.findByTestId("onboarding-advanced-provider-settings")).toHaveTextContent(
+        "All currently available providers are already shown above.",
+      );
+    });
+
+    it("keeps existing custom providers and add-custom controls in the quick-start advanced area", async () => {
+      mockFetchCustomProviders.mockResolvedValueOnce({
+        providers: [
+          { id: "custom-openai", name: "Custom OpenAI", baseUrl: "https://example.com", api: "openai-responses", models: [] },
+        ],
+      });
+
+      render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
+
+      const quickStartSection = await screen.findByTestId("onboarding-quick-start-providers");
+      fireEvent.click(within(quickStartSection).getByRole("button", { name: /Advanced provider settings/ }));
+
+      const advancedPanel = await screen.findByTestId("onboarding-advanced-provider-settings");
+      expect(within(advancedPanel).getByText("Custom OpenAI")).toBeTruthy();
+      expect(within(advancedPanel).getByRole("button", { name: /Add custom provider/ })).toBeTruthy();
+    });
+
+    it("shows the no-provider empty state without rendering leftover advanced-provider controls", async () => {
+      mockFetchAuthStatus.mockResolvedValueOnce({ providers: [] });
+
+      render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
+
+      expect(await screen.findByText("No AI providers are configured. Please check your Fusion configuration.")).toBeTruthy();
+      expect(screen.queryByTestId("onboarding-quick-start-providers")).toBeNull();
+      expect(screen.queryByRole("button", { name: /Advanced provider settings/ })).toBeNull();
     });
 
     it("shows model dropdown in AI Setup step", async () => {
@@ -1239,6 +1343,8 @@ describe("ModelOnboardingModal", () => {
 
       expect(await screen.findByTestId("cursor-cli-provider-card")).toBeInTheDocument();
       expect(screen.getByText("Cursor — via Cursor CLI")).toBeInTheDocument();
+      expect(screen.queryByLabelText("Cursor CLI binary path")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Save & Test" })).not.toBeInTheDocument();
     });
 
     it("renders stable onboarding-provider-icon wrappers for provider cards", async () => {
@@ -1592,13 +1698,13 @@ describe("ModelOnboardingModal", () => {
   });
 
   describe("GitHub step", () => {
-    it("GitHub step shows OAuth setup fallback when neither OAuth nor gh CLI auth is available", async () => {
+    it("GitHub step shows optional fallback when neither OAuth nor gh CLI auth is available", async () => {
       render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
 
       await navigateToGitHubStep();
 
-      expect(screen.getByText(/GitHub OAuth isn't connected yet/)).toBeTruthy();
-      expect(screen.getByText(/Settings → Authentication/)).toBeTruthy();
+      expect(screen.getByText(/Dashboard GitHub OAuth is not configured/)).toBeTruthy();
+      expect(screen.getByText(/GitHub CLI setup guidance above/)).toBeTruthy();
       expect(screen.getByRole("button", { name: "Continue without GitHub →" })).toBeTruthy();
     });
 
@@ -1622,7 +1728,7 @@ describe("ModelOnboardingModal", () => {
 
       const ctaContainer = screen.getByTestId("onboarding-github-connect-cta");
       expect(ctaContainer).toHaveClass("onboarding-github-connect-cta");
-      const connectButton = screen.getByRole("button", { name: /Connect/ });
+      const connectButton = screen.getByRole("button", { name: /Connect GitHub OAuth/ });
       expect(connectButton).toHaveClass("btn", "btn-primary", "btn-sm");
     });
 
@@ -1632,6 +1738,186 @@ describe("ModelOnboardingModal", () => {
       await navigateToGitHubStep();
 
       expect(screen.getByText(/task creation works without it/i)).toBeTruthy();
+    });
+
+    it("shows a low-noise installed Git prerequisite note without replacing GitHub auth state", async () => {
+      mockFetchAuthStatus.mockResolvedValueOnce({
+        providers: [
+          { id: "github", name: "GitHub", authenticated: false, type: "oauth" },
+        ],
+        gitCli: { available: true, version: "2.45.1", installUrl: "https://git-scm.com/downloads" },
+      });
+
+      render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
+
+      await navigateToGitHubStep();
+
+      const prerequisite = screen.getByTestId("onboarding-git-prerequisite");
+      expect(prerequisite).toHaveClass("onboarding-github-git-prerequisite--ready");
+      expect(prerequisite).toHaveTextContent("Git prerequisite ready");
+      expect(prerequisite).toHaveTextContent("2.45.1");
+      expect(screen.getByTestId("github-status-badge")).toHaveTextContent("Not connected");
+      expect(screen.getByRole("button", { name: /Connect/ })).toBeTruthy();
+    });
+
+    it("shows platform-aware install guidance when Git is missing on the Fusion host", async () => {
+      mockFetchAuthStatus.mockResolvedValueOnce({
+        providers: [
+          { id: "github", name: "GitHub", authenticated: false, type: "oauth" },
+        ],
+        gitCli: { available: false, installUrl: "https://git-scm.com/downloads" },
+      });
+
+      render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
+
+      await navigateToGitHubStep();
+
+      const prerequisite = screen.getByTestId("onboarding-git-prerequisite");
+      expect(prerequisite).toHaveAttribute("role", "alert");
+      expect(prerequisite).toHaveClass("onboarding-github-git-prerequisite--missing");
+      expect(prerequisite).toHaveTextContent("Install Git before project setup");
+      expect(prerequisite).toHaveTextContent("server host running Fusion");
+      expect(prerequisite).toHaveTextContent("macOS");
+      expect(prerequisite).toHaveTextContent("Windows");
+      expect(prerequisite).toHaveTextContent("Linux");
+      expect(screen.getByRole("link", { name: "Open Git install downloads" })).toHaveAttribute("href", "https://git-scm.com/downloads");
+      expect(screen.getByRole("button", { name: /Connect/ })).toBeTruthy();
+      expect(screen.getByText("No worries if you're not ready — connect GitHub anytime from Settings → Authentication.")).toBeTruthy();
+    });
+
+    it("keeps legacy auth status responses without gitCli free of empty prerequisite shells", async () => {
+      mockFetchAuthStatus.mockResolvedValueOnce({
+        providers: [
+          { id: "github", name: "GitHub", authenticated: false, type: "oauth" },
+        ],
+      });
+
+      render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
+
+      await navigateToGitHubStep();
+
+      expect(screen.queryByTestId("onboarding-git-prerequisite")).toBeNull();
+      expect(screen.getByTestId("github-status-badge")).toHaveTextContent("Not connected");
+    });
+
+    it("keeps legacy auth status responses without ghCli non-blocking", async () => {
+      mockFetchAuthStatus.mockResolvedValueOnce({
+        providers: [],
+        gitCli: { available: true, version: "2.45.1", installUrl: "https://git-scm.com/downloads" },
+      });
+
+      render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
+
+      await navigateToGitHubStep();
+
+      expect(screen.getByTestId("onboarding-git-prerequisite")).toHaveTextContent("Git prerequisite ready");
+      expect(screen.queryByTestId("github-status-badge")).toBeNull();
+      expect(screen.getByRole("button", { name: "Continue without GitHub →" })).toBeTruthy();
+    });
+
+    it("does not treat GitHub Copilot provider auth as GitHub integration readiness", async () => {
+      mockFetchAuthStatus.mockResolvedValueOnce({
+        providers: [
+          { id: "github-copilot", name: "GitHub Copilot", authenticated: true, type: "oauth" },
+        ],
+        ghCli: { available: false, authenticated: false },
+      });
+
+      render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
+
+      await navigateToGitHubStep();
+
+      expect(screen.queryByTestId("github-status-badge")).toBeNull();
+      expect(screen.getByText(/Dashboard GitHub OAuth is not configured/)).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Continue without GitHub →" })).toBeTruthy();
+      expect(screen.queryByText(/GitHub is connected — issue imports/)).toBeNull();
+    });
+
+    it("models installed but unauthenticated gh CLI as not ready while preserving OAuth connect", async () => {
+      mockFetchAuthStatus.mockResolvedValueOnce({
+        providers: [
+          { id: "github", name: "GitHub", authenticated: false, type: "oauth" },
+        ],
+        ghCli: { available: true, authenticated: false },
+      });
+
+      render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
+
+      await navigateToGitHubStep();
+
+      expect(screen.getByTestId("github-status-badge")).toHaveTextContent("Not connected");
+      const authCard = screen.getByTestId("onboarding-gh-cli-auth-card");
+      expect(authCard).toHaveTextContent("Authenticate GitHub CLI");
+      expect(authCard).toHaveTextContent("gh auth login");
+      expect(screen.getByRole("button", { name: /Connect GitHub OAuth/ })).toBeTruthy();
+      expect(screen.getByText(/task creation works without it/i)).toBeTruthy();
+    });
+
+    it("models missing gh CLI as not ready while preserving optional skip", async () => {
+      mockFetchAuthStatus.mockResolvedValueOnce({
+        providers: [
+          { id: "github", name: "GitHub", authenticated: false, type: "oauth" },
+        ],
+        ghCli: { available: false, authenticated: false },
+      });
+
+      render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
+
+      await navigateToGitHubStep();
+
+      expect(screen.getByTestId("github-status-badge")).toHaveTextContent("Not connected");
+      const installCard = screen.getByTestId("onboarding-gh-cli-install-card");
+      expect(installCard).toHaveTextContent("Install GitHub CLI");
+      expect(installCard).toHaveTextContent("host running Fusion");
+      expect(installCard).toHaveTextContent("macOS");
+      expect(installCard).toHaveTextContent("Windows");
+      expect(installCard).toHaveTextContent("Linux");
+      expect(screen.getByRole("link", { name: "Open GitHub CLI releases" })).toHaveAttribute("href", "https://github.com/cli/cli/releases/latest");
+      expect(screen.getByRole("button", { name: /Connect GitHub OAuth/ })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Skip GitHub →" })).toBeTruthy();
+    });
+
+    it("shows GitHub CLI install guidance even when dashboard GitHub OAuth provider is absent", async () => {
+      mockFetchAuthStatus.mockResolvedValueOnce({
+        providers: [],
+        ghCli: { available: false, authenticated: false },
+      });
+
+      render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
+
+      await navigateToGitHubStep();
+
+      expect(screen.getByTestId("onboarding-gh-cli-install-card")).toHaveTextContent("Install GitHub CLI");
+      expect(screen.getByText(/Dashboard GitHub OAuth is not configured/)).toBeTruthy();
+      expect(screen.queryByRole("button", { name: /Connect GitHub OAuth/ })).toBeNull();
+      expect(screen.getByRole("button", { name: "Continue without GitHub →" })).toBeTruthy();
+    });
+
+    it("preserves missing-Git guidance when GitHub OAuth provider is absent and gh CLI is ready", async () => {
+      mockFetchAuthStatus.mockResolvedValueOnce({
+        providers: [],
+        ghCli: { available: true, authenticated: true },
+        gitCli: { available: false, installUrl: "https://git-scm.com/downloads" },
+      });
+
+      render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
+
+      await navigateToGitHubStep();
+
+      expect(screen.getByTestId("onboarding-git-prerequisite")).toHaveTextContent("Install Git before project setup");
+      expect(screen.getByRole("button", { name: "Continue with gh CLI auth →" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: /Connect OAuth/ })).toBeTruthy();
+    });
+
+    it("does not show a Git prerequisite shell when auth status fails to load", async () => {
+      mockFetchAuthStatus.mockRejectedValueOnce(new Error("auth unavailable"));
+
+      render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
+
+      await navigateToGitHubStep();
+
+      expect(screen.queryByTestId("onboarding-git-prerequisite")).toBeNull();
+      expect(screen.getByRole("button", { name: "Continue without GitHub →" })).toBeTruthy();
     });
 
     it("GitHub step shows connected state when already authenticated", async () => {

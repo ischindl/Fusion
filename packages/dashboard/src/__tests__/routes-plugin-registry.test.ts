@@ -83,6 +83,11 @@ describe("GET /api/plugins/registry", () => {
     expect((res.body as { plugins: Array<{ id: string }> }).plugins.map((plugin) => plugin.id)).toEqual([
       "fusion-plugin-whatsapp-chat",
     ]);
+
+    const linearRes = await performGet(buildApp(pluginStore), "/api/plugins/registry?q=linear");
+    expect((linearRes.body as { plugins: Array<{ id: string }> }).plugins.map((plugin) => plugin.id)).toEqual([
+      "fusion-plugin-linear-import",
+    ]);
   });
 
   it("filters by category", async () => {

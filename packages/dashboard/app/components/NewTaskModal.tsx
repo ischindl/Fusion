@@ -618,6 +618,11 @@ export function NewTaskModal({ isOpen, onClose, projectId, tasks, onCreateTask, 
   const quickFieldsDepRef = useRef<HTMLDivElement>(null);
 
   const { hasAiProvider, hasGithub, loading: setupReadinessLoading } = useSetupReadiness(projectId);
+  /*
+  FNXC:SetupWarning 2026-07-03-00:00:
+  The New Task modal does not own the Settings navigation callback that can open Authentication, so it must not show the delayed GitHub warning without the required Connect GitHub CTA. Keep immediate AI-provider warnings here and let the dashboard banner render the actionable GitHub warning.
+  */
+  const visibleSetupHasWarnings = !hasAiProvider;
   const { nodes } = useNodes();
 
   /**
@@ -1132,10 +1137,11 @@ export function NewTaskModal({ isOpen, onClose, projectId, tasks, onCreateTask, 
         </div>
 
         <div className="modal-body">
-          {!setupReadinessLoading && (
+          {!setupReadinessLoading && visibleSetupHasWarnings && (
             <SetupWarningBanner
               hasAiProvider={hasAiProvider}
               hasGithub={hasGithub}
+              showGithubWarning={false}
             />
           )}
 

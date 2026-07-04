@@ -7,8 +7,12 @@ interface SetupWarningBannerProps {
   hasAiProvider: boolean;
   /** Whether GitHub is connected */
   hasGithub: boolean;
+  /** Whether the GitHub warning item is allowed to render after any grace period */
+  showGithubWarning?: boolean;
   /** Optional: compact mode for inline use (QuickEntryBox) */
   compact?: boolean;
+  /** Optional callback to open GitHub/authentication setup */
+  onConnectGithub?: () => void;
   /** Optional callback to dismiss the banner */
   onDismiss?: () => void;
 }
@@ -22,11 +26,14 @@ interface WarningItem {
 export function SetupWarningBanner({
   hasAiProvider,
   hasGithub,
+  showGithubWarning = !hasGithub,
   compact = false,
   onDismiss,
+  onConnectGithub,
 }: SetupWarningBannerProps) {
   const { t } = useTranslation("app");
-  if (hasAiProvider && hasGithub) {
+  const shouldShowGithubWarning = !hasGithub && showGithubWarning;
+  if (hasAiProvider && !shouldShowGithubWarning) {
     return null;
   }
 
@@ -66,7 +73,7 @@ export function SetupWarningBanner({
     });
   }
 
-  if (!hasGithub) {
+  if (shouldShowGithubWarning) {
     warningItems.push({
       key: "github",
       title: t("setup.noGithub", "GitHub not connected"),
@@ -85,6 +92,13 @@ export function SetupWarningBanner({
         <div key={warning.key} className="setup-warning-banner__item">
           <strong className="setup-warning-banner__title">{warning.title}</strong>
           <p className="setup-warning-banner__description">{warning.description}</p>
+          {warning.key === "github" && onConnectGithub ? (
+            <div className="setup-warning-banner__actions">
+              <button type="button" className="btn btn-sm btn-primary" onClick={onConnectGithub}>
+                {t("setup.connectGithub", "Connect GitHub")}
+              </button>
+            </div>
+          ) : null}
         </div>
       ))}
     </div>

@@ -5,9 +5,44 @@
   align-items: center;
 }
 
+.cursor-cli-binary-path-control {
+  display: grid;
+  gap: var(--space-xs);
+  margin-top: var(--space-sm);
+}
+
+.cursor-cli-binary-path-label {
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.cursor-cli-binary-path-row {
+  display: flex;
+  gap: var(--space-sm);
+  align-items: center;
+}
+
+.cursor-cli-binary-path-input {
+  min-width: 0;
+  flex: 1 1 18rem;
+  height: 2rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  padding: 0 var(--space-sm);
+}
+
 @media (max-width: 768px) {
   .cursor-cli-provider-card .auth-provider-cli-actions,
-  .cursor-cli-provider-card .onboarding-provider-card__actions {
+  .cursor-cli-provider-card .onboarding-provider-card__actions,
+  .cursor-cli-binary-path-row {
     flex-wrap: wrap;
+  }
+
+  .cursor-cli-binary-path-row .btn,
+  .cursor-cli-binary-path-input {
+    width: 100%;
   }
 }

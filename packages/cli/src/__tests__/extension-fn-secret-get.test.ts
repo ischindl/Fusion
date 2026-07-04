@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { workflowAuthoringEngineMock } from "./helpers/engine-workflow-authoring-mock.js";
 
 const resolveSecretAccessPolicyMock = vi.hoisted(() => vi.fn());
 const revealSecretMock = vi.hoisted(() => vi.fn());
@@ -10,6 +11,7 @@ const assertNoSecretPlaintextMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@fusion/dashboard", () => ({ registerGithubTrackingHook: vi.fn() }));
 vi.mock("@fusion/engine", () => ({
+  ...workflowAuthoringEngineMock,
   createFnAgent: vi.fn(),
   fetchWebContent: vi.fn(),
   assertNoSecretPlaintext: assertNoSecretPlaintextMock,

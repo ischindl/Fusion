@@ -194,11 +194,6 @@ export default defineConfig({
             FNXC:EngineTests 2026-06-14-02:11:
             FN-6433 rescued the AI-merge suites by replacing broad activeSessionRegistry cleanup with path-scoped cleanup, so the default engine lane should execute them again. The soft-delete blocker residue suite was deleted under the ratchet because deterministic soft-delete deadlock coverage already owns that invariant.
             */
-            /*
-            FNXC:EngineTests 2026-06-29-13:55:
-            FN-7239 quarantines executor-pause.test.ts under the deletion ratchet because it still asserts obsolete direct-dispatch StepSessionExecutor and legacy pause paths after builtin:coding moved to graph execution. Keep graph-path equivalents active in step-session-executor, executor-paused-abort-todo-benign, and workflow-graph-step-rerun before rescuing or deleting this file.
-            */
-            "src/__tests__/executor-pause.test.ts",
           ],
         },
       },

@@ -46,7 +46,7 @@ export interface SetupWizardModalProps {
 }
 
 type WizardStep = "manual" | "agent" | "complete";
-type ManualSetupMode = "existing" | "clone";
+type ManualSetupMode = "existing" | "init" | "clone";
 type AgentOutcome = "created" | "skipped" | null;
 
 interface WizardState {
@@ -150,7 +150,7 @@ export function SetupWizardModal({
 
   const handlePathChange = useCallback((path: string) => {
     setState((prev) => {
-      const updates: Partial<WizardState> = { manualPath: path, detectedRepos: [], workspaceMode: false };
+      const updates: Partial<WizardState> = { manualPath: path, detectedRepos: [], workspaceMode: false, error: null };
       // Auto-suggest name when path changes and name is empty or was previously auto-suggested
       if (path && (!prev.manualName || prev.manualName === suggestProjectName(prev.manualPath))) {
         updates.manualName = suggestProjectName(path);
@@ -189,6 +189,19 @@ export function SetupWizardModal({
     }
   }, [state.manualMode]);
 
+  const handleSetupModeChange = useCallback((mode: ManualSetupMode) => {
+    setState((prev) => ({
+      ...prev,
+      manualMode: mode,
+      manualCloneUrl: mode === "clone" ? prev.manualCloneUrl : "",
+      detectedRepos: mode === "existing" ? prev.detectedRepos : [],
+      workspaceMode: mode === "existing" ? prev.workspaceMode : false,
+      isDetectingWorkspace: false,
+      error: null,
+    }));
+    detectWorkspaceRequestId.current += 1;
+  }, []);
+
   const handleManualRegister = useCallback(async () => {
     const trimmedPath = state.manualPath.trim();
     const trimmedName = state.manualName.trim();
@@ -205,8 +218,9 @@ export function SetupWizardModal({
         path: trimmedPath,
         isolationMode: state.manualIsolationMode,
         nodeId: state.manualNodeId || undefined,
+        gitSetupMode: state.manualMode,
         cloneUrl: state.manualMode === "clone" ? trimmedCloneUrl : undefined,
-        workspaceMode: state.workspaceMode,
+        workspaceMode: state.manualMode === "existing" ? state.workspaceMode : false,
         taskPrefix: state.manualTaskPrefix.trim() || undefined,
       };
 
@@ -294,6 +308,22 @@ export function SetupWizardModal({
         agentOutcome: "created",
       }));
     } catch (err) {
+      /*
+       * FNXC:Onboarding 2026-07-03-12:10:
+       * A same-named first agent ("CEO") may already exist — created via another first-run surface
+       * (the unified ModelOnboarding agent step) or a prior attempt; agent names are unique per store.
+       * The desired end state (a first agent exists) already holds, so treat a name collision as success
+       * and complete setup rather than blocking with "Agent with this name already exists".
+       */
+      if (err instanceof Error && /already exists/i.test(err.message)) {
+        setState((prev) => ({
+          ...prev,
+          step: "complete",
+          isCreatingAgent: false,
+          agentOutcome: "created",
+        }));
+        return;
+      }
       setState((prev) => ({
         ...prev,
         isCreatingAgent: false,
@@ -314,7 +344,13 @@ export function SetupWizardModal({
   if (!isOpen) return null;
 
   const isExistingMode = state.manualMode === "existing";
+  const isInitMode = state.manualMode === "init";
   const isCloneMode = state.manualMode === "clone";
+  const setupModeSubmitLabel = isCloneMode
+    ? t("setup.cloneAndRegisterProject", "Clone and Register Project")
+    : isInitMode
+      ? t("setup.initializeAndRegisterProject", "Initialize and Register Project")
+      : t("setup.registerProject", "Register Project");
   const hasPath = state.manualPath.trim().length > 0;
   const hasName = state.manualName.trim().length > 0;
   const hasCloneUrl = state.manualCloneUrl.trim().length > 0;
@@ -390,6 +426,88 @@ export function SetupWizardModal({
           {/* Manual Step */}
           {state.step === "manual" && (
             <div className="setup-wizard-manual">
+              {/*
+                FNXC:Onboarding 2026-07-02-14:30:
+                First-run project setup must make existing, init, and clone repository paths visible before path entry.
+                The selected mode tells users whether Fusion will register an existing git repo, run server-side `git init`, or `git clone` into an empty destination so non-git folders do not strand onboarding.
+              */}
+              <section className="setup-wizard-repository-section" aria-labelledby="setup-repository-mode-title">
+                <div className="setup-wizard-section-heading">
+                  <h3 id="setup-repository-mode-title">{t("setup.repositorySetupTitle", "Repository setup")}</h3>
+                  <p>{t("setup.repositorySetupDescription", "Choose how Fusion should prepare the project directory before registration.")}</p>
+                </div>
+                <fieldset className="setup-wizard-mode-switch" aria-label={t("setup.projectSetupModeAriaLabel", "Project setup mode")}>
+                  <legend>{t("setup.setupMode", "Setup Mode")}</legend>
+                  <label className={`setup-wizard-mode-option${isExistingMode ? " selected" : ""}`}>
+                    <input
+                      type="radio"
+                      name="setup-mode"
+                      value="existing"
+                      aria-label={t("setup.useExistingDirectory", "Use Existing Directory")}
+                      checked={isExistingMode}
+                      onChange={() => handleSetupModeChange("existing")}
+                    />
+                    <span className="setup-wizard-mode-option-copy">
+                      <strong>{t("setup.useExistingDirectory", "Use Existing Directory")}</strong>
+                      <span>{t("setup.useExistingDirectoryHint", "Register a folder that is already a git repository or workspace root.")}</span>
+                    </span>
+                  </label>
+                  <label className={`setup-wizard-mode-option${isInitMode ? " selected" : ""}`}>
+                    <input
+                      type="radio"
+                      name="setup-mode"
+                      value="init"
+                      aria-label={t("setup.initializeNewRepository", "Initialize New Repository")}
+                      checked={isInitMode}
+                      onChange={() => handleSetupModeChange("init")}
+                    />
+                    <span className="setup-wizard-mode-option-copy">
+                      <strong>{t("setup.initializeNewRepository", "Initialize New Repository")}</strong>
+                      <span>{t("setup.initializeNewRepositoryHint", "Register a selected non-git folder and let Fusion run git init on the server.")}</span>
+                    </span>
+                  </label>
+                  <label className={`setup-wizard-mode-option${isCloneMode ? " selected" : ""}`}>
+                    <input
+                      type="radio"
+                      name="setup-mode"
+                      value="clone"
+                      aria-label={t("setup.cloneGitRepository", "Clone Git Repository")}
+                      checked={isCloneMode}
+                      onChange={() => handleSetupModeChange("clone")}
+                    />
+                    <span className="setup-wizard-mode-option-copy">
+                      <strong>{t("setup.cloneGitRepository", "Clone Git Repository")}</strong>
+                      <span>{t("setup.cloneGitRepositoryHint", "Clone a remote repository into an empty or absent destination folder.")}</span>
+                    </span>
+                  </label>
+                </fieldset>
+              </section>
+
+              {/*
+                FNXC:Onboarding 2026-07-03-08:20:
+                Folder selection comes BEFORE the project name: the name auto-derives from the chosen
+                directory, so picking the folder first pre-fills a sensible name (rather than asking for
+                a name before there's a folder to base it on).
+              */}
+              <div className="form-group">
+                <label htmlFor="project-path">{isCloneMode ? t("setup.destinationDirectory", "Destination Directory") : isInitMode ? t("setup.newRepositoryDirectory", "New Repository Directory") : t("setup.projectDirectory", "Project Directory")}</label>
+                <DirectoryPicker
+                  value={state.manualPath}
+                  onChange={handlePathChange}
+                  nodeId={state.manualNodeId || undefined}
+                  localNodeId={localNodeId}
+                  selectCreatedDirectory
+                  placeholder={isCloneMode ? t("setup.clonePathPlaceholder", "/path/for/new-clone") : isInitMode ? t("setup.initPathPlaceholder", "/path/to/new-project") : t("setup.projectPathPlaceholder", "/path/to/your/project")}
+                />
+                <p className="form-hint">
+                  {isCloneMode
+                    ? t("setup.clonePathHint", "Select or type an absolute destination path. Fusion will clone into this directory. The destination must be empty or absent.")
+                    : isInitMode
+                      ? t("setup.initPathHint", "Select or type an absolute path to an empty or non-git folder. Fusion will run git init during registration.")
+                      : t("setup.projectPathHint", "Select or type the absolute path to an existing git repository or workspace root.")}
+                </p>
+              </div>
+
               <div className="form-group">
                 <label htmlFor="project-name">{t("setup.projectName", "Project Name")}</label>
                 <input
@@ -404,25 +522,27 @@ export function SetupWizardModal({
                 <p className="form-hint">
                   {isCloneMode
                     ? t("setup.projectNameHintClone", "By default this follows the destination folder name unless you edit it.")
-                    : t("setup.projectNameHintExisting", "By default this follows the selected directory name unless you edit it.")}
+                    : isInitMode
+                      ? t("setup.projectNameHintInit", "By default this follows the folder name Fusion will initialize unless you edit it.")
+                      : t("setup.projectNameHintExisting", "By default this follows the selected directory name unless you edit it.")}
                 </p>
               </div>
 
-              <div className="form-group">
-                <label htmlFor="project-path">{isCloneMode ? t("setup.destinationDirectory", "Destination Directory") : t("setup.projectDirectory", "Project Directory")}</label>
-                <DirectoryPicker
-                  value={state.manualPath}
-                  onChange={handlePathChange}
-                  nodeId={state.manualNodeId || undefined}
-                  localNodeId={localNodeId}
-                  placeholder={isCloneMode ? t("setup.clonePathPlaceholder", "/path/for/new-clone") : t("setup.projectPathPlaceholder", "/path/to/your/project")}
-                />
-                <p className="form-hint">
-                  {isCloneMode
-                    ? t("setup.clonePathHint", "Select or type an absolute destination path. Fusion will clone into this directory.")
-                    : t("setup.projectPathHint", "Select or type the absolute path to your project")}
-                </p>
-              </div>
+              {isCloneMode && (
+                <div className="form-group">
+                  <label htmlFor="project-clone-url">{t("setup.repositoryUrl", "Repository URL")}</label>
+                  <input
+                    id="project-clone-url"
+                    type="text"
+                    value={state.manualCloneUrl}
+                    onChange={(e) => setState((prev) => ({ ...prev, manualCloneUrl: e.target.value, error: null }))}
+                    placeholder={t("setup.repositoryUrlPlaceholder", "https://github.com/owner/repo.git")}
+                  />
+                  <p className="form-hint">
+                    {t("setup.cloneGitHint", "Fusion will run git clone into the destination directory, then register that cloned folder.")}
+                  </p>
+                </div>
+              )}
 
               {/*
                 FNXC:Workspace 2026-06-24-19:00:
@@ -443,7 +563,7 @@ export function SetupWizardModal({
                   </label>
                   {state.isDetectingWorkspace && (
                     <p className="form-hint">
-                      <Loader2 size={12} className="animate-spin" style={{ display: "inline-block", verticalAlign: "middle", marginRight: 4 }} />
+                      <Loader2 size={12} className="animate-spin setup-wizard-inline-spinner" />
                       {t("setup.detectingWorkspace", "Detecting sub-repositories...")}
                     </p>
                   )}
@@ -494,50 +614,6 @@ export function SetupWizardModal({
                 </button>
                 {showAdvancedSettings && (
                   <div className="setup-wizard-advanced-panel">
-                    <fieldset className="setup-wizard-mode-switch" aria-label="Project setup mode">
-                      <legend>{t("setup.setupMode", "Setup Mode")}</legend>
-                      <label
-                        className={`setup-wizard-mode-option${isExistingMode ? " selected" : ""}`}
-                      >
-                        <input
-                          type="radio"
-                          name="setup-mode"
-                          value="existing"
-                          checked={isExistingMode}
-                          onChange={() => setState((prev) => ({ ...prev, manualMode: "existing", error: null }))}
-                        />
-                        <span>{t("setup.useExistingDirectory", "Use Existing Directory")}</span>
-                      </label>
-                      <label
-                        className={`setup-wizard-mode-option${isCloneMode ? " selected" : ""}`}
-                      >
-                        <input
-                          type="radio"
-                          name="setup-mode"
-                          value="clone"
-                          checked={isCloneMode}
-                          onChange={() => setState((prev) => ({ ...prev, manualMode: "clone", error: null }))}
-                        />
-                        <span>{t("setup.cloneGitRepository", "Clone Git Repository")}</span>
-                      </label>
-                    </fieldset>
-
-                    {isCloneMode && (
-                      <div className="form-group">
-                        <label htmlFor="project-clone-url">{t("setup.repositoryUrl", "Repository URL")}</label>
-                        <input
-                          id="project-clone-url"
-                          type="text"
-                          value={state.manualCloneUrl}
-                          onChange={(e) => setState((prev) => ({ ...prev, manualCloneUrl: e.target.value }))}
-                          placeholder={t("setup.repositoryUrlPlaceholder", "https://github.com/owner/repo.git")}
-                        />
-                        <p className="form-hint">
-                          {t("setup.cloneGitHint", "Fusion will run git clone into the destination directory, then register that cloned folder.")}
-                        </p>
-                      </div>
-                    )}
-
                     <div className="form-group">
                       <div className="project-node-selector">
                         <span className="project-node-selector__label">{t("setup.runtimeNode", "Runtime Node")}</span>
@@ -742,7 +818,7 @@ export function SetupWizardModal({
                   <span>{t("setup.registering", "Registering...")}</span>
                 </>
               ) : (
-                <span>{t("setup.registerProject", "Register Project")}</span>
+                <span>{setupModeSubmitLabel}</span>
               )}
             </button>
           )}

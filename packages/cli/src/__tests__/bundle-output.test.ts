@@ -200,6 +200,28 @@ describe("CLI bundle output", () => {
     expect(stagedPkg.exports?.["."]?.import).toBe("./bundled.js");
   });
 
+  it("dist/plugins/fusion-plugin-linear-import/ is staged as bundled runtime output", () => {
+    const stagedRoot = join(cliRoot, "dist", "plugins", "fusion-plugin-linear-import");
+    const manifestPath = join(stagedRoot, "manifest.json");
+    const packageJsonPath = join(stagedRoot, "package.json");
+
+    expect(existsSync(manifestPath)).toBe(true);
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf-8")) as { id?: string; name?: string; dashboardViews?: unknown[] };
+    expect(manifest.id).toBe("fusion-plugin-linear-import");
+    expect(typeof manifest.name).toBe("string");
+    expect(manifest.dashboardViews?.[0]).toMatchObject({ viewId: "linear-import" });
+
+    expect(existsSync(join(stagedRoot, "bundled.js"))).toBe(true);
+    expect(existsSync(join(stagedRoot, "src"))).toBe(false);
+
+    const stagedPkg = JSON.parse(readFileSync(packageJsonPath, "utf-8")) as {
+      exports?: { "."?: { import?: string } };
+      dependencies?: Record<string, string>;
+    };
+    expect(stagedPkg.exports?.["."]?.import).toBe("./bundled.js");
+    expect(stagedPkg.dependencies?.["@fusion/core"]).toBeUndefined();
+  });
+
   it("dist/plugins/fusion-plugin-whatsapp-chat/ is staged with a valid manifest", () => {
     const stagedRoot = join(cliRoot, "dist", "plugins", "fusion-plugin-whatsapp-chat");
     const manifestPath = join(stagedRoot, "manifest.json");

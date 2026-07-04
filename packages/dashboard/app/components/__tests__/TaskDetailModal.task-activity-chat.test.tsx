@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { act, render, screen, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import React, { type ComponentProps } from "react";
 import type { AgentLogEntry } from "@fusion/core";
@@ -90,6 +90,18 @@ function mockRawLogs(entries: AgentLogEntry[]) {
     total: entries.length,
     loadingMore: false,
   });
+}
+
+function createMockVisualViewport(width: number, height: number) {
+  const visualViewport = new EventTarget() as EventTarget & Pick<VisualViewport, "width" | "height" | "offsetLeft" | "offsetTop" | "scale">;
+  Object.defineProperties(visualViewport, {
+    width: { configurable: true, value: width },
+    height: { configurable: true, value: height },
+    offsetLeft: { configurable: true, value: 0 },
+    offsetTop: { configurable: true, value: 0 },
+    scale: { configurable: true, value: 1 },
+  });
+  return visualViewport;
 }
 
 describe("TaskDetailModal Activity and planner Chat tab integration", () => {
@@ -195,6 +207,133 @@ describe("TaskDetailModal Activity and planner Chat tab integration", () => {
       HTMLElement.prototype.getBoundingClientRect = originalGetBoundingClientRect;
       Object.defineProperty(window, "innerWidth", { configurable: true, value: originalInnerWidth });
       Object.defineProperty(window, "innerHeight", { configurable: true, value: originalInnerHeight });
+    }
+  });
+
+  it("keeps the mobile iOS Activity menu usable through the opening visualViewport echo", () => {
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
+    const originalVisualViewport = Object.getOwnPropertyDescriptor(window, "visualViewport");
+    const documentElement = document.documentElement;
+    const performanceNowSpy = vi.spyOn(performance, "now").mockReturnValue(100);
+    const visualViewport = createMockVisualViewport(390, 720);
+    const addVisualViewportListenerSpy = vi.spyOn(visualViewport, "addEventListener");
+    const removeVisualViewportListenerSpy = vi.spyOn(visualViewport, "removeEventListener");
+
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 844 });
+    Object.defineProperty(documentElement, "clientWidth", { configurable: true, value: 390 });
+    Object.defineProperty(documentElement, "clientHeight", { configurable: true, value: 844 });
+    Object.defineProperty(window, "visualViewport", { configurable: true, value: visualViewport });
+    HTMLElement.prototype.getBoundingClientRect = function getBoundingClientRect() {
+      if (this.classList.contains("detail-tab--activity")) {
+        return { x: 24, y: 96, top: 96, right: 116, bottom: 132, left: 24, width: 92, height: 36, toJSON: () => ({}) } as DOMRect;
+      }
+      return originalGetBoundingClientRect.call(this);
+    };
+
+    try {
+      mockRawLogs([
+        { timestamp: "2026-06-30T20:03:00.000Z", taskId: "FN-7315", type: "text", agent: "executor", text: "raw executor line" },
+      ] as AgentLogEntry[]);
+      const { rerender, unmount } = renderModal();
+      const activityButton = screen.getByRole("button", { name: "Activity" });
+
+      fireEvent.click(activityButton);
+      let menu = screen.getByRole("menu", { name: "Activity views" });
+      performanceNowSpy.mockReturnValue(120);
+      act(() => {
+        visualViewport.dispatchEvent(new Event("resize"));
+        visualViewport.dispatchEvent(new Event("scroll"));
+      });
+      menu = screen.getByRole("menu", { name: "Activity views" });
+
+      expect(menu.parentElement).toBe(document.body);
+      expect(document.querySelector(".detail-tabs")).not.toContainElement(menu);
+      expect(document.querySelector(".detail-tab-dropdown")?.contains(menu)).toBe(false);
+      expect(menu).toHaveStyle({ position: "fixed" });
+      expect(menu.style.top).not.toBe("");
+      expect(menu.style.left).not.toBe("");
+      expect(parseFloat(menu.style.left)).toBeGreaterThanOrEqual(0);
+      expect(parseFloat(menu.style.left)).toBeLessThan(390);
+      expect(parseFloat(menu.style.top)).toBeGreaterThanOrEqual(0);
+      expect(parseFloat(menu.style.top)).toBeLessThan(844);
+      expect(document.querySelectorAll(".activity-view-menu")).toHaveLength(1);
+      expect(document.querySelectorAll(".detail-tab--activity")).toHaveLength(1);
+      expect(activityButton).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getByText("Existing steering guidance")).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("menuitem", { name: "Feed" }));
+      expect(screen.queryByRole("menu", { name: "Activity views" })).not.toBeInTheDocument();
+      expect(activityButton).toHaveAttribute("aria-expanded", "false");
+      expect(screen.getByRole("heading", { name: "Feed" })).toBeInTheDocument();
+      expect(screen.getByText("Posted update")).toBeInTheDocument();
+
+      selectActivityView("raw-logs");
+      expect(screen.getByTestId("agent-log-viewer")).toBeInTheDocument();
+      expect(screen.getByText("raw executor line")).toBeInTheDocument();
+
+      selectActivityView("current");
+      expect(screen.getByText("Existing steering guidance")).toBeInTheDocument();
+      expect(screen.queryByTestId("agent-log-viewer")).not.toBeInTheDocument();
+
+      fireEvent.click(activityButton);
+      expect(screen.getByRole("menu", { name: "Activity views" })).toBeInTheDocument();
+      fireEvent.mouseDown(document.body);
+      expect(screen.queryByRole("menu", { name: "Activity views" })).not.toBeInTheDocument();
+      expect(activityButton).toHaveAttribute("aria-expanded", "false");
+
+      fireEvent.click(activityButton);
+      fireEvent.keyDown(document, { key: "Escape" });
+      expect(screen.queryByRole("menu", { name: "Activity views" })).not.toBeInTheDocument();
+      expect(activityButton).toHaveAttribute("aria-expanded", "false");
+
+      fireEvent.click(activityButton);
+      performanceNowSpy.mockReturnValue(1000);
+      act(() => {
+        visualViewport.dispatchEvent(new Event("resize"));
+      });
+      expect(screen.queryByRole("menu", { name: "Activity views" })).not.toBeInTheDocument();
+      expect(activityButton).toHaveAttribute("aria-expanded", "false");
+
+      fireEvent.click(activityButton);
+      expect(screen.getByRole("menu", { name: "Activity views" })).toBeInTheDocument();
+      rerender(
+        <TaskDetailModal
+          task={makeTask({ id: "FN-7485-NEXT", column: "in-progress" as any, log: [], steeringComments: [] })}
+          onClose={noop}
+          onMoveTask={noopMove}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+          onOpenDetail={noopOpenDetail}
+          addToast={noop}
+        />,
+      );
+      expect(screen.queryByRole("menu", { name: "Activity views" })).not.toBeInTheDocument();
+      expect(document.querySelector(".activity-view-select")).toBeNull();
+      expect(document.querySelector(".activity-segmented-control")).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+      expect(screen.getByRole("menu", { name: "Activity views" })).toBeInTheDocument();
+      unmount();
+      expect(screen.queryByRole("menu", { name: "Activity views" })).not.toBeInTheDocument();
+      expect(removeVisualViewportListenerSpy).toHaveBeenCalledWith("resize", expect.any(Function));
+      expect(removeVisualViewportListenerSpy).toHaveBeenCalledWith("scroll", expect.any(Function));
+      expect(addVisualViewportListenerSpy).toHaveBeenCalledWith("resize", expect.any(Function));
+      expect(addVisualViewportListenerSpy).toHaveBeenCalledWith("scroll", expect.any(Function));
+    } finally {
+      performanceNowSpy.mockRestore();
+      HTMLElement.prototype.getBoundingClientRect = originalGetBoundingClientRect;
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: originalInnerWidth });
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: originalInnerHeight });
+      if (originalVisualViewport) {
+        Object.defineProperty(window, "visualViewport", originalVisualViewport);
+      } else {
+        delete (window as unknown as { visualViewport?: unknown }).visualViewport;
+      }
+      delete (documentElement as unknown as { clientWidth?: number }).clientWidth;
+      delete (documentElement as unknown as { clientHeight?: number }).clientHeight;
     }
   });
 

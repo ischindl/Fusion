@@ -139,6 +139,7 @@ describe("tokenAnalyticsToTable", () => {
         cacheWriteTokens: 0,
         totalTokens: 0,
         nTasks: 0,
+        nChatMessages: 0,
       },
       cost: { usd: null, unavailable: false, stale: false },
       groups: [],
@@ -165,6 +166,7 @@ describe("tokenAnalyticsToTable", () => {
         cacheWriteTokens: 0,
         totalTokens: 30,
         nTasks: 1,
+        nChatMessages: 2,
         cost: { usd: 0.01, unavailable: false, stale: false },
       },
     ];

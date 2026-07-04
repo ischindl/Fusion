@@ -15,6 +15,7 @@ This reference documents tools injected by the engine at runtime for specific ag
 | `fn_task_log` | executor, heartbeat | Write significant task log entries | `message` (string), `outcome?` (string) |
 | `fn_task_document_write` | triage, executor, heartbeat; chat/planning (explicit `task_id`) | Save/update a named task document revision | `key` (string), `content` (string), `author?` (string); chat/planning also require `task_id` (string) |
 | `fn_task_document_read` | triage, executor, heartbeat; chat/planning (explicit `task_id`) | Read one task document or list all | `key?` (string); chat/planning also require `task_id` (string) |
+| `fn_task_prompt_write` | plan/spec review (Plan Review reviewer) | Replace the task's authoritative PROMPT.md with revised plan/spec content during Plan Review/spec repair; routed through TaskStore so PROMPT.md validation and task.json sync stay the single persistence path. Provide the complete final PROMPT.md content; do not implement product code from plan review | `content` (string) |
 | `fn_goal_list` | triage, executor, heartbeat | List goals with concise citation-ready snippets and active-goal warning details | `status?` (`active` \| `archived` \| `all`) |
 | `fn_goal_show` | triage, executor, heartbeat | Show one goal's full detail on demand, including the full description body | `id` (string) |
 | `fn_workflow_list` | executor | List the project's custom workflows (read-only built-ins plus user definitions) | none |

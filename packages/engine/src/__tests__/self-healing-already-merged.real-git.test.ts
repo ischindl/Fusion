@@ -280,16 +280,60 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
     );
   }, 20_000);
 
-  it("rejects already-merged recovery when the task branch tip belongs to a foreign task", async () => {
+  it("recovers a no-op branch behind main from a previous task trailer tip without foreign-tip rejection", async () => {
     const repo = setupRepo();
     mkdirSync(path.join(repo, "src"), { recursive: true });
+    writeFileSync(path.join(repo, "src", "previous-tip.txt"), "previous landed task\n", "utf-8");
+    git(repo, "git add src/previous-tip.txt && git commit -m 'feat: previous landed' -m 'Fusion-Task-Id: FN-7477'");
+    const previousLandedSha = git(repo, "git rev-parse HEAD");
+
+    const worktreePath = path.join(repo, ".worktrees", "fn-7486-noop");
+    mkdirSync(path.dirname(worktreePath), { recursive: true });
+    git(repo, `git branch fusion/fn-7486-noop ${previousLandedSha}`);
+    git(repo, `git worktree add ${JSON.stringify(worktreePath)} fusion/fn-7486-noop`);
+    writeFileSync(path.join(repo, "src", "unrelated-after-noop.txt"), "unrelated after no-op branch\n", "utf-8");
+    git(repo, "git add src/unrelated-after-noop.txt && git commit -m 'feat: unrelated after noop branch'");
+
+    const tasks: TaskMap = new Map([
+      ["FN-7486-NOOP", makeTask({ id: "FN-7486-NOOP", column: "in-review", status: "failed", mergeRetries: 3, paused: false, baseBranch: "main", branch: "fusion/fn-7486-noop", worktree: worktreePath })],
+    ]);
+    const store = createStore(tasks);
+    const manager = new SelfHealingManager(store, { rootDir: repo, getExecutingTaskIds: () => new Set() });
+
+    await (manager as any).recoverAlreadyMergedReviewTasks();
+
+    const task = tasks.get("FN-7486-NOOP")!;
+    expect(task.column).toBe("done");
+    expect(task.status).toBeNull();
+    expect(task.mergeDetails?.commitSha).toBe(previousLandedSha);
+    expect(task.mergeDetails?.mergeConfirmed).toBe(true);
+    expect((store as any).recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({
+      mutationType: "task:auto-recover-finalize-already-on-main",
+      target: "FN-7486-NOOP",
+      metadata: expect.objectContaining({ mergeStrategy: "no-diff" }),
+    }));
+    expect((store.logEntry as any).mock.calls.some((call: unknown[]) => String(call[1]).includes("already-merged rejected FN-7486-NOOP"))).toBe(false);
+    expect((store as any).recordRunAuditEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+      mutationType: "task:auto-recover-already-merged-rejected",
+      target: "FN-7486-NOOP",
+      metadata: expect.objectContaining({ reason: "foreign-task-tip", candidateOwner: "FN-7477" }),
+    }));
+  }, 20_000);
+
+  it("rejects already-merged recovery when the task branch tip has branch-only foreign work", async () => {
+    const repo = setupRepo();
+    mkdirSync(path.join(repo, "src"), { recursive: true });
+    git(repo, "git checkout -b fusion/fn-7143");
     writeFileSync(path.join(repo, "src", "foreign-tip.txt"), "foreign\n", "utf-8");
-    git(repo, "git add src/foreign-tip.txt && git commit -m 'feat: foreign landed' -m 'Fusion-Task-Id: FN-7187'");
-    const foreignSha = git(repo, "git rev-parse HEAD");
+    git(repo, "git add src/foreign-tip.txt && git commit -m 'feat: foreign branch work' -m 'Fusion-Task-Id: FN-7187'");
+
+    git(repo, "git checkout main");
+    mkdirSync(path.join(repo, "src"), { recursive: true });
+    writeFileSync(path.join(repo, "src", "owned-landed.txt"), "owned landed\n", "utf-8");
+    git(repo, "git add src/owned-landed.txt && git commit -m 'feat: owned landed' -m 'Fusion-Task-Id: FN-7143'");
 
     const worktreePath = path.join(repo, ".worktrees", "fn-7143");
     mkdirSync(path.dirname(worktreePath), { recursive: true });
-    git(repo, `git branch fusion/fn-7143 ${foreignSha}`);
     git(repo, `git worktree add ${JSON.stringify(worktreePath)} fusion/fn-7143`);
 
     const tasks: TaskMap = new Map([
@@ -298,7 +342,7 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
     const store = createStore(tasks);
     const manager = new SelfHealingManager(store, { rootDir: repo, getExecutingTaskIds: () => new Set() });
 
-    await (manager as any).runMaintenance();
+    await (manager as any).recoverAlreadyMergedReviewTasks();
 
     const task = tasks.get("FN-7143")!;
     expect(task.column).toBe("in-review");
@@ -309,6 +353,41 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
       mutationType: "task:auto-recover-already-merged-rejected",
       target: "FN-7143",
       metadata: expect.objectContaining({ reason: "foreign-task-tip", candidateOwner: "FN-7187" }),
+    }));
+  }, 20_000);
+
+  it("rejects already-merged recovery when the task branch tip carries a foreign lineage", async () => {
+    const repo = setupRepo();
+    mkdirSync(path.join(repo, "src"), { recursive: true });
+    git(repo, "git checkout -b fusion/fn-7143-lineage");
+    writeFileSync(path.join(repo, "src", "foreign-lineage-tip.txt"), "foreign lineage\n", "utf-8");
+    git(repo, "git add src/foreign-lineage-tip.txt && git commit -m 'feat: foreign lineage branch work' -m 'Fusion-Task-Lineage: LINEAGE-OTHER'");
+
+    git(repo, "git checkout main");
+    mkdirSync(path.join(repo, "src"), { recursive: true });
+    writeFileSync(path.join(repo, "src", "owned-lineage-landed.txt"), "owned lineage landed\n", "utf-8");
+    git(repo, "git add src/owned-lineage-landed.txt && git commit -m 'feat: owned lineage landed' -m 'Fusion-Task-Id: FN-7143-LINEAGE' -m 'Fusion-Task-Lineage: LINEAGE-OWN'");
+
+    const worktreePath = path.join(repo, ".worktrees", "fn-7143-lineage");
+    mkdirSync(path.dirname(worktreePath), { recursive: true });
+    git(repo, `git worktree add ${JSON.stringify(worktreePath)} fusion/fn-7143-lineage`);
+
+    const tasks: TaskMap = new Map([
+      ["FN-7143-LINEAGE", makeTask({ id: "FN-7143-LINEAGE", lineageId: "LINEAGE-OWN", column: "in-review", status: "failed", mergeRetries: 3, paused: false, baseBranch: "main", branch: "fusion/fn-7143-lineage", worktree: worktreePath })],
+    ]);
+    const store = createStore(tasks);
+    const manager = new SelfHealingManager(store, { rootDir: repo, getExecutingTaskIds: () => new Set() });
+
+    await (manager as any).recoverAlreadyMergedReviewTasks();
+
+    const task = tasks.get("FN-7143-LINEAGE")!;
+    expect(task.column).toBe("in-review");
+    expect(task.mergeDetails?.mergeConfirmed).not.toBe(true);
+    expect((store as any).moveTask).not.toHaveBeenCalledWith("FN-7143-LINEAGE", "done");
+    expect((store as any).recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({
+      mutationType: "task:auto-recover-already-merged-rejected",
+      target: "FN-7143-LINEAGE",
+      metadata: expect.objectContaining({ reason: "foreign-lineage-tip", candidateOwner: "LINEAGE-OTHER" }),
     }));
   }, 20_000);
 

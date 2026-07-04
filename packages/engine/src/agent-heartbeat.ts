@@ -1170,15 +1170,12 @@ export class HeartbeatMonitor {
     return this.approvalRequestStore;
   }
 
-  private buildActionGateContext(agent: Agent, taskId?: string, runId?: string, projectDefaultPolicy?: { rules?: Partial<import("@fusion/core").AgentPermissionPolicy["rules"]> }): AgentActionGateContext | undefined {
-    if (isEphemeralAgent(agent)) {
-      return undefined;
-    }
+  private buildActionGateContext(agent: Agent, taskId?: string, runId?: string, projectDefaultPolicy?: { rules?: Partial<import("@fusion/core").AgentPermissionPolicy["rules"]>; toolRules?: import("@fusion/core").AgentPermissionPolicyToolRules }): AgentActionGateContext | undefined {
     const policy = resolveEffectiveAgentPermissionPolicy(agent.permissionPolicy, projectDefaultPolicy);
     return {
       agentId: agent.id,
       agentName: agent.name,
-      isEphemeral: false,
+      isEphemeral: isEphemeralAgent(agent),
       taskId,
       runId,
       permissionPolicy: policy,
@@ -1223,11 +1220,7 @@ export class HeartbeatMonitor {
     };
   }
 
-  private buildPermanentAgentGatingContext(agent: Agent, taskId?: string, runId?: string, projectDefaultPolicy?: { rules?: Partial<import("@fusion/core").AgentPermissionPolicy["rules"]> }): import("@fusion/core").PermanentAgentGatingContext | undefined {
-    if (isEphemeralAgent(agent)) {
-      return undefined;
-    }
-
+  private buildPermanentAgentGatingContext(agent: Agent, taskId?: string, runId?: string, projectDefaultPolicy?: { rules?: Partial<import("@fusion/core").AgentPermissionPolicy["rules"]>; toolRules?: import("@fusion/core").AgentPermissionPolicyToolRules }): import("@fusion/core").PermanentAgentGatingContext | undefined {
     return {
       permissionPolicy: resolveEffectiveAgentPermissionPolicy(agent.permissionPolicy, projectDefaultPolicy),
       requester: { actorId: agent.id, actorType: "agent", actorName: agent.name },
@@ -1240,13 +1233,13 @@ export class HeartbeatMonitor {
         targetAction: {
           category,
           action: toolName,
-          summary: `Permanent-agent gated action for ${toolName}`,
+          summary: `Agent gated action for ${toolName}`,
           resourceType: "tool",
           resourceId: toolName,
           context: {
             toolName,
             toolArgs: args,
-            source: "permanent-agent-gating",
+            source: "agent-gating",
           },
         },
       }),

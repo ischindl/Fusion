@@ -34,6 +34,12 @@ function expectMeasurementSafeFontStack(stack: string): void {
   expect(families).not.toContain(TERMINAL_SYMBOLS_FONT_FAMILY);
 }
 
+function expectTextSizeAdjustmentDisabledForExactXtermMetrics(cssSource: string): void {
+  const match = cssSource.match(/\.terminal-xterm\s*,\s*\.terminal-xterm \*\s*\{([^}]*)\}/);
+  expect(match?.[1] ?? "").toMatch(/-webkit-text-size-adjust\s*:\s*none\s*;/);
+  expect(match?.[1] ?? "").toMatch(/text-size-adjust\s*:\s*none\s*;/);
+}
+
 // Mock hooks and API
 vi.mock("../../hooks/useTerminal", () => ({
   useTerminal: vi.fn(),
@@ -662,6 +668,37 @@ describe("TerminalModal", () => {
     const refreshBtn = screen.getByTestId("terminal-bootstrap-refresh-btn");
     expect(refreshBtn).toBeTruthy();
     expect(refreshBtn.textContent).toContain("Refresh page");
+  });
+
+  it("shows Windows Terminal startup guidance inline on desktop and mobile without native dialog hooks", async () => {
+    const mockRetryBootstrap = vi.fn();
+    const windowsTerminalMessage =
+      "Fusion could not start an embedded terminal shell on Windows. Use Command Prompt or PowerShell for the embedded terminal, or install/repair Windows Terminal separately with `winget install Microsoft.WindowsTerminal` if you want Windows Terminal outside Fusion.";
+    mockUseTerminalSessions.mockReturnValue({
+      ...defaultSessionState,
+      tabs: [],
+      activeTab: null,
+      bootstrapError: windowsTerminalMessage,
+      retryBootstrap: mockRetryBootstrap,
+    });
+
+    const { rerender } = render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+    expect(screen.getByTestId("terminal-bootstrap-error")).toHaveTextContent("Command Prompt or PowerShell");
+    expect(screen.getByTestId("terminal-bootstrap-error")).toHaveTextContent("winget install Microsoft.WindowsTerminal");
+    expect(screen.getByTestId("terminal-bootstrap-error")).not.toHaveTextContent("1.24.11321.0");
+    expect(screen.getByTestId("terminal-retry-btn")).toBeTruthy();
+
+    const previousInnerWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { value: 390, configurable: true });
+    try {
+      rerender(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+      expect(screen.getByTestId("terminal-bootstrap-error")).toHaveTextContent("Command Prompt or PowerShell");
+      fireEvent.click(screen.getByTestId("terminal-retry-btn"));
+      expect(mockRetryBootstrap).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.defineProperty(window, "innerWidth", { value: previousInnerWidth, configurable: true });
+    }
   });
 
   it("retry button calls retryBootstrap from the hook", async () => {
@@ -4997,6 +5034,199 @@ describe("TerminalModal — FN-872 real-device keyboard overlap refinement", () 
     } finally {
       helperTextarea.remove();
     }
+  });
+
+  it("fits initial iOS keyboard-open 12px terminal from the visible viewport before any repair event", async () => {
+    (window as any).ontouchstart = null;
+    window.localStorage.setItem(TERMINAL_PREFERENCES_KEY, JSON.stringify({
+      ...DEFAULT_TERMINAL_PREFERENCES,
+      fontSize: 12,
+    }));
+    const originalScreen = window.screen;
+    const { listeners, mockVV } = simulateIOSSafari(true, 390);
+    Object.defineProperty(mockVV, "width", { value: 390, writable: true, configurable: true });
+    Object.defineProperty(window, "innerWidth", { value: 390, writable: true, configurable: true });
+    Object.defineProperty(document.documentElement, "clientWidth", {
+      value: 390,
+      configurable: true,
+    });
+    Object.defineProperty(document.documentElement, "clientHeight", {
+      value: 390,
+      configurable: true,
+    });
+    Object.defineProperty(window, "screen", {
+      configurable: true,
+      value: { width: 390, height: 844 },
+    });
+    const helperTextarea = document.createElement("textarea");
+    document.body.appendChild(helperTextarea);
+    helperTextarea.focus();
+    const onDataListeners: Array<(data: string) => void> = [];
+    const resizeForInitialIOSKeyboard = vi.fn();
+    mockUseTerminal.mockReturnValue(createMockTerminalState({
+      connectionStatus: "connected",
+      resize: resizeForInitialIOSKeyboard,
+      onData: vi.fn((cb: (data: string) => void) => {
+        onDataListeners.push(cb);
+        return vi.fn();
+      }),
+      onScrollback: vi.fn((cb: (data: string) => void) => {
+        onDataListeners.push(cb);
+        return vi.fn();
+      }),
+    }));
+
+    try {
+      render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+      await waitFor(() => expect(screen.getByTestId("terminal-font-size-value")).toHaveTextContent("12px"));
+      await waitFor(() => {
+        const modal = screen.getByTestId("terminal-modal");
+        expect(modal).toHaveClass("terminal-modal--mobile");
+        expect(modal.style.getPropertyValue("--keyboard-overlap")).toBe("454px");
+        expect(modal.style.getPropertyValue("--vv-height")).toBe("390px");
+        expect(modal.style.getPropertyValue("--vv-width")).toBe("390px");
+      });
+      await waitFor(() => expect(onDataListeners.length).toBeGreaterThan(0));
+
+      act(() => {
+        for (const cb of onDataListeners) {
+          cb("❯ test\r\n❯ ls\r\nAGENTS.md  README.md  package.json  main\r\n");
+        }
+        for (const cb of listeners.resize) cb();
+      });
+
+      await waitFor(() => expect(mockTerminalInstance.write).toHaveBeenCalledWith(expect.stringContaining("test")));
+      await waitFor(() => expect(mockTerminalInstance.write).toHaveBeenCalledWith(expect.stringContaining("AGENTS.md")));
+      await waitFor(() => expect(resizeForInitialIOSKeyboard).toHaveBeenCalledWith(80, 24));
+      expectMeasurementSafeFontStack(mockTerminalInstance.options.fontFamily as string);
+      expect(mockTerminalInstance.options.fontSize).toBe(12);
+      expectTextSizeAdjustmentDisabledForExactXtermMetrics(terminalModalCss);
+    } finally {
+      helperTextarea.remove();
+      Object.defineProperty(window, "screen", { configurable: true, value: originalScreen });
+      window.localStorage.removeItem(TERMINAL_PREFERENCES_KEY);
+    }
+  });
+
+  it("fits initial iOS keyboard-open 10px terminal when layout height already shrank", async () => {
+    (window as any).ontouchstart = null;
+    window.localStorage.setItem(TERMINAL_FONT_SIZE_KEY, "10");
+    const originalScreen = window.screen;
+    const { mockVV } = simulateIOSSafari(true, 390);
+    Object.defineProperty(mockVV, "width", { value: 390, writable: true, configurable: true });
+    Object.defineProperty(window, "innerWidth", { value: 390, writable: true, configurable: true });
+    Object.defineProperty(document.documentElement, "clientHeight", {
+      value: 390,
+      configurable: true,
+    });
+    Object.defineProperty(window, "screen", {
+      configurable: true,
+      value: { width: 390, height: 844 },
+    });
+    const helperTextarea = document.createElement("textarea");
+    document.body.appendChild(helperTextarea);
+    helperTextarea.focus();
+    const resizeForInitialIOSSmallFont = vi.fn();
+    mockUseTerminal.mockReturnValue(createMockTerminalState({
+      connectionStatus: "connected",
+      resize: resizeForInitialIOSSmallFont,
+    }));
+
+    try {
+      render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+      await waitFor(() => expect(screen.getByTestId("terminal-font-size-value")).toHaveTextContent("10px"));
+      await waitFor(() => {
+        const modal = screen.getByTestId("terminal-modal");
+        expect(modal.style.getPropertyValue("--keyboard-overlap")).toBe("454px");
+        expect(modal.style.getPropertyValue("--vv-height")).toBe("390px");
+        expect(modal.style.getPropertyValue("--vv-width")).toBe("390px");
+      });
+      await waitFor(() => expect(resizeForInitialIOSSmallFont).toHaveBeenCalledWith(80, 24));
+      expectMeasurementSafeFontStack(mockTerminalInstance.options.fontFamily as string);
+      expect(mockTerminalInstance.options.fontSize).toBe(10);
+    } finally {
+      helperTextarea.remove();
+      Object.defineProperty(window, "screen", { configurable: true, value: originalScreen });
+      window.localStorage.removeItem(TERMINAL_FONT_SIZE_KEY);
+    }
+  });
+
+  it("fits Android keyboard-open 10px terminal to visual viewport width before any repair event", async () => {
+    (window as any).ontouchstart = null;
+    window.localStorage.setItem(TERMINAL_FONT_SIZE_KEY, "10");
+    const listeners: Record<string, Array<() => void>> = { resize: [], scroll: [] };
+    const mockVV = {
+      width: 390,
+      height: 320,
+      offsetTop: 0,
+      offsetLeft: 0,
+      addEventListener: vi.fn((event: string, cb: () => void) => {
+        if (listeners[event]) listeners[event].push(cb);
+      }),
+      removeEventListener: vi.fn(),
+    };
+    Object.defineProperty(window, "visualViewport", {
+      value: mockVV,
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(window, "innerWidth", {
+      value: 900,
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(window, "innerHeight", {
+      value: 700,
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(document.documentElement, "clientWidth", {
+      value: 900,
+      configurable: true,
+    });
+    Object.defineProperty(document.documentElement, "clientHeight", {
+      value: 700,
+      configurable: true,
+    });
+    const onDataListeners: Array<(data: string) => void> = [];
+    const resizeForAndroidKeyboard = vi.fn();
+    mockUseTerminal.mockReturnValue(createMockTerminalState({
+      connectionStatus: "connected",
+      resize: resizeForAndroidKeyboard,
+      onData: vi.fn((cb: (data: string) => void) => {
+        onDataListeners.push(cb);
+        return vi.fn();
+      }),
+      onScrollback: vi.fn((cb: (data: string) => void) => {
+        onDataListeners.push(cb);
+        return vi.fn();
+      }),
+    }));
+
+    render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+    await waitFor(() => expect(screen.getByTestId("terminal-font-size-value")).toHaveTextContent("10px"));
+    await waitFor(() => {
+      const modal = screen.getByTestId("terminal-modal");
+      expect(modal).toHaveClass("terminal-modal--mobile");
+      expect(modal.style.getPropertyValue("--keyboard-overlap")).toBe("380px");
+      expect(modal.style.getPropertyValue("--vv-height")).toBe("320px");
+      expect(modal.style.getPropertyValue("--vv-width")).toBe("390px");
+    });
+    await waitFor(() => expect(onDataListeners.length).toBeGreaterThan(0));
+
+    act(() => {
+      for (const cb of onDataListeners) {
+        cb("❯ ls\r\nAGENTS.md  CHANGELOG.md  README.md  eslint.config.mjs  tsconfig.placeholder.d.ts  main\r\n");
+      }
+    });
+
+    await waitFor(() => expect(mockTerminalInstance.write).toHaveBeenCalledWith(expect.stringContaining("AGENTS.md")));
+    await waitFor(() => expect(resizeForAndroidKeyboard).toHaveBeenCalledWith(80, 24));
+    expectMeasurementSafeFontStack(mockTerminalInstance.options.fontFamily as string);
+    expect(mockTerminalInstance.options.fontSize).toBe(10);
   });
 
   it("treats Android folded visualViewport width as mobile before initial terminal fit", async () => {

@@ -82,6 +82,9 @@ const modelResponse = {
 };
 
 beforeEach(() => {
+  mockFetchModels.mockReset();
+  mockFetchValues.mockReset();
+  mockUpdateValues.mockReset();
   mockFetchModels.mockResolvedValue(modelResponse);
   mockFetchValues.mockResolvedValue(payload());
   mockUpdateValues.mockResolvedValue(payload());
@@ -89,7 +92,6 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  vi.clearAllMocks();
 });
 
 describe("WorkflowSettingsPanel — Definitions tab", () => {
@@ -270,6 +272,81 @@ describe("WorkflowSettingsPanel — Values tab", () => {
     fireEvent.click(screen.getByTestId("wf-settings-save-values"));
     await waitFor(() => expect(mockUpdateValues).toHaveBeenCalledTimes(2));
     expect(mockUpdateValues).toHaveBeenNthCalledWith(2, "wf-1", { label: "mid-flight-edit" }, "proj-1");
+  });
+
+  it("preserves a newer same-key edit when an older save resolves", async () => {
+    mockFetchValues.mockResolvedValue(payload({ effective: { "timeout-ms": 1000, "new-sessions": false, label: "server" } }));
+    let resolveSave!: (value: WorkflowSettingValuesPayload) => void;
+    mockUpdateValues
+      .mockReturnValueOnce(
+        new Promise<WorkflowSettingValuesPayload>((resolve) => {
+          resolveSave = resolve;
+        }),
+      )
+      .mockResolvedValueOnce(
+        payload({
+          stored: { "timeout-ms": 7000 },
+          effective: { "timeout-ms": 7000, "new-sessions": false, label: "server" },
+        }),
+      );
+
+    render(<Host initial={decls} />);
+    openValues();
+    await waitFor(() => expect(mockFetchValues).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByLabelText("Timeout"), { target: { value: "5000" } });
+    fireEvent.click(screen.getByTestId("wf-settings-save-values"));
+    await waitFor(() => expect(mockUpdateValues).toHaveBeenCalledTimes(1));
+    expect(mockUpdateValues).toHaveBeenNthCalledWith(1, "wf-1", { "timeout-ms": 5000 }, "proj-1");
+
+    fireEvent.change(screen.getByLabelText("Timeout"), { target: { value: "7000" } });
+    await act(async () => {
+      resolveSave(payload({ stored: { "timeout-ms": 5000 }, effective: { "timeout-ms": 5000, "new-sessions": false, label: "server" } }));
+    });
+
+    expect(screen.getByLabelText("Timeout")).toHaveValue(7000);
+    await waitFor(() => expect(screen.getByTestId("wf-settings-save-values")).not.toBeDisabled());
+    fireEvent.click(screen.getByTestId("wf-settings-save-values"));
+    await waitFor(() => expect(mockUpdateValues).toHaveBeenCalledTimes(2));
+    expect(mockUpdateValues).toHaveBeenNthCalledWith(2, "wf-1", { "timeout-ms": 7000 }, "proj-1");
+  });
+
+  it("preserves mid-flight clear-to-default edits after an unrelated save resolves", async () => {
+    mockFetchValues.mockResolvedValue(
+      payload({
+        stored: { label: "custom" },
+        effective: { "timeout-ms": 1000, "new-sessions": false, label: "custom" },
+      }),
+    );
+    let resolveSave!: (value: WorkflowSettingValuesPayload) => void;
+    mockUpdateValues
+      .mockReturnValueOnce(
+        new Promise<WorkflowSettingValuesPayload>((resolve) => {
+          resolveSave = resolve;
+        }),
+      )
+      .mockResolvedValueOnce(payload({ stored: {}, effective: { "timeout-ms": 5000, "new-sessions": false } }));
+
+    render(<Host initial={decls} />);
+    openValues();
+    await waitFor(() => expect(screen.getByLabelText("Label")).toHaveValue("custom"));
+    await waitFor(() => expect(screen.getByTestId("wf-settings-customized-label")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText("Timeout"), { target: { value: "5000" } });
+    fireEvent.click(screen.getByTestId("wf-settings-save-values"));
+    await waitFor(() => expect(mockUpdateValues).toHaveBeenCalledTimes(1));
+
+    const labelRow = screen.getByTestId("wf-settings-value-label");
+    fireEvent.click(within(labelRow).getByRole("button"));
+    await act(async () => {
+      resolveSave(payload({ stored: { "timeout-ms": 5000, label: "custom" }, effective: { "timeout-ms": 5000, "new-sessions": false, label: "custom" } }));
+    });
+
+    expect(screen.getByLabelText("Label")).toHaveValue("");
+    await waitFor(() => expect(screen.getByTestId("wf-settings-save-values")).not.toBeDisabled());
+    fireEvent.click(screen.getByTestId("wf-settings-save-values"));
+    await waitFor(() => expect(mockUpdateValues).toHaveBeenCalledTimes(2));
+    expect(mockUpdateValues).toHaveBeenNthCalledWith(2, "wf-1", { label: null }, "proj-1");
   });
 
   it("renders a per-field rejection on the matching row and keeps other edits applied", async () => {
@@ -516,6 +593,48 @@ describe("WorkflowSettingsPanel — Values tab", () => {
     expect(mockUpdateValues).toHaveBeenCalledWith(
       "wf-1",
       { planningProvider: null, planningModelId: null },
+      "proj-1",
+    );
+  });
+
+  it("preserves mid-flight model-lane pair edits after an unrelated save resolves", async () => {
+    mockFetchValues.mockResolvedValue(payload({ effective: { planningProvider: "", planningModelId: "", customModelProvider: "old" } }));
+    let resolveSave!: (value: WorkflowSettingValuesPayload) => void;
+    mockUpdateValues
+      .mockReturnValueOnce(
+        new Promise<WorkflowSettingValuesPayload>((resolve) => {
+          resolveSave = resolve;
+        }),
+      )
+      .mockResolvedValueOnce(
+        payload({
+          stored: { planningProvider: "anthropic", planningModelId: "claude-sonnet", customModelProvider: "saved" },
+          effective: { planningProvider: "anthropic", planningModelId: "claude-sonnet", customModelProvider: "saved" },
+        }),
+      );
+
+    render(<Host initial={modelDecls} readOnly />);
+    await waitFor(() => expect(mockFetchModels).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByLabelText("Custom model provider"), { target: { value: "saved" } });
+    fireEvent.click(screen.getByTestId("wf-settings-save-values"));
+    await waitFor(() => expect(mockUpdateValues).toHaveBeenCalledTimes(1));
+    expect(mockUpdateValues).toHaveBeenNthCalledWith(1, "wf-1", { customModelProvider: "saved" }, "proj-1");
+
+    await openPlanningDropdown();
+    fireEvent.click(await screen.findByRole("option", { name: /Claude Sonnet/i }));
+    await act(async () => {
+      resolveSave(payload({ stored: { customModelProvider: "saved" }, effective: { customModelProvider: "saved" } }));
+    });
+
+    expect(screen.getByLabelText("Plan/Triage Model")).toHaveTextContent("Claude Sonnet");
+    await waitFor(() => expect(screen.getByTestId("wf-settings-save-values")).not.toBeDisabled());
+    fireEvent.click(screen.getByTestId("wf-settings-save-values"));
+    await waitFor(() => expect(mockUpdateValues).toHaveBeenCalledTimes(2));
+    expect(mockUpdateValues).toHaveBeenNthCalledWith(
+      2,
+      "wf-1",
+      { planningProvider: "anthropic", planningModelId: "claude-sonnet" },
       "proj-1",
     );
   });

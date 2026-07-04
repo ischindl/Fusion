@@ -1952,6 +1952,38 @@ export class SelfHealingManager {
     return getCommitTaskOwnership(taskId, lineageId, subject, body);
   }
 
+  private async branchHasNoUniqueDiff(branchTip: string, baseBranch: string): Promise<boolean> {
+    const { stdout: mergeBaseStdout } = await execAsync(`git merge-base ${shellQuote(branchTip)} ${shellQuote(baseBranch)}`, {
+      cwd: this.options.rootDir,
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    });
+    const mergeBase = mergeBaseStdout.trim();
+    if (!mergeBase) return false;
+
+    await execAsync(`git diff --quiet ${shellQuote(mergeBase)}..${shellQuote(branchTip)}`, {
+      cwd: this.options.rootDir,
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    });
+    return true;
+  }
+
+  private async baseHasExplicitTaskOwnership(taskId: string, lineageId: string | undefined, baseBranch: string): Promise<boolean> {
+    const patterns = lineageId
+      ? [`^Fusion-Task-Lineage: ${escapeRegex(lineageId)}$`, `^Fusion-Task-Id: ${escapeRegex(taskId)}$`]
+      : [`^Fusion-Task-Id: ${escapeRegex(taskId)}$`];
+    for (const pattern of patterns) {
+      const { stdout } = await execAsync(`git log --grep=${shellQuote(pattern)} -E --max-count=1 --format=%H ${shellQuote(baseBranch)}`, {
+        cwd: this.options.rootDir,
+        timeout: 30_000,
+        maxBuffer: 1024 * 1024,
+      });
+      if (stdout.trim()) return true;
+    }
+    return false;
+  }
+
   private async rejectForeignAlreadyMergedCandidate(input: {
     task: Pick<Task, "id" | "lineageId">;
     candidateSha: string;
@@ -1999,8 +2031,9 @@ export class SelfHealingManager {
     taskId: string;
     lineageId?: string;
     branch: string;
+    baseBranch: string;
   }): Promise<{ sha: string; owner?: string; reason: "foreign-task-tip" | "foreign-lineage-tip" | "ownership-unverifiable" } | null> {
-    const { taskId, lineageId, branch } = input;
+    const { taskId, lineageId, branch, baseBranch } = input;
     let stdout = "";
     try {
       ({ stdout } = await execAsync(`git rev-parse ${shellQuote(branch)}`, {
@@ -2013,16 +2046,24 @@ export class SelfHealingManager {
     }
     const sha = stdout.trim();
     if (!sha) return null;
+    const hasNoUniqueDiff = await this.branchHasNoUniqueDiff(sha, baseBranch).catch(() => false);
     let ownership: Awaited<ReturnType<SelfHealingManager["readCommitTaskOwnership"]>>;
     try {
       ownership = await this.readCommitTaskOwnership(sha, taskId, lineageId);
     } catch {
       return { sha, reason: "ownership-unverifiable" };
     }
-    if (ownership.rejectionReason === "foreign-task") {
+    /*
+    FNXC:WorkflowRecovery 2026-07-03-21:35:
+    Already-merged recovery must classify no-diff task branches before enforcing branch-tip trailers. A branch created from main can point at a previous task's landed commit and later sit behind main after unrelated commits; reject foreign trailers only when merge-base-to-tip diff proof shows the branch contains real task-branch content.
+    */
+    const baseAlreadyHasCurrentTask = hasNoUniqueDiff
+      ? await this.baseHasExplicitTaskOwnership(taskId, lineageId, baseBranch).catch(() => false)
+      : false;
+    if ((!hasNoUniqueDiff || baseAlreadyHasCurrentTask) && ownership.rejectionReason === "foreign-task") {
       return { sha, owner: ownership.ownerTaskId, reason: "foreign-task-tip" };
     }
-    if (ownership.rejectionReason === "foreign-lineage") {
+    if ((!hasNoUniqueDiff || baseAlreadyHasCurrentTask) && ownership.rejectionReason === "foreign-lineage") {
       return { sha, owner: ownership.ownerLineageId, reason: "foreign-lineage-tip" };
     }
     return null;
@@ -6291,6 +6332,16 @@ export class SelfHealingManager {
             return (Number.isFinite(bTs) ? bTs : 0) - (Number.isFinite(aTs) ? aTs : 0);
           })[0];
       };
+      const isRetryableParkedRemediationFailure = (task: Pick<Task, "status" | "error">): boolean => {
+        /*
+         * FNXC:WorkflowRemediation 2026-07-03-23:10:
+         * Restart recovery for parked remediation rows is limited to pre-merge optional-step remediation. `plan-replan` belongs to Plan Review's replan/triage path; sending it through `recoverFailedPreMergeStep` would incorrectly reopen implementation work.
+         */
+        if (task.status !== "failed") return false;
+        const error = task.error ?? "";
+        return error.includes("Workflow graph terminated with failure at node 'code-review-remediation'")
+          || error.includes("Workflow graph terminated with failure at node 'browser-verification-remediation'");
+      };
 
       /*
        * FNXC:WorkflowOptionalStepRevisionBudget 2026-06-27-12:34:
@@ -6360,9 +6411,15 @@ export class SelfHealingManager {
         if (task.column !== "in-review") return false;
         if (!allowsAutoMergeProcessing(task, settings)) return false;
         if (task.paused) return false;
-        // Preserve terminal/human-handoff statuses (failed, awaiting-user-review,
-        // merging, etc.). Only revive tasks that are otherwise idle.
-        if (task.status) return false;
+        /*
+         * FNXC:WorkflowRemediation 2026-07-03-20:10:
+         * Retryable Code Review remediation can park as `status:"failed"` when the
+         * graph loses restart-local failure context at `code-review-remediation`.
+         * Treat only that durable remediation-node signature as recoverable here;
+         * other failed review rows remain terminal/operator-actionable.
+         */
+        const parkedRemediationFailure = isRetryableParkedRemediationFailure(task);
+        if (task.status && !parkedRemediationFailure) return false;
         if (executingIds.has(task.id)) return false;
         const budget = revisionBudgetFor(task.id);
         if (!budget.unbounded && (!Number.isFinite(budget.max) || budget.max <= 0)) return false;
@@ -6375,7 +6432,7 @@ export class SelfHealingManager {
         // not by an unrelated condition (incomplete steps, etc.) that is
         // already handled by a dedicated scan.
         const blocker = getTaskMergeBlocker(task);
-        if (blocker !== "task has failed pre-merge workflow steps") return false;
+        if (!parkedRemediationFailure && blocker !== "task has failed pre-merge workflow steps") return false;
 
         // The retry flow injects into PROMPT.md + re-executes on the worktree.
         // If the worktree was cleaned up we can't reliably resume here; leave
@@ -8544,7 +8601,7 @@ export class SelfHealingManager {
           const baseBranch = mergeTarget.branch;
           if (!baseBranch) continue;
           if (task.branch) {
-            const foreignTip = await this.branchTipForeignOwnership({ taskId: task.id, lineageId: task.lineageId, branch: task.branch }).catch(() => null);
+            const foreignTip = await this.branchTipForeignOwnership({ taskId: task.id, lineageId: task.lineageId, branch: task.branch, baseBranch }).catch(() => null);
             if (foreignTip) {
               await this.rejectForeignAlreadyMergedCandidate({
                 task,
@@ -8870,11 +8927,19 @@ export class SelfHealingManager {
       maxBuffer: 1024 * 1024,
     });
     const branchTip = tipOut.trim();
+    const hasNoUniqueDiff = await this.branchHasNoUniqueDiff(branchTip, baseBranch).catch(() => false);
     const ownership = await this.readCommitTaskOwnership(branchTip, taskId, lineageId);
-    if (ownership.rejectionReason === "foreign-task") {
+    /*
+    FNXC:WorkflowRecovery 2026-07-03-21:39:
+    Branch-misbound recovery shares the no-op inheritance edge case with already-merged recovery. Check merge-base-to-tip diff state first so a branch with no unique task content is not mislabeled misbound solely because its inherited tip belongs to the previously landed task, even after base advances.
+    */
+    const baseAlreadyHasCurrentTask = hasNoUniqueDiff
+      ? await this.baseHasExplicitTaskOwnership(taskId, lineageId, baseBranch).catch(() => false)
+      : false;
+    if ((!hasNoUniqueDiff || baseAlreadyHasCurrentTask) && ownership.rejectionReason === "foreign-task") {
       return { misbound: false, branchTip, landed: null, rejection: { reason: "foreign-task-tip", owner: ownership.ownerTaskId } };
     }
-    if (ownership.rejectionReason === "foreign-lineage") {
+    if ((!hasNoUniqueDiff || baseAlreadyHasCurrentTask) && ownership.rejectionReason === "foreign-lineage") {
       return { misbound: false, branchTip, landed: null, rejection: { reason: "foreign-lineage-tip", owner: ownership.ownerLineageId } };
     }
     const hasTaskId = ownership.ownerTaskId === taskId;

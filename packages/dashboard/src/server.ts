@@ -72,7 +72,7 @@ import { createCliSessionsRouter } from "./routes/cli-sessions.js";
 import { getProjectIdFromRequest } from "./routes/context.js";
 import type { CliRelaunchRegistry } from "./cli-session-transport.js";
 import { validateRemoteAuthToken } from "./remote-auth.js";
-import { getCliPackageVersion } from "./cli-package-version.js";
+import { getCliPackageVersion, isUnresolvedCliPackageVersion } from "./cli-package-version.js";
 import {
   dayHasSamples,
   fileScopeInvariantFailuresPerDay,
@@ -513,11 +513,14 @@ function hasDashboardEngine(options?: ServerOptions): boolean {
    * by this process AND engines owned by another fusion process on the machine
    * (detected via the singleton lock); without the latter a UI-only launch
    * alongside an already-running engine shows a false "engine not running"
-   * banner. Fall back to the owned-engine map for older manager instances /
-   * test doubles.
+   * banner.
+   *
+   * FNXC:DesktopEngineAvailability 2026-07-03-16:15:
+   * Desktop embedded local mode creates modern ProjectEngineManager before any project engine may exist.
+   * Treating an empty owned-engine map as dashboard-only makes the app shell show restart-Fusion remediation while the same manager is still starting, reconciling, or able to lazily ensure the selected project engine. A manager with machine-level liveness support therefore means automation is available at the process level; project-scoped disconnected/starting details stay on /api/engine/status. Older manager test doubles without that method retain the historical owned-engine fallback.
    */
   if (typeof manager.hasRunningEngine === "function") {
-    return manager.hasRunningEngine();
+    return true;
   }
   const engines = manager.getAllEngines?.();
   return Boolean(engines && engines.size > 0);
@@ -1869,6 +1872,16 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
   app.get("/api/updates/check", async (_req, res) => {
     const currentVersion = cliPackageVersion;
     res.set("Cache-Control", "no-store");
+
+    if (isUnresolvedCliPackageVersion(currentVersion)) {
+      res.status(200).json({
+        currentVersion,
+        latestVersion: null,
+        updateAvailable: false,
+        error: "Current Fusion version is unavailable",
+      });
+      return;
+    }
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10_000);

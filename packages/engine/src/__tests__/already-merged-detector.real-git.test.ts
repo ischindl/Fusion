@@ -148,6 +148,50 @@ describeIfGit("findAlreadyMergedTaskCommit ownership anchoring (real git)", () =
     }
   });
 
+  it("treats a canonical no-op branch at a previous task trailer tip as no-diff", async () => {
+    const repo = setupRepo();
+    mkdirSync(path.join(repo, "src"), { recursive: true });
+    writeFileSync(path.join(repo, "src", "previous.txt"), "previous landed task\n", "utf-8");
+    git(repo, "git add src/previous.txt && git commit -m 'feat: previous landed' -m 'Fusion-Task-Id: FN-AMD-PREVIOUS'");
+    const previousLandedSha = git(repo, "git rev-parse HEAD");
+    git(repo, "git branch fusion/fn-amd-noop");
+
+    const result = await findAlreadyMergedTaskCommit({
+      taskId: "FN-AMD-NOOP",
+      repoDir: repo,
+      baseBranch: "main",
+      taskBranch: "fusion/fn-amd-noop",
+    });
+
+    expect(result).not.toBeNull();
+    expect(result!.sha).toBe(previousLandedSha);
+    expect(result!.strategy).toBe("no-diff");
+    expect(result!.ownershipProof).toBe("canonical-branch-no-diff");
+  });
+
+  it("treats a canonical no-op branch behind main as no-diff despite inherited foreign trailer", async () => {
+    const repo = setupRepo();
+    mkdirSync(path.join(repo, "src"), { recursive: true });
+    writeFileSync(path.join(repo, "src", "previous-advanced.txt"), "previous landed task\n", "utf-8");
+    git(repo, "git add src/previous-advanced.txt && git commit -m 'feat: previous landed' -m 'Fusion-Task-Id: FN-AMD-PREVIOUS-ADVANCED'");
+    const previousLandedSha = git(repo, "git rev-parse HEAD");
+    git(repo, "git branch fusion/fn-amd-noop-advanced");
+    writeFileSync(path.join(repo, "src", "unrelated-after-noop.txt"), "unrelated after branch\n", "utf-8");
+    git(repo, "git add src/unrelated-after-noop.txt && git commit -m 'feat: unrelated after noop branch'");
+
+    const result = await findAlreadyMergedTaskCommit({
+      taskId: "FN-AMD-NOOP-ADVANCED",
+      repoDir: repo,
+      baseBranch: "main",
+      taskBranch: "fusion/fn-amd-noop-advanced",
+    });
+
+    expect(result).not.toBeNull();
+    expect(result!.sha).toBe(previousLandedSha);
+    expect(result!.strategy).toBe("no-diff");
+    expect(result!.ownershipProof).toBe("canonical-branch-no-diff");
+  });
+
   it("rejects a patch-id match when the landed candidate carries a foreign task trailer", async () => {
     const repo = setupRepo();
     git(repo, "git checkout -b fusion/fn-amd-foreign");
@@ -165,6 +209,30 @@ describeIfGit("findAlreadyMergedTaskCommit ownership anchoring (real git)", () =
       repoDir: repo,
       baseBranch: "main",
       taskBranch: "fusion/fn-amd-foreign",
+      baseCommitSha: branchBase,
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("rejects a patch-id match when the landed candidate carries a foreign lineage trailer", async () => {
+    const repo = setupRepo();
+    git(repo, "git checkout -b fusion/fn-amd-foreign-lineage");
+    mkdirSync(path.join(repo, "src"), { recursive: true });
+    writeFileSync(path.join(repo, "src", "foreign-lineage-patch.txt"), "same-lineage-content\n", "utf-8");
+    git(repo, "git add src/foreign-lineage-patch.txt && git commit -m 'work without owner'");
+    const branchBase = git(repo, "git merge-base main fusion/fn-amd-foreign-lineage");
+    git(repo, "git checkout main");
+    mkdirSync(path.join(repo, "src"), { recursive: true });
+    writeFileSync(path.join(repo, "src", "foreign-lineage-patch.txt"), "same-lineage-content\n", "utf-8");
+    git(repo, "git add src/foreign-lineage-patch.txt && git commit -m 'feat: foreign lineage landed' -m 'Fusion-Task-Lineage: LINEAGE-OTHER'");
+
+    const result = await findAlreadyMergedTaskCommit({
+      taskId: "FN-AMD-FOREIGN-LINEAGE",
+      lineageId: "LINEAGE-OWN",
+      repoDir: repo,
+      baseBranch: "main",
+      taskBranch: "fusion/fn-amd-foreign-lineage",
       baseCommitSha: branchBase,
     });
 

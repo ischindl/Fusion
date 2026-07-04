@@ -16,7 +16,17 @@ describe("fn_web_fetch universal registration", () => {
   });
 
   it("reviewer registers fn_web_fetch", () => {
-    expect(readSource("reviewer.ts")).toContain("customTools: [createWebFetchTool()");
+    // FNXC:WebFetchUniversal 2026-07-01-20:20:
+    // FN-7293's inline-fix reviewer refactor extracted the reviewer custom-tool list
+    // into a `reviewCustomTools` array (to conditionally append the prompt-write and
+    // memory tools), so the old inline `customTools: [createWebFetchTool()` literal no
+    // longer appears. The universal-registration invariant is unchanged: the reviewer
+    // still registers fn_web_fetch as its first custom tool. Assert the current wiring —
+    // createWebFetchTool() heads the reviewCustomTools array and that array is the
+    // session's customTools — so this surface stays enumerated without pinning the literal.
+    const reviewerSrc = readSource("reviewer.ts");
+    expect(reviewerSrc).toMatch(/reviewCustomTools\s*=\s*\[\s*createWebFetchTool\(\),/);
+    expect(reviewerSrc).toContain("customTools: reviewCustomTools");
   });
 
   it("merger registers fn_web_fetch", () => {

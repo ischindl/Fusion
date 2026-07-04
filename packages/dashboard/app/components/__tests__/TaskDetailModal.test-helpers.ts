@@ -98,6 +98,7 @@ vi.mock("lucide-react", () => ({
   Workflow: () => null,
   GitMerge: () => null,
   GitBranch: () => null,
+  Gitlab: () => null,
   AlertTriangle: () => null,
   Play: () => null,
   Flag: () => null,

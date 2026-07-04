@@ -213,7 +213,131 @@ describe("executor graph execute self-requeue gate", () => {
     expect(store.moveTask).not.toHaveBeenCalledWith(live.id, "in-review", expect.anything());
   });
 
-  it("still parks a remediation-node graph failure as failed when NO live session exists", async () => {
+  it("auto-recovers a no-live-session code-review-remediation failure with a durable failed gate result", async () => {
+    resetExecutorMocks();
+    const store = createMockStore();
+    const live = task({
+      id: "FN-7476-REMEDIATION",
+      column: "in-review",
+      status: "failed",
+      error: "Workflow graph terminated with failure at node 'code-review-remediation'",
+      steps: [{ name: "Implement", status: "done" }],
+      postReviewFixCount: 99,
+      workflowStepResults: [{
+        workflowStepId: "code-review",
+        workflowStepName: "Code Review",
+        phase: "pre-merge",
+        status: "failed",
+        output: "Fix the reviewer finding before merge.",
+        startedAt: now,
+        completedAt: now,
+      }],
+      log: Array.from({ length: 99 }, (_, index) => ({
+        timestamp: now,
+        action: `Auto-reviving in-review task with failed pre-merge workflow step (attempt ${index + 1}/unbounded)`,
+        outcome: "Step: Code Review\nWorkflow revision key: code-review",
+      })),
+    });
+    store.getTask.mockResolvedValue(live);
+    store.getSettings.mockResolvedValue({
+      autoMerge: true,
+      maxAutoMergeRetries: 3,
+      maxConcurrent: 2,
+      maxWorktrees: 4,
+      pollIntervalMs: 15000,
+    });
+    const executor = new TaskExecutor(store, "/tmp/test");
+
+    /*
+     * FNXC:WorkflowRemediation 2026-07-03-20:10:
+     * FN-7476-class parked rows have no live session left, but the durable failed
+     * Code Review result is enough evidence to reuse the remediation handoff.
+     * Built-in Code Review remains unbounded by default, so high prior attempt
+     * counts must not force manual retry unless a numeric cap was configured.
+     */
+    await (executor as any).handleGraphFailure(live, {
+      disposition: "failed",
+      outcome: "failure",
+      visitedNodeIds: ["code-review", "code-review-remediation"],
+      context: { "node:code-review-remediation:value": "remediation-not-scheduled" },
+    });
+
+    expect(store.updateTask).toHaveBeenCalledWith(live.id, { postReviewFixCount: 100 }, undefined);
+    expect(store.addTaskComment).toHaveBeenCalledWith(
+      live.id,
+      expect.stringContaining("Auto-revived from in-review: pre-merge workflow step \"Code Review\" had failed"),
+      "agent",
+    );
+    expect(store.logEntry).toHaveBeenCalledWith(
+      live.id,
+      expect.stringContaining("Auto-recovered retryable remediation node 'code-review-remediation'"),
+      expect.stringContaining("Workflow revision key: code-review"),
+      undefined,
+    );
+    expect(store.updateTask).not.toHaveBeenCalledWith(
+      live.id,
+      expect.objectContaining({ status: "failed" }),
+      expect.anything(),
+    );
+    expect(store.handoffToReview).not.toHaveBeenCalled();
+  });
+
+  it("does not route plan-replan graph failures through pre-merge remediation recovery", async () => {
+    resetExecutorMocks();
+    const store = createMockStore();
+    const live = task({
+      id: "FN-PLAN-REPLAN-PARKED",
+      column: "in-review",
+      status: "failed",
+      error: "Workflow graph terminated with failure at node 'plan-replan'",
+      steps: [{ name: "Plan", status: "done" }],
+      workflowStepResults: [{
+        workflowStepId: "plan-review",
+        workflowStepName: "Plan Review",
+        phase: "pre-merge",
+        status: "failed",
+        output: "Revise the task plan before implementation.",
+        startedAt: now,
+        completedAt: now,
+      }],
+    });
+    store.getTask.mockResolvedValue(live);
+    store.getSettings.mockResolvedValue({
+      autoMerge: true,
+      maxAutoMergeRetries: 3,
+      maxConcurrent: 2,
+      maxWorktrees: 4,
+      pollIntervalMs: 15000,
+    });
+    const executor = new TaskExecutor(store, "/tmp/test");
+
+    /*
+     * FNXC:WorkflowRemediation 2026-07-03-23:10:
+     * A parked Plan Review `plan-replan` failure is not a pre-merge implementation remediation node. It must not call the Code Review remediation bridge, because that bridge injects fix instructions and sends the task back to executor work instead of the plan-replan/triage path.
+     */
+    await (executor as any).handleGraphFailure(live, {
+      disposition: "failed",
+      outcome: "failure",
+      visitedNodeIds: ["plan-review", "plan-replan"],
+      context: { "node:plan-replan:value": "remediation-not-scheduled" },
+    });
+
+    expect(store.addTaskComment).not.toHaveBeenCalledWith(
+      live.id,
+      expect.stringContaining("Auto-revived from in-review: pre-merge workflow step"),
+      "agent",
+    );
+    expect(store.logEntry).not.toHaveBeenCalledWith(
+      live.id,
+      expect.stringContaining("Auto-recovered retryable remediation node 'plan-replan'"),
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(store.updateTask).toHaveBeenCalledWith(live.id, { status: null, error: null }, undefined);
+    expect(store.updateTask).toHaveBeenCalledWith(live.id, { workflowStepResults: [] }, undefined);
+  });
+
+  it("still parks a remediation-node graph failure as failed when no durable failed gate result exists", async () => {
     resetExecutorMocks();
     const store = createMockStore();
     const live = task({
@@ -231,9 +355,6 @@ describe("executor graph execute self-requeue gate", () => {
     });
     const executor = new TaskExecutor(store, "/tmp/test");
 
-    // Surface enumeration: the guard is scoped to a LIVE session surface. With
-    // no session (e.g. a genuinely exhausted rework budget), the remediation
-    // failure remains terminal and parks failed exactly as before.
     await (executor as any).handleGraphFailure(live, {
       disposition: "failed",
       outcome: "failure",

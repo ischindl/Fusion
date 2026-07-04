@@ -12,6 +12,7 @@ import {
 vi.mock("../pi.js", () => ({
   createFnAgent: vi.fn(),
   describeModel: vi.fn().mockReturnValue("mock-provider/mock-model"),
+  formatModelMarkerDetails: vi.fn((model: string) => model),
   promptWithFallback: vi.fn(async (session, prompt, options) => {
     if (options === undefined) {
       await session.prompt(prompt);

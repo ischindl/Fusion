@@ -617,6 +617,7 @@ Behavior:
 - `fn task archive <id>` moves any live-board task (`triage`, `todo`, `in-progress`, `in-review`, or `done`) to `archived`; tasks already in `archived` are rejected.
 - Archive records the task's `preArchiveColumn` so restore can return to the original live column instead of always assuming `done`.
 - Dashboard delete confirmations for live tasks include an **Archive Instead** action so users can preserve history without soft-deleting the task.
+- Archived tasks can also be deleted from the dashboard/API/CLI. Deleting an archived task removes the archived snapshot from lists and search, but first materializes the normal soft-delete tombstone so the task ID remains reserved unless the operator explicitly chooses allow-resurrection behavior.
 - Cleanup mode can persist compact metadata and remove the task directory
 - Archived tasks are read-only for task log/document writes:
   - `logEntry()` throws `Task <id> is archived — logging is read-only`
@@ -625,7 +626,7 @@ Behavior:
 
 ### Cleanup behavior
 
-- Archived entries are persisted as compact archive snapshots (current runtime stores these in SQLite `archivedTasks`; legacy docs may refer to `.fusion/archive.jsonl`)
+- Archived entries are persisted as compact archive snapshots in `archive.db`; legacy in-main-DB `archivedTasks` rows and older `.fusion/archive.jsonl` references may still appear in historical data/docs.
 - Task directory (`task.json`, `PROMPT.md`, `agent.log`, attachments) can be removed
 
 ### Compact archive entry format
@@ -672,6 +673,14 @@ Recovery/backfill guidance:
 - Record the incident in the replacement task so future audits understand why the task ID and commit history diverge.
 
 ## GitHub Issue Import and PR Creation
+
+GitLab enablement, instance/API URL, and access-token configuration are available in Settings for GitLab.com and self-managed GitLab (`gitlabEnabled`, `gitlabInstanceUrl`, optional `gitlabApiBaseUrl`, `gitlabAuthToken`, `gitlabAuthTokenType`). Fusion accepts personal, project, and group access tokens for GitLab HTTP API import tasks; read-only project issue, group issue, and merge request imports require `read_api` or `api`, while later write actions such as comments and auto-close require `api`.
+
+GitLab imports are HTTP API only and do not require or invoke `glab`. They require effective `gitlabEnabled !== false`; when GitLab is disabled, dashboard/API/CLI/pi import fetches fail clearly before making GitLab network calls, while saved URL/token settings and existing linked GitLab metadata remain visible for re-enable. Operators can import project issues, group issues, and project merge requests from the Import Tasks surface, CLI, or pi extension tools. Imported tasks are created in `triage`, include the GitLab body (or `(no description)`) plus `Source: <web_url>`, and persist `source.sourceType: "gitlab_import"`, `source.sourceMetadata.provider: "gitlab"`, `resourceType` (`project_issue`, `group_issue`, or `merge_request`), instance/API URL, project/group identity, IID, and web URL. Group issue imports preserve the originating project identity from GitLab so duplicate detection is project-aware instead of group-path-only. Merge request imports use MR IID as the visible number and a namespaced external ID so they do not collide with issue imports.
+
+Duplicate detection checks existing non-archived task provenance and source URLs before creating another GitLab-imported task. GitLab lifecycle side effects (completion comments, close/reopen, source closed-at backfill, and tracking refreshes) also require GitLab to be enabled; when disabled they skip network work with task-log diagnostics instead of clearing source metadata. GitLab linked tracking display, comments/notes, auto-close/reopen, Command Center signals/analytics, research/search support, and any GitLab-star prompt remain out of scope until the later GitLab parity tasks mapped in [GitLab Parity Inventory](./gitlab-parity-inventory.md).
+
+Linear issue import is available through the bundled **Linear Import** plugin, not the core GitHub/GitLab Import Tasks implementation. Operators enable the plugin from Plugin Manager, configure the plugin-owned Linear API key, then use the plugin dashboard view or plugin tools to browse and import issues. Imported Linear tasks are created in `triage`, include the Linear body (or `(no description)`) plus `Source: <url>`, and persist `sourceIssue.provider: "linear"` plus `source.sourceMetadata.provider: "linear"` with stable issue id, identifier, URL, team, state, assignee, and timestamps where available. Duplicate detection checks existing non-archived Linear provenance by issue id, identifier, and source URL before task creation and reports the existing task id when a duplicate is found.
 
 Import issues:
 

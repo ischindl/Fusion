@@ -1,4 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+
+function mockPlatform(platform: NodeJS.Platform): void {
+  Object.defineProperty(process, "platform", {
+    configurable: true,
+    value: platform,
+  });
+}
 
 // Mock renderer module - must be hoisted before importing main
 const rendererMocks = vi.hoisted(() => {
@@ -31,8 +40,14 @@ const mocks = vi.hoisted(() => {
     show: vi.fn(),
     focus: vi.fn(),
     hide: vi.fn(),
+    close: vi.fn(),
     maximize: vi.fn(),
-    webContents: { reload: vi.fn() },
+    webContents: {
+      reload: vi.fn(),
+      setWindowOpenHandler: vi.fn((handler: (details: { url: string }) => unknown) => {
+        browserWindowHandlers.set("window-open", handler as (...args: unknown[]) => void);
+      }),
+    },
   };
 
   const BrowserWindow = vi.fn(function () {
@@ -43,12 +58,17 @@ const mocks = vi.hoisted(() => {
   };
   BrowserWindow.getAllWindows = vi.fn(() => []);
 
+  const appHandlers = new Map<string, (...args: unknown[]) => void>();
   const app = {
+    isQuitting: false,
     whenReady: vi.fn(() => Promise.resolve()),
     getVersion: vi.fn(() => "0.1.0"),
     getPath: vi.fn(() => "/mock/home"),
     quit: vi.fn(),
-    on: vi.fn(),
+    on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
+      appHandlers.set(event, handler);
+      return app;
+    }),
   };
 
   const ipcMain = {
@@ -61,6 +81,7 @@ const mocks = vi.hoisted(() => {
     setToolTip: vi.fn(),
     setContextMenu: vi.fn(),
     on: vi.fn(),
+    destroy: vi.fn(),
   };
 
   const Tray = vi.fn(function () {
@@ -92,6 +113,7 @@ const mocks = vi.hoisted(() => {
 
   return {
     app,
+    appHandlers,
     BrowserWindow,
     ipcMain,
     trayInstance,
@@ -142,6 +164,7 @@ const mainDeps = vi.hoisted(() => {
       return { startLocal, stopLocal, getStatus, getServerPort };
     }),
     startLocal,
+    stopLocal,
   };
 });
 
@@ -208,6 +231,11 @@ describe("main process", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
+    mocks.appHandlers.clear();
+    mocks.app.isQuitting = false;
+    if (platformDescriptor) {
+      Object.defineProperty(process, "platform", platformDescriptor);
+    }
     delete process.env.FUSION_DESKTOP_MODE;
     delete process.env.FUSION_HOME;
     if (originalDashboardUrl === undefined) {
@@ -226,6 +254,13 @@ describe("main process", () => {
     rendererMocks.getRendererFilePath.mockReturnValue("/path/to/dist/client/index.html");
     rendererMocks.isUrlRenderer.mockReturnValue(false);
     mocks.screen.getAllDisplays.mockReturnValue([{ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }]);
+  });
+
+  afterEach(() => {
+    if (platformDescriptor) {
+      Object.defineProperty(process, "platform", platformDescriptor);
+    }
+    vi.useRealTimers();
   });
 
   it("DASHBOARD_URL defaults to local file URL in production mode", async () => {
@@ -296,6 +331,53 @@ describe("main process", () => {
     expect(mocks.browserWindowInstance.loadURL).not.toHaveBeenCalled();
   });
 
+  it("macOS Anthropic Subscription OAuth denies Claude app-like popup and opens system browser", async () => {
+    const authUrl = "https://claude.ai/oauth/authorize?client_id=fusion&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fcallback";
+    const { createMainWindow } = await importMainModule();
+
+    createMainWindow();
+    const handler = mocks.browserWindowHandlers.get("window-open") as
+      | ((details: { url: string }) => { action: "allow" | "deny" })
+      | undefined;
+
+    expect(handler).toBeTypeOf("function");
+    const result = handler?.({ url: authUrl });
+
+    expect(result).toEqual({ action: "deny" });
+    expect(mocks.shell.openExternal).toHaveBeenCalledTimes(1);
+    expect(mocks.shell.openExternal).toHaveBeenCalledWith(authUrl);
+  });
+
+  it("keeps same-origin Fusion renderer popups inside the desktop app", async () => {
+    rendererMocks.isUrlRenderer.mockReturnValue(true);
+    rendererMocks.getRendererUrl.mockReturnValue("http://localhost:5173");
+    rendererMocks.getRendererFilePath.mockReturnValue("");
+    const { createMainWindow } = await importMainModule();
+
+    createMainWindow();
+    const handler = mocks.browserWindowHandlers.get("window-open") as
+      | ((details: { url: string }) => { action: "allow" | "deny" })
+      | undefined;
+
+    const result = handler?.({ url: "http://localhost:5173/settings?section=auth" });
+
+    expect(result).toEqual({ action: "allow" });
+    expect(mocks.shell.openExternal).not.toHaveBeenCalled();
+  });
+
+  it("does not externalize Fusion deep links or unsafe custom window-open schemes", async () => {
+    const { createMainWindow } = await importMainModule();
+
+    createMainWindow();
+    const handler = mocks.browserWindowHandlers.get("window-open") as
+      | ((details: { url: string }) => { action: "allow" | "deny" })
+      | undefined;
+
+    expect(handler?.({ url: "fusion://task/FN-7473" })).toEqual({ action: "deny" });
+    expect(handler?.({ url: "claude://oauth/callback?code=abc" })).toEqual({ action: "deny" });
+    expect(mocks.shell.openExternal).not.toHaveBeenCalled();
+  });
+
   it("exports initializeApp for lifecycle orchestration", async () => {
     const mainModule = await importMainModule();
 
@@ -328,7 +410,10 @@ describe("main process", () => {
     const { resolveLocalRuntimeRoot } = await importMainModule();
 
     expect(resolveLocalRuntimeRoot()).toBe("/custom/fusion-home");
-    expect(mocks.app.getPath).not.toHaveBeenCalled();
+    // FUSION_HOME must satisfy the root without falling back to getPath("home").
+    // (Module load calls getPath("userData") for the profile-relocation guard, so
+    // assert the specific "home" lookup is skipped rather than getPath overall.)
+    expect(mocks.app.getPath).not.toHaveBeenCalledWith("home");
   });
 
   it("initializeApp does not start local runtime for remembered choose mode", async () => {
@@ -409,6 +494,48 @@ describe("main process", () => {
 
     expect(mocks.browserWindowInstance.on).toHaveBeenCalledWith("close", expect.any(Function));
     expect(mocks.browserWindowInstance.on).toHaveBeenCalledWith("closed", expect.any(Function));
+  });
+
+  it("windows window close saves state and allows quit cleanup instead of hiding", async () => {
+    mockPlatform("win32");
+    const { initializeApp, run } = await importMainModule();
+
+    await initializeApp();
+    run();
+    const closeHandler = mocks.browserWindowHandlers.get("close") as
+      | ((event: { preventDefault: () => void }) => void)
+      | undefined;
+    const event = { preventDefault: vi.fn() };
+
+    closeHandler?.(event);
+    mocks.appHandlers.get("window-all-closed")?.();
+    mocks.appHandlers.get("before-quit")?.();
+
+    expect(mainDeps.saveWindowState).toHaveBeenCalledWith(mocks.browserWindowInstance);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(mocks.browserWindowInstance.hide).not.toHaveBeenCalled();
+    expect(mocks.app.quit).toHaveBeenCalledTimes(1);
+    expect(mainDeps.stopLocal).toHaveBeenCalledTimes(1);
+  });
+
+  it("macOS window close hides to tray without quitting", async () => {
+    mockPlatform("darwin");
+    const { initializeApp, run } = await importMainModule();
+
+    await initializeApp();
+    run();
+    const closeHandler = mocks.browserWindowHandlers.get("close") as
+      | ((event: { preventDefault: () => void }) => void)
+      | undefined;
+    const event = { preventDefault: vi.fn() };
+
+    closeHandler?.(event);
+    mocks.appHandlers.get("window-all-closed")?.();
+
+    expect(mainDeps.saveWindowState).toHaveBeenCalledWith(mocks.browserWindowInstance);
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
+    expect(mocks.browserWindowInstance.hide).toHaveBeenCalledTimes(1);
+    expect(mocks.app.quit).not.toHaveBeenCalled();
   });
 
   it("createMainWindow shows and focuses on ready-to-show", async () => {

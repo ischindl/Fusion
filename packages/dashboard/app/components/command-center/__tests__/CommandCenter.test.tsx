@@ -1015,8 +1015,8 @@ describe("CommandCenter shell", () => {
     render(<CommandCenter />);
     const tablist = screen.getByRole("tablist");
     const tabs = within(tablist).getAllByRole("tab");
-    // Overview, Tokens, Tools, Activity, Productivity, Team, Workflows, Ecosystem, GitHub, Signals, System, Reliability, Mission Control.
-    expect(tabs.length).toBe(13);
+    // Overview, Tokens, Tools, Activity, Productivity, Team, Workflows, Ecosystem, GitHub, GitLab, Signals, System, Reliability, Mission Control.
+    expect(tabs.length).toBe(14);
     expect(screen.queryByTestId("command-center-tab-nodes")).toBeNull();
     // roving tabindex: exactly one tab is focusable.
     const focusable = tabs.filter((tab) => tab.getAttribute("tabindex") === "0");

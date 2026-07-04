@@ -19,19 +19,19 @@ describe("desktop release workflow wiring", () => {
     for (const workflow of [release, testRelease]) {
       expect(workflow).toContain("build-desktop-windows:");
       expect(workflow).toContain("runs-on: windows-latest");
-      expect(workflow).toMatch(/pnpm --filter @fusion\/desktop dist:win|electron-builder --win/);
+      expect(workflow).toMatch(/pnpm --filter @fusion\/desktop dist:win|electron-builder[^\n]*--win/);
       expect(workflow).toContain("name: fusion-desktop-windows");
       expect(workflow).toContain("packages/desktop/dist-electron/latest.yml");
 
       expect(workflow).toContain("build-desktop-macos:");
       expect(workflow).toContain("runs-on: macos-latest");
-      expect(workflow).toMatch(/pnpm --filter @fusion\/desktop dist:mac|electron-builder --mac/);
+      expect(workflow).toMatch(/pnpm --filter @fusion\/desktop dist:mac|electron-builder[^\n]*--mac/);
       expect(workflow).toContain("name: fusion-desktop-macos");
       expect(workflow).toContain("packages/desktop/dist-electron/latest-mac.yml");
 
       expect(workflow).toContain("build-desktop-linux:");
       expect(workflow).toContain("runs-on: ubuntu-latest");
-      expect(workflow).toMatch(/pnpm --filter @fusion\/desktop dist:linux|electron-builder --linux/);
+      expect(workflow).toMatch(/pnpm --filter @fusion\/desktop dist:linux|electron-builder[^\n]*--linux/);
       expect(workflow).toContain("--x64");
       expect(workflow).toContain("--arm64");
       expect(workflow).toContain("Fusion-*-linux-arm64.AppImage");
@@ -76,7 +76,8 @@ describe("desktop release workflow wiring", () => {
       expect(workflow).toContain("build-android:");
       expect(workflow).toContain("runs-on: ubuntu-latest");
       expect(workflow).toContain("actions/setup-java@v4");
-      expect(workflow).toContain('java-version: "17"');
+      // FNXC:AndroidRelease 2026-07-01-19:52: Capacitor 7 @capacitor/android compiles with JavaVersion.VERSION_21, so the Android release Gradle build must provision JDK 21 (JDK 17 fails with `invalid source release: 21`). Assert the intended JDK here.
+      expect(workflow).toContain('java-version: "21"');
       expect(workflow).toContain("pnpm --filter @fusion/mobile cap add android");
       expect(workflow).toContain("pnpm --filter @fusion/mobile cap sync android");
       expect(workflow).toContain("ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}");

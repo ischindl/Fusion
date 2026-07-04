@@ -200,6 +200,10 @@ export function TokensArea({ range }: { range: DateRange }) {
             <div className="cc-stat-label">{t("commandCenter.tokens.tasks", "Tasks")}</div>
             <div className="cc-stat-value">{formatCount(totals?.nTasks ?? 0)}</div>
           </div>
+          <div className="card cc-stat-card">
+            <div className="cc-stat-label">{t("commandCenter.tokens.chatMessages", "Chat turns")}</div>
+            <div className="cc-stat-value">{formatCount(totals?.nChatMessages ?? 0)}</div>
+          </div>
         </div>
       </div>
 

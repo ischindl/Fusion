@@ -473,11 +473,13 @@ describe("SessionTerminal (mobile) — keyboard-open behavior", () => {
     vvHeight,
     scale = 1,
     vvOffsetTop = 0,
+    vvWidth = 375,
   }: {
     innerHeight: number;
     vvHeight: number;
     scale?: number;
     vvOffsetTop?: number;
+    vvWidth?: number;
   }) {
     (window as unknown as { ontouchstart: unknown }).ontouchstart = null;
     Object.defineProperty(navigator, "maxTouchPoints", { value: 5, configurable: true });
@@ -489,7 +491,7 @@ describe("SessionTerminal (mobile) — keyboard-open behavior", () => {
     });
     const listeners: Record<string, Array<() => void>> = { resize: [], scroll: [] };
     const mockVV = {
-      width: 375,
+      width: vvWidth,
       height: vvHeight,
       offsetTop: vvOffsetTop,
       offsetLeft: 0,
@@ -554,6 +556,84 @@ describe("SessionTerminal (mobile) — keyboard-open behavior", () => {
     });
 
     input.remove();
+  });
+
+  it("keeps initial iOS keyboard-open 12px metrics when layout height already shrank", async () => {
+    installMatchMedia(true);
+    const originalScreen = window.screen;
+    installVisualViewport({ innerHeight: 390, vvHeight: 390, vvWidth: 390 });
+    Object.defineProperty(window, "innerWidth", { value: 390, writable: true, configurable: true });
+    Object.defineProperty(document.documentElement, "clientHeight", {
+      value: 390,
+      configurable: true,
+    });
+    Object.defineProperty(window, "screen", {
+      configurable: true,
+      value: { width: 390, height: 844 },
+    });
+    window.localStorage.setItem(
+      TERMINAL_PREFERENCES_KEY,
+      JSON.stringify({ ...DEFAULT_TERMINAL_PREFERENCES, fontSize: 12 }),
+    );
+    const input = document.createElement("textarea");
+    document.body.appendChild(input);
+    input.focus();
+
+    try {
+      const { ws } = await renderMobile();
+
+      await waitFor(() => {
+        const root = screen.getByTestId("cli-terminal-mobile-bar").closest(".cli-session-terminal");
+        expect(root).toHaveClass("cli-session-terminal--mobile");
+        expect(root).toHaveAttribute("data-keyboard-open", "true");
+        const bar = screen.getByTestId("cli-terminal-mobile-bar");
+        expect(bar.className).toContain("cli-session-terminal__mobile-bar--keyboard-open");
+        expect(bar.style.bottom).toBe("454px");
+      });
+      expect(mockTerm.options.fontSize).toBe(12);
+      expectMeasurementSafeFontStack(mockTerm.options.fontFamily as string);
+      await waitFor(() => expect(mockFitAddon.fit).toHaveBeenCalled());
+      expect(ws.sent.some((raw) => JSON.parse(raw).type === "resize")).toBe(true);
+    } finally {
+      input.remove();
+      Object.defineProperty(window, "screen", { configurable: true, value: originalScreen });
+    }
+  });
+
+  it("keeps Android keyboard-open 10px metrics on visualViewport mobile width", async () => {
+    installMatchMedia({ width: false, height: false });
+    installVisualViewport({ innerHeight: 700, vvHeight: 320, vvWidth: 390 });
+    Object.defineProperty(window, "innerWidth", { value: 900, writable: true, configurable: true });
+    Object.defineProperty(document.documentElement, "clientHeight", {
+      value: 700,
+      configurable: true,
+    });
+    window.localStorage.setItem(
+      TERMINAL_PREFERENCES_KEY,
+      JSON.stringify({ ...DEFAULT_TERMINAL_PREFERENCES, fontSize: 10 }),
+    );
+    const input = document.createElement("textarea");
+    document.body.appendChild(input);
+    input.focus();
+
+    try {
+      const { ws } = await renderMobile();
+
+      await waitFor(() => {
+        const root = screen.getByTestId("cli-terminal-mobile-bar").closest(".cli-session-terminal");
+        expect(root).toHaveClass("cli-session-terminal--mobile");
+        expect(root).toHaveAttribute("data-keyboard-open", "true");
+        const bar = screen.getByTestId("cli-terminal-mobile-bar");
+        expect(bar.className).toContain("cli-session-terminal__mobile-bar--keyboard-open");
+        expect(bar.style.bottom).toBe("380px");
+      });
+      expect(mockTerm.options.fontSize).toBe(10);
+      expectMeasurementSafeFontStack(mockTerm.options.fontFamily as string);
+      await waitFor(() => expect(mockFitAddon.fit).toHaveBeenCalled());
+      expect(ws.sent.some((raw) => JSON.parse(raw).type === "resize")).toBe(true);
+    } finally {
+      input.remove();
+    }
   });
 
   it("keeps initial folded keyboard-open metrics without waiting for unfold", async () => {

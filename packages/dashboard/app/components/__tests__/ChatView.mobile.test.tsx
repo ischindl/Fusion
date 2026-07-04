@@ -22,6 +22,7 @@ import {
   createRoomFixture,
   ensureMatchMedia,
   installChatViewEnv,
+  mockFetchModels,
 } from "./ChatView.test-harness";
 
 // Mock the hooks
@@ -220,27 +221,125 @@ describe("ChatView mobile behavior", () => {
 
       // Thread header should not be rendered when there's no active session
       expect(document.querySelector(".chat-thread-header")).not.toBeInTheDocument();
-      // Back button should not be visible
+      // Back/session controls should not appear before a direct thread is selected; ordinary Chat header remains visible.
       expect(screen.queryByTestId("chat-back-btn")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("chat-mobile-session-trigger")).not.toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Chat" })).toBeInTheDocument();
+      expect(document.querySelector(".chat-view--mobile-direct-thread")).not.toBeInTheDocument();
     } finally {
       restoreMatchMedia.mockRestore();
     }
   });
 
-  it("mobile mode: renders thread header with back button when session is active", async () => {
+  it("mobile mode: collapses direct thread controls into one far-left ViewHeader row", async () => {
     const restoreMatchMedia = mockMobileViewport();
     try {
       setupMockChat({
-        activeSession: { id: "session-001", agentId: "agent-001", status: "active", title: "Test Chat", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" },
+        activeSession: {
+          id: "session-001",
+          agentId: "__fn_agent__",
+          status: "active",
+          title: "Testing",
+          modelProvider: "minimax",
+          modelId: "m3",
+          createdAt: "2026-04-08T00:00:00.000Z",
+          updatedAt: "2026-04-08T00:00:00.000Z",
+        },
         messages: [{ id: "msg-001", sessionId: "session-001", role: "assistant", content: "Hello", createdAt: "2026-04-08T00:00:00.000Z" }],
       });
 
       await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
 
-      // Thread header should be rendered when there's an active session
-      expect(document.querySelector(".chat-thread-header")).toBeInTheDocument();
-      // Back button should be visible in mobile thread view
-      expect(screen.getByTestId("chat-back-btn")).toBeInTheDocument();
+      expect(document.querySelector(".chat-thread-header")).not.toBeInTheDocument();
+      expect(document.querySelector(".chat-view--mobile-direct-thread")).toBeInTheDocument();
+
+      const viewHeader = document.querySelector(".view-header") as HTMLElement;
+      const headerActions = viewHeader.querySelector(".view-header__actions") as HTMLElement;
+      const headerTitle = viewHeader.querySelector(".view-header__title") as HTMLElement;
+      const backButton = screen.getByTestId("chat-back-btn");
+      const sessionTrigger = screen.getByTestId("chat-mobile-session-trigger");
+      const renderToggle = screen.getByTestId("chat-thread-render-toggle");
+
+      expect(viewHeader).toContainElement(backButton);
+      expect(viewHeader).toContainElement(sessionTrigger);
+      expect(headerActions).toContainElement(backButton);
+      expect(headerActions).toContainElement(sessionTrigger);
+      expect(headerActions.firstElementChild).toBe(backButton);
+      expect(backButton.compareDocumentPosition(sessionTrigger) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(headerTitle).not.toContainElement(backButton);
+      expect(headerTitle.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+      expect(sessionTrigger).toHaveTextContent("Testing");
+      expect(sessionTrigger).not.toHaveTextContent("M3");
+      expect(sessionTrigger).not.toHaveTextContent("MiniMax M3");
+      expect(within(sessionTrigger).getByTestId("minimax-icon")).toBeInTheDocument();
+      expect(sessionTrigger.querySelector(".chat-model-tag")).not.toBeInTheDocument();
+      expect(viewHeader).not.toContainElement(renderToggle);
+      expect(renderToggle).toHaveClass("chat-thread-header-render-toggle--floating");
+      expect(screen.getAllByTestId("chat-back-btn")).toHaveLength(1);
+      expect(screen.getAllByTestId("chat-mobile-session-trigger")).toHaveLength(1);
+      expect(screen.getByRole("heading", { name: "Chat" })).toBeInTheDocument();
+      expect(document.querySelector(".chat-thread-header")).not.toBeInTheDocument();
+    } finally {
+      restoreMatchMedia.mockRestore();
+    }
+  });
+
+  it("mobile mode: model-only empty title uses Untitled without model-name text", async () => {
+    const restoreMatchMedia = mockMobileViewport();
+    try {
+      setupMockChat({
+        activeSession: {
+          id: "session-001",
+          agentId: "__fn_agent__",
+          status: "active",
+          title: null,
+          modelProvider: "minimax",
+          modelId: "m3",
+          createdAt: "2026-04-08T00:00:00.000Z",
+          updatedAt: "2026-04-08T00:00:00.000Z",
+        },
+        messages: [{ id: "msg-001", sessionId: "session-001", role: "assistant", content: "Hello", createdAt: "2026-04-08T00:00:00.000Z" }],
+      });
+
+      await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+
+      const trigger = screen.getByTestId("chat-mobile-session-trigger");
+      expect(trigger).toHaveTextContent("Untitled");
+      expect(trigger).not.toHaveTextContent("M3");
+      expect(trigger).not.toHaveTextContent("MiniMax M3");
+      expect(within(trigger).getByTestId("minimax-icon")).toBeInTheDocument();
+      expect(trigger.querySelector(".chat-model-tag")).not.toBeInTheDocument();
+      expect(screen.getAllByTestId("chat-mobile-session-trigger")).toHaveLength(1);
+    } finally {
+      restoreMatchMedia.mockRestore();
+    }
+  });
+
+  it("mobile mode: floating render toggle flips persisted and streaming assistant output", async () => {
+    const restoreMatchMedia = mockMobileViewport();
+    try {
+      setupMockChat({
+        activeSession: { id: "session-001", agentId: "agent-001", status: "active", title: "Test Chat", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" },
+        messages: [{ id: "msg-001", sessionId: "session-001", role: "assistant", content: "**Persisted** reply", createdAt: "2026-04-08T00:00:00.000Z" }],
+        isStreaming: true,
+        streamingText: "**Live** reply",
+      });
+
+      await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+
+      const toggle = screen.getByTestId("chat-thread-render-toggle");
+      const persistedBubble = screen.getByTestId("chat-message-msg-001");
+      const streamingBubble = document.querySelector(".chat-message--streaming") as HTMLElement;
+
+      expect(toggle).toHaveClass("chat-thread-header-render-toggle--floating");
+      expect(screen.queryAllByTestId("chat-message-render-toggle")).toHaveLength(0);
+      expect(within(persistedBubble).getByText("Persisted", { selector: "strong" })).toBeInTheDocument();
+      expect(within(streamingBubble).getByText("Live", { selector: "strong" })).toBeInTheDocument();
+
+      await userEvent.click(toggle);
+
+      expect(within(persistedBubble).getByText(/\*\*Persisted\*\* reply/)).toBeInTheDocument();
+      expect(within(streamingBubble).getByText(/\*\*Live\*\* reply/)).toBeInTheDocument();
     } finally {
       restoreMatchMedia.mockRestore();
     }
@@ -268,7 +367,118 @@ describe("ChatView mobile behavior", () => {
     }
   });
 
-  it("mobile mode: thread header title opens quick session switcher and closes after selection", async () => {
+  it("mobile mode: direct sidebar rows expose rename and delete buttons", async () => {
+    const restoreMatchMedia = mockMobileViewport();
+    const selectSession = vi.fn();
+    try {
+      const sessions = [
+        { id: "session-001", agentId: "agent-001", status: "active" as const, title: "Mobile Chat", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" },
+      ];
+      setupMockChat({
+        sessions,
+        filteredSessions: sessions,
+        activeSession: null,
+        selectSession,
+      });
+
+      await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+
+      const row = screen.getByTestId("chat-session-session-001");
+      const renameButton = within(row).getByTestId("chat-session-rename-btn");
+      const deleteButton = within(row).getByTestId("chat-session-delete-btn");
+      expect(renameButton).toHaveAccessibleName(/rename conversation mobile chat/i);
+      expect(deleteButton).toHaveAccessibleName(/delete conversation/i);
+      expect(renameButton.compareDocumentPosition(deleteButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(renameButton.closest(".chat-session-actions")).toBe(deleteButton.closest(".chat-session-actions"));
+
+      await userEvent.click(renameButton);
+      expect(selectSession).not.toHaveBeenCalled();
+      expect(screen.getByRole("dialog", { name: /rename conversation/i })).toBeInTheDocument();
+    } finally {
+      restoreMatchMedia.mockRestore();
+    }
+  });
+
+  it("mobile mode: quick session switcher rename affordance remains wired", async () => {
+    const restoreMatchMedia = mockMobileViewport();
+    const selectSession = vi.fn();
+    const renameSession = vi.fn().mockResolvedValue(undefined);
+    try {
+      const sessions = [
+        { id: "session-001", agentId: "agent-001", status: "active" as const, title: "Test Chat", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" },
+        { id: "session-002", agentId: "agent-002", status: "active" as const, title: "Switcher Chat", createdAt: "2026-04-07T00:00:00.000Z", updatedAt: "2026-04-07T00:00:00.000Z" },
+      ];
+      setupMockChat({
+        sessions,
+        filteredSessions: sessions,
+        activeSession: sessions[0],
+        selectSession,
+        renameSession,
+      });
+
+      await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+
+      await userEvent.click(screen.getByTestId("chat-mobile-session-trigger"));
+      await userEvent.click(screen.getByTestId("chat-mobile-session-rename-session-002"));
+
+      expect(selectSession).not.toHaveBeenCalled();
+      expect(screen.queryByTestId("chat-mobile-session-dropdown")).not.toBeInTheDocument();
+      const dialog = screen.getByRole("dialog", { name: /rename conversation/i });
+      const input = within(dialog).getByTestId("chat-rename-input") as HTMLInputElement;
+      expect(input).toHaveValue("Switcher Chat");
+
+      await userEvent.clear(input);
+      await userEvent.type(input, "Switcher Renamed");
+      await userEvent.click(within(dialog).getByTestId("chat-rename-save"));
+
+      await waitFor(() => {
+        expect(renameSession).toHaveBeenCalledWith("session-002", "Switcher Renamed");
+      });
+    } finally {
+      restoreMatchMedia.mockRestore();
+    }
+  });
+
+  it("mobile mode: long duplicate session titles stay in the single-row switcher with Bot fallback", async () => {
+    const restoreMatchMedia = mockMobileViewport();
+    const selectSession = vi.fn();
+    const longTitle = "MiniMax M3 with an extraordinarily long duplicated conversation label that must truncate";
+    try {
+      mockFetchModels.mockResolvedValue({ models: [], favoriteProviders: [], favoriteModels: [], defaultProvider: null, defaultModelId: null });
+      const duplicateSessions = [
+        { id: "session-001", agentId: "agent-unresolved", status: "active" as const, title: longTitle, createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" },
+        { id: "session-002", agentId: "agent-unresolved-2", status: "active" as const, title: longTitle, createdAt: "2026-04-07T00:00:00.000Z", updatedAt: "2026-04-07T00:00:00.000Z" },
+      ];
+      setupMockChat({
+        sessions: duplicateSessions,
+        filteredSessions: duplicateSessions,
+        activeSession: duplicateSessions[0],
+        messages: [{ id: "msg-001", sessionId: "session-001", role: "assistant", content: "Hello", createdAt: "2026-04-08T00:00:00.000Z" }],
+        selectSession,
+      });
+
+      await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+
+      const headerActions = document.querySelector(".view-header__actions") as HTMLElement;
+      const backButton = screen.getByTestId("chat-back-btn");
+      const trigger = screen.getByTestId("chat-mobile-session-trigger");
+      expect(headerActions.firstElementChild).toBe(backButton);
+      expect(trigger).toHaveTextContent(longTitle);
+      expect(within(trigger).getByTestId("icon-bot")).toBeInTheDocument();
+      expect(trigger.querySelector(".chat-model-tag")).not.toBeInTheDocument();
+      expect(screen.getAllByTestId("chat-mobile-session-trigger")).toHaveLength(1);
+
+      await userEvent.click(trigger);
+      const dropdown = screen.getByTestId("chat-mobile-session-dropdown");
+      expect(within(dropdown).getAllByText(longTitle)).toHaveLength(2);
+      await userEvent.click(screen.getByTestId("chat-mobile-session-option-session-002"));
+      expect(selectSession).toHaveBeenCalledWith("session-002");
+    } finally {
+      restoreMatchMedia.mockRestore();
+    }
+  });
+
+  it("mobile mode: ViewHeader session trigger opens quick session switcher and closes after selection", async () => {
     const restoreMatchMedia = mockMobileViewport();
     const selectSession = vi.fn();
     try {
@@ -1805,10 +2015,33 @@ describe("ChatView mobile CSS contract", () => {
     expect(css).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.chat-message\s*\{[^}]*max-width:\s*100%/);
   });
 
-  it("mobile keeps thread-header identity and render toggle inline", async () => {
-    expect(css).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.chat-thread-header\s*\{[^}]*flex-wrap:\s*nowrap/);
-    expect(css).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.chat-thread-header-identity\s*\{[^}]*flex:\s*1\s+1\s+auto[^}]*white-space:\s*nowrap/);
-    expect(css).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.chat-thread-header-render-toggle\s*\{[^}]*flex-shrink:\s*0/);
+  it("mobile direct thread keeps a non-wrapping far-left header row with tokenized sizing", async () => {
+    const headerRule = css.match(/\.chat-view--mobile-direct-thread\s*>\s*\.view-header\s*\{([^}]*)\}/)?.[1] ?? "";
+    const directTitleRule = css.match(/\.chat-view--mobile-direct-thread\s*>\s*\.view-header\s+\.view-header__title\s*\{([^}]*)\}/)?.[1] ?? "";
+    const actionsRule = css.match(/\.chat-view--mobile-direct-thread\s*>\s*\.view-header\s+\.view-header__actions\s*\{([^}]*)\}/)?.[1] ?? "";
+    const menuRule = css.match(/\.chat-view--mobile-direct-thread\s+\.chat-mobile-session-menu\s*\{([^}]*)\}/)?.[1] ?? "";
+    const triggerRule = css.match(/\.chat-mobile-session-trigger\s*\{([^}]*)\}/)?.[1] ?? "";
+    const floatingToggleRule = css.match(/\.chat-thread-header-render-toggle--floating\s*\{([^}]*)\}/)?.[1] ?? "";
+
+    expect(headerRule).toContain("flex-wrap: nowrap");
+    expect(directTitleRule).toContain("position: absolute");
+    expect(directTitleRule).toContain("inline-size: var(--btn-border-width)");
+    expect(directTitleRule).toContain("clip-path: inset(50%)");
+    expect(actionsRule).toContain("width: 100%");
+    expect(actionsRule).toContain("margin-left: 0");
+    expect(actionsRule).toContain("flex-wrap: nowrap");
+    expect(actionsRule).toContain("justify-content: flex-start");
+    expect(menuRule).toContain("flex: 1 1 0");
+    expect(menuRule).toContain("min-width: 0");
+    expect(triggerRule).toContain("min-width: 0");
+    expect(triggerRule).toContain("gap: var(--space-sm)");
+    expect(triggerRule).not.toMatch(/#[0-9a-fA-F]{3,8}|rgb\(/);
+    expect(floatingToggleRule).toContain("position: absolute");
+    expect(floatingToggleRule).toContain("right: var(--space-md)");
+    expect(floatingToggleRule).toContain("bottom: calc((var(--space-lg) * 2.5) + (var(--space-md) * 2) + var(--space-sm))");
+    expect(floatingToggleRule).toContain("min-width: calc(var(--space-lg) * 2.25)");
+    expect(floatingToggleRule).toContain("min-height: calc(var(--space-lg) * 2.25)");
+    expect(floatingToggleRule).toContain("box-shadow: var(--shadow-md)");
   });
 
   it("FN-4352: response copy action stays compact on mobile", async () => {

@@ -5,7 +5,7 @@ import { canonicalFusionBranchName, resolveTaskWorkingBranch } from "./worktree-
 
 const execAsync = promisify(exec);
 
-export type AlreadyMergedDetectionStrategy = "trailer" | "ancestry" | "patch-id" | "tree-equal";
+export type AlreadyMergedDetectionStrategy = "trailer" | "ancestry" | "patch-id" | "tree-equal" | "no-diff";
 
 export interface AlreadyMergedLookupInput {
   taskId: string;
@@ -21,7 +21,8 @@ export type AlreadyMergedOwnershipProof =
   | "lineage-trailer"
   | "subject-anchor"
   | "canonical-branch-patch"
-  | "canonical-branch-tree";
+  | "canonical-branch-tree"
+  | "canonical-branch-no-diff";
 
 export interface AlreadyMergedLookupResult {
   sha: string;
@@ -119,6 +120,26 @@ async function commitHasForeignTaskOwnership(
   return ownership.rejectionReason === "foreign-task" || ownership.rejectionReason === "foreign-lineage";
 }
 
+async function branchHasNoUniqueDiff(repoDir: string, branchTip: string, baseBranch: string): Promise<boolean> {
+  const { stdout: mergeBaseStdout } = await execAsync(
+    `git merge-base ${shellQuote(branchTip)} ${shellQuote(baseBranch)}`,
+    {
+      cwd: repoDir,
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    },
+  );
+  const mergeBase = mergeBaseStdout.trim();
+  if (!mergeBase) return false;
+
+  await execAsync(`git diff --quiet ${shellQuote(mergeBase)}..${shellQuote(branchTip)}`, {
+    cwd: repoDir,
+    timeout: 30_000,
+    maxBuffer: 1024 * 1024,
+  });
+  return true;
+}
+
 export async function findAlreadyMergedTaskCommit(
   input: AlreadyMergedLookupInput,
 ): Promise<AlreadyMergedLookupResult | null> {
@@ -177,21 +198,35 @@ export async function findAlreadyMergedTaskCommit(
   */
   const hasCanonicalBranchIdentity = branchName === canonicalBranchName;
   let branchTipOwnershipVerified = false;
+  let branchTipHasNoUniqueDiff = false;
+  let branchTipForeignNoDiff = false;
   try {
     branchTip = execSync(`git rev-parse --verify ${shellQuote(branchName)}`, {
       cwd: repoDir,
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
     }).trim();
-    if (await commitHasForeignTaskOwnership(repoDir, branchTip, taskId, lineageId)) {
+    if (hasCanonicalBranchIdentity) {
+      branchTipHasNoUniqueDiff = await branchHasNoUniqueDiff(repoDir, branchTip, baseBranch).catch(() => false);
+    }
+    /*
+    FNXC:WorkflowRecovery 2026-07-03-21:31:
+    A new no-op task branch can inherit the current main tip and therefore a previous task's Fusion trailer. Prove the branch has no unique diff from its merge-base before applying the FN-7143/FN-7187 foreign-tip guard; the base branch may have advanced since the no-op branch was created, so current base-tree equality is not part of ownership classification.
+    */
+    const branchTipHasForeignOwnership = await commitHasForeignTaskOwnership(repoDir, branchTip, taskId, lineageId);
+    if (!branchTipHasNoUniqueDiff && branchTipHasForeignOwnership) {
       return null;
     }
+    branchTipForeignNoDiff = branchTipHasNoUniqueDiff && branchTipHasForeignOwnership;
     branchTipOwnershipVerified = true;
 
     execSync(`git merge-base --is-ancestor ${shellQuote(branchTip)} ${shellQuote(baseBranch)}`, {
       cwd: repoDir,
       stdio: ["pipe", "pipe", "pipe"],
     });
+    if (branchTipForeignNoDiff) {
+      return { sha: branchTip, strategy: "no-diff", ownershipProof: "canonical-branch-no-diff" };
+    }
 
     // FN-5441/5446 (2026-05-23 lost-work bug #2): `--grep=<taskId>` is a loose
     // match that also hits commits merely mentioning the task ID in prose.
@@ -237,9 +272,14 @@ export async function findAlreadyMergedTaskCommit(
         encoding: "utf-8",
         stdio: ["pipe", "pipe", "pipe"],
       }).trim();
-      if (await commitHasForeignTaskOwnership(repoDir, branchTip, taskId, lineageId)) {
+      if (hasCanonicalBranchIdentity) {
+        branchTipHasNoUniqueDiff = await branchHasNoUniqueDiff(repoDir, branchTip, baseBranch).catch(() => false);
+      }
+      const branchTipHasForeignOwnership = await commitHasForeignTaskOwnership(repoDir, branchTip, taskId, lineageId);
+      if (!branchTipHasNoUniqueDiff && branchTipHasForeignOwnership) {
         return null;
       }
+      branchTipForeignNoDiff = branchTipHasNoUniqueDiff && branchTipHasForeignOwnership;
       branchTipOwnershipVerified = true;
     }
 
@@ -272,28 +312,26 @@ export async function findAlreadyMergedTaskCommit(
       .split("\n")
       .find((line) => line.trim().length > 0);
     const branchPatchId = branchPatchIdLine?.trim().split(/\s+/)[0];
-    if (!branchPatchId) {
-      return null;
-    }
+    if (branchPatchId) {
+      const basePatchMapCommand = `git log -n 200 -p --format='%H' ${shellQuote(baseBranch)} | git patch-id`;
+      const { stdout: basePatchIdsOut } = await execAsync(basePatchMapCommand, {
+        cwd: repoDir,
+        shell: "/bin/sh",
+        timeout: 60_000,
+        maxBuffer: 32 * 1024 * 1024,
+      });
 
-    const basePatchMapCommand = `git log -n 200 -p --format='%H' ${shellQuote(baseBranch)} | git patch-id`;
-    const { stdout: basePatchIdsOut } = await execAsync(basePatchMapCommand, {
-      cwd: repoDir,
-      shell: "/bin/sh",
-      timeout: 60_000,
-      maxBuffer: 32 * 1024 * 1024,
-    });
+      const basePatchMap = new Map<string, string>();
+      for (const line of basePatchIdsOut.split("\n")) {
+        const [patchId, sha] = line.trim().split(/\s+/);
+        if (!patchId || !sha) continue;
+        basePatchMap.set(patchId, sha);
+      }
 
-    const basePatchMap = new Map<string, string>();
-    for (const line of basePatchIdsOut.split("\n")) {
-      const [patchId, sha] = line.trim().split(/\s+/);
-      if (!patchId || !sha) continue;
-      basePatchMap.set(patchId, sha);
-    }
-
-    const matchedSha = basePatchMap.get(branchPatchId);
-    if (matchedSha && !await commitHasForeignTaskOwnership(repoDir, matchedSha, taskId, lineageId)) {
-      return { sha: matchedSha, strategy: "patch-id", ownershipProof: "canonical-branch-patch" };
+      const matchedSha = basePatchMap.get(branchPatchId);
+      if (matchedSha && !await commitHasForeignTaskOwnership(repoDir, matchedSha, taskId, lineageId)) {
+        return { sha: matchedSha, strategy: "patch-id", ownershipProof: "canonical-branch-patch" };
+      }
     }
   } catch {
     // Fall through to null when patch-id detection fails.
@@ -330,7 +368,7 @@ export async function findAlreadyMergedTaskCommit(
         maxBuffer: 1024 * 1024,
       });
       const baseHead = baseHeadStdout.trim();
-      if (baseHead && !await commitHasForeignTaskOwnership(repoDir, baseHead, taskId, lineageId)) {
+      if (baseHead && (branchTipForeignNoDiff || !await commitHasForeignTaskOwnership(repoDir, baseHead, taskId, lineageId))) {
         return { sha: baseHead, strategy: "tree-equal", ownershipProof: "canonical-branch-tree" };
       }
     }

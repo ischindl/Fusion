@@ -185,6 +185,26 @@ describe("buildMobileWorkflowGraph", () => {
     ]);
   });
 
+  it("filters foreach boundary chrome while preserving real stepwise template child edges", () => {
+    const { nodes, edges } = irToFlow(workflowDef(BUILTIN_STEPWISE_CODING_WORKFLOW_IR));
+    const rows = buildMobileWorkflowGraph(
+      nodes,
+      edges,
+      BUILTIN_STEPWISE_CODING_WORKFLOW_IR.version === "v2" ? BUILTIN_STEPWISE_CODING_WORKFLOW_IR.columns : [],
+    );
+    const steps = rows.find((row) => row.id === "steps");
+    expect(steps?.outgoing.some((out) => out.label === "entry" || out.label === "exit")).toBe(false);
+    expect(steps?.outgoing.some((out) => out.target.includes("step-"))).toBe(false);
+
+    const execute = steps?.children.find((child) => child.id === foreachChildFlowId("steps", "step-execute"));
+    const done = steps?.children.find((child) => child.id === foreachChildFlowId("steps", "step-done"));
+    expect(execute?.outgoing.map((out) => [out.target, out.label])).toContainEqual([
+      foreachChildFlowId("steps", "step-review"),
+      "success",
+    ]);
+    expect(done?.outgoing.some((out) => out.target === "steps" || out.label === "exit")).toBe(false);
+  });
+
   it("nests foreach template children without exposing local ids as top-level rows", () => {
     const childId = foreachChildFlowId("each", "step");
     const rows = buildMobileWorkflowGraph(

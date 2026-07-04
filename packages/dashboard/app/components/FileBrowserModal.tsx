@@ -421,6 +421,7 @@ export function FileBrowserModal({
               workspace={currentWorkspace}
               onRefresh={refresh}
               projectId={projectId}
+              showProjectFileControls={currentWorkspace === "project"}
             />
           </div>
 

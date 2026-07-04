@@ -52,6 +52,18 @@ describe("FN-3298 regression: dashboard vitest runtime plugins resolve from sour
         '"../../plugins/fusion-plugin-compound-engineering/src/index.ts"',
       );
       expect(config).not.toContain("fusion-plugin-compound-engineering/dist/");
+      expect(
+        config,
+        `${configFile} must alias the linear-import dashboard-view to src`,
+      ).toContain('"@fusion-plugin-examples/linear-import/dashboard-view": resolve(');
+      expect(config).toContain(
+        '"../../plugins/fusion-plugin-linear-import/src/dashboard-view.tsx"',
+      );
+      expect(config).toContain('"@fusion-plugin-examples/linear-import": resolve(');
+      expect(config).toContain(
+        '"../../plugins/fusion-plugin-linear-import/src/index.ts"',
+      );
+      expect(config).not.toContain("fusion-plugin-linear-import/dist/");
     }
   });
 });

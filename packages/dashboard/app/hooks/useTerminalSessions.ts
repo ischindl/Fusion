@@ -146,6 +146,7 @@ export function useTerminalSessions(projectId?: string): UseTerminalSessionsRetu
   // Ref-based generation token to protect against stale completions from prior
   // bootstrap attempts. Only the current generation may mutate state.
   const generationRef = useRef(0);
+  const bootstrapCreateInFlightGenerationRef = useRef<number | null>(null);
 
   useEffect(() => {
     generationRef.current += 1;
@@ -240,13 +241,27 @@ export function useTerminalSessions(projectId?: string): UseTerminalSessionsRetu
   }, [projectId]); // Re-run when project scope changes
 
   // Auto-create first tab if no tabs exist after validation
+  // On Windows, do NOT auto-create because the embedded shell may invoke Windows Terminal
+  // (wt.exe) and produce native "Help" version dialogs. Users can still create a terminal
+  // explicitly from the UI.
   useEffect(() => {
-    if (tabs.length === 0 && isReady && serverAvailable) {
+    if (typeof window !== "undefined" && window.navigator.userAgent.includes("Windows")) {
+      setIsReady(true);
+      return;
+    }
+    if (tabs.length === 0 && isReady && serverAvailable && !bootstrapError) {
       // Capture current generation so only this attempt's result is accepted
       const gen = generationRef.current;
+      if (bootstrapCreateInFlightGenerationRef.current === gen) return;
 
       // Small delay to avoid race condition with the validation effect
       const timeout = setTimeout(() => {
+        if (bootstrapCreateInFlightGenerationRef.current === gen) return;
+        bootstrapCreateInFlightGenerationRef.current = gen;
+        /*
+        FNXC:WindowsTerminalStartup 2026-07-02-07:45:
+        Terminal bootstrap failures must render once inside Fusion and then wait for an explicit Retry, so Windows Terminal help/version output cannot recur through an automatic create-session loop.
+        */
         withTimeout(
           createTerminalSession(undefined, undefined, undefined, projectId),
           BOOTSTRAP_CREATE_TIMEOUT_MS,
@@ -284,11 +299,16 @@ export function useTerminalSessions(projectId?: string): UseTerminalSessionsRetu
             const message =
               err instanceof Error ? err.message : typeof err === "string" ? err : "Failed to create terminal session";
             setBootstrapError(message);
+          })
+          .finally(() => {
+            if (bootstrapCreateInFlightGenerationRef.current === gen) {
+              bootstrapCreateInFlightGenerationRef.current = null;
+            }
           });
       }, 0);
       return () => clearTimeout(timeout);
     }
-  }, [isReady, serverAvailable, tabs.length, retryGeneration]); // Run when ready or when tabs become empty
+  }, [bootstrapError, isReady, serverAvailable, tabs.length, retryGeneration]); // Run when ready or when tabs become empty
 
   /**
    * Internal create tab function (used for auto-creation and user-initiated creation).
@@ -491,6 +511,7 @@ export function useTerminalSessions(projectId?: string): UseTerminalSessionsRetu
   const retryBootstrap = useCallback((): void => {
     setBootstrapError(null);
     generationRef.current += 1;
+    bootstrapCreateInFlightGenerationRef.current = null;
     setRetryGeneration((g) => g + 1);
   }, []);
 

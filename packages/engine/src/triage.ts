@@ -80,7 +80,7 @@ import type {
   ToolDefinition,
   AgentSession,
 } from "@earendil-works/pi-coding-agent";
-import { describeModel, formatModelMarkerDetails, promptWithFallback } from "./pi.js";
+import { ModelFallbackExhaustedError, describeModel, formatModelMarkerDetails, promptWithFallback } from "./pi.js";
 import {
   createResolvedAgentSession,
   extractRuntimeHint,
@@ -1396,6 +1396,29 @@ export class TriageProcessor {
             task.id,
             errorMessage,
           );
+        } else if (err instanceof ModelFallbackExhaustedError) {
+          /*
+          FNXC:TriageModelFallback 2026-07-02-00:00:
+          Exhausted planner model fallback is terminal and operator-actionable: clearing status lets the scheduler recreate the same primary/fallback pair forever, so triage persists a failed task error with the bounded attempt count and sanitized provider reason.
+          */
+          const failureMessage =
+            `Triage failed: unable to select a usable model after ${err.attempts} attempt${err.attempts === 1 ? "" : "s"}. ${err.message}`;
+          planLog.error(`✗ ${task.id} planner model fallback exhausted: ${failureMessage}`);
+          await this.store.logEntry(task.id, failureMessage).catch((logErr: unknown) => {
+            const msg = logErr instanceof Error ? logErr.message : String(logErr);
+            planLog.warn(`${task.id}: failed to log planner fallback exhaustion: ${msg}`);
+          });
+          await this.store.updateTask(task.id, {
+            status: "failed",
+            error: failureMessage,
+            recoveryRetryCount: null,
+            nextRecoveryAt: null,
+          }).catch((updateErr: unknown) => {
+            const msg = updateErr instanceof Error ? updateErr.message : String(updateErr);
+            planLog.warn(`${task.id}: failed to persist planner fallback exhaustion: ${msg}`);
+          });
+          this.options.onSpecifyError?.(task, err);
+          return;
         } else if (isTransientError(errorMessage)) {
           // Transient network/infrastructure error — use bounded recovery policy
           const decision = computeRecoveryDecision({

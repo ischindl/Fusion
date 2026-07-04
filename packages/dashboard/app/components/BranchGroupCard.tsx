@@ -3,20 +3,24 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CheckCircle2, ChevronDown, ChevronRight, CircleDashed, ExternalLink, GitBranch, GitPullRequest, Loader2 } from "lucide-react";
 import type { BranchGroupSummary } from "../api";
-import { apiAbandonBranchGroup, apiGetBranchGroup, apiPromoteBranchGroup } from "../api";
+import { ApiRequestError, apiAbandonBranchGroup, apiAssignTaskBranchGroup, apiGetBranchGroup, apiPromoteBranchGroup } from "../api";
 import { subscribeSse } from "../sse-bus";
 import { BRANCH_GROUP_REFRESH_TASK_EVENTS, shouldRefreshBranchGroupForTaskEvent } from "../utils/branchGroupSse";
 
 interface BranchGroupCardProps {
   groupId: string;
+  taskId?: string;
   projectId?: string;
+  onBranchGroupReset?: () => Promise<void> | void;
 }
 
-export function BranchGroupCard({ groupId, projectId }: BranchGroupCardProps) {
+export function BranchGroupCard({ groupId, taskId, projectId, onBranchGroupReset }: BranchGroupCardProps) {
   const { t } = useTranslation("app");
   const [group, setGroup] = useState<BranchGroupSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [missingGroup, setMissingGroup] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const [promoting, setPromoting] = useState(false);
   const [abandoning, setAbandoning] = useState(false);
   /*
@@ -30,8 +34,11 @@ export function BranchGroupCard({ groupId, projectId }: BranchGroupCardProps) {
       const response = await apiGetBranchGroup(groupId, projectId);
       setGroup(response.group);
       setError(null);
+      setMissingGroup(false);
     } catch (loadError) {
+      const isMissing = loadError instanceof ApiRequestError && loadError.status === 404;
       const message = loadError instanceof Error ? loadError.message : t("branchGroup.loadError", "Failed to load branch group");
+      setMissingGroup(isMissing);
       setError(message);
     } finally {
       setLoading(false);
@@ -96,11 +103,49 @@ export function BranchGroupCard({ groupId, projectId }: BranchGroupCardProps) {
     }
   }, [groupId, loadGroup, projectId]);
 
+  /*
+  FNXC:BranchGroupRecovery 2026-07-02-11:55:
+  Stale branch-group references must be recoverable from task detail by clearing only the affected task through the supported branch-group assignment API. Do not require operators to stop Fusion or run raw SQLite json_remove repairs.
+  */
+  const onResetStaleContext = useCallback(async () => {
+    if (!taskId) return;
+    setResetting(true);
+    try {
+      await apiAssignTaskBranchGroup({ taskId, groupId: null }, projectId);
+      await onBranchGroupReset?.();
+    } finally {
+      setResetting(false);
+    }
+  }, [onBranchGroupReset, projectId, taskId]);
+
   if (loading) {
     return <div className="card branch-group-card"><Loader2 className="spin" size={14} /> {t("branchGroup.loading", "Loading branch group…")}</div>;
   }
 
   if (error || !group) {
+    if (missingGroup) {
+      return (
+        <section className="card branch-group-card branch-group-card-error" aria-live="polite">
+          <div className="branch-group-card-error-title">{t("branchGroup.staleTitle", "Stale branch group reference")}</div>
+          <p className="branch-group-card-error-copy">
+            {t(
+              "branchGroup.staleDescription",
+              "This task references branch group {{groupId}}, but that group is no longer available. Reset only this task's branch group to continue without raw SQLite edits.",
+              { groupId },
+            )}
+          </p>
+          {taskId ? (
+            <button type="button" className="btn" onClick={() => void onResetStaleContext()} disabled={resetting}>
+              {resetting ? <Loader2 size={14} className="spin" /> : null}
+              {t("branchGroup.resetTask", "Reset branch group for this task")}
+            </button>
+          ) : (
+            <span className="branch-group-card-error-copy">{t("branchGroup.resetUnavailable", "Open the task detail view to reset this stale branch group reference.")}</span>
+          )}
+        </section>
+      );
+    }
+
     return <div className="card branch-group-card branch-group-card-error">{error ?? t("branchGroup.unavailable", "Branch group unavailable")}</div>;
   }
 

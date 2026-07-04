@@ -57,10 +57,12 @@ Profiles are first-class saved objects shared by onboarding and Connection Manag
 
 Connection Manager supports:
 
-- **Use** (activate profile)
+- **Desktop Switch server** presents the built-in **Local Server** separately from saved **Remote servers**. Local Server is always available in the desktop shell; selecting it calls `setDesktopMode("local")` and returns the shell to the embedded/local Fusion server without deleting remote profiles.
+- **Add remote server** is the desktop CTA for saving another Fusion server profile. The remote profile editor stays collapsed until a user chooses **Add remote server** or edits an existing saved profile, so local-only desktop users do not see an empty setup form.
+- **Use** (activate a saved remote profile). In desktop local mode, using a remote profile first switches desktop mode back to `remote`, then activates the selected profile.
 - **Edit** (update name/URL/token)
 - **Delete**
-- **Add connection**
+- **Mobile Add connection / Scan QR** remains focused on remote profile setup and does not show the desktop-only Local Server guidance.
 
 Activation updates `activeProfileId` and stamps `lastUsedAt` on the selected profile.
 

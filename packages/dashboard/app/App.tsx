@@ -47,6 +47,7 @@ import { useMobileKeyboard } from "./hooks/useMobileKeyboard";
 import { isIOS, useMobileKeyboardViewportLock, useMobileViewportRestoreReset } from "./hooks/useMobileScrollLock";
 import { computeMobileBarKeyboardFlags } from "./utils/mobileBarKeyboardFlags";
 import { useSetupReadiness } from "./hooks/useSetupReadiness";
+import { useGithubSetupWarningDelay } from "./hooks/useGithubSetupWarningDelay";
 import { useUpdateCheck } from "./hooks/useUpdateCheck";
 import { useViewState, type TaskView } from "./hooks/useViewState";
 import { NavigationHistoryProvider, useNavigationHistory } from "./hooks/useNavigationHistory";
@@ -117,6 +118,7 @@ import type { GraphWorkflowSelection } from "./components/GraphWorkflowSwitcherS
 import "./components/ChatView.css";
 
 const IS_TEST_ENV = import.meta.env.MODE === "test";
+export const TASK_DETAIL_FLOATING_GEOMETRY_KEY = "floating-window:task-detail";
 
 const AgentsView = lazy(() => import("./components/AgentsView").then((m) => ({ default: m.AgentsView })));
 const DocumentsView = lazy(() => import("./components/DocumentsView").then((m) => ({ default: m.DocumentsView })));
@@ -230,14 +232,19 @@ function AppInner() {
   const { currentNode, currentNodeId, isRemote, setCurrentNode, clearCurrentNode } = useNodeContext();
 
   // Current project with node-aware persistence
-  const { currentProject, setCurrentProject, clearCurrentProject, loading: currentProjectLoading } = useCurrentProject(projects, { nodeId: currentNodeId });
+  const { currentProject, setCurrentProject, clearCurrentProject, loading: currentProjectLoading } = useCurrentProject(projects, { nodeId: currentNodeId, projectsLoading });
 
   const {
     hasAiProvider,
     hasGithub,
     loading: setupReadinessLoading,
-    hasWarnings,
   } = useSetupReadiness(currentProject?.id);
+  const showGithubSetupWarning = useGithubSetupWarningDelay({
+    projectId: currentProject?.id,
+    hasGithub,
+    loading: setupReadinessLoading,
+  });
+  const visibleSetupHasWarnings = !hasAiProvider || (!hasGithub && showGithubSetupWarning);
   const {
     updateAvailable,
     latestVersion,
@@ -336,7 +343,7 @@ function AppInner() {
   const { pushNav, replaceCurrent, removeNav } = useNavigationHistory({ enabled: true });
 
   // View state must be defined before useTasks since useTasks depends on taskView for SSE gating
-  const { viewMode, setViewMode, taskView, handleChangeTaskView } = useViewState({
+  const { viewMode, setViewMode, taskView, setTaskView, handleChangeTaskView } = useViewState({
     projectsLoading,
     projectsError,
     currentProjectLoading,
@@ -717,6 +724,7 @@ function AppInner() {
     setCurrentProject,
     clearCurrentProject,
     setViewMode,
+    setTaskView,
     currentProject,
     refreshProjects,
     toggleFavoriteProvider,
@@ -1138,7 +1146,7 @@ function AppInner() {
 
   // Props for the extracted <MainContent> switch (see components/dashboard/MainContent.tsx).
   // Every value is passed by its App name; the switch renders the same subtrees as before.
-  const rightDock = useRightDockController({ active: rightDockActive, projectId: currentProject?.id, addToast, settingsLoaded, researchReadinessVersion, goalAnchorId, tasks: isRemote && remoteData.tasks.length > 0 ? remoteData.tasks : tasks, workflowSteps, subscribePluginEvents, openDetailTask, openFileInBrowser, onMoveTask: moveTask, onDeleteTask: deleteTask, onArchiveTask: archiveTask, onMergeTask: mergeTask, onRetryTask: retryTask, onResetTask: resetTask, onDuplicateTask: duplicateTask, onTaskUpdated: (task: Task) => ingestCreatedTasks([task]), openSettings: (section?: string) => openSettingsWithNav(section as SectionId), onOpenUsage: openUsageWithNav, onOpenActivityLog: openActivityLogWithNav, onOpenGitHubImport: openGitHubImportWithNav, onOpenGitManager: openGitManagerWithNav, onOpenSchedules: openSchedulesWithNav, onSendSelectionToTask: modalManager.openNewTaskWithDescription, onCreateTaskFromInsight: handleInsightTaskCreate, onNavigateToMission: handleOpenMission, onTaskCreated: (task: Task) => ingestCreatedTasks([task]), prAuthAvailable, autoMerge, taskDetailChatFirst, visibilityOptions: { experimentalFeatures: { insights: insightsEnabled, memoryView: memoryEnabled, devServerView: devServerEnabled, researchView: researchEnabled, evalsView: evalsEnabled, goalsView: goalsEnabled }, showSkillsTab: skillsEnabled, todosEnabled, pluginDashboardViews }, footerVisible: executorFooterVisible });
+  const rightDock = useRightDockController({ active: rightDockActive, projectId: currentProject?.id, addToast, settingsLoaded, researchReadinessVersion, goalAnchorId, tasks: isRemote && remoteData.tasks.length > 0 ? remoteData.tasks : tasks, workflowSteps, subscribePluginEvents, openDetailTask, openTaskPopup: popOutTaskDetail, openMobileTasksInPopup, openFileInBrowser, onMoveTask: moveTask, onDeleteTask: deleteTask, onArchiveTask: archiveTask, onMergeTask: mergeTask, onRetryTask: retryTask, onResetTask: resetTask, onDuplicateTask: duplicateTask, onTaskUpdated: (task: Task) => ingestCreatedTasks([task]), openSettings: (section?: string) => openSettingsWithNav(section as SectionId), onOpenUsage: openUsageWithNav, onOpenActivityLog: openActivityLogWithNav, onOpenGitHubImport: openGitHubImportWithNav, onOpenGitManager: openGitManagerWithNav, onOpenSchedules: openSchedulesWithNav, onSendSelectionToTask: modalManager.openNewTaskWithDescription, onCreateTaskFromInsight: handleInsightTaskCreate, onNavigateToMission: handleOpenMission, onTaskCreated: (task: Task) => ingestCreatedTasks([task]), prAuthAvailable, autoMerge, taskDetailChatFirst, visibilityOptions: { experimentalFeatures: { insights: insightsEnabled, memoryView: memoryEnabled, devServerView: devServerEnabled, researchView: researchEnabled, evalsView: evalsEnabled, goalsView: goalsEnabled }, showSkillsTab: skillsEnabled, todosEnabled, pluginDashboardViews }, footerVisible: executorFooterVisible });
 
   /*
   FNXC:OpenTasksInRightSidebar 2026-06-28-00:00:
@@ -1367,11 +1375,12 @@ function AppInner() {
     dbCorruptionRefreshing,
     dbCorruptionRefreshError,
     setupReadinessLoading,
-    hasWarnings,
+    hasWarnings: visibleSetupHasWarnings,
     setupWarningDismissed,
     handleDismissSetupWarning,
     hasAiProvider,
     hasGithub,
+    showGithubSetupWarning,
     approvalBannerCandidate,
     dismissApproval,
     mailboxPendingApprovalCount,
@@ -1633,6 +1642,9 @@ function AppInner() {
 
       FNXC:TaskDetail 2026-06-22-12:20:
       Task pop-outs use TaskDetailContent's own gray header as the only visible header, matching the one-header fixed task modal while keeping FloatingWindow drag/resize. The generic Maximize title chrome is hidden; close now lives beside edit inside the task header.
+
+      FNXC:TaskPopupGeometry 2026-07-03-00:00:
+      Every task-detail FloatingWindow keeps its per-task windowKey for DOM identity, dedupe, cascade fallback, and z-index independence, but all task-detail popups share one persisted geometry key so operators do not resize or reposition the popup between tasks.
       */}
       {poppedOutTasks.map((snapshot) => {
         const liveTask = tasks.find((candidate) => candidate.id === snapshot.id) ?? snapshot;
@@ -1646,6 +1658,7 @@ function AppInner() {
             hideHeader
             dragHandleSelector=".task-detail-content--embedded > .modal-header"
             className="floating-window--task-detail"
+            persistGeometryKey={TASK_DETAIL_FLOATING_GEOMETRY_KEY}
           >
             <TaskDetailContent
               task={liveTask}

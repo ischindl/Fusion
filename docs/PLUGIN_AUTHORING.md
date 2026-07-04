@@ -1309,6 +1309,13 @@ Standalone roadmap planning plugin extracted from dashboard host code.
 - Demonstrates: top-level navigation registration through `dashboardViews` (`viewId: "roadmaps"`) and host static view registration
 - Demonstrates: AI suggestion flows that consume `ctx.createAiSession` through plugin route handlers
 
+### [Linear Import Plugin](../../plugins/fusion-plugin-linear-import/)
+
+Bundled integration plugin that imports Linear issues into Fusion tasks without adding host-owned Linear routes or settings.
+
+- Demonstrates: password plugin settings, plugin-scoped HTTP routes under `/api/plugins/fusion-plugin-linear-import/*`, agent tools, top-level `dashboardViews`, host static dashboard view registration, and task creation through `PluginContext.taskStore`.
+- Demonstrates: external SaaS API evidence in plugin docs, bounded GraphQL pagination, duplicate detection with durable source provenance, and safe error responses that do not leak API keys.
+
 ### [Droid Runtime Plugin](../../plugins/fusion-plugin-droid-runtime/)
 
 Reference runtime plugin that migrates a CLI-backed provider into the plugin system.

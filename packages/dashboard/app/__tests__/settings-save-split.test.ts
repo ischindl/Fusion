@@ -28,6 +28,12 @@ describe("scope anchors", () => {
     expect(isProjectSettingsKey("enabledBuiltinWorkflowIds")).toBe(true);
     expect(isProjectSettingsKey("githubLinkImportedIssuesToTracking")).toBe(true);
     expect(isGlobalSettingsKey("githubLinkImportedIssuesToTracking")).toBe(false);
+    expect(isGlobalSettingsKey("gitlabEnabled")).toBe(true);
+    expect(isProjectSettingsKey("gitlabEnabled")).toBe(true);
+    expect(isGlobalSettingsKey("gitlabAuthToken")).toBe(true);
+    expect(isProjectSettingsKey("gitlabAuthToken")).toBe(true);
+    expect(isGlobalSettingsKey("gitlabAuthTokenType")).toBe(true);
+    expect(isProjectSettingsKey("gitlabAuthTokenType")).toBe(true);
   });
 
   it("every MODEL_LANE_KEYS entry is a project settings key", () => {
@@ -216,6 +222,73 @@ describe("splitSettingsSave", () => {
     expect(projectPatch).toEqual({ maxConcurrent: 7 });
   });
 
+  it("routes GitLab enable and token settings to global settings only from global general", () => {
+    const initialScopedValues = {
+      global: { gitlabEnabled: true, gitlabAuthToken: undefined, gitlabAuthTokenType: undefined },
+      project: { gitlabEnabled: true, gitlabAuthToken: "project-token", gitlabAuthTokenType: "project" },
+    } as never;
+
+    const payload: Record<string, unknown> = {
+      gitlabEnabled: false,
+      gitlabAuthToken: "global-token",
+      gitlabAuthTokenType: "group",
+    };
+
+    const { globalPatch, projectPatch } = splitSettingsSave({
+      payload,
+      initialValues: null,
+      initialScopedValues,
+      activeSection: "global-general",
+    });
+
+    expect(globalPatch).toEqual({ gitlabEnabled: false, gitlabAuthToken: "global-token", gitlabAuthTokenType: "group" });
+    expect(projectPatch).toEqual({});
+  });
+
+  it("routes GitLab enable and token settings to project settings outside global general", () => {
+    const initialScopedValues = {
+      global: { gitlabEnabled: false, gitlabAuthToken: "global-token", gitlabAuthTokenType: "group" },
+      project: { gitlabEnabled: true },
+    } as never;
+
+    const payload: Record<string, unknown> = {
+      gitlabEnabled: false,
+      gitlabAuthToken: "project-token",
+      gitlabAuthTokenType: "project",
+    };
+
+    const { globalPatch, projectPatch } = splitSettingsSave({
+      payload,
+      initialValues: null,
+      initialScopedValues,
+      activeSection: "merge",
+    });
+
+    expect(globalPatch).toEqual({});
+    expect(projectPatch).toEqual({ gitlabEnabled: false, gitlabAuthToken: "project-token", gitlabAuthTokenType: "project" });
+  });
+
+  it("clears a project GitLab token with null-as-delete while preserving selected token type", () => {
+    const initialScopedValues = {
+      global: {},
+      project: { gitlabAuthToken: "old-project-token", gitlabAuthTokenType: "group" },
+    } as never;
+
+    const payload: Record<string, unknown> = {
+      gitlabAuthToken: undefined,
+      gitlabAuthTokenType: "personal",
+    };
+
+    const { projectPatch } = splitSettingsSave({
+      payload,
+      initialValues: null,
+      initialScopedValues,
+      activeSection: "merge",
+    });
+
+    expect(projectPatch).toEqual({ gitlabAuthToken: null, gitlabAuthTokenType: "personal" });
+  });
+
   it("routes imported GitHub issue linking only to project settings", () => {
     const initialScopedValues = {
       global: {},
@@ -399,6 +472,59 @@ describe("splitSettingsSave", () => {
     });
 
     expect(globalPatch).toEqual({});
+  });
+
+  it("routes GitLab URL keys to the active settings scope", () => {
+    const payload: Record<string, unknown> = {
+      gitlabInstanceUrl: "https://gitlab.example.com/gitlab",
+      gitlabApiBaseUrl: "https://gitlab.example.com/gitlab/api/v4",
+    };
+
+    const onGlobal = splitSettingsSave({
+      payload,
+      initialValues: {} as never,
+      initialScopedValues: { global: {}, project: {} } as never,
+      activeSection: "global-general",
+    });
+    expect(onGlobal.globalPatch).toMatchObject(payload);
+    expect("gitlabInstanceUrl" in onGlobal.projectPatch).toBe(false);
+    expect("gitlabApiBaseUrl" in onGlobal.projectPatch).toBe(false);
+
+    const onProject = splitSettingsSave({
+      payload,
+      initialValues: {} as never,
+      initialScopedValues: { global: {}, project: {} } as never,
+      activeSection: "general",
+    });
+    expect("gitlabInstanceUrl" in onProject.globalPatch).toBe(false);
+    expect("gitlabApiBaseUrl" in onProject.globalPatch).toBe(false);
+    expect(onProject.projectPatch).toMatchObject(payload);
+  });
+
+  it("clears GitLab URL overrides with null in the active settings scope", () => {
+    const payload: Record<string, unknown> = { gitlabInstanceUrl: undefined, gitlabApiBaseUrl: undefined };
+
+    const onGlobal = splitSettingsSave({
+      payload,
+      initialValues: {} as never,
+      initialScopedValues: {
+        global: { gitlabInstanceUrl: "https://global.example", gitlabApiBaseUrl: "https://global.example/api/v4" },
+        project: {},
+      } as never,
+      activeSection: "global-general",
+    });
+    expect(onGlobal.globalPatch).toEqual({ gitlabInstanceUrl: null, gitlabApiBaseUrl: null });
+
+    const onProject = splitSettingsSave({
+      payload,
+      initialValues: {} as never,
+      initialScopedValues: {
+        global: {},
+        project: { gitlabInstanceUrl: "https://project.example", gitlabApiBaseUrl: "https://project.example/api/v4" },
+      } as never,
+      activeSection: "general",
+    });
+    expect(onProject.projectPatch).toEqual({ gitlabInstanceUrl: null, gitlabApiBaseUrl: null });
   });
 
   it("routes githubTrackingDefaultRepo to global only on the global-general section", () => {

@@ -19,12 +19,44 @@ Date: 2026-05-07
 - `cursor-agent` is the direct CLI runtime entrypoint and is symlinked to a versioned install under:
   - `~/.local/share/cursor-agent/versions/<version>/cursor-agent`
 
-### Detection strategy to implement
+### Detection strategy
 
-1. Probe `cursor-agent` first.
-2. Probe `cursor` second.
-3. Persist the resolved path and executable name in probe results.
-4. Report explicit failure reason when neither exists.
+1. If the global `cursorCliBinaryPath` setting is a non-empty string, probe that configured binary first.
+2. Probe `cursor-agent` from PATH.
+3. Probe `cursor` from PATH.
+4. Deduplicate candidates when the configured value is exactly `cursor-agent` or `cursor`.
+5. Persist the resolved path and executable name in probe results.
+6. Report explicit failure reason when neither exists.
+
+### Manual binary path override
+
+<!--
+FNXC:CursorCli 2026-07-02-00:00:
+Operators can set a global Cursor CLI binary path when PATH discovery resolves the wrong shim. The override is optional and must never remove the cursor-agent/cursor fallback probes.
+-->
+
+Settings → Authentication → Cursor CLI exposes an optional binary path field. Leave it blank to use PATH auto-detection. When populated, Fusion validates the configured path by running the same `--version` probe used for status/enable, saves it only if that configured candidate itself succeeds, and then uses it for status, enable validation, and Cursor model discovery before falling back to PATH candidates.
+
+If the configured path fails during ordinary status/model-discovery probes but a PATH candidate succeeds, Fusion remains usable and reports the PATH candidate as the effective `binaryPath`; bounded diagnostics include the configured-path failure. If saving a new non-empty override fails or only succeeds via PATH fallback, the Settings save returns a 400 diagnostic and does not persist the path.
+
+Windows paths with spaces, for example `C:\Users\A User\AppData\Roaming\npm\cursor-agent.cmd`, are treated as one operator-provided string. Users should not quote or split the path in the UI.
+
+### Windows PATH shim invocation
+
+<!--
+FNXC:CursorCli 2026-07-02-00:00:
+Windows Cursor installs may publish `cursor-agent.cmd`, `cursor.cmd`, or equivalent `.bat` shims on PATH; Fusion must invoke Cursor probe and discovery commands through the Windows shell so Node can execute those wrappers.
+Unix and macOS stay direct-spawned to avoid broadening shell semantics beyond the platform that requires it.
+-->
+
+On Windows, `cursor-agent`, `cursor`, and manual override paths can resolve to `.cmd` / `.bat` wrappers rather than native executables. Node.js direct `spawn(binary, args)` does not execute those wrappers reliably; Fusion's Cursor command runner therefore sets shell execution only when `process.platform === "win32"`.
+
+The Windows shell-backed path applies to every Cursor CLI command Fusion currently runs through the shared runner:
+
+- Configured binary / `cursor-agent --version` / `cursor --version` probe attempts.
+- Model discovery attempts against the effective probe-selected binary: `models --json`, `model list --json`, and `models`.
+
+Non-Windows probes and discovery continue to use direct spawn. Spawn errors such as `ENOENT` or `EACCES` are included in the unavailable probe reason in bounded diagnostic form so a working terminal command is distinguishable from known Cursor runtime/auth states; Fusion does not dump PATH, environment variables, or unbounded stdout/stderr.
 
 ## Confirmed error/auth/runtime signals
 

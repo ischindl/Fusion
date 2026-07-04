@@ -20,6 +20,13 @@ vi.mock("../agent-session-helpers.js", () => ({
 vi.mock("../pi.js", () => ({
   describeModel: vi.fn().mockReturnValue("mock-model"),
   promptWithFallback: mockPromptWithFallback,
+  // FNXC:TriageTests 2026-07-02-07:40:
+  // triage.ts specifyTask now calls formatModelMarkerDetails (from pi.js) to
+  // build the model-marker log line after the agent session resolves. The mock
+  // must expose the export so the stuck-requeue planning path can reach
+  // finalization (moveTask todo / needs-replan) instead of throwing on a
+  // missing mock member.
+  formatModelMarkerDetails: vi.fn((model: string) => model),
 }));
 
 function createTask(overrides: Partial<Task> = {}): Task {

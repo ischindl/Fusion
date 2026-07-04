@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => {
       show: vi.fn(),
       focus: vi.fn(),
       maximize: vi.fn(),
+      webContents: { setWindowOpenHandler: vi.fn() },
       isDestroyed: vi.fn(() => false),
       getBounds: vi.fn(() => ({ x: 50, y: 80, width: 1280, height: 900 })),
       isMaximized: vi.fn(() => false),
@@ -169,6 +170,7 @@ vi.mock("electron", () => ({
   Tray: mocks.Tray,
   nativeImage: mocks.nativeImage,
   screen: mocks.screen,
+  shell: { openExternal: vi.fn(() => Promise.resolve()) },
 }));
 
 vi.mock("../menu.js", () => ({
@@ -231,8 +233,13 @@ async function importMainModule() {
 }
 
 async function flushPromises() {
-  await Promise.resolve();
-  await Promise.resolve();
+  // Drain ALL pending microtasks via a macrotask boundary rather than counting a
+  // fixed number of ticks. initializeApp()'s async chain length is an implementation
+  // detail (e.g. the launch-mode/shell split-brain reconciliation adds a readShellSettings
+  // await); a hardcoded tick count silently under-flushes when that chain grows and the
+  // run()-based tests then observe a half-initialized app. setTimeout(0) waits for the
+  // whole microtask queue to settle, so these tests assert on a fully-initialized app.
+  await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 describe("main integration", () => {

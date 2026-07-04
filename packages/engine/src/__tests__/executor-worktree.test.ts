@@ -137,7 +137,16 @@ describe("TaskExecutor with semaphore", () => {
       updatedAt: new Date().toISOString(),
     });
 
+    // FNXC:WorkflowLifecycle 2026-07-01-20:10: With workflowGraphExecutor default-on, terminal
+    // execution failures are parked `status: "failed"` IN PLACE by the workflow-graph failure model
+    // (handleGraphFailure / the legacy terminal catch in executor.ts). status="failed" doubles as the
+    // self-healing review-revival exemption marker, so the task is intentionally NOT moved to in-review
+    // — this supersedes FN-1284's legacy in-review escalation (confirmed by the sibling "fails after 3
+    // attempts" / "fails fast when rootDir not git" tests, which assert failed without any in-review
+    // move). The protected invariant here is unchanged: an execution throw marks the task failed with an
+    // error message and fires onError.
     expect(store.updateTask).toHaveBeenCalledWith("FN-001", { status: "failed", error: expect.any(String) });
+    expect(store.moveTask).not.toHaveBeenCalledWith("FN-001", "in-review");
     expect(onError).toHaveBeenCalled();
   });
 

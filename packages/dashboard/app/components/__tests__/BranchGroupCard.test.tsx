@@ -2,11 +2,13 @@ import React from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { BranchGroupCard } from "../BranchGroupCard";
+import { ApiRequestError } from "../../api";
 import { loadAllAppCssBaseOnly } from "../../test/cssFixture";
 
 const apiGetBranchGroup = vi.fn();
 const apiPromoteBranchGroup = vi.fn();
 const apiAbandonBranchGroup = vi.fn();
+const apiAssignTaskBranchGroup = vi.fn();
 
 type SseSubscription = {
   url: string;
@@ -19,9 +21,17 @@ type SseSubscription = {
 const sseSubscriptions: SseSubscription[] = [];
 
 vi.mock("../../api", () => ({
+  ApiRequestError: class ApiRequestError extends Error {
+    status: number;
+    constructor(message: string, status: number) {
+      super(message);
+      this.status = status;
+    }
+  },
   apiGetBranchGroup: (...args: unknown[]) => apiGetBranchGroup(...args),
   apiPromoteBranchGroup: (...args: unknown[]) => apiPromoteBranchGroup(...args),
   apiAbandonBranchGroup: (...args: unknown[]) => apiAbandonBranchGroup(...args),
+  apiAssignTaskBranchGroup: (...args: unknown[]) => apiAssignTaskBranchGroup(...args),
 }));
 
 vi.mock("../../sse-bus", () => ({
@@ -74,6 +84,7 @@ describe("BranchGroupCard", () => {
     apiGetBranchGroup.mockReset();
     apiPromoteBranchGroup.mockReset();
     apiAbandonBranchGroup.mockReset();
+    apiAssignTaskBranchGroup.mockReset();
     sseSubscriptions.length = 0;
   });
 
@@ -83,6 +94,35 @@ describe("BranchGroupCard", () => {
     await screen.findByText("1 of 2 members finished");
     await expandBranchGroup();
     expect(screen.queryByRole("button", { name: /open pr|merge group into main/i })).toBeNull();
+  });
+
+  it("FN-7438: guides users to reset a stale branch group reference and clears only this task", async () => {
+    apiGetBranchGroup.mockRejectedValue(new ApiRequestError("Branch group not found", 404));
+    apiAssignTaskBranchGroup.mockResolvedValue({ taskId: "FN-1", groupId: null });
+    const onBranchGroupReset = vi.fn();
+
+    render(<BranchGroupCard groupId="BG-missing" taskId="FN-1" projectId="proj-a" onBranchGroupReset={onBranchGroupReset} />);
+
+    expect(await screen.findByText("Stale branch group reference")).toBeInTheDocument();
+    expect(screen.getByText(/Reset only this task's branch group/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /expand branch group/i })).toBeNull();
+    expect(screen.queryByRole("progressbar")).toBeNull();
+    const reset = screen.getByRole("button", { name: /reset branch group for this task/i });
+    fireEvent.click(reset);
+
+    await waitFor(() => {
+      expect(apiAssignTaskBranchGroup).toHaveBeenCalledWith({ taskId: "FN-1", groupId: null }, "proj-a");
+      expect(onBranchGroupReset).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("keeps transient branch-group load failures separate from stale-reference reset UI", async () => {
+    apiGetBranchGroup.mockRejectedValue(new Error("network down"));
+
+    render(<BranchGroupCard groupId="BG-1" taskId="FN-1" />);
+
+    expect(await screen.findByText("network down")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /reset branch group for this task/i })).toBeNull();
   });
 
   it("shows promote and calls API when complete + autoMerge off", async () => {

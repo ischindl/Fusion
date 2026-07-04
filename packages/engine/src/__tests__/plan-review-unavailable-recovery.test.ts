@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../pi.js", () => ({
   describeModel: vi.fn().mockReturnValue("mock-provider/mock-model"),
+  formatModelMarkerDetails: vi.fn((model: string) => model),
   promptWithFallback: vi.fn(async (session: any, prompt: string, options?: any) => {
     if (options == null) await session.prompt(prompt);
     else await session.prompt(prompt, options);

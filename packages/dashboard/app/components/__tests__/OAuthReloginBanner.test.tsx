@@ -39,19 +39,70 @@ describe("OAuthReloginBanner", () => {
     window.localStorage.clear();
   });
 
-  it("shows expired Anthropic subscription OAuth even when Claude CLI is authenticated", async () => {
+  it("hides expired Anthropic subscription urgency when Claude CLI is authenticated", async () => {
     mockFetchAuthStatus.mockResolvedValueOnce({
       providers: [
         { id: "anthropic-subscription", name: "Anthropic Subscription", type: "oauth", authenticated: false, expired: true },
-        { id: "claude-cli", name: "Claude CLI", type: "cli", authenticated: true },
+        { id: "claude-cli", name: "Anthropic — via Claude CLI", type: "cli", authenticated: true },
       ],
       ghCli: { available: false, authenticated: false },
     });
 
     render(<OAuthReloginBanner onReLogin={vi.fn()} pollIntervalMs={60_000} />);
 
-    expect(await screen.findByRole("status")).toHaveTextContent("Anthropic Subscription");
-    expect(screen.getByRole("status")).toHaveTextContent("Re-login required");
+    await waitFor(() => expect(mockFetchAuthStatus).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByText(/Re-login required: Anthropic Subscription/i)).toBeNull();
+    expect(screen.queryByText(/keep agents running/i)).toBeNull();
+  });
+
+  it("hides expired Anthropic subscription urgency when API key and Claude CLI are authenticated", async () => {
+    mockFetchAuthStatus.mockResolvedValueOnce({
+      providers: [
+        { id: "anthropic-subscription", name: "Anthropic Subscription", type: "oauth", authenticated: false, expired: true },
+        { id: "anthropic-api-key", name: "Anthropic API Key", type: "api_key", authenticated: true, keyHint: "sk-••••1234" },
+        { id: "claude-cli", name: "Anthropic — via Claude CLI", type: "cli", authenticated: true },
+      ],
+      ghCli: { available: false, authenticated: false },
+    });
+
+    render(<OAuthReloginBanner onReLogin={vi.fn()} pollIntervalMs={60_000} />);
+
+    await waitFor(() => expect(mockFetchAuthStatus).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByText(/Re-login required: Anthropic Subscription/i)).toBeNull();
+  });
+
+  it("shows expired Anthropic subscription urgency when no Anthropic fallback is authenticated", async () => {
+    mockFetchAuthStatus.mockResolvedValueOnce({
+      providers: [
+        { id: "anthropic-subscription", name: "Anthropic Subscription", type: "oauth", authenticated: false, expired: true },
+        { id: "anthropic-api-key", name: "Anthropic API Key", type: "api_key", authenticated: false },
+        { id: "claude-cli", name: "Anthropic — via Claude CLI", type: "cli", authenticated: false },
+      ],
+      ghCli: { available: false, authenticated: false },
+    });
+
+    render(<OAuthReloginBanner onReLogin={vi.fn()} pollIntervalMs={60_000} />);
+
+    expect(await screen.findByRole("status")).toHaveTextContent("Re-login required: Anthropic Subscription");
+    expect(screen.getByRole("status")).toHaveTextContent("keep agents running");
+  });
+
+  it("keeps unrelated expired OAuth providers visible when Anthropic fallback suppresses subscription urgency", async () => {
+    mockFetchAuthStatus.mockResolvedValueOnce({
+      providers: [
+        { id: "anthropic-subscription", name: "Anthropic Subscription", type: "oauth", authenticated: false, expired: true },
+        { id: "anthropic-api-key", name: "Anthropic API Key", type: "api_key", authenticated: true, keyHint: "sk-••••1234" },
+        { id: "openai-codex", name: "OpenAI Codex", type: "oauth", authenticated: false, expired: true },
+      ],
+      ghCli: { available: false, authenticated: false },
+    });
+
+    render(<OAuthReloginBanner onReLogin={vi.fn()} pollIntervalMs={60_000} />);
+
+    expect(await screen.findByRole("status")).toHaveTextContent("OpenAI Codex");
+    expect(screen.getByRole("status")).not.toHaveTextContent("Anthropic Subscription");
   });
 
   it("clears the banner when OAuth success is dispatched for the status provider id", async () => {

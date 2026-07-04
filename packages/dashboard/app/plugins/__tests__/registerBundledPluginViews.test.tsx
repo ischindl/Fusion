@@ -10,6 +10,7 @@ const MockDependencyGraphDashboardView = () => createElement("div", { "data-test
 const MockCompoundEngineeringDashboardView = () => createElement("div", { "data-testid": "ce-view" });
 const MockCliPrintingPressWizardView = () => createElement("div", { "data-testid": "cli-printing-press-view" });
 const MockCliPrintingPressManageView = () => createElement("div", { "data-testid": "cli-printing-press-manage-view" });
+const MockLinearImportView = () => createElement("div", { "data-testid": "linear-import-view" });
 
 vi.mock("@fusion-plugin-examples/dependency-graph/dashboard-view", () => ({
   DependencyGraphDashboardView: (...args: unknown[]) => MockDependencyGraphDashboardView(...args),
@@ -27,6 +28,10 @@ vi.mock("@fusion-plugin-examples/cli-printing-press/manage-view", () => ({
   CliPrintingPressManageView: (...args: unknown[]) => MockCliPrintingPressManageView(...args),
 }));
 
+vi.mock("@fusion-plugin-examples/linear-import/dashboard-view", () => ({
+  LinearImportDashboardView: (...args: unknown[]) => MockLinearImportView(...args),
+}));
+
 // The dashboard statically registers bundled views client-side, so these views can
 // render even when engine-side PluginLoader startup failed and the persisted
 // installation row is in an error state.
@@ -36,7 +41,7 @@ describe("registerBundledPluginViews", () => {
     __test_resetBundledPluginViewRegistration();
   });
 
-  it("registers dependency graph, compound engineering, and cli printing press bundled views", () => {
+  it("registers dependency graph, compound engineering, cli printing press, and Linear bundled views", () => {
     registerBundledPluginViews();
 
     // This registration is independent of engine-side plugin load success; the
@@ -49,6 +54,7 @@ describe("registerBundledPluginViews", () => {
     expect(getPluginViewComponent("fusion-plugin-roadmap", "roadmaps")).toBeNull();
     expect(getPluginViewComponent("fusion-plugin-cli-printing-press", "wizard")).toBeTruthy();
     expect(getPluginViewComponent("fusion-plugin-cli-printing-press", "manage")).toBeTruthy();
+    expect(getPluginViewComponent("fusion-plugin-linear-import", "linear-import")).toBeTruthy();
   });
 
   it("is idempotent when called more than once", () => {
@@ -69,6 +75,7 @@ describe("registerBundledPluginViews", () => {
     expect(isPluginViewRegistered("fusion-plugin-roadmap", "roadmaps")).toBe(false);
     expect(isPluginViewRegistered("fusion-plugin-cli-printing-press", "wizard")).toBe(true);
     expect(isPluginViewRegistered("fusion-plugin-cli-printing-press", "manage")).toBe(true);
+    expect(isPluginViewRegistered("fusion-plugin-linear-import", "linear-import")).toBe(true);
     // Unknown plugin/view should not be registered
     expect(isPluginViewRegistered("unknown-plugin", "unknown")).toBe(false);
   });

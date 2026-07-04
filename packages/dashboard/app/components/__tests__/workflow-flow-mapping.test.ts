@@ -34,7 +34,7 @@ import {
   wouldCreateCycle,
   buildConnectionEdge,
   cascadeDelete,
-  refreshOptionalGroupVisualBoundaries,
+  refreshTemplateContainerVisualBoundaries,
   COLUMN_BAND_HEIGHT,
   WF_CARD_WIDTH,
   WF_FALLBACK_NODE_GAP,
@@ -87,7 +87,7 @@ function assertRenderedHandles(
 }
 
 function assertContainerHandles(kind: "optional-group" | "foreach" | "loop", data: WorkflowFlowNodeData): void {
-  assertRenderedHandles(kind, data, kind === "optional-group" ? { target: 2, source: 2 } : { target: 1, source: 1 });
+  assertRenderedHandles(kind, data, { target: 2, source: 2 });
 }
 
 function assertRunDoesNotOverlap(
@@ -1026,7 +1026,7 @@ describe("workflow-flow-mapping foreach + rework round-trip", () => {
       label: "success",
     };
 
-    const connected = refreshOptionalGroupVisualBoundaries(initial.nodes, [...initial.edges, realInternalEdge]);
+    const connected = refreshTemplateContainerVisualBoundaries(initial.nodes, [...initial.edges, realInternalEdge]);
     const connectedById = new Map(connected.nodes.map((node) => [node.id, node] as const));
     expect(connectedById.get("opt::alpha")?.data.optionalGroupBoundary).toEqual({ entry: true, exit: false });
     expect(connectedById.get("opt::beta")?.data.optionalGroupBoundary).toEqual({ entry: false, exit: true });
@@ -1035,7 +1035,7 @@ describe("workflow-flow-mapping foreach + rework round-trip", () => {
       "opt::beta->opt",
     ]);
 
-    const disconnected = refreshOptionalGroupVisualBoundaries(
+    const disconnected = refreshTemplateContainerVisualBoundaries(
       connected.nodes,
       connected.edges.filter((edge) => edge.id !== realInternalEdge.id),
     );
@@ -1102,6 +1102,123 @@ describe("workflow-flow-mapping foreach + rework round-trip", () => {
     expect(
       edges.filter((edge) => isVisualOnlyWorkflowEdge(edge) && edge.source === "opt::review" && edge.target === "opt"),
     ).toHaveLength(1);
+  });
+
+  it("derives visual-only template boundary connectors across foreach, loop, and optional-group states", () => {
+    const cases = [
+      {
+        name: "single child",
+        nodes: [{ id: "only", kind: "prompt" as const, config: { prompt: "only" } }],
+        edges: [] as NonNullable<WorkflowDefinition["ir"]["edges"]>,
+        visual: ["box->box::only", "box::only->box"],
+        boundaries: { only: { entry: true, exit: true } },
+      },
+      {
+        name: "linear children",
+        nodes: [
+          { id: "alpha", kind: "prompt" as const, config: { prompt: "alpha" } },
+          { id: "beta", kind: "gate" as const },
+        ],
+        edges: [{ from: "alpha", to: "beta", condition: "success" }],
+        visual: ["box->box::alpha", "box::beta->box"],
+        boundaries: { alpha: { entry: true, exit: false }, beta: { entry: false, exit: true } },
+      },
+      {
+        name: "independent children",
+        nodes: [
+          { id: "alpha", kind: "prompt" as const, config: { prompt: "alpha" } },
+          { id: "beta", kind: "prompt" as const, config: { prompt: "beta" } },
+        ],
+        edges: [] as NonNullable<WorkflowDefinition["ir"]["edges"]>,
+        visual: ["box->box::alpha", "box->box::beta", "box::alpha->box", "box::beta->box"],
+        boundaries: { alpha: { entry: true, exit: true }, beta: { entry: true, exit: true } },
+      },
+      {
+        name: "empty template",
+        nodes: [] as NonNullable<WorkflowDefinition["ir"]["nodes"]>,
+        edges: [] as NonNullable<WorkflowDefinition["ir"]["edges"]>,
+        visual: [] as string[],
+        boundaries: {},
+      },
+      {
+        name: "rework cycle ignored for boundaries",
+        nodes: [
+          { id: "alpha", kind: "prompt" as const, config: { prompt: "alpha" } },
+          { id: "beta", kind: "step-review" as const, config: { type: "code" } },
+        ],
+        edges: [
+          { from: "alpha", to: "beta", condition: "success" },
+          { from: "beta", to: "alpha", condition: "outcome:revise", kind: "rework" as const },
+        ],
+        visual: ["box->box::alpha", "box::beta->box"],
+        boundaries: { alpha: { entry: true, exit: false }, beta: { entry: false, exit: true } },
+      },
+    ];
+
+    for (const containerKind of ["foreach", "loop", "optional-group"] as const) {
+      for (const testCase of cases) {
+        const template = { nodes: testCase.nodes, edges: testCase.edges };
+        const config =
+          containerKind === "foreach"
+            ? { source: "task-steps" as const, template }
+            : containerKind === "loop"
+              ? { maxIterations: 2, template }
+              : { defaultOn: true, template };
+        const containerIr: WorkflowDefinition["ir"] = {
+          version: "v2",
+          name: `${containerKind}-${testCase.name}`,
+          columns: ir.columns,
+          nodes: [
+            { id: "start", kind: "start", column: "plan" },
+            { id: "box", kind: containerKind, column: "in-progress", config },
+            { id: "end", kind: "end", column: "done" },
+          ],
+          edges: [
+            { from: "start", to: "box", condition: "success" },
+            { from: "box", to: "end", condition: "success" },
+          ],
+        };
+
+        const { nodes, edges } = irToFlow(makeDef(containerIr));
+        const byId = new Map(nodes.map((node) => [node.id, node] as const));
+        for (const [childId, boundary] of Object.entries(testCase.boundaries)) {
+          expect(byId.get(`box::${childId}`)?.data.templateBoundary, `${containerKind} ${testCase.name} ${childId}`).toEqual(boundary);
+        }
+        expect(edges.filter((edge) => isVisualOnlyWorkflowEdge(edge)).map((edge) => `${edge.source}->${edge.target}`).sort()).toEqual(
+          testCase.visual.sort(),
+        );
+
+        const { ir: out } = flowToIr(containerIr.name, nodes, edges, columnsOf(makeDef(containerIr)));
+        if (out.version !== "v2") throw new Error("expected v2");
+        expect(out.edges.map((edge) => `${edge.from}->${edge.to}`)).toEqual(["start->box", "box->end"]);
+        const outBox = out.nodes.find((node) => node.id === "box")!;
+        const outTemplate = outBox.config?.template as { nodes?: Array<{ config?: Record<string, unknown> }>; edges?: unknown[] };
+        expect(outTemplate.edges).toEqual(testCase.edges);
+        expect(outTemplate.nodes?.map((node) => node.config?.templateBoundary)).toEqual(testCase.nodes.map(() => undefined));
+      }
+    }
+  });
+
+  it("connects built-in stepwise foreach steps to visual-only boundary guides", () => {
+    const { nodes, edges } = irToFlow(makeDef(BUILTIN_STEPWISE_CODING_WORKFLOW_IR));
+    const byId = new Map(nodes.map((node) => [node.id, node] as const));
+    expect(byId.get("steps")?.type).toBe("foreach");
+    expect(byId.get(foreachChildFlowId("steps", "step-execute"))?.data.templateBoundary).toEqual({ entry: true, exit: false });
+    expect(byId.get(foreachChildFlowId("steps", "step-done"))?.data.templateBoundary).toEqual({ entry: false, exit: true });
+    expect(edges.filter((edge) => isVisualOnlyWorkflowEdge(edge) && (edge.source === "steps" || edge.target === "steps"))).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: "steps", sourceHandle: "template-boundary-entry", target: foreachChildFlowId("steps", "step-execute") }),
+        expect.objectContaining({ source: foreachChildFlowId("steps", "step-done"), target: "steps", targetHandle: "template-boundary-exit" }),
+      ]),
+    );
+
+    const { ir: out } = flowToIr("stepwise", nodes, edges, columnsOf(makeDef(BUILTIN_STEPWISE_CODING_WORKFLOW_IR)));
+    if (out.version !== "v2") throw new Error("expected v2");
+    expect(out.edges.some((edge) => edge.from === "steps" && edge.to.includes("step"))).toBe(false);
+    const steps = out.nodes.find((node) => node.id === "steps")!;
+    const template = steps.config?.template as { nodes?: Array<{ config?: Record<string, unknown> }>; edges?: Array<{ from: string; to: string }> };
+    expect(template.nodes?.map((node) => node.config?.templateBoundary)).toEqual([undefined, undefined, undefined]);
+    expect(template.edges?.some((edge) => edge.from === "steps" || edge.to === "steps")).toBe(false);
   });
 
   it("marks built-in Plan Review and Code Review single children as optional-group entry and exit boundaries", () => {
@@ -1451,7 +1568,11 @@ describe("workflow-flow-mapping foreach + rework round-trip", () => {
     expect(group?.type).toBe("loop");
     expect(child?.position).toEqual({ x: 86, y: 132 });
     expect(inserted.nodes.filter((n) => n.parentId === group?.id)).toHaveLength(1);
-    expect(inserted.edges).toHaveLength(0);
+    expect(inserted.edges.filter((edge) => !isVisualOnlyWorkflowEdge(edge))).toHaveLength(0);
+    expect(inserted.edges.filter((edge) => isVisualOnlyWorkflowEdge(edge)).map((edge) => `${edge.source}->${edge.target}`).sort()).toEqual([
+      `${group?.id}->${child?.id}`,
+      `${child?.id}->${group?.id}`,
+    ]);
   });
 
   it("round-trips a code node config (source + timeoutMs)", () => {
@@ -1627,10 +1748,10 @@ describe("edge-condition authoring (U2)", () => {
     });
 
     // visual-only optional-group boundary handles are reserved for generated guide edges.
-    expect(buildConnectionEdge({ source: "a", sourceHandle: "optional-boundary-entry", target: "b" }, edges, nodes)).toEqual({
+    expect(buildConnectionEdge({ source: "a", sourceHandle: "template-boundary-entry", target: "b" }, edges, nodes)).toEqual({
       error: "reserved-handle",
     });
-    expect(buildConnectionEdge({ source: "a", target: "b", targetHandle: "optional-boundary-exit" }, edges, nodes)).toEqual({
+    expect(buildConnectionEdge({ source: "a", target: "b", targetHandle: "template-boundary-exit" }, edges, nodes)).toEqual({
       error: "reserved-handle",
     });
 

@@ -34,6 +34,7 @@ export const PROJECT_STORAGE_KEYS: string[] = [
   "kb-dashboard-working-branch-filter",
   "kb-dashboard-base-branch-filter",
   "kb-capacity-risk-banner-dismissed",
+  "kb-github-setup-warning-missing-since",
   "kb-files-line-numbers",
   "kb-dashboard-dock-files-current",
   "kb-dashboard-board-workflow-selection",

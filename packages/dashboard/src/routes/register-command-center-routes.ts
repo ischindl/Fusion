@@ -7,6 +7,7 @@ import {
   aggregateTeamAnalytics,
   aggregateWorkflowAnalytics,
   aggregateGithubIssueAnalytics,
+  aggregateGitlabIssueAnalytics,
   aggregateSignalsAnalytics,
   composeLiveSnapshot,
   LITELLM_PRICING_SOURCE_URL,
@@ -24,6 +25,7 @@ import {
   productivityAnalyticsToTable,
   workflowAnalyticsToTable,
   githubIssueAnalyticsToTable,
+  gitlabIssueAnalyticsToTable,
   type CsvTable,
 } from "../command-center-csv.js";
 import { invalidateAllGlobalSettingsCaches } from "../project-store-resolver.js";
@@ -415,6 +417,29 @@ export const registerCommandCenterRoutes: ApiRouteRegistrar = (ctx) => {
     } catch (err: unknown) {
       if (err instanceof ApiError) throw err;
       rethrowAsApiError(err, "Failed to aggregate GitHub issue analytics");
+    }
+  });
+
+  /**
+   * GET /api/command-center/gitlab
+   * GitLab issues/MRs filed by Fusion and imported GitLab source items fixed by Fusion.
+   */
+  router.get("/command-center/gitlab", async (req, res) => {
+    try {
+      const store = await getScopedStore(req);
+      const range = resolveRange(req.query);
+      const result = aggregateGitlabIssueAnalytics(store.getDatabase(), {
+        from: range.from,
+        to: range.to,
+      });
+      if (wantsCsv(req.query)) {
+        sendCsv(res, "command-center-gitlab.csv", gitlabIssueAnalyticsToTable(result));
+        return;
+      }
+      res.json(result);
+    } catch (err: unknown) {
+      if (err instanceof ApiError) throw err;
+      rethrowAsApiError(err, "Failed to aggregate GitLab issue analytics");
     }
   });
 

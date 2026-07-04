@@ -35,6 +35,20 @@ describe("SetupWarningBanner", () => {
     expect(screen.queryByText("No AI provider connected")).toBeNull();
   });
 
+  it("omits GitHub warning and empty shell when the grace period has not elapsed", () => {
+    const { container } = render(<SetupWarningBanner hasAiProvider hasGithub={false} showGithubWarning={false} />);
+
+    expect(container.firstChild).toBeNull();
+    expect(screen.queryByText("GitHub not connected")).toBeNull();
+  });
+
+  it("preserves the AI warning while GitHub is hidden by the grace period", () => {
+    render(<SetupWarningBanner hasAiProvider={false} hasGithub={false} showGithubWarning={false} />);
+
+    expect(screen.getByText("No AI provider connected")).toBeInTheDocument();
+    expect(screen.queryByText("GitHub not connected")).toBeNull();
+  });
+
   it("shows both warnings when both providers are missing", () => {
     render(<SetupWarningBanner hasAiProvider={false} hasGithub={false} />);
 
@@ -119,6 +133,32 @@ describe("SetupWarningBanner", () => {
 
     fireEvent.click(dismissButton);
     expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders a GitHub connect button only when GitHub warning is visible and action is available", () => {
+    const onConnectGithub = vi.fn();
+
+    render(<SetupWarningBanner hasAiProvider hasGithub={false} onConnectGithub={onConnectGithub} />);
+
+    const connectButton = screen.getByRole("button", { name: "Connect GitHub" });
+    expect(connectButton).toHaveAttribute("type", "button");
+
+    fireEvent.click(connectButton);
+    expect(onConnectGithub).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not render an empty GitHub connect shell when action is unavailable", () => {
+    const { container } = render(<SetupWarningBanner hasAiProvider hasGithub={false} />);
+
+    expect(screen.queryByRole("button", { name: "Connect GitHub" })).toBeNull();
+    expect(container.querySelector(".setup-warning-banner__actions")).toBeNull();
+  });
+
+  it("does not render hidden GitHub connect controls during the grace period", () => {
+    render(<SetupWarningBanner hasAiProvider={false} hasGithub={false} showGithubWarning={false} onConnectGithub={vi.fn()} />);
+
+    expect(screen.queryByText("GitHub not connected")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Connect GitHub" })).toBeNull();
   });
 
   it("clicking dismiss button calls onDismiss", () => {

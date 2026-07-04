@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, type CSSProperties, type Mous
 import { Globe, Folder, RefreshCw, Star, HelpCircle, Settings as SettingsIcon } from "lucide-react";
 import {
   getErrorMessage,
+  resolveGitlabConfig,
   normalizeMergeIntegrationWorktreeMode,
   normalizeMergeAdvanceAutoSyncMode,
 } from "@fusion/core";
@@ -401,6 +402,7 @@ type PluginsSubsectionId = "fusion-plugins" | "pi-extensions";
 
 /** Local form state extends Settings with a worktreeInitCommand override and lets tokenCap carry null (delete semantic). */
 type SettingsFormState = Settings & { worktreeInitCommand?: string; tokenCap?: number | null };
+type GlobalGitlabSettings = Pick<GlobalSettings, "gitlabEnabled" | "gitlabInstanceUrl" | "gitlabApiBaseUrl" | "gitlabAuthToken" | "gitlabAuthTokenType">;
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -677,8 +679,12 @@ export function SettingsModal({
   addToast,
   projectId,
   initialSection,
-  themeMode = "dark",
-  colorTheme = "ocean",
+  /*
+  FNXC:DashboardTheming 2026-07-03-00:00:
+  Settings/onboarding surfaces that render before App threads persisted appearance settings should mirror fresh startup defaults: System mode with Shadcn Ember.
+  */
+  themeMode = "system",
+  colorTheme = "shadcn-ember",
   onThemeModeChange,
   onColorThemeChange,
   dashboardFontScalePct = 100,
@@ -774,6 +780,7 @@ export function SettingsModal({
   // Track scoped settings for inheritance detection (fetched alongside merged settings)
   // This stores the raw { global, project } structure from the API
   const [scopedSettings, setScopedSettings] = useState<{ global: GlobalSettings; project: Partial<Settings> } | null>(null);
+  const [globalGitlabSettings, setGlobalGitlabSettings] = useState<GlobalGitlabSettings | null>(null);
   // Track initial scoped values for null-as-delete semantics on project overrides
   const [initialScopedValues, setInitialScopedValues] = useState<{ global: GlobalSettings; project: Partial<Settings> } | null>(null);
   // Find the first non-group-header section for visibility fallback handling
@@ -1021,6 +1028,13 @@ export function SettingsModal({
         setForm(normalizedSettings);
         setInitialValues(normalizedSettings); // Store initial values to detect explicit clears
         setScopedSettings(scoped);
+        setGlobalGitlabSettings({
+          gitlabEnabled: scoped.global.gitlabEnabled,
+          gitlabInstanceUrl: scoped.global.gitlabInstanceUrl,
+          gitlabApiBaseUrl: scoped.global.gitlabApiBaseUrl,
+          gitlabAuthToken: scoped.global.gitlabAuthToken,
+          gitlabAuthTokenType: scoped.global.gitlabAuthTokenType,
+        });
         setInitialScopedValues({
           ...scoped,
           project: {
@@ -2473,6 +2487,11 @@ export function SettingsModal({
     setIsSaving(true);
     try {
       const normalizedWorktreeCopyFiles = normalizeWorktreeCopyFilesForSave(form.worktreeCopyFiles);
+      /*
+      FNXC:GitLabEnablement 2026-07-02-00:00:
+      The Global General section must edit raw global GitLab settings, not the merged project-effective form. Otherwise a project override can silently overwrite the global GitLab default on a no-op save.
+      */
+      const gitlabFormForSave = activeSection === "global-general" && globalGitlabSettings ? globalGitlabSettings : form;
       const payload = {
         ...form,
         worktreeInitCommand: form.worktreeInitCommand?.trim() || undefined,
@@ -2485,6 +2504,11 @@ export function SettingsModal({
         maxAutoMergeRetries: resolveMaxAutoMergeRetriesForSettingsForm(form),
         taskPrefix: form.taskPrefix?.trim() || undefined,
         githubTrackingDefaultRepo: form.githubTrackingDefaultRepo?.trim() || undefined,
+        gitlabEnabled: gitlabFormForSave.gitlabEnabled,
+        gitlabInstanceUrl: gitlabFormForSave.gitlabInstanceUrl?.trim() || undefined,
+        gitlabApiBaseUrl: gitlabFormForSave.gitlabApiBaseUrl?.trim() || undefined,
+        gitlabAuthToken: gitlabFormForSave.gitlabAuthToken?.trim() || undefined,
+        gitlabAuthTokenType: gitlabFormForSave.gitlabAuthTokenType ?? "personal",
         githubAuthToken: form.githubAuthToken?.trim() || undefined,
         prTitlePromptInstructions: form.prTitlePromptInstructions?.trim() || undefined,
         prDescriptionPromptInstructions: form.prDescriptionPromptInstructions?.trim() || undefined,
@@ -2494,6 +2518,23 @@ export function SettingsModal({
           : undefined,
         experimentalFeatures: normalizeExperimentalFeaturesForSave(form.experimentalFeatures),
       };
+
+      if (activeSection === "general") {
+        resolveGitlabConfig({
+          project: {
+            gitlabInstanceUrl: payload.gitlabInstanceUrl,
+            gitlabApiBaseUrl: payload.gitlabApiBaseUrl,
+          },
+        });
+      }
+      if (activeSection === "global-general") {
+        resolveGitlabConfig({
+          global: {
+            gitlabInstanceUrl: payload.gitlabInstanceUrl,
+            gitlabApiBaseUrl: payload.gitlabApiBaseUrl,
+          },
+        });
+      }
 
       // Always save both global and project settings with strict scope
       // separation. The split (global vs project routing, null-as-delete, and
@@ -2529,7 +2570,7 @@ export function SettingsModal({
     } finally {
       setIsSaving(false);
     }
-  }, [form, globalMaxConcurrent, prefixError, presetDraft, initialValues, initialScopedValues, onClose, addToast, projectId, activeSection, isSaving, t]);
+  }, [form, globalGitlabSettings, globalMaxConcurrent, prefixError, presetDraft, initialValues, initialScopedValues, onClose, addToast, projectId, activeSection, isSaving, t]);
 
   const handleSaveMemory = useCallback(async () => {
     try {
@@ -2762,6 +2803,15 @@ export function SettingsModal({
             scopeBanner={renderScopeBanner()}
             form={form}
             setForm={setForm}
+            globalSettings={globalGitlabSettings}
+            onGlobalGitlabSettingsChange={(patch) => setGlobalGitlabSettings((current) => ({
+              gitlabEnabled: current?.gitlabEnabled,
+              gitlabInstanceUrl: current?.gitlabInstanceUrl,
+              gitlabApiBaseUrl: current?.gitlabApiBaseUrl,
+              gitlabAuthToken: current?.gitlabAuthToken,
+              gitlabAuthTokenType: current?.gitlabAuthTokenType,
+              ...patch,
+            }))}
             globalTrackingRepoOptions={globalTrackingRepoOptions}
             globalTrackingRepoLoading={globalTrackingRepoLoading}
             globalTrackingRepoError={globalTrackingRepoError}

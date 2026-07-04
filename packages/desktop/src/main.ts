@@ -1,6 +1,32 @@
-import { app, BrowserWindow, nativeImage, screen, Tray } from "electron";
+import { app, BrowserWindow, nativeImage, screen, shell, Tray } from "electron";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import os from "node:os";
+import { migratePreviousUserData } from "./user-data-migration.js";
+
+/*
+FNXC:DesktopUserDataIsolation 2026-07-03-14:40:
+Isolate Electron desktop user-data/cache/crash artifacts under ~/.fusion/desktop-user-data so the packaged desktop does not share (or collide with) the default per-app Chromium profile across installs and Fusion versions (field report Issue 8). setPath must run before app "ready"; once locked it throws, which is non-fatal here.
+
+FNXC:DesktopUserDataMigration 2026-07-03-15:10:
+Migrate the previous default profile into the new location BEFORE `setPath` overrides it, so upgrading operators keep their window geometry/session. `app.getPath("userData")` returns the default `<appData>/<productName>` path until overridden, so capture it first. See user-data-migration.ts for the one-time-copy gating.
+*/
+const fusionUserDataDir = join(os.homedir(), ".fusion", "desktop-user-data");
+
+const migratedUserData = migratePreviousUserData(app.getPath("userData"), fusionUserDataDir);
+if (migratedUserData) {
+  console.log(`[desktop/main] Migrated previous desktop profile into ${fusionUserDataDir}`);
+}
+
+try {
+  app.commandLine.appendSwitch("user-data-dir", fusionUserDataDir);
+  app.setPath("userData", fusionUserDataDir);
+  app.setPath("cache", join(fusionUserDataDir, "cache"));
+  app.setPath("crashDumps", join(fusionUserDataDir, "crashes"));
+} catch {
+  // Path already locked after app is ready; not a fatal error.
+}
+
 import { setupDeepLinkHandler, registerDeepLinkProtocol } from "./deep-link.js";
 import { registerIpcHandlers } from "./ipc.js";
 import { buildAppMenu } from "./menu.js";
@@ -73,6 +99,37 @@ export function getCurrentDesktopLaunchMode(): DesktopLaunchMode {
   return currentDesktopLaunchMode;
 }
 
+function isLoopbackHost(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1" || normalized === "[::1]";
+}
+
+function getDesktopRendererOrigin(launchTargetUrl?: string): string | null {
+  const candidateUrl = launchTargetUrl ?? (isUrlRenderer() ? getRendererUrl() : `file://${getRendererFilePath()}`);
+  try {
+    return new URL(candidateUrl).origin;
+  } catch {
+    return null;
+  }
+}
+
+function isInternalDesktopNavigation(url: URL, rendererOrigin: string | null): boolean {
+  if (url.protocol === "file:") {
+    return true;
+  }
+
+  if ((url.protocol === "http:" || url.protocol === "https:") && rendererOrigin && url.origin === rendererOrigin) {
+    return true;
+  }
+
+  // Local runtime/dev dashboard URLs represent Fusion app navigation, not external OAuth destinations.
+  if ((url.protocol === "http:" || url.protocol === "https:") && isLoopbackHost(url.hostname)) {
+    return true;
+  }
+
+  return false;
+}
+
 async function resetLaunchModeAndReload(window: BrowserWindow): Promise<void> {
   try {
     const settings = await readShellSettings();
@@ -122,6 +179,33 @@ export function createMainWindow(state?: WindowState, launchTargetUrl?: string):
     },
   });
 
+  const rendererOrigin = getDesktopRendererOrigin(launchTargetUrl);
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(url);
+    } catch {
+      return { action: "deny" };
+    }
+
+    if (isInternalDesktopNavigation(parsedUrl, rendererOrigin)) {
+      return { action: "allow" };
+    }
+
+    if (parsedUrl.protocol === "http:" || parsedUrl.protocol === "https:") {
+      /*
+      FNXC:DesktopOAuth 2026-07-03-15:55:
+      macOS Anthropic Subscription login must leave the Electron popup path and open in the user's system browser instead of a child BrowserWindow or Claude Code app handoff. Keep Fusion polling in the renderer while denying the popup so the OAuth callback can complete the existing login state.
+      */
+      void shell.openExternal(url).catch((error: unknown) => {
+        console.error(`[desktop/main] Failed to open external URL: ${url}`, error);
+      });
+      return { action: "deny" };
+    }
+
+    return { action: "deny" };
+  });
+
   if (launchTargetUrl) {
     void window.loadURL(launchTargetUrl);
   } else if (isUrlRenderer()) {
@@ -145,6 +229,14 @@ export function createMainWindow(state?: WindowState, launchTargetUrl?: string):
     saveWindowState(window);
 
     if (getAppWithQuitFlag().isQuitting) {
+      return;
+    }
+
+    /*
+    FNXC:DesktopClosePolicy 2026-07-03-15:30:
+    Windows Desktop close is a shutdown request, not a tray-minimize request. Let the BrowserWindow close so Electron emits window-all-closed and before-quit, which stops the embedded local Fusion runtime; keep macOS/non-Windows close-to-tray semantics for dock/tray restoration.
+    */
+    if (process.platform === "win32") {
       return;
     }
 
@@ -181,7 +273,33 @@ export function resolveLocalRuntimeRoot(): string {
 
 export async function initializeApp(): Promise<void> {
   const state = await loadWindowState();
-  const rememberedLaunchMode = await loadDesktopLaunchMode();
+  let rememberedLaunchMode = await loadDesktopLaunchMode();
+
+  /*
+   * FNXC:DesktopRuntimeMode 2026-07-02-14:35:
+   * Split-brain reconciliation. Desktop startup has TWO persisted sources of truth
+   * that must agree: `desktop-launch-mode.json` (loadDesktopLaunchMode) decides whether
+   * THIS function STARTS the embedded local runtime, while `shell-connections.json`
+   * (readShellSettings().desktopMode) decides whether the renderer launch gate WAITS
+   * for it. They desync because shell:setDesktopMode persists shell settings BEFORE the
+   * fallible startLocalRuntimeOnce()/saveDesktopLaunchMode() — so a first local selection
+   * whose runtime start throws or is interrupted leaves shell=`local` but launch-mode=`choose`.
+   * The gate then shows "Starting local Fusion runtime…" and polls forever for a runtime
+   * nobody started, timing out after 30s on EVERY launch. Treat a completed shell "local"
+   * selection as authoritative and heal the launch-mode file so both halves agree.
+   */
+  const reconcileShellSettings = await readShellSettings();
+  if (
+    rememberedLaunchMode !== "local" &&
+    reconcileShellSettings.desktopMode === "local" &&
+    reconcileShellSettings.hasCompletedModeSelection === true
+  ) {
+    console.warn(
+      `[desktop/main] Healing launch-mode split-brain: shell desktopMode="local" but launch-mode="${rememberedLaunchMode}"; adopting "local"`,
+    );
+    rememberedLaunchMode = "local";
+    await saveDesktopLaunchMode("local");
+  }
 
   localRuntimeManager = new LocalRuntimeManager({ rootDir: resolveLocalRuntimeRoot() });
   currentDesktopLaunchMode = rememberedLaunchMode;
@@ -199,7 +317,7 @@ export async function initializeApp(): Promise<void> {
     }
   }
 
-  if (rememberedLaunchMode === "local") {
+  if (rememberedLaunchMode === "local" && !process.env.FUSION_SERVER_PORT) {
     try {
       await startLocalRuntimeOnce();
     } catch (error) {
@@ -213,6 +331,16 @@ export async function initializeApp(): Promise<void> {
 
   if (currentDesktopLaunchMode === "choose" && process.env.FUSION_DESKTOP_MODE === "local") {
     await startLocalRuntimeOnce();
+    currentDesktopLaunchMode = "local";
+  }
+
+  /*
+  FNXC:DesktopReuseCliServer 2026-07-03-14:40:
+  When `fusion desktop` launches Electron it exports FUSION_SERVER_PORT for the dashboard the CLI already started. In that case the desktop must NOT spin up its own embedded local runtime (which would double-bind ports and conflict on Windows, field report Issue 9): skip startLocalRuntimeOnce() when the port is set, and treat a "choose" mode as already-local so the shell attaches to the external CLI server.
+  */
+  if (currentDesktopLaunchMode === "choose" && process.env.FUSION_SERVER_PORT) {
+    // The CLI already started a dashboard server; use it without spawning an
+    // embedded local runtime. The shell state will report external-cli running.
     currentDesktopLaunchMode = "local";
   }
 
@@ -274,13 +402,23 @@ export async function initializeApp(): Promise<void> {
       if (mode === "local") {
         currentRemoteLaunch = null;
         localRuntimeStartupAttempted = false;
+        /*
+         * FNXC:DesktopRuntimeMode 2026-07-02-14:35:
+         * Persist launch-mode BEFORE the fallible startLocalRuntimeOnce(). shell:setDesktopMode
+         * already wrote shell-connections.json `desktopMode:"local"` before invoking this callback;
+         * if the runtime start throws/is interrupted and we saved launch-mode only afterward, the two
+         * files desync (shell=local, launch-mode=choose) and every future launch hangs at "Starting
+         * local runtime". Saving first keeps both sources in agreement so a failed start simply retries
+         * on next launch instead of deadlocking.
+         */
+        await saveDesktopLaunchMode(mode);
         await startLocalRuntimeOnce();
-      } else {
-        localRuntimeStartupAttempted = false;
-        await localRuntimeManager.stopLocal();
-        const shellSettings = await readShellSettings();
-        currentRemoteLaunch = normalizeDesktopRemoteLaunch({ ...shellSettings, desktopMode: "remote" });
+        return;
       }
+      localRuntimeStartupAttempted = false;
+      await localRuntimeManager.stopLocal();
+      const shellSettings = await readShellSettings();
+      currentRemoteLaunch = normalizeDesktopRemoteLaunch({ ...shellSettings, desktopMode: "remote" });
       await saveDesktopLaunchMode(mode);
     },
     onDesktopLaunchModeChange: async (mode) => {
@@ -291,12 +429,14 @@ export async function initializeApp(): Promise<void> {
       localRuntimeStartupAttempted = false;
       if (mode === "local") {
         currentRemoteLaunch = null;
+        // FNXC:DesktopRuntimeMode 2026-07-02-14:35: persist before the fallible start (see onDesktopModeChange).
+        await saveDesktopLaunchMode(mode);
         await startLocalRuntimeOnce();
-      } else {
-        await localRuntimeManager.stopLocal();
-        const shellSettings = await readShellSettings();
-        currentRemoteLaunch = normalizeDesktopRemoteLaunch({ ...shellSettings, desktopMode: "remote" });
+        return;
       }
+      await localRuntimeManager.stopLocal();
+      const shellSettings = await readShellSettings();
+      currentRemoteLaunch = normalizeDesktopRemoteLaunch({ ...shellSettings, desktopMode: "remote" });
       await saveDesktopLaunchMode(mode);
     },
     getRuntimeStatus: () => localRuntimeManager?.getStatus() ?? { source: "none", state: "stopped" },

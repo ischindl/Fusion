@@ -25,6 +25,12 @@
   color: var(--text-muted);
 }
 
+.setup-warning-banner__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
 .setup-warning-banner--compact {
   flex-direction: row;
   align-items: flex-start;
@@ -75,6 +81,10 @@
 @media (max-width: 768px) {
   .setup-warning-banner--compact {
     padding: var(--space-xs) var(--space-sm);
+  }
+
+  .setup-warning-banner__actions .btn {
+    width: 100%;
   }
 }
 

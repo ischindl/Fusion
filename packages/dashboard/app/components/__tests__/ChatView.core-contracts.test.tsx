@@ -346,16 +346,27 @@ describe("Chat Session Delete Button", () => {
     const restoreMatchMedia = mockViewportMode("mobile");
     const renameSession = vi.fn().mockResolvedValue(undefined);
     try {
+      const initialSession: ChatSessionInfo = {
+        id: "session-001",
+        agentId: "__fn_agent__",
+        status: "active",
+        title: "Mobile Chat",
+        modelProvider: "minimax",
+        modelId: "m3",
+        createdAt: "2026-04-08T00:00:00.000Z",
+        updatedAt: "2026-04-08T00:00:00.000Z",
+      };
       setupMockChat({
-        activeSession: { id: "session-001", agentId: "agent-001", status: "active", title: "Mobile Chat", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" },
-        sessions: [{ id: "session-001", agentId: "agent-001", status: "active", title: "Mobile Chat", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" }],
-        filteredSessions: [{ id: "session-001", agentId: "agent-001", status: "active", title: "Mobile Chat", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" }],
+        activeSession: initialSession,
+        sessions: [initialSession],
+        filteredSessions: [initialSession],
         renameSession,
       });
 
       const view = await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
 
       expect(screen.getByTestId("chat-mobile-session-trigger")).toHaveTextContent("Mobile Chat");
+      expect(screen.getByTestId("chat-mobile-session-trigger")).not.toHaveTextContent("M3");
       await userEvent.click(screen.getByTestId("chat-mobile-session-trigger"));
       await userEvent.click(screen.getByTestId("chat-mobile-session-rename-session-001"));
 
@@ -367,7 +378,7 @@ describe("Chat Session Delete Button", () => {
 
       expect(renameSession).toHaveBeenCalledWith("session-001", "Mobile Renamed");
 
-      const renamedSession: ChatSessionInfo = { id: "session-001", agentId: "agent-001", status: "active", title: "Mobile Renamed", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" };
+      const renamedSession: ChatSessionInfo = { ...initialSession, title: "Mobile Renamed" };
       setupMockChat({
         activeSession: renamedSession,
         sessions: [renamedSession],
@@ -378,7 +389,10 @@ describe("Chat Session Delete Button", () => {
         view.rerender(<ChatView projectId="proj-123" addToast={vi.fn()} />);
       });
 
-      expect(screen.getByTestId("chat-mobile-session-trigger")).toHaveTextContent("Mobile Renamed");
+      const trigger = screen.getByTestId("chat-mobile-session-trigger");
+      expect(trigger).toHaveTextContent("Mobile Renamed");
+      expect(trigger).not.toHaveTextContent("M3");
+      expect(trigger.querySelector(".chat-model-tag")).not.toBeInTheDocument();
       const headerTitle = document.querySelector(".chat-thread-header-title") as HTMLElement | null;
       expect(headerTitle).toHaveTextContent("Mobile Renamed");
     } finally {
@@ -526,52 +540,52 @@ describe("ChatView CSS — active state edge highlights", () => {
 describe("FN-3911 chat session list layout", () => {
   const css = loadAllAppCss();
 
-  it("reserves right padding on title and preview rows so text clears the delete button", async () => {
+  it("reserves right padding on title and preview rows so text clears the edit/delete action pair", async () => {
     const titleMatch = css.match(/\.chat-session-title\s*\{([^}]*)\}/);
     const previewMatch = css.match(/\.chat-session-preview\s*\{([^}]*)\}/);
     expect(titleMatch).toBeTruthy();
     expect(previewMatch).toBeTruthy();
-    expect(titleMatch?.[1]).toMatch(/padding-right:\s*calc\(var\(--space-md\)\s*\*\s*3\)/);
-    expect(previewMatch?.[1]).toMatch(/padding-right:\s*calc\(var\(--space-md\)\s*\*\s*3\)/);
+    expect(titleMatch?.[1]).toContain("padding-right: calc((var(--space-md) * 4) + (var(--space-xs) * 2))");
+    expect(previewMatch?.[1]).toContain("padding-right: calc((var(--space-md) * 4) + (var(--space-xs) * 2))");
   });
 
-  it("FN-4385: keeps mobile title/preview clearance matched to compact delete button", async () => {
+  it("FN-4385/FN-7441: keeps mobile title/preview clearance matched to compact row action pair", async () => {
     expect(css).toMatch(
-      /@media\s*\(max-width:\s*768px\)[\s\S]*?\.chat-session-title,\s*\.chat-session-preview\s*\{\s*padding-right:\s*calc\(var\(--space-md\)\s*\*\s*3\);\s*\}/,
+      /@media\s*\(max-width:\s*768px\)[\s\S]*?\.chat-session-title,\s*\.chat-session-preview\s*\{\s*padding-right:\s*calc\(\(var\(--space-md\)\s*\*\s*4\)\s*\+\s*\(var\(--space-xs\)\s*\*\s*2\)\);\s*\}/,
     );
   });
 });
 
-describe("Chat Session Delete Button CSS", () => {
+describe("Chat Session Row Action CSS", () => {
   const css = loadAllAppCss();
 
-  it(".chat-session-delete-btn exists with opacity: 0", async () => {
-    const match = css.match(/\.chat-session-delete-btn\s*\{([^}]*)\}/);
-    expect(match).toBeTruthy();
-    expect(match![1]).toContain("opacity: 0");
+  it(".chat-session-actions positions the edit/delete pair outside row text flow", async () => {
+    const actionsMatch = css.match(/\.chat-session-actions\s*\{([^}]*)\}/);
+    const actionButtonMatch = css.match(/\.chat-session-action-btn\s*\{([^}]*)\}/);
+    expect(actionsMatch).toBeTruthy();
+    expect(actionButtonMatch).toBeTruthy();
+    expect(actionsMatch![1]).toContain("position: absolute");
+    expect(actionsMatch![1]).toContain("right: var(--space-sm)");
+    expect(actionsMatch![1]).toContain("gap: var(--space-xs)");
+    expect(actionButtonMatch![1]).toContain("width: calc(var(--space-md) * 2)");
+    expect(actionButtonMatch![1]).toContain("min-height: calc(var(--space-md) * 2)");
   });
 
-  it(".chat-session-item:hover .chat-session-delete-btn has opacity: 1", async () => {
-    const match = css.match(/\.chat-session-item:hover\s*\.chat-session-delete-btn\s*\{([^}]*)\}/);
-    expect(match).toBeTruthy();
-    expect(match![1]).toContain("opacity: 1");
-  });
-
-  it("FN-4352: mobile delete button stays visible without min-size inflation", async () => {
+  it("FN-4352: mobile row action buttons stay compact without min-size inflation", async () => {
     const mobileRegex = /@media[^{]*\(max-width:\s*768px\)[^{]*\{([\s\S]*?)\n\}/g;
     let match;
-    let deleteRule = "";
+    let actionRule = "";
     while ((match = mobileRegex.exec(css)) !== null) {
       const mediaContent = match[1];
-      if (mediaContent.includes(".chat-session-delete-btn")) {
-        deleteRule = mediaContent.match(/\.chat-session-delete-btn\s*\{([^}]*)\}/)?.[1] ?? "";
-        if (deleteRule) break;
+      if (mediaContent.includes(".chat-session-title")) {
+        actionRule = mediaContent.match(/\.chat-session-title,\s*\.chat-session-preview\s*\{([^}]*)\}/)?.[1] ?? "";
+        if (actionRule) break;
       }
     }
 
-    expect(deleteRule).toContain("opacity: 1");
-    expect(deleteRule).not.toContain("min-width:");
-    expect(deleteRule).not.toContain("min-height:");
+    expect(actionRule).toContain("padding-right: calc((var(--space-md) * 4) + (var(--space-xs) * 2))");
+    expect(actionRule).not.toContain("min-width:");
+    expect(actionRule).not.toContain("min-height:");
   });
 });
 
@@ -606,6 +620,7 @@ describe("ChatView CSS — mobile thread switcher", () => {
     expect(optionTitleMatch?.[1]).toContain("line-height: normal");
     expect(optionTitleMatch?.[1]).toContain("white-space: normal");
     expect(optionTitleMatch?.[1]).toContain("overflow-wrap: anywhere");
+    expect(css).not.toMatch(/\.chat-mobile-session-trigger\s+\.chat-model-tag/);
   });
 
   it("keeps mobile override for header identity overflow visible so dropdown can render", async () => {

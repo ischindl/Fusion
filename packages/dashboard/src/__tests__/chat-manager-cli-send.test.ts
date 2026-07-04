@@ -19,6 +19,7 @@ const mockChatStore = {
   setCliSessionFile: vi.fn(),
   setInFlightGeneration: vi.fn(),
   getRoomMessages: vi.fn(),
+  recordTokenUsage: vi.fn(),
 };
 
 function makeManager(): ChatManager {
@@ -67,5 +68,44 @@ describe("ChatManager.sendMessage — cli-agent send branch", () => {
 
     expect(ensureSession).toHaveBeenCalledWith("chat-cli2", { projectId: "proj-from-session" });
     expect(send).toHaveBeenCalledWith("chat-cli2", "queued please");
+  });
+
+  it("persists cli-chat token usage from the runner telemetry snapshot", async () => {
+    mockChatStore.getSession.mockReturnValue({
+      id: "chat-cli3",
+      cliExecutorAdapterId: "claude-code",
+      projectId: "proj-1",
+      agentId: "agent-cli",
+      modelId: "claude-sonnet-4-5",
+    });
+    const ensureSession = vi.fn(async () => "cli-session-3");
+    const send = vi.fn(async () => "sent" as const);
+    const getTokenUsageSnapshot = vi.fn(async () => ({
+      tokens: { input: 17, output: 23, cacheRead: 5, cacheWrite: 7, total: 52 },
+      modelProvider: "anthropic",
+      modelId: "claude-sonnet-4-5",
+      messageId: "msg-cli-assistant",
+      createdAt: "2026-07-02T00:00:00.000Z",
+    }));
+    const manager = makeManager();
+    manager.setCliChatRunner({ ensureSession, send, getTokenUsageSnapshot }, "proj-1");
+
+    await manager.sendMessage("chat-cli3", "hello cli");
+
+    expect(mockChatStore.recordTokenUsage).toHaveBeenCalledWith({
+      sourceKind: "cli-chat",
+      chatSessionId: "chat-cli3",
+      messageId: "msg-cli-assistant",
+      projectId: "proj-1",
+      agentId: "agent-cli",
+      modelProvider: "anthropic",
+      modelId: "claude-sonnet-4-5",
+      createdAt: "2026-07-02T00:00:00.000Z",
+      inputTokens: 17,
+      outputTokens: 23,
+      cachedTokens: 5,
+      cacheWriteTokens: 7,
+      totalTokens: 52,
+    });
   });
 });

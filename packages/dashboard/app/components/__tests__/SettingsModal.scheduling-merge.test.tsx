@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { EditorView } from "@codemirror/view";
 import path from "path";
 import { SettingsModal } from "../SettingsModal";
@@ -60,6 +60,7 @@ import {
   mockSetDroidCliEnabled,
   mockFetchCursorCliStatus,
   mockSetCursorCliEnabled,
+  mockSetCursorCliBinaryPath,
   mockUseWorkspaceFileBrowser,
   mockConfirm,
   mockUseWorktrunkInstallStatus,
@@ -131,6 +132,7 @@ vi.mock("../../api", async (importOriginal) => {
     setDroidCliEnabled: (...args: unknown[]) => mockSetDroidCliEnabled(...args),
     fetchCursorCliStatus: (...args: unknown[]) => mockFetchCursorCliStatus(...args),
     setCursorCliEnabled: (...args: unknown[]) => mockSetCursorCliEnabled(...args),
+    setCursorCliBinaryPath: (...args: unknown[]) => mockSetCursorCliBinaryPath(...args),
   });
 });
 
@@ -1334,6 +1336,68 @@ describe("SettingsModal", () => {
       const payload = mockUpdateSettings.mock.calls[0][0] as Record<string, unknown>;
       expect(payload.githubAuthMode).toBe("token");
       expect(payload.githubAuthToken).toBe("ghp_test_token");
+    });
+
+    it("renders GitLab authentication controls as secret-safe project settings", async () => {
+      renderModal({ initialSection: "merge" });
+      await waitForSettingsModalReady();
+
+      const disclosure = screen.getByTestId("project-gitlab-authentication-disclosure");
+      expect(disclosure).not.toHaveAttribute("open");
+      await settingsModalUser.click(within(disclosure).getByText("GitLab Authentication"));
+      expect(disclosure).toHaveAttribute("open");
+
+      expect(screen.getByRole("heading", { name: "GitLab Authentication" })).toBeInTheDocument();
+      const tokenInput = screen.getByLabelText("GitLab access token") as HTMLInputElement;
+      expect(tokenInput.type).toBe("password");
+      expect(screen.getByText(/Read-only GitLab operations need read_api or api/i)).toBeInTheDocument();
+      expect(screen.queryByText("glpat_test_token")).not.toBeInTheDocument();
+      expect((screen.getByLabelText("GitLab token type") as HTMLSelectElement).value).toBe("personal");
+    });
+
+    it.each(["personal", "project", "group"] as const)("saves a %s GitLab access token from Merge", async (tokenType) => {
+      renderModal({ initialSection: "merge" });
+      await waitForSettingsModalReady();
+
+      await settingsModalUser.selectOptions(screen.getByLabelText("GitLab token type"), tokenType);
+      await settingsModalUser.type(screen.getByLabelText("GitLab access token"), " glpat_test_token ");
+      await settingsModalUser.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => {
+        expect(mockUpdateSettings).toHaveBeenCalled();
+      });
+
+      const payload = mockUpdateSettings.mock.calls[0][0] as Record<string, unknown>;
+      expect(payload.gitlabAuthTokenType).toBe(tokenType);
+      expect(payload.gitlabAuthToken).toBe("glpat_test_token");
+      expect(mockUpdateGlobalSettings).not.toHaveBeenCalledWith(expect.objectContaining({ gitlabAuthToken: expect.anything() }));
+    });
+
+    it("clears a saved project GitLab access token without clearing the selected type", async () => {
+      mockFetchSettings.mockResolvedValue({
+        ...defaultSettings,
+        gitlabAuthToken: "saved-token",
+        gitlabAuthTokenType: "group",
+      });
+      mockFetchSettingsByScope.mockResolvedValue({
+        global: defaultSettings,
+        project: { gitlabAuthToken: "saved-token", gitlabAuthTokenType: "group" },
+      });
+
+      renderModal({ initialSection: "merge" });
+      await waitForSettingsModalReady();
+
+      await settingsModalUser.clear(screen.getByLabelText("GitLab access token"));
+      await settingsModalUser.selectOptions(screen.getByLabelText("GitLab token type"), "project");
+      await settingsModalUser.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => {
+        expect(mockUpdateSettings).toHaveBeenCalled();
+      });
+
+      const payload = mockUpdateSettings.mock.calls[0][0] as Record<string, unknown>;
+      expect(payload.gitlabAuthToken).toBeNull();
+      expect(payload.gitlabAuthTokenType).toBe("project");
     });
   });
 

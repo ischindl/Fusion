@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { workflowAuthoringEngineMock } from "./helpers/engine-workflow-authoring-mock.js";
 
 const fetchWebContentMock = vi.hoisted(() => vi.fn());
 
@@ -7,6 +8,7 @@ vi.mock("@fusion/dashboard", () => ({
 }));
 
 vi.mock("@fusion/engine", () => ({
+  ...workflowAuthoringEngineMock,
   createFnAgent: vi.fn(),
   fetchWebContent: fetchWebContentMock,
   emitGoalRetrievalAudit: vi.fn(),

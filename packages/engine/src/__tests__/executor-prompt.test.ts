@@ -2019,19 +2019,32 @@ describe("TaskExecutor global pause behavior", () => {
     const disposeFn2 = vi.fn();
     let callCount = 0;
 
+    /*
+    FNXC:WorkflowLifecycle 2026-07-01-20:35:
+    With workflowGraphExecutor default-on, each task's thrown session error is classified for
+    pause-provenance at handleGraphFailure time: a throw that lands BEFORE globalPause registers is a
+    genuine execution failure (parked `failed`), while a throw AFTER the pause is a benign global-pause
+    abort (moved to todo, progress preserved). The legacy harness fired the pause only inside the
+    second-created task's prompt, so the first task raced ahead and threw before the pause registered,
+    landing it `failed` and defeating the disposal invariant under the graph. Gate both prompts on a
+    two-party barrier so BOTH sessions are genuinely in-flight when the single globalPause fires, then let
+    both throw — faithfully modeling "global pause aborts every in-flight task to todo without failing it".
+    */
+    // Each session's first prompt blocks on the barrier so BOTH tasks are genuinely in-flight at their
+    // first graph node (createFnAgent invoked) before the pause fires. The test body detects both
+    // in-flight, fires the single globalPause, then releases the barrier so both sessions throw AFTER the
+    // pause is registered — a graph-node count is unreliable because a coding task now traverses several
+    // agent nodes (planning/plan-review/execute/code-review), so we gate on distinct in-flight task ids.
+    let releaseBarrier: () => void = () => {};
+    const barrier = new Promise<void>((resolve) => { releaseBarrier = resolve; });
+
     mockedCreateFnAgent.mockImplementation(async () => {
       callCount++;
       const dispose = callCount === 1 ? disposeFn1 : disposeFn2;
       return {
         session: {
           prompt: vi.fn().mockImplementation(async () => {
-            // Wait for the global pause to fire; only fire once for first task
-            if (callCount === 2) {
-              store._trigger("settings:updated", {
-                settings: { globalPause: true },
-                previous: { globalPause: false },
-              });
-            }
+            await barrier;
             throw new Error("Session terminated");
           }),
           dispose,
@@ -2041,19 +2054,37 @@ describe("TaskExecutor global pause behavior", () => {
 
     const executor = new TaskExecutor(store, "/tmp/test");
 
-    // Execute two tasks concurrently
-    await Promise.all([
+    // Execute two tasks concurrently (do NOT await yet — the prompts block on the barrier).
+    // Distinct worktrees per task: the active-session registry now rejects two tasks claiming the same
+    // checkout path, so without unique worktrees FN-002 would fail on a path-collision guard rather than
+    // exercise the pause-disposal invariant. existsSync is stubbed true (resume) so each stored path is
+    // reused verbatim instead of regenerating a shared name.
+    const run = Promise.all([
       executor.execute({
         id: "FN-001", title: "T1", description: "T", column: "in-progress",
+        worktree: "/tmp/test/.worktrees/wt-001", branch: "fusion/fn-001",
         dependencies: [], steps: [], currentStep: 0, log: [],
         createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
       }),
       executor.execute({
         id: "FN-002", title: "T2", description: "T", column: "in-progress",
+        worktree: "/tmp/test/.worktrees/wt-002", branch: "fusion/fn-002",
         dependencies: [], steps: [], currentStep: 0, log: [],
         createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
       }),
     ]);
+
+    // Wait until BOTH tasks have an active in-flight session (registered by execute()), then fire the
+    // single global pause and release the sessions so their terminations classify as pause aborts.
+    await vi.waitFor(() => {
+      if (callCount < 2) throw new Error("waiting for both sessions in-flight");
+    }, { timeout: 5000 });
+    store._trigger("settings:updated", {
+      settings: { globalPause: true },
+      previous: { globalPause: false },
+    });
+    releaseBarrier();
+    await run;
 
     // Global pause should move both tasks out of in-progress without marking failed.
     const moveCalls = store.moveTask.mock.calls;

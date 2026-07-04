@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
 
 const fetchDashboardHealth = vi.fn();
@@ -14,6 +14,10 @@ describe("useDashboardHealth", () => {
   beforeEach(() => {
     fetchDashboardHealth.mockReset();
     refreshDashboardHealth.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("seeds health from the mount fetch and falls back to null on failure", async () => {
@@ -58,6 +62,24 @@ describe("useDashboardHealth", () => {
 
     expect(result.current.refreshError).toBe("nope");
     expect(result.current.refreshing).toBe(false);
+  });
+
+  it("polls health so a transient unavailable desktop startup response is replaced", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    fetchDashboardHealth
+      .mockResolvedValueOnce({ status: "ok", engine: { available: false } })
+      .mockResolvedValueOnce({ status: "ok", engine: { available: true } });
+
+    const { result } = renderHook(() => useDashboardHealth());
+
+    await waitFor(() => expect(result.current.health).toEqual({ status: "ok", engine: { available: false } }));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000);
+    });
+
+    await waitFor(() => expect(result.current.health).toEqual({ status: "ok", engine: { available: true } }));
+    expect(fetchDashboardHealth).toHaveBeenCalledTimes(2);
   });
   it("fires the mount fetch and tolerates an unmount before it resolves", async () => {
     let resolveMount: (value: { status: string }) => void = () => {};

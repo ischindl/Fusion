@@ -1,11 +1,34 @@
 import { useCallback, useEffect, useMemo, useState, type JSX } from "react";
 import { useTranslation } from "react-i18next";
 import { AlertTriangle, X } from "lucide-react";
-import { fetchAuthStatus } from "../api";
+import { fetchAuthStatus, type AuthProvider } from "../api";
 import { OAUTH_RELOGIN_SUCCESS_EVENT } from "../auth";
 import "./OAuthReloginBanner.css";
 
 const DISMISS_STORAGE_KEY = "fusion:oauth-relogin-dismissed";
+const ANTHROPIC_SUBSCRIPTION_PROVIDER_ID = "anthropic-subscription";
+const ANTHROPIC_FALLBACK_PROVIDER_IDS = new Set(["anthropic-api-key", "claude-cli"]);
+
+type ExpiredBannerProvider = { id: string; name: string };
+
+function isAuthenticatedAnthropicFallback(provider: AuthProvider): boolean {
+  return ANTHROPIC_FALLBACK_PROVIDER_IDS.has(provider.id) && provider.authenticated === true;
+}
+
+function getVisibleExpiredOAuthProvidersForGlobalBanner(providers: AuthProvider[]): ExpiredBannerProvider[] {
+  const hasAuthenticatedAnthropicFallback = providers.some(isAuthenticatedAnthropicFallback);
+
+  return providers
+    .filter((provider) => provider.type === "oauth" && provider.expired === true)
+    .filter((provider) => {
+      /*
+      FNXC:ProviderAuth 2026-07-02-12:00:
+      Active Anthropic API-key or Claude CLI auth suppresses only the global urgent Subscription OAuth banner. Settings must still show `anthropic-subscription` as expired/not connected, and CLI/API-key availability must never mark subscription OAuth healthy.
+      */
+      return !(provider.id === ANTHROPIC_SUBSCRIPTION_PROVIDER_ID && hasAuthenticatedAnthropicFallback);
+    })
+    .map((provider) => ({ id: provider.id, name: provider.name }));
+}
 
 function loadDismissedProviderIds(): Set<string> {
   if (typeof window === "undefined") {
@@ -37,15 +60,13 @@ export function OAuthReloginBanner({
   pollIntervalMs?: number;
 }): JSX.Element | null {
   const { t } = useTranslation("app");
-  const [expiredProviders, setExpiredProviders] = useState<Array<{ id: string; name: string }>>([]);
+  const [expiredProviders, setExpiredProviders] = useState<ExpiredBannerProvider[]>([]);
   const [dismissedProviderIds, setDismissedProviderIds] = useState<Set<string>>(() => loadDismissedProviderIds());
 
   const refreshAuthStatus = useCallback(async () => {
     try {
       const { providers } = await fetchAuthStatus();
-      const nextExpiredProviders = providers
-        .filter((provider) => provider.type === "oauth" && provider.expired === true)
-        .map((provider) => ({ id: provider.id, name: provider.name }));
+      const nextExpiredProviders = getVisibleExpiredOAuthProvidersForGlobalBanner(providers);
 
       setExpiredProviders(nextExpiredProviders);
       setDismissedProviderIds((currentDismissed) => {

@@ -47,8 +47,8 @@ interface WorkflowOptionalGroupConfig {
   template: { nodes: WorkflowIrNode[]; edges: WorkflowIrEdge[] };
 }
 
-const OPTIONAL_GROUP_BOUNDARY_ENTRY_HANDLE = "optional-boundary-entry";
-const OPTIONAL_GROUP_BOUNDARY_EXIT_HANDLE = "optional-boundary-exit";
+export const TEMPLATE_BOUNDARY_ENTRY_HANDLE = "template-boundary-entry";
+export const TEMPLATE_BOUNDARY_EXIT_HANDLE = "template-boundary-exit";
 
 // WorkflowFieldDefinition is imported from @fusion/core above (KTD-13/14).
 // Re-exported so existing importers that reference WorkflowFieldDefinitionShape
@@ -286,11 +286,11 @@ function optionalGroupConfigOf(node: WorkflowIrNode): WorkflowOptionalGroupConfi
 }
 
 /*
-FNXC:WorkflowOptionalGroup 2026-06-29-20:10:
-Optional-group template entry/exit connectivity is visually owned by the container's outer handles. Child boundary handles must not imply disconnected IR edges, so derive child boundary metadata from forward internal template edges only; rework loops route backward and cannot erase the review-step exit or execute-step entry.
+FNXC:WorkflowTemplateBoundaries 2026-07-01-00:00:
+Foreach, loop, and optional-group template entry/exit connectivity is visual editor chrome owned by the container boundary, not workflow topology. Derive child boundary metadata from forward internal template edges only; rework loops route backward and cannot erase an entry or exit guide.
 */
-function optionalGroupTemplateBoundaryById(
-  template: WorkflowOptionalGroupConfig["template"],
+function templateBoundaryById(
+  template: { nodes: WorkflowIrNode[]; edges: WorkflowIrEdge[] },
 ): Map<string, { entry: boolean; exit: boolean }> {
   const templateNodeIds = new Set(template.nodes.map((node) => node.id));
   const incomingForward = new Set<string>();
@@ -448,29 +448,17 @@ function templateBoundaryNodeIds(template: { nodes: WorkflowIrNode[]; edges: Wor
 }
 
 /*
- * FNXC:WorkflowOptionalGroup 2026-06-29-20:41:
- * Single-node optional groups such as Plan Review and Code Review looked disconnected because their executable template child had no internal template edge. Add read-only boundary connector edges in React Flow so the child visibly participates in the block, but mark them visual-only and filter them out of save/mobile serialization so the workflow IR keeps the real optional-group entry/exit contract. Boundary connectors use the same forward-edge-only rule as child handle metadata because rework loops are review routing, not alternate optional-group entry/exit ownership.
- *
- * FNXC:WorkflowOptionalGroup 2026-06-29-20:56:
- * Surface enumeration for FN-7249 keeps the fix constrained to editor visualization surfaces: desktop React Flow handles/edges, mobile outline filtering, parentId template children, and built-in Plan Review/Code Review single-child optional groups. Preserve saved/manual layouts and the core optional-group execution contract while repairing only visual child-boundary connectivity.
- *
- * FNXC:WorkflowOptionalGroup 2026-06-29-21:25:
- * Optional groups may have multiple independent template entries or exits. Emit one visual-only connector per boundary child so boundary-handle suppression never creates a disconnected child with no corresponding container-owned visual path.
- *
- * FNXC:WorkflowOptionalGroup 2026-06-29-22:16:
- * Boundary connector edges are explanatory editor chrome, not workflow topology. Keep them non-selectable and non-deletable so authors cannot mistake the visual entry/exit guides for persisted optional-group template edges.
- *
- * FNXC:WorkflowOptionalGroup 2026-06-29-22:47:
- * Boundary connector edges must attach entry guides to a left-side container source handle and exit guides to a right-side container target handle. The normal optional-group target/source handles remain reserved for top-level workflow edges, so visual-only child connectors do not reverse the perceived execution boundary.
+ * FNXC:WorkflowTemplateBoundaries 2026-07-01-00:00:
+ * Template containers such as stepwise foreach blocks need visible boundary-to-child guides so internal template nodes do not look disconnected. Emit one visual-only connector per forward-edge-derived entry/exit child for foreach, loop, and optional-group containers, but keep these edges non-selectable, non-deletable, and filtered from save/mobile serialization because they are editor/read-only chrome rather than workflow topology.
  */
-function optionalGroupBoundaryEdgesForFlowIds(groupId: string, entryFlowIds: readonly string[], exitFlowIds: readonly string[]): FlowEdge[] {
+function templateBoundaryEdgesForFlowIds(groupId: string, entryFlowIds: readonly string[], exitFlowIds: readonly string[]): FlowEdge[] {
   const visualEdges: FlowEdge[] = [];
   for (const entryFlowId of entryFlowIds) {
     const entryId = templateNodeIdFromChild(groupId, entryFlowId);
     visualEdges.push({
       id: `e-${groupId}-boundary-entry-${entryId}`,
       source: groupId,
-      sourceHandle: OPTIONAL_GROUP_BOUNDARY_ENTRY_HANDLE,
+      sourceHandle: TEMPLATE_BOUNDARY_ENTRY_HANDLE,
       target: entryFlowId,
       label: "entry",
       data: { condition: "entry", visualOnly: WF_TEMPLATE_BOUNDARY_EDGE_KIND, boundary: "entry" },
@@ -488,7 +476,7 @@ function optionalGroupBoundaryEdgesForFlowIds(groupId: string, entryFlowIds: rea
       id: `e-${groupId}-boundary-exit-${exitId}`,
       source: exitFlowId,
       target: groupId,
-      targetHandle: OPTIONAL_GROUP_BOUNDARY_EXIT_HANDLE,
+      targetHandle: TEMPLATE_BOUNDARY_EXIT_HANDLE,
       label: "exit",
       data: { condition: "exit", visualOnly: WF_TEMPLATE_BOUNDARY_EDGE_KIND, boundary: "exit" },
       className: "wf-edge-template-boundary",
@@ -502,10 +490,10 @@ function optionalGroupBoundaryEdgesForFlowIds(groupId: string, entryFlowIds: rea
   return visualEdges;
 }
 
-function optionalGroupBoundaryEdges(node: WorkflowIrNode, template: { nodes: WorkflowIrNode[]; edges: WorkflowIrEdge[] }): FlowEdge[] {
-  if (node.kind !== "optional-group" || template.nodes.length === 0) return [];
+function templateBoundaryEdges(node: WorkflowIrNode, template: { nodes: WorkflowIrNode[]; edges: WorkflowIrEdge[] }): FlowEdge[] {
+  if (!groupTemplateConfigOf(node) || template.nodes.length === 0) return [];
   const { entryIds, exitIds } = templateBoundaryNodeIds(template);
-  return optionalGroupBoundaryEdgesForFlowIds(
+  return templateBoundaryEdgesForFlowIds(
     node.id,
     entryIds.map((entryId) => foreachChildFlowId(node.id, entryId)),
     exitIds.map((exitId) => foreachChildFlowId(node.id, exitId)),
@@ -513,10 +501,10 @@ function optionalGroupBoundaryEdges(node: WorkflowIrNode, template: { nodes: Wor
 }
 
 /*
- * FNXC:WorkflowOptionalGroup 2026-06-29-23:31:
- * Optional-group boundary connector edges are derived editor chrome. Recompute them after live canvas node/edge mutations so adding, deleting, or retagging internal template edges immediately moves entry/exit guides without waiting for a save/reload round-trip.
+ * FNXC:WorkflowTemplateBoundaries 2026-07-01-00:00:
+ * Template boundary connector edges are derived editor chrome. Recompute them after live canvas node/edge mutations so adding, deleting, or retagging internal foreach/loop/optional-group template edges immediately moves entry/exit guides without waiting for a save/reload round-trip.
  */
-export function refreshOptionalGroupVisualBoundaries(
+export function refreshTemplateContainerVisualBoundaries(
   nodes: FlowNode<WorkflowFlowNodeData>[],
   edges: FlowEdge[],
 ): { nodes: FlowNode<WorkflowFlowNodeData>[]; edges: FlowEdge[] } {
@@ -530,12 +518,12 @@ export function refreshOptionalGroupVisualBoundaries(
 
   const groupIds = new Set(
     nodes
-      .filter((node) => node.data.kind === "optional-group")
+      .filter((node) => node.data.kind === "optional-group" || node.data.kind === "foreach" || node.data.kind === "loop")
       .map((node) => node.id),
   );
-  const childToOptionalGroup = new Map<string, string>();
+  const childToTemplateContainer = new Map<string, string>();
   for (const groupId of groupIds) {
-    for (const child of childrenByGroup.get(groupId) ?? []) childToOptionalGroup.set(child.id, groupId);
+    for (const child of childrenByGroup.get(groupId) ?? []) childToTemplateContainer.set(child.id, groupId);
   }
 
   const nonVisualEdges = edges.filter((edge) => !isVisualOnlyWorkflowEdge(edge));
@@ -566,24 +554,43 @@ export function refreshOptionalGroupVisualBoundaries(
       if (boundary.entry) entryFlowIds.push(child.id);
       if (boundary.exit) exitFlowIds.push(child.id);
     }
-    nextVisualEdges.push(...optionalGroupBoundaryEdgesForFlowIds(groupId, entryFlowIds, exitFlowIds));
+    nextVisualEdges.push(...templateBoundaryEdgesForFlowIds(groupId, entryFlowIds, exitFlowIds));
   }
 
   const nextNodes = nodes.map((node) => {
-    const optionalGroupId = childToOptionalGroup.get(node.id);
-    if (!optionalGroupId) {
-      if (!node.data.optionalGroupBoundary) return node;
-      const { optionalGroupBoundary: _boundary, ...data } = node.data;
+    const containerId = childToTemplateContainer.get(node.id);
+    if (!containerId) {
+      if (!node.data.templateBoundary && !node.data.optionalGroupBoundary) return node;
+      const { templateBoundary: _templateBoundary, optionalGroupBoundary: _optionalBoundary, ...data } = node.data;
       return { ...node, data };
     }
     const boundary = boundaryByChild.get(node.id);
     if (!boundary) return node;
-    if (node.data.optionalGroupBoundary?.entry === boundary.entry && node.data.optionalGroupBoundary?.exit === boundary.exit) return node;
-    return { ...node, data: { ...node.data, optionalGroupBoundary: boundary } };
+    const optionalCompat = nodes.find((candidate) => candidate.id === containerId)?.data.kind === "optional-group"
+      ? boundary
+      : undefined;
+    if (
+      node.data.templateBoundary?.entry === boundary.entry &&
+      node.data.templateBoundary?.exit === boundary.exit &&
+      node.data.optionalGroupBoundary?.entry === optionalCompat?.entry &&
+      node.data.optionalGroupBoundary?.exit === optionalCompat?.exit
+    ) {
+      return node;
+    }
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        templateBoundary: boundary,
+        ...(optionalCompat ? { optionalGroupBoundary: optionalCompat } : { optionalGroupBoundary: undefined }),
+      },
+    };
   });
 
   return { nodes: nextNodes, edges: [...nonVisualEdges, ...nextVisualEdges] };
 }
+
+export const refreshOptionalGroupVisualBoundaries = refreshTemplateContainerVisualBoundaries;
 
 /** Build React Flow nodes/edges from a stored workflow definition. v2 columns
  *  render as swimlane band group nodes; step nodes carry their `column`. A
@@ -620,9 +627,7 @@ export function irToFlow(def: WorkflowDefinition): {
     const groupCfg = groupTemplateConfigOf(node);
     if (groupCfg) {
       const template = groupCfg.template;
-      const optionalGroupBoundaries = node.kind === "optional-group"
-        ? optionalGroupTemplateBoundaryById(template)
-        : undefined;
+      const templateBoundaries = templateBoundaryById(template);
       // Render template nodes as children of this group (parentId = group id).
       template.nodes.forEach((inner, innerIdx) => {
         const childFlowId = foreachChildFlowId(node.id, inner.id);
@@ -633,7 +638,8 @@ export function irToFlow(def: WorkflowDefinition): {
             y: FOREACH_CHILD_Y,
           };
         const innerKind = editorKind(inner);
-        const optionalGroupBoundary = optionalGroupBoundaries?.get(inner.id);
+        const templateBoundary = templateBoundaries.get(inner.id);
+        const optionalGroupBoundary = node.kind === "optional-group" ? templateBoundary : undefined;
         childNodes.push({
           id: childFlowId,
           type: innerKind,
@@ -645,6 +651,7 @@ export function irToFlow(def: WorkflowDefinition): {
             ...dataIrKind(inner, innerKind),
             label: nodeLabel(inner),
             config: { ...(inner.config ?? {}) },
+            ...(templateBoundary ? { templateBoundary } : {}),
             ...(optionalGroupBoundary ? { optionalGroupBoundary } : {}),
           },
           deletable: true,
@@ -654,7 +661,7 @@ export function irToFlow(def: WorkflowDefinition): {
       template.edges.forEach((edge, eIdx) => {
         childEdges.push(irEdgeToFlow(edge, eIdx, `${node.id}${FOREACH_CHILD_SEP}`));
       });
-      childEdges.push(...optionalGroupBoundaryEdges(node, template));
+      childEdges.push(...templateBoundaryEdges(node, template));
       // Strip the template off the group node's own config (children carry it).
       const { template: _t, ...restCfg } = (node.config ?? {}) as Record<string, unknown>;
       return {
@@ -1034,8 +1041,8 @@ export type BuildConnectionResult =
   | { edge: FlowEdge }
   | { error: "missing-endpoint" | "duplicate" | "cycle" | "reserved-handle" };
 
-function isOptionalGroupBoundaryConnectionHandle(handleId: string | null | undefined): boolean {
-  return handleId === OPTIONAL_GROUP_BOUNDARY_ENTRY_HANDLE || handleId === OPTIONAL_GROUP_BOUNDARY_EXIT_HANDLE;
+function isTemplateBoundaryConnectionHandle(handleId: string | null | undefined): boolean {
+  return handleId === TEMPLATE_BOUNDARY_ENTRY_HANDLE || handleId === TEMPLATE_BOUNDARY_EXIT_HANDLE;
 }
 
 /** Construct a new success edge for a React Flow connection, reimplementing the
@@ -1059,12 +1066,12 @@ export function buildConnectionEdge(
   if (!source || !target) return { error: "missing-endpoint" };
 
   /*
-   * FNXC:WorkflowOptionalGroup 2026-06-29-23:20:
-   * Optional-group boundary handles are visual guide anchors owned by refreshOptionalGroupVisualBoundaries, not editable workflow topology. Reject connection gestures that mention them so stale DOM, test mocks, or browser quirks cannot persist a fake group↔child edge if React Flow ever reports a boundary handle as connectable.
+   * FNXC:WorkflowTemplateBoundaries 2026-07-01-00:00:
+   * Template boundary handles are visual guide anchors owned by refreshTemplateContainerVisualBoundaries, not editable workflow topology. Reject connection gestures that mention them so stale DOM, test mocks, or browser quirks cannot persist a fake container↔child edge if React Flow ever reports a boundary handle as connectable.
    */
   if (
-    isOptionalGroupBoundaryConnectionHandle(connection.sourceHandle) ||
-    isOptionalGroupBoundaryConnectionHandle(connection.targetHandle)
+    isTemplateBoundaryConnectionHandle(connection.sourceHandle) ||
+    isTemplateBoundaryConnectionHandle(connection.targetHandle)
   ) {
     return { error: "reserved-handle" };
   }
@@ -1473,9 +1480,7 @@ export function insertFragment(
     if (groupCfg) {
       const template = groupCfg.template;
       const groupKind = editorKind(node);
-      const optionalGroupBoundaries = node.kind === "optional-group"
-        ? optionalGroupTemplateBoundaryById(template)
-        : undefined;
+      const templateBoundaries = templateBoundaryById(template);
       template.nodes.forEach((inner, innerIdx) => {
         const innerKind = editorKind(inner);
         const childPos =
@@ -1483,7 +1488,8 @@ export function insertFragment(
             x: FOREACH_CHILD_X + innerIdx * FOREACH_CHILD_STEP_X,
             y: FOREACH_CHILD_Y,
           };
-        const optionalGroupBoundary = optionalGroupBoundaries?.get(inner.id);
+        const templateBoundary = templateBoundaries.get(inner.id);
+        const optionalGroupBoundary = node.kind === "optional-group" ? templateBoundary : undefined;
         childNodes.push({
           id: foreachChildFlowId(id, inner.id),
           type: innerKind,
@@ -1495,6 +1501,7 @@ export function insertFragment(
             ...dataIrKind(inner, innerKind),
             label: nodeLabel(inner),
             config: { ...(inner.config ?? {}) },
+            ...(templateBoundary ? { templateBoundary } : {}),
             ...(optionalGroupBoundary ? { optionalGroupBoundary } : {}),
           },
           deletable: true,
@@ -1504,7 +1511,7 @@ export function insertFragment(
       template.edges.forEach((edge, eIdx) => {
         childEdges.push(irEdgeToFlow(edge, eIdx, `${id}${FOREACH_CHILD_SEP}`));
       });
-      childEdges.push(...optionalGroupBoundaryEdges({ ...node, id }, template));
+      childEdges.push(...templateBoundaryEdges({ ...node, id }, template));
       // The group node keeps everything except the template (children carry it).
       const { template: _t, ...restCfg } = (node.config ?? {}) as Record<string, unknown>;
       return {

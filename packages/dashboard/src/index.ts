@@ -34,6 +34,21 @@ export {
 } from "./github-tracking-dedup.js";
 export { registerGithubTrackingHook } from "./github-tracking-hook.js";
 export {
+  GitLabClient,
+  GitLabApiError,
+  buildGitLabTaskDescription,
+  buildGitLabTaskProvenance,
+  isGitLabAlreadyImported,
+  type GitLabIssue,
+  type GitLabMergeRequest,
+  type GitLabResourceType,
+} from "./gitlab.js";
+export {
+  resolveGitlabAuth,
+  type ResolvedGitlabAuth,
+  type GitlabAuthResolution,
+} from "./gitlab-auth.js";
+export {
   resolveGithubTrackingAuth,
   type GithubTrackingAuth,
   type GithubTrackingAuthResolution,

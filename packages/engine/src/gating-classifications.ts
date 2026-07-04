@@ -50,6 +50,9 @@ const ACTION_GATE_TASK_AGENT_ONLY_TOOLS = [
   "fn_delegate_task",
   "fn_task_import_github",
   "fn_task_import_github_issue",
+  "fn_task_import_gitlab_project_issues",
+  "fn_task_import_gitlab_group_issues",
+  "fn_task_import_gitlab_merge_requests",
 ] as const;
 const ACTION_GATE_SHARED_TASK_AGENT_TOOLS = SHARED_TASK_AGENT_TOOLS.filter(
   (tool) => !(PROVISIONING_TOOLS as readonly string[]).includes(tool),
@@ -132,6 +135,12 @@ export const READONLY_FN_TOOLS: ReadonlySet<string> = new Set([
   "fn_delegate_task",
   "fn_task_import_github",
   "fn_task_import_github_issue",
+  "fn_task_import_gitlab_project_issues",
+  "fn_task_import_gitlab_group_issues",
+  "fn_task_import_gitlab_merge_requests",
+  "fn_task_browse_gitlab_project_issues",
+  "fn_task_browse_gitlab_group_issues",
+  "fn_task_browse_gitlab_merge_requests",
   "fn_research_list",
   "fn_research_get",
   "fn_insight_list",

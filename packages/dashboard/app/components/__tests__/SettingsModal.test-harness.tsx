@@ -80,6 +80,7 @@ export const mockFetchDroidCliStatus = vi.fn();
 export const mockSetDroidCliEnabled = vi.fn();
 export const mockFetchCursorCliStatus = vi.fn();
 export const mockSetCursorCliEnabled = vi.fn();
+export const mockSetCursorCliBinaryPath = vi.fn();
 export const mockUseWorkspaceFileBrowser = vi.fn();
 export const mockConfirm = vi.fn();
 export const mockUseWorktrunkInstallStatus = vi.fn();
@@ -429,10 +430,12 @@ export function installSettingsModalEnv() {
     mockFetchCursorCliStatus.mockResolvedValue({
       binary: { available: true, version: "0.1.0", binaryPath: "/usr/local/bin/cursor-agent", probeDurationMs: 8 },
       enabled: false,
+      binaryPath: undefined,
       extension: null,
       ready: false,
     });
     mockSetCursorCliEnabled.mockResolvedValue({ enabled: true, restartRequired: false });
+    mockSetCursorCliBinaryPath.mockResolvedValue({ enabled: false, restartRequired: false });
     mockUseWorkspaceFileBrowser.mockReturnValue({
       entries: [],
       currentPath: ".",

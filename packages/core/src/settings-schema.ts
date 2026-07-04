@@ -63,7 +63,11 @@ type ProjectSettingsSchema = Omit<ProjectSettings, MovedProjectSettingsKey>;
 
 /** Default values for global (user-level) settings. */
 export const DEFAULT_GLOBAL_SETTINGS = {
-  themeMode: "dark",
+  /*
+  FNXC:DashboardTheming 2026-07-03-00:00:
+  Fresh installs must follow the operating system theme until the user explicitly chooses Light, Dark, or System. Keep this global default aligned with dashboard and desktop pre-hydration fallbacks.
+  */
+  themeMode: "system",
   /*
   FNXC:DashboardTheming 2026-06-30-00:00:
   New users and unset installs should start on Shadcn Ember. Existing users who explicitly stored colorTheme "default", "ocean", or another valid theme must remain on that selection, so the ids stay valid and only the absence/default seed changes to "shadcn-ember".
@@ -136,10 +140,21 @@ export const DEFAULT_GLOBAL_SETTINGS = {
   updateCheckFrequency: "daily",
   autoReloadOnVersionChange: true,
   githubTrackingDefaultRepo: undefined,
+  gitlabEnabled: undefined,
+  gitlabInstanceUrl: undefined,
+  gitlabApiBaseUrl: undefined,
+  gitlabAuthToken: undefined,
+  gitlabAuthTokenType: undefined,
   modelOnboardingComplete: undefined,
   useClaudeCli: undefined,
   useDroidCli: undefined,
   useLlamaCpp: undefined,
+  useCursorCli: undefined,
+  /*
+  FNXC:CursorCli 2026-07-02-00:00:
+  Cursor CLI binary overrides are global operator settings because executable locations are machine-local. Blank/undefined preserves PATH auto-detection through cursor-agent and cursor.
+  */
+  cursorCliBinaryPath: undefined,
   // Global baseline lanes for per-role model selection
   executionGlobalProvider: undefined,
   executionGlobalModelId: undefined,
@@ -491,6 +506,14 @@ export const DEFAULT_PROJECT_SETTINGS = {
   githubTrackingEnabledByDefault: false,
   githubLinkImportedIssuesToTracking: false,
   githubTrackingDefaultRepo: undefined,
+  gitlabEnabled: undefined,
+  gitlabInstanceUrl: undefined,
+  gitlabApiBaseUrl: undefined,
+  gitlabAuthToken: undefined,
+  gitlabAuthTokenType: undefined,
+  gitlabCommentOnDone: false,
+  gitlabCommentTemplate: undefined,
+  gitlabCloseSourceIssueOnDone: false,
   githubTrackingDedupEnabled: true,
   githubAuthMode: "gh-cli",
   githubAuthToken: undefined,

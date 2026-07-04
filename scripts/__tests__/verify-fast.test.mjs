@@ -110,7 +110,7 @@ test("buildVerifyPlan: typecheck for all eligible, then builds, then boot smoke 
 test("buildVerifyPlan: a package without a build script gets a typecheck step but no build step", () => {
   const packageMeta = new Map([
     ["@fusion/engine", { hasTypecheck: true, hasBuild: true }],
-    ["@fusion/test-only", { hasTypecheck: false, hasBuild: false }],
+    ["@fusion/test-only", { hasTypecheck: false, hasTsconfig: true, hasBuild: false }],
   ]);
   const plan = buildVerifyPlan({ packages: ["@fusion/engine", "@fusion/test-only"], packageMeta, bootSmokeScriptPath: SMOKE, nodeBin: NODE });
   assert.deepEqual(stepIds(plan), [
@@ -124,6 +124,20 @@ test("buildVerifyPlan: a package without a build script gets a typecheck step bu
   // The test-only package's typecheck uses the tsc fallback (no typecheck script).
   const tc = stepByKind(plan, "typecheck").find((s) => s.pkg === "@fusion/test-only");
   assert.deepEqual(tc.args, ["--filter", "@fusion/test-only", "exec", "tsc", "--noEmit", "-p", "."]);
+});
+
+test("buildVerifyPlan: skips synthetic typecheck for JavaScript alias packages with no tsconfig", () => {
+  const packageMeta = new Map([
+    ["runfusion.ai", { hasTypecheck: false, hasTsconfig: false, hasBuild: false }],
+    ["@runfusion/fusion", { hasTypecheck: true, hasTsconfig: true, hasBuild: true }],
+  ]);
+  const plan = buildVerifyPlan({ packages: ["runfusion.ai", "@runfusion/fusion"], packageMeta, bootSmokeScriptPath: SMOKE, nodeBin: NODE });
+  assert.deepEqual(stepIds(plan), [
+    "bootstrap-artifacts",
+    "typecheck:@runfusion/fusion",
+    "build:@runfusion/fusion",
+    "boot-smoke",
+  ]);
 });
 
 test("buildVerifyPlan: desktop/mobile are excluded from scoped steps but boot smoke still runs", () => {

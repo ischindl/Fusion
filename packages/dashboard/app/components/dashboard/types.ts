@@ -272,6 +272,7 @@ export interface DashboardBannersProps {
   handleDismissSetupWarning: () => void;
   hasAiProvider: boolean;
   hasGithub: boolean;
+  showGithubSetupWarning: boolean;
   approvalBannerCandidate: ApprovalBannerCandidate | null;
   dismissApproval: (candidate: ApprovalBannerCandidate) => void;
   mailboxPendingApprovalCount: number;

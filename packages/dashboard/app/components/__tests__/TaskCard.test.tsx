@@ -11,6 +11,7 @@ import type { Task } from "@fusion/core";
 vi.mock("lucide-react", () => ({
   Link: () => null,
   GitBranch: () => null,
+  Gitlab: () => null,
   Clock: () => null,
   Pencil: () => null,
   Layers: () => null,
@@ -211,6 +212,54 @@ afterEach(() => {
 });
 
 describe("TaskCard", () => {
+  it("renders GitLab tracking badges for linked and stale items without dropping GitHub badges", () => {
+    const gitlabItem = {
+      kind: "merge_request" as const,
+      url: "https://gitlab.com/acme/app/-/merge_requests/5",
+      instanceUrl: "https://gitlab.com",
+      host: "gitlab.com",
+      iid: 5,
+      projectPath: "acme/app",
+      title: "MR title",
+      state: "opened",
+      createdAt: "2026-07-02T00:00:00.000Z",
+    };
+    render(
+      <TaskCard
+        task={makeTask({
+          gitlabTracking: { item: gitlabItem },
+          issueInfo: { url: "https://github.com/runfusion/fusion/issues/1", number: 1, state: "open", title: "GitHub issue" },
+        })}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
+
+    expect(screen.getByTestId("card-gitlab-badge")).toHaveAccessibleName("GitLab MR !5: MR title");
+    expect(screen.getByRole("link", { name: /GitLab MR !5/ })).toHaveAttribute("href", gitlabItem.url);
+    expect(screen.getByRole("link", { name: "#1" })).toHaveAttribute("href", "https://github.com/runfusion/fusion/issues/1");
+  });
+
+  it("updates memoized card equality when GitLab tracking changes", () => {
+    const base = { task: makeTask({ gitlabTracking: undefined }) };
+    const withGitLab = {
+      task: makeTask({
+        gitlabTracking: {
+          item: {
+            kind: "project_issue",
+            url: "https://gitlab.com/acme/app/-/issues/42",
+            instanceUrl: "https://gitlab.com",
+            host: "gitlab.com",
+            iid: 42,
+            createdAt: "2026-07-02T00:00:00.000Z",
+          },
+        },
+      }),
+    };
+
+    expect(__test_areTaskCardPropsEqual(base as any, withGitLab as any)).toBe(false);
+  });
+
   it("shows an Answer-questions button when awaiting user input and opens the workflow tab", async () => {
     const onOpenDetailWithTab = vi.fn();
     render(

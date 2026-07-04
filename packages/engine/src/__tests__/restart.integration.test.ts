@@ -37,6 +37,12 @@ vi.mock("../pi.js", () => ({
       await session.prompt(prompt, options);
     }
   }),
+  // FNXC:EngineTests 2026-07-02-07:40:
+  // Both triage.ts and executor.ts now call formatModelMarkerDetails (from
+  // pi.js) to build the model-marker log line after resolving an agent
+  // session. The mock must expose the export so the resume/triage paths can
+  // reach finalization instead of throwing on a missing mock member.
+  formatModelMarkerDetails: vi.fn((model: string) => model),
 }));
 vi.mock("../reviewer.js", () => ({
   reviewStep: vi.fn(),

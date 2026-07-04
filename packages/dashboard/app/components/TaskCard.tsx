@@ -15,6 +15,7 @@ import {
 import { resolveEffectiveAutoMerge } from "../../../core/src/task-merge";
 import { addressPrFeedback, fetchTaskDetail, uploadAttachment, fetchMission, fetchAgent, rebuildTaskSpec, refreshPrStatus, type WorkflowFieldDefinition } from "../api";
 import { GitHubBadge } from "./GitHubBadge";
+import { GitLabBadge } from "./GitLabBadge";
 import { PrCreateModal } from "./PrCreateModal";
 import { ProviderIcon } from "./ProviderIcon";
 import { PluginSlot } from "./PluginSlot";
@@ -713,7 +714,8 @@ function areTaskCardPropsEqual(previous: TaskCardProps, next: TaskCardProps): bo
     }) &&
     areTaskBadgeInfosEqual(previousTask.issueInfo, nextTask.issueInfo) &&
     // FNXC:GitHubTracking 2026-07-01-00:00: Context-menu tracking actions depend on githubTracking.enabled, so memoized cards must repaint when a PATCH enables tracking and remove the now-ineligible menu item.
-    JSON.stringify(previousTask.githubTracking ?? null) === JSON.stringify(nextTask.githubTracking ?? null)
+    JSON.stringify(previousTask.githubTracking ?? null) === JSON.stringify(nextTask.githubTracking ?? null) &&
+    JSON.stringify(previousTask.gitlabTracking ?? null) === JSON.stringify(nextTask.gitlabTracking ?? null)
   );
 }
 
@@ -2488,6 +2490,9 @@ function TaskCardComponent({
               />
             ) : null}
           </>
+        )}
+        {task.gitlabTracking?.item && (
+          <GitLabBadge item={task.gitlabTracking.item} />
         )}
         {prNode && (
           prNode.state === "failed" ? (

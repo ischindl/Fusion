@@ -98,6 +98,9 @@ const ACTION_MUTATION_PERMANENT_READONLY_TOOLS = new Set([
   "fn_delegate_task",
   "fn_task_import_github",
   "fn_task_import_github_issue",
+  "fn_task_import_gitlab_project_issues",
+  "fn_task_import_gitlab_group_issues",
+  "fn_task_import_gitlab_merge_requests",
 ]);
 
 const policyMatrix = [
@@ -110,6 +113,9 @@ const permanentReadonlySiblingTaskCreationTools = [
   "fn_delegate_task",
   "fn_task_import_github",
   "fn_task_import_github_issue",
+  "fn_task_import_gitlab_project_issues",
+  "fn_task_import_gitlab_group_issues",
+  "fn_task_import_gitlab_merge_requests",
 ] as const;
 
 describe("gating-classifications parity", () => {

@@ -32,7 +32,7 @@ of blocking forever, and we exit nonzero on the first failing step.
 */
 
 import path from "node:path";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -135,7 +135,7 @@ export function buildArtifactBootstrapStep(bootstrapScriptPath, nodeBin = proces
  *
  * @param {object} opts
  * @param {string[]} [opts.packages]  affected package names
- * @param {Map<string, { dir?: string, hasTypecheck?: boolean, hasBuild?: boolean }>} [opts.packageMeta]
+ * @param {Map<string, { dir?: string, hasTypecheck?: boolean, hasTsconfig?: boolean, hasBuild?: boolean }>} [opts.packageMeta]
  * @param {string} opts.bootSmokeScriptPath
  * @param {string} [opts.artifactBootstrapScriptPath]
  * @param {string} [opts.nodeBin]
@@ -147,7 +147,13 @@ export function buildVerifyPlan({ packages = [], packageMeta = new Map(), bootSm
 
   const steps = [buildArtifactBootstrapStep(bootstrapScriptPath, nodeBin)];
   for (const pkg of eligiblePackages) {
-    steps.push(buildTypecheckStep(pkg, packageMeta.get(pkg) ?? {}));
+    const meta = packageMeta.get(pkg) ?? {};
+    /*
+    FNXC:TestInfrastructure 2026-07-03-21:54:
+    Workspace alias packages such as `runfusion.ai` are publishable JavaScript shims with no tsconfig. verify:fast should not synthesize a `tsc -p .` fallback for those packages; their executable behavior is covered by the required CLI build and boot smoke.
+    */
+    if (meta.hasTypecheck === false && meta.hasTsconfig === false) continue;
+    steps.push(buildTypecheckStep(pkg, meta));
   }
 
   const builtPackages = new Set();
@@ -181,7 +187,7 @@ export function buildVerifyPlan({ packages = [], packageMeta = new Map(), bootSm
  * @param {string[]} packages
  * @param {Map<string, string>} packageDirByName  pkg name → repo-relative dir
  * @param {string} [root]
- * @returns {Map<string, { dir: string, hasTypecheck: boolean, hasBuild: boolean }>}
+ * @returns {Map<string, { dir: string, hasTypecheck: boolean, hasTsconfig: boolean, hasBuild: boolean }>}
  */
 export function readPackageMeta(packages, packageDirByName, root = repoRoot) {
   const meta = new Map();
@@ -199,6 +205,7 @@ export function readPackageMeta(packages, packageDirByName, root = repoRoot) {
     meta.set(pkg, {
       dir: dir ?? null,
       hasTypecheck: typeof scripts.typecheck === "string",
+      hasTsconfig: dir ? existsSync(path.join(root, dir, "tsconfig.json")) : true,
       hasBuild: typeof scripts.build === "string",
     });
   }

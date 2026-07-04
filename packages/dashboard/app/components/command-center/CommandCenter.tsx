@@ -13,6 +13,7 @@ import { TeamArea } from "./areas/TeamArea";
 import { WorkflowArea } from "./areas/WorkflowArea";
 import { EcosystemArea } from "./areas/EcosystemArea";
 import { GithubArea } from "./areas/GithubArea";
+import { GitlabArea } from "./areas/GitlabArea";
 import { SignalsArea } from "./areas/SignalsArea";
 import { SystemStatsArea } from "./areas/SystemStatsArea";
 import { MissionControlPanel } from "./MissionControlPanel";
@@ -40,6 +41,7 @@ type SubViewId =
   | "workflows"
   | "ecosystem"
   | "github"
+  | "gitlab"
   | "signals"
   | "system"
   | "nodes"
@@ -82,6 +84,7 @@ function useSubViews(nodesEnabled: boolean): SubView[] {
     { id: "workflows", label: t("commandCenter.tabs.workflows", "Workflows") },
     { id: "ecosystem", label: t("commandCenter.tabs.ecosystem", "Ecosystem") },
     { id: "github", label: t("commandCenter.tabs.github", "GitHub") },
+    { id: "gitlab", label: t("commandCenter.tabs.gitlab", "GitLab") },
     { id: "signals", label: t("commandCenter.tabs.signals", "Signals") },
     { id: "system", label: t("commandCenter.tabs.system", "System") },
     ...(nodesEnabled ? [{ id: "nodes" as const, label: t("commandCenter.tabs.nodes", "Nodes") }] : []),
@@ -574,6 +577,8 @@ export function CommandCenter({
         return <EcosystemArea range={range} />;
       case "github":
         return <GithubArea range={range} />;
+      case "gitlab":
+        return <GitlabArea range={range} />;
       case "signals":
         return <SignalsArea range={range} />;
       case "system":

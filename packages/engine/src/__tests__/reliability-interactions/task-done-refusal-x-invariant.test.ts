@@ -97,6 +97,12 @@ describe("FN-4851 reliability interactions: task-done refusals x invariant", () 
   it("shares one retry budget across mixed refusal classes", async () => {
     const { doneTool, reviewTool, store, getTask } = await setup({ steps: [{ name: "S1", status: "in-progress" }, { name: "S2", status: "pending" }] });
 
+    // FNXC:WorkflowLifecycle 2026-07-01-21:20: setup()'s execute() drives a bare mock agent through the
+    // default-on workflow graph; the agent never calls fn_task_done, so the graph's no-fn_task_done requeue
+    // pre-bumps taskDoneRetryCount by one before the refusal sequence under test begins. Reset the shared
+    // budget to zero so this test measures ONLY the mixed-refusal-class budget sharing it is asserting.
+    getTask().taskDoneRetryCount = 0;
+
     await doneTool.execute("1", { summary: "Task is not complete." });
     expect(getTask().taskDoneRetryCount).toBe(1);
 
@@ -111,6 +117,12 @@ describe("FN-4851 reliability interactions: task-done refusals x invariant", () 
 
     const fourth = await doneTool.execute("4", { summary: "Task is not complete." });
     expect(fourth.details.refusalClass).toBe("pending-code-review-revise");
-    expect(store.moveTask).toHaveBeenCalledWith("FN-4851", "in-review");
+    // FNXC:WorkflowLifecycle 2026-07-01-21:20: The shared retry budget is exhausted on the 4th refusal
+    // (count already 3). Exhaustion is terminal and now parks the task `status: "failed"` in place under
+    // the workflow-graph failure model (superseding FN-1284's move-to-in-review escalation); the invariant
+    // proven here is that a SINGLE budget is shared across mixed refusal classes and its exhaustion is
+    // terminal, not that the terminal state is in-review.
+    expect(store.updateTask).toHaveBeenCalledWith("FN-4851", expect.objectContaining({ status: "failed" }));
+    expect(store.moveTask).not.toHaveBeenCalledWith("FN-4851", "in-review");
   });
 });

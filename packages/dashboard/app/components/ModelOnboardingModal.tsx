@@ -20,6 +20,7 @@ import {
   fetchCustomProviders,
   createCustomProvider,
   type AgentOnboardingSummary,
+  type GitCliStatus,
 } from "../api";
 import type { ToastType } from "../hooks/useToast";
 import { useModalResizePersist } from "../hooks/useModalResizePersist";
@@ -245,10 +246,11 @@ function getProviderDisplayName(providerId: string): string {
 }
 
 /*
-FNXC:ProviderAuth 2026-06-29-23:58:
-Onboarding quick start must show Anthropic subscription OAuth and raw Anthropic API-key auth as separate first-class cards; keep the legacy `anthropic` id as a fallback only for older status payloads.
+FNXC:Onboarding 2026-07-03-00:00:
+Onboarding quick start must show practical first-run choices beyond Anthropic, including OpenAI/ChatGPT, Google/Gemini, OpenRouter, and Ollama when those visible providers are configured.
+Keep Anthropic subscription OAuth and raw Anthropic API-key auth as separate first-class cards; use the legacy `anthropic` id only as a fallback for older status payloads.
 */
-const QUICK_START_PROVIDER_IDS = ["anthropic-subscription", "anthropic-api-key", "anthropic", "openai", "google", "gemini", "ollama"] as const;
+const QUICK_START_PROVIDER_IDS = ["anthropic-subscription", "anthropic-api-key", "anthropic", "openai", "google", "gemini", "openrouter", "ollama"] as const;
 
 const ONBOARDING_CURATED_PROVIDER_FAMILY_ORDER = [
   "anthropic",
@@ -257,6 +259,7 @@ const ONBOARDING_CURATED_PROVIDER_FAMILY_ORDER = [
   "cursor-cli",
   "llama-cpp",
   "openai-codex",
+  "openrouter",
   "gemini",
   "minimax",
   "kimi",
@@ -587,9 +590,84 @@ export type ProviderConnectionStatus = "connected" | "not-connected" | "skipped"
 /** GitHub-specific status variants for richer connection feedback */
 type GitHubConnectionStatus = "connected" | "failed" | "pending" | "skipped" | "not-connected";
 
+type GitHubOAuthActionState = "unavailable" | "not-connected" | "connected" | "pending" | "failed" | "skipped";
+type GitHubCliActionState = "unknown" | "missing" | "unauthenticated" | "authenticated";
+
 interface GhCliStatus {
   available: boolean;
   authenticated: boolean;
+}
+
+interface GitHubActionViewModel {
+  oauth: {
+    provider?: AuthProvider;
+    providerAvailable: boolean;
+    authenticated: boolean;
+    loginInProgress: boolean;
+    state: GitHubOAuthActionState;
+  };
+  ghCli: {
+    status?: GhCliStatus;
+    state: GitHubCliActionState;
+    authenticated: boolean;
+  };
+  ready: boolean;
+  readyVia: "oauth" | "gh-cli" | null;
+}
+
+const GIT_INSTALL_URL = "https://git-scm.com/downloads";
+const GH_CLI_INSTALL_URL = "https://github.com/cli/cli/releases/latest";
+
+function buildGitHubActionViewModel(params: {
+  providers: AuthProvider[];
+  ghCliStatus?: GhCliStatus;
+  loginOutcomes: Record<string, LoginOutcome>;
+  skipped: boolean;
+}): GitHubActionViewModel {
+  const githubProvider = params.providers.find((provider) => provider.id === "github");
+  const oauthAuthenticated = githubProvider?.authenticated ?? false;
+  const oauthLoginInProgress = githubProvider?.loginInProgress ?? false;
+  const ghCliState: GitHubCliActionState = !params.ghCliStatus
+    ? "unknown"
+    : params.ghCliStatus.authenticated
+      ? "authenticated"
+      : params.ghCliStatus.available
+        ? "unauthenticated"
+        : "missing";
+  const ghCliAuthenticated = ghCliState === "authenticated";
+  let oauthState: GitHubOAuthActionState = "unavailable";
+
+  if (githubProvider) {
+    const outcome = params.loginOutcomes.github;
+    if (oauthAuthenticated) {
+      oauthState = "connected";
+    } else if (outcome === "pending" || oauthLoginInProgress) {
+      oauthState = "pending";
+    } else if (outcome === "failed" || outcome === "timeout") {
+      oauthState = "failed";
+    } else if (params.skipped) {
+      oauthState = "skipped";
+    } else {
+      oauthState = "not-connected";
+    }
+  }
+
+  return {
+    oauth: {
+      provider: githubProvider,
+      providerAvailable: !!githubProvider,
+      authenticated: oauthAuthenticated,
+      loginInProgress: oauthLoginInProgress,
+      state: oauthState,
+    },
+    ghCli: {
+      status: params.ghCliStatus,
+      state: ghCliState,
+      authenticated: ghCliAuthenticated,
+    },
+    ready: oauthAuthenticated || ghCliAuthenticated,
+    readyVia: oauthAuthenticated ? "oauth" : ghCliAuthenticated ? "gh-cli" : null,
+  };
 }
 
 /** Maximum number of poll cycles before timing out (150 × 2s = 5 minutes) */
@@ -656,6 +734,7 @@ export function ModelOnboardingModal({
   const [isAgentInterviewOpen, setIsAgentInterviewOpen] = useState(false);
   const [authProviders, setAuthProviders] = useState<AuthProvider[]>([]);
   const [ghCliStatus, setGhCliStatus] = useState<GhCliStatus | undefined>(undefined);
+  const [gitCliStatus, setGitCliStatus] = useState<GitCliStatus | undefined>(undefined);
   const [authLoading, setAuthLoading] = useState(true);
   const [authActionInProgress, setAuthActionInProgress] = useState<string | null>(null);
   const [loginInstructions, setLoginInstructions] = useState<Record<string, string>>({});
@@ -817,10 +896,11 @@ export function ModelOnboardingModal({
   // Load auth providers
   const loadAuthStatus = useCallback(async () => {
     try {
-      const { providers, ghCli } = await fetchAuthStatus();
+      const { providers, ghCli, gitCli } = await fetchAuthStatus();
       const visibleProviders = filterVisibleOnboardingAndSettingsProviders(providers);
       setAuthProviders(visibleProviders);
       setGhCliStatus(ghCli);
+      setGitCliStatus(gitCli);
       setLoginInstructions((prev) => {
         const next: Record<string, string> = {};
         for (const [providerId, instructions] of Object.entries(prev)) {
@@ -908,15 +988,32 @@ export function ModelOnboardingModal({
     return () => clearInterval(interval);
   }, [authProviders, loadAuthStatus]);
 
+  /*
+  FNXC:Onboarding 2026-07-03-17:04:
+  The GitHub onboarding step needs an explicit action model so OAuth login, GitHub CLI install/auth, and optional skip states stay independent.
+  GitHub readiness remains OAuth-authenticated OR `gh`-authenticated; GitHub-named AI providers such as `github-copilot` must never satisfy the GitHub integration provider check.
+  */
+  const githubActionState = useMemo(
+    () => buildGitHubActionViewModel({
+      providers: authProviders,
+      ghCliStatus,
+      loginOutcomes,
+      skipped: isGithubSkipped,
+    }),
+    [authProviders, ghCliStatus, loginOutcomes, isGithubSkipped],
+  );
   // OAuth status for the GitHub provider (used for OAuth-specific controls like Connect/Disconnect).
-  const githubProvider = authProviders.find((p) => p.id === "github");
-  const hasGithubProvider = !!githubProvider;
-  const isGithubAuthenticated = githubProvider?.authenticated ?? false;
-  const isGithubLoginInProgress = githubProvider?.loginInProgress ?? false;
-  const isGithubCliAuthenticated = ghCliStatus?.authenticated ?? false;
+  const hasGithubProvider = githubActionState.oauth.providerAvailable;
+  const isGithubAuthenticated = githubActionState.oauth.authenticated;
+  const isGithubLoginInProgress = githubActionState.oauth.loginInProgress;
+  const isGithubCliAuthenticated = githubActionState.ghCli.authenticated;
+  const gitInstallUrl = gitCliStatus?.installUrl ?? GIT_INSTALL_URL;
+  const gitVersionLabel = gitCliStatus?.version
+    ? t("setup.gitPrerequisiteInstalledVersion", "Git is installed on the Fusion host ({{version}}).", { version: gitCliStatus.version })
+    : t("setup.gitPrerequisiteInstalled", "Git is installed on the Fusion host.");
   // Effective GitHub readiness (matches useSetupReadiness): OAuth OR authenticated gh CLI session.
-  const isGitHubReady = isGithubAuthenticated || isGithubCliAuthenticated;
-  const isGitHubReadyViaCli = !isGithubAuthenticated && isGithubCliAuthenticated;
+  const isGitHubReady = githubActionState.ready;
+  const isGitHubReadyViaCli = githubActionState.readyVia === "gh-cli";
 
   // Get provider connection status for UI display
   const getProviderStatus = useCallback((provider: AuthProvider): ProviderConnectionStatus => {
@@ -955,23 +1052,22 @@ export function ModelOnboardingModal({
   }
 
   const getGitHubStatus = useCallback((): GitHubConnectionStatus => {
-    if (isGitHubReady) {
+    if (githubActionState.ready) {
       return "connected";
     }
 
-    const githubOutcome = loginOutcomes["github"];
-    if (githubOutcome === "pending") {
+    if (githubActionState.oauth.state === "pending") {
       return "pending";
     }
-    if (githubOutcome === "failed" || githubOutcome === "timeout") {
+    if (githubActionState.oauth.state === "failed") {
       return "failed";
     }
-    if (isGithubSkipped) {
+    if (githubActionState.oauth.state === "skipped") {
       return "skipped";
     }
 
     return "not-connected";
-  }, [isGitHubReady, loginOutcomes, isGithubSkipped]);
+  }, [githubActionState]);
 
   function GitHubStatusBadge({ status }: { status: GitHubConnectionStatus }) {
     const config: Record<GitHubConnectionStatus, { text: string; className: string }> = {
@@ -1201,6 +1297,19 @@ export function ModelOnboardingModal({
       await createAgent(buildAgentCreatePayload(agentDraft), targetProjectId);
       handleNext();
     } catch (err) {
+      /*
+       * FNXC:Onboarding 2026-07-03-12:10:
+       * The default first agent ("CEO") can already exist by the time this step runs — the operator can
+       * reach agent creation from more than one first-run surface (the project-setup SetupWizard sub-flow
+       * also offers to create the first agent), and agent names are unique per store, so a redundant
+       * create returns 409 "Agent with this name already exists". The step's goal — a first agent exists —
+       * is already satisfied, so treat a name collision as success and advance instead of blocking first
+       * run. The user still creates the agent; they just aren't punished for the flow offering it twice.
+       */
+      if (err instanceof Error && /already exists/i.test(err.message)) {
+        handleNext();
+        return;
+      }
       setAgentCreationError(err instanceof Error ? err.message : t("setup.firstAgentCreateError", "Failed to create agent"));
     } finally {
       setIsCreatingAgent(false);
@@ -1316,10 +1425,11 @@ export function ModelOnboardingModal({
           }
 
           try {
-            const { providers, ghCli } = await fetchAuthStatus();
+            const { providers, ghCli, gitCli } = await fetchAuthStatus();
             const visibleProviders = filterVisibleOnboardingAndSettingsProviders(providers);
             setAuthProviders(visibleProviders);
             setGhCliStatus(ghCli);
+            setGitCliStatus(gitCli);
             const provider = visibleProviders.find((p) => p.id === providerId);
             if (provider?.authenticated) {
               if (pollIntervalRef.current) {
@@ -1655,9 +1765,36 @@ export function ModelOnboardingModal({
   );
 
   // Handle model selection from CustomModelDropdown
-  const handleModelSelect = useCallback((value: string) => {
-    setSelectedModel(value);
-  }, []);
+  const handleModelSelect = useCallback(
+    (value: string) => {
+      setSelectedModel(value);
+
+      /*
+       * FNXC:Onboarding 2026-07-03-09:15:
+       * Persist the picked model as the global default IMMEDIATELY on selection. Previously the choice
+       * lived only in local state until completeOnboarding ran on the final step, so a user who selected
+       * a model but exited or skipped before finishing lost the selection and then saw the post-onboarding
+       * "Select Default Model" banner despite having explicitly chosen one. Saving on pick makes the
+       * selection durable regardless of how onboarding is exited.
+       */
+      const slashIdx = value.indexOf("/");
+      const provider = slashIdx !== -1 ? value.slice(0, slashIdx) : undefined;
+      const modelId = slashIdx !== -1 ? value.slice(slashIdx + 1) : value;
+      const model = availableModels.find((m) => m.id === modelId);
+      const updates: Record<string, unknown> = {};
+      if (model) {
+        updates.defaultProvider = model.provider;
+        updates.defaultModelId = model.id;
+      } else if (provider && modelId) {
+        updates.defaultProvider = provider;
+        updates.defaultModelId = modelId;
+      }
+      if (updates.defaultModelId) {
+        void updateGlobalSettings(updates).catch(() => undefined);
+      }
+    },
+    [availableModels, updateGlobalSettings],
+  );
 
   const completeOnboarding = useCallback(async () => {
     try {
@@ -1665,13 +1802,26 @@ export function ModelOnboardingModal({
         modelOnboardingComplete: true,
       };
 
-      // If a model was selected, persist it as the default
-      if (selectedModel) {
-        const slashIdx = selectedModel.indexOf("/");
+      /*
+       * FNXC:Onboarding 2026-07-03-09:10:
+       * Persist a default model on completion so the post-onboarding "Select Default Model"
+       * recommendation does not fire for operators who connected a provider but never opened the model
+       * dropdown. selectedModel is only populated by an explicit dropdown pick (or a previously-saved
+       * default), so a fresh first-run where the user just connects Anthropic and clicks Continue would
+       * otherwise leave defaultProvider/defaultModelId unset and trip the false-positive banner. Prefer
+       * the explicit pick; otherwise fall back to the first available model from the connected provider.
+       * Only when no models are available at all do we leave the default unset.
+       */
+      const effectiveSelection =
+        selectedModel ||
+        (availableModels[0] ? `${availableModels[0].provider}/${availableModels[0].id}` : "");
+
+      if (effectiveSelection) {
+        const slashIdx = effectiveSelection.indexOf("/");
         const provider =
-          slashIdx !== -1 ? selectedModel.slice(0, slashIdx) : undefined;
+          slashIdx !== -1 ? effectiveSelection.slice(0, slashIdx) : undefined;
         const modelId =
-          slashIdx !== -1 ? selectedModel.slice(slashIdx + 1) : selectedModel;
+          slashIdx !== -1 ? effectiveSelection.slice(slashIdx + 1) : effectiveSelection;
 
         const model = availableModels.find((m) => m.id === modelId);
         if (model) {
@@ -1830,7 +1980,15 @@ export function ModelOnboardingModal({
   const githubStatus = getGitHubStatus();
 
   const aiProviders = authProviders.filter((provider) => provider.id !== "github");
-  const showShellConnectionSetup = shellState.host !== "web" && !shellState.activeProfileId;
+  /*
+   * FNXC:Onboarding 2026-07-03-07:20:
+   * Show the "Connect remote Fusion server" card ONLY when not already connected to a remote server
+   * (no active remote profile) — on any host, web included. Never show it in LOCAL desktop mode: a
+   * local runtime is already the connected backend, so prompting for a remote server URL just confuses
+   * first-run setup (the original report).
+   */
+  const showShellConnectionSetup =
+    !shellState.activeProfileId && shellState.desktopMode !== "local";
   const orderedAiProviders = [...aiProviders].sort(compareOnboardingProviders);
   const hasOauthProviders = orderedAiProviders.some((provider) => !provider.type || provider.type === "oauth");
   const providerSupportsApiKey = (provider: AuthProvider) => provider.type === "api_key";
@@ -2353,9 +2511,6 @@ export function ModelOnboardingModal({
               <p className="onboarding-helper-text model-onboarding-primary-helper">
                 {t("setup.onlyNeedOneProvider", "You only need one provider to get started.")}
               </p>
-              <p className="onboarding-helper-text">
-                {t("setup.researchRunsNote", "Research runs require provider credentials and an enabled Research View. After onboarding, verify these in Settings → Authentication and Settings → Experimental Features.")}
-              </p>
 
               {showShellConnectionSetup && (
                 <div className="card">
@@ -2481,6 +2636,48 @@ export function ModelOnboardingModal({
                         {t("setup.noQuickStartProviders", "No quick-start providers are available in this environment.")}
                       </p>
                     )}
+
+                    {/*
+                    FNXC:Onboarding 2026-07-03-00:00:
+                    Expanded/all-provider controls belong directly under quick-start providers so the advanced provider list, custom-provider list, and add-custom-provider form stay visually tied to the first provider decision.
+                    */}
+                    <OnboardingDisclosure summary={t("setup.advancedProviderSettings", "Advanced provider settings")} className="onboarding-provider-advanced">
+                      <div data-testid="onboarding-advanced-provider-settings">
+                        {advancedProviders.length > 0 ? (
+                          <div className="model-onboarding-providers">
+                            {advancedProviders.map((provider) => renderAiProviderCard(provider))}
+                          </div>
+                        ) : (
+                          <p className="onboarding-helper-text">
+                            {t("setup.allProvidersShown", "All currently available providers are already shown above.")}
+                          </p>
+                        )}
+
+                        {customProviders.length > 0 ? (
+                          <div className="onboarding-custom-provider-list">
+                            {customProviders.map((provider) => (
+                              <div key={provider.id} className="onboarding-custom-provider-item">
+                                <ProviderIcon provider={provider.id} size="sm" />
+                                <span>{provider.name || provider.id}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+
+                        {!showCustomProviderForm ? (
+                          <button type="button" className="btn btn-sm" onClick={() => setShowCustomProviderForm(true)}>
+                            {t("setup.addCustomProvider", "Add custom provider")}
+                          </button>
+                        ) : (
+                          <CustomProviderForm
+                            onSave={handleSaveCustomProvider}
+                            onCancel={() => { setShowCustomProviderForm(false); setCustomProviderError(undefined); }}
+                            saving={customProviderSaving}
+                            error={customProviderError}
+                          />
+                        )}
+                      </div>
+                    </OnboardingDisclosure>
                   </section>
 
                   {connectedNonQuickStartProviders.length > 0 && (
@@ -2534,44 +2731,6 @@ export function ModelOnboardingModal({
                     )}
                   </div>
 
-                  <OnboardingDisclosure summary={t("setup.advancedProviderSettings", "Advanced provider settings")} className="onboarding-provider-advanced">
-                    <div data-testid="onboarding-advanced-provider-settings">
-                      {advancedProviders.length > 0 ? (
-                        <div className="model-onboarding-providers">
-                          {advancedProviders.map((provider) => renderAiProviderCard(provider))}
-                        </div>
-                      ) : (
-                        <p className="onboarding-helper-text">
-                          {t("setup.allProvidersShown", "All currently available providers are already shown above.")}
-                        </p>
-                      )}
-
-                      {customProviders.length > 0 ? (
-                        <div className="onboarding-custom-provider-list">
-                          {customProviders.map((provider) => (
-                            <div key={provider.id} className="onboarding-custom-provider-item">
-                              <ProviderIcon provider={provider.id} size="sm" />
-                              <span>{provider.name || provider.id}</span>
-                            </div>
-                          ))}
-                        </div>
-                      ) : null}
-
-                      {!showCustomProviderForm ? (
-                        <button type="button" className="btn btn-sm" onClick={() => setShowCustomProviderForm(true)}>
-                          {t("setup.addCustomProvider", "Add custom provider")}
-                        </button>
-                      ) : (
-                        <CustomProviderForm
-                          onSave={handleSaveCustomProvider}
-                          onCancel={() => { setShowCustomProviderForm(false); setCustomProviderError(undefined); }}
-                          saving={customProviderSaving}
-                          error={customProviderError}
-                        />
-                      )}
-                    </div>
-                  </OnboardingDisclosure>
-
                   {/* OAuth login disclosure */}
                   {hasOauthProviders && (
                     <OnboardingDisclosure summary={t("setup.howDoesLoginWork", "How does login work?")}>
@@ -2611,6 +2770,45 @@ export function ModelOnboardingModal({
                   {t("setup.githubConnectionDescription", "Connecting GitHub unlocks issue imports and pull request tracking. You can skip this — task creation works without it.")}
                 </p>
               )}
+              {/*
+                FNXC:Onboarding 2026-07-03-00:00:
+                The GitHub step must surface missing `git` on the Fusion server host before users reach project clone/init workflows.
+                This prerequisite warning is separate from GitHub OAuth/gh readiness so users can still skip optional GitHub auth.
+              */}
+              {gitCliStatus && (
+                <div
+                  className={`onboarding-github-git-prerequisite ${gitCliStatus.available ? "onboarding-github-git-prerequisite--ready" : "onboarding-github-git-prerequisite--missing"}`}
+                  data-testid="onboarding-git-prerequisite"
+                  role={gitCliStatus.available ? "status" : "alert"}
+                >
+                  <div className="onboarding-github-git-prerequisite__heading">
+                    <GitPullRequest size={16} aria-hidden="true" />
+                    <strong>
+                      {gitCliStatus.available
+                        ? t("setup.gitPrerequisiteReadyTitle", "Git prerequisite ready")
+                        : t("setup.gitPrerequisiteMissingTitle", "Install Git before project setup")}
+                    </strong>
+                  </div>
+                  {gitCliStatus.available ? (
+                    <p>{gitVersionLabel}</p>
+                  ) : (
+                    <>
+                      <p>
+                        {t("setup.gitPrerequisiteMissingBody", "Fusion could not find `git` on the server host running Fusion. Install Git there before cloning repositories, initializing projects, or registering Git-backed workspaces.")}
+                      </p>
+                      <ul className="onboarding-github-git-install-list">
+                        <li>{t("setup.gitPrerequisiteMac", "macOS: install Xcode Command Line Tools with `xcode-select --install`, Homebrew with `brew install git`, or the Git installer.")}</li>
+                        <li>{t("setup.gitPrerequisiteWindows", "Windows: install Git for Windows and restart the Fusion host shell or service.")}</li>
+                        <li>{t("setup.gitPrerequisiteLinux", "Linux: install with your package manager, for example `sudo apt install git`, `sudo dnf install git`, or `sudo pacman -S git`.")}</li>
+                      </ul>
+                      <a href={gitInstallUrl} target="_blank" rel="noreferrer">
+                        {t("setup.gitPrerequisiteInstallLink", "Open Git install downloads")}
+                      </a>
+                    </>
+                  )}
+                </div>
+              )}
+
               {!isGitHubReady && (
                 <div className="onboarding-feature-list">
                   <ul>
@@ -2646,6 +2844,44 @@ export function ModelOnboardingModal({
                 </p>
               </OnboardingDisclosure>
 
+              {/*
+                FNXC:Onboarding 2026-07-03-17:22:
+                GitHub onboarding must give users in-flow paths for both supported auth modes instead of Settings-only explanatory copy.
+                The dashboard can start OAuth when the GitHub provider exists; `gh` CLI setup remains explicit host-side guidance because Fusion does not install third-party binaries automatically.
+              */}
+              {!isGithubCliAuthenticated && githubActionState.ghCli.state === "missing" && (
+                <div className="onboarding-github-setup-card onboarding-github-setup-card--warning" data-testid="onboarding-gh-cli-install-card" role="status">
+                  <div className="onboarding-github-setup-card__heading">
+                    <ProviderIcon provider="github" size="sm" />
+                    <strong>{t("setup.githubCliInstallTitle", "Install GitHub CLI")}</strong>
+                  </div>
+                  <p>
+                    {t("setup.githubCliInstallBody", "Fusion could not find `gh` on the host running Fusion. Install GitHub CLI there to import issues and track pull requests with CLI authentication.")}
+                  </p>
+                  <ul className="onboarding-github-setup-list">
+                    <li>{t("setup.githubCliInstallMac", "macOS: `brew install gh` or download the installer from GitHub CLI releases.")}</li>
+                    <li>{t("setup.githubCliInstallWindows", "Windows: install GitHub CLI with WinGet, Chocolatey, or the GitHub CLI installer, then restart the Fusion host shell or service.")}</li>
+                    <li>{t("setup.githubCliInstallLinux", "Linux: install `gh` with your distribution package manager or the packages from cli.github.com.")}</li>
+                  </ul>
+                  <a className="btn btn-sm" href={GH_CLI_INSTALL_URL} target="_blank" rel="noreferrer">
+                    {t("setup.githubCliInstallLink", "Open GitHub CLI releases")}
+                  </a>
+                </div>
+              )}
+
+              {!isGithubCliAuthenticated && githubActionState.ghCli.state === "unauthenticated" && (
+                <div className="onboarding-github-setup-card onboarding-github-setup-card--info" data-testid="onboarding-gh-cli-auth-card" role="status">
+                  <div className="onboarding-github-setup-card__heading">
+                    <ProviderIcon provider="github" size="sm" />
+                    <strong>{t("setup.githubCliAuthTitle", "Authenticate GitHub CLI")}</strong>
+                  </div>
+                  <p>
+                    {t("setup.githubCliAuthBody", "GitHub CLI is installed but not authenticated on the Fusion host. Run this command in the environment where Fusion is running, then return here and continue.")}
+                  </p>
+                  <code className="onboarding-github-command">gh auth login</code>
+                </div>
+              )}
+
               {!hasGithubProvider ? (
                 <div className="model-onboarding-github-optional">
                   <div className="optional-icon optional-icon--github" aria-hidden="true">
@@ -2657,13 +2893,21 @@ export function ModelOnboardingModal({
                     </p>
                   ) : (
                     <p>
-                      {t("setup.githubOauthNotConnected", "GitHub OAuth isn't connected yet. You can set it up in Settings → Authentication, or continue now and connect later.")}
+                      {t("setup.githubOauthUnavailable", "Dashboard GitHub OAuth is not configured on this Fusion host. You can still continue without GitHub, or use the GitHub CLI setup guidance above when available.")}
                     </p>
                   )}
                   <div className="model-onboarding-github-optional__actions">
                     <button
                       className="btn btn-primary btn-sm"
-                      onClick={() => setStep("project-setup")}
+                      /*
+                       * FNXC:Onboarding 2026-07-03-08:00:
+                       * Advance via handleNext/handleSkip (not a raw setStep) so the GitHub step's
+                       * status is recorded. When GitHub is ready via the gh CLI, "Continue with gh CLI
+                       * auth" must COMPLETE the step (handleNext) — previously it jumped to project-setup
+                       * without adding "github" to completedSteps, so step 2 never checked off. When
+                       * GitHub isn't connected, "Continue without GitHub" is a SKIP (handleSkip).
+                       */
+                      onClick={isGitHubReadyViaCli ? handleNext : handleSkip}
                     >
                       {isGitHubReadyViaCli
                         ? t("setup.continueWithGhCli", "Continue with gh CLI auth →")
@@ -2741,7 +2985,7 @@ export function ModelOnboardingModal({
                           onClick={() => handleLogin("github")}
                         >
                           <GitPullRequest size={16} />
-                          {t("setup.connect", "Connect")}
+                          {t("setup.connectGitHubOauth", "Connect GitHub OAuth")}
                         </button>
                       )}
                       {(authActionInProgress === "github" || isGithubLoginInProgress) && loginInstructions.github && (

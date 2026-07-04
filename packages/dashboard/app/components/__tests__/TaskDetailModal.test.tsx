@@ -21,12 +21,14 @@ import {
 import { TaskDetailContent, TaskDetailModal } from "../TaskDetailModal";
 
 vi.mock("../BranchGroupCard", () => ({
-  BranchGroupCard: ({ groupId }: { groupId: string }) => {
+  BranchGroupCard: ({ groupId, taskId, onBranchGroupReset }: { groupId: string; taskId?: string; onBranchGroupReset?: () => void }) => {
     const [expanded, setExpanded] = React.useState(false);
     return (
       <div>
         Mock Branch Group {groupId}
+        {taskId && <span>Mock Branch Group Task {taskId}</span>}
         <button type="button" onClick={() => setExpanded(true)}>Mock expand branch group</button>
+        {onBranchGroupReset && <button type="button" onClick={onBranchGroupReset}>Mock reset stale branch group</button>}
         {expanded && <span>Mock branch group expanded</span>}
       </div>
     );
@@ -881,6 +883,13 @@ describe("TaskDetailModal branch group surfacing", () => {
     render(renderTaskWithBranchContext("FN-6041"));
 
     expect(screen.getByText("Mock Branch Group BG-1")).toBeInTheDocument();
+  });
+
+  it("FN-7438: passes task identity and reset callback to stale branch-group recovery", () => {
+    render(renderTaskWithBranchContext("FN-6041"));
+
+    expect(screen.getByText("Mock Branch Group Task FN-6041")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Mock reset stale branch group" })).toBeInTheDocument();
   });
 
   it("remounts the branch group card when switching tasks inside the same group", async () => {

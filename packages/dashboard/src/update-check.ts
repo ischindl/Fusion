@@ -14,6 +14,7 @@ const INSTALL_MAX_BUFFER = 10 * 1024 * 1024;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const execAsync = promisify(exec);
+const UNRESOLVED_VERSION = "0.0.0";
 
 /** Allowed update-check cadences from GlobalSettings. */
 export type UpdateCheckFrequency = "manual" | "on-startup" | "daily" | "weekly";
@@ -202,6 +203,20 @@ export async function performUpdateCheck(
   options: { frequency?: UpdateCheckFrequency; force?: boolean } = {},
 ): Promise<UpdateCheckResult> {
   const now = Date.now();
+
+  /*
+   * FNXC:DesktopUpdates 2026-07-03-15:35:
+   * `0.0.0` is a resolver sentinel, not an installed Fusion version. If packaged/runtime metadata is missing, update surfaces must fail closed instead of comparing npm's latest release against zero and showing a false-positive desktop update banner.
+   */
+  if (currentVersion === UNRESOLVED_VERSION) {
+    return {
+      currentVersion,
+      latestVersion: null,
+      updateAvailable: false,
+      lastChecked: now,
+      error: "Current Fusion version is unavailable",
+    };
+  }
   const cached = readCachedUpdateCheck(fusionDir);
   const cacheMatchesCurrentVersion = !cached || cached.currentVersion === currentVersion;
   const ttl = ttlForFrequency(options.frequency);

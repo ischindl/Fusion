@@ -79,6 +79,7 @@ const mockChatStore = {
   setCliSessionFile: vi.fn(),
   setInFlightGeneration: vi.fn(),
   getRoomMessages: vi.fn(),
+  recordTokenUsage: vi.fn(),
 };
 
 const mockAgentStore = {
@@ -186,6 +187,105 @@ describe("ChatManager.sendMessage", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("records successful chat session token usage from provider stats", async () => {
+    __setCreateResolvedAgentSession(async () => ({
+      session: {
+        prompt: vi.fn().mockResolvedValue(undefined),
+        dispose: vi.fn(),
+        model: { provider: "openai", id: "gpt-4o" },
+        getSessionStats: () => ({ tokens: { input: 21, output: 13, cacheRead: 5, cacheWrite: 2, total: 41 } }),
+        state: { messages: [{ role: "assistant", content: "Tokened response" }] },
+      },
+    }));
+    mockChatStore.getSession.mockReturnValue({
+      id: "chat-001",
+      agentId: "agent-001",
+      status: "active",
+      projectId: "project-a",
+    });
+    mockChatStore.addMessage.mockImplementation((_sessionId, input) => ({
+      id: input.role === "assistant" ? "assistant-msg" : "user-msg",
+      sessionId: "chat-001",
+      role: input.role,
+      content: input.content,
+      createdAt: "2026-07-02T00:00:00.000Z",
+    }));
+
+    const chatManager = createChatManager();
+    await chatManager.sendMessage("chat-001", "Hello");
+
+    expect(mockChatStore.recordTokenUsage).toHaveBeenCalledWith(expect.objectContaining({
+      sourceKind: "chat",
+      chatSessionId: "chat-001",
+      messageId: "assistant-msg",
+      projectId: "project-a",
+      agentId: "agent-001",
+      modelProvider: "openai",
+      modelId: "gpt-4o",
+      inputTokens: 21,
+      outputTokens: 13,
+      cachedTokens: 5,
+      cacheWriteTokens: 2,
+      totalTokens: 41,
+    }));
+  });
+
+  it("records task-detail planner chat tokens separately from task execution usage", async () => {
+    __setCreateResolvedAgentSession(async () => ({
+      session: {
+        prompt: vi.fn().mockResolvedValue(undefined),
+        dispose: vi.fn(),
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        getSessionStats: () => ({ tokens: { input: 10, output: 4, cacheRead: 0, cacheWrite: 0 } }),
+        state: { messages: [{ role: "assistant", content: "Planner response" }] },
+      },
+    }));
+    mockChatStore.getSession.mockReturnValue({
+      id: "chat-planner",
+      agentId: "task-planner:FN-7449",
+      status: "active",
+      projectId: "project-a",
+    });
+    mockChatStore.addMessage.mockImplementation((_sessionId, input) => ({
+      id: input.role === "assistant" ? "planner-assistant-msg" : "planner-user-msg",
+      sessionId: "chat-planner",
+      role: input.role,
+      content: input.content,
+      createdAt: "2026-07-02T00:00:00.000Z",
+    }));
+    const taskStore = {
+      getTask: vi.fn().mockResolvedValue({ id: "FN-7449", title: "Task", description: "desc", column: "todo", steps: [] }),
+      getSettings: vi.fn().mockResolvedValue({}),
+    };
+
+    const chatManager = new ChatManager(mockChatStore as any, "/tmp/test", mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
+    await chatManager.sendMessage("chat-planner", "How many tokens?");
+
+    expect(mockChatStore.recordTokenUsage).toHaveBeenCalledWith(expect.objectContaining({
+      sourceKind: "task-planner-chat",
+      chatSessionId: "chat-planner",
+      messageId: "planner-assistant-msg",
+      agentId: "task-planner:FN-7449",
+      totalTokens: 14,
+    }));
+  });
+
+  it("does not record chat token usage when session stats are unavailable or zero", async () => {
+    __setCreateResolvedAgentSession(async () => ({
+      session: {
+        prompt: vi.fn().mockResolvedValue(undefined),
+        dispose: vi.fn(),
+        getSessionStats: () => ({ tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }),
+        state: { messages: [{ role: "assistant", content: "No stats" }] },
+      },
+    }));
+
+    const chatManager = createChatManager();
+    await chatManager.sendMessage("chat-001", "Hello");
+
+    expect(mockChatStore.recordTokenUsage).not.toHaveBeenCalled();
   });
 
   describe("mention parsing and context", () => {

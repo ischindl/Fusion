@@ -9,8 +9,8 @@
  * component-test conventions in settings-primitives.test.tsx.
  */
 import { useState } from "react";
-import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-library/react";
 import * as jestDomMatchers from "@testing-library/jest-dom/matchers";
 
 import { AppearanceSection } from "../components/settings/sections/AppearanceSection";
@@ -23,7 +23,8 @@ import { PromptsSection } from "../components/settings/sections/PromptsSection";
 import { SecretsSection } from "../components/settings/sections/SecretsSection";
 import { WorktreesSection } from "../components/settings/sections/WorktreesSection";
 import type { SettingsFormState } from "../components/settings/sections/context";
-import { fetchWorkflow, fetchWorkflowSettingValues } from "../api";
+import { fetchWorkflow, fetchWorkflowSettingValues, updateWorkflowSettingValues } from "../api";
+import type { WorkflowSettingValuesPayload } from "../api";
 
 vi.mock("../components/AgentPromptsManager", () => ({
   AgentPromptsManager: () => <div data-testid="agent-prompts-manager" />,
@@ -41,17 +42,32 @@ vi.mock("../api", async (importOriginal) => {
     fetchProjectDefaultWorkflow: vi.fn(async () => ({ workflowId: null })),
     setProjectDefaultWorkflow: vi.fn(async () => ({ workflowId: null })),
     fetchGlobalSettings: vi.fn(async () => ({})),
+    updateWorkflowSettingValues: vi.fn(async () => ({ stored: {}, effective: {}, orphaned: [] })),
   };
 });
 vi.mock("../components/CustomModelDropdown", () => ({
-  CustomModelDropdown: ({ id, label, menuWidth = "trigger" }: { id?: string; label: string; menuWidth?: "trigger" | "readable" }) => (
-    <button type="button" data-testid={`mock-model-dropdown-${id ?? label}`} data-menu-width={menuWidth}>
+  CustomModelDropdown: ({ id, label, value, onChange, menuWidth = "trigger" }: { id?: string; label: string; value?: string; onChange?: (value: string) => void; menuWidth?: "trigger" | "readable" }) => (
+    <button
+      type="button"
+      data-testid={`mock-model-dropdown-${id ?? label}`}
+      data-menu-width={menuWidth}
+      data-value={value ?? ""}
+      onClick={() => onChange?.("anthropic/claude-sonnet-4-5")}
+    >
       {label}
     </button>
   ),
 }));
 
 expect.extend(jestDomMatchers);
+beforeEach(() => {
+  vi.mocked(fetchWorkflow).mockReset();
+  vi.mocked(fetchWorkflowSettingValues).mockReset();
+  vi.mocked(updateWorkflowSettingValues).mockReset();
+  vi.mocked(fetchWorkflow).mockResolvedValue({ id: "builtin:coding", name: "Coding", ir: {} } as never);
+  vi.mocked(fetchWorkflowSettingValues).mockResolvedValue({ stored: {}, effective: {}, orphaned: [] });
+  vi.mocked(updateWorkflowSettingValues).mockResolvedValue({ stored: {}, effective: {}, orphaned: [] });
+});
 afterEach(() => cleanup());
 
 const emptyForm = {} as SettingsFormState;
@@ -343,6 +359,89 @@ describe("ProjectModelsSection", () => {
     );
 
     expect(await screen.findByTestId("mock-model-dropdown-workflow-planning-model")).toHaveAttribute("data-menu-width", "readable");
+  });
+
+  it("preserves workflow lane edits made while the registered saver is in flight", async () => {
+    let saver: (() => Promise<void>) | null = null;
+    let resolveSave!: (value: WorkflowSettingValuesPayload) => void;
+    vi.mocked(fetchWorkflow).mockResolvedValueOnce({
+      id: "builtin:coding",
+      name: "Coding",
+      ir: {
+        settings: [
+          { id: "planningProvider", name: "Planning Provider", type: "string" },
+          { id: "planningModelId", name: "Planning Model", type: "string" },
+          { id: "executionProvider", name: "Execution Provider", type: "string" },
+          { id: "executionModelId", name: "Execution Model", type: "string" },
+        ],
+      },
+    } as never);
+    vi.mocked(fetchWorkflowSettingValues).mockResolvedValueOnce({ stored: {}, effective: {}, orphaned: [] });
+    vi.mocked(updateWorkflowSettingValues)
+      .mockReturnValueOnce(
+        new Promise<WorkflowSettingValuesPayload>((resolve) => {
+          resolveSave = resolve;
+        }),
+      )
+      .mockResolvedValueOnce({
+        stored: { executionProvider: "anthropic", executionModelId: "claude-sonnet-4-5" },
+        effective: { executionProvider: "anthropic", executionModelId: "claude-sonnet-4-5" },
+        orphaned: [],
+      });
+
+    render(
+      <ProjectModelsSection
+        scopeBanner={null}
+        form={{ defaultWorkflowId: "builtin:coding" } as SettingsFormState}
+        setForm={vi.fn()}
+        models={{
+          ...models,
+          availableModels: [{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }],
+        }}
+        projectId="project-1"
+        addToast={vi.fn()}
+        registerWorkflowLaneSaver={(next) => {
+          saver = next;
+        }}
+      />,
+    );
+
+    const planning = await screen.findByTestId("mock-model-dropdown-workflow-planning-model");
+    const execution = await screen.findByTestId("mock-model-dropdown-workflow-execution-model");
+    fireEvent.click(planning);
+    await waitFor(() => expect(planning).toHaveAttribute("data-value", "anthropic/claude-sonnet-4-5"));
+
+    const firstSave = saver!();
+    await waitFor(() => expect(updateWorkflowSettingValues).toHaveBeenCalledTimes(1));
+    expect(updateWorkflowSettingValues).toHaveBeenNthCalledWith(
+      1,
+      "builtin:coding",
+      { planningProvider: "anthropic", planningModelId: "claude-sonnet-4-5" },
+      "project-1",
+    );
+
+    fireEvent.click(execution);
+    await waitFor(() => expect(execution).toHaveAttribute("data-value", "anthropic/claude-sonnet-4-5"));
+    await act(async () => {
+      resolveSave({
+        stored: { planningProvider: "anthropic", planningModelId: "claude-sonnet-4-5" },
+        effective: { planningProvider: "anthropic", planningModelId: "claude-sonnet-4-5" },
+        orphaned: [],
+      });
+      await firstSave;
+    });
+
+    expect(execution).toHaveAttribute("data-value", "anthropic/claude-sonnet-4-5");
+    await act(async () => {
+      await saver!();
+    });
+    await waitFor(() => expect(updateWorkflowSettingValues).toHaveBeenCalledTimes(2));
+    expect(updateWorkflowSettingValues).toHaveBeenNthCalledWith(
+      2,
+      "builtin:coding",
+      { executionProvider: "anthropic", executionModelId: "claude-sonnet-4-5" },
+      "project-1",
+    );
   });
 
   it("renders PR prompt guidance textareas and emits edits through setForm", () => {

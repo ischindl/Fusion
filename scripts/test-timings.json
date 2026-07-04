@@ -1402,7 +1402,6 @@
         "packages/engine/src/__tests__/executor-implicit-task-done-revise-guard.test.ts": 100,
         "packages/engine/src/__tests__/executor-lease-renewal.test.ts": 100,
         "packages/engine/src/__tests__/executor-missing-task-json-transient.test.ts": 100,
-        "packages/engine/src/__tests__/executor-pause.test.ts": 300,
         "packages/engine/src/__tests__/executor-paused-abort-todo-benign.test.ts": 100,
         "packages/engine/src/__tests__/executor-plan-only-scope-leak.test.ts": 100,
         "packages/engine/src/__tests__/executor-prompt.test.ts": 500,

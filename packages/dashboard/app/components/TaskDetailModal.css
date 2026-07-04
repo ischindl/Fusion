@@ -696,32 +696,42 @@ The task-detail modal metadata must keep priority, execution mode, provenance, P
   border-top: 1px solid var(--border);
 }
 
-.detail-github-tracking-section {
+.detail-github-tracking-section,
+.detail-gitlab-tracking-section {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--card);
   padding: var(--space-xs) var(--space-md);
 }
 
-.detail-github-tracking-section .detail-source-header {
+.detail-source-provider-badge--stale {
+  background: color-mix(in srgb, var(--color-warning) 18%, transparent);
+  color: var(--color-warning);
+}
+
+.detail-github-tracking-section .detail-source-header,
+.detail-gitlab-tracking-section .detail-source-header {
   flex-wrap: nowrap;
   align-items: center;
   min-width: 0;
 }
 
-.detail-github-tracking-section .detail-source-summary {
+.detail-github-tracking-section .detail-source-summary,
+.detail-gitlab-tracking-section .detail-source-summary {
   flex: 1 1 auto;
   flex-wrap: nowrap;
   min-width: 0;
 }
 
-.detail-github-tracking-section .detail-source-empty {
+.detail-github-tracking-section .detail-source-empty,
+.detail-gitlab-tracking-section .detail-source-empty {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.detail-github-tracking-section .detail-source-toggle {
+.detail-github-tracking-section .detail-source-toggle,
+.detail-gitlab-tracking-section .detail-source-toggle {
   flex: 0 0 auto;
 }
 
@@ -741,13 +751,15 @@ The task-detail modal metadata must keep priority, execution mode, provenance, P
   color: var(--text-muted);
 }
 
-.detail-github-tracking-content {
+.detail-github-tracking-content,
+.detail-gitlab-tracking-content {
   margin-top: var(--space-xs);
   padding-top: var(--space-xs);
   border-top: 1px solid var(--border);
 }
 
-.detail-github-tracking-grid {
+.detail-github-tracking-grid,
+.detail-gitlab-tracking-grid {
   margin-top: 0;
   padding-top: 0;
 }
@@ -765,7 +777,17 @@ The task-detail modal metadata must keep priority, execution mode, provenance, P
   color: var(--text-muted);
 }
 
-.detail-github-tracking-controls {
+.detail-gitlab-item-state {
+  font-weight: 600;
+  text-transform: lowercase;
+}
+
+.detail-gitlab-item-state--stale {
+  color: var(--color-warning);
+}
+
+.detail-github-tracking-controls,
+.detail-gitlab-tracking-controls {
   margin-top: var(--space-sm);
   display: flex;
   flex-direction: column;
@@ -2640,12 +2662,14 @@ Live and Feed Activity expansion overlays the content instead of reserving a too
     min-width: 0;
   }
 
-  .detail-github-tracking-section .detail-source-header {
+  .detail-github-tracking-section .detail-source-header,
+  .detail-gitlab-tracking-section .detail-source-header {
     flex-wrap: nowrap;
     min-width: 0;
   }
 
-  .detail-github-tracking-section .detail-source-summary {
+  .detail-github-tracking-section .detail-source-summary,
+  .detail-gitlab-tracking-section .detail-source-summary {
     flex: 1 1 auto;
     flex-wrap: nowrap;
     min-width: 0;
@@ -2663,7 +2687,8 @@ Live and Feed Activity expansion overlays the content instead of reserving a too
     margin-left: auto;
   }
 
-  .detail-github-tracking-section .detail-source-header .detail-source-toggle {
+  .detail-github-tracking-section .detail-source-header .detail-source-toggle,
+  .detail-gitlab-tracking-section .detail-source-header .detail-source-toggle {
     margin-left: 0;
   }
 

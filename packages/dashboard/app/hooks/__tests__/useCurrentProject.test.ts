@@ -44,6 +44,7 @@ describe("useCurrentProject", () => {
 
   beforeEach(() => {
     localStorage.clear();
+    window.history.replaceState({}, "", "/");
     vi.clearAllMocks();
     mockReadCache.mockReturnValue(null);
     // Default mock implementations
@@ -102,6 +103,69 @@ describe("useCurrentProject", () => {
       swrCache.SWR_CACHE_KEYS.CURRENT_PROJECT_ID,
       { maxAgeMs: swrCache.SWR_LONG_MAX_AGE_MS },
     );
+  });
+
+  it("hydrates from URL project before settings/cache fallback", async () => {
+    mockReadCache.mockReturnValueOnce("proj_1");
+    window.history.replaceState({}, "", "/?project=proj_2");
+    (fetchGlobalSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      dashboardCurrentProjectIdByNode: { local: "proj_1" },
+    });
+
+    const { result } = renderHook(() => useCurrentProject(mockProjects));
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.currentProject?.id).toBe("proj_2");
+    expect(fetchGlobalSettings).not.toHaveBeenCalled();
+    expect(mockWriteCache).toHaveBeenCalledWith(swrCache.SWR_CACHE_KEYS.CURRENT_PROJECT_ID, "proj_2");
+  });
+
+  it("waits for URL project while projects are still loading", async () => {
+    window.history.replaceState({}, "", "/?project=proj_2");
+
+    const { result, rerender } = renderHook(
+      ({ projects, projectsLoading }) => useCurrentProject(projects, { projectsLoading }),
+      { initialProps: { projects: [] as ProjectInfo[], projectsLoading: true } },
+    );
+
+    expect(result.current.currentProject).toBeNull();
+    expect(result.current.loading).toBe(true);
+
+    rerender({ projects: cloneProjects(), projectsLoading: false });
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+    expect(result.current.currentProject?.id).toBe("proj_2");
+    expect(fetchGlobalSettings).not.toHaveBeenCalled();
+  });
+
+  it("keeps unknown URL project from falling back to default project", async () => {
+    window.history.replaceState({}, "", "/?project=missing");
+    (fetchGlobalSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      dashboardCurrentProjectIdByNode: { local: "proj_1" },
+    });
+
+    const { result, rerender } = renderHook(
+      ({ projects }) => useCurrentProject(projects),
+      { initialProps: { projects: cloneProjects() } },
+    );
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.currentProject).toBeNull();
+    expect(fetchGlobalSettings).not.toHaveBeenCalled();
+
+    for (let i = 0; i <= CONSECUTIVE_ABSENCE_THRESHOLD; i += 1) {
+      rerender({ projects: cloneProjects() });
+    }
+
+    expect(result.current.currentProject).toBeNull();
   });
 
   it("falls back to settings-driven selection when cache miss occurs", async () => {

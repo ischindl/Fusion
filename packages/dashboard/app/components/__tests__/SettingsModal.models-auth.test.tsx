@@ -63,6 +63,7 @@ import {
   mockSetDroidCliEnabled,
   mockFetchCursorCliStatus,
   mockSetCursorCliEnabled,
+  mockSetCursorCliBinaryPath,
   mockUseWorkspaceFileBrowser,
   mockConfirm,
   mockUseWorktrunkInstallStatus,
@@ -138,6 +139,7 @@ vi.mock("../../api", async (importOriginal) => {
     setDroidCliEnabled: (...args: unknown[]) => mockSetDroidCliEnabled(...args),
     fetchCursorCliStatus: (...args: unknown[]) => mockFetchCursorCliStatus(...args),
     setCursorCliEnabled: (...args: unknown[]) => mockSetCursorCliEnabled(...args),
+    setCursorCliBinaryPath: (...args: unknown[]) => mockSetCursorCliBinaryPath(...args),
   });
 });
 
@@ -1131,6 +1133,82 @@ describe("SettingsModal", () => {
       });
     });
 
+    it("keeps polling Anthropic Subscription OAuth until authenticated without false incomplete toast", async () => {
+      const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+      const addToast = vi.fn();
+      mockFetchAuthStatus
+        .mockResolvedValueOnce({
+          providers: [{ id: "anthropic-subscription", name: "Anthropic Subscription", authenticated: false, type: "oauth" }],
+        })
+        .mockResolvedValueOnce({
+          providers: [{ id: "anthropic-subscription", name: "Anthropic Subscription", authenticated: false, type: "oauth", loginInProgress: true }],
+        })
+        .mockResolvedValueOnce({
+          providers: [{ id: "anthropic-subscription", name: "Anthropic Subscription", authenticated: true, type: "oauth", loginInProgress: false }],
+        });
+      mockLoginProvider.mockResolvedValueOnce({ url: "https://claude.ai/oauth/authorize" });
+
+      render(<SettingsModal onClose={noop} addToast={addToast} />);
+      await waitForSettingsModalReady();
+      await settingsModalUser.click(screen.getByRole("button", { name: "Authentication" }));
+      vi.useFakeTimers();
+
+      try {
+        const anthropicCard = screen.getByTestId("auth-provider-icon-anthropic-subscription").closest(".auth-provider-card") as HTMLElement;
+        fireEvent.click(within(anthropicCard).getByRole("button", { name: "Login" }));
+
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(openSpy).toHaveBeenCalledWith("https://claude.ai/oauth/authorize", "_blank");
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(2000);
+          await vi.advanceTimersByTimeAsync(2000);
+        });
+
+        expect(addToast).toHaveBeenCalledWith("Login successful", "success");
+        expect(addToast).not.toHaveBeenCalledWith("Login did not complete. Please try again.", "error");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("shows incomplete toast when Anthropic Subscription OAuth stops without authentication", async () => {
+      const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+      const addToast = vi.fn();
+      mockFetchAuthStatus
+        .mockResolvedValueOnce({
+          providers: [{ id: "anthropic-subscription", name: "Anthropic Subscription", authenticated: false, type: "oauth" }],
+        })
+        .mockResolvedValueOnce({
+          providers: [{ id: "anthropic-subscription", name: "Anthropic Subscription", authenticated: false, type: "oauth", loginInProgress: false }],
+        });
+      mockLoginProvider.mockResolvedValueOnce({ url: "https://claude.ai/oauth/authorize" });
+
+      render(<SettingsModal onClose={noop} addToast={addToast} />);
+      await waitForSettingsModalReady();
+      await settingsModalUser.click(screen.getByRole("button", { name: "Authentication" }));
+      vi.useFakeTimers();
+
+      try {
+        const anthropicCard = screen.getByTestId("auth-provider-icon-anthropic-subscription").closest(".auth-provider-card") as HTMLElement;
+        fireEvent.click(within(anthropicCard).getByRole("button", { name: "Login" }));
+
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(openSpy).toHaveBeenCalledWith("https://claude.ai/oauth/authorize", "_blank");
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(2000);
+        });
+
+        expect(addToast).toHaveBeenCalledWith("Login did not complete. Please try again.", "error");
+        expect(addToast).not.toHaveBeenCalledWith("Login successful", "success");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("renders Anthropic pasted-code form when login response includes manualCode", async () => {
       const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
       mockFetchAuthStatus.mockResolvedValueOnce({
@@ -1552,6 +1630,79 @@ describe("SettingsModal", () => {
 
       expect(await screen.findByTestId("cursor-cli-provider-card")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Enable" })).toBeInTheDocument();
+      expect(screen.getByLabelText("Cursor CLI binary path")).toBeInTheDocument();
+      expect(screen.getByText("Leave blank to use PATH auto-detection (`cursor-agent`, then `cursor`).")).toBeInTheDocument();
+    });
+
+    it("saves and tests a populated cursor cli binary override", async () => {
+      mockFetchAuthStatus.mockResolvedValueOnce({
+        providers: [{ id: "cursor-cli", name: "Cursor — via Cursor CLI", authenticated: false, type: "cli" }],
+      });
+      mockFetchCursorCliStatus
+        .mockResolvedValueOnce({
+          binary: { available: true, version: "0.1.0", binaryPath: "cursor-agent", probeDurationMs: 8 },
+          enabled: false,
+          extension: null,
+          ready: false,
+        })
+        .mockResolvedValueOnce({
+          binary: { available: true, version: "0.1.0", binaryPath: "C:\\Users\\A User\\AppData\\Roaming\\npm\\cursor-agent.cmd", configuredBinaryPath: "C:\\Users\\A User\\AppData\\Roaming\\npm\\cursor-agent.cmd", usingConfiguredBinaryPath: true, probeDurationMs: 8 },
+          enabled: false,
+          binaryPath: "C:\\Users\\A User\\AppData\\Roaming\\npm\\cursor-agent.cmd",
+          extension: null,
+          ready: false,
+        });
+      mockSetCursorCliBinaryPath.mockResolvedValueOnce({ enabled: false, binaryPath: "C:\\Users\\A User\\AppData\\Roaming\\npm\\cursor-agent.cmd", restartRequired: false });
+
+      renderModal();
+      await waitForSettingsModalReady();
+
+      const input = await screen.findByLabelText("Cursor CLI binary path");
+      fireEvent.change(input, { target: { value: "  C:\\Users\\A User\\AppData\\Roaming\\npm\\cursor-agent.cmd  " } });
+      await waitFor(() => expect(screen.getByRole("button", { name: "Save & Test" })).not.toBeDisabled());
+      fireEvent.click(screen.getByRole("button", { name: "Save & Test" }));
+
+      await waitFor(() => expect(mockSetCursorCliBinaryPath).toHaveBeenCalledWith("C:\\Users\\A User\\AppData\\Roaming\\npm\\cursor-agent.cmd"));
+      expect(await screen.findByText("Binary path saved and tested.")).toBeInTheDocument();
+    });
+
+    it("shows cursor cli override diagnostics and can clear the override", async () => {
+      mockFetchAuthStatus.mockResolvedValueOnce({
+        providers: [{ id: "cursor-cli", name: "Cursor — via Cursor CLI", authenticated: false, type: "cli" }],
+      });
+      mockFetchCursorCliStatus
+        .mockResolvedValueOnce({
+          binary: { available: false, reason: "Configured Cursor CLI binary '/bad-old' failed", binaryPath: "cursor-agent", probeDurationMs: 8 },
+          enabled: false,
+          binaryPath: "/bad-old",
+          extension: null,
+          ready: false,
+        })
+        .mockResolvedValueOnce({
+          binary: { available: true, binaryPath: "cursor-agent", probeDurationMs: 8 },
+          enabled: false,
+          extension: null,
+          ready: false,
+        });
+      mockSetCursorCliBinaryPath
+        .mockRejectedValueOnce(new Error("Cannot save Cursor CLI binary path: Configured Cursor CLI binary '/missing/cursor-agent' failed"))
+        .mockResolvedValueOnce({ enabled: false, restartRequired: false });
+
+      renderModal();
+      await waitForSettingsModalReady();
+
+      const input = await screen.findByLabelText("Cursor CLI binary path");
+      fireEvent.change(input, { target: { value: "/missing/cursor-agent" } });
+      await waitFor(() => expect(screen.getByRole("button", { name: "Save & Test" })).not.toBeDisabled());
+      fireEvent.click(screen.getByRole("button", { name: "Save & Test" }));
+      expect(await screen.findByText("Cannot save Cursor CLI binary path: Configured Cursor CLI binary '/missing/cursor-agent' failed")).toBeInTheDocument();
+
+      fireEvent.change(input, { target: { value: "" } });
+      await waitFor(() => expect(screen.getByRole("button", { name: "Save & Test" })).not.toBeDisabled());
+      fireEvent.click(screen.getByRole("button", { name: "Save & Test" }));
+
+      await waitFor(() => expect(mockSetCursorCliBinaryPath).toHaveBeenLastCalledWith(null));
+      expect(await screen.findByText("Binary path cleared; PATH auto-detection is active.")).toBeInTheDocument();
     });
 
     it("disables cursor enable action when binary is unavailable", async () => {

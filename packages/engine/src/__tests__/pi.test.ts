@@ -993,6 +993,112 @@ describe("piLog structured diagnostics", () => {
     );
   });
 
+  it("throws a bounded fallback exhaustion error when prompt-time fallback also fails", async () => {
+    const createAgentSessionMock = vi.mocked(createAgentSession);
+    vi.mocked(ModelRegistry.create).mockReturnValueOnce({
+      find: vi.fn((provider: string, id: string) => ({ provider, id, name: id })),
+      getAll: vi.fn().mockReturnValue([]),
+      registerProvider: vi.fn(),
+      refresh: vi.fn(),
+    } as any);
+    const onFallbackModelUsed = vi.fn();
+
+    const primarySession = {
+      model: { provider: "openai", id: "gpt-4o" },
+      prompt: vi.fn().mockRejectedValue(new Error("429 Too Many Requests")),
+      subscribe: vi.fn(),
+      dispose: vi.fn(),
+      setThinkingLevel: vi.fn(),
+      sessionFile: undefined,
+    } as unknown as AgentSession;
+
+    const fallbackSession = {
+      model: { provider: "anthropic", id: "claude-3-5-haiku-20241022" },
+      prompt: vi.fn().mockRejectedValue(new Error("401 invalid api key for fallback")),
+      state: { errorMessage: "", messages: [] },
+      subscribe: vi.fn(),
+      dispose: vi.fn(),
+      setThinkingLevel: vi.fn(),
+      sessionFile: undefined,
+    } as unknown as AgentSession;
+
+    createAgentSessionMock.mockReset();
+    createAgentSessionMock
+      .mockResolvedValueOnce({ session: primarySession } as any)
+      .mockResolvedValueOnce({ session: fallbackSession } as any);
+
+    const { session } = await createFnAgent({
+      cwd: "/test/project",
+      systemPrompt: "Test planner fallback exhaustion",
+      defaultProvider: "openai",
+      defaultModelId: "gpt-4o",
+      fallbackProvider: "anthropic",
+      fallbackModelId: "claude-3-5-haiku-20241022",
+      taskId: "FN-7437",
+      onFallbackModelUsed,
+    });
+
+    await expect((session as any).promptWithFallback("prompt text")).rejects.toMatchObject({
+      name: "ModelFallbackExhaustedError",
+      attempts: 2,
+      primaryModel: "openai/gpt-4o",
+      fallbackModel: "anthropic/claude-3-5-haiku-20241022",
+      triggerPoint: "prompt-time",
+    });
+
+    expect(createAgentSessionMock).toHaveBeenCalledTimes(2);
+    expect(primarySession.prompt).toHaveBeenCalledTimes(1);
+    expect(fallbackSession.prompt).toHaveBeenCalledTimes(1);
+    expect(onFallbackModelUsed).toHaveBeenCalledTimes(1);
+    expect(onFallbackModelUsed).toHaveBeenCalledWith(expect.objectContaining({
+      triggerPoint: "prompt-time",
+      primaryModel: "openai/gpt-4o",
+      fallbackModel: "anthropic/claude-3-5-haiku-20241022",
+      taskId: "FN-7437",
+    }));
+  });
+
+  it("does not create a meaningless prompt-time fallback when primary and fallback match", async () => {
+    const createAgentSessionMock = vi.mocked(createAgentSession);
+    vi.mocked(ModelRegistry.create).mockReturnValueOnce({
+      find: vi.fn((provider: string, id: string) => ({ provider, id, name: id })),
+      getAll: vi.fn().mockReturnValue([]),
+      registerProvider: vi.fn(),
+      refresh: vi.fn(),
+    } as any);
+    const onFallbackModelUsed = vi.fn();
+    const primarySession = {
+      model: { provider: "openai", id: "gpt-4o" },
+      prompt: vi.fn().mockRejectedValue(new Error("429 Too Many Requests")),
+      subscribe: vi.fn(),
+      dispose: vi.fn(),
+      setThinkingLevel: vi.fn(),
+      sessionFile: undefined,
+    } as unknown as AgentSession;
+
+    createAgentSessionMock.mockReset();
+    createAgentSessionMock.mockResolvedValueOnce({ session: primarySession } as any);
+
+    const { session } = await createFnAgent({
+      cwd: "/test/project",
+      systemPrompt: "Test same fallback",
+      defaultProvider: "openai",
+      defaultModelId: "gpt-4o",
+      fallbackProvider: "openai",
+      fallbackModelId: "gpt-4o",
+      onFallbackModelUsed,
+    });
+
+    await expect((session as any).promptWithFallback("prompt text")).rejects.toMatchObject({
+      name: "ModelFallbackExhaustedError",
+      attempts: 1,
+      primaryModel: "openai/gpt-4o",
+      fallbackModel: undefined,
+    });
+    expect(createAgentSessionMock).toHaveBeenCalledTimes(1);
+    expect(onFallbackModelUsed).not.toHaveBeenCalled();
+  });
+
   it("fires fallback hook on prompt-time model-auth-tier fallback", async () => {
     const createAgentSessionMock = vi.mocked(createAgentSession);
     const onFallbackModelUsed = vi.fn();

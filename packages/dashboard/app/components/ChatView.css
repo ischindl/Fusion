@@ -344,7 +344,7 @@ When the movable chat popup is resized narrow, collapse Direct/Rooms labels to i
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  padding-right: calc(var(--space-md) * 3);
+  padding-right: calc((var(--space-md) * 4) + (var(--space-xs) * 2));
 }
 
 .chat-session-preview {
@@ -353,7 +353,7 @@ When the movable chat popup is resized narrow, collapse Direct/Rooms labels to i
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  padding-right: calc(var(--space-md) * 3);
+  padding-right: calc((var(--space-md) * 4) + (var(--space-xs) * 2));
 }
 
 .chat-session-meta {
@@ -378,39 +378,37 @@ When the movable chat popup is resized narrow, collapse Direct/Rooms labels to i
   flex-shrink: 0;
 }
 
-/* === Chat Session Delete Button === */
-.chat-session-delete-btn {
+/*
+FNXC:ChatSidebar 2026-07-02-00:00:
+Direct conversation rows expose edit and delete as a compact action pair. Keep the pair outside the row text flow so title/preview truncation stays stable across desktop, mobile, and compact right-dock layouts.
+*/
+.chat-session-actions {
   position: absolute;
   top: var(--space-sm);
   right: var(--space-sm);
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
+  gap: var(--space-xs);
+}
+
+.chat-session-action-btn {
   width: calc(var(--space-md) * 2);
+  min-width: calc(var(--space-md) * 2);
   height: calc(var(--space-md) * 2);
-  padding: 0;
-  background: transparent;
-  border: none;
+  min-height: calc(var(--space-md) * 2);
+  flex: 0 0 auto;
   border-radius: var(--radius-sm);
   color: var(--text-muted);
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity var(--transition-fast), color var(--transition-fast);
 }
 
-.chat-session-item:hover .chat-session-delete-btn {
-  opacity: 1;
+.chat-session-action-btn:hover,
+.chat-session-action-btn:focus-visible {
+  color: var(--text);
 }
 
-.chat-session-delete-btn:hover {
+.chat-session-delete-btn:hover,
+.chat-session-delete-btn:focus-visible {
   color: var(--color-error);
-  opacity: 1;
-}
-
-.chat-session-delete-btn:focus {
-  opacity: 1;
-  outline: none;
-  box-shadow: var(--focus-ring-strong);
 }
 
 /* Context menu for session items */
@@ -617,14 +615,6 @@ The Direct-chat context budget indicator is a secondary desktop/tablet header af
   white-space: nowrap;
 }
 
-.chat-mobile-session-trigger .chat-model-tag {
-  flex-shrink: 0;
-  max-width: calc(var(--space-xl) * 4);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .chat-mobile-session-trigger .provider-icon,
 .chat-mobile-session-trigger > svg:first-child {
   flex-shrink: 0;
@@ -767,6 +757,42 @@ Mobile chat session switching needs a dedicated rename tap target beside each se
 }
 
 .chat-view .view-header__actions {
+  min-width: 0;
+}
+
+/*
+FNXC:ChatHeader 2026-07-02-17:26:
+Mobile direct-chat detail uses ViewHeader as the only visible header row. The back arrow must be the far-left visible/focusable control and the session selector must stay on that same non-wrapping row, so hide the entire Chat title/icon shell from layout while retaining the accessible heading and make the actions cluster own the row from the left edge.
+*/
+.chat-view--mobile-direct-thread > .view-header {
+  flex-wrap: nowrap;
+}
+
+.chat-view--mobile-direct-thread > .view-header .view-header__title {
+  position: absolute;
+  inline-size: var(--btn-border-width);
+  block-size: var(--btn-border-width);
+  margin: calc(var(--btn-border-width) * -1);
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.chat-view--mobile-direct-thread > .view-header .view-header__actions {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  margin-left: 0;
+  flex-wrap: nowrap;
+  justify-content: flex-start;
+}
+
+.chat-view--mobile-direct-thread .chat-back-btn {
+  flex: 0 0 auto;
+}
+
+.chat-view--mobile-direct-thread .chat-mobile-session-menu {
+  flex: 1 1 0;
   min-width: 0;
 }
 
@@ -913,9 +939,10 @@ In the narrow/mobile chat layout there is no room for an expand/maximize afforda
   }
 }
 
-/* Single thread-wide markdown / plain-text toggle, anchored to the right of
- * the header next to "New Chat". Replaces the per-message eye toggle that
- * used to live inside every assistant bubble. */
+/*
+FNXC:ChatRenderMode 2026-07-02-00:00:
+Chat keeps one thread-wide Markdown/plain control: desktop/tablet anchors it in the thread identity header, while mobile direct-thread view floats the same button above the transcript/composer so it does not reintroduce a second header row or per-message toggles.
+*/
 .chat-thread-header-render-toggle {
   margin-left: auto;
   flex-shrink: 0;
@@ -948,6 +975,25 @@ In the narrow/mobile chat layout there is no room for an expand/maximize afforda
 
 .chat-thread-header-render-toggle--plain {
   color: var(--text);
+}
+
+.chat-thread-header-render-toggle--floating {
+  position: absolute;
+  right: var(--space-md);
+  bottom: calc((var(--space-lg) * 2.5) + (var(--space-md) * 2) + var(--space-sm));
+  z-index: 3;
+  width: calc(var(--space-lg) * 2.25);
+  height: calc(var(--space-lg) * 2.25);
+  min-width: calc(var(--space-lg) * 2.25);
+  min-height: calc(var(--space-lg) * 2.25);
+  border: var(--btn-border-width) solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+}
+
+.chat-thread-header-render-toggle--floating:hover {
+  background: var(--surface-hover);
 }
 
 /* Messages */
@@ -2200,15 +2246,10 @@ Queued-message banners stack above the composer input with a capped scroll area,
     min-height: calc(var(--space-lg) * 2.25);
   }
 
-  /* FN-4352: secondary control inside tappable session row; keep compact size (inflated by FN-3628). */
-  .chat-session-delete-btn {
-    opacity: 1;
-  }
-
-  /* FN-4352/FN-4385: keep row text clearance aligned to compact secondary delete control (matches base compact clearance). */
+  /* FN-4352/FN-4385/FN-7441: direct session row action pair stays visible and text keeps clearance for both edit and delete touch targets. */
   .chat-session-title,
   .chat-session-preview {
-    padding-right: calc(var(--space-md) * 3);
+    padding-right: calc((var(--space-md) * 4) + (var(--space-xs) * 2));
   }
 
   .chat-message--assistant .chat-message-render-toggle {

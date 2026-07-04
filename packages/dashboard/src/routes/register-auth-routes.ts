@@ -2,7 +2,7 @@ import type { Request } from "express";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
-import { isGhAvailable, isGhAuthenticated } from "@fusion/core";
+import { GIT_INSTALL_URL, isGhAvailable, isGhAuthenticated, probeGitCliStatus } from "@fusion/core";
 import { probeClaudeCli } from "../claude-cli-probe.js";
 import { probeDroidCli } from "../droid-cli-probe.js";
 import { probeCursorCliProvider } from "../runtime-provider-probes.js";
@@ -34,6 +34,24 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
       throw new Error("Authentication is not configured");
     }
     return authStorage;
+  }
+
+  function normalizeCursorCliBinaryPath(value: unknown): string | undefined {
+    return typeof value === "string" ? value.trim() || undefined : undefined;
+  }
+
+  async function readCursorCliBinaryPath(): Promise<string | undefined> {
+    /*
+    FNXC:CursorCli 2026-07-02-00:00:
+    Auth provider list, status, enable, and path-save validation must all probe the same trimmed global Cursor CLI binary override before falling back to PATH candidates.
+    */
+    if (!store) return undefined;
+    const globalSettings = await store.getGlobalSettingsStore().getSettings();
+    return normalizeCursorCliBinaryPath(globalSettings.cursorCliBinaryPath);
+  }
+
+  async function probeCursorCliWithStoredBinary() {
+    return probeCursorCliProvider({ binaryPath: await readCursorCliBinaryPath() });
   }
 
   /**
@@ -297,7 +315,8 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
    * Includes both OAuth-backed and API-key-backed providers.
    * Response: {
    *   providers: [{ id, name, authenticated, type, keyHint? }],
-   *   ghCli: { available: boolean, authenticated: boolean }
+   *   ghCli: { available: boolean, authenticated: boolean },
+   *   gitCli: { available: boolean, version?: string, installUrl: string }
    * }
    */
   router.get("/auth/status", async (req, res) => {
@@ -420,7 +439,7 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
         } catch {
           // best effort
         }
-        const cursorBinary = await probeCursorCliProvider();
+        const cursorBinary = await probeCursorCliWithStoredBinary();
         providers.push({
           id: "cursor-cli",
           name: "Cursor — via Cursor CLI",
@@ -453,8 +472,14 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
         available: isGhAvailable(),
         authenticated: isGhAuthenticated(),
       };
+      let gitCli: Awaited<ReturnType<typeof probeGitCliStatus>>;
+      try {
+        gitCli = await probeGitCliStatus();
+      } catch {
+        gitCli = { available: false, installUrl: GIT_INSTALL_URL };
+      }
 
-      res.json({ providers, ghCli });
+      res.json({ providers, ghCli, gitCli });
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         throw err;
@@ -728,21 +753,55 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
       if (!store) {
         throw new ApiError(500, "Settings store unavailable");
       }
-      const enabled = req.body?.enabled;
-      if (typeof enabled !== "boolean") {
+      const requestedEnabled = req.body?.enabled;
+      const hasEnabledPatch = Object.prototype.hasOwnProperty.call(req.body ?? {}, "enabled");
+      const requestedBinaryPath = req.body?.binaryPath;
+      const hasBinaryPathPatch = Object.prototype.hasOwnProperty.call(req.body ?? {}, "binaryPath");
+      if (!hasEnabledPatch && !hasBinaryPathPatch) {
+        throw badRequest("enabled or binaryPath is required");
+      }
+      if (hasEnabledPatch && typeof requestedEnabled !== "boolean") {
         throw badRequest("enabled must be a boolean");
+      }
+      if (hasBinaryPathPatch && requestedBinaryPath !== null && typeof requestedBinaryPath !== "string") {
+        throw badRequest("binaryPath must be a string or null");
+      }
+
+      const currentSettings = await store.getGlobalSettingsStore().getSettings();
+      const enabled = hasEnabledPatch ? requestedEnabled : (currentSettings as Record<string, unknown>).useCursorCli === true;
+      const currentBinaryPath = normalizeCursorCliBinaryPath(currentSettings.cursorCliBinaryPath);
+      const nextBinaryPath = hasBinaryPathPatch
+        ? normalizeCursorCliBinaryPath(requestedBinaryPath)
+        : currentBinaryPath;
+
+      if (hasBinaryPathPatch && nextBinaryPath) {
+        const binary = await probeCursorCliProvider({ binaryPath: nextBinaryPath });
+        if (!binary.available || !binary.usingConfiguredBinaryPath) {
+          throw new ApiError(400, `Cannot save Cursor CLI binary path: ${binary.reason ?? "configured binary not available"}`);
+        }
       }
 
       if (enabled) {
-        const binary = await probeCursorCliProvider();
+        const binary = await probeCursorCliProvider({ binaryPath: nextBinaryPath });
         if (!binary.available) {
           throw new ApiError(400, `Cannot enable Cursor CLI routing: ${binary.reason ?? "cursor binary not available"}`);
         }
       }
 
-      const settings = await store.updateGlobalSettings({ useCursorCli: enabled } as Record<string, unknown>);
+      const patch: Record<string, unknown> = {};
+      if (hasEnabledPatch) {
+        patch.useCursorCli = enabled;
+      }
+      if (hasBinaryPathPatch) {
+        patch.cursorCliBinaryPath = nextBinaryPath ?? null;
+      }
+      const settings = await store.updateGlobalSettings(patch);
       invalidateAllGlobalSettingsCaches();
-      res.json({ enabled: (settings as Record<string, unknown>).useCursorCli === true, restartRequired: false });
+      res.json({
+        enabled: (settings as Record<string, unknown>).useCursorCli === true,
+        binaryPath: normalizeCursorCliBinaryPath((settings as Record<string, unknown>).cursorCliBinaryPath),
+        restartRequired: false,
+      });
     } catch (err: unknown) {
       if (err instanceof ApiError) throw err;
       rethrowAsApiError(err);
@@ -751,7 +810,8 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
 
   router.get("/providers/cursor-cli/status", async (_req, res) => {
     try {
-      const binary = await probeCursorCliProvider();
+      const binaryPath = await readCursorCliBinaryPath();
+      const binary = await probeCursorCliProvider({ binaryPath });
       let enabled = false;
       if (store) {
         try {
@@ -761,7 +821,7 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
           // best effort
         }
       }
-      res.json({ binary, enabled, extension: null, ready: enabled && binary.available });
+      res.json({ binary, enabled, binaryPath, extension: null, ready: enabled && binary.available });
     } catch (err: unknown) {
       if (err instanceof ApiError) throw err;
       rethrowAsApiError(err);

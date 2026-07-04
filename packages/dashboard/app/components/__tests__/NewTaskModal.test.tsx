@@ -7,6 +7,9 @@ import type { Task, Column } from "@fusion/core";
 import { apiFetchGitHubIssues, apiFetchGitHubPulls, checkDuplicateTasks, fetchAgents, fetchGitRemotes, type BoardWorkflowsPayload } from "../../api";
 import { writeBoardWorkflowsCache } from "../../utils/boardWorkflowsCache";
 import { writeLastSelectedWorkflowId } from "../../utils/lastSelectedWorkflow";
+import { GITHUB_SETUP_WARNING_DELAY_MS, GITHUB_SETUP_WARNING_MISSING_SINCE_KEY } from "../../hooks/useGithubSetupWarningDelay";
+import { __test_clearCache as clearSetupReadinessCache } from "../../hooks/useSetupReadiness";
+import { scopedKey } from "../../utils/projectStorage";
 
 const newTaskModalCss = readFileSync("app/components/NewTaskModal.css", "utf8");
 
@@ -128,6 +131,7 @@ function renderNewTaskModal(props: Partial<ComponentProps<typeof NewTaskModal>> 
 describe("NewTaskModal", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    clearSetupReadinessCache();
     mockViewportMode = "mobile";
     mockConfirm.mockReset();
     mockConfirm.mockResolvedValue(true);
@@ -135,6 +139,7 @@ describe("NewTaskModal", () => {
     vi.mocked(fetchGitRemotes).mockResolvedValue([]);
     vi.mocked(apiFetchGitHubIssues).mockResolvedValue([]);
     vi.mocked(apiFetchGitHubPulls).mockResolvedValue([]);
+    window.localStorage.clear();
     mockUseMobileKeyboard.mockReturnValue({
       keyboardOpen: false,
       keyboardOverlap: 0,
@@ -1092,7 +1097,7 @@ describe("NewTaskModal", () => {
 
     await waitFor(() => {
       expect(screen.getByText("No AI provider connected")).toBeTruthy();
-      expect(screen.getByText("GitHub not connected")).toBeTruthy();
+      expect(screen.queryByText("GitHub not connected")).toBeNull();
     });
 
     const descTextarea = screen.getByPlaceholderText("What needs to be done?");
@@ -1106,6 +1111,45 @@ describe("NewTaskModal", () => {
         }),
       );
     });
+  });
+
+  it("hides GitHub-only setup warning before the project grace period expires", async () => {
+    const { fetchAuthStatus } = await import("../../api");
+    vi.mocked(fetchAuthStatus).mockResolvedValueOnce({
+      providers: [
+        { id: "anthropic", name: "Anthropic", authenticated: true, type: "oauth" },
+        { id: "github", name: "GitHub", authenticated: false, type: "oauth" },
+      ],
+    });
+
+    renderNewTaskModal({ projectId: "proj-grace" });
+
+    await waitFor(() => {
+      expect(screen.queryByText("No AI provider connected")).toBeNull();
+      expect(screen.queryByText("GitHub not connected")).toBeNull();
+    });
+  });
+
+  it("suppresses the modal GitHub setup warning after grace because no settings opener is available", async () => {
+    const { fetchAuthStatus } = await import("../../api");
+    vi.mocked(fetchAuthStatus).mockResolvedValueOnce({
+      providers: [
+        { id: "anthropic", name: "Anthropic", authenticated: true, type: "oauth" },
+        { id: "github", name: "GitHub", authenticated: false, type: "oauth" },
+      ],
+    });
+    window.localStorage.setItem(
+      scopedKey(GITHUB_SETUP_WARNING_MISSING_SINCE_KEY, "proj-expired"),
+      String(Date.now() - GITHUB_SETUP_WARNING_DELAY_MS),
+    );
+
+    renderNewTaskModal({ projectId: "proj-expired" });
+
+    await waitFor(() => {
+      expect(screen.queryByText("No AI provider connected")).toBeNull();
+      expect(screen.queryByText("GitHub not connected")).toBeNull();
+    });
+    expect(screen.queryByRole("button", { name: "Connect GitHub" })).toBeNull();
   });
 
   it("closes modal after successful creation", async () => {

@@ -289,7 +289,8 @@ describe("DirectoryPicker", () => {
     );
   });
 
-  it("allows creating a new folder", async () => {
+  it("allows creating a new folder without changing the selected path by default", async () => {
+    const onChange = vi.fn();
     mockBrowseDirectory.mockResolvedValue({
       currentPath: "/home/user",
       parentPath: "/home",
@@ -300,7 +301,7 @@ describe("DirectoryPicker", () => {
 
     mockCreateDirectory.mockResolvedValue({ success: true, path: "/home/user/my-new-folder" });
 
-    render(<DirectoryPicker value="" onChange={vi.fn()} />);
+    render(<DirectoryPicker value="" onChange={onChange} />);
 
     fireEvent.click(screen.getByText("Browse"));
 
@@ -308,27 +309,98 @@ describe("DirectoryPicker", () => {
       expect(screen.getByText("projects")).toBeDefined();
     });
 
-    // Click "New folder" button
     fireEvent.click(screen.getByRole("button", { name: "Create new folder" }));
-
-    // Type folder name
-    const input = screen.getByPlaceholderText("Folder name");
-    fireEvent.change(input, { target: { value: "my-new-folder" } });
-
-    // Click Create
+    fireEvent.change(screen.getByPlaceholderText("Folder name"), { target: { value: "my-new-folder" } });
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
 
     await waitFor(() => {
       expect(mockCreateDirectory).toHaveBeenCalledWith("/home/user/my-new-folder");
     });
 
-    // Should refresh the directory listing
+    await waitFor(() => {
+      expect(mockBrowseDirectory).toHaveBeenLastCalledWith("/home/user", false, undefined, undefined);
+    });
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("selects the API-returned normalized directory path when enabled", async () => {
+    const onChange = vi.fn();
+    mockBrowseDirectory.mockResolvedValue({
+      currentPath: "/home/user",
+      parentPath: "/home",
+      entries: [],
+    });
+    mockCreateDirectory.mockResolvedValue({ success: true, path: "/normalized/home/user/Fresh Project" });
+
+    render(<DirectoryPicker value="" onChange={onChange} selectCreatedDirectory />);
+
+    fireEvent.click(screen.getByText("Browse"));
+
+    await waitFor(() => {
+      expect(screen.getByText("No subdirectories")).toBeDefined();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Create new folder" }));
+    fireEvent.change(screen.getByPlaceholderText("Folder name"), { target: { value: "fresh-project" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => {
+      expect(onChange).toHaveBeenCalledWith("/normalized/home/user/Fresh Project");
+    });
+    expect(mockCreateDirectory).toHaveBeenCalledWith("/home/user/fresh-project");
     await waitFor(() => {
       expect(mockBrowseDirectory).toHaveBeenLastCalledWith("/home/user", false, undefined, undefined);
     });
   });
 
-  it("shows error when creating folder fails", async () => {
+  it("keeps create disabled until a folder name and current path exist", async () => {
+    let resolveBrowse: (value: any) => void;
+    mockBrowseDirectory.mockImplementationOnce(() => new Promise((resolve) => { resolveBrowse = resolve; }));
+
+    render(<DirectoryPicker value="" onChange={vi.fn()} />);
+
+    fireEvent.click(screen.getByText("Browse"));
+    fireEvent.click(screen.getByRole("button", { name: "Create new folder" }));
+
+    const createButton = screen.getByRole("button", { name: "Create" }) as HTMLButtonElement;
+    expect(createButton.disabled).toBe(true);
+
+    fireEvent.change(screen.getByPlaceholderText("Folder name"), { target: { value: "fresh-project" } });
+    expect(createButton.disabled).toBe(true);
+    expect(mockCreateDirectory).not.toHaveBeenCalled();
+
+    resolveBrowse!({ currentPath: "/home/user", parentPath: "/home", entries: [] });
+    await waitFor(() => {
+      expect(screen.getByText("No subdirectories")).toBeDefined();
+    });
+  });
+
+  it("rejects invalid folder names before calling createDirectory", async () => {
+    const onChange = vi.fn();
+    mockBrowseDirectory.mockResolvedValue({
+      currentPath: "/home/user",
+      parentPath: "/home",
+      entries: [],
+    });
+
+    render(<DirectoryPicker value="" onChange={onChange} selectCreatedDirectory />);
+
+    fireEvent.click(screen.getByText("Browse"));
+    await waitFor(() => {
+      expect(screen.getByText("No subdirectories")).toBeDefined();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Create new folder" }));
+    fireEvent.change(screen.getByPlaceholderText("Folder name"), { target: { value: "../fresh" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    expect(mockCreateDirectory).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByText("Folder name cannot contain path separators or '..'")).toBeDefined();
+  });
+
+  it("shows error when creating folder fails and leaves the selected path untouched", async () => {
+    const onChange = vi.fn();
     mockBrowseDirectory.mockResolvedValue({
       currentPath: "/home/user",
       parentPath: "/home",
@@ -337,7 +409,7 @@ describe("DirectoryPicker", () => {
 
     mockCreateDirectory.mockRejectedValue(new Error("Permission denied"));
 
-    render(<DirectoryPicker value="" onChange={vi.fn()} />);
+    render(<DirectoryPicker value="" onChange={onChange} selectCreatedDirectory />);
 
     fireEvent.click(screen.getByText("Browse"));
 
@@ -345,18 +417,13 @@ describe("DirectoryPicker", () => {
       expect(screen.getByText("No subdirectories")).toBeDefined();
     });
 
-    // Click "New folder" button
     fireEvent.click(screen.getByRole("button", { name: "Create new folder" }));
-
-    // Type folder name
-    const input = screen.getByPlaceholderText("Folder name");
-    fireEvent.change(input, { target: { value: "test-folder" } });
-
-    // Click Create
+    fireEvent.change(screen.getByPlaceholderText("Folder name"), { target: { value: "test-folder" } });
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
 
     await waitFor(() => {
       expect(screen.getByText("Permission denied")).toBeDefined();
     });
+    expect(onChange).not.toHaveBeenCalled();
   });
 });

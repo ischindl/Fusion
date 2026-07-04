@@ -1,9 +1,9 @@
 import "./FileBrowser.css";
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useId, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import { Folder, File, ChevronRight, Loader2, Copy, Move, Trash2, Pencil, Download, Archive, FilePlus2, FolderPlus, Plus, ChevronDown } from "lucide-react";
+import { Folder, File, ChevronRight, Loader2, Copy, Move, Trash2, Pencil, Download, Archive, FilePlus2, FolderPlus, Plus, ChevronDown, Search } from "lucide-react";
 import type { FileNode } from "../api";
-import { copyFile, createWorkspaceDirectory, createWorkspaceFile, moveFile, deleteFile, renameFile, downloadFileUrl, downloadZipUrl } from "../api";
+import { copyFile, createWorkspaceDirectory, createWorkspaceFile, moveFile, deleteFile, renameFile, downloadFileUrl, downloadZipUrl, searchFiles } from "../api";
 import { appendTokenQuery } from "../auth";
 import { getErrorMessage } from "@fusion/core";
 import { getParentDisplayPath, joinDisplayPath, normalizeDisplayPath } from "../utils/pathDisplay";
@@ -22,6 +22,8 @@ interface FileBrowserProps {
   onRefresh?: () => void;
   /** Optional project ID for multi-project scoping */
   projectId?: string;
+  /** Show first-class Files — Project creation and recursive search controls instead of the compact picker chrome. */
+  showProjectFileControls?: boolean;
 }
 
 function formatBytes(bytes?: number): string {
@@ -339,8 +341,10 @@ export function FileBrowser({
   workspace,
   onRefresh,
   projectId,
+  showProjectFileControls = false,
 }: FileBrowserProps) {
   const { t } = useTranslation("app");
+  const searchInputId = useId();
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(INITIAL_CONTEXT_MENU);
   const [dialog, setDialog] = useState<DialogState>(INITIAL_DIALOG);
   const [operationLoading, setOperationLoading] = useState(false);
@@ -348,12 +352,17 @@ export function FileBrowser({
   const [isLongPressing, setIsLongPressing] = useState(false);
   const [longPressTargetPath, setLongPressTargetPath] = useState<string | null>(null);
   const [newMenuOpen, setNewMenuOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<Array<{ path: string; name: string }>>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
 
   const longPressTimerRef = useRef<number | null>(null);
   const longPressFeedbackTimerRef = useRef<number | null>(null);
   const touchStartRef = useRef<TouchPoint | null>(null);
   const touchOpenHandledRef = useRef(false);
   const newMenuRef = useRef<HTMLDivElement>(null);
+  const searchRequestIdRef = useRef(0);
 
   const clearLongPressTimers = useCallback(() => {
     if (longPressTimerRef.current !== null) {
@@ -399,6 +408,51 @@ export function FileBrowser({
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, [newMenuOpen]);
+
+  const trimmedSearchQuery = searchQuery.trim();
+  const isSearching = showProjectFileControls && Boolean(workspace) && trimmedSearchQuery.length > 0;
+
+  const runSearch = useCallback((query: string) => {
+    if (!showProjectFileControls || !workspace) {
+      setSearchResults([]);
+      setSearchError(null);
+      setSearchLoading(false);
+      return;
+    }
+
+    const requestId = searchRequestIdRef.current + 1;
+    searchRequestIdRef.current = requestId;
+    setSearchLoading(true);
+    setSearchError(null);
+
+    searchFiles(query, workspace, projectId)
+      .then((result) => {
+        if (searchRequestIdRef.current !== requestId) return;
+        setSearchResults(result.files);
+      })
+      .catch((err) => {
+        if (searchRequestIdRef.current !== requestId) return;
+        setSearchResults([]);
+        setSearchError(getErrorMessage(err) || t("fileBrowser.searchFailed", "Search failed"));
+      })
+      .finally(() => {
+        if (searchRequestIdRef.current !== requestId) return;
+        setSearchLoading(false);
+      });
+  }, [projectId, showProjectFileControls, t, workspace]);
+
+  useEffect(() => {
+    if (!isSearching || !workspace) {
+      searchRequestIdRef.current += 1;
+      setSearchResults([]);
+      setSearchError(null);
+      setSearchLoading(false);
+      return;
+    }
+
+    const timer = window.setTimeout(() => runSearch(trimmedSearchQuery), 250);
+    return () => window.clearTimeout(timer);
+  }, [isSearching, runSearch, trimmedSearchQuery, workspace]);
 
   const openContextMenuAt = useCallback((x: number, y: number, entry: FileNode, fullPath: string) => {
     setContextMenu({
@@ -581,6 +635,11 @@ export function FileBrowser({
     setOperationError(null);
   }, []);
 
+  const handleSearchResultSelect = useCallback((path: string) => {
+    touchOpenHandledRef.current = false;
+    onSelectFile(path);
+  }, [onSelectFile]);
+
   const handleFileNodeClick = useCallback((entry: FileNode, fullPath: string) => {
     if (touchOpenHandledRef.current) {
       touchOpenHandledRef.current = false;
@@ -633,7 +692,50 @@ export function FileBrowser({
           </button>
         )}
         <span className="file-browser-path">{currentPath === "." ? t("fileBrowser.root", "Root") : normalizeDisplayPath(currentPath)}</span>
+        {showProjectFileControls && (
+          <div className="file-browser-search" role="search">
+            <Search size={16} aria-hidden="true" className="file-browser-search-icon" />
+            <input
+              id={searchInputId}
+              className="input file-browser-search-input"
+              type="search"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              aria-label={t("fileBrowser.searchProjectFiles", "Search project files")}
+              placeholder={t("fileBrowser.searchProjectFilesPlaceholder", "Search project files…")}
+              disabled={!workspace}
+            />
+          </div>
+        )}
         <div className="file-browser-header-actions">
+          {showProjectFileControls ? (
+            <>
+              {/**
+               * FNXC:FileBrowser 2026-07-02-00:00:
+               * Files — Project needs visible create-file and create-folder targets plus recursive search, while embedded settings pickers keep the compact New menu to avoid misleading picker chrome.
+               */}
+              <button
+                type="button"
+                className="btn btn-sm file-browser-create-button"
+                onClick={() => openCreateDialog("create-file")}
+                disabled={!workspace}
+                title={t("fileBrowser.createNewFile", "Create new file")}
+              >
+                <FilePlus2 size={14} />
+                {t("fileBrowser.createNewFile", "Create new file")}
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm file-browser-create-button"
+                onClick={() => openCreateDialog("create-folder")}
+                disabled={!workspace}
+                title={t("fileBrowser.createNewFolder", "Create new folder")}
+              >
+                <FolderPlus size={14} />
+                {t("fileBrowser.createNewFolder", "Create new folder")}
+              </button>
+            </>
+          ) : (
           <div className="file-browser-new-menu" ref={newMenuRef}>
             {/*
              * FNXC:FileBrowser 2026-06-22-15:24:
@@ -680,11 +782,46 @@ export function FileBrowser({
               </div>
             )}
           </div>
+          )}
         </div>
       </div>
 
       <div className="file-browser-list">
-        {entries.length === 0 ? (
+        {isSearching ? (
+          <div className="file-browser-search-results" aria-live="polite">
+            {searchLoading ? (
+              <div className="file-browser-search-status">
+                <Loader2 className="spin" size={18} />
+                <span>{t("fileBrowser.searchingFiles", "Searching files…")}</span>
+              </div>
+            ) : searchError ? (
+              <div className="file-browser-search-status file-browser-search-status--error">
+                <span>{searchError}</span>
+                <button type="button" className="btn btn-sm" onClick={() => runSearch(trimmedSearchQuery)}>
+                  {t("common.retry", "Retry")}
+                </button>
+              </div>
+            ) : searchResults.length === 0 ? (
+              <div className="file-browser-empty">{t("fileBrowser.searchNoResults", "No files found")}</div>
+            ) : (
+              searchResults.map((result) => (
+                <button
+                  type="button"
+                  key={result.path}
+                  className="file-node file-node--file file-browser-search-result"
+                  onClick={() => handleSearchResultSelect(result.path)}
+                  title={result.path}
+                >
+                  <div className="file-node-icon">
+                    <File size={16} />
+                  </div>
+                  <div className="file-node-name">{result.name}</div>
+                  <div className="file-node-path">{normalizeDisplayPath(result.path)}</div>
+                </button>
+              ))
+            )}
+          </div>
+        ) : entries.length === 0 ? (
           <div className="file-browser-empty">{t("fileBrowser.emptyDirectory", "(empty directory)")}</div>
         ) : (
           entries.map((entry) => {

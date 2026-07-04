@@ -85,6 +85,47 @@ describe("integration-branch resolver", () => {
     expect(first).toBe(INTEGRATION_BRANCH_FALLBACK);
     expect(second).toBe(INTEGRATION_BRANCH_FALLBACK);
     expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("origin/HEAD unset and no project override"));
+  });
+
+  it("falls back to main with actionable guidance when origin is absent but gitlab remote exists", async () => {
+    execMock.mockImplementation((command: string, _opts: object, cb: (error: Error | null, result: { stdout: string }) => void) => {
+      if (command.includes("origin/HEAD")) {
+        cb(new Error("no symbolic ref"), { stdout: "" });
+        return {};
+      }
+      cb(null, { stdout: "gitlab\n" });
+      return {};
+    });
+    const warn = vi.fn();
+
+    const resolved = await resolveIntegrationBranch("/repo", undefined, { logger: { warn } });
+
+    expect(resolved).toBe(INTEGRATION_BRANCH_FALLBACK);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain("auto-detect checks origin/HEAD");
+    expect(warn.mock.calls[0]?.[0]).toContain("origin is absent");
+    expect(warn.mock.calls[0]?.[0]).toContain("found remote gitlab");
+    expect(warn.mock.calls[0]?.[0]).toContain("set integrationBranch manually");
+  });
+
+  it("warns once per rootDir when origin exists but has no HEAD", async () => {
+    execMock.mockImplementation((command: string, _opts: object, cb: (error: Error | null, result: { stdout: string }) => void) => {
+      if (command.includes("origin/HEAD")) {
+        cb(new Error("no symbolic ref"), { stdout: "" });
+        return {};
+      }
+      cb(null, { stdout: "origin\ngitlab\norigin\n" });
+      return {};
+    });
+    const warn = vi.fn();
+
+    await expect(resolveIntegrationBranch("/repo", undefined, { logger: { warn } })).resolves.toBe(INTEGRATION_BRANCH_FALLBACK);
+    await expect(resolveIntegrationBranch("/repo", undefined, { logger: { warn } })).resolves.toBe(INTEGRATION_BRANCH_FALLBACK);
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain("origin/HEAD is unset");
+    expect(warn.mock.calls[0]?.[0]).toContain("found remote origin, gitlab");
   });
 
   it("sync and async variants match", async () => {

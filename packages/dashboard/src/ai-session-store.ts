@@ -162,6 +162,7 @@ export class AiSessionStore extends EventEmitter<AiSessionStoreEvents> {
       return;
     }
     const now = new Date().toISOString();
+    // FNXC:PlanningMode 2026-07-02-00:00: Planning checkpoints persist pending summaries inside inputPayload, so every session upsert must refresh inputPayload on existing rows instead of treating it as create-only draft metadata.
     const thinking = trimThinking(session.thinkingOutput);
 
     this.db
@@ -171,6 +172,7 @@ export class AiSessionStore extends EventEmitter<AiSessionStoreEvents> {
          ON CONFLICT(id) DO UPDATE SET
            status = excluded.status,
            title = excluded.title,
+           inputPayload = excluded.inputPayload,
            conversationHistory = excluded.conversationHistory,
            currentQuestion = excluded.currentQuestion,
            result = excluded.result,

@@ -269,11 +269,11 @@ function edgeRenderableAssertion(definition: WorkflowDefinition) {
     );
     expect(edge.zIndex, `${definition.id} edge ${edge.id} z-index`).toBeGreaterThan(0);
     if (isVisualOnlyWorkflowEdge(edge) && edge.data?.boundary === "entry") {
-      expect(edge.sourceHandle, `${definition.id} edge ${edge.id} source handle`).toBe("optional-boundary-entry");
+      expect(edge.sourceHandle, `${definition.id} edge ${edge.id} source handle`).toBe("template-boundary-entry");
       expect(edge.targetHandle, `${definition.id} edge ${edge.id} target handle`).toBeUndefined();
     } else if (isVisualOnlyWorkflowEdge(edge) && edge.data?.boundary === "exit") {
       expect(edge.sourceHandle, `${definition.id} edge ${edge.id} source handle`).toBeUndefined();
-      expect(edge.targetHandle, `${definition.id} edge ${edge.id} target handle`).toBe("optional-boundary-exit");
+      expect(edge.targetHandle, `${definition.id} edge ${edge.id} target handle`).toBe("template-boundary-exit");
     } else {
       expect(edge.sourceHandle, `${definition.id} edge ${edge.id} source handle`).toBeUndefined();
       expect(edge.targetHandle, `${definition.id} edge ${edge.id} target handle`).toBeUndefined();
@@ -2049,10 +2049,10 @@ describe("WorkflowNodeEditor — U8 step-inversion authoring", () => {
      */
     await waitFor(() => {
       expect(
-        document.body.querySelector(`.react-flow__handle.source[data-nodeid="${seededGroupId}"][data-handleid="optional-boundary-entry"]`),
+        document.body.querySelector(`.react-flow__handle.source[data-nodeid="${seededGroupId}"][data-handleid="template-boundary-entry"]`),
       ).toBeInTheDocument();
       expect(
-        document.body.querySelector(`.react-flow__handle.target[data-nodeid="${seededGroupId}"][data-handleid="optional-boundary-exit"]`),
+        document.body.querySelector(`.react-flow__handle.target[data-nodeid="${seededGroupId}"][data-handleid="template-boundary-exit"]`),
       ).toBeInTheDocument();
       expect(document.body.querySelector(`.react-flow__handle.target[data-nodeid="${seededChildId}"][data-handlepos="left"]`)).toBeInTheDocument();
       expect(document.body.querySelector(`.react-flow__handle.source[data-nodeid="${seededChildId}"][data-handlepos="right"]`)).toBeInTheDocument();
@@ -2512,8 +2512,8 @@ describe("WorkflowNodeEditor — built-in stepwise selection render path", () =>
 
       const boundaryEdges = flow.edges.filter((edge) => isVisualOnlyWorkflowEdge(edge) && (edge.source === groupId || edge.target === groupId));
       expect(boundaryEdges, `${groupId} visual boundary edges`).toEqual(expect.arrayContaining([
-        expect.objectContaining({ source: groupId, sourceHandle: "optional-boundary-entry", target: childFlowId }),
-        expect.objectContaining({ source: childFlowId, target: groupId, targetHandle: "optional-boundary-exit" }),
+        expect.objectContaining({ source: groupId, sourceHandle: "template-boundary-entry", target: childFlowId }),
+        expect.objectContaining({ source: childFlowId, target: groupId, targetHandle: "template-boundary-exit" }),
       ]));
       /*
        * FNXC:WorkflowOptionalGroup 2026-06-29-22:47:
@@ -2534,10 +2534,10 @@ describe("WorkflowNodeEditor — built-in stepwise selection render path", () =>
         ).toBeInTheDocument();
       }
       const entryBoundaryHandle = document.body.querySelector(
-        `.react-flow__handle.source[data-nodeid="${groupId}"][data-handlepos="left"][data-handleid="optional-boundary-entry"]`,
+        `.react-flow__handle.source[data-nodeid="${groupId}"][data-handlepos="left"][data-handleid="template-boundary-entry"]`,
       );
       const exitBoundaryHandle = document.body.querySelector(
-        `.react-flow__handle.target[data-nodeid="${groupId}"][data-handlepos="right"][data-handleid="optional-boundary-exit"]`,
+        `.react-flow__handle.target[data-nodeid="${groupId}"][data-handlepos="right"][data-handleid="template-boundary-exit"]`,
       );
       expect(entryBoundaryHandle, `${groupId} left boundary source handle`).toBeInTheDocument();
       expect(exitBoundaryHandle, `${groupId} right boundary target handle`).toBeInTheDocument();

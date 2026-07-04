@@ -3221,7 +3221,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
   router.patch("/tasks/:id", async (req, res) => {
     try {
       const { store: scopedStore } = await getProjectContext(req);
-      const { title, description, prompt, priority, dependencies, enabledWorkflowSteps, modelProvider, modelId, validatorModelProvider, validatorModelId, planningModelProvider, planningModelId, thinkingLevel, assigneeUserId, reviewLevel, executionMode, sourceIssue, nodeId, branch, baseBranch, githubTracking, noCommitsExpected, autoMerge, overlapBlockedBy, status, dismissNearDuplicate } = req.body;
+      const { title, description, prompt, priority, dependencies, enabledWorkflowSteps, modelProvider, modelId, validatorModelProvider, validatorModelId, planningModelProvider, planningModelId, thinkingLevel, assigneeUserId, reviewLevel, executionMode, sourceIssue, nodeId, branch, baseBranch, githubTracking, gitlabTracking, noCommitsExpected, autoMerge, overlapBlockedBy, status, dismissNearDuplicate } = req.body;
       const hasBodyField = (field: string) => Object.prototype.hasOwnProperty.call(req.body, field);
 
       // Validate model fields are strings or undefined/null
@@ -3387,6 +3387,105 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         }
       }
 
+      let validatedGitLabTracking: (Omit<import("@fusion/core").TaskGitLabTracking, "item"> & { item?: import("@fusion/core").TaskGitLabTrackedItem | null }) | null | undefined;
+      if (hasBodyField("gitlabTracking")) {
+        if (gitlabTracking === null) {
+          validatedGitLabTracking = null;
+        } else if (typeof gitlabTracking !== "object" || Array.isArray(gitlabTracking)) {
+          throw new Error("gitlabTracking must be an object or null");
+        } else {
+          const candidate = gitlabTracking as { item?: unknown; unlinkedAt?: unknown };
+          if (candidate.unlinkedAt !== undefined && candidate.unlinkedAt !== null && typeof candidate.unlinkedAt !== "string") {
+            throw new Error("gitlabTracking.unlinkedAt must be a string when provided");
+          }
+          if (candidate.item === null) {
+            validatedGitLabTracking = { item: null };
+          } else if (candidate.item === undefined) {
+            validatedGitLabTracking = {
+              ...(typeof candidate.unlinkedAt === "string" && candidate.unlinkedAt.trim().length > 0 ? { unlinkedAt: candidate.unlinkedAt.trim() } : {}),
+            };
+          } else if (typeof candidate.item !== "object" || Array.isArray(candidate.item)) {
+            throw new Error("gitlabTracking.item must be an object or null");
+          } else {
+            const item = candidate.item as Record<string, unknown>;
+            const kind = item.kind;
+            if (kind !== "project_issue" && kind !== "group_issue" && kind !== "merge_request") {
+              throw new Error("gitlabTracking.item.kind must be project_issue, group_issue, or merge_request");
+            }
+            if (typeof item.url !== "string" || item.url.trim().length === 0) {
+              throw new Error("gitlabTracking.item.url must be a non-empty string");
+            }
+            if (typeof item.instanceUrl !== "string" || item.instanceUrl.trim().length === 0) {
+              throw new Error("gitlabTracking.item.instanceUrl must be a non-empty string");
+            }
+            let parsedUrl: URL;
+            let parsedInstanceUrl: URL;
+            try {
+              parsedUrl = new URL(item.url.trim());
+              parsedInstanceUrl = new URL(item.instanceUrl.trim());
+            } catch {
+              throw new Error("gitlabTracking.item.url and instanceUrl must be valid URLs");
+            }
+            if (!["http:", "https:"].includes(parsedUrl.protocol) || !["http:", "https:"].includes(parsedInstanceUrl.protocol)) {
+              throw new Error("gitlabTracking.item.url and instanceUrl must be http(s) URLs");
+            }
+            if (typeof item.host !== "string" || item.host.trim().length === 0) {
+              throw new Error("gitlabTracking.item.host must be a non-empty string");
+            }
+            if (item.host.trim() !== parsedUrl.host || parsedInstanceUrl.host !== parsedUrl.host) {
+              throw new Error("gitlabTracking.item.host must match the GitLab URL host");
+            }
+            if (typeof item.iid !== "number" || !Number.isInteger(item.iid) || item.iid <= 0) {
+              throw new Error("gitlabTracking.item.iid must be a positive integer");
+            }
+            const optionalNumberFields = ["id", "projectId"];
+            for (const field of optionalNumberFields) {
+              if (item[field] !== undefined && item[field] !== null && (typeof item[field] !== "number" || !Number.isInteger(item[field]) || Number(item[field]) <= 0)) {
+                throw new Error(`gitlabTracking.item.${field} must be a positive integer when provided`);
+              }
+            }
+            const optionalStringFields = ["projectPath", "groupPath", "title", "state", "createdAt", "linkedAt", "lastSyncedAt", "staleAt", "staleReason"];
+            for (const field of optionalStringFields) {
+              if (item[field] !== undefined && item[field] !== null && typeof item[field] !== "string") {
+                throw new Error(`gitlabTracking.item.${field} must be a string when provided`);
+              }
+            }
+            if (typeof item.createdAt !== "string" || item.createdAt.trim().length === 0) {
+              throw new Error("gitlabTracking.item.createdAt must be a non-empty string");
+            }
+            if (item.groupId !== undefined && item.groupId !== null) {
+              const groupIdType = typeof item.groupId;
+              if (!((groupIdType === "string" && String(item.groupId).trim().length > 0) || (groupIdType === "number" && Number.isInteger(item.groupId) && Number(item.groupId) > 0))) {
+                throw new Error("gitlabTracking.item.groupId must be a non-empty string or positive integer when provided");
+              }
+            }
+
+            validatedGitLabTracking = {
+              item: {
+                kind,
+                url: parsedUrl.toString(),
+                instanceUrl: parsedInstanceUrl.origin,
+                host: parsedUrl.host,
+                iid: item.iid,
+                ...(typeof item.id === "number" ? { id: item.id } : {}),
+                ...(typeof item.projectId === "number" ? { projectId: item.projectId } : {}),
+                ...(typeof item.projectPath === "string" && item.projectPath.trim().length > 0 ? { projectPath: item.projectPath.trim() } : {}),
+                ...(typeof item.groupId === "number" || typeof item.groupId === "string" ? { groupId: typeof item.groupId === "string" ? item.groupId.trim() : item.groupId } : {}),
+                ...(typeof item.groupPath === "string" && item.groupPath.trim().length > 0 ? { groupPath: item.groupPath.trim() } : {}),
+                ...(typeof item.title === "string" && item.title.trim().length > 0 ? { title: item.title.trim() } : {}),
+                ...(typeof item.state === "string" && item.state.trim().length > 0 ? { state: item.state.trim() } : {}),
+                createdAt: item.createdAt.trim(),
+                ...(typeof item.linkedAt === "string" && item.linkedAt.trim().length > 0 ? { linkedAt: item.linkedAt.trim() } : {}),
+                ...(typeof item.lastSyncedAt === "string" && item.lastSyncedAt.trim().length > 0 ? { lastSyncedAt: item.lastSyncedAt.trim() } : {}),
+                ...(typeof item.staleAt === "string" && item.staleAt.trim().length > 0 ? { staleAt: item.staleAt.trim() } : {}),
+                ...(typeof item.staleReason === "string" && item.staleReason.trim().length > 0 ? { staleReason: item.staleReason.trim() } : {}),
+              },
+              ...(typeof candidate.unlinkedAt === "string" && candidate.unlinkedAt.trim().length > 0 ? { unlinkedAt: candidate.unlinkedAt.trim() } : {}),
+            };
+          }
+        }
+      }
+
       let validatedOverlapBlockedBy: string | null | undefined;
       if (hasBodyField("overlapBlockedBy")) {
         if (overlapBlockedBy === null || overlapBlockedBy === undefined) {
@@ -3440,6 +3539,9 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       if (hasBodyField("githubTracking")) {
         (updates as Record<string, unknown>).githubTracking = validatedGithubTracking;
       }
+      if (hasBodyField("gitlabTracking")) {
+        (updates as Record<string, unknown>).gitlabTracking = validatedGitLabTracking;
+      }
       if (hasBodyField("overlapBlockedBy")) updates.overlapBlockedBy = validatedOverlapBlockedBy;
       if (hasBodyField("status")) updates.status = validatedStatus;
       if (dismissNearDuplicate === true) {
@@ -3489,7 +3591,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       if (err instanceof ApiError) {
         throw err;
       }
-      const status = (err instanceof Error ? err.message : String(err)).includes("must be a string") || (err instanceof Error ? err.message : String(err)).includes("must be a non-empty string") || (err instanceof Error ? err.message : String(err)).includes("must be a string or null") || (err instanceof Error ? err.message : String(err)).includes("must be an array of strings") || (err instanceof Error ? err.message : String(err)).includes("must be a boolean") || (err instanceof Error ? err.message : String(err)).includes("thinkingLevel must be one of") || (err instanceof Error ? err.message : String(err)).includes("reviewLevel must be an integer") || (err instanceof Error ? err.message : String(err)).includes("executionMode must be one of") || (err instanceof Error ? err.message : String(err)).includes("priority must be one of") || (err instanceof Error ? err.message : String(err)).includes("sourceIssue") || (err instanceof Error ? err.message : String(err)).includes("status may only be cleared") ? 400 : 500;
+      const status = (err instanceof Error ? err.message : String(err)).includes("must be a string") || (err instanceof Error ? err.message : String(err)).includes("must be a non-empty string") || (err instanceof Error ? err.message : String(err)).includes("must be a string or null") || (err instanceof Error ? err.message : String(err)).includes("must be an array of strings") || (err instanceof Error ? err.message : String(err)).includes("must be a boolean") || (err instanceof Error ? err.message : String(err)).includes("thinkingLevel must be one of") || (err instanceof Error ? err.message : String(err)).includes("reviewLevel must be an integer") || (err instanceof Error ? err.message : String(err)).includes("executionMode must be one of") || (err instanceof Error ? err.message : String(err)).includes("priority must be one of") || (err instanceof Error ? err.message : String(err)).includes("sourceIssue") || (err instanceof Error ? err.message : String(err)).includes("gitlabTracking") || (err instanceof Error ? err.message : String(err)).includes("status may only be cleared") ? 400 : 500;
       throw new ApiError(status, err instanceof Error ? err.message : String(err));
     }
   });

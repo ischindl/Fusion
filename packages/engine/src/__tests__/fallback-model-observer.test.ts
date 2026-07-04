@@ -53,6 +53,37 @@ describe("createFallbackModelObserver", () => {
     });
   });
 
+  it("writes fallback events as non-empty rows with readable delimiters", async () => {
+    const store = {
+      logEntry: vi.fn().mockResolvedValue(undefined),
+      appendAgentLog: vi.fn().mockResolvedValue(undefined),
+    };
+    const observer = createFallbackModelObserver({
+      agent: "triage",
+      label: "triage",
+      store,
+      taskId: "FN-7437",
+    });
+
+    await observer({
+      primaryModel: "openai/gpt-4o",
+      fallbackModel: "anthropic/claude-3-5-haiku-20241022",
+      triggerPoint: "prompt-time",
+    });
+    await observer({
+      primaryModel: "openai/gpt-4o",
+      fallbackModel: "anthropic/claude-3-5-haiku-20241022",
+      triggerPoint: "prompt-time",
+    });
+
+    const rows = store.appendAgentLog.mock.calls.map((call) => call[1]);
+    expect(rows).toEqual([
+      "[fallback] triage switched from openai/gpt-4o to anthropic/claude-3-5-haiku-20241022 (prompt-time)",
+      "[fallback] triage switched from openai/gpt-4o to anthropic/claude-3-5-haiku-20241022 (prompt-time)",
+    ]);
+    expect(rows.every((row) => row.trim() === row && row.includes(" switched from ") && row.includes(" to "))).toBe(true);
+  });
+
   it("swallows logging failures and still dispatches a notification", async () => {
     const store = {
       logEntry: vi.fn().mockRejectedValue(new Error("log failed")),

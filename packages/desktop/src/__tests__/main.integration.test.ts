@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => {
     show: vi.fn(),
     focus: vi.fn(),
     maximize: vi.fn(),
+    webContents: { setWindowOpenHandler: vi.fn() },
   };
 
   return {
@@ -59,6 +60,7 @@ vi.mock("electron", () => ({
   Tray: mocks.Tray,
   nativeImage: mocks.nativeImage,
   screen: mocks.screen,
+  shell: { openExternal: vi.fn(() => Promise.resolve()) },
 }));
 
 vi.mock("../menu.js", () => ({

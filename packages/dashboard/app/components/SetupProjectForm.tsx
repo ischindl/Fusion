@@ -148,6 +148,7 @@ export function SetupProjectForm({
           onChange={handlePathChange}
           nodeId={nodeId || undefined}
           localNodeId={localNodeId}
+          selectCreatedDirectory
           placeholder={t("setup.pathPlaceholder", "/path/to/your/project")}
         />
         {pathError && touched.path && (

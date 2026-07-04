@@ -110,17 +110,22 @@ vi.mock("../FileEditor", () => ({
   },
 }));
 
+const capturedFileBrowserProps: Array<{ showProjectFileControls?: boolean; projectId?: string }> = [];
+
 // Render the tree's files as buttons so we can click one.
 vi.mock("../FileBrowser", () => ({
-  FileBrowser: ({ entries: e, onSelectFile }: { entries: FileNode[]; onSelectFile: (p: string) => void }) => (
-    <div data-testid="mock-file-browser">
-      {e.map((entry) => (
-        <button key={entry.name} type="button" onClick={() => onSelectFile(entry.name)}>
-          {entry.name}
-        </button>
-      ))}
-    </div>
-  ),
+  FileBrowser: ({ entries: e, onSelectFile, showProjectFileControls, projectId }: { entries: FileNode[]; onSelectFile: (p: string) => void; showProjectFileControls?: boolean; projectId?: string }) => {
+    capturedFileBrowserProps.push({ showProjectFileControls, projectId });
+    return (
+      <div data-testid="mock-file-browser" data-project-controls={showProjectFileControls ? "true" : "false"}>
+        {e.map((entry) => (
+          <button key={entry.name} type="button" onClick={() => onSelectFile(entry.name)}>
+            {entry.name}
+          </button>
+        ))}
+      </div>
+    );
+  },
 }));
 
 const PROJECT_ID = "proj-1";
@@ -137,6 +142,7 @@ describe("DockFilesView shared current-file state", () => {
     mockSave.mockClear();
     capturedFileEditorProps.length = 0;
     capturedEditorHookCalls.length = 0;
+    capturedFileBrowserProps.length = 0;
   });
   afterEach(() => cleanup());
 
@@ -149,6 +155,16 @@ describe("DockFilesView shared current-file state", () => {
     expect(dockFilesCss).toContain("border-right: var(--chrome-divider-width, 1px) solid var(--right-dock-view-divider-color, transparent);");
     expect(dockFilesCss).not.toContain("border-bottom: 1px solid var(--border);");
     expect(dockFilesCss).not.toContain("border-right: 1px solid var(--border);");
+  });
+
+  it("enables Files — Project controls in both compact and two-pane dock layouts", () => {
+    const dock = render(<DockFilesView projectId={PROJECT_ID} layout="auto" />);
+    expect(screen.getByTestId("mock-file-browser")).toHaveAttribute("data-project-controls", "true");
+    dock.unmount();
+
+    render(<DockFilesView projectId={PROJECT_ID} layout="two-pane" />);
+    expect(screen.getByTestId("mock-file-browser")).toHaveAttribute("data-project-controls", "true");
+    expect(capturedFileBrowserProps.every((props) => props.showProjectFileControls === true && props.projectId === PROJECT_ID)).toBe(true);
   });
 
   it("persists the selected file to scoped storage and a fresh expand instance reads it on mount", async () => {

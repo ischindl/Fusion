@@ -119,6 +119,58 @@ describe("FileBrowserModal", () => {
     expect(mockUseWorkspaceFileBrowser).toHaveBeenCalledWith("project", true, undefined);
   });
 
+  it("shows Files — Project create and search controls only for the project workspace", async () => {
+    const { rerender } = render(
+      <FileBrowserModal
+        initialWorkspace="project"
+        isOpen={true}
+        onClose={mockOnClose}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Create new file" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create new folder" })).toBeInTheDocument();
+    expect(screen.getByRole("searchbox", { name: "Search project files" })).toBeInTheDocument();
+
+    rerender(
+      <FileBrowserModal
+        initialWorkspace="FN-001"
+        isOpen={true}
+        onClose={mockOnClose}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByRole("searchbox", { name: "Search project files" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Create new file" })).toBeNull();
+      expect(screen.getByRole("button", { name: /^New$/i })).toBeInTheDocument();
+    });
+  });
+
+  it("keeps Files — Project controls available in the narrow mobile list pane", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      writable: true,
+      configurable: true,
+      value: 375,
+    });
+    window.dispatchEvent(new Event("resize"));
+
+    render(
+      <FileBrowserModal
+        initialWorkspace="project"
+        isOpen={true}
+        onClose={mockOnClose}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(document.querySelector(".file-browser-modal--narrow")).toBeInTheDocument();
+      expect(screen.getByRole("searchbox", { name: "Search project files" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Create new file" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Create new folder" })).toBeInTheDocument();
+    });
+  });
+
   it("opens a file in the editor when selected", async () => {
     render(
       <FileBrowserModal

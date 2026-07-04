@@ -5489,6 +5489,135 @@ describe("SelfHealingManager", () => {
       managerWithRecovery.stop();
     });
 
+    it("recovers a parked failed code-review-remediation row after restart when Code Review is unbounded", async () => {
+      const recoverFn = vi.fn().mockResolvedValue(true);
+      const managerWithRecovery = new SelfHealingManager(store, {
+        rootDir: "/tmp/test-project",
+        recoverFailedPreMergeStep: recoverFn,
+      });
+      (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+        autoMerge: true,
+        globalPause: false,
+        enginePaused: false,
+        maxPostReviewFixes: 1,
+      });
+      const failedCodeReviewTask = {
+        ...baseTask,
+        status: "failed",
+        error: "Workflow graph terminated with failure at node 'code-review-remediation'",
+        postReviewFixCount: 50,
+        log: Array.from({ length: 50 }, (_, index) => ({
+          timestamp: new Date().toISOString(),
+          action: `Auto-reviving in-review task with failed pre-merge workflow step (attempt ${index + 1}/unbounded)`,
+          outcome: "Step: Code Review\nWorkflow revision key: code-review",
+        })),
+        workflowStepResults: [
+          {
+            ...baseTask.workflowStepResults[0],
+            workflowStepId: "code-review",
+            workflowStepName: "Code Review",
+          },
+        ],
+      };
+      (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([failedCodeReviewTask]);
+      (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue(failedCodeReviewTask);
+
+      /*
+       * FNXC:WorkflowRemediation 2026-07-03-20:10:
+       * Restart self-healing must recognize the FN-7476 signature: in-review,
+       * status=failed, terminal `code-review-remediation`, and a durable failed
+       * Code Review result. Code Review's default budget is unbounded, so the
+       * global maxPostReviewFixes fallback must not strand high-attempt rows.
+       */
+      await expect(managerWithRecovery.recoverReviewTasksWithFailedPreMergeSteps()).resolves.toBe(1);
+
+      expect(store.updateTask).toHaveBeenCalledWith("FN-1572", { postReviewFixCount: 51 });
+      expect(store.logEntry).toHaveBeenCalledWith(
+        "FN-1572",
+        expect.stringContaining("Auto-reviving in-review task with failed pre-merge workflow step (attempt 51/unbounded)"),
+        expect.stringContaining("Workflow revision key: code-review"),
+      );
+      expect(recoverFn).toHaveBeenCalledWith(expect.objectContaining({ id: "FN-1572", status: "failed" }));
+
+      managerWithRecovery.stop();
+    });
+
+    it("does not recover parked plan-replan failures through pre-merge remediation", async () => {
+      const recoverFn = vi.fn().mockResolvedValue(true);
+      const managerWithRecovery = new SelfHealingManager(store, {
+        rootDir: "/tmp/test-project",
+        recoverFailedPreMergeStep: recoverFn,
+      });
+      (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+        autoMerge: true,
+        globalPause: false,
+        enginePaused: false,
+        maxPostReviewFixes: 9,
+      });
+      const failedPlanReviewTask = {
+        ...baseTask,
+        status: "failed",
+        error: "Workflow graph terminated with failure at node 'plan-replan'",
+        workflowStepResults: [
+          {
+            ...baseTask.workflowStepResults[0],
+            workflowStepId: "plan-review",
+            workflowStepName: "Plan Review",
+          },
+        ],
+      };
+      (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([failedPlanReviewTask]);
+      (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue(failedPlanReviewTask);
+
+      /*
+       * FNXC:WorkflowRemediation 2026-07-03-23:10:
+       * Self-healing's failed pre-merge-step bridge intentionally excludes `plan-replan`. Plan Review recovery has a separate replan/triage lifecycle, while `recoverFailedPreMergeStep` reopens implementation work and is only safe for Code Review/Browser Verification remediation nodes.
+       */
+      await expect(managerWithRecovery.recoverReviewTasksWithFailedPreMergeSteps()).resolves.toBe(0);
+
+      expect(recoverFn).not.toHaveBeenCalled();
+      expect(store.updateTask).not.toHaveBeenCalledWith("FN-1572", expect.objectContaining({ postReviewFixCount: expect.any(Number) }));
+
+      managerWithRecovery.stop();
+    });
+
+    it("does not recover parked remediation failures when the numeric Code Review cap is exhausted", async () => {
+      const recoverFn = vi.fn().mockResolvedValue(true);
+      const managerWithRecovery = new SelfHealingManager(store, {
+        rootDir: "/tmp/test-project",
+        recoverFailedPreMergeStep: recoverFn,
+      });
+      (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+        autoMerge: true,
+        globalPause: false,
+        enginePaused: false,
+        maxPostReviewFixes: 9,
+        codeReviewMaxRevisions: 1,
+      });
+      const cappedTask = {
+        ...baseTask,
+        status: "failed",
+        error: "Workflow graph terminated with failure at node 'code-review-remediation'",
+        log: [revisionLog("Code Review", "code-review", 1)],
+        workflowStepResults: [
+          {
+            ...baseTask.workflowStepResults[0],
+            workflowStepId: "code-review",
+            workflowStepName: "Code Review",
+          },
+        ],
+      };
+      (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([cappedTask]);
+      (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue(cappedTask);
+
+      await expect(managerWithRecovery.recoverReviewTasksWithFailedPreMergeSteps()).resolves.toBe(0);
+
+      expect(recoverFn).not.toHaveBeenCalled();
+      expect(store.updateTask).not.toHaveBeenCalledWith("FN-1572", expect.objectContaining({ postReviewFixCount: expect.any(Number) }));
+
+      managerWithRecovery.stop();
+    });
+
     it("keeps Plan Review and Code Review workflow caps independent during recovery", async () => {
       const recoverFn = vi.fn().mockResolvedValue(true);
       const managerWithRecovery = new SelfHealingManager(store, {

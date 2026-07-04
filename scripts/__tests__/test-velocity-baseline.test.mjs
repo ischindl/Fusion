@@ -213,7 +213,11 @@ describe("main", () => {
     }
   });
 
-  it("renders zero quarantine figures from an empty live ledger in report-only mode", async () => {
+  /*
+  FNXC:TestVelocityQuarantine 2026-07-02-12:00:
+  FN-7420 requires report-only regeneration to render quarantine surfaces from the live ledger even when the committed report and latest timing history still claim a non-zero quarantine count.
+  */
+  it("renders zero quarantine figures from an empty live ledger over stale report and history values", async () => {
     const rootDir = tempRoot();
     try {
       writeJson(rootDir, "scripts/lib/test-quarantine.json", { entries: [] });
@@ -233,7 +237,7 @@ describe("main", () => {
             gateMs: 7_000,
             bootSmokeMs: 18_000,
             testMs: 25_000,
-            quarantineCount: 0,
+            quarantineCount: 1,
             slowestTop20: [{ file: "packages/a/src/__tests__/slow.test.ts", package: "@pkg/a", ms: 9_000 }],
             measurementFailures: [],
           },
@@ -242,7 +246,7 @@ describe("main", () => {
       mkdirSync(path.join(rootDir, "docs"), { recursive: true });
       writeFileSync(
         path.join(rootDir, "docs/test-velocity-baseline.md"),
-        "| Quarantine / flake count | 3 | +3 |\n| 0-6 days | 3 |\nquarantine ledger 3 (+3)\n",
+        "| Quarantine / flake count | 1 | +1 |\n| 0-6 days | 1 |\nquarantine ledger 1 (+1)\n",
         "utf8",
       );
 
@@ -272,6 +276,81 @@ describe("main", () => {
       assert.doesNotMatch(report, /\| Quarantine \/ flake count \| [1-9]/);
       assert.doesNotMatch(report, /\| (?:0-6 days|7-13 days|deletion due \(>=14 days\)|unknown\/future) \| [1-9]/);
       assert.doesNotMatch(report, /quarantine ledger [1-9]/);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  /*
+  FNXC:TestVelocityQuarantine 2026-07-02-01:55:
+  FN-7414 requires report-only refreshes to trust the live quarantine ledger over stale generated report text or stale history rows, so a newly quarantined test cannot be published as count zero.
+  */
+  it("renders populated live quarantine figures over stale zero report and history values", async () => {
+    const rootDir = tempRoot();
+    try {
+      writeJson(rootDir, "scripts/lib/test-quarantine.json", {
+        entries: [
+          {
+            file: "packages/engine/src/__tests__/hypothetical-quarantined.test.ts",
+            reason: "FN-7239: stale post-cutover direct-dispatch StepSessionExecutor/legacy pause assertions fail after builtin:coding graph cutover.",
+            quarantinedAt: "2026-06-29",
+          },
+        ],
+      });
+      writeJson(rootDir, "scripts/test-velocity-history.json", {
+        entries: [
+          {
+            capturedAt: "2026-06-25T12:00:00.000Z",
+            gateMs: 10_000,
+            bootSmokeMs: 20_000,
+            testMs: 30_000,
+            quarantineCount: 0,
+            slowestTop20: [{ file: "packages/a/src/__tests__/slow.test.ts", package: "@pkg/a", ms: 9_000 }],
+            measurementFailures: [],
+          },
+          {
+            capturedAt: "2026-06-27T12:00:00.000Z",
+            gateMs: 7_000,
+            bootSmokeMs: 18_000,
+            testMs: 25_000,
+            quarantineCount: 0,
+            slowestTop20: [{ file: "packages/a/src/__tests__/slow.test.ts", package: "@pkg/a", ms: 9_000 }],
+            measurementFailures: [],
+          },
+        ],
+      });
+      mkdirSync(path.join(rootDir, "docs"), { recursive: true });
+      writeFileSync(
+        path.join(rootDir, "docs/test-velocity-baseline.md"),
+        "| Quarantine / flake count | 0 | 0 |\n| 0-6 days | 0 |\nquarantine ledger 0 (0)\n",
+        "utf8",
+      );
+
+      const exitCode = await main(["--write-report"], {
+        rootDir,
+        stdout: nullStream(),
+        stderr: nullStream(),
+        now: new Date("2026-07-02T12:00:00.000Z"),
+        commandRunner: async (measurement) => {
+          throw new Error(`unexpected command: ${measurement.label}`);
+        },
+      });
+
+      assert.equal(exitCode, 0);
+      const report = readFileSync(path.join(rootDir, "docs/test-velocity-baseline.md"), "utf8");
+      assert.match(report, /\| Quarantine \/ flake count \| 1 \| \+1 \|/);
+      assert.match(report, /\| Deletion-due quarantines \| 0 \| n\/a \|/);
+      assert.match(report, /\| 0-6 days \| 1 \|/);
+      assert.match(report, /\| 7-13 days \| 0 \|/);
+      assert.match(report, /\| deletion due \(>=14 days\) \| 0 \|/);
+      assert.match(report, /\| unknown\/future \| 0 \|/);
+      assert.match(report, /\| — \| — \| — \|/);
+      assert.match(report, /\| Latest \| 2026-06-27T12:00:00\.000Z \| 7\.0s \| 18\.0s \| 25\.0s \| 1 \|/);
+      assert.match(report, /\| Delta \| — \| -3\.0s \| -2\.0s \| -5\.0s \| \+1 \|/);
+      assert.match(report, /quarantine ledger 1 \(\+1\)/);
+      assert.match(report, /Deletion-due quarantines: 0\./);
+      assert.doesNotMatch(report, /\| Quarantine \/ flake count \| 0 \| 0 \|/);
+      assert.doesNotMatch(report, /quarantine ledger 0 \(0\)/);
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

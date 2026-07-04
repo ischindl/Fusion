@@ -23,6 +23,7 @@ vi.mock("lucide-react", async () => {
     Archive: (props: any) => <span data-testid="icon-archive" {...props} />,
     FilePlus2: (props: any) => <span data-testid="icon-file-plus" {...props} />,
     FolderPlus: (props: any) => <span data-testid="icon-folder-plus" {...props} />,
+    Search: (props: any) => <span data-testid="icon-search" {...props} />,
   };
 });
 
@@ -38,6 +39,7 @@ const mockDownloadFileUrl = vi.fn((_workspace: string, filePath: string) =>
 const mockDownloadZipUrl = vi.fn((_workspace: string, filePath: string) =>
   `/api/files/${encodeURIComponent(filePath)}/download-zip?workspace=test-ws`,
 );
+const mockSearchFiles = vi.fn();
 
 vi.mock("../../api", () => ({
   copyFile: (...args: any[]) => mockCopyFile(...args),
@@ -48,6 +50,7 @@ vi.mock("../../api", () => ({
   renameFile: (...args: any[]) => mockRenameFile(...args),
   downloadFileUrl: (workspace: string, filePath: string) => mockDownloadFileUrl(workspace, filePath),
   downloadZipUrl: (workspace: string, filePath: string) => mockDownloadZipUrl(workspace, filePath),
+  searchFiles: (...args: any[]) => mockSearchFiles(...args),
 }));
 
 // ── Test Data ───────────────────────────────────────────────────────────
@@ -84,6 +87,7 @@ type FileBrowserTestOverrides = Partial<typeof defaultProps> & {
   loading?: boolean;
   error?: string | null;
   onRetry?: () => void;
+  showProjectFileControls?: boolean;
 };
 
 function renderFileBrowser(overrides: FileBrowserTestOverrides = {}) {
@@ -118,6 +122,11 @@ function getNewFolderAction() {
   return screen.getByRole("menuitem", { name: /New Folder/i });
 }
 
+async function typeProjectSearch(query: string) {
+  fireEvent.change(screen.getByRole("searchbox", { name: "Search project files" }), { target: { value: query } });
+  await waitFor(() => expect(mockSearchFiles).toHaveBeenCalled());
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────
 
 describe("FileBrowser", () => {
@@ -131,6 +140,7 @@ describe("FileBrowser", () => {
     mockDownloadZipUrl.mockImplementation((_workspace: string, filePath: string) =>
       `/api/files/${encodeURIComponent(filePath)}/download-zip?workspace=test-ws`,
     );
+    mockSearchFiles.mockResolvedValue({ files: [] });
     vi.useRealTimers();
     Object.defineProperty(window, "innerWidth", {
       configurable: true,
@@ -189,6 +199,42 @@ describe("FileBrowser", () => {
   it("disables the create menu when no workspace is provided", () => {
     renderFileBrowser({ workspace: undefined });
     expect(screen.getByRole("button", { name: /^New$/i })).toBeDisabled();
+  });
+
+  it("shows visible Files — Project create buttons and search when enabled", () => {
+    renderFileBrowser({ showProjectFileControls: true });
+    expect(screen.getByRole("button", { name: "Create new file" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create new folder" })).toBeInTheDocument();
+    expect(screen.getByRole("searchbox", { name: "Search project files" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^New$/i })).toBeNull();
+  });
+
+  it("keeps settings-style picker chrome compact unless project controls are enabled", () => {
+    renderFileBrowser();
+    expect(screen.getByRole("button", { name: /^New$/i })).toBeInTheDocument();
+    expect(screen.queryByRole("searchbox", { name: "Search project files" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create new file" })).toBeNull();
+  });
+
+  it("disables visible create and search controls when no workspace is provided", () => {
+    renderFileBrowser({ showProjectFileControls: true, workspace: undefined });
+    expect(screen.getByRole("button", { name: "Create new file" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Create new folder" })).toBeDisabled();
+    expect(screen.getByRole("searchbox", { name: "Search project files" })).toBeDisabled();
+  });
+
+  it("clicking visible Create new file opens the existing dialog", () => {
+    renderFileBrowser({ showProjectFileControls: true });
+    fireEvent.click(screen.getByRole("button", { name: "Create new file" }));
+    expect(document.querySelector(".file-browser-dialog-title")?.textContent).toBe("New File");
+    expect(screen.getByPlaceholderText("File name")).toBeDefined();
+  });
+
+  it("clicking visible Create new folder opens the existing dialog", () => {
+    renderFileBrowser({ showProjectFileControls: true });
+    fireEvent.click(screen.getByRole("button", { name: "Create new folder" }));
+    expect(document.querySelector(".file-browser-dialog-title")?.textContent).toBe("New Folder");
+    expect(screen.getByPlaceholderText("Folder name")).toBeDefined();
   });
 
   it("clicking New File opens a dialog with name input", () => {
@@ -258,6 +304,69 @@ describe("FileBrowser", () => {
     fireEvent.click(getNewFileAction());
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByPlaceholderText("File name")).toBeNull();
+  });
+
+  it("searches project files recursively and selects a result with path context", async () => {
+    mockSearchFiles.mockResolvedValue({
+      files: [
+        { name: "config.json", path: "packages/app/config.json" },
+        { name: "config.json", path: "packages/core/config.json" },
+      ],
+    });
+    const onSelectFile = vi.fn();
+    renderFileBrowser({ showProjectFileControls: true, onSelectFile });
+
+    await typeProjectSearch("config");
+
+    await waitFor(() => {
+      expect(mockSearchFiles).toHaveBeenCalledWith("config", "test-ws", "project-1");
+      expect(screen.getByText("packages/app/config.json")).toBeInTheDocument();
+      expect(screen.getByText("packages/core/config.json")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getAllByRole("button", { name: /config.json/i })[1]);
+    expect(onSelectFile).toHaveBeenCalledWith("packages/core/config.json");
+  });
+
+  it("does not search without a workspace and preserves normal browsing", async () => {
+    renderFileBrowser({ showProjectFileControls: true, workspace: undefined });
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search project files" }), { target: { value: "readme" } });
+    await waitFor(() => expect(screen.getByDisplayValue("readme")).toBeInTheDocument());
+    expect(mockSearchFiles).not.toHaveBeenCalled();
+    expect(screen.getByText("readme.md")).toBeInTheDocument();
+  });
+
+  it("shows search loading, no-results, and restores the current directory when cleared", async () => {
+    let resolveSearch: (value: { files: Array<{ path: string; name: string }> }) => void = () => {};
+    mockSearchFiles.mockReturnValue(new Promise((resolve) => {
+      resolveSearch = resolve;
+    }));
+    renderFileBrowser({ showProjectFileControls: true, entries: [] });
+
+    await typeProjectSearch("missing");
+    expect(screen.getByText("Searching files…")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveSearch({ files: [] });
+    });
+
+    await waitFor(() => expect(screen.getByText("No files found")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search project files" }), { target: { value: "" } });
+    expect(screen.getByText("(empty directory)")).toBeInTheDocument();
+  });
+
+  it("shows search errors with retry", async () => {
+    mockSearchFiles.mockRejectedValueOnce(new Error("Index unavailable"));
+    mockSearchFiles.mockResolvedValueOnce({ files: [{ name: "readme.md", path: "readme.md" }] });
+    renderFileBrowser({ showProjectFileControls: true });
+
+    await typeProjectSearch("readme");
+    await waitFor(() => expect(screen.getByText("Index unavailable")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /readme\.md/ })).toBeInTheDocument());
+    expect(mockSearchFiles).toHaveBeenCalledTimes(2);
   });
 
   it("closes create dialog on Escape", () => {

@@ -433,7 +433,8 @@ describe("onboarding flow integration", () => {
           { id: "anthropic", name: "Anthropic", authenticated: true, type: "oauth" },
           { id: "google", name: "Google", authenticated: false, type: "oauth" },
           { id: "minimax", name: "MiniMax", authenticated: false, type: "api_key" },
-          { id: "openrouter", name: "OpenRouter", authenticated: true, type: "api_key" },
+          { id: "openrouter", name: "OpenRouter", authenticated: false, type: "api_key" },
+          { id: "zai", name: "Zhipu AI", authenticated: true, type: "api_key" },
           { id: "github", name: "GitHub", authenticated: true, type: "oauth" },
         ],
       });
@@ -448,10 +449,10 @@ describe("onboarding flow integration", () => {
       expect(screen.getByRole("button", { name: /Advanced provider settings/ })).toHaveAttribute("aria-expanded", "false");
 
       const quickStartSection = screen.getByTestId("onboarding-quick-start-providers");
-      expect(getProviderOrderInSection(quickStartSection)).toEqual(["anthropic", "openai", "google"]);
+      expect(getProviderOrderInSection(quickStartSection)).toEqual(["anthropic", "openai", "google", "openrouter"]);
 
       const connectedSection = screen.getByTestId("onboarding-connected-providers");
-      expect(getProviderOrderInSection(connectedSection)).toEqual(["openrouter"]);
+      expect(getProviderOrderInSection(connectedSection)).toEqual(["zai"]);
 
       expect(screen.queryByTestId("onboarding-provider-card-minimax")).not.toBeInTheDocument();
       expect(screen.queryByTestId("onboarding-provider-card-moonshot")).not.toBeInTheDocument();
@@ -474,7 +475,7 @@ describe("onboarding flow integration", () => {
       mockFetchAuthStatus.mockResolvedValue({
         providers: [
           { id: "openai", name: "OpenAI", authenticated: false, type: "api_key" },
-          { id: "openrouter", name: "OpenRouter", authenticated: true, type: "api_key" },
+          { id: "minimax", name: "MiniMax", authenticated: true, type: "api_key" },
           { id: "openai-codex", name: "OpenAI Codex", authenticated: false, type: "oauth" },
           { id: "claude-cli", name: "Anthropic — via Claude CLI", authenticated: false, type: "cli" },
         ],
@@ -489,7 +490,7 @@ describe("onboarding flow integration", () => {
       expect(screen.getByTestId("onboarding-apikey-save-openai")).toBeInTheDocument();
 
       const connectedSection = screen.getByTestId("onboarding-connected-providers");
-      expect(within(connectedSection).getByText("OpenRouter")).toBeInTheDocument();
+      expect(within(connectedSection).getByText("MiniMax")).toBeInTheDocument();
       expect(within(connectedSection).getByRole("button", { name: "Remove Key" })).toBeInTheDocument();
 
       fireEvent.click(screen.getByRole("button", { name: /Advanced provider settings/ }));
@@ -608,7 +609,7 @@ describe("onboarding flow integration", () => {
         expect(hasSavedStateCall("github")).toBe(true);
       });
 
-      expect(mockUpdateGlobalSettings).toHaveBeenCalledWith({ modelOnboardingComplete: true });
+      expect(mockUpdateGlobalSettings).toHaveBeenCalledWith(expect.objectContaining({ modelOnboardingComplete: true }));
       expect(renderResult.onComplete).toHaveBeenCalledTimes(1);
       expect(mockMarkOnboardingCompleted).not.toHaveBeenCalled();
     });
@@ -977,7 +978,7 @@ describe("onboarding flow integration", () => {
       });
 
       expect(mockMarkOnboardingCompleted).toHaveBeenCalled();
-      expect(mockUpdateGlobalSettings).toHaveBeenCalledWith({ modelOnboardingComplete: true });
+      expect(mockUpdateGlobalSettings).toHaveBeenCalledWith(expect.objectContaining({ modelOnboardingComplete: true }));
       await waitFor(() => {
         expect(screen.getByText("Your first task is ready!")).toBeInTheDocument();
       });
@@ -1090,7 +1091,7 @@ describe("onboarding flow integration", () => {
       });
 
       expect(renderResult.onOpenNewTask).toHaveBeenCalled();
-      expect(mockUpdateGlobalSettings).toHaveBeenCalledWith({ modelOnboardingComplete: true });
+      expect(mockUpdateGlobalSettings).toHaveBeenCalledWith(expect.objectContaining({ modelOnboardingComplete: true }));
     });
 
     it("task creation flow: Import from GitHub CTA completes onboarding and triggers import", async () => {

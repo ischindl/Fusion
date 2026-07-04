@@ -5,10 +5,12 @@ import { costFor, type CostResult, type ModelPricingOverrides } from "./model-pr
 import type { TaskTokenUsagePerModel } from "./types.js";
 
 /**
- * Token-consumption analytics over the `tasks` table, generalizing the fixed
- * 24h/7d/all-time windows of `agent-token-usage.ts` to an arbitrary `(from, to)`
- * range. Sums the `tokenUsage*` columns filtered by `tokenUsageLastUsedAt` and
- * groups by model / provider / node / agent.
+ * Token-consumption analytics over task execution rows plus durable chat-token
+ * rows, generalizing the fixed 24h/7d/all-time windows of
+ * `agent-token-usage.ts` to an arbitrary `(from, to)` range. Sums task
+ * `tokenUsage*` columns filtered by `tokenUsageLastUsedAt` and chat
+ * `chat_token_usage` rows filtered by `createdAt`, then groups by model /
+ * provider / node / agent.
  *
  * Inclusivity: `from`/`to` bounds are **inclusive** (`>= from AND <= to`),
  * matching `usage-events.ts` and the range-scan house style. A task whose
@@ -32,6 +34,8 @@ export interface TokenTotals {
   totalTokens: number;
   /** Number of tasks that contributed to these totals. */
   nTasks: number;
+  /** Number of chat assistant/room messages that contributed to these totals. Legacy callers may omit it in fixtures; analytics always returns a number. */
+  nChatMessages?: number;
 }
 
 /** One group's token totals, keyed by the grouped dimension value. */
@@ -99,10 +103,12 @@ function emptyTotals(): TokenTotals {
     cacheWriteTokens: 0,
     totalTokens: 0,
     nTasks: 0,
+    nChatMessages: 0,
   };
 }
 
 interface TaskTokenRow {
+  id: string;
   inputTokens: number | null;
   outputTokens: number | null;
   cachedTokens: number | null;
@@ -118,20 +124,40 @@ interface TaskTokenRow {
   tokenUsageLastUsedAt: string;
 }
 
-function groupKeyFor(row: TaskTokenRow, groupBy: TokenGroupBy): string | null {
+interface ChatTokenRow {
+  id: string;
+  sourceKind: string;
+  chatSessionId: string | null;
+  roomId: string | null;
+  messageId: string | null;
+  projectId: string | null;
+  agentId: string | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cachedTokens: number | null;
+  cacheWriteTokens: number | null;
+  totalTokens: number | null;
+  modelProvider: string | null;
+  modelId: string | null;
+  createdAt: string;
+}
+
+type TokenContributionRow = (TaskTokenRow & { contributionKind: "task" }) | (ChatTokenRow & { contributionKind: "chat" });
+
+function groupKeyFor(row: TokenContributionRow, groupBy: TokenGroupBy): string | null {
   switch (groupBy) {
     case "model":
       /*
        * FNXC:TokenAnalytics 2026-06-19-16:09:
-       * By-model analytics expands durable per-model buckets before this legacy path runs. Keep this single-snapshot fallback for pre-migration, empty, or malformed per-model rows so historical grouping never throws.
+       * By-model analytics expands durable per-model task buckets before this legacy path runs. Chat rows are already one model snapshot per assistant turn.
        */
-      return row.tokenUsageModelId ?? row.modelId;
+      return row.contributionKind === "task" ? row.tokenUsageModelId ?? row.modelId : row.modelId;
     case "provider":
-      return row.tokenUsageModelProvider ?? row.modelProvider;
+      return row.contributionKind === "task" ? row.tokenUsageModelProvider ?? row.modelProvider : row.modelProvider;
     case "node":
-      return row.checkoutNodeId;
+      return row.contributionKind === "task" ? row.checkoutNodeId : null;
     case "agent":
-      return row.assignedAgentId;
+      return row.contributionKind === "task" ? row.assignedAgentId : row.agentId;
   }
 }
 
@@ -155,7 +181,7 @@ function emptyCostAccumulator(): CostAccumulator {
 
 function addRowCost(
   acc: CostAccumulator,
-  row: TaskTokenRow,
+  row: TokenContributionRow,
   now?: number,
   pricingOverrides?: ModelPricingOverrides,
 ): void {
@@ -171,8 +197,8 @@ function addRowCost(
       cacheWriteTokens: row.cacheWriteTokens ?? 0,
     },
     {
-      provider: row.tokenUsageModelProvider ?? row.modelProvider,
-      model: row.tokenUsageModelId ?? row.modelId,
+      provider: row.contributionKind === "task" ? row.tokenUsageModelProvider ?? row.modelProvider : row.modelProvider,
+      model: row.contributionKind === "task" ? row.tokenUsageModelId ?? row.modelId : row.modelId,
     },
     now,
     pricingOverrides,
@@ -194,12 +220,17 @@ function finalizeCost(acc: CostAccumulator): CostResult {
   };
 }
 
-function parsePerModelRows(row: TaskTokenRow): TaskTokenRow[] {
-  if (!row.tokenUsagePerModel) return [];
+interface ParsedPerModelRows {
+  valid: boolean;
+  rows: TokenContributionRow[];
+}
+
+function parsePerModelRows(row: TaskTokenRow): ParsedPerModelRows {
+  if (!row.tokenUsagePerModel) return { valid: false, rows: [] };
   try {
     const parsed = JSON.parse(row.tokenUsagePerModel) as unknown;
-    if (!Array.isArray(parsed) || parsed.length === 0) return [];
-    return parsed
+    if (!Array.isArray(parsed) || parsed.length === 0) return { valid: false, rows: [] };
+    const rows = parsed
       .filter((entry): entry is Partial<TaskTokenUsagePerModel> => entry !== null && typeof entry === "object")
       .map((entry) => {
         const inputTokens = Number.isFinite(entry.inputTokens) ? Number(entry.inputTokens) : 0;
@@ -218,14 +249,21 @@ function parsePerModelRows(row: TaskTokenRow): TaskTokenRow[] {
           totalTokens,
           tokenUsageModelProvider: typeof entry.modelProvider === "string" ? entry.modelProvider : null,
           tokenUsageModelId: typeof entry.modelId === "string" ? entry.modelId : null,
+          tokenUsageLastUsedAt: typeof entry.lastUsedAt === "string" ? entry.lastUsedAt : row.tokenUsageLastUsedAt,
+          contributionKind: "task" as const,
         };
       });
+    return { valid: rows.length > 0, rows };
   } catch {
-    return [];
+    return { valid: false, rows: [] };
   }
 }
 
-function addRow(totals: TokenTotals, row: TaskTokenRow): void {
+function isWithinRange(isoTimestamp: string, from?: string, to?: string): boolean {
+  return (from === undefined || isoTimestamp >= from) && (to === undefined || isoTimestamp <= to);
+}
+
+function addRow(totals: TokenTotals, row: TokenContributionRow, ids?: Set<string>): void {
   totals.inputTokens += row.inputTokens ?? 0;
   totals.outputTokens += row.outputTokens ?? 0;
   totals.cachedTokens += row.cachedTokens ?? 0;
@@ -239,7 +277,14 @@ function addRow(totals: TokenTotals, row: TaskTokenRow): void {
       (row.outputTokens ?? 0) +
       (row.cachedTokens ?? 0) +
       (row.cacheWriteTokens ?? 0);
-  totals.nTasks += 1;
+  if (!ids || !ids.has(row.id)) {
+    if (row.contributionKind === "task") {
+      totals.nTasks += 1;
+    } else {
+      totals.nChatMessages = (totals.nChatMessages ?? 0) + 1;
+    }
+    ids?.add(row.id);
+  }
 }
 
 function isoWeekBucket(isoTimestamp: string): string {
@@ -252,14 +297,19 @@ function isoWeekBucket(isoTimestamp: string): string {
   return `${thursday.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
 }
 
-function bucketFor(row: TaskTokenRow, granularity: TokenTimeGranularity): string {
+function contributionTimestamp(row: TokenContributionRow): string {
+  return row.contributionKind === "task" ? row.tokenUsageLastUsedAt : row.createdAt;
+}
+
+function bucketFor(row: TokenContributionRow, granularity: TokenTimeGranularity): string {
+  const timestamp = contributionTimestamp(row);
   switch (granularity) {
     case "hour":
-      return row.tokenUsageLastUsedAt.slice(0, 13);
+      return timestamp.slice(0, 13);
     case "day":
-      return row.tokenUsageLastUsedAt.slice(0, 10);
+      return timestamp.slice(0, 10);
     case "week":
-      return isoWeekBucket(row.tokenUsageLastUsedAt);
+      return isoWeekBucket(timestamp);
   }
 }
 
@@ -290,6 +340,7 @@ export async function aggregateTokenAnalytics(
     const tTo = query.to !== undefined ? sql`AND token_usage_last_used_at <= ${query.to}` : sql``;
     const rawRows = (await layer.db.execute(
       sql`SELECT
+            id,
             token_usage_input_tokens        AS "inputTokens",
             token_usage_output_tokens       AS "outputTokens",
             token_usage_cached_tokens       AS "cachedTokens",
@@ -307,6 +358,7 @@ export async function aggregateTokenAnalytics(
           WHERE token_usage_last_used_at IS NOT NULL ${tFrom} ${tTo}`,
     )) as Array<Record<string, unknown>>;
     const rows: TaskTokenRow[] = rawRows.map((r) => ({
+      id: String(r.id),
       inputTokens: r.inputTokens == null ? null : Number(r.inputTokens),
       outputTokens: r.outputTokens == null ? null : Number(r.outputTokens),
       cachedTokens: r.cachedTokens == null ? null : Number(r.cachedTokens),
@@ -323,25 +375,74 @@ export async function aggregateTokenAnalytics(
       assignedAgentId: (r.assignedAgentId as string | null) ?? null,
       tokenUsageLastUsedAt: String(r.tokenUsageLastUsedAt),
     }));
-    return computeTokenAnalytics(rows, query);
+
+    const cFrom = query.from !== undefined ? sql`AND created_at >= ${query.from}` : sql``;
+    const cTo = query.to !== undefined ? sql`AND created_at <= ${query.to}` : sql``;
+    const rawChatRows = (await layer.db.execute(
+      sql`SELECT
+            id,
+            source_kind        AS "sourceKind",
+            chat_session_id    AS "chatSessionId",
+            room_id            AS "roomId",
+            message_id         AS "messageId",
+            project_id         AS "projectId",
+            agent_id           AS "agentId",
+            input_tokens       AS "inputTokens",
+            output_tokens      AS "outputTokens",
+            cached_tokens      AS "cachedTokens",
+            cache_write_tokens AS "cacheWriteTokens",
+            total_tokens       AS "totalTokens",
+            model_provider     AS "modelProvider",
+            model_id           AS "modelId",
+            created_at         AS "createdAt"
+          FROM project.chat_token_usage
+          WHERE 1=1 ${cFrom} ${cTo}`,
+    )) as Array<Record<string, unknown>>;
+    const chatRows: ChatTokenRow[] = rawChatRows.map((r) => ({
+      id: String(r.id),
+      sourceKind: (r.sourceKind as string) ?? "chat",
+      chatSessionId: (r.chatSessionId as string | null) ?? null,
+      roomId: (r.roomId as string | null) ?? null,
+      messageId: (r.messageId as string | null) ?? null,
+      projectId: (r.projectId as string | null) ?? null,
+      agentId: (r.agentId as string | null) ?? null,
+      inputTokens: r.inputTokens == null ? null : Number(r.inputTokens),
+      outputTokens: r.outputTokens == null ? null : Number(r.outputTokens),
+      cachedTokens: r.cachedTokens == null ? null : Number(r.cachedTokens),
+      cacheWriteTokens: r.cacheWriteTokens == null ? null : Number(r.cacheWriteTokens),
+      totalTokens: r.totalTokens == null ? null : Number(r.totalTokens),
+      modelProvider: (r.modelProvider as string | null) ?? null,
+      modelId: (r.modelId as string | null) ?? null,
+      createdAt: String(r.createdAt),
+    }));
+    return computeTokenAnalytics(rows, chatRows, query);
   }
 
   const db = dbOrLayer as Database;
   const clauses: string[] = ["tokenUsageLastUsedAt IS NOT NULL"];
   const params: string[] = [];
+  const rangeClauses: string[] = [];
   if (query.from !== undefined) {
-    clauses.push("tokenUsageLastUsedAt >= ?");
+    rangeClauses.push("tokenUsageLastUsedAt >= ?");
     params.push(query.from);
   }
   if (query.to !== undefined) {
-    clauses.push("tokenUsageLastUsedAt <= ?");
+    rangeClauses.push("tokenUsageLastUsedAt <= ?");
     params.push(query.to);
+  }
+  if (rangeClauses.length > 0) {
+    /*
+     * FNXC:CommandCenterTokenRanges 2026-07-02-00:00:
+     * Last 30 days model analytics must evaluate durable tokenUsagePerModel bucket timestamps, not only the task-level latest usage timestamp. Include candidate multi-model rows for in-memory bucket filtering while legacy rows stay narrowed by task tokenUsageLastUsedAt.
+     */
+    clauses.push(`((${rangeClauses.join(" AND ")}) OR tokenUsagePerModel IS NOT NULL)`);
   }
   const where = `WHERE ${clauses.join(" AND ")}`;
 
   const rows = db
     .prepare(
       `SELECT
+         id,
          tokenUsageInputTokens   AS inputTokens,
          tokenUsageOutputTokens  AS outputTokens,
          tokenUsageCachedTokens  AS cachedTokens,
@@ -359,7 +460,40 @@ export async function aggregateTokenAnalytics(
     )
     .all(...params) as TaskTokenRow[];
 
-  return computeTokenAnalytics(rows, query);
+  const chatClauses: string[] = [];
+  const chatParams: string[] = [];
+  if (query.from !== undefined) {
+    chatClauses.push("createdAt >= ?");
+    chatParams.push(query.from);
+  }
+  if (query.to !== undefined) {
+    chatClauses.push("createdAt <= ?");
+    chatParams.push(query.to);
+  }
+  const chatWhere = chatClauses.length > 0 ? `WHERE ${chatClauses.join(" AND ")}` : "";
+  const chatRows = db
+    .prepare(
+      `SELECT
+         id,
+         sourceKind,
+         chatSessionId,
+         roomId,
+         messageId,
+         projectId,
+         agentId,
+         inputTokens,
+         outputTokens,
+         cachedTokens,
+         cacheWriteTokens,
+         totalTokens,
+         modelProvider,
+         modelId,
+         createdAt
+       FROM chat_token_usage ${chatWhere}`,
+    )
+    .all(...chatParams) as ChatTokenRow[];
+
+  return computeTokenAnalytics(rows, chatRows, query);
 }
 
 /**
@@ -367,9 +501,12 @@ export async function aggregateTokenAnalytics(
  * Pure post-fetch aggregation shared by the sync (SQLite) and async (PostgreSQL)
  * paths of {@link aggregateTokenAnalytics}. Takes already-fetched per-task token
  * rows and produces the totals/groups/series result — no I/O.
+ * FNXC:ChatTokenAccounting 2026-07-02-00:00:
+ * FN-7410 added chat_token_usage rows to Command Center token totals.
  */
 function computeTokenAnalytics(
   rows: TaskTokenRow[],
+  chatRows: ChatTokenRow[],
   query: TokenAnalyticsQuery,
 ): TokenAnalytics {
   const totals = emptyTotals();
@@ -383,34 +520,81 @@ function computeTokenAnalytics(
   const now = query.now;
   const pricingOverrides = query.pricingOverrides;
 
+  const totalContributionIds = new Set<string>();
+  const groupContributionIds = new Map<string | null, Set<string>>();
+  const seriesContributionIds = new Map<string, Set<string>>();
+
+  /*
+   * FNXC:ChatTokenAccounting 2026-07-02-00:00:
+   * Command Center token totals include durable chat turns alongside task execution tokens. `nTasks` remains task-only and `nChatMessages` counts chat assistant/room messages so labels never imply chat turns are tasks.
+   */
   for (const row of rows) {
-    addRow(totals, row);
-    addRowCost(totalCost, row, now, pricingOverrides);
-    if (groupBy) {
-      const groupRows = (groupBy === "model" || groupBy === "provider") ? parsePerModelRows(row) : [];
-      const rowsForGroup = groupRows.length > 0 ? groupRows : [row];
-      for (const groupRow of rowsForGroup) {
-        const key = groupKeyFor(groupRow, groupBy);
+    const taskRow: TokenContributionRow = { ...row, contributionKind: "task" };
+    const perModel = parsePerModelRows(row);
+    const rowInRange = isWithinRange(row.tokenUsageLastUsedAt, query.from, query.to);
+    const contributionRows = perModel.valid
+      ? perModel.rows.filter((bucketRow) => isWithinRange(contributionTimestamp(bucketRow), query.from, query.to))
+      : rowInRange
+        ? [taskRow]
+        : [];
+
+    for (const contributionRow of contributionRows) {
+      addRow(totals, contributionRow, totalContributionIds);
+      addRowCost(totalCost, contributionRow, now, pricingOverrides);
+      if (groupBy) {
+        const key = groupKeyFor(contributionRow, groupBy);
         let group = groupMap.get(key);
         if (!group) {
           group = { key, ...emptyTotals(), cost: { usd: null, unavailable: false, stale: false } };
           groupMap.set(key, group);
           groupCostMap.set(key, emptyCostAccumulator());
+          groupContributionIds.set(key, new Set<string>());
         }
-        addRow(group, groupRow);
-        addRowCost(groupCostMap.get(key)!, groupRow, now, pricingOverrides);
+        addRow(group, contributionRow, groupContributionIds.get(key)!);
+        addRowCost(groupCostMap.get(key)!, contributionRow, now, pricingOverrides);
+      }
+      if (granularity) {
+        const bucket = bucketFor(contributionRow, granularity);
+        let point = seriesMap.get(bucket);
+        if (!point) {
+          point = { bucket, ...emptyTotals(), cost: { usd: null, unavailable: false, stale: false } };
+          seriesMap.set(bucket, point);
+          seriesCostMap.set(bucket, emptyCostAccumulator());
+          seriesContributionIds.set(bucket, new Set<string>());
+        }
+        addRow(point, contributionRow, seriesContributionIds.get(bucket)!);
+        addRowCost(seriesCostMap.get(bucket)!, contributionRow, now, pricingOverrides);
       }
     }
+  }
+
+  for (const row of chatRows) {
+    const contributionRow: TokenContributionRow = { ...row, contributionKind: "chat" };
+    addRow(totals, contributionRow, totalContributionIds);
+    addRowCost(totalCost, contributionRow, now, pricingOverrides);
+    if (groupBy) {
+      const key = groupKeyFor(contributionRow, groupBy);
+      let group = groupMap.get(key);
+      if (!group) {
+        group = { key, ...emptyTotals(), cost: { usd: null, unavailable: false, stale: false } };
+        groupMap.set(key, group);
+        groupCostMap.set(key, emptyCostAccumulator());
+        groupContributionIds.set(key, new Set<string>());
+      }
+      addRow(group, contributionRow, groupContributionIds.get(key)!);
+      addRowCost(groupCostMap.get(key)!, contributionRow, now, pricingOverrides);
+    }
     if (granularity) {
-      const bucket = bucketFor(row, granularity);
+      const bucket = bucketFor(contributionRow, granularity);
       let point = seriesMap.get(bucket);
       if (!point) {
         point = { bucket, ...emptyTotals(), cost: { usd: null, unavailable: false, stale: false } };
         seriesMap.set(bucket, point);
         seriesCostMap.set(bucket, emptyCostAccumulator());
+        seriesContributionIds.set(bucket, new Set<string>());
       }
-      addRow(point, row);
-      addRowCost(seriesCostMap.get(bucket)!, row, now, pricingOverrides);
+      addRow(point, contributionRow, seriesContributionIds.get(bucket)!);
+      addRowCost(seriesCostMap.get(bucket)!, contributionRow, now, pricingOverrides);
     }
   }
 

@@ -492,6 +492,14 @@ function rawValueDisplay(value: unknown): string {
   }
 }
 
+function workflowSettingPendingValueEquals(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((value, index) => Object.is(value, b[index]));
+  }
+  return false;
+}
+
 export interface WorkflowModelLanePair {
   id: string;
   providerId: string;
@@ -712,14 +720,21 @@ function ValuesTab({
 
   const save = useCallback(async () => {
     if (!dirty) return;
-    const savedKeys = new Set(Object.keys(pending));
+    const pendingSnapshot = { ...pending };
+    const savedKeys = Object.keys(pendingSnapshot);
     setSaving(true);
     try {
-      const res = await updateWorkflowSettingValues(workflowId, pending, boundProjectId);
+      const res = await updateWorkflowSettingValues(workflowId, pendingSnapshot, boundProjectId);
       setPayload(res);
       setPending((prev) => {
         const next = { ...prev };
-        for (const k of savedKeys) delete next[k];
+        /*
+         * FNXC:WorkflowSettingsSaveRace 2026-07-02-13:28:
+         * Values remain editable during an async save, so success may only clear keys whose current pending value still equals this request's snapshot. New same-key edits, clear-to-default nulls, and model-lane pair edits must remain queued for the next save.
+         */
+        for (const k of savedKeys) {
+          if (workflowSettingPendingValueEquals(prev[k], pendingSnapshot[k])) delete next[k];
+        }
         return next;
       });
       setRejections({});

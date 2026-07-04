@@ -82,6 +82,80 @@ const mockTaskDocuments: TaskDocumentWithTask[] = [
   },
 ];
 
+const mockStatusTaskDocuments: TaskDocumentWithTask[] = [
+  {
+    id: "doc-status-done",
+    taskId: "KB-DONE",
+    key: "plan",
+    content: "Done document content",
+    revision: 1,
+    author: "agent",
+    createdAt: "2026-04-19T10:00:00.000Z",
+    updatedAt: "2026-04-19T16:00:00.000Z",
+    taskTitle: "Done task",
+    taskColumn: "done",
+  },
+  {
+    id: "doc-status-todo",
+    taskId: "KB-TODO",
+    key: "notes",
+    content: "Todo document content",
+    revision: 1,
+    author: "agent",
+    createdAt: "2026-04-19T10:00:00.000Z",
+    updatedAt: "2026-04-19T15:00:00.000Z",
+    taskTitle: "Todo task",
+    taskColumn: "todo",
+  },
+  {
+    id: "doc-status-archived",
+    taskId: "KB-ARCHIVED",
+    key: "summary",
+    content: "Archived document content",
+    revision: 1,
+    author: "agent",
+    createdAt: "2026-04-19T10:00:00.000Z",
+    updatedAt: "2026-04-19T14:00:00.000Z",
+    taskTitle: "Archived task",
+    taskColumn: "archived",
+  },
+  {
+    id: "doc-status-custom",
+    taskId: "KB-CUSTOM",
+    key: "handoff",
+    content: "Custom column document content",
+    revision: 1,
+    author: "agent",
+    createdAt: "2026-04-19T10:00:00.000Z",
+    updatedAt: "2026-04-19T13:00:00.000Z",
+    taskTitle: "Custom task",
+    taskColumn: "qa-ready",
+  },
+  {
+    id: "doc-status-missing",
+    taskId: "KB-MISSING",
+    key: "legacy",
+    content: "Legacy document content",
+    revision: 1,
+    author: "agent",
+    createdAt: "2026-04-19T10:00:00.000Z",
+    updatedAt: "2026-04-19T12:00:00.000Z",
+    taskTitle: "Legacy task",
+  },
+  {
+    id: "doc-status-done-duplicate",
+    taskId: "KB-DONE",
+    key: "notes",
+    content: "Second done document content",
+    revision: 1,
+    author: "agent",
+    createdAt: "2026-04-19T10:00:00.000Z",
+    updatedAt: "2026-04-19T11:00:00.000Z",
+    taskTitle: "Done task",
+    taskColumn: "done",
+  },
+];
+
 const mockProjectFiles = [
   {
     path: "README.md",
@@ -272,6 +346,80 @@ describe("DocumentsView", () => {
     expect(screen.getByRole("tab", { name: /show task documents/i })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByText("KB-001")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Open README.md" })).not.toBeInTheDocument();
+  });
+
+  it("shows collapsed task group status badges for done non-done archived custom and legacy documents", async () => {
+    mockUseProjectMarkdownFiles.mockReturnValue({
+      files: [],
+      loading: false,
+      error: null,
+      refresh: vi.fn().mockResolvedValue(undefined),
+    });
+    mockUseDocuments.mockReturnValue({
+      documents: mockStatusTaskDocuments,
+      projectFiles: [],
+      loading: false,
+      error: null,
+      refresh: vi.fn().mockResolvedValue(undefined),
+    });
+
+    render(<DocumentsView addToast={addToast} onOpenDetail={onOpenDetail} />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: /show task documents/i })).toHaveAttribute("aria-selected", "true");
+    });
+
+    const doneGroup = screen.getByRole("button", { name: /expand documents for task KB-DONE/i }).closest(".documents-group");
+    const todoGroup = screen.getByRole("button", { name: /expand documents for task KB-TODO/i }).closest(".documents-group");
+    const archivedGroup = screen.getByRole("button", { name: /expand documents for task KB-ARCHIVED/i }).closest(".documents-group");
+    const customGroup = screen.getByRole("button", { name: /expand documents for task KB-CUSTOM/i }).closest(".documents-group");
+    const missingGroup = screen.getByRole("button", { name: /expand documents for task KB-MISSING/i }).closest(".documents-group");
+
+    expect(doneGroup).not.toBeNull();
+    expect(todoGroup).not.toBeNull();
+    expect(archivedGroup).not.toBeNull();
+    expect(customGroup).not.toBeNull();
+    expect(missingGroup).not.toBeNull();
+
+    expect(within(doneGroup as HTMLElement).getByLabelText("Task status: Done")).toHaveTextContent("Done");
+    expect(within(doneGroup as HTMLElement).getByText("2 docs")).toBeInTheDocument();
+    expect(within(doneGroup as HTMLElement).getByLabelText("Task status: Done").querySelector(".status-dot--online")).toBeInTheDocument();
+    expect(within(todoGroup as HTMLElement).getByLabelText("Task status: Todo")).toHaveTextContent("Todo");
+    expect(within(archivedGroup as HTMLElement).getByLabelText("Task status: Archived")).toHaveTextContent("Archived");
+    expect(within(customGroup as HTMLElement).getByLabelText("Task status: qa-ready")).toHaveTextContent("qa-ready");
+    expect((missingGroup as HTMLElement).querySelector(".documents-group-status")).not.toBeInTheDocument();
+    expect(screen.queryByText("Done document content")).not.toBeInTheDocument();
+  });
+
+  it("keeps task group status badges as non-interactive header metadata on mobile", async () => {
+    window.innerWidth = 600;
+    mockUseProjectMarkdownFiles.mockReturnValue({
+      files: [],
+      loading: false,
+      error: null,
+      refresh: vi.fn().mockResolvedValue(undefined),
+    });
+    mockUseDocuments.mockReturnValue({
+      documents: mockStatusTaskDocuments,
+      projectFiles: [],
+      loading: false,
+      error: null,
+      refresh: vi.fn().mockResolvedValue(undefined),
+    });
+
+    render(<DocumentsView addToast={addToast} onOpenDetail={onOpenDetail} />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: /show task documents/i })).toHaveAttribute("aria-selected", "true");
+    });
+
+    const doneGroup = screen.getByRole("button", { name: /expand documents for task KB-DONE/i }).closest(".documents-group") as HTMLElement;
+    const status = within(doneGroup).getByLabelText("Task status: Done");
+
+    expect(status).toHaveClass("documents-group-status");
+    expect(status.closest(".documents-group-header")).toBeInTheDocument();
+    expect(status.closest("button")).toBeNull();
+    expect(within(doneGroup).getByRole("button", { name: /open task KB-DONE/i })).toBeInTheDocument();
   });
 
   it("renders artifacts tab counts and all media card paths without non-media expand shells", async () => {

@@ -22,6 +22,7 @@ import type {
   ChatRoomMessage,
   ChatSession,
   ChatSessionCreateInput,
+  ChatTokenUsageCreateInput,
   MessageStore,
   Settings,
   TaskStore,
@@ -233,6 +234,43 @@ const MAX_MESSAGES_PER_IP_PER_MINUTE = 30;
 const MAX_REFERENCED_FILE_SIZE = 50 * 1024;
 export const TASK_PLANNER_CHAT_AGENT_ID_PREFIX = "task-planner:";
 const ROOM_AMBIENT_MAX_RESPONDERS = 5;
+
+type ChatSessionStatsLike = { tokens?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; total?: number } };
+type ChatTokenDelta = Pick<ChatTokenUsageCreateInput, "inputTokens" | "outputTokens" | "cachedTokens" | "cacheWriteTokens" | "totalTokens">;
+
+function normalizeChatTokenDelta(stats: ChatSessionStatsLike | undefined): ChatTokenDelta | undefined {
+  const tokens = stats?.tokens;
+  if (!tokens) return undefined;
+  const inputTokens = Math.max(0, Math.trunc(tokens.input ?? 0));
+  const outputTokens = Math.max(0, Math.trunc(tokens.output ?? 0));
+  const cachedTokens = Math.max(0, Math.trunc(tokens.cacheRead ?? 0));
+  const cacheWriteTokens = Math.max(0, Math.trunc(tokens.cacheWrite ?? 0));
+  const totalTokens = Math.max(0, Math.trunc(tokens.total ?? (inputTokens + outputTokens + cachedTokens + cacheWriteTokens)));
+  if (inputTokens === 0 && outputTokens === 0 && cachedTokens === 0 && cacheWriteTokens === 0 && totalTokens === 0) return undefined;
+  return { inputTokens, outputTokens, cachedTokens, cacheWriteTokens, totalTokens };
+}
+
+async function readChatSessionTokenDelta(session: unknown): Promise<ChatTokenDelta | undefined> {
+  const accessor = (session as { getSessionStats?: () => ChatSessionStatsLike | Promise<ChatSessionStatsLike> }).getSessionStats;
+  if (typeof accessor !== "function") return undefined;
+  try {
+    return normalizeChatTokenDelta(await accessor.call(session));
+  } catch {
+    return undefined;
+  }
+}
+
+function modelSnapshotForTokenUsage(session: unknown, fallback?: { fallbackModel?: string }): { provider: string | null; modelId: string | null } {
+  const model = (session as { model?: { provider?: string; id?: string } }).model;
+  if (model?.provider || model?.id) {
+    return { provider: model.provider ?? null, modelId: model.id ?? null };
+  }
+  if (fallback?.fallbackModel?.includes("/")) {
+    const [provider, ...modelParts] = fallback.fallbackModel.split("/");
+    return { provider: provider || null, modelId: modelParts.join("/") || null };
+  }
+  return { provider: null, modelId: fallback?.fallbackModel ?? null };
+}
 
 type ChatCustomTool = ReturnType<typeof createWorkflowAuthoringTools>[number];
 type ChatToolExecute = (...args: unknown[]) => Promise<unknown>;
@@ -1053,6 +1091,20 @@ export class ChatManager {
   private cliChatRunner?: {
     ensureSession(chatSessionId: string, opts: { projectId: string; worktreePath?: string | null }): Promise<string>;
     send(chatSessionId: string, text: string): Promise<"sent" | "queued">;
+    getSessionStats?(chatSessionId: string): ChatSessionStatsLike | Promise<ChatSessionStatsLike | undefined> | undefined;
+    getTokenUsageSnapshot?(chatSessionId: string): ({
+      tokens?: ChatSessionStatsLike["tokens"];
+      modelProvider?: string | null;
+      modelId?: string | null;
+      messageId?: string | null;
+      createdAt?: string | null;
+    }) | Promise<{
+      tokens?: ChatSessionStatsLike["tokens"];
+      modelProvider?: string | null;
+      modelId?: string | null;
+      messageId?: string | null;
+      createdAt?: string | null;
+    } | undefined> | undefined;
   };
   /** Project id used when the runner spawns a CLI session for a chat. */
   private cliChatProjectId?: string;
@@ -1532,7 +1584,7 @@ export class ChatManager {
           continue;
         }
 
-        await this.chatStore.addRoomMessage(roomId, {
+        const assistantMessage = await this.chatStore.addRoomMessage(roomId, {
           role: "assistant",
           content: response.content,
           thinkingOutput: response.thinkingOutput,
@@ -1540,6 +1592,17 @@ export class ChatManager {
           senderAgentId: responder.id,
           mentions: mentions.map((mention) => mention.agentId),
         });
+        if (response.tokenUsage) {
+          this.chatStore.recordTokenUsage({
+            sourceKind: "room-chat",
+            roomId,
+            messageId: assistantMessage.id,
+            projectId: room.projectId ?? null,
+            agentId: responder.id,
+            createdAt: assistantMessage.createdAt,
+            ...response.tokenUsage,
+          });
+        }
         successfulResponderIds.push(responder.id);
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
@@ -1583,7 +1646,7 @@ export class ChatManager {
     responder: Agent;
     modelProvider?: string;
     modelId?: string;
-  }): Promise<{ content: string; thinkingOutput: string | null; metadata?: Record<string, unknown> }> {
+  }): Promise<{ content: string; thinkingOutput: string | null; metadata?: Record<string, unknown>; tokenUsage?: ChatTokenDelta & { modelProvider: string | null; modelId: string | null } }> {
     await ensureEngineReady();
 
     let systemPrompt = CHAT_SYSTEM_PROMPT;
@@ -1724,6 +1787,8 @@ export class ChatManager {
         throw new Error("Room responder returned an empty reply");
       }
 
+      const tokenDelta = await readChatSessionTokenDelta(resolvedSession.session);
+      const model = modelSnapshotForTokenUsage(resolvedSession.session, roomFallbackInfo);
       return {
         content: finalContent,
         thinkingOutput: null,
@@ -1731,6 +1796,7 @@ export class ChatManager {
           roomId: input.roomId,
           ...(roomFallbackInfo ? { fallback: roomFallbackInfo } : {}),
         },
+        ...(tokenDelta ? { tokenUsage: { ...tokenDelta, modelProvider: model.provider, modelId: model.modelId } } : {}),
       };
     } finally {
       resolvedSession.session.dispose?.();
@@ -1807,6 +1873,26 @@ export class ChatManager {
           projectId: this.cliChatProjectId ?? session.projectId ?? "",
         });
         await runner.send(sessionId, content);
+        const usageSnapshot = await runner.getTokenUsageSnapshot?.(sessionId);
+        const sessionStats = usageSnapshot ?? (await runner.getSessionStats?.(sessionId));
+        const tokenDelta = normalizeChatTokenDelta(sessionStats);
+        if (tokenDelta) {
+          /*
+           * FNXC:ChatTokenAccounting 2026-07-02-00:00:
+           * CLI-agent-backed chat returns before the dashboard model loop, so read the runner's per-turn telemetry snapshot here and persist it as `cli-chat`. This keeps CLI/pi chat tokens in Command Center while leaving task execution tokenUsage untouched.
+           */
+          this.chatStore.recordTokenUsage({
+            sourceKind: "cli-chat",
+            chatSessionId: sessionId,
+            messageId: usageSnapshot?.messageId ?? null,
+            projectId: session.projectId ?? this.cliChatProjectId ?? null,
+            agentId: session.agentId ?? null,
+            modelProvider: usageSnapshot?.modelProvider ?? null,
+            modelId: usageSnapshot?.modelId ?? session.modelId ?? null,
+            createdAt: usageSnapshot?.createdAt ?? new Date().toISOString(),
+            ...tokenDelta,
+          });
+        }
       } finally {
         const current = this.activeGenerations.get(sessionId);
         if (current?.generationId === generationId) {
@@ -2295,6 +2381,26 @@ export class ChatManager {
         thinkingOutput: accumulatedThinking || undefined,
         metadata: Object.keys(assistantMetadata).length > 0 ? assistantMetadata : undefined,
       });
+
+      const tokenDelta = await readChatSessionTokenDelta(agentResult.session);
+      if (tokenDelta) {
+        const model = modelSnapshotForTokenUsage(agentResult.session, fallbackInfo);
+        /*
+         * FNXC:ChatTokenAccounting 2026-07-02-00:00:
+         * Successful dashboard chat turns persist provider-reported session stats as chat-token rows. Task-detail planner chat uses sourceKind `task-planner-chat` instead of task.tokenUsage so the planner's own model call is visible in Command Center without mutating execution totals for the task it discusses.
+         */
+        this.chatStore.recordTokenUsage({
+          sourceKind: taskPlannerChatTaskId ? "task-planner-chat" : "chat",
+          chatSessionId: sessionId,
+          messageId: assistantMessage.id,
+          projectId: session.projectId ?? null,
+          agentId: session.agentId ?? null,
+          modelProvider: model.provider,
+          modelId: model.modelId,
+          createdAt: assistantMessage.createdAt,
+          ...tokenDelta,
+        });
+      }
 
       this.flushInFlightGenerationPersist(sessionId, null);
 

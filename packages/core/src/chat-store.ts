@@ -15,6 +15,8 @@ import { randomUUID } from "node:crypto";
 import type { Database } from "./db.js";
 import { fromJson, toJsonNullable } from "./db.js";
 import type { AsyncDataLayer } from "./postgres/data-layer.js";
+import { sql } from "drizzle-orm";
+import * as schema from "./postgres/schema/index.js";
 import * as asyncChatStore from "./async-chat-store.js";
 import type {
   ChatSession,
@@ -36,6 +38,9 @@ import type {
   ChatRoomStatus,
   ChatRoomUpdateInput,
   RoomMemberRole,
+  ChatTokenUsageCreateInput,
+  ChatTokenUsageRecord,
+  ChatTokenUsageSourceKind,
 } from "./chat-types.js";
 
 // ── Event Types ─────────────────────────────────────────────────────
@@ -132,6 +137,24 @@ interface ChatRoomMessageRow {
   attachments: string | null;
   senderAgentId: string | null;
   mentions: string | null;
+  createdAt: string;
+}
+
+interface ChatTokenUsageRow {
+  id: string;
+  sourceKind: string;
+  chatSessionId: string | null;
+  roomId: string | null;
+  messageId: string | null;
+  projectId: string | null;
+  agentId: string | null;
+  modelProvider: string | null;
+  modelId: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
   createdAt: string;
 }
 
@@ -245,6 +268,26 @@ export class ChatStore extends EventEmitter<ChatStoreEvents> {
       attachments: fromJson<ChatAttachment[]>(row.attachments) ?? undefined,
       senderAgentId: row.senderAgentId ?? null,
       mentions: fromJson<string[]>(row.mentions) ?? [],
+      createdAt: row.createdAt,
+    };
+  }
+
+  private rowToTokenUsage(row: ChatTokenUsageRow): ChatTokenUsageRecord {
+    return {
+      id: row.id,
+      sourceKind: row.sourceKind as ChatTokenUsageSourceKind,
+      chatSessionId: row.chatSessionId ?? null,
+      roomId: row.roomId ?? null,
+      messageId: row.messageId ?? null,
+      projectId: row.projectId ?? null,
+      agentId: row.agentId ?? null,
+      modelProvider: row.modelProvider ?? null,
+      modelId: row.modelId ?? null,
+      inputTokens: row.inputTokens ?? 0,
+      outputTokens: row.outputTokens ?? 0,
+      cachedTokens: row.cachedTokens ?? 0,
+      cacheWriteTokens: row.cacheWriteTokens ?? 0,
+      totalTokens: row.totalTokens ?? 0,
       createdAt: row.createdAt,
     };
   }
@@ -1376,5 +1419,84 @@ export class ChatStore extends EventEmitter<ChatStoreEvents> {
     this.syncDb().bumpLastModified();
     this.emit("chat:room:message:updated", updated);
     return updated;
+  }
+
+  recordTokenUsage(input: ChatTokenUsageCreateInput): ChatTokenUsageRecord | undefined {
+    const inputTokens = Math.max(0, Math.trunc(input.inputTokens));
+    const outputTokens = Math.max(0, Math.trunc(input.outputTokens));
+    const cachedTokens = Math.max(0, Math.trunc(input.cachedTokens));
+    const cacheWriteTokens = Math.max(0, Math.trunc(input.cacheWriteTokens));
+    const totalTokens = Math.max(0, Math.trunc(input.totalTokens ?? (inputTokens + outputTokens + cachedTokens + cacheWriteTokens)));
+    if (inputTokens === 0 && outputTokens === 0 && cachedTokens === 0 && cacheWriteTokens === 0 && totalTokens === 0) {
+      return undefined;
+    }
+
+    const record: ChatTokenUsageRecord = {
+      id: `chat-tokens-${randomUUID().slice(0, 12)}`,
+      sourceKind: input.sourceKind,
+      chatSessionId: input.chatSessionId ?? null,
+      roomId: input.roomId ?? null,
+      messageId: input.messageId ?? null,
+      projectId: input.projectId ?? null,
+      agentId: input.agentId ?? null,
+      modelProvider: input.modelProvider ?? null,
+      modelId: input.modelId ?? null,
+      inputTokens,
+      outputTokens,
+      cachedTokens,
+      cacheWriteTokens,
+      totalTokens,
+      createdAt: input.createdAt ?? new Date().toISOString(),
+    };
+
+    /*
+     * FNXC:ChatTokenAccounting 2026-07-02-00:00:
+     * Chat interactions are first-class token consumers for Command Center totals, but they are stored in a separate append-only table instead of task.tokenUsage so task execution panels stay task-scoped and planner chat cannot double-count executor/reviewer/triage/merger sessions.
+     */
+    if (this.backendMode) {
+      const layer = this.asyncLayer!;
+      void layer.db.execute(sql`INSERT INTO project.chat_token_usage (
+        id, source_kind, chat_session_id, room_id, message_id, project_id, agent_id,
+        model_provider, model_id, input_tokens, output_tokens, cached_tokens,
+        cache_write_tokens, total_tokens, created_at
+      ) VALUES (
+        ${record.id}, ${record.sourceKind}, ${record.chatSessionId}, ${record.roomId},
+        ${record.messageId}, ${record.projectId}, ${record.agentId},
+        ${record.modelProvider}, ${record.modelId}, ${record.inputTokens}, ${record.outputTokens},
+        ${record.cachedTokens}, ${record.cacheWriteTokens}, ${record.totalTokens}, ${record.createdAt}
+      )`);
+      return record;
+    }
+    this.syncDb().prepare(`
+      INSERT INTO chat_token_usage (
+        id, sourceKind, chatSessionId, roomId, messageId, projectId, agentId,
+        modelProvider, modelId, inputTokens, outputTokens, cachedTokens,
+        cacheWriteTokens, totalTokens, createdAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      record.id,
+      record.sourceKind,
+      record.chatSessionId,
+      record.roomId,
+      record.messageId,
+      record.projectId,
+      record.agentId,
+      record.modelProvider,
+      record.modelId,
+      record.inputTokens,
+      record.outputTokens,
+      record.cachedTokens,
+      record.cacheWriteTokens,
+      record.totalTokens,
+      record.createdAt,
+    );
+    this.syncDb().bumpLastModified();
+    return record;
+  }
+
+  listTokenUsage(): ChatTokenUsageRecord[] {
+    if (this.backendMode) return [];
+    const rows = this.syncDb().prepare("SELECT * FROM chat_token_usage ORDER BY createdAt ASC").all() as ChatTokenUsageRow[];
+    return rows.map((row) => this.rowToTokenUsage(row));
   }
 }

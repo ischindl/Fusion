@@ -25,11 +25,21 @@ function normalize(value: unknown): string {
     .replace(/^origin\//, "");
 }
 
-function warnFallback(rootDir: string, logger: Pick<Console, "warn">): void {
+/*
+FNXC:IntegrationBranch 2026-07-02-11:59:
+Auto-detect deliberately reads origin/HEAD only. When operators use another remote such as gitlab, fallback diagnostics must name discovered remotes and guide them to add an origin alias or set integrationBranch manually instead of silently choosing an arbitrary remote.
+*/
+function warnFallback(rootDir: string, logger: Pick<Console, "warn">, remotes: string[] = []): void {
   if (warnedFallbackRootDirs.has(rootDir)) {
     return;
   }
   warnedFallbackRootDirs.add(rootDir);
+  if (remotes.length > 0) {
+    const remoteList = remotes.join(", ");
+    const originState = remotes.includes("origin") ? "origin/HEAD is unset" : "origin is absent";
+    logger.warn(`[integration-branch] falling back to 'main' — auto-detect checks origin/HEAD, but ${originState}; found remote ${remoteList}. Add an origin alias or set integrationBranch manually.`);
+    return;
+  }
   logger.warn("[integration-branch] falling back to 'main' — origin/HEAD unset and no project override");
 }
 
@@ -71,6 +81,42 @@ function resolveFromOriginHeadSync(rootDir: string): string {
   }
 }
 
+function parseRemotes(stdout: string): string[] {
+  return [...new Set(stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean))];
+}
+
+async function listGitRemotes(rootDir: string): Promise<string[]> {
+  try {
+    const { stdout } = await execAsync("git remote", {
+      cwd: rootDir,
+      encoding: "utf8",
+      timeout: 5_000,
+      maxBuffer: 1024 * 1024,
+    });
+    return parseRemotes(stdout);
+  } catch {
+    return [];
+  }
+}
+
+function listGitRemotesSync(rootDir: string): string[] {
+  try {
+    const stdout = execSync("git remote", {
+      cwd: rootDir,
+      encoding: "utf8",
+      timeout: 5_000,
+      maxBuffer: 1024 * 1024,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return parseRemotes(stdout);
+  } catch {
+    return [];
+  }
+}
+
 export async function resolveIntegrationBranch(
   rootDir: string,
   settings: IntegrationBranchSettings,
@@ -88,7 +134,8 @@ export async function resolveIntegrationBranch(
     return fromOrigin;
   }
 
-  warnFallback(rootDir, logger);
+  const remotes = await listGitRemotes(rootDir);
+  warnFallback(rootDir, logger, remotes);
   return INTEGRATION_BRANCH_FALLBACK;
 }
 
@@ -109,7 +156,8 @@ export function resolveIntegrationBranchSync(
     return fromOrigin;
   }
 
-  warnFallback(rootDir, logger);
+  const remotes = listGitRemotesSync(rootDir);
+  warnFallback(rootDir, logger, remotes);
   return INTEGRATION_BRANCH_FALLBACK;
 }
 

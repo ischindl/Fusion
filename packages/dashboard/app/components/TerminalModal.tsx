@@ -363,6 +363,26 @@ function isKeyboardFocusableElement(el: Element | null): boolean {
  * - Fallback: initial viewport height - vv.height - vv.offsetTop
  *   Works on iOS Safari where window.innerHeight shrinks with the keyboard.
  */
+function getScreenViewportBaselineCandidate(viewportWidth: number, viewportHeight: number): number | null {
+  if (typeof window === "undefined" || !window.screen) return null;
+  const screenWidth = window.screen.width;
+  const screenHeight = window.screen.height;
+  if (!Number.isFinite(screenWidth) || !Number.isFinite(screenHeight) || screenWidth <= 0 || screenHeight <= 0) {
+    return null;
+  }
+
+  const portraitLike = viewportHeight >= viewportWidth;
+  const candidate = portraitLike
+    ? Math.max(screenWidth, screenHeight)
+    : Math.min(screenWidth, screenHeight);
+  const gap = candidate - viewportHeight;
+  const minMeaningfulGap = portraitLike
+    ? Math.max(220, candidate * 0.25)
+    : Math.max(80, candidate * 0.25);
+
+  return gap >= minMeaningfulGap ? candidate : null;
+}
+
 function getKeyboardOverlap(): number {
   if (typeof window === "undefined" || !window.visualViewport) return 0;
   const vv = window.visualViewport;
@@ -384,6 +404,9 @@ function getKeyboardOverlap(): number {
 
   FNXC:Terminal 2026-06-30-11:42:
   Touch-primary short landscape and folded closed postures can be <=480px tall. A keyboard-closed width/posture sample must replace an unfolded baseline even at that height, while focused keyboard-open samples remain excluded so xterm does not clear overlap before the first correct folded fit.
+
+  FNXC:Terminal 2026-07-02-18:12:
+  iOS Safari can deliver the very first terminal sample with the helper textarea focused, the soft keyboard already open, and both `innerHeight` and `documentElement.clientHeight` shrunk to the visual viewport. Seed that initial focused sample from the device screen only when the missing height is large enough to be a keyboard, so 10px/12px terminals publish --keyboard-overlap/--vv-height/--vv-width before any close/open, orientation, reconnect, or font reset side effect can repair spaced ASCII cells.
   */
   if (!isKeyboardFocusableElement(document.activeElement) && hasSettledViewportPostureChange(viewportWidth)) {
     setInitialViewportBaseline(viewportHeight, viewportWidth);
@@ -392,7 +415,13 @@ function getKeyboardOverlap(): number {
   // On iOS Safari, window.innerHeight shrinks to match visualViewport.
   // Detect keyboard by checking if visual viewport is shorter than initial
   // height by more than 80px (with a 30px noise filter).
-  const initialHeight = getInitialViewportHeight(viewportWidth, viewportHeight);
+  const screenBaselineCandidate = isKeyboardFocusableElement(document.activeElement)
+    ? getScreenViewportBaselineCandidate(viewportWidth, viewportHeight)
+    : null;
+  const initialHeight = Math.max(
+    getInitialViewportHeight(viewportWidth, screenBaselineCandidate ?? viewportHeight),
+    screenBaselineCandidate ?? 0,
+  );
   const gap = initialHeight - vv.offsetTop - vv.height;
   // Minimum 30px gap required to filter noise (address bar, toolbar changes).
   // Threshold of 80px: only consider keyboard present when gap exceeds this.
@@ -470,6 +499,7 @@ export function TerminalModal({ isOpen, onClose, initialCommand, initialCommandG
   const [openGeneration, setOpenGeneration] = useState(0);
   const [keyboardOverlap, setKeyboardOverlap] = useState(0);
   const [viewportHeight, setViewportHeight] = useState<number | null>(null);
+  const [viewportWidth, setViewportWidth] = useState<number | null>(null);
   const [terminalPreferences, setTerminalPreferences] = useState<TerminalPreferences>(() =>
     readTerminalPreferences(),
   );
@@ -860,6 +890,11 @@ export function TerminalModal({ isOpen, onClose, initialCommand, initialCommandG
       // This is more reliable than 100dvh on iOS Safari where
       // the dynamic viewport height behavior varies by browser version.
       setViewportHeight(vv.height);
+      /*
+      FNXC:Terminal 2026-07-02-12:28:
+      Android Chrome can open the keyboard with a visual viewport narrower than the layout viewport while the terminal footer already shows the persisted 10px preference. Publish the current visual viewport width alongside --vv-height so the fullscreen mobile shell and xterm's first fit measure the visible keyboard-open box before any later orientation, unfold, reconnect, or manual font reset can repair stale wide columns.
+      */
+      setViewportWidth(vv.width);
       // Scroll the modal so the status bar (bottom edge) stays visible
       // when the virtual keyboard pushes the viewport up.
       if (overlap > 0 && modalRef.current?.scrollIntoView) {
@@ -916,6 +951,7 @@ export function TerminalModal({ isOpen, onClose, initialCommand, initialCommandG
       }
       setKeyboardOverlap(0);
       setViewportHeight(null);
+      setViewportWidth(null);
     };
   }, [fitAndResizeForSession, isOpen]);
 
@@ -2086,6 +2122,7 @@ export function TerminalModal({ isOpen, onClose, initialCommand, initialCommandG
           // This is more reliable than 100dvh which behaves differently
           // across Chrome Android vs iOS Safari.
           "--vv-height": viewportHeight ? `${viewportHeight}px` : undefined,
+          "--vv-width": viewportWidth ? `${viewportWidth}px` : undefined,
         }
       : {}),
     ...(isDockedMode ? { "--terminal-docked-height": `${dockedHeight}px` } : {}),

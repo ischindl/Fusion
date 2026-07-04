@@ -1288,4 +1288,126 @@ describe("ChatView core interactions", () => {
     const messageBubble = screen.getByTestId("chat-message-msg-001");
     expect(messageBubble.querySelector(".chat-message-avatar")).toBeNull();
   });
+
+  describe("conversation rename affordances", () => {
+    it("renames the clicked sidebar session without selecting it", async () => {
+      const selectSession = vi.fn();
+      const renameSession = vi.fn().mockResolvedValue(undefined);
+      const sessions: ChatSessionInfo[] = [
+        {
+          id: "session-001",
+          agentId: "agent-001",
+          status: "active",
+          title: "Alpha Chat",
+          lastMessagePreview: "Alpha preview",
+          createdAt: "2026-04-08T00:00:00.000Z",
+          updatedAt: "2026-04-08T00:00:00.000Z",
+        },
+        {
+          id: "session-002",
+          agentId: "agent-002",
+          status: "active",
+          title: "Beta Chat",
+          lastMessagePreview: "Beta preview",
+          createdAt: "2026-04-07T00:00:00.000Z",
+          updatedAt: "2026-04-07T00:00:00.000Z",
+        },
+      ];
+
+      setupMockChat({
+        sessions,
+        filteredSessions: sessions,
+        activeSession: sessions[0],
+        selectSession,
+        renameSession,
+      });
+      await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+
+      const betaRow = screen.getByTestId("chat-session-session-002");
+      await userEvent.click(within(betaRow).getByTestId("chat-session-rename-btn"));
+
+      expect(selectSession).not.toHaveBeenCalled();
+      const dialog = screen.getByRole("dialog", { name: /rename conversation/i });
+      const input = within(dialog).getByTestId("chat-rename-input") as HTMLInputElement;
+      expect(input).toHaveValue("Beta Chat");
+
+      await userEvent.clear(input);
+      await userEvent.type(input, "Renamed Beta");
+      await userEvent.click(within(dialog).getByTestId("chat-rename-save"));
+
+      await waitFor(() => {
+        expect(renameSession).toHaveBeenCalledWith("session-002", "Renamed Beta");
+      });
+      expect(selectSession).not.toHaveBeenCalled();
+
+      await userEvent.click(betaRow);
+      expect(selectSession).toHaveBeenCalledWith("session-002");
+    });
+
+    it("uses Untitled in the sidebar rename button name for empty session titles", async () => {
+      const renameSession = vi.fn().mockResolvedValue(undefined);
+      const untitledSession: ChatSessionInfo = {
+        id: "session-empty-title",
+        agentId: "agent-001",
+        status: "active",
+        title: undefined,
+        createdAt: "2026-04-08T00:00:00.000Z",
+        updatedAt: "2026-04-08T00:00:00.000Z",
+      };
+
+      setupMockChat({
+        sessions: [untitledSession],
+        filteredSessions: [untitledSession],
+        activeSession: null,
+        renameSession,
+      });
+      await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+
+      const row = screen.getByTestId("chat-session-session-empty-title");
+      const renameButton = within(row).getByRole("button", { name: /rename conversation untitled/i });
+      expect(renameButton).toHaveAttribute("data-testid", "chat-session-rename-btn");
+
+      await userEvent.click(renameButton);
+      const dialog = screen.getByRole("dialog", { name: /rename conversation/i });
+      const input = within(dialog).getByTestId("chat-rename-input") as HTMLInputElement;
+      expect(input).toHaveValue("");
+      expect(input).toHaveAttribute("placeholder", "Untitled");
+    });
+
+    it("keeps the existing context-menu rename path wired to renameSession", async () => {
+      const renameSession = vi.fn().mockResolvedValue(undefined);
+      const session: ChatSessionInfo = {
+        id: "session-context",
+        agentId: "agent-001",
+        status: "active",
+        title: "Context Rename",
+        createdAt: "2026-04-08T00:00:00.000Z",
+        updatedAt: "2026-04-08T00:00:00.000Z",
+      };
+
+      setupMockChat({
+        sessions: [session],
+        filteredSessions: [session],
+        activeSession: session,
+        renameSession,
+      });
+      await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+
+      fireEvent.contextMenu(screen.getByTestId("chat-session-session-context"), { clientX: 12, clientY: 24 });
+      await userEvent.click(screen.getByTestId("chat-context-rename"));
+
+      const dialog = screen.getByRole("dialog", { name: /rename conversation/i });
+      const input = within(dialog).getByTestId("chat-rename-input") as HTMLInputElement;
+      expect(input).toHaveValue("Context Rename");
+
+      await userEvent.clear(input);
+      await userEvent.type(input, "Context Renamed");
+      await userEvent.click(within(dialog).getByTestId("chat-rename-save"));
+
+      await waitFor(() => {
+        expect(renameSession).toHaveBeenCalledWith("session-context", "Context Renamed");
+      });
+    });
+  });
+
 });

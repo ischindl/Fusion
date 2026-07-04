@@ -83,7 +83,12 @@ describe("FN-4851 REVISE verdict task-done guard", () => {
 
     expect(result.details.refusalClass).toBe("pending-code-review-revise");
     expect(result.details.error).toContain("pending-code-review-revise");
-    expect(store.moveTask).toHaveBeenCalledWith("FN-4851", "in-review");
+    // FNXC:WorkflowLifecycle 2026-07-01-20:28: At fn_task_done refusal-budget exhaustion the task is parked
+    // `status: "failed"` IN PLACE (executor.ts fn_task_done refusal exhaustion branch) rather than moved to
+    // in-review — the same workflow-graph failure-in-place model that superseded FN-1284's legacy in-review
+    // escalation. The protected invariant (a pending REVISE at budget exhaustion is terminal, not another
+    // requeue) holds via the failed update and the absence of a further todo requeue.
+    expect(store.moveTask).not.toHaveBeenCalledWith("FN-4851", "in-review");
     expect(store.updateTask).toHaveBeenCalledWith("FN-4851", expect.objectContaining({ status: "failed" }));
   });
 

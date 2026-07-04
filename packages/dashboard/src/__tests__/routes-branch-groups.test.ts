@@ -2,7 +2,12 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import express from "express";
-import type { BranchGroup, Task, TaskStore } from "@fusion/core";
+import { mkdtempSync } from "node:fs";
+import { rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { TaskStore } from "@fusion/core";
+import type { BranchGroup, Task } from "@fusion/core";
 import { evaluateBranchGroupCompletion, ProjectEngine } from "@fusion/engine";
 import { createApiRoutes } from "../routes.js";
 import { createBranchGroupsRouter } from "../routes/register-branch-groups-routes.js";
@@ -213,6 +218,78 @@ describe("branch group routes", () => {
     const res = await REQUEST(app, "POST", "/api/branch-groups/assign", JSON.stringify({ taskId: "FN-99", branchName: "feature/cli-onboarding" }), { "content-type": "application/json" });
     expect(res.status).toBe(200);
     expect((store.ensureBranchGroupForSource as unknown as ReturnType<typeof vi.fn>)).toHaveBeenCalled();
+  });
+});
+
+describe("branch group routes with durable TaskStore", () => {
+  async function withRestartedStore<T>(callback: (store: TaskStore, app: express.Express) => Promise<T>): Promise<T> {
+    const rootDir = mkdtempSync(join(tmpdir(), "fusion-branch-group-route-"));
+    const globalDir = join(rootDir, ".fusion-global");
+    let store = new TaskStore(rootDir, globalDir);
+    await store.init();
+    try {
+      const group = store.ensureBranchGroupForSource("planning", "PS-route-restart", {
+        branchName: "feature/route-restart",
+        autoMerge: true,
+      });
+      await store.createTask({
+        description: "route member after restart",
+        branchContext: { groupId: group.id, source: "planning", assignmentMode: "shared" },
+      });
+      store.close();
+      store = new TaskStore(rootDir, globalDir);
+      await store.init();
+
+      const app = express();
+      app.use(express.json());
+      app.use("/api/branch-groups", createBranchGroupsRouter(store));
+      attachErrorHandler(app);
+      return await callback(store, app);
+    } finally {
+      store.close();
+      await rm(rootDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  }
+
+  it("FN-7438: lists and shows persisted branch groups after a server/store restart", async () => {
+    await withRestartedStore(async (store, app) => {
+      const group = store.getBranchGroupBySource("planning", "PS-route-restart");
+      expect(group?.id).toMatch(/^BG-/);
+
+      const listRes = await REQUEST(app, "GET", "/api/branch-groups");
+      expect(listRes.status).toBe(200);
+      expect(listRes.body.groups.map((entry: { id: string }) => entry.id)).toContain(group!.id);
+      expect(listRes.body.groups.find((entry: { id: string }) => entry.id === group!.id).completion.total).toBe(1);
+
+      const showRes = await REQUEST(app, "GET", `/api/branch-groups/${group!.id}`);
+      expect(showRes.status).toBe(200);
+      expect(showRes.body.group.id).toBe(group!.id);
+      expect(showRes.body.group.members).toHaveLength(1);
+      expect(showRes.body.group.branchName).toBe("feature/route-restart");
+    });
+  });
+
+  it("FN-7438: clears only one stale task branch context through the assign API", async () => {
+    await withRestartedStore(async (store, app) => {
+      const stale = await store.createTask({
+        description: "stale branch context",
+        source: { sourceType: "api", sourceMetadata: { externalKey: "preserve" } },
+        branchContext: { groupId: "BG-missing", source: "planning", assignmentMode: "shared" },
+      });
+      const peer = await store.createTask({
+        description: "peer branch context",
+        branchContext: { groupId: "BG-other-missing", source: "planning", assignmentMode: "shared" },
+      });
+
+      const res = await REQUEST(app, "POST", "/api/branch-groups/assign", JSON.stringify({ taskId: stale.id, groupId: null }), { "content-type": "application/json" });
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ taskId: stale.id, groupId: null });
+
+      const cleared = await store.getTask(stale.id);
+      expect(cleared.branchContext).toBeUndefined();
+      expect(cleared.sourceMetadata).toEqual({ externalKey: "preserve" });
+      expect((await store.getTask(peer.id)).branchContext?.groupId).toBe("BG-other-missing");
+    });
   });
 });
 

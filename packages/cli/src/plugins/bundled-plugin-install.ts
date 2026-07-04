@@ -18,6 +18,7 @@ export const BUNDLED_PLUGIN_IDS = [
   "fusion-plugin-cursor-runtime",
   "fusion-plugin-cli-printing-press",
   "fusion-plugin-compound-engineering",
+  "fusion-plugin-linear-import",
 ] as const;
 
 export type BundledPluginId = (typeof BUNDLED_PLUGIN_IDS)[number];

@@ -82,7 +82,7 @@ import {
   edgeConditionEditability,
   buildConnectionEdge,
   cascadeDelete,
-  refreshOptionalGroupVisualBoundaries,
+  refreshTemplateContainerVisualBoundaries,
   WF_EDGE_INTERACTION_WIDTH,
   FOREACH_GROUP_WIDTH,
   FOREACH_GROUP_HEIGHT,
@@ -1380,7 +1380,7 @@ function InnerEditor({
         return;
       }
       setEdges((eds) => {
-        const refreshed = refreshOptionalGroupVisualBoundaries(nodes, [...eds, result.edge]);
+        const refreshed = refreshTemplateContainerVisualBoundaries(nodes, [...eds, result.edge]);
         setNodes(refreshed.nodes);
         return refreshed.edges;
       });
@@ -1397,7 +1397,7 @@ function InnerEditor({
     (changes: EdgeChange<FlowEdge>[]) => {
       setEdges((eds) => {
         const changedEdges = applyEdgeChanges(changes, eds) as FlowEdge[];
-        const refreshed = refreshOptionalGroupVisualBoundaries(nodes, changedEdges);
+        const refreshed = refreshTemplateContainerVisualBoundaries(nodes, changedEdges);
         setNodes(refreshed.nodes);
         return refreshed.edges;
       });
@@ -1493,8 +1493,7 @@ function InnerEditor({
               deletable: true,
             },
           ] satisfies FlowNode<WorkflowFlowNodeData>[];
-          if (kind !== "optional-group") return nextNodes;
-          const refreshed = refreshOptionalGroupVisualBoundaries(nextNodes, edges);
+          const refreshed = refreshTemplateContainerVisualBoundaries(nextNodes, edges);
           setEdges(refreshed.edges);
           return refreshed.nodes;
         });
@@ -1813,7 +1812,7 @@ function InnerEditor({
             className: edgeClassName(condition, rework),
           };
         });
-        const refreshed = refreshOptionalGroupVisualBoundaries(nodes, updated);
+        const refreshed = refreshTemplateContainerVisualBoundaries(nodes, updated);
         setNodes(refreshed.nodes);
         return refreshed.edges;
       });
@@ -1831,7 +1830,7 @@ function InnerEditor({
       let next: { nodes: FlowNode<WorkflowFlowNodeData>[]; edges: FlowEdge[] } | null = null;
       setNodes((ns) => {
         const deleted = cascadeDelete(ns, edges, idSet);
-        next = refreshOptionalGroupVisualBoundaries(deleted.nodes, deleted.edges);
+        next = refreshTemplateContainerVisualBoundaries(deleted.nodes, deleted.edges);
         return next.nodes;
       });
       if (next) setEdges((next as { edges: FlowEdge[] }).edges);

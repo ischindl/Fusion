@@ -125,6 +125,21 @@ describe("update-check", () => {
     expect(olderResult.updateAvailable).toBe(false);
   });
 
+  it("fails closed without fetching when current version is unresolved", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await expect(performUpdateCheck(fusionDir, "0.0.0", { force: true })).resolves.toEqual(
+      expect.objectContaining({
+        currentVersion: "0.0.0",
+        latestVersion: null,
+        updateAvailable: false,
+        error: "Current Fusion version is unavailable",
+      }),
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("returns a non-throwing error result when network fetch fails", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
 

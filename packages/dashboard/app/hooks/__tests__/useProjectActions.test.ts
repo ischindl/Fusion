@@ -47,13 +47,15 @@ function createOptions(overrides: Partial<Parameters<typeof useProjectActions>[0
 describe("useProjectActions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.history.replaceState({ preserved: true }, "", "/");
     mockPauseProject.mockResolvedValue(PROJECT);
     mockResumeProject.mockResolvedValue(PROJECT);
     mockUpdateProject.mockResolvedValue(PROJECT);
     mockUnregisterProject.mockResolvedValue(undefined);
   });
 
-  it("handleSelectProject sets current project and view mode", () => {
+  it("handleSelectProject sets current project, view mode, and URL project state", () => {
+    window.history.replaceState({ preserved: "state" }, "", "/?task=FN-1&view=mailbox#message-1");
     const options = createOptions();
     const { result } = renderHook(() => useProjectActions(options));
 
@@ -63,9 +65,40 @@ describe("useProjectActions", () => {
 
     expect(options.setCurrentProject).toHaveBeenCalledWith(PROJECT);
     expect(options.setViewMode).toHaveBeenCalledWith("project");
+    expect(window.location.pathname).toBe("/");
+    expect(window.location.search).toBe("?task=FN-1&view=mailbox&project=proj_123");
+    expect(window.location.hash).toBe("#message-1");
+    expect(window.history.state).toEqual({ preserved: "state" });
   });
 
-  it("handleViewAllProjects clears current project and sets overview", () => {
+  it("handleSelectProject URL-encodes project ids", () => {
+    const encodedProject: ProjectInfo = { ...PROJECT, id: "blendance/system id" };
+    const options = createOptions();
+    const { result } = renderHook(() => useProjectActions(options));
+
+    act(() => {
+      result.current.handleSelectProject(encodedProject);
+    });
+
+    expect(window.location.search).toBe("?project=blendance%2Fsystem+id");
+    expect(new URLSearchParams(window.location.search).get("project")).toBe("blendance/system id");
+  });
+
+  it("handleSelectProject writes project ids rather than duplicate display names", () => {
+    const duplicateNameProject: ProjectInfo = { ...PROJECT, id: "proj_unique_b", name: "Duplicate" };
+    const options = createOptions();
+    const { result } = renderHook(() => useProjectActions(options));
+
+    act(() => {
+      result.current.handleSelectProject(duplicateNameProject);
+    });
+
+    expect(new URLSearchParams(window.location.search).get("project")).toBe("proj_unique_b");
+    expect(window.location.search).not.toContain("Duplicate");
+  });
+
+  it("handleViewAllProjects clears current project, sets overview, and removes only URL project state", () => {
+    window.history.replaceState({ preserved: "state" }, "", "/?project=proj_123&task=FN-1&room=room-1#thread");
     const options = createOptions();
     const { result } = renderHook(() => useProjectActions(options));
 
@@ -75,6 +108,9 @@ describe("useProjectActions", () => {
 
     expect(options.clearCurrentProject).toHaveBeenCalledTimes(1);
     expect(options.setViewMode).toHaveBeenCalledWith("overview");
+    expect(window.location.search).toBe("?task=FN-1&room=room-1");
+    expect(window.location.hash).toBe("#thread");
+    expect(window.history.state).toEqual({ preserved: "state" });
   });
 
   it("handleSetupComplete closes wizard, sets project, toasts, and refreshes", async () => {

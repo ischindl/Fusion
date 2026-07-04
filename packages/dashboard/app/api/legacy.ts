@@ -68,6 +68,8 @@ import type {
   ResearchRunStatus,
   TaskPriority,
   TaskSourceIssue,
+  TaskGitLabTracking,
+  TaskGitLabTrackedItem,
   PrConflictDiagnostics,
   PrInfo,
   ManagedDockerNodeInput,
@@ -535,6 +537,7 @@ export function updateTask(
       repoOverride?: string | null;
       issue?: null;
     } | null;
+    gitlabTracking?: (Omit<TaskGitLabTracking, "item"> & { item?: TaskGitLabTrackedItem | null }) | null;
     dismissNearDuplicate?: boolean;
   },
   projectId?: string,
@@ -1804,10 +1807,14 @@ export interface CursorCliStatus {
     available: boolean;
     version?: string;
     binaryPath?: string;
+    configuredBinaryPath?: string;
+    usingConfiguredBinaryPath?: boolean;
+    diagnostics?: string[];
     reason?: string;
     probeDurationMs: number;
   };
   enabled: boolean;
+  binaryPath?: string;
   extension: null;
   ready: boolean;
 }
@@ -2150,10 +2157,19 @@ export function setDroidCliEnabled(
 
 export function setCursorCliEnabled(
   enabled: boolean,
-): Promise<{ enabled: boolean; restartRequired: boolean }> {
-  return api<{ enabled: boolean; restartRequired: boolean }>("/auth/cursor-cli", {
+): Promise<{ enabled: boolean; binaryPath?: string; restartRequired: boolean }> {
+  return api<{ enabled: boolean; binaryPath?: string; restartRequired: boolean }>("/auth/cursor-cli", {
     method: "POST",
     body: JSON.stringify({ enabled }),
+  });
+}
+
+export function setCursorCliBinaryPath(
+  binaryPath: string | null,
+): Promise<{ enabled: boolean; binaryPath?: string; restartRequired: boolean }> {
+  return api<{ enabled: boolean; binaryPath?: string; restartRequired: boolean }>("/auth/cursor-cli", {
+    method: "POST",
+    body: JSON.stringify({ binaryPath }),
   });
 }
 
@@ -2322,14 +2338,22 @@ export async function probeProviderModels(params: ProbeModelsParams): Promise<Pr
   });
 }
 
+export interface GitCliStatus {
+  available: boolean;
+  version?: string;
+  installUrl?: string;
+}
+
 /** Fetch authentication status for all OAuth providers */
 export function fetchAuthStatus(options?: FetchOptions): Promise<{
   providers: AuthProvider[];
   ghCli?: { available: boolean; authenticated: boolean };
+  gitCli?: GitCliStatus;
 }> {
   return dedupe("/auth/status", () => api<{
     providers: AuthProvider[];
     ghCli?: { available: boolean; authenticated: boolean };
+    gitCli?: GitCliStatus;
   }>("/auth/status"), options);
 }
 
@@ -2554,6 +2578,58 @@ export function apiImportGitHubPull(owner: string, repo: string, prNumber: numbe
     method: "POST",
     body: JSON.stringify({ owner, repo, prNumber }),
   });
+}
+
+// --- GitLab Import API ---
+
+export interface GitLabImportItem {
+  resourceKind: "project_issue" | "group_issue" | "merge_request";
+  id?: number;
+  iid: number;
+  projectId?: number;
+  projectPath?: string;
+  groupId?: number | string;
+  groupPath?: string;
+  title: string;
+  description: string | null;
+  webUrl: string;
+  state: string;
+  author?: { username?: string; name?: string } | null;
+  labels: string[];
+  createdAt?: string;
+  updatedAt?: string;
+  commentsCount?: number;
+  sourceBranch?: string;
+  targetBranch?: string;
+  draft?: boolean;
+}
+
+export function apiFetchGitLabProjectIssues(project: string, limit?: number, labels?: string[], state?: string): Promise<GitLabImportItem[]> {
+  return api<GitLabImportItem[]>("/gitlab/project/issues/fetch", { method: "POST", body: JSON.stringify({ project, limit, labels, state }) });
+}
+
+export function apiFetchGitLabGroupIssues(group: string, limit?: number, labels?: string[], state?: string): Promise<GitLabImportItem[]> {
+  return api<GitLabImportItem[]>("/gitlab/group/issues/fetch", { method: "POST", body: JSON.stringify({ group, limit, labels, state }) });
+}
+
+export function apiFetchGitLabMergeRequests(project: string, limit?: number, labels?: string[], state?: string): Promise<GitLabImportItem[]> {
+  return api<GitLabImportItem[]>("/gitlab/merge-requests/fetch", { method: "POST", body: JSON.stringify({ project, limit, labels, state }) });
+}
+
+export function apiImportGitLabProjectIssue(project: string, iid: number, projectId?: string): Promise<Task> {
+  return api<Task>(withProjectId("/gitlab/project/issues/import", projectId), { method: "POST", body: JSON.stringify({ project, iid }) });
+}
+
+export function apiImportGitLabGroupIssue(issue: GitLabImportItem, group?: string, projectId?: string): Promise<Task> {
+  return api<Task>(withProjectId("/gitlab/group/issues/import", projectId), { method: "POST", body: JSON.stringify({ issue, group }) });
+}
+
+export function apiImportGitLabMergeRequest(project: string, iid: number, projectId?: string): Promise<Task> {
+  return api<Task>(withProjectId("/gitlab/merge-requests/import", projectId), { method: "POST", body: JSON.stringify({ project, iid }) });
+}
+
+export function apiBatchImportGitLab(items: Array<Record<string, unknown>>, projectId?: string): Promise<{ results: Array<{ success: boolean; taskId?: string; error?: string; iid?: number }> }> {
+  return api<{ results: Array<{ success: boolean; taskId?: string; error?: string; iid?: number }> }>(withProjectId("/gitlab/batch-import", projectId), { method: "POST", body: JSON.stringify({ items }) });
 }
 
 // --- Git Remote Detection API ---
@@ -6865,7 +6941,9 @@ export type ExecutorState = "idle" | "running" | "paused" | "stopped";
  * 
  * Counts (runningTaskCount, blockedTaskCount, queuedTaskCount, inReviewCount, stuckTaskCount)
  * are derived client-side from the same tasks array shared with the board, ensuring
- * the footer counts always match the column counts displayed on screen.
+ * the footer counts always match the active work states displayed on screen. Queued covers
+ * todo plus planning/triage work; Done is intentionally not exposed unless a footer Done
+ * segment is added.
  * The API returns settings-based values (globalPause, enginePaused, maxConcurrent) and
  * lastActivityAt from the activity log.
  * 
@@ -6882,7 +6960,7 @@ export interface ExecutorStats {
   blockedTaskCount: number;
   /** Number of "in-progress" tasks with no activity for > 10 minutes */
   stuckTaskCount: number;
-  /** Number of tasks in "todo" column */
+  /** Number of tasks in "todo" plus planning/triage work states */
   queuedTaskCount: number;
   /** Number of tasks in "in-review" column */
   inReviewCount: number;
@@ -6913,6 +6991,7 @@ export interface ProjectCreateInput {
   path: string;
   isolationMode?: "in-process" | "child-process";
   nodeId?: string;
+  gitSetupMode?: "existing" | "init" | "clone";
   cloneUrl?: string;
   workspaceMode?: boolean;
   taskPrefix?: string;

@@ -7,7 +7,6 @@ ignoredBuiltDependencies:
   - ssh2
 onlyBuiltDependencies:
   - '@homebridge/node-pty-prebuilt-multiarch'
-  - electron
   - esbuild
   - koffi
   - protobufjs
@@ -28,3 +27,4 @@ packages:
   - "plugins/fusion-plugin-even-realities-glasses"
   - "plugins/fusion-plugin-reports"
   - "plugins/fusion-plugin-compound-engineering"
+  - "plugins/fusion-plugin-linear-import"

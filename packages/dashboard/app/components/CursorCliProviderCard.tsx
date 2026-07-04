@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
-import { fetchCursorCliStatus, setCursorCliEnabled, type CursorCliStatus } from "../api";
+import { fetchCursorCliStatus, setCursorCliBinaryPath, setCursorCliEnabled, type CursorCliStatus } from "../api";
 import { ProviderIcon } from "./ProviderIcon";
 import "./CursorCliProviderCard.css";
 
@@ -14,7 +14,10 @@ interface CursorCliProviderCardProps {
 export function CursorCliProviderCard({ authenticated, compact = false, onToggled }: CursorCliProviderCardProps) {
   const { t } = useTranslation("app");
   const [status, setStatus] = useState<CursorCliStatus | null>(null);
-  const [busy, setBusy] = useState<"enabling" | "disabling" | "testing" | null>(null);
+  const [busy, setBusy] = useState<"enabling" | "disabling" | "testing" | "saving-path" | null>(null);
+  const [binaryPathInput, setBinaryPathInput] = useState("");
+  const [pathMessage, setPathMessage] = useState<{ tone: "success" | "error"; text: string } | null>(null);
+  const pathDirtyRef = useRef(false);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -27,7 +30,10 @@ export function CursorCliProviderCard({ authenticated, compact = false, onToggle
   const refresh = useCallback(async () => {
     try {
       const next = await fetchCursorCliStatus();
-      if (mountedRef.current) setStatus(next);
+      if (mountedRef.current) {
+        setStatus(next);
+        setBinaryPathInput((current) => (pathDirtyRef.current ? current : (next.binaryPath ?? "")));
+      }
       return next;
     } catch {
       return null;
@@ -54,6 +60,71 @@ export function CursorCliProviderCard({ authenticated, compact = false, onToggle
 
   const currentlyEnabled = status?.enabled ?? authenticated;
   const binaryAvailable = status?.binary.available ?? false;
+  const trimmedBinaryPath = binaryPathInput.trim();
+  const savedBinaryPath = status?.binaryPath ?? "";
+  const binaryPathChanged = trimmedBinaryPath !== savedBinaryPath;
+
+  const handleBinaryPathChange = useCallback((value: string) => {
+    setBinaryPathInput(value);
+    pathDirtyRef.current = true;
+    setPathMessage(null);
+  }, []);
+
+  const handleSaveBinaryPath = useCallback(async () => {
+    setBusy("saving-path");
+    setPathMessage(null);
+    try {
+      await setCursorCliBinaryPath(trimmedBinaryPath || null);
+      if (!mountedRef.current) return;
+      pathDirtyRef.current = false;
+      const refreshed = await fetchCursorCliStatus();
+      if (mountedRef.current) {
+        setStatus(refreshed);
+        setBinaryPathInput(refreshed.binaryPath ?? "");
+        setPathMessage({
+          tone: "success",
+          text: trimmedBinaryPath
+            ? t("setup.cursorCli.pathSaved", "Binary path saved and tested.")
+            : t("setup.cursorCli.pathCleared", "Binary path cleared; PATH auto-detection is active."),
+        });
+      }
+    } catch (error) {
+      if (mountedRef.current) {
+        const message = error instanceof Error ? error.message : String(error);
+        setPathMessage({ tone: "error", text: message });
+      }
+    } finally {
+      if (mountedRef.current) setBusy(null);
+    }
+  }, [t, trimmedBinaryPath]);
+
+  /*
+  FNXC:CursorCli 2026-07-02-00:00:
+  Settings Authentication owns the manual binary override because onboarding should stay a compact enable/test surface. Send the trimmed value as one string so Windows paths with spaces and .cmd/.bat shims are not quoted or split in the browser.
+  */
+  const binaryPathControl = compact ? (
+    <div className="cursor-cli-binary-path-control">
+      <label className="cursor-cli-binary-path-label" htmlFor="cursor-cli-binary-path">
+        {t("setup.cursorCli.binaryPathLabel", "Cursor CLI binary path")}
+      </label>
+      <div className="cursor-cli-binary-path-row">
+        <input
+          id="cursor-cli-binary-path"
+          className="cursor-cli-binary-path-input"
+          type="text"
+          value={binaryPathInput}
+          onChange={(event) => handleBinaryPathChange(event.target.value)}
+          placeholder={t("setup.cursorCli.binaryPathPlaceholder", "/usr/local/bin/cursor-agent")}
+          disabled={busy !== null}
+        />
+        <button type="button" className="btn btn-sm" onClick={() => void handleSaveBinaryPath()} disabled={busy !== null || !binaryPathChanged}>
+          {busy === "saving-path" ? t("setup.cursorCli.savingPath", "Saving…") : t("setup.cursorCli.saveAndTestPath", "Save & Test")}
+        </button>
+      </div>
+      <small className="settings-muted">{t("setup.cursorCli.binaryPathHelp", "Leave blank to use PATH auto-detection (`cursor-agent`, then `cursor`).")}</small>
+      {pathMessage ? <small className={pathMessage.tone === "error" ? "form-error" : "text-muted"}>{pathMessage.text}</small> : null}
+    </div>
+  ) : null;
 
   const actions = (
     <>
@@ -97,6 +168,7 @@ export function CursorCliProviderCard({ authenticated, compact = false, onToggle
           <div className="auth-provider-cli-actions">{actions}</div>
         </div>
         <small className="settings-muted">{statusText}</small>
+        {binaryPathControl}
       </div>
     );
   }

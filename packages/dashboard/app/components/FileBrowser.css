@@ -193,6 +193,32 @@
   gap: var(--space-xs);
 }
 
+.file-browser-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 calc(var(--space-xl) * 6);
+  min-width: calc(var(--space-xl) * 4.5);
+  max-width: calc(var(--space-xl) * 12);
+}
+
+.file-browser-search-icon {
+  position: absolute;
+  left: var(--space-sm);
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.file-browser-search-input {
+  width: 100%;
+  min-width: 0;
+  padding-left: calc(var(--space-lg) + var(--space-md));
+}
+
+.file-browser-create-button {
+  white-space: nowrap;
+}
+
 .file-browser-new-menu {
   position: relative;
   flex-shrink: 0;
@@ -252,6 +278,50 @@
   text-align: center;
   color: var(--text-muted);
   font-style: italic;
+}
+
+.file-browser-search-results {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.file-browser-search-result {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.file-browser-search-result:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring-strong);
+}
+
+.file-node-path {
+  margin-left: auto;
+  min-width: 0;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.file-browser-search-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  padding: var(--space-xl);
+  color: var(--text-muted);
+}
+
+.file-browser-search-status--error {
+  color: var(--color-error);
 }
 
 .file-browser-loading,
@@ -660,10 +730,28 @@ Narrow Files windows use the same single-pane list/editor behavior as mobile eve
     max-width: none;
   }
 
+  .file-browser-search {
+    order: 3;
+    flex-basis: 100%;
+    max-width: none;
+    min-width: 0;
+  }
+
   .file-browser .file-browser-header-actions {
     width: 100%;
     margin-left: 0;
     justify-content: flex-start;
+  }
+
+  .file-browser-create-button {
+    flex: 1 1 calc(var(--space-xl) * 4.5);
+    justify-content: center;
+  }
+
+  .file-node-path {
+    flex-basis: 100%;
+    max-width: none;
+    margin-left: calc(var(--space-lg) + var(--space-sm));
   }
 
   .file-editor-toolbar {

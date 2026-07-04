@@ -11,7 +11,15 @@ function isMobileDevice(): boolean {
   if (typeof window === "undefined") return false;
   const hasTouchScreen =
     "ontouchstart" in window || navigator.maxTouchPoints > 0;
-  const isNarrow = window.innerWidth <= 768;
+  const visualWidth = window.visualViewport?.width;
+  /*
+  FNXC:Terminal 2026-07-02-12:39:
+  Android Chrome can keep a tablet-sized layout viewport while the active visualViewport is the narrow keyboard-open terminal pane. Keyboard tracking must follow the touch visual width just like `useViewportMode`, or SessionTerminal renders mobile chrome but never lifts/refits its input bar for the initial 10px keyboard-open terminal state.
+  */
+  const effectiveWidth = hasTouchScreen && typeof visualWidth === "number" && visualWidth > 0
+    ? Math.min(window.innerWidth, visualWidth)
+    : window.innerWidth;
+  const isNarrow = effectiveWidth <= 768;
   return hasTouchScreen && isNarrow;
 }
 
@@ -97,6 +105,28 @@ function isCollapsedRestoreViewportSample(baselineHeight: number): boolean {
   return window.visualViewport.height >= baselineHeight - IOS_VIEWPORT_SHRINK_MIN_PX;
 }
 
+function getScreenViewportBaselineCandidate(viewportWidth: number, viewportHeight: number): number | null {
+  if (typeof window === "undefined" || !window.screen) {
+    return null;
+  }
+  const screenWidth = window.screen.width;
+  const screenHeight = window.screen.height;
+  if (!Number.isFinite(screenWidth) || !Number.isFinite(screenHeight) || screenWidth <= 0 || screenHeight <= 0) {
+    return null;
+  }
+
+  const portraitLike = viewportHeight >= viewportWidth;
+  const candidate = portraitLike
+    ? Math.max(screenWidth, screenHeight)
+    : Math.min(screenWidth, screenHeight);
+  const gap = candidate - viewportHeight;
+  const minMeaningfulGap = portraitLike
+    ? Math.max(220, candidate * 0.25)
+    : Math.max(80, candidate * 0.25);
+
+  return gap >= minMeaningfulGap ? candidate : null;
+}
+
 function getKeyboardMetrics(
   previousMetrics: KeyboardMetrics = CLOSED_KEYBOARD_METRICS,
   { bypassImpossibleSampleHold = false }: { bypassImpossibleSampleHold?: boolean } = {},
@@ -151,7 +181,14 @@ function getKeyboardMetrics(
   // iOS fallback (window.innerHeight shrinks with keyboard). Same focused
   // requirement as above — the dismissal animation otherwise leaves the
   // gap > the open-threshold for the duration of the slide.
-  const baselineHeight = getBaselineViewportHeight();
+  /*
+  FNXC:Terminal 2026-07-02-18:18:
+  SessionTerminal uses this shared hook, so it has the same initial iOS keyboard-open failure mode as TerminalModal: the first focused sample can have `innerHeight`, `clientHeight`, and `visualViewport.height` already shrunk. Use a guarded screen-derived baseline only when the missing height is large enough to be a real keyboard, keeping the mobile input bar and xterm resize bridge correct at 10px/12px before later viewport events can repair spacing.
+  */
+  const screenBaselineCandidate = focused
+    ? getScreenViewportBaselineCandidate(getCurrentViewportWidth(), vv.height)
+    : null;
+  const baselineHeight = Math.max(getBaselineViewportHeight(), screenBaselineCandidate ?? 0);
   const gap = Math.max(0, baselineHeight - vv.offsetTop - vv.height);
 
   if (gap >= IOS_FALLBACK_MIN_GAP_PX && focused) {

@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { ArrowLeft, FileText, ChevronDown, ChevronUp, ChevronRight, RefreshCw, Search, X, Eye, EyeOff } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { ArtifactWithTask, TaskDocumentWithTask, TaskDetail } from "@fusion/core";
+import type { ArtifactWithTask, ColumnId, TaskDocumentWithTask, TaskDetail } from "@fusion/core";
 import type { ToastType } from "../hooks/useToast";
 import { artifactMediaUrl, fetchTaskDetail, fetchWorkspaceFileContent, type MarkdownFileEntry } from "../api";
 import { useArtifacts } from "../hooks/useArtifacts";
@@ -15,6 +15,7 @@ import { SelectionCommentPopover } from "./SelectionCommentPopover";
 import { LoadingSpinner } from "./LoadingSpinner";
 import { ArtifactMedia, getArtifactTypeLabel } from "./ArtifactMedia";
 import { ViewHeader } from "./ViewHeader";
+import { useColumnLabel } from "../i18n/labels";
 
 const MOBILE_BREAKPOINT = 768;
 
@@ -38,6 +39,7 @@ interface TaskGroupProps {
   taskId: string;
   taskTitle?: string;
   documents: TaskDocumentWithTask[];
+  taskColumn?: string;
   onOpenTask: (taskId: string) => void;
   renderMarkdownStates: Map<string, boolean>;
   onToggleMarkdown: (docId: string) => void;
@@ -70,6 +72,13 @@ function formatFileSize(bytes: number): string {
 function getContentPreview(content: string, maxLength: number = 200): string {
   if (content.length <= maxLength) return content;
   return `${content.substring(0, maxLength)}…`;
+}
+
+function getTaskColumnStatusDotClass(taskColumn: string): string {
+  if (taskColumn === "done") return "status-dot status-dot--online";
+  if (taskColumn === "archived") return "status-dot status-dot--offline";
+  if (taskColumn === "todo" || taskColumn === "triage") return "status-dot status-dot--pending";
+  return "status-dot status-dot--connecting";
 }
 
 function DocumentCard({ document, renderMarkdown, onToggleMarkdown }: DocumentCardProps) {
@@ -140,9 +149,12 @@ function DocumentCard({ document, renderMarkdown, onToggleMarkdown }: DocumentCa
   );
 }
 
-function TaskGroup({ taskId, taskTitle, documents, onOpenTask, renderMarkdownStates, onToggleMarkdown }: TaskGroupProps) {
+function TaskGroup({ taskId, taskTitle, documents, taskColumn, onOpenTask, renderMarkdownStates, onToggleMarkdown }: TaskGroupProps) {
   const { t } = useTranslation("app");
+  const columnLabel = useColumnLabel();
   const [expanded, setExpanded] = useState(false);
+  const taskStatusLabel = taskColumn ? columnLabel(taskColumn as ColumnId) : null;
+  const taskStatusDotClass = taskColumn ? getTaskColumnStatusDotClass(taskColumn) : "status-dot";
 
   return (
     <div className="documents-group">
@@ -159,6 +171,13 @@ function TaskGroup({ taskId, taskTitle, documents, onOpenTask, renderMarkdownSta
           <span className="documents-group-task-id">{taskId}</span>
           <span className="documents-group-task-title">{taskTitle || t("documents.untitled", "Untitled")}</span>
         </button>
+
+        {taskStatusLabel ? (
+          <span className="documents-group-status badge" aria-label={t("documents.taskStatusAria", "Task status: {{status}}", { status: taskStatusLabel })}>
+            <span className={taskStatusDotClass} aria-hidden="true" />
+            <span>{taskStatusLabel}</span>
+          </span>
+        ) : null}
 
         <span className="documents-group-count">{t("documents.docCount", "{{count}} doc{{plural}}", { count: documents.length, plural: documents.length !== 1 ? "s" : "" })}</span>
 
@@ -366,6 +385,11 @@ export function DocumentsView({ projectId, addToast, onOpenDetail, onOpenArtifac
         return {
           taskId,
           taskTitle: sortedDocs[0]?.taskTitle,
+          /*
+          FNXC:DocumentsView 2026-07-02-00:00:
+          Task document groups must surface the parent task completion state in the header so operators can identify done work without expanding documents or opening task details. Use the first available column from the grouped task documents because legacy rows may omit taskColumn.
+          */
+          taskColumn: sortedDocs.find((doc) => doc.taskColumn)?.taskColumn,
           documents: sortedDocs,
           latestUpdated: sortedDocs[0]?.updatedAt ?? "",
         };
@@ -807,11 +831,12 @@ export function DocumentsView({ projectId, addToast, onOpenDetail, onOpenArtifac
         ) : (
           <div className="documents-task-list-wrap">
             <div className="documents-view-list">
-              {groupedDocuments.map(({ taskId, taskTitle, documents: taskDocs }) => (
+              {groupedDocuments.map(({ taskId, taskTitle, taskColumn, documents: taskDocs }) => (
                 <TaskGroup
                   key={taskId}
                   taskId={taskId}
                   taskTitle={taskTitle}
+                  taskColumn={taskColumn}
                   documents={taskDocs}
                   onOpenTask={handleOpenTask}
                   renderMarkdownStates={taskDocMarkdownStates}

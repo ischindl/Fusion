@@ -32,6 +32,19 @@ vi.mock("../logger.js", () => ({
   },
 }));
 
+/*
+FNXC:PluginRunnerTests 2026-07-02-17:20:
+Task lifecycle handlers are fire-and-forget (`void this.invokeHookSafe(...)`), but the mock
+`invokeHook` seam resolves through awaited microtasks, never real timers. Flush a bounded number
+of microtask turns deterministically instead of paying real `setTimeout` wall-clock sleeps
+(FN-5048: prefer fake timers/deterministic seams over real time waits — no slow tests).
+*/
+async function flushMicrotasks(turns = 4): Promise<void> {
+  for (let i = 0; i < turns; i++) {
+    await Promise.resolve();
+  }
+}
+
 describe("PluginRunner", () => {
   let mockPluginLoader: {
     loadAllPlugins: ReturnType<typeof vi.fn>;
@@ -1428,6 +1441,17 @@ describe("PluginRunner", () => {
   });
 
   describe("task lifecycle hooks", () => {
+    /*
+    FNXC:PluginRunnerTests 2026-07-02-17:20:
+    PluginRunner lifecycle handlers intentionally fire-and-forget their hook dispatch, so tests must wait for the mocked invokeHook promise chain to settle before asserting.
+    Use a bounded microtask flush instead of real wall-clock sleeps because FN-5048 forbids deterministic test settling through setTimeout delays when no production timer behavior is under test.
+    */
+    const flushMicrotasks = async (turns = 4): Promise<void> => {
+      for (let turn = 0; turn < turns; turn += 1) {
+        await Promise.resolve();
+      }
+    };
+
     it("should invoke onTaskCreated when task:created event fires", async () => {
       mockPluginLoader.invokeHook = vi.fn();
       await pluginRunner.init();
@@ -1442,10 +1466,10 @@ describe("PluginRunner", () => {
       if (createdHandler) {
         createdHandler(mockTask);
       }
-      
-      // Give async handler time to execute
-      await new Promise(resolve => setTimeout(resolve, 10));
-      
+
+      // Let the fire-and-forget hook chain settle via microtasks (no real sleep).
+      await flushMicrotasks();
+
       expect(mockPluginLoader.invokeHook).toHaveBeenCalledWith(
         "onTaskCreated",
         mockTask
@@ -1466,10 +1490,10 @@ describe("PluginRunner", () => {
       if (movedHandler) {
         movedHandler({ task: mockTask, from: "todo", to: "in-progress" });
       }
-      
-      // Give async handler time to execute
-      await new Promise(resolve => setTimeout(resolve, 10));
-      
+
+      // Let the fire-and-forget hook chain settle via microtasks (no real sleep).
+      await flushMicrotasks();
+
       expect(mockPluginLoader.invokeHook).toHaveBeenCalledWith(
         "onTaskMoved",
         mockTask,
@@ -1504,10 +1528,10 @@ describe("PluginRunner", () => {
       if (movedHandler) {
         movedHandler({ task: mockTask, from: "in-progress", to: "done" });
       }
-      
-      // Give async handler time to execute
-      await new Promise(resolve => setTimeout(resolve, 50));
-      
+
+      // Let the fire-and-forget hook chain settle via microtasks (no real sleep).
+      await flushMicrotasks();
+
       expect(mockPluginLoader.invokeHook).toHaveBeenCalledWith(
         "onTaskCompleted",
         mockTask
@@ -1537,10 +1561,10 @@ describe("PluginRunner", () => {
       if (movedHandler) {
         movedHandler({ task: mockTask, from: "todo", to: "in-progress" });
       }
-      
-      // Give async handler time to execute
-      await new Promise(resolve => setTimeout(resolve, 50));
-      
+
+      // Let the fire-and-forget hook chain settle via microtasks (no real sleep).
+      await flushMicrotasks();
+
       expect(mockPluginLoader.invokeHook).not.toHaveBeenCalledWith(
         "onTaskCompleted",
         expect.anything()

@@ -28,9 +28,35 @@ vi.mock("../CustomProvidersSection", () => ({
   CustomProvidersSection: () => <div data-testid="custom-providers-section" />,
 }));
 
-vi.mock("../ClaudeCliProviderCard", () => ({ ClaudeCliProviderCard: () => <div /> }));
-vi.mock("../CursorCliProviderCard", () => ({ CursorCliProviderCard: () => <div /> }));
-vi.mock("../LlamaCppProviderCard", () => ({ LlamaCppProviderCard: () => <div /> }));
+vi.mock("../ClaudeCliProviderCard", () => ({
+  ClaudeCliProviderCard: ({ authenticated }: { authenticated: boolean }) => (
+    <div data-testid="claude-cli-provider-card" data-authenticated={authenticated ? "true" : "false"} />
+  ),
+}));
+vi.mock("../CursorCliProviderCard", () => ({
+  CursorCliProviderCard: ({ authenticated }: { authenticated: boolean }) => (
+    <div data-testid="cursor-cli-provider-card" data-authenticated={authenticated ? "true" : "false"} />
+  ),
+}));
+vi.mock("../LlamaCppProviderCard", () => ({
+  LlamaCppProviderCard: ({ authenticated }: { authenticated: boolean }) => (
+    <div data-testid="llama-cpp-provider-card" data-authenticated={authenticated ? "true" : "false"} />
+  ),
+}));
+
+function authCardOrder(groupLabel: "Authenticated" | "Available") {
+  const group = screen.getByText(groupLabel).closest(".auth-provider-group") as HTMLElement;
+  return Array.from(group.children)
+    .map((child) => {
+      const element = child as HTMLElement;
+      if (element.dataset.testid === "claude-cli-provider-card") return "claude-cli";
+      if (element.dataset.testid === "cursor-cli-provider-card") return "cursor-cli";
+      if (element.dataset.testid === "llama-cpp-provider-card") return "llama-cpp";
+      const icon = element.querySelector<HTMLElement>("[data-testid^='auth-provider-icon-']");
+      return icon?.dataset.testid?.replace("auth-provider-icon-", "") ?? null;
+    })
+    .filter((providerId): providerId is string => Boolean(providerId));
+}
 
 function renderAuthSection(providers: AuthProvider[], overrides: Partial<AuthenticationSectionData> = {}) {
   const handleLogin = vi.fn();
@@ -75,6 +101,77 @@ function renderAuthSection(providers: AuthProvider[], overrides: Partial<Authent
 describe("AuthenticationSection", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("sorts visible Anthropic standard providers together near the top", () => {
+    renderAuthSection([
+      { id: "openai", name: "OpenAI", authenticated: false, type: "api_key" },
+      { id: "anthropic-api-key", name: "Anthropic API Key", authenticated: false, type: "api_key" },
+      { id: "github-copilot", name: "GitHub Copilot", authenticated: false, type: "oauth" },
+      { id: "anthropic-subscription", name: "Anthropic Subscription", authenticated: false, type: "oauth" },
+      { id: "openrouter", name: "OpenRouter", authenticated: false, type: "api_key" },
+    ]);
+
+    expect(authCardOrder("Available")).toEqual([
+      "anthropic-subscription",
+      "anthropic-api-key",
+      "github-copilot",
+      "openai",
+      "openrouter",
+    ]);
+  });
+
+  it("prioritizes Anthropic cards within each auth state without crossing group boundaries", () => {
+    renderAuthSection([
+      { id: "openai", name: "OpenAI", authenticated: true, type: "api_key" },
+      { id: "anthropic-api-key", name: "Anthropic API Key", authenticated: false, type: "api_key" },
+      { id: "github-copilot", name: "GitHub Copilot", authenticated: false, type: "oauth" },
+      { id: "anthropic-subscription", name: "Anthropic Subscription", authenticated: true, type: "oauth" },
+      { id: "openrouter", name: "OpenRouter", authenticated: true, type: "api_key" },
+    ]);
+
+    expect(authCardOrder("Authenticated")).toEqual(["anthropic-subscription", "openai", "openrouter"]);
+    expect(authCardOrder("Available")).toEqual(["anthropic-api-key", "github-copilot"]);
+  });
+
+  it("hides legacy Anthropic when separated cards are present without breaking priority order", () => {
+    renderAuthSection([
+      { id: "openai", name: "OpenAI", authenticated: false, type: "api_key" },
+      { id: "anthropic-api-key", name: "Anthropic API Key", authenticated: false, type: "api_key" },
+      { id: "anthropic", name: "Anthropic", authenticated: false, type: "oauth" },
+      { id: "anthropic-subscription", name: "Anthropic Subscription", authenticated: false, type: "oauth" },
+    ]);
+
+    expect(screen.queryByTestId("auth-provider-icon-anthropic")).not.toBeInTheDocument();
+    expect(authCardOrder("Available")).toEqual(["anthropic-subscription", "anthropic-api-key", "openai"]);
+  });
+
+  it("keeps Claude CLI first among CLI-backed authentication cards", () => {
+    renderAuthSection([
+      { id: "llama-cpp", name: "Llama.cpp", authenticated: false, type: "cli" },
+      { id: "cursor-cli", name: "Cursor CLI", authenticated: false, type: "cli" },
+      { id: "claude-cli", name: "Anthropic — via Claude CLI", authenticated: false, type: "cli" },
+    ]);
+
+    expect(authCardOrder("Available")).toEqual(["claude-cli", "cursor-cli", "llama-cpp"]);
+  });
+
+  it("groups Anthropic CLI, subscription, and API-key cards before other CLI providers", () => {
+    renderAuthSection([
+      { id: "cursor-cli", name: "Cursor CLI", authenticated: false, type: "cli" },
+      { id: "anthropic-api-key", name: "Anthropic API Key", authenticated: false, type: "api_key" },
+      { id: "llama-cpp", name: "Llama.cpp", authenticated: false, type: "cli" },
+      { id: "anthropic-subscription", name: "Anthropic Subscription", authenticated: false, type: "oauth" },
+      { id: "claude-cli", name: "Anthropic — via Claude CLI", authenticated: false, type: "cli" },
+    ]);
+
+    expect(authCardOrder("Available")).toEqual([
+      "claude-cli",
+      "anthropic-subscription",
+      "anthropic-api-key",
+      "cursor-cli",
+      "llama-cpp",
+    ]);
   });
 
   it("renders separate Anthropic subscription OAuth and API-key cards", () => {

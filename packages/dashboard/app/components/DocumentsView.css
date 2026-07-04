@@ -364,7 +364,7 @@ Artifacts controls are the first page content below the shared header, so add a 
 
 .documents-group-header {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   align-items: center;
   gap: var(--space-sm);
   padding: var(--space-sm) var(--space-md);
@@ -418,6 +418,14 @@ Artifacts controls are the first page content below the shared header, so add a 
   color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.documents-group-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  justify-self: end;
   white-space: nowrap;
 }
 
@@ -903,12 +911,18 @@ The artifacts tab is a thumbnail-first responsive media gallery for agent-create
     grid-template-columns: minmax(0, 1fr) auto;
     grid-template-areas:
       "toggle count"
+      "status status"
       "link link";
     row-gap: var(--space-xs);
   }
 
   .documents-group-toggle-btn {
     grid-area: toggle;
+  }
+
+  .documents-group-status {
+    grid-area: status;
+    justify-self: start;
   }
 
   .documents-group-count {

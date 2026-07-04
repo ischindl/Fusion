@@ -64,8 +64,16 @@ describe("acquireTaskWorktree backend wiring", () => {
 
     expect(result.branch).toBe("fusion/fn-1");
     expect(result.worktreePath).toBe("/repo/.worktrees/fn-1");
+    /*
+     * FNXC:WorktreeIsolation 2026-07-02-07:40:
+     * acquireTaskWorktree now resolves the integration branch via `git symbolic-ref` and pins fresh worktree creation to that start point so new task branches never inherit the root checkout's ambient HEAD. With an empty mock stdout the resolver falls back to "main", so the native create command appends "main" as the start point and there are two exec calls (symbolic-ref + worktree add).
+     */
     expect(execMock).toHaveBeenCalledWith(
-      'git worktree add -b "fusion/fn-1" "/repo/.worktrees/fn-1"',
+      "git symbolic-ref --short refs/remotes/origin/HEAD",
+      expect.objectContaining({ cwd: "/repo" }),
+    );
+    expect(execMock).toHaveBeenCalledWith(
+      'git worktree add -b "fusion/fn-1" "/repo/.worktrees/fn-1" "main"',
       expect.objectContaining({ cwd: "/repo" }),
     );
     expect(audit.git).not.toHaveBeenCalledWith(
@@ -125,7 +133,16 @@ describe("acquireTaskWorktree backend wiring", () => {
       }),
     ).rejects.toMatchObject({ name: "WorktrunkOperationError", code: "worktrunk_binary_missing" });
 
-    expect(execMock).not.toHaveBeenCalled();
+    /*
+     * FNXC:WorktreeIsolation 2026-07-02-07:40:
+     * The integration-branch resolution (`git symbolic-ref`) runs before the worktrunk binary check, so one exec call is expected. No worktrunk `switch` command should be attempted when the binary is missing.
+     */
+    expect(execMock).toHaveBeenCalledTimes(1);
+    expect(execMock).toHaveBeenCalledWith(
+      "git symbolic-ref --short refs/remotes/origin/HEAD",
+      expect.objectContaining({ cwd: "/repo" }),
+    );
+    expect(execMock.mock.calls.some((call) => String(call[0]).includes('"switch"'))).toBe(false);
   });
 
   it("throws worktrunk_operation_failed and preserves stderr", async () => {
@@ -170,6 +187,14 @@ describe("acquireTaskWorktree backend wiring", () => {
     expect(result.worktreePath).toBe("/tmp/backend");
     expect(result.branch).toBe("fusion/fn-backend");
     expect(create).toHaveBeenCalledTimes(1);
-    expect(execMock).not.toHaveBeenCalled();
+    /*
+     * FNXC:WorktreeIsolation 2026-07-02-07:40:
+     * The integration-branch resolution runs before the explicit backend's create is invoked, so the only exec call is the `git symbolic-ref` lookup. The custom backend's create mock performs no exec.
+     */
+    expect(execMock).toHaveBeenCalledTimes(1);
+    expect(execMock).toHaveBeenCalledWith(
+      "git symbolic-ref --short refs/remotes/origin/HEAD",
+      expect.objectContaining({ cwd: "/repo" }),
+    );
   });
 });

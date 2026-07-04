@@ -15,6 +15,8 @@ export interface DirectoryPickerProps {
   nodeId?: string;
   /** Node ID of the local node (used to determine when to route through proxy). */
   localNodeId?: string;
+  /** Select the newly created directory path returned by the API after folder creation. */
+  selectCreatedDirectory?: boolean;
 }
 
 interface BrowserState {
@@ -29,7 +31,7 @@ interface BrowserState {
   createFolderError: string | null;
 }
 
-export function DirectoryPicker({ value, onChange, placeholder, onInputKeyDown, nodeId, localNodeId }: DirectoryPickerProps) {
+export function DirectoryPicker({ value, onChange, placeholder, onInputKeyDown, nodeId, localNodeId, selectCreatedDirectory = false }: DirectoryPickerProps) {
   const { t } = useTranslation("app");
   const [browser, setBrowser] = useState<BrowserState>({
     isOpen: false,
@@ -138,9 +140,17 @@ export function DirectoryPicker({ value, onChange, placeholder, onInputKeyDown, 
 
     setBrowser((prev) => ({ ...prev, loading: true, createFolderError: null }));
     try {
-      await createDirectory(folderPath);
+      const result = await createDirectory(folderPath);
       setNewFolderName("");
       setBrowser((prev) => ({ ...prev, createFolderOpen: false }));
+      /*
+      FNXC:DirectoryPicker 2026-07-03-00:00:
+      Project setup must select the directory returned by createDirectory immediately after folder creation so first-time users do not accidentally register the parent directory.
+      Keep this opt-in because DirectoryPicker is shared by non-project surfaces such as plugin installation.
+      */
+      if (selectCreatedDirectory) {
+        onChange(result.path);
+      }
       // Refresh entries to show the new folder
       await fetchEntries(browser.currentPath, browser.showHidden);
     } catch (err) {
@@ -150,7 +160,7 @@ export function DirectoryPicker({ value, onChange, placeholder, onInputKeyDown, 
         createFolderError: err instanceof Error ? err.message : "Failed to create folder",
       }));
     }
-  }, [newFolderName, browser.currentPath, browser.showHidden, fetchEntries]);
+  }, [newFolderName, browser.currentPath, browser.showHidden, fetchEntries, onChange, selectCreatedDirectory]);
 
   const handleCreateFolderKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {

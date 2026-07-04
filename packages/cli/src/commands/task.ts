@@ -90,6 +90,8 @@ function formatTaskSource(task: {
       const issueUrl = getGitHubIssueUrl(task.sourceMetadata);
       return issueUrl ? `GitHub Import (${issueUrl})` : "GitHub Import";
     }
+    case "gitlab_import":
+      return "GitLab Import";
     case "research": {
       const context = getResearchSourceContext(task.sourceMetadata);
       return context ? `Research (${context})` : "Research";
@@ -1518,6 +1520,63 @@ export async function runTaskImportFromGitHub(
   console.log();
   console.log(`  ✓ Imported ${created} tasks from ${owner}/${repo}${skipped > 0 ? ` (${skipped} skipped)` : ""}`);
   console.log();
+}
+
+export type GitLabImportResource = "project-issues" | "group-issues" | "merge-requests";
+
+async function createGitLabClientForStore(store: TaskStore): Promise<dashboard.GitLabClient> {
+  const projectSettings = await store.getSettings();
+  const globalSettings = await store.getGlobalSettingsStore().getSettings();
+  const auth = dashboard.resolveGitlabAuth({ projectSettings, globalSettings });
+  if (!auth.ok) throw new Error(auth.message);
+  return new dashboard.GitLabClient(auth.auth);
+}
+
+export async function runTaskImportFromGitLab(
+  target: string,
+  options: TaskImportOptions & { resource?: GitLabImportResource } = {},
+  projectName?: string,
+): Promise<void> {
+  const resource = options.resource ?? "project-issues";
+  const store = await getStore(projectName);
+  const client = await createGitLabClientForStore(store);
+  console.log(`\n  Importing GitLab ${resource} from ${target}...\n`);
+  const labelArray = options.labels ?? [];
+  const items = resource === "project-issues"
+    ? await client.listProjectIssues(target, { limit: options.limit, labels: labelArray })
+    : resource === "group-issues"
+      ? await client.listGroupIssues(target, { limit: options.limit, labels: labelArray })
+      : await client.listMergeRequests(target, { limit: options.limit, labels: labelArray });
+  if (items.length === 0) {
+    console.log("  No GitLab resources found.\n");
+    return;
+  }
+  const existingTasks = await store.listTasks({ slim: false, includeArchived: false });
+  let created = 0;
+  let skipped = 0;
+  for (const item of items) {
+    const provenance = dashboard.buildGitLabTaskProvenance({ auth: client.auth, resourceType: resource === "merge-requests" ? "merge_request" : resource === "group-issues" ? "group_issue" : "project_issue", item, projectInput: resource !== "group-issues" ? target : undefined, groupInput: resource === "group-issues" ? target : undefined });
+    if (existingTasks.some((task) => dashboard.isGitLabAlreadyImported(task, provenance))) {
+      console.log(`  → Skipping #${item.iid}: already imported`);
+      skipped += 1;
+      continue;
+    }
+    const title = resource === "merge-requests" ? `Review MR !${item.iid}: ${item.title.slice(0, 180)}` : item.title.slice(0, 200);
+    const task = await store.createTask({
+      title: title || undefined,
+      description: dashboard.buildGitLabTaskDescription(item),
+      column: "triage",
+      dependencies: [],
+      sourceIssue: provenance.sourceIssue,
+      gitlabTracking: provenance.gitlabTracking,
+      source: { sourceType: "gitlab_import", sourceMetadata: provenance.sourceMetadata },
+    });
+    await store.logEntry(task.id, resource === "merge-requests" ? "Imported merge request from GitLab" : "Imported from GitLab", item.webUrl);
+    existingTasks.push(task);
+    created += 1;
+    console.log(`  ✓ Created ${task.id}: ${task.title}`);
+  }
+  console.log(`\n  ✓ Imported ${created} GitLab tasks${skipped > 0 ? ` (${skipped} skipped)` : ""}\n`);
 }
 
 export async function runTaskComment(id: string, message?: string, author = "user", projectName?: string) {

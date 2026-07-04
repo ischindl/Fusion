@@ -252,6 +252,7 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
    *   path: string,
    *   isolationMode?: "in-process" | "child-process",
    *   nodeId?: string,
+   *   gitSetupMode?: "existing" | "init" | "clone",
    *   cloneUrl?: string,
    *   workspaceMode?: boolean,
    *   taskPrefix?: string
@@ -260,7 +261,7 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
    */
   router.post("/projects", async (req, res) => {
     try {
-      const { name, path, isolationMode = "in-process", nodeId, cloneUrl, workspaceMode, taskPrefix } = req.body;
+      const { name, path, isolationMode = "in-process", nodeId, cloneUrl, gitSetupMode, workspaceMode, taskPrefix } = req.body;
 
       if (!name || typeof name !== "string" || !name.trim()) {
         throw badRequest("name is required and must be a non-empty string");
@@ -275,6 +276,14 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
       const normalizedName = name.trim();
       const normalizedPath = path.trim();
       let normalizedCloneUrl: string | undefined;
+      let normalizedGitSetupMode: "existing" | "init" | "clone" | undefined;
+
+      if (gitSetupMode !== undefined) {
+        if (!["existing", "init", "clone"].includes(gitSetupMode)) {
+          throw badRequest("gitSetupMode must be 'existing', 'init', or 'clone'");
+        }
+        normalizedGitSetupMode = gitSetupMode;
+      }
 
       if (normalizedPath.includes("\0")) {
         throw badRequest("path cannot contain null bytes");
@@ -299,7 +308,19 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
         normalizedCloneUrl = trimmedCloneUrl;
       }
 
-      const isCloneMode = normalizedCloneUrl !== undefined;
+      if (normalizedCloneUrl !== undefined && normalizedGitSetupMode !== undefined && normalizedGitSetupMode !== "clone") {
+        throw badRequest("cloneUrl can only be provided when gitSetupMode is 'clone'");
+      }
+      if (normalizedGitSetupMode === "clone" && normalizedCloneUrl === undefined) {
+        throw badRequest("cloneUrl must be a non-empty string when gitSetupMode is 'clone'");
+      }
+
+      /*
+      FNXC:Onboarding 2026-07-02-14:48:
+      Dashboard onboarding now sends an explicit git setup mode, but existing clients may still only send cloneUrl.
+      Preserve the legacy cloneUrl trigger while treating existing/init as the CentralCore ensureProjectForPath path where non-git directories are initialized by ensureGitRepositoryForProjectPath.
+      */
+      const isCloneMode = normalizedGitSetupMode === "clone" || normalizedCloneUrl !== undefined;
       let destinationCreatedForClone = false;
 
       if (!isCloneMode) {
@@ -404,6 +425,19 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
 
         return { activeProject, outcome: ensured.outcome };
       });
+
+      /*
+       * FNXC:Onboarding 2026-07-03-05:40:
+       * Proactively warm the new project's engine on creation. getOrCreateProjectStore fires the
+       * onProjectFirstAccessed hook (engineManager.onProjectAccessed -> ensureEngine), so the
+       * project's engine starts immediately instead of waiting for the first lazy store access.
+       * Without this, a freshly-created project (especially the operator's FIRST project on the
+       * desktop, where no other engine is running) leaves engineManager with no running engine, so
+       * /api/health reports engine.available=false and the dashboard shows "AI engine is not
+       * running" right after project creation. Fire-and-forget: engine startup is async and must not
+       * block or fail the registration response.
+       */
+      void getOrCreateProjectStore(activeProjectWithOutcome.activeProject.id).catch(() => undefined);
 
       // Bootstrap memory files (non-blocking, non-fatal)
       ensureMemoryFileWithBackend(normalizedPath).catch(() => {

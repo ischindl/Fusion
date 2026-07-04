@@ -168,6 +168,7 @@ export function DockFilesView({ projectId, openFile, layout = "auto" }: DockFile
           workspace="project"
           onRefresh={refresh}
           projectId={projectId}
+          showProjectFileControls
         />
       </div>
 

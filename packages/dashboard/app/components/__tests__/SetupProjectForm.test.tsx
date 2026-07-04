@@ -53,12 +53,14 @@ vi.mock("../DirectoryPicker", () => ({
     nodeId,
     localNodeId,
     placeholder,
+    selectCreatedDirectory,
   }: {
     value: string;
     onChange: (path: string) => void;
     nodeId?: string;
     localNodeId?: string;
     placeholder?: string;
+    selectCreatedDirectory?: boolean;
   }) => (
     <div data-testid="directory-picker">
       <input
@@ -73,6 +75,9 @@ vi.mock("../DirectoryPicker", () => ({
       )}
       {localNodeId !== undefined && (
         <span data-testid="local-node-id">{localNodeId}</span>
+      )}
+      {selectCreatedDirectory && (
+        <span data-testid="select-created-directory">enabled</span>
       )}
     </div>
   ),
@@ -116,6 +121,11 @@ describe("SetupProjectForm", () => {
   it("renders without crashing", () => {
     render(<SetupProjectForm onSubmit={vi.fn()} />);
     expect(screen.getByText("Directory Path")).toBeDefined();
+  });
+
+  it("opts into selecting directories created during project registration", () => {
+    render(<SetupProjectForm onSubmit={vi.fn()} />);
+    expect(screen.getByTestId("select-created-directory").textContent).toBe("enabled");
   });
 
   it("has disabled submit button initially", () => {

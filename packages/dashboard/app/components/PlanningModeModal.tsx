@@ -5,7 +5,13 @@ import { useState, useCallback, useEffect, useRef, useMemo, type MouseEvent } fr
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Task, PlanningQuestion, PlanningSummary, TaskPriority } from "@fusion/core";
-import { DEFAULT_TASK_PRIORITY, TASK_PRIORITIES, getErrorMessage } from "@fusion/core";
+import {
+  DEFAULT_TASK_PRIORITY,
+  PLANNING_DEEPEN_CHECKPOINT_ID,
+  PLANNING_DEEPEN_PROCEED_OPTION_ID,
+  TASK_PRIORITIES,
+  getErrorMessage,
+} from "@fusion/core";
 import {
   startPlanningStreaming,
   createPlanningDraft,
@@ -316,6 +322,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
   const [isCreatingTask, setIsCreatingTask] = useState(false);
   const [isStartingBreakdown, setIsStartingBreakdown] = useState(false);
   const [isCreatingFromBreakdown, setIsCreatingFromBreakdown] = useState(false);
+  const [isRefiningSummary, setIsRefiningSummary] = useState(false);
   const [generationStartTime, setGenerationStartTime] = useState<number | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -334,6 +341,11 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
   const modalRef = useRef<HTMLDivElement>(null);
   const streamConnectionRef = useRef<{ close: () => void; isConnected: () => boolean } | null>(null);
   const currentSessionIdRef = useRef<string | null>(null);
+  /*
+  FNXC:PlanningMode 2026-07-02-07:56:
+  Refine Further is a single-flight completed-summary turn. Guard synchronously with a ref so duplicate click, touch, or keyboard activations cannot submit a second refine request or close the active stream with a generation-in-progress error before React renders the disabled state.
+  */
+  const refineSummaryInFlightRef = useRef(false);
   const draftSessionIdRef = useRef<string | null>(null);
   /*
   FNXC:PlanningMode 2026-07-01-00:00:
@@ -606,6 +618,8 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
     setStreamingOutput("");
     setIsReconnecting(false);
     setIsRetrying(false);
+    setIsRefiningSummary(false);
+    refineSummaryInFlightRef.current = false;
     setPlanningModelProvider(undefined);
     setPlanningModelId(undefined);
     setPlanningDepth("medium");
@@ -717,6 +731,8 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
           const normalizedQuestion = normalizeQuestionOptions(question);
           setIsReconnecting(false);
           setIsRetrying(false);
+          setIsRefiningSummary(false);
+          refineSummaryInFlightRef.current = false;
           clearPlanningDescription(projectId);
 
           // Preserve reasoning accumulated during the loading turn as a
@@ -756,6 +772,8 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
           const normalizedSummary = normalizePlanningSummary(summary);
           setIsReconnecting(false);
           setIsRetrying(false);
+          setIsRefiningSummary(false);
+          refineSummaryInFlightRef.current = false;
           clearPlanningDescription(projectId);
 
           // Preserve reasoning accumulated during the loading turn.
@@ -811,6 +829,8 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
 
             setIsReconnecting(false);
             setIsRetrying(false);
+            setIsRefiningSummary(false);
+            refineSummaryInFlightRef.current = false;
             setError(null);
             setView((prev) => {
               if (prev.type === "question" || prev.type === "summary" || prev.type === "error") {
@@ -840,6 +860,8 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
         onComplete: () => {
           setIsReconnecting(false);
           setIsRetrying(false);
+          setIsRefiningSummary(false);
+          refineSummaryInFlightRef.current = false;
           currentSessionIdRef.current = null;
           broadcastCompleted({ sessionId, status: "complete" });
         },
@@ -862,6 +884,8 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
     setConversationHistory([]);
     setResponseHistory([]);
     setIsReconnecting(false);
+    setIsRefiningSummary(false);
+    refineSummaryInFlightRef.current = false;
     setView({ type: "loading" });
 
     try {
@@ -966,6 +990,8 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
       setConversationHistory([]);
       setEditedSummary(null);
       setIsRetrying(false);
+      setIsRefiningSummary(false);
+      refineSummaryInFlightRef.current = false;
       setView({ type: "loading" });
 
       try {
@@ -1573,6 +1599,8 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
     streamConnectionRef.current = null;
     setIsReconnecting(false);
     setIsRetrying(false);
+    setIsRefiningSummary(false);
+    refineSummaryInFlightRef.current = false;
     resetMobileViewportAfterClose();
     onClose();
   }, [flushDraftAndSummarize, initialPlan, onClose, projectId, resetMobileViewportAfterClose, view.type]);
@@ -1647,7 +1675,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
   );
 
   const handleRefineFurther = useCallback(async () => {
-    if (view.type !== "summary") {
+    if (view.type !== "summary" || refineSummaryInFlightRef.current) {
       return;
     }
 
@@ -1656,6 +1684,8 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
     currentSessionIdRef.current = sessionId;
     setLockSessionId(sessionId);
 
+    refineSummaryInFlightRef.current = true;
+    setIsRefiningSummary(true);
     setError(null);
     setIsRetrying(false);
     setStreamingOutput("");
@@ -1666,9 +1696,15 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
     try {
       await respondToPlanning(sessionId, { refine: true }, projectId, sessionTabId);
     } catch (err) {
+      const message = getErrorMessage(err) || t("planning.failedRefinePlan", "Failed to refine plan");
+      if (/generation already in progress/i.test(message)) {
+        return;
+      }
+      refineSummaryInFlightRef.current = false;
+      setIsRefiningSummary(false);
       streamConnectionRef.current?.close();
       streamConnectionRef.current = null;
-      setError(getErrorMessage(err) || t("planning.failedRefinePlan", "Failed to refine plan"));
+      setError(message);
       setView({ type: "summary", session, summary: editedSummary ?? summary });
     }
   }, [connectToPlanningStream, editedSummary, projectId, sessionTabId, view]);
@@ -1689,6 +1725,8 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
     streamConnectionRef.current = null;
     setIsReconnecting(false);
     setIsRetrying(false);
+    setIsRefiningSummary(false);
+    refineSummaryInFlightRef.current = false;
     setView({
       type: "error",
       session: { sessionId, currentQuestion: null, summary: null },
@@ -2376,6 +2414,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
               }}
               isCreatingTask={isCreatingTask}
               isStartingBreakdown={isStartingBreakdown}
+              isRefiningSummary={isRefiningSummary}
             />
           )}
 
@@ -2445,6 +2484,7 @@ function QuestionForm({ question: rawQuestion, progress, historyEntries, onSubmi
   const { t } = useTranslation("app");
   const question = normalizeQuestionOptions(rawQuestion);
   const questionOptions = question.options ?? [];
+  const isDeepeningCheckpoint = question.id === PLANNING_DEEPEN_CHECKPOINT_ID;
   const [response, setResponse] = useState<QuestionResponse>({});
   const [textValue, setTextValue] = useState("");
   const [commentValue, setCommentValue] = useState("");
@@ -2497,6 +2537,9 @@ function QuestionForm({ question: rawQuestion, progress, historyEntries, onSubmi
       /*
       FNXC:PlanningInterview 2026-06-26-00:00:
       Multi-select planning questions can combine provided choices with a user-authored Other answer. Preserve selected option ids and append `_other` only while the Other checkbox is active and non-empty.
+
+      FNXC:PlanningMode 2026-07-02-00:00:
+      The mandatory deepening checkpoint reuses multi-select payloads, with the server-reserved proceed option acting as an explicit final-summary gate. Other/custom topics stay additive only for deepening choices, never hidden final-summary actions.
       */
       nextResponse = isOtherSelected && trimmedOther.length > 0
         ? { ...response, [PLANNING_OTHER_RESPONSE_KEY]: trimmedOther }
@@ -2649,6 +2692,7 @@ function QuestionForm({ question: rawQuestion, progress, historyEntries, onSubmi
                 <div className="planning-checkbox-group">
                   {questionOptions.map((option) => {
                     const selected = Array.isArray(response[question.id]) ? (response[question.id] as string[]) : [];
+                    const isProceedOption = isDeepeningCheckpoint && option.id === PLANNING_DEEPEN_PROCEED_OPTION_ID;
                     return (
                       <label key={option.id} className="planning-option planning-option--checkbox">
                         <input
@@ -2657,8 +2701,14 @@ function QuestionForm({ question: rawQuestion, progress, historyEntries, onSubmi
                           checked={selected.includes(option.id)}
                           onChange={(e) => {
                             const newSelected = e.target.checked
-                              ? [...selected, option.id]
+                              ? isProceedOption
+                                ? [option.id]
+                                : [...selected.filter((id) => id !== PLANNING_DEEPEN_PROCEED_OPTION_ID), option.id]
                               : selected.filter((id) => id !== option.id);
+                            if (isProceedOption && e.target.checked) {
+                              setIsOtherSelected(false);
+                              setOtherValue("");
+                            }
                             setResponse({ [question.id]: newSelected });
                           }}
                         />
@@ -2679,6 +2729,10 @@ function QuestionForm({ question: rawQuestion, progress, historyEntries, onSubmi
                       checked={isOtherSelected}
                       onChange={(e) => {
                         setIsOtherSelected(e.target.checked);
+                        if (e.target.checked && isDeepeningCheckpoint) {
+                          const selected = Array.isArray(response[question.id]) ? (response[question.id] as string[]) : [];
+                          setResponse({ [question.id]: selected.filter((id) => id !== PLANNING_DEEPEN_PROCEED_OPTION_ID) });
+                        }
                         if (!e.target.checked) {
                           setOtherValue("");
                         }
@@ -2811,6 +2865,7 @@ interface SummaryViewProps {
   onRefine: () => void;
   isCreatingTask: boolean;
   isStartingBreakdown: boolean;
+  isRefiningSummary: boolean;
 }
 
 function SummaryView({
@@ -2829,6 +2884,7 @@ function SummaryView({
   onRefine,
   isCreatingTask,
   isStartingBreakdown,
+  isRefiningSummary,
 }: SummaryViewProps) {
   const { t } = useTranslation("app");
   const summary = normalizePlanningSummary(rawSummary);
@@ -2846,7 +2902,7 @@ function SummaryView({
   const selectedPriority = normalizeTaskPriority(summary.priority);
   const isBranchNameRequired = branchMode === "existing" || branchMode === "custom-new";
   const hasInvalidBranchSelection = isBranchNameRequired && !branchName.trim();
-  const isLoading = isCreatingTask || isStartingBreakdown;
+  const isLoading = isCreatingTask || isStartingBreakdown || isRefiningSummary;
 
   const handleDependencyToggle = (taskId: string) => {
     const newDeps = selectedDependencies.includes(taskId)

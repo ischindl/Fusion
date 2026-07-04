@@ -16,6 +16,7 @@ vi.mock("../../../ProviderIcon", () => ({
 }));
 
 const range7d: DateRange = { from: "2026-06-08", to: null, preset: "7d" };
+const range30d: DateRange = { from: "2026-06-02", to: null, preset: "30d" };
 
 function makeTokenGroup(key: string | null, totalTokens: number) {
   const inputTokens = Math.round(totalTokens * 0.6);
@@ -113,6 +114,31 @@ function glmMixedProviderTokenFixture() {
   };
 }
 
+function last30DaysMultiModelFixture() {
+  return {
+    from: "2026-06-02T00:00:00.000Z",
+    to: "2026-07-02T00:00:00.000Z",
+    groupBy: "model",
+    totals: {
+      inputTokens: 950,
+      outputTokens: 450,
+      cachedTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 1_400,
+      nTasks: 1,
+    },
+    cost: { usd: 4.2, unavailable: false, stale: false },
+    series: [
+      { bucket: "2026-06-15", inputTokens: 700, outputTokens: 300, cachedTokens: 0, cacheWriteTokens: 0, totalTokens: 1_000, nTasks: 1, cost: { usd: 3, unavailable: false, stale: false } },
+      { bucket: "2026-06-20", inputTokens: 250, outputTokens: 150, cachedTokens: 0, cacheWriteTokens: 0, totalTokens: 400, nTasks: 1, cost: { usd: 1.2, unavailable: false, stale: false } },
+    ],
+    groups: [
+      { key: "claude-sonnet-4-5", inputTokens: 700, outputTokens: 300, cachedTokens: 0, cacheWriteTokens: 0, totalTokens: 1_000, nTasks: 1, cost: { usd: 3, unavailable: false, stale: false } },
+      { key: "gpt-5", inputTokens: 250, outputTokens: 150, cachedTokens: 0, cacheWriteTokens: 0, totalTokens: 400, nTasks: 1, cost: { usd: 1.2, unavailable: false, stale: false } },
+    ],
+  };
+}
+
 function manyModelTokenFixture() {
   const groups = [
     makeTokenGroup("claude-sonnet-4-5", 2_000),
@@ -203,6 +229,30 @@ describe("TokensArea provider model icons", () => {
     expect(within(screen.getByTestId("cc-tokens-row-custom-model-v1")).getByTestId("provider-icon-custom-model-v1")).toBeTruthy();
     expect(within(screen.getByTestId("cc-tokens-row-unknown")).getByTestId("provider-icon-")).toBeTruthy();
     expect(table.querySelectorAll('.provider-icon[data-provider="zai"]').length).toBe(3);
+  });
+
+  it("renders Last 30 days multi-model groups across bar, pie, line, and table surfaces", async () => {
+    apiMock.mockResolvedValue(last30DaysMultiModelFixture());
+    render(<TokensArea range={range30d} />);
+
+    const byModelChart = await screen.findByRole("list", { name: "Tokens by model" });
+    const pie = screen.getByTestId("cc-tokens-pie");
+    const table = screen.getByTestId("cc-tokens-table");
+    const line = screen.getByTestId("cc-tokens-line");
+
+    expect(apiMock).toHaveBeenCalledWith(
+      "/command-center/tokens?groupBy=model&granularity=day&from=2026-06-02",
+      undefined,
+    );
+    for (const label of ["claude-sonnet-4-5", "gpt-5"]) {
+      expect(within(byModelChart).getAllByText(label).length).toBeGreaterThan(0);
+      expect(within(pie).getAllByText(label).length).toBeGreaterThan(0);
+      expect(within(table).getAllByText(label).length).toBeGreaterThan(0);
+    }
+    expect(within(table).getByTestId("cc-tokens-row-claude-sonnet-4-5")).toHaveTextContent("1,000");
+    expect(within(table).getByTestId("cc-tokens-row-gpt-5")).toHaveTextContent("400");
+    expect(line).toHaveTextContent("Total");
+    expect(screen.getByTestId("cc-tokens-total")).toHaveTextContent("1,400");
   });
 
   it("renders every analytics model group in detail bar, pie, and table even beyond the old cap", async () => {

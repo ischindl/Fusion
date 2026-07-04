@@ -65,8 +65,14 @@ describe("acquireTaskWorktree worktrunk wiring", () => {
     });
 
     expect(result).toMatchObject({ source: "fresh", branch: "fusion/fn-1" });
-    expect(execMock).toHaveBeenCalledTimes(1);
-    expect(execMock.mock.calls[0]?.[0]).toContain("git worktree add -b");
+    /*
+     * FNXC:WorktreeIsolation 2026-07-02-07:40:
+     * acquireTaskWorktree now resolves the integration branch via `git symbolic-ref` (returning empty here, so it falls back to "main") and pins the fresh worktree to that start point. Two exec calls happen: the symbolic-ref lookup, then the native `git worktree add -b ... "main"` create.
+     */
+    expect(execMock).toHaveBeenCalledTimes(2);
+    expect(execMock.mock.calls[0]?.[0]).toBe("git symbolic-ref --short refs/remotes/origin/HEAD");
+    expect(execMock.mock.calls[1]?.[0]).toContain('git worktree add -b "fusion/fn-1"');
+    expect(execMock.mock.calls[1]?.[0]).toContain('"main"');
   });
 
   it("prefers explicit createWorktree override", async () => {
@@ -223,6 +229,14 @@ describe("acquireTaskWorktree worktrunk wiring", () => {
 
     expect(result.branch).toBe("fusion/fn-1-custom");
     expect(create).toHaveBeenCalledTimes(1);
-    expect(execMock).not.toHaveBeenCalled();
+    /*
+     * FNXC:WorktreeIsolation 2026-07-02-07:40:
+     * The integration-branch resolution runs before the custom backend's create, so the only exec call is the `git symbolic-ref` lookup. The backend's create mock performs no exec.
+     */
+    expect(execMock).toHaveBeenCalledTimes(1);
+    expect(execMock).toHaveBeenCalledWith(
+      "git symbolic-ref --short refs/remotes/origin/HEAD",
+      expect.objectContaining({ cwd: "/repo" }),
+    );
   });
 });

@@ -101,6 +101,16 @@
       "tags": ["planning", "roadmap"]
     },
     {
+      "id": "fusion-plugin-linear-import",
+      "name": "Linear Import",
+      "description": "Browse Linear issues and import selected issues as Fusion triage tasks through plugin-owned settings.",
+      "version": "0.1.0",
+      "author": "Fusion",
+      "category": "integration",
+      "path": "./plugins/fusion-plugin-linear-import",
+      "tags": ["linear", "import", "issues", "dashboard"]
+    },
+    {
       "id": "fusion-plugin-agent-browser",
       "name": "Agent Browser",
       "description": "Built-in integration metadata. Package install support lands in FN-3101.",

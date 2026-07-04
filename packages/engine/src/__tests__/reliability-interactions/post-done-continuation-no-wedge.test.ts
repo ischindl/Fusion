@@ -396,14 +396,20 @@ describe("FN-5866 reliability interactions: post-done continuation no wedge", ()
     const executor = new TaskExecutor(store, "/tmp/test", { onError });
     await executor.execute(task);
 
-    expect(task.column).toBe("in-review");
+    // FNXC:WorkflowLifecycle 2026-07-01-21:15: When the non-continuable fresh-session retry budget is
+    // exhausted, the run falls through to the TERMINAL failure path, which under the workflow-graph model
+    // parks the task `status: "failed"` IN PLACE (column preserved, worktree/session state cleared, onError
+    // surfaced) — the failure-in-place model that superseded the legacy FN-1284 move-to-in-review
+    // escalation. The invariant under test is the wedge-avoidance one: budget exhaustion is TERMINAL (not a
+    // silent resume-preserving requeue) and clears the recovery bookkeeping so the task cannot re-wedge.
+    expect(task.column).toBe("in-progress");
     expect(task.status).toBe("failed");
     expect(task.error).toContain("Cannot continue from message role: assistant");
     expect(task.recoveryRetryCount).toBeNull();
     expect(task.nextRecoveryAt).toBeNull();
     expect(task.sessionFile).toBeNull();
     expect(store.moveTask).not.toHaveBeenCalledWith(task.id, "todo", { preserveResumeState: true });
-    expect(store.handoffToReview).toHaveBeenCalledTimes(1);
+    expect(store.handoffToReview).not.toHaveBeenCalled();
     expect(onError).toHaveBeenCalledTimes(1);
     expect((task.log ?? []).some((entry: any) => entry.action.includes("fresh-session retries exhausted"))).toBe(true);
   });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadAllAppCssBaseOnly } from "../../test/cssFixture";
+import { loadAllAppCss, loadAllAppCssBaseOnly } from "../../test/cssFixture";
 
 function getCssRuleBlock(css: string, selector: string): string {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -46,12 +46,19 @@ describe("TaskDetailModal CSS contract", () => {
 
   it("FN-7351/FN-7375 keeps the Activity tab dropdown portal-safe on narrow task-detail surfaces", async () => {
     const css = await loadAllAppCssBaseOnly();
+    const fullCss = await loadAllAppCss();
 
     expect(css).toMatch(/\.detail-tab-dropdown\s*\{[^}]*flex-shrink\s*:\s*0\s*;/);
     expect(css).toMatch(/\.detail-tab--activity\s*\{[^}]*display\s*:\s*inline-flex\s*;/);
     expect(css).toMatch(/\.activity-view-menu\s*\{[^}]*position\s*:\s*fixed\s*;/);
+    expect(css).toMatch(/\.activity-view-menu\s*\{[^}]*z-index\s*:\s*1000\s*;/);
     expect(css).toMatch(/\.activity-view-menu\s*\{[^}]*overflow-y\s*:\s*auto\s*;/);
+    expect(css).toMatch(/\.activity-view-menu\s*\{[^}]*overscroll-behavior\s*:\s*contain\s*;/);
+    expect(fullCss).toMatch(
+      /@media\s*\(max-width:\s*768px\)\s*\{[^}]*\.activity-view-menu\s*\{[^}]*max-inline-size\s*:\s*calc\(100vw - \(var\(--space-md\) \* 2\)\)\s*;/,
+    );
     expect(css).not.toMatch(/\.activity-view-menu\s*\{[^}]*position\s*:\s*absolute\s*;/);
+    expect(css).not.toMatch(/\.activity-view-menu\s*\{[^}]*inset-(?:block|inline)-start\s*:/);
     expect(css).not.toMatch(/\.activity-view-menu\s*\{[^}]*min-inline-size\s*:\s*100%\s*;/);
     expect(css).not.toContain(".activity-view-select");
     expect(css).not.toContain(".activity-segmented-control");

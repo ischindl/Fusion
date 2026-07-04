@@ -121,7 +121,7 @@ async function loadCommandHandlers() {
   const { runServe } = await import("./commands/serve.js");
   const { runDaemon } = await import("./commands/daemon.js");
   const { runDesktop } = await import("./commands/desktop.js");
-  const { runTaskCreate, runTaskList, runTaskMove, runTaskMerge, runTaskUpdate, runTaskDeps, runTaskLog, runTaskLogs, runTaskShow, runTaskAttach, runTaskPause, runTaskUnpause, runTaskImportFromGitHub, runTaskDuplicate, runTaskArchive, runTaskUnarchive, runTaskRefine, runTaskPlan, runTaskDelete, runTaskRetry, runTaskComment, runTaskComments, runTaskSteer, runTaskSetNode, runTaskClearNode } = await import("./commands/task.js");
+  const { runTaskCreate, runTaskList, runTaskMove, runTaskMerge, runTaskUpdate, runTaskDeps, runTaskLog, runTaskLogs, runTaskShow, runTaskAttach, runTaskPause, runTaskUnpause, runTaskImportFromGitHub, runTaskImportFromGitLab, runTaskDuplicate, runTaskArchive, runTaskUnarchive, runTaskRefine, runTaskPlan, runTaskDelete, runTaskRetry, runTaskComment, runTaskComments, runTaskSteer, runTaskSetNode, runTaskClearNode } = await import("./commands/task.js");
   const { runPrCreate, runPrShow, runPrList, runPrRespond, runPrApprove, runPrRetry, runPrMerge, runPrClose, runPrAutomerge, runPrAutomergeCleanup } = await import("./commands/pr.js");
   const { runSettingsShow, runSettingsSet } = await import("./commands/settings.js");
   const { runSettingsExport } = await import("./commands/settings-export.js");
@@ -169,6 +169,7 @@ async function loadCommandHandlers() {
     runTaskPause,
     runTaskUnpause,
     runTaskImportFromGitHub,
+    runTaskImportFromGitLab,
     runTaskDuplicate,
     runTaskArchive,
     runTaskUnarchive,
@@ -337,6 +338,7 @@ Usage:
   fn task clear-node <id>                Clear a per-task node override
   fn task retry <id>                  Retry a failed task (clears error, moves to todo)
   fn task import <owner/repo> [opts]  Import GitHub issues as tasks
+  fn task import-gitlab <project-or-group> [opts] Import GitLab project issues, group issues, or merge requests
 
 PR:
   fn pr create <task-id> [--title <title>] [--base <branch>] [--body <body>] [--draft] [--no-ai] [--reviewer <login>]
@@ -679,6 +681,7 @@ async function main() {
     runTaskPause,
     runTaskUnpause,
     runTaskImportFromGitHub,
+    runTaskImportFromGitLab,
     runTaskDuplicate,
     runTaskArchive,
     runTaskUnarchive,
@@ -1453,6 +1456,26 @@ async function main() {
               process.exit(1);
             }
             await runTaskRetry(id, projectName);
+            break;
+          }
+          case "import-gitlab": {
+            const target = args[2];
+            if (!target) {
+              console.error("Usage: fn task import-gitlab <project-path-or-id|group-path-or-id> [options]");
+              console.error("Options: --resource <project-issues|group-issues|merge-requests>, --limit <n>, --labels <labels>");
+              process.exit(1);
+            }
+            const limitIndex = args.findIndex((arg) => arg === "--limit" || arg === "-l");
+            const limit = limitIndex >= 0 && args[limitIndex + 1] ? parseInt(args[limitIndex + 1], 10) : 30;
+            const labelsIndex = args.findIndex((arg) => arg === "--labels" || arg === "-L");
+            const labels = labelsIndex >= 0 && args[labelsIndex + 1] ? args[labelsIndex + 1].split(",").map((value) => value.trim()).filter(Boolean) : undefined;
+            const resourceIndex = args.findIndex((arg) => arg === "--resource" || arg === "-r");
+            const resourceValue = resourceIndex >= 0 && args[resourceIndex + 1] ? args[resourceIndex + 1] : "project-issues";
+            if (resourceValue !== "project-issues" && resourceValue !== "group-issues" && resourceValue !== "merge-requests") {
+              console.error("Invalid --resource. Expected project-issues, group-issues, or merge-requests.");
+              process.exit(1);
+            }
+            await runTaskImportFromGitLab(target, { limit, labels, resource: resourceValue }, projectName);
             break;
           }
           case "import": {

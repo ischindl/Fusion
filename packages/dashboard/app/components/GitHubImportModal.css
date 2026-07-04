@@ -1613,3 +1613,44 @@ body. Let the content take its full intrinsic height and hand vertical scrolling
     display: block;
   }
 }
+
+/*
+FNXC:GitLabImport 2026-07-02-00:00:
+FN-7424 keeps GitLab project issue, group issue, and merge request imports inside the existing Import Tasks surface. Use the established tab, toolbar, list, and preview classes so desktop and mobile affordances do not create a second navigation destination or hidden button shell.
+*/
+.github-import-provider {
+  display: flex;
+  gap: var(--spacing-2);
+  padding: var(--spacing-3) var(--spacing-4) 0;
+}
+
+.github-import-gitlab {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-3);
+  min-height: 0;
+  flex: 1;
+}
+
+.github-import-gitlab__workspace {
+  display: grid;
+  grid-template-columns: minmax(0, var(--import-list-width, 16rem)) minmax(0, 1fr);
+  gap: var(--spacing-3);
+  min-height: 0;
+  flex: 1;
+}
+
+.github-import-gitlab .github-import-preview-pane {
+  min-width: 0;
+}
+
+@media (max-width: 768px) {
+  .github-import-provider,
+  .github-import-gitlab .github-import-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .github-import-gitlab__workspace {
+    grid-template-columns: 1fr;
+  }
+}

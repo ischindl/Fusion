@@ -1724,6 +1724,21 @@ export class TaskExecutor {
   private pendingEphemeralDeletions = new Set<string>();
   private workspaceConfig: WorkspaceConfig | null | undefined = undefined;
 
+  /*
+  FNXC:WorkflowLifecycle 2026-07-01-16:20:
+  Breadcrumb task-log writes on the abort/pause/finalize paths are best-effort diagnostics and must NEVER break control flow. FN-7335 wired store.logEntry() straight into the SYNCHRONOUS markPausedAborted() as `void this.store.logEntry(...).catch(...)`; when store.logEntry is absent/throws synchronously (undefined method, store closed mid-abort, corrupted pager) the call throws a TypeError BEFORE the promise exists, so the trailing .catch() never runs and the exception unwinds out of markPausedAborted — aborting hard-cancel/pause and stranding the in-review handoff. Route every breadcrumb write through safeLogEntry() so both synchronous throws and async rejections are swallowed into a warn.
+  */
+  private safeLogEntry(taskId: string, message: string): void {
+    try {
+      const result = this.store.logEntry(taskId, message, undefined, this.getRunContextFor(taskId));
+      void Promise.resolve(result).catch((error) => {
+        executorLog.warn(`${taskId}: failed to write task-log breadcrumb: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    } catch (error) {
+      executorLog.warn(`${taskId}: failed to write task-log breadcrumb: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   private markPausedAborted(
     taskId: string,
     provenance: "global-pause" | "merge-seam" | "hard-cancel" | "completion-finalize" = "hard-cancel",
@@ -1738,14 +1753,10 @@ export class TaskExecutor {
       FNXC:WorkflowLifecycle 2026-07-01-22:24:
       Pause aborts are frequent enough that operators need task-log breadcrumbs at the marker source, not only at the later graph-failure sink. Log first-mark/provenance-change events so a task card shows why a workflow was interrupted and which code path owned the abort.
       */
-      void this.store.logEntry(
+      this.safeLogEntry(
         taskId,
         `Pause abort marked: provenance=${provenance} source=${source}${previousProvenance && previousProvenance !== provenance ? ` previous=${previousProvenance}` : ""}`,
-        undefined,
-        this.getRunContextFor(taskId),
-      ).catch((error) => {
-        executorLog.warn(`${taskId}: failed to log pause-abort marker: ${error instanceof Error ? error.message : String(error)}`);
-      });
+      );
     }
   }
 
@@ -2164,23 +2175,27 @@ export class TaskExecutor {
     return this._approvalRequestStore;
   }
 
-  private buildActionGateContext(taskId: string | undefined, agent: Agent | null | undefined, projectDefaultPolicy?: { rules?: Partial<import("@fusion/core").AgentPermissionPolicy["rules"]> }): AgentActionGateContext | undefined {
-    if (!agent || isEphemeralAgent(agent)) {
-      return undefined;
-    }
-    const policy = resolveEffectiveAgentPermissionPolicy(agent.permissionPolicy, projectDefaultPolicy);
+  private buildActionGateContext(taskId: string | undefined, agent: Agent | null | undefined, projectDefaultPolicy?: { rules?: Partial<import("@fusion/core").AgentPermissionPolicy["rules"]>; toolRules?: import("@fusion/core").AgentPermissionPolicyToolRules }): AgentActionGateContext | undefined {
+    /*
+    FNXC:AgentPermissions 2026-07-02-00:00:
+    FN-7413 requires task-scoped runtime gates for permanent identity agents, stored ephemeral agents, and fallback executor-FN task workers. Use a stable synthetic actor for fallback workers so category/exact-tool rules and approval dedupe keys apply even when no agent row exists.
+    */
+    const actorId = agent?.id ?? `executor-${taskId ?? "unknown"}`;
+    const actorName = agent?.name ?? `Task worker ${taskId ?? "unknown"}`;
+    const isEphemeral = !agent || isEphemeralAgent(agent);
+    const policy = resolveEffectiveAgentPermissionPolicy(agent?.permissionPolicy, projectDefaultPolicy);
     return {
-      agentId: agent.id,
-      agentName: agent.name,
-      isEphemeral: false,
+      agentId: actorId,
+      agentName: actorName,
+      isEphemeral,
       taskId,
       runId: taskId ? this.getRunContextFor(taskId)?.runId : undefined,
       permissionPolicy: policy,
       createApprovalRequest: async (decision, args) => await this.approvalRequestStore.create({
         requester: {
-          actorId: agent.id,
+          actorId,
           actorType: "agent",
-          actorName: agent.name,
+          actorName,
         },
         taskId,
         runId: taskId ? this.getRunContextFor(taskId)?.runId : undefined,
@@ -2199,16 +2214,16 @@ export class TaskExecutor {
         },
       }),
       findApprovalByDedupeKey: async (dedupeKey) => {
-        const latest = await this.approvalRequestStore.findLatestByDedupeKey({ requesterActorId: agent.id, taskId, dedupeKey });
+        const latest = await this.approvalRequestStore.findLatestByDedupeKey({ requesterActorId: actorId, taskId, dedupeKey });
         return latest ? { id: latest.id, status: latest.status } : null;
       },
       findPendingApprovalByDedupeKey: async (dedupeKey) => {
-        const latest = await this.approvalRequestStore.findLatestByDedupeKey({ requesterActorId: agent.id, taskId, dedupeKey });
+        const latest = await this.approvalRequestStore.findLatestByDedupeKey({ requesterActorId: actorId, taskId, dedupeKey });
         return latest?.status === "pending" ? { id: latest.id } : null;
       },
       pauseForApproval: async ({ approvalRequestId, decision }) => {
         if (taskId) {
-          await this.store.pauseTask(taskId, true, this.getRunContextFor(taskId), { pausedByAgentId: agent.id });
+          await this.store.pauseTask(taskId, true, this.getRunContextFor(taskId), { pausedByAgentId: actorId });
           await this.store.logEntry(
             taskId,
             `Approval required for ${decision.toolName}. Request ${approvalRequestId} created; task and agent paused awaiting decision.`,
@@ -2216,57 +2231,56 @@ export class TaskExecutor {
             this.getRunContextFor(taskId),
           );
         }
-        if (this.options.agentStore) {
+        if (agent && this.options.agentStore) {
           await this.options.agentStore.updateAgentState(agent.id, "paused");
           await this.options.agentStore.updateAgent(agent.id, { pauseReason: "awaiting-approval" });
         }
       },
       markApprovalCompleted: async (approvalRequestId) => {
         await this.approvalRequestStore.markCompleted(approvalRequestId, {
-          actor: { actorId: agent.id, actorType: "agent", actorName: agent.name },
+          actor: { actorId, actorType: "agent", actorName },
           note: "Tool executed after approval",
         });
       },
     };
   }
 
-  private buildPermanentAgentGatingContext(taskId: string | undefined, agent: Agent | null | undefined, projectDefaultPolicy?: { rules?: Partial<import("@fusion/core").AgentPermissionPolicy["rules"]> }): import("@fusion/core").PermanentAgentGatingContext | undefined {
-    if (!agent || isEphemeralAgent(agent)) {
-      return undefined;
-    }
+  private buildPermanentAgentGatingContext(taskId: string | undefined, agent: Agent | null | undefined, projectDefaultPolicy?: { rules?: Partial<import("@fusion/core").AgentPermissionPolicy["rules"]>; toolRules?: import("@fusion/core").AgentPermissionPolicyToolRules }): import("@fusion/core").PermanentAgentGatingContext | undefined {
+    const actorId = agent?.id ?? `executor-${taskId ?? "unknown"}`;
+    const actorName = agent?.name ?? `Task worker ${taskId ?? "unknown"}`;
 
     return {
-      permissionPolicy: resolveEffectiveAgentPermissionPolicy(agent.permissionPolicy, projectDefaultPolicy),
+      permissionPolicy: resolveEffectiveAgentPermissionPolicy(agent?.permissionPolicy, projectDefaultPolicy),
       requester: {
-        actorId: agent.id,
+        actorId,
         actorType: "agent",
-        actorName: agent.name,
+        actorName,
       },
       taskId,
       runId: taskId ? this.getRunContextFor(taskId)?.runId : undefined,
       createApprovalRequest: async ({ category, toolName, args }) => await this.approvalRequestStore.create({
         requester: {
-          actorId: agent.id,
+          actorId,
           actorType: "agent",
-          actorName: agent.name,
+          actorName,
         },
         taskId,
         runId: taskId ? this.getRunContextFor(taskId)?.runId : undefined,
         targetAction: {
           category,
           action: toolName,
-          summary: `Permanent-agent gated action for ${toolName}`,
+          summary: `Agent gated action for ${toolName}`,
           resourceType: "tool",
           resourceId: toolName,
           context: {
             toolName,
             toolArgs: args,
-            source: "permanent-agent-gating",
+            source: "agent-gating",
           },
         },
       }),
       findPendingApprovalRequest: async (dedupeKey) => {
-        const pending = await this.approvalRequestStore.list({ status: "pending", requesterActorId: agent.id, taskId, limit: 100 });
+        const pending = await this.approvalRequestStore.list({ status: "pending", requesterActorId: actorId, taskId, limit: 100 });
         return pending.find((request) => request.targetAction.context?.approvalDedupeKey === dedupeKey) ?? null;
       },
     };
@@ -2565,14 +2579,10 @@ export class TaskExecutor {
 
     if (hadActiveSurface) {
       executorLog.log(`${taskId}: awaited abort of in-flight work — ${reason}`);
-      await this.store.logEntry(
+      this.safeLogEntry(
         taskId,
         `Pause abort cleanup completed: reason=${reason}; surfaces=${abortedSurfaces.join(", ") || "none"}`,
-        undefined,
-        this.getRunContextFor(taskId),
-      ).catch((error) => {
-        executorLog.warn(`${taskId}: failed to log pause-abort cleanup: ${error instanceof Error ? error.message : String(error)}`);
-      });
+      );
     }
   }
 
@@ -7722,6 +7732,24 @@ export class TaskExecutor {
     );
   }
 
+  /*
+  FNXC:WorkflowRemediation 2026-07-03-23:10:
+  Retryable parked-remediation recovery is only for pre-merge optional-step remediation nodes. Plan Review `plan-replan` failures must stay on the existing replan/triage path instead of delegating to `recoverFailedPreMergeWorkflowStep`, which reopens implementation work.
+  */
+  private async isPreMergeRemediationGraphNode(taskId: string, failedNode: string | undefined): Promise<boolean> {
+    if (!failedNode) return false;
+    try {
+      const ir = await resolveWorkflowIrForTask(this.store, taskId);
+      const node = ir?.nodes?.find((n) => n.id === failedNode);
+      const action = node?.config?.workflowAction;
+      if (action === "pre-merge-remediation") return true;
+      if (node) return false;
+    } catch {
+      // Best-effort IR resolution; fall through to the built-in id fallback.
+    }
+    return failedNode === "code-review-remediation" || failedNode === "browser-verification-remediation";
+  }
+
   private isTerminalMergeGraphFailureValue(value: string | undefined): boolean {
     if (!value) return false;
     const normalized = value.toLowerCase();
@@ -7731,6 +7759,86 @@ export class TaskExecutor {
       || normalized.includes("retry-exhausted")
       || normalized.includes("retries exhausted")
       || normalized.includes("max retries");
+  }
+
+  private latestFailedPreMergeWorkflowStep(task: Pick<Task, "workflowStepResults">): CoreWorkflowStepResult | undefined {
+    return (task.workflowStepResults ?? [])
+      .filter((r) => (r.phase || "pre-merge") === "pre-merge" && r.status === "failed")
+      .sort((a, b) => {
+        const aTs = Date.parse(a.completedAt || a.startedAt || "");
+        const bTs = Date.parse(b.completedAt || b.startedAt || "");
+        return (Number.isFinite(bTs) ? bTs : 0) - (Number.isFinite(aTs) ? aTs : 0);
+      })[0];
+  }
+
+  private async resolveFailedPreMergeWorkflowStepBudget(
+    task: Task,
+    target: CoreWorkflowStepResult,
+  ): Promise<{ unbounded: boolean; max: number; label: string; key: string; stepName?: string; attempts: number }> {
+    const settings = await mergeEffectiveSettings(this.store, task, await this.store.getSettings());
+    const fallback = settings.maxPostReviewFixes ?? 3;
+    let rawMaxRevisions: unknown;
+    try {
+      const ir = await resolveWorkflowIrForTask(this.store, task.id);
+      if (ir.version === "v2") {
+        const node = ir.nodes.find((candidate) => candidate.id === target.workflowStepId && candidate.kind === "optional-group");
+        rawMaxRevisions = node?.config?.maxRevisions;
+      }
+    } catch {
+      rawMaxRevisions = undefined;
+    }
+    const maxRevisions = resolveOptionalReviewRevisionBudget({
+      optionalGroupId: target.workflowStepId ?? "",
+      workflowSettings: settings as Record<string, unknown>,
+      nodeMaxRevisions: rawMaxRevisions,
+      fallbackMaxRevisions: fallback,
+    });
+    const budget = resolveOptionalStepRevisionBudget(maxRevisions, fallback);
+    const key = optionalStepRevisionKey(target.workflowStepId, target.workflowStepName);
+    return {
+      ...budget,
+      key,
+      stepName: target.workflowStepName,
+      attempts: countOptionalStepRevisionAttempts(task, key, target.workflowStepName),
+      label: budget.unbounded ? "unbounded" : String(budget.max),
+    };
+  }
+
+  private async routeRetryableRemediationGraphFailureToPreMergeFix(
+    live: TaskDetail,
+    failedNode: string | undefined,
+    failureValue: string | undefined,
+  ): Promise<boolean> {
+    /*
+    FNXC:WorkflowRemediation 2026-07-03-20:10:
+    A failed `pre-merge-remediation` node is retryable when the durable blocking Code Review/optional-step result is still present and its revision budget remains. Route that parked graph failure through the same pre-merge fix handoff as live review REVISE handling; manual retry remains an escape hatch, not the primary recovery. Built-in Code Review defaults to an unbounded budget, so do not apply the legacy `postReviewFixCount` cap unless workflow settings or node config provide a numeric cap.
+    */
+    if (!await this.isPreMergeRemediationGraphNode(live.id, failedNode)) return false;
+    if (live.deletedAt || live.paused || live.userPaused === true) return false;
+    if (live.column === "done" || live.column === "archived") return false;
+    if (!live.worktree) return false;
+    const settings = await this.store.getSettings().catch(() => undefined);
+    if (!settings || settings.globalPause === true || settings.enginePaused === true) return false;
+    if (!allowsAutoMergeProcessing(live, settings) && !isSharedBranchGroupMemberIntegration(live)) return false;
+    const target = this.latestFailedPreMergeWorkflowStep(live);
+    if (!target) return false;
+    const budget = await this.resolveFailedPreMergeWorkflowStepBudget(live, target);
+    if (!budget.unbounded && (!Number.isFinite(budget.max) || budget.max <= 0)) return false;
+    if (!budget.unbounded && budget.attempts >= budget.max) return false;
+
+    const nextCount = budget.attempts + 1;
+    const totalFixCount = (live.postReviewFixCount ?? 0) + 1;
+    await this.store.updateTask(live.id, { postReviewFixCount: totalFixCount }, this.getRunContextFor(live.id));
+    await this.store.logEntry(
+      live.id,
+      `Auto-recovered retryable remediation node '${failedNode ?? "unknown"}' for failed pre-merge workflow step (attempt ${nextCount}/${budget.label})`,
+      optionalStepRevisionLogOutcome(`Step: ${budget.stepName ?? budget.key}${failureValue ? `\nGraph value: ${failureValue}` : ""}`, budget.key),
+      this.getRunContextFor(live.id),
+    );
+    const sentBack = await this.recoverFailedPreMergeWorkflowStep(live);
+    if (!sentBack) return false;
+    await this.persistTokenUsage(live.id);
+    return true;
   }
 
   private isRetryableMergePauseAbortStatus(status: string | null | undefined): boolean {
@@ -8222,11 +8330,9 @@ export class TaskExecutor {
       if (pausedAborted || live.paused || live.userPaused || abortProvenance) {
         const failedNodeForLog = result.visitedNodeIds[result.visitedNodeIds.length - 1] ?? "unknown";
         const failureValueForLog = this.graphFailureValue(result) ?? "none";
-        await this.store.logEntry(
+        this.safeLogEntry(
           task.id,
           `Pause abort classified: provenance=${abortProvenance ?? "unknown"}; node=${failedNodeForLog}; interrupted=${result.interruptedNodeId ?? "none"}; abortKind=${result.interruptedAbortKind ?? "none"}; column=${live.column}; status=${live.status ?? "none"}; paused=${live.paused === true}; userPaused=${live.userPaused === true}; value=${failureValueForLog}; genuine=${genuinePauseAbort}; mergeSeam=${mergeSeamAborted}; completionSuppressed=${suppressFinalizedCompletionAbort}`,
-          undefined,
-          this.getRunContextFor(task.id),
         );
       }
       if (genuinePauseAbort && await this.isReentrantPausedAbortedInFlightNode(live, result, abortProvenance, pausedAborted, this.userCanceledTaskIds.has(task.id))) {
@@ -8472,6 +8578,9 @@ export class TaskExecutor {
         return;
       }
       if (failedNode === "parse" && failureValue === "pin-mismatch" && await this.routeResetParsePinMismatchToRetry(live)) {
+        return;
+      }
+      if (await this.routeRetryableRemediationGraphFailureToPreMergeFix(live, failedNode, failureValue)) {
         return;
       }
       if (await this.routeGraphFailureToExecutionResume(live, failedNode ?? "unknown", failureValue)) {

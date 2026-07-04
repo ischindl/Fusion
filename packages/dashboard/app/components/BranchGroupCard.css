@@ -17,6 +17,15 @@ Collapsed branch-group details must consume less task-detail space with token-ba
   color: var(--color-error);
 }
 
+.branch-group-card-error-title {
+  font-weight: var(--font-weight-semibold);
+}
+
+.branch-group-card-error-copy {
+  margin: 0;
+  color: var(--text-muted);
+}
+
 .branch-group-card-header {
   display: flex;
   align-items: center;

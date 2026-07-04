@@ -4,6 +4,7 @@ import type {
   ActivityAnalytics,
   ProductivityAnalytics,
   GithubIssueAnalytics,
+  GitlabIssueAnalytics,
   WorkflowAnalytics,
 } from "@fusion/core";
 
@@ -84,6 +85,7 @@ export function tokenAnalyticsToTable(result: TokenAnalytics): CsvTable {
     "cacheWriteTokens",
     "totalTokens",
     "nTasks",
+    "nChatMessages",
     "costUsd",
     "costUnavailable",
   ];
@@ -97,6 +99,7 @@ export function tokenAnalyticsToTable(result: TokenAnalytics): CsvTable {
       g.cacheWriteTokens,
       g.totalTokens,
       g.nTasks,
+      g.nChatMessages ?? 0,
       g.cost.usd,
       g.cost.unavailable,
     ]);
@@ -115,6 +118,7 @@ export function tokenAnalyticsToTable(result: TokenAnalytics): CsvTable {
         t.cacheWriteTokens,
         t.totalTokens,
         t.nTasks,
+        t.nChatMessages ?? 0,
         result.cost.usd,
         result.cost.unavailable,
       ],
@@ -287,4 +291,24 @@ export function githubIssueAnalyticsToTable(
   }
   rows.push(["summary", "total", result.filed, result.fixed, result.net, "", "", "", "", ""]);
   return { header, rows };
+}
+
+/** GitLab issue/MR analytics → CSV. Daily, project, resolved detail, and summary rows. */
+export function gitlabIssueAnalyticsToTable(
+  result: GitlabIssueAnalytics,
+): CsvTable {
+  const githubShaped: GithubIssueAnalytics = {
+    ...result,
+    byRepo: result.byProject.map((entry) => ({ repo: entry.project, filed: entry.filed, fixed: entry.fixed })),
+    resolved: result.resolved.map((entry) => ({
+      taskId: entry.taskId,
+      taskTitle: entry.taskTitle,
+      repo: entry.project,
+      issueNumber: entry.issueNumber,
+      url: entry.url,
+      resolvedAt: entry.resolvedAt,
+      resolvedAtExact: entry.resolvedAtExact,
+    })),
+  };
+  return githubIssueAnalyticsToTable(githubShaped);
 }

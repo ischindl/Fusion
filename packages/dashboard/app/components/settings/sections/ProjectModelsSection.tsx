@@ -80,6 +80,14 @@ function modelPairValue(values: Record<string, unknown>, pair: WorkflowModelPair
         ? `${provider}/${modelId}`
         : "";
 }
+function workflowPendingValueEquals(a: unknown, b: unknown): boolean {
+    if (Object.is(a, b))
+        return true;
+    if (Array.isArray(a) && Array.isArray(b)) {
+        return a.length === b.length && a.every((value, index) => Object.is(value, b[index]));
+    }
+    return false;
+}
 export interface ProjectModelsSectionModelProps {
     modelLanes: ModelLane[];
     getLaneStatus: (lane: ModelLane) => LaneStatus;
@@ -208,10 +216,23 @@ export function ProjectModelsSection({ scopeBanner, form, setForm, models, proje
     const saveWorkflowLanes = useCallback(async () => {
         if (!projectId || !workflowDirty)
             return;
+        const pendingSnapshot = { ...workflowPending };
+        const savedKeys = Object.keys(pendingSnapshot);
         try {
-            const payload = await updateWorkflowSettingValues(workflowId, workflowPending, projectId);
+            const payload = await updateWorkflowSettingValues(workflowId, pendingSnapshot, projectId);
             setWorkflowPayload(payload);
-            setWorkflowPending({});
+            setWorkflowPending((current) => {
+                const next = { ...current };
+                /*
+                 * FNXC:ProjectModelsWorkflowLanes 2026-07-02-13:30:
+                 * The registered Settings saver can resolve after workflow lane dropdowns changed again. Clear only snapshot-matching keys so Project Models follows the same no-lost-pending-edits invariant as Workflow Settings Values.
+                 */
+                for (const key of savedKeys) {
+                    if (workflowPendingValueEquals(current[key], pendingSnapshot[key]))
+                        delete next[key];
+                }
+                return next;
+            });
             setWorkflowRejections({});
         }
         catch (err) {

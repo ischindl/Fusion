@@ -703,6 +703,10 @@ export async function landOneRepo(
             configured: depsSyncResult.configured,
             skipped: depsSyncResult.skipped,
             skipReason: depsSyncResult.skipReason,
+            // FNXC:AIMerge 2026-07-02-14:05 (lockfile auto-heal): record when an outdated frozen lockfile
+            // was recovered by a non-frozen retry so operators can see deps drifted without failing merge.
+            healed: depsSyncResult.healed,
+            healedCommand: depsSyncResult.healedCommand,
             durationMs: depsSyncResult.durationMs,
           },
         });

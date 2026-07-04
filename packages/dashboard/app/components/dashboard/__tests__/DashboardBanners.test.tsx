@@ -31,7 +31,29 @@ vi.mock("../../UpdateAvailableBanner", () => ({ UpdateAvailableBanner: () => nul
 vi.mock("../../MergeAdvanceNotice", () => ({ default: () => null }));
 vi.mock("../../TaskIdIntegrityBanner", () => ({ TaskIdIntegrityBanner: () => null }));
 vi.mock("../../DbCorruptionBanner", () => ({ DbCorruptionBanner: () => null }));
-vi.mock("../../SetupWarningBanner", () => ({ SetupWarningBanner: () => null }));
+vi.mock("../../SetupWarningBanner", () => ({
+  SetupWarningBanner: ({
+    hasAiProvider,
+    hasGithub,
+    showGithubWarning,
+    onDismiss,
+    onConnectGithub,
+  }: {
+    hasAiProvider: boolean;
+    hasGithub: boolean;
+    showGithubWarning?: boolean;
+    onDismiss?: () => void;
+    onConnectGithub?: () => void;
+  }) => (
+    <section data-testid="setup-warning-banner">
+      <span data-testid="setup-warning-ai">{String(hasAiProvider)}</span>
+      <span data-testid="setup-warning-github">{String(hasGithub)}</span>
+      <span data-testid="setup-warning-show-github">{String(showGithubWarning)}</span>
+      {onConnectGithub ? <button type="button" onClick={onConnectGithub}>Connect GitHub</button> : null}
+      {onDismiss ? <button type="button" onClick={onDismiss}>Dismiss setup warning</button> : null}
+    </section>
+  ),
+}));
 vi.mock("../../ApprovalNotificationBanner", () => ({
   ApprovalNotificationBanner: ({ pendingCount, onOpenMailbox }: { pendingCount: number; onOpenMailbox: () => void }) => (
     <section role="region" aria-label="Approval requests">
@@ -184,6 +206,7 @@ function buildProps(overrides: Partial<DashboardBannersProps> = {}): DashboardBa
     handleDismissSetupWarning: vi.fn(),
     hasAiProvider: true,
     hasGithub: true,
+    showGithubSetupWarning: false,
     approvalBannerCandidate: null,
     dismissApproval: vi.fn(),
     mailboxPendingApprovalCount: 0,
@@ -308,6 +331,24 @@ describe("DashboardBanners engine remediation visibility", () => {
     expect(screen.getAllByRole("button", { name: /start engine/i })).toHaveLength(2);
   });
 
+  it("does not mount the dashboard-only unavailable banner when desktop health reports a startable manager", () => {
+    render(
+      <DashboardBanners
+        {...buildProps({
+          authTokenRecoveryOpen: false,
+          dashboardHealth: {
+            ...unavailableEngineHealth(),
+            engine: { available: true },
+          } as DashboardBannersProps["dashboardHealth"],
+        })}
+      />,
+    );
+
+    expect(screen.queryByTestId("engine-unavailable-banner")).not.toBeInTheDocument();
+    expect(screen.getByTestId("engine-status-banner")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /start engine/i })).toHaveLength(1);
+  });
+
   it("preserves the current project guard while auth recovery is closed", () => {
     render(<DashboardBanners {...buildProps({ authTokenRecoveryOpen: false, currentProject: null })} />);
 
@@ -364,6 +405,106 @@ describe("DashboardBanners session notification visibility", () => {
     render(<DashboardBanners {...buildProps({ sessionsNeedingInput: [] })} />);
 
     expect(querySessionBanner()).not.toBeInTheDocument();
+  });
+});
+
+describe("DashboardBanners setup warning visibility", () => {
+  it("does not mount an empty setup warning shell while GitHub is inside the grace period", () => {
+    render(
+      <DashboardBanners
+        {...buildProps({
+          hasAiProvider: true,
+          hasGithub: false,
+          showGithubSetupWarning: false,
+          hasWarnings: false,
+        })}
+      />,
+    );
+
+    expect(screen.queryByTestId("setup-warning-banner")).not.toBeInTheDocument();
+  });
+
+  it("preserves immediate AI warnings while GitHub is inside the grace period", () => {
+    render(
+      <DashboardBanners
+        {...buildProps({
+          hasAiProvider: false,
+          hasGithub: false,
+          showGithubSetupWarning: false,
+          hasWarnings: true,
+        })}
+      />,
+    );
+
+    expect(screen.getByTestId("setup-warning-banner")).toBeInTheDocument();
+    expect(screen.getByTestId("setup-warning-show-github")).toHaveTextContent("false");
+  });
+
+  it("passes the expired GitHub warning state into the shared setup banner", () => {
+    render(
+      <DashboardBanners
+        {...buildProps({
+          hasAiProvider: true,
+          hasGithub: false,
+          showGithubSetupWarning: true,
+          hasWarnings: true,
+        })}
+      />,
+    );
+
+    expect(screen.getByTestId("setup-warning-banner")).toBeInTheDocument();
+    expect(screen.getByTestId("setup-warning-show-github")).toHaveTextContent("true");
+  });
+
+  it("opens Settings authentication from the GitHub setup CTA", () => {
+    const openSettingsWithNav = vi.fn();
+    render(
+      <DashboardBanners
+        {...buildProps({
+          hasAiProvider: true,
+          hasGithub: false,
+          showGithubSetupWarning: true,
+          hasWarnings: true,
+          openSettingsWithNav,
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Connect GitHub" }));
+
+    expect(openSettingsWithNav).toHaveBeenCalledWith("authentication");
+  });
+
+  it("keeps dismissed setup warnings hidden for the current project", () => {
+    render(
+      <DashboardBanners
+        {...buildProps({
+          hasAiProvider: false,
+          hasGithub: false,
+          showGithubSetupWarning: true,
+          hasWarnings: true,
+          setupWarningDismissed: true,
+        })}
+      />,
+    );
+
+    expect(screen.queryByTestId("setup-warning-banner")).not.toBeInTheDocument();
+  });
+
+  it("does not render setup warning shells while readiness is loading", () => {
+    render(
+      <DashboardBanners
+        {...buildProps({
+          hasAiProvider: false,
+          hasGithub: false,
+          showGithubSetupWarning: true,
+          hasWarnings: true,
+          setupReadinessLoading: true,
+        })}
+      />,
+    );
+
+    expect(screen.queryByTestId("setup-warning-banner")).not.toBeInTheDocument();
   });
 });
 

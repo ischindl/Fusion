@@ -649,6 +649,8 @@ Default behavior: PR title/body are AI-generated unless both `--title` and `--bo
 
 `fn task import` creates Fusion tasks from GitHub issues. If project or global GitHub tracking defaults are enabled, imported issue tasks are marked as tracked and the tracking hook links the source issue itself instead of opening a duplicate Fusion tracking issue.
 
+`fn task import-gitlab` creates Fusion tasks from GitLab project issues, group issues, or project merge requests using the configured GitLab instance/API URL and access token (`read_api` or `api` scope for import; `api` for later comments/close actions). It uses the GitLab HTTP API only (no `glab` dependency), supports GitLab.com and self-managed instances, stores `gitlab_import` provenance plus `gitlabTracking` task metadata for dashboard badges/details, and skips duplicates by source URL/provenance. Imported GitLab tasks can post lifecycle comments and close/reopen source or tracking targets when project settings enable those side effects; group issues require backing project identity, and Fusion never merges GitLab merge requests.
+
 ```bash
 fn pr create FN-001
 fn pr create FN-001 --draft --reviewer octocat --reviewer hubot --base main
@@ -657,6 +659,10 @@ fn pr automerge-cleanup --json
 fn pr automerge-cleanup --apply
 fn task import owner/repo --labels bug --limit 10
 fn task import owner/repo --interactive
+fn task import-gitlab group/project --resource project-issues --labels bug --limit 10
+fn task import-gitlab group/subgroup --resource group-issues --limit 20
+fn task import-gitlab 12345 --resource merge-requests --limit 5
+fn task import-gitlab platform/team/app --resource project-issues --project self-managed
 ```
 
 ---
@@ -1166,8 +1172,9 @@ Subcommands: `search`, `install`.
 | `--node` | `fn task create` |
 | `--feedback` | `fn task refine` |
 | `--yes` | confirmation-skipping flows (`task plan`, `settings import`, git pull/push, etc.) |
-| `--limit`, `-l` | `fn task import` (default: 30, max: 100), `fn skills search` (default: 10, max: 50) |
-| `--labels`, `-L` | `fn task import` |
+| `--limit`, `-l` | `fn task import`, `fn task import-gitlab` (default: 30, max: 100), `fn skills search` (default: 10, max: 50) |
+| `--labels`, `-L` | `fn task import`, `fn task import-gitlab` |
+| `--resource`, `-r` | `fn task import-gitlab` (`project-issues`, `group-issues`, or `merge-requests`) |
 | `--skill` | `fn skills install` |
 | `--dry-run` | `fn agent import` |
 | `--skip-existing` | `fn agent import` |

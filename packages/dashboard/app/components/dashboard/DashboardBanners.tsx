@@ -57,6 +57,7 @@ export function DashboardBanners({
   handleDismissSetupWarning,
   hasAiProvider,
   hasGithub,
+  showGithubSetupWarning,
   approvalBannerCandidate,
   dismissApproval,
   mailboxPendingApprovalCount,
@@ -162,6 +163,8 @@ export function DashboardBanners({
         <SetupWarningBanner
           hasAiProvider={hasAiProvider}
           hasGithub={hasGithub}
+          showGithubWarning={showGithubSetupWarning}
+          onConnectGithub={() => openSettingsWithNav("authentication" as SectionId)}
           onDismiss={handleDismissSetupWarning}
         />
       )}

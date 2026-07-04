@@ -36,6 +36,12 @@ All skill/extension tool invocations in this catalog use the public `fn_*` names
 | `fn_task_import_github` | Import GitHub issues as Fusion tasks. Fetches open issues from a repository and creates tasks in the planning column. Each task includes the issue title and body with a link to the source issue. |
 | `fn_task_import_github_issue` | Import a specific GitHub issue as a Fusion task. Fetches the issue by number and creates a single task in the planning column with the issue title and body. |
 | `fn_task_browse_github_issues` | List open GitHub issues from a repository to browse before importing. Returns issue numbers, titles, and URLs for selection. Use with fn_task_import_github_issue to import specific issues by number. |
+| `fn_task_browse_gitlab_project_issues` | List GitLab project issues from the configured GitLab instance. |
+| `fn_task_import_gitlab_project_issues` | Import GitLab project issues as Fusion tasks using configured GitLab HTTP API auth. |
+| `fn_task_browse_gitlab_group_issues` | List GitLab group issues while preserving each issue's originating project identity. |
+| `fn_task_import_gitlab_group_issues` | Import GitLab group issues as Fusion tasks using each issue's originating project identity. |
+| `fn_task_browse_gitlab_merge_requests` | List GitLab project merge requests from the configured GitLab instance. |
+| `fn_task_import_gitlab_merge_requests` | Import GitLab project merge requests as Fusion review tasks using configured GitLab HTTP API auth. |
 | `fn_task_plan` | Create a task via AI-guided planning mode — interactive conversation to refine your idea into a well-specified task. |
 | `fn_web_fetch` | Lightweight URL fetch (no JS rendering). Use agent-browser skill for JS-heavy pages. URL to fetch (http/https) Optional extraction hint for downstream summarization Timeout in milliseconds (default: 30000) Max bytes to return (default: 512000) |
 | `fn_secret_get` | Read a secret by key using per-secret access policy. |
@@ -75,6 +81,7 @@ All skill/extension tool invocations in this catalog use the public `fn_*` names
 | `fn_agent_stop` | Stop a running agent — pauses its execution. Transitions the agent from running/active to paused state. |
 | `fn_agent_start` | Start a stopped agent — resumes its execution. Transitions the agent from paused to active state. |
 | `fn_agent_create` | Create a new non-ephemeral agent. |
+| `fn_agent_update` | Update editable configuration for an existing non-ephemeral agent. Agent callers can only update direct or indirect reports inside their management subtree; user/operator calls are privileged. |
 | `fn_agent_set_instructions` | Set the instructionsText and/or instructionsPath of one of the caller's direct or indirect reports. At least one of instructions_text or instructions_path is required; pass an empty string to clear a field. The change is persisted and recorded as a config revision. |
 | `fn_agent_delete` | Delete a non-ephemeral agent. |
 | `fn_list_agents` | List all available agents in the system. Shows each agent's name, role, state, personality (soul), and current assignment. Use this to discover which agents exist and what they specialize in before delegating work. |

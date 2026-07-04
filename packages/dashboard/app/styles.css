@@ -2221,6 +2221,15 @@ input[type="range"]:focus-visible {
   color: var(--text-muted);
 }
 
+/*
+FNXC:GitLabTracking 2026-07-02-00:00:
+Task cards reuse the compact badge chip dimensions for GitLab links, but stale GitLab sync metadata must use the warning token so operators can distinguish stale tracker snapshots from open/closed GitHub status.
+*/
+.card-gitlab-badge--stale {
+  background: color-mix(in srgb, var(--color-warning) 20%, transparent);
+  color: var(--color-warning);
+}
+
 .pr-number {
   color: var(--text-muted);
   font-size: 0.875rem;

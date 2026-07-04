@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { ProjectInfo } from "../api";
 import { fetchGlobalSettings, updateGlobalSettings } from "../api";
+import { getProjectIdFromUrl } from "../utils/projectUrlState";
 import { readCache, SWR_CACHE_KEYS, SWR_LONG_MAX_AGE_MS, writeCache } from "../utils/swrCache";
 
 // Legacy localStorage key for migration - no longer used as primary storage
@@ -20,21 +21,32 @@ export interface UseCurrentProjectResult {
 
 interface UseCurrentProjectOptions {
   nodeId?: string | null;
+  projectsLoading?: boolean;
 }
 
 export function useCurrentProject(
   availableProjects: ProjectInfo[],
   options: UseCurrentProjectOptions = {},
 ): UseCurrentProjectResult {
-  const { nodeId = null } = options;
+  const { nodeId = null, projectsLoading = false } = options;
+  const urlProjectId = getProjectIdFromUrl();
+  const urlProject = urlProjectId
+    ? availableProjects.find((project) => project.id === urlProjectId) ?? null
+    : null;
   const cachedProjectId = readCache<string>(SWR_CACHE_KEYS.CURRENT_PROJECT_ID, { maxAgeMs: SWR_LONG_MAX_AGE_MS });
   const cachedProject =
-    typeof cachedProjectId === "string" && cachedProjectId.length > 0
+    urlProject ??
+    (typeof cachedProjectId === "string" && cachedProjectId.length > 0
       ? availableProjects.find((project) => project.id === cachedProjectId) ?? null
-      : null;
+      : null);
 
   const [currentProject, setCurrentProjectState] = useState<ProjectInfo | null>(cachedProject);
-  const [loading, setLoading] = useState(() => cachedProject === null);
+  const [loading, setLoading] = useState(() => {
+    if (urlProjectId) {
+      return projectsLoading || (availableProjects.length === 0 && !urlProject);
+    }
+    return cachedProject === null;
+  });
   const hydratedRef = useRef(false);
   const hydratedNodeKeyRef = useRef<string | null>(null);
   const explicitlyClearedRef = useRef(false);
@@ -72,6 +84,33 @@ export function useCurrentProject(
 
     if (hydratedRef.current && hydratedNodeKeyRef.current === nodeKey) {
       setLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    if (urlProjectId) {
+      const foundFromUrl = availableProjects.find((project) => project.id === urlProjectId) ?? null;
+      if (foundFromUrl) {
+        explicitlyClearedRef.current = false;
+        absentCountRef.current = 0;
+        autoDefaultCountRef.current = 0;
+        setCurrentProjectState(foundFromUrl);
+        persistCurrentProjectId(foundFromUrl.id);
+        hydratedRef.current = true;
+        hydratedNodeKeyRef.current = nodeKey;
+        setLoading(false);
+      } else if (!projectsLoading) {
+        explicitlyClearedRef.current = true;
+        absentCountRef.current = 0;
+        autoDefaultCountRef.current = 0;
+        setCurrentProjectState(null);
+        hydratedRef.current = true;
+        hydratedNodeKeyRef.current = nodeKey;
+        setLoading(false);
+      } else {
+        setLoading(true);
+      }
       return () => {
         cancelled = true;
       };
@@ -144,7 +183,7 @@ export function useCurrentProject(
     return () => {
       cancelled = true;
     };
-  }, [availableProjects, cachedProjectId, nodeKey, persistCurrentProjectId]);
+  }, [availableProjects, cachedProjectId, nodeKey, persistCurrentProjectId, projectsLoading, urlProjectId]);
 
   useEffect(() => {
     absentCountRef.current = 0;
@@ -153,6 +192,10 @@ export function useCurrentProject(
 
   useEffect(() => {
     if (loading) return;
+
+    if (urlProjectId && !currentProject) {
+      return;
+    }
 
     if (currentProject) {
       autoDefaultCountRef.current = 0;
@@ -208,6 +251,7 @@ export function useCurrentProject(
     currentProject,
     loading,
     nodeKey,
+    urlProjectId,
     persistCurrentProjectId,
     pickFallbackProject,
     setListDrivenSelection,

@@ -149,6 +149,7 @@ import { registerSettingsMemoryRoutes } from "./routes/register-settings-memory-
 import { registerSecretsRoutes } from "./routes/register-secrets-routes.js";
 import { registerMessagingScriptRoutes } from "./routes/register-messaging-scripts.js";
 import { registerGitGitHubRoutes } from "./routes/register-git-github.js";
+import { registerGitLabRoutes } from "./routes/register-gitlab.js";
 import { registerFilesTerminalWorkspaceRoutes } from "./routes/register-files-terminal-workspaces.js";
 import { registerAgentsProjectsNodesRoutes } from "./routes/register-agents-projects-nodes.js";
 import { registerProjectRoutes } from "./routes/register-project-routes.js";
@@ -1137,6 +1138,7 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
   registerChatRoomRoutes(routeContext, { upload });
   registerMessagingScriptRoutes(routeContext);
   registerGitGitHubRoutes(routeContext);
+  registerGitLabRoutes(routeContext);
   registerFilesTerminalWorkspaceRoutes(routeContext);
   registerAgentsProjectsNodesRoutes(routeContext);
   registerPluginsAutomationRoutes(routeContext);

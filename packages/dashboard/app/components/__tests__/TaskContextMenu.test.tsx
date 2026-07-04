@@ -210,6 +210,25 @@ describe("TaskContextMenu shared task action model", () => {
     }).reviewAction).toMatchObject({ id: "pr-automation", label: "Merging PR…", disabled: true });
   });
 
+  it("keeps archived delete available without live-only destructive shells", () => {
+    const onDelete = vi.fn();
+    const archivedModel = buildTaskActionMenuModel({
+      task: makeTask({ column: "archived" }),
+      t,
+      columnLabel: columnLabel as any,
+      hasResetHandler: true,
+      onReset: vi.fn(),
+      onTogglePause: vi.fn(),
+      onDelete,
+    });
+
+    expect(archivedModel.actions.map((action) => action.id)).toEqual(["respecify", "delete"]);
+    expect(archivedModel.actions.map((action) => action.id)).not.toContain("pause");
+    expect(archivedModel.actions.map((action) => action.id)).not.toContain("reset");
+    archivedModel.actions.find((action) => action.id === "delete")?.onSelect?.();
+    expect(onDelete).toHaveBeenCalledTimes(1);
+  });
+
   it("renders descriptors and delegates selection to injected host handlers", () => {
     const onDelete = vi.fn();
     const onActionSelect = vi.fn();

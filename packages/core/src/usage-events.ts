@@ -112,6 +112,9 @@ export function categorizeToolName(toolName: string | null | undefined): string 
   if (name.startsWith("fn_task_import_github") || name.startsWith("fn_task_browse_github")) {
     return "github";
   }
+  if (name.startsWith("fn_task_import_gitlab") || name.startsWith("fn_task_browse_gitlab")) {
+    return "gitlab";
+  }
   if (name === "fn_web_fetch") return "network";
   if (name.startsWith("fn_secret_")) return "secrets";
   if (name.startsWith("fn_skills_")) return "skills";

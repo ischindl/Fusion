@@ -20,6 +20,14 @@ export interface WorktreeDependencySyncResult {
   configured: boolean;
   skipped: boolean;
   skipReason?: "no-command" | "lockfile-marker-match";
+  /**
+   * FNXC:AIMerge 2026-07-02-14:05 (lockfile auto-heal):
+   * True when the inferred frozen-lockfile install failed with an outdated-lockfile error and Fusion
+   * recovered by re-running the non-frozen variant (regenerating the lockfile inside the clean-room
+   * worktree). `healedCommand` records what actually reran. Callers surface this in run-audit.
+   */
+  healed: boolean;
+  healedCommand?: string;
   durationMs: number;
 }
 
@@ -92,6 +100,38 @@ function throwIfDependencySyncAborted(signal: AbortSignal | undefined, taskId: s
   throw err;
 }
 
+function extractCommandErrorDetails(error: unknown): string {
+  const maybeCommandError = error as { stderr?: unknown; stdout?: unknown; message?: unknown };
+  return String(maybeCommandError.stderr || maybeCommandError.stdout || maybeCommandError.message || error);
+}
+
+/**
+ * FNXC:AIMerge 2026-07-02-14:05 (lockfile auto-heal):
+ * A task that adds/removes a dependency but does not regenerate the lockfile makes the inferred frozen
+ * install fail (pnpm `ERR_PNPM_OUTDATED_LOCKFILE`; yarn/bun equivalents). That is the normal outcome of a
+ * legitimate dependency change, not corruption, so detect it and retry non-frozen instead of dead-ending
+ * the merge. Match the frozen-refusal signatures across pnpm/yarn/bun.
+ */
+export function isOutdatedLockfileError(details: string): boolean {
+  return /ERR_PNPM_OUTDATED_LOCKFILE|OUTDATED_LOCKFILE|frozen-lockfile|lockfile is frozen|lockfile had changes, but lockfile is frozen|lockfile needs to be updated|Your lockfile needs to be updated/i.test(
+    details,
+  );
+}
+
+/**
+ * FNXC:AIMerge 2026-07-02-14:05 (lockfile auto-heal):
+ * Build the non-frozen retry for an inferred frozen install. pnpm gets the explicit `--no-frozen-lockfile`
+ * negation so a CI-default `frozen-lockfile=true` is overridden deterministically; yarn/bun simply drop the
+ * flag. Returns null when the command carries no frozen flag (nothing to heal).
+ */
+export function buildNonFrozenRetryCommand(installCommand: string): string | null {
+  if (!installCommand.includes("--frozen-lockfile")) return null;
+  if (/^\s*pnpm\b/.test(installCommand)) {
+    return installCommand.replace(/--frozen-lockfile/g, "--no-frozen-lockfile");
+  }
+  return installCommand.replace(/\s*--frozen-lockfile/g, "").trim();
+}
+
 /**
  * FNXC:AIMerge 2026-06-13-20:18:
  * Temporary AI-merge clean-room worktrees must install workspace dependencies before merge/review verification runs inside them. A configured worktreeInitCommand is the authoritative bootstrap and always runs; inferred lockfile installs may skip only when the node_modules install marker matches the current lockfile hash.
@@ -104,7 +144,7 @@ export async function installWorktreeDependencies(options: InstallWorktreeDepend
   const configured = configuredCommand !== null;
 
   if (!installCommand) {
-    return { installCommand: null, configured: false, skipped: true, skipReason: "no-command", durationMs: Date.now() - startedAt };
+    return { installCommand: null, configured: false, skipped: true, skipReason: "no-command", healed: false, durationMs: Date.now() - startedAt };
   }
 
   const shouldUseInstallMarker = !configured;
@@ -117,6 +157,7 @@ export async function installWorktreeDependencies(options: InstallWorktreeDepend
       configured,
       skipped: true,
       skipReason: "lockfile-marker-match",
+      healed: false,
       durationMs: Date.now() - startedAt,
     };
   }
@@ -125,20 +166,49 @@ export async function installWorktreeDependencies(options: InstallWorktreeDepend
   logger?.log?.(`${taskId}: syncing dependencies ${context}`);
   await log?.(`Syncing dependencies ${context}: ${installCommand}`);
 
-  try {
-    await execAsync(installCommand, {
+  const runInstall = (command: string): Promise<unknown> =>
+    execAsync(command, {
       cwd,
       encoding: "utf-8",
       maxBuffer: 10 * 1024 * 1024,
       timeout: INSTALL_TIMEOUT_MS,
     });
+
+  try {
+    await runInstall(installCommand);
     throwIfDependencySyncAborted(signal, taskId);
     if (lockHash) writeInstallMarker(cwd, lockHash);
-    return { installCommand, configured, skipped: false, durationMs: Date.now() - startedAt };
+    return { installCommand, configured, skipped: false, healed: false, durationMs: Date.now() - startedAt };
   } catch (error: unknown) {
     throwIfDependencySyncAborted(signal, taskId);
-    const maybeCommandError = error as { stderr?: unknown; stdout?: unknown; message?: unknown };
-    const details = maybeCommandError.stderr || maybeCommandError.stdout || maybeCommandError.message || String(error);
-    throw new Error(`Dependency sync failed for ${taskId}: ${String(details)}`.trim());
+    const details = extractCommandErrorDetails(error);
+
+    /*
+    FNXC:AIMerge 2026-07-02-14:05 (lockfile auto-heal):
+    Only auto-heal an INFERRED frozen install (`!configured`) — a user-supplied worktreeInitCommand is
+    authoritative and its frozen intent is respected. On an outdated-lockfile refusal, retry once with the
+    non-frozen variant so a task's legitimate dependency add/remove regenerates the lockfile in the clean
+    room rather than aborting the merge. The regenerated lockfile changes the hash, so recompute the marker
+    from disk (writing the pre-heal hash would wrongly skip the next real change).
+    */
+    const retryCommand = configured ? null : buildNonFrozenRetryCommand(installCommand);
+    if (retryCommand && isOutdatedLockfileError(details)) {
+      logger?.log?.(`${taskId}: lockfile out of date; retrying dependency sync without frozen lockfile`);
+      await log?.(`Dependency sync hit an outdated lockfile; retrying without frozen lockfile: ${retryCommand}`);
+      try {
+        await runInstall(retryCommand);
+      } catch (retryError: unknown) {
+        throwIfDependencySyncAborted(signal, taskId);
+        throw new Error(
+          `Dependency sync failed for ${taskId} (after non-frozen retry): ${extractCommandErrorDetails(retryError)}`.trim(),
+        );
+      }
+      throwIfDependencySyncAborted(signal, taskId);
+      const healedHash = computeLockfileHash(cwd);
+      if (healedHash) writeInstallMarker(cwd, healedHash);
+      return { installCommand, configured, skipped: false, healed: true, healedCommand: retryCommand, durationMs: Date.now() - startedAt };
+    }
+
+    throw new Error(`Dependency sync failed for ${taskId}: ${details}`.trim());
   }
 }

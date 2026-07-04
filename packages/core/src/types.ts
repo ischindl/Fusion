@@ -15,6 +15,13 @@ export type { CapacityRiskSignal } from "./capacity.js";
 
 // FNXC:McpConfig 2026-06-26-02:10: The dashboard Vite build aliases @fusion/core to this browser-safe module, so the pure MCP config helpers are re-exported here for Settings UI import/export, validation, and project-over-global resolution without pulling Node-only stores into the client bundle.
 export { exportMcpServersJson, importMcpServersJson, resolveEffectiveMcpServers } from "./mcp-config.js";
+export {
+  DEFAULT_GITLAB_API_BASE_URL,
+  DEFAULT_GITLAB_INSTANCE_URL,
+  resolveGitlabConfig,
+  resolveGitlabEnabled,
+} from "./gitlab-config.js";
+export type { GitlabConfigSettingsSource, ResolvedGitlabConfig, ResolveGitlabConfigInput } from "./gitlab-config.js";
 export { validateMcpServerDefinitionDetailed, validateMcpServerDefinitionsDetailed } from "./settings-validation.js";
 
 /**
@@ -1001,6 +1008,49 @@ export interface TaskGithubTrackedIssue {
 
 export type GithubIssueAction = "close" | "delete" | "leave" | "auto";
 
+export type GitLabTrackedItemKind = "project_issue" | "group_issue" | "merge_request";
+
+/*
+FNXC:GitLabTracking 2026-07-02-00:00:
+GitLab tracking is a first-class task contract instead of overloading GitHub tracking because GitLab items can come from GitLab.com or self-managed instances and may be project issues, group issues, or merge requests. Store only public metadata and stale/link timestamps; never persist GitLab tokens here.
+*/
+export interface TaskGitLabTrackedItem {
+  /** GitLab work item kind imported or linked to this task. */
+  kind: GitLabTrackedItemKind;
+  /** Canonical browser URL for GitLab.com or a self-managed GitLab instance. */
+  url: string;
+  /** GitLab web instance/base URL, for example https://gitlab.com or a self-managed host. */
+  instanceUrl: string;
+  /** Parsed host for compact display/dedup diagnostics. */
+  host: string;
+  /** GitLab IID visible inside a project or group namespace. */
+  iid: number;
+  /** Optional global GitLab database id when import APIs supplied it. */
+  id?: number;
+  /** Project numeric id when the item belongs to a concrete project. */
+  projectId?: number;
+  /** Project path with namespace, when available from import or URL parsing. */
+  projectPath?: string;
+  /** Group id/path for group-issue searches where GitLab returns a group-scoped source. */
+  groupId?: number | string;
+  groupPath?: string;
+  /** Optional display title and live state snapshot; these are staleable metadata, not auth state. */
+  title?: string;
+  state?: string;
+  createdAt: string;
+  linkedAt?: string;
+  lastSyncedAt?: string;
+  staleAt?: string;
+  staleReason?: string;
+}
+
+export interface TaskGitLabTracking {
+  /** Per-task linked GitLab metadata. Separate from GitHub tracking because GitLab supports GitLab.com plus self-managed project/group/MR URLs without GitHub issue semantics. */
+  item?: TaskGitLabTrackedItem;
+  /** ISO-8601 of the most recent manual unlink, retained for audit. */
+  unlinkedAt?: string;
+}
+
 export interface TaskGithubTracking {
   /** Per-task enabled override. When undefined, project/global default applies. */
   enabled?: boolean;
@@ -1859,6 +1909,7 @@ export type SourceType =
   | "cron"
   | "workflow_step"
   | "github_import"
+  | "gitlab_import"
   | "task_refine"
   | "task_duplicate"
   | "cli"
@@ -2223,6 +2274,8 @@ export interface Task {
   source?: TaskSource;
   /** Durable source provenance for the originating external issue. */
   sourceIssue?: TaskSourceIssue;
+  /** Linked GitLab tracking metadata for GitLab.com and self-managed GitLab items. */
+  gitlabTracking?: TaskGitLabTracking;
   log: TaskLogEntry[];
   /** Pre-aggregated sum of `[timing] … in <N>ms` log durations, in milliseconds.
    *  Computed server-side so slim board listings can render the card timer
@@ -2585,6 +2638,8 @@ export interface TaskCreateInput {
   autoMerge?: boolean;
   /** Durable source provenance for the originating external issue. */
   sourceIssue?: TaskSourceIssue;
+  /** Linked GitLab tracking metadata for GitLab.com and self-managed GitLab items. */
+  gitlabTracking?: TaskGitLabTracking;
   /** Optional persisted aggregate token usage snapshot for task creation/import paths. */
   tokenUsage?: TaskTokenUsage;
   /** Provenance metadata for task creation. */
@@ -3152,6 +3207,22 @@ export interface GlobalSettings {
   /** Global fallback GitHub tracking repo in `owner/repo` format (FN-3868).
    *  Used when a project has no githubTrackingDefaultRepo. */
   githubTrackingDefaultRepo?: string;
+  /** Global GitLab integration enable flag. Undefined is effectively enabled for backward compatibility; projects can override this value. */
+  gitlabEnabled?: boolean;
+  /** Global fallback GitLab web instance URL. Defaults effectively to https://gitlab.com when unset.
+   *  Project gitlabInstanceUrl overrides this value. */
+  gitlabInstanceUrl?: string;
+  /** Global fallback GitLab REST API base URL. When unset, Fusion derives `<instance>/api/v4`.
+   *  Project gitlabApiBaseUrl overrides this value. */
+  gitlabApiBaseUrl?: string;
+  /**
+   * FNXC:GitLabAuthentication 2026-07-02-00:00:
+   * FN-7423 accepts personal, project, and group GitLab access tokens for later HTTP API import/tracking/comment/close tasks. Global values are fallbacks only; project settings override them and project/group token resource membership still constrains runtime access.
+   */
+  /** Global fallback GitLab access token. Stored as a plain settings string in this phase; UI must render it only as a password field. */
+  gitlabAuthToken?: string;
+  /** Global fallback GitLab token type label. Defaults effectively to "personal" when a token exists and this is unset. */
+  gitlabAuthTokenType?: GitlabAuthTokenType;
   /** Cadence for automatic update checks. The dashboard's `/update-check`
    *  route uses this to decide whether to consult npm or return a cached
    *  result.
@@ -3197,6 +3268,14 @@ export interface GlobalSettings {
    *  by the dashboard auth toggle. Setting this field explicitly (true/false)
    *  always wins. */
   useLlamaCpp?: boolean;
+  /** When true, enable Cursor CLI model-provider support (provider ID: `cursor-cli`)
+   *  through an operator-local Cursor CLI installation. */
+  useCursorCli?: boolean;
+  /**
+   * FNXC:CursorCli 2026-07-02-00:00:
+   * Operators need a global machine-local Cursor CLI executable override when PATH discovery resolves the wrong `cursor-agent`, `cursor`, `.cmd`, or `.bat` shim. Blank/undefined means Fusion must keep auto-detecting through PATH candidates.
+   */
+  cursorCliBinaryPath?: string;
   /** Global baseline AI model provider for task execution (executor agent).
    *  This is the global lane that project-level `executionProvider` can override.
    *  Must be set together with `executionGlobalModelId`. Falls back to
@@ -3456,6 +3535,9 @@ export interface RemoteAccessProjectSettings {
 
 /** GitHub authentication strategy used by project issue-tracking settings (FN-3868). */
 export type GithubAuthMode = "gh-cli" | "token";
+
+/** GitLab access-token family configured for future HTTP API integrations (FN-7423). */
+export type GitlabAuthTokenType = "personal" | "project" | "group";
 
 export interface SecretsEnvSettings {
   /** Default: false. When true, materialize env_exportable secrets into the worktree on creation. */
@@ -4033,10 +4115,10 @@ export interface ProjectSettings {
     /** Backend ids that may bootstrap without approval. Default: ["native"]. */
     autoApproveBackendIds?: string[];
   };
-  /** Project default runtime permission-policy overrides for permanent agents.
+  /** Project default runtime permission-policy overrides for all agent lifetimes.
    *  Rules are a partial map of category -> disposition (`allow` | `block` | `require-approval`).
    *  Tool rules are exact tool-name overrides that take precedence over category rules.
-   *  Missing categories and tools inherit the built-in `unrestricted` seed (`allow`). */
+   *  Missing categories and tools inherit the built-in `unrestricted` seed (`allow`). Agents without an explicit policy, including legacy ephemeral task workers, inherit this project default at runtime. */
   defaultAgentPermissionPolicy?: {
     rules?: Partial<AgentPermissionPolicyRules>;
     toolRules?: AgentPermissionPolicyToolRules;
@@ -4256,6 +4338,30 @@ export interface ProjectSettings {
   /** Project default GitHub tracking repo in `owner/repo` format (FN-3868).
    *  Falls back to global githubTrackingDefaultRepo when unset. */
   githubTrackingDefaultRepo?: string;
+  /**
+   * FNXC:GitLabConfiguration 2026-07-02-00:00:
+   * FN-7422 adds durable GitLab instance/API URL settings for GitLab.com and self-managed hosts. FN-7423 layers token settings onto the same project-over-global configuration contract without adding runtime GitLab imports or tracking.
+   */
+  /** Project GitLab integration enable flag. Undefined inherits global gitlabEnabled, then defaults effectively enabled for backward compatibility. */
+  gitlabEnabled?: boolean;
+  /** Project GitLab web instance URL. Falls back to global gitlabInstanceUrl, then https://gitlab.com. */
+  gitlabInstanceUrl?: string;
+  /** Project GitLab REST API base URL. Falls back to global gitlabApiBaseUrl, then derives `<instance>/api/v4`. */
+  gitlabApiBaseUrl?: string;
+  /** Project GitLab access token for HTTP API auth. Stored as a plain settings string in this phase; UI must render it only as a password field. */
+  gitlabAuthToken?: string;
+  /** Project GitLab token type label. Defaults effectively to "personal" when a token exists and this is unset. */
+  gitlabAuthTokenType?: GitlabAuthTokenType;
+  /**
+   * FNXC:GitLabLifecycle 2026-07-02-00:00:
+   * GitLab comment and auto-close settings mirror GitHub lifecycle side effects but remain disabled by default and use the configured GitLab instance/API URL so GitLab.com and self-managed hosts behave consistently.
+   */
+  /** When true, automatically post a comment to the originating GitLab issue or merge request when an imported task is moved to done. Default: false. */
+  gitlabCommentOnDone?: boolean;
+  /** Optional template used for GitLab source comments posted on task completion. Supports `{taskId}` and `{taskTitle}` placeholders. */
+  gitlabCommentTemplate?: string;
+  /** When true, automatically close/reopen linked source-imported GitLab issues or merge requests on task done/undone lifecycle moves. Default: false. */
+  gitlabCloseSourceIssueOnDone?: boolean;
   /** When true, tracking issue creation searches open/closed repo issues for likely duplicates before opening a new issue.
    *  Default: true (set false to opt out). */
   githubTrackingDedupEnabled?: boolean;
@@ -4760,6 +4866,8 @@ export interface ArchivedTaskEntry {
   prInfos?: PrInfo[];
   issueInfo?: IssueInfo;
   githubTracking?: TaskGithubTracking;
+  /** Linked GitLab tracking metadata for GitLab.com and self-managed GitLab items. */
+  gitlabTracking?: TaskGitLabTracking;
   /** Durable source provenance for the originating external issue. */
   sourceIssue?: TaskSourceIssue;
   /** Attachment metadata (filenames, mime types, etc.) without file content */
@@ -4837,6 +4945,18 @@ export interface ArchivedTaskEntry {
 
 /** Type of planning question presented to the user */
 export type PlanningQuestionType = "text" | "single_select" | "multi_select" | "confirm";
+
+/** Exact Planning Mode checkpoint prompt shown before a final summary can be displayed. */
+export const PLANNING_DEEPEN_CHECKPOINT_QUESTION = "Would you like to go deeper?";
+
+/** Reserved question id for the server-owned Planning Mode deepening checkpoint. */
+export const PLANNING_DEEPEN_CHECKPOINT_ID = "__planning_deepen_checkpoint__";
+
+/** Reserved checkbox option id that lets the user accept the pending final summary. */
+export const PLANNING_DEEPEN_PROCEED_OPTION_ID = "__planning_deepen_proceed_to_final__";
+
+/** Reserved response key accepted as an explicit proceed signal for the deepening checkpoint. */
+export const PLANNING_DEEPEN_PROCEED_RESPONSE_KEY = "__planning_deepen_proceed__";
 
 /** Isolation mode for project execution */
 export type IsolationMode = "in-process" | "child-process";
@@ -6333,6 +6453,12 @@ export const AGENT_PERMISSION_POLICY_CATEGORY_TOOL_EXAMPLES: Record<
     "fn_delegate_task",
     "fn_task_import_github",
     "fn_task_import_github_issue",
+    "fn_task_import_gitlab_project_issues",
+    "fn_task_import_gitlab_group_issues",
+    "fn_task_import_gitlab_merge_requests",
+    "fn_task_browse_gitlab_project_issues",
+    "fn_task_browse_gitlab_group_issues",
+    "fn_task_browse_gitlab_merge_requests",
     "fn_spawn_agent",
     "fn_update_agent_config",
     "fn_task_update",
@@ -6388,7 +6514,7 @@ export type AgentPermissionPolicyDisposition = "allow" | "block" | "require-appr
 /** Exact tool-name permission overrides layered above category rules. */
 export type AgentPermissionPolicyToolRules = Record<string, AgentPermissionPolicyDisposition>;
 
-/** Minimum portable permanent-agent gating context consumed by engine runtime wrappers. */
+/** Minimum portable agent gating context consumed by engine runtime wrappers. The legacy name is retained for API compatibility, but the context applies to permanent identity agents and ephemeral task-worker agents. */
 export interface PermanentAgentGatingContext {
   permissionPolicy?: {
     presetId: string;
@@ -6407,7 +6533,7 @@ export interface PermanentAgentGatingContext {
   findPendingApprovalRequest?: (dedupeKey: string) => Promise<ApprovalRequest | null>;
 }
 
-/** Built-in permission policy preset identifiers for permanent agents. */
+/** Built-in permission policy preset identifiers for agent runtime policies. */
 export const AGENT_PERMISSION_POLICY_PRESET_IDS = ["unrestricted", "approval-required", "locked-down", "custom"] as const;
 
 /** A single built-in permission policy preset identifier. */
@@ -6420,7 +6546,7 @@ export type AgentPermissionPolicyRules = Record<
 >;
 
 /**
- * First-class persisted permission policy contract for permanent agents.
+ * First-class persisted permission policy contract for permanent and ephemeral agents.
  *
  * FNXC:ToolPermissions 2026-07-01-00:00:
  * Operators must be able to block a single governed tool such as `fn_task_create` without blocking every task-agent mutation. `toolRules` stores exact tool-name overrides and the engine resolves them before category rules while leaving heartbeat-critical exempt tools non-configurable.

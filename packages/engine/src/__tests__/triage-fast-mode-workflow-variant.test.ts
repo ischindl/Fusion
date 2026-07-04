@@ -25,6 +25,12 @@ vi.mock("../pi.js", () => ({
   createFnAgent: mockCreateFnAgent,
   describeModel: vi.fn().mockReturnValue("mock-model"),
   promptWithFallback: mockPromptWithFallback,
+  // FNXC:TriageTests 2026-07-02-07:40:
+  // triage.ts specifyTask now calls formatModelMarkerDetails (from pi.js) to
+  // build the model-marker log line after the agent session resolves. The mock
+  // must expose the export so the planning path can reach finalization
+  // (moveTask todo) instead of throwing on a missing mock member.
+  formatModelMarkerDetails: vi.fn((model: string) => model),
 }));
 
 vi.mock("@fusion/core", async (importOriginal) => {
