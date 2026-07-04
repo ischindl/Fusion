@@ -7731,6 +7731,24 @@ export class TaskExecutor {
     );
   }
 
+  /*
+  FNXC:WorkflowRemediation 2026-07-03-23:10:
+  Retryable parked-remediation recovery is only for pre-merge optional-step remediation nodes. Plan Review `plan-replan` failures must stay on the existing replan/triage path instead of delegating to `recoverFailedPreMergeWorkflowStep`, which reopens implementation work.
+  */
+  private async isPreMergeRemediationGraphNode(taskId: string, failedNode: string | undefined): Promise<boolean> {
+    if (!failedNode) return false;
+    try {
+      const ir = await resolveWorkflowIrForTask(this.store, taskId);
+      const node = ir?.nodes?.find((n) => n.id === failedNode);
+      const action = node?.config?.workflowAction;
+      if (action === "pre-merge-remediation") return true;
+      if (node) return false;
+    } catch {
+      // Best-effort IR resolution; fall through to the built-in id fallback.
+    }
+    return failedNode === "code-review-remediation" || failedNode === "browser-verification-remediation";
+  }
+
   private isTerminalMergeGraphFailureValue(value: string | undefined): boolean {
     if (!value) return false;
     const normalized = value.toLowerCase();
@@ -7740,6 +7758,86 @@ export class TaskExecutor {
       || normalized.includes("retry-exhausted")
       || normalized.includes("retries exhausted")
       || normalized.includes("max retries");
+  }
+
+  private latestFailedPreMergeWorkflowStep(task: Pick<Task, "workflowStepResults">): CoreWorkflowStepResult | undefined {
+    return (task.workflowStepResults ?? [])
+      .filter((r) => (r.phase || "pre-merge") === "pre-merge" && r.status === "failed")
+      .sort((a, b) => {
+        const aTs = Date.parse(a.completedAt || a.startedAt || "");
+        const bTs = Date.parse(b.completedAt || b.startedAt || "");
+        return (Number.isFinite(bTs) ? bTs : 0) - (Number.isFinite(aTs) ? aTs : 0);
+      })[0];
+  }
+
+  private async resolveFailedPreMergeWorkflowStepBudget(
+    task: Task,
+    target: CoreWorkflowStepResult,
+  ): Promise<{ unbounded: boolean; max: number; label: string; key: string; stepName?: string; attempts: number }> {
+    const settings = await mergeEffectiveSettings(this.store, task, await this.store.getSettings());
+    const fallback = settings.maxPostReviewFixes ?? 3;
+    let rawMaxRevisions: unknown;
+    try {
+      const ir = await resolveWorkflowIrForTask(this.store, task.id);
+      if (ir.version === "v2") {
+        const node = ir.nodes.find((candidate) => candidate.id === target.workflowStepId && candidate.kind === "optional-group");
+        rawMaxRevisions = node?.config?.maxRevisions;
+      }
+    } catch {
+      rawMaxRevisions = undefined;
+    }
+    const maxRevisions = resolveOptionalReviewRevisionBudget({
+      optionalGroupId: target.workflowStepId ?? "",
+      workflowSettings: settings as Record<string, unknown>,
+      nodeMaxRevisions: rawMaxRevisions,
+      fallbackMaxRevisions: fallback,
+    });
+    const budget = resolveOptionalStepRevisionBudget(maxRevisions, fallback);
+    const key = optionalStepRevisionKey(target.workflowStepId, target.workflowStepName);
+    return {
+      ...budget,
+      key,
+      stepName: target.workflowStepName,
+      attempts: countOptionalStepRevisionAttempts(task, key, target.workflowStepName),
+      label: budget.unbounded ? "unbounded" : String(budget.max),
+    };
+  }
+
+  private async routeRetryableRemediationGraphFailureToPreMergeFix(
+    live: TaskDetail,
+    failedNode: string | undefined,
+    failureValue: string | undefined,
+  ): Promise<boolean> {
+    /*
+    FNXC:WorkflowRemediation 2026-07-03-20:10:
+    A failed `pre-merge-remediation` node is retryable when the durable blocking Code Review/optional-step result is still present and its revision budget remains. Route that parked graph failure through the same pre-merge fix handoff as live review REVISE handling; manual retry remains an escape hatch, not the primary recovery. Built-in Code Review defaults to an unbounded budget, so do not apply the legacy `postReviewFixCount` cap unless workflow settings or node config provide a numeric cap.
+    */
+    if (!await this.isPreMergeRemediationGraphNode(live.id, failedNode)) return false;
+    if (live.deletedAt || live.paused || live.userPaused === true) return false;
+    if (live.column === "done" || live.column === "archived") return false;
+    if (!live.worktree) return false;
+    const settings = await this.store.getSettings().catch(() => undefined);
+    if (!settings || settings.globalPause === true || settings.enginePaused === true) return false;
+    if (!allowsAutoMergeProcessing(live, settings) && !isSharedBranchGroupMemberIntegration(live)) return false;
+    const target = this.latestFailedPreMergeWorkflowStep(live);
+    if (!target) return false;
+    const budget = await this.resolveFailedPreMergeWorkflowStepBudget(live, target);
+    if (!budget.unbounded && (!Number.isFinite(budget.max) || budget.max <= 0)) return false;
+    if (!budget.unbounded && budget.attempts >= budget.max) return false;
+
+    const nextCount = budget.attempts + 1;
+    const totalFixCount = (live.postReviewFixCount ?? 0) + 1;
+    await this.store.updateTask(live.id, { postReviewFixCount: totalFixCount }, this.getRunContextFor(live.id));
+    await this.store.logEntry(
+      live.id,
+      `Auto-recovered retryable remediation node '${failedNode ?? "unknown"}' for failed pre-merge workflow step (attempt ${nextCount}/${budget.label})`,
+      optionalStepRevisionLogOutcome(`Step: ${budget.stepName ?? budget.key}${failureValue ? `\nGraph value: ${failureValue}` : ""}`, budget.key),
+      this.getRunContextFor(live.id),
+    );
+    const sentBack = await this.recoverFailedPreMergeWorkflowStep(live);
+    if (!sentBack) return false;
+    await this.persistTokenUsage(live.id);
+    return true;
   }
 
   private isRetryableMergePauseAbortStatus(status: string | null | undefined): boolean {
@@ -8479,6 +8577,9 @@ export class TaskExecutor {
         return;
       }
       if (failedNode === "parse" && failureValue === "pin-mismatch" && await this.routeResetParsePinMismatchToRetry(live)) {
+        return;
+      }
+      if (await this.routeRetryableRemediationGraphFailureToPreMergeFix(live, failedNode, failureValue)) {
         return;
       }
       if (await this.routeGraphFailureToExecutionResume(live, failedNode ?? "unknown", failureValue)) {

@@ -6284,6 +6284,16 @@ export class SelfHealingManager {
             return (Number.isFinite(bTs) ? bTs : 0) - (Number.isFinite(aTs) ? aTs : 0);
           })[0];
       };
+      const isRetryableParkedRemediationFailure = (task: Pick<Task, "status" | "error">): boolean => {
+        /*
+         * FNXC:WorkflowRemediation 2026-07-03-23:10:
+         * Restart recovery for parked remediation rows is limited to pre-merge optional-step remediation. `plan-replan` belongs to Plan Review's replan/triage path; sending it through `recoverFailedPreMergeStep` would incorrectly reopen implementation work.
+         */
+        if (task.status !== "failed") return false;
+        const error = task.error ?? "";
+        return error.includes("Workflow graph terminated with failure at node 'code-review-remediation'")
+          || error.includes("Workflow graph terminated with failure at node 'browser-verification-remediation'");
+      };
 
       /*
        * FNXC:WorkflowOptionalStepRevisionBudget 2026-06-27-12:34:
@@ -6353,9 +6363,15 @@ export class SelfHealingManager {
         if (task.column !== "in-review") return false;
         if (!allowsAutoMergeProcessing(task, settings)) return false;
         if (task.paused) return false;
-        // Preserve terminal/human-handoff statuses (failed, awaiting-user-review,
-        // merging, etc.). Only revive tasks that are otherwise idle.
-        if (task.status) return false;
+        /*
+         * FNXC:WorkflowRemediation 2026-07-03-20:10:
+         * Retryable Code Review remediation can park as `status:"failed"` when the
+         * graph loses restart-local failure context at `code-review-remediation`.
+         * Treat only that durable remediation-node signature as recoverable here;
+         * other failed review rows remain terminal/operator-actionable.
+         */
+        const parkedRemediationFailure = isRetryableParkedRemediationFailure(task);
+        if (task.status && !parkedRemediationFailure) return false;
         if (executingIds.has(task.id)) return false;
         const budget = revisionBudgetFor(task.id);
         if (!budget.unbounded && (!Number.isFinite(budget.max) || budget.max <= 0)) return false;
@@ -6368,7 +6384,7 @@ export class SelfHealingManager {
         // not by an unrelated condition (incomplete steps, etc.) that is
         // already handled by a dedicated scan.
         const blocker = getTaskMergeBlocker(task);
-        if (blocker !== "task has failed pre-merge workflow steps") return false;
+        if (!parkedRemediationFailure && blocker !== "task has failed pre-merge workflow steps") return false;
 
         // The retry flow injects into PROMPT.md + re-executes on the worktree.
         // If the worktree was cleaned up we can't reliably resume here; leave
