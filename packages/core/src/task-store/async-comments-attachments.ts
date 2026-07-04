@@ -307,6 +307,59 @@ export async function getTaskDocumentRevisions(
   return rows as unknown as TaskDocumentRevisionRow[];
 }
 
+/**
+ * FNXC:PostgresCutover 2026-07-04:
+ * Delete a task document and all of its archived revisions. This is the async
+ * equivalent of the sync `deleteTaskDocument`: it verifies the document exists
+ * (throwing the same "not found" error otherwise), then removes the revisions
+ * and the document row inside a single transaction so a partial delete can
+ * never leave orphaned revisions. Unlike the read/upsert paths it intentionally
+ * does NOT gate on the parent task's live state — the sync path deletes by
+ * (taskId, key) existence alone, and this preserves that behavior.
+ *
+ * @param layer The async data layer (the delete runs in its own transaction).
+ * @param taskId The parent task id.
+ * @param key The document key.
+ */
+export async function deleteTaskDocument(
+  layer: AsyncDataLayer,
+  taskId: string,
+  key: string,
+): Promise<void> {
+  return layer.transactionImmediate(async (tx) => {
+    const existing = await tx
+      .select({ id: schema.project.taskDocuments.id })
+      .from(schema.project.taskDocuments)
+      .where(
+        and(
+          eq(schema.project.taskDocuments.taskId, taskId),
+          eq(schema.project.taskDocuments.key, key),
+        ),
+      )
+      .limit(1);
+    if (existing.length === 0) {
+      throw new Error(`Document ${key} not found for task ${taskId}`);
+    }
+
+    await tx
+      .delete(schema.project.taskDocumentRevisions)
+      .where(
+        and(
+          eq(schema.project.taskDocumentRevisions.taskId, taskId),
+          eq(schema.project.taskDocumentRevisions.key, key),
+        ),
+      );
+    await tx
+      .delete(schema.project.taskDocuments)
+      .where(
+        and(
+          eq(schema.project.taskDocuments.taskId, taskId),
+          eq(schema.project.taskDocuments.key, key),
+        ),
+      );
+  });
+}
+
 // ── Artifacts ────────────────────────────────────────────────────────
 
 /**

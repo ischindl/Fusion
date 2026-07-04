@@ -13,14 +13,15 @@ import { basename, dirname, join, normalize, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import {
   CentralCore,
+  createTaskStoreForBackend,
   isValidSqliteDatabaseFile,
   readProjectIdentity,
   writeProjectIdentity,
   detectWorkspaceRepos,
   saveWorkspaceConfig,
   suggestTaskPrefix,
+  TaskStore,
   type RegisteredProject,
-  type TaskStore,
 } from "@fusion/core";
 import { ProjectManager } from "@fusion/engine";
 
@@ -422,13 +423,32 @@ export async function resolveProject(options: ResolveOptions = {}): Promise<Reso
 }
 
 /**
+ * FNXC:PostgresCutover 2026-07-04: boot a project TaskStore through the
+ * PostgreSQL startup factory (embedded by default, external via DATABASE_URL)
+ * instead of a legacy SQLite TaskStore whose runtime was removed under
+ * VAL-REMOVAL-005. Returns the legacy store only on the FUSION_NO_EMBEDDED_PG=1
+ * opt-out. Shared by createResolvedProject and the onboarding init paths so
+ * every `fn project`/`fn init` store construction stays backend-first.
+ */
+async function createProjectStore(rootDir: string): Promise<TaskStore> {
+  const boot = await createTaskStoreForBackend({ rootDir });
+  if (boot) {
+    return boot.taskStore;
+  }
+  const store = new TaskStore(rootDir);
+  await store.init();
+  return store;
+}
+
+/**
  * Create a ResolvedProject from a RegisteredProject.
  * Initializes the TaskStore for the project.
  */
 async function createResolvedProject(project: RegisteredProject): Promise<ResolvedProject> {
   // Initialize TaskStore for this project
-  const store = new (await import("@fusion/core")).TaskStore(project.path);
-  await store.init();
+  // FNXC:PostgresCutover 2026-07-04: boot PostgreSQL via createTaskStoreForBackend
+  // instead of a legacy SQLite TaskStore whose runtime was removed (VAL-REMOVAL-005).
+  const store = await createProjectStore(project.path);
 
   // Try to get runtime from ProjectManager if available
   let runtime: import("@fusion/engine").ProjectRuntime | undefined;
@@ -683,10 +703,10 @@ export async function registerProjectInteractive(
 
       if (shouldInit) {
         // Initialize the project (create .fusion/)
-        const { TaskStore } = await import("@fusion/core");
-        const store = new TaskStore(absPath);
+        // FNXC:PostgresCutover 2026-07-04: initialize via the PostgreSQL backend
+        // factory (createProjectStore) instead of a removed-SQLite-runtime TaskStore.
+        const store = await createProjectStore(absPath);
         try {
-          await store.init();
           if (detectedSubRepos) {
             await saveWorkspaceConfig(absPath, { repos: detectedSubRepos });
             // Persist workspaceMode in config.json so it's visible/toggleable in the dashboard
@@ -761,10 +781,10 @@ export async function registerProjectInteractive(
   to config.json via the TaskStore.
   */
   {
-    const { TaskStore } = await import("@fusion/core");
-    const store = new TaskStore(absPath);
+    // FNXC:PostgresCutover 2026-07-04: persist prefix/workflow via a PostgreSQL
+    // backend store (createProjectStore), not the removed SQLite runtime.
+    const store = await createProjectStore(absPath);
     try {
-      await store.init();
       let prefix = suggestTaskPrefix(name);
       if (interactive) {
         const rl = createInterface({ input: process.stdin, output: process.stdout });

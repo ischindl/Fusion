@@ -31,7 +31,11 @@ function getArtifactDir(id: string, projectRoot: string): string {
 }
 
 function getStore(ctx: PluginContext) {
-  return createCliPressStore(ctx.taskStore.getDatabase());
+  // FNXC:PostgresCutover 2026-07-04-00:00:
+  // In backend mode, getDatabase() throws. Pass null so the store degrades
+  // (methods throw a clear error) rather than crashing at factory time.
+  const db = ctx.taskStore.isBackendMode() ? null : ctx.taskStore.getDatabase();
+  return createCliPressStore(db);
 }
 
 function toDraft(service: Service, spec: CliSpec | undefined, endpoints: ServiceDraft["endpoints"]): ServiceDraft {

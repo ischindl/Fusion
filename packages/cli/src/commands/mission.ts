@@ -1,4 +1,4 @@
-import { type Goal, type MilestoneStatus, type SliceStatus, type FeatureStatus } from "@fusion/core";
+import { drizzleSql, type Goal, type MilestoneStatus, type SliceStatus, type FeatureStatus } from "@fusion/core";
 import { createInterface } from "node:readline/promises";
 import { getStore } from "../project-resolver.js";
 
@@ -160,18 +160,37 @@ export async function runMissionList(projectName?: string, options: RunMissionLi
   const includeDrafts = options.includeDrafts ?? true;
 
   const missions = await missionStore.listMissions();
-  const drafts = includeDrafts
-    ? (store.getDatabase()
-      .prepare(
-        `SELECT id, title, status, updatedAt
-         FROM ai_sessions
-         WHERE type = 'mission_interview'
-           AND status IN ('generating', 'awaiting_input', 'error', 'complete')
-           AND COALESCE(archived, 0) = 0
-         ORDER BY updatedAt DESC`,
-      )
-      .all() as Array<{ id: string; title: string; status: "generating" | "awaiting_input" | "error" | "complete"; updatedAt: string }>)
-    : [];
+  // FNXC:PostgresCutover 2026-07-04: in backend mode read mission-interview
+  // drafts from PostgreSQL via Drizzle (the SQLite getDatabase() runtime was
+  // removed under VAL-REMOVAL-005). PG ai_sessions columns are snake_case, so
+  // alias updated_at -> updatedAt to preserve the existing draft row shape.
+  // The legacy SQLite path is retained for the FUSION_NO_EMBEDDED_PG opt-out.
+  const draftStatuses = ["generating", "awaiting_input", "error", "complete"] as const;
+  type MissionInterviewDraft = {
+    id: string;
+    title: string;
+    status: (typeof draftStatuses)[number];
+    updatedAt: string;
+  };
+  let drafts: MissionInterviewDraft[] = [];
+  if (includeDrafts) {
+    if (store.isBackendMode()) {
+      drafts = await store.getAsyncLayer()!.db.execute<MissionInterviewDraft>(
+        drizzleSql`SELECT id, title, status, updated_at AS "updatedAt" FROM project.ai_sessions WHERE type = 'mission_interview' AND status IN ('generating', 'awaiting_input', 'error', 'complete') AND COALESCE(archived, 0) = 0 ORDER BY updated_at DESC`,
+      );
+    } else {
+      drafts = store.getDatabase()
+        .prepare(
+          `SELECT id, title, status, updatedAt
+           FROM ai_sessions
+           WHERE type = 'mission_interview'
+             AND status IN ('generating', 'awaiting_input', 'error', 'complete')
+             AND COALESCE(archived, 0) = 0
+           ORDER BY updatedAt DESC`,
+        )
+        .all() as MissionInterviewDraft[];
+    }
+  }
 
   if (missions.length === 0 && drafts.length === 0) {
     console.log("\n  No missions yet. Create one with: fn mission create\n");

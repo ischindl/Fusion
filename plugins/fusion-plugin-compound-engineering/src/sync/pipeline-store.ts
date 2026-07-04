@@ -167,11 +167,21 @@ function rowToLink(row: CePipelineLinkRow): CePipelineLink {
  * test) still works.
  */
 export class CePipelineStore {
-  private readonly db: Database;
+  // FNXC:PostgresCutover 2026-07-04-00:00:
+  // db is null in backend mode (PostgreSQL). CePipelineStore has no async path,
+  // so methods that use sync SQLite throw in backend mode rather than crash the
+  // plugin hooks (task move/complete) at factory time. Full async port pending.
+  private readonly db: Database | null;
 
-  constructor(db: Database) {
+  constructor(db: Database | null) {
     this.db = db;
-    ensureCeSchema(db);
+    if (db) ensureCeSchema(db);
+  }
+
+  /** Asserts sync db is available (throws in backend mode). */
+  private syncDb(): Database {
+    if (!this.db) throw new Error("CePipelineStore: sync Database is null (backend mode)");
+    return this.db;
   }
 
   /** Record a task→pipeline/artifact link. */
@@ -184,28 +194,23 @@ export class CePipelineStore {
       ceArtifactPath: input.ceArtifactPath ?? null,
       createdAt: new Date().toISOString(),
     };
-    this.db
-      .prepare(
-        `INSERT INTO ce_pipeline_links
-          (id, taskId, cePipelineId, ceStageId, ceArtifactPath, createdAt)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      )
+    this.syncDb().prepare(`INSERT INTO ce_pipeline_links
+      (id, taskId, cePipelineId, ceStageId, ceArtifactPath, createdAt)
+     VALUES (?, ?, ?, ?, ?, ?)`,)
       .run(link.id, link.taskId, link.cePipelineId, link.ceStageId, link.ceArtifactPath, link.createdAt);
     return link;
   }
 
   /** All links produced by a given CE pipeline, newest first. */
   listByPipeline(cePipelineId: string): CePipelineLink[] {
-    const rows = this.db
-      .prepare(`SELECT * FROM ce_pipeline_links WHERE cePipelineId = ? ORDER BY createdAt DESC, id`)
+    const rows = this.syncDb().prepare(`SELECT * FROM ce_pipeline_links WHERE cePipelineId = ? ORDER BY createdAt DESC, id`)
       .all(cePipelineId) as CePipelineLinkRow[];
     return rows.map(rowToLink);
   }
 
   /** Resolve a board task back to its CE link (the back-reference). */
   findByTaskId(taskId: string): CePipelineLink | undefined {
-    const row = this.db
-      .prepare(`SELECT * FROM ce_pipeline_links WHERE taskId = ?`)
+    const row = this.syncDb().prepare(`SELECT * FROM ce_pipeline_links WHERE taskId = ?`)
       .get(taskId) as CePipelineLinkRow | undefined;
     return row ? rowToLink(row) : undefined;
   }
@@ -215,16 +220,14 @@ export class CePipelineStore {
 
   /** Read a pipeline's own state record. */
   getState(cePipelineId: string): CePipelineState | undefined {
-    const row = this.db
-      .prepare(`SELECT * FROM ce_pipeline_state WHERE cePipelineId = ?`)
+    const row = this.syncDb().prepare(`SELECT * FROM ce_pipeline_state WHERE cePipelineId = ?`)
       .get(cePipelineId) as CePipelineStateRow | undefined;
     return row ? rowToState(row) : undefined;
   }
 
   /** All pipeline state records (the reconciler sweeps every one). */
   listAllState(): CePipelineState[] {
-    const rows = this.db
-      .prepare(`SELECT * FROM ce_pipeline_state ORDER BY updatedAt DESC, cePipelineId`)
+    const rows = this.syncDb().prepare(`SELECT * FROM ce_pipeline_state ORDER BY updatedAt DESC, cePipelineId`)
       .all() as CePipelineStateRow[];
     return rows.map(rowToState);
   }
@@ -240,20 +243,14 @@ export class CePipelineStore {
     const lastArtifactPath =
       input.lastArtifactPath !== undefined ? input.lastArtifactPath : existing?.lastArtifactPath ?? null;
     if (existing) {
-      this.db
-        .prepare(
-          `UPDATE ce_pipeline_state
-             SET currentStage = ?, status = ?, lastArtifactPath = ?, updatedAt = ?
-           WHERE cePipelineId = ?`,
-        )
+      this.syncDb().prepare(`UPDATE ce_pipeline_state
+         SET currentStage = ?, status = ?, lastArtifactPath = ?, updatedAt = ?
+       WHERE cePipelineId = ?`,)
         .run(input.currentStage, status, lastArtifactPath, now, input.cePipelineId);
     } else {
-      this.db
-        .prepare(
-          `INSERT INTO ce_pipeline_state
-             (cePipelineId, currentStage, status, lastArtifactPath, createdAt, updatedAt)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-        )
+      this.syncDb().prepare(`INSERT INTO ce_pipeline_state
+         (cePipelineId, currentStage, status, lastArtifactPath, createdAt, updatedAt)
+       VALUES (?, ?, ?, ?, ?, ?)`,)
         .run(input.cePipelineId, input.currentStage, status, lastArtifactPath, now, now);
     }
     return this.getState(input.cePipelineId)!;
@@ -294,28 +291,23 @@ export class CePipelineStore {
       enqueuedAt: new Date().toISOString(),
       processedAt: null,
     };
-    this.db
-      .prepare(
-        `INSERT INTO ce_pipeline_sync_queue
-           (id, cePipelineId, taskId, reason, fromColumn, toColumn, enqueuedAt, processedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
-      )
+    this.syncDb().prepare(`INSERT INTO ce_pipeline_sync_queue
+       (id, cePipelineId, taskId, reason, fromColumn, toColumn, enqueuedAt, processedAt)
+     VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,)
       .run(entry.id, entry.cePipelineId, entry.taskId, entry.reason, entry.fromColumn, entry.toColumn, entry.enqueuedAt);
     return entry;
   }
 
   /** All pending (un-drained) queue entries, oldest first. */
   listPendingSync(): CeSyncQueueEntry[] {
-    const rows = this.db
-      .prepare(`SELECT * FROM ce_pipeline_sync_queue WHERE processedAt IS NULL ORDER BY enqueuedAt, id`)
+    const rows = this.syncDb().prepare(`SELECT * FROM ce_pipeline_sync_queue WHERE processedAt IS NULL ORDER BY enqueuedAt, id`)
       .all() as CeSyncQueueRow[];
     return rows.map(rowToQueueEntry);
   }
 
   /** Mark a queue entry drained (idempotent). */
   markSyncProcessed(id: string): void {
-    this.db
-      .prepare(`UPDATE ce_pipeline_sync_queue SET processedAt = ? WHERE id = ? AND processedAt IS NULL`)
+    this.syncDb().prepare(`UPDATE ce_pipeline_sync_queue SET processedAt = ? WHERE id = ? AND processedAt IS NULL`)
       .run(new Date().toISOString(), id);
   }
 }
@@ -327,7 +319,10 @@ export function getCePipelineStore(ctx: PluginContext): CePipelineStore {
   const key = ctx.taskStore as object;
   const cached = storeCache.get(key);
   if (cached) return cached;
-  const store = new CePipelineStore(ctx.taskStore.getDatabase());
+  // FNXC:PostgresCutover 2026-07-04-00:00:
+  // In backend mode, getDatabase() throws. Guard with isBackendMode() check.
+  const db = ctx.taskStore.isBackendMode() ? null : ctx.taskStore.getDatabase();
+  const store = new CePipelineStore(db);
   storeCache.set(key, store);
   return store;
 }

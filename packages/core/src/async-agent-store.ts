@@ -448,6 +448,35 @@ export async function listActiveHeartbeatRuns(handle: QueryHandle): Promise<Agen
     .map((row) => (row.data as AgentHeartbeatRun | null) ?? null)
     .filter((run): run is AgentHeartbeatRun => run !== null);
 }
+/**
+ * FNXC:PostgresCutover 2026-07-04:
+ * List every heartbeat run across all agents for mesh-snapshot capture.
+ * Mirrors the SQLite `getAgentRunSnapshot` query: when `limit` is given the
+ * rows come back newest-first (caller reverses to chronological); otherwise
+ * they come back in ascending startedAt order. The deterministic `id`
+ * tiebreaker replaces SQLite's `rowid` (Postgres has no rowid).
+ */
+export async function listAllAgentRuns(
+  handle: QueryHandle,
+  limit?: number,
+): Promise<AgentHeartbeatRun[]> {
+  const normalizedLimit =
+    typeof limit === "number" && Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : undefined;
+  const rows = normalizedLimit
+    ? await handle
+        .select({ data: schema.project.agentRuns.data })
+        .from(schema.project.agentRuns)
+        .orderBy(desc(schema.project.agentRuns.startedAt), desc(schema.project.agentRuns.id))
+        .limit(normalizedLimit)
+    : await handle
+        .select({ data: schema.project.agentRuns.data })
+        .from(schema.project.agentRuns)
+        .orderBy(asc(schema.project.agentRuns.startedAt), asc(schema.project.agentRuns.id));
+  return rows
+    .map((row) => (row.data as AgentHeartbeatRun | null) ?? null)
+    .filter((run): run is AgentHeartbeatRun => run !== null);
+}
+
 
 /**
  * Get aggregate run-status counts (completed/failed), optionally scoped to a

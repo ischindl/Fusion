@@ -6,6 +6,7 @@ import {
   ResearchRunStatus,
   ResearchStore,
   TaskStore,
+  createTaskStoreForBackend,
   resolveResearchSettings,
   type ResearchExportFormat,
   type ResearchRun,
@@ -51,7 +52,15 @@ function getSyncResearchStore(taskStore: TaskStore): ResearchStore {
 
 async function getStore(projectName?: string): Promise<TaskStore> {
   const project = projectName ? await resolveProject(projectName) : undefined;
-  const store = new TaskStore(project?.projectPath ?? process.cwd());
+  const rootDir = project?.projectPath ?? process.cwd();
+  // FNXC:PostgresCutover 2026-07-04: boot the PostgreSQL backend via the startup
+  // factory instead of a legacy SQLite TaskStore whose runtime was removed
+  // (VAL-REMOVAL-005). Falls back to legacy only on FUSION_NO_EMBEDDED_PG=1.
+  const boot = await createTaskStoreForBackend({ rootDir });
+  if (boot) {
+    return boot.taskStore;
+  }
+  const store = new TaskStore(rootDir);
   await store.init();
   return store;
 }

@@ -1,6 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
-import { TaskStore, exportSettings, generateExportFilename } from "@fusion/core";
+import { TaskStore, createTaskStoreForBackend, exportSettings, generateExportFilename } from "@fusion/core";
 import { resolveProject } from "../project-context.js";
 
 /**
@@ -19,8 +19,18 @@ export async function runSettingsExport(options: {
   const scope = options.scope ?? "both";
   const project = options.projectName ? await resolveProject(options.projectName) : undefined;
 
-  const store = new TaskStore(project?.projectPath ?? process.cwd());
-  await store.init();
+  // FNXC:PostgresCutover 2026-07-04: boot the PostgreSQL backend via the startup
+  // factory instead of a legacy SQLite TaskStore whose runtime was removed
+  // (VAL-REMOVAL-005). Falls back to legacy only on FUSION_NO_EMBEDDED_PG=1.
+  const rootDir = project?.projectPath ?? process.cwd();
+  const boot = await createTaskStoreForBackend({ rootDir });
+  let store: TaskStore;
+  if (boot) {
+    store = boot.taskStore;
+  } else {
+    store = new TaskStore(rootDir);
+    await store.init();
+  }
   const outputPath = options.output;
 
   try {

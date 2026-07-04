@@ -1,5 +1,8 @@
+import { sql } from "drizzle-orm";
 import type { AgentStore } from "./agent-store.js";
 import type { Database } from "./db.js";
+import type { DrizzleDb } from "./postgres/data-layer.js";
+import { PROJECT_SCHEMA } from "./postgres/schema/_shared.js";
 import type { TaskStore } from "./store.js";
 import type { AgentRole } from "./types.js";
 
@@ -41,6 +44,33 @@ interface TaskTokenLinkRow {
   totalTokens: number | null;
 }
 
+/**
+ * FNXC:PostgresCutover 2026-07-04:
+ * Shared accumulation core for task-derived token totals by agent link.
+ * Both the sync SQLite path and the async PostgreSQL path funnel the same
+ * TaskTokenLinkRow[] through this so the assigned/source/checkout attribution
+ * stays identical across backends (every linked agent is credited, no double
+ * counting when a task links the same agent via multiple fields).
+ */
+function accumulateTaskTokenLinkRows(
+  rows: TaskTokenLinkRow[],
+  totalsByAgentId: Map<string, AgentTaskTokenTotals>,
+): void {
+  for (const row of rows) {
+    const agentIds = new Set([row.assignedAgentId, row.sourceAgentId, row.checkedOutBy].filter((value): value is string => Boolean(value)));
+    for (const agentId of agentIds) {
+      const existing = totalsByAgentId.get(agentId) ?? createTaskTokenTotals();
+      existing.inputTokens += row.inputTokens ?? 0;
+      existing.cachedTokens += row.cachedTokens ?? 0;
+      existing.cacheWriteTokens += row.cacheWriteTokens ?? 0;
+      existing.outputTokens += row.outputTokens ?? 0;
+      existing.totalTokens += row.totalTokens ?? (row.inputTokens ?? 0) + (row.cachedTokens ?? 0) + (row.cacheWriteTokens ?? 0) + (row.outputTokens ?? 0);
+      existing.nTasks += 1;
+      totalsByAgentId.set(agentId, existing);
+    }
+  }
+}
+
 export function aggregateTaskTokenTotalsByAgentLink(db: Database): Map<string, AgentTaskTokenTotals> {
   /*
   FNXC:AgentTokenUsage 2026-06-27-23:06:
@@ -66,20 +96,45 @@ export function aggregateTaskTokenTotalsByAgentLink(db: Database): Map<string, A
   `).all() as TaskTokenLinkRow[];
 
   const totalsByAgentId = new Map<string, AgentTaskTokenTotals>();
-  for (const row of rows) {
-    const agentIds = new Set([row.assignedAgentId, row.sourceAgentId, row.checkedOutBy].filter((value): value is string => Boolean(value)));
-    for (const agentId of agentIds) {
-      const existing = totalsByAgentId.get(agentId) ?? createTaskTokenTotals();
-      existing.inputTokens += row.inputTokens ?? 0;
-      existing.cachedTokens += row.cachedTokens ?? 0;
-      existing.cacheWriteTokens += row.cacheWriteTokens ?? 0;
-      existing.outputTokens += row.outputTokens ?? 0;
-      existing.totalTokens += row.totalTokens ?? (row.inputTokens ?? 0) + (row.cachedTokens ?? 0) + (row.cacheWriteTokens ?? 0) + (row.outputTokens ?? 0);
-      existing.nTasks += 1;
-      totalsByAgentId.set(agentId, existing);
-    }
-  }
+  accumulateTaskTokenLinkRows(rows, totalsByAgentId);
+  return totalsByAgentId;
+}
 
+/**
+ * FNXC:PostgresCutover 2026-07-04:
+ * Async PostgreSQL equivalent of {@link aggregateTaskTokenTotalsByAgentLink}.
+ * Reads the same task-link token columns from the schema-qualified
+ * project.tasks table (snake_case) and runs them through the shared
+ * accumulator so the Agents listing surfaces real task-derived totals in
+ * backend (PostgreSQL) mode instead of silently degrading to zero. The route
+ * dispatches to this when the scoped store carries an AsyncDataLayer.
+ */
+export async function aggregateTaskTokenTotalsByAgentLinkAsync(
+  db: DrizzleDb,
+): Promise<Map<string, AgentTaskTokenTotals>> {
+  const rawRows = (await db.execute(
+    sql.raw(`
+      SELECT
+        id AS "taskId",
+        assigned_agent_id AS "assignedAgentId",
+        source_agent_id AS "sourceAgentId",
+        checked_out_by AS "checkedOutBy",
+        token_usage_input_tokens AS "inputTokens",
+        token_usage_cached_tokens AS "cachedTokens",
+        token_usage_cache_write_tokens AS "cacheWriteTokens",
+        token_usage_output_tokens AS "outputTokens",
+        token_usage_total_tokens AS "totalTokens"
+      FROM ${PROJECT_SCHEMA}.tasks
+      WHERE token_usage_input_tokens IS NOT NULL
+         OR token_usage_cached_tokens IS NOT NULL
+         OR token_usage_cache_write_tokens IS NOT NULL
+         OR token_usage_output_tokens IS NOT NULL
+         OR token_usage_total_tokens IS NOT NULL
+    `),
+  )) as unknown as TaskTokenLinkRow[];
+
+  const totalsByAgentId = new Map<string, AgentTaskTokenTotals>();
+  accumulateTaskTokenLinkRows(rawRows, totalsByAgentId);
   return totalsByAgentId;
 }
 

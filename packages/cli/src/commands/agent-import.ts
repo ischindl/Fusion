@@ -20,7 +20,7 @@ import {
 import type { AgentCreateInput } from "@fusion/core";
 import type { SkillManifest } from "@fusion/core";
 import { stringify as stringifyYaml } from "yaml";
-import { resolveProject } from "../project-context.js";
+import { resolveAgentStoreBase } from "../project-context.js";
 
 export interface SkillImportResult {
   imported: string[];
@@ -152,24 +152,6 @@ async function importSkillsToProject(
 }
 
 /**
- * Get the project path for agent operations.
- * Falls back to process.cwd() if no project is specified.
- */
-async function getProjectPath(projectName?: string): Promise<string> {
-  if (projectName) {
-    const context = await resolveProject(projectName);
-    return context.projectPath;
-  }
-
-  try {
-    const context = await resolveProject(undefined);
-    return context.projectPath;
-  } catch {
-    return process.cwd();
-  }
-}
-
-/**
  * Print a summary of the import result.
  */
 function printSummary(
@@ -245,9 +227,11 @@ export async function runAgentImport(
     process.exit(1);
   }
 
-  // Get existing agent names for skip logic
-  const projectPath = await getProjectPath(options?.project);
-  const agentStore = new AgentStore({ rootDir: projectPath + "/.fusion" });
+  // FNXC:PostgresCutover 2026-07-04: construct AgentStore in backend mode by
+  // borrowing the asyncLayer from the resolved project store (SQLite runtime
+  // removed under VAL-REMOVAL-005), mirroring extension.ts getAgentStore.
+  const { rootDir: projectPath, asyncLayer } = await resolveAgentStoreBase(options?.project);
+  const agentStore = new AgentStore({ rootDir: projectPath + "/.fusion", asyncLayer: asyncLayer ?? undefined });
   await agentStore.init();
 
   const existingAgents = await agentStore.listAgents();

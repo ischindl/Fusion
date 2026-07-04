@@ -13,6 +13,7 @@ import { InsightStore } from "../insight-store.js";
 import { ResearchStore } from "../research-store.js";
 import { type ActivityLogSnapshot, type TaskMetadataSnapshot, createActivityLogSnapshot, createTaskMetadataSnapshot } from "../shared-mesh-state.js";
 import { type TaskRow } from "./persistence.js";
+import { eq } from "drizzle-orm";
 import * as schema from "../postgres/schema/index.js";
 import { MergeRequestRow, WorkflowWorkItemRow } from "./row-types.js";
 import { TodoStore } from "../todo-store.js";
@@ -102,7 +103,41 @@ params: {
 }
 
 export function getMergeRequestRecordImpl(store: TaskStore, taskId: string): MergeRequestRecord | null {
+    /*
+    FNXC:PostgresCutover 2026-07-04:
+    Synchronous read of merge_requests cannot run against PostgreSQL (Drizzle
+    is async). This sync entry point is consumed directly by the merger,
+    scheduler, and executor (~12 sites) which call it without await; converting
+    the signature would require coordinated edits across packages/engine and
+    refactoring the SQLite-path sync-transaction read in
+    projectMergeRequestToWorkflowWorkItemImpl. In backend mode we therefore
+    return null (graceful, mirrors the getTaskWorkflowSelection sync→backend
+    degradation) instead of throwing. Callers that need the real record in PG
+    must use getMergeRequestRecordAsync below.
+    */
+    if (store.backendMode) return null;
     const row = store.db.prepare("SELECT * FROM merge_requests WHERE taskId = ?").get(taskId) as MergeRequestRow | undefined;
+    return row ? store.rowToMergeRequestRecord(row) : null;
+}
+
+/**
+ * FNXC:PostgresCutover 2026-07-04:
+ * Async backend-mode read of a merge_request record via Drizzle. This is the
+ * PostgreSQL-capable counterpart of getMergeRequestRecordImpl — the Drizzle
+ * select returns camelCase columns (schema-mapped), cast to MergeRequestRow,
+ * then converted through the shared rowToMergeRequestRecord. Mirrors the
+ * upsertMergeRequestRecordImpl backend branch's select-back shape. In SQLite
+ * mode it delegates to the sync impl.
+ */
+export async function getMergeRequestRecordAsyncImpl(store: TaskStore, taskId: string): Promise<MergeRequestRecord | null> {
+    if (!store.backendMode) return store.getMergeRequestRecord(taskId);
+    const layer = store.asyncLayer!;
+    const rows = await layer.db
+      .select()
+      .from(schema.project.mergeRequests)
+      .where(eq(schema.project.mergeRequests.taskId, taskId))
+      .limit(1);
+    const row = rows[0] as MergeRequestRow | undefined;
     return row ? store.rowToMergeRequestRecord(row) : null;
 }
 

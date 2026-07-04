@@ -243,6 +243,16 @@ export async function duplicateTaskImpl(store: TaskStore, id: string): Promise<T
   }
 
 export async function listStrandedRefinementsImpl(store: TaskStore, options?: { freshnessThresholdMs?: number; }): Promise<Array<{ task: Task; reasons: Array<"untriaged-stale" | "awaiting-approval" | "failed" | "stuck-killed" | "recovery-backoff">; nextRecoveryAt?: string; ageMs: number; }>> {
+    /*
+    FNXC:PostgresCutover 2026-07-04:
+    Backend-mode early-return []. The stranded-refinement scan uses the
+    SQLite-specific getTaskSelectClause + store.db query; the async equivalent
+    would compose listTasksAsync with the sourceType='task_refine'/'triage'
+    // filter and the same staleness reason classification. That is a follow-up;
+    returning [] here stops the throw on the dashboard self-healing route and
+    matches the assignment-sanctioned P1 early-return.
+    */
+    if (store.backendMode) return [];
     const defaultFreshnessThresholdMs = 10 * 60 * 1000;
     const requestedThresholdMs = options?.freshnessThresholdMs;
     const freshnessThresholdMs = Number.isFinite(requestedThresholdMs) && (requestedThresholdMs ?? 0) >= 0
@@ -470,6 +480,17 @@ export async function recordRunAuditEventImpl(store: TaskStore, input: RunAuditE
   }
 
 export function getRunAuditEventsImpl(store: TaskStore, options: RunAuditEventFilter = {}): RunAuditEvent[] {
+    /*
+    FNXC:PostgresCutover 2026-07-04:
+    Synchronous SELECT * FROM run_audit_events cannot run against PostgreSQL
+    (Drizzle is async). This sync reader is consumed widely by the dashboard
+    routes (owned by another batch) and ~40 engine test files, so converting
+    the signature is out of scope here. In backend mode we return [] (mirrors
+    the getTaskWorkflowSelection sync→backend degradation) instead of
+    throwing. The authoritative async read path is queryRunAuditEvents
+    (async-audit.ts), used by the dashboard analytics and parity consumers.
+    */
+    if (store.backendMode) return [];
     const conditions: string[] = [];
     const params: unknown[] = [];
 

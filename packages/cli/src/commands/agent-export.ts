@@ -11,25 +11,7 @@ import { resolve } from "node:path";
 
 import { AgentStore, exportAgentsToDirectory } from "@fusion/core";
 
-import { resolveProject } from "../project-context.js";
-
-/**
- * Get the project path for agent operations.
- * Falls back to process.cwd() if no project is specified.
- */
-async function getProjectPath(projectName?: string): Promise<string> {
-  if (projectName) {
-    const context = await resolveProject(projectName);
-    return context.projectPath;
-  }
-
-  try {
-    const context = await resolveProject(undefined);
-    return context.projectPath;
-  } catch {
-    return process.cwd();
-  }
-}
+import { resolveAgentStoreBase } from "../project-context.js";
 
 function printSummary(result: {
   outputDir: string;
@@ -66,8 +48,11 @@ export async function runAgentExport(
     agentIds?: string[];
   },
 ): Promise<void> {
-  const projectPath = await getProjectPath(options?.project);
-  const agentStore = new AgentStore({ rootDir: projectPath + "/.fusion" });
+  // FNXC:PostgresCutover 2026-07-04: construct AgentStore in backend mode by
+  // borrowing the asyncLayer from the resolved project store (SQLite runtime
+  // removed under VAL-REMOVAL-005), mirroring extension.ts getAgentStore.
+  const { rootDir, asyncLayer } = await resolveAgentStoreBase(options?.project);
+  const agentStore = new AgentStore({ rootDir: rootDir + "/.fusion", asyncLayer: asyncLayer ?? undefined });
   await agentStore.init();
 
   const allAgents = await agentStore.listAgents();

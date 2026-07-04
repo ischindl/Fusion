@@ -5,6 +5,7 @@ import * as fusionCore from "@fusion/core";
 import {
   TaskStore,
   createTaskStoreForBackend,
+  drizzleSql,
   AgentStore,
   isEphemeralAgent,
   AGENT_VALID_TRANSITIONS,
@@ -27,7 +28,6 @@ import {
   type AgentUpdateInput,
   RESEARCH_RUN_STATUSES,
   isResearchExperimentalEnabled,
-  isEphemeralAgent,
   resolveResearchSettings,
   canAgentTakeImplementationTaskForExplicitRouting,
   formatRoleMismatchReason,
@@ -2860,18 +2860,35 @@ export default function kbExtension(pi: ExtensionAPI) {
       const includeDrafts = params.includeDrafts ?? true;
 
       const missions = await missionStore.listMissions();
-      const drafts = includeDrafts
-        ? (store.getDatabase()
-          .prepare(
-            `SELECT id, title, status, updatedAt
-             FROM ai_sessions
-             WHERE type = 'mission_interview'
-               AND status IN ('generating', 'awaiting_input', 'error', 'complete')
-               AND COALESCE(archived, 0) = 0
-             ORDER BY updatedAt DESC`,
-          )
-          .all() as Array<{ id: string; title: string; status: "generating" | "awaiting_input" | "error" | "complete"; updatedAt: string }>)
-        : [];
+      // FNXC:PostgresCutover 2026-07-04: in backend mode read mission-interview
+      // drafts from PostgreSQL via Drizzle (the SQLite getDatabase() runtime was
+      // removed under VAL-REMOVAL-005). PG ai_sessions columns are snake_case, so
+      // alias updated_at -> updatedAt to preserve the existing draft row shape.
+      type MissionInterviewDraft = {
+        id: string;
+        title: string;
+        status: "generating" | "awaiting_input" | "error" | "complete";
+        updatedAt: string;
+      };
+      let drafts: MissionInterviewDraft[] = [];
+      if (includeDrafts) {
+        if (store.isBackendMode()) {
+          drafts = await store.getAsyncLayer()!.db.execute<MissionInterviewDraft>(
+            drizzleSql`SELECT id, title, status, updated_at AS "updatedAt" FROM project.ai_sessions WHERE type = 'mission_interview' AND status IN ('generating', 'awaiting_input', 'error', 'complete') AND COALESCE(archived, 0) = 0 ORDER BY updated_at DESC`,
+          );
+        } else {
+          drafts = store.getDatabase()
+            .prepare(
+              `SELECT id, title, status, updatedAt
+               FROM ai_sessions
+               WHERE type = 'mission_interview'
+                 AND status IN ('generating', 'awaiting_input', 'error', 'complete')
+                 AND COALESCE(archived, 0) = 0
+               ORDER BY updatedAt DESC`,
+            )
+            .all() as MissionInterviewDraft[];
+        }
+      }
 
       if (missions.length === 0 && drafts.length === 0) {
         return {
@@ -4340,8 +4357,11 @@ export default function kbExtension(pi: ExtensionAPI) {
       ], { description: "How agent responds to messages" })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const { AgentStore } = await import("@fusion/core");
-      const agentStore = new AgentStore({ rootDir: getFusionDir(ctx.cwd) });
+      // FNXC:PostgresCutover 2026-07-04: every other agent tool uses
+      // getAgentStore(cwd) (backend-mode AgentStore via the project asyncLayer);
+      // this site was missed and constructed a layerless AgentStore whose SQLite
+      // runtime was removed under VAL-REMOVAL-005.
+      const agentStore = await getAgentStore(ctx.cwd);
       await agentStore.init();
 
       const updateParamKeys = [

@@ -606,7 +606,7 @@ export {
 } from "./duplicate-intake.js";
 export { computeRetrySummary, RETRY_STORM_WARNING_RATIO } from "./retry-summary.js";
 export { RetryStormError, serializeRetryStormError } from "./retry-storm-error.js";
-export { aggregateAgentTokenUsage, aggregateTaskTokenTotalsByAgentLink } from "./agent-token-usage.js";
+export { aggregateAgentTokenUsage, aggregateTaskTokenTotalsByAgentLink, aggregateTaskTokenTotalsByAgentLinkAsync } from "./agent-token-usage.js";
 export type { AgentTaskTokenTotals, AgentTokenUsageSummary, AgentTokenUsageWindowSummary } from "./agent-token-usage.js";
 export {
   emitUsageEvent,

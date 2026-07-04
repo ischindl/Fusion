@@ -14,6 +14,7 @@ import {
   CentralCore,
   GlobalSettingsStore,
   TaskStore,
+  createTaskStoreForBackend,
   ensureMemoryFileWithBackend,
   type RegisteredProject,
   type IsolationMode,
@@ -123,9 +124,25 @@ function formatLastActivity(timestamp?: string | null): string {
  * Get task counts by column for a project.
  */
 async function getTaskCounts(projectPath: string): Promise<TaskCountSummary> {
+  // FNXC:PostgresCutover 2026-07-04:
+  // Route through createTaskStoreForBackend so the count works in PostgreSQL
+  // backend mode. Previously this constructed `new TaskStore(projectPath)`,
+  // which throws in backend mode (SQLite runtime removed under VAL-REMOVAL-005);
+  // the surrounding try/catch swallowed it so project info/list silently showed
+  // zero tasks. The boot result's shutdown() releases the connection pool (and
+  // any embedded PostgreSQL process) so a one-shot CLI read leaks nothing.
+  let store: TaskStore | undefined;
+  let backendShutdown: (() => Promise<void>) | undefined;
   try {
-    const store = new TaskStore(projectPath);
-    await store.init();
+    const boot = await createTaskStoreForBackend({ rootDir: projectPath });
+    if (boot) {
+      store = boot.taskStore;
+      backendShutdown = boot.shutdown;
+    } else {
+      // Legacy SQLite opt-out (FUSION_NO_EMBEDDED_PG=1): byte-identical legacy path.
+      store = new TaskStore(projectPath);
+      await store.init();
+    }
     const tasks = await store.listTasks({ slim: true });
 
     const counts: Record<string, number> = {};
@@ -139,6 +156,10 @@ async function getTaskCounts(projectPath: string): Promise<TaskCountSummary> {
   } catch {
     // Return empty counts if we can't read the project
     return { byColumn: {}, runningAgentCount: 0 };
+  } finally {
+    if (backendShutdown) {
+      await backendShutdown().catch(() => undefined);
+    }
   }
 }
 

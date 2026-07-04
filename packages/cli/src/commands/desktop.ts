@@ -6,7 +6,7 @@ import type { AddressInfo } from "node:net";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import * as os from "node:os";
-import { CentralCore, TaskStore } from "@fusion/core";
+import { CentralCore, TaskStore, createTaskStoreForBackend } from "@fusion/core";
 import { createServer } from "@fusion/dashboard";
 import { ProjectEngineManager } from "@fusion/engine";
 import { ensureCwdProjectRegistered } from "./ensure-project-registered.js";
@@ -27,10 +27,21 @@ interface DashboardRuntime {
   port: number;
   engineManager?: ProjectEngineManager;
   centralCore?: CentralCore;
+  /** Releases the PostgreSQL backend pool / embedded cluster (backend mode only). */
+  backendShutdown?: () => Promise<void>;
 }
 
 async function startDashboardRuntime(rootDir: string, paused: boolean, noAuth: boolean): Promise<DashboardRuntime> {
-  const store = new TaskStore(rootDir);
+  // FNXC:PostgresCutover 2026-07-04: boot the PostgreSQL backend via the startup
+  // factory (embedded by default, external via DATABASE_URL), mirroring dashboard.ts.
+  // The factory returns null only on the FUSION_NO_EMBEDDED_PG=1 opt-out, in which
+  // case the legacy SQLite TaskStore is constructed (init() is still required).
+  const boot = await createTaskStoreForBackend({ rootDir });
+  let backendShutdown: (() => Promise<void>) | undefined;
+  const store: TaskStore = boot ? boot.taskStore : new TaskStore(rootDir);
+  if (boot) {
+    backendShutdown = boot.shutdown;
+  }
   let server: import("node:http").Server | null = null;
   let engineManager: ProjectEngineManager | undefined;
   let centralCore: CentralCore | undefined;
@@ -94,6 +105,7 @@ async function startDashboardRuntime(rootDir: string, paused: boolean, noAuth: b
       port: address.port,
       engineManager,
       centralCore,
+      backendShutdown,
     };
   } catch (error) {
     if (server) {
@@ -102,6 +114,7 @@ async function startDashboardRuntime(rootDir: string, paused: boolean, noAuth: b
     await engineManager?.stopAll().catch(() => undefined);
     await centralCore?.close?.().catch(() => undefined);
     store.close();
+    await backendShutdown?.().catch(() => undefined);
     throw error;
   }
 }
@@ -113,6 +126,7 @@ async function closeDashboardRuntime(runtime: DashboardRuntime): Promise<void> {
   await runtime.engineManager?.stopAll().catch(() => undefined);
   await runtime.centralCore?.close?.().catch(() => undefined);
   runtime.store.close();
+  await runtime.backendShutdown?.().catch(() => undefined);
 }
 
 function resolveElectronBinary(): string {

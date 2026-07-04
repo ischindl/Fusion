@@ -6,7 +6,15 @@ import { CLI_PRINTING_PRESS_WORKFLOW_STEPS } from "./workflow-steps.js";
 
 const storeByDb = new WeakMap<object, ReturnType<typeof createCliPressStore>>();
 
-function getStore(taskStore: { getDatabase: () => object }) {
+function getStore(taskStore: { getDatabase: () => object; isBackendMode: () => boolean }) {
+  // FNXC:PostgresCutover 2026-07-04-00:00:
+  // In backend mode, getDatabase() throws. Pass null so the store degrades
+  // (methods throw a clear error) rather than crashing at factory time. The
+  // WeakMap cache is keyed by the db object, so a null-db store is returned
+  // directly without caching.
+  if (taskStore.isBackendMode()) {
+    return createCliPressStore(null);
+  }
   const db = taskStore.getDatabase();
   const existing = storeByDb.get(db);
   if (existing) return existing;
@@ -29,7 +37,7 @@ const plugin = definePlugin({
   },
   routes: createCliPrintingPressRoutes(),
   executorRuntimeEnv: (taskCtx, ctx) => {
-    const store = getStore(ctx.taskStore as { getDatabase: () => object });
+    const store = getStore(ctx.taskStore as { getDatabase: () => object; isBackendMode: () => boolean });
     return buildExecutorRuntimeEnv(store, taskCtx, ctx);
   },
   workflowSteps: CLI_PRINTING_PRESS_WORKFLOW_STEPS,

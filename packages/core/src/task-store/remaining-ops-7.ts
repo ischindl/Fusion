@@ -17,7 +17,7 @@ import * as schema from "../postgres/schema/index.js";
 import { runCommandAsync } from "../run-command.js";
 import { getStepParser } from "../step-parsers.js";
 import { getTaskMergeBlocker } from "../task-merge.js";
-import { getArtifact as getArtifactAsync, getArtifacts as getArtifactsAsync, getTaskDocument as getTaskDocumentAsync, listTaskDocuments as listTaskDocumentsAsync } from "./async-comments-attachments.js";
+import { deleteTaskDocument as deleteTaskDocumentAsync, getArtifact as getArtifactAsync, getArtifacts as getArtifactsAsync, getTaskDocument as getTaskDocumentAsync, getTaskDocumentRevisions as getTaskDocumentRevisionsAsync, listTaskDocuments as listTaskDocumentsAsync } from "./async-comments-attachments.js";
 import { emitUsageEvent as emitUsageEventAsync, recordPluginActivation as recordPluginActivationAsync } from "./async-events.js";
 import { enqueueMergeQueue as enqueueMergeQueueAsync, peekMergeQueue as peekMergeQueueAsync, peekMergeQueueHead as peekMergeQueueHeadAsync } from "./async-merge-coordination.js";
 import { clearCompletionHandoffMarker as clearCompletionHandoffMarkerAsync, getCompletionHandoffMarker as getCompletionHandoffMarkerAsync } from "./async-workflow-workitems.js";
@@ -389,6 +389,18 @@ export async function runGitCommandImpl(store: TaskStore, command: string, timeo
 
 export function clearStaleExecutionStartBranchReferencesImpl(store: TaskStore, deletedBranches: string[], ownerTaskId?: string): string[] {
     if (deletedBranches.length === 0) return [];
+    /*
+    FNXC:PostgresCutover 2026-07-04:
+    Sync SELECT+UPDATE on tasks.executionStartBranch cannot run against
+    PostgreSQL (Drizzle is async). The engine call sites (executor/merger/
+    self-healing) invoke this synchronously and several already wrap it in
+    try/catch as best-effort cleanup, so in PG mode today these calls throw
+    and are either swallowed or propagate as a crash. Returning [] converts
+    that into a graceful no-op (no stale-branch clearing in PG) — strictly
+    better than throwing. A real async Drizzle clear is the follow-up; it
+    requires converting this signature and its 7 callers (core + engine).
+    */
+    if (store.backendMode) return [];
     const placeholders = deletedBranches.map(() => "?").join(",");
     const params: string[] = [...deletedBranches];
     let whereClause = `executionStartBranch IN (${placeholders})`;
@@ -758,6 +770,20 @@ export async function getTaskDocumentRevisionsImpl(store: TaskStore,
     key: string,
     options?: { limit?: number },
   ): Promise<TaskDocumentRevision[]> {
+    /*
+    FNXC:PostgresCutover 2026-07-04:
+    Backend-mode read of task_document_revisions via the async Drizzle helper.
+    The helper returns revisions newest-first by createdAt; the sync SQLite
+    path orders by revision DESC, so we re-sort by revision descending in JS
+    to preserve that ordering exactly, then apply the optional LIMIT.
+    */
+    if (store.backendMode) {
+      const layer = store.asyncLayer!;
+      const rows = await getTaskDocumentRevisionsAsync(layer.db, taskId, key);
+      const sorted = [...rows].sort((a, b) => b.revision - a.revision);
+      const mapped = sorted.map((row) => store.rowToTaskDocumentRevision(row));
+      return options?.limit !== undefined ? mapped.slice(0, Math.max(0, options.limit)) : mapped;
+    }
     if (!store.hasActiveTask(taskId)) {
       return [];
     }
@@ -779,6 +805,23 @@ export async function getTaskDocumentRevisionsImpl(store: TaskStore,
 }
 
 export async function deleteTaskDocumentImpl(store: TaskStore, taskId: string, key: string): Promise<void> {
+    /*
+    FNXC:PostgresCutover 2026-07-04:
+    Backend-mode delete via the async Drizzle helper (deleteTaskDocument in
+    async-comments-attachments.ts). The helper verifies existence (throwing the
+    same "not found" error) and removes revisions + document in one transaction.
+    The post-delete task:updated emit mirrors the SQLite path; getTask returns
+    only live tasks so a present task implies deletedAt == null.
+    */
+    if (store.backendMode) {
+      const layer = store.asyncLayer!;
+      await deleteTaskDocumentAsync(layer, taskId, key);
+      const task = await store.getTask(taskId);
+      if (task) {
+        store.emit("task:updated", task);
+      }
+      return;
+    }
     const existing = store.db
       .prepare("SELECT id FROM task_documents WHERE taskId = ? AND key = ?")
       .get(taskId, key) as { id: string } | undefined;

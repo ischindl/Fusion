@@ -428,7 +428,9 @@ export const registerCommandCenterRoutes: ApiRouteRegistrar = (ctx) => {
     try {
       const store = await getScopedStore(req);
       const range = resolveRange(req.query);
-      const result = aggregateGitlabIssueAnalytics(store.getDatabase(), {
+      // FNXC:PostgresCutover 2026-07-04-00:00:
+      // GitLab issue analytics now runs on the AsyncDataLayer in backend mode.
+      const result = await aggregateGitlabIssueAnalytics(store.getAsyncLayer() ?? store.getDatabase(), {
         from: range.from,
         to: range.to,
       });

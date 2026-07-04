@@ -7,6 +7,7 @@ import {
   AGENT_PERMISSION_POLICY_ACTION_CATEGORIES,
   AGENT_PERMISSIONS,
   aggregateTaskTokenTotalsByAgentLink,
+  aggregateTaskTokenTotalsByAgentLinkAsync,
   getDefaultHeartbeatProcedurePath,
   isAgentPermissionPolicyPresetId,
   isEphemeralAgent,
@@ -116,9 +117,18 @@ function isCompatibleDefaultHeartbeatPath(path: string | undefined, agent: Agent
   return new RegExp(`^\\.fusion/agents/[^/]+-${safeId}/HEARTBEAT\\.md$`).test(trimmed);
 }
 
-function withTaskDerivedTokenTotals<T extends Agent>(agents: T[], scopedStore: TaskStore): T[] {
+async function withTaskDerivedTokenTotals<T extends Agent>(agents: T[], scopedStore: TaskStore): Promise<T[]> {
   try {
-    const tokenTotalsByAgentId = aggregateTaskTokenTotalsByAgentLink(scopedStore.getDatabase());
+    // FNXC:PostgresCutover 2026-07-04:
+    // Dispatch to the async PostgreSQL aggregator when the scoped store carries
+    // an AsyncDataLayer; otherwise the legacy SQLite Database path. Previously
+    // this unconditionally called getDatabase(), which throws in backend mode;
+    // the surrounding try/catch swallowed it so the feature silently degraded
+    // to zero task-derived totals. Now the async path actually runs.
+    const layer = scopedStore.getAsyncLayer();
+    const tokenTotalsByAgentId = layer
+      ? await aggregateTaskTokenTotalsByAgentLinkAsync(layer.db)
+      : aggregateTaskTokenTotalsByAgentLink(scopedStore.getDatabase());
 
     return agents.map((agent) => {
       const storedInputTokens = agent.totalInputTokens ?? 0;
@@ -197,7 +207,7 @@ export function registerAgentCoreListCreateRoutes(ctx: ApiRoutesContext, deps: A
 
       const agents = await agentStore.listAgents(filter as { state?: "idle" | "active" | "running" | "paused" | "error"; role?: AgentCapability; includeEphemeral?: boolean });
       const sanitizedAgents = await sanitizeAgentTaskLinks(agents, scopedStore);
-      const agentsWithTokenTotals = withTaskDerivedTokenTotals(sanitizedAgents, scopedStore);
+      const agentsWithTokenTotals = await withTaskDerivedTokenTotals(sanitizedAgents, scopedStore);
       res.json(await withPendingApprovalCounts(agentsWithTokenTotals, scopedStore));
     } catch (err: unknown) {
       if (err instanceof ApiError) {

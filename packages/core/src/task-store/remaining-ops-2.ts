@@ -29,7 +29,7 @@ import {__setTaskActivityLogLimitsForTesting} from "../task-store/comments.js";
 import {assertSafeGitBranchName} from "../task-store/shell-safety.js";
 import {readTaskRow as readTaskRowAsync, readTaskRowInTransaction} from "../task-store/async-persistence.js";
 import * as schema from "../postgres/schema/index.js";
-import {and, eq, isNull} from "drizzle-orm";
+import {and, asc, eq, isNotNull, isNull, sql} from "drizzle-orm";
 import {recoverExpiredMergeQueueLeases as recoverExpiredMergeQueueLeasesAsync} from "../task-store/async-merge-coordination.js";
 import {updateBranchGroup as updateBranchGroupAsync, updatePrEntity as updatePrEntityAsync} from "../task-store/async-branch-groups.js";
 import {recordCompletionHandoff as recordCompletionHandoffAsync, getCompletionHandoffMarker as getCompletionHandoffMarkerAsync} from "../task-store/async-workflow-workitems.js";
@@ -376,6 +376,46 @@ export async function listTasksForGithubTrackingReconcileImpl(store: TaskStore, 
     const reconcileScanLimit = 200;
     const offset = Math.max(0, options?.offset ?? 0);
     const limit = Math.max(0, options?.limit ?? reconcileScanLimit);
+    /*
+    FNXC:PostgresCutover 2026-07-04:
+    Backend-mode GitHub-tracking reconcile via async Drizzle. Mirrors the
+    SQLite path's two concerns: (1) count + paginate soft-deleted tasks that
+    carry githubTracking, ordered by updatedAt ASC (FN-5577 bypasses the
+    active-tasks filter intentionally), and (2) hydrate each row through the
+    shared pgRowToTaskRow + rowToTask pipeline, then strip the log payload
+    (the reconcile only needs identity + tracking fields). The archived-tasks
+    fallback is a separate async subsystem (AsyncArchiveLineage) not wired
+    through the sync archiveDb, so it is skipped in backend mode.
+    */
+    if (store.backendMode) {
+      const layer = store.asyncLayer!;
+      const trackedDeletedFilter = and(
+        isNotNull(schema.project.tasks.deletedAt),
+        isNotNull(schema.project.tasks.githubTracking),
+      );
+      const countRows = await layer.db
+        .select({ count: sql<number>`count(*)` })
+        .from(schema.project.tasks)
+        .where(trackedDeletedFilter);
+      const deletedCount = Number(countRows[0]?.count ?? 0);
+      const deletedOffset = Math.min(offset, deletedCount);
+      const deletedRowsRaw = await layer.db
+        .select()
+        .from(schema.project.tasks)
+        .where(trackedDeletedFilter)
+        .orderBy(asc(schema.project.tasks.updatedAt))
+        .limit(limit)
+        .offset(deletedOffset);
+      const deletedTasks = deletedRowsRaw.map((row) => {
+        const task = store.rowToTask(store.pgRowToTaskRow(row as unknown as Record<string, unknown>));
+        task.timedExecutionMs = store.computeTimedExecutionMs(task.log);
+        task.log = [];
+        return task;
+      });
+      const totalCount = deletedCount;
+      const hasMore = offset + limit < totalCount;
+      return { tasks: deletedTasks, hasMore };
+    }
     const selectClause = store.getTaskSelectClause(true);
 
     // FN-5577: GitHub tracking reconciliation must inspect soft-deleted rows,

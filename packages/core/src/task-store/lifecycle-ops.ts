@@ -333,6 +333,21 @@ export function setupActivityLogListenersImpl(store: TaskStore): void {
   }
 
 export async function reconcileOrphanedTaskDirsImpl(store: TaskStore, opts: { ignoreRecencyWindow?: boolean } = {},): Promise<{ recovered: string[]; skipped: Array<{ id: string; reason: string }> }> {
+    /*
+    FNXC:PostgresCutover 2026-07-04:
+    The orphaned-task-dir sweep is a SQLite-era corruption/recovery mechanism:
+    it scans on-disk task.json files and re-INSERTs rows the DB lost, gated by
+    a recency window and soft-delete tombstones. In PostgreSQL backend mode
+    the authoritative store is the DB (not the filesystem), the sync insert/
+    tombstone probes go through store.db (which is removed), and self-healing
+    calls this directly. Return an empty recovery result so self-healing no-
+    ops instead of throwing. PG-side recovery of orphaned dirs is handled by
+    the async self-healing pass; this matches the assignment-sanctioned P1
+    early-return.
+    */
+    if (store.backendMode) {
+      return { recovered: [], skipped: [] };
+    }
     const result: { recovered: string[]; skipped: Array<{ id: string; reason: string }> } = {
       recovered: [],
       skipped: [],

@@ -75,6 +75,7 @@ import {
   getHeartbeatHistory as getHeartbeatHistoryAsync,
   appendConfigRevision as appendConfigRevisionAsync,
   readConfigRevisions as readConfigRevisionsAsync,
+  findConfigRevisionById as findConfigRevisionByIdAsync,
   addRating as addRatingAsync,
   getRatings as getRatingsAsync,
   deleteRating as deleteRatingAsync,
@@ -84,12 +85,18 @@ import {
   getRunById as getRunByIdAsync,
   listActiveHeartbeatRuns as listActiveHeartbeatRunsAsync,
   getRunStatusCounts as getRunStatusCountsAsync,
+  insertRunIfAbsent as insertRunIfAbsentAsync,
+  listAllAgentRuns as listAllAgentRunsAsync,
   getTaskSession as getTaskSessionAsync,
   upsertTaskSession as upsertTaskSessionAsync,
   deleteTaskSession as deleteTaskSessionAsync,
   readApiKeys as readApiKeysAsync,
   insertApiKey as insertApiKeyAsync,
   revokeApiKeyRow as revokeApiKeyRowAsync,
+  getLastBlockedState as getLastBlockedStateAsync,
+  setLastBlockedState as setLastBlockedStateAsync,
+  clearLastBlockedState as clearLastBlockedStateAsync,
+  getAllBlockedStates as getAllBlockedStatesAsync,
 } from "./async-agent-store.js";
 import { createAgentRunSnapshot, createAgentSnapshot, validateSnapshotEnvelope, type AgentRunSnapshot, type AgentSnapshot } from "./shared-mesh-state.js";
 
@@ -2610,6 +2617,10 @@ export class AgentStore extends EventEmitter {
    * Get the most recently persisted blocked-task dedup state for an agent.
    */
   async getLastBlockedState(agentId: string): Promise<BlockedStateSnapshot | null> {
+    // FNXC:PostgresCutover 2026-07-04: delegate to async Drizzle helper in backend mode.
+    if (this.backendMode) {
+      return getLastBlockedStateAsync(this.asyncLayer!.db, agentId);
+    }
     const row = this.db.prepare("SELECT data FROM agentBlockedStates WHERE agentId = ?").get(agentId) as
       | { data: string }
       | undefined;
@@ -2621,6 +2632,11 @@ export class AgentStore extends EventEmitter {
    */
   async setLastBlockedState(agentId: string, state: BlockedStateSnapshot): Promise<void> {
     await this.withLock(agentId, async () => {
+      // FNXC:PostgresCutover 2026-07-04: delegate to async Drizzle helper in backend mode.
+      if (this.backendMode) {
+        await setLastBlockedStateAsync(this.asyncLayer!.db, agentId, state);
+        return;
+      }
       const updatedAt = new Date().toISOString();
       this.db.prepare(`
         INSERT INTO agentBlockedStates (agentId, data, updatedAt)
@@ -2638,6 +2654,11 @@ export class AgentStore extends EventEmitter {
    */
   async clearLastBlockedState(agentId: string): Promise<void> {
     await this.withLock(agentId, async () => {
+      // FNXC:PostgresCutover 2026-07-04: delegate to async Drizzle helper in backend mode.
+      if (this.backendMode) {
+        await clearLastBlockedStateAsync(this.asyncLayer!.db, agentId);
+        return;
+      }
       this.db.prepare("DELETE FROM agentBlockedStates WHERE agentId = ?").run(agentId);
       this.db.bumpLastModified();
     });
@@ -2646,10 +2667,12 @@ export class AgentStore extends EventEmitter {
   getAgentSnapshot(): Promise<AgentSnapshot> {
     return (async () => {
       const agents = await this.listAgents({ includeEphemeral: true });
-      const blockedRows = this.db.prepare("SELECT agentId, data FROM agentBlockedStates ORDER BY updatedAt ASC").all() as Array<{ agentId: string; data: string }>;
-      const blockedStates = blockedRows
-        .map((row) => ({ agentId: row.agentId, state: this.parseJson<BlockedStateSnapshot | null>(row.data, null) }))
-        .filter((row): row is { agentId: string; state: BlockedStateSnapshot } => row.state !== null);
+      // FNXC:PostgresCutover 2026-07-04: read blocked states via async helper in backend mode.
+      const blockedStates = this.backendMode
+        ? await getAllBlockedStatesAsync(this.asyncLayer!.db)
+        : (this.db.prepare("SELECT agentId, data FROM agentBlockedStates ORDER BY updatedAt ASC").all() as Array<{ agentId: string; data: string }>)
+            .map((row) => ({ agentId: row.agentId, state: this.parseJson<BlockedStateSnapshot | null>(row.data, null) }))
+            .filter((row): row is { agentId: string; state: BlockedStateSnapshot } => row.state !== null);
       return createAgentSnapshot({ agents, blockedStates });
     })();
   }
@@ -2658,6 +2681,20 @@ export class AgentStore extends EventEmitter {
     validateSnapshotEnvelope(snapshot);
     let appliedAgents = 0;
     let appliedBlockedStates = 0;
+
+    // FNXC:PostgresCutover 2026-07-04: delegate to async Drizzle helpers in backend mode.
+    if (this.backendMode) {
+      const handle = this.asyncLayer!.db;
+      for (const agent of snapshot.payload.agents) {
+        await writeAgentAsync(handle, agent);
+        appliedAgents++;
+      }
+      for (const blocked of snapshot.payload.blockedStates) {
+        await setLastBlockedStateAsync(handle, blocked.agentId, blocked.state);
+        appliedBlockedStates++;
+      }
+      return { appliedAgents, appliedBlockedStates };
+    }
 
     for (const agent of snapshot.payload.agents) {
       this.db.prepare(`INSERT INTO agents (id, name, role, state, taskId, createdAt, updatedAt, lastHeartbeatAt, metadata, data)
@@ -2692,8 +2729,14 @@ export class AgentStore extends EventEmitter {
     return { appliedAgents, appliedBlockedStates };
   }
 
-  getAgentRunSnapshot(limit?: number): AgentRunSnapshot {
+  async getAgentRunSnapshot(limit?: number): Promise<AgentRunSnapshot> {
     const normalizedLimit = typeof limit === "number" && Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : undefined;
+    // FNXC:PostgresCutover 2026-07-04: delegate to async Drizzle helper in backend mode.
+    if (this.backendMode) {
+      const runs = await listAllAgentRunsAsync(this.asyncLayer!.db, normalizedLimit);
+      const orderedRuns = normalizedLimit ? runs.reverse() : runs;
+      return createAgentRunSnapshot(orderedRuns);
+    }
     const query = normalizedLimit
       ? "SELECT data FROM agentRuns ORDER BY startedAt DESC, rowid DESC LIMIT ?"
       : "SELECT data FROM agentRuns ORDER BY startedAt ASC, rowid ASC";
@@ -2711,6 +2754,21 @@ export class AgentStore extends EventEmitter {
     validateSnapshotEnvelope(snapshot);
     let applied = 0;
     let skipped = 0;
+
+    // FNXC:PostgresCutover 2026-07-04: delegate to async Drizzle helper in backend mode.
+    // insertRunIfAbsent mirrors the SQLite "skip if id exists" guard atomically.
+    if (this.backendMode) {
+      const handle = this.asyncLayer!.db;
+      for (const run of snapshot.payload.runs) {
+        const inserted = await insertRunIfAbsentAsync(handle, run);
+        if (inserted) {
+          applied++;
+        } else {
+          skipped++;
+        }
+      }
+      return { applied, skipped };
+    }
 
     for (const run of snapshot.payload.runs) {
       const exists = this.db.prepare("SELECT 1 FROM agentRuns WHERE id = ?").get(run.id);
@@ -2847,6 +2905,10 @@ export class AgentStore extends EventEmitter {
   }
 
   private async findConfigRevisionAcrossAgents(revisionId: string): Promise<AgentConfigRevision | null> {
+    // FNXC:PostgresCutover 2026-07-04: delegate to async Drizzle helper in backend mode.
+    if (this.backendMode) {
+      return findConfigRevisionByIdAsync(this.asyncLayer!.db, revisionId);
+    }
     const row = this.db.prepare("SELECT data FROM agentConfigRevisions WHERE id = ?").get(revisionId) as
       | { data: string }
       | undefined;
@@ -3063,6 +3125,14 @@ export class AgentStore extends EventEmitter {
   }
 
   private readAgent(agentId: string): Agent | null {
+    // FNXC:PostgresCutover 2026-07-04: backend mode has no synchronous DB handle.
+    // This sync helper cannot await the async readAgent helper, so it degrades to
+    // null in backend mode. Callers needing the agent must use the async getAgent()
+    // (which delegates to readAgentAsync). Strictly safer than the pre-cutover
+    // behaviour where this.db threw in backend mode.
+    if (this.backendMode) {
+      return null;
+    }
     const row = this.db.prepare("SELECT * FROM agents WHERE id = ?").get(agentId) as AgentRow | undefined;
     return row ? this.mapAgentRow(row) : null;
   }
@@ -3101,6 +3171,14 @@ export class AgentStore extends EventEmitter {
    * @param agentId - The agent ID
    */
   getCachedAgent(agentId: string): Agent | null {
+    // FNXC:PostgresCutover 2026-07-04: getCachedAgent is a synchronous hot-path
+    // reader and cannot await the async PG layer. In backend mode it degrades to
+    // null; callers that need the agent must use the async getAgent(). The mesh
+    // heartbeat wake-up path already routes through getAgent() (see
+    // agent-wake-getagent.pg.test.ts), so this only affects best-effort sync reads.
+    if (this.backendMode) {
+      return null;
+    }
     return this.readAgent(agentId);
   }
 

@@ -191,8 +191,17 @@ export function ensureCliPressSchema(db: Database): void {
   `);
 }
 
-export function createCliPressStore(db: Database) {
-  ensureCliPressSchema(db);
+export function createCliPressStore(db: Database | null) {
+  // FNXC:PostgresCutover 2026-07-04-00:00:
+  // db is null in backend mode (PostgreSQL). CliPressStore has no async path,
+  // so methods that use sync SQLite throw in backend mode (wizard routes /
+  // executor runtime degrade) rather than crash at factory time. Full async
+  // port pending.
+  if (db) ensureCliPressSchema(db);
+  const syncDb = (): Database => {
+    if (!db) throw new Error("CliPressStore: sync Database is null (backend mode)");
+    return db;
+  };
 
   const mapService = (row: ServiceRow): Service => ({
     id: row.id,
@@ -255,21 +264,21 @@ export function createCliPressStore(db: Database) {
 
   return {
     listServices(): Service[] {
-      const rows = db.prepare("SELECT * FROM cli_press_services ORDER BY createdAt DESC").all() as unknown as ServiceRow[];
+      const rows = syncDb().prepare("SELECT * FROM cli_press_services ORDER BY createdAt DESC").all() as unknown as ServiceRow[];
       return rows.map(mapService);
     },
 
     getService(id: string): Service | undefined {
-      const row = db.prepare("SELECT * FROM cli_press_services WHERE id = ?").get(id) as unknown as ServiceRow | undefined;
+      const row = syncDb().prepare("SELECT * FROM cli_press_services WHERE id = ?").get(id) as unknown as ServiceRow | undefined;
       return row ? mapService(row) : undefined;
     },
 
     createService(input: ServiceCreateInput): Service {
       const service: Service = { id: createId("svc"), ...input, createdAt: nowIso(), updatedAt: nowIso() };
-      db.prepare(`INSERT INTO cli_press_services (id, slug, displayName, description, baseUrl, sourceKind, sourceRef, createdAt, updatedAt)
+      syncDb().prepare(`INSERT INTO cli_press_services (id, slug, displayName, description, baseUrl, sourceKind, sourceRef, createdAt, updatedAt)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(service.id, service.slug, service.displayName, service.description ?? null, service.baseUrl, service.sourceKind, service.sourceRef ?? null, service.createdAt, service.updatedAt);
-      db.bumpLastModified();
+      syncDb().bumpLastModified();
       return service;
     },
 
@@ -277,35 +286,35 @@ export function createCliPressStore(db: Database) {
       const existing = this.getService(id);
       if (!existing) throw new Error(`Service ${id} not found`);
       const updated: Service = { ...existing, ...updates, id: existing.id, slug: existing.slug, createdAt: existing.createdAt, updatedAt: nowIso() };
-      db.prepare(`UPDATE cli_press_services SET displayName = ?, description = ?, baseUrl = ?, sourceKind = ?, sourceRef = ?, updatedAt = ? WHERE id = ?`)
+      syncDb().prepare(`UPDATE cli_press_services SET displayName = ?, description = ?, baseUrl = ?, sourceKind = ?, sourceRef = ?, updatedAt = ? WHERE id = ?`)
         .run(updated.displayName, updated.description ?? null, updated.baseUrl, updated.sourceKind, updated.sourceRef ?? null, updated.updatedAt, id);
-      db.bumpLastModified();
+      syncDb().bumpLastModified();
       return updated;
     },
 
     deleteService(id: string): void {
-      db.transaction(() => {
-        db.prepare("DELETE FROM cli_press_services WHERE id = ?").run(id);
+      syncDb().transaction(() => {
+        syncDb().prepare("DELETE FROM cli_press_services WHERE id = ?").run(id);
       });
-      db.bumpLastModified();
+      syncDb().bumpLastModified();
     },
 
     listSpecs(serviceId: string): CliSpec[] {
-      const rows = db.prepare("SELECT * FROM cli_press_cli_specs WHERE serviceId = ? ORDER BY createdAt DESC").all(serviceId) as unknown as CliSpecRow[];
+      const rows = syncDb().prepare("SELECT * FROM cli_press_cli_specs WHERE serviceId = ? ORDER BY createdAt DESC").all(serviceId) as unknown as CliSpecRow[];
       return rows.map(mapSpec);
     },
 
     getSpec(id: string): CliSpec | undefined {
-      const row = db.prepare("SELECT * FROM cli_press_cli_specs WHERE id = ?").get(id) as unknown as CliSpecRow | undefined;
+      const row = syncDb().prepare("SELECT * FROM cli_press_cli_specs WHERE id = ?").get(id) as unknown as CliSpecRow | undefined;
       return row ? mapSpec(row) : undefined;
     },
 
     createSpec(input: CliSpecCreateInput): CliSpec {
       const spec: CliSpec = { id: createId("cli"), ...input, createdAt: nowIso(), updatedAt: nowIso() };
-      db.prepare(`INSERT INTO cli_press_cli_specs (id, serviceId, name, version, generatorVersion, specJson, generatedAt, status, lastGenerationError, createdAt, updatedAt)
+      syncDb().prepare(`INSERT INTO cli_press_cli_specs (id, serviceId, name, version, generatorVersion, specJson, generatedAt, status, lastGenerationError, createdAt, updatedAt)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(spec.id, spec.serviceId, spec.name, spec.version, spec.generatorVersion, spec.specJson, spec.generatedAt ?? null, spec.status, spec.lastGenerationError ?? null, spec.createdAt, spec.updatedAt);
-      db.bumpLastModified();
+      syncDb().bumpLastModified();
       return spec;
     },
 
@@ -313,48 +322,48 @@ export function createCliPressStore(db: Database) {
       const existing = this.getSpec(id);
       if (!existing) throw new Error(`Spec ${id} not found`);
       const updated: CliSpec = { ...existing, ...updates, id: existing.id, serviceId: existing.serviceId, createdAt: existing.createdAt, updatedAt: nowIso() };
-      db.prepare(`UPDATE cli_press_cli_specs SET name=?, version=?, generatorVersion=?, specJson=?, generatedAt=?, status=?, lastGenerationError=?, updatedAt=? WHERE id=?`)
+      syncDb().prepare(`UPDATE cli_press_cli_specs SET name=?, version=?, generatorVersion=?, specJson=?, generatedAt=?, status=?, lastGenerationError=?, updatedAt=? WHERE id=?`)
         .run(updated.name, updated.version, updated.generatorVersion, updated.specJson, updated.generatedAt ?? null, updated.status, updated.lastGenerationError ?? null, updated.updatedAt, id);
-      db.bumpLastModified();
+      syncDb().bumpLastModified();
       return updated;
     },
 
     deleteSpec(id: string): void {
-      db.prepare("DELETE FROM cli_press_cli_specs WHERE id = ?").run(id);
-      db.bumpLastModified();
+      syncDb().prepare("DELETE FROM cli_press_cli_specs WHERE id = ?").run(id);
+      syncDb().bumpLastModified();
     },
 
     listArtifacts(specId: string): CliArtifact[] {
-      const rows = db.prepare("SELECT * FROM cli_press_artifacts WHERE cliSpecId = ? ORDER BY createdAt DESC").all(specId) as unknown as CliArtifactRow[];
+      const rows = syncDb().prepare("SELECT * FROM cli_press_artifacts WHERE cliSpecId = ? ORDER BY createdAt DESC").all(specId) as unknown as CliArtifactRow[];
       return rows.map(mapArtifact);
     },
 
     createArtifact(input: CliArtifactCreateInput): CliArtifact {
       const artifact: CliArtifact = { id: createId("art"), ...input, createdAt: nowIso(), updatedAt: nowIso() };
-      db.prepare(`INSERT INTO cli_press_artifacts (id, cliSpecId, kind, path, executable, checksum, sizeBytes, createdAt, updatedAt)
+      syncDb().prepare(`INSERT INTO cli_press_artifacts (id, cliSpecId, kind, path, executable, checksum, sizeBytes, createdAt, updatedAt)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(artifact.id, artifact.cliSpecId, artifact.kind, artifact.path, artifact.executable ? 1 : 0, artifact.checksum ?? null, artifact.sizeBytes ?? null, artifact.createdAt, artifact.updatedAt);
-      db.bumpLastModified();
+      syncDb().bumpLastModified();
       return artifact;
     },
 
     updateArtifact(id: string, updates: CliArtifactUpdateInput): CliArtifact {
-      const existing = db.prepare("SELECT * FROM cli_press_artifacts WHERE id = ?").get(id) as unknown as CliArtifactRow | undefined;
+      const existing = syncDb().prepare("SELECT * FROM cli_press_artifacts WHERE id = ?").get(id) as unknown as CliArtifactRow | undefined;
       if (!existing) throw new Error(`Artifact ${id} not found`);
       const updated = { ...mapArtifact(existing), ...updates, id: existing.id, cliSpecId: existing.cliSpecId, createdAt: existing.createdAt, updatedAt: nowIso() };
-      db.prepare("UPDATE cli_press_artifacts SET path=?, executable=?, checksum=?, sizeBytes=?, updatedAt=? WHERE id=?")
+      syncDb().prepare("UPDATE cli_press_artifacts SET path=?, executable=?, checksum=?, sizeBytes=?, updatedAt=? WHERE id=?")
         .run(updated.path, updated.executable ? 1 : 0, updated.checksum ?? null, updated.sizeBytes ?? null, updated.updatedAt, id);
-      db.bumpLastModified();
+      syncDb().bumpLastModified();
       return updated;
     },
 
     deleteArtifact(id: string): void {
-      db.prepare("DELETE FROM cli_press_artifacts WHERE id = ?").run(id);
-      db.bumpLastModified();
+      syncDb().prepare("DELETE FROM cli_press_artifacts WHERE id = ?").run(id);
+      syncDb().bumpLastModified();
     },
 
     listCredentials(serviceId: string): Credential[] {
-      const rows = db.prepare("SELECT * FROM cli_press_credentials WHERE serviceId = ? ORDER BY createdAt DESC").all(serviceId) as unknown as CredentialRow[];
+      const rows = syncDb().prepare("SELECT * FROM cli_press_credentials WHERE serviceId = ? ORDER BY createdAt DESC").all(serviceId) as unknown as CredentialRow[];
       return rows.map(mapCredential);
     },
 
@@ -362,15 +371,15 @@ export function createCliPressStore(db: Database) {
       assertCredentialSupported(input.kind);
       assertPlacementConsistency(input.kind, input.placement);
       const cred: Credential = { id: createId("cred"), ...input, createdAt: nowIso(), updatedAt: nowIso() };
-      db.prepare(`INSERT INTO cli_press_credentials (id, serviceId, name, kind, value, placement, createdAt, updatedAt)
+      syncDb().prepare(`INSERT INTO cli_press_credentials (id, serviceId, name, kind, value, placement, createdAt, updatedAt)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(cred.id, cred.serviceId, cred.name, cred.kind, JSON.stringify(cred.value), JSON.stringify(cred.placement), cred.createdAt, cred.updatedAt);
-      db.bumpLastModified();
+      syncDb().bumpLastModified();
       return cred;
     },
 
     updateCredential(id: string, updates: CredentialUpdateInput): Credential {
-      const existing = db.prepare("SELECT * FROM cli_press_credentials WHERE id = ?").get(id) as unknown as CredentialRow | undefined;
+      const existing = syncDb().prepare("SELECT * FROM cli_press_credentials WHERE id = ?").get(id) as unknown as CredentialRow | undefined;
       if (!existing) throw new Error(`Credential ${id} not found`);
       const mapped = mapCredential(existing);
       const updated: Credential = {
@@ -384,42 +393,42 @@ export function createCliPressStore(db: Database) {
       };
       assertCredentialSupported(updated.kind);
       assertPlacementConsistency(updated.kind, updated.placement);
-      db.prepare("UPDATE cli_press_credentials SET name=?, value=?, placement=?, updatedAt=? WHERE id=?")
+      syncDb().prepare("UPDATE cli_press_credentials SET name=?, value=?, placement=?, updatedAt=? WHERE id=?")
         .run(updated.name, JSON.stringify(updated.value), JSON.stringify(updated.placement), updated.updatedAt, id);
-      db.bumpLastModified();
+      syncDb().bumpLastModified();
       return updated;
     },
 
     deleteCredential(id: string): void {
-      db.prepare("DELETE FROM cli_press_credentials WHERE id = ?").run(id);
-      db.bumpLastModified();
+      syncDb().prepare("DELETE FROM cli_press_credentials WHERE id = ?").run(id);
+      syncDb().bumpLastModified();
     },
 
     listSettings(serviceId: string): ServiceSetting[] {
-      const rows = db.prepare("SELECT * FROM cli_press_service_settings WHERE serviceId = ? ORDER BY createdAt DESC").all(serviceId) as unknown as ServiceSettingRow[];
+      const rows = syncDb().prepare("SELECT * FROM cli_press_service_settings WHERE serviceId = ? ORDER BY createdAt DESC").all(serviceId) as unknown as ServiceSettingRow[];
       return rows.map(mapSetting);
     },
 
     setSetting(input: ServiceSettingCreateInput): ServiceSetting {
-      const existing = db.prepare("SELECT * FROM cli_press_service_settings WHERE serviceId = ? AND key = ? AND scope = ?")
+      const existing = syncDb().prepare("SELECT * FROM cli_press_service_settings WHERE serviceId = ? AND key = ? AND scope = ?")
         .get(input.serviceId, input.key, input.scope) as unknown as ServiceSettingRow | undefined;
       const now = nowIso();
       if (existing) {
-        db.prepare("UPDATE cli_press_service_settings SET value = ?, updatedAt = ? WHERE id = ?").run(input.value, now, existing.id);
-        db.bumpLastModified();
+        syncDb().prepare("UPDATE cli_press_service_settings SET value = ?, updatedAt = ? WHERE id = ?").run(input.value, now, existing.id);
+        syncDb().bumpLastModified();
         return mapSetting({ ...existing, value: input.value, updatedAt: now });
       }
       const setting: ServiceSetting = { id: createId("set"), ...input, createdAt: now, updatedAt: now };
-      db.prepare(`INSERT INTO cli_press_service_settings (id, serviceId, key, value, scope, createdAt, updatedAt)
+      syncDb().prepare(`INSERT INTO cli_press_service_settings (id, serviceId, key, value, scope, createdAt, updatedAt)
         VALUES (?, ?, ?, ?, ?, ?, ?)`)
         .run(setting.id, setting.serviceId, setting.key, setting.value, setting.scope, setting.createdAt, setting.updatedAt);
-      db.bumpLastModified();
+      syncDb().bumpLastModified();
       return setting;
     },
 
     deleteSetting(id: string): void {
-      db.prepare("DELETE FROM cli_press_service_settings WHERE id = ?").run(id);
-      db.bumpLastModified();
+      syncDb().prepare("DELETE FROM cli_press_service_settings WHERE id = ?").run(id);
+      syncDb().bumpLastModified();
     },
   };
 }

@@ -5,7 +5,7 @@
  * for operating on tasks across multiple registered projects.
  */
 
-import { TaskStore, type RegisteredProject, CentralCore, GlobalSettingsStore, isValidSqliteDatabaseFile } from "@fusion/core";
+import { TaskStore, createTaskStoreForBackend, type AsyncDataLayer, type RegisteredProject, CentralCore, GlobalSettingsStore, isValidSqliteDatabaseFile } from "@fusion/core";
 import { resolve, dirname, basename } from "node:path";
 
 /** Project context for CLI operations */
@@ -256,9 +256,12 @@ export async function getStoreForProject(
     return cached;
   }
 
-  // Create new store
-  const store = new TaskStore(projectPath, globalSettingsDir);
-  await store.init();
+  // FNXC:PostgresCutover 2026-07-04: delegate construction to createLocalStore,
+  // which boots the PostgreSQL backend via createTaskStoreForBackend (embedded
+  // by default, external via DATABASE_URL) instead of a legacy SQLite TaskStore
+  // whose runtime was removed under VAL-REMOVAL-005. Caching the resulting store
+  // keeps a single connection pool per project for the CLI process lifetime.
+  const store = await createLocalStore(projectPath, globalSettingsDir);
 
   // Cache it
   storeCache.set(projectId, store);
@@ -276,6 +279,15 @@ async function createLocalStore(
   projectPath: string,
   globalSettingsDir?: string,
 ): Promise<TaskStore> {
+  // FNXC:PostgresCutover 2026-07-04: route through createTaskStoreForBackend so
+  // standalone CLI commands (and resolveProject().store) boot PostgreSQL instead
+  // of the removed SQLite runtime. The factory returns null only on the
+  // FUSION_NO_EMBEDDED_PG=1 opt-out; in that case fall back to the legacy
+  // TaskStore, which still needs an explicit init().
+  const boot = await createTaskStoreForBackend({ rootDir: projectPath, globalSettingsDir });
+  if (boot) {
+    return boot.taskStore;
+  }
   const store = new TaskStore(projectPath, globalSettingsDir);
   await store.init();
   return store;
@@ -311,4 +323,25 @@ export async function getStore(
 ): Promise<TaskStore> {
   const context = await resolveProject(projectName, cwd, globalDir);
   return context.store;
+}
+
+/**
+ * Resolve the AgentStore rootDir + backend AsyncDataLayer for agent CLI commands.
+ *
+ * FNXC:PostgresCutover 2026-07-04: agent commands (stop/start, export, import)
+ * must construct AgentStore in backend mode so agent data lives in PostgreSQL,
+ * not the removed SQLite runtime (VAL-REMOVAL-005). The asyncLayer is borrowed
+ * from the resolved project's TaskStore (same connection pool), mirroring the
+ * extension.ts getAgentStore injection. When no project resolves (unregistered
+ * cwd) the layer is null and AgentStore falls back to its layerless path.
+ */
+export async function resolveAgentStoreBase(
+  projectName?: string,
+): Promise<{ rootDir: string; asyncLayer: AsyncDataLayer | null }> {
+  try {
+    const context = await resolveProject(projectName);
+    return { rootDir: context.projectPath, asyncLayer: context.store.getAsyncLayer() };
+  } catch {
+    return { rootDir: process.cwd(), asyncLayer: null };
+  }
 }

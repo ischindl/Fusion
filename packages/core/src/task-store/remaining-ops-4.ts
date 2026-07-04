@@ -680,6 +680,52 @@ export async function upsertTaskCommitAssociationImpl(store: TaskStore, input: O
       updatedAt: now,
       ...input,
     });
+    /*
+    FNXC:PostgresCutover 2026-07-04:
+    Backend-mode upsert of a task_commit_associations row via async Drizzle.
+    Mirrors the SQLite ON CONFLICT(taskLineageId, commitSha, matchedBy) DO
+    UPDATE — the unique index task_commit_associations_task_lineage_id_commit_sha_matched_by_unique
+    is the conflict target. id is excluded from the update set (SQLite path
+    keeps the existing id on conflict too). Reached from the merger.
+    */
+    if (store.backendMode) {
+      const layer = store.asyncLayer!;
+      await layer.db
+        .insert(schema.project.taskCommitAssociations)
+        .values({
+          id: association.id,
+          taskLineageId: association.taskLineageId,
+          taskIdSnapshot: association.taskIdSnapshot,
+          commitSha: association.commitSha,
+          commitSubject: association.commitSubject,
+          authoredAt: association.authoredAt,
+          matchedBy: association.matchedBy,
+          confidence: association.confidence,
+          note: association.note ?? null,
+          additions: association.additions ?? null,
+          deletions: association.deletions ?? null,
+          createdAt: association.createdAt,
+          updatedAt: association.updatedAt,
+        })
+        .onConflictDoUpdate({
+          target: [
+            schema.project.taskCommitAssociations.taskLineageId,
+            schema.project.taskCommitAssociations.commitSha,
+            schema.project.taskCommitAssociations.matchedBy,
+          ],
+          set: {
+            taskIdSnapshot: association.taskIdSnapshot,
+            commitSubject: association.commitSubject,
+            authoredAt: association.authoredAt,
+            confidence: association.confidence,
+            note: association.note ?? null,
+            additions: association.additions ?? null,
+            deletions: association.deletions ?? null,
+            updatedAt: association.updatedAt,
+          },
+        });
+      return association;
+    }
     store.db.prepare(
       `INSERT INTO task_commit_associations
        (id, taskLineageId, taskIdSnapshot, commitSha, commitSubject, authoredAt, matchedBy, confidence, note, additions, deletions, createdAt, updatedAt)

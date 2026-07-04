@@ -147,6 +147,12 @@ export const tasks = projectSchema.table("tasks", {
   prInfos: jsonb("pr_infos"),
   issueInfo: jsonb("issue_info"),
   githubTracking: jsonb("github_tracking"),
+  // FNXC:PostgresCutover 2026-07-04-00:00:
+  // gitlab_tracking was missed in the initial SQLite→PG schema snapshot
+  // (github_tracking was migrated; this one was not). Without it, GitLab
+  // tracking is silently dropped in backend mode and Command Center GitLab
+  // analytics can't read filed counts. Mirrors github_tracking (jsonb).
+  gitlabTracking: jsonb("gitlab_tracking"),
   sourceIssueProvider: text("source_issue_provider"),
   sourceIssueRepository: text("source_issue_repository"),
   sourceIssueExternalIssueId: text("source_issue_external_issue_id"),
@@ -1421,6 +1427,30 @@ export const chatMessages = projectSchema.table("chat_messages", {
   index("idxChatMessagesCreatedAt").on(t.createdAt),
 ]);
 
+/*
+FNXC:PostgresCutover 2026-07-04-00:00:
+Append-only chat token-accounting table backing ChatStore.recordTokenUsage + aggregateTokenAnalytics (Command Center token totals). Columns mirror ChatTokenUsageRecord (chat-types.ts); the session/room/message/project/agent/provider/model fields are nullable, token counts + sourceKind + createdAt are non-null. created_at is indexed because every Command Center date-range query filters on it.
+*/
+export const chatTokenUsage = projectSchema.table("chat_token_usage", {
+  id: text("id").primaryKey(),
+  sourceKind: text("source_kind").notNull(),
+  chatSessionId: text("chat_session_id"),
+  roomId: text("room_id"),
+  messageId: text("message_id"),
+  projectId: text("project_id"),
+  agentId: text("agent_id"),
+  modelProvider: text("model_provider"),
+  modelId: text("model_id"),
+  inputTokens: integer("input_tokens").notNull(),
+  outputTokens: integer("output_tokens").notNull(),
+  cachedTokens: integer("cached_tokens").notNull(),
+  cacheWriteTokens: integer("cache_write_tokens").notNull(),
+  totalTokens: integer("total_tokens").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (t) => [
+  index("idxChatTokenUsageCreatedAt").on(t.createdAt),
+]);
+
 export const runAuditEvents = projectSchema.table("run_audit_events", {
   id: text("id").primaryKey(),
   timestamp: text("timestamp").notNull(),
@@ -1609,7 +1639,7 @@ export const chatRoomMessages = projectSchema.table("chat_room_messages", {
  * Registry of all project-schema table names. Used by the migration applier
  * and the schema-init hook to enumerate expected tables. Kept explicit so
  * adding a table requires updating both the definition and the registry
- * (the version-gate discipline carries forward).
+ * entry (drift signal).
  */
 export const projectTableNames = [
   "tasks", "config", "distributed_task_id_state", "distributed_task_id_reservations",
@@ -1633,5 +1663,5 @@ export const projectTableNames = [
   "mission_validator_runs", "mission_validator_failures",
   "mission_fix_feature_lineage", "verification_cache", "approval_requests",
   "approval_request_audit_events", "chat_rooms", "chat_room_members",
-  "chat_room_messages",
+  "chat_room_messages", "chat_token_usage",
 ] as const;

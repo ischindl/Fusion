@@ -18,7 +18,10 @@ function getStore(ctx: PluginContext): ReportStore {
   const key = ctx.taskStore as object;
   const cached = reportStoreCache.get(key);
   if (cached) return cached;
-  const store = new ReportStore(ctx.taskStore.getDatabase());
+  // FNXC:PostgresCutover 2026-07-04-00:00:
+  // In backend mode, getDatabase() throws. Guard with isBackendMode() check.
+  const db = ctx.taskStore.isBackendMode() ? null : ctx.taskStore.getDatabase();
+  const store = new ReportStore(db);
   reportStoreCache.set(key, store);
   return store;
 }

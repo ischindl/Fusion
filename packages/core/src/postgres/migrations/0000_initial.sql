@@ -121,6 +121,7 @@ CREATE TABLE IF NOT EXISTS project.tasks (
   pr_infos jsonb,
   issue_info jsonb,
   github_tracking jsonb,
+  gitlab_tracking jsonb,
   source_issue_provider text,
   source_issue_repository text,
   source_issue_external_issue_id text,
@@ -1270,6 +1271,25 @@ CREATE TABLE IF NOT EXISTS project.chat_messages (
   attachments jsonb
 );
 
+-- FNXC:PostgresCutover 2026-07-04-00:00: append-only chat token-accounting table (ChatStore.recordTokenUsage + Command Center aggregateTokenAnalytics).
+CREATE TABLE IF NOT EXISTS project.chat_token_usage (
+  id text PRIMARY KEY,
+  source_kind text NOT NULL,
+  chat_session_id text,
+  room_id text,
+  message_id text,
+  project_id text,
+  agent_id text,
+  model_provider text,
+  model_id text,
+  input_tokens integer NOT NULL,
+  output_tokens integer NOT NULL,
+  cached_tokens integer NOT NULL,
+  cache_write_tokens integer NOT NULL,
+  total_tokens integer NOT NULL,
+  created_at text NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS project.run_audit_events (
   id text PRIMARY KEY,
   timestamp text NOT NULL,
@@ -1483,6 +1503,9 @@ CREATE INDEX IF NOT EXISTS "idxChatSessionsProjectId" ON project.chat_sessions(p
 -- chat_messages
 CREATE INDEX IF NOT EXISTS "idxChatMessagesSessionId" ON project.chat_messages(session_id);
 CREATE INDEX IF NOT EXISTS "idxChatMessagesCreatedAt" ON project.chat_messages(created_at);
+
+-- chat_token_usage
+CREATE INDEX IF NOT EXISTS "idxChatTokenUsageCreatedAt" ON project.chat_token_usage(created_at);
 
 -- cli_sessions
 CREATE INDEX IF NOT EXISTS "idx_cli_sessions_taskId" ON project.cli_sessions(task_id);

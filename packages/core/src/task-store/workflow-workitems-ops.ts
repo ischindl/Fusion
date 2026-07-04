@@ -33,7 +33,7 @@ export async function projectMergeRequestToWorkflowWorkItemImpl(store: TaskStore
     // run in their own transactions. The audit row is fire-and-forget.
     if (store.backendMode) {
       const layer = store.asyncLayer!;
-      const record = await store.getMergeRequestRecord(taskId);
+      const record = await store.getMergeRequestRecordAsync(taskId);
       if (!record) return null;
       const state = store.workflowStateForMergeRequestState(record.state);
       const kind = record.state === "manual-required" ? "manual-hold" : "merge";

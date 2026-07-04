@@ -1258,9 +1258,9 @@ legacyDescribe("fn pi extension (legacy exhaustive suite)", () => {
       // FNXC:PostgresCutover: seed ai_sessions drafts via the PG async layer
       // (the sync getDatabase() SQLite path is removed).
       const db = store.getAsyncLayer()!.db;
-      await db.execute(drizzleSql`INSERT INTO ai_sessions (id, type, status, title, inputPayload, conversationHistory, currentQuestion, result, thinkingOutput, error, projectId, createdAt, updatedAt, lockedByTab, lockedAt)
+      await db.execute(drizzleSql`INSERT INTO project.ai_sessions (id, type, status, title, input_payload, conversation_history, current_question, result, thinking_output, error, project_id, created_at, updated_at, locked_by_tab, locked_at)
         VALUES (${"draft-1"}, 'mission_interview', 'awaiting_input', ${"Draft Mission"}, ${"{}"}, ${"[]"}, NULL, NULL, ${""}, NULL, NULL, ${"2026-05-12T00:00:00.000Z"}, ${"2026-05-12T00:00:00.000Z"}, NULL, NULL)`);
-      await db.execute(drizzleSql`INSERT INTO ai_sessions (id, type, status, title, inputPayload, conversationHistory, currentQuestion, result, thinkingOutput, error, projectId, createdAt, updatedAt, lockedByTab, lockedAt)
+      await db.execute(drizzleSql`INSERT INTO project.ai_sessions (id, type, status, title, input_payload, conversation_history, current_question, result, thinking_output, error, project_id, created_at, updated_at, locked_by_tab, locked_at)
         VALUES (${"draft-2"}, 'mission_interview', 'complete', ${"Ready Mission"}, ${"{}"}, ${"[]"}, NULL, ${"{}"}, ${""}, NULL, NULL, ${"2026-05-12T00:01:00.000Z"}, ${"2026-05-12T00:01:00.000Z"}, NULL, NULL)`);
 
       const listTool = api.tools.get("fn_mission_list")!;
@@ -1289,7 +1289,7 @@ legacyDescribe("fn pi extension (legacy exhaustive suite)", () => {
       const store = h.store();
       // FNXC:PostgresCutover: seed ai_sessions drafts via the PG async layer.
       const db = store.getAsyncLayer()!.db;
-      await db.execute(drizzleSql`INSERT INTO ai_sessions (id, type, status, title, inputPayload, conversationHistory, currentQuestion, result, thinkingOutput, error, projectId, createdAt, updatedAt, lockedByTab, lockedAt)
+      await db.execute(drizzleSql`INSERT INTO project.ai_sessions (id, type, status, title, input_payload, conversation_history, current_question, result, thinking_output, error, project_id, created_at, updated_at, locked_by_tab, locked_at)
         VALUES (${"draft-2"}, 'mission_interview', 'error', ${"Hidden Draft"}, ${"{}"}, ${"[]"}, NULL, NULL, ${""}, NULL, NULL, ${"2026-05-12T00:00:00.000Z"}, ${"2026-05-12T00:00:00.000Z"}, NULL, NULL)`);
 
       const listTool = api.tools.get("fn_mission_list")!;

@@ -312,6 +312,17 @@ export function occupantsByColumnForWorkflowImpl(store: TaskStore,
     workflowId: string,
     includeNullSelection: boolean,
   ): Map<string, number> {
+    /*
+    FNXC:PostgresCutover 2026-07-04:
+    Sync per-task SELECT of tasks."column" cannot run against PostgreSQL
+    (Drizzle is async), and the underlying listWorkflowOccupantTaskIds is
+    itself SQLite-only in this path. updateWorkflowDefinitionImpl drives this
+    for the "cannot remove an occupied column" guard; in backend mode we return
+    an empty occupancy map so the guard is skipped (the async layer-set path in
+    workflow-ops.ts already enforces occupancy via its own branch). Mirrors the
+    getTaskWorkflowSelection sync→backend degradation and prevents the throw.
+    */
+    if (store.backendMode) return new Map();
     const counts = new Map<string, number>();
     for (const taskId of store.listWorkflowOccupantTaskIds(workflowId, includeNullSelection)) {
       const row = store.db.prepare(`SELECT "column" AS column FROM tasks WHERE id = ?`).get(taskId) as
@@ -1015,6 +1026,18 @@ export async function applyTaskMetadataSnapshotImpl(store: TaskStore, snapshot: 
 
 export function applyActivityLogSnapshotImpl(store: TaskStore, snapshot: ActivityLogSnapshot): { applied: number; skipped: number } {
     validateSnapshotEnvelope(snapshot);
+    /*
+    FNXC:PostgresCutover 2026-07-04:
+    Synchronous mesh state-apply for activity_log cannot run against PostgreSQL
+    (Drizzle is async). This sync entry point is consumed by the dashboard mesh
+    route (owned by another batch), so converting the signature is out of scope.
+    In backend mode we surface the snapshot as fully skipped — the authoritative
+    async write path is recordActivityLogEntry (async-audit.ts), used by the
+    mesh-apply route. Mirrors applyRunAuditSnapshot's backend degradation.
+    */
+    if (store.backendMode) {
+      return { applied: 0, skipped: snapshot.payload.entries.length };
+    }
     let applied = 0;
     let skipped = 0;
 
