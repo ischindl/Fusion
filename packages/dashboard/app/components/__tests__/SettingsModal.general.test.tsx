@@ -874,6 +874,42 @@ describe("SettingsModal", () => {
       }
     });
 
+    /*
+    FNXC:GitLabEnablement 2026-07-04-00:00:
+    FN-7535 regression repro: the scoped `global` settings omit `gitlabEnabled`
+    entirely (the operator has never saved a global GitLab value before), while
+    the merged/project-effective `fetchSettings` value already happens to equal
+    the value the operator is about to set. Before the fix, `splitSettingsSave`
+    fell back to the merged `initialValues` for the changed-only comparison
+    when the scoped global object lacked the key, so this explicit global edit
+    was misclassified as "unchanged" and silently dropped from the global patch.
+    */
+    it("saves an explicit global GitLab disable edit when scoped global omits the key but merged settings already match", async () => {
+      // Scoped global omits `gitlabEnabled` entirely (unset renders as checked/
+      // enabled per the disclosure's documented "unset behaves as enabled" default).
+      // The merged/project-effective `fetchSettings` value already happens to be
+      // `false` — the same value the operator is about to explicitly set.
+      mockFetchSettings.mockResolvedValueOnce({ ...defaultSettings, gitlabEnabled: false });
+      mockFetchSettingsByScope.mockResolvedValueOnce({
+        global: { ...defaultSettings }, // no gitlabEnabled key at all
+        project: {},
+      });
+
+      renderModal({ initialSection: "global-general" });
+      await waitForSettingsModalReady();
+
+      const enableToggle = screen.getByLabelText("Enable GitLab integration") as HTMLInputElement;
+      expect(enableToggle).toBeChecked();
+
+      await settingsModalUser.click(enableToggle);
+      expect(enableToggle).not.toBeChecked();
+      await settingsModalUser.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => {
+        expect(mockUpdateGlobalSettings).toHaveBeenCalledWith(expect.objectContaining({ gitlabEnabled: false }));
+      });
+    });
+
     it("shows global tracking repo error hint and keeps custom entry when lookups fail", async () => {
       mockFetchProjects.mockRejectedValueOnce(new Error("no projects"));
 

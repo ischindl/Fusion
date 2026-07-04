@@ -45,6 +45,25 @@ export const MODEL_LANE_KEYS = [
 
 const MODEL_LANE_KEY_SET = new Set<string>(MODEL_LANE_KEYS);
 
+/*
+FNXC:GitLabEnablement 2026-07-04-00:00:
+FN-7535: the five global GitLab keys must be diffed against the SCOPED global
+initial only — never the merged, project-effective `initialValues` — because
+SettingsModal already edits these keys through a dedicated `globalGitlabSettings`
+state seeded from `scoped.global` (FN-7453). Falling back to merged initialValues
+when the scoped global object lacks the key (e.g. the operator has never saved a
+global value before) let a project override's effective value silently stand in
+for "no change", so a genuine global edit that happened to match the merged value
+was dropped from the global patch. These keys never fall back to `initialValues`.
+*/
+const GLOBAL_GITLAB_SCOPED_ONLY_KEYS = new Set<string>([
+  "gitlabEnabled",
+  "gitlabInstanceUrl",
+  "gitlabApiBaseUrl",
+  "gitlabAuthToken",
+  "gitlabAuthTokenType",
+]);
+
 type RemoteAccessProvider = "tailscale" | "cloudflare";
 type RemoteAccessPatch = NonNullable<GlobalSettings["remoteAccess"]>;
 
@@ -366,11 +385,14 @@ export function splitSettingsSave({
         continue;
       }
 
+      const scopedOnly = GLOBAL_GITLAB_SCOPED_ONLY_KEYS.has(key);
       const hasScopedInitial = hasOwn(initialScopedValues?.global, key);
-      const hasMergedInitial = hasOwn(initialValues, key);
+      const hasMergedInitial = !scopedOnly && hasOwn(initialValues, key);
       const initialValue = hasScopedInitial
         ? initialScopedValues?.global?.[key as keyof GlobalSettings]
-        : initialValues?.[key as keyof GlobalSettings];
+        : scopedOnly
+          ? undefined
+          : initialValues?.[key as keyof GlobalSettings];
       const hasInitialValue = hasScopedInitial || hasMergedInitial;
 
       if (settingsValueEquals(value, initialValue)) {
