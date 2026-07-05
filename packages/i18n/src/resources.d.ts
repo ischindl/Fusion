@@ -1365,8 +1365,6 @@ export default interface Resources {
       "sendMessageFailed": "Failed to send message",
       "sendRoomMessageFailed": "Failed to send room message",
       "sessionsGroupLabel": "Sessions",
-      "showPlainText": "Show all messages as plain text",
-      "showRenderedMarkdown": "Show all messages as rendered Markdown",
       "skillSuggestions": "Skill suggestions",
       "startNewChat": "Start a new chat",
       "startNewConversation": "Start a new conversation",
