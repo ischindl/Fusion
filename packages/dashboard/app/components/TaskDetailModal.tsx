@@ -34,6 +34,7 @@ import { AgentLogViewer } from "./AgentLogViewer";
 import { ModelSelectorTab } from "./ModelSelectorTab";
 import { PrPanel } from "./PrPanel";
 import { PrCreateModal } from "./PrCreateModal";
+import { PlannerInterventionTimeline } from "./PlannerInterventionTimeline";
 import { TaskComments } from "./TaskComments";
 import { TaskChatTab } from "./TaskChatTab";
 import { TaskPlannerChatTab } from "./TaskPlannerChatTab";
@@ -3842,6 +3843,21 @@ export function TaskDetailContent({
                     )}
                   </div>
                 )}
+                {/*
+                FNXC:PlannerOversight 2026-07-04-18:00:
+                FN-7519 Intervention Timeline: rendered adjacent to the FN-7517
+                oversight cluster (no separate `.task-oversight-controls` class
+                exists in the merged FN-7517 code, so this attaches to the
+                closest existing seam — the same gating condition used by the
+                nudge/stop/explain controls above). Hidden entirely (no
+                leftover empty shell) when oversight is Off or unresolved, per
+                the Surface Enumeration gate.
+                */}
+                <PlannerInterventionTimeline
+                  taskId={task.id}
+                  projectId={projectId}
+                  hidden={!(hasTaskOversightOverride || workflowOversightResolved) || oversightIsOff}
+                />
                 {provenanceDisplay && (
                   <div className="detail-provenance">
                     <GitBranch aria-hidden="true" />

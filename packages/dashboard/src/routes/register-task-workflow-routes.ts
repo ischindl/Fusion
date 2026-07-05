@@ -43,6 +43,7 @@ import {
   parseExplicitDuplicateMarker,
   isWorkflowColumnsEnabled,
   TransitionRejectionError,
+  getPlannerInterventionTimeline,
   type NearDuplicateCandidate,
 } from "@fusion/core";
 import { GitHubClient } from "../github.js";
@@ -2465,6 +2466,29 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       }
       const snapshot = engine.explainOverseerTask(req.params.id);
       res.json({ snapshot });
+    } catch (err: unknown) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      rethrowAsApiError(err);
+    }
+  });
+
+  /*
+  FNXC:PlannerOversight 2026-07-04-18:00:
+  FN-7519 read-only intervention-timeline endpoint. Reuses the existing
+  run-audit store via `getPlannerInterventionTimeline` (built on top of
+  `TaskStore.getRunAuditEvents`) rather than a parallel audit store; never
+  mutates state and returns an empty array (not an error) when the task has
+  no recorded interventions. This is a pure READ path — FN-7520 owns wiring
+  `recordPlannerIntervention` calls at overseer decision points.
+  */
+  router.get("/tasks/:id/overseer/interventions", async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      await scopedStore.getTask(req.params.id);
+      const entries = getPlannerInterventionTimeline(scopedStore, req.params.id);
+      res.json({ entries });
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         throw err;

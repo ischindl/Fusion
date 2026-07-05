@@ -97,6 +97,7 @@ import type {
 } from "@fusion/core";
 import type { PlanningQuestion, PlanningSummary } from "@fusion/core";
 import type { PlannerOverseerRuntimeSnapshot } from "@fusion/core";
+import type { PlannerInterventionEntry } from "@fusion/core";
 import type { GithubIssueAction, ScheduledTask, ScheduledTaskCreateInput, ScheduledTaskUpdateInput, AutomationRunResult, Routine, RoutineCreateInput, RoutineUpdateInput, RoutineExecutionResult } from "@fusion/core";
 import type { DiscoveredSkill, CatalogEntry, CatalogFetchResult, ToggleSkillResult, SkillContent, SkillFileEntry, SkillFileContent } from "@fusion/dashboard";
 import type { MilestoneValidationTelemetry, MissionInterviewDraftSummary } from "../components/mission-types";
@@ -849,6 +850,16 @@ export function stopOverseer(id: string, projectId?: string): Promise<OverseerCo
 
 export function explainOverseer(id: string, projectId?: string): Promise<{ snapshot: PlannerOverseerRuntimeSnapshot | null }> {
   return api<{ snapshot: PlannerOverseerRuntimeSnapshot | null }>(withProjectId(`/tasks/${id}/overseer/explain`, projectId), { method: "GET" });
+}
+
+/*
+FNXC:PlannerOversight 2026-07-04-18:00:
+FN-7519 read-only client fetch for the planner-intervention timeline. Mirrors
+`explainOverseer`'s pattern; never mutates state and resolves to an empty
+array when the task has no recorded interventions.
+*/
+export function fetchPlannerInterventionTimeline(id: string, projectId?: string): Promise<{ entries: PlannerInterventionEntry[] }> {
+  return api<{ entries: PlannerInterventionEntry[] }>(withProjectId(`/tasks/${id}/overseer/interventions`, projectId), { method: "GET" });
 }
 
 export function archiveTask(id: string, projectId?: string, options?: ArchiveTaskOptions): Promise<Task> {
