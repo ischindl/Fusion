@@ -1,3 +1,11 @@
+/*
+FNXC:PlannerOversight 2026-07-05-00:00:
+FN-7604 — the footer "Actions" dropdown button name is matched EXACTLY
+(`{ name: "Actions" }`) throughout this file, not via a loose `/actions/i`
+regex. The now-universal Oversight overflow trigger's aria-label is
+"Oversight actions", which also matches `/actions/i` and made every such
+query ambiguous once the trigger stopped being a mobile-only affordance.
+*/
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -445,6 +453,38 @@ describe("TaskDetailModal", () => {
       expect(screen.getByText("Reject Plan")).toBeTruthy();
     });
 
+    /*
+     * FN-7559: release-authorization holds share status "awaiting-approval" with
+     * the manual gate (auto-approve-all intentionally does not bypass release
+     * authorization), so the plain Approve/Reject affordance must never render
+     * for them — clicking Approve would let a release-class spec bypass the
+     * FN-6481 explicit-marker requirement via a button click. Instead a distinct,
+     * truthful reason is shown and no leftover empty button shell remains.
+     */
+    it("shows a distinct release-authorization reason instead of Approve/Reject Plan buttons", () => {
+      render(
+        <TaskDetailModal
+          task={makeTask({
+            column: "triage",
+            status: "awaiting-approval",
+            awaitingApprovalReason: "release-authorization",
+            prompt: "# Task Spec",
+          })}
+          initialTab="definition"
+          onClose={noop}
+          onMoveTask={noopMove}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+          onOpenDetail={noopOpenDetail}
+          addToast={noop}
+        />,
+      );
+
+      expect(screen.queryByText("Approve Plan")).toBeNull();
+      expect(screen.queryByText("Reject Plan")).toBeNull();
+      expect(screen.getByText(/Awaiting release authorization/i)).toBeTruthy();
+    });
+
     it("does not show approval buttons when task is not in triage", () => {
       render(
         <TaskDetailModal
@@ -711,7 +751,7 @@ describe("TaskDetailModal", () => {
       );
 
       // Open Actions dropdown to see Duplicate
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       fireEvent.click(actionsBtn);
 
       expect(screen.getByRole("menuitem", { name: "Duplicate" })).toBeTruthy();
@@ -732,7 +772,7 @@ describe("TaskDetailModal", () => {
       );
 
       // Open Actions dropdown - Duplicate should not be there
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       fireEvent.click(actionsBtn);
       expect(screen.queryByRole("menuitem", { name: "Duplicate" })).toBeNull();
     });
@@ -755,7 +795,7 @@ describe("TaskDetailModal", () => {
       );
 
       // Open Actions dropdown first
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       fireEvent.click(actionsBtn);
 
       fireEvent.click(screen.getByRole("menuitem", { name: "Duplicate" }));
@@ -788,7 +828,7 @@ describe("TaskDetailModal", () => {
       );
 
       // Open Actions dropdown first
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       fireEvent.click(actionsBtn);
 
       fireEvent.click(screen.getByRole("menuitem", { name: "Duplicate" }));
@@ -820,7 +860,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
       const pauseItem = screen.getByRole("menuitem", { name: "Pause" });
 
       fireEvent.pointerUp(pauseItem, { pointerType: "touch", pointerId: 1 });
@@ -852,7 +892,7 @@ describe("TaskDetailModal", () => {
       );
 
       // Open Actions dropdown first
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       fireEvent.click(actionsBtn);
 
       fireEvent.click(screen.getByRole("menuitem", { name: "Duplicate" }));
@@ -883,7 +923,7 @@ describe("TaskDetailModal", () => {
       );
 
       // Open Actions dropdown first
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       fireEvent.click(actionsBtn);
 
       fireEvent.click(screen.getByRole("menuitem", { name: "Duplicate" }));
@@ -913,7 +953,7 @@ describe("TaskDetailModal", () => {
       );
 
       // Open Actions dropdown first
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       fireEvent.click(actionsBtn);
 
       fireEvent.click(screen.getByRole("menuitem", { name: "Duplicate" }));
@@ -944,7 +984,7 @@ describe("TaskDetailModal", () => {
           addToast={noop}
         />,
       );
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
       const item = screen.queryByRole("menuitem", { name: "Refine" });
       if (shouldShow) expect(item).toBeTruthy();
       else expect(item).toBeNull();
@@ -980,7 +1020,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      expect(screen.getByRole("button", { name: /actions/i })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Actions" })).toBeTruthy();
     });
 
     it("renders Unpause button for a paused triage task", () => {
@@ -997,7 +1037,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
 
       expect(screen.getByRole("menuitem", { name: "Unpause" })).toBeTruthy();
     });
@@ -1019,7 +1059,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      await userEvent.click(screen.getByRole("button", { name: /actions/i }));
+      await userEvent.click(screen.getByRole("button", { name: "Actions" }));
       await userEvent.click(screen.getByRole("menuitem", { name: "Unpause" }));
 
       await waitFor(() => {
@@ -1052,7 +1092,7 @@ describe("TaskDetailModal", () => {
         expect(mockFetchAgent).toHaveBeenCalledWith("agent-1", undefined);
       });
 
-      await userEvent.click(screen.getByRole("button", { name: /actions/i }));
+      await userEvent.click(screen.getByRole("button", { name: "Actions" }));
       await userEvent.click(screen.getByRole("menuitem", { name: "Unpause" }));
 
       await waitFor(() => {
@@ -1083,7 +1123,7 @@ describe("TaskDetailModal", () => {
         expect(mockFetchAgent).toHaveBeenCalledWith("agent-1", undefined);
       });
 
-      await userEvent.click(screen.getByRole("button", { name: /actions/i }));
+      await userEvent.click(screen.getByRole("button", { name: "Actions" }));
 
       expect(screen.getByRole("menuitem", { name: "Unpause" })).toBeTruthy();
       expect(await screen.findByText("Paused by agent")).toBeTruthy();
@@ -1113,7 +1153,7 @@ describe("TaskDetailModal", () => {
         expect(mockFetchAgent).toHaveBeenCalledWith("agent-1", undefined);
       });
 
-      await userEvent.click(screen.getByRole("button", { name: /actions/i }));
+      await userEvent.click(screen.getByRole("button", { name: "Actions" }));
       await userEvent.click(screen.getByRole("menuitem", { name: "Pause" }));
 
       await waitFor(() => {
@@ -1145,7 +1185,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      await userEvent.click(screen.getByRole("button", { name: /actions/i }));
+      await userEvent.click(screen.getByRole("button", { name: "Actions" }));
 
       expect(screen.getByRole("menuitem", { name: expectedLabel })).toBeTruthy();
     });
@@ -1164,7 +1204,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      await userEvent.click(screen.getByRole("button", { name: /actions/i }));
+      await userEvent.click(screen.getByRole("button", { name: "Actions" }));
 
       expect(screen.queryByRole("menuitem", { name: "Pause" })).toBeNull();
       expect(screen.queryByRole("menuitem", { name: "Unpause" })).toBeNull();
@@ -1184,7 +1224,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      expect(screen.queryByRole("button", { name: /actions/i })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Actions" })).toBeNull();
     });
 
     it("clicking Refine opens the refinement modal", () => {
@@ -1202,7 +1242,7 @@ describe("TaskDetailModal", () => {
       );
 
       // Open Actions dropdown first
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       fireEvent.click(actionsBtn);
 
       fireEvent.click(screen.getByRole("menuitem", { name: "Refine" }));
@@ -1226,7 +1266,7 @@ describe("TaskDetailModal", () => {
       );
 
       // Open Actions dropdown first
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       fireEvent.click(actionsBtn);
 
       fireEvent.click(screen.getByRole("menuitem", { name: "Refine" }));
@@ -1249,7 +1289,7 @@ describe("TaskDetailModal", () => {
       );
 
       // Open Actions dropdown first
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       fireEvent.click(actionsBtn);
 
       fireEvent.click(screen.getByRole("menuitem", { name: "Refine" }));
@@ -1277,7 +1317,7 @@ describe("TaskDetailModal", () => {
       );
 
       // Open Actions dropdown first
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       fireEvent.click(actionsBtn);
 
       fireEvent.click(screen.getByRole("menuitem", { name: "Refine" }));
@@ -1301,7 +1341,7 @@ describe("TaskDetailModal", () => {
       );
 
       // Open Actions dropdown first
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       fireEvent.click(actionsBtn);
 
       fireEvent.click(screen.getByRole("menuitem", { name: "Refine" }));
@@ -1332,7 +1372,7 @@ describe("TaskDetailModal", () => {
       );
 
       // Open Actions dropdown first
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       fireEvent.click(actionsBtn);
 
       fireEvent.click(screen.getByRole("menuitem", { name: "Refine" }));
@@ -1360,7 +1400,7 @@ describe("TaskDetailModal", () => {
       );
 
       // Open Actions dropdown first
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       fireEvent.click(actionsBtn);
 
       fireEvent.click(screen.getByRole("menuitem", { name: "Refine" }));
@@ -1411,7 +1451,7 @@ describe("TaskDetailModal", () => {
       );
 
       // Open Actions dropdown first
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       fireEvent.click(actionsBtn);
 
       fireEvent.click(screen.getByRole("menuitem", { name: "Refine" }));
@@ -1463,7 +1503,7 @@ describe("TaskDetailModal", () => {
       await screen.findByTestId("task-detail-workflow-badge");
       expect(screen.getByTestId("task-detail-workflow-badge")).toHaveTextContent("Custom refinement lane");
 
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Refine" }));
       fireEvent.change(screen.getByPlaceholderText("Enter your feedback here..."), { target: { value: "Keep the same workflow lane" } });
       fireEvent.click(screen.getByText("Create Refinement Task"));
@@ -1499,7 +1539,7 @@ describe("TaskDetailModal", () => {
       );
 
       // Open Actions dropdown first
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       fireEvent.click(actionsBtn);
 
       // Click Refine from the dropdown
@@ -1530,7 +1570,7 @@ describe("TaskDetailModal", () => {
       );
 
       // Open Actions dropdown first
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       fireEvent.click(actionsBtn);
 
       // Click Refine from the dropdown
@@ -1564,7 +1604,7 @@ describe("TaskDetailModal", () => {
       );
 
       // Open Actions dropdown first
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       fireEvent.click(actionsBtn);
 
       // Click Refine from the dropdown
@@ -1598,7 +1638,7 @@ describe("TaskDetailModal", () => {
       );
 
       // Open Actions dropdown first
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       fireEvent.click(actionsBtn);
 
       // Click Refine from the dropdown

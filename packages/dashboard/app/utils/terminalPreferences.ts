@@ -193,6 +193,107 @@ export async function waitForTerminalFontMetrics(
   return true;
 }
 
+/*
+FNXC:Terminal 2026-07-04-09:30:
+FN-7561 (recurrence #3 of mobile inter-character spacing, after FN-7456's DOM
+glyph-fallback fix and FN-7460's `text-size-adjust: none`) root cause: real
+xterm.js's `OptionsService` setter is a strict no-op when a caller reassigns an
+option to a value that already strictly-equals its current value (no
+`onOptionChange` fires — see `@xterm/xterm` `common/services/OptionsService.ts`).
+Both terminal surfaces reapply `terminal.options.fontFamily`/`fontSize` with the
+SAME already-resolved value once `waitForTerminalFontMetrics()` settles, which is
+the common case (the user never touched terminal preferences). That reassignment
+never fires `onOptionChange`, so xterm's `CharSizeService` (canvas/DOM character
+measurement) and `DomRenderer._setDefaultSpacing()` (the letter-spacing
+compensation baked onto `.xterm-rows`) never recompute against the web font that
+finished loading AFTER xterm's initial pre-load (fallback-font) measurement. The
+stale pre-load cell metrics + compensation persist as visible excess
+inter-character gaps on the very first mobile layout until an unrelated event
+(resize/orientation/DPR change) happens to produce a genuine value change and
+incidentally force a real remeasure — exactly the "only repairs itself after
+keyboard toggle/orientation/reconnect" symptom reported for this recurrence.
+Force a genuine (distinct-value) transition through a sentinel font family
+before landing back on the resolved value so xterm's internal remeasure
+pipeline always runs at least once against the now-settled font, regardless of
+whether the resolved value already matches the terminal's current option value.
+*/
+const TERMINAL_FONT_REMEASURE_SENTINEL_FONT_FAMILY = "monospace";
+
+export function forceTerminalFontRemeasure(
+  terminal: { options: { fontFamily?: string } },
+  fontFamily: string,
+): void {
+  const sentinel =
+    fontFamily === TERMINAL_FONT_REMEASURE_SENTINEL_FONT_FAMILY
+      ? `${TERMINAL_FONT_REMEASURE_SENTINEL_FONT_FAMILY}, monospace`
+      : TERMINAL_FONT_REMEASURE_SENTINEL_FONT_FAMILY;
+  terminal.options.fontFamily = sentinel;
+  terminal.options.fontFamily = fontFamily;
+}
+
+/*
+FNXC:Terminal 2026-07-05-12:40:
+FN-7603 recurrence #5 root cause (grounded in the installed `@xterm/xterm@5.5.0`
+source, see task doc key="xterm-source-audit" on FN-7603): xterm's
+`CharSizeService` picks its character-measurement strategy at construction time
+(inside `terminal.open()`) via `try { new OffscreenCanvasStrategy(optionsService) }
+catch { new DomFallbackStrategy(document, helperContainer, optionsService) }`.
+Whenever `OffscreenCanvas` + `CanvasRenderingContext2D.measureText()` reporting
+`fontBoundingBoxAscent`/`fontBoundingBoxDescent` are available — true on
+essentially every real modern mobile Safari/Chrome — the CANVAS strategy is
+chosen, and `dimensions.css.cell.width` (which feeds `FitAddon.fit()`'s column
+count AND `DomRenderer._setDefaultSpacing()`'s baked letter-spacing) is measured
+via Canvas 2D `ctx.measureText("W")`. Separately, `DomRenderer._setDefaultSpacing()`
+subtracts `WidthCache.get('W')` — an ENTIRELY SEPARATE, DOM-based measurement
+(`offsetWidth` of a hidden 32x-repeated-"W" span) — from that canvas-measured
+cell width to compute the compensating letter-spacing baked onto `.xterm-rows`.
+Those are two DIFFERENT browser text-rendering pipelines (Canvas 2D vs CSS/DOM
+layout) queried against the same font; real glyphs are painted 100% via DOM
+(`DomRenderer` never draws through canvas), so the only way for the baked
+spacing to reliably converge to the DOM's own natural (tight) glyph advance is
+for BOTH measurements to go through the SAME (DOM) pipeline. FN-7456/FN-7460/
+FN-7561/FN-7567 never touched which measurement strategy CharSizeService uses,
+only WHEN/how often it remeasures — so this Canvas-vs-DOM divergence survived
+all four prior fixes and can still bake a small-but-visible, non-zero,
+systematic inter-character gap on the very first mobile layout even after every
+prior remedy runs correctly. Force xterm onto the SAME (DOM) measurement
+pipeline CharSizeService already ships as its own fallback strategy by making
+`OffscreenCanvas` transiently unavailable for the synchronous duration of
+`terminal.open()`, so `CharSizeService`'s constructor try-block throws and it
+self-selects its own DOM-based `l` strategy — unifying `dimensions.css.cell.width`
+and `WidthCache.get('W')` onto one measurement pipeline instead of adding any
+hardcoded compensation. See `docs/solutions/ui-bugs/xterm-options-noop-remeasure-after-font-settle.md`
+recurrence #5 section.
+*/
+export function withDomBasedTerminalCharacterMeasurement<T>(fn: () => T): T {
+  if (typeof window === "undefined" || !("OffscreenCanvas" in window)) {
+    // Nothing to hide — CharSizeService will already fall back to its DOM
+    // strategy on its own (e.g. older WebKit without OffscreenCanvas support).
+    return fn();
+  }
+
+  const descriptor = Object.getOwnPropertyDescriptor(window, "OffscreenCanvas");
+  const originalValue = (window as unknown as Record<string, unknown>).OffscreenCanvas;
+
+  try {
+    delete (window as unknown as Record<string, unknown>).OffscreenCanvas;
+  } catch {
+    // Some environments define OffscreenCanvas as non-configurable; nothing
+    // we can safely do, so proceed without forcing the DOM strategy.
+    return fn();
+  }
+
+  try {
+    return fn();
+  } finally {
+    if (descriptor) {
+      Object.defineProperty(window, "OffscreenCanvas", descriptor);
+    } else if (originalValue !== undefined) {
+      (window as unknown as Record<string, unknown>).OffscreenCanvas = originalValue;
+    }
+  }
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

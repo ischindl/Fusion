@@ -1,15 +1,21 @@
 /*
 FNXC:PlannerOversight 2026-07-04-19:00:
-FN-7545 coverage for the mobile collapse of the FN-7517 oversight action
-controls into a single overflow menu (`detail-oversight-menu-trigger`). The
-suite forces the narrow-viewport branch by setting `window.innerWidth` below
-the `TaskDetailModal.tsx` `OVERSIGHT_MENU_MOBILE_BREAKPOINT` (768) BEFORE
-render, since the component reads `window.innerWidth` on mount via a resize
-listener (mirroring `DocumentsView`'s local `isMobile` pattern) rather than a
-CSS media query. Every action inside the menu reuses the SAME handlers and
-enablement gates as the desktop suite
-(`TaskDetailModal.oversight-controls.test.tsx`) — this file only asserts the
-collapsed-menu affordance, not new guard logic.
+FN-7545 coverage for the collapse of the FN-7517 oversight action controls
+into a single overflow menu (`detail-oversight-menu-trigger`). Every action
+inside the menu reuses the SAME handlers and enablement gates as the desktop
+suite (`TaskDetailModal.oversight-controls.test.tsx`) — this file only
+asserts the collapsed-menu affordance, not new guard logic.
+
+FNXC:PlannerOversight 2026-07-05-00:00:
+FN-7604 — the overflow menu is now the SINGLE UNIVERSAL surface at every
+viewport (desktop and mobile); it is no longer a narrow-viewport-only branch
+selected by a JS `isOversightMenuMobile` resize listener (that state, the
+`OVERSIGHT_MENU_MOBILE_BREAKPOINT` constant, and its effects were removed
+from `TaskDetailModal.tsx`). `setViewportWidth`/`MOBILE_WIDTH`/`DESKTOP_WIDTH`
+no longer select which branch mounts — both widths mount the exact same
+dropdown — they are kept as a documented regression guard that the popover
+still renders/positions/behaves correctly across a narrow AND a desktop
+viewport, per the Surface Enumeration breakpoint requirement.
 */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
@@ -382,6 +388,108 @@ describe("TaskDetailModal oversight controls — mobile overflow menu", () => {
       expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     });
     expect(trigger).toHaveAttribute("aria-expanded", "false");
+  });
+
+  /*
+  FNXC:PlannerOversight 2026-07-04-00:00:
+  FN-7562 regression coverage — the menu-open auto-focus effect used to
+  select `.detail-oversight-menu-item` generically, which matched the native
+  `<select>` FIRST (it carries that class too) and focused it. Focusing a
+  native `<select>` programmatically surfaces its OS option picker, which
+  rendered as a second menu overlapping the custom `role="menu"` popover.
+  These tests assert the fixed invariant: auto-focus lands on an actionable
+  button menuitem (never the select), and only one `role="menu"` surface is
+  ever present, across both the active-overseer state and the oversight-off
+  (level-only) state.
+  */
+  it("auto-focuses the first button menuitem (never the native select) when nudge/stop/explain are available", async () => {
+    render(
+      <TaskDetailModal
+        task={makeTask({ id: "FN-213", column: "in-progress", plannerOversightLevel: "autonomous", plannerOverseerState: activeSnapshot })}
+        onClose={noop}
+        onMoveTask={noopMove}
+        onDeleteTask={noopDelete}
+        onMergeTask={noopMerge}
+        onOpenDetail={noopOpenDetail}
+        addToast={noop}
+      />,
+    );
+
+    const trigger = await screen.findByTestId("detail-oversight-menu-trigger");
+    fireEvent.click(trigger);
+
+    const select = await screen.findByTestId("detail-oversight-level-select");
+    const nudgeBtn = await screen.findByTestId("detail-overseer-nudge");
+
+    await waitFor(() => {
+      expect(document.activeElement).toBe(nudgeBtn);
+    });
+    expect(document.activeElement).not.toBe(select);
+
+    // Exactly one menu surface renders — the custom popover — and the native
+    // select stays a closed control (jsdom/browsers do not spawn a second
+    // top-level popup unless the element is actually focused).
+    expect(screen.getAllByRole("menu")).toHaveLength(1);
+  });
+
+  it("does not fall back to focusing the native select when oversight is off and only the level control renders", async () => {
+    render(
+      <TaskDetailModal
+        task={makeTask({ id: "FN-214", column: "todo", plannerOversightLevel: "off" })}
+        onClose={noop}
+        onMoveTask={noopMove}
+        onDeleteTask={noopDelete}
+        onMergeTask={noopMerge}
+        onOpenDetail={noopOpenDetail}
+        addToast={noop}
+      />,
+    );
+
+    const trigger = await screen.findByTestId("detail-oversight-menu-trigger");
+    fireEvent.click(trigger);
+
+    const select = await screen.findByTestId("detail-oversight-level-select");
+    // No button menuitem exists in this state (nudge/stop/explain are all
+    // absent), so the auto-focus effect must not fall back to the select.
+    expect(screen.queryByTestId("detail-overseer-nudge")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("detail-overseer-stop")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("detail-overseer-explain")).not.toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(document.activeElement).not.toBe(select);
+    });
+    expect(screen.getAllByRole("menu")).toHaveLength(1);
+  });
+
+  it("the overflow-menu popover renders identically at a desktop viewport (FN-7604 universal dropdown)", async () => {
+    setViewportWidth(DESKTOP_WIDTH);
+
+    render(
+      <TaskDetailModal
+        task={makeTask({ id: "FN-215", column: "in-progress", plannerOversightLevel: "autonomous", plannerOverseerState: activeSnapshot })}
+        onClose={noop}
+        onMoveTask={noopMove}
+        onDeleteTask={noopDelete}
+        onMergeTask={noopMerge}
+        onOpenDetail={noopOpenDetail}
+        addToast={noop}
+      />,
+    );
+
+    // FNXC:PlannerOversight 2026-07-05-00:00: FN-7604 — there is no longer a
+    // desktop-only inline select surface; the overflow-menu trigger is the
+    // single universal mount point at every viewport, including desktop. The
+    // popover stays closed until clicked, exactly like the mobile width.
+    const trigger = await screen.findByTestId("detail-oversight-menu-trigger");
+    expect(screen.queryByTestId("detail-oversight-level-select")).not.toBeInTheDocument();
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+
+    fireEvent.click(trigger);
+    const select = await screen.findByTestId("detail-oversight-level-select");
+    expect(select).toBeInTheDocument();
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+
+    setViewportWidth(MOBILE_WIDTH);
   });
 
   it("click-outside closes the menu", async () => {

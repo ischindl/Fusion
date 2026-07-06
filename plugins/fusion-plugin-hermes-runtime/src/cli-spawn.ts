@@ -309,18 +309,19 @@ function stripChrome(text: string): string {
  * Returns `{ body, sessionId }` on success or throws with a descriptive error.
  */
 export function parseHermesOutput(rawStdout: string, rawStderr: string): HermesCliResult {
-  const cleaned = cleanText(rawStdout);
-  const match = SESSION_ID_RE.exec(cleaned);
+  const cleanedStdout = cleanText(rawStdout);
+  const cleanedCombined = cleanText([rawStdout, rawStderr].filter(Boolean).join("\n"));
+  const stdoutMatch = SESSION_ID_RE.exec(cleanedStdout);
+  const match = stdoutMatch ?? SESSION_ID_RE.exec(cleanedCombined);
 
   if (!match) {
-    const combined = [rawStdout, rawStderr].filter(Boolean).join("\n");
-    throw new Error(`hermes: missing session_id in output.\n${combined}`);
+    throw new Error(`hermes: missing session_id in output.\n${cleanedCombined}`);
   }
 
   const sessionId = match[1]!;
-  // Body is everything before the session_id line.
-  const sessionIdLineStart = cleaned.lastIndexOf("\nsession_id:");
-  const bodyRaw = sessionIdLineStart >= 0 ? cleaned.slice(0, sessionIdLineStart) : cleaned;
+  // Body is stdout before the session_id line. Recent Hermes builds can emit
+  // the session_id marker on stderr, so do not treat stderr as assistant text.
+  const bodyRaw = stdoutMatch ? cleanedStdout.slice(0, stdoutMatch.index) : cleanedStdout;
   const body = stripChrome(bodyRaw);
 
   return { body, sessionId };

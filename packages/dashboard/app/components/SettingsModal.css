@@ -2550,6 +2550,17 @@ FN-7553's dedicated Keyboard Shortcuts section groups every action under a categ
   border-bottom: 0;
 }
 
+/*
+FNXC:DashboardShortcuts 2026-07-05-00:00:
+FN-7602 fixes an overlap bug: Record/Clear previously used the icon-only `btn-icon` class
+(line-height:0 + mobile 36px square), which clipped/overlapped their text labels
+("Record"/"Recording…"/"Clear") against the input and each other (IMG_1305). The input
+keeps `flex: 1 1 auto; min-width: 0;` so it shrinks first, while the buttons get
+`flex-shrink: 0; white-space: nowrap;` so their content-sized width (including the longer
+"Recording…" label) is never crushed or allowed to overlap a neighbor on desktop. Below
+768px the row stacks to a column so the buttons sit on their own row under the full-width
+input, still non-overlapping.
+*/
 .shortcut-capture {
   display: flex;
   align-items: center;
@@ -2564,6 +2575,12 @@ FN-7553's dedicated Keyboard Shortcuts section groups every action under a categ
 
 .shortcut-capture__input--invalid {
   border-color: var(--color-error);
+}
+
+.shortcut-capture__record,
+.shortcut-capture__clear {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .shortcut-capture__record--active {

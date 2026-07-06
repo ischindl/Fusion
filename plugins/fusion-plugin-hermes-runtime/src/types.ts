@@ -23,6 +23,10 @@ export interface HermesStreamSession {
   model: unknown;
   systemPrompt: string;
   messages: unknown[];
+  state: {
+    messages: unknown[];
+    errorMessage?: string;
+  };
   apiKey: string | undefined;
   thinkingLevel: string | undefined;
   sessionId: string;

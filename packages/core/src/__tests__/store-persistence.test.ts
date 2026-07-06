@@ -59,6 +59,45 @@ describe("TaskStore", () => {
     });
   });
 
+  /*
+   * FNXC:PlanApproval 2026-07-04-22:41:
+   * FN-7569 — approvedPlanFingerprint must survive create/update/null-clear round trips through
+   * SQLite so the manual plan-approval gate can compare it against the freshly written PROMPT.md
+   * on every re-specification, even after a full store reopen.
+   */
+  describe("approvedPlanFingerprint persistence", () => {
+    it("round-trips approvedPlanFingerprint through updateTask and getTask", async () => {
+      const task = await harness.store().createTask({ description: "Approval fingerprint task" });
+      expect(task.approvedPlanFingerprint).toBeUndefined();
+
+      const updated = await harness.store().updateTask(task.id, { approvedPlanFingerprint: "abc123" });
+      expect(updated.approvedPlanFingerprint).toBe("abc123");
+
+      const detail = await harness.store().getTask(task.id);
+      expect(detail.approvedPlanFingerprint).toBe("abc123");
+    });
+
+    it("clears approvedPlanFingerprint with an explicit null update (reject-plan semantics)", async () => {
+      const task = await harness.store().createTask({ description: "Approval fingerprint task" });
+      await harness.store().updateTask(task.id, { approvedPlanFingerprint: "abc123" });
+
+      const cleared = await harness.store().updateTask(task.id, { approvedPlanFingerprint: null });
+      expect(cleared.approvedPlanFingerprint).toBeUndefined();
+
+      const detail = await harness.store().getTask(task.id);
+      expect(detail.approvedPlanFingerprint).toBeUndefined();
+    });
+
+    it("returns approvedPlanFingerprint from listTasks", async () => {
+      const task = await harness.store().createTask({ description: "Approval fingerprint list task" });
+      await harness.store().updateTask(task.id, { approvedPlanFingerprint: "xyz789" });
+
+      const tasks = await harness.store().listTasks();
+      const listed = tasks.find((t) => t.id === task.id);
+      expect(listed?.approvedPlanFingerprint).toBe("xyz789");
+    });
+  });
+
   // FNXC:Workspace 2026-06-24-15:30 (multiworkspace fn_task_done regression):
   // task.workspaceWorktrees previously had NO SQLite column / no rowToTask mapping, so
   // fn_acquire_repo_worktree's updateTask({workspaceWorktrees}) set it only in memory and the very

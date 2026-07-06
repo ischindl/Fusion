@@ -21,8 +21,10 @@ import {
 } from "@fusion/core";
 import { resolveEffectivePlannerOversightLevel } from "../../../core/src/workflow-settings-resolver";
 import { isNearDuplicateCanonicalInactive } from "../../../core/src/near-duplicate-canonical";
+import { getRevertOfId, findOpenUndoTaskForSource } from "../utils/taskRevert";
 import { resolveEffectiveAutoMerge } from "../../../core/src/task-merge";
 import { uploadAttachment, deleteAttachment, updateTask, repairOverlapBlocker, pauseTask, unpauseTask, fetchTaskDetail, fetchSettings, fetchTaskEffectiveSettings, fetchGlobalSettings, requestSpecRevision, rebuildTaskSpec, approvePlan, rejectPlan, refineTask, fetchWorkflowResults, assignTask, fetchAgents, fetchAgent, refreshPrStatus, fetchBoardWorkflows, updateTaskCustomFields, summarizeTitle, fetchWorkflowSettingValues, nudgeOverseer, stopOverseer, explainOverseer, api } from "../api";
+import type { RevertTaskOptions, RevertTaskResult } from "../api";
 import type { BoardWorkflowsPayload, WorkflowFieldDefinition, CustomFieldRejection } from "../api";
 import { WorkflowIcon } from "./WorkflowIcon";
 import { ApiRequestError } from "../api";
@@ -84,8 +86,9 @@ const ACTIVITY_VIEW_MENU_MIN_WIDTH = 160;
 const ACTIVITY_VIEW_MENU_MIN_HEIGHT = 120;
 const ACTIVITY_VIEW_MENU_MAX_HEIGHT = 320;
 const ACTIVITY_VIEW_MENU_OPEN_VIEWPORT_GUARD_MS = 350;
-// FNXC:PlannerOversight 2026-07-04-19:00: FN-7545 — mobile breakpoint for collapsing the oversight action cluster into an overflow menu; matches the `@media (max-width: 768px)` breakpoint used across TaskDetailModal.css.
-const OVERSIGHT_MENU_MOBILE_BREAKPOINT = 768;
+// FNXC:TaskDetailSwipeBack 2026-07-05-12:30: FN-7587 — mobile breakpoint gating the presentation-only predictive-back slide/fade transition on the modal/list/nested task-detail surface; matches the `@media (max-width: 768px)` convention already used in this file.
+// FNXC:PlannerOversight 2026-07-05-00:00: FN-7604 — the OVERSIGHT_MENU_MOBILE_BREAKPOINT constant (formerly used to branch the oversight controls between an inline cluster and this overflow menu) was removed; the overflow-menu dropdown is now the single universal surface at every viewport, so no breakpoint gates it.
+const TASK_DETAIL_MOBILE_TRANSITION_BREAKPOINT = 768;
 
 type ActivityViewMenuPosition = {
   top: number;
@@ -224,7 +227,7 @@ function formatDurationCompact(ageMs: number): string {
 }
 
 type TabId = "summary" | "definition" | "chat" | "planner-chat" | "logs" | "changes" | "review" | "pr" | "comments" | "model" | "workflow" | "documents" | "stats" | "routing" | "retries" | "terminal" | `plugin-${string}`;
-type ActivitySegment = "current" | "feed" | "raw-logs";
+type ActivitySegment = "current" | "feed" | "raw-logs" | "interventions";
 
 /*
 FNXC:TaskDetailActivityTab 2026-06-30-00:00:
@@ -346,6 +349,8 @@ export interface TaskDetailModalProps {
     allowResurrection?: boolean;
   }) => Promise<Task>;
   onArchiveTask?: (id: string, options?: { removeLineageReferences?: boolean }) => Promise<Task>;
+  /* FNXC:TaskRevert 2026-07-05-00:00 (FN-7525): threaded alongside onArchiveTask; never mutates the source task's column. */
+  onRevertTask?: (id: string, body?: RevertTaskOptions) => Promise<RevertTaskResult>;
   onMergeTask: (id: string) => Promise<MergeResult>;
   onRetryTask?: (id: string) => Promise<Task>;
   onResetTask?: (id: string) => Promise<Task>;
@@ -614,6 +619,7 @@ export function TaskDetailContent({
   onMoveTask,
   onDeleteTask,
   onArchiveTask,
+  onRevertTask,
   onMergeTask,
   onRetryTask,
   onResetTask,
@@ -772,6 +778,21 @@ export function TaskDetailContent({
     sourceAgentName: sourceAgent?.name,
     t,
   });
+  /**
+   * FNXC:TaskRevert 2026-07-04-00:00:
+   * Forward direction (FN-7555): when this task IS an AI-undo task (`sourceMetadata.revertOf`
+   * set by `createAiUndoTask`), surface a "Created to undo <sourceId>" provenance clause with
+   * a clickable link to the source task, alongside — not replacing — the base provenance label.
+   */
+  const revertOfId = getRevertOfId(workingTask.sourceMetadata, workingTask.sourceParentTaskId, workingTask.sourceType);
+  /**
+   * FNXC:TaskRevert 2026-07-04-00:00:
+   * Reverse direction (FN-7555): scan the loaded `tasks` list for the most recent OPEN undo
+   * task pointing back at this task via `revertOf`. Mirrors `TaskStore.findOpenRevertTaskForSource`
+   * (open board columns only) so a done/archived/soft-deleted prior undo attempt never renders as
+   * an active "Undo task" link — that would be a stale/leftover affordance.
+   */
+  const openUndoTask = findOpenUndoTaskForSource(tasks, workingTask.id);
 
   // Sync activeTab when the caller changes initialTab (e.g. opening a different tab)
   useEffect(() => {
@@ -1048,15 +1069,16 @@ export function TaskDetailContent({
   const [overseerExplainSnapshot, setOverseerExplainSnapshot] = useState<PlannerOverseerRuntimeSnapshot | null>(null);
   /*
   FNXC:PlannerOversight 2026-07-04-19:00:
-  FN-7545 — collapse the oversight action controls into a mobile overflow
-  menu so the detail control bar fits narrow viewports; desktop keeps the
-  inline cluster; menu never renders an empty shell when oversight is
-  off/inactive. `isOversightMenuMobile` mirrors the `DocumentsView` local
-  `isMobile` resize-listener pattern (defaults false so JSDOM/unit tests keep
-  exercising the desktop inline branch unless a test explicitly narrows the
-  viewport).
+  FN-7545 — collapse the oversight action controls into an overflow menu so
+  the detail control bar fits narrow viewports; menu never renders an empty
+  shell when oversight is off/inactive.
+
+  FNXC:PlannerOversight 2026-07-05-00:00:
+  FN-7604 — the overflow menu is now the single universal surface at every
+  viewport (desktop and mobile); the `isOversightMenuMobile` resize-driven
+  branch selector was removed since there is no longer a second branch to
+  select between.
   */
-  const [isOversightMenuMobile, setIsOversightMenuMobile] = useState(false);
   const [showOversightMenu, setShowOversightMenu] = useState(false);
   const oversightMenuRef = useRef<HTMLDivElement>(null);
   const oversightMenuButtonRef = useRef<HTMLButtonElement>(null);
@@ -1480,26 +1502,6 @@ export function TaskDetailContent({
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [showMoveMenu, showActionsMenu, showActivityViewMenu, showOversightMenu]);
-
-  // FNXC:PlannerOversight 2026-07-04-19:00: FN-7545 — track the mobile breakpoint locally (mirrors DocumentsView's isMobile resize-listener pattern) so the oversight action cluster can collapse into an overflow menu on narrow viewports while desktop keeps the inline layout.
-  useEffect(() => {
-    const updateOversightMenuMobile = () => {
-      setIsOversightMenuMobile(window.innerWidth <= OVERSIGHT_MENU_MOBILE_BREAKPOINT);
-    };
-
-    updateOversightMenuMobile();
-    window.addEventListener("resize", updateOversightMenuMobile);
-
-    return () => {
-      window.removeEventListener("resize", updateOversightMenuMobile);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!isOversightMenuMobile) {
-      setShowOversightMenu(false);
-    }
-  }, [isOversightMenuMobile]);
 
   // Reset spec edit state when task changes
   useEffect(() => {
@@ -2569,7 +2571,80 @@ export function TaskDetailContent({
     }
   }, [onArchiveTask, confirm, task.id, nearDuplicateOf, addToast, requestClose]);
 
+  /*
+  FNXC:TaskRevert 2026-07-05-00:00 (FN-7525):
+  Detail-view Revert action, mirroring TaskCard's `handleRevertClick`: calls the
+  API in "auto" mode, surfaces a clean-git success toast with the revert commit
+  sha, an info toast for `alreadyReverted`, an error toast (never a silent AI
+  fork) for `needsHuman`, and otherwise confirms before falling back to the
+  AI-undo task on conflict/unsupported. The source task's column is never
+  mutated as a side effect.
+  */
+  const isRevertable = (task.column === "done" || task.column === "archived")
+    && Boolean(task.mergeDetails?.commitSha);
+
+  const handleRevertTask = useCallback(async () => {
+    if (!onRevertTask) return;
+    try {
+      const result = await onRevertTask(task.id, { mode: "auto" });
+
+      if (result.mode === "ai") {
+        addToast(result.alreadyOpen
+          ? t("tasks.revertAlreadyOpen", "An undo task is already open: {{id}}", { id: result.createdTaskId })
+          : t("tasks.revertAiCreated", "Created undo task {{id}}", { id: result.createdTaskId }), "success");
+        return;
+      }
+
+      if (result.alreadyReverted) {
+        addToast(t("tasks.revertAlreadyReverted", "{{taskId}} was already reverted", { taskId: task.id }), "info");
+        return;
+      }
+
+      if (result.needsHuman) {
+        addToast(t("tasks.revertNeedsHuman", "Cannot auto-revert {{taskId}}: {{reason}}", { taskId: task.id, reason: result.reason || t("tasks.revertNeedsHumanDefault", "human review required") }), "error");
+        return;
+      }
+
+      if (result.clean && result.revertCommitSha) {
+        addToast(t("tasks.reverted", "Reverted {{taskId}} in commit {{sha}}", { taskId: task.id, sha: result.revertCommitSha.slice(0, 12) }), "success");
+        return;
+      }
+
+      if (!result.clean || result.unsupported) {
+        const confirmed = await confirm({
+          title: t("tasks.revertConflictTitle", "Revert Conflict"),
+          message: t("tasks.revertConflictMessage", "Git revert conflicts with later changes. Create an AI task to undo this?"),
+          cancelLabel: t("common.cancel", "Cancel"),
+        });
+        if (!confirmed) return;
+
+        const aiResult = await onRevertTask(task.id, { mode: "ai" });
+        if (aiResult.mode === "ai") {
+          addToast(aiResult.alreadyOpen
+            ? t("tasks.revertAlreadyOpen", "An undo task is already open: {{id}}", { id: aiResult.createdTaskId })
+            : t("tasks.revertAiCreated", "Created undo task {{id}}", { id: aiResult.createdTaskId }), "success");
+        }
+        return;
+      }
+
+      addToast(t("tasks.revertFailed", "Failed to revert {{taskId}}", { taskId: task.id }), "error");
+    } catch (err) {
+      addToast(getErrorMessage(err), "error");
+    }
+  }, [onRevertTask, confirm, task.id, addToast, t]);
+
   const isTaskPaused = task.paused || task.userPaused;
+  /*
+   * FNXC:PlanApproval 2026-07-04-21:35:
+   * FN-7559: release-authorization holds and manual plan-approval holds both
+   * use status "awaiting-approval" (auto-approve-all intentionally bypasses only
+   * the manual gate — see FNXC:PlanApproval in types.ts). Gate the manual
+   * Approve/Reject Plan affordance to genuine manual holds only — clicking
+   * "Approve Plan" on a release-authorization hold would let a release-class
+   * spec bypass FN-6481's explicit-marker requirement via a plain button click.
+   */
+  const isAwaitingApproval = task.column === "triage" && task.status === "awaiting-approval";
+  const isReleaseAuthorizationHold = isAwaitingApproval && task.awaitingApprovalReason === "release-authorization";
 
   const handleTogglePause = useCallback(async () => {
     try {
@@ -3055,7 +3130,19 @@ export function TaskDetailContent({
   const mergeStrategy = settings?.mergeStrategy ?? "direct";
   const autoMergeEnabled = autoMergeEnabledProp ?? (settings?.autoMerge ?? false);
   const effectiveAutoMerge = resolveEffectiveAutoMerge({ autoMerge: task.autoMerge }, { autoMerge: autoMergeEnabled });
-  const isManualPrFlow = mergeStrategy === "pull-request" && !effectiveAutoMerge;
+  /*
+  FNXC:TaskDetailPr 2026-07-05-19:45:
+  Manual PR flow visibility must follow the LIVE GLOBAL auto-merge setting
+  (`autoMergeEnabled`), not the per-task effective auto-merge override
+  (`effectiveAutoMerge`). Otherwise a per-task auto-merge override of `true`
+  hides manual PR affordances even when global auto-merge is off, stranding
+  the user with no way to manually open/manage the PR (FN-7607; regression
+  introduced by FN-7255 / commit 924bcb97d, which switched this from
+  `!autoMergeEnabled` to `!effectiveAutoMerge`). The `autoMerge` prop passed
+  to PrPanel stays `effectiveAutoMerge` — only this flow-gating boolean is
+  keyed off the live global setting.
+  */
+  const isManualPrFlow = mergeStrategy === "pull-request" && !autoMergeEnabled;
   /*
   FNXC:PlannerOversight 2026-07-04-17:00:
   FN-7517 enablement rules for the nudge/stop/explain controls. Nudge and
@@ -3070,8 +3157,37 @@ export function TaskDetailContent({
   already uses — the server-side `evaluateOverseerHumanControl` guard is the
   real enforcement; this is a client-side disable heuristic only). Stop is
   hidden once oversight is already off — there is nothing left to stop.
+
+  FNXC:PlannerOversight 2026-07-05-00:00:
+  FN-7582: the original disabled-Nudge copy ("overseer is not actively
+  watching this task") read as a fault report — operators seeing it on a
+  healthy IN PROGRESS task assumed the overseer had broken, when the real
+  cause is benign: `pollPlannerOverseer` observes in-progress/in-review tasks
+  on a bounded ~45s poll, and `plannerOverseerState` is only populated once
+  that poll records a live observation for the current stage (FN-7531). The
+  reworded copy below differentiates two distinct disabled reasons instead of
+  one alarming message: (1) no observation yet — reassuring, periodic-poll
+  framing (`nudgeDisabledTitle`); (2) human-control suppressed — user-paused,
+  done/archived, or the `autoMerge:false` in-review human-review terminal —
+  which gets its own distinct copy (`nudgeSuppressedTitle`) naming manual
+  control as the reason instead of implying the overseer is idle. Neither
+  `canNudgeOverseer` nor any other enablement/gating boolean changed; this is
+  copy-only, selected via the already-computed `overseerHumanControlSuppressed`
+  / `overseerActive` booleans below.
   */
-  const overseerSnapshot = task.plannerOverseerState ?? null;
+  /*
+  FNXC:PlannerOversight 2026-07-05-00:00:
+  FN-7600: this used to read `task.plannerOverseerState` — the transient
+  snapshot enrichment from `GET /api/tasks` (list) — but the modal is
+  frequently opened via `fetchTaskDetail` (dependency chips, Documents view,
+  logs, or the post-open detail refetch) where the parent `task` prop never
+  carries the snapshot, so `overseerActive`/`canNudgeOverseer` were almost
+  always false and Nudge showed the periodic-observation copy even while the
+  overseer was actively watching. `GET /api/tasks/:id` now attaches the same
+  snapshot (mirrors the list route), so read it from `workingTask` — the
+  full-detail-backed merged object — instead of the raw prop.
+  */
+  const overseerSnapshot = workingTask.plannerOverseerState ?? null;
   const overseerActive = Boolean(overseerSnapshot);
   const isDoneOrArchivedColumn = task.column === "done" || task.column === "archived";
   const isOverseerHumanReviewTerminal = task.column === "in-review" && !effectiveAutoMerge;
@@ -3080,6 +3196,18 @@ export function TaskDetailContent({
   const canNudgeOverseer = overseerActive && !oversightIsOff && !overseerHumanControlSuppressed;
   const canExplainOverseer = overseerActive && !oversightIsOff;
   const showStopOverseer = !oversightIsOff;
+  /*
+  FNXC:PlannerOversight 2026-07-05-00:00:
+  FN-7582 shared disabled-reason string, computed once and reused at all four
+  render sites (mobile menu title + helper, desktop inline title + helper) so
+  the two copies can never drift out of sync. Picks the human-control-suppressed
+  copy when suppression is the active cause even though `!overseerActive` may
+  also be true in that state (e.g. a paused task that never got observed) —
+  suppression is the more actionable/accurate explanation for the operator.
+  */
+  const nudgeDisabledReason = overseerHumanControlSuppressed
+    ? t("taskDetail.oversight.nudgeSuppressedTitle", "Nudge is paused while this task is under manual control.")
+    : t("taskDetail.oversight.nudgeDisabledTitle", "Nudge becomes available once the overseer is observing this task's current stage — it checks periodically.");
   const isActivityExpanded = activityExpanded && activeTab === "chat" && !isEditing;
   const isPlannerChatExpanded = plannerChatExpanded && activeTab === "planner-chat" && !isEditing;
   /*
@@ -3295,12 +3423,34 @@ export function TaskDetailContent({
     });
   }, []);
 
+  /*
+  FNXC:PlannerOversight 2026-07-04-19:00:
+  FN-7571 moves the FN-7519 Intervention Timeline out of the inline oversight
+  cluster and into the Activity view dropdown as a fourth `interventions`
+  segment, alongside Live/Feed/Raw. It is gated on the SAME oversight-active
+  expression the inline mount used to use (`hasTaskOversightOverride ||
+  workflowOversightResolved`, minus `oversightIsOff`) so the option never
+  appears — and never leaves an always-empty segment — when oversight is off
+  or unresolved for the task.
+  */
+  const oversightActive = (hasTaskOversightOverride || workflowOversightResolved) && !oversightIsOff;
+
   const activityViewOptions = useMemo<Array<{ value: ActivitySegment; label: string }>>(() => [
     { value: "current", label: t("taskDetail.activity.current", "Live") },
     { value: "feed", label: t("taskDetail.activity.feed", "Feed") },
     { value: "raw-logs", label: t("taskDetail.activity.raw", "Raw") },
-  ], [t]);
+    ...(oversightActive ? [{ value: "interventions" as const, label: t("taskDetail.activity.interventions", "Interventions") }] : []),
+  ], [t, oversightActive]);
   const selectedActivityViewLabel = activityViewOptions.find((option) => option.value === activitySegment)?.label ?? activityViewOptions[0]?.label ?? "Live";
+
+  // FNXC:PlannerOversight 2026-07-04-19:00: if oversight turns off (or was never active) while
+  // the Interventions segment is selected, fall back to Live so a hidden dropdown option never
+  // leaves a blank/selected segment behind.
+  useEffect(() => {
+    if (!oversightActive && activitySegment === "interventions") {
+      setActivitySegment("current");
+    }
+  }, [oversightActive, activitySegment]);
 
   const selectActivityView = useCallback((value: ActivitySegment) => {
     activityViewMenuViewportGuardUntilRef.current = 0;
@@ -3342,12 +3492,13 @@ export function TaskDetailContent({
     firstMenuItem?.focus();
   }, [showMoveMenu]);
 
+  // FNXC:PlannerOversight 2026-07-04-00:00: FN-7562 — auto-focus the first actionable button menuitem, never the native oversight-level <select>; focusing the <select> surfaced its OS picker as a second menu overlapping the custom oversight popover on mobile.
   useEffect(() => {
     if (!showOversightMenu) {
       return;
     }
 
-    const firstMenuItem = oversightMenuRef.current?.querySelector<HTMLButtonElement | HTMLSelectElement>(".detail-oversight-menu-item");
+    const firstMenuItem = oversightMenuRef.current?.querySelector<HTMLButtonElement>("button.detail-oversight-menu-item");
     firstMenuItem?.focus();
   }, [showOversightMenu]);
 
@@ -3824,16 +3975,19 @@ export function TaskDetailContent({
                   FNXC:PlannerOversight 2026-07-04-19:00:
                   FN-7545 — collapse the oversight action controls into a mobile
                   overflow menu so the detail control bar fits narrow viewports;
-                  desktop keeps the inline cluster; menu never renders an empty
-                  shell when oversight is off/inactive. Both branches below share
-                  the SAME enablement gates (`hasTaskOversightOverride`,
+                  menu never renders an empty shell when oversight is off/inactive.
+                  Shares the SAME enablement gates (`hasTaskOversightOverride`,
                   `workflowOversightResolved`, `oversightIsOff`, `showStopOverseer`,
                   `canNudgeOverseer`, `canExplainOverseer`) and the SAME handlers
-                  — the mobile branch only changes where the controls render, never
-                  their guard logic.
+                  as before.
+
+                  FNXC:PlannerOversight 2026-07-05-00:00:
+                  FN-7604 — the oversight action controls (level select / nudge /
+                  stop / explain) render ONLY behind the "Oversight" overflow-menu
+                  trigger on every surface (desktop and mobile); the former desktop
+                  inline cluster was removed for a consistent, simpler control bar.
                   */}
-                  {isOversightMenuMobile ? (
-                    (hasTaskOversightOverride || workflowOversightResolved) && (
+                  {(hasTaskOversightOverride || workflowOversightResolved) && (
                       <div className="detail-oversight-menu-dropdown" ref={oversightMenuRef}>
                         <button
                           type="button"
@@ -3890,7 +4044,7 @@ export function TaskDetailContent({
                                 }}
                                 onKeyDown={handleOversightMenuKeyDown}
                                 disabled={!canNudgeOverseer || isNudgingOverseer}
-                                title={canNudgeOverseer ? t("taskDetail.oversight.nudgeTitle", "Inject steering guidance into the current stage now") : t("taskDetail.oversight.nudgeDisabledTitle", "Nudge unavailable: overseer is not actively watching this task")}
+                                title={canNudgeOverseer ? t("taskDetail.oversight.nudgeTitle", "Inject steering guidance into the current stage now") : nudgeDisabledReason}
                                 aria-label={t("taskDetail.oversight.nudgeAriaLabel", "Manual nudge")}
                               >
                                 {isNudgingOverseer ? <Loader2 className="spin" aria-hidden="true" /> : <Send aria-hidden="true" />}
@@ -3899,7 +4053,7 @@ export function TaskDetailContent({
                             )}
                             {!oversightIsOff && !canNudgeOverseer && (
                               <span className="detail-oversight-controls-helper" data-testid="detail-overseer-nudge-disabled-reason">
-                                {t("taskDetail.oversight.nudgeDisabledTitle", "Nudge unavailable: overseer is not actively watching this task")}
+                                {nudgeDisabledReason}
                               </span>
                             )}
                             {showStopOverseer && (
@@ -3942,119 +4096,7 @@ export function TaskDetailContent({
                           </div>
                         )}
                       </div>
-                    )
-                  ) : (
-                    <>
-                      {(hasTaskOversightOverride || workflowOversightResolved) && (
-                        <label
-                          className={`card-oversight-badge card-oversight-badge--${effectiveOversightLevel} detail-oversight-chip ${isSavingOversightLevel ? "detail-oversight-chip--saving" : ""}`}
-                        >
-                          <span>{t("taskDetail.oversight.label", "Oversight:")}</span>
-                          <select
-                            className="detail-oversight-select"
-                            data-testid="detail-oversight-level-select"
-                            value={hasTaskOversightOverride ? (task.plannerOversightLevel as string) : "__inherit__"}
-                            onChange={(event) => {
-                              void handleOversightLevelChange(event.target.value);
-                            }}
-                            disabled={isSavingOversightLevel}
-                            aria-label={t("taskDetail.oversight.ariaLabel", "Planner oversight level")}
-                          >
-                            <option value="__inherit__">
-                              {t("taskDetail.oversight.inherit", "Inherit ({{level}})", { level: OVERSIGHT_LEVEL_LABEL[effectiveOversightLevel] })}
-                            </option>
-                            {PLANNER_OVERSIGHT_LEVELS.map((levelOption) => (
-                              <option key={levelOption} value={levelOption}>
-                                {OVERSIGHT_LEVEL_LABEL[levelOption]}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                      )}
-                      {/*
-                      FNXC:PlannerOversight 2026-07-04-17:00:
-                      FN-7517 manual nudge / stop oversight / explain current action
-                      controls. Disabled (with an accessible aria-label reason) rather
-                      than hidden for nudge/explain when the overseer is off/inactive
-                      so operators understand WHY the control is inert instead of it
-                      silently vanishing; stop is hidden once oversight is already off
-                      (nothing left to stop) per the PROMPT's enablement rule, avoiding
-                      an always-on empty shell for the common oversight-off default.
-
-                      FNXC:PlannerOversight 2026-07-04-20:30:
-                      FN-7546 — operators reported these controls were confusing:
-                      unlabeled inline chips, greyed out most of the time, with the
-                      only "why" behind a mouse-hover `title`. Add a visible,
-                      non-interactive `detail-oversight-controls-label` group label
-                      (gated by the SAME condition as the buttons) so the cluster is
-                      identifiable, and a `detail-overseer-nudge-disabled-reason`
-                      helper line that surfaces the disabled reason in-DOM (not just
-                      on hover) whenever Nudge is unavailable. Explain is read-only
-                      and non-mutating, so its disabled gate is removed entirely
-                      (see handleExplainOverseer below) — it always opens its panel,
-                      which already renders an informative "not currently watching"
-                      empty state. Nudge's mutating gate (`canNudgeOverseer`) and
-                      Stop's confirm dialog are unchanged.
-                      */}
-                      {(hasTaskOversightOverride || workflowOversightResolved) && !oversightIsOff && (
-                        <span className="detail-oversight-controls-label" data-testid="detail-oversight-controls-label">
-                          {t("taskDetail.oversight.controlsLabel", "Overseer controls")}
-                        </span>
-                      )}
-                      {(hasTaskOversightOverride || workflowOversightResolved) && !oversightIsOff && (
-                        <button
-                          type="button"
-                          className={`btn btn-sm detail-overseer-nudge ${isNudgingOverseer ? "detail-overseer-nudge--saving" : ""}`}
-                          data-testid="detail-overseer-nudge"
-                          onClick={() => {
-                            void handleNudgeOverseer();
-                          }}
-                          disabled={!canNudgeOverseer || isNudgingOverseer}
-                          title={canNudgeOverseer ? t("taskDetail.oversight.nudgeTitle", "Inject steering guidance into the current stage now") : t("taskDetail.oversight.nudgeDisabledTitle", "Nudge unavailable: overseer is not actively watching this task")}
-                          aria-label={t("taskDetail.oversight.nudgeAriaLabel", "Manual nudge")}
-                        >
-                          {isNudgingOverseer ? <Loader2 className="spin" aria-hidden="true" /> : <Send aria-hidden="true" />}
-                          <span>{t("taskDetail.oversight.nudge", "Nudge")}</span>
-                        </button>
-                      )}
-                      {(hasTaskOversightOverride || workflowOversightResolved) && !oversightIsOff && !canNudgeOverseer && (
-                        <span className="detail-oversight-controls-helper" data-testid="detail-overseer-nudge-disabled-reason">
-                          {t("taskDetail.oversight.nudgeDisabledTitle", "Nudge unavailable: overseer is not actively watching this task")}
-                        </span>
-                      )}
-                      {(hasTaskOversightOverride || workflowOversightResolved) && showStopOverseer && (
-                        <button
-                          type="button"
-                          className={`btn btn-sm detail-overseer-stop ${isStoppingOverseer ? "detail-overseer-stop--saving" : ""}`}
-                          data-testid="detail-overseer-stop"
-                          onClick={() => {
-                            void handleStopOverseer();
-                          }}
-                          disabled={isStoppingOverseer}
-                          aria-label={t("taskDetail.oversight.stopAriaLabel", "Stop oversight")}
-                        >
-                          {isStoppingOverseer ? <Loader2 className="spin" aria-hidden="true" /> : <Square aria-hidden="true" />}
-                          <span>{t("taskDetail.oversight.stop", "Stop")}</span>
-                        </button>
-                      )}
-                      {(hasTaskOversightOverride || workflowOversightResolved) && !oversightIsOff && (
-                        <button
-                          type="button"
-                          className="btn btn-sm detail-overseer-explain"
-                          data-testid="detail-overseer-explain"
-                          onClick={() => {
-                            void handleExplainOverseer();
-                          }}
-                          title={canExplainOverseer ? t("taskDetail.oversight.explainTitle", "Explain the overseer's current action") : t("taskDetail.oversight.explainInactiveTitle", "Overseer is not currently watching this task — Explain shows its last known state")}
-                          aria-label={t("taskDetail.oversight.explainAriaLabel", "Explain current action")}
-                          aria-expanded={overseerExplainOpen}
-                        >
-                          <Info aria-hidden="true" />
-                          <span>{t("taskDetail.oversight.explain", "Explain")}</span>
-                        </button>
-                      )}
-                    </>
-                  )}
+                    )}
                 </div>
                 {overseerExplainOpen && (
                   <div className="detail-overseer-explain-panel" data-testid="detail-overseer-explain-panel" role="region" aria-live="polite">
@@ -4085,21 +4127,6 @@ export function TaskDetailContent({
                     )}
                   </div>
                 )}
-                {/*
-                FNXC:PlannerOversight 2026-07-04-18:00:
-                FN-7519 Intervention Timeline: rendered adjacent to the FN-7517
-                oversight cluster (no separate `.task-oversight-controls` class
-                exists in the merged FN-7517 code, so this attaches to the
-                closest existing seam — the same gating condition used by the
-                nudge/stop/explain controls above). Hidden entirely (no
-                leftover empty shell) when oversight is Off or unresolved, per
-                the Surface Enumeration gate.
-                */}
-                <PlannerInterventionTimeline
-                  taskId={task.id}
-                  projectId={projectId}
-                  hidden={!(hasTaskOversightOverride || workflowOversightResolved) || oversightIsOff}
-                />
                 {provenanceDisplay && (
                   <div className="detail-provenance">
                     <GitBranch aria-hidden="true" />
@@ -4157,6 +4184,36 @@ export function TaskDetailContent({
                       ) : (
                         ""
                       )}
+                    </span>
+                  </div>
+                )}
+                {revertOfId && (
+                  <div className="detail-provenance detail-revert-of-row">
+                    <GitBranch aria-hidden="true" />
+                    <span>
+                      {t("taskDetail.provenance.createdToUndo", "Created to undo")}{" "}
+                      <button
+                        type="button"
+                        className="detail-provenance-link"
+                        onClick={() => handleDepClick(revertOfId)}
+                      >
+                        {revertOfId}
+                      </button>
+                    </span>
+                  </div>
+                )}
+                {openUndoTask && (
+                  <div className="detail-provenance detail-undo-task-row">
+                    <GitBranch aria-hidden="true" />
+                    <span>
+                      {t("taskDetail.provenance.undoTask", "Undo task")}:{" "}
+                      <button
+                        type="button"
+                        className="detail-provenance-link"
+                        onClick={() => handleDepClick(openUndoTask.id)}
+                      >
+                        {openUndoTask.id}
+                      </button>
                     </span>
                   </div>
                 )}
@@ -4462,6 +4519,14 @@ export function TaskDetailContent({
                   loadingMore={agentLogLoadingMore}
                   totalCount={agentLogTotal}
                 />
+              ) : activitySegment === "interventions" ? (
+                // FNXC:PlannerOversight 2026-07-04-19:00: FN-7571 relocates the FN-7519
+                // Intervention Timeline from the inline oversight cluster into this
+                // Activity segment. Reachable only via the dropdown, which already gates
+                // on oversightActive, so no `hidden` prop is needed here.
+                <div className="detail-activity detail-activity--interventions" role="tabpanel">
+                  <PlannerInterventionTimeline taskId={task.id} projectId={projectId} />
+                </div>
               ) : (
                 <div className="detail-activity" role="tabpanel">
                   <button
@@ -5565,8 +5630,10 @@ export function TaskDetailContent({
             </>
           ) : (
             <>
-              {/* Approve/Reject Plan buttons for tasks awaiting approval — always visible */}
-              {task.column === "triage" && task.status === "awaiting-approval" && workingTask.prompt && (
+              {/* Approve/Reject Plan buttons — only for genuine manual plan-approval
+                  holds (FN-7559: a release-authorization hold shares the same
+                  status but must never be resolvable via this plain button click). */}
+              {isAwaitingApproval && !isReleaseAuthorizationHold && workingTask.prompt && (
                 <>
                   <button className="btn btn-primary btn-sm" onClick={handleApprovePlan}>
                     {t("taskDetail.plan.approveBtn", "Approve Plan")}
@@ -5577,10 +5644,26 @@ export function TaskDetailContent({
                 </>
               )}
 
+              {/* FN-7559: release-authorization holds are surfaced with a truthful,
+                  distinct reason instead of the manual Approve/Reject affordance —
+                  auto-approve-all does not (and must not) bypass this gate, and
+                  resolving it requires the explicit authorization marker in a
+                  regenerated spec, not a plain approval click. */}
+              {isReleaseAuthorizationHold && (
+                <span className="modal-hold-reason modal-hold-reason--release-authorization">
+                  {t(
+                    "taskDetail.plan.releaseAuthorizationHold",
+                    "Awaiting release authorization — add the explicit authorization marker to the spec and resubmit.",
+                  )}
+                </span>
+              )}
+
               {/* Standalone Delete button for triage-column tasks — triage tasks
                   hide the Actions dropdown (see condition below) so the user has
-                  no quick way to delete a freshly-created task otherwise. */}
-              {task.column === "triage" && task.status !== "awaiting-approval" && !canRetryTask && (
+                  no quick way to delete a freshly-created task otherwise. Release-
+                  authorization holds no longer render the Approve/Reject affordance,
+                  so Delete remains available for them too (FN-7559). */}
+              {task.column === "triage" && (!isAwaitingApproval || isReleaseAuthorizationHold) && !canRetryTask && (
                 <button
                   className="btn btn-sm btn-danger"
                   onClick={handleDelete}
@@ -5588,6 +5671,25 @@ export function TaskDetailContent({
                   title={t("taskDetail.delete.ariaLabel", "Delete task")}
                 >
                   {t("taskDetail.delete.btn", "Delete")}
+                </button>
+              )}
+
+              {/*
+              FNXC:TaskRevert 2026-07-05-00:00 (FN-7525):
+              Detail-view Revert button for done/archived tasks, mirroring the
+              standalone triage Delete button above. Rendered (not just menu-only)
+              because the detail view is the primary surface for reviewing a
+              completed task's outcome. Omitted — not disabled — when the task has
+              no landed commit to revert, avoiding an empty button shell.
+              */}
+              {(task.column === "done" || task.column === "archived") && onRevertTask && isRevertable && (
+                <button
+                  className="btn btn-sm"
+                  onClick={() => void handleRevertTask()}
+                  aria-label={t("tasks.revertTask", "Revert this task's changes")}
+                  title={t("tasks.revertTask", "Revert this task's changes")}
+                >
+                  {t("tasks.revert", "Revert")}
                 </button>
               )}
 
@@ -5792,6 +5894,30 @@ export function TaskDetailModal({ onClose, ...props }: TaskDetailModalProps) {
   useModalResizePersist(modalRef, true, "task-detail-modal-size");
   useMobileScrollLock(true);
   const overlayDismissProps = useOverlayDismiss(onClose);
+  /*
+  FNXC:TaskDetailSwipeBack 2026-07-05-12:30:
+  FN-7587 — track the mobile breakpoint locally (mirrors the same resize-listener pattern
+  used elsewhere in this file) so the list/modal/nested task-detail surface gets the same
+  presentation-only predictive-back slide/fade enter transition as the board main-panel
+  (MainContent.tsx), without threading a new isMobile prop through App.tsx/AppModals.tsx. This
+  is presentation-only: it never touches onClose/onRequestClose timing or the underlying
+  useNavigationHistory dismissal routing, and honors prefers-reduced-motion (see
+  TaskDetailModal.css). Defaults false so JSDOM/unit tests keep exercising the desktop (no
+  animation) branch unless a test explicitly narrows the viewport.
+  */
+  const [isMobileTransition, setIsMobileTransition] = useState(false);
+  useEffect(() => {
+    const updateIsMobileTransition = () => {
+      setIsMobileTransition(window.innerWidth <= TASK_DETAIL_MOBILE_TRANSITION_BREAKPOINT);
+    };
+
+    updateIsMobileTransition();
+    window.addEventListener("resize", updateIsMobileTransition);
+
+    return () => {
+      window.removeEventListener("resize", updateIsMobileTransition);
+    };
+  }, []);
 
   return (
     <div
@@ -5800,7 +5926,10 @@ export function TaskDetailModal({ onClose, ...props }: TaskDetailModalProps) {
       role="dialog"
       aria-modal="true"
     >
-      <div className="modal modal-lg task-detail-modal" ref={modalRef}>
+      <div
+        className={`modal modal-lg task-detail-modal${isMobileTransition ? " task-detail-modal--mobile-transition" : ""}`}
+        ref={modalRef}
+      >
         <TaskDetailContent
           {...props}
           onRequestClose={onClose}

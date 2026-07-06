@@ -10,6 +10,7 @@ import {
 } from "../builtin-workflows.js";
 import { BUILTIN_CODING_WORKFLOW_IR } from "../builtin-coding-workflow-ir.js";
 import { BUILTIN_STEPWISE_CODING_WORKFLOW_IR } from "../builtin-stepwise-coding-workflow-ir.js";
+import { BUILTIN_PR_WORKFLOW_IR } from "../builtin-pr-workflow-ir.js";
 import { BROWSER_VERIFICATION_GROUP_ID, BROWSER_VERIFICATION_STEP_NODE_ID } from "../builtin-browser-verification-group.js";
 import { CODE_REVIEW_STEP_NODE_ID } from "../builtin-code-review-group.js";
 import { PLAN_REVIEW_GROUP_ID, PLAN_REVIEW_STEP_NODE_ID } from "../builtin-plan-review-group.js";
@@ -343,12 +344,89 @@ describe("built-in workflows", () => {
     );
   });
 
+  /*
+   * FNXC:WorkflowBrainstorming 2026-07-05-00:00:
+   * FN-7584 parity coverage for the registered builtin:brainstorming built-in
+   * (FN-7579's ask-user -> refine -> exit-gate-on-approval composition,
+   * discoverable from the workflow picker ahead of the normal coding spine).
+   */
+  it("registers builtin:brainstorming as a default-enabled workflow ordered after the existing built-ins", () => {
+    const brainstorming = getBuiltinWorkflow("builtin:brainstorming");
+    expect(brainstorming).toBeDefined();
+    expect(brainstorming!.kind).toBe("workflow");
+    expect(() => parseWorkflowIr(brainstorming!.ir)).not.toThrow();
+    expect(defaultEnabledBuiltinWorkflowIds()).toContain("builtin:brainstorming");
+    expect(BUILTIN_WORKFLOWS.findIndex((workflow) => workflow.id === "builtin:brainstorming")).toBeGreaterThan(
+      BUILTIN_WORKFLOWS.findIndex((workflow) => workflow.id === "builtin:lead-generation"),
+    );
+    // Ordering assertion the suite pins elsewhere (`.slice(0, 5)`) must stay untouched.
+    expect(defaultEnabledBuiltinWorkflowIds().slice(0, 5)).toEqual([
+      "builtin:coding",
+      "builtin:coding-ideas",
+      "builtin:legacy-coding",
+      "builtin:quick-fix",
+      "builtin:review-heavy",
+    ]);
+  });
+
+  it("orders builtin:brainstorming's ask-user/exit-gate loop ahead of the plan/execute spine", () => {
+    const brainstorming = getBuiltinWorkflow("builtin:brainstorming")!;
+    const nodes = brainstorming.ir.nodes;
+    const askIndex = nodes.findIndex((node) => node.kind === "ask-user");
+    const exitIndex = nodes.findIndex((node) => node.kind === "exit-gate");
+    const planIndex = nodes.findIndex((node) => node.id === "plan");
+    const parseIndex = nodes.findIndex((node) => node.id === "parse");
+    const stepsIndex = nodes.findIndex((node) => node.id === "steps");
+
+    expect(askIndex).toBeGreaterThanOrEqual(0);
+    expect(exitIndex).toBeGreaterThan(askIndex);
+    expect(planIndex).toBeGreaterThan(exitIndex);
+    expect(parseIndex).toBeGreaterThan(planIndex);
+    expect(stepsIndex).toBeGreaterThan(parseIndex);
+  });
+
+  it("builtin:brainstorming still satisfies every merge-capable built-in invariant (completion summary, post-merge-verification, merge primitives, settings)", () => {
+    const brainstorming = getBuiltinWorkflow("builtin:brainstorming")!;
+    const summaryNodes = brainstorming.ir.nodes.filter(
+      (node) => node.kind === "prompt" && (node.config as { summaryTarget?: unknown } | undefined)?.summaryTarget === "task",
+    );
+    expect(summaryNodes).toHaveLength(1);
+    expect((summaryNodes[0]!.config as { toolMode?: unknown }).toolMode).toBe("readonly");
+
+    expect(brainstorming.ir.nodes.some((node) => node.id === "post-merge-verification")).toBe(true);
+    for (const id of [
+      "merge-gate",
+      "merge-retry",
+      "merge-manual-hold",
+      "branch-group-member-integration",
+      "branch-group-promotion",
+      "merge-attempt",
+      "recovery-router",
+    ]) {
+      expect(brainstorming.ir.nodes.some((node) => node.id === id)).toBe(true);
+    }
+
+    expect(brainstorming.ir.settings?.some((setting) => setting.id === "planReviewMaxRevisions")).toBe(true);
+    expect(brainstorming.ir.settings?.some((setting) => setting.id === "codeReviewMaxRevisions")).toBe(true);
+  });
+
   it("default workflow column ids equal the legacy enum values, in legacy order (KTD-1)", () => {
     expect(BUILTIN_CODING_WORKFLOW_IR.version).toBe("v2");
     if (BUILTIN_CODING_WORKFLOW_IR.version !== "v2") throw new Error("expected v2");
     expect(BUILTIN_CODING_WORKFLOW_IR.columns.map((c) => c.id)).toEqual([
       ...DEFAULT_WORKFLOW_COLUMN_IDS,
     ]);
+  });
+
+  // FNXC:Workflows 2026-07-05-00:00: FN-7599 — hand-authored default workflows (stepwise-coding, pr-workflow)
+  // must also label the intake column "Planning" while keeping the "triage" id, matching builtin-coding.
+  it("hand-authored default workflows label the intake column 'Planning' (FN-7599)", () => {
+    for (const ir of [BUILTIN_STEPWISE_CODING_WORKFLOW_IR, BUILTIN_PR_WORKFLOW_IR]) {
+      expect(ir.version).toBe("v2");
+      if (ir.version !== "v2") throw new Error("expected v2");
+      const triageColumn = ir.columns.find((column) => column.id === "triage");
+      expect(triageColumn).toEqual({ id: "triage", name: "Planning", traits: [{ trait: "intake" }] });
+    }
   });
 
   it("builtin:coding catalog entry is backed by the stepwise final-review IR", () => {

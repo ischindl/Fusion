@@ -60,14 +60,182 @@ vi.mock("../../api", () => ({
 }));
 
 // Mock xterm modules to prevent DOM errors in jsdom
-const mockFitAddonFit = vi.fn();
+/*
+FNXC:Terminal 2026-07-04-11:05:
+FN-7567 recurrence #4: forcing a genuine fontFamily/fontSize transition
+(FN-7561's `forceTerminalFontRemeasure`) is necessary but not sufficient. Real
+xterm's `DomRenderer._setDefaultSpacing()` — the letter-spacing compensation
+baked onto `.xterm-rows` (`spacing = dimensions.css.cell.width -
+widthCache.get('W')`) — is recomputed on `CharSizeService.onCharSizeChange`
+(any genuine option change) and on `handleDevicePixelRatioChange`, but NOT on
+`handleResize()` (the path `fitAddon.fit()` -> `terminal.resize(cols, rows)`
+takes; see `@xterm/xterm` `src/browser/renderer/dom/DomRenderer.ts`). Both
+settle sites call `forceTerminalFontRemeasure()` (which bakes spacing against
+the column count that predates `fit()`) and only THEN call `fitAddon.fit()`
+(which changes cols/cell-width but never re-bakes spacing), leaving a stale,
+oversized letter-spacing baked in until an unrelated later event happens to
+force another genuine option/DPR change. `mockFitAddonFit`/`mockTerminalInstance.cols`
+model this ordering-sensitive geometry (measured char width, cell width
+derived from cols, and the baked letter-spacing) directly, mirroring xterm's
+real internals, so the regression asserts actual geometry instead of a
+CSS-property or call-count check.
+*/
+const MOCK_CONTAINER_WIDTH_PX = 728;
+const MOCK_FALLBACK_CHAR_WIDTH_PX = 9;
+const MOCK_SETTLED_CHAR_WIDTH_PX = 7;
+/*
+FNXC:Terminal 2026-07-05-12:45:
+FN-7603 recurrence #5: real xterm's `CharSizeService` picks ONE of two
+measurement strategies at `terminal.open()` time — Canvas/OffscreenCanvas
+(`ctx.measureText("W")`, chosen whenever `OffscreenCanvas` + the required
+`TextMetrics` fields are available, i.e. virtually every real mobile browser)
+or a DOM fallback (`offsetWidth` of a hidden repeated-"W" span, chosen only if
+the canvas strategy's constructor throws). Separately, `DomRenderer.
+_setDefaultSpacing()`/`DomRendererRowFactory` ALWAYS measure via `WidthCache`,
+which is ALWAYS DOM-based (`offsetWidth`), regardless of which strategy
+CharSizeService picked. The FN-7567 mock above (and prior recurrences) modeled
+both as the SAME shared width, hiding this divergence. Model them
+independently: `mockCanvasCharWidthPx` (drives `FitAddon.fit()`'s column
+count, mirroring `dimensions.css.cell.width`) can diverge from
+`mockDomCharWidthPx` (mirrors `WidthCache.get('W')`) whenever
+`window.OffscreenCanvas` is defined at the moment the mock's `open()` runs —
+exactly mirroring the real `CharSizeService` constructor's
+`try { new OffscreenCanvasStrategy } catch { new DomFallbackStrategy }`
+selection. The production fix (`withDomBasedTerminalCharacterMeasurement`)
+hides `window.OffscreenCanvas` for the synchronous duration of `open()`, which
+this mock's `open()` observes to decide which strategy was "selected".
+*/
+const MOCK_CANVAS_DOM_DIVERGENCE_PX = 0.7;
+let mockFontsSettledForCharSize = false;
+let mockDomCharWidthPx = MOCK_FALLBACK_CHAR_WIDTH_PX;
+let mockCanvasCharWidthPx = MOCK_FALLBACK_CHAR_WIDTH_PX;
+let mockCharSizeServiceUsesCanvasStrategy = true;
+let mockBakedLetterSpacingPx = 0;
+
+function resetMockTerminalGeometry(): void {
+  mockFontsSettledForCharSize = false;
+  mockDomCharWidthPx = MOCK_FALLBACK_CHAR_WIDTH_PX;
+  mockCanvasCharWidthPx = MOCK_FALLBACK_CHAR_WIDTH_PX;
+  mockCharSizeServiceUsesCanvasStrategy = true;
+  mockBakedLetterSpacingPx = 0;
+  mockTerminalInstance.cols = 80;
+}
+
+/** Mirrors the real web font finishing its network load/paint settle. */
+function settleMockTerminalFontForCharSize(): void {
+  mockFontsSettledForCharSize = true;
+}
+
+/** The rendered cell/advance-width geometry invariant under test: 0 == tight contiguous monospace. */
+function getMockBakedLetterSpacingPx(): number {
+  return mockBakedLetterSpacingPx;
+}
+
+/**
+ * Mirrors real xterm's `CharSizeService` constructor picking its measurement
+ * strategy the moment `terminal.open()` runs: Canvas/OffscreenCanvas when
+ * `window.OffscreenCanvas` is present, DOM fallback otherwise.
+ */
+function mockSelectCharSizeServiceStrategyAtOpen(): void {
+  mockCharSizeServiceUsesCanvasStrategy =
+    typeof (window as unknown as { OffscreenCanvas?: unknown }).OffscreenCanvas !== "undefined";
+}
+
+// Mirrors xterm's CharSizeService.measure() -> onCharSizeChange ->
+// DomRenderer.handleCharSizeChanged() -> _updateDimensions() +
+// _setDefaultSpacing(): runs on every GENUINE fontFamily/fontSize option
+// transition, using the CURRENT (possibly stale, pre-fit) column count.
+//
+// `mockDomCharWidthPx` mirrors `WidthCache.get('W')` (always DOM-based).
+// `mockCanvasCharWidthPx` mirrors `CharSizeService.width`: identical to the
+// DOM value when the DOM strategy was selected at open(), but offset by a
+// fixed divergence when the Canvas strategy was selected — modeling the real
+// cross-pipeline (Canvas 2D vs DOM layout) measurement discrepancy that
+// `_setDefaultSpacing()`'s `dimensions.css.cell.width - widthCache.get('W')`
+// formula depends on both operands agreeing to correctly converge to zero.
+function mockHandleCharSizeChanged(): void {
+  mockDomCharWidthPx = mockFontsSettledForCharSize
+    ? MOCK_SETTLED_CHAR_WIDTH_PX
+    : MOCK_FALLBACK_CHAR_WIDTH_PX;
+  mockCanvasCharWidthPx = mockCharSizeServiceUsesCanvasStrategy
+    ? mockDomCharWidthPx + MOCK_CANVAS_DOM_DIVERGENCE_PX
+    : mockDomCharWidthPx;
+  const cols = (mockTerminalInstance.cols as number) || 1;
+  const cellWidthPx = MOCK_CONTAINER_WIDTH_PX / cols;
+  mockBakedLetterSpacingPx = cellWidthPx - mockDomCharWidthPx;
+}
+
+// Mirrors FitAddon.proposeDimensions(): cols = floor(availableWidth /
+// renderService.dimensions.css.cell.width) — the CANVAS-strategy-derived
+// value when that strategy is active, matching the installed
+// @xterm/addon-fit@0.10.0 source (`t.css.cell.width`).
+const mockFitAddonFit = vi.fn(() => {
+  mockTerminalInstance.cols = Math.max(
+    1,
+    Math.floor(MOCK_CONTAINER_WIDTH_PX / mockCanvasCharWidthPx),
+  );
+});
 
 let terminalKeyEventHandler: ((event: KeyboardEvent) => boolean) | null = null;
 let terminalDataHandler: ((data: string) => void) | null = null;
 
+/*
+FNXC:Terminal 2026-07-04-09:15:
+Real xterm.js's OptionsService setter is a strict no-op (no onOptionChange fires,
+so CharSizeService/DomRenderer never remeasure) whenever a caller reassigns an
+option to a value that already equals the option's current value — see
+`@xterm/xterm` `common/services/OptionsService.ts` `setter()`. The plain object
+literal previously used for `mockTerminalInstance.options` could not model this
+no-op-on-unchanged-value behavior, which is why prior FN-7456/FN-7460 coverage
+could pass while the real recurrence (reassigning the SAME resolved font after
+an async web-font settle never forces a genuine remeasure) stayed uncaught.
+Track a `fontRemeasureCount` that only increments on a genuine (distinct-value)
+fontFamily/fontSize transition so tests can assert xterm's measurement pipeline
+was actually forced to recompute, not merely reassigned to an identical value.
+*/
+let fontRemeasureCount = 0;
+function resetFontRemeasureCount(): void {
+  fontRemeasureCount = 0;
+}
+function getFontRemeasureCount(): number {
+  return fontRemeasureCount;
+}
+function createMockTerminalOptions(): Record<string, unknown> {
+  const store: Record<string, unknown> = {
+    fontSize: 14,
+    fontFamily: undefined,
+    cursorStyle: undefined,
+    cursorBlink: undefined,
+  };
+  const options: Record<string, unknown> = {};
+  for (const key of Object.keys(store)) {
+    Object.defineProperty(options, key, {
+      enumerable: true,
+      configurable: true,
+      get(): unknown {
+        return store[key];
+      },
+      set(value: unknown): void {
+        if (store[key] !== value) {
+          store[key] = value;
+          if (key === "fontFamily" || key === "fontSize") {
+            fontRemeasureCount += 1;
+            mockHandleCharSizeChanged();
+          }
+        }
+      },
+    });
+  }
+  return options;
+}
+
 const mockTerminalInstance = {
   loadAddon: vi.fn(),
-  open: vi.fn(),
+  // FN-7603: mirror the real CharSizeService constructor's strategy
+  // selection, which happens synchronously inside terminal.open().
+  open: vi.fn(() => {
+    mockSelectCharSizeServiceStrategyAtOpen();
+  }),
   onData: vi.fn((cb: (data: string) => void) => {
     terminalDataHandler = cb;
     return { dispose: vi.fn() };
@@ -83,7 +251,7 @@ const mockTerminalInstance = {
   clear: vi.fn(),
   focus: vi.fn(),
   refresh: vi.fn(),
-  options: { fontSize: 14 },
+  options: createMockTerminalOptions(),
   cols: 80,
   rows: 24,
 };
@@ -236,6 +404,8 @@ describe("TerminalModal", () => {
     mockTerminalInstance.options.fontSize = 14;
     mockTerminalInstance.options.cursorStyle = "block";
     mockTerminalInstance.options.cursorBlink = true;
+    resetFontRemeasureCount();
+    resetMockTerminalGeometry();
     mockCreateTerminalSession.mockResolvedValue({
       sessionId: "test-session-123",
       shell: "/bin/bash",
@@ -630,13 +800,26 @@ describe("TerminalModal", () => {
   it("encodes below-terminal in-flow layout without fixed overlay geometry", () => {
     const hostRule = terminalModalCss.match(/\.terminal-below-host\s*\{([^}]*)\}/)?.[1] ?? "";
     const belowRule = terminalModalCss.match(/\.modal\.terminal-modal\.terminal-modal--below\s*\{([^}]*)\}/)?.[1] ?? "";
-    const footerShellRule = terminalModalCss.match(/\.terminal-status-bar\s*\{/);
 
     expect(hostRule).toContain("display: flex;");
     expect(belowRule).toContain("position: relative;");
     expect(belowRule).not.toContain("position: fixed;");
     expect(belowRule).toContain("height: var(--terminal-below-height);");
-    expect(footerShellRule).toBeNull();
+
+    // FN-7560: the `.terminal-status-bar` footer is a MOBILE-ONLY affordance
+    // (isMobileTerminal, which itself excludes below mode) — it must exist only
+    // scoped inside a `@media (max-width: 768px)` block, never as a global/
+    // unscoped rule that could leak a footer shell into desktop/floating/
+    // pinned-below. Strip every mobile media-query block out of the
+    // stylesheet and confirm no `.terminal-status-bar` rule remains outside it.
+    const cssWithoutMobileMediaBlocks = terminalModalCss.replace(
+      /@media \(max-width: 768px\) \{(?:[^{}]*\{[^{}]*\})*[^{}]*\}/g,
+      "",
+    );
+    expect(cssWithoutMobileMediaBlocks).not.toMatch(/\.terminal-status-bar\s*\{/);
+    const mobileFooterRule =
+      terminalModalCss.match(/@media \(max-width: 768px\) \{[\s\S]*?\.terminal-status-bar\s*\{/);
+    expect(mobileFooterRule).not.toBeNull();
   });
 
   it("exposes floating drag and resize handles and refits after floating resize", async () => {
@@ -1301,6 +1484,16 @@ describe("TerminalModal", () => {
         terminalModalCss.match(/@media \(max-width: 768px\) \{[\s\S]*?\.terminal-shortcut-panel\s*\{([^}]*)\}/)?.[1] ?? "";
       expect(mobilePanelRule).toContain("max-height");
       expect(mobilePanelRule).not.toContain("min-width");
+    });
+
+    it("gives the mobile footer bar the same horizontal-scroll pattern (FN-7560)", () => {
+      // FN-7560: the mobile action-control footer must reuse the min-width: 0 +
+      // overflow-x: auto flex-scroll pattern so a crowded footer scrolls
+      // horizontally instead of clipping/wrapping.
+      const footerRule =
+        terminalModalCss.match(/@media \(max-width: 768px\) \{[\s\S]*?\.terminal-status-bar\s*\{([^}]*)\}/)?.[1] ?? "";
+      expect(footerRule).toContain("overflow-x: auto;");
+      expect(footerRule).toContain("min-width: 0;");
     });
 
     it("is hidden by default and toggles from header action", async () => {
@@ -3253,7 +3446,14 @@ describe("TerminalModal — mobile layout contract", () => {
     });
   });
 
-  it("header actions show connection state without a footer status-bar shell", async () => {
+  it("header actions show connection state without a footer status-bar shell (desktop, FN-7502)", async () => {
+    // FN-7560: explicitly desktop-width — the footer only exists on the mobile
+    // (isMobileTerminal) path; desktop/floating/pinned-below keep the FN-7502
+    // header-actions contract with NO footer shell rendered.
+    const previousInnerWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { value: 1280, configurable: true });
+
+    try {
     render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
 
     await waitFor(() => {
@@ -3263,6 +3463,238 @@ describe("TerminalModal — mobile layout contract", () => {
       const connectionStatus = actions.querySelector(".terminal-connection-status");
       expect(connectionStatus?.textContent).toBe("Disconnected");
     });
+    } finally {
+      Object.defineProperty(window, "innerWidth", { value: previousInnerWidth, configurable: true });
+    }
+  });
+
+  it("renders terminal action controls in a mobile footer, not the header (FN-7560)", async () => {
+    const previousInnerWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { value: 390, configurable: true });
+
+    try {
+      render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+      await waitFor(() => {
+        const footer = screen.getByTestId("terminal-footer-actions");
+        expect(footer.className).toContain("terminal-status-bar");
+
+        const clearBtn = screen.getByTestId("terminal-clear-btn");
+        const shortcutToggle = screen.getByTestId("terminal-shortcut-toggle");
+        const preferencesToggle = screen.getByTestId("terminal-preferences-toggle");
+        const fontSizeValue = screen.getByTestId("terminal-font-size-value");
+
+        // Controls live inside the footer region...
+        expect(footer.contains(clearBtn)).toBe(true);
+        expect(footer.contains(shortcutToggle)).toBe(true);
+        expect(footer.contains(preferencesToggle)).toBe(true);
+        expect(footer.contains(fontSizeValue)).toBe(true);
+
+        // ...and NOT inside the header.
+        const header = document.querySelector(".terminal-header");
+        expect(header).toBeTruthy();
+        expect(header?.contains(clearBtn)).toBe(false);
+        expect(header?.contains(shortcutToggle)).toBe(false);
+        expect(header?.contains(preferencesToggle)).toBe(false);
+        expect(header?.contains(fontSizeValue)).toBe(false);
+
+        // No empty .terminal-actions shell renders in the mobile header.
+        expect(header?.querySelector(".terminal-actions")).toBeNull();
+
+        // The close button and mobile tab dropdown remain in the header.
+        const closeBtn = screen.getByTestId("terminal-close-btn");
+        expect(header?.contains(closeBtn)).toBe(true);
+        expect(footer.contains(closeBtn)).toBe(false);
+        const mobileTabs = screen.getByTestId("terminal-mobile-tabs");
+        expect(header?.contains(mobileTabs)).toBe(true);
+      });
+    } finally {
+      Object.defineProperty(window, "innerWidth", { value: previousInnerWidth, configurable: true });
+    }
+  });
+
+  it("pins the mobile close button to the top-right corner of the header, not buried in .terminal-actions (FN-7565)", async () => {
+    const previousInnerWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { value: 390, configurable: true });
+
+    try {
+      render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+      await waitFor(() => {
+        const header = document.querySelector(".terminal-header");
+        expect(header).toBeTruthy();
+
+        // Exactly one close button renders on mobile — no duplicate close target.
+        const closeButtons = screen.getAllByTestId("terminal-close-btn");
+        expect(closeButtons).toHaveLength(1);
+        const closeBtn = closeButtons[0];
+
+        // It is a direct child of .terminal-header, not nested inside a wrapping
+        // .terminal-actions cluster (which no longer renders on mobile at all).
+        expect(closeBtn.parentElement).toBe(header);
+        expect(header?.querySelector(".terminal-actions")).toBeNull();
+
+        // It carries the mobile corner-pin class so CSS order/margin can place
+        // it last in flex order, flush against the right edge next to the tab
+        // dropdown, instead of falling back to order:0 (far left).
+        expect(closeBtn.className).toContain("terminal-close--corner");
+      });
+    } finally {
+      Object.defineProperty(window, "innerWidth", { value: previousInnerWidth, configurable: true });
+    }
+  });
+
+  it("keeps the mobile corner-pin invariant across connection/exit states (FN-7565)", async () => {
+    const previousInnerWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { value: 390, configurable: true });
+
+    try {
+      mockUseTerminal.mockReturnValue(
+        createMockTerminalState({ connectionStatus: "disconnected" }),
+      );
+      const { rerender } = render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+      await waitFor(() => {
+        const header = document.querySelector(".terminal-header");
+        const closeBtn = screen.getByTestId("terminal-close-btn");
+        expect(closeBtn.parentElement).toBe(header);
+        expect(closeBtn.className).toContain("terminal-close--corner");
+        // Reconnect control lives in the footer, not the header, so it cannot
+        // crowd the corner-pinned close button.
+        expect(screen.getByTestId("terminal-reconnect-btn").closest(".terminal-header")).toBeNull();
+      });
+
+      let exitCallback: ((code: number) => void) | null = null;
+      const customOnExit = vi.fn((cb: (code: number) => void) => {
+        exitCallback = cb;
+        return vi.fn();
+      });
+      mockUseTerminal.mockReturnValue(
+        createMockTerminalState({ connectionStatus: "connected", onExit: customOnExit }),
+      );
+      rerender(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+      await waitFor(() => {
+        expect(mockTerminalInstance.open).toHaveBeenCalled();
+      });
+      act(() => {
+        exitCallback?.(1);
+      });
+
+      await waitFor(() => {
+        const header = document.querySelector(".terminal-header");
+        const closeBtn = screen.getByTestId("terminal-close-btn");
+        expect(closeBtn.parentElement).toBe(header);
+        expect(closeBtn.className).toContain("terminal-close--corner");
+        // Restart control + exit code live in the footer, not the header.
+        expect(screen.getByTestId("terminal-restart-btn").closest(".terminal-header")).toBeNull();
+      });
+    } finally {
+      Object.defineProperty(window, "innerWidth", { value: previousInnerWidth, configurable: true });
+    }
+  });
+
+  it("keeps the desktop close button in .terminal-actions with no mobile-only corner slot (FN-7565)", async () => {
+    const previousInnerWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { value: 1280, configurable: true });
+
+    try {
+      render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+      await waitFor(() => {
+        const closeButtons = screen.getAllByTestId("terminal-close-btn");
+        expect(closeButtons).toHaveLength(1);
+        const closeBtn = closeButtons[0];
+        const actions = screen.getByTestId("terminal-actions");
+
+        // Desktop/floating/pinned-below keep the FN-7502 placement: close stays
+        // the rightmost child of .terminal-actions.
+        expect(actions.contains(closeBtn)).toBe(true);
+        expect(actions.lastElementChild).toBe(closeBtn);
+
+        // No mobile-only corner class/slot renders on desktop.
+        expect(closeBtn.className).not.toContain("terminal-close--corner");
+      });
+    } finally {
+      Object.defineProperty(window, "innerWidth", { value: previousInnerWidth, configurable: true });
+    }
+  });
+
+  it("corner-pins the mobile close button after .terminal-mobile-tabs and .terminal-workspace-picker in flex order (FN-7565)", () => {
+    const nonMediaMobileRule =
+      terminalModalCss.match(/\.modal\.terminal-modal\.terminal-modal--mobile \.terminal-close--corner\s*\{([^}]*)\}/)?.[1] ?? "";
+    const mediaMobileRule =
+      terminalModalCss.match(/@media \(max-width: 768px\) \{[\s\S]*?\.terminal-close--corner\s*\{([^}]*)\}/)?.[1] ?? "";
+    const mobileTabsOrderMedia = terminalModalCss.match(/@media \(max-width: 768px\) \{[\s\S]*?\.terminal-mobile-tabs\s*\{([^}]*)\}/)?.[1] ?? "";
+    const workspacePickerOrderMedia = terminalModalCss.match(/@media \(max-width: 768px\) \{[\s\S]*?\.terminal-workspace-picker\s*\{([^}]*)\}/)?.[1] ?? "";
+    const baseHeaderRule = terminalModalCss.match(/\.terminal-header\s*\{([^}]*)\}/)?.[1] ?? "";
+
+    expect(nonMediaMobileRule).toContain("order: 3;");
+    expect(nonMediaMobileRule).toContain("margin-inline-start: auto;");
+    expect(mediaMobileRule).toContain("order: 3;");
+    expect(mediaMobileRule).toContain("margin-inline-start: auto;");
+    expect(mobileTabsOrderMedia).toContain("order: 1;");
+    expect(workspacePickerOrderMedia).toContain("order: 2;");
+    // Base header stays a flex row so order-based corner-pinning applies.
+    expect(baseHeaderRule).toContain("display: flex;");
+  });
+
+  it("shows the reconnect control in the mobile footer when disconnected (FN-7560)", async () => {
+    const previousInnerWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { value: 390, configurable: true });
+
+    try {
+      mockUseTerminal.mockReturnValue(
+        createMockTerminalState({ connectionStatus: "disconnected" }),
+      );
+
+      render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+      await waitFor(() => {
+        const footer = screen.getByTestId("terminal-footer-actions");
+        const reconnectBtn = screen.getByTestId("terminal-reconnect-btn");
+        expect(footer.contains(reconnectBtn)).toBe(true);
+      });
+    } finally {
+      Object.defineProperty(window, "innerWidth", { value: previousInnerWidth, configurable: true });
+    }
+  });
+
+  it("shows the restart control and exit code in the mobile footer after the terminal exits (FN-7560)", async () => {
+    const previousInnerWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { value: 390, configurable: true });
+
+    let exitCallback: ((code: number) => void) | null = null;
+    const customOnExit = vi.fn((cb: (code: number) => void) => {
+      exitCallback = cb;
+      return vi.fn();
+    });
+
+    try {
+      mockUseTerminal.mockReturnValue(
+        createMockTerminalState({ connectionStatus: "connected", onExit: customOnExit }),
+      );
+
+      render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+      await waitFor(() => {
+        expect(mockTerminalInstance.open).toHaveBeenCalled();
+      });
+
+      act(() => {
+        exitCallback?.(0);
+      });
+
+      await waitFor(() => {
+        const footer = screen.getByTestId("terminal-footer-actions");
+        const restartBtn = screen.getByTestId("terminal-restart-btn");
+        const exitCodeEl = screen.getByTestId("terminal-exit-code");
+        expect(footer.contains(restartBtn)).toBe(true);
+        expect(footer.contains(exitCodeEl)).toBe(true);
+      });
+    } finally {
+      Object.defineProperty(window, "innerWidth", { value: previousInnerWidth, configurable: true });
+    }
   });
 
   it("delivers buffered terminal output to xterm when subscriptions are established after websocket messages", async () => {
@@ -6793,6 +7225,766 @@ describe("TerminalModal — project-context propagation (FN-1765)", () => {
     // New xterm should be initialized for the new session
     await waitFor(() => {
       expect(mockTerminalInstance.open).toHaveBeenCalled();
+    });
+  });
+});
+
+/*
+FNXC:Terminal 2026-07-04-09:20:
+FN-7561 root cause: after FN-7456/FN-7460 disabled `text-size-adjust` and waited
+for `document.fonts.ready`, both the initial xterm-init settle path and the live
+preferences-apply settle path reapply `terminal.options.fontFamily`/`fontSize`
+by assigning the ALREADY-RESOLVED value back onto the option. Real xterm's
+OptionsService setter is a no-op when the new value strictly equals the current
+value (no `onOptionChange` fires), so CharSizeService's canvas/DOM character
+measurement and DomRenderer's `_setDefaultSpacing()` letter-spacing compensation
+are never actually recomputed against the web font that only finished loading
+AFTER xterm's initial (pre-load, fallback-font) measurement. The stale
+pre-load cell metrics + compensation persist as visible excess inter-character
+gaps until an unrelated event (resize/orientation/DPR change) happens to force
+a genuine value change. This suite proves the app now forces a genuine
+value-changing remeasure every time font metrics settle, not just a same-value
+reassignment.
+*/
+describe("TerminalModal — FN-7561 mobile inter-character spacing (xterm no-op remeasure)", () => {
+  const mockOnClose = vi.fn();
+  const mockSendInput = vi.fn();
+  const mockResize = vi.fn();
+  const mockReconnect = vi.fn();
+
+  const createMockTerminalState = (overrides = {}) => ({
+    connectionStatus: "connected" as const,
+    sendInput: mockSendInput,
+    resize: mockResize,
+    onData: vi.fn(() => vi.fn()),
+    onExit: vi.fn(() => vi.fn()),
+    onConnect: vi.fn(() => vi.fn()),
+    onScrollback: vi.fn(() => vi.fn()),
+    reconnect: mockReconnect,
+    onSessionInvalid: vi.fn(() => vi.fn()),
+    ...overrides,
+  });
+
+  let previousInnerWidth: number;
+  let previousOntouchstart: unknown;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetFontRemeasureCount();
+    resetMockTerminalGeometry();
+    vi.spyOn(window, "matchMedia").mockImplementation((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+    previousInnerWidth = window.innerWidth;
+    previousOntouchstart = window.ontouchstart;
+    // Real reported device: a narrow touch-primary mobile viewport.
+    Object.defineProperty(window, "innerWidth", { value: 390, configurable: true });
+    Object.defineProperty(window, "ontouchstart", { value: null, configurable: true });
+    mockTerminalInstance.options.fontFamily = XTERM_FONT_FAMILY;
+    mockTerminalInstance.options.fontSize = 12;
+    mockTerminalInstance.options.cursorStyle = "block";
+    mockTerminalInstance.options.cursorBlink = true;
+    resetFontRemeasureCount();
+    resetMockTerminalGeometry();
+    mockUseTerminal.mockReturnValue(createMockTerminalState());
+    mockUseTerminalSessions.mockReturnValue(defaultSessionState);
+    mockUseWorkspaces.mockReturnValue({
+      projectName: "kb",
+      workspaces: [],
+      loading: false,
+      error: null,
+    });
+    mockCreateTerminalSession.mockResolvedValue({
+      sessionId: "test-session-123",
+      shell: "/bin/bash",
+      cwd: "/project",
+    });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, "innerWidth", { value: previousInnerWidth, configurable: true });
+    if (previousOntouchstart === undefined) {
+      delete (window as unknown as { ontouchstart?: unknown }).ontouchstart;
+    } else {
+      Object.defineProperty(window, "ontouchstart", { value: previousOntouchstart, configurable: true });
+    }
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("forces a genuine xterm character-metric remeasure after the mobile web font settles later than xterm's initial measurement", async () => {
+    // Model the font not being ready yet at xterm construction (the real
+    // recurrence: the custom web font loads asynchronously, AFTER xterm's
+    // initial fallback-font character measurement), then settling shortly
+    // after. `waitForTerminalFontMetrics` awaits exactly this `load`/`ready`
+    // pair before reapplying font options.
+    let resolveLoad: (() => void) | undefined;
+    let resolveReady: (() => void) | undefined;
+    const load = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveLoad = resolve;
+        }),
+    );
+    Object.defineProperty(document, "fonts", {
+      value: {
+        load,
+        ready: new Promise<void>((resolve) => {
+          resolveReady = resolve;
+        }),
+      },
+      configurable: true,
+    });
+
+    render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+    await waitFor(() => expect(mockTerminalInstance.open).toHaveBeenCalled());
+    expectMeasurementSafeFontStack(mockTerminalInstance.options.fontFamily as string);
+
+    // Nothing else has changed the resolved font/size at this point, so any
+    // remeasure count observed so far merely reflects the initial synchronous
+    // application done during xterm construction/effect setup — reset it and
+    // isolate exactly what happens once the deferred font-load settles.
+    resetFontRemeasureCount();
+    resetMockTerminalGeometry();
+
+    await act(async () => {
+      resolveLoad?.();
+      resolveReady?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // The resolved fontFamily/fontSize the app wants after settle is identical
+    // to what was already applied before the font finished loading (the user
+    // never touched terminal preferences). A naive "reassign the resolved
+    // value" is therefore a no-op against real xterm's OptionsService
+    // (identical-value assignments never fire onOptionChange), so
+    // CharSizeService/DomRenderer would silently keep stale pre-load cell
+    // metrics forever. The fix must force at least one genuine (distinct
+    // value) fontFamily/fontSize transition here so xterm actually
+    // remeasures against the now-loaded font — this is the invariant
+    // FN-7456/FN-7460's `text-size-adjust`/`--keyboard-overlap`/`--vv-height`
+    // assertions never covered.
+    await waitFor(() => {
+      expect(getFontRemeasureCount()).toBeGreaterThan(0);
+    });
+
+    // The terminal must still land on the correct, symbols-free, resolved
+    // font after the forced remeasure settles.
+    expectMeasurementSafeFontStack(mockTerminalInstance.options.fontFamily as string);
+    expect(mockTerminalInstance.options.fontFamily).toBe(XTERM_FONT_FAMILY);
+  });
+
+  it("also forces the remeasure when the mobile keyboard is already open at initial render", async () => {
+    const mockVV = {
+      width: 375,
+      height: 300,
+      offsetTop: 0,
+      offsetLeft: 0,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    };
+    Object.defineProperty(window, "visualViewport", {
+      value: mockVV,
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(window, "innerHeight", { value: 300, writable: true, configurable: true });
+
+    let resolveLoad: (() => void) | undefined;
+    let resolveReady: (() => void) | undefined;
+    Object.defineProperty(document, "fonts", {
+      value: {
+        load: vi.fn(
+          () =>
+            new Promise<void>((resolve) => {
+              resolveLoad = resolve;
+            }),
+        ),
+        ready: new Promise<void>((resolve) => {
+          resolveReady = resolve;
+        }),
+      },
+      configurable: true,
+    });
+
+    render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+    await waitFor(() => expect(mockTerminalInstance.open).toHaveBeenCalled());
+    resetFontRemeasureCount();
+    resetMockTerminalGeometry();
+
+    await act(async () => {
+      resolveLoad?.();
+      resolveReady?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(getFontRemeasureCount()).toBeGreaterThan(0);
+    });
+    expectMeasurementSafeFontStack(mockTerminalInstance.options.fontFamily as string);
+
+    Object.defineProperty(window, "visualViewport", { value: undefined, writable: true, configurable: true });
+  });
+});
+
+/*
+FNXC:Terminal 2026-07-04-11:20:
+FN-7567 (recurrence #4 of mobile terminal inter-character spacing, after
+FN-7456's DOM glyph-fallback fix, FN-7460's `text-size-adjust: none`, and
+FN-7561's `forceTerminalFontRemeasure`) root cause: real xterm.js's
+`DomRenderer._setDefaultSpacing()` bakes the letter-spacing compensation used
+to correct rounding drift between the measured character width and the
+computed cell width (`dimensions.css.cell.width`, which is itself derived from
+the container width divided by the CURRENT column count). That bake only runs
+from `handleCharSizeChanged()` (wired to `CharSizeService.onCharSizeChange`,
+i.e. any genuine `fontFamily`/`fontSize` option transition) and from
+`handleDevicePixelRatioChange()` \u2014 NEVER from `handleResize()`, which is what
+`fitAddon.fit()` -> `terminal.resize(cols, rows)` triggers. Both mobile
+settle sites (`remeasureAfterTerminalFontLoad` in TerminalModal.tsx and its
+SessionTerminal.tsx sibling, plus the live-preferences-apply settle path in
+both files) call `forceTerminalFontRemeasure()` \u2014 which correctly forces a
+genuine option transition and DOES bake letter-spacing \u2014 but they bake it
+using the STALE column count that predates `fitAddon.fit()`. `fitAddon.fit()`
+then changes the column count (and therefore the true cell width) but never
+re-bakes the letter-spacing, so the terminal keeps rendering with a spacing
+value computed against a column count that no longer matches reality. This
+produces genuinely excessive inter-character gaps that persist until an
+unrelated later event (device-pixel-ratio change, orientation, reconnect)
+happens to force another *genuine* option/DPR-triggered remeasure \u2014 exactly
+matching the "only repairs itself after an incidental refit" report. See
+`docs/solutions/ui-bugs/xterm-options-noop-remeasure-after-font-settle.md`
+recurrence-#4 addendum.
+
+This suite asserts the actual rendered geometry invariant (baked letter-spacing
+== 0, i.e. cell width matches the settled glyph advance width) using a
+xterm-internals-accurate model (`mockHandleCharSizeChanged`/`mockFitAddonFit`),
+not a re-assertion of the FN-7456/FN-7460/FN-7561 CSS-property/call-count
+checks. It fails on pre-fix code (stale pre-fit letter-spacing survives the
+settle) and passes once the fix re-bakes spacing AFTER `fitAddon.fit()`
+settles the column count.
+*/
+describe("TerminalModal — FN-7567 mobile inter-character spacing (stale post-fit letter-spacing bake)", () => {
+  const mockOnClose = vi.fn();
+  const mockSendInput = vi.fn();
+  const mockResize = vi.fn();
+  const mockReconnect = vi.fn();
+
+  const createMockTerminalState = (overrides = {}) => ({
+    connectionStatus: "connected" as const,
+    sendInput: mockSendInput,
+    resize: mockResize,
+    onData: vi.fn(() => vi.fn()),
+    onExit: vi.fn(() => vi.fn()),
+    onConnect: vi.fn(() => vi.fn()),
+    onScrollback: vi.fn(() => vi.fn()),
+    reconnect: mockReconnect,
+    onSessionInvalid: vi.fn(() => vi.fn()),
+    ...overrides,
+  });
+
+  let previousInnerWidth: number;
+  let previousOntouchstart: unknown;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetFontRemeasureCount();
+    resetMockTerminalGeometry();
+    vi.spyOn(window, "matchMedia").mockImplementation((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+    previousInnerWidth = window.innerWidth;
+    previousOntouchstart = window.ontouchstart;
+    // Real reported device: a narrow touch-primary mobile viewport.
+    Object.defineProperty(window, "innerWidth", { value: 390, configurable: true });
+    Object.defineProperty(window, "ontouchstart", { value: null, configurable: true });
+    mockTerminalInstance.options.fontFamily = XTERM_FONT_FAMILY;
+    mockTerminalInstance.options.fontSize = 12;
+    mockTerminalInstance.options.cursorStyle = "block";
+    mockTerminalInstance.options.cursorBlink = true;
+    resetFontRemeasureCount();
+    resetMockTerminalGeometry();
+    mockUseTerminal.mockReturnValue(createMockTerminalState());
+    mockUseTerminalSessions.mockReturnValue(defaultSessionState);
+    mockUseWorkspaces.mockReturnValue({
+      projectName: "kb",
+      workspaces: [],
+      loading: false,
+      error: null,
+    });
+    mockCreateTerminalSession.mockResolvedValue({
+      sessionId: "test-session-123",
+      shell: "/bin/bash",
+      cwd: "/project",
+    });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, "innerWidth", { value: previousInnerWidth, configurable: true });
+    if (previousOntouchstart === undefined) {
+      delete (window as unknown as { ontouchstart?: unknown }).ontouchstart;
+    } else {
+      Object.defineProperty(window, "ontouchstart", { value: previousOntouchstart, configurable: true });
+    }
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("renders contiguous monospace cells (zero baked letter-spacing) once the mobile web font settles after xterm's initial fit", async () => {
+    let resolveLoad: (() => void) | undefined;
+    let resolveReady: (() => void) | undefined;
+    Object.defineProperty(document, "fonts", {
+      value: {
+        load: vi.fn(
+          () =>
+            new Promise<void>((resolve) => {
+              resolveLoad = resolve;
+            }),
+        ),
+        ready: new Promise<void>((resolve) => {
+          resolveReady = resolve;
+        }),
+      },
+      configurable: true,
+    });
+
+    render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+    await waitFor(() => expect(mockTerminalInstance.open).toHaveBeenCalled());
+    resetFontRemeasureCount();
+
+    // Simulate the real recurrence: the custom web font finishes downloading
+    // AFTER xterm's initial fallback-font measurement/fit already ran and
+    // baked a letter-spacing value that was internally consistent for the
+    // FALLBACK font at that (stale) column count.
+    settleMockTerminalFontForCharSize();
+
+    await act(async () => {
+      resolveLoad?.();
+      resolveReady?.();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(getFontRemeasureCount()).toBeGreaterThan(0);
+    });
+
+    // The measured geometry invariant: once font metrics settle and xterm
+    // refits to the correct column count for the SETTLED font, the baked
+    // letter-spacing compensation must be recomputed against that FINAL
+    // column count, not the stale pre-fit one. A nonzero value here means
+    // rendered cells are wider (or narrower) than the glyph advance width \u2014
+    // exactly the reported "characters spread across cells" symptom \u2014 and
+    // this assertion fails on pre-fix code, which bakes spacing only BEFORE
+    // `fitAddon.fit()` runs and never re-bakes it afterward.
+    await waitFor(() => {
+      expect(getMockBakedLetterSpacingPx()).toBeCloseTo(0, 5);
+    });
+  });
+
+  it("also settles to zero baked letter-spacing at persisted 10px with the mobile keyboard already open at initial render", async () => {
+    window.localStorage.setItem(TERMINAL_FONT_SIZE_KEY, "10");
+
+    const mockVV = {
+      width: 375,
+      height: 300,
+      offsetTop: 0,
+      offsetLeft: 0,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    };
+    Object.defineProperty(window, "visualViewport", {
+      value: mockVV,
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(window, "innerHeight", { value: 300, writable: true, configurable: true });
+
+    let resolveLoad: (() => void) | undefined;
+    let resolveReady: (() => void) | undefined;
+    Object.defineProperty(document, "fonts", {
+      value: {
+        load: vi.fn(
+          () =>
+            new Promise<void>((resolve) => {
+              resolveLoad = resolve;
+            }),
+        ),
+        ready: new Promise<void>((resolve) => {
+          resolveReady = resolve;
+        }),
+      },
+      configurable: true,
+    });
+
+    render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+    await waitFor(() => expect(mockTerminalInstance.open).toHaveBeenCalled());
+    resetFontRemeasureCount();
+    settleMockTerminalFontForCharSize();
+
+    await act(async () => {
+      resolveLoad?.();
+      resolveReady?.();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(getFontRemeasureCount()).toBeGreaterThan(0);
+    });
+
+    // Same measured geometry invariant, but with the keyboard already
+    // constraining the viewport at initial render and a persisted 10px font —
+    // the exact FN-7460 screenshot conditions — to prove the fix is not
+    // accidentally scoped to only the default font-size/no-keyboard case.
+    await waitFor(() => {
+      expect(getMockBakedLetterSpacingPx()).toBeCloseTo(0, 5);
+    });
+
+    Object.defineProperty(window, "visualViewport", { value: undefined, writable: true, configurable: true });
+  });
+
+  it("also settles to zero baked letter-spacing when a live font-size preference change resettles after fit", async () => {
+    Object.defineProperty(document, "fonts", {
+      value: {
+        load: vi.fn(() => Promise.resolve()),
+        ready: Promise.resolve(),
+      },
+      configurable: true,
+    });
+
+    render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+    await waitFor(() => expect(mockTerminalInstance.open).toHaveBeenCalled());
+
+    // Let the initial-open settle path finish and reach a consistent baseline.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    settleMockTerminalFontForCharSize();
+    resetFontRemeasureCount();
+
+    fireEvent.click(await screen.findByTestId("terminal-font-size-increase"));
+
+    await waitFor(() => {
+      expect(getFontRemeasureCount()).toBeGreaterThan(0);
+    });
+
+    await waitFor(() => {
+      expect(getMockBakedLetterSpacingPx()).toBeCloseTo(0, 5);
+    });
+  });
+});
+
+/*
+FNXC:Terminal 2026-07-05-12:50:
+FN-7603 (recurrence #5 of mobile terminal inter-character spacing, after
+FN-7456's DOM glyph-fallback fix, FN-7460's `text-size-adjust: none`,
+FN-7561's `forceTerminalFontRemeasure`, and FN-7567's post-fit re-bake) root
+cause, grounded against the installed `@xterm/xterm@5.5.0` source (see task
+document key="xterm-source-audit" on FN-7603): xterm's `CharSizeService`
+selects ONE of two independent measurement strategies the moment
+`terminal.open()` runs — a Canvas/`OffscreenCanvas` strategy (chosen whenever
+`OffscreenCanvas` + the required `TextMetrics` fields are available, i.e.
+virtually every real modern mobile browser) or a DOM fallback strategy (only
+selected if the canvas strategy's constructor throws). `dimensions.css.cell.width`
+(which feeds `FitAddon.fit()`'s column count AND `DomRenderer.
+_setDefaultSpacing()`'s baked letter-spacing) derives from whichever strategy
+CharSizeService picked. Separately, `WidthCache` (used by both
+`_setDefaultSpacing()` and `DomRendererRowFactory`'s per-glyph override) is
+ALWAYS DOM-based. Real glyphs are painted 100% through the DOM, so
+`_setDefaultSpacing()`'s `cell.width - widthCache.get('W')` formula only
+converges to zero — i.e. tight, contiguous monospace cells — when BOTH
+operands are measured through the SAME pipeline. Canvas 2D text measurement
+and DOM/CSS text layout are two different browser rendering pipelines that can
+disagree by a small but visible amount for the same font on the same device —
+a divergence none of FN-7456/FN-7460/FN-7561/FN-7567 (or their test doubles)
+ever modeled, because all four assumed a single unified character-width
+measurement. This is why the reported symptom survived every prior remedy:
+none of them touched WHICH measurement pipeline xterm's cell geometry is
+computed from, only WHEN it recomputes.
+
+The fix (`withDomBasedTerminalCharacterMeasurement` in terminalPreferences.ts)
+makes `window.OffscreenCanvas` transiently unavailable for the synchronous
+duration of `terminal.open()`, forcing `CharSizeService`'s constructor
+try-block to throw and self-select its own DOM fallback strategy — unifying
+`dimensions.css.cell.width` and `WidthCache.get('W')` onto the SAME
+measurement pipeline instead of adding any hardcoded letter-spacing
+compensation.
+
+This suite extends the FN-7567 geometry-accurate mock
+(`mockHandleCharSizeChanged`/`mockFitAddonFit`) to model the Canvas-vs-DOM
+divergence explicitly (`mockCanvasCharWidthPx` vs `mockDomCharWidthPx`, gated
+on `window.OffscreenCanvas` availability observed at the mock's `open()` call
+— exactly mirroring the real CharSizeService constructor's strategy
+selection), which the FN-7567 double could not represent (it modeled both
+measurements as a single shared value). It fails on pre-fix code — where
+`window.OffscreenCanvas` stays available throughout `open()`, so the mock
+selects its "Canvas strategy" and the baked letter-spacing settles to a
+persistent NONZERO value even after the full settle + pre/post-fit remeasure
+sequence FN-7561/FN-7567 added — and passes once the fix hides
+`OffscreenCanvas` around `open()`, converging the bake to exactly zero.
+See `docs/solutions/ui-bugs/xterm-options-noop-remeasure-after-font-settle.md`
+recurrence-#5 section.
+*/
+describe("TerminalModal — FN-7603 mobile inter-character spacing (Canvas vs DOM CharSizeService measurement divergence)", () => {
+  const mockOnClose = vi.fn();
+  const mockSendInput = vi.fn();
+  const mockResize = vi.fn();
+  const mockReconnect = vi.fn();
+
+  const createMockTerminalState = (overrides = {}) => ({
+    connectionStatus: "connected" as const,
+    sendInput: mockSendInput,
+    resize: mockResize,
+    onData: vi.fn(() => vi.fn()),
+    onExit: vi.fn(() => vi.fn()),
+    onConnect: vi.fn(() => vi.fn()),
+    onScrollback: vi.fn(() => vi.fn()),
+    reconnect: mockReconnect,
+    onSessionInvalid: vi.fn(() => vi.fn()),
+    ...overrides,
+  });
+
+  let previousInnerWidth: number;
+  let previousOntouchstart: unknown;
+  let previousOffscreenCanvas: unknown;
+  let hadOwnOffscreenCanvas: boolean;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetFontRemeasureCount();
+    resetMockTerminalGeometry();
+    vi.spyOn(window, "matchMedia").mockImplementation((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+    previousInnerWidth = window.innerWidth;
+    previousOntouchstart = window.ontouchstart;
+    hadOwnOffscreenCanvas = Object.prototype.hasOwnProperty.call(window, "OffscreenCanvas");
+    previousOffscreenCanvas = (window as unknown as { OffscreenCanvas?: unknown }).OffscreenCanvas;
+    // Real reported device: a narrow touch-primary mobile viewport with a
+    // modern engine that supports OffscreenCanvas (true on essentially every
+    // real mobile Safari/Chrome), so xterm's CharSizeService would pick its
+    // Canvas measurement strategy absent the fix.
+    Object.defineProperty(window, "innerWidth", { value: 390, configurable: true });
+    Object.defineProperty(window, "ontouchstart", { value: null, configurable: true });
+    Object.defineProperty(window, "OffscreenCanvas", {
+      value: class MockOffscreenCanvas {},
+      writable: true,
+      configurable: true,
+    });
+    window.localStorage.removeItem(TERMINAL_FONT_SIZE_KEY);
+    window.localStorage.removeItem(TERMINAL_PREFERENCES_KEY);
+    mockTerminalInstance.options.fontFamily = XTERM_FONT_FAMILY;
+    mockTerminalInstance.options.fontSize = 12;
+    mockTerminalInstance.options.cursorStyle = "block";
+    mockTerminalInstance.options.cursorBlink = true;
+    resetFontRemeasureCount();
+    resetMockTerminalGeometry();
+    mockUseTerminal.mockReturnValue(createMockTerminalState());
+    mockUseTerminalSessions.mockReturnValue(defaultSessionState);
+    mockUseWorkspaces.mockReturnValue({
+      projectName: "kb",
+      workspaces: [],
+      loading: false,
+      error: null,
+    });
+    mockCreateTerminalSession.mockResolvedValue({
+      sessionId: "test-session-123",
+      shell: "/bin/bash",
+      cwd: "/project",
+    });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, "innerWidth", { value: previousInnerWidth, configurable: true });
+    if (previousOntouchstart === undefined) {
+      delete (window as unknown as { ontouchstart?: unknown }).ontouchstart;
+    } else {
+      Object.defineProperty(window, "ontouchstart", { value: previousOntouchstart, configurable: true });
+    }
+    if (hadOwnOffscreenCanvas) {
+      Object.defineProperty(window, "OffscreenCanvas", {
+        value: previousOffscreenCanvas,
+        writable: true,
+        configurable: true,
+      });
+    } else {
+      delete (window as unknown as { OffscreenCanvas?: unknown }).OffscreenCanvas;
+    }
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("converges baked letter-spacing to exactly zero by forcing xterm off its Canvas character-measurement strategy during open()", async () => {
+    let resolveLoad: (() => void) | undefined;
+    let resolveReady: (() => void) | undefined;
+    Object.defineProperty(document, "fonts", {
+      value: {
+        load: vi.fn(
+          () =>
+            new Promise<void>((resolve) => {
+              resolveLoad = resolve;
+            }),
+        ),
+        ready: new Promise<void>((resolve) => {
+          resolveReady = resolve;
+        }),
+      },
+      configurable: true,
+    });
+
+    render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+    await waitFor(() => expect(mockTerminalInstance.open).toHaveBeenCalled());
+    resetFontRemeasureCount();
+
+    settleMockTerminalFontForCharSize();
+
+    await act(async () => {
+      resolveLoad?.();
+      resolveReady?.();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(getFontRemeasureCount()).toBeGreaterThan(0);
+    });
+
+    /*
+     * The decisive geometry assertion for this recurrence: on pre-fix code,
+     * `window.OffscreenCanvas` stays defined throughout `terminal.open()`, so
+     * the mock's CharSizeService strategy selects "Canvas" and
+     * `mockCanvasCharWidthPx` diverges from `mockDomCharWidthPx` by
+     * `MOCK_CANVAS_DOM_DIVERGENCE_PX`. Even after the full FN-7561/FN-7567
+     * settle + pre/post-fit remeasure sequence runs to completion, the baked
+     * letter-spacing does NOT converge to zero — it settles at a persistent,
+     * nonzero residual driven purely by the Canvas-vs-DOM measurement
+     * mismatch, exactly matching "still spaced apart even after every prior
+     * fix ran correctly". This assertion fails on HEAD before this task's fix
+     * and passes once `withDomBasedTerminalCharacterMeasurement` hides
+     * `OffscreenCanvas` around `open()`.
+     */
+    await waitFor(() => {
+      expect(getMockBakedLetterSpacingPx()).toBeCloseTo(0, 5);
+    });
+  });
+
+  it("also converges to zero with the mobile keyboard already open and a persisted 10px font", async () => {
+    window.localStorage.setItem(TERMINAL_FONT_SIZE_KEY, "10");
+
+    const mockVV = {
+      width: 375,
+      height: 300,
+      offsetTop: 0,
+      offsetLeft: 0,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    };
+    Object.defineProperty(window, "visualViewport", {
+      value: mockVV,
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(window, "innerHeight", { value: 300, writable: true, configurable: true });
+
+    let resolveLoad: (() => void) | undefined;
+    let resolveReady: (() => void) | undefined;
+    Object.defineProperty(document, "fonts", {
+      value: {
+        load: vi.fn(
+          () =>
+            new Promise<void>((resolve) => {
+              resolveLoad = resolve;
+            }),
+        ),
+        ready: new Promise<void>((resolve) => {
+          resolveReady = resolve;
+        }),
+      },
+      configurable: true,
+    });
+
+    render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+    await waitFor(() => expect(mockTerminalInstance.open).toHaveBeenCalled());
+    resetFontRemeasureCount();
+    settleMockTerminalFontForCharSize();
+
+    await act(async () => {
+      resolveLoad?.();
+      resolveReady?.();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(getFontRemeasureCount()).toBeGreaterThan(0);
+    });
+
+    await waitFor(() => {
+      expect(getMockBakedLetterSpacingPx()).toBeCloseTo(0, 5);
+    });
+
+    Object.defineProperty(window, "visualViewport", { value: undefined, writable: true, configurable: true });
+  });
+
+  it("does not regress when the real browser has no OffscreenCanvas support (xterm already self-selects the DOM strategy)", async () => {
+    window.localStorage.removeItem(TERMINAL_FONT_SIZE_KEY);
+    delete (window as unknown as { OffscreenCanvas?: unknown }).OffscreenCanvas;
+    settleMockTerminalFontForCharSize();
+
+    Object.defineProperty(document, "fonts", {
+      value: {
+        load: vi.fn(() => Promise.resolve()),
+        ready: Promise.resolve(),
+      },
+      configurable: true,
+    });
+
+    render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+    await waitFor(() => expect(mockTerminalInstance.open).toHaveBeenCalled());
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(getMockBakedLetterSpacingPx()).toBeCloseTo(0, 5);
     });
   });
 });

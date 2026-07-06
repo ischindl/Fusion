@@ -271,6 +271,8 @@ interface TaskRow {
   thinkingLevel: string | null;
   executionMode: string | null;
   plannerOversightLevel: string | null;
+  awaitingApprovalReason: string | null;
+  approvedPlanFingerprint: string | null;
   tokenUsageInputTokens: number | null;
   tokenUsageOutputTokens: number | null;
   tokenUsageCachedTokens: number | null;
@@ -437,6 +439,21 @@ const TASK_COLUMN_DESCRIPTORS: TaskColumnDescriptor[] = [
   defineTaskColumn("thinkingLevel", (task) => task.thinkingLevel ?? null),
   defineTaskColumn("executionMode", (task) => task.executionMode ?? null),
   defineTaskColumn("plannerOversightLevel", (task) => task.plannerOversightLevel ?? null),
+  /*
+   * FNXC:PlanApproval 2026-07-04-21:35:
+   * FN-7559 discriminator: only the release-authorization gate sets this (to
+   * "release-authorization"); the manual plan-approval gate always writes it
+   * back to null so a stale value from an earlier release-authorization hold on
+   * the same task never survives past the manual gate's own awaiting-approval.
+   */
+  defineTaskColumn("awaitingApprovalReason", (task) => task.awaitingApprovalReason ?? null),
+  /*
+   * FNXC:PlanApproval 2026-07-04-22:41:
+   * FN-7569 — hash of the last operator-approved PROMPT.md (computePlanApprovalFingerprint).
+   * Set by POST /tasks/:id/approve-plan, cleared by POST /tasks/:id/reject-plan, and consulted
+   * by the manual plan-approval gate to skip re-parking an unchanged, already-approved plan.
+   */
+  defineTaskColumn("approvedPlanFingerprint", (task) => task.approvedPlanFingerprint ?? null),
   defineTaskColumn("tokenUsageInputTokens", (task) => task.tokenUsage?.inputTokens ?? null),
   defineTaskColumn("tokenUsageOutputTokens", (task) => task.tokenUsage?.outputTokens ?? null),
   defineTaskColumn("tokenUsageCachedTokens", (task) => task.tokenUsage?.cachedTokens ?? null),
@@ -2135,6 +2152,8 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       thinkingLevel: (row.thinkingLevel || undefined) as Task["thinkingLevel"],
       executionMode: (row.executionMode || undefined) as Task["executionMode"],
       plannerOversightLevel: (row.plannerOversightLevel || undefined) as Task["plannerOversightLevel"],
+      awaitingApprovalReason: (row.awaitingApprovalReason || undefined) as Task["awaitingApprovalReason"],
+      approvedPlanFingerprint: row.approvedPlanFingerprint || undefined,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       columnMovedAt: row.columnMovedAt || undefined,
@@ -2691,7 +2710,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       "validatorModelProvider", "validatorModelId",
       "planningModelProvider", "planningModelId",
       "mergeRetries", "workflowStepRetries", "stuckKillCount", "resumeLimboCount", "graphResumeRetryCount", "resumeLimboTipSha", "resumeLimboStepSignature", "postReviewFixCount", "recoveryRetryCount", "taskDoneRetryCount", "worktreeSessionRetryCount", "completionHandoffLimboRecoveryCount", "verificationFailureCount", "mergeConflictBounceCount", "mergeAuditBounceCount", "mergeTransientRetryCount", "branchConflictRecoveryCount", "reviewerContextRetryCount", "reviewerFallbackRetryCount", "nextRecoveryAt",
-      "error", "summary", "thinkingLevel", "executionMode", "plannerOversightLevel",
+      "error", "summary", "thinkingLevel", "executionMode", "plannerOversightLevel", "awaitingApprovalReason", "approvedPlanFingerprint",
       "tokenUsageInputTokens", "tokenUsageOutputTokens", "tokenUsageCachedTokens", "tokenUsageCacheWriteTokens", "tokenUsageTotalTokens", "tokenUsageFirstUsedAt", "tokenUsageLastUsedAt", "tokenUsageModelProvider", "tokenUsageModelId", "tokenUsagePerModel", "tokenBudgetSoftAlertedAt", "tokenBudgetHardAlertedAt", "tokenBudgetOverride",
       "createdAt", "updatedAt", "columnMovedAt", "firstExecutionAt", "cumulativeActiveMs", "columnDwellMs", "executionStartedAt", "executionCompletedAt",
       "dependencies", "steps", "customFields", "comments", "review", "reviewState", "workflowStepResults", "steeringComments",
@@ -2787,7 +2806,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       "validatorModelProvider", "validatorModelId",
       "planningModelProvider", "planningModelId",
       "mergeRetries", "workflowStepRetries", "stuckKillCount", "resumeLimboCount", "graphResumeRetryCount", "resumeLimboTipSha", "resumeLimboStepSignature", "postReviewFixCount", "recoveryRetryCount", "taskDoneRetryCount", "worktreeSessionRetryCount", "completionHandoffLimboRecoveryCount", "verificationFailureCount", "mergeConflictBounceCount", "mergeAuditBounceCount", "mergeTransientRetryCount", "branchConflictRecoveryCount", "reviewerContextRetryCount", "reviewerFallbackRetryCount", "nextRecoveryAt",
-      "error", "summary", "thinkingLevel", "executionMode", "plannerOversightLevel",
+      "error", "summary", "thinkingLevel", "executionMode", "plannerOversightLevel", "awaitingApprovalReason", "approvedPlanFingerprint",
       "tokenUsageInputTokens", "tokenUsageOutputTokens", "tokenUsageCachedTokens", "tokenUsageCacheWriteTokens", "tokenUsageTotalTokens", "tokenUsageFirstUsedAt", "tokenUsageLastUsedAt", "tokenUsageModelProvider", "tokenUsageModelId", "tokenUsagePerModel", "tokenBudgetSoftAlertedAt", "tokenBudgetHardAlertedAt", "tokenBudgetOverride",
       "createdAt", "updatedAt", "columnMovedAt", "firstExecutionAt", "cumulativeActiveMs", "columnDwellMs", "executionStartedAt", "executionCompletedAt",
       "dependencies", "steps", "customFields", "attachments", "steeringComments",
@@ -6840,6 +6859,37 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
   }
 
   /**
+   * FNXC:TaskRevert 2026-07-04-00:00 (FN-7524 idempotency guard):
+   * Reverse lookup for `sourceMetadata.revertOf === sourceTaskId`, restricted
+   * to OPEN (non `done`/`archived`) tasks — mirrors the `nearDuplicateOf`
+   * reverse-lookup pattern above. Only an OPEN AI-undo task suppresses
+   * creating a new one: a prior undo task that itself reached `done`/`archived`
+   * must NOT block a fresh undo request (the work may need undoing again,
+   * e.g. redone then relanded). Returns the most recently created open match,
+   * or `null` when none exists.
+   */
+  async findOpenRevertTaskForSource(sourceTaskId: string): Promise<Task | null> {
+    const trimmedId = sourceTaskId.trim();
+    if (trimmedId.length === 0) {
+      return null;
+    }
+
+    const selectClause = this.getTaskSelectClause(false, "t");
+    const row = this.db.prepare(`
+      SELECT ${selectClause}
+      FROM tasks t
+      WHERE t."deletedAt" IS NULL
+        AND t."column" != 'archived'
+        AND t."column" != 'done'
+        AND json_extract(t.sourceMetadata, '$.revertOf') = ?
+      ORDER BY t.createdAt DESC
+      LIMIT 1
+    `).get(trimmedId) as TaskRow | undefined;
+
+    return row ? this.rowToTask(row) : null;
+  }
+
+  /**
    * FNXC:NearDuplicateDetection 2026-06-14-12:00:
    * FN-6439 requires the store to reconcile persisted duplicate flags after a canonical becomes inactive.
    * sourceMetadataPatch only merges, so this reverse lookup performs a bounded read-modify-write that strips stale near-duplicate keys without pausing or failing the referencing tasks.
@@ -7626,11 +7676,22 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
         !sourceIsLegacy &&
         (COLUMNS as readonly string[]).includes(toColumn);
       if (!isEvacuation) {
-        // Legacy flag-OFF branch (useWorkflow === false): both columns are
-        // guaranteed legacy ids here — a non-legacy `toColumn` returns `?? []`
-        // and rejects below, and flag-OFF tasks never hold custom column ids.
-        // The `as Column` is provably safe within this branch (#1403).
-        const validTargets = VALID_TRANSITIONS[task.column as Column] ?? [];
+        /*
+        FNXC:WorkflowColumns 2026-07-05-19:30:
+        Workflow columns graduated to always-on (no experimental flag emitted), so this "flag-OFF"
+        branch is the DEFAULT move path for nearly every project — the strict compat flag reads false
+        because nothing sets it. Legacy columns (triage/todo/in-progress/in-review/done/archived) are
+        validated verbatim by VALID_TRANSITIONS, preserving the legacy bare-Error contract. But a task
+        can legitimately sit in a NON-legacy workflow column now (e.g. Coding (Ideas) → "ideas"), which
+        VALID_TRANSITIONS cannot key — the old code returned `?? []` and rejected EVERY move out of it
+        ("Invalid transition: 'ideas' → 'todo'. Valid targets: none"). Resolve a non-legacy source
+        column's targets from the task's own workflow adjacency instead, still throwing the same
+        legacy-style bare Error (not TransitionRejectionError) so the flag-OFF characterization contract
+        holds for legacy columns.
+        */
+        const validTargets = sourceIsLegacy
+          ? (VALID_TRANSITIONS[task.column as Column] ?? [])
+          : resolveAllowedColumns(this.resolveTaskWorkflowIrSync(id), task.column);
         if (!validTargets.includes(toColumn as Column)) {
           throw new Error(
             `Invalid transition: '${task.column}' → '${toColumn}'. ` +
@@ -8376,7 +8437,7 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
 
   async updateTask(
     id: string,
-    updates: { title?: string; description?: string; priority?: TaskPriority | null; prompt?: string; worktree?: string | null; workspaceWorktrees?: import("./types.js").Task["workspaceWorktrees"]; status?: string | null; dependencies?: string[]; steps?: import("./types.js").TaskStep[]; customFields?: Record<string, unknown>; currentStep?: number; blockedBy?: string | null; overlapBlockedBy?: string | null; assignedAgentId?: string | null; pausedByAgentId?: string | null; pausedReason?: string | null; tokenBudgetSoftAlertedAt?: string | null; worktrunkFallbackAlertedAt?: string | null; worktrunkFailure?: import("./types.js").Task["worktrunkFailure"] | null; tokenBudgetHardAlertedAt?: string | null; tokenBudgetOverride?: import("./types.js").TaskTokenBudgetOverride | null; dispatchStormCount?: number | null; lastDispatchAt?: string | null; assigneeUserId?: string | null; scopeOverride?: boolean | null; scopeOverrideReason?: string | null; scopeAutoWiden?: string[] | null; nodeId?: string | null; effectiveNodeId?: string | null; effectiveNodeSource?: string | null; checkedOutBy?: string | null; checkedOutAt?: string | null; checkoutNodeId?: string | null; checkoutRunId?: string | null; checkoutLeaseRenewedAt?: string | null; checkoutLeaseEpoch?: number | null; paused?: boolean; baseBranch?: string | null; autoMerge?: boolean | null; branch?: string | null; executionStartBranch?: string | null; baseCommitSha?: string | null; size?: "S" | "M" | "L"; reviewLevel?: number; executionMode?: import("./types.js").ExecutionMode | null; plannerOversightLevel?: import("./types.js").PlannerOversightLevel | null; mergeRetries?: number; workflowStepRetries?: number; stuckKillCount?: number | null; resumeLimboCount?: number | null; graphResumeRetryCount?: number | null; resumeLimboTipSha?: string | null; resumeLimboStepSignature?: string | null; postReviewFixCount?: number | null; recoveryRetryCount?: number | null; taskDoneRetryCount?: number | null; worktreeSessionRetryCount?: number | null; completionHandoffLimboRecoveryCount?: number | null; verificationFailureCount?: number | null; mergeConflictBounceCount?: number | null; mergeAuditBounceCount?: number | null; mergeTransientRetryCount?: number | null; branchConflictRecoveryCount?: number | null; reviewerContextRetryCount?: number | null; reviewerFallbackRetryCount?: number | null; nextRecoveryAt?: string | null; enabledWorkflowSteps?: string[]; noCommitsExpected?: boolean | null; modelProvider?: string | null; modelId?: string | null; validatorModelProvider?: string | null; validatorModelId?: string | null; planningModelProvider?: string | null; planningModelId?: string | null; thinkingLevel?: string | null; error?: string | null; summary?: string | null; sessionFile?: string | null; firstExecutionAt?: string | null; cumulativeActiveMs?: number | null; executionStartedAt?: string | null; executionCompletedAt?: string | null; review?: import("./types.js").TaskReview | null; reviewState?: import("./types.js").TaskReviewState | null; workflowStepResults?: import("./types.js").WorkflowStepResult[] | null; mergeDetails?: import("./types.js").MergeDetails | null; sourceIssue?: import("./types.js").TaskSourceIssue | null; sourceMetadataPatch?: Record<string, unknown> | null; githubTracking?: import("./types.js").TaskGithubTracking | null; gitlabTracking?: (Omit<import("./types.js").TaskGitLabTracking, "item"> & { item?: import("./types.js").TaskGitLabTrackedItem | null }) | null; tokenUsage?: import("./types.js").TaskTokenUsage | null; modifiedFiles?: string[] | null; workflowTransitionNotification?: import("./types.js").Task["workflowTransitionNotification"] | null; missionId?: string | null; sliceId?: string | null },
+    updates: { title?: string; description?: string; priority?: TaskPriority | null; prompt?: string; worktree?: string | null; workspaceWorktrees?: import("./types.js").Task["workspaceWorktrees"]; status?: string | null; dependencies?: string[]; steps?: import("./types.js").TaskStep[]; customFields?: Record<string, unknown>; currentStep?: number; blockedBy?: string | null; overlapBlockedBy?: string | null; assignedAgentId?: string | null; pausedByAgentId?: string | null; pausedReason?: string | null; tokenBudgetSoftAlertedAt?: string | null; worktrunkFallbackAlertedAt?: string | null; worktrunkFailure?: import("./types.js").Task["worktrunkFailure"] | null; tokenBudgetHardAlertedAt?: string | null; tokenBudgetOverride?: import("./types.js").TaskTokenBudgetOverride | null; dispatchStormCount?: number | null; lastDispatchAt?: string | null; assigneeUserId?: string | null; scopeOverride?: boolean | null; scopeOverrideReason?: string | null; scopeAutoWiden?: string[] | null; nodeId?: string | null; effectiveNodeId?: string | null; effectiveNodeSource?: string | null; checkedOutBy?: string | null; checkedOutAt?: string | null; checkoutNodeId?: string | null; checkoutRunId?: string | null; checkoutLeaseRenewedAt?: string | null; checkoutLeaseEpoch?: number | null; paused?: boolean; baseBranch?: string | null; autoMerge?: boolean | null; branch?: string | null; executionStartBranch?: string | null; baseCommitSha?: string | null; size?: "S" | "M" | "L"; reviewLevel?: number; executionMode?: import("./types.js").ExecutionMode | null; plannerOversightLevel?: import("./types.js").PlannerOversightLevel | null; awaitingApprovalReason?: import("./types.js").Task["awaitingApprovalReason"] | null; approvedPlanFingerprint?: string | null; mergeRetries?: number; workflowStepRetries?: number; stuckKillCount?: number | null; resumeLimboCount?: number | null; graphResumeRetryCount?: number | null; resumeLimboTipSha?: string | null; resumeLimboStepSignature?: string | null; postReviewFixCount?: number | null; recoveryRetryCount?: number | null; taskDoneRetryCount?: number | null; worktreeSessionRetryCount?: number | null; completionHandoffLimboRecoveryCount?: number | null; verificationFailureCount?: number | null; mergeConflictBounceCount?: number | null; mergeAuditBounceCount?: number | null; mergeTransientRetryCount?: number | null; branchConflictRecoveryCount?: number | null; reviewerContextRetryCount?: number | null; reviewerFallbackRetryCount?: number | null; nextRecoveryAt?: string | null; enabledWorkflowSteps?: string[]; noCommitsExpected?: boolean | null; modelProvider?: string | null; modelId?: string | null; validatorModelProvider?: string | null; validatorModelId?: string | null; planningModelProvider?: string | null; planningModelId?: string | null; thinkingLevel?: string | null; error?: string | null; summary?: string | null; sessionFile?: string | null; firstExecutionAt?: string | null; cumulativeActiveMs?: number | null; executionStartedAt?: string | null; executionCompletedAt?: string | null; review?: import("./types.js").TaskReview | null; reviewState?: import("./types.js").TaskReviewState | null; workflowStepResults?: import("./types.js").WorkflowStepResult[] | null; mergeDetails?: import("./types.js").MergeDetails | null; sourceIssue?: import("./types.js").TaskSourceIssue | null; sourceMetadataPatch?: Record<string, unknown> | null; githubTracking?: import("./types.js").TaskGithubTracking | null; gitlabTracking?: (Omit<import("./types.js").TaskGitLabTracking, "item"> & { item?: import("./types.js").TaskGitLabTrackedItem | null }) | null; tokenUsage?: import("./types.js").TaskTokenUsage | null; modifiedFiles?: string[] | null; workflowTransitionNotification?: import("./types.js").Task["workflowTransitionNotification"] | null; missionId?: string | null; sliceId?: string | null },
     runContext?: RunMutationContext,
   ): Promise<Task> {
     return this.withTaskLock(id, () => this.updateTaskUnlocked(id, updates, runContext));
@@ -9196,6 +9257,16 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
         task.plannerOversightLevel = undefined;
       } else if (updates.plannerOversightLevel !== undefined) {
         task.plannerOversightLevel = updates.plannerOversightLevel as import("./types.js").PlannerOversightLevel;
+      }
+      if (updates.awaitingApprovalReason === null) {
+        task.awaitingApprovalReason = undefined;
+      } else if (updates.awaitingApprovalReason !== undefined) {
+        task.awaitingApprovalReason = updates.awaitingApprovalReason as import("./types.js").Task["awaitingApprovalReason"];
+      }
+      if (updates.approvedPlanFingerprint === null) {
+        task.approvedPlanFingerprint = undefined;
+      } else if (updates.approvedPlanFingerprint !== undefined) {
+        task.approvedPlanFingerprint = updates.approvedPlanFingerprint;
       }
       if (updates.error === null) {
         task.error = undefined;

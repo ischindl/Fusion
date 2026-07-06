@@ -224,6 +224,18 @@ describe("parseHermesOutput", () => {
     expect(result.body).toBe("line1\nline2");
   });
 
+  it("accepts session_id emitted on stderr while keeping stderr out of the body", () => {
+    const result = parseHermesOutput("OK\n", "session_id: 20260427_120000_abcd12\n");
+    expect(result.sessionId).toBe("20260427_120000_abcd12");
+    expect(result.body).toBe("OK");
+  });
+
+  it("strips a leading stdout session_id marker from an empty assistant body", () => {
+    const result = parseHermesOutput("session_id: 20260427_120000_abcd12\n", "");
+    expect(result.sessionId).toBe("20260427_120000_abcd12");
+    expect(result.body).toBe("");
+  });
+
   it("throws when session_id line is missing", () => {
     expect(() => parseHermesOutput("some output without id", "stderr text")).toThrow(
       /missing session_id/,

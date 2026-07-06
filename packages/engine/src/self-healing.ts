@@ -1103,6 +1103,10 @@ export class SelfHealingManager {
   /**
    * FNXC:SelfHealingReclaim 2026-06-19-00:00:
    * FN-6736 requires self-healing to stop treating an in-memory `executor-active` binding as live when the owner is demonstrably dead. Preserve FN-4811 by requiring every live-owner signal to be absent, leave the FN-5219 missing-worktree path untouched, and avoid FN-5704 resume-limbo counters because this path only clears a stale binding and requeues once with progress/worktree preserved.
+   *
+   * FNXC:SelfHealingReclaim 2026-07-05-08:15:
+   * FN-7566: the FN-6736 liveness gate (`agentPresent` heartbeat, `checkedOutBy` lease, `hasRecentRunAudit`) is structurally blind to EPHEMERAL EXECUTOR agents (`agentId: "executor"`): they never emit heartbeat runs (so `activeHeartbeatTaskIds` never contains them), never acquire a checkout lease (`checkedOutBy` stays null), and normal execution activity (sandbox:run / task:log / verification) writes no `runAuditEvents` rows (so `getRecentRunAuditActivityAgeMs` stays null). With all three permanently false, the ONLY surviving gate was age > graceMs*3 (~30 min), so any ephemeral executor task running longer than 30 minutes — a heavy foreach workflow, a slow model — was killed mid-flight on the next self-healing sweep and hard-moved to `todo`, corrupting overlapping-worktree/task-link state.
+   * The fix adds the in-process live-session truth that DOES track ephemeral executors: a worktree path registered as active in `activeSessionRegistry` (the executor/step-session/workflow-step session holds it for the whole run), the `executingTaskLock`, or `isTaskActive`. This mirrors the canonical `isWorkspaceTaskLive` / `sessionDead` predicate. A genuinely leaked binding (FN-6736) still has an EMPTY registry / no lock / inactive task, so legitimate phantom recovery is preserved; a live ephemeral executor now vetoes the phantom verdict regardless of the durable-agent signals.
    */
   private isPhantomExecutorBinding(task: Task, options: {
     executionAgeMs: number | null;
@@ -1115,6 +1119,14 @@ export class SelfHealingManager {
     const checkedOutBy = typeof task.checkedOutBy === "string" && task.checkedOutBy.trim().length > 0 ? task.checkedOutBy : null;
     const worktreeExists = Boolean(task.worktree && existsSync(task.worktree));
     const hasRecentRunAudit = options.lastActivityMs !== null && options.lastActivityMs <= RUNNING_ON_INACTIVE_TASK_STALE_RUN_MS;
+    // FN-7566: in-process liveness that survives for ephemeral executors. The registered
+    // session path is the faithful proxy for the live session surfaces
+    // (`activeSessions`/`activeStepExecutors`/`activeWorkflowStepSessions`) that
+    // `clearPhantomExecutorBinding` itself refuses to detach.
+    const livePaths = activeSessionRegistry.pathsForTask(task.id).filter((path) => activeSessionRegistry.isPathActive(path));
+    const hasLiveInProcessSession = livePaths.length > 0
+      || executingTaskLock.has(task.id)
+      || this.options.isTaskActive?.(task.id) === true;
     const safeAgeMs = options.graceMs * PHANTOM_EXECUTOR_BINDING_AGE_MULTIPLIER;
     const metadata = {
       taskId: task.id,
@@ -1125,6 +1137,8 @@ export class SelfHealingManager {
       agentPresent,
       lastActivityMs: options.lastActivityMs,
       hasRecentRunAudit,
+      hasLiveInProcessSession,
+      liveSessionPaths: livePaths,
       worktree: task.worktree ?? null,
       branch: task.branch ?? null,
       worktreeExists,
@@ -1137,7 +1151,8 @@ export class SelfHealingManager {
         && options.executionAgeMs > safeAgeMs
         && !checkedOutBy
         && !agentPresent
-        && !hasRecentRunAudit,
+        && !hasRecentRunAudit
+        && !hasLiveInProcessSession,
       metadata,
     };
   }
@@ -1953,6 +1968,39 @@ export class SelfHealingManager {
     baseCommitSha?: string;
   }) {
     return findAlreadyMergedTaskCommit(input);
+  }
+
+  /**
+   * Best-effort refresh of the remote-tracking base ref so the already-merged
+   * evidence detector can see a squash that landed on the remote after this
+   * process last fetched. Returns the `origin/<base>` ref to re-run the detector
+   * against, or null when there is nothing fresher to prove against.
+   *
+   * Fail-closed: a fetch error (offline / auth / no remote) is swallowed and we
+   * still attempt to resolve the (possibly stale) remote-tracking ref; if even
+   * that is absent we return null and the caller leaves the card untouched.
+   */
+  private async refreshRemoteBaseRef(baseBranch: string): Promise<string | null> {
+    // Already a remote ref — nothing local to refresh.
+    if (baseBranch.startsWith("origin/")) return null;
+    const remoteRef = `origin/${baseBranch}`;
+    try {
+      await execAsync(`git fetch origin ${shellQuote(baseBranch)}`, {
+        cwd: this.options.rootDir,
+        timeout: 60_000,
+      });
+    } catch {
+      // Swallow: fall through to the existing remote-tracking ref if present.
+    }
+    try {
+      await execAsync(`git rev-parse --verify ${shellQuote(remoteRef)}`, {
+        cwd: this.options.rootDir,
+        timeout: 30_000,
+      });
+      return remoteRef;
+    } catch {
+      return null;
+    }
   }
 
   private async readCommitTaskOwnership(sha: string, taskId: string, lineageId?: string) {
@@ -3123,7 +3171,22 @@ export class SelfHealingManager {
               // FNXC:SelfHealingReclaim 2026-06-30-00:00: preserveWorktrees keeps the held worktree's
               // session-registry entry so the moveTask(preserveWorktree:true) re-dispatch reattaches to
               // the same worktree instead of orphaning it and acquiring a new one (FN-7249 regression).
-              this.options.clearPhantomExecutorBinding?.(task.id, { preserveWorktrees: true });
+              // FNXC:SelfHealingReclaim 2026-07-05-08:15: FN-7566 — honor clearPhantomExecutorBinding's
+              // live-session refusal (returns false when any session surface is still registered) as the
+              // last line of defense before the destructive moveTask(→todo), matching reapLeakedConcurrencySlots.
+              // Even if a future liveness signal slips past isPhantomExecutorBinding, a refused clear must NOT
+              // be followed by a hard-cancel of a live executor: fall through to the no-action audit instead.
+              const released = this.options.clearPhantomExecutorBinding?.(task.id, { preserveWorktrees: true });
+              if (released === false) {
+                await this.emitFalsePositiveRequeueNoAction(
+                  task,
+                  "reclaim-self-owned-branch-conflict",
+                  "task:reclaim-self-owned-branch-conflict-no-action",
+                  "phantom-clear-refused-live-session",
+                  { ...phantomBinding.metadata, signalReason: liveExecutionSignal.reason },
+                );
+                continue;
+              }
               await createRunAuditor(this.store, {
                 runId: generateSyntheticRunId("self-healing-phantom-executor-binding", task.id),
                 agentId: "self-healing",
@@ -8605,7 +8668,7 @@ export class SelfHealingManager {
             }
           }
 
-          const landed = await this.findAlreadyMergedTaskCommit({
+          let landed = await this.findAlreadyMergedTaskCommit({
             taskId: task.id,
             lineageId: task.lineageId,
             repoDir: this.options.rootDir,
@@ -8613,6 +8676,29 @@ export class SelfHealingManager {
             taskBranch: task.branch,
             baseCommitSha: task.baseCommitSha,
           });
+          if (!landed && getPrimaryPrInfo(task)) {
+            // Fetch-then-prove: the LOCAL base ref can be stale. When a PR merged
+            // on the remote (human / merge-train squash) but this process never
+            // fetched, the owned commit is absent from the local base branch, so
+            // the detector finds nothing and the failed card holds its file-scope
+            // lease forever. Best-effort refresh the remote-tracking base ref and
+            // re-run the SAME evidence detector against it. The owned-commit proof
+            // (and every foreign-ownership guard inside the detector) still gates
+            // the heal, so this only un-wedges a genuinely-merged task — it never
+            // phantom-finalizes on unproven state. Gated on a recorded PR: no PR
+            // ⇒ nothing could have merged remotely ⇒ no fetch.
+            const refreshedBaseRef = await this.refreshRemoteBaseRef(baseBranch);
+            if (refreshedBaseRef) {
+              landed = await this.findAlreadyMergedTaskCommit({
+                taskId: task.id,
+                lineageId: task.lineageId,
+                repoDir: this.options.rootDir,
+                baseBranch: refreshedBaseRef,
+                taskBranch: task.branch,
+                baseCommitSha: task.baseCommitSha,
+              });
+            }
+          }
           if (!landed) continue;
 
           const mergeDetails: MergeDetails = {

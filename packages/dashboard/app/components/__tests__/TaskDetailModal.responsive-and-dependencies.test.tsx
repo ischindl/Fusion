@@ -226,6 +226,157 @@ describe("TaskDetailModal", () => {
       expect(css).not.toMatch(/@media \(max-width: 640px\)\s*\{[^}]*\.detail-meta-inline-controls\s*\{[^}]*flex-direction:\s*column;/);
     });
 
+    it("unifies border/radius/height across the Priority, Execution-mode, and Oversight quick controls (FN-7585)", () => {
+      const css = readDashboardStylesSource();
+
+      const inlineControlsBlock = getStandaloneCssRuleBlock(css, ".detail-meta-inline-controls");
+      const priorityChipBlock = getExactCssRuleBlock(css, ".detail-priority-chip");
+      const executionToggleBlock = getExactCssRuleBlock(css, ".detail-execution-mode-toggle");
+      const oversightTriggerBlock = getExactCssRuleBlock(css, ".detail-oversight-menu-trigger");
+
+      // The cluster declares one shared border-radius token; all three
+      // controls must reference it rather than independent literal radii.
+      // FNXC:PlannerOversight 2026-07-05-00:00: FN-7604 removed the desktop-only
+      // `.detail-oversight-chip` wrapper (the inline branch it styled was
+      // deleted); the Oversight surface is now represented solely by
+      // `.detail-oversight-menu-trigger`, which already carried this trio.
+      expect(inlineControlsBlock).toContain("--detail-control-border-radius: var(--radius-md);");
+      for (const block of [priorityChipBlock, executionToggleBlock, oversightTriggerBlock]) {
+        expect(block).toContain("border-radius: var(--detail-control-border-radius);");
+        expect(block).toContain("border-width: var(--btn-border-width);");
+        expect(block).toContain("border-color: var(--border);");
+        // Same height token as the rest of the invariant.
+        expect(block).toContain("min-height: var(--detail-priority-control-min-height);");
+        expect(block).toContain("box-sizing: border-box;");
+      }
+
+      // Guard against regressing back to independent literal radius values
+      // (e.g. reintroducing a bare `var(--radius-pill)` on the priority chip).
+      expect(priorityChipBlock).not.toMatch(/border-radius:\s*var\(--radius-pill\)/);
+      expect(oversightTriggerBlock).not.toMatch(/border-radius:\s*var\(--radius-pill\)/);
+    });
+
+    it("renders the Priority dropdown chip like the Oversight dropdown chip, on every surface (FN-7597)", () => {
+      const css = readDashboardStylesSource();
+
+      const priorityChipBlock = getExactCssRuleBlock(css, ".detail-priority-chip");
+      const oversightTriggerBlock = getExactCssRuleBlock(css, ".detail-oversight-menu-trigger");
+      const prioritySelectBlock = getExactCssRuleBlock(css, ".detail-priority-select");
+      const oversightSelectBlock = getExactCssRuleBlock(css, ".detail-oversight-select");
+      const prioritySelectOptionBlock = getExactCssRuleBlock(css, ".detail-priority-select option");
+      const oversightSelectOptionBlock = getExactCssRuleBlock(css, ".detail-oversight-select option");
+
+      // Same box size AND same border source for the Priority chip vs. the
+      // (now-universal, FN-7604) Oversight overflow trigger.
+      for (const block of [priorityChipBlock, oversightTriggerBlock]) {
+        expect(block).toContain("min-height: var(--detail-priority-control-min-height);");
+        expect(block).toContain("border-width: var(--btn-border-width);");
+        expect(block).toContain("border-color: var(--border);");
+        expect(block).toContain("border-radius: var(--detail-control-border-radius);");
+        expect(block).toContain("box-sizing: border-box;");
+      }
+
+      // Same select typography: neither select force-uppercases its own text
+      // or options; both rely on the ancestor chip label's uppercase transform,
+      // so a regression re-adding a Priority-only override fails this.
+      expect(prioritySelectBlock).not.toMatch(/text-transform\s*:/);
+      expect(oversightSelectBlock).not.toMatch(/text-transform\s*:/);
+      expect(prioritySelectOptionBlock).not.toMatch(/text-transform\s*:/);
+      expect(oversightSelectOptionBlock).not.toMatch(/text-transform\s*:/);
+      expect(prioritySelectBlock).toContain("font: inherit;");
+      expect(oversightSelectBlock).toContain("font: inherit;");
+
+      // The untinted `normal` priority level must resolve a real, non-transparent
+      // neutral chip background (not a borderless/background-less shell), just
+      // like the Oversight chip's neutral `--off` background.
+      const priorityNormalBlock = getExactCssRuleBlock(css, ".detail-priority-chip.card-priority-badge--normal");
+      const oversightOffBlock = getExactCssRuleBlock(css, ".card-oversight-badge--off");
+      expect(priorityNormalBlock).toMatch(/background:\s*color-mix\(in srgb, var\(--text-muted\)/);
+      expect(oversightOffBlock).toMatch(/background:\s*color-mix\(in srgb, var\(--text-muted\)/);
+
+      // The semantic priority tints (info/warning/error family) must survive —
+      // this task must not flatten low/high/urgent to the same neutral tone.
+      expect(css).toMatch(/\.card-priority-badge--low\s*\{[^}]*background:\s*color-mix\(in srgb, var\(--color-info\)/);
+      expect(css).toMatch(/\.card-priority-badge--high\s*\{[^}]*background:\s*color-mix\(in srgb, var\(--color-warning\)/);
+      expect(css).toMatch(/\.card-priority-badge--urgent\s*\{[^}]*background:\s*color-mix\(in srgb, var\(--color-error\)/);
+
+      // `--saving` only dims opacity; it must never change box size/border.
+      const prioritySavingBlock = getExactCssRuleBlock(css, ".detail-priority-chip--saving");
+      expect(prioritySavingBlock.replace(/\s+/g, "")).toBe("opacity:0.75;");
+      expect(prioritySavingBlock).not.toMatch(/border|min-height|padding/);
+    });
+
+    it("makes low/high/urgent visibly distinct colors on the detail Priority chip, scoped away from TaskCard (FN-7601)", () => {
+      const css = readDashboardStylesSource();
+
+      // FN-7585's shared base rule and FN-7597's neutral `normal` rule must
+      // survive untouched — this task only ADDS per-level overrides on top.
+      const baseChipBlock = getExactCssRuleBlock(css, ".detail-priority-chip");
+      expect(baseChipBlock).toContain("border-width: var(--btn-border-width);");
+      expect(baseChipBlock).toContain("border-color: var(--border);");
+      expect(baseChipBlock).toContain("border-radius: var(--detail-control-border-radius);");
+      const normalBlock = getExactCssRuleBlock(css, ".detail-priority-chip.card-priority-badge--normal");
+      expect(normalBlock).toMatch(/background:\s*color-mix\(in srgb, var\(--text-muted\)/);
+      expect(normalBlock).toContain("color: var(--text-muted);");
+
+      const lowBlock = getExactCssRuleBlock(css, ".detail-priority-chip.card-priority-badge--low");
+      const highBlock = getExactCssRuleBlock(css, ".detail-priority-chip.card-priority-badge--high");
+      const urgentBlock = getExactCssRuleBlock(css, ".detail-priority-chip.card-priority-badge--urgent");
+
+      // Each non-neutral level must declare its own tinted border-color AND
+      // background, using the matching semantic token family.
+      for (const [block, token] of [
+        [lowBlock, "--color-info"],
+        [highBlock, "--color-warning"],
+        [urgentBlock, "--color-error"],
+      ] as const) {
+        expect(block).not.toBe("");
+        expect(block).toMatch(/border-color\s*:/);
+        expect(block).toMatch(/background\s*:/);
+        expect(block).toContain(token);
+      }
+
+      // None of the per-level border-colors may resolve to the plain shared
+      // `var(--border)` value used by the base rule — that was the original
+      // bug (every level looked the same washed-out box).
+      const borderColorOf = (block: string): string => {
+        const match = block.match(/border-color\s*:\s*([^;]+);/);
+        return match?.[1]?.trim() ?? "";
+      };
+      const backgroundOf = (block: string): string => {
+        const match = block.match(/background\s*:\s*([^;]+);/);
+        return match?.[1]?.trim() ?? "";
+      };
+
+      const lowBorder = borderColorOf(lowBlock);
+      const highBorder = borderColorOf(highBlock);
+      const urgentBorder = borderColorOf(urgentBlock);
+
+      expect(lowBorder).not.toBe("var(--border)");
+      expect(highBorder).not.toBe("var(--border)");
+      expect(urgentBorder).not.toBe("var(--border)");
+
+      // Mutually distinct — low, high, and urgent must not collapse onto the
+      // same border-color or background declaration as one another.
+      expect(new Set([lowBorder, highBorder, urgentBorder]).size).toBe(3);
+      const lowBg = backgroundOf(lowBlock);
+      const highBg = backgroundOf(highBlock);
+      const urgentBg = backgroundOf(urgentBlock);
+      expect(new Set([lowBg, highBg, urgentBg]).size).toBe(3);
+
+      // `normal`'s background/border must remain distinct from all three tinted
+      // levels (it keeps the FN-7597 neutral treatment, not a semantic tint).
+      expect(new Set([backgroundOf(normalBlock), lowBg, highBg, urgentBg]).size).toBe(4);
+
+      // The read-only TaskCard badge tints referenced by TaskCard.css must be
+      // untouched by this task — confirm no `.detail-priority-chip` compound
+      // selector leaks a border-color override into the bare `.card-priority-badge--*`
+      // selectors (those remain single-class, background/color-only rules).
+      expect(css).toMatch(/\.card-priority-badge--low\s*\{\s*background:\s*color-mix\(in srgb, var\(--color-info\) 15%, transparent\);\s*color:\s*var\(--color-info\);\s*\}/);
+      expect(css).toMatch(/\.card-priority-badge--high\s*\{\s*background:\s*color-mix\(in srgb, var\(--color-warning\) 18%, transparent\);\s*color:\s*var\(--color-warning\);\s*\}/);
+      expect(css).toMatch(/\.card-priority-badge--urgent\s*\{\s*background:\s*color-mix\(in srgb, var\(--color-error\) 20%, transparent\);\s*color:\s*var\(--color-error-dark\);\s*\}/);
+    });
+
     it("keeps grouped timestamp metadata inline on desktop and mobile", () => {
       const css = readDashboardStylesSource();
 
@@ -464,8 +615,13 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      // Actions are now in a dropdown - open it first
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      // Actions are now in a dropdown - open it first.
+      // FNXC:PlannerOversight 2026-07-05-00:00: FN-7604 — the footer "Actions"
+      // dropdown button name must be matched EXACTLY (not `/actions/i`) because
+      // the now-universal Oversight overflow trigger's aria-label is "Oversight
+      // actions", which also matches a loose /actions/i regex and made this
+      // query ambiguous once the trigger stopped being mobile-only.
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       fireEvent.click(actionsBtn);
 
       // Now the dropdown items should be visible
@@ -504,7 +660,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
 
       await waitFor(() => {
@@ -531,7 +687,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
 
       await waitFor(() => {
@@ -558,7 +714,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
 
       await waitFor(() => {
@@ -583,7 +739,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
 
       await waitFor(() => {
@@ -622,7 +778,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
 
       await waitFor(() => {
@@ -684,7 +840,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
 
       await waitFor(() => {
@@ -721,7 +877,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
 
       await waitFor(() => {
@@ -758,7 +914,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
 
       await waitFor(() => {
@@ -801,7 +957,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
 
       await waitFor(() => {
@@ -832,7 +988,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
 
       await waitFor(() => {
@@ -869,7 +1025,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
 
       await waitFor(() => {
@@ -903,7 +1059,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
 
       await waitFor(() => {

@@ -91,9 +91,19 @@ export function ShortcutCaptureInput({ id, value, defaultValue, invalid, describ
         }}
         onChange={(event) => onChange(event.target.value)}
       />
+      {/*
+      FNXC:DashboardShortcuts 2026-07-05-00:00:
+      Record/Clear are TEXT-labeled buttons ("Record"/"Recording…"/"Clear"), not icon-only
+      controls. `btn-icon` sets `line-height: 0` and a mobile 36px square meant for SVG-only
+      buttons — applying it here clipped the label's line box and, at mobile widths, forced
+      "Recording…" to overflow the fixed square and overlap the Clear button/input
+      (reported via screenshot IMG_1305). Use `btn-sm` instead so labels render on a normal
+      line-height with content-sized width; `.shortcut-capture` locks these buttons with
+      `flex-shrink: 0` so they never collide with the input or each other.
+      */}
       <button
         type="button"
-        className={`btn btn-icon shortcut-capture__record${recording ? " shortcut-capture__record--active" : ""}`}
+        className={`btn btn-sm shortcut-capture__record${recording ? " shortcut-capture__record--active" : ""}`}
         aria-pressed={recording}
         title={recording ? t("settings.keyboardShortcuts.recordingTitle", "Recording… press Escape to cancel") : t("settings.keyboardShortcuts.recordTitle", "Record a new shortcut")}
         onClick={() => (recording ? stopRecording() : startRecording())}
@@ -102,7 +112,7 @@ export function ShortcutCaptureInput({ id, value, defaultValue, invalid, describ
       </button>
       <button
         type="button"
-        className="btn btn-icon shortcut-capture__clear"
+        className="btn btn-sm shortcut-capture__clear"
         title={t("settings.keyboardShortcuts.clearTitle", "Disable this shortcut")}
         onClick={() => {
           if (recording) stopRecording();

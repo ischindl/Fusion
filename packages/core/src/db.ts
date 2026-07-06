@@ -183,7 +183,7 @@ export function isFts5CorruptionError(error: unknown): boolean {
 
 // ── Schema Definition ────────────────────────────────────────────────
 
-const SCHEMA_VERSION = 137;
+const SCHEMA_VERSION = 139;
 
 const TASKS_FTS_AUTOMERGE = 8;
 const TASKS_FTS_CRISISMERGE = 16;
@@ -300,6 +300,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   thinkingLevel TEXT,
   executionMode TEXT DEFAULT 'standard',
   plannerOversightLevel TEXT,
+  awaitingApprovalReason TEXT,
+  approvedPlanFingerprint TEXT,
   tokenUsageInputTokens INTEGER,
   tokenUsageOutputTokens INTEGER,
   tokenUsageCachedTokens INTEGER,
@@ -5568,6 +5570,43 @@ export class Database {
        */
       this.applyMigration(137, () => {
         this.addColumnIfMissing("tasks", "plannerOversightLevel", "TEXT");
+      });
+    }
+
+    if (version < 138) {
+      /*
+       * FNXC:PlanApproval 2026-07-04-21:35:
+       * FN-7559 — release-authorization and manual plan-approval both park a task
+       * with status "awaiting-approval" and rendered an identical operator-facing
+       * badge/Approve-Plan affordance, so operators with auto-approve-all enabled
+       * could not tell an intentionally-not-bypassed release-authorization hold
+       * from a (never-fired, since bypassed) manual gate — read as "auto-approve is
+       * broken". This nullable discriminator is set only by the release-authorization
+       * gate (packages/engine/src/triage.ts) so the dashboard can render a distinct,
+       * truthful label and hide the manual Approve/Reject affordance for that hold.
+       * Additive-only: NULL means an ordinary manual-approval hold (or no hold).
+       */
+      this.applyMigration(138, () => {
+        this.addColumnIfMissing("tasks", "awaitingApprovalReason", "TEXT");
+      });
+    }
+
+    if (version < 139) {
+      /*
+       * FNXC:PlanApproval 2026-07-04-22:41:
+       * FN-7569 — manual plan approval had no persisted record of what the operator actually
+       * approved, so re-specification of an already-approved, unchanged plan (replan,
+       * plan-review reviewer-outage retry, self-healing rebound to triage) re-triggered the
+       * manual gate and re-parked the identical plan at "awaiting-approval", forcing the
+       * operator to re-approve a plan they already approved. This nullable column stores only
+       * a hash (computePlanApprovalFingerprint in packages/core/src/plan-approval.ts) of the
+       * last operator-approved PROMPT.md, set by POST /tasks/:id/approve-plan and cleared by
+       * POST /tasks/:id/reject-plan. Additive-only: NULL means never-approved (legacy rows) or
+       * a rejected/cleared approval, and the manual gate falls back to today's always-re-park
+       * behavior for those rows. No backfill.
+       */
+      this.applyMigration(139, () => {
+        this.addColumnIfMissing("tasks", "approvedPlanFingerprint", "TEXT");
       });
     }
 

@@ -467,4 +467,107 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
     await enginePausedManager.recoverAlreadyMergedReviewTasks();
     expect(enginePausedStore.listTasks).not.toHaveBeenCalled();
   }, 20_000);
+
+  // PR3: the local base ref can be stale. When a PR squash-merged on the remote
+  // but this process never fetched, the owned commit is absent from the LOCAL
+  // base branch, so the detector finds nothing and the failed card holds its
+  // file-scope lease forever. Recovery now fetches origin/<base> (gated on a
+  // recorded PR) and re-runs the SAME evidence detector against origin/<base>.
+  function setupRepoWithRemote(): { repo: string; remote: string } {
+    const remoteParent = mkdtempSync(path.join(os.tmpdir(), "fn-stale-remote-"));
+    repos.push(remoteParent);
+    const remote = path.join(remoteParent, "origin.git");
+    execSync(`git init --bare -b main ${JSON.stringify(remote)}`, { stdio: ["pipe", "pipe", "pipe"] });
+    const repo = setupRepo();
+    git(repo, `git remote add origin ${JSON.stringify(remote)}`);
+    git(repo, "git push origin main");
+    return { repo, remote };
+  }
+
+  // Clone the bare remote, run `mutate` in it, push main back. Advances the
+  // remote's main WITHOUT touching the primary repo's local main / origin/main
+  // tracking ref — i.e. it manufactures a genuinely stale local base.
+  function landOnRemoteMain(remote: string, mutate: (clone: string) => void): string {
+    const cloneParent = mkdtempSync(path.join(os.tmpdir(), "fn-stale-clone-"));
+    repos.push(cloneParent);
+    const clone = path.join(cloneParent, "clone");
+    execSync(`git clone ${JSON.stringify(remote)} ${JSON.stringify(clone)}`, { stdio: ["pipe", "pipe", "pipe"] });
+    git(clone, 'git config user.email "test@example.com"');
+    git(clone, 'git config user.name "Test"');
+    mutate(clone);
+    git(clone, "git push origin main");
+    return git(clone, "git rev-parse HEAD");
+  }
+
+  it("fetch-then-prove: finalizes a failed card whose PR merged on the remote (stale local base)", async () => {
+    const { repo, remote } = setupRepoWithRemote();
+
+    // Task branch tip lives locally (owned by nothing foreign).
+    git(repo, "git checkout -b fusion/fn-stale");
+    mkdirSync(path.join(repo, "src"), { recursive: true });
+    writeFileSync(path.join(repo, "src", "stale.txt"), "work\n", "utf-8");
+    git(repo, "git add src/stale.txt && git commit -m 'task work'");
+    git(repo, "git checkout main");
+
+    const worktreePath = path.join(repo, ".worktrees", "fn-stale");
+    mkdirSync(path.dirname(worktreePath), { recursive: true });
+    git(repo, `git worktree add ${JSON.stringify(worktreePath)} fusion/fn-stale`);
+
+    // Simulate the merge-train squash landing on the remote — never fetched locally.
+    const landedSha = landOnRemoteMain(remote, (clone) => {
+      git(clone, "git commit --allow-empty -m 'feat: landed' -m 'Fusion-Task-Id: FN-STALE'");
+    });
+
+    // Local base is stale: neither main nor origin/main has the owned commit yet.
+    expect(git(repo, "git rev-parse origin/main")).not.toBe(landedSha);
+
+    const tasks: TaskMap = new Map([
+      ["FN-STALE", makeTask({ id: "FN-STALE", column: "in-review", status: "failed", mergeRetries: 3, paused: false, baseBranch: "main", branch: "fusion/fn-stale", worktree: worktreePath, prInfo: { number: 77 } as any })],
+    ]);
+    const store = createStore(tasks);
+    const manager = new SelfHealingManager(store, { rootDir: repo, getExecutingTaskIds: () => new Set() });
+
+    await (manager as any).recoverAlreadyMergedReviewTasks();
+
+    // Fetch advanced origin/main, and the detector proved the owned commit against it.
+    expect(git(repo, "git rev-parse origin/main")).toBe(landedSha);
+    const task = tasks.get("FN-STALE")!;
+    expect(task.column).toBe("done");
+    expect(task.status).toBeNull();
+    expect(task.mergeRetries).toBe(0);
+    expect(task.mergeDetails?.commitSha).toBe(landedSha);
+    expect(task.mergeDetails?.mergeConfirmed).toBe(true);
+    expect(existsSync(worktreePath)).toBe(false);
+  }, 30_000);
+
+  it("fetch-then-prove: does NOT heal when the remote base carries only a foreign commit", async () => {
+    const { repo, remote } = setupRepoWithRemote();
+
+    git(repo, "git checkout -b fusion/fn-guard");
+    mkdirSync(path.join(repo, "src"), { recursive: true });
+    writeFileSync(path.join(repo, "src", "guard.txt"), "work\n", "utf-8");
+    git(repo, "git add src/guard.txt && git commit -m 'task work'");
+    git(repo, "git checkout main");
+
+    // Remote base advances, but the landed commit is owned by a DIFFERENT task.
+    const foreignSha = landOnRemoteMain(remote, (clone) => {
+      git(clone, "git commit --allow-empty -m 'feat: other' -m 'Fusion-Task-Id: FN-OTHER'");
+    });
+
+    const tasks: TaskMap = new Map([
+      ["FN-GUARD", makeTask({ id: "FN-GUARD", column: "in-review", status: "failed", mergeRetries: 3, paused: false, baseBranch: "main", branch: "fusion/fn-guard", prInfo: { number: 88 } as any })],
+    ]);
+    const store = createStore(tasks);
+    const manager = new SelfHealingManager(store, { rootDir: repo, getExecutingTaskIds: () => new Set() });
+
+    await (manager as any).recoverAlreadyMergedReviewTasks();
+
+    // The fetch still ran (proves the guard, not a missing fetch), but no owned
+    // commit exists → the card is left untouched, never phantom-finalized.
+    expect(git(repo, "git rev-parse origin/main")).toBe(foreignSha);
+    const task = tasks.get("FN-GUARD")!;
+    expect(task.column).toBe("in-review");
+    expect(task.status).toBe("failed");
+    expect(task.mergeDetails?.mergeConfirmed).not.toBe(true);
+  }, 30_000);
 });

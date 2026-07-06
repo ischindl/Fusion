@@ -1369,6 +1369,15 @@ export class InProcessRuntime
   }
 
   /**
+   * Get the project-scoped PluginRunner (if initialized).
+   * Dashboard chat needs this runner, not the top-level PluginLoader, so
+   * runtime hints such as `hermes` can resolve plugin runtimes correctly.
+   */
+  getPluginRunner(): PluginRunner | undefined {
+    return this.pluginRunner;
+  }
+
+  /**
    * Get the project's Scheduler instance.
    * @throws Error if runtime has not been started
    */
