@@ -64,6 +64,16 @@ vi.mock("@fusion/core", () => ({
     init: mockTaskStoreInit,
     listTasks: mockTaskStoreListTasks,
   })),
+  // FNXC:PostgresCutover 2026-07-05-17:20: getTaskCounts/health now boot the
+  // project store through the PostgreSQL startup factory; route the factory to
+  // the same mocked listTasks so count/in-flight assertions exercise it.
+  createTaskStoreForBackend: vi.fn(async () => ({
+    taskStore: {
+      init: mockTaskStoreInit,
+      listTasks: mockTaskStoreListTasks,
+    },
+    shutdown: vi.fn(async () => {}),
+  })),
   countRunningAgentTasks: (tasks: Array<{ column: string; status?: string; paused?: boolean }>) => tasks.filter((task) => (
     task.column === "in-progress" ||
     (task.column === "triage" && task.status === "planning" && !task.paused) ||

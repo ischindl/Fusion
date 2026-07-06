@@ -16,6 +16,12 @@ import {
   clearStoreCache,
 } from "../project-context.js";
 import { CentralCore, GlobalSettingsStore, type RegisteredProject } from "@fusion/core";
+import {
+  pgDescribe,
+  createTaskStoreForTest,
+  type PgTestHarness,
+} from "../../../core/src/__test-utils__/pg-test-harness.js";
+import { beforeAll, afterAll } from "vitest";
 
 describe("project-context", () => {
   let tempDir: string;
@@ -67,37 +73,10 @@ describe("project-context", () => {
   }
 
   describe("detectProjectFromCwd", () => {
-    it("should find project from CWD when .fusion/fusion.db exists", async () => {
-      const projectPath = createMockProject("my-project");
-      const project = await central.registerProject({
-        name: "my-project",
-        path: resolve(projectPath),
-      });
-      createdProjectIds.push(project.id);
-
-      const found = await detectProjectFromCwd(projectPath, central);
-
-      expect(found).toBeDefined();
-      expect(found?.id).toBe(project.id);
-      expect(found?.name).toBe("my-project");
-    });
-
-    it("should walk up directory tree to find project", async () => {
-      const projectPath = createMockProject("my-project");
-      const subDir = join(projectPath, "src", "components");
-      mkdirSync(subDir, { recursive: true });
-
-      const project = await central.registerProject({
-        name: "my-project",
-        path: resolve(projectPath),
-      });
-      createdProjectIds.push(project.id);
-
-      const found = await detectProjectFromCwd(subDir, central);
-
-      expect(found).toBeDefined();
-      expect(found?.id).toBe(project.id);
-    });
+    // FNXC:PostgresCutover 2026-07-05-17:30: the registerProject-dependent
+    // detect tests moved to the PostgreSQL-backed block at the bottom of this
+    // file — CentralCore writes require an AsyncDataLayer (legacy SQLite
+    // CentralDatabase was removed under VAL-REMOVAL-005).
 
     it("should return undefined when no project found", async () => {
       const randomDir = join(tempDir, "random");
@@ -185,15 +164,11 @@ describe("project-context", () => {
       );
     });
 
-    it("should resolve unregistered local project from cwd", async () => {
-      const projectPath = createMockProject("legacy-project");
-
-      const context = await resolveProject(undefined, projectPath, homeDir);
-
-      expect(context.projectPath).toBe(resolve(projectPath));
-      expect(context.projectName).toBe("legacy-project");
-      expect(context.isRegistered).toBe(false);
-    });
+    // FNXC:PostgresCutover 2026-07-05-17:30: "resolves unregistered local
+    // project from cwd" moved to the PostgreSQL-backed block below — it boots
+    // a real project store through the startup factory, which must target the
+    // test cluster (DATABASE_URL) instead of spawning embedded PostgreSQL
+    // inside a unit-test worker.
 
     it("should throw when no project can be resolved", async () => {
       const randomDir = join(tempDir, "no-project-here");
@@ -203,5 +178,120 @@ describe("project-context", () => {
         "No fusion project found"
       );
     });
+  });
+});
+
+/*
+FNXC:PostgresCutover 2026-07-05-17:30:
+PostgreSQL-backed CentralCore coverage for project-context. The legacy SQLite
+CentralDatabase was removed (VAL-REMOVAL-005): registerProject and the
+factory-booted store paths need a real AsyncDataLayer. Auto-skipped when
+PostgreSQL is unreachable (pgDescribe), matching the core pg suites.
+*/
+pgDescribe("project-context (PostgreSQL-backed CentralCore)", () => {
+  let h: PgTestHarness;
+  let tempDir: string;
+  let homeDir: string;
+  let central: CentralCore;
+  const createdProjectIds: string[] = [];
+
+  beforeAll(async () => {
+    h = await createTaskStoreForTest({ prefix: "fusion_cli_project_ctx" });
+  });
+
+  afterAll(async () => {
+    await h.teardown();
+  });
+
+  beforeEach(async () => {
+    tempDir = mkdtempSync(join(tmpdir(), "kb-test-pg-"));
+    homeDir = mkdtempSync(join(tmpdir(), "kb-home-pg-"));
+    central = new CentralCore(homeDir, { asyncLayer: h.layer });
+    await central.init();
+  });
+
+  afterEach(async () => {
+    for (const projectId of createdProjectIds) {
+      try {
+        await central.unregisterProject(projectId);
+      } catch {
+        // Ignore cleanup errors for already-removed entities
+      }
+    }
+    createdProjectIds.length = 0;
+    try {
+      await central.close();
+    } catch {
+      // Ignore close errors
+    }
+    clearStoreCache();
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+      rmSync(homeDir, { recursive: true, force: true });
+    } catch {
+      // Ignore cleanup errors
+    }
+  });
+
+  function createMockProject(name: string, parentDir: string = tempDir): string {
+    const projectPath = join(parentDir, name);
+    mkdirSync(join(projectPath, ".fusion"), { recursive: true });
+    writeFileSync(join(projectPath, ".fusion", "fusion.db"), "");
+    return projectPath;
+  }
+
+  it("should find project from CWD when .fusion/fusion.db exists", async () => {
+    const projectPath = createMockProject("my-project");
+    const project = await central.registerProject({
+      name: "my-project",
+      path: resolve(projectPath),
+    });
+    createdProjectIds.push(project.id);
+
+    const found = await detectProjectFromCwd(projectPath, central);
+
+    expect(found).toBeDefined();
+    expect(found?.id).toBe(project.id);
+    expect(found?.name).toBe("my-project");
+  });
+
+  it("should walk up directory tree to find project", async () => {
+    const projectPath = createMockProject("my-project");
+    const subDir = join(projectPath, "src", "components");
+    mkdirSync(subDir, { recursive: true });
+
+    const project = await central.registerProject({
+      name: "my-project",
+      path: resolve(projectPath),
+    });
+    createdProjectIds.push(project.id);
+
+    const found = await detectProjectFromCwd(subDir, central);
+
+    expect(found).toBeDefined();
+    expect(found?.id).toBe(project.id);
+  });
+
+  it("should resolve unregistered local project from cwd", async () => {
+    const projectPath = createMockProject("legacy-project");
+    // Point the startup factory at the test cluster so createLocalStore
+    // connects externally instead of spawning an embedded PostgreSQL
+    // subprocess inside the test worker.
+    const prevDatabaseUrl = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = h.testUrl;
+    try {
+      const context = await resolveProject(undefined, projectPath, homeDir);
+
+      expect(context.projectPath).toBe(resolve(projectPath));
+      expect(context.projectName).toBe("legacy-project");
+      expect(context.isRegistered).toBe(false);
+      await context.store.close();
+    } finally {
+      if (prevDatabaseUrl === undefined) {
+        delete process.env.DATABASE_URL;
+      } else {
+        process.env.DATABASE_URL = prevDatabaseUrl;
+      }
+    }
   });
 });

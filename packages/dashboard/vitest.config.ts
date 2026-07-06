@@ -371,19 +371,15 @@ const quarantinedDashboardTests: string[] = [
   Mirrored in scripts/lib/test-quarantine.json; will be DELETED when the SQLite code is removed.
   */
   /*
-  FNXC:DashboardTestQuarantine 2026-06-28-12:00:
-  The SQLite-to-PostgreSQL cutover removed the Database class body. These dashboard
-  test files construct mock stores that exercise the removed SQLite runtime
-  (store.db.prepare(), inMemoryDb, etc.) and fail with "SQLite Database class body
-  has been removed" or hit the startup factory which tries to boot embedded PG in
-  a unit test context without a proper temp dir. Quarantined on sight per AGENTS.md.
-  Mirrored in scripts/lib/test-quarantine.json.
+  FNXC:DashboardTestQuarantine 2026-07-05-17:10:
+  RESCUED: the five 2026-06-28 SQLite-cutover entries (project-store-resolver,
+  routes-planning, routes-auth, routes-automation, routes-tasks) were root-cause
+  fixed and un-quarantined: mock stores expose getAsyncLayer(), AgentStore
+  seeding was replaced with prototype spies (legacy runtime removed under
+  VAL-REMOVAL-005), the resolver test mocks the createTaskStoreForBackend seam,
+  and the manual-backup parity tests stub runBackupCommand (post-cutover it
+  pg_dumps a live cluster). Ledger entries removed in the same commit.
   */
-  "src/__tests__/project-store-resolver.test.ts",
-  "src/__tests__/routes-planning.test.ts",
-  "src/__tests__/routes-auth.test.ts",
-  "src/__tests__/routes-automation.test.ts",
-  "src/__tests__/routes-tasks.test.ts",
 ];
 
 const qualityApiTests = [

@@ -1142,7 +1142,11 @@ export function registerAgentRuntimeRoutes(ctx: ApiRoutesContext, deps: AgentRun
         }
 
         const { AgentStore: AgentStoreClass } = await import("@fusion/core");
-        const agentStore = new AgentStoreClass({ rootDir: scopedStore.getFusionDir() });
+        // FNXC:PostgresCutover 2026-07-05-16:50: borrow the scoped store's
+        // AsyncDataLayer so the AgentStore runs in backend mode (the SQLite
+        // runtime was removed under VAL-REMOVAL-005), matching the
+        // record-only fallback branch below.
+        const agentStore = new AgentStoreClass({ rootDir: scopedStore.getFusionDir(), asyncLayer: scopedStore.getAsyncLayer() ?? undefined });
         await agentStore.init();
 
         const agent = await agentStore.getAgent(req.params.id);

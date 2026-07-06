@@ -194,6 +194,9 @@ function createMockStore(overrides: Partial<TaskStore> = {}): TaskStore {
   }>();
 
   return {
+    // FNXC:PostgresCutover 2026-07-05-16:50: routes borrow the AsyncDataLayer
+    // from the scoped store; null = legacy mode for this mock.
+    getAsyncLayer: vi.fn().mockReturnValue(null),
     getTask: vi.fn(),
     listTasks: vi.fn().mockResolvedValue([]),
     searchTasks: vi.fn().mockResolvedValue([]),
@@ -3654,18 +3657,21 @@ describe("Saturated-slot regression: heartbeat wake routes", () => {
 
   describe("POST /api/tasks/:id/comments — utility lane independence", () => {
     it("triggers heartbeat wake for assigned agent when task-lane is saturated", async () => {
-      const tempDir = mkdtempSync(join(tmpdir(), "kb-routes-sat-comment-"));
-      const fusionDir = join(tempDir, ".fusion");
-      mkdirSync(fusionDir, { recursive: true });
+      const fusionDir = "/fake/root/.fusion";
 
       try {
         const { AgentStore } = await import("@fusion/core");
-        const agentStore = new AgentStore({ rootDir: fusionDir });
-        await agentStore.init();
-        const agent = await agentStore.createAgent({ name: "Saturated Wake Agent", role: "executor" });
-        await agentStore.updateAgent(agent.id, {
-          runtimeConfig: { messageResponseMode: "immediate" },
-        });
+      /*
+      FNXC:PostgresCutover 2026-07-05-16:50:
+      The legacy `new AgentStore({ rootDir })` runtime was removed
+      (VAL-REMOVAL-005); spy on the prototype instead of seeding a real
+      on-disk agent store. The invariant under test is lane independence of
+      the ROUTE under maxConcurrent=0, not AgentStore persistence.
+      */
+        const agent = { id: "agent-sat-1", name: "Saturated Wake Agent", role: "executor", state: "idle", runtimeConfig: { messageResponseMode: "immediate" } };
+        vi.spyOn(AgentStore.prototype, "init").mockResolvedValue(undefined);
+        vi.spyOn(AgentStore.prototype, "getAgent").mockResolvedValue(agent as never);
+        vi.spyOn(AgentStore.prototype, "getActiveHeartbeatRun").mockResolvedValue(null);
 
         const heartbeatMonitor = {
           executeHeartbeat: vi.fn().mockResolvedValue({ id: "run-sat-1" }),
@@ -3707,26 +3713,27 @@ describe("Saturated-slot regression: heartbeat wake routes", () => {
           }));
         }, { timeout: 1000 });
       } finally {
-        rmSync(tempDir, { recursive: true, force: true });
+        vi.restoreAllMocks();
       }
     });
 
     it("preserves active-run conflict 409 semantics when task-lane is saturated", async () => {
-      const tempDir = mkdtempSync(join(tmpdir(), "kb-routes-sat-active-run-"));
-      const fusionDir = join(tempDir, ".fusion");
-      mkdirSync(fusionDir, { recursive: true });
-      let agentStore: any;
+      const fusionDir = "/fake/root/.fusion";
 
       try {
         const { AgentStore } = await import("@fusion/core");
-        agentStore = new AgentStore({ rootDir: fusionDir });
-        await agentStore.init();
-        const agent = await agentStore.createAgent({ name: "Active Run Agent", role: "executor" });
-        await agentStore.updateAgent(agent.id, {
-          runtimeConfig: { messageResponseMode: "immediate" },
-        });
-        // Start an active run (simulates existing heartbeat)
-        await agentStore.startHeartbeatRun(agent.id);
+      /*
+      FNXC:PostgresCutover 2026-07-05-16:50:
+      The legacy `new AgentStore({ rootDir })` runtime was removed
+      (VAL-REMOVAL-005); spy on the prototype instead of seeding a real
+      on-disk agent store. The invariant under test is lane independence of
+      the ROUTE under maxConcurrent=0, not AgentStore persistence.
+      */
+        const agent = { id: "agent-sat-2", name: "Active Run Agent", role: "executor", state: "running", runtimeConfig: { messageResponseMode: "immediate" } };
+        vi.spyOn(AgentStore.prototype, "init").mockResolvedValue(undefined);
+        vi.spyOn(AgentStore.prototype, "getAgent").mockResolvedValue(agent as never);
+        // Existing active heartbeat run: the wake helper must skip.
+        vi.spyOn(AgentStore.prototype, "getActiveHeartbeatRun").mockResolvedValue({ id: "run-active" } as never);
 
         const heartbeatMonitor = {
           executeHeartbeat: vi.fn().mockResolvedValue({ id: "run-sat-2" }),
@@ -3761,26 +3768,35 @@ describe("Saturated-slot regression: heartbeat wake routes", () => {
         // Active run conflict must still work under saturation
         expect(heartbeatMonitor.executeHeartbeat).not.toHaveBeenCalled();
       } finally {
-        agentStore?.close?.();
-        rmSync(tempDir, { recursive: true, force: true });
+        vi.restoreAllMocks();
       }
     });
   });
 
   describe("POST /api/agents/:id/runs — utility lane independence", () => {
     it("accepts triggering comment wake fields when task-lane is saturated", async () => {
-      const tempDir = mkdtempSync(join(tmpdir(), "kb-routes-sat-agent-runs-"));
-      const fusionDir = join(tempDir, ".fusion");
-      mkdirSync(fusionDir, { recursive: true });
+      const fusionDir = "/fake/root/.fusion";
 
       try {
         const { AgentStore } = await import("@fusion/core");
-        const agentStore = new AgentStore({ rootDir: fusionDir });
-        await agentStore.init();
-        const agent = await agentStore.createAgent({
-          name: "Saturated Run Agent",
-          role: "executor",
-        });
+      /*
+      FNXC:PostgresCutover 2026-07-05-16:50:
+      The legacy `new AgentStore({ rootDir })` runtime was removed
+      (VAL-REMOVAL-005); spy on the prototype instead of seeding a real
+      on-disk agent store. The record-only run-creation path is exercised via
+      startHeartbeatRun/saveRun spies; run enrichment stays real.
+      */
+        const agent = { id: "agent-sat-run-1", name: "Saturated Run Agent", role: "executor", state: "idle" };
+        vi.spyOn(AgentStore.prototype, "init").mockResolvedValue(undefined);
+        vi.spyOn(AgentStore.prototype, "getAgent").mockResolvedValue(agent as never);
+        vi.spyOn(AgentStore.prototype, "getActiveHeartbeatRun").mockResolvedValue(null);
+        vi.spyOn(AgentStore.prototype, "startHeartbeatRun").mockResolvedValue({
+          id: "run-sat-created",
+          agentId: agent.id,
+          startedAt: "2026-01-01T00:00:00.000Z",
+          status: "running",
+        } as never);
+        vi.spyOn(AgentStore.prototype, "saveRun").mockResolvedValue(undefined as never);
 
         const store = createSaturatedStore({
           getFusionDir: vi.fn().mockReturnValue(fusionDir),
@@ -3814,23 +3830,17 @@ describe("Saturated-slot regression: heartbeat wake routes", () => {
           triggeringCommentType: "task",
         });
       } finally {
-        rmSync(tempDir, { recursive: true, force: true });
+        vi.restoreAllMocks();
       }
     });
 
     it("preserves validation 400 for invalid triggeringCommentIds when task-lane is saturated", async () => {
-      const tempDir = mkdtempSync(join(tmpdir(), "kb-routes-sat-validation-"));
-      const fusionDir = join(tempDir, ".fusion");
-      mkdirSync(fusionDir, { recursive: true });
+      const fusionDir = "/fake/root/.fusion";
 
       try {
-        const { AgentStore } = await import("@fusion/core");
-        const agentStore = new AgentStore({ rootDir: fusionDir });
-        await agentStore.init();
-        const agent = await agentStore.createAgent({
-          name: "Validation Agent",
-          role: "executor",
-        });
+        // Validation rejects before any store/agent access, so no seeded
+        // agent is required — a fixed id suffices (PostgresCutover port).
+        const agent = { id: "agent-sat-validation-1" };
 
         const store = createSaturatedStore({
           getFusionDir: vi.fn().mockReturnValue(fusionDir),
@@ -3856,7 +3866,7 @@ describe("Saturated-slot regression: heartbeat wake routes", () => {
         expect(res.status).toBe(400);
         expect(res.body.error).toContain("triggeringCommentIds must be an array");
       } finally {
-        rmSync(tempDir, { recursive: true, force: true });
+        vi.restoreAllMocks();
       }
     }, 15_000);
   });
