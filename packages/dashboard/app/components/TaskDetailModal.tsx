@@ -86,9 +86,8 @@ const ACTIVITY_VIEW_MENU_MIN_WIDTH = 160;
 const ACTIVITY_VIEW_MENU_MIN_HEIGHT = 120;
 const ACTIVITY_VIEW_MENU_MAX_HEIGHT = 320;
 const ACTIVITY_VIEW_MENU_OPEN_VIEWPORT_GUARD_MS = 350;
-// FNXC:PlannerOversight 2026-07-04-19:00: FN-7545 — mobile breakpoint for collapsing the oversight action cluster into an overflow menu; matches the `@media (max-width: 768px)` breakpoint used across TaskDetailModal.css.
-const OVERSIGHT_MENU_MOBILE_BREAKPOINT = 768;
-// FNXC:TaskDetailSwipeBack 2026-07-05-12:30: FN-7587 — mobile breakpoint gating the presentation-only predictive-back slide/fade transition on the modal/list/nested task-detail surface; matches OVERSIGHT_MENU_MOBILE_BREAKPOINT/the `@media (max-width: 768px)` convention already used in this file.
+// FNXC:TaskDetailSwipeBack 2026-07-05-12:30: FN-7587 — mobile breakpoint gating the presentation-only predictive-back slide/fade transition on the modal/list/nested task-detail surface; matches the `@media (max-width: 768px)` convention already used in this file.
+// FNXC:PlannerOversight 2026-07-05-00:00: FN-7604 — the OVERSIGHT_MENU_MOBILE_BREAKPOINT constant (formerly used to branch the oversight controls between an inline cluster and this overflow menu) was removed; the overflow-menu dropdown is now the single universal surface at every viewport, so no breakpoint gates it.
 const TASK_DETAIL_MOBILE_TRANSITION_BREAKPOINT = 768;
 
 type ActivityViewMenuPosition = {
@@ -1070,15 +1069,16 @@ export function TaskDetailContent({
   const [overseerExplainSnapshot, setOverseerExplainSnapshot] = useState<PlannerOverseerRuntimeSnapshot | null>(null);
   /*
   FNXC:PlannerOversight 2026-07-04-19:00:
-  FN-7545 — collapse the oversight action controls into a mobile overflow
-  menu so the detail control bar fits narrow viewports; desktop keeps the
-  inline cluster; menu never renders an empty shell when oversight is
-  off/inactive. `isOversightMenuMobile` mirrors the `DocumentsView` local
-  `isMobile` resize-listener pattern (defaults false so JSDOM/unit tests keep
-  exercising the desktop inline branch unless a test explicitly narrows the
-  viewport).
+  FN-7545 — collapse the oversight action controls into an overflow menu so
+  the detail control bar fits narrow viewports; menu never renders an empty
+  shell when oversight is off/inactive.
+
+  FNXC:PlannerOversight 2026-07-05-00:00:
+  FN-7604 — the overflow menu is now the single universal surface at every
+  viewport (desktop and mobile); the `isOversightMenuMobile` resize-driven
+  branch selector was removed since there is no longer a second branch to
+  select between.
   */
-  const [isOversightMenuMobile, setIsOversightMenuMobile] = useState(false);
   const [showOversightMenu, setShowOversightMenu] = useState(false);
   const oversightMenuRef = useRef<HTMLDivElement>(null);
   const oversightMenuButtonRef = useRef<HTMLButtonElement>(null);
@@ -1502,26 +1502,6 @@ export function TaskDetailContent({
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [showMoveMenu, showActionsMenu, showActivityViewMenu, showOversightMenu]);
-
-  // FNXC:PlannerOversight 2026-07-04-19:00: FN-7545 — track the mobile breakpoint locally (mirrors DocumentsView's isMobile resize-listener pattern) so the oversight action cluster can collapse into an overflow menu on narrow viewports while desktop keeps the inline layout.
-  useEffect(() => {
-    const updateOversightMenuMobile = () => {
-      setIsOversightMenuMobile(window.innerWidth <= OVERSIGHT_MENU_MOBILE_BREAKPOINT);
-    };
-
-    updateOversightMenuMobile();
-    window.addEventListener("resize", updateOversightMenuMobile);
-
-    return () => {
-      window.removeEventListener("resize", updateOversightMenuMobile);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!isOversightMenuMobile) {
-      setShowOversightMenu(false);
-    }
-  }, [isOversightMenuMobile]);
 
   // Reset spec edit state when task changes
   useEffect(() => {
@@ -3983,16 +3963,19 @@ export function TaskDetailContent({
                   FNXC:PlannerOversight 2026-07-04-19:00:
                   FN-7545 — collapse the oversight action controls into a mobile
                   overflow menu so the detail control bar fits narrow viewports;
-                  desktop keeps the inline cluster; menu never renders an empty
-                  shell when oversight is off/inactive. Both branches below share
-                  the SAME enablement gates (`hasTaskOversightOverride`,
+                  menu never renders an empty shell when oversight is off/inactive.
+                  Shares the SAME enablement gates (`hasTaskOversightOverride`,
                   `workflowOversightResolved`, `oversightIsOff`, `showStopOverseer`,
                   `canNudgeOverseer`, `canExplainOverseer`) and the SAME handlers
-                  — the mobile branch only changes where the controls render, never
-                  their guard logic.
+                  as before.
+
+                  FNXC:PlannerOversight 2026-07-05-00:00:
+                  FN-7604 — the oversight action controls (level select / nudge /
+                  stop / explain) render ONLY behind the "Oversight" overflow-menu
+                  trigger on every surface (desktop and mobile); the former desktop
+                  inline cluster was removed for a consistent, simpler control bar.
                   */}
-                  {isOversightMenuMobile ? (
-                    (hasTaskOversightOverride || workflowOversightResolved) && (
+                  {(hasTaskOversightOverride || workflowOversightResolved) && (
                       <div className="detail-oversight-menu-dropdown" ref={oversightMenuRef}>
                         <button
                           type="button"
@@ -4101,119 +4084,7 @@ export function TaskDetailContent({
                           </div>
                         )}
                       </div>
-                    )
-                  ) : (
-                    <>
-                      {(hasTaskOversightOverride || workflowOversightResolved) && (
-                        <label
-                          className={`card-oversight-badge card-oversight-badge--${effectiveOversightLevel} detail-oversight-chip ${isSavingOversightLevel ? "detail-oversight-chip--saving" : ""}`}
-                        >
-                          <span>{t("taskDetail.oversight.label", "Oversight:")}</span>
-                          <select
-                            className="detail-oversight-select"
-                            data-testid="detail-oversight-level-select"
-                            value={hasTaskOversightOverride ? (task.plannerOversightLevel as string) : "__inherit__"}
-                            onChange={(event) => {
-                              void handleOversightLevelChange(event.target.value);
-                            }}
-                            disabled={isSavingOversightLevel}
-                            aria-label={t("taskDetail.oversight.ariaLabel", "Planner oversight level")}
-                          >
-                            <option value="__inherit__">
-                              {t("taskDetail.oversight.inherit", "Inherit ({{level}})", { level: OVERSIGHT_LEVEL_LABEL[effectiveOversightLevel] })}
-                            </option>
-                            {PLANNER_OVERSIGHT_LEVELS.map((levelOption) => (
-                              <option key={levelOption} value={levelOption}>
-                                {OVERSIGHT_LEVEL_LABEL[levelOption]}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                      )}
-                      {/*
-                      FNXC:PlannerOversight 2026-07-04-17:00:
-                      FN-7517 manual nudge / stop oversight / explain current action
-                      controls. Disabled (with an accessible aria-label reason) rather
-                      than hidden for nudge/explain when the overseer is off/inactive
-                      so operators understand WHY the control is inert instead of it
-                      silently vanishing; stop is hidden once oversight is already off
-                      (nothing left to stop) per the PROMPT's enablement rule, avoiding
-                      an always-on empty shell for the common oversight-off default.
-
-                      FNXC:PlannerOversight 2026-07-04-20:30:
-                      FN-7546 — operators reported these controls were confusing:
-                      unlabeled inline chips, greyed out most of the time, with the
-                      only "why" behind a mouse-hover `title`. Add a visible,
-                      non-interactive `detail-oversight-controls-label` group label
-                      (gated by the SAME condition as the buttons) so the cluster is
-                      identifiable, and a `detail-overseer-nudge-disabled-reason`
-                      helper line that surfaces the disabled reason in-DOM (not just
-                      on hover) whenever Nudge is unavailable. Explain is read-only
-                      and non-mutating, so its disabled gate is removed entirely
-                      (see handleExplainOverseer below) — it always opens its panel,
-                      which already renders an informative "not currently watching"
-                      empty state. Nudge's mutating gate (`canNudgeOverseer`) and
-                      Stop's confirm dialog are unchanged.
-                      */}
-                      {(hasTaskOversightOverride || workflowOversightResolved) && !oversightIsOff && (
-                        <span className="detail-oversight-controls-label" data-testid="detail-oversight-controls-label">
-                          {t("taskDetail.oversight.controlsLabel", "Overseer controls")}
-                        </span>
-                      )}
-                      {(hasTaskOversightOverride || workflowOversightResolved) && !oversightIsOff && (
-                        <button
-                          type="button"
-                          className={`btn btn-sm detail-overseer-nudge ${isNudgingOverseer ? "detail-overseer-nudge--saving" : ""}`}
-                          data-testid="detail-overseer-nudge"
-                          onClick={() => {
-                            void handleNudgeOverseer();
-                          }}
-                          disabled={!canNudgeOverseer || isNudgingOverseer}
-                          title={canNudgeOverseer ? t("taskDetail.oversight.nudgeTitle", "Inject steering guidance into the current stage now") : nudgeDisabledReason}
-                          aria-label={t("taskDetail.oversight.nudgeAriaLabel", "Manual nudge")}
-                        >
-                          {isNudgingOverseer ? <Loader2 className="spin" aria-hidden="true" /> : <Send aria-hidden="true" />}
-                          <span>{t("taskDetail.oversight.nudge", "Nudge")}</span>
-                        </button>
-                      )}
-                      {(hasTaskOversightOverride || workflowOversightResolved) && !oversightIsOff && !canNudgeOverseer && (
-                        <span className="detail-oversight-controls-helper" data-testid="detail-overseer-nudge-disabled-reason">
-                          {nudgeDisabledReason}
-                        </span>
-                      )}
-                      {(hasTaskOversightOverride || workflowOversightResolved) && showStopOverseer && (
-                        <button
-                          type="button"
-                          className={`btn btn-sm detail-overseer-stop ${isStoppingOverseer ? "detail-overseer-stop--saving" : ""}`}
-                          data-testid="detail-overseer-stop"
-                          onClick={() => {
-                            void handleStopOverseer();
-                          }}
-                          disabled={isStoppingOverseer}
-                          aria-label={t("taskDetail.oversight.stopAriaLabel", "Stop oversight")}
-                        >
-                          {isStoppingOverseer ? <Loader2 className="spin" aria-hidden="true" /> : <Square aria-hidden="true" />}
-                          <span>{t("taskDetail.oversight.stop", "Stop")}</span>
-                        </button>
-                      )}
-                      {(hasTaskOversightOverride || workflowOversightResolved) && !oversightIsOff && (
-                        <button
-                          type="button"
-                          className="btn btn-sm detail-overseer-explain"
-                          data-testid="detail-overseer-explain"
-                          onClick={() => {
-                            void handleExplainOverseer();
-                          }}
-                          title={canExplainOverseer ? t("taskDetail.oversight.explainTitle", "Explain the overseer's current action") : t("taskDetail.oversight.explainInactiveTitle", "Overseer is not currently watching this task — Explain shows its last known state")}
-                          aria-label={t("taskDetail.oversight.explainAriaLabel", "Explain current action")}
-                          aria-expanded={overseerExplainOpen}
-                        >
-                          <Info aria-hidden="true" />
-                          <span>{t("taskDetail.oversight.explain", "Explain")}</span>
-                        </button>
-                      )}
-                    </>
-                  )}
+                    )}
                 </div>
                 {overseerExplainOpen && (
                   <div className="detail-overseer-explain-panel" data-testid="detail-overseer-explain-panel" role="region" aria-live="polite">
@@ -6013,8 +5884,8 @@ export function TaskDetailModal({ onClose, ...props }: TaskDetailModalProps) {
   const overlayDismissProps = useOverlayDismiss(onClose);
   /*
   FNXC:TaskDetailSwipeBack 2026-07-05-12:30:
-  FN-7587 — track the mobile breakpoint locally (mirrors the OVERSIGHT_MENU_MOBILE_BREAKPOINT
-  resize-listener pattern above) so the list/modal/nested task-detail surface gets the same
+  FN-7587 — track the mobile breakpoint locally (mirrors the same resize-listener pattern
+  used elsewhere in this file) so the list/modal/nested task-detail surface gets the same
   presentation-only predictive-back slide/fade enter transition as the board main-panel
   (MainContent.tsx), without threading a new isMobile prop through App.tsx/AppModals.tsx. This
   is presentation-only: it never touches onClose/onRequestClose timing or the underlying

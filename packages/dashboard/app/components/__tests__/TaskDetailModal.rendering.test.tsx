@@ -1,6 +1,13 @@
 /*
 FNXC:TaskDetailTabs 2026-06-17-08:20:
 FN-7306 labels the stable internal `chat` tab as Activity and keeps it as the default TaskDetailModal tab. Tests that assert Definition-only sections must opt into `initialTab="definition"` so they verify the intended surface instead of the Activity landing state.
+
+FNXC:PlannerOversight 2026-07-05-00:00:
+FN-7604 — the footer "Actions" dropdown button name is matched EXACTLY
+(`{ name: "Actions" }`) throughout this file, not via a loose `/actions/i`
+regex. The now-universal Oversight overflow trigger's aria-label is
+"Oversight actions", which also matches `/actions/i` and made every such
+query ambiguous once the trigger stopped being a mobile-only affordance.
 */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
@@ -1538,7 +1545,7 @@ describe("TaskDetailModal", () => {
     );
 
     // Open Actions dropdown to see Retry
-    const actionsBtn = screen.getByRole("button", { name: /actions/i });
+    const actionsBtn = screen.getByRole("button", { name: "Actions" });
     fireEvent.click(actionsBtn);
 
     expect(screen.getByRole("menuitem", { name: "Retry" })).toBeTruthy();
@@ -1560,7 +1567,7 @@ describe("TaskDetailModal", () => {
     );
 
     // No Retry should be visible in the Actions dropdown
-    const actionsBtn = screen.getByRole("button", { name: /actions/i });
+    const actionsBtn = screen.getByRole("button", { name: "Actions" });
     fireEvent.click(actionsBtn);
     expect(screen.queryByRole("menuitem", { name: "Retry" })).toBeNull();
   });
@@ -1599,7 +1606,7 @@ describe("TaskDetailModal", () => {
       );
 
       // Open Actions dropdown and check for exactly one Retry
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       fireEvent.click(actionsBtn);
 
       const retryButtons = screen.getAllByRole("menuitem", { name: "Retry" });
@@ -1622,7 +1629,7 @@ describe("TaskDetailModal", () => {
       );
 
       // Open Actions dropdown and check for exactly one Retry
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       fireEvent.click(actionsBtn);
 
       const retryButtons = screen.getAllByRole("menuitem", { name: "Retry" });
@@ -1644,7 +1651,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       fireEvent.click(actionsBtn);
 
       const retryButtons = screen.getAllByRole("menuitem", { name: "Retry" });
@@ -1670,7 +1677,7 @@ describe("TaskDetailModal", () => {
       );
 
       // Open Actions dropdown and click Retry
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       await act(async () => {
         fireEvent.click(actionsBtn);
       });
@@ -1706,7 +1713,7 @@ describe("TaskDetailModal", () => {
       );
 
       // Open Actions dropdown and click Retry
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       await act(async () => {
         fireEvent.click(actionsBtn);
       });
@@ -1746,7 +1753,7 @@ describe("TaskDetailModal", () => {
       );
 
       // Open Actions dropdown and click Retry
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       await act(async () => {
         fireEvent.click(actionsBtn);
       });
@@ -1787,7 +1794,7 @@ describe("TaskDetailModal", () => {
       expect(screen.getByRole("menuitem", { name: "Back to In Progress" })).toBeTruthy();
       expect(screen.queryByRole("menuitem", { name: "Move to Todo" })).toBeNull();
 
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       fireEvent.click(actionsBtn);
       expect(screen.queryByRole("menuitem", { name: "Retry" })).toBeNull();
     });
@@ -1807,7 +1814,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       await act(async () => {
         fireEvent.click(actionsBtn);
       });

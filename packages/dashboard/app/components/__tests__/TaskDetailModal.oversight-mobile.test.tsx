@@ -1,15 +1,21 @@
 /*
 FNXC:PlannerOversight 2026-07-04-19:00:
-FN-7545 coverage for the mobile collapse of the FN-7517 oversight action
-controls into a single overflow menu (`detail-oversight-menu-trigger`). The
-suite forces the narrow-viewport branch by setting `window.innerWidth` below
-the `TaskDetailModal.tsx` `OVERSIGHT_MENU_MOBILE_BREAKPOINT` (768) BEFORE
-render, since the component reads `window.innerWidth` on mount via a resize
-listener (mirroring `DocumentsView`'s local `isMobile` pattern) rather than a
-CSS media query. Every action inside the menu reuses the SAME handlers and
-enablement gates as the desktop suite
-(`TaskDetailModal.oversight-controls.test.tsx`) — this file only asserts the
-collapsed-menu affordance, not new guard logic.
+FN-7545 coverage for the collapse of the FN-7517 oversight action controls
+into a single overflow menu (`detail-oversight-menu-trigger`). Every action
+inside the menu reuses the SAME handlers and enablement gates as the desktop
+suite (`TaskDetailModal.oversight-controls.test.tsx`) — this file only
+asserts the collapsed-menu affordance, not new guard logic.
+
+FNXC:PlannerOversight 2026-07-05-00:00:
+FN-7604 — the overflow menu is now the SINGLE UNIVERSAL surface at every
+viewport (desktop and mobile); it is no longer a narrow-viewport-only branch
+selected by a JS `isOversightMenuMobile` resize listener (that state, the
+`OVERSIGHT_MENU_MOBILE_BREAKPOINT` constant, and its effects were removed
+from `TaskDetailModal.tsx`). `setViewportWidth`/`MOBILE_WIDTH`/`DESKTOP_WIDTH`
+no longer select which branch mounts — both widths mount the exact same
+dropdown — they are kept as a documented regression guard that the popover
+still renders/positions/behaves correctly across a narrow AND a desktop
+viewport, per the Surface Enumeration breakpoint requirement.
 */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
@@ -455,7 +461,7 @@ describe("TaskDetailModal oversight controls — mobile overflow menu", () => {
     expect(screen.getAllByRole("menu")).toHaveLength(1);
   });
 
-  it("desktop inline oversight select is unaffected by the mobile auto-focus fix", async () => {
+  it("the overflow-menu popover renders identically at a desktop viewport (FN-7604 universal dropdown)", async () => {
     setViewportWidth(DESKTOP_WIDTH);
 
     render(
@@ -470,12 +476,18 @@ describe("TaskDetailModal oversight controls — mobile overflow menu", () => {
       />,
     );
 
-    // Desktop renders the inline native select directly (no overflow trigger,
-    // no custom popover) — confirm that surface is untouched by this fix.
-    expect(screen.queryByTestId("detail-oversight-menu-trigger")).not.toBeInTheDocument();
+    // FNXC:PlannerOversight 2026-07-05-00:00: FN-7604 — there is no longer a
+    // desktop-only inline select surface; the overflow-menu trigger is the
+    // single universal mount point at every viewport, including desktop. The
+    // popover stays closed until clicked, exactly like the mobile width.
+    const trigger = await screen.findByTestId("detail-oversight-menu-trigger");
+    expect(screen.queryByTestId("detail-oversight-level-select")).not.toBeInTheDocument();
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+
+    fireEvent.click(trigger);
     const select = await screen.findByTestId("detail-oversight-level-select");
     expect(select).toBeInTheDocument();
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(screen.getByRole("menu")).toBeInTheDocument();
 
     setViewportWidth(MOBILE_WIDTH);
   });

@@ -232,13 +232,16 @@ describe("TaskDetailModal", () => {
       const inlineControlsBlock = getStandaloneCssRuleBlock(css, ".detail-meta-inline-controls");
       const priorityChipBlock = getExactCssRuleBlock(css, ".detail-priority-chip");
       const executionToggleBlock = getExactCssRuleBlock(css, ".detail-execution-mode-toggle");
-      const oversightChipBlock = getExactCssRuleBlock(css, ".detail-oversight-chip");
       const oversightTriggerBlock = getExactCssRuleBlock(css, ".detail-oversight-menu-trigger");
 
-      // The cluster declares one shared border-radius token; all four controls
-      // must reference it rather than four independent literal radii.
+      // The cluster declares one shared border-radius token; all three
+      // controls must reference it rather than independent literal radii.
+      // FNXC:PlannerOversight 2026-07-05-00:00: FN-7604 removed the desktop-only
+      // `.detail-oversight-chip` wrapper (the inline branch it styled was
+      // deleted); the Oversight surface is now represented solely by
+      // `.detail-oversight-menu-trigger`, which already carried this trio.
       expect(inlineControlsBlock).toContain("--detail-control-border-radius: var(--radius-md);");
-      for (const block of [priorityChipBlock, executionToggleBlock, oversightChipBlock, oversightTriggerBlock]) {
+      for (const block of [priorityChipBlock, executionToggleBlock, oversightTriggerBlock]) {
         expect(block).toContain("border-radius: var(--detail-control-border-radius);");
         expect(block).toContain("border-width: var(--btn-border-width);");
         expect(block).toContain("border-color: var(--border);");
@@ -247,26 +250,25 @@ describe("TaskDetailModal", () => {
         expect(block).toContain("box-sizing: border-box;");
       }
 
-      // Guard against regressing back to four independent literal radius values
-      // (e.g. reintroducing a bare `var(--radius-pill)` on only the chips).
+      // Guard against regressing back to independent literal radius values
+      // (e.g. reintroducing a bare `var(--radius-pill)` on the priority chip).
       expect(priorityChipBlock).not.toMatch(/border-radius:\s*var\(--radius-pill\)/);
-      expect(oversightChipBlock).not.toMatch(/border-radius:\s*var\(--radius-pill\)/);
+      expect(oversightTriggerBlock).not.toMatch(/border-radius:\s*var\(--radius-pill\)/);
     });
 
     it("renders the Priority dropdown chip like the Oversight dropdown chip, on every surface (FN-7597)", () => {
       const css = readDashboardStylesSource();
 
       const priorityChipBlock = getExactCssRuleBlock(css, ".detail-priority-chip");
-      const oversightChipBlock = getExactCssRuleBlock(css, ".detail-oversight-chip");
       const oversightTriggerBlock = getExactCssRuleBlock(css, ".detail-oversight-menu-trigger");
       const prioritySelectBlock = getExactCssRuleBlock(css, ".detail-priority-select");
       const oversightSelectBlock = getExactCssRuleBlock(css, ".detail-oversight-select");
       const prioritySelectOptionBlock = getExactCssRuleBlock(css, ".detail-priority-select option");
       const oversightSelectOptionBlock = getExactCssRuleBlock(css, ".detail-oversight-select option");
 
-      // Same box size AND same border source for the desktop Priority chip vs.
-      // BOTH oversight surfaces (desktop chip and the mobile overflow trigger).
-      for (const block of [priorityChipBlock, oversightChipBlock, oversightTriggerBlock]) {
+      // Same box size AND same border source for the Priority chip vs. the
+      // (now-universal, FN-7604) Oversight overflow trigger.
+      for (const block of [priorityChipBlock, oversightTriggerBlock]) {
         expect(block).toContain("min-height: var(--detail-priority-control-min-height);");
         expect(block).toContain("border-width: var(--btn-border-width);");
         expect(block).toContain("border-color: var(--border);");
@@ -613,8 +615,13 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      // Actions are now in a dropdown - open it first
-      const actionsBtn = screen.getByRole("button", { name: /actions/i });
+      // Actions are now in a dropdown - open it first.
+      // FNXC:PlannerOversight 2026-07-05-00:00: FN-7604 — the footer "Actions"
+      // dropdown button name must be matched EXACTLY (not `/actions/i`) because
+      // the now-universal Oversight overflow trigger's aria-label is "Oversight
+      // actions", which also matches a loose /actions/i regex and made this
+      // query ambiguous once the trigger stopped being mobile-only.
+      const actionsBtn = screen.getByRole("button", { name: "Actions" });
       fireEvent.click(actionsBtn);
 
       // Now the dropdown items should be visible
@@ -653,7 +660,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
 
       await waitFor(() => {
@@ -680,7 +687,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
 
       await waitFor(() => {
@@ -707,7 +714,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
 
       await waitFor(() => {
@@ -732,7 +739,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
 
       await waitFor(() => {
@@ -771,7 +778,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
 
       await waitFor(() => {
@@ -833,7 +840,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
 
       await waitFor(() => {
@@ -870,7 +877,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
 
       await waitFor(() => {
@@ -907,7 +914,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
 
       await waitFor(() => {
@@ -950,7 +957,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
 
       await waitFor(() => {
@@ -981,7 +988,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
 
       await waitFor(() => {
@@ -1018,7 +1025,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
 
       await waitFor(() => {
@@ -1052,7 +1059,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
 
       await waitFor(() => {

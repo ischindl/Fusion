@@ -322,24 +322,21 @@ The task-detail modal metadata must keep priority, execution mode, provenance, P
   /*
   FNXC:PlannerOversight 2026-07-04-17:00:
   FN-7517: the oversight-controls cluster (priority + execution-mode + the
-  new oversight-level/nudge/stop/explain controls) must wrap without
-  overflowing the mobile modal width rather than forcing horizontal scroll.
+  Oversight trigger) must wrap without overflowing the mobile modal width
+  rather than forcing horizontal scroll.
 
-  FNXC:PlannerOversight 2026-07-04-19:00:
-  FN-7545: the level-select/nudge/stop/explain controls now collapse behind a
-  single `.detail-oversight-menu-trigger` button below this breakpoint (JS
-  `isOversightMenuMobile` swap in TaskDetailModal.tsx, not a CSS hide), so the
-  cluster only ever needs to fit priority + execution-mode + the trigger on
-  one row; `flex-wrap: wrap` remains as a safety fallback so the cluster never
-  forces horizontal scroll if it still overflows at very narrow widths.
+  FNXC:PlannerOversight 2026-07-05-00:00:
+  FN-7604: the level-select/nudge/stop/explain controls collapse behind the
+  single `.detail-oversight-menu-trigger` button at EVERY viewport now (no
+  longer a mobile-only branch), so the cluster only ever needs to fit
+  priority + execution-mode + the trigger on one row; `flex-wrap: wrap`
+  remains as a safety fallback so the cluster never forces horizontal scroll
+  if it still overflows at very narrow widths. The `.detail-oversight-menu`
+  positioning (`right: 0`) is already declared once on the base rule above
+  and applies at every width, so no mobile-only override is needed here.
   */
   .detail-meta-inline-controls {
     flex-wrap: wrap;
-  }
-
-  .detail-oversight-menu {
-    right: 0;
-    left: auto;
   }
 
   .detail-provenance {
@@ -542,36 +539,20 @@ uppercases its content; this only removes a duplicated, drift-prone override.
 
 /*
 FNXC:PlannerOversight 2026-07-04-17:00:
-FN-7517 task-detail planner-overseer controls (quick level-change chip,
+FN-7517 task-detail planner-overseer controls (quick level-change select,
 manual nudge / stop / explain buttons, explain panel). Reuses the same
 `.card-oversight-badge--*` status-color modifiers FN-7516's TaskCard badge
 already declares (see TaskCard.css) so oversight-level color stays a single
-semantic source, and the same `--detail-priority-control-min-height` chip
-height token as the priority/execution-mode controls above so the cluster
-renders at a uniform height.
+semantic source.
 
-FNXC:TaskDetail 2026-07-05-00:00:
-FN-7585 — like `.detail-priority-chip`, override `.card-oversight-badge`'s
-transparent border with the shared `--btn-border-width`/`--border`/
-`--detail-control-border-radius` trio so every oversight level (including
-`--off`, which has a neutral tint) renders the same bordered box as Priority
-and Execution-mode. The mobile `.detail-oversight-menu-trigger` swap below
-gets the identical trio so both oversight variants match.
+FNXC:PlannerOversight 2026-07-05-00:00:
+FN-7604 — the desktop-only `.detail-oversight-chip` wrapper (the inline
+quick-level-change chip rendered outside the overflow menu) was removed along
+with the desktop inline branch it styled; the level select now renders only
+inside `.detail-oversight-menu-item--select` (see below). `.detail-oversight-select`
+itself stays — the dropdown menu item reuses this class for the native
+`<select>` styling.
 */
-.detail-oversight-chip {
-  gap: var(--space-xs);
-  min-height: var(--detail-priority-control-min-height);
-  padding-block: var(--space-xs);
-  box-sizing: border-box;
-  border-width: var(--btn-border-width);
-  border-color: var(--border);
-  border-radius: var(--detail-control-border-radius);
-}
-
-.detail-oversight-chip--saving {
-  opacity: 0.75;
-}
-
 .detail-oversight-select {
   border: 0;
   background: transparent;
@@ -694,12 +675,16 @@ than a one-off style.
 
 /*
 FNXC:PlannerOversight 2026-07-04-19:00:
-FN-7545 — mobile overflow menu for the oversight action controls. Reuses the
-same `.detail-move-dropdown` / `.detail-move-menu` popover tokens/pattern
+FN-7545 — overflow menu for the oversight action controls. Reuses the same
+`.detail-move-dropdown` / `.detail-move-menu` popover tokens/pattern
 (position/border/radius/shadow) so the two overflow menus in this modal look
 and behave consistently. The popover opens DOWNWARD (`top: calc(100% + ...)`)
 since the trigger lives in the header cluster rather than the footer, unlike
 `.detail-move-menu` which opens upward from the footer.
+
+FNXC:PlannerOversight 2026-07-05-00:00:
+FN-7604 — this overflow menu is now the single universal surface at every
+viewport (desktop and mobile); it is no longer mobile-only.
 */
 .detail-oversight-menu-dropdown {
   position: relative;
@@ -714,10 +699,13 @@ since the trigger lives in the header cluster rather than the footer, unlike
   box-sizing: border-box;
   /*
   FNXC:TaskDetail 2026-07-05-00:00:
-  FN-7585 — mobile swap-in for `.detail-oversight-chip` (JS `isOversightMenuMobile`
-  swap in TaskDetailModal.tsx). Pin the same shared border/radius trio so the
-  mobile overflow-trigger variant matches the desktop chip and the
-  Priority/Execution-mode controls, per the FN-7585 surface enumeration.
+  FN-7585 — pin the same shared border/radius trio as Priority/Execution-mode
+  so the Oversight trigger matches the rest of the control cluster.
+
+  FNXC:PlannerOversight 2026-07-05-00:00:
+  FN-7604 — this trigger is now the single universal surface at every
+  viewport (the desktop-only `.detail-oversight-chip` it used to swap in for
+  was removed).
   */
   border-width: var(--btn-border-width);
   border-color: var(--border);
@@ -809,10 +797,9 @@ button.detail-oversight-menu-item svg {
 
 /*
 FNXC:PlannerOversight 2026-07-04-20:30:
-FN-7546 — the same group label / disabled-reason helper as the desktop
-cluster above, adapted to the mobile overflow-menu's padded list-item layout
-so they read as ordinary (non-interactive) menu rows rather than floating
-text.
+FN-7546 — the same group label / disabled-reason helper base rules above,
+adapted to the overflow-menu's padded list-item layout so they read as
+ordinary (non-interactive) menu rows rather than floating text.
 */
 .detail-oversight-menu .detail-oversight-controls-label,
 .detail-oversight-menu .detail-oversight-controls-helper {
