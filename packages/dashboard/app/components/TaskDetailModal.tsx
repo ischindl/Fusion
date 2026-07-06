@@ -3130,7 +3130,19 @@ export function TaskDetailContent({
   const mergeStrategy = settings?.mergeStrategy ?? "direct";
   const autoMergeEnabled = autoMergeEnabledProp ?? (settings?.autoMerge ?? false);
   const effectiveAutoMerge = resolveEffectiveAutoMerge({ autoMerge: task.autoMerge }, { autoMerge: autoMergeEnabled });
-  const isManualPrFlow = mergeStrategy === "pull-request" && !effectiveAutoMerge;
+  /*
+  FNXC:TaskDetailPr 2026-07-05-19:45:
+  Manual PR flow visibility must follow the LIVE GLOBAL auto-merge setting
+  (`autoMergeEnabled`), not the per-task effective auto-merge override
+  (`effectiveAutoMerge`). Otherwise a per-task auto-merge override of `true`
+  hides manual PR affordances even when global auto-merge is off, stranding
+  the user with no way to manually open/manage the PR (FN-7607; regression
+  introduced by FN-7255 / commit 924bcb97d, which switched this from
+  `!autoMergeEnabled` to `!effectiveAutoMerge`). The `autoMerge` prop passed
+  to PrPanel stays `effectiveAutoMerge` — only this flow-gating boolean is
+  keyed off the live global setting.
+  */
+  const isManualPrFlow = mergeStrategy === "pull-request" && !autoMergeEnabled;
   /*
   FNXC:PlannerOversight 2026-07-04-17:00:
   FN-7517 enablement rules for the nudge/stop/explain controls. Nudge and

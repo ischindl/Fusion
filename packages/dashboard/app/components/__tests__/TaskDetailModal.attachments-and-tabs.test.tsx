@@ -483,9 +483,19 @@ describe("TaskDetailModal", () => {
 
   describe("tab toggle", () => {
     it("restores planner Chat as the omitted non-done default when Chat-first is enabled", () => {
+      /*
+      FNXC:PlannerOversight 2026-07-05-19:45:
+      FN-7510 made DEFAULT_PLANNER_OVERSIGHT_LEVEL = "autonomous", so a task
+      fixture with no per-task override and no resolvable workflow now
+      legitimately resolves oversight-active, which surfaces an additional
+      "Interventions" Activity-view option. This test's intent is to assert
+      Chat-first default routing (the omitted-tab default lands on Chat), not
+      oversight gating, so pin plannerOversightLevel: "off" to keep the
+      three-label Activity-view assertion meaningful and honest (FN-7607).
+      */
       const { container } = render(
         <TaskDetailModal
-          task={makeTask({ prompt: "# Hello\n\nContent" })}
+          task={makeTask({ prompt: "# Hello\n\nContent", plannerOversightLevel: "off" })}
           taskDetailChatFirst
           onClose={noop}
           onMoveTask={noopMove}
