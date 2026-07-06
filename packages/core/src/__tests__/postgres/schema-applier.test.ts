@@ -308,9 +308,13 @@ pgDescribe("schema-applier: VAL-SCHEMA-001 final-schema parity (table counts)", 
     ctx = null;
   });
 
-  it("creates all 80 project tables, 17 central tables, 1 archive table", async () => {
+  it("creates all 81 project tables, 17 central tables, 1 archive table", async () => {
     ctx = await setupFreshDb();
-    await applySchemaBaseline(ctx.db);
+    // FNXC:PostgresCutover 2026-07-05-15:55: apply the BASELINE only.
+    // applySchemaBaseline now runs the plugin schema-init hooks by default,
+    // which add plugin-owned project-schema tables; this parity check counts
+    // the core baseline snapshot, so hooks are explicitly disabled here.
+    await applySchemaBaseline(ctx.db, { pluginHooks: [] });
     const rows = (await ctx.db.execute(sql`
       SELECT table_schema, count(*)::int AS n
       FROM information_schema.tables
@@ -319,8 +323,8 @@ pgDescribe("schema-applier: VAL-SCHEMA-001 final-schema parity (table counts)", 
       GROUP BY table_schema
     `)) as unknown as Array<{ table_schema: string; n: number }>;
     const bySchema = Object.fromEntries(rows.map((r) => [r.table_schema, r.n]));
-    // Project: 80 core tables. (Plugin tables are added separately by the hook.)
-    expect(bySchema.project).toBe(80);
+    // Project: 81 core tables. (Plugin tables are added separately by the hook.)
+    expect(bySchema.project).toBe(81);
     expect(bySchema.central).toBe(17);
     expect(bySchema.archive).toBe(1);
   });

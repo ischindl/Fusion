@@ -9,17 +9,79 @@
 import {TaskStore, storeLog} from "../store.js";
 import {readFile} from "node:fs/promises";
 import {join} from "node:path";
-import {existsSync} from "node:fs";
+import {existsSync, statSync} from "node:fs";
 import type {Task, TaskDetail, ColumnId} from "../types.js";
 import "../builtin-traits.js";
 import {allowsAutoMergeProcessing} from "../task-merge.js";
-import {getInReviewStallReason} from "../in-review-stall.js";
+import {getInReviewStallReason, DEFAULT_STALE_MERGING_MIN_AGE_MS} from "../in-review-stall.js";
+import {getAgentLogFilePath} from "../agent-log-file-store.js";
 import {getInReviewStalledSignal} from "../in-review-stalled.js";
 import {getStalePausedReviewSignal} from "../stale-paused-review.js";
 import {getStalePausedTodoSignal} from "../stale-paused-todo.js";
 import {getTaskAgeStalenessSignal, type TaskAgeStalenessThresholds} from "../task-age-staleness.js";
 import {detectStalledReview} from "../stalled-review-detector.js";
 import {computeRetrySummary} from "../retry-summary.js";
+
+/**
+ * Latest agent-log activity for a task: newest matching in-memory buffer entry
+ * or the on-disk agent-log.jsonl mtime, whichever is fresher. Mirrors main's
+ * TaskStore.getLatestAgentLogActivityMs (FNXC:WorkflowLifecycle 2026-07-01-23:27).
+ */
+function getLatestAgentLogActivityMs(store: TaskStore, taskId: string): number | undefined {
+  let latest = Number.NEGATIVE_INFINITY;
+  for (let index = store.agentLogBuffer.length - 1; index >= 0; index -= 1) {
+    const entry = store.agentLogBuffer[index];
+    if (entry?.taskId !== taskId) continue;
+    const parsed = Date.parse(entry.timestamp);
+    if (Number.isFinite(parsed)) {
+      latest = Math.max(latest, parsed);
+      break;
+    }
+  }
+
+  try {
+    const filePath = getAgentLogFilePath(store.taskDir(taskId));
+    if (existsSync(filePath)) {
+      const fileMtimeMs = statSync(filePath).mtimeMs;
+      if (Number.isFinite(fileMtimeMs)) {
+        latest = Math.max(latest, fileMtimeMs);
+      }
+    }
+  } catch (error) {
+    storeLog.warn("Skipping agent-log freshness check for stalled badge hydration", {
+      taskId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  return Number.isFinite(latest) ? latest : undefined;
+}
+
+/**
+ * FNXC:WorkflowLifecycle 2026-07-05-15:40:
+ * True when an in-review task has agent-log writes newer than its own row
+ * update and within the stale-merging window — a merge/review agent is
+ * actively streaming, so stall badges must be suppressed. Ported from main's
+ * TaskStore.hasFreshAgentLogActivitySinceTaskUpdate, which the PostgreSQL
+ * cutover's store split predated.
+ */
+function hasFreshAgentLogActivitySinceTaskUpdate(
+  store: TaskStore,
+  task: Pick<Task, "id" | "column" | "updatedAt">,
+  now: number,
+): boolean {
+  if (task.column !== "in-review") return false;
+  const latestAgentLogMs = getLatestAgentLogActivityMs(store, task.id);
+  if (latestAgentLogMs == null) return false;
+
+  const updatedAtMs = Date.parse(task.updatedAt);
+  if (Number.isFinite(updatedAtMs) && latestAgentLogMs <= updatedAtMs) {
+    return false;
+  }
+
+  return Math.max(0, now - latestAgentLogMs) < DEFAULT_STALE_MERGING_MIN_AGE_MS;
+}
+
 import {type TaskRow} from "../task-store/persistence.js";
 import {__setTaskActivityLogLimitsForTesting} from "../task-store/comments.js";
 import {readTaskRow, readLiveTaskRows} from "../task-store/async-persistence.js";
@@ -44,10 +106,22 @@ export async function getTaskImpl(store: TaskStore, id: string, options?: { acti
         const now = Date.now();
         const settings = await store.getSettingsFast();
         const mergeQueuedTaskIds = await store.getMergeQueuedTaskIdsAsync();
+        /*
+        FNXC:WorkflowLifecycle 2026-07-05-15:40:
+        In-review merge/review agents stream progress to agent-log JSONL without
+        necessarily mutating the task row. Treat fresh agent-log writes as active
+        ownership for stall-badge hydration so the board does not show
+        Stalled/Merge stalled while a merger is visibly making progress. Restores
+        main's FNXC:WorkflowLifecycle 2026-07-01-23:27 behavior, which the
+        PostgreSQL cutover's store split predated.
+        */
+        const hasFreshAgentLogActivity = hasFreshAgentLogActivitySinceTaskUpdate(store, task, now);
+        const executingTaskIds = hasFreshAgentLogActivity ? new Set<string>([task.id]) : undefined;
         task.inReviewStall = mergeQueuedTaskIds.has(task.id)
           ? undefined
           : getInReviewStallReason(task, {
             now,
+            executingTaskIds,
             autoMerge: allowsAutoMergeProcessing(task, settings),
             engineActiveSinceMs: settings.engineActiveSinceMs,
             engineActivationGraceMs: settings.engineActivationGraceMs,
@@ -56,12 +130,13 @@ export async function getTaskImpl(store: TaskStore, id: string, options?: { acti
           ? undefined
           : getInReviewStalledSignal(task, {
             now,
+            executingTaskIds,
             thresholdMs: settings.inReviewStalledThresholdMs,
             autoMerge: allowsAutoMergeProcessing(task, settings),
             engineActiveSinceMs: settings.engineActiveSinceMs,
             engineActivationGraceMs: settings.engineActivationGraceMs,
           });
-        task.stalledReview = mergeQueuedTaskIds.has(task.id) ? undefined : detectStalledReview(task, { now });
+        task.stalledReview = mergeQueuedTaskIds.has(task.id) || hasFreshAgentLogActivity ? undefined : detectStalledReview(task, { now });
         task.retrySummary = computeRetrySummary(task);
         if (task.steps.length === 0) {
           task.steps = await store.parseStepsFromPrompt(id);
@@ -89,10 +164,22 @@ export async function getTaskImpl(store: TaskStore, id: string, options?: { acti
       const now = Date.now();
       const settings = await store.getSettingsFast();
       const mergeQueuedTaskIds = store.getMergeQueuedTaskIds();
+      /*
+      FNXC:WorkflowLifecycle 2026-07-05-15:40:
+      In-review merge/review agents stream progress to agent-log JSONL without
+      necessarily mutating the task row. Treat fresh agent-log writes as active
+      ownership for stall-badge hydration so the board does not show
+      Stalled/Merge stalled while a merger is visibly making progress. Restores
+      main's FNXC:WorkflowLifecycle 2026-07-01-23:27 behavior, which the
+      PostgreSQL cutover's store split predated.
+      */
+      const hasFreshAgentLogActivity = hasFreshAgentLogActivitySinceTaskUpdate(store, task, now);
+      const executingTaskIds = hasFreshAgentLogActivity ? new Set<string>([task.id]) : undefined;
       task.inReviewStall = mergeQueuedTaskIds.has(task.id)
         ? undefined
         : getInReviewStallReason(task, {
           now,
+          executingTaskIds,
           autoMerge: allowsAutoMergeProcessing(task, settings),
           engineActiveSinceMs: settings.engineActiveSinceMs,
           engineActivationGraceMs: settings.engineActivationGraceMs,
@@ -101,12 +188,13 @@ export async function getTaskImpl(store: TaskStore, id: string, options?: { acti
         ? undefined
         : getInReviewStalledSignal(task, {
           now,
+          executingTaskIds,
           thresholdMs: settings.inReviewStalledThresholdMs,
           autoMerge: allowsAutoMergeProcessing(task, settings),
           engineActiveSinceMs: settings.engineActiveSinceMs,
           engineActivationGraceMs: settings.engineActivationGraceMs,
         });
-      task.stalledReview = mergeQueuedTaskIds.has(task.id) ? undefined : detectStalledReview(task, { now });
+      task.stalledReview = mergeQueuedTaskIds.has(task.id) || hasFreshAgentLogActivity ? undefined : detectStalledReview(task, { now });
       // Derived at read time only; retrySummary is never persisted to SQLite.
       task.retrySummary = computeRetrySummary(task);
 
@@ -162,13 +250,17 @@ export async function listTasksImpl(store: TaskStore, options?: { limit?: number
     // (the async helper reads all live rows; soft-delete is filtered in SQL).
     if (store.backendMode) {
       const layer = store.asyncLayer!;
-      // FNXC:TaskStoreReads 2026-06-26-10:25:
-      // Pass `excludeLog: slim` so the board-list hydration skips the heavy
-      // `log` jsonb column (~99% of row payload) when in slim mode, matching
-      // the SQLite path's `getTaskSelectClause(slim)` projection. The full
-      // activity log is loaded per-task via `getTask(id)` for the detail view.
-      // Pass `includeDeleted` through for forensic reads (VAL-DATA-006).
-      const pgRows = await readLiveTaskRows(layer, { excludeLog: slim, includeDeleted: options?.includeDeleted });
+      /*
+      FNXC:TaskStoreReads 2026-07-05-15:30:
+      The `log` column must be fetched even in slim mode: the server derives
+      `stalledReview` (reenqueue-churn / invalid-transition heuristics) and
+      `timedExecutionMs` from log entries BEFORE stripping the log from the
+      wire response, exactly like the SQLite path's slim projection (which
+      also selected `log` for this reason). The earlier `excludeLog: slim`
+      optimization silently disabled both signals on board listings.
+      Pass `includeDeleted` through for forensic reads (VAL-DATA-006).
+      */
+      const pgRows = await readLiveTaskRows(layer, { includeDeleted: options?.includeDeleted });
       let filteredRows = pgRows;
       if (columnFilter) {
         filteredRows = pgRows.filter((row) => row.column === columnFilter);
@@ -195,8 +287,20 @@ export async function listTasksImpl(store: TaskStore, options?: { limit?: number
         const row = store.pgRowToTaskRow(pgRow);
         const task = store.rowToTask(row);
         const isMergeQueued = mergeQueuedTaskIds.has(task.id);
+        /*
+        FNXC:WorkflowLifecycle 2026-07-05-15:40:
+        In-review merge/review agents stream progress to agent-log JSONL without
+        necessarily mutating the task row. Treat fresh agent-log writes as active
+        ownership for stall-badge hydration so the board does not show
+        Stalled/Merge stalled while a merger is visibly making progress. Restores
+        main's FNXC:WorkflowLifecycle 2026-07-01-23:27 behavior, which the
+        PostgreSQL cutover's store split predated.
+        */
+        const hasFreshAgentLogActivity = hasFreshAgentLogActivitySinceTaskUpdate(store, task, now);
+        const executingTaskIds = hasFreshAgentLogActivity ? new Set<string>([task.id]) : undefined;
         task.inReviewStall = isMergeQueued ? undefined : getInReviewStallReason(task, {
           now,
+          executingTaskIds,
           autoMerge: allowsAutoMergeProcessing(task, settings),
           engineActiveSinceMs: settings.engineActiveSinceMs,
           engineActivationGraceMs: settings.engineActivationGraceMs,
@@ -209,6 +313,7 @@ export async function listTasksImpl(store: TaskStore, options?: { limit?: number
         });
         task.inReviewStalled = isMergeQueued ? undefined : getInReviewStalledSignal(task, {
           now,
+          executingTaskIds,
           thresholdMs: settings.inReviewStalledThresholdMs,
           autoMerge: allowsAutoMergeProcessing(task, settings),
           engineActiveSinceMs: settings.engineActiveSinceMs,
@@ -226,7 +331,7 @@ export async function listTasksImpl(store: TaskStore, options?: { limit?: number
           engineActiveSinceMs: settings.engineActiveSinceMs,
           engineActivationGraceMs: settings.engineActivationGraceMs,
         });
-        task.stalledReview = isMergeQueued ? undefined : detectStalledReview(task, { now });
+        task.stalledReview = isMergeQueued || hasFreshAgentLogActivity ? undefined : detectStalledReview(task, { now });
         task.retrySummary = computeRetrySummary(task);
         if (slim) {
           task.timedExecutionMs = store.computeTimedExecutionMs(task.log);
@@ -301,8 +406,20 @@ export async function listTasksImpl(store: TaskStore, options?: { limit?: number
     const activeTasks = await Promise.all((rows as unknown as TaskRow[]).map(async (row) => {
       const task = store.rowToTask(row);
       const isMergeQueued = mergeQueuedTaskIds.has(task.id);
+      /*
+      FNXC:WorkflowLifecycle 2026-07-05-15:40:
+      In-review merge/review agents stream progress to agent-log JSONL without
+      necessarily mutating the task row. Treat fresh agent-log writes as active
+      ownership for stall-badge hydration so the board does not show
+      Stalled/Merge stalled while a merger is visibly making progress. Restores
+      main's FNXC:WorkflowLifecycle 2026-07-01-23:27 behavior, which the
+      PostgreSQL cutover's store split predated.
+      */
+      const hasFreshAgentLogActivity = hasFreshAgentLogActivitySinceTaskUpdate(store, task, now);
+      const executingTaskIds = hasFreshAgentLogActivity ? new Set<string>([task.id]) : undefined;
       task.inReviewStall = isMergeQueued ? undefined : getInReviewStallReason(task, {
         now,
+        executingTaskIds,
         autoMerge: allowsAutoMergeProcessing(task, settings),
         engineActiveSinceMs: settings.engineActiveSinceMs,
         engineActivationGraceMs: settings.engineActivationGraceMs,
@@ -315,6 +432,7 @@ export async function listTasksImpl(store: TaskStore, options?: { limit?: number
       });
       task.inReviewStalled = isMergeQueued ? undefined : getInReviewStalledSignal(task, {
         now,
+        executingTaskIds,
         thresholdMs: settings.inReviewStalledThresholdMs,
         autoMerge: allowsAutoMergeProcessing(task, settings),
         engineActiveSinceMs: settings.engineActiveSinceMs,
@@ -345,7 +463,7 @@ export async function listTasksImpl(store: TaskStore, options?: { limit?: number
           }
         }
       }
-      task.stalledReview = isMergeQueued ? undefined : detectStalledReview(task, { now });
+      task.stalledReview = isMergeQueued || hasFreshAgentLogActivity ? undefined : detectStalledReview(task, { now });
       // Derived at read time only; retrySummary is never persisted to SQLite.
       task.retrySummary = computeRetrySummary(task);
 
@@ -438,8 +556,20 @@ export async function listTasksModifiedSinceImpl(store: TaskStore, since: string
       const tasks = pgRows.slice(0, resolvedLimit).map((pgRow) => {
         const task = store.rowToTask(store.pgRowToTaskRow(pgRow));
         const isMergeQueued = mergeQueuedTaskIds.has(task.id);
+        /*
+        FNXC:WorkflowLifecycle 2026-07-05-15:40:
+        In-review merge/review agents stream progress to agent-log JSONL without
+        necessarily mutating the task row. Treat fresh agent-log writes as active
+        ownership for stall-badge hydration so the board does not show
+        Stalled/Merge stalled while a merger is visibly making progress. Restores
+        main's FNXC:WorkflowLifecycle 2026-07-01-23:27 behavior, which the
+        PostgreSQL cutover's store split predated.
+        */
+        const hasFreshAgentLogActivity = hasFreshAgentLogActivitySinceTaskUpdate(store, task, now);
+        const executingTaskIds = hasFreshAgentLogActivity ? new Set<string>([task.id]) : undefined;
         task.inReviewStall = isMergeQueued ? undefined : getInReviewStallReason(task, {
           now,
+          executingTaskIds,
           autoMerge: allowsAutoMergeProcessing(task, settings),
           engineActiveSinceMs: settings.engineActiveSinceMs,
           engineActivationGraceMs: settings.engineActivationGraceMs,
@@ -452,6 +582,7 @@ export async function listTasksModifiedSinceImpl(store: TaskStore, since: string
         });
         task.inReviewStalled = isMergeQueued ? undefined : getInReviewStalledSignal(task, {
           now,
+          executingTaskIds,
           thresholdMs: settings.inReviewStalledThresholdMs,
           autoMerge: allowsAutoMergeProcessing(task, settings),
           engineActiveSinceMs: settings.engineActiveSinceMs,
@@ -483,7 +614,7 @@ export async function listTasksModifiedSinceImpl(store: TaskStore, since: string
           }
         }
         task.timedExecutionMs = store.computeTimedExecutionMs(task.log);
-        task.stalledReview = isMergeQueued ? undefined : detectStalledReview(task, { now });
+        task.stalledReview = isMergeQueued || hasFreshAgentLogActivity ? undefined : detectStalledReview(task, { now });
         task.retrySummary = computeRetrySummary(task);
         task.log = [];
         return task;
@@ -506,8 +637,20 @@ export async function listTasksModifiedSinceImpl(store: TaskStore, since: string
     const tasks = rows.slice(0, resolvedLimit).map((row) => {
       const task = store.rowToTask(row);
       const isMergeQueued = mergeQueuedTaskIds.has(task.id);
+      /*
+      FNXC:WorkflowLifecycle 2026-07-05-15:40:
+      In-review merge/review agents stream progress to agent-log JSONL without
+      necessarily mutating the task row. Treat fresh agent-log writes as active
+      ownership for stall-badge hydration so the board does not show
+      Stalled/Merge stalled while a merger is visibly making progress. Restores
+      main's FNXC:WorkflowLifecycle 2026-07-01-23:27 behavior, which the
+      PostgreSQL cutover's store split predated.
+      */
+      const hasFreshAgentLogActivity = hasFreshAgentLogActivitySinceTaskUpdate(store, task, now);
+      const executingTaskIds = hasFreshAgentLogActivity ? new Set<string>([task.id]) : undefined;
       task.inReviewStall = isMergeQueued ? undefined : getInReviewStallReason(task, {
         now,
+        executingTaskIds,
         autoMerge: allowsAutoMergeProcessing(task, settings),
         engineActiveSinceMs: settings.engineActiveSinceMs,
         engineActivationGraceMs: settings.engineActivationGraceMs,
@@ -520,6 +663,7 @@ export async function listTasksModifiedSinceImpl(store: TaskStore, since: string
       });
       task.inReviewStalled = isMergeQueued ? undefined : getInReviewStalledSignal(task, {
         now,
+        executingTaskIds,
         thresholdMs: settings.inReviewStalledThresholdMs,
         autoMerge: allowsAutoMergeProcessing(task, settings),
         engineActiveSinceMs: settings.engineActiveSinceMs,
@@ -551,7 +695,7 @@ export async function listTasksModifiedSinceImpl(store: TaskStore, since: string
         }
       }
       task.timedExecutionMs = store.computeTimedExecutionMs(task.log);
-      task.stalledReview = isMergeQueued ? undefined : detectStalledReview(task, { now });
+      task.stalledReview = isMergeQueued || hasFreshAgentLogActivity ? undefined : detectStalledReview(task, { now });
       // Derived at read time only; retrySummary is never persisted to SQLite.
       task.retrySummary = computeRetrySummary(task);
       task.log = [];
@@ -599,20 +743,33 @@ export async function searchTasksImpl(store: TaskStore, query: string, options?:
       const tasks = await Promise.all(pgRows.map(async (pgRow) => {
         const task = store.rowToTask(store.pgRowToTaskRow(pgRow));
         const isMergeQueued = mergeQueuedTaskIds.has(task.id);
+        /*
+        FNXC:WorkflowLifecycle 2026-07-05-15:40:
+        In-review merge/review agents stream progress to agent-log JSONL without
+        necessarily mutating the task row. Treat fresh agent-log writes as active
+        ownership for stall-badge hydration so the board does not show
+        Stalled/Merge stalled while a merger is visibly making progress. Restores
+        main's FNXC:WorkflowLifecycle 2026-07-01-23:27 behavior, which the
+        PostgreSQL cutover's store split predated.
+        */
+        const hasFreshAgentLogActivity = hasFreshAgentLogActivitySinceTaskUpdate(store, task, now);
+        const executingTaskIds = hasFreshAgentLogActivity ? new Set<string>([task.id]) : undefined;
         task.inReviewStall = isMergeQueued ? undefined : getInReviewStallReason(task, {
           now,
+          executingTaskIds,
           autoMerge: allowsAutoMergeProcessing(task, settings),
           engineActiveSinceMs: settings.engineActiveSinceMs,
           engineActivationGraceMs: settings.engineActivationGraceMs,
         });
         task.inReviewStalled = isMergeQueued ? undefined : getInReviewStalledSignal(task, {
           now,
+          executingTaskIds,
           thresholdMs: settings.inReviewStalledThresholdMs,
           autoMerge: allowsAutoMergeProcessing(task, settings),
           engineActiveSinceMs: settings.engineActiveSinceMs,
           engineActivationGraceMs: settings.engineActivationGraceMs,
         });
-        task.stalledReview = isMergeQueued ? undefined : detectStalledReview(task, { now });
+        task.stalledReview = isMergeQueued || hasFreshAgentLogActivity ? undefined : detectStalledReview(task, { now });
         task.retrySummary = computeRetrySummary(task);
         if (slim) {
           task.timedExecutionMs = store.computeTimedExecutionMs(task.log);
@@ -697,8 +854,20 @@ export async function searchTasksImpl(store: TaskStore, query: string, options?:
     const activeMatches = await Promise.all(rows.map(async (row) => {
       const task = store.rowToTask(row);
       const isMergeQueued = mergeQueuedTaskIds.has(task.id);
+      /*
+      FNXC:WorkflowLifecycle 2026-07-05-15:40:
+      In-review merge/review agents stream progress to agent-log JSONL without
+      necessarily mutating the task row. Treat fresh agent-log writes as active
+      ownership for stall-badge hydration so the board does not show
+      Stalled/Merge stalled while a merger is visibly making progress. Restores
+      main's FNXC:WorkflowLifecycle 2026-07-01-23:27 behavior, which the
+      PostgreSQL cutover's store split predated.
+      */
+      const hasFreshAgentLogActivity = hasFreshAgentLogActivitySinceTaskUpdate(store, task, now);
+      const executingTaskIds = hasFreshAgentLogActivity ? new Set<string>([task.id]) : undefined;
       task.inReviewStall = isMergeQueued ? undefined : getInReviewStallReason(task, {
         now,
+        executingTaskIds,
         autoMerge: allowsAutoMergeProcessing(task, settings),
         engineActiveSinceMs: settings.engineActiveSinceMs,
         engineActivationGraceMs: settings.engineActivationGraceMs,
@@ -711,6 +880,7 @@ export async function searchTasksImpl(store: TaskStore, query: string, options?:
       });
       task.inReviewStalled = isMergeQueued ? undefined : getInReviewStalledSignal(task, {
         now,
+        executingTaskIds,
         thresholdMs: settings.inReviewStalledThresholdMs,
         autoMerge: allowsAutoMergeProcessing(task, settings),
         engineActiveSinceMs: settings.engineActiveSinceMs,

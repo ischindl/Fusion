@@ -12,11 +12,13 @@
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from "vitest";
+import { eq } from "drizzle-orm";
 import {
   pgDescribe,
   createSharedPgTaskStoreTestHarness,
   type SharedPgTaskStoreHarness,
 } from "../../__test-utils__/pg-test-harness.js";
+import * as schema from "../../postgres/schema/index.js";
 
 const pgTest = pgDescribe;
 
@@ -70,9 +72,15 @@ pgTest("TaskStore stalledReview hydration (PostgreSQL)", () => {
 
   it("omits stalledReview while fresh agent-log activity is streaming", async () => {
     const task = await seedStalledInReviewTask();
+    const store = h.store();
     const oldUpdatedAt = new Date(Date.now() - 6 * 60_000).toISOString();
-    const db = (store as unknown as { db: { prepare: (sql: string) => { run: (...params: unknown[]) => unknown } } }).db;
-    db.prepare("UPDATE tasks SET updatedAt = ? WHERE id = ?").run(oldUpdatedAt, task.id);
+    // Backend mode: age the task row via adminDb (the sync SQLite handle is gone).
+    await h
+      .adminDb()
+      .update(schema.project.tasks)
+      .set({ updatedAt: oldUpdatedAt })
+      .where(eq(schema.project.tasks.id, task.id));
+    store.taskCache.delete(task.id);
     await store.appendAgentLog(task.id, "reviewer is comparing the squash against the branch", "thinking", undefined, "merger");
 
     const slimTasks = await store.listTasks({ slim: true, column: "in-review" });

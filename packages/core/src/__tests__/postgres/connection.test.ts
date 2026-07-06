@@ -150,7 +150,11 @@ describe("connection: pooler URL disables prepared statements and warns (VAL-CON
   it("emits the prepared-statement warning for a pooler URL without migration URL", async () => {
     // We don't connect (the pooler URL is fake); we verify the warning is emitted
     // at connection creation time. Use a custom onWarning to capture it.
-    let capturedWarning: string | null = null;
+    // FNXC:PostgresCutover 2026-07-05-15:50: collect ALL warnings — external
+    // mode also emits the fixed-schema isolation warning (2026-06-27-10:35)
+    // after the pooler warning, so capturing only the last message misses the
+    // prepared-statement one.
+    const capturedWarnings: string[] = [];
     const backend = resolveBackendWithOptions({
       databaseUrl: "postgresql://user:pw@xyz.pooler.supabase.com:6543/db",
     });
@@ -162,14 +166,14 @@ describe("connection: pooler URL disables prepared statements and warns (VAL-CON
         poolMax: 1,
         connectTimeoutSeconds: 2,
         onWarning: (msg) => {
-          capturedWarning = msg;
+          capturedWarnings.push(msg);
         },
       });
     } catch {
       // Connection failure expected (fake host)
     }
-    expect(capturedWarning).not.toBeNull();
-    expect(capturedWarning).toMatch(/prepared statement/i);
+    expect(capturedWarnings.length).toBeGreaterThan(0);
+    expect(capturedWarnings.some((msg) => /prepared statement/i.test(msg))).toBe(true);
   });
 });
 
