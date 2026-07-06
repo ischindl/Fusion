@@ -1,16 +1,23 @@
 #!/usr/bin/env node
-import path from "node:path";
+/*
+FNXC:PostgresCutover 2026-07-05-13:00:
+Ported from direct node:sqlite access on .fusion/fusion.db to the PostgreSQL
+backend (scripts/lib/backend-db.mjs). The planning logic is pure
+(planReconcileLeakedSoftDeletes) so tests exercise it with plain row arrays;
+only the thin apply step touches PostgreSQL. Behavior preserved from FN-5175:
+soft-deleted rows leaked outside 'archived' are moved to 'archived' with a
+run-audit event per repaired row.
+*/
 import process from "node:process";
-import { randomUUID } from "node:crypto";
-import { DatabaseSync } from "node:sqlite";
+import { openBackend, rowsOf } from "./lib/backend-db.mjs";
 
 export function parseArgs(argv = process.argv.slice(2)) {
   const args = [...argv];
-  let dbPath = ".fusion/fusion.db";
+  let projectRoot = process.cwd();
 
   for (let i = 0; i < args.length; i += 1) {
-    if (args[i] === "--db" && args[i + 1]) {
-      dbPath = args[i + 1];
+    if (args[i] === "--project-root" && args[i + 1]) {
+      projectRoot = args[i + 1];
       i += 1;
     }
   }
@@ -18,68 +25,69 @@ export function parseArgs(argv = process.argv.slice(2)) {
   return {
     apply: args.includes("--apply"),
     dryRun: !args.includes("--apply"),
-    dbPath,
+    projectRoot,
   };
 }
 
-export function findLeakedSoftDeletes(db) {
-  return db.prepare(`
-    SELECT id, "column", status, deletedAt
-    FROM tasks
-    WHERE deletedAt IS NOT NULL AND "column" != 'archived'
-    ORDER BY id
-  `).all();
-}
-
-export function reconcileLeakedSoftDeletes({ db, dryRun = true, runId = `synthetic-reconcile-fn-5175-${Date.now()}` }) {
-  const rows = findLeakedSoftDeletes(db);
-  const summary = {
+/**
+ * Pure planning step: given task rows ({ id, column, status, deletedAt }),
+ * report the leaked soft-deletes (deletedAt set but column != 'archived').
+ */
+export function planReconcileLeakedSoftDeletes(rows, { runId = `synthetic-reconcile-fn-5175-${Date.now()}` } = {}) {
+  const findings = rows
+    .filter((row) => row.deletedAt != null && row.column !== "archived")
+    .map((row) => ({ id: row.id, column: row.column, status: row.status ?? null, deletedAt: row.deletedAt }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  return {
     rowsScanned: rows.length,
     rowsUpdated: 0,
     auditRowsInserted: 0,
     runId,
-    findings: rows.map((row) => ({ ...row, status: row.status ?? null })),
+    findings,
   };
+}
 
-  if (dryRun || rows.length === 0) {
+export async function reconcileLeakedSoftDeletes({ backend, dryRun = true, runId }) {
+  const { core, asyncLayer, sql } = backend;
+  const rows = rowsOf(
+    await asyncLayer.db.execute(sql`
+      SELECT id, "column", status, deleted_at AS "deletedAt"
+      FROM project."tasks"
+      WHERE deleted_at IS NOT NULL AND "column" != 'archived'
+      ORDER BY id
+    `),
+  );
+  const allCount = rowsOf(
+    await asyncLayer.db.execute(sql`SELECT count(*)::int AS count FROM project."tasks"`),
+  )[0]?.count ?? rows.length;
+
+  const summary = planReconcileLeakedSoftDeletes(rows, runId ? { runId } : {});
+  summary.rowsScanned = allCount;
+
+  if (dryRun || summary.findings.length === 0) {
     return summary;
   }
 
-  const now = new Date().toISOString();
-  const updateTask = db.prepare(`UPDATE tasks SET "column" = 'archived' WHERE id = ?`);
-  const insertAudit = db.prepare(`
-    INSERT INTO runAuditEvents (
-      id, timestamp, taskId, agentId, runId, domain, mutationType, target, metadata
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    for (const row of rows) {
-      updateTask.run(row.id);
-      insertAudit.run(
-        randomUUID(),
-        now,
-        row.id,
-        "system",
-        runId,
-        "database",
-        "task:soft-delete-column-reconcile",
-        row.id,
-        JSON.stringify({
+  await asyncLayer.transactionImmediate(async (tx) => {
+    for (const row of summary.findings) {
+      await tx.execute(sql`UPDATE project."tasks" SET "column" = 'archived' WHERE id = ${row.id}`);
+      await core.recordRunAuditEventWithinTransaction(tx, {
+        taskId: row.id,
+        agentId: "system",
+        runId: summary.runId,
+        domain: "database",
+        mutationType: "task:soft-delete-column-reconcile",
+        target: row.id,
+        metadata: {
           previousColumn: row.column,
           previousStatus: row.status ?? null,
           source: "FN-5175 reconcile",
-        }),
-      );
+        },
+      });
       summary.rowsUpdated += 1;
       summary.auditRowsInserted += 1;
     }
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
+  });
 
   return summary;
 }
@@ -97,16 +105,15 @@ export function formatSummary(summary, dryRun) {
 }
 
 export async function main(argv = process.argv.slice(2)) {
-  const { dryRun, dbPath } = parseArgs(argv);
-  const resolvedDbPath = path.resolve(dbPath);
-  const db = new DatabaseSync(resolvedDbPath);
+  const { dryRun, projectRoot } = parseArgs(argv);
+  const backend = await openBackend(projectRoot);
 
   try {
-    const summary = reconcileLeakedSoftDeletes({ db, dryRun });
+    const summary = await reconcileLeakedSoftDeletes({ backend, dryRun });
     console.log(formatSummary(summary, dryRun));
     return summary;
   } finally {
-    db.close();
+    await backend.shutdown().catch(() => {});
   }
 }
 
