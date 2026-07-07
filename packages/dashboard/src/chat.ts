@@ -18,6 +18,7 @@ import type {
   ChatMention,
   ChatAttachment,
   ChatInFlightGenerationState,
+  ChatMessage,
   ChatStore,
   ChatRoomMessage,
   ChatSession,
@@ -1984,13 +1985,15 @@ export class ChatManager {
       const mentions = hasMentionCandidates ? await this.parseMentions(content, mentionAgents) : [];
 
       // Persist user message
+      let persistedUserMessageId: string | undefined;
       try {
-        this.chatStore.addMessage(sessionId, {
+        const persistedUserMessage = this.chatStore.addMessage(sessionId, {
           role: "user",
           content,
           metadata: mentions.length > 0 ? { mentions } : undefined,
           attachments,
         });
+        persistedUserMessageId = persistedUserMessage.id;
       } catch (err) {
         this.flushInFlightGenerationPersist(sessionId, null);
         chatStreamManager.broadcast(sessionId, {
@@ -2150,6 +2153,27 @@ export class ChatManager {
       // first user message we create a fresh, file-backed session and persist
       // its path; subsequent messages reopen the same file.
       const sessionManager = this.resolveCliSessionManager(session);
+
+      /*
+       * FNXC:ChatMessageEdit 2026-07-07-09:00:
+       * Capture the pi SessionManager leaf BEFORE prompt() appends the user turn (and the
+       * assistant reply) as children of it. Persisting this parent-leaf id onto the just-saved
+       * user message is what lets a later edit rewind losslessly via SessionManager.branch()/
+       * resetLeaf() (null when this is the first turn) instead of falling back to a lossy
+       * text-only session rebuild. Best-effort: a persistence failure must not block sending.
+       */
+      const parentLeafId = sessionManager.getLeafId();
+      if (persistedUserMessageId) {
+        try {
+          this.chatStore.updateMessageMetadata(persistedUserMessageId, { piParentLeafId: parentLeafId });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          diagnostics.warn(
+            `Failed to record pi parent-leaf id for chat ${sessionId} message ${persistedUserMessageId}: ${message}`,
+          );
+        }
+      }
+
       const chatModelSettings = await this.getChatModelSettings();
       const usesConfiguredDefaultModel =
         requestedModelProvider === chatModelSettings.defaultProvider
@@ -2555,6 +2579,127 @@ export class ChatManager {
    */
   getGeneratingSessionIds(): string[] {
     return [...this.activeGenerations.keys()];
+  }
+
+  /**
+   * FNXC:ChatMessageEdit 2026-07-07-09:00:
+   * Rewind a direct (model-loop) chat session so an edit to an earlier user message resumes
+   * the conversation from that point with everything after it — the edited turn included —
+   * forgotten. This is a two-part invariant: (1) the persisted `chat_messages` rows are
+   * truncated via `ChatStore.deleteMessagesFrom`, and (2) the pi SessionManager leaf is rewound
+   * so `buildSessionContext()` no longer includes the discarded turns, otherwise the model would
+   * still "remember" content that the UI claims was forgotten. Regeneration is NOT triggered
+   * here — callers resend the edited content through the existing streaming `sendMessage` path.
+   */
+  async rewindSessionForEdit(sessionId: string, fromMessageId: string): Promise<{ retained: ChatMessage[] }> {
+    const session = this.chatStore.getSession(sessionId);
+    if (!session) {
+      throw new Error(`Chat session ${sessionId} not found`);
+    }
+
+    const target = this.chatStore.getMessage(fromMessageId);
+    if (!target || target.sessionId !== sessionId) {
+      throw new Error(`Message ${fromMessageId} not found in session ${sessionId}`);
+    }
+    if (target.role !== "user") {
+      throw new Error(`Message ${fromMessageId} is not a user message and cannot be edited`);
+    }
+
+    // Guard against racing a live stream: rewinding mid-generation would pull the pi session
+    // leaf out from under the in-flight prompt() call.
+    if (this.activeGenerations.has(sessionId)) {
+      throw new Error(`Cannot edit message ${fromMessageId}: a generation is currently in progress for session ${sessionId}`);
+    }
+
+    const parentLeafId = (target.metadata as { piParentLeafId?: string | null } | null)?.piParentLeafId;
+    const hasRecordedParentLeaf = target.metadata != null && Object.prototype.hasOwnProperty.call(target.metadata, "piParentLeafId");
+
+    const { retained } = this.chatStore.deleteMessagesFrom(sessionId, fromMessageId);
+
+    if (hasRecordedParentLeaf) {
+      /*
+       * Primary path. `SessionManager.branch()`/`resetLeaf()` only mutate the calling
+       * instance's IN-MEMORY leaf pointer — nothing is written to disk, and a fresh
+       * `SessionManager.open()` on the next turn recomputes the leaf from the file itself, which
+       * would silently undo the rewind. Persisting the truncation therefore requires materializing
+       * a NEW session file: `createBranchedSession(leafId)` writes a file containing only the
+       * root→leafId path, which we then adopt as the chat's `cliSessionFile`. The abandoned turns
+       * remain physically present in the OLD file (never mutated) but are no longer reachable from
+       * the new file, so `buildSessionContext()` on the next open cannot include them.
+       */
+      try {
+        const sessionManager = this.resolveCliSessionManager(session);
+        if (parentLeafId) {
+          const branchedFile = sessionManager.createBranchedSession(parentLeafId);
+          if (!branchedFile) {
+            throw new Error("createBranchedSession returned no file (non-persisting session)");
+          }
+          this.chatStore.setCliSessionFile(sessionId, branchedFile);
+        } else {
+          // First-turn edit: nothing precedes the edited message, so there is no path to
+          // branch from. A brand-new empty session is the correct "forget everything" state.
+          const fresh = SessionManager.create(this.rootDir);
+          this.chatStore.setCliSessionFile(sessionId, fresh.getSessionFile() ?? null);
+        }
+        return { retained };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        diagnostics.warn(
+          `Failed to branch pi session for chat ${sessionId} at leaf ${String(parentLeafId)} (${message}); rebuilding session from retained history`,
+        );
+      }
+    }
+
+    // Fallback path: legacy sessions with no recorded parent-leaf id (created before this
+    // feature shipped), or a failed branch/resetLeaf above. Best-effort: rebuild a fresh
+    // session containing only the retained (pre-edit) turns as text-only messages — tool-call
+    // and thinking fidelity is a documented limitation of this path. On ANY failure, fall back
+    // further to a clean, empty session rather than risk leaving the model able to recall a
+    // turn the UI says was discarded.
+    try {
+      const rebuilt = SessionManager.create(this.rootDir);
+      for (const message of retained) {
+        if (message.role === "user") {
+          rebuilt.appendMessage({
+            role: "user",
+            content: message.content,
+            timestamp: Date.parse(message.createdAt) || Date.now(),
+          });
+        } else if (message.role === "assistant") {
+          rebuilt.appendMessage({
+            role: "assistant",
+            content: [{ type: "text", text: message.content }],
+            api: "chat",
+            provider: session.modelProvider ?? "unknown",
+            model: session.modelId ?? "unknown",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 0,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+            stopReason: "stop",
+            timestamp: Date.parse(message.createdAt) || Date.now(),
+          });
+        }
+      }
+      const rebuiltFile = rebuilt.getSessionFile();
+      this.chatStore.setCliSessionFile(sessionId, rebuiltFile ?? null);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      diagnostics.warn(
+        `Failed to rebuild pi session for chat ${sessionId} from retained history (${message}); clearing CLI session file so no discarded turn can be recalled`,
+      );
+      try {
+        this.chatStore.setCliSessionFile(sessionId, null);
+      } catch {
+        // best-effort; nothing further we can do here
+      }
+    }
+
+    return { retained };
   }
 }
 

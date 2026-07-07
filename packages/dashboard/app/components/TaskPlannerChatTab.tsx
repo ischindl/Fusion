@@ -825,6 +825,14 @@ export function TaskPlannerChatTab({ task, projectId, active, expanded = false, 
                   />
                 );
               }
+              /*
+               * FNXC:ChatMessageEdit 2026-07-07-09:00:
+               * Planner Chat (task-planner:<id> synthetic session) is model-loop and could support
+               * edit, but wiring an equivalent rewind-and-resend action here is deferred to a
+               * follow-up task. Deliberately pass no `onEditMessage`/`canEdit` so
+               * StandardChatMessageItem renders no edit affordance at all here — never a dead/no-op
+               * button.
+               */
               return (
                 <StandardChatMessageItem
                   key={message.id}

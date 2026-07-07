@@ -82,6 +82,7 @@ function setupMockChat(session: ChatSessionInfo): void {
     archiveSession: vi.fn(),
     deleteSession: vi.fn(),
     sendMessage: vi.fn(),
+    editMessageAndResend: vi.fn(),
     stopStreaming: vi.fn(),
     pendingMessages: [],
     clearPendingMessage: vi.fn(),

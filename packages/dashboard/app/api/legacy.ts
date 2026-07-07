@@ -10188,6 +10188,28 @@ export function deleteChatMessage(
   );
 }
 
+/**
+ * FNXC:ChatMessageEdit 2026-07-07-09:00:
+ * Edit an earlier user message in a direct (model-loop) chat session. Truncates the persisted
+ * transcript from (and including) the target message onward AND rewinds the pi session context
+ * server-side, so the returned `retained` list is the surviving pre-edit history. Does NOT
+ * trigger regeneration — the caller resends the edited content via the existing streaming send.
+ */
+export function editChatMessage(
+  sessionId: string,
+  messageId: string,
+  content: string,
+  projectId?: string,
+): Promise<{ retained: ChatMessage[] }> {
+  return api<{ retained: ChatMessage[] }>(
+    withProjectId(`/chat/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}`, projectId),
+    {
+      method: "PATCH",
+      body: JSON.stringify({ content }),
+    },
+  );
+}
+
 export function fetchChatRooms(
   options: { status?: string; agentId?: string } = {},
   projectId?: string,

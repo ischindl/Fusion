@@ -895,6 +895,57 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
     }
   });
 
+  /**
+   * PATCH /api/chat/sessions/:id/messages/:messageId
+   *
+   * FNXC:ChatMessageEdit 2026-07-07-09:00:
+   * Edit a user's earlier message: truncates the persisted transcript from (and including)
+   * the target message onward AND rewinds the pi session context so the model forgets the
+   * discarded turns (see ChatManager.rewindSessionForEdit). Does NOT stream a regeneration —
+   * the client resends the edited content through the existing streaming POST send after this
+   * call returns the retained (pre-edit) history.
+   */
+  router.patch("/chat/sessions/:id/messages/:messageId", rateLimit(RATE_LIMITS.mutation), async (req, res) => {
+    try {
+      const projectId = req.query.projectId as string | undefined;
+      const { chatStore } = await resolveScopedChatStore(projectId);
+      const chatManager = await resolveScopedChatManager(projectId);
+
+      const sessionId = String(req.params.id);
+      const messageId = String(req.params.messageId);
+      const content = (req.body as { content?: unknown } | undefined)?.content;
+
+      if (typeof content !== "string" || content.trim().length === 0) {
+        throw badRequest("content must be a non-empty string");
+      }
+
+      const session = chatStore.getSession(sessionId);
+      if (!session) {
+        throw notFound(`Chat session ${sessionId} not found`);
+      }
+
+      const message = chatStore.getMessage(messageId);
+      if (!message || message.sessionId !== sessionId) {
+        throw notFound(`Message ${messageId} not found`);
+      }
+      if (message.role !== "user") {
+        throw badRequest("Only user messages can be edited");
+      }
+
+      if (chatManager.isGenerating(sessionId)) {
+        throw badRequest("Cannot edit a message while a generation is in progress");
+      }
+
+      const { retained } = await chatManager.rewindSessionForEdit(sessionId, messageId);
+      res.json({ retained });
+    } catch (err: unknown) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      rethrowAsApiError(err, "Failed to edit chat message");
+    }
+  });
+
   if (process.env.FUSION_DEBUG_CHAT_ROUTES === "1") {
     const chatRoutes = [
       "GET /chat/sessions",
@@ -910,6 +961,7 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
       "POST /chat/sessions/:id/messages",
       "POST /chat/sessions/:id/cancel",
       "DELETE /chat/sessions/:id/messages/:messageId",
+      "PATCH /chat/sessions/:id/messages/:messageId",
     ];
     chatLogger.info("routes registered", { chatRoutes });
   }

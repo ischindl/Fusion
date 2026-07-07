@@ -6,6 +6,7 @@ import {
   fetchChatMessages,
   updateChatSession,
   deleteChatSession,
+  editChatMessage,
   attachChatStream,
   streamChatResponse,
   cancelChatResponse,
@@ -93,6 +94,14 @@ export interface UseChatReturn {
   // Message operations
   /** Send a message, optionally with file attachments to upload with the prompt. */
   sendMessage: (content: string, attachments?: File[]) => void;
+  /**
+   * FNXC:ChatMessageEdit 2026-07-07-09:00:
+   * Edit an earlier user message: truncates local + persisted history from that message onward
+   * (server also rewinds the pi session context so the model forgets discarded turns), then
+   * resends the edited content through the normal `sendMessage` streaming path. No-ops while a
+   * generation is streaming or when there is no active session.
+   */
+  editMessageAndResend: (messageId: string, newContent: string) => Promise<void>;
   stopStreaming: () => void;
   clearPendingMessage: (index?: number) => void;
   loadMoreMessages: () => Promise<void>;
@@ -1222,6 +1231,56 @@ export function useChat(
 
   sendMessageRef.current = sendMessage;
 
+  /*
+   * FNXC:ChatMessageEdit 2026-07-07-09:00:
+   * Editing an earlier message must resume the conversation from that point, forgetting
+   * everything after it, so future responses are not biased by discarded turns. The optimistic
+   * local truncation happens first (immediate UI feedback), then the server truncates its
+   * persisted rows AND rewinds the pi session context (ChatManager.rewindSessionForEdit) before
+   * we resend the edited content through the normal streaming sendMessage path. Blocked while
+   * streaming so an edit cannot race a live generation.
+   */
+  const editMessageAndResend = useCallback(
+    async (messageId: string, newContent: string) => {
+      if (isStreamingRef.current || !activeSession) {
+        return;
+      }
+
+      const trimmed = newContent.trim();
+      if (!trimmed) {
+        return;
+      }
+
+      const sessionId = activeSession.id;
+      const previousMessages = messagesRef.current;
+      const targetIndex = previousMessages.findIndex((m) => m.id === messageId);
+      if (targetIndex === -1) {
+        return;
+      }
+
+      // Optimistic truncation: drop the edited message and everything after it immediately.
+      setMessages(previousMessages.slice(0, targetIndex));
+
+      try {
+        await editChatMessage(sessionId, messageId, trimmed, projectId);
+      } catch (error) {
+        console.error("[useChat] Failed to edit message:", error);
+        addToast?.("Failed to edit message", "error");
+        // Restore truthful state from the server rather than trusting the optimistic truncation.
+        await loadMessages(sessionId);
+        return;
+      }
+
+      const cacheKey = getChatMessagesCacheKey(projectId, sessionId);
+      if (cacheKey) {
+        clearCache(cacheKey);
+      }
+
+      sendMessage(trimmed);
+    },
+    [activeSession, projectId, addToast, loadMessages, getChatMessagesCacheKey, sendMessage],
+  );
+
   // Filter sessions based on search query
   const filteredSessions = searchQuery
     ? sessions.filter(
@@ -1486,6 +1545,7 @@ export function useChat(
     renameSession,
     deleteSession,
     sendMessage,
+    editMessageAndResend,
     stopStreaming,
     clearPendingMessage,
     loadMoreMessages,

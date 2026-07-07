@@ -58,6 +58,7 @@ const {
   mockBeginGeneration,
   mockIsGenerating,
   mockGetActiveGenerationId,
+  mockRewindSessionForEdit,
 } = vi.hoisted(() => {
   // Store subscribers per session for broadcast simulation
   const subscribers = new Map<string, Set<{ callback: (event: any, eventId?: number) => void; generationId?: number }>>();
@@ -124,6 +125,7 @@ const {
     mockBeginGeneration: vi.fn(() => ({ generationId: 1, abortController: new AbortController() })),
     mockIsGenerating: vi.fn(() => false),
     mockGetActiveGenerationId: vi.fn(() => undefined),
+    mockRewindSessionForEdit: vi.fn(),
     mockChatStreamManager: chatStreamManager,
   };
 });
@@ -186,6 +188,7 @@ vi.mock("../chat.js", () => {
       beginGeneration = mockBeginGeneration;
       isGenerating = mockIsGenerating;
       getActiveGenerationId = mockGetActiveGenerationId;
+      rewindSessionForEdit = mockRewindSessionForEdit;
     },
     chatStreamManager: mockChatStreamManager,
     TASK_PLANNER_CHAT_AGENT_ID_PREFIX: "task-planner:",
@@ -318,6 +321,7 @@ function createMockChatManager() {
     beginGeneration: mockBeginGeneration,
     isGenerating: mockIsGenerating,
     getActiveGenerationId: mockGetActiveGenerationId,
+    rewindSessionForEdit: mockRewindSessionForEdit,
   };
 }
 
@@ -390,6 +394,7 @@ describe("Chat API Routes", () => {
     mockCancelGeneration.mockReset();
     mockIsGenerating.mockReset();
     mockGetActiveGenerationId.mockReset();
+    mockRewindSessionForEdit.mockReset();
     mockAgentStoreInit.mockResolvedValue(undefined);
     mockAgentStoreGetAgent.mockReset();
     mockGetOrCreateProjectStore.mockReset();
@@ -402,6 +407,7 @@ describe("Chat API Routes", () => {
     mockCancelGeneration.mockReturnValue(false);
     mockIsGenerating.mockReturnValue(false);
     mockGetActiveGenerationId.mockReturnValue(undefined);
+    mockRewindSessionForEdit.mockResolvedValue({ retained: [] });
 
     // Default agent mock - agent with model config
     mockAgentStoreGetAgent.mockResolvedValue({
@@ -1423,6 +1429,124 @@ describe("Chat API Routes", () => {
 
       expect(response.status).toBe(404);
       expect(mockDeleteMessage).toHaveBeenCalledWith("msg-xyz789");
+    });
+  });
+
+  describe("PATCH /api/chat/sessions/:id/messages/:messageId", () => {
+    it("truncates from the target message and returns retained history", async () => {
+      mockGetSession.mockReturnValue(sampleSession);
+      mockGetMessage.mockReturnValue(sampleMessage);
+      mockIsGenerating.mockReturnValue(false);
+      const retained = [{ ...sampleMessage, id: "msg-earlier", content: "earlier turn" }];
+      mockRewindSessionForEdit.mockResolvedValue({ retained });
+
+      const response = await request(
+        app,
+        "PATCH",
+        "/api/chat/sessions/chat-abc123/messages/msg-xyz789",
+        JSON.stringify({ content: "edited content" }),
+        { "content-type": "application/json" },
+      );
+
+      expect(response.status).toBe(200);
+      expect((response.body as any).retained).toEqual(retained);
+      expect(mockRewindSessionForEdit).toHaveBeenCalledWith("chat-abc123", "msg-xyz789");
+    });
+
+    it("allows editing the first message in a thread", async () => {
+      mockGetSession.mockReturnValue(sampleSession);
+      mockGetMessage.mockReturnValue(sampleMessage);
+      mockIsGenerating.mockReturnValue(false);
+      mockRewindSessionForEdit.mockResolvedValue({ retained: [] });
+
+      const response = await request(
+        app,
+        "PATCH",
+        "/api/chat/sessions/chat-abc123/messages/msg-xyz789",
+        JSON.stringify({ content: "edited first message" }),
+        { "content-type": "application/json" },
+      );
+
+      expect(response.status).toBe(200);
+      expect((response.body as any).retained).toEqual([]);
+    });
+
+    it("returns 400 when the target message is not a user message", async () => {
+      mockGetSession.mockReturnValue(sampleSession);
+      mockGetMessage.mockReturnValue({ ...sampleMessage, role: "assistant" as const });
+
+      const response = await request(
+        app,
+        "PATCH",
+        "/api/chat/sessions/chat-abc123/messages/msg-xyz789",
+        JSON.stringify({ content: "edited content" }),
+        { "content-type": "application/json" },
+      );
+
+      expect(response.status).toBe(400);
+      expect(mockRewindSessionForEdit).not.toHaveBeenCalled();
+    });
+
+    it("returns 400 for empty content", async () => {
+      mockGetSession.mockReturnValue(sampleSession);
+      mockGetMessage.mockReturnValue(sampleMessage);
+
+      const response = await request(
+        app,
+        "PATCH",
+        "/api/chat/sessions/chat-abc123/messages/msg-xyz789",
+        JSON.stringify({ content: "   " }),
+        { "content-type": "application/json" },
+      );
+
+      expect(response.status).toBe(400);
+      expect(mockRewindSessionForEdit).not.toHaveBeenCalled();
+    });
+
+    it("returns 404 when session not found", async () => {
+      mockGetSession.mockReturnValue(undefined);
+
+      const response = await request(
+        app,
+        "PATCH",
+        "/api/chat/sessions/nonexistent/messages/msg-xyz789",
+        JSON.stringify({ content: "edited content" }),
+        { "content-type": "application/json" },
+      );
+
+      expect(response.status).toBe(404);
+    });
+
+    it("returns 404 when message not found", async () => {
+      mockGetSession.mockReturnValue(sampleSession);
+      mockGetMessage.mockReturnValue(undefined);
+
+      const response = await request(
+        app,
+        "PATCH",
+        "/api/chat/sessions/chat-abc123/messages/nonexistent",
+        JSON.stringify({ content: "edited content" }),
+        { "content-type": "application/json" },
+      );
+
+      expect(response.status).toBe(404);
+    });
+
+    it("rejects the edit while a generation is in flight for the session", async () => {
+      mockGetSession.mockReturnValue(sampleSession);
+      mockGetMessage.mockReturnValue(sampleMessage);
+      mockIsGenerating.mockReturnValue(true);
+
+      const response = await request(
+        app,
+        "PATCH",
+        "/api/chat/sessions/chat-abc123/messages/msg-xyz789",
+        JSON.stringify({ content: "edited content" }),
+        { "content-type": "application/json" },
+      );
+
+      expect(response.status).toBe(400);
+      expect(mockRewindSessionForEdit).not.toHaveBeenCalled();
     });
   });
 

@@ -772,6 +772,101 @@ export class ChatStore extends EventEmitter<ChatStoreEvents> {
     return true;
   }
 
+  /**
+   * FNXC:ChatMessageEdit 2026-07-07-09:00:
+   * Truncate a chat session from (and including) a target message onward. Editing an earlier
+   * user turn must "forget" that turn and every turn after it — both from the persisted
+   * transcript here AND from the model's resumable pi session context (rewound separately by
+   * ChatManager.rewindSessionForEdit) — so future responses are not biased by discarded turns.
+   *
+   * Ordering is resolved by (createdAt ASC, rowid ASC) rather than createdAt alone, since
+   * multiple messages can share an identical createdAt timestamp (same-millisecond inserts);
+   * rowid is SQLite's implicit monotonic insertion-order tiebreaker, guaranteeing the edited
+   * message and every later message (in true insertion order) are always included, with no
+   * sibling straggler surviving the truncation.
+   *
+   * @param sessionId - Parent session ID
+   * @param fromMessageId - Id of the earliest message to delete (inclusive)
+   * @returns deletedIds (in ASC order) and retained messages (pre-edit history, ASC order)
+   */
+  deleteMessagesFrom(sessionId: string, fromMessageId: string): { deletedIds: string[]; retained: ChatMessage[] } {
+    const target = this.db.prepare(
+      "SELECT id, sessionId, rowid as rowid_ FROM chat_messages WHERE id = ?",
+    ).get(fromMessageId) as { id: string; sessionId: string; rowid_: number } | undefined;
+
+    if (!target || target.sessionId !== sessionId) {
+      return { deletedIds: [], retained: this.getMessages(sessionId) };
+    }
+
+    // Ordered id list for the session (createdAt ASC, rowid ASC tiebreak) so we can
+    // deterministically split retained-vs-deleted around the target message.
+    const orderedRows = this.db.prepare(
+      "SELECT id, rowid as rowid_ FROM chat_messages WHERE sessionId = ? ORDER BY createdAt ASC, rowid_ ASC",
+    ).all(sessionId) as { id: string; rowid_: number }[];
+
+    const targetIndex = orderedRows.findIndex((row) => row.id === fromMessageId);
+    if (targetIndex === -1) {
+      return { deletedIds: [], retained: this.getMessages(sessionId) };
+    }
+
+    const retainedIds = orderedRows.slice(0, targetIndex).map((row) => row.id);
+    const deletedIds = orderedRows.slice(targetIndex).map((row) => row.id);
+
+    const retained = retainedIds
+      .map((id) => this.getMessage(id))
+      .filter((message): message is ChatMessage => Boolean(message));
+
+    if (deletedIds.length === 0) {
+      return { deletedIds: [], retained };
+    }
+
+    const now = new Date().toISOString();
+    const placeholders = deletedIds.map(() => "?").join(", ");
+    this.db.prepare(`DELETE FROM chat_messages WHERE id IN (${placeholders})`).run(...deletedIds);
+    this.db.prepare("UPDATE chat_sessions SET updatedAt = ? WHERE id = ?").run(now, sessionId);
+    this.db.bumpLastModified();
+
+    for (const id of deletedIds) {
+      this.emit("chat:message:deleted", id);
+    }
+    const updatedSession = this.getSession(sessionId);
+    if (updatedSession) {
+      this.emit("chat:session:updated", updatedSession);
+    }
+
+    return { deletedIds, retained };
+  }
+
+  /**
+   * FNXC:ChatMessageEdit 2026-07-07-09:00:
+   * Merge (default) or replace a persisted message's metadata. Used by the model-loop generation
+   * path to record the pi SessionManager parent-leaf id (`metadata.piParentLeafId`) onto the
+   * just-created user message, without disturbing other metadata (e.g. `mentions`). This linkage
+   * is what lets a later edit rewind losslessly via SessionManager.branch()/resetLeaf().
+   */
+  updateMessageMetadata(messageId: string, metadata: Record<string, unknown> | null, options?: { merge?: boolean }): ChatMessage {
+    const existing = this.getMessage(messageId);
+    if (!existing) {
+      throw new Error(`Message ${messageId} not found`);
+    }
+
+    const merge = options?.merge !== false;
+    const nextMetadata = metadata === null
+      ? (merge ? existing.metadata : null)
+      : (merge ? { ...(existing.metadata ?? {}), ...metadata } : metadata);
+
+    this.db.prepare("UPDATE chat_messages SET metadata = ? WHERE id = ?").run(toJsonNullable(nextMetadata), messageId);
+
+    const updated = this.getMessage(messageId);
+    if (!updated) {
+      throw new Error(`Failed to update message ${messageId}`);
+    }
+
+    this.db.bumpLastModified();
+    this.emit("chat:message:updated", updated);
+    return updated;
+  }
+
   createRoom(input: ChatRoomCreateInput & { memberAgentIds?: string[] }): ChatRoom {
     const normalizedName = this.normalizeRoomName(input.name);
     if (!normalizedName) throw new Error("Room name cannot be empty");

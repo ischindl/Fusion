@@ -1326,6 +1326,84 @@ Narrow chat hosts need full-width bubbles for prose, code, tool output, failures
   color: var(--color-error);
 }
 
+/*
+FNXC:ChatMessageEdit 2026-07-07-09:00:
+User messages in direct (model-loop) chat can carry an inline edit affordance mirroring the
+assistant copy/scroll-to-top action row pattern above, plus an inline textarea editor. Editing
+an earlier message resumes the conversation from that point, forgetting everything after it, so
+keep the affordance visually consistent with existing chat-message-actions styling rather than a
+one-off treatment. Rendered only for user messages on direct/model-loop sessions (never rooms,
+CLI-agent sessions, or while streaming) — see StandardChatSurface.tsx `showEditAction`.
+*/
+.chat-message-actions--user {
+  justify-content: flex-start;
+}
+
+.chat-message-edit-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(var(--space-lg) * 2);
+  height: calc(var(--space-lg) * 2);
+  min-width: calc(var(--space-lg) * 2);
+  min-height: calc(var(--space-lg) * 2);
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent-text) 15%, transparent);
+  color: var(--accent-text);
+  cursor: pointer;
+  opacity: 0.85;
+  transition: opacity var(--transition-fast), background var(--transition-fast);
+}
+
+.chat-message-edit-action:hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--accent-text) 25%, transparent);
+}
+
+.chat-message-edit-action:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring-strong);
+  opacity: 1;
+}
+
+.chat-message-edit-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  width: 100%;
+}
+
+.chat-message-edit-textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: calc(var(--space-lg) * 4);
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+}
+
+.chat-message-edit-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-xs);
+}
+
+@media (max-width: 768px) {
+  .chat-message-edit-action {
+    width: calc(var(--space-lg) * 2.25);
+    height: calc(var(--space-lg) * 2.25);
+    min-width: calc(var(--space-lg) * 2.25);
+    min-height: calc(var(--space-lg) * 2.25);
+  }
+
+  .chat-message-edit-textarea {
+    min-height: calc(var(--space-lg) * 5);
+  }
+}
+
 .chat-message-content--markdown > :first-child {
   margin-top: 0;
 }

@@ -486,6 +486,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
     renameSession,
     deleteSession,
     sendMessage,
+    editMessageAndResend,
     stopStreaming,
     pendingMessages,
     clearPendingMessage,
@@ -2311,6 +2312,15 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
   // Terminal attach id: the native session linkage when known, else the chat id.
   const cliTerminalSessionId = activeSession?.cliSessionFile || activeSession?.id || "";
 
+  /*
+   * FNXC:ChatMessageEdit 2026-07-07-09:00:
+   * Editing is supported only for direct (model-loop) chat sessions: never CLI-agent-backed
+   * sessions (a live PTY owns the transcript, not a rewindable pi session), and never while a
+   * generation is streaming (an edit cannot race a live send). Rooms don't route through this
+   * pane at all, so no additional gate is needed here for that surface.
+   */
+  const canEditChatMessages = !cliChatActive && !isStreaming;
+
   // The session message pane and composer, captured once so both the normal
   // provider path and the CLI-backed path (CliChatSurface thunks) render the
   // exact same JSX — no parallel message/composer UI.
@@ -2341,6 +2351,8 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
               isAwaitingQuestionAnswer={message.role === "assistant" && index === messages.length - 1 && !isStreaming}
               submittedQuestionAnswer={findSubmittedQuestionAnswer(messages, index)}
               onQuestionSubmit={handleQuestionSubmit}
+              canEdit={canEditChatMessages}
+              onEditMessage={editMessageAndResend}
             />
           ))}
           <StandardStreamingMessage
@@ -2383,6 +2395,8 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
               isAwaitingQuestionAnswer={message.role === "assistant" && index === messages.length - 1 && !isStreaming}
               submittedQuestionAnswer={findSubmittedQuestionAnswer(messages, index)}
               onQuestionSubmit={handleQuestionSubmit}
+              canEdit={canEditChatMessages}
+              onEditMessage={editMessageAndResend}
             />
           ))}
         </>

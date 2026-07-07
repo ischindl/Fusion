@@ -66,6 +66,7 @@ export const defaultChatState: UseChatReturn = {
   renameSession: vi.fn(),
   deleteSession: vi.fn(),
   sendMessage: vi.fn(),
+  editMessageAndResend: vi.fn(),
   stopStreaming: vi.fn(),
   pendingMessages: [],
   clearPendingMessage: vi.fn(),

@@ -1,9 +1,9 @@
 import type { Agent } from "@fusion/core";
-import React, { memo, useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ArrowUpToLine, Bot, File, Send, TriangleAlert } from "lucide-react";
+import { ArrowUpToLine, Bot, File, Pencil, Send, TriangleAlert } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ChatMessageInfo, FailureInfo, ToolCallInfo } from "../hooks/chatTypes";
 import { linkifyFilePaths, linkifyReactChildren } from "../utils/filePathLinkify";
@@ -33,6 +33,21 @@ export interface StandardChatMessageItemProps {
   submittedQuestionAnswer?: string;
   onQuestionSubmit?: (answerText: string, structured: Record<string, unknown>) => void;
   toolCallRenderer?: (toolCall: ToolCallInfo, index: number) => ReactNode | undefined;
+  /**
+   * FNXC:ChatMessageEdit 2026-07-07-09:00:
+   * When set together with `canEdit`, a user message renders an edit affordance that swaps its
+   * content for an inline textarea. Saving calls this with the edited text; the caller is
+   * responsible for truncating server + local history from this message onward and resending
+   * (see useChat.editMessageAndResend) so the model forgets everything after the edited turn.
+   * Only rendered for `role === "user"` messages — never for assistant/system messages.
+   */
+  onEditMessage?: (messageId: string, newContent: string) => void | Promise<void>;
+  /**
+   * Gate for whether editing is currently supported/allowed for this message's surface (direct
+   * model-loop chat, not Rooms or CLI-agent sessions) and state (not while streaming). When
+   * false or `onEditMessage` is absent, no affordance renders at all — never a disabled/dead one.
+   */
+  canEdit?: boolean;
 }
 
 export interface StandardStreamingMessageProps {
@@ -325,9 +340,47 @@ export const StandardChatMessageItem = memo(function StandardChatMessageItem({
   submittedQuestionAnswer,
   onQuestionSubmit,
   toolCallRenderer,
+  onEditMessage,
+  canEdit = false,
 }: StandardChatMessageItemProps) {
   const { t } = useTranslation("app");
   const isAssistantMessage = message.role === "assistant";
+  const isUserMessage = message.role === "user";
+  /*
+   * FNXC:ChatMessageEdit 2026-07-07-09:00:
+   * Edit affordance is scoped strictly to user messages on surfaces that opt in via both
+   * `canEdit` and `onEditMessage`; absent either, `showEditAction` is false and nothing renders
+   * (no dead button, no empty shell) — e.g. assistant/system messages, Rooms, CLI-agent chat, or
+   * while a generation is streaming.
+   */
+  const showEditAction = isUserMessage && canEdit && Boolean(onEditMessage);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editedText, setEditedText] = useState(message.content);
+  const editTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const startEditing = useCallback(() => {
+    setEditedText(message.content);
+    setIsEditing(true);
+  }, [message.content]);
+
+  const cancelEditing = useCallback(() => {
+    setIsEditing(false);
+    setEditedText(message.content);
+  }, [message.content]);
+
+  const saveEdit = useCallback(() => {
+    const trimmed = editedText.trim();
+    if (!trimmed || trimmed === message.content) return;
+    setIsEditing(false);
+    void onEditMessage?.(message.id, trimmed);
+  }, [editedText, message.content, message.id, onEditMessage]);
+
+  useEffect(() => {
+    if (isEditing) {
+      editTextareaRef.current?.focus();
+      editTextareaRef.current?.select();
+    }
+  }, [isEditing]);
   const failureInfo = isAssistantMessage ? message.failureInfo : undefined;
   const showAssistantIdentity = isAssistantMessage && (!hideAssistantIdentity || Boolean(failureInfo));
   const renderedUserContent = useMemo<ReactNode>(() => {
@@ -377,10 +430,36 @@ export const StandardChatMessageItem = memo(function StandardChatMessageItem({
     return renderStandardAssistantContent(message.content, forcePlain);
   }, [failureInfo, forcePlain, isAssistantMessage, message.content, t]);
   return (
-    <div className={`chat-message chat-message--${message.role}${failureInfo ? " chat-message--failure" : ""}`} data-testid={`chat-message-${message.id}`} data-message-id={message.id}>
+    <div className={`chat-message chat-message--${message.role}${failureInfo ? " chat-message--failure" : ""}${isEditing ? " chat-message--editing" : ""}`} data-testid={`chat-message-${message.id}`} data-message-id={message.id}>
       {showAssistantIdentity && <div className="chat-message-avatar">{activeModelProvider ? <ProviderIcon provider={activeModelProvider} size="sm" /> : <Bot size={14} />}<span>{agentName}</span>{showAssistantModelTag && activeModelTag && <span className="chat-model-tag">{activeModelTag}</span>}</div>}
-      {isAssistantMessage ? assistantBody : <div className="chat-message-content">{renderedUserContent}</div>}
+      {isEditing ? (
+        <div className="chat-message-edit-editor" data-testid={`chat-message-edit-editor-${message.id}`}>
+          <textarea
+            ref={editTextareaRef}
+            className="input chat-message-edit-textarea"
+            value={editedText}
+            onChange={(event) => setEditedText(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                cancelEditing();
+              } else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                event.preventDefault();
+                saveEdit();
+              }
+            }}
+            rows={3}
+          />
+          <div className="chat-message-edit-actions">
+            <button type="button" className="btn btn-sm" onClick={cancelEditing}>{t("chat.editMessageCancel", "Cancel")}</button>
+            <button type="button" className="btn btn-sm btn-primary" disabled={!editedText.trim() || editedText.trim() === message.content} onClick={saveEdit}>{t("chat.editMessageSave", "Save")}</button>
+          </div>
+        </div>
+      ) : (
+        isAssistantMessage ? assistantBody : <div className="chat-message-content">{renderedUserContent}</div>
+      )}
       {isAssistantMessage && !failureInfo && (copyAction || onScrollToTop) && <div className="chat-message-actions">{copyAction}{onScrollToTop && <button type="button" className="btn-icon chat-message-scroll-to-top-action" aria-label={t("chat.scrollMessageToTop", "Scroll message to top")} data-testid={`chat-message-scroll-to-top-${message.id}`} onClick={() => onScrollToTop(message.id)}><ArrowUpToLine size={14} /></button>}</div>}
+      {showEditAction && !isEditing && <div className="chat-message-actions chat-message-actions--user"><button type="button" className="btn-icon chat-message-edit-action" aria-label={t("chat.editMessage", "Edit message")} data-testid={`chat-message-edit-${message.id}`} onClick={startEditing}><Pencil size={14} /></button></div>}
       {renderStandardToolCalls(message.toolCalls, t, { isAwaitingAnswer: isAwaitingQuestionAnswer, submittedAnswer: submittedQuestionAnswer, onQuestionSubmit, toolCallRenderer })}
       {message.thinkingOutput && <details className="chat-message-thinking"><summary>{t("chat.thinking", "Thinking")}</summary><pre className="chat-message-thinking-content">{linkifyFilePaths(message.thinkingOutput)}</pre></details>}
       {renderedAttachments}
