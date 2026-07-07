@@ -12,6 +12,11 @@ import { clearUsageCache } from "../usage.js";
 import { invalidateAllGlobalSettingsCaches } from "../project-store-resolver.js";
 import type { AuthStorageLike } from "../routes.js";
 import type { ApiRouteRegistrar } from "./types.js";
+import {
+  STATIC_API_KEY_PROVIDER_CATALOG,
+  STATIC_OAUTH_PROVIDER_CATALOG,
+  unionProviderCatalog,
+} from "./auth-provider-catalog.js";
 
 export type DeviceCodeInfo = {
   userCode: string;
@@ -512,7 +517,15 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
       const origin = typeof req.headers.origin === "string" ? req.headers.origin : undefined;
       const storage = getAuthStorage();
       storage.reload();
-      const oauthProviders = storage.getOAuthProviders();
+      /*
+      FNXC:ProviderAuth 2026-07-07-00:00:
+      FN-7625: enumerate OAuth + API-key providers from the static catalog
+      UNIONED with whatever storage currently reports, so a connected
+      runtime plugin narrowing storage.getOAuthProviders()/getApiKeyProviders()
+      never removes a provider from the list — only per-provider status below
+      may vary with runtime/auth state. See auth-provider-catalog.ts.
+      */
+      const oauthProviders = unionProviderCatalog(STATIC_OAUTH_PROVIDER_CATALOG, storage.getOAuthProviders());
       const providers: {
         id: string;
         name: string;
@@ -564,9 +577,13 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
         };
       }));
 
-      // Include API-key-backed providers if supported
-      if (storage.getApiKeyProviders) {
-        const apiKeyProviders = storage.getApiKeyProviders();
+      // Include API-key-backed providers. Presence is the static catalog
+      // unioned with anything storage additionally reports (FN-7625) —
+      // storage.getApiKeyProviders may be absent/narrowed, but the catalog
+      // entries must still surface as present-but-unauthenticated.
+      {
+        const runtimeApiKeyProviders = storage.getApiKeyProviders ? storage.getApiKeyProviders() : [];
+        const apiKeyProviders = unionProviderCatalog(STATIC_API_KEY_PROVIDER_CATALOG, runtimeApiKeyProviders);
         for (const p of apiKeyProviders) {
           let keyHint: string | undefined;
           if (storage.get) {

@@ -932,11 +932,34 @@ describe("GET /auth/status", () => {
     // Filter out synthetic CLI providers — they have dedicated route tests.
     // Structural assertions here are about OAuth + API-key paths only.
     const providers = res.body.providers.filter((p: any) => p.id !== "claude-cli" && p.id !== "droid-cli" && p.id !== "cursor-cli" && p.id !== "llama-cpp");
-    expect(providers).toEqual([
-      { id: "github-copilot", name: "GitHub Copilot", authenticated: true, type: "oauth", expired: false, loginInProgress: false },
-      { id: "openrouter", name: "OpenRouter", authenticated: false, type: "api_key" },
-      { id: "kimi-coding", name: "Kimi", authenticated: false, type: "api_key" },
+    /*
+    FN-7625: the static catalog (anthropic-subscription/github-copilot/openai-codex
+    OAuth + the full API-key catalog) is always present, unioned with whatever the
+    mocked storage additionally reports — even when storage only reports a narrow
+    subset (github-copilot + openrouter + kimi-coding here).
+    */
+    expect(providers.map((p: any) => p.id)).toEqual([
+      "anthropic-subscription",
+      "github-copilot",
+      "openai-codex",
+      "anthropic-api-key",
+      "brave",
+      "kimi-coding",
+      "minimax",
+      "openrouter",
+      "opencode-go",
+      "tavily",
+      "zai",
     ]);
+    const githubCopilot = providers.find((p: any) => p.id === "github-copilot");
+    expect(githubCopilot).toEqual({ id: "github-copilot", name: "GitHub Copilot", authenticated: true, type: "oauth", expired: false, loginInProgress: false });
+    const openrouter = providers.find((p: any) => p.id === "openrouter");
+    expect(openrouter).toEqual({ id: "openrouter", name: "OpenRouter", authenticated: false, type: "api_key" });
+    const kimiCoding = providers.find((p: any) => p.id === "kimi-coding");
+    expect(kimiCoding).toEqual({ id: "kimi-coding", name: "Kimi", authenticated: false, type: "api_key" });
+    // Catalog-only entries (not reported by storage) still surface, present-but-unauthenticated.
+    const brave = providers.find((p: any) => p.id === "brave");
+    expect(brave).toEqual({ id: "brave", name: "Brave Search", authenticated: false, type: "api_key" });
     expect(authStorage.reload).toHaveBeenCalled();
   });
 
@@ -1026,13 +1049,35 @@ describe("GET /auth/status", () => {
 
     expect(res.status).toBe(200);
     const providers = res.body.providers.filter((p: any) => p.id !== "claude-cli" && p.id !== "droid-cli" && p.id !== "cursor-cli" && p.id !== "llama-cpp");
-    expect(providers).toEqual([
-      { id: "github-copilot", name: "GitHub Copilot", authenticated: true, type: "oauth", expired: false, loginInProgress: false },
-      { id: "openai-codex", name: "OpenAI Codex", authenticated: false, type: "oauth", expired: false, loginInProgress: false, requiresManualCode: true },
-      { id: "openrouter", name: "OpenRouter", authenticated: false, type: "api_key" },
-      { id: "kimi-coding", name: "Kimi", authenticated: false, type: "api_key" },
-      { id: "acme-extension", name: "Acme Extension", authenticated: true, type: "api_key" },
+    /*
+    FN-7625: catalog ids remain present even though storage only reported a
+    narrow subset, and a storage-reported id NOT in the catalog ("acme-extension")
+    still surfaces — union, never intersection, with runtime state.
+    */
+    expect(providers.map((p: any) => p.id)).toEqual([
+      "anthropic-subscription",
+      "github-copilot",
+      "openai-codex",
+      "anthropic-api-key",
+      "brave",
+      "kimi-coding",
+      "minimax",
+      "openrouter",
+      "opencode-go",
+      "tavily",
+      "zai",
+      "acme-extension",
     ]);
+    const githubCopilot = providers.find((p: any) => p.id === "github-copilot");
+    expect(githubCopilot).toEqual({ id: "github-copilot", name: "GitHub Copilot", authenticated: true, type: "oauth", expired: false, loginInProgress: false });
+    const openaiCodex = providers.find((p: any) => p.id === "openai-codex");
+    expect(openaiCodex).toEqual({ id: "openai-codex", name: "OpenAI Codex", authenticated: false, type: "oauth", expired: false, loginInProgress: false, requiresManualCode: true });
+    const openrouter = providers.find((p: any) => p.id === "openrouter");
+    expect(openrouter).toEqual({ id: "openrouter", name: "OpenRouter", authenticated: false, type: "api_key" });
+    const kimiCoding = providers.find((p: any) => p.id === "kimi-coding");
+    expect(kimiCoding).toEqual({ id: "kimi-coding", name: "Kimi", authenticated: false, type: "api_key" });
+    const acmeExtension = providers.find((p: any) => p.id === "acme-extension");
+    expect(acmeExtension).toEqual({ id: "acme-extension", name: "Acme Extension", authenticated: true, type: "api_key" });
   });
 
   it.each(["https://my-host.example.com", undefined])(
@@ -1461,6 +1506,121 @@ describe("GET /auth/status", () => {
 
     expect(res.status).toBe(500);
     expect(res.body.error).toBe("storage error");
+  });
+
+  /*
+  FN-7625 symptom verification: connecting a runtime plugin (e.g. Hermes Runtime)
+  can narrow pi AuthStorage's live provider registry — storage.getOAuthProviders()
+  and storage.getApiKeyProviders() collapse to whatever that plugin still exposes.
+  Before the fix, GET /auth/status enumerated `providers` directly from those live
+  reads, so the response's provider set collapsed along with the narrowed registry.
+  The static catalog fix must keep provider *presence* deterministic — identical
+  full-catalog ids — across a full registry, a narrowed/empty registry (simulating
+  a connected runtime plugin), AND a registry that reports ids outside the catalog
+  (union, never intersection). Only per-provider `authenticated`/`expired` may vary.
+  */
+  describe("FN-7625: provider list is a static catalog independent of runtime/plugin connection state", () => {
+    const FULL_OAUTH_CATALOG_IDS = ["anthropic-subscription", "github-copilot", "openai-codex"];
+    const FULL_API_KEY_CATALOG_IDS = [
+      "anthropic-api-key",
+      "brave",
+      "kimi-coding",
+      "minimax",
+      "openrouter",
+      "opencode-go",
+      "tavily",
+      "zai",
+    ];
+    const FULL_CATALOG_IDS = [...FULL_OAUTH_CATALOG_IDS, ...FULL_API_KEY_CATALOG_IDS];
+
+    function nonCliProviderIds(res: any): string[] {
+      return res.body.providers
+        .filter((p: any) => p.id !== "claude-cli" && p.id !== "droid-cli" && p.id !== "cursor-cli" && p.id !== "llama-cpp")
+        .map((p: any) => p.id);
+    }
+
+    it("enumerates the identical full catalog whether storage reports the full set or a narrowed/empty set (Hermes Runtime connection simulation)", async () => {
+      // Permutation 1: no runtime plugin connected — storage reports the full
+      // upstream registry.
+      (authStorage.getOAuthProviders as ReturnType<typeof vi.fn>).mockReturnValue([
+        { id: "anthropic", name: "Anthropic" },
+        { id: "github-copilot", name: "GitHub Copilot" },
+        { id: "openai-codex", name: "OpenAI Codex" },
+      ]);
+      (authStorage.getApiKeyProviders as ReturnType<typeof vi.fn>).mockReturnValue([
+        { id: "anthropic-api-key", name: "Anthropic API Key" },
+        { id: "brave", name: "Brave Search" },
+        { id: "kimi-coding", name: "Kimi" },
+        { id: "minimax", name: "Minimax" },
+        { id: "openrouter", name: "OpenRouter" },
+        { id: "opencode-go", name: "Opencode (Go)" },
+        { id: "tavily", name: "Tavily" },
+        { id: "zai", name: "Zai" },
+      ]);
+      const fullRes = await GET(app, "/api/auth/status");
+      expect(fullRes.status).toBe(200);
+      expect(nonCliProviderIds(fullRes)).toEqual(FULL_CATALOG_IDS);
+
+      // Permutation 2: a runtime plugin (e.g. Hermes Runtime) connects and
+      // narrows the live registry down to almost nothing — the exact
+      // reproduction from the task's Symptom Verification section.
+      (authStorage.getOAuthProviders as ReturnType<typeof vi.fn>).mockReturnValue([
+        { id: "github-copilot", name: "GitHub Copilot" },
+      ]);
+      (authStorage.getApiKeyProviders as ReturnType<typeof vi.fn>).mockReturnValue([]);
+      const narrowedRes = await GET(app, "/api/auth/status");
+      expect(narrowedRes.status).toBe(200);
+      expect(nonCliProviderIds(narrowedRes)).toEqual(FULL_CATALOG_IDS);
+
+      // Permutation 3: another runtime plugin narrows the registry to a
+      // completely empty set (Paperclip / OpenClaw / Droid Runtime scenario).
+      (authStorage.getOAuthProviders as ReturnType<typeof vi.fn>).mockReturnValue([]);
+      (authStorage.getApiKeyProviders as ReturnType<typeof vi.fn>).mockReturnValue([]);
+      const emptyRes = await GET(app, "/api/auth/status");
+      expect(emptyRes.status).toBe(200);
+      expect(nonCliProviderIds(emptyRes)).toEqual(FULL_CATALOG_IDS);
+    });
+
+    it("still tracks authenticated/expired from storage while presence stays static", async () => {
+      (authStorage.getOAuthProviders as ReturnType<typeof vi.fn>).mockReturnValue([]);
+      (authStorage.getApiKeyProviders as ReturnType<typeof vi.fn>).mockReturnValue([]);
+      (authStorage.hasAuth as ReturnType<typeof vi.fn>).mockImplementation((provider: string) => provider === "github-copilot");
+      (authStorage.hasApiKey as ReturnType<typeof vi.fn>).mockImplementation((provider: string) => provider === "openrouter");
+
+      const res = await GET(app, "/api/auth/status");
+
+      expect(res.status).toBe(200);
+      // Catalog provider missing from storage still appears, present-but-unauthenticated.
+      const anthropicSubscription = res.body.providers.find((p: any) => p.id === "anthropic-subscription");
+      expect(anthropicSubscription).toMatchObject({ authenticated: false });
+      // Catalog provider storage marks authenticated stays authenticated.
+      const githubCopilot = res.body.providers.find((p: any) => p.id === "github-copilot");
+      expect(githubCopilot).toMatchObject({ authenticated: true });
+      const openrouter = res.body.providers.find((p: any) => p.id === "openrouter");
+      expect(openrouter).toMatchObject({ authenticated: true });
+      const brave = res.body.providers.find((p: any) => p.id === "brave");
+      expect(brave).toMatchObject({ authenticated: false });
+    });
+
+    it("surfaces a storage-reported provider absent from the catalog (union, never intersection) and keeps the Anthropic alias de-duplicated", async () => {
+      (authStorage.getOAuthProviders as ReturnType<typeof vi.fn>).mockReturnValue([
+        { id: "anthropic", name: "Anthropic" },
+        { id: "a-brand-new-upstream-oauth-provider", name: "Brand New Provider" },
+      ]);
+      (authStorage.getApiKeyProviders as ReturnType<typeof vi.fn>).mockReturnValue([]);
+
+      const res = await GET(app, "/api/auth/status");
+
+      expect(res.status).toBe(200);
+      const providerIds = res.body.providers.map((p: any) => p.id);
+      // Union: the new upstream provider surfaces alongside the static catalog.
+      expect(providerIds).toContain("a-brand-new-upstream-oauth-provider");
+      // The anthropic OAuth id is exposed only as the synthetic anthropic-subscription
+      // id — no duplicate raw "anthropic" OAuth card.
+      expect(providerIds).toContain("anthropic-subscription");
+      expect(providerIds).not.toContain("anthropic");
+      expect(providerIds.filter((id: string) => id === "anthropic-subscription")).toHaveLength(1);
+    });
   });
 });
 
