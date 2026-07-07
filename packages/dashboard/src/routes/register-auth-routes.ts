@@ -1149,7 +1149,19 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
       const oauthProviders = storage.getOAuthProviders();
       const found = oauthProviders.find((p) => p.id === provider || p.id === storageProvider);
       if (!found) {
-        throw badRequest(`Unknown provider: ${provider}`);
+        /*
+         * FNXC:ProviderAuth 2026-07-07-00:00:
+         * FN-7624: `github` is NOT a dashboard-managed OAuth provider — pi's OAuth registry only
+         * ships `anthropic`, `github-copilot`, and `openai-codex` (see @earendil-works/pi-ai/oauth via
+         * packages/engine/src/auth-storage.ts). Fusion's real GitHub integration is gh CLI / token
+         * based (`githubAuthMode: "gh-cli" | "token"`), so the onboarding/settings UI must never offer
+         * a dashboard OAuth login for `github`. If this branch is ever reached for `github` anyway
+         * (e.g. a stale client build), return a clear, actionable message naming the provider and that
+         * no OAuth flow exists for it — never a generic/misleading error like "model not found".
+         */
+        throw badRequest(
+          `Unknown provider: "${provider}" has no registered OAuth login flow. Registered dashboard OAuth providers are: ${oauthProviders.map((p) => p.id).join(", ") || "none"}. GitHub integration uses the GitHub CLI (run \`gh auth login\`) or a token, not dashboard OAuth.`,
+        );
       }
       const loginProvider = found.id === provider ? provider : storageProvider;
 

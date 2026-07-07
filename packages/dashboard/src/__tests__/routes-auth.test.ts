@@ -2457,6 +2457,28 @@ describe("POST /auth/login", () => {
     expect(res.body.error).toContain("Unknown provider");
   });
 
+  it("FN-7624: returns a clear, non-misleading 400 for provider: \"github\" when only built-in OAuth providers are registered (never a 'model not found' style error)", async () => {
+    // Only the built-in dashboard OAuth providers are registered — no `github` provider exists,
+    // matching the real pi OAuth registry (anthropic / github-copilot / openai-codex only).
+    (authStorage.getOAuthProviders as ReturnType<typeof vi.fn>).mockReturnValue([
+      { id: "anthropic", name: "Anthropic" },
+      { id: "github-copilot", name: "GitHub Copilot" },
+      { id: "openai-codex", name: "OpenAI Codex" },
+    ]);
+
+    // This reproduces the original symptom: the onboarding GitHub button used to call
+    // POST /api/auth/login { provider: "github" } and surface a confusing error.
+    const res = await REQUEST(buildApp(), "POST", "/api/auth/login", JSON.stringify({ provider: "github" }), {
+      "Content-Type": "application/json",
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Unknown provider");
+    expect(res.body.error).toContain("github");
+    // Assert the error is never the misleading "model not found" style message the user reported.
+    expect(res.body.error.toLowerCase()).not.toContain("model not found");
+  });
+
   it("returns 409 when login is already in progress for the same provider", async () => {
     let releaseLogin: (() => void) | undefined;
     (authStorage.login as ReturnType<typeof vi.fn>).mockImplementation(

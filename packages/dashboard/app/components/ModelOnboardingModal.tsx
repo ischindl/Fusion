@@ -2882,6 +2882,16 @@ export function ModelOnboardingModal({
                 </div>
               )}
 
+              {/*
+               * FNXC:ProviderAuth 2026-07-07-00:00:
+               * FN-7624: no `github` OAuth provider is ever registered on any Fusion host (pi ships only
+               * anthropic/github-copilot/openai-codex), so this whole `!hasGithubProvider` branch must never
+               * render a dashboard OAuth login affordance (a previous "Connect OAuth (optional)" button here
+               * called handleLogin("github") unconditionally when the gh CLI was ready, which always failed
+               * against a non-existent provider). The gh-CLI-ready and not-ready copy below are the only
+               * offered actions; OAuth login only appears in the `hasGithubProvider` branch below, which is
+               * unreachable while no `github` provider is registered.
+               */}
               {!hasGithubProvider ? (
                 <div className="model-onboarding-github-optional">
                   <div className="optional-icon optional-icon--github" aria-hidden="true">
@@ -2913,29 +2923,7 @@ export function ModelOnboardingModal({
                         ? t("setup.continueWithGhCli", "Continue with gh CLI auth →")
                         : t("setup.continueWithoutGitHub", "Continue without GitHub →")}
                     </button>
-                    {isGitHubReadyViaCli && (
-                      (authActionInProgress === "github" || isGithubLoginInProgress) ? (
-                        <button className="btn btn-sm" disabled>
-                          <Loader2 size={14} className="onboarding-spinner" />
-                          {t("setup.waitingForOauthLogin", "Waiting for OAuth login…")}
-                        </button>
-                      ) : (
-                        <button
-                          className="btn btn-sm"
-                          onClick={() => handleLogin("github")}
-                        >
-                          <ProviderIcon provider="github" size="sm" />
-                          {t("setup.connectOauthOptional", "Connect OAuth (optional)")}
-                        </button>
-                      )
-                    )}
                   </div>
-                  {isGitHubReadyViaCli && (authActionInProgress === "github" || isGithubLoginInProgress) && loginInstructions.github && (
-                    <LoginInstructions
-                      instructions={loginInstructions.github}
-                      data-testid="onboarding-login-instructions-github"
-                    />
-                  )}
                 </div>
               ) : (
                 <>
