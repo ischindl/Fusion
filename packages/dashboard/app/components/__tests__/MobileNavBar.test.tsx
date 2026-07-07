@@ -557,6 +557,47 @@ describe("MobileNavBar", () => {
     expect(screen.queryByLabelText("Unread chat response")).toBeNull();
   });
 
+  /*
+  FNXC:Navigation 2026-07-05-00:00:
+  FN-7614: planning-awaiting-input moved from a top-of-board banner (broken Resume redirect) to a yellow
+  needs-input dot on the Planning More-sheet item and the More tab icon, mirroring the chat unread dot pattern.
+  The existing activePlanningSessionCount count badge must remain unaffected.
+  */
+  describe("planningNeedsInput dot (FN-7614)", () => {
+    it("shows a needs-input dot on the More tab icon when planningNeedsInput is true and the sheet is closed", () => {
+      render(<MobileNavBar {...createDefaultProps()} view="board" planningNeedsInput={true} />);
+      expect(screen.getByLabelText("Planning needs your input")).toBeInTheDocument();
+    });
+
+    it("hides the More tab dot when planningNeedsInput is false", () => {
+      render(<MobileNavBar {...createDefaultProps()} view="board" planningNeedsInput={false} />);
+      expect(screen.queryByLabelText("Planning needs your input")).toBeNull();
+    });
+
+    it("hides the More tab dot while already on the planning view", () => {
+      render(<MobileNavBar {...createDefaultProps()} view="planning" planningNeedsInput={true} />);
+      expect(screen.queryByLabelText("Planning needs your input")).toBeNull();
+    });
+
+    it("shows a needs-input dot on the Planning More-sheet item and keeps the count badge unaffected", () => {
+      render(<MobileNavBar {...createDefaultProps()} view="board" planningNeedsInput={true} activePlanningSessionCount={2} />);
+      fireEvent.click(screen.getByTestId("mobile-nav-tab-more"));
+
+      const planningItem = screen.getByTestId("mobile-more-item-planning");
+      expect(planningItem.querySelector(".status-dot.status-dot--pending")).toBeTruthy();
+      expect(planningItem).toHaveTextContent("2");
+    });
+
+    it("hides the Planning More-sheet dot when planningNeedsInput is false while the count badge still renders", () => {
+      render(<MobileNavBar {...createDefaultProps()} view="board" planningNeedsInput={false} activePlanningSessionCount={3} />);
+      fireEvent.click(screen.getByTestId("mobile-nav-tab-more"));
+
+      const planningItem = screen.getByTestId("mobile-more-item-planning");
+      expect(planningItem.querySelector(".status-dot.status-dot--pending")).toBeNull();
+      expect(planningItem).toHaveTextContent("3");
+    });
+  });
+
   it("skills More-sheet item calls onChangeView with 'skills'", () => {
     const props = createDefaultProps();
     render(<MobileNavBar {...props} view="board" showSkillsTab={true} />);

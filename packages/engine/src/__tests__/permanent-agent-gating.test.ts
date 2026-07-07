@@ -1,6 +1,7 @@
 import type { AgentPermissionPolicy } from "@fusion/core";
 import { describe, expect, it } from "vitest";
 import {
+  buildAgentGatedActionSummary,
   classifyPermanentAgentToolCall,
   resolvePermanentAgentToolDecision,
 } from "../permanent-agent-gating.js";
@@ -249,5 +250,35 @@ describe("permanent-agent-gating", () => {
       },
     });
     expect(approvalDecision.disposition).toBe("require-approval");
+  });
+});
+
+// FN-7609: approval cards must show the real gated payload instead of a
+// generic "Agent gated action for <tool>" placeholder.
+describe("buildAgentGatedActionSummary", () => {
+  it("renders the trimmed shell command for bash calls", () => {
+    expect(buildAgentGatedActionSummary("bash", { command: "  pnpm test --run  " })).toBe("Run: pnpm test --run");
+  });
+
+  it("truncates very long shell commands to a sane cap", () => {
+    const longCommand = `echo ${"x".repeat(300)}`;
+    const summary = buildAgentGatedActionSummary("bash", { command: longCommand });
+    expect(summary.startsWith("Run: echo ")).toBe(true);
+    expect(summary.length).toBeLessThanOrEqual(210);
+    expect(summary.endsWith("\u2026")).toBe(true);
+  });
+
+  it("renders a compact args summary for fn_* tools", () => {
+    const summary = buildAgentGatedActionSummary("fn_task_update", { id: "FN-1", status: "done" });
+    expect(summary).toBe("fn_task_update {id: FN-1, status: done}");
+  });
+
+  it("falls back to a generic summary when no args are meaningful", () => {
+    expect(buildAgentGatedActionSummary("fn_task_list", {})).toBe("Agent gated action for fn_task_list");
+    expect(buildAgentGatedActionSummary("fn_task_list", undefined)).toBe("Agent gated action for fn_task_list");
+  });
+
+  it("falls back to a generic summary for bash calls with no command", () => {
+    expect(buildAgentGatedActionSummary("bash", {})).toBe("Agent gated action for bash");
   });
 });

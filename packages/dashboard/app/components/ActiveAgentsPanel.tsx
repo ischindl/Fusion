@@ -8,6 +8,7 @@ import "./ActiveAgentsPanel.css";
 import { useLiveTranscript } from "../hooks/useLiveTranscript";
 import { resolveHeartbeatIntervalMs } from "../utils/heartbeatIntervals";
 import { AgentTaskBadge } from "./AgentTaskBadge";
+import { getCanonicalStepNumber } from "../lib/step-display";
 
 interface LiveAgentCardProps {
   agent: Agent;
@@ -71,9 +72,10 @@ function LiveAgentCard({ agent, projectId, onSelect, onOpenTaskLogs }: LiveAgent
     return t("agents.nextHeartbeat", "Next heartbeat in {{elapsed}}", { elapsed: formatElapsed(deltaSec) });
   })();
 
-  const currentStep = task?.steps?.[task.currentStep ?? 0];
-  const totalSteps = task?.steps?.length ?? 0;
-  const stepNumber = (task?.currentStep ?? 0) + 1;
+  // FNXC:TaskStepNumbering 2026-07-05-00:00: use the canonical (0-based, PROMPT-numbered) step
+  // number so this indicator agrees with the Activity tab for the same underlying step (FN-7612).
+  const { stepNumber, totalSteps } = getCanonicalStepNumber(task);
+  const currentStep = task?.steps?.[stepNumber];
   const executorModel = task?.modelId;
 
   const handleSelect = () => {

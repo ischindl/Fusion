@@ -6,6 +6,10 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { execSync, spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { TEST_MODE_RESOLVED } from "@fusion/core";
 import type {
   Mission,
@@ -338,6 +342,33 @@ function createMockMissionStore() {
 
       return fixFeature;
     }),
+    reconcileSupersededGeneratedFixFeatures: vi.fn((sliceId: string) => {
+      let supersededCount = 0;
+      const featureIds: string[] = [];
+      const featureHasPassed = (feature: MissionFeature | undefined) =>
+        feature?.lastValidatorStatus === "passed" || feature?.loopState === "passed";
+      const hasPassedAncestor = (feature: MissionFeature, seen = new Set<string>()): boolean => {
+        const sourceFeatureId = feature.generatedFromFeatureId;
+        if (!sourceFeatureId || seen.has(sourceFeatureId)) return false;
+        seen.add(sourceFeatureId);
+        const sourceFeature = features.get(sourceFeatureId);
+        return featureHasPassed(sourceFeature) || (sourceFeature ? hasPassedAncestor(sourceFeature, seen) : false);
+      };
+      for (const feature of [...features.values()]) {
+        if (feature.sliceId !== sliceId || !feature.generatedFromFeatureId || !hasPassedAncestor(feature)) continue;
+        if (feature.status === "done" && feature.loopState === "passed" && feature.lastValidatorStatus === "passed") continue;
+        features.set(feature.id, {
+          ...feature,
+          status: "done",
+          loopState: "passed",
+          lastValidatorStatus: "passed",
+          updatedAt: new Date().toISOString(),
+        });
+        supersededCount += 1;
+        featureIds.push(feature.id);
+      }
+      return { supersededCount, featureIds };
+    }),
     triageFeature: vi.fn(async (featureId: string) => {
       const feature = features.get(featureId);
       if (!feature) throw new Error(`Feature ${featureId} not found`);
@@ -471,6 +502,25 @@ function expectNoValidationBoardTaskMutation(taskStore: ReturnType<typeof create
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
+
+// ── real-git fixtures (for the stale-workspace guard) ────────────────────────
+const hasGit = spawnSync("git", ["--version"], { stdio: "pipe" }).status === 0;
+
+function git(repo: string, command: string): string {
+  return execSync(command, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+}
+
+/** A throwaway git repo with one initial commit; HEAD on `main`. */
+function initGitRepo(): string {
+  const repo = mkdtempSync(join(tmpdir(), "fn-stale-ws-"));
+  git(repo, "git init -b main");
+  git(repo, 'git config user.email "test@example.com"');
+  git(repo, 'git config user.name "Test User"');
+  git(repo, "git config commit.gpgsign false");
+  writeFileSync(join(repo, "foo.ts"), "line1\n");
+  git(repo, "git add foo.ts && git commit -m init");
+  return repo;
+}
 
 describe("MissionExecutionLoop", () => {
   let loop: MissionExecutionLoop;
@@ -635,6 +685,47 @@ describe("MissionExecutionLoop", () => {
       await loop.recoverActiveMissions();
 
       expect(missionStore.startValidatorRun).not.toHaveBeenCalled();
+    });
+
+    it("skips superseded generated fixes from the stale recovery snapshot", async () => {
+      const mission = createMockMission({ id: "M-SUPERSEDE", status: "active" });
+      missionStore._clear();
+      missionStore._setMission(mission);
+
+      const slice = createMockSlice({ id: "SL-SUPERSEDE", milestoneId: "MS-001", status: "active" });
+      const source = createMockFeature({
+        id: "F-SOURCE",
+        sliceId: slice.id,
+        status: "done",
+        loopState: "passed",
+        lastValidatorStatus: "passed",
+      });
+      const staleFix = createMockFeature({
+        id: "F-STALE-FIX",
+        sliceId: slice.id,
+        status: "defined",
+        loopState: "validating",
+        generatedFromFeatureId: source.id,
+        taskId: "FN-stale-fix",
+      });
+      missionStore._setFeature(source);
+      missionStore._setFeature(staleFix);
+      taskStore._setTask({ id: "FN-stale-fix", column: "done" });
+      wireHierarchy(slice, [source, staleFix]);
+
+      loop = new MissionExecutionLoop({
+        taskStore: taskStore as any,
+        missionStore: missionStore as any,
+        rootDir: "/tmp",
+      });
+      loop.start();
+
+      const result = await loop.recoverActiveMissions();
+
+      expect(missionStore.reconcileSupersededGeneratedFixFeatures).toHaveBeenCalledWith(slice.id);
+      expect(missionStore.transitionLoopState).not.toHaveBeenCalledWith(staleFix.id, "implementing");
+      expect(taskStore.getTask).not.toHaveBeenCalledWith("FN-stale-fix");
+      expect(result).toEqual({ recoveredCount: 1 });
     });
   });
 
@@ -1876,6 +1967,290 @@ describe("MissionExecutionLoop", () => {
         }),
       );
     });
+  });
+
+  // ── premerge guard (fail verdict while the linked task is unmerged) ──────
+
+  describe("premerge guard", () => {
+    const gitRepos: string[] = [];
+    afterEach(() => {
+      for (const dir of gitRepos.splice(0)) rmSync(dir, { recursive: true, force: true });
+    });
+    function makeGitRepo(): string {
+      const repo = initGitRepo();
+      gitRepos.push(repo);
+      return repo;
+    }
+
+    function primeFailVerdict() {
+      const failResponse = JSON.stringify({
+        status: "fail",
+        assertions: [{ assertionId: "CA-1", passed: false, message: "Failed", expected: "ok", actual: "not ok" }],
+        summary: "Assertion failed",
+      });
+      mockSessionHolder.session.state.messages = [
+        { role: "user", content: "Validate this" },
+        { role: "assistant", content: failResponse },
+      ];
+    }
+
+    function primeFeature() {
+      const feature = createMockFeature({
+        loopState: "implementing",
+        taskId: "FN-001",
+        id: "F-001",
+        implementationAttemptCount: 1,
+      });
+      missionStore._setFeature(feature);
+      missionStore.getFeatureByTaskId = vi.fn().mockReturnValue(feature);
+      missionStore.listAssertionsForFeature = vi.fn().mockReturnValue(makeAssertions(1));
+      return feature;
+    }
+
+    it("should defer a fail to inconclusive while the linked task is not done/archived", async () => {
+      primeFeature();
+      primeFailVerdict();
+
+      // The linked task is still in review — its code has not merged yet, so
+      // the validator judged a checkout that predates the work.
+      taskStore._setTask({ id: "FN-001", title: "Test", description: "Implementation", log: [], column: "in-review" });
+
+      loop = new MissionExecutionLoop({
+        taskStore: taskStore as any,
+        missionStore: missionStore as any,
+        rootDir: "/tmp",
+      });
+      const emitSpy = vi.spyOn(loop, "emit");
+      loop.start();
+
+      await loop.processTaskOutcome("FN-001");
+
+      // Routed to the inconclusive outcome — no Fix Feature minted (R21)
+      expect(missionStore.createGeneratedFixFeature).not.toHaveBeenCalled();
+      expect(missionStore.completeValidatorRun).toHaveBeenCalledWith(
+        expect.any(String),
+        "blocked",
+        expect.stringContaining("code not merged yet"),
+      );
+      expect(emitSpy).toHaveBeenCalledWith(
+        "validation:inconclusive",
+        expect.objectContaining({
+          featureId: "F-001",
+          reason: expect.stringContaining('"in-review"'),
+        }),
+      );
+      expect(emitSpy).not.toHaveBeenCalledWith("validation:failed", expect.anything());
+
+      // The infra-failure marker keeps deferred fails separable from real ones
+      expect(missionStore.logMissionEvent).toHaveBeenCalledWith(
+        expect.any(String),
+        "warning",
+        expect.stringContaining("Verification inconclusive"),
+        expect.objectContaining({
+          code: "verification_inconclusive",
+          outcome: "inconclusive",
+          infraFailure: true,
+        }),
+      );
+    });
+
+    it("should run the normal fail path once the linked task is done", async () => {
+      primeFeature();
+      primeFailVerdict();
+
+      taskStore._setTask({ id: "FN-001", title: "Test", description: "Implementation", log: [], column: "done" });
+
+      loop = new MissionExecutionLoop({
+        taskStore: taskStore as any,
+        missionStore: missionStore as any,
+        rootDir: "/tmp",
+      });
+      const emitSpy = vi.spyOn(loop, "emit");
+      loop.start();
+
+      await loop.processTaskOutcome("FN-001");
+
+      expect(missionStore.createGeneratedFixFeature).toHaveBeenCalledWith(
+        "F-001",
+        expect.any(String),
+        expect.arrayContaining(["CA-1"]),
+        expect.any(String),
+      );
+      expect(emitSpy).toHaveBeenCalledWith(
+        "validation:failed",
+        expect.objectContaining({ featureId: "F-001" }),
+      );
+      expect(emitSpy).not.toHaveBeenCalledWith("validation:inconclusive", expect.anything());
+    });
+
+    it("should fail open (normal fail path) when the linked task cannot be read", async () => {
+      primeFeature();
+
+      loop = new MissionExecutionLoop({
+        taskStore: taskStore as any,
+        missionStore: missionStore as any,
+        rootDir: "/tmp",
+      });
+      // Bypass the AI session (runValidation also reads the task, without a
+      // catch) so the rejecting getTask below only exercises the guard.
+      vi.spyOn(loop as any, "runValidation").mockResolvedValue({
+        status: "fail",
+        assertions: [{ assertionId: "CA-1", passed: false, message: "Failed", expected: "ok", actual: "not ok" }],
+        summary: "Assertion failed",
+      });
+      taskStore.getTask = vi.fn().mockRejectedValue(new Error("store unavailable"));
+
+      const emitSpy = vi.spyOn(loop, "emit");
+      loop.start();
+
+      await loop.processTaskOutcome("FN-001");
+
+      // Unknown task state must never suppress a fail — only defer on
+      // affirmative evidence of an unmerged column.
+      expect(missionStore.createGeneratedFixFeature).toHaveBeenCalled();
+      expect(emitSpy).toHaveBeenCalledWith(
+        "validation:failed",
+        expect.objectContaining({ featureId: "F-001" }),
+      );
+    });
+
+    // ── stale-workspace guard (task done, but rootDir predates the merge) ────
+
+    (hasGit ? it : it.skip)(
+      "should defer a fail when the judged checkout predates the merged commit",
+      async () => {
+        primeFeature();
+        primeFailVerdict();
+
+        // rootDir HEAD is `main` @ commit1. The merged commit lives on a side
+        // branch and is NOT reachable from HEAD — exactly the stale-checkout
+        // case (merge landed on remote / another worktree, rootDir never reset).
+        const repo = makeGitRepo();
+        git(repo, "git checkout -q -b feature");
+        writeFileSync(join(repo, "foo.ts"), "line1\nmerged\n");
+        git(repo, "git add foo.ts && git commit -m merged");
+        const mergedSha = git(repo, "git rev-parse HEAD");
+        git(repo, "git checkout -q main");
+
+        // Column is `done`, so the premerge column guard passes; only the
+        // ancestry check can catch the stale workspace.
+        taskStore._setTask({ id: "FN-001", title: "Test", description: "d", log: [], column: "done", integrationSha: mergedSha } as any);
+
+        loop = new MissionExecutionLoop({
+          taskStore: taskStore as any,
+          missionStore: missionStore as any,
+          rootDir: repo,
+        });
+        const emitSpy = vi.spyOn(loop, "emit");
+        loop.start();
+
+        await loop.processTaskOutcome("FN-001");
+
+        expect(missionStore.createGeneratedFixFeature).not.toHaveBeenCalled();
+        expect(missionStore.completeValidatorRun).toHaveBeenCalledWith(
+          expect.any(String),
+          "blocked",
+          expect.stringContaining("predates the merged code"),
+        );
+        expect(emitSpy).toHaveBeenCalledWith(
+          "validation:inconclusive",
+          expect.objectContaining({
+            featureId: "F-001",
+            reason: expect.stringContaining("predates the merged code"),
+          }),
+        );
+        expect(emitSpy).not.toHaveBeenCalledWith("validation:failed", expect.anything());
+      },
+    );
+
+    (hasGit ? it : it.skip)(
+      "should run the normal fail path when the merged commit is an ancestor of HEAD",
+      async () => {
+        primeFeature();
+        primeFailVerdict();
+
+        // rootDir HEAD advanced PAST the merged commit — the workspace is fresh,
+        // so the fail is real and must mint a Fix Feature.
+        const repo = makeGitRepo();
+        const baseSha = git(repo, "git rev-parse HEAD");
+        writeFileSync(join(repo, "foo.ts"), "line1\nadvanced\n");
+        git(repo, "git add foo.ts && git commit -m advance");
+
+        taskStore._setTask({ id: "FN-001", title: "Test", description: "d", log: [], column: "done", integrationSha: baseSha } as any);
+
+        loop = new MissionExecutionLoop({
+          taskStore: taskStore as any,
+          missionStore: missionStore as any,
+          rootDir: repo,
+        });
+        const emitSpy = vi.spyOn(loop, "emit");
+        loop.start();
+
+        await loop.processTaskOutcome("FN-001");
+
+        expect(missionStore.createGeneratedFixFeature).toHaveBeenCalled();
+        expect(emitSpy).toHaveBeenCalledWith(
+          "validation:failed",
+          expect.objectContaining({ featureId: "F-001" }),
+        );
+        expect(emitSpy).not.toHaveBeenCalledWith("validation:inconclusive", expect.anything());
+      },
+    );
+
+    it("should fail open (normal fail) when the task carries no integration SHA", async () => {
+      primeFeature();
+      primeFailVerdict();
+
+      // Done, but no integrationSha/baseCommit → no evidence of staleness.
+      taskStore._setTask({ id: "FN-001", title: "Test", description: "d", log: [], column: "done" });
+
+      loop = new MissionExecutionLoop({
+        taskStore: taskStore as any,
+        missionStore: missionStore as any,
+        rootDir: "/tmp",
+      });
+      const emitSpy = vi.spyOn(loop, "emit");
+      loop.start();
+
+      await loop.processTaskOutcome("FN-001");
+
+      expect(missionStore.createGeneratedFixFeature).toHaveBeenCalled();
+      expect(emitSpy).toHaveBeenCalledWith(
+        "validation:failed",
+        expect.objectContaining({ featureId: "F-001" }),
+      );
+      expect(emitSpy).not.toHaveBeenCalledWith("validation:inconclusive", expect.anything());
+    });
+
+    (hasGit ? it : it.skip)(
+      "should fail open (normal fail) when the integration SHA is an unknown object",
+      async () => {
+        primeFeature();
+        primeFailVerdict();
+
+        // A bogus SHA makes `git merge-base --is-ancestor` exit 128 (bad object),
+        // which is unknown → must NOT suppress the fail.
+        const repo = makeGitRepo();
+        taskStore._setTask({ id: "FN-001", title: "Test", description: "d", log: [], column: "done", integrationSha: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" } as any);
+
+        loop = new MissionExecutionLoop({
+          taskStore: taskStore as any,
+          missionStore: missionStore as any,
+          rootDir: repo,
+        });
+        const emitSpy = vi.spyOn(loop, "emit");
+        loop.start();
+
+        await loop.processTaskOutcome("FN-001");
+
+        expect(missionStore.createGeneratedFixFeature).toHaveBeenCalled();
+        expect(emitSpy).toHaveBeenCalledWith(
+          "validation:failed",
+          expect.objectContaining({ featureId: "F-001" }),
+        );
+        expect(emitSpy).not.toHaveBeenCalledWith("validation:inconclusive", expect.anything());
+      },
+    );
   });
 
   // ── handleValidationBlocked ───────────────────────────────────────────────

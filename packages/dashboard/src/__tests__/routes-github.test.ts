@@ -608,7 +608,6 @@ describe("POST /github/issues/import", () => {
     expect(store.createTask).toHaveBeenCalledWith({
       title: "Test Issue",
       description: "Test body\n\nSource: https://github.com/owner/repo/issues/1",
-      column: "triage",
       dependencies: [],
       sourceIssue: {
         provider: "github",
@@ -790,7 +789,6 @@ describe("POST /github/issues/import", () => {
     expect(store.createTask).toHaveBeenCalledWith({
       title: "A".repeat(200),
       description: expect.stringContaining("Source:"),
-      column: "triage",
       dependencies: [],
       sourceIssue: {
         provider: "github",

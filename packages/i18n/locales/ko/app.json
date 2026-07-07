@@ -4021,6 +4021,7 @@
     "moreSheetTitle": "탐색",
     "noScriptsAddOne": "스크립트 없음 — 추가하세요…",
     "planning": "계획",
+    "planningNeedsInputAriaLabel": "계획에 입력이 필요합니다",
     "primaryNavAriaLabel": "기본 탐색",
     "projects": "프로젝트",
     "research": "연구",

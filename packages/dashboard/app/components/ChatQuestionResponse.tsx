@@ -168,11 +168,18 @@ function QuestionControls({
   if (question.type === "confirm") {
     return (
       <div className="chat-question-response__confirm-group" role="group" aria-label={question.question}>
+        {/*
+          FNXC:ChatQuestionResponse 2026-07-05-00:00:
+          Expose the confirm selection to assistive tech via aria-pressed so
+          screen reader users get the same clear selected/unselected signal
+          the strengthened CSS now provides visually.
+        */}
         <button
           type="button"
           className={`btn chat-question-response__confirm${value === true ? " chat-question-response__confirm--selected" : ""}`}
           data-testid={`chat-question-response-option-${question.id}-yes`}
           disabled={disabled}
+          aria-pressed={value === true}
           onClick={() => setQuestionAnswer(question.id, true)}
         >
           {t("chat.questionConfirmYes", "Yes")}
@@ -182,6 +189,7 @@ function QuestionControls({
           className={`btn chat-question-response__confirm${value === false ? " chat-question-response__confirm--selected" : ""}`}
           data-testid={`chat-question-response-option-${question.id}-no`}
           disabled={disabled}
+          aria-pressed={value === false}
           onClick={() => setQuestionAnswer(question.id, false)}
         >
           {t("chat.questionConfirmNo", "No")}

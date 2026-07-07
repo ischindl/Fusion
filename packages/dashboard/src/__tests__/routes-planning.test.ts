@@ -1616,6 +1616,67 @@ describe("Planning Mode Routes", () => {
         });
       });
 
+      it("prefers AI-authored deepeningThemes over generic themes on both completion paths", async () => {
+        const responses = [
+          JSON.stringify({
+            type: "complete",
+            data: {
+              title: "Plan offline sync",
+              description: "Add offline-first sync support.",
+              suggestedSize: "M",
+              suggestedDependencies: [],
+              keyDeliverables: ["Sync engine"],
+              deepeningThemes: [
+                { label: "Conflict resolution strategy", description: "How concurrent offline edits reconcile." },
+              ],
+            },
+          }),
+        ];
+        const messages: Array<{ role: string; content: string }> = [];
+        let callIndex = 0;
+        __setCreateFnAgent(async () => ({
+          session: {
+            state: { messages },
+            prompt: vi.fn(async (message: string) => {
+              messages.push({ role: "user", content: message });
+              messages.push({ role: "assistant", content: responses[Math.min(callIndex++, responses.length - 1)] });
+            }),
+            dispose: vi.fn(),
+          },
+        }));
+
+        const startRes = await REQUEST(
+          buildApp(),
+          "POST",
+          "/api/planning/start",
+          JSON.stringify({ initialPlan: "Plan offline sync support" }),
+          { "Content-Type": "application/json" },
+        );
+        const sessionId = startRes.body.sessionId;
+
+        expect(startRes.body.firstQuestion.question).toBe(PLANNING_DEEPEN_CHECKPOINT_QUESTION);
+        expect(startRes.body.firstQuestion.options?.[0]?.id).toBe(PLANNING_DEEPEN_PROCEED_OPTION_ID);
+        expect(startRes.body.firstQuestion.options?.map((option: { label: string }) => option.label)).toEqual([
+          "Proceed to final plan",
+          "Conflict resolution strategy",
+        ]);
+
+        const deepeningRes = await REQUEST(
+          buildApp(),
+          "POST",
+          "/api/planning/respond",
+          JSON.stringify({
+            sessionId,
+            responses: { [PLANNING_DEEPEN_CHECKPOINT_ID]: [PLANNING_DEEPEN_PROCEED_OPTION_ID] },
+          }),
+          { "Content-Type": "application/json" },
+        );
+        expect(deepeningRes.body).toMatchObject({
+          type: "complete",
+          data: { title: "Plan offline sync" },
+        });
+      });
+
       it("allows refine requests from completed sessions", async () => {
         const startRes = await REQUEST(
           buildApp(),

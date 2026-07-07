@@ -256,6 +256,54 @@ describe("TaskDetailModal", () => {
       expect(oversightTriggerBlock).not.toMatch(/border-radius:\s*var\(--radius-pill\)/);
     });
 
+    it("stretches the Oversight dropdown wrapper so the trigger matches the Priority/Execution-mode row height on every surface (FN-7618)", () => {
+      const css = readDashboardStylesSource();
+      const mobileBlock = getCssAtRuleBlockContaining(css, "@media (max-width: 768px)", ".detail-meta-inline-controls");
+
+      const priorityChipBlock = getExactCssRuleBlock(css, ".detail-priority-chip");
+      const executionToggleBlock = getExactCssRuleBlock(css, ".detail-execution-mode-toggle");
+      const oversightTriggerBlock = getExactCssRuleBlock(css, ".detail-oversight-menu-trigger");
+      const oversightDropdownBlock = getExactCssRuleBlock(css, ".detail-oversight-menu-dropdown");
+      const oversightMenuBlock = getExactCssRuleBlock(css, ".detail-oversight-menu");
+
+      // Priority and Execution-mode are direct flex children of
+      // `.detail-meta-inline-controls { align-items: stretch }`, so they
+      // stretch to the shared row height via the same min-height token.
+      for (const block of [priorityChipBlock, executionToggleBlock, oversightTriggerBlock]) {
+        expect(block).toContain("min-height: var(--detail-priority-control-min-height);");
+      }
+
+      // The Oversight trigger instead lives inside a `position: relative`
+      // `.detail-oversight-menu-dropdown` wrapper (required for the popover's
+      // absolute positioning). Without the wrapper itself participating in
+      // the cluster's stretch, the trigger only gets its own intrinsic
+      // min-height and renders shorter than its siblings on non-mobile
+      // widths. Assert the wrapper stretches and the trigger fills it, so a
+      // future change that drops either declaration fails this test.
+      expect(oversightDropdownBlock).toContain("position: relative;");
+      expect(oversightDropdownBlock).toContain("display: inline-flex;");
+      expect(oversightDropdownBlock).toContain("align-items: stretch;");
+      expect(oversightTriggerBlock).toContain("align-self: stretch;");
+
+      // This invariant is not scoped to a mobile-only media block: the
+      // cluster's base rule (which the dropdown/trigger rules above read
+      // from) applies at every width, and there must be no non-mobile
+      // override that removes the stretch behavior.
+      expect(css).not.toMatch(/@media[^{]*\(min-width:[^{]*\{[\s\S]*?\.detail-oversight-menu-dropdown\s*\{[^}]*align-items:\s*(?:center|flex-start|flex-end);/);
+
+      // The wrapper stretch must not affect the popover: it stays absolutely
+      // positioned (independent of the flex layout) and unstretched.
+      expect(oversightMenuBlock).toContain("position: absolute;");
+      expect(oversightMenuBlock).not.toContain("align-self: stretch;");
+      expect(oversightMenuBlock).not.toMatch(/height:\s*100%/);
+
+      // No `@media (max-width: 768px)` override removes the wrapper's stretch
+      // declarations, so the mobile `flex-wrap: wrap` fallback keeps the same
+      // fix in effect.
+      expect(mobileBlock).not.toMatch(/\.detail-oversight-menu-dropdown\s*\{[^}]*align-items:\s*(?:center|flex-start|flex-end|normal);/);
+      expect(mobileBlock).not.toMatch(/\.detail-oversight-menu-trigger\s*\{[^}]*align-self:\s*(?:auto|center|flex-start|flex-end);/);
+    });
+
     it("renders the Priority dropdown chip like the Oversight dropdown chip, on every surface (FN-7597)", () => {
       const css = readDashboardStylesSource();
 

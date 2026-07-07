@@ -379,6 +379,47 @@ describe("MailboxView", () => {
     });
   });
 
+  // FN-7609: an agent-gating approval must render the real gated payload
+  // (command visible), and this must be mutually exclusive with the
+  // dedicated worktrunk_install branch (covered by the test above).
+  it("renders gated action payload details for agent-gating approvals", async () => {
+    const now = new Date().toISOString();
+    mockFetchInbox.mockResolvedValue({ messages: [], unreadCount: 0, total: 0 });
+    mockFetchApprovals.mockResolvedValue({
+      requests: [{ id: "apr-1", status: "pending", actionCategory: "command_execution", actionSummary: "Run: pnpm test", agentId: "agent-001", createdAt: now, updatedAt: now }],
+      total: 1,
+      pendingCount: 1,
+    });
+    mockFetchApprovalDetail.mockResolvedValue({
+      id: "apr-1", status: "pending", actionCategory: "command_execution", actionSummary: "Run: pnpm test", agentId: "agent-001", createdAt: now, updatedAt: now,
+      requester: { actorId: "agent-001", actorType: "agent", actorName: "Agent 1" }, requestedAt: now,
+      targetAction: {
+        category: "command_execution",
+        action: "bash",
+        summary: "Run: pnpm test",
+        resourceType: "tool",
+        resourceId: "bash",
+        context: {
+          toolName: "bash",
+          toolArgs: { command: "pnpm test" },
+          source: "agent-gating",
+          command: "pnpm test",
+        },
+      },
+      history: [{ id: "evt-1", eventType: "created", actor: { actorId: "agent-001", actorType: "agent", actorName: "Agent 1" }, createdAt: now }],
+    });
+
+    render(<MailboxView {...defaultProps} />);
+    await act(async () => { fireEvent.click(screen.getByTestId("mailbox-tab-approvals")); });
+    await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-item-apr-1")); });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("gated-action-approval-details")).toBeInTheDocument();
+      expect(screen.getByText("pnpm test")).toBeInTheDocument();
+      expect(screen.queryByTestId("worktrunk-install-approval-details")).not.toBeInTheDocument();
+    });
+  });
+
   it("allows approving a pending approval request", async () => {
     const now = new Date().toISOString();
     mockFetchInbox.mockResolvedValue({ messages: [], unreadCount: 0, total: 0 });

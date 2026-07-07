@@ -125,7 +125,13 @@ export function signalToTaskInput(signal: Signal): Parameters<TaskStore["createT
   return {
     title: signal.title,
     description,
-    column: "triage",
+    /*
+    FNXC:Workflows 2026-07-05-00:00:
+    FN-7611: do not hardcode column here. This path has no workflowId, so
+    TaskStore.createTask resolves the landing column from the PROJECT-DEFAULT
+    workflow's intake trait (byte-identical "triage" for builtin:coding; a custom
+    default workflow's own intake column, e.g. Inbox, otherwise).
+    */
     priority: signal.severity === "critical" ? "high" : undefined,
     source: {
       // Reuse the existing `api` source type — signals arrive over the API

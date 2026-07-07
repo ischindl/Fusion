@@ -686,8 +686,25 @@ FNXC:PlannerOversight 2026-07-05-00:00:
 FN-7604 — this overflow menu is now the single universal surface at every
 viewport (desktop and mobile); it is no longer mobile-only.
 */
+/*
+FNXC:TaskDetail 2026-07-05-14:00:
+FN-7618 — Priority (`<label>`) and Execution-mode (`<button>`) are direct
+flex children of `.detail-meta-inline-controls { align-items: stretch }`, so
+they stretch to the shared `--detail-priority-control-min-height` row height.
+FN-7604 wrapped the Oversight trigger in this `position: relative` div
+(required for the popover's absolute positioning), which became the flex
+child instead of the trigger itself — so the trigger only got its own
+intrinsic `min-height` and never stretched to match its taller siblings.
+Make the wrapper an `inline-flex` with `align-items: stretch` so it
+participates in the cluster's stretch on every viewport (desktop and
+mobile); the trigger below fills the wrapper's full height. The popover
+(`.detail-oversight-menu`) stays `position: absolute`, so this does not
+affect its size or anchoring — only the trigger's box height changes.
+*/
 .detail-oversight-menu-dropdown {
   position: relative;
+  display: inline-flex;
+  align-items: stretch;
 }
 
 .detail-oversight-menu-trigger {
@@ -706,7 +723,16 @@ viewport (desktop and mobile); it is no longer mobile-only.
   FN-7604 — this trigger is now the single universal surface at every
   viewport (the desktop-only `.detail-oversight-chip` it used to swap in for
   was removed).
+
+  FNXC:TaskDetail 2026-07-05-14:00:
+  FN-7618 — `align-self: stretch` makes the trigger fill the height of its
+  `.detail-oversight-menu-dropdown` wrapper (now `inline-flex`/`align-items:
+  stretch`), which itself stretches to the shared cluster row height. The
+  `min-height` token above remains as the floor for any context where the
+  wrapper isn't stretched (e.g. isolated rendering), so the trigger never
+  drops below Priority/Execution-mode's height either way.
   */
+  align-self: stretch;
   border-width: var(--btn-border-width);
   border-color: var(--border);
   border-radius: var(--detail-control-border-radius);

@@ -88,6 +88,14 @@ export interface MobileNavBarProps {
   onOpenPlanning?: () => void;
   onResumePlanning?: () => void;
   activePlanningSessionCount?: number;
+  /*
+  FNXC:Navigation 2026-07-05-00:00:
+  Planning Mode "awaiting input" no longer shows a top-of-board banner (its Resume button did not reliably
+  redirect). Instead this flag drives a yellow `status-dot--pending` dot on the Planning More-sheet item and the
+  More tab icon, mirroring `chatHasUnreadResponse`'s `mobile-nav-chat-unread-dot`, so the click target is always
+  the working Planning navigation.
+  */
+  planningNeedsInput?: boolean;
   onOpenUsage?: () => void;
   onRunScript?: (name: string, command: string) => void;
   projectId?: string;
@@ -149,6 +157,7 @@ export function MobileNavBar({
   onOpenPlanning,
   onResumePlanning,
   activePlanningSessionCount = 0,
+  planningNeedsInput = false,
   onOpenUsage,
   onRunScript,
   projectId,
@@ -469,6 +478,9 @@ export function MobileNavBar({
         >
           <span className="mobile-nav-tab-icon-wrapper">
             <MoreHorizontal />
+            {planningNeedsInput && view !== "planning" && !isMoreOpen && (
+              <span className="status-dot status-dot--pending mobile-nav-chat-unread-dot" aria-label={t("nav.planningNeedsInputAriaLabel", "Planning needs your input")} />
+            )}
           </span>
           <span className="mobile-nav-tab-label">{t("nav.more", "More")}</span>
         </button>
@@ -613,7 +625,12 @@ export function MobileNavBar({
               data-testid="mobile-more-item-planning"
               onClick={() => handleMoreAction(planningHandler)}
             >
-              <Lightbulb />
+              <span className="mobile-more-item-icon-wrapper">
+                <Lightbulb />
+                {planningNeedsInput && (
+                  <span className="status-dot status-dot--pending mobile-more-item-icon-dot" aria-label={t("nav.planningNeedsInputAriaLabel", "Planning needs your input")} />
+                )}
+              </span>
               <span>{t("nav.planning", "Planning")}</span>
               {activePlanningSessionCount > 0 && (
                 <span className="mobile-more-item-badge">{formatCount(activePlanningSessionCount)}</span>

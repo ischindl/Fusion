@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { join, relative } from "node:path";
+import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 
 /*
@@ -1123,6 +1124,137 @@ legacyDescribe("fn pi extension (legacy exhaustive suite)", () => {
       expect(result.content[0].text).toContain("test.txt");
       expect(result.details.attachment).toBeDefined();
       expect(result.details.attachment.originalName).toBe("test.txt");
+    });
+
+    it("attaches a file from an in-boundary nested subdirectory", async () => {
+      const createTool = api.tools.get("fn_task_create")!;
+      await createTool.execute(
+        "c1",
+        { description: "A task" },
+        undefined,
+        undefined,
+        makeCtx(tmpDir),
+      );
+
+      await mkdir(join(tmpDir, "nested", "dir"), { recursive: true });
+      const testFile = join(tmpDir, "nested", "dir", "inner.txt");
+      await writeFile(testFile, "inner content");
+
+      const attachTool = api.tools.get("fn_task_attach")!;
+      const result = await attachTool.execute(
+        "call-1",
+        { id: "FN-001", path: "nested/dir/inner.txt" },
+        undefined,
+        undefined,
+        makeCtx(tmpDir),
+      );
+
+      expect(result.content[0].text).toContain("Attached to FN-001");
+      expect(result.details.attachment.originalName).toBe("inner.txt");
+    });
+
+    /*
+     * FNXC:CliTaskAttach 2026-07-05-00:00:
+     * Regression coverage for FN-7619 — fn_task_attach must reject any path
+     * (relative traversal, absolute, or @-prefixed traversal) that resolves
+     * outside the task worktree boundary (ctx.cwd), and must never create an
+     * attachment when it does.
+     */
+    describe("worktree boundary guard (FN-7619)", () => {
+      let outsideDir: string;
+      let outsideFile: string;
+
+      beforeEach(async () => {
+        outsideDir = await mkdtemp(join(tmpdir(), "kb-ext-test-outside-"));
+        outsideFile = join(outsideDir, "secret.txt");
+        await writeFile(outsideFile, "top secret contents");
+      });
+
+      afterEach(async () => {
+        await rm(outsideDir, { recursive: true, force: true });
+      });
+
+      it("rejects a relative traversal path escaping the worktree", async () => {
+        const createTool = api.tools.get("fn_task_create")!;
+        await createTool.execute(
+          "c1",
+          { description: "A task" },
+          undefined,
+          undefined,
+          makeCtx(tmpDir),
+        );
+
+        const relPath = join(relative(tmpDir, outsideDir), "secret.txt");
+
+        const attachTool = api.tools.get("fn_task_attach")!;
+        await expect(
+          attachTool.execute(
+            "call-1",
+            { id: "FN-001", path: relPath },
+            undefined,
+            undefined,
+            makeCtx(tmpDir),
+          ),
+        ).rejects.toThrow(/boundary|outside/i);
+
+        const store = new TaskStore(tmpDir);
+        const task = await store.getTask("FN-001");
+        expect(task?.attachments ?? []).toHaveLength(0);
+      });
+
+      it("rejects an absolute path outside the worktree", async () => {
+        const createTool = api.tools.get("fn_task_create")!;
+        await createTool.execute(
+          "c1",
+          { description: "A task" },
+          undefined,
+          undefined,
+          makeCtx(tmpDir),
+        );
+
+        const attachTool = api.tools.get("fn_task_attach")!;
+        await expect(
+          attachTool.execute(
+            "call-1",
+            { id: "FN-001", path: outsideFile },
+            undefined,
+            undefined,
+            makeCtx(tmpDir),
+          ),
+        ).rejects.toThrow(/boundary|outside/i);
+
+        const store = new TaskStore(tmpDir);
+        const task = await store.getTask("FN-001");
+        expect(task?.attachments ?? []).toHaveLength(0);
+      });
+
+      it("rejects an @-prefixed traversal path escaping the worktree", async () => {
+        const createTool = api.tools.get("fn_task_create")!;
+        await createTool.execute(
+          "c1",
+          { description: "A task" },
+          undefined,
+          undefined,
+          makeCtx(tmpDir),
+        );
+
+        const relPath = join(relative(tmpDir, outsideDir), "secret.txt");
+
+        const attachTool = api.tools.get("fn_task_attach")!;
+        await expect(
+          attachTool.execute(
+            "call-1",
+            { id: "FN-001", path: `@${relPath}` },
+            undefined,
+            undefined,
+            makeCtx(tmpDir),
+          ),
+        ).rejects.toThrow(/boundary|outside/i);
+
+        const store = new TaskStore(tmpDir);
+        const task = await store.getTask("FN-001");
+        expect(task?.attachments ?? []).toHaveLength(0);
+      });
     });
 
     it("rejects unsupported file types", async () => {

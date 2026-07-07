@@ -263,6 +263,26 @@ Wrap every tab icon in the same token-sized icon slot and keep unread/pending do
   color: var(--text-muted);
 }
 
+/*
+FNXC:Navigation 2026-07-05-00:00:
+Planning "awaiting input" moved from a top-of-board banner (broken Resume redirect) to a yellow needs-input dot on
+this More-sheet item, mirroring the mobile-nav-tab icon-wrapper pattern so the dot positions relative to the icon
+rather than the full-width row.
+*/
+.mobile-more-item-icon-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.mobile-more-item-icon-dot {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+}
+
 .mobile-more-item-badge {
   margin-left: auto;
   min-width: 20px;

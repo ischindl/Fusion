@@ -622,6 +622,19 @@ export async function landOneRepo(
     throwIfAborted(signal, taskId);
     const tipSha = await git(["rev-parse", "--verify", `refs/heads/${integrationBranch}`], repoRootDir);
 
+    // Short-circuit a branch with zero commits ahead of the integration tip
+    // BEFORE building a clean room + installing deps. A truly-empty branch would
+    // reach the identical `outcome: "empty"` return below via mergeAndReview →
+    // no squashSha, but only after the throw-prone dep-install churn (which a
+    // non-workspace land hard-fails), so the merge gets transient-retried to
+    // exhaustion and the card is parked failed. Only short-circuit on a CONFIDENT
+    // 0: a git failure yields "" → parseInt → NaN (≠ 0) and falls through.
+    const aheadRaw = await git(["rev-list", "--count", `${integrationBranch}..${branch}`], repoRootDir).catch(() => "");
+    if (Number.parseInt(aheadRaw.trim(), 10) === 0) {
+      await audit.git({ type: "merge:ai-empty", target: integrationBranch, metadata: { taskId, tipSha } });
+      return { outcome: "empty", tipSha, integrationBranch };
+    }
+
     // 1. Clean-room worktree at the integration tip.
     let mergeRoot: string | undefined;
     let worktreeAdded = false;

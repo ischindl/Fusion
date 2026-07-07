@@ -18,7 +18,7 @@ import {
   PLANNING_DEEPEN_CHECKPOINT_QUESTION,
   PLANNING_DEEPEN_PROCEED_OPTION_ID,
 } from "@fusion/core";
-import type { MergeResult } from "@fusion/core";
+import type { MergeResult, PlanningQuestion } from "@fusion/core";
 const mockUseAiSessionSync = vi.fn();
 
 import {
@@ -27,6 +27,7 @@ import {
   mockCreatePlanningDraft,
   mockConnectPlanningStream,
   mockRespondToPlanning,
+  mockRewindPlanningSession,
   mockRetryPlanningSession,
   mockCancelPlanning,
   mockStopPlanningGeneration,
@@ -81,6 +82,7 @@ vi.mock("../../api", () => ({
   createPlanningDraft: (...args: any[]) => mockCreatePlanningDraft(...args),
   connectPlanningStream: (...args: any[]) => mockConnectPlanningStream(...args),
   respondToPlanning: (...args: any[]) => mockRespondToPlanning(...args),
+  rewindPlanningSession: (...args: any[]) => mockRewindPlanningSession(...args),
   retryPlanningSession: (...args: any[]) => mockRetryPlanningSession(...args),
   cancelPlanning: (...args: any[]) => mockCancelPlanning(...args),
   stopPlanningGeneration: (...args: any[]) => mockStopPlanningGeneration(...args),
@@ -181,6 +183,7 @@ describe("PlanningModeModal", () => {
     mockReleaseSessionLock.mockResolvedValue(undefined);
     mockForceAcquireSessionLock.mockResolvedValue(undefined);
     mockCancelPlanning.mockResolvedValue(undefined);
+    mockRewindPlanningSession.mockReset();
     mockUpdatePlanningSessionDraft.mockResolvedValue({ ok: true });
     mockStopPlanningGeneration.mockResolvedValue({ success: true });
     mockUseAiSessionSync.mockReturnValue({
@@ -3456,6 +3459,183 @@ describe("PlanningModeModal", () => {
       expect(screen.getByTestId("conversation-history")).toBeDefined();
       expect(screen.getByText("What is the scope?")).toBeDefined();
       expect(screen.getByText("Medium")).toBeDefined();
+    });
+  });
+
+  /*
+  FNXC:PlanningMode 2026-07-05-00:00:
+  FN-7615 regression coverage: Back is deterministic history navigation (a pure server-side
+  rewind), not AI generation, so it must never render `.planning-loading` (the "Generating next
+  question..."/"AI is thinking..." spinner + Stop screen reserved for real model turns). Cover the
+  success path, the failure path (error surfaced, still on a question form), and the
+  no-history-yet state where the Back button is absent.
+  */
+  describe("Back navigation (FN-7615)", () => {
+    const secondQuestion: PlanningQuestion = {
+      id: "q-requirements",
+      type: "text",
+      question: "What are the key requirements?",
+      description: "Describe the requirements",
+    };
+
+    const thirdQuestion: PlanningQuestion = {
+      id: "q-details",
+      type: "text",
+      question: "Any additional details?",
+      description: "Optional extra context",
+    };
+
+    async function advanceToThirdQuestion() {
+      let streamHandlers: any;
+      mockConnectPlanningStream.mockImplementationOnce((_sessionId: string, _projectId: string | undefined, handlers: any) => {
+        streamHandlers = handlers;
+        setTimeout(() => {
+          handlers.onQuestion?.(mockQuestion);
+        }, 10);
+
+        return {
+          close: vi.fn(),
+          isConnected: vi.fn().mockReturnValue(true),
+        };
+      });
+
+      let respondCallCount = 0;
+      mockRespondToPlanning.mockImplementation(async () => {
+        respondCallCount += 1;
+        const nextQuestion = respondCallCount === 1 ? secondQuestion : thirdQuestion;
+        setTimeout(() => {
+          streamHandlers?.onQuestion?.(nextQuestion);
+        }, 10);
+        return { sessionId: "session-123", currentQuestion: null, summary: null };
+      });
+
+      const renderResult = render(
+        <PlanningModeModal
+          isOpen={true}
+          onClose={mockOnClose}
+          onTaskCreated={mockOnTaskCreated}
+          onTasksCreated={vi.fn()}
+          tasks={mockTasks}
+        />,
+      );
+
+      fireEvent.change(screen.getByPlaceholderText(/e.g., Build a user authentication/), {
+        target: { value: "Build auth system" },
+      });
+      fireEvent.click(screen.getByText("Start Planning"));
+
+      await waitFor(() => {
+        expect(screen.getByText("What is the scope?")).toBeDefined();
+      });
+
+      const mediumOption = await screen.findByText("Medium");
+      fireEvent.click(mediumOption);
+      fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+
+      await waitFor(() => {
+        expect(screen.getByText("What are the key requirements?")).toBeDefined();
+      }, { timeout: 5000 });
+
+      const requirementsTextarea = screen.getByPlaceholderText("Type your answer here...");
+      fireEvent.change(requirementsTextarea, { target: { value: "Auth requirements" } });
+      fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+
+      await waitFor(() => {
+        expect(screen.getByText("Any additional details?")).toBeDefined();
+      }, { timeout: 5000 });
+
+      return renderResult;
+    }
+
+    it("never renders the generation screen while going back, and restores the previous question with prior Q&A visible", async () => {
+      let resolveRewind!: (value: {
+        currentQuestion: PlanningQuestion;
+        history: Array<{ question: PlanningQuestion; response: unknown; thinkingOutput?: string }>;
+      }) => void;
+      mockRewindPlanningSession.mockImplementation(
+        () => new Promise((resolve) => {
+          resolveRewind = resolve;
+        }),
+      );
+
+      const { container } = await advanceToThirdQuestion();
+
+      const backButton = screen.getByRole("button", { name: /Back/i });
+
+      await act(async () => {
+        fireEvent.click(backButton);
+      });
+
+      // Symptom assertion (FN-7615): immediately after the click, while the deterministic
+      // rewind is still in flight, the generation view must never be present.
+      expect(container.querySelector(".planning-loading")).toBeNull();
+      expect(screen.queryByText("Generating next question...")).toBeNull();
+      expect(screen.queryByText("AI is thinking...")).toBeNull();
+
+      await act(async () => {
+        resolveRewind({
+          currentQuestion: secondQuestion,
+          history: [{ question: mockQuestion, response: { [mockQuestion.id]: "medium" } }],
+        });
+      });
+
+      await waitFor(() => {
+        expect(screen.getByRole("heading", { name: "What are the key requirements?" })).toBeDefined();
+      });
+
+      // Symptom assertion (FN-7615): after the async rewind settles, the generation view must
+      // still never have appeared, and the previous question form is shown with the prior Q&A
+      // (Q1's restored answer) visible above it.
+      expect(container.querySelector(".planning-loading")).toBeNull();
+      expect(screen.getByTestId("conversation-history")).toBeDefined();
+      expect(screen.getByText("What is the scope?")).toBeDefined();
+      expect(screen.getByText("Medium")).toBeDefined();
+      expect(mockRewindPlanningSession).toHaveBeenCalledWith("session-123", undefined, expect.any(String));
+    });
+
+    it("stays on the question form and surfaces an error when the rewind request fails", async () => {
+      mockRewindPlanningSession.mockRejectedValueOnce(new Error("rewind failed"));
+
+      const { container } = await advanceToThirdQuestion();
+
+      const backButton = screen.getByRole("button", { name: /Back/i });
+
+      await act(async () => {
+        fireEvent.click(backButton);
+      });
+
+      expect(container.querySelector(".planning-loading")).toBeNull();
+
+      await waitFor(() => {
+        expect(screen.getByText("rewind failed")).toBeDefined();
+      });
+
+      // Still on a question form (not loading, not generation) after the failure.
+      expect(container.querySelector(".planning-loading")).toBeNull();
+      expect(screen.getByText("Any additional details?")).toBeDefined();
+    });
+
+    it("does not render a Back button on the first question, before any history exists", async () => {
+      render(
+        <PlanningModeModal
+          isOpen={true}
+          onClose={mockOnClose}
+          onTaskCreated={mockOnTaskCreated}
+          onTasksCreated={vi.fn()}
+          tasks={mockTasks}
+        />,
+      );
+
+      fireEvent.change(screen.getByPlaceholderText(/e.g., Build a user authentication/), {
+        target: { value: "Build auth system" },
+      });
+      fireEvent.click(screen.getByText("Start Planning"));
+
+      await waitFor(() => {
+        expect(screen.getByText("What is the scope?")).toBeDefined();
+      });
+
+      expect(screen.queryByRole("button", { name: /Back/i })).toBeNull();
     });
   });
 

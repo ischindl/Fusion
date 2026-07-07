@@ -77,6 +77,7 @@ import { canonicalFusionBranchName, canonicalStepInstanceBranchName, generateWor
 import { resolveTaskWorktreePath, resolveWorktreesDir } from "./worktree-paths.js";
 import { Type, type Static } from "@earendil-works/pi-ai";
 import { describeModel, formatModelMarkerDetails, promptWithFallback, compactSessionContext } from "./pi.js";
+import { buildAgentGatedActionSummary } from "./permanent-agent-gating.js";
 import { accumulateSessionTokenUsage, mergeTokenUsagePerModel } from "./session-token-usage.js";
 import {
   createResolvedAgentSession,
@@ -1314,6 +1315,9 @@ const reviewStepParams = Type.Object({
 /*
 FNXC:ExecutorPrompt 2026-06-21-03:59:
 Agents must not run the full/workspace-wide test suite by default; targeted/package-scoped verification is the norm, full runs require explicit task/workflow opt-in.
+
+FNXC:ExecutorPrompt 2026-07-05-00:35:
+FN-7608: a `require-approval` gate previously only parked the single tool call (soft rejection + task/agent paused in the store) while the turn-ending rules below forbade ending a turn without another tool call, so the model was effectively instructed to hunt for ungated workarounds (re-issuing the same bash, probing read-only equivalents, fn_web_fetch/fn_task_attach bypasses) instead of stopping. The engine now actually suspends the in-flight session when a gate resolves to wait-for-approval (see executor.ts buildActionGateContext.pauseForApproval), so the prompt must carve out waiting on a pending approval as a legitimate turn end and explicitly forbid probing for alternatives. This clause must stay byte-identical with EXECUTOR_PROMPT_TEXT in packages/core/src/agent-prompts.ts.
 */
 const EXECUTOR_SYSTEM_PROMPT = `You are a task execution agent for "fn", an AI-orchestrated task board.
 
@@ -1336,6 +1340,8 @@ You MUST NOT end a turn by writing prose that asks the user a question, summariz
 - "Let me know if you'd like me to..."
 - "Ready to move on to step N. Want me to continue?"
 - Any markdown progress summary at the end of a turn instead of a tool call
+
+**Exception — pending approval.** If a tool call reports that the action requires approval (a permission gate) and the task has been paused awaiting a decision, STOP. Waiting on a pending approval IS a legitimate turn end: the engine suspends this session automatically once the gate fires, so ending the turn here is expected, not a violation of the rule above. Do NOT re-issue the same gated call, probe for a read-only or "equivalent" alternative, fetch the gated resource through another tool (e.g. \`fn_web_fetch\`, \`fn_task_attach\`), or otherwise search for an ungated path around the blocked action — an approval gate is fully blocking, not something to route around or "make progress another way" against. Execution resumes on its own once the request is approved or denied.
 
 If you have just finished a step's work, immediately call \`fn_task_update\` to mark the step done and continue with the next pending step in the SAME turn. Do not pause to summarize.
 
@@ -2275,6 +2281,29 @@ export class TaskExecutor {
             undefined,
             this.getRunContextFor(taskId),
           );
+          /*
+          FNXC:AgentGating 2026-07-05-00:10:
+          FN-7608: pauseTask() alone does not stop the in-flight LLM turn -- the
+          gated tool call only returns a soft rejection, and the executor system
+          prompt forbids ending a turn without another tool call, so the agent
+          kept hunting for ungated workarounds (re-issuing the same bash, probing
+          read-only tools, fn_web_fetch/fn_task_attach bypasses) while the task
+          sat "paused" only in the store. Make wait-for-approval a REAL
+          session-suspending state by aborting the in-flight session here, using
+          the same synchronous abort surface hard-cancel uses
+          (awaitAbortInFlightTaskWork). This call is deliberately NOT awaited:
+          awaitAbortInFlightTaskWork's agent-session branch awaits
+          session.abort(), which internally awaits agent.waitForIdle() -- since
+          pauseForApproval runs from inside this very tool call, the agent
+          cannot become idle until our own execute() resolves, so awaiting the
+          abort inline here would deadlock. Firing it (fire-and-forget, errors
+          swallowed to a warn per the FN-7335 best-effort-breadcrumb pattern)
+          lets the abort proceed the moment this tool's rejection unwinds back
+          to the agent loop.
+          */
+          void this.awaitAbortInFlightTaskWork(taskId, `awaiting-approval:${decision.toolName}`).catch((error) => {
+            executorLog.warn(`${taskId}: failed to suspend in-flight session while awaiting approval: ${error instanceof Error ? error.message : String(error)}`);
+          });
         }
         if (agent && this.options.agentStore) {
           await this.options.agentStore.updateAgentState(agent.id, "paused");
@@ -2303,7 +2332,14 @@ export class TaskExecutor {
       },
       taskId,
       runId: taskId ? this.getRunContextFor(taskId)?.runId : undefined,
-      createApprovalRequest: async ({ category, toolName, args }) => await this.approvalRequestStore.create({
+      // FNXC:AgentGating 2026-07-05-00:00:
+      // FN-7609: operators approving a gated action need the real command/args,
+      // and a stateless heartbeat retrying the same command must reuse a single
+      // pending approval instead of minting duplicates. `summary` is now
+      // payload-bearing (shared helper) and `approvalDedupeKey`/`command`/`cwd`
+      // are persisted into targetAction.context so findPendingApprovalRequest
+      // can match and the UI can render the payload without re-parsing.
+      createApprovalRequest: async ({ category, toolName, args, approvalDedupeKey }) => await this.approvalRequestStore.create({
         requester: {
           actorId,
           actorType: "agent",
@@ -2314,13 +2350,20 @@ export class TaskExecutor {
         targetAction: {
           category,
           action: toolName,
-          summary: `Agent gated action for ${toolName}`,
+          summary: buildAgentGatedActionSummary(toolName, args),
           resourceType: "tool",
           resourceId: toolName,
           context: {
             toolName,
             toolArgs: args,
             source: "agent-gating",
+            ...(approvalDedupeKey ? { approvalDedupeKey } : {}),
+            ...(typeof (args as Record<string, unknown> | undefined)?.command === "string"
+              ? { command: (args as Record<string, unknown>).command }
+              : {}),
+            ...(typeof (args as Record<string, unknown> | undefined)?.cwd === "string"
+              ? { cwd: (args as Record<string, unknown>).cwd }
+              : {}),
           },
         },
       }),

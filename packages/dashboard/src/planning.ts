@@ -236,6 +236,7 @@ When ready to complete, generate:
 - Size estimate (S/M/L) based on scope
 - Any suggested dependencies on existing tasks
 - Key deliverables as a checklist
+- Optional "deepeningThemes": before completing, think ahead about THIS specific plan (its title, description, and deliverables) and propose 2-5 concrete, plan-aligned topics the user could explore in more depth — including angles they may not have anticipated. Each theme is an object with "label" and "description" string fields. Themes must be specific to this plan, not generic boilerplate (do not just restate "scope", "testing", "edge cases" as bare labels — tie them to this plan's actual concerns). Omit the field entirely if nothing meaningful stands out.
 
 ## Board tools
 - fn_task_list — list active tasks
@@ -249,7 +250,12 @@ For questions:
 {\n  "type": "question",\n  "data": {\n    "id": "unique-id",\n    "type": "text|single_select|multi_select|confirm",\n    "question": "The question text",\n    "description": "Helpful context",\n    "options": [{"id": "opt1", "label": "Option 1", "description": "Details"}]\n  }\n}
 
 For completion:
-{\n  "type": "complete",\n  "data": {\n    "title": "Task title",\n    "description": "Detailed description",\n    "suggestedSize": "S|M|L",\n    "suggestedDependencies": [],\n    "keyDeliverables": ["Item 1", "Item 2"]\n  }\n}`;
+{\n  "type": "complete",\n  "data": {\n    "title": "Task title",\n    "description": "Detailed description",\n    "suggestedSize": "S|M|L",\n    "suggestedDependencies": [],\n    "keyDeliverables": ["Item 1", "Item 2"],\n    "deepeningThemes": [{"label": "Plan-specific topic", "description": "Why this is worth exploring further for this plan"}]\n  }\n}`;
+
+/*
+FNXC:PlanningMode 2026-07-05-00:00:
+The completion payload's optional deepeningThemes field lets the planning AI "think ahead" and propose topics tailored to the specific plan, instead of the checkpoint always offering the same fixed generic buckets (FN-7616 / issue #1912). See buildDeepeningCheckpointOptions for the AI-first / generic-fallback precedence.
+*/
 
 /** Placeholder title for draft sessions before the user starts planning. */
 export const DRAFT_PLACEHOLDER_TITLE = "New planning session";
@@ -464,6 +470,8 @@ export function normalizePlanningSummaryPayload(
     ? summary.description.trim()
     : fallback?.description?.trim() || title;
 
+  const deepeningThemes = normalizeDeepeningThemes(summary.deepeningThemes);
+
   return {
     title,
     description,
@@ -473,7 +481,48 @@ export function normalizePlanningSummaryPayload(
     priority: isTaskPriority(summary.priority) ? summary.priority : DEFAULT_TASK_PRIORITY,
     suggestedDependencies: normalizeStringArray(summary.suggestedDependencies),
     keyDeliverables: normalizeStringArray(summary.keyDeliverables),
+    ...(deepeningThemes ? { deepeningThemes } : {}),
   };
+}
+
+/** Max deepeningThemes entries kept per summary; bounds checkpoint size. */
+const MAX_DEEPENING_THEMES = 6;
+
+/*
+FNXC:PlanningMode 2026-07-05-00:10:
+AI-proposed deepeningThemes are untrusted runtime data (same discipline as the rest of this normalizer). Keep only object entries with a non-empty trimmed label; trim description when present; drop anything malformed (non-object, missing/blank label, non-array value entirely) without ever letting an unchecked shape reach a live stream. Cap at MAX_DEEPENING_THEMES and omit the field entirely (not []) when nothing valid remains, so callers can treat "field absent" as "AI supplied none" and fall back to the generic regex themes (FN-7616 / issue #1912).
+*/
+function normalizeDeepeningThemes(value: unknown): Array<{ id?: string; label: string; description?: string }> | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const seenLabels = new Set<string>();
+  const normalized: Array<{ id?: string; label: string; description?: string }> = [];
+  for (const item of value) {
+    if (normalized.length >= MAX_DEEPENING_THEMES) {
+      break;
+    }
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      continue;
+    }
+    const record = item as Record<string, unknown>;
+    const label = typeof record.label === "string" ? record.label.trim() : "";
+    if (!label) {
+      continue;
+    }
+    const dedupeKey = label.toLowerCase();
+    if (seenLabels.has(dedupeKey)) {
+      continue;
+    }
+    seenLabels.add(dedupeKey);
+    const description = typeof record.description === "string" && record.description.trim().length > 0
+      ? record.description.trim()
+      : undefined;
+    normalized.push({ label, ...(description ? { description } : {}) });
+  }
+
+  return normalized.length > 0 ? normalized : undefined;
 }
 
 export interface PlanningDeepeningDecision {
@@ -519,10 +568,40 @@ function collectCheckpointThemeText(
   ].join("\n");
 }
 
+const PROCEED_OPTION: NonNullable<PlanningQuestion["options"]>[number] = {
+  id: PLANNING_DEEPEN_PROCEED_OPTION_ID,
+  label: "Proceed to final plan",
+  description: "The plan is detailed enough; show the final editable summary.",
+};
+
+/*
+FNXC:PlanningMode 2026-07-05-00:15:
+Prefer the planning AI's own deepeningThemes (plan-specific, sometimes-unanticipated topics) over the fixed regex-derived candidates below. The generic CHECKPOINT_THEME_CANDIDATES/FALLBACK_CHECKPOINT_THEME_OPTIONS path remains the safety net for when the AI supplies no themes (FN-7616 / issue #1912).
+*/
 export function buildDeepeningCheckpointOptions(
   history: Array<{ question: PlanningQuestion; response: unknown }>,
   summary: PlanningSummary,
 ): PlanningQuestion["options"] {
+  if (summary.deepeningThemes && summary.deepeningThemes.length > 0) {
+    const seenIds = new Set<string>([PROCEED_OPTION.id]);
+    const aiOptions = summary.deepeningThemes.flatMap((theme) => {
+      const label = theme.label.trim();
+      if (!label || label === PROCEED_OPTION.label) {
+        return [];
+      }
+      const id = `theme-${slugifyCheckpointTheme(label)}`;
+      if (seenIds.has(id)) {
+        return [];
+      }
+      seenIds.add(id);
+      return [{ id, label, ...(theme.description ? { description: theme.description } : {}) }];
+    });
+
+    if (aiOptions.length > 0) {
+      return [PROCEED_OPTION, ...aiOptions];
+    }
+  }
+
   const text = collectCheckpointThemeText(history, summary);
   const matched = CHECKPOINT_THEME_CANDIDATES.filter((candidate) =>
     candidate.patterns.some((pattern) => pattern.test(text)),
@@ -542,7 +621,7 @@ export function buildDeepeningCheckpointOptions(
   });
 
   return [
-    { id: PLANNING_DEEPEN_PROCEED_OPTION_ID, label: "Proceed to final plan", description: "The plan is detailed enough; show the final editable summary." },
+    PROCEED_OPTION,
     ...options,
   ];
 }
@@ -550,6 +629,9 @@ export function buildDeepeningCheckpointOptions(
 /*
 FNXC:PlanningMode 2026-07-02-00:00:
 Planning Mode final summaries are user-gated, not AI-gated. Every AI completion becomes the exact “Would you like to go deeper?” checkpoint with a persisted pending summary; users may loop on selected themes/custom topics indefinitely, or explicitly proceed to reveal the final summary actions.
+
+FNXC:PlanningMode 2026-07-05-00:20:
+buildDeepeningCheckpointOptions prefers the AI's plan-specific deepeningThemes when the completion payload supplied any; it falls back to the generic regex-derived CHECKPOINT_THEME_CANDIDATES only when the AI supplied none (FN-7616 / issue #1912). The reserved proceed option is always first and deterministic in both branches.
 */
 export function buildDeepeningCheckpointQuestion(
   history: Array<{ question: PlanningQuestion; response: unknown }>,

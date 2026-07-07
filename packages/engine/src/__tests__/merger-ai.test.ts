@@ -434,6 +434,32 @@ describe("runAiMerge", () => {
     expect(store.moveTask).toHaveBeenCalledWith("FN-1", "done", expect.objectContaining({ moveSource: "engine", preserveProgress: true }));
   });
 
+  it("short-circuits a zero-commits-ahead branch before the clean-room/merge-agent churn (empty-branch wedge)", async () => {
+    const { dir } = initRepoWithBranch({ branch: "fusion/fn-1" });
+    // Move the task branch back onto main's tip → 0 commits ahead of the
+    // integration branch (the empty-branch shape a coding agent that produced
+    // no commits leaves behind).
+    git(dir, "branch -f fusion/fn-1 main");
+    const { store } = makeStore(dir);
+    const mainBefore = git(dir, "rev-parse main");
+    const mergeAgent = vi.fn(async () => { /* would build a squash if reached */ });
+
+    const result = await runAiMerge(store, dir, "FN-1", { manual: true }, {
+      mergeAgent,
+      reviewAgent: vi.fn(async () => "REVIEW_VERDICT: approve"),
+    });
+
+    // The zero-ahead short-circuit fires BEFORE the clean-room build + dep
+    // install, so the merge agent is never invoked. In prod that dep install
+    // throws and gets transient-retried to exhaustion, terminally parking the
+    // card failed — skipping it is the wedge fix.
+    expect(mergeAgent).not.toHaveBeenCalled();
+    expect(result.noOp).toBe(true);
+    expect(result.merged).toBe(false);
+    expect(git(dir, "rev-parse main")).toBe(mainBefore);
+    expect(store.moveTask).toHaveBeenCalledWith("FN-1", "done", expect.objectContaining({ moveSource: "engine", preserveProgress: true }));
+  });
+
   it("demotes a no-commits task with skipped-out work instead of AI empty-merge finalizing done", async () => {
     const { dir } = initRepoWithBranch({ branch: "fusion/fn-1" });
     git(dir, "merge -q fusion/fn-1");

@@ -43,6 +43,59 @@ function extractShellCommand(args: Record<string, unknown>): string {
   return typeof command === "string" ? command.trim() : "";
 }
 
+const GATED_SUMMARY_COMMAND_MAX_LENGTH = 200;
+
+function truncateForSummary(value: string, maxLength: number): string {
+  const singleLine = value.replace(/\s+/g, " ").trim();
+  if (singleLine.length <= maxLength) {
+    return singleLine;
+  }
+  return `${singleLine.slice(0, maxLength - 1)}\u2026`;
+}
+
+function renderCompactArgs(args: Record<string, unknown>): string {
+  const entries = Object.entries(args).filter(([, value]) => value !== undefined);
+  if (entries.length === 0) {
+    return "";
+  }
+  const rendered = entries
+    .slice(0, 4)
+    .map(([key, value]) => {
+      const stringValue = typeof value === "string" ? value : JSON.stringify(value);
+      return `${key}: ${truncateForSummary(String(stringValue ?? ""), 60)}`;
+    })
+    .join(", ");
+  const suffix = entries.length > 4 ? ", \u2026" : "";
+  return `{${rendered}${suffix}}`;
+}
+
+/**
+ * FNXC:AgentGating 2026-07-05-00:00:
+ * FN-7609: operators approving a gated agent action need to see the real
+ * payload (shell command line, or tool arguments), not just a generic
+ * "Agent gated action for <tool>" placeholder. This pure helper builds a
+ * payload-bearing, human-readable summary shared by both permanent-agent
+ * gating context builders (executor.ts and agent-heartbeat.ts) so approval
+ * cards are actionable instead of blank.
+ */
+export function buildAgentGatedActionSummary(toolName: string, args: unknown): string {
+  const normalizedArgs = normalizeArgs(args);
+
+  if (toolName === "bash") {
+    const command = extractShellCommand(normalizedArgs);
+    if (command) {
+      return `Run: ${truncateForSummary(command, GATED_SUMMARY_COMMAND_MAX_LENGTH)}`;
+    }
+  }
+
+  const compactArgs = renderCompactArgs(normalizedArgs);
+  if (compactArgs) {
+    return `${toolName} ${compactArgs}`;
+  }
+
+  return `Agent gated action for ${toolName}`;
+}
+
 
 export function classifyPermanentAgentToolCall(
   toolName: string,

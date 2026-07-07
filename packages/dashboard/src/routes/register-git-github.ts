@@ -4017,10 +4017,16 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
 
       const importedIssueGithubTracking = await resolveImportedIssueGithubTracking(scopedStore);
       const source = buildGitHubIssueSource(owner, repo, issue);
+      /*
+      FNXC:Workflows 2026-07-05-00:00:
+      FN-7611: do not hardcode column here. This import path has no workflowId, so the
+      store resolves the landing column from the PROJECT-DEFAULT workflow's intake trait
+      (byte-identical "triage" for builtin:coding; a custom default workflow's own intake
+      column otherwise).
+      */
       const task = await scopedStore.createTask({
         title: title || undefined,
         description,
-        column: "triage",
         dependencies: [],
         sourceIssue: source.sourceIssue,
         source: {
@@ -4154,10 +4160,12 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
 
         try {
           const source = buildGitHubIssueSource(owner, repo, issue);
+          // FNXC:Workflows 2026-07-05-00:00: FN-7611 — no workflowId here; let the store
+          // resolve the project-default workflow's intake column (byte-identical "triage"
+          // for builtin:coding).
           const task = await scopedStore.createTask({
             title: title || undefined,
             description,
-            column: "triage",
             dependencies: [],
             sourceIssue: source.sourceIssue,
             source: {
@@ -4481,10 +4489,12 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
       const body = pr.body?.trim() || "(no description)";
       const description = `Review and address any issues in this pull request.\n\nPR: ${sourceUrl}\nBranch: ${pr.headBranch} → ${pr.baseBranch}\n\n${body}`;
 
+      // FNXC:Workflows 2026-07-05-00:00: FN-7611 — no workflowId here; let the store
+      // resolve the project-default workflow's intake column (byte-identical "triage"
+      // for builtin:coding).
       const task = await scopedStore.createTask({
         title: title || undefined,
         description,
-        column: "triage",
         dependencies: [],
         source: {
           sourceType: "github_import",

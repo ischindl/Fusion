@@ -663,6 +663,86 @@ describe("wrapToolsWithPermanentAgentGating", () => {
     expect(tool.execute).not.toHaveBeenCalled();
   });
 
+  // FN-7609: the permanent-agent gate must pass its computed dedupe key
+  // through to createApprovalRequest so the closure can persist it into
+  // targetAction.context.approvalDedupeKey — without this, a stateless
+  // heartbeat retrying the same gated command mints a brand-new blank
+  // approval every tick instead of reusing the pending one.
+  it("passes the computed approvalDedupeKey through to createApprovalRequest", async () => {
+    const tool = { name: "bash", label: "Bash", description: "", parameters: {}, execute: vi.fn() };
+    const createApprovalRequest = vi.fn().mockResolvedValue({ id: "apr-dedupe-1" });
+    const findPendingApprovalRequest = vi.fn().mockResolvedValue(null);
+    const { wrapToolsWithPermanentAgentGating } = await import("../pi.js");
+    const wrapped = wrapToolsWithPermanentAgentGating([tool as any], {
+      requester: { actorId: "agent-1", actorType: "agent", actorName: "Perm" },
+      taskId: "FN-1",
+      permissionPolicy: {
+        presetId: "approval-required",
+        rules: {
+          git_write: "require-approval",
+          file_write_delete: "require-approval",
+          command_execution: "require-approval",
+          network_api: "require-approval",
+          task_agent_mutation: "require-approval",
+        },
+      },
+      createApprovalRequest,
+      findPendingApprovalRequest,
+    });
+
+    await (wrapped[0] as any).execute("t1", { command: "pnpm test" });
+
+    expect(findPendingApprovalRequest).toHaveBeenCalledWith("agent-1|FN-1|bash|command_execution");
+    expect(createApprovalRequest).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: "bash",
+      approvalDedupeKey: "agent-1|FN-1|bash|command_execution",
+    }));
+  });
+
+  it("reuses a pending approval instead of creating a duplicate on a repeated gated tick", async () => {
+    const tool = { name: "bash", label: "Bash", description: "", parameters: {}, execute: vi.fn() };
+    const createApprovalRequest = vi.fn().mockResolvedValue({ id: "apr-dedupe-2" });
+    // Simulate a real findPendingApprovalRequest backed by a store that
+    // persists context.approvalDedupeKey (as executor.ts/agent-heartbeat.ts
+    // now do): first tick finds nothing and creates a request; the store then
+    // "remembers" it, so the second identical tick finds it and reuses it.
+    let stored: { id: string; targetAction: { context: Record<string, unknown> } } | null = null;
+    const findPendingApprovalRequest = vi.fn(async (dedupeKey: string) => {
+      if (stored && stored.targetAction.context.approvalDedupeKey === dedupeKey) {
+        return stored as any;
+      }
+      return null;
+    });
+    const gating = {
+      requester: { actorId: "agent-1", actorType: "agent" as const, actorName: "Perm" },
+      taskId: "FN-1",
+      permissionPolicy: {
+        presetId: "approval-required" as const,
+        rules: {
+          git_write: "require-approval" as const,
+          file_write_delete: "require-approval" as const,
+          command_execution: "require-approval" as const,
+          network_api: "require-approval" as const,
+          task_agent_mutation: "require-approval" as const,
+        },
+      },
+      createApprovalRequest: vi.fn(async (input: { toolName: string; approvalDedupeKey?: string }) => {
+        const created = await createApprovalRequest(input);
+        stored = { id: created.id, targetAction: { context: { approvalDedupeKey: input.approvalDedupeKey } } };
+        return created;
+      }),
+      findPendingApprovalRequest,
+    };
+    const { wrapToolsWithPermanentAgentGating } = await import("../pi.js");
+    const wrapped = wrapToolsWithPermanentAgentGating([tool as any], gating as any);
+
+    await (wrapped[0] as any).execute("t1", { command: "pnpm test" });
+    await (wrapped[0] as any).execute("t2", { command: "pnpm test" });
+
+    expect(createApprovalRequest).toHaveBeenCalledTimes(1);
+    expect(findPendingApprovalRequest).toHaveBeenCalledTimes(2);
+  });
+
   it("requires approval for governed internal task-mutation fn_* tools", async () => {
     const tool = { name: "fn_task_create", label: "Task Create", description: "", parameters: {}, execute: vi.fn().mockResolvedValue({ ok: true }) };
     const createApprovalRequest = vi.fn().mockResolvedValue({ id: "apr-fn-1" });

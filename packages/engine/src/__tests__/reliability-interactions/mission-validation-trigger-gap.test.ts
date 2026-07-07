@@ -215,6 +215,11 @@ describe("FN-5715 reliability: mission validation trigger gap", () => {
       completeValidatorRun: vi.fn(),
       getSlice: vi.fn(() => ({ id: "SL-001", milestoneId: "MS-001", status: "active" })),
       getMilestone: vi.fn(() => ({ id: "MS-001", missionId: "M-001" })),
+      // resolveFeatureMission (reached via processTaskOutcome during recovery)
+      // walks getSlice → getMilestone → getMission to gate on mission.status.
+      // Without getMission the walk throws and recovery aborts before it can
+      // ensure assertions / start the validator run this test asserts on.
+      getMission: vi.fn(() => ({ id: "M-001", status: "active" })),
       logMissionEvent: vi.fn(),
       transitionLoopState: vi.fn(),
       setFeatureCurrentTaskRunId: vi.fn(),
@@ -277,6 +282,11 @@ describe("FN-5715 reliability: mission validation trigger gap", () => {
       completeValidatorRun: vi.fn(),
       getSlice: vi.fn(() => ({ id: "SL-001", milestoneId: "MS-001", status: "active" })),
       getMilestone: vi.fn(() => ({ id: "MS-001", missionId: "M-001" })),
+      // resolveFeatureMission (reached via processTaskOutcome during recovery)
+      // walks getSlice → getMilestone → getMission to gate on mission.status.
+      // Without getMission the walk throws and recovery aborts before it can
+      // ensure assertions / start the validator run this test asserts on.
+      getMission: vi.fn(() => ({ id: "M-001", status: "active" })),
       logMissionEvent: vi.fn(),
       transitionLoopState: vi.fn(),
       setFeatureCurrentTaskRunId: vi.fn(),

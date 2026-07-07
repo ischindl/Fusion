@@ -109,6 +109,13 @@ export interface LeftSidebarNavProps {
   mailboxUnreadCount?: number;
   mailboxPendingApprovalCount?: number;
   chatHasUnreadResponse?: boolean;
+  /*
+  FNXC:Navigation 2026-07-05-00:00:
+  Planning Mode "awaiting input" no longer shows a top-of-board banner (its Resume button did not reliably
+  redirect). Instead this flag drives a yellow `status-dot--pending` dot on the Planning nav destination,
+  mirroring `chatHasUnreadResponse` exactly, so the click target is always the working `planning` nav item.
+  */
+  planningNeedsInput?: boolean;
   experimentalFeatures?: LeftSidebarExperimentalFeatures;
   pluginDashboardViews?: PluginDashboardViewEntry[];
   showAgentsTab?: boolean;
@@ -156,6 +163,7 @@ export function LeftSidebarNav({
   mailboxUnreadCount = 0,
   mailboxPendingApprovalCount = 0,
   chatHasUnreadResponse = false,
+  planningNeedsInput = false,
   experimentalFeatures,
   pluginDashboardViews = [],
   showAgentsTab = false,
@@ -324,6 +332,8 @@ export function LeftSidebarNav({
       isActive: view === "planning",
       icon: Lightbulb,
       testId: "sidebar-nav-planning",
+      // FNXC:Navigation 2026-07-05-00:00: mirrors the chat item's `dot` below — replaces the broken-Resume banner.
+      dot: planningNeedsInput && view !== "planning" ? "pending" : undefined,
       onSelect: () => onChangeView("planning"),
     },
     {

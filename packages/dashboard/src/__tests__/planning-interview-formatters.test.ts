@@ -11,6 +11,7 @@ import {
   classifyDeepeningCheckpointResponse,
   formatInterviewQA,
   formatResponseForAgent,
+  normalizePlanningSummaryPayload,
 } from "../planning";
 
 const singleSelectQuestion: PlanningQuestion = {
@@ -100,6 +101,181 @@ describe("planning deepening checkpoint helpers", () => {
       selectedThemeLabels: ["Testing and verification"],
       customTopic: "Explore rollout risk",
     });
+  });
+
+  it("prefers AI-authored deepeningThemes over the generic regex themes, keeping proceed first", () => {
+    const summaryWithAiThemes: PlanningSummary = {
+      ...summaryWithSurfaces,
+      deepeningThemes: [
+        { label: "Offline sync conflicts", description: "How do concurrent edits reconcile without a server round trip?" },
+        { label: "Push notification budget", description: "Does this plan's notification volume need throttling?" },
+      ],
+    };
+
+    const question = buildDeepeningCheckpointQuestion([], summaryWithAiThemes);
+
+    expect(question.options?.[0]?.id).toBe(PLANNING_DEEPEN_PROCEED_OPTION_ID);
+    expect(question.options?.map((option) => option.label)).toEqual([
+      "Proceed to final plan",
+      "Offline sync conflicts",
+      "Push notification budget",
+    ]);
+    expect(question.options?.[1]?.description).toBe("How do concurrent edits reconcile without a server round trip?");
+  });
+
+  it("falls back to the generic regex themes when deepeningThemes is absent or empty", () => {
+    const withoutThemes = buildDeepeningCheckpointOptions([], summaryWithSurfaces);
+    expect(withoutThemes?.map((option) => option.label)).toEqual([
+      "Proceed to final plan",
+      "Edge cases and data states",
+      "UX and interaction details",
+      "Testing and verification",
+    ]);
+
+    const withEmptyThemes = buildDeepeningCheckpointOptions([], { ...summaryWithSurfaces, deepeningThemes: [] });
+    expect(withEmptyThemes?.map((option) => option.label)).toEqual([
+      "Proceed to final plan",
+      "Edge cases and data states",
+      "UX and interaction details",
+      "Testing and verification",
+    ]);
+  });
+
+  it("excludes an AI theme colliding with the reserved proceed option, keeping proceed unique and first", () => {
+    const summaryWithCollidingTheme: PlanningSummary = {
+      ...summaryWithSurfaces,
+      deepeningThemes: [
+        { label: "Proceed to final plan", description: "Should be dropped as a collision." },
+        { label: "Data retention window", description: "How long should archived records live?" },
+      ],
+    };
+
+    const options = buildDeepeningCheckpointOptions([], summaryWithCollidingTheme);
+    expect(options?.map((option) => option.label)).toEqual([
+      "Proceed to final plan",
+      "Data retention window",
+    ]);
+    expect(options?.filter((option) => option.id === PLANNING_DEEPEN_PROCEED_OPTION_ID)).toHaveLength(1);
+  });
+
+  it("resolves an AI-sourced theme id to its label via classifyDeepeningCheckpointResponse", () => {
+    const summaryWithAiThemes: PlanningSummary = {
+      ...summaryWithSurfaces,
+      deepeningThemes: [{ label: "Offline sync conflicts" }],
+    };
+    const question = buildDeepeningCheckpointQuestion([], summaryWithAiThemes);
+    const themeOptionId = question.options?.[1]?.id as string;
+
+    expect(classifyDeepeningCheckpointResponse(question, {
+      [question.id]: [themeOptionId],
+      _other: "Also check billing edge cases",
+    })).toMatchObject({
+      proceed: false,
+      selectedThemeLabels: ["Offline sync conflicts"],
+      customTopic: "Also check billing edge cases",
+    });
+
+    expect(classifyDeepeningCheckpointResponse(question, {
+      [question.id]: [PLANNING_DEEPEN_PROCEED_OPTION_ID],
+    })).toMatchObject({ proceed: true, selectedThemeLabels: [] });
+  });
+});
+
+describe("normalizePlanningSummaryPayload deepeningThemes normalization", () => {
+  const baseFallback = { title: "Fallback title", description: "Fallback description" };
+
+  it("keeps valid entries, trims label/description, and dedupes case-insensitively", () => {
+    const summary = normalizePlanningSummaryPayload({
+      title: "A plan",
+      description: "A description",
+      suggestedSize: "M",
+      suggestedDependencies: [],
+      keyDeliverables: [],
+      deepeningThemes: [
+        { label: "  Offline sync  ", description: "  Handle conflicts  " },
+        { label: "offline sync" },
+      ],
+    }, baseFallback);
+
+    expect(summary.deepeningThemes).toEqual([
+      { label: "Offline sync", description: "Handle conflicts" },
+    ]);
+  });
+
+  it("drops malformed entries (missing/blank label, non-object, non-array) without throwing", () => {
+    const summary = normalizePlanningSummaryPayload({
+      title: "A plan",
+      description: "A description",
+      suggestedSize: "M",
+      suggestedDependencies: [],
+      keyDeliverables: [],
+      deepeningThemes: [
+        { label: "   " },
+        { description: "missing label" },
+        "not-an-object",
+        null,
+        42,
+        { label: "Valid theme" },
+      ],
+    }, baseFallback);
+
+    expect(summary.deepeningThemes).toEqual([{ label: "Valid theme" }]);
+
+    const summaryWithNonArray = normalizePlanningSummaryPayload({
+      title: "A plan",
+      description: "A description",
+      suggestedSize: "M",
+      suggestedDependencies: [],
+      keyDeliverables: [],
+      deepeningThemes: "not-an-array",
+    }, baseFallback);
+    expect(summaryWithNonArray.deepeningThemes).toBeUndefined();
+  });
+
+  it("omits the field entirely (not []) when absent or all entries are invalid", () => {
+    const withoutField = normalizePlanningSummaryPayload({
+      title: "A plan",
+      description: "A description",
+      suggestedSize: "M",
+      suggestedDependencies: [],
+      keyDeliverables: [],
+    }, baseFallback);
+    expect("deepeningThemes" in withoutField).toBe(false);
+
+    const withEmptyArray = normalizePlanningSummaryPayload({
+      title: "A plan",
+      description: "A description",
+      suggestedSize: "M",
+      suggestedDependencies: [],
+      keyDeliverables: [],
+      deepeningThemes: [],
+    }, baseFallback);
+    expect("deepeningThemes" in withEmptyArray).toBe(false);
+
+    const withAllInvalid = normalizePlanningSummaryPayload({
+      title: "A plan",
+      description: "A description",
+      suggestedSize: "M",
+      suggestedDependencies: [],
+      keyDeliverables: [],
+      deepeningThemes: [{ label: "" }, { notALabel: true }],
+    }, baseFallback);
+    expect("deepeningThemes" in withAllInvalid).toBe(false);
+  });
+
+  it("caps the number of themes kept", () => {
+    const themes = Array.from({ length: 10 }, (_, index) => ({ label: `Theme ${index}` }));
+    const summary = normalizePlanningSummaryPayload({
+      title: "A plan",
+      description: "A description",
+      suggestedSize: "M",
+      suggestedDependencies: [],
+      keyDeliverables: [],
+      deepeningThemes: themes,
+    }, baseFallback);
+
+    expect(summary.deepeningThemes).toHaveLength(6);
+    expect(summary.deepeningThemes?.[0]).toEqual({ label: "Theme 0" });
   });
 });
 

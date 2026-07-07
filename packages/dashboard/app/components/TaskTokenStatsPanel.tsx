@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import type { Task, TaskTokenUsage, WorkflowStepResult } from "@fusion/core";
 import { extractTimingEvents, getActiveRuntimeMs, getEndToEndDurationMs, getTimedDurationMs, getWallClockSinceFirstExecutionMs, getWorkflowRuntimeMs, type TimingEvent } from "../utils/taskTiming";
+import { getCanonicalStepNumber } from "../lib/step-display";
 import "./TaskTokenStatsPanel.css";
 
 interface TaskTokenStatsPanelProps {
@@ -153,7 +154,9 @@ export function TaskTokenStatsPanel({ tokenUsage, loading, task }: TaskTokenStat
   const showWallClockSinceFirstExecution =
     wallClockSinceFirstExecutionMs != null
     && wallClockSinceFirstExecutionMs !== totalExecutionMs;
-  const taskStepCount = task?.steps?.length ?? 0;
+  // FNXC:TaskStepNumbering 2026-07-05-00:00: use the canonical (0-based, PROMPT-numbered) step
+  // number so this indicator agrees with the Activity tab for the same underlying step (FN-7612).
+  const { stepNumber: canonicalStepNumber, totalSteps: taskStepCount } = getCanonicalStepNumber(task);
 
   return (
     <section className="task-token-stats-panel" aria-label={t("taskDetail.executionStatsAria", "Task execution statistics")}>
@@ -231,7 +234,7 @@ export function TaskTokenStatsPanel({ tokenUsage, loading, task }: TaskTokenStat
           </div>
           <div className="task-token-stats-panel__detail-row">
             <dt>{t("taskDetail.stepProgress", "Step progress")}</dt>
-            <dd>{taskStepCount > 0 ? `${Math.min((task?.currentStep ?? 0) + 1, taskStepCount)} / ${taskStepCount}` : t("taskDetail.noSteps", "No steps")}</dd>
+            <dd>{taskStepCount > 0 ? `${canonicalStepNumber} / ${taskStepCount}` : t("taskDetail.noSteps", "No steps")}</dd>
           </div>
           <div className="task-token-stats-panel__detail-row">
             <dt>{t("taskDetail.retriesLabel", "Retries (recovery / workflow / merge / task_done)")}</dt>

@@ -4021,6 +4021,7 @@
     "moreSheetTitle": "导航",
     "noScriptsAddOne": "无脚本 — 添加一个…",
     "planning": "规划",
+    "planningNeedsInputAriaLabel": "规划需要您的输入",
     "primaryNavAriaLabel": "主导航",
     "projects": "项目",
     "research": "研究",

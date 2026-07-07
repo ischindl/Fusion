@@ -37,6 +37,7 @@ import { createLogger, heartbeatLog, formatError } from "./logger.js";
 import { acquireTaskWorktree } from "./worktree-acquisition.js";
 import { createRunAuditor, generateSyntheticRunId, type DatabaseMutationType, type EngineRunContext } from "./run-audit.js";
 import { promptWithFallback } from "./pi.js";
+import { buildAgentGatedActionSummary } from "./permanent-agent-gating.js";
 import { createResolvedAgentSession, extractRuntimeHint, resolveHeartbeatSessionModels } from "./agent-session-helpers.js";
 import { resolveMcpServersForStore } from "./mcp-resolution.js";
 import type { AgentActionGateContext } from "./agent-action-gate.js";
@@ -1200,6 +1201,19 @@ export class HeartbeatMonitor {
         const latest = await this.getApprovalRequestStore().findLatestByDedupeKey({ requesterActorId: agent.id, taskId, dedupeKey });
         return latest?.status === "pending" ? { id: latest.id } : null;
       },
+      /*
+      FNXC:AgentGating 2026-07-05-00:15:
+      FN-7608: unlike TaskExecutor.buildActionGateContext, HeartbeatMonitor has
+      no `activeSessions`/session-abort surface of its own -- permanent-agent
+      heartbeat ticks are short stateless request/response cycles (each tick
+      runs one bounded pi turn and returns; there is no long-lived in-flight
+      session object to synchronously abort mid-turn). Pausing the task and
+      agent here already prevents the NEXT heartbeat tick from running (the
+      scheduler skips paused agents/tasks), so there is nothing further to
+      suspend -- this closure intentionally has no session-abort call. If
+      HeartbeatMonitor ever grows a persistent in-flight session surface, wire
+      awaitAbortInFlightTaskWork-equivalent suspension here too.
+      */
       pauseForApproval: async ({ approvalRequestId, decision }) => {
         if (taskId && this.taskStore) {
           await this.taskStore.pauseTask(taskId, true, undefined, { pausedByAgentId: agent.id });
@@ -1226,20 +1240,34 @@ export class HeartbeatMonitor {
       requester: { actorId: agent.id, actorType: "agent", actorName: agent.name },
       taskId,
       runId,
-      createApprovalRequest: async ({ category, toolName, args }) => await this.getApprovalRequestStore().create({
+      // FNXC:AgentGating 2026-07-05-00:00:
+      // FN-7609: operators approving a gated action need the real command/args,
+      // and a stateless heartbeat retrying the same command must reuse a single
+      // pending approval instead of minting duplicates. `summary` is now
+      // payload-bearing (shared helper) and `approvalDedupeKey`/`command`/`cwd`
+      // are persisted into targetAction.context so findPendingApprovalRequest
+      // can match and the UI can render the payload without re-parsing.
+      createApprovalRequest: async ({ category, toolName, args, approvalDedupeKey }) => await this.getApprovalRequestStore().create({
         requester: { actorId: agent.id, actorType: "agent", actorName: agent.name },
         taskId,
         runId,
         targetAction: {
           category,
           action: toolName,
-          summary: `Agent gated action for ${toolName}`,
+          summary: buildAgentGatedActionSummary(toolName, args),
           resourceType: "tool",
           resourceId: toolName,
           context: {
             toolName,
             toolArgs: args,
             source: "agent-gating",
+            ...(approvalDedupeKey ? { approvalDedupeKey } : {}),
+            ...(typeof (args as Record<string, unknown> | undefined)?.command === "string"
+              ? { command: (args as Record<string, unknown>).command }
+              : {}),
+            ...(typeof (args as Record<string, unknown> | undefined)?.cwd === "string"
+              ? { cwd: (args as Record<string, unknown>).cwd }
+              : {}),
           },
         },
       }),

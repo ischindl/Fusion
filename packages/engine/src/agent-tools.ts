@@ -943,7 +943,8 @@ export async function createAgentTask(
 }
 
 /**
- * Create a `fn_task_create` tool that creates a new task in triage.
+ * Create a `fn_task_create` tool that creates a new task in the selected-or-default
+ * workflow's resolved intake column.
  *
  * @param store - TaskStore for task persistence
  * @returns ToolDefinition for the `fn_task_create` tool
@@ -958,7 +959,10 @@ export function createTaskCreateTool(
     label: "Create Task",
     description:
       "Create a new task for out-of-scope work discovered during execution. " +
-      "The task goes into triage where it will be specified by the AI. " +
+      "The task enters the selected-or-default workflow's intake/planning column " +
+      "where it will be specified by the AI (a custom workflow with a non-triage " +
+      "intake column, e.g. Inbox, lands the card there instead and it stays inert " +
+      "until released). " +
       "Before creating, scan existing open tasks for similar work — if an open task " +
       "already covers this, do not create a duplicate. " +
       "Optionally set dependencies (e.g., the new task depends on the current one, " +
@@ -987,10 +991,21 @@ export function createTaskCreateTool(
           }
         }
         const workflowId = params.workflow_id?.trim() || undefined;
+        /*
+        FNXC:Workflows 2026-07-05-00:00:
+        fn_task_create must NOT hardcode column:"triage" here. TaskStore.createTask already
+        resolves the landing column from the selected-or-default workflow's intake-trait
+        column (input.column || resolvedEntryColumn || "triage" in _createTaskInternal); a
+        hardcoded override here defeated that resolution and made a non-triage intake column
+        (e.g. a custom workflow's "Inbox" hold column) dead configuration, since the card
+        always jumped straight into triage and started the Planner seam immediately.
+        Omitting `column` lets a custom workflow's Inbox-style intake column capture new
+        cards inert (no bootstrap spec generation) while the default builtin:coding workflow
+        still resolves to "triage" (byte-identical prior behavior).
+        */
         const { task, wasDuplicate } = await createAgentTask(store, {
           description: params.description,
           dependencies: params.dependencies,
-          column: "triage",
           priority: params.priority,
           ...(workflowId ? { workflowId } : {}),
           source: provenance ? {

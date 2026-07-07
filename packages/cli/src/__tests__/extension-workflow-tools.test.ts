@@ -240,4 +240,74 @@ pgTest("pi extension workflow authoring tools", () => {
      * assertion that the task-bound call succeeds with details.taskId.
      */
   });
+
+  /*
+  FNXC:Workflows 2026-07-05-00:00:
+  FN-7611: fn_task_create must land a new card in the selected workflow's resolved
+  intake column (not a hardcoded "triage"), and its response text must echo that
+  ACTUAL landing column instead of a fixed "Column: triage" string.
+  */
+  it("lands a task in a custom workflow's intake column and echoes it in the response text", async () => {
+    const inboxIr: WorkflowIr = {
+      version: "v2",
+      name: "Inbox-intake workflow",
+      columns: [
+        { id: "inbox", name: "Inbox", traits: [{ trait: "intake" }] },
+        { id: "todo", name: "Todo", traits: [] },
+      ],
+      nodes: [
+        { id: "start", kind: "start", column: "inbox" },
+        {
+          id: "plan",
+          kind: "prompt",
+          column: "todo",
+          config: { name: "Plan", prompt: "Plan the work", autoApprove: true },
+        },
+        { id: "end", kind: "end", column: "todo" },
+      ],
+      edges: [
+        { from: "start", to: "plan", condition: "success" },
+        { from: "plan", to: "end", condition: "success" },
+      ],
+    } as WorkflowIr;
+
+    const createWorkflow = await api.tools.get("fn_workflow_create")!.execute(
+      "create-inbox-workflow",
+      { name: "Inbox-intake workflow", ir: inboxIr },
+      undefined,
+      undefined,
+      makeCtx(tmpDir),
+    );
+    expect(createWorkflow.isError).not.toBe(true);
+    const workflowId = createWorkflow.details.workflowId;
+
+    const createTask = api.tools.get("fn_task_create")!;
+    const result = await createTask.execute(
+      "create-inbox-task",
+      { description: "Needs manual release", workflow_id: workflowId },
+      undefined,
+      undefined,
+      makeCtx(tmpDir),
+    );
+
+    expect(result.isError).not.toBe(true);
+    expect(result.details.column).toBe("inbox");
+    expect(result.content[0].text).toContain("Column: inbox");
+    expect(result.content[0].text).not.toContain("Column: triage");
+  });
+
+  it("still reports Column: triage for the default builtin:coding workflow (byte-identical regression guard)", async () => {
+    const createTask = api.tools.get("fn_task_create")!;
+    const result = await createTask.execute(
+      "create-default-task",
+      { description: "Default workflow task" },
+      undefined,
+      undefined,
+      makeCtx(tmpDir),
+    );
+
+    expect(result.isError).not.toBe(true);
+    expect(result.details.column).toBe("triage");
+    expect(result.content[0].text).toContain("Column: triage");
+  });
 });

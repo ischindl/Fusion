@@ -43,6 +43,12 @@ vi.mock("../pi.js", () => ({
   // session. The mock must expose the export so the resume/triage paths can
   // reach finalization instead of throwing on a missing mock member.
   formatModelMarkerDetails: vi.fn((model: string) => model),
+  // triage.ts guards its catch block with `err instanceof ModelFallbackExhaustedError`
+  // (imported from pi.js). Because this factory replaces pi.js wholesale, the class
+  // must be exported or evaluating the `instanceof` throws "No ModelFallbackExhaustedError
+  // export is defined on the mock". No restart test enters the fallback-exhausted branch,
+  // so a plain Error subclass is a faithful stub (instanceof simply returns false).
+  ModelFallbackExhaustedError: class ModelFallbackExhaustedError extends Error {},
 }));
 vi.mock("../reviewer.js", () => ({
   reviewStep: vi.fn(),

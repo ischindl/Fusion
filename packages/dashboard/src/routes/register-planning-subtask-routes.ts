@@ -285,10 +285,16 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
           taskSegment: item.title || item.tempId,
         });
 
+        /*
+        FNXC:Workflows 2026-07-05-00:00:
+        FN-7611: do not hardcode column here. This route accepts an explicit workflowId
+        (below), so a hardcoded "triage" would defeat that custom workflow's own intake
+        column resolution. Omitting `column` lets the store resolve intake for the
+        selected-or-default workflow (byte-identical "triage" for builtin:coding).
+        */
         const task = await scopedStore.createTask({
           title: item.title.trim(),
           description: typeof item.description === "string" ? item.description.trim() : item.title.trim(),
-          column: "triage",
           dependencies: undefined,
           // Inherit parent's model settings if available
           modelProvider: parentTask?.modelProvider,
@@ -1130,11 +1136,17 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
       const { branch: resolvedBranch, baseBranch: resolvedBaseBranch } =
         resolveBranchSelection(branchSelection, branch, baseBranch);
 
+      /*
+      FNXC:Workflows 2026-07-05-00:00:
+      FN-7611: do not hardcode column here. This route accepts an explicit workflowId
+      (below), so a hardcoded "triage" would defeat that custom workflow's own intake
+      column resolution. Omitting `column` lets the store resolve intake for the
+      selected-or-default workflow (byte-identical "triage" for builtin:coding).
+      */
       // Create the task
       const task = await scopedStore.createTask({
         title: summary.title,
         description: summary.description,
-        column: "triage",
         dependencies: summary.suggestedDependencies.length > 0 ? summary.suggestedDependencies : undefined,
         priority: isTaskPriority(summary.priority) ? summary.priority : DEFAULT_TASK_PRIORITY,
         source: { sourceType: "api" },
@@ -1367,10 +1379,16 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
           taskSegment: item.title || item.id,
         });
 
+        /*
+        FNXC:Workflows 2026-07-05-00:00:
+        FN-7611: do not hardcode column here. This route accepts an explicit workflowId
+        (below), so a hardcoded "triage" would defeat that custom workflow's own intake
+        column resolution. Omitting `column` lets the store resolve intake for the
+        selected-or-default workflow (byte-identical "triage" for builtin:coding).
+        */
         const task = await scopedStore.createTask({
           title: item.title.trim(),
           description: typeof item.description === "string" ? item.description.trim() : item.title.trim(),
-          column: "triage",
           dependencies: undefined,
           priority: isTaskPriority(item.priority) ? item.priority : DEFAULT_TASK_PRIORITY,
           source: { sourceType: "api", sourceMetadata: { planningSessionId } },

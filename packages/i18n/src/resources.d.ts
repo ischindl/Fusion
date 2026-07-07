@@ -4032,6 +4032,7 @@ export default interface Resources {
       "moreSheetTitle": "Navigate",
       "noScriptsAddOne": "No scripts — add one…",
       "planning": "Planning",
+      "planningNeedsInputAriaLabel": "Planning needs your input",
       "primaryNavAriaLabel": "Primary navigation",
       "projects": "Projects",
       "research": "Research",

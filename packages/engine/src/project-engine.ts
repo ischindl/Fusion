@@ -2957,7 +2957,23 @@ export class ProjectEngine {
             }
           };
 
-          if (mergeStrategy === "pull-request" && this.options.processPullRequestMerge) {
+          // FNXC:Workspace 2026-07-05-00:00 (FN-7610):
+          // The PR-merge branch previously had NO isWorkspaceTask guard, so a
+          // workspace-mode task (non-empty task.workspaceWorktrees) reaching
+          // auto-merge under project mergeStrategy:"pull-request" would
+          // unconditionally call processPullRequestMerge -> getCurrentRepo(cwd),
+          // which throws "could not determine repository" because the workspace
+          // root is a plain container of independent git sub-repos, not itself a
+          // git repo. That looped in-review <-> failed until retries exhausted.
+          // Hoist the workspace check here so workspace tasks ALWAYS fall through
+          // to the existing direct/else `rawMerge` branch below, whose
+          // isWorkspaceTask(mergeTask) routing already calls landWorkspaceTask
+          // correctly, regardless of the configured mergeStrategy — until true
+          // per-repo PR merge for workspace tasks (master-plan U6) ships.
+          const mergeCandidate = await store.getTask(taskId).catch(() => null);
+          const routeWorkspaceDirect = !!mergeCandidate && isWorkspaceTask(mergeCandidate);
+
+          if (mergeStrategy === "pull-request" && this.options.processPullRequestMerge && !routeWorkspaceDirect) {
             this.activeMergeTaskId = taskId;
             runtimeLog.log(`${hasManualResolver ? "Manual" : "Auto"}-merge processing PR flow for ${taskId}...`);
             const result = await this.options.processPullRequestMerge(

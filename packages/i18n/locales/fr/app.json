@@ -4021,6 +4021,7 @@
     "moreSheetTitle": "Naviguer",
     "noScriptsAddOne": "Aucun script — en ajouter un…",
     "planning": "Planification",
+    "planningNeedsInputAriaLabel": "La planification nécessite votre saisie",
     "primaryNavAriaLabel": "Navigation principale",
     "projects": "Projets",
     "research": "Recherche",

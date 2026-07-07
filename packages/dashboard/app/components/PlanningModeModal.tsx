@@ -322,6 +322,15 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
   const [isCreatingTask, setIsCreatingTask] = useState(false);
   const [isStartingBreakdown, setIsStartingBreakdown] = useState(false);
   const [isCreatingFromBreakdown, setIsCreatingFromBreakdown] = useState(false);
+  /*
+  FNXC:PlanningMode 2026-07-05-00:00:
+  FN-7615: Back is deterministic history navigation (a pure server-side rewind that pops the last
+  history entry), not AI generation. isBackPending drives a lightweight inline pending state on the
+  Back button itself so the QuestionForm stays mounted throughout — it must never trigger the
+  `.planning-loading` generation view (spinner + "Generating next question..."), which is reserved
+  for real model-generation turns.
+  */
+  const [isBackPending, setIsBackPending] = useState(false);
   const [isRefiningSummary, setIsRefiningSummary] = useState(false);
   const [generationStartTime, setGenerationStartTime] = useState<number | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -1957,6 +1966,17 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
     }
   }, [baseBranch, branchMode, branchName, broadcastCompleted, handleClose, view, onTasksCreated, projectId, workflowId]);
 
+  /*
+  FNXC:PlanningMode 2026-07-05-00:00:
+  FN-7615: Back must never render `.planning-loading`. rewindSession (src/planning.ts) is a
+  deterministic history pop + `question` SSE broadcast — it performs no model call — so treating it
+  like a generation turn (setView({type:"loading"})) was a bug: the user perceives Back as "not
+  working" because it flashes a spinner/"Generating next question..." screen for an instant,
+  synchronous-feeling navigation. Stay on the question view throughout; use isBackPending only to
+  disable the Back/submit controls while the request is in flight. On success, apply the
+  authoritative rewound history/question (same mapping as before). On failure, surface
+  planning.failedGoBack and remain on the question view — never loading.
+  */
   const handleBack = useCallback(async () => {
     if (view.type !== "question" || responseHistory.length === 0) {
       return;
@@ -1964,7 +1984,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
 
     const sessionId = view.session.sessionId;
     setError(null);
-    setView({ type: "loading" });
+    setIsBackPending(true);
 
     try {
       const rewound = await rewindPlanningSession(sessionId, projectId, sessionTabId);
@@ -1994,6 +2014,8 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
     } catch (err) {
       setError(getErrorMessage(err) || t("planning.failedGoBack", "Failed to go back to the previous question"));
       setView({ type: "question", session: view.session });
+    } finally {
+      setIsBackPending(false);
     }
   }, [projectId, responseHistory.length, sessionTabId, view]);
 
@@ -2391,6 +2413,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
                 historyEntries={conversationHistory}
                 onSubmit={handleSubmitResponse}
                 onBack={responseHistory.length > 0 ? handleBack : undefined}
+                isBackPending={isBackPending}
               />
             </div>
           )}
@@ -2478,9 +2501,10 @@ interface QuestionFormProps {
   historyEntries: ConversationHistoryEntry[];
   onSubmit: (responses: QuestionResponse) => void;
   onBack?: () => void;
+  isBackPending?: boolean;
 }
 
-function QuestionForm({ question: rawQuestion, progress, historyEntries, onSubmit, onBack }: QuestionFormProps) {
+function QuestionForm({ question: rawQuestion, progress, historyEntries, onSubmit, onBack, isBackPending = false }: QuestionFormProps) {
   const { t } = useTranslation("app");
   const question = normalizeQuestionOptions(rawQuestion);
   const questionOptions = question.options ?? [];
@@ -2831,15 +2855,15 @@ function QuestionForm({ question: rawQuestion, progress, historyEntries, onSubmi
 
       <div className="planning-actions">
         {onBack && (
-          <button className="btn" onClick={onBack}>
-            <ArrowLeft size={16} className="icon-mr-4" />
+          <button className="btn" onClick={onBack} disabled={isBackPending}>
+            {isBackPending ? <Loader2 size={16} className="icon-mr-4 spin" /> : <ArrowLeft size={16} className="icon-mr-4" />}
             {t("common.back", "Back")}
           </button>
         )}
         <button
           className="btn btn-primary planning-actions-primary"
           onClick={handleSubmit}
-          disabled={!isValid()}
+          disabled={!isValid() || isBackPending}
         >
           {t("planning.continue", "Continue")}
           <ArrowRight size={16} className="icon-ml-4" />

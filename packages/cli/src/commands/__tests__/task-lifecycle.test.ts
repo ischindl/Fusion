@@ -463,6 +463,43 @@ describe("processPullRequestMergeTask", () => {
     expect(github.createPr).not.toHaveBeenCalled();
   });
 
+  // FNXC:Workspace 2026-07-05-00:00 (FN-7610, defense-in-depth):
+  // A workspace-mode task (non-empty workspaceWorktrees) must never reach
+  // getCurrentRepo here — the engine merge dispatch is the primary fix that
+  // routes workspace tasks around this function entirely, but if a future
+  // caller forgets that guard, this must fail with the named
+  // WorkspaceTaskMergeError BEFORE getCurrentRepo is even called (never the
+  // generic "could not determine repository").
+  it("rejects with the named WorkspaceTaskMergeError for a workspace-mode task, before resolving the repository", async () => {
+    const getCurrentRepoMock = vi.mocked(getCurrentRepo);
+    getCurrentRepoMock.mockClear();
+    const task: MockTask & { workspaceWorktrees: Record<string, unknown> } = {
+      id: "FN-7610-WS",
+      title: "test",
+      description: "desc",
+      column: "in-review",
+      workspaceWorktrees: {
+        "repo-a": { worktreePath: "/tmp/a", branch: "fusion/fn-7610-ws-a" },
+      },
+    };
+    const store = makeStore(task as never);
+    const github = {
+      findPrForBranch: vi.fn(),
+      createPr: vi.fn(),
+      getPrMergeStatus: vi.fn(),
+      mergePr: vi.fn(),
+    };
+
+    const rejection = processPullRequestMergeTask(store as never, "/repo", task.id, github as never, () => undefined);
+    await expect(rejection).rejects.toMatchObject({ name: "WorkspaceTaskMergeError" });
+    await expect(rejection).rejects.not.toThrow("could not determine repository");
+
+    expect(getCurrentRepoMock).not.toHaveBeenCalled();
+    expect(github.getPrMergeStatus).not.toHaveBeenCalled();
+    expect(github.findPrForBranch).not.toHaveBeenCalled();
+    expect(github.createPr).not.toHaveBeenCalled();
+  });
+
   it("finalizes branch group and member tasks when shared group PR is already merged", async () => {
     const taskA: MockTask = {
       id: "FN-9015",
@@ -1461,6 +1498,25 @@ describe("syncGroupPrCallback (U6)", () => {
     const github = { getPrStatus: vi.fn(), updatePr: vi.fn() };
     const sync = syncGroupPrCallback(github as never);
     await expect(sync({ cwd: "/tmp/project", group: { ...group, prNumber: undefined } as never, members })).rejects.toThrow(/no persisted prNumber/);
+  });
+
+  // FNXC:Workspace 2026-07-05-00:00 (FN-7610, defense-in-depth):
+  // A workspace-mode shared-group member has no single git repo to resolve a
+  // PR against here. Assert the named WorkspaceTaskMergeError fires BEFORE
+  // getPrStatus/getCurrentRepo resolution is attempted.
+  it("rejects with the named WorkspaceTaskMergeError when a group member is a workspace-mode task, before resolving the repository", async () => {
+    const getCurrentRepoMock = vi.mocked(getCurrentRepo);
+    getCurrentRepoMock.mockClear();
+    const workspaceMembers = [
+      { id: "FN-A", title: "Alpha" },
+      { id: "FN-B", title: "Beta", workspaceWorktrees: { "repo-a": { worktreePath: "/tmp/a", branch: "fusion/fn-b-a" } } },
+    ] as never[];
+    const github = { getPrStatus: vi.fn(), updatePr: vi.fn() };
+    const sync = syncGroupPrCallback(github as never);
+    const rejection = sync({ cwd: "/tmp/project", group: group as never, members: workspaceMembers });
+    await expect(rejection).rejects.toMatchObject({ name: "WorkspaceTaskMergeError" });
+    expect(getCurrentRepoMock).not.toHaveBeenCalled();
+    expect(github.getPrStatus).not.toHaveBeenCalled();
   });
 
   /*

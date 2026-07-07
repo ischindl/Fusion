@@ -24,7 +24,15 @@ const execAsync = promisify(exec);
 const execFileAsync: (file: string, args: string[], opts?: import("node:child_process").ExecFileOptions) => Promise<{ stdout: string; stderr: string }> = (file, args, opts) =>
   (promisify(childProcess.execFile) as (f: string, a: string[], o?: object) => Promise<{ stdout: string; stderr: string }>)(file, args, opts);
 import type { TaskStore } from "@fusion/core";
-import { resolveTaskMergeTarget, getCurrentRepo, isBranchGroupMemberLanded, resolveEffectiveSettings } from "@fusion/core";
+import {
+  resolveTaskMergeTarget,
+  getCurrentRepo,
+  isBranchGroupMemberLanded,
+  resolveEffectiveSettings,
+  isWorkspaceTask,
+  assertNotWorkspaceTaskMerge,
+  WorkspaceTaskMergeError,
+} from "@fusion/core";
 import type { Settings, TaskDetail, PrInfo, MergeResult, BranchGroup, BranchGroupPrState, Task } from "@fusion/core";
 import { activeSessionRegistry, resolveIntegrationBranch } from "@fusion/engine";
 import type {
@@ -311,6 +319,18 @@ export function syncGroupPrCallback(
   return async ({ cwd, group, members }) => {
     if (group.prNumber == null) {
       throw new Error(`syncGroupPr: group ${group.id} has no persisted prNumber`);
+    }
+    // FNXC:Workspace 2026-07-05-00:00 (FN-7610, defense-in-depth):
+    // A workspace-mode task (non-empty workspaceWorktrees) as a shared-group
+    // member has no single git repo to resolve a PR against here — the primary
+    // fix routes workspace tasks around the PR-merge branch entirely in the
+    // engine dispatch (project-engine.ts drainMergeQueue), but this callback
+    // must fail loudly with the named WorkspaceTaskMergeError (not the generic
+    // "could not determine repository") if it is ever reached for one anyway.
+    if (members.some((m) => isWorkspaceTask(m))) {
+      throw new WorkspaceTaskMergeError(
+        `syncGroupPr: group ${group.id} has a workspace-mode member; group PR sync is not supported for workspace tasks`,
+      );
     }
     // T4: resolve the repo from the PROJECT cwd, not the process cwd. In a
     // multi-project daemon the process cwd is not the project dir, so
@@ -666,6 +686,17 @@ export async function processPullRequestMergeTask(
   if (getTaskMergeBlocker(task)) {
     return "skipped";
   }
+
+  // FNXC:Workspace 2026-07-05-00:00 (FN-7610, defense-in-depth):
+  // The engine merge dispatch (project-engine.ts drainMergeQueue) is the
+  // primary fix: it hoists an isWorkspaceTask check before the mergeStrategy
+  // branch so a workspace-mode task never reaches this function under
+  // mergeStrategy:"pull-request". This assert is a second line of defense —
+  // any future caller that forgets that guard fails with the named,
+  // actionable WorkspaceTaskMergeError instead of the generic
+  // "could not determine repository" (the workspace root is a plain container
+  // of independent git sub-repos, not itself a git repo).
+  assertNotWorkspaceTaskMerge(task);
 
   /*
    * FNXC:PrMergeAutoMerge 2026-06-27-13:14:

@@ -1373,6 +1373,146 @@ describe("ProjectEngine U0 merge unification dispatch", () => {
     expect(result.merged).toBe(true);
     await engine.stop();
   });
+
+  // FNXC:Workspace 2026-07-05-00:00 (FN-7610):
+  // A workspace-mode task must route to landWorkspaceTask EVEN WHEN the project
+  // is configured with mergeStrategy:"pull-request" (getMergeStrategy resolves
+  // "pull-request") — the engine dispatch hoists an isWorkspaceTask check before
+  // the mergeStrategy branch so processPullRequestMerge (which would call
+  // getCurrentRepo against the non-git workspace root and throw "could not
+  // determine repository") is never reached for workspace tasks. Covers
+  // multi-repo, single-repo, and true-zero-commit no-op variants, plus asserts
+  // no regression to the legacy singular-worktree PR path.
+  describe("workspace tasks bypass PR-merge strategy (FN-7610)", () => {
+    it("multi-repo workspaceWorktrees + mergeStrategy=pull-request routes to landWorkspaceTask, never processPullRequestMerge", async () => {
+      const mockStore = createMockStore({ ...baseSettings, autoMerge: true });
+      mockStore.store.getTask.mockResolvedValue({
+        id: "FN-WS-PR-MULTI",
+        column: "in-review",
+        paused: false,
+        mergeRetries: 0,
+        status: "queued",
+        branch: "fusion/fn-ws-pr-multi",
+        workspaceWorktrees: {
+          "repo-a": { worktreePath: "/tmp/a", branch: "fusion/fn-ws-pr-multi-a" },
+          "repo-b": { worktreePath: "/tmp/b", branch: "fusion/fn-ws-pr-multi-b" },
+        },
+      } as any);
+      mocks.currentStore = mockStore.store;
+      mocks.landWorkspaceTask.mockResolvedValue({
+        allLanded: true,
+        repos: [
+          { repo: "repo-a", status: "landed", landedSha: "aaaa1111", integrationBranch: "main" },
+          { repo: "repo-b", status: "landed", landedSha: "bbbb2222", integrationBranch: "main" },
+        ],
+      } as any);
+
+      const processPullRequestMerge = vi.fn(async () => "merged" as const);
+      const engine = createEngine({ processPullRequestMerge, getMergeStrategy: () => "pull-request" });
+      await engine.start();
+      const result = await engine.onMerge("FN-WS-PR-MULTI");
+      expect(processPullRequestMerge).not.toHaveBeenCalled();
+      expect(mocks.landWorkspaceTask).toHaveBeenCalled();
+      expect(result.merged).toBe(true);
+      await engine.stop();
+    });
+
+    it("single-key workspaceWorktrees + mergeStrategy=pull-request routes to landWorkspaceTask, never processPullRequestMerge", async () => {
+      const mockStore = createMockStore({ ...baseSettings, autoMerge: true });
+      mockStore.store.getTask.mockResolvedValue({
+        id: "FN-WS-PR-SINGLE",
+        column: "in-review",
+        paused: false,
+        mergeRetries: 0,
+        status: "queued",
+        branch: "fusion/fn-ws-pr-single",
+        workspaceWorktrees: {
+          "repo-c": { worktreePath: "/tmp/c", branch: "fusion/fn-ws-pr-single-c" },
+        },
+      } as any);
+      mocks.currentStore = mockStore.store;
+      mocks.landWorkspaceTask.mockResolvedValue({
+        allLanded: true,
+        repos: [{ repo: "repo-c", status: "landed", landedSha: "cccc3333", integrationBranch: "main" }],
+      } as any);
+
+      const processPullRequestMerge = vi.fn(async () => "merged" as const);
+      const engine = createEngine({ processPullRequestMerge, getMergeStrategy: () => "pull-request" });
+      await engine.start();
+      const result = await engine.onMerge("FN-WS-PR-SINGLE");
+      expect(processPullRequestMerge).not.toHaveBeenCalled();
+      expect(mocks.landWorkspaceTask).toHaveBeenCalled();
+      expect(result.merged).toBe(true);
+      await engine.stop();
+    });
+
+    it("true-zero-commit no-op workspace task under mergeStrategy=pull-request finalizes without calling processPullRequestMerge and does not park failed", async () => {
+      const mockStore = createMockStore({ ...baseSettings, autoMerge: true });
+      mockStore.store.getTask.mockResolvedValue({
+        id: "FN-WS-PR-NOOP",
+        column: "in-review",
+        paused: false,
+        mergeRetries: 0,
+        status: "queued",
+        branch: "fusion/fn-ws-pr-noop",
+        noCommitsExpected: true,
+        workspaceWorktrees: {
+          "repo-d": { worktreePath: "/tmp/d", branch: "fusion/fn-ws-pr-noop-d" },
+        },
+      } as any);
+      mocks.currentStore = mockStore.store;
+      // All repos land with no real commit (empty/no-op) — landWorkspaceTask still
+      // reports allLanded:true and finalizes gracefully.
+      mocks.landWorkspaceTask.mockResolvedValue({
+        allLanded: true,
+        repos: [{ repo: "repo-d", status: "empty", integrationBranch: "main" }],
+      } as any);
+
+      const processPullRequestMerge = vi.fn(async () => "merged" as const);
+      const engine = createEngine({ processPullRequestMerge, getMergeStrategy: () => "pull-request" });
+      await engine.start();
+      const result = await engine.onMerge("FN-WS-PR-NOOP");
+      expect(processPullRequestMerge).not.toHaveBeenCalled();
+      expect(mocks.landWorkspaceTask).toHaveBeenCalled();
+      expect(result.ok).not.toBe(false);
+      await engine.stop();
+    });
+
+    it("non-workspace task under mergeStrategy=pull-request still uses the PR path (no regression)", async () => {
+      const mockStore = createMockStore({ ...baseSettings, autoMerge: true });
+      mockStore.store.getTask
+        .mockResolvedValueOnce({
+          id: "FN-WS-PR-LEGACY",
+          column: "in-review",
+          paused: false,
+          mergeRetries: 0,
+          status: null,
+          branch: "fusion/fn-ws-pr-legacy",
+        })
+        .mockResolvedValue({
+          id: "FN-WS-PR-LEGACY",
+          column: "done",
+          paused: false,
+          mergeRetries: 0,
+          status: null,
+          branch: "fusion/fn-ws-pr-legacy",
+          mergeDetails: { mergeConfirmed: true, mergedAt: "2026-07-05T00:00:00.000Z", mergeTargetBranch: "main" },
+        });
+      mocks.currentStore = mockStore.store;
+
+      const processPullRequestMerge = vi.fn(async () => "merged" as const);
+      const engine = createEngine({ processPullRequestMerge, getMergeStrategy: () => "pull-request" });
+      await engine.start();
+      engine.enqueueMerge("FN-WS-PR-LEGACY");
+
+      await vi.waitFor(() => {
+        expect(processPullRequestMerge).toHaveBeenCalled();
+      });
+      expect(mocks.landWorkspaceTask).not.toHaveBeenCalled();
+
+      await engine.stop();
+    });
+  });
 });
 
 /*

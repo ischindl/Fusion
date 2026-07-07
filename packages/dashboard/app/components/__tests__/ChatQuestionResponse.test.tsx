@@ -60,6 +60,32 @@ describe("ChatQuestionResponse", () => {
     }
   });
 
+  it("marks the clicked confirm option as visually selected and moves the marker on re-click (FN-7613)", async () => {
+    const user = userEvent.setup();
+    render(<ChatQuestionResponse parsed={parsed} onSubmit={vi.fn()} />);
+
+    const yesButton = screen.getByTestId("chat-question-response-option-confirm-yes");
+    const noButton = screen.getByTestId("chat-question-response-option-confirm-no");
+
+    // Neither selected before any click.
+    expect(yesButton).not.toHaveClass("chat-question-response__confirm--selected");
+    expect(noButton).not.toHaveClass("chat-question-response__confirm--selected");
+    expect(yesButton).toHaveAttribute("aria-pressed", "false");
+    expect(noButton).toHaveAttribute("aria-pressed", "false");
+
+    await user.click(yesButton);
+    expect(yesButton).toHaveClass("chat-question-response__confirm--selected");
+    expect(noButton).not.toHaveClass("chat-question-response__confirm--selected");
+    expect(yesButton).toHaveAttribute("aria-pressed", "true");
+    expect(noButton).toHaveAttribute("aria-pressed", "false");
+
+    await user.click(noButton);
+    expect(noButton).toHaveClass("chat-question-response__confirm--selected");
+    expect(yesButton).not.toHaveClass("chat-question-response__confirm--selected");
+    expect(noButton).toHaveAttribute("aria-pressed", "true");
+    expect(yesButton).toHaveAttribute("aria-pressed", "false");
+  });
+
   it("supports compact mode", () => {
     render(<ChatQuestionResponse parsed={{ questions: [parsed.questions[0]!] }} compact onSubmit={vi.fn()} />);
     expect(screen.getByTestId("chat-question-response")).toHaveClass("chat-question-response--compact");

@@ -37,7 +37,9 @@ function makeStore(db?: Database) {
         id: `FN-${++counter}`,
         title: input.title,
         description: input.description,
-        column: input.column,
+        // FNXC:Workflows 2026-07-05-00:00: FN-7611 — mirror the real store's intake-column
+        // resolution (input.column || resolvedEntryColumn || "triage") for the default workflow.
+        column: input.column ?? "triage",
         source: input.source,
       } as unknown as Task;
       tasks.push(task);
@@ -913,7 +915,7 @@ describe("helpers", () => {
     })).toEqual(["webhook", "pagerduty", "gitlab"]);
   });
 
-  it("signalToTaskInput maps to a triage task with provenance metadata", () => {
+  it("signalToTaskInput omits column so the store resolves the default-workflow intake (triage)", () => {
     const input = signalToTaskInput({
       source: "webhook",
       externalId: "e",
@@ -921,7 +923,7 @@ describe("helpers", () => {
       title: "t",
       severity: "critical",
     });
-    expect(input.column).toBe("triage");
+    expect(input.column).toBeUndefined();
     expect(input.priority).toBe("high");
     expect(input.source?.sourceType).toBe("api");
   });

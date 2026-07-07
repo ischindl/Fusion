@@ -92,6 +92,7 @@ import {
   requiresNativeShellOnboarding,
   shouldShowFirstEverBootLoader,
   isSessionNeedingInputForBanner,
+  isPlanningAwaitingInput,
   getCliActionDisabledReasonForBanner,
   executeCliSessionBannerAction,
 } from "./utils/appLifecycle";
@@ -103,6 +104,7 @@ export {
   requiresNativeShellOnboarding,
   shouldShowFirstEverBootLoader,
   isSessionNeedingInputForBanner,
+  isPlanningAwaitingInput,
   getCliActionDisabledReasonForBanner,
   executeCliSessionBannerAction,
 } from "./utils/appLifecycle";
@@ -365,9 +367,16 @@ function AppInner() {
   /*
    * FNXC:SessionBanner 2026-06-14-19:32:
    * CLI agent sessions use `waiting_on_input` and `needs_attention` to represent user-actionable states. The banner feed must include those statuses in addition to the legacy planning-session statuses so visible CLI actions cannot be silently hidden from users.
+   *
+   * FNXC:SessionBanner 2026-07-05-00:00:
+   * Planning `awaiting_input` sessions are excluded from the banner feed: the banner's Resume button did not
+   * reliably redirect into Planning Mode. That signal now surfaces as a yellow `status-dot--pending` nav badge
+   * (see `planningNeedsInput` below) whose click target is the already-correct `planning` view navigation.
+   * Planning sessions in `error` status are unaffected and still render in the banner.
    */
-  const sessionsNeedingInput = bgSessions.filter(isSessionNeedingInputForBanner);
+  const sessionsNeedingInput = bgSessions.filter((s) => isSessionNeedingInputForBanner(s) && !isPlanningAwaitingInput(s));
   const sessionBannersHidden = useSessionBannersHidden();
+  const planningNeedsInput = bgPlanningSessions.some((s) => s.status === "awaiting_input");
 
   // Modal state/handlers - required before useViewState
   const modalManager = useModalManager({
@@ -1586,6 +1595,7 @@ function AppInner() {
             mailboxUnreadCount={mailboxUnreadCount}
             mailboxPendingApprovalCount={mailboxPendingApprovalCount}
             chatHasUnreadResponse={chatHasUnreadResponse}
+            planningNeedsInput={planningNeedsInput}
             experimentalFeatures={{
               insights: insightsEnabled,
               memoryView: memoryEnabled,
@@ -1668,6 +1678,7 @@ function AppInner() {
         onOpenPlanning={openPlanningWithNav}
         onResumePlanning={resumePlanningWithNav}
         activePlanningSessionCount={bgPlanningSessions.length}
+        planningNeedsInput={planningNeedsInput}
         onOpenUsage={() => openUsageWithNav(null)}
         onViewAllProjects={handleViewAllProjects}
         onRunScript={runScriptWithNav}

@@ -71,7 +71,7 @@ import {
   traitListParams,
 } from "@fusion/engine";
 import * as dashboard from "@fusion/dashboard";
-import { resolve, basename, extname, join } from "node:path";
+import { resolve, relative, isAbsolute, sep, basename, extname, join } from "node:path";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -881,13 +881,21 @@ export default function kbExtension(pi: ExtensionAPI) {
             ? task.description.slice(0, 80) + "…"
             : task.description;
 
+        /*
+        FNXC:Workflows 2026-07-05-00:00:
+        The response text must reflect the ACTUAL resolved landing column (task.column),
+        not a hardcoded "triage" string. store.createTask already resolves intake correctly
+        (this call never overrides `column`), so a custom workflow's non-triage intake
+        column (e.g. "Inbox") must be echoed back to the caller instead of a fixed value
+        that would misreport where the card actually landed.
+        */
         return {
           content: [
             {
               type: "text",
               text:
                 `Created ${task.id}: ${label}${workflowId ? ` (workflow: ${workflowId})` : ""}\n` +
-                `Column: triage\n` +
+                `Column: ${task.column}\n` +
                 (task.dependencies.length
                   ? `Dependencies: ${task.dependencies.join(", ")}\n`
                   : "") +
@@ -1268,6 +1276,27 @@ export default function kbExtension(pi: ExtensionAPI) {
       if (!mimeType) {
         throw new Error(
           `Unsupported file type: ${ext}. Supported: ${Object.keys(MIME_TYPES).join(", ")}`,
+        );
+      }
+
+      /*
+       * FNXC:CliTaskAttach 2026-07-05-00:00:
+       * fn_task_attach must confine reads to the task worktree boundary (ctx.cwd) to
+       * prevent a path-traversal / absolute-path read-boundary bypass — an agent could
+       * previously pass "../../../etc/hosts" or an absolute path (with an allowed
+       * extension) and exfiltrate arbitrary files into a task's attachments. The guard
+       * must run BEFORE readFile so an out-of-boundary path is never opened, even to
+       * fail. The boundary is intentionally ctx.cwd (the worktree) — not a broader
+       * project root — to avoid re-exposing sibling worktrees. (FN-7619, flagged
+       * out-of-scope during FN-7608.)
+       */
+      const boundaryRoot = resolve(ctx.cwd);
+      const rel = relative(boundaryRoot, filePath);
+      const escapesBoundary =
+        rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+      if (escapesBoundary) {
+        throw new Error(
+          `Refusing to attach file outside the task worktree boundary: ${params.path}`,
         );
       }
 

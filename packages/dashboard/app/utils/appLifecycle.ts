@@ -176,6 +176,18 @@ export function isSessionNeedingInputForBanner(session: AiSessionSummary): boole
   );
 }
 
+/*
+FNXC:SessionBanner 2026-07-05-00:00:
+Planning-Mode "awaiting input" is no longer a SessionNotificationBanner entry: the banner's Resume button did not
+reliably redirect into the Planning Mode interface, so awaiting-input planning sessions are now surfaced as a yellow
+`status-dot--pending` badge on the Planning nav destination instead (LeftSidebarNav + MobileNavBar), whose click
+target is the already-correct `planning` view navigation. Planning sessions in `error` status are unaffected and
+still render in the banner via `isSessionNeedingInputForBanner` above.
+*/
+export function isPlanningAwaitingInput(session: AiSessionSummary): boolean {
+  return session.type === "planning" && session.status === "awaiting_input";
+}
+
 export function getCliActionDisabledReasonForBanner(session: AiSessionSummary, action: CliActionId): string | null {
   if ((action === "advance" || action === "relaunch") && !session.cliSessionId) {
     return "CLI session id is missing.";

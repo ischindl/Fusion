@@ -41,6 +41,7 @@ import { MailboxMessageContent } from "./MailboxMessageContent";
 import { MessageComposer } from "./MessageComposer";
 import { ViewHeader } from "./ViewHeader";
 import { WorktrunkInstallApprovalDetails } from "./WorktrunkInstallApprovalDetails";
+import { GatedActionApprovalDetails } from "./GatedActionApprovalDetails";
 import { subscribeSse } from "../sse-bus";
 import { useViewportMode } from "../hooks/useViewportMode";
 import { useMobileKeyboard } from "../hooks/useMobileKeyboard";
@@ -1207,6 +1208,17 @@ export function MailboxView({
           </div>
           {selectedApproval.targetAction.category === "network_api" && selectedApproval.targetAction.action === "worktrunk_install" && (
             <WorktrunkInstallApprovalDetails targetAction={selectedApproval.targetAction} />
+          )}
+          {/*
+            FNXC:Approvals 2026-07-05-00:00:
+            FN-7609: render the generic gated-action payload (command/args/cwd)
+            whenever the request came from the agent-gating path, on both
+            desktop and mobile layouts. Mutually exclusive with the dedicated
+            worktrunk_install branch above, which must keep rendering unchanged.
+          */}
+          {selectedApproval.targetAction.action !== "worktrunk_install"
+            && (selectedApproval.targetAction.context as Record<string, unknown> | undefined)?.source === "agent-gating" && (
+            <GatedActionApprovalDetails targetAction={selectedApproval.targetAction} />
           )}
           <div className="mailbox-conversation" data-testid="mailbox-approval-history">
             {selectedApproval.history.map((event) => (

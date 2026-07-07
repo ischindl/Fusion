@@ -102,10 +102,46 @@
 }
 
 .chat-question-response__option:hover,
-.chat-question-response__option--selected,
-.chat-question-response__confirm--selected {
+.chat-question-response__option--selected {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, var(--card));
+}
+
+/*
+FNXC:ChatQuestionResponse 2026-07-05-00:00:
+The confirm Yes/No buttons also carry the global `.btn` class, whose base
+background and (especially) `.btn:hover` rule (specificity 0,2,0) visually
+swamped the old single-class `.chat-question-response__confirm--selected`
+rule (0,1,0), so a clicked answer never looked selected. Use a compound
+selector (`.chat-question-response__confirm.chat-question-response__confirm--selected`,
+specificity 0,2,0) plus a dedicated `:hover` override so the selected state
+beats `.btn`/`.btn:hover` in every interaction state, and keep everything
+token-driven (`--cta-*` / `--accent` via color-mix) so light/dark themes and
+the mobile column layout stay correct without hardcoded colors.
+*/
+.chat-question-response__confirm {
+  border-color: var(--border);
+  background: var(--card);
+  color: var(--text);
+  font-weight: 500;
+}
+
+.chat-question-response__confirm.chat-question-response__confirm--selected {
+  border-color: var(--cta-border);
+  background: color-mix(in srgb, var(--cta-bg) 55%, var(--card));
+  color: var(--cta-text);
+  font-weight: 700;
+  box-shadow: var(--cta-glow), inset 0 0 0 var(--btn-border-width) var(--cta-border);
+}
+
+.chat-question-response__confirm.chat-question-response__confirm--selected:hover {
+  background: color-mix(in srgb, var(--cta-bg-hover) 60%, var(--card));
+  border-color: var(--cta-border-hover);
+  color: var(--cta-text);
+}
+
+.chat-question-response__confirm.chat-question-response__confirm--selected:focus-visible {
+  box-shadow: var(--focus-ring-strong), var(--cta-glow);
 }
 
 .chat-question-response__option input {

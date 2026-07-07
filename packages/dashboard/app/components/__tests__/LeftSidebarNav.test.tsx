@@ -647,4 +647,32 @@ describe("LeftSidebarNav", () => {
 
     expect(() => fireEvent.click(screen.getByTestId("sidebar-nav-settings"))).not.toThrow();
   });
+
+  /*
+  FNXC:Navigation 2026-07-05-00:00:
+  FN-7614: planning-awaiting-input moved from a top-of-board banner (broken Resume redirect) to a yellow
+  `status-dot--pending` dot on this Planning nav destination, mirroring `chatHasUnreadResponse` exactly.
+  */
+  describe("planningNeedsInput dot (FN-7614)", () => {
+    it("shows the pending status dot on the Planning item when planningNeedsInput is true and not on the planning view", () => {
+      renderSidebar({ planningNeedsInput: true, view: "board" });
+
+      const planningButton = screen.getByTestId("sidebar-nav-planning");
+      expect(planningButton.querySelector(".status-dot.status-dot--pending")).toBeTruthy();
+    });
+
+    it("hides the dot when the user is already on the planning view", () => {
+      renderSidebar({ planningNeedsInput: true, view: "planning" });
+
+      const planningButton = screen.getByTestId("sidebar-nav-planning");
+      expect(planningButton.querySelector(".status-dot.status-dot--pending")).toBeNull();
+    });
+
+    it("hides the dot when planningNeedsInput is false", () => {
+      renderSidebar({ planningNeedsInput: false, view: "board" });
+
+      const planningButton = screen.getByTestId("sidebar-nav-planning");
+      expect(planningButton.querySelector(".status-dot.status-dot--pending")).toBeNull();
+    });
+  });
 });

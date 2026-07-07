@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import type { AiSessionSummary } from "../../api";
 import { SessionNotificationBanner, dismissedIds } from "../SessionNotificationBanner";
+import { isPlanningAwaitingInput, isSessionNeedingInputForBanner } from "../../utils/appLifecycle";
 
 function buildSession(overrides: Partial<AiSessionSummary>): AiSessionSummary {
   return {
@@ -281,6 +282,49 @@ describe("SessionNotificationBanner", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss Error to Dismiss" }));
     expect(onDismissSession).toHaveBeenCalledWith("error-dismiss");
+  });
+
+  /*
+  FNXC:SessionBanner 2026-07-05-00:00:
+  Symptom Verification (FN-7614): the production banner feed (App.tsx `sessionsNeedingInput`) filters via
+  `isSessionNeedingInputForBanner(s) && !isPlanningAwaitingInput(s)` before it ever reaches this component. Given a
+  lone planning awaiting_input session, that filter yields an empty array, so the banner must render NO entry
+  (and no banner region at all) — reproducing the original broken-Resume-button symptom being fixed by the nav badge.
+  */
+  it("renders no banner entry (and no banner region) for a lone planning awaiting_input session, using the production banner filter", () => {
+    const planningAwaitingInput = buildSession({ id: "planning-solo", type: "planning", status: "awaiting_input", title: "Solo planning session" });
+    const filtered = [planningAwaitingInput].filter((s) => isSessionNeedingInputForBanner(s) && !isPlanningAwaitingInput(s));
+
+    const { container } = render(
+      <SessionNotificationBanner
+        sessions={filtered}
+        onResumeSession={vi.fn()}
+        onDismissSession={vi.fn()}
+        onDismissAll={vi.fn()}
+      />,
+    );
+
+    expect(filtered).toEqual([]);
+    expect(screen.queryByText("Solo planning session")).not.toBeInTheDocument();
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("keeps a mixed non-planning awaiting-input session visible while excluding planning-awaiting-input via the production filter", () => {
+    const planningAwaitingInput = buildSession({ id: "planning-solo2", type: "planning", status: "awaiting_input", title: "Excluded planning session" });
+    const cliAwaitingInput = buildSession({ id: "cli-mixed", type: "cli-agent", status: "waiting_on_input", title: "Visible CLI session" });
+    const filtered = [planningAwaitingInput, cliAwaitingInput].filter((s) => isSessionNeedingInputForBanner(s) && !isPlanningAwaitingInput(s));
+
+    render(
+      <SessionNotificationBanner
+        sessions={filtered}
+        onResumeSession={vi.fn()}
+        onDismissSession={vi.fn()}
+        onDismissAll={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText("Excluded planning session")).not.toBeInTheDocument();
+    expect(screen.getByText("Visible CLI session")).toBeInTheDocument();
   });
 
   it("preserves dismissed error sessions when session status changes", () => {
