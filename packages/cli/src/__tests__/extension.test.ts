@@ -3394,15 +3394,15 @@ pgTest("fn pi extension (runnable structured-output regression slice)", () => {
     // must finalize-on-proof or return an explicit isError, never a silent "Updated" no-op
     // (NEXT-322 / NEXT-375 / NEXT-340).
     it("finalizes an in-review task to done when setting nodeId='end' with merge proof", async () => {
-      const store = new TaskStore(tmpDir);
-      await store.init();
+      // FNXC:PostgresCutover 2026-07-07-15:00: seed through the shared PG harness store
+      // (upstream seeded via a throwaway sqlite TaskStore, which is removed on this branch).
+      const store = createStore();
       const task = await store.createTask({ description: "out-of-band merge repro" });
       await store.updateTask(task.id, { steps: [{ name: "Only step", status: "done" }] });
       await store.moveTask(task.id, "todo");
       await store.moveTask(task.id, "in-progress");
       await store.moveTask(task.id, "in-review");
       await store.updateTask(task.id, { mergeDetails: { mergeConfirmed: true } });
-      store.close();
 
       const updateTool = api.tools.get("fn_task_update")!;
       const result = await updateTool.execute(
@@ -3422,14 +3422,14 @@ pgTest("fn pi extension (runnable structured-output regression slice)", () => {
     });
 
     it("returns an explicit isError instead of a silent no-op when setting nodeId='end' without merge proof", async () => {
-      const store = new TaskStore(tmpDir);
-      await store.init();
+      // FNXC:PostgresCutover 2026-07-07-15:00: seed through the shared PG harness store
+      // (upstream seeded via a throwaway sqlite TaskStore, which is removed on this branch).
+      const store = createStore();
       const task = await store.createTask({ description: "no proof repro" });
       await store.updateTask(task.id, { steps: [{ name: "Only step", status: "done" }] });
       await store.moveTask(task.id, "todo");
       await store.moveTask(task.id, "in-progress");
       await store.moveTask(task.id, "in-review");
-      store.close();
 
       const updateTool = api.tools.get("fn_task_update")!;
       const result = await updateTool.execute(
