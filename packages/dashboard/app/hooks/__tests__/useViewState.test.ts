@@ -77,6 +77,55 @@ describe("useViewState", () => {
     });
   });
 
+  // FNXC:ViewState FN-7649: Persisted Settings must not be the auto-restored landing view either; it lands on the Board instead.
+  it("lands on board when the persisted taskView is settings", async () => {
+    localStorage.setItem("kb-dashboard-task-view", "settings");
+
+    const { result } = renderHook(() => useViewState(createOptions()));
+
+    await waitFor(() => {
+      expect(result.current.taskView).toBe("board");
+    });
+  });
+
+  it("?view=settings deep link still opens Settings (not routed through the landing guard)", async () => {
+    const originalSearch = window.location.search;
+    window.history.replaceState({}, "", "?view=settings");
+
+    try {
+      const { result } = renderHook(() => useViewState(createOptions()));
+
+      await waitFor(() => {
+        expect(result.current.taskView).toBe("settings");
+      });
+    } finally {
+      window.history.replaceState({}, "", originalSearch ? `?${originalSearch.replace(/^\?/, "")}` : "/");
+    }
+  });
+
+  it("explicit setTaskView/handleChangeTaskView to settings still opens Settings", async () => {
+    const { result } = renderHook(() => useViewState(createOptions()));
+
+    await waitFor(() => {
+      expect(result.current.taskView).toBe("board");
+    });
+
+    await act(async () => {
+      result.current.setTaskView("settings");
+    });
+
+    expect(result.current.taskView).toBe("settings");
+
+    await act(async () => {
+      result.current.handleChangeTaskView("board");
+    });
+    await act(async () => {
+      result.current.handleChangeTaskView("settings");
+    });
+
+    expect(result.current.taskView).toBe("settings");
+  });
+
   it("migrates legacy reliability taskView from localStorage to Command Center", async () => {
     localStorage.setItem("kb-dashboard-task-view", "reliability");
 
@@ -575,6 +624,31 @@ describe("useViewState", () => {
 
     await waitFor(() => {
       expect(result.current.taskView).toBe("insights");
+    });
+  });
+
+  // FNXC:ViewState FN-7649: Switching projects (rerender with a new currentProject) must not land on Settings when the newly selected project's scoped persisted view is settings; it resolves to board. Mirrors the existing command-center project-switch coverage above.
+  it("lands on board when switching to a project whose persisted scoped taskView is settings", async () => {
+    const projectA: ProjectInfo = { ...PROJECT, id: "proj_a", name: "Project A" };
+    const projectB: ProjectInfo = { ...PROJECT, id: "proj_b", name: "Project B" };
+
+    localStorage.setItem("kb:proj_a:kb-dashboard-task-view", "list");
+    localStorage.setItem("kb:proj_b:kb-dashboard-task-view", "settings");
+
+    const { result, rerender } = renderHook(
+      ({ project }) => useViewState(createOptions({ currentProject: project })),
+      { initialProps: { project: projectA } },
+    );
+
+    await waitFor(() => {
+      expect(result.current.taskView).toBe("list");
+    });
+
+    // Switch to project B, whose persisted view is settings - must land on board, not settings.
+    rerender({ project: projectB });
+
+    await waitFor(() => {
+      expect(result.current.taskView).toBe("board");
     });
   });
 

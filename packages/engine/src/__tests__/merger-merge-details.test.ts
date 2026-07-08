@@ -153,6 +153,10 @@ import { createFnAgent } from "../pi.js";
 import { execSync, exec } from "node:child_process";
 import * as core from "@fusion/core";
 import { type TaskStore, type Task, type MergeResult, DEFAULT_SETTINGS } from "@fusion/core";
+// FNXC:AgentLogging 2026-07-07-08:40: FN-7503 added optional 6th timing arg to
+// appendAgentLog. Use the shared 5-arg-tolerant helper for text-delta assertions
+// instead of toHaveBeenCalledWith so the timing object doesn't re-break them.
+import { expectAppendAgentLog } from "./agent-log-assertions.js";
 
 const mockedCreateFnAgent = vi.mocked(createFnAgent);
 const mockedExecSync = vi.mocked(execSync);
@@ -496,7 +500,7 @@ describe("aiMergeTask — agent log persistence", () => {
 
     await aiMergeTask(store, "/tmp/root", "FN-050");
 
-    expect(store.appendAgentLog).toHaveBeenCalledWith("FN-050", "Hello merge", "text", undefined, "merger");
+    expectAppendAgentLog(store.appendAgentLog, "FN-050", "Hello merge", "text", undefined, "merger");
   });
 
   it("logs tool invocations to store.appendAgentLog", async () => {
@@ -550,7 +554,7 @@ describe("aiMergeTask — agent log persistence", () => {
     await aiMergeTask(store, "/tmp/root", "FN-050", { onAgentText });
 
     expect(onAgentText).toHaveBeenCalledWith("hi");
-    expect(store.appendAgentLog).toHaveBeenCalledWith("FN-050", "hi", "text", undefined, "merger");
+    expectAppendAgentLog(store.appendAgentLog, "FN-050", "hi", "text", undefined, "merger");
   });
 });
 

@@ -51,9 +51,18 @@ vi.mock("../sse.js", () => ({
 // SessionManager is constructed per-chat for CLI session continuity. We don't
 // want tests touching the real ~/.pi sessions directory, so stub the static
 // methods. The test `cliSessionFile-threading` asserts call shapes.
+// FNXC:ChatMessageEdit 2026-07-07-09:00: fakeManager also stubs the pi SessionManager rewind
+// surface (getLeafId/branch/resetLeaf/appendMessage) that ChatManager.sendMessage and
+// rewindSessionForEdit now call, so the shared fake stays in sync with the real API shape used
+// for the edit-and-resend flow.
 const { mockSessionManagerCreate, mockSessionManagerOpen } = vi.hoisted(() => {
   const fakeManager = {
     getSessionFile: () => "/tmp/test/.pi-fake/session-abc.jsonl",
+    getLeafId: () => "leaf-fake",
+    branch: () => {},
+    resetLeaf: () => {},
+    appendMessage: () => "entry-fake",
+    createBranchedSession: () => "/tmp/test/.pi-fake/session-branched.jsonl",
   };
   return {
     mockSessionManagerCreate: vi.fn(() => fakeManager),
@@ -74,12 +83,15 @@ const mockChatStore = {
   getSession: vi.fn(),
   createSession: vi.fn(),
   addMessage: vi.fn(),
+  getMessage: vi.fn(),
   getMessages: vi.fn(),
   updateSession: vi.fn(),
   setCliSessionFile: vi.fn(),
   setInFlightGeneration: vi.fn(),
   getRoomMessages: vi.fn(),
   recordTokenUsage: vi.fn(),
+  deleteMessagesFrom: vi.fn(),
+  updateMessageMetadata: vi.fn(),
 };
 
 const mockAgentStore = {

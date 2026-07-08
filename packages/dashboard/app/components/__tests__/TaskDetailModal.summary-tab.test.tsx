@@ -92,7 +92,11 @@ describe("TaskDetailModal Summary tab", () => {
     expect(container.querySelector(".detail-tabs")?.firstElementChild?.textContent).toBe("Activity");
     const summaryButton = screen.getByRole("button", { name: "Summary" });
     expectButtonActive(summaryButton);
-    expect(screen.queryByRole("button", { name: "Chat" })).toBeNull();
+    /*
+    FNXC:TaskDetailTabs 2026-07-07-09:25:
+    The planner-chat ("Chat") tab now renders unconditionally in the task-detail tab strip (both taskDetailChatFirst branches), so done tasks expose Activity, Chat, Summary, ... (see TaskDetailModal.definition-actions.test.tsx). Done tasks still land on Summary by default; Chat is present but not active.
+    */
+    expect(screen.getByRole("button", { name: "Chat" })).toBeInTheDocument();
     expect(screen.getByText("Completion summary")).toBeTruthy();
     expect(screen.getByText("summary")).toBeTruthy();
     expect(screen.getByText("What changed")).toBeTruthy();

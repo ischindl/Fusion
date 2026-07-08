@@ -861,6 +861,74 @@ export class ChatStore extends EventEmitter<ChatStoreEvents> {
   }
 
   /**
+   * Escape a raw search term for safe use inside a SQL `LIKE ... ESCAPE '\'` pattern.
+   * Escapes the LIKE wildcard characters (`%`, `_`) and the escape character itself (`\`)
+   * so a literal user-typed `%`/`_` is matched literally instead of acting as a wildcard.
+   */
+  private escapeLikePattern(raw: string): string {
+    return raw.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+  }
+
+  /**
+   * Search sessions by message content (not just title/agentId).
+   *
+   * FNXC:ChatSearch 2026-07-07-00:00:
+   * Message content is not fully loaded client-side (only sessions + a last-message preview
+   * are), so "find a conversation by something that was said in it" requires a server round
+   * trip against chat_messages. There is no FTS table for chat_messages (see db.ts schema), so
+   * this uses a parameterized SQL `LIKE ... ESCAPE '\'` query — never string-concatenated —
+   * with `%`/`_`/`\` escaped in the search term so a literal `%` or `_` typed by the user is
+   * matched literally rather than acting as a wildcard (injection- and wildcard-safety).
+   *
+   * Scoped to the given session IDs (already filtered by projectId/status/agentId by the
+   * caller via listSessions) to keep the query bounded and avoid re-deriving scope filters
+   * against chat_sessions here. Deduplicates to one row per session using MAX(createdAt) so a
+   * session with multiple matching messages appears once, with a preview of its most recent
+   * matching message (truncated to ~100 chars, mirroring getLastMessageForSessions).
+   *
+   * @param query - Raw user search text (content match)
+   * @param sessionIds - Session IDs to search within (already scope-filtered by the caller)
+   * @returns Map of sessionId -> truncated preview of the most recent matching message
+   */
+  async searchSessionsByMessageContent(query: string, sessionIds: string[]): Promise<Map<string, string>> {
+    const trimmed = query.trim();
+    if (!trimmed || !sessionIds || sessionIds.length === 0) {
+      return new Map();
+    }
+
+    if (this.backendMode) {
+      return asyncChatStore.searchChatSessionsByMessageContent(this.asyncLayer!.db, trimmed, sessionIds);
+    }
+
+    const escaped = this.escapeLikePattern(trimmed);
+    const pattern = `%${escaped}%`;
+    const placeholders = sessionIds.map(() => "?").join(", ");
+
+    // Single bounded query: find the most recent matching message per session via a
+    // GROUP BY + join-back, avoiding N+1 per-session queries. Ties on createdAt (common in
+    // fast test/bulk-insert scenarios where multiple messages share a millisecond timestamp)
+    // are broken by SQLite's implicit rowid, which tracks insertion order.
+    const rows = this.syncDb().prepare(`
+      SELECT cm.* FROM chat_messages cm
+      INNER JOIN (
+        SELECT sessionId, MAX(rowid) as maxRowid
+        FROM chat_messages
+        WHERE sessionId IN (${placeholders}) AND content LIKE ? ESCAPE '\\'
+        GROUP BY sessionId
+      ) matched ON cm.sessionId = matched.sessionId AND cm.rowid = matched.maxRowid
+    `).all(...sessionIds, pattern);
+
+    const result = new Map<string, string>();
+    for (const row of rows as unknown as ChatMessageRow[]) {
+      const message = this.rowToMessage(row);
+      if (result.has(message.sessionId)) continue;
+      const content = message.content || "";
+      result.set(message.sessionId, content.length > 100 ? content.slice(0, 100) + "…" : content);
+    }
+    return result;
+  }
+
+  /**
    * Delete a message by ID.
    *
    * @param id - Message ID
@@ -899,6 +967,122 @@ export class ChatStore extends EventEmitter<ChatStoreEvents> {
     }
 
     return true;
+  }
+
+  /**
+   * FNXC:ChatMessageEdit 2026-07-07-09:00:
+   * Truncate a chat session from (and including) a target message onward. Editing an earlier
+   * user turn must "forget" that turn and every turn after it — both from the persisted
+   * transcript here AND from the model's resumable pi session context (rewound separately by
+   * ChatManager.rewindSessionForEdit) — so future responses are not biased by discarded turns.
+   *
+   * Ordering is resolved by (createdAt ASC, rowid ASC) rather than createdAt alone, since
+   * multiple messages can share an identical createdAt timestamp (same-millisecond inserts);
+   * rowid is SQLite's implicit monotonic insertion-order tiebreaker, guaranteeing the edited
+   * message and every later message (in true insertion order) are always included, with no
+   * sibling straggler surviving the truncation. The Postgres backend has no rowid, so it
+   * tiebreaks on (createdAt ASC, id ASC) — deterministic, matching getLastMessageForSessions.
+   *
+   * @param sessionId - Parent session ID
+   * @param fromMessageId - Id of the earliest message to delete (inclusive)
+   * @returns deletedIds (in ASC order) and retained messages (pre-edit history, ASC order)
+   */
+  async deleteMessagesFrom(sessionId: string, fromMessageId: string): Promise<{ deletedIds: string[]; retained: ChatMessage[] }> {
+    if (this.backendMode) {
+      const result = await asyncChatStore.deleteChatMessagesFrom(this.asyncLayer!.db, sessionId, fromMessageId);
+      if (result.deletedIds.length > 0) {
+        for (const id of result.deletedIds) {
+          this.emit("chat:message:deleted", id);
+        }
+        const updatedSession = await this.getSession(sessionId);
+        if (updatedSession) this.emit("chat:session:updated", updatedSession);
+      }
+      return result;
+    }
+
+    const target = this.syncDb().prepare(
+      "SELECT id, sessionId, rowid as rowid_ FROM chat_messages WHERE id = ?",
+    ).get(fromMessageId) as { id: string; sessionId: string; rowid_: number } | undefined;
+
+    if (!target || target.sessionId !== sessionId) {
+      return { deletedIds: [], retained: await this.getMessages(sessionId) };
+    }
+
+    // Ordered id list for the session (createdAt ASC, rowid ASC tiebreak) so we can
+    // deterministically split retained-vs-deleted around the target message.
+    const orderedRows = this.syncDb().prepare(
+      "SELECT id, rowid as rowid_ FROM chat_messages WHERE sessionId = ? ORDER BY createdAt ASC, rowid_ ASC",
+    ).all(sessionId) as { id: string; rowid_: number }[];
+
+    const targetIndex = orderedRows.findIndex((row) => row.id === fromMessageId);
+    if (targetIndex === -1) {
+      return { deletedIds: [], retained: await this.getMessages(sessionId) };
+    }
+
+    const retainedIds = orderedRows.slice(0, targetIndex).map((row) => row.id);
+    const deletedIds = orderedRows.slice(targetIndex).map((row) => row.id);
+
+    const retained: ChatMessage[] = [];
+    for (const id of retainedIds) {
+      const message = await this.getMessage(id);
+      if (message) retained.push(message);
+    }
+
+    if (deletedIds.length === 0) {
+      return { deletedIds: [], retained };
+    }
+
+    const now = new Date().toISOString();
+    const placeholders = deletedIds.map(() => "?").join(", ");
+    this.syncDb().prepare(`DELETE FROM chat_messages WHERE id IN (${placeholders})`).run(...deletedIds);
+    this.syncDb().prepare("UPDATE chat_sessions SET updatedAt = ? WHERE id = ?").run(now, sessionId);
+    this.syncDb().bumpLastModified();
+
+    for (const id of deletedIds) {
+      this.emit("chat:message:deleted", id);
+    }
+    const updatedSession = await this.getSession(sessionId);
+    if (updatedSession) {
+      this.emit("chat:session:updated", updatedSession);
+    }
+
+    return { deletedIds, retained };
+  }
+
+  /**
+   * FNXC:ChatMessageEdit 2026-07-07-09:00:
+   * Merge (default) or replace a persisted message's metadata. Used by the model-loop generation
+   * path to record the pi SessionManager parent-leaf id (`metadata.piParentLeafId`) onto the
+   * just-created user message, without disturbing other metadata (e.g. `mentions`). This linkage
+   * is what lets a later edit rewind losslessly via SessionManager.branch()/resetLeaf().
+   */
+  async updateMessageMetadata(messageId: string, metadata: Record<string, unknown> | null, options?: { merge?: boolean }): Promise<ChatMessage> {
+    if (this.backendMode) {
+      const updated = await asyncChatStore.updateChatMessageMetadata(this.asyncLayer!.db, messageId, metadata, options);
+      this.emit("chat:message:updated", updated);
+      return updated;
+    }
+
+    const existing = await this.getMessage(messageId);
+    if (!existing) {
+      throw new Error(`Message ${messageId} not found`);
+    }
+
+    const merge = options?.merge !== false;
+    const nextMetadata = metadata === null
+      ? (merge ? existing.metadata : null)
+      : (merge ? { ...(existing.metadata ?? {}), ...metadata } : metadata);
+
+    this.syncDb().prepare("UPDATE chat_messages SET metadata = ? WHERE id = ?").run(toJsonNullable(nextMetadata), messageId);
+
+    const updated = await this.getMessage(messageId);
+    if (!updated) {
+      throw new Error(`Failed to update message ${messageId}`);
+    }
+
+    this.syncDb().bumpLastModified();
+    this.emit("chat:message:updated", updated);
+    return updated;
   }
 
   async createRoom(input: ChatRoomCreateInput & { memberAgentIds?: string[] }): Promise<ChatRoom> {

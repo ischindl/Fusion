@@ -187,7 +187,7 @@ describe("Workflow Steps Execution", () => {
     expect(onComplete).not.toHaveBeenCalled();
   });
 
-  it("moves task to in-review once fn_task_done requeue budget is exhausted", async () => {
+  it("marks task failed in-place once fn_task_done requeue budget is exhausted (FN-7229)", async () => {
     const store = createMockStore();
     store.getTask.mockResolvedValue({
       id: "FN-001",
@@ -237,7 +237,8 @@ describe("Workflow Steps Execution", () => {
       status: "failed",
       error: "Agent finished without calling fn_task_done (after 3 retries)",
     });
-    expect(store.moveTask).toHaveBeenCalledWith("FN-001", "in-review");
+    // FNXC:ExecutorMoveTask 2026-07-07-08:38: FN-7229 (984e36255d) stopped parking execution errors in review — an exhausted fn_task_done budget now marks the task failed in-place (executor.ts:11179) instead of moveTask→in-review. `in-review` is reserved for clean completion handoffs, so the task must NOT be moved there. (Line 236 already asserts status=failed.)
+    expect(store.moveTask).not.toHaveBeenCalledWith("FN-001", "in-review");
     expect(store.moveTask).not.toHaveBeenCalledWith("FN-001", "todo");
     expect(onError).toHaveBeenCalledWith(
       expect.objectContaining({ id: "FN-001" }),
@@ -557,18 +558,20 @@ describe("Workflow Steps Execution", () => {
     // non-deterministic; calling performWorkflowRerunBounce directly is
     // exactly what the timer would have done after the next event-loop
     // tick and removes the timing dependency entirely.
+    // Cast once to a named handle: these are private executor methods the
+    // compiler cannot see; assign to a typed const rather than inlining the
+    // cast into each member access.
+    const executorInternals = executor as unknown as {
+      scheduleWorkflowRerun: (taskId: string, worktreePath: string, successMessage: string) => void;
+      performWorkflowRerunBounce: (taskId: string, worktreePath: string) => Promise<unknown>;
+    };
+    let bouncePromise: Promise<unknown> | undefined;
     const scheduleSpy = vi
-      .spyOn(executor as unknown as {
-        scheduleWorkflowRerun: (
-          taskId: string,
-          worktreePath: string,
-          successMessage: string,
-        ) => void;
-      }, "scheduleWorkflowRerun")
+      .spyOn(executorInternals, "scheduleWorkflowRerun")
       .mockImplementation((taskId, worktreePath) => {
-        void (executor as unknown as {
-          performWorkflowRerunBounce: (taskId: string, worktreePath: string) => Promise<unknown>;
-        }).performWorkflowRerunBounce(taskId, worktreePath);
+        // Capture the bounce promise so the test can await it to completion
+        // (see FNXC below) instead of flushing a fixed microtask count.
+        bouncePromise = executorInternals.performWorkflowRerunBounce(taskId, worktreePath);
       });
 
     const stepName = "Frontend UX Design";
@@ -604,15 +607,11 @@ describe("Workflow Steps Execution", () => {
       .map((call: any[]) => call[1]);
     expect(reopenedStepIndexes).toEqual([0, 1]);
 
-    // performWorkflowRerunBounce was invoked synchronously by the spy
-    // above; flush microtasks so its awaited store calls settle before
-    // we assert.
-    await new Promise<void>((resolve) => queueMicrotask(resolve));
-    await new Promise<void>((resolve) => queueMicrotask(resolve));
-    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    // FNXC:ExecutorMoveTask 2026-07-07-08:38: Await the captured rerun-bounce promise instead of flushing a fixed number of microtasks. 3167dbc83 inserted clearTerminalStepFailuresForRetry (an extra awaited hop) between the todo and in-progress moves inside performWorkflowRerunBounce, so a fixed microtask count no longer deterministically drains the bounce to the final in-progress moveTask. Awaiting the promise is exact and survives future awaited hops; the bounce still performs the todo→in-progress hop (executor.ts:3650 then 3674).
+    await bouncePromise;
 
     // (2) bounce uses preserveResumeState so step progress + worktree survive
-    expect(store.moveTask).toHaveBeenCalledWith("FN-001", "todo", { preserveResumeState: true, preserveWorktree: true });
+    expect(store.moveTask).toHaveBeenCalledWith("FN-001", "todo", expect.objectContaining({ preserveResumeState: true, preserveWorktree: true }));
     expect(store.moveTask).toHaveBeenCalledWith("FN-001", "in-progress");
     expect(store.moveTask).not.toHaveBeenCalledWith("FN-001", "in-review");
     expect(onError).not.toHaveBeenCalled();

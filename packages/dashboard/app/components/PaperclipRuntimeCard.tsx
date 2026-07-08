@@ -23,6 +23,7 @@ import {
   fetchPaperclipCompanies,
   fetchPaperclipStatus,
   fetchPluginSettings,
+  fetchPlugins,
   mintPaperclipApiKey,
   updatePluginSettings,
   type PaperclipAgentSummary,
@@ -132,12 +133,33 @@ export function PaperclipRuntimeCard() {
   >(null);
   const [toast, setToast] = useState<{ kind: "ok" | "err"; message: string } | null>(null);
   const [apiKeyDirty, setApiKeyDirty] = useState(false);
+  /*
+   * FNXC:PluginManager 2026-07-07-00:00:
+   * FN-7629 — Plugin Manager is the source of truth for the runtime's enable/disable decision.
+   * Mirror the installed project-state so this card never claims Paperclip is connected/active
+   * when the user has disabled it there.
+   */
+  const [runtimeDisabled, setRuntimeDisabled] = useState(false);
   const mountedRef = useRef(true);
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchPlugins()
+      .then((list) => {
+        if (cancelled) return;
+        const installed = list.find((p) => p.id === PLUGIN_ID);
+        setRuntimeDisabled(installed ? !installed.enabled : false);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
     };
   }, []);
 
@@ -411,15 +433,17 @@ export function PaperclipRuntimeCard() {
   const identity = status?.connection.identity;
   const cliOk = cliDiscovery?.ok === true;
 
-  const statusKind =
-    status === null
+  const statusKind = runtimeDisabled
+    ? "neutral"
+    : status === null
       ? "loading"
       : connected
         ? "ok"
         : "err";
 
-  const statusText =
-    status === null
+  const statusText = runtimeDisabled
+    ? t("paperclip.statusDisabledInPluginManager", "Disabled in Plugin Manager")
+    : status === null
       ? settings.transport === "cli" && cliDiscovery && !cliOk
         ? t("paperclip.statusCliDiscoveryFailed", "✗ CLI discovery failed: {{reason}}", { reason: cliDiscovery.reason })
         : t("paperclip.statusProbing", "Probing Paperclip server…")

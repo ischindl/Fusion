@@ -43,13 +43,16 @@ import {
   DEFAULT_WORKFLOW_POOL_ID,
   TransitionRejectionError,
   resolveWorkflowIrForTask,
+  buildBootstrapPrompt,
   type TaskStore,
   type Task,
   type WorkflowIr,
   type WorkflowIrV2,
   type WorkflowIrColumn,
 } from "@fusion/core";
+import { readFile } from "node:fs/promises";
 import { schedulerLog } from "./logger.js";
+import { getPromptPath } from "./spec-staleness.js";
 
 /** A reservation handle returned by {@link HoldReleaseDeps.reserveSlot}. The
  *  sweep calls `release()` if the subsequent move rejects on capacity. */
@@ -119,6 +122,47 @@ function isHeldTask(ir: WorkflowIr, task: Task): boolean {
   const column = findColumn(ir, task.column);
   if (!column) return false;
   return resolveColumnFlags(column).hold === true;
+}
+
+/**
+ * True when the card carries the `intake` trait on its CURRENT column, in its
+ * OWN resolved workflow IR.
+ */
+function columnHasIntakeTrait(ir: WorkflowIr, columnId: string): boolean {
+  const column = findColumn(ir, columnId);
+  if (!column) return false;
+  return resolveColumnFlags(column).intake === true;
+}
+
+/**
+ * FNXC:WorkflowScheduling 2026-07-07-00:00:
+ * A card must never be released into a processing (`countsTowardWip`) column
+ * while it is unplanned — regardless of which literal column id it currently
+ * rests in. "Unplanned" means: `status === "planning"` (specified-in-place),
+ * OR the card's PROMPT.md still equals the bootstrap stub AND the card is
+ * resident in the legacy `todo` column OR a column carrying the `intake`
+ * trait. Keying the stub check on the literal `"todo"` string alone misses a
+ * custom workflow whose intake/planning column is renamed (`ideas`, `Inbox`,
+ * default-workflow's renamed "Planning") — this is the general, trait-based
+ * predicate shared by the sweep (`issueRelease`) and the scheduler's
+ * `reserveSlot` guard (FN-7648) so every release surface (sweep, explicit
+ * `promoteHeldTask`, `releaseHeldTaskByEvent`) enforces the same invariant.
+ */
+export async function isUnplannedForExecution(store: TaskStore, task: Task, ir: WorkflowIr): Promise<boolean> {
+  if (task.status === "planning") return true;
+
+  const isLegacyTodoColumn = task.column === "todo";
+  const isIntakeColumn = columnHasIntakeTrait(ir, task.column);
+  if (!isLegacyTodoColumn && !isIntakeColumn) return false;
+
+  if (typeof store.getTasksDir !== "function") return false;
+  try {
+    const promptContent = await readFile(getPromptPath(store.getTasksDir(), task.id), "utf-8");
+    return promptContent === buildBootstrapPrompt(task.id, task.title, task.description);
+  } catch {
+    // Missing prompt is handled by filesystem validation elsewhere; do not block on it here.
+    return false;
+  }
 }
 
 /**
@@ -408,6 +452,22 @@ async function issueRelease(
 ): Promise<boolean> {
   const targetColumn = findColumn(ir, target);
   const targetIsProcessing = targetColumn ? resolveColumnFlags(targetColumn).countsTowardWip === true : false;
+
+  /*
+  FNXC:WorkflowScheduling 2026-07-07-00:00:
+  Every release surface funnels through this function (the sweep, explicit
+  `promoteHeldTask`, and `releaseHeldTaskByEvent`) so a single defensive check
+  here covers all of them — including the operator/webhook release paths that
+  do not pass a `reserveSlot` dep at all and would otherwise bypass the
+  scheduler's `reserveSlot` guard entirely. An unplanned card (bootstrap-stub
+  PROMPT.md, `status: "planning"`, or resident in an `intake`-trait column)
+  must never be moved into a processing column, no matter which surface
+  requested the release (FN-7648).
+  */
+  if (targetIsProcessing && (await isUnplannedForExecution(store, task, ir))) {
+    schedulerLog.log(`Hold release for ${task.id} blocked — card is unplanned and cannot enter processing column ${target}`);
+    return false;
+  }
 
   let reservation: SlotReservation | null = null;
   if (targetIsProcessing && deps.reserveSlot) {

@@ -109,6 +109,15 @@ export function SchedulingSection({ scopeBanner, form, setForm, globalMaxConcurr
         <small>{t("settings.scheduling.timeoutInMinutesForDetectingStuckTasksWhen", "Timeout in minutes for detecting stuck tasks. When a task's agent session shows no activity for longer than this duration, the task is terminated and retried. Leave empty to disable. Suggested: 10. Default: 10 minutes (600000ms).")}</small>
       </div>
       <div className="form-group">
+        <label htmlFor="buildTimeoutMs">{t("settings.scheduling.buildTimeoutMinutes", "Build/Verification Timeout (minutes)")}</label>
+        <input id="buildTimeoutMs" type="number" min={1} step={1} value={form.buildTimeoutMs ? Math.round(form.buildTimeoutMs / 60000) : ""} onChange={(e) => {
+            const val = e.target.value;
+            const num = Number(val);
+            setForm((f) => ({ ...f, buildTimeoutMs: val && num > 0 ? num * 60000 : undefined }));
+        }}/>
+        <small>{t("settings.scheduling.maximumTimeInMinutesForBuildVerificationCommands", "Maximum time in minutes for build/verification commands before they are killed. Raise for large monorepo or Docker builds. Default: 5.")}</small>
+      </div>
+      <div className="form-group">
         <label htmlFor="staleHighFanoutBlockerAgeThresholdMs">{t("settings.scheduling.staleHighFanOutEscalationHours", "Stale High Fan-out Escalation (hours)")}</label>
         <input id="staleHighFanoutBlockerAgeThresholdMs" type="number" min={1} step={1} value={form.staleHighFanoutBlockerAgeThresholdMs ? Math.round(form.staleHighFanoutBlockerAgeThresholdMs / 3600000) : ""} onChange={(e) => {
             const val = e.target.value;

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
 import type { Task, TaskStore } from "@fusion/core";
+import { createAuthMaterialSnapshot } from "@fusion/core";
 import { request } from "../test-request.js";
 import { createServer } from "../server.js";
 import type { RuntimeLogger } from "../runtime-logger.js";
@@ -31,6 +32,7 @@ const mockCommitDistributedTaskIdReservation = vi.fn();
 const mockAbortDistributedTaskIdReservation = vi.fn();
 const mockGetDistributedTaskIdState = vi.fn();
 const mockApplyReplicatedTaskCreate = vi.fn();
+const mockApplyAuthMaterialSnapshot = vi.fn();
 
 // Mock GlobalSettingsStore
 const mockGetSettings = vi.fn().mockResolvedValue({});
@@ -55,7 +57,35 @@ vi.mock("@fusion/core", async () => {
       getLocalMeshSnapshot: mockGetLocalMeshSnapshot,
       getSettingsForSync: mockGetSettingsForSync,
       applyRemoteSettings: mockApplyRemoteSettings,
+      applyAuthMaterialSnapshot: mockApplyAuthMaterialSnapshot,
     }; }),
+  };
+});
+
+// FNXC:ProviderAuth 2026-07-07-00:00: FN-7647 routed register-mesh-routes.ts's inline
+// auth-material shared-state domain through @fusion/engine's createFusionAuthStorage() instead of
+// a raw AuthStorage.create(getFusionAuthPath()). Mock the factory so mesh sync auth-material writes
+// are observable and never touch the real ~/.fusion/agent/auth.json during tests; preserve every
+// other real @fusion/engine export other routers rely on at module load time. vi.mock factories are
+// hoisted above top-level const declarations, so the referenced mocks must be created via
+// vi.hoisted to avoid a temporal-dead-zone ReferenceError.
+const { mockMeshAuthStorageSet, mockCreateFusionAuthStorage } = vi.hoisted(() => {
+  const mockMeshAuthStorageSet = vi.fn().mockResolvedValue(undefined);
+  const mockCreateFusionAuthStorage = vi.fn(() => ({
+    set: mockMeshAuthStorageSet,
+    get: vi.fn(),
+    getApiKey: vi.fn(),
+    getOAuthProviders: vi.fn().mockReturnValue([]),
+    reload: vi.fn(),
+  }));
+  return { mockMeshAuthStorageSet, mockCreateFusionAuthStorage };
+});
+
+vi.mock("@fusion/engine", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@fusion/engine")>();
+  return {
+    ...actual,
+    createFusionAuthStorage: mockCreateFusionAuthStorage,
   };
 });
 
@@ -701,6 +731,94 @@ describe("POST /api/mesh/sync", () => {
           }),
         }),
       );
+    });
+  });
+
+  // ── FN-7647 Symptom Verification: auth-material shared-state sync ─────────────
+  // Original symptom (FN-7646 class): a raw independent AuthStorage instance can persist a stale
+  // in-memory snapshot over ~/.fusion/agent/auth.json, wiping a key another process just saved.
+  // Asserts the mesh sync auth-material domain writes via the coordinated createFusionAuthStorage()
+  // proxy (not a raw instance) and that an unrelated provider's saved credential survives the write.
+  describe("auth-material shared-state sync", () => {
+    beforeEach(() => {
+      mockApplyAuthMaterialSnapshot.mockReset();
+      mockCreateFusionAuthStorage.mockClear();
+      mockMeshAuthStorageSet.mockReset().mockResolvedValue(undefined);
+    });
+
+    it("writes received auth-material credentials via the coordinated createFusionAuthStorage() proxy", async () => {
+      mockApplyAuthMaterialSnapshot.mockReturnValue({
+        success: true,
+        authCount: 1,
+        providerAuth: { anthropic: { type: "api_key", key: "sk-ant-mesh-received" } },
+      });
+
+      const authMaterial = createAuthMaterialSnapshot({
+        anthropic: { type: "api_key", key: "sk-ant-mesh-received" },
+      });
+
+      const response = await request(
+        app,
+        "POST",
+        "/api/mesh/sync",
+        JSON.stringify({
+          senderNodeId: "node_remote",
+          senderNodeUrl: "https://remote.example.com",
+          knownPeers: [],
+          timestamp: "2026-04-01T12:00:00.000Z",
+          sharedState: { authMaterial },
+        }),
+        { "Content-Type": "application/json" }
+      );
+
+      expect(response.status).toBe(200);
+      expect(mockApplyAuthMaterialSnapshot).toHaveBeenCalledWith(authMaterial);
+      // Proves the write path is the coordinated proxy, not a raw independent AuthStorage instance.
+      expect(mockCreateFusionAuthStorage).toHaveBeenCalled();
+      expect(mockMeshAuthStorageSet).toHaveBeenCalledWith("anthropic", { type: "api_key", key: "sk-ant-mesh-received" });
+    });
+
+    it("concurrent-writer survival: an unrelated provider's saved key is never clobbered by the mesh sync write", async () => {
+      mockApplyAuthMaterialSnapshot.mockReturnValue({
+        success: true,
+        authCount: 1,
+        providerAuth: { anthropic: { type: "api_key", key: "sk-ant-mesh-received" } },
+      });
+
+      // Simulate another Fusion instance's provider credential already persisted on disk by having
+      // the mocked coordinated proxy merge per-provider (as the real reload-before-persist proxy
+      // does) rather than overwrite the whole file.
+      const diskState: Record<string, unknown> = {
+        openai: { type: "api_key", key: "sk-openai-from-other-instance" },
+      };
+      mockMeshAuthStorageSet.mockImplementation(async (providerId: string, credential: unknown) => {
+        diskState[providerId] = credential;
+      });
+
+      const authMaterial = createAuthMaterialSnapshot({
+        anthropic: { type: "api_key", key: "sk-ant-mesh-received" },
+      });
+
+      const response = await request(
+        app,
+        "POST",
+        "/api/mesh/sync",
+        JSON.stringify({
+          senderNodeId: "node_remote",
+          senderNodeUrl: "https://remote.example.com",
+          knownPeers: [],
+          timestamp: "2026-04-01T12:00:00.000Z",
+          sharedState: { authMaterial },
+        }),
+        { "Content-Type": "application/json" }
+      );
+
+      expect(response.status).toBe(200);
+      // The unrelated provider saved by another instance before this handler ran must still be present.
+      expect(diskState.openai).toEqual({ type: "api_key", key: "sk-openai-from-other-instance" });
+      // And the received provider was merged in alongside it — no full-snapshot clobber.
+      expect(diskState.anthropic).toEqual({ type: "api_key", key: "sk-ant-mesh-received" });
+      expect(mockMeshAuthStorageSet).toHaveBeenCalledTimes(1);
     });
   });
 });

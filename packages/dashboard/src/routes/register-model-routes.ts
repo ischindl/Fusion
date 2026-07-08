@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { customProviderRegistryKey, mergeSupplementalAnthropicModels, resolvePlanningSettingsModel } from "@fusion/core";
 import type { CustomProvider } from "@fusion/core";
 import { ApiError } from "../api-error.js";
+import { getHermesPickerModels, HERMES_PICKER_PROVIDER_ID } from "../hermes-model-cache.js";
 import type { AuthStorageLike } from "../routes.js";
 import type { ApiRouteRegistrar } from "./types.js";
 
@@ -255,16 +256,60 @@ export const registerModelRoutes: ApiRouteRegistrar = (ctx) => {
         models = models.filter((m) => m.provider !== "cursor-cli");
       }
 
+      /*
+      FNXC:ModelCatalog 2026-07-07-09:05:
+      FN-7636 (deferred item 1 of FN-7630/GitHub #1931): additively surface
+      Hermes-configured models (`hermes profile list`) under the stable
+      "hermes" provider id so picker selections route to the Hermes runtime
+      (HERMES_RUNTIME_ID). Fetched through getHermesPickerModels, which is
+      backed by a short-TTL, single-flight cache — this call NEVER spawns the
+      `hermes` CLI per request, and NEVER throws (a missing/failed binary
+      degrades to []). Hermes rows are merged respecting the existing
+      seenModelKeys provider/id dedup so an existing row always wins over a
+      colliding Hermes row — this is purely additive and must never displace,
+      overwrite, or filter out an existing row.
+      */
+      const hermesModels = await getHermesPickerModels();
+      // Track "configured" by profile presence, not by how many rows survived
+      // the seenModelKeys dedup: even when every Hermes-derived id collides
+      // with an already-present row (existing row wins, see FN-7636 Surface
+      // Enumeration), the user still has Hermes profiles configured, so the
+      // "hermes" provider must remain selectable below.
+      const hermesRowsAdded = hermesModels.length > 0;
+      for (const hermesModel of hermesModels) {
+        const key = `${hermesModel.provider}/${hermesModel.id}`;
+        if (seenModelKeys.has(key)) continue;
+        seenModelKeys.add(key);
+        models.push(hermesModel);
+      }
+
       // Filter to only providers the user has explicitly configured in Fusion.
       // getAvailable() checks supplemental credential stores (Codex CLI,
       // Claude Code, env vars) which surface providers the user may not
       // have set up in Fusion. We restrict to providers with credentials
       // in Fusion's own auth stores (primary + legacy .pi + models.json),
       // plus any providers enabled via settings toggles (Claude CLI, etc.).
+      /*
+      FNXC:ModelCatalog 2026-07-07-08:00:
+      FN-7630 (GitHub #1931): the Hermes Runtime plugin must be strictly additive
+      — connecting/activating or disconnecting it must never narrow this
+      configuredProviders allow-set. This block only ever ADDS provider ids
+      (auth-storage-derived, CLI-toggle-derived, and customProviders-derived); it
+      never removes an entry based on any runtime-plugin connection state, and no
+      Hermes-specific branch exists here by design. customProviders' registry keys
+      are added unconditionally (regardless of whether Hermes is loaded/connected)
+      so a connected Hermes runtime can never deactivate independently-configured
+      custom Fusion providers/models. See register-model-routes-hermes-additive.test.ts.
+      */
       const configuredProviders = await getConfiguredProviderNames(options?.authStorage);
       if (useClaudeCli) configuredProviders.add("pi-claude-cli");
       if (useDroidCli) configuredProviders.add("droid-cli");
       if (useLlamaCpp) configuredProviders.add("llama-server");
+      // FNXC:ModelCatalog 2026-07-07-09:05 (FN-7636): only allow-list "hermes"
+      // through the final filter when Hermes rows were actually contributed
+      // above, mirroring the useClaudeCli/useDroidCli toggle pattern (Hermes
+      // has no separate settings toggle — profile presence IS the signal).
+      if (hermesRowsAdded) configuredProviders.add(HERMES_PICKER_PROVIDER_ID);
       // Custom providers are configured in Fusion's global settings rather than
       // the auth.json/models.json stores, so add their registry keys explicitly.
       for (const provider of customProviders) {

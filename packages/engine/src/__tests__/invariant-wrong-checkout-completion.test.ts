@@ -114,7 +114,12 @@ describe("FN-4115 wrong-checkout completion rejection", () => {
     const result = await tool.execute("id", {});
     expect(result.content[0].text).toContain("Task marked complete");
     expect(store.updateStep).toHaveBeenCalled();
-    expect(store.moveTask).not.toHaveBeenCalledWith("FN-4115", "todo", { preserveProgress: true });
+    // FNXC:ExecutorMoveTask 2026-07-07-08:38: A valid fn_task_done completion is distinguished from a wrong-checkout REFUSAL by its success log, not by the absence of a todo moveTask. setup() runs execute() with a mocked agent that never calls fn_task_done, so the FN-4806 silent worktree-reclaim path (executor.ts:11149, 3f8a5e6839) legitimately requeues to todo with { preserveProgress: true } — the same signature the refusal path (handleImplicitTaskDoneRefusal, executor.ts:13030) emits — so a moveTask-shape assertion cannot tell a valid completion from a refusal. Pin the positive success marker instead: a valid completion logs "Task marked done by agent" (executor.ts:13306), which the refusal test at line 82 proves a wrong-checkout rejection never emits. (Filter on id+message so the runContext arg / arity don't make this brittle.)
+    expect(
+      store.logEntry.mock.calls.some(
+        ([id, msg]) => id === "FN-4115" && typeof msg === "string" && msg === "Task marked done by agent",
+      ),
+    ).toBe(true);
   });
 
   it("FN-4115: pre-session liveness rejects missing worktree before createFnAgent", async () => {

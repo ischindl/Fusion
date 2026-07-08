@@ -767,7 +767,7 @@ describe("PluginManager", () => {
       expect(screen.getByText("Test Plugin A")).toBeTruthy();
     });
 
-    const toggle = screen.getByRole("checkbox");
+    const toggle = screen.getByRole("checkbox", { name: /Test Plugin A/ });
     expect(toggle).toBeTruthy();
     expect(toggle).not.toBeChecked();
 
@@ -796,7 +796,7 @@ describe("PluginManager", () => {
       expect(screen.getByText("Test Plugin A")).toBeTruthy();
     });
 
-    await userEvent.click(screen.getByRole("checkbox"));
+    await userEvent.click(screen.getByRole("checkbox", { name: /Test Plugin A/ }));
 
     await waitFor(() => {
       expect(addToast).toHaveBeenCalledWith(
@@ -818,7 +818,7 @@ describe("PluginManager", () => {
       expect(screen.getByText("Test Plugin A")).toBeTruthy();
     });
 
-    await userEvent.click(screen.getByRole("checkbox"));
+    await userEvent.click(screen.getByRole("checkbox", { name: /Test Plugin A/ }));
 
     await waitFor(() => {
       expect(addToast).toHaveBeenCalledWith("Failed to enable plugin: network", "error");
@@ -835,7 +835,7 @@ describe("PluginManager", () => {
       expect(screen.getByText("Test Plugin A")).toBeTruthy();
     });
 
-    const toggle = screen.getByRole("checkbox");
+    const toggle = screen.getByRole("checkbox", { name: /Test Plugin A/ });
     expect(toggle).toBeTruthy();
     expect(toggle).toBeChecked();
 
@@ -1150,7 +1150,7 @@ describe("PluginManager", () => {
       });
 
       await waitFor(() => {
-        const toggle = screen.getByRole("checkbox");
+        const toggle = screen.getByRole("checkbox", { name: /Test Plugin A/ });
         expect(toggle).toBeChecked();
       });
     });
@@ -1183,7 +1183,7 @@ describe("PluginManager", () => {
       });
 
       await waitFor(() => {
-        const toggle = screen.getByRole("checkbox");
+        const toggle = screen.getByRole("checkbox", { name: /Test Plugin A/ });
         expect(toggle).not.toBeChecked();
       });
     });

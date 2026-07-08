@@ -35,8 +35,8 @@ import { StaleTaskReporter } from "./stale-task-reporter.js";
 import { BacklogPressureReporter } from "./backlog-pressure-reporter.js";
 import { UnlinkedMissionsAdvisoryReporter } from "./unlinked-missions-advisory-reporter.js";
 import { createRunAuditor, generateSyntheticRunId } from "./run-audit.js";
-import { isWorkflowColumnsEnabled, DEFAULT_WORKFLOW_POOL_ID } from "@fusion/core";
-import { runHoldReleaseSweep, type SlotReservation } from "./hold-release.js";
+import { isWorkflowColumnsEnabled, DEFAULT_WORKFLOW_POOL_ID, resolveWorkflowIrForTask } from "@fusion/core";
+import { runHoldReleaseSweep, isUnplannedForExecution, type SlotReservation } from "./hold-release.js";
 import { evaluateParkedAgentTaskLink } from "./task-agent-sync.js";
 
 function shouldRunWorkflowColumnScheduler(_settings: Settings): boolean {
@@ -2273,21 +2273,17 @@ export class Scheduler {
           let reservedScope = false;
 
           /*
-          FNXC:CodingIdeasWorkflow 2026-07-04-12:10:
-          The workflow-column dispatch path is the only dispatcher when the flag is on, so the planning/bootstrap guards from the legacy todo filter must also apply here. A todo task being specified in place (status "planning") or still carrying the bootstrap stub PROMPT.md must not be released into an execution slot.
+          FNXC:WorkflowScheduling 2026-07-07-00:00:
+          The workflow-column dispatch path is the only dispatcher when the flag is on, so the planning/bootstrap guards from the legacy todo filter must also apply here — and they must be TRAIT-based, not keyed on the literal "todo" column id. A custom workflow's intake/planning column can be renamed (`ideas`, `Inbox`, the default workflow's renamed "Planning"), so gating this guard on `task.column === "todo"` alone let an unplanned card in a renamed intake column bypass the stub check and release straight into execution (FN-7648). `isUnplannedForExecution` resolves the intake trait on the task's OWN resolved workflow IR so every renamed variant is covered.
           */
-          if (task.status === "planning") {
-            return null;
-          }
-          if (task.column === "todo") {
-            try {
-              const promptContent = await readFile(getPromptPath(this.store.getTasksDir(), task.id), "utf-8");
-              if (promptContent === buildBootstrapPrompt(task.id, task.title, task.description)) {
-                return null;
-              }
-            } catch {
-              // Missing prompt handled by filesystem validation below.
+          try {
+            const ir = await resolveWorkflowIrForTask(this.store, task.id);
+            if (await isUnplannedForExecution(this.store, task, ir)) {
+              return null;
             }
+          } catch {
+            // IR resolution failure: fall through to the filesystem/other guards below,
+            // which handle a missing/invalid workflow via their own error paths.
           }
 
           const unmetDeps = getUnmetSchedulingDependencies(task, tasks, schedulingDependencyOptions);

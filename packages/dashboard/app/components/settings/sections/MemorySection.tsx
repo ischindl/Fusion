@@ -112,6 +112,19 @@ export function MemorySection({ scopeBanner, form, setForm, memory }: MemorySect
           </div>
         </>)}
 
+      <div className="form-group">
+        <label htmlFor="insightExtractionEnabled" className="checkbox-label">
+          <input id="insightExtractionEnabled" type="checkbox" checked={form.insightExtractionEnabled || false} onChange={(e) => setForm((f) => ({ ...f, insightExtractionEnabled: e.target.checked }))}/>{t("settings.memory.enableInsightExtraction", " Enable Insight Extraction ")}</label>
+        <small>{t("settings.memory.periodicallyExtractDurableInsightsFromCompletedTasks", "Periodically extract durable insights/learnings from completed tasks into memory")}</small>
+      </div>
+
+      {(form.insightExtractionEnabled || false) && (
+          <div className="form-group">
+            <label htmlFor="insightExtractionSchedule">{t("settings.memory.scheduleCron", "Schedule (cron)")}</label>
+            <input id="insightExtractionSchedule" type="text" className="input" value={form.insightExtractionSchedule ?? "0 2 * * *"} onChange={(e) => setForm((f) => ({ ...f, insightExtractionSchedule: e.target.value }))} placeholder={t("settings.memory.02", "0 2 * * *")}/>
+            <small>{t("settings.memory.cronExpressionForInsightExtractionScheduleDefaultDaily", "Cron expression for insight extraction schedule (default: daily at 2 AM)")}</small>
+          </div>)}
+
       <div style={{ borderTop: "1px solid var(--border)", margin: "var(--space-lg) 0" }}/>
 
       <div className="form-group">

@@ -1,3 +1,4 @@
+import { createFusionAuthStorage } from "@fusion/engine";
 import { ApiError, badRequest } from "../api-error.js";
 import type { ApiRouteRegistrar } from "./types.js";
 import { fetchFromRemoteNode } from "./register-settings-sync-helpers.js";
@@ -538,9 +539,16 @@ export const registerMeshRoutes: ApiRouteRegistrar = (ctx) => {
           if (!sharedState.authMaterial) return;
           validateSnapshotEnvelope(sharedState.authMaterial);
           const applied = central.applyAuthMaterialSnapshot(sharedState.authMaterial as Parameters<typeof central.applyAuthMaterialSnapshot>[0]);
-          const { AuthStorage } = await import("@earendil-works/pi-coding-agent");
-          const { getFusionAuthPath } = await import("../auth-paths.js");
-          const authStorage = AuthStorage.create(getFusionAuthPath());
+          /*
+           * FNXC:ProviderAuth 2026-07-07-00:00:
+           * Dashboard sync/mesh credential writes must go through the coordinated createFusionAuthStorage()
+           * proxy (reload-before-persist, supplemental-credential sync, logout suppression, Anthropic aliasing)
+           * instead of a raw AuthStorage.create(getFusionAuthPath()) instance, so concurrent Fusion processes
+           * sharing ~/.fusion/agent/auth.json do not clobber each other's saved provider keys. FN-7647,
+           * follow-up to FN-7646's engine-side hardening. Uses a static top-level import (not dynamic
+           * import) per FN-3049's bundler-safety rule against dynamic engine imports (`await` + `import(...)` of the engine package).
+           */
+          const authStorage = createFusionAuthStorage();
           for (const [providerId, credential] of Object.entries(applied.providerAuth)) {
             if (credential.type === "api_key" && credential.key) {
               authStorage.set(providerId, { type: "api_key", key: credential.key });

@@ -34,6 +34,9 @@ const mocks = vi.hoisted(() => ({
   oauthExpiryMonitorStop: vi.fn(),
   oauthValidityLoggerStart: vi.fn(async () => undefined),
   oauthValidityLoggerStop: vi.fn(),
+  // FNXC:EngineOAuth 2026-07-07-08:25: FN-7574 added OAuthRefreshScheduler (proactive access-token refresh) to the notification module; mirror its start/stop seams here alongside the sibling OAuth monitors.
+  oauthRefreshSchedulerStart: vi.fn(async () => undefined),
+  oauthRefreshSchedulerStop: vi.fn(),
   runtimeConfigurePrMonitoring: vi.fn(),
   prHandlerCreateFollowUpTask: vi.fn(async () => undefined),
 }));
@@ -159,6 +162,13 @@ vi.mock("../notification/index.js", () => ({
     return {
       start: mocks.oauthExpiryMonitorStart,
       stop: mocks.oauthExpiryMonitorStop,
+    };
+  }),
+  // FNXC:EngineOAuth 2026-07-07-08:25: FN-7574 constructs `new OAuthRefreshScheduler({ authStorage })` then awaits `.start()`/`.stop()` in ProjectEngine.start/stop. Export a constructable mock (function impl returning {start,stop}) so `new` works and the canonical-listener wiring tests run instead of failing on a missing mock export.
+  OAuthRefreshScheduler: vi.fn().mockImplementation(function () {
+    return {
+      start: mocks.oauthRefreshSchedulerStart,
+      stop: mocks.oauthRefreshSchedulerStop,
     };
   }),
   OAuthValidityLogger: vi.fn().mockImplementation(function () {
@@ -345,6 +355,8 @@ beforeEach(() => {
   mocks.oauthExpiryMonitorStop.mockClear();
   mocks.oauthValidityLoggerStart.mockClear();
   mocks.oauthValidityLoggerStop.mockClear();
+  mocks.oauthRefreshSchedulerStart.mockClear();
+  mocks.oauthRefreshSchedulerStop.mockClear();
 
   mocks.execFile.mockImplementation((
     _file: string,
@@ -1547,15 +1559,26 @@ describe("ProjectEngine workspace merge dispatch hardening (Phase C review)", ()
     vi.useFakeTimers();
     try {
       const mockStore = createMockStore({ ...baseSettings, autoMerge: true });
-      // First getTask (dispatch routing) returns the workspace task; the catch's getTask
-      // (after the throw) returns null to simulate a DB outage.
-      mockStore.store.getTask
-        .mockResolvedValueOnce(workspaceTask() as any) // dispatch routing read
-        .mockResolvedValueOnce(workspaceTask() as any) // canMergeTask sweep read (if any)
-        .mockResolvedValue(null as any); // catch-block read → DB outage
+      // FNXC:Workspace 2026-07-07-08:30 (FN-7610 regression):
+      // FN-7610 hoisted an isWorkspaceTask getTask read (mergeCandidate) into the
+      // dispatch ahead of landWorkspaceTask. A fixed mockResolvedValueOnce(2x)+null
+      // sequence no longer lands the null on the catch read — an earlier routing read
+      // consumes it and the workspace task never reaches landWorkspaceTask, so the
+      // WorkspacePartialLandError catch (and its fail-closed updateTask) never runs.
+      // Flip a flag inside the landWorkspaceTask mock and return the workspace task from
+      // getTask until that flag is set, so the null lands deterministically on the
+      // catch-block read (DB outage) regardless of how many routing reads precede the throw.
+      let landInvoked = false;
+      mocks.landWorkspaceTask.mockImplementation(async () => {
+        landInvoked = true;
+        throw new WorkspacePartialLandError(0, ["repo-a"], "Workspace partial land for FN-WSH: 0 landed, 1 failed");
+      });
       mocks.currentStore = mockStore.store;
-      mocks.landWorkspaceTask.mockRejectedValue(
-        new WorkspacePartialLandError(0, ["repo-a"], "Workspace partial land for FN-WSH: 0 landed, 1 failed"),
+      // getTask is typed to return a workspace task Record, but the real TaskStore
+      // signature yields Task | null; cast through unknown so the DB-outage null is
+      // expressible without `any`.
+      mockStore.store.getTask.mockImplementation(async () =>
+        (landInvoked ? null : workspaceTask()) as unknown as Record<string, unknown>,
       );
 
       const engine = createEngine();

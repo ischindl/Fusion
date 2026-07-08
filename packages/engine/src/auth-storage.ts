@@ -17,6 +17,21 @@ import type { OAuthCredentials } from "@earendil-works/pi-ai/oauth";
 type StoredCredential = StoredAuthCredential;
 
 /*
+FNXC:ProviderAuth 2026-07-07-00:00:
+FN-7646: the cross-process ~/.fusion/agent/auth.json coordination invariant (concurrent
+writers merge per-provider instead of clobbering each other's credentials) depends on the
+vendored @earendil-works/pi-coding-agent AuthStorage backend using proper-lockfile locking
+plus a per-provider read-modify-merge (FileAuthStorageBackend.persistProviderChange /
+refreshOAuthTokenWithLock re-read the file under a lock and spread
+{...currentData, [provider]: credential} rather than flushing a whole-file in-memory
+snapshot). packages/engine/package.json already floors this at
+"@earendil-works/pi-coding-agent": "^0.80.3" (caret bounds it to >=0.80.3 <0.81.0, which is
+where this locked per-provider merge landed) — do not downgrade below 0.80.x, and re-verify
+this comment against dist/core/auth-storage.js if the range is ever widened. See
+packages/engine/src/__tests__/auth-storage-concurrency.test.ts for the regression coverage.
+*/
+
+/*
 FNXC:ClaudeOAuth 2026-07-05-00:00:
 FN-7574: a 60s reactive refresh buffer meant a healthy Anthropic subscription token was
 only ever refreshed a few seconds before (or after) it actually expired — too late to
@@ -556,7 +571,19 @@ export function createFusionAuthStorage(): AuthStorage {
         FNXC:ClaudeOAuth 2026-06-13-22:46:
         A manual re-login or replacement credential must win over an older in-flight refresh response.
         Re-check the credential identity before persisting so a delayed refresh cannot restore stale OAuth material after the user already fixed auth.
+
+        FNXC:ProviderAuth 2026-07-07-00:00:
+        FN-7646: ~/.fusion/agent/auth.json is shared across independent Fusion processes on one
+        machine (e.g. a CLI-served web app and the desktop app). The FileAuthStorageBackend already
+        coordinates concurrent writers with a lock plus a per-provider read-modify-merge, so it never
+        clobbers OTHER providers — but this process's own in-flight refresh must not overwrite a
+        NEWER credential another process wrote for the SAME provider while this refresh was pending.
+        Re-read from disk (primary.reload()) before comparing identity so `latestCredential` reflects
+        what is actually on disk right now, not this process's possibly-stale in-memory snapshot from
+        before the refresh started. Without this reload, a concurrent process's newer login/refresh for
+        this exact provider could be silently overwritten by our older refreshed token.
         */
+        primary.reload();
         const latestCredential = selectStoredCredential(storageProvider);
         if (!isSameOAuthCredentialIdentity(latestCredential, credential)) {
           return resolveStoredCredentialApiKey(storageProvider, latestCredential);

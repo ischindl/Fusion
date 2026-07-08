@@ -8,6 +8,7 @@ import {
   StepSessionExecutor,
 } from "../step-session-executor.js";
 import { AgentLogger } from "../agent-logger.js";
+import { expectAppendAgentLog } from "./agent-log-assertions.js";
 import * as worktreeBackendModule from "../worktree-backend.js";
 import type { TaskDetail, Settings, TaskStore } from "@fusion/core";
 import { installTaskWorktreeIdentityGuard } from "../worktree-hooks.js";
@@ -2753,9 +2754,10 @@ describe("StepSessionExecutor", () => {
 
       await executor.executeAll();
 
-      expect(appendAgentLog).toHaveBeenCalledWith("FN-001", "step output", "text", undefined, "executor");
-      expect(appendAgentLog).toHaveBeenCalledWith("FN-001", "read", "tool", undefined, "executor");
-      expect(appendAgentLog).toHaveBeenCalledWith("FN-001", "read", "tool_result", undefined, "executor");
+      // FN-7503 added an optional 6th timing arg; pin the first five and tolerate timing.
+      expectAppendAgentLog(appendAgentLog, "FN-001", "step output", "text", undefined, "executor");
+      expectAppendAgentLog(appendAgentLog, "FN-001", "read", "tool", undefined, "executor");
+      expectAppendAgentLog(appendAgentLog, "FN-001", "read", "tool_result", undefined, "executor");
     });
 
     it("flushes AgentLogger in attempt finally block", async () => {

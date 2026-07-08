@@ -4,6 +4,7 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
 import { resolveDesktopRuntimePrimaryProject } from "./engine-runtime.js";
+import { resolveDesktopBundlePluginDirs } from "./bundled-plugin-dirs.js";
 
 /*
  * FNXC:DesktopRuntime 2026-07-02-14:35:
@@ -36,10 +37,23 @@ export interface DesktopRuntimeStatus {
   error?: string;
 }
 
+/*
+ * FNXC:DesktopRuntime 2026-07-07-12:00:
+ * FN-7623: the embedded desktop server must wire a PluginStore + PluginLoader into createServer
+ * (as the CLI dashboard command does) or the Settings -> Plugins Browse-registry sub-router never
+ * mounts ("Plugin \"registry\" not found") and plugin install throws "Plugin install mode is not
+ * supported: plugin loader not available". getPluginStore()/getDatabase() are the two TaskStore
+ * members this wiring needs beyond the pre-existing init/watch/close surface.
+ */
+type PluginStoreLike = { init(): Promise<void> };
+type PluginDatabaseLike = { runPluginSchemaInits(hooks: Array<{ pluginId: string; hook: unknown }>): Promise<void> };
+
 type TaskStoreLike = {
   init(): Promise<void>;
   watch(): Promise<void>;
   close(): void;
+  getPluginStore(): PluginStoreLike;
+  getDatabase(): PluginDatabaseLike;
 };
 
 type RuntimeCleanup = () => Promise<void> | void;
@@ -103,9 +117,9 @@ async function createStoreDefault(rootDir: string): Promise<TaskStoreLike> {
 }
 
 async function createDashboardServerDefault(store: TaskStoreLike, rootDir: string): Promise<{ server: Server; cleanup: RuntimeCleanup }> {
-  const { CentralCore } = await import("@fusion/core");
+  const { CentralCore, PluginLoader, ensureBundledPluginInstalled, isBundledPluginId } = await import("@fusion/core");
   const { createServer } = await import("@fusion/dashboard");
-  const { ProjectEngineManager, createFusionAuthStorage, createFusionModelRegistry } = await import("@fusion/engine");
+  const { ProjectEngineManager, createFusionAuthStorage, createFusionModelRegistry, seedDashboardProviders } = await import("@fusion/engine");
 
   /*
    * FNXC:DesktopRuntime 2026-06-20-23:39:
@@ -113,7 +127,9 @@ async function createDashboardServerDefault(store: TaskStoreLike, rootDir: strin
    */
   const centralCore = new CentralCore();
   const engineManager = new ProjectEngineManager(centralCore);
+  const providerSeeding: { dispose?: () => void } = {};
   const cleanup = async () => {
+    providerSeeding.dispose?.();
     await engineManager.stopAll();
     await centralCore.close?.();
   };
@@ -138,25 +154,126 @@ async function createDashboardServerDefault(store: TaskStoreLike, rootDir: strin
     strace(`createDashboardServer: primaryProject=${rootProject?.id ?? "none"}`);
     const primaryEngine = rootProject ? await engineManager.ensureEngine(rootProject.id) : undefined;
     /*
-     * FNXC:DesktopRuntime 2026-07-03-06:20:
-     * Wire an auth storage into the embedded server. Without it, GET /api/auth/status throws 500
-     * "Authentication is not configured", the dashboard's first-run onboarding hook (useAuthOnboarding
-     * -> fetchAuthStatus) hits its silent catch and NEVER opens the AI/GitHub onboarding wizard, and
-     * providers can't be authenticated at all. The CLI wires the same storage (createFusionAuthStorage);
-     * the desktop must too so operators can set up AI accounts. (API-key provider wrapping remains
-     * CLI-only for now; OAuth + CLI providers are available here.)
+     * FNXC:DesktopRuntime 2026-07-07-00:00:
+     * FN-7622: wire an auth storage into the embedded server AND run it through the same
+     * registration sequence the CLI serve/dashboard/daemon commands use — built-in Zai/API-key
+     * provider seeding (registerBuiltInZaiProvider), wrapAuthStorageWithApiKeyProviders, and
+     * registerCustomProviders(globalSettings.customProviders) — via the shared
+     * @fusion/engine seedDashboardProviders() helper. Previously this path passed the RAW
+     * authStorage/modelRegistry straight to createServer and skipped that whole sequence, so
+     * desktop's Authentication page and model picker showed a truncated provider catalog
+     * (stock API-key providers and user customProviders[] missing) versus the identical config
+     * rendered by the web build. Passing the WRAPPED authStorage returned by
+     * seedDashboardProviders (not the raw one) closes that gap; the disposer unsubscribes the
+     * settings:updated -> reregisterCustomProviders listener on shutdown.
      */
     const authStorage = createFusionAuthStorage();
     // FNXC:DesktopRuntime 2026-07-03-07:00: a ModelRegistry is required for the /api/models endpoint;
     // without it the onboarding model picker shows "no models" even with a provider connected.
     const modelRegistry = createFusionModelRegistry(authStorage);
+    strace("createDashboardServer: seedDashboardProviders");
+    const { authStorage: wrappedAuthStorage, dispose } = await seedDashboardProviders({
+      store: store as never,
+      authStorage,
+      modelRegistry,
+      log: (scope, message) => strace(`[${scope}] ${message}`),
+    });
+    providerSeeding.dispose = dispose;
+
+    /*
+     * FNXC:DesktopRuntime 2026-07-07-12:00:
+     * FN-7623: mirror the CLI dashboard command's plugin wiring (packages/cli/src/commands/dashboard.ts)
+     * — construct the store's PluginStore, build a PluginLoader, load enabled plugins, and run schema-init
+     * hooks — so the desktop embedded server's registry sub-router mounts (GET /api/plugins/registry) and
+     * POST /api/plugins install mode works. Failures here must not crash embedded startup: the dashboard
+     * still needs to boot even if the plugin subsystem can't come up (e.g. a corrupt plugin manifest), so
+     * this is wrapped and traced rather than left to throw.
+     *
+     * FNXC:DesktopRuntime 2026-07-07-12:30:
+     * FN-7637: bundled-plugin auto-install (Dependency Graph, Hermes, OpenClaw, Paperclip, …) is now
+     * host-agnostic in @fusion/core's ensureBundledPluginInstalled. The only host-specific input is
+     * bundle-directory resolution: resolveDesktopBundlePluginDirs (./bundled-plugin-dirs.js) resolves
+     * each manifest id to its staged `@fusion-plugin-examples/<short-name>` package directory via
+     * import.meta.resolve, mirroring the CLI's `<cli>/dist/plugins/<id>` resolver
+     * (packages/cli/src/plugins/bundled-plugin-install.ts). Mirrors the CLI dashboard command's startup
+     * auto-install pass: install the bundled Dependency Graph plugin before loadAllPlugins() so it is
+     * enabled/registered before the general load pass runs, and expose the same lazy-install callback the
+     * CLI wires so PUT /api/plugins/:id/settings can auto-install Hermes/OpenClaw/Paperclip/etc. on first
+     * save. Cross-reference: local-server.ts carries the matching wiring for the other desktop startup path.
+     */
+    let pluginStore: PluginStoreLike | undefined;
+    let pluginLoader: InstanceType<typeof PluginLoader> | undefined;
+    let ensureBundledPluginInstalledCallback: ((pluginId: string) => Promise<boolean>) | undefined;
+    try {
+      strace("createDashboardServer: pluginStore.init");
+      pluginStore = store.getPluginStore();
+      await pluginStore.init();
+      pluginLoader = new PluginLoader({ pluginStore: pluginStore as never, taskStore: store as never });
+
+      const boundPluginStore = pluginStore;
+      const boundPluginLoader = pluginLoader;
+
+      try {
+        strace("createDashboardServer: bundled dependency-graph auto-install");
+        const installStatus = await ensureBundledPluginInstalled(
+          boundPluginStore as never,
+          boundPluginLoader,
+          "fusion-plugin-dependency-graph",
+          resolveDesktopBundlePluginDirs,
+        );
+        strace(`createDashboardServer: bundled dependency-graph auto-install status=${installStatus}`);
+      } catch (error) {
+        strace(
+          `createDashboardServer: bundled dependency-graph auto-install FAILED (non-fatal) — ${error instanceof Error ? error.stack : String(error)}`,
+        );
+      }
+
+      strace("createDashboardServer: pluginLoader.loadAllPlugins");
+      const { loaded, errors } = await pluginLoader.loadAllPlugins();
+      strace(`createDashboardServer: plugins loaded=${loaded} errors=${errors}`);
+      const schemaHooks = pluginLoader.getPluginSchemaInitHooks();
+      if (schemaHooks.length > 0) {
+        await store.getDatabase().runPluginSchemaInits(schemaHooks);
+      }
+
+      ensureBundledPluginInstalledCallback = async (pluginId: string): Promise<boolean> => {
+        if (!isBundledPluginId(pluginId)) {
+          strace(`ensureBundledPluginInstalled: unknown bundled plugin id "${pluginId}"`);
+          return false;
+        }
+        try {
+          const status = await ensureBundledPluginInstalled(boundPluginStore as never, boundPluginLoader, pluginId, resolveDesktopBundlePluginDirs);
+          if (status === "missing-bundle") {
+            strace(`ensureBundledPluginInstalled: bundled plugin "${pluginId}" not found in this build`);
+            return false;
+          }
+          strace(`ensureBundledPluginInstalled: bundled plugin "${pluginId}" status=${status}`);
+          return true;
+        } catch (error) {
+          strace(
+            `ensureBundledPluginInstalled: failed to auto-install "${pluginId}" — ${error instanceof Error ? error.stack : String(error)}`,
+          );
+          throw error;
+        }
+      };
+    } catch (error) {
+      strace(
+        `createDashboardServer: plugin subsystem init FAILED (non-fatal, dashboard still boots) — ${error instanceof Error ? error.stack : String(error)}`,
+      );
+      pluginStore = undefined;
+      pluginLoader = undefined;
+      ensureBundledPluginInstalledCallback = undefined;
+    }
+
     strace("createDashboardServer: createServer");
     const app = createServer(store as never, {
       ...(primaryEngine ? { engine: primaryEngine } : {}),
       engineManager,
       centralCore,
-      authStorage,
+      authStorage: wrappedAuthStorage,
       modelRegistry,
+      ...(pluginStore && pluginLoader ? { pluginStore: pluginStore as never, pluginLoader, pluginRunner: pluginLoader } : {}),
+      ...(ensureBundledPluginInstalledCallback ? { ensureBundledPluginInstalled: ensureBundledPluginInstalledCallback } : {}),
       onProjectFirstAccessed: (projectId: string) => engineManager.onProjectAccessed(projectId),
     });
 

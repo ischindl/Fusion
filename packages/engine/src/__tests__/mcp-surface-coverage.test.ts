@@ -131,7 +131,8 @@ describe("MCP surface coverage", () => {
 
   it("keeps dashboard planning forwarding resolved MCP with the readonly opt-in", () => {
     const source = readFileSync(join(process.cwd(), "../dashboard/src/planning.ts"), "utf8");
-    const forwardingNeedle = "mcpServers: (await resolveMcpServersForStore(store)).servers,";
+    // FNXC:McpCoverage 2026-07-07-09:50: FN-7446 wrapped planning MCP resolution in resolvePlanningMcpServers(store), defaulting undefined resolver results to empty servers. Match the new helper call instead of the raw (await resolveMcpServersForStore(store)).servers expression.
+    const forwardingNeedle = "mcpServers: await resolvePlanningMcpServers(store),";
     expect(source.match(new RegExp(forwardingNeedle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"))?.length).toBe(2);
     expect(source.match(/allowMcpToolsInReadonly: true,/g)?.length).toBeGreaterThanOrEqual(2);
     expect(source).toContain("const agentResult = await createFnAgent({");

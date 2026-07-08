@@ -590,7 +590,11 @@ describe("AppModals", () => {
 
       fireEvent.click(screen.getByTestId("task-detail-open-detail"));
       expect(pushStateSpy).toHaveBeenCalledTimes(1);
-      expect(mockModalManager.openDetailTask).toHaveBeenCalledWith({ id: "FN-2", title: "Nested" }, undefined);
+      /*
+      FNXC:TaskDetailNav 2026-07-07-09:15:
+      FN-7352 (route completed-task refine menus to detail) added a third `opts?: { origin?: DetailTaskOrigin }` argument to openDetailTask / openDetailTaskWithNav, so the modalManager call now carries three args (task, tab, opts). A task-to-task open with no explicit tab/origin passes (task, undefined, undefined).
+      */
+      expect(mockModalManager.openDetailTask).toHaveBeenCalledWith({ id: "FN-2", title: "Nested" }, undefined, undefined);
     });
   });
 });

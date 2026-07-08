@@ -18,6 +18,7 @@ import * as useTerminalModule from "../../hooks/useTerminal";
 import * as useTerminalSessionsModule from "../../hooks/useTerminalSessions";
 import * as useWorkspacesModule from "../../hooks/useWorkspaces";
 import * as apiModule from "../../api";
+import { loadAllAppCss } from "../../test/cssFixture";
 
 const terminalModalCss = readFileSync("app/components/TerminalModal.css", "utf8");
 
@@ -1494,6 +1495,111 @@ describe("TerminalModal", () => {
         terminalModalCss.match(/@media \(max-width: 768px\) \{[\s\S]*?\.terminal-status-bar\s*\{([^}]*)\}/)?.[1] ?? "";
       expect(footerRule).toContain("overflow-x: auto;");
       expect(footerRule).toContain("min-width: 0;");
+    });
+
+    describe("real-CSS mobile cascade (FN-7621 recurrence #3)", () => {
+      // FN-7621: the FN-7550/FN-7560 tests above are leaf-rule string matches —
+      // they proved the declarations exist, but never proved the panel actually
+      // scrolls under the real mobile cascade (ancestor overrides, mobile
+      // classes, media queries). This is exactly why the bug recurred a third
+      // time while those tests stayed green: touch-action's used value for a
+      // touch gesture is the INTERSECTION of the touched element's value and
+      // every ancestor's value (confirmed by this codebase's own
+      // "opt known horizontal scrollers back into pan-x" convention in
+      // styles.css's mobile lockdown), so a correct leaf `touch-action: pan-x`
+      // on `.terminal-shortcut-panel` was silently defeated by its ancestors
+      // (`.terminal-modal`, `.modal-overlay`) staying locked to `pan-y` by that
+      // same global mobile lockdown. Resolve real cascade winners via
+      // `getComputedStyle` under `loadAllAppCss()` instead of matching rule text.
+      let styleEl: HTMLStyleElement;
+
+      beforeAll(() => {
+        styleEl = document.createElement("style");
+        styleEl.textContent = loadAllAppCss();
+        document.head.appendChild(styleEl);
+      });
+
+      afterAll(() => {
+        styleEl.remove();
+      });
+
+      async function renderMobileShortcutPanel(): Promise<{ panel: HTMLElement; modal: HTMLElement; overlay: HTMLElement | null }> {
+        Object.defineProperty(window, "innerWidth", { value: 390, configurable: true });
+        render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+        const toggle = await screen.findByTestId("terminal-shortcut-toggle");
+        fireEvent.click(toggle);
+        const panel = await screen.findByTestId("terminal-shortcut-panel");
+        const modal = await screen.findByTestId("terminal-modal");
+        const overlay = modal.closest(".modal-overlay") as HTMLElement | null;
+        return { panel, modal, overlay };
+      }
+
+      it("resolves the panel + full ancestor chain as width-bounded and pan-x-capable at mobile fullscreen", async () => {
+        const { panel, modal, overlay } = await renderMobileShortcutPanel();
+        expect(modal).toHaveClass("terminal-modal--mobile");
+
+        const panelStyle = getComputedStyle(panel);
+        expect(panelStyle.minWidth).toBe("0px");
+        expect(panelStyle.overflowX).toBe("auto");
+        expect(panelStyle.flexWrap).toBe("nowrap");
+        expect(panelStyle.touchAction).toContain("pan-x");
+
+        // The direct parent (.terminal-modal) must itself be width-bounded
+        // (overflow: hidden + a definite width/max-width) AND must not
+        // re-lock horizontal panning for its descendants — this is the
+        // ancestor that FN-7550/FN-7560 never touched.
+        const modalStyle = getComputedStyle(modal);
+        expect(modalStyle.overflow).toBe("hidden");
+        expect(modalStyle.maxWidth).not.toBe("");
+        expect(modalStyle.touchAction).toContain("pan-x");
+
+        // The portaled overlay ancestor is the OTHER surface the mobile
+        // lockdown explicitly re-locks to pan-y (`.modal-overlay:not(.confirm-dialog-overlay)`
+        // in styles.css) — it must be carved back out too.
+        expect(overlay).toBeTruthy();
+        const overlayStyle = getComputedStyle(overlay as HTMLElement);
+        expect(overlayStyle.touchAction).toContain("pan-x");
+      });
+
+      it("keeps the ancestor chain pan-x-capable in the --keyboard-overlap narrowed-visual-viewport variant", async () => {
+        const { panel, modal, overlay } = await renderMobileShortcutPanel();
+
+        // Simulate the keyboard-open narrowed-visual-viewport variant
+        // (--vv-width narrower than the layout viewport) directly on the DOM
+        // node — this exercises the `.terminal-modal--mobile[style*="--keyboard-overlap"]`
+        // selector's cascade without needing the full focus/resize keyboard
+        // simulation machinery used elsewhere in this file.
+        act(() => {
+          modal.style.setProperty("--keyboard-overlap", "300px");
+          modal.style.setProperty("--vv-width", "320px");
+          modal.style.setProperty("--vv-height", "380px");
+        });
+
+        const panelStyle = getComputedStyle(panel);
+        expect(panelStyle.minWidth).toBe("0px");
+        expect(panelStyle.overflowX).toBe("auto");
+        expect(panelStyle.touchAction).toContain("pan-x");
+
+        const modalStyle = getComputedStyle(modal);
+        expect(modalStyle.maxWidth).toBe("var(--vv-width, 100vw)");
+        expect(modalStyle.touchAction).toContain("pan-x");
+
+        expect(overlay).toBeTruthy();
+        expect(getComputedStyle(overlay as HTMLElement).touchAction).toContain("pan-x");
+      });
+
+      it("does not regress desktop docked/floating/pinned-below touch-action or width contracts", async () => {
+        Object.defineProperty(window, "innerWidth", { value: 1280, configurable: true });
+        render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+        const modal = await screen.findByTestId("terminal-modal");
+        expect(modal).not.toHaveClass("terminal-modal--mobile");
+        // Desktop never had a touch-action restriction on the modal/overlay —
+        // this fix only carves out the mobile-locked ancestors, so desktop's
+        // computed touch-action must stay whatever it already was (unset/auto),
+        // never narrowed to something that would block desktop pointer input.
+        const modalStyle = getComputedStyle(modal);
+        expect(modalStyle.touchAction === "" || modalStyle.touchAction === "auto").toBe(true);
+      });
     });
 
     it("is hidden by default and toggles from header action", async () => {
@@ -7985,6 +8091,364 @@ describe("TerminalModal — FN-7603 mobile inter-character spacing (Canvas vs DO
 
     await waitFor(() => {
       expect(getMockBakedLetterSpacingPx()).toBeCloseTo(0, 5);
+    });
+  });
+});
+
+/*
+FNXC:Terminal 2026-07-06-09:15:
+FN-7620: "terminal renders nothing on mobile" is a DIFFERENT symptom than the
+FN-7456->FN-7603 inter-character-spacing family above — a total blank render,
+not visible-but-spaced ASCII. Root cause: real `FitAddon.proposeDimensions()`
+(@xterm/addon-fit@0.10.0) reads `getComputedStyle(terminal.element.
+parentElement)` height/width and floors to a degenerate `{cols: 2, rows: 1}`
+grid — rather than bailing out — whenever that resolves to a zero box (e.g.
+the mobile fullscreen/keyboard-overlap CSS height cascade has not settled by
+the time the first post-open `fitAddon.fit()` runs). Only the WHOLE MODAL
+(`modalRef`) had a ResizeObserver; nothing watched the xterm CONTAINER
+(`terminalRef`) itself, so if the container's OWN box was still zero at the
+single scheduled deferred-fit check, no later trigger ever re-measured it —
+the terminal stayed a near-invisible 2x1 grid clipped inside a genuinely
+zero-height box. This models that exact mechanism: `mockFitAddonFit`'s
+implementation is temporarily swapped for a variant that reads the REAL
+container's clientWidth/clientHeight (mirroring the real addon's
+`getComputedStyle(...).width/height` read) instead of the shared fixed-width
+constant the spacing-family tests above use, and a captured
+`new ResizeObserver(cb)` lets the test fire the SAME notification a real
+browser would deliver the instant the container's box changes size — without
+calling any keyboard-toggle/orientation/reconnect/manual-refit production
+handler. See docs/solutions/ui-bugs/mobile-terminal-blank-render-zero-geometry-container.md.
+*/
+describe("TerminalModal — FN-7620 mobile blank render (zero-geometry xterm container)", () => {
+  const mockOnClose = vi.fn();
+  const mockSendInput = vi.fn();
+  const mockResize = vi.fn();
+  const mockReconnect = vi.fn();
+
+  const createMockTerminalState = (overrides = {}) => ({
+    connectionStatus: "connected" as const,
+    sendInput: mockSendInput,
+    resize: mockResize,
+    onData: vi.fn(() => vi.fn()),
+    onExit: vi.fn(() => vi.fn()),
+    onConnect: vi.fn(() => vi.fn()),
+    onScrollback: vi.fn(() => vi.fn()),
+    reconnect: mockReconnect,
+    onSessionInvalid: vi.fn(() => vi.fn()),
+    ...overrides,
+  });
+
+  type CapturedResizeObserverEntry = { target: Element; callback: ResizeObserverCallback };
+  let capturedResizeObservers: CapturedResizeObserverEntry[] = [];
+
+  class MockResizeObserver {
+    private readonly callback: ResizeObserverCallback;
+    constructor(callback: ResizeObserverCallback) {
+      this.callback = callback;
+    }
+    observe(target: Element): void {
+      capturedResizeObservers.push({ target, callback: this.callback });
+    }
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+
+  /**
+   * Fires the captured ResizeObserver callback(s) for the element with the
+   * given `data-testid`, mirroring exactly what a real browser delivers when
+   * that element's own box changes size. Returns false if no ResizeObserver
+   * ever observed that element (the pre-fix state for "terminal-xterm").
+   */
+  function fireResizeObserverFor(testId: string): boolean {
+    const target = screen.getByTestId(testId);
+    const matches = capturedResizeObservers.filter((entry) => entry.target === target);
+    if (matches.length === 0) return false;
+    for (const entry of matches) {
+      entry.callback(
+        [] as unknown as ResizeObserverEntry[],
+        entry as unknown as ResizeObserver,
+      );
+    }
+    return true;
+  }
+
+  // Mirrors real FitAddon.proposeDimensions()'s degenerate-floor formula
+  // (`Math.max(2, floor(width/cellWidth))` / `Math.max(1, floor(height/
+  // cellHeight))`) against the REAL xterm container element's clientWidth/
+  // clientHeight — unlike the shared fixed-width mock the spacing-family
+  // tests above use, this is what lets the test distinguish "the container is
+  // still a zero/degenerate box" from "the container has settled to a real,
+  // usable box".
+  const CHAR_WIDTH_PX = 9;
+  const CHAR_HEIGHT_PX = 17;
+  const geometryAwareFitAddonFit = vi.fn(() => {
+    const container = screen.queryByTestId("terminal-xterm");
+    const width = container?.clientWidth ?? 0;
+    const height = container?.clientHeight ?? 0;
+    mockTerminalInstance.cols = Math.max(2, Math.floor(width / CHAR_WIDTH_PX));
+    mockTerminalInstance.rows = Math.max(1, Math.floor(height / CHAR_HEIGHT_PX));
+  });
+
+  const originalMockFitAddonFitImpl = mockFitAddonFit.getMockImplementation();
+  let previousInnerWidth: number;
+  let previousOntouchstart: unknown;
+  let originalWindowResizeObserver: unknown;
+  let originalGlobalResizeObserver: unknown;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetMockTerminalGeometry();
+    resetFontRemeasureCount();
+    capturedResizeObservers = [];
+    mockFitAddonFit.mockImplementation(geometryAwareFitAddonFit);
+
+    originalWindowResizeObserver = (window as unknown as { ResizeObserver?: unknown }).ResizeObserver;
+    originalGlobalResizeObserver = (globalThis as unknown as { ResizeObserver?: unknown }).ResizeObserver;
+    (window as unknown as { ResizeObserver: unknown }).ResizeObserver = MockResizeObserver;
+    (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = MockResizeObserver;
+
+    vi.spyOn(window, "matchMedia").mockImplementation((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+    previousInnerWidth = window.innerWidth;
+    previousOntouchstart = window.ontouchstart;
+    // Real reported device: a narrow touch-primary mobile viewport.
+    Object.defineProperty(window, "innerWidth", { value: 390, configurable: true });
+    Object.defineProperty(window, "ontouchstart", { value: null, configurable: true });
+
+    window.localStorage.removeItem(TERMINAL_FONT_SIZE_KEY);
+    window.localStorage.removeItem(TERMINAL_PREFERENCES_KEY);
+    mockTerminalInstance.options.fontFamily = XTERM_FONT_FAMILY;
+    mockTerminalInstance.options.fontSize = 14;
+    mockTerminalInstance.cols = 80;
+    mockTerminalInstance.rows = 24;
+
+    mockUseTerminal.mockReturnValue(createMockTerminalState());
+    mockUseTerminalSessions.mockReturnValue(defaultSessionState);
+    mockUseWorkspaces.mockReturnValue({
+      projectName: "kb",
+      workspaces: [],
+      loading: false,
+      error: null,
+    });
+    mockCreateTerminalSession.mockResolvedValue({
+      sessionId: "test-session-123",
+      shell: "/bin/bash",
+      cwd: "/project",
+    });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, "innerWidth", { value: previousInnerWidth, configurable: true });
+    if (previousOntouchstart === undefined) {
+      delete (window as unknown as { ontouchstart?: unknown }).ontouchstart;
+    } else {
+      Object.defineProperty(window, "ontouchstart", { value: previousOntouchstart, configurable: true });
+    }
+    if (originalWindowResizeObserver) {
+      (window as unknown as { ResizeObserver: unknown }).ResizeObserver = originalWindowResizeObserver;
+    } else {
+      delete (window as unknown as { ResizeObserver?: unknown }).ResizeObserver;
+    }
+    if (originalGlobalResizeObserver) {
+      (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = originalGlobalResizeObserver;
+    } else {
+      delete (globalThis as unknown as { ResizeObserver?: unknown }).ResizeObserver;
+    }
+    mockFitAddonFit.mockImplementation(originalMockFitAddonFitImpl ?? (() => {}));
+    Object.defineProperty(window, "visualViewport", { value: undefined, writable: true, configurable: true });
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function overrideContainerBox(container: HTMLElement, box: { width: number; height: number }): void {
+    Object.defineProperty(container, "clientWidth", { configurable: true, get: () => box.width });
+    Object.defineProperty(container, "clientHeight", { configurable: true, get: () => box.height });
+  }
+
+  it("recovers from a zero-geometry xterm container on the INITIAL mobile layout with the keyboard CLOSED — no reconnect/orientation/refit", async () => {
+    let capturedDataCallback: ((data: string) => void) | null = null;
+    let capturedScrollbackCallback: ((data: string) => void) | null = null;
+    mockUseTerminal.mockReturnValue(
+      createMockTerminalState({
+        onData: vi.fn((cb: (data: string) => void) => {
+          capturedDataCallback = cb;
+          return vi.fn();
+        }),
+        onScrollback: vi.fn((cb: (data: string) => void) => {
+          capturedScrollbackCallback = cb;
+          return vi.fn();
+        }),
+      }),
+    );
+
+    render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+    await waitFor(() => expect(mockTerminalInstance.open).toHaveBeenCalled());
+
+    const container = screen.getByTestId("terminal-xterm");
+    const box = { width: 0, height: 0 };
+    overrideContainerBox(container, box);
+
+    // Let the initial fit()+deferred-refit sequence run against a genuinely
+    // zero container box — the real-device race this task fixes.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      await Promise.resolve();
+    });
+
+    // Pre-condition: with the container still reporting 0x0, xterm has
+    // collapsed to FitAddon's degenerate floor — exactly the "nothing
+    // renders" mechanism (a 2x1 grid clipped inside a 0px box).
+    expect(mockTerminalInstance.cols).toBe(2);
+    expect(mockTerminalInstance.rows).toBe(1);
+
+    // The real device settles the container to its actual, stable box a
+    // moment later — no user action, CSS/layout/font settle only.
+    box.width = 360;
+    box.height = 480;
+
+    // Decisive step: fire the SAME notification a real browser's
+    // ResizeObserver would deliver for THIS container the instant its box
+    // changed — not a manual fitAddon.fit()/reconnect/keyboard-toggle call.
+    // Pre-fix, no ResizeObserver ever observes this container (only the
+    // whole modal), so this assertion fails outright.
+    const observed = fireResizeObserverFor("terminal-xterm");
+    expect(observed).toBe(true);
+
+    await waitFor(() => {
+      expect(mockTerminalInstance.cols).toBeGreaterThan(2);
+      expect(mockTerminalInstance.rows).toBeGreaterThan(1);
+    });
+
+    // Rendered-state invariant: a non-zero, stable measured box AND real
+    // (non-degenerate) rows/cols — not merely that fit()/open() was
+    // attempted.
+    expect(container.clientWidth).toBe(360);
+    expect(container.clientHeight).toBe(480);
+    expect(mockTerminalInstance.cols).toBe(Math.max(2, Math.floor(360 / CHAR_WIDTH_PX)));
+    expect(mockTerminalInstance.rows).toBe(Math.max(1, Math.floor(480 / CHAR_HEIGHT_PX)));
+
+    // Output/prompt actually renders (write() receives real data), not just
+    // an init attempt.
+    mockTerminalInstance.write.mockClear();
+    act(() => {
+      capturedScrollbackCallback?.("user@host:~$ ");
+      capturedDataCallback?.("ls\r\n");
+    });
+    expect(mockTerminalInstance.write).toHaveBeenCalledWith("user@host:~$ ");
+    expect(mockTerminalInstance.write).toHaveBeenCalledWith("ls\r\n");
+  });
+
+  it("recovers from a zero-geometry xterm container on the INITIAL mobile layout with the keyboard already OPEN", async () => {
+    const mockVV = {
+      width: 360,
+      height: 300,
+      offsetTop: 0,
+      offsetLeft: 0,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    };
+    Object.defineProperty(window, "visualViewport", { value: mockVV, writable: true, configurable: true });
+    Object.defineProperty(window, "innerHeight", { value: 300, writable: true, configurable: true });
+
+    render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+    await waitFor(() => expect(mockTerminalInstance.open).toHaveBeenCalled());
+
+    const container = screen.getByTestId("terminal-xterm");
+    const box = { width: 0, height: 0 };
+    overrideContainerBox(container, box);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      await Promise.resolve();
+    });
+
+    expect(mockTerminalInstance.cols).toBe(2);
+    expect(mockTerminalInstance.rows).toBe(1);
+
+    box.width = 360;
+    box.height = 260;
+
+    const observed = fireResizeObserverFor("terminal-xterm");
+    expect(observed).toBe(true);
+
+    await waitFor(() => {
+      expect(mockTerminalInstance.cols).toBeGreaterThan(2);
+      expect(mockTerminalInstance.rows).toBeGreaterThan(1);
+    });
+
+    expect(container.clientWidth).toBe(360);
+    expect(container.clientHeight).toBe(260);
+    expect(mockTerminalInstance.cols).toBe(Math.max(2, Math.floor(360 / CHAR_WIDTH_PX)));
+    expect(mockTerminalInstance.rows).toBe(Math.max(1, Math.floor(260 / CHAR_HEIGHT_PX)));
+  });
+
+  it("re-establishes the container ResizeObserver against the NEW container node after a tab-switch remount", async () => {
+    const secondTab = {
+      id: "tab-2",
+      sessionId: "session-2",
+      title: "Terminal 2",
+      isActive: true,
+      createdAt: Date.now(),
+    };
+
+    const { rerender } = render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+    await waitFor(() => expect(mockTerminalInstance.open).toHaveBeenCalledTimes(1));
+
+    const firstContainer = screen.getByTestId("terminal-xterm");
+    expect(fireResizeObserverFor("terminal-xterm")).toBe(true);
+
+    mockUseTerminalSessions.mockReturnValue({
+      ...defaultSessionState,
+      tabs: [{ ...defaultTab, isActive: false }, secondTab],
+      activeTab: secondTab,
+    });
+    rerender(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+    await waitFor(() => expect(mockTerminalInstance.open).toHaveBeenCalledTimes(2));
+
+    const secondContainer = screen.getByTestId("terminal-xterm");
+    expect(secondContainer).not.toBe(firstContainer);
+    // The container remounted with a new sessionId key — the observer must
+    // now target the NEW node, not the stale/unmounted one.
+    expect(fireResizeObserverFor("terminal-xterm")).toBe(true);
+  });
+
+  it("coalesces duplicate/rapid container resize notifications into a single settled fit", async () => {
+    render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+    await waitFor(() => expect(mockTerminalInstance.open).toHaveBeenCalled());
+
+    const container = screen.getByTestId("terminal-xterm");
+
+    const box = { width: 0, height: 0 };
+    overrideContainerBox(container, box);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      await Promise.resolve();
+    });
+    expect(mockTerminalInstance.cols).toBe(2);
+    expect(mockTerminalInstance.rows).toBe(1);
+
+    box.width = 640;
+    box.height = 400;
+
+    // Two rapid duplicate notifications (e.g. layout + font settle firing in
+    // the same tick) must coalesce to one corrective fit, not double-apply.
+    mockFitAddonFit.mockClear();
+    expect(fireResizeObserverFor("terminal-xterm")).toBe(true);
+    expect(fireResizeObserverFor("terminal-xterm")).toBe(true);
+
+    await waitFor(() => {
+      expect(mockTerminalInstance.cols).toBe(Math.max(2, Math.floor(640 / CHAR_WIDTH_PX)));
+      expect(mockTerminalInstance.rows).toBe(Math.max(1, Math.floor(400 / CHAR_HEIGHT_PX)));
     });
   });
 });

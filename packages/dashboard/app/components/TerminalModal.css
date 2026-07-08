@@ -41,10 +41,15 @@ The terminal must NEVER dim or blur the page behind it, in ANY mode. The base .m
 FNXC:Terminal 2026-06-23-21:28:
 Theme-level modal backdrop rules can load after component CSS and reapply dim/blur, especially in glass themes. Use a higher-specificity terminal overlay selector and clear both standard and WebKit backdrop filters so docked and modal terminal surfaces never darken the app behind them.
 */
+/*
+FNXC:Terminal 2026-07-06-19:45:
+FN-7621 recurrence #3 root cause: styles.css's mobile `@media (max-width: 768px)` block resets `* { touch-action: pan-y; }` and then explicitly re-locks `.modal-overlay:not(.confirm-dialog-overlay) { touch-action: pan-y; }` (the cross-cutting "full-screen modal on mobile" rule) — and this terminal overlay matches that selector. touch-action's used value for a touch gesture is the INTERSECTION of the touched element's value and every ancestor's value, not just the touched element's own computed value (confirmed by this codebase's own board-only carve-out: "the board is the only always-present horizontal scroller on mobile ... opt known horizontal scrollers back into pan-x below"). FN-7550/FN-7560 only ever edited `.terminal-shortcut-panel`'s OWN rule in this file — giving that leaf element `touch-action: pan-x` — but never carved the terminal's overlay/modal ancestors back out of the page-level pan-y lock, so the intersection stayed empty and the swipe never scrolled on a real mobile browser, even though the leaf-rule string test (and the width/overflow chain) were both already correct. Re-opt this overlay into horizontal panning so its descendants' own touch-action values can actually take effect.
+*/
 .modal-overlay.terminal-modal-overlay.terminal-modal-overlay {
   background: transparent;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
+  touch-action: pan-x pan-y;
 }
 
 .modal-overlay.terminal-modal-overlay--docked.terminal-modal-overlay--docked,
@@ -1398,6 +1403,17 @@ Android folded Chrome can keep a wide layout viewport while visualViewport is th
   border-radius: 0;
   border: none;
   resize: none;
+  /*
+  FNXC:Terminal 2026-07-06-19:45:
+  FN-7621: the mobile lockdown in styles.css resets `* { touch-action: pan-y; }`
+  (and #root/html/body explicitly restate pan-y). This modal sits between that
+  lock and .terminal-shortcut-panel/.terminal-status-bar, both of which need real
+  horizontal panning — touch-action's used value intersects every ancestor along
+  the touched chain, so this ancestor must also allow pan-x or the leaf panel's
+  own touch-action: pan-x is silently defeated (the actual root cause of this
+  recurrence; the panel's leaf rule was already correct).
+  */
+  touch-action: pan-x pan-y;
 }
 
 .modal.terminal-modal.terminal-modal--mobile .terminal-header {
@@ -1473,6 +1489,18 @@ The Android keyboard-open recurrence can start with a touch-primary visualViewpo
     border: none;
     /* Disable user resize on mobile — fullscreen layout. */
     resize: none;
+    /*
+    FNXC:Terminal 2026-07-06-19:45:
+    FN-7621: same touch-action carve-out as the .terminal-modal--mobile class
+    rule above, for the plain-media-query mobile path (a real narrow layout
+    viewport rather than the folded-Android visualViewport case). Without
+    this, the ancestor-chain touch-action intersection from styles.css's
+    mobile lockdown (`* { touch-action: pan-y }`, restated on #root/html/body
+    and `.modal-overlay:not(.confirm-dialog-overlay)`) defeats
+    .terminal-shortcut-panel's and .terminal-status-bar's own pan-x, even
+    though those leaf rules are correct.
+    */
+    touch-action: pan-x pan-y;
   }
 
   /* Mobile swaps the desktop tab strip for a selector; wrapping is intentional on very narrow phones so worktree and session actions remain reachable. */
@@ -1745,6 +1773,16 @@ The Android keyboard-open recurrence can start with a touch-primary visualViewpo
     min-width: 0;
     overflow-x: auto;
     scrollbar-width: thin;
+    /*
+    FNXC:Terminal 2026-07-06-19:45:
+    FN-7621: this footer shares .terminal-shortcut-panel's FN-7550 min-width/
+    overflow-x pattern but never had ITS OWN touch-action opt-in, so real
+    mobile swipes on it were also defeated by the ancestor-chain touch-action
+    intersection from styles.css's mobile lockdown (see the .modal.terminal-modal
+    and .modal-overlay.terminal-modal-overlay carve-outs above/elsewhere in
+    this file). Give it the same pan-x pan-y opt-in as .terminal-shortcut-panel.
+    */
+    touch-action: pan-x pan-y;
   }
 
   .terminal-shortcuts--header,

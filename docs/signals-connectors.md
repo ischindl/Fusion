@@ -142,6 +142,8 @@ Configure a GitLab project or group webhook with:
 
 Fusion verifies GitLab's `X-Gitlab-Token` header. GitLab's webhook docs now recommend signing tokens for new webhooks, but this connector intentionally supports the documented secret-token compatibility path required by existing GitLab.com and self-managed GitLab installations. This task introduces no GitLab binary, CLI, download, or checksum-managed artifact.
 
+Broader GitHub-to-GitLab parity (issue import, linked tracking, lifecycle automation, and Command Center analytics) is mapped in [GitLab Parity Inventory](./gitlab-parity-inventory.md). These signal webhooks are the GitLab side of that parity surface.
+
 Supported GitLab events:
 
 - Project and group **Issue Hook** payloads with `object_kind`/`event_type` of `issue`.

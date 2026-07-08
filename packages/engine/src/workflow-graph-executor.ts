@@ -726,8 +726,32 @@ export class WorkflowGraphExecutor {
           else if (verdict === "REVISE") stepStatus = "advisory_failure";
           else stepStatus = "passed";
           const exitContextPatch = exitResult?.contextPatch;
-          const stepOutput = typeof exitContextPatch?.output === "string" ? exitContextPatch.output : undefined;
+          let stepOutput = typeof exitContextPatch?.output === "string" ? exitContextPatch.output : undefined;
           const stepNotes = typeof exitContextPatch?.notes === "string" ? exitContextPatch.notes : undefined;
+          /*
+           * FNXC:WorkflowStepResults 2026-07-07-00:00:
+           * A non-verdict `stepStatus === "failed"` (dispatch/infra exception, not a
+           * reviewer verdict) with no `output`/`notes` recovered from the exit
+           * context-patch must never be recorded field-absent — that is the
+           * `(no feedback captured)` signature from Runfusion/Fusion#1946. Synthesize
+           * a diagnostic from the template node's `node:<id>:error` context-patch key
+           * (derived from the last visited template node id) with a fallback to the
+           * failure `value` (e.g. "exception", "aborted"). Genuine REVISE/APPROVE
+           * records already carry `stepOutput`/`stepNotes` and are unaffected.
+           */
+          if (stepStatus === "failed" && !verdict && stepOutput === undefined && stepNotes === undefined) {
+            const lastVisited = groupResult.visitedNodeIds[groupResult.visitedNodeIds.length - 1];
+            const templateNodeId = lastVisited?.includes("::") ? lastVisited.slice(lastVisited.indexOf("::") + 2) : undefined;
+            stepOutput = this.synthesizeNonVerdictFailureOutput({
+              stepLabel: groupName,
+              contextPatch: exitContextPatch,
+              templateNodeId,
+              failureValue: verdictRaw,
+              fallbackText: node.id === PLAN_REVIEW_GROUP_ID
+                ? "Plan Review failed before execution. Re-run triage to revise PROMPT.md before implementation continues."
+                : undefined,
+            });
+          }
           await this.recordOptionalGroupStepResult(task.id, {
             workflowStepId: node.id,
             workflowStepName: groupName,
@@ -1060,6 +1084,67 @@ export class WorkflowGraphExecutor {
   }
 
   /*
+   * FNXC:WorkflowStepResults 2026-07-07-00:00:
+   * A hard optional-group / node-gate failure that originates from a dispatch or
+   * infra exception (rather than a reviewer verdict) must never be persisted as a
+   * `WorkflowStepResult` with `verdict`/`output`/`notes` entirely absent — that is
+   * the field-absent `(no feedback captured)` signature reported in
+   * Runfusion/Fusion#1946 (3 confirmed instances: card stranded in `in-review`,
+   * ~3s duration from `executeNodeWithRetries` exhausting fast dispatch retries,
+   * no reviewer-agent error). `executeNodeWithRetries` stores the underlying error
+   * text under a `node:<templateNodeId>:error` context-patch key (see the
+   * `plugin-node-handler-error`/`exception` failure branches ~line 1140/1238), but
+   * the terminal recorder previously derived `output`/`notes` only from
+   * `contextPatch.output`/`.notes`, silently dropping that diagnostic. This helper
+   * synthesizes a non-blank diagnostic `output` from the `:error`-suffixed patch
+   * key (preferring the exact `node:<templateNodeId>:error` key when the template
+   * node id is known) with a fallback to the failure `value` (e.g. `"exception"`,
+   * `"aborted"`, `"plugin-node-handler-error"`) and finally a stable non-blank
+   * fallback sentence — never an empty string. Shared by the optional-group
+   * terminal recorder and `recordNodeProgressFinish` (CE `source:"node"` skill
+   * gates) so both surfaces carry the identical guarantee. `status` (`"failed"`),
+   * verdict extraction, edge routing, and `self-healing.ts`'s
+   * `latestFailedPreMergeStep` (which filters on `status === "failed"`) are
+   * untouched — this only adds `output` to an already-failed record.
+   */
+  private synthesizeNonVerdictFailureOutput(params: {
+    stepLabel: string;
+    contextPatch?: Record<string, unknown>;
+    templateNodeId?: string;
+    failureValue?: string;
+    /**
+     * FNXC:WorkflowStepResults 2026-07-07-00:00:
+     * `PLAN_REVIEW_GROUP_ID`'s existing hard-failure handoff (~line 802) already
+     * has a dedicated, non-blank sentinel ("Plan Review failed before execution...")
+     * for the fully-unrecoverable case (no `:error` key, no failure `value`). Pass
+     * it through so the recorded `output` and the pre-merge fix `feedback` stay
+     * byte-identical for that path when no real diagnostic exists to surface;
+     * every other caller keeps the generic fallback sentence.
+     */
+    fallbackText?: string;
+  }): string {
+    const { stepLabel, contextPatch, templateNodeId, failureValue, fallbackText } = params;
+    let errorText: string | undefined;
+    if (contextPatch) {
+      if (templateNodeId) {
+        const exact = contextPatch[`node:${templateNodeId}:error`];
+        if (typeof exact === "string" && exact.trim()) errorText = exact.trim();
+      }
+      if (!errorText) {
+        for (const [key, value] of Object.entries(contextPatch)) {
+          if (key.endsWith(":error") && typeof value === "string" && value.trim()) {
+            errorText = value.trim();
+            break;
+          }
+        }
+      }
+    }
+    const detail = errorText || (typeof failureValue === "string" && failureValue.trim() ? failureValue.trim() : undefined);
+    if (detail) return `${stepLabel} failed before producing a verdict: ${detail}`;
+    return fallbackText || "Workflow step failed before producing a verdict (no reviewer output captured).";
+  }
+
+  /*
    * FNXC:WorkflowStepResults 2026-06-25-12:00:
    * Fail-soft forward to the `recordWorkflowStepResult` persistence sink (plan U2).
    * Recording is additive visibility bookkeeping — a sink failure (or absent sink)
@@ -1280,8 +1365,23 @@ export class WorkflowGraphExecutor {
   ): Promise<void> {
     const status: WorkflowStepResult["status"] = nodeResult.outcome === "success" ? "passed" : "failed";
     const contextPatch = nodeResult.contextPatch ?? {};
-    const output = typeof contextPatch.output === "string" ? contextPatch.output : undefined;
+    let output = typeof contextPatch.output === "string" ? contextPatch.output : undefined;
     const notes = typeof contextPatch.notes === "string" ? contextPatch.notes : undefined;
+    /*
+     * FNXC:WorkflowStepResults 2026-07-07-00:00:
+     * CE `source:"node"` skill-gate failures share the same `(no feedback
+     * captured)` defect as the optional-group path (Runfusion/Fusion#1946): a
+     * `failed` node with no `contextPatch.output`/`.notes` must still record a
+     * non-blank diagnostic sourced from `node:<id>:error`.
+     */
+    if (status === "failed" && output === undefined && notes === undefined) {
+      output = this.synthesizeNonVerdictFailureOutput({
+        stepLabel: this.workflowNodeProgressName(node),
+        contextPatch,
+        templateNodeId: node.id,
+        failureValue: nodeResult.value,
+      });
+    }
     await this.recordOptionalGroupStepResult(taskId, {
       workflowStepId: node.id,
       workflowStepName: this.workflowNodeProgressName(node),

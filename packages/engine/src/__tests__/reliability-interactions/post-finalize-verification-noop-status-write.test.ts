@@ -162,8 +162,16 @@ describe("post-finalize verification noop status-write guard", () => {
       expect.objectContaining({ source: expect.objectContaining({ sourceType: "recovery" }) }),
     );
 
+    // FNXC:MergerUnification 2026-07-07-08:35:
+    // FN-4944's post-finalize guard added an earlier "already-on-main fast-path"
+    // no-op that fires whenever a done + merge-confirmed task hits a verification
+    // error, BEFORE the bounce-cap logic. This scenario (done task, VerificationError)
+    // now resolves through that fast-path, whose log message differs from the older
+    // cap-reached "already-done task" wording. Pin the fast-path message text here;
+    // the no-op count (1) and the task:post-finalize-verification-no-op audit are
+    // unchanged across both paths.
     const noopLogs = logs.filter((entry) =>
-      entry.includes("[verification] post-finalize VerificationError on already-done task — no action"),
+      entry.includes("[verification] post-finalize verification failed for already-on-main fast-path; no action"),
     );
     expect(noopLogs).toHaveLength(1);
 

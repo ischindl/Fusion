@@ -202,21 +202,37 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
   /**
    * GET /api/chat/sessions
    * List chat sessions with optional filtering.
-   * Query params: projectId?, status?, agentId?
+   * Query params: projectId?, status?, agentId?, q?, titleOnly?
+   *
+   * FNXC:ChatSearch 2026-07-07-00:00:
+   * `q` triggers a server-side message-content search (title/agentId filtering stays
+   * client-side, unchanged) because chat message bodies are not fully loaded client-side.
+   * `titleOnly=true` (or `q` absent) preserves the exact prior behavior: the normal enriched
+   * session list, with title/agent filtering left to the client. When `q` is present and
+   * titleOnly is not set, the result is narrowed to sessions whose content matches
+   * `q` (via ChatStore.searchSessionsByMessageContent), scoped by the same
+   * projectId/status/agentId filters and the task-planner common-feed guard used below, with
+   * `matchedMessagePreview` attached. The dashboard hook unions this with its local
+   * title/agent match so "content mode" covers both signals.
    *
    * Response is enriched with lastMessagePreview and lastMessageAt for each session.
    */
   router.get("/chat/sessions", rateLimit(RATE_LIMITS.api), async (req, res) => {
     try {
-      const { projectId, status, agentId, lookup, modelProvider, modelId } = req.query as {
+      const { projectId, status, agentId, lookup, modelProvider, modelId, q, titleOnly } = req.query as {
         projectId?: string;
         status?: string;
         agentId?: string;
         lookup?: string;
         modelProvider?: string;
         modelId?: string;
+        q?: string;
+        titleOnly?: string;
       };
       const { store: scopedStore, chatStore } = await resolveScopedChatStore(projectId);
+      const hasSearchQuery = typeof q === "string" && q.trim().length > 0;
+      const isTitleOnly = titleOnly === "true" || !hasSearchQuery;
+      const isContentSearch = hasSearchQuery && !isTitleOnly;
 
       const isResumeLookup = lookup === "resume";
       const hasModelProvider = typeof modelProvider === "string" && modelProvider.trim().length > 0;
@@ -272,6 +288,19 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
           });
         }
 
+        /*
+        FNXC:ChatSearch 2026-07-07-00:00:
+        Content search runs AFTER the task-planner common-feed filter above so a matching
+        message inside a hidden task-planner session can never bypass that guard. It also runs
+        after resume-lookup narrowing, so `lookup=resume` and task-detail routes are unaffected
+        (isContentSearch is only true for the plain listSessions path).
+        */
+        let contentMatches: Map<string, string> | undefined;
+        if (isContentSearch && !isResumeLookup) {
+          contentMatches = await chatStore.searchSessionsByMessageContent(q!.trim(), sessions.map((s) => s.id));
+          sessions = sessions.filter((session) => contentMatches!.has(session.id));
+        }
+
         // Batch-gather generating session IDs to avoid N+1 calls
         const resolvedChatManager = projectId
           ? await resolveScopedChatManager(projectId).catch(() => options?.chatManager)
@@ -290,6 +319,12 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
             enriched.lastMessageAt = lastMessage.createdAt;
           }
           enriched.isGenerating = generatingSet.has(session.id);
+          if (contentMatches) {
+            const matchedPreview = contentMatches.get(session.id);
+            if (matchedPreview !== undefined) {
+              enriched.matchedMessagePreview = matchedPreview;
+            }
+          }
         }
       }
 
@@ -895,6 +930,57 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
     }
   });
 
+  /**
+   * PATCH /api/chat/sessions/:id/messages/:messageId
+   *
+   * FNXC:ChatMessageEdit 2026-07-07-09:00:
+   * Edit a user's earlier message: truncates the persisted transcript from (and including)
+   * the target message onward AND rewinds the pi session context so the model forgets the
+   * discarded turns (see ChatManager.rewindSessionForEdit). Does NOT stream a regeneration —
+   * the client resends the edited content through the existing streaming POST send after this
+   * call returns the retained (pre-edit) history.
+   */
+  router.patch("/chat/sessions/:id/messages/:messageId", rateLimit(RATE_LIMITS.mutation), async (req, res) => {
+    try {
+      const projectId = req.query.projectId as string | undefined;
+      const { chatStore } = await resolveScopedChatStore(projectId);
+      const chatManager = await resolveScopedChatManager(projectId);
+
+      const sessionId = String(req.params.id);
+      const messageId = String(req.params.messageId);
+      const content = (req.body as { content?: unknown } | undefined)?.content;
+
+      if (typeof content !== "string" || content.trim().length === 0) {
+        throw badRequest("content must be a non-empty string");
+      }
+
+      const session = await chatStore.getSession(sessionId);
+      if (!session) {
+        throw notFound(`Chat session ${sessionId} not found`);
+      }
+
+      const message = await chatStore.getMessage(messageId);
+      if (!message || message.sessionId !== sessionId) {
+        throw notFound(`Message ${messageId} not found`);
+      }
+      if (message.role !== "user") {
+        throw badRequest("Only user messages can be edited");
+      }
+
+      if (chatManager.isGenerating(sessionId)) {
+        throw badRequest("Cannot edit a message while a generation is in progress");
+      }
+
+      const { retained } = await chatManager.rewindSessionForEdit(sessionId, messageId);
+      res.json({ retained });
+    } catch (err: unknown) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      rethrowAsApiError(err, "Failed to edit chat message");
+    }
+  });
+
   if (process.env.FUSION_DEBUG_CHAT_ROUTES === "1") {
     const chatRoutes = [
       "GET /chat/sessions",
@@ -910,6 +996,7 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
       "POST /chat/sessions/:id/messages",
       "POST /chat/sessions/:id/cancel",
       "DELETE /chat/sessions/:id/messages/:messageId",
+      "PATCH /chat/sessions/:id/messages/:messageId",
     ];
     chatLogger.info("routes registered", { chatRoutes });
   }

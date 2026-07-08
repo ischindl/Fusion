@@ -79,7 +79,7 @@ FNXC:Workspace 2026-06-22-14:10 (Phase D review G — cycle dissolved):
 module so self-healing can import the predicate without re-entering the self-healing ↔ merger-ai
 import cycle (merger-ai-worktree imports `MIN_TEMP_WORKTREE_REAP_AGE_MS` from self-healing).
 */
-import { isRepoLanded, FUSION_TASK_ID_TRAILER_KEY } from "./workspace-land-predicate.js";
+import { isRepoLanded, findProvenLandedCommit, FUSION_TASK_ID_TRAILER_KEY } from "./workspace-land-predicate.js";
 import { finalizeProvenAutoMergeTask } from "./auto-merge-finalization.js";
 import {
   cleanupAiMergeWorktree,
@@ -1221,11 +1221,30 @@ export async function landWorkspaceTask(
     // ancestor of (or equals) its CURRENT integration tip is already landed — SKIP
     // it so a retry never re-advances the ref. This makes a re-run after a partial
     // land idempotent for the already-landed repos.
-    if (await isRepoLanded(repoRootDir, integrationBranch, entry.landedSha, taskId, entry.branch)) {
-      await log(`AI merge (workspace): sub-repo ${repoRel} already landed (${short(entry.landedSha!)} ⊑ ${integrationBranch}) — skipping`);
+    const provenLandedSha = await findProvenLandedCommit(
+      repoRootDir,
+      integrationBranch,
+      entry.landedSha,
+      taskId,
+      entry.branch,
+    );
+    if (provenLandedSha) {
+      /*
+      FNXC:Workspace 2026-07-07-10:25 (Phase C A1 recovery — record the EXACT proven commit, not the tip):
+      isRepoLanded's A1 trailer-fallback can prove a sub-repo is landed even when its landedSha
+      was never persisted (the persist-after-advance window in persistRepoLandedSha threw). That
+      left the in-memory result with landedSha: undefined, so finalizeWorkspaceTask's
+      `status === "landed" && landedSha` filter dropped the recovered repo, `anyLanded` stayed
+      false, and the proven repo's retry STRANDED the task in-review with missing-merge-confirmation.
+      Recover the EXACT proven commit (the A1 trailer commit, or the recorded landedSha when it is
+      still an ancestor) — NOT the current integration tip, which may have advanced past the actual
+      landing commit via an intervening sub-repo land. findProvenLandedCommit returns that exact sha
+      so finalize builds durable mergeConfirmed proof and the A1 retry completes to done.
+      */
+      await log(`AI merge (workspace): sub-repo ${repoRel} already landed (${short(provenLandedSha)} ⊑ ${integrationBranch}) — skipping`);
       repos.push({
         repo: repoRel, repoRootDir, integrationBranch, branch: entry.branch,
-        status: "landed", landedSha: entry.landedSha, alreadyLanded: true,
+        status: "landed", landedSha: provenLandedSha, alreadyLanded: true,
       });
       continue;
     }

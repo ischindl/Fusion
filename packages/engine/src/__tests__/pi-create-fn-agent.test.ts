@@ -1065,7 +1065,10 @@ describe("wrapToolsWithActionGate", () => {
     expect((first as any).decision.metadata.approvalRequestId).toBe("apr-1");
     expect((second as any).decision.metadata.approvalRequestId).toBe("apr-1");
     expect(createApprovalRequest).toHaveBeenCalledTimes(1);
-    expect(pauseForApproval).toHaveBeenCalledTimes(1);
+    // FN-7608 (9e5c02511): the gate pause (pauseForApproval) now runs for BOTH the
+    // newly-created-request sub-case AND the reused-pending sub-case, so each gated
+    // execute while the approval is pending pauses the session (see pi.ts FNXC:ActionGate).
+    expect(pauseForApproval).toHaveBeenCalledTimes(2);
     expect(tool.execute).not.toHaveBeenCalled();
   });
 

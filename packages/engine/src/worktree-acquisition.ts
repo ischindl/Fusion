@@ -862,7 +862,15 @@ export async function acquireWorkspaceRepoWorktree(
       task: { ...task, worktree: undefined, branch: undefined },
       rootDir: repoAbsPath,
       store,
-      settings,
+      // FNXC:Workspace 2026-07-07-08:40 (FN-7360 regression — strip shared branch overrides for per-repo start-point):
+      // FN-7360 pinned fresh task worktree creation to `resolveIntegrationBranch(rootDir, settings)`
+      // when no executionStartBranch is present, so new branches never inherit an ambient root HEAD.
+      // For a workspace sub-repo, `settings` carries the SHARED project integrationBranch/baseBranch;
+      // honoring it resolves a branch absent from this sub-repo and fails `git worktree add` with
+      // "invalid reference". Strip both overrides here so freshStartPoint falls through to this
+      // sub-repo's own origin/HEAD — matching the per-repo base-SHA capture below, which already
+      // resolves against stripped settings (F4/KTD3).
+      settings: { ...settings, integrationBranch: undefined, baseBranch: undefined },
       logger,
       secretsStore,
       audit,

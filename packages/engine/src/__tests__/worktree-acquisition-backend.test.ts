@@ -134,12 +134,16 @@ describe("acquireTaskWorktree backend wiring", () => {
     ).rejects.toMatchObject({ name: "WorktrunkOperationError", code: "worktrunk_binary_missing" });
 
     /*
-     * FNXC:WorktreeIsolation 2026-07-02-07:40:
-     * The integration-branch resolution (`git symbolic-ref`) runs before the worktrunk binary check, so one exec call is expected. No worktrunk `switch` command should be attempted when the binary is missing.
+     * FNXC:WorktreeIsolation 2026-07-02-07:40 (updated 2026-07-07-09:15 for FN-7438):
+     * The integration-branch resolution runs before the worktrunk binary check. With an empty symbolic-ref result, FN-7438 (aa8f1f32e) adds a `git remote` discovery call before the "main" fallback, so two exec calls happen. No worktrunk `switch` command should be attempted when the binary is missing.
      */
-    expect(execMock).toHaveBeenCalledTimes(1);
+    expect(execMock).toHaveBeenCalledTimes(2);
     expect(execMock).toHaveBeenCalledWith(
       "git symbolic-ref --short refs/remotes/origin/HEAD",
+      expect.objectContaining({ cwd: "/repo" }),
+    );
+    expect(execMock).toHaveBeenCalledWith(
+      "git remote",
       expect.objectContaining({ cwd: "/repo" }),
     );
     expect(execMock.mock.calls.some((call) => String(call[0]).includes('"switch"'))).toBe(false);
@@ -188,12 +192,16 @@ describe("acquireTaskWorktree backend wiring", () => {
     expect(result.branch).toBe("fusion/fn-backend");
     expect(create).toHaveBeenCalledTimes(1);
     /*
-     * FNXC:WorktreeIsolation 2026-07-02-07:40:
-     * The integration-branch resolution runs before the explicit backend's create is invoked, so the only exec call is the `git symbolic-ref` lookup. The custom backend's create mock performs no exec.
+     * FNXC:WorktreeIsolation 2026-07-02-07:40 (updated 2026-07-07-09:15 for FN-7438):
+     * The integration-branch resolution runs before the explicit backend's create. With an empty symbolic-ref result, FN-7438 (aa8f1f32e) adds a `git remote` discovery call before the "main" fallback, so two exec calls happen: symbolic-ref + git remote. The custom backend's create mock performs no exec.
      */
-    expect(execMock).toHaveBeenCalledTimes(1);
+    expect(execMock).toHaveBeenCalledTimes(2);
     expect(execMock).toHaveBeenCalledWith(
       "git symbolic-ref --short refs/remotes/origin/HEAD",
+      expect.objectContaining({ cwd: "/repo" }),
+    );
+    expect(execMock).toHaveBeenCalledWith(
+      "git remote",
       expect.objectContaining({ cwd: "/repo" }),
     );
   });

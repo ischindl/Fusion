@@ -235,6 +235,22 @@ The embedded title reads like other embedded-view titles (Planning modal-header-
     width: 100%;
     height: 100%;
   }
+
+  /*
+    FNXC:Settings 2026-07-07-00:00:
+    Mobile embedded Settings has no left sidebar to exit through (only the bottom MobileNavBar), so the header needs
+    an explicit close affordance. Reuse the shared .modal-close sizing/hover and pin it to the header's trailing
+    edge, after the Star/Discord actions, without displacing them. Desktop/tablet embedded and the standalone modal
+    presentation are untouched by this rule (scoped to .settings-modal--embedded .modal-header--embedded).
+  */
+  .settings-modal--embedded .modal-header--embedded .settings-embedded-mobile-close {
+    --settings-embedded-mobile-close-touch-target: calc(var(--space-lg) + var(--space-lg) + var(--space-xs));
+
+    flex-shrink: 0;
+    margin-left: var(--space-xs);
+    min-height: var(--settings-embedded-mobile-close-touch-target);
+    min-width: var(--settings-embedded-mobile-close-touch-target);
+  }
 }
 
 /* === Settings Layout === */

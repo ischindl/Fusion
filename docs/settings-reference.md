@@ -963,6 +963,8 @@ Fusion resolves task models through workflow-backed lane values first, then glob
 
 Z.ai's built-in provider uses the existing `zai` auth entry / `ZAI_API_KEY` environment variable and includes `zai/glm-5.2` as a selectable model in the same dropdowns and workflow lane controls as the other built-in GLM models. If a pi extension also registers the `zai` provider, Fusion preserves the extension's models and re-adds any missing built-in Z.ai models so built-in GLM choices remain available.
 
+When the Hermes Runtime plugin (`fusion-plugin-hermes-runtime`) is installed and the local `hermes` CLI has configured profiles (`hermes profile list`), those profiles are surfaced additively in `/api/models` under the `hermes` provider — one row per profile, id/name derived from the profile name and its configured model. This surfacing is read-only (Fusion does not create or edit Hermes profiles) and is fetched through a short-TTL, single-flight cache so the model picker never spawns the `hermes` CLI on every request; a missing/failed `hermes` binary simply yields zero Hermes rows without affecting other providers.
+
 ### Planning model
 
 1. Per-task `planningModelProvider` + `planningModelId`

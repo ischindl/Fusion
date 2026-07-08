@@ -10,6 +10,11 @@ import type { Task } from "@fusion/core";
 const apiMocks = vi.hoisted(() => ({
   fetchBoardWorkflows: vi.fn(),
   fetchWorkflowSteps: vi.fn(),
+  /*
+  FNXC:BoardNoLegacyFlash 2026-07-07-09:05:
+  ListView renders QuickEntryBox, whose quick-create path calls fetchWorkflowOptionalSteps (added FN-6304). The partial api mock must expose it or vitest throws "No fetchWorkflowOptionalSteps export" during render and the skeleton/legacy assertions never settle.
+  */
+  fetchWorkflowOptionalSteps: vi.fn(),
   fetchNodes: vi.fn(),
   fetchTaskDetail: vi.fn(),
   batchUpdateTaskModels: vi.fn(),
@@ -23,7 +28,7 @@ const apiMocks = vi.hoisted(() => ({
 vi.mock("../../api", () => ({
   fetchBoardWorkflows: apiMocks.fetchBoardWorkflows,
   fetchWorkflowSteps: apiMocks.fetchWorkflowSteps,
-  fetchNodes: apiMocks.fetchNodes,
+  fetchWorkflowOptionalSteps: apiMocks.fetchWorkflowOptionalSteps,
   fetchTaskDetail: apiMocks.fetchTaskDetail,
   batchUpdateTaskModels: apiMocks.batchUpdateTaskModels,
   promoteTask: apiMocks.promoteTask,
@@ -187,6 +192,7 @@ describe("no legacy-board flash before workflow lanes load (FN-6776)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     apiMocks.fetchWorkflowSteps.mockResolvedValue([]);
+    apiMocks.fetchWorkflowOptionalSteps.mockResolvedValue([]);
     apiMocks.fetchNodes.mockResolvedValue([]);
     apiMocks.fetchTaskDetail.mockResolvedValue(null);
     apiMocks.promoteTask.mockResolvedValue({});
@@ -276,14 +282,19 @@ describe("no legacy-board flash before workflow lanes load (FN-6776)", () => {
     expectSkeleton(surface);
   });
 
-  it.each<Surface>(["Board", "ListView"])("%s fetch error exits the skeleton to a terminal legacy layout", async (surface) => {
+  it.each<Surface>(["Board", "ListView"])("%s keeps the skeleton on a failed first fetch instead of flashing legacy (non-authoritative failure)", async (surface) => {
     mockViewport(1024);
     apiMocks.fetchBoardWorkflows.mockRejectedValue(new Error("network"));
 
     renderSurface(surface);
     expectSkeleton(surface);
 
-    await waitFor(() => expectLegacyLayout(surface));
+    /*
+    FNXC:BoardNoLegacyFlash 2026-07-07-09:30:
+    FN-7234 (preserve board workflow selections) made fetch failures non-authoritative: useBoardWorkflows keeps the current/cache-hydrated payload on a rejected fetch (empty .catch) rather than falling back to legacy. With no cached payload, boardWorkflows stays null so the skeleton persists — the board never flashes legacy on a failed first fetch. Recovery happens on the next visibility/focus/switcher-open re-fetch, not by dropping to legacy.
+    */
+    await waitFor(() => expect(apiMocks.fetchBoardWorkflows).toHaveBeenCalled());
+    expectSkeleton(surface);
   });
 
   it.each<Surface>(["Board", "ListView"])("%s does not leak cached workflow layouts across project switches", async (surface) => {

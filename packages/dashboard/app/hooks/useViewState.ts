@@ -76,9 +76,12 @@ function normalizeTaskView(value: TaskView): TaskView {
 /*
 FNXC:ViewState 2026-06-22-15:30:
 Fusion must land on the Board on load, never the Command Center "Dashboard" view. A persisted/normalized `command-center` value resolves to `board` for the auto-restored landing view only (initializer + project-hydration effect). Deep links (`?view=command-center`) and explicit user navigation still reach the Command Center — this only governs the restored landing surface.
+
+FNXC:ViewState 2026-07-07-00:00:
+FN-7649: an auto-restored/hydrated landing surface must never be Settings either. Once a project's per-project persisted `kb-dashboard-task-view` becomes `settings` (a common state after configuring a project through Settings), switching projects re-hydrates that scoped value and — without this guard — restores straight to Settings instead of the Board. `settings`, like `command-center`, now resolves to `board` for the auto-restored landing view only (initializer + project-hydration effect). Deep links (`?view=settings`) and explicit header/sidebar navigation to Settings still work because the `?view=` URL effect and `setTaskView`/`handleChangeTaskView` paths use `normalizeTaskView`, not this guard.
 */
 function resolveLandingTaskView(value: TaskView): TaskView {
-  return value === "command-center" ? "board" : value;
+  return value === "command-center" || value === "settings" ? "board" : value;
 }
 
 function migrateLegacyRoadmapsView(value: string): TaskView {

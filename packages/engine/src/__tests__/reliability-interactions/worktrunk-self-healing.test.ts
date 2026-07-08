@@ -161,6 +161,25 @@ describe("reliability interactions: worktrunk x self-healing", () => {
 
     const store = makeStore({ maintenanceIntervalMs: 0, worktrunk: { enabled: true, onFailure: "fail" } } as Settings);
     const manager = new SelfHealingManager(store, { rootDir: "/tmp/project" });
+    // FNXC:SelfHealingReclaim 2026-07-07-08:45:
+    // FN-7486 (commit 138d6447f) hardened tip-already-merged reclaim so an
+    // unverifiable commit tip short-circuits BEFORE native `git worktree prune`
+    // (previously a null ownership fell through to the prune). Here `exec` is
+    // mocked, so `promisify(exec)` loses Node's custom promisify symbol and
+    // resolves to the raw stdout string, which makes `readCommitTaskOwnership`
+    // throw on its `{ stdout }` destructure — ownership is unverifiable, so the
+    // reclaim now skips the prune. This test's invariant is the prune PLUMBING
+    // (branch-level reclaim stays native in worktrunk mode), not ownership
+    // verification, so attribute the tip to this task and let the reclaim reach
+    // the native prune (mirrors how inspectBranchConflict is stubbed above).
+    const reclaimInternals = manager as unknown as {
+      readCommitTaskOwnership: (sha: string, taskId: string, lineageId?: string) => Promise<unknown>;
+    };
+    vi.spyOn(reclaimInternals, "readCommitTaskOwnership").mockResolvedValue({
+      owned: true,
+      proof: "task-trailer",
+      ownerTaskId: "FN-4628",
+    });
 
     await manager.reclaimSelfOwnedBranchConflicts();
 

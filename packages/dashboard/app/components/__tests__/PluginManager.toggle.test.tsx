@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, waitFor, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { PluginManager } from "../PluginManager";
 import { loadAllAppCss } from "../../test/cssFixture";
@@ -21,7 +21,8 @@ vi.mock("../../api", () => ({
   browseDirectory: vi.fn(() => Promise.resolve({ currentPath: "/", parentPath: null, entries: [] })),
 }));
 
-import { fetchPlugins, disablePlugin } from "../../api";
+import { fetchPlugins, disablePlugin, enablePlugin, installPlugin } from "../../api";
+import { BUILTIN_PLUGINS } from "../PluginManager";
 
 const addToast = vi.fn();
 
@@ -71,6 +72,22 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+function builtinPlugin(id: string, enabled: boolean) {
+  const builtin = BUILTIN_PLUGINS.find((p) => p.id === id)!;
+  return {
+    id: builtin.id,
+    name: builtin.name,
+    version: "1.0.0",
+    state: "started" as const,
+    enabled,
+    path: builtin.path ?? "/plugins/unknown",
+    settings: {},
+    settingsSchema: {},
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
+}
+
 describe("PluginManager toggle switch", () => {
   it("keeps checkbox focusable but visually hidden", async () => {
     vi.mocked(fetchPlugins).mockResolvedValue([plugin(true)]);
@@ -115,5 +132,88 @@ describe("PluginManager toggle switch", () => {
     const disabled = await screen.findByRole("checkbox", { name: "Enable Test Plugin A" });
     expect(disabled).not.toBeChecked();
     expect(disabled.nextElementSibling).toHaveClass("toggle-slider");
+  });
+});
+
+/*
+ * FNXC:PluginManager 2026-07-07-00:00:
+ * FN-7629 — regression coverage for the durable built-in runtime enable/disable control.
+ * Symptom: with no plugin_installs row for Hermes/Paperclip/OpenClaw/Droid (fetchPlugins -> []),
+ * the built-in runtime rows dead-ended at a static "Built-in metadata only"/install-only CTA and
+ * offered no way to disable the runtime. Assert every runtime built-in exposes an interactive
+ * toggle in every data state, and clicking disable on a not-installed runtime persists via
+ * installPlugin + disablePlugin (the durable register-then-disable path).
+ */
+describe("PluginManager built-in runtime enable/disable toggle (FN-7629)", () => {
+  const RUNTIME_BUILTINS = BUILTIN_PLUGINS.filter((p) => p.category === "runtime");
+
+  async function builtinSection() {
+    return within(await screen.findByLabelText("Built-in plugin recommendations"));
+  }
+
+  it("renders an interactive, checked toggle for every runtime built-in when not installed", async () => {
+    vi.mocked(fetchPlugins).mockResolvedValue([]);
+
+    render(<PluginManager addToast={addToast} />);
+    const section = await builtinSection();
+
+    for (const runtime of RUNTIME_BUILTINS) {
+      const toggle = await section.findByRole("checkbox", { name: `Disable ${runtime.name}` });
+      expect(toggle).toBeChecked();
+      expect(toggle.closest("label.toggle-switch")).not.toBeNull();
+    }
+
+    // No dead-end "Built-in metadata only" label for any runtime built-in row
+    // (the metadata-only dead-end may still legitimately appear for non-runtime
+    // built-ins like Agent Browser, which this task does not change).
+    for (const runtime of RUNTIME_BUILTINS) {
+      const row = section.getByText(runtime.name).closest(".plugin-builtins-item") as HTMLElement;
+      expect(within(row).queryByText("Built-in metadata only")).not.toBeInTheDocument();
+    }
+  });
+
+  it("disabling a not-installed runtime built-in registers it then disables it (durable path)", async () => {
+    vi.mocked(fetchPlugins).mockResolvedValue([]);
+    vi.mocked(installPlugin).mockResolvedValue(builtinPlugin("fusion-plugin-hermes-runtime", true));
+
+    render(<PluginManager addToast={addToast} />);
+
+    const toggle = await (await builtinSection()).findByRole("checkbox", { name: "Disable Hermes Runtime" });
+    await userEvent.click(toggle.closest("label.toggle-switch") as HTMLLabelElement);
+
+    await waitFor(() => {
+      expect(installPlugin).toHaveBeenCalledWith({ path: "./plugins/fusion-plugin-hermes-runtime" }, undefined);
+    });
+    await waitFor(() => {
+      expect(disablePlugin).toHaveBeenCalledWith("fusion-plugin-hermes-runtime", undefined);
+    });
+  });
+
+  it("toggles an installed, enabled runtime built-in via the standard disable path (no re-install)", async () => {
+    vi.mocked(fetchPlugins).mockResolvedValue([builtinPlugin("fusion-plugin-paperclip-runtime", true)]);
+
+    render(<PluginManager addToast={addToast} />);
+
+    const toggle = await (await builtinSection()).findByRole("checkbox", { name: "Disable Paperclip Runtime" });
+    await userEvent.click(toggle.closest("label.toggle-switch") as HTMLLabelElement);
+
+    await waitFor(() => {
+      expect(disablePlugin).toHaveBeenCalledWith("fusion-plugin-paperclip-runtime", undefined);
+    });
+    expect(installPlugin).not.toHaveBeenCalled();
+  });
+
+  it("toggles an installed, disabled runtime built-in back on via the standard enable path", async () => {
+    vi.mocked(fetchPlugins).mockResolvedValue([builtinPlugin("fusion-plugin-openclaw-runtime", false)]);
+
+    render(<PluginManager addToast={addToast} />);
+
+    const toggle = await (await builtinSection()).findByRole("checkbox", { name: "Enable OpenClaw Runtime" });
+    expect(toggle).not.toBeChecked();
+    await userEvent.click(toggle.closest("label.toggle-switch") as HTMLLabelElement);
+
+    await waitFor(() => {
+      expect(enablePlugin).toHaveBeenCalledWith("fusion-plugin-openclaw-runtime", undefined);
+    });
   });
 });

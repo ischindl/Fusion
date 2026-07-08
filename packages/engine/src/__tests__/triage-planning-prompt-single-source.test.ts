@@ -18,11 +18,20 @@ vi.mock("../reviewer.js", () => ({
   reviewStep: mockReviewStep,
 }));
 
-vi.mock("../pi.js", () => ({
-  createFnAgent: mockCreateFnAgent,
-  describeModel: vi.fn().mockReturnValue("mock-model"),
-  promptWithFallback: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("../pi.js", () => {
+  /*
+  FNXC:EngineTests 2026-07-07-09:10:
+  triage.ts specifyTask catch checks `err instanceof ModelFallbackExhaustedError` (FN-7559 planner fallback exhaustion handling) and agentWork calls `formatModelMarkerDetails`. The pi mock must expose both so the instanceof guard is callable and model-marker formatting resolves, instead of crashing happy-path specifyTask runs.
+  */
+  class ModelFallbackExhaustedError extends Error {}
+  return {
+    ModelFallbackExhaustedError,
+    createFnAgent: mockCreateFnAgent,
+    describeModel: vi.fn().mockReturnValue("mock-model"),
+    formatModelMarkerDetails: vi.fn((model: string) => model),
+    promptWithFallback: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 vi.mock("@fusion/core", async (importOriginal) => {
   const { createEngineCoreMock } = await import("../test/mockCore.js");

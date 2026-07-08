@@ -373,14 +373,35 @@ describeIfGit("landWorkspaceTask — DB-failure resilience (Phase C review A1/A4
     // Status was reset off 'merging' before the throw escaped (A3).
     expect(store.task.status ?? null).toBeNull();
 
-    // Retry: isRepoLanded's trailer ancestor-fallback (A1) recognises the actually-landed
-    // repo via its Fusion-Task-Id trailer and SKIPS it — the ref must NOT advance a 2nd time.
+    /*
+    FNXC:Workspace 2026-07-07-10:55 (Phase C A1 precision regression — Greptile P1, two surfaces):
+    Advance repo-a's integration tip with an intervening commit whose MESSAGE BODY mentions the
+    trailer text "Fusion-Task-Id: FN-2002" (a changelog/diagnostic-style mention, NOT a real trailer
+    line) AFTER the task's squash landed (tipAfterFirst) but BEFORE the lost-persist retry. This
+    covers both precision surfaces: (1) the recovered landedSha must be the task's OWN landing commit
+    (tipAfterFirst), not the later tip; (2) the substring --grep prefilter must NOT select the
+    body-mention commit — findProvenLandedCommit requires an actual trailer line, so it skips the
+    mention and returns the real squash commit.
+    */
+    configureIdentity(fx.repoPath("repo-a"));
+    fx.git(
+      "repo-a",
+      'git commit --allow-empty -m "unrelated intervening land" -m "changelog: relates to Fusion-Task-Id: FN-2002 (body mention, not a trailer line)"',
+    );
+    const tipAfterIntervening = fx.git("repo-a", "git rev-parse refs/heads/main");
+    expect(tipAfterIntervening).not.toBe(tipAfterFirst);
+
+    // Retry: the A1 trailer scan recognises the actually-landed repo via its Fusion-Task-Id
+    // trailer and SKIPS it — the ref must NOT advance a 2nd time (stays at the intervening tip).
     const second = await landWorkspaceTask(store, store.task, fx.rootDir, {}, {
       mergeAgent: squashMergeAgent(BRANCH),
       reviewAgent: approveReviewAgent,
     });
-    expect(fx.git("repo-a", "git rev-parse refs/heads/main")).toBe(tipAfterFirst); // no double squash
+    expect(fx.git("repo-a", "git rev-parse refs/heads/main")).toBe(tipAfterIntervening); // no double squash
     expect(second.repos[0].alreadyLanded).toBe(true);
+    // Precision invariant: the recovered landedSha is the task's exact landing commit, not the
+    // later unrelated integration tip.
+    expect(second.repos[0].landedSha).toBe(tipAfterFirst);
     expect(second.allLanded).toBe(true);
     expect(second.finalized).toBe(true);
   });

@@ -480,6 +480,20 @@
   text-transform: uppercase;
 }
 
+/*
+ * FNXC:PluginManager 2026-07-07-00:00:
+ * FN-7629 — runtime built-ins (Hermes/Paperclip/OpenClaw/Droid) must always expose a durable
+ * enable/disable control alongside the existing Install/Manage affordance, on both desktop and
+ * mobile, and never dead-end at a static label. Wrap the toggle + action button so both share the
+ * same alignment as the rest of the built-in row.
+ */
+.plugin-builtins-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-shrink: 0;
+}
+
 .plugin-registry-section {
   display: flex;
   flex-direction: column;
@@ -829,6 +843,26 @@
   .plugin-registry-item {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  /*
+   * FNXC:PluginManager 2026-07-07-00:00:
+   * FN-7629 — keep the built-in runtime toggle at a 36x36 tap target on mobile, matching the
+   * installed-list `.plugin-actions .toggle-switch` convention, and let the actions row wrap
+   * below the metadata instead of squeezing the toggle + button onto one line.
+   */
+  .plugin-builtins-actions {
+    width: 100%;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
+  .plugin-builtins-actions .toggle-switch {
+    min-width: 36px;
+    min-height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .plugin-registry-header {

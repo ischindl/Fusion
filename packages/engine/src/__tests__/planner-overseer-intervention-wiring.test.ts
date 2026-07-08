@@ -262,8 +262,22 @@ describe("FN-7551 — overseer decision points populate the intervention timelin
 
   it("exhaustion actually reached through real tick()s (three denials) emits escalate exactly once thereafter", async () => {
     const task = await seedTask("in-review");
-    const { monitor, controllerFromMonitor: controller, emitEscalation } = wireRealEngineOverseer(store);
-    await monitor.observeTask(task, "autonomous");
+    // FNXC:PlannerOversight 2026-07-07-08:50:
+    // FN-7577 (2026-07-05) made PlannerRecoveryController.tick() drop the
+    // bounded-recovery attempt budget whenever a watched stage reports a
+    // HEALTHY/human-wait signal (progressing/complete/awaiting-human). A plain
+    // in-review task derives a "progressing" merger signal, so denials never
+    // accumulate through the real monitor wiring and exhaustion can't be
+    // reached — the 4th tick kept returning await_confirmation instead of the
+    // exhausted "none". This test's invariant is escalation DEDUP after
+    // exhaustion reached via real tick()s, so wire the controller to a PROBLEM
+    // (failed) merger snapshot (controllerWithSnapshot — the documented seam for
+    // branches the monitor's own signal-derivation cannot produce) whose signal
+    // holds the attempt budget, then drive three real denials to reach genuine
+    // exhaustion. The merger stage still surfaces await_confirmation regardless
+    // of signal (decidePlannerRecovery), so requiresConfirmation stays asserted.
+    const { controllerWithSnapshot, emitEscalation } = wireRealEngineOverseer(store);
+    const controller = controllerWithSnapshot(observation({ taskId: task.id, stage: "merger", signal: "failed" }));
 
     for (let i = 0; i < 3; i += 1) {
       const decision = await controller.tick(task);

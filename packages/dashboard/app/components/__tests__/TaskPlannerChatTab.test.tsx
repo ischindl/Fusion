@@ -8,7 +8,7 @@ import { TaskPlannerChatTab } from "../TaskPlannerChatTab";
 
 const taskPlannerChatCss = readFileSync(resolve(__dirname, "../TaskPlannerChatTab.css"), "utf8");
 
-const { mockEnsureTaskPlannerChatSession, mockFetchTaskPlannerChatSession, mockFetchChatSession, mockFetchChatMessages, mockFetchTaskDetail, mockStreamChatResponse, mockAttachChatStream, mockTranslations, mockT } = vi.hoisted(() => {
+const { mockEnsureTaskPlannerChatSession, mockFetchTaskPlannerChatSession, mockFetchChatSession, mockFetchChatMessages, mockFetchTaskDetail, mockStreamChatResponse, mockAttachChatStream, mockEditChatMessage, mockTranslations, mockT } = vi.hoisted(() => {
   const translations = new Map<string, string>();
   return {
     mockEnsureTaskPlannerChatSession: vi.fn(),
@@ -18,6 +18,7 @@ const { mockEnsureTaskPlannerChatSession, mockFetchTaskPlannerChatSession, mockF
     mockFetchTaskDetail: vi.fn(),
     mockStreamChatResponse: vi.fn(),
     mockAttachChatStream: vi.fn(),
+    mockEditChatMessage: vi.fn(),
     mockTranslations: translations,
     mockT: (key: string, fallback: string) => translations.get(key) ?? fallback,
   };
@@ -40,15 +41,20 @@ vi.mock("../../api", async (importOriginal) => {
     fetchTaskDetail: mockFetchTaskDetail,
     streamChatResponse: mockStreamChatResponse,
     attachChatStream: mockAttachChatStream,
+    editChatMessage: mockEditChatMessage,
   };
 });
 
-vi.mock("lucide-react", () => ({
-  Loader2: (props: any) => React.createElement("svg", { "data-testid": "loader2-icon", ...props }),
-  Maximize2: (props: any) => React.createElement("svg", { "data-testid": "maximize2-icon", ...props }),
-  Minimize2: (props: any) => React.createElement("svg", { "data-testid": "minimize2-icon", ...props }),
-  Send: (props: any) => React.createElement("svg", { "data-testid": "send-icon", ...props }),
-}));
+vi.mock("lucide-react", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("lucide-react")>();
+  return {
+    ...actual,
+    Loader2: (props: any) => React.createElement("svg", { "data-testid": "loader2-icon", ...props }),
+    Maximize2: (props: any) => React.createElement("svg", { "data-testid": "maximize2-icon", ...props }),
+    Minimize2: (props: any) => React.createElement("svg", { "data-testid": "minimize2-icon", ...props }),
+    Send: (props: any) => React.createElement("svg", { "data-testid": "send-icon", ...props }),
+  };
+});
 
 function makeTask(id: string, overrides: Record<string, unknown> = {}) {
   return { id, description: "Test task", column: "todo", dependencies: [], steps: [], currentStep: 0, createdAt: "2026-06-30T00:00:00.000Z", updatedAt: "2026-06-30T00:00:00.000Z", planningModelProvider: "anthropic", planningModelId: "claude-plan", ...overrides } as any;
@@ -126,6 +132,7 @@ describe("TaskPlannerChatTab", () => {
     mockFetchTaskDetail.mockResolvedValue(makeTask("FN-7310"));
     mockStreamChatResponse.mockReturnValue({ close: vi.fn(), isConnected: () => true });
     mockAttachChatStream.mockReturnValue({ close: vi.fn(), isConnected: () => true });
+    mockEditChatMessage.mockResolvedValue({ retained: [] });
   });
 
   it("looks up an existing task-scoped planner session and renders the starter-prompt empty state", async () => {
@@ -712,6 +719,39 @@ describe("TaskPlannerChatTab", () => {
     expect(mobileTextHideRule).toMatch(/span:not\(\.chat-input-stop-icon\)/);
     expect(mobileTextHideRule).not.toMatch(/\.task-planner-chat-send\s+span\s*\{/);
     expect(stopIcon).toHaveClass("chat-input-stop-icon");
+  });
+
+  it("keeps the planner stop button width in parity with the send button on desktop and mobile (FN-7634)", () => {
+    // Desktop: both `.chat-input-send` and `.chat-input-stop` (from ChatView.css) read
+    // `width: var(--chat-input-control-size)`, which is only declared inside `.chat-input-row`.
+    // The Planner composer must declare that same custom property itself so the value never
+    // resolves to `auto`, and must give the shared `.task-planner-chat-send` class (present on
+    // both the send and stop button variants) a `min-inline-size` floor bound to it — otherwise
+    // the streaming Stop button can render narrower than the idle Send button.
+    expect(taskPlannerChatCss).toMatch(/\.task-planner-chat-composer\s*\{[\s\S]*?--chat-input-control-size:\s*calc\(var\(--space-lg\)\s*\*\s*2\.5\);/);
+
+    // The base (non-mobile) `.task-planner-chat-send` rule is the first one in source order,
+    // before the `@media (max-width: 768px)` block redeclares it for mobile.
+    const mediaQueryStart = taskPlannerChatCss.indexOf("@media (max-width: 768px)");
+    const desktopCss = mediaQueryStart >= 0 ? taskPlannerChatCss.slice(0, mediaQueryStart) : taskPlannerChatCss;
+    const desktopSendRule = desktopCss.match(/\.task-planner-chat-send\s*\{[^}]*\}/)?.[0] ?? "";
+    // The desktop rule must bind the same control-size custom property as its floor so the
+    // Send button (idle) and Stop button (streaming) — both of which carry this class — never
+    // differ in width footprint.
+    expect(desktopSendRule).toMatch(/min-inline-size:\s*var\(--chat-input-control-size\)/);
+
+    // Mobile keeps its pre-existing explicit square sizing, which already applies identically
+    // to both the send and stop variants via the shared `.task-planner-chat-send` class.
+    const mobileSendRule = taskPlannerChatCss
+      .slice(mediaQueryStart)
+      .match(/\.task-planner-chat-send\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(mobileSendRule).toMatch(/inline-size:\s*calc\(var\(--space-2xl\)\s*\+\s*var\(--space-lg\)\)/);
+    expect(mobileSendRule).toMatch(/min-inline-size:\s*calc\(var\(--space-2xl\)\s*\+\s*var\(--space-lg\)\)/);
+
+    // Guard the FN-7594-era contract that the stop icon span stays visible on mobile even
+    // though other text-label spans are visually hidden.
+    const mobileTextHideRule = taskPlannerChatCss.match(/@media \(max-width: 768px\)[\s\S]*?\.task-planner-chat-send[^{}]*\{[^}]*clip:[^}]*\}/)?.[0] ?? "";
+    expect(mobileTextHideRule).toMatch(/span:not\(\.chat-input-stop-icon\)/);
   });
 
   it("renders live and stored thinking output through the standard chat surface", async () => {
@@ -1348,5 +1388,226 @@ describe("TaskPlannerChatTab", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Planner unavailable");
     await waitFor(() => expect(screen.getByLabelText("Message planner chat")).toBeEnabled());
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+  });
+
+  /*
+   * FNXC:TaskDetailPlannerChat 2026-07-07-10:15:
+   * Covers the FN-7639 edit-and-resend affordance across the enumerated surfaces: renders only
+   * for persisted user rows, absent on assistant/optimistic/streaming rows and while sending,
+   * truncates-then-resends in order, reloads truthful history and toasts on PATCH failure without
+   * resending, preserves planner-question dedup across an edited answer, and refreshes task detail
+   * with a discard notice (but no reversal) when the discarded range held a steering/refinement
+   * confirmation.
+   */
+  describe("message edit affordance", () => {
+    it("renders the edit affordance only for persisted user messages, hiding it for assistant, optimistic, and streaming rows", async () => {
+      mockFetchChatMessages.mockResolvedValue({
+        messages: [
+          { id: "m1", sessionId: "chat-planner", role: "user", content: "Hello", thinkingOutput: null, metadata: null, createdAt: "2026-06-30T00:01:00.000Z" },
+          { id: "m2", sessionId: "chat-planner", role: "assistant", content: "Hi there", thinkingOutput: null, metadata: null, createdAt: "2026-06-30T00:02:00.000Z" },
+        ],
+      });
+
+      renderPlannerChat();
+
+      expect(await screen.findByTestId("chat-message-edit-m1")).toBeInTheDocument();
+      expect(screen.queryByTestId("chat-message-edit-m2")).toBeNull();
+      const assistantMessage = screen.getByTestId("chat-message-m2");
+      expect(assistantMessage.querySelector("[aria-label='Edit message']")).toBeNull();
+    });
+
+    it("hides the edit affordance for an optimistic row and the streaming placeholder while sending", async () => {
+      const deferredStream = createDeferred<void>();
+      mockStreamChatResponse.mockImplementation((_sessionId, _content, handlers) => {
+        void deferredStream.promise.then(() => {
+          handlers.onText("partial");
+        });
+        return { close: vi.fn(), isConnected: () => true };
+      });
+      const user = userEvent.setup();
+      renderPlannerChat();
+      await screen.findByTestId("task-planner-chat-empty");
+
+      await user.type(screen.getByLabelText("Message planner chat"), "In flight");
+      await user.click(screen.getByRole("button", { name: "Send" }));
+
+      const optimisticMessage = await screen.findByText("In flight");
+      const optimisticRow = optimisticMessage.closest("[data-testid^='chat-message-']") as HTMLElement;
+      expect(optimisticRow?.querySelector("[aria-label='Edit message']")).toBeNull();
+      expect(screen.queryByLabelText("Edit message")).toBeNull();
+
+      deferredStream.resolve();
+    });
+
+    it("truncates locally, calls editChatMessage, then resends through the normal streaming send in order", async () => {
+      mockFetchChatMessages.mockResolvedValue({
+        messages: [
+          { id: "m1", sessionId: "chat-planner", role: "user", content: "Hello", thinkingOutput: null, metadata: null, createdAt: "2026-06-30T00:01:00.000Z" },
+          { id: "m2", sessionId: "chat-planner", role: "assistant", content: "Hi there", thinkingOutput: null, metadata: null, createdAt: "2026-06-30T00:02:00.000Z" },
+        ],
+      });
+      const deferredEdit = createDeferred<{ retained: unknown[] }>();
+      mockEditChatMessage.mockReturnValue(deferredEdit.promise);
+      mockStreamChatResponse.mockReturnValue({ close: vi.fn(), isConnected: () => true });
+
+      const user = userEvent.setup();
+      renderPlannerChat();
+
+      await screen.findByText("Hello");
+      await user.click(screen.getByTestId("chat-message-edit-m1"));
+      const editor = screen.getByTestId("chat-message-edit-editor-m1");
+      const textarea = editor.querySelector("textarea") as HTMLTextAreaElement;
+      fireEvent.change(textarea, { target: { value: "Hello, edited" } });
+      fireEvent.click(screen.getByText("Save"));
+
+      await waitFor(() => expect(mockEditChatMessage).toHaveBeenCalledWith("chat-planner", "m1", "Hello, edited", undefined));
+      // Optimistic truncation happens before the PATCH resolves: the edited row and its tail drop immediately.
+      await waitFor(() => expect(screen.queryByText("Hello")).not.toBeInTheDocument());
+      expect(screen.queryByText("Hi there")).not.toBeInTheDocument();
+      expect(mockStreamChatResponse).not.toHaveBeenCalled();
+
+      deferredEdit.resolve({ retained: [] });
+
+      await waitFor(() => expect(mockStreamChatResponse).toHaveBeenCalledWith(
+        "chat-planner",
+        "Hello, edited",
+        expect.any(Object),
+        undefined,
+        undefined,
+        { taskId: "FN-7310" },
+      ));
+      const editCallOrder = mockEditChatMessage.mock.invocationCallOrder[0];
+      const sendCallOrder = mockStreamChatResponse.mock.invocationCallOrder[mockStreamChatResponse.mock.calls.length - 1];
+      expect(editCallOrder).toBeLessThan(sendCallOrder);
+    });
+
+    it("reloads truthful history and toasts on PATCH failure without resending", async () => {
+      mockFetchChatMessages.mockResolvedValueOnce({
+        messages: [
+          { id: "m1", sessionId: "chat-planner", role: "user", content: "Hello", thinkingOutput: null, metadata: null, createdAt: "2026-06-30T00:01:00.000Z" },
+        ],
+      });
+      mockFetchChatMessages.mockResolvedValueOnce({
+        messages: [
+          { id: "m1", sessionId: "chat-planner", role: "user", content: "Hello", thinkingOutput: null, metadata: null, createdAt: "2026-06-30T00:01:00.000Z" },
+        ],
+      });
+      mockEditChatMessage.mockRejectedValueOnce(new Error("edit failed"));
+      const addToast = vi.fn();
+
+      renderPlannerChat({ addToast });
+      await screen.findByText("Hello");
+      fireEvent.click(screen.getByTestId("chat-message-edit-m1"));
+      const editor = screen.getByTestId("chat-message-edit-editor-m1");
+      const textarea = editor.querySelector("textarea") as HTMLTextAreaElement;
+      fireEvent.change(textarea, { target: { value: "Hello, edited" } });
+      fireEvent.click(screen.getByText("Save"));
+
+      await waitFor(() => expect(addToast).toHaveBeenCalledWith("edit failed", "error"));
+      await waitFor(() => expect(mockFetchChatMessages).toHaveBeenCalledTimes(2));
+      expect(mockStreamChatResponse).not.toHaveBeenCalled();
+      expect(await screen.findByText("Hello")).toBeInTheDocument();
+    });
+
+    it("hides the edit affordance on an already-persisted message while a new generation is streaming", async () => {
+      mockFetchChatMessages.mockResolvedValue({
+        messages: [
+          { id: "m1", sessionId: "chat-planner", role: "user", content: "Hello", thinkingOutput: null, metadata: null, createdAt: "2026-06-30T00:01:00.000Z" },
+        ],
+      });
+      const deferredStream = createDeferred<void>();
+      mockStreamChatResponse.mockImplementation((_sessionId, _content, handlers) => {
+        void deferredStream.promise.then(() => handlers.onText("partial"));
+        return { close: vi.fn(), isConnected: () => true };
+      });
+      const user = userEvent.setup();
+
+      renderPlannerChat();
+      await screen.findByTestId("chat-message-edit-m1");
+
+      await user.type(screen.getByLabelText("Message planner chat"), "another message");
+      await user.click(screen.getByRole("button", { name: "Send" }));
+
+      await waitFor(() => expect(screen.queryByTestId("chat-message-edit-m1")).toBeNull());
+      expect(mockEditChatMessage).not.toHaveBeenCalled();
+
+      deferredStream.resolve();
+    });
+
+    it("editing a planner-question answer does not corrupt question dedup", async () => {
+      mockFetchChatMessages.mockResolvedValue({
+        messages: [
+          plannerQuestionMessage("assistant-question", { question: "Pick a path", options: ["Conservative", "Aggressive"] }, "2026-06-30T00:01:00.000Z"),
+          { id: "answer-1", sessionId: "chat-planner", role: "user", content: "> Q: Pick a path\nConservative", thinkingOutput: null, metadata: null, createdAt: "2026-06-30T00:02:00.000Z" },
+        ],
+      });
+      mockEditChatMessage.mockResolvedValue({ retained: [] });
+      mockStreamChatResponse.mockReturnValue({ close: vi.fn(), isConnected: () => true });
+
+      renderPlannerChat();
+      await screen.findByTestId("chat-question-response");
+      expect(screen.getByTestId("chat-question-response")).toHaveClass("chat-question-response--answered");
+
+      fireEvent.click(screen.getByTestId("chat-message-edit-answer-1"));
+      const editor = screen.getByTestId("chat-message-edit-editor-answer-1");
+      const textarea = editor.querySelector("textarea") as HTMLTextAreaElement;
+      fireEvent.change(textarea, { target: { value: "> Q: Pick a path\nAggressive" } });
+      fireEvent.click(screen.getByText("Save"));
+
+      await waitFor(() => expect(mockEditChatMessage).toHaveBeenCalledWith("chat-planner", "answer-1", "> Q: Pick a path\nAggressive", undefined));
+      // The prior answer is discarded and the edited content is resent as the new answer: the
+      // question card stays a single card (no duplicate/corrupted dedup state) and reflects the
+      // resent answer as the current answered state.
+      await waitFor(() => expect(screen.getAllByTestId("chat-question-response")).toHaveLength(1));
+      expect(screen.getByTestId("chat-question-response")).toHaveClass("chat-question-response--answered");
+      expect(screen.getByTestId("chat-question-response-submitted-answer")).toHaveTextContent("Aggressive");
+    });
+
+    it("refreshes task detail and surfaces a discard notice (without reverting) when the discarded range held a steering confirmation", async () => {
+      mockFetchChatMessages.mockResolvedValue({
+        messages: [
+          { id: "m1", sessionId: "chat-planner", role: "user", content: "Please steer this", thinkingOutput: null, metadata: null, createdAt: "2026-06-30T00:01:00.000Z" },
+          {
+            id: "m2",
+            sessionId: "chat-planner",
+            role: "assistant",
+            content: "Added that as steering.",
+            thinkingOutput: null,
+            metadata: {
+              toolCalls: [{
+                toolName: "fn_task_planner_add_steering",
+                args: { text: "Please steer this" },
+                isError: false,
+                result: { details: { taskId: "FN-7310", text: "Please steer this", steeringComment: { id: "steer-1", text: "Please steer this" } } },
+                status: "completed",
+              }],
+            },
+            createdAt: "2026-06-30T00:02:00.000Z",
+          },
+        ],
+      });
+      mockEditChatMessage.mockResolvedValue({ retained: [] });
+      mockStreamChatResponse.mockReturnValue({ close: vi.fn(), isConnected: () => true });
+      const onTaskUpdated = vi.fn();
+      const addToast = vi.fn();
+
+      renderPlannerChat({ onTaskUpdated, addToast });
+      await screen.findByTestId("task-planner-chat-steering-confirmation");
+
+      fireEvent.click(screen.getByTestId("chat-message-edit-m1"));
+      const editor = screen.getByTestId("chat-message-edit-editor-m1");
+      const textarea = editor.querySelector("textarea") as HTMLTextAreaElement;
+      fireEvent.change(textarea, { target: { value: "Please steer this differently" } });
+      fireEvent.click(screen.getByText("Save"));
+
+      await waitFor(() => expect(mockFetchTaskDetail).toHaveBeenCalledWith("FN-7310", undefined));
+      await waitFor(() => expect(onTaskUpdated).toHaveBeenCalled());
+      await waitFor(() => expect(addToast).toHaveBeenCalledWith(
+        expect.stringContaining("were not undone"),
+        "info",
+      ));
+      // No reversal call is made for the already-applied steering comment.
+      expect(mockFetchTaskDetail).not.toHaveBeenCalledWith("FN-7310", expect.anything(), expect.anything());
+    });
   });
 });

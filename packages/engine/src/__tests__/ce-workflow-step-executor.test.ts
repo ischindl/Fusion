@@ -462,9 +462,16 @@ describe("CE workflow-step executor integration", () => {
         value: "implementation-incomplete",
       }));
       expect(mergeRequester).not.toHaveBeenCalled();
+      // FNXC:WorkflowMerge 2026-07-07-08:38: The merge boundary (executor.ts:6305, 6fc50d8d9e) now moves the task to in-review and logs the boundary move BEFORE the implementation-proof gate runs, then the proof failure is logged separately. The proof-failure text (executor.ts:6345) changed from the static "implementation steps are incomplete" to the parse-step-aware "implementation did not run: parsed coding steps are missing or incomplete". Assert both log entries so the new two-stage merge-boundary behavior is pinned.
       expect(store.logEntry).toHaveBeenCalledWith(
         "FN-CE-1",
-        "Workflow merge blocked before requester: implementation steps are incomplete",
+        "Workflow merge boundary moved task to in-review before requesting merge",
+        undefined,
+        undefined,
+      );
+      expect(store.logEntry).toHaveBeenCalledWith(
+        "FN-CE-1",
+        "Workflow merge blocked before requester: implementation did not run: parsed coding steps are missing or incomplete",
         undefined,
         undefined,
       );

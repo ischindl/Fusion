@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { loadAllAppCss } from "../../test/cssFixture";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { ChangesDiffModal, type NormalizedFile } from "../ChangesDiffModal";
+import { ModalDismissPreferenceProvider } from "../../hooks/useOverlayDismiss";
 import type { MergeDetails } from "@fusion/core";
 
 vi.mock("lucide-react", () => ({
@@ -381,8 +382,14 @@ describe("ChangesDiffModal", () => {
 
     it("calls onClose when clicking the modal overlay", () => {
       const onClose = vi.fn();
+      /*
+      FNXC:ChangesDiffModal 2026-07-07-09:20:
+      FN-7261 (global modal dismissal setting) made backdrop dismissal default-off: useOverlayDismiss only closes when ModalDismissPreferenceProvider enables it. Wrap the render in the provider so the overlay-click dismiss path is exercised (matches AgentErrorDetailsModal.test.tsx).
+      */
       const { container } = render(
-        <ChangesDiffModal {...defaultProps} onClose={onClose} />,
+        <ModalDismissPreferenceProvider enabled>
+          <ChangesDiffModal {...defaultProps} onClose={onClose} />
+        </ModalDismissPreferenceProvider>,
       );
 
       const overlay = container.querySelector(".modal-overlay");

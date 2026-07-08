@@ -66,13 +66,14 @@ describe("acquireTaskWorktree worktrunk wiring", () => {
 
     expect(result).toMatchObject({ source: "fresh", branch: "fusion/fn-1" });
     /*
-     * FNXC:WorktreeIsolation 2026-07-02-07:40:
-     * acquireTaskWorktree now resolves the integration branch via `git symbolic-ref` (returning empty here, so it falls back to "main") and pins the fresh worktree to that start point. Two exec calls happen: the symbolic-ref lookup, then the native `git worktree add -b ... "main"` create.
+     * FNXC:WorktreeIsolation 2026-07-02-07:40 (updated 2026-07-07-09:15 for FN-7438):
+     * acquireTaskWorktree resolves the integration branch via `git symbolic-ref`. When that returns empty (as the mock does here), FN-7438 (aa8f1f32e) added a `git remote` discovery call before falling back to "main". So three exec calls happen: symbolic-ref, git remote, then the native `git worktree add -b ... "main"` create.
      */
-    expect(execMock).toHaveBeenCalledTimes(2);
+    expect(execMock).toHaveBeenCalledTimes(3);
     expect(execMock.mock.calls[0]?.[0]).toBe("git symbolic-ref --short refs/remotes/origin/HEAD");
-    expect(execMock.mock.calls[1]?.[0]).toContain('git worktree add -b "fusion/fn-1"');
-    expect(execMock.mock.calls[1]?.[0]).toContain('"main"');
+    expect(execMock.mock.calls[1]?.[0]).toBe("git remote");
+    expect(execMock.mock.calls[2]?.[0]).toContain('git worktree add -b "fusion/fn-1"');
+    expect(execMock.mock.calls[2]?.[0]).toContain('"main"');
   });
 
   it("prefers explicit createWorktree override", async () => {
@@ -230,12 +231,16 @@ describe("acquireTaskWorktree worktrunk wiring", () => {
     expect(result.branch).toBe("fusion/fn-1-custom");
     expect(create).toHaveBeenCalledTimes(1);
     /*
-     * FNXC:WorktreeIsolation 2026-07-02-07:40:
-     * The integration-branch resolution runs before the custom backend's create, so the only exec call is the `git symbolic-ref` lookup. The backend's create mock performs no exec.
+     * FNXC:WorktreeIsolation 2026-07-02-07:40 (updated 2026-07-07-09:15 for FN-7438):
+     * The integration-branch resolution runs before the custom backend's create. With an empty symbolic-ref result, FN-7438 (aa8f1f32e) adds a `git remote` discovery call before the "main" fallback, so two exec calls happen: symbolic-ref + git remote. The backend's create mock performs no exec.
      */
-    expect(execMock).toHaveBeenCalledTimes(1);
+    expect(execMock).toHaveBeenCalledTimes(2);
     expect(execMock).toHaveBeenCalledWith(
       "git symbolic-ref --short refs/remotes/origin/HEAD",
+      expect.objectContaining({ cwd: "/repo" }),
+    );
+    expect(execMock).toHaveBeenCalledWith(
+      "git remote",
       expect.objectContaining({ cwd: "/repo" }),
     );
   });

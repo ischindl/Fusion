@@ -5,7 +5,7 @@ import { Loader2, Maximize2, Minimize2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ToastType } from "../hooks/useToast";
 import type { ChatMessageInfo, ToolCallInfo } from "../hooks/chatTypes";
-import { attachChatStream, ensureTaskPlannerChatSession, fetchChatMessages, fetchChatSession, fetchTaskDetail, fetchTaskPlannerChatSession, streamChatResponse, type ChatFailureInfo, type ChatStreamErrorMeta } from "../api";
+import { attachChatStream, editChatMessage, ensureTaskPlannerChatSession, fetchChatMessages, fetchChatSession, fetchTaskDetail, fetchTaskPlannerChatSession, streamChatResponse, type ChatFailureInfo, type ChatStreamErrorMeta } from "../api";
 import { parseQuestionToolCall, type ParsedQuestionToolCall } from "../utils/parseQuestionToolCall";
 import { ChatQuestionResponse } from "./ChatQuestionResponse";
 import { ProviderIcon } from "./ProviderIcon";
@@ -604,6 +604,75 @@ export function TaskPlannerChatTab({ task, projectId, active, expanded = false, 
     }
   }, [addToast, modelPayload, projectId, sessionId, startPlannerStream, task.id, t]);
 
+  const refreshTaskAfterEdit = useCallback(async (hadDiscardedSideEffect: boolean) => {
+    try {
+      const refreshedTask = await fetchTaskDetail(task.id, projectId);
+      onTaskUpdatedRef.current?.(refreshedTask);
+    } catch {
+      // Best-effort: the edit itself already succeeded and resent; a task-detail refresh
+      // failure here is non-fatal and must not be surfaced as an edit failure.
+    }
+    if (hadDiscardedSideEffect) {
+      addToastRef.current(
+        t(
+          "taskDetail.plannerChat.editDiscardedSideEffectsToast",
+          "Earlier steering comments or refinement tasks from the discarded messages were not undone",
+        ),
+        "info",
+      );
+    }
+  }, [projectId, t, task.id]);
+
+  /*
+   * FNXC:TaskDetailPlannerChat 2026-07-07-10:15:
+   * Editing an earlier Planner Chat message resumes the conversation from that point and forgets
+   * everything after it — both the persisted rows (via editChatMessage's server-side truncation)
+   * and the pi session context (via ChatManager.rewindSessionForEdit, reused unmodified from
+   * FN-7628). Product decision for already-applied task-scoped side effects: discarded turns may
+   * have already run fn_task_planner_add_steering (persisted a steering comment) or
+   * fn_task_planner_create_refinement (created a real task). Reverting those is destructive and
+   * out of scope here, so this task deliberately does NOT attempt to undo them — the steering
+   * comment stays on the task and the refinement task stays open. Instead, after a successful
+   * edit-and-resend we refresh task detail (so Activity/steering reflects reality) and, only when
+   * the discarded range contained a steering/refinement tool result, surface an informational
+   * toast so the user is not misled into thinking those changes were reverted.
+   */
+  const editMessageAndResend = useCallback(async (messageId: string, newContent: string) => {
+    if (composerStateRef.current === "sending" || !sessionId) return;
+    if (messageId.startsWith("optimistic-") || messageId === "streaming-assistant") return;
+    const trimmed = newContent.trim();
+    if (!trimmed) return;
+
+    const resolvedSessionId = sessionId;
+    const targetIndex = messages.findIndex((candidate) => candidate.id === messageId);
+    if (targetIndex === -1) return;
+
+    const discardedRange = messages.slice(targetIndex);
+    const hadDiscardedSideEffect = discardedRange.some((candidate) =>
+      extractToolCalls(candidate).some((toolCall) =>
+        extractPlannerSteeringResult(toolCall) !== null || extractPlannerRefinementResult(toolCall) !== null,
+      ),
+    );
+
+    // Optimistic truncation: drop the edited message and everything after it immediately,
+    // matching the server's index-based truncation semantics (not just a timestamp filter).
+    setMessages((current) => current.slice(0, targetIndex));
+
+    try {
+      await editChatMessage(resolvedSessionId, messageId, trimmed, projectId);
+    } catch (err) {
+      const message = getErrorMessage(err) || t("taskDetail.plannerChat.editFailed", "Failed to edit planner chat message");
+      setError(message);
+      addToastRef.current(message, "error");
+      // Restore truthful state from the server rather than trusting the optimistic truncation.
+      void refreshMessagesForSession(resolvedSessionId, () => true);
+      return;
+    }
+
+    await sendMessageContent(trimmed);
+    await refreshTaskAfterEdit(hadDiscardedSideEffect);
+  }, [messages, projectId, refreshMessagesForSession, refreshTaskAfterEdit, sendMessageContent, sessionId, t]);
+
   const sendMessage = useCallback(() => sendMessageContent(draft), [draft, sendMessageContent]);
 
   const stopPlannerStreaming = useCallback(() => {
@@ -825,6 +894,14 @@ export function TaskPlannerChatTab({ task, projectId, active, expanded = false, 
                   />
                 );
               }
+              /*
+               * FNXC:ChatMessageEdit 2026-07-07-10:15:
+               * Planner Chat (task-planner:<id> synthetic session) is model-loop and reuses FN-7628's
+               * rewind-and-resend path via the local editMessageAndResend orchestration above. The
+               * affordance is only offered on persisted user rows (never optimistic-<ts>/
+               * streaming-assistant placeholders, never assistant/system rows, and never while a
+               * generation is in flight) so StandardChatMessageItem never renders a dead/no-op button.
+               */
               return (
                 <StandardChatMessageItem
                   key={message.id}
@@ -839,6 +916,13 @@ export function TaskPlannerChatTab({ task, projectId, active, expanded = false, 
                   isAwaitingQuestionAnswer={message.role === "assistant"}
                   onQuestionSubmit={(answerText) => void sendMessageContent(answerText)}
                   toolCallRenderer={(toolCall, index) => renderPlannerToolCall(message, toolCall, index)}
+                  onEditMessage={editMessageAndResend}
+                  canEdit={
+                    message.role === "user"
+                    && !message.id.startsWith("optimistic-")
+                    && message.id !== "streaming-assistant"
+                    && composerState !== "sending"
+                  }
                 />
               );
             })}

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { makeTransitionRejection, TransitionRejectionError, type Task, type TaskStore } from "@fusion/core";
+import { makeTransitionRejection, TransitionRejectionError, buildBootstrapPrompt, type Task, type TaskStore, type WorkflowIr } from "@fusion/core";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { Scheduler } from "../scheduler.js";
@@ -31,7 +31,11 @@ function task(overrides: Partial<Task> = {}): Task {
   } as Task;
 }
 
-function storeWith(tasks: Task[], settings: Record<string, unknown> = {}): TaskStore {
+function storeWith(
+  tasks: Task[],
+  settings: Record<string, unknown> = {},
+  workflows: { selections?: Record<string, string>; definitions?: Record<string, WorkflowIr> } = {},
+): TaskStore {
   const byId = new Map(tasks.map((candidate) => [candidate.id, candidate]));
   return {
     listTasks: vi.fn(async () => [...byId.values()]),
@@ -64,6 +68,14 @@ function storeWith(tasks: Task[], settings: Record<string, unknown> = {}): TaskS
       listMissions: () => [],
       listGoalIdsForMission: () => [],
     })),
+    getTaskWorkflowSelection: vi.fn((id: string) => {
+      const workflowId = workflows.selections?.[id];
+      return workflowId ? { workflowId, stepIds: [] } : undefined;
+    }),
+    getWorkflowDefinition: vi.fn(async (id: string) => {
+      const ir = workflows.definitions?.[id];
+      return ir ? { ir } : undefined;
+    }),
   } as unknown as TaskStore;
 }
 
@@ -121,6 +133,50 @@ describe("Scheduler workflow cutover", () => {
       effectiveNodeSource: "local",
     }));
     expect(onSchedule).toHaveBeenCalledWith(expect.objectContaining({ id: "FN-100", column: "in-progress" }));
+  });
+
+  /*
+  FNXC:WorkflowScheduling 2026-07-07-00:00:
+  FN-7648 regression: a custom workflow's intake column can be renamed away from
+  the literal "todo" id (e.g. `ideas`). An unplanned card resting there (still
+  carrying the bootstrap-stub PROMPT.md) must stay held — the `reserveSlot`
+  guard used to be keyed on `task.column === "todo"` and silently released this
+  kind of card straight into `in-progress`.
+  */
+  it("FN-7648: keeps an unplanned card in a renamed custom intake column held instead of releasing it", async () => {
+    const unplanned = task({ id: "FN-300", column: "ideas" });
+    const renamedIntakeIr: WorkflowIr = {
+      version: "v2",
+      name: "renamed-intake",
+      columns: [
+        { id: "ideas", name: "Ideas", traits: [{ trait: "intake" }, { trait: "hold", config: { release: "capacity" } }] },
+        { id: "in-progress", name: "in-progress", traits: [{ trait: "wip", config: { limit: 5 } }] },
+        { id: "done", name: "done", traits: [{ trait: "complete" }] },
+      ],
+      nodes: [
+        { id: "start", kind: "start", column: "ideas" },
+        { id: "execute", kind: "prompt", column: "in-progress", config: { seam: "execute", prompt: "Do the work" } },
+        { id: "end", kind: "end", column: "done" },
+      ],
+      edges: [
+        { from: "start", to: "execute", condition: "success" },
+        { from: "execute", to: "end", condition: "success" },
+      ],
+    } as WorkflowIr;
+    const store = storeWith([unplanned], {}, {
+      selections: { "FN-300": "custom:renamed-intake" },
+      definitions: { "custom:renamed-intake": renamedIntakeIr },
+    });
+    vi.mocked(readFile).mockImplementation(async () => buildBootstrapPrompt("FN-300", unplanned.title, unplanned.description));
+    const onSchedule = vi.fn();
+    const scheduler = new Scheduler(store, { onSchedule });
+    (scheduler as unknown as { running: boolean }).running = true;
+
+    await scheduler.schedule();
+
+    expect(store.moveTask).not.toHaveBeenCalledWith("FN-300", "in-progress", expect.anything());
+    expect(unplanned.column).toBe("ideas");
+    expect(onSchedule).not.toHaveBeenCalledWith(expect.objectContaining({ id: "FN-300" }));
   });
 
   it("queues without dispatch when ephemeral agents are disabled and no agent store is available", async () => {

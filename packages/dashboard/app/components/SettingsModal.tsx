@@ -3612,6 +3612,23 @@ export function SettingsModal({
               &times;
             </button>
           )}
+          {/*
+            FNXC:Settings 2026-07-07-00:00:
+            Mobile embedded Settings (taskView === "settings", presentation="embedded") has no left sidebar to exit
+            through — only the bottom MobileNavBar — so the header needs an explicit close affordance calling the
+            existing onClose prop (wired to closeSettingsView: modalManager.closeSettings() + back to board + refresh
+            app settings). Desktop/tablet embedded still exit via the sidebar (no button here), and the standalone
+            modal presentation keeps its own `!isEmbedded` `modal-close` button above, untouched and byte-identical.
+          */}
+          {isEmbedded && viewportMode === "mobile" && (
+            <button
+              className="modal-close settings-embedded-mobile-close"
+              onClick={onClose}
+              aria-label={t("actions.close", "Close")}
+            >
+              &times;
+            </button>
+          )}
         </div>
         {loading ? (
           <div className="settings-empty-state settings-loading"><LoadingSpinner label={t("settings.loading", "Loading…")} /></div>

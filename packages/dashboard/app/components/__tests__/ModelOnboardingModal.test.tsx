@@ -1906,7 +1906,37 @@ describe("ModelOnboardingModal", () => {
 
       expect(screen.getByTestId("onboarding-git-prerequisite")).toHaveTextContent("Install Git before project setup");
       expect(screen.getByRole("button", { name: "Continue with gh CLI auth →" })).toBeTruthy();
-      expect(screen.getByRole("button", { name: /Connect OAuth/ })).toBeTruthy();
+      // FN-7624: no `github` OAuth provider is registered here (providers: []), so no dashboard
+      // OAuth login affordance may render — clicking it used to call handleLogin("github") against
+      // a provider that does not exist, surfacing a login error. Only the gh-CLI continue path is offered.
+      expect(screen.queryByRole("button", { name: /Connect OAuth/ })).toBeNull();
+    });
+
+    it("FN-7624: never renders a dashboard GitHub OAuth login affordance when no github OAuth provider is registered, across all gh CLI states", async () => {
+      const scenarios: Array<{ label: string; ghCli?: { available: boolean; authenticated: boolean } }> = [
+        { label: "gh CLI missing", ghCli: { available: false, authenticated: false } },
+        { label: "gh CLI unauthenticated", ghCli: { available: true, authenticated: false } },
+        { label: "gh CLI authenticated", ghCli: { available: true, authenticated: true } },
+      ];
+
+      for (const scenario of scenarios) {
+        mockFetchAuthStatus.mockResolvedValueOnce({
+          providers: [],
+          ghCli: scenario.ghCli,
+        });
+
+        const { unmount } = render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
+
+        await navigateToGitHubStep();
+
+        // No OAuth login trigger of any kind should render — no "Connect GitHub OAuth", no
+        // "Connect OAuth (optional)", no leftover empty CTA wrapper — since providerAvailable is false.
+        expect(screen.queryByRole("button", { name: /Connect OAuth/ })).toBeNull();
+        expect(screen.queryByRole("button", { name: /Connect GitHub OAuth/ })).toBeNull();
+        expect(screen.queryByTestId("onboarding-github-connect-cta")).toBeNull();
+
+        unmount();
+      }
     });
 
     it("does not show a Git prerequisite shell when auth status fails to load", async () => {

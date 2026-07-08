@@ -821,11 +821,14 @@ describe("WorktrunkWorktreeBackend", () => {
   });
 
   it("maps rebase conflicts to worktrunk_sync_conflict", async () => {
+    // FN-7438 (aa8f1f32e): resolveIntegrationBranch now does symbolic-ref + `git remote`
+    // before fetch+rebase when no trunk is given, which would consume this mock queue.
+    // Pass an explicit trunk to isolate the rebase-conflict mapping path under test.
     execMock.mockResolvedValueOnce({ stdout: "", stderr: "" }).mockRejectedValueOnce({ stderr: "CONFLICT" });
     const backend = new WorktrunkWorktreeBackend({ binaryPath: "worktrunk" });
 
     await expect(
-      backend.sync({ rootDir: "/repo", worktreePath: "/repo/.worktrees/fn-1", branch: "main" }),
+      backend.sync({ rootDir: "/repo", worktreePath: "/repo/.worktrees/fn-1", branch: "main", trunk: "main" }),
     ).rejects.toMatchObject({ code: "worktrunk_sync_conflict", operation: "sync" });
   });
 

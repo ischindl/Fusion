@@ -78,29 +78,36 @@ async function gitCapture(args: string[], cwd: string): Promise<string | undefin
  * Exported (A6) so Phase D self-healing reuses THIS canonical predicate instead of
  * reimplementing the ancestor/trailer check.
  */
-export async function isRepoLanded(
+/**
+ * FNXC:Workspace 2026-07-07-10:20 (Phase C A1 recovery precision — Greptile P1):
+ * Returns the EXACT proven landed commit (not just a boolean). Callers that need to record
+ * `landedSha` after a lost persist must use this, because the integration tip may have advanced
+ * past the actual landing commit (another sub-repo landing in between). The A1 trailer scan
+ * captures the commit carrying this task's trailer in the bounded range; `git log` is
+ * reverse-chronological so the first `%H` is the task's own landing commit, not a later unrelated tip.
+ */
+export async function findProvenLandedCommit(
   repoRootDir: string,
   integrationBranch: string,
   landedSha: string | undefined,
   taskId?: string,
   branch?: string,
-): Promise<boolean> {
+): Promise<string | undefined> {
   const intRef = `refs/heads/${integrationBranch}`;
   if (!(await gitOk(["rev-parse", "--verify", intRef], repoRootDir))) {
-    return false;
+    return undefined;
   }
-  // Primary: recorded landedSha is an ancestor of (or equals) the integration tip.
-  // `merge-base --is-ancestor X Y` exits 0 iff X is an ancestor of (or equal to) Y.
+  // Primary: recorded landedSha is an ancestor of (or equals) the integration tip — that SHA
+  // IS the exact landing commit.
   if (
     landedSha &&
     (await gitOk(["merge-base", "--is-ancestor", landedSha, intRef], repoRootDir))
   ) {
-    return true;
+    return landedSha;
   }
-  // A1 fallback: even without a recorded landedSha, the repo is already landed if the
-  // integration ref carries a commit with this task's Fusion-Task-Id trailer (the squash
-  // we lost the persist for). Bound the scan to commits gained since the branch's land base
-  // so a stale historical trailer of the same id cannot false-positive.
+  // A1 fallback: the commit carrying this task's Fusion-Task-Id trailer in the bounded range
+  // is the exact proven landing commit. Bound the scan to commits gained since the branch's
+  // land base so a stale historical trailer of the same id cannot false-positive.
   if (taskId) {
     const branchRef = branch ? `refs/heads/${branch}` : undefined;
     let range = intRef;
@@ -109,11 +116,40 @@ export async function isRepoLanded(
       if (base) range = `${base.trim()}..${intRef}`;
     }
     const trailer = `${FUSION_TASK_ID_TRAILER_KEY}: ${taskId}`;
-    const found = await gitCapture(
+    /*
+    FNXC:Workspace 2026-07-07-10:50 (Phase C A1 precision — Greptile P1, trailer-line verification):
+    `git log --grep=<trailer> --fixed-strings` is a substring search over the WHOLE commit message,
+    so a later changelog/diagnostic commit that merely mentions the trailer text in its body would
+    be selected over the actual squash commit. Use --grep only as a prefilter, then require an actual
+    trailer LINE (a line whose trimmed text is exactly the trailer) via `git show -s --format=%B`.
+    Candidates are reverse-chronological, so the first one with an exact trailer line is the task's
+    own landing commit.
+    */
+    const candidates = await gitCapture(
       ["log", "--format=%H", `--grep=${trailer}`, "--fixed-strings", range],
       repoRootDir,
     );
-    if (found && found.trim().length > 0) return true;
+    if (candidates) {
+      for (const sha of candidates.trim().split("\n")) {
+        if (!sha) continue;
+        const body = await gitCapture(["show", "-s", "--format=%B", sha], repoRootDir);
+        if (body && body.split("\n").some((line) => line.trim() === trailer)) {
+          return sha;
+        }
+      }
+    }
   }
-  return false;
+  return undefined;
+}
+
+export async function isRepoLanded(
+  repoRootDir: string,
+  integrationBranch: string,
+  landedSha: string | undefined,
+  taskId?: string,
+  branch?: string,
+): Promise<boolean> {
+  return Boolean(
+    await findProvenLandedCommit(repoRootDir, integrationBranch, landedSha, taskId, branch),
+  );
 }

@@ -3,6 +3,7 @@ import { useTranslation, Trans } from "react-i18next";
 import {
   fetchOpenClawStatus,
   fetchPluginSettings,
+  fetchPlugins,
   updatePluginSettings,
   type OpenClawProviderStatus,
 } from "../api";
@@ -83,12 +84,33 @@ export function OpenClawRuntimeCard() {
   const [status, setStatus] = useState<OpenClawProviderStatus | null>(null);
   const [busy, setBusy] = useState<"loading" | "saving" | "testing" | "save-test" | null>(null);
   const [toast, setToast] = useState<{ kind: "ok" | "err"; message: string } | null>(null);
+  /*
+   * FNXC:PluginManager 2026-07-07-00:00:
+   * FN-7629 — Plugin Manager is the source of truth for the runtime's enable/disable decision.
+   * Mirror the installed project-state so this card never claims OpenClaw is active/detected when
+   * the user has disabled it there.
+   */
+  const [runtimeDisabled, setRuntimeDisabled] = useState(false);
   const mountedRef = useRef(true);
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchPlugins()
+      .then((list) => {
+        if (cancelled) return;
+        const installed = list.find((p) => p.id === PLUGIN_ID);
+        setRuntimeDisabled(installed ? !installed.enabled : false);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
     };
   }, []);
 
@@ -201,10 +223,12 @@ export function OpenClawRuntimeCard() {
   }, [buildPayload, probe, t]);
 
   const binary = status?.binary;
-  const statusKind =
-    status === null ? "loading" : binary?.available ? "ok" : "err";
-  const statusText =
-    status === null
+  const statusKind = runtimeDisabled
+    ? "neutral"
+    : status === null ? "loading" : binary?.available ? "ok" : "err";
+  const statusText = runtimeDisabled
+    ? t("openclaw.statusDisabledInPluginManager", "Disabled in Plugin Manager")
+    : status === null
       ? t("openclaw.probing", "Probing local openclaw binary…")
       : binary?.available
         ? t("openclaw.statusDetected", `✓ Detected{{version}}{{path}}`, { version: binary.version ? ` ${binary.version}` : "", path: binary.binaryPath ? ` · ${binary.binaryPath}` : "" })

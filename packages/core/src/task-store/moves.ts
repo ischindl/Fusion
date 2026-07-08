@@ -450,7 +450,28 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
         options?.recoveryRehome === true &&
         !sourceIsLegacy &&
         (COLUMNS as readonly string[]).includes(toColumn);
-      if (!isEvacuation) {
+      /*
+      FNXC:AutoMergeLifecycle 2026-07-07-12:00:
+      Signature 1 (FN-7641 / NEXT-010): a proven-merge recovery rehome can also run
+      LEGACY -> LEGACY (e.g. `todo -> done` when finalizeProvenAutoMergeTask reaches a
+      task whose column drifted to `todo`/`in-progress`/`triage` before workspace-merge
+      finalization runs). VALID_TRANSITIONS['todo'] never lists 'done' -- that adjacency
+      graph encodes the NORMAL flow, not proven-merge recovery -- so the legacy adjacency
+      check below rejected the finalizer's `store.moveTask(id, 'done', { recoveryRehome:
+      true, preserveProgress: true })` call with "Invalid transition: 'todo' -> 'done'.
+      Valid targets: in-progress, triage, archived", stranding the card in `todo` forever
+      even though `finalizeProvenAutoMergeTask` already verified `hasDurableMergeProof`
+      and `getTaskHardMergeBlocker` before calling moveTask. Bypass ONLY the adjacency
+      check for a recoveryRehome move between two legacy columns; the merge-blocker guard
+      below (fromColumn === 'in-review' && toColumn === 'done') and the finalizer's own
+      hard-blocker gate are untouched, so non-recovery moves and genuine merge blockers
+      are not weakened.
+      */
+      const isLegacyRecoveryRehome =
+        options?.recoveryRehome === true &&
+        sourceIsLegacy &&
+        (COLUMNS as readonly string[]).includes(toColumn);
+      if (!isEvacuation && !isLegacyRecoveryRehome) {
         /*
         FNXC:WorkflowColumns 2026-07-05-19:30:
         Workflow columns graduated to always-on (no experimental flag emitted), so this "flag-OFF"

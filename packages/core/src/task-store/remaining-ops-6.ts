@@ -18,6 +18,7 @@ import { getWorkflowWorkItem as getWorkflowWorkItemAsync } from "./async-workflo
 import { type TaskRow } from "./persistence.js";
 import { BranchGroupRow, MergeRequestRow, PrEntityRow, PrThreadStateRow, WorkflowWorkItemRow } from "./row-types.js";
 import { BranchGroup, BranchGroupCreateInput, ColumnId, MergeRequestRecord, MergeRequestState, PrEntity, PrEntityCreateInput, PrThreadOutcome, PrThreadState, RunMutationContext, Task, TaskLogEntry, TaskPriority, WorkflowWorkItem, WorkflowWorkItemKind, WorkflowWorkItemState, WorkflowWorkItemTransitionPatch } from "../types.js";
+import { validateNodeOverrideChange } from "../node-override-guard.js";
 import { WorkflowMovePolicyInput } from "../workflow-extension-types.js";
 import { resolveWorkflowIrById } from "../workflow-ir-resolver.js";
 import { WorkflowSettingDefinition } from "../workflow-ir-types.js";
@@ -619,6 +620,34 @@ export async function updateTaskImpl(store: TaskStore,
     updates: { title?: string; description?: string; priority?: TaskPriority | null; prompt?: string; worktree?: string | null; workspaceWorktrees?: import("../types.js").Task["workspaceWorktrees"]; status?: string | null; dependencies?: string[]; steps?: import("../types.js").TaskStep[]; customFields?: Record<string, unknown>; currentStep?: number; blockedBy?: string | null; overlapBlockedBy?: string | null; assignedAgentId?: string | null; pausedByAgentId?: string | null; pausedReason?: string | null; tokenBudgetSoftAlertedAt?: string | null; worktrunkFallbackAlertedAt?: string | null; worktrunkFailure?: import("../types.js").Task["worktrunkFailure"] | null; tokenBudgetHardAlertedAt?: string | null; tokenBudgetOverride?: import("../types.js").TaskTokenBudgetOverride | null; dispatchStormCount?: number | null; lastDispatchAt?: string | null; assigneeUserId?: string | null; scopeOverride?: boolean | null; scopeOverrideReason?: string | null; scopeAutoWiden?: string[] | null; nodeId?: string | null; effectiveNodeId?: string | null; effectiveNodeSource?: string | null; checkedOutBy?: string | null; checkedOutAt?: string | null; checkoutNodeId?: string | null; checkoutRunId?: string | null; checkoutLeaseRenewedAt?: string | null; checkoutLeaseEpoch?: number | null; paused?: boolean; baseBranch?: string | null; autoMerge?: boolean | null; branch?: string | null; executionStartBranch?: string | null; baseCommitSha?: string | null; size?: "S" | "M" | "L"; reviewLevel?: number; executionMode?: import("../types.js").ExecutionMode | null; mergeRetries?: number; workflowStepRetries?: number; stuckKillCount?: number | null; resumeLimboCount?: number | null; graphResumeRetryCount?: number | null; resumeLimboTipSha?: string | null; resumeLimboStepSignature?: string | null; postReviewFixCount?: number | null; recoveryRetryCount?: number | null; taskDoneRetryCount?: number | null; worktreeSessionRetryCount?: number | null; completionHandoffLimboRecoveryCount?: number | null; verificationFailureCount?: number | null; mergeConflictBounceCount?: number | null; mergeAuditBounceCount?: number | null; mergeTransientRetryCount?: number | null; branchConflictRecoveryCount?: number | null; reviewerContextRetryCount?: number | null; reviewerFallbackRetryCount?: number | null; nextRecoveryAt?: string | null; enabledWorkflowSteps?: string[]; noCommitsExpected?: boolean | null; modelProvider?: string | null; modelId?: string | null; validatorModelProvider?: string | null; validatorModelId?: string | null; planningModelProvider?: string | null; planningModelId?: string | null; thinkingLevel?: string | null; error?: string | null; summary?: string | null; sessionFile?: string | null; firstExecutionAt?: string | null; cumulativeActiveMs?: number | null; executionStartedAt?: string | null; executionCompletedAt?: string | null; review?: import("../types.js").TaskReview | null; reviewState?: import("../types.js").TaskReviewState | null; workflowStepResults?: import("../types.js").WorkflowStepResult[] | null; mergeDetails?: import("../types.js").MergeDetails | null; sourceIssue?: import("../types.js").TaskSourceIssue | null; sourceMetadataPatch?: Record<string, unknown> | null; githubTracking?: import("../types.js").TaskGithubTracking | null; tokenUsage?: import("../types.js").TaskTokenUsage | null; modifiedFiles?: string[] | null; missionId?: string | null; sliceId?: string | null; workflowTransitionNotification?: import("../types.js").WorkflowTransitionNotificationMarker | undefined },
     runContext?: RunMutationContext,
   ): Promise<Task> {
+    /*
+    FNXC:StateMachine 2026-07-07-12:00:
+    Signature 2 (FN-7641): resolve the nodeId='end' finalize-on-proof-or-error contract ONCE here so
+    the dashboard route, CLI task-update tool, and any other updateTask caller share identical
+    behavior via this single choke point. Read the current task and check BEFORE acquiring the
+    per-task lock (getTask/moveTask each acquire their own lock; nesting inside withTaskLock would
+    deadlock since the lock is non-reentrant). A terminal-node override with durable merge proof
+    finalizes the card to done via the Signature-1 recovery rehome; without proof it throws an
+    explicit error instead of letting updateTaskUnlocked write a no-op nodeId field.
+    */
+    if (updates.nodeId !== undefined) {
+      const currentTask = await store.getTask(id).catch(() => null);
+      if (currentTask) {
+        const validation = validateNodeOverrideChange(currentTask, updates.nodeId ?? null, {
+          isTerminalNodeId: (nodeId) => isTaskTerminalNodeIdImpl(store, id, nodeId),
+        });
+        if (!validation.allowed) {
+          throw new Error(validation.message);
+        }
+        if (validation.requiresFinalize) {
+          await store.moveTask(id, "done", {
+            moveSource: "engine",
+            recoveryRehome: true,
+            preserveProgress: true,
+          });
+        }
+      }
+    }
     // FNXC:RuntimeTaskOrchestrationAsync 2026-06-24-14:00:
     // Backend-mode updateTask: delegates to updateTaskUnlocked which now
     // handles backend mode by upserting the task row via async Drizzle
@@ -626,6 +655,24 @@ export async function updateTaskImpl(store: TaskStore,
     // object is mutated in-place exactly as in the SQLite path, then the
     // full row is written to PostgreSQL. The SQLite path is unchanged.
     return store.withTaskLock(id, () => store.updateTaskUnlocked(id, updates, runContext));
+}
+
+/**
+ * FNXC:StateMachine 2026-07-07-12:00:
+ * Resolve whether `nodeId` is the task's resolved workflow terminal `end` node (kind === "end"),
+ * for the nodeId='end' finalize-on-proof-or-error contract (FN-7641 Signature 2). Falls back to
+ * the literal id check when the workflow IR cannot be resolved or does not contain the node, which
+ * still matches every built-in workflow's terminal node id.
+ */
+function isTaskTerminalNodeIdImpl(store: TaskStore, taskId: string, nodeId: string): boolean {
+  try {
+    const ir = store.resolveTaskWorkflowIrSync(taskId);
+    const node = ir.nodes.find((n) => n.id === nodeId);
+    if (node) return node.kind === "end";
+  } catch {
+    // Fall through to the literal-id fallback below.
+  }
+  return nodeId === "end";
 }
 
 export function mergeCustomFieldPatchImpl(store: TaskStore,

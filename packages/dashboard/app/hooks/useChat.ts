@@ -6,6 +6,7 @@ import {
   fetchChatMessages,
   updateChatSession,
   deleteChatSession,
+  editChatMessage,
   attachChatStream,
   streamChatResponse,
   cancelChatResponse,
@@ -50,6 +51,13 @@ export interface ChatSessionInfo {
   cliExecutorAdapterId?: string | null;
   /** Native CLI session id linkage (used as the terminal attach id for resume). */
   cliSessionFile?: string | null;
+  /**
+   * FNXC:ChatSearch 2026-07-07-00:00:
+   * Set only when this session's inclusion in `filteredSessions` (content mode) was driven by
+   * a server-side message-content match rather than the title/agentId filter, so the sidebar
+   * can show "why did this match" without a second round trip.
+   */
+  matchedMessagePreview?: string;
 }
 
 // Re-export shared chat types so existing consumers (`import { ChatMessageInfo } from "../hooks/useChat"`)
@@ -93,6 +101,14 @@ export interface UseChatReturn {
   // Message operations
   /** Send a message, optionally with file attachments to upload with the prompt. */
   sendMessage: (content: string, attachments?: File[]) => void;
+  /**
+   * FNXC:ChatMessageEdit 2026-07-07-09:00:
+   * Edit an earlier user message: truncates local + persisted history from that message onward
+   * (server also rewinds the pi session context so the model forgets discarded turns), then
+   * resends the edited content through the normal `sendMessage` streaming path. No-ops while a
+   * generation is streaming or when there is no active session.
+   */
+  editMessageAndResend: (messageId: string, newContent: string) => Promise<void>;
   stopStreaming: () => void;
   clearPendingMessage: (index?: number) => void;
   loadMoreMessages: () => Promise<void>;
@@ -101,6 +117,14 @@ export interface UseChatReturn {
   // Search/filter
   searchQuery: string;
   setSearchQuery: (query: string) => void;
+  /**
+   * FNXC:ChatSearch 2026-07-07-00:00:
+   * When true, search matches only session title/agentId (the original client-side-only
+   * behavior). When false (default), search also matches message content via a debounced
+   * server round trip; matched sessions are unioned into `filteredSessions`.
+   */
+  searchInTitleOnly: boolean;
+  setSearchInTitleOnly: (value: boolean) => void;
   filteredSessions: ChatSessionInfo[];
 
   // Refresh
@@ -327,6 +351,16 @@ export function useChat(
 
   // Search/filter
   const [searchQuery, setSearchQuery] = useState("");
+  /*
+  FNXC:ChatSearch 2026-07-07-00:00:
+  Default is content mode (searchInTitleOnly=false): the query matches title/agentId AND
+  message content. The toggle flips this to the pre-existing title/agentId-only behavior.
+  */
+  const [searchInTitleOnly, setSearchInTitleOnly] = useState(false);
+  const [contentMatchedPreviews, setContentMatchedPreviews] = useState<Map<string, string>>(new Map());
+  // Monotonic request counter: guards against an out-of-order/superseded debounced content
+  // search response overwriting a newer query's results (or a toggle-to-title-only reset).
+  const contentSearchRequestIdRef = useRef(0);
 
   // Pagination
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
@@ -1222,14 +1256,126 @@ export function useChat(
 
   sendMessageRef.current = sendMessage;
 
-  // Filter sessions based on search query
-  const filteredSessions = searchQuery
-    ? sessions.filter(
-        (s) =>
-          s.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          s.agentId.toLowerCase().includes(searchQuery.toLowerCase()),
-      )
-    : sessions;
+  /*
+   * FNXC:ChatMessageEdit 2026-07-07-09:00:
+   * Editing an earlier message must resume the conversation from that point, forgetting
+   * everything after it, so future responses are not biased by discarded turns. The optimistic
+   * local truncation happens first (immediate UI feedback), then the server truncates its
+   * persisted rows AND rewinds the pi session context (ChatManager.rewindSessionForEdit) before
+   * we resend the edited content through the normal streaming sendMessage path. Blocked while
+   * streaming so an edit cannot race a live generation.
+   */
+  const editMessageAndResend = useCallback(
+    async (messageId: string, newContent: string) => {
+      if (isStreamingRef.current || !activeSession) {
+        return;
+      }
+
+      const trimmed = newContent.trim();
+      if (!trimmed) {
+        return;
+      }
+
+      const sessionId = activeSession.id;
+      const previousMessages = messagesRef.current;
+      const targetIndex = previousMessages.findIndex((m) => m.id === messageId);
+      if (targetIndex === -1) {
+        return;
+      }
+
+      // Optimistic truncation: drop the edited message and everything after it immediately.
+      setMessages(previousMessages.slice(0, targetIndex));
+
+      try {
+        await editChatMessage(sessionId, messageId, trimmed, projectId);
+      } catch (error) {
+        console.error("[useChat] Failed to edit message:", error);
+        addToast?.("Failed to edit message", "error");
+        // Restore truthful state from the server rather than trusting the optimistic truncation.
+        await loadMessages(sessionId);
+        return;
+      }
+
+      const cacheKey = getChatMessagesCacheKey(projectId, sessionId);
+      if (cacheKey) {
+        clearCache(cacheKey);
+      }
+
+      sendMessage(trimmed);
+    },
+    [activeSession, projectId, addToast, loadMessages, getChatMessagesCacheKey, sendMessage],
+  );
+
+  /*
+  FNXC:ChatSearch 2026-07-07-00:00:
+  Content search requires a server round trip (message bodies are not fully loaded
+  client-side), so it is debounced (300ms) and guarded against out-of-order responses via a
+  monotonic request id: a superseded query (typed-ahead, or a toggle back to title-only)
+  invalidates in-flight responses instead of letting a stale result flash in. Switching to
+  title-only or clearing the query resets `contentMatchedPreviews` synchronously so there is
+  no stale-result flash while the (now-irrelevant) debounced fetch is still pending/aborted.
+  */
+  const trimmedSearchQuery = searchQuery.trim();
+  useEffect(() => {
+    if (searchInTitleOnly || !trimmedSearchQuery) {
+      contentSearchRequestIdRef.current++;
+      setContentMatchedPreviews(new Map());
+      return;
+    }
+
+    const requestId = ++contentSearchRequestIdRef.current;
+    const timeoutId = setTimeout(() => {
+      void (async () => {
+        try {
+          const data = await fetchChatSessions(projectId, undefined, {
+            q: trimmedSearchQuery,
+            titleOnly: false,
+          });
+          if (contentSearchRequestIdRef.current !== requestId) return;
+          const previews = new Map<string, string>();
+          for (const s of data.sessions) {
+            if (s.matchedMessagePreview) previews.set(s.id, s.matchedMessagePreview);
+          }
+          setContentMatchedPreviews(previews);
+        } catch {
+          if (contentSearchRequestIdRef.current === requestId) {
+            setContentMatchedPreviews(new Map());
+          }
+        }
+      })();
+    }, 300);
+
+    return () => clearTimeout(timeoutId);
+  }, [trimmedSearchQuery, searchInTitleOnly, projectId]);
+
+  // Filter sessions based on search query: title/agentId match always applies; content
+  // matches (from contentMatchedPreviews) are unioned in unless searchInTitleOnly is set.
+  const filteredSessions = (() => {
+    if (!trimmedSearchQuery) return sessions;
+
+    const lowerQuery = trimmedSearchQuery.toLowerCase();
+    const titleMatched = sessions.filter(
+      (s) =>
+        s.title?.toLowerCase().includes(lowerQuery) ||
+        s.agentId.toLowerCase().includes(lowerQuery),
+    );
+
+    if (searchInTitleOnly || contentMatchedPreviews.size === 0) {
+      return titleMatched;
+    }
+
+    const merged = new Map<string, ChatSessionInfo>();
+    for (const s of titleMatched) merged.set(s.id, s);
+    for (const session of sessions) {
+      const preview = contentMatchedPreviews.get(session.id);
+      if (preview === undefined) continue;
+      const existing = merged.get(session.id);
+      merged.set(session.id, { ...(existing ?? session), matchedMessagePreview: preview });
+    }
+    return Array.from(merged.values()).sort(
+      (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+    );
+  })();
 
   useEffect(() => {
     if (!activeSession?.id || activeSession.isGenerating !== true || streamRef.current) {
@@ -1486,12 +1632,15 @@ export function useChat(
     renameSession,
     deleteSession,
     sendMessage,
+    editMessageAndResend,
     stopStreaming,
     clearPendingMessage,
     loadMoreMessages,
     hasMoreMessages,
     searchQuery,
     setSearchQuery,
+    searchInTitleOnly,
+    setSearchInTitleOnly,
     filteredSessions,
     refreshSessions,
     agentsMap,

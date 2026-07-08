@@ -16,7 +16,7 @@
  *   flip. These helpers are the async target the PostgreSQL integration tests
  *   consume.
  */
-import { and, asc, desc, eq, gt, inArray, isNull, lte, ne, or as orFn, sql as drizzleSql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, ilike, inArray, isNull, lte, ne, or as orFn, sql as drizzleSql } from "drizzle-orm";
 import * as schema from "./postgres/schema/index.js";
 import type { AsyncDataLayer, DbTransaction } from "./postgres/data-layer.js";
 import type {
@@ -639,6 +639,127 @@ export async function deleteChatMessage(
     .set({ updatedAt: new Date().toISOString() })
     .where(eq(schema.project.chatSessions.id, existing.sessionId));
   return true;
+}
+
+/**
+ * FNXC:ChatSearch 2026-07-07-00:00:
+ * Postgres counterpart of the sync ChatStore.searchSessionsByMessageContent (FN-7631 Chat
+ * sidebar content search). Parameterized ILIKE with `%`/`_`/`\` escaped so literal wildcards
+ * in the user's search text match literally (SQLite LIKE is ASCII case-insensitive, so ILIKE
+ * preserves those semantics). One row per session: the most recent matching message wins,
+ * tiebroken by id since Postgres has no rowid; preview truncated to ~100 chars.
+ */
+export async function searchChatSessionsByMessageContent(
+  handle: QueryHandle,
+  query: string,
+  sessionIds: string[],
+): Promise<Map<string, string>> {
+  const trimmed = query.trim();
+  if (!trimmed || sessionIds.length === 0) return new Map();
+  const escaped = trimmed.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+  const rows = await handle
+    .select()
+    .from(schema.project.chatMessages)
+    .where(and(
+      inArray(schema.project.chatMessages.sessionId, sessionIds),
+      ilike(schema.project.chatMessages.content, `%${escaped}%`),
+    ))
+    .orderBy(
+      desc(schema.project.chatMessages.createdAt),
+      desc(schema.project.chatMessages.id),
+    );
+  const result = new Map<string, string>();
+  for (const row of rows) {
+    const message = rowToMessage(row);
+    if (result.has(message.sessionId)) continue;
+    const content = message.content || "";
+    result.set(message.sessionId, content.length > 100 ? content.slice(0, 100) + "…" : content);
+  }
+  return result;
+}
+
+/**
+ * FNXC:ChatMessageEdit 2026-07-07-09:00:
+ * Truncate a chat session from (and including) a target message onward — the Postgres
+ * counterpart of the sync ChatStore.deleteMessagesFrom (FN-7628 edit/rewind). Postgres has
+ * no rowid insertion-order tiebreaker, so ordering is (createdAt ASC, id ASC) — deterministic
+ * and consistent with getLastMessageForSessions' (createdAt DESC, id DESC).
+ * Returns deletedIds (ASC order) and retained pre-edit messages (ASC order).
+ */
+export async function deleteChatMessagesFrom(
+  handle: QueryHandle,
+  sessionId: string,
+  fromMessageId: string,
+): Promise<{ deletedIds: string[]; retained: ChatMessage[] }> {
+  const orderedRows = await handle
+    .select()
+    .from(schema.project.chatMessages)
+    .where(eq(schema.project.chatMessages.sessionId, sessionId))
+    .orderBy(
+      asc(schema.project.chatMessages.createdAt),
+      asc(schema.project.chatMessages.id),
+    );
+  const ordered = orderedRows.map(rowToMessage);
+
+  const target = await getChatMessage(handle, fromMessageId);
+  if (!target || target.sessionId !== sessionId) {
+    return { deletedIds: [], retained: ordered };
+  }
+
+  const targetIndex = ordered.findIndex((message) => message.id === fromMessageId);
+  if (targetIndex === -1) {
+    return { deletedIds: [], retained: ordered };
+  }
+
+  const retained = ordered.slice(0, targetIndex);
+  const deletedIds = ordered.slice(targetIndex).map((message) => message.id);
+  if (deletedIds.length === 0) {
+    return { deletedIds: [], retained };
+  }
+
+  await handle
+    .delete(schema.project.chatMessages)
+    .where(inArray(schema.project.chatMessages.id, deletedIds));
+  await handle
+    .update(schema.project.chatSessions)
+    .set({ updatedAt: new Date().toISOString() })
+    .where(eq(schema.project.chatSessions.id, sessionId));
+
+  return { deletedIds, retained };
+}
+
+/**
+ * FNXC:ChatMessageEdit 2026-07-07-09:00:
+ * Merge (default) or replace a persisted message's metadata — Postgres counterpart of the
+ * sync ChatStore.updateMessageMetadata (FN-7628). Records e.g. `metadata.piParentLeafId`
+ * on a user message so a later edit can rewind the pi session losslessly.
+ */
+export async function updateChatMessageMetadata(
+  handle: QueryHandle,
+  messageId: string,
+  metadata: Record<string, unknown> | null,
+  options?: { merge?: boolean },
+): Promise<ChatMessage> {
+  const existing = await getChatMessage(handle, messageId);
+  if (!existing) {
+    throw new Error(`Message ${messageId} not found`);
+  }
+
+  const merge = options?.merge !== false;
+  const nextMetadata = metadata === null
+    ? (merge ? existing.metadata : null)
+    : (merge ? { ...(existing.metadata ?? {}), ...metadata } : metadata);
+
+  await handle
+    .update(schema.project.chatMessages)
+    .set({ metadata: nextMetadata ?? null })
+    .where(eq(schema.project.chatMessages.id, messageId));
+
+  const updated = await getChatMessage(handle, messageId);
+  if (!updated) {
+    throw new Error(`Failed to update message ${messageId}`);
+  }
+  return updated;
 }
 
 /**
