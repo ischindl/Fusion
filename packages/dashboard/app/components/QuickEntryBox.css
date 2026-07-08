@@ -249,6 +249,9 @@ The wide menu is portaled and fixed-positioned by QuickEntryBox so right-side bo
 /*
 FNXC:QuickAddWorkflow 2026-07-08-00:00:
 FN-7677 — the workflow trigger shares `.btn.btn-sm.dep-trigger` classes with other surfaces (InlineCreateCard, NewTaskModal, TaskDetailModal, TaskForm), but the shared `.dep-trigger, .inline-create-model-trigger` rule in styles.css sets `padding: 3px 8px`, overriding `.btn-sm`'s `padding: 4px 10px` and making this trigger ~2px shorter than its Save/Fast/Subtask `.btn.btn-sm` siblings in `.quick-entry-actions`. Re-assert `.btn-sm`'s own padding value scoped to this selector only (do not touch the shared global `.dep-trigger` rule — other surfaces still depend on its 3px/8px sizing) so the quick-add action row reads as one uniform height.
+
+FNXC:QuickAddWorkflow 2026-07-08-09:30:
+FN-7682 — the tokenized-CSS test forbids raw px in the workflow-selector rules, so the `4px 10px` literal is replaced with `var(--space-sm) var(--space-md)` (vertical then horizontal). Height parity is unaffected: box height for this trigger is governed by the FN-7680 `.quick-entry-actions .btn, .quick-entry-actions .wf-optional-steps-dropdown-trigger { min-height: calc(var(--space-xl) + var(--space-xs)); }` normalization (desktop and the matching mobile block), not by this element's own padding — the padding only controls internal content spacing and stays at or below that min-height.
 */
 .quick-entry-workflow-trigger {
   display: inline-flex;
@@ -258,7 +261,7 @@ FN-7677 — the workflow trigger shares `.btn.btn-sm.dep-trigger` classes with o
   width: auto;
   min-width: 0;
   max-width: min(calc(var(--space-xl) * 5), calc(100vw - var(--space-lg)));
-  padding: 4px 10px;
+  padding: var(--space-sm) var(--space-md);
 }
 
 .quick-entry-workflow-icon {
