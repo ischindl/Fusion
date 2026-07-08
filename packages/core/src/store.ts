@@ -8798,6 +8798,22 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
     projectId: string,
     patch: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
+    return (await this.updateWorkflowSettingValuesWithPrevious(workflowId, projectId, patch)).stored;
+  }
+
+  /**
+   * Like {@link updateWorkflowSettingValues} but also returns the row's value
+   * snapshot as it was read INSIDE the same serialized transaction, immediately
+   * before the merge. Callers that diff before→after (e.g. model-lane drift on
+   * `PATCH /workflows/:id/setting-values`) must use this — reading `before`
+   * outside the write transaction races a concurrent patch of the same row and
+   * can pair a stale `previous` with another writer's `stored` (Greptile P2).
+   */
+  async updateWorkflowSettingValuesWithPrevious(
+    workflowId: string,
+    projectId: string,
+    patch: Record<string, unknown>,
+  ): Promise<{ previous: Record<string, unknown>; stored: Record<string, unknown> }> {
     const declarations = await this.resolveWorkflowSettingDeclarations(workflowId);
     const result = validateSettingValuePatch(declarations, patch);
     if (result.rejections.length > 0) {
@@ -8812,8 +8828,8 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
     // write transaction. Validation/declaration resolution above stays outside
     // since it's async and doesn't read the row being mutated.
     return this.db.transactionImmediate(() => {
-      const current = this.getWorkflowSettingValues(workflowId, projectId);
-      const next: Record<string, unknown> = { ...current };
+      const previous = this.getWorkflowSettingValues(workflowId, projectId);
+      const next: Record<string, unknown> = { ...previous };
       for (const [key, value] of Object.entries(result.accepted)) {
         if (value === null) {
           delete next[key];
@@ -8832,7 +8848,9 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
         )
         .run(workflowId, projectId, JSON.stringify(next), now);
       this.db.bumpLastModified();
-      return next;
+      // `previous` is captured before the merge; it and `next` are a consistent
+      // before/after pair from the same transaction snapshot.
+      return { previous, stored: next };
     });
   }
 
@@ -15823,11 +15841,19 @@ ${stepsSection}`;
    * so changing a workflow's default silently orphans already-created tasks
    * unless this drift is surfaced. Read-only — never mutates `tasks`; pair
    * with `POST /tasks/batch-update-models` to actually re-pin flagged ids.
+   *
+   * When the diffed workflow is the project default, no-selection tasks resolve
+   * THROUGH it and are pinned to its lane values, so they must be counted as
+   * occupants. Callers pass `includeNullSelection: true` in that case (the
+   * route never hands us the internal `DEFAULT_WORKFLOW_POOL_ID` sentinel — it
+   * has the concrete default id — so we cannot infer this from `workflowId`
+   * alone; Greptile P1). When omitted, it falls back to the sentinel check.
    */
   getModelLaneDrift(
     workflowId: string,
     before: Record<string, unknown>,
     after: Record<string, unknown>,
+    options?: { includeNullSelection?: boolean },
   ): Array<{
     lane: string;
     from: { provider: string | null; modelId: string | null };
@@ -15835,7 +15861,8 @@ ${stepsSection}`;
     taskIds: string[];
   }> {
     const asStringOrNull = (v: unknown): string | null => (typeof v === "string" ? v : null);
-    const includeNullSelection = workflowId === TaskStore.DEFAULT_WORKFLOW_POOL_ID;
+    const includeNullSelection =
+      options?.includeNullSelection ?? workflowId === TaskStore.DEFAULT_WORKFLOW_POOL_ID;
     const drift: Array<{
       lane: string;
       from: { provider: string | null; modelId: string | null };

@@ -481,8 +481,11 @@ export function registerWorkflowRoutes(ctx: ApiRoutesContext): void {
       await assertWorkflowExists(store, workflowId);
       const projectId = store.getWorkflowSettingsProjectId();
       try {
-        const before = store.getWorkflowSettingValues(workflowId, projectId);
-        const stored = await store.updateWorkflowSettingValues(
+        // FNXC:ModelLaneDrift 2026-07-08-07:24:
+        // Capture `before` INSIDE the write transaction (paired with `stored`)
+        // so a concurrent patch of the same row cannot pair a stale baseline
+        // with another writer's result (Greptile P2).
+        const { previous: before, stored } = await store.updateWorkflowSettingValuesWithPrevious(
           workflowId,
           projectId,
           values as Record<string, unknown>,
@@ -491,7 +494,17 @@ export function registerWorkflowRoutes(ctx: ApiRoutesContext): void {
         // Model-lane drift: tasks already pinned to the value being replaced
         // are never auto-resynced (see getModelLaneDrift), so surface them
         // here rather than let the change silently orphan those tasks.
-        const modelDrift = store.getModelLaneDrift(workflowId, before, stored).filter((d) => d.taskIds.length > 0);
+        // FNXC:ModelLaneDrift 2026-07-08-07:24:
+        // When the patched workflow is the project default, no-selection tasks
+        // resolve through it and must be counted, so flag includeNullSelection
+        // then (Greptile P1) — the route holds the concrete default id, not the
+        // internal DEFAULT_WORKFLOW_POOL_ID sentinel getModelLaneDrift checks.
+        const defaultWorkflowId = (await store.getDefaultWorkflowId()) ?? "builtin:coding";
+        const modelDrift = store
+          .getModelLaneDrift(workflowId, before, stored, {
+            includeNullSelection: workflowId === defaultWorkflowId,
+          })
+          .filter((d) => d.taskIds.length > 0);
         res.json({
           stored,
           effective: resolveEffectiveSettingValues(declarations, stored),
