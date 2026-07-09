@@ -20,8 +20,10 @@ import {
   isWorkspaceTask,
   resolveColumnFlags,
   BUILTIN_CODING_WORKFLOW_IR,
+  mergeBuiltInGrokProviderModels,
   mergeBuiltInZaiProviderModels,
   parseWorkflowIr,
+  registerBuiltInGrokProvider,
   registerBuiltInZaiProvider,
   type WorkflowIrColumn,
   type TraitFlags,
@@ -1485,6 +1487,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
   const authStorage = createFusionAuthStorage();
   const modelRegistry = ModelRegistry.create(authStorage, getModelRegistryModelsPath());
   registerBuiltInZaiProvider(modelRegistry, (message) => logSink.log(message, "extensions"));
+  registerBuiltInGrokProvider(modelRegistry, (message) => logSink.log(message, "extensions"));
   const dashboardAuthStorage = wrapAuthStorageWithApiKeyProviders(authStorage, modelRegistry);
 
   // PackageManager may be used for skills adapter even if extension loading fails.
@@ -1605,6 +1608,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
 
     extensionsResult.runtime.pendingProviderRegistrations = [];
     mergeBuiltInZaiProviderModels(modelRegistry, (message) => logSink.log(message, "extensions"));
+    mergeBuiltInGrokProviderModels(modelRegistry, (message) => logSink.log(message, "extensions"));
     modelRegistry.refresh();
 
     try {

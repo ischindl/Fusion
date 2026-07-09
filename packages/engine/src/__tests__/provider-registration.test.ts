@@ -104,7 +104,7 @@ describe("seedDashboardProviders", () => {
     const { authStorage: wrapped } = await seedDashboardProviders({ store, authStorage, modelRegistry });
 
     const providerIds = wrapped.getApiKeyProviders().map((p) => p.id);
-    expect(providerIds).toEqual(expect.arrayContaining(["zai", "openrouter", "kimi-coding"]));
+    expect(providerIds).toEqual(expect.arrayContaining(["zai", "openrouter", "kimi-coding", "grok-cli"]));
   });
 
   it("registers built-in API-key providers with an empty customProviders array", async () => {
@@ -115,7 +115,7 @@ describe("seedDashboardProviders", () => {
     const { authStorage: wrapped } = await seedDashboardProviders({ store, authStorage, modelRegistry });
 
     const providerIds = wrapped.getApiKeyProviders().map((p) => p.id);
-    expect(providerIds).toEqual(expect.arrayContaining(["zai", "openrouter", "kimi-coding"]));
+    expect(providerIds).toEqual(expect.arrayContaining(["zai", "openrouter", "kimi-coding", "grok-cli"]));
   });
 
   it("registers one custom provider alongside built-ins", async () => {

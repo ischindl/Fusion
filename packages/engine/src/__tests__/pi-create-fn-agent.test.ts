@@ -1537,7 +1537,12 @@ describe("createFnAgent", () => {
     expect(registerProviderMock).toHaveBeenNthCalledWith(1, "zai", expect.objectContaining({
       models: expect.arrayContaining([expect.objectContaining({ id: "glm-5.2" })]),
     }));
-    expect(registerProviderMock).toHaveBeenNthCalledWith(2, "zai", expect.objectContaining({
+    // FN-7711: registerBuiltInGrokProvider seeds grok-cli immediately after the built-in zai
+    // registration, before the extension's pending provider registrations replay.
+    expect(registerProviderMock).toHaveBeenNthCalledWith(2, "grok-cli", expect.objectContaining({
+      models: expect.arrayContaining([expect.objectContaining({ id: "grok-4.5" })]),
+    }));
+    expect(registerProviderMock).toHaveBeenNthCalledWith(3, "zai", expect.objectContaining({
       models: [{ id: "glm-5.1" }],
     }));
     expect(refreshMock).toHaveBeenCalled();
@@ -1784,6 +1789,77 @@ describe("createFnAgent", () => {
     })).rejects.toThrow("Configured model openai-codex/missing-model (fallback selection) was not found in the pi model registry");
 
     expect(createAgentSessionMock).not.toHaveBeenCalled();
+  });
+
+  // FNXC:ModelRegistry 2026-07-09-00:00:
+  // FN-7711 symptom verification: selecting grok-cli/grok-4.5 used to hard-fail at session
+  // creation with "not found in the pi model registry" because the grok-cli provider was never
+  // registered into the execution registry (see registerExtensionProviders in ../pi.js). This
+  // mirrors the zai/glm-5.1 throw test above to reproduce the exact original failure, then proves
+  // it is gone once the registry resolves a grok-cli model (mirroring how registerBuiltInGrokProvider
+  // makes the provider resolvable), and that an unlisted grok-cli id also resolves via the
+  // provider-base-model on-the-fly fallback.
+  it("reproduces then proves gone the grok-cli/grok-4.5 'not found in the pi model registry' hard-fail", async () => {
+    // Without any grok-cli provider registration, find() returns nothing and getAll() has no
+    // grok-cli models — resolveConfiguredModel must throw the exact original error message.
+    findMock.mockImplementation((provider: string, modelId: string) => (
+      provider === "grok-cli" && modelId === "grok-4.5" ? undefined : { provider, id: modelId }
+    ));
+    getAllMock.mockReturnValue([]);
+
+    const { createFnAgent } = await import("../pi.js");
+
+    await expect(createFnAgent({
+      cwd: "/tmp",
+      systemPrompt: "test",
+      tools: "readonly",
+      defaultProvider: "grok-cli",
+      defaultModelId: "grok-4.5",
+    })).rejects.toThrow("Configured model grok-cli/grok-4.5 (primary selection) was not found in the pi model registry");
+    expect(createAgentSessionMock).not.toHaveBeenCalled();
+
+    // Once the grok-cli provider is resolvable (as it is after registerBuiltInGrokProvider seeds
+    // it into the real execution registry via registerExtensionProviders), find() returns a model
+    // and the session is created successfully — the hard-fail is gone.
+    findMock.mockImplementation((provider: string, modelId: string) => ({ provider, id: modelId }));
+
+    await createFnAgent({
+      cwd: "/tmp",
+      systemPrompt: "test",
+      tools: "readonly",
+      defaultProvider: "grok-cli",
+      defaultModelId: "grok-4.5",
+    });
+
+    expect(createAgentSessionMock).toHaveBeenCalledTimes(1);
+    expect(createAgentSessionMock.mock.calls[0]?.[0]).toMatchObject({
+      model: { provider: "grok-cli", id: "grok-4.5" },
+    });
+  });
+
+  it("resolves an unlisted grok-cli model id via the provider-base-model on-the-fly fallback", async () => {
+    // find() has no entry for the unlisted id, but getAll() reports the provider has at least one
+    // registered grok-cli model (as it does once registerBuiltInGrokProvider seeds the provider) —
+    // resolveConfiguredModel should synthesize a model from the base model rather than throwing.
+    findMock.mockImplementation((provider: string, modelId: string) => (
+      provider === "grok-cli" && modelId === "grok-4-fast" ? undefined : { provider, id: modelId }
+    ));
+    getAllMock.mockReturnValue([{ provider: "grok-cli", id: "grok-4.5", name: "Grok 4.5" }]);
+
+    const { createFnAgent } = await import("../pi.js");
+
+    await createFnAgent({
+      cwd: "/tmp",
+      systemPrompt: "test",
+      tools: "readonly",
+      defaultProvider: "grok-cli",
+      defaultModelId: "grok-4-fast",
+    });
+
+    expect(createAgentSessionMock).toHaveBeenCalledTimes(1);
+    expect(createAgentSessionMock.mock.calls[0]?.[0]).toMatchObject({
+      model: { provider: "grok-cli", id: "grok-4-fast" },
+    });
   });
 
   it("creates a session when configured models resolve successfully", async () => {

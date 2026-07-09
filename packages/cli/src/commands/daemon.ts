@@ -20,8 +20,10 @@ import {
   GlobalSettingsStore,
   resolveGlobalDir,
   getEnabledPiExtensionPaths,
+  mergeBuiltInGrokProviderModels,
   mergeBuiltInZaiProviderModels,
   reconcileClaudeCliPaths,
+  registerBuiltInGrokProvider,
   registerBuiltInZaiProvider,
 } from "@fusion/core";
 import type { AutomationRunResult, ScheduledTask } from "@fusion/core";
@@ -550,6 +552,7 @@ export async function runDaemon(opts: DaemonOptions = {}) {
   const authStorage = createFusionAuthStorage();
   const modelRegistry = ModelRegistry.create(authStorage, getModelRegistryModelsPath());
   registerBuiltInZaiProvider(modelRegistry, (message) => console.log(`[extensions] ${message}`));
+  registerBuiltInGrokProvider(modelRegistry, (message) => console.log(`[extensions] ${message}`));
   const dashboardAuthStorage = wrapAuthStorageWithApiKeyProviders(authStorage, modelRegistry);
 
   // PackageManager may be used for skills adapter even if extension loading fails
@@ -665,6 +668,7 @@ export async function runDaemon(opts: DaemonOptions = {}) {
 
     extensionsResult.runtime.pendingProviderRegistrations = [];
     mergeBuiltInZaiProviderModels(modelRegistry, (message) => console.log(`[extensions] ${message}`));
+    mergeBuiltInGrokProviderModels(modelRegistry, (message) => console.log(`[extensions] ${message}`));
     modelRegistry.refresh();
 
     try {

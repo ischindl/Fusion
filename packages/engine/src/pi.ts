@@ -42,8 +42,10 @@ import {
   getProjectRootFromWorktree,
   reconcileClaudeCliPaths,
   reconcileDroidCliPaths,
+  mergeBuiltInGrokProviderModels,
   mergeBuiltInZaiProviderModels,
   mergeSupplementalAnthropicModels,
+  registerBuiltInGrokProvider,
   registerBuiltInZaiProvider,
   resolvePiExtensionProjectRoot,
 } from "@fusion/core";
@@ -1463,6 +1465,7 @@ function resolveVendoredDroidCliEntry(): string | null {
 
 async function registerExtensionProviders(cwd: string, modelRegistry: ModelRegistry): Promise<void> {
   registerBuiltInZaiProvider(modelRegistry, (message) => extensionsLog.warn(message));
+  registerBuiltInGrokProvider(modelRegistry, (message) => extensionsLog.warn(message));
 
   try {
     const agentDir = getPackageManagerAgentDir();
@@ -1525,6 +1528,7 @@ async function registerExtensionProviders(cwd: string, modelRegistry: ModelRegis
 
     extensionsResult.runtime.pendingProviderRegistrations = [];
     mergeBuiltInZaiProviderModels(modelRegistry, (message) => extensionsLog.warn(message));
+    mergeBuiltInGrokProviderModels(modelRegistry, (message) => extensionsLog.warn(message));
     modelRegistry.refresh();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

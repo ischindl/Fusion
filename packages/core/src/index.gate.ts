@@ -87,6 +87,13 @@ export {
 } from "./zai-provider.js";
 export type { ZaiProviderRegistration } from "./zai-provider.js";
 export {
+  GROK_CLI_PROVIDER_ID,
+  GROK_PROVIDER_REGISTRATION,
+  mergeBuiltInGrokProviderModels,
+  registerBuiltInGrokProvider,
+} from "./grok-provider.js";
+export type { GrokProviderRegistration } from "./grok-provider.js";
+export {
   resolveWorktrunkSettings,
   requiresWorktrunkInstallVerification,
   validateWorktrunkSettings,
