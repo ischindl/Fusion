@@ -65,6 +65,20 @@ describe("model-pricing", () => {
     expect(result.usd).toBeCloseTo(3.25, 2);
   });
 
+  it("prices OpenAI Codex GPT-5.6 codenamed models instead of reporting unavailable", () => {
+    // FN-7742: gpt-5.6-luna / gpt-5.6-sol / gpt-5.6-terra mirror the gpt-5.3-codex rate
+    // ($1.25/1M input, $10/1M output). 1,000,000 input + 200,000 output = 1.25 + 2.00 = 3.25
+    for (const model of ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]) {
+      const result = costFor(
+        { ...ZERO, inputTokens: 1_000_000, outputTokens: 200_000 },
+        { provider: "openai-codex", model },
+      );
+      expect(result.unavailable).toBe(false);
+      expect(result.usd).not.toBeNull();
+      expect(result.usd).toBeCloseTo(3.25, 2);
+    }
+  });
+
   it("prices Codex mini latest instead of reporting unavailable", () => {
     // codex-mini-latest: input $1.50/1M, output $6/1M, cached input $0.375/1M.
     const result = costFor(

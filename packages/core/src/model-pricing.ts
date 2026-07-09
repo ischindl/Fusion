@@ -28,7 +28,7 @@
  * The date the rates in {@link MODEL_PRICING} were last verified, ISO-8601.
  * Bump this whenever you edit a rate. Surfaced in the UI as "prices as of".
  */
-export const pricingAsOf = "2026-06-30";
+export const pricingAsOf = "2026-07-09";
 
 /**
  * Pricing entries older than this (relative to a caller-supplied `now`) are
@@ -287,6 +287,39 @@ export const MODEL_PRICING: Readonly<Record<string, ModelPricing>> = {
     source: "openai.com/api/pricing",
   },
   "openai-codex:gpt-5.3-codex": {
+    inputPer1M: 1.25,
+    outputPer1M: 10,
+    cacheReadPer1M: 0.125,
+    cacheWritePer1M: 1.25,
+    source: "openai.com/api/pricing",
+  },
+  /*
+   * FNXC:CommandCenter 2026-07-09-00:00:
+   * FN-7742 bumped the bundled pi SDK to 0.80.5 and inspected its generated model catalogs
+   * directly (node_modules/@earendil-works/pi-ai/dist/providers/{openai,openai-codex}.models.js)
+   * rather than guessing. There is no `gpt-5.6-codex` id in either catalog — OpenAI dropped the
+   * separate `-codex`-suffixed tier naming starting at the 5.4 generation. GPT-5.6 instead ships
+   * as three codenamed variants (`gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`) that are present
+   * under BOTH the `openai` and `openai-codex` provider catalogs, so they are the faithful
+   * equivalent of the prior `gpt-5.x-codex` entries. Rates mirror the existing gpt-5.3-codex rate
+   * (no confirmed different published OpenAI rate for these codenamed models) so Command Center
+   * token cost does not show `unavailable` for pi-sourced GPT-5.6 codex runs.
+   */
+  "openai-codex:gpt-5.6-luna": {
+    inputPer1M: 1.25,
+    outputPer1M: 10,
+    cacheReadPer1M: 0.125,
+    cacheWritePer1M: 1.25,
+    source: "openai.com/api/pricing",
+  },
+  "openai-codex:gpt-5.6-sol": {
+    inputPer1M: 1.25,
+    outputPer1M: 10,
+    cacheReadPer1M: 0.125,
+    cacheWritePer1M: 1.25,
+    source: "openai.com/api/pricing",
+  },
+  "openai-codex:gpt-5.6-terra": {
     inputPer1M: 1.25,
     outputPer1M: 10,
     cacheReadPer1M: 0.125,
