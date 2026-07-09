@@ -1583,7 +1583,8 @@ Project-scoped default permission policy for agent runtime action gates. It appl
       "git_write": "require-approval",
       "command_execution": "require-approval",
       "network_api": "block",
-      "task_agent_mutation": "allow"
+      "task_agent_mutation": "allow",
+      "review_gate_bypass": "block"
     },
     "toolRules": {
       "fn_task_create": "block"
@@ -1594,9 +1595,10 @@ Project-scoped default permission policy for agent runtime action gates. It appl
 
 - `rules` is a partial map of category → disposition.
 - `toolRules` is an optional exact tool-name map (`fn_task_create`, `fn_web_fetch`, `bash`, etc.) → disposition. Exact tool rules apply before category rules, so the example blocks task creation while leaving other `task_agent_mutation` tools allowed.
-- Categories: `git_write`, `file_write_delete`, `command_execution`, `network_api`, `task_agent_mutation`.
+- Categories: `git_write`, `file_write_delete`, `command_execution`, `network_api`, `task_agent_mutation`, `review_gate_bypass`.
+- `review_gate_bypass` (FN-7728) governs `fn_task_bypass_review` — the operator-only merge-gate override that force-advances a card past a failed pre-merge review step (FN-7720). It is a dedicated, more-restricted category distinct from `task_agent_mutation`: even the `unrestricted` preset defaults it to `require-approval` instead of `allow`, so a review-gate bypass is never silently allowed by default. `approval-required` (`require-approval`) and `locked-down` (`block`) already cover it uniformly. `toolRules.fn_task_bypass_review` still layers an exact override on top of the category rule, same as any other tool. The tool remains registered CLI/pi-extension-only — it is never exposed to executor/reviewer/triage agent tool lists.
 - Dispositions: `allow`, `require-approval`, `block`.
-- Missing categories default to `allow` via the built-in `unrestricted` seed; missing or empty `toolRules` preserve legacy category-only behavior.
+- Missing categories default to `allow` via the built-in `unrestricted` seed, EXCEPT `review_gate_bypass` which seeds to `require-approval` even under `unrestricted`/`custom`; missing or empty `toolRules` preserve legacy category-only behavior. A stored policy that predates the `review_gate_bypass` category (missing the key) resolves to the preset default — no migration is required.
 - Runtime precedence is per-agent exact tool rule → per-agent category rule → project default exact tool rule → project default category rule → unrestricted fallback.
 - Heartbeat-critical coordination/exempt tools remain non-configurable and allowed to prevent deadlocks.
 - Legacy ephemeral agents without `permissionPolicy` are not rewritten on disk; they inherit this setting when a runtime session is built.

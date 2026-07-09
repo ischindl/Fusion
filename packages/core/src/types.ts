@@ -6678,12 +6678,17 @@ export type AgentPermission = (typeof AGENT_PERMISSIONS)[number];
  * `none` is a classifier-only result for positively-recognized read-only actions.
  * It is never stored as a policy rule key.
  */
+/**
+ * FNXC:ToolPermissions 2026-07-09-00:00:
+ * FN-7728 adds `review_gate_bypass` as a first-class sensitive action category distinct from `task_agent_mutation`. It governs merge-gate override tools (e.g. `fn_task_bypass_review`, delivered by FN-7720) so operators can independently allow/require-approval/block "who may bypass a failed review gate" without touching ordinary task-mutation policy. It defaults to a stricter disposition than the uniform preset default (see agent-permission-policy.ts) and is resolved identically by both evaluateAgentActionGate and the permanent-agent gate via the shared gating-classifications.ts source.
+ */
 export const PERMANENT_AGENT_ACTION_CATEGORIES = [
   "git_write",
   "file_write_delete",
   "command_execution",
   "network_api",
   "task_agent_mutation",
+  "review_gate_bypass",
   "none",
 ] as const;
 
@@ -6700,6 +6705,7 @@ export const AGENT_PERMISSION_POLICY_ACTION_CATEGORIES: readonly PermanentAgentS
   "command_execution",
   "network_api",
   "task_agent_mutation",
+  "review_gate_bypass",
 ] as const;
 
 export const AGENT_PERMISSION_POLICY_CATEGORY_TOOL_EXAMPLES: Record<
@@ -6734,6 +6740,8 @@ export const AGENT_PERMISSION_POLICY_CATEGORY_TOOL_EXAMPLES: Record<
     "fn_task_promote",
     "fn_task_refine",
   ],
+  /* FNXC:ToolPermissions 2026-07-09-00:00: FN-7728 — review_gate_bypass governs merge-gate override tools as a distinct, more-restricted permission from ordinary task mutation. fn_task_bypass_review (FN-7720) is CLI/pi-extension operator-tool-only; it is never exposed to executor/reviewer/triage agent tool lists. */
+  review_gate_bypass: ["fn_task_bypass_review"],
 };
 
 export const AGENT_PERMISSION_POLICY_EXEMPT_TOOL_EXAMPLES: readonly string[] = [

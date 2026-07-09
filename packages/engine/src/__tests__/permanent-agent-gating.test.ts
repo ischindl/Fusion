@@ -14,6 +14,7 @@ const unrestrictedPolicy: AgentPermissionPolicy = {
     command_execution: "allow",
     network_api: "allow",
     task_agent_mutation: "allow",
+    review_gate_bypass: "allow",
   },
 };
 
@@ -25,6 +26,7 @@ const approvalRequiredPolicy: AgentPermissionPolicy = {
     command_execution: "require-approval",
     network_api: "require-approval",
     task_agent_mutation: "require-approval",
+    review_gate_bypass: "require-approval",
   },
 };
 
@@ -36,6 +38,7 @@ const blockedPolicy: AgentPermissionPolicy = {
     command_execution: "block",
     network_api: "block",
     task_agent_mutation: "block",
+    review_gate_bypass: "block",
   },
 };
 
@@ -222,6 +225,44 @@ describe("permanent-agent-gating", () => {
     expect(decision.disposition).toBe("allow");
     expect(decision.category).toBe("none");
     expect(decision.recognized).toBe(true);
+  });
+
+  // FN-7728: fn_task_bypass_review must classify identically here (review_gate_bypass) as in
+  // agent-action-gate.ts's evaluateAgentActionGate, and must never fall through to task_agent_mutation
+  // or the unrecognized-tool "none"/require-approval fallback.
+  it("classifies fn_task_bypass_review as review_gate_bypass, distinct from task_agent_mutation", () => {
+    expect(classifyPermanentAgentToolCall("fn_task_bypass_review")).toEqual({ category: "review_gate_bypass", recognized: true });
+  });
+
+  it.each([
+    ["allow" as const, "allow" as const],
+    ["require-approval" as const, "require-approval" as const],
+    ["block" as const, "block" as const],
+  ])("honors review_gate_bypass disposition %s for fn_task_bypass_review", (ruleDisposition, expectedDisposition) => {
+    const decision = resolvePermanentAgentToolDecision({
+      toolName: "fn_task_bypass_review",
+      gating: {
+        permissionPolicy: {
+          presetId: "custom",
+          rules: { review_gate_bypass: ruleDisposition },
+        },
+      },
+    });
+    expect(decision).toMatchObject({ category: "review_gate_bypass", recognized: true, disposition: expectedDisposition });
+  });
+
+  it("lets an exact toolRules.fn_task_bypass_review override win over the review_gate_bypass category rule", () => {
+    const decision = resolvePermanentAgentToolDecision({
+      toolName: "fn_task_bypass_review",
+      gating: {
+        permissionPolicy: {
+          presetId: "custom",
+          rules: { review_gate_bypass: "block" },
+          toolRules: { fn_task_bypass_review: "allow" },
+        },
+      },
+    });
+    expect(decision).toMatchObject({ category: "review_gate_bypass", recognized: true, disposition: "allow" });
   });
 
   it("resolves disposition from policy for sensitive categories", () => {

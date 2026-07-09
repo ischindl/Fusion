@@ -19,6 +19,7 @@ describe("AgentPermissionPolicyEditor", () => {
           command_execution: "allow",
           network_api: "allow",
           task_agent_mutation: "allow",
+          review_gate_bypass: "allow",
         } }}
         onChange={onChange}
       />,
@@ -57,6 +58,7 @@ describe("AgentPermissionPolicyEditor", () => {
           command_execution: "allow",
           network_api: "allow",
           task_agent_mutation: "allow",
+          review_gate_bypass: "allow",
         } }}
         onChange={onChange}
       />,
@@ -117,6 +119,7 @@ describe("AgentPermissionPolicyEditor", () => {
           command_execution: "allow",
           network_api: "allow",
           task_agent_mutation: "allow",
+          review_gate_bypass: "allow",
         } }}
         onChange={onChange}
       />,
@@ -153,6 +156,7 @@ describe("AgentPermissionPolicyEditor", () => {
           command_execution: "allow",
           network_api: "allow",
           task_agent_mutation: "allow",
+          review_gate_bypass: "allow",
         }, toolRules: { fn_task_create: "block" } }}
         onChange={onChange}
       />,
@@ -173,6 +177,7 @@ describe("AgentPermissionPolicyEditor", () => {
           command_execution: "allow",
           network_api: "allow",
           task_agent_mutation: "allow",
+          review_gate_bypass: "allow",
         }, toolRules: { fn_task_create: "allow" } }}
         projectDefaultToolRules={{ fn_task_create: "block" }}
         onChange={() => {}}

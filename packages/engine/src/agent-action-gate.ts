@@ -10,6 +10,7 @@ import {
   COMMAND_EXECUTION_FN_TOOLS,
   COORDINATION_EXEMPT_TOOLS,
   READONLY_BUILTIN_TOOLS,
+  REVIEW_GATE_BYPASS_FN_TOOLS,
   classifyGitCommand,
 } from "./gating-classifications.js";
 import { runtimeLog } from "./logger.js";
@@ -88,6 +89,7 @@ const TASK_AGENT_MANAGEMENT_TOOLS = ACTION_GATE_TASK_AGENT_MANAGEMENT_TOOLS;
 const NETWORK_API_TOOLS = ACTION_GATE_NETWORK_API_TOOLS;
 const COMMAND_EXECUTION_TOOLS = COMMAND_EXECUTION_FN_TOOLS;
 const READONLY_DISCOVERY_TOOLS = READONLY_BUILTIN_TOOLS;
+const REVIEW_GATE_BYPASS_TOOLS = REVIEW_GATE_BYPASS_FN_TOOLS;
 
 function normalizeArgs(args: unknown): Record<string, unknown> {
   return args && typeof args === "object" ? (args as Record<string, unknown>) : {};
@@ -157,6 +159,11 @@ export function evaluateAgentActionGate(params: {
     category = "command_execution";
     operation = params.toolName;
     resourceType = "file";
+  } else if (REVIEW_GATE_BYPASS_TOOLS.has(params.toolName)) {
+    // FNXC:ToolGovernance 2026-07-09-00:00: FN-7728 — fn_task_bypass_review is a merge-gate override, governed by its own review_gate_bypass category rather than task_agent_mutation so operators can dial bypass approval independently of ordinary task mutations.
+    category = "review_gate_bypass";
+    operation = params.toolName;
+    resourceType = "task";
   } else if (TASK_AGENT_MANAGEMENT_TOOLS.has(params.toolName)) {
     category = "task_agent_mutation";
     operation = params.toolName;

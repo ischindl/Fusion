@@ -61,8 +61,6 @@ const PERMANENT_TASK_AGENT_ONLY_TOOLS = [
   "fn_task_pause",
   "fn_task_unpause",
   "fn_task_retry",
-  // FNXC:ReviewLaneBypass 2026-07-09-00:00: fn_task_bypass_review (FN-7720) is registered only on the CLI/pi-extension operator tool surface (packages/cli/src/extension.ts), the same registration path as fn_task_retry/fn_task_pause above — classify it here so the action gate never falls through to the unrecognized-tool exemption for this mutating, policy-gated escape hatch.
-  "fn_task_bypass_review",
   "fn_task_duplicate",
   "fn_task_archive",
   "fn_task_unarchive",
@@ -104,6 +102,12 @@ export const PERMANENT_AGENT_TASK_MUTATION_TOOLS: ReadonlySet<string> = new Set(
   ...PERMANENT_AND_ACTION_TASK_AGENT_TOOLS,
   ...PERMANENT_TASK_AGENT_ONLY_TOOLS,
 ]);
+
+/**
+ * FNXC:ToolGovernance 2026-07-09-00:00:
+ * FN-7728 gives `fn_task_bypass_review` (FN-7720's merge-gate override, CLI/pi-extension operator-tool-only — never on executor/reviewer/triage agent tool lists) its own `review_gate_bypass` classification, distinct from `task_agent_mutation`, so operators can govern "who may bypass a failed review gate" independently of ordinary task mutations and it can never fall through to the unrecognized-tool exempt fallback. Both evaluateAgentActionGate (agent-action-gate.ts) and the permanent-agent gate (permanent-agent-gating.ts) must consume this same set so the two gate paths cannot drift.
+ */
+export const REVIEW_GATE_BYPASS_FN_TOOLS: ReadonlySet<string> = new Set(["fn_task_bypass_review"]);
 
 export const FILE_WRITE_DELETE_FN_TOOLS: ReadonlySet<string> = new Set(["fn_task_attach"]);
 

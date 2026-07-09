@@ -26,9 +26,15 @@ describe("agent-permission-policy", () => {
     ]);
   });
 
-  it("normalizes unrestricted preset with all categories allow", () => {
+  it("normalizes unrestricted preset with all categories allow, except review_gate_bypass which stays require-approval", () => {
+    // FN-7728: review_gate_bypass intentionally diverges from the uniform unrestricted default —
+    // a merge-gate bypass must never be silently allowed by default even under the permissive preset.
     const policy = normalizeAgentPermissionPolicyFromPreset("unrestricted");
     for (const category of AGENT_PERMISSION_POLICY_ACTION_CATEGORIES) {
+      if (category === "review_gate_bypass") {
+        expect(policy.rules[category]).toBe("require-approval");
+        continue;
+      }
       expect(policy.rules[category]).toBe("allow");
     }
   });
@@ -51,6 +57,10 @@ describe("agent-permission-policy", () => {
     const effective = resolveEffectiveAgentPermissionPolicy(undefined);
     expect(effective.presetId).toBe(DEFAULT_AGENT_PERMISSION_POLICY_PRESET_ID);
     for (const category of AGENT_PERMISSION_POLICY_ACTION_CATEGORIES) {
+      if (category === "review_gate_bypass") {
+        expect(effective.rules[category]).toBe("require-approval");
+        continue;
+      }
       expect(effective.rules[category]).toBe("allow");
     }
     expect(effective.toolRules).toBeUndefined();
@@ -116,5 +126,47 @@ describe("agent-permission-policy", () => {
     for (const toolName of AGENT_PERMISSION_POLICY_EXEMPT_TOOL_EXAMPLES) {
       expect(COORDINATION_EXEMPT_TOOLS).toContain(toolName);
     }
+  });
+
+  // FN-7728: review_gate_bypass regression coverage.
+  describe("review_gate_bypass category", () => {
+    it("is a distinct category from task_agent_mutation with fn_task_bypass_review as its example tool", () => {
+      expect(AGENT_PERMISSION_POLICY_ACTION_CATEGORIES).toContain("review_gate_bypass");
+      expect(AGENT_PERMISSION_POLICY_CATEGORY_TOOL_EXAMPLES.review_gate_bypass).toEqual(["fn_task_bypass_review"]);
+      expect(AGENT_PERMISSION_POLICY_CATEGORY_TOOL_EXAMPLES.task_agent_mutation).not.toContain("fn_task_bypass_review");
+    });
+
+    it("defaults to require-approval under approval-required and block under locked-down", () => {
+      expect(normalizeAgentPermissionPolicyFromPreset("approval-required").rules.review_gate_bypass).toBe("require-approval");
+      expect(normalizeAgentPermissionPolicyFromPreset("locked-down").rules.review_gate_bypass).toBe("block");
+    });
+
+    it("can be overridden independently under a custom policy without changing task_agent_mutation", () => {
+      const policy = normalizeAgentPermissionPolicy({
+        presetId: "custom",
+        rules: { review_gate_bypass: "allow" },
+      });
+
+      expect(policy.rules.review_gate_bypass).toBe("allow");
+      expect(policy.rules.task_agent_mutation).toBe("allow");
+    });
+
+    it("resolves a stored policy missing the review_gate_bypass key to the preset default (no migration required)", () => {
+      const effective = resolveEffectiveAgentPermissionPolicy({
+        presetId: "custom",
+        rules: { task_agent_mutation: "block" } as never,
+      });
+
+      expect(effective.rules.review_gate_bypass).toBe("require-approval");
+    });
+
+    it("lets the project default override review_gate_bypass independently", () => {
+      const effective = resolveEffectiveAgentPermissionPolicy(undefined, {
+        rules: { review_gate_bypass: "block" },
+      });
+
+      expect(effective.rules.review_gate_bypass).toBe("block");
+      expect(effective.rules.task_agent_mutation).toBe("allow");
+    });
   });
 });
