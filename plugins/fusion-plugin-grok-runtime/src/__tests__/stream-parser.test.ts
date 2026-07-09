@@ -76,4 +76,37 @@ describe("parseLine (Grok CLI NDJSON)", () => {
   it("skips a JSON array (not an object)", () => {
     expect(parseLine(JSON.stringify([{ type: "text" }]))).toBeNull();
   });
+
+  // FNXC:GrokCli 2026-07-09-00:10: FN-7724 — additional tool_use/step_finish/
+  // error coverage for the runtime-adapter bridge (Step 3). The parser itself
+  // needed no change (see stream-parser.ts's FN-7724 comment); these prove
+  // the full toolCall/toolResult/timing shape round-trips and malformed tool
+  // lines are still skipped without throwing.
+  it("parses a tool_use event with full toolCall/toolResult/timing fields", () => {
+    const line = JSON.stringify({
+      type: "tool_use",
+      sessionID: "sess-2",
+      stepNumber: 2,
+      timestamp: 300,
+      toolCall: { id: "tc-2", type: "function", function: { name: "read_file", arguments: '{"path":"a.ts"}' } },
+      toolResult: { success: false, output: "ENOENT" },
+      timing: { startedAt: 280, finishedAt: 300, durationMs: 20 },
+    });
+    const parsed = parseLine(line);
+    expect(parsed).toEqual({
+      type: "tool_use",
+      sessionID: "sess-2",
+      stepNumber: 2,
+      timestamp: 300,
+      toolCall: { id: "tc-2", type: "function", function: { name: "read_file", arguments: '{"path":"a.ts"}' } },
+      toolResult: { success: false, output: "ENOENT" },
+      timing: { startedAt: 280, finishedAt: 300, durationMs: 20 },
+    });
+  });
+
+  it("skips a malformed tool_use line (broken JSON) without throwing", () => {
+    const line = '{"type":"tool_use","toolCall":{"function":{"name":';
+    expect(() => parseLine(line)).not.toThrow();
+    expect(parseLine(line)).toBeNull();
+  });
 });

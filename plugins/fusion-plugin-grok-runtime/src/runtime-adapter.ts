@@ -12,15 +12,26 @@ prose: src/index.ts's CLI parsing + src/headless/output.ts's
 `createHeadlessJsonlEmitter` + its fixture tests). Contract captured in
 docs/grok-cli-contract.md. This adapter spawns that command via the
 `cli-stream` seam, parses NDJSON via `stream-parser.parseLine`, and drives
-`onText` as `text` events arrive. Scoped deliberately narrow, mirroring the
-Droid plugin's parser+text-bridge pattern but NOT its full tool-call/
-break-early machinery: the verified schema has no thinking/reasoning event
-(onThinking is therefore never invoked here — kept only for AgentRuntime
-interface parity), and tool_use bridging is filed as a follow-up (see
-docs/grok-cli-contract.md "Follow-ups"). This adapter is only reached when
-an agent's `runtimeConfig.runtimeHint === "grok"`, which nothing in the
-product sets today (recorded as the wiring gap in the contract doc) — this
-task lands the adapter without wiring an end-to-end exercised path.
+`onText` as `text` events arrive.
+
+FNXC:GrokCli 2026-07-09-00:10:
+FN-7724: extends the above with `tool_use` (and terminal `step_finish`/
+`error`) bridging, per docs/grok-cli-contract.md's verified NDJSON schema.
+`onToolStart`/`onToolEnd` fire from each `tool_use` event's
+`toolCall`/`toolResult`, mirroring the Droid plugin's `DroidCallbacks`
+shape. No Grok→pi tool-name/arg mapping is applied: the verified contract
+does not pin grok-cli's specific tool-name vocabulary (unlike Droid's
+Claude-shaped names), so `toolCall.function.name`/parsed `.arguments` pass
+through unchanged (decision recorded in the FN-7724 `research` task
+document). `onThinking` is still never invoked — the verified schema has no
+thinking/reasoning event (confirmed absence, not a gap). The terminal
+lifecycle is UNCHANGED from FN-7722: the doc states `step_finish` is a
+per-step boundary (multiple can occur per run for multi-round tool use), so
+it does NOT finalize the promise here; only subprocess `close`/`error`
+does, same `streamEnded`-guarded (via the existing `settled` flag)
+resolve-never-reject lifecycle as before. This adapter is only reached when
+an agent's `runtimeConfig.runtimeHint === "grok"` (wired end-to-end by
+FN-7725).
 */
 
 /**
@@ -41,6 +52,25 @@ const FIRST_LINE_TIMEOUT_MS = 60_000;
  */
 const INACTIVITY_TIMEOUT_MS = 30 * 60_000;
 
+/**
+ * FNXC:GrokCli 2026-07-09-00:10:
+ * FN-7724: `toolCall.function.arguments` is a JSON-encoded string per the
+ * verified `ToolCall` shape (docs/grok-cli-contract.md / types.ts's
+ * `GrokToolCallLike`). Parse it defensively — malformed/missing arguments
+ * must never throw inside the NDJSON read loop; fall back to the raw string
+ * (or undefined) so callers still see something rather than losing the
+ * event, mirroring the Droid event-bridge's empty-args guard.
+ */
+function parseToolArguments(raw: string | undefined): unknown {
+  if (raw === undefined) return undefined;
+  if (raw === "") return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
 export interface GrokRuntimeAdapterOptions {
   /** Binary name/path to invoke. Defaults to "grok" (PATH resolution). */
   binary?: string;
@@ -59,7 +89,16 @@ export class GrokRuntimeAdapter implements AgentRuntime {
     this.spawnFn = options?.spawn ?? spawnGrokStream;
   }
 
-  async createSession(options: { defaultModelId?: string; systemPrompt?: string; onText?: (text: string) => void; onThinking?: (text: string) => void } = {}): Promise<AgentSessionResult> {
+  async createSession(
+    options: {
+      defaultModelId?: string;
+      systemPrompt?: string;
+      onText?: (text: string) => void;
+      onThinking?: (text: string) => void;
+      onToolStart?: (toolName: string, args?: unknown) => void;
+      onToolEnd?: (toolName: string, isError: boolean, result?: unknown) => void;
+    } = {},
+  ): Promise<AgentSessionResult> {
     const model = options.defaultModelId ?? "grok/default";
     const session: GrokSession = {
       model,
@@ -70,6 +109,8 @@ export class GrokRuntimeAdapter implements AgentRuntime {
       callbacks: {
         onText: options.onText,
         onThinking: options.onThinking,
+        onToolStart: options.onToolStart,
+        onToolEnd: options.onToolEnd,
       },
     };
     return { session, sessionFile: undefined };
@@ -133,10 +174,26 @@ export class GrokRuntimeAdapter implements AgentRuntime {
 
         if (event.type === "text") {
           grokSession.callbacks.onText?.(event.text);
+        } else if (event.type === "tool_use") {
+          // FNXC:GrokCli 2026-07-09-00:10: FN-7724 — bridge the verified
+          // tool_use event. toolCall.function.name/arguments and
+          // toolResult.success/output are the verified fields
+          // (docs/grok-cli-contract.md); pass-through, no name/arg mapping
+          // (see FN-7724 research task document for the decision).
+          const toolName = event.toolCall?.function?.name ?? event.toolCall?.type ?? "unknown";
+          const args = parseToolArguments(event.toolCall?.function?.arguments);
+          grokSession.callbacks.onToolStart?.(toolName, args);
+          const isError = event.toolResult?.success === false;
+          grokSession.callbacks.onToolEnd?.(toolName, isError, event.toolResult);
         }
-        // step_start / tool_use / step_finish / error: intentionally not
-        // bridged by this scoped adapter (text-only). tool_use bridging is
-        // a follow-up (docs/grok-cli-contract.md).
+        // step_start / step_finish / error: step_finish is a per-step
+        // boundary (not run-terminal, per docs/grok-cli-contract.md — a run
+        // can have multiple step_start/step_finish pairs for multi-round
+        // tool use), so it is intentionally NOT bridged into a callback or
+        // treated as the finalize signal; only subprocess close/error
+        // finalizes (see finish() below). `error` events carry no dedicated
+        // callback in this scoped adapter (mirrors FN-7722: they can appear
+        // inline without ending the process, per the verified contract).
       });
 
       proc.on("error", () => {

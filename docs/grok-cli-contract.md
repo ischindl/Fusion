@@ -253,10 +253,18 @@ See the task's `fn_task_create` calls (linked from FN-7722) for:
 1. ~~End-to-end routing wiring~~ — **closed by FN-7725** (see "Wiring"
    above): the agent Runtime-mode picker path was formalized, documented,
    and covered by `packages/engine/src/__tests__/grok-runtime-routing.test.ts`.
-2. Full tool-call/break-early bridging for `tool_use` NDJSON events, if a
-   future need for Grok-CLI-driven tool execution arises (out of scope for
-   the scoped text/no-thinking adapter landed here; tracked separately as
-   FN-7724).
+2. ~~Full tool-call bridging for `tool_use` NDJSON events~~ — **closed by
+   FN-7724**: `GrokRuntimeAdapter` now bridges `tool_use` into
+   `onToolStart`/`onToolEnd` (no Grok→pi tool-name mapping was added — the
+   verified schema does not pin grok-cli's tool-name vocabulary, so
+   names/args pass through unchanged). Break-early on `step_finish` was
+   deliberately NOT adopted: this doc's own "Verified NDJSON event schema"
+   notes above establish `step_finish` is a per-step boundary (a run can
+   contain multiple `step_start`/`step_finish` pairs), not the run
+   terminal — the adapter's terminal signal remains subprocess
+   `close`/`error`, unchanged from FN-7722. See
+   `plugins/fusion-plugin-grok-runtime/README.md`'s "Tool execution
+   bridging (FN-7724)" section.
 3. (Filed by FN-7725, if warranted) Preserving a specific `grok-cli/*` model
    selection when routing through the CLI runtime (Runtime-mode is currently
    model-agnostic — see "Known limitation" in "Wiring" above). This is the

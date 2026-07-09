@@ -59,6 +59,18 @@ grok --prompt "<text>" --format json
 - The adapter parses that stream (`src/stream-parser.ts`) and drives
   `onText` as `text` events arrive. There is no `thinking`/`reasoning` event
   in the verified schema, so `onThinking` is never invoked for this path.
+- **Tool execution bridging (FN-7724):** each verified `tool_use` event
+  (`toolCall`/`toolResult`/`timing`) additionally drives `onToolStart(toolName,
+  args)` / `onToolEnd(toolName, isError, result)`, mirroring the Droid
+  plugin's `DroidCallbacks` shape. `toolName`/`args` are
+  `toolCall.function.name` / parsed `toolCall.function.arguments`;
+  `isError` derives from `toolResult.success === false`. No Grok→pi
+  tool-name/arg translation is applied — the verified contract does not pin
+  grok-cli's specific tool-name vocabulary (unlike Droid's Claude-shaped
+  names), so names/args pass through unchanged. `step_finish` is a per-step
+  boundary (a run can contain multiple), not the run terminal, so it does
+  not finalize the adapter's promise; only subprocess `close`/`error` does,
+  unchanged from FN-7722.
 - **Auth implication:** because the `grok` binary resolves its own
   credentials for this path (env var, project `.env`, `grok -k`, or
   `~/.grok/user-settings.json`), a CLI-routed selection needs **no

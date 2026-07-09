@@ -11,6 +11,16 @@ throws. Debug noise, empty lines, and malformed/unrecognized JSON all return
 null so the streaming pipeline can safely skip them and continue.
 */
 
+/*
+FNXC:GrokCli 2026-07-09-00:10:
+FN-7724: confirmed at execution time — FN-7722 already typed `tool_use` /
+`step_finish` / `error` into the `GrokNdjsonEvent` union (types.ts) and this
+parser already accepts them via KNOWN_EVENT_TYPES below, so no parser change
+was needed to "surface" them; only runtime-adapter.ts's bridge (previously
+intentionally dropping tool_use/step_finish/error, see FN-7722 comment
+above) needed extending. See docs/grok-cli-contract.md for the verified
+schema this parser accepts unmodified.
+*/
 const KNOWN_EVENT_TYPES = new Set(["step_start", "text", "tool_use", "step_finish", "error"]);
 
 /**

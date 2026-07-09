@@ -82,6 +82,25 @@ export interface GrokCallbacks {
    * event to bridge (see docs/grok-cli-contract.md).
    */
   onThinking?: (text: string) => void;
+  /**
+   * FNXC:GrokCli 2026-07-09-00:10:
+   * FN-7724: bridged from the verified `tool_use` NDJSON event's
+   * `toolCall.function.name` / parsed `toolCall.function.arguments`.
+   * Mirrors the Droid plugin's `DroidCallbacks.onToolStart` signature. No
+   * Grok→pi tool-name mapping is applied — the verified contract
+   * (docs/grok-cli-contract.md) does not pin grok-cli's specific tool-name
+   * vocabulary, so names/args pass through unchanged (see FN-7724 research
+   * task document for the decision).
+   */
+  onToolStart?: (toolName: string, args?: unknown) => void;
+  /**
+   * FNXC:GrokCli 2026-07-09-00:10:
+   * FN-7724: bridged from the same `tool_use` event's `toolResult` field —
+   * `isError` derives from the verified `toolResult.success === false`,
+   * `result` is the full `toolResult` object (includes `output` plus any
+   * other verified/unverified passthrough fields).
+   */
+  onToolEnd?: (toolName: string, isError: boolean, result?: unknown) => void;
 }
 
 export interface GrokSession {
@@ -101,6 +120,10 @@ export interface AgentRuntimeOptions {
   defaultModelId?: string;
   onText?: (text: string) => void;
   onThinking?: (text: string) => void;
+  /** FNXC:GrokCli 2026-07-09-00:10: FN-7724 — additive, mirrors GrokCallbacks.onToolStart. */
+  onToolStart?: (toolName: string, args?: unknown) => void;
+  /** FNXC:GrokCli 2026-07-09-00:10: FN-7724 — additive, mirrors GrokCallbacks.onToolEnd. */
+  onToolEnd?: (toolName: string, isError: boolean, result?: unknown) => void;
   signal?: AbortSignal;
 }
 
