@@ -19,7 +19,7 @@
 
 import type { AgentStore, AgentHeartbeatRun, HeartbeatInvocationSource, AgentHeartbeatConfig, AgentBudgetStatus, Message, MessageStore, TaskStore, TaskDetail, AgentRole, Agent, InboxTask, RunMutationContext, Settings, AgentConfigRevision, ReflectionStore, ChatStore, ChatRoom, ChatRoomMessage, AgentMemoryInclusionMode } from "@fusion/core";
 import { AutoClaimSnapshotManager, resolveFreshAutoClaimCandidates, type AutoClaimCandidate } from "./auto-claim-snapshot.js";
-import { ApprovalRequestStore, buildExecutionMemoryInstructions, isEphemeralAgent, hasAgentIdentity, resolveEffectiveAgentPermissionPolicy, canAgentTakeImplementationTask, canAgentTakeImplementationTaskForExplicitRouting, resolvePersistAgentThinkingLog, resolveAgentMemoryInclusionMode, FUSION_RUNTIME_SELF_AWARENESS } from "@fusion/core";
+import { ApprovalRequestStore, buildExecutionMemoryInstructions, isEphemeralAgent, hasAgentIdentity, resolveEffectiveAgentPermissionPolicy, canAgentTakeImplementationTask, canAgentTakeImplementationTaskForExplicitRouting, resolvePersistAgentThinkingLog, resolveAgentMemoryInclusionMode, FUSION_RUNTIME_SELF_AWARENESS, AWAITING_APPROVAL_PAUSE_REASON } from "@fusion/core";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "@earendil-works/pi-ai";
 import { createHash } from "node:crypto";
@@ -1249,7 +1249,11 @@ export class HeartbeatMonitor {
       */
       pauseForApproval: async ({ approvalRequestId, decision }) => {
         if (taskId && this.taskStore) {
-          await this.taskStore.pauseTask(taskId, true, undefined, { pausedByAgentId: agent.id });
+          // FNXC:ApprovalHold 2026-07-09-00:10: FN-7736 -- mirror executor.ts's
+          // stamping of the canonical AWAITING_APPROVAL_PAUSE_REASON so
+          // recovery/oversight code recognizes this hold on the task, not just
+          // the agent's `pauseReason`.
+          await this.taskStore.pauseTask(taskId, true, undefined, { pausedByAgentId: agent.id, pausedReason: AWAITING_APPROVAL_PAUSE_REASON });
           await this.taskStore.logEntry(
             taskId,
             `Approval required for ${decision.toolName}. Request ${approvalRequestId} created; task and agent paused awaiting decision.`,

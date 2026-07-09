@@ -9693,11 +9693,23 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
    * Pause or unpause a task. Paused tasks are excluded from all automated
    * agent and scheduler interaction. Logs the action and emits `task:updated`.
    */
+  /*
+   * FNXC:ApprovalHold 2026-07-09-00:05:
+   * FN-7736: `agentOptions.pausedReason` is the minimal seam for durably
+   * stamping WHY a task was paused (e.g. the canonical
+   * `AWAITING_APPROVAL_PAUSE_REASON` from a tool-approval gate). Widening
+   * this existing options bag avoids a second, racy `updateTask` write right
+   * after `pauseTask` — the reason lands atomically with the pause itself.
+   * On unpause the caller-supplied reason is cleared here (mirroring how
+   * `pausedByAgentId`/`userPaused` are already cleared below); sweep-set
+   * built-in reasons like `branch-conflict-unrecoverable` are cleared by
+   * their own dedicated resume code paths and are unaffected.
+   */
   async pauseTask(
     id: string,
     paused: boolean,
     runContext?: RunMutationContext,
-    agentOptions?: { pausedByAgentId?: string },
+    agentOptions?: { pausedByAgentId?: string; pausedReason?: string },
   ): Promise<Task> {
     return this.withTaskLock(id, async () => {
       const dir = this.taskDir(id);
@@ -9713,9 +9725,13 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
       if (paused && agentOptions?.pausedByAgentId) {
         task.pausedByAgentId = agentOptions.pausedByAgentId;
       }
+      if (paused && agentOptions?.pausedReason) {
+        task.pausedReason = agentOptions.pausedReason;
+      }
       if (!paused) {
         task.pausedByAgentId = undefined;
         task.userPaused = undefined;
+        task.pausedReason = undefined;
       }
       // When pausing an in-progress/in-review task, set status so the UI can show the state.
       // When unpausing, clear the "paused" status.

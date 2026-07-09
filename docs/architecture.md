@@ -1540,20 +1540,27 @@ are implemented elsewhere.
 FN-7514 supplies the comprehensive human-control safeguard the FN-7512/FN-7513 layers deferred: the
 overseer must be fully inert — no steering, retry, targeted-fix, or FN-7513 confirmation-required action
 (merge/PR progression, destructive/external-service side effect) may fire, and no pending confirmation
-may even be recorded — whenever a task is (a) user-paused, or (b) ineligible for auto-merge processing
-per the FN-5147 `autoMerge:false` / PR-based human-review terminal contract.
+may even be recorded — whenever a task is (a) user-paused, (b) blocked on a pending human approval
+decision (FN-7736), or (c) ineligible for auto-merge processing per the FN-5147 `autoMerge:false` /
+PR-based human-review terminal contract.
 
 `packages/engine/src/overseer-human-control-policy.ts` exports the pure predicate
 `evaluateOverseerHumanControl(task, settings)` (no I/O, mirrors the `recovery-policy.ts` style), returning
-`{ withhold: boolean; reason?: "user-paused" | "auto-merge-off-human-review" }`. It reuses
-`allowsAutoMergeProcessing` from `@fusion/core` VERBATIM for the auto-merge-off half — never re-derives
-the predicate inline. For the pause half, it distinguishes:
+`{ withhold: boolean; reason?: "user-paused" | "approval-blocked" | "auto-merge-off-human-review" }`. It
+reuses `allowsAutoMergeProcessing` from `@fusion/core` VERBATIM for the auto-merge-off half, and
+`isTaskBlockedOnApproval` from `@fusion/core` VERBATIM for the approval-hold half (checked FIRST, ahead of
+the user-pause/auto-merge-off checks — see the approval-hold contract below) — never re-derives either
+predicate inline. For the pause half, it distinguishes:
 
 - Explicit user pause: `task.userPaused === true`, OR `task.paused === true` with NO `task.pausedReason`
   (the `fn_task_pause` tool / `TaskStore.pauseTask` never stamps a `pausedReason`).
 - Engine/self-healing park (NOT user pause): `task.paused === true` WITH a `pausedReason` (every
   self-healing park path — branch-conflict-unrecoverable, token_budget_exceeded,
   in-review-stall-deadlock, worktrunk_operation_failed, etc. — always stamps one).
+- Approval hold (also NOT user pause, checked before the user-pause branch above so it is never
+  shadowed): `task.paused === true` WITH `task.pausedReason === "awaiting-approval"` (the canonical
+  `AWAITING_APPROVAL_PAUSE_REASON`), OR `task.status === "awaiting-approval"`. See the approval-hold
+  contract section below for the full rationale.
 
 `PlannerRecoveryController.tick()` (`planner-recovery-controller.ts`) consults this guard FIRST — before
 the snapshot lookup, before `decidePlannerRecovery`, before FN-7513's confirmation classification. When
@@ -1573,6 +1580,53 @@ same settings self-healing already gates lifecycle mutation on.
 
 **Downstream ownership (not this layer):** the dashboard UI/badges surfacing withheld state (FN-7515+),
 a persisted intervention timeline (FN-7519), and richer run-audit/activity presentation (FN-7520).
+
+### Approval-hold contract for recovery and oversight (FN-7736)
+
+A task can be blocked awaiting a human approval decision via two distinct mechanisms, and every
+automated recovery (self-healing) and oversight (planner overseer) path must refuse to rebound, requeue,
+resume, re-plan, or otherwise advance a task while either hold is active:
+
+1. **Triage plan-approval gate** — parks the task spec at `status: "awaiting-approval"`. Already a member
+   of `HARD_BLOCKING_TASK_STATUSES` (`packages/core/src/task-merge.ts`) and preserved by
+   `GHOST_REVIEW_PRESERVED_STATUSES` in `self-healing.ts`; `POST /api/tasks/:id/approve-plan` is the only
+   route that clears it.
+2. **Runtime tool-approval gate** — a gated tool call parks a RUNNING task via `pauseForApproval`
+   (`executor.ts` and `agent-heartbeat.ts`), which calls `store.pauseTask(taskId, true, ..., {
+   pausedByAgentId, pausedReason: AWAITING_APPROVAL_PAUSE_REASON })`. Before FN-7736 this call stamped
+   only `paused: true` with NO durable `pausedReason`, so recovery/oversight code keying on
+   `pausedReason` could not recognize the hold, and self-healing's `autoReboundPausedScopeDecay` could
+   rebound the held task back to `todo` (defeating the approval gate) once a follower task's scope-decay
+   threshold elapsed.
+
+`packages/core/src/task-merge.ts` exports the canonical `AWAITING_APPROVAL_PAUSE_REASON =
+"awaiting-approval"` constant and the shared pure predicate `isTaskBlockedOnApproval(task)`, which returns
+`true` for EITHER hold shape (`task.paused === true && task.pausedReason ===
+AWAITING_APPROVAL_PAUSE_REASON`, or `task.status === "awaiting-approval"`). Both are re-exported via
+`index.ts`/`index.gate.ts` for engine consumption. Consulted at:
+
+- **`SelfHealingManager.PAUSED_SCOPE_DECAY_EXCLUDED_REASONS`** (`self-healing.ts`) — includes
+  `AWAITING_APPROVAL_PAUSE_REASON` alongside `branch-conflict-unrecoverable`, `worktrunk_operation_failed`,
+  and `token_budget_exceeded`, so `autoReboundPausedScopeDecay` skips an approval-held holder task even
+  when a follower is present and the age threshold has elapsed.
+- **`classifyPausedAbortWorkflowRecovery`** (`self-healing.ts`) — already skips any `task.paused === true`
+  row before this task; the approval-hold shape is covered by that generic guard (regression-tested
+  explicitly rather than relying on the incidental coverage).
+- **`evaluateOverseerHumanControl`** (`overseer-human-control-policy.ts`) — checks `isTaskBlockedOnApproval`
+  FIRST, ahead of the accidental "paused with no reason" user-pause heuristic, returning
+  `{ withhold: true, reason: "approval-blocked" }`. This ordering is load-bearing: once FN-7736 started
+  stamping a durable `pausedReason` on the tool-approval hold, the old no-reason heuristic would stop
+  matching it — the explicit `approval-blocked` branch prevents that from silently flipping the overseer
+  from withhold to act.
+- **Every other self-healing sweep** that gates on generic `task.paused === true` (or `task.paused ||
+  task.userPaused`) before taking a lifecycle-advancing action already skips an approval-held task
+  regardless of `pausedReason`, and needed no change.
+
+`TaskStore.pauseTask(id, paused, runContext?, agentOptions?)` accepts an optional `agentOptions.pausedReason`
+seam (widened for FN-7736) so the durable reason lands atomically with the pause write, avoiding a second
+racy `updateTask` call; unpausing (`pauseTask(id, false)`, used by the approval-resolution route) clears
+the caller-supplied `pausedReason` the same way it already clears `pausedByAgentId`/`userPaused`, so the
+hold is not sticky once the operator decides.
 
 ### Planner overseer runtime-state exposure (FN-7531)
 

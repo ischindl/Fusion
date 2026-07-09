@@ -5,6 +5,8 @@ import {
   HARD_BLOCKING_TASK_STATUSES,
   SCHEDULER_TRANSIENT_STATUSES,
   TASK_DONE_BYPASS_BLOCKER_MESSAGE,
+  AWAITING_APPROVAL_PAUSE_REASON,
+  isTaskBlockedOnApproval,
   getTaskCompletionBlocker,
   getTaskDoneBypassBlocker,
   getTaskHardMergeBlocker,
@@ -873,5 +875,37 @@ describe("getTaskCompletionBlocker", () => {
       dependencies: ["FN-999"],
     }, { resolveTask }))
       .resolves.toBe("task has unresolved dependencies: FN-999");
+  });
+});
+
+// FN-7736: isTaskBlockedOnApproval covers both approval-hold shapes (pause-reason
+// and awaiting-approval status) and must not false-positive on a bare user pause.
+describe("isTaskBlockedOnApproval", () => {
+  it("is true when paused with the canonical approval pause reason", () => {
+    expect(isTaskBlockedOnApproval({ paused: true, pausedReason: AWAITING_APPROVAL_PAUSE_REASON, status: undefined })).toBe(true);
+  });
+
+  it("is true when status is awaiting-approval regardless of paused", () => {
+    expect(isTaskBlockedOnApproval({ paused: false, pausedReason: undefined, status: "awaiting-approval" })).toBe(true);
+  });
+
+  it("is true when both the pause-reason and status shapes are present", () => {
+    expect(isTaskBlockedOnApproval({ paused: true, pausedReason: AWAITING_APPROVAL_PAUSE_REASON, status: "awaiting-approval" })).toBe(true);
+  });
+
+  it("is false for a task with neither hold shape", () => {
+    expect(isTaskBlockedOnApproval({ paused: false, pausedReason: undefined, status: undefined })).toBe(false);
+  });
+
+  it("is false for a bare user pause (paused true, no reason) — must not conflate with approval hold", () => {
+    expect(isTaskBlockedOnApproval({ paused: true, pausedReason: undefined, status: undefined })).toBe(false);
+  });
+
+  it("is false when paused with a different (non-approval) pause reason", () => {
+    expect(isTaskBlockedOnApproval({ paused: true, pausedReason: "branch-conflict-unrecoverable", status: undefined })).toBe(false);
+  });
+
+  it("is false when pausedReason is the approval reason but paused is not true", () => {
+    expect(isTaskBlockedOnApproval({ paused: false, pausedReason: AWAITING_APPROVAL_PAUSE_REASON, status: undefined })).toBe(false);
   });
 });

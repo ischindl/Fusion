@@ -11,7 +11,7 @@ import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import type { TaskStore, Task, TaskDetail, TaskTokenUsage, StepStatus, Settings, WorkflowStep, MissionStore, Slice, AgentState, AgentCapability, RunMutationContext, AgentHeartbeatConfig, Agent, AgentMemoryInclusionMode, ProjectSettings, MergeResult, WorkflowIrNode, WorkflowIrNodeKind, WorkflowStepResult as CoreWorkflowStepResult } from "@fusion/core";
 import { getUnmetSchedulingDependencies } from "./scheduler.js";
-import { RetryStormError, TaskDeletedError, serializeRetryStormError, isExperimentalFeatureEnabled, resolveWorkflowIrForTask, resolveColumnAgentBinding, resolveEffectiveAgent, instanceNodeId, getWorkflowExtensionRegistry, getBuiltinWorkflow, parseNoOpCompletionMarker, allowsAutoMergeProcessing, isSharedBranchGroupMemberIntegration, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, COMPLETION_SUMMARY_NODE_ID, upsertWorkflowStepResult } from "@fusion/core";
+import { RetryStormError, TaskDeletedError, serializeRetryStormError, isExperimentalFeatureEnabled, resolveWorkflowIrForTask, resolveColumnAgentBinding, resolveEffectiveAgent, instanceNodeId, getWorkflowExtensionRegistry, getBuiltinWorkflow, parseNoOpCompletionMarker, allowsAutoMergeProcessing, isSharedBranchGroupMemberIntegration, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, COMPLETION_SUMMARY_NODE_ID, upsertWorkflowStepResult, AWAITING_APPROVAL_PAUSE_REASON } from "@fusion/core";
 import { finalizeProvenAutoMergeTask } from "./auto-merge-finalization.js";
 import { mergeEffectiveSettings } from "./effective-settings.js";
 import type { TaskStep, WorkflowIr, WorkflowFieldDefinition, WorkflowColumnAgent, EffectiveAgentInput, WorkflowWorkEngineDispatchResult } from "@fusion/core";
@@ -2278,7 +2278,16 @@ export class TaskExecutor {
       },
       pauseForApproval: async ({ approvalRequestId, decision }) => {
         if (taskId) {
-          await this.store.pauseTask(taskId, true, this.getRunContextFor(taskId), { pausedByAgentId: actorId });
+          /*
+          FNXC:ApprovalHold 2026-07-09-00:10:
+          FN-7736: stamp the canonical AWAITING_APPROVAL_PAUSE_REASON on the
+          task (not just the agent) so recovery/oversight code can durably
+          recognize this hold via isTaskBlockedOnApproval -- previously only
+          `paused: true` was set with no reason, which self-healing's
+          autoReboundPausedScopeDecay could rebound before the operator ever
+          decided.
+          */
+          await this.store.pauseTask(taskId, true, this.getRunContextFor(taskId), { pausedByAgentId: actorId, pausedReason: AWAITING_APPROVAL_PAUSE_REASON });
           await this.store.logEntry(
             taskId,
             `Approval required for ${decision.toolName}. Request ${approvalRequestId} created; task and agent paused awaiting decision.`,

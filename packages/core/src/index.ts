@@ -906,6 +906,8 @@ export {
   resolveEffectiveAutoMerge,
   resolveEffectiveGroupAutoMerge,
   resolveTaskMergeTarget,
+  AWAITING_APPROVAL_PAUSE_REASON,
+  isTaskBlockedOnApproval,
   type MergeTargetResolution,
   type MergeTargetResolverOptions,
 } from "./task-merge.js";

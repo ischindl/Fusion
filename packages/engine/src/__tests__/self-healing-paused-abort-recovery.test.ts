@@ -211,6 +211,27 @@ describe("recoverPausedAbortFailures", () => {
     expect(store.updateTask).not.toHaveBeenCalled();
   });
 
+  // FN-7736: explicit regression for the approval-hold shape (paused, canonical
+  // awaiting-approval reason) -- classifyPausedAbortWorkflowRecovery's existing
+  // generic `task.paused` skip already covers this, but the invariant
+  // ("approval-blocked tasks are never advanced") must be asserted directly
+  // rather than relying on incidental generic-pause coverage.
+  it("skips an approval-held pause-abort park (canonical awaiting-approval reason)", async () => {
+    const store = createMockStore([
+      parkTask({ id: "FN-APPROVAL", paused: true, pausedReason: "awaiting-approval" }),
+    ]);
+    const manager = new SelfHealingManager(store, {
+      rootDir: "/tmp/test-project",
+      getExecutingTaskIds: () => new Set<string>(),
+    });
+
+    const recovered = await manager.recoverPausedAbortFailures();
+
+    expect(recovered).toBe(0);
+    expect(store.updateTask).not.toHaveBeenCalled();
+    expect(store.moveTask).not.toHaveBeenCalled();
+  });
+
   it("leaves guarded in-review pause-abort parks untouched", async () => {
     const candidates = [
       parkTask({ id: "FN-U", column: "in-review", error: IN_REVIEW_PARK_ERROR, steps: DONE_STEPS, userPaused: true, autoMerge: true }),

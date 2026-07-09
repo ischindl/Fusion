@@ -30,7 +30,7 @@ import { setImmediate as setImmediateCb } from "node:timers";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, countRecentIdenticalStallEntries, detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getTaskMergeBlocker, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkflowColumnsEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, parseExplicitDuplicateMarker, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, resolveWorkflowIrForTask, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult, type WorkflowStepResult } from "@fusion/core";
+import { IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, countRecentIdenticalStallEntries, detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getTaskMergeBlocker, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkflowColumnsEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, parseExplicitDuplicateMarker, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, resolveWorkflowIrForTask, AWAITING_APPROVAL_PAUSE_REASON, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult, type WorkflowStepResult } from "@fusion/core";
 import type { MeshLeaseManager } from "./mesh-lease-manager.js";
 import { createLogger, schedulerLog } from "./logger.js";
 import { mergeEffectiveSettings } from "./effective-settings.js";
@@ -795,10 +795,20 @@ export class SelfHealingManager {
     lastNtfyAt: number | null;
   } | null = null;
 
+  /*
+   * FNXC:ApprovalHold 2026-07-09-00:15:
+   * FN-7736: AWAITING_APPROVAL_PAUSE_REASON must be excluded here so a task
+   * parked mid-execution on a pending tool-approval decision (`pauseForApproval`
+   * -> `pauseTask(id, true, { pausedReason: AWAITING_APPROVAL_PAUSE_REASON })`)
+   * is never rebounded to `todo` by this scope-decay sweep before the operator
+   * approves or denies -- this was the reported symptom (a follower task's
+   * scope-decay threshold elapsing could silently defeat the approval gate).
+   */
   private static readonly PAUSED_SCOPE_DECAY_EXCLUDED_REASONS = new Set([
     "branch-conflict-unrecoverable",
     "worktrunk_operation_failed",
     "token_budget_exceeded",
+    AWAITING_APPROVAL_PAUSE_REASON,
   ]);
 
   constructor(

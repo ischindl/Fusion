@@ -141,6 +141,40 @@ export function resolveTaskMergeTarget(
   return { branch: legacyFallback, source: "legacy-main", rejected };
 }
 
+/*
+ * FNXC:ApprovalHold 2026-07-09-00:00:
+ * FN-7736: two distinct mechanisms park a task on a pending human approval —
+ * (1) the triage plan-approval gate sets `task.status === "awaiting-approval"`
+ * (already a HARD_BLOCKING_TASK_STATUSES member below), and (2) a gated tool
+ * call parks a RUNNING task via `pauseForApproval` -> `store.pauseTask(id,
+ * true, ...)`, which historically only set `paused:true` with no durable
+ * `pausedReason`, so recovery/oversight code keying on `pausedReason` could
+ * not recognize it and at least one sweep (self-healing's
+ * `autoReboundPausedScopeDecay`) could rebound the held task back to `todo`
+ * before the operator ever decided. `AWAITING_APPROVAL_PAUSE_REASON` is the
+ * canonical, durable marker both `executor.ts` and `agent-heartbeat.ts`
+ * `pauseForApproval` now stamp via `TaskStore.pauseTask`'s `pausedReason`
+ * option, and `isTaskBlockedOnApproval` is the single shared predicate core
+ * and engine code must consult before rebounding, requeuing, resuming,
+ * re-planning, or otherwise advancing a task — it must return `true` for
+ * EITHER hold shape so callers never have to special-case which mechanism
+ * parked the task.
+ */
+export const AWAITING_APPROVAL_PAUSE_REASON = "awaiting-approval";
+
+/**
+ * Returns true when `task` is blocked on a pending human approval decision,
+ * via either hold mechanism (see FNXC:ApprovalHold above). Every automated
+ * recovery (self-healing) and oversight (planner overseer) path must treat
+ * `true` as "take no lifecycle-advancing action on this task".
+ */
+export function isTaskBlockedOnApproval(
+  task: Pick<Task, "paused" | "pausedReason" | "status">,
+): boolean {
+  if (task.paused === true && task.pausedReason === AWAITING_APPROVAL_PAUSE_REASON) return true;
+  return task.status === "awaiting-approval";
+}
+
 export const HARD_BLOCKING_TASK_STATUSES = new Set([
   "failed",
   // ── User-attention / awaiting-handoff states ─────────────────────────

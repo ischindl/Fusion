@@ -416,6 +416,24 @@ describe("TaskStore", () => {
       expect(updated.paused).toBe(true);
       expect(updated.pausedByAgentId).toBe("agent-other");
     });
+
+    // FN-7736: pauseTask's agentOptions.pausedReason seam durably stamps WHY a
+    // task was paused (e.g. the canonical awaiting-approval reason) and the
+    // reason is cleared on unpause, matching pausedByAgentId/userPaused.
+    it("stamps pausedReason via agentOptions and clears it on unpause", async () => {
+      const task = await harness.store().createTask({ description: "Approval-held task" });
+      const paused = await harness.store().pauseTask(task.id, true, undefined, { pausedByAgentId: "agent-1", pausedReason: "awaiting-approval" });
+
+      expect(paused.paused).toBe(true);
+      expect(paused.pausedReason).toBe("awaiting-approval");
+
+      const detail = await harness.store().getTask(task.id);
+      expect(detail.pausedReason).toBe("awaiting-approval");
+
+      const unpaused = await harness.store().pauseTask(task.id, false);
+      expect(unpaused.paused).toBeFalsy();
+      expect(unpaused.pausedReason).toBeUndefined();
+    });
   });
 
   describe("branch field persistence", () => {
