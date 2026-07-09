@@ -598,6 +598,17 @@ interactive GitHub import, `fn task logs --follow`) keep their interactive
 prompt loop or tail session un-retried by design but still close the
 resolved store on every exit path, including on `Ctrl+C`.
 
+The same retry-on-lock and deterministic-teardown behavior extends to
+`fn branch-group *` (`list`/`show`/`abandon`/`promote`) and `fn pr *`
+(`create`/`list`/`show`/`approve`/`respond`/`retry`/`merge`/`close`/
+`automerge`/`automerge-cleanup`) (FN-7738). Discrete board reads/writes
+retry through a momentary `database is locked` (subject to the same
+`FUSION_CLI_LOCK_RETRY_MS` deadline override); external GitHub API calls and
+workflow-release side effects are not retried, to avoid re-issuing an
+already-completed side effect. The resolved `TaskStore` — whether resolved
+from the registered/default project or the uncached CWD-fallback project —
+is always closed on exit so the CLI process exits promptly.
+
 ### Execution and status
 
 ```bash

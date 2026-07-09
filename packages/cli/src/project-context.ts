@@ -356,3 +356,29 @@ export async function resolveProjectPathOnly(
   await closeProjectStore(context);
   return context.projectPath;
 }
+
+/**
+ * FNXC:CliBoardMutation 2026-07-09-00:00:
+ * Wrap an already-constructed, UNCACHED local `TaskStore` (the CWD-fallback
+ * branch several board command files build directly via
+ * `new TaskStore(process.cwd())` when `resolveProject` throws — e.g.
+ * `getBranchGroupContext`/`getPrContext` in `packages/cli/src/commands/
+ * branch-group.ts`/`pr.ts`, FN-7738) as a well-formed `ProjectContext` so
+ * `closeProjectStore` can close+evict it the same way it handles a cached
+ * context, even though `storeCache` holds no matching entry for it (eviction
+ * is then a harmless no-op; the `.close()` call is what matters). Mirrors
+ * `packages/cli/src/commands/task.ts`'s private `asLocalProjectContext`
+ * helper (kept private there per FN-7734/FN-7738 scope boundaries — this
+ * export exists so `branch-group.ts`/`pr.ts` do not need to fork a second
+ * copy).
+ */
+export function asLocalProjectContext(store: TaskStore): ProjectContext {
+  const cwd = process.cwd();
+  return {
+    projectId: cwd,
+    projectPath: cwd,
+    projectName: basename(cwd) || "current-project",
+    isRegistered: false,
+    store,
+  };
+}
