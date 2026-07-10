@@ -7,6 +7,7 @@ import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TaskStore, type ArtifactType, type ArtifactWithTask } from "@fusion/core";
+import { createArtifactRegisterTool } from "@fusion/engine";
 import { createApiRoutes } from "../../routes.js";
 import { request as REQUEST } from "../../test-request.js";
 
@@ -128,6 +129,50 @@ describe("artifacts route integration", () => {
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toBe("image/png");
     expect(res.body).toEqual(imageBytes);
+  });
+
+  /*
+   * FNXC:ArtifactRegistry 2026-07-10-00:00:
+   * FN-7767 pins the real-server/default-scope invariant the in-memory FN-7693/FN-7764 tests missed: an image created through the agent fn_artifact_register tool must be visible through the dashboard route with no projectId query (single-project/default server scope) and stream as image/png.
+   */
+  it("an agent-tool image artifact is listed and streamed through the default server scope", async () => {
+    const task = await store.createTask({
+      title: "Agent screenshot",
+      description: "Artifact should surface in the default Artifacts tab scope",
+    });
+    const registerTool = createArtifactRegisterTool(store, "agent-fn-7767");
+
+    const registerResult = await registerTool.execute("call-register-fn-7767-image", {
+      type: "image",
+      title: "Agent-created screenshot",
+      description: "Default-scope image artifact",
+      mimeType: "image/png",
+      dataBase64: PNG_IMAGE_BYTES.toString("base64"),
+      taskId: task.id,
+    });
+    const artifactId = (registerResult.details as { artifactId?: string }).artifactId;
+    expect(artifactId).toBeTruthy();
+
+    const listRes = await REQUEST(app, "GET", "/api/artifacts");
+
+    expect(listRes.status).toBe(200);
+    const listed = (listRes.body as ArtifactWithTask[]).find((artifact) => artifact.id === artifactId);
+    expect(listed).toMatchObject({
+      id: artifactId,
+      type: "image",
+      title: "Agent-created screenshot",
+      mimeType: "image/png",
+      authorId: "agent-fn-7767",
+      authorType: "agent",
+      taskId: task.id,
+      taskTitle: "Agent screenshot",
+    });
+    expect(listRes.body).toHaveLength(1);
+
+    const mediaRes = await requestRawBuffer(app, `/api/artifacts/${artifactId}/media`);
+    expect(mediaRes.status).toBe(200);
+    expect(mediaRes.headers["content-type"]).toBe("image/png");
+    expect(mediaRes.body).toEqual(PNG_IMAGE_BYTES);
   });
 
   it("a global image artifact still streams from the managed global artifacts directory", async () => {
