@@ -2130,7 +2130,14 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
   const activeModelTag = formatModelTag(activeResolvedModel?.provider, activeResolvedModel?.modelId);
   const activeModelProvider = activeResolvedModel?.provider ?? null;
   const hasThreadInView = Boolean(activeSession || isStreaming || messages.length > 0);
-  const hasMobileDetailSelection = chatScope === "rooms" ? roomThreadActive : Boolean(activeSession);
+  /*
+  FNXC:ChatHeader 2026-07-10-00:00:
+  After Chat remounts, useChat/useChatRooms can restore persisted activeSession/activeRoom while sidebarVisible resets to true. On mobile, header controls, the direct-thread shell class, and swipe-back history must follow the pane the body is actually showing, so detail-open requires the sidebar/list to be hidden instead of relying on restored thread presence alone.
+  */
+  const mobileThreadPaneOpen = isChatMobile && !sidebarVisible && (chatScope === "rooms" ? roomThreadActive : hasThreadInView);
+  const hasMobileDetailSelection = isChatMobile
+    ? mobileThreadPaneOpen
+    : chatScope === "rooms" ? roomThreadActive : Boolean(activeSession);
   const previousHasMobileDetailSelectionRef = useRef(hasMobileDetailSelection);
 
   useEffect(() => {
@@ -2168,8 +2175,9 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
       total: threadHeaderContextTotal,
     })
     : null;
-  const showMobileSessionSwitcher = isChatMobile && chatScope === "direct" && !!activeSession;
-  const showMobileDirectThreadHeaderControls = isChatMobile && chatScope === "direct" && hasThreadInView;
+  const showMobileSessionSwitcher = mobileThreadPaneOpen && chatScope === "direct" && !!activeSession;
+  const showMobileDirectThreadHeaderControls = mobileThreadPaneOpen && chatScope === "direct";
+  const showMobileRoomThreadHeaderControls = mobileThreadPaneOpen && chatScope === "rooms";
 
   const agentName =
     agentsMap.get(activeSession?.agentId ?? "")?.name ||
@@ -3181,8 +3189,9 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
         <div ref={chatThreadRef} className="chat-thread">
           {rooms.activeRoom ? (
             <>
+              {(!isChatMobile || showMobileRoomThreadHeaderControls) && (
               <div className="chat-room-thread-header">
-                {isChatMobile && (
+                {showMobileRoomThreadHeaderControls && (
                   <button className="btn-icon" onClick={handleRoomBack} data-testid="chat-back-btn">
                     <ChevronLeft size={16} />
                   </button>
@@ -3238,6 +3247,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
                   ))}
                 </div>
               </div>
+              )}
               <div className="chat-messages" ref={messagesContainerRef} onScroll={updateScrollState}>
                 {rooms.messagesLoading ? (
                   <div className="chat-empty-state">{t("chat.loadingMessages", "Loading messages...")}</div>
