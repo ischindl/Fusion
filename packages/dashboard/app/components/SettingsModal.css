@@ -558,9 +558,7 @@ The embedded title reads like other embedded-view titles (Planning modal-header-
   border-bottom: var(--btn-border-width) solid var(--border);
 }
 
-/* FNXC:Settings 2026-07-09-00:00: the row wraps label + input + results; on desktop it always
-   renders (see .settings-search-toggle below, hidden here). On mobile the toggle in SettingsModal.tsx
-   controls whether this wrapper mounts at all. */
+/* FNXC:Settings 2026-07-09-12:00: the row wraps label + input + results; on desktop it always renders (see .settings-search-toggle below, hidden here). On mobile the inline section-picker toggle controls whether this wrapper mounts below the picker, avoiding an empty padded shell above the picker while collapsed. */
 .settings-search-row {
   display: flex;
   flex-direction: column;
@@ -2193,14 +2191,12 @@ The header row wraps so the badge drops below the heading on narrow widths inste
     padding: var(--space-md) var(--space-lg) var(--space-sm);
   }
 
-  /* FNXC:Settings 2026-07-09-00:00: mobile-only collapse-by-default toggle. The row starts
-     collapsed (only the icon button renders) and expands to the full search row on tap. */
+  /* FNXC:Settings 2026-07-09-12:00: mobile-only collapse-by-default toggle sits in the section picker control row so search and section navigation share one horizontal affordance row. The row starts collapsed and expands to the full search row below the picker on tap. */
   .settings-search-toggle {
     --settings-search-toggle-touch-target: calc(var(--space-lg) + var(--space-lg) + var(--space-xs));
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    align-self: flex-start;
     width: var(--settings-search-toggle-touch-target);
     height: var(--settings-search-toggle-touch-target);
     flex-shrink: 0;
@@ -2233,7 +2229,22 @@ The header row wraps so the badge drops below the heading on narrow widths inste
     text-transform: uppercase;
   }
 
+  .settings-mobile-section-picker-control-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    min-width: 0;
+  }
+
   .settings-mobile-section-picker select {
+    flex: 1 1 auto;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .settings-mobile-section-picker .settings-search-empty-hint {
+    flex: 1 1 auto;
+    min-width: 0;
     width: 100%;
   }
 

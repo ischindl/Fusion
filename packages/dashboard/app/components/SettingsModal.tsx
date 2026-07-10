@@ -3651,26 +3651,51 @@ export function SettingsModal({
         ) : (
           <div className="settings-layout">
             <aside className="settings-navigation" aria-label={t("settings.search.navigationLabel", "Settings navigation")}> 
-              <div className="settings-search" data-testid="settings-search">
-                {isMobileSettingsSearch && (
-                  // FNXC:Settings 2026-07-09-00:00: mobile-only compact icon toggle; hidden entirely on
-                  // desktop/tablet via `isMobileSettingsSearch`, which always shows the row instead.
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-icon settings-search-toggle"
-                    onClick={() => setMobileSearchRowExpanded((expanded) => !expanded)}
-                    aria-expanded={settingsSearchRowVisible}
-                    aria-controls="settings-search-row-region"
-                    aria-label={
-                      settingsSearchRowVisible
-                        ? t("settings.search.toggleHide", "Hide search")
-                        : t("settings.search.toggleShow", "Show search")
-                    }
-                  >
-                    {settingsSearchRowVisible ? <SearchToggleCloseIcon size={16} /> : <Search size={16} />}
-                  </button>
-                )}
-                {settingsSearchRowVisible && (
+              {showMobileSectionPicker && (
+                <div className="settings-mobile-section-picker">
+                  <label htmlFor="settings-mobile-section">{t("settings.mobileNav.label", "Settings Section")}</label>
+                  <div className="settings-mobile-section-picker-control-row">
+                    {hasSettingsSearchResults ? (
+                      <select
+                        id="settings-mobile-section"
+                        className="select touch-target"
+                        value={activeSection}
+                        onChange={(event) => setActiveSection(event.target.value as SectionId)}
+                      >
+                        {searchableSectionOptions.map((section) => {
+                          const label = t(section.labelKey, section.label);
+                          return (
+                            <option key={section.id} value={section.id}>
+                              {resolveSettingsSectionOptionLabel(section, label)}
+                            </option>
+                          );
+                        })}
+                      </select>
+                    ) : (
+                      <p className="settings-search-empty-hint">{t("settings.search.noMobileOptions", "No sections match this search.")}</p>
+                    )}
+                    {isMobileSettingsSearch && (
+                      // FNXC:Settings 2026-07-09-12:00: mobile-only search toggle now lives inline beside the section picker control so section navigation and search read as one compact row; FN-7713 expand/hide behavior and active-query preservation remain unchanged.
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-icon settings-search-toggle"
+                        onClick={() => setMobileSearchRowExpanded((expanded) => !expanded)}
+                        aria-expanded={settingsSearchRowVisible}
+                        aria-controls="settings-search-row-region"
+                        aria-label={
+                          settingsSearchRowVisible
+                            ? t("settings.search.toggleHide", "Hide search")
+                            : t("settings.search.toggleShow", "Show search")
+                        }
+                      >
+                        {settingsSearchRowVisible ? <SearchToggleCloseIcon size={16} /> : <Search size={16} />}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+              {settingsSearchRowVisible && (
+                <div className="settings-search" data-testid="settings-search">
                   <div id="settings-search-row-region" className="settings-search-row">
                     <label className="settings-search-label" htmlFor="settings-search-input">
                       {t("settings.search.label", "Search settings")}
@@ -3709,30 +3734,6 @@ export function SettingsModal({
                         : t("settings.search.allSections", "Showing all settings sections")}
                     </div>
                   </div>
-                )}
-              </div>
-              {showMobileSectionPicker && (
-                <div className="settings-mobile-section-picker">
-                  <label htmlFor="settings-mobile-section">{t("settings.mobileNav.label", "Settings Section")}</label>
-                  {hasSettingsSearchResults ? (
-                    <select
-                      id="settings-mobile-section"
-                      className="select touch-target"
-                      value={activeSection}
-                      onChange={(event) => setActiveSection(event.target.value as SectionId)}
-                    >
-                      {searchableSectionOptions.map((section) => {
-                        const label = t(section.labelKey, section.label);
-                        return (
-                          <option key={section.id} value={section.id}>
-                            {resolveSettingsSectionOptionLabel(section, label)}
-                          </option>
-                        );
-                      })}
-                    </select>
-                  ) : (
-                    <p className="settings-search-empty-hint">{t("settings.search.noMobileOptions", "No sections match this search.")}</p>
-                  )}
                 </div>
               )}
               <nav className="settings-sidebar">

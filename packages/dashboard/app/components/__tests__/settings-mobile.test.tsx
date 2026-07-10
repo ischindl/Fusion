@@ -505,6 +505,10 @@ describe("SettingsModal mobile adaptations", () => {
 
     expectMobileRule(css, ".settings-layout", "flex-direction: column;");
     expectMobileRule(css, ".settings-mobile-section-picker", "display: flex;");
+    expectMobileRule(css, ".settings-mobile-section-picker-control-row", "display: flex;");
+    expectMobileRule(css, ".settings-mobile-section-picker-control-row", "align-items: center;");
+    expectMobileRule(css, ".settings-mobile-section-picker select", "flex: 1 1 auto;");
+    expectMobileRule(css, ".settings-mobile-section-picker .settings-search-empty-hint", "flex: 1 1 auto;");
     expectMobileRule(css, ".settings-navigation", "width: 100%;");
     expectMobileRule(css, ".settings-search", "padding: var(--space-md) var(--space-lg) var(--space-sm);");
     expectMobileRule(css, ".settings-sidebar", "display: none;");
@@ -605,16 +609,24 @@ describe("SettingsModal mobile adaptations", () => {
       const toggle = getByLabelText("Show search");
       expect(toggle.getAttribute("aria-expanded")).toBe("false");
       expect(toggle.getAttribute("aria-controls")).toBe("settings-search-row-region");
+      const picker = toggle.closest(".settings-mobile-section-picker") as HTMLElement;
+      expect(picker).toBeTruthy();
+      expect(within(picker).getByLabelText("Settings Section")).toBeTruthy();
+      expect(queryByTestId("settings-search")).toBeNull();
 
       await user.click(toggle);
-      expect(await findByLabelText("Hide search")).toBeTruthy();
-      expect(getByLabelText("Hide search").getAttribute("aria-expanded")).toBe("true");
+      const hideToggle = await findByLabelText("Hide search");
+      expect(hideToggle).toBeTruthy();
+      expect(hideToggle.getAttribute("aria-expanded")).toBe("true");
+      expect(hideToggle.closest(".settings-mobile-section-picker")).toBe(picker);
       expect(document.getElementById("settings-search-row-region")).toBeTruthy();
+      expect(picker.nextElementSibling?.classList.contains("settings-search")).toBe(true);
 
       await user.click(getByLabelText("Hide search"));
       await waitFor(() => expect(queryByTestId("settings-search-input")).toBeNull());
       expect(getByLabelText("Show search").getAttribute("aria-expanded")).toBe("false");
-      // No leftover shell for the results region while collapsed.
+      // No leftover shell for the search row or results region while collapsed.
+      expect(queryByTestId("settings-search")).toBeNull();
       expect(document.getElementById("settings-search-row-region")).toBeNull();
       expect(document.getElementById("settings-search-results")).toBeNull();
     });
@@ -642,18 +654,36 @@ describe("SettingsModal mobile adaptations", () => {
 
     it("keeps the desktop search row always visible with no toggle rendered", async () => {
       mockSettingsViewport(false);
-      const { queryByLabelText, getByTestId } = render(<SettingsModal onClose={vi.fn()} addToast={vi.fn()} />);
+      const { container, queryByLabelText, getByTestId } = render(<SettingsModal onClose={vi.fn()} addToast={vi.fn()} />);
       await waitFor(() => expect(fetchSettings).toHaveBeenCalled());
 
       expect(getByTestId("settings-search-input")).toBeTruthy();
       expect(queryByLabelText("Show search")).toBeNull();
       expect(queryByLabelText("Hide search")).toBeNull();
+      expect(container.querySelector(".settings-mobile-section-picker .settings-search-toggle")).toBeNull();
+    });
+
+    it("keeps the inline toggle reachable when mobile search has no section results", async () => {
+      mockSettingsViewport(true);
+      const user = userEvent.setup();
+      const { getByLabelText, getByTestId, findByText } = render(<SettingsModal onClose={vi.fn()} addToast={vi.fn()} />);
+      await waitFor(() => expect(fetchSettings).toHaveBeenCalled());
+
+      await user.click(getByLabelText("Show search"));
+      await user.type(getByTestId("settings-search-input"), "zzzzzz-no-match");
+
+      const emptyHint = await findByText("No sections match this search.");
+      const picker = emptyHint.closest(".settings-mobile-section-picker") as HTMLElement;
+      expect(picker).toBeTruthy();
+      expect(within(picker).getByLabelText("Hide search")).toBeTruthy();
+      expect(picker.querySelector("#settings-mobile-section")).toBeNull();
     });
 
     it("contains the mobile-only toggle CSS override and hides it on desktop", () => {
       const css = loadAllAppCss();
 
       expectMobileRule(css, ".settings-search-toggle", "display: inline-flex;");
+      expectMobileRule(css, ".settings-search-toggle", "flex-shrink: 0;");
       expectBaseRule(css, ".settings-search-toggle", "display: none;");
     });
   });
