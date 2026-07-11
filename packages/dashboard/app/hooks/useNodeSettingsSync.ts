@@ -172,6 +172,19 @@ export function useNodeSettingsSync(): UseNodeSettingsSyncResult {
       }));
       setError(null);
     } catch (err) {
+      /*
+      FNXC:PostgresCutover 2026-07-10:
+      Node settings sync is disabled on the PostgreSQL backend (nodes share the
+      database); the sync-status route answers 409 with
+      code "settings-sync-disabled-postgres". Treat that as a quiet steady
+      state: stop tracking the node so polling ceases, keep the status map
+      empty (no sync chips render), and surface no error banner. Explicit
+      push/pull clicks still show the server's explanatory 409 message.
+      */
+      if ((err as { status?: number } | null)?.status === 409) {
+        trackedNodesRef.current.delete(nodeId);
+        return;
+      }
       // Keep stale data visible during polling failures
       console.error(`Failed to fetch sync status for node ${nodeId}:`, err);
       setError(err instanceof Error ? err.message : t("nodeSync.error.failedToFetchStatus", "Failed to fetch sync status"));

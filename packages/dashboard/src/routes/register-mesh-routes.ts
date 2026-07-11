@@ -393,8 +393,27 @@ export const registerMeshRoutes: ApiRouteRegistrar = (ctx) => {
       const localPeer = await central.getLocalPeerInfo();
 
       // ── Settings sync: handle incoming settings and prepare response ──
+      /*
+      FNXC:PostgresCutover 2026-07-10:
+      Node settings sync is REMOVED on the PostgreSQL backend: nodes connect to
+      the same shared PostgreSQL database, so mesh-level settings replication is
+      redundant and can only introduce churn/clobber against the shared rows.
+      Inbound settings payloads are ignored (with a diagnostic) and no settings
+      are included in the response. The legacy SQLite topology (one DB file per
+      node) keeps the sync path unchanged.
+      */
       let responseSettings: import("@fusion/core").SettingsSyncPayload | undefined;
-      const remoteSettings = req.body?.settings;
+      const remoteSettings = store.backendMode ? undefined : req.body?.settings;
+      if (store.backendMode && req.body?.settings) {
+        emitRemoteRouteDiagnostic({
+          route: "mesh-sync",
+          message: "Ignored inbound settings payload — settings sync is disabled on the PostgreSQL backend (nodes share the database)",
+          nodeId: senderNodeId,
+          upstreamPath: "/api/mesh/sync",
+          operationStage: "settings-sync",
+          level: "info",
+        });
+      }
 
       if (remoteSettings) {
         try {
