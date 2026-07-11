@@ -7763,7 +7763,8 @@
       "review": "审查",
       "routing": "路由",
       "stats": "统计",
-      "terminal": "",
+      "terminal": "会话",
+      "worktreeTerminal": "终端",
       "workflow": "工作流",
       "summary": "Summary"
     },

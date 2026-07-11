@@ -226,7 +226,7 @@ function formatDurationCompact(ageMs: number): string {
   return `${minutes}m`;
 }
 
-type TabId = "summary" | "definition" | "chat" | "planner-chat" | "logs" | "changes" | "review" | "pr" | "comments" | "model" | "workflow" | "documents" | "stats" | "routing" | "retries" | "terminal" | `plugin-${string}`;
+type TabId = "summary" | "definition" | "chat" | "planner-chat" | "logs" | "changes" | "review" | "pr" | "comments" | "model" | "workflow" | "documents" | "stats" | "routing" | "retries" | "terminal" | "worktree-terminal" | `plugin-${string}`;
 type ActivitySegment = "current" | "feed" | "raw-logs" | "interventions";
 
 /*
@@ -271,9 +271,12 @@ function resolveDefaultActivitySegment(initialTab: TabId | undefined): ActivityS
   return initialTab === "logs" ? "feed" : "current";
 }
 
-// Lazy-load the terminal so xterm + addons stay out of the main bundle (U11).
+// Lazy-load terminal surfaces so xterm + addons stay out of the main bundle (U11).
 const LazySessionTerminal = lazy(() =>
   import("./SessionTerminal").then((m) => ({ default: m.SessionTerminal })),
+);
+const LazyTerminalModal = lazy(() =>
+  import("./TerminalModal").then((m) => ({ default: m.TerminalModal })),
 );
 
 /** CLI session record fields the terminal tab needs (mirrors @fusion/core CliSession). */
@@ -1153,6 +1156,12 @@ export function TaskDetailContent({
     [cliSession, cliOneShot, cliGenericIdle],
   );
   const showCliTab = cliTabVisibility.kind !== "hidden";
+  /*
+  FNXC:TaskDetailTerminal 2026-07-10-00:00:
+  FN-7813 exposes a dedicated interactive Terminal tab only for single-worktree tasks. Workspace tasks have multiple repo roots and no single safe default shell cwd, so they intentionally hide this tab rather than falling back to the project root.
+  */
+  const taskWorktreeCwd = typeof task.worktree === "string" && task.worktree.trim().length > 0 ? task.worktree : undefined;
+  const showWorktreeTerminalTab = Boolean(taskWorktreeCwd) && !isWorkspaceTask(workingTask);
   const cliPosture: SessionTerminalPosture | undefined = useMemo(() => {
     if (!cliSession) return undefined;
     const p = cliSession.autonomyPosture ?? {};
@@ -1186,6 +1195,11 @@ export function TaskDetailContent({
   useEffect(() => {
     if (activeTab === "terminal" && !showCliTab) setActiveTab("definition");
   }, [activeTab, showCliTab]);
+
+  // If the worktree-rooted terminal tab loses its single-worktree cwd, fall back.
+  useEffect(() => {
+    if (activeTab === "worktree-terminal" && !showWorktreeTerminalTab) setActiveTab("definition");
+  }, [activeTab, showWorktreeTerminalTab]);
 
   // Track mount state to avoid setting state on unmounted component
   useEffect(() => {
@@ -4439,7 +4453,15 @@ export function TaskDetailContent({
                 className={`detail-tab${activeTab === "terminal" ? " detail-tab-active" : ""}`}
                 onClick={() => setActiveTab("terminal")}
               >
-                {t("taskDetail.tabs.terminal", "Terminal")}
+                {t("taskDetail.tabs.terminal", "Session")}
+              </button>
+            )}
+            {showWorktreeTerminalTab && (
+              <button
+                className={`detail-tab${activeTab === "worktree-terminal" ? " detail-tab-active" : ""}`}
+                onClick={() => setActiveTab("worktree-terminal")}
+              >
+                {t("taskDetail.tabs.worktreeTerminal", "Terminal")}
               </button>
             )}
             {/* Plugin tabs */}
@@ -4823,6 +4845,19 @@ export function TaskDetailContent({
                   />
                 </Suspense>
               ) : null}
+            </div>
+          ) : activeTab === "worktree-terminal" && showWorktreeTerminalTab && taskWorktreeCwd ? (
+            <div className="detail-section detail-section--worktree-terminal">
+              <Suspense fallback={<div className="detail-loading"><LoadingSpinner label={t("taskDetail.terminal.loadingInteractive", "Loading interactive terminal…")} /></div>}>
+                <LazyTerminalModal
+                  isOpen={true}
+                  onClose={() => setActiveTab("definition")}
+                  embedded
+                  defaultCwd={taskWorktreeCwd}
+                  scopeId={task.id}
+                  projectId={projectId}
+                />
+              </Suspense>
             </div>
           ) : (
           <>

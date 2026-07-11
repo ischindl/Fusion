@@ -7763,7 +7763,8 @@
       "review": "검토",
       "routing": "라우팅",
       "stats": "통계",
-      "terminal": "",
+      "terminal": "세션",
+      "worktreeTerminal": "터미널",
       "workflow": "워크플로",
       "summary": "Summary"
     },

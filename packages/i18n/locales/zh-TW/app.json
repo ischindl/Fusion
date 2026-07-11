@@ -7763,7 +7763,8 @@
       "review": "審查",
       "routing": "路由",
       "stats": "統計",
-      "terminal": "",
+      "terminal": "工作階段",
+      "worktreeTerminal": "終端",
       "workflow": "工作流程",
       "summary": "Summary"
     },

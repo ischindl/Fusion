@@ -7764,7 +7764,8 @@
       "review": "Révision",
       "routing": "Routage",
       "stats": "Statistiques",
-      "terminal": "",
+      "terminal": "Session",
+      "worktreeTerminal": "Terminal",
       "workflow": "Workflow",
       "summary": "Summary"
     },

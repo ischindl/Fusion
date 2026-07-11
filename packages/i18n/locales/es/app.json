@@ -7763,7 +7763,8 @@
       "review": "Revisión",
       "routing": "Enrutamiento",
       "stats": "Estadísticas",
-      "terminal": "",
+      "terminal": "Sesión",
+      "worktreeTerminal": "Terminal",
       "workflow": "Flujo de trabajo",
       "summary": "Summary"
     },

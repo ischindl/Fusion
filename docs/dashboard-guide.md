@@ -623,6 +623,9 @@ Mailbox view shows inbox/outbox communication threads and unread state.
 
 Fusion embeds a terminal using xterm.js. Desktop and tablet use the footer status bar as the terminal launcher; mobile keeps the full-screen terminal path.
 
+<!-- FNXC:TaskDetailTerminal 2026-07-10-00:00: FN-7813 gives single-worktree tasks their own Task Detail Terminal tab while preserving the existing CLI-agent Session tab label, so operators can distinguish an interactive shell from the read-only/live agent session transcript. -->
+Task Detail has two terminal-adjacent tabs when both are applicable: **Session** shows the pre-existing CLI agent session transcript/control surface, while **Terminal** embeds the interactive multi-tab terminal inside the task detail body. The interactive **Terminal** tab appears only for non-workspace tasks with a single recorded worktree; its first shell starts in that task worktree, and its terminal tabs are stored separately from the footer/global project terminal tabs.
+
 On Windows, the embedded terminal starts a supported shell inside Fusion, such as Command Prompt (`cmd.exe`) or Windows PowerShell. Windows Terminal (`wt.exe`) is an external terminal host and is not required or launched for the embedded panel, so Fusion should not show native Windows Terminal help/version popups while starting a terminal. If embedded terminal startup fails, Fusion shows an inline error with **Retry** instead of a blocking native dialog; install or repair Windows Terminal separately with `winget install Microsoft.WindowsTerminal` only if you want to use Windows Terminal outside Fusion.
 
 Use the terminal on desktop/tablet:

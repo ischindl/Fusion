@@ -7830,7 +7830,8 @@
       "routing": "Routing",
       "stats": "Stats",
       "summary": "Summary",
-      "terminal": "Terminal",
+      "terminal": "Session",
+      "worktreeTerminal": "Terminal",
       "workflow": "Workflow"
     },
     "terminal": {
