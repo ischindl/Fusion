@@ -46,11 +46,6 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function getContentPreview(content: string, maxLength: number = 200): string {
-  if (content.length <= maxLength) return content;
-  return `${content.substring(0, maxLength)}…`;
-}
-
 function getTaskColumnStatusDotClass(taskColumn: string): string {
   if (taskColumn === "done") return "status-dot status-dot--online";
   if (taskColumn === "archived") return "status-dot status-dot--offline";

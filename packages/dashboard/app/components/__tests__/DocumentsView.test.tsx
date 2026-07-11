@@ -400,6 +400,7 @@ describe("DocumentsView", () => {
   it("keeps project file and task document selections isolated across tab switches", async () => {
     render(<DocumentsView addToast={addToast} onOpenDetail={onOpenDetail} />);
 
+    fireEvent.click(screen.getByRole("tab", { name: /show project markdown files/i }));
     fireEvent.click(screen.getByRole("button", { name: "Open README.md" }));
     expect(await screen.findByText(/Hello docs/)).toBeInTheDocument();
 
@@ -1058,6 +1059,7 @@ describe("DocumentsView", () => {
 
     render(<DocumentsView addToast={addToast} onOpenDetail={onOpenDetail} />);
 
+    fireEvent.click(screen.getByRole("tab", { name: /show task documents/i }));
     await waitFor(() => {
       expect(screen.getByRole("tab", { name: /show task documents/i })).toHaveAttribute("aria-selected", "true");
     });
