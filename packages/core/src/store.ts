@@ -1436,6 +1436,15 @@ interface MoveTaskOptions {
   preserveProgress?: boolean;
   preserveWorktree?: boolean;
   preserveStatus?: boolean;
+  /**
+   * FNXC:WorkflowLifecycle 2026-07-12-09:05:
+   * Keep `paused`/`pausedByAgentId`/`pausedReason` (and any existing
+   * `userPaused`) across a reopen-to-todo/triage move. Used by the executor's
+   * pause teardown so a user pause survives its own hard-cancel re-queue and
+   * the row stays parked until an explicit unpause (FN-7851 pause-bounce loop).
+   * Never SETS a pause — only prevents the reopen block from clearing one.
+   */
+  preservePause?: boolean;
   allocateWorktree?: (reservedNames: Set<string>) => string | null;
   moveSource?: "user" | "engine" | "scheduler";
   workflowMoveActor?: WorkflowMovePolicyInput["actor"];
@@ -7885,6 +7894,7 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
           preserveResumeState: options?.preserveResumeState,
           preserveProgress: options?.preserveProgress,
           preserveWorktree: options?.preserveWorktree,
+          preservePause: options?.preservePause,
         },
         resetSteps: () => this.resetAllStepsToPending(task),
       };
@@ -7946,18 +7956,26 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
         && (toColumn === "todo" || toColumn === "triage");
 
       if (isReopenToTodoOrTriage) {
+        // FNXC:WorkflowLifecycle 2026-07-12-09:05: keep this flag-OFF inline
+        // block in sync with applyResetOnEntryEffects (default-workflow-hooks.ts)
+        // — `preservePause` keeps a pause-caused teardown move from clearing the
+        // user's park (FN-7851 pause-bounce loop).
         if (!options?.preserveStatus) {
           task.status = undefined;
           task.error = undefined;
-          task.pausedReason = undefined;
+          if (!options?.preservePause) {
+            task.pausedReason = undefined;
+          }
         }
         task.blockedBy = undefined;
         task.overlapBlockedBy = undefined;
-        task.paused = undefined;
-        task.pausedByAgentId = undefined;
+        if (!options?.preservePause) {
+          task.paused = undefined;
+          task.pausedByAgentId = undefined;
+        }
         if (moveSource === "user" && toColumn === "todo") {
           task.userPaused = true;
-        } else {
+        } else if (!options?.preservePause) {
           task.userPaused = undefined;
         }
 

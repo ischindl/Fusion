@@ -8739,13 +8739,20 @@ export class TaskExecutor {
         FNXC:WorkflowLifecycle 2026-06-17-23:32:
         FN-6625: completion-finalize aborts are teardown artifacts after a completed/no-commit execution has already advanced to in-review. Without excluding that provenance, the FN-6614 execute-node tail failure was mislabeled as an operator-action pause abort and re-parked failed.
         */
+        // FNXC:WorkflowLifecycle 2026-07-12-09:05: check `live.paused` BEFORE the
+        // bare pausedAborted marker — a task-pause park that survived teardown
+        // (preservePause, FN-7851) is operator intent, not an engine-internal
+        // abort, and must be labeled as such so the benign re-queue log below
+        // does not misreport it as engine churn.
         const pauseProvenance = live.userPaused
           ? "explicit user pause"
           : abortProvenance === "global-pause"
             ? "global pause"
-            : pausedAborted
-              ? "engine abort during pause/resume"
-              : "task pause";
+            : live.paused
+              ? "task pause"
+              : pausedAborted
+                ? "engine abort during pause/resume"
+                : "task pause";
         // Typed discriminant for the engine-internal abort case (mirrors the
         // `pauseProvenance === "engine abort during pause/resume"` arm above):
         // a hard-cancel teardown that is NOT a user pause or global pause. Used
@@ -8864,7 +8871,13 @@ export class TaskExecutor {
               // shared budget and falls back to plain todo re-queueing.
               executorLog.warn(`${task.id}: engine abort during pause/resume exhausted ${MAX_TRANSIENT_GRAPH_RESUME_RETRIES} internal retries — falling back to benign todo re-queue`);
             }
-            const todoBenign = `Workflow graph run ended during ${pauseProvenance} with task re-queued to todo — benign, cleared for normal scheduling`;
+            // FNXC:WorkflowLifecycle 2026-07-12-09:05: a row still carrying a
+            // pause park (paused/userPaused) is NOT "cleared for normal
+            // scheduling" — the scheduler skips it until an explicit unpause.
+            // Say so, or the log contradicts the board (FN-7851 misdiagnosis).
+            const todoBenign = live.paused || live.userPaused
+              ? `Workflow graph run ended during ${pauseProvenance} with task parked in todo — benign, paused awaiting explicit unpause`
+              : `Workflow graph run ended during ${pauseProvenance} with task re-queued to todo — benign, cleared for normal scheduling`;
             executorLog.log(`${task.id}: ${todoBenign}`);
             await this.store.logEntry(task.id, todoBenign, undefined, this.getRunContextFor(task.id));
             // FNXC:WorkflowLifecycle 2026-06-20-19:58: reconcile a stale
@@ -11588,13 +11601,28 @@ export class TaskExecutor {
           const hasResumableProgress =
             (progressSource.currentStep ?? 0) > 0
             || (progressSource.steps?.some((step) => step.status === "done" || step.status === "in-progress") ?? false);
+          /*
+          FNXC:WorkflowLifecycle 2026-07-12-09:05:
+          Pause-bounce loop (observed on FN-7851): this teardown runs BECAUSE the user paused the task, but the plain move-to-todo below wiped the pause flags (store reopen block), leaving an unpaused dispatchable todo row. The graph-failure classifier then read `paused=false, userPaused=false`, misclassified the abort as engine-internal, and auto-continued the session; once the shared graphResumeRetryCount budget was exhausted the scheduler simply re-dispatched the row seconds later — so pausing an in-progress task could never stick. When the pause that caused this abort is still in force at teardown time, move with `preservePause` so the row lands in todo still parked (`paused` kept; scheduler skips paused/userPaused todo rows) and the classifier sees the pause and routes benignly. An unpause during the teardown window leaves `paused` unset and restores the old requeue-for-normal-scheduling behavior.
+          */
+          const pauseStillInForce = latestTask?.paused === true;
           await this.store.updateTask(
             task.id,
             hasResumableProgress ? { worktree: undefined } : { worktree: undefined, branch: undefined },
           );
-          await this.store.logEntry(task.id, "Execution paused — agent terminated, moved to todo", undefined, this.getRunContextFor(task.id));
+          await this.store.logEntry(
+            task.id,
+            pauseStillInForce
+              ? "Execution paused — agent terminated, parked in todo (pause preserved, awaiting explicit unpause)"
+              : "Execution paused — agent terminated, moved to todo",
+            undefined,
+            this.getRunContextFor(task.id),
+          );
           this.markGraphExecuteSelfRequeued(task.id);
-          await this.store.moveTask(task.id, "todo", hasResumableProgress ? { preserveResumeState: true } : undefined);
+          await this.store.moveTask(task.id, "todo", {
+            ...(hasResumableProgress ? { preserveResumeState: true } : {}),
+            ...(pauseStillInForce ? { preservePause: true } : {}),
+          });
         }
       } else if (this.stuckAborted.has(task.id)) {
         // Task was killed by stuck task detector — defer requeue to finally block
