@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import type { ComponentProps } from "react";
 import { render, screen, fireEvent, waitFor, within, act, cleanup } from "@testing-library/react";
 import path from "path";
@@ -202,6 +202,10 @@ vi.mock("../FileBrowser", () => ({
 
 describe("SettingsModal", () => {
   installSettingsModalEnv();
+
+  beforeEach(() => {
+    localStorage.setItem("fusion:settings:show-advanced", "true");
+  });
 
   describe("Project Models", () => {
     it("saves opencode-go startup model sync toggle in global settings", async () => {
@@ -696,7 +700,7 @@ describe("SettingsModal", () => {
       renderModal();
       await waitForSettingsModalReady();
 
-      expect(await screen.findByText("Version 1.2.3")).toBeInTheDocument();
+      expect(await screen.findByText("v1.2.3")).toBeInTheDocument();
       expect(mockFetchDashboardHealth).toHaveBeenCalledTimes(1);
 
       expect(screen.getByRole("button", { name: "Check for updates" })).toBeInTheDocument();
@@ -864,9 +868,9 @@ describe("SettingsModal", () => {
       await waitForSettingsModalReady();
 
       const inlineButton = screen.getByRole("button", { name: "Check for updates" });
-      expect(within(inlineButton).getByText("Version 1.2.3")).toBeInTheDocument();
+      expect(within(inlineButton).getByText("v1.2.3")).toBeInTheDocument();
 
-      await settingsModalUser.click(within(inlineButton).getByText("Version 1.2.3"));
+      await settingsModalUser.click(within(inlineButton).getByText("v1.2.3"));
 
       await waitFor(() => {
         expect(mockCheckForUpdates).toHaveBeenCalledTimes(1);

@@ -221,7 +221,7 @@ describe("DashboardApp smoke", () => {
     const frame = lastFrame() ?? "";
     // Splash can render either the compact text mark or the expanded block-art logo.
     expect(frame).toMatch(/FUSION|███████╗/);
-    expect(frame).toContain("multi node agent orchestrator");
+    expect(frame).toContain("software factory");
     expect(frame).toContain("runfusion.ai");
     unmount();
   });

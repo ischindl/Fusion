@@ -113,6 +113,24 @@ describe("model-pricing", () => {
     expect(result.usd).toBeCloseTo(4.875, 3);
   });
 
+  it("prices GLM-5.2, MiniMax-M3, and Kimi K2.6 instead of reporting unavailable", () => {
+    const cases = [
+      { provider: "zai", model: "glm-5.2", expectedUsd: 2.28 },
+      { provider: "minimax", model: "MiniMax-M3", expectedUsd: 0.54 },
+      { provider: "kimi-coding", model: "kimi-k2.6-preview", expectedUsd: 1.75 },
+    ] as const;
+
+    for (const { provider, model, expectedUsd } of cases) {
+      const result = costFor(
+        { ...ZERO, inputTokens: 1_000_000, outputTokens: 200_000 },
+        { provider, model },
+      );
+      expect(result.unavailable).toBe(false);
+      expect(result.usd).not.toBeNull();
+      expect(result.usd).toBeCloseTo(expectedUsd, 2);
+    }
+  });
+
   it("returns unavailable + null usd for an unknown model (never guesses)", () => {
     const result = costFor(
       { ...ZERO, inputTokens: 1_000_000 },
@@ -228,6 +246,9 @@ describe("model-pricing", () => {
       expect(
         lookupPricing({ provider: " OpenAI ", model: " GPT-4o " }),
       ).toBe(MODEL_PRICING["openai:gpt-4o"]);
+      expect(
+        lookupPricing({ provider: " MiniMax ", model: " MiniMax-M3 " }),
+      ).toBe(MODEL_PRICING["minimax:minimax-m3"]);
     });
 
     it("resolves OpenAI Codex models by explicit provider:model keys", () => {
@@ -246,6 +267,9 @@ describe("model-pricing", () => {
     it("falls back to a bare model id when provider is unset", () => {
       expect(lookupPricing({ model: "gemini-2.5-pro" })).toBe(
         MODEL_PRICING["google:gemini-2.5-pro"],
+      );
+      expect(lookupPricing({ model: "kimi-k2.6-preview" })).toBe(
+        MODEL_PRICING["kimi-coding:kimi-k2.6-preview"],
       );
     });
 

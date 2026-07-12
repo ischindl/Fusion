@@ -45,11 +45,10 @@
     margin-right: var(--space-sm);
   }
 
-  /* Keep the mobile title readable by reducing promotional header actions to their already-labeled icons. */
-  .settings-header-actions .settings-github-star-btn__count {
-    display: none;
-  }
-
+  /*
+  FNXC:Settings 2026-07-11-00:00:
+  FN-7848: Mobile Settings must still show the GitHub star count. FN-4375 kept the header in one row by collapsing promotional action labels; keep the count visible and rely on .settings-modal-heading min-width: 0 to truncate the title before the pill wraps. Only the redundant "Star" word stays collapsed to save horizontal room.
+  */
   .settings-header-actions .settings-github-star-btn__action,
   .settings-header-actions .settings-header-discord-btn {
     width: 40px;

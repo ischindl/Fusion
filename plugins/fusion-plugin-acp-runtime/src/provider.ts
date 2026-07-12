@@ -67,6 +67,30 @@ export class HandshakeTimeoutError extends Error {
   }
 }
 
+/*
+FNXC:GrokAcp 2026-07-12-07:00:
+Grok ACP emits vendor extension notifications such as `_x.ai/session_notification`
+and `_x.ai/session/update` for hook_execution status (post_tool_use, etc.).
+@agentclientprotocol/sdk routes non-spec methods to Client.extNotification /
+extMethod; when those are absent the SDK logs Method not found (-32601) for
+every hook even though hooks themselves succeeded. Accept extensions as no-ops
+so Fusion clients stay forward-compatible without claiming Grok-only features.
+Do not forward into sessionUpdate: hook_execution is not a standard
+sessionUpdate tag and would fail zSessionNotification validation.
+*/
+
+/** No-op ACP extension handlers so vendor notifications do not Method-not-found. */
+function acceptAcpExtensions(): Pick<Client, "extMethod" | "extNotification"> {
+  return {
+    async extMethod(_method: string, _params: Record<string, unknown>) {
+      return {};
+    },
+    async extNotification(_method: string, _params: Record<string, unknown>) {
+      // Intentionally empty — informational Grok hooks / x.ai session extensions.
+    },
+  };
+}
+
 /**
  * Minimal default client handler. Later units (U3/U4/U5/U7) supply the real one
  * that bridges `session/update` into Fusion callbacks and routes permission
@@ -81,6 +105,7 @@ export function createDefaultClientHandler(): Client {
     async requestPermission() {
       return { outcome: { outcome: "cancelled" } };
     },
+    ...acceptAcpExtensions(),
   };
 }
 
@@ -182,6 +207,9 @@ export function createBridgingClientHandler(
         );
       });
     },
+    // FNXC:GrokAcp 2026-07-12-07:00: swallow `_x.ai/*` extension notifications
+    // (hook_execution, session admin, …) so ACP SDK does not log -32601.
+    ...acceptAcpExtensions(),
   };
 
   // Register fs handlers ONLY when enabled, so the advertised capability and the
@@ -216,6 +244,19 @@ export interface ConnectOptions {
   /** Advertise fs capabilities ONLY where the toggle is true (KTD6). */
   advertiseFs: { read: boolean; write: boolean };
   initializeTimeoutMs?: number;
+  /**
+   * FNXC:GrokAcp 2026-07-11-15:00:
+   * Optional post-initialize authenticate (xAI Grok docs: initialize → authenticate
+   * → session/new). Prefer methods listed in preferMethods that the agent
+   * advertised; when require is true, missing auth fails closed.
+   * See https://docs.x.ai/build/cli/headless-scripting#acp
+   */
+  authenticate?: {
+    preferMethods?: string[];
+    methodId?: string;
+    meta?: Record<string, unknown>;
+    require?: boolean;
+  };
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout: () => Error): Promise<T> {
@@ -318,6 +359,25 @@ export async function connect(opts: ConnectOptions): Promise<AcpConnection> {
     ? initResult.authMethods.map((m) => ({ id: m.id }))
     : [];
 
+  /*
+  FNXC:GrokAcp 2026-07-11-15:00:
+  Official Grok ACP scripting requires authenticate after initialize (method
+  xai.api_key when XAI_API_KEY is set, else cached_token) with
+  `_meta: { headless: true }` before session/new. Generic ACP agents that
+  advertise no preferred methods skip this step.
+  */
+  if (opts.authenticate) {
+    try {
+      await authenticateAcpConnection(
+        { conn, authMethods },
+        opts.authenticate,
+      );
+    } catch (err) {
+      dispose();
+      throw err;
+    }
+  }
+
   return {
     conn,
     child,
@@ -326,6 +386,59 @@ export async function connect(opts: ConnectOptions): Promise<AcpConnection> {
     stderr,
     dispose,
   };
+}
+
+export class AcpAuthRequiredError extends Error {
+  readonly code = "acp_auth_required" as const;
+  constructor(readonly availableMethodIds: string[]) {
+    super(
+      availableMethodIds.length > 0
+        ? `ACP agent requires authentication but no preferred method matched (available: ${availableMethodIds.join(", ")})`
+        : "ACP agent requires authentication but advertised no auth methods",
+    );
+    this.name = "AcpAuthRequiredError";
+  }
+}
+
+/**
+ * Call ACP `authenticate` with the first preferred method the agent advertised.
+ * No-ops when neither methodId nor a preferred method is available and require
+ * is false.
+ */
+export async function authenticateAcpConnection(
+  connection: Pick<AcpConnection, "conn" | "authMethods">,
+  opts: {
+    preferMethods?: string[];
+    methodId?: string;
+    meta?: Record<string, unknown>;
+    require?: boolean;
+  },
+): Promise<{ methodId: string } | undefined> {
+  const available = connection.authMethods.map((m) => m.id);
+  const availableSet = new Set(available);
+  let methodId = opts.methodId?.trim();
+  if (methodId && !availableSet.has(methodId)) {
+    methodId = undefined;
+  }
+  if (!methodId) {
+    for (const candidate of opts.preferMethods ?? []) {
+      if (availableSet.has(candidate)) {
+        methodId = candidate;
+        break;
+      }
+    }
+  }
+  if (!methodId) {
+    if (opts.require) {
+      throw new AcpAuthRequiredError(available);
+    }
+    return undefined;
+  }
+  await connection.conn.authenticate({
+    methodId,
+    _meta: opts.meta ?? { headless: true },
+  });
+  return { methodId };
 }
 
 // --- U3: session driving on top of connect() -------------------------------
@@ -353,11 +466,22 @@ export interface NewAcpSessionResult {
  */
 export async function newAcpSession(
   connection: AcpConnection,
-  opts: { cwd: string; mcpServers?: AcpMcpServer[] },
+  opts: {
+    cwd: string;
+    mcpServers?: AcpMcpServer[];
+    /**
+     * FNXC:GrokAcp 2026-07-11-14:00:
+     * Optional ACP `_meta` bag for agent-specific session setup (Grok uses
+     * `pluginDirs`, `rules`, `systemPromptOverride`). Opaque to the generic
+     * ACP client — agents interpret their own keys.
+     */
+    meta?: Record<string, unknown>;
+  },
 ): Promise<NewAcpSessionResult> {
   const res = await connection.conn.newSession({
     cwd: opts.cwd,
-    mcpServers: opts.mcpServers ?? [],
+    mcpServers: (opts.mcpServers ?? []) as never,
+    ...(opts.meta && Object.keys(opts.meta).length > 0 ? { _meta: opts.meta } : {}),
   });
   // `sessionId` is agent-supplied/untrusted (U6/Risk S7): bound its length and
   // strip path separators / NUL bytes before it is stored on the session or

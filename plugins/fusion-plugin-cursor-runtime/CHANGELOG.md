@@ -1,5 +1,11 @@
 # @fusion-plugin-examples/cursor-runtime
 
+## 0.1.42
+
+### Patch Changes
+
+- @fusion/plugin-sdk@0.58.0
+
 ## 0.1.41
 
 ### Patch Changes

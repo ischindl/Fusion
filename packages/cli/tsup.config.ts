@@ -11,6 +11,9 @@ export { ALL_STAGED_BUNDLED_IDS };
 const RUNTIME_PLUGINS_WITH_MCP_SCHEMA_SERVER = new Set([
   "fusion-plugin-openclaw-runtime",
   "fusion-plugin-droid-runtime",
+  // FNXC:GrokAcp 2026-07-11-14:00: Grok ACP ships mcp-schema-server.cjs so
+  // session/new can forward executable Fusion fn_* tools to grok agent stdio.
+  "fusion-plugin-grok-runtime",
 ]);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

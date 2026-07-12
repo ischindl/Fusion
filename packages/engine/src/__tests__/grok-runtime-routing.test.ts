@@ -1,5 +1,3 @@
-import { EventEmitter } from "node:events";
-import { PassThrough } from "node:stream";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginRunner } from "../plugin-runner.js";
@@ -17,12 +15,13 @@ Source -> Runtime picker) must resolve the REAL GrokRuntimeAdapter (FN-7722,
 imported unmodified from the plugin package, not re-implemented/mocked here)
 through the generic extractRuntimeHint -> resolveRuntime ->
 resolvePluginRuntime -> plugin factory chain, and driving a prompt through
-that resolved session must invoke onText from faked NDJSON `text` lines.
-Uses the adapter's own injectable `spawn` seam (runtime-adapter.ts) — no
-live `grok` binary, no real subprocess, no real network. Also asserts the
-Surface Enumeration invariant: trigger OFF / unset / non-grok hints still
-fall back to the default pi runtime unchanged, and an empty/undefined
-runtimeConfig does not crash.
+that resolved session must invoke onText from streamed ACP updates.
+
+FNXC:GrokAcp 2026-07-11-12:00:
+Prompt transport is now ACP (`grok agent stdio`). Tests inject a fake
+AcpRuntimeAdapter via `createAcpAdapter` — no live `grok` binary, no real
+subprocess, no real network. Surface Enumeration: trigger OFF / unset /
+non-grok hints still fall back to the default pi runtime unchanged.
 */
 
 const mockCreateFnAgent = vi.hoisted(() => vi.fn());
@@ -47,9 +46,25 @@ function grokRuntimeAdapterModulePath(): string {
   );
 }
 
+type FakeAcpAdapter = {
+  createSession: (options: {
+    onText?: (t: string) => void;
+    onThinking?: (t: string) => void;
+    defaultModelId?: string;
+    systemPrompt?: string;
+  }) => Promise<{ session: Record<string, unknown> }>;
+  promptWithFallback: (
+    session: Record<string, unknown>,
+    prompt: string,
+    options?: unknown,
+  ) => Promise<void | { stopReason?: string }>;
+  describeModel: (session: unknown) => string;
+  dispose?: (session: unknown) => Promise<void>;
+};
+
 type GrokRuntimeAdapterCtor = new (options?: {
   binary?: string;
-  spawn?: (binary: string, prompt: string, options?: { cwd?: string; model?: string; signal?: AbortSignal }) => unknown;
+  createAcpAdapter?: (settings: Record<string, unknown>) => FakeAcpAdapter;
 }) => {
   id: string;
   name: string;
@@ -65,14 +80,53 @@ async function loadGrokRuntimeAdapter(): Promise<GrokRuntimeAdapterCtor> {
   return mod.GrokRuntimeAdapter;
 }
 
-/** Fake `GrokStreamProcess`: an EventEmitter + a writable PassThrough stdout, matching
- *  the shape runtime-adapter.ts's own fixture tests use (no live subprocess). */
-function makeFakeGrokProcess(): { proc: unknown; stdout: PassThrough; kill: ReturnType<typeof vi.fn> } {
-  const stdout = new PassThrough();
-  const emitter = new EventEmitter();
-  const kill = vi.fn();
-  const proc = Object.assign(emitter, { stdout, kill });
-  return { proc, stdout, kill };
+/**
+ * Fake ACP adapter that simulates streamed session/update callbacks without a
+ * live `grok agent stdio` process. `promptBehavior` controls the turn outcome.
+ */
+function makeFakeAcpFactory(options?: {
+  promptBehavior?: "text" | "empty-json" | "throw";
+  settingsOut?: Record<string, unknown>[];
+}): (settings: Record<string, unknown>) => FakeAcpAdapter {
+  const promptBehavior = options?.promptBehavior ?? "text";
+  const settingsOut = options?.settingsOut;
+  return (settings) => {
+    settingsOut?.push(settings);
+    let capturedOnText: ((t: string) => void) | undefined;
+    const sessionShell: Record<string, unknown> = {
+      model: String(settings.acpModel ?? "grok/default"),
+      messages: [],
+      state: { messages: [] },
+      lastModelDescription: `acp/${settings.acpModel ?? "default"}`,
+      callbacks: {},
+      connection: { id: "conn-1" },
+      sessionId: "acp-session-1",
+      dispose: vi.fn(),
+    };
+    return {
+      createSession: async (opts) => {
+        capturedOnText = opts.onText;
+        sessionShell.callbacks = {
+          onText: opts.onText,
+          onThinking: opts.onThinking,
+        };
+        sessionShell.systemPrompt = opts.systemPrompt;
+        return { session: sessionShell };
+      },
+      promptWithFallback: async () => {
+        if (promptBehavior === "throw") {
+          throw new Error("ACP bridge hung up");
+        }
+        if (promptBehavior === "empty-json") {
+          return { stopReason: "end_turn" };
+        }
+        capturedOnText?.("hi there");
+        return { stopReason: "end_turn" };
+      },
+      describeModel: (session) => `acp/${(session as { model?: string }).model ?? "default"}`,
+      dispose: async () => undefined,
+    };
+  };
 }
 
 function createMockPluginRunner(overrides: Partial<PluginRunner> = {}): PluginRunner {
@@ -91,7 +145,7 @@ function createMockPluginRunner(overrides: Partial<PluginRunner> = {}): PluginRu
 }
 
 async function createGrokRegistration(
-  spawnFn: ReturnType<typeof vi.fn>,
+  createAcpAdapter: (settings: Record<string, unknown>) => FakeAcpAdapter = makeFakeAcpFactory(),
 ): Promise<{ pluginId: string; runtime: PluginRuntimeRegistration }> {
   const GrokRuntimeAdapter = await loadGrokRuntimeAdapter();
   return {
@@ -100,10 +154,10 @@ async function createGrokRegistration(
       metadata: {
         runtimeId: "grok",
         name: "Grok Runtime",
-        description: "Grok CLI runtime support for Fusion",
-        version: "0.1.0",
+        description: "Grok CLI runtime support for Fusion (ACP)",
+        version: "0.2.0",
       },
-      factory: vi.fn().mockImplementation(async () => new GrokRuntimeAdapter({ spawn: spawnFn })),
+      factory: vi.fn().mockImplementation(async () => new GrokRuntimeAdapter({ createAcpAdapter })),
     },
   };
 }
@@ -123,8 +177,7 @@ describe("Grok CLI runtime routing (FN-7725)", () => {
   });
 
   it("resolves the real GrokRuntimeAdapter via resolveRuntime when runtimeHint is 'grok'", async () => {
-    const spawn = vi.fn().mockReturnValue(makeFakeGrokProcess().proc);
-    const grokRegistration = await createGrokRegistration(spawn);
+    const grokRegistration = await createGrokRegistration();
     const pluginRunner = createMockPluginRunner({
       getRuntimeById: vi.fn().mockReturnValue(grokRegistration),
     });
@@ -142,10 +195,11 @@ describe("Grok CLI runtime routing (FN-7725)", () => {
     expect(pluginRunner.getRuntimeById).toHaveBeenCalledWith("grok");
   });
 
-  it("createResolvedAgentSession routes an agent's runtimeConfig.runtimeHint through to GrokRuntimeAdapter and streams onText from faked NDJSON", async () => {
-    const { proc, stdout } = makeFakeGrokProcess();
-    const spawn = vi.fn().mockReturnValue(proc);
-    const grokRegistration = await createGrokRegistration(spawn);
+  it("createResolvedAgentSession routes an agent's runtimeConfig.runtimeHint through to GrokRuntimeAdapter and streams onText from faked ACP updates", async () => {
+    const settingsOut: Record<string, unknown>[] = [];
+    const grokRegistration = await createGrokRegistration(
+      makeFakeAcpFactory({ promptBehavior: "text", settingsOut }),
+    );
     const pluginRunner = createMockPluginRunner({
       getRuntimeById: vi.fn().mockReturnValue(grokRegistration),
     });
@@ -169,29 +223,27 @@ describe("Grok CLI runtime routing (FN-7725)", () => {
     expect(result.runtimeId).toBe("grok");
     expect(result.wasConfigured).toBe(true);
     expect(mockCreateFnAgent).not.toHaveBeenCalled();
+    // FNXC:GrokAcp 2026-07-11-14:00 / 15:00: ACP args include --no-auto-update
+    // (official headless scripting docs), session-scoped --plugin-dir for Fusion
+    // skills, then stdio (optional -m when a model is set).
+    const acpArgs = settingsOut[0]?.acpArgs as string[];
+    expect(acpArgs).toContain("--no-auto-update");
+    expect(acpArgs).toContain("agent");
+    expect(acpArgs).toContain("--plugin-dir");
+    expect(acpArgs.at(-1)).toBe("stdio");
 
     // Drive the resolved session's promptWithFallback (attached by
-    // createResolvedAgentSession) and feed a faked single-JSON `grok
-    // --output-format json` response through the adapter's injected fake stdout
-    // — no live grok binary involved. FNXC:GrokCli 2026-07-10-12:52: FN-7796
-    // replaced the streaming-NDJSON contract with a single JSON object parsed
-    // once on subprocess close; onText now fires once with the full `text`.
+    // createResolvedAgentSession). Fake ACP fires onText with streamed text.
     const session = result.session as { promptWithFallback: (prompt: string) => Promise<void> };
-    const promptPromise = session.promptWithFallback("hello grok");
+    await session.promptWithFallback("hello grok");
 
-    stdout.write(`${JSON.stringify({ text: "hi there", stopReason: "EndTurn" })}\n`);
-    (proc as EventEmitter).emit("close", 0, null);
-
-    await promptPromise;
-
-    expect(spawn).toHaveBeenCalledWith("grok", "hello grok", expect.objectContaining({}));
     expect(onText.mock.calls.map((c) => c[0])).toEqual(["hi there"]);
   });
 
-  it("surfaces code-0 zero-NDJSON Grok exits through the shared runtime session seam", async () => {
-    const { proc, stdout } = makeFakeGrokProcess();
-    const spawn = vi.fn().mockReturnValue(proc);
-    const grokRegistration = await createGrokRegistration(spawn);
+  it("surfaces ACP prompt failures through the shared runtime session seam without rejecting", async () => {
+    const grokRegistration = await createGrokRegistration(
+      makeFakeAcpFactory({ promptBehavior: "throw" }),
+    );
     const pluginRunner = createMockPluginRunner({
       getRuntimeById: vi.fn().mockReturnValue(grokRegistration),
     });
@@ -208,16 +260,12 @@ describe("Grok CLI runtime routing (FN-7725)", () => {
       state?: { errorMessage?: string };
       promptWithFallback: (prompt: string) => Promise<void>;
     };
-    const promptPromise = session.promptWithFallback("hello grok");
-    stdout.end();
-    (proc as EventEmitter).emit("close", 0, null);
+    await expect(session.promptWithFallback("hello grok")).resolves.toBeUndefined();
 
-    await promptPromise;
-
-    // FNXC:GrokCli 2026-07-10-12:52: FN-7796 renamed the zero-output diagnostic
-    // from "no NDJSON output" to "no JSON output" (single-object json contract).
-    expect(session.state?.errorMessage).toContain("Grok CLI produced no JSON output");
-    expect(onText).toHaveBeenCalledWith(expect.stringContaining("Grok CLI produced no JSON output"));
+    // FNXC:GrokAcp 2026-07-11-12:00: ACP path resolves-never-rejects and surfaces
+    // turn failures as diagnosable onText (same empty-bubble invariant as FN-7779).
+    expect(session.state?.errorMessage).toContain("Grok ACP turn failed");
+    expect(onText).toHaveBeenCalledWith(expect.stringContaining("Grok ACP turn failed"));
   });
 
   it("falls back to the default pi runtime when the Grok plugin runtime is not registered", async () => {
@@ -263,8 +311,7 @@ describe("Grok CLI runtime routing (FN-7725)", () => {
 
   it("auto-routes a grok-cli model selection to the Grok runtime when no Fusion-visible key exists", async () => {
     vi.mocked(fusionCore.isGrokApiKeyFusionVisible).mockReturnValue(false);
-    const spawn = vi.fn().mockReturnValue(makeFakeGrokProcess().proc);
-    const grokRegistration = await createGrokRegistration(spawn);
+    const grokRegistration = await createGrokRegistration();
     const pluginRunner = createMockPluginRunner({
       getRuntimeById: vi.fn().mockReturnValue(grokRegistration),
     });
@@ -302,8 +349,7 @@ describe("Grok CLI runtime routing (FN-7725)", () => {
 
   it("keeps grok-cli on the direct pi runtime when a Fusion-visible key exists", async () => {
     vi.mocked(fusionCore.isGrokApiKeyFusionVisible).mockReturnValue(true);
-    const spawn = vi.fn().mockReturnValue(makeFakeGrokProcess().proc);
-    const grokRegistration = await createGrokRegistration(spawn);
+    const grokRegistration = await createGrokRegistration();
     const pluginRunner = createMockPluginRunner({
       getRuntimeById: vi.fn().mockReturnValue(grokRegistration),
     });
@@ -349,8 +395,7 @@ describe("Grok CLI runtime routing (FN-7725)", () => {
 
   it("auto-routes heartbeat/room responder grok-cli defaults to the Grok runtime when no Fusion-visible key exists", async () => {
     vi.mocked(fusionCore.isGrokApiKeyFusionVisible).mockReturnValue(false);
-    const spawn = vi.fn().mockReturnValue(makeFakeGrokProcess().proc);
-    const grokRegistration = await createGrokRegistration(spawn);
+    const grokRegistration = await createGrokRegistration();
     const pluginRunner = createMockPluginRunner({
       getRuntimeById: vi.fn().mockReturnValue(grokRegistration),
     });
@@ -382,8 +427,7 @@ describe("Grok CLI runtime routing (FN-7725)", () => {
 
   it("auto-routes a grok-cli fallback model to the Grok runtime when no Fusion-visible key exists", async () => {
     vi.mocked(fusionCore.isGrokApiKeyFusionVisible).mockReturnValue(false);
-    const spawn = vi.fn().mockReturnValue(makeFakeGrokProcess().proc);
-    const grokRegistration = await createGrokRegistration(spawn);
+    const grokRegistration = await createGrokRegistration();
     const pluginRunner = createMockPluginRunner({
       getRuntimeById: vi.fn().mockReturnValue(grokRegistration),
     });
@@ -419,8 +463,7 @@ describe("Grok CLI runtime routing (FN-7725)", () => {
 
   it("auto-routes a bare grok-cli fallback model id without adding a provider prefix", async () => {
     vi.mocked(fusionCore.isGrokApiKeyFusionVisible).mockReturnValue(false);
-    const spawn = vi.fn().mockReturnValue(makeFakeGrokProcess().proc);
-    const grokRegistration = await createGrokRegistration(spawn);
+    const grokRegistration = await createGrokRegistration();
     const pluginRunner = createMockPluginRunner({
       getRuntimeById: vi.fn().mockReturnValue(grokRegistration),
     });
@@ -442,8 +485,7 @@ describe("Grok CLI runtime routing (FN-7725)", () => {
 
   it("keeps mock/test-mode provider routing on the mock runtime when grok-cli fallback is configured", async () => {
     vi.mocked(fusionCore.isGrokApiKeyFusionVisible).mockReturnValue(false);
-    const spawn = vi.fn().mockReturnValue(makeFakeGrokProcess().proc);
-    const grokRegistration = await createGrokRegistration(spawn);
+    const grokRegistration = await createGrokRegistration();
     const pluginRunner = createMockPluginRunner({
       getRuntimeById: vi.fn().mockReturnValue(grokRegistration),
     });
@@ -467,8 +509,7 @@ describe("Grok CLI runtime routing (FN-7725)", () => {
 
   it("honors explicit runtime hints over the no-key grok-cli auto-derivation", async () => {
     vi.mocked(fusionCore.isGrokApiKeyFusionVisible).mockReturnValue(false);
-    const spawn = vi.fn().mockReturnValue(makeFakeGrokProcess().proc);
-    const grokRegistration = await createGrokRegistration(spawn);
+    const grokRegistration = await createGrokRegistration();
     const getRuntimeById = vi.fn((runtimeId: string) => runtimeId === "grok" ? grokRegistration : undefined);
     const pluginRunner = createMockPluginRunner({ getRuntimeById });
 

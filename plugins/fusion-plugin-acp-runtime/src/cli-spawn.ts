@@ -50,6 +50,17 @@ export interface AcpCliSettings {
   allowUnrestricted: boolean;
   /** Bundled bridge resolution status when `acpBinaryPath` asks for it. */
   binaryResolution?: AcpBinaryResolution;
+  /**
+   * FNXC:GrokAcp 2026-07-11-15:00:
+   * When set, call ACP authenticate after initialize (Grok headless scripting
+   * contract). preferMethods are tried in order against advertised authMethods.
+   */
+  authenticate?: {
+    preferMethods?: string[];
+    methodId?: string;
+    meta?: Record<string, unknown>;
+    require?: boolean;
+  };
 }
 
 function asTrimmedString(value: unknown): string | undefined {
@@ -125,6 +136,7 @@ export function resolveCliSettings(settings?: Record<string, unknown>): AcpCliSe
   const fsWrite = asBool(settings?.acpFsWrite);
   const envAllowList = asStringArray(settings?.acpEnvAllowList) ?? [];
   const allowUnrestricted = asBool(settings?.acpAllowUnrestricted);
+  const authenticate = asAuthenticateSettings(settings?.acpAuthenticate);
   return {
     binaryPath,
     args,
@@ -135,6 +147,29 @@ export function resolveCliSettings(settings?: Record<string, unknown>): AcpCliSe
     requiredEnv: [],
     allowUnrestricted,
     binaryResolution,
+    authenticate,
+  };
+}
+
+function asAuthenticateSettings(value: unknown): AcpCliSettings["authenticate"] {
+  if (value === true) {
+    return { preferMethods: ["xai.api_key", "cached_token"], meta: { headless: true }, require: true };
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const obj = value as Record<string, unknown>;
+  const preferMethods = asStringArray(obj.preferMethods);
+  const methodId = asTrimmedString(obj.methodId);
+  const meta =
+    obj.meta && typeof obj.meta === "object" && !Array.isArray(obj.meta)
+      ? (obj.meta as Record<string, unknown>)
+      : { headless: true };
+  const require = obj.require === true;
+  if (!preferMethods && !methodId && !require) return undefined;
+  return {
+    ...(preferMethods ? { preferMethods } : {}),
+    ...(methodId ? { methodId } : {}),
+    meta,
+    require,
   };
 }
 

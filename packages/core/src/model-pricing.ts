@@ -28,7 +28,7 @@
  * The date the rates in {@link MODEL_PRICING} were last verified, ISO-8601.
  * Bump this whenever you edit a rate. Surfaced in the UI as "prices as of".
  */
-export const pricingAsOf = "2026-07-09";
+export const pricingAsOf = "2026-07-11";
 
 /**
  * Pricing entries older than this (relative to a caller-supplied `now`) are
@@ -383,6 +383,40 @@ export const MODEL_PRICING: Readonly<Record<string, ModelPricing>> = {
     cacheReadPer1M: 0.31,
     cacheWritePer1M: 1.25,
     source: "ai.google.dev/gemini-api/docs/pricing",
+  },
+
+  /*
+   * FNXC:ModelCatalog 2026-07-11-23:02:
+   * The LiteLLM pricing refresh only maps OpenAI, Anthropic, and Google providers, so Z.ai, MiniMax, and Kimi Coding runs need static rows to keep Dashboard token-cost surfaces from rendering `—`. Rates are verified from https://docs.z.ai/guides/overview/pricing.md, https://platform.minimax.io/docs/guides/pricing-paygo.md, and https://platform.kimi.ai/docs/pricing/chat-k26.md; MiniMax uses the Standard ≤512k pay-as-you-go tier because MODEL_PRICING has no request-tier dimension.
+   */
+  // ── Zhipu AI (Z.ai) ─────────────────────────────────────────────────
+  // No distinct cache-write token charge → cacheWrite = input rate.
+  "zai:glm-5.2": {
+    inputPer1M: 1.4,
+    outputPer1M: 4.4,
+    cacheReadPer1M: 0.26,
+    cacheWritePer1M: 1.4,
+    source: "docs.z.ai/guides/overview/pricing.md",
+  },
+
+  // ── MiniMax ─────────────────────────────────────────────────────────
+  // Standard pay-as-you-go ≤512k tier; no M3 cache-write row → cacheWrite = input rate.
+  "minimax:minimax-m3": {
+    inputPer1M: 0.3,
+    outputPer1M: 1.2,
+    cacheReadPer1M: 0.06,
+    cacheWritePer1M: 0.3,
+    source: "platform.minimax.io/docs/guides/pricing-paygo.md",
+  },
+
+  // ── Moonshot AI (Kimi) ──────────────────────────────────────────────
+  // Cache miss is the input rate; no distinct cache-write charge → cacheWrite = input rate.
+  "kimi-coding:kimi-k2.6-preview": {
+    inputPer1M: 0.95,
+    outputPer1M: 4,
+    cacheReadPer1M: 0.16,
+    cacheWritePer1M: 0.95,
+    source: "platform.kimi.ai/docs/pricing/chat-k26.md",
   },
 };
 

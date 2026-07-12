@@ -4,14 +4,19 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { THINKING_LEVELS, type EnrichedChatSession, type ChatAttachment } from "@fusion/core";
 import { ApiError, badRequest, notFound } from "../api-error.js";
-import { resolveProjectChatContext } from "../chat-project-services.js";
+/*
+FNXC:GrokAcp 2026-07-11-18:30:
+List/create and ChatManager share resolveProjectChatContext (not getOrCreateProjectStore /
+getOrCreateScopedChatStore at this layer). Direct imports of those helpers were leftover after
+the store-alignment fix and failed lint as unused; keep manager construction on the resolved
+store/chatStore pair only.
+*/
+import { getOrCreateScopedChatManager, resolveProjectChatContext } from "../chat-project-services.js";
 import { CHAT_ALLOWED_MIME_TYPES, CHAT_MAX_ATTACHMENT_SIZE } from "./chat-attachment-config.js";
 import { rateLimit, RATE_LIMITS } from "../rate-limit.js";
 import { writeSSEEvent, type SessionBufferedEvent } from "../sse-buffer.js";
 import { TASK_PLANNER_CHAT_AGENT_ID_PREFIX } from "../chat.js";
 import type { ApiRoutesContext } from "./types.js";
-import { getOrCreateScopedChatManager, getOrCreateScopedChatStore } from "../chat-project-services.js";
-import { getOrCreateProjectStore } from "../project-store-resolver.js";
 
 interface ChatRouteDeps {
   parseLastEventId: (req: import("express").Request) => number | undefined;
@@ -113,12 +118,21 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
       if (!options?.chatManager) throw new ApiError(503, "Chat manager not available");
       return options.chatManager;
     }
-    const projectStore = await getOrCreateProjectStore(projectId);
-    const chatStore = getOrCreateScopedChatStore(projectStore);
+    /*
+    FNXC:GrokAcp 2026-07-11-17:00:
+    Chat list/create use resolveProjectChatContext, which falls back to the host
+    default store when no engine is running for the project (nested dashboard /
+    lockfile-blocked engines). ChatManager must use that same store/chatStore
+    pair — getOrCreateProjectStore alone pointed at a different fusion dir, so
+    sessions visible in the UI 404'd on sendMessage ("Chat session not found").
+    Prefer the engine plugin runner when available; otherwise the host runner
+    (e.g. Grok ACP 0.2) so CLI runtimes still resolve.
+    */
+    const { store: scopedStore, chatStore } = await resolveScopedChatStore(projectId);
     const engine = options?.engineManager?.getEngine(projectId);
     const projectPluginRunner = engine?.getPluginRunner?.();
     const pluginRunner = projectPluginRunner ?? options?.pluginRunner;
-    return getOrCreateScopedChatManager(projectStore, chatStore, pluginRunner, Boolean(projectPluginRunner));
+    return getOrCreateScopedChatManager(scopedStore, chatStore, pluginRunner, Boolean(projectPluginRunner));
   }
   const THINKING_LEVEL_SET = new Set<string>(THINKING_LEVELS);
 

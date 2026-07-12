@@ -5,6 +5,7 @@ import {
   IncompatibleProtocolError,
   HandshakeTimeoutError,
   createDefaultClientHandler,
+  createBridgingClientHandler,
 } from "../provider.js";
 import { killAllProcesses, activeProcessCount } from "../process-manager.js";
 
@@ -92,5 +93,35 @@ describe("connect() handshake", () => {
     await expect(handler.sessionUpdate({} as never)).resolves.toBeUndefined();
     const res = await handler.requestPermission({} as never);
     expect(res).toEqual({ outcome: { outcome: "cancelled" } });
+  });
+
+  /*
+  FNXC:GrokAcp 2026-07-12-07:00:
+  Grok sends `_x.ai/session_notification` for hook_execution; without
+  extNotification the ACP SDK logs Method not found (-32601).
+  */
+  it("default and bridging handlers accept x.ai extension notifications without Method not found", async () => {
+    const defaultHandler = createDefaultClientHandler();
+    await expect(
+      defaultHandler.extNotification?.("_x.ai/session_notification", {
+        sessionId: "s1",
+        update: {
+          sessionUpdate: "hook_execution",
+          event_name: "post_tool_use",
+          tool_name: "read_file",
+          runs: [{ name: "global/settings:post_tool_use[0].hooks[0]", status: { status: "success", elapsed_ms: 9 } }],
+        },
+      }),
+    ).resolves.toBeUndefined();
+    await expect(defaultHandler.extMethod?.("_x.ai/example", { a: 1 })).resolves.toEqual({});
+
+    const { handler } = createBridgingClientHandler({});
+    await expect(
+      handler.extNotification?.("_x.ai/session/update", {
+        sessionId: "s1",
+        update: { sessionUpdate: "hook_execution", event_name: "stop", runs: [] },
+      }),
+    ).resolves.toBeUndefined();
+    await expect(handler.extMethod?.("x.ai/session_notification", {})).resolves.toEqual({});
   });
 });

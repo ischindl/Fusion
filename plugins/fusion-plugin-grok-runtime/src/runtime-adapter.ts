@@ -1,417 +1,411 @@
-import { forceKillGrokStream, spawnGrokStream, type GrokStreamProcess, type SpawnGrokStreamOptions } from "./cli-stream.js";
-import { parseJsonOutput, parseLine } from "./stream-parser.js";
-import type { AgentRuntime, AgentRuntimeOptions, AgentSession, AgentSessionResult, GrokSession } from "./types.js";
+import { AcpRuntimeAdapter } from "./acp/index.js";
+import {
+  buildGrokAcpRuntimeSettings,
+  modelForCli,
+  normalizeGrokCliModel,
+} from "./acp-settings.js";
+import { toAcpMcpServers, type AcpMcpServer } from "./mcp-forwarding.js";
+import {
+  buildGrokSkillRules,
+  extractRequestedSkillNames,
+  stageGrokSessionSkills,
+} from "./skill-loader.js";
+import { startFusionToolBridge, type FusionToolBridge, type ToolLike } from "./tool-bridge.js";
+import type {
+  AgentRuntime,
+  AgentRuntimeOptions,
+  AgentSession,
+  AgentSessionResult,
+  GrokSession,
+} from "./types.js";
 
 /*
-FNXC:GrokCli 2026-07-10-12:52:
-FN-7796: the production binary is xAI's Grok Build TUI. Its `--output-format streaming-json` path intermittently emits only `thought` events and then `stopReason:"Cancelled"` with no `text`, so the adapter now consumes the reliable `--output-format json` single object on subprocess close. Bridge object `text` to `onText`, object `thought` to `onThinking`, record `sessionId`, and make non-`EndTurn` empty-text terminals diagnosable instead of silent.
+FNXC:GrokAcp 2026-07-11-12:00:
+Replace the one-shot headless path (`grok -p --output-format json`) with native
+ACP transport (`grok agent stdio`) for realtime streaming, tool visibility, and
+multi-turn session reuse. Implementation composes a vendored AcpRuntimeAdapter
+(copied under ./acp/, not imported from fusion-plugin-acp-runtime) with
+Grok-specific binary/args/env. Keep resolve-never-reject on prompt failures so
+chat/executor always get a well-formed turn; surface create/prompt failures as
+visible onText diagnostics rather than silent empty bubbles (FN-7779 invariant).
+
+FNXC:GrokAcp 2026-07-11-16:00:
+Do not import `@fusion-plugin-examples/acp-runtime`. Grok is bundled/auto-install;
+the generic ACP plugin is experimental. Vendor the client modules under src/acp/.
 
 FNXC:GrokCliRouting 2026-07-10-10:54:
-FN-7753's auto-derived `grok` runtime routing from a `grok-cli/*` model selection still preserves the concrete model. Normalize provider-qualified ids (`grok-cli/<id>` or `grok/<id>`) at session creation/prompt time and pass only the concrete id to `grok -m`; the no-model Runtime-mode path keeps the historical `grok/default` session fallback and omits `-m`.
+FN-7753's auto-derived `grok` runtime routing from a `grok-cli/*` model selection
+still preserves the concrete model. Normalize provider-qualified ids
+(`grok-cli/<id>` or `grok/<id>`) and pass only the concrete id as `grok agent -m`;
+the no-model Runtime-mode path keeps `grok/default` and omits `-m`.
+
+FNXC:GrokAcp 2026-07-11-14:00:
+Load Fusion tools + skills into the ACP session:
+  - Operator MCP servers → session/new.mcpServers (stdio/http/sse)
+  - Engine customTools (fn_*) → loopback MCP bridge + fusion-custom-tools server
+  - Skills → session-scoped --plugin-dir / _meta.pluginDirs + rules context
 */
 
-/**
- * Cold-start ceiling: if `grok -p --output-format json` produces no stdout
- * bytes within this window, treat it as a hung/failed subprocess and resolve
- * (never reject — mirrors the Droid adapter's resolve-on-error lifecycle so pi
- * always gets a well-formed, if diagnostic, result instead of an unhandled rejection).
- *
- * FNXC:GrokCli 2026-07-11-00:00:
- * FN-7838 raises Grok's cold-start ceiling from 60s to 120s because slow/cold first-token starts were killed prematurely. Operators can override the first-output guard with GROK_CLI_FIRST_OUTPUT_TIMEOUT_MS; invalid values fall back to the default so the guard is never disabled. This mirrors the OpenClaw/Hermes *_CLI_TIMEOUT_MS precedence pattern while keeping the 30-minute inactivity safety net separate.
- */
-const DEFAULT_FIRST_OUTPUT_TIMEOUT_MS = 120_000;
-const GROK_FIRST_OUTPUT_TIMEOUT_ENV = "GROK_CLI_FIRST_OUTPUT_TIMEOUT_MS";
+export type AcpAdapterFactory = (settings: Record<string, unknown>) => {
+  createSession(options: AgentRuntimeOptions): Promise<AgentSessionResult>;
+  promptWithFallback(
+    session: AgentSession,
+    prompt: string,
+    options?: unknown,
+  ): Promise<void | { stopReason?: string }>;
+  describeModel(session: AgentSession): string;
+  dispose?(session: AgentSession): Promise<void>;
+};
 
-function parsePositiveInteger(value: string | undefined): number | undefined {
-  const trimmed = value?.trim();
-  if (!trimmed) return undefined;
-  const parsed = Number(trimmed);
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) return undefined;
-  return parsed;
+export interface GrokRuntimeAdapterOptions {
+  /** Binary name/path to invoke. Defaults to "grok" (PATH resolution). */
+  binary?: string;
+  /**
+   * Injectable ACP adapter factory for tests. Production uses
+   * `AcpRuntimeAdapter` with Grok ACP settings.
+   */
+  createAcpAdapter?: AcpAdapterFactory;
 }
 
-function resolveFirstOutputTimeoutMs(): number {
-  return parsePositiveInteger(process.env[GROK_FIRST_OUTPUT_TIMEOUT_ENV]) ?? DEFAULT_FIRST_OUTPUT_TIMEOUT_MS;
+/** Turn-scoped stream accumulators stored on the session for prompt finalization. */
+interface TurnAccum {
+  text: string;
 }
 
-/**
- * Inactivity safety net: kill the subprocess if no stdout bytes arrive for
- * this long after the first chunk. Generous ceiling mirroring the Droid
- * adapter's rationale — the caller (Fusion's stuck-task detection / abort
- * signal) is the authoritative "this session is stuck" source; this is a
- * last-resort guard for a catastrophically hung `grok` process.
- */
-const INACTIVITY_TIMEOUT_MS = 30 * 60_000;
-
-/**
- * FNXC:GrokCli 2026-07-10-15:10:
- * FN-7779 root-cause helpers. The reported "No message" empty Grok bubble was
- * not a legitimate content-empty response — it was every silent grok failure
- * (missing/invalid GROK_API_KEY, bad flag, non-zero exit, missing binary)
- * collapsing into a resolve-with-no-output. The frontend placeholder (FN-7779
- * UI step) hid the symptom; these helpers cure the cause by turning each
- * silent failure into visible, diagnosable text so the operator sees WHY grok
- * returned nothing. Retargeted for FN-7796's single-JSON-object contract —
- * the schema no longer carries a `tool_use`/`error` NDJSON event, so only the
- * spawn/process/exit-code failure surfaces below apply.
- */
-function emitFailureText(session: GrokSession, text: string): void {
-  session.callbacks.onText?.(text);
-}
-
-function describeSpawnFailure(error: unknown): string {
-  const reason = error instanceof Error ? error.message : String(error ?? "unknown error");
-  return `Grok CLI failed to start: ${reason}. Ensure the \`grok\` binary is installed and on PATH, or set GROK_API_KEY to use the direct xAI endpoint.`;
-}
-
-/**
- * Build the operator-facing message for a run that finished with NO renderable
- * content. Prefer the captured stderr (the channel for fatal, pre-JSON
- * failures); otherwise fall back to a non-zero-exit diagnostic. Returns
- * undefined for a genuinely clean, content-less exit (code 0, no stderr) so a
- * legitimately empty response is not decorated with a false error.
- */
-function describeSilentFailure(stderr: string, exitCode: number | null | undefined): string | undefined {
-  const trimmed = stderr.trim();
-  if (trimmed) {
-    return `Grok CLI returned no content. ${trimmed}`;
-  }
-  if (typeof exitCode === "number" && exitCode !== 0) {
-    return `Grok CLI exited with code ${exitCode} and produced no output. Check that GROK_API_KEY (or the \`grok\` login) is configured and the selected model is valid.`;
-  }
-  return undefined;
-}
-
-function normalizeGrokCliModel(model: string | undefined): string | undefined {
-  const normalized = model?.trim();
-  if (!normalized) return undefined;
-  for (const prefix of ["grok-cli/", "grok/"]) {
-    if (normalized.startsWith(prefix)) {
-      const stripped = normalized.slice(prefix.length).trim();
-      return stripped.length > 0 ? stripped : undefined;
-    }
-  }
-  return normalized;
-}
-
-function modelForCli(model: string | undefined): string | undefined {
-  const normalized = normalizeGrokCliModel(model);
-  return normalized && normalized !== "default" ? normalized : undefined;
+interface SessionResources {
+  toolBridge?: FusionToolBridge | null;
+  skillStaging?: { dispose: () => void } | null;
 }
 
 function compactDiagnostic(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
-function formatCloseDiagnostic(code: number | null, signal: NodeJS.Signals | null, stderr: string): string {
-  const detail = compactDiagnostic(stderr);
-  const exitDetail = code === null ? `signal ${signal ?? "unknown"}` : `code ${code}`;
-  return detail ? `Grok CLI failed (${exitDetail}): ${detail}` : `Grok CLI failed with ${exitDetail} and no stderr output.`;
+function describeCreateFailure(error: unknown): string {
+  const reason = error instanceof Error ? error.message : String(error ?? "unknown error");
+  return compactDiagnostic(
+    `Grok ACP failed to start: ${reason}. Ensure the \`grok\` binary is installed and authenticated (` +
+      `\`grok agent stdio\`), or set XAI_API_KEY / GROK_API_KEY for key-based auth.`,
+  );
 }
 
-function formatNoJsonDiagnostic(firstStdoutChunk: string | undefined): string {
-  const firstChunk = firstStdoutChunk ? compactDiagnostic(firstStdoutChunk) : "";
-  if (firstChunk) {
-    return `Grok CLI produced stdout but no parseable JSON response for a headless prompt; first output: ${firstChunk}`;
-  }
-  return "Grok CLI produced no JSON output for a headless prompt; this usually means the binary on PATH is not xAI's supported Grok Build TUI headless implementation, did not recognize -p/--output-format json, or exited interactive mode immediately after stdin EOF.";
-}
-
-function formatTerminalNoTextDiagnostic(stopReason: string): string {
-  return `Grok CLI ended with stopReason ${stopReason} and produced no assistant text.`;
+function describePromptFailure(error: unknown): string {
+  const reason = error instanceof Error ? error.message : String(error ?? "unknown error");
+  return compactDiagnostic(`Grok ACP turn failed: ${reason}`);
 }
 
 function appendMessage(session: GrokSession, role: "user" | "assistant", content: string): void {
-  session.state.messages.push({ role, content });
+  const entry = { role, content };
+  session.state.messages.push(entry);
+  if (session.messages !== session.state.messages) {
+    session.messages.push(entry);
+  }
 }
 
-interface ParsedPromptOutput {
-  text: string;
-  thought?: string;
-  stopReason?: string;
-  sessionId?: string;
-  parsed: boolean;
+const TURN_ACCUM = Symbol("grokTurnAccum");
+const SESSION_RESOURCES = Symbol("grokSessionResources");
+
+type SessionWithExtras = GrokSession & {
+  [TURN_ACCUM]?: TurnAccum;
+  [SESSION_RESOURCES]?: SessionResources;
+};
+
+function getTurnAccum(session: GrokSession): TurnAccum {
+  const s = session as SessionWithExtras;
+  if (!s[TURN_ACCUM]) {
+    s[TURN_ACCUM] = { text: "" };
+  }
+  return s[TURN_ACCUM];
 }
 
-function parsePromptOutput(stdout: string): ParsedPromptOutput {
-  const json = parseJsonOutput(stdout);
-  if (json) {
-    return {
-      text: json.text ?? "",
-      thought: json.thought,
-      stopReason: json.stopReason,
-      sessionId: json.sessionId,
-      parsed: true,
-    };
+function resetTurnAccum(session: GrokSession): void {
+  getTurnAccum(session).text = "";
+}
+
+function collectCustomTools(options: AgentRuntimeOptions): ToolLike[] {
+  const fromCustom = Array.isArray(options.customTools) ? (options.customTools as ToolLike[]) : [];
+  /*
+  FNXC:GrokAcp 2026-07-11-19:00:
+  AgentRuntimeOptions.tools is typed as "coding"|"readonly"|undefined, but some call sites pass
+  an array of ToolDefinitions. Narrow via Array.isArray on the tools field, then cast the array
+  value only — never cast the whole options object to { tools: ToolLike[] } (TS2352).
+  */
+  const toolsField = (options as { tools?: unknown }).tools;
+  const maybeToolsArray = Array.isArray(toolsField) ? (toolsField as ToolLike[]) : [];
+  return [...fromCustom, ...maybeToolsArray];
+}
+
+function ensureGrokSessionShape(
+  session: AgentSession,
+  model: string,
+  options: AgentRuntimeOptions,
+  turnAccum: TurnAccum,
+  resources: SessionResources,
+): GrokSession {
+  const messages: unknown[] =
+    Array.isArray((session as GrokSession).messages) ? (session as GrokSession).messages : [];
+  const existingState = (session as { state?: GrokSession["state"] }).state;
+  const state: GrokSession["state"] = existingState ?? { messages };
+  if (!Array.isArray(state.messages)) {
+    state.messages = messages;
   }
 
-  let text = "";
-  let thought = "";
-  let stopReason: string | undefined;
-  let sessionId: string | undefined;
-  let parsed = false;
-  for (const line of stdout.split(/\r?\n/)) {
-    const event = parseLine(line);
-    if (!event) continue;
-    parsed = true;
-    if (event.type === "text") {
-      text += event.data;
-    } else if (event.type === "thought") {
-      thought += event.data;
-    } else {
-      stopReason = event.stopReason;
-      sessionId = event.sessionId;
-    }
-  }
+  const grok = session as GrokSession;
+  grok.model = model;
+  grok.systemPrompt = grok.systemPrompt ?? options.systemPrompt;
+  grok.messages = state.messages;
+  grok.state = state;
+  grok.lastModelDescription = `grok/${model}`;
+  // Prefer callbacks already installed on the ACP session (wrapped at create
+  // for turnAccum + engine fans-out). Only fall back to the raw engine options.
+  grok.callbacks = {
+    onText: grok.callbacks?.onText ?? options.onText,
+    onThinking: grok.callbacks?.onThinking ?? options.onThinking,
+    onToolStart: grok.callbacks?.onToolStart ?? options.onToolStart,
+    onToolEnd: grok.callbacks?.onToolEnd ?? options.onToolEnd,
+  };
 
-  return { text, thought: thought || undefined, stopReason, sessionId, parsed };
+  const originalDispose = typeof grok.dispose === "function" ? grok.dispose.bind(grok) : () => undefined;
+  grok.dispose = () => {
+    void resources.toolBridge?.dispose();
+    resources.skillStaging?.dispose();
+    originalDispose();
+  };
+
+  (grok as SessionWithExtras)[TURN_ACCUM] = turnAccum;
+  (grok as SessionWithExtras)[SESSION_RESOURCES] = resources;
+  return grok;
 }
 
-export interface GrokRuntimeAdapterOptions {
-  /** Binary name/path to invoke. Defaults to "grok" (PATH resolution). */
-  binary?: string;
-  /** Injectable spawn seam for tests — defaults to the real `spawnGrokStream`. */
-  spawn?: (binary: string, prompt: string, options?: SpawnGrokStreamOptions) => GrokStreamProcess;
+function createDeadSession(
+  model: string,
+  options: AgentRuntimeOptions,
+  diagnostic: string,
+  resources?: SessionResources,
+): GrokSession {
+  const messages: unknown[] = [];
+  const session: GrokSession = {
+    model,
+    systemPrompt: options.systemPrompt,
+    messages,
+    state: { messages, errorMessage: diagnostic },
+    sessionId: undefined,
+    lastModelDescription: `grok/${model}`,
+    callbacks: {
+      onText: options.onText,
+      onThinking: options.onThinking,
+      onToolStart: options.onToolStart,
+      onToolEnd: options.onToolEnd,
+    },
+    dispose: () => {
+      void resources?.toolBridge?.dispose();
+      resources?.skillStaging?.dispose();
+    },
+  };
+  return session;
 }
 
 export class GrokRuntimeAdapter implements AgentRuntime {
   readonly id = "grok";
   readonly name = "Grok Runtime";
   private readonly binary: string;
-  private readonly spawnFn: (binary: string, prompt: string, options?: SpawnGrokStreamOptions) => GrokStreamProcess;
+  private readonly createAcpAdapter: AcpAdapterFactory;
+  /** Per-session ACP adapter so model-specific spawn args stay consistent. */
+  private readonly adapters = new WeakMap<object, ReturnType<AcpAdapterFactory>>();
 
   constructor(options?: GrokRuntimeAdapterOptions) {
     this.binary = options?.binary ?? "grok";
-    this.spawnFn = options?.spawn ?? spawnGrokStream;
+    /*
+    FNXC:GrokAcp 2026-07-11-19:00:
+    AcpRuntimeAdapter returns ACP AgentSession shapes (acp/types); AcpAdapterFactory is typed
+    against Grok AgentSessionResult (messages/state). createSession always runs
+    ensureGrokSessionShape after the ACP create, so the production factory is a deliberate
+    structural bridge via unknown rather than unifying the two session interfaces here.
+    */
+    this.createAcpAdapter =
+      options?.createAcpAdapter ??
+      ((settings) => new AcpRuntimeAdapter(settings) as unknown as ReturnType<AcpAdapterFactory>);
   }
 
   async createSession(
-    options: {
-      defaultModelId?: string;
-      systemPrompt?: string;
-      onText?: (text: string) => void;
-      onThinking?: (text: string) => void;
-      onToolStart?: (toolName: string, args?: unknown) => void;
-      onToolEnd?: (toolName: string, isError: boolean, result?: unknown) => void;
-    } = {},
+    options: AgentRuntimeOptions = {
+      cwd: process.cwd(),
+      systemPrompt: "",
+    },
   ): Promise<AgentSessionResult> {
     const model = normalizeGrokCliModel(options.defaultModelId) ?? "grok/default";
-    const messages: unknown[] = [];
-    const session: GrokSession = {
-      model,
-      systemPrompt: options.systemPrompt,
-      messages,
-      state: { messages },
-      sessionId: undefined,
-      lastModelDescription: `grok/${model}`,
-      callbacks: {
-        onText: options.onText,
-        onThinking: options.onThinking,
-        onToolStart: options.onToolStart,
-        onToolEnd: options.onToolEnd,
+    const turnAccum: TurnAccum = { text: "" };
+    const resources: SessionResources = {};
+
+    // ── Skills ────────────────────────────────────────────────────────────
+    const requestedSkillNames = extractRequestedSkillNames({
+      skills: options.skills,
+      skillSelection: options.skillSelection,
+    });
+    const skillStaging = stageGrokSessionSkills({
+      requestedSkillNames,
+      additionalSkillPaths: options.additionalSkillPaths,
+      includeFusionSkill: true,
+    });
+    resources.skillStaging = skillStaging;
+
+    // ── Operator MCP + Fusion custom tools ────────────────────────────────
+    const operatorMcp = toAcpMcpServers(options.mcpServers);
+    let toolBridge: FusionToolBridge | null = null;
+    try {
+      toolBridge = await startFusionToolBridge(collectCustomTools(options));
+      resources.toolBridge = toolBridge;
+    } catch {
+      toolBridge = null;
+    }
+
+    const mcpServers: AcpMcpServer[] = [
+      ...operatorMcp,
+      ...(toolBridge ? [toolBridge.mcpServer] : []),
+    ];
+
+    const rules = buildGrokSkillRules({
+      skillNames: skillStaging.skillNames.length > 0 ? skillStaging.skillNames : requestedSkillNames,
+      toolMode: typeof options.tools === "string" ? options.tools : "coding",
+      fusionToolCount: toolBridge?.toolCount,
+      operatorMcpCount: operatorMcp.length,
+    });
+
+    const systemPromptParts = [options.systemPrompt?.trim() ?? "", rules].filter((part) => part.length > 0);
+    const systemPrompt = systemPromptParts.join("\n\n");
+
+    const sessionMeta: Record<string, unknown> = {
+      pluginDirs: [skillStaging.pluginDir],
+      rules,
+      ...(systemPrompt ? { systemPromptOverride: systemPrompt } : {}),
+    };
+
+    const sessionOptions: AgentRuntimeOptions = {
+      ...options,
+      cwd: options.cwd?.trim() ? options.cwd : process.cwd(),
+      systemPrompt,
+      defaultModelId: modelForCli(model) ?? model,
+      mcpServers,
+      sessionMeta,
+      onText: (delta: string) => {
+        turnAccum.text += delta;
+        options.onText?.(delta);
+      },
+      onThinking: (delta: string) => {
+        options.onThinking?.(delta);
+      },
+      onToolStart: (name: string, args?: unknown) => {
+        options.onToolStart?.(name, args);
+      },
+      onToolEnd: (name: string, isError: boolean, result?: unknown) => {
+        options.onToolEnd?.(name, isError, result);
       },
     };
-    return { session, sessionFile: undefined };
+
+    const settings = buildGrokAcpRuntimeSettings({
+      binary: this.binary,
+      model,
+      pluginDirs: [skillStaging.pluginDir],
+    });
+    const acp = this.createAcpAdapter(settings);
+
+    try {
+      const result = await acp.createSession(sessionOptions);
+      const session = ensureGrokSessionShape(result.session, model, options, turnAccum, resources);
+      this.adapters.set(session, acp);
+      return { session, sessionFile: result.sessionFile };
+    } catch (error) {
+      const diagnostic = describeCreateFailure(error);
+      const session = createDeadSession(model, sessionOptions, diagnostic, resources);
+      session.callbacks.onText?.(diagnostic);
+      appendMessage(session, "assistant", diagnostic);
+      return { session, sessionFile: undefined };
+    }
   }
 
-  async promptWithFallback(session: AgentSession, prompt: string, options?: AgentRuntimeOptions): Promise<void> {
+  async promptWithFallback(
+    session: AgentSession,
+    prompt: string,
+    options?: unknown,
+  ): Promise<void | { stopReason?: string }> {
     const grokSession = session as GrokSession;
-    const cwd = options?.cwd;
-    const signal = options?.signal;
     appendMessage(grokSession, "user", prompt);
-    const firstOutputTimeoutMs = resolveFirstOutputTimeoutMs();
+    resetTurnAccum(grokSession);
 
-    return new Promise<void>((resolve) => {
-      let proc: GrokStreamProcess;
-      try {
-        proc = this.spawnFn(this.binary, prompt, { cwd, model: modelForCli(grokSession.model), signal });
-      } catch (spawnError) {
-        // Spawn threw synchronously (e.g. binary not found without shell
-        // resolution) — resolve, never reject, matching the CLI-adapter
-        // contract of always producing a well-formed result while retaining
-        // the concrete diagnostic for callers that surface session.state, AND
-        // (FN-7779 root-cause) surfacing the reason as visible text so the
-        // user sees a diagnosable failure instead of an empty bubble.
-        const message = spawnError instanceof Error ? spawnError.message : String(spawnError);
-        const diagnostic = compactDiagnostic(`Grok CLI spawn failed: ${message}`);
-        grokSession.state.errorMessage = diagnostic;
-        const failureMessage = describeSpawnFailure(spawnError);
-        emitFailureText(grokSession, failureMessage);
-        appendMessage(grokSession, "assistant", failureMessage);
-        resolve();
-        return;
+    const acp = this.adapters.get(session);
+    const hasConnection =
+      acp && "connection" in session && Boolean((session as { connection?: unknown }).connection);
+
+    /*
+    FNXC:GrokAcp 2026-07-12-06:15:
+    Dead / disposed sessions have no ACP connection. Follow-up prompts must not
+    append a user message and return silently — always re-surface a diagnostic
+    via onText + assistant message so multi-turn chat stays visible. Prefer the
+    previous errorMessage when present so operators still see the root cause.
+    */
+    if (!hasConnection) {
+      const existing = grokSession.state.errorMessage?.trim();
+      const diagnostic = existing
+        ? `Grok ACP session has no live connection (previous error: ${existing}). Start a new session to retry.`
+        : "Grok ACP session has no live connection. The `grok agent stdio` process failed to start or was disposed.";
+      grokSession.state.errorMessage = diagnostic;
+      grokSession.callbacks.onText?.(diagnostic);
+      appendMessage(grokSession, "assistant", diagnostic);
+      return;
+    }
+
+    try {
+      const result = await acp!.promptWithFallback(session, prompt, options);
+      const assistantText = getTurnAccum(grokSession).text;
+      if (assistantText.length > 0) {
+        appendMessage(grokSession, "assistant", assistantText);
+      } else if (result && typeof result === "object" && "stopReason" in result) {
+        const stopReason = result.stopReason;
+        if (stopReason && stopReason !== "end_turn" && stopReason !== "EndTurn") {
+          const diagnostic = `Grok ACP ended with stopReason ${stopReason} and produced no assistant text.`;
+          grokSession.state.errorMessage = diagnostic;
+          grokSession.callbacks.onText?.(diagnostic);
+          appendMessage(grokSession, "assistant", diagnostic);
+        }
       }
-
-      let settled = false;
-      let firstOutputReceived = false;
-      let firstStdoutChunk: string | undefined;
-      let assistantText = "";
-      let diagnosticEmitted = false;
-      let stderr = "";
-      let stdout = "";
-      let firstOutputTimer: NodeJS.Timeout | undefined;
-      let inactivityTimer: NodeJS.Timeout | undefined;
-      // FNXC:GrokCli 2026-07-10-15:10: FN-7779 root-cause — track whether any
-      // renderable content (real assistant text) or a fallback diagnostic has
-      // already been surfaced via onText, so a run that finished with NO
-      // renderable content gets exactly one visible reason instead of an
-      // empty "No message" assistant bubble (and never a duplicate
-      // diagnostic on top of real content).
-      let contentEmitted = false;
-
-      const setErrorMessage = (message: string) => {
-        if (message.trim().length === 0) return;
-        grokSession.state.errorMessage = message;
-      };
-
-      const emitDiagnosticText = (message: string | undefined) => {
-        const diagnostic = message?.trim();
-        if (!diagnostic || assistantText || diagnosticEmitted || contentEmitted) return;
-        diagnosticEmitted = true;
-        contentEmitted = true;
+      return result;
+    } catch (error) {
+      const assistantText = getTurnAccum(grokSession).text;
+      if (assistantText.length === 0) {
+        const diagnostic = describePromptFailure(error);
+        grokSession.state.errorMessage = diagnostic;
         grokSession.callbacks.onText?.(diagnostic);
         appendMessage(grokSession, "assistant", diagnostic);
-      };
-
-      const emitParsedOutput = (parsed: ParsedPromptOutput) => {
-        if (parsed.thought) {
-          grokSession.callbacks.onThinking?.(parsed.thought);
-        }
-        if (parsed.sessionId) {
-          grokSession.sessionId = parsed.sessionId;
-        }
-        if (parsed.text.length > 0) {
-          assistantText += parsed.text;
-          contentEmitted = true;
-          grokSession.callbacks.onText?.(parsed.text);
-          return;
-        }
-        if (parsed.stopReason && parsed.stopReason !== "EndTurn") {
-          setErrorMessage(formatTerminalNoTextDiagnostic(parsed.stopReason));
-        }
-      };
-
-      /*
-      FNXC:GrokCli 2026-07-10-00:00:
-      A failing headless `grok` run can close stdout before the child `close` event reports its non-zero exit and stderr. Resolving too early made dashboard Chat persist an empty assistant message before the diagnostic existed. Finalize only from subprocess close/error or lifecycle timeouts, and store concrete stderr/parse error details on session.state.errorMessage so shared chat/executor seams can surface the reason without breaking the resolve-never-reject runtime contract.
-
-      FNXC:GrokCli 2026-07-10-12:52:
-      FN-7796 replaces the streaming-json/NDJSON contract with a single JSON object parsed once on subprocess close (`parsePromptOutput`/`emitParsedOutput`), because streaming-json intermittently emitted only `thought` + `stopReason:"Cancelled"` with no `text`. `stdout` is accumulated in full across `data` chunks rather than parsed line-by-line as it arrives.
-
-      FNXC:GrokCli 2026-07-10-15:10:
-      FN-7779 root-cause — the above only covered the zero-output shape. A run
-      that DID exit non-zero (or produced fatal stderr) with no renderable
-      content still resolved silently once `session.state.errorMessage` had
-      already been consumed by `emitDiagnosticText` for a different reason (or
-      not set at all). If nothing was rendered AND no diagnostic has been
-      emitted yet, fall back to `describeSilentFailure` (stderr-first, then a
-      non-zero-exit reason) so every silent failure surface gets a visible,
-      diagnosable `onText` — never a bare empty resolve.
-      */
-      const finish = (exitCode?: number | null) => {
-        if (settled) return;
-        settled = true;
-        if (firstOutputTimer) clearTimeout(firstOutputTimer);
-        if (inactivityTimer) clearTimeout(inactivityTimer);
-        if (assistantText) {
-          appendMessage(grokSession, "assistant", assistantText);
-        } else {
-          // FN-7779's stderr/exit-code diagnostic takes priority when the run
-          // actually failed (non-empty stderr or non-zero exit): it names the
-          // concrete cause. Only fall back to the FN-7796 parse-shape
-          // diagnostic (session.state.errorMessage, e.g. "produced no JSON
-          // output") for the remaining case that describeSilentFailure can't
-          // describe — a code-0 exit with no stderr that still produced no
-          // parseable output.
-          const failure = describeSilentFailure(stderr, exitCode);
-          if (failure && !contentEmitted) {
-            contentEmitted = true;
-            emitFailureText(grokSession, failure);
-            appendMessage(grokSession, "assistant", failure);
-          } else {
-            emitDiagnosticText(grokSession.state.errorMessage);
-          }
-        }
-        resolve();
-      };
-
-      const resetInactivityTimer = () => {
-        if (inactivityTimer) clearTimeout(inactivityTimer);
-        inactivityTimer = setTimeout(() => {
-          setErrorMessage(
-            `Grok CLI stopped producing stdout for ${INACTIVITY_TIMEOUT_MS}ms during a headless prompt; the process was killed.`,
-          );
-          forceKillGrokStream(proc);
-          finish();
-        }, INACTIVITY_TIMEOUT_MS);
-      };
-
-      firstOutputTimer = setTimeout(() => {
-        if (firstOutputReceived) return;
-        setErrorMessage(
-          `Grok CLI produced no stdout within ${firstOutputTimeoutMs}ms for a headless prompt; the process was killed.`,
-        );
-        forceKillGrokStream(proc);
-        finish();
-      }, firstOutputTimeoutMs);
-
-      proc.stdout?.on("data", (chunk: Buffer | string) => {
-        const text = chunk.toString();
-        if (!firstOutputReceived) {
-          firstOutputReceived = true;
-          firstStdoutChunk = text;
-          if (firstOutputTimer) clearTimeout(firstOutputTimer);
-        }
-        stdout += text;
-        resetInactivityTimer();
-      });
-
-      proc.stderr?.on("data", (chunk: Buffer | string) => {
-        // FNXC:GrokCli 2026-07-10-15:10: FN-7779 root-cause — xAI's Grok
-        // Build TUI writes fatal, pre-JSON failures (missing API key,
-        // invalid flag, auth error) to stderr with no JSON on stdout.
-        // Reading stdout alone would lose the entire failure reason, so
-        // stderr is captured for both the FN-7796 close diagnostic and the
-        // FN-7779 silent-failure fallback below. Capped to avoid unbounded
-        // growth on a pathologically chatty process.
-        if (stderr.length < 8192) stderr += chunk.toString();
-      });
-
-      proc.on("error", (procError) => {
-        // FNXC:GrokCli 2026-07-10-15:10: FN-7779 root-cause — spawn/runtime
-        // process error (e.g. ENOENT for a missing `grok` binary) previously
-        // resolved into an empty bubble; surface the reason both on
-        // session.state (unchanged historical format) and as visible text
-        // via finish()'s silent-failure fallback.
-        const message = procError instanceof Error ? procError.message : String(procError);
-        if (!assistantText) {
-          setErrorMessage(compactDiagnostic(`Grok CLI process error: ${message}`));
-        }
-        if (!contentEmitted && !stderr) {
-          stderr = describeSpawnFailure(procError);
-        }
-        finish();
-      });
-
-      proc.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
-        const parsed = parsePromptOutput(stdout);
-        if (parsed.parsed) {
-          emitParsedOutput(parsed);
-        }
-
-        const failed = typeof code === "number" ? code !== 0 : Boolean(signal);
-        if (!assistantText && failed) {
-          setErrorMessage(formatCloseDiagnostic(typeof code === "number" ? code : null, signal, stderr));
-        } else if (!assistantText && !parsed.parsed && typeof code === "number" && code === 0) {
-          setErrorMessage(formatNoJsonDiagnostic(firstStdoutChunk));
-        }
-        finish(code);
-      });
-    });
+      } else {
+        appendMessage(grokSession, "assistant", assistantText);
+      }
+      return;
+    }
   }
 
   describeModel(session: AgentSession): string {
     const grokSession = session as GrokSession;
     return grokSession.lastModelDescription || `grok/${grokSession.model ?? "default"}`;
+  }
+
+  async dispose(session: AgentSession): Promise<void> {
+    const resources = (session as SessionWithExtras)[SESSION_RESOURCES];
+    try {
+      await resources?.toolBridge?.dispose();
+    } catch {
+      // best-effort
+    }
+    try {
+      resources?.skillStaging?.dispose();
+    } catch {
+      // best-effort
+    }
+    const acp = this.adapters.get(session);
+    if (acp && typeof acp.dispose === "function") {
+      await acp.dispose(session);
+      return;
+    }
+    const grok = session as GrokSession;
+    grok.dispose?.();
   }
 }

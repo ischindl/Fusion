@@ -32,7 +32,11 @@ export const FUSION_LOGO_LARGE_LINES = [
   "╚═╝      ╚═════╝ ╚══════╝╚═╝ ╚═════╝ ╚═╝  ╚═══╝",
 ];
 
-export const FUSION_TAGLINE = "multi node agent orchestrator";
+/*
+FNXC:DashboardTUI 2026-07-12-00:00:
+The dashboard TUI splash tagline must reflect the README's current "software factory" product positioning while keeping the logo, URL, and version copy unchanged.
+*/
+export const FUSION_TAGLINE = "software factory";
 export const FUSION_URL = "runfusion.ai";
 
 // Single source of truth: the dashboard's resolver also powers /api/health and

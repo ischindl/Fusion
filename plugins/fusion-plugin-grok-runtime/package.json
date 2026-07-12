@@ -1,11 +1,13 @@
 {
   "name": "@fusion-plugin-examples/grok-runtime",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "type": "module",
-  "description": "Grok CLI runtime plugin for Fusion",
+  "description": "Grok CLI runtime plugin for Fusion (ACP agent stdio)",
   "keywords": [
     "fusion-plugin",
     "grok",
+    "acp",
+    "agent-client-protocol",
     "runtime"
   ],
   "exports": {
@@ -26,6 +28,8 @@
     "test": "vitest run --silent=passed-only --reporter=dot"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "0.24.0",
+    "@fusion/core": "workspace:*",
     "@fusion/plugin-sdk": "workspace:*"
   },
   "peerDependencies": {

@@ -17,7 +17,7 @@ import {
   createBridgingClientHandler,
 } from "./provider.js";
 import { buildSpawnEnv } from "./process-manager.js";
-import { buildPromptBlocks } from "./prompt-builder.js";
+import { buildPromptBlocks, extractPromptImagesFromOptions } from "./prompt-builder.js";
 import type {
   AgentRuntime,
   AgentRuntimeOptions,
@@ -73,6 +73,7 @@ export class AcpRuntimeAdapter implements AgentRuntime {
     // Spawn + initialize (U2). fs capabilities are advertised only where the
     // resolved settings enable them (KTD6); the subprocess env is built from the
     // allow-list, never inherited process.env (KTD6b).
+    // Optional authenticate (Grok headless ACP: initialize → authenticate → session/new).
     const connection = await connect({
       binaryPath: this.settings.binaryPath,
       args: this.settings.args,
@@ -80,16 +81,27 @@ export class AcpRuntimeAdapter implements AgentRuntime {
       env: buildSpawnEnv(this.settings.envAllowList, { required: this.settings.requiredEnv }),
       advertiseFs: { read: this.settings.fsRead, write: this.settings.fsWrite },
       clientHandler,
+      ...(this.settings.authenticate ? { authenticate: this.settings.authenticate } : {}),
     });
 
     // Open the ACP session over the task worktree. Forward MCP servers when the
     // caller supplied them (U10 — Route A); absent/empty keeps the Route B
     // read-only ask posture. Tool calls still route through the U5 permission floor.
+    //
+    // FNXC:GrokAcp 2026-07-11-14:00:
+    // Callers (Grok runtime) may also pass `_meta` (pluginDirs / rules /
+    // systemPromptOverride) via options.sessionMeta so agent-specific skill and
+    // prompt setup rides on session/new without a second protocol hop.
     let sessionId: string;
     try {
+      const sessionMeta =
+        options && typeof options === "object" && "sessionMeta" in options
+          ? (options as { sessionMeta?: Record<string, unknown> }).sessionMeta
+          : undefined;
       const opened = await newAcpSession(connection, {
         cwd: options.cwd,
         mcpServers: options.mcpServers,
+        meta: sessionMeta,
       });
       sessionId = opened.sessionId;
     } catch (err) {
@@ -129,7 +141,7 @@ export class AcpRuntimeAdapter implements AgentRuntime {
   async promptWithFallback(
     session: AgentSession,
     prompt: string,
-    _options?: unknown,
+    options?: unknown,
   ): Promise<{ stopReason?: string }> {
     const acp = session as AcpSession;
     if (!acp.connection) {
@@ -140,7 +152,14 @@ export class AcpRuntimeAdapter implements AgentRuntime {
     // each turn (FIX 1). Without this, a turn that hit the per-turn output cap
     // would silently suppress all later turns.
     acp.resetTurn?.();
-    const blocks = buildPromptBlocks(prompt);
+    /*
+    FNXC:GrokAcp 2026-07-12-07:15:
+    Chat/triage pass `{ images: [{ type:"image", data, mimeType }] }` through
+    promptWithFallback. Previously options were ignored (`_options`) so Grok ACP
+    and generic ACP sessions never received image ContentBlocks on session/prompt.
+    */
+    const images = extractPromptImagesFromOptions(options);
+    const blocks = buildPromptBlocks(prompt, images ? { images } : undefined);
     // Resolve when the SDK prompt promise resolves — it already drains all
     // session/update notifications for the turn before reporting the stopReason.
     // The bridging client handler installed at createSession (U4) has already

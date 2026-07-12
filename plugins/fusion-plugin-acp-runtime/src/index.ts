@@ -83,6 +83,7 @@ const plugin: FusionPlugin = definePlugin({
 
 export default plugin;
 export { AcpRuntimeAdapter };
+export { authenticateAcpConnection, AcpAuthRequiredError } from "./provider.js";
 export { checkSetup, setupHooks, setupManifest, validateBundledBridgeIdentity } from "./setup.js";
 export {
   CLAUDE_CODE_CLI_ACP_BINARY,
@@ -92,3 +93,10 @@ export {
   resolveCliSettings,
 } from "./cli-spawn.js";
 export type { AcpBinaryResolution, AcpCliSettings } from "./cli-spawn.js";
+/*
+FNXC:GrokAcp 2026-07-11-12:00:
+Grok Runtime composes AcpRuntimeAdapter for native `grok agent stdio`. Re-export
+the process-registry kill so Grok can register the same exit reaper without a
+second subprocess registry or a fragile cross-plugin relative import.
+*/
+export { killAllProcesses } from "./process-manager.js";

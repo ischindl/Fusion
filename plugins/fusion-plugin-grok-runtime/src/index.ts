@@ -1,5 +1,6 @@
 import { definePlugin } from "@fusion/plugin-sdk";
 import type { FusionPlugin } from "@fusion/plugin-sdk";
+import { killAllProcesses } from "./acp/index.js";
 import { probeGrokBinary } from "./probe.js";
 import { discoverGrokProviderModels } from "./provider.js";
 import { GrokRuntimeAdapter } from "./runtime-adapter.js";
@@ -12,26 +13,47 @@ one contract difference — Grok is API-key auth (GROK_API_KEY env var or
 `grok status --format json` route; probe/authRoute here surface key-presence
 auth state instead (see probe.ts). This shells out to an operator-installed
 `grok` binary on PATH — Fusion does not download or bundle it.
+
+FNXC:GrokAcp 2026-07-11-12:00:
+Prompt transport is now native ACP (`grok agent stdio`) via vendored
+AcpRuntimeAdapter under ./acp/ — realtime session/update streaming, tool calls,
+and multi-turn session reuse. Probe/model discovery still use the CLI.
+
+FNXC:GrokAcp 2026-07-11-16:00:
+ACP client code is copied into this plugin (src/acp/), not imported from
+fusion-plugin-acp-runtime, so bundled Grok does not depend on the experimental
+ACP example plugin package.
 */
+
+// Reap Grok ACP agent subprocesses on hard process exit (registry SIGKILL is
+// authoritative). Scoped to ACP-tracked agent children only — never port 4040.
+process.on("exit", killAllProcesses);
+
 const plugin: FusionPlugin = definePlugin({
   manifest: {
     id: "fusion-plugin-grok-runtime",
     name: "Grok Runtime Plugin",
-    version: "0.1.0",
-    description: "Grok CLI runtime support for Fusion",
+    version: "0.2.0",
+    description: "Grok CLI runtime support for Fusion (ACP agent stdio)",
     runtime: {
       runtimeId: "grok",
       name: "Grok Runtime",
-      version: "0.1.0",
+      version: "0.2.0",
     },
   },
   state: "installed",
-  hooks: {},
+  hooks: {
+    onLoad: (ctx) => {
+      ctx.logger.info(
+        "Grok Runtime Plugin loaded — transport=ACP (grok agent stdio); probe uses grok --version",
+      );
+    },
+  },
   runtime: {
     metadata: {
       runtimeId: "grok",
       name: "Grok Runtime",
-      version: "0.1.0",
+      version: "0.2.0",
     },
     factory: async () => new GrokRuntimeAdapter(),
   },
@@ -71,4 +93,5 @@ const plugin: FusionPlugin = definePlugin({
 export default plugin;
 export { probeGrokBinary } from "./probe.js";
 export { discoverGrokProviderModels } from "./provider.js";
+export { GrokRuntimeAdapter } from "./runtime-adapter.js";
 export type { GrokBinaryStatus } from "./types.js";

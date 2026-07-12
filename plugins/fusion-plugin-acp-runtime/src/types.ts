@@ -21,17 +21,37 @@ export interface AcpCallbacks {
 }
 
 /**
- * A stdio MCP server forwarded to the agent on `session/new` (U10 — Route A).
- * `env` is explicit name/value pairs; inherited `process.env` is NEVER forwarded
- * to the untrusted agent. Maps 1:1 onto an ACP `mcpServers` entry and onto what
- * `pi-claude-cli`'s `mcp-config.ts` builds for `--mcp-config`.
+ * MCP servers forwarded to the agent on `session/new` (U10 — Route A).
+ * `env` / `headers` are explicit name/value pairs; inherited `process.env` is
+ * NEVER forwarded to the untrusted agent.
+ *
+ * FNXC:GrokAcp 2026-07-11-14:00:
+ * Widen beyond stdio so Grok ACP can receive Fusion operator MCP servers over
+ * http/sse (Grok advertises mcpCapabilities.http/sse) as well as the classic
+ * stdio custom-tools bridge used by Route A.
  */
-export interface AcpMcpServer {
+export interface AcpMcpServerStdio {
   name: string;
   command: string;
   args: string[];
   env: { name: string; value: string }[];
 }
+
+export interface AcpMcpServerHttp {
+  type: "http";
+  name: string;
+  url: string;
+  headers: { name: string; value: string }[];
+}
+
+export interface AcpMcpServerSse {
+  type: "sse";
+  name: string;
+  url: string;
+  headers: { name: string; value: string }[];
+}
+
+export type AcpMcpServer = AcpMcpServerStdio | AcpMcpServerHttp | AcpMcpServerSse;
 
 /** Per-category permission disposition (mirrors the engine policy shape). */
 export type GateDisposition = "allow" | "block" | "require-approval";
@@ -111,6 +131,12 @@ export interface AgentRuntimeOptions {
    * U5 permission floor). Absent/empty preserves Route B's read-only ask posture.
    */
   mcpServers?: AcpMcpServer[];
+  /**
+   * FNXC:GrokAcp 2026-07-11-14:00:
+   * Opaque ACP `session/new._meta` for agent-specific setup (Grok pluginDirs /
+   * rules / systemPromptOverride). Ignored by agents that do not read `_meta`.
+   */
+  sessionMeta?: Record<string, unknown>;
 }
 
 /** Live ACP session state tracked by the runtime adapter. */

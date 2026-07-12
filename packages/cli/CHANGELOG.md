@@ -1,5 +1,478 @@
 # @runfusion/fusion
 
+## 0.58.0
+
+### Minor Changes
+
+- 6317fcd: summary: Add an interactive worktree-rooted Terminal tab to the task detail view.
+  category: feature
+  dev: TaskDetailModal embeds TerminalModal in a new `embedded` mode; useTerminalSessions gains task-scoped storage + defaultCwd. The pre-existing agent-session tab is relabeled "Session".
+- 17d7bd1: summary: The Task Detail Terminal tab is now always available, falling back to the project root when a task has no worktree.
+  category: feature
+  dev: Relaxes the TaskDetailModal `showWorktreeTerminalTab` gate to always render and passes `defaultCwd` = worktree when present else undefined (project-root auto-create via useTerminalSessions). Covers no-worktree and multi-repo workspace tasks. Sessions stay task-scoped via `scopeId`.
+- f10c39f: summary: Agents can now add files to a task's File Scope while working, so out-of-scope edits aren't stranded at merge.
+  category: feature
+  dev: New `fn_task_file_scope_add` executor tool (packages/engine/src/agent-tools.ts, wired in executor.ts) appends validated repo-relative paths/globs to the `## File Scope` section of PROMPT.md and persists via `store.updateTask({ prompt })` (same validation + task.json/PROMPT.md sync as `fn_task_prompt_write`). Entries are validated with `isValidFileScopeEntry` and de-duplicated; the base executor prompt now instructs the agent to call it when editing beyond the declared scope. Does not re-run the merge-time peer-claim refusal — the squash file-scope invariant remains the cross-task backstop.
+- 9024f3a: summary: Agents save screenshots, videos, HTML mockups, and PDFs as artifacts, shown in a new category gallery with doc editing.
+  category: feature
+  dev: fn_artifact_register gains a `path` payload source (file copied into managed storage, MIME inference, image/video/PDF signature validation) and is now always exposed to executor sessions (previously missing in ephemeral mode) with worktree-relative path resolution and executing-task default taskId; executor/planning prompts instruct agents to register visual/media deliverables (images, videos, HTML mockups, PDFs); the media route serves HTTP byte ranges for video/audio seeking; video attachments (100MB cap) bridge into the registry like images; HTML docs render as live sandboxed previews; new `GET`/`PATCH /api/artifacts/:id` routes plus `TaskStore.updateArtifact` and the `artifact:updated` SSE event power in-place doc editing in the new ArtifactsGallery (Images/Docs/PDFs/Videos/Audio/Other sections with per-category viewers, mobile-responsive); viewers open in draggable/resizable FloatingWindows, Artifacts is the first/landing tab of the view, and mobile tab buttons render at the uniform 44px control height.
+- 05d30ff: summary: Edit task documents and project files in the Artifacts view; markdown by default; fix the Add comment button.
+  category: feature
+  dev: DocumentsView embeds the shared CodeMirror FileEditor for task-document (PUT /tasks/:id/documents/:key) and project-file (project workspace file API) edits. The Add comment no-op was a CSS bundle-order regression — `.btn:active` out-ordered the equal-specificity trigger rule; the `:active` rules now use `.btn.selection-comment-trigger` (0,3,0) with a test asserting the prefix.
+- 19055c6: summary: Add a persistent Advanced settings toggle that keeps uncommon Settings sections and controls hidden by default.
+  category: feature
+  dev: The browser-local disclosure applies to navigation, search, and field-level controls without changing saved settings.
+- f66bfae: summary: Guide repeatable Compound Engineering cycles from product grounding through reusable learnings.
+  category: feature
+  dev: Adds project-scoped sessions, collection-aware stages, Work quality gates, and terminal Compound progression.
+- 84fb513: summary: Add persisted thinking-level settings for every fallback model lane.
+  category: feature
+  dev: New optional ThinkingLevel keys — global `fallbackThinkingLevel`, workflow `planningFallbackThinkingLevel`/`validatorFallbackThinkingLevel`, project `titleSummarizerFallbackThinkingLevel`. Schema foundation only; no runtime/UI consumption yet.
+- 7fe18df: summary: Cursor CLI models now appear in Fusion's model picker when the Cursor CLI provider is enabled.
+  category: fix
+  dev: /api/models additively merges `cursor-agent` model discovery under the `cursor-cli` provider via a short-TTL, single-flight cache (no per-request CLI spawn), and adds `cursor-cli` to configuredProviders when useCursorCli is on so the rows survive the final provider filter. Rows are deduped by provider/id and never displace existing entries. Pattern mirrors FN-7636 (Hermes).
+- 081dae0: summary: Add Grok CLI runtime support as a bundled plugin with a grok-cli model provider.
+  category: feature
+  dev: New plugin fusion-plugin-grok-runtime (auto-installed); settings useGrokCli/grokCliBinaryPath; routes /auth/grok-cli + /providers/grok-cli/status; grok-cli merged into /api/models.
+- 21d1201: summary: Mobile Settings search row now collapses by default with a show/hide toggle.
+  category: feature
+  dev: SettingsModal mobile-only searchRowExpanded state + toggle icon; desktop unchanged.
+- 626e002: summary: Add a policy-gated review-lane bypass for cards stranded by a failed pre-merge review step.
+  category: feature
+  dev: Adds the operator-only `fn_task_bypass_review` CLI/pi-extension tool, `POST /tasks/:id/bypass-review` dashboard API route, `store.bypassFailedPreMergeReviewStep(id, { reason, actor })`, `task-merge.ts` `getLatestFailedPreMergeReviewStep`, and `bypassedBy`/`bypassedAt`/`bypassReason`/`bypassedFromStatus`/`bypassedFromVerdict` `WorkflowStepResult` fields. Not exposed to executor/reviewer/triage agent tool lists.
+- 171aaa2: summary: Grok can now run through the Grok CLI's NDJSON stream, so CLI-authenticated setups need no Fusion-visible API key.
+  category: feature
+  dev: GrokRuntimeAdapter.promptWithFallback now spawns `grok --prompt --format json`, parses the NDJSON event stream (new src/stream-parser.ts, fixture-tested), and drives onText/onThinking — replacing the FN-7715 no-op. Direct xAI OpenAI-compatible path (FN-7711/FN-7714) is unchanged and remains the default; end-to-end runtimeHint="grok" routing is a follow-up. Contract captured in docs/grok-cli-contract.md.
+- 1fc615d: summary: Grok CLI runtime now bridges tool execution events (name/args/result) from the NDJSON stream, not just text.
+  category: feature
+  dev: GrokRuntimeAdapter.promptWithFallback now bridges tool_use NDJSON events into onToolStart/onToolEnd; tool name/args/result pass through unchanged (no Grok→pi name mapping — the verified docs/grok-cli-contract.md schema does not pin a tool-name vocabulary). step_finish/error remain non-terminal per-step events and are not bridged to a callback; only subprocess close/error finalizes, unchanged from FN-7722. Fixture-tested (no live binary). End-to-end runtimeHint="grok" routing remains FN-7725's scope; the direct xAI path (FN-7711/7714) is unchanged.
+- e5c3ffb: summary: Grok work can now be routed through the Grok CLI streaming runtime, not only the direct xAI endpoint.
+  category: feature
+  dev: FN-7725 formalizes, tests, and documents the existing agent Runtime-mode picker path (option (a)) as the decided Grok CLI routing wiring — setting an agent's Runtime Source to "Runtime" -> "Grok Runtime" sets runtimeConfig.runtimeHint="grok", which the existing generic extractRuntimeHint -> resolveRuntime -> resolvePluginRuntime -> plugin factory chain (packages/engine/src/agent-session-helpers.ts, runtime-resolution.ts) already resolved to GrokRuntimeAdapter (FN-7722) for other plugin runtimes; no new engine/dashboard code was required, only a routing test (packages/engine/src/**tests**/grok-runtime-routing.test.ts), an FNXC decision note at the extractRuntimeHint seam, and documentation. Direct xAI OpenAI-compatible path (FN-7711/FN-7714) remains the default and is unchanged; the new path is additive/opt-in and does not preserve a specific grok-cli/\* model selection (documented limitation). Contract decision recorded in docs/grok-cli-contract.md.
+- d44dbaa: summary: Add a dedicated permission for who may bypass a failed review gate, separate from task mutations.
+  category: feature
+  dev: Adds a new `review_gate_bypass` permission-policy category (packages/core/src/types.ts, agent-permission-policy.ts) governing `fn_task_bypass_review` (FN-7720). `fn_task_bypass_review` is classified into it in the shared `gating-classifications.ts` source and resolves identically in both `evaluateAgentActionGate` and the permanent-agent gate. Defaults to `require-approval` even under the `unrestricted` preset (stricter than the uniform preset default), while `approval-required`/`locked-down` presets already cover it uniformly. `toolRules.fn_task_bypass_review` exact overrides continue to apply on top. The dashboard permission-policy editor (project-default + per-agent override) renders the category as its own row. No DB migration required; a stored policy missing the key resolves to the preset default. The tool's CLI/pi-extension-only registration surface is unchanged.
+- 0e90578: summary: Add a File Scope agent permission category, allowed by default under the grant-all preset.
+  category: feature
+  dev: Adds `file_scope` to AGENT_PERMISSION_POLICY_ACTION_CATEGORIES; uniform preset disposition (no review_gate_bypass-style override), classified via FILE_SCOPE_FN_TOOLS in both agent-action-gate and permanent-agent-gating.
+- 9d7b087: summary: Update the pi SDK and add support for GPT-5.6 codex-tier models.
+  category: feature
+  dev: Bumps @earendil-works/pi-ai and @earendil-works/pi-coding-agent from ^0.80.3 to ^0.80.5 across packages/cli, packages/dashboard, packages/engine, and packages/pi-claude-cli (packages/droid-cli and packages/pi-llama-cpp's pi-coding-agent stay unpinned at `*` per existing convention). Inspected the installed SDK's generated model catalogs directly and found no `gpt-5.6-codex` id — OpenAI dropped the separate `-codex`-suffixed tier naming starting at the 5.4 generation. Added `openai-codex:gpt-5.6-luna`, `openai-codex:gpt-5.6-sol`, and `openai-codex:gpt-5.6-terra` pricing (the actual GPT-5.6 codenamed variants exposed by the SDK under the `openai-codex` provider) to `model-pricing.ts`, mirroring the existing `gpt-5.3-codex` rate, and bumped `pricingAsOf` to 2026-07-09 so Command Center token cost reports real cost instead of `unavailable` for these models.
+- f930790: summary: GPT-5.6 codenamed models (luna, sol, terra) are now selectable in the model picker.
+  category: feature
+  dev: Adds mergeSupplementalOpenAiCodexModels in @fusion/core, invoked from GET /api/models alongside the Anthropic supplemental merge; additive and deduped against the pinned pi-ai catalog, gated by the configured openai-codex provider.
+- 3cda9d8: summary: Add inline thinking-level selection to task and agent model dropdowns.
+  category: feature
+  dev: CustomModelDropdown now supports optional thinking-level props; migrated task and agent surfaces off standalone selects.
+- 5f14a58: summary: Add per-lane thinking effort overrides to Settings model lane dropdowns.
+  category: feature
+  dev: Adds optional lane thinking settings and runtime precedence task > lane > global default.
+- 235ff4c: summary: Add per-node workflow thinking-level controls for custom model bindings.
+  category: feature
+  dev: Workflow IR now round-trips config.thinkingLevel and runtime precedence is node/step > task > settings.
+- df8ad46: summary: Add per-workflow model lane thinking-level controls for planning, execution, and review.
+  category: feature
+  dev: Adds execution/planning/validator workflow thinking settings and phase precedence threading.
+- 035caca: summary: Choose a thinking level when starting a new model chat.
+  category: feature
+  dev: Adds chat_sessions.thinkingLevel and passes it as the engine defaultThinkingLevel session option.
+- 57c3d7c: summary: Plugin prompt contributions can now gate content on per-project plugin settings.
+  category: feature
+  dev: PluginPromptContribution.condition is evaluated against effective plugin settings via a minimal `settings["key"] === "value"` / `!==` grammar (no eval); see docs/PLUGIN_AUTHORING.md.
+- 5729fe2: summary: Let task edits toggle optional workflow steps directly.
+  category: feature
+  dev: TaskForm edit mode now loads optional-step catalogs from the resolved task workflow without defaultOn re-seeding.
+- 03073af: summary: Show a Claude "Weekly (Fable)" usage window in the Usage dropdown.
+  category: feature
+  dev: usage.ts fetchClaudeUsage parses seven_day_fable (with tolerant fallback keys) and fetchClaudeUsageViaCli adds a "Current week (Fable" section; frontend renders it generically. API field name assumed seven_day_fable.
+- de67b57: summary: Image attachments now appear in the Artifacts view as artifacts.
+  category: feature
+  dev: Bridges TaskStore.addAttachment image files into artifact rows with attachment-backed media URIs.
+- fc4acd4: summary: Apply fallback models' own thinking levels when runtime swaps to them.
+  category: feature
+  dev: Adds fallbackThinkingLevel session plumbing, resolver precedence, and Grok CLI fallback remap handling.
+- 3d5cc0a: summary: Add inline thinking-level selectors to every fallback model picker in Settings.
+  category: feature
+  dev: Binds fallback pickers (global Fallback Model, workflow planning/validator fallback lanes, project title-summarizer fallback) to the FN-7793 keys via CustomModelDropdown showThinkingLevel; save-split routes fallbackThinkingLevel (global) and titleSummarizerFallbackThinkingLevel (project) with null-as-delete parity.
+- 595d323: summary: Artifacts view — Task Documents now uses a left-sidebar list with a right-pane content viewer.
+  category: feature
+  dev: DocumentsView Task Documents tab reuses the Project Files `documents-project-layout` sidebar/right-pane pattern with a separate selection state and desktop/mobile gating; the markdown/plain toggle is preserved. Select-to-comment stays Project-Files-only (tracked as a follow-up).
+- 56b20a7: summary: Artifacts view — select text in a Task Document's content pane to comment and send it to a new task.
+  category: feature
+  dev: DocumentsView Task Documents right pane reuses the Project Files `useSelectionComment`/`SelectionCommentPopover` pattern (markdown + plain refs following the render toggle, composer-open lock, popover gated on the task-document selection + `onSendSelectionToTask`). Project Files behavior and the markdown/plain toggle are unchanged. Depends on FN-7811.
+- bd0e99b: summary: Show a Grok (xAI) card in the Usage dropdown for configured Grok API keys.
+  category: feature
+  dev: usage.ts adds fetchGrokUsage (env GROK_API_KEY -> ~/.grok/user-settings.json -> grok-cli auth key) validating GET https://api.x.ai/v1/api-key and registered in fetchAllProviderUsage. xAI exposes no subscription usage meter to the inference key, so the card is auth-validity (ok/no-auth/error) with a real usage window only when confirmed data exists; no fabricated windows. Real usage field found: no — validity-only.
+- d40f24d: summary: Show Cursor subscription usage in the Usage dropdown.
+  category: feature
+  dev: usage.ts adds fetchCursorUsage via Cursor Admin API POST https://api.cursor.com/teams/spend with Basic auth API_KEY:, resolving the Admin API key from documented env `CURSOR_ADMIN_API_KEY` (or `CURSOR_API_KEY` alias) before internal test/auth-storage fallbacks. It maps teamMemberSpend overallSpendCents/spendCents plus hardLimitOverrideDollars/monthlyLimitDollars and subscriptionCycleStart; fetchAllProviderUsage wraps it with withTimeout and no-auth demotion, while UsageIndicator maps "Cursor" to cursor-cli. No personal Cursor CLI usage endpoint confirmed; CLI session only supplies userEmail/subscriptionTier metadata.
+- a2c9b0f: summary: Add a documented CURSOR_API_KEY credential path for Cursor usage metering.
+  category: feature
+  dev: usage.ts adds readCursorApiKey (CURSOR_API_KEY env var → cursor authStorage entry, mirroring readGrokApiKey); settings-reference.md documents it and clarifies cursor-cli runtime OAuth vs the usage/admin API key. Unblocks FN-7816. Cursor usage-API specifics confirmed via Cursor Admin API docs: POST /teams/spend with Basic auth using an admin:\* API key as the username.
+- 9376504: summary: Add a Cost tab to task detail and an optional per-card cost badge (default off).
+  category: feature
+  dev: New shared taskTokenCost helper (read-time costFor derivation) powers the Summary tab, the new Cost tab, and a card badge gated by the default-off project setting showCostBadgeOnCards.
+- 26f0c5a: summary: Add a resizable Settings navigation rail that remembers its width.
+  category: feature
+  dev: Removes the Settings rail divider and keeps nav labels single-line across modal and embedded Settings.
+- cc743ee: summary: CLI agent cold-start timeouts now default to 2 minutes and are configurable.
+  category: feature
+  dev: Grok honors GROK_CLI_FIRST_OUTPUT_TIMEOUT_MS; Droid honors PI_DROID_CLI_FIRST_LINE_TIMEOUT_MS. Defaults raised 60000 → 120000. Inactivity ceilings unchanged.
+- dd95634: summary: Artifacts view — the Task Documents list now also shows each task's registered artifacts.
+  category: feature
+  dev: DocumentsView Task Documents tab unions task documents with task-scoped artifacts per task group and adds an inline right-pane artifact viewer (image/video/audio/pdf/inline-doc/other) reusing getArtifactCategory + artifactMediaUrl/fetchArtifact. Selection is a discriminated document|artifact type kept separate from Project Files selection; the standalone Artifacts gallery tab is unchanged.
+- d99c04c: summary: Add cost data for GLM-5.2, MiniMax-M3, and Kimi K2.6 so their token usage shows a dollar cost instead of "—".
+  category: feature
+  dev: Adds static MODEL_PRICING rows for zai:glm-5.2, minimax:MiniMax-M3, and kimi-coding:kimi-k2.6-preview (not covered by the LiteLLM refresh) and bumps pricingAsOf to 2026-07-11.
+- 6267a76: summary: Drive Grok CLI sessions over ACP with Fusion tools, skills, and MCP loaded.
+  category: feature
+  dev: GrokRuntimeAdapter uses vendored ACP client under src/acp/ (not fusion-plugin-acp-runtime import), `grok agent stdio`, MCP/fn\_\* bridge, and Fusion skills via --plugin-dir / \_meta.pluginDirs.
+- bcbd97c: summary: Add a simplified workflow editor view with a modern vertical canvas, plus Simple/Advanced/List mode toggle.
+  category: feature
+  dev: New WorkflowSimpleCanvas + WorkflowAddStepModal components; view mode persists in localStorage (`fusion:wf-editor-view-mode`, mobile `fusion:wf-mobile-graph-style`); insert-on-edge helpers live in workflow-simple-layout.ts. The old "Show simple editor" compact layout is now the List mode; the advanced canvas is unchanged.
+- fc07bdf: summary: Task cards now show a "Reviewing" badge while a task is in Plan Review.
+  category: feature
+  dev: Adds isPlanReviewRunning(task) in taskProgress.ts; consumed by TaskCard + ListView status badges.
+- 4edd8cc: summary: Usage dropdown now shows the Claude Fable weekly window and Grok CLI subscription credit usage.
+  category: feature
+  dev: Claude per-model weekly usage is parsed generically from the OAuth payload's `limits[]` scoped entries (the `seven_day_fable` key guess was disproven by a live probe); Grok prefers `~/.grok/auth.json` OIDC credentials against `cli-chat-proxy.grok.com/v1/billing?format=credits`, falling back to the xAI API-key validity card.
+
+### Patch Changes
+
+- 79264d4: summary: Terminal now auto-reconnects on first launch instead of getting stuck on "Disconnected".
+  category: fix
+  dev: useTerminal tracks whether the socket has ever opened; a never-connected initial connect keeps retrying at capped backoff (staying "reconnecting") until it opens, while mid-session drops and 4000/4004 permanent closes are unchanged.
+- 49faf0a: summary: Task Detail terminal now shows its worktree, is shorter on mobile, and sits with Cost after Comments.
+  category: feature
+  dev: TerminalModal defaults its workspace picker to the useWorkspaces entry matching `defaultCwd` (embedded task terminal only; footer terminal stays on Project Root). TaskDetailModal reorders the tab strip to Comments → Terminal → Cost and reduces the mobile min-height of `.detail-section--worktree-terminal`.
+- 66e91f9: summary: Task card size badge (S/M/L) no longer drops onto a misaligned second row on cards with extra badges.
+  category: fix
+  dev: Groups the wrapping header status/meta badges in TaskCard so `.card-id` and the right-aligned `.card-header-actions` (holding `.card-size-badge`) stay on the top row; fixes the fast-mode (`.card-execution-mode-badge`) orphaned-size-chip case (FN-7832 repro).
+- 9ac4da0: summary: Task card size badge (S/M/L) now sits flush against the card's right edge.
+  category: fix
+  dev: Renders `.card-size-badge` as the last child of `.card-header-actions` in TaskCard so its right margin equals the card's top padding (FN-7846).
+- 409de31: summary: Stop false "Anthropic OAuth expired" notifications when the token is actually valid.
+  category: fix
+  dev: The OAuth expiry monitor and validity logger iterated the un-aliased `getOAuthProviders()` id `anthropic` and evaluated `get("anthropic")`, which can resolve to a stale legacy/supplemental row (e.g. `~/.pi/agent/auth.json`) even when the fresh, actually-used token lives under `anthropic-subscription`. Both now resolve the freshest of the two aliased ids via a shared `resolveEffectiveOAuthCredential` helper (mirroring the refresh scheduler's `getRefreshCandidateIds` alias handling), so a live subscription token suppresses the false alert. Notification cadence/throttle semantics are unchanged.
+- f628095: summary: Fix the Artifacts preview "Add comment" button doing nothing when clicked, and label the preview as read-only.
+  category: fix
+  dev: The global `.btn:active { transform: scale(0.97) }` press feedback replaced the selection-comment trigger's positioning translate while the mouse was held, moving the button out from under the cursor so `click` never fired. `.selection-comment-trigger:active` now restates the translate (desktop and mobile), covering DocumentsView and FileEditor surfaces. The Artifacts project-file preview header also gains a `documents.readOnly` badge.
+- 93b0801: summary: Fix a slow dashboard memory leak where archived tasks were never evicted from the in-memory badge cache.
+  category: performance
+  dev: The badge-snapshot cache (packages/dashboard/src/server.ts) only removed a task on hard-delete, so archiving a task re-cached it via the task:updated listener and it was retained for the daemon's lifetime — unbounded growth over long uptimes with task churn. A new `isBadgeEligibleTask` predicate (column !== "archived") gates both the create and update listeners so archived tasks are evicted, matching the startup prime's `includeArchived:false`. An unarchive re-primes the entry.
+- ec1a2ea: summary: Tidy the board quick-add composer and add a visible task-card actions menu.
+  category: fix
+  dev: QuickEntryBox actions split into options/primary groups (Save right-aligned, single divider); TaskCard gains a hover/mobile-visible kebab that opens the existing TaskContextMenu.
+- fbea66d: summary: Show partial estimated costs across all Command Center cost views when some model pricing is unavailable.
+  category: fix
+  dev: Priced subtotals use a trailing plus sign; entirely unpriced usage remains unavailable.
+- 23e36b8: summary: Daemon exits non-zero on signal termination so Restart=on-failure restarts it after a memory-pressure kill.
+  category: fix
+  dev: `fn daemon` and `fn serve` (packages/cli/src/commands/daemon.ts, serve.ts) now exit with the POSIX 128+signal code (SIGTERM=143, SIGINT=130) on signal-initiated graceful shutdown instead of 0. Previously a memory-pressure SIGTERM produced exit 0, which `Restart=on-failure` treated as a clean stop, leaving the daemon dead. A deliberate `systemctl stop` still won't restart (systemd honors the requested inactive state regardless of exit code); a non-signal shutdown still exits 0. The interactive TUI launcher (`fn dashboard`) is intentionally unchanged — it has its own signal-name-keyed restart supervisor.
+- 53427cd: summary: Prevent stale Planning notifications from pointing to missing sessions.
+  category: fix
+  dev: Background task sync now defers to the authoritative server session list.
+- c565ceb: summary: Fix the GitHub/GitLab import preview panel being cut off on tablet-width screens.
+  category: fix
+  dev: The embedded Import Tasks view is container-query driven; the viewport `@media (max-width: 860px)` pane rules in GitHubImportModal.css were leaking `max-height: 50%` onto the embedded preview pane and are now scoped to `:not(.github-import-modal--embedded)`.
+- d585edb: summary: Fix misaligned padding on the Cursor CLI authentication card.
+  category: fix
+  dev: Wraps `CursorCliProviderCard`'s compact status line + binary-path control in a padded `.cursor-cli-provider-card__body` to match the header inset, mirroring the Claude CLI card's `.auth-provider-cli-details-body`.
+- bccb552: summary: Fix Cursor CLI model discovery and auth to use the real cursor-agent commands.
+  category: fix
+  dev: Switches model discovery to `cursor-agent models` (plain text `id - Label`, no `--json`/`model list` support) with header/tip/empty-state filtering, and derives auth from `cursor-agent status --format json` (`isAuthenticated`) instead of a `--version`-success heuristic.
+- 639a706: summary: The Cursor CLI binary path override now also applies to the model picker, not just sign-in/status.
+  category: fix
+  dev: /api/models reads globalSettings.cursorCliBinaryPath (trim/blank→undefined) and threads it as getCursorPickerModels({ binaryPath }) so model-picker discovery spawns the same machine-local cursor-agent used by auth/probe/status. Blank/undefined preserves PATH auto-detection. Follow-up to FN-7696.
+- 3e7e4a8: summary: Cursor CLI model-picker rows now surface reasoning/context-window metadata when the Cursor CLI reports it.
+  category: feature
+  dev: Threads optional reasoning/contextWindow from cursor-agent model discovery (structured JSON entries only) through discoverCursorProviderModels into cursorDiscoveryToModels, replacing the hardcoded false/0 defaults. Text-only CLI output (today's real behavior) still yields false/0, so the change is behavior-preserving against the current CLI and forward-compatible. Metadata is pass-through only — never fabricated or parsed from free text. Parallels the deferred Hermes enrichment gap (FN-7696/FN-7636).
+- 22e7d75: summary: Fix the search icon overlapping typed/placeholder text in the Files — Project search input.
+  category: fix
+  dev: `.file-browser-search-input` `padding-left` was `calc(var(--space-lg) + var(--space-md))`, which collided exactly with the leading `.file-browser-search-icon`'s occupied width (`var(--space-sm)` offset + 16px icon) under the compact spacing theme. Padding is now anchored to the same `--space-sm` offset the icon uses, plus the icon's box width, plus a real gap, so clearance holds across all spacing scales for both the FileBrowser view and modal.
+- 55dae49: summary: Fix `fn agent stop`/`fn agent start` hanging up to 60s per retry instead of exiting.
+  category: fix
+  dev: Root cause was non-deterministic CLI process exit, not a DB lock — `resolveProject()` cached an unclosed `TaskStore` and `createAgentStore()` never closed the `AgentStore` it opened, leaving SQLite handles alive after the command's real work finished. Added `resolveProjectPathOnly`/`closeProjectStore` in `project-context.ts` so path-only callers never leak a `TaskStore`, explicit `AgentStore.close()` on every exit/return path in `agent.ts` (since `process.exit()` does not run pending `finally` blocks), and a bounded fast-fail timeout around the state-store write (default 10s, override via `FUSION_AGENT_CMD_TIMEOUT_MS`) so a genuinely stuck operation fails fast with a clear error and non-zero exit instead of hanging.
+- 4fb2bf5: summary: Background memory-index refresh no longer keeps short-lived CLI/Node processes alive.
+  category: fix
+  dev: The default qmd exec path in `packages/core/src/memory-backend.ts` now unrefs the spawned child + stdio (replacing `promisify(execFile)`, whose internal stream buffering silently re-refs the pipes on a deferred tick, with a hand-rolled `spawn()`-based executor) so a fire-and-forget `scheduleQmd*` refresh never blocks a caller's event loop from draining; long-lived callers (e.g. the dashboard server) still see the refresh resolve/reject normally.
+- dcfbee9: summary: qmd-backed project memory search no longer keeps short-lived CLI/Node processes alive.
+  category: fix
+  dev: `searchWithQmd` in `packages/core/src/memory-backend.ts` no longer carries its own inline `promisify(execFile)` copy for the awaited `qmd collection add` / `qmd search` calls; it now routes through the FN-7706-hardened `getDefaultExecFileAsync()` spawn-based executor, which unrefs the child + stdio synchronously so a short-lived caller invoking a search is not held open by a slow/hung qmd child beyond its own work, while preserving the same `{stdout, stderr}` resolve / reject-on-nonzero-exit contract the search's JSON parsing depends on.
+- 6606902: summary: Fix background SQLite integrity checks holding short-lived CLI commands open unnecessarily.
+  category: fix
+  dev: `integrityCheckSqliteFileAsync`'s spawned `sqlite3` child (+ stdio) is now unref'd via the shared `unrefQmdChildProcess` helper, and `scheduleBackgroundIntegrityCheck`'s 60s scheduling timer is now `.unref()`'d, so a short-lived process (e.g. a `fn` one-shot CLI command) that opens a disk-backed `Database` exits promptly instead of being pinned by the background integrity check (FN-7706/FN-7707-class leak). Audited every other non-FN-7708 inline spawn site across `@fusion/core`/`@fusion/engine`/`@fusion/dashboard`/cli and found them SAFE (synchronous, awaited-as-own-work, or intentionally-tracked persistent processes) — see FN-7709's audit document.
+- 6cff782: summary: Grok and Cursor CLI models now appear in model pickers immediately after enabling the provider.
+  category: fix
+  dev: useModelsCache exposes a shared single-flight refreshModelsCache() that clears the SWR_CACHE_KEYS.MODELS cache and notifies subscribers; the Authentication CLI provider toggle (cursor-cli/grok-cli/claude-cli/llama-cpp) now calls it. Server-side cursor/grok picker caches use a short negative-TTL so transient cold-start empties self-heal.
+- 7dc2710: summary: Grok CLI models now run instead of failing with "not found in the pi model registry".
+  category: fix
+  dev: Adds a built-in grok-cli provider (packages/core/src/grok-provider.ts) — xAI OpenAI-compatible endpoint https://api.x.ai/v1, api openai-completions, apiKey $GROK_API_KEY — registered into the execution registry (pi.ts registerExtensionProviders), seedDashboardProviders, and CLI serve/daemon/dashboard, mirroring the built-in Z.ai provider. Grok CLI binary remains discovery/probe only; GrokRuntimeAdapter streaming is still a stub (tracked follow-up).
+- 2580524: summary: Fix Grok CLI model picker showing prompt text instead of real model names.
+  category: fix
+  dev: Rewrote parseModelLines in fusion-plugin-grok-runtime/process-manager.ts to strip the login/"Default model:"/"Available models:" preamble and `*`/`-` bullet markers plus the `(default)` annotation from verified `grok models` output; legacy `id - Label`, columnar, and JSON paths preserved.
+- b2613b7: summary: Grok now uses the key from ~/.grok/user-settings.json when GROK_API_KEY is not set.
+  category: fix
+  dev: registerBuiltInGrokProvider (packages/core/src/grok-provider.ts) now hydrates process.env.GROK_API_KEY from ~/.grok/user-settings.json { apiKey } when the env var is unset/empty, so the provider's $GROK_API_KEY reference resolves. Env var always wins; missing/malformed/empty file is fail-soft (no throw, no env mutation). Mirrors the grok-runtime probe's fallback.
+- 71e9f48: summary: Grok CLI no longer requires a Fusion-visible API key — the CLI's own auth is enough to enable it.
+  category: fix
+  dev: probeGrokBinary now derives `authenticated` from `grok` binary availability (readiness) instead of GROK_API_KEY/~/.grok/user-settings.json presence, mirroring the Cursor CLI provider; key detection is exposed as a non-blocking `apiKeyDetected` hint. The /auth/status grok-cli provider is authenticated when enabled + binary available; GrokCliProviderCard drops the blocking "Set GROK_API_KEY" state. The direct xAI streaming path still uses $GROK_API_KEY when present (FN-7711/FN-7714 unchanged).
+- c8fcbec: summary: Archiving a task now releases its active-session lock so the next task can run Plan Review.
+  category: fix
+  dev: task:moved handler in packages/engine/src/executor.ts now disposes active surfaces and sweeps activeSessionRegistry paths for any move to the terminal "archived" column (previously only from==="in-progress"); done/in-review merge leases are deliberately untouched.
+- cda9532: summary: Fix agents needing repeated stop/start because a stopped agent's heartbeat timer was never fully cleared.
+  category: fix
+  dev: HeartbeatTriggerScheduler.auditTimerRegistrations now unregisters lingering timers for non-eligible (stopped/paused/disabled) agents, and syncTimerForAgent force-re-arms a stale present timer on a start transition, so a stop/start durably clears the zombie-timer condition instead of deferring to the FN-7645 watchdog repair (FN-7718).
+- a4931a4: summary: Triage recovers automatically when the planning model hits a provider 404/429 and no fallback is set.
+  category: fix
+  dev: TriageProcessor.specifyTask now derives an implicit fallback from the project/global default (execution) model when no planningFallback*/global fallback* pair is configured, so a retryable primary planner-model failure swaps once instead of failing triage with "no fallback configured". Test mode and self-swap are excluded; the single-swap ModelFallbackExhaustedError terminal path is preserved.
+- a24b0fa: summary: Bound durable-agent heartbeat worktree-acquisition retries and count exhausted failures.
+  category: fix
+  dev: HeartbeatMonitor.executeHeartbeat's task worktree acquisition (agent-heartbeat.ts) previously requeued a task to "todo" on every acquisition failure with no cross-heartbeat retry cap, unlike Executor.createWorktree's bounded MAX_WORKTREE_RETRIES loop. Adds MAX_HEARTBEAT_WORKTREE_ACQUISITION_RETRIES (3), reusing Task.recoveryRetryCount as the counter (no schema migration). On cap exhaustion the task is terminally marked status:"failed" and a new onTaskAcquisitionExhausted callback is invoked; in-process-runtime.ts wires it to CentralCore.recordTaskCompletion(taskId, false) so the failure is counted (previously totalTasksFailed could stay 0 for this path). Investigation (FN-7721) found the other reported worktree-collision sub-gaps (branch-exists idempotent reuse, in-call retry cap, branch↔task-ID naming) already handled or not reproducing on HEAD — see task docs for evidence.
+- e657d3b: summary: The engine now reacts to CLI `fn agent stop`/`start` promptly instead of waiting up to a minute for the audit sweep.
+  category: fix
+  dev: AgentStore gains opt-in cross-process change detection (fs.watch + poll fallback, modeled on TaskStore) that re-emits the existing agent:updated/agent:stateChanged events in the engine process when another process (the fn CLI) mutates an agent row, so HeartbeatTriggerScheduler's listeners fire without waiting for the 60s auditTimerRegistrations sweep. The audit sweep is retained as the durable backstop (FN-7723, follow-up from FN-7718).
+- 927741a: summary: Preserve prior failed review-step attempts so self-healing re-runs no longer erase the failure history.
+  category: fix
+  dev: Adds an optional `priorAttempts?: WorkflowStepResult[]` field (bounded, single-level, capped at `MAX_WORKFLOW_STEP_PRIOR_ATTEMPTS`) plus a shared pure `upsertWorkflowStepResult(existing, incoming, opts?)` helper in `@fusion/core` (`packages/core/src/workflow-step-results.ts`). Both engine recorders — the executor graph adapter's `recordWorkflowStepResult` and triage's `recordPlanReviewWorkflowResult` — now route through this helper instead of a bare replace-in-place upsert, so a self-healing recovery re-run of a failed pre-merge review node (code-review, plan-review, browser-verification) snapshots the prior `failed`/`advisory_failure` attempt into `priorAttempts` rather than overwriting it. Selection (self-healing, merge-blocker, progress/timing) is unchanged and reads only the current entry; `priorAttempts` is read-only history, surfaced in the task-detail Summary tab's Workflow results list as a collapsed "previous failed attempts" disclosure.
+- 5a9f354: summary: Board mutations from a tool session no longer silently land in the wrong project database.
+  category: fix
+  dev: FN-7730. `packages/core/src/pi-extensions.ts`'s `getProjectRootFromGitLinkedWorktree` now resolves a linked worktree's project root from git's own on-disk `.git`/`commondir` metadata (pure filesystem reads) before falling back to the `git rev-parse` CLI. Previously, for a non-standard `settings.worktreesDir` location combined with a failing `git` invocation (missing binary, Docker "dubious ownership" `safe.directory` refusal, etc.), resolution silently fell through to the task's own locally-hydrated `.fusion/fusion.db` instead of the true project root, so `fn_task_update` and other pi-extension write tools wrote to a throwaway, never-synced-back copy with no error surfaced. See docs/storage.md "Silent board-mutation write loss (FN-7730)" for the full root-cause writeup.
+- 7420abe: summary: `fn task show`/`move` now retry through a momentarily locked board database instead of failing.
+  category: fix
+  dev: CLI-level bounded exponential backoff gated on SQLite lock errors (override via FUSION_CLI_LOCK_RETRY_MS); resolved TaskStore now closed for deterministic exit.
+- 6a13ad1: summary: Removed leftover UI/i18n/docs for the deleted "awaiting release authorization" planning hold.
+  category: internal
+  dev: FN-7732 — removes the residual release-authorization planning-block scaffolding left after the triage gate was deleted (b5b0458): the unemitted `task:release-authorization-required` activity type, the dead `isReleaseAuthorizationHold` TaskCard badge/label + CSS, orphaned i18n keys across all locales, and the stale solutions doc. The backward-compat `awaitingApprovalReason` DB column (migration 138) and the operator-only `scripts/lib/release-authorization-gate.mjs` publish guard are intentionally left intact.
+- 1e79a23: summary: All `fn task` subcommands now retry a momentarily locked board database and exit promptly instead of hanging or leaking.
+  category: fix
+  dev: Generalizes the FN-7731 CLI retryOnLock + closeProjectStore pattern across the ~26 runTask\* handlers in packages/cli/src/commands/task.ts; honors FUSION_CLI_LOCK_RETRY_MS; closes both cached and uncached CWD-fallback stores; multi-step flows (create/retry/delete/merge/imports) retry each discrete write independently instead of the whole flow.
+- bab42b4: summary: Recovery and oversight now wait for approval-blocked tasks instead of resuming them early.
+  category: fix
+  dev: Adds canonical `awaiting-approval` pause reason + `isTaskBlockedOnApproval` predicate; excludes the hold from paused-scope-decay rebound and keeps the planner overseer withholding (FN-7736).
+- 86bd434: summary: `fn branch-group`/`fn pr` now retry a locked board database and exit promptly instead of hanging or leaking.
+  category: fix
+  dev: Applies the FN-7731 CLI retryOnLock + closeProjectStore pattern to packages/cli/src/commands/branch-group.ts and pr.ts (agent/node audited and left unchanged); honors FUSION_CLI_LOCK_RETRY_MS; closes both cached and uncached CWD-fallback stores on every exit path.
+- 5304af8: summary: `fn backup`/`memory-backup`/`mcp`/`db vacuum` now retry a locked board database and exit promptly instead of hanging.
+  category: fix
+  dev: Applies the FN-7731/FN-7738 CLI retryOnLock + closeProjectStore/asLocalProjectContext pattern to packages/cli/src/commands/backup.ts, memory-backup.ts, mcp.ts, and db.ts; closes cached, uncached CWD-fallback, and ad-hoc MCP secrets TaskStores on every exit path; retries MCP settings writes and DB VACUUM; honors FUSION_CLI_LOCK_RETRY_MS. GlobalSettingsStore is file-backed and left unchanged.
+- 4726af6: summary: CLI research/settings-import/agent-export/git/project commands close board stores promptly and retry a locked database.
+  category: fix
+  dev: Applies the FN-7731/FN-7738/FN-7704 CLI resolveProjectPathOnly + closeProjectStore/asLocalProjectContext + retryOnLock pattern to packages/cli/src/commands/research.ts, settings-import.ts, agent-export.ts, git.ts, and project.ts; path-only callers stop leaking the cached resolveProject TaskStore, getTaskCounts closes its per-project store, agent export closes its AgentStore, and importSettings/createExport retry FUSION_CLI_LOCK_RETRY_MS. The research non-wait fire-and-forget run path is intentionally exempted so it is not truncated; GlobalSettingsStore is file-backed and left unchanged.
+- 2ff8e2e: summary: The planner overseer now detects and recovers stalled in-progress tasks instead of leaving hung executors stuck.
+  category: fix
+  dev: FN-7743 — the executor-stage overseer observation now emits `signal: "stuck"` once an in-progress task has been inactive past a configurable threshold (`plannerOverseerExecutorStuckAfterMs`), feeding the existing `decidePlannerRecovery` → bounded `inject_guidance` path. Previously a non-paused in-progress task was always reported `progressing`, so a hung executor was never recovered. Human-control withholds (user-paused / approval-blocked / autoMerge-off) still take precedence.
+- 1fa4a69: summary: Harden the dashboard server so provider API keys keep persisting even if a host forgets to wire auth storage.
+  category: fix
+  dev: createServer() now derives a fallback authStorage from engine.getAuthStorage() (new ProjectEngine getter exposing its createFusionAuthStorage() instance) when options.authStorage is absent, mirroring the existing engine-derivation of onMerge/automationStore/etc. Explicit authStorage still overrides. Prevents regression of the desktop "keys don't persist / Authentication is not configured" gap (#1948); the desktop path's wrapped authStorage (FN-7622) is unchanged.
+- 786a274: summary: Fix manual merge hold tasks being marked failed when auto-merge is off.
+  category: fix
+  dev: Adds benign manual-hold pause-abort classification and in-place self-healing recovery for auto-merge-off merge holds.
+- eb377ba: summary: Manual merge hold now applies to shared-branch-group tasks whose group has dissolved.
+  category: fix
+  dev: `isLiveSharedBranchGroupMemberIntegration(task, group)` gates the shared-member auto-merge-off exemption on a live (`status: "open"`) branch group; a missing/finalized/abandoned group degrades to the standalone manual-hold path. Threaded through `project-engine.ts allowInReviewMergeProcessing` and the `executor.ts` merge gates. Fixes issue #1980 (FN-7750).
+- 547740b: summary: Mobile Settings search icon now sits inline next to the section dropdown.
+  category: fix
+  dev: SettingsModal moves .settings-search-toggle into the .settings-mobile-section-picker row; desktop unchanged.
+- 9ce0b49: summary: Tighten the mobile Settings layout — dropdown-only section picker, single-row footer, and slimmer header/footer.
+  category: fix
+  dev: SettingsModal mobile (≤768px) CSS/JSX only; section-picker label removed, aria-label preserves accessible name.
+- f7c6f56: summary: Grok CLI models now run via the grok CLI when no Fusion-visible API key is set.
+  category: fix
+  dev: createResolvedAgentSession (packages/engine/src/agent-session-helpers.ts) auto-derives runtimeHint "grok" when defaultProvider is grok-cli, no GROK_API_KEY is Fusion-visible (new read-only isGrokApiKeyFusionVisible in packages/core/src/grok-provider.ts), and the Grok runtime is registered; the selected model is passed to the CLI via a new --model option on spawnGrokStream. Explicit runtime hints and the key-visible direct-endpoint default are unchanged. Closes the deferred FN-7722/FN-7725 follow-up.
+- d2c2a4c: summary: The latest OpenAI GPT-5.6 models now appear everywhere, not just the Settings model list.
+  category: fix
+  dev: Wires mergeSupplementalOpenAiCodexModels into the engine pi createFnAgent registry-seeding surface (packages/engine/src/pi.ts) alongside the existing mergeSupplementalAnthropicModels call, mirroring register-model-routes.ts. FN-7745 only wired the dashboard /api/models route, so gpt-5.6-luna/sol/terra were absent on the pi surface. Additive, dedupe-safe; adds a pi-create-fn-agent regression test.
+- 28c8233: summary: Update the bundled pi SDK to 0.80.6.
+  category: internal
+  dev: Bumps @earendil-works/pi-ai and @earendil-works/pi-coding-agent from ^0.80.5 to ^0.80.6 across cli/dashboard/engine/pi-claude-cli and regenerates pnpm-lock.yaml. Adds pi-claude-cli compatibility for the new max ThinkingLevel by mapping Opus models to CLI max and non-Opus models to high.
+- b4b183f: summary: Fix empty estimated cost on the dashboard so priced runs show a dollar amount.
+  category: fix
+  dev: Root-caused model-identity → pricing-key resolution; cost stays read-time derived in costFor/token-analytics.
+- 2be6040: summary: Route no-key Grok CLI chat and fallback model selections through the bundled CLI runtime.
+  category: fix
+  dev: Extends grok-cli no-visible-key routing to dashboard chat defaults, room responders, and fallback models.
+- fed5d3d: summary: GPT-5.6 codex models (luna, sol, terra) now actually appear in the codex model picker.
+  category: fix
+  dev: Prior fixes (FN-7742/7745/7754) validated the openai-codex supplemental merge only against a mocked ModelRegistry, so gpt-5.6-luna/sol/terra could fail to reach the picker through the real pi-coding-agent registry (getAvailable() auth filtering + registerProvider full-replacement + OAuth provider validation) and/or the /api/models configuredProviders filter. This closes that gap and adds a real-registry regression test.
+- 150227f: summary: Fix mobile model drop-down lists so they scroll by touch.
+  category: fix
+  dev: Adds the CustomModelDropdown portaled list mobile scroll contract.
+- 18841d7: summary: Route Grok CLI models through the logged-in grok CLI in packaged hosts without requiring GROK_API_KEY.
+  category: fix
+  dev: Eagerly ensures the bundled Grok runtime in serve/daemon/dashboard and blocks silent direct-endpoint fallback when no key is visible.
+- f6fd6ac: summary: Fix oversized icons and spacing on the MCP servers settings page.
+  category: fix
+  dev: McpServersCard inline lucide icons now use --icon-size-sm/md token values; .btn > svg is unsized globally so they previously fell back to lucide's 24px default.
+- 059016e: summary: Fix Grok CLI chat failing instantly with a "Response failed" error.
+  category: fix
+  dev: ChatManager.sendMessage (packages/dashboard/src/chat.ts) now null-safely reads session.state.errorMessage/messages and falls back to the session's top-level messages + accumulated onText stream, so plugin-backed CLI runtime sessions (grok/droid/cursor) that expose no pi-shaped `state` render their reply instead of throwing "Cannot read properties of undefined (reading 'errorMessage')". pi/openclaw/hermes state.errorMessage failure bubbles are unchanged. Same fix applied to the room-responder session.state.messages read.
+- 167067c: summary: Fix the Artifacts tab count for default-scope dashboards.
+  category: fix
+  dev: useArtifacts now fetches and subscribes when no projectId is available, matching the default /api/artifacts scope.
+- 1ba588d: summary: Fix mobile Settings footer spacing so version text no longer overlaps actions.
+  category: fix
+  dev: Tightens the Settings modal mobile footer rail and adds CSS regression coverage.
+- f9641ec: summary: Style the Thinking Level dropdown to match the dark model picker across all surfaces.
+  category: fix
+  dev: Adds a `.thinking-level-select` rule in CustomModelDropdown.css mirroring the canonical dark `select` tokens; fixes the OS-default white control shown in model pickers incl. the quick-add QuickEntryBox/InlineCreateCard popups. No logic/prop changes.
+- 2758dde: summary: Fix Skills view showing "Skill not found" when opening any skill's content.
+  category: fix
+  dev: The /skills/:id/content and /skills/:id/file routes double-decoded the URL param (Express 5 already decodes route params once), corrupting the encoded source segment so the id no longer matched computeSkillId's discovery output. Routes now use the once-decoded canonical id (FN-7777).
+- a32307f: summary: Plugin skills now show for the project that enabled them, even when the daemon starts elsewhere.
+  category: fix
+  dev: getPluginSkills is now project-aware — resolved per requesting rootDir against project_plugin_states instead of the daemon-root PluginLoader scope; plugins skipped as disabled are now logged at load time. Wired in dashboard.ts/serve.ts/daemon.ts. Strategy: B per-project resolution.
+- 70330bc: summary: Show a No message placeholder for empty assistant chat replies.
+  category: fix
+  dev: Adds shared StandardChatSurface rendering and tests for empty assistant message bodies.
+- ee796ee: summary: Grok CLI failures now show the actual error instead of an empty chat message.
+  category: fix
+  dev: GrokRuntimeAdapter.promptWithFallback now captures stderr, bridges NDJSON `error` events, and inspects the subprocess exit code. Any run that ends with no renderable content (missing/invalid GROK_API_KEY, bad flag, non-zero exit, missing `grok` binary, cold-start/inactivity hang, or a dropped `error` event) surfaces a diagnosable reason via `onText` rather than resolving into a blank bubble. A clean content-less exit (code 0, no stderr) stays silent. Fixes the root cause behind the FN-7779 "No message" placeholder.
+- f5fd8b8: summary: Task cards no longer wrap the header when a task was created by an agent — the agent badge moved to a bottom row.
+  category: fix
+  dev: Moved `.card-agent-created-badge` out of `.card-meta-badges` into a new `.card-agent-badge-row` in TaskCard; updated the `hasCardMetaBadges` guard.
+- 2e97395: summary: Surface Grok CLI runtime failures instead of empty chat replies.
+  category: fix
+  dev: Keeps Grok CLI prompt resolution non-throwing while waiting for child close to capture stderr diagnostics.
+- 59a798b: summary: Fix Chat header showing thread controls while the conversation list is displayed after re-entering Chat.
+  category: fix
+  dev: On mobile remount, useChat/useChatRooms restore the active session/room while sidebarVisible resets true; mobile thread controls now key off actual pane visibility.
+- 4d4e9ad: summary: Tighten margins and padding across all mobile Settings pages for a more compact layout.
+  category: fix
+  dev: SettingsModal mobile (≤768px) CSS only — reduced .settings-content and interior section spacing; desktop/tablet unchanged.
+- cc8b1b6: summary: Estimated cost on the dashboard stays populated as runtime model catalogs drift.
+  category: fix
+  dev: Durable token-usage snapshot pricing for Team/Workflow analytics so cost survives empty legacy task model columns; cost stays read-time derived in costFor/token-analytics.
+- 30bd779: summary: Surface Grok CLI immediate no-message exits with actionable diagnostics.
+  category: fix
+  dev: Treat code-0 zero-NDJSON grok headless runs as anomalous and stream diagnostics through runtime sessions.
+- dd82a60: summary: Fix the Thinking Level dropdown showing an unstyled white control in model pickers.
+  category: fix
+  dev: Re-scopes .thinking-level-select from .model-combobox to the portaled .model-combobox-dropdown container.
+- db9b9d2: summary: Fix Grok CLI runtime sends to stream responses from xAI's real grok binary.
+  category: fix
+  dev: Uses `grok -p --output-format streaming-json` and parses `thought`/`text`/`end` events.
+- c258fc1: summary: Make Grok CLI chat replies reliable by using the stable headless JSON response.
+  category: fix
+  dev: Grok runtime now invokes `grok -p <prompt> --output-format json` and diagnoses empty non-EndTurn results.
+- 7846c96: summary: Usage view now shows meters only for AI providers you have configured.
+  category: fix
+  dev: fetchAllProviderUsage() in packages/dashboard/src/usage.ts filters providers with no resolved credentials and no meterable entitlement (e.g. GitHub 404 "No Copilot subscription found" reclassified error→no-auth); configured-but-failing providers (auth expired / HTTP 5xx / timeout) remain visible.
+- 725ce45: summary: Fix a false "Project directory is not a Git repository" error that blocked all task execution in valid repos.
+  category: fix
+  dev: Git detection is now tri-state (repo/not-repo/error) via detectGitRepository(); dubious-ownership/PATH/timeout git failures no longer masquerade as "not a Git repository". FN-7799.
+- 915c1e0: summary: Show the xAI logo for Grok model IDs across dashboard provider surfaces.
+  category: fix
+  dev: ProviderIcon now falls back through inferProviderIconKey before the generic CPU icon.
+- 21fb8f6: summary: Recover tasks stranded by missing worktrees during merge/review and allow retry.
+  category: fix
+  dev: Adds merge-active missing-worktree self-healing with no-action audits and signature-only retry resets across CLI, extension, and dashboard.
+- 367f591: summary: Mobile Settings footer shows the compact "v0.x" version instead of the full word.
+  category: fix
+  dev: SettingsModal picks settings.footer.versionShort ("v{{version}}") when viewportMode === "mobile".
+- 60b8b4e: summary: Quick-add composer now shows icon-only priority/Fast controls with GitHub tracking beside attach.
+  category: feature
+  dev: QuickEntryBox + TaskForm reuse a shared priorityIndicator glyph helper; GitHub + Priority relocated into .quick-entry-primary-group; no test-id/payload changes.
+- c1b14c2: summary: Usage view now hides Gemini when it isn't configured for metering or its login has expired.
+  category: fix
+  dev: fetchGeminiUsage() in packages/dashboard/src/usage.ts reclassifies the unsupported-auth-type (api-key/vertex-ai) and HTTP 401/403 outcomes from error→no-auth so fetchAllProviderUsage omits Gemini; transient failures (HTTP 5xx/network/timeout) of a configured token remain visible as error.
+- 281d1a3: summary: Fix the List view controls and quick-add box being cut off on tablet-width screens.
+  category: fix
+  dev: ListView collapses to a single-pane layout at the `useViewportMode()` "tablet" tier (769–1024px) instead of the desktop two-pane split, which lacked horizontal room and clipped the primary action cluster and expanded QuickEntryBox. Split-vs-single now keys off a shared narrow gate; touch-only long-press stays gated on mobile.
+- 3da9da2: summary: Use the real Cursor logo in the usage dropdown, model selection, and other provider surfaces.
+  category: fix
+  dev: Replaces the placeholder CursorCliIcon SVG with the Cursor brand mark and adds a `cursor` → `cursor-cli` mapping in inferProviderIconKey.
+- 0a90dc4: summary: Stop false "OAuth token expired" push notifications for providers that silently refresh (e.g. GitHub Copilot).
+  category: fix
+  dev: OAuthExpiryMonitor.check() now attempts a best-effort getApiKey refresh and re-checks the credential before dispatching oauth-token-expired, mirroring /api/auth/status's refresh-then-recheck that drives OAuthReloginBanner. The FN-7574 start-refresher-first ordering only covered the startup check; short-lived auto-refreshing tokens still fired on interval ticks with no matching banner.
+- ee5c2a8: summary: Fix terminal header wrapping and spacing when the panel is narrow.
+  category: fix
+  dev: Header shortcut/status text now stays nowrap so terminal actions scroll horizontally instead of wrapping.
+- 6b506f2: summary: Move terminal shortcuts into the footer and collapse crowded terminal tabs into a dropdown.
+  category: feature
+  dev: The shared terminalActionControls fragment now always renders in the .terminal-status-bar footer (never the header .terminal-actions); a ResizeObserver-driven container-overflow check swaps the .terminal-tabs strip for the existing .terminal-mobile-tabs <select> dropdown when tabs don't fit, distinct from the viewport-based isMobileTerminal/isTabletTerminal flags.
+- 4fb3606: summary: Show task Artifacts-tab documents expanded with Markdown by default.
+  category: feature
+  dev: TaskDocumentsTab now uses multi-expand document state and persists the Markdown/Plain preference.
+- 06bf0b8: summary: Artifacts view — Task Documents sidebar now shows clearer task grouping and more space between tasks.
+  category: fix
+  dev: DocumentsView Task Documents sidebar restyles .documents-task-sidebar-group-header vs .documents-task-document-item hierarchy and increases inter-group separation, scoped under .documents-task-documents-sidebar so Project Files and Artifacts tabs are unaffected.
+- 391ff0d: summary: Agents now auto-clear error state and retry on their next heartbeat instead of getting stuck.
+  category: fix
+  dev: Heartbeat scheduler keeps transient, non-operator-actionable error-state durable agents timer-eligible; executeHeartbeat clears error (error→active, clears lastError) at run entry, bounded by MAX_HEARTBEAT_ERROR_RECOVERY_ATTEMPTS (settings-overridable). Operator-actionable errors stay parked; exhaustion pauses the agent with pauseReason "error-retry-exhausted"; a successful run resets the counter. Emits agent:auto-recover-error-state / agent:error-retry-exhausted run-audit events.
+- b3ed63d: summary: Fix the Artifacts Task Documents list rendering as blank rows when documents are loaded.
+  category: fix
+  dev: Root cause was flex-shrinking task cards in DocumentsView.css; cards now opt out of shrink and DocumentsView.test.tsx covers loaded 50+ group rendering.
+- 3da3f37: summary: Done task cards group Archive and Revert into one dropdown.
+  category: feature
+  dev: Reuses the in-progress "Send back" .card-send-back\* dropdown pattern in TaskCard; new i18n key tasks.doneActions.
+- 14b7244: summary: Stop recording advisory "merger awaiting-confirmation" planner interventions that never block auto-merge.
+  category: fix
+  dev: decidePlannerRecovery now returns action "none" for merger/pull-request stages when autoMergeWillProceed === true; the genuine human-approval (false) and neutral (undefined) confirmation paths are unchanged (FN-7840).
+- 0b5c551: summary: Fix the mobile Todo view so the list panel fills full height on selection.
+  category: fix
+  dev: TodoView.css — the single-panel narrow-container stack no longer inherits the @media (max-width:768px) sidebar max-height cap.
+- c7c6c5a: summary: Priority selection in quick add and task cards is now color-coded by urgency (blue low, amber high, red urgent).
+  category: feature
+  dev: priorityIndicator gains a getPriorityColorVar single source consumed by QuickEntryBox, TaskForm inline row, and TaskCard's .card-priority-badge; semantic tokens only, no test-id/payload changes.
+- c9d0211: summary: Coordinate durable-agent error recovery across heartbeat and self-healing.
+  category: fix
+  dev: Reconciles heartbeatErrorRecovery with recoverOrphanedAgents so timer and self-healing paths share one retry budget, use consistent transient/operator-actionable eligibility, and emit a source-discriminated audit surface (FN-7844).
+- 4397caf: summary: Fix push to remote after merge never running; pick the push remote and target branch from dropdowns in settings.
+  category: fix
+  dev: The `pushAfterMerge` setting only existed in the soft-deprecated legacy `aiMergeTask` pipeline; `runAiMerge` (the sole merge path since master-plan U0) now runs a post-finalize push step — ref-to-ref fast path, clean-room detached rebase with AI conflict resolution on remote divergence (non-FF local ref CAS advance + merge-advance auto-sync), `push:origin` run-audit events, non-fatal failures. New `GET /api/git/remotes/:name/branches` endpoint backs the settings dropdowns; the `pushRemote` setting string ("origin" / "origin main") is unchanged.
+- d116018: summary: Make stranded AI merge recovery bind to the reviewed clean-room commit.
+  category: fix
+  dev: Avoids ambiguous same-task clean-room recovery and honors cancellation before pre-prune landing.
+- d80cdd2: summary: Honor assigned agent models in execution and warn on default-model fallbacks.
+  category: fix
+  dev: Executor assigned-agent lookup now falls back to the root AgentStore; session audit adds noModelResolved/runtimeBuiltInFallbackModel when resolution is empty.
+- 41998a6: summary: Fix cramped padding on the Notifications "Failure notification mode" settings card.
+  category: fix
+  dev: Wrap the failure-notification card fields in `.notification-provider-body` in NotificationsSection so it matches sibling provider-card padding on desktop and mobile.
+- a9d5c0f: summary: Fix Grok CLI chat returning errors or empty replies in the dashboard.
+  category: fix
+  dev: Two independent defects. (1) The default (no-project) ChatManager received a bare PluginLoader as its runner; Grok CLI routing (deriveGrokRuntimeHintForNoVisibleKey → resolveRuntime) calls getRuntimeById/createRuntimeContext, which only exist on PluginRunner, so a grok-cli/\* chat with no Fusion-visible GROK_API_KEY threw "getRuntimeById is not a function" and surfaced the misleading "requires the bundled Grok CLI runtime" error. New resolveChatManagerPluginRunner(options) prefers the engine's PluginRunner (the runner the project-scoped chat path already uses), falling back to the loader only in UI-only mode. (2) In a source checkout the running dashboard resolved the staged CLI tsup bundle (packages/cli/dist/plugins/fusion-plugin-grok-runtime/bundled.js), which resolvePluginEntryPath prefers verbatim with no freshness check; that bundle was stale vs the FN-7796 single-JSON adapter source (the FN-7779 dev prebuild rebuilds each plugin's own dist but never the staged bundle), so project-scoped grok chat produced empty replies. Fixed durably: getCandidatePluginDirs now probes the live workspace source dir (<repo>/plugins/<id>) before the staged bundle, so dev loads the freshness-checked live plugin (self-healing even when the prebuild is skipped). Published installs are unaffected (no workspace dir). A one-time `pnpm build` refreshes any already-stale staged bundle.
+- 5dc3837: summary: Fix header connection pill showing "Desktop Desktop" and mixed font sizes.
+  category: fix
+  dev: ShellConnectionStatus now folds the host kind into one summary string; removed the separate \_\_kind span and its CSS.
+- 1d2d73b: summary: Fix Memory insights parsing and modernize the Memory, Insights, Todos, and agent Memory views.
+  category: fix
+  dev: parseInsightsContent filtered bullets after stripping their prefix, collapsing every category into one blob; useMemoryData drops the dead GET /memory and /memory/stats mount fetches and no longer refetches the file list on selection; Engines tab is a 2-column card grid; Todo items are single-row with a quiet inline action cluster; the agent Memory tab uses the shared FileEditor with per-section save actions and fixes the agents.memoryFileMeta {{date}} interpolation.
+- c73094e: summary: Polish the Memory view: centered layout, labeled editor toolbar, aligned toggle rows.
+  category: fix
+  dev: MemoryView tabs get a 960px centered column; FileEditor instances pass forceToolbarActionsVisible; new i18n key memory.dreamsEnabledTooltip.
+- c68b053: summary: Reconcile completed and stale generated-fix mission invariants.
+  category: fix
+  dev: Completed missions now normalize autopilot/auto-advance to inactive during autopilot completion, polling, and restart recovery. Mission reconciliation also supersedes generated fix features whose own validator state is already passed, and the scheduler startup sweep runs stale generated-fix reconciliation before trying to relink or retriage active slice features. This prevents complete missions from remaining watched and prevents stale generated fix rows from keeping otherwise-drained missions administratively active.
+- b613a87: summary: Settings on mobile now keeps showing the GitHub star count.
+  category: fix
+  dev: Removed the ≤768px `display:none` on `.settings-github-star-btn__count` in SettingsModal.css (FN-7848).
+- be1950b: summary: Keep task detail per-model cost tables horizontally scrollable on mobile.
+  category: fix
+  dev: Removes the Task Detail stacked-card mobile override and guards the shared token table scroll contract.
+- dbb29d4: summary: Document the planner-overseer eye badge on task cards.
+  category: internal
+  dev: Clarifies that the eye icon reflects non-idle plannerOverseerState, not a human view marker.
+- e4a59f7: summary: Tasks are no longer stuck "awaiting release authorization" — the over-firing release gate was removed.
+  category: fix
+  dev: Removed the triage release-authorization gate (packages/engine/src/triage-release-authorization.ts + finalizeApprovedTask block) and its dashboard approve/reject-plan guards. It false-flagged specs that merely mentioned release tooling and stranded tasks in awaiting-approval with no in-band exit. Legacy `awaitingApprovalReason: "release-authorization"` rows now render as ordinary manual plan-approval holds. Releases are kept out of Fusion by agent instruction (AGENTS.md → Releasing) instead.
+- e4d404e: summary: Fix Settings GitLab row overflowing its panel and the footer Save button clipping.
+  category: fix
+  dev: settings-gitlab-disclosure now carries the form-group gutter; .settings-modal .modal-actions wraps on desktop instead of clipping (mobile nowrap rail preserved).
+- 2cfeb74: summary: Polish first-run setup: connected providers first, state-driven GitHub step, fixed radios, deduped node picker.
+  category: fix
+  dev: New setupWizardNodes.ts (getSelectableRuntimeNodes/shouldShowRuntimeNodeSelector) shared by SetupWizardModal and SetupProjectForm; GitHub status revalidates on window focus and OAUTH_RELOGIN_SUCCESS_EVENT; 4 new i18n keys.
+- e90a9c4: summary: Auto-heal wedged SQLite connections in place instead of failing every request until restart.
+  category: fix
+  dev: The sqlite adapter now classifies connection-corruption errors (SQLITE_NOTADB "file is not a database" / "database disk image is malformed"), reopens the connection on the same path, replays assignment-style PRAGMAs, verifies with PRAGMA quick_check, and retries the failed operation once when outside an explicit transaction. Statements are generation-tracked so ones prepared before the reopen re-prepare transparently; mid-transaction unwind (ROLLBACK/RELEASE) after a reopen is absorbed as no-ops. Covers fusion.db, fusion-central.db, and archive.db. On-disk corruption (quick_check failure) still defers to the open-time recovery machinery.
+- 23e36b8: summary: Task API operations no longer fail with 500 when a task's PROMPT.md can't be read; server also logs 500 causes.
+  category: fix
+  dev: getTask (the shared load for GET/DELETE/PATCH/retry/reset/archive) and the mutation helpers updateTaskUnlocked, updateStep, readPromptForArchive, and resetPromptCheckboxes (packages/core/src/store.ts) read PROMPT.md unguarded, so an unreadable file (root-owned from a prior `sudo` run → EACCES, PROMPT.md being a directory → EISDIR, transient FS error) 500'd every per-task op while the PROMPT.md-free board list/create kept working. These reads are now best-effort (degrade + log). Diagnosability: rethrowAsApiError preserves the original error as Error `cause` and the /api boundary logs stack + cause for 5xx (packages/dashboard/src/api-error.ts, server.ts); client body stays generic in production.
+- 23e36b8: summary: "Update now" now explains permission (EACCES) failures and how to fix them instead of showing raw npm errors.
+  category: fix
+  dev: `performUpdateInstall` (packages/dashboard/src/update-check.ts) detects EACCES/EPERM install failures (by error code or stderr text) and returns actionable remediation — run `sudo fn update`, reinstall without sudo, or `brew upgrade fusion` for Homebrew installs — rather than the raw `npm error EACCES … rename '/usr/lib/node_modules/@runfusion/fusion'`. Occurs when Fusion was installed via `sudo npm i -g` (root-owned global dir); `--force` is not retried for this class since it cannot grant write permission.
+
 ## 0.57.0
 
 ### Minor Changes

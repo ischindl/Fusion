@@ -1,5 +1,23 @@
 # @fusion/dashboard
 
+## 0.58.0
+
+### Patch Changes
+
+- @fusion/core@0.58.0
+- @fusion/engine@0.58.0
+- @fusion/i18n@0.39.23
+- @fusion-plugin-examples/cli-printing-press@0.1.40
+- @fusion-plugin-examples/compound-engineering@0.1.23
+- @fusion-plugin-examples/dependency-graph@0.1.54
+- @fusion-plugin-examples/grok-runtime@0.2.1
+- @fusion-plugin-examples/roadmap@0.1.42
+- @fusion-plugin-examples/cursor-runtime@0.1.42
+- @fusion-plugin-examples/droid-runtime@0.1.49
+- @fusion-plugin-examples/hermes-runtime@0.2.73
+- @fusion-plugin-examples/openclaw-runtime@0.2.73
+- @fusion-plugin-examples/paperclip-runtime@0.2.73
+
 ## 0.57.0
 
 ### Patch Changes
