@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import type { ArtifactWithTask, TaskDocumentWithTask, TaskDetail } from "@fusion/core";
 import { DocumentsView } from "../DocumentsView";
-import { fetchArtifact, fetchTaskDetail, fetchWorkspaceFileContent, updateArtifact } from "../../api";
+import { fetchArtifact, fetchTaskDetail, fetchWorkspaceFileContent, putTaskDocument, saveWorkspaceFileContent, updateArtifact } from "../../api";
 import { useArtifacts } from "../../hooks/useArtifacts";
 import { useDocuments } from "../../hooks/useDocuments";
 import { useProjectMarkdownFiles } from "../../hooks/useProjectMarkdownFiles";
@@ -15,6 +15,8 @@ vi.mock("../../api", () => ({
   fetchArtifacts: vi.fn(),
   fetchArtifact: vi.fn(),
   updateArtifact: vi.fn(),
+  putTaskDocument: vi.fn(),
+  saveWorkspaceFileContent: vi.fn(),
   artifactMediaUrl: vi.fn((id: string) => `/api/artifacts/${id}/media`),
 }));
 
@@ -47,6 +49,8 @@ const mockFetchWorkspaceFileContent = vi.mocked(fetchWorkspaceFileContent);
 const mockFetchTaskDetail = vi.mocked(fetchTaskDetail);
 const mockFetchArtifact = vi.mocked(fetchArtifact);
 const mockUpdateArtifact = vi.mocked(updateArtifact);
+const mockPutTaskDocument = vi.mocked(putTaskDocument);
+const mockSaveWorkspaceFileContent = vi.mocked(saveWorkspaceFileContent);
 
 function mockSelectionRect() {
   const rect = new DOMRect(10, 20, 80, 12);
@@ -775,23 +779,48 @@ describe("DocumentsView", () => {
   });
 
   /*
-  FNXC:ArtifactsView 2026-07-10-16:20:
-  First-run review: the preview pane did not communicate that it is view-only. The Read-only
-  badge must render with the preview header in BOTH render modes (plain and markdown) — the
-  header markup is shared between desktop and mobile layouts.
+  FNXC:DocumentsView 2026-07-11-14:45:
+  Operator requirement: Project Files are editable in place with the shared CodeMirror FileEditor (this replaced the former Read-only badge contract). Edit swaps the preview for the editor, Save persists via the "project" workspace file API and updates the preview, Cancel discards without saving, and select-to-comment is suppressed while editing.
   */
-  it("shows a Read-only badge in the project file preview header in plain and markdown modes", async () => {
+  it("edits a project file in the shared file editor and saves via the workspace file API", async () => {
+    mockSaveWorkspaceFileContent.mockResolvedValue({ success: true } as Awaited<ReturnType<typeof saveWorkspaceFileContent>>);
     render(<DocumentsView addToast={addToast} onOpenDetail={onOpenDetail} />);
     // Landing tab is now Artifacts; these tests exercise the Project Files tab explicitly.
     fireEvent.click(screen.getByRole("tab", { name: /show project markdown files/i }));
 
     fireEvent.click(screen.getByRole("button", { name: "Open README.md" }));
     await screen.findByText(/Hello docs/);
-    expect(screen.getByText("Read-only")).toBeInTheDocument();
+    expect(screen.queryByText("Read-only")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /switch to markdown/i }));
-    await screen.findByText("Hello docs");
-    expect(screen.getByText("Read-only")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /edit project file/i }));
+    const editor = screen.getByLabelText("file editor");
+    expect(editor).toHaveValue("# README\nHello docs");
+    fireEvent.change(editor, { target: { value: "# README\nUpdated docs" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(mockSaveWorkspaceFileContent).toHaveBeenCalledWith("project", "README.md", "# README\nUpdated docs", undefined);
+    });
+    await waitFor(() => {
+      expect(screen.queryByLabelText("file editor")).not.toBeInTheDocument();
+    });
+    expect(screen.getByText(/Updated docs/)).toBeInTheDocument();
+  });
+
+  it("cancels project file editing without saving", async () => {
+    render(<DocumentsView addToast={addToast} onOpenDetail={onOpenDetail} />);
+    fireEvent.click(screen.getByRole("tab", { name: /show project markdown files/i }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Open README.md" }));
+    await screen.findByText(/Hello docs/);
+
+    fireEvent.click(screen.getByRole("button", { name: /edit project file/i }));
+    fireEvent.change(screen.getByLabelText("file editor"), { target: { value: "Discarded" } });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(mockSaveWorkspaceFileContent).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("file editor")).not.toBeInTheDocument();
+    expect(screen.getByText(/Hello docs/)).toBeInTheDocument();
   });
 
   it("sends selected plain project file preview text to a new task description", async () => {
@@ -847,6 +876,8 @@ describe("DocumentsView", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: /show task documents/i }));
     fireEvent.click(screen.getByRole("button", { name: "Open KB-001 plan" }));
+    // Markdown is the default render mode; switch to plain to exercise the plain-preview selection surface.
+    fireEvent.click(screen.getByRole("button", { name: /switch to plain text/i }));
     const plainPreview = screen.getByText("Alpha document content");
     selectNodeText(plainPreview);
 
@@ -866,7 +897,7 @@ describe("DocumentsView", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: /show task documents/i }));
     fireEvent.click(screen.getByRole("button", { name: "Open KB-001 plan" }));
-    fireEvent.click(screen.getByRole("button", { name: /switch to markdown/i }));
+    // Markdown is the default render mode — no toggle needed.
     const markdownPreviewText = await screen.findByText("Alpha document content");
     selectNodeText(markdownPreviewText);
 
@@ -926,6 +957,53 @@ describe("DocumentsView", () => {
     selectNodeText(mobilePreview);
 
     expect(await screen.findByRole("button", { name: /add a comment/i })).toBeInTheDocument();
+  });
+
+  /*
+  FNXC:DocumentsView 2026-07-11-13:40:
+  Operator requirement: task documents must be editable in place from the Artifacts view with the shared CodeMirror FileEditor. Surface enumeration for the affordance: Edit swaps the preview for the editor, Save persists via putTaskDocument and refreshes the list, Cancel restores the read view without saving, and select-to-comment is suppressed while editing so the composer cannot fight the editor selection.
+  */
+  it("edits a task document in the shared file editor and saves via putTaskDocument", async () => {
+    mockPutTaskDocument.mockResolvedValue(mockTaskDocuments[0]);
+    render(<DocumentsView addToast={addToast} onOpenDetail={onOpenDetail} />);
+
+    fireEvent.click(screen.getByRole("tab", { name: /show task documents/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Open KB-001 plan" }));
+    fireEvent.click(screen.getByRole("button", { name: /edit task document/i }));
+
+    const editor = screen.getByLabelText("file editor");
+    expect(editor).toHaveValue("Alpha document content");
+    fireEvent.change(editor, { target: { value: "Updated document content" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(mockPutTaskDocument).toHaveBeenCalledWith("KB-001", "plan", "Updated document content", {}, undefined);
+    });
+    await waitFor(() => {
+      expect(screen.queryByLabelText("file editor")).not.toBeInTheDocument();
+    });
+    expect(addToast).toHaveBeenCalledWith("Document saved", "success");
+  });
+
+  it("cancels task document editing without saving and suppresses select-to-comment while editing", async () => {
+    mockSelectionRect();
+    const onSendSelectionToTask = vi.fn();
+    render(<DocumentsView addToast={addToast} onOpenDetail={onOpenDetail} onSendSelectionToTask={onSendSelectionToTask} />);
+
+    fireEvent.click(screen.getByRole("tab", { name: /show task documents/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Open KB-001 plan" }));
+    selectNodeText(screen.getByText("Alpha document content"));
+    expect(await screen.findByRole("button", { name: /add a comment/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /edit task document/i }));
+    expect(screen.queryByRole("button", { name: /add a comment/i })).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("file editor"), { target: { value: "Discarded draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(mockPutTaskDocument).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("file editor")).not.toBeInTheDocument();
+    expect(screen.getByText("Alpha document content")).toBeInTheDocument();
   });
 
   it("search filters task documents and clears filtered-out selection", async () => {
@@ -1192,15 +1270,15 @@ describe("DocumentsView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Open KB-001 plan" }));
 
-    // Task document toggle should default to raw (not influenced by project toggle)
-    const taskToggle = screen.getByRole("button", { name: /switch to markdown/i });
-    expect(taskToggle).toHaveAttribute("aria-pressed", "false");
+    // Task document toggle defaults to markdown (its own default, not influenced by project toggle)
+    const taskToggle = screen.getByRole("button", { name: /switch to plain text/i });
+    expect(taskToggle).toHaveAttribute("aria-pressed", "true");
 
-    // Toggle task document
+    // Toggle task document to plain
     fireEvent.click(taskToggle);
-    expect(screen.getByRole("button", { name: /switch to plain text/i })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /switch to markdown/i })).toHaveAttribute("aria-pressed", "false");
 
-    // Switch back to project - project toggle should still be on
+    // Switch back to project - project toggle should still be on markdown
     fireEvent.click(screen.getByRole("tab", { name: /show project markdown files/i }));
     expect(screen.getByRole("button", { name: /switch to plain text/i })).toHaveAttribute("aria-pressed", "true");
   });
@@ -1220,15 +1298,15 @@ describe("DocumentsView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Open KB-001 plan" }));
 
-    // Should show raw text by default
+    // FNXC:DocumentsView 2026-07-11-14:45: operator requirement — task documents render markdown by default.
     expect(screen.getByText("Alpha document content")).toBeInTheDocument();
+    const toggleBtn = screen.getByRole("button", { name: /switch to plain text/i });
+    expect(toggleBtn).toHaveAttribute("aria-pressed", "true");
 
-    // Toggle should exist
-    const toggleBtn = screen.getByRole("button", { name: /switch to markdown/i });
-    expect(toggleBtn).toHaveAttribute("aria-pressed", "false");
-
-    // Click to toggle to markdown mode
+    // Click to toggle to plain mode and back
     fireEvent.click(toggleBtn);
+    expect(screen.getByRole("button", { name: /switch to markdown/i })).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(screen.getByRole("button", { name: /switch to markdown/i }));
     expect(screen.getByRole("button", { name: /switch to plain text/i })).toHaveAttribute("aria-pressed", "true");
   });
 });

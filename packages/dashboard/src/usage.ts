@@ -1126,6 +1126,9 @@ async function fetchClaudeUsage(authStorage?: AuthStorageLike): Promise<Provider
     /*
     FNXC:UsageIndicator 2026-07-10-00:00:
     Claude Fable 5 is a first-class Anthropic model, so the Usage dropdown must mirror the Sonnet/Opus per-model weekly windows when Anthropic returns a Fable usage bucket. `seven_day_fable` follows the existing API naming convention but remains an assumed primary key until a live OAuth usage payload confirms it; tolerant fallbacks keep the operator-visible window working if Anthropic ships a nearby field name.
+
+    FNXC:UsageIndicator 2026-07-11-19:40:
+    A live OAuth usage probe disproved the `seven_day_fable` guess: Anthropic ships per-model weekly usage in the top-level `limits[]` array as `{ kind: "weekly_scoped", group: "weekly", percent, resets_at, scope.model.display_name }` (observed live with display_name "Fable"), while `seven_day_opus`/`seven_day_sonnet` are now null. Parse `limits[]` generically so every scoped weekly model bucket (Fable today, future models automatically) appears in the Usage dropdown as "Weekly (<model>)". The legacy seven_day_* keys stay first for older payloads; label dedup prevents double windows when both shapes are present.
     */
     const fable = parseWindow("seven_day_fable", "Weekly (Fable)", SEVEN_DAYS_MS, [
       "seven_day_claude_fable",
@@ -1138,6 +1141,30 @@ async function fetchClaudeUsage(authStorage?: AuthStorageLike): Promise<Provider
     if (sonnet) usage.windows.push(sonnet);
     if (opus) usage.windows.push(opus);
     if (fable) usage.windows.push(fable);
+
+    if (Array.isArray(data.limits)) {
+      for (const limit of data.limits) {
+        if (!limit || typeof limit !== "object") continue;
+        const modelName = limit?.scope?.model?.display_name;
+        if (typeof modelName !== "string" || modelName.trim().length === 0) continue;
+        if (typeof limit.percent !== "number" || !Number.isFinite(limit.percent)) continue;
+        const isWeekly = limit.group === "weekly" || (typeof limit.kind === "string" && limit.kind.startsWith("weekly"));
+        if (!isWeekly) continue;
+        const label = `Weekly (${modelName.trim()})`;
+        if (usage.windows.some((w) => w.label === label)) continue;
+
+        const parsedReset = _parseResetTimestamp(limit.resets_at ?? limit.reset_at ?? limit.resetsAt);
+        usage.windows.push({
+          label,
+          percentUsed: Math.min(100, Math.max(0, limit.percent)),
+          percentLeft: Math.min(100, Math.max(0, 100 - limit.percent)),
+          resetText: parsedReset ? `resets in ${formatDuration(parsedReset.msLeft)}` : null,
+          resetMs: parsedReset?.msLeft,
+          resetAt: parsedReset?.resetAt,
+          windowDurationMs: SEVEN_DAYS_MS,
+        });
+      }
+    }
   } catch (e: unknown) {
     usage.status = "error";
     usage.error = e instanceof Error ? e.message : "Failed to fetch Claude usage";
@@ -1611,6 +1638,67 @@ async function readGrokUserSettingsApiKey(): Promise<string | null> {
   }
 }
 
+/*
+FNXC:UsageProviders 2026-07-11-19:45:
+The grok CLI (`grok login`) stores OIDC subscription credentials in `~/.grok/auth.json` as a map keyed by `<issuer>::<client_id>` whose entries carry a Bearer `key`. Its `/usage` command fetches subscription credit usage from `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits` (verified live: returns `config.creditUsagePercent`, weekly `currentPeriod`/`billingPeriodEnd`, and per-product `productUsage`). This gives the Usage dropdown a real percent-used weekly window for Grok subscription users, unlike the xAI inference API key which only supports an auth-validity card.
+*/
+async function readGrokCliOidcToken(): Promise<string | null> {
+  try {
+    const raw = await readFile(path.join(getHomeDir(), ".grok", "auth.json"), "utf-8");
+    const parsed = JSON.parse(raw) as Record<string, { key?: unknown } | null>;
+    for (const entry of Object.values(parsed)) {
+      if (entry && typeof entry.key === "string" && entry.key.trim().length > 0) {
+        return entry.key.trim();
+      }
+    }
+  } catch {
+    // File doesn't exist or invalid JSON — no grok CLI login
+  }
+  return null;
+}
+
+/**
+ * Fetch Grok subscription credit usage via the grok CLI's billing endpoint.
+ * Returns null when the request fails in any way so the caller can fall back
+ * to the xAI API-key auth-validity card.
+ */
+async function fetchGrokCliBillingUsage(token: string, usage: ProviderUsage): Promise<boolean> {
+  try {
+    const res = await httpsRequest("https://cli-chat-proxy.grok.com/v1/billing?format=credits", {
+      method: "GET",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+    });
+    if (res.status !== 200) return false;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped API response
+    const data: any = res.body.trim().length > 0 ? JSON.parse(res.body) : {};
+    const config = data?.config;
+    if (!config || typeof config !== "object") return false;
+
+    const pctUsed = config.creditUsagePercent;
+    if (typeof pctUsed !== "number" || !Number.isFinite(pctUsed)) return false;
+
+    const parsedReset = _parseResetTimestamp(config.billingPeriodEnd ?? config.currentPeriod?.end);
+    const isWeekly = config.currentPeriod?.type === "USAGE_PERIOD_TYPE_WEEKLY";
+    usage.windows.push({
+      label: isWeekly ? "Weekly (credits)" : "Credits",
+      percentUsed: Math.min(100, Math.max(0, pctUsed)),
+      percentLeft: Math.min(100, Math.max(0, 100 - pctUsed)),
+      resetText: parsedReset ? `resets in ${formatDuration(parsedReset.msLeft)}` : null,
+      resetMs: parsedReset?.msLeft,
+      resetAt: parsedReset?.resetAt,
+      windowDurationMs: isWeekly ? 7 * 24 * 60 * 60 * 1000 : undefined,
+    });
+    usage.status = "ok";
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function readGrokApiKey(authStorage?: AuthStorageLike): Promise<string | null> {
   const envKey = process.env.GROK_API_KEY;
   if (typeof envKey === "string" && envKey.trim().length > 0) {
@@ -1633,9 +1721,23 @@ async function fetchGrokUsage(authStorage?: AuthStorageLike): Promise<ProviderUs
     windows: [],
   };
 
+  // Prefer grok CLI subscription credentials — they yield a real percent-used
+  // weekly credits window instead of the API-key auth-validity card below.
+  const cliToken = await readGrokCliOidcToken();
+  if (cliToken && (await fetchGrokCliBillingUsage(cliToken, usage))) {
+    return usage;
+  }
+
   const apiKey = await readGrokApiKey(authStorage);
   if (!apiKey) {
-    usage.error = "No Grok credentials — set GROK_API_KEY or add a key";
+    if (cliToken) {
+      // A grok CLI login exists but its billing call failed — surface an
+      // actionable error card instead of hiding the provider as no-auth.
+      usage.status = "error";
+      usage.error = "Grok CLI auth expired — run 'grok login' (or set GROK_API_KEY)";
+    } else {
+      usage.error = "No Grok credentials — set GROK_API_KEY or add a key";
+    }
     return usage;
   }
 

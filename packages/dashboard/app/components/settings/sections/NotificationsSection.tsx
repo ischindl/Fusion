@@ -58,28 +58,34 @@ export function NotificationsSection({ scopeBanner, form, setForm, testNotificat
       <h4 className="settings-section-heading">{t("settings.notifications.notifications", "Notifications")}</h4>
 
       <div className="notification-provider-card">
-        <div className="form-group">
-          <label htmlFor="failureNotificationMode">{t("settings.notifications.failureNotificationMode", "Failure notification mode")}</label>
-          <select id="failureNotificationMode" value={form.failureNotificationMode ?? "sticky-only"} onChange={(e) => {
-            const value = e.target.value as "sticky-only" | "all" | "terminal-only";
-            setForm((f) => ({ ...f, failureNotificationMode: value }));
-        }}>
-            <option value="sticky-only">{t("settings.notifications.stickyFailuresOnlyDefault", "Sticky failures only (default)")}</option>
-            <option value="terminal-only">{t("settings.notifications.terminalFailuresOnlySuppressAutoRetried", "Terminal failures only (suppress auto-retried)")}</option>
-            <option value="all">{t("settings.notifications.allFailuresLegacy", "All failures (legacy)")}</option>
-          </select>
-          <small>{t("settings.notifications.stickyOnlySuppressesRecoveredFailuresTerminalOnlyWaits", "Sticky-only suppresses recovered failures; terminal-only waits for paused/in-review failed tasks; all restores legacy alerts.")}</small>
-        </div>
-        <div className="form-group">
-          <label htmlFor="failureNotificationDelayMs">{t("settings.notifications.failureNotificationDelayMs", "Failure notification delay (ms)")}</label>
-          <input id="failureNotificationDelayMs" type="number" min={0} step={1000} disabled={(form.failureNotificationMode ?? "sticky-only") === "all"} value={form.failureNotificationDelayMs ?? 30000} onChange={(e) => {
-            const parsed = Number(e.target.value);
-            setForm((f) => ({
-                ...f,
-                failureNotificationDelayMs: Number.isFinite(parsed) && parsed >= 0 ? parsed : 0,
-            }));
-        }}/>
-          <small>{t("settings.notifications.howLongAFailureMustPersistBeforeA", " How long a failure must persist before a push notification is sent. 0 = notify immediately. Default: 30000 (30 seconds). ")}</small>
+        {/*
+        FNXC:SettingsLayout 2026-07-11-19:00:
+        The failure-notification card must reuse `.notification-provider-body` because `.notification-provider-card` has no own padding; this keeps its field gutters aligned with ntfy/webhook provider cards on desktop and mobile.
+        */}
+        <div className="notification-provider-body">
+          <div className="form-group">
+            <label htmlFor="failureNotificationMode">{t("settings.notifications.failureNotificationMode", "Failure notification mode")}</label>
+            <select id="failureNotificationMode" value={form.failureNotificationMode ?? "sticky-only"} onChange={(e) => {
+              const value = e.target.value as "sticky-only" | "all" | "terminal-only";
+              setForm((f) => ({ ...f, failureNotificationMode: value }));
+          }}>
+              <option value="sticky-only">{t("settings.notifications.stickyFailuresOnlyDefault", "Sticky failures only (default)")}</option>
+              <option value="terminal-only">{t("settings.notifications.terminalFailuresOnlySuppressAutoRetried", "Terminal failures only (suppress auto-retried)")}</option>
+              <option value="all">{t("settings.notifications.allFailuresLegacy", "All failures (legacy)")}</option>
+            </select>
+            <small>{t("settings.notifications.stickyOnlySuppressesRecoveredFailuresTerminalOnlyWaits", "Sticky-only suppresses recovered failures; terminal-only waits for paused/in-review failed tasks; all restores legacy alerts.")}</small>
+          </div>
+          <div className="form-group">
+            <label htmlFor="failureNotificationDelayMs">{t("settings.notifications.failureNotificationDelayMs", "Failure notification delay (ms)")}</label>
+            <input id="failureNotificationDelayMs" type="number" min={0} step={1000} disabled={(form.failureNotificationMode ?? "sticky-only") === "all"} value={form.failureNotificationDelayMs ?? 30000} onChange={(e) => {
+              const parsed = Number(e.target.value);
+              setForm((f) => ({
+                  ...f,
+                  failureNotificationDelayMs: Number.isFinite(parsed) && parsed >= 0 ? parsed : 0,
+              }));
+          }}/>
+            <small>{t("settings.notifications.howLongAFailureMustPersistBeforeA", " How long a failure must persist before a push notification is sent. 0 = notify immediately. Default: 30000 (30 seconds). ")}</small>
+          </div>
         </div>
       </div>
 

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef, type CSSProperties, type MouseEvent } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { Globe, Folder, RefreshCw, Star, HelpCircle, Settings as SettingsIcon, Search, X as SearchToggleCloseIcon } from "lucide-react";
 import {
   getErrorMessage,
@@ -239,6 +239,10 @@ type SettingsSection = {
 const MOBILE_SETTINGS_MEDIA_QUERY = "(max-width: 768px)";
 const DEFAULT_MEMORY_EDITOR_PATH = ".fusion/memory/DREAMS.md";
 const ADVANCED_SETTINGS_STORAGE_KEY = "fusion:settings:show-advanced";
+const SETTINGS_NAV_WIDTH_STORAGE_KEY = "fusion:settings-nav-width";
+const SETTINGS_NAV_DEFAULT_WIDTH = 248;
+const SETTINGS_NAV_MIN_WIDTH = 200;
+const SETTINGS_NAV_MAX_WIDTH = 420;
 
 /*
 FNXC:SettingsSimplification 2026-07-10-23:24:
@@ -271,6 +275,20 @@ function readAdvancedSettingsPreference(): boolean {
     return localStorage.getItem(ADVANCED_SETTINGS_STORAGE_KEY) === "true";
   } catch {
     return false;
+  }
+}
+
+function clampSettingsNavWidth(width: number): number {
+  if (!Number.isFinite(width)) return SETTINGS_NAV_DEFAULT_WIDTH;
+  return Math.min(SETTINGS_NAV_MAX_WIDTH, Math.max(SETTINGS_NAV_MIN_WIDTH, Math.round(width)));
+}
+
+function readSettingsNavWidthPreference(): number {
+  try {
+    const stored = Number.parseFloat(localStorage.getItem(SETTINGS_NAV_WIDTH_STORAGE_KEY) ?? "");
+    return clampSettingsNavWidth(stored);
+  } catch {
+    return SETTINGS_NAV_DEFAULT_WIDTH;
   }
 }
 
@@ -1024,6 +1042,12 @@ export function SettingsModal({
       ? window.matchMedia(MOBILE_SETTINGS_MEDIA_QUERY)?.matches === true
       : false),
   );
+  /**
+   * FNXC:Settings 2026-07-11-18:52:
+   * FN-7825 makes the desktop/tablet Settings rail resizable and persists the chosen width locally. Mobile remains stacked and ignores this inline CSS variable so a desktop-saved width cannot leak into the top-bar layout.
+   */
+  const [settingsNavWidth, setSettingsNavWidth] = useState(() => readSettingsNavWidthPreference());
+  const settingsNavDragRef = useRef<{ startX: number; startWidth: number; previousUserSelect: string } | null>(null);
   const [settingsSearchQuery, setSettingsSearchQuery] = useState("");
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(() => {
     const requestedSection = initialSection === "pi-extensions" ? "plugins" : initialSection;
@@ -1040,6 +1064,16 @@ export function SettingsModal({
     } catch {
       // Storage can be unavailable in private/locked-down browser contexts; the in-session preference still works.
     }
+  }, []);
+  const persistSettingsNavWidth = useCallback((width: number) => {
+    const nextWidth = clampSettingsNavWidth(width);
+    setSettingsNavWidth(nextWidth);
+    try {
+      localStorage.setItem(SETTINGS_NAV_WIDTH_STORAGE_KEY, String(nextWidth));
+    } catch {
+      // Storage can be unavailable in private/locked-down browser contexts; the in-session width still works.
+    }
+    return nextWidth;
   }, []);
   /*
    * FNXC:Settings 2026-07-09-00:00:
@@ -1271,6 +1305,74 @@ export function SettingsModal({
     projectId,
     enabled: activeSection === "memory",
   });
+
+  const settingsNavResizeEnabled = !showMobileSectionPicker;
+  const settingsNavigationStyle = settingsNavResizeEnabled
+    ? ({ "--settings-nav-width": `${settingsNavWidth}px` } as CSSProperties)
+    : undefined;
+
+  const endSettingsNavResize = useCallback((pointerId?: number, target?: EventTarget | null) => {
+    const dragState = settingsNavDragRef.current;
+    if (!dragState) return;
+    document.body.style.userSelect = dragState.previousUserSelect;
+    settingsNavDragRef.current = null;
+    if (typeof pointerId === "number" && target instanceof HTMLElement && typeof target.releasePointerCapture === "function") {
+      try {
+        target.releasePointerCapture(pointerId);
+      } catch {
+        // Pointer capture may already be released by the browser; cleanup is still complete.
+      }
+    }
+  }, []);
+
+  const handleSettingsNavResizePointerMove = useCallback((event: PointerEvent) => {
+    const dragState = settingsNavDragRef.current;
+    if (!dragState) return;
+    event.preventDefault();
+    persistSettingsNavWidth(dragState.startWidth + event.clientX - dragState.startX);
+  }, [persistSettingsNavWidth]);
+
+  const handleSettingsNavResizePointerUp = useCallback((event: PointerEvent) => {
+    endSettingsNavResize(event.pointerId, event.target);
+  }, [endSettingsNavResize]);
+
+  const handleSettingsNavResizePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!settingsNavResizeEnabled) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (typeof event.currentTarget.setPointerCapture === "function") {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
+    settingsNavDragRef.current = {
+      startX: event.clientX,
+      startWidth: settingsNavWidth,
+      previousUserSelect: document.body.style.userSelect,
+    };
+    document.body.style.userSelect = "none";
+  }, [settingsNavResizeEnabled, settingsNavWidth]);
+
+  const handleSettingsNavResizeKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!settingsNavResizeEnabled) return;
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    persistSettingsNavWidth(settingsNavWidth + (event.key === "ArrowRight" ? 16 : -16));
+  }, [persistSettingsNavWidth, settingsNavResizeEnabled, settingsNavWidth]);
+
+  useEffect(() => {
+    if (!settingsNavResizeEnabled) {
+      endSettingsNavResize();
+      return;
+    }
+    document.addEventListener("pointermove", handleSettingsNavResizePointerMove);
+    document.addEventListener("pointerup", handleSettingsNavResizePointerUp);
+    document.addEventListener("pointercancel", handleSettingsNavResizePointerUp);
+    return () => {
+      document.removeEventListener("pointermove", handleSettingsNavResizePointerMove);
+      document.removeEventListener("pointerup", handleSettingsNavResizePointerUp);
+      document.removeEventListener("pointercancel", handleSettingsNavResizePointerUp);
+      endSettingsNavResize();
+    };
+  }, [endSettingsNavResize, handleSettingsNavResizePointerMove, handleSettingsNavResizePointerUp, settingsNavResizeEnabled]);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
@@ -3764,7 +3866,11 @@ export function SettingsModal({
           <div className="settings-empty-state settings-loading"><LoadingSpinner label={t("settings.loading", "Loading…")} /></div>
         ) : (
           <div className="settings-layout">
-            <aside className="settings-navigation" aria-label={t("settings.search.navigationLabel", "Settings navigation")}> 
+            <aside
+              className="settings-navigation"
+              aria-label={t("settings.search.navigationLabel", "Settings navigation")}
+              style={settingsNavigationStyle}
+            >
               {showMobileSectionPicker && (
                 <div className="settings-mobile-section-picker">
                   {/**
@@ -3901,6 +4007,20 @@ export function SettingsModal({
                 )}
               </nav>
             </aside>
+            {settingsNavResizeEnabled && (
+              <div
+                className="settings-nav-resize-handle"
+                role="separator"
+                aria-orientation="vertical"
+                aria-label={t("settings.nav.resize", "Resize settings navigation")}
+                aria-valuemin={SETTINGS_NAV_MIN_WIDTH}
+                aria-valuemax={SETTINGS_NAV_MAX_WIDTH}
+                aria-valuenow={settingsNavWidth}
+                tabIndex={0}
+                onPointerDown={handleSettingsNavResizePointerDown}
+                onKeyDown={handleSettingsNavResizeKeyDown}
+              />
+            )}
             <div
               className="settings-content"
               ref={settingsContentRef}

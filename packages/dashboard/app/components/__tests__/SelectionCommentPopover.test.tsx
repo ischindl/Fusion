@@ -77,6 +77,12 @@ describe("SelectionCommentPopover", () => {
   must include the `translate(-50%` positioning component. The popover is shared by
   DocumentsView (plain + markdown preview) and FileEditor (editor + preview), so this one
   stylesheet invariant covers all surfaces.
+
+  FNXC:ArtifactsView 2026-07-11-14:20:
+  The bug regressed a second way: `.selection-comment-trigger:active` ties `.btn:active` at
+  specificity (0,2,0), so a CSS bundle-order flip let `.btn:active` win again and the no-op
+  came back. Every :active trigger rule must now carry the `.btn.` prefix ((0,3,0)) so it
+  out-specifies `.btn:active` regardless of bundle order — asserted below.
   */
   it("keeps the positioning translate in every trigger transform, including :active press state", () => {
     const css = readFileSync(join(__dirname, "..", "SelectionCommentPopover.css"), "utf8");
@@ -87,7 +93,7 @@ describe("SelectionCommentPopover", () => {
     const rulePattern = /([^{}]+)\{([^{}]*)\}/g;
     for (const match of uncommented.matchAll(rulePattern)) {
       const selector = match[1].trim();
-      if (selector.split(",").some((part) => part.trim().startsWith(".selection-comment-trigger"))) {
+      if (selector.split(",").some((part) => part.trim().includes(".selection-comment-trigger"))) {
         triggerBlocks.push({ selector, block: match[2] });
       }
     }
@@ -102,6 +108,13 @@ describe("SelectionCommentPopover", () => {
 
     const activeBlocks = transformBlocks.filter(({ selector }) => selector.includes(":active"));
     expect(activeBlocks.length, "both desktop and mobile need an :active override that restates the translate").toBeGreaterThanOrEqual(2);
+
+    for (const { selector } of activeBlocks) {
+      expect(
+        selector.includes(".btn.selection-comment-trigger"),
+        `":active" trigger rule "${selector}" must use the .btn. prefix to out-specify the global .btn:active regardless of CSS bundle order`,
+      ).toBe(true);
+    }
   });
 
   /*

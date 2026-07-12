@@ -553,6 +553,40 @@ describe("useBackgroundSessions", () => {
     });
   });
 
+  it("does not materialize an older cross-tab session after the authoritative list is empty", async () => {
+    const { result } = renderHook(() => useBackgroundSessions());
+    const { result: syncResult } = renderHook(() => useAiSessionSync());
+
+    await waitFor(() => {
+      expect(mockFetchAiSessions).toHaveBeenCalledWith(undefined);
+      expect(result.current.sessions).toEqual([]);
+    });
+
+    /*
+     * FNXC:BackgroundTasks 2026-07-11-19:08:
+     * A sibling tab can respond after the server has removed its planning
+     * session. Background Tasks must then remain empty because Planning reads
+     * the authoritative server list and cannot resume that stale cache entry.
+     */
+    act(() => {
+      syncResult.current.broadcastUpdate({
+        sessionId: "late-stale-planning",
+        status: "awaiting_input",
+        needsInput: true,
+        type: "planning",
+        title: "Late stale planning session",
+        updatedAt: "2026-04-08T00:00:01.000Z",
+        timestamp: Date.parse("2026-04-08T00:00:01.000Z"),
+      });
+    });
+
+    await waitFor(() => {
+      expect(result.current.sessions).toEqual([]);
+      expect(result.current.planningSessions).toEqual([]);
+      expect(result.current.needsInput).toBe(0);
+    });
+  });
+
   it("dismissSession calls cancelSubtaskBreakdown for subtask sessions", async () => {
     mockFetchAiSessions.mockResolvedValueOnce([
       makeSession({ id: "subtask-session", status: "generating", type: "subtask" }),

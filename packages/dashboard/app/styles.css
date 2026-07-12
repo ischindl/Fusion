@@ -652,8 +652,8 @@ html .column.drag-over * {
   background: color-mix(in srgb, var(--surface) 60%, transparent);
 }
 
-[data-theme="light"] .settings-sidebar {
-  background: color-mix(in srgb, var(--surface) 60%, transparent);
+[data-theme="light"] .settings-navigation .settings-sidebar {
+  background: transparent;
 }
 
 [data-theme="light"] .toast-success {
@@ -1616,16 +1616,18 @@ input[type="range"]:focus-visible {
   display: none;
 }
 
+/*
+FNXC:Settings 2026-07-11-18:45:
+FN-7825 makes .settings-navigation the sole owner of Settings rail width and removes the old nested sidebar divider. Keep this global fallback structural only so embedded and modal Settings do not fight competing width/border/background rules.
+*/
 .settings-sidebar {
-  width: 170px;
-  min-width: 170px;
-  border-right: 1px solid var(--border);
   display: flex;
+  flex: 1;
   flex-direction: column;
+  min-height: 0;
   overflow-y: auto;
-  padding: 10px 8px;
-  gap: 2px;
-  background: color-mix(in srgb, var(--text) 10%, transparent);
+  padding: var(--space-md) var(--space-sm);
+  gap: calc(var(--space-xs) / 2);
   scrollbar-color: var(--border) transparent;
   scrollbar-width: thin;
 }
@@ -1648,11 +1650,15 @@ input[type="range"]:focus-visible {
 }
 
 .settings-nav-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
   width: 100%;
+  min-height: 36px;
   padding: var(--space-sm) var(--space-md);
   font-size: 13px;
   font-weight: 500;
+  line-height: 1.25;
   color: var(--text-muted);
   background: none;
   border: none;
@@ -1660,6 +1666,9 @@ input[type="range"]:focus-visible {
   border-radius: 0 var(--radius) var(--radius) 0;
   cursor: pointer;
   text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   transition:
     background var(--transition-fast),
     color var(--transition-fast),

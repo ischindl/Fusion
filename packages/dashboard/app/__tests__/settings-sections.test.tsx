@@ -165,6 +165,24 @@ describe("NotificationsSection", () => {
     expect(updater(emptyForm)).toMatchObject({ failureNotificationMode: "all" });
   });
 
+  it("nests the failure-notification mode field inside the padded provider body", () => {
+    render(
+      <NotificationsSection
+        scopeBanner={null}
+        form={emptyForm}
+        setForm={vi.fn()}
+        testNotificationLoading={{}}
+        testNotificationResult={{}}
+        onTestProviderNotification={vi.fn()}
+      />,
+    );
+
+    const select = screen.getByLabelText("Failure notification mode") as HTMLSelectElement;
+    const providerBody = select.closest(".notification-provider-body");
+    expect(providerBody).not.toBeNull();
+    expect(providerBody?.closest(".notification-provider-card")).not.toBeNull();
+  });
+
   it("shows the ntfy topic field only when ntfy is enabled", () => {
     const { rerender } = render(
       <NotificationsSection

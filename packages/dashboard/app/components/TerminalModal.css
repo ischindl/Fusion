@@ -851,6 +851,14 @@ The terminal header pop-out/dock affordance is an icon-only utility control. It 
   color: var(--text-muted);
 }
 
+/*
+FNXC:TerminalHeader 2026-07-11-18:45:
+FN-7823: viewport-based terminal breakpoints keep narrow floating/docked panels on the desktop header layout, so the header help text must stay on one line and let .terminal-actions use the FN-7550 min-width: 0 + overflow-x scroll pattern instead of wrapping the header.
+*/
+.terminal-shortcuts--header {
+  white-space: nowrap;
+}
+
 .terminal-shortcuts kbd {
   display: inline-block;
   padding: 2px 6px;
@@ -1254,6 +1262,7 @@ The shortcut bar (modifier keys + arrow keys) must sit on ONE line, not stack in
 
 .terminal-connection-status {
   font-weight: 500;
+  white-space: nowrap;
 }
 
 .terminal-connection-status.connected {

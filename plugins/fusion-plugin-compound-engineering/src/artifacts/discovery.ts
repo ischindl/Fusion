@@ -10,6 +10,7 @@ import {
   realpathSync,
 } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
+import { listStages } from "../session/stage-registry.js";
 
 /**
  * CE artifact discovery (U3).
@@ -21,17 +22,19 @@ import { isAbsolute, join, relative, sep } from "node:path";
  * them. An artifact that cannot be read or is malformed is represented as an
  * `error` entry rather than crashing the scan or being silently dropped.
  *
- * Locations (per the plan): STRATEGY.md, docs/ideation/, docs/brainstorms/,
- * docs/plans/, docs/solutions/, CONCEPTS.md.
+ * Stage locations come from the registry. Solutions and Concepts remain
+ * explicit knowledge collections because they are not interactive stages.
  */
 
 export type CeArtifactStage =
   | "strategy"
-  | "ideation"
-  | "brainstorm"
+  | "ideate"
   | "plan"
+  | "work"
+  | "debug"
   | "solution"
-  | "concepts";
+  | "concepts"
+  | (string & {});
 
 /** Whether a conventional location is a single file or a directory of files. */
 type LocationKind = "file" | "directory";
@@ -50,14 +53,34 @@ interface ConventionalLocation {
  * scanner reads ONLY these paths (and, for directories, their immediate `.md`
  * children). Nothing outside this list is opened.
  */
-export const CONVENTIONAL_LOCATIONS: readonly ConventionalLocation[] = [
-  { stage: "strategy", label: "Strategy", path: "STRATEGY.md", kind: "file" },
-  { stage: "ideation", label: "Ideation", path: "docs/ideation", kind: "directory" },
-  { stage: "brainstorm", label: "Brainstorms", path: "docs/brainstorms", kind: "directory" },
-  { stage: "plan", label: "Plans", path: "docs/plans", kind: "directory" },
-  { stage: "solution", label: "Solutions", path: "docs/solutions", kind: "directory" },
-  { stage: "concepts", label: "Concepts", path: "CONCEPTS.md", kind: "file" },
-];
+/*
+FNXC:CompoundEngineeringArtifacts 2026-07-10-12:00:
+The artifact hub must follow registered stage output locations so Work and Debug remain discoverable as the pipeline evolves.
+
+FNXC:CompoundEngineeringArtifacts 2026-07-10-23:40:
+The upstream Compound Engineering workflow writes repeatable requirements documents to docs/brainstorms and implementation plans to docs/plans. Discovery must retain the dedicated requirements history while also supporting requirements-only unified plans produced by newer in-place handoffs.
+*/
+function stageLocations(): ConventionalLocation[] {
+  return listStages().filter((definition) => definition.stageId !== "brainstorm").map((definition) => {
+    const path = definition.artifactLocation.replace(/\/$/, "");
+    return {
+      stage: definition.stageId,
+      label: definition.stageId === "compound" ? "Learnings" : definition.label,
+      path,
+      kind: definition.artifactLocation.endsWith("/") ? "directory" : "file",
+    };
+  });
+}
+
+function conventionalLocations(): ConventionalLocation[] {
+  return [
+    ...stageLocations(),
+    { stage: "brainstorm", label: "Brainstorms", path: "docs/brainstorms", kind: "directory" },
+    { stage: "concepts", label: "Concepts", path: "CONCEPTS.md", kind: "file" },
+  ];
+}
+
+export const CONVENTIONAL_LOCATIONS: readonly ConventionalLocation[] = conventionalLocations();
 
 /** A discovered, readable artifact. */
 export interface CeArtifact {
@@ -376,7 +399,7 @@ function discoverLocation(root: string, loc: ConventionalLocation): CeArtifactGr
  */
 export function discoverArtifacts(projectRoot: string): DiscoveryResult {
   const root = projectRoot;
-  const groups = CONVENTIONAL_LOCATIONS.map((loc) => discoverLocation(root, loc));
+  const groups = conventionalLocations().map((loc) => discoverLocation(root, loc));
   let totalArtifacts = 0;
   let totalErrors = 0;
   for (const g of groups) {
@@ -402,7 +425,7 @@ export function readArtifactById(
   if (sepIdx <= 0) return undefined;
   const stage = id.slice(0, sepIdx) as CeArtifactStage;
   const relPath = id.slice(sepIdx + 1);
-  const loc = CONVENTIONAL_LOCATIONS.find((l) => l.stage === stage);
+  const loc = conventionalLocations().find((l) => l.stage === stage);
   if (!loc) return undefined;
 
   const locationAbs = join(projectRoot, loc.path);

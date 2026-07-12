@@ -937,6 +937,110 @@ describe("usage", () => {
       expect(claude.windows.some((w) => w.label === "Weekly (Fable)")).toBe(false);
     });
 
+    it("parses scoped weekly model windows from the limits[] array (live Fable payload shape)", async () => {
+      setupClaudeMocks({
+        credFileContent: {
+          accessToken: "test-token",
+          scopes: ["user:profile"],
+          subscriptionType: "max",
+        },
+      });
+
+      const resetsAt = new Date(Date.now() + 4 * 24 * 60 * 60 * 1000).toISOString();
+      setupClaudeApiResponse({
+        five_hour: { utilization: 36.0, resets_at: resetsAt },
+        seven_day: { utilization: 41.0, resets_at: resetsAt },
+        seven_day_sonnet: null,
+        seven_day_opus: null,
+        limits: [
+          { kind: "session", group: "session", percent: 36, resets_at: resetsAt, scope: null },
+          { kind: "weekly_all", group: "weekly", percent: 41, resets_at: resetsAt, scope: null },
+          {
+            kind: "weekly_scoped",
+            group: "weekly",
+            percent: 46,
+            resets_at: resetsAt,
+            scope: { model: { id: null, display_name: "Fable" }, surface: null },
+          },
+        ],
+      });
+
+      const providers = await fetchAllProviderUsage();
+      const claude = providers.find((p) => p.name === "Claude")!;
+
+      expect(claude.status).toBe("ok");
+      expect(claude.windows.map((w) => w.label)).toEqual([
+        "Session (5h)",
+        "Weekly",
+        "Weekly (Fable)",
+      ]);
+      const fable = claude.windows.find((w) => w.label === "Weekly (Fable)")!;
+      expect(fable.percentUsed).toBe(46);
+      expect(fable.percentLeft).toBe(54);
+      expect(fable.resetText).toContain("resets in");
+      expect(fable.resetAt).toBeDefined();
+    });
+
+    it("does not duplicate a model window present as both seven_day_* key and limits[] entry", async () => {
+      setupClaudeMocks({
+        credFileContent: {
+          accessToken: "test-token",
+          scopes: ["user:profile"],
+          subscriptionType: "max",
+        },
+      });
+
+      const resetsAt = new Date(Date.now() + 4 * 24 * 60 * 60 * 1000).toISOString();
+      setupClaudeApiResponse({
+        seven_day_fable: { utilization: 46.0, resets_at: resetsAt },
+        limits: [
+          {
+            kind: "weekly_scoped",
+            group: "weekly",
+            percent: 46,
+            resets_at: resetsAt,
+            scope: { model: { id: null, display_name: "Fable" }, surface: null },
+          },
+        ],
+      });
+
+      const providers = await fetchAllProviderUsage();
+      const claude = providers.find((p) => p.name === "Claude")!;
+
+      expect(claude.windows.filter((w) => w.label === "Weekly (Fable)")).toHaveLength(1);
+    });
+
+    it("ignores limits[] entries that are session-scoped or missing model scope", async () => {
+      setupClaudeMocks({
+        credFileContent: {
+          accessToken: "test-token",
+          scopes: ["user:profile"],
+          subscriptionType: "max",
+        },
+      });
+
+      const resetsAt = new Date(Date.now() + 4 * 24 * 60 * 60 * 1000).toISOString();
+      setupClaudeApiResponse({
+        five_hour: { utilization: 10.0, resets_at: resetsAt },
+        limits: [
+          { kind: "session", group: "session", percent: 10, resets_at: resetsAt, scope: null },
+          {
+            kind: "session_scoped",
+            group: "session",
+            percent: 20,
+            resets_at: resetsAt,
+            scope: { model: { id: null, display_name: "Fable" }, surface: null },
+          },
+          { kind: "weekly_scoped", group: "weekly", percent: 30, resets_at: resetsAt, scope: { model: null, surface: "code" } },
+        ],
+      });
+
+      const providers = await fetchAllProviderUsage();
+      const claude = providers.find((p) => p.name === "Claude")!;
+
+      expect(claude.windows.map((w) => w.label)).toEqual(["Session (5h)"]);
+    });
+
     it("parses Weekly (Fable) from CLI fallback output after a 429 rate limit", async () => {
       setupClaudeMocks({
         credFileContent: {
@@ -3478,6 +3582,112 @@ describe("usage", () => {
         return mockReq;
       });
     };
+
+    const GROK_CLI_AUTH_JSON = JSON.stringify({
+      "https://auth.x.ai::client-id": {
+        key: "grok-cli-oidc-token",
+        auth_mode: "oidc",
+        refresh_token: "refresh",
+        expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      },
+    });
+
+    const mockGrokBillingResponse = (statusCode: number, body: unknown, apiKeyStatus = 200) => {
+      const mockReq = { on: vi.fn(), write: vi.fn(), end: vi.fn() };
+      mockRequest.mockImplementation((options: any, callback: any) => {
+        let responseBody: string;
+        let responseStatus: number;
+        if (options.hostname === "cli-chat-proxy.grok.com") {
+          expect(options.path).toBe("/v1/billing?format=credits");
+          expect(options.headers.authorization).toBe("Bearer grok-cli-oidc-token");
+          responseBody = typeof body === "string" ? body : JSON.stringify(body);
+          responseStatus = statusCode;
+        } else {
+          expect(options.hostname).toBe("api.x.ai");
+          expect(options.path).toBe("/v1/api-key");
+          responseBody = JSON.stringify({ api_key_blocked: false });
+          responseStatus = apiKeyStatus;
+        }
+        const mockRes = {
+          statusCode: responseStatus,
+          headers: {},
+          on: vi.fn((event: string, handler: any) => {
+            if (event === "data") handler(Buffer.from(responseBody));
+            if (event === "end") handler();
+          }),
+        };
+        callback(mockRes);
+        return mockReq;
+      });
+    };
+
+    it("prefers grok CLI subscription billing and renders a weekly credits window", async () => {
+      mockReadFile.mockImplementation(async (filePath: string) => {
+        if (String(filePath).includes(".grok/auth.json")) return GROK_CLI_AUTH_JSON;
+        return Promise.reject(new Error("File not found"));
+      });
+      mockExecFileSync.mockImplementation(() => {
+        throw new Error("Keychain item not found");
+      });
+      const periodEnd = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
+      mockGrokBillingResponse(200, {
+        config: {
+          currentPeriod: { type: "USAGE_PERIOD_TYPE_WEEKLY", start: new Date().toISOString(), end: periodEnd },
+          creditUsagePercent: 6.0,
+          isUnifiedBillingUser: true,
+          billingPeriodEnd: periodEnd,
+        },
+      });
+
+      const providers = await fetchAllProviderUsage();
+      const grok = providers.find((p) => p.name === "Grok")!;
+
+      expect(grok.status).toBe("ok");
+      expect(grok.windows).toHaveLength(1);
+      expect(grok.windows[0]).toMatchObject({
+        label: "Weekly (credits)",
+        percentUsed: 6,
+        percentLeft: 94,
+      });
+      expect(grok.windows[0].resetText).toContain("resets in");
+      expect(mockRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it("falls back to the xAI API-key validity card when CLI billing fails", async () => {
+      vi.stubEnv("GROK_API_KEY", "env-grok-key");
+      mockReadFile.mockImplementation(async (filePath: string) => {
+        if (String(filePath).includes(".grok/auth.json")) return GROK_CLI_AUTH_JSON;
+        return Promise.reject(new Error("File not found"));
+      });
+      mockExecFileSync.mockImplementation(() => {
+        throw new Error("Keychain item not found");
+      });
+      mockGrokBillingResponse(401, { error: "unauthorized" });
+
+      const providers = await fetchAllProviderUsage();
+      const grok = providers.find((p) => p.name === "Grok")!;
+
+      expect(grok.status).toBe("ok");
+      expect(grok.windows).toEqual([]);
+      expect(mockRequest).toHaveBeenCalledTimes(2);
+    });
+
+    it("shows an actionable error card when only an expired grok CLI login exists", async () => {
+      mockReadFile.mockImplementation(async (filePath: string) => {
+        if (String(filePath).includes(".grok/auth.json")) return GROK_CLI_AUTH_JSON;
+        return Promise.reject(new Error("File not found"));
+      });
+      mockExecFileSync.mockImplementation(() => {
+        throw new Error("Keychain item not found");
+      });
+      mockGrokBillingResponse(401, { error: "unauthorized" });
+
+      const providers = await fetchAllProviderUsage();
+      const grok = providers.find((p) => p.name === "Grok")!;
+
+      expect(grok.status).toBe("error");
+      expect(grok.error).toContain("grok login");
+    });
 
     it("omits Grok when no env, user settings, or auth-file key exists", async () => {
       mockReadFile.mockImplementation(async () => {

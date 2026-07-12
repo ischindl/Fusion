@@ -51,6 +51,7 @@ export function useBackgroundSessions(projectId?: string): UseBackgroundSessions
   const [sessions, setSessions] = useState<AiSessionSummary[]>([]);
   const sessionTimestampsRef = useRef<Map<string, number>>(new Map());
   const dismissedSessionTimestampsRef = useRef<Map<string, number>>(new Map());
+  const lastAuthoritativeRefreshAtRef = useRef(0);
 
   const {
     sessions: syncedSessions,
@@ -83,6 +84,16 @@ export function useBackgroundSessions(projectId?: string): UseBackgroundSessions
         for (const session of filtered) {
           nextTimestampMap.set(session.id, parseTimestamp(session.updatedAt));
         }
+
+        /*
+         * FNXC:BackgroundTasks 2026-07-11-19:08:
+         * Planning must never advertise a cached cross-tab session that the
+         * server's current project-scoped list does not contain. A late sync
+         * response is only a latency aid, so suppress updates older than this
+         * successful authoritative refresh; newer updates may still represent
+         * a session created immediately after the list request.
+         */
+        lastAuthoritativeRefreshAtRef.current = Date.now();
         sessionTimestampsRef.current = nextTimestampMap;
         setSessions(filtered);
       })
@@ -115,6 +126,10 @@ export function useBackgroundSessions(projectId?: string): UseBackgroundSessions
         const incomingTimestamp = syncState.lastEventTimestamp;
         const knownTimestamp = sessionTimestampsRef.current.get(syncState.sessionId) ?? 0;
         if (incomingTimestamp < knownTimestamp) {
+          continue;
+        }
+
+        if (!nextById.has(syncState.sessionId) && incomingTimestamp <= lastAuthoritativeRefreshAtRef.current) {
           continue;
         }
 

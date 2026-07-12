@@ -1158,11 +1158,11 @@ export function TaskDetailContent({
   );
   const showCliTab = cliTabVisibility.kind !== "hidden";
   /*
-  FNXC:TaskDetailTerminal 2026-07-10-00:00:
-  FN-7813 exposes a dedicated interactive Terminal tab only for single-worktree tasks. Workspace tasks have multiple repo roots and no single safe default shell cwd, so they intentionally hide this tab rather than falling back to the project root.
+  FNXC:TaskDetailTerminal 2026-07-11-13:20:
+  FN-7826 makes the interactive Terminal tab always available in Task Detail. The first shell opens in task.worktree when present; otherwise defaultCwd stays undefined so useTerminalSessions creates a project-root shell, including for multi-repo workspace tasks with no single worktree. Terminal sessions remain task-scoped through scopeId so they do not share the footer/global terminal namespace.
   */
   const taskWorktreeCwd = typeof task.worktree === "string" && task.worktree.trim().length > 0 ? task.worktree : undefined;
-  const showWorktreeTerminalTab = Boolean(taskWorktreeCwd) && !isWorkspaceTask(workingTask);
+  const showWorktreeTerminalTab = true;
   const cliPosture: SessionTerminalPosture | undefined = useMemo(() => {
     if (!cliSession) return undefined;
     const p = cliSession.autonomyPosture ?? {};
@@ -1197,10 +1197,6 @@ export function TaskDetailContent({
     if (activeTab === "terminal" && !showCliTab) setActiveTab("definition");
   }, [activeTab, showCliTab]);
 
-  // If the worktree-rooted terminal tab loses its single-worktree cwd, fall back.
-  useEffect(() => {
-    if (activeTab === "worktree-terminal" && !showWorktreeTerminalTab) setActiveTab("definition");
-  }, [activeTab, showWorktreeTerminalTab]);
 
   // Track mount state to avoid setting state on unmounted component
   useEffect(() => {
@@ -4858,7 +4854,7 @@ export function TaskDetailContent({
                 </Suspense>
               ) : null}
             </div>
-          ) : activeTab === "worktree-terminal" && showWorktreeTerminalTab && taskWorktreeCwd ? (
+          ) : activeTab === "worktree-terminal" && showWorktreeTerminalTab ? (
             <div className="detail-section detail-section--worktree-terminal">
               <Suspense fallback={<div className="detail-loading"><LoadingSpinner label={t("taskDetail.terminal.loadingInteractive", "Loading interactive terminal…")} /></div>}>
                 <LazyTerminalModal

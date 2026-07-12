@@ -305,6 +305,29 @@ Artifacts controls are the first page content below the shared header, so add a 
   gap: var(--space-sm);
 }
 
+/*
+FNXC:DocumentsView 2026-07-11-13:40:
+Task-document header actions group the Markdown/Plain toggle with the new Edit (and Cancel/Save while editing) buttons so the in-place CodeMirror editing controls stay in the header instead of a second toolbar. The editor container mirrors .artifacts-gallery-viewer-editor sizing so the embedded FileEditor gets real height inside the right pane.
+*/
+.documents-task-document-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-shrink: 0;
+}
+
+.documents-task-document-editor {
+  display: flex;
+  flex-direction: column;
+  min-height: 45dvh;
+  flex: 1;
+}
+
+.documents-task-document-editor .file-editor-container {
+  flex: 1;
+  min-height: 40dvh;
+}
+
 .documents-file-path-header {
   margin: 0;
   padding: var(--space-sm) var(--space-md);
@@ -316,19 +339,6 @@ Artifacts controls are the first page content below the shared header, so add a 
   font-size: 12px;
   word-break: break-word;
   flex: 1;
-}
-
-/*
-FNXC:ArtifactsView 2026-07-10-16:10:
-Subtle view-only indicator for the project-file preview header; muted so it informs without competing with the Plain/Markdown toggle. Shared markup serves desktop and mobile.
-*/
-.documents-readonly-badge {
-  flex-shrink: 0;
-  color: var(--text-muted);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  white-space: nowrap;
 }
 
 .documents-content-viewer-text {
@@ -409,18 +419,15 @@ FN-7811 reuses the Project Files shell for Task Documents, while task-scoped sid
   border-left-color: transparent;
 }
 
-.documents-task-document-title-block {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  flex-direction: column;
-  gap: var(--space-xs);
-}
-
+/*
+FNXC:DocumentsView 2026-07-11-14:30:
+The meta line (author · revision · date) renders as its own row directly under the path+actions header row; the viewer column's gap is too tall between two related header rows, so the meta pulls itself closer to the path box it annotates.
+*/
 .documents-task-document-meta {
   padding: 0;
   border-bottom: none;
   flex-wrap: wrap;
+  margin-top: calc(-1 * var(--space-sm));
 }
 
 .documents-group-task-id {

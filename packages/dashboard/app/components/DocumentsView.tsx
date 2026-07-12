@@ -1,17 +1,18 @@
 import "./DocumentsView.css";
 import { useState, useMemo, useCallback, useEffect, useRef, type ChangeEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowLeft, FileText, RefreshCw, Search, X, Eye, EyeOff } from "lucide-react";
+import { ArrowLeft, FileText, Pencil, RefreshCw, Search, X, Eye, EyeOff } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ColumnId, TaskDocumentWithTask, TaskDetail } from "@fusion/core";
 import type { ToastType } from "../hooks/useToast";
-import { fetchTaskDetail, fetchWorkspaceFileContent, type MarkdownFileEntry } from "../api";
+import { fetchTaskDetail, fetchWorkspaceFileContent, putTaskDocument, saveWorkspaceFileContent, type MarkdownFileEntry } from "../api";
 import { useArtifacts } from "../hooks/useArtifacts";
 import { useDocuments } from "../hooks/useDocuments";
 import { useProjectMarkdownFiles } from "../hooks/useProjectMarkdownFiles";
 import { useSelectionComment } from "../hooks/useSelectionComment";
 import { SelectionCommentPopover } from "./SelectionCommentPopover";
+import { FileEditor } from "./FileEditor";
 import { LoadingSpinner } from "./LoadingSpinner";
 import { ArtifactsGallery } from "./ArtifactsGallery";
 import { ViewHeader } from "./ViewHeader";
@@ -73,8 +74,25 @@ export function DocumentsView({ projectId, addToast, onOpenDetail, onOpenArtifac
   const taskDocPlainPreviewRef = useRef<HTMLPreElement>(null);
   // Markdown render toggle for project file preview
   const [renderProjectMarkdown, setRenderProjectMarkdown] = useState(false);
-  // Markdown render toggles per task document card (scoped by doc ID)
+  /*
+  FNXC:DocumentsView 2026-07-11-14:45:
+  Markdown render toggles per task document card (scoped by doc ID). Operator requirement: task documents default to the RENDERED MARKDOWN view (not plain text) — the map only stores explicit toggles away from that default, so every `?? true` fallback here and in the toggle handler must stay in sync.
+  */
   const [taskDocMarkdownStates, setTaskDocMarkdownStates] = useState<Map<string, boolean>>(new Map());
+  /*
+  FNXC:DocumentsView 2026-07-11-13:40:
+  Operator requirement: task documents in the Artifacts view must be editable in place with the same CodeMirror FileEditor used for workspace files and artifact docs — the FN-7811 read-only pane is not enough. Editing state is scoped to the selected document ID so switching documents, tabs, or projects can never save a draft against the wrong document; the draft lives here (not in FileEditor) so Save can PUT it via putTaskDocument and refresh the SWR document list.
+  */
+  const [editingTaskDocumentId, setEditingTaskDocumentId] = useState<string | null>(null);
+  const [taskDocDraft, setTaskDocDraft] = useState("");
+  const [taskDocSaving, setTaskDocSaving] = useState(false);
+  /*
+  FNXC:DocumentsView 2026-07-11-14:45:
+  Operator requirement: Project Files must be editable in place too (same CodeMirror FileEditor), replacing the former Read-only badge contract. Saves go through the workspace file API for the "project" workspace and update the local preview content on success.
+  */
+  const [editingProjectFile, setEditingProjectFile] = useState(false);
+  const [projectFileDraft, setProjectFileDraft] = useState("");
+  const [projectFileSaving, setProjectFileSaving] = useState(false);
   const [selectionCommentOpen, setSelectionCommentOpen] = useState(false);
   const markdownSelection = useSelectionComment(markdownPreviewRef, { locked: selectionCommentOpen });
   const plainSelection = useSelectionComment(plainPreviewRef, { locked: selectionCommentOpen });
@@ -136,6 +154,12 @@ export function DocumentsView({ projectId, addToast, onOpenDetail, onOpenArtifac
     setFileLoading(false);
     setRenderProjectMarkdown(false);
     setTaskDocMarkdownStates(new Map());
+    setEditingTaskDocumentId(null);
+    setTaskDocDraft("");
+    setTaskDocSaving(false);
+    setEditingProjectFile(false);
+    setProjectFileDraft("");
+    setProjectFileSaving(false);
   }, [projectId]);
 
   const groupedDocuments = useMemo(() => {
@@ -225,6 +249,12 @@ export function DocumentsView({ projectId, addToast, onOpenDetail, onOpenArtifac
     setActiveTab(tab);
     if (tab !== "tasks") {
       setSelectedTaskDocumentId(null);
+      setEditingTaskDocumentId(null);
+      setTaskDocDraft("");
+    }
+    if (tab !== "project") {
+      setEditingProjectFile(false);
+      setProjectFileDraft("");
     }
   }, []);
 
@@ -258,6 +288,8 @@ export function DocumentsView({ projectId, addToast, onOpenDetail, onOpenArtifac
     setFileLoading(true);
     setFileError(null);
     setFileContent(null);
+    setEditingProjectFile(false);
+    setProjectFileDraft("");
 
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
@@ -288,24 +320,84 @@ export function DocumentsView({ projectId, addToast, onOpenDetail, onOpenArtifac
     setFileContent(null);
     setFileError(null);
     setFileLoading(false);
+    setEditingProjectFile(false);
+    setProjectFileDraft("");
   }, []);
+
+  const handleStartProjectFileEdit = useCallback(() => {
+    if (fileContent === null) return;
+    setProjectFileDraft(fileContent);
+    setEditingProjectFile(true);
+  }, [fileContent]);
+
+  const handleCancelProjectFileEdit = useCallback(() => {
+    setEditingProjectFile(false);
+    setProjectFileDraft("");
+  }, []);
+
+  const handleSaveProjectFileEdit = useCallback(async () => {
+    if (!selectedFile) return;
+    setProjectFileSaving(true);
+    try {
+      await saveWorkspaceFileContent("project", selectedFile.path, projectFileDraft, projectId);
+      setFileContent(projectFileDraft);
+      setEditingProjectFile(false);
+      setProjectFileDraft("");
+      addToast(t("documents.projectFileSaved", "File saved"), "success");
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      setProjectFileSaving(false);
+    }
+  }, [selectedFile, projectFileDraft, projectId, addToast, t]);
 
   const handleSelectTaskDocument = useCallback((docId: string) => {
     setSelectedTaskDocumentId(docId);
+    setEditingTaskDocumentId(null);
+    setTaskDocDraft("");
   }, []);
 
   const handleBackToTaskDocumentList = useCallback(() => {
     setSelectedTaskDocumentId(null);
+    setEditingTaskDocumentId(null);
+    setTaskDocDraft("");
   }, []);
 
   const handleToggleTaskDocMarkdown = useCallback((docId: string) => {
     setTaskDocMarkdownStates((prev) => {
       const next = new Map(prev);
-      const current = next.get(docId) ?? false;
+      const current = next.get(docId) ?? true;
       next.set(docId, !current);
       return next;
     });
   }, []);
+
+  const handleStartTaskDocEdit = useCallback(() => {
+    if (!selectedTaskDocument) return;
+    setTaskDocDraft(selectedTaskDocument.content);
+    setEditingTaskDocumentId(selectedTaskDocument.id);
+  }, [selectedTaskDocument]);
+
+  const handleCancelTaskDocEdit = useCallback(() => {
+    setEditingTaskDocumentId(null);
+    setTaskDocDraft("");
+  }, []);
+
+  const handleSaveTaskDocEdit = useCallback(async () => {
+    if (!selectedTaskDocument) return;
+    setTaskDocSaving(true);
+    try {
+      await putTaskDocument(selectedTaskDocument.taskId, selectedTaskDocument.key, taskDocDraft, {}, projectId);
+      await refreshDocuments();
+      setEditingTaskDocumentId(null);
+      setTaskDocDraft("");
+      addToast(t("documents.taskDocumentSaved", "Document saved"), "success");
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      setTaskDocSaving(false);
+    }
+  }, [selectedTaskDocument, taskDocDraft, projectId, refreshDocuments, addToast, t]);
 
   const activeError = activeTab === "project" ? projectFilesError : activeTab === "tasks" ? documentsError : artifactsError;
 
@@ -322,9 +414,10 @@ export function DocumentsView({ projectId, addToast, onOpenDetail, onOpenArtifac
   }, [activeTab, refreshArtifacts, refreshProjectFiles, refreshDocuments]);
 
   const activeCount = activeTab === "project" ? filteredProjectFiles.length : activeTab === "tasks" ? documents.length : artifacts.length;
-  const selectedTaskDocumentRendersMarkdown = selectedTaskDocument ? (taskDocMarkdownStates.get(selectedTaskDocument.id) ?? false) : false;
+  const selectedTaskDocumentRendersMarkdown = selectedTaskDocument ? (taskDocMarkdownStates.get(selectedTaskDocument.id) ?? true) : false;
   const activeTaskDocumentSelection = selectedTaskDocumentRendersMarkdown ? taskDocMarkdownSelection : taskDocPlainSelection;
-  const selectionPopover = activeTab === "project" && selectedFile && onSendSelectionToTask && activeProjectSelection ? (
+  const editingSelectedTaskDocument = selectedTaskDocument !== null && editingTaskDocumentId === selectedTaskDocument.id;
+  const selectionPopover = activeTab === "project" && selectedFile && !editingProjectFile && onSendSelectionToTask && activeProjectSelection ? (
     <SelectionCommentPopover
       selectedText={activeProjectSelection.selectedText}
       anchorRect={activeProjectSelection.anchorRect}
@@ -333,7 +426,7 @@ export function DocumentsView({ projectId, addToast, onOpenDetail, onOpenArtifac
       onOpenChange={setSelectionCommentOpen}
     />
   ) : null;
-  const taskDocumentSelectionPopover = activeTab === "tasks" && selectedTaskDocument && onSendSelectionToTask && activeTaskDocumentSelection ? (
+  const taskDocumentSelectionPopover = activeTab === "tasks" && selectedTaskDocument && !editingSelectedTaskDocument && onSendSelectionToTask && activeTaskDocumentSelection ? (
     <SelectionCommentPopover
       selectedText={activeTaskDocumentSelection.selectedText}
       anchorRect={activeTaskDocumentSelection.anchorRect}
@@ -516,29 +609,56 @@ export function DocumentsView({ projectId, addToast, onOpenDetail, onOpenArtifac
                       <div className="documents-content-header">
                         <p className="documents-file-path-header">{selectedFile.path}</p>
                         {/*
-                        FNXC:ArtifactsView 2026-07-10-16:10:
-                        First-run review feedback: the Artifacts preview pane did not communicate whether documents are editable. This pane is view-only (there is no editor here — editing happens elsewhere, e.g. the workspace FileEditor), so a persistent Read-only badge states that explicitly on both desktop and mobile. Select-to-comment still works and is the intended interaction.
+                        FNXC:DocumentsView 2026-07-11-14:45:
+                        Operator requirement: Project Files are editable in place with the shared CodeMirror FileEditor, replacing the former Read-only badge contract (the FN-7810-era badge said "editing happens elsewhere"; it now happens here). While editing, the Markdown/Plain toggle is replaced by Cancel/Save and select-to-comment is suppressed.
                         */}
-                        <span
-                          className="documents-readonly-badge badge"
-                          title={t("documents.readOnlyHint", "This preview is read-only. Select text to comment and send it to a new task.")}
-                        >
-                          {t("documents.readOnly", "Read-only")}
-                        </span>
-                        <button
-                          className="btn btn-sm document-mode-toggle"
-                          onClick={() => setRenderProjectMarkdown((prev) => !prev)}
-                          aria-label={renderProjectMarkdown ? t("documents.switchToPlainText", "Switch to plain text") : t("documents.switchToMarkdown", "Switch to markdown")}
-                          aria-pressed={renderProjectMarkdown}
-                          title={renderProjectMarkdown ? t("documents.switchToPlainText", "Switch to plain text") : t("documents.switchToMarkdown", "Switch to markdown")}
-                        >
-                          {renderProjectMarkdown ? t("documents.markdown", "Markdown") : t("documents.plain", "Plain")}
-                        </button>
+                        <div className="documents-task-document-actions">
+                          {editingProjectFile ? (
+                            <>
+                              <button className="btn btn-sm" onClick={handleCancelProjectFileEdit} disabled={projectFileSaving}>
+                                {t("documents.cancelEdit", "Cancel")}
+                              </button>
+                              <button className="btn btn-sm btn-primary" onClick={() => void handleSaveProjectFileEdit()} disabled={projectFileSaving}>
+                                {projectFileSaving ? t("documents.saving", "Saving…") : t("documents.saveProjectFile", "Save")}
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                className="btn btn-sm document-mode-toggle"
+                                onClick={() => setRenderProjectMarkdown((prev) => !prev)}
+                                aria-label={renderProjectMarkdown ? t("documents.switchToPlainText", "Switch to plain text") : t("documents.switchToMarkdown", "Switch to markdown")}
+                                aria-pressed={renderProjectMarkdown}
+                                title={renderProjectMarkdown ? t("documents.switchToPlainText", "Switch to plain text") : t("documents.switchToMarkdown", "Switch to markdown")}
+                              >
+                                {renderProjectMarkdown ? t("documents.markdown", "Markdown") : t("documents.plain", "Plain")}
+                              </button>
+                              <button
+                                className="btn btn-sm"
+                                onClick={handleStartProjectFileEdit}
+                                disabled={fileLoading || fileError !== null || fileContent === null}
+                                aria-label={t("documents.editProjectFile", "Edit project file")}
+                              >
+                                <Pencil size={14} aria-hidden="true" />
+                                {t("documents.edit", "Edit")}
+                              </button>
+                            </>
+                          )}
+                        </div>
                       </div>
                       {fileLoading ? (
                         <p className="documents-content-state"><LoadingSpinner label={t("documents.loadingFileContent", "Loading file content…")} /></p>
                       ) : fileError ? (
                         <p className="documents-content-state documents-content-state--error">{fileError}</p>
+                      ) : editingProjectFile ? (
+                        <div className="documents-task-document-editor" aria-label={t("documents.projectFileContentEditor", "Project file content editor")}>
+                          <FileEditor
+                            content={projectFileDraft}
+                            onChange={setProjectFileDraft}
+                            filePath={selectedFile.path}
+                            forceToolbarActionsVisible
+                          />
+                        </div>
                       ) : renderProjectMarkdown ? (
                         <div ref={markdownPreviewRef} className="documents-content-markdown">
                           <div className="markdown-body">
@@ -690,28 +810,62 @@ export function DocumentsView({ projectId, addToast, onOpenDetail, onOpenArtifac
                   </div>
                 ) : (
                   <div className="documents-content-viewer documents-task-document-viewer">
+                    {/*
+                    FNXC:DocumentsView 2026-07-11-14:30:
+                    The header actions (Plain/Edit, or Cancel/Save while editing) must sit on the same row as the document path box, vertically centered against it — when the path and the author/revision meta shared a title-block column, the actions centered on the two-row block and rendered visibly below the path box's midline (user-reported misalignment). The meta line now renders below the path+actions row at full width.
+                    */}
                     <div className="documents-content-header documents-task-document-header">
-                      <div className="documents-task-document-title-block">
-                        <p className="documents-file-path-header">{selectedTaskDocument.taskId} / {selectedTaskDocument.key}</p>
-                        <div className="document-card-meta documents-task-document-meta">
-                          <span className="document-card-author">{selectedTaskDocument.author}</span>
-                          <span className="document-card-separator">·</span>
-                          <span>{t("documents.revisionShort", "v{{revision}}", { revision: selectedTaskDocument.revision })}</span>
-                          <span className="document-card-separator">·</span>
-                          <span className="document-card-date">{formatTimestamp(selectedTaskDocument.updatedAt)}</span>
-                        </div>
+                      <p className="documents-file-path-header">{selectedTaskDocument.taskId} / {selectedTaskDocument.key}</p>
+                      {/*
+                      FNXC:DocumentsView 2026-07-11-13:40:
+                      Operator requirement: task documents must be editable in place from the Artifacts view with the shared CodeMirror FileEditor (not a plain textarea, and not read-only). While editing, the Markdown/Plain toggle is replaced by Cancel/Save (FileEditor carries its own Edit/Preview toolbar for markdown) and select-to-comment is suppressed so the composer lock cannot fight the editor selection.
+                      */}
+                      <div className="documents-task-document-actions">
+                        {editingSelectedTaskDocument ? (
+                          <>
+                            <button className="btn btn-sm" onClick={handleCancelTaskDocEdit} disabled={taskDocSaving}>
+                              {t("documents.cancelEdit", "Cancel")}
+                            </button>
+                            <button className="btn btn-sm btn-primary" onClick={() => void handleSaveTaskDocEdit()} disabled={taskDocSaving}>
+                              {taskDocSaving ? t("documents.saving", "Saving…") : t("documents.saveTaskDocument", "Save")}
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              className="btn btn-sm document-mode-toggle"
+                              onClick={() => handleToggleTaskDocMarkdown(selectedTaskDocument.id)}
+                              aria-label={selectedTaskDocumentRendersMarkdown ? t("documents.switchToPlainText", "Switch to plain text") : t("documents.switchToMarkdown", "Switch to markdown")}
+                              aria-pressed={selectedTaskDocumentRendersMarkdown}
+                              title={selectedTaskDocumentRendersMarkdown ? t("documents.switchToPlainText", "Switch to plain text") : t("documents.switchToMarkdown", "Switch to markdown")}
+                            >
+                              {selectedTaskDocumentRendersMarkdown ? t("documents.markdown", "Markdown") : t("documents.plain", "Plain")}
+                            </button>
+                            <button className="btn btn-sm" onClick={handleStartTaskDocEdit} aria-label={t("documents.editTaskDocument", "Edit task document")}>
+                              <Pencil size={14} aria-hidden="true" />
+                              {t("documents.edit", "Edit")}
+                            </button>
+                          </>
+                        )}
                       </div>
-                      <button
-                        className="btn btn-sm document-mode-toggle"
-                        onClick={() => handleToggleTaskDocMarkdown(selectedTaskDocument.id)}
-                        aria-label={selectedTaskDocumentRendersMarkdown ? t("documents.switchToPlainText", "Switch to plain text") : t("documents.switchToMarkdown", "Switch to markdown")}
-                        aria-pressed={selectedTaskDocumentRendersMarkdown}
-                        title={selectedTaskDocumentRendersMarkdown ? t("documents.switchToPlainText", "Switch to plain text") : t("documents.switchToMarkdown", "Switch to markdown")}
-                      >
-                        {selectedTaskDocumentRendersMarkdown ? t("documents.markdown", "Markdown") : t("documents.plain", "Plain")}
-                      </button>
                     </div>
-                    {selectedTaskDocumentRendersMarkdown ? (
+                    <div className="document-card-meta documents-task-document-meta">
+                      <span className="document-card-author">{selectedTaskDocument.author}</span>
+                      <span className="document-card-separator">·</span>
+                      <span>{t("documents.revisionShort", "v{{revision}}", { revision: selectedTaskDocument.revision })}</span>
+                      <span className="document-card-separator">·</span>
+                      <span className="document-card-date">{formatTimestamp(selectedTaskDocument.updatedAt)}</span>
+                    </div>
+                    {editingSelectedTaskDocument ? (
+                      <div className="documents-task-document-editor" aria-label={t("documents.taskDocumentContentEditor", "Task document content editor")}>
+                        <FileEditor
+                          content={taskDocDraft}
+                          onChange={setTaskDocDraft}
+                          filePath={selectedTaskDocument.key.includes(".") ? selectedTaskDocument.key : `${selectedTaskDocument.key}.md`}
+                          forceToolbarActionsVisible
+                        />
+                      </div>
+                    ) : selectedTaskDocumentRendersMarkdown ? (
                       <div ref={taskDocMarkdownPreviewRef} className="documents-content-markdown">
                         <div className="markdown-body">
                           <ReactMarkdown remarkPlugins={[remarkGfm]}>{selectedTaskDocument.content}</ReactMarkdown>

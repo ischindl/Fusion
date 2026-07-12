@@ -1556,6 +1556,27 @@ describe("TerminalModal", () => {
       expect(tabletBlock).not.toMatch(/\.terminal-connection-status/);
     });
 
+    it("keeps the desktop terminal header controls on one scrollable row when narrow (FN-7823)", () => {
+      // FN-7823: large viewport breakpoints can still produce narrow floating or
+      // docked panels, so the desktop header must preserve horizontal scrolling
+      // instead of wrapping the help/status text into multiple rows.
+      const shortcutsHeaderRule = terminalModalCss.match(/\.terminal-shortcuts--header\s*\{([^}]*)\}/)?.[1] ?? "";
+      expect(shortcutsHeaderRule).toContain("white-space: nowrap;");
+
+      const actionsRule = terminalModalCss.match(/\.terminal-actions\s*\{([^}]*)\}/)?.[1] ?? "";
+      expect(actionsRule).toContain("min-width: 0;");
+      expect(actionsRule).toContain("overflow-x: auto;");
+      expect(actionsRule).not.toContain("flex-wrap: wrap;");
+
+      const connectionStatusRule = terminalModalCss.match(/\.terminal-connection-status\s*\{([^}]*)\}/)?.[1] ?? "";
+      expect(connectionStatusRule).toContain("white-space: nowrap;");
+
+      const mobileHideBlock = terminalModalCss.match(
+        /@media \(max-width: 768px\) \{[\s\S]*?\.terminal-shortcuts--header,\s*\n\s*\.terminal-connection-status \{([^}]*)\}/,
+      )?.[1] ?? "";
+      expect(mobileHideBlock).toContain("display: none;");
+    });
+
     describe("real-CSS mobile cascade (FN-7621 recurrence #3)", () => {
       // FN-7621: the FN-7550/FN-7560 tests above are leaf-rule string matches —
       // they proved the declarations exist, but never proved the panel actually

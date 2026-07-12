@@ -25,8 +25,16 @@ Every :active override here must restate the positioning translate alongside the
 feedback so the trigger stays under the cursor for the whole press. This one shared rule
 covers all popover surfaces: DocumentsView project-file preview (plain and markdown) and
 FileEditor (editor and preview), desktop and mobile.
+
+FNXC:ArtifactsView 2026-07-11-14:20:
+Regression: `.selection-comment-trigger:active` and the global `.btn:active` are both
+specificity (0,2,0), so this fix silently lost to `.btn:active` when the CSS bundle order
+flipped and the mid-press teleport/no-op came back (same bundle-order failure mode the
+`.selection-comment-panel.card` rule below documents). `.btn.selection-comment-trigger:active`
+is (0,3,0) so the positioning translate wins regardless of bundle order. Never rely on
+source order against `.btn:active` here.
 */
-.selection-comment-trigger:active {
+.btn.selection-comment-trigger:active {
   transform: translate(-50%, calc(-1 * var(--space-xl))) scale(0.97);
 }
 
@@ -108,8 +116,9 @@ a selection near the bottom of the viewport from pushing the composer off-screen
   Mobile uses a taller lift, so its :active rule must restate the mobile translate too —
   otherwise the desktop :active rule (space-xl) would snap the pressed trigger to the
   desktop offset and reintroduce the missed-click no-op on touch/landscape-phone widths.
+  FNXC:ArtifactsView 2026-07-11-14:20: `.btn.` prefix for bundle-order immunity — see the desktop rule above.
   */
-  .selection-comment-trigger:active {
+  .btn.selection-comment-trigger:active {
     transform: translate(-50%, calc(-1 * var(--space-2xl))) scale(0.97);
   }
 
