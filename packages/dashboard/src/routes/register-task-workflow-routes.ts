@@ -28,10 +28,9 @@ import {
   REPO_OVERRIDE_RE,
   resolveTitleSummarizerSettingsModel,
   validateNodeOverrideChange,
-  canAgentTakeImplementationTaskForExplicitRouting,
+  evaluateImplementationTaskBind,
   applyWorkflowSettingsOverlay,
   resolveEffectiveSettingsDetailed,
-  formatRoleMismatchReason,
   getCurrentRepo,
   findDuplicateMatches,
   deterministicGuardLocks,
@@ -4671,8 +4670,17 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
           throw notFound("Task not found");
         }
 
-        if (override !== true && !canAgentTakeImplementationTaskForExplicitRouting(agent, targetTask)) {
-          throw new ApiError(409, formatRoleMismatchReason(agent, targetTask));
+        /*
+        FNXC:AgentRouting 2026-07-12-12:25:
+        Issue #2015: route through the shared bind evaluator so per-agent assignmentPolicy is enforced.
+        override=true still bypasses the role check but never assignmentPolicy "none".
+        */
+        const bindVerdict = evaluateImplementationTaskBind(agent, targetTask, {
+          explicitRouting: true,
+          executorRoleOverride: override === true,
+        });
+        if (!bindVerdict.allowed) {
+          throw new ApiError(409, bindVerdict.reason);
         }
       }
 
@@ -5138,6 +5146,10 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         throw err;
+      }
+      // FNXC:AgentRouting 2026-07-12-12:25: issue #2015 — checkout is now policy-guarded in AgentStore.checkoutTask; surface the refusal as 409, not 500.
+      if (err instanceof Error && err.name === "AgentTaskRoutingPolicyError") {
+        throw new ApiError(409, err.message);
       }
       if (err instanceof Error && err.name === "CheckoutConflictError") {
         const checkoutErr = err as Error & { currentHolderId?: string; taskId?: string };

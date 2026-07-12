@@ -8,6 +8,7 @@ import {
   drizzleSql,
   AgentStore,
   isEphemeralAgent,
+  evaluateImplementationTaskBind,
   AGENT_VALID_TRANSITIONS,
   ApprovalRequestStore,
   COLUMNS,
@@ -29,8 +30,6 @@ import {
   RESEARCH_RUN_STATUSES,
   isResearchExperimentalEnabled,
   resolveResearchSettings,
-  canAgentTakeImplementationTaskForExplicitRouting,
-  formatRoleMismatchReason,
   getTaskDuplicateLineage,
   resolveAgentProvisioningPolicy,
   TASK_PRIORITIES,
@@ -282,7 +281,6 @@ async function validateAssignableAgentId(
   task?: Pick<Task, "id" | "column"> | null,
   override = false,
 ): Promise<string | null> {
-  
   const agentStore = await getAgentStore(cwd);
   await agentStore.init();
   const agent = await agentStore.getAgent(agentId);
@@ -292,8 +290,15 @@ async function validateAssignableAgentId(
   if (isEphemeralAgent(agent)) {
     return `Cannot assign task to ephemeral/runtime agent ${agentId}`;
   }
-  if (task && !override && !canAgentTakeImplementationTaskForExplicitRouting(agent, task)) {
-    return formatRoleMismatchReason(agent, task);
+  if (task) {
+    // FNXC:AgentRouting 2026-07-12-12:30: issue #2015 — shared bind evaluator; override bypasses role only, never assignmentPolicy "none".
+    const verdict = evaluateImplementationTaskBind(agent, task, {
+      explicitRouting: true,
+      executorRoleOverride: override,
+    });
+    if (!verdict.allowed) {
+      return verdict.reason;
+    }
   }
   return null;
 }

@@ -19,7 +19,7 @@
 
 import type { AgentStore, AgentHeartbeatRun, HeartbeatInvocationSource, AgentHeartbeatConfig, AgentBudgetStatus, Message, MessageStore, TaskStore, TaskDetail, AgentRole, Agent, InboxTask, RunMutationContext, Settings, AgentConfigRevision, ReflectionStore, ChatStore, ChatRoom, ChatRoomMessage, AgentMemoryInclusionMode } from "@fusion/core";
 import { AutoClaimSnapshotManager, resolveFreshAutoClaimCandidates, type AutoClaimCandidate } from "./auto-claim-snapshot.js";
-import { ApprovalRequestStore, buildExecutionMemoryInstructions, isEphemeralAgent, hasAgentIdentity, resolveEffectiveAgentPermissionPolicy, canAgentTakeImplementationTask, canAgentTakeImplementationTaskForExplicitRouting, resolvePersistAgentThinkingLog, resolveAgentMemoryInclusionMode, FUSION_RUNTIME_SELF_AWARENESS, AWAITING_APPROVAL_PAUSE_REASON } from "@fusion/core";
+import { ApprovalRequestStore, buildExecutionMemoryInstructions, isEphemeralAgent, hasAgentIdentity, resolveEffectiveAgentPermissionPolicy, canAgentTakeImplementationTask, evaluateImplementationTaskBind, resolvePersistAgentThinkingLog, resolveAgentMemoryInclusionMode, FUSION_RUNTIME_SELF_AWARENESS, AWAITING_APPROVAL_PAUSE_REASON } from "@fusion/core";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "@earendil-works/pi-ai";
 import { createHash } from "node:crypto";
@@ -2340,10 +2340,16 @@ export class HeartbeatMonitor {
         let inboxSelection: InboxTask | null = null;
 
         if (!taskId) {
-          inboxSelection = await taskStore.selectNextTaskForAgent(agentId, { id: agent.id, role: agent.role });
-          if (inboxSelection && !canAgentTakeImplementationTaskForExplicitRouting(agent, inboxSelection.task)) {
-            const hasRoleOverride = inboxSelection.task.sourceMetadata?.executorRoleOverride === true;
-            if (!hasRoleOverride) {
+          // FNXC:AgentRouting 2026-07-12-12:10: pass runtimeConfig so the inbox selector can enforce per-agent assignmentPolicy (issue #2015).
+          inboxSelection = await taskStore.selectNextTaskForAgent(agentId, { id: agent.id, role: agent.role, runtimeConfig: agent.runtimeConfig });
+          if (inboxSelection) {
+            // Defense-in-depth re-check with the shared evaluator: executorRoleOverride bypasses the role
+            // check only — assignmentPolicy "none" is never overridable (issue #2015).
+            const bindVerdict = evaluateImplementationTaskBind(agent, inboxSelection.task, {
+              explicitRouting: true,
+              executorRoleOverride: inboxSelection.task.sourceMetadata?.executorRoleOverride === true,
+            });
+            if (!bindVerdict.allowed) {
               heartbeatLog.log(
                 `Agent ${agentId} (role=${agent.role}) skipped inbox-selected task ${inboxSelection.task.id} due to executor-role assignment policy`,
               );

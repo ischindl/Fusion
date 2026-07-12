@@ -202,6 +202,15 @@ export interface MoveTaskOptions {
   preserveProgress?: boolean;
   preserveWorktree?: boolean;
   preserveStatus?: boolean;
+  /**
+   * FNXC:WorkflowLifecycle 2026-07-12-09:05:
+   * Keep `paused`/`pausedByAgentId`/`pausedReason` (and any existing
+   * `userPaused`) across a reopen-to-todo/triage move. Used by the executor's
+   * pause teardown so a user pause survives its own hard-cancel re-queue and
+   * the row stays parked until an explicit unpause (FN-7851 pause-bounce loop).
+   * Never SETS a pause — only prevents the reopen block from clearing one.
+   */
+  preservePause?: boolean;
   allocateWorktree?: (reservedNames: Set<string>) => string | null;
   moveSource?: "user" | "engine" | "scheduler";
   workflowMoveActor?: WorkflowMovePolicyInput["actor"];
@@ -1088,7 +1097,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   async renewCheckoutLease( taskId: string, update: { checkoutRunId: string | null; checkoutLeaseRenewedAt: string; }, ): Promise<Task> {
     return renewCheckoutLeaseImpl(this, taskId, update);
   }
-  async selectNextTaskForAgent( agentId: string, agent?: Pick<Agent, "id" | "role">, ): Promise<InboxTask | null> {
+  async selectNextTaskForAgent( agentId: string, agent?: Pick<Agent, "id" | "role"> & Partial<Pick<Agent, "runtimeConfig">>, ): Promise<InboxTask | null> {
     return selectNextTaskForAgentImpl(this, agentId, agent);
   }
   public areAllDependenciesDone(dependencies: string[], tasksById: Map<string, Task>): boolean {

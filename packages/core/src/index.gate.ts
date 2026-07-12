@@ -576,7 +576,14 @@ export {
   canAgentTakeImplementationTaskForExplicitRouting,
   canAgentTakeImplementationTaskForBacklogPickup,
   formatRoleMismatchReason,
+  getAgentAssignmentPolicy,
+  isAgentAutoAssignable,
+  canAgentReceiveImplementationTasks,
+  evaluateImplementationTaskBind,
+  assertImplementationTaskBindAllowed,
+  AgentTaskRoutingPolicyError,
 } from "./agent-role-policy.js";
+export type { AgentAssignmentPolicy, ImplementationTaskBindContext, ImplementationTaskBindVerdict } from "./agent-role-policy.js";
 export { ReflectionStore } from "./reflection-store.js";
 export type { ReflectionStoreEvents } from "./reflection-store.js";
 export { MessageStore } from "./message-store.js";

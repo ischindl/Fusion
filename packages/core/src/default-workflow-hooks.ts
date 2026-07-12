@@ -86,6 +86,7 @@ export interface DefaultWorkflowMoveContext {
     preserveResumeState?: boolean;
     preserveProgress?: boolean;
     preserveWorktree?: boolean;
+    preservePause?: boolean;
   };
   /** Reset all steps to pending + currentStep 0 (store owns the impl). */
   resetSteps: () => void;
@@ -134,19 +135,28 @@ export function applyResetOnEntryEffects(ctx: DefaultWorkflowMoveContext): void 
     (toColumn === "todo" || toColumn === "triage");
   if (!isReopenToTodoOrTriage) return;
 
+  /*
+  FNXC:WorkflowLifecycle 2026-07-12-09:05:
+  Pause-bounce loop (observed on FN-7851, 2026-07-12): a user pause of an in-progress task hard-cancels the session and the executor teardown re-queues the row to todo. This reopen block unconditionally wiped `paused`/`pausedByAgentId`/`pausedReason`, so the pause NEVER survived its own teardown — the graph-failure classifier then saw an unpaused row, misread the abort as engine-internal, and auto-continued the session (and after the retry budget, the scheduler re-dispatched the unpaused todo row). `preservePause` lets the pause-caused teardown move keep the park; the scheduler skips paused/userPaused todo rows until an explicit unpause.
+  `userPaused` promotion for user-source moves is unchanged; preservePause only prevents CLEARING an existing park, never sets one.
+  */
   if (!options.preserveStatus) {
     task.status = undefined;
     task.error = undefined;
-    task.pausedReason = undefined;
+    if (!options.preservePause) {
+      task.pausedReason = undefined;
+    }
   }
   task.blockedBy = undefined;
   task.overlapBlockedBy = undefined;
-  task.paused = undefined;
-  task.pausedByAgentId = undefined;
+  if (!options.preservePause) {
+    task.paused = undefined;
+    task.pausedByAgentId = undefined;
+  }
   // abort-on-exit userPaused: only for user-source moves to todo (KTD-9).
   if (moveSource === "user" && toColumn === "todo") {
     task.userPaused = true;
-  } else {
+  } else if (!options.preservePause) {
     task.userPaused = undefined;
   }
 

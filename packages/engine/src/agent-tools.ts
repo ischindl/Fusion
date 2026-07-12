@@ -16,7 +16,7 @@ import * as fusionCore from "@fusion/core";
 import type { AgentState, AgentCapability, AgentUpdateInput, Artifact, ArtifactCreateInput, ArtifactWithTask, TaskDocument, TaskDocumentCreateInput, TaskStore, RunMutationContext, MessageStore, Message, SourceType, Settings, ResearchRun, ResearchRunStatus, TaskCreateInput, ReflectionStore, ApprovalRequestStore, ProjectSettings, ChatStore, WorkflowSettingDefinition, GoalStatus } from "@fusion/core";
 import { listTraits, isBuiltinWorkflowId, AgentStore, validateColumnAgentBindings, ColumnAgentBindingError, ResearchStore, stripApprovalBypassFlags, WorkflowSettingRejectionError, resolveEffectiveSettingsById, resolveWorkflowIrById, findOrphanedSettingValues, BUILTIN_WORKFLOW_SETTINGS, MAX_TASK_LIST_TEXT_CHARS, formatCurrentTaskLine, normalizeWorkflowIcon } from "@fusion/core";
 import { promoteHeldTask } from "./hold-release.js";
-import { DASHBOARD_USER_ID, canAgentTakeImplementationTaskForExplicitRouting, dailyMemoryPath, ensureOpenClawMemoryFiles, extractAgentProvisioningRequest, formatRoleMismatchReason, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh } from "@fusion/core";
+import { DASHBOARD_USER_ID, dailyMemoryPath, ensureOpenClawMemoryFiles, evaluateImplementationTaskBind, extractAgentProvisioningRequest, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh } from "@fusion/core";
 import { ResearchOrchestrator } from "./research-orchestrator.js";
 import { ResearchProviderRegistry } from "./research/provider-registry.js";
 import { ResearchStepRunner } from "./research-step-runner.js";
@@ -3844,11 +3844,21 @@ export function createDelegateTaskTool(
         };
       }
 
+      /*
+      FNXC:AgentRouting 2026-07-12-12:20:
+      Issue #2015: delegation must honor per-agent assignmentPolicy. override=true still bypasses the ROLE
+      check, but an agent with assignmentPolicy "none" (liaison guarantee) can never be delegated an
+      implementation task — no override exists for that.
+      */
       const override = params.override === true;
       const newTaskRef = { id: "<new>", column: "todo" } as const;
-      if (!override && !canAgentTakeImplementationTaskForExplicitRouting(agent, { column: newTaskRef.column })) {
+      const bindVerdict = evaluateImplementationTaskBind(agent, newTaskRef, {
+        explicitRouting: true,
+        executorRoleOverride: override,
+      });
+      if (!bindVerdict.allowed) {
         return {
-          content: [{ type: "text" as const, text: `ERROR: ${formatRoleMismatchReason(agent, newTaskRef)}` }],
+          content: [{ type: "text" as const, text: `ERROR: ${bindVerdict.reason}` }],
           details: {},
         };
       }

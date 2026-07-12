@@ -935,7 +935,8 @@ export function registerAgentRuntimeRoutes(ctx: ApiRoutesContext, deps: AgentRun
         throw notFound("Agent not found");
       }
 
-      const selection = await scopedStore.selectNextTaskForAgent(agentId);
+      // FNXC:AgentRouting 2026-07-12-14:10: issue #2015 — pass the agent so the inbox preview applies the same role/assignmentPolicy bind filter as the heartbeat selector.
+      const selection = await scopedStore.selectNextTaskForAgent(agentId, { id: agent.id, role: agent.role, runtimeConfig: agent.runtimeConfig });
       if (!selection) {
         res.json({ task: null });
         return;

@@ -1,5 +1,5 @@
 import type { Agent, AgentStore, Task, TaskStore } from "@fusion/core";
-import { isEphemeralAgent } from "@fusion/core";
+import { isAgentAutoAssignable, isEphemeralAgent } from "@fusion/core";
 
 const ACTIVE_COLUMNS = new Set(["todo", "in-progress", "in-review"]);
 
@@ -26,11 +26,18 @@ export async function listEligibleExecutorAgents(
   agentStore: Pick<AgentStore, "listAgents">,
 ): Promise<Agent[]> {
   const agents = await agentStore.listAgents({ role: "executor", includeEphemeral: true });
+  /*
+  FNXC:AgentRouting 2026-07-12-12:15:
+  Issue #2015 (NEXT-871): the scheduler auto-assign pool admitted EVERY enabled executor-role agent, so a
+  liaison-type agent whose role field is "executor" was round-robin-assigned product-code tasks. Agents with
+  runtimeConfig.assignmentPolicy "explicit-only"/"none" are excluded from all automatic assignment.
+  */
   return agents.filter(
     (agent) => agent.role === "executor"
       && !isEphemeralAgent(agent)
       && agent.state !== "error"
-      && isAgentEnabled(agent),
+      && isAgentEnabled(agent)
+      && isAgentAutoAssignable(agent),
   );
 }
 

@@ -3319,6 +3319,17 @@ function deriveEngineerBacklogAutoClaim(runtimeConfig: AgentDetail["runtimeConfi
   return runtimeConfig?.engineerBacklogAutoClaim === true;
 }
 
+/*
+FNXC:AgentRouting 2026-07-12-13:50:
+Issue #2015: operators need a per-agent switch that removes an agent from task routing. "auto" (default)
+keeps today's behavior, "explicit-only" blocks automatic assignment/auto-claim, "none" guarantees the agent
+can never be bound to implementation tasks (liaison/observer agents).
+*/
+function deriveAssignmentPolicy(runtimeConfig: AgentDetail["runtimeConfig"] | undefined): "auto" | "explicit-only" | "none" {
+  const raw = runtimeConfig?.assignmentPolicy;
+  return raw === "explicit-only" || raw === "none" ? raw : "auto";
+}
+
 function deriveRunMissedHeartbeatOnStartup(runtimeConfig: AgentDetail["runtimeConfig"] | undefined): boolean {
   return runtimeConfig?.runMissedHeartbeatOnStartup === true;
 }
@@ -3704,6 +3715,9 @@ function ConfigTab({
   const [engineerBacklogAutoClaimEnabled, setEngineerBacklogAutoClaimEnabled] = useState<boolean>(
     () => deriveEngineerBacklogAutoClaim(agent.runtimeConfig),
   );
+  const [assignmentPolicy, setAssignmentPolicy] = useState<"auto" | "explicit-only" | "none">(
+    () => deriveAssignmentPolicy(agent.runtimeConfig),
+  );
   const [runMissedHeartbeatOnStartup, setRunMissedHeartbeatOnStartup] = useState<boolean>(
     () => deriveRunMissedHeartbeatOnStartup(agent.runtimeConfig),
   );
@@ -4020,6 +4034,7 @@ function ConfigTab({
     if (heartbeatEnabled !== deriveHeartbeatEnabled(agent.runtimeConfig)) return true;
     if (autoClaimRelevantTasksEnabled !== deriveAutoClaimRelevantTasksEnabled(agent.runtimeConfig)) return true;
     if (engineerBacklogAutoClaimEnabled !== deriveEngineerBacklogAutoClaim(agent.runtimeConfig)) return true;
+    if (assignmentPolicy !== deriveAssignmentPolicy(agent.runtimeConfig)) return true;
     if (runMissedHeartbeatOnStartup !== deriveRunMissedHeartbeatOnStartup(agent.runtimeConfig)) return true;
     if (allowParallelExecution !== deriveAllowParallelExecution(agent.runtimeConfig)) return true;
     if (skipHeartbeatWhenIdle !== deriveSkipHeartbeatWhenIdle(agent.runtimeConfig)) return true;
@@ -4259,6 +4274,11 @@ function ConfigTab({
     newRuntimeConfig.enabled = heartbeatEnabled;
     newRuntimeConfig.autoClaimRelevantTasks = autoClaimRelevantTasksEnabled;
     newRuntimeConfig.engineerBacklogAutoClaim = engineerBacklogAutoClaimEnabled;
+    if (assignmentPolicy === "auto") {
+      delete newRuntimeConfig.assignmentPolicy;
+    } else {
+      newRuntimeConfig.assignmentPolicy = assignmentPolicy;
+    }
     newRuntimeConfig.runMissedHeartbeatOnStartup = runMissedHeartbeatOnStartup;
     newRuntimeConfig.allowParallelExecution = allowParallelExecution;
     newRuntimeConfig.skipHeartbeatWhenIdle = skipHeartbeatWhenIdle;
@@ -4369,7 +4389,7 @@ function ConfigTab({
       runtimeConfig: newRuntimeConfig,
       bundleConfig: newBundleConfig,
     };
-  }, [agent.metadata, agent.runtimeConfig, allowParallelExecution, autoClaimRelevantTasksEnabled, budgetValues, bundleEntryFile, bundleExternalPath, bundleFiles, bundleMode, engineerBacklogAutoClaimEnabled, formValues, heartbeatEnabled, heartbeatPromptTemplate, heartbeatScopeDiscipline, heartbeatValues, iconValue, modelValue, nameValue, reportsToValue, roleValue, runMissedHeartbeatOnStartup, runtimeMode, selectedRuntimeId, selectedSkills, skipHeartbeatWhenIdle, titleValue, validationErrors]);
+  }, [agent.metadata, agent.runtimeConfig, allowParallelExecution, assignmentPolicy, autoClaimRelevantTasksEnabled, budgetValues, bundleEntryFile, bundleExternalPath, bundleFiles, bundleMode, engineerBacklogAutoClaimEnabled, formValues, heartbeatEnabled, heartbeatPromptTemplate, heartbeatScopeDiscipline, heartbeatValues, iconValue, modelValue, nameValue, reportsToValue, roleValue, runMissedHeartbeatOnStartup, runtimeMode, selectedRuntimeId, selectedSkills, skipHeartbeatWhenIdle, titleValue, validationErrors]);
 
   const persistSettings = useCallback(async (showValidationToast: boolean, source: "auto" | "manual") => {
     const payload = buildSavePayload();
@@ -4865,6 +4885,24 @@ function ConfigTab({
               {t("agents.engineerBacklogAutoClaim", "Engineer Backlog Auto-Claim")}
             </label>
             <span className="config-hint">{t("agents.engineerBacklogAutoClaimHint", "Per-agent override of the project default. Allows this engineer-role agent to auto-claim unowned backlog tasks; explicit assignment and delegation are unchanged.")}</span>
+          </div>
+
+          {/* FNXC:AgentRouting 2026-07-12-13:55: issue #2015 — per-agent task-routing eligibility (liaison guarantee). */}
+          <div className="config-field">
+            <label htmlFor="hb-assignmentPolicy">{t("agents.assignmentPolicy", "Assignment Policy")}</label>
+            <select
+              id="hb-assignmentPolicy"
+              value={assignmentPolicy}
+              onChange={(e) => {
+                setAssignmentPolicy(e.target.value as "auto" | "explicit-only" | "none");
+                void scheduleAutoSave();
+              }}
+            >
+              <option value="auto">{t("agents.assignmentPolicyAuto", "Auto (default) — eligible for automatic assignment")}</option>
+              <option value="explicit-only">{t("agents.assignmentPolicyExplicitOnly", "Explicit only — never auto-assigned; accepts direct assignment/delegation")}</option>
+              <option value="none">{t("agents.assignmentPolicyNone", "None — can never receive implementation tasks")}</option>
+            </select>
+            <span className="config-hint">{t("agents.assignmentPolicyHint", "Controls whether task routing may bind work to this agent. Use \"None\" for liaison/observer agents that must never execute product tasks — no override can bypass it.")}</span>
           </div>
 
           <div className="config-field">

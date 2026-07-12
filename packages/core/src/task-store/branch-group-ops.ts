@@ -10,7 +10,7 @@ import {TaskStore} from "../store.js";
 import type {Task, ColumnId, ArtifactType, ArtifactWithTask, InboxTask, TaskLogEntry, RunMutationContext, Agent} from "../types.js";
 import {runReconciliationAbort} from "../workflow-reconciliation.js";
 import "../builtin-traits.js";
-import {canAgentTakeImplementationTaskForExplicitRouting} from "../agent-role-policy.js";
+import {evaluateImplementationTaskBind} from "../agent-role-policy.js";
 import {isNearDuplicateCanonicalInactive} from "../near-duplicate-canonical.js";
 import {type TaskRow} from "../task-store/persistence.js";
 import {__setTaskActivityLogLimitsForTesting} from "../task-store/comments.js";
@@ -105,7 +105,7 @@ export async function clearNearDuplicateReferencesToImpl(store: TaskStore, canon
     return updatedTasks;
   }
 
-export async function selectNextTaskForAgentImpl(store: TaskStore, agentId: string, agent?: Pick<Agent, "id" | "role">,): Promise<InboxTask | null> {
+export async function selectNextTaskForAgentImpl(store: TaskStore, agentId: string, agent?: Pick<Agent, "id" | "role"> & Partial<Pick<Agent, "runtimeConfig">>,): Promise<InboxTask | null> {
     const hasExecutorRoleOverride = (task: Task): boolean => task.sourceMetadata?.executorRoleOverride === true;
     const tasks = await store.listTasks({ slim: true });
     if (tasks.length === 0) {
@@ -121,9 +121,26 @@ export async function selectNextTaskForAgentImpl(store: TaskStore, agentId: stri
       return aSortAt.localeCompare(bSortAt);
     };
 
+    /*
+    FNXC:AgentRouting 2026-07-12-12:05 (merge port from main):
+    FN-7851 / issue #2015: the in-progress branch used to return unconditionally, so a task mis-bound to a
+    role-incompatible or policy-excluded agent was re-selected on every heartbeat forever (the NEXT-871 liaison
+    loop). Route BOTH branches through the shared bind evaluator. executorRoleOverride still bypasses the role
+    check but never assignmentPolicy "none" — that is the hard liaison guarantee.
+    */
+    const isBindCompatible = (task: Task): boolean => {
+      if (!agent) return true;
+      return evaluateImplementationTaskBind(agent, task, {
+        explicitRouting: true,
+        executorRoleOverride: hasExecutorRoleOverride(task),
+      }).allowed;
+    };
+
     const assignedTasks = tasks.filter((task) => task.assignedAgentId === agentId);
 
-    const inProgress = assignedTasks.filter((task) => task.column === "in-progress").sort(sortByOldestColumnMove);
+    const inProgress = assignedTasks
+      .filter((task) => task.column === "in-progress" && isBindCompatible(task))
+      .sort(sortByOldestColumnMove);
     if (inProgress.length > 0) {
       return {
         task: inProgress[0],
@@ -132,14 +149,7 @@ export async function selectNextTaskForAgentImpl(store: TaskStore, agentId: stri
       };
     }
 
-    const roleCompatibleAssignedTasks = agent
-      ? assignedTasks.filter((task) => {
-          if (task.column === "in-progress" || hasExecutorRoleOverride(task)) {
-            return true;
-          }
-          return canAgentTakeImplementationTaskForExplicitRouting(agent, task);
-        })
-      : assignedTasks;
+    const roleCompatibleAssignedTasks = assignedTasks.filter(isBindCompatible);
 
     const todoCandidates = roleCompatibleAssignedTasks.filter((task) => task.column === "todo" && task.paused !== true);
 

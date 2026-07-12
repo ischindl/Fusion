@@ -55,7 +55,7 @@ import {
 import type { CentralClaimStore, CheckoutClaimContext, RunMutationContext } from "./types.js";
 import type { TaskStore } from "./store.js";
 import { computeAccessState, normalizePermissions } from "./agent-permissions.js";
-import { canAgentTakeImplementationTask, canAgentTakeImplementationTaskForExplicitRouting, formatRoleMismatchReason } from "./agent-role-policy.js";
+import { assertImplementationTaskBindAllowed, evaluateImplementationTaskBind } from "./agent-role-policy.js";
 import { normalizeAgentPermissionPolicy } from "./agent-permission-policy.js";
 import { Database } from "./db.js";
 import type { AsyncDataLayer } from "./postgres/data-layer.js";
@@ -1437,6 +1437,34 @@ export class AgentStore extends EventEmitter {
    * @returns The updated agent
    */
   async assignTask(agentId: string, taskId: string | undefined, runContext?: RunMutationContext): Promise<Agent> {
+    /*
+    FNXC:AgentRouting 2026-07-12-11:55:
+    FN-7851 / issue #2015: assignTask was an UNGUARDED binding primitive. Guard new assignments with the shared
+    bind evaluator (assignTask is an explicit route: a caller chose this agent). Clearing (taskId undefined) is
+    always allowed, and hosts without a TaskStore or with an unresolvable task stay fail-open because this
+    primitive is also used for display-only linkage in stores that cannot resolve tasks.
+    */
+    if (taskId !== undefined) {
+      const agent = await this.getAgent(agentId);
+      if (!agent) {
+        throw new Error(`Agent ${agentId} not found`);
+      }
+      let task: Task | null = null;
+      if (this.taskStore) {
+        try {
+          task = await this.taskStore.getTask(taskId);
+        } catch {
+          task = null;
+        }
+      }
+      if (task) {
+        assertImplementationTaskBindAllowed(agent, task, {
+          explicitRouting: true,
+          executorRoleOverride: task.sourceMetadata?.executorRoleOverride === true,
+        });
+      }
+    }
+
     const updated = await this.syncExecutionTaskLink(agentId, taskId);
 
     // Emit agent:assigned only when assigning a task (not when clearing)
@@ -1531,12 +1559,20 @@ export class AgentStore extends EventEmitter {
       return { ok: false, reason: "paused", task };
     }
 
+    /*
+    FNXC:AgentRouting 2026-07-12-11:50:
+    FN-7851 / issue #2015: route the claim through the shared bind evaluator so role AND per-agent
+    assignmentPolicy are enforced identically to every other binding surface. executorRoleOverride is honored
+    only for explicit routing (task already assigned to this agent) — an override-marked task must not become
+    auto-claimable by role-incompatible agents; policy "none" is never overridable.
+    */
     const isExplicitlyAssignedToAgent = task.assignedAgentId === agentId;
-    const roleAllowed = isExplicitlyAssignedToAgent
-      ? canAgentTakeImplementationTaskForExplicitRouting(agent, task)
-      : canAgentTakeImplementationTask(agent, task);
-    if (!roleAllowed) {
-      return { ok: false, reason: formatRoleMismatchReason(agent, task), task };
+    const bindVerdict = evaluateImplementationTaskBind(agent, task, {
+      explicitRouting: isExplicitlyAssignedToAgent,
+      executorRoleOverride: isExplicitlyAssignedToAgent && task.sourceMetadata?.executorRoleOverride === true,
+    });
+    if (!bindVerdict.allowed) {
+      return { ok: false, reason: bindVerdict.reason, task };
     }
 
     if (task.column === "done" || task.column === "archived") {
@@ -1592,6 +1628,21 @@ export class AgentStore extends EventEmitter {
 
     if (task.checkedOutBy && task.checkedOutBy !== agentId) {
       throw new CheckoutConflictError(taskId, task.checkedOutBy, agentId);
+    }
+
+    /*
+    FNXC:AgentRouting 2026-07-12-11:55:
+    FN-7851 / issue #2015: checkout was an UNGUARDED binding primitive — a role-incompatible or policy-excluded
+    agent (e.g. a liaison) could acquire the lease directly (dashboard POST /tasks/:id/checkout, direct callers)
+    even though claimTaskForAgent would have refused. Guard fresh checkouts with the shared bind evaluator.
+    Lease renewals (agent already holds the lease, e.g. executor renewTaskLease) stay exempt so recovery of an
+    existing hold never strands; policy "none" still cannot acquire a NEW hold by any path.
+    */
+    if (task.checkedOutBy !== agentId) {
+      assertImplementationTaskBindAllowed(agent, task, {
+        explicitRouting: task.assignedAgentId === agentId,
+        executorRoleOverride: task.assignedAgentId === agentId && task.sourceMetadata?.executorRoleOverride === true,
+      });
     }
 
     const nextRenewedAt = leaseContext?.renewedAt ?? new Date().toISOString();

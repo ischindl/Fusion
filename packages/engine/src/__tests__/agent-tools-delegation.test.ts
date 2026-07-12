@@ -387,6 +387,54 @@ describe("createDelegateTaskTool", () => {
     }), expect.objectContaining({ settings: { autoSummarizeTitles: false } }));
   });
 
+  /*
+  FNXC:AgentRouting 2026-07-12-13:25:
+  Issue #2015: delegation must honor per-agent assignmentPolicy. "none" is the liaison guarantee —
+  not even override=true can delegate implementation work to such an agent; "explicit-only" accepts delegation.
+  */
+  it("rejects a policy-'none' executor target even with override=true", async () => {
+    const liaison = createAgent({
+      id: "agent-liaison",
+      name: "Platform Liaison",
+      role: "executor",
+      runtimeConfig: { assignmentPolicy: "none" },
+    });
+    vi.mocked(agentStore.getAgent).mockResolvedValue(liaison);
+
+    const tool = createDelegateTaskTool(agentStore, taskStore);
+    for (const override of [false, true]) {
+      const result = await tool.execute("session-1", {
+        agent_id: "agent-liaison",
+        description: "Do something",
+        override,
+      }, undefined as any, undefined as any, undefined as any);
+      const text = (result.content[0] as { text: string }).text;
+      expect(text).toContain("assignmentPolicy \"none\"");
+    }
+    expect(taskStore.createTask).not.toHaveBeenCalled();
+  });
+
+  it("allows delegation to an 'explicit-only' executor without override", async () => {
+    const explicitOnly = createAgent({
+      id: "agent-explicit",
+      name: "Explicit Only",
+      role: "executor",
+      runtimeConfig: { assignmentPolicy: "explicit-only" },
+    });
+    vi.mocked(agentStore.getAgent).mockResolvedValue(explicitOnly);
+
+    const tool = createDelegateTaskTool(agentStore, taskStore);
+    await tool.execute("session-1", {
+      agent_id: "agent-explicit",
+      description: "Do something",
+    }, undefined as any, undefined as any, undefined as any);
+
+    expect(taskStore.createTask).toHaveBeenCalledWith(
+      expect.objectContaining({ assignedAgentId: "agent-explicit" }),
+      expect.anything(),
+    );
+  });
+
   it("passes dependencies through to task creation", async () => {
     const agent = createAgent({ id: "agent-001", name: "Bob" });
     vi.mocked(agentStore.getAgent).mockResolvedValue(agent);

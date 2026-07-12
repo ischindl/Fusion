@@ -84,4 +84,41 @@ describe("default-workflow-hooks registry wiring", () => {
     applyDefaultWorkflowMoveEffects(engineCtx);
     expect(engineCtx.task.userPaused).toBeUndefined();
   });
+
+  // FN-7851 pause-bounce regression: the executor's pause teardown re-queues a
+  // user-paused in-progress task to todo. Without preservePause the reopen
+  // block wiped the pause flags, leaving the row dispatchable — the scheduler
+  // re-dispatched it seconds after the user paused it.
+  it("preservePause keeps the pause park across an engine reopen to todo", () => {
+    registerDefaultWorkflowHooks();
+    const ctx = makeCtx({ fromColumn: "in-progress", toColumn: "todo", moveSource: "engine", options: { preservePause: true } });
+    ctx.task.paused = true;
+    ctx.task.pausedByAgentId = "agent-1";
+    ctx.task.pausedReason = "operator pause";
+    ctx.task.userPaused = true;
+    applyDefaultWorkflowMoveEffects(ctx);
+    expect(ctx.task.paused).toBe(true);
+    expect(ctx.task.pausedByAgentId).toBe("agent-1");
+    expect(ctx.task.pausedReason).toBe("operator pause");
+    expect(ctx.task.userPaused).toBe(true);
+  });
+
+  it("preservePause never SETS a pause on an unpaused reopen, and default reopen still clears one", () => {
+    registerDefaultWorkflowHooks();
+    // preservePause on an unpaused task: nothing appears.
+    const unpausedCtx = makeCtx({ fromColumn: "in-progress", toColumn: "todo", moveSource: "engine", options: { preservePause: true } });
+    applyDefaultWorkflowMoveEffects(unpausedCtx);
+    expect(unpausedCtx.task.paused).toBeUndefined();
+    expect(unpausedCtx.task.userPaused).toBeUndefined();
+
+    // Default (no preservePause) engine reopen still clears an existing pause.
+    const defaultCtx = makeCtx({ fromColumn: "in-progress", toColumn: "todo", moveSource: "engine" });
+    defaultCtx.task.paused = true;
+    defaultCtx.task.pausedByAgentId = "agent-1";
+    defaultCtx.task.pausedReason = "operator pause";
+    applyDefaultWorkflowMoveEffects(defaultCtx);
+    expect(defaultCtx.task.paused).toBeUndefined();
+    expect(defaultCtx.task.pausedByAgentId).toBeUndefined();
+    expect(defaultCtx.task.pausedReason).toBeUndefined();
+  });
 });

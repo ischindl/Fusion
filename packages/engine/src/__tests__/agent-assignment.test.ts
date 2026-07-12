@@ -162,4 +162,37 @@ describe("listEligibleExecutorAgents", () => {
 
     expect(eligible.map((agent) => agent.id)).toEqual(["ok"]);
   });
+
+  /*
+  FNXC:AgentRouting 2026-07-12-13:20:
+  Issue #2015 regression: an executor-ROLE liaison agent must be excludable from the scheduler's auto-assign
+  pool via runtimeConfig.assignmentPolicy — this pool was the routing path that bound NEXT-871 to the liaison.
+  */
+  it("excludes executors with assignmentPolicy 'explicit-only' or 'none' from the auto-assign pool", async () => {
+    const eligible = await listEligibleExecutorAgents({
+      listAgents: async () => [
+        makeAgent({ id: "liaison-none", runtimeConfig: { assignmentPolicy: "none" } }),
+        makeAgent({ id: "explicit-only", runtimeConfig: { assignmentPolicy: "explicit-only" } }),
+        makeAgent({ id: "auto-explicitly", runtimeConfig: { assignmentPolicy: "auto" } }),
+        makeAgent({ id: "auto-default" }),
+      ],
+    } as never);
+
+    expect(eligible.map((agent) => agent.id)).toEqual(["auto-explicitly", "auto-default"]);
+  });
+
+  it("never auto-assigns a task to a policy-excluded executor even when it is the only agent", async () => {
+    const selected = await selectPermanentAgentForTask({
+      task: makeTask({ id: "NEXT-871" }),
+      agentStore: {
+        listAgents: async () => [
+          makeAgent({ id: "liaison", runtimeConfig: { assignmentPolicy: "none" } }),
+        ],
+        getChainOfCommand: async () => [],
+      } as never,
+      taskStore: { listTasks: async () => [] } as never,
+    });
+
+    expect(selected).toBeNull();
+  });
 });

@@ -7198,6 +7198,13 @@ export interface AgentHeartbeatConfig {
   enabled?: boolean;
   /** Whether this agent should auto-claim relevant unowned tasks during no-task heartbeats (default: true when unset). */
   autoClaimRelevantTasks?: boolean;
+  /**
+   * FNXC:AgentRouting 2026-07-12-11:20:
+   * Per-agent task-routing eligibility (GitHub issue Runfusion/Fusion#2015). "auto" (default) = current behavior;
+   * "explicit-only" = never auto-assigned/auto-claimed but accepts explicit delegation; "none" = never bound to
+   * implementation tasks by ANY path, including delegation with override=true. Set "none" on liaison/observer agents.
+   */
+  assignmentPolicy?: "auto" | "explicit-only" | "none";
   /** Number of auto-claim candidates to inject into no-task heartbeat prompts. Default: 5, range: 0-10. */
   autoClaimCandidatesInPrompt?: number;
   /** Per-agent override for opting engineer-role agents into no-task backlog auto-claim. Default: project setting or false. */

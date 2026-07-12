@@ -193,22 +193,47 @@ describe("pause-abort benign requeue-to-todo (FN-6782)", () => {
   });
 
   it.each([
-    { label: "explicit user pause", overrides: { column: "todo", userPaused: true }, provenance: "hard-cancel" as const },
-    { label: "global pause", overrides: { column: "todo" }, provenance: "global-pause" as const },
+    {
+      label: "explicit user pause",
+      overrides: { column: "todo", userPaused: true },
+      provenance: "hard-cancel" as const,
+      expectedBenign: "benign, paused awaiting explicit unpause",
+      expectedProvenance: "explicit user pause",
+    },
+    {
+      label: "global pause",
+      overrides: { column: "todo" },
+      provenance: "global-pause" as const,
+      expectedBenign: "benign, cleared for normal scheduling",
+      expectedProvenance: "global pause",
+    },
+    {
+      // FN-7851 pause-bounce regression: a pause-button pause that survived the
+      // executor teardown via preservePause lands in todo with `paused: true`.
+      // It must be classified as a task pause (NOT an engine-internal abort),
+      // stay parked, and never auto-continue the session.
+      label: "task pause (pause button, preserved across teardown)",
+      overrides: { column: "todo", paused: true },
+      provenance: "hard-cancel" as const,
+      expectedBenign: "benign, paused awaiting explicit unpause",
+      expectedProvenance: "task pause",
+    },
   ])(
     "does NOT auto-resume a $label that landed in todo",
-    async ({ overrides, provenance }) => {
+    async ({ overrides, provenance, expectedBenign, expectedProvenance }) => {
       // The auto-continue is scoped strictly to the engine-internal abort
-      // provenance. A genuine operator pause (userPaused) or a global engine
-      // pause that ended up in todo must stay parked-benign and wait for
-      // explicit resume — auto-resuming it would override the operator's intent.
+      // provenance. A genuine operator pause (userPaused OR a preserved
+      // pause-button `paused`) or a global engine pause that ended up in todo
+      // must stay parked-benign and wait for explicit resume — auto-resuming it
+      // would override the operator's intent.
       const { store, task, executor } = makeHarness(overrides, provenance);
       (executor as any).addActiveWorktree(task.id, task.worktree);
       const executeSpy = vi.spyOn(executor as any, "execute").mockResolvedValue(undefined);
 
       await invokeGraphFailure(executor, task);
 
-      expect(logText(store)).toContain("benign, cleared for normal scheduling");
+      expect(logText(store)).toContain(expectedBenign);
+      expect(logText(store)).toContain(`during ${expectedProvenance} with task`);
       expect(logText(store)).not.toContain("auto-continuing the agent session");
       await flushScheduledRetry();
       expect(executeSpy).not.toHaveBeenCalled();

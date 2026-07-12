@@ -528,6 +528,7 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
           preserveResumeState: options?.preserveResumeState,
           preserveProgress: options?.preserveProgress,
           preserveWorktree: options?.preserveWorktree,
+          preservePause: options?.preservePause,
         },
         resetSteps: () => store.resetAllStepsToPending(task),
       };
@@ -589,18 +590,26 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
         && (toColumn === "todo" || toColumn === "triage");
 
       if (isReopenToTodoOrTriage) {
+        // FNXC:WorkflowLifecycle 2026-07-12-09:05 (merge port from main): keep
+        // this flag-OFF inline block in sync with applyResetOnEntryEffects
+        // (default-workflow-hooks.ts) — `preservePause` keeps a pause-caused
+        // teardown move from clearing the user's park (FN-7851 pause-bounce loop).
         if (!options?.preserveStatus) {
           task.status = undefined;
           task.error = undefined;
-          task.pausedReason = undefined;
+          if (!options?.preservePause) {
+            task.pausedReason = undefined;
+          }
         }
         task.blockedBy = undefined;
         task.overlapBlockedBy = undefined;
-        task.paused = undefined;
-        task.pausedByAgentId = undefined;
+        if (!options?.preservePause) {
+          task.paused = undefined;
+          task.pausedByAgentId = undefined;
+        }
         if (moveSource === "user" && toColumn === "todo") {
           task.userPaused = true;
-        } else {
+        } else if (!options?.preservePause) {
           task.userPaused = undefined;
         }
 
