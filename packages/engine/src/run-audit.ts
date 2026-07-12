@@ -436,6 +436,7 @@ export type DatabaseMutationType =
   | "task:checkout"
   | "agent:auto-recover-error-state"
   | "agent:error-retry-exhausted"
+  | "agent:error-parked-unrecoverable"
   | "task:release"
   | "task:pause"
   | "task:unpause"
@@ -550,6 +551,8 @@ export type DatabaseMutationType =
   | "task:stuck-no-progress-churn-terminalized"
   /** Metadata: { taskId, cycleCount, windowMs, lastMoveSource } */
   | "task:dispatch-oscillation-terminalized"
+  /** Metadata: { taskId, cycleCount, maxCycles, progressSignature, failureValue } */
+  | "task:execution-dispatch-loop-terminalized"
   | "task:auto-recover-starved-refinement"
   /** Metadata: { rawDiffFileCount: number; attributedFileCount: number; foreignCommitCount: number; foreignCommitShas: string[]; source: string } */
   | "task:worktree-contamination-detected"

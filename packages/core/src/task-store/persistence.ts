@@ -49,6 +49,8 @@ export interface TaskRow {
   graphResumeRetryCount: number | null;
   resumeLimboTipSha: string | null;
   resumeLimboStepSignature: string | null;
+  executeRequeueLoopCount: number | null;
+  executeRequeueLoopSignature: string | null;
   postReviewFixCount: number | null;
   recoveryRetryCount: number | null;
   taskDoneRetryCount: number | null;
@@ -202,6 +204,9 @@ export const TASK_COLUMN_DESCRIPTORS: TaskColumnDescriptor[] = [
   defineTaskColumn("graphResumeRetryCount", (task) => task.graphResumeRetryCount === undefined ? 0 : task.graphResumeRetryCount),
   defineTaskColumn("resumeLimboTipSha", (task) => task.resumeLimboTipSha ?? null),
   defineTaskColumn("resumeLimboStepSignature", (task) => task.resumeLimboStepSignature ?? null),
+  // FNXC:WorkflowLifecycle 2026-07-12 (merge port from main): FN-7863 progress-anchored execute self-requeue streak.
+  defineTaskColumn("executeRequeueLoopCount", (task) => task.executeRequeueLoopCount ?? 0),
+  defineTaskColumn("executeRequeueLoopSignature", (task) => task.executeRequeueLoopSignature ?? null),
   defineTaskColumn("postReviewFixCount", (task) => task.postReviewFixCount ?? 0),
   defineTaskColumn("recoveryRetryCount", (task) => task.recoveryRetryCount ?? null),
   defineTaskColumn("taskDoneRetryCount", (task) => task.taskDoneRetryCount ?? 0),

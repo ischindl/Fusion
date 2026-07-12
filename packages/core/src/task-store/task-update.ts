@@ -374,6 +374,16 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
       } else if (updates.resumeLimboStepSignature !== undefined) {
         task.resumeLimboStepSignature = updates.resumeLimboStepSignature;
       }
+      if (updates.executeRequeueLoopCount === null) {
+        task.executeRequeueLoopCount = undefined;
+      } else if (updates.executeRequeueLoopCount !== undefined) {
+        task.executeRequeueLoopCount = updates.executeRequeueLoopCount;
+      }
+      if (updates.executeRequeueLoopSignature === null) {
+        task.executeRequeueLoopSignature = undefined;
+      } else if (updates.executeRequeueLoopSignature !== undefined) {
+        task.executeRequeueLoopSignature = updates.executeRequeueLoopSignature;
+      }
       if (updates.postReviewFixCount === null) {
         task.postReviewFixCount = undefined;
       } else if (updates.postReviewFixCount !== undefined) {

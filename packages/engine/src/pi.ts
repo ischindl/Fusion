@@ -79,7 +79,7 @@ import { READONLY_ALLOWLIST, filterCustomToolsForReadonly, isReadonlyAllowed } f
 import { createStreamingDeltaNormalizer } from "./streaming-delta.js";
 import { isModelAuthTierIncompatibilityError, isProviderModelNotFoundError, isUnsupportedMessageRoleError } from "./transient-error-detector.js";
 import { logMcpForwardingSkipped, runtimeSupportsMcp } from "./mcp-runtime-support.js";
-import { connectMcpSessionTools, type McpClientFactory, type McpSessionToolset } from "./mcp-session-tools.js";
+import { connectMcpSessionTools, McpSessionBootstrapError, type McpClientFactory, type McpSessionToolset } from "./mcp-session-tools.js";
 export { isModelAuthTierIncompatibilityError } from "./transient-error-detector.js";
 
 const RTK_ACCEPTED_REWRITE_EXIT_CODES = new Set([0, 3]);
@@ -1904,7 +1904,7 @@ export function wrapToolsWithActionGate(
   tools: ToolDefinition[],
   gateContext: AgentActionGateContext | undefined,
 ): ToolDefinition[] {
-  if (!gateContext || gateContext.isEphemeral) {
+  if (!gateContext) {
     return tools;
   }
 
@@ -2327,6 +2327,18 @@ export async function createFnAgent(options: AgentOptions): Promise<AgentResult>
         clientFactory: options.mcpClientFactory,
         logger: piLog,
       });
+      /*
+       * FNXC:McpConfig 2026-07-12-17:02:
+       * MAIN-008 requires a configured MCP bootstrap failure to be observably
+       * different from a genuine zero-server/tool catalog. Fail session creation
+       * using names plus coarse categories only, and dispose every partially
+       * connected client before the error crosses the runtime boundary.
+       */
+      const bootstrapFailures = mcpToolset.skipped.filter(({ reason }) => reason !== "disabled");
+      if (bootstrapFailures.length > 0) {
+        await mcpToolset.dispose();
+        throw new McpSessionBootstrapError(bootstrapFailures);
+      }
     } else if (forwardedMcpServers.length > 0 && isReadonly) {
       piLog.log(`readonly session — MCP servers (${forwardedMcpServers.length}) skipped`);
     }
@@ -2357,10 +2369,18 @@ export async function createFnAgent(options: AgentOptions): Promise<AgentResult>
       ...allowlistFilteredCustomTools.allowed,
     ];
     const toolsWithRtkRewrite = wrapToolsWithRtkRewrite(toolChainStart);
-    const toolsWithPermanentGating = wrapToolsWithPermanentAgentGating(
-      toolsWithRtkRewrite,
-      options.permanentAgentGating,
-    );
+    /*
+     * FNXC:AgentGating 2026-07-12-17:22:
+     * MAIN-008 requires one approval authority per tool call. Executor sessions
+     * provide the status-aware action gate for permanent, ephemeral, and
+     * fallback task-worker identities; applying the legacy permanent gate
+     * inside it would reject the call again after the outer gate consumed an
+     * approved request. Standalone lanes without actionGateContext retain the
+     * permanent gate unchanged.
+     */
+    const toolsWithPermanentGating = options.actionGateContext
+      ? toolsWithRtkRewrite
+      : wrapToolsWithPermanentAgentGating(toolsWithRtkRewrite, options.permanentAgentGating);
     const toolsWithActionGate = wrapToolsWithActionGate(
       toolsWithPermanentGating,
       options.actionGateContext,

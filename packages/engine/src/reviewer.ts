@@ -424,7 +424,9 @@ export async function reviewStep(
       defaultThinkingLevel: options.defaultThinkingLevel,
       runAuditor,
       settings: effectiveSettings,
+      // FNXC:PluginSkills 2026-07-12-00:00: Reviewer sessions use the shared skill context; forward plugin body dirs so requested plugin review skills include their SKILL.md content.
       ...(skillContext?.skillSelectionContext ? { skillSelection: skillContext.skillSelectionContext } : {}),
+      ...(skillContext && skillContext.additionalSkillPaths.length > 0 ? { additionalSkillPaths: skillContext.additionalSkillPaths } : {}),
       taskId: options.taskId,
       taskTitle: options.taskTitle,
       // FNXC:McpConfig 2026-06-25-22:45: Reviewer and validator sessions resolve the same trusted MCP server set as executor lanes at session creation; secret values are passed only in memory to the runtime guard.

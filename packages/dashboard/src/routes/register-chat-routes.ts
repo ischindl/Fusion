@@ -132,7 +132,7 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
     const engine = options?.engineManager?.getEngine(projectId);
     const projectPluginRunner = engine?.getPluginRunner?.();
     const pluginRunner = projectPluginRunner ?? options?.pluginRunner;
-    return getOrCreateScopedChatManager(scopedStore, chatStore, pluginRunner, Boolean(projectPluginRunner));
+    return getOrCreateScopedChatManager(scopedStore, chatStore, pluginRunner, Boolean(projectPluginRunner), engine?.getMessageStore());
   }
   const THINKING_LEVEL_SET = new Set<string>(THINKING_LEVELS);
 

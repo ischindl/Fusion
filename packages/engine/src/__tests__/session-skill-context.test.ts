@@ -1,4 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import {
   normalizeAgentSkills,
   collectPluginSkillNames,
@@ -9,6 +12,35 @@ import {
 } from "../session-skill-context.js";
 import type { Agent, AgentStore } from "@fusion/core";
 import type { PluginRunner } from "../plugin-runner.js";
+
+const tempDirs: string[] = [];
+
+async function createProjectWithSettings(settings: Record<string, unknown>): Promise<string> {
+  const projectRoot = await mkdtemp(join(tmpdir(), "session-skill-context-"));
+  tempDirs.push(projectRoot);
+  await mkdir(join(projectRoot, ".fusion"), { recursive: true });
+  await writeFile(join(projectRoot, ".fusion", "settings.json"), JSON.stringify(settings), "utf-8");
+  return projectRoot;
+}
+
+function pluginRunnerWithSkills(
+  skills: Array<{ pluginId: string; pluginRoot?: string; skill: { name: string; enabled?: boolean; skillFiles?: string[] } }>,
+): PluginRunner {
+  return { getPluginSkills: vi.fn().mockReturnValue(skills) } as unknown as PluginRunner;
+}
+
+async function createPluginSkillRoot(skillName: string, body = "# Plugin skill\n"): Promise<{ pluginRoot: string; skillDir: string }> {
+  const pluginRoot = await mkdtemp(join(tmpdir(), "session-plugin-skill-"));
+  tempDirs.push(pluginRoot);
+  const skillDir = join(pluginRoot, "skills", skillName);
+  await mkdir(skillDir, { recursive: true });
+  await writeFile(join(skillDir, "SKILL.md"), body, "utf-8");
+  return { pluginRoot, skillDir };
+}
+
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
 
 describe("normalizeAgentSkills", () => {
   it("returns empty array for non-array input", () => {
@@ -279,20 +311,49 @@ describe("buildSessionSkillContextSync", () => {
     expect(result.resolvedSkillNames).toEqual(["fusion", "plugin-skill"]);
   });
 
+  it("honors per-project plugin skill toggles in sync path", async () => {
+    const projectRoot = await createProjectWithSettings({
+      packages: [
+        { source: "plugin:plugin-a", skills: ["+skills/opt-in/SKILL.md"] },
+        { source: "plugin:plugin-b", skills: ["-skills/opt-out/SKILL.md"] },
+      ],
+    });
+    const pluginRunner = pluginRunnerWithSkills([
+      { pluginId: "plugin-a", skill: { name: "opt-in", enabled: false } },
+      { pluginId: "plugin-b", skill: { name: "opt-out", enabled: true } },
+      { pluginId: "plugin-c", skill: { name: "default-on" } },
+    ]);
+
+    const result = buildSessionSkillContextSync(null, "executor", projectRoot, pluginRunner);
+    expect(result.resolvedSkillNames).toEqual(["fusion", "opt-in", "default-on"]);
+  });
+
+  it("threads enabled plugin skill body directories into sync session context", async () => {
+    const { pluginRoot, skillDir } = await createPluginSkillRoot("plugin-skill", "# Plugin body\n");
+    const pluginRunner = pluginRunnerWithSkills([
+      { pluginId: "plugin-a", pluginRoot, skill: { name: "plugin-skill" } },
+    ]);
+
+    const result = buildSessionSkillContextSync(null, "executor", projectRootDir, pluginRunner);
+    expect(result.resolvedSkillNames).toEqual(["fusion", "plugin-skill"]);
+    expect(result.additionalSkillPaths).toEqual([skillDir, dirname(skillDir)]);
+  });
+
   it("keeps legacy behavior in sync path when pluginRunner is omitted", () => {
     const result = buildSessionSkillContextSync(null, "executor", projectRootDir);
     expect(result.resolvedSkillNames).toEqual(["fusion"]);
+    expect(result.additionalSkillPaths).toEqual([]);
   });
 });
 
 describe("collectPluginSkillNames", () => {
   it("returns empty arrays when pluginRunner is undefined", () => {
-    expect(collectPluginSkillNames(undefined)).toEqual({ names: [], pluginIds: [] });
+    expect(collectPluginSkillNames(undefined)).toEqual({ names: [], pluginIds: [], additionalSkillPaths: [] });
   });
 
   it("returns empty arrays when no plugin skills are contributed", () => {
     const pluginRunner = { getPluginSkills: vi.fn().mockReturnValue([]) } as unknown as PluginRunner;
-    expect(collectPluginSkillNames(pluginRunner)).toEqual({ names: [], pluginIds: [] });
+    expect(collectPluginSkillNames(pluginRunner)).toEqual({ names: [], pluginIds: [], additionalSkillPaths: [] });
   });
 
   it("returns enabled plugin skill names and dedupes by first occurrence", () => {
@@ -307,6 +368,7 @@ describe("collectPluginSkillNames", () => {
     expect(collectPluginSkillNames(pluginRunner)).toEqual({
       names: ["alpha", "beta"],
       pluginIds: ["plugin-a", "plugin-b"],
+      additionalSkillPaths: [],
     });
   });
 
@@ -321,6 +383,113 @@ describe("collectPluginSkillNames", () => {
     expect(collectPluginSkillNames(pluginRunner)).toEqual({
       names: ["beta"],
       pluginIds: ["plugin-b"],
+      additionalSkillPaths: [],
+    });
+  });
+
+  it("uses project settings to enable a statically disabled plugin skill", async () => {
+    const projectRoot = await createProjectWithSettings({
+      packages: [{ source: "plugin:plugin-a", skills: ["+skills/alpha/SKILL.md"] }],
+    });
+    const pluginRunner = pluginRunnerWithSkills([
+      { pluginId: "plugin-a", skill: { name: "alpha", enabled: false } },
+    ]);
+
+    expect(collectPluginSkillNames(pluginRunner, projectRoot)).toEqual({
+      names: ["alpha"],
+      pluginIds: ["plugin-a"],
+      additionalSkillPaths: [],
+    });
+  });
+
+  it("uses project settings to disable a statically enabled plugin skill", async () => {
+    const projectRoot = await createProjectWithSettings({
+      packages: [{ source: "plugin:plugin-a", skills: ["-skills/alpha/SKILL.md"] }],
+    });
+    const pluginRunner = pluginRunnerWithSkills([
+      { pluginId: "plugin-a", skill: { name: "alpha", enabled: true } },
+      { pluginId: "plugin-b", skill: { name: "beta" } },
+    ]);
+
+    expect(collectPluginSkillNames(pluginRunner, projectRoot)).toEqual({
+      names: ["beta"],
+      pluginIds: ["plugin-b"],
+      additionalSkillPaths: [],
+    });
+  });
+
+  it("falls back to static defaults when project settings omit a plugin skill", async () => {
+    const projectRoot = await createProjectWithSettings({ skills: [] });
+    const pluginRunner = pluginRunnerWithSkills([
+      { pluginId: "plugin-a", skill: { name: "alpha", enabled: false } },
+      { pluginId: "plugin-b", skill: { name: "beta" } },
+    ]);
+
+    expect(collectPluginSkillNames(pluginRunner, projectRoot)).toEqual({
+      names: ["beta"],
+      pluginIds: ["plugin-b"],
+      additionalSkillPaths: [],
+    });
+  });
+
+  it("honors top-level skill toggle entries for plugin skills", async () => {
+    const projectRoot = await createProjectWithSettings({
+      skills: ["+skills/alpha/SKILL.md"],
+    });
+    const pluginRunner = pluginRunnerWithSkills([
+      { pluginId: "plugin-a", skill: { name: "alpha", enabled: false } },
+    ]);
+
+    expect(collectPluginSkillNames(pluginRunner, projectRoot)).toEqual({
+      names: ["alpha"],
+      pluginIds: ["plugin-a"],
+      additionalSkillPaths: [],
+    });
+  });
+
+  it("resolves settings from the real project root when called with a worktree path", async () => {
+    const projectRoot = await createProjectWithSettings({
+      packages: [{ source: "plugin:plugin-a", skills: ["+skills/alpha/SKILL.md"] }],
+    });
+    const worktreeRoot = join(projectRoot, ".worktrees", "branch-a");
+    await mkdir(worktreeRoot, { recursive: true });
+    const pluginRunner = pluginRunnerWithSkills([
+      { pluginId: "plugin-a", skill: { name: "alpha", enabled: false } },
+    ]);
+
+    expect(collectPluginSkillNames(pluginRunner, worktreeRoot)).toEqual({
+      names: ["alpha"],
+      pluginIds: ["plugin-a"],
+      additionalSkillPaths: [],
+    });
+  });
+
+  it("adds enabled plugin skill body directories and dedupes duplicate directories", async () => {
+    const { pluginRoot, skillDir } = await createPluginSkillRoot("alpha");
+    const pluginRunner = pluginRunnerWithSkills([
+      { pluginId: "plugin-a", pluginRoot, skill: { name: "alpha" } },
+      { pluginId: "plugin-b", pluginRoot, skill: { name: "alpha" } },
+      { pluginId: "plugin-c", pluginRoot, skill: { name: "beta", skillFiles: ["skills/alpha/SKILL.md"] } },
+    ]);
+
+    expect(collectPluginSkillNames(pluginRunner)).toEqual({
+      names: ["alpha", "beta"],
+      pluginIds: ["plugin-a", "plugin-c"],
+      additionalSkillPaths: [skillDir, dirname(skillDir)],
+    });
+  });
+
+  it("does not add body directories for disabled skills or missing pluginRoot", async () => {
+    const { pluginRoot } = await createPluginSkillRoot("alpha");
+    const pluginRunner = pluginRunnerWithSkills([
+      { pluginId: "plugin-a", pluginRoot, skill: { name: "alpha", enabled: false } },
+      { pluginId: "plugin-b", skill: { name: "beta" } },
+    ]);
+
+    expect(collectPluginSkillNames(pluginRunner)).toEqual({
+      names: ["beta"],
+      pluginIds: ["plugin-b"],
+      additionalSkillPaths: [],
     });
   });
 });
@@ -487,6 +656,51 @@ describe("buildSessionSkillContext", () => {
 
     expect(result.resolvedSkillNames).toEqual(["fusion", "plugin-skill"]);
     expect(result.skillSelectionContext?.requestedSkillNames).toEqual(["fusion", "plugin-skill"]);
+  });
+
+  it("threads enabled plugin skill body directories into async session context", async () => {
+    const { pluginRoot, skillDir } = await createPluginSkillRoot("plugin-skill", "# Plugin body\n");
+    const mockAgentStore = { getAgent: vi.fn().mockResolvedValue(null) } as unknown as AgentStore;
+    const pluginRunner = pluginRunnerWithSkills([
+      { pluginId: "plugin-a", pluginRoot, skill: { name: "plugin-skill" } },
+    ]);
+
+    const result = await buildSessionSkillContext({
+      agentStore: mockAgentStore,
+      task: {},
+      sessionPurpose: "executor",
+      projectRootDir,
+      pluginRunner,
+    });
+
+    expect(result.resolvedSkillNames).toEqual(["fusion", "plugin-skill"]);
+    expect(result.additionalSkillPaths).toEqual([skillDir, dirname(skillDir)]);
+  });
+
+  it("honors per-project plugin skill toggles in async path", async () => {
+    const projectRoot = await createProjectWithSettings({
+      packages: [
+        { source: "plugin:plugin-a", skills: ["+skills/opt-in/SKILL.md"] },
+        { source: "plugin:plugin-b", skills: ["-skills/opt-out/SKILL.md"] },
+      ],
+    });
+    const mockAgentStore = { getAgent: vi.fn().mockResolvedValue(null) } as unknown as AgentStore;
+    const pluginRunner = pluginRunnerWithSkills([
+      { pluginId: "plugin-a", skill: { name: "opt-in", enabled: false } },
+      { pluginId: "plugin-b", skill: { name: "opt-out", enabled: true } },
+      { pluginId: "plugin-c", skill: { name: "default-on" } },
+    ]);
+
+    const result = await buildSessionSkillContext({
+      agentStore: mockAgentStore,
+      task: {},
+      sessionPurpose: "executor",
+      projectRootDir: projectRoot,
+      pluginRunner,
+    });
+
+    expect(result.resolvedSkillNames).toEqual(["fusion", "opt-in", "default-on"]);
+    expect(result.skillSelectionContext?.requestedSkillNames).toEqual(["fusion", "opt-in", "default-on"]);
   });
 
   it("deduplicates plugin skills against assigned-agent skills case-insensitively", async () => {

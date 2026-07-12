@@ -171,6 +171,9 @@ Use deep links to open a specific task directly from notifications, chat, or ext
 
 File paths in dashboard text are automatically rendered as inline links. Clicking a linked path opens the Files browser modal at that path (including line/column targets when available) so you can inspect the file and use editor actions where supported.
 
+<!-- FNXC:FileEditor 2026-07-12-00:00: Workspace file editing now auto-saves by default in the Files modal and right-dock Files view, with a shared persisted toolbar toggle so operators can return to manual Save/Discard behavior when needed. -->
+Editable workspace text files auto-save after a short pause by default in both the Files modal and the right-dock Files view. Use the editor toolbar's **Auto-save** toggle to turn that shared preference off or on; when it is off, the existing **Save**, **Discard**, and Cmd/Ctrl+S manual flow applies.
+
 Current surfaces include:
 - Task detail modal content (description markdown, **Review** tab, and **Workflow Results** tab output plus workflow overview/graph/model settings)
 - Chat view messages/tool output
@@ -513,6 +516,7 @@ Chat view provides project-scoped conversations with agents.
 <!-- FNXC:ChatEmptyMessage 2026-07-10-00:00: Empty final assistant responses can be legitimate provider output (for example a Grok CLI run ending without text). Document the shared Chat/Planner Chat behavior so operators see "No message" instead of interpreting a blank bubble as a rendering failure. -->
 - Final assistant messages with no text, tool calls, thinking output, attachments, or failure details render a muted **No message** placeholder instead of a blank bubble. In-progress responses still use the existing **Working…** / **Thinking…** streaming state until the run finishes.
 - In-progress assistant responses now survive refresh/navigation while generation is still active: Chat restores the last durable in-flight text/thinking/tool state immediately, keeps the prior persisted conversation visible, then resumes streaming from the stored replay point; any new text, thinking, or tool-call updates append to that restored bubble instead of replacing it or starting from an empty "Working…" placeholder.
+- While a Chat response is actively streaming, prior user and assistant messages stay visible across session-update snapshots, tool-call churn, and stale message reloads; the thread does not flicker to an empty history mid-turn.
 - If a regular Chat stream drops with a hidden-tab/browser-suspension error (for example `Load failed`) while the server is still generating, Chat suppresses the false error banner, re-attaches to the in-progress stream using the durable replay state, and reconciles the final assistant reply when generation completes.
 - If you queue follow-up user messages while the assistant is still streaming, Chat persists them per session, stacks each queued preview above the input box with one shared divider, and restores/sends them one at a time in FIFO order once each active response finishes if you leave and return.
 - Chat message lists now track near-bottom scroll state: while you are reading older messages, live streaming/new replies do not force-scroll; a **Latest** jump control appears until you return to the tail.
@@ -612,7 +616,7 @@ Mailbox view shows inbox/outbox communication threads and unread state.
 - Inbox renders one row per message (no sender-based collapsing)
 - clicking a message in the Mail tab opens the task detail pane with full message content and conversation context
 - reply rows in the mailbox modal can expand inline to show the replied-to message context for easier thread reading
-- when an agent or dashboard chat session registers an artifact with `fn_artifact_register`, Fusion sends a best-effort `system` → user inbox message announcing the new artifact (for example, `New image artifact registered: <title>`) with metadata for `artifactId`, `artifactType`, `title`, `authorId`, and optional `taskId`; notification delivery is informational and never blocks or rolls back the artifact registration
+- when an agent or dashboard chat session registers an artifact with `fn_artifact_register`, Fusion sends a best-effort `system` → user inbox message announcing the new artifact (for example, `New image artifact registered: <title>`) with metadata for `artifactId`, `artifactType`, `title`, optional `mimeType`, `authorId`, and optional `taskId`; notification delivery is informational and never blocks or rolls back the artifact registration. Artifact notifications are actionable in message detail views: image artifacts show an inline preview plus **Open artifact**, while video/audio/document/other artifacts show an **Open artifact** link to the managed media URL.
 - mailbox now includes an **Approvals** tab with pending and history filters (`approved` / `denied` / `completed`), approval detail context, and inline approve/deny actions for pending requests
 - for approvals gated by an agent's permission policy (permanent agents and task-worker heartbeats), the Approvals detail pane renders the gated action's real payload — tool name, shell command line or structured arguments, and working directory when present — instead of only a generic "Agent gated action for `<tool>`" summary; a stateless heartbeat retrying the same gated command reuses the existing pending approval instead of creating a duplicate (FN-7609)
 - in the **Agents** tab, the agent selector now includes **All agents**, which shows one combined agent-to-agent stream (with sender + recipient labels); selecting a specific agent still shows Inbox/Outbox subtabs
@@ -680,11 +684,12 @@ Features:
 - PTY-backed shell sessions
 - Ctrl/Cmd+C copies the current terminal selection, while plain Ctrl+C with no selection still sends SIGINT
 - Ctrl/Cmd+V pastes clipboard text exactly once into the active integrated terminal or live embedded CLI session
-- The Shortcuts panel includes Ctrl/Alt helpers, ESC/Tab, common shell shortcuts, and Up/Down/Left/Right arrow buttons that send standard ANSI cursor sequences for keyboard-less shell history and line editing
-- Shortcuts panel buttons preserve terminal focus on the active terminal session during pointer, mouse, and touch activation, so Ctrl combinations reliably emit control bytes to the shell
-- The Preferences panel customizes font family, font size, cursor style, cursor blink, and renderer; changes persist in browser `localStorage` under `kb-terminal-preferences`, with the legacy `kb-terminal-font-size` value migrated automatically
+- The Shortcuts panel includes Ctrl/Alt helpers, ESC/Tab, common shell shortcuts, Up/Down/Left/Right arrow buttons, and any custom shortcut buttons you define for keyboard-less shell history, line editing, or frequent snippets
+- Shortcuts panel buttons preserve terminal focus on the active terminal session during pointer, mouse, and touch activation, so Ctrl combinations and custom snippets reliably emit bytes to the shell
+- The Preferences panel customizes font family, font size, cursor style, cursor blink, renderer, and custom shortcut buttons; changes persist in browser `localStorage` under `kb-terminal-preferences`, with the legacy `kb-terminal-font-size` value migrated automatically
+- Custom shortcuts have a short label and injected value. Use `\n` for Enter, `\t` for Tab, `\r` for Return, `\e` or `\x1b` for Esc, and `\\` for a literal backslash; unknown escapes are sent literally. Add, edit, or remove them from the terminal Preferences panel, and reset terminal preferences to clear them.
 - Font and cursor preferences apply live to the active xterm instance; renderer changes apply the next time the terminal opens, and mobile devices keep the WebGL renderer disabled to avoid glyph artifacts
-- Embedded CLI session terminals honor the same saved preferences and physical copy/paste semantics for live interactive session views: selected text copies with the platform copy modifier, no-selection Ctrl+C stays available to the shell, and Ctrl/Cmd+V sends clipboard text exactly once to the attach channel. Idle, ended, and read-only replay views suppress input handlers and mobile accessory controls. Cursor blink still stays disabled for read-only/replay sessions, renderer changes apply on the next session mount, and WebGL never loads on mobile viewports.
+- Embedded CLI session terminals honor the same saved preferences and physical copy/paste semantics for live interactive session views: selected text copies with the platform copy modifier, no-selection Ctrl+C stays available to the shell, and Ctrl/Cmd+V sends clipboard text exactly once to the attach channel. On mobile, the embedded terminal's accessory key bar also shows the same custom shortcuts defined in the terminal Preferences panel as tappable buttons that inject the decoded value; desktop embedded terminals have no key bar. Idle, ended, and read-only replay views suppress input handlers and mobile accessory controls. Cursor blink still stays disabled for read-only/replay sessions, renderer changes apply on the next session mount, and WebGL never loads on mobile viewports.
 - Mobile-aware virtual keyboard handling and auto-refit behavior
 - Reopen/reconnect/session-recovery flows preserve single-keystroke input forwarding (no duplicate characters, no page refresh required)
 
@@ -789,6 +794,8 @@ Anthropic also supports a raw `ANTHROPIC_API_KEY` from a separate **Anthropic AP
 
 ## Setup Warning Banner
 
+The dashboard banner cluster can also show a one-time storage notice announcing that the next Fusion version replaces the current SQLite data store with an embedded Postgres backend; dismissing it stores a browser-local acknowledgement so it does not reappear.
+
 The dashboard and New Task modal show setup warnings only after readiness checks finish. AI-provider warnings appear immediately because agents cannot work without a provider. GitHub warnings are delayed per project: Fusion records the first time GitHub OAuth and authenticated `gh` CLI are both missing, waits one day, and then shows **GitHub not connected** if GitHub is still unavailable. Reconnecting GitHub clears the timer so a later disconnect starts a fresh one-day grace period.
 
 When the dashboard GitHub warning is visible, its **Connect GitHub** action opens **Settings → Authentication**. The New Task modal keeps immediate AI-provider warnings but suppresses the GitHub warning because that modal does not own the Settings navigation callback required for an actionable GitHub setup control.
@@ -842,10 +849,11 @@ Features:
 - Video artifacts (agent-registered recordings, `path`-ingested MP4/WebM/MOV, and bridged video attachments) play with working seek because the media route serves HTTP byte ranges
 - HTML doc artifacts (`mimeType: text/html`) render as **live sandboxed previews** by default in the document viewer (scripts allowed, same-origin denied), with a Preview/Source toggle and the same Edit mode as other docs
 - **Edit any inline-content doc in place**: the document viewer's **Edit** button switches to an editor whose **Save** persists through `PATCH /api/artifacts/:id` and live-refreshes open galleries via the `artifact:updated` registry event; binary-backed documents stay read-only with a media link
-- Every viewer (image/video lightbox, PDF viewer, document viewer) opens in a draggable, resizable floating window (drag by the viewer header, resize by any edge/corner; geometry persists per viewer kind); dismiss with the close button or Escape. Windows are non-blocking, so the gallery behind them stays interactive
+<!-- FNXC:ArtifactsGalleryDocs 2026-07-12-12:02: Artifact viewer docs distinguish desktop draggable/resizable FloatingWindow behavior from the mobile full-screen sheet so users do not expect to drag a small artifact popup on touch devices. -->
+- Every viewer (image/video lightbox, PDF viewer, document viewer) opens in a draggable, resizable floating window on desktop/tablet (drag by the viewer header, resize by any edge/corner; geometry persists per viewer kind); dismiss with the close button or Escape. Windows are non-blocking, so the gallery behind them stays interactive
 - Read artifact metadata on cards, rows, and viewer footers: title, optional description, author ID, timestamp, size, and linked task ID when present
 - Use the task link on a card/row or viewer footer to jump back to the originating task when the artifact has a `taskId`; inside task detail, the **Artifacts** tab shows that task's documents and registered media artifacts together
-- The gallery scales down at the mobile breakpoint (including landscape phones): category chips scroll horizontally, visual grids collapse to two columns, cards and rows go single-column, and viewer windows clamp to the viewport
+- The gallery scales down at the mobile breakpoint (including landscape phones): category chips scroll horizontally, visual grids collapse to two columns, cards and rows go single-column, and viewer windows open as full-screen sheets without desktop resize handles or drag cursors
 - Loading state: the Artifacts tab shows `Loading artifacts…` while the first artifact list request is pending and no artifact results are loaded
 - Empty states: with no search query it shows `No artifacts yet.` plus the hint that artifacts are created by agents, users, and system tools; with a search query it shows `No artifacts match "<query>".`
 - Error state: a failed artifact list request uses the shared `Failed to load artifacts: <error>` panel with a **Retry** action that re-runs the artifact fetch
@@ -896,6 +904,9 @@ Todo View is an experimental full-height dashboard surface for managing per-proj
 Navigation:
 - Desktop/tablet: **Left sidebar → Todos** when the Todo view is enabled
 - Mobile: **More** sheet → **Todos**
+
+<!-- FNXC:Todos 2026-07-12-00:00: Todo operators can declutter long selected lists with a per-project Hide done / Show done toggle while the completion count remains based on all items. -->
+Use the items header **Hide done** toggle to hide completed todo items in the selected list; switch it back with **Show done** when you need to review completed work. The completed/total count still reflects all items in the list.
 
 For full behavior, API contracts, and storage details, use the canonical [Todo View guide](./todo-view.md).
 

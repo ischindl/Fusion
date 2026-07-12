@@ -254,7 +254,7 @@ describe("artifact register tool", () => {
 
   it("sends exactly one system-to-user inbox notification with artifact metadata", async () => {
     const { store, registerArtifact } = createMockStore();
-    const artifact = createMockArtifact({ id: "art-notify", type: "image", title: "Screenshot", uri: "artifacts/screenshot.png", content: undefined });
+    const artifact = createMockArtifact({ id: "art-notify", type: "image", title: "Screenshot", mimeType: "image/png", uri: "artifacts/screenshot.png", content: undefined });
     registerArtifact.mockResolvedValue(artifact);
     const { messageStore, sendMessage } = createMockMessageStore();
 
@@ -276,10 +276,40 @@ describe("artifact register tool", () => {
         artifactId: "art-notify",
         artifactType: "image",
         title: "Screenshot",
+        mimeType: "image/png",
         authorId: AUTHOR_ID,
         taskId: TASK_ID,
       }),
     }));
+  });
+
+  it("still sends artifact notification metadata when mimeType is absent", async () => {
+    const { store, registerArtifact } = createMockStore();
+    registerArtifact.mockResolvedValue(createMockArtifact({
+      id: "art-no-mime",
+      title: "Metadata-only artifact",
+      mimeType: undefined,
+      content: undefined,
+      uri: "artifact://metadata-only",
+    }));
+    const { messageStore, sendMessage } = createMockMessageStore();
+
+    const tool = createArtifactRegisterTool(store, AUTHOR_ID, messageStore);
+    const result = await runTool(tool, "call-no-mime-notify", {
+      type: "other",
+      title: "Metadata-only artifact",
+      uri: "artifact://metadata-only",
+    });
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({
+        artifactId: "art-no-mime",
+        title: "Metadata-only artifact",
+        mimeType: undefined,
+      }),
+    }));
+    expect(getText(result)).toContain("Registered artifact");
   });
 
   it("still succeeds when notification sendMessage throws", async () => {

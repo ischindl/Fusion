@@ -30,6 +30,7 @@ import type {
   PluginRuntimeRegistration,
   CliProviderContribution,
   PluginInstallation,
+  PluginManifest,
   PluginSkillContribution,
   PluginWorkflowStepContribution,
   PluginTraitContribution,
@@ -44,6 +45,7 @@ import { normalizePluginUiContributionDefinition, validatePluginManifest } from 
 import { createLogger } from "./logger.js";
 import { getCreateAiSessionFactory, getCreateInteractiveAiSessionFactory } from "./ai-engine-loader.js";
 import { scanPluginSecurity } from "./plugin-security-scan.js";
+import { resolvePluginRootFromEntryPath } from "./plugin-skill-paths.js";
 
 // Minimum Fusion version for plugin compatibility checks (can be expanded later)
 const MINIMUM_FUSION_VERSION = "0.1.0";
@@ -202,6 +204,9 @@ export class PluginLoader extends EventEmitter<{
   /** Cache of dynamically imported modules */
   private loadedModules: Map<string, unknown> = new Map();
 
+  /** Absolute plugin package roots keyed by plugin id. */
+  private pluginRoots: Map<string, string> = new Map();
+
   private readonly log = createLogger("plugin-loader");
 
   constructor(private options: PluginLoaderOptions) {
@@ -355,6 +360,8 @@ export class PluginLoader extends EventEmitter<{
         );
       }
 
+      await this.refreshPersistedManifestMetadata(installation, plugin.manifest);
+
       // Check version compatibility
       if (plugin.manifest.fusionVersion) {
         const compatible = this.checkVersionCompatibility(
@@ -376,6 +383,7 @@ export class PluginLoader extends EventEmitter<{
       // Update plugin state locally and store
       plugin.state = "started";
       this.plugins.set(pluginId, plugin);
+      this.pluginRoots.set(pluginId, resolvePluginRootFromEntryPath(pluginPath));
 
       // Call onLoad hook
       const ctx = await this.createContext(plugin);
@@ -384,6 +392,7 @@ export class PluginLoader extends EventEmitter<{
       } catch (loadErr) {
         // onLoad failed - clean up and propagate error
         this.plugins.delete(pluginId);
+        this.pluginRoots.delete(pluginId);
         const errorMsg = loadErr instanceof Error ? loadErr.message : String(loadErr);
         await this.options.pluginStore.updatePluginState(
           pluginId,
@@ -404,6 +413,7 @@ export class PluginLoader extends EventEmitter<{
       // Ensure plugin is removed from loaded map on any failure
       // (it may have been added above before the onLoad hook)
       this.plugins.delete(pluginId);
+      this.pluginRoots.delete(pluginId);
 
       // Error isolation: set error state but don't crash
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -420,6 +430,54 @@ export class PluginLoader extends EventEmitter<{
 
       throw err;
     }
+  }
+
+  private async refreshPersistedManifestMetadata(
+    installation: PluginInstallation,
+    manifest: PluginManifest,
+  ): Promise<void> {
+    const versionChanged = installation.version !== manifest.version;
+    const settingsSchemaChanged =
+      this.stableManifestMetadataJson(installation.settingsSchema ?? null) !==
+      this.stableManifestMetadataJson(manifest.settingsSchema ?? null);
+
+    if (!versionChanged && !settingsSchemaChanged) {
+      return;
+    }
+
+    try {
+      /*
+      FNXC:Plugins 2026-07-12-10:59:
+      FN-7855 requires each fresh module re-import to reconcile persisted manifest metadata for path-registered plugins, because rebuilt code can change version/settingsSchema without re-registration.
+      Keep this update metadata-only so per-project enablement and saved setting values survive reload/restart; bundled plugins may already be current from ensureBundledPluginInstalled, making this idempotent.
+      */
+      await this.options.pluginStore.updatePlugin(installation.id, {
+        ...(versionChanged ? { version: manifest.version } : {}),
+        ...(settingsSchemaChanged ? { settingsSchema: manifest.settingsSchema ?? null } : {}),
+      });
+    } catch (err) {
+      this.log.warn(
+        `Failed to refresh persisted manifest metadata for plugin ${installation.id}:`,
+        err,
+      );
+    }
+  }
+
+  private stableManifestMetadataJson(value: unknown): string {
+    if (value === null || value === undefined) {
+      return "null";
+    }
+    if (Array.isArray(value)) {
+      return `[${value.map((entry) => this.stableManifestMetadataJson(entry)).join(",")}]`;
+    }
+    if (typeof value === "object") {
+      const record = value as Record<string, unknown>;
+      return `{${Object.keys(record)
+        .sort()
+        .map((key) => `${JSON.stringify(key)}:${this.stableManifestMetadataJson(record[key])}`)
+        .join(",")}}`;
+    }
+    return JSON.stringify(value);
   }
 
   private resolvePluginPath(path: string): string {
@@ -549,6 +607,7 @@ export class PluginLoader extends EventEmitter<{
 
       // Replace in plugins map
       this.plugins.set(pluginId, newPlugin);
+      this.pluginRoots.set(pluginId, resolvePluginRootFromEntryPath(pluginPath));
 
       // Create fresh context and call onLoad
       const ctx = await this.createContext(newPlugin);
@@ -557,6 +616,8 @@ export class PluginLoader extends EventEmitter<{
         timeoutMs,
         `onLoad timeout for ${pluginId}`,
       );
+
+      await this.refreshPersistedManifestMetadata(installation, newPlugin.manifest);
 
       // State is already "started", no need to update store
       // (avoiding started -> started transition which is disallowed)
@@ -573,6 +634,7 @@ export class PluginLoader extends EventEmitter<{
       try {
         // Restore old plugin
         this.plugins.set(pluginId, snapshot);
+        this.pluginRoots.set(pluginId, resolvePluginRootFromEntryPath(pluginPath));
 
         // Attempt to reactivate old plugin
         const ctx = await this.createContext(snapshot);
@@ -594,6 +656,7 @@ export class PluginLoader extends EventEmitter<{
         );
 
         this.plugins.delete(pluginId);
+        this.pluginRoots.delete(pluginId);
 
         const originalError = err instanceof Error ? err.message : String(err);
         const rollbackError = rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr);
@@ -813,6 +876,7 @@ export class PluginLoader extends EventEmitter<{
 
     // Remove from loaded plugins
     this.plugins.delete(pluginId);
+    this.pluginRoots.delete(pluginId);
 
     // Invalidate module cache for clean re-import
     this.invalidateModuleCache(pluginPath);
@@ -1257,13 +1321,16 @@ export class PluginLoader extends EventEmitter<{
 
   /**
    * Get all skill contributions from loaded plugins.
+   *
+   * FNXC:PluginSkills 2026-07-12-00:00:
+   * Plugin skill body resolution must honor skillFiles relative to the plugin package, so each contribution exposes the absolute pluginRoot alongside the SDK skill data. This is additive for old consumers and lets dashboard/session callers use the shared traversal-guarded resolver instead of guessing from the skill name.
    */
-  getPluginSkills(): Array<{ pluginId: string; skill: PluginSkillContribution }> {
-    const skills: Array<{ pluginId: string; skill: PluginSkillContribution }> = [];
+  getPluginSkills(): Array<{ pluginId: string; skill: PluginSkillContribution; pluginRoot?: string }> {
+    const skills: Array<{ pluginId: string; skill: PluginSkillContribution; pluginRoot?: string }> = [];
     for (const [pluginId, plugin] of this.plugins) {
       if (plugin.skills) {
         for (const skill of plugin.skills) {
-          skills.push({ pluginId, skill });
+          skills.push({ pluginId, skill, pluginRoot: this.pluginRoots.get(pluginId) });
         }
       }
     }

@@ -1410,6 +1410,13 @@
     "versionMismatchPrefix": "설치된",
     "versionMismatchSuffix": "최신 버전으로 업데이트하여 동기화를 유지하세요."
   },
+  "storageMigrationNotice": {
+    "body": "",
+    "dismissLabel": "",
+    "getHelp": "",
+    "getHelpLabel": "",
+    "title": ""
+  },
   "cliBinary": {
     "binaryLabel": "",
     "checking": "확인 중…",
@@ -2441,6 +2448,7 @@
     "previewTitle": "{{file}} 미리보기"
   },
   "fileEditor": {
+    "autoSave": "",
     "edit": "편집",
     "editMode": "편집 모드",
     "editorFor": "{{filePath}} 편집기",
@@ -2448,6 +2456,7 @@
     "lineNumber": "줄 번호",
     "preview": "미리보기",
     "previewMode": "미리보기 모드",
+    "toggleAutoSave": "",
     "toggleLineNumbers": "줄 번호 표시 토글",
     "toggleOptions": "편집기 옵션 토글",
     "toggleWordWrap": "자동 줄 바꿈 토글",
@@ -8352,6 +8361,7 @@
   },
   "todo": {
     "addItemPlaceholder": "할 일 항목 추가",
+    "allDoneHidden": "",
     "addList": "목록 추가",
     "assignAgent": "{{text}}을(를) 에이전트에 할당",
     "cancelItemEdit": "항목 편집 취소",
@@ -8381,6 +8391,7 @@
     "failedToCreateTask": "작업 생성 실패: {{error}}",
     "failedToLoadAgents": "에이전트 불러오기 실패: {{error}}",
     "failedUpdateItem": "항목 업데이트 실패",
+    "hideDone": "",
     "failedUpdateItemToast": "할 일 항목 업데이트에 실패했습니다",
     "itemsLabel": "할 일 항목",
     "lists": "목록",
@@ -8400,6 +8411,7 @@
     "saveListRename": "목록 이름 바꾸기 저장",
     "selectList": "{{title}} 목록 선택",
     "selectListEmpty": "사이드바에서 목록을 선택하세요",
+    "showDone": "",
     "startPlanning": "{{text}}에서 계획 시작",
     "taskCreatedAndAssigned": "{{id}} 생성 후 {{agent}}에 할당됨",
     "taskCreatedFromTodo": "할 일에서 {{id}} 생성됨",

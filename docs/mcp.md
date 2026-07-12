@@ -266,7 +266,21 @@ When an AI lane or readonly dashboard helper starts a session, Fusion resolves t
 
 Runtime support is guarded. Claude/pi/ACP-compatible runtimes receive MCP servers; mock or unsupported runtimes skip forwarding and emit only structured count/provider/runtime metadata. Skipped forwarding is not a settings error: it means the selected runtime does not accept MCP server declarations.
 
-The default pi runtime connects resolved MCP servers inside the engine because pi does not consume raw `mcpServers` declarations itself. For each reachable server, Fusion performs the MCP handshake, lists tools, and registers each tool as a pi custom tool named `mcp__<server>__<tool>` with sanitized, deterministic suffixes for collisions. Unreachable or disabled servers fail soft with content-free logs, and all MCP clients/transports are closed when the agent session is disposed so stdio subprocesses are reaped.
+The default pi runtime connects resolved MCP servers inside the engine because pi does not consume raw `mcpServers` declarations itself. For each reachable server, Fusion performs the MCP handshake, lists tools, and registers each tool as a pi custom tool named `mcp__<server>__<tool>` with sanitized, deterministic suffixes for collisions. A genuine empty or disabled effective configuration creates no MCP tools. By contrast, secret materialization, connection, or tool-listing failure aborts configured session bootstrap with only the server name and a coarse failure category; Fusion never silently turns that failure into an apparently empty catalog and never includes raw exception text or server contents. Every client is tracked before connection and closed exactly once on success, failure, abort, model fallback, approval suspension, or normal session disposal.
+
+Executor, retry, workflow-node, self-fix, child, and unpause-resume sessions resolve the effective project/global MCP set immediately before each new runtime session. Resolution is not cached in task state, and materialized secret values remain in memory only for that session bootstrap.
+
+Namespaced MCP tools remain governed external network actions. When policy requires approval, the first call creates or reuses one pending request, pauses the task/agent, and disposes the active session. Approval and denial use the shared `POST /api/approvals/:id/decision` route on desktop and mobile. If the decision arrives while the old executor is still unwinding, Fusion records one deferred resume and starts it only after the old execution lock and session surfaces are released. The resumed session re-resolves and reconnects MCP before prompting: an approved request permits the matching logical call once and is then marked completed; a denied request makes no MCP call. User-paused tasks remain paused.
+
+### Verifying executor MCP lifecycle
+
+After installing a build with an MCP lifecycle change, use a non-mutating configured tool to verify the runtime rather than relying on settings presence alone:
+
+1. Start three genuinely fresh executor runs and record sanitized run ids/start times.
+2. Confirm each actual tool catalog contains the same expected `mcp__<server>__<tool>` name.
+3. Invoke one explicitly read-only operation, approve that request through the normal dashboard approval route, and confirm the resumed call returns once and the approval reaches `completed`.
+4. Confirm audit evidence contains no other external tool invocation and that no client/session remains active.
+5. If any configured server reports `secret-materialization`, `connect`, `list`, `aborted`, or another coarse error category, treat the run as a bootstrap failure. Do not inspect or log the server definition, URL, command arguments, headers, environment, secret values, or raw exception text.
 
 Read-only sessions do not receive MCP tools automatically. Interactive planning and mission interview lanes (planning, streaming planning, mission interview, milestone interview, and slice interview) explicitly opt in because their job is to gather context and create plans, so configured MCP documentation/context tools are available there while still passing through the same custom-tool read-only filter, allowlists, permanent-agent gating, action-gate wrapping, worktree-boundary wrapping, schema preservation, redacted logging, and teardown path. Other read-only validator/helper lanes must make their own reviewed opt-in before external MCP tools appear.
 

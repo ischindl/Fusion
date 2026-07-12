@@ -2,9 +2,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_TERMINAL_PREFERENCES,
   LEGACY_TERMINAL_FONT_SIZE_KEY,
+  MAX_TERMINAL_CUSTOM_SHORTCUT_LABEL_LENGTH,
+  MAX_TERMINAL_CUSTOM_SHORTCUT_VALUE_LENGTH,
+  MAX_TERMINAL_CUSTOM_SHORTCUTS,
   TERMINAL_PREFERENCES_KEY,
   XTERM_FONT_FAMILY,
+  decodeTerminalShortcutSequence,
   forceTerminalFontRemeasure,
+  normalizeTerminalCustomShortcuts,
   readTerminalPreferences,
   waitForTerminalFontMetrics,
   writeTerminalPreferences,
@@ -81,6 +86,7 @@ describe("terminalPreferences", () => {
     });
 
     expect(written).toEqual({
+      ...DEFAULT_TERMINAL_PREFERENCES,
       fontFamily: "system-mono",
       fontSize: 22,
       cursorStyle: "underline",
@@ -89,6 +95,68 @@ describe("terminalPreferences", () => {
     });
     expect(readTerminalPreferences()).toEqual(written);
     expect(localStorage.getItem(LEGACY_TERMINAL_FONT_SIZE_KEY)).toBe("22");
+  });
+
+  it("normalizes missing, corrupt, and non-array custom shortcuts to an empty list", () => {
+    expect(readTerminalPreferences().customShortcuts).toEqual([]);
+
+    localStorage.setItem(
+      TERMINAL_PREFERENCES_KEY,
+      JSON.stringify({ ...DEFAULT_TERMINAL_PREFERENCES, customShortcuts: "bad" }),
+    );
+    expect(readTerminalPreferences().customShortcuts).toEqual([]);
+
+    expect(normalizeTerminalCustomShortcuts(null)).toEqual([]);
+  });
+
+  it("drops invalid custom shortcuts and caps labels, values, ids, and list length", () => {
+    const longLabel = ` ${"L".repeat(MAX_TERMINAL_CUSTOM_SHORTCUT_LABEL_LENGTH + 5)} `;
+    const longValue = ` ${"v".repeat(MAX_TERMINAL_CUSTOM_SHORTCUT_VALUE_LENGTH + 5)} `;
+    const normalized = normalizeTerminalCustomShortcuts([
+      null,
+      { id: "keep", label: "  Status  ", value: " git status\\n " },
+      { id: "empty-label", label: " ", value: "echo nope" },
+      { id: "empty-value", label: "Nope", value: " " },
+      { id: "keep", label: "Duplicate", value: "pwd\\n" },
+      { label: longLabel, value: longValue },
+      ...Array.from({ length: MAX_TERMINAL_CUSTOM_SHORTCUTS + 5 }, (_, index) => ({
+        id: `extra-${index}`,
+        label: `E${index}`,
+        value: `echo ${index}`,
+      })),
+    ]);
+
+    expect(normalized).toHaveLength(MAX_TERMINAL_CUSTOM_SHORTCUTS);
+    expect(normalized[0]).toEqual({ id: "keep", label: "Status", value: "git status\\n" });
+    expect(normalized[1]?.id).not.toBe("keep");
+    expect(new Set(normalized.map((shortcut) => shortcut.id)).size).toBe(normalized.length);
+    expect(normalized[2]?.label).toHaveLength(MAX_TERMINAL_CUSTOM_SHORTCUT_LABEL_LENGTH);
+    expect(normalized[2]?.value).toHaveLength(MAX_TERMINAL_CUSTOM_SHORTCUT_VALUE_LENGTH);
+  });
+
+  it("round-trips valid custom shortcuts through the existing preferences record", () => {
+    const written = writeTerminalPreferences({
+      customShortcuts: [
+        { id: "cs-status", label: "Status", value: "git status\\n" },
+        { id: "cs-clear", label: "Clear", value: "clear\\n" },
+      ],
+    });
+
+    expect(written.customShortcuts).toEqual([
+      { id: "cs-status", label: "Status", value: "git status\\n" },
+      { id: "cs-clear", label: "Clear", value: "clear\\n" },
+    ]);
+    expect(readTerminalPreferences().customShortcuts).toEqual(written.customShortcuts);
+    expect(JSON.parse(localStorage.getItem(TERMINAL_PREFERENCES_KEY) ?? "null")).toEqual(written);
+  });
+
+  it("decodes terminal shortcut escape sequences and preserves unknown escapes", () => {
+    expect(decodeTerminalShortcutSequence("git status\\n")).toBe("git status\n");
+    expect(decodeTerminalShortcutSequence("col1\\tcol2\\r")).toBe("col1\tcol2\r");
+    expect(decodeTerminalShortcutSequence("esc=\\e alt=\\x1b")).toBe("esc=\x1b alt=\x1b");
+    expect(decodeTerminalShortcutSequence("literal=\\\\ unknown=\\q tail=\\")).toBe(
+      "literal=\\ unknown=\\q tail=\\",
+    );
   });
 
   it("keeps terminal font metrics wait best-effort when iOS rejects the full stack shorthand", async () => {

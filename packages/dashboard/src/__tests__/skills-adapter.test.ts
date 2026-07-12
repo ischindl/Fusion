@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createSkillsAdapter, extractSkillName, computeSkillId, bareSkillName } from "../skills-adapter.js";
-import { writeFile, mkdir, access, readFile, rm } from "node:fs/promises";
-import { join, dirname } from "node:path";
+import { resolvePluginSkillEnabled } from "@fusion/core";
+import { writeFile, mkdir, access, readFile, rm, mkdtemp } from "node:fs/promises";
+import { join, dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
@@ -800,6 +801,79 @@ describe("createSkillsAdapter - plugin skill merge", () => {
     expect(byName.get("ce-plan")!.id).toContain("::");
   });
 
+  it("honors plugin skillFiles in category subdirectories when pluginRoot is present", async () => {
+    const pluginRoot = resolve("/tmp/fusion-plugin-compound-engineering");
+    const adapter = createSkillsAdapter({
+      packageManager: { resolve: vi.fn().mockResolvedValue({ skills: [] }) },
+      getSettingsPath: () => "/tmp/does-not-exist-settings.json",
+      getPluginSkills: () => [
+        {
+          pluginId: "fusion-plugin-compound-engineering",
+          pluginRoot,
+          skill: {
+            skillId: "entity-framework-core",
+            name: "entity-framework-core",
+            description: "EF Core guidance",
+            skillFiles: ["skills/data/entity-framework-core/SKILL.md"],
+          },
+        },
+      ],
+    });
+
+    const skills = await adapter.discoverSkills("/tmp/project");
+    const skill = skills.find((entry) => entry.name === "entity-framework-core")!;
+
+    expect(skill.relativePath).toBe("skills/data/entity-framework-core/SKILL.md");
+    expect(skill.path).toBe(join(pluginRoot, "skills/data/entity-framework-core/SKILL.md"));
+  });
+
+  it("keeps CE-style flat skillFiles on the previous name-derived path and id", async () => {
+    const pluginRoot = resolve("/tmp/fusion-plugin-compound-engineering");
+    const adapter = createSkillsAdapter({
+      packageManager: { resolve: vi.fn().mockResolvedValue({ skills: [] }) },
+      getSettingsPath: () => "/tmp/does-not-exist-settings.json",
+      getPluginSkills: () => [
+        {
+          pluginId: "fusion-plugin-compound-engineering",
+          pluginRoot,
+          skill: {
+            skillId: "ce-plan",
+            name: "ce-plan",
+            description: "Plan work",
+            skillFiles: ["skills/ce-plan/SKILL.md"],
+          },
+        },
+      ],
+    });
+
+    const cePlan = (await adapter.discoverSkills("/tmp/project")).find((entry) => entry.name === "ce-plan")!;
+
+    expect(cePlan.relativePath).toBe("skills/ce-plan/SKILL.md");
+    expect(cePlan.id).toBe(computeSkillId("plugin:fusion-plugin-compound-engineering", "skills/ce-plan/SKILL.md"));
+  });
+
+  it("keeps the name-derived relative path when pluginRoot is missing", async () => {
+    const adapter = createSkillsAdapter({
+      packageManager: { resolve: vi.fn().mockResolvedValue({ skills: [] }) },
+      getSettingsPath: () => "/tmp/does-not-exist-settings.json",
+      getPluginSkills: () => [
+        {
+          pluginId: "legacy-plugin",
+          skill: {
+            skillId: "entity-framework-core",
+            name: "entity-framework-core",
+            skillFiles: ["skills/data/entity-framework-core/SKILL.md"],
+          },
+        },
+      ],
+    });
+
+    const skill = (await adapter.discoverSkills("/tmp/project")).find((entry) => entry.name === "entity-framework-core")!;
+
+    expect(skill.relativePath).toBe("skills/entity-framework-core/SKILL.md");
+    expect(skill.path).toBe("skills/entity-framework-core/SKILL.md");
+  });
+
   it("passes the requesting project root into async plugin-skill discovery", async () => {
     const daemonRoot = "/tmp/daemon-root";
     const projectRoot = "/tmp/managed-project";
@@ -863,12 +937,10 @@ describe("createSkillsAdapter - plugin skill merge", () => {
     // ce-plan defaults to enabled, but a "-" entry under its plugin package
     // source must disable it; without the settings lookup the toggle is lost.
     const relativePath = "skills/ce-plan/SKILL.md";
-    await writeFile(
-      settingsPath,
-      JSON.stringify({
-        packages: [{ source: "plugin:fusion-plugin-compound-engineering", skills: [`-${relativePath}`] }],
-      }),
-    );
+    const settings = {
+      packages: [{ source: "plugin:fusion-plugin-compound-engineering", skills: [`-${relativePath}`] }],
+    };
+    await writeFile(settingsPath, JSON.stringify(settings));
 
     try {
       const adapter = createSkillsAdapter({
@@ -883,6 +955,55 @@ describe("createSkillsAdapter - plugin skill merge", () => {
       const cePlan = skills.find((s) => s.name === "ce-plan");
       expect(cePlan).toBeDefined();
       expect(cePlan!.enabled).toBe(false);
+      expect(cePlan!.enabled).toBe(resolvePluginSkillEnabled(
+        settings,
+        "fusion-plugin-compound-engineering",
+        "ce-plan",
+        true,
+      ));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps plugin discovery enablement in parity with the shared session resolver", async () => {
+    const dir = join(tmpdir(), `skills-adapter-plugin-parity-${process.pid}-${Date.now()}`);
+    const settingsPath = join(dir, "settings.json");
+    await mkdir(dir, { recursive: true });
+    const settings = {
+      packages: [
+        { source: "plugin:fusion-plugin-compound-engineering", skills: ["+skills/opt-in/SKILL.md"] },
+        { source: "plugin:fusion-plugin-compound-engineering", skills: ["-skills/opt-out/SKILL.md"] },
+      ],
+    };
+    await writeFile(settingsPath, JSON.stringify(settings));
+
+    try {
+      const adapter = createSkillsAdapter({
+        packageManager: { resolve: vi.fn().mockResolvedValue({ skills: [] }) },
+        getSettingsPath: () => settingsPath,
+        getPluginSkills: () => [
+          { pluginId: "fusion-plugin-compound-engineering", skill: { name: "opt-in", enabled: false } },
+          { pluginId: "fusion-plugin-compound-engineering", skill: { name: "opt-out", enabled: true } },
+          { pluginId: "fusion-plugin-compound-engineering", skill: { name: "default-on" } },
+        ],
+      });
+
+      const byName = new Map((await adapter.discoverSkills(dir)).map((skill) => [skill.name, skill.enabled]));
+      expect(byName).toEqual(new Map([
+        ["opt-in", true],
+        ["opt-out", false],
+        ["default-on", true],
+      ]));
+      for (const [name, enabled] of byName) {
+        const staticEnabled = name === "opt-in" ? false : true;
+        expect(enabled).toBe(resolvePluginSkillEnabled(
+          settings,
+          "fusion-plugin-compound-engineering",
+          name,
+          staticEnabled,
+        ));
+      }
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -890,28 +1011,76 @@ describe("createSkillsAdapter - plugin skill merge", () => {
 });
 
 describe("createSkillsAdapter - readSkillContent for plugin skills", () => {
-  it("returns synthesized content (not a blank panel) for plugin-contributed skills", async () => {
-    const adapter = createSkillsAdapter({
-      packageManager: { resolve: vi.fn().mockResolvedValue({ skills: [] }) },
-      getSettingsPath: () => "/tmp/does-not-exist-settings.json",
-      getPluginSkills: () => [
-        {
-          pluginId: "fusion-plugin-compound-engineering",
-          skill: { name: "ce-plan", description: "Create structured plans." },
-        },
-      ],
-    });
+  it("reads the real SKILL.md and reference files for plugin-contributed skills", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "plugin-skill-content-"));
+    const pluginRoot = join(dir, "plugin");
+    const skillDir = join(pluginRoot, "skills", "ce-plan");
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(join(skillDir, "SKILL.md"), "# CE Plan\n\nDistinctive plugin body marker.", "utf-8");
+    await writeFile(join(skillDir, "reference.md"), "Plugin reference marker.", "utf-8");
 
-    const skills = await adapter.discoverSkills("/tmp/project");
-    const cePlan = skills.find((s) => s.name === "ce-plan")!;
+    try {
+      const adapter = createSkillsAdapter({
+        packageManager: { resolve: vi.fn().mockResolvedValue({ skills: [] }) },
+        getSettingsPath: () => join(dir, "missing-settings.json"),
+        getPluginSkills: () => [
+          {
+            pluginId: "fusion-plugin-compound-engineering",
+            pluginRoot,
+            skill: { name: "ce-plan", description: "Create structured plans." },
+          },
+        ],
+      });
 
-    const content = await adapter.readSkillContent("/tmp/project", cePlan.id);
-    expect(content.name).toBe("ce-plan");
-    expect(content.skillMd).toContain("ce-plan");
-    expect(content.skillMd).toContain("Create structured plans.");
-    expect(content.skillMd).toContain("fusion-plugin-compound-engineering");
-    expect(content.skillMd).not.toBe("");
-    expect(content.files).toEqual([]);
+      const skills = await adapter.discoverSkills(dir);
+      const cePlan = skills.find((s) => s.name === "ce-plan")!;
+      expect(cePlan.path).toBe(join(skillDir, "SKILL.md"));
+
+      const content = await adapter.readSkillContent(dir, cePlan.id);
+      expect(content.name).toBe("ce-plan");
+      expect(content.skillMd).toContain("Distinctive plugin body marker.");
+      expect(content.skillMd).not.toContain("materialized at runtime");
+      expect(content.files).toEqual([{ name: "reference.md", relativePath: "reference.md", type: "file" }]);
+
+      const reference = await adapter.readSkillFileContent(dir, cePlan.id, "reference.md");
+      expect(reference).toEqual({
+        name: "reference.md",
+        relativePath: "reference.md",
+        content: "Plugin reference marker.",
+        isText: true,
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("handles a missing plugin SKILL.md gracefully", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "plugin-skill-missing-"));
+    const pluginRoot = join(dir, "plugin");
+    const skillDir = join(pluginRoot, "skills", "ce-plan");
+    await mkdir(skillDir, { recursive: true });
+
+    try {
+      const adapter = createSkillsAdapter({
+        packageManager: { resolve: vi.fn().mockResolvedValue({ skills: [] }) },
+        getSettingsPath: () => join(dir, "missing-settings.json"),
+        getPluginSkills: () => [
+          {
+            pluginId: "fusion-plugin-compound-engineering",
+            pluginRoot,
+            skill: { name: "ce-plan" },
+          },
+        ],
+      });
+
+      const cePlan = (await adapter.discoverSkills(dir)).find((s) => s.name === "ce-plan")!;
+      const content = await adapter.readSkillContent(dir, cePlan.id);
+      expect(content.name).toBe("ce-plan");
+      expect(content.skillMd).toBe("");
+      expect(content.files).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

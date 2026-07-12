@@ -10,12 +10,14 @@ import { useMobileKeyboard } from "../hooks/useMobileKeyboard";
 import { isMobileViewport, MOBILE_MEDIA_QUERY } from "../hooks/useViewportMode";
 import {
   TERMINAL_PREFERENCES_KEY,
+  decodeTerminalShortcutSequence,
   forceTerminalFontRemeasure,
   readTerminalPreferences,
   resolveTerminalFontFamily,
   resolveTerminalGlyphFontFamily,
   waitForTerminalFontMetrics,
   withDomBasedTerminalCharacterMeasurement,
+  type TerminalCustomShortcut,
 } from "../utils/terminalPreferences";
 
 /**
@@ -207,6 +209,9 @@ export function SessionTerminal({
   // Sticky Ctrl: tap Ctrl, then the next tapped key combines into a control
   // sequence (Ctrl-C → 0x03, Ctrl-D → 0x04, Ctrl-Z → 0x1A).
   const [ctrlSticky, setCtrlSticky] = useState(false);
+  const [customShortcuts, setCustomShortcuts] = useState<TerminalCustomShortcut[]>(() =>
+    readTerminalPreferences().customShortcuts,
+  );
   const [ticketReadOnly, setTicketReadOnly] = useState<boolean | null>(null);
   const effectiveReadOnly = readOnly || ticketReadOnly === true;
   const canAcceptInput = !readOnly && ticketReadOnly === false && mode === "live";
@@ -365,6 +370,9 @@ export function SessionTerminal({
   /*
   FNXC:Terminal 2026-06-17-01:05:
   Font and cursor preferences live-apply through the shared storage key so SessionTerminal follows changes made in another terminal surface without remounting. Renderer remains excluded from this handler because renderer addon teardown/re-attach only happens safely during the next session init.
+
+  FNXC:Terminal 2026-07-12-13:20:
+  SessionTerminal custom shortcuts read FN-7872's shared client-local terminalPreferences store rather than a second embedded-terminal store. Always refresh through readTerminalPreferences() on storage events so corrupt, missing, or non-array customShortcuts normalize before React renders the mobile key bar.
   */
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -376,6 +384,7 @@ export function SessionTerminal({
         return;
       }
       applyLiveTerminalPreferences();
+      setCustomShortcuts(readTerminalPreferences().customShortcuts);
     };
 
     window.addEventListener("storage", onStorage);
@@ -951,6 +960,28 @@ export function SessionTerminal({
             >
               →
             </button>
+            {/*
+            FNXC:Terminal 2026-07-12-13:26:
+            User-defined shortcut buttons must mirror built-in mobile bar keys: prevent pointer/mouse blur, clear sticky Ctrl like the dedicated ^C key, and send only decodeTerminalShortcutSequence(value) through sendInput. The surrounding canAcceptInput gate suppresses rendering and injection for read-only tickets, idle, ended, and replay sessions.
+            */}
+            {customShortcuts.map((shortcut) => (
+              <button
+                key={shortcut.id}
+                type="button"
+                className="cli-terminal-key cli-terminal-key--custom"
+                data-testid={`cli-terminal-custom-shortcut-${shortcut.id}`}
+                title={shortcut.label}
+                aria-label={shortcut.label}
+                onPointerDown={keepFocus}
+                onMouseDown={keepFocus}
+                onClick={() => {
+                  setCtrlSticky(false);
+                  sendInput(decodeTerminalShortcutSequence(shortcut.value));
+                }}
+              >
+                {shortcut.label}
+              </button>
+            ))}
           </div>
           <form
             className="cli-session-terminal__input-row"

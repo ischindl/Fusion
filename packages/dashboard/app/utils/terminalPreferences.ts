@@ -3,6 +3,9 @@ export const LEGACY_TERMINAL_FONT_SIZE_KEY = "kb-terminal-font-size";
 export const DEFAULT_TERMINAL_FONT_SIZE = 14;
 export const MIN_TERMINAL_FONT_SIZE = 8;
 export const MAX_TERMINAL_FONT_SIZE = 32;
+export const MAX_TERMINAL_CUSTOM_SHORTCUTS = 24;
+export const MAX_TERMINAL_CUSTOM_SHORTCUT_LABEL_LENGTH = 24;
+export const MAX_TERMINAL_CUSTOM_SHORTCUT_VALUE_LENGTH = 256;
 
 export const TERMINAL_SYMBOLS_FONT_FAMILY = '"Fusion Terminal Nerd Font Symbols"';
 
@@ -40,17 +43,27 @@ export type TerminalFontFamily = (typeof TERMINAL_FONT_FAMILY_PRESETS)[number]["
 export type TerminalCursorStyle = "block" | "underline" | "bar";
 export type TerminalRenderer = "auto" | "canvas";
 
+export interface TerminalCustomShortcut {
+  id: string;
+  label: string;
+  value: string;
+}
+
 export interface TerminalPreferences {
   fontFamily: TerminalFontFamily;
   fontSize: number;
   cursorStyle: TerminalCursorStyle;
   cursorBlink: boolean;
   renderer: TerminalRenderer;
+  customShortcuts: TerminalCustomShortcut[];
 }
 
 /*
 FNXC:Terminal 2026-06-16-23:35:
-Terminal preferences are intentionally client-local: users can customize font, cursor, and renderer without introducing server settings schema. Reads must tolerate unavailable storage, corrupt JSON, unknown enum values, and legacy font-size data so opening the terminal never throws and always falls back to safe defaults.
+Terminal preferences are intentionally client-local: users can customize font, cursor, renderer, and custom shortcut buttons without introducing server settings schema. Reads must tolerate unavailable storage, corrupt JSON, unknown enum values, legacy font-size data, and malformed shortcut lists so opening the terminal never throws and always falls back to safe defaults.
+
+FNXC:Terminal 2026-07-12-00:00:
+FN-7872 custom shortcuts remain client-local in kb-terminal-preferences, are count/length-capped, and are defensively normalized before use so corrupt localStorage cannot break terminal startup. decodeTerminalShortcutSequence is the single injection-decoding boundary for user-authored shortcut sequences before TerminalModal sends bytes to the PTY.
 */
 export const DEFAULT_TERMINAL_PREFERENCES: TerminalPreferences = {
   fontFamily: "nerd-font",
@@ -58,6 +71,7 @@ export const DEFAULT_TERMINAL_PREFERENCES: TerminalPreferences = {
   cursorStyle: "block",
   cursorBlink: true,
   renderer: "auto",
+  customShortcuts: [],
 };
 
 export function clampTerminalFontSize(value: number): number {
@@ -313,6 +327,129 @@ function isTerminalRenderer(value: unknown): value is TerminalRenderer {
   return value === "auto" || value === "canvas";
 }
 
+let terminalCustomShortcutIdCounter = 0;
+
+export function createTerminalCustomShortcutId(): string {
+  const maybeCrypto = globalThis.crypto as { randomUUID?: () => string } | undefined;
+  if (typeof maybeCrypto?.randomUUID === "function") {
+    return `cs-${maybeCrypto.randomUUID()}`;
+  }
+
+  terminalCustomShortcutIdCounter += 1;
+  return `cs-${terminalCustomShortcutIdCounter.toString(36)}`;
+}
+
+function capTerminalShortcutText(value: string, maxLength: number): string {
+  return value.trim().slice(0, maxLength);
+}
+
+export function normalizeTerminalCustomShortcuts(
+  value: unknown,
+): TerminalCustomShortcut[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const normalized: TerminalCustomShortcut[] = [];
+  const seenIds = new Set<string>();
+
+  for (const entry of value) {
+    if (normalized.length >= MAX_TERMINAL_CUSTOM_SHORTCUTS) {
+      break;
+    }
+
+    if (!isObject(entry)) {
+      continue;
+    }
+
+    const label =
+      typeof entry.label === "string"
+        ? capTerminalShortcutText(entry.label, MAX_TERMINAL_CUSTOM_SHORTCUT_LABEL_LENGTH)
+        : "";
+    const shortcutValue =
+      typeof entry.value === "string"
+        ? capTerminalShortcutText(entry.value, MAX_TERMINAL_CUSTOM_SHORTCUT_VALUE_LENGTH)
+        : "";
+
+    if (!label || !shortcutValue) {
+      continue;
+    }
+
+    const rawId = typeof entry.id === "string" ? entry.id.trim() : "";
+    let id = rawId && !seenIds.has(rawId) ? rawId : createTerminalCustomShortcutId();
+    if (seenIds.has(id)) {
+      const idBase = id;
+      let suffix = 2;
+      while (seenIds.has(`${idBase}-${suffix}`)) {
+        suffix += 1;
+      }
+      id = `${idBase}-${suffix}`;
+    }
+    seenIds.add(id);
+    normalized.push({ id, label, value: shortcutValue });
+  }
+
+  return normalized;
+}
+
+export function decodeTerminalShortcutSequence(value: string): string {
+  let decoded = "";
+
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (character !== "\\") {
+      decoded += character;
+      continue;
+    }
+
+    const next = value[index + 1];
+    if (next === undefined) {
+      decoded += character;
+      continue;
+    }
+
+    switch (next) {
+      case "n":
+        decoded += "\n";
+        index += 1;
+        break;
+      case "t":
+        decoded += "\t";
+        index += 1;
+        break;
+      case "r":
+        decoded += "\r";
+        index += 1;
+        break;
+      case "e":
+        decoded += "\x1b";
+        index += 1;
+        break;
+      case "\\":
+        decoded += "\\";
+        index += 1;
+        break;
+      case "x": {
+        const hexEscape = value.slice(index + 1, index + 4).toLowerCase();
+        if (hexEscape === "x1b") {
+          decoded += "\x1b";
+          index += 3;
+          break;
+        }
+        decoded += `\\${next}`;
+        index += 1;
+        break;
+      }
+      default:
+        decoded += `\\${next}`;
+        index += 1;
+        break;
+    }
+  }
+
+  return decoded;
+}
+
 function readLegacyFontSize(): number | undefined {
   if (typeof window === "undefined") {
     return undefined;
@@ -362,6 +499,7 @@ function normalizeTerminalPreferences(value: unknown): TerminalPreferences {
     renderer: isTerminalRenderer(source.renderer)
       ? source.renderer
       : DEFAULT_TERMINAL_PREFERENCES.renderer,
+    customShortcuts: normalizeTerminalCustomShortcuts(source.customShortcuts),
   };
 }
 

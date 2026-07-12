@@ -560,7 +560,55 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
     } finally {
       setCommitting(false);
     }
-  }, [commitMessage, addToast, projectId, t]);
+  }, [commitMessage, addToast, projectId, gitRepoPath, t]);
+
+  /*
+  FNXC:GitManager 2026-07-12-00:00:
+  The Changes commit form needs a one-click path that commits currently staged changes and immediately pushes the active branch using the existing git client APIs, while preserving the commit message when only the push fails so the local commit context remains visible.
+  */
+  const handleCommitAndPush = useCallback(async () => {
+    const trimmedMessage = commitMessage.trim();
+    if (!trimmedMessage) return;
+
+    setCommitting(true);
+    let commitHash: string | null = null;
+    try {
+      const commitResult = await createCommit(trimmedMessage, projectId, gitRepoPath);
+      commitHash = commitResult.hash;
+      addToast(t("git.committedHash", "Committed: {{hash}}", { hash: commitResult.hash }), "success");
+
+      const pushResult = await pushBranch(projectId, gitRepoPath);
+      setLastRemoteResult(pushResult);
+      addToast(pushResult.message || t("git.pushCompleted", "Push completed"), "success");
+      setCommitMessage("");
+
+      const [changes, statusData] = await Promise.all([fetchFileChanges(projectId, gitRepoPath), fetchGitStatus(projectId, { extended: true }, gitRepoPath)]);
+      setFileChanges(changes);
+      setStatus(statusData);
+      setSelectedDiffTarget(null);
+      setChangeDiff(null);
+      setChangeDiffError(null);
+    } catch (err) {
+      if (commitHash) {
+        const errorMessage = getErrorMessage(err) || t("git.pushFailed", "Push failed");
+        addToast(t("git.commitSucceededPushFailed", "Committed locally ({{hash}}), but push failed: {{message}}", { hash: commitHash, message: errorMessage }), "error");
+        try {
+          const [changes, statusData] = await Promise.all([fetchFileChanges(projectId, gitRepoPath), fetchGitStatus(projectId, { extended: true }, gitRepoPath)]);
+          setFileChanges(changes);
+          setStatus(statusData);
+          setSelectedDiffTarget(null);
+          setChangeDiff(null);
+          setChangeDiffError(null);
+        } catch {
+          // Keep the push failure toast as the actionable user-facing error.
+        }
+      } else {
+        addToast(getErrorMessage(err) || t("git.failedToCommit", "Failed to commit"), "error");
+      }
+    } finally {
+      setCommitting(false);
+    }
+  }, [commitMessage, addToast, projectId, gitRepoPath, t]);
 
   const handleStageAllAndCommit = useCallback(async () => {
     if (!commitMessage.trim()) return;
@@ -1194,6 +1242,7 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
                     commitMessage={commitMessage}
                     setCommitMessage={setCommitMessage}
                     onCommit={handleCommit}
+                    onCommitAndPush={handleCommitAndPush}
                     onStageAllAndCommit={handleStageAllAndCommit}
                     committing={committing}
                   />
@@ -1758,6 +1807,7 @@ function ChangesPanel({
   commitMessage,
   setCommitMessage,
   onCommit,
+  onCommitAndPush,
   onStageAllAndCommit,
   committing,
 }: {
@@ -1777,6 +1827,7 @@ function ChangesPanel({
   commitMessage: string;
   setCommitMessage: (msg: string) => void;
   onCommit: (e: React.FormEvent) => void;
+  onCommitAndPush: () => void;
   onStageAllAndCommit: () => void;
   committing: boolean;
 }) {
@@ -2011,6 +2062,17 @@ function ChangesPanel({
           >
             {committing ? <Loader2 size={14} className="spin" /> : <Send size={14} />}
             {t("git.commit", "Commit")}
+          </button>
+          {/* FNXC:GitManager 2026-07-12-00:00: Expose the staged-only commit-then-push affordance beside Commit without making it a second primary action, so the established commit hierarchy stays intact. */}
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={onCommitAndPush}
+            disabled={committing || !commitMessage.trim() || stagedFiles.length === 0}
+            title={t("git.commitAndPushTitle", "Commit staged changes, then push the current branch")}
+          >
+            {committing ? <Loader2 size={14} className="spin" /> : <ArrowUp size={14} />}
+            {t("git.commitAndPush", "Commit and Push")}
           </button>
           {unstagedFiles.length > 0 && (
             <button

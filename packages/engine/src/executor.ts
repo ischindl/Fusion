@@ -94,7 +94,7 @@ import {
 } from "./agent-session-helpers.js";
 import { buildSessionSkillContext } from "./session-skill-context.js";
 import type { SkillSelectionContext } from "./skill-resolver.js";
-import { resolveMcpServersForStore } from "./mcp-resolution.js";
+import { assertMcpResolutionSucceeded, resolveMcpServersForStore } from "./mcp-resolution.js";
 import { reviewStep, proseSignalsClearApproval, extractJsonObjectCandidates, type ReviewVerdict, type ReviewResult } from "./reviewer.js";
 import { buildUserCommentsPromptSection, selectUserCommentsForAgentContext } from "./agent-user-comments.js";
 import { resolveSandboxBackend } from "./sandbox/index.js";
@@ -343,6 +343,11 @@ export function augmentSessionSkillsForBrowserStep(
   };
 }
 
+function mergeAdditionalSkillPaths(...pathGroups: Array<string[] | undefined>): string[] | undefined {
+  const merged = Array.from(new Set(pathGroups.flatMap((paths) => paths ?? [])));
+  return merged.length > 0 ? merged : undefined;
+}
+
 export function formatAgentBrowserAvailabilityLog(result: AgentBrowserAvailabilityProbeResult): string {
   if (result.available) {
     return `[browser-verification] agent-browser available — version ${result.version ?? "unknown"}`;
@@ -490,6 +495,10 @@ const MAX_WORKFLOW_STEP_RETRIES = 3;
 const MAX_TASK_DONE_SESSION_RETRIES = 3;
 /** Maximum todo requeues after exhausting in-session fn_task_done retries. */
 const MAX_TASK_DONE_REQUEUE_RETRIES = 3;
+/** Maximum no-progress execute-node self-requeues before terminalizing the loop. */
+export const MAX_EXECUTE_REQUEUE_LOOP_CYCLES = 6;
+/** Low-water mark for surfacing a visible warning before loop terminalization. */
+export const EXECUTE_REQUEUE_LOOP_VISIBLE_THRESHOLD = 3;
 /**
  * Maximum bounded retries for the narrow resume-after-restart graph transient.
  * Budget exhaustion falls through to terminal status:"failed" so FN-5704's
@@ -505,6 +514,13 @@ const WORKFLOW_RERUN_WATCHDOG_MS = 15_000;
 const LOOP_COMPACTION_TIMEOUT_MS = 60_000;
 
 const TASK_DONE_REFUSAL_SUFFIX = "Either finish the work and resubmit, or do not call fn_task_done — exit the session and the engine will requeue.";
+
+export function buildExecuteRequeueLoopSignature(live: TaskDetail): string {
+  return JSON.stringify({
+    currentStep: live.currentStep ?? null,
+    steps: live.steps?.map((step) => step.status) ?? [],
+  });
+}
 
 const TRANSIENT_WORKTREE_TASK_JSON_ENOENT_PATTERN = /ENOENT:\s+no such file or directory,\s+open\s+'([^']+\/\.fusion\/tasks\/([^/]+)\/task\.json)'/;
 
@@ -1707,6 +1723,10 @@ export class TaskExecutor {
   private executing = new Set<string>();
   /** Tasks currently being prepared for unpause resume, before execute() has registered them. */
   private resumingUnpaused = new Set<string>();
+  /** Tasks whose active session was intentionally suspended by an action gate. */
+  private approvalSuspended = new Set<string>();
+  /** Approval decisions received while the old execute() lifecycle is still unwinding. */
+  private approvalResumeAfterUnwind = new Set<string>();
   /** Completed orphan recovery tasks currently running during startup. */
   private recoveringCompleted = new Set<string>();
   /**
@@ -2320,8 +2340,20 @@ export class TaskExecutor {
           `paused: true` was set with no reason, which self-healing's
           autoReboundPausedScopeDecay could rebound before the operator ever
           decided.
+
+          FNXC:ApprovalResume 2026-07-12-17:02:
+          MAIN-008: record the approval-specific suspension before pauseTask emits its
+          task:updated event so every abort branch can preserve the in-progress row
+          for a deterministic fresh resume. Clear the mark if pauseTask fails so a
+          failed pause does not leave a sticky suspended marker.
           */
-          await this.store.pauseTask(taskId, true, this.getRunContextFor(taskId), { pausedByAgentId: actorId, pausedReason: AWAITING_APPROVAL_PAUSE_REASON });
+          this.approvalSuspended.add(taskId);
+          try {
+            await this.store.pauseTask(taskId, true, this.getRunContextFor(taskId), { pausedByAgentId: actorId, pausedReason: AWAITING_APPROVAL_PAUSE_REASON });
+          } catch (error) {
+            this.approvalSuspended.delete(taskId);
+            throw error;
+          }
           await this.store.logEntry(
             taskId,
             `Approval required for ${decision.toolName}. Request ${approvalRequestId} created; task and agent paused awaiting decision.`,
@@ -2466,6 +2498,8 @@ export class TaskExecutor {
     this.executing.delete(taskId);
     this.recoveringCompleted.delete(taskId);
     this.resumingUnpaused.delete(taskId);
+    this.approvalSuspended.delete(taskId);
+    this.approvalResumeAfterUnwind.delete(taskId);
     TaskExecutor.processWideGraphRouting.delete(taskId);
     executingTaskLock.release(taskId);
     this.effectiveColumnAgentByTask.delete(taskId);
@@ -2797,10 +2831,104 @@ export class TaskExecutor {
    * prevents new work dispatch — running sessions continue to completion.
    * Paused tasks are moved back to `todo` rather than marked as `failed`.
    */
+  private async parkApprovalSuspension(taskId: string, surface: string): Promise<boolean> {
+    if (!this.approvalSuspended.has(taskId)) return false;
+    this.clearPausedAborted(taskId);
+    await this.store.logEntry(
+      taskId,
+      `Execution suspended for approval — ${surface} disposed; task remains in progress for decision resume`,
+      undefined,
+      this.getRunContextFor(taskId),
+    );
+    executorLog.log(`${taskId}: approval suspension parked after ${surface} disposal`);
+    return true;
+  }
+
+  private async dispatchUnpauseResume(task: Task): Promise<boolean> {
+    if (
+      this.executing.has(task.id)
+      || this.resumingUnpaused.has(task.id)
+      || this.recoveringCompleted.has(task.id)
+      || this.activeSessions.has(task.id)
+      || this.activeStepExecutors.has(task.id)
+      || this.activeWorkflowStepSessions.has(task.id)
+    ) {
+      return false;
+    }
+
+    const pauseLabel = await this.getExecutionPauseLabel();
+    if (pauseLabel) {
+      executorLog.log(`Skipping unpause resume for ${task.id} — ${pauseLabel} active`);
+      return false;
+    }
+
+    this.approvalSuspended.delete(task.id);
+    if (this.isTaskWorkComplete(task) && !task.mergeDetails) {
+      this.recoveringCompleted.add(task.id);
+      executorLog.log(`${task.id} unpaused with completed work and no session — recovering directly to in-review`);
+      void this.recoverCompletedTask(task)
+        .catch((err) => executorLog.error(`Failed to recover completed unpaused task ${task.id}:`, err))
+        .finally(() => this.recoveringCompleted.delete(task.id));
+      return true;
+    }
+
+    this.resumingUnpaused.add(task.id);
+    executorLog.log(`Unpaused ${task.id} in-progress with no session — resuming execution`);
+    try {
+      await this.clearResumeFailureState(task);
+      await this.store.updateTask(task.id, {
+        resumeLimboCount: 0,
+        resumeLimboTipSha: null,
+        resumeLimboStepSignature: null,
+      });
+      await this.store.logEntry(task.id, "Resuming execution after unpause", undefined, this.getRunContextFor(task.id));
+      await this.recoverApprovedStepsOnResume(task.id);
+    } catch (clearErr) {
+      executorLog.warn(`${task.id} clearResumeFailureState failed during unpause: ${clearErr instanceof Error ? clearErr.message : String(clearErr)}`);
+    }
+    this.execute(task)
+      .catch((err) => executorLog.error(`Failed to resume unpaused ${task.id}:`, err))
+      .finally(() => this.resumingUnpaused.delete(task.id));
+    return true;
+  }
+
+  private async resumeApprovalAfterUnwindIfNeeded(taskId: string): Promise<boolean> {
+    /*
+    FNXC:ApprovalResume 2026-07-12-18:35:
+    MAIN-008 review: this runs from execute()'s outer finally. A getTask throw
+    (hard-deleted task between deferral and consume) must not escape finally and
+    mask the original execute outcome — treat unreadable tasks as no deferred resume.
+    */
+    if (!this.approvalResumeAfterUnwind.delete(taskId)) return false;
+    let latestTask;
+    try {
+      latestTask = await this.store.getTask(taskId);
+    } catch (error) {
+      executorLog.warn(`${taskId}: failed to read latest task state for deferred approval resume: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
+    if (latestTask.paused || latestTask.userPaused || latestTask.column !== "in-progress") return false;
+    return this.dispatchUnpauseResume(latestTask);
+  }
+
   private async resolveMcpServers(agentId?: string | null) {
-    // FNXC:McpConfig 2026-06-25-22:20:
-    // Executor-owned lanes (main execution, retry, workflow model nodes, self-fix, and spawned child sessions) resolve the same trusted MCP server set from the task store immediately before session creation so secret material is never persisted in task state.
-    return (await resolveMcpServersForStore(this.store, { agentId: agentId ?? undefined })).servers;
+    /*
+     * FNXC:McpConfig 2026-06-25-22:20:
+     * Executor-owned lanes (main execution, retry, workflow model nodes, self-fix, and spawned child sessions) resolve the same trusted MCP server set from the task store immediately before session creation so secret material is never persisted in task state.
+     *
+     * FNXC:McpConfig 2026-07-12-17:02:
+     * MAIN-008 forbids executor paths from silently consuming a partially
+     * materialized server set. Convert secret-resolution errors into a
+     * content-free bootstrap failure before any runtime can connect with
+     * missing credentials; only server names/counts and a coarse category may
+     * cross this seam.
+     */
+    const resolved = await resolveMcpServersForStore(this.store, { agentId: agentId ?? undefined });
+    if (resolved.errors.length > 0) {
+      const serverNames = [...new Set(resolved.errors.map((error) => error.serverName))].sort();
+      executorLog.warn(`MCP executor resolution failed: servers=${serverNames.join(",")} count=${serverNames.length} reason=secret-materialization`);
+    }
+    return assertMcpResolutionSucceeded(resolved);
   }
 
   constructor(
@@ -2882,6 +3010,8 @@ export class TaskExecutor {
     });
 
     store.on("task:deleted", (task) => {
+      this.approvalSuspended.delete(task.id);
+      this.approvalResumeAfterUnwind.delete(task.id);
       this.trackTaskDisposal(
         task.id,
         this.awaitAbortInFlightTaskWork(task.id, "task soft-deleted", { userCanceled: true }),
@@ -2918,9 +3048,23 @@ export class TaskExecutor {
         }
 
         // Handle unpause of an in-progress task with no active session.
-        // This covers orphaned states (e.g., engine restarted while task was
-        // paused in-progress) where the task needs to resume execution.
-        // The executing/resuming guards prevent duplicate runs.
+        // Approval can be decided while the old session is still unwinding;
+        // remember that edge instead of losing the only task:updated event.
+        if (!task.paused && task.column === "in-progress" && this.approvalSuspended.has(task.id)) {
+          if (
+            this.executing.has(task.id)
+            || this.activeSessions.has(task.id)
+            || this.activeStepExecutors.has(task.id)
+            || this.activeWorkflowStepSessions.has(task.id)
+          ) {
+            this.approvalResumeAfterUnwind.add(task.id);
+            executorLog.log(`${task.id}: approval decision received during session unwind — deferred one resume`);
+            return;
+          }
+        }
+
+        // This also covers orphaned states (for example, engine restart while
+        // paused in-progress). dispatchUnpauseResume owns all duplicate guards.
         if (
           !task.paused
           && task.column === "in-progress"
@@ -2928,52 +3072,7 @@ export class TaskExecutor {
           && !this.activeStepExecutors.has(task.id)
           && !this.activeWorkflowStepSessions.has(task.id)
         ) {
-          if (
-            !this.executing.has(task.id)
-            && !this.resumingUnpaused.has(task.id)
-            && !this.recoveringCompleted.has(task.id)
-          ) {
-            const pauseLabel = await this.getExecutionPauseLabel();
-            if (pauseLabel) {
-              executorLog.log(`Skipping unpause resume for ${task.id} — ${pauseLabel} active`);
-              return;
-            }
-
-            if (this.isTaskWorkComplete(task) && !task.mergeDetails) {
-              this.recoveringCompleted.add(task.id);
-              executorLog.log(`${task.id} unpaused with completed work and no session — recovering directly to in-review`);
-              void this.recoverCompletedTask(task)
-                .catch((err) =>
-                  executorLog.error(`Failed to recover completed unpaused task ${task.id}:`, err),
-                )
-                .finally(() => {
-                  this.recoveringCompleted.delete(task.id);
-                });
-              return;
-            }
-
-            this.resumingUnpaused.add(task.id);
-            executorLog.log(`Unpaused ${task.id} in-progress with no session — resuming execution`);
-            try {
-              await this.clearResumeFailureState(task);
-              await this.store.updateTask(task.id, {
-                resumeLimboCount: 0,
-                resumeLimboTipSha: null,
-                resumeLimboStepSignature: null,
-              });
-              await this.store.logEntry(task.id, "Resuming execution after unpause", undefined, this.getRunContextFor(task.id));
-              await this.recoverApprovedStepsOnResume(task.id);
-            } catch (clearErr) {
-              executorLog.warn(`${task.id} clearResumeFailureState failed during unpause: ${clearErr instanceof Error ? clearErr.message : String(clearErr)}`);
-            }
-            this.execute(task)
-              .catch((err) =>
-                executorLog.error(`Failed to resume unpaused ${task.id}:`, err),
-              )
-              .finally(() => {
-                this.resumingUnpaused.delete(task.id);
-              });
-          }
+          await this.dispatchUnpauseResume(task);
           return;
         }
 
@@ -8964,7 +9063,57 @@ export class TaskExecutor {
 
         FNXC:WorkflowLifecycle 2026-06-23-21:19:
         Also honor the in-process self-requeue marker. Upgrade/restart races and minimal stores can return a stale `in-progress` live row even after the inner executor already moved the task to `todo`; stale reads must not strand progressing tasks in review.
+
+        FNXC:WorkflowLifecycle 2026-07-12-00:00:
+        FN-7863: the scheduler's wall-clock dispatchStormCount guard only increments when re-dispatches happen inside its short window; slow execute→pause-abort→todo loops reset that counter every cycle. Count this funnel by execution-progress signature instead, warn early for board-visible monitoring, and terminalize only non-paused live tasks after the bounded no-progress cap while preserving worktree/branch/step progress.
         */
+        const signature = buildExecuteRequeueLoopSignature(live);
+        const nextCount = live.executeRequeueLoopSignature === signature
+          ? (live.executeRequeueLoopCount ?? 0) + 1
+          : 1;
+        if (live.executeRequeueLoopCount !== nextCount || live.executeRequeueLoopSignature !== signature) {
+          await this.store.updateTask(task.id, {
+            executeRequeueLoopCount: nextCount,
+            executeRequeueLoopSignature: signature,
+          }, this.getRunContextFor(task.id));
+        }
+        if (nextCount === EXECUTE_REQUEUE_LOOP_VISIBLE_THRESHOLD) {
+          const warningMessage = `Execution dispatch loop building: ${nextCount}/${MAX_EXECUTE_REQUEUE_LOOP_CYCLES} no-progress execute re-queues`;
+          executorLog.warn(`${task.id}: ${warningMessage}`);
+          await this.store.logEntry(task.id, warningMessage, undefined, this.getRunContextFor(task.id));
+        }
+        const canTerminalizeExecuteLoop = live.userPaused !== true
+          && live.paused !== true
+          && live.column !== "done"
+          && live.column !== "archived";
+        if (nextCount >= MAX_EXECUTE_REQUEUE_LOOP_CYCLES && canTerminalizeExecuteLoop) {
+          const terminalError = `EXECUTION_DISPATCH_LOOP_EXHAUSTED: execute node re-queued task to todo ${nextCount} times with no forward progress (last value=${failureValue ?? "no-value"}). No further automatic retries will run. Manually retry, decompose, or rescope the task.`;
+          await this.store.updateTask(task.id, {
+            status: "failed",
+            error: terminalError,
+            executeRequeueLoopCount: nextCount,
+            executeRequeueLoopSignature: signature,
+          }, this.getRunContextFor(task.id));
+          await this.store.recordRunAuditEvent?.({
+            taskId: task.id,
+            agentId: "executor",
+            runId: generateSyntheticRunId("execution-dispatch-loop", task.id),
+            domain: "database",
+            mutationType: "task:execution-dispatch-loop-terminalized",
+            target: task.id,
+            metadata: {
+              taskId: task.id,
+              cycleCount: nextCount,
+              maxCycles: MAX_EXECUTE_REQUEUE_LOOP_CYCLES,
+              progressSignature: signature,
+              failureValue: failureValue ?? null,
+            },
+          });
+          executorLog.warn(`${task.id}: ${terminalError}`);
+          await this.store.logEntry(task.id, terminalError, undefined, this.getRunContextFor(task.id));
+          await this.persistTokenUsage(task.id);
+          return;
+        }
         const benignMessage = `Workflow graph execute node ended after executor re-queued task to todo (${failureValue ?? "no-value"}) — executor recovery preserved`;
         executorLog.log(`${task.id}: ${benignMessage}`);
         await this.store.logEntry(task.id, benignMessage, undefined, this.getRunContextFor(task.id));
@@ -9985,8 +10134,9 @@ export class TaskExecutor {
           // FNXC:McpConfig 2026-06-25-23:03: Per-step workflow sessions are an executor lane, so they inherit the task's resolved MCP set from the effective step identity agent and never re-read or log plaintext secret values.
           mcpServers: await this.resolveMcpServers(stepIdentityAgent?.id),
           workflowStepThinkingLevel: this.graphSeamThinkingLevel.get(task.id),
-          // Pass skill selection context from the main executor session
+          // FNXC:PluginSkills 2026-07-12-00:00: Step sessions must forward plugin skill body dirs alongside requested names; otherwise plugin-provided SKILL.md bodies are invisible to the inner createFnAgent loader.
           skillSelection: skillContext.skillSelectionContext,
+          additionalSkillPaths: skillContext.additionalSkillPaths,
           // Pass agentStore and messageStore for delegation and messaging tools
           agentStore: this.options.agentStore,
           messageStore: this.options.messageStore,
@@ -10050,6 +10200,7 @@ export class TaskExecutor {
               await this.store.logEntry(task.id, "Execution canceled by user — leaving task in todo");
               return;
             }
+            if (await this.parkApprovalSuspension(task.id, "step sessions")) return;
             this.clearPausedAborted(task.id);
             await this.store.logEntry(task.id, "Execution paused — step sessions terminated, moved to todo", undefined, this.getRunContextFor(task.id));
             this.markGraphExecuteSelfRequeued(task.id);
@@ -10282,7 +10433,7 @@ export class TaskExecutor {
             }
 
             // Reset retry counters on success
-            await this.store.updateTask(task.id, { workflowStepRetries: undefined, taskDoneRetryCount: null });
+            await this.store.updateTask(task.id, { workflowStepRetries: undefined, taskDoneRetryCount: null, executeRequeueLoopCount: null, executeRequeueLoopSignature: null });
             if (await this.shouldDeferCompletionForGlobalPause(task.id, "before in-review transition after step-session completion")) {
               return;
             }
@@ -10333,6 +10484,7 @@ export class TaskExecutor {
               await this.store.logEntry(task.id, "Execution canceled by user — leaving task in todo");
               return;
             }
+            if (await this.parkApprovalSuspension(task.id, "step session")) return;
             this.clearPausedAborted(task.id);
             await this.store.logEntry(task.id, "Execution paused during step-session", undefined, this.getRunContextFor(task.id));
             this.markGraphExecuteSelfRequeued(task.id);
@@ -10804,8 +10956,9 @@ export class TaskExecutor {
             sessionManager,
             taskEnv,
             mcpServers: await this.resolveMcpServers(identityAgent?.id),
-            // Skill selection: use assigned agent skills if available, otherwise role fallback
+            // FNXC:PluginSkills 2026-07-12-00:00: Plugin skill session delivery requires forwarding both requested names and body directories so the pi loader can discover plugin-package SKILL.md files.
             ...(skillContext.skillSelectionContext ? { skillSelection: skillContext.skillSelectionContext } : {}),
+            ...(skillContext.additionalSkillPaths.length > 0 ? { additionalSkillPaths: skillContext.additionalSkillPaths } : {}),
             // Column-agent principal alignment (plan U5, R5): action gating is
             // computed for the agent ACTUALLY RUNNING. When the governing execute
             // seam's column binds an agent that supersedes the assigned agent,
@@ -11009,6 +11162,10 @@ export class TaskExecutor {
               await this.store.logEntry(task.id, "Execution canceled by user — leaving task in todo");
               return;
             }
+            if (await this.parkApprovalSuspension(task.id, "agent session")) {
+              wasPaused = true;
+              return;
+            }
             this.clearPausedAborted(task.id);
             wasPaused = true;
             if (await this.shouldFinalizeCompletedTask(task.id, taskDone)) {
@@ -11114,7 +11271,7 @@ export class TaskExecutor {
             }
 
             // Reset retry counters on success
-            await this.store.updateTask(task.id, { workflowStepRetries: undefined, taskDoneRetryCount: null });
+            await this.store.updateTask(task.id, { workflowStepRetries: undefined, taskDoneRetryCount: null, executeRequeueLoopCount: null, executeRequeueLoopSignature: null });
             if (await this.shouldDeferCompletionForGlobalPause(task.id, "before in-review transition after task completion (post-reset)")) {
               return;
             }
@@ -11232,8 +11389,9 @@ export class TaskExecutor {
                   sessionManager: SessionManager.create(worktreePath),
                   taskEnv,
                   mcpServers: await this.resolveMcpServers(identityAgent?.id),
-                  // Skill selection: use assigned agent skills if available, otherwise role fallback
+                  // FNXC:PluginSkills 2026-07-12-00:00: Retry executor sessions must keep the same plugin skill body discovery paths as the primary attempt so requested plugin skill names resolve to real bodies.
                   ...(skillContext.skillSelectionContext ? { skillSelection: skillContext.skillSelectionContext } : {}),
+                  ...(skillContext.additionalSkillPaths.length > 0 ? { additionalSkillPaths: skillContext.additionalSkillPaths } : {}),
                   // U5 (R5): retry session re-keys gating to the effective principal,
                   // mirroring the primary execute-seam session above.
                   actionGateContext: this.buildActionGateContext(task.id, identityAgent, settings.defaultAgentPermissionPolicy),
@@ -11398,7 +11556,7 @@ export class TaskExecutor {
                 await this.store.logEntry(task.id, "Fast mode — pre-merge workflow steps skipped", undefined, this.getRunContextFor(task.id));
               }
 
-              await this.store.updateTask(task.id, { workflowStepRetries: undefined, taskDoneRetryCount: null });
+              await this.store.updateTask(task.id, { workflowStepRetries: undefined, taskDoneRetryCount: null, executeRequeueLoopCount: null, executeRequeueLoopSignature: null });
               if (await this.shouldDeferCompletionForGlobalPause(task.id, "before in-review transition after task completion retry")) {
                 return;
               }
@@ -11546,6 +11704,7 @@ export class TaskExecutor {
           await this.store.logEntry(task.id, "Execution canceled by user — leaving task in todo");
           return;
         }
+        if (await this.parkApprovalSuspension(task.id, "executor session")) return;
         this.clearPausedAborted(task.id);
         const latestTask = await this.store.getTask(task.id);
         if (
@@ -12288,6 +12447,16 @@ export class TaskExecutor {
           }
         }
       }
+
+      /*
+       * FNXC:AgentGating 2026-07-12-17:12:
+       * MAIN-008 closes the approval-decision/unwind race. The dashboard can
+       * unpause while the original executor still owns its process-wide lock;
+       * consume that single deferred edge only after every old-session cleanup
+       * path above has run, then bootstrap one new executor session. A Set plus
+       * resumingUnpaused makes duplicate task updates idempotent.
+       */
+      await this.resumeApprovalAfterUnwindIfNeeded(task.id);
     }
   }
 
@@ -14192,7 +14361,9 @@ Do not refactor, rename broadly, or make opportunistic improvements.
         // #1675: propagate task id so verification-fix requests carry the same
         // X-Session-Id/X-Session-Affinity as the primary session.
         taskId: task.id,
+        // FNXC:PluginSkills 2026-07-12-00:00: Verification-fix sessions share task skill selection; include plugin skill body dirs so fixes can use plugin-authored guidance.
         ...(skillContext?.skillSelectionContext ? { skillSelection: skillContext.skillSelectionContext } : {}),
+        ...(skillContext && skillContext.additionalSkillPaths.length > 0 ? { additionalSkillPaths: skillContext.additionalSkillPaths } : {}),
       });
 
       await this.store.logEntry(
@@ -15209,7 +15380,7 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
           `[skill-load] Workflow step '${workflowStep.name}' requests skill '${workflowStep.skillName}' but FUSION_CE_SKILLS_DIR is unset — the skill cannot be discovered; the step runs with role-fallback skills only.`,
         );
       }
-      const additionalSkillPaths = ceSkillsDir ? [ceSkillsDir] : undefined;
+      const additionalSkillPaths = mergeAdditionalSkillPaths(skillContext.additionalSkillPaths, ceSkillsDir ? [ceSkillsDir] : undefined);
       const logBrowserVerificationActivity = async (message: string) => {
         await this.store.logEntry(task.id, message);
         await this.store.appendAgentLog(task.id, message, "text", undefined, "reviewer");
@@ -15296,8 +15467,8 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
         // #1675: propagate task id so workflow-step requests carry the same
         // X-Session-Id/X-Session-Affinity as the primary session.
         taskId: task.id,
-        // Skill selection: assigned-agent / role-fallback skills, plus the step's
-        // own named skill (U1) made discoverable via additionalSkillPaths.
+        // FNXC:PluginSkills 2026-07-12-00:00: Workflow-step sessions union plugin skill body dirs with CE's FUSION_CE_SKILLS_DIR so neither plugin-package nor compound-engineering skills are overwritten.
+        // Skill selection: assigned-agent / role-fallback skills, plus the step's own named skill (U1) made discoverable via additionalSkillPaths.
         ...(effectiveSkillSelection ? { skillSelection: effectiveSkillSelection } : {}),
         ...(additionalSkillPaths ? { additionalSkillPaths } : {}),
         ...(readonlyCustomTools.allowed.length > 0 ? { customTools: readonlyCustomTools.allowed } : {}),
@@ -18172,8 +18343,9 @@ Child agent: ${agent.id} (${name})`;
             // #1675: propagate task id so child-agent requests carry the same
             // X-Session-Id/X-Session-Affinity as the parent task session.
             taskId,
-            // Skill selection: use assigned agent skills if available, otherwise role fallback
+            // FNXC:PluginSkills 2026-07-12-00:00: Child-agent sessions inherit plugin skill body directories from the task skill context so delegated work can load plugin skill guidance.
             ...(skillContext.skillSelectionContext ? { skillSelection: skillContext.skillSelectionContext } : {}),
+            ...(skillContext.additionalSkillPaths.length > 0 ? { additionalSkillPaths: skillContext.additionalSkillPaths } : {}),
           });
 
           // Store tracking state

@@ -4020,6 +4020,38 @@ pgTest("fn pi extension (runnable structured-output regression slice)", () => {
       expect(result.details.agents.every((a: { state: string; id: string }) => a.id !== ephemeralId)).toBe(true);
     });
 
+    it("surfaces error and pause diagnostics only for error/paused agents", async () => {
+      const agentStore = new AgentStore({ rootDir: join(tmpDir, ".fusion") });
+      await agentStore.init();
+      const errorAgent = await agentStore.createAgent({ name: "error-agent", role: "executor", metadata: {} });
+      const pausedAgent = await agentStore.createAgent({ name: "paused-agent", role: "executor", metadata: {} });
+      const healthyAgent = await agentStore.createAgent({ name: "healthy-agent", role: "executor", metadata: {} });
+      await agentStore.updateAgentState(errorAgent.id, "error");
+      await agentStore.updateAgent(errorAgent.id, {
+        lastError: "Error: 401 Invalid authentication credentials with additional context that should be visible",
+        metadata: { heartbeatErrorRecovery: { consecutiveAttempts: 2, updatedAt: "2026-07-12T18:20:00.000Z" } },
+      });
+      await agentStore.updateAgentState(pausedAgent.id, "paused");
+      await agentStore.updateAgent(pausedAgent.id, {
+        pauseReason: "error-retry-exhausted",
+        metadata: { durableErrorRecovery: { attempts: 5, exhausted: true } },
+      });
+      await agentStore.updateAgentState(healthyAgent.id, "active");
+      await agentStore.updateAgent(healthyAgent.id, { lastError: "stale hidden error", pauseReason: "stale hidden pause" });
+
+      const tool = api.tools.get("fn_list_agents")!;
+      const result = await tool.execute("la-diagnostics", {}, undefined, undefined, makeCtx(tmpDir));
+
+      const text = result.content[0].text;
+      expect(text).toMatch(/Name: error-agent[\s\S]*Last Error: Error: 401 Invalid authentication credentials/);
+      expect(text).toMatch(/Name: error-agent[\s\S]*Error Recovery: attempts 2/);
+      expect(text).toMatch(/Name: paused-agent[\s\S]*Pause Reason: error-retry-exhausted/);
+      expect(text).toMatch(/Name: paused-agent[\s\S]*Error Recovery: attempts 5, exhausted/);
+      const healthyBlock = text.split("Name: healthy-agent")[1]?.split("\n\n")[0] ?? "";
+      expect(healthyBlock).not.toContain("Last Error:");
+      expect(healthyBlock).not.toContain("Pause Reason:");
+    });
+
     it("shows current task column context for parked, active, terminal, and missing links", async () => {
       const store = createStore();
       const triageTask = await store.createTask({ description: "Planning link", column: "triage" });
@@ -4354,6 +4386,42 @@ pgTest("fn pi extension (runnable structured-output regression slice)", () => {
 
       expect(result.content[0].text).toContain("resolve-by-name");
       expect(result.details.agent.name).toBe("resolve-by-name");
+    });
+
+    it("surfaces lastError, pauseReason, and recovery counters", async () => {
+      const agentStore = new AgentStore({ rootDir: join(tmpDir, ".fusion") });
+      await agentStore.init();
+      const agent = await agentStore.createAgent({
+        name: "diagnostic-agent",
+        role: "executor",
+        metadata: {
+          heartbeatErrorRecovery: { consecutiveAttempts: 1, updatedAt: "2026-07-12T18:20:00.000Z" },
+          durableErrorRecovery: { attempts: 3, nextRetryAt: "2026-07-12T18:30:00.000Z" },
+        },
+      });
+      await agentStore.updateAgentState(agent.id, "error");
+      await agentStore.updateAgent(agent.id, {
+        lastError: "Error: 401 Invalid authentication credentials",
+        pauseReason: "heartbeat-model-unavailable",
+      });
+
+      const tool = api.tools.get("fn_agent_show")!;
+      const result = await tool.execute("as-diagnostics", { id: agent.id }, undefined, undefined, makeCtx(tmpDir));
+
+      expect(result.content[0].text).toContain("Last Error: Error: 401 Invalid authentication credentials");
+      expect(result.content[0].text).toContain("Pause Reason: heartbeat-model-unavailable");
+      expect(result.content[0].text).toContain("Error Recovery: attempts 3, next 2026-07-12T18:30:00.000Z");
+    });
+
+    it("omits empty diagnostic fields for healthy agents", async () => {
+      const agentId = await seedAgent(tmpDir, { name: "healthy-show-agent" });
+
+      const tool = api.tools.get("fn_agent_show")!;
+      const result = await tool.execute("as-no-diagnostics", { id: agentId }, undefined, undefined, makeCtx(tmpDir));
+
+      expect(result.content[0].text).not.toContain("Last Error:");
+      expect(result.content[0].text).not.toContain("Pause Reason:");
+      expect(result.content[0].text).not.toContain("Error Recovery:");
     });
 
     it("shows current task column context for linked agents", async () => {

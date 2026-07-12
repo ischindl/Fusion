@@ -5,6 +5,7 @@ export const IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON = "in-review-stall-deadlock";
 export const MANUAL_RETRY_RESET_COUNTER_KEYS = [
   "stuckKillCount",
   "resumeLimboCount",
+  "executeRequeueLoopCount",
   "graphResumeRetryCount",
   "recoveryRetryCount",
   "taskDoneRetryCount",

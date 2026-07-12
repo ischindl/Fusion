@@ -1099,6 +1099,16 @@ Any state can transition to:
 | `stopped` | Plugin shut down gracefully |
 | `error` | Plugin failed during load or execution |
 
+### Updating path-registered plugins
+
+For plugins installed from a filesystem path, the normal update loop is now:
+
+1. Pull or edit the plugin source.
+2. Rebuild the plugin entrypoint if your plugin uses a build step.
+3. Restart Fusion, or disable and re-enable the plugin.
+
+On the next load/reload, Fusion re-imports the plugin module and refreshes the persisted manifest `version` and `settingsSchema` from the rebuilt manifest. Existing per-project enablement and saved setting values are preserved, so you do not need to unregister and re-register a path-based plugin just to expose a new version or settings field.
+
 ---
 
 ## 12. Testing Plugins
@@ -1486,16 +1496,19 @@ const skills: PluginSkillContribution[] = [
     skillId: "web-research",
     name: "Web Research",
     description: "Finds and summarizes web sources for a task",
-    skillFiles: ["skills/web-research/SKILL.md"],
+    skillFiles: ["skills/research/web-research/SKILL.md"],
     enabled: true,
     triggerPatterns: ["research", "search the web", "find sources"],
   },
 ];
 ```
 
-`skillFiles` are relative to the plugin root. `skillId` must be kebab-case.
+`skillFiles` are relative to the plugin root. The first entry, `skillFiles[0]`, is the authoritative body file that Fusion resolves for the skill, so plugins can organize skill bodies in category subdirectories such as `skills/research/web-research/SKILL.md` while keeping a short `skillId`. When `skillFiles` is omitted or empty, Fusion falls back to the compatibility path `skills/<name>/SKILL.md`. `skillId` must be kebab-case.
 
 Plugin skills are discovered per requesting project: the Skills view and workflow editor surface `plugin:<id>` skills only when that plugin is enabled for that project's plugin state, even if the daemon was started from a different directory.
+
+<!-- FNXC:PluginSkills 2026-07-12-00:00: GitHub #2017 requires plugin skill bodies to be available anywhere native skills are available. The engine threads enabled plugin skill body discovery paths into agent sessions, and the dashboard reads the resolved plugin-package SKILL.md/reference files instead of showing a runtime placeholder. -->
+Enabled plugin skills are delivered to agent sessions from their plugin-package `SKILL.md` files. Fusion resolves the first `skillFiles` entry (or the compatibility fallback) through the plugin root, adds the skill body directory to the session's skill discovery paths, and keeps the requested skill name in the same selection filter used for native and installed skills. The Skills view also reads the resolved `SKILL.md` plus sibling reference files from disk, so users can inspect the exact guidance agents receive.
 
 ## 16. Registering Workflow Steps
 

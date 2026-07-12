@@ -1310,6 +1310,100 @@ The shortcut bar (modifier keys + arrow keys) must sit on ONE line, not stack in
   justify-self: start;
 }
 
+.terminal-shortcut-btn--custom {
+  border-color: var(--accent);
+  background: var(--surface-elevated);
+}
+
+.terminal-custom-shortcuts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  grid-column: 1 / -1;
+  padding: var(--space-sm);
+  border: var(--btn-border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--card);
+}
+
+.terminal-custom-shortcuts__header,
+.terminal-custom-shortcuts__row,
+.terminal-custom-shortcuts__form,
+.terminal-custom-shortcuts__form-actions,
+.terminal-custom-shortcuts__actions {
+  display: flex;
+  gap: var(--space-sm);
+}
+
+.terminal-custom-shortcuts__header {
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.terminal-custom-shortcuts__header h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.95rem;
+}
+
+.terminal-custom-shortcuts__count,
+.terminal-custom-shortcuts__empty {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.terminal-custom-shortcuts__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.terminal-custom-shortcuts__row {
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-xs);
+  border: var(--btn-border-width) solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.terminal-custom-shortcuts__summary {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+.terminal-custom-shortcuts__summary code {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-custom-shortcuts__actions,
+.terminal-custom-shortcuts__form-actions {
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.terminal-custom-shortcuts__form {
+  align-items: flex-end;
+}
+
+.terminal-custom-shortcuts__form .terminal-preference-field {
+  flex: 1 1 0;
+}
+
+.terminal-custom-shortcuts__submit {
+  white-space: nowrap;
+}
+
 .terminal-connection-status {
   font-weight: 500;
   white-space: nowrap;
@@ -1726,6 +1820,18 @@ The Android keyboard-open recurrence can start with a touch-primary visualViewpo
   .terminal-preference-field--checkbox,
   .terminal-preferences-reset {
     align-self: stretch;
+  }
+
+  .terminal-custom-shortcuts__header,
+  .terminal-custom-shortcuts__row,
+  .terminal-custom-shortcuts__form,
+  .terminal-custom-shortcuts__form-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .terminal-custom-shortcuts__actions {
+    flex-wrap: wrap;
   }
 
   .terminal-font-size-btn {

@@ -51,6 +51,35 @@ vi.mock("../../hooks/useToast", () => ({
 }));
 
 const noop = () => {};
+const resolvedChipHeightPattern = /^(var\(--card-chip-height\)|22px)$/;
+const centeredIdNudgePattern = /^translateY\(calc\(var\(--space-xs\) \/ 4\)\)$/;
+
+function expectSharedHeaderBaseline(container: HTMLElement) {
+  const header = container.querySelector(".card-header") as HTMLElement;
+  const cardId = container.querySelector(".card-id") as HTMLElement;
+  const actions = container.querySelector(".card-header-actions") as HTMLElement;
+
+  expect(header).toBeTruthy();
+  expect(cardId).toBeTruthy();
+  expect(actions).toBeTruthy();
+
+  const headerStyles = getComputedStyle(header);
+  const idStyles = getComputedStyle(cardId);
+  const actionsStyles = getComputedStyle(actions);
+
+  expect(headerStyles.alignItems).toBe("flex-start");
+  expect(headerStyles.flexWrap).toBe("nowrap");
+  expect(idStyles.display).toBe("inline-flex");
+  expect(idStyles.alignItems).toBe("center");
+  expect(idStyles.lineHeight).toBe("1");
+  expect(idStyles.minHeight).toMatch(resolvedChipHeightPattern);
+  expect(idStyles.transform).toMatch(centeredIdNudgePattern);
+  expect(actionsStyles.display).toBe("flex");
+  expect(actionsStyles.alignItems).toBe("center");
+  expect(actionsStyles.minHeight).toMatch(resolvedChipHeightPattern);
+  expect(actionsStyles.marginLeft).toBe("auto");
+  expect(actionsStyles.flex).toBe("0 0 auto");
+}
 
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -68,10 +97,12 @@ function makeTask(overrides: Partial<Task> = {}): Task {
 describe("TaskCard badge wrapping (FN-5162)", () => {
   let cleanupCss: (() => void) | undefined;
   let container: HTMLElement;
+  let loadedCss = "";
 
   beforeEach(async () => {
     const style = document.createElement("style");
-    style.textContent = await Promise.resolve(loadAllAppCss());
+    loadedCss = await Promise.resolve(loadAllAppCss());
+    style.textContent = loadedCss;
     document.head.appendChild(style);
     cleanupCss = () => style.remove();
 
@@ -172,6 +203,80 @@ describe("TaskCard badge wrapping (FN-5162)", () => {
     expect(actionsStyles.marginLeft).toBe("auto");
     expect(actionsStyles.flexShrink).toBe("0");
     expect(actionsStyles.alignSelf).toBe("flex-start");
+    expectSharedHeaderBaseline(sizedContainer);
+  });
+
+  it("aligns an in-progress card id with Send back and size actions while badges are present", () => {
+    const { container: alignedContainer } = render(
+      <TaskCard
+        task={makeTask({
+          id: "FN-7862",
+          column: "in-progress",
+          status: "planning" as Task["status"],
+          size: "M",
+          priority: "urgent" as Task["priority"],
+          executionMode: "fast",
+          plannerOverseerState: { state: "monitoring" },
+        })}
+        onOpenDetail={noop}
+        addToast={noop}
+        onMoveTask={async () => makeTask()}
+      />,
+    );
+
+    const headerBadges = alignedContainer.querySelector(".card-header-badges") as HTMLElement;
+    const actions = alignedContainer.querySelector(".card-header-actions") as HTMLElement;
+    const sizeBadge = alignedContainer.querySelector(".card-size-badge") as HTMLElement;
+    const sendBack = alignedContainer.querySelector(".card-send-back") as HTMLElement;
+
+    expect(headerBadges).toBeTruthy();
+    expect(getComputedStyle(headerBadges).alignItems).toBe("center");
+    expect(getComputedStyle(headerBadges).minHeight).toMatch(resolvedChipHeightPattern);
+    expect(sendBack).toBeTruthy();
+    expect(actions.contains(sendBack)).toBe(true);
+    expect(actions.contains(sizeBadge)).toBe(true);
+    expect(sizeBadge.closest(".card-header-badges")).toBeNull();
+    expectSharedHeaderBaseline(alignedContainer);
+  });
+
+  it("aligns a no-badges triage card id with edit/delete actions without shifting the id", () => {
+    const { container: triageContainer } = render(
+      <TaskCard
+        task={makeTask({
+          id: "FN-7862-NO-BADGES",
+          column: "triage",
+          status: undefined,
+          size: "M",
+          priority: "normal" as Task["priority"],
+          executionMode: "standard",
+          plannerOversightLevel: "off",
+        })}
+        onOpenDetail={noop}
+        addToast={noop}
+        onUpdateTask={async () => makeTask()}
+        onDeleteTask={async () => makeTask()}
+      />,
+    );
+
+    const actions = triageContainer.querySelector(".card-header-actions") as HTMLElement;
+    const sizeBadge = triageContainer.querySelector(".card-size-badge") as HTMLElement;
+
+    expect(triageContainer.querySelector(".card-header-badges")).toBeNull();
+    expect(actions.querySelector(".card-edit-btn")).toBeTruthy();
+    expect(actions.querySelector(".card-delete-btn")).toBeTruthy();
+    expect(actions.contains(sizeBadge)).toBe(true);
+    expect(sizeBadge.closest(".card-header-badges")).toBeNull();
+    expectSharedHeaderBaseline(triageContainer);
+  });
+
+  it("keeps the centered-id nudge and mobile header rhythm tokenized with the badge-wrap contract", () => {
+    const cardIdRule = loadedCss.match(/\.card-id\s*\{(?<body>[^}]*)\}/)?.groups?.body ?? "";
+    expect(cardIdRule).toContain("min-height: var(--card-chip-height);");
+    expect(cardIdRule).toContain("line-height: 1;");
+    expect(cardIdRule).toContain("transform: translateY(calc(var(--space-xs) / 4));");
+    expect(cardIdRule).not.toMatch(/translateY\(\d/);
+    expect(loadedCss).toContain(".card-id,\n  .card-header-badges,\n  .card-header-actions");
+    expect(loadedCss).toContain("min-height: var(--card-chip-height-mobile);");
   });
 
   it.each([

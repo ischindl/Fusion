@@ -16,7 +16,11 @@ import {
 } from "./gating-classifications.js";
 import { runtimeLog } from "./logger.js";
 
-export type AgentActionGateResourceType = "file" | "git" | "task" | "agent" | "research" | "command" | "other";
+/*
+FNXC:AgentGating 2026-07-12-18:35:
+MAIN-008 review: project MCP tools must not share the "research" resource type used by built-in network research tools. Operators and approval-dedupe keys need a distinct label for external MCP side effects; "mcp" is that resource type.
+*/
+export type AgentActionGateResourceType = "file" | "git" | "task" | "agent" | "research" | "command" | "mcp" | "other";
 
 export interface AgentActionGateDecision {
   disposition: "allow" | "block" | "require-approval";
@@ -179,10 +183,22 @@ export function evaluateAgentActionGate(params: {
     category = "command_execution";
     operation = params.toolName;
     resourceType = "command";
-  } else if (NETWORK_API_TOOLS.has(params.toolName)) {
+  } else if (NETWORK_API_TOOLS.has(params.toolName) || params.toolName.startsWith("mcp__")) {
+    /*
+    FNXC:AgentGating 2026-07-12-17:18:
+    MAIN-008 requires every namespaced project MCP operation to remain inside
+    the external-action approval boundary. MCP tools are dynamically named and
+    therefore cannot live in the static tool registry; classify the namespace
+    as network_api instead of falling through to the exempt default.
+
+    FNXC:AgentGating 2026-07-12-18:35:
+    Built-in research tools keep resourceType "research". Namespaced mcp__*
+    tools use "mcp" so approval UI/audit metadata and dedupe keys describe an
+    external MCP action rather than a research read.
+    */
     category = "network_api";
     operation = params.toolName;
-    resourceType = "research";
+    resourceType = params.toolName.startsWith("mcp__") ? "mcp" : "research";
   }
 
   /*

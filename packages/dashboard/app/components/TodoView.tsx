@@ -14,6 +14,8 @@ import {
   Bot,
   PlusCircle,
   Lightbulb,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import { getErrorMessage, type Task, type TaskCreateInput, type TodoItem, type TodoList } from "@fusion/core";
 import { createTask, fetchAgents } from "../api";
@@ -21,6 +23,7 @@ import type { Agent } from "../api";
 import { useTodoLists } from "../hooks/useTodoLists";
 import { useConfirm } from "../hooks/useConfirm";
 import { LoadingSpinner } from "./LoadingSpinner";
+import { getScopedItem, setScopedItem } from "../utils/projectStorage";
 import "./TodoView.css";
 
 interface TodoViewProps {
@@ -32,6 +35,19 @@ interface TodoViewProps {
 
 function sortItems(items: TodoItem[]): TodoItem[] {
   return [...items].sort((a, b) => a.sortOrder - b.sortOrder);
+}
+
+function readHideDoneTodos(projectId?: string): boolean {
+  try {
+    const saved = getScopedItem("kb-dashboard-todo-hide-done", projectId);
+    if (saved !== null) {
+      return saved === "true";
+    }
+  } catch {
+    // Invalid localStorage data - fall through to default
+  }
+
+  return false;
 }
 
 export function TodoView({
@@ -78,6 +94,7 @@ export function TodoView({
   const [agentsLoading, setAgentsLoading] = useState(false);
   const [showAgentPicker, setShowAgentPicker] = useState(false);
   const [activeItemForAgent, setActiveItemForAgent] = useState<string | null>(null);
+  const [hideDone, setHideDone] = useState<boolean>(() => readHideDoneTodos(projectId));
   const agentPickerRef = useRef<HTMLDivElement>(null);
   const { confirm } = useConfirm();
 
@@ -94,6 +111,14 @@ export function TodoView({
   const sortedItems = useMemo(
     () => sortItems(items.filter((item) => item.listId === selectedListId)),
     [items, selectedListId],
+  );
+  /*
+  FNXC:Todos 2026-07-12-00:00:
+  Operators need a per-project Hide done toggle for TodoView so long lists can focus on outstanding work. The rendered list filters completed items only when enabled, but progress counts intentionally continue to reflect every item in the selected list so completion status remains truthful while completed rows are hidden.
+  */
+  const visibleItems = useMemo(
+    () => hideDone ? sortedItems.filter((item) => !item.completed) : sortedItems,
+    [hideDone, sortedItems],
   );
   const listItemStats = useMemo(() => {
     const stats = new Map<string, { total: number; completed: number }>();
@@ -164,6 +189,12 @@ export function TodoView({
     setShowAgentPicker(false);
     setActiveItemForAgent(null);
   }, [selectedListId]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      setScopedItem("kb-dashboard-todo-hide-done", hideDone.toString(), projectId);
+    }
+  }, [hideDone, projectId]);
 
   useEffect(() => {
     if (!showAgentPicker) {
@@ -282,14 +313,21 @@ export function TodoView({
   }
 
   async function handleMoveItem(itemId: string, direction: "up" | "down"): Promise<void> {
-    const ids = sortedItems.map((item) => item.id);
-    const index = ids.findIndex((id) => id === itemId);
-    if (index < 0) {
+    const visibleIds = visibleItems.map((item) => item.id);
+    const visibleIndex = visibleIds.findIndex((id) => id === itemId);
+    if (visibleIndex < 0) {
       return;
     }
 
-    const targetIndex = direction === "up" ? index - 1 : index + 1;
-    if (targetIndex < 0 || targetIndex >= ids.length) {
+    const targetVisibleIndex = direction === "up" ? visibleIndex - 1 : visibleIndex + 1;
+    if (targetVisibleIndex < 0 || targetVisibleIndex >= visibleIds.length) {
+      return;
+    }
+
+    const ids = sortedItems.map((item) => item.id);
+    const index = ids.findIndex((id) => id === itemId);
+    const targetIndex = ids.findIndex((id) => id === visibleIds[targetVisibleIndex]);
+    if (index < 0 || targetIndex < 0) {
       return;
     }
 
@@ -569,6 +607,16 @@ export function TodoView({
                     </span>
                   )}
                 </div>
+                <button
+                  type="button"
+                  className="btn btn-sm todo-hide-done-toggle"
+                  aria-pressed={hideDone}
+                  onClick={() => setHideDone((current) => !current)}
+                  data-testid="todo-hide-done-toggle"
+                >
+                  {hideDone ? <Eye aria-hidden="true" /> : <EyeOff aria-hidden="true" />}
+                  {hideDone ? t("todo.showDone", "Show done") : t("todo.hideDone", "Hide done")}
+                </button>
               </div>
 
               <div className="todo-add-item-row">
@@ -603,9 +651,13 @@ export function TodoView({
                 <div className="todo-empty-state">
                   <p>{t("todo.noItemsEmpty", "No items in this list. Add one above.")}</p>
                 </div>
+              ) : visibleItems.length === 0 ? (
+                <div className="todo-empty-state" data-testid="todo-all-done-hidden-empty">
+                  <p>{t("todo.allDoneHidden", "All items are complete. Choose Show done to view them.")}</p>
+                </div>
               ) : (
                 <div className="todo-items-list">
-                  {sortedItems.map((item, index) => {
+                  {visibleItems.map((item, index) => {
                     const isEditing = item.id === editingItemId;
 
                     return (
@@ -692,7 +744,7 @@ export function TodoView({
                                   onClick={() => {
                                     void handleMoveItem(item.id, "down");
                                   }}
-                                  disabled={index === sortedItems.length - 1}
+                                  disabled={index === visibleItems.length - 1}
                                   aria-label={t("todo.moveItemDown", "Move {{text}} down", { text: item.text })}
                                   data-testid={`move-down-${item.id}`}
                                 >

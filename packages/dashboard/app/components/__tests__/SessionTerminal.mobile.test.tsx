@@ -125,6 +125,15 @@ function expectMeasurementSafeFontStack(stack: string): void {
   expect(families).not.toContain(TERMINAL_SYMBOLS_FONT_FAMILY);
 }
 
+function seedCustomShortcuts(
+  customShortcuts: Array<{ id: string; label: string; value: string }>,
+): void {
+  window.localStorage.setItem(
+    TERMINAL_PREFERENCES_KEY,
+    JSON.stringify({ ...DEFAULT_TERMINAL_PREFERENCES, customShortcuts }),
+  );
+}
+
 /** Pull the parsed input frames a WS has sent. */
 function inputFrames(ws: FakeWS): string[] {
   return ws.sent
@@ -371,6 +380,91 @@ describe("SessionTerminal (mobile)", () => {
     const pdEvent = new Event("pointerdown", { bubbles: true, cancelable: true });
     send.dispatchEvent(pdEvent);
     expect(pdEvent.defaultPrevented).toBe(true);
+  });
+
+  describe("custom shortcuts", () => {
+    it("renders seeded shortcut buttons and injects decoded values", async () => {
+      seedCustomShortcuts([
+        {
+          id: "decode-all",
+          label: "Decode",
+          value: "git status\\nnext\\targ\\e\\x1b\\rslash\\\\unknown\\q",
+        },
+      ]);
+
+      const { ws } = await renderMobile();
+      const button = screen.getByTestId("cli-terminal-custom-shortcut-decode-all");
+
+      expect(button.textContent).toBe("Decode");
+      fireEvent.click(button);
+      expect(inputFrames(ws)).toEqual([
+        "git status\nnext\targ\x1b\x1b\rslash\\unknown\\q",
+      ]);
+    });
+
+    it("prevents pointerdown blur like built-in bar keys", async () => {
+      seedCustomShortcuts([{ id: "focus", label: "Focus", value: "echo focus" }]);
+      await renderMobile();
+
+      const button = screen.getByTestId("cli-terminal-custom-shortcut-focus");
+      const pdEvent = new Event("pointerdown", { bubbles: true, cancelable: true });
+      button.dispatchEvent(pdEvent);
+      expect(pdEvent.defaultPrevented).toBe(true);
+    });
+
+    it("clears sticky Ctrl and injects the literal decoded shortcut value", async () => {
+      seedCustomShortcuts([{ id: "literal", label: "Literal", value: "c\\n" }]);
+      const { ws } = await renderMobile();
+      const ctrl = screen.getByTestId("cli-key-ctrl");
+
+      fireEvent.click(ctrl);
+      expect(ctrl.getAttribute("aria-pressed")).toBe("true");
+      fireEvent.click(screen.getByTestId("cli-terminal-custom-shortcut-literal"));
+
+      expect(ctrl.getAttribute("aria-pressed")).toBe("false");
+      expect(inputFrames(ws)).toEqual(["c\n"]);
+    });
+
+    it.each([
+      ["read-only prop", { readOnly: true }, true],
+      ["idle mode", { mode: "idle" as const }, false],
+      ["ended mode", { mode: "ended" as const }, false],
+      ["read-only attach ticket", {}, true],
+    ])("suppresses custom shortcut buttons and input in %s", async (_label, props, ticketReadOnly) => {
+      seedCustomShortcuts([{ id: "blocked", label: "Blocked", value: "echo blocked\\n" }]);
+      if (ticketReadOnly) {
+        apiMock.mockResolvedValue({ ticket: "tkt-ro", expiresAt: "", readOnly: true });
+      }
+
+      const { ws } = await renderMobile(props);
+
+      expect(screen.queryByTestId("cli-terminal-mobile-bar")).toBeNull();
+      expect(screen.queryByTestId("cli-terminal-custom-shortcut-blocked")).toBeNull();
+      expect(inputFrames(ws)).toEqual([]);
+    });
+
+    it("renders no custom shortcut shell for an empty list", async () => {
+      seedCustomShortcuts([]);
+      await renderMobile();
+
+      const keyBar = screen.getByTestId("cli-terminal-key-bar");
+      expect(screen.getByTestId("cli-key-esc")).toBeTruthy();
+      expect(keyBar.querySelector('[data-testid^="cli-terminal-custom-shortcut-"]')).toBeNull();
+    });
+
+    it("updates custom shortcut buttons from the shared storage event", async () => {
+      await renderMobile();
+      expect(screen.queryByTestId("cli-terminal-custom-shortcut-live")).toBeNull();
+
+      seedCustomShortcuts([{ id: "live", label: "Live", value: "echo live\\n" }]);
+      act(() => {
+        window.dispatchEvent(new StorageEvent("storage", { key: TERMINAL_PREFERENCES_KEY }));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId("cli-terminal-custom-shortcut-live").textContent).toBe("Live");
+      });
+    });
   });
 
   // ── AE6 mobile leg: same live bytes reach term.write ──────────────────────

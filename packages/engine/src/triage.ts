@@ -1170,8 +1170,9 @@ export class TriageProcessor {
           settings,
           // FNXC:McpConfig 2026-06-25-23:17: Primary triage planning is an AI lane, so it receives the store-resolved MCP set while the pi runtime-support guard decides whether to forward it without logging secret material.
           mcpServers: (await resolveMcpServersForStore(this.store)).servers,
-          // Skill selection: use assigned agent skills if available, otherwise role fallback
+          // FNXC:PluginSkills 2026-07-12-00:00: Triage sessions forward plugin skill body dirs with requested names so plugin-authored planning guidance is discoverable by the pi loader.
           ...(skillContext.skillSelectionContext ? { skillSelection: skillContext.skillSelectionContext } : {}),
+          ...(skillContext.additionalSkillPaths.length > 0 ? { additionalSkillPaths: skillContext.additionalSkillPaths } : {}),
           taskId: task.id,
           taskTitle: task.title,
           onFallbackModelUsed: createFallbackModelObserver({

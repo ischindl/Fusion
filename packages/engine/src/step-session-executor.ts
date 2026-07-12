@@ -125,6 +125,8 @@ export interface StepSessionExecutorOptions {
   onStepComplete?: (stepIndex: number, result: StepResult) => void;
   /** Optional skill selection context for session creation. */
   skillSelection?: SkillSelectionContext;
+  /** Optional extra skill body directories for session resource discovery. */
+  additionalSkillPaths?: string[];
   /** Optional agent store for delegation tools. */
   agentStore?: AgentStore;
   /** Optional message store for messaging tools. */
@@ -1399,8 +1401,9 @@ Follow instructions precisely and avoid unrelated changes.`,
                 telemetry.agentLogger.onToolEnd(name, isError, result);
                 stuckTaskDetector?.recordActivity(telemetry.trackingKey);
               },
-              // Skill selection from step-session executor options
+              // FNXC:PluginSkills 2026-07-12-00:00: Step-session createFnAgent must receive plugin skill body dirs from TaskExecutor; names alone do not make plugin-package SKILL.md files discoverable.
               ...(this.options.skillSelection ? { skillSelection: this.options.skillSelection } : {}),
+              ...(this.options.additionalSkillPaths && this.options.additionalSkillPaths.length > 0 ? { additionalSkillPaths: this.options.additionalSkillPaths } : {}),
               actionGateContext: this.options.actionGateContext,
               permanentAgentGating: this.options.permanentAgentGating,
               taskId: taskDetail.id,

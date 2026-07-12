@@ -164,6 +164,9 @@ export const EXPECTED_PROJECT_COLUMNS: ReadonlyArray<{ schema?: string; table: s
   // the baseline's CREATE TABLE IF NOT EXISTS never upgrades an existing
   // table, and every scoped task read/claim now folds project_id into WHERE.
   { table: "tasks", column: "project_id", type: "text" },
+  // FNXC:WorkflowLifecycle 2026-07-12: FN-7863 execute self-requeue streak (merge port).
+  { table: "tasks", column: "execute_requeue_loop_count", type: "integer" },
+  { table: "tasks", column: "execute_requeue_loop_signature", type: "text" },
   // distributed_task_id_state
   { table: "distributed_task_id_state", column: "prefix", type: "text" },
   { table: "distributed_task_id_state", column: "next_sequence", type: "integer" },

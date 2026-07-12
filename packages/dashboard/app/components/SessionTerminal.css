@@ -265,6 +265,11 @@ Recurrence #5 requires the attach terminal to mirror TerminalModal: xterm receiv
   border-color: var(--color-warning);
 }
 
+.cli-terminal-key--custom {
+  color: var(--accent-text);
+  border-color: var(--accent);
+}
+
 .cli-session-terminal__input-row {
   display: flex;
   gap: var(--space-xs);

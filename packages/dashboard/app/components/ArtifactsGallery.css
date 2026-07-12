@@ -532,7 +532,33 @@ Viewers live inside the shared FloatingWindow (draggable by the viewer header, r
     width: 100%;
   }
 
-  /* FloatingWindow clamps viewer geometry to the viewport, so mobile only tightens the inner padding. */
+  /*
+  FNXC:ArtifactsGallery 2026-07-12-12:02:
+  On mobile the artifact viewer popup must match chat and task-detail FloatingWindow sheets instead of remaining a small draggable desktop window that is hard to move on touch. Scope the geometry override to the artifact window so desktop keeps header drag and edge/corner resize behavior.
+  */
+  .artifacts-gallery-window {
+    inset: 0 !important;
+    width: 100vw !important;
+    height: 100dvh !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    max-width: 100vw !important;
+    max-height: 100dvh !important;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .artifacts-gallery-window .floating-window__resize-handle {
+    display: none;
+  }
+
+  .artifacts-gallery-window .artifacts-gallery-viewer-header,
+  .artifacts-gallery-window .artifacts-gallery-viewer-header:active {
+    cursor: default;
+    touch-action: auto;
+  }
+
   .artifacts-gallery-viewer {
     padding: var(--space-sm);
   }

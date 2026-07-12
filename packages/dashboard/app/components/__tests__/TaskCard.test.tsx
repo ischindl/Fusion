@@ -21,7 +21,7 @@ import { NavigationHistoryProvider, useNavigationHistory } from "../../hooks/use
 import { useOverlayDismiss } from "../../hooks/useOverlayDismiss";
 import type { ConfirmOptions } from "../../hooks/useConfirm";
 import { TASK_PRIORITIES, type Task, type TaskPriority } from "@fusion/core";
-import { getPriorityColorVar } from "../../utils/priorityIndicator";
+import { getPriorityColorVar, getPriorityLabel } from "../../utils/priorityIndicator";
 
 // Mock lucide-react to avoid SVG rendering issues in test env
 vi.mock("lucide-react", () => ({
@@ -42,10 +42,10 @@ vi.mock("lucide-react", () => ({
   RotateCw: () => null,
   Zap: () => <svg data-testid="icon-zap" />,
   AlertTriangle: () => null,
-  ArrowDown: ({ style }: { style?: React.CSSProperties }) => <svg data-testid="priority-icon-low" className="lucide-arrow-down" style={style} />,
-  Flag: ({ style }: { style?: React.CSSProperties }) => <svg data-testid="priority-icon-normal" className="lucide-flag" style={style} />,
-  ArrowUp: ({ style }: { style?: React.CSSProperties }) => <svg data-testid="priority-icon-high" className="lucide-arrow-up" style={style} />,
-  TriangleAlert: ({ style }: { style?: React.CSSProperties }) => <svg data-testid="priority-icon-urgent" className="lucide-triangle-alert" style={style} />,
+  ArrowDown: ({ style, ...props }: React.SVGProps<SVGSVGElement>) => <svg data-testid="priority-icon-low" className="lucide-arrow-down" style={style} {...props} />,
+  Flag: ({ style, ...props }: React.SVGProps<SVGSVGElement>) => <svg data-testid="priority-icon-normal" className="lucide-flag" style={style} {...props} />,
+  ArrowUp: ({ style, ...props }: React.SVGProps<SVGSVGElement>) => <svg data-testid="priority-icon-high" className="lucide-arrow-up" style={style} {...props} />,
+  TriangleAlert: ({ style, ...props }: React.SVGProps<SVGSVGElement>) => <svg data-testid="priority-icon-urgent" className="lucide-triangle-alert" style={style} {...props} />,
   ArrowUpRight: () => null,
   // FN-7592: the overseer badge now renders an icon child instead of a text label,
   // so tests must see a real SVG (like Zap) rather than a no-op render.
@@ -2790,7 +2790,7 @@ describe("TaskCard", () => {
     ]);
   });
 
-  it("renders shared urgency-colored glyphs for visible priority badges while normal stays hidden", () => {
+  it("renders icon-only urgency-colored priority badges with accessible labels while normal stays hidden", () => {
     for (const priority of TASK_PRIORITIES) {
       const { container, unmount } = render(
         <TaskCard
@@ -2807,13 +2807,29 @@ describe("TaskCard", () => {
         continue;
       }
 
+      const label = getPriorityLabel(priority);
       expect(badge).not.toBeNull();
-      expect(badge).toHaveTextContent(priority);
+      expect(badge).toHaveAttribute("aria-label", label);
+      expect(badge).toHaveAttribute("title", label);
+      expect(Array.from(badge?.childNodes ?? []).filter((node) => node.nodeType === Node.TEXT_NODE && node.textContent?.trim())).toEqual([]);
+      const visibleLabelSpans = Array.from(badge?.querySelectorAll("span") ?? []).filter((span) => !span.classList.contains("visually-hidden"));
+      expect(visibleLabelSpans).toEqual([]);
+      expect(badge?.querySelector(".visually-hidden")).toHaveTextContent(label);
       const icon = badge?.querySelector("svg");
       expect(icon).not.toBeNull();
+      expect(icon).toHaveAttribute("aria-hidden", "true");
       expect(icon?.getAttribute("style")).toContain(`color: ${getPriorityColorVar(priority)}`);
       unmount();
     }
+
+    const { container } = render(
+      <TaskCard
+        task={makeTask({ priority: undefined })}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
+    expect(container.querySelector(".card-priority-badge")).toBeNull();
   });
 
   it("renders partial card meta groups without empty wrappers when time is absent", () => {

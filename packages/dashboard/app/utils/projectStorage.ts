@@ -12,6 +12,7 @@ export const PROJECT_STORAGE_KEYS: string[] = [
   "kb-dashboard-task-view",
   "kb-dashboard-list-columns",
   "kb-dashboard-hide-done",
+  "kb-dashboard-todo-hide-done",
   "kb-dashboard-list-collapsed",
   "kb-dashboard-selected-tasks",
   "kb-dashboard-list-selected-task",

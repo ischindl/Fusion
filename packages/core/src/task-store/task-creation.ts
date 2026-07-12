@@ -8,7 +8,7 @@
  */
 import {TaskStore, storeLog} from "../store.js";
 import {InvalidFileScopeError, SelfDefeatingDependencyError, detectSelfDefeatingDependency, TombstonedTaskResurrectionError} from "./errors.js";
-import {mkdir, writeFile} from "node:fs/promises";
+import {mkdir, rm, writeFile} from "node:fs/promises";
 import {join} from "node:path";
 import {existsSync} from "node:fs";
 import type {Task, TaskCreateInput, Column, Settings} from "../types.js";
@@ -357,37 +357,44 @@ export async function _createTaskInternalBackendImpl(store: TaskStore, input: Ta
       throw error;
     }
 
-    // Write task.json for backward compatibility and debugging.
-    if (store.isWatching) store.taskCache.set(id, { ...task });
-    await store.writeTaskJsonFile(dir, task);
+    // FNXC:ReservationAtomicity 2026-07-12-00:00:
+    // Wrap post-insert filesystem/prompt work so any failure rolls back the
+    // inserted row. Without this, a writeTaskJsonFile or prompt-validation throw
+    // leaves a live row paired with an aborted reservation (FN-7074 invariant).
+    try {
+      // Write task.json for backward compatibility and debugging.
+      if (store.isWatching) store.taskCache.set(id, { ...task });
+      await store.writeTaskJsonFile(dir, task);
 
-    // Write PROMPT.md (same logic as SQLite path).
-    /*
-    FNXC:CodingIdeasWorkflow 2026-07-05-19:45:
-    A freshly created task needs the bootstrap stub only when it lands in a
-    column the triage service will plan from — the legacy "triage" intake or a
-    workflow's resolved manual intake (e.g. Coding (Ideas) → "ideas"). Direct
-    creates into other columns keep generateSpecifiedPrompt (main parity).
-    */
-    const isIntakeColumn = task.column === "triage"
-      || (options?.resolvedEntryColumn !== undefined && task.column === options.resolvedEntryColumn);
-    const prompt = options?.promptOverride
-      ?? (isIntakeColumn
-        ? buildBootstrapPrompt(id, task.title, task.description)
-        : store.generateSpecifiedPrompt(task));
-    const validation = validateFileScopeInPromptContent(prompt);
-    if (validation.invalid.length > 0) {
+      // Write PROMPT.md (same logic as SQLite path).
+      /*
+      FNXC:CodingIdeasWorkflow 2026-07-05-19:45:
+      A freshly created task needs the bootstrap stub only when it lands in a
+      column the triage service will plan from — the legacy "triage" intake or a
+      workflow's resolved manual intake (e.g. Coding (Ideas) → "ideas"). Direct
+      creates into other columns keep generateSpecifiedPrompt (main parity).
+      */
+      const isIntakeColumn = task.column === "triage"
+        || (options?.resolvedEntryColumn !== undefined && task.column === options.resolvedEntryColumn);
+      const prompt = options?.promptOverride
+        ?? (isIntakeColumn
+          ? buildBootstrapPrompt(id, task.title, task.description)
+          : store.generateSpecifiedPrompt(task));
+      const validation = validateFileScopeInPromptContent(prompt);
+      if (validation.invalid.length > 0) {
+        throw new InvalidFileScopeError(id, validation.invalid);
+      }
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, "PROMPT.md"), prompt);
+    } catch (error) {
       // Rollback: soft-delete the inserted row and remove the directory.
       await softDeleteTaskRowAsync(layer, id, new Date().toISOString());
       if (store.isWatching) store.taskCache.delete(id);
-      const { rm } = await import("node:fs/promises");
       if (existsSync(dir)) {
         await rm(dir, { recursive: true, force: true });
       }
-      throw new InvalidFileScopeError(id, validation.invalid);
+      throw error;
     }
-    await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, "PROMPT.md"), prompt);
 
     // Auto-archive dedup (best-effort, same as SQLite path but using async reads).
     await store._maybeAutoArchiveSameAgentDuplicateBackend(task, input);

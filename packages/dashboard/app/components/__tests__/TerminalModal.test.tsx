@@ -9,6 +9,7 @@ import { TerminalModal, _resetInitialViewportHeight, ctrlChar, altChar, evaluate
 import {
   DEFAULT_TERMINAL_PREFERENCES,
   LEGACY_TERMINAL_FONT_SIZE_KEY,
+  MAX_TERMINAL_CUSTOM_SHORTCUTS,
   TERMINAL_PREFERENCES_KEY,
   TERMINAL_SYMBOLS_FONT_FAMILY,
   XTERM_FONT_FAMILY,
@@ -2070,6 +2071,77 @@ describe("TerminalModal", () => {
       expect(screen.getByTestId("terminal-modifier-ctrl").getAttribute("aria-pressed")).toBe("false");
     });
 
+    it("renders persisted custom shortcuts and injects decoded values without stealing focus", async () => {
+      window.localStorage.setItem(
+        TERMINAL_PREFERENCES_KEY,
+        JSON.stringify({
+          ...DEFAULT_TERMINAL_PREFERENCES,
+          customShortcuts: [{ id: "cs-status", label: "Status", value: "git status\\n" }],
+        }),
+      );
+      render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+      await waitFor(() => expect(mockTerminalInstance.open).toHaveBeenCalled());
+
+      const terminalDiv = screen.getByTestId("terminal-xterm");
+      const helperTextarea = document.createElement("textarea");
+      helperTextarea.className = "xterm-helper-textarea";
+      const focusSpy = vi.spyOn(helperTextarea, "focus");
+      terminalDiv.appendChild(helperTextarea);
+      helperTextarea.focus();
+
+      fireEvent.click(screen.getByTestId("terminal-shortcut-toggle"));
+      const customButton = screen.getByTestId("terminal-custom-shortcut-cs-status");
+      expect(customButton).toHaveClass("terminal-shortcut-btn--custom");
+
+      const mouseDown = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+      customButton.dispatchEvent(mouseDown);
+      expect(mouseDown.defaultPrevented).toBe(true);
+      expect(document.activeElement).toBe(helperTextarea);
+
+      mockSendInput.mockClear();
+      mockTerminalInstance.focus.mockClear();
+      focusSpy.mockClear();
+
+      fireEvent.click(customButton);
+
+      expect(mockSendInput).toHaveBeenCalledWith("git status\n");
+      expect(mockTerminalInstance.focus).toHaveBeenCalled();
+      expect(focusSpy).toHaveBeenCalled();
+    });
+
+    it("renders custom shortcut controls on mobile without empty shells", async () => {
+      const previousInnerWidth = window.innerWidth;
+      window.localStorage.setItem(
+        TERMINAL_PREFERENCES_KEY,
+        JSON.stringify({
+          ...DEFAULT_TERMINAL_PREFERENCES,
+          customShortcuts: [{ id: "cs-mobile", label: "Clear", value: "clear\\n" }],
+        }),
+      );
+      Object.defineProperty(window, "innerWidth", {
+        value: 375,
+        writable: true,
+        configurable: true,
+      });
+
+      try {
+        render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+        fireEvent.click(screen.getByTestId("terminal-shortcut-toggle"));
+        fireEvent.click(screen.getByTestId("terminal-preferences-toggle"));
+
+        expect(screen.getByTestId("terminal-modal")).toHaveClass("terminal-modal--mobile");
+        expect(screen.getByTestId("terminal-custom-shortcut-cs-mobile")).toHaveTextContent("Clear");
+        expect(screen.getByTestId("terminal-custom-shortcuts")).toBeTruthy();
+        expect(screen.queryByTestId("terminal-custom-shortcuts-empty")).toBeNull();
+      } finally {
+        Object.defineProperty(window, "innerWidth", {
+          value: previousInnerWidth,
+          writable: true,
+          configurable: true,
+        });
+      }
+    });
+
     it("renders shortcut controls on mobile viewport", async () => {
       const previousInnerWidth = window.innerWidth;
       const previousOntouchstart = window.ontouchstart;
@@ -2325,6 +2397,117 @@ describe("TerminalModal", () => {
       await waitFor(() => {
         expect(screen.getByTestId("terminal-renderer-reopen-note")).toBeTruthy();
       });
+    });
+
+    it("adds and edits custom shortcuts through the shared preferences record", async () => {
+      render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+      fireEvent.click(screen.getByTestId("terminal-preferences-toggle"));
+      expect(screen.getByTestId("terminal-custom-shortcuts-empty")).toBeTruthy();
+      const addButton = screen.getByTestId("terminal-custom-shortcut-add");
+      expect(addButton).toHaveProperty("disabled", true);
+
+      fireEvent.change(screen.getByTestId("terminal-custom-shortcut-label-input"), {
+        target: { value: "Status" },
+      });
+      fireEvent.change(screen.getByTestId("terminal-custom-shortcut-value-input"), {
+        target: { value: "git status\\n" },
+      });
+      expect(addButton).toHaveProperty("disabled", false);
+      fireEvent.click(addButton);
+
+      const persisted = JSON.parse(window.localStorage.getItem(TERMINAL_PREFERENCES_KEY) ?? "null");
+      expect(persisted.customShortcuts).toEqual([
+        expect.objectContaining({ label: "Status", value: "git status\\n" }),
+      ]);
+      const shortcutId = persisted.customShortcuts[0].id;
+
+      fireEvent.click(screen.getByTestId("terminal-shortcut-toggle"));
+      expect(screen.getByTestId(`terminal-custom-shortcut-${shortcutId}`)).toHaveTextContent("Status");
+
+      fireEvent.click(screen.getByTestId(`terminal-custom-shortcut-edit-${shortcutId}`));
+      fireEvent.change(screen.getByTestId("terminal-custom-shortcut-label-input"), {
+        target: { value: "Clear" },
+      });
+      fireEvent.change(screen.getByTestId("terminal-custom-shortcut-value-input"), {
+        target: { value: "clear\\n" },
+      });
+      fireEvent.click(screen.getByTestId("terminal-custom-shortcut-add"));
+
+      const edited = JSON.parse(window.localStorage.getItem(TERMINAL_PREFERENCES_KEY) ?? "null");
+      expect(edited.customShortcuts).toEqual([
+        { id: shortcutId, label: "Clear", value: "clear\\n" },
+      ]);
+      expect(screen.getByTestId(`terminal-custom-shortcut-${shortcutId}`)).toHaveTextContent("Clear");
+    });
+
+    it("removes custom shortcuts and reset to defaults clears them without leftover shells", async () => {
+      window.localStorage.setItem(
+        TERMINAL_PREFERENCES_KEY,
+        JSON.stringify({
+          ...DEFAULT_TERMINAL_PREFERENCES,
+          customShortcuts: [{ id: "cs-clear", label: "Clear", value: "clear\\n" }],
+        }),
+      );
+      render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+      fireEvent.click(screen.getByTestId("terminal-preferences-toggle"));
+      fireEvent.click(screen.getByTestId("terminal-shortcut-toggle"));
+      expect(screen.getByTestId("terminal-custom-shortcut-cs-clear")).toBeTruthy();
+
+      fireEvent.click(screen.getByTestId("terminal-custom-shortcut-remove-cs-clear"));
+      expect(screen.queryByTestId("terminal-custom-shortcut-cs-clear")).toBeNull();
+      expect(screen.getByTestId("terminal-custom-shortcuts-empty")).toBeTruthy();
+      expect(document.querySelectorAll(".terminal-custom-shortcuts__row")).toHaveLength(0);
+      expect(
+        JSON.parse(window.localStorage.getItem(TERMINAL_PREFERENCES_KEY) ?? "null").customShortcuts,
+      ).toEqual([]);
+
+      fireEvent.change(screen.getByTestId("terminal-custom-shortcut-label-input"), {
+        target: { value: "Again" },
+      });
+      fireEvent.change(screen.getByTestId("terminal-custom-shortcut-value-input"), {
+        target: { value: "echo again\\n" },
+      });
+      fireEvent.click(screen.getByTestId("terminal-custom-shortcut-add"));
+      expect(document.querySelectorAll(".terminal-custom-shortcuts__row")).toHaveLength(1);
+
+      fireEvent.click(screen.getByTestId("terminal-preferences-reset"));
+      expect(screen.getByTestId("terminal-custom-shortcuts-empty")).toBeTruthy();
+      expect(document.querySelectorAll(".terminal-custom-shortcuts__row")).toHaveLength(0);
+      expect(JSON.parse(window.localStorage.getItem(TERMINAL_PREFERENCES_KEY) ?? "null")).toEqual(
+        DEFAULT_TERMINAL_PREFERENCES,
+      );
+    });
+
+    it("disables custom shortcut add when inputs are empty or the cap is reached", async () => {
+      window.localStorage.setItem(
+        TERMINAL_PREFERENCES_KEY,
+        JSON.stringify({
+          ...DEFAULT_TERMINAL_PREFERENCES,
+          customShortcuts: Array.from({ length: MAX_TERMINAL_CUSTOM_SHORTCUTS }, (_, index) => ({
+            id: `cs-${index}`,
+            label: `S${index}`,
+            value: `echo ${index}`,
+          })),
+        }),
+      );
+      render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+      fireEvent.click(screen.getByTestId("terminal-preferences-toggle"));
+      const addButton = screen.getByTestId("terminal-custom-shortcut-add");
+      expect(addButton).toHaveProperty("disabled", true);
+
+      fireEvent.change(screen.getByTestId("terminal-custom-shortcut-label-input"), {
+        target: { value: "Overflow" },
+      });
+      fireEvent.change(screen.getByTestId("terminal-custom-shortcut-value-input"), {
+        target: { value: "echo overflow\\n" },
+      });
+      expect(addButton).toHaveProperty("disabled", true);
+
+      fireEvent.click(screen.getByTestId("terminal-custom-shortcut-edit-cs-0"));
+      expect(addButton).toHaveProperty("disabled", false);
     });
   });
 

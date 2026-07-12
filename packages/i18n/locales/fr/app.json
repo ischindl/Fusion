@@ -1410,6 +1410,13 @@
     "versionMismatchPrefix": "Votre",
     "versionMismatchSuffix": "Mettez à jour pour rester synchronisé."
   },
+  "storageMigrationNotice": {
+    "body": "",
+    "dismissLabel": "",
+    "getHelp": "",
+    "getHelpLabel": "",
+    "title": ""
+  },
   "cliBinary": {
     "binaryLabel": "",
     "checking": "Vérification…",
@@ -2441,6 +2448,7 @@
     "previewTitle": "Aperçu de {{file}}"
   },
   "fileEditor": {
+    "autoSave": "",
     "edit": "Modifier",
     "editMode": "Mode édition",
     "editorFor": "Éditeur pour {{filePath}}",
@@ -2448,6 +2456,7 @@
     "lineNumber": "Ligne #",
     "preview": "Aperçu",
     "previewMode": "Mode aperçu",
+    "toggleAutoSave": "",
     "toggleLineNumbers": "Basculer les numéros de ligne",
     "toggleOptions": "Basculer les options de l'éditeur",
     "toggleWordWrap": "Basculer le retour à la ligne automatique",
@@ -8352,6 +8361,7 @@
   },
   "todo": {
     "addItemPlaceholder": "Ajouter un élément de tâche",
+    "allDoneHidden": "",
     "addList": "Ajouter une liste",
     "assignAgent": "Assigner {{text}} à l'agent",
     "cancelItemEdit": "Annuler la modification de l'élément",
@@ -8381,6 +8391,7 @@
     "failedToCreateTask": "Échec de la création de la tâche : {{error}}",
     "failedToLoadAgents": "Échec du chargement des agents : {{error}}",
     "failedUpdateItem": "Échec de la mise à jour de l'élément",
+    "hideDone": "",
     "failedUpdateItemToast": "Échec de la mise à jour de la tâche à faire",
     "itemsLabel": "Éléments de la liste de tâches",
     "lists": "Listes",
@@ -8400,6 +8411,7 @@
     "saveListRename": "Enregistrer le renommage de la liste",
     "selectList": "Sélectionner la liste {{title}}",
     "selectListEmpty": "Sélectionnez une liste dans la barre latérale",
+    "showDone": "",
     "startPlanning": "Commencer à planifier à partir de {{text}}",
     "taskCreatedAndAssigned": "Créé {{id}} et assigné à {{agent}}",
     "taskCreatedFromTodo": "Créé {{id}} à partir de la liste de tâches",

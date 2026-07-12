@@ -1410,6 +1410,13 @@
     "versionMismatchPrefix": "你安裝的",
     "versionMismatchSuffix": "更新以保持同步。"
   },
+  "storageMigrationNotice": {
+    "body": "",
+    "dismissLabel": "",
+    "getHelp": "",
+    "getHelpLabel": "",
+    "title": ""
+  },
   "cliBinary": {
     "binaryLabel": "",
     "checking": "檢查中…",
@@ -2441,6 +2448,7 @@
     "previewTitle": "{{file}} 的預覽"
   },
   "fileEditor": {
+    "autoSave": "",
     "edit": "編輯",
     "editMode": "編輯模式",
     "editorFor": "{{filePath}}編輯器",
@@ -2448,6 +2456,7 @@
     "lineNumber": "行號",
     "preview": "預覽",
     "previewMode": "預覽模式",
+    "toggleAutoSave": "",
     "toggleLineNumbers": "切換行號",
     "toggleOptions": "切換編輯器選項",
     "toggleWordWrap": "切換自動換行",
@@ -8352,6 +8361,7 @@
   },
   "todo": {
     "addItemPlaceholder": "新增待辦事項",
+    "allDoneHidden": "",
     "addList": "新增清單",
     "assignAgent": "將 {{text}} 指派給代理",
     "cancelItemEdit": "取消項目編輯",
@@ -8381,6 +8391,7 @@
     "failedToCreateTask": "建立任務失敗：{{error}}",
     "failedToLoadAgents": "加載代理失敗：{{error}}",
     "failedUpdateItem": "更新項目失敗",
+    "hideDone": "",
     "failedUpdateItemToast": "更新待辦項目失敗",
     "itemsLabel": "待辦事項",
     "lists": "清單",
@@ -8400,6 +8411,7 @@
     "saveListRename": "保存清單重新命名",
     "selectList": "選擇清單 {{title}}",
     "selectListEmpty": "從側邊欄選擇清單",
+    "showDone": "",
     "startPlanning": "從 {{text}} 開始規劃",
     "taskCreatedAndAssigned": "建立了 {{id}} 並指派給 {{agent}}",
     "taskCreatedFromTodo": "從待辦事項建立了 {{id}}",

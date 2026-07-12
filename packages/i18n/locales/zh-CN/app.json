@@ -1410,6 +1410,13 @@
     "versionMismatchPrefix": "你安装的",
     "versionMismatchSuffix": "更新以保持同步。"
   },
+  "storageMigrationNotice": {
+    "body": "",
+    "dismissLabel": "",
+    "getHelp": "",
+    "getHelpLabel": "",
+    "title": ""
+  },
   "cliBinary": {
     "binaryLabel": "",
     "checking": "检查中…",
@@ -2441,6 +2448,7 @@
     "previewTitle": "{{file}} 的预览"
   },
   "fileEditor": {
+    "autoSave": "",
     "edit": "编辑",
     "editMode": "编辑模式",
     "editorFor": "{{filePath}}编辑器",
@@ -2448,6 +2456,7 @@
     "lineNumber": "行号",
     "preview": "预览",
     "previewMode": "预览模式",
+    "toggleAutoSave": "",
     "toggleLineNumbers": "切换行号",
     "toggleOptions": "切换编辑器选项",
     "toggleWordWrap": "切换自动换行",
@@ -8352,6 +8361,7 @@
   },
   "todo": {
     "addItemPlaceholder": "添加待办事项",
+    "allDoneHidden": "",
     "addList": "添加列表",
     "assignAgent": "将 {{text}} 分配给代理",
     "cancelItemEdit": "取消项目编辑",
@@ -8381,6 +8391,7 @@
     "failedToCreateTask": "创建任务失败：{{error}}",
     "failedToLoadAgents": "加载代理失败：{{error}}",
     "failedUpdateItem": "更新项失败",
+    "hideDone": "",
     "failedUpdateItemToast": "更新待办事项失败",
     "itemsLabel": "待办事项",
     "lists": "列表",
@@ -8400,6 +8411,7 @@
     "saveListRename": "保存列表重命名",
     "selectList": "选择列表 {{title}}",
     "selectListEmpty": "从边栏选择一个列表",
+    "showDone": "",
     "startPlanning": "从 {{text}} 开始规划",
     "taskCreatedAndAssigned": "创建了 {{id}} 并分配给 {{agent}}",
     "taskCreatedFromTodo": "从待办事项创建了 {{id}}",

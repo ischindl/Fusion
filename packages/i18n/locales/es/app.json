@@ -1410,6 +1410,13 @@
     "versionMismatchPrefix": "Tu",
     "versionMismatchSuffix": "Actualiza para mantenerte sincronizado."
   },
+  "storageMigrationNotice": {
+    "body": "",
+    "dismissLabel": "",
+    "getHelp": "",
+    "getHelpLabel": "",
+    "title": ""
+  },
   "cliBinary": {
     "binaryLabel": "",
     "checking": "Verificando…",
@@ -2441,6 +2448,7 @@
     "previewTitle": "Vista previa de {{file}}"
   },
   "fileEditor": {
+    "autoSave": "",
     "edit": "Editar",
     "editMode": "Modo editar",
     "editorFor": "Editor para {{filePath}}",
@@ -2448,6 +2456,7 @@
     "lineNumber": "Línea #",
     "preview": "Vista previa",
     "previewMode": "Modo vista previa",
+    "toggleAutoSave": "",
     "toggleLineNumbers": "Alternar números de línea",
     "toggleOptions": "Alternar opciones del editor",
     "toggleWordWrap": "Alternar ajuste de palabra",
@@ -8352,6 +8361,7 @@
   },
   "todo": {
     "addItemPlaceholder": "Agregar elemento de tarea",
+    "allDoneHidden": "",
     "addList": "Agregar lista",
     "assignAgent": "Asignar {{text}} al agente",
     "cancelItemEdit": "Cancelar edición de elemento",
@@ -8381,6 +8391,7 @@
     "failedToCreateTask": "Error al crear la tarea: {{error}}",
     "failedToLoadAgents": "Error al cargar agentes: {{error}}",
     "failedUpdateItem": "Error al actualizar el elemento",
+    "hideDone": "",
     "failedUpdateItemToast": "Error al actualizar el elemento de tareas pendientes",
     "itemsLabel": "Elementos de tareas",
     "lists": "Listas",
@@ -8400,6 +8411,7 @@
     "saveListRename": "Guardar cambio de nombre de lista",
     "selectList": "Seleccionar lista {{title}}",
     "selectListEmpty": "Seleccione una lista de la barra lateral",
+    "showDone": "",
     "startPlanning": "Comenzar a planificar desde {{text}}",
     "taskCreatedAndAssigned": "Creado {{id}} y asignado a {{agent}}",
     "taskCreatedFromTodo": "Creado {{id}} desde la lista de tareas",

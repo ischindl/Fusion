@@ -758,6 +758,74 @@ describe("GitManagerModal", () => {
     });
   });
 
+  it("commits staged changes and then pushes from the Changes form", async () => {
+    const user = userEvent.setup();
+    render(
+      <GitManagerModal isOpen={true} onClose={vi.fn()} tasks={mockTasks} addToast={mockAddToast} />
+    );
+    fireEvent.click(screen.getByRole("tab", { name: /changes/i }));
+
+    await screen.findByPlaceholderText("Commit message...");
+    await user.type(screen.getByPlaceholderText("Commit message..."), "feat: publish staged work");
+    await user.click(screen.getByRole("button", { name: /commit and push/i }));
+
+    await waitFor(() => {
+      expectLatestCallStartsWith(createCommit as any, "feat: publish staged work");
+      expect(pushBranch).toHaveBeenCalledWith(undefined, undefined);
+    });
+    expect((createCommit as any).mock.invocationCallOrder[0]).toBeLessThan(
+      (pushBranch as any).mock.invocationCallOrder[0]
+    );
+    expect(mockAddToast).toHaveBeenCalledWith("Push completed", "success");
+  });
+
+  it("disables Commit and Push when the message is empty or no staged files exist", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(
+      <GitManagerModal isOpen={true} onClose={vi.fn()} tasks={mockTasks} addToast={mockAddToast} />
+    );
+    fireEvent.click(screen.getByRole("tab", { name: /changes/i }));
+
+    const commitAndPush = await screen.findByRole("button", { name: /commit and push/i });
+    expect(commitAndPush).toBeDisabled();
+    unmount();
+
+    (fetchFileChanges as any).mockResolvedValueOnce([
+      { file: "src/app.ts", status: "modified", staged: false },
+    ]);
+    render(
+      <GitManagerModal isOpen={true} onClose={vi.fn()} tasks={mockTasks} addToast={mockAddToast} />
+    );
+    fireEvent.click(screen.getByRole("tab", { name: /changes/i }));
+
+    const textarea = await screen.findByPlaceholderText("Commit message...");
+    await user.type(textarea, "fix: no staged changes");
+    expect(screen.getByRole("button", { name: /commit and push/i })).toBeDisabled();
+  });
+
+  it("keeps local commit context visible when commit succeeds but push fails", async () => {
+    const user = userEvent.setup();
+    (pushBranch as any).mockRejectedValueOnce(new Error("Remote rejected"));
+    render(
+      <GitManagerModal isOpen={true} onClose={vi.fn()} tasks={mockTasks} addToast={mockAddToast} />
+    );
+    fireEvent.click(screen.getByRole("tab", { name: /changes/i }));
+
+    const textarea = await screen.findByPlaceholderText("Commit message...");
+    await user.type(textarea, "feat: keep context");
+    await user.click(screen.getByRole("button", { name: /commit and push/i }));
+
+    await waitFor(() => {
+      expectLatestCallStartsWith(createCommit as any, "feat: keep context");
+      expect(pushBranch).toHaveBeenCalled();
+      expect(mockAddToast).toHaveBeenCalledWith(
+        expect.stringContaining("Committed locally"),
+        "error"
+      );
+    });
+    expect(screen.getByDisplayValue("feat: keep context")).toBeInTheDocument();
+  });
+
   it("disables Commit button when no message or no staged files", async () => {
     (fetchFileChanges as any).mockResolvedValue([
       { file: "src/app.ts", status: "modified", staged: false },

@@ -1986,8 +1986,9 @@ Do not refactor, rename broadly, or make opportunistic improvements.
       }),
       settings,
       mcpServers: await resolveMergerMcpServers(store, assignedAgent?.id),
-      // Skill selection: use assigned agent skills if available, otherwise role fallback
+      // FNXC:PluginSkills 2026-07-12-00:00: Merger verification-fix sessions forward plugin skill body dirs with requested names so plugin merge guidance is discoverable in live sessions.
       ...(skillContext?.skillSelectionContext ? { skillSelection: skillContext.skillSelectionContext } : {}),
+      ...(skillContext && skillContext.additionalSkillPaths.length > 0 ? { additionalSkillPaths: skillContext.additionalSkillPaths } : {}),
       taskId,
       taskTitle: taskForSkillContext?.title,
       onFallbackModelUsed: createFallbackModelObserver({
@@ -3181,7 +3182,9 @@ ${fileList}
     }),
     settings,
     mcpServers: await resolveMergerMcpServers(store, assignedAgent?.id),
+    // FNXC:PluginSkills 2026-07-12-00:00: Autostash conflict sessions must preserve plugin skill body dirs from the shared skill context.
     ...(skillContext?.skillSelectionContext ? { skillSelection: skillContext.skillSelectionContext } : {}),
+    ...(skillContext && skillContext.additionalSkillPaths.length > 0 ? { additionalSkillPaths: skillContext.additionalSkillPaths } : {}),
     taskId,
     taskTitle: taskForSkillContext?.title,
     onFallbackModelUsed: createFallbackModelObserver({
@@ -3599,7 +3602,9 @@ ${fileList}
     }),
     settings,
     mcpServers: await resolveMergerMcpServers(store, assignedAgent?.id),
+    // FNXC:PluginSkills 2026-07-12-00:00: Autostash hard-fail recovery sessions keep plugin body discovery paths aligned with requested plugin skills.
     ...(skillContext?.skillSelectionContext ? { skillSelection: skillContext.skillSelectionContext } : {}),
+    ...(skillContext && skillContext.additionalSkillPaths.length > 0 ? { additionalSkillPaths: skillContext.additionalSkillPaths } : {}),
     taskId,
     taskTitle: taskForSkillContext?.title,
     onFallbackModelUsed: createFallbackModelObserver({
@@ -12084,8 +12089,9 @@ async function runAiAgentForCommit(params: AiAgentParams): Promise<{ success: bo
     settings,
     // FNXC:McpConfig 2026-06-25-23:04: The primary merge-authoring agent is part of the merger lane and receives the resolved MCP set under the shared runtime-support guard, matching conflict/verification merge sessions without exposing secret material.
     mcpServers: await resolveMergerMcpServers(store, assignedAgent?.id),
-    // Skill selection: use assigned agent skills if available, otherwise role fallback
+    // FNXC:PluginSkills 2026-07-12-00:00: Merge-authoring sessions forward plugin skill body dirs so plugin-contributed merger skills load their bodies.
     ...(skillContext?.skillSelectionContext ? { skillSelection: skillContext.skillSelectionContext } : {}),
+    ...(skillContext && skillContext.additionalSkillPaths.length > 0 ? { additionalSkillPaths: skillContext.additionalSkillPaths } : {}),
     taskId,
     taskTitle: taskForSkillContext?.title,
     onFallbackModelUsed: createFallbackModelObserver({

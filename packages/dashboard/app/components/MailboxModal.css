@@ -321,6 +321,80 @@
   word-break: break-word;
 }
 
+/*
+FNXC:ArtifactRegistry 2026-07-12-00:00:
+Artifact-registration mail messages now render metadata-driven media affordances directly below the markdown body. The block must share mailbox spacing/radius tokens and collapse entirely for messages without artifactId metadata.
+*/
+.mailbox-artifact-attachment {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin-top: var(--space-sm);
+  padding: var(--space-md);
+  border: var(--btn-border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+}
+
+.mailbox-artifact-attachment__header,
+.mailbox-artifact-attachment__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.mailbox-artifact-attachment__title {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.mailbox-artifact-attachment__type {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  text-transform: capitalize;
+}
+
+.mailbox-artifact-attachment__media,
+.mailbox-artifact-attachment__image,
+.mailbox-artifact-attachment__audio {
+  width: 100%;
+}
+
+.mailbox-artifact-attachment__media,
+.mailbox-artifact-attachment__image {
+  max-height: min(45vh, 28rem);
+  border-radius: var(--radius-sm);
+  object-fit: contain;
+  background: var(--surface);
+}
+
+.mailbox-artifact-attachment__audio {
+  display: block;
+}
+
+.mailbox-artifact-attachment__link {
+  text-decoration: none;
+}
+
+@media (max-width: 768px) {
+  .mailbox-artifact-attachment {
+    padding: var(--space-sm);
+  }
+
+  .mailbox-artifact-attachment__header,
+  .mailbox-artifact-attachment__actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .mailbox-artifact-attachment__link {
+    justify-content: center;
+    width: 100%;
+  }
+}
+
 /* Markdown rendering inside message bodies. ReactMarkdown produces standard
    block elements (p, ul, h*, code, table, ...). Reset margins so message
    prose still feels compact, and let pre/table scroll horizontally. */

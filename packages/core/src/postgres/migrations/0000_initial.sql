@@ -74,6 +74,8 @@ CREATE TABLE IF NOT EXISTS project.tasks (
   graph_resume_retry_count integer DEFAULT 0,
   resume_limbo_tip_sha text,
   resume_limbo_step_signature text,
+  execute_requeue_loop_count integer DEFAULT 0,
+  execute_requeue_loop_signature text,
   recovery_retry_count integer,
   task_done_retry_count integer DEFAULT 0,
   worktree_session_retry_count integer DEFAULT 0,

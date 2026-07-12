@@ -36,6 +36,8 @@ vi.mock("lucide-react", () => ({
   Bot: () => <span data-testid="icon-bot" />,
   PlusCircle: () => <span data-testid="icon-plus-circle" />,
   Lightbulb: () => <span data-testid="icon-lightbulb" />,
+  Eye: () => <span data-testid="icon-eye" />,
+  EyeOff: () => <span data-testid="icon-eye-off" />,
 }));
 
 function createMockTodoLists(overrides: Record<string, unknown> = {}) {
@@ -76,6 +78,7 @@ describe("TodoView", () => {
     mockFetchAgents.mockResolvedValue([
       { id: "agent-1", name: "Builder", role: "engineer", state: "active" },
     ]);
+    window.localStorage.clear();
     mockUseTodoLists.mockReturnValue(createMockTodoLists());
   });
 
@@ -133,6 +136,80 @@ describe("TodoView", () => {
     mockUseTodoLists.mockReturnValue(createMockTodoLists({ selectedListId: null }));
     render(<TodoView addToast={addToast} />);
     expect(screen.getByText("Select a list from the sidebar")).toBeInTheDocument();
+    expect(screen.queryByTestId("todo-hide-done-toggle")).not.toBeInTheDocument();
+  });
+
+  it("renders the hide-done toggle in the selected list items header", () => {
+    render(<TodoView addToast={addToast} />);
+
+    const toggle = screen.getByTestId("todo-hide-done-toggle");
+    expect(toggle).toHaveTextContent("Hide done");
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("keeps the toggle available when the selected list has no completed items", () => {
+    mockUseTodoLists.mockReturnValue(createMockTodoLists({
+      items: [
+        { id: "item-1", listId: "list-1", text: "Buy groceries", completed: false, sortOrder: 0 },
+        { id: "item-4", listId: "list-1", text: "Pack bags", completed: false, sortOrder: 1 },
+      ],
+    }));
+
+    render(<TodoView addToast={addToast} />);
+    fireEvent.click(screen.getByTestId("todo-hide-done-toggle"));
+
+    expect(screen.getByText("Buy groceries")).toBeInTheDocument();
+    expect(screen.getByText("Pack bags")).toBeInTheDocument();
+  });
+
+  it("hides and shows completed items without changing the all-item progress count", () => {
+    render(<TodoView addToast={addToast} />);
+
+    expect(screen.getByText("1/2 complete")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("todo-hide-done-toggle"));
+
+    expect(screen.getByText("Buy groceries")).toBeInTheDocument();
+    expect(screen.queryByText("Clean house")).not.toBeInTheDocument();
+    expect(screen.getByText("1/2 complete")).toBeInTheDocument();
+    expect(screen.getByTestId("todo-hide-done-toggle")).toHaveTextContent("Show done");
+    expect(screen.getByTestId("todo-hide-done-toggle")).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(screen.getByTestId("todo-hide-done-toggle"));
+
+    expect(screen.getByText("Clean house")).toBeInTheDocument();
+    expect(screen.getByText("1/2 complete")).toBeInTheDocument();
+    expect(screen.getByTestId("todo-hide-done-toggle")).toHaveTextContent("Hide done");
+  });
+
+  it("shows a distinct all-done-hidden empty state when every selected item is completed", () => {
+    mockUseTodoLists.mockReturnValue(createMockTodoLists({
+      items: [
+        { id: "item-1", listId: "list-1", text: "Buy groceries", completed: true, sortOrder: 0 },
+        { id: "item-2", listId: "list-1", text: "Clean house", completed: true, sortOrder: 1 },
+      ],
+    }));
+
+    render(<TodoView addToast={addToast} />);
+    fireEvent.click(screen.getByTestId("todo-hide-done-toggle"));
+
+    expect(screen.getByTestId("todo-all-done-hidden-empty")).toHaveTextContent("All items are complete. Choose Show done to view them.");
+    expect(screen.queryByText("No items in this list. Add one above.")).not.toBeInTheDocument();
+  });
+
+  it("persists the hide-done toggle per project and re-reads it on mount", async () => {
+    window.localStorage.setItem("kb:project-1:kb-dashboard-todo-hide-done", "true");
+
+    render(<TodoView addToast={addToast} projectId="project-1" />);
+
+    expect(screen.getByTestId("todo-hide-done-toggle")).toHaveTextContent("Show done");
+    expect(screen.queryByText("Clean house")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("todo-hide-done-toggle"));
+
+    await waitFor(() => {
+      expect(window.localStorage.getItem("kb:project-1:kb-dashboard-todo-hide-done")).toBe("false");
+    });
+    expect(screen.getByText("Clean house")).toBeInTheDocument();
   });
 
   it("clicking a list item calls setSelectedListId", () => {
@@ -299,6 +376,28 @@ describe("TodoView", () => {
 
     expect(screen.getByRole("button", { name: "Move Buy groceries up" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Move Clean house down" })).toBeDisabled();
+  });
+
+  it("computes reorder boundaries from visible items while preserving hidden done positions", () => {
+    const state = createMockTodoLists({
+      items: [
+        { id: "item-1", listId: "list-1", text: "Buy groceries", completed: false, sortOrder: 0 },
+        { id: "item-2", listId: "list-1", text: "Clean house", completed: true, sortOrder: 1 },
+        { id: "item-4", listId: "list-1", text: "Pack bags", completed: false, sortOrder: 2 },
+      ],
+    });
+    mockUseTodoLists.mockReturnValue(state);
+
+    render(<TodoView addToast={addToast} />);
+    fireEvent.click(screen.getByTestId("todo-hide-done-toggle"));
+
+    expect(screen.getByRole("button", { name: "Move Buy groceries up" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Move Buy groceries down" })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "Move Pack bags down" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Move Buy groceries down" }));
+
+    expect(state.reorderItems).toHaveBeenCalledWith(["item-4", "item-2", "item-1"]);
   });
 
   it("clicking trash icon on item calls deleteItem", () => {

@@ -29,10 +29,12 @@
  * - Results are deduplicated preserving stable insertion order
  */
 
+import { dirname } from "node:path";
 import type { Agent, AgentStore } from "@fusion/core";
+import { resolvePluginSkillBodyPath, resolvePluginSkillEnabled } from "@fusion/core";
 import { piLog } from "./logger.js";
 import type { PluginRunner } from "./plugin-runner.js";
-import type { SkillSelectionContext } from "./skill-resolver.js";
+import { readProjectSettings, resolveProjectRoot, type SkillSelectionContext } from "./skill-resolver.js";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -69,6 +71,8 @@ export interface SessionSkillContextResult {
   resolvedSkillNames: string[];
   /** Source of the skills: 'assigned-agent', 'role-fallback', or 'none' */
   skillSource: "assigned-agent" | "role-fallback" | "none";
+  /** Extra skill body directories to pass to createFnAgent's additionalSkillPaths */
+  additionalSkillPaths: string[];
 }
 
 // ── Skill Normalization ─────────────────────────────────────────────────────
@@ -123,25 +127,43 @@ export function normalizeAgentSkills(
   return result;
 }
 
+/**
+ * FNXC:PluginSkills 2026-07-12-00:00:
+ * Session assembly must honor the same per-project plugin-skill override as the Skills view. Resolve worktree project roots before reading settings, then delegate effective enablement to @fusion/core so static plugin defaults cannot drift from project toggles again.
+ *
+ * FNXC:PluginSkills 2026-07-12-00:00:
+ * GitHub #2017 showed that plugin skill names alone never delivered bodies because the pi loader does not scan plugin packages. Resolve each enabled plugin skill body through @fusion/core's traversal-guarded primitive and thread its body directory plus parent discovery root as additionalSkillPaths, mirroring the compound-engineering FUSION_CE_SKILLS_DIR mechanism while preserving the explicit body-dir contract.
+ */
 export function collectPluginSkillNames(
   pluginRunner: PluginRunner | undefined,
-): { names: string[]; pluginIds: string[] } {
+  projectRootDir?: string,
+): { names: string[]; pluginIds: string[]; additionalSkillPaths: string[] } {
   if (!pluginRunner) {
-    return { names: [], pluginIds: [] };
+    return { names: [], pluginIds: [], additionalSkillPaths: [] };
+  }
+
+  let settings = {};
+  if (projectRootDir) {
+    try {
+      settings = readProjectSettings(resolveProjectRoot(projectRootDir));
+    } catch {
+      settings = {};
+    }
   }
 
   const pluginSkills = pluginRunner.getPluginSkills();
   const seenNames = new Set<string>();
   const pluginIds = new Set<string>();
+  const additionalSkillPathSet = new Set<string>();
   const names: string[] = [];
 
   for (const contribution of pluginSkills) {
     const { pluginId, skill } = contribution;
-    if (skill.enabled === false) {
+    const name = skill.name.trim();
+    if (!resolvePluginSkillEnabled(settings, pluginId, name, skill.enabled)) {
       continue;
     }
 
-    const name = skill.name.trim();
     if (name.length === 0 || seenNames.has(name)) {
       continue;
     }
@@ -149,12 +171,27 @@ export function collectPluginSkillNames(
     seenNames.add(name);
     pluginIds.add(pluginId);
     names.push(name);
+
+    if (contribution.pluginRoot) {
+      try {
+        const bodyPath = resolvePluginSkillBodyPath(skill, contribution.pluginRoot);
+        const bodyDir = dirname(bodyPath.absolutePath);
+        additionalSkillPathSet.add(bodyDir);
+        additionalSkillPathSet.add(dirname(bodyDir));
+      } catch (error) {
+        piLog.warn(
+          `[skills] Plugin ${pluginId} skill ${name} body path could not be resolved: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
     piLog.log(`[skills] Plugin ${pluginId} contributes skill: ${name}`);
   }
 
   return {
     names,
     pluginIds: Array.from(pluginIds),
+    additionalSkillPaths: Array.from(additionalSkillPathSet),
   };
 }
 
@@ -245,6 +282,7 @@ export async function buildSessionSkillContext(
               },
               resolvedSkillNames: agentSkills,
               skillSource: "assigned-agent",
+              additionalSkillPaths: [],
             },
             sessionPurpose,
             projectRootDir,
@@ -280,6 +318,7 @@ function resolveRoleFallback(
       },
       resolvedSkillNames: roleFallbackSkills,
       skillSource: "role-fallback",
+      additionalSkillPaths: [],
     };
   }
 
@@ -287,7 +326,12 @@ function resolveRoleFallback(
     skillSelectionContext: undefined,
     resolvedSkillNames: [],
     skillSource: "none",
+    additionalSkillPaths: [],
   };
+}
+
+function mergeAdditionalSkillPaths(...pathGroups: string[][]): string[] {
+  return Array.from(new Set(pathGroups.flat()));
 }
 
 function mergePluginSkills(
@@ -296,9 +340,9 @@ function mergePluginSkills(
   projectRootDir: string,
   pluginRunner: PluginRunner | undefined,
 ): SessionSkillContextResult {
-  const { names: pluginSkillNames } = collectPluginSkillNames(pluginRunner);
+  const { names: pluginSkillNames, additionalSkillPaths } = collectPluginSkillNames(pluginRunner, projectRootDir);
   if (pluginSkillNames.length === 0) {
-    return baseResult;
+    return { ...baseResult, additionalSkillPaths: mergeAdditionalSkillPaths(baseResult.additionalSkillPaths, additionalSkillPaths) };
   }
 
   const mergedNames = [...baseResult.resolvedSkillNames];
@@ -323,7 +367,7 @@ function mergePluginSkills(
   }
 
   if (mergedNames.length === 0) {
-    return baseResult;
+    return { ...baseResult, additionalSkillPaths: mergeAdditionalSkillPaths(baseResult.additionalSkillPaths, additionalSkillPaths) };
   }
 
   return {
@@ -334,6 +378,7 @@ function mergePluginSkills(
     },
     resolvedSkillNames: mergedNames,
     skillSource: baseResult.skillSource === "none" ? "role-fallback" : baseResult.skillSource,
+    additionalSkillPaths: mergeAdditionalSkillPaths(baseResult.additionalSkillPaths, additionalSkillPaths),
   };
 }
 
@@ -367,6 +412,7 @@ export function buildSessionSkillContextSync(
           },
           resolvedSkillNames: agentSkills,
           skillSource: "assigned-agent",
+          additionalSkillPaths: [],
         },
         sessionPurpose,
         projectRootDir,

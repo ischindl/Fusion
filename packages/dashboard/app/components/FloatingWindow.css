@@ -99,6 +99,14 @@ FNXC:ChatModal 2026-06-22-14:49:
 On mobile/narrow app viewports, opening Quick Chat should present the full Chat modal as a full-screen sheet instead of a small draggable desktop window. Scope this to the chat FloatingWindow and override the inline desktop geometry only at the mobile breakpoint; desktop pop-out behavior remains movable/resizable.
 */
 @media (max-width: 768px) {
+  /*
+  FNXC:FloatingWindow 2026-07-12-17:35:
+  Mobile keeps the global `styles.css` pan-y lockdown so the dashboard cannot drift, but movable FloatingWindow headers must still resolve to an effective `touch-action: none`. Reassert the drag-handle contract at the mobile breakpoint, excluding full-screen sheet variants, so a single-finger header drag stays on the captured pointermove stream instead of being intersected back into page pan by the ancestor chain. Desktop drag/resize and mobile sheet variants are unchanged.
+  */
+  .floating-window:not(.floating-window--chat):not(.floating-window--task-detail):not(.floating-window--workflow-editor):not(.floating-window--automation):not(.floating-window--mission-interview):not(.floating-window--file-browser):not(.floating-window--pr-create):not(.artifacts-gallery-window) .floating-window__header {
+    touch-action: none;
+  }
+
   .floating-window--chat {
     inset: 0 !important;
     width: 100vw !important;

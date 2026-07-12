@@ -462,24 +462,25 @@ Redesign Todos to fit the rest of the dashboard theme: full-height tokenized wor
   gap: var(--space-sm);
 }
 
+/*
+FNXC:TodosStyling 2026-07-12-00:00:
+FN-7870 removes the active-row left accent stripe and per-row border boxing so Todo sidebar list rows read as a flat, quiet stack. Active and hover states remain visible through background and text color only.
+*/
 .todo-list-item {
   min-height: 42px;
   padding: var(--space-sm);
-  border: 1px solid transparent;
   border-radius: var(--radius-md);
   color: var(--text-muted);
 }
 
 .todo-list-item:hover {
   background: var(--card-hover);
-  border-color: color-mix(in srgb, var(--border) 70%, transparent);
+  color: var(--text);
 }
 
 .todo-list-item--active {
   background: color-mix(in srgb, var(--todo) 10%, var(--surface));
-  border-color: color-mix(in srgb, var(--todo) 32%, var(--border));
   color: var(--text);
-  box-shadow: inset 3px 0 0 var(--todo);
 }
 
 .todo-list-select-btn {
@@ -535,6 +536,33 @@ Redesign Todos to fit the rest of the dashboard theme: full-height tokenized wor
 .todo-items-progress {
   color: var(--text-muted);
   font-size: 0.8125rem;
+}
+
+/*
+FNXC:TodosStyling 2026-07-12-00:00:
+The Todo items header owns the Hide done / Show done affordance. Keep it quiet, token-sized, and wrap-safe so the same control remains visible in the wide split pane, the right-dock container stack, and the viewport mobile layout without creating an overflow-only button shell.
+*/
+.todo-hide-done-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs);
+  flex-shrink: 0;
+  white-space: nowrap;
+  color: var(--text-muted);
+  border-color: var(--border);
+  background: var(--surface);
+}
+
+.todo-hide-done-toggle[aria-pressed="true"] {
+  color: var(--todo);
+  border-color: color-mix(in srgb, var(--todo) 36%, var(--border));
+  background: color-mix(in srgb, var(--todo) 8%, var(--surface));
+}
+
+.todo-hide-done-toggle svg {
+  width: var(--space-md);
+  height: var(--space-md);
 }
 
 .todo-add-item-row {
@@ -713,6 +741,15 @@ NARROW container (right dock): collapse the side-by-side split into a single-pan
     opacity: 1;
   }
 
+  .todo-items-header {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .todo-hide-done-toggle {
+    min-height: calc(var(--space-2xl) + var(--space-xs));
+  }
+
   /* Stack text over the action row: a phone-width row cannot fit text plus seven controls. */
   .todo-item {
     flex-direction: column;
@@ -805,6 +842,15 @@ NARROW container (right dock): collapse the side-by-side split into a single-pan
 
   .todo-item-main-row {
     align-items: center;
+  }
+
+  .todo-items-header {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .todo-hide-done-toggle {
+    min-height: calc(var(--space-2xl) + var(--space-xs));
   }
 
   /* Stack text over the action row on mobile; mirror the narrow-container stack. */

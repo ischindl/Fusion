@@ -37,17 +37,24 @@ import { nextFloatingZ, currentFloatingZ } from "./floatingWindowStack";
 import { getPathBasename } from "../utils/pathDisplay";
 import {
   DEFAULT_TERMINAL_PREFERENCES,
+  MAX_TERMINAL_CUSTOM_SHORTCUTS,
+  MAX_TERMINAL_CUSTOM_SHORTCUT_LABEL_LENGTH,
+  MAX_TERMINAL_CUSTOM_SHORTCUT_VALUE_LENGTH,
   MAX_TERMINAL_FONT_SIZE,
   MIN_TERMINAL_FONT_SIZE,
   TERMINAL_FONT_FAMILY_PRESETS,
   clampTerminalFontSize,
+  createTerminalCustomShortcutId,
+  decodeTerminalShortcutSequence,
   forceTerminalFontRemeasure,
+  normalizeTerminalCustomShortcuts,
   readTerminalPreferences,
   resolveTerminalFontFamily,
   resolveTerminalGlyphFontFamily,
   waitForTerminalFontMetrics,
   withDomBasedTerminalCharacterMeasurement,
   writeTerminalPreferences,
+  type TerminalCustomShortcut,
   type TerminalPreferences,
   type TerminalRenderer,
 } from "../utils/terminalPreferences";
@@ -551,6 +558,9 @@ export function TerminalModal({ isOpen, onClose, initialCommand, initialCommandG
   const [terminalPreferences, setTerminalPreferences] = useState<TerminalPreferences>(() =>
     readTerminalPreferences(),
   );
+  const [customShortcutLabel, setCustomShortcutLabel] = useState("");
+  const [customShortcutValue, setCustomShortcutValue] = useState("");
+  const [editingCustomShortcutId, setEditingCustomShortcutId] = useState<string | null>(null);
   const fontSize = terminalPreferences.fontSize;
   const resolvedFontFamily = resolveTerminalFontFamily(terminalPreferences.fontFamily);
   /*
@@ -1325,6 +1335,78 @@ export function TerminalModal({ isOpen, onClose, initialCommand, initialCommandG
     setTerminalPreferences((current) => writeTerminalPreferences({ ...current, ...patch }));
   }, []);
 
+  const resetCustomShortcutForm = useCallback(() => {
+    setCustomShortcutLabel("");
+    setCustomShortcutValue("");
+    setEditingCustomShortcutId(null);
+  }, []);
+
+  const persistCustomShortcuts = useCallback(
+    (shortcuts: TerminalCustomShortcut[]) => {
+      updateTerminalPreferences({
+        customShortcuts: normalizeTerminalCustomShortcuts(shortcuts),
+      });
+    },
+    [updateTerminalPreferences],
+  );
+
+  const startEditingCustomShortcut = useCallback((shortcut: TerminalCustomShortcut) => {
+    setCustomShortcutLabel(shortcut.label);
+    setCustomShortcutValue(shortcut.value);
+    setEditingCustomShortcutId(shortcut.id);
+  }, []);
+
+  const removeCustomShortcut = useCallback(
+    (shortcutId: string) => {
+      persistCustomShortcuts(
+        terminalPreferences.customShortcuts.filter((shortcut) => shortcut.id !== shortcutId),
+      );
+      if (editingCustomShortcutId === shortcutId) {
+        resetCustomShortcutForm();
+      }
+    },
+    [editingCustomShortcutId, persistCustomShortcuts, resetCustomShortcutForm, terminalPreferences.customShortcuts],
+  );
+
+  const trimmedCustomShortcutLabel = customShortcutLabel.trim();
+  const trimmedCustomShortcutValue = customShortcutValue.trim();
+  const isEditingCustomShortcut = editingCustomShortcutId !== null;
+  const customShortcutLimitReached =
+    terminalPreferences.customShortcuts.length >= MAX_TERMINAL_CUSTOM_SHORTCUTS;
+  const canSubmitCustomShortcut =
+    trimmedCustomShortcutLabel !== "" &&
+    trimmedCustomShortcutValue !== "" &&
+    (isEditingCustomShortcut || !customShortcutLimitReached);
+
+  const submitCustomShortcut = useCallback(() => {
+    if (!canSubmitCustomShortcut) {
+      return;
+    }
+
+    const nextShortcut: TerminalCustomShortcut = {
+      id: editingCustomShortcutId ?? createTerminalCustomShortcutId(),
+      label: trimmedCustomShortcutLabel,
+      value: trimmedCustomShortcutValue,
+    };
+    const nextShortcuts = isEditingCustomShortcut
+      ? terminalPreferences.customShortcuts.map((shortcut) =>
+          shortcut.id === editingCustomShortcutId ? nextShortcut : shortcut,
+        )
+      : [...terminalPreferences.customShortcuts, nextShortcut];
+
+    persistCustomShortcuts(nextShortcuts);
+    resetCustomShortcutForm();
+  }, [
+    canSubmitCustomShortcut,
+    editingCustomShortcutId,
+    isEditingCustomShortcut,
+    persistCustomShortcuts,
+    resetCustomShortcutForm,
+    terminalPreferences.customShortcuts,
+    trimmedCustomShortcutLabel,
+    trimmedCustomShortcutValue,
+  ]);
+
   const setFontSize = useCallback(
     (value: number | ((current: number) => number)) => {
       setTerminalPreferences((current) => {
@@ -1341,7 +1423,8 @@ export function TerminalModal({ isOpen, onClose, initialCommand, initialCommandG
 
   const resetTerminalPreferences = useCallback(() => {
     setTerminalPreferences(writeTerminalPreferences(DEFAULT_TERMINAL_PREFERENCES));
-  }, []);
+    resetCustomShortcutForm();
+  }, [resetCustomShortcutForm]);
 
   const refitTerminal = useCallback(() => {
     const terminal = xtermRef.current;
@@ -2940,6 +3023,26 @@ export function TerminalModal({ isOpen, onClose, initialCommand, initialCommandG
                 {shortcut.label}
               </button>
             ))}
+            {/**
+             * FNXC:Terminal 2026-07-12-00:00:
+             * FN-7872 user-defined shortcuts must inject their decoded value through the same sendLiteralShortcut path as built-in literal shortcuts. Keep the pointer/mouse/touch focus guards so the FN-6697/FN-6737 xterm-refocus invariant holds for custom buttons on desktop and touch surfaces.
+             */}
+            {terminalPreferences.customShortcuts.map((shortcut) => (
+              <button
+                key={shortcut.id}
+                type="button"
+                className="terminal-shortcut-btn terminal-shortcut-btn--custom"
+                data-testid={`terminal-custom-shortcut-${shortcut.id}`}
+                title={shortcut.label}
+                aria-label={shortcut.label}
+                onPointerDown={preserveShortcutFocus}
+                onMouseDown={preserveShortcutFocus}
+                onTouchStart={preserveShortcutFocus}
+                onClick={() => sendLiteralShortcut(decodeTerminalShortcutSequence(shortcut.value))}
+              >
+                {shortcut.label}
+              </button>
+            ))}
           </div>
         )}
 
@@ -3025,6 +3128,103 @@ export function TerminalModal({ isOpen, onClose, initialCommand, initialCommandG
                 </span>
               )}
             </label>
+            <section className="terminal-custom-shortcuts" data-testid="terminal-custom-shortcuts">
+              <div className="terminal-custom-shortcuts__header">
+                <div>
+                  <h3>{t("terminal.customShortcutsTitle", "Custom shortcuts")}</h3>
+                  <p className="terminal-preference-note">
+                    {t(
+                      "terminal.customShortcutsHelp",
+                      "Use \\n for Enter, \\t for Tab, \\e or \\x1b for Esc, \\r for Return, and \\\\ for a literal backslash.",
+                    )}
+                  </p>
+                </div>
+                <span className="terminal-custom-shortcuts__count">
+                  {terminalPreferences.customShortcuts.length}/{MAX_TERMINAL_CUSTOM_SHORTCUTS}
+                </span>
+              </div>
+              {terminalPreferences.customShortcuts.length === 0 ? (
+                <p className="terminal-custom-shortcuts__empty" data-testid="terminal-custom-shortcuts-empty">
+                  {t("terminal.customShortcutsEmpty", "No custom shortcuts yet.")}
+                </p>
+              ) : (
+                <ul className="terminal-custom-shortcuts__list" aria-label={t("terminal.customShortcutsList", "Custom terminal shortcuts")}>
+                  {terminalPreferences.customShortcuts.map((shortcut) => (
+                    <li key={shortcut.id} className="terminal-custom-shortcuts__row">
+                      <span className="terminal-custom-shortcuts__summary">
+                        <strong>{shortcut.label}</strong>
+                        <code>{shortcut.value}</code>
+                      </span>
+                      <span className="terminal-custom-shortcuts__actions">
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          data-testid={`terminal-custom-shortcut-edit-${shortcut.id}`}
+                          onClick={() => startEditingCustomShortcut(shortcut)}
+                        >
+                          {t("common.edit", "Edit")}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          data-testid={`terminal-custom-shortcut-remove-${shortcut.id}`}
+                          onClick={() => removeCustomShortcut(shortcut.id)}
+                        >
+                          {t("common.remove", "Remove")}
+                        </button>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="terminal-custom-shortcuts__form">
+                <label className="terminal-preference-field">
+                  <span>{t("terminal.customShortcutLabel", "Button label")}</span>
+                  <input
+                    className="input terminal-preference-control"
+                    data-testid="terminal-custom-shortcut-label-input"
+                    type="text"
+                    maxLength={MAX_TERMINAL_CUSTOM_SHORTCUT_LABEL_LENGTH}
+                    value={customShortcutLabel}
+                    onChange={(event) => setCustomShortcutLabel(event.target.value)}
+                  />
+                </label>
+                <label className="terminal-preference-field">
+                  <span>{t("terminal.customShortcutValue", "Injected value")}</span>
+                  <input
+                    className="input terminal-preference-control"
+                    data-testid="terminal-custom-shortcut-value-input"
+                    type="text"
+                    maxLength={MAX_TERMINAL_CUSTOM_SHORTCUT_VALUE_LENGTH}
+                    value={customShortcutValue}
+                    onChange={(event) => setCustomShortcutValue(event.target.value)}
+                  />
+                </label>
+                <div className="terminal-custom-shortcuts__form-actions">
+                  {isEditingCustomShortcut && (
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      data-testid="terminal-custom-shortcut-cancel"
+                      onClick={resetCustomShortcutForm}
+                    >
+                      {t("common.cancel", "Cancel")}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="btn terminal-custom-shortcuts__submit"
+                    data-testid="terminal-custom-shortcut-add"
+                    disabled={!canSubmitCustomShortcut}
+                    onClick={submitCustomShortcut}
+                  >
+                    {isEditingCustomShortcut
+                      ? t("terminal.customShortcutSave", "Save shortcut")
+                      : t("terminal.customShortcutAdd", "Add shortcut")}
+                  </button>
+                </div>
+              </div>
+            </section>
             <button
               type="button"
               className="btn terminal-preferences-reset"

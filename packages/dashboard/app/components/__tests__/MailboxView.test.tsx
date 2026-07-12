@@ -25,6 +25,7 @@ vi.mock("../../api", () => ({
   fetchApprovals: vi.fn(),
   fetchApprovalDetail: vi.fn(),
   decideApproval: vi.fn(),
+  artifactMediaUrl: vi.fn((id: string, projectId?: string) => `/api/artifacts/${id}/media${projectId ? `?projectId=${projectId}` : ""}`),
 }));
 
 vi.mock("../../hooks/useViewportMode", () => {
@@ -807,6 +808,98 @@ describe("MailboxView", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("mailbox-message-detail")).toBeDefined();
+    });
+  });
+
+  it("renders an inline artifact attachment in the single-message detail path", async () => {
+    const artifactMessage: Message = {
+      ...mockMessage,
+      metadata: {
+        artifactId: "art-mailbox-image",
+        artifactType: "image",
+        title: "Mailbox Screenshot",
+        mimeType: "image/png",
+      },
+    };
+    mockFetchInbox.mockResolvedValue(makeInboxResponse([artifactMessage], 1));
+    mockFetchConversation.mockResolvedValue([artifactMessage]);
+    mockMarkMessageRead.mockResolvedValue({ ...artifactMessage, read: true });
+
+    render(<MailboxView {...defaultProps} projectId="project-a" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-item-msg-001")).toBeDefined();
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("mailbox-item-msg-001"));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-message-body")).toHaveTextContent(artifactMessage.content);
+      expect(screen.getByTestId("mailbox-artifact-attachment")).toBeInTheDocument();
+      expect(screen.getByRole("img", { name: "Mailbox Screenshot" })).toHaveAttribute("src", "/api/artifacts/art-mailbox-image/media?projectId=project-a");
+      expect(screen.getByRole("link", { name: "Open artifact: Mailbox Screenshot" })).toHaveAttribute("href", "/api/artifacts/art-mailbox-image/media?projectId=project-a");
+    });
+  });
+
+  it("renders no artifact attachment for messages without artifact metadata", async () => {
+    mockFetchInbox.mockResolvedValue(makeInboxResponse([mockMessage], 1));
+    mockFetchConversation.mockResolvedValue([mockMessage]);
+    mockMarkMessageRead.mockResolvedValue({ ...mockMessage, read: true });
+
+    render(<MailboxView {...defaultProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-item-msg-001")).toBeDefined();
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("mailbox-item-msg-001"));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-message-body")).toHaveTextContent(mockMessage.content);
+      expect(screen.queryByTestId("mailbox-artifact-attachment")).toBeNull();
+    });
+  });
+
+  it("renders artifact attachments inside conversation thread messages", async () => {
+    const rootMessage: Message = {
+      ...mockMessage,
+      id: "msg-artifact-root",
+      content: "Artifact root",
+    };
+    const artifactReply: Message = {
+      ...mockMessage,
+      id: "msg-artifact-reply",
+      content: "New image artifact registered: Thread Image",
+      metadata: {
+        replyTo: { messageId: "msg-artifact-root" },
+        artifactId: "art-thread-image",
+        artifactType: "image",
+        title: "Thread Image",
+      },
+      read: true,
+    };
+    mockFetchInbox.mockResolvedValue(makeInboxResponse([rootMessage], 1));
+    mockFetchConversation.mockResolvedValue([rootMessage, artifactReply]);
+    mockMarkMessageRead.mockResolvedValue({ ...rootMessage, read: true });
+
+    render(<MailboxView {...defaultProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-item-msg-artifact-root")).toBeDefined();
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("mailbox-item-msg-artifact-root"));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-conversation")).toBeInTheDocument();
+      expect(screen.getByTestId("mailbox-artifact-attachment")).toBeInTheDocument();
+      expect(screen.getByRole("img", { name: "Thread Image" })).toHaveAttribute("src", "/api/artifacts/art-thread-image/media");
     });
   });
 

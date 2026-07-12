@@ -54,7 +54,7 @@ import { WorkspaceWorktreesSummary, isWorkspaceTask } from "./WorkspaceWorktrees
 import { WorkflowIcon } from "./WorkflowIcon";
 import { TaskContextMenu, buildTaskActionMenuModel, getTaskPrAutomationLabel, type TaskContextMenuColumnFlags, type TaskContextMenuColumnMetadata, type TaskMenuActionDescriptor } from "./TaskContextMenu";
 import { formatCost, hasTaskCost, taskTotalCost } from "../utils/taskTokenCost";
-import { getPriorityColorVar, getPriorityIcon } from "../utils/priorityIndicator";
+import { getPriorityColorVar, getPriorityIcon, getPriorityLabel } from "../utils/priorityIndicator";
 
 /** Per-branch progress snapshot (U13). Surfaced as an optional additive field
  *  on the task payload for the parallel-window badge (U9). */
@@ -3086,10 +3086,14 @@ function TaskCardComponent({
         {hasCardMetaBadges && (
           <div className="card-meta-badges" data-testid="card-meta-badges">
             {showPriorityBadge && (
-              <span className={`card-priority-badge card-priority-badge--${normalizedPriority}`}>
-                {/* FNXC:PriorityColorCoding 2026-07-11-00:00: Cards render the shared priority glyph with the priorityIndicator urgency color while preserving the existing badge text and non-normal visibility gate. */}
+              <span
+                className={`card-priority-badge card-priority-badge--${normalizedPriority}`}
+                title={getPriorityLabel(normalizedPriority)}
+                aria-label={getPriorityLabel(normalizedPriority)}
+              >
+                {/* FNXC:PriorityIconOnlyBadge 2026-07-12-00:00: FN-7867 makes task-card priority badges icon-only so priority text cannot widen .card-meta-badges and force wrapping; preserve the label through title, aria-label, and visually-hidden text while keeping the shared urgency color. */}
                 <PriorityBadgeIcon size={10} aria-hidden="true" style={{ color: getPriorityColorVar(normalizedPriority) }} />
-                <span>{normalizedPriority}</span>
+                <span className="visually-hidden">{getPriorityLabel(normalizedPriority)}</span>
               </span>
             )}
             {task.executionMode === "fast" && (

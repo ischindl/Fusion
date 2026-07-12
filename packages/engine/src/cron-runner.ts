@@ -1046,7 +1046,9 @@ export async function createAiPromptExecutor(cwd: string, store?: TaskStore): Pr
       systemPrompt: AI_AUTOMATION_SYSTEM_PROMPT,
       tools: "coding",
       toolsAllowlist: allowedTools,
+      // FNXC:PluginSkills 2026-07-12-00:00: Automation sessions use the shared executor skill context; forward plugin body dirs when a plugin runner is supplied so requested plugin skills can be discovered.
       ...(skillContext.skillSelectionContext ? { skillSelection: skillContext.skillSelectionContext } : {}),
+      ...(skillContext.additionalSkillPaths.length > 0 ? { additionalSkillPaths: skillContext.additionalSkillPaths } : {}),
       defaultProvider: modelProvider,
       defaultModelId: modelId,
       mcpServers,

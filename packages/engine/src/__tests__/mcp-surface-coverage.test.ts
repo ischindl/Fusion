@@ -93,6 +93,17 @@ describe("MCP surface coverage", () => {
     await expect(resolveHeartbeatMcpForAgent(undefined, "agent-heartbeat-1")).resolves.toEqual({ servers: [], errors: [] });
   });
 
+  it("keeps every executor-owned fresh-session seam on immediate MCP re-resolution", () => {
+    const source = readFileSync(join(process.cwd(), "src/executor.ts"), "utf8");
+    const immediateResolutions = source.match(/mcpServers: await this\.resolveMcpServers\(/g) ?? [];
+
+    // Main executor, fresh retry, workflow/manual model seams, self-fix/review,
+    // and spawned-child paths all resolve at their own create-session call.
+    expect(immediateResolutions.length).toBeGreaterThanOrEqual(6);
+    expect(source).toContain("resumeApprovalAfterUnwindIfNeeded");
+    expect(source).toContain("approvalResumeAfterUnwind");
+  });
+
   it("keeps the heartbeat createResolvedAgentSession seam wired to the resolved MCP result", () => {
     expectResolvedMcpForwarded(
       "src/agent-heartbeat.ts",

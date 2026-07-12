@@ -102,6 +102,9 @@ export const tasks = projectSchema.table("tasks", {
   graphResumeRetryCount: integer("graph_resume_retry_count").default(0),
   resumeLimboTipSha: text("resume_limbo_tip_sha"),
   resumeLimboStepSignature: text("resume_limbo_step_signature"),
+  // FNXC:WorkflowLifecycle 2026-07-12 (merge port from main): FN-7863 execute self-requeue streak.
+  executeRequeueLoopCount: integer("execute_requeue_loop_count").default(0),
+  executeRequeueLoopSignature: text("execute_requeue_loop_signature"),
   recoveryRetryCount: integer("recovery_retry_count"),
   taskDoneRetryCount: integer("task_done_retry_count").default(0),
   worktreeSessionRetryCount: integer("worktree_session_retry_count").default(0),

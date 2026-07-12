@@ -103,6 +103,8 @@ export function rowToTask(row: TaskRow): Task {
     graphResumeRetryCount: row.graphResumeRetryCount ?? undefined,
     resumeLimboTipSha: row.resumeLimboTipSha || undefined,
     resumeLimboStepSignature: row.resumeLimboStepSignature || undefined,
+    executeRequeueLoopCount: row.executeRequeueLoopCount ?? undefined,
+    executeRequeueLoopSignature: row.executeRequeueLoopSignature || undefined,
     postReviewFixCount: row.postReviewFixCount ?? undefined,
     recoveryRetryCount: row.recoveryRetryCount ?? undefined,
     taskDoneRetryCount: row.taskDoneRetryCount ?? undefined,

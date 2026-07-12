@@ -357,6 +357,38 @@ export async function tryClaimCheckoutImpl(store: TaskStore, taskId: string, cla
       return { ok: false, reason: "row_not_found", current: null };
     }
 
+    // FNXC:AgentRoutingBackend 2026-07-12-00:00: PG backend branch for
+    // tryClaimCheckout — the SQLite path below is unreachable in backend mode.
+    if (store.backendMode) {
+      const layer = store.asyncLayer!;
+      const now = new Date().toISOString();
+      const projectScope = layer.projectId ? sql`AND project_id = ${layer.projectId}` : sql``;
+      const rows = await layer.db.execute(sql`
+        UPDATE project.tasks SET
+          checked_out_by = ${claim.agentId},
+          checked_out_at = COALESCE(checked_out_at, ${now}),
+          checkout_node_id = ${claim.nodeId},
+          checkout_run_id = ${claim.runId},
+          checkout_lease_renewed_at = ${claim.renewedAt},
+          checkout_lease_epoch = ${claim.leaseEpoch}
+        WHERE id = ${taskId}
+          ${projectScope}
+          AND deleted_at IS NULL
+          AND COALESCE(checked_out_by, '') = COALESCE(${precondition.expectedCheckedOutBy ?? ''}, '')
+          AND COALESCE(checkout_node_id, '') = COALESCE(${precondition.expectedNodeId ?? ''}, '')
+          AND COALESCE(checkout_lease_epoch, 0) = COALESCE(${precondition.expectedLeaseEpoch ?? 0}, 0)
+        RETURNING id
+      `);
+      const changes = (rows as unknown[]).length;
+      const post = await store.getTask(taskId);
+      if (changes === 0) {
+        return { ok: false, reason: "precondition_failed", current: post };
+      }
+      if (!post) {
+        return { ok: false, reason: "row_not_found", current: null };
+      }
+      return { ok: true, task: post };
+    }
     const updateResult = store.db.prepare(`
       UPDATE tasks
       SET

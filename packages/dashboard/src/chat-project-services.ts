@@ -94,6 +94,7 @@ export function getOrCreateScopedChatManager(
   chatStore: ChatStore,
   pluginRunner?: ConstructorParameters<typeof ChatManager>[3],
   refreshPluginRunner = false,
+  messageStore?: MessageStore,
 ): ChatManager {
   const key = store.getFusionDir();
   const cached = scopedChatManagerCache.get(key);
@@ -101,18 +102,25 @@ export function getOrCreateScopedChatManager(
     if (refreshPluginRunner && pluginRunner) {
       cached.setPluginRunner(pluginRunner);
     }
+    if (messageStore) {
+      cached.setMessageStore(messageStore);
+    }
     return cached;
   }
   // FNXC:PostgresCutover 2026-07-05-20:10: keep the backend AsyncDataLayer on
   // the chat AgentStore (merge union with main's Hermes plugin-runner refresh).
   const agentStore = new AgentStore({ rootDir: store.getFusionDir(), asyncLayer: store.getAsyncLayer() ?? undefined });
+  /*
+   * FNXC:ProjectChatRuntime 2026-07-12-11:00:
+   * Project/agent chat must expose the same tool schema over desktop and browser transports. The scoped manager is cached by fusion dir, so lazy engine boot must upgrade the cached MessageStore instead of leaving fn_send_message/fn_read_messages stale-missing after the first pre-engine resolution.
+   */
   const manager = new ChatManager(
     chatStore,
     store.getRootDir(),
     agentStore,
     pluginRunner,
     () => store.getSettings(),
-    undefined,
+    messageStore,
     store,
   );
   scopedChatManagerCache.set(key, manager);

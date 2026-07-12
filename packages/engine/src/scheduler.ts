@@ -766,10 +766,12 @@ export class Scheduler {
         }
       } else if (to === "in-review" || to === "done" || to === "archived") {
         this.recentEngineTodoRequeues.delete(task.id);
-        if (task.dispatchStormCount != null || task.lastDispatchAt != null) {
+        if (task.dispatchStormCount != null || task.lastDispatchAt != null || task.executeRequeueLoopCount != null || task.executeRequeueLoopSignature != null) {
           void this.store.updateTask(task.id, {
             dispatchStormCount: null,
             lastDispatchAt: null,
+            executeRequeueLoopCount: null,
+            executeRequeueLoopSignature: null,
           }).catch((error) => {
             schedulerLog.warn(`Failed to reset dispatch oscillation state for ${task.id} on move to ${to}: ${error instanceof Error ? error.message : String(error)}`);
           });
@@ -812,10 +814,12 @@ export class Scheduler {
       } else if (this.pausedTaskIds.has(task.id)) {
         // Task was paused, now unpaused — trigger scheduling
         this.pausedTaskIds.delete(task.id);
-        if (task.userPaused === false && (task.dispatchStormCount != null || task.lastDispatchAt != null)) {
+        if (task.userPaused === false && (task.dispatchStormCount != null || task.lastDispatchAt != null || task.executeRequeueLoopCount != null || task.executeRequeueLoopSignature != null)) {
           void this.store.updateTask(task.id, {
             dispatchStormCount: null,
             lastDispatchAt: null,
+            executeRequeueLoopCount: null,
+            executeRequeueLoopSignature: null,
           }).catch((error) => {
             schedulerLog.warn(`Failed to reset dispatch oscillation state for ${task.id} on unpause: ${error instanceof Error ? error.message : String(error)}`);
           });

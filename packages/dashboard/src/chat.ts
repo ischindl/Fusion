@@ -691,6 +691,17 @@ export type ChatStreamEvent =
   | { type: "tool_end"; data: { toolName: string; isError: boolean; result?: unknown } }
   | { type: "fallback"; data: { primaryModel: string; fallbackModel: string; triggerPoint: "session-creation" | "prompt-time" } }
   | {
+      type: "warning";
+      data: {
+        code: "tool-schema-reduced";
+        toolSchemaReduced: true;
+        reason: "message-store-unavailable";
+        sessionId: string;
+        agentId: string;
+        projectId: string | null;
+      };
+    }
+  | {
       type: "done";
       data: {
         messageId: string;
@@ -1055,7 +1066,7 @@ export class ChatManager {
       FNXC:ChatSkills 2026-06-16-19:10:
       Agent chat receives the project plugin runner through this narrow structural type, so expose enabled plugin skill contributions here without requiring dashboard code to depend on the full engine runner class.
       */
-      getPluginSkills?(): Array<{ pluginId: string; skill: { name: string; enabled?: boolean } }>;
+      getPluginSkills?(): Array<{ pluginId: string; pluginRoot?: string; skill: { skillId?: string; name: string; description?: string; enabled?: boolean; skillFiles?: string[] } }>;
     },
     private getSettings?: () => Promise<Pick<Settings,
       | "fallbackProvider"
@@ -1097,6 +1108,14 @@ export class ChatManager {
    */
   setPluginRunner(pluginRunner: ChatManager["pluginRunner"] | undefined): void {
     this.pluginRunner = pluginRunner;
+  }
+
+  /**
+   * FNXC:ProjectChatRuntime 2026-07-12-11:00:
+   * Project-scoped chat managers can be constructed before the project engine boots, so the engine MessageStore that provides fn_send_message/fn_read_messages must be refreshable post-construction like the plugin runner. Without this FN-7854 refresh seam, a cached desktop manager keeps messaging tools permanently stripped for that session.
+   */
+  setMessageStore(messageStore: MessageStore | undefined): void {
+    this.messageStore = messageStore;
   }
 
   private getPluginRunnerForSkillSelection(): Parameters<typeof buildSessionSkillContextSync>[3] {
@@ -2246,6 +2265,26 @@ export class ChatManager {
        * Model-loop chat sessions apply the per-session thinking level through the engine `defaultThinkingLevel` session option; an empty session value inherits the project/global execution default resolved by resolveExecutorThinkingLevel.
        */
       const effectiveThinkingLevel = resolveExecutorThinkingLevel(session.thinkingLevel ?? undefined, chatModelSettings);
+
+      if (agent?.id && !this.messageStore) {
+        const warning = {
+          code: "tool-schema-reduced" as const,
+          toolSchemaReduced: true as const,
+          reason: "message-store-unavailable" as const,
+          sessionId,
+          agentId: agent.id,
+          projectId: session.projectId ?? null,
+        };
+        /*
+         * FNXC:ChatAgentTools 2026-07-12-11:00:
+         * A bound agent with reduced tools must receive an observable signal instead of later discovering missing coordination tools one failed call at a time. FN-7854 keeps the signal lightweight by using diagnostics plus the existing chat stream channel when MessageStore-backed messaging tools cannot be assembled.
+         */
+        diagnostics.warn("Project chat tool schema reduced", warning);
+        chatStreamManager.broadcast(sessionId, {
+          type: "warning",
+          data: warning,
+        }, broadcastOptions);
+      }
 
       const messagingTools = agent?.id && this.messageStore
         ? [

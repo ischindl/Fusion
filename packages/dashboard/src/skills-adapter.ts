@@ -7,7 +7,16 @@
 
 import { access, readFile, writeFile, mkdir, readdir, stat } from "node:fs/promises";
 import { join, relative, dirname, resolve, sep } from "node:path";
-import { superviseSpawn } from "@fusion/core";
+import {
+  computeSkillId,
+  getSkillSettingState,
+  normalizeStoredSkillPath,
+  parseSkillId,
+  resolvePluginSkillBodyPath,
+  resolvePluginSkillEnabled,
+  superviseSpawn,
+} from "@fusion/core";
+export { computeSkillId, getSkillSettingState, parseSkillId } from "@fusion/core";
 import type { ChildProcess } from "node:child_process";
 
 /**
@@ -198,39 +207,6 @@ export interface SkillFileContent {
 }
 
 /**
- * Compute deterministic skill ID from metadata.
- * Format: encodeURIComponent(metadata.source) + "::" + relativePath
- *
- * @param source - The package source identifier
- * @param relativePath - Path relative to the skill directory
- * @returns Deterministic skill ID
- */
-export function computeSkillId(source: string, relativePath: string): string {
-  const normalizedPath = relativePath.replaceAll("\\", "/");
-  return `${encodeURIComponent(source)}::${normalizedPath}`;
-}
-
-/**
- * Parse a skill ID back into source and relativePath components.
- */
-export function parseSkillId(skillId: string): { source: string; relativePath: string } | null {
-  const parts = skillId.split("::");
-  if (parts.length !== 2) return null;
-  try {
-    return {
-      source: decodeURIComponent(parts[0]!),
-      relativePath: parts[1]!,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function normalizeStoredSkillPath(path: string): string {
-  return path.replaceAll("\\", "/").replace(/^skills\//, "");
-}
-
-/**
  * Reduce any skill-name form to a single bare token (lowercased) for dedup:
  *   "ce-work/SKILL.md" / "<src>::skills/ce-work/SKILL.md" / "ce-work" → "ce-work"
  * Mirrors the editor-side helper (app/components/nodes/node-summary.ts); kept
@@ -275,55 +251,6 @@ async function waitForSupervisedExit(
 }
 
 /**
- * Resolve a skill's explicit enable/disable state from settings.
- * Checks both top-level skills and package-scoped skills. Returns "enabled" or
- * "disabled" when a settings entry matches, or undefined when the settings file
- * says nothing about this skill -- so callers can apply their own default.
- */
-function getSkillSettingState(
-  skillId: string,
-  settings: { skills?: string[]; packages?: Array<{ source: string; skills?: string[] }> },
-): "enabled" | "disabled" | undefined {
-  const parsedSkillId = parseSkillId(skillId);
-  if (!parsedSkillId) {
-    return undefined;
-  }
-
-  const normalizedSkillPath = normalizeStoredSkillPath(parsedSkillId.relativePath);
-
-  const skills = settings.skills ?? [];
-  for (const entry of skills) {
-    const entryPath = normalizeStoredSkillPath(
-      entry.startsWith("+") || entry.startsWith("-") ? entry.slice(1) : entry,
-    );
-    const entryId = computeSkillId("*", `skills/${entryPath}`);
-    if (entryId === skillId || entryPath === normalizedSkillPath) {
-      return entry.startsWith("+") ? "enabled" : "disabled";
-    }
-  }
-
-  // Check package-scoped skills
-  const packages = settings.packages ?? [];
-  for (const pkg of packages) {
-    const source = typeof pkg === "string" ? pkg : pkg.source;
-    const pkgSkills = typeof pkg === "object" ? pkg.skills : undefined;
-    if (!pkgSkills) continue;
-
-    for (const entry of pkgSkills) {
-      const entryPath = normalizeStoredSkillPath(
-        entry.startsWith("+") || entry.startsWith("-") ? entry.slice(1) : entry,
-      );
-      const entryId = computeSkillId(source, `skills/${entryPath}`);
-      if (entryId === skillId || entryPath === normalizedSkillPath) {
-        return entry.startsWith("+") ? "enabled" : "disabled";
-      }
-    }
-  }
-
-  return undefined;
-}
-
-/**
  * Check if a skill path is enabled in the settings.
  * Checks both top-level skills and package-scoped skills.
  * Defaults to disabled when the settings file says nothing about the skill.
@@ -358,11 +285,13 @@ export function createSkillsAdapter(options: {
   getPluginSkills?: (rootDir: string) =>
     | Array<{
       pluginId: string;
-      skill: { name: string; description?: string; enabled?: boolean };
+      pluginRoot?: string;
+      skill: { skillId?: string; name: string; description?: string; enabled?: boolean; skillFiles?: string[] };
     }>
     | Promise<Array<{
       pluginId: string;
-      skill: { name: string; description?: string; enabled?: boolean };
+      pluginRoot?: string;
+      skill: { skillId?: string; name: string; description?: string; enabled?: boolean; skillFiles?: string[] };
     }>>;
   /** Optional superviseSpawn seam for tests */
   superviseSpawn?: typeof superviseSpawn;
@@ -421,33 +350,34 @@ export function createSkillsAdapter(options: {
       /*
        * FNXC:PluginSkills 2026-07-10-00:00:
        * Skill discovery is project-scoped: plugin contributions must be resolved for the requesting rootDir's project_plugin_states, not the daemon startup directory. This keeps /api/skills/discovered from leaking daemon-root plugin skills into unrelated projects while still surfacing skills enabled only for the requested managed project.
+       *
+       * FNXC:PluginSkills 2026-07-12-00:00:
+       * Plugin skill body paths now come from skillFiles (GitHub #2018) through @fusion/core's traversal-guarded resolver when pluginRoot is available. Discovered plugin skill path is the absolute on-disk SKILL.md location for FN-7857 consumers, while missing pluginRoot keeps the old name-derived relative path for compatibility.
        */
       const pluginSkills = await (options.getPluginSkills?.(rootDir) ?? []);
       if (pluginSkills.length > 0) {
         const seenBareNames = new Set(discoveredSkills.map((s) => bareSkillName(s.name)));
-        for (const { pluginId, skill } of pluginSkills) {
+        for (const { pluginId, pluginRoot, skill } of pluginSkills) {
           const name = skill.name?.trim();
           if (!name) continue;
           const bare = bareSkillName(name);
           if (seenBareNames.has(bare)) continue;
           seenBareNames.add(bare);
-          const relativePath = `skills/${name}/SKILL.md`;
+          const resolvedBodyPath = pluginRoot
+            ? resolvePluginSkillBodyPath({ name, skillFiles: skill.skillFiles ?? [] }, pluginRoot)
+            : null;
+          const relativePath = resolvedBodyPath?.relativePath ?? `skills/${name}/SKILL.md`;
           const id = computeSkillId(`plugin:${pluginId}`, relativePath);
-          // Respect an explicit enable/disable written to project settings by
-          // toggleExecutionSkill, falling back to the plugin's declared default.
-          // Without consulting settings here, a user toggle on a plugin skill
-          // would be silently reverted on the very next discovery.
-          const settingState = getSkillSettingState(
-            id,
-            settings as Parameters<typeof getSkillSettingState>[1],
+          const enabled = resolvePluginSkillEnabled(
+            settings as Parameters<typeof resolvePluginSkillEnabled>[0],
+            pluginId,
+            name,
+            skill.enabled,
           );
-          const enabled = settingState === undefined
-            ? skill.enabled !== false
-            : settingState === "enabled";
           discoveredSkills.push({
             id,
             name,
-            path: relativePath,
+            path: resolvedBodyPath?.absolutePath ?? relativePath,
             relativePath,
             enabled,
             description: skill.description,
@@ -738,27 +668,10 @@ export function createSkillsAdapter(options: {
         throw new Error(`Skill not found: ${skillId}`);
       }
 
-      // Plugin-contributed skills have no on-disk representation in this
-      // catalog: the engine materializes them for executor sessions at runtime,
-      // so `path` is a virtual relative path with no filesystem backing. Reading
-      // it would silently return a blank panel, so surface what we know (name +
-      // description) and explain where the definition lives instead.
-      if (skill.metadata.source.startsWith("plugin:")) {
-        const pluginId = skill.metadata.source.slice("plugin:".length);
-        const lines = [`# ${skill.name}`, ""];
-        if (skill.description) {
-          lines.push(skill.description, "");
-        }
-        lines.push(
-          `_Contributed by the \`${pluginId}\` plugin. Its definition is materialized at runtime and has no editable file in this project._`,
-        );
-        return {
-          name: skill.name,
-          skillMd: lines.join("\n"),
-          files: [],
-        };
-      }
-
+      /*
+      FNXC:PluginSkills 2026-07-12-00:00:
+      GitHub #2017 requires plugin skills to be inspectable from the same on-disk SKILL.md/reference files that sessions load. FN-7860 makes plugin skill.path an absolute package path, so plugin entries now use the regular traversal-guarded disk reader instead of a runtime placeholder.
+      */
       let skillDir = skill.path;
       try {
         const skillPathStat = await stat(skill.path);
@@ -809,10 +722,10 @@ export function createSkillsAdapter(options: {
       if (!skill) {
         throw new Error(`Skill not found: ${skillId}`);
       }
-      if (skill.metadata.source.startsWith("plugin:")) {
-        throw new Error(`Skill file not found: ${relativePath}`);
-      }
-
+      /*
+      FNXC:PluginSkills 2026-07-12-00:00:
+      Plugin skill reference files are read from the resolved plugin skill directory with the same traversal guard as native skills, so dashboard inspection matches the body delivered to sessions.
+      */
       let skillDir = skill.path;
       try {
         const skillPathStat = await stat(skill.path);
