@@ -2445,6 +2445,81 @@ describe("POST /tasks/batch-update-models", () => {
     expect(res.body.error).toContain("nodeId must be a string, null, or undefined");
   });
 
+  it("bulk sets thinkingLevel across selected tasks", async () => {
+    const task1 = { ...FAKE_TASK_DETAIL, id: "FN-001" };
+    const task2 = { ...FAKE_TASK_DETAIL, id: "FN-002" };
+    const updated1 = { ...task1, thinkingLevel: "high" };
+    const updated2 = { ...task2, thinkingLevel: "high" };
+
+    (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValueOnce(task1).mockResolvedValueOnce(task2);
+    (store.updateTask as ReturnType<typeof vi.fn>).mockResolvedValueOnce(updated1).mockResolvedValueOnce(updated2);
+
+    const res = await REQUEST(buildApp(), "POST", "/api/tasks/batch-update-models", JSON.stringify({
+      taskIds: ["FN-001", "FN-002"],
+      thinkingLevel: "high",
+    }), {
+      "Content-Type": "application/json",
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body.count).toBe(2);
+    expect(store.updateTask).toHaveBeenCalledWith("FN-001", { thinkingLevel: "high" });
+    expect(store.updateTask).toHaveBeenCalledWith("FN-002", { thinkingLevel: "high" });
+  });
+
+  it("rejects invalid thinkingLevel values", async () => {
+    const res = await REQUEST(buildApp(), "POST", "/api/tasks/batch-update-models", JSON.stringify({
+      taskIds: ["FN-001"],
+      thinkingLevel: "maximum",
+    }), {
+      "Content-Type": "application/json",
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("thinkingLevel must be one of");
+    expect(store.updateTask).not.toHaveBeenCalled();
+  });
+
+  it("omitted thinkingLevel leaves existing values untouched", async () => {
+    const task1 = { ...FAKE_TASK_DETAIL, id: "FN-001", thinkingLevel: "medium" };
+    const updated1 = { ...task1, modelProvider: "openai", modelId: "gpt-4o" };
+
+    (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValueOnce(task1);
+    (store.updateTask as ReturnType<typeof vi.fn>).mockResolvedValueOnce(updated1);
+
+    const res = await REQUEST(buildApp(), "POST", "/api/tasks/batch-update-models", JSON.stringify({
+      taskIds: ["FN-001"],
+      modelProvider: "openai",
+      modelId: "gpt-4o",
+    }), {
+      "Content-Type": "application/json",
+    });
+
+    expect(res.status).toBe(200);
+    expect(store.updateTask).toHaveBeenCalledWith("FN-001", {
+      modelProvider: "openai",
+      modelId: "gpt-4o",
+    });
+  });
+
+  it("clears thinkingLevel when null is provided", async () => {
+    const task1 = { ...FAKE_TASK_DETAIL, id: "FN-001", thinkingLevel: "medium" };
+    const updated1 = { ...task1, thinkingLevel: undefined };
+
+    (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValueOnce(task1);
+    (store.updateTask as ReturnType<typeof vi.fn>).mockResolvedValueOnce(updated1);
+
+    const res = await REQUEST(buildApp(), "POST", "/api/tasks/batch-update-models", JSON.stringify({
+      taskIds: ["FN-001"],
+      thinkingLevel: null,
+    }), {
+      "Content-Type": "application/json",
+    });
+
+    expect(res.status).toBe(200);
+    expect(store.updateTask).toHaveBeenCalledWith("FN-001", { thinkingLevel: null });
+  });
+
   it("updates nodeId across multiple tasks", async () => {
     const task1 = { ...FAKE_TASK_DETAIL, id: "FN-001" };
     const task2 = { ...FAKE_TASK_DETAIL, id: "FN-002" };
