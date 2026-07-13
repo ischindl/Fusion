@@ -31,6 +31,7 @@ import {
 } from "../../../api/legacy";
 import { subscribeSse } from "../../../sse-bus";
 import type { ToastType } from "../../../hooks/useToast";
+import { copyTextToClipboard } from "../../../utils/copyToClipboard";
 import "./SystemControlsArea.css";
 
 /*
@@ -356,8 +357,16 @@ export function SystemControlsArea({ projectId, addToast }: SystemControlsAreaPr
     () =>
       runAction("diagnostics", async () => {
         const diagnostics = await buildDiagnostics();
-        await navigator.clipboard.writeText(JSON.stringify(diagnostics, null, 2));
-        toast(t("systemControls.diagnosticsCopied", "Diagnostics copied to clipboard"), "success");
+        /*
+        FNXC:SystemPanel 2026-07-12-00:00:
+        Diagnostics copy must use copyTextToClipboard because navigator.clipboard is undefined on non-secure origins such as mobile http://fusionstudio:4040. Calling writeText directly previously crashed with reading 'writeText' instead of surfacing a clear copy failure.
+        */
+        const copied = await copyTextToClipboard(JSON.stringify(diagnostics, null, 2));
+        if (copied) {
+          toast(t("systemControls.diagnosticsCopied", "Diagnostics copied to clipboard"), "success");
+          return;
+        }
+        toast(t("systemControls.diagnosticsCopyFailed", "Could not copy diagnostics to clipboard"), "error");
       }),
     [buildDiagnostics, runAction, t, toast],
   );
