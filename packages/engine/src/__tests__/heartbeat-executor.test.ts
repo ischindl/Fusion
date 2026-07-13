@@ -884,10 +884,10 @@ describe("executeHeartbeat", () => {
 
       expect(result).toBeDefined();
       expect(result.status).toBe("completed");
-      // FNXC:HeartbeatTests 2026-07-12-FN7835: FN-7835 reclassified the error-state-not-recovery-eligible resultJson reason from "invalid_state" to "error-unrecoverable" (HEARTBEAT_ERROR_UNRECOVERABLE_PAUSE_REASON) so parked-unrecoverable agents are distinguishable from other invalid states. The paused-state case above still uses "invalid_state".
-      expect(result.resultJson).toEqual({ reason: "error-unrecoverable", recoveryEligible: false, state: "error" });
+      // FNXC:HeartbeatTests 2026-07-12-16:10: FN-7878 makes absent/generic durable-agent lastError recoverable, but this executor-harness agent is not recovery-eligible; it should remain a normal invalid-state exit instead of fabricating an unrecoverable park.
+      expect(result.resultJson).toEqual({ reason: "invalid_state", state: "error" });
       expect(mockedCreateFnAgent).not.toHaveBeenCalled();
-      expect(store.updateAgentState).not.toHaveBeenCalledWith("agent-001", "active");
+      expect(store.updateAgentState).toHaveBeenCalledWith("agent-001", "active");
     });
 
     it("keeps terminated as a run status while pausing the agent", async () => {
@@ -920,9 +920,9 @@ describe("executeHeartbeat", () => {
         status: "completed",
       });
 
-      // FNXC:HeartbeatTests 2026-07-12-FN7835: FN-7835/FN-7859 park non-recoverable heartbeat failures as "paused" (pauseReason: error-unrecoverable) instead of bare "error". The subsequent successful run still clears the stale lastError and returns to active.
-      expect(store.updateAgentState).toHaveBeenCalledWith("agent-001", "paused");
-      expect(store.updateAgentState).not.toHaveBeenCalledWith("agent-001", "error");
+      // FNXC:HeartbeatTests 2026-07-12-16:10: FN-7878 changed generic heartbeat failures such as "Prompt failed" from immediate `error-unrecoverable` parking to bare `error` so the bounded retry budget can run. The subsequent successful run still clears the stale lastError and returns to active.
+      expect(store.updateAgentState).toHaveBeenCalledWith("agent-001", "error");
+      expect(store.updateAgentState).not.toHaveBeenCalledWith("agent-001", "paused");
       expect(store.updateAgent).toHaveBeenCalledWith("agent-001", expect.objectContaining({ lastError: "Prompt failed" }));
       expect(store.updateAgentState).toHaveBeenCalledWith("agent-001", "active");
       // FNXC:HeartbeatTests 2026-07-12-10:10: FN-7835's success path also resets error-recovery metadata alongside lastError, so use objectContaining to tolerate the extra metadata key.
@@ -3695,8 +3695,9 @@ describe("executeHeartbeat", () => {
       expect(result).toBeDefined();
       expect(result.status).toBe("failed");
       expect(result.stderrExcerpt).toContain("Model unavailable");
-      // FNXC:HeartbeatTests 2026-07-12-FN7835: FN-7835/FN-7859 park non-recoverable failures (e.g. "Model unavailable") as "paused" with pauseReason error-unrecoverable instead of bare "error".
-      expect(store.updateAgentState).toHaveBeenCalledWith("agent-001", "paused");
+      // FNXC:HeartbeatTests 2026-07-12-16:10: FN-7878 treats generic session startup failures such as "Model unavailable" as recoverable unless an operator-actionable auth/model/billing signal is present.
+      expect(store.updateAgentState).toHaveBeenCalledWith("agent-001", "error");
+      expect(store.updateAgentState).not.toHaveBeenCalledWith("agent-001", "paused");
     });
 
     it("fails soft on timer heartbeat when model provider credentials are unavailable", async () => {

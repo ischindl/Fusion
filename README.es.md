@@ -65,12 +65,11 @@ fusion dashboard
 **Homebrew** (macOS y Linux):
 
 ```bash
-brew tap runfusion/fusion
-brew install fusion
+brew install runfusion/fusion/fusion
 fusion dashboard            # o: fn dashboard
 ```
 
-O en una sola línea (añade el tap automáticamente): `brew install runfusion/fusion/fusion`.
+La instalación con nombre completo hace auto-tap y, en Homebrew 6.0+, confía solo en la fórmula Fusion. Si ya ejecutaste `brew tap runfusion/fusion` y la instalación por nombre corto falla con “untrusted tap”, ejecuta `brew trust --formula runfusion/fusion/fusion` y luego `brew install fusion`.
 
 **npm global**:
 

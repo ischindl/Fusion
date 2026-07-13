@@ -37,11 +37,10 @@ curl -fsSL https://runfusion.ai/install.sh | sh
 **Homebrew** (macOS & Linux):
 
 ```bash
-brew tap runfusion/fusion
-brew install fusion
+brew install runfusion/fusion/fusion
 ```
 
-Or as a one-liner: `brew install runfusion/fusion/fusion`.
+Fully-qualified install auto-taps and, on Homebrew 6.0+, trusts only this formula. If short-name install fails with “untrusted tap”, run `brew trust --formula runfusion/fusion/fusion` then `brew install fusion`.
 
 **npm global**:
 

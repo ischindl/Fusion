@@ -882,7 +882,7 @@ export {
   readProjectIdentityAsync,
   writeProjectIdentityAsync,
 } from "./project-identity.js";
-export { ProcessSupervisor, superviseSpawn } from "./process-supervisor.js";
+export { ProcessSupervisor, superviseSpawn, FUSION_RESTART_EXIT_CODE } from "./process-supervisor.js";
 export type {
   SuperviseSpawnOptions,
   SupervisedChild,

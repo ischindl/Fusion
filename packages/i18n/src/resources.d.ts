@@ -6538,6 +6538,7 @@ export default interface Resources {
       "reset": {
         "allProjectResetSuccess": "All project settings reset to defaults",
         "button": "Reset Settings",
+        "buttonShort": "Reset",
         "buttonTitle": "Reset settings to their defaults",
         "dialogAriaLabel": "Reset settings",
         "dialogBody": "Choose what to reset to its defaults. This cannot be undone.",

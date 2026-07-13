@@ -176,7 +176,11 @@ describe("heartbeat error-recovery primitives", () => {
     expect(isErrorRecoveryEligible(baseAgent({ metadata: { agentKind: "task-worker" }, lastError: "socket hang up" }), 5)).toBe(false);
     expect(isErrorRecoveryEligible(baseAgent({ metadata: buildHeartbeatErrorRecoveryMetadata(baseAgent(), 5), lastError: "socket hang up" }), 5)).toBe(false);
     expect(isErrorRecoveryEligible(baseAgent({ lastError: "invalid api key" }), 5)).toBe(false);
-    expect(isErrorRecoveryEligible(baseAgent({ lastError: "SyntaxError: Unexpected token" }), 5)).toBe(false);
+    expect(isErrorRecoveryEligible(baseAgent({ lastError: "model gpt-x not found" }), 5)).toBe(false);
+    expect(isErrorRecoveryEligible(baseAgent({ lastError: "quota exceeded" }), 5)).toBe(false);
+    expect(isErrorRecoveryEligible(baseAgent({ lastError: "billing issue: payment required" }), 5)).toBe(false);
+    expect(isErrorRecoveryEligible(baseAgent({ lastError: "SyntaxError: Unexpected token" }), 5)).toBe(true);
+    expect(isErrorRecoveryEligible(baseAgent({ lastError: "" }), 5)).toBe(true);
     // OAuth token-rotation 401s are transient credential rotations, not operator problems.
     expect(isErrorRecoveryEligible(baseAgent({ lastError: 'Error: 401 {"type":"error","error":{"type":"authentication_error","message":"Invalid authentication credentials"},"request_id":"req_011CcxRi9mwx1NrZmX9qN7p2"}' }), 5)).toBe(true);
     expect(isErrorRecoveryEligible(baseAgent({ lastError: '401 {"type":"error","error":{"type":"authentication_error","message":"OAuth token does not meet scope requirements"}}' }), 5)).toBe(false);
@@ -215,10 +219,48 @@ describe("HeartbeatMonitor error-state recovery", () => {
     }));
   });
 
-  it("parks an operator-actionable error state instead of auto-recovering or stranding it", async () => {
+  it("treats a generic first-run heartbeat failure as recoverable and auto-recovers on the next heartbeat", async () => {
+    const genericError = "Failed to start agent session: spawn ENOENT";
+    const firstSession = createSession(async () => { throw new Error(genericError); });
+    const secondSession = createSession(async () => undefined);
+    mockedCreateFnAgent.mockResolvedValueOnce(firstSession as never).mockResolvedValueOnce(secondSession as never);
+    const store = createAgentStore(baseAgent({ state: "active", lastError: undefined }));
+    const taskStore = createNoTaskStore();
+    const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: process.cwd() });
+
+    await monitor.executeHeartbeat({ agentId: store.agent.id, source: "timer" });
+
+    expect(store.agent.state).toBe("error");
+    expect(store.agent.lastError).toContain(genericError);
+    expect(store.agent.pauseReason).toBeUndefined();
+    expect(readHeartbeatErrorRetryCount(store.agent)).toBe(0);
+    expect(taskStore.recordRunAuditEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+      mutationType: "agent:error-parked-unrecoverable",
+    }));
+
+    await monitor.executeHeartbeat({ agentId: store.agent.id, source: "timer" });
+
+    expect(secondSession.prompt).toHaveBeenCalledTimes(1);
+    expect(store.agent.state).toBe("active");
+    expect(store.agent.lastError).toBeUndefined();
+    expect(readHeartbeatErrorRetryCount(store.agent)).toBe(0);
+    expect(taskStore.recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({
+      mutationType: "agent:auto-recover-error-state",
+      target: store.agent.id,
+      metadata: expect.objectContaining({ attempt: 1, limit: 5, source: "timer" }),
+    }));
+  });
+
+  it.each([
+    "invalid api key",
+    '401 {"type":"error","error":{"type":"authentication_error","message":"OAuth token does not meet scope requirements"}}',
+    "model gpt-x not found",
+    "quota exceeded",
+    "billing issue: payment method required",
+  ])("parks an operator-actionable error state instead of auto-recovering or stranding it: %s", async (lastError) => {
     const session = createSession(async () => undefined);
     mockedCreateFnAgent.mockResolvedValueOnce(session as never);
-    const store = createAgentStore(baseAgent({ lastError: "invalid api key" }));
+    const store = createAgentStore(baseAgent({ lastError }));
     const taskStore = createNoTaskStore();
     const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: process.cwd() });
 
@@ -226,7 +268,7 @@ describe("HeartbeatMonitor error-state recovery", () => {
 
     expect(session.prompt).not.toHaveBeenCalled();
     expect(store.agent.state).toBe("paused");
-    expect(store.agent.lastError).toBe("invalid api key");
+    expect(store.agent.lastError).toBe(lastError);
     expect(store.agent.pauseReason).toBe(HEARTBEAT_ERROR_UNRECOVERABLE_PAUSE_REASON);
     expect(readHeartbeatErrorRetryCount(store.agent)).toBe(0);
     expect(taskStore.recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -239,9 +281,13 @@ describe("HeartbeatMonitor error-state recovery", () => {
     }));
   });
 
-  it("parks a first-run operator-actionable failure immediately with an explicit reason", async () => {
+  it.each([
+    ["invalid api key", "invalid api key"],
+    ["OAuth scope", '401 {"type":"error","error":{"type":"authentication_error","message":"OAuth token does not meet scope requirements"}}'],
+    ["model not found", "model gpt-x not found"],
+  ])("parks a first-run operator-actionable failure immediately with an explicit reason: %s", async (_name, errorMessage) => {
     mockedCreateFnAgent.mockResolvedValueOnce(createSession(async () => {
-      throw new Error('401 {"type":"error","error":{"type":"authentication_error","message":"OAuth token does not meet scope requirements"}}');
+      throw new Error(errorMessage);
     }) as never);
     const store = createAgentStore(baseAgent({ state: "active", lastError: undefined }));
     const taskStore = createNoTaskStore();
@@ -250,7 +296,7 @@ describe("HeartbeatMonitor error-state recovery", () => {
     await monitor.executeHeartbeat({ agentId: store.agent.id, source: "timer" });
 
     expect(store.agent.state).toBe("paused");
-    expect(store.agent.lastError).toContain("OAuth token does not meet scope requirements");
+    expect(store.agent.lastError).toContain(errorMessage);
     expect(store.agent.pauseReason).toBe(HEARTBEAT_ERROR_UNRECOVERABLE_PAUSE_REASON);
     expect(readHeartbeatErrorRetryCount(store.agent)).toBe(0);
     expect(taskStore.recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -348,11 +394,11 @@ describe("HeartbeatMonitor error-state recovery", () => {
     }));
   });
 
-  it("parks the agent paused after the bounded recovery budget is exhausted", async () => {
+  it("parks the agent paused as retry-exhausted after a persistent generic error consumes the bounded recovery budget", async () => {
     mockedCreateFnAgent
-      .mockResolvedValueOnce(createSession(async () => { throw new Error("socket hang up 1"); }) as never)
-      .mockResolvedValueOnce(createSession(async () => { throw new Error("socket hang up 2"); }) as never);
-    const store = createAgentStore(baseAgent({ metadata: {}, lastError: "socket hang up" }));
+      .mockResolvedValueOnce(createSession(async () => { throw new Error("Unexpected end of JSON input 1"); }) as never)
+      .mockResolvedValueOnce(createSession(async () => { throw new Error("Unexpected end of JSON input 2"); }) as never);
+    const store = createAgentStore(baseAgent({ metadata: {}, lastError: "Unexpected end of JSON input" }));
     const taskStore = createNoTaskStore({ heartbeatErrorRecoveryAttempts: 2 });
     const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: process.cwd() });
 
@@ -429,6 +475,28 @@ describe("HeartbeatMonitor error-state recovery", () => {
       scheduler?.stop();
       vi.useRealTimers();
     }
+  });
+
+  it("suppresses stale worktree module-resolution errors instead of naively retrying or parking unrecoverable", async () => {
+    const staleError = "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/tmp/deleted/node_modules/@runfusion/fusion/dist/bin.js' imported from /tmp/deleted/packages/engine/src/pi.ts";
+    const session = createSession(async () => undefined);
+    mockedCreateFnAgent.mockResolvedValueOnce(session as never);
+    const store = createAgentStore(baseAgent({ lastError: staleError }));
+    const taskStore = createNoTaskStore();
+    const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: process.cwd() });
+
+    await monitor.executeHeartbeat({ agentId: store.agent.id, source: "timer" });
+
+    expect(session.prompt).not.toHaveBeenCalled();
+    expect(store.agent.state).toBe("error");
+    expect(store.agent.pauseReason).toBeUndefined();
+    expect(readHeartbeatErrorRetryCount(store.agent)).toBe(0);
+    expect(taskStore.recordRunAuditEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+      mutationType: "agent:auto-recover-error-state",
+    }));
+    expect(taskStore.recordRunAuditEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+      mutationType: "agent:error-parked-unrecoverable",
+    }));
   });
 
   it("resets the recovery budget after a successful run", async () => {

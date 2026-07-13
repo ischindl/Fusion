@@ -34,7 +34,7 @@ import { resolveHeartbeatPromptTemplate, resolveHeartbeatScopeDisciplineMode, se
 import { buildPromptLayers, collapsePromptLayers } from "./prompt-layers.js";
 import { resolveAndEmitGoalContext } from "./goal-injection-diagnostics.js";
 import { createLogger, heartbeatLog, formatError } from "./logger.js";
-import { classifyError, isOperatorActionableAgentError, isStaleWorktreeModuleResolutionError } from "./transient-error-detector.js";
+import { isOperatorActionableAgentError, isStaleWorktreeModuleResolutionError } from "./transient-error-detector.js";
 
 /**
  * FNXC:WorktreeAcquisition 2026-07-09-00:00:
@@ -4281,7 +4281,11 @@ export function resetHeartbeatErrorRecoveryMetadata(agent: { metadata?: Record<s
 
 export function isHeartbeatErrorRecoverable(agent: Pick<Agent, "lastError">): boolean {
   const lastError = agent.lastError ?? "";
-  return classifyError(lastError) === "transient" && !isOperatorActionableAgentError(lastError);
+  /*
+  FNXC:Reliability-ErrorClassification 2026-07-12-16:09:
+  FN-7878: a generic durable-agent heartbeat failure that manual Retry immediately fixes is recoverable by policy, even when it does not match curated transient patterns. Give unknown/session/spawn/stream blips the bounded heartbeat retry budget and re-park persistent failures as `error-retry-exhausted`; only operator-actionable auth/model/billing errors park immediately as `error-unrecoverable`. Stale worktree module-resolution errors stay out of naive retry recovery because self-healing has a dedicated stale-host/worktree suppression path.
+  */
+  return !isStaleWorktreeModuleResolutionError(lastError) && !isOperatorActionableAgentError(lastError);
 }
 
 export function isErrorRecoveryEligible(agent: Agent, limit: number): boolean {

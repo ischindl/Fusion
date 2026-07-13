@@ -386,6 +386,8 @@ describe("Transient Error Detector", () => {
       expect(isOperatorActionableAgentError("model gpt-x not found")).toBe(true);
       expect(isOperatorActionableAgentError("missing OPENAI_API_KEY")).toBe(true);
       expect(isOperatorActionableAgentError("billing issue: quota exceeded")).toBe(true);
+      expect(isOperatorActionableAgentError("OAuth token does not meet scope requirements")).toBe(true);
+      expect(isOperatorActionableAgentError("insufficient_scope: missing repo grant")).toBe(true);
       expect(
         isOperatorActionableAgentError(
           'Error: 404 {"type":"error","error":{"type":"not_found_error","message":"Not found"},"request_id":"req_011CcawcZ3Ra9CennJXM8oWC"}',
@@ -410,9 +412,11 @@ describe("Transient Error Detector", () => {
       expect(isOperatorActionableAgentError("400 invalid_request_error: missing required field messages")).toBe(false);
     });
 
-    it("returns false for transient network errors", () => {
+    it("returns false for transient and generic retryable errors", () => {
       expect(isOperatorActionableAgentError("socket hang up")).toBe(false);
       expect(isOperatorActionableAgentError("upstream connect error")).toBe(false);
+      expect(isOperatorActionableAgentError("Failed to start agent session: spawn ENOENT")).toBe(false);
+      expect(isOperatorActionableAgentError("Unexpected end of JSON input")).toBe(false);
     });
   });
 
@@ -449,6 +453,7 @@ describe("Transient Error Detector", () => {
       expect(isTransientAuthCredentialError(scopeError)).toBe(false);
       expect(isTransientError(scopeError)).toBe(false);
       expect(classifyError(scopeError)).toBe("permanent");
+      expect(isOperatorActionableAgentError(scopeError)).toBe(true);
     });
 
     it("keeps API-key misconfiguration operator-actionable even inside an authentication_error envelope", () => {

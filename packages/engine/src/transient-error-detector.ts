@@ -302,6 +302,8 @@ const OPERATOR_ACTIONABLE_AGENT_ERROR_PATTERNS: RegExp[] = [
   /unauthorized/i,
   /forbidden/i,
   /insufficient permissions?/i,
+  /(?:oauth token )?does not meet scope requirements?/i,
+  /insufficient[_\s-]?scope/i,
   /model .* not found/i,
   /unknown model/i,
   /no such model/i,

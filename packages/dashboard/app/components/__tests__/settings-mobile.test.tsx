@@ -241,14 +241,21 @@ describe("SettingsModal mobile adaptations", () => {
   FN-7506 mobile surface coverage: the Reset Settings button and its confirmation
   dialog must be reachable and usable at the mobile breakpoint, with no horizontal
   overflow, mirroring the desktop assertions in SettingsModal.general.test.tsx.
+
+  FNXC:SettingsReset 2026-07-12-00:00:
+  FN-7880 mobile label coverage: the same footer affordance renders in modal and
+  embedded SettingsView presentations, but only the mobile viewport shortens the
+  visible label to Reset. Desktop and tablet keep Reset Settings.
   */
-  it("renders and operates the Reset Settings button/dialog at the mobile breakpoint", async () => {
+  it("renders and operates the compact Reset button/dialog at the mobile breakpoint", async () => {
     mockSettingsViewport(true);
     const { findByTestId, container } = render(<SettingsModal onClose={vi.fn()} addToast={vi.fn()} />);
     await waitFor(() => expect(fetchSettings).toHaveBeenCalled());
 
     const resetBtn = await findByTestId("settings-reset");
     expect(container.querySelector(".modal-actions")?.contains(resetBtn)).toBe(true);
+    expect(resetBtn).toHaveTextContent(/^Reset$/);
+    expect(resetBtn).not.toHaveTextContent("Reset Settings");
 
     const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
     await user.click(resetBtn);
@@ -259,6 +266,34 @@ describe("SettingsModal mobile adaptations", () => {
     expect(within(dialog).getByTestId("settings-reset-menu")).toBeTruthy();
     expect(within(dialog).getByTestId("settings-reset-all-project")).toBeTruthy();
     expect(updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("uses viewport-specific reset labels in modal and embedded footers", async () => {
+    mockSettingsViewport(true);
+    const mobileModal = render(<SettingsModal onClose={vi.fn()} addToast={vi.fn()} />);
+    await waitFor(() => expect(fetchSettings).toHaveBeenCalled());
+    expect(await mobileModal.findByTestId("settings-reset")).toHaveTextContent(/^Reset$/);
+    mobileModal.unmount();
+
+    vi.clearAllMocks();
+    mockSettingsViewport(true);
+    const mobileEmbedded = render(<SettingsView onClose={vi.fn()} addToast={vi.fn()} />);
+    await waitFor(() => expect(fetchSettings).toHaveBeenCalled());
+    expect(await mobileEmbedded.findByTestId("settings-reset")).toHaveTextContent(/^Reset$/);
+    mobileEmbedded.unmount();
+
+    vi.clearAllMocks();
+    mockSettingsViewport(false);
+    const desktopModal = render(<SettingsModal onClose={vi.fn()} addToast={vi.fn()} />);
+    await waitFor(() => expect(fetchSettings).toHaveBeenCalled());
+    expect(await desktopModal.findByTestId("settings-reset")).toHaveTextContent(/^Reset Settings$/);
+    desktopModal.unmount();
+
+    vi.clearAllMocks();
+    mockSettingsViewport(false);
+    const desktopEmbedded = render(<SettingsView onClose={vi.fn()} addToast={vi.fn()} />);
+    await waitFor(() => expect(fetchSettings).toHaveBeenCalled());
+    expect(await desktopEmbedded.findByTestId("settings-reset")).toHaveTextContent(/^Reset Settings$/);
   });
 
   it("renders the compact app version label in mobile layout", async () => {

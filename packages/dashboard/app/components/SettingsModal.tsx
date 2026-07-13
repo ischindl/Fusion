@@ -4130,6 +4130,9 @@ export function SettingsModal({
             embedded (SettingsView) presentations — the footer is not gated by isEmbedded
             (only Cancel is), so this button renders in both automatically (FN-7506
             Surface Enumeration: modal + embedded).
+
+            FNXC:SettingsReset 2026-07-12-00:00:
+            The mobile Settings footer needs the compact Reset label to preserve horizontal space alongside Help, version, Import, Export, Cancel, and Save. Desktop and tablet keep the full Reset Settings wording while the existing destructive confirmation dialog remains unchanged.
             */}
             <button
               type="button"
@@ -4139,7 +4142,9 @@ export function SettingsModal({
               disabled={loading}
               title={t("settings.reset.buttonTitle", "Reset settings to their defaults")}
             >
-              {t("settings.reset.button", "Reset Settings")}
+              {viewportMode === "mobile"
+                ? t("settings.reset.buttonShort", "Reset")
+                : t("settings.reset.button", "Reset Settings")}
             </button>
           </div>
           <div className="modal-actions-right">

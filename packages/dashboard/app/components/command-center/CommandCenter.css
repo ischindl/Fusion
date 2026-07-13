@@ -123,9 +123,24 @@ Dashboard follows the global header rule: surface background, canonical height/p
   -webkit-overflow-scrolling: touch;
 }
 
+/*
+FNXC:SystemPanel 2026-07-12-16:10:
+The System tab combines a controls fragment with a stats .cc-area. Keep the tabpanel as the only vertical scroll owner, and put the shared --space-lg section rhythm on this lightweight wrapper so the Server logs section has breathing room before Live system health.
+*/
+.cc-system-tab {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  min-inline-size: 0;
+}
+
 @media (max-width: 768px) {
   .cc-tabpanel {
     padding-bottom: calc(var(--space-lg) + env(safe-area-inset-bottom, 0) + var(--standalone-bottom-gap));
+  }
+
+  .cc-system-tab {
+    gap: var(--space-lg);
   }
 }
 

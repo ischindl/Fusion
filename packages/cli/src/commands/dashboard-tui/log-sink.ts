@@ -1,4 +1,5 @@
-import type { LogEntry } from "./log-ring-buffer.js";
+import { redactSecrets } from "@fusion/core";
+import { LogRingBuffer, type LogEntry } from "./log-ring-buffer.js";
 
 // ── formatConsoleArgs ─────────────────────────────────────────────────────────
 
@@ -71,6 +72,16 @@ export class DashboardLogSink {
   private tui: LogSinkTarget | null = null;
   private isTTY: boolean;
   private silenced = false;
+  /*
+  FNXC:SystemPanel 2026-07-12-11:10:
+  The sink is the single funnel for runtime + captured-console logs in
+  `fn dashboard`, so it also keeps a bounded history and a listener set. The
+  dashboard server's System panel "View logs" surface reads/tails these via
+  the systemLogs ServerOptions provider — works in both TTY (TUI) and
+  headless modes because recording happens before TTY routing.
+  */
+  private readonly history = new LogRingBuffer();
+  private readonly entryListeners = new Set<(entry: LogEntry) => void>();
   private originalConsole: {
     log: typeof console.log;
     warn: typeof console.warn;
@@ -107,8 +118,40 @@ export class DashboardLogSink {
     console.error = noop;
   }
 
+  private record(level: LogEntry["level"], message: string, prefix?: string): void {
+    // `message` is already redacted by the public log/warn/error entry points.
+    const entry: LogEntry = { timestamp: new Date(), level, message, prefix };
+    this.history.push(entry);
+    for (const listener of this.entryListeners) {
+      try {
+        listener(entry);
+      } catch {
+        // Listeners must never throw into logging flows.
+      }
+    }
+  }
+
+  /** Most recent log entries in chronological order (bounded by the ring buffer). */
+  getRecentEntries(limit = 500): LogEntry[] {
+    const all = this.history.getAll();
+    return limit >= all.length ? all : all.slice(-limit);
+  }
+
+  /** Subscribe to live log entries. Returns an unsubscribe function. */
+  subscribeEntries(listener: (entry: LogEntry) => void): () => void {
+    this.entryListeners.add(listener);
+    return () => {
+      this.entryListeners.delete(listener);
+    };
+  }
+
   log(message: string, prefix?: string): void {
     if (this.silenced) return;
+    // Redact once at the entry point so BOTH the recorded history (served over
+    // /system/logs) and the TUI/console output are masked — a secret must not
+    // leak on either path.
+    message = redactSecrets(message);
+    this.record("info", message, prefix);
     const line = prefix ? `[${prefix}] ${message}` : message;
     if (this.tui && this.isTTY) {
       this.tui.log(message, prefix);
@@ -121,6 +164,8 @@ export class DashboardLogSink {
 
   warn(message: string, prefix?: string): void {
     if (this.silenced) return;
+    message = redactSecrets(message);
+    this.record("warn", message, prefix);
     const line = prefix ? `[${prefix}] ${message}` : message;
     if (this.tui && this.isTTY) {
       this.tui.warn(message, prefix);
@@ -133,6 +178,8 @@ export class DashboardLogSink {
 
   error(message: string, prefix?: string): void {
     if (this.silenced) return;
+    message = redactSecrets(message);
+    this.record("error", message, prefix);
     const line = prefix ? `[${prefix}] ${message}` : message;
     if (this.tui && this.isTTY) {
       this.tui.error(message, prefix);

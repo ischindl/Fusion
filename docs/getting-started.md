@@ -28,10 +28,11 @@ fusion dashboard
 ### Homebrew (macOS & Linux)
 
 ```bash
-brew tap runfusion/fusion
-brew install fusion
+brew install runfusion/fusion/fusion
 fusion dashboard            # or: fn dashboard
 ```
+
+Fully-qualified install auto-taps. On Homebrew 6.0+, it also trusts only this formula (short-name `brew install fusion` after a plain tap fails until you run `brew trust --formula runfusion/fusion/fusion`).
 
 ### npm global
 
@@ -69,7 +70,7 @@ npm install -g @runfusion/fusion@latest
 If you installed via Homebrew and links are still broken, reinstall the formula:
 
 ```bash
-brew uninstall fusion && brew install runfusion/tap/fusion
+brew uninstall fusion && brew install runfusion/fusion/fusion
 ```
 
 ## Initialize a Project

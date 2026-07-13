@@ -315,3 +315,103 @@ describe("formatConsoleArgs", () => {
     expect(typeof message).toBe("string");
   });
 });
+
+/*
+FNXC:SystemPanel 2026-07-12-12:10:
+The sink's history + listener surface powers the dashboard System panel's
+"View logs" tail; every log/warn/error must be recorded (with level and
+prefix) in both TTY and headless modes, and unsubscribing must stop delivery.
+*/
+describe("DashboardLogSink system-log history", () => {
+  it("records entries with level and prefix and serves bounded recents", () => {
+    const sink = new DashboardLogSink();
+    sink.log("hello", "dashboard");
+    sink.warn("careful");
+    sink.error("boom", "engine");
+
+    const entries = sink.getRecentEntries();
+    expect(entries).toHaveLength(3);
+    expect(entries[0]).toMatchObject({ level: "info", message: "hello", prefix: "dashboard" });
+    expect(entries[1]).toMatchObject({ level: "warn", message: "careful" });
+    expect(entries[2]).toMatchObject({ level: "error", message: "boom", prefix: "engine" });
+
+    expect(sink.getRecentEntries(1)).toHaveLength(1);
+    expect(sink.getRecentEntries(1)[0].message).toBe("boom");
+  });
+
+  it("notifies subscribers live and stops after unsubscribe", () => {
+    const sink = new DashboardLogSink();
+    const seen: string[] = [];
+    const unsubscribe = sink.subscribeEntries((entry) => seen.push(entry.message));
+
+    sink.log("first");
+    unsubscribe();
+    sink.log("second");
+
+    expect(seen).toEqual(["first"]);
+  });
+
+  // FNXC:SystemPanel 2026-07-12-14:40: The history is served over /system/logs
+  // and fed into diagnostics/bug reports, so secrets must be redacted before an
+  // entry enters the ring buffer or reaches a live subscriber.
+  it("redacts secrets before storing and before notifying subscribers", () => {
+    const sink = new DashboardLogSink();
+    const seen: string[] = [];
+    sink.subscribeEntries((entry) => seen.push(entry.message));
+
+    sink.log("auth failed Authorization: Bearer sk-abcdef0123456789abcdef");
+
+    const stored = sink.getRecentEntries()[0].message;
+    expect(stored).toContain("[REDACTED]");
+    expect(stored).not.toContain("sk-abcdef0123456789abcdef");
+    expect(seen[0]).toBe(stored);
+  });
+
+  it("redacts secrets on the TUI/console output path too", () => {
+    const secret = "sk-abcdef0123456789abcdef";
+    // Non-TTY sink → forwards to console.*; assert the raw secret never prints.
+    const consoleSpies = {
+      log: vi.spyOn(console, "log").mockImplementation(() => {}),
+      warn: vi.spyOn(console, "warn").mockImplementation(() => {}),
+      error: vi.spyOn(console, "error").mockImplementation(() => {}),
+    };
+    try {
+      const sink = new DashboardLogSink();
+      sink.log(`token=${secret}`);
+      sink.warn(`token=${secret}`, "engine");
+      sink.error(`Authorization: Bearer ${secret}`);
+
+      const allPrinted = [
+        ...consoleSpies.log.mock.calls,
+        ...consoleSpies.warn.mock.calls,
+        ...consoleSpies.error.mock.calls,
+      ]
+        .flat()
+        .join(" ");
+      expect(allPrinted).not.toContain(secret);
+      expect(allPrinted).toContain("[REDACTED]");
+    } finally {
+      consoleSpies.log.mockRestore();
+      consoleSpies.warn.mockRestore();
+      consoleSpies.error.mockRestore();
+    }
+  });
+
+  it("redacts secrets forwarded to the TUI target", () => {
+    const secret = "ghp_abcdef0123456789ABCDEF";
+    const lines: string[] = [];
+    const tuiTarget = {
+      running: true,
+      log: (m: string) => lines.push(m),
+      warn: (m: string) => lines.push(m),
+      error: (m: string) => lines.push(m),
+    };
+    const sink = new DashboardLogSink(tuiTarget);
+    sink.log(`leaked ${secret}`);
+    sink.error(`boom ${secret}`, "engine");
+
+    const joined = lines.join(" ");
+    expect(joined).not.toContain(secret);
+    expect(joined).toContain("[REDACTED]");
+  });
+});

@@ -24,8 +24,10 @@ Every user-editable setting's help text (the `.settings-description`/`<small>` h
 
 ## Reset Settings
 
-<!-- FNXC:SettingsResetDocs 2026-07-04-00:00: Reset Settings is a DESTRUCTIVE action. Document both choices, the scope-precision guarantee, and which sections are excluded so operators understand exactly what a reset does and does not touch before they click it. -->
-The Settings footer includes a **Reset Settings** button, next to Import/Export, in both the Settings modal and the embedded Settings page (desktop and mobile). Selecting it opens a confirmation dialog with two destructive choices, plus Cancel:
+<!-- FNXC:SettingsResetDocs 2026-07-04-00:00: Reset Settings is a DESTRUCTIVE action. Document both choices, the scope-precision guarantee, and which sections are excluded so operators understand exactly what a reset does and does not touch before they click it.
+
+FNXC:SettingsResetDocs 2026-07-12-00:00: FN-7880 shortens the mobile footer affordance to Reset to keep the Settings action row usable on small screens; desktop and tablet keep the full Reset Settings label while the confirmation choices remain identical. -->
+The Settings footer includes a **Reset Settings** button, next to Import/Export, in both the Settings modal and the embedded Settings page. On mobile the same button is labeled **Reset** to preserve footer space; desktop and tablet keep **Reset Settings**. Selecting it opens a confirmation dialog with two destructive choices, plus Cancel:
 
 - **Reset this menu ({{section}})** — resets only the settings owned by the currently active section, at that section's own scope (global or project). A global section (for example Appearance) writes the section's keys back to their canonical defaults. A project section (for example Merge) clears the section's keys back to their inherited/default value. No other section's settings are touched.
 - **Reset all project settings** — resets every project-scoped setting for the current project back to its default/inherited value. This never touches global (cross-project) settings.

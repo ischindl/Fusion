@@ -65,12 +65,11 @@ fusion dashboard
 **Homebrew**（macOS 和 Linux）：
 
 ```bash
-brew tap runfusion/fusion
-brew install fusion
+brew install runfusion/fusion/fusion
 fusion dashboard            # 或：fn dashboard
 ```
 
-或使用一行命令（自动添加 tap）：`brew install runfusion/fusion/fusion`。
+完整限定名安装会自动添加 tap，并在 Homebrew 6.0+ 上仅信任 Fusion 公式。若你已执行 `brew tap runfusion/fusion` 且短名称安装报 “untrusted tap”，请先运行 `brew trust --formula runfusion/fusion/fusion`，再 `brew install fusion`。
 
 **npm 全局安装**：
 

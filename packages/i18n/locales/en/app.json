@@ -6710,6 +6710,7 @@
     },
     "reset": {
       "button": "Reset Settings",
+      "buttonShort": "Reset",
       "buttonTitle": "Reset settings to their defaults",
       "dialogAriaLabel": "Reset settings",
       "dialogTitle": "Reset Settings",
