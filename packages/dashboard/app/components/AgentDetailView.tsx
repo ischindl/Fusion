@@ -36,6 +36,7 @@ import { AgentTaskBadge } from "./AgentTaskBadge";
 import { ExperimentalAgentOnboardingModal } from "./ExperimentalAgentOnboardingModal";
 import { AgentPermissionPolicyEditor } from "./AgentPermissionPolicyEditor";
 import { useFavorites } from "../hooks/useFavorites";
+import { copyTextToClipboard } from "../utils/copyToClipboard";
 
 /**
  * Simple className utility - joins class names conditionally
@@ -642,10 +643,19 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
     return getAgentHealthStatus(agent);
   };
 
-  const copyAgentId = () => {
+  /*
+  FNXC:Clipboard 2026-07-12-00:00:
+  Direct navigator.clipboard.writeText crashes or mis-reports on non-secure origins such as mobile http://fusionstudio:4040; copyTextToClipboard centralizes the secure-context guard and execCommand fallback.
+  */
+  const copyAgentId = async () => {
     if (agent) {
-      navigator.clipboard.writeText(agent.id);
-      addToast(t("agents.idCopied", "Agent ID copied to clipboard"), "success");
+      const copied = await copyTextToClipboard(agent.id);
+      addToast(
+        copied
+          ? t("agents.idCopied", "Agent ID copied to clipboard")
+          : t("agents.idCopyFailed", "Failed to copy agent ID"),
+        copied ? "success" : "error"
+      );
     }
   };
 
