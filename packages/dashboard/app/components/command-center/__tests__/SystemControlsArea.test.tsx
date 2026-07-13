@@ -243,6 +243,102 @@ describe("SystemControlsArea layout integration", () => {
     expect(addToast).not.toHaveBeenCalledWith(expect.stringContaining("writeText"), "error");
   });
 
+  it("embeds the full diagnostics bundle in the bug report body when the operator confirms", async () => {
+    mockFetchSystemLogs.mockResolvedValue({
+      entries: [{ timestamp: "2026-07-12T00:00:00.000Z", level: "error", message: "boom" }],
+    });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    await renderSystemTab();
+
+    const reportCard = await screen.findByTestId("cc-syscontrol-report-bug");
+    fireEvent.click(within(reportCard).getByRole("button", { name: "Report" }));
+
+    await waitFor(() => expect(openSpy).toHaveBeenCalledTimes(1));
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    const url = openSpy.mock.calls[0]?.[0] as string;
+    const body = decodeURIComponent(url.split("?body=")[1] ?? "");
+    expect(url).toContain("github.com");
+    expect(url).toContain("/issues/new");
+    expect(body).toContain("### What happened");
+    expect(body).toContain("### Environment");
+    expect(body).toContain("### Diagnostics");
+    expect(body).toContain("<details><summary>Diagnostics</summary>");
+    expect(body).toContain('"recentLogs"');
+    expect(body).toContain("boom");
+
+    confirmSpy.mockRestore();
+    openSpy.mockRestore();
+  });
+
+  it("omits the diagnostics block from the bug report body when the operator declines", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    await renderSystemTab();
+
+    const reportCard = await screen.findByTestId("cc-syscontrol-report-bug");
+    fireEvent.click(within(reportCard).getByRole("button", { name: "Report" }));
+
+    await waitFor(() => expect(openSpy).toHaveBeenCalledTimes(1));
+    const url = openSpy.mock.calls[0]?.[0] as string;
+    const body = decodeURIComponent(url.split("?body=")[1] ?? "");
+    expect(body).toContain("### What happened");
+    expect(body).toContain("### Environment");
+    expect(body).not.toContain("### Diagnostics");
+
+    confirmSpy.mockRestore();
+    openSpy.mockRestore();
+  });
+
+  it("neutralizes embedded code fences in log messages so they cannot break out of the diagnostics fence", async () => {
+    mockFetchSystemLogs.mockResolvedValue({
+      entries: [{ timestamp: "2026-07-12T00:00:00.000Z", level: "error", message: "```oops``` breakout" }],
+    });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    await renderSystemTab();
+
+    const reportCard = await screen.findByTestId("cc-syscontrol-report-bug");
+    fireEvent.click(within(reportCard).getByRole("button", { name: "Report" }));
+
+    await waitFor(() => expect(openSpy).toHaveBeenCalledTimes(1));
+    const url = openSpy.mock.calls[0]?.[0] as string;
+    const body = decodeURIComponent(url.split("?body=")[1] ?? "");
+    // The fenced JSON block should contain no raw ``` other than the fence delimiters themselves.
+    const jsonBlockMatch = body.match(/```json\n([\s\S]*?)\n```/);
+    expect(jsonBlockMatch).not.toBeNull();
+    expect(jsonBlockMatch?.[1]).not.toContain("```");
+    expect(jsonBlockMatch?.[1]).toContain("'''oops''' breakout");
+
+    confirmSpy.mockRestore();
+    openSpy.mockRestore();
+  });
+
+  it("truncates an oversized diagnostics bundle in the bug report body with the truncation cap marker", async () => {
+    mockFetchSystemLogs.mockResolvedValue({
+      entries: Array.from({ length: 100 }, (_, i) => ({
+        timestamp: "2026-07-12T00:00:00.000Z",
+        level: "error" as const,
+        message: `error-line-${i}-${"x".repeat(100)}`,
+      })),
+    });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    await renderSystemTab();
+
+    const reportCard = await screen.findByTestId("cc-syscontrol-report-bug");
+    fireEvent.click(within(reportCard).getByRole("button", { name: "Report" }));
+
+    await waitFor(() => expect(openSpy).toHaveBeenCalledTimes(1));
+    const url = openSpy.mock.calls[0]?.[0] as string;
+    const body = decodeURIComponent(url.split("?body=")[1] ?? "");
+    expect(body).toContain("\u2026(truncated)");
+    expect(body.length).toBeLessThanOrEqual(5500 + "\n\u2026(truncated)".length);
+
+    confirmSpy.mockRestore();
+    openSpy.mockRestore();
+  });
+
   it("keeps the System controls header row override active on mobile", () => {
     const css = readFileSync(join(process.cwd(), "app/components/command-center/areas/SystemControlsArea.css"), "utf8");
 

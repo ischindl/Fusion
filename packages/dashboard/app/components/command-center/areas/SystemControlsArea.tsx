@@ -371,29 +371,31 @@ export function SystemControlsArea({ projectId, addToast }: SystemControlsAreaPr
     [buildDiagnostics, runAction, t, toast],
   );
 
+  /*
+  FNXC:SystemPanel 2026-07-12-15:30:
+  Requirement change (FN-7883): the bug-report flow previously offered only the
+  last 5 error log lines behind confirmation. That gave maintainers too little
+  context for a first triage pass. Now doReportBug reuses the exact same
+  buildDiagnostics() bundle that "Copy diagnostics" produces (health,
+  runtime/system info, recent logs) and asks a single confirmation question
+  covering that whole bundle. The confirm gate, fenceSafe neutralization, and
+  BUG_URL_BODY_CAP truncation are preserved unchanged because this content is
+  still sent to a public github.com issue and must never be included without
+  explicit operator consent, must not let a log line break out of the fenced
+  code block, and must not produce an over-length URL.
+  */
   const doReportBug = useCallback(
     () =>
       runAction("report-bug", async () => {
         const health = await fetchDashboardHealth().catch(() => null);
-        const recentErrors = info?.logsSupported
-          ? await fetchSystemLogs(200)
-              .then((r) => r.entries.filter((entry) => entry.level === "error").slice(-5))
-              .catch(() => [])
-          : [];
-        // FNXC:SystemPanel 2026-07-12-14:05: The recent-errors excerpt is
-        // server log content sent to github.com. Require explicit confirmation
-        // before including it (operator may not want internal logs public), and
-        // neutralize embedded ``` so a log line can't break out of the fence.
-        const includeErrors =
-          recentErrors.length > 0 &&
-          window.confirm(
-            t(
-              "systemControls.reportBugConfirm",
-              "Include the last {{count}} server error log line(s) in the GitHub issue? They will be sent to github.com — review after the issue opens.",
-              { count: recentErrors.length },
-            ),
-          );
         const fenceSafe = (text: string) => text.replace(/`/g, "'");
+        const includeDiagnostics = window.confirm(
+          t(
+            "systemControls.reportBugConfirm",
+            "Include diagnostic info and recent logs (health, runtime info, recent server logs) in the GitHub issue? They will be sent to github.com — review after the issue opens.",
+          ),
+        );
+        const diagnostics = includeDiagnostics ? await buildDiagnostics() : null;
         let body = [
           "### What happened",
           "",
@@ -404,14 +406,23 @@ export function SystemControlsArea({ projectId, addToast }: SystemControlsAreaPr
           `- Platform: ${info?.platform ?? "unknown"} (${info?.arch ?? "?"}), Node ${info?.nodeVersion ?? "?"}`,
           `- Uptime: ${info?.uptimeSeconds ?? "?"}s, supervised: ${info?.supervised ?? false}`,
           "",
-          ...(includeErrors
-            ? ["### Recent server errors", "```", ...recentErrors.map((entry) => fenceSafe(`${entry.prefix ? `[${entry.prefix}] ` : ""}${entry.message}`)), "```"]
+          ...(diagnostics
+            ? [
+                "### Diagnostics",
+                "<details><summary>Diagnostics</summary>",
+                "",
+                "```json",
+                fenceSafe(JSON.stringify(diagnostics, null, 2)),
+                "```",
+                "",
+                "</details>",
+              ]
             : []),
         ].join("\n");
         if (body.length > BUG_URL_BODY_CAP) body = `${body.slice(0, BUG_URL_BODY_CAP)}\n…(truncated)`;
         window.open(`${GITHUB_NEW_ISSUE_URL}?body=${encodeURIComponent(body)}`, "_blank", "noopener");
       }),
-    [info, runAction],
+    [buildDiagnostics, info, runAction, t],
   );
 
   // ── Control definitions ───────────────────────────────────────────────────
