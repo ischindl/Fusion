@@ -1373,6 +1373,7 @@
     "stopGeneration": "생성 중지",
     "thinking": "생각 중",
     "thinkingLabel": "생각 중",
+    "thinkingLevelButton": "생각 수준",
     "thinkingStatus": "생각 중…",
     "toolArgsLabel": "",
     "toolArgsPreview": "",

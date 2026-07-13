@@ -1962,6 +1962,73 @@ CLI-agent sessions, or while streaming) — see StandardChatSurface.tsx `showEdi
   align-self: flex-end;
 }
 
+/*
+FNXC:Chat-ThinkingLevel 2026-07-12-19:30:
+FN-7898 adds a Brain-icon trigger next to the attach button so an active model-loop session's
+thinking (reasoning-effort) level can be changed mid-conversation. The root wrapper needs
+position: relative so the popover (mirroring .chat-skill-menu's positioning/z-index) anchors to
+the trigger instead of the whole .chat-input-row.
+*/
+.chat-thinking-level-root {
+  position: relative;
+  align-self: flex-end;
+}
+
+.chat-thinking-btn {
+  min-width: calc(var(--space-lg) * 2);
+  min-height: calc(var(--space-lg) * 2);
+}
+
+.chat-thinking-btn--active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.chat-thinking-popover {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + var(--space-xs));
+  min-width: calc((var(--space-xl) * 6) + var(--space-2xl));
+  max-width: calc(100vw - (var(--space-lg) * 2));
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  z-index: 50;
+}
+
+.chat-thinking-popover-list {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-xs);
+  max-height: calc(var(--space-xl) * 10);
+  overflow-y: auto;
+}
+
+.chat-thinking-popover-option {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background var(--transition-fast);
+}
+
+.chat-thinking-popover-option:hover,
+.chat-thinking-popover-option.active {
+  background: var(--card-hover);
+}
+
+.chat-thinking-popover-option:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring-strong);
+  background: var(--card-hover);
+}
+
 .chat-input-wrapper {
   flex: 1;
 }
@@ -2326,6 +2393,12 @@ Queued-message banners stack above the composer input with a capped scroll area,
 
   /* primary touch targets per AGENTS.md convention */
   .chat-attach-btn {
+    min-width: calc(var(--space-lg) * 2.25);
+    min-height: calc(var(--space-lg) * 2.25);
+  }
+
+  /* FN-7898: mirror the attach button's mobile touch-target bump. */
+  .chat-thinking-btn {
     min-width: calc(var(--space-lg) * 2.25);
     min-height: calc(var(--space-lg) * 2.25);
   }

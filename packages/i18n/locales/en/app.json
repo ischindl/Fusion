@@ -1385,6 +1385,7 @@
     "stopGeneration": "Stop generation",
     "thinking": "Thinking",
     "thinkingLabel": "Thinking",
+    "thinkingLevelButton": "Thinking level",
     "thinkingStatus": "Thinking…",
     "toolArgsLabel": "args",
     "toolArgsPreview": "args: {{summary}}",

@@ -475,24 +475,53 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
 
   /**
    * PATCH /api/chat/sessions/:id
-   * Update a chat session (title, status).
-   * Body: { title?: string, status?: "active" | "archived" }
+   * Update a chat session (title, status, thinkingLevel).
+   * Body: { title?: string, status?: "active" | "archived", thinkingLevel?: string | null }
+   *
+   * FNXC:Chat-ThinkingLevel 2026-07-12-19:30:
+   * FN-7775 only let a user pick a session's thinking level at creation time
+   * (POST /chat/sessions). FN-7898 lets an EXISTING model-loop session's
+   * reasoning-effort level be changed mid-conversation from the in-chat
+   * composer control, distinct from that create-time picker. `null`/`""`
+   * is an explicit clear back to the project/global default (mirrors the
+   * create-time semantics where an absent/empty thinkingLevel means
+   * "inherit"); omitting the key entirely leaves the session's stored
+   * value untouched, matching the existing title/status behavior below.
    */
   router.patch("/chat/sessions/:id", rateLimit(RATE_LIMITS.mutation), async (req, res) => {
     try {
       const { chatStore } = await resolveScopedChatStore(req.query.projectId as string | undefined);
 
       const sessionId = String(req.params.id);
-      const { title, status } = req.body as { title?: string; status?: string };
+      const { title, status, thinkingLevel: rawThinkingLevel } = req.body as {
+        title?: string;
+        status?: string;
+        thinkingLevel?: string | null;
+      };
 
       // Validate status if provided
       if (status !== undefined && status !== "active" && status !== "archived") {
         throw badRequest("status must be 'active' or 'archived'");
       }
 
+      // Normalize thinkingLevel before persisting: undefined leaves the field
+      // untouched (key omitted below), null/empty-string is an explicit clear
+      // to inherit the default, and any other value is validated against
+      // THINKING_LEVELS via the existing validateThinkingLevel helper.
+      let normalizedThinkingLevel: string | null | undefined;
+      if (rawThinkingLevel !== undefined) {
+        if (rawThinkingLevel === null || (typeof rawThinkingLevel === "string" && rawThinkingLevel.trim() === "")) {
+          normalizedThinkingLevel = null;
+        } else {
+          const validated = validateThinkingLevel(rawThinkingLevel);
+          normalizedThinkingLevel = validated ?? null;
+        }
+      }
+
       const session = chatStore.updateSession(sessionId, {
         ...(title !== undefined && { title: title?.trim() || null }),
         ...(status !== undefined && { status }),
+        ...(normalizedThinkingLevel !== undefined && { thinkingLevel: normalizedThinkingLevel }),
       });
 
       if (!session) {

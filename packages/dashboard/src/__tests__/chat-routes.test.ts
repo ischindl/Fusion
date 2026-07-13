@@ -1276,6 +1276,89 @@ describe("Chat API Routes", () => {
 
       expect(response.status).toBe(404);
     });
+
+    // FN-7898: PATCH now accepts thinkingLevel to change an existing session's
+    // reasoning-effort level mid-conversation (distinct from create-time picker).
+    it("accepts a valid thinkingLevel and forwards it to updateSession", async () => {
+      const updatedSession = { ...sampleSession, thinkingLevel: "high" };
+      mockUpdateSession.mockReturnValue(updatedSession);
+
+      const response = await request(
+        app,
+        "PATCH",
+        "/api/chat/sessions/chat-abc123",
+        JSON.stringify({ thinkingLevel: "high" }),
+        { "content-type": "application/json" },
+      );
+
+      expect(response.status).toBe(200);
+      expect((response.body as any).session.thinkingLevel).toBe("high");
+      expect(mockUpdateSession).toHaveBeenCalledWith("chat-abc123", { thinkingLevel: "high" });
+    });
+
+    it("returns 400 for an unknown thinkingLevel value", async () => {
+      const response = await request(
+        app,
+        "PATCH",
+        "/api/chat/sessions/chat-abc123",
+        JSON.stringify({ thinkingLevel: "ultra" }),
+        { "content-type": "application/json" },
+      );
+
+      expect(response.status).toBe(400);
+      expect((response.body as any).error).toContain("thinkingLevel must be one of");
+      expect(mockUpdateSession).not.toHaveBeenCalled();
+    });
+
+    it("treats thinkingLevel: null as an explicit clear", async () => {
+      const updatedSession = { ...sampleSession, thinkingLevel: null };
+      mockUpdateSession.mockReturnValue(updatedSession);
+
+      const response = await request(
+        app,
+        "PATCH",
+        "/api/chat/sessions/chat-abc123",
+        JSON.stringify({ thinkingLevel: null }),
+        { "content-type": "application/json" },
+      );
+
+      expect(response.status).toBe(200);
+      expect(mockUpdateSession).toHaveBeenCalledWith("chat-abc123", { thinkingLevel: null });
+    });
+
+    it("treats thinkingLevel: '' as an explicit clear", async () => {
+      const updatedSession = { ...sampleSession, thinkingLevel: null };
+      mockUpdateSession.mockReturnValue(updatedSession);
+
+      const response = await request(
+        app,
+        "PATCH",
+        "/api/chat/sessions/chat-abc123",
+        JSON.stringify({ thinkingLevel: "" }),
+        { "content-type": "application/json" },
+      );
+
+      expect(response.status).toBe(200);
+      expect(mockUpdateSession).toHaveBeenCalledWith("chat-abc123", { thinkingLevel: null });
+    });
+
+    it("omitting thinkingLevel leaves it untouched (existing title/status behavior unaffected)", async () => {
+      const updatedSession = { ...sampleSession, title: "New Title" };
+      mockUpdateSession.mockReturnValue(updatedSession);
+
+      const response = await request(
+        app,
+        "PATCH",
+        "/api/chat/sessions/chat-abc123",
+        JSON.stringify({ title: "New Title" }),
+        { "content-type": "application/json" },
+      );
+
+      expect(response.status).toBe(200);
+      expect(mockUpdateSession).toHaveBeenCalledWith("chat-abc123", { title: "New Title" });
+      const callArgs = mockUpdateSession.mock.calls[mockUpdateSession.mock.calls.length - 1][1];
+      expect(callArgs).not.toHaveProperty("thinkingLevel");
+    });
   });
 
   describe("DELETE /api/chat/sessions/:id", () => {

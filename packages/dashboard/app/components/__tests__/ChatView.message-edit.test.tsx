@@ -121,6 +121,7 @@ function baseChatState(overrides: Partial<UseChatReturn> = {}): UseChatReturn {
     createSession: vi.fn(),
     archiveSession: vi.fn(),
     renameSession: vi.fn(),
+    setSessionThinkingLevel: vi.fn(),
     deleteSession: vi.fn(),
     sendMessage: vi.fn(),
     editMessageAndResend: vi.fn(),

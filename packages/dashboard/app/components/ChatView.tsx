@@ -26,6 +26,7 @@ import { useViewportMode } from "./Header";
 import { updateGlobalSettings, type DiscoveredSkill } from "../api";
 import type { Agent } from "@fusion/core";
 import { CustomModelDropdown } from "./CustomModelDropdown";
+import { ChatThinkingLevelControl } from "./ChatThinkingLevelControl";
 import { AgentMentionPopup } from "./AgentMentionPopup";
 import { AgentAvatar } from "./AgentAvatar";
 import { ProviderIcon } from "./ProviderIcon";
@@ -514,6 +515,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
     createSession,
     archiveSession,
     renameSession,
+    setSessionThinkingLevel,
     deleteSession,
     sendMessage,
     editMessageAndResend,
@@ -2668,6 +2670,24 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
         >
           <Paperclip size={16} />
         </button>
+        {/*
+        FNXC:Chat-ThinkingLevel 2026-07-12-19:30:
+        FN-7898: change the active session's thinking level mid-conversation from the composer.
+        Model-loop (non-CLI) direct sessions only — CLI-backed sessions broker to a live PTY and
+        never receive defaultThinkingLevel (FN-7775), and chat rooms have no thinkingLevel field
+        at all. Gate with the existing cliChatActive boolean already in scope here.
+        */}
+        {!cliChatActive && (
+          <ChatThinkingLevelControl
+            level={activeSession?.thinkingLevel}
+            onChange={(level) => {
+              if (activeSession) {
+                void setSessionThinkingLevel(activeSession.id, level);
+              }
+            }}
+            disabled={!activeSession}
+          />
+        )}
         <div
           className={`chat-input-wrapper${isDragOver ? " chat-input-wrapper--dragover" : ""}`}
           onDragOver={(event) => {
