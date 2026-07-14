@@ -150,6 +150,7 @@ describe("PluginRunner", () => {
       off: mockOff,
       getTask: vi.fn(),
       getDatabase: vi.fn().mockReturnValue({ runPluginSchemaInits: mockRunPluginSchemaInits }),
+      isBackendMode: vi.fn().mockReturnValue(false),
       recordRunAuditEvent: vi.fn(),
     };
 

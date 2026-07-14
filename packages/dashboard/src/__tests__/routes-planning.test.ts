@@ -195,6 +195,9 @@ function createMockStore(overrides: Partial<TaskStore> = {}): TaskStore {
   }>();
 
   return {
+    // FNXC:PostgresCutover 2026-07-05-16:50: routes borrow the AsyncDataLayer
+    // from the scoped store; null = legacy mode for this mock.
+    getAsyncLayer: vi.fn().mockReturnValue(null),
     getTask: vi.fn(),
     listTasks: vi.fn().mockResolvedValue([]),
     searchTasks: vi.fn().mockResolvedValue([]),
@@ -320,26 +323,26 @@ async function REQUEST(
 class MockAiSessionStore extends EventEmitter {
   rows = new Map<string, AiSessionRow>();
 
-  upsert(row: AiSessionRow): void {
+  async upsert(row: AiSessionRow): Promise<void> {
     this.rows.set(row.id, row);
   }
 
-  updateThinking(id: string, thinkingOutput: string): void {
+  async updateThinking(id: string, thinkingOutput: string): Promise<void> {
     const row = this.rows.get(id);
     if (!row) return;
     this.rows.set(id, { ...row, thinkingOutput, updatedAt: new Date().toISOString() });
   }
 
-  delete(id: string): void {
+  async delete(id: string): Promise<void> {
     this.rows.delete(id);
     this.emit("ai_session:deleted", id);
   }
 
-  get(id: string): AiSessionRow | null {
+  async get(id: string): Promise<AiSessionRow | null> {
     return this.rows.get(id) ?? null;
   }
 
-  listRecoverable(): AiSessionRow[] {
+  async listRecoverable(): Promise<AiSessionRow[]> {
     return [...this.rows.values()].filter(
       (row) => row.status === "awaiting_input" || row.status === "generating" || row.status === "error",
     );
@@ -521,9 +524,9 @@ describe("Planning Mode Routes", () => {
 
     async function rehydratePlanningSessionRow(row: AiSessionRow): Promise<string> {
       const mockStore = new MockAiSessionStore();
-      mockStore.upsert(row);
+      await mockStore.upsert(row);
       setAiSessionStore(mockStore as unknown as Parameters<typeof setAiSessionStore>[0]);
-      const recoveredCount = rehydrateFromStore(mockStore as unknown as Parameters<typeof rehydrateFromStore>[0]);
+      const recoveredCount = await rehydrateFromStore(mockStore as unknown as Parameters<typeof rehydrateFromStore>[0]);
       expect(recoveredCount).toBe(1);
       return row.id;
     }
@@ -1262,7 +1265,7 @@ describe("Planning Mode Routes", () => {
         const sessionId = startRes.body.sessionId as string;
 
         const { planningStreamManager, getSession } = await import("../planning.js");
-        const session = getSession(sessionId);
+        const session = await getSession(sessionId);
         expect(session).toBeDefined();
 
         planningStreamManager.broadcast(sessionId, { type: "thinking", data: "first buffered thought" });
@@ -1313,7 +1316,7 @@ describe("Planning Mode Routes", () => {
         // Manually simulate an awaiting_input session by updating the session state
         // In the real app, this happens via respondToPlanning which sets currentQuestion
         const { planningStreamManager, getSession } = await import("../planning.js");
-        const session = getSession(sessionId);
+        const session = await getSession(sessionId);
         expect(session).toBeDefined();
 
         // Simulate the session being in awaiting_input state with a question
@@ -3275,7 +3278,7 @@ describe("Planning Mode Routes", () => {
           responses: { [PLANNING_DEEPEN_CHECKPOINT_ID]: [PLANNING_DEEPEN_PROCEED_OPTION_ID] },
         }), { "Content-Type": "application/json" });
 
-        const session = planningModule.getSession(planningSessionId);
+        const session = await planningModule.getSession(planningSessionId);
         if (!session) {
           throw new Error("Expected planning session to exist");
         }
@@ -3731,18 +3734,21 @@ describe("Saturated-slot regression: heartbeat wake routes", () => {
 
   describe("POST /api/tasks/:id/comments — utility lane independence", () => {
     it("triggers heartbeat wake for assigned agent when task-lane is saturated", async () => {
-      const tempDir = mkdtempSync(join(tmpdir(), "kb-routes-sat-comment-"));
-      const fusionDir = join(tempDir, ".fusion");
-      mkdirSync(fusionDir, { recursive: true });
+      const fusionDir = "/fake/root/.fusion";
 
       try {
         const { AgentStore } = await import("@fusion/core");
-        const agentStore = new AgentStore({ rootDir: fusionDir });
-        await agentStore.init();
-        const agent = await agentStore.createAgent({ name: "Saturated Wake Agent", role: "executor" });
-        await agentStore.updateAgent(agent.id, {
-          runtimeConfig: { messageResponseMode: "immediate" },
-        });
+      /*
+      FNXC:PostgresCutover 2026-07-05-16:50:
+      The legacy `new AgentStore({ rootDir })` runtime was removed
+      (VAL-REMOVAL-005); spy on the prototype instead of seeding a real
+      on-disk agent store. The invariant under test is lane independence of
+      the ROUTE under maxConcurrent=0, not AgentStore persistence.
+      */
+        const agent = { id: "agent-sat-1", name: "Saturated Wake Agent", role: "executor", state: "idle", runtimeConfig: { messageResponseMode: "immediate" } };
+        vi.spyOn(AgentStore.prototype, "init").mockResolvedValue(undefined);
+        vi.spyOn(AgentStore.prototype, "getAgent").mockResolvedValue(agent as never);
+        vi.spyOn(AgentStore.prototype, "getActiveHeartbeatRun").mockResolvedValue(null);
 
         const heartbeatMonitor = {
           executeHeartbeat: vi.fn().mockResolvedValue({ id: "run-sat-1" }),
@@ -3784,26 +3790,27 @@ describe("Saturated-slot regression: heartbeat wake routes", () => {
           }));
         }, { timeout: 1000 });
       } finally {
-        rmSync(tempDir, { recursive: true, force: true });
+        vi.restoreAllMocks();
       }
     });
 
     it("preserves active-run conflict 409 semantics when task-lane is saturated", async () => {
-      const tempDir = mkdtempSync(join(tmpdir(), "kb-routes-sat-active-run-"));
-      const fusionDir = join(tempDir, ".fusion");
-      mkdirSync(fusionDir, { recursive: true });
-      let agentStore: any;
+      const fusionDir = "/fake/root/.fusion";
 
       try {
         const { AgentStore } = await import("@fusion/core");
-        agentStore = new AgentStore({ rootDir: fusionDir });
-        await agentStore.init();
-        const agent = await agentStore.createAgent({ name: "Active Run Agent", role: "executor" });
-        await agentStore.updateAgent(agent.id, {
-          runtimeConfig: { messageResponseMode: "immediate" },
-        });
-        // Start an active run (simulates existing heartbeat)
-        await agentStore.startHeartbeatRun(agent.id);
+      /*
+      FNXC:PostgresCutover 2026-07-05-16:50:
+      The legacy `new AgentStore({ rootDir })` runtime was removed
+      (VAL-REMOVAL-005); spy on the prototype instead of seeding a real
+      on-disk agent store. The invariant under test is lane independence of
+      the ROUTE under maxConcurrent=0, not AgentStore persistence.
+      */
+        const agent = { id: "agent-sat-2", name: "Active Run Agent", role: "executor", state: "running", runtimeConfig: { messageResponseMode: "immediate" } };
+        vi.spyOn(AgentStore.prototype, "init").mockResolvedValue(undefined);
+        vi.spyOn(AgentStore.prototype, "getAgent").mockResolvedValue(agent as never);
+        // Existing active heartbeat run: the wake helper must skip.
+        vi.spyOn(AgentStore.prototype, "getActiveHeartbeatRun").mockResolvedValue({ id: "run-active" } as never);
 
         const heartbeatMonitor = {
           executeHeartbeat: vi.fn().mockResolvedValue({ id: "run-sat-2" }),
@@ -3838,26 +3845,35 @@ describe("Saturated-slot regression: heartbeat wake routes", () => {
         // Active run conflict must still work under saturation
         expect(heartbeatMonitor.executeHeartbeat).not.toHaveBeenCalled();
       } finally {
-        agentStore?.close?.();
-        rmSync(tempDir, { recursive: true, force: true });
+        vi.restoreAllMocks();
       }
     });
   });
 
   describe("POST /api/agents/:id/runs — utility lane independence", () => {
     it("accepts triggering comment wake fields when task-lane is saturated", async () => {
-      const tempDir = mkdtempSync(join(tmpdir(), "kb-routes-sat-agent-runs-"));
-      const fusionDir = join(tempDir, ".fusion");
-      mkdirSync(fusionDir, { recursive: true });
+      const fusionDir = "/fake/root/.fusion";
 
       try {
         const { AgentStore } = await import("@fusion/core");
-        const agentStore = new AgentStore({ rootDir: fusionDir });
-        await agentStore.init();
-        const agent = await agentStore.createAgent({
-          name: "Saturated Run Agent",
-          role: "executor",
-        });
+      /*
+      FNXC:PostgresCutover 2026-07-05-16:50:
+      The legacy `new AgentStore({ rootDir })` runtime was removed
+      (VAL-REMOVAL-005); spy on the prototype instead of seeding a real
+      on-disk agent store. The record-only run-creation path is exercised via
+      startHeartbeatRun/saveRun spies; run enrichment stays real.
+      */
+        const agent = { id: "agent-sat-run-1", name: "Saturated Run Agent", role: "executor", state: "idle" };
+        vi.spyOn(AgentStore.prototype, "init").mockResolvedValue(undefined);
+        vi.spyOn(AgentStore.prototype, "getAgent").mockResolvedValue(agent as never);
+        vi.spyOn(AgentStore.prototype, "getActiveHeartbeatRun").mockResolvedValue(null);
+        vi.spyOn(AgentStore.prototype, "startHeartbeatRun").mockResolvedValue({
+          id: "run-sat-created",
+          agentId: agent.id,
+          startedAt: "2026-01-01T00:00:00.000Z",
+          status: "running",
+        } as never);
+        vi.spyOn(AgentStore.prototype, "saveRun").mockResolvedValue(undefined as never);
 
         const store = createSaturatedStore({
           getFusionDir: vi.fn().mockReturnValue(fusionDir),
@@ -3891,23 +3907,17 @@ describe("Saturated-slot regression: heartbeat wake routes", () => {
           triggeringCommentType: "task",
         });
       } finally {
-        rmSync(tempDir, { recursive: true, force: true });
+        vi.restoreAllMocks();
       }
     });
 
     it("preserves validation 400 for invalid triggeringCommentIds when task-lane is saturated", async () => {
-      const tempDir = mkdtempSync(join(tmpdir(), "kb-routes-sat-validation-"));
-      const fusionDir = join(tempDir, ".fusion");
-      mkdirSync(fusionDir, { recursive: true });
+      const fusionDir = "/fake/root/.fusion";
 
       try {
-        const { AgentStore } = await import("@fusion/core");
-        const agentStore = new AgentStore({ rootDir: fusionDir });
-        await agentStore.init();
-        const agent = await agentStore.createAgent({
-          name: "Validation Agent",
-          role: "executor",
-        });
+        // Validation rejects before any store/agent access, so no seeded
+        // agent is required — a fixed id suffices (PostgresCutover port).
+        const agent = { id: "agent-sat-validation-1" };
 
         const store = createSaturatedStore({
           getFusionDir: vi.fn().mockReturnValue(fusionDir),
@@ -3933,7 +3943,7 @@ describe("Saturated-slot regression: heartbeat wake routes", () => {
         expect(res.status).toBe(400);
         expect(res.body.error).toContain("triggeringCommentIds must be an array");
       } finally {
-        rmSync(tempDir, { recursive: true, force: true });
+        vi.restoreAllMocks();
       }
     }, 15_000);
   });

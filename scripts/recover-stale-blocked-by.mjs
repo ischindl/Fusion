@@ -1,9 +1,17 @@
 #!/usr/bin/env node
+/*
+FNXC:PostgresCutover 2026-07-05-13:00:
+Ported from direct node:sqlite access on .fusion/fusion.db to the PostgreSQL
+backend (scripts/lib/backend-db.mjs). The FN-3899 recovery logic
+(planRecoverBlockedBy) is pure and operates on plain row arrays so tests need
+no database; only the thin apply step touches PostgreSQL. In PG the `log`
+column is jsonb (already an array), unlike the SQLite JSON-string column.
+*/
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { execSync } from "node:child_process";
-import { DatabaseSync } from "node:sqlite";
+import { openBackend, rowsOf } from "./lib/backend-db.mjs";
 
 function parseArgs(argv) {
   const flags = new Set(argv.slice(2));
@@ -57,17 +65,11 @@ function isTerminalColumn(column) {
   return column === "done" || column === "archived";
 }
 
-function hasDeletedAtColumn(db) {
-  const columns = db.prepare("PRAGMA table_info('tasks')").all();
-  return columns.some((column) => column?.name === "deletedAt");
-}
-
-export function recoverBlockedBy({ db, tasksDir, dryRun = true }) {
-  const includeDeletedAt = hasDeletedAtColumn(db);
-  const selectSql = includeDeletedAt
-    ? "SELECT id, \"column\", blockedBy, worktree, paused, log, deletedAt FROM tasks WHERE deletedAt IS NULL"
-    : "SELECT id, \"column\", blockedBy, worktree, paused, log FROM tasks";
-  const rows = db.prepare(selectSql).all();
+/**
+ * Pure FN-3899 planning: rows are { id, column, blockedBy, worktree, paused }.
+ * Returns findings; entries with newBlocker === null are the repairs.
+ */
+export function planRecoverBlockedBy({ rows, tasksDir }) {
   const byId = new Map(rows.map((row) => [row.id, row]));
 
   const activeScopes = new Map();
@@ -79,8 +81,6 @@ export function recoverBlockedBy({ db, tasksDir, dryRun = true }) {
   }
 
   const findings = [];
-  const now = new Date().toISOString();
-
   for (const row of rows) {
     if (row.column !== "todo" || !row.blockedBy) continue;
 
@@ -107,23 +107,40 @@ export function recoverBlockedBy({ db, tasksDir, dryRun = true }) {
     }
 
     findings.push({ taskId: row.id, oldBlocker: row.blockedBy, newBlocker: null, reason });
+  }
 
-    if (!dryRun) {
-      let log = [];
-      try {
-        log = row.log ? JSON.parse(row.log) : [];
-        if (!Array.isArray(log)) log = [];
-      } catch {
-        log = [];
-      }
-      log.push({
-        at: now,
-        message: "Recovered: cleared stale blockedBy via FN-3899 recovery",
-        outcome: `Recovered: cleared stale blockedBy via FN-3899 recovery (reason: ${reason})`,
-      });
+  return findings;
+}
 
-      db.prepare("UPDATE tasks SET blockedBy = NULL, log = ?, updatedAt = ? WHERE id = ?").run(JSON.stringify(log), now, row.id);
-    }
+export async function recoverBlockedBy({ backend, tasksDir, dryRun = true }) {
+  const { asyncLayer, sql } = backend;
+  const rows = rowsOf(
+    await asyncLayer.db.execute(sql`
+      SELECT id, "column", blocked_by AS "blockedBy", worktree, paused, log
+      FROM project."tasks"
+      WHERE deleted_at IS NULL
+    `),
+  );
+
+  const findings = planRecoverBlockedBy({ rows, tasksDir });
+  if (dryRun) return findings;
+
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const now = new Date().toISOString();
+  for (const finding of findings) {
+    if (finding.newBlocker === finding.oldBlocker) continue;
+    const row = byId.get(finding.taskId);
+    const log = Array.isArray(row?.log) ? [...row.log] : [];
+    log.push({
+      at: now,
+      message: "Recovered: cleared stale blockedBy via FN-3899 recovery",
+      outcome: `Recovered: cleared stale blockedBy via FN-3899 recovery (reason: ${finding.reason})`,
+    });
+    await asyncLayer.db.execute(sql`
+      UPDATE project."tasks"
+      SET blocked_by = NULL, log = ${JSON.stringify(log)}::jsonb, updated_at = ${now}
+      WHERE id = ${finding.taskId}
+    `);
   }
 
   return findings;
@@ -148,14 +165,13 @@ function printFindings(findings, dryRun) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   const { dryRun } = parseArgs(process.argv);
   const projectRoot = resolveProjectRoot();
-  const dbPath = path.join(projectRoot, ".fusion", "fusion.db");
   const tasksDir = path.join(projectRoot, ".fusion", "tasks");
 
-  const db = new DatabaseSync(dbPath);
+  const backend = await openBackend(projectRoot);
   try {
-    const findings = recoverBlockedBy({ db, tasksDir, dryRun });
+    const findings = await recoverBlockedBy({ backend, tasksDir, dryRun });
     printFindings(findings, dryRun);
   } finally {
-    db.close();
+    await backend.shutdown().catch(() => {});
   }
 }

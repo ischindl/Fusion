@@ -1,8 +1,15 @@
 #!/usr/bin/env node
 
+/*
+FNXC:PostgresCutover 2026-07-05-13:00:
+Ported from the sqlite3 CLI on .fusion/fusion.db to the PostgreSQL backend
+(scripts/lib/backend-db.mjs). Same heuristics; task rows and the
+active/archived duplicate join now come from the project/archive schemas.
+*/
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
+import { openBackend, rowsOf } from "./lib/backend-db.mjs";
 
 function parseArgs(argv) {
   const args = { projectRoot: process.cwd(), json: false };
@@ -24,19 +31,6 @@ function run(command, args, options = {}) {
     stdio: ["ignore", "pipe", "pipe"],
     ...options,
   }).trim();
-}
-
-function sqliteJson(dbPath, sql) {
-  const output = run("sqlite3", ["-json", dbPath, sql]);
-  return output ? JSON.parse(output) : [];
-}
-
-function safeSqliteJson(dbPath, sql) {
-  try {
-    return sqliteJson(dbPath, sql);
-  } catch {
-    return [];
-  }
 }
 
 function resolveMainRef(projectRoot) {
@@ -132,26 +126,37 @@ function getLatestTaskCommit(projectRoot, mainRef, taskId) {
   }
 }
 
-function buildReport(projectRoot) {
-  const dbPath = path.join(projectRoot, ".fusion", "fusion.db");
+async function buildReport(projectRoot) {
   const tasksDir = path.join(projectRoot, ".fusion", "tasks");
   const mainRef = resolveMainRef(projectRoot);
 
-  if (!existsSync(dbPath)) {
-    throw new Error(`Database not found: ${dbPath}`);
-  }
   if (!existsSync(tasksDir)) {
     throw new Error(`Tasks directory not found: ${tasksDir}`);
   }
 
-  const activeTasks = sqliteJson(
-    dbPath,
-    "SELECT id, title, createdAt, updatedAt, \"column\" AS columnName FROM tasks ORDER BY id",
-  );
-  const archivedDupes = safeSqliteJson(
-    dbPath,
-    "SELECT t.id AS id, t.title AS activeTitle, a.archivedAt AS archivedAt FROM tasks t INNER JOIN archivedTasks a ON a.id = t.id ORDER BY t.id",
-  );
+  const backend = await openBackend(projectRoot);
+  let activeTasks;
+  let archivedDupes;
+  try {
+    const { asyncLayer, sql } = backend;
+    activeTasks = rowsOf(await asyncLayer.db.execute(sql`
+      SELECT id, title, created_at AS "createdAt", updated_at AS "updatedAt", "column" AS "columnName"
+      FROM project."tasks"
+      ORDER BY id
+    `));
+    try {
+      archivedDupes = rowsOf(await asyncLayer.db.execute(sql`
+        SELECT t.id AS id, t.title AS "activeTitle", a.archived_at AS "archivedAt"
+        FROM project."tasks" t
+        INNER JOIN archive."archived_tasks" a ON a.id = t.id
+        ORDER BY t.id
+      `));
+    } catch {
+      archivedDupes = [];
+    }
+  } finally {
+    await backend.shutdown().catch(() => {});
+  }
 
   const candidates = [];
   let historyUnavailableCount = 0;
@@ -250,7 +255,6 @@ function buildReport(projectRoot) {
 
   return {
     projectRoot,
-    dbPath,
     tasksDir,
     mainRef,
     scannedActiveTasks: activeTasks.length,
@@ -266,8 +270,6 @@ function toMarkdown(report) {
   lines.push("");
   lines.push(`- Project root: \
 \`${report.projectRoot}\``);
-  lines.push(`- Database: \
-\`${report.dbPath}\``);
   lines.push(`- Git ref used for commit checks: \
 \`${report.mainRef}\``);
   lines.push(`- Active tasks scanned: **${report.scannedActiveTasks}**`);
@@ -296,5 +298,5 @@ function toMarkdown(report) {
 }
 
 const args = parseArgs(process.argv.slice(2));
-const report = buildReport(args.projectRoot);
+const report = await buildReport(args.projectRoot);
 process.stdout.write(args.json ? `${JSON.stringify(report, null, 2)}\n` : `${toMarkdown(report)}\n`);

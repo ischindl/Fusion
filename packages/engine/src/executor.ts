@@ -2299,7 +2299,7 @@ export class TaskExecutor {
       this.store.setCompletionHandoffAcceptedMarker(task.id, {
         source: `executor:${reason}`,
       });
-      this.store.upsertMergeRequestRecord(task.id, {
+      await this.store.upsertMergeRequestRecord(task.id, {
         state: handedOff.autoMerge === false ? "manual-required" : "queued",
       });
     }
@@ -2322,7 +2322,8 @@ export class TaskExecutor {
 
   private get approvalRequestStore(): ApprovalRequestStore {
     if (!this._approvalRequestStore) {
-      this._approvalRequestStore = new ApprovalRequestStore(this.store.getDatabase());
+      const layer = this.store.getAsyncLayer();
+      this._approvalRequestStore = new ApprovalRequestStore(layer ? null : this.store.getDatabase(), { asyncLayer: layer });
     }
     return this._approvalRequestStore;
   }
@@ -2343,7 +2344,7 @@ export class TaskExecutor {
       taskId,
       runId: taskId ? this.getRunContextFor(taskId)?.runId : undefined,
       permissionPolicy: policy,
-      createApprovalRequest: async (decision, args) => this.approvalRequestStore.create({
+      createApprovalRequest: async (decision, args) => await this.approvalRequestStore.create({
         requester: {
           actorId,
           actorType: "agent",
@@ -2366,11 +2367,11 @@ export class TaskExecutor {
         },
       }),
       findApprovalByDedupeKey: async (dedupeKey) => {
-        const latest = this.approvalRequestStore.findLatestByDedupeKey({ requesterActorId: actorId, taskId, dedupeKey });
+        const latest = await this.approvalRequestStore.findLatestByDedupeKey({ requesterActorId: actorId, taskId, dedupeKey });
         return latest ? { id: latest.id, status: latest.status } : null;
       },
       findPendingApprovalByDedupeKey: async (dedupeKey) => {
-        const latest = this.approvalRequestStore.findLatestByDedupeKey({ requesterActorId: actorId, taskId, dedupeKey });
+        const latest = await this.approvalRequestStore.findLatestByDedupeKey({ requesterActorId: actorId, taskId, dedupeKey });
         return latest?.status === "pending" ? { id: latest.id } : null;
       },
       pauseForApproval: async ({ approvalRequestId, decision }) => {
@@ -2461,7 +2462,7 @@ export class TaskExecutor {
       // payload-bearing (shared helper) and `approvalDedupeKey`/`command`/`cwd`
       // are persisted into targetAction.context so findPendingApprovalRequest
       // can match and the UI can render the payload without re-parsing.
-      createApprovalRequest: async ({ category, toolName, args, approvalDedupeKey }) => this.approvalRequestStore.create({
+      createApprovalRequest: async ({ category, toolName, args, approvalDedupeKey }) => await this.approvalRequestStore.create({
         requester: {
           actorId,
           actorType: "agent",
@@ -2490,7 +2491,7 @@ export class TaskExecutor {
         },
       }),
       findPendingApprovalRequest: async (dedupeKey) => {
-        const pending = this.approvalRequestStore.list({ status: "pending", requesterActorId: actorId, taskId, limit: 100 });
+        const pending = await this.approvalRequestStore.list({ status: "pending", requesterActorId: actorId, taskId, limit: 100 });
         return pending.find((request) => request.targetAction.context?.approvalDedupeKey === dedupeKey) ?? null;
       },
     };
@@ -8318,9 +8319,10 @@ export class TaskExecutor {
     };
   }
 
-  private isLiveSharedBranchGroupMember(live: Pick<TaskDetail, "branchContext">): boolean {
+  private async isLiveSharedBranchGroupMember(live: Pick<TaskDetail, "branchContext">): Promise<boolean> {
     const groupId = live.branchContext?.groupId?.trim();
-    const branchGroup = groupId ? this.store.getBranchGroup(groupId) : null;
+    // FNXC:PostgresCutover 2026-07-10: getBranchGroup is async on the PG branch.
+    const branchGroup = groupId ? await this.store.getBranchGroup(groupId) : null;
     return isLiveSharedBranchGroupMemberIntegration(live, branchGroup);
   }
 
@@ -8340,7 +8342,7 @@ export class TaskExecutor {
     const settings = await this.store.getSettings().catch(() => undefined);
     if (!settings || settings.globalPause === true || settings.enginePaused === true) return false;
     /* FNXC:AutoMergeHold 2026-07-09-17:04: FN-7750 requires retryable pre-merge remediation to treat stale shared-group members as standalone manual-hold rows when global auto-merge is off; only live/open groups retain the shared-member exemption. */
-    if (!allowsAutoMergeProcessing(live, settings) && !this.isLiveSharedBranchGroupMember(live)) return false;
+    if (!allowsAutoMergeProcessing(live, settings) && !(await this.isLiveSharedBranchGroupMember(live))) return false;
     const target = this.latestFailedPreMergeWorkflowStep(live);
     if (!target) return false;
     const budget = await this.resolveFailedPreMergeWorkflowStepBudget(live, target);
@@ -8394,7 +8396,7 @@ export class TaskExecutor {
     } catch {
       return false;
     }
-    const sharedBranchMember = this.isLiveSharedBranchGroupMember(live);
+    const sharedBranchMember = await this.isLiveSharedBranchGroupMember(live);
     if (!sharedBranchMember && !allowsAutoMergeProcessing(live, settings)) return false;
     if (!sharedBranchMember && resolveEffectiveAutoMerge(live, settings) === false) return false;
     if ((live.mergeRetries ?? 0) >= resolveMaxAutoMergeRetries(settings)) return false;
@@ -8463,7 +8465,7 @@ export class TaskExecutor {
       return false;
     }
     /* FNXC:AutoMergeHold 2026-07-09-17:07: FN-7749's benign manual-hold classifier must exclude only live shared-group integrations. FN-7750 stale shared-group members are standalone manual-hold rows and should not be stranded as pause-abort failures. */
-    if (this.isLiveSharedBranchGroupMember(live)) return false;
+    if (await this.isLiveSharedBranchGroupMember(live)) return false;
     return !allowsAutoMergeProcessing(live, settings) || resolveEffectiveAutoMerge(live, settings) === false;
   }
 
@@ -8504,7 +8506,7 @@ export class TaskExecutor {
       return false;
     }
     if (settings.globalPause === true || settings.enginePaused === true) return false;
-    if (!allowsAutoMergeProcessing(live, settings) && !this.isLiveSharedBranchGroupMember(live)) return false;
+    if (!allowsAutoMergeProcessing(live, settings) && !(await this.isLiveSharedBranchGroupMember(live))) return false;
 
     this.clearPausedAborted(live.id);
     this.activeWorktrees.delete(live.id);
@@ -8577,7 +8579,7 @@ export class TaskExecutor {
       return false;
     }
     if (settings.globalPause === true || settings.enginePaused === true) return false;
-    if (!allowsAutoMergeProcessing(live, settings) && !this.isLiveSharedBranchGroupMember(live)) return false;
+    if (!allowsAutoMergeProcessing(live, settings) && !(await this.isLiveSharedBranchGroupMember(live))) return false;
 
     const nextRetries = priorRetries + 1;
     this.clearPausedAborted(live.id);
@@ -8683,7 +8685,7 @@ export class TaskExecutor {
     if (live.column === "in-review") {
       if (live.autoMerge === false) return false;
       if (!settings) return false;
-      const sharedBranchMember = this.isLiveSharedBranchGroupMember(live);
+      const sharedBranchMember = await this.isLiveSharedBranchGroupMember(live);
       if (!sharedBranchMember && !allowsAutoMergeProcessing(live, settings)) return false;
       if (live.mergeDetails?.mergeConfirmed === true) return false;
     }
@@ -9109,6 +9111,33 @@ export class TaskExecutor {
             await this.persistTokenUsage(task.id);
             return;
           }
+          /*
+          FNXC:WorkflowLifecycle 2026-07-12:
+          A pause-abort whose task already reached a terminal SUCCESS column is
+          benign teardown, not an operator problem. The live-acceptance repro:
+          the workflow merge boundary hard-cancels the in-flight executor
+          session when it moves the task in-progress → in-review
+          (abort-in-flight provenance=hard-cancel), the AI merge then lands and
+          the task advances to done — and only afterwards does the aborted
+          graph run reach this sink, where it logged "Workflow graph failure
+          surfaced ... operator action required; retry or explicitly
+          unpause/resume" on a task that finished perfectly. The `status:
+          "failed"` write below was already guarded for done/archived, but the
+          alarming operator-action log entry (and its warn) still fired on
+          every auto-merged task. Treat done/archived like the todo benign
+          case: clear the abort marker, release the worktree slot, log a
+          benign completion note, and never emit the PAUSE_ABORT_PARK markers
+          (so self-healing's recoverPausedAbortFailures has nothing to chase).
+          */
+          if (live.column === "done" || live.column === "archived") {
+            this.clearPausedAborted(task.id);
+            this.activeWorktrees.delete(task.id);
+            const doneBenign = `Workflow graph run ended during ${pauseProvenance} after the task already completed ('${live.column}') — benign, no action needed`;
+            executorLog.log(`${task.id}: ${doneBenign}`);
+            await this.store.logEntry(task.id, doneBenign, undefined, this.getRunContextFor(task.id));
+            await this.persistTokenUsage(task.id);
+            return;
+          }
           const failedNode = result.visitedNodeIds[result.visitedNodeIds.length - 1] ?? "unknown";
           // FNXC:WorkflowLifecycle 2026-06-20-00:00: build the parked-failure
           // message from the shared markers so self-healing's recoverPausedAbortFailures
@@ -9116,7 +9145,7 @@ export class TaskExecutor {
           const message = `${PAUSE_ABORT_PARK_ERROR_MARKER} ${pauseProvenance} in '${live.column}' at node '${failedNode}' — ${PAUSE_ABORT_PARK_OPERATOR_MARKER}; retry or explicitly unpause/resume after inspecting the task`;
           executorLog.warn(`${task.id}: ${message}`);
           await this.store.logEntry(task.id, message, undefined, this.getRunContextFor(task.id));
-          if (live.column !== "done" && live.column !== "archived" && live.status == null && live.error == null) {
+          if (live.status == null && live.error == null) {
             await this.store.updateTask(task.id, { error: message, status: "failed" }, this.getRunContextFor(task.id));
           }
           await this.persistTokenUsage(task.id);
@@ -9529,7 +9558,7 @@ export class TaskExecutor {
     const markerAcceptedByTaskId = new Map<string, boolean>();
     if (settings.mergeRequestContractShadowEnabled === true) {
       for (const depId of liveTask.dependencies) {
-        markerAcceptedByTaskId.set(depId, this.store.getCompletionHandoffAcceptedMarker(depId) !== null);
+        markerAcceptedByTaskId.set(depId, (await this.store.getCompletionHandoffAcceptedMarker(depId)) !== null);
       }
     }
     const unmetDeps = getUnmetSchedulingDependencies(

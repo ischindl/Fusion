@@ -1,32 +1,26 @@
 import { MessageStore, createDatabase } from "@fusion/core";
-import type { Database, ParticipantType } from "@fusion/core";
-import { resolveProject } from "../project-context.js";
-
-/**
- * Get the project path for message operations.
- * Falls back to process.cwd() if no project is specified.
- */
-async function getProjectPath(projectName?: string): Promise<string> {
-  if (projectName) {
-    const context = await resolveProject(projectName);
-    return context.projectPath;
-  }
-
-  try {
-    const context = await resolveProject(undefined);
-    return context.projectPath;
-  } catch {
-    return process.cwd();
-  }
-}
+import type { ParticipantType } from "@fusion/core";
+import { resolveAgentStoreBase } from "../project-context.js";
 
 /**
  * Create a MessageStore for the given project.
- * Returns both the store and database for proper cleanup.
+ * Returns the store plus a `db` cleanup handle callers close in `finally`.
+ *
+ * FNXC:PostgresCutover 2026-07-05-12:00:
+ * Borrow the PostgreSQL AsyncDataLayer from the resolved project store so the
+ * MessageStore runs in backend mode (the sync SQLite Database runtime was
+ * removed under VAL-REMOVAL-005). The legacy createDatabase path survives only
+ * for the FUSION_NO_EMBEDDED_PG=1 opt-out where no asyncLayer exists. The
+ * backend-mode `db` handle is a no-op closer: the AsyncDataLayer pool is owned
+ * by the resolved project store, not by this command.
  */
-export async function createMessageStore(projectName?: string): Promise<{ store: MessageStore; db: Database }> {
-  const projectPath = await getProjectPath(projectName);
-  const fusionDir = projectPath + "/.fusion";
+export async function createMessageStore(projectName?: string): Promise<{ store: MessageStore; db: { close: () => void } }> {
+  const { rootDir, asyncLayer } = await resolveAgentStoreBase(projectName);
+  if (asyncLayer) {
+    const store = new MessageStore(null, { asyncLayer });
+    return { store, db: { close: () => {} } };
+  }
+  const fusionDir = rootDir + "/.fusion";
   const db = createDatabase(fusionDir);
   db.init();
   const store = new MessageStore(db);
@@ -42,8 +36,8 @@ export const CLI_USER_ID = "cli";
 export async function runMessageInbox(projectName?: string): Promise<void> {
   const { store, db } = await createMessageStore(projectName);
   try {
-    const mailbox = store.getMailbox(CLI_USER_ID, "user");
-    const messages = store.getInbox(CLI_USER_ID, "user", { limit: 20 });
+    const mailbox = await store.getMailbox(CLI_USER_ID, "user");
+    const messages = await store.getInbox(CLI_USER_ID, "user", { limit: 20 });
 
     console.log();
     console.log(`  📬 Inbox (${mailbox.unreadCount} unread)`);
@@ -75,7 +69,7 @@ export async function runMessageInbox(projectName?: string): Promise<void> {
 export async function runMessageOutbox(projectName?: string): Promise<void> {
   const { store, db } = await createMessageStore(projectName);
   try {
-    const messages = store.getOutbox(CLI_USER_ID, "user", { limit: 20 });
+    const messages = await store.getOutbox(CLI_USER_ID, "user", { limit: 20 });
 
     console.log();
     console.log("  📤 Outbox");
@@ -106,7 +100,7 @@ export async function runMessageOutbox(projectName?: string): Promise<void> {
 export async function runMessageSend(toId: string, content: string, projectName?: string): Promise<void> {
   const { store, db } = await createMessageStore(projectName);
   try {
-    const message = store.sendMessage({
+    const message = await store.sendMessage({
       fromId: CLI_USER_ID,
       fromType: "user",
       toId,
@@ -130,7 +124,7 @@ export async function runMessageSend(toId: string, content: string, projectName?
 export async function runMessageRead(id: string, projectName?: string): Promise<void> {
   const { store, db } = await createMessageStore(projectName);
   try {
-    const message = store.getMessage(id);
+    const message = await store.getMessage(id);
 
     if (!message) {
       console.error(`Message ${id} not found`);
@@ -139,7 +133,7 @@ export async function runMessageRead(id: string, projectName?: string): Promise<
 
     // Mark as read
     if (!message.read) {
-      store.markAsRead(id);
+      await store.markAsRead(id);
     }
 
     const fromLabel = formatParticipant(message.fromId, message.fromType);
@@ -166,7 +160,7 @@ export async function runMessageRead(id: string, projectName?: string): Promise<
 export async function runMessageDelete(id: string, projectName?: string): Promise<void> {
   const { store, db } = await createMessageStore(projectName);
   try {
-    store.deleteMessage(id);
+    await store.deleteMessage(id);
 
     console.log();
     console.log(`  ✓ Message ${id} deleted`);
@@ -182,8 +176,8 @@ export async function runMessageDelete(id: string, projectName?: string): Promis
 export async function runAgentMailbox(agentId: string, projectName?: string): Promise<void> {
   const { store, db } = await createMessageStore(projectName);
   try {
-    const mailbox = store.getMailbox(agentId, "agent");
-    const messages = store.getInbox(agentId, "agent", { limit: 20 });
+    const mailbox = await store.getMailbox(agentId, "agent");
+    const messages = await store.getInbox(agentId, "agent", { limit: 20 });
 
     console.log();
     console.log(`  🤖 Agent Mailbox: ${agentId} (${mailbox.unreadCount} unread)`);

@@ -9,7 +9,7 @@ import {
 import { classifyGhError, getGhErrorMessage, getCurrentRepo, isGhAuthenticated, isGhAvailable } from "@fusion/core/gh-cli";
 import { releaseHeldTaskByEvent } from "@fusion/engine";
 import * as dashboard from "@fusion/dashboard";
-import { resolveProject, closeProjectStore, asLocalProjectContext, type ProjectContext } from "../project-context.js";
+import { resolveProject, createLocalStore, closeProjectStore, asLocalProjectContext, type ProjectContext } from "../project-context.js";
 import { retryOnLock, LockRetryExhaustedError } from "../lock-retry.js";
 
 /**
@@ -73,8 +73,9 @@ async function getPrContext(projectName?: string): Promise<ProjectContext> {
   if (projectName) {
     throw new Error(`Project ${projectName} not found`);
   }
-  const store = new TaskStore(process.cwd());
-  await store.init();
+  // FNXC:PostgresCutover 2026-07-05-12:00: boot the cwd fallback through the
+  // PostgreSQL startup factory; bare `new TaskStore` throws in backend mode.
+  const store = await createLocalStore(process.cwd());
   return asLocalProjectContext(store);
 }
 
@@ -257,7 +258,7 @@ export async function runPrCreate(id: string, options: PrCreateOptions = {}, pro
           // workflow node uses (mirrors pr-nodes.ts: ensure → flip to open with the
           // persisted PR number/url). Without this the PR would be invisible to
           // `fn pr list/show`, the reconciler, and the workflow nodes (R13 parity).
-          const entity = store.ensurePrEntityForSource({
+          const entity = await store.ensurePrEntityForSource({
             sourceType: "task",
             sourceId: task.id,
             repo: `${owner}/${repo}`,
@@ -265,7 +266,7 @@ export async function runPrCreate(id: string, options: PrCreateOptions = {}, pro
             baseBranch: prInfo.baseBranch,
             state: "creating",
           });
-          store.updatePrEntity(entity.id, {
+          await store.updatePrEntity(entity.id, {
             state: "open",
             prNumber: prInfo.number,
             prUrl: prInfo.url,
@@ -332,7 +333,7 @@ export async function runPrList(projectName?: string) {
         const context = await getPrContext(projectName);
         try {
           const { store } = context;
-          const entities = store.listActivePrEntities();
+          const entities = await store.listActivePrEntities();
 
           if (entities.length === 0) {
             console.log("\n  No active pull requests.\n");

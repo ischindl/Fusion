@@ -222,6 +222,10 @@ function createMockStore(overrides: Partial<TaskStore> = {}): TaskStore {
     recordActivity: vi.fn().mockResolvedValue(undefined),
     getFusionDir: vi.fn().mockReturnValue("/fake/root/.fusion"),
     getRootDir: vi.fn().mockReturnValue("/fake/root"),
+    // FNXC:PostgresCutover 2026-07-05-16:20: routes borrow the AsyncDataLayer
+    // from the scoped store (e.g. triggerCommentWakeForAssignedAgent builds a
+    // backend AgentStore). null = legacy mode for this mock.
+    getAsyncLayer: vi.fn().mockReturnValue(null),
     getDistributedTaskIdAllocator: vi.fn().mockReturnValue({
       reserveDistributedTaskId: vi.fn().mockResolvedValue({ reservationId: "res-1", taskId: "FN-7001" }),
       commitDistributedTaskIdReservation: vi.fn().mockResolvedValue({}),

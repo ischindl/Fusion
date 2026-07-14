@@ -14,6 +14,7 @@ import {
   CentralCore,
   GlobalSettingsStore,
   TaskStore,
+  createTaskStoreForBackend,
   ensureMemoryFileWithBackend,
   type RegisteredProject,
   type IsolationMode,
@@ -136,11 +137,28 @@ function formatLastActivity(timestamp?: string | null): string {
  * tasks" via the outer catch — it rides out the lock instead.
  */
 async function getTaskCounts(projectPath: string): Promise<TaskCountSummary> {
-  const store = new TaskStore(projectPath);
+  // FNXC:PostgresCutover 2026-07-04:
+  // Route through createTaskStoreForBackend so the count works in PostgreSQL
+  // backend mode. Previously this constructed `new TaskStore(projectPath)`,
+  // which throws in backend mode (SQLite runtime removed under VAL-REMOVAL-005);
+  // the surrounding try/catch swallowed it so project info/list silently showed
+  // zero tasks. The boot result's shutdown() releases the connection pool (and
+  // any embedded PostgreSQL process) so a one-shot CLI read leaks nothing.
+  let store: TaskStore | undefined;
+  let backendShutdown: (() => Promise<void>) | undefined;
   try {
-    await store.init();
+    const boot = await createTaskStoreForBackend({ rootDir: projectPath });
+    if (boot) {
+      store = boot.taskStore;
+      backendShutdown = boot.shutdown;
+    } else {
+      // Legacy SQLite opt-out (FUSION_NO_EMBEDDED_PG=1): byte-identical legacy path.
+      store = new TaskStore(projectPath);
+      await store.init();
+    }
+    const resolvedStore = store;
     const tasks = await retryOnLock(
-      () => store.listTasks({ slim: true }),
+      () => resolvedStore.listTasks({ slim: true }),
       { id: projectPath, action: "count tasks" },
     );
 
@@ -158,9 +176,12 @@ async function getTaskCounts(projectPath: string): Promise<TaskCountSummary> {
     return { byColumn: {}, runningAgentCount: 0 };
   } finally {
     try {
-      await store.close();
+      await store?.close();
     } catch {
       // Best-effort: an already-closed/never-initialized store must not throw.
+    }
+    if (backendShutdown) {
+      await backendShutdown().catch(() => undefined);
     }
   }
 }
@@ -336,8 +357,12 @@ export async function runProjectAdd(
         rl.close();
 
         if (init.trim().toLowerCase() !== "n") {
-          // Initialize the project
-          const store = new TaskStore(absolutePath);
+          // Initialize the project.
+          // FNXC:PostgresCutover 2026-07-05-12:00: boot through the PostgreSQL
+          // startup factory; bare `new TaskStore` throws in backend mode. The
+          // boot shutdown releases the pool for this one-shot init.
+          const boot = await createTaskStoreForBackend({ rootDir: absolutePath });
+          const store = boot ? boot.taskStore : new TaskStore(absolutePath);
           await store.init();
           // FNXC:CliBoardMutation 2026-07-09-00:00: FN-7740 — this init-only
           // store was never closed, leaking a handle for the rest of the
@@ -348,6 +373,7 @@ export async function runProjectAdd(
           } catch {
             // Best-effort.
           }
+          if (boot) await boot.shutdown().catch(() => {});
           console.log(`  ✓ Initialized fn at ${absolutePath}`);
         } else {
           console.log("\n  Cancelled. Run `fn init` to initialize a project first.\n");

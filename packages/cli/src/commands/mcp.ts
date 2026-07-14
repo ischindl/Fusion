@@ -1,9 +1,8 @@
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import {
+import { TaskStore,
   GlobalSettingsStore,
-  TaskStore,
   exportMcpServersJson,
   importMcpServersJson,
   isMcpSecretRef,
@@ -18,7 +17,7 @@ import {
   type SecretScope,
   type Settings,
 } from "@fusion/core";
-import { resolveProject, closeProjectStore, asLocalProjectContext, type ProjectContext } from "../project-context.js";
+import { resolveProject, createLocalStore, closeProjectStore, asLocalProjectContext, type ProjectContext } from "../project-context.js";
 import { retryOnLock, LockRetryExhaustedError } from "../lock-retry.js";
 
 export type McpScope = "global" | "project";
@@ -218,18 +217,18 @@ async function getSecretsStore(context: McpContext) {
     return project.store.getSecretsStore();
   }
   if (!context.secretsStore) {
-    const store = new TaskStore(process.cwd());
-    await store.init();
-    context.secretsStore = store;
+    // FNXC:PostgresCutover 2026-07-05-12:00: boot the cwd fallback through the
+    // PostgreSQL startup factory; bare `new TaskStore` throws in backend mode.
+    context.secretsStore = await createLocalStore(process.cwd());
   }
   return context.secretsStore.getSecretsStore();
 }
 
 async function resolveExistingSecret(context: McpContext, secretRef: string, scope: SecretScope): Promise<McpSecretRef> {
   const secrets = await getSecretsStore(context);
-  const byId = secrets.getSecretMetadata(secretRef, scope);
+  const byId = await secrets.getSecretMetadata(secretRef, scope);
   if (byId) return { secretRef: byId.id, scope };
-  const byKey = secrets.listSecrets(scope).find((secret) => secret.key === secretRef);
+  const byKey = (await secrets.listSecrets(scope)).find((secret: { id: string; key: string }) => secret.key === secretRef);
   if (!byKey) {
     throw new Error(`Secret "${secretRef}" not found in ${scope} scope. Create it first or use --create-secret-env/--create-secret-header.`);
   }

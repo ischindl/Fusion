@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { TaskStore } from "@fusion/core";
+import { TaskStore, createTaskStoreForBackend } from "@fusion/core";
 import {
   defaultGitOps,
   ExperimentFinalizeBranchExistsError,
@@ -69,8 +69,14 @@ export async function runExperimentFinalize(options: ExperimentFinalizeOptions):
   try {
     const project = options.projectName ? await resolveProject(options.projectName) : undefined;
     const projectRoot = project?.projectPath ?? process.cwd();
-    const taskStore = new TaskStore(projectRoot);
-    await taskStore.init();
+    // FNXC:PostgresCutover 2026-07-04: boot the PostgreSQL backend via the startup
+    // factory instead of a legacy SQLite TaskStore whose runtime was removed
+    // (VAL-REMOVAL-005). Falls back to legacy only on FUSION_NO_EMBEDDED_PG=1.
+    const boot = await createTaskStoreForBackend({ rootDir: projectRoot });
+    const taskStore: TaskStore = boot ? boot.taskStore : new TaskStore(projectRoot);
+    if (!boot) {
+      await taskStore.init();
+    }
     const sessionStore = taskStore.getExperimentSessionStore();
     const service = new ExperimentFinalizeService({
       store: sessionStore,

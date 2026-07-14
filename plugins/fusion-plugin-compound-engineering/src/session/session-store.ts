@@ -174,11 +174,20 @@ function rowToSession(row: CeSessionRow): CeSession {
  * in a test) still works.
  */
 export class CeSessionStore {
-  private readonly db: Database;
+  // FNXC:RuntimeSatelliteAsync 2026-06-24-22:45:
+  // db is null in backend mode (PostgreSQL). Store methods that use sync
+  // SQLite will throw in backend mode until the async path is implemented.
+  private readonly db: Database | null;
 
-  constructor(db: Database) {
+  constructor(db: Database | null) {
     this.db = db;
-    ensureCeSchema(db);
+    if (db) ensureCeSchema(db);
+  }
+
+  /** Asserts sync db is available (throws in backend mode). */
+  private syncDb(): Database {
+    if (!this.db) throw new Error("CeSessionStore: sync Database is null (backend mode)");
+    return this.db;
   }
 
   create(input: CreateCeSessionInput): CeSession {
@@ -193,14 +202,15 @@ export class CeSessionStore {
    */
   createWithPlanHandoffClaim(input: CreateCeSessionInput, artifactPath: string): CeSession {
     const session = this.newSession({ ...input, artifactPath });
-    return this.db.transactionImmediate(() => {
-      const existing = this.db
+    const db = this.syncDb();
+    return db.transactionImmediate(() => {
+      const existing = db
         .prepare("SELECT sessionId FROM ce_plan_handoff_claims WHERE artifactPath = ?")
         .get(artifactPath) as { sessionId: string } | undefined;
       if (existing) throw new PlanHandoffClaimError(artifactPath, existing.sessionId);
 
       this.insert(session);
-      this.db
+      db
         .prepare("INSERT INTO ce_plan_handoff_claims (artifactPath, sessionId, projectId, createdAt) VALUES (?, ?, ?, ?)")
         .run(artifactPath, session.id, session.projectId, session.createdAt);
       return session;
@@ -226,7 +236,7 @@ export class CeSessionStore {
   }
 
   private insert(session: CeSession): void {
-    this.db
+    this.syncDb()
       .prepare(
         `INSERT INTO ce_sessions
           (id, stage, status, currentQuestion, conversationHistory, projectId, artifactPath, error, turnIntervalMs, lastActivityAt, createdAt, updatedAt)
@@ -249,7 +259,7 @@ export class CeSessionStore {
   }
 
   get(id: string): CeSession | undefined {
-    const row = this.db.prepare(`SELECT * FROM ce_sessions WHERE id = ?`).get(id) as CeSessionRow | undefined;
+    const row = this.syncDb().prepare(`SELECT * FROM ce_sessions WHERE id = ?`).get(id) as CeSessionRow | undefined;
     return row ? rowToSession(row) : undefined;
   }
 
@@ -269,7 +279,7 @@ export class CeSessionStore {
       params.push(filter.projectId);
     }
     const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
-    const rows = this.db
+    const rows = this.syncDb()
       .prepare(`SELECT * FROM ce_sessions ${where} ORDER BY updatedAt DESC, id`)
       .all(...params) as CeSessionRow[];
     return rows.map(rowToSession);
@@ -296,7 +306,7 @@ export class CeSessionStore {
       lastActivityAt: patch.lastActivityAt ?? Date.now(),
       updatedAt: new Date().toISOString(),
     };
-    this.db
+    this.syncDb()
       .prepare(
         `UPDATE ce_sessions SET
            status = ?, currentQuestion = ?, conversationHistory = ?, projectId = ?,
@@ -319,10 +329,11 @@ export class CeSessionStore {
 
   /** Delete a session row. Returns true when a row was removed. */
   delete(id: string): boolean {
-    return this.db.transactionImmediate(() => {
-      const result = this.db.prepare(`DELETE FROM ce_sessions WHERE id = ?`).run(id);
+    const db = this.syncDb();
+    return db.transactionImmediate(() => {
+      const result = db.prepare(`DELETE FROM ce_sessions WHERE id = ?`).run(id);
       if (Number(result.changes ?? 0) > 0) {
-        this.db.prepare("DELETE FROM ce_plan_handoff_claims WHERE sessionId = ?").run(id);
+        db.prepare("DELETE FROM ce_plan_handoff_claims WHERE sessionId = ?").run(id);
         return true;
       }
       return false;
@@ -388,7 +399,10 @@ export function getCeSessionStore(ctx: PluginContext): CeSessionStore {
   const key = ctx.taskStore as object;
   const cached = storeCache.get(key);
   if (cached) return cached;
-  const store = new CeSessionStore(ctx.taskStore.getDatabase());
+  // FNXC:RuntimeSatelliteAsync 2026-06-24-22:40:
+  // In backend mode, getDatabase() throws. Guard with isBackendMode() check.
+  const db = ctx.taskStore.isBackendMode() ? null : ctx.taskStore.getDatabase();
+  const store = new CeSessionStore(db);
   storeCache.set(key, store);
   return store;
 }

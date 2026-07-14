@@ -195,6 +195,9 @@ function createMockGlobalSettingsStore() {
 
 function createMockStore(overrides: Partial<TaskStore> = {}): TaskStore {
   return {
+    // FNXC:PostgresCutover 2026-07-10: system-stats constructs an AgentStore
+    // with asyncLayer from store.getAsyncLayer(); null = legacy mode here.
+    getAsyncLayer: vi.fn().mockReturnValue(null),
     getTask: vi.fn(),
     listTasks: vi.fn().mockResolvedValue([]),
     searchTasks: vi.fn().mockResolvedValue([]),
@@ -331,6 +334,38 @@ describe("route registrar ordering invariants", () => {
 
     expect(indexOf("GET /mesh/state")).toBeLessThan(indexOf("POST /mesh/sync"));
     expect(indexOf("GET /discovery/status")).toBeGreaterThan(indexOf("POST /mesh/sync"));
+  });
+});
+
+describe("node settings sync on the PostgreSQL backend", () => {
+  /*
+  FNXC:PostgresCutover 2026-07-10:
+  Node settings sync is removed on the PostgreSQL backend — nodes share the
+  same database, so settings replication over HTTP is redundant and can
+  clobber the shared source of truth. Every settings-sync surface must answer
+  409 with code "settings-sync-disabled-postgres" in backend mode. Provider
+  AUTH sync stays available (auth material is per-machine file state).
+  */
+  function buildBackendApp() {
+    const store = createMockStore({ backendMode: true } as unknown as Partial<TaskStore>);
+    const app = express();
+    app.use(express.json());
+    app.use("/api", createApiRoutes(store));
+    return app;
+  }
+
+  it.each([
+    ["GET", "/api/nodes/node-1/settings"],
+    ["POST", "/api/nodes/node-1/settings/push"],
+    ["POST", "/api/nodes/node-1/settings/pull"],
+    ["GET", "/api/nodes/node-1/settings/sync-status"],
+    ["POST", "/api/settings/sync-receive"],
+  ] as const)("%s %s answers 409 settings-sync-disabled-postgres in backend mode", async (method, path) => {
+    const res = await REQUEST(buildBackendApp(), method, path, method === "GET" ? undefined : JSON.stringify({}), {
+      "content-type": "application/json",
+    });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("settings-sync-disabled-postgres");
   });
 });
 

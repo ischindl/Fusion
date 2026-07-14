@@ -73,6 +73,19 @@ export const registerSettingsSyncInboundRoutes: ApiRouteRegistrar = (ctx) => {
    */
   router.post("/settings/sync-receive", async (req, res) => {
     try {
+      /*
+      FNXC:PostgresCutover 2026-07-10:
+      Node settings sync is removed on the PostgreSQL backend — nodes share the
+      same database. Reject inbound pushed settings so a legacy/misconfigured
+      peer cannot overwrite the shared source of truth over HTTP.
+      */
+      if (store.backendMode) {
+        res.status(409).json({
+          error: "Node settings sync is disabled on the PostgreSQL backend — nodes share the same database.",
+          code: "settings-sync-disabled-postgres",
+        });
+        return;
+      }
       const { CentralCore } = await import("@fusion/core");
       // FNXC:GlobalDirGuard 2026-06-25-22:20: Inbound settings sync writes GLOBAL central state, so it must use the resolved global dir (~/.fusion). Previously this (and the secrets/proxy/node routes) passed store.getFusionDir() — the project `.fusion/` — which created a stray per-project central DB seeded with default global settings, the root cause of intermittent "all my global settings reset". Mirror this requirement on every CentralCore construction in dashboard routes.
       const central = new CentralCore(store.getGlobalSettingsDir());

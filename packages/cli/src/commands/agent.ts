@@ -1,34 +1,17 @@
 import { AgentStore, AGENT_VALID_TRANSITIONS } from "@fusion/core";
 import type { AgentState } from "@fusion/core";
-import { resolveProjectPathOnly } from "../project-context.js";
-
-/**
- * Get the project path for agent operations.
- * Falls back to process.cwd() if no project is specified.
- *
- * FNXC:CliAgentControl 2026-07-08-00:00:
- * Uses `resolveProjectPathOnly` (not `resolveProject`) so this never leaks a
- * `TaskStore` this command has no use for. See `closeProjectStore` in
- * project-context.ts for the leak this avoids.
- */
-async function getProjectPath(projectName?: string): Promise<string> {
-  if (projectName) {
-    return await resolveProjectPathOnly(projectName);
-  }
-
-  try {
-    return await resolveProjectPathOnly(undefined);
-  } catch {
-    return process.cwd();
-  }
-}
+import { resolveAgentStoreBase } from "../project-context.js";
 
 /**
  * Create an initialized AgentStore for the given project.
+ *
+ * FNXC:PostgresCutover 2026-07-04: borrow the PostgreSQL AsyncDataLayer from
+ * the resolved project store so AgentStore runs in backend mode (the SQLite
+ * runtime was removed under VAL-REMOVAL-005), mirroring extension.ts getAgentStore.
  */
 async function createAgentStore(projectName?: string): Promise<AgentStore> {
-  const projectPath = await getProjectPath(projectName);
-  const agentStore = new AgentStore({ rootDir: projectPath + "/.fusion" });
+  const { rootDir, asyncLayer } = await resolveAgentStoreBase(projectName);
+  const agentStore = new AgentStore({ rootDir: rootDir + "/.fusion", asyncLayer: asyncLayer ?? undefined });
   await agentStore.init();
   return agentStore;
 }

@@ -23,7 +23,7 @@ import { OVERSEER_INTERVENTION_MUTATION } from "./types.js";
 
 /** Minimal store seam this module depends on (satisfied by `TaskStore`). */
 export interface PlannerInterventionStore {
-  recordRunAuditEvent(input: RunAuditEventInput): RunAuditEvent;
+  recordRunAuditEvent(input: RunAuditEventInput): RunAuditEvent | Promise<RunAuditEvent>;
   getRunAuditEvents(options?: RunAuditEventFilter): RunAuditEvent[];
 }
 
@@ -74,7 +74,7 @@ const KNOWN_SOURCE_LINK_KINDS: readonly PlannerInterventionSourceLink["kind"][] 
 export function recordPlannerIntervention(
   store: PlannerInterventionStore,
   input: RecordPlannerInterventionInput,
-): RunAuditEvent {
+): RunAuditEvent | Promise<RunAuditEvent> {
   const metadata: Record<string, unknown> = {
     stage: input.stage,
     reason: input.reason,

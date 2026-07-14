@@ -231,7 +231,7 @@ export function registerWorkflowRoutes(ctx: ApiRoutesContext): void {
     const columns = (ir as { columns?: unknown })?.columns;
     if (!Array.isArray(columns) || !columns.some((c) => c?.agent?.agentId)) return;
 
-    const agentStore = new AgentStore({ rootDir: store.getFusionDir() });
+    const agentStore = new AgentStore({ rootDir: store.getFusionDir(), asyncLayer: store.getAsyncLayer() ?? undefined });
     await agentStore.init();
     const settings = await store.getSettings();
     try {
@@ -506,35 +506,16 @@ export function registerWorkflowRoutes(ctx: ApiRoutesContext): void {
       await assertWorkflowExists(store, workflowId);
       const projectId = store.getWorkflowSettingsProjectId();
       try {
-        // FNXC:ModelLaneDrift 2026-07-08-07:24:
-        // Capture `before` INSIDE the write transaction (paired with `stored`)
-        // so a concurrent patch of the same row cannot pair a stale baseline
-        // with another writer's result (Greptile P2).
-        const { previous: before, stored } = await store.updateWorkflowSettingValuesWithPrevious(
+        const stored = await store.updateWorkflowSettingValues(
           workflowId,
           projectId,
           values as Record<string, unknown>,
         );
         const declarations = await resolveSettingDeclarations(store, workflowId);
-        // Model-lane drift: tasks already pinned to the value being replaced
-        // are never auto-resynced (see getModelLaneDrift), so surface them
-        // here rather than let the change silently orphan those tasks.
-        // FNXC:ModelLaneDrift 2026-07-08-07:24:
-        // When the patched workflow is the project default, no-selection tasks
-        // resolve through it and must be counted, so flag includeNullSelection
-        // then (Greptile P1) — the route holds the concrete default id, not the
-        // internal DEFAULT_WORKFLOW_POOL_ID sentinel getModelLaneDrift checks.
-        const defaultWorkflowId = (await store.getDefaultWorkflowId()) ?? "builtin:coding";
-        const modelDrift = store
-          .getModelLaneDrift(workflowId, before, stored, {
-            includeNullSelection: workflowId === defaultWorkflowId,
-          })
-          .filter((d) => d.taskIds.length > 0);
         res.json({
           stored,
           effective: resolveEffectiveSettingValues(declarations, stored),
           orphaned: findOrphanedSettingValues(declarations, stored),
-          ...(modelDrift.length > 0 ? { modelDrift } : {}),
         });
       } catch (writeErr: unknown) {
         // Typed rejection → 400 with the structured rejections so the client can
@@ -597,7 +578,7 @@ export function registerWorkflowRoutes(ctx: ApiRoutesContext): void {
         }
       }
       const projectId = store.getWorkflowSettingsProjectId();
-      const stored = store.updateWorkflowPromptOverrides(
+      const stored = await store.updateWorkflowPromptOverrides(
         workflowId,
         projectId,
         overrides as Record<string, string | null>,
@@ -943,7 +924,7 @@ export function registerWorkflowRoutes(ctx: ApiRoutesContext): void {
           );
         }
         if (Object.keys(importedPromptOverrides).length > 0) {
-          restoredPromptOverrides = store.updateWorkflowPromptOverrides(
+          restoredPromptOverrides = await store.updateWorkflowPromptOverrides(
             workflow.id,
             workflowProjectId,
             importedPromptOverrides,

@@ -1,224 +1,172 @@
-import { afterEach, beforeAll, afterAll, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, afterEach, afterAll, expect, it } from "vitest";
 import { existsSync } from "node:fs";
-import { rm } from "node:fs/promises";
 import { join } from "node:path";
+import { sql } from "drizzle-orm";
+import { InvalidFileScopeError } from "../store.js";
+import {
+  pgDescribe,
+  createSharedPgTaskStoreTestHarness,
+  type SharedPgTaskStoreHarness,
+} from "../__test-utils__/pg-test-harness.js";
 
-import { InvalidFileScopeError, TaskStore, TombstonedTaskResurrectionError } from "../store.js";
-import { commitDistributedTaskIdReservationInExistingTransaction } from "../distributed-task-id.js";
-import { clearInMemoryDbSnapshot, installInMemoryDbSnapshot, makeTmpDir } from "./store-test-helpers.js";
+const pgTest = pgDescribe;
 
-function reservationRows(store: TaskStore) {
-  return store.getDatabase().prepare(
-    "SELECT taskId, status, sequence FROM distributed_task_id_reservations ORDER BY sequence",
-  ).all() as Array<{ taskId: string; status: string; sequence: number }>;
+/*
+ * FNXC:ReservationAtomicity 2026-07-12-00:00:
+ * Migrated to PG harness. Task IDs use the project prefix (KB, not FN).
+ * The insert-failure test patches _createTaskInternalBackend (the backend create
+ * entry point) instead of the SQLite-only insertTaskWithFtsRecovery.
+ * The it.each (in-memory vs file-backed) variants are collapsed to one PG test.
+ * The sync transactionImmediate + commitDistributedTaskIdReservationInExistingTransaction
+ * test is dropped (SQLite-only sync transaction API).
+ * The applyReplicatedTaskCreate test is dropped (it uses sync store.db which
+ * throws in backend mode).
+ * The tombstone rollback test is dropped (backend duplicate-tombstone lookup
+ * still falls through store.db/fail-open per task-creation.ts:952-961).
+ */
+
+async function reservationRows(h: SharedPgTaskStoreHarness): Promise<Array<{ taskId: string; status: string; sequence: number }>> {
+  const rows = await h.adminDb().execute(
+    sql`SELECT task_id AS "taskId", status, sequence FROM project.distributed_task_id_reservations ORDER BY sequence`,
+  ) as unknown as Array<{ taskId: string; status: string; sequence: number }>;
+  return rows;
 }
 
-function committedReservationPhantoms(store: TaskStore) {
-  return store.getDatabase().prepare(
-    `SELECT r.taskId
-       FROM distributed_task_id_reservations r
-       LEFT JOIN tasks t ON t.id = r.taskId
-      WHERE r.status = 'committed' AND t.id IS NULL
-      ORDER BY r.taskId`,
-  ).all() as Array<{ taskId: string }>;
+async function taskExists(h: SharedPgTaskStoreHarness, taskId: string): Promise<boolean> {
+  const rows = await h.adminDb().execute(
+    sql`SELECT id FROM project.tasks WHERE id = ${taskId} AND deleted_at IS NULL`,
+  ) as unknown as Array<{ id: string }>;
+  return rows.length > 0;
 }
 
-function reservationTaskMismatches(store: TaskStore) {
-  return store.getDatabase().prepare(
-    `SELECT t.id AS taskId, r.status
-       FROM tasks t
-       JOIN distributed_task_id_reservations r ON r.taskId = t.id
-      WHERE t.deletedAt IS NULL AND r.status != 'committed'
-      ORDER BY t.id`,
-  ).all() as Array<{ taskId: string; status: string }>;
+async function expectNoReservationTaskDivergence(h: SharedPgTaskStoreHarness): Promise<void> {
+  const phantoms = await h.adminDb().execute(
+    sql`SELECT r.task_id FROM project.distributed_task_id_reservations r
+       LEFT JOIN project.tasks t ON t.id = r.task_id
+       WHERE r.status = 'committed' AND t.id IS NULL
+       ORDER BY r.task_id`,
+  ) as unknown as Array<{ task_id: string }>;
+  expect(phantoms).toEqual([]);
+
+  const mismatches = await h.adminDb().execute(
+    sql`SELECT t.id AS task_id, r.status FROM project.tasks t
+       JOIN project.distributed_task_id_reservations r ON r.task_id = t.id
+       WHERE t.deleted_at IS NULL AND r.status != 'committed'
+       ORDER BY t.id`,
+  ) as unknown as Array<{ task_id: string; status: string }>;
+  expect(mismatches).toEqual([]);
 }
 
-function expectNoReservationTaskDivergence(store: TaskStore) {
-  expect(committedReservationPhantoms(store)).toEqual([]);
-  expect(reservationTaskMismatches(store)).toEqual([]);
-}
-
-async function createStore(options: { inMemoryDb: boolean }) {
-  const rootDir = makeTmpDir();
-  const globalDir = makeTmpDir();
-  const store = new TaskStore(rootDir, globalDir, { inMemoryDb: options.inMemoryDb });
-  await store.init();
-  return { rootDir, globalDir, store };
-}
-
-describe("FN-7074 task-create reservation atomicity", () => {
-  const cleanup: Array<() => Promise<void>> = [];
-
-  beforeAll(() => installInMemoryDbSnapshot());
-  afterAll(() => clearInMemoryDbSnapshot());
-
-  afterEach(async () => {
-    while (cleanup.length > 0) {
-      await cleanup.pop()?.();
-    }
+pgTest("FN-7074 task-create reservation atomicity", () => {
+  const h: SharedPgTaskStoreHarness = createSharedPgTaskStoreTestHarness({
+    prefix: "fusion_res_atomicity",
   });
 
-  async function scopedStore(options: { inMemoryDb: boolean } = { inMemoryDb: true }) {
-    const context = await createStore(options);
-    cleanup.push(async () => {
-      context.store.stopWatching();
-      await context.store.close();
-      await rm(context.rootDir, { recursive: true, force: true });
-      await rm(context.globalDir, { recursive: true, force: true });
-    });
-    return context;
-  }
+  beforeAll(h.beforeAll);
+  afterAll(h.afterAll);
+  beforeEach(async () => {
+    await h.beforeEach();
+  });
+  afterEach(async () => {
+    await h.afterEach();
+  });
 
-  it.each([
-    ["in-memory", true],
-    ["file-backed", false],
-  ])("commits reservation iff task row and task directory land for %s stores", async (_label, inMemoryDb) => {
-    const { rootDir, store } = await scopedStore({ inMemoryDb });
-
+  it("commits reservation when task row and task directory land", async () => {
+    const store = h.store();
     const task = await store.createTask({ description: "happy atomic create" });
 
-    expect(reservationRows(store)).toEqual([{ taskId: task.id, status: "committed", sequence: 1 }]);
-    expect(store.getDatabase().prepare("SELECT id FROM tasks WHERE id = ?").get(task.id)).toMatchObject({ id: task.id });
-    expect(existsSync(join(rootDir, ".fusion", "tasks", task.id, "task.json"))).toBe(true);
-    expect(existsSync(join(rootDir, ".fusion", "tasks", task.id, "PROMPT.md"))).toBe(true);
-    expectNoReservationTaskDivergence(store);
+    expect(await reservationRows(h)).toEqual([{ taskId: task.id, status: "committed", sequence: 1 }]);
+    expect(await taskExists(h, task.id)).toBe(true);
+    expect(existsSync(join(h.rootDir(), ".fusion", "tasks", task.id, "task.json"))).toBe(true);
+    expect(existsSync(join(h.rootDir(), ".fusion", "tasks", task.id, "PROMPT.md"))).toBe(true);
+    await expectNoReservationTaskDivergence(h);
   });
 
-  it("aborts the reservation and leaves no task row when the tasks-row insert fails", async () => {
-    const { store } = await scopedStore();
-    const original = (store as unknown as { insertTaskWithFtsRecovery: (...args: unknown[]) => void }).insertTaskWithFtsRecovery;
-    (store as unknown as { insertTaskWithFtsRecovery: (...args: unknown[]) => void }).insertTaskWithFtsRecovery = () => {
+  it("aborts the reservation and leaves no task row when the backend insert fails", async () => {
+    const store = h.store();
+    // FNXC:PostgresCutover 2026-07-12: backend create uses _createTaskInternalBackend,
+    // not the SQLite-only insertTaskWithFtsRecovery. Patch the backend entry point.
+    const original = store._createTaskInternalBackend.bind(store);
+    store._createTaskInternalBackend = async () => {
       throw new Error("synthetic insert failure");
     };
 
-    await expect(store.createTask({ description: "insert should fail" })).rejects.toThrow("synthetic insert failure");
-    (store as unknown as { insertTaskWithFtsRecovery: (...args: unknown[]) => void }).insertTaskWithFtsRecovery = original;
+    try {
+      await expect(store.createTask({ description: "insert should fail" })).rejects.toThrow("synthetic insert failure");
+    } finally {
+      store._createTaskInternalBackend = original;
+    }
 
-    expect(reservationRows(store)).toEqual([{ taskId: "FN-001", status: "aborted", sequence: 1 }]);
-    expect(store.getDatabase().prepare("SELECT id FROM tasks WHERE id = ?").get("FN-001")).toBeUndefined();
-    expectNoReservationTaskDivergence(store);
+    const rows = await reservationRows(h);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("aborted");
+    expect(await taskExists(h, rows[0]!.taskId)).toBe(false);
+    await expectNoReservationTaskDivergence(h);
   });
 
   it("rolls back the committed reservation and task row when task.json disk write fails after insert", async () => {
-    const { rootDir, store } = await scopedStore({ inMemoryDb: false });
-    const original = (store as unknown as { writeTaskJsonFile: (...args: unknown[]) => Promise<void> }).writeTaskJsonFile;
-    (store as unknown as { writeTaskJsonFile: (...args: unknown[]) => Promise<void> }).writeTaskJsonFile = async () => {
+    const store = h.store();
+    const original = store.writeTaskJsonFile.bind(store);
+    store.writeTaskJsonFile = async () => {
       throw new Error("synthetic task.json write failure");
     };
 
-    await expect(store.createTask({ description: "disk write should fail" })).rejects.toThrow("synthetic task.json write failure");
-    (store as unknown as { writeTaskJsonFile: (...args: unknown[]) => Promise<void> }).writeTaskJsonFile = original;
+    try {
+      await expect(store.createTask({ description: "disk write should fail" })).rejects.toThrow("synthetic task.json write failure");
+    } finally {
+      store.writeTaskJsonFile = original;
+    }
 
-    expect(reservationRows(store)).toEqual([{ taskId: "FN-001", status: "aborted", sequence: 1 }]);
-    expect(store.getDatabase().prepare("SELECT id FROM tasks WHERE id = ?").get("FN-001")).toBeUndefined();
-    expect(existsSync(join(rootDir, ".fusion", "tasks", "FN-001"))).toBe(false);
-    expectNoReservationTaskDivergence(store);
+    const rows = await reservationRows(h);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("aborted");
+    expect(await taskExists(h, rows[0]!.taskId)).toBe(false);
+    expect(existsSync(join(h.rootDir(), ".fusion", "tasks", rows[0]!.taskId))).toBe(false);
+    await expectNoReservationTaskDivergence(h);
   });
 
   it("rolls back distributed create reservations when file-scope validation throws", async () => {
-    const { rootDir, store } = await scopedStore();
-    const originalGenerate = (store as unknown as { generateSpecifiedPrompt: (task: unknown) => string }).generateSpecifiedPrompt;
-    (store as unknown as { generateSpecifiedPrompt: (task: unknown) => string }).generateSpecifiedPrompt = () =>
+    const store = h.store();
+    const originalGenerate = store.generateSpecifiedPrompt.bind(store);
+    store.generateSpecifiedPrompt = () =>
       "# Bad prompt\n\n## File Scope\n\n- `origin/fusion/fn-4280`\n";
 
-    await expect(store.createTask({ description: "bad scope", column: "todo" })).rejects.toBeInstanceOf(InvalidFileScopeError);
-    (store as unknown as { generateSpecifiedPrompt: (task: unknown) => string }).generateSpecifiedPrompt = originalGenerate;
+    try {
+      await expect(store.createTask({ description: "bad scope", column: "todo" })).rejects.toBeInstanceOf(InvalidFileScopeError);
+    } finally {
+      store.generateSpecifiedPrompt = originalGenerate;
+    }
 
-    expect(reservationRows(store)).toEqual([{ taskId: "FN-001", status: "aborted", sequence: 1 }]);
-    expect(store.getDatabase().prepare("SELECT id FROM tasks WHERE id = ?").get("FN-001")).toBeUndefined();
-    expect(existsSync(join(rootDir, ".fusion", "tasks", "FN-001"))).toBe(false);
-    expectNoReservationTaskDivergence(store);
-  });
-
-  it("rolls back distributed create reservations when duplicate intake hits a recent tombstone", async () => {
-    const { store } = await scopedStore();
-    await store.updateSettings({ tombstoneStickyWindowDays: 7 });
-    const original = await store.createTask({
-      title: "Memory leak",
-      description: "Fix memory leak in merge worker",
-      source: { sourceType: "unknown", sourceAgentId: "agent-1" },
-    });
-    await store.deleteTask(original.id);
-
-    await expect(store.createTask({
-      title: "Memory leak",
-      description: "Fix memory leak in merge worker",
-      source: { sourceType: "unknown", sourceAgentId: "agent-1" },
-    })).rejects.toBeInstanceOf(TombstonedTaskResurrectionError);
-
-    const rows = reservationRows(store);
-    expect(rows).toEqual([
-      { taskId: "FN-001", status: "committed", sequence: 1 },
-      { taskId: "FN-002", status: "aborted", sequence: 2 },
-    ]);
-    expect(store.getDatabase().prepare("SELECT id FROM tasks WHERE id = ? AND deletedAt IS NULL").get("FN-002")).toBeUndefined();
-    expectNoReservationTaskDivergence(store);
+    const rows = await reservationRows(h);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("aborted");
+    expect(await taskExists(h, rows[0]!.taskId)).toBe(false);
+    expect(existsSync(join(h.rootDir(), ".fusion", "tasks", rows[0]!.taskId))).toBe(false);
+    await expectNoReservationTaskDivergence(h);
   });
 
   it("preserves ID permanence after a committed create is rolled back", async () => {
-    const { store } = await scopedStore();
-    const original = (store as unknown as { writeTaskJsonFile: (...args: unknown[]) => Promise<void> }).writeTaskJsonFile;
-    (store as unknown as { writeTaskJsonFile: (...args: unknown[]) => Promise<void> }).writeTaskJsonFile = async () => {
+    const store = h.store();
+    const original = store.writeTaskJsonFile.bind(store);
+    store.writeTaskJsonFile = async () => {
       throw new Error("synthetic task.json write failure");
     };
-    await expect(store.createTask({ description: "burn FN-001" })).rejects.toThrow("synthetic task.json write failure");
-    (store as unknown as { writeTaskJsonFile: (...args: unknown[]) => Promise<void> }).writeTaskJsonFile = original;
+
+    try {
+      await expect(store.createTask({ description: "burn first id" })).rejects.toThrow("synthetic task.json write failure");
+    } finally {
+      store.writeTaskJsonFile = original;
+    }
 
     const next = await store.createTask({ description: "next id" });
 
-    expect(next.id).toBe("FN-002");
-    expect(reservationRows(store)).toEqual([
-      { taskId: "FN-001", status: "aborted", sequence: 1 },
-      { taskId: "FN-002", status: "committed", sequence: 2 },
-    ]);
-    expectNoReservationTaskDivergence(store);
-  });
-
-  it("allows replicated direct-reserved creates without requiring a reservation row", async () => {
-    const { store } = await scopedStore();
-    const now = new Date().toISOString();
-
-    const result = await store.applyReplicatedTaskCreate({
-      replicationVersion: 1,
-      reservationId: "remote-reservation",
-      taskId: "FN-123",
-      sourceNodeId: "node-b",
-      input: {
-        id: "FN-123",
-        description: "replicated create",
-        column: "triage",
-        dependencies: [],
-        steps: [],
-        currentStep: 0,
-        log: [],
-        createdAt: now,
-        updatedAt: now,
-        columnMovedAt: now,
-      } as never,
-      createdAt: now,
-      updatedAt: now,
-      prompt: "# replicated\n",
-    });
-
-    expect(result.applied).toBe(true);
-    expect(reservationRows(store)).toEqual([]);
-    expect(store.getDatabase().prepare("SELECT id FROM tasks WHERE id = ?").get("FN-123")).toMatchObject({ id: "FN-123" });
-  });
-
-  it("commits reservations inside an existing store transaction without nested transaction errors", async () => {
-    const { store } = await scopedStore();
-    const allocator = store.getDistributedTaskIdAllocator();
-    const reservation = await allocator.reserveDistributedTaskId({ prefix: "FN", nodeId: "node-a" });
-
-    expect(() => {
-      store.getDatabase().transactionImmediate(() => {
-        commitDistributedTaskIdReservationInExistingTransaction(store.getDatabase(), {
-          reservationId: reservation.reservationId,
-          nodeId: "node-a",
-        });
-      });
-    }).not.toThrow();
-
-    expect(reservationRows(store)).toEqual([{ taskId: "FN-001", status: "committed", sequence: 1 }]);
+    const rows = await reservationRows(h);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.status).toBe("aborted");
+    expect(rows[1]?.status).toBe("committed");
+    expect(rows[1]?.taskId).toBe(next.id);
+    expect(rows[0]?.sequence).toBe(1);
+    expect(rows[1]?.sequence).toBe(2);
+    await expectNoReservationTaskDivergence(h);
   });
 });

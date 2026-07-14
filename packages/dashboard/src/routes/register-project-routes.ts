@@ -11,7 +11,7 @@ import {
 import type { CentralCore as CentralCoreApi } from "@fusion/core";
 import { ApiError, badRequest, notFound } from "../api-error.js";
 import { execFileAsync } from "../exec-file.js";
-import { getOrCreateProjectStore } from "../project-store-resolver.js";
+import { getOrCreateProjectStore, evictProjectStore } from "../project-store-resolver.js";
 import type { ApiRouteRegistrar } from "./types.js";
 
 const {
@@ -452,41 +452,45 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
       */
       if (activeProjectWithOutcome.outcome === "registered") {
         try {
-          const { TaskStore, suggestTaskPrefix, detectWorkspaceRepos, saveWorkspaceConfig } = await import("@fusion/core");
-          const store = new TaskStore(normalizedPath);
-          try {
-            await store.init();
+          const { suggestTaskPrefix, detectWorkspaceRepos, saveWorkspaceConfig } = await import("@fusion/core");
+          /*
+          FNXC:PostgresCutover 2026-07-05-12:00:
+          Use the shared backend-booted project store (getOrCreateProjectStore)
+          instead of `new TaskStore(normalizedPath)`: the bare constructor
+          resolves to the removed SQLite runtime and throws in backend mode,
+          which silently skipped workspace-mode/task-prefix/default-workflow
+          setup for every newly registered project. The shared store is cached
+          for SSE/API reuse, so it must NOT be closed here.
+          */
+          const store = await getOrCreateProjectStore(activeProjectWithOutcome.activeProject.id);
 
-            /*
-            FNXC:Workspace 2026-06-24-19:00:
-            Workspace mode: if the client explicitly requested it (workspaceMode: true from the
-            wizard checkbox), detect and persist sub-repos. If the client didn't specify and
-            auto-detection finds sub-repos, also apply it. This mirrors the CLI interactive flow.
-            */
-            if (workspaceMode === true) {
-              const repos = await detectWorkspaceRepos(normalizedPath);
-              if (repos.length > 0) {
-                await saveWorkspaceConfig(normalizedPath, { repos });
-                await store.updateSettings({ workspaceMode: true });
-              }
-            } else if (workspaceMode === undefined) {
-              const repos = await detectWorkspaceRepos(normalizedPath);
-              if (repos.length > 0) {
-                await saveWorkspaceConfig(normalizedPath, { repos });
-                await store.updateSettings({ workspaceMode: true });
-              }
+          /*
+          FNXC:Workspace 2026-06-24-19:00:
+          Workspace mode: if the client explicitly requested it (workspaceMode: true from the
+          wizard checkbox), detect and persist sub-repos. If the client didn't specify and
+          auto-detection finds sub-repos, also apply it. This mirrors the CLI interactive flow.
+          */
+          if (workspaceMode === true) {
+            const repos = await detectWorkspaceRepos(normalizedPath);
+            if (repos.length > 0) {
+              await saveWorkspaceConfig(normalizedPath, { repos });
+              await store.updateSettings({ workspaceMode: true });
             }
-
-            const rawPrefix = typeof taskPrefix === "string" ? taskPrefix.trim().toUpperCase() : "";
-            const validPrefix = /^[A-Z]{1,5}$/.test(rawPrefix) ? rawPrefix : "";
-            const prefix = validPrefix || suggestTaskPrefix(normalizedName);
-            await store.updateSettings({
-              taskPrefix: prefix,
-              defaultWorkflowId: "builtin:coding",
-            });
-          } finally {
-            await store.close();
+          } else if (workspaceMode === undefined) {
+            const repos = await detectWorkspaceRepos(normalizedPath);
+            if (repos.length > 0) {
+              await saveWorkspaceConfig(normalizedPath, { repos });
+              await store.updateSettings({ workspaceMode: true });
+            }
           }
+
+          const rawPrefix = typeof taskPrefix === "string" ? taskPrefix.trim().toUpperCase() : "";
+          const validPrefix = /^[A-Z]{1,5}$/.test(rawPrefix) ? rawPrefix : "";
+          const prefix = validPrefix || suggestTaskPrefix(normalizedName);
+          await store.updateSettings({
+            taskPrefix: prefix,
+            defaultWorkflowId: "builtin:coding",
+          });
         } catch {
           // Non-fatal: project registration succeeded; settings can be configured later
         }
@@ -816,12 +820,29 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
   /**
    * DELETE /api/projects/:id
    * Unregister a project.
+   *
+   * FNXC:ProjectLifecycle 2026-06-28-12:00:
+   * Unregistering a project removes ONLY the central registry row (and its
+   * cascade children: project_health, central_activity_log, path mappings).
+   * Task data in project.tasks is NEVER deleted — the table has no FK to
+   * central.projects, so tasks survive unregister and are immediately visible
+   * when the project is re-added via ensureProjectForPath with the same
+   * project ID. This is intentional: operators can remove and re-add projects
+   * without data loss.
+   *
+   * The in-memory TaskStore cache is evicted so stale connections/watchers
+   * don't linger after the project is removed from the dashboard.
    */
   router.delete("/projects/:id", async (req, res) => {
     try {
       await withCentralCore(async (central) => {
         await central.unregisterProject(req.params.id);
       });
+
+      // Evict the in-memory store (closes watchers + connection pool) so the
+      // dashboard doesn't hold stale resources for an unregistered project.
+      // When the project is re-added, getOrCreateProjectStore will re-create it.
+      evictProjectStore(req.params.id);
 
       res.json({ success: true });
     } catch (err: unknown) {

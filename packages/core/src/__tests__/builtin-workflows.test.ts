@@ -18,7 +18,7 @@ import { builtinPromptConfig, BUILTIN_SEAM_PROMPTS } from "../builtin-workflow-p
 import { BUILTIN_WORKFLOW_SETTINGS } from "../builtin-workflow-settings.js";
 import { resolveColumnFlags } from "../trait-registry.js";
 import { DEFAULT_WORKFLOW_COLUMN_IDS, parseWorkflowIr, serializeWorkflowIr } from "../workflow-ir.js";
-import { createSharedTaskStoreTestHarness } from "./store-test-helpers.js";
+import { pgDescribe, createSharedPgTaskStoreTestHarness } from "../__test-utils__/pg-test-harness.js";
 import { BUILTIN_STEPWISE_FINAL_REVIEW_CODING_WORKFLOW_IR } from "../builtin-stepwise-final-review-coding-workflow-ir.js";
 
 const EXECUTE_NODE_MAX_RETRIES = 2;
@@ -1017,11 +1017,17 @@ describe("built-in workflows", () => {
     expect(template?.nodes?.[0]?.config?.toolMode).toBe("coding");
   });
 
-  describe("store integration", () => {
-    const harness = createSharedTaskStoreTestHarness();
+  /*
+  FNXC:PostgresCutover 2026-07-05-14:00:
+  Store-integration coverage runs on the shared PostgreSQL harness (the sync
+  SQLite TaskStore runtime was removed under VAL-REMOVAL-005). pgDescribe
+  auto-skips when PostgreSQL is unreachable so the merge gate stays green.
+  */
+  pgDescribe("store integration (PostgreSQL)", () => {
+    const harness = createSharedPgTaskStoreTestHarness({ prefix: "fusion_builtin_wf" });
 
-  beforeAll(harness.beforeAll);
-  afterAll(harness.afterAll);
+    beforeAll(harness.beforeAll);
+    afterAll(harness.afterAll);
     let store: ReturnType<typeof harness.store>;
     beforeEach(async () => {
       await harness.beforeEach();
@@ -1131,7 +1137,7 @@ describe("built-in workflows", () => {
 
         const detail = await store.getTask(task.id);
         expect(detail.enabledWorkflowSteps ?? []).toEqual(expected);
-        expect(store.getTaskWorkflowSelection(task.id)).toEqual({ workflowId, stepIds: expected });
+        expect(await store.getTaskWorkflowSelectionAsync(task.id)).toEqual({ workflowId, stepIds: expected });
       }
     });
 
@@ -1143,7 +1149,7 @@ describe("built-in workflows", () => {
       // `plan-review` and `code-review` optional groups, so the explicit-workflow
       // create path seeds them into the task's enabledWorkflowSteps.
       expect(detail.enabledWorkflowSteps ?? []).toEqual(["plan-review", "code-review"]);
-      expect(store.getTaskWorkflowSelection(task.id)).toEqual({ workflowId: "builtin:coding", stepIds: ["plan-review", "code-review"] });
+      expect(await store.getTaskWorkflowSelectionAsync(task.id)).toEqual({ workflowId: "builtin:coding", stepIds: ["plan-review", "code-review"] });
     });
 
     it("a task can disable code-review by creating with explicit enabledWorkflowSteps excluding it", async () => {
@@ -1159,7 +1165,7 @@ describe("built-in workflows", () => {
       const detail = await store.getTask(task.id);
       expect(detail.enabledWorkflowSteps ?? []).not.toContain("code-review");
       expect(detail.enabledWorkflowSteps ?? []).toEqual(["plan-review", "browser-verification"]);
-      expect(store.getTaskWorkflowSelection(task.id)).toEqual({
+      expect(await store.getTaskWorkflowSelectionAsync(task.id)).toEqual({
         workflowId: "builtin:coding",
         stepIds: ["plan-review", "browser-verification"],
       });
@@ -1173,7 +1179,7 @@ describe("built-in workflows", () => {
       });
 
       expect((await store.getTask(task.id)).enabledWorkflowSteps ?? []).toEqual(["plan-review", "code-review"]);
-      expect(store.getTaskWorkflowSelection(task.id)).toEqual({
+      expect(await store.getTaskWorkflowSelectionAsync(task.id)).toEqual({
         workflowId: "builtin:stepwise-coding",
         stepIds: ["plan-review", "code-review"],
       });
@@ -1193,7 +1199,7 @@ describe("built-in workflows", () => {
       with "not materialized" and re-run default-on Plan Review / Code Review.
       */
       expect((await store.getTask(task.id)).enabledWorkflowSteps).toEqual([]);
-      expect(store.getTaskWorkflowSelection(task.id)).toEqual({
+      expect(await store.getTaskWorkflowSelectionAsync(task.id)).toEqual({
         workflowId: "builtin:coding",
         stepIds: [],
       });
@@ -1210,7 +1216,7 @@ describe("built-in workflows", () => {
       );
 
       expect((await store.getTask(task.id)).enabledWorkflowSteps ?? []).toEqual(["plan-review", "code-review"]);
-      expect(store.getTaskWorkflowSelection(task.id)).toEqual({
+      expect(await store.getTaskWorkflowSelectionAsync(task.id)).toEqual({
         workflowId: "builtin:stepwise-coding",
         stepIds: ["plan-review", "code-review"],
       });
@@ -1229,26 +1235,26 @@ describe("built-in workflows", () => {
       await store.setDefaultWorkflowId("builtin:coding");
       const codingTask = await store.createTask({ description: "default builtin coding" });
       expect((await store.getTask(codingTask.id)).enabledWorkflowSteps ?? []).toEqual(["plan-review", "code-review"]);
-      expect(store.getTaskWorkflowSelection(codingTask.id)).toEqual({ workflowId: "builtin:coding", stepIds: ["plan-review", "code-review"] });
+      expect(await store.getTaskWorkflowSelectionAsync(codingTask.id)).toEqual({ workflowId: "builtin:coding", stepIds: ["plan-review", "code-review"] });
 
       const reservedCodingTask = await store.createTaskWithReservedId(
         { description: "reserved default builtin coding" },
         { taskId: "reserved-default-builtin-coding" },
       );
       expect((await store.getTask(reservedCodingTask.id)).enabledWorkflowSteps ?? []).toEqual(["plan-review", "code-review"]);
-      expect(store.getTaskWorkflowSelection(reservedCodingTask.id)).toEqual({ workflowId: "builtin:coding", stepIds: ["plan-review", "code-review"] });
+      expect(await store.getTaskWorkflowSelectionAsync(reservedCodingTask.id)).toEqual({ workflowId: "builtin:coding", stepIds: ["plan-review", "code-review"] });
 
       await store.setDefaultWorkflowId("builtin:stepwise-coding");
       const stepwiseTask = await store.createTask({ description: "default builtin stepwise" });
       expect((await store.getTask(stepwiseTask.id)).enabledWorkflowSteps ?? []).toEqual(["plan-review", "code-review"]);
-      expect(store.getTaskWorkflowSelection(stepwiseTask.id)).toEqual({ workflowId: "builtin:stepwise-coding", stepIds: ["plan-review", "code-review"] });
+      expect(await store.getTaskWorkflowSelectionAsync(stepwiseTask.id)).toEqual({ workflowId: "builtin:stepwise-coding", stepIds: ["plan-review", "code-review"] });
 
       const reservedStepwiseTask = await store.createTaskWithReservedId(
         { description: "reserved default builtin stepwise" },
         { taskId: "reserved-default-builtin-stepwise" },
       );
       expect((await store.getTask(reservedStepwiseTask.id)).enabledWorkflowSteps ?? []).toEqual(["plan-review", "code-review"]);
-      expect(store.getTaskWorkflowSelection(reservedStepwiseTask.id)).toEqual({ workflowId: "builtin:stepwise-coding", stepIds: ["plan-review", "code-review"] });
+      expect(await store.getTaskWorkflowSelectionAsync(reservedStepwiseTask.id)).toEqual({ workflowId: "builtin:stepwise-coding", stepIds: ["plan-review", "code-review"] });
     });
 
     it("rejects selecting the PR lifecycle fragment for a task", async () => {

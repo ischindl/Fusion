@@ -4,6 +4,13 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import * as fusionCore from "@fusion/core";
 import {
   TaskStore,
+  createTaskStoreForBackend,
+  drizzleSql,
+  AgentStore,
+  isEphemeralAgent,
+  evaluateImplementationTaskBind,
+  AGENT_VALID_TRANSITIONS,
+  ApprovalRequestStore,
   COLUMNS,
   COLUMN_LABELS,
   buildAutoPauseClearPatch,
@@ -22,7 +29,6 @@ import {
   type AgentUpdateInput,
   RESEARCH_RUN_STATUSES,
   isResearchExperimentalEnabled,
-  isEphemeralAgent,
   resolveResearchSettings,
   getTaskDuplicateLineage,
   resolveAgentProvisioningPolicy,
@@ -210,18 +216,51 @@ function resolveProjectRoot(cwd: string): string {
   }
 }
 
-/** Cache stores per project root to avoid re-init on every tool call. */
-const storeCache = new Map<string, TaskStore>();
+/*
+FNXC:PostgresCutover 2026-07-04-00:00:
+The agent-tool store path must boot the PostgreSQL backend (embedded by default, or external via DATABASE_URL) instead of constructing a legacy SQLite TaskStore, whose runtime was removed under VAL-REMOVAL-005. Mirrors the fn serve boot path, which already routes through createTaskStoreForBackend. The boot result is cached per project root so the connection pool (and any embedded PostgreSQL process) is released deterministically in closeCachedStores.
+*/
+interface CachedStoreEntry {
+  readonly store: TaskStore;
+  /** Releases the connection pool and stops an embedded PostgreSQL process when one was started. Absent for test-injected stores. */
+  readonly shutdown?: () => Promise<void>;
+  /**
+   * True when the entry was injected by tests (`__setCachedStoreForTesting`).
+   * closeCachedStores removes it from the cache but does NOT close the store —
+   * the owning test harness (shared PG fixture) controls that store's lifetime.
+   */
+  readonly external?: boolean;
+}
+
+/** Cache stores per project root to avoid re-booting the backend on every tool call. */
+const storeCache = new Map<string, CachedStoreEntry>();
 
 async function getStore(cwd: string): Promise<TaskStore> {
   const projectRoot = resolveProjectRoot(cwd);
   const existing = storeCache.get(projectRoot);
-  if (existing) return existing;
+  if (existing) return existing.store;
 
+  const boot = await createTaskStoreForBackend({ rootDir: projectRoot });
+  if (boot) {
+    storeCache.set(projectRoot, { store: boot.taskStore, shutdown: boot.shutdown });
+    return boot.taskStore;
+  }
+  // Legacy SQLite opt-out (FUSION_NO_EMBEDDED_PG=1). createTaskStoreForBackend
+  // returns null only in that case; the store still needs an explicit init().
   const store = new TaskStore(projectRoot);
   await store.init();
-  storeCache.set(projectRoot, store);
+  storeCache.set(projectRoot, { store });
   return store;
+}
+
+/**
+ * @internal Test-only: inject a pre-built store for a project root so tests share
+ * one isolated PostgreSQL database with the agent tools without re-booting the
+ * backend per tool call. The entry carries no shutdown hook; tests own the
+ * injected store's lifecycle (the shared PG harness tears it down in afterAll).
+ */
+export function __setCachedStoreForTesting(projectRoot: string, store: TaskStore): void {
+  storeCache.set(projectRoot, { store, external: true });
 }
 
 /** @internal Exposed so tests and the extension shutdown hook can close cached stores deterministically; not a public CLI API contract. */
@@ -230,11 +269,18 @@ export async function closeCachedStores(): Promise<void> {
   FNXC:CliTests 2026-06-17-23:58: FN-6626 found the CLI extension cache cleared real TaskStore instances without closing them, leaving SQLite/WAL handles to survive module resets and making canonical-project-root task-tool tests timeout under suite load.
   FNXC:CliTests 2026-06-21-09:58: FN-6839 requires awaiting TaskStore.close() so deferred task-created filesystem work and SQLite/WAL handles drain before temp-root removal; do not appease this loaded-lane seam with timeouts, retries, or worker changes.
   */
-  const stores = [...storeCache.values()];
+  const entries = [...storeCache.values()];
   storeCache.clear();
-  for (const store of stores) {
+  for (const entry of entries) {
+    // Externally-owned (test-injected) entries are removed by the clear() above;
+    // their owning harness controls the store's lifetime, so do not close them.
+    if (entry.external) continue;
     try {
-      await store.close();
+      if (entry.shutdown) {
+        await entry.shutdown();
+      } else {
+        await entry.store.close();
+      }
     } catch (error) {
       console.warn("[fusion-extension] cached TaskStore close skipped", error);
     }
@@ -243,6 +289,14 @@ export async function closeCachedStores(): Promise<void> {
 
 function getFusionDir(cwd: string): string {
   return join(resolveProjectRoot(cwd), ".fusion");
+}
+/*
+FNXC:PostgresCutover 2026-07-04-00:00:
+Agent tools must construct AgentStore in backend mode so agent data lives in PostgreSQL, not the removed SQLite runtime (VAL-REMOVAL-005). The asyncLayer is borrowed from the project's cached TaskStore (same connection pool), mirroring the TaskStore backend injection. The returned store is NOT pre-initialized — callers keep their existing `await agentStore.init()` (idempotent mkdir in backend mode).
+*/
+async function getAgentStore(cwd: string): Promise<AgentStore> {
+  const projectStore = await getStore(cwd);
+  return new AgentStore({ rootDir: getFusionDir(cwd), asyncLayer: projectStore.getAsyncLayer() ?? undefined });
 }
 
 function emitSecretAudit(
@@ -255,7 +309,7 @@ function emitSecretAudit(
   if (!ctx.runId || !ctx.agentId) return;
   try {
     assertNoSecretPlaintext(metadata);
-    store.recordRunAuditEvent({
+    void store.recordRunAuditEvent({
       runId: ctx.runId,
       agentId: ctx.agentId,
       taskId: ctx.taskId,
@@ -282,8 +336,7 @@ async function validateAssignableAgentId(
   task?: Pick<Task, "id" | "column"> | null,
   override = false,
 ): Promise<string | null> {
-  const { AgentStore, isEphemeralAgent, evaluateImplementationTaskBind } = await import("@fusion/core");
-  const agentStore = new AgentStore({ rootDir: getFusionDir(cwd) });
+  const agentStore = await getAgentStore(cwd);
   await agentStore.init();
   const agent = await agentStore.getAgent(agentId);
   if (!agent) {
@@ -314,8 +367,8 @@ Resolution is fail-open on lookup errors: a missing/unresolvable caller is treat
 async function isEphemeralCallerAgent(cwd: string, callerAgentId: string | undefined): Promise<boolean> {
   if (!callerAgentId) return false;
   try {
-    const { AgentStore, isEphemeralAgent } = await import("@fusion/core");
-    const agentStore = new AgentStore({ rootDir: getFusionDir(cwd) });
+    
+    const agentStore = await getAgentStore(cwd);
     await agentStore.init();
     const agent = await agentStore.resolveAgent(callerAgentId);
     if (!agent) return false;
@@ -2319,7 +2372,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       let record: import("@fusion/core").SecretRecord | null = null;
       let resolvedScope: import("@fusion/core").SecretScope | null = null;
       for (const scope of scopes) {
-        const match = secretsStore.listSecrets(scope).find((candidate) => candidate.key === params.key);
+        const match = (await secretsStore.listSecrets(scope)).find((candidate) => candidate.key === params.key);
         if (match) {
           record = match;
           resolvedScope = scope;
@@ -2343,13 +2396,14 @@ export default function kbExtension(pi: ExtensionAPI) {
       }
 
       if (decision.policy === "prompt") {
-        const { ApprovalRequestStore } = await import("@fusion/core");
-        const approvalStore = new ApprovalRequestStore(store.getDatabase());
+        
+        const cliLayer = store.getAsyncLayer();
+        const approvalStore = new ApprovalRequestStore(cliLayer ? null : store.getDatabase(), { asyncLayer: cliLayer });
         const dedupeKey = `secret-read:${resolvedScope}:${params.key}:${fnCtx.agentId ?? "unknown"}`;
-        const existing = approvalStore.findLatestByDedupeKey({ requesterActorId: fnCtx.agentId ?? "user", taskId: fnCtx.taskId, dedupeKey });
+        const existing = await approvalStore.findLatestByDedupeKey({ requesterActorId: fnCtx.agentId ?? "user", taskId: fnCtx.taskId, dedupeKey });
         const request = existing && existing.status === "pending"
           ? existing
-          : approvalStore.create({
+          : await approvalStore.create({
             requester: { actorId: fnCtx.agentId ?? "user", actorType: "agent", actorName: fnCtx.agentName ?? fnCtx.agentId ?? "Agent" },
             targetAction: {
               category: "task_mutation",
@@ -2400,8 +2454,12 @@ export default function kbExtension(pi: ExtensionAPI) {
         };
       }
 
+      // FNXC:ResearchStore 2026-06-27-12:40:
+      // getResearchStore() returns ResearchStore (SQLite) or AsyncResearchStore (PG backend);
+      // await every call so research-run CRUD works in both backends (await is harmless on
+      // the sync store). AI research EXECUTION still requires starting the engine.
       const researchStore = store.getResearchStore();
-      const run = researchStore.createRun({
+      const run = await researchStore.createRun({
         query: params.query,
         topic: params.query,
         providerConfig: {},
@@ -2422,7 +2480,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       let latestRun = run;
 
       while (Date.now() <= deadline) {
-        const current = researchStore.getRun(run.id);
+        const current = await researchStore.getRun(run.id);
         if (!current) {
           break;
         }
@@ -2463,7 +2521,7 @@ export default function kbExtension(pi: ExtensionAPI) {
         };
       }
 
-      const runs = store.getResearchStore().listRuns({ status: params.status as ResearchRunStatus | undefined, limit: params.limit ?? 10 });
+      const runs = await store.getResearchStore().listRuns({ status: params.status as ResearchRunStatus | undefined, limit: params.limit ?? 10 });
       const text = runs.length ? runs.map((run) => `- ${run.id} [${run.status}] ${run.query}`).join("\n") : "No research runs found.";
       return { content: [{ type: "text", text }], details: { runs: runs.map(toResearchRunDetails) } };
     },
@@ -2492,7 +2550,7 @@ export default function kbExtension(pi: ExtensionAPI) {
         };
       }
 
-      const run = store.getResearchStore().getRun(params.id);
+      const run = await store.getResearchStore().getRun(params.id);
       if (!run) {
         return {
           content: [{ type: "text", text: `Research run ${params.id} not found.` }],
@@ -2536,7 +2594,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       }
 
       const researchStore = store.getResearchStore();
-      const run = researchStore.getRun(params.id);
+      const run = await researchStore.getRun(params.id);
       if (!run) {
         return {
           content: [{ type: "text", text: `Research run ${params.id} not found.` }],
@@ -2565,7 +2623,7 @@ export default function kbExtension(pi: ExtensionAPI) {
         };
       }
 
-      const updated = researchStore.requestCancellation(params.id);
+      const updated = await researchStore.requestCancellation(params.id);
       return {
         content: [{ type: "text", text: `Requested cancellation for research run ${params.id} (status: ${updated.status}).` }],
         details: toResearchRunDetails(updated),
@@ -2598,7 +2656,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       }
 
       const researchStore = store.getResearchStore();
-      const run = researchStore.getRun(params.id);
+      const run = await researchStore.getRun(params.id);
       if (!run) {
         return {
           content: [{ type: "text", text: `Research run ${params.id} not found.` }],
@@ -2627,7 +2685,7 @@ export default function kbExtension(pi: ExtensionAPI) {
         };
       }
 
-      const retryRun = researchStore.createRetryRun(params.id);
+      const retryRun = await researchStore.createRetryRun(params.id);
       return {
         content: [{ type: "text", text: `Created retry run ${retryRun.id} from ${params.id}.` }],
         details: toResearchRunDetails(retryRun),
@@ -2754,8 +2812,8 @@ export default function kbExtension(pi: ExtensionAPI) {
         limit: params.limit,
         offset: params.offset,
       };
-      const insights = insightStore.listInsights(options);
-      const count = insightStore.countInsights({
+      const insights = await insightStore.listInsights(options);
+      const count = await insightStore.countInsights({
         category,
         status,
         runId: params.runId,
@@ -2792,7 +2850,7 @@ export default function kbExtension(pi: ExtensionAPI) {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const store = await getStore(ctx.cwd);
       const insightStore = store.getInsightStore();
-      const insight = insightStore.getInsight(params.id);
+      const insight = await insightStore.getInsight(params.id);
 
       if (!insight) {
         return {
@@ -2867,8 +2925,8 @@ export default function kbExtension(pi: ExtensionAPI) {
         limit: params.limit,
         offset: params.offset,
       };
-      const runs = insightStore.listRuns(options);
-      const count = insightStore.countRuns({ status, trigger });
+      const runs = await insightStore.listRuns(options);
+      const count = await insightStore.countRuns({ status, trigger });
 
       if (runs.length === 0) {
         return {
@@ -2902,7 +2960,7 @@ export default function kbExtension(pi: ExtensionAPI) {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const store = await getStore(ctx.cwd);
       const insightStore = store.getInsightStore();
-      const run = insightStore.getRun(params.id);
+      const run = await insightStore.getRun(params.id);
 
       if (!run) {
         return {
@@ -2963,17 +3021,17 @@ export default function kbExtension(pi: ExtensionAPI) {
       const store = await getStore(ctx.cwd);
       const missionStore = store.getMissionStore();
 
-      const mission = missionStore.createMission({
+      const mission = await missionStore.createMission({
         title: params.title.trim(),
         description: params.description?.trim(),
         baseBranch: params.baseBranch?.trim() || undefined,
       });
 
       if (params.autoAdvance !== undefined) {
-        missionStore.updateMission(mission.id, { autoAdvance: params.autoAdvance });
+        await missionStore.updateMission(mission.id, { autoAdvance: params.autoAdvance });
       }
 
-      const createdMission = missionStore.getMission(mission.id)!;
+      const createdMission = (await missionStore.getMission(mission.id))!;
 
       return {
         content: [
@@ -3014,19 +3072,36 @@ export default function kbExtension(pi: ExtensionAPI) {
       const missionStore = store.getMissionStore();
       const includeDrafts = params.includeDrafts ?? true;
 
-      const missions = missionStore.listMissions();
-      const drafts = includeDrafts
-        ? (store.getDatabase()
-          .prepare(
-            `SELECT id, title, status, updatedAt
-             FROM ai_sessions
-             WHERE type = 'mission_interview'
-               AND status IN ('generating', 'awaiting_input', 'error', 'complete')
-               AND COALESCE(archived, 0) = 0
-             ORDER BY updatedAt DESC`,
-          )
-          .all() as Array<{ id: string; title: string; status: "generating" | "awaiting_input" | "error" | "complete"; updatedAt: string }>)
-        : [];
+      const missions = await missionStore.listMissions();
+      // FNXC:PostgresCutover 2026-07-04: in backend mode read mission-interview
+      // drafts from PostgreSQL via Drizzle (the SQLite getDatabase() runtime was
+      // removed under VAL-REMOVAL-005). PG ai_sessions columns are snake_case, so
+      // alias updated_at -> updatedAt to preserve the existing draft row shape.
+      type MissionInterviewDraft = {
+        id: string;
+        title: string;
+        status: "generating" | "awaiting_input" | "error" | "complete";
+        updatedAt: string;
+      };
+      let drafts: MissionInterviewDraft[] = [];
+      if (includeDrafts) {
+        if (store.isBackendMode()) {
+          drafts = await store.getAsyncLayer()!.db.execute<MissionInterviewDraft>(
+            drizzleSql`SELECT id, title, status, updated_at AS "updatedAt" FROM project.ai_sessions WHERE type = 'mission_interview' AND status IN ('generating', 'awaiting_input', 'error', 'complete') AND COALESCE(archived, 0) = 0 ORDER BY updated_at DESC`,
+          );
+        } else {
+          drafts = store.getDatabase()
+            .prepare(
+              `SELECT id, title, status, updatedAt
+               FROM ai_sessions
+               WHERE type = 'mission_interview'
+                 AND status IN ('generating', 'awaiting_input', 'error', 'complete')
+                 AND COALESCE(archived, 0) = 0
+               ORDER BY updatedAt DESC`,
+            )
+            .all() as MissionInterviewDraft[];
+        }
+      }
 
       if (missions.length === 0 && drafts.length === 0) {
         return {
@@ -3130,8 +3205,8 @@ export default function kbExtension(pi: ExtensionAPI) {
       const store = await getStore(ctx.cwd);
       const goalStore = store.getGoalStore();
       const status = params.status ?? "active";
-      const goals = status === "all" ? goalStore.listGoals() : goalStore.listGoals({ status });
-      const activeCount = goalStore.listGoals({ status: "active" }).length;
+      const goals = status === "all" ? await goalStore.listGoals() : await goalStore.listGoals({ status });
+      const activeCount = (await goalStore.listGoals({ status: "active" })).length;
       const softWarning = activeCount >= GOAL_LIST_SOFT_WARNING_THRESHOLD;
       const goalEntries = goals.map(buildGoalListEntry);
 
@@ -3183,11 +3258,11 @@ export default function kbExtension(pi: ExtensionAPI) {
       const goalStore = store.getGoalStore();
 
       try {
-        const goal = goalStore.createGoal({
+        const goal = await goalStore.createGoal({
           title: params.title.trim(),
           description: params.description?.trim() || undefined,
         });
-        const activeCount = goalStore.listGoals({ status: "active" }).length;
+        const activeCount = (await goalStore.listGoals({ status: "active" })).length;
         const softWarning = activeCount >= 3;
 
         return {
@@ -3226,7 +3301,7 @@ export default function kbExtension(pi: ExtensionAPI) {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const store = await getStore(ctx.cwd);
       const goalStore = store.getGoalStore();
-      const goal = goalStore.getGoal(params.id);
+      const goal = await goalStore.getGoal(params.id);
 
       if (!goal) {
         return {
@@ -3243,7 +3318,7 @@ export default function kbExtension(pi: ExtensionAPI) {
         };
       }
 
-      const archived = goalStore.archiveGoal(params.id);
+      const archived = await goalStore.archiveGoal(params.id);
       return {
         content: [{ type: "text", text: `Archived ${archived.id}: ${archived.title}` }],
         details: { goalId: archived.id, status: "archived" },
@@ -3273,7 +3348,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       };
       const store = await getStore(ctx.cwd);
       const goalStore = store.getGoalStore();
-      const goal = goalStore.getGoal(params.id);
+      const goal = await goalStore.getGoal(params.id);
 
       if (!goal) {
         emitGoalRetrievalAudit(store, fnCtx, {
@@ -3333,7 +3408,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       const store = await getStore(ctx.cwd);
       const missionStore = store.getMissionStore();
 
-      const mission = missionStore.getMissionWithHierarchy(params.id);
+      const mission = await missionStore.getMissionWithHierarchy(params.id);
       if (!mission) {
         return {
           content: [{ type: "text", text: `Mission ${params.id} not found` }],
@@ -3421,7 +3496,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       const store = await getStore(ctx.cwd);
       const missionStore = store.getMissionStore();
       const goalStore = store.getGoalStore();
-      const mission = missionStore.getMission(params.missionId);
+      const mission = await missionStore.getMission(params.missionId);
 
       if (!mission) {
         return {
@@ -3431,10 +3506,9 @@ export default function kbExtension(pi: ExtensionAPI) {
         };
       }
 
-      const goals = missionStore
-        .listGoalIdsForMission(params.missionId)
-        .map((goalId) => goalStore.getGoal(goalId))
-        .filter((goal): goal is NonNullable<typeof goal> => Boolean(goal));
+      const goals = (await Promise.all(
+        (await missionStore.listGoalIdsForMission(params.missionId)).map((goalId) => goalStore.getGoal(goalId)),
+      )).filter((goal): goal is NonNullable<typeof goal> => Boolean(goal));
 
       const lines = [`Linked goals for ${mission.id}: ${mission.title}`];
       if (goals.length === 0) {
@@ -3478,7 +3552,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       const store = await getStore(ctx.cwd);
       const missionStore = store.getMissionStore();
       const goalStore = store.getGoalStore();
-      const mission = missionStore.getMission(params.missionId);
+      const mission = await missionStore.getMission(params.missionId);
       if (!mission) {
         return {
           content: [{ type: "text", text: `Mission ${params.missionId} not found` }],
@@ -3487,7 +3561,7 @@ export default function kbExtension(pi: ExtensionAPI) {
         };
       }
 
-      const goal = goalStore.getGoal(params.goalId);
+      const goal = await goalStore.getGoal(params.goalId);
       if (!goal) {
         return {
           content: [{ type: "text", text: `Goal ${params.goalId} not found` }],
@@ -3503,11 +3577,10 @@ export default function kbExtension(pi: ExtensionAPI) {
         };
       }
 
-      missionStore.linkGoal(params.missionId, params.goalId);
-      const goals = missionStore
-        .listGoalIdsForMission(params.missionId)
-        .map((goalId) => goalStore.getGoal(goalId))
-        .filter((linkedGoal): linkedGoal is NonNullable<typeof linkedGoal> => Boolean(linkedGoal));
+      await missionStore.linkGoal(params.missionId, params.goalId);
+      const goals = (await Promise.all(
+        (await missionStore.listGoalIdsForMission(params.missionId)).map((goalId) => goalStore.getGoal(goalId)),
+      )).filter((linkedGoal): linkedGoal is NonNullable<typeof linkedGoal> => Boolean(linkedGoal));
 
       return {
         content: [{ type: "text", text: `Linked ${goal.id}: ${goal.title} → ${mission.id}` }],
@@ -3542,7 +3615,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       const store = await getStore(ctx.cwd);
       const missionStore = store.getMissionStore();
       const goalStore = store.getGoalStore();
-      const mission = missionStore.getMission(params.missionId);
+      const mission = await missionStore.getMission(params.missionId);
       if (!mission) {
         return {
           content: [{ type: "text", text: `Mission ${params.missionId} not found` }],
@@ -3551,7 +3624,7 @@ export default function kbExtension(pi: ExtensionAPI) {
         };
       }
 
-      const goal = goalStore.getGoal(params.goalId);
+      const goal = await goalStore.getGoal(params.goalId);
       if (!goal) {
         return {
           content: [{ type: "text", text: `Goal ${params.goalId} not found` }],
@@ -3560,11 +3633,10 @@ export default function kbExtension(pi: ExtensionAPI) {
         };
       }
 
-      missionStore.unlinkGoal(params.missionId, params.goalId);
-      const goals = missionStore
-        .listGoalIdsForMission(params.missionId)
-        .map((goalId) => goalStore.getGoal(goalId))
-        .filter((linkedGoal): linkedGoal is NonNullable<typeof linkedGoal> => Boolean(linkedGoal));
+      await missionStore.unlinkGoal(params.missionId, params.goalId);
+      const goals = (await Promise.all(
+        (await missionStore.listGoalIdsForMission(params.missionId)).map((goalId) => goalStore.getGoal(goalId)),
+      )).filter((linkedGoal): linkedGoal is NonNullable<typeof linkedGoal> => Boolean(linkedGoal));
 
       return {
         content: [{ type: "text", text: `Unlinked ${goal.id}: ${goal.title} from ${mission.id}` }],
@@ -3599,7 +3671,7 @@ export default function kbExtension(pi: ExtensionAPI) {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const store = await getStore(ctx.cwd);
       const missionStore = store.getMissionStore();
-      const report = missionStore.backfillFeatureAssertions({
+      const report = await missionStore.backfillFeatureAssertions({
         missionId: params.missionId,
         dryRun: params.dryRun ?? true,
       });
@@ -3641,7 +3713,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       const store = await getStore(ctx.cwd);
       const missionStore = store.getMissionStore();
 
-      const mission = missionStore.getMission(params.id);
+      const mission = await missionStore.getMission(params.id);
       if (!mission) {
         return {
           content: [{ type: "text", text: `Mission ${params.id} not found` }],
@@ -3650,7 +3722,7 @@ export default function kbExtension(pi: ExtensionAPI) {
         };
       }
 
-      missionStore.deleteMission(params.id);
+      await missionStore.deleteMission(params.id);
 
       return {
         content: [{ type: "text", text: `Deleted ${params.id}: "${mission.title}"` }],
@@ -3683,7 +3755,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       const store = await getStore(ctx.cwd);
       const missionStore = store.getMissionStore();
 
-      const existingMission = missionStore.getMission(params.id);
+      const existingMission = await missionStore.getMission(params.id);
       if (!existingMission) {
         return {
           content: [{ type: "text", text: `Mission ${params.id} not found` }],
@@ -3714,7 +3786,7 @@ export default function kbExtension(pi: ExtensionAPI) {
         };
       }
 
-      const mission = missionStore.updateMission(params.id, updates);
+      const mission = await missionStore.updateMission(params.id, updates);
 
       return {
         content: [{ type: "text", text: `Updated ${mission.id}: "${mission.title}"` }],
@@ -3749,7 +3821,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       const store = await getStore(ctx.cwd);
       const missionStore = store.getMissionStore();
 
-      const mission = missionStore.getMission(params.missionId);
+      const mission = await missionStore.getMission(params.missionId);
       if (!mission) {
         return {
           content: [{ type: "text", text: `Mission ${params.missionId} not found` }],
@@ -3758,7 +3830,7 @@ export default function kbExtension(pi: ExtensionAPI) {
         };
       }
 
-      const milestone = missionStore.addMilestone(params.missionId, {
+      const milestone = await missionStore.addMilestone(params.missionId, {
         title: params.title.trim(),
         description: params.description?.trim(),
       });
@@ -3794,7 +3866,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       const store = await getStore(ctx.cwd);
       const missionStore = store.getMissionStore();
 
-      const milestone = missionStore.getMilestone(params.milestoneId);
+      const milestone = await missionStore.getMilestone(params.milestoneId);
       if (!milestone) {
         return {
           content: [{ type: "text", text: `Milestone ${params.milestoneId} not found` }],
@@ -3803,7 +3875,7 @@ export default function kbExtension(pi: ExtensionAPI) {
         };
       }
 
-      const slice = missionStore.addSlice(params.milestoneId, {
+      const slice = await missionStore.addSlice(params.milestoneId, {
         title: params.title.trim(),
         description: params.description?.trim(),
       });
@@ -3842,7 +3914,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       const store = await getStore(ctx.cwd);
       const missionStore = store.getMissionStore();
 
-      const slice = missionStore.getSlice(params.sliceId);
+      const slice = await missionStore.getSlice(params.sliceId);
       if (!slice) {
         return {
           content: [{ type: "text", text: `Slice ${params.sliceId} not found` }],
@@ -3851,7 +3923,7 @@ export default function kbExtension(pi: ExtensionAPI) {
         };
       }
 
-      const feature = missionStore.addFeature(params.sliceId, {
+      const feature = await missionStore.addFeature(params.sliceId, {
         title: params.title.trim(),
         description: params.description?.trim(),
         acceptanceCriteria: params.acceptanceCriteria?.trim(),
@@ -3887,7 +3959,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       const missionStore = store.getMissionStore();
 
       try {
-        missionStore.deleteFeature(params.featureId, params.force === true);
+        await missionStore.deleteFeature(params.featureId, params.force === true);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return {
@@ -3921,7 +3993,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       const missionStore = store.getMissionStore();
 
       try {
-        missionStore.deleteSlice(params.sliceId, params.force === true);
+        await missionStore.deleteSlice(params.sliceId, params.force === true);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return {
@@ -3955,7 +4027,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       const missionStore = store.getMissionStore();
 
       try {
-        missionStore.deleteMilestone(params.milestoneId, params.force === true);
+        await missionStore.deleteMilestone(params.milestoneId, params.force === true);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return {
@@ -3994,7 +4066,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       const store = await getStore(ctx.cwd);
       const missionStore = store.getMissionStore();
 
-      const slice = missionStore.getSlice(params.id);
+      const slice = await missionStore.getSlice(params.id);
       if (!slice) {
         return {
           content: [{ type: "text", text: `Slice ${params.id} not found` }],
@@ -4051,7 +4123,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       const store = await getStore(ctx.cwd);
       const missionStore = store.getMissionStore();
 
-      const feature = missionStore.getFeature(params.featureId);
+      const feature = await missionStore.getFeature(params.featureId);
       if (!feature) {
         return {
           content: [{ type: "text", text: `Feature ${params.featureId} not found` }],
@@ -4072,7 +4144,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       }
 
       try {
-        const updated = missionStore.linkFeatureToTask(params.featureId, params.taskId);
+        const updated = await missionStore.linkFeatureToTask(params.featureId, params.taskId);
         await store.updateTask(params.taskId, { sliceId: feature.sliceId });
 
         return {
@@ -4122,7 +4194,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       const store = await getStore(ctx.cwd);
       const missionStore = store.getMissionStore();
 
-      const existingFeature = missionStore.getFeature(params.id);
+      const existingFeature = await missionStore.getFeature(params.id);
       if (!existingFeature) {
         return {
           content: [{ type: "text", text: `Feature ${params.id} not found` }],
@@ -4156,7 +4228,7 @@ export default function kbExtension(pi: ExtensionAPI) {
         };
       }
 
-      const feature = missionStore.updateFeature(params.id, updates);
+      const feature = await missionStore.updateFeature(params.id, updates);
 
       return {
         content: [{ type: "text", text: `Updated ${feature.id}: "${feature.title}"` }],
@@ -4199,7 +4271,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       const store = await getStore(ctx.cwd);
       const missionStore = store.getMissionStore();
 
-      const existingMilestone = missionStore.getMilestone(params.id);
+      const existingMilestone = await missionStore.getMilestone(params.id);
       if (!existingMilestone) {
         return {
           content: [{ type: "text", text: `Milestone ${params.id} not found` }],
@@ -4233,7 +4305,7 @@ export default function kbExtension(pi: ExtensionAPI) {
         };
       }
 
-      const milestone = missionStore.updateMilestone(params.id, updates);
+      const milestone = await missionStore.updateMilestone(params.id, updates);
 
       return {
         content: [{ type: "text", text: `Updated ${milestone.id}: "${milestone.title}"` }],
@@ -4268,9 +4340,9 @@ export default function kbExtension(pi: ExtensionAPI) {
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const { AgentStore, AGENT_VALID_TRANSITIONS } = await import("@fusion/core");
+      
 
-      const agentStore = new AgentStore({ rootDir: getFusionDir(ctx.cwd) });
+      const agentStore = await getAgentStore(ctx.cwd);
       await agentStore.init();
 
       const agent = await agentStore.getAgent(params.id);
@@ -4331,9 +4403,9 @@ export default function kbExtension(pi: ExtensionAPI) {
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const { AgentStore, AGENT_VALID_TRANSITIONS } = await import("@fusion/core");
+      
 
-      const agentStore = new AgentStore({ rootDir: getFusionDir(ctx.cwd) });
+      const agentStore = await getAgentStore(ctx.cwd);
       await agentStore.init();
 
       const agent = await agentStore.getAgent(params.id);
@@ -4401,8 +4473,8 @@ export default function kbExtension(pi: ExtensionAPI) {
       message_response_mode: Type.Optional(Type.Union([Type.Literal("immediate"), Type.Literal("on-heartbeat")])),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const { AgentStore, ApprovalRequestStore } = await import("@fusion/core");
-      const agentStore = new AgentStore({ rootDir: getFusionDir(ctx.cwd) });
+      
+      const agentStore = await getAgentStore(ctx.cwd);
       await agentStore.init();
       const store = await getStore(ctx.cwd);
       const caller = { id: "user", role: "user", isPrivileged: true } as const;
@@ -4420,8 +4492,9 @@ export default function kbExtension(pi: ExtensionAPI) {
       }
 
       if (policy.decision === "require-approval") {
-        const approvalStore = new ApprovalRequestStore(store.getDatabase());
-        const request = approvalStore.create({
+        const cliLayer2 = store.getAsyncLayer();
+        const approvalStore = new ApprovalRequestStore(cliLayer2 ? null : store.getDatabase(), { asyncLayer: cliLayer2 });
+        const request = await approvalStore.create({
           requester: { actorId: "user", actorType: "user", actorName: "CLI User" },
           targetAction: { category: "agent_provisioning", action: "create", summary: `Create agent ${params.name} (${params.role})`, resourceType: "agent", resourceId: "", context: { tool: "fn_agent_create", params } },
         });
@@ -4497,8 +4570,11 @@ export default function kbExtension(pi: ExtensionAPI) {
       ], { description: "How agent responds to messages" })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const { AgentStore } = await import("@fusion/core");
-      const agentStore = new AgentStore({ rootDir: getFusionDir(ctx.cwd) });
+      // FNXC:PostgresCutover 2026-07-04: every other agent tool uses
+      // getAgentStore(cwd) (backend-mode AgentStore via the project asyncLayer);
+      // this site was missed and constructed a layerless AgentStore whose SQLite
+      // runtime was removed under VAL-REMOVAL-005.
+      const agentStore = await getAgentStore(ctx.cwd);
       await agentStore.init();
 
       const updateParamKeys = [
@@ -4708,8 +4784,8 @@ export default function kbExtension(pi: ExtensionAPI) {
       ),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const { AgentStore } = await import("@fusion/core");
-      const agentStore = new AgentStore({ rootDir: getFusionDir(ctx.cwd) });
+      
+      const agentStore = await getAgentStore(ctx.cwd);
       await agentStore.init();
 
       const hasInstructionsText = params.instructions_text !== undefined;
@@ -4784,8 +4860,8 @@ export default function kbExtension(pi: ExtensionAPI) {
       reassign_to: Type.Optional(Type.String({ description: "Optional replacement agent for assigned tasks" })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const { AgentStore, ApprovalRequestStore } = await import("@fusion/core");
-      const agentStore = new AgentStore({ rootDir: getFusionDir(ctx.cwd) });
+      
+      const agentStore = await getAgentStore(ctx.cwd);
       await agentStore.init();
       const store = await getStore(ctx.cwd);
       const caller = { id: "user", role: "user", isPrivileged: true } as const;
@@ -4796,8 +4872,9 @@ export default function kbExtension(pi: ExtensionAPI) {
       });
 
       if (policy.decision === "require-approval") {
-        const approvalStore = new ApprovalRequestStore(store.getDatabase());
-        const request = approvalStore.create({
+        const cliLayer3 = store.getAsyncLayer();
+        const approvalStore = new ApprovalRequestStore(cliLayer3 ? null : store.getDatabase(), { asyncLayer: cliLayer3 });
+        const request = await approvalStore.create({
           requester: { actorId: "user", actorType: "user", actorName: "CLI User" },
           targetAction: { category: "agent_provisioning", action: "delete", summary: `Delete agent ${params.agent_id}`, resourceType: "agent", resourceId: params.agent_id, context: { tool: "fn_agent_delete", params } },
         });
@@ -4847,9 +4924,9 @@ export default function kbExtension(pi: ExtensionAPI) {
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const { AgentStore } = await import("@fusion/core");
+      
 
-      const agentStore = new AgentStore({ rootDir: getFusionDir(ctx.cwd) });
+      const agentStore = await getAgentStore(ctx.cwd);
       await agentStore.init();
 
       const filter: Record<string, unknown> = {};
@@ -4959,8 +5036,8 @@ export default function kbExtension(pi: ExtensionAPI) {
         };
       }
 
-      const { AgentStore } = await import("@fusion/core");
-      const agentStore = new AgentStore({ rootDir: getFusionDir(ctx.cwd) });
+      
+      const agentStore = await getAgentStore(ctx.cwd);
       await agentStore.init();
       const agent = await agentStore.getAgent(params.agent_id);
 
@@ -5022,9 +5099,9 @@ export default function kbExtension(pi: ExtensionAPI) {
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const { AgentStore } = await import("@fusion/core");
+      
 
-      const agentStore = new AgentStore({ rootDir: getFusionDir(ctx.cwd) });
+      const agentStore = await getAgentStore(ctx.cwd);
       await agentStore.init();
 
       const agent = await agentStore.resolveAgent(params.id);
@@ -5130,10 +5207,10 @@ export default function kbExtension(pi: ExtensionAPI) {
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const { AgentStore } = await import("@fusion/core");
+      
       type OrgTreeNode = { agent: { id: string; icon?: string; name: string; role: string; state: string; taskId?: string }; children: OrgTreeNode[] };
 
-      const agentStore = new AgentStore({ rootDir: getFusionDir(ctx.cwd) });
+      const agentStore = await getAgentStore(ctx.cwd);
       await agentStore.init();
 
       const includeEphemeral = params.include_ephemeral ?? false;

@@ -2894,21 +2894,7 @@ export interface TaskCreateInput {
 
 // ── Todo List Types ──────────────────────────────────────────────────────
 
-export interface MeshReplicatedTaskCreatePayload {
-  replicationVersion: 1;
-  reservationId: string;
-  taskId: string;
-  sourceNodeId: string;
-  createdAt: string;
-  updatedAt: string;
-  prompt: string;
-  input: TaskCreateInput;
-}
 
-export interface MeshReplicatedTaskApplyResult {
-  task: Task;
-  applied: boolean;
-}
 
 /** Canonical version for shared-state snapshots exchanged across mesh nodes. */
 export const SHARED_STATE_SNAPSHOT_VERSION = 1 as const;
@@ -4881,6 +4867,27 @@ export interface ProjectSettings {
    *  per-task JSONL files — see agentLogFileRetentionDays. Default: 30. Set 0
    *  to disable pruning. */
   operationalLogRetentionDays?: number;
+  /*
+  FNXC:PostgresMigrationBanner 2026-07-12:
+  Written by the startup factory after the first-boot SQLite → PostgreSQL
+  auto-migration succeeds, so the dashboard can show a one-time banner telling
+  the operator their data was migrated and the original SQLite files were
+  kept as backups. Dismissing the banner sets dismissed: true (the notice is
+  retained for support/audit rather than deleted). null/absent = no migration
+  happened on this project.
+  */
+  sqliteMigrationNotice?: {
+    /** ISO timestamp of the auto-migration. */
+    migratedAt: string;
+    /** Total rows imported across all tables. */
+    migratedRows: number;
+    /** Number of tables imported. */
+    tables: number;
+    /** Absolute paths of the original SQLite files kept as backups. */
+    sqliteBackups: string[];
+    /** True once the operator dismissed the banner. */
+    dismissed?: boolean;
+  } | null;
   /** Number of days to retain per-task agent-log JSONL files for soft-deleted
    *  and archived tasks. Only affects tasks that are no longer active. Entries
    *  older than this window are removed from the JSONL file during periodic
@@ -5522,22 +5529,14 @@ export interface MeshDegradedReadState {
 }
 
 export interface SharedMeshStatePayload {
-  taskMetadata?: SnapshotBase & { payload: { tasks: Task[] } };
-  missionHierarchy?: SnapshotBase & {
-    payload: {
-      missions: import("./mission-types.js").Mission[];
-      milestones: import("./mission-types.js").Milestone[];
-      slices: import("./mission-types.js").Slice[];
-      features: import("./mission-types.js").MissionFeature[];
-      missionEvents: import("./mission-types.js").MissionEvent[];
-      assertions: import("./mission-types.js").MissionContractAssertion[];
-      featureAssertionLinks: import("./mission-types.js").FeatureAssertionLink[];
-    };
-  };
-  agents?: SnapshotBase & { payload: { agents: Agent[]; blockedStates: { agentId: string; state: BlockedStateSnapshot }[] } };
-  agentRuns?: SnapshotBase & { payload: { runs: AgentHeartbeatRun[] } };
-  activityLog?: SnapshotBase & { payload: { entries: ActivityLogEntry[] } };
-  runAudit?: SnapshotBase & { payload: { entries: RunAuditEvent[] } };
+  /*
+  FNXC:PostgresCutover 2026-07-12:
+  Task/state mesh replication is REMOVED — replication is handled at the
+  PostgreSQL level (nodes share the database). Only the settings-adjacent
+  domains remain on the wire: projectSettings (legacy sqlite settings sync)
+  and authMaterial (per-machine auth.json). Receivers ignore any other
+  domain a legacy peer may still send.
+  */
   projectSettings?: SnapshotBase & { payload: { global: GlobalSettings; projects?: Record<string, ProjectSettings> } };
   authMaterial?: SnapshotBase & { payload: { providerAuth?: Record<string, ProviderAuthEntry> } };
 }

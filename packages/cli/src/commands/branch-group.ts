@@ -1,7 +1,7 @@
 import { TaskStore, isBranchGroupComplete, isBranchGroupMemberLanded, filterTasksByBranchGroup, type BranchGroup, type Settings, type Task } from "@fusion/core";
 import { promoteBranchGroup, resolveIntegrationBranch } from "@fusion/engine";
 import { GitHubClient, closeGroupPullRequest } from "@fusion/dashboard";
-import { resolveProject, closeProjectStore, asLocalProjectContext, type ProjectContext } from "../project-context.js";
+import { resolveProject, createLocalStore, closeProjectStore, asLocalProjectContext, type ProjectContext } from "../project-context.js";
 import { createGroupPrCallback } from "./task-lifecycle.js";
 import { retryOnLock, LockRetryExhaustedError } from "../lock-retry.js";
 
@@ -58,8 +58,9 @@ async function getBranchGroupContext(projectName?: string): Promise<ProjectConte
   if (projectName) {
     throw new Error(`Project ${projectName} not found`);
   }
-  const store = new TaskStore(process.cwd());
-  await store.init();
+  // FNXC:PostgresCutover 2026-07-05-12:00: boot the cwd fallback through the
+  // PostgreSQL startup factory; bare `new TaskStore` throws in backend mode.
+  const store = await createLocalStore(process.cwd());
   return asLocalProjectContext(store);
 }
 
@@ -112,7 +113,7 @@ export async function runBranchGroupList(projectName?: string) {
         const context = await getBranchGroupContext(projectName);
         try {
           const { store } = context;
-          const groups = store.listBranchGroups();
+          const groups = await store.listBranchGroups();
 
           if (groups.length === 0) {
             console.log("\n  No branch groups yet.\n");
@@ -152,7 +153,7 @@ export async function runBranchGroupShow(id: string, projectName?: string) {
         const context = await getBranchGroupContext(projectName);
         try {
           const { store } = context;
-          const group = store.getBranchGroup(id);
+          const group = await store.getBranchGroup(id);
           if (!group) {
             console.error(`\n  \u2717 Branch group ${id} not found\n`);
             await closeProjectStore(context);
@@ -309,7 +310,7 @@ export async function runBranchGroupPromote(id: string, projectName?: string) {
         recordAudit: async (event) => {
           await retryOnLock(
             async () =>
-              store.recordRunAuditEvent({
+              void store.recordRunAuditEvent({
                 agentId: "cli:branch-group-promote",
                 runId: `cli-promote-${group.id}`,
                 domain: event.domain as Parameters<TaskStore["recordRunAuditEvent"]>[0]["domain"],

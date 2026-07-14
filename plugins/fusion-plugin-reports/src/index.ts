@@ -58,6 +58,15 @@ export function getReportStore(ctx: PluginContext): ReportStore {
   const cached = reportStoreCache.get(key);
   if (cached) return cached;
 
+  // FNXC:PostgresCutover 2026-07-04-00:00:
+  // In backend mode, pass the asyncLayer so ReportStore async methods query
+  // PostgreSQL via Drizzle. In SQLite mode, pass the sync Database.
+  if (ctx.taskStore.isBackendMode()) {
+    const asyncLayer = ctx.taskStore.getAsyncLayer();
+    const store = new ReportStore(null, { asyncLayer });
+    reportStoreCache.set(key, store);
+    return store;
+  }
   const store = new ReportStore(ctx.taskStore.getDatabase());
   reportStoreCache.set(key, store);
   return store;
@@ -80,9 +89,9 @@ export async function runGeneratedReportReview(input: RunGeneratedReportReviewIn
       source: "runGeneratedReportReview",
     },
   };
-  const report = store.createReport(reportInput);
-  store.setStatus(report.id, "review_pending");
-  store.setStatus(report.id, "review_in_progress");
+  const report = await store.createReportAsync(reportInput);
+  await store.setStatusAsync(report.id, "review_pending");
+  await store.setStatusAsync(report.id, "review_in_progress");
 
   const combinedReview = await runReviewPanel({
     reportDraft: input.reportDraft,
@@ -94,7 +103,7 @@ export async function runGeneratedReportReview(input: RunGeneratedReportReviewIn
     cwd: input.cwd,
   }, ctx);
 
-  const reviewed = store.attachReview(report.id, combinedReview);
+  const reviewed = await store.attachReviewAsync(report.id, combinedReview);
 
   const nextApprovalState = initializeApprovalState(reviewed.status, {
     approvalRequired: getApprovalRequired(ctx.settings),
@@ -105,7 +114,7 @@ export async function runGeneratedReportReview(input: RunGeneratedReportReviewIn
 
   if (nextApprovalState !== "not_required") {
     const now = new Date().toISOString();
-    store.updateReport(report.id, {
+    await store.updateReportAsync(report.id, {
       approvalState: nextApprovalState,
       ...(nextApprovalState === "approved"
         ? { status: "approved", approvedAt: now, approvedBy: "system" }

@@ -671,9 +671,9 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
     }
 
     const activePrEntity =
-      scopedStore.getActivePrEntityBySource?.("task", task.id) ??
+      (await scopedStore.getActivePrEntityBySource?.("task", task.id)) ??
       (task.branchContext?.groupId
-        ? scopedStore.getActivePrEntityBySource?.("branch-group", task.branchContext.groupId)
+        ? await scopedStore.getActivePrEntityBySource?.("branch-group", task.branchContext.groupId)
         : null);
     if (
       isBackwardMoveBlockedByOpenPr({
@@ -892,6 +892,14 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       const offset = typeof req.query.offset === "string" ? Number.parseInt(req.query.offset, 10) : undefined;
       const q = typeof req.query.q === "string" ? req.query.q.trim() : undefined;
       const includeArchived = req.query.includeArchived === "1" || req.query.includeArchived === "true";
+      // FNXC:TaskStoreForensicRead 2026-06-26-15:30:
+      // VAL-CROSS-003 / VAL-DATA-006 — Forensic read surface. When
+      // includeDeleted=true is passed, soft-deleted tasks (deletedAt IS NOT
+      // NULL) are surfaced for admin/forensic consumers. Default (unset/false)
+      // preserves the live-reader invariant (VAL-DATA-005): tombstoned tasks
+      // never appear on the board. Only honored on the list path (no `q`),
+      // since search has its own deletedAt filter that is intentionally live-only.
+      const includeDeleted = req.query.includeDeleted === "1" || req.query.includeDeleted === "true";
       const columnParam = typeof req.query.column === "string" ? req.query.column.trim() : undefined;
       const column = columnParam ? (isColumn(columnParam) ? columnParam : undefined) : undefined;
 
@@ -912,7 +920,8 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         // Board-view list: omit the heavy agent log payload and exclude
         // archived tasks unless explicitly requested. Full task detail still loads via
         // GET /api/tasks/:id. Without this, every dashboard load shipped tens of MB of agent logs.
-        const listOptions = { limit, offset, slim: true, includeArchived, ...(column ? { column } : {}) };
+        // includeDeleted propagates to the store forensic read path (VAL-DATA-006).
+        const listOptions = { limit, offset, slim: true, includeArchived, ...(includeDeleted ? { includeDeleted } : {}), ...(column ? { column } : {}) };
         tasks = await scopedStore.listTasks(listOptions);
       }
 
@@ -1501,8 +1510,8 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
 
       const taskWithBranchContext = requestedBranchMode === "shared-group" && sharedFeatureBranch
         ? await (async () => {
-            const group = scopedStore.getBranchGroupByBranchName(sharedFeatureBranch)
-              ?? scopedStore.ensureBranchGroupForSource("new-task", sharedFeatureBranch, { branchName: sharedFeatureBranch });
+            const group = (await scopedStore.getBranchGroupByBranchName(sharedFeatureBranch))
+              ?? await scopedStore.ensureBranchGroupForSource("new-task", sharedFeatureBranch, { branchName: sharedFeatureBranch });
             await scopedStore.setTaskBranchGroup(taskWithAutoBranch.id, group.id);
             const taskSegment = ((taskWithAutoBranch.title ?? "").trim() || taskWithAutoBranch.description).slice(0, 60);
             const workingBranch = derivePerTaskBranch(sharedFeatureBranch, taskSegment);
@@ -1585,9 +1594,9 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       const guardTask = await scopedStore.getTask(req.params.id);
       if (guardTask) {
         const activePrEntity =
-          scopedStore.getActivePrEntityBySource?.("task", guardTask.id) ??
+          (await scopedStore.getActivePrEntityBySource?.("task", guardTask.id)) ??
           (guardTask.branchContext?.groupId
-            ? scopedStore.getActivePrEntityBySource?.("branch-group", guardTask.branchContext.groupId)
+            ? await scopedStore.getActivePrEntityBySource?.("branch-group", guardTask.branchContext.groupId)
             : null);
         if (
           isBackwardMoveBlockedByOpenPr({
@@ -4683,7 +4692,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
 
       const { store: scopedStore } = await getProjectContext(req);
       const { AgentStore } = await import("@fusion/core");
-      const agentStore = new AgentStore({ rootDir: scopedStore.getFusionDir() });
+      const agentStore = new AgentStore({ rootDir: scopedStore.getFusionDir(), asyncLayer: scopedStore.getAsyncLayer() ?? undefined });
       await agentStore.init();
 
       if (typeof agentId === "string") {
@@ -5164,6 +5173,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       const agentStore = new AgentStore({
         rootDir: scopedStore.getFusionDir(),
         taskStore: scopedStore,
+        asyncLayer: scopedStore.getAsyncLayer() ?? undefined,
       });
       await agentStore.init();
 
@@ -5206,6 +5216,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       const agentStore = new AgentStore({
         rootDir: scopedStore.getFusionDir(),
         taskStore: scopedStore,
+        asyncLayer: scopedStore.getAsyncLayer() ?? undefined,
       });
       await agentStore.init();
 
@@ -5233,6 +5244,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       const agentStore = new AgentStore({
         rootDir: scopedStore.getFusionDir(),
         taskStore: scopedStore,
+        asyncLayer: scopedStore.getAsyncLayer() ?? undefined,
       });
       await agentStore.init();
 

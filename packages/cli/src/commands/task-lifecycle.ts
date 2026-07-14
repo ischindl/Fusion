@@ -763,7 +763,7 @@ export async function processPullRequestMergeTask(
   const sharedGroupId = task.branchContext?.groupId;
   const branchGroup =
     isSharedBranchGroupMember && sharedGroupId
-      ? store.getBranchGroup(sharedGroupId)
+      ? await store.getBranchGroup(sharedGroupId)
       : null;
 
   if (isSharedBranchGroupMember && branchGroup) {
@@ -860,7 +860,7 @@ export async function processPullRequestMergeTask(
       return "waiting";
     }
 
-    const activeMerge = store.getActiveMergingTask(task.id);
+    const activeMerge = await store.getActiveMergingTask(task.id);
     if (activeMerge) {
       await store.updateTask(task.id, { status: "awaiting-pr-checks" });
       return "waiting";
@@ -979,7 +979,7 @@ export async function processPullRequestMergeTask(
   }
 
   // Cross-process safety net: abort if another task is already mid-merge.
-  const activeMerge = store.getActiveMergingTask(task.id);
+  const activeMerge = await store.getActiveMergingTask(task.id);
   if (activeMerge) {
     await store.updateTask(task.id, { status: "awaiting-pr-checks" });
     return "waiting";

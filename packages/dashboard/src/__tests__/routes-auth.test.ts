@@ -196,6 +196,9 @@ function createMockGlobalSettingsStore() {
 
 function createMockStore(overrides: Partial<TaskStore> = {}): TaskStore {
   return {
+    // FNXC:PostgresCutover 2026-07-05-16:40: routes borrow the AsyncDataLayer
+    // from the scoped store; null = legacy mode for this mock.
+    getAsyncLayer: vi.fn().mockReturnValue(null),
     getTask: vi.fn(),
     listTasks: vi.fn().mockResolvedValue([]),
     searchTasks: vi.fn().mockResolvedValue([]),
@@ -455,7 +458,12 @@ describe("GET /models", () => {
     expect(res.status).toBe(200);
     const sonnetFiveRows = res.body.models.filter((model: { provider: string; id: string }) => model.provider === "anthropic" && model.id === "claude-sonnet-5");
     expect(sonnetFiveRows).toHaveLength(1);
-    expect(modelRegistry.registerProvider).not.toHaveBeenCalled();
+    // FNXC:ModelCatalog 2026-07-10: FN-7745's supplemental GPT-5.6 codex merge
+    // legitimately registers the missing openai-codex provider on this bare
+    // registry; the dedupe invariant under test is only that ANTHROPIC is not
+    // re-registered when the upstream registry already advertises Sonnet 5.
+    const anthropicRegistrations = (modelRegistry.registerProvider as ReturnType<typeof vi.fn>).mock.calls.filter((call) => call[0] === "anthropic");
+    expect(anthropicRegistrations).toHaveLength(0);
   });
 
   // Regression guard: FN-2370's auto-resolved squash inverted this filter,
@@ -3699,18 +3707,21 @@ describe("Pause/Unpause endpoints", () => {
     });
 
     it("POST /tasks/:id/comments — triggers immediate heartbeat wake for assigned agent", async () => {
-      const tempDir = mkdtempSync(join(tmpdir(), "kb-routes-comment-heartbeat-"));
-      const fusionDir = join(tempDir, ".fusion");
-      mkdirSync(fusionDir, { recursive: true });
+      const fusionDir = "/fake/root/.fusion";
 
       try {
         const { AgentStore } = await import("@fusion/core");
-        const agentStore = new AgentStore({ rootDir: fusionDir });
-        await agentStore.init();
-        const agent = await agentStore.createAgent({ name: "Wake Agent", role: "executor" });
-        await agentStore.updateAgent(agent.id, {
-          runtimeConfig: { messageResponseMode: "immediate" },
-        });
+        /*
+        FNXC:PostgresCutover 2026-07-05-16:40:
+        The legacy `new AgentStore({ rootDir })` runtime was removed
+        (VAL-REMOVAL-005); spy on the prototype instead of seeding a real
+        on-disk agent store. The invariant under test is the ROUTE's wake
+        behavior, not AgentStore persistence.
+        */
+        const agent = { id: "agent-wake-1", name: "Wake Agent", role: "executor", state: "idle", runtimeConfig: { messageResponseMode: "immediate" } };
+        vi.spyOn(AgentStore.prototype, "init").mockResolvedValue(undefined);
+        vi.spyOn(AgentStore.prototype, "getAgent").mockResolvedValue(agent as never);
+        vi.spyOn(AgentStore.prototype, "getActiveHeartbeatRun").mockResolvedValue(null);
 
         const heartbeatMonitor = {
           executeHeartbeat: vi.fn().mockResolvedValue({ id: "run-1" }),
@@ -3747,7 +3758,7 @@ describe("Pause/Unpause endpoints", () => {
           }));
         }, { timeout: 1000 });
       } finally {
-        rmSync(tempDir, { recursive: true, force: true });
+        vi.restoreAllMocks();
       }
     }, 15_000);
 
@@ -3804,19 +3815,21 @@ describe("Pause/Unpause endpoints", () => {
     });
 
     it("POST /tasks/:id/comments — skips heartbeat wake when an active run already exists", async () => {
-      const tempDir = mkdtempSync(join(tmpdir(), "kb-routes-comment-active-run-"));
-      const fusionDir = join(tempDir, ".fusion");
-      mkdirSync(fusionDir, { recursive: true });
+      const fusionDir = "/fake/root/.fusion";
 
       try {
         const { AgentStore } = await import("@fusion/core");
-        const agentStore = new AgentStore({ rootDir: fusionDir });
-        await agentStore.init();
-        const agent = await agentStore.createAgent({ name: "Active Run Agent", role: "executor" });
-        await agentStore.updateAgent(agent.id, {
-          runtimeConfig: { messageResponseMode: "immediate" },
-        });
-        await agentStore.startHeartbeatRun(agent.id);
+        /*
+        FNXC:PostgresCutover 2026-07-05-16:40:
+        The legacy `new AgentStore({ rootDir })` runtime was removed
+        (VAL-REMOVAL-005); spy on the prototype instead of seeding a real
+        on-disk agent store. The invariant under test is the ROUTE's wake
+        behavior, not AgentStore persistence.
+        */
+        const agent = { id: "agent-active-1", name: "Active Run Agent", role: "executor", state: "running", runtimeConfig: { messageResponseMode: "immediate" } };
+        vi.spyOn(AgentStore.prototype, "init").mockResolvedValue(undefined);
+        vi.spyOn(AgentStore.prototype, "getAgent").mockResolvedValue(agent as never);
+        vi.spyOn(AgentStore.prototype, "getActiveHeartbeatRun").mockResolvedValue({ id: "run-active" } as never);
 
         const heartbeatMonitor = {
           executeHeartbeat: vi.fn().mockResolvedValue({ id: "run-1" }),
@@ -3846,7 +3859,7 @@ describe("Pause/Unpause endpoints", () => {
         await new Promise((resolve) => setTimeout(resolve, 0));
         expect(heartbeatMonitor.executeHeartbeat).not.toHaveBeenCalled();
       } finally {
-        rmSync(tempDir, { recursive: true, force: true });
+        vi.restoreAllMocks();
       }
     });
 
@@ -3910,18 +3923,21 @@ describe("Pause/Unpause endpoints", () => {
     });
 
     it("triggers immediate heartbeat wake for assigned agent", async () => {
-      const tempDir = mkdtempSync(join(tmpdir(), "kb-routes-steer-heartbeat-"));
-      const fusionDir = join(tempDir, ".fusion");
-      mkdirSync(fusionDir, { recursive: true });
+      const fusionDir = "/fake/root/.fusion";
 
       try {
         const { AgentStore } = await import("@fusion/core");
-        const agentStore = new AgentStore({ rootDir: fusionDir });
-        await agentStore.init();
-        const agent = await agentStore.createAgent({ name: "Steer Wake Agent", role: "executor" });
-        await agentStore.updateAgent(agent.id, {
-          runtimeConfig: { messageResponseMode: "immediate" },
-        });
+        /*
+        FNXC:PostgresCutover 2026-07-05-16:40:
+        The legacy `new AgentStore({ rootDir })` runtime was removed
+        (VAL-REMOVAL-005); spy on the prototype instead of seeding a real
+        on-disk agent store. The invariant under test is the ROUTE's wake
+        behavior, not AgentStore persistence.
+        */
+        const agent = { id: "agent-steer-1", name: "Steer Wake Agent", role: "executor", state: "idle", runtimeConfig: { messageResponseMode: "immediate" } };
+        vi.spyOn(AgentStore.prototype, "init").mockResolvedValue(undefined);
+        vi.spyOn(AgentStore.prototype, "getAgent").mockResolvedValue(agent as never);
+        vi.spyOn(AgentStore.prototype, "getActiveHeartbeatRun").mockResolvedValue(null);
 
         const heartbeatMonitor = {
           executeHeartbeat: vi.fn().mockResolvedValue({ id: "run-1" }),
@@ -3959,23 +3975,26 @@ describe("Pause/Unpause endpoints", () => {
           }));
         }, { timeout: 1000 });
       } finally {
-        rmSync(tempDir, { recursive: true, force: true });
+        vi.restoreAllMocks();
       }
     });
 
     it("skips heartbeat wake when assigned agent is not in immediate response mode", async () => {
-      const tempDir = mkdtempSync(join(tmpdir(), "kb-routes-steer-non-immediate-"));
-      const fusionDir = join(tempDir, ".fusion");
-      mkdirSync(fusionDir, { recursive: true });
+      const fusionDir = "/fake/root/.fusion";
 
       try {
         const { AgentStore } = await import("@fusion/core");
-        const agentStore = new AgentStore({ rootDir: fusionDir });
-        await agentStore.init();
-        const agent = await agentStore.createAgent({ name: "Non-immediate Agent", role: "executor" });
-        await agentStore.updateAgent(agent.id, {
-          runtimeConfig: { messageResponseMode: "on-heartbeat" },
-        });
+        /*
+        FNXC:PostgresCutover 2026-07-05-16:40:
+        The legacy `new AgentStore({ rootDir })` runtime was removed
+        (VAL-REMOVAL-005); spy on the prototype instead of seeding a real
+        on-disk agent store. The invariant under test is the ROUTE's wake
+        behavior, not AgentStore persistence.
+        */
+        const agent = { id: "agent-nonimm-1", name: "Non-immediate Agent", role: "executor", state: "idle", runtimeConfig: { messageResponseMode: "on-heartbeat" } };
+        vi.spyOn(AgentStore.prototype, "init").mockResolvedValue(undefined);
+        vi.spyOn(AgentStore.prototype, "getAgent").mockResolvedValue(agent as never);
+        vi.spyOn(AgentStore.prototype, "getActiveHeartbeatRun").mockResolvedValue(null);
 
         const heartbeatMonitor = {
           executeHeartbeat: vi.fn().mockResolvedValue({ id: "run-1" }),
@@ -4006,7 +4025,7 @@ describe("Pause/Unpause endpoints", () => {
         await new Promise((resolve) => setTimeout(resolve, 0));
         expect(heartbeatMonitor.executeHeartbeat).not.toHaveBeenCalled();
       } finally {
-        rmSync(tempDir, { recursive: true, force: true });
+        vi.restoreAllMocks();
       }
     });
 

@@ -1,8 +1,16 @@
 #!/usr/bin/env node
 
+/*
+FNXC:PostgresCutover 2026-07-05-13:00:
+Ported from the sqlite3 CLI on .fusion/fusion.db to the PostgreSQL backend
+(scripts/lib/backend-db.mjs). The git contamination analysis
+(analyzeBranchCrossContamination) is pure given task rows, so tests inject
+rows directly; only row loading touches PostgreSQL.
+*/
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { openBackend, rowsOf } from "./lib/backend-db.mjs";
 
 function runGit(projectRoot, args, { allowFailure = false } = {}) {
   try {
@@ -31,14 +39,6 @@ function parseArgs(argv) {
     }
   }
   return options;
-}
-
-function sqliteJson(dbPath, sql) {
-  const output = execFileSync("sqlite3", ["-json", dbPath, sql], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  }).trim();
-  return output ? JSON.parse(output) : [];
 }
 
 function parseTaskIdFromSubject(subject) {
@@ -96,13 +96,8 @@ function parseCommits(raw) {
   });
 }
 
-export function auditBranchCrossContamination({ projectRoot = process.cwd() } = {}) {
-  const dbPath = path.join(projectRoot, ".fusion", "fusion.db");
-  const taskRows = sqliteJson(
-    dbPath,
-    `SELECT id, title, branch, baseCommitSha, "column" AS columnName FROM tasks WHERE "column" IN ('triage','todo','in-progress','in-review') ORDER BY id`,
-  );
-
+/** Pure analysis over injected task rows ({ id, title, branch, baseCommitSha, columnName }). */
+export function analyzeBranchCrossContamination({ projectRoot = process.cwd(), taskRows }) {
   const report = {
     generatedAt: new Date().toISOString(),
     projectRoot,
@@ -179,6 +174,23 @@ export function auditBranchCrossContamination({ projectRoot = process.cwd() } = 
   return report;
 }
 
+export async function auditBranchCrossContamination({ projectRoot = process.cwd() } = {}) {
+  const backend = await openBackend(projectRoot);
+  let taskRows;
+  try {
+    const { asyncLayer, sql } = backend;
+    taskRows = rowsOf(await asyncLayer.db.execute(sql`
+      SELECT id, title, branch, base_commit_sha AS "baseCommitSha", "column" AS "columnName"
+      FROM project."tasks"
+      WHERE deleted_at IS NULL AND "column" IN ('triage','todo','in-progress','in-review')
+      ORDER BY id
+    `));
+  } finally {
+    await backend.shutdown().catch(() => {});
+  }
+  return analyzeBranchCrossContamination({ projectRoot, taskRows });
+}
+
 function renderSummary(report) {
   const lines = [
     `Branch cross-contamination audit`,
@@ -200,7 +212,7 @@ function renderSummary(report) {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const options = parseArgs(process.argv.slice(2));
-  const report = auditBranchCrossContamination({ projectRoot: options.projectRoot });
+  const report = await auditBranchCrossContamination({ projectRoot: options.projectRoot });
   const json = JSON.stringify(report, null, 2);
   process.stdout.write(`${json}\n`);
   process.stderr.write(`${renderSummary(report)}\n`);

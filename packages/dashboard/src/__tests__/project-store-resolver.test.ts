@@ -33,34 +33,46 @@ const createdStores: Array<{
 
 vi.mock("@fusion/core", async () => {
   const actual = await vi.importActual<typeof import("@fusion/core")>("@fusion/core");
+  const makeStore = (projectId: string): TaskStore => {
+    const store = Object.create(EventEmitter.prototype) as TaskStore;
+    EventEmitter.call(store as any);
+    (store as any).setMaxListeners(100);
+
+    const watchMock = vi.fn(async () => {});
+    const closeMock = vi.fn(() => {});
+    const stopWatchingMock = vi.fn(() => {});
+
+    const entry = { projectId, store, watchMock, closeMock, stopWatchingMock };
+
+    // Minimal store interface
+    (store as any).init = vi.fn(async () => {});
+    (store as any).watch = watchMock;
+    (store as any).close = closeMock;
+    (store as any).stopWatching = stopWatchingMock;
+    (store as any).getMissionStore = vi.fn(() => ({
+      on: vi.fn(),
+      off: vi.fn(),
+    }));
+
+    createdStores.push(entry);
+    return store;
+  };
   return {
     ...actual,
+    /*
+    FNXC:PostgresCutover 2026-07-05-17:00:
+    The resolver consults createTaskStoreForBackend FIRST (embedded PG default);
+    mock it at that seam so these backend-agnostic cache/dedup/eviction/SSE
+    invariants run without booting a real PostgreSQL cluster. The legacy
+    getOrCreateForProject mock remains for the FUSION_NO_EMBEDDED_PG branch.
+    */
+    createTaskStoreForBackend: vi.fn(async ({ projectId }: { projectId: string }) => ({
+      taskStore: makeStore(projectId),
+      shutdown: vi.fn(async () => {}),
+    })),
     TaskStore: {
       ...actual.TaskStore,
-      getOrCreateForProject: vi.fn(async (projectId: string): Promise<TaskStore> => {
-        const store = Object.create(EventEmitter.prototype) as TaskStore;
-        EventEmitter.call(store as any);
-        (store as any).setMaxListeners(100);
-
-        const watchMock = vi.fn(async () => {});
-        const closeMock = vi.fn(() => {});
-        const stopWatchingMock = vi.fn(() => {});
-
-        const entry = { projectId, store, watchMock, closeMock, stopWatchingMock };
-
-        // Minimal store interface
-        (store as any).init = vi.fn(async () => {});
-        (store as any).watch = watchMock;
-        (store as any).close = closeMock;
-        (store as any).stopWatching = stopWatchingMock;
-        (store as any).getMissionStore = vi.fn(() => ({
-          on: vi.fn(),
-          off: vi.fn(),
-        }));
-
-        createdStores.push(entry);
-        return store;
-      }),
+      getOrCreateForProject: vi.fn(async (projectId: string): Promise<TaskStore> => makeStore(projectId)),
     },
   };
 });

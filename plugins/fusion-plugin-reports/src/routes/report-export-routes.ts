@@ -17,6 +17,13 @@ function getStore(ctx: PluginContext): ReportStore {
   const key = ctx.taskStore as object;
   const cached = reportStoreCache.get(key);
   if (cached) return cached;
+  // FNXC:PostgresCutover 2026-07-04-00:00:
+  // In backend mode, pass asyncLayer so ReportStore async methods work.
+  if (ctx.taskStore.isBackendMode()) {
+    const store = new ReportStore(null, { asyncLayer: ctx.taskStore.getAsyncLayer() });
+    reportStoreCache.set(key, store);
+    return store;
+  }
   const store = new ReportStore(ctx.taskStore.getDatabase());
   reportStoreCache.set(key, store);
   return store;
@@ -39,12 +46,12 @@ export function createReportExportRoutes(): PluginRouteDefinition[] {
         const request = req as RouteRequest;
         const id = request.params.id;
         const store = getStore(ctx);
-        const record = store.getReport(id);
+        const record = await store.getReportAsync(id);
         if (!record) return notFound(`Report ${id} not found`);
         if (record.status === "generating") return conflict(`Report ${id} is not generated yet`);
         const html = record.renderedHtml ?? renderStandaloneReportHtml(record);
         if (!record.renderedHtml) {
-          store.setRenderedHtml(id, html);
+          await store.setRenderedHtmlAsync(id, html);
         }
         return {
           status: 200,
@@ -63,7 +70,7 @@ export function createReportExportRoutes(): PluginRouteDefinition[] {
         const request = req as RouteRequest;
         const id = request.params.id;
         const store = getStore(ctx);
-        const record = store.getReport(id);
+        const record = await store.getReportAsync(id);
         if (!record) return notFound(`Report ${id} not found`);
         if (record.status === "generating") return conflict(`Report ${id} is not generated yet`);
         return {

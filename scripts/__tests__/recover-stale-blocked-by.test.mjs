@@ -1,32 +1,24 @@
+/*
+FNXC:PostgresCutover 2026-07-05-13:00:
+The script now targets the PostgreSQL backend; the FN-3899 recovery logic is
+pure (planRecoverBlockedBy over plain rows), so this test injects rows instead
+of seeding a SQLite fixture. Soft-deleted rows never reach the planner — the
+backend query filters `deleted_at IS NULL` — so the FN-5528 case is modeled by
+omitting deleted rows from the injected set.
+*/
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 
-import { recoverBlockedBy } from "../recover-stale-blocked-by.mjs";
+import { planRecoverBlockedBy } from "../recover-stale-blocked-by.mjs";
 
-function setupFixture() {
+function setupTasksDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fn-3899-"));
   const tasksDir = path.join(dir, "tasks");
   fs.mkdirSync(tasksDir, { recursive: true });
-  const dbPath = path.join(dir, "fusion.db");
-  const db = new DatabaseSync(dbPath);
-  db.exec(`
-    CREATE TABLE tasks (
-      id TEXT PRIMARY KEY,
-      "column" TEXT,
-      blockedBy TEXT,
-      worktree TEXT,
-      paused INTEGER,
-      log TEXT,
-      updatedAt TEXT,
-      deletedAt TEXT
-    );
-  `);
-
-  return { dir, tasksDir, db };
+  return { dir, tasksDir };
 }
 
 function writePrompt(tasksDir, taskId, scopeLines) {
@@ -36,119 +28,92 @@ function writePrompt(tasksDir, taskId, scopeLines) {
   fs.writeFileSync(path.join(taskDir, "PROMPT.md"), `# Task\n\n## File Scope\n${bullets}\n`);
 }
 
-function insertTask(db, row) {
-  db.prepare(`INSERT INTO tasks (id, "column", blockedBy, worktree, paused, log, updatedAt, deletedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(
-      row.id,
-      row.column,
-      row.blockedBy ?? null,
-      row.worktree ?? null,
-      row.paused ?? 0,
-      row.log ?? "[]",
-      row.updatedAt ?? new Date().toISOString(),
-      row.deletedAt ?? null,
-    );
-}
-
 test("clears stale blocker when blocker is terminal", () => {
-  const { dir, tasksDir, db } = setupFixture();
+  const { dir, tasksDir } = setupTasksDir();
   try {
     writePrompt(tasksDir, "FN-BLOCKED", ["packages/dashboard/app/App.tsx"]);
     writePrompt(tasksDir, "FN-DONE", ["packages/dashboard/app/App.tsx"]);
 
-    insertTask(db, { id: "FN-DONE", column: "done" });
-    insertTask(db, { id: "FN-BLOCKED", column: "todo", blockedBy: "FN-DONE" });
+    const findings = planRecoverBlockedBy({
+      rows: [
+        { id: "FN-DONE", column: "done", blockedBy: null, worktree: null, paused: 0 },
+        { id: "FN-BLOCKED", column: "todo", blockedBy: "FN-DONE", worktree: null, paused: 0 },
+      ],
+      tasksDir,
+    });
 
-    const findings = recoverBlockedBy({ db, tasksDir, dryRun: false });
-    const blocked = db.prepare("SELECT blockedBy, log FROM tasks WHERE id = ?").get("FN-BLOCKED");
-
-    assert.equal(findings.find((f) => f.taskId === "FN-BLOCKED")?.reason, "blocker-terminal:done");
-    assert.equal(blocked.blockedBy, null);
-    assert.match(blocked.log, /FN-3899 recovery/);
+    const finding = findings.find((f) => f.taskId === "FN-BLOCKED");
+    assert.equal(finding?.reason, "blocker-terminal:done");
+    assert.equal(finding?.newBlocker, null);
   } finally {
-    db.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
 test("preserves valid blocker when overlap remains active", () => {
-  const { dir, tasksDir, db } = setupFixture();
+  const { dir, tasksDir } = setupTasksDir();
   try {
     writePrompt(tasksDir, "FN-ACTIVE", ["packages/dashboard/app/App.tsx"]);
     writePrompt(tasksDir, "FN-BLOCKED", ["packages/dashboard/app/App.tsx"]);
 
-    insertTask(db, { id: "FN-ACTIVE", column: "in-progress" });
-    insertTask(db, { id: "FN-BLOCKED", column: "todo", blockedBy: "FN-ACTIVE" });
+    const findings = planRecoverBlockedBy({
+      rows: [
+        { id: "FN-ACTIVE", column: "in-progress", blockedBy: null, worktree: null, paused: 0 },
+        { id: "FN-BLOCKED", column: "todo", blockedBy: "FN-ACTIVE", worktree: null, paused: 0 },
+      ],
+      tasksDir,
+    });
 
-    recoverBlockedBy({ db, tasksDir, dryRun: false });
-    const blocked = db.prepare("SELECT blockedBy FROM tasks WHERE id = ?").get("FN-BLOCKED");
-
-    assert.equal(blocked.blockedBy, "FN-ACTIVE");
+    const finding = findings.find((f) => f.taskId === "FN-BLOCKED");
+    assert.equal(finding?.reason, "unchanged");
+    assert.equal(finding?.newBlocker, "FN-ACTIVE");
   } finally {
-    db.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("dry-run reports repairs without writing", () => {
-  const { dir, tasksDir, db } = setupFixture();
+test("flags in-review blocker without worktree", () => {
+  const { dir, tasksDir } = setupTasksDir();
   try {
     writePrompt(tasksDir, "FN-BLOCKED", ["packages/dashboard/app/App.tsx"]);
     writePrompt(tasksDir, "FN-MISSING-SCOPE", ["packages/engine/src/scheduler.ts"]);
 
-    insertTask(db, { id: "FN-MISSING-SCOPE", column: "in-review", worktree: null });
-    insertTask(db, { id: "FN-BLOCKED", column: "todo", blockedBy: "FN-MISSING-SCOPE" });
-
-    const findings = recoverBlockedBy({ db, tasksDir, dryRun: true });
-    const blocked = db.prepare("SELECT blockedBy, log FROM tasks WHERE id = ?").get("FN-BLOCKED");
+    const findings = planRecoverBlockedBy({
+      rows: [
+        { id: "FN-MISSING-SCOPE", column: "in-review", blockedBy: null, worktree: null, paused: 0 },
+        { id: "FN-BLOCKED", column: "todo", blockedBy: "FN-MISSING-SCOPE", worktree: null, paused: 0 },
+      ],
+      tasksDir,
+    });
 
     assert.equal(findings.find((f) => f.taskId === "FN-BLOCKED")?.reason, "blocker-in-review-without-worktree");
-    assert.equal(blocked.blockedBy, "FN-MISSING-SCOPE");
-    assert.equal(blocked.log, "[]");
   } finally {
-    db.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("recoverBlockedBy ignores soft-deleted blockers and dependents (FN-5528)", () => {
-  const { dir, tasksDir, db } = setupFixture();
+test("treats soft-deleted blockers as missing and never plans for deleted dependents (FN-5528)", () => {
+  const { dir, tasksDir } = setupTasksDir();
   try {
     writePrompt(tasksDir, "FN-LIVE-DEPENDENT", ["packages/core/src/store.ts"]);
-    writePrompt(tasksDir, "FN-DELETED-BLOCKER", ["packages/core/src/store.ts"]);
-    writePrompt(tasksDir, "FN-DELETED-TODO", ["packages/dashboard/app/App.tsx"]);
     writePrompt(tasksDir, "FN-LIVE-TERMINAL", ["packages/engine/src/self-healing.ts"]);
     writePrompt(tasksDir, "FN-LIVE-TERMINAL-DEP", ["packages/engine/src/self-healing.ts"]);
 
-    insertTask(db, {
-      id: "FN-DELETED-BLOCKER",
-      column: "in-review",
-      deletedAt: "2026-05-20T05:50:51.015Z",
+    // FN-DELETED-BLOCKER and FN-DELETED-TODO are soft-deleted: the backend
+    // query filters them out with `deleted_at IS NULL`, so they are absent.
+    const findings = planRecoverBlockedBy({
+      rows: [
+        { id: "FN-LIVE-DEPENDENT", column: "todo", blockedBy: "FN-DELETED-BLOCKER", worktree: null, paused: 0 },
+        { id: "FN-LIVE-TERMINAL", column: "done", blockedBy: null, worktree: null, paused: 0 },
+        { id: "FN-LIVE-TERMINAL-DEP", column: "todo", blockedBy: "FN-LIVE-TERMINAL", worktree: null, paused: 0 },
+      ],
+      tasksDir,
     });
-    insertTask(db, { id: "FN-LIVE-DEPENDENT", column: "todo", blockedBy: "FN-DELETED-BLOCKER" });
-
-    const deletedTodoUpdatedAt = "2026-05-22T01:00:00.000Z";
-    insertTask(db, {
-      id: "FN-DELETED-TODO",
-      column: "todo",
-      blockedBy: "FN-LIVE-TERMINAL",
-      updatedAt: deletedTodoUpdatedAt,
-      deletedAt: "2026-05-20T05:50:51.015Z",
-    });
-
-    insertTask(db, { id: "FN-LIVE-TERMINAL", column: "done" });
-    insertTask(db, { id: "FN-LIVE-TERMINAL-DEP", column: "todo", blockedBy: "FN-LIVE-TERMINAL" });
-
-    const findings = recoverBlockedBy({ db, tasksDir, dryRun: false });
 
     assert.equal(findings.find((f) => f.taskId === "FN-LIVE-DEPENDENT")?.reason, "blocker-missing");
     assert.equal(findings.find((f) => f.taskId === "FN-LIVE-TERMINAL-DEP")?.reason, "blocker-terminal:done");
-
-    const deletedTodo = db.prepare("SELECT blockedBy, updatedAt FROM tasks WHERE id = ?").get("FN-DELETED-TODO");
-    assert.equal(deletedTodo.blockedBy, "FN-LIVE-TERMINAL");
-    assert.equal(deletedTodo.updatedAt, deletedTodoUpdatedAt);
+    assert.equal(findings.some((f) => f.taskId === "FN-DELETED-TODO"), false);
   } finally {
-    db.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

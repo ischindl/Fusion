@@ -11,29 +11,7 @@ import { resolve } from "node:path";
 
 import { AgentStore, exportAgentsToDirectory } from "@fusion/core";
 
-import { resolveProjectPathOnly } from "../project-context.js";
-
-/**
- * FNXC:CliAgentControl 2026-07-09-00:00:
- * FN-7740 audit finding: `getProjectPath` only ever needs the resolved
- * `projectPath` — it never uses `context.store`. The prior `resolveProject`
- * call still constructed (and, for registered/CWD-detected projects,
- * cached) a `TaskStore` that was never closed, leaking a SQLite/WAL handle
- * that keeps the CLI event loop alive after export finishes. Use
- * `resolveProjectPathOnly` (FN-7731/FN-7738), which closes+evicts the store
- * it constructs internally.
- */
-async function getProjectPath(projectName?: string): Promise<string> {
-  if (projectName) {
-    return resolveProjectPathOnly(projectName);
-  }
-
-  try {
-    return await resolveProjectPathOnly(undefined);
-  } catch {
-    return process.cwd();
-  }
-}
+import { resolveAgentStoreBase } from "../project-context.js";
 
 /**
  * FNXC:CliAgentControl 2026-07-09-00:00:
@@ -86,8 +64,11 @@ export async function runAgentExport(
     agentIds?: string[];
   },
 ): Promise<void> {
-  const projectPath = await getProjectPath(options?.project);
-  const agentStore = new AgentStore({ rootDir: projectPath + "/.fusion" });
+  // FNXC:PostgresCutover 2026-07-04: construct AgentStore in backend mode by
+  // borrowing the asyncLayer from the resolved project store (SQLite runtime
+  // removed under VAL-REMOVAL-005), mirroring extension.ts getAgentStore.
+  const { rootDir, asyncLayer } = await resolveAgentStoreBase(options?.project);
+  const agentStore = new AgentStore({ rootDir: rootDir + "/.fusion", asyncLayer: asyncLayer ?? undefined });
   await agentStore.init();
 
   try {

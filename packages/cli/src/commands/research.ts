@@ -4,7 +4,9 @@ import {
   RESEARCH_EXPORT_FORMATS,
   RESEARCH_RUN_STATUSES,
   ResearchRunStatus,
+  ResearchStore,
   TaskStore,
+  createTaskStoreForBackend,
   resolveResearchSettings,
   type ResearchExportFormat,
   type ResearchRun,
@@ -29,7 +31,7 @@ import { retryOnLock } from "../lock-retry.js";
  * `runResearchCreate`'s non-`waitForCompletion` fire-and-forget branch,
  * which is intentionally exempted (see the FNXC comment at that call site):
  * `orchestrator.startRun(runId, query)` is not awaited and the background
- * run continues to read/write the SAME store via `store.getResearchStore()`
+ * run continues to read/write the SAME store via `getSyncResearchStore(store)`
  * after this function returns — closing it there would truncate an
  * in-flight run. Discrete board/settings reads that gate run-critical
  * decisions (`getSettings()` in `getResearchRuntime`) and the `createExport`
@@ -75,9 +77,31 @@ interface ResearchExportOptions extends ResearchCommandOptions {
   output?: string;
 }
 
+// FNXC:ResearchStore 2026-06-27-12:45:
+// The research CLI drives the sync EventEmitter ResearchStore + ResearchOrchestrator.
+// In PG backend mode getResearchStore() returns the AsyncResearchStore (CRUD-only), so
+// fail with a clean error (caught by handleError → exit 1) instead of mis-typing the
+// orchestrator. AI research EXECUTION via the CLI stays unavailable in PG mode; the
+// dashboard research routes remain the ported surface.
+function getSyncResearchStore(taskStore: TaskStore): ResearchStore {
+  const resolved = taskStore.getResearchStore();
+  if (!(resolved instanceof ResearchStore)) {
+    throw new Error("Research CLI is not available in PG backend mode.");
+  }
+  return resolved;
+}
+
 async function getStore(projectName?: string): Promise<TaskStore> {
   const projectPath = projectName ? await resolveProjectPathOnly(projectName) : undefined;
-  const store = new TaskStore(projectPath ?? process.cwd());
+  const rootDir = projectPath ?? process.cwd();
+  // FNXC:PostgresCutover 2026-07-04: boot the PostgreSQL backend via the startup
+  // factory instead of a legacy SQLite TaskStore whose runtime was removed
+  // (VAL-REMOVAL-005). Falls back to legacy only on FUSION_NO_EMBEDDED_PG=1.
+  const boot = await createTaskStoreForBackend({ rootDir });
+  if (boot) {
+    return boot.taskStore;
+  }
+  const store = new TaskStore(rootDir);
   await store.init();
   return store;
 }
@@ -116,7 +140,7 @@ async function getResearchRuntime(store: TaskStore) {
   });
 
   const orchestrator = new ResearchOrchestrator({
-    store: store.getResearchStore(),
+    store: getSyncResearchStore(store),
     stepRunner,
     maxConcurrentRuns: resolved.limits.maxConcurrentRuns,
   });
@@ -179,7 +203,7 @@ export async function runResearchCreate(options: ResearchCreateOptions): Promise
     store = await getStore(options.projectName);
     const { orchestrator, settings, resolved, availableProviderTypes } = await getResearchRuntime(store);
 
-    const runId = orchestrator.createRun({
+    const runId = await orchestrator.createRun({
       providers: availableProviderTypes
         .filter((type) => type !== "llm-synthesis")
         .map((type) => ({ type, config: { maxResults: resolved.limits.maxSourcesPerRun, timeoutMs: resolved.limits.requestTimeoutMs } })),
@@ -193,7 +217,7 @@ export async function runResearchCreate(options: ResearchCreateOptions): Promise
     if (!options.waitForCompletion) {
       // Intentionally-long-lived branch — do NOT close `store` here (see
       // the function-level FNXC comment above).
-      const run = store.getResearchStore().getRun(runId);
+      const run = getSyncResearchStore(store).getRun(runId);
       if (options.json) {
         jsonOut(run);
       } else {
@@ -207,7 +231,7 @@ export async function runResearchCreate(options: ResearchCreateOptions): Promise
     const completed = await Promise.race([
       runPromise,
       new Promise<ResearchRun>((resolveRun) => setTimeout(() => {
-        const latest = store!.getResearchStore().getRun(runId);
+        const latest = getSyncResearchStore(store!).getRun(runId);
         resolveRun(latest ?? ({
           id: runId,
           query: options.query,
@@ -243,7 +267,7 @@ export async function runResearchList(options: ResearchListOptions = {}): Promis
         throw new Error(`Invalid status: ${options.status}`);
       }
 
-      const runs = store.getResearchStore().listRuns({
+      const runs = getSyncResearchStore(store).listRuns({
         status: options.status as ResearchRunStatus | undefined,
         limit: options.limit ? Math.max(1, options.limit) : 20,
       });
@@ -270,7 +294,7 @@ export async function runResearchList(options: ResearchListOptions = {}): Promis
 export async function runResearchShow(runId: string, options: ResearchCommandOptions = {}): Promise<void> {
   try {
     await withResolvedStore(options.projectName, async (store) => {
-      const run = store.getResearchStore().getRun(runId);
+      const run = getSyncResearchStore(store).getRun(runId);
       if (!run) throw new Error(`Cited-research run not found: ${runId}`);
 
       if (options.json) {
@@ -294,7 +318,7 @@ function renderMarkdown(run: ResearchRun): string {
 export async function runResearchExport(options: ResearchExportOptions): Promise<void> {
   try {
     await withResolvedStore(options.projectName, async (store) => {
-      const run = store.getResearchStore().getRun(options.runId);
+      const run = getSyncResearchStore(store).getRun(options.runId);
       if (!run) throw new Error(`Cited-research run not found: ${options.runId}`);
 
       const format = (options.format ?? "markdown") as ResearchExportFormat;
@@ -310,7 +334,7 @@ export async function runResearchExport(options: ResearchExportOptions): Promise
 
       await writeFile(outputPath, content, "utf8");
       await retryOnLock(
-        async () => store.getResearchStore().createExport(run.id, format, content),
+        async () => getSyncResearchStore(store).createExport(run.id, format, content),
         { id: run.id, action: "export research run" },
       );
 
@@ -329,7 +353,7 @@ export async function runResearchExport(options: ResearchExportOptions): Promise
 export async function runResearchCancel(runId: string, options: ResearchCommandOptions = {}): Promise<void> {
   try {
     await withResolvedStore(options.projectName, async (store) => {
-      const run = store.getResearchStore().getRun(runId);
+      const run = getSyncResearchStore(store).getRun(runId);
       if (!run) throw new Error(`Cited-research run not found: ${runId}`);
 
       if (!["queued", "running", "cancelling", "retry_waiting"].includes(run.status)) {
@@ -337,7 +361,7 @@ export async function runResearchCancel(runId: string, options: ResearchCommandO
       }
 
       const { orchestrator } = await getResearchRuntime(store);
-      const cancelled = orchestrator.cancelRun(runId);
+      const cancelled = await orchestrator.cancelRun(runId);
 
       if (options.json) {
         jsonOut({ cancelled, run });
@@ -355,7 +379,7 @@ export async function runResearchCancel(runId: string, options: ResearchCommandO
 export async function runResearchRetry(runId: string, options: ResearchCommandOptions = {}): Promise<void> {
   try {
     await withResolvedStore(options.projectName, async (store) => {
-      const existing = store.getResearchStore().getRun(runId);
+      const existing = getSyncResearchStore(store).getRun(runId);
       if (!existing) throw new Error(`Cited-research run not found: ${runId}`);
 
       if (existing.status === "retry_exhausted" || existing.lifecycle?.errorCode === "RETRY_EXHAUSTED") {
@@ -369,8 +393,8 @@ export async function runResearchRetry(runId: string, options: ResearchCommandOp
       // unlike `runResearchCreate`'s fire-and-forget branch there is no
       // background execution in flight here — safe to close the store below.
       const { orchestrator } = await getResearchRuntime(store);
-      const newRunId = orchestrator.retryRun(runId);
-      const run = store.getResearchStore().getRun(newRunId);
+      const newRunId = await orchestrator.retryRun(runId);
+      const run = getSyncResearchStore(store).getRun(newRunId);
 
       if (options.json) {
         jsonOut({ retryOf: runId, run });

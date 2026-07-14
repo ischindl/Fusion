@@ -1,5 +1,5 @@
 export { COLUMNS, DEFAULT_COLUMN, isColumn, normalizeColumn, COLUMN_LABELS, COLUMN_DESCRIPTIONS, VALID_TRANSITIONS, DEFAULT_SETTINGS, DEFAULT_GLOBAL_SETTINGS, DEFAULT_PROJECT_SETTINGS, GLOBAL_SETTINGS_KEYS, PROJECT_SETTINGS_KEYS, isGlobalSettingsKey, isProjectSettingsKey, isMergeRequestContractShadowEnabled, resolvePersistAgentThinkingLog, THINKING_LEVELS, THEME_MODES, COLOR_THEMES, SUPPORTED_LOCALES, DEFAULT_LOCALE, isLocale, AGENT_PERMISSIONS, PERMANENT_AGENT_ACTION_CATEGORIES, AGENT_PERMISSION_POLICY_ACTION_CATEGORIES, AGENT_PROVISIONING_APPROVAL_MODES, SANDBOX_PROVISIONING_APPROVAL_MODES, AGENT_PERMISSION_POLICY_PRESET_IDS, LEGACY_AGENT_PERMISSION_POLICY_ACTION_CATEGORY_ALIASES, APPROVAL_REQUEST_STATUSES, APPROVAL_REQUEST_AUDIT_EVENT_TYPES, normalizeApprovalRequestActionCategory, isValidApprovalRequestTransition, agentToConfigSnapshot, diffConfigSnapshots, isEphemeralAgent, hasAgentIdentity, CheckoutConflictError, DEFAULT_HEARTBEAT_PROCEDURE_PATH, getDefaultHeartbeatProcedurePath, EXECUTION_MODES, DEFAULT_EXECUTION_MODE, PLANNER_OVERSIGHT_LEVELS, DEFAULT_PLANNER_OVERSIGHT_LEVEL, TASK_PRIORITIES, DEFAULT_TASK_PRIORITY, WORKFLOW_WORK_ITEM_KINDS, WORKFLOW_WORK_ITEM_STATES, HIGH_FANOUT_BLOCKER_TODO_THRESHOLD, STALE_HIGH_FANOUT_BLOCKER_AGE_THRESHOLD_MS, DASHBOARD_USER_ID, normalizeMessageParticipant, validateMessageMetadata, validateDockerNodeConfig, sanitizeDockerNodeConfigForResponse, normalizeMergeIntegrationWorktreeMode, normalizeMergeAdvanceAutoSyncMode, DEFAULT_GITLAB_API_BASE_URL, DEFAULT_GITLAB_INSTANCE_URL, resolveGitlabConfig, resolveGitlabEnabled, PLANNING_DEEPEN_CHECKPOINT_ID, PLANNING_DEEPEN_CHECKPOINT_QUESTION, PLANNING_DEEPEN_PROCEED_OPTION_ID, PLANNING_DEEPEN_PROCEED_RESPONSE_KEY, MERGE_ADVANCE_AUTO_SYNC_MODES, normalizeMergeConflictStrategy, normalizeMergeStrategyOverlapBehavior, normalizePostMergeAuditMode, POST_MERGE_AUDIT_MODES, normalizeMergeAuditAutoRecovery, MERGE_AUDIT_AUTO_RECOVERY_MODES, normalizeMergerMode, MERGER_MODES, normalizeAutoRecovery, AUTO_RECOVERY_MODES, buildResearchDocumentKey, REPO_OVERRIDE_RE, SHARED_STATE_SNAPSHOT_VERSION, sanitizeCliAgentSettings, sanitizeCliAgentsSettings, sanitizeMcpServers, CLI_AGENT_ADAPTER_IDS, CLI_AGENT_AUTONOMY_MODES, isMcpSecretRef, OVERSEER_INTERVENTION_MUTATION } from "./types.js";
-export type { Column, ColumnId, IssueInfo, IssueState, TaskSourceIssue, TaskGitLabTracking, TaskGitLabTrackedItem, GitLabTrackedItemKind, PrInfo, PrConflictState, PrConflictDiagnostics, PrCheckState, PrCheckStatus, PrStatus, BranchGroup, BranchGroupCreateInput, BranchGroupUpdate, BranchGroupPrState, Task, TaskTokenUsage, TaskTokenUsagePerModel, TaskAttachment, TaskComment, TaskCommentInput, TaskDocument, TaskDocumentRevision, TaskDocumentCreateInput, TaskDocumentWithTask, ArtifactType, Artifact, ArtifactCreateInput, ArtifactWithTask, TaskCreateInput, MeshReplicatedTaskCreatePayload, MeshReplicatedTaskApplyResult, TaskSource, SourceType, TaskDetail, RetrySummary, InboxTask, TodoList, TodoItem, TodoListCreateInput, TodoListUpdateInput, TodoItemCreateInput, TodoItemUpdateInput, TodoListWithItems, AgentLogEntry, AgentLogType, AgentRole, BoardConfig, DistributedTaskIdReserveInput, DistributedTaskIdReserveResult, DistributedTaskIdCommitInput, DistributedTaskIdCommitResult, DistributedTaskIdAbortInput, DistributedTaskIdAbortResult, DistributedTaskIdStateInput, DistributedTaskIdStateResult, AutostashOrphanRecord, AutostashOutcome, MergeDetails, MergeResult, MergeIntegrationWorktreeMode, MergeAdvanceAutoSyncMode, MergeConflictStrategy, CanonicalMergeConflictStrategy, MergeStrategyOverlapBehavior, PostMergeAuditMode, MergeAuditAutoRecoveryMode, MergerMode, MergerSettings, AutoRecoveryMode, AutoRecoveryFailureClass, AutoRecoverySettings, DirectMergeCommitStrategy, Settings, GlobalSettings, ProjectSettings, SecretsEnvConfig, WebSearchBackend, ResearchEnabledSources, ResearchGlobalDefaults, ResearchProjectLimits, ResearchProjectSettings, SandboxBackendName, SandboxFailureMode, SandboxPolicy, SandboxProjectSettings, EvalFollowUpPolicy, EvalProjectSettings, ResolvedEvalSettings, SettingsScope, DaemonTokenSettings, TaskStep, StepStatus, TaskLogEntry, RunMutationContext, ActivityLogEntry, ActivityEventType, ThinkingLevel, ThemeMode, ColorTheme, Locale, ExecutionMode, PlannerOversightLevel, TaskPriority, MergeQueueEntry, MergeQueueEnqueueOptions, MergeQueueAcquireOptions, MergeQueueReleaseOutcome, MergeRequestState, MergeRequestRecord, MergeRequestWorkflowProjectionOptions, CompletionHandoffMarker, WorkflowWorkItem, WorkflowWorkItemDueFilter, WorkflowWorkItemKind, WorkflowWorkItemState, WorkflowWorkItemTransitionPatch, WorkflowWorkItemUpsertInput, HandoffEvidence, HandoffToReviewOptions, UnavailableNodePolicy, OwningNodeHandoffPolicy, PlanningQuestion, PlanningSummary, PlanningResponse, PlanningQuestionType, ArchivedTaskEntry, BatchStatusRequest, BatchStatusResponse, BatchStatusEntry, BatchStatusResult, GithubIssueAction, ModelPreset, WorkflowStep, WorkflowStepMode, WorkflowStepGateMode, WorkflowStepPhase, WorkflowStepInput, WorkflowStepResult, WorkflowStepTemplate, Agent, OrgTreeNode, AgentState, AgentDetail, AgentCreateInput, AgentUpdateInput, AgentApiKey, AgentApiKeyCreateResult, AgentCapability, AgentPromptTemplate, AgentPromptsConfig, AgentPermission, PermanentAgentActionCategory, PermanentAgentSensitiveActionCategory, PermanentAgentGatingContext, AgentPermissionPolicy, AgentPermissionPolicyRules, AgentPermissionPolicyToolRules, AgentPermissionPolicyActionCategory, AgentProvisioningApprovalMode, SandboxProvisioningApprovalMode, LegacyAgentPermissionPolicyActionCategory, ApprovalRequestActionCategoryInput, ApprovalRequestActionCategory, AgentPermissionPolicyDisposition, AgentPermissionPolicyPresetId, ApprovalRequestStatus, ApprovalRequestAuditEventType, ApprovalRequestActorSnapshot, ApprovalRequestTargetAction, ApprovalRequestAuditEvent, ApprovalRequest, ApprovalRequestCreateInput, ApprovalRequestDecisionInput, ApprovalRequestCompletionInput, ApprovalRequestListInput, TaskAssignSource, AgentAccessState, AgentHeartbeatConfig, AgentBudgetConfig, AgentBudgetStatus, InstructionsBundleConfig, MessageResponseMode, AgentHeartbeatEvent, AgentHeartbeatRun, BlockedStateSnapshot, HeartbeatInvocationSource, AgentTaskSession, AgentRating, AgentRatingSummary, AgentRatingInput, AgentConfigSnapshot, RevisionFieldDiff, AgentConfigRevision, AgentStats, ReflectionTrigger, ReflectionMetrics, AgentReflection, AgentPerformanceSummary, NtfyNotificationEvent, NotificationEvent, NotificationPayload, NotificationProviderConfig, CustomProvider, SteeringComment, ParticipantType, MessageType, Message, MessageCreateInput, MessageFilter, MessageMetadata, MessageReplyReference, Mailbox, CheckoutLease, CheckoutClaimPrecondition, TaskClaimRow, CentralClaimStore, RunAuditDomain, RunAuditEvent, RunAuditEventInput, RunAuditEventFilter, AgentMemoryInclusionMode, HeartbeatPromptTemplate, HeartbeatScopeDisciplineMode, WorktrunkSettings, WorktrunkOnFailure, TaskBranchContext, CliAgentSettings, McpSecretRef, McpSensitiveValue, McpStdioTransport, McpSseTransport, McpStreamableHttpTransport, McpTransport, McpServerDefinition, McpServersSettings, GitlabConfigSettingsSource, ResolvedGitlabConfig, ResolveGitlabConfigInput, GitlabAuthTokenType, PlannerOversightStage, PlannerInterventionAction, PlannerInterventionOutcome, PlannerInterventionSourceLink, PlannerInterventionEntry } from "./types.js";
+export type { Column, ColumnId, IssueInfo, IssueState, TaskSourceIssue, TaskGitLabTracking, TaskGitLabTrackedItem, GitLabTrackedItemKind, PrInfo, PrConflictState, PrConflictDiagnostics, PrCheckState, PrCheckStatus, PrStatus, BranchGroup, BranchGroupCreateInput, BranchGroupUpdate, BranchGroupPrState, Task, TaskTokenUsage, TaskTokenUsagePerModel, TaskAttachment, TaskComment, TaskCommentInput, TaskDocument, TaskDocumentRevision, TaskDocumentCreateInput, TaskDocumentWithTask, ArtifactType, Artifact, ArtifactCreateInput, ArtifactWithTask, TaskCreateInput, TaskSource, SourceType, TaskDetail, RetrySummary, InboxTask, TodoList, TodoItem, TodoListCreateInput, TodoListUpdateInput, TodoItemCreateInput, TodoItemUpdateInput, TodoListWithItems, AgentLogEntry, AgentLogType, AgentRole, BoardConfig, DistributedTaskIdReserveInput, DistributedTaskIdReserveResult, DistributedTaskIdCommitInput, DistributedTaskIdCommitResult, DistributedTaskIdAbortInput, DistributedTaskIdAbortResult, DistributedTaskIdStateInput, DistributedTaskIdStateResult, AutostashOrphanRecord, AutostashOutcome, MergeDetails, MergeResult, MergeIntegrationWorktreeMode, MergeAdvanceAutoSyncMode, MergeConflictStrategy, CanonicalMergeConflictStrategy, MergeStrategyOverlapBehavior, PostMergeAuditMode, MergeAuditAutoRecoveryMode, MergerMode, MergerSettings, AutoRecoveryMode, AutoRecoveryFailureClass, AutoRecoverySettings, DirectMergeCommitStrategy, Settings, GlobalSettings, ProjectSettings, SecretsEnvConfig, WebSearchBackend, ResearchEnabledSources, ResearchGlobalDefaults, ResearchProjectLimits, ResearchProjectSettings, SandboxBackendName, SandboxFailureMode, SandboxPolicy, SandboxProjectSettings, EvalFollowUpPolicy, EvalProjectSettings, ResolvedEvalSettings, SettingsScope, DaemonTokenSettings, TaskStep, StepStatus, TaskLogEntry, RunMutationContext, ActivityLogEntry, ActivityEventType, ThinkingLevel, ThemeMode, ColorTheme, Locale, ExecutionMode, PlannerOversightLevel, TaskPriority, MergeQueueEntry, MergeQueueEnqueueOptions, MergeQueueAcquireOptions, MergeQueueReleaseOutcome, MergeRequestState, MergeRequestRecord, MergeRequestWorkflowProjectionOptions, CompletionHandoffMarker, WorkflowWorkItem, WorkflowWorkItemDueFilter, WorkflowWorkItemKind, WorkflowWorkItemState, WorkflowWorkItemTransitionPatch, WorkflowWorkItemUpsertInput, HandoffEvidence, HandoffToReviewOptions, UnavailableNodePolicy, OwningNodeHandoffPolicy, PlanningQuestion, PlanningSummary, PlanningResponse, PlanningQuestionType, ArchivedTaskEntry, BatchStatusRequest, BatchStatusResponse, BatchStatusEntry, BatchStatusResult, GithubIssueAction, ModelPreset, WorkflowStep, WorkflowStepMode, WorkflowStepGateMode, WorkflowStepPhase, WorkflowStepInput, WorkflowStepResult, WorkflowStepTemplate, Agent, OrgTreeNode, AgentState, AgentDetail, AgentCreateInput, AgentUpdateInput, AgentApiKey, AgentApiKeyCreateResult, AgentCapability, AgentPromptTemplate, AgentPromptsConfig, AgentPermission, PermanentAgentActionCategory, PermanentAgentSensitiveActionCategory, PermanentAgentGatingContext, AgentPermissionPolicy, AgentPermissionPolicyRules, AgentPermissionPolicyToolRules, AgentPermissionPolicyActionCategory, AgentProvisioningApprovalMode, SandboxProvisioningApprovalMode, LegacyAgentPermissionPolicyActionCategory, ApprovalRequestActionCategoryInput, ApprovalRequestActionCategory, AgentPermissionPolicyDisposition, AgentPermissionPolicyPresetId, ApprovalRequestStatus, ApprovalRequestAuditEventType, ApprovalRequestActorSnapshot, ApprovalRequestTargetAction, ApprovalRequestAuditEvent, ApprovalRequest, ApprovalRequestCreateInput, ApprovalRequestDecisionInput, ApprovalRequestCompletionInput, ApprovalRequestListInput, TaskAssignSource, AgentAccessState, AgentHeartbeatConfig, AgentBudgetConfig, AgentBudgetStatus, InstructionsBundleConfig, MessageResponseMode, AgentHeartbeatEvent, AgentHeartbeatRun, BlockedStateSnapshot, HeartbeatInvocationSource, AgentTaskSession, AgentRating, AgentRatingSummary, AgentRatingInput, AgentConfigSnapshot, RevisionFieldDiff, AgentConfigRevision, AgentStats, ReflectionTrigger, ReflectionMetrics, AgentReflection, AgentPerformanceSummary, NtfyNotificationEvent, NotificationEvent, NotificationPayload, NotificationProviderConfig, CustomProvider, SteeringComment, ParticipantType, MessageType, Message, MessageCreateInput, MessageFilter, MessageMetadata, MessageReplyReference, Mailbox, CheckoutLease, CheckoutClaimPrecondition, TaskClaimRow, CentralClaimStore, RunAuditDomain, RunAuditEvent, RunAuditEventInput, RunAuditEventFilter, AgentMemoryInclusionMode, HeartbeatPromptTemplate, HeartbeatScopeDisciplineMode, WorktrunkSettings, WorktrunkOnFailure, TaskBranchContext, CliAgentSettings, McpSecretRef, McpSensitiveValue, McpStdioTransport, McpSseTransport, McpStreamableHttpTransport, McpTransport, McpServerDefinition, McpServersSettings, GitlabConfigSettingsSource, ResolvedGitlabConfig, ResolveGitlabConfigInput, GitlabAuthTokenType, PlannerOversightStage, PlannerInterventionAction, PlannerInterventionOutcome, PlannerInterventionSourceLink, PlannerInterventionEntry } from "./types.js";
 export { AGENT_VALID_TRANSITIONS, DUPLICATE_OF_METADATA_KEY, assertNotWorkspaceTaskMerge, isWorkspaceTask, WorkspaceTaskMergeError } from "./types.js";
 export {
   resolveEntryPointBranchAssignment,
@@ -691,7 +691,7 @@ export {
 } from "./duplicate-intake.js";
 export { computeRetrySummary, RETRY_STORM_WARNING_RATIO } from "./retry-summary.js";
 export { RetryStormError, serializeRetryStormError } from "./retry-storm-error.js";
-export { aggregateAgentTokenUsage, aggregateTaskTokenTotalsByAgentLink } from "./agent-token-usage.js";
+export { aggregateAgentTokenUsage, aggregateTaskTokenTotalsByAgentLink, aggregateTaskTokenTotalsByAgentLinkAsync } from "./agent-token-usage.js";
 export type { AgentTaskTokenTotals, AgentTokenUsageSummary, AgentTokenUsageWindowSummary } from "./agent-token-usage.js";
 export {
   emitUsageEvent,
@@ -879,6 +879,8 @@ export {
   ProjectIdentityMismatchError,
   readProjectIdentity,
   writeProjectIdentity,
+  readProjectIdentityAsync,
+  writeProjectIdentityAsync,
 } from "./project-identity.js";
 export { ProcessSupervisor, superviseSpawn, FUSION_RESTART_EXIT_CODE } from "./process-supervisor.js";
 export type {
@@ -891,7 +893,6 @@ export type { Statement, VacuumResult } from "./db.js";
 export type { ProjectIdentity } from "./project-identity.js";
 export type { EnsureProjectForPathInput, EnsureProjectForPathResult } from "./central-core.js";
 export { ArchiveDatabase } from "./archive-db.js";
-export { detectLegacyData, migrateFromLegacy, getMigrationStatus } from "./db-migrate.js";
 export { GlobalSettingsStore, resolveGlobalDir, resolveGlobalDirForHome } from "./global-settings.js";
 export { isValidSqliteDatabaseFile } from "./sqlite-validation.js";
 export { DaemonTokenManager, DAEMON_TOKEN_PREFIX, DAEMON_TOKEN_HEX_LENGTH, isDaemonTokenFormat } from "./daemon-token.js";
@@ -1527,10 +1528,12 @@ export type {
 } from "./mission-types.js";
 export { MissionStore } from "./mission-store.js";
 export type { MissionStoreEvents, MissionSummary } from "./mission-store.js";
+export { AsyncMissionStore } from "./async-mission-store.js";
 export { ACTIVE_GOAL_LIMIT, ActiveGoalLimitExceededError } from "./goal-types.js";
 export type { Goal, GoalCreateInput, GoalListFilter, GoalStatus, GoalUpdateInput } from "./goal-types.js";
 export { GoalStore } from "./goal-store.js";
 export type { GoalStoreEvents } from "./goal-store.js";
+export { AsyncGoalStore } from "./async-goal-store.js";
 export type {
   GoalCitation,
   GoalCitationSurface,
@@ -1786,6 +1789,10 @@ export type { AgentDreamProcessorResult, DreamProcessorResult, DreamPromptExecut
 // ── Project Insights ──────────────────────────────────────────────────────
 
 export { InsightLifecycleError, InsightStore, computeInsightFingerprint } from "./insight-store.js";
+// FNXC:InsightStore 2026-06-28-10:10: export the PostgreSQL-backed AsyncInsightStore
+// so the dashboard insights routes + run sweeper can type the run-execution store
+// path as the `InsightStore | AsyncInsightStore` union (insight-run execution in PG mode).
+export { AsyncInsightStore } from "./async-insight-store.js";
 export {
   classifyInsightRunError,
   executeInsightRunLifecycle,
@@ -1824,6 +1831,10 @@ export type {
 // ── Research System ───────────────────────────────────────────────────────
 
 export { ResearchLifecycleError, ResearchStore } from "./research-store.js";
+// FNXC:ResearchStore 2026-06-28-11:30: export the PostgreSQL-backed AsyncResearchStore
+// so the engine's ResearchOrchestrator/ResearchRunDispatcher can type their store as
+// the `ResearchStore | AsyncResearchStore` union (research run execution in PG mode).
+export { AsyncResearchStore } from "./async-research-store.js";
 export {
   RESEARCH_RUN_STATUSES,
   RESEARCH_SOURCE_STATUSES,
@@ -1927,6 +1938,7 @@ export { isSandboxExperimentalEnabled } from "./sandbox-settings.js";
 export { TodoStore } from "./todo-store.js";
 export type { TodoStoreEvents } from "./todo-store.js";
 export { EvalLifecycleError, EvalStore } from "./eval-store.js";
+export { AsyncEvalStore } from "./async-eval-store.js";
 export { collectDeterministicSignals } from "./eval-signal-collector.js";
 export type { EvalRunContext } from "./eval-signal-collector.js";
 export type {
@@ -2175,6 +2187,153 @@ export {
   hasSyncPassphraseConfigured,
 } from "./secrets-sync-passphrase.js";
 export { suggestTaskPrefix } from "./task-prefix.js";
+
+// ── U1: PostgreSQL connection layer (backend resolution + connection pool) ──
+export {
+  resolveBackend,
+  resolveBackendWithOptions,
+  looksLikePoolerUrl,
+  poolerWarning,
+  describeBackendForLog,
+  DATABASE_URL_ENV,
+  DATABASE_MIGRATION_URL_ENV,
+  POOLER_PREPARED_STATEMENT_WARNING,
+  createConnectionSet,
+  createConnectionSetFromUrl,
+  verifyConnection,
+  DatabaseConnectionError,
+  redactUrlPassword,
+  redactKeywordPassword,
+  redactConnectionString,
+  redactCredentialsFromMessage,
+  REDACTED_PASSWORD_PLACEHOLDER,
+  createAsyncDataLayer,
+  recordRunAuditEvent,
+  recordRunAuditEventWithinTransaction,
+  checkPostgresHealth,
+  detectSchemaDrift,
+  healSchemaDrift,
+  validateAndHealSchema,
+  vacuumAnalyze,
+  detectTaskIdIntegrityAnomaliesAsync,
+  EXPECTED_PROJECT_COLUMNS,
+  // FNXC:SqliteRemoval 2026-06-25-00:00:
+  // SQLite migrator (U9) exports. The dual-read cutover harness (U10) has been
+  // removed — it was a transitional operator tool that should not ship to end
+  // users. The upgrade path is auto-migrate + keep the SQLite file as a backup.
+  PgBackupManager,
+  PROJECT_BACKUP_SCHEMAS,
+  CENTRAL_BACKUP_SCHEMAS,
+  migrateSqliteToPostgres,
+  defaultMigrationSources,
+  applySchemaBaseline,
+  getAppliedMigrations,
+  SCHEMA_BASELINE_VERSION,
+  // FNXC:BackendFlip 2026-06-26-14:30:
+  // Runtime startup factory (cutover milestone). Production construction sites
+  // (engine, dashboard, CLI serve/dashboard, desktop) consult this to boot
+  // against PostgreSQL. Post default-flip: embedded PG is the default when
+  // DATABASE_URL is unset; FUSION_NO_EMBEDDED_PG=1 opts back to legacy SQLite.
+  createTaskStoreForBackend,
+  shouldUsePostgresBackend,
+  isEmbeddedPgRequested,
+  isEmbeddedPgOptedOut,
+  EMBEDDED_PG_ENV,
+  NO_EMBEDDED_PG_ENV,
+} from "./postgres/index.js";
+export type {
+  BackendMode,
+  ResolvedBackend,
+  ResolveBackendOptions,
+  PostgresConnections,
+  CreateConnectionOptions,
+  AsyncDataLayer,
+  DrizzleDb,
+  DbTransaction,
+  TransactionOptions,
+  PostgresHealthSnapshot,
+  SchemaDriftFinding,
+  SchemaValidationReport,
+  VacuumAnalyzeStats,
+  VacuumAnalyzeResult,
+  PgBackupOptions,
+  PgBackupPair,
+  PgDumpResult,
+  SqliteMigrationSource,
+  SchemaName,
+  MigrationReport,
+  TableMigrationResult,
+  BackendBootResult,
+  CreateTaskStoreForBackendOptions,
+} from "./postgres/index.js";
+
+// FNXC:RuntimeSatelliteAsync 2026-06-24-13:30:
+// Async monitor helpers exported for the dashboard monitor-store dual-path.
+export {
+  recordDeploymentAsync,
+  resolveIncidentAsync,
+  ingestIncidentSignalAsync,
+  getOpenIncidentByGroupingKeyAsync,
+  getIncidentAsync,
+  // FNXC:Monitor 2026-06-28-10:10:
+  // Storm-guard async helpers exported so the dashboard monitor-trait can run
+  // the full create→link→release sequence in PG backend mode (no longer
+  // early-returns "absorbed" when store.backendMode).
+  countRecentAutoFixTasksAsync,
+  claimIncidentForFixTaskAsync,
+  attachFixTaskAsync,
+  releaseIncidentFixTaskClaimAsync,
+} from "./task-store/async-monitor.js";
+export type { Deployment as AsyncDeployment, Incident as AsyncIncident } from "./task-store/async-monitor.js";
+
+// FNXC:RuntimeSatelliteCompletion 2026-06-24-23:40:
+// Async AiSessionStore helpers exported for the dashboard AiSessionStore dual-path.
+export {
+  upsertAiSession,
+  getAiSession,
+  listActiveAiSessions,
+  listAllAiSessions,
+  listRecoverableAiSessions,
+  updateAiSessionStatus,
+  updateAiSessionTitle,
+  markDraftSummarized,
+  updateDraft,
+  pingAiSession,
+  updateThinking as updateThinkingAsync,
+  archiveAiSession,
+  unarchiveAiSession,
+  acquireAiSessionLock,
+  releaseAiSessionLock,
+  forceAcquireAiSessionLock,
+  getAiSessionLockHolder,
+  releaseStaleAiSessionLocks,
+  deleteAiSession,
+  deleteAiSessionByIdAndType,
+  recoverStaleAiSessions,
+  cleanupOldAiSessions,
+  cleanupStaleAiSessions,
+} from "./async-ai-session-store.js";
+export type {
+  AiSessionRow as AsyncAiSessionRow,
+  AiSessionStatus as AsyncAiSessionStatus,
+  AiSessionType as AsyncAiSessionType,
+  AiSessionSummary as AsyncAiSessionSummary,
+  AiSessionCleanupSummary as AsyncAiSessionCleanupSummary,
+} from "./async-ai-session-store.js";
+
+// Re-export the drizzle-orm `sql` template tag so dashboard/engine consumers
+// can build raw queries against the AsyncDataLayer without depending on
+// drizzle-orm directly.
+export { sql as drizzleSql } from "drizzle-orm";
+
+// FNXC:PostgresSchema 2026-07-04-00:00:
+// Re-export the PostgreSQL Drizzle schema namespace so plugin stores (which
+// run in backend mode via ctx.taskStore.getAsyncLayer()) can build type-safe
+// Drizzle queries against their own plugin-owned tables (materialized via the
+// plugin schema-init hook) without a direct relative import into core's
+// postgres internals. The shape definitions are harmless to expose: they only
+// describe tables the AsyncDataLayer can already reach.
+export { schema as postgresSchema } from "./postgres/index.js";
 export {
   upsertWorkflowStepResult,
   MAX_WORKFLOW_STEP_PRIOR_ATTEMPTS,

@@ -18,7 +18,10 @@ export function getOrCreateScopedChatStore(store: TaskStore, fallbackChatStore?:
   const cached = scopedChatStoreCache.get(key);
   if (cached) return cached;
 
-  const chatStore = new ChatStore(store.getFusionDir(), store.getDatabase());
+  // FNXC:RuntimeSatelliteAsync 2026-06-24-21:50:
+  // ChatStore dual-path: pass async layer in backend mode, sync DB otherwise.
+  const layer = store.getAsyncLayer();
+  const chatStore = new ChatStore(store.getFusionDir(), layer ? null : store.getDatabase(), { asyncLayer: layer });
   scopedChatStoreCache.set(key, chatStore);
   return chatStore;
 }
@@ -68,7 +71,7 @@ export async function createProjectScopedChatManager(options: {
   pluginRunner?: ConstructorParameters<typeof ChatManager>[3];
   messageStore?: MessageStore;
 }): Promise<ChatManager> {
-  const agentStore = new AgentStore({ rootDir: options.store.getFusionDir() });
+  const agentStore = new AgentStore({ rootDir: options.store.getFusionDir(), asyncLayer: options.store.getAsyncLayer() ?? undefined });
   return new ChatManager(
     options.chatStore,
     options.store.getRootDir(),
@@ -104,7 +107,9 @@ export function getOrCreateScopedChatManager(
     }
     return cached;
   }
-  const agentStore = new AgentStore({ rootDir: store.getFusionDir() });
+  // FNXC:PostgresCutover 2026-07-05-20:10: keep the backend AsyncDataLayer on
+  // the chat AgentStore (merge union with main's Hermes plugin-runner refresh).
+  const agentStore = new AgentStore({ rootDir: store.getFusionDir(), asyncLayer: store.getAsyncLayer() ?? undefined });
   /*
    * FNXC:ProjectChatRuntime 2026-07-12-11:00:
    * Project/agent chat must expose the same tool schema over desktop and browser transports. The scoped manager is cached by fusion dir, so lazy engine boot must upgrade the cached MessageStore instead of leaving fn_send_message/fn_read_messages stale-missing after the first pre-engine resolution.

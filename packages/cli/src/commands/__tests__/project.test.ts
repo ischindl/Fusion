@@ -66,6 +66,16 @@ vi.mock("@fusion/core", () => ({
     listTasks: mockTaskStoreListTasks,
     close: mockTaskStoreClose,
   })),
+  // FNXC:PostgresCutover 2026-07-05-17:20: getTaskCounts/health now boot the
+  // project store through the PostgreSQL startup factory; route the factory to
+  // the same mocked listTasks so count/in-flight assertions exercise it.
+  createTaskStoreForBackend: vi.fn(async () => ({
+    taskStore: {
+      init: mockTaskStoreInit,
+      listTasks: mockTaskStoreListTasks,
+    },
+    shutdown: vi.fn(async () => {}),
+  })),
   // FN-7740: `getTaskCounts`/`runProjectAdd`'s interactive-init store now
   // close via `store.close()` and `listTasks` is wrapped in `retryOnLock`
   // (which imports `isSqliteLockError` from @fusion/core) — stub it per

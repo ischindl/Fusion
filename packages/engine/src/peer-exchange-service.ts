@@ -86,7 +86,14 @@ export class PeerExchangeService {
   constructor(centralCore: CentralCore, options: PeerExchangeServiceOptions = {}) {
     this.centralCore = centralCore;
     this.syncIntervalMs = options.syncIntervalMs ?? 120_000; // 2 minute default
-    this.settingsSyncEnabled = options.settingsSyncEnabled ?? false;
+    /*
+    FNXC:PostgresCutover 2026-07-10:
+    Node settings sync is removed on the PostgreSQL backend — nodes connect to
+    the same shared PostgreSQL database, so gossip-level settings replication is
+    redundant. Force-disable regardless of the caller's option when the central
+    core runs in backend mode.
+    */
+    this.settingsSyncEnabled = centralCore.backendMode ? false : (options.settingsSyncEnabled ?? false);
     this.settingsSyncThrottleMs = options.settingsSyncThrottleMs ?? 300_000; // 5 minutes default
     this.globalSettings = options.globalSettings;
     this.settingsSyncAuth = options.settingsSyncAuth ?? false;

@@ -32,7 +32,7 @@ describe("FN-5743 hard-cancel merge-request cutover", () => {
       evidence: { reason: "fn_task_done", runId: "run-1", agentId: "agent" },
     });
 
-    store.upsertMergeRequestRecord(task.id, { state: "queued", attemptCount: 1 });
+    await store.upsertMergeRequestRecord(task.id, { state: "queued", attemptCount: 1 });
     store.setCompletionHandoffAcceptedMarker(task.id, { source: "executor:fn_task_done" });
 
     await store.moveTask(task.id, "todo", { moveSource: "user" });
@@ -50,7 +50,7 @@ describe("FN-5743 hard-cancel merge-request cutover", () => {
       evidence: { reason: "fn_task_done", runId: "run-2", agentId: "agent" },
     });
 
-    store.upsertMergeRequestRecord(task.id, { state: "queued", attemptCount: 1 });
+    await store.upsertMergeRequestRecord(task.id, { state: "queued", attemptCount: 1 });
     store.setCompletionHandoffAcceptedMarker(task.id, { source: "executor:fn_task_done" });
 
     await store.moveTask(task.id, "todo", { moveSource: "engine" as any });
@@ -64,6 +64,7 @@ describe("FN-5743 hard-cancel merge-request cutover", () => {
     const fakeStore = {
       getSettings: vi.fn().mockResolvedValue({ mergeRequestContractShadowEnabled: true }),
       getMergeRequestRecord: vi.fn(() => ({ state, attemptCount: 0, lastError: null })),
+      getMergeRequestRecordAsync: vi.fn(() => Promise.resolve({ state, attemptCount: 0, lastError: null })),
       transitionMergeRequestState: vi.fn((_taskId: string, toState: string) => {
         state = toState;
       }),

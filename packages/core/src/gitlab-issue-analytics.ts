@@ -1,4 +1,6 @@
+import { sql } from "drizzle-orm";
 import type { Database } from "./db.js";
+import type { AsyncDataLayer } from "./postgres/data-layer.js";
 
 /**
  * FNXC:CommandCenterGitLab 2026-07-02-00:00:
@@ -132,15 +134,25 @@ function addProject(
 
 /**
  * Aggregate locally persisted GitLab issue and merge-request analytics for the Command Center.
- * Bounds are inclusive. Malformed historical `gitlabTracking` JSON is ignored rather than
+ * Empty ranges return zeroed structures, never null collections. Bounds are
+ * inclusive. Malformed historical `gitlabTracking` JSON is ignored rather than
  * failing the entire analytics request.
+ *
+ * FNXC:PostgresCutover 2026-07-04-00:00:
+ * Now accepts a `Database | AsyncDataLayer` and is async. In backend
+ * (PostgreSQL) mode it branches on `"ping" in dbOrLayer` and reads the real
+ * `project.tasks` rows (gitlab_tracking is jsonb — already parsed — and the
+ * source_issue_* columns are snake_case); the sync SQLite branch is unchanged.
+ * Mirrors aggregateGithubIssueAnalytics.
  */
-export function aggregateGitlabIssueAnalytics(
-  db: Database,
+export async function aggregateGitlabIssueAnalytics(
+  dbOrLayer: Database | AsyncDataLayer,
   query: GitlabIssueAnalyticsQuery = {},
-): GitlabIssueAnalytics {
-  const daily = new Map<string, { filed: number; fixed: number }>();
-  const byProject = new Map<string, { filed: number; fixed: number }>();
+): Promise<GitlabIssueAnalytics> {
+  if ("ping" in dbOrLayer) {
+    return aggregateGitlabIssueAnalyticsAsync(dbOrLayer, query);
+  }
+  const db = dbOrLayer as Database;
 
   const filedRows = db
     .prepare(
@@ -148,7 +160,8 @@ export function aggregateGitlabIssueAnalytics(
     )
     .all() as GitlabTrackingRow[];
 
-  let filed = 0;
+  // Sync rows store gitlabTracking as a JSON string; parse (skip malformed).
+  const filedTrackings: GitlabTrackingLike[] = [];
   for (const row of filedRows) {
     if (!row.gitlabTracking) continue;
     let parsed: unknown;
@@ -157,7 +170,83 @@ export function aggregateGitlabIssueAnalytics(
     } catch {
       continue;
     }
-    const item = (parsed as GitlabTrackingLike).item;
+    filedTrackings.push(parsed as GitlabTrackingLike);
+  }
+
+  const fixedRows = db
+    .prepare(
+      `SELECT id, title, sourceIssueRepository, sourceIssueNumber, sourceIssueUrl, sourceIssueClosedAt, updatedAt FROM tasks WHERE sourceIssueProvider = 'gitlab' AND "column" = 'done'`,
+    )
+    .all() as FixedIssueRow[];
+
+  return buildGitlabIssueAnalytics(filedTrackings, fixedRows, query);
+}
+
+/**
+ * FNXC:PostgresCutover 2026-07-04-00:00:
+ * PostgreSQL fetch path for {@link aggregateGitlabIssueAnalytics}. gitlab_tracking
+ * is jsonb (postgres-js returns it already parsed, so no JSON.parse), and the
+ * `gitlab_tracking::text <> '{}'` predicate mirrors the sync `NOT IN ('', '{}')`
+ * empty-object skip. Fixed-issue columns are aliased back to their camelCase
+ * row shape; source_issue_number coerces to number|null.
+ */
+async function aggregateGitlabIssueAnalyticsAsync(
+  layer: AsyncDataLayer,
+  query: GitlabIssueAnalyticsQuery,
+): Promise<GitlabIssueAnalytics> {
+  const filedRaw = (await layer.db.execute(
+    sql`SELECT gitlab_tracking AS "gitlabTracking" FROM project.tasks
+        WHERE gitlab_tracking IS NOT NULL AND gitlab_tracking::text <> '{}'`,
+  )) as Array<{ gitlabTracking: unknown }>;
+  const filedTrackings: GitlabTrackingLike[] = [];
+  for (const row of filedRaw) {
+    if (row.gitlabTracking == null) continue;
+    filedTrackings.push(row.gitlabTracking as GitlabTrackingLike);
+  }
+
+  const fixedRaw = (await layer.db.execute(
+    sql`SELECT
+          id,
+          title,
+          source_issue_repository AS "sourceIssueRepository",
+          source_issue_number     AS "sourceIssueNumber",
+          source_issue_url        AS "sourceIssueUrl",
+          source_issue_closed_at  AS "sourceIssueClosedAt",
+          updated_at              AS "updatedAt"
+        FROM project.tasks
+        WHERE source_issue_provider = 'gitlab' AND "column" = 'done'`,
+  )) as Array<Record<string, unknown>>;
+  const fixedRows: FixedIssueRow[] = fixedRaw.map((r) => ({
+    id: String(r.id),
+    title: (r.title as string | null) ?? null,
+    sourceIssueRepository: (r.sourceIssueRepository as string | null) ?? null,
+    sourceIssueNumber: r.sourceIssueNumber == null ? null : Number(r.sourceIssueNumber),
+    sourceIssueUrl: (r.sourceIssueUrl as string | null) ?? null,
+    sourceIssueClosedAt: (r.sourceIssueClosedAt as string | null) ?? null,
+    updatedAt: (r.updatedAt as string | null) ?? null,
+  }));
+
+  return buildGitlabIssueAnalytics(filedTrackings, fixedRows, query);
+}
+
+/**
+ * FNXC:PostgresCutover 2026-07-04-00:00:
+ * Pure GitLab-issue aggregation shared by the sync (SQLite) and async
+ * (PostgreSQL) fetch paths. Takes already-parsed `gitlabTracking` objects and
+ * the fixed-issue rows so both backends produce identical filed/fixed/daily/
+ * byProject/resolved shapes.
+ */
+function buildGitlabIssueAnalytics(
+  filedTrackings: GitlabTrackingLike[],
+  fixedRows: FixedIssueRow[],
+  query: GitlabIssueAnalyticsQuery,
+): GitlabIssueAnalytics {
+  const daily = new Map<string, { filed: number; fixed: number }>();
+  const byProject = new Map<string, { filed: number; fixed: number }>();
+
+  let filed = 0;
+  for (const tracking of filedTrackings) {
+    const item = tracking.item;
     if (!item || typeof item.iid !== "number" || !Number.isFinite(item.iid)) continue;
 
     const createdAt = typeof item.createdAt === "string" ? item.createdAt : undefined;
@@ -172,12 +261,6 @@ export function aggregateGitlabIssueAnalytics(
       if (day !== null) addDaily(daily, day, "filed");
     }
   }
-
-  const fixedRows = db
-    .prepare(
-      `SELECT id, title, sourceIssueRepository, sourceIssueNumber, sourceIssueUrl, sourceIssueClosedAt, updatedAt FROM tasks WHERE sourceIssueProvider = 'gitlab' AND "column" = 'done'`,
-    )
-    .all() as FixedIssueRow[];
 
   let fixed = 0;
   const resolved: GitlabResolvedIssue[] = [];

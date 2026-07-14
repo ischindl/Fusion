@@ -20,7 +20,7 @@
     "check:changesets": "node scripts/check-changeset-format.mjs",
     "check:quarantine-ledger": "node scripts/check-quarantine-ledger.mjs",
     "check:mock-completeness": "node scripts/check-mock-completeness.mjs",
-    "test:gate": "node scripts/check-no-nohup.mjs && node scripts/check-no-kill-4040.mjs && node scripts/check-no-test-timeout-appeasement.mjs && node scripts/check-changeset-format.mjs && node scripts/check-mock-completeness.mjs && pnpm --filter @fusion/engine test:core && pnpm --filter @runfusion/fusion test:ci-shape",
+    "test:gate": "node scripts/check-no-nohup.mjs && node scripts/check-no-kill-4040.mjs && node scripts/check-no-test-timeout-appeasement.mjs && node scripts/check-changeset-format.mjs && node scripts/check-mock-completeness.mjs && pnpm --filter @fusion/engine test:core && pnpm --filter @fusion/core test:pg-gate && pnpm --filter @runfusion/fusion test:ci-shape",
     "smoke:boot": "node scripts/boot-smoke.mjs",
     "local": "node scripts/start-local.mjs",
     "dev": "node scripts/dev-with-memory.mjs",
@@ -82,7 +82,6 @@
   "pnpm": {
     "ignoredBuiltDependencies": [
       "@google/genai",
-      "better-sqlite3",
       "cpu-features",
       "electron-winstaller",
       "keytar",
@@ -90,6 +89,14 @@
       "ssh2"
     ],
     "onlyBuiltDependencies": [
+      "@embedded-postgres/darwin-arm64",
+      "@embedded-postgres/darwin-x64",
+      "@embedded-postgres/linux-arm",
+      "@embedded-postgres/linux-arm64",
+      "@embedded-postgres/linux-ia32",
+      "@embedded-postgres/linux-ppc64",
+      "@embedded-postgres/linux-x64",
+      "@embedded-postgres/windows-x64",
       "@homebridge/node-pty-prebuilt-multiarch",
       "electron",
       "esbuild",

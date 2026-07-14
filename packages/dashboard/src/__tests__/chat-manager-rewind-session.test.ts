@@ -9,6 +9,15 @@ test proves the rewind at the seam that actually matters: after
 turn's content survives. It deliberately does NOT mock `@earendil-works/pi-coding-agent` — a
 real, temp-directory-backed `SessionManager` is used so the assertion exercises the actual
 `branch()`/`resetLeaf()` behavior described in `session-manager.d.ts`, not a stub.
+
+FNXC:ChatMessageEdit 2026-07-07-14:00:
+Ported from upstream's sqlite-backed version: the sqlite ChatStore path is removed on this
+branch (Database.init throws — SqliteFinalRemoval), so the chat_messages persistence side uses
+an in-memory FakeChatStore implementing the async ChatStore surface ChatManager touches
+(getSession/getMessage/deleteMessagesFrom/updateMessageMetadata/setCliSessionFile). The store
+truncation semantics themselves are covered against real PostgreSQL in
+packages/core/src/__tests__/postgres/chat-store-content-search-edit.pg.test.ts; the seam under
+test here is the pi session branch/repoint behavior, which is store-agnostic.
 */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdtempSync } from "node:fs";
@@ -16,7 +25,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { rm } from "node:fs/promises";
 import { ChatManager } from "../chat.js";
-import { ChatStore, Database } from "@fusion/core";
+import type { ChatMessage, ChatSession } from "@fusion/core";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 
 function makeAssistantMessage(text: string) {
@@ -51,27 +60,111 @@ function extractText(context: ReturnType<SessionManager["buildSessionContext"]>)
   });
 }
 
+/**
+ * Minimal in-memory stand-in for the async ChatStore surface exercised by
+ * ChatManager.rewindSessionForEdit. Messages keep insertion order, matching the
+ * (createdAt, insertion-order) contract of the real backends.
+ */
+class FakeChatStore {
+  private sessions = new Map<string, ChatSession>();
+  private messages: ChatMessage[] = [];
+  private counter = 0;
+
+  createSession(input: { agentId: string }): ChatSession {
+    const now = new Date().toISOString();
+    const session: ChatSession = {
+      id: `chat-${++this.counter}`,
+      agentId: input.agentId,
+      title: null,
+      status: "active",
+      projectId: null,
+      modelProvider: null,
+      modelId: null,
+      cliSessionFile: null,
+      cliExecutorAdapterId: null,
+      inFlightGeneration: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.sessions.set(session.id, session);
+    return session;
+  }
+
+  async setInFlightGeneration(_sessionId: string, _snapshot: unknown): Promise<void> {
+    // In-flight generation persistence is irrelevant to the rewind seam under test.
+  }
+
+  async getSession(id: string): Promise<ChatSession | undefined> {
+    return this.sessions.get(id);
+  }
+
+  async addMessage(sessionId: string, input: { role: "user" | "assistant"; content: string }): Promise<ChatMessage> {
+    const message: ChatMessage = {
+      id: `msg-${++this.counter}`,
+      sessionId,
+      role: input.role,
+      content: input.content,
+      thinkingOutput: null,
+      metadata: null,
+      createdAt: new Date().toISOString(),
+    };
+    this.messages.push(message);
+    return message;
+  }
+
+  async getMessage(id: string): Promise<ChatMessage | undefined> {
+    return this.messages.find((m) => m.id === id);
+  }
+
+  async getMessages(sessionId: string): Promise<ChatMessage[]> {
+    return this.messages.filter((m) => m.sessionId === sessionId);
+  }
+
+  async updateMessageMetadata(
+    messageId: string,
+    metadata: Record<string, unknown> | null,
+    options?: { merge?: boolean },
+  ): Promise<ChatMessage> {
+    const existing = this.messages.find((m) => m.id === messageId);
+    if (!existing) throw new Error(`Message ${messageId} not found`);
+    const merge = options?.merge !== false;
+    existing.metadata = metadata === null
+      ? (merge ? existing.metadata : null)
+      : (merge ? { ...(existing.metadata ?? {}), ...metadata } : metadata);
+    return existing;
+  }
+
+  async deleteMessagesFrom(sessionId: string, fromMessageId: string): Promise<{ deletedIds: string[]; retained: ChatMessage[] }> {
+    const inSession = this.messages.filter((m) => m.sessionId === sessionId);
+    const targetIndex = inSession.findIndex((m) => m.id === fromMessageId);
+    const target = this.messages.find((m) => m.id === fromMessageId);
+    if (!target || target.sessionId !== sessionId || targetIndex === -1) {
+      return { deletedIds: [], retained: inSession };
+    }
+    const retained = inSession.slice(0, targetIndex);
+    const deletedIds = inSession.slice(targetIndex).map((m) => m.id);
+    this.messages = this.messages.filter((m) => !deletedIds.includes(m.id));
+    return { deletedIds, retained };
+  }
+
+  async setCliSessionFile(id: string, cliSessionFile: string | null): Promise<void> {
+    const session = this.sessions.get(id);
+    if (session) session.cliSessionFile = cliSessionFile;
+  }
+}
+
 describe("ChatManager.rewindSessionForEdit — pi session context seam (real SessionManager)", () => {
   let tmpDir: string;
-  let db: Database;
-  let chatStore: ChatStore;
+  let chatStore: FakeChatStore;
   let chatManager: ChatManager;
 
   beforeAll(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "fn-chat-rewind-test-"));
-    const fusionDir = join(tmpDir, ".fusion");
-    db = new Database(fusionDir, { inMemory: true });
-    db.init();
-    chatStore = new ChatStore(fusionDir, db);
-    chatManager = new ChatManager(chatStore, tmpDir);
+    chatStore = new FakeChatStore();
+    chatManager = new ChatManager(chatStore as any, tmpDir);
   });
 
   afterAll(async () => {
-    try {
-      db.close();
-    } catch {
-      // already closed
-    }
     await rm(tmpDir, { recursive: true, force: true });
   });
 
@@ -83,7 +176,7 @@ describe("ChatManager.rewindSessionForEdit — pi session context seam (real Ses
     const seedManager = SessionManager.create(tmpDir);
     const sessionFile = seedManager.getSessionFile();
     expect(sessionFile).toBeTruthy();
-    chatStore.setCliSessionFile(session.id, sessionFile!);
+    await chatStore.setCliSessionFile(session.id, sessionFile!);
 
     seedManager.appendMessage({ role: "user", content: "first turn", timestamp: Date.now() });
     seedManager.appendMessage(makeAssistantMessage("first reply"));
@@ -94,11 +187,11 @@ describe("ChatManager.rewindSessionForEdit — pi session context seam (real Ses
 
     // Persist the corresponding chat_messages rows, recording the second user turn's pi
     // parent-leaf id the way ChatManager.sendMessage does before calling prompt().
-    const m1 = chatStore.addMessage(session.id, { role: "user", content: "first turn" });
-    chatStore.addMessage(session.id, { role: "assistant", content: "first reply" });
-    const m3 = chatStore.addMessage(session.id, { role: "user", content: "second turn" });
-    chatStore.updateMessageMetadata(m3.id, { piParentLeafId: leafAfterTurn1 });
-    chatStore.addMessage(session.id, { role: "assistant", content: "second reply" });
+    const m1 = await chatStore.addMessage(session.id, { role: "user", content: "first turn" });
+    await chatStore.addMessage(session.id, { role: "assistant", content: "first reply" });
+    const m3 = await chatStore.addMessage(session.id, { role: "user", content: "second turn" });
+    await chatStore.updateMessageMetadata(m3.id, { piParentLeafId: leafAfterTurn1 });
+    await chatStore.addMessage(session.id, { role: "assistant", content: "second reply" });
 
     // Sanity: before the edit, the full pi context includes both turns.
     const beforeTexts = extractText(seedManager.buildSessionContext());
@@ -112,13 +205,13 @@ describe("ChatManager.rewindSessionForEdit — pi session context seam (real Ses
 
     // The DB truncation alone is not the seam that matters — assert the persisted rows too,
     // but the load-bearing assertion is the pi session context below.
-    expect(chatStore.getMessages(session.id).map((m) => m.content)).toEqual(["first turn", "first reply"]);
+    expect((await chatStore.getMessages(session.id)).map((m) => m.content)).toEqual(["first turn", "first reply"]);
 
     // The rewind materializes a NEW session file (createBranchedSession) and repoints the
     // chat row at it — branch()/resetLeaf() alone only mutate an in-memory leaf pointer and do
     // not survive a fresh SessionManager.open() on the next turn, so re-fetch the file the next
     // real send would actually resume from and prove the discarded turn is unreachable there.
-    const rewoundSession = chatStore.getSession(session.id)!;
+    const rewoundSession = (await chatStore.getSession(session.id))!;
     expect(rewoundSession.cliSessionFile).not.toBe(sessionFile);
     const reopened = SessionManager.open(rewoundSession.cliSessionFile!);
     const afterTexts = extractText(reopened.buildSessionContext());
@@ -139,20 +232,20 @@ describe("ChatManager.rewindSessionForEdit — pi session context seam (real Ses
 
     const seedManager = SessionManager.create(tmpDir);
     const sessionFile = seedManager.getSessionFile();
-    chatStore.setCliSessionFile(session.id, sessionFile!);
+    await chatStore.setCliSessionFile(session.id, sessionFile!);
 
     // First turn: parent leaf is null (nothing before it).
     seedManager.appendMessage({ role: "user", content: "only turn", timestamp: Date.now() });
     seedManager.appendMessage(makeAssistantMessage("only reply"));
 
-    const m1 = chatStore.addMessage(session.id, { role: "user", content: "only turn" });
-    chatStore.updateMessageMetadata(m1.id, { piParentLeafId: null });
-    chatStore.addMessage(session.id, { role: "assistant", content: "only reply" });
+    const m1 = await chatStore.addMessage(session.id, { role: "user", content: "only turn" });
+    await chatStore.updateMessageMetadata(m1.id, { piParentLeafId: null });
+    await chatStore.addMessage(session.id, { role: "assistant", content: "only reply" });
 
     const { retained } = await chatManager.rewindSessionForEdit(session.id, m1.id);
     expect(retained).toEqual([]);
 
-    const rewoundSession = chatStore.getSession(session.id)!;
+    const rewoundSession = (await chatStore.getSession(session.id))!;
     expect(rewoundSession.cliSessionFile).not.toBe(sessionFile);
     const reopened = SessionManager.open(rewoundSession.cliSessionFile!);
     const afterTexts = extractText(reopened.buildSessionContext());
@@ -163,8 +256,8 @@ describe("ChatManager.rewindSessionForEdit — pi session context seam (real Ses
   it("rejects editing a non-user message", async () => {
     const session = chatStore.createSession({ agentId: "agent-001" });
     const seedManager = SessionManager.create(tmpDir);
-    chatStore.setCliSessionFile(session.id, seedManager.getSessionFile()!);
-    const assistantMsg = chatStore.addMessage(session.id, { role: "assistant", content: "hi" });
+    await chatStore.setCliSessionFile(session.id, seedManager.getSessionFile()!);
+    const assistantMsg = await chatStore.addMessage(session.id, { role: "assistant", content: "hi" });
 
     await expect(chatManager.rewindSessionForEdit(session.id, assistantMsg.id)).rejects.toThrow(/user message/);
   });
@@ -172,8 +265,8 @@ describe("ChatManager.rewindSessionForEdit — pi session context seam (real Ses
   it("rejects an edit while a generation is in flight for the session", async () => {
     const session = chatStore.createSession({ agentId: "agent-001" });
     const seedManager = SessionManager.create(tmpDir);
-    chatStore.setCliSessionFile(session.id, seedManager.getSessionFile()!);
-    const userMsg = chatStore.addMessage(session.id, { role: "user", content: "hi" });
+    await chatStore.setCliSessionFile(session.id, seedManager.getSessionFile()!);
+    const userMsg = await chatStore.addMessage(session.id, { role: "user", content: "hi" });
 
     chatManager.beginGeneration(session.id);
     try {

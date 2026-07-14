@@ -131,6 +131,25 @@ export const registerSettingsSyncRoutes: ApiRouteRegistrar = (ctx) => {
 
   // ── Node Settings Sync Routes ────────────────────────────────────────────
 
+  /*
+  FNXC:PostgresCutover 2026-07-10:
+  Node settings sync (fetch/push/pull/sync-status) is REMOVED on the PostgreSQL
+  backend: nodes connect to the same shared PostgreSQL database, so replicating
+  settings between nodes over HTTP is redundant and can clobber the shared
+  source of truth. These routes return 409 with an explanatory message in
+  backend mode. Provider AUTH sync (/nodes/:id/auth/sync) is intentionally NOT
+  gated — auth material is per-machine file state (auth.json), not database
+  state, so multi-node credential propagation still needs it.
+  */
+  const rejectSettingsSyncOnPostgres = (res: import("express").Response): boolean => {
+    if (!store.backendMode) return false;
+    res.status(409).json({
+      error: "Node settings sync is disabled on the PostgreSQL backend — nodes share the same database, so settings are already shared. Edit settings on any node and every node sees them.",
+      code: "settings-sync-disabled-postgres",
+    });
+    return true;
+  };
+
   /**
    * GET /api/nodes/:id/settings
    * Fetch settings from a remote node by proxying to the remote's /api/settings/scopes endpoint.
@@ -138,6 +157,7 @@ export const registerSettingsSyncRoutes: ApiRouteRegistrar = (ctx) => {
    */
   router.get("/nodes/:id/settings", async (req, res) => {
     try {
+      if (rejectSettingsSyncOnPostgres(res)) return;
       const { CentralCore } = await import("@fusion/core");
       const central = new CentralCore();
       await central.init();
@@ -171,6 +191,7 @@ export const registerSettingsSyncRoutes: ApiRouteRegistrar = (ctx) => {
    */
   router.post("/nodes/:id/settings/push", async (req, res) => {
     try {
+      if (rejectSettingsSyncOnPostgres(res)) return;
       const { CentralCore } = await import("@fusion/core");
       const central = new CentralCore();
       await central.init();
@@ -257,6 +278,7 @@ export const registerSettingsSyncRoutes: ApiRouteRegistrar = (ctx) => {
    */
   router.post("/nodes/:id/settings/pull", async (req, res) => {
     try {
+      if (rejectSettingsSyncOnPostgres(res)) return;
       const { CentralCore } = await import("@fusion/core");
       const central = new CentralCore();
       await central.init();
@@ -391,6 +413,7 @@ export const registerSettingsSyncRoutes: ApiRouteRegistrar = (ctx) => {
    */
   router.get("/nodes/:id/settings/sync-status", async (req, res) => {
     try {
+      if (rejectSettingsSyncOnPostgres(res)) return;
       const { CentralCore } = await import("@fusion/core");
       const central = new CentralCore();
       await central.init();

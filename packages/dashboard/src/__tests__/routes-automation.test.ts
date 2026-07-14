@@ -44,11 +44,15 @@ const mockCentralListProjects = vi.fn().mockResolvedValue([]);
 const mockCentralInit = vi.fn().mockResolvedValue(undefined);
 const mockCentralClose = vi.fn().mockResolvedValue(undefined);
 const mockCentralReconcileProjectStatuses = vi.fn().mockResolvedValue(undefined);
-const { mockPerformUpdateCheck, mockClearUpdateCheckCache, mockExecSync, mockExecFile } = vi.hoisted(() => ({
+const { mockPerformUpdateCheck, mockClearUpdateCheckCache, mockExecSync, mockExecFile, mockRunBackupCommand } = vi.hoisted(() => ({
   mockPerformUpdateCheck: vi.fn(),
   mockClearUpdateCheckCache: vi.fn(),
   mockExecSync: vi.fn(),
   mockExecFile: vi.fn(),
+  mockRunBackupCommand: vi.fn().mockResolvedValue({
+    success: true,
+    output: "Backup created: fusion-pg-2026-07-05.dump (1.2 KB).",
+  }),
 }));
 
 vi.mock("../update-check.js", async () => {
@@ -96,6 +100,14 @@ vi.mock("@fusion/core", async (importOriginal) => {
   const { createCoreMock } = await import("../test/mockCoreEngine.js");
   return createCoreMock(() => importOriginal<typeof import("@fusion/core")>(), {
     resolveGlobalDir: vi.fn().mockReturnValue("/tmp/fusion-test"),
+    /*
+    FNXC:DatabaseBackup 2026-07-05-16:30:
+    FN-7537 covers ROUTING parity (manual run intercepts the backup in-process
+    instead of shelling out), not the backup engine. Post-PG-cutover the real
+    runBackupCommand pg_dumps a live PostgreSQL cluster, which a unit test has
+    no business booting; stub it deterministically and assert it was invoked.
+    */
+    runBackupCommand: mockRunBackupCommand,
     isGhAvailable: vi.fn(),
     isGhAuthenticated: vi.fn(),
     isQmdAvailable: vi.fn().mockResolvedValue(false),
@@ -1379,19 +1391,10 @@ describe("Automation routes", () => {
     without a global `fn`/`runfusion.ai` binary.
     */
     describe("manual backup run parity (FN-7537)", () => {
-      function writeTestDb(path: string): void {
-        try {
-          execFileSync("sqlite3", [path, "CREATE TABLE IF NOT EXISTS t(x); INSERT INTO t VALUES (1);"]);
-        } catch {
-          writeFileSync(path, "dummy database content");
-        }
-      }
-
       it("intercepts the in-process backup for a legacy single-command schedule and does not shell out", async () => {
         const tempDir = mkdtempSync(join(tmpdir(), "routes-automation-backup-"));
         const fusionDir = join(tempDir, ".fusion");
         mkdirSync(fusionDir, { recursive: true });
-        writeTestDb(join(fusionDir, "fusion.db"));
 
         try {
           const mockStore = createMockAutomationStore();
@@ -1410,6 +1413,7 @@ describe("Automation routes", () => {
           expect(res.status).toBe(200);
           expect(res.body.result.success).toBe(true);
           expect(res.body.result.output).toContain("Backup created");
+          expect(mockRunBackupCommand).toHaveBeenCalledWith(fusionDir, expect.anything());
           // A shelled-out command would have gone through node:child_process exec — assert it did not.
           expect(mockExecFile).not.toHaveBeenCalledWith(
             expect.anything(),
@@ -1426,7 +1430,6 @@ describe("Automation routes", () => {
         const tempDir = mkdtempSync(join(tmpdir(), "routes-automation-backup-step-"));
         const fusionDir = join(tempDir, ".fusion");
         mkdirSync(fusionDir, { recursive: true });
-        writeTestDb(join(fusionDir, "fusion.db"));
 
         try {
           const mockStore = createMockAutomationStore();
@@ -1462,7 +1465,6 @@ describe("Automation routes", () => {
         const tempDir = mkdtempSync(join(tmpdir(), "routes-automation-backup-live-"));
         const fusionDir = join(tempDir, ".fusion");
         mkdirSync(fusionDir, { recursive: true });
-        writeTestDb(join(fusionDir, "fusion.db"));
 
         try {
           const mockStore = createMockAutomationStore();

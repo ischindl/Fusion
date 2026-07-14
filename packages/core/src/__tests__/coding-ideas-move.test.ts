@@ -1,5 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { createTaskStoreTestHarness } from "./store-test-helpers.js";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from "vitest";
+import {
+  pgDescribe,
+  createSharedPgTaskStoreTestHarness,
+} from "../__test-utils__/pg-test-harness.js";
 
 /*
 FNXC:WorkflowColumns 2026-07-05-19:10:
@@ -18,10 +21,18 @@ table, on a default project with NO experimental flag set):
  - Holds for both user- and engine-sourced moves.
  - Default workflow (legacy column ids) is unchanged (parity), verified in move-task-characterization.
 */
-describe("Coding (Ideas) custom-column moves (workflow-columns graduation)", () => {
-  const harness = createTaskStoreTestHarness();
+/*
+FNXC:PostgresCutover 2026-07-05-19:40:
+Runs on the shared PostgreSQL harness (the sync SQLite TaskStore runtime was
+removed under VAL-REMOVAL-005); pgDescribe auto-skips when PostgreSQL is
+unreachable so the merge gate stays green.
+*/
+pgDescribe("Coding (Ideas) custom-column moves (workflow-columns graduation)", () => {
+  const harness = createSharedPgTaskStoreTestHarness({ prefix: "fusion_ideas_move" });
+  beforeAll(harness.beforeAll);
   beforeEach(harness.beforeEach);
   afterEach(harness.afterEach);
+  afterAll(harness.afterAll);
 
   it("moves an ideas-workflow task from the ideas intake column to todo", async () => {
     const store = harness.store();

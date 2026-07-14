@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
-import type { Database, PluginContext } from "@fusion/core";
+import { and, desc, eq, isNull } from "drizzle-orm";
+import type { AsyncDataLayer, Database, PluginContext } from "@fusion/core";
+import { cePipelineLinks as cePipelineLinksShape, cePipelineState as cePipelineStateShape, cePipelineSyncQueue as cePipelineSyncQueueShape } from "./pg-schema.js";
 import { ensureCeSchema } from "../schema.js";
 
 /**
@@ -160,19 +162,48 @@ function rowToLink(row: CePipelineLinkRow): CePipelineLink {
   };
 }
 
-/**
- * CRUD for CE pipeline link records. Reaches the DB the same way the session
- * store / reports do (via `ctx.taskStore.getDatabase()`) and ensures its schema
- * defensively on construction so a store built before `onSchemaInit` ran (or in a
- * test) still works.
- */
-export class CePipelineStore {
-  private readonly db: Database;
+// Drizzle table refs (CE plugin tables live in the project schema; see
+// packages/core/src/postgres/schema/plugin.ts and cePluginSchemaInit).
+const cePipelineLinksTable = cePipelineLinksShape;
+const cePipelineStateTable = cePipelineStateShape;
+const cePipelineSyncQueueTable = cePipelineSyncQueueShape;
 
-  constructor(db: Database) {
+export class CePipelineStore {
+  // FNXC:PostgresCutover 2026-07-04-00:00 RESOLVED:
+  // Backend (PostgreSQL) mode is now wired. The constructor accepts an optional
+  // AsyncDataLayer; when present, the *Async() siblings route every query
+  // through Drizzle against the plugin-owned ce_pipeline_* tables (materialized
+  // by cePluginSchemaInit). The sync methods remain as the SQLite fallback and
+  // are used directly by non-backend callers and tests.
+  private readonly db: Database | null;
+  private readonly asyncLayer: AsyncDataLayer | null;
+
+  constructor(db: Database | null, asyncLayer: AsyncDataLayer | null = null) {
     this.db = db;
-    ensureCeSchema(db);
+    this.asyncLayer = asyncLayer;
+    if (db) ensureCeSchema(db);
+    // PG plugin tables materialize via cePluginSchemaInit at schema-apply time
+    // (long before any store is constructed), so there is no first-use DDL here.
   }
+
+  /** True when the store was constructed with a PostgreSQL async layer. */
+  get backendMode(): boolean {
+    return this.asyncLayer !== null;
+  }
+
+  /** Asserts sync db is available (SQLite fallback; throws in backend mode). */
+  private syncDb(): Database {
+    if (!this.db) throw new Error("CePipelineStore: sync Database is null (backend mode)");
+    return this.db;
+  }
+
+  /** Drizzle handle for the async siblings (backend mode only). */
+  private dbAsync() {
+    if (!this.asyncLayer) throw new Error("CePipelineStore: asyncLayer is null (SQLite mode)");
+    return this.asyncLayer.db;
+  }
+
+  // ── Links (U7) ─────────────────────────────────────────────────────
 
   /** Record a task→pipeline/artifact link. */
   createLink(input: CreateCePipelineLinkInput): CePipelineLink {
@@ -184,30 +215,67 @@ export class CePipelineStore {
       ceArtifactPath: input.ceArtifactPath ?? null,
       createdAt: new Date().toISOString(),
     };
-    this.db
-      .prepare(
-        `INSERT INTO ce_pipeline_links
-          (id, taskId, cePipelineId, ceStageId, ceArtifactPath, createdAt)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      )
+    this.syncDb().prepare(`INSERT INTO ce_pipeline_links
+      (id, taskId, cePipelineId, ceStageId, ceArtifactPath, createdAt)
+     VALUES (?, ?, ?, ?, ?, ?)`,)
       .run(link.id, link.taskId, link.cePipelineId, link.ceStageId, link.ceArtifactPath, link.createdAt);
+    return link;
+  }
+
+  /** Async sibling: createLink. Routes to Drizzle in backend mode. */
+  async createLinkAsync(input: CreateCePipelineLinkInput): Promise<CePipelineLink> {
+    if (!this.asyncLayer) return this.createLink(input);
+    const link: CePipelineLink = {
+      id: input.id ?? randomUUID(),
+      taskId: input.taskId,
+      cePipelineId: input.cePipelineId,
+      ceStageId: input.ceStageId,
+      ceArtifactPath: input.ceArtifactPath ?? null,
+      createdAt: new Date().toISOString(),
+    };
+    await this.dbAsync().insert(cePipelineLinksTable).values({
+      id: link.id,
+      taskId: link.taskId,
+      cePipelineId: link.cePipelineId,
+      ceStageId: link.ceStageId,
+      ceArtifactPath: link.ceArtifactPath,
+      createdAt: link.createdAt,
+    });
     return link;
   }
 
   /** All links produced by a given CE pipeline, newest first. */
   listByPipeline(cePipelineId: string): CePipelineLink[] {
-    const rows = this.db
-      .prepare(`SELECT * FROM ce_pipeline_links WHERE cePipelineId = ? ORDER BY createdAt DESC, id`)
+    const rows = this.syncDb().prepare(`SELECT * FROM ce_pipeline_links WHERE cePipelineId = ? ORDER BY createdAt DESC, id`)
       .all(cePipelineId) as CePipelineLinkRow[];
     return rows.map(rowToLink);
   }
 
+  /** Async sibling: listByPipeline. Routes to Drizzle in backend mode. */
+  async listByPipelineAsync(cePipelineId: string): Promise<CePipelineLink[]> {
+    if (!this.asyncLayer) return this.listByPipeline(cePipelineId);
+    const rows = await this.dbAsync().select()
+      .from(cePipelineLinksTable)
+      .where(eq(cePipelineLinksTable.cePipelineId, cePipelineId))
+      .orderBy(desc(cePipelineLinksTable.createdAt), cePipelineLinksTable.id);
+    return rows.map((r) => rowToLink(r as CePipelineLinkRow));
+  }
+
   /** Resolve a board task back to its CE link (the back-reference). */
   findByTaskId(taskId: string): CePipelineLink | undefined {
-    const row = this.db
-      .prepare(`SELECT * FROM ce_pipeline_links WHERE taskId = ?`)
+    const row = this.syncDb().prepare(`SELECT * FROM ce_pipeline_links WHERE taskId = ?`)
       .get(taskId) as CePipelineLinkRow | undefined;
     return row ? rowToLink(row) : undefined;
+  }
+
+  /** Async sibling: findByTaskId. Routes to Drizzle in backend mode. */
+  async findByTaskIdAsync(taskId: string): Promise<CePipelineLink | undefined> {
+    if (!this.asyncLayer) return this.findByTaskId(taskId);
+    const rows = await this.dbAsync().select()
+      .from(cePipelineLinksTable)
+      .where(eq(cePipelineLinksTable.taskId, taskId))
+      .limit(1);
+    return rows[0] ? rowToLink(rows[0] as CePipelineLinkRow) : undefined;
   }
 
   // ── CE-pipeline STATE machine (U8) ───────────────────────────────────
@@ -215,18 +283,35 @@ export class CePipelineStore {
 
   /** Read a pipeline's own state record. */
   getState(cePipelineId: string): CePipelineState | undefined {
-    const row = this.db
-      .prepare(`SELECT * FROM ce_pipeline_state WHERE cePipelineId = ?`)
+    const row = this.syncDb().prepare(`SELECT * FROM ce_pipeline_state WHERE cePipelineId = ?`)
       .get(cePipelineId) as CePipelineStateRow | undefined;
     return row ? rowToState(row) : undefined;
   }
 
+  /** Async sibling: getState. Routes to Drizzle in backend mode. */
+  async getStateAsync(cePipelineId: string): Promise<CePipelineState | undefined> {
+    if (!this.asyncLayer) return this.getState(cePipelineId);
+    const rows = await this.dbAsync().select()
+      .from(cePipelineStateTable)
+      .where(eq(cePipelineStateTable.cePipelineId, cePipelineId))
+      .limit(1);
+    return rows[0] ? rowToState(rows[0] as CePipelineStateRow) : undefined;
+  }
+
   /** All pipeline state records (the reconciler sweeps every one). */
   listAllState(): CePipelineState[] {
-    const rows = this.db
-      .prepare(`SELECT * FROM ce_pipeline_state ORDER BY updatedAt DESC, cePipelineId`)
+    const rows = this.syncDb().prepare(`SELECT * FROM ce_pipeline_state ORDER BY updatedAt DESC, cePipelineId`)
       .all() as CePipelineStateRow[];
     return rows.map(rowToState);
+  }
+
+  /** Async sibling: listAllState. Routes to Drizzle in backend mode. */
+  async listAllStateAsync(): Promise<CePipelineState[]> {
+    if (!this.asyncLayer) return this.listAllState();
+    const rows = await this.dbAsync().select()
+      .from(cePipelineStateTable)
+      .orderBy(desc(cePipelineStateTable.updatedAt), cePipelineStateTable.cePipelineId);
+    return rows.map((r) => rowToState(r as CePipelineStateRow));
   }
 
   /**
@@ -240,23 +325,45 @@ export class CePipelineStore {
     const lastArtifactPath =
       input.lastArtifactPath !== undefined ? input.lastArtifactPath : existing?.lastArtifactPath ?? null;
     if (existing) {
-      this.db
-        .prepare(
-          `UPDATE ce_pipeline_state
-             SET currentStage = ?, status = ?, lastArtifactPath = ?, updatedAt = ?
-           WHERE cePipelineId = ?`,
-        )
+      this.syncDb().prepare(`UPDATE ce_pipeline_state
+         SET currentStage = ?, status = ?, lastArtifactPath = ?, updatedAt = ?
+       WHERE cePipelineId = ?`,)
         .run(input.currentStage, status, lastArtifactPath, now, input.cePipelineId);
     } else {
-      this.db
-        .prepare(
-          `INSERT INTO ce_pipeline_state
-             (cePipelineId, currentStage, status, lastArtifactPath, createdAt, updatedAt)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-        )
+      this.syncDb().prepare(`INSERT INTO ce_pipeline_state
+         (cePipelineId, currentStage, status, lastArtifactPath, createdAt, updatedAt)
+       VALUES (?, ?, ?, ?, ?, ?)`,)
         .run(input.cePipelineId, input.currentStage, status, lastArtifactPath, now, now);
     }
     return this.getState(input.cePipelineId)!;
+  }
+
+  /** Async sibling: upsertState. Routes to Drizzle in backend mode. */
+  async upsertStateAsync(input: UpsertCePipelineStateInput): Promise<CePipelineState> {
+    if (!this.asyncLayer) return this.upsertState(input);
+    const now = new Date().toISOString();
+    const existing = await this.getStateAsync(input.cePipelineId);
+    const status = input.status ?? existing?.status ?? "running";
+    const lastArtifactPath =
+      input.lastArtifactPath !== undefined ? input.lastArtifactPath : existing?.lastArtifactPath ?? null;
+    if (existing) {
+      await this.dbAsync().update(cePipelineStateTable).set({
+        currentStage: input.currentStage,
+        status,
+        lastArtifactPath,
+        updatedAt: now,
+      }).where(eq(cePipelineStateTable.cePipelineId, input.cePipelineId));
+    } else {
+      await this.dbAsync().insert(cePipelineStateTable).values({
+        cePipelineId: input.cePipelineId,
+        currentStage: input.currentStage,
+        status,
+        lastArtifactPath,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    return (await this.getStateAsync(input.cePipelineId))!;
   }
 
   /**
@@ -270,6 +377,23 @@ export class CePipelineStore {
     const existing = this.getState(cePipelineId);
     if (!existing) return undefined;
     return this.upsertState({
+      cePipelineId,
+      currentStage: next.currentStage ?? existing.currentStage,
+      status: next.status ?? existing.status,
+      lastArtifactPath:
+        next.lastArtifactPath !== undefined ? next.lastArtifactPath : existing.lastArtifactPath,
+    });
+  }
+
+  /** Async sibling: transitionState. Routes to Drizzle in backend mode. */
+  async transitionStateAsync(
+    cePipelineId: string,
+    next: { currentStage?: string; status?: CePipelineStatus; lastArtifactPath?: string | null },
+  ): Promise<CePipelineState | undefined> {
+    if (!this.asyncLayer) return this.transitionState(cePipelineId, next);
+    const existing = await this.getStateAsync(cePipelineId);
+    if (!existing) return undefined;
+    return this.upsertStateAsync({
       cePipelineId,
       currentStage: next.currentStage ?? existing.currentStage,
       status: next.status ?? existing.status,
@@ -294,29 +418,74 @@ export class CePipelineStore {
       enqueuedAt: new Date().toISOString(),
       processedAt: null,
     };
-    this.db
-      .prepare(
-        `INSERT INTO ce_pipeline_sync_queue
-           (id, cePipelineId, taskId, reason, fromColumn, toColumn, enqueuedAt, processedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
-      )
+    this.syncDb().prepare(`INSERT INTO ce_pipeline_sync_queue
+       (id, cePipelineId, taskId, reason, fromColumn, toColumn, enqueuedAt, processedAt)
+     VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,)
       .run(entry.id, entry.cePipelineId, entry.taskId, entry.reason, entry.fromColumn, entry.toColumn, entry.enqueuedAt);
+    return entry;
+  }
+
+  /** Async sibling: enqueueSync. Routes to Drizzle in backend mode. */
+  async enqueueSyncAsync(input: EnqueueSyncInput): Promise<CeSyncQueueEntry> {
+    if (!this.asyncLayer) return this.enqueueSync(input);
+    const entry: CeSyncQueueEntry = {
+      id: input.id ?? randomUUID(),
+      cePipelineId: input.cePipelineId,
+      taskId: input.taskId,
+      reason: input.reason,
+      fromColumn: input.fromColumn ?? null,
+      toColumn: input.toColumn ?? null,
+      enqueuedAt: new Date().toISOString(),
+      processedAt: null,
+    };
+    await this.dbAsync().insert(cePipelineSyncQueueTable).values({
+      id: entry.id,
+      cePipelineId: entry.cePipelineId,
+      taskId: entry.taskId,
+      reason: entry.reason,
+      fromColumn: entry.fromColumn,
+      toColumn: entry.toColumn,
+      enqueuedAt: entry.enqueuedAt,
+      processedAt: null,
+    });
     return entry;
   }
 
   /** All pending (un-drained) queue entries, oldest first. */
   listPendingSync(): CeSyncQueueEntry[] {
-    const rows = this.db
-      .prepare(`SELECT * FROM ce_pipeline_sync_queue WHERE processedAt IS NULL ORDER BY enqueuedAt, id`)
+    const rows = this.syncDb().prepare(`SELECT * FROM ce_pipeline_sync_queue WHERE processedAt IS NULL ORDER BY enqueuedAt, id`)
       .all() as CeSyncQueueRow[];
     return rows.map(rowToQueueEntry);
   }
 
+  /** Async sibling: listPendingSync. Routes to Drizzle in backend mode. */
+  async listPendingSyncAsync(): Promise<CeSyncQueueEntry[]> {
+    if (!this.asyncLayer) return this.listPendingSync();
+    const rows = await this.dbAsync().select()
+      .from(cePipelineSyncQueueTable)
+      .where(isNull(cePipelineSyncQueueTable.processedAt))
+      .orderBy(cePipelineSyncQueueTable.enqueuedAt, cePipelineSyncQueueTable.id);
+    return rows.map((r) => rowToQueueEntry(r as CeSyncQueueRow));
+  }
+
   /** Mark a queue entry drained (idempotent). */
   markSyncProcessed(id: string): void {
-    this.db
-      .prepare(`UPDATE ce_pipeline_sync_queue SET processedAt = ? WHERE id = ? AND processedAt IS NULL`)
+    this.syncDb().prepare(`UPDATE ce_pipeline_sync_queue SET processedAt = ? WHERE id = ? AND processedAt IS NULL`)
       .run(new Date().toISOString(), id);
+  }
+
+  /** Async sibling: markSyncProcessed. Routes to Drizzle in backend mode. */
+  async markSyncProcessedAsync(id: string): Promise<void> {
+    if (!this.asyncLayer) {
+      this.markSyncProcessed(id);
+      return;
+    }
+    await this.dbAsync().update(cePipelineSyncQueueTable)
+      .set({ processedAt: new Date().toISOString() })
+      .where(and(
+        eq(cePipelineSyncQueueTable.id, id),
+        isNull(cePipelineSyncQueueTable.processedAt),
+      ));
   }
 }
 
@@ -327,7 +496,15 @@ export function getCePipelineStore(ctx: PluginContext): CePipelineStore {
   const key = ctx.taskStore as object;
   const cached = storeCache.get(key);
   if (cached) return cached;
-  const store = new CePipelineStore(ctx.taskStore.getDatabase());
+  // FNXC:PostgresCutover 2026-07-04-00:00 RESOLVED:
+  // In backend mode the sync SQLite Database is unavailable (getDatabase()
+  // throws), but the TaskStore's AsyncDataLayer is wired through. Pass both:
+  // the *Async() siblings use asyncLayer in backend mode; the sync methods
+  // remain as the SQLite fallback for non-backend callers/tests.
+  const backendMode = ctx.taskStore.isBackendMode();
+  const db = backendMode ? null : ctx.taskStore.getDatabase();
+  const asyncLayer = backendMode ? ctx.taskStore.getAsyncLayer() : null;
+  const store = new CePipelineStore(db, asyncLayer);
   storeCache.set(key, store);
   return store;
 }

@@ -2,9 +2,8 @@ import {
   BackupManager,
   createBackupManager,
   runBackupCommand,
-  TaskStore,
 } from "@fusion/core";
-import { resolveProject, closeProjectStore, asLocalProjectContext, type ProjectContext } from "../project-context.js";
+import { resolveProject, createLocalStore, closeProjectStore, asLocalProjectContext, type ProjectContext } from "../project-context.js";
 import { retryOnLock, LockRetryExhaustedError } from "../lock-retry.js";
 
 /**
@@ -30,8 +29,10 @@ async function resolveBackupContext(projectName?: string): Promise<ProjectContex
   try {
     return await resolveProject(projectName);
   } catch {
-    const store = new TaskStore(process.cwd());
-    await store.init();
+    // FNXC:PostgresCutover 2026-07-05-12:00: the cwd fallback must boot through
+    // the PostgreSQL startup factory (createLocalStore); a bare `new TaskStore`
+    // resolves to the removed SQLite runtime, which throws on first DB access.
+    const store = await createLocalStore(process.cwd());
     return asLocalProjectContext(store);
   }
 }

@@ -59,6 +59,18 @@ vi.mock("@fusion/core", async () => {
       applyRemoteSettings: mockApplyRemoteSettings,
       applyAuthMaterialSnapshot: mockApplyAuthMaterialSnapshot,
     }; }),
+    // FNXC:PostgresCutover 2026-07-10: the mesh sync response path constructs a
+    // REAL AgentStore for the agents/agentRuns shared-state snapshots; the
+    // sqlite runtime is removed on this branch, so a real init() throws and
+    // 500s the route. Stub the store surface the route touches.
+    AgentStore: vi.fn().mockImplementation(function () { return {
+      init: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+      getAgentSnapshot: vi.fn(() => undefined),
+      getAgentRunSnapshot: vi.fn(() => undefined),
+      applyAgentSnapshot: vi.fn(async () => undefined),
+      applyAgentRunSnapshot: vi.fn(async () => undefined),
+    }; }),
   };
 });
 
@@ -90,6 +102,19 @@ vi.mock("@fusion/engine", async (importOriginal) => {
 });
 
 class MockStore extends EventEmitter {
+  // FNXC:PostgresCutover 2026-07-10: createServer resolves the chat/session
+  // layers via store.getAsyncLayer(); null = legacy mode for this mock (this
+  // single missing method had the whole file red since the cutover).
+  getAsyncLayer(): null {
+    return null;
+  }
+
+  // Settings sync stays enabled for this mock (sqlite topology); the PG-mode
+  // 409 gating is covered in routes-system.test.ts.
+  get backendMode(): boolean {
+    return false;
+  }
+
   getRootDir(): string {
     return "/tmp/fn-1224";
   }
@@ -878,7 +903,9 @@ describe("/api/mesh/task-ids routes", () => {
   });
 });
 
-describe("/api/mesh/tasks/create", () => {
+
+
+describe("GET /api/mesh/state", () => {
   let app: ReturnType<typeof createServer>;
 
   beforeEach(async () => {
@@ -886,89 +913,7 @@ describe("/api/mesh/tasks/create", () => {
     mockInit.mockResolvedValue(undefined);
     mockClose.mockResolvedValue(undefined);
     mockGetNode.mockResolvedValue(undefined);
-    mockApplyReplicatedTaskCreate.mockResolvedValue({
-      task: {
-        id: "FN-001",
-        description: "replicated",
-        column: "triage",
-        dependencies: [],
-        steps: [],
-        currentStep: 0,
-        log: [],
-        createdAt: "2026-05-05T00:00:00.000Z",
-        updatedAt: "2026-05-05T00:00:00.000Z",
-      },
-      applied: true,
-    });
     app = createServer(new MockStore() as unknown as TaskStore);
-  });
-
-  it("applies replicated task create payload", async () => {
-    const payload = {
-      replicationVersion: 1,
-      reservationId: "res-1",
-      taskId: "FN-001",
-      sourceNodeId: "node_remote_1",
-      createdAt: "2026-05-05T00:00:00.000Z",
-      updatedAt: "2026-05-05T00:00:00.000Z",
-      prompt: "# FN-001\n\nreplicated\n",
-      input: { description: "replicated" },
-    };
-
-    const response = await request(app, "POST", "/api/mesh/tasks/create", JSON.stringify(payload), { "Content-Type": "application/json" });
-    expect(response.status).toBe(201);
-    expect(mockApplyReplicatedTaskCreate).toHaveBeenCalledWith(payload);
-  });
-
-  it("returns 200 when replicated task create is an idempotent replay", async () => {
-    mockApplyReplicatedTaskCreate.mockResolvedValue({
-      task: {
-        id: "FN-001",
-        description: "replicated",
-        column: "triage",
-        dependencies: [],
-        steps: [],
-        currentStep: 0,
-        log: [],
-        createdAt: "2026-05-05T00:00:00.000Z",
-        updatedAt: "2026-05-05T00:00:00.000Z",
-      },
-      applied: false,
-    });
-
-    const payload = {
-      replicationVersion: 1,
-      reservationId: "res-1",
-      taskId: "FN-001",
-      sourceNodeId: "node_remote_1",
-      createdAt: "2026-05-05T00:00:00.000Z",
-      updatedAt: "2026-05-05T00:00:00.000Z",
-      prompt: "# FN-001\n\nreplicated\n",
-      input: { description: "replicated" },
-    };
-
-    const response = await request(app, "POST", "/api/mesh/tasks/create", JSON.stringify(payload), { "Content-Type": "application/json" });
-    expect(response.status).toBe(200);
-  });
-
-  it("rejects unauthorized replicated create", async () => {
-    mockGetNode.mockResolvedValue(makeNodeConfig({ id: "node_remote_1", apiKey: "secret" }));
-    const payload = {
-      replicationVersion: 1,
-      reservationId: "res-1",
-      taskId: "FN-001",
-      sourceNodeId: "node_remote_1",
-      createdAt: "2026-05-05T00:00:00.000Z",
-      updatedAt: "2026-05-05T00:00:00.000Z",
-      prompt: "# FN-001\n\nreplicated\n",
-      input: { description: "replicated" },
-    };
-
-    const response = await request(app, "POST", "/api/mesh/tasks/create", JSON.stringify(payload), {
-      "Content-Type": "application/json",
-      Authorization: "Bearer wrong",
-    });
-    expect(response.status).toBe(401);
   });
 
   it("returns local-only mesh snapshot when includeRemote=false", async () => {
@@ -1073,5 +1018,110 @@ describe("/api/mesh/tasks/create", () => {
     vi.restoreAllMocks();
     expect(response.status).toBe(200);
     expect((response.body as { nodes: Array<{ nodeId: string }> }).nodes.map((node) => node.nodeId)).toContain("node_local");
+  });
+});
+
+/*
+FNXC:PostgresCutover 2026-07-12:
+Task mesh replication is REMOVED on the PostgreSQL backend — nodes share the
+database, so replication is handled at the PostgreSQL level. These tests pin
+the three gates: replicated task creates 409 (stable code), inbound/outbound
+/mesh/sync shared-state is reduced to authMaterial only (the one domain not in
+the database), and task-ID reservations never forward to a remote coordinator
+(the shared distributed_task_id_state rows ARE the coordinator).
+*/
+describe("PostgreSQL backend mode: task mesh replication disabled", () => {
+  class BackendModeMockStore extends MockStore {
+    override get backendMode(): boolean {
+      return true;
+    }
+
+  }
+
+  let app: ReturnType<typeof createServer>;
+  let store: BackendModeMockStore;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockInit.mockResolvedValue(undefined);
+    mockClose.mockResolvedValue(undefined);
+    mockMergePeers.mockResolvedValue({ added: [], updated: [] });
+    mockGetAllKnownPeerInfo.mockResolvedValue([]);
+    mockGetLocalPeerInfo.mockResolvedValue({
+      nodeId: "node_local",
+      nodeName: "local",
+      nodeUrl: "",
+      status: "online",
+      metrics: null,
+      lastSeen: "2026-04-01T12:00:00.000Z",
+      maxConcurrent: 4,
+    });
+    mockGetNode.mockResolvedValue(undefined);
+    mockUpdateNode.mockResolvedValue({ id: "node_remote", status: "online" });
+    mockReserveDistributedTaskId.mockResolvedValue({ reservationId: "res-1", taskId: "FN-001", sequence: 1, expiresAt: "2030-01-01T00:00:00.000Z", committedClusterTaskCount: 0 });
+    store = new BackendModeMockStore();
+    app = createServer(store as unknown as TaskStore);
+  });
+
+  it("POST /api/mesh/tasks/create no longer exists (route removed — replication is the database)", async () => {
+    const response = await request(
+      app,
+      "POST",
+      "/api/mesh/tasks/create",
+      JSON.stringify({
+        replicationVersion: 1,
+        reservationId: "res-9",
+        taskId: "FN-900",
+        sourceNodeId: "node_remote",
+        createdAt: "2026-07-12T00:00:00.000Z",
+        updatedAt: "2026-07-12T00:00:00.000Z",
+        prompt: "# FN-900",
+        input: { description: "replicated" },
+      }),
+      { "Content-Type": "application/json" }
+    );
+
+    expect(response.status).toBe(404);
+    expect(mockApplyReplicatedTaskCreate).not.toHaveBeenCalled();
+  });
+
+  it("POST /api/mesh/sync ignores inbound task-state domains and offers no database-backed snapshots", async () => {
+    const response = await request(
+      app,
+      "POST",
+      "/api/mesh/sync",
+      JSON.stringify({
+        senderNodeId: "node_remote",
+        knownPeers: [],
+        sharedState: {
+          taskMetadata: { domain: "task-metadata", version: 1, entries: [] },
+        },
+      }),
+      { "Content-Type": "application/json" }
+    );
+
+    expect(response.status).toBe(200);
+    // Peer topology exchange still works (discovery is not replication).
+    expect(mockMergePeers).toHaveBeenCalled();
+    // No database-backed domains are offered back to the peer.
+    const shared = (response.body as { sharedState?: Record<string, unknown> }).sharedState ?? {};
+    for (const domain of ["taskMetadata", "missionHierarchy", "agents", "agentRuns", "activityLog", "runAudit", "projectSettings"]) {
+      expect(shared[domain]).toBeUndefined();
+    }
+  });
+
+  it("POST /api/mesh/task-ids/reserve resolves locally even when a remote coordinator is named", async () => {
+    const response = await request(
+      app,
+      "POST",
+      "/api/mesh/task-ids/reserve",
+      JSON.stringify({ prefix: "FN", nodeId: "node_remote", coordinatorNodeId: "node_other_coordinator" }),
+      { "Content-Type": "application/json" }
+    );
+
+    expect(response.status).toBe(200);
+    // The shared-database allocator handled it; no coordinator lookup/forward.
+    expect(mockReserveDistributedTaskId).toHaveBeenCalledWith({ prefix: "FN", nodeId: "node_remote", ttlMs: undefined });
+    expect(mockGetNode).not.toHaveBeenCalled();
   });
 });

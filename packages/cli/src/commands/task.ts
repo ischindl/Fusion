@@ -12,7 +12,7 @@ import {
   isGhAvailable,
   runGhJsonAsync,
 } from "@fusion/core/gh-cli";
-import { resolveProject, closeProjectStore, type ProjectContext } from "../project-context.js";
+import { resolveProject, createLocalStore, closeProjectStore, type ProjectContext } from "../project-context.js";
 import { findNodeByNameOrId } from "./node.js";
 import { retryOnLock, LockRetryExhaustedError } from "../lock-retry.js";
 
@@ -162,8 +162,10 @@ async function getBoardCommandContext(projectName?: string): Promise<ProjectCont
     }
     return context;
   } catch {
-    const store = new TaskStore(process.cwd());
-    await store.init();
+    // FNXC:PostgresCutover 2026-07-05-12:00: the cwd fallback must boot through
+    // the PostgreSQL startup factory (createLocalStore); a bare `new TaskStore`
+    // resolves to the removed SQLite runtime, which throws on first DB access.
+    const store = await createLocalStore(process.cwd());
     return asLocalProjectContext(store);
   }
 }

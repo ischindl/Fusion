@@ -249,7 +249,7 @@ async function dependencySatisfied(store: TaskStore, dep: Task): Promise<boolean
 
   let markerAccepted = false;
   try {
-    markerAccepted = store.getCompletionHandoffAcceptedMarker(dep.id) !== null;
+    markerAccepted = (await store.getCompletionHandoffAcceptedMarker(dep.id)) !== null;
   } catch {
     markerAccepted = false;
   }

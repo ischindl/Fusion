@@ -1,7 +1,7 @@
 import { AgentStore } from "@fusion/core";
 import type { Message } from "@fusion/core";
 import { createMessageStore, formatParticipant, formatTime, CLI_USER_ID } from "./message.js";
-import { resolveProject } from "../project-context.js";
+import { resolveAgentStoreBase } from "../project-context.js";
 import { createInterface } from "node:readline/promises";
 
 const MAX_MESSAGE_LENGTH = 8192;
@@ -18,23 +18,15 @@ export interface ChatInteractiveOptions {
   output?: NodeJS.WritableStream;
 }
 
-async function getProjectPath(projectName?: string): Promise<string> {
-  if (projectName) {
-    const context = await resolveProject(projectName);
-    return context.projectPath;
-  }
-
-  try {
-    const context = await resolveProject(undefined);
-    return context.projectPath;
-  } catch {
-    return process.cwd();
-  }
-}
-
+/*
+FNXC:PostgresCutover 2026-07-05-12:00:
+Borrow the PostgreSQL AsyncDataLayer from the resolved project store so the
+chat AgentStore runs in backend mode (the SQLite runtime was removed under
+VAL-REMOVAL-005), mirroring agent.ts/extension.ts createAgentStore.
+*/
 async function createAgentStore(projectName?: string): Promise<AgentStore> {
-  const projectPath = await getProjectPath(projectName);
-  const store = new AgentStore({ rootDir: `${projectPath}/.fusion` });
+  const { rootDir, asyncLayer } = await resolveAgentStoreBase(projectName);
+  const store = new AgentStore({ rootDir: `${rootDir}/.fusion`, asyncLayer: asyncLayer ?? undefined });
   await store.init();
   return store;
 }
@@ -90,13 +82,13 @@ async function waitForReply(
 ): Promise<boolean> {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
-    const inbox = messageStore.getInbox(CLI_USER_ID, "user", { limit: 50 });
+    const inbox = await messageStore.getInbox(CLI_USER_ID, "user", { limit: 50 });
     for (const message of inbox.slice().reverse()) {
       if (message.fromId !== agentId || message.fromType !== "agent") continue;
       if (printedIds.has(message.id)) continue;
       printedIds.add(message.id);
       printMessage(output, message);
-      messageStore.markAsRead(message.id);
+      await messageStore.markAsRead(message.id);
       return true;
     }
     await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
@@ -119,7 +111,7 @@ export async function runChatInteractive(agentId: string, options: ChatInteracti
   const { store: messageStore, db } = await createMessageStore(options.project);
   const printedIds = new Set<string>();
 
-  const conversation = messageStore.getConversation(
+  const conversation = await messageStore.getConversation(
     { id: CLI_USER_ID, type: "user" },
     { id: agentId, type: "agent" },
   );
@@ -141,7 +133,7 @@ export async function runChatInteractive(agentId: string, options: ChatInteracti
         return 0;
       }
 
-      messageStore.sendMessage({
+      await messageStore.sendMessage({
         fromId: CLI_USER_ID,
         fromType: "user",
         toId: agentId,
@@ -163,13 +155,13 @@ export async function runChatInteractive(agentId: string, options: ChatInteracti
     const abortController = new AbortController();
     const poller = (async () => {
       while (!abortController.signal.aborted) {
-        const inbox = messageStore.getInbox(CLI_USER_ID, "user", { limit: 50 });
+        const inbox = await messageStore.getInbox(CLI_USER_ID, "user", { limit: 50 });
         for (const message of inbox.slice().reverse()) {
           if (message.fromId !== agentId || message.fromType !== "agent") continue;
           if (printedIds.has(message.id)) continue;
           printedIds.add(message.id);
           printMessage(output, message);
-          messageStore.markAsRead(message.id);
+          await messageStore.markAsRead(message.id);
         }
         await sleep(pollIntervalMs, abortController.signal);
       }
@@ -192,10 +184,10 @@ export async function runChatInteractive(agentId: string, options: ChatInteracti
         continue;
       }
       if (line === "/history") {
-        const history = messageStore.getConversation(
+        const history = (await messageStore.getConversation(
           { id: CLI_USER_ID, type: "user" },
           { id: agentId, type: "agent" },
-        ).slice(-HISTORY_LIMIT);
+        )).slice(-HISTORY_LIMIT);
         for (const message of history) printedIds.add(message.id);
         printConversationTail(output, history);
         continue;
@@ -209,7 +201,7 @@ export async function runChatInteractive(agentId: string, options: ChatInteracti
         continue;
       }
 
-      messageStore.sendMessage({
+      await messageStore.sendMessage({
         fromId: CLI_USER_ID,
         fromType: "user",
         toId: agentId,

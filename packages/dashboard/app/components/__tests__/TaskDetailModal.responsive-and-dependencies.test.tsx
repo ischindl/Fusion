@@ -25,6 +25,19 @@ import { TaskDetailModal, TaskDetailContent } from "../TaskDetailModal";
 
 setupTaskDetailModalHooks();
 
+/*
+FNXC:TaskDetailTabs 2026-07-07-15:00:
+The rule-block extractors below match first-closing-brace structure, so a CSS comment
+containing literal braces (e.g. TaskPlannerChatTab.css's FN-7634 note quoting
+`.chat-input-row { … }`) truncates the extracted block and fails assertions against
+declarations that ARE present. Neutralize ONLY braces inside comments (same-length
+replacement) so structural matching is brace-safe while comment text, offsets, and the
+"only-whitespace-between-} -and-selector" anchor semantics all stay intact.
+*/
+function neutralizeCssCommentBraces(css: string): string {
+  return css.replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[{}]/g, " "));
+}
+
 function getCssAtRuleBlock(css: string, atRule: string, startAt = 0): { block: string; endIndex: number } {
   const atRuleStart = css.indexOf(atRule, startAt);
   expect(atRuleStart).toBeGreaterThanOrEqual(0);
@@ -59,13 +72,13 @@ function getCssAtRuleBlockContaining(css: string, atRule: string, selector: stri
 
 function getExactCssRuleBlock(css: string, selector: string): string {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const ruleMatch = css.match(new RegExp(`(?:^|[}\\n])\\s*${escapedSelector}\\s*\\{([^}]*)\\}`));
+  const ruleMatch = neutralizeCssCommentBraces(css).match(new RegExp(`(?:^|[}\\n])\\s*${escapedSelector}\\s*\\{([^}]*)\\}`));
   return ruleMatch?.[1] ?? "";
 }
 
 function getStandaloneCssRuleBlock(css: string, selector: string): string {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const ruleMatch = css.match(new RegExp(`(?:^|})\\s*${escapedSelector}\\s*\\{([^}]*)\\}`));
+  const ruleMatch = neutralizeCssCommentBraces(css).match(new RegExp(`(?:^|})\\s*${escapedSelector}\\s*\\{([^}]*)\\}`));
   return ruleMatch?.[1] ?? "";
 }
 

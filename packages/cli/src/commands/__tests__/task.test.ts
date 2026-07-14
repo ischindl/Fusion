@@ -148,10 +148,28 @@ vi.mock("@fusion/core/gh-cli", () => ({
 
 // Mock project-context
 vi.mock("../../project-context.js", () => ({
+  asLocalProjectContext: vi.fn((store: unknown) => ({
+    projectId: process.cwd(),
+    projectPath: process.cwd(),
+    projectName: "current-project",
+    isRegistered: false,
+    store,
+  })),
+  resolveProjectPathOnly: vi.fn(async () => process.cwd()),
   resolveProject: vi.fn().mockRejectedValue(new Error("No project context")),
   getStore: vi.fn().mockResolvedValue({}),
   getDefaultProject: vi.fn().mockResolvedValue(undefined),
   setDefaultProject: vi.fn().mockResolvedValue(undefined),
+  // FNXC:PostgresCutover 2026-07-05-12:00: cwd fallbacks now boot through
+  // createLocalStore (PostgreSQL startup factory) instead of `new TaskStore`.
+  // Default impl mirrors the legacy fallback (construct + init the mocked
+  // TaskStore) so tests exercising the fallback keep their store shape.
+  createLocalStore: vi.fn(async (projectPath: string) => {
+    const { TaskStore } = await import("@fusion/core");
+    const store = new (TaskStore as unknown as new (p: string) => { init?: () => Promise<void> })(projectPath);
+    await store.init?.();
+    return store;
+  }),
   // FNXC:CliBoardMutation 2026-07-09-00:00: FN-7731's runTaskShow/runTaskMove
   // close the resolved store via closeProjectStore on every exit path; the
   // real implementation is best-effort/tolerant of a store without a usable
@@ -189,7 +207,7 @@ import {
 } from "@fusion/core/gh-cli";
 import { GitHubClient, generatePrMetadata } from "@fusion/dashboard";
 import { createSession, submitResponse } from "@fusion/dashboard/planning";
-import { resolveProject } from "../../project-context.js";
+import { resolveProject, createLocalStore } from "../../project-context.js";
 import { aiMergeTask, runAiMerge, landWorkspaceTask } from "@fusion/engine";
 
 const mockedExec = vi.mocked(exec);
@@ -552,17 +570,16 @@ describe("project-aware task command behavior", () => {
       new Error("No fusion project found in current directory. Use --project or run from a project directory.")
     );
 
-    (TaskStore as unknown as ReturnType<typeof vi.fn>).mockImplementation((projectPath: string) => ({
+    vi.mocked(createLocalStore).mockResolvedValueOnce({
       init,
       listTasks: mockListTasks,
-      projectPath,
-    }));
+      projectPath: "/current/project",
+    } as never);
 
     await expect(runTaskList()).rejects.toThrow("process.exit");
 
     expect(resolveProject).toHaveBeenCalledWith(undefined);
-    expect(TaskStore).toHaveBeenCalledWith("/current/project");
-    expect(init).toHaveBeenCalledOnce();
+    expect(createLocalStore).toHaveBeenCalledWith("/current/project");
     expect(mockListTasks).toHaveBeenCalledOnce();
     cwdSpy.mockRestore();
     exitSpy.mockRestore();
@@ -632,19 +649,18 @@ describe("project-aware task command behavior", () => {
       new Error("No fn project found in current directory. Use --project or run from a project directory.")
     );
 
-    (TaskStore as unknown as ReturnType<typeof vi.fn>).mockImplementation((projectPath: string) => ({
+    vi.mocked(createLocalStore).mockResolvedValueOnce({
       init,
       createTask: mockCreateTask,
       addAttachment: vi.fn(),
-      getRootDir: vi.fn().mockReturnValue(projectPath),
-      projectPath,
-    }));
+      getRootDir: vi.fn().mockReturnValue("/current/project"),
+      projectPath: "/current/project",
+    } as never);
 
     await runTaskCreate("local task");
 
     expect(resolveProject).toHaveBeenCalledWith(undefined);
-    expect(TaskStore).toHaveBeenCalledWith("/current/project");
-    expect(init).toHaveBeenCalledOnce();
+    expect(createLocalStore).toHaveBeenCalledWith("/current/project");
     expect(mockCreateTask).toHaveBeenCalledWith({ description: "local task", dependencies: undefined, source: { sourceType: "cli", sourceMetadata: { contentFingerprint: "fp-local" } } });
     cwdSpy.mockRestore();
   });
