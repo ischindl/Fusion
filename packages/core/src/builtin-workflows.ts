@@ -18,6 +18,7 @@ import {
   codeReviewRemediationNode,
   planReplanNode,
 } from "./builtin-workflow-remediation-nodes.js";
+import { DEPRECATED_BUILTIN_WORKFLOW_IDS } from "./types.js";
 import type { WorkflowDefinition } from "./workflow-definition-types.js";
 import type { WorkflowIr, WorkflowIrColumn, WorkflowIrNode } from "./workflow-ir-types.js";
 import { parseWorkflowIr } from "./workflow-ir.js";
@@ -33,8 +34,20 @@ const PLUGIN_GATED_BUILTIN_WORKFLOWS: ReadonlyMap<string, string> = new Map([
   ["builtin:compound-engineering", "fusion-plugin-compound-engineering"],
 ]);
 
+/*
+ * FNXC:WorkflowBrainstorming 2026-07-15-15:49:
+ * FN-7970 deprecates builtin:brainstorming after its occupancy preflight: hide it
+ * from new selection while retaining its definition for existing task resolution.
+ * Keep this generic registry so later deprecated built-ins share the same policy.
+ */
+const DEPRECATED_BUILTIN_WORKFLOWS: ReadonlySet<string> = DEPRECATED_BUILTIN_WORKFLOW_IDS;
+
 export function isBuiltinWorkflowPluginGated(id: string): boolean {
   return PLUGIN_GATED_BUILTIN_WORKFLOWS.has(id);
+}
+
+export function isBuiltinWorkflowDeprecated(id: string): boolean {
+  return DEPRECATED_BUILTIN_WORKFLOWS.has(id);
 }
 
 export function getRequiredPluginIdForBuiltinWorkflow(id: string): string | undefined {
@@ -43,7 +56,9 @@ export function getRequiredPluginIdForBuiltinWorkflow(id: string): string | unde
 
 export function defaultEnabledBuiltinWorkflowIds(): string[] {
   return BUILTIN_WORKFLOWS.filter(
-    (workflow) => workflow.kind !== "fragment" && !PLUGIN_GATED_BUILTIN_WORKFLOWS.has(workflow.id),
+    (workflow) => workflow.kind !== "fragment"
+      && !isBuiltinWorkflowPluginGated(workflow.id)
+      && !isBuiltinWorkflowDeprecated(workflow.id),
   ).map((workflow) => workflow.id);
 }
 

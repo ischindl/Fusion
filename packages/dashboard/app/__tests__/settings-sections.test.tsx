@@ -24,7 +24,7 @@ import { PromptsSection } from "../components/settings/sections/PromptsSection";
 import { SecretsSection } from "../components/settings/sections/SecretsSection";
 import { WorktreesSection } from "../components/settings/sections/WorktreesSection";
 import type { SettingsFormState } from "../components/settings/sections/context";
-import { fetchWorkflow, fetchWorkflowSettingValues, updateWorkflowSettingValues } from "../api";
+import { fetchWorkflow, fetchWorkflows, fetchWorkflowSettingValues, updateWorkflowSettingValues } from "../api";
 import type { WorkflowSettingValuesPayload } from "../api";
 
 vi.mock("../components/AgentPromptsManager", () => ({
@@ -75,9 +75,11 @@ vi.mock("../components/CustomModelDropdown", () => ({
 
 expect.extend(jestDomMatchers);
 beforeEach(() => {
+  vi.mocked(fetchWorkflows).mockReset();
   vi.mocked(fetchWorkflow).mockReset();
   vi.mocked(fetchWorkflowSettingValues).mockReset();
   vi.mocked(updateWorkflowSettingValues).mockReset();
+  vi.mocked(fetchWorkflows).mockResolvedValue([]);
   vi.mocked(fetchWorkflow).mockResolvedValue({ id: "builtin:coding", name: "Coding", ir: {} } as never);
   vi.mocked(fetchWorkflowSettingValues).mockResolvedValue({ stored: {}, effective: {}, orphaned: [] });
   vi.mocked(updateWorkflowSettingValues).mockResolvedValue({ stored: {}, effective: {}, orphaned: [] });
@@ -117,6 +119,30 @@ describe("AppearanceSection", () => {
 });
 
 describe("GeneralSection", () => {
+  it("hides deprecated built-ins from the workflow enablement toggles", async () => {
+    vi.mocked(fetchWorkflows).mockResolvedValue([
+      { id: "builtin:coding", name: "Coding", kind: "workflow", ir: {} },
+      { id: "builtin:brainstorming", name: "Brainstorming", kind: "workflow", ir: {} },
+    ] as never);
+
+    render(
+      <GeneralSection
+        scopeBanner={null}
+        form={emptyForm}
+        setForm={vi.fn()}
+        addToast={vi.fn()}
+        prefixError={null}
+        setPrefixError={vi.fn()}
+        projectTrackingRepoOptions={[]}
+        projectTrackingRepoLoading={false}
+        projectTrackingRepoError={null}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByLabelText("Coding")).toBeInTheDocument());
+    expect(screen.queryByLabelText("Brainstorming")).not.toBeInTheDocument();
+  });
+
   it("emits the absolute file-browser path toggle via setForm", () => {
     function GeneralHost() {
       const [form, setForm] = useState({ allowAbsoluteFileBrowserPaths: false } as SettingsFormState);

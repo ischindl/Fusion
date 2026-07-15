@@ -11,7 +11,7 @@ import { TaskStore } from "../store.js";
 import {resolveEntryColumnId} from "../workflow-reconciliation.js";
 import { pruneAgentLogFiles as pruneAgentLogFileEntries, readAgentLogEntriesByTimeRange } from "../agent-log-file-store.js";
 import { BUILTIN_CODING_WORKFLOW_IR } from "../builtin-coding-workflow-ir.js";
-import { BUILTIN_WORKFLOWS, getBuiltinWorkflow, getRequiredPluginIdForBuiltinWorkflow, isBuiltinWorkflowEnabled, isBuiltinWorkflowId, isBuiltinWorkflowPluginGated } from "../builtin-workflows.js";
+import { BUILTIN_WORKFLOWS, getBuiltinWorkflow, getRequiredPluginIdForBuiltinWorkflow, isBuiltinWorkflowDeprecated, isBuiltinWorkflowEnabled, isBuiltinWorkflowId, isBuiltinWorkflowPluginGated } from "../builtin-workflows.js";
 import { CentralCore } from "../central-core.js";
 import { fromJson } from "../db.js";
 import { type DistributedTaskIdAllocator, createDistributedTaskIdAllocator } from "../distributed-task-id.js";
@@ -235,8 +235,14 @@ export async function listWorkflowDefinitionsImpl(store: TaskStore,
     const enabledVisible = options?.includeDisabledBuiltins
       ? all
       : all.filter((wf) => isBuiltinWorkflowEnabled(wf.id, enabledBuiltinWorkflowIds));
+    // FNXC:WorkflowBrainstorming 2026-07-15-15:49:
+    // FN-7970 removes deprecated built-ins only from new-selection listings.
+    // Management listings retain them, and direct id resolution remains unconditional.
+    const selectionVisible = options?.includeDisabledBuiltins
+      ? enabledVisible
+      : enabledVisible.filter((wf) => !isBuiltinWorkflowDeprecated(wf.id));
     const visible = await Promise.all(
-      enabledVisible.map(async (wf) => {
+      selectionVisible.map(async (wf) => {
         const requiredPluginId = getRequiredPluginIdForBuiltinWorkflow(wf.id);
         if (!requiredPluginId) return wf;
         return (await store.isPluginInstalled(requiredPluginId)) ? wf : undefined;

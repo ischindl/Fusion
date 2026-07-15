@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { isLocale, SUPPORTED_LOCALES, type WorkflowDefinition } from "@fusion/core";
+import { DEPRECATED_BUILTIN_WORKFLOW_IDS, isLocale, SUPPORTED_LOCALES, type WorkflowDefinition } from "@fusion/core";
 import { SettingsToggleRow } from "../SettingsToggleRow";
 import { SettingsSelectRow } from "../SettingsSelectRow";
 /*
@@ -35,7 +35,12 @@ export function GeneralSection({ scopeBanner, form, setForm, projectId, addToast
         fetchWorkflows(projectId, { includeDisabledBuiltins: true })
             .then((workflows) => {
             if (!cancelled) {
-                setBuiltinWorkflows(workflows.filter((workflow) => workflow.id.startsWith("builtin:") && workflow.kind !== "fragment"));
+                // FNXC:WorkflowBrainstorming 2026-07-15-15:49: FN-7970 keeps deprecated built-ins out of Settings toggles, which are a new-selection surface.
+                setBuiltinWorkflows(workflows.filter(
+                    (workflow) => workflow.id.startsWith("builtin:")
+                        && workflow.kind !== "fragment"
+                        && !DEPRECATED_BUILTIN_WORKFLOW_IDS.has(workflow.id),
+                ));
             }
         })
             .catch(() => {
