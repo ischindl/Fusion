@@ -1336,9 +1336,16 @@ function TaskCardComponent({
   const stalePausedReviewCopy = task.stalePausedReview ? getStalePausedReviewCopy(task.stalePausedReview) : undefined;
   const hasTaskAgeStaleness = shouldShowTaskAgeStalenessBadge(task);
   const taskAgeStalenessCopy = getTaskAgeStalenessCopy(task.ageStaleness);
-  // A legacy row carrying awaitingApprovalReason === "release-authorization" renders
-  // as an ordinary manual plan-approval hold (FN-7732) — no distinct badge/class.
+  /*
+  FNXC:PlanReviewReplan 2026-07-15-11:09:
+  Awaiting-approval on triage is the human plan gate. Legacy release-authorization rows still
+  use the generic badge (FN-7732). plan-review-replan-cap must read distinctly so operators
+  know approval is required because Plan Review exhausted automatic REVISE replans without
+  converging — Approve keeps the current PROMPT.md; Reject regenerates.
+  */
   const isAwaitingApproval = task.column === "triage" && task.status === "awaiting-approval";
+  const isPlanReviewReplanCapApproval =
+    isAwaitingApproval && task.awaitingApprovalReason === "plan-review-replan-cap";
   const isAwaitingInput = task.status === "awaiting-user-input";
   const isArchived = task.column === "archived";
   const isAgentActive = !globalPaused && !queued && !isFailed && !isPaused && !isStuck && !isAwaitingApproval && !isAwaitingInput && (task.column === "in-progress" || ACTIVE_STATUSES.has(visualStatus as string));
@@ -3060,9 +3067,34 @@ function TaskCardComponent({
         )}
         {!isPaused && visualStatus && visualStatus !== "queued" && (
           <span
-            className={`card-status-badge card-status-badge--${task.column}${isAwaitingApproval ? " awaiting-approval" : ""}${isAwaitingInput ? " awaiting-input" : ""}${ACTIVE_STATUSES.has(visualStatus) ? " pulsing" : ""}${isFailed ? " failed" : ""}${isStuck ? " stuck" : ""}`}
+            className={`card-status-badge card-status-badge--${task.column}${isAwaitingApproval ? " awaiting-approval" : ""}${isPlanReviewReplanCapApproval ? " awaiting-approval--plan-review-replan-cap" : ""}${isAwaitingInput ? " awaiting-input" : ""}${ACTIVE_STATUSES.has(visualStatus) ? " pulsing" : ""}${isFailed ? " failed" : ""}${isStuck ? " stuck" : ""}`}
+            title={
+              isPlanReviewReplanCapApproval
+                ? t(
+                    "tasks.awaitingApprovalPlanReviewReplanCapTitle",
+                    "Plan Review requested revisions repeatedly without converging. Approve the current plan to proceed, or reject to regenerate it.",
+                  )
+                : isAwaitingApproval
+                  ? t(
+                      "tasks.awaitingApprovalTitle",
+                      "This plan needs your approval before implementation can start.",
+                    )
+                  : undefined
+            }
+            data-testid={isAwaitingApproval ? `card-awaiting-approval-${task.id}` : undefined}
+            data-awaiting-approval-reason={isAwaitingApproval ? (task.awaitingApprovalReason ?? "manual") : undefined}
           >
-            {isStuck ? t("tasks.stuck", "Stuck") : isAwaitingApproval ? t("tasks.awaitingApproval", "Awaiting Approval") : isAwaitingInput ? t("tasks.needsInput", "Needs input") : visualStatus === "merging-fix" ? t("tasks.statusMergingFix", "Merging fixes…") : getTaskStatusLabel(visualStatus, t)}
+            {isStuck
+              ? t("tasks.stuck", "Stuck")
+              : isPlanReviewReplanCapApproval
+                ? t("tasks.awaitingApprovalPlanReviewReplanCap", "Plan Review Cap")
+                : isAwaitingApproval
+                  ? t("tasks.awaitingApproval", "Awaiting Approval")
+                  : isAwaitingInput
+                    ? t("tasks.needsInput", "Needs input")
+                    : visualStatus === "merging-fix"
+                      ? t("tasks.statusMergingFix", "Merging fixes…")
+                      : getTaskStatusLabel(visualStatus, t)}
           </span>
         )}
         {planReviewRunning && (

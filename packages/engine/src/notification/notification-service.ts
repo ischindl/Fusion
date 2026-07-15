@@ -260,10 +260,18 @@ export class NotificationService {
     }
 
     if (task.status === "awaiting-approval") {
+      /*
+      FNXC:PlanReviewReplan 2026-07-15-11:09:
+      Include awaitingApprovalReason so ntfy/webhook copy can tell operators why approval is
+      required — especially plan-review-replan-cap (Plan Review exhausted automatic REVISE
+      replans) vs a routine require-all / workflow manual plan gate.
+      */
       this.maybeNotify(
         task.id,
         "awaiting-approval",
-        this.createTaskPayload(task, "awaiting-approval"),
+        this.createTaskPayload(task, "awaiting-approval", {
+          awaitingApprovalReason: task.awaitingApprovalReason ?? "manual",
+        }),
       );
     }
 

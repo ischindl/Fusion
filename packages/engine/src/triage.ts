@@ -63,8 +63,14 @@ the task never reaches `awaiting-approval`. Bound the consecutive REVISE replans
 cap (mirroring the executor graph's PLAN_REVIEW_REPLAN_HARD_CAP backstop): after this many
 replans the gate escalates the task to `awaiting-approval` for a human decision instead of
 replanning again. The counter (Task.planReviewReplanCount) resets when the gate passes.
+
+FNXC:PlanReviewReplan 2026-07-15-11:09:
+Raise the automatic REVISE replan ceiling from 3 to 8 so planner/reviewer pairs get more
+room to converge before escalation. When the cap is hit, the dashboard must still make the
+approval reason explicit (awaitingApprovalReason `plan-review-replan-cap`) so operators know
+this is a non-converging Plan Review loop, not a routine require-all plan gate.
 */
-const PLAN_REVIEW_GATE_REPLAN_CAP = 3;
+export const PLAN_REVIEW_GATE_REPLAN_CAP = 8;
 const PLAN_REVIEW_REPLAN_CAP_LOG_ACTION = "Plan Review replan cap reached — escalating to manual approval";
 
 export function inlineTaskListFallback(
@@ -2126,6 +2132,12 @@ export class TriageProcessor {
   clear log entry and a distinct awaitingApprovalReason) so a persistent planner/reviewer
   disagreement surfaces to a human instead of looping forever. Callers still record the workflow
   step result and the "AI spec revision requested" feedback log before invoking this.
+
+  FNXC:PlanReviewReplan 2026-07-15-11:09:
+  Cap is 8 automatic REVISE replans. Escalation still stamps awaitingApprovalReason
+  `plan-review-replan-cap` so TaskCard/TaskDetailModal/notifications can tell the operator
+  why approval is required (Plan Review did not converge) instead of looking like a generic
+  require-all plan gate.
   */
   private async blockAfterPlanReviewRevise(task: Task, latestFeedback: string): Promise<void> {
     const priorCount = task.planReviewReplanCount ?? 0;
@@ -2137,13 +2149,14 @@ export class TriageProcessor {
       );
       /*
       FNXC:PlanReviewReplan 2026-07-13-00:00:
-      `awaitingApprovalReason` is not a persisted `updateTask` column in the PostgreSQL
-      store (it survives only as a Task type field after the release-authorization gate
-      was removed), so the distinct reason is written through a Record<string, unknown>
-      the same way the manual plan-approval hold clears it below. The escalated task
-      renders as an ordinary manual plan-approval hold (only the legacy
-      "release-authorization" value is special-cased in the dashboard), which is exactly
-      the intended human Approve/Reject decision point.
+      `awaitingApprovalReason` is written through a Record<string, unknown> the same way the
+      manual plan-approval hold clears it below so the distinct reason survives the update path.
+
+      FNXC:PlanReviewReplan 2026-07-15-11:09:
+      The dashboard special-cases `plan-review-replan-cap` (badge, detail banner, notifications)
+      so operators know approval is required because Plan Review exhausted its automatic replan
+      budget after non-convergence — Approve accepts the current PROMPT.md; Reject regenerates.
+      Legacy `release-authorization` rows still render as ordinary manual plan-approval holds.
       */
       const escalationUpdates: Record<string, unknown> = {
         status: "awaiting-approval",

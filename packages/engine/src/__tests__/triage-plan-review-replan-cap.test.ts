@@ -3,7 +3,7 @@ import type { Settings, Task, TaskStore } from "@fusion/core";
 import { join } from "node:path";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { TriageProcessor } from "../triage.js";
+import { PLAN_REVIEW_GATE_REPLAN_CAP, TriageProcessor } from "../triage.js";
 
 /*
  * Bug A (part 2): the triage pre-execution Plan Review gate must bound consecutive
@@ -142,9 +142,12 @@ describe("Plan Review replan cap", () => {
   it("escalates to awaiting-approval instead of replanning once the cap is reached", async () => {
     const rootDir = await createFixtureRoot();
     roots.push(rootDir);
-    // Cap is 3: a task that has already consumed 3 consecutive REVISE replans must
-    // escalate on the next REVISE rather than replanning a 4th time.
-    const task = createRetryTask({ id: "FN-REPLAN-CAP-HIT", planReviewReplanCount: 3 });
+    // Cap is PLAN_REVIEW_GATE_REPLAN_CAP (8): a task that has already consumed that many
+    // consecutive REVISE replans must escalate on the next REVISE rather than replanning again.
+    const task = createRetryTask({
+      id: "FN-REPLAN-CAP-HIT",
+      planReviewReplanCount: PLAN_REVIEW_GATE_REPLAN_CAP,
+    });
     const prompt = `# Task: ${task.id} - Existing draft\n\n## Mission\n\nOnly rewrite after reviewer feedback.\n`;
     await writePrompt(rootDir, task.id, prompt);
     const store = createStore(task);
@@ -165,6 +168,35 @@ describe("Plan Review replan cap", () => {
       "Plan Review replan cap reached — escalating to manual approval",
       expect.stringContaining(feedback),
     );
+    expect(store.logEntry).toHaveBeenCalledWith(
+      task.id,
+      "Plan Review replan cap reached — escalating to manual approval",
+      expect.stringContaining(`cap ${PLAN_REVIEW_GATE_REPLAN_CAP}`),
+    );
+  });
+
+  it("still replans when one attempt remains under the cap", async () => {
+    const rootDir = await createFixtureRoot();
+    roots.push(rootDir);
+    const priorCount = PLAN_REVIEW_GATE_REPLAN_CAP - 1;
+    const task = createRetryTask({
+      id: "FN-REPLAN-CAP-LAST",
+      planReviewReplanCount: priorCount,
+    });
+    const prompt = `# Task: ${task.id} - Existing draft\n\n## Mission\n\nOnly rewrite after reviewer feedback.\n`;
+    await writePrompt(rootDir, task.id, prompt);
+    const store = createStore(task);
+    mockReviewStep.mockResolvedValue({ verdict: "REVISE", review: "One more try.", summary: "Needs revision." });
+
+    await runGate(rootDir, task, store);
+
+    expect(store.updateTask).toHaveBeenCalledWith(task.id, expect.objectContaining({
+      status: "needs-replan",
+      planReviewReplanCount: PLAN_REVIEW_GATE_REPLAN_CAP,
+    }));
+    expect(store.updateTask).not.toHaveBeenCalledWith(task.id, expect.objectContaining({
+      status: "awaiting-approval",
+    }));
   });
 
   it("resets the replan counter when Plan Review passes", async () => {

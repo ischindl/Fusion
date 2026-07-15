@@ -2566,9 +2566,16 @@ export interface Task {
    * ordinary tasks in "awaiting-approval" with no in-band exit). No code writes
    * "release-authorization" anymore; releases are kept out of Fusion by agent instruction
    * (AGENTS.md → "Releasing"), not an engine gate. The field is retained only so existing
-   * task rows persisted with the legacy value still deserialize; the dashboard now treats
-   * any such hold as an ordinary manual plan-approval hold (Approve/Reject Plan render
-   * normally). Undefined means either no hold or a manual-approval hold.
+   * task rows persisted with the legacy value still deserialize; the dashboard treats
+   * that legacy value as an ordinary manual plan-approval hold (Approve/Reject Plan render
+   * normally).
+
+   * FNXC:PlanReviewReplan 2026-07-15-11:09:
+   * Live writer: triage Plan Review REVISE replan-cap escalation stamps
+   * `plan-review-replan-cap` when automatic REVISE replans hit PLAN_REVIEW_GATE_REPLAN_CAP.
+   * Dashboard badge/detail banner/notifications must surface that reason so operators know
+   * approval is required because Plan Review did not converge — not a generic require-all gate.
+   * Undefined means either no hold or a routine manual plan-approval hold.
    */
   awaitingApprovalReason?: "release-authorization" | "plan-review-replan-cap";
   /*

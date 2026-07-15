@@ -2739,9 +2739,16 @@ export function TaskDetailContent({
   }, [onRevertTask, confirm, task.id, addToast, t]);
 
   const isTaskPaused = task.paused || task.userPaused;
-  // A legacy row carrying awaitingApprovalReason === "release-authorization" is an
-  // ordinary manual plan-approval hold (FN-7732) — no distinct treatment needed.
+  /*
+  FNXC:PlanReviewReplan 2026-07-15-11:09:
+  Plan approval holds always need a clear "why" in the detail surface. Legacy
+  release-authorization rows stay ordinary Approve/Reject (FN-7732). When the reason is
+  plan-review-replan-cap, explain that Plan Review exhausted automatic REVISE replans
+  without converging so the operator is not guessing why the task is parked.
+  */
   const isAwaitingApproval = task.column === "triage" && task.status === "awaiting-approval";
+  const isPlanReviewReplanCapApproval =
+    isAwaitingApproval && task.awaitingApprovalReason === "plan-review-replan-cap";
 
   const handleTogglePause = useCallback(async () => {
     try {
@@ -4033,6 +4040,47 @@ export function TaskDetailContent({
                       {t("taskDetail.nearDuplicate.keepBtn", "Keep")}
                     </button>
                   </div>
+                </div>
+              )}
+              {/*
+              FNXC:PlanReviewReplan 2026-07-15-11:09:
+              Always explain why this task is parked for plan approval before the operator
+              clicks Approve/Reject. Replan-cap escalations get a stronger, distinct reason;
+              ordinary require-all / workflow manual gates get a clear pre-execution gate note.
+              */}
+              {isAwaitingApproval && (
+                <div
+                  className={`detail-plan-approval-banner${isPlanReviewReplanCapApproval ? " detail-plan-approval-banner--replan-cap" : ""}`}
+                  role="status"
+                  aria-live="polite"
+                  data-testid="detail-plan-approval-banner"
+                  data-awaiting-approval-reason={task.awaitingApprovalReason ?? "manual"}
+                >
+                  <div className="detail-plan-approval-banner__header">
+                    <Info aria-hidden="true" />
+                    <span className="detail-plan-approval-banner__headline">
+                      {isPlanReviewReplanCapApproval
+                        ? t(
+                            "taskDetail.plan.replanCapHeadline",
+                            "Approval needed: Plan Review did not converge",
+                          )
+                        : t(
+                            "taskDetail.plan.approvalHeadline",
+                            "Approval needed before implementation",
+                          )}
+                    </span>
+                  </div>
+                  <p className="detail-plan-approval-banner__copy">
+                    {isPlanReviewReplanCapApproval
+                      ? t(
+                          "taskDetail.plan.replanCapCopy",
+                          "Plan Review requested automatic planning revisions repeatedly without approving a plan. Fusion stopped the replan loop so a human can decide. Approve the current PROMPT.md to move this task to Todo, or Reject Plan to discard it and regenerate.",
+                        )
+                      : t(
+                          "taskDetail.plan.approvalCopy",
+                          "This project's plan-approval settings require a human decision before work starts. Review the plan below, then Approve Plan to continue to Todo or Reject Plan to regenerate it.",
+                        )}
+                  </p>
                 </div>
               )}
               <div className="detail-meta">

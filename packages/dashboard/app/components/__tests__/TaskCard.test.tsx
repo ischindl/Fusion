@@ -2248,6 +2248,31 @@ describe("TaskCard", () => {
     expect(releaseBadge.className).not.toContain("awaiting-release-authorization");
   });
 
+  /*
+   * FNXC:PlanReviewReplan 2026-07-15-11:09:
+   * When Plan Review exhausts automatic REVISE replans, the card must not look like a
+   * generic require-all hold — badge text + title explain the non-convergence reason.
+   */
+  it("renders a distinct Plan Review Cap badge when awaitingApprovalReason is plan-review-replan-cap", () => {
+    const { container } = render(
+      <TaskCard
+        task={makeTask({
+          column: "triage",
+          status: "awaiting-approval",
+          awaitingApprovalReason: "plan-review-replan-cap",
+        } as any)}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
+    expect(within(container).getByText("Plan Review Cap")).toBeDefined();
+    expect(within(container).queryByText("Awaiting Approval")).toBeNull();
+    const badge = container.querySelector(".card-status-badge") as HTMLElement;
+    expect(badge.className).toContain("awaiting-approval--plan-review-replan-cap");
+    expect(badge.getAttribute("data-awaiting-approval-reason")).toBe("plan-review-replan-cap");
+    expect(badge.getAttribute("title")).toMatch(/Plan Review requested revisions/i);
+  });
+
   it("renders stalled badge with visible reason when stalledReview is set", () => {
     render(
       <TaskCard

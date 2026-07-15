@@ -1516,6 +1516,7 @@ Planner Chat should not open expanded by default. When the user expands it, the 
 
 .task-detail-content--planner-chat-expanded .detail-description-toggle,
 .task-detail-content--planner-chat-expanded .detail-near-duplicate-banner,
+.task-detail-content--planner-chat-expanded .detail-plan-approval-banner,
 .task-detail-content--planner-chat-expanded .task-fields-section,
 .task-detail-content--planner-chat-expanded .branch-group-card,
 .task-detail-content--planner-chat-expanded .workspace-worktrees-summary,
@@ -3536,6 +3537,44 @@ Live and Feed Activity expansion overlays the content instead of reserving a too
   background: color-mix(in srgb, var(--color-warning) 8%, transparent);
   border: 1px solid color-mix(in srgb, var(--color-warning) 30%, transparent);
   margin-bottom: var(--space-md);
+}
+
+/*
+FNXC:PlanReviewReplan 2026-07-15-11:09:
+Plan-approval holds must explain why the operator is being asked before Approve/Reject.
+Reuse the near-duplicate banner layout; replan-cap escalations use a stronger warning tint.
+*/
+.detail-plan-approval-banner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-lg);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-info, var(--in-progress)) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-info, var(--in-progress)) 28%, transparent);
+  margin-bottom: var(--space-md);
+}
+
+.detail-plan-approval-banner--replan-cap {
+  background: color-mix(in srgb, var(--color-warning) 10%, transparent);
+  border-color: color-mix(in srgb, var(--color-warning) 32%, transparent);
+}
+
+.detail-plan-approval-banner__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.detail-plan-approval-banner__headline {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.detail-plan-approval-banner__copy {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.45;
 }
 
 .detail-near-duplicate-banner__header {

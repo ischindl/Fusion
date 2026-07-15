@@ -7761,6 +7761,8 @@ export default interface Resources {
       },
       "paused": "Paused",
       "plan": {
+        "approvalCopy": "This project's plan-approval settings require a human decision before work starts. Review the plan below, then Approve Plan to continue to Todo or Reject Plan to regenerate it.",
+        "approvalHeadline": "Approval needed before implementation",
         "approveBtn": "Approve Plan",
         "approved": "Plan approved — {{id}} moved to Todo",
         "rebuildMessage": "Rebuild the plan for this task? The task will move to planning for replanning.",
@@ -7769,6 +7771,8 @@ export default interface Resources {
         "rejectMessage": "Reject this plan? The specification will be discarded and regenerated.",
         "rejectTitle": "Reject Plan",
         "rejected": "Plan rejected — {{id}} returned to Planning for replanning",
+        "replanCapCopy": "Plan Review requested automatic planning revisions repeatedly without approving a plan. Fusion stopped the replan loop so a human can decide. Approve the current PROMPT.md to move this task to Todo, or Reject Plan to discard it and regenerate.",
+        "replanCapHeadline": "Approval needed: Plan Review did not converge",
         "replanning": "Replanning {{id}}…"
       },
       "pr": {
@@ -8203,6 +8207,9 @@ export default interface Resources {
       "attachFileFailed": "Failed to attach {{fileName}}: {{error}}",
       "attachedFile": "Attached {{fileName}} to {{taskId}}",
       "awaitingApproval": "Awaiting Approval",
+      "awaitingApprovalPlanReviewReplanCap": "Plan Review Cap",
+      "awaitingApprovalPlanReviewReplanCapTitle": "Plan Review requested revisions repeatedly without converging. Approve the current plan to proceed, or reject to regenerate it.",
+      "awaitingApprovalTitle": "This plan needs your approval before implementation can start.",
       "baseBranch": "Base",
       "blockedByTooltip": "Blocked by {{taskId}} (file overlap)",
       "branch": "Branch",
