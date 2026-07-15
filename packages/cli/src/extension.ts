@@ -868,19 +868,6 @@ async function fetchGitHubIssuesViaGh(
   }
 }
 
-function buildGitHubIssueSource(owner: string, repo: string, issue: { number: number; html_url: string }) {
-  return {
-    sourceIssue: {
-      provider: "github" as const,
-      repository: `${owner}/${repo}`,
-      externalIssueId: String(issue.number),
-      issueNumber: issue.number,
-      url: issue.html_url,
-    },
-    sourceMetadata: { issueUrl: issue.html_url, issueNumber: issue.number },
-  };
-}
-
 async function resolveImportedIssueGithubTracking(store: TaskStore): Promise<{ enabled: true } | undefined> {
   const projectSettings = await store.getSettings();
   if (projectSettings.githubLinkImportedIssuesToTracking === true) {
@@ -898,20 +885,6 @@ async function resolveImportedIssueGithubTracking(store: TaskStore): Promise<{ e
     globalSettings,
   );
   return resolvedTracking.enabled ? { enabled: true } : undefined;
-}
-
-function isIssueAlreadyImported(
-  task: Pick<Task, "description" | "sourceIssue">,
-  owner: string,
-  repo: string,
-  issueNumber: number,
-  sourceUrl: string,
-): boolean {
-  const sourceIssue = task.sourceIssue;
-  return task.description.includes(sourceUrl)
-    || (sourceIssue?.provider === "github"
-      && sourceIssue.repository === `${owner}/${repo}`
-      && sourceIssue.issueNumber === issueNumber);
 }
 
 async function fetchGitHubIssueViaGh(
@@ -2165,7 +2138,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
       for (const issue of issues) {
         const sourceUrl = issue.html_url;
-        const alreadyImported = existingTasks.some((task) => isIssueAlreadyImported(task, owner, repo, issue.number, sourceUrl));
+        const alreadyImported = existingTasks.some((task) => dashboard.isGitHubIssueAlreadyImported(task, { owner, repo, issueNumber: issue.number, sourceUrl }));
         if (alreadyImported) {
           continue;
         }
@@ -2174,7 +2147,7 @@ export default function kbExtension(pi: ExtensionAPI) {
         const body = issue.body?.trim() || "(no description)";
         const description = `${body}\n\nSource: ${sourceUrl}`;
 
-        const source = buildGitHubIssueSource(owner, repo, issue);
+        const source = dashboard.buildGitHubIssueSource(owner, repo, issue);
         const task = await store.createTask({
           title: title || undefined,
           description,
@@ -2249,7 +2222,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       const sourceUrl = issue.html_url;
 
       for (const task of existingTasks) {
-        if (isIssueAlreadyImported(task, owner, repo, issueNumber, sourceUrl)) {
+        if (dashboard.isGitHubIssueAlreadyImported(task, { owner, repo, issueNumber, sourceUrl })) {
           return {
             content: [
               {
@@ -2269,7 +2242,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
       const importedIssueGithubTracking = await resolveImportedIssueGithubTracking(store);
 
-      const source = buildGitHubIssueSource(owner, repo, issue);
+      const source = dashboard.buildGitHubIssueSource(owner, repo, issue);
       const task = await store.createTask({
         title: title || undefined,
         description,

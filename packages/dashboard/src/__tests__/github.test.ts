@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { GitHubClient, CreatePrParams, PrComment, isPrMergeReady } from "../github.js";
+import { GitHubClient, CreatePrParams, PrComment, isGitHubIssueAlreadyImported, isPrMergeReady } from "../github.js";
 
 // Mock the gh-cli module from @fusion/core
 vi.mock("@fusion/core", async () => {
@@ -2315,5 +2315,25 @@ describe("GitHubClient", () => {
 
       expect(fetchSpy).toHaveBeenCalledTimes(2); // initial + 1 retry
     });
+  });
+});
+
+describe("isGitHubIssueAlreadyImported", () => {
+  const input = { owner: "owner", repo: "repo", issueNumber: 1, sourceUrl: "https://github.com/owner/repo/issues/1" };
+
+  it("matches edited sourceIssue metadata, legacy source metadata, and description URLs", () => {
+    expect(isGitHubIssueAlreadyImported({ description: "Source: https://github.com/OWNER/REPO/issues/1" }, input)).toBe(true);
+    expect(isGitHubIssueAlreadyImported({
+      description: "Edited description",
+      sourceIssue: { provider: "github", repository: "Owner/Repo", issueNumber: 1, externalIssueId: "1", url: "https://github.com/other/repo/issues/2" },
+    }, input)).toBe(true);
+    expect(isGitHubIssueAlreadyImported({
+      description: "Edited description",
+      source: { sourceType: "github_import", sourceMetadata: { issueUrl: "https://github.com/Owner/Repo/issues/2", issueNumber: 1 } },
+    }, input)).toBe(true);
+  });
+
+  it("does not match a fresh issue", () => {
+    expect(isGitHubIssueAlreadyImported({ description: "Unrelated" }, input)).toBe(false);
   });
 });

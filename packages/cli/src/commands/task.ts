@@ -1475,17 +1475,7 @@ export async function runTaskImportGitHubInteractive(
   const context = await resolveBoardContext(projectName, "import", "resolve project");
   const store = context.store;
   try {
-    const existingTasks = await retryBoardCall(context, "import", "list tasks", () => store.listTasks({ slim: true }));
-
-    // Build a set of already-imported issue URLs
-    const importedUrls = new Map<string, string>();
-    for (const task of existingTasks) {
-      // Match Source URL anywhere in description (more robust than end-of-string anchor)
-      const sourceMatch = task.description.match(/Source: (https:\/\/github\.com\/[^/]+\/[^/]+\/issues\/\d+)/);
-      if (sourceMatch) {
-        importedUrls.set(sourceMatch[1], task.id);
-      }
-    }
+    const existingTasks = await retryBoardCall(context, "import", "list tasks", () => store.listTasks({ slim: false }));
 
     let issues: GitHubIssue[];
     try {
@@ -1505,8 +1495,13 @@ export async function runTaskImportGitHubInteractive(
     console.log(`  Found ${issues.length} issues:\n`);
     for (let i = 0; i < issues.length; i++) {
       const issue = issues[i];
-      const alreadyImported = importedUrls.has(issue.html_url);
-      const status = alreadyImported ? ` [Imported as ${importedUrls.get(issue.html_url)}]` : "";
+      const importedTask = existingTasks.find((task) => dashboard.isGitHubIssueAlreadyImported(task, {
+        owner,
+        repo,
+        issueNumber: issue.number,
+        sourceUrl: issue.html_url,
+      }));
+      const status = importedTask ? ` [Imported as ${importedTask.id}]` : "";
       console.log(`  ${i + 1}. #${issue.number} ${issue.title.slice(0, 80)}${issue.title.length > 80 ? "…" : ""}${status}`);
     }
 
@@ -1559,10 +1554,15 @@ export async function runTaskImportGitHubInteractive(
     for (const idx of selectedIndices) {
       const issue = issues[idx];
 
-      // Check if already imported
-      if (importedUrls.has(issue.html_url)) {
-        const existingId = importedUrls.get(issue.html_url)!;
-        console.log(`  → Skipping #${issue.number}: already imported as ${existingId}`);
+      // Re-evaluate the shared dedup helper against tasks created earlier in this run.
+      const importedTask = existingTasks.find((task) => dashboard.isGitHubIssueAlreadyImported(task, {
+        owner,
+        repo,
+        issueNumber: issue.number,
+        sourceUrl: issue.html_url,
+      }));
+      if (importedTask) {
+        console.log(`  → Skipping #${issue.number}: already imported as ${importedTask.id}`);
         skipped++;
         continue;
       }
@@ -1576,7 +1576,7 @@ export async function runTaskImportGitHubInteractive(
 
       // Create the task
       // FN-5060: intentional same-content sibling; deterministic guard skipped here.
-      const source = buildGitHubIssueSource(owner, repo, issue);
+      const source = dashboard.buildGitHubIssueSource(owner, repo, issue);
       const task = await retryBoardCall(context, "import", "create task", () => store.createTask({
         title: title || undefined,
         description,
@@ -1592,6 +1592,7 @@ export async function runTaskImportGitHubInteractive(
 
       const label = task.title || task.description.slice(0, 60) + (task.description.length > 60 ? "…" : "");
       console.log(`  ✓ Created ${task.id}: ${label}`);
+      existingTasks.push(task);
       created++;
     }
 
@@ -1677,19 +1678,6 @@ async function resolveImportedIssueGithubTracking(store: TaskStore): Promise<{ e
   return resolvedTracking.enabled ? { enabled: true } : undefined;
 }
 
-function buildGitHubIssueSource(owner: string, repo: string, issue: { number: number; html_url: string }) {
-  return {
-    sourceIssue: {
-      provider: "github" as const,
-      repository: `${owner}/${repo}`,
-      externalIssueId: String(issue.number),
-      issueNumber: issue.number,
-      url: issue.html_url,
-    },
-    sourceMetadata: { issueUrl: issue.html_url, issueNumber: issue.number },
-  };
-}
-
 export async function runTaskImportFromGitHub(
   ownerRepo: string,
   options: TaskImportOptions = {},
@@ -1711,23 +1699,13 @@ export async function runTaskImportFromGitHub(
   // FNXC:CliBoardMutation 2026-07-09-00:00 (FN-7734): MULTI-STEP mutation
   // (loop of creates, no interactivity). Resolution + initial list are
   // retried once; each `createTask` call in the loop is retried
-  // independently — self-correcting on retry via the `importedUrls`
-  // already-imported check, so redoing an earlier iteration after a LATER
+  // independently — self-correcting on retry via the shared helper against
+  // the growing existing-task set, so redoing an earlier iteration after a LATER
   // one's lock error is harmless. Store closed in a `finally`.
   const context = await resolveBoardContext(projectName, "import", "resolve project");
   const store = context.store;
   try {
-    const existingTasks = await retryBoardCall(context, "import", "list tasks", () => store.listTasks({ slim: true }));
-
-    // Build a set of already-imported issue URLs
-    const importedUrls = new Map<string, string>();
-    for (const task of existingTasks) {
-      // Match Source URL anywhere in description (more robust than end-of-string anchor)
-      const sourceMatch = task.description.match(/Source: (https:\/\/github\.com\/[^/]+\/[^/]+\/issues\/\d+)/);
-      if (sourceMatch) {
-        importedUrls.set(sourceMatch[1], task.id);
-      }
-    }
+    const existingTasks = await retryBoardCall(context, "import", "list tasks", () => store.listTasks({ slim: false }));
 
     let issues: GitHubIssue[];
     try {
@@ -1749,10 +1727,15 @@ export async function runTaskImportFromGitHub(
     let skipped = 0;
 
     for (const issue of issues) {
-      // Check if already imported
-      if (importedUrls.has(issue.html_url)) {
-        const existingId = importedUrls.get(issue.html_url)!;
-        console.log(`  → Skipping #${issue.number}: already imported as ${existingId}`);
+      // Re-evaluate the shared dedup helper against tasks created earlier in this run.
+      const importedTask = existingTasks.find((task) => dashboard.isGitHubIssueAlreadyImported(task, {
+        owner,
+        repo,
+        issueNumber: issue.number,
+        sourceUrl: issue.html_url,
+      }));
+      if (importedTask) {
+        console.log(`  → Skipping #${issue.number}: already imported as ${importedTask.id}`);
         skipped++;
         continue;
       }
@@ -1766,7 +1749,7 @@ export async function runTaskImportFromGitHub(
 
       // Create the task
       // FN-5060: intentional same-content sibling; deterministic guard skipped here.
-      const source = buildGitHubIssueSource(owner, repo, issue);
+      const source = dashboard.buildGitHubIssueSource(owner, repo, issue);
       const task = await retryBoardCall(context, "import", "create task", () => store.createTask({
         title: title || undefined,
         description,
@@ -1782,6 +1765,7 @@ export async function runTaskImportFromGitHub(
 
       const label = task.title || task.description.slice(0, 60) + (task.description.length > 60 ? "…" : "");
       console.log(`  ✓ Created ${task.id}: ${label}`);
+      existingTasks.push(task);
       created++;
     }
 

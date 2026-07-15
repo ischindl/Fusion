@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import type { BranchGroup, BranchGroupPrState, DirectMergeCommitStrategy, IssueInfo, PrConflictDiagnostics, PrConflictState, PrInfo, TaskReviewData, TaskReviewItem, TaskReviewSummary } from "@fusion/core";
+import type { BranchGroup, BranchGroupPrState, DirectMergeCommitStrategy, IssueInfo, PrConflictDiagnostics, PrConflictState, PrInfo, Task, TaskReviewData, TaskReviewItem, TaskReviewSummary, TaskSourceIssue } from "@fusion/core";
 import {
   isGhAvailable,
   isGhAuthenticated,
@@ -110,6 +110,66 @@ function parseIssueUrl(stdout: string): { owner: string; repo: string; number: n
     number: Number.parseInt(match[3], 10),
     url,
   };
+}
+
+/*
+FNXC:GithubImport 2026-07-15-00:00:
+GitHub import deduplication must survive edited task descriptions and owner/repo casing changes. Both CLI import paths, both extension tools, and dashboard single/batch routes share this sourceIssue-first helper, mirroring GitLab provenance while retaining legacy description URL matching.
+*/
+export function buildGitHubIssueSource(owner: string, repo: string, issue: { number: number; html_url: string }): {
+  sourceIssue: TaskSourceIssue;
+  sourceMetadata: Record<string, unknown>;
+} {
+  return {
+    sourceIssue: {
+      provider: "github",
+      repository: `${owner}/${repo}`,
+      externalIssueId: String(issue.number),
+      issueNumber: issue.number,
+      url: issue.html_url,
+    },
+    sourceMetadata: { issueUrl: issue.html_url, issueNumber: issue.number },
+  };
+}
+
+function equalsIgnoreCase(left: string | undefined, right: string | undefined): boolean {
+  return Boolean(left && right && left.toLocaleLowerCase() === right.toLocaleLowerCase());
+}
+
+function repositoryFromGitHubIssueUrl(url: unknown): string | undefined {
+  if (typeof url !== "string") return undefined;
+  const match = url.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/issues\/\d+\/?$/i);
+  return match ? `${match[1]}/${match[2]}` : undefined;
+}
+
+export function isGitHubIssueAlreadyImported(
+  task: Pick<Task, "description" | "sourceIssue" | "source">,
+  input: { owner: string; repo: string; issueNumber: number; sourceUrl: string },
+): boolean {
+  const { owner, repo, issueNumber, sourceUrl } = input;
+  const repository = `${owner}/${repo}`;
+  const normalizedSourceUrl = sourceUrl.toLocaleLowerCase();
+
+  if (task.description?.toLocaleLowerCase().includes(normalizedSourceUrl)) return true;
+
+  const sourceIssue = task.sourceIssue;
+  if (sourceIssue?.provider === "github") {
+    if (equalsIgnoreCase(sourceIssue.url, sourceUrl)) return true;
+    if (equalsIgnoreCase(sourceIssue.repository, repository)
+      && (sourceIssue.issueNumber === issueNumber || sourceIssue.externalIssueId === String(issueNumber))) {
+      return true;
+    }
+  }
+
+  const metadata = task.source?.sourceMetadata;
+  if (task.source?.sourceType === "github_import" && metadata && typeof metadata === "object") {
+    const sourceMetadata = metadata as Record<string, unknown>;
+    if (equalsIgnoreCase(typeof sourceMetadata.issueUrl === "string" ? sourceMetadata.issueUrl : undefined, sourceUrl)) return true;
+    return sourceMetadata.issueNumber === issueNumber
+      && equalsIgnoreCase(repositoryFromGitHubIssueUrl(sourceMetadata.issueUrl), repository);
+  }
+
+  return false;
 }
 
 /**

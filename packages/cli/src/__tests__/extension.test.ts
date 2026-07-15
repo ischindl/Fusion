@@ -2692,10 +2692,10 @@ legacyDescribe("fn pi extension (legacy exhaustive suite)", () => {
         description: "Edited description without source URL",
         sourceIssue: {
           provider: "github",
-          repository: "acme/demo",
+          repository: "Acme/Demo",
           externalIssueId: "1",
           issueNumber: 1,
-          url: "https://github.com/acme/demo/issues/1",
+          url: "https://github.com/other/repo/issues/99",
         },
       });
 
@@ -2705,7 +2705,7 @@ legacyDescribe("fn pi extension (legacy exhaustive suite)", () => {
           number: 1,
           title: "Issue one",
           body: "First issue body",
-          html_url: "https://github.com/acme/demo/issues/1",
+          html_url: "https://github.com/other/repo/issues/99",
         },
       ] as never);
 
@@ -2722,10 +2722,10 @@ legacyDescribe("fn pi extension (legacy exhaustive suite)", () => {
         description: "Edited description without source URL",
         sourceIssue: {
           provider: "github",
-          repository: "acme/demo",
+          repository: "Acme/Demo",
           externalIssueId: "1",
           issueNumber: 1,
-          url: "https://github.com/acme/demo/issues/1",
+          url: "https://github.com/other/repo/issues/99",
         },
       });
 
@@ -2734,7 +2734,7 @@ legacyDescribe("fn pi extension (legacy exhaustive suite)", () => {
         number: 1,
         title: "Issue one",
         body: "First issue body",
-        html_url: "https://github.com/acme/demo/issues/1",
+        html_url: "https://github.com/other/repo/issues/99",
       } as never);
 
       const result = await tool.execute(

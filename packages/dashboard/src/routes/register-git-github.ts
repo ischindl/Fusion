@@ -37,7 +37,7 @@ import {
   rateLimited,
   unauthorized,
 } from "../api-error.js";
-import { GitHubClient, type PrReviewSnapshot, parseBadgeUrl } from "../github.js";
+import { GitHubClient, buildGitHubIssueSource, isGitHubIssueAlreadyImported, type PrReviewSnapshot, parseBadgeUrl } from "../github.js";
 import { GitHubIssueCommentService } from "../github-issue-comment.js";
 import { GitHubTrackingCommentService } from "../github-tracking-comments.js";
 import { GitHubTrackingStateService } from "../github-tracking-state.js";
@@ -2089,33 +2089,6 @@ export function createBatchImportRateLimiter(): (req: Request, res: Response, ne
   };
 }
 
-function buildGitHubIssueSource(owner: string, repo: string, issue: { number: number; html_url: string }) {
-  return {
-    sourceIssue: {
-      provider: "github" as const,
-      repository: `${owner}/${repo}`,
-      externalIssueId: String(issue.number),
-      issueNumber: issue.number,
-      url: issue.html_url,
-    },
-    sourceMetadata: { issueUrl: issue.html_url, issueNumber: issue.number },
-  };
-}
-
-function isIssueAlreadyImported(
-  task: Pick<Task, "description" | "sourceIssue">,
-  owner: string,
-  repo: string,
-  issueNumber: number,
-  sourceUrl: string,
-): boolean {
-  const sourceIssue = task.sourceIssue;
-  return task.description.includes(sourceUrl)
-    || (sourceIssue?.provider === "github"
-      && sourceIssue.repository === `${owner}/${repo}`
-      && sourceIssue.issueNumber === issueNumber);
-}
-
 /*
 FNXC:GitHubImportTranslate 2026-07-15-09:30:
 Shared by BOTH import surfaces (single import and batch import) so a batch-imported task carries the same translation a singly-imported one does — the requirement is about imported issues, not about which button was pressed.
@@ -4099,7 +4072,7 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
       const existingTasks = await scopedStore.listTasks({ slim: false, includeArchived: false });
       const sourceUrl = issue.html_url;
       for (const existingTask of existingTasks) {
-        if (isIssueAlreadyImported(existingTask, owner, repo, issueNumber, sourceUrl)) {
+        if (isGitHubIssueAlreadyImported(existingTask, { owner, repo, issueNumber, sourceUrl })) {
           throw new ApiError(409, `Issue #${issueNumber} already imported as ${existingTask.id}`, {
             existingTaskId: existingTask.id,
           });
@@ -4352,7 +4325,7 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
 
         // Check if already imported
         const sourceUrl = issue.html_url;
-        const existingTask = existingTasks.find((t) => isIssueAlreadyImported(t, owner, repo, issueNumber, sourceUrl));
+        const existingTask = existingTasks.find((t) => isGitHubIssueAlreadyImported(t, { owner, repo, issueNumber, sourceUrl }));
         if (existingTask) {
           results.push({
             issueNumber,

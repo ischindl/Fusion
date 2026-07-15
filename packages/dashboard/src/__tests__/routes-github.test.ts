@@ -756,10 +756,10 @@ describe("POST /github/issues/import", () => {
         column: "triage",
         sourceIssue: {
           provider: "github",
-          repository: "owner/repo",
+          repository: "Owner/Repo",
           externalIssueId: "1",
           issueNumber: 1,
-          url: "https://github.com/owner/repo/issues/1",
+          url: "https://github.com/other/repo/issues/99",
         },
       },
     ]);
@@ -1041,10 +1041,10 @@ describe("POST /github/issues/batch-import", () => {
         column: "triage",
         sourceIssue: {
           provider: "github",
-          repository: "owner/repo",
+          repository: "Owner/Repo",
           externalIssueId: "1",
           issueNumber: 1,
-          url: "https://github.com/owner/repo/issues/1",
+          url: "https://github.com/other/repo/issues/99",
         },
       },
     ]);

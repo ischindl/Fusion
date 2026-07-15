@@ -118,6 +118,15 @@ vi.mock("@fusion/dashboard", () => ({
   GitLabClient: vi.fn(),
   resolveGitlabAuth: vi.fn(() => ({})),
   buildGitLabTaskProvenance: vi.fn(() => ({})),
+  buildGitHubIssueSource: vi.fn((owner: string, repo: string, issue: { number: number; html_url: string }) => ({
+    sourceIssue: { provider: "github", repository: `${owner}/${repo}`, externalIssueId: String(issue.number), issueNumber: issue.number, url: issue.html_url },
+    sourceMetadata: { issueUrl: issue.html_url, issueNumber: issue.number },
+  })),
+  isGitHubIssueAlreadyImported: vi.fn((task: any, input: any) =>
+    task.description?.toLowerCase().includes(input.sourceUrl.toLowerCase())
+    || (task.sourceIssue?.provider === "github"
+      && task.sourceIssue.repository?.toLowerCase() === `${input.owner}/${input.repo}`.toLowerCase()
+      && (task.sourceIssue.issueNumber === input.issueNumber || task.sourceIssue.externalIssueId === String(input.issueNumber)))),
   isGitLabAlreadyImported: vi.fn(),
   buildGitLabTaskDescription: vi.fn(),
 }));
@@ -148,13 +157,6 @@ vi.mock("@fusion/core/gh-cli", () => ({
 
 // Mock project-context
 vi.mock("../../project-context.js", () => ({
-  asLocalProjectContext: vi.fn((store: unknown) => ({
-    projectId: process.cwd(),
-    projectPath: process.cwd(),
-    projectName: "current-project",
-    isRegistered: false,
-    store,
-  })),
   resolveProjectPathOnly: vi.fn(async () => process.cwd()),
   resolveProject: vi.fn().mockRejectedValue(new Error("No project context")),
   getStore: vi.fn().mockResolvedValue({}),
@@ -1754,8 +1756,16 @@ describe("runTaskImportGitHubInteractive", () => {
     mockListTasks.mockResolvedValueOnce([
       {
         id: "FN-001",
-        description: "Existing\n\nSource: https://github.com/owner/repo/issues/1",
+        description: "Edited description without source URL",
         column: "triage",
+        sourceIssue: {
+          provider: "github",
+          repository: "Owner/Repo",
+          externalIssueId: "1",
+          issueNumber: 1,
+          // FNXC:GithubImport 2026-07-15-00:00: A mismatched URL proves repository/number matching survives casing changes.
+          url: "https://github.com/other/repo/issues/99",
+        },
       },
     ]);
 
@@ -2077,8 +2087,16 @@ describe("runTaskImportFromGitHub", () => {
     mockListTasks.mockResolvedValueOnce([
       {
         id: "FN-001",
-        description: "Existing\n\nSource: https://github.com/owner/repo/issues/1",
+        description: "Edited description without source URL",
         column: "triage",
+        sourceIssue: {
+          provider: "github",
+          repository: "Owner/Repo",
+          externalIssueId: "1",
+          issueNumber: 1,
+          // FNXC:GithubImport 2026-07-15-00:00: A mismatched URL proves repository/number matching survives casing changes.
+          url: "https://github.com/other/repo/issues/99",
+        },
       },
     ]);
 
