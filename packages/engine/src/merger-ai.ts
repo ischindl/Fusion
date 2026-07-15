@@ -70,6 +70,7 @@ import { accumulateSessionTokenUsage } from "./session-token-usage.js";
 import { createRunAuditor, generateSyntheticRunId, type RunAuditor } from "./run-audit.js";
 import { createLogger } from "./logger.js";
 import {
+  buildAutostashLabel,
   captureSingleCommitLandedMetadata,
   isNonFastForwardPushError,
   parsePushRemoteTarget,
@@ -596,8 +597,22 @@ export async function landSquash(input: {
       + `Commit, stash, or clean local changes before retrying.`,
     );
   }
+  /*
+  FNXC:MergeAutostash 2026-07-15-13:20:
+  Label through the canonical `fusion-merger-autostash:` vocabulary so this stash
+  reaches merger.ts's reclamation machinery: subsumed-drop once its content is on
+  HEAD, age sweep, and the orphan notifications that tell an operator work is
+  recoverable. The former `fusion-ai-merge-sync-<taskId>` label matched none of
+  it, so the retention below ("keep as a backup") had no counterpart that ever
+  reclaimed the backup and entries accumulated for months.
+  Retention is still deliberate — only a stash whose content is provably already
+  on HEAD is ever dropped.
+  */
   const stashed = dirty
-    ? await gitOk(["stash", "push", "--include-untracked", "-m", `fusion-ai-merge-sync-${taskId}`], projectRootDir)
+    ? await gitOk(
+        ["stash", "push", "--include-untracked", "-m", buildAutostashLabel(taskId, "ai-local-sync", Date.now())],
+        projectRootDir,
+      )
     : false;
 
   if (dirty && !stashed) {

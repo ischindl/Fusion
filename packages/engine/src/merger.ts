@@ -2218,29 +2218,103 @@ export interface AutostashHandle {
 }
 
 const AUTOSTASH_LABEL_PREFIX = "fusion-merger-autostash:";
+
+/*
+FNXC:MergeAutostash 2026-07-15-13:20:
+`merger-ai`'s local-checkout sync stashed under its own `fusion-ai-merge-sync-<taskId>`
+label, which none of the reclamation machinery here matches — every path keys off
+AUTOSTASH_LABEL_PREFIX. The entries were therefore never classified, never
+subsumed-dropped, never age-swept, and never surfaced as orphans holding work:
+they accumulated indefinitely (six entries dating back a month were found on a
+single working tree, and their sheer age made real lost work indistinguishable
+from litter).
+
+merger-ai now labels through `buildAutostashLabel` so one vocabulary reaches all
+of it. This legacy prefix stays recognized so entries already sitting in
+developers' stash lists are reclaimed rather than stranded forever; it carries no
+timestamp, so the age sweep skips it and only the subsumed check can drop it.
+*/
+const LEGACY_AI_SYNC_LABEL_PREFIX = "fusion-ai-merge-sync-";
+
+/** Canonical autostash label. `phase` distinguishes the creating call site
+ *  (`pre-merge`, `ai-local-sync`, `finalize-reset`, `race-rescue-<n>`). */
+export function buildAutostashLabel(taskId: string, phase: string, at: number): string {
+  return `${AUTOSTASH_LABEL_PREFIX}${taskId}:${phase}:${at}`;
+}
 const AUTOSTASH_TIMESTAMP_RE = /^fusion-merger-autostash:[A-Za-z]+-\d+:(?:(?:[a-z0-9-]+:)?(?:\d+:)?)?(\d+)$/;
 
 /** Return the set of paths a stash commit recorded as changed against its
  *  parent (HEAD-at-stash-time). Used to compare a new dirty snapshot against
  *  the primary autostash and avoid producing duplicate race-rescue stashes
  *  for the same paths the primary already captured. */
-async function listStashChangedPaths(rootDir: string, stashSha: string): Promise<Set<string>> {
-  const out = new Set<string>();
+/*
+FNXC:MergeAutostash 2026-07-15-13:20:
+A stash created with `--include-untracked` stores its untracked files in a THIRD
+parent commit (`<sha>^3`) whose paths `git stash show` does not list — it reports
+the tracked side only. Reading just that side makes an untracked-only stash look
+EMPTY, and every "does this stash still hold work?" caller reads empty as
+"subsumed → safe to drop". That silently destroys untracked work: new tests, plan
+docs, and changesets are exactly what the ai-local-sync stashes carry.
+Enumerate both sides, and keep them distinguishable — the two sides must be
+diffed against different commits (see `classifyStashContent`).
+
+`null` means "could not read", which is NOT the same as "holds nothing". Callers
+must treat null as unknown and refuse to drop; collapsing the two is the bug
+above.
+*/
+async function listStashTrackedPaths(rootDir: string, stashSha: string): Promise<Set<string> | null> {
   try {
     const { stdout } = await execAsync(
       `git stash show -z --name-only ${quoteArg(stashSha)}`,
       { cwd: rootDir, encoding: "utf-8" },
     );
-    for (const entry of stdout.split("\0")) {
+    const out = new Set<string>();
+    for (const entry of String(stdout).split("\0")) {
       const p = entry.trim();
       if (p) out.add(p);
     }
+    return out;
   } catch {
-    // Best-effort: an empty set means we'll be slightly more aggressive
-    // about rescuing (everything dirty gets rescued), which is the safe
-    // direction — false positives are noise, false negatives are data loss.
+    return null;
   }
-  return out;
+}
+
+/** Paths held in a stash's untracked third parent. An empty set (not null) is
+ *  returned when the stash simply has no `^3` — i.e. it was created without
+ *  `--include-untracked`, which is a legitimate "no untracked files" answer. */
+async function listStashUntrackedPaths(rootDir: string, stashSha: string): Promise<Set<string> | null> {
+  try {
+    await execAsync(`git rev-parse -q --verify ${quoteArg(`${stashSha}^3`)}`, { cwd: rootDir, encoding: "utf-8" });
+  } catch {
+    return new Set<string>();
+  }
+  try {
+    const { stdout } = await execAsync(
+      `git ls-tree -r -z --name-only ${quoteArg(`${stashSha}^3`)}`,
+      { cwd: rootDir, encoding: "utf-8" },
+    );
+    const out = new Set<string>();
+    for (const entry of String(stdout).split("\0")) {
+      const p = entry.trim();
+      if (p) out.add(p);
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+/** Every path a stash holds, tracked and untracked. Used for display and for
+ *  rescue-scope decisions; `classifyStashContent` is the drop-safety authority. */
+async function listStashChangedPaths(rootDir: string, stashSha: string): Promise<Set<string>> {
+  const [tracked, untracked] = await Promise.all([
+    listStashTrackedPaths(rootDir, stashSha),
+    listStashUntrackedPaths(rootDir, stashSha),
+  ]);
+  // Best-effort union: an empty set means we'll be slightly more aggressive
+  // about rescuing (everything dirty gets rescued), which is the safe
+  // direction — false positives are noise, false negatives are data loss.
+  return new Set<string>([...(tracked ?? []), ...(untracked ?? [])]);
 }
 
 /** True iff two stash commits point to the exact same tree object. Cheap
@@ -2431,7 +2505,10 @@ async function listOrphanedAutostashes(
     const orphans: Array<{ sha: string; ref: string; label: string }> = [];
     for (const line of lines) {
       // Format: "<sha> stash@{N} <subject including label>"
-      const idx = line.indexOf(AUTOSTASH_LABEL_PREFIX);
+      // Match the canonical label, or the legacy merger-ai one so already-leaked
+      // entries are reclaimed too (see LEGACY_AI_SYNC_LABEL_PREFIX).
+      let idx = line.indexOf(AUTOSTASH_LABEL_PREFIX);
+      if (idx === -1) idx = line.indexOf(LEGACY_AI_SYNC_LABEL_PREFIX);
       if (idx === -1) continue;
       const parts = line.split(/\s+/);
       const sha = parts[0] ?? "";
@@ -2446,8 +2523,11 @@ async function listOrphanedAutostashes(
 }
 
 function parseAutostashTaskId(label: string): string | null {
-  const match = /^fusion-merger-autostash:([A-Za-z]+-\d+):/.exec(label.trim());
-  return match?.[1] ?? null;
+  const trimmed = label.trim();
+  const match = /^fusion-merger-autostash:([A-Za-z]+-\d+):/.exec(trimmed);
+  if (match?.[1]) return match[1];
+  // Legacy merger-ai label: `fusion-ai-merge-sync-<taskId>` (no trailing fields).
+  return /^fusion-ai-merge-sync-([A-Za-z]+-\d+)$/.exec(trimmed)?.[1] ?? null;
 }
 
 
@@ -2465,22 +2545,63 @@ function parseAutostashSourcePhase(label: string): string | null {
   if (phaseMatch?.[1]) return phaseMatch[1];
   if (/^fusion-merger-autostash:[A-Za-z]+-\d+:race-rescue-\d+:\d+$/.test(trimmed)) return "race-rescue";
   if (/^fusion-merger-autostash:[A-Za-z]+-\d+:\d+$/.test(trimmed)) return "pre-merge";
+  if (/^fusion-ai-merge-sync-[A-Za-z]+-\d+$/.test(trimmed)) return "ai-local-sync";
   return null;
 }
 
+/*
+FNXC:MergeAutostash 2026-07-15-13:20:
+The single drop-safety authority: may this stash be discarded without losing work?
+
+  - `subsumed` — every path it holds is already byte-identical to HEAD. Safe to drop.
+  - `live`     — at least one path still differs from HEAD. Real work; never drop.
+  - `unknown`  — we could not prove either. Never drop (false positives are noise,
+                 false negatives are data loss).
+
+The tracked and untracked sides must be diffed against DIFFERENT commits: the
+stash commit's tree holds only tracked content, while untracked files live in
+`<sha>^3`. Diffing an untracked path against `<sha>` compares HEAD to a tree that
+never contained it, which reports no difference and misreads live work as
+subsumed — the data-loss path this replaces.
+
+Previously this logic existed in three near-identical copies (orphan
+classification, the per-merge sweep, and the liveness probe), all sharing that
+bug. One authority, one behavior.
+*/
+async function classifyStashContent(rootDir: string, sha: string): Promise<"subsumed" | "live" | "unknown"> {
+  const [tracked, untracked] = await Promise.all([
+    listStashTrackedPaths(rootDir, sha),
+    listStashUntrackedPaths(rootDir, sha),
+  ]);
+  // Unreadable side → cannot prove the stash is redundant.
+  if (tracked === null || untracked === null) return "unknown";
+  if (tracked.size === 0 && untracked.size === 0) return "subsumed";
+
+  const differsFromHead = async (paths: Set<string>, against: string): Promise<boolean | null> => {
+    if (paths.size === 0) return false;
+    try {
+      const pathsArg = [...paths].map(quoteArg).join(" ");
+      const { stdout } = await execAsync(
+        `git diff --name-only HEAD ${quoteArg(against)} -- ${pathsArg}`,
+        { cwd: rootDir, encoding: "utf-8" },
+      );
+      return String(stdout).trim() !== "";
+    } catch {
+      return null;
+    }
+  };
+
+  const trackedLive = await differsFromHead(tracked, sha);
+  if (trackedLive === null) return "unknown";
+  if (trackedLive) return "live";
+
+  const untrackedLive = await differsFromHead(untracked, `${sha}^3`);
+  if (untrackedLive === null) return "unknown";
+  return untrackedLive ? "live" : "subsumed";
+}
+
 async function classifyAutostashOrphan(rootDir: string, sha: string): Promise<"subsumed" | "live" | "unknown"> {
-  try {
-    const stashFiles = await listStashChangedPaths(rootDir, sha);
-    if (stashFiles.size === 0) return "subsumed";
-    const pathsArg = [...stashFiles].map(quoteArg).join(" ");
-    const { stdout: pathDiffOut } = await execAsync(
-      `git diff --name-only HEAD ${quoteArg(sha)} -- ${pathsArg}`,
-      { cwd: rootDir, encoding: "utf-8" },
-    );
-    return pathDiffOut.trim() === "" ? "subsumed" : "live";
-  } catch {
-    return "unknown";
-  }
+  return classifyStashContent(rootDir, sha);
 }
 
 export async function listAutostashOrphans(rootDir: string): Promise<AutostashOrphanRecord[]> {
@@ -2626,20 +2747,19 @@ async function sweepAutostashOrphans(
 
   for (const orphan of orphans) {
     try {
-      const stashFiles = await listStashChangedPaths(rootDir, orphan.sha);
-      if (stashFiles.size === 0) {
-        // Empty stash — nothing to lose by dropping.
+      /*
+      FNXC:MergeAutostash 2026-07-15-13:20:
+      Delegates to the shared drop-safety authority so tracked-only and
+      untracked-only stashes are judged identically. `unknown` is treated as
+      live: an unprovable stash is warned about, never dropped.
+      */
+      const classification = await classifyStashContent(rootDir, orphan.sha);
+      if (classification === "subsumed") {
         subsumed.push(orphan);
         continue;
       }
-      const pathsArg = [...stashFiles].map(quoteArg).join(" ");
-      const { stdout: pathDiffOut } = await execAsync(
-        `git diff --name-only HEAD ${quoteArg(orphan.sha)} -- ${pathsArg}`,
-        { cwd: rootDir, encoding: "utf-8" },
-      );
-      const isPathSubsumed = pathDiffOut.trim() === "";
-      if (isPathSubsumed) {
-        subsumed.push(orphan);
+      if (classification === "unknown") {
+        live.push(orphan);
         continue;
       }
 
@@ -2741,6 +2861,16 @@ export async function sweepStaleAutostashes(
     const entries = await listOrphanedAutostashes(rootDir);
     let dropped = 0;
 
+    /*
+    FNXC:MergeAutostash 2026-07-15-13:20:
+    Age-based dropping is deliberate bounded retention, not a safety gap: it is
+    the backstop that stops autostashes accumulating forever when a restore
+    failed and nobody recovered the work. It intentionally drops by timestamp
+    alone, without consulting stash content — do not add a liveness check here.
+    Entries carrying a timestamp (every canonical label) age out; the legacy
+    `fusion-ai-merge-sync-<id>` labels carry none, so they are reachable only via
+    the subsumed check in `sweepAutostashOrphans`.
+    */
     for (const entry of entries) {
       const match = AUTOSTASH_TIMESTAMP_RE.exec(entry.label.trim());
       if (!match) continue;
@@ -2989,16 +3119,11 @@ export async function dropAutostashBySha(
   return { dropped: false, reason: "exhausted retry attempts" };
 }
 
+/** True when the stash still holds work not present on HEAD. An unprovable
+ *  (`unknown`) stash counts as live so callers never discard it. */
 async function isAutostashLive(rootDir: string, sha: string): Promise<boolean> {
   try {
-    const stashFiles = await listStashChangedPaths(rootDir, sha);
-    if (stashFiles.size === 0) return false;
-    const pathsArg = [...stashFiles].map(quoteArg).join(" ");
-    const { stdout: pathDiffOut } = await execAsync(
-      `git diff --name-only HEAD ${quoteArg(sha)} -- ${pathsArg}`,
-      { cwd: rootDir, encoding: "utf-8" },
-    );
-    return pathDiffOut.trim().length > 0;
+    return (await classifyStashContent(rootDir, sha)) !== "subsumed";
   } catch {
     return true;
   }
