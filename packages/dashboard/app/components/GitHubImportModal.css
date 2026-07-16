@@ -565,6 +565,26 @@ The Import Tasks sub-header tab bar should match the Artifacts view's button bar
   background: var(--surface);
 }
 
+/*
+FNXC:GitHubImport 2026-07-15-16:30:
+Hide imported must remain a compact, reachable control beside loaded-result metadata and within the GitLab toolbar, including
+when either layout wraps on mobile. Token-based spacing keeps it consistent with the surrounding import controls.
+*/
+.github-import-hide-imported {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.github-import-hide-imported input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
 .github-import-state {
   display: flex;
   align-items: flex-start;
@@ -1245,6 +1265,7 @@ Across the thread: a top filter (All/Human/Bot) and prev/next chevrons live in t
   .github-import-results-meta {
     justify-content: flex-start;
   }
+
 
   .issue-item {
     flex-wrap: wrap;

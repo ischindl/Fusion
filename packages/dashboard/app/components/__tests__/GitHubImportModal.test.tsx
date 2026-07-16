@@ -1912,4 +1912,112 @@ describe("GitHubImportModal", () => {
     expect(source).toMatch(/@media \(max-width: 768px\)[\s\S]*\.floating-window--github-import-detail[\s\S]*width: 100vw !important/);
     expect(source).toContain(".floating-window--github-import-detail .floating-window__resize-handle");
   });
+
+  describe("Hide imported", () => {
+    const issueItems = [
+      { number: 1, title: "Imported issue", body: "", html_url: "https://github.com/owner/repo/issues/1", labels: [] },
+      { number: 2, title: "Available issue", body: "", html_url: "https://github.com/owner/repo/issues/2", labels: [] },
+    ];
+    const gitlabItems = [
+      { resourceKind: "project_issue" as const, id: 1, iid: 1, projectId: 3, projectPath: "group/project", title: "Imported GitLab item", description: "", webUrl: "https://gitlab.example.com/group/project/-/issues/1", state: "opened", labels: [] },
+      { resourceKind: "project_issue" as const, id: 2, iid: 2, projectId: 3, projectPath: "group/project", title: "Available GitLab item", description: "", webUrl: "https://gitlab.example.com/group/project/-/issues/2", state: "opened", labels: [] },
+    ];
+
+    it("filters imported issues and pulls without changing their full imported counts", async () => {
+      const importedIssueTask = { ...mockTask, description: "Source: https://github.com/owner/repo/issues/1" };
+      const importedPullTask = { ...mockPRTask, description: "PR: https://github.com/owner/repo/pull/1" };
+      vi.mocked(fetchGitRemotes).mockResolvedValueOnce([{ name: "origin", owner: "owner", repo: "repo", url: "" }]);
+      vi.mocked(apiFetchGitHubIssues).mockResolvedValueOnce(issueItems);
+      vi.mocked(apiFetchGitHubPulls).mockResolvedValueOnce(mockPulls);
+      render(<GitHubImportModal isOpen onClose={onClose} onImport={onImport} tasks={[importedIssueTask, importedPullTask]} projectId="project-1" />);
+
+      await screen.findByText("Imported issue");
+      const toggle = screen.getByRole("checkbox", { name: /hide imported/i });
+      fireEvent.click(toggle);
+      expect(screen.queryByText("Imported issue")).toBeNull();
+      expect(screen.getByText("Available issue")).toBeTruthy();
+      expect(screen.getByText("1 imported")).toBeTruthy();
+      fireEvent.click(toggle);
+      expect(await screen.findByText("Imported issue")).toBeTruthy();
+      expect(screen.getByText("Imported issue").closest(".issue-item")).toHaveClass("imported");
+
+      fireEvent.click(screen.getByRole("tab", { name: /pull requests/i }));
+      await screen.findByText("Test PR");
+      fireEvent.click(screen.getByRole("checkbox", { name: /hide imported/i }));
+      expect(screen.queryByText("Test PR")).toBeNull();
+      expect(screen.getByText("Another PR")).toBeTruthy();
+    });
+
+    it("persists the toggle per project and clears a selection that becomes hidden", async () => {
+      vi.mocked(fetchGitRemotes).mockResolvedValue([{ name: "origin", owner: "owner", repo: "repo", url: "" }]);
+      vi.mocked(apiFetchGitHubIssues).mockResolvedValue(issueItems);
+      const view = render(<GitHubImportModal isOpen onClose={onClose} onImport={onImport} tasks={[]} projectId="project-1" />);
+      await screen.findByText("Imported issue");
+      fireEvent.click(screen.getByRole("radio", { name: /select issue #1/i }));
+      expect(await screen.findByTestId("github-import-preview-card")).toHaveTextContent("Imported issue");
+      view.rerender(<GitHubImportModal isOpen onClose={onClose} onImport={onImport} tasks={[{ ...mockTask, description: "Source: https://github.com/owner/repo/issues/1" }]} projectId="project-1" />);
+      fireEvent.click(screen.getByTestId("github-import-hide-imported-toggle"));
+      await waitFor(() => expect(screen.queryByTestId("github-import-preview-card")).toBeNull());
+      view.unmount();
+
+      render(<GitHubImportModal isOpen onClose={onClose} onImport={onImport} tasks={[]} projectId="project-1" />);
+      await screen.findByText("Imported issue");
+      expect(screen.getByTestId("github-import-hide-imported-toggle")).toBeChecked();
+    });
+
+    it("filters GitLab rows and renders a dedicated all-imported state for every provider", async () => {
+      const importedGitlabTask = { ...mockTask, description: "Source: https://gitlab.example.com/group/project/-/issues/1" };
+      vi.mocked(fetchGitRemotes).mockResolvedValueOnce([]);
+      vi.mocked(apiFetchGitLabProjectIssues).mockResolvedValueOnce(gitlabItems);
+      const filteredView = render(<GitHubImportModal isOpen onClose={onClose} onImport={onImport} tasks={[importedGitlabTask]} projectId="project-2" />);
+      fireEvent.click(await screen.findByRole("button", { name: "GitLab" }));
+      fireEvent.change(screen.getByLabelText("GitLab project path or ID"), { target: { value: "group/project" } });
+      fireEvent.click(screen.getByRole("button", { name: "Load" }));
+      await screen.findByText(/Imported GitLab item/);
+      fireEvent.click(screen.getByTestId("github-import-hide-imported-toggle"));
+      expect(screen.queryByText(/Imported GitLab item/)).toBeNull();
+      expect(screen.getByText(/Available GitLab item/)).toBeTruthy();
+
+      const allImportedTask = { ...mockTask, description: "Source: https://gitlab.example.com/group/project/-/issues/2" };
+      filteredView.unmount();
+      window.localStorage.removeItem(`kb:project-2:${GITHUB_IMPORT_STATE_KEY}`);
+      vi.mocked(fetchGitRemotes).mockResolvedValueOnce([]);
+      vi.mocked(apiFetchGitLabProjectIssues).mockResolvedValueOnce(gitlabItems);
+      render(<GitHubImportModal isOpen onClose={onClose} onImport={onImport} tasks={[importedGitlabTask, allImportedTask]} projectId="project-a" />);
+      fireEvent.click(await screen.findByRole("button", { name: "GitLab" }));
+      fireEvent.change(screen.getByLabelText("GitLab project path or ID"), { target: { value: "group/project" } });
+      fireEvent.click(screen.getByRole("button", { name: "Load" }));
+      fireEvent.click(await screen.findByTestId("github-import-hide-imported-toggle"));
+      expect(await screen.findByTestId("github-import-all-imported-empty")).toHaveTextContent("All loaded items are already imported");
+    });
+
+    it("keeps the shared toggle reachable and functional at the mobile breakpoint", async () => {
+      const originalInnerWidth = window.innerWidth;
+      Object.defineProperty(window, "innerWidth", { writable: true, configurable: true, value: 480 });
+      window.dispatchEvent(new Event("resize"));
+      const importedIssueTask = { ...mockTask, description: "Source: https://github.com/owner/repo/issues/1" };
+      vi.mocked(fetchGitRemotes).mockResolvedValueOnce([{ name: "origin", owner: "owner", repo: "repo", url: "" }]);
+      vi.mocked(apiFetchGitHubIssues).mockResolvedValueOnce(issueItems);
+      const view = render(<GitHubImportModal isOpen onClose={onClose} onImport={onImport} tasks={[importedIssueTask]} projectId="project-b" />);
+      await screen.findByText("Imported issue");
+      fireEvent.click(screen.getByTestId("github-import-hide-imported-toggle"));
+      expect(screen.queryByText("Imported issue")).toBeNull();
+      expect(screen.getByText("Available issue")).toBeTruthy();
+      view.unmount();
+
+      window.localStorage.removeItem(`kb:project-b:${GITHUB_IMPORT_STATE_KEY}`);
+      vi.mocked(fetchGitRemotes).mockResolvedValueOnce([]);
+      vi.mocked(apiFetchGitLabProjectIssues).mockResolvedValueOnce(gitlabItems);
+      render(<GitHubImportModal isOpen onClose={onClose} onImport={onImport} tasks={[{ ...mockTask, description: "Source: https://gitlab.example.com/group/project/-/issues/1" }]} projectId="project-b" />);
+      fireEvent.click(await screen.findByRole("button", { name: "GitLab" }));
+      fireEvent.change(screen.getByLabelText("GitLab project path or ID"), { target: { value: "group/project" } });
+      fireEvent.click(screen.getByRole("button", { name: "Load" }));
+      await screen.findByText(/Imported GitLab item/);
+      fireEvent.click(screen.getByTestId("github-import-hide-imported-toggle"));
+      expect(screen.queryByText(/Imported GitLab item/)).toBeNull();
+      expect(screen.getByText(/Available GitLab item/)).toBeTruthy();
+      Object.defineProperty(window, "innerWidth", { writable: true, configurable: true, value: originalInnerWidth });
+      window.dispatchEvent(new Event("resize"));
+    });
+  });
 });

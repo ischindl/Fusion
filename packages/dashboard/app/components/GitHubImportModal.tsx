@@ -429,6 +429,13 @@ export function GitHubImportModal({ isOpen, onClose, onImport, tasks, projectId,
   // Gates the persist-on-change effect until the mount hydration effect has applied its (possibly restored) values to
   // state, so the FIRST commit's still-default state is never written over a real persisted value.
   const [readyToPersistImportState, setReadyToPersistImportState] = useState(false);
+  const [hideImported, setHideImported] = useState(false);
+
+  /*
+  FNXC:GitHubImport 2026-07-15-16:30:
+  The Hide imported control is a view-only filter over already-imported candidates. Persist it per project with the other
+  cheap Import Tasks preferences so navigation preserves the operator's decluttering choice without retaining fetched lists.
+  */
 
   /*
   FNXC:GitHubImport 2026-07-15-15:30:
@@ -493,6 +500,7 @@ export function GitHubImportModal({ isOpen, onClose, onImport, tasks, projectId,
       setOwner("");
       setRepo("");
       setLabels(persisted?.labels ?? "");
+      setHideImported(persisted?.hideImported ?? false);
       setProvider(persisted?.provider ?? "github");
       setGitlabResource(persisted?.gitlabResource ?? "project_issue");
       setGitlabProject(persisted?.gitlabProject ?? "");
@@ -832,6 +840,7 @@ export function GitHubImportModal({ isOpen, onClose, onImport, tasks, projectId,
         selectedIssueNumber,
         selectedPullNumber,
         selectedGitlabKey,
+        hideImported,
       },
       projectId,
     );
@@ -849,6 +858,7 @@ export function GitHubImportModal({ isOpen, onClose, onImport, tasks, projectId,
     selectedIssueNumber,
     selectedPullNumber,
     selectedGitlabKey,
+    hideImported,
     projectId,
   ]);
 
@@ -1147,6 +1157,13 @@ export function GitHubImportModal({ isOpen, onClose, onImport, tasks, projectId,
     autoTranslateEnabled,
   });
 
+  useEffect(() => {
+    if (!hideImported) return;
+    if (selectedIssue && isUrlImported(selectedIssue.html_url)) setSelectedIssueNumber(null);
+    if (selectedPull && isUrlImported(selectedPull.html_url)) setSelectedPullNumber(null);
+    if (selectedGitlabItem && isUrlImported(selectedGitlabItem.webUrl)) setSelectedGitlabKey(null);
+  }, [hideImported, selectedIssue, selectedPull, selectedGitlabItem, isUrlImported]);
+
   if (!isOpen) return null;
 
   // Determine state flags
@@ -1156,6 +1173,17 @@ export function GitHubImportModal({ isOpen, onClose, onImport, tasks, projectId,
   // Tab-specific counts
   const importedIssueCount = issues.filter((issue) => isUrlImported(issue.html_url)).length;
   const importedPullCount = pulls.filter((pull) => isUrlImported(pull.html_url)).length;
+  /*
+  FNXC:GitHubImport 2026-07-15-16:30:
+  Hide imported removes imported rows from every provider's render set, while toggle-off preserves the original arrays and
+  imported counts always use the full fetched sets. Use `isUrlImported` so optimistic imports also disappear immediately.
+  */
+  const visibleIssues = hideImported ? issues.filter((issue) => !isUrlImported(issue.html_url)) : issues;
+  const visiblePulls = hideImported ? pulls.filter((pull) => !isUrlImported(pull.html_url)) : pulls;
+  const visibleGitlabItems = hideImported ? gitlabItems.filter((item) => !isUrlImported(item.webUrl)) : gitlabItems;
+  const allIssuesHidden = hideImported && issues.length > 0 && visibleIssues.length === 0;
+  const allPullsHidden = hideImported && pulls.length > 0 && visiblePulls.length === 0;
+  const allGitlabItemsHidden = hideImported && gitlabItems.length > 0 && visibleGitlabItems.length === 0;
 
   // Empty states
   const isIssuesEmpty = isIssuesEmptyState;
@@ -1357,12 +1385,20 @@ export function GitHubImportModal({ isOpen, onClose, onImport, tasks, projectId,
                   <div className="github-import-results-meta" aria-live="polite">
                     <span>{t("git.issueCount", { count: issues.length, defaultValue_one: "{{count}} issue", defaultValue_other: "{{count}} issues" })}</span>
                     <span>{t("git.importedCount", "{{count}} imported", { count: importedIssueCount })}</span>
+                    <label className="github-import-hide-imported">
+                      <input type="checkbox" checked={hideImported} onChange={(event) => setHideImported(event.target.checked)} data-testid="github-import-hide-imported-toggle" />
+                      {t("git.hideImported", "Hide imported")}
+                    </label>
                   </div>
                 )}
                 {activeTab === "pulls" && pulls.length > 0 && (
                   <div className="github-import-results-meta" aria-live="polite">
                     <span>{t("git.pullCount", { count: pulls.length, defaultValue_one: "{{count}} pull request", defaultValue_other: "{{count}} pull requests" })}</span>
                     <span>{t("git.importedCount", "{{count}} imported", { count: importedPullCount })}</span>
+                    <label className="github-import-hide-imported">
+                      <input type="checkbox" checked={hideImported} onChange={(event) => setHideImported(event.target.checked)} data-testid="github-import-hide-imported-toggle" />
+                      {t("git.hideImported", "Hide imported")}
+                    </label>
                   </div>
                 )}
               </div>
@@ -1405,10 +1441,16 @@ export function GitHubImportModal({ isOpen, onClose, onImport, tasks, projectId,
                   </div>
                 )}
 
+                {activeTab === "issues" && allIssuesHidden && (
+                  <div className="github-import-state github-import-state--empty" data-testid="github-import-all-imported-empty" role="status">
+                    <div><strong>{t("git.allImportedHidden", "All loaded items are already imported")}</strong></div>
+                  </div>
+                )}
+
                 {/* Issues list */}
-                {activeTab === "issues" && issues.length > 0 && (
+                {activeTab === "issues" && visibleIssues.length > 0 && (
                   <div className="issues-list" aria-live="polite">
-                    {issues.map((issue) => {
+                    {visibleIssues.map((issue) => {
                       const isImported = isUrlImported(issue.html_url);
                       return (
                         <div
@@ -1456,10 +1498,16 @@ export function GitHubImportModal({ isOpen, onClose, onImport, tasks, projectId,
                   </div>
                 )}
 
+                {activeTab === "pulls" && allPullsHidden && (
+                  <div className="github-import-state github-import-state--empty" data-testid="github-import-all-imported-empty" role="status">
+                    <div><strong>{t("git.allImportedHidden", "All loaded items are already imported")}</strong></div>
+                  </div>
+                )}
+
                 {/* Pulls list */}
-                {activeTab === "pulls" && pulls.length > 0 && (
+                {activeTab === "pulls" && visiblePulls.length > 0 && (
                   <div className="issues-list" aria-live="polite">
-                    {pulls.map((pull) => {
+                    {visiblePulls.map((pull) => {
                       const isImported = isUrlImported(pull.html_url);
                       return (
                         <div
@@ -1746,13 +1794,24 @@ export function GitHubImportModal({ isOpen, onClose, onImport, tasks, projectId,
                   {loading ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
                   {t("git.load", "Load")}
                 </button>
+                {gitlabItems.length > 0 && (
+                  <label className="github-import-hide-imported">
+                    <input type="checkbox" checked={hideImported} onChange={(event) => setHideImported(event.target.checked)} data-testid="github-import-hide-imported-toggle" />
+                    {t("git.hideImported", "Hide imported")}
+                  </label>
+                )}
               </div>
               {!gitlabEnabled && <div className="github-import-state github-import-state--idle" data-testid="gitlab-import-disabled"><strong>{t("git.gitlabDisabledHeading", "GitLab integration disabled")}</strong><span>{t("git.gitlabDisabledHint", "Enable GitLab integration in Settings to fetch or import GitLab resources. Saved GitLab URLs and tokens remain configured.")}</span></div>}
               {error && <div className="github-import-state github-import-state--error" data-testid="gitlab-import-error"><strong>{t("git.gitlabError", "GitLab import unavailable")}</strong><span>{error}</span></div>}
               {gitlabItems.length === 0 && !loading && !error ? <div className="github-import-state github-import-state--idle" data-testid="gitlab-import-empty"><strong>{t("git.gitlabNoResources", "No GitLab resources loaded")}</strong><span>{t("git.gitlabLoadHint", "Enter a project or group and load resources from the configured GitLab instance.")}</span></div> : null}
               <div className="github-import-gitlab__workspace">
+                {allGitlabItemsHidden ? (
+                  <div className="github-import-state github-import-state--empty" data-testid="github-import-all-imported-empty" role="status">
+                    <div><strong>{t("git.allImportedHidden", "All loaded items are already imported")}</strong></div>
+                  </div>
+                ) : visibleGitlabItems.length > 0 ? (
                 <div className="issues-list" aria-live="polite">
-                  {gitlabItems.map((item) => {
+                  {visibleGitlabItems.map((item) => {
                     const key = `${item.resourceKind}:${item.projectId ?? item.projectPath ?? ""}:${item.iid}`;
                     const imported = isUrlImported(item.webUrl);
                     return (
@@ -1763,6 +1822,7 @@ export function GitHubImportModal({ isOpen, onClose, onImport, tasks, projectId,
                     );
                   })}
                 </div>
+                ) : null}
                 {selectedGitlabItem && (
                   <FloatingWindow
                     windowKey="github-import-detail"
