@@ -56,7 +56,7 @@ import type { PostgresJsDatabase, PostgresJsTransaction } from "drizzle-orm/post
 import { randomUUID } from "node:crypto";
 import type { PostgresConnections } from "./connection.js";
 import * as schema from "./schema/index.js";
-import { PROJECT_SCHEMA, LEGACY_UNSCOPED_PROJECT_ID } from "./schema/_shared.js";
+import { PROJECT_SCHEMA } from "./schema/_shared.js";
 
 /**
  * FNXC:AsyncDataLayer 2026-06-24-09:00:
@@ -435,29 +435,4 @@ export function projectScopeFor(
 ): SQL | undefined {
   const scope = projectId?.trim();
   return scope ? eq(column, scope) : undefined;
-}
-
-/**
- * Resolve a project id to the partition a row is actually stored under.
- *
- * FNXC:MultiProjectIsolation 2026-07-15-22:05:
- * The counterpart to {@link projectScopeFor}, for tables where an unbound id is a PLACE rather
- * than an absence of scope — currently `project.__meta`, whose rows are migration guards
- * ("legacy file import, terminated-state migration, heartbeat-procedure-path migration").
- *
- * Those two readings are not interchangeable, and picking the wrong one for `__meta` corrupts
- * data rather than hiding it. `projectScopeFor` drops the predicate when unbound, so an unbound
- * `getMetaValue` would return whichever project's marker it found first — on the shared
- * embedded-PG cluster (one database, one `project` schema, every project's rows in one table)
- * project A's "migration complete" marker would tell project B to skip a migration it never ran.
- * An unscoped marker must resolve to one specific partition, which is what
- * upsertMetaValue documents: "the empty binding remains the explicit project-agnostic
- * compatibility partition".
- *
- * Writing the sentinel explicitly (rather than writing '' and letting the trigger COALESCE)
- * keeps the partition deterministic: a blank write from a session that happens to have
- * `fusion.project_id` set would otherwise land in THAT project instead of the shared one.
- */
-export function projectPartitionId(projectId: string | undefined): string {
-  return projectId?.trim() || LEGACY_UNSCOPED_PROJECT_ID;
 }

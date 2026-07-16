@@ -38,17 +38,6 @@ export const ARCHIVE_SCHEMA = "archive";
 export const DRIZZLE_MIGRATION_SCHEMA = "public";
 
 /**
- * The `project_id` value for rows that belong to no specific project.
- *
- * FNXC:MultiProjectIsolation 2026-07-15-22:05:
- * Written by the `fusion_assign_project_id` BEFORE INSERT trigger (migration 0006), which
- * rewrites a blank `project_id` to the session's `fusion.project_id` or, failing that, this
- * sentinel. Code that writes a blank id and then reads it back with `project_id = ''` finds
- * nothing, because '' is never what lands. Named here so call sites stop open-coding it.
- */
-export const LEGACY_UNSCOPED_PROJECT_ID = "__legacy_unscoped__";
-
-/**
  * All application schemas, in the order the applier creates them.
  * Plugin-owned tables are materialized separately via the schema-init hook
  * (VAL-SCHEMA-007), so they are not in this constant.

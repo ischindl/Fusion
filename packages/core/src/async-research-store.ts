@@ -21,7 +21,6 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { and, asc, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import * as schema from "./postgres/schema/index.js";
-import { projectScopeFor } from "./postgres/data-layer.js";
 import type { AsyncDataLayer, DbTransaction } from "./postgres/data-layer.js";
 import {
   ResearchLifecycleError,
@@ -252,8 +251,7 @@ export async function getActiveResearchRun(
     .from(schema.project.researchRuns)
     .where(
       and(
-        // FNXC:MultiProjectIsolation 2026-07-15-22:05: unbound reads across projects; a literal '' scope matched nothing (the migration-0006 trigger never stores ''). See projectScopeFor.
-        projectScopeFor(schema.project.researchRuns.projectId, projectId),
+        eq(schema.project.researchRuns.projectId, projectId),
         eq(schema.project.researchRuns.trigger, trigger),
         inArray(schema.project.researchRuns.status, ["queued", "running", "cancelling", "retry_waiting"]),
       ),

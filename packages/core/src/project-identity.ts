@@ -4,7 +4,6 @@ import { and, eq } from "drizzle-orm";
 import { DatabaseSync } from "./sqlite-adapter.js";
 import { createLogger } from "./logger.js";
 import * as schema from "./postgres/schema/index.js";
-import { projectPartitionId } from "./postgres/data-layer.js";
 import type { AsyncDataLayer } from "./postgres/data-layer.js";
 
 const log = createLogger("project-identity");
@@ -137,14 +136,7 @@ export function hasProjectIdentity(fusionDir: string): boolean {
 // ─────────────────────────────────────────────────────────────────────
 
 async function readMetaAsync(layer: AsyncDataLayer, key: string): Promise<string | null> {
-  /*
-  FNXC:MultiProjectIsolation 2026-07-15-22:05:
-  An unbound layer must resolve to the shared unscoped PARTITION, not to a literal '' scope: the
-  fusion_assign_project_id trigger (migration 0006) never stores '', so reading it back found no
-  identity stamp this code had just written. projectPartitionId, not projectScopeFor — dropping
-  the predicate here would read another project's stamp. Must match upsertMetaAsync exactly.
-  */
-  const projectId = projectPartitionId(layer.projectId);
+  const projectId = layer.projectId ?? "";
   const rows = await layer.db
     .select({ value: schema.project.projectMeta.value })
     .from(schema.project.projectMeta)
@@ -156,16 +148,11 @@ async function readMetaAsync(layer: AsyncDataLayer, key: string): Promise<string
 }
 
 async function upsertMetaAsync(layer: AsyncDataLayer, key: string, value: string): Promise<void> {
+  const projectId = layer.projectId ?? "";
   /*
   FNXC:PostgresMultiProjectCutover 2026-07-14-11:18:
   Backend identity reads and writes must use the data layer's project binding so one registered project cannot inherit or overwrite another project's PostgreSQL __meta stamp.
-
-  FNXC:MultiProjectIsolation 2026-07-15-22:05:
-  Write the resolved partition explicitly rather than a blank the trigger rewrites. A blank write
-  from a session carrying `fusion.project_id` would land in THAT project's stamp — the exact
-  cross-project inheritance the note above forbids. Must match readMetaAsync exactly.
   */
-  const projectId = projectPartitionId(layer.projectId);
   await layer.db
     .insert(schema.project.projectMeta)
     .values({ projectId, key, value })
