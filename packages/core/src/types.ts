@@ -3892,6 +3892,16 @@ export interface ProjectSettings {
    *  characters will automatically receive an AI-generated title (max 60 chars).
    *  Default: false. */
   autoSummarizeTitles?: boolean;
+  /*
+  FNXC:TaskDefinitionInputLanguage 2026-07-16-05:00:
+  This opt-in localizes only planner-authored task-definition prose for supported detectable
+  locales (en/es/fr/ko/zh-CN). Chinese always resolves to zh-CN because Traditional Chinese
+  is not variant-detected; headings, markers, code, and unsupported input such as Japanese
+  remain canonical English so deterministic PROMPT.md gates keep parsing safely.
+  */
+  /** When true, writes generated task-definition prose in the operator's detected supported
+   *  input language. Default: false; uncertain or unsupported input falls back to English. */
+  taskDefinitionInInputLanguage?: boolean;
   /** When true, merge commit messages include an AI-generated summary of the
    *  changes instead of just listing step commit subjects. Body composition
    *  includes a narrative line, bullet summary, and `git diff --stat` when

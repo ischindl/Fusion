@@ -255,6 +255,7 @@ const SETTING_DESCRIPTION_KEYS: Record<string, string> = {
   // ProjectModelsSection
   autoSelectModelPreset: "projectModels.autoSelectModelPresetHint",
   autoSummarizeTitles: "projectModels.whenEnabledTasksCreatedWithoutATitleBut",
+  taskDefinitionInInputLanguage: "projectModels.taskDefinitionInInputLanguageHelp",
   defaultPresetBySize: "projectModels.autoSelectModelPresetHint",
   modelPresets: "projectModels.autoSelectModelPresetHint",
   prDescriptionPromptInstructions: "projectModels.prDescriptionPromptInstructionsHelp",

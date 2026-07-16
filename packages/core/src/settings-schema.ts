@@ -617,6 +617,13 @@ export const DEFAULT_PROJECT_SETTINGS = {
   memoryBackupDir: ".fusion/backups/memory",
   memoryBackupScope: "all" as const,
   autoSummarizeTitles: false,
+  /*
+  FNXC:TaskDefinitionInputLanguage 2026-07-16-05:00:
+  Default off preserves byte-faithful English task definitions unless operators opt into
+  prose localization for the detector's supported locales (en/es/fr/ko/zh-CN); zh-TW is
+  not variant-detected and unsupported input, including Japanese, remains English.
+  */
+  taskDefinitionInInputLanguage: false,
   useAiMergeCommitSummary: true,
   // Title-summarizer model lanes stay project-scoped (not moved in U4).
   titleSummarizerProvider: undefined,

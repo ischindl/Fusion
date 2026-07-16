@@ -463,6 +463,24 @@ describe("ProjectModelsSection", () => {
     expect(screen.getByTestId("mock-model-dropdown-preset-validator-model")).toHaveAttribute("data-menu-width", "readable");
   });
 
+  it("renders and updates the supported input-language task-definition toggle", () => {
+    const setForm = vi.fn();
+    render(
+      <ProjectModelsSection
+        form={{ taskDefinitionInInputLanguage: false } as SettingsFormState}
+        setForm={setForm}
+        models={models}
+        addToast={vi.fn()}
+      />,
+    );
+
+    const toggle = screen.getByRole("checkbox", { name: "Write task definitions in the operator's input language" });
+    expect(toggle).not.toBeChecked();
+    expect(screen.getByText(/supported detectable input languages/i)).toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(setForm).toHaveBeenCalled();
+  });
+
   it("colocates summarization model controls with AI summarization settings", () => {
     render(
       <ProjectModelsSection

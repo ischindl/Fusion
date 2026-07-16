@@ -732,6 +732,23 @@ export function ProjectModelsSection({ form, setForm, models, projectId, onOpenW
             </div>))}
         </div>) : null}
 
+      {/*
+      FNXC:TaskDefinitionInputLanguage 2026-07-16-05:00:
+      Keep task-definition language outside title and merge summarization controls: it changes
+      triage authoring only, uses no summarizer lane, and is opt-in for supported detectable
+      languages. The shared toggle row carries the responsive Project Models layout.
+      */}
+      <SettingsToggleRow
+        descriptor={{
+          key: "taskDefinitionInInputLanguage",
+          label: t("settings.projectModels.taskDefinitionInInputLanguage", "Write task definitions in the operator's input language"),
+          help: t("settings.projectModels.taskDefinitionInInputLanguageHelp", "When enabled, generated task-definition prose uses supported detectable input languages (Spanish, French, Korean, or Chinese as zh-CN). Headings, markers, and code stay English. Unsupported or undetectable input stays English. Default: disabled."),
+          scope: "project",
+        }}
+        value={form.taskDefinitionInInputLanguage || false}
+        onChange={(v) => setForm((f) => ({ ...f, taskDefinitionInInputLanguage: v === true }))}
+      />
+
       {/* --- AI Title and Git Commit Message Summarization --- */}
       <section data-testid="project-models-ai-summarization">
         {/*
