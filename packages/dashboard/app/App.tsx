@@ -1838,6 +1838,13 @@ function AppInner() {
           hideHeader
           dragHandleSelector=".chat-view--floating .view-header"
           className="floating-window--chat"
+          layer="task-detail"
+          /*
+          FNXC:ChatModal 2026-07-17-15:55:
+          Quick Chat and task-detail popups must share the task popup interaction stack: either
+          overlapping surface claims the front on pointer/focus. Other utility FloatingWindows keep
+          their higher utility band, so this scoped opt-in cannot change Terminal, Files, or New Task.
+          */
           /* FNXC:ModalGeometryPersistence 2026-07-15-19:30: Chat is a full-screen sheet at ≤768px, so preserve its desktop location and size instead of restoring or overwriting them there. */
           suspendGeometryPersistenceOnMobile
           persistGeometryKey="kb-dashboard-chat-floating-window"
@@ -1874,8 +1881,10 @@ function AppInner() {
       FNXC:TaskPopupGeometry 2026-07-03-00:00:
       Every task-detail FloatingWindow keeps its per-task windowKey for DOM identity, dedupe, cascade fallback, and z-index independence, but all task-detail popups share one persisted geometry key so operators do not resize or reposition the popup between tasks.
 
-      FNXC:TaskPopupLayer 2026-07-04-18:36:
-      Ordinary task-detail popups belong to the board/task-detail layer, not the global floating-utility stack. Pass the task-detail layer so board/right-dock task opens preserve the visible board context while utility windows keep the higher app-wide raise/focus contract.
+      FNXC:TaskPopupLayer 2026-07-17-15:55:
+      Task-detail popups and Quick Chat share the task-detail interaction stack, so pointer/focus
+      moves either overlapping surface above the other. Other utility windows retain their separate,
+      higher utility band and cannot be reordered by task-popup interaction.
 
       FNXC:TaskPopupViewGating 2026-07-15-15:20:
       Rendering uses only the active view's scoped entries; state keeps hidden snapshots so returning remounts them with shared geometry. Each FloatingWindow key includes its origin so identical task ids never collide across views.
