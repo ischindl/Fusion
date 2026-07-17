@@ -34,6 +34,10 @@ describe("getTaskStatusBadgeLabel", () => {
     expect(getTaskStatusBadgeLabel("merging-fix", t)).toBe("Merging fixes…");
   });
 
+  it("maps needs-replan to the operator-facing Replan label", () => {
+    expect(getTaskStatusBadgeLabel("needs-replan", t)).toBe("Replan");
+  });
+
   it("passes through non-merge statuses", () => {
     expect(getTaskStatusBadgeLabel("planning", t)).toBe("planning");
     expect(getTaskStatusBadgeLabel("failed", t)).toBe("failed");

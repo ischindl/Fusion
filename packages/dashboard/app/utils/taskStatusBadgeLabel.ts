@@ -30,5 +30,13 @@ export function getTaskStatusBadgeLabel(
   if (isActiveMergeStatus(status)) {
     return t("tasks.statusMerging", "Merging…");
   }
+  /*
+  FNXC:TaskStatusBadge 2026-07-28-00:00:
+  FN-8195 requires the raw engine status "needs-replan" to appear as "Replan" on board cards
+  and list rows. Keep the task.status token unchanged and map centrally so both consumers agree.
+  */
+  if (status === "needs-replan") {
+    return t("tasks.statusReplan", "Replan");
+  }
   return status;
 }
