@@ -33,6 +33,14 @@ function hasProjectArg(script: string | undefined, project: string): boolean {
   return parts.some((part, index) => part === "--project" && parts[index + 1] === project);
 }
 
+/*
+FNXC:DependencyPinning 2026-07-17-12:00:
+FN-8201 requires source and prepack-transformed manifests to keep pi-ai and
+pi-coding-agent as one exact version pair, because npm global installation does
+not honor pnpm-lock.yaml when resolving package dependency ranges.
+*/
+const EXACT_SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+
 function assertRuntimeDepsAreNotOptionalPeers(pkg: any, label: string): void {
   const dependencies = pkg.dependencies ?? {};
   const peerDependencies = pkg.peerDependencies ?? {};
@@ -48,7 +56,10 @@ function assertRuntimeDepsAreNotOptionalPeers(pkg: any, label: string): void {
   for (const dependencyName of ["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai"]) {
     expect(dependencies, `${label}: ${dependencyName} must remain a required runtime dependency`).toHaveProperty(
       dependencyName,
-      "^0.80.6",
+      "0.80.10",
+    );
+    expect(dependencies[dependencyName], `${label}: ${dependencyName} must be a clean exact semver`).toMatch(
+      EXACT_SEMVER,
     );
     expect(peerDependencies, `${label}: ${dependencyName} must not be a peer dependency`).not.toHaveProperty(
       dependencyName,
@@ -57,6 +68,11 @@ function assertRuntimeDepsAreNotOptionalPeers(pkg: any, label: string): void {
       dependencyName,
     );
   }
+
+  expect(
+    dependencies["@earendil-works/pi-ai"],
+    `${label}: pi-ai and pi-coding-agent must remain a matched exact version pair`,
+  ).toBe(dependencies["@earendil-works/pi-coding-agent"]);
 
   expect(dependencies, `${label}: typebox must not be promoted into runtime dependencies`).not.toHaveProperty(
     "typebox",
