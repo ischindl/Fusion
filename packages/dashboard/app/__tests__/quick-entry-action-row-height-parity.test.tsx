@@ -205,7 +205,7 @@ describe("quick-entry action row height parity (FN-7680)", () => {
     expect(mobileBlockMatch![1].trim()).toBe("var(--quick-entry-action-row-height-mobile)");
   });
 
-  it("enlarges only mobile icon-forward glyphs with tokenized sizing and tightens horizontal gaps", () => {
+  it("enlarges every mobile action-row glyph with tokenized sizing and tightens horizontal spacing", () => {
     const cssContent = loadAllAppCss();
     const markerStart = cssContent.indexOf("Quick Entry Mobile Touch + Overflow Fixes");
     expect(markerStart).toBeGreaterThan(-1);
@@ -215,28 +215,37 @@ describe("quick-entry action row height parity (FN-7680)", () => {
     expect(sectionEnd).toBeGreaterThan(sectionStart);
     const mobileSection = cssContent.slice(sectionStart, sectionEnd);
 
-    // FNXC:QuickAddActionRow 2026-07-16-15:00: JSDOM cannot resolve CSS vars or
+    // FNXC:QuickAddActionRow 2026-07-16-16:00: JSDOM cannot resolve CSS vars or
     // render mocked lucide glyphs, so source-contract assertions prove the
-    // mobile-only cascade keeps the 36px target while making its small 12/14px
-    // icon-forward glyphs read proportionately and compactly.
+    // mobile-only cascade covers both option and primary groups. The broad
+    // primary-group selector includes the session-advisor glyph rather than
+    // leaving it at its inline 14px size.
     const iconRule = mobileSection.match(
-      /\.quick-entry-primary-group \.btn-icon svg,\s*\n\s*\.quick-entry-primary-group \[data-testid="quick-entry-priority-button"\] svg,\s*\n\s*\.quick-entry-primary-group \[data-testid="quick-entry-fast-toggle"\] svg\s*\{([^}]*)\}/,
+      /\.quick-entry-options-group svg,\s*\n\s*\.quick-entry-primary-group svg\s*\{([^}]*)\}/,
     );
     expect(iconRule).not.toBeNull();
-    expect(iconRule![1]).toMatch(/width:\s*var\(--space-lg\);/);
-    expect(iconRule![1]).toMatch(/height:\s*var\(--space-lg\);/);
+    expect(iconRule![1]).toMatch(/width:\s*calc\(var\(--space-md\) \+ var\(--space-sm\)\);/);
+    expect(iconRule![1]).toMatch(/height:\s*calc\(var\(--space-md\) \+ var\(--space-sm\)\);/);
     expect(iconRule![1]).not.toMatch(/\d+(?:\.\d+)?px/);
 
-    const tokenValue = loadStylesCss().match(/--space-lg:\s*(\d+)px;/);
-    expect(tokenValue).not.toBeNull();
-    expect(Number(tokenValue![1])).toBeGreaterThan(14);
+    const stylesCss = loadStylesCss();
+    const mediumToken = stylesCss.match(/--space-md:\s*(\d+)px;/);
+    const smallToken = stylesCss.match(/--space-sm:\s*(\d+)px;/);
+    expect(mediumToken).not.toBeNull();
+    expect(smallToken).not.toBeNull();
+    expect(Number(mediumToken![1]) + Number(smallToken![1])).toBeGreaterThan(16);
 
     const actionGapRule = mobileSection.match(/\.quick-entry-actions\s*\{([^}]*)\}/);
     const optionGapRule = mobileSection.match(/\.quick-entry-options-group\s*\{([^}]*)\}/);
+    const compactControlRule = mobileSection.match(
+      /\.quick-entry-options-group \.btn,\s*\n\s*\.quick-entry-options-group \.wf-optional-steps-dropdown-trigger,\s*\n\s*\.quick-entry-primary-group \.btn-icon\s*\{([^}]*)\}/,
+    );
     expect(actionGapRule?.[1]).toMatch(/column-gap:\s*var\(--space-xs\);/);
     expect(optionGapRule?.[1]).toMatch(/column-gap:\s*var\(--space-xs\);/);
-    expect(actionGapRule?.[1]).not.toMatch(/\d+(?:\.\d+)?px/);
-    expect(optionGapRule?.[1]).not.toMatch(/\d+(?:\.\d+)?px/);
+    expect(compactControlRule?.[1]).toMatch(/padding-inline:\s*var\(--space-sm\);/);
+    for (const ruleBody of [actionGapRule?.[1], optionGapRule?.[1], compactControlRule?.[1], iconRule![1]]) {
+      expect(ruleBody).not.toMatch(/\d+(?:\.\d+)?px/);
+    }
 
     const baseOnlyCss = loadAllAppCssBaseOnly();
     const desktopRule = baseOnlyCss.match(
@@ -245,7 +254,7 @@ describe("quick-entry action row height parity (FN-7680)", () => {
     expect(desktopRule).not.toBeNull();
     expect(desktopRule![1]).toMatch(/min-height:\s*var\(--quick-entry-action-row-height-desktop\);/);
     expect(desktopRule![1]).toMatch(/max-height:\s*var\(--quick-entry-action-row-height-desktop\);/);
-    expect(desktopRule![1]).not.toMatch(/(?:width|height):\s*var\(--space-lg\)/);
+    expect(desktopRule![1]).not.toMatch(/(?:^|[;\n]\s*)(?:width|height):/);
 
     const mobileHeightRule = mobileSection.match(
       /\.quick-entry-actions \.btn,\s*\n\s*\.quick-entry-actions \.wf-optional-steps-dropdown-trigger\s*\{([^}]*)\}/,
