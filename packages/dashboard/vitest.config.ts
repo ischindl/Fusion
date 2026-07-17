@@ -596,6 +596,10 @@ export default defineConfig({
         __dirname,
         "../../plugins/fusion-plugin-grok-runtime/src/index.ts",
       ),
+      "@fusion-plugin-examples/claude-runtime": resolve(
+        __dirname,
+        "../../plugins/fusion-plugin-claude-runtime/src/index.ts",
+      ),
       /*
       FNXC:OmpAcp 2026-07-11-23:35:
       runtime-provider-probes.ts imports probeOmpBinary from @fusion-plugin-examples/omp-runtime.
