@@ -1236,6 +1236,96 @@ describe("GitHubImportModal", () => {
     });
 
     /*
+    FNXC:GitHubImportTranslate 2026-07-17-15:48:
+    List-level translation remains non-blocking, but its asynchronous state must be visible while a page
+    is translating and must leave no aria-live shell after success, error, disabled auto-translate, or tab changes.
+    */
+    it("announces auto-translation progress, completion, and fail-soft errors", async () => {
+      const issue = { number: 1, title: "Foreign issue", body: "Foreign body", html_url: "https://github.com/owner/repo/issues/1", labels: [] };
+      let resolveTranslation: ((value: { enabled: boolean; targetLocale: string; capped: boolean; translations: Record<string, { title: string; body: string }> }) => void) | undefined;
+      const pendingTranslation = new Promise<{ enabled: boolean; targetLocale: string; capped: boolean; translations: Record<string, { title: string; body: string }> }>((resolve) => {
+        resolveTranslation = resolve;
+      });
+      vi.mocked(fetchGitRemotes).mockResolvedValueOnce(singleRemote);
+      vi.mocked(fetchSettings).mockResolvedValue({ gitlabEnabled: true, githubImportAutoTranslate: true } as never);
+      vi.mocked(apiFetchGitHubIssues).mockResolvedValueOnce([issue]);
+      vi.mocked(autoTranslateImportIssues).mockReturnValueOnce(pendingTranslation as never);
+
+      render(<GitHubImportModal isOpen onClose={onClose} onImport={onImport} tasks={[]} />);
+
+      const status = await screen.findByTestId("github-import-autotranslate-status");
+      expect(status).toHaveAttribute("role", "status");
+      expect(status).toHaveAttribute("aria-live", "polite");
+      expect(within(status).getByText("Translating…")).toBeTruthy();
+
+      resolveTranslation?.({
+        enabled: true,
+        targetLocale: "en",
+        capped: false,
+        translations: { 1: { title: "Translated issue", body: "Translated body" } },
+      });
+      await screen.findByText("Translated issue");
+      await waitFor(() => expect(screen.queryByTestId("github-import-autotranslate-status")).toBeNull());
+
+      vi.mocked(apiFetchGitHubIssues).mockResolvedValueOnce([issue]);
+      vi.mocked(autoTranslateImportIssues).mockRejectedValueOnce(new Error("Translation unavailable"));
+      fireEvent.click(screen.getByRole("button", { name: /Load issues/i }));
+      const errorStatus = await screen.findByTestId("github-import-autotranslate-status");
+      expect(within(errorStatus).getByText("Failed to translate content. Please try again.")).toBeTruthy();
+    });
+
+    it("keeps translation status visible after earlier chunks have landed", async () => {
+      const issues = Array.from({ length: 9 }, (_, index) => ({
+        number: index + 1,
+        title: `Foreign issue ${index + 1}`,
+        body: `Foreign body ${index + 1}`,
+        html_url: `https://github.com/owner/repo/issues/${index + 1}`,
+        labels: [],
+      }));
+      let resolveFinalChunk: ((value: { enabled: boolean; targetLocale: string; capped: boolean; translations: Record<string, { title: string; body: string }> }) => void) | undefined;
+      const finalChunk = new Promise<{ enabled: boolean; targetLocale: string; capped: boolean; translations: Record<string, { title: string; body: string }> }>((resolve) => {
+        resolveFinalChunk = resolve;
+      });
+      vi.mocked(fetchGitRemotes).mockResolvedValueOnce(singleRemote);
+      vi.mocked(fetchSettings).mockResolvedValue({ gitlabEnabled: true, githubImportAutoTranslate: true } as never);
+      vi.mocked(apiFetchGitHubIssues).mockResolvedValueOnce(issues);
+      vi.mocked(autoTranslateImportIssues)
+        .mockResolvedValueOnce({
+          enabled: true,
+          targetLocale: "en",
+          capped: false,
+          translations: Object.fromEntries(issues.slice(0, 8).map((issue) => [issue.number, { title: `Translated ${issue.number}`, body: issue.body }])),
+        })
+        .mockReturnValueOnce(finalChunk as never);
+
+      render(<GitHubImportModal isOpen onClose={onClose} onImport={onImport} tasks={[]} />);
+
+      await screen.findByText("Translated 1");
+      expect(screen.getByTestId("github-import-autotranslate-status")).toBeTruthy();
+      resolveFinalChunk?.({
+        enabled: true,
+        targetLocale: "en",
+        capped: false,
+        translations: { 9: { title: "Translated 9", body: "Translated body" } },
+      });
+      await screen.findByText("Translated 9");
+      await waitFor(() => expect(screen.queryByTestId("github-import-autotranslate-status")).toBeNull());
+    });
+
+    it("omits auto-translation status when disabled or outside the issues tab", async () => {
+      const issue = { number: 1, title: "Foreign issue", body: "Foreign body", html_url: "https://github.com/owner/repo/issues/1", labels: [] };
+      vi.mocked(fetchGitRemotes).mockResolvedValueOnce(singleRemote);
+      vi.mocked(apiFetchGitHubIssues).mockResolvedValueOnce([issue]);
+
+      render(<GitHubImportModal isOpen onClose={onClose} onImport={onImport} tasks={[]} />);
+      await screen.findByText("Foreign issue");
+      expect(screen.queryByTestId("github-import-autotranslate-status")).toBeNull();
+
+      fireEvent.click(screen.getByRole("tab", { name: /Pull Requests/i }));
+      expect(screen.queryByTestId("github-import-autotranslate-status")).toBeNull();
+    });
+
+    /*
     FNXC:GitHubImport 2026-07-16-16:20:
     Page controls for repos with >1 page (30/page). Asserts page 1 shows only the first 30, the pager reports
     the right page/total, and Next reveals the next page — the behavior missing when the list was capped at 30.

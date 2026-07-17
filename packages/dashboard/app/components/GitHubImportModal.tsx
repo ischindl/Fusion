@@ -1762,6 +1762,35 @@ export function GitHubImportModal({ isOpen, onClose, onImport, tasks, projectId,
                 )}
               </div>
 
+              {/*
+              FNXC:GitHubImportTranslate 2026-07-17-15:48:
+              Eager list translation is intentionally background and fail-soft, but operators need a visible,
+              polite announcement while chunks are in flight and when a chunk fails. Render no container while
+              idle so auto-translate-off and cache-served loads leave no empty status shell in the issues list.
+              */}
+              {provider === "github" && activeTab === "issues" && (autoTranslate.loading || autoTranslate.error) && (
+                <div
+                  className="github-import-autotranslate-status"
+                  data-testid="github-import-autotranslate-status"
+                  role="status"
+                  aria-live="polite"
+                >
+                  {autoTranslate.loading && (
+                    <div className="github-import-autotranslate-status__working">
+                      <span className="status-dot status-dot--connecting" aria-hidden="true" />
+                      <Loader2 size={14} className="spin" aria-hidden="true" />
+                      <span>{t("git.translateWorking", "Translating…")}</span>
+                    </div>
+                  )}
+                  {autoTranslate.error && (
+                    <div className="github-import-autotranslate-status__error">
+                      <span className="status-dot status-dot--error" aria-hidden="true" />
+                      <span>{autoTranslate.error}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="github-import-pane-content">
                 {!hasResultsContent && (
                   <div className="github-import-state github-import-state--idle" data-testid="github-import-results-idle">
