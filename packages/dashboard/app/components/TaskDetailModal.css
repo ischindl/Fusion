@@ -3427,10 +3427,22 @@ Live and Feed Activity expansion overlays the content instead of reserving a too
     margin-left: 0;
   }
 
+  /*
+  FNXC:TaskDetailModalResponsive 2026-07-16-00:00:
+  FN-8189 hides the mobile `.detail-body` scrollbar so a non-overlay vertical
+  track cannot reserve right-edge layout space and recreate the lopsided gutter
+  fixed by FN-8166. Keep touch scrolling automatic; desktop retains its thin,
+  visible scrollbar outside this breakpoint.
+  */
   .detail-body {
     padding: calc(var(--space-md) + var(--space-xs) / 2);
     overflow-x: hidden;
     overflow-y: auto;
+    scrollbar-width: none;
+  }
+
+  .detail-body::-webkit-scrollbar {
+    display: none;
   }
 
   .detail-title {

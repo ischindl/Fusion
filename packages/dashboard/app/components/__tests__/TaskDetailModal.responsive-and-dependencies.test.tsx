@@ -732,6 +732,61 @@ describe("TaskDetailModal", () => {
       }
     });
 
+    it("FN-8189 hides only the mobile detail-body scrollbar to preserve symmetric task-detail insets", () => {
+      const css = readDashboardStylesSource();
+      const baseDetailBodyBlock = getExactCssRuleBlock(css, ".detail-body");
+      const baseScrollbarBlock = getExactCssRuleBlock(css, ".detail-body::-webkit-scrollbar");
+      const mobileBlock = getCssAtRuleBlockContainingExactRule(css, "@media (max-width: 768px)", ".detail-body");
+      const mobileDetailBodyBlock = getExactCssRuleBlock(mobileBlock, ".detail-body");
+      const mobileScrollbarBlock = getExactCssRuleBlock(mobileBlock, ".detail-body::-webkit-scrollbar");
+      const mobileActivityBlock = getExactCssRuleBlock(mobileBlock, ".detail-activity");
+      const mobileInterventionsBlock = getExactCssRuleBlock(mobileBlock, ".detail-activity--interventions");
+      const mobilePrBlock = getExactCssRuleBlock(
+        getCssAtRuleBlockContainingExactRule(css, "@media (max-width: 768px)", ".detail-pr-tab"),
+        ".detail-pr-tab",
+      );
+      const embeddedBodyBlock = getExactCssRuleBlock(
+        css,
+        ".task-detail-content--embedded .modal-header,\n.task-detail-content--embedded .detail-body,\n.task-detail-content--embedded .detail-tabs,\n.task-detail-content--embedded .modal-actions",
+      );
+      const allMobileCss = getCssAtRuleBlocks(css, "@media (max-width: 768px)").join("\n");
+
+      expect(baseDetailBodyBlock).toContain("scrollbar-width: thin;");
+      expect(baseScrollbarBlock).toContain("width: 6px;");
+      expect(mobileDetailBodyBlock).toContain("padding: calc(var(--space-md) + var(--space-xs) / 2);");
+      expect(mobileDetailBodyBlock).toContain("overflow-x: hidden;");
+      expect(mobileDetailBodyBlock).toContain("overflow-y: auto;");
+      expect(mobileDetailBodyBlock).toContain("scrollbar-width: none;");
+      expect(mobileScrollbarBlock).toContain("display: none;");
+
+      expect(mobileActivityBlock).toContain("padding-inline-end: 0;");
+      expect(mobileBlock).toContain("padding-inline-end: calc(var(--space-2xl) + var(--space-sm));");
+      expect(mobileInterventionsBlock).toContain("padding-inline-end: 0;");
+      expect(mobilePrBlock.trim()).toBe("gap: var(--space-md);");
+      expect(allMobileCss).not.toMatch(/\.task-changes-tab\s*\{[^}]*\bpadding(?:-[\w-]+)?\s*:/);
+      expect(embeddedBodyBlock).toContain("width: 100%;");
+      expect(embeddedBodyBlock).toContain("min-width: 0;");
+      expect(embeddedBodyBlock).toContain("max-width: 100%;");
+
+      for (const selector of [
+        ".detail-section",
+        ".detail-section--plan-prompt",
+        ".detail-section--original-prompt",
+        ".detail-body--chat",
+        ".detail-section--chat",
+        ".detail-body--agent-log",
+        ".detail-body--planner-chat",
+      ]) {
+        const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const exactSelector = `${escapedSelector}(?![-\\w])`;
+        const declarations = [...neutralizeCssCommentBraces(allMobileCss).matchAll(new RegExp(`${exactSelector}[^{}]*\\{([^{}]*)\\}`, "g"))]
+          .map((match) => match[1])
+          .join("\n");
+        expect(declarations, `${selector} mobile right inset`).not.toMatch(/\bpadding-(?:inline-end|right)\s*:/);
+        expect(declarations, `${selector} mobile asymmetric padding`).not.toMatch(/\bpadding\s*:/);
+      }
+    });
+
     it("renders responsive structural classes (modal-lg, overlay, spacer, tabs, detail-body)", () => {
       const { container } = render(
         <TaskDetailModal
