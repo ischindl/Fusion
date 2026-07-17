@@ -2467,6 +2467,11 @@
     "taskMatches": "Tâches correspondantes"
   },
   "git": {
+    "addComment": "Add comment",
+    "addCommentPlaceholder": "Write a comment…",
+    "commentAuthorYou": "You",
+    "commentPosted": "Comment posted",
+    "failedToPostComment": "Failed to post comment",
     "add": "Ajouter",
     "addRemote": "Ajouter un distant",
     "advancesHelpFix": "<strong>Correctif :</strong> Fusion n'affiche <em>Synchroniser l'arbre de travail</em> que lorsqu'au moins une avance est réellement <code>pending</code> et que HEAD n'est pas aligné sur la pointe d'intégration. Si les entrées sont déjà traitées (subsumed/orphaned/reachable/superseded), aucune action de synchronisation n'est proposée.",

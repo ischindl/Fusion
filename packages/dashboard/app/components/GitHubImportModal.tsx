@@ -9,6 +9,7 @@ import {
   apiFetchGitHubPullDetail,
   apiFetchGitHubIssueDetail,
   apiCloseGitHubIssue,
+  apiAddGitHubIssueComment,
   apiImportGitHubPull,
   apiImportGitHubComment,
   apiFetchGitLabProjectIssues,
@@ -529,6 +530,8 @@ export function GitHubImportModal({ isOpen, onClose, onImport, tasks, projectId,
   const [closingIssue, setClosingIssue] = useState(false);
   const [closeToast, setCloseToast] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const closeToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [commentBody, setCommentBody] = useState("");
+  const [addingComment, setAddingComment] = useState(false);
   // FNXC:GitHubImport 2026-07-16-17:00: Track check-task submission by name + row index so duplicate GitHub check names never disable each other's controls.
   const [creatingCheckFixTaskRows, setCreatingCheckFixTaskRows] = useState<Set<string>>(new Set());
   const [checkFixTaskToast, setCheckFixTaskToast] = useState<{ type: "success" | "error"; message: string } | null>(null);
@@ -1268,6 +1271,45 @@ export function GitHubImportModal({ isOpen, onClose, onImport, tasks, projectId,
     }
   }, [selectedIssueNumber, owner, repo, t, confirm]);
 
+  /*
+  FNXC:GitHubImport 2026-07-17-12:00:
+  This composer posts a NEW upstream GitHub issue comment, rather than importing an existing
+  comment as a Fusion task. On success it updates both issue-detail surfaces so the shared
+  CommentsThread remains immediate and cache-first reselection does not lose the posted comment.
+  */
+  const handleAddIssueComment = useCallback(async () => {
+    const body = commentBody.trim();
+    if (selectedIssueNumber === null || !owner.trim() || !repo.trim() || !body) return;
+
+    const issueNumber = selectedIssueNumber;
+    const repository = `${owner.trim()}/${repo.trim()}`;
+    setAddingComment(true);
+    if (closeToastTimerRef.current) clearTimeout(closeToastTimerRef.current);
+    setCloseToast(null);
+    try {
+      await apiAddGitHubIssueComment(repository, issueNumber, body);
+      const postedComment: GitHubCommentDetail = {
+        author: t("git.commentAuthorYou", "You"),
+        body,
+        createdAt: new Date().toISOString(),
+        authorIsBot: false,
+      };
+      const cachedDetail = issueDetailCacheRef.current.get(issueNumber) ?? { comments: [] };
+      issueDetailCacheRef.current.set(issueNumber, {
+        ...cachedDetail,
+        comments: [...cachedDetail.comments, postedComment],
+      });
+      setIssueDetail((current) => current ? { ...current, comments: [...current.comments, postedComment] } : { comments: [postedComment] });
+      setCommentBody("");
+      setCloseToast({ type: "success", message: t("git.commentPosted", "Comment posted") });
+    } catch (err: unknown) {
+      setCloseToast({ type: "error", message: getErrorMessage(err) });
+    } finally {
+      setAddingComment(false);
+      closeToastTimerRef.current = setTimeout(() => setCloseToast(null), 4000);
+    }
+  }, [commentBody, selectedIssueNumber, owner, repo, t]);
+
   const selectedIssue = issues.find((i) => i.number === selectedIssueNumber);
   const selectedPull = pulls.find((p) => p.number === selectedPullNumber);
 
@@ -1891,7 +1933,7 @@ export function GitHubImportModal({ isOpen, onClose, onImport, tasks, projectId,
                   role="status"
                   data-testid="github-import-issue-close-toast"
                 >
-                  {closeToast.message}
+                  <span data-testid="github-import-issue-comment-toast">{closeToast.message}</span>
                 </div>
               )}
 
@@ -2125,6 +2167,30 @@ export function GitHubImportModal({ isOpen, onClose, onImport, tasks, projectId,
               The detail action remains Import for issues, while pull requests are explicitly Resolve feedback so their imported task covers reviewer feedback and failed checks. Close issue remains to its left and is unaffected.
               */}
               <div className="github-import-detail-actions" data-testid="github-import-detail-actions">
+                {activeTab === "issues" && selectedIssue && (
+                  <form
+                    className="github-import-issue-comment-composer"
+                    onSubmit={(event) => { event.preventDefault(); void handleAddIssueComment(); }}
+                  >
+                    <textarea
+                      className="input github-import-issue-comment-composer__input"
+                      data-testid="github-import-issue-comment-input"
+                      value={commentBody}
+                      onChange={(event) => setCommentBody(event.target.value)}
+                      placeholder={t("git.addCommentPlaceholder", "Write a comment…")}
+                      aria-label={t("git.addComment", "Add comment")}
+                      disabled={addingComment}
+                    />
+                    <button
+                      type="submit"
+                      className="btn btn-primary github-import-issue-comment-composer__submit"
+                      data-testid="github-import-issue-comment-submit"
+                      disabled={!commentBody.trim() || addingComment}
+                    >
+                      {addingComment ? <Loader2 size={14} className="spin" /> : t("git.addComment", "Add comment")}
+                    </button>
+                  </form>
+                )}
                 {activeTab === "issues" && selectedIssue && !selectedIssueClosed && (
                   <button
                     className="btn btn-danger github-import-issue-close"

@@ -69,6 +69,54 @@ describe("GitHubClient", () => {
     });
   });
 
+  describe("addIssueComment", () => {
+    it("posts through gh CLI when authenticated", async () => {
+      mockRunGhAsync.mockResolvedValue("");
+
+      await client.addIssueComment("owner", "repo", 42, "A new comment");
+
+      expect(mockRunGhAsync).toHaveBeenCalledWith([
+        "issue", "comment", "42", "--repo", "owner/repo", "--body", "A new comment",
+      ]);
+    });
+
+    it("falls back to REST when gh is unavailable and a token exists", async () => {
+      mockIsGhAvailable.mockReturnValue(false);
+      mockIsGhAuthenticated.mockReturnValue(false);
+      const tokenClient = new GitHubClient("ghp_token");
+      const fetchSpy = vi.spyOn(global, "fetch" as any).mockResolvedValue({ ok: true } as any);
+
+      await tokenClient.addIssueComment("owner", "repo", 42, "A new comment");
+
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "https://api.github.com/repos/owner/repo/issues/42/comments",
+        expect.objectContaining({ method: "POST", body: JSON.stringify({ body: "A new comment" }) }),
+      );
+    });
+
+    it("rejects when neither gh nor a token can authenticate", async () => {
+      mockIsGhAvailable.mockReturnValue(false);
+      mockIsGhAuthenticated.mockReturnValue(false);
+
+      await expect(new GitHubClient().addIssueComment("owner", "repo", 42, "A new comment")).rejects.toThrow(
+        "no GITHUB_TOKEN provided",
+      );
+    });
+
+    it("maps REST 404 responses to a not-found error", async () => {
+      mockIsGhAvailable.mockReturnValue(false);
+      mockIsGhAuthenticated.mockReturnValue(false);
+      const tokenClient = new GitHubClient("ghp_token");
+      vi.spyOn(global, "fetch" as any).mockResolvedValue({
+        ok: false, status: 404, statusText: "Not Found", json: async () => ({ message: "Not Found" }),
+      } as any);
+
+      await expect(tokenClient.addIssueComment("owner", "repo", 42, "A new comment")).rejects.toThrow(
+        "Issue #42 not found in owner/repo",
+      );
+    });
+  });
+
   describe("createIssue", () => {
     it("falls back to API when gh path fails and token is configured", async () => {
       const clientWithToken = new GitHubClient("ghp_token");

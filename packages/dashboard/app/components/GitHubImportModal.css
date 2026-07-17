@@ -352,6 +352,29 @@ when the preview is short; the top border separates it from scrolling content.
   min-height: 36px;
 }
 
+
+/*
+FNXC:GitHubImport 2026-07-17-12:00:
+The upstream-comment composer shares the detail action bar but takes a full row, keeping its
+textarea and submit control reachable before Import on desktop and the mobile detail sheet.
+*/
+.github-import-issue-comment-composer {
+  display: flex;
+  flex: 1 0 100%;
+  gap: var(--space-sm);
+}
+
+.github-import-issue-comment-composer__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 36px;
+  resize: vertical;
+}
+
+.github-import-issue-comment-composer__submit {
+  align-self: flex-end;
+}
+
 /*
 FNXC:GitHubImport 2026-07-15-18:20 (superseded 2026-07-15-23:25):
 Supersedes #551a2a3c1's note here. That change dropped `justify-content: space-between` and gave the
@@ -1739,6 +1762,17 @@ Import Tasks embedded header now adopts the canonical ViewHeader chrome — edge
     min-height: 40px;
     padding: 0 var(--space-md);
     font-size: 13px;
+  }
+
+
+  .github-import-issue-comment-composer {
+    flex-direction: column;
+  }
+
+  .github-import-issue-comment-composer__input,
+  .github-import-issue-comment-composer__submit {
+    width: 100%;
+    min-height: 40px;
   }
 }
 

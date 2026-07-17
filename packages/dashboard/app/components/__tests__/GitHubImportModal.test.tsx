@@ -9,6 +9,7 @@ import {
   apiFetchGitHubPullDetail,
   apiFetchGitHubIssueDetail,
   apiCloseGitHubIssue,
+  apiAddGitHubIssueComment,
   apiImportGitHubPull,
   apiImportGitHubComment,
   apiFetchGitLabProjectIssues,
@@ -38,6 +39,7 @@ vi.mock("../../api", async (importOriginal) => {
     apiFetchGitHubPullDetail: vi.fn(),
     apiFetchGitHubIssueDetail: vi.fn(),
     apiCloseGitHubIssue: vi.fn(),
+    apiAddGitHubIssueComment: vi.fn(),
     apiImportGitHubPull: vi.fn(),
     apiImportGitHubComment: vi.fn(),
     apiFetchGitLabProjectIssues: vi.fn(),
@@ -189,6 +191,7 @@ describe("GitHubImportModal", () => {
     vi.mocked(apiFetchGitHubPullDetail).mockReset();
     vi.mocked(apiFetchGitHubIssueDetail).mockReset();
     vi.mocked(apiCloseGitHubIssue).mockReset();
+    vi.mocked(apiAddGitHubIssueComment).mockReset();
     vi.mocked(apiImportGitHubPull).mockReset();
     vi.mocked(apiImportGitHubComment).mockReset();
     vi.mocked(apiFetchGitLabProjectIssues).mockReset();
@@ -207,6 +210,7 @@ describe("GitHubImportModal", () => {
     vi.mocked(apiFetchGitHubPullDetail).mockResolvedValue({ comments: [], checks: [] });
     vi.mocked(apiFetchGitHubIssueDetail).mockResolvedValue({ comments: [] });
     vi.mocked(apiCloseGitHubIssue).mockResolvedValue(undefined);
+    vi.mocked(apiAddGitHubIssueComment).mockResolvedValue(undefined);
     vi.mocked(apiImportGitHubComment).mockResolvedValue(mockTask);
     vi.mocked(apiFetchGitLabProjectIssues).mockResolvedValue([]);
     vi.mocked(apiFetchGitLabGroupIssues).mockResolvedValue([]);
@@ -2724,6 +2728,64 @@ describe("GitHubImportModal — detail actions sit at the bottom (operator repor
     await waitFor(() => {
       expect(screen.queryByTestId("github-import-issue-close")).toBeNull();
     });
+  });
+
+
+  /*
+  FNXC:GitHubImport 2026-07-17-12:00:
+  The upstream-comment affordance is one FloatingWindow surface shared by modal and right-dock
+  presentations. Exercise both so neither presentation silently loses posting or optimistic cache behavior.
+  */
+  it.each(["modal", "embedded"] as const)("posts and optimistically preserves comments in %s presentation", async (presentation) => {
+    const issues = [
+      { number: 18, title: "Commentable Issue", body: "Body", html_url: "https://github.com/dustinbyrne/kb/issues/18", labels: [], state: "closed" as const },
+      { number: 19, title: "Other Issue", body: "Other", html_url: "https://github.com/dustinbyrne/kb/issues/19", labels: [], state: "open" as const },
+    ];
+    vi.mocked(fetchGitRemotes).mockResolvedValueOnce(singleRemote);
+    vi.mocked(apiFetchGitHubIssues).mockResolvedValueOnce(issues);
+    vi.mocked(apiFetchGitHubIssueDetail).mockResolvedValueOnce({
+      comments: [{ author: "octocat", body: "Existing comment", createdAt: "2026-07-17T00:00:00.000Z", authorIsBot: false }],
+    });
+    vi.mocked(apiFetchGitHubIssueDetail).mockResolvedValueOnce({ comments: [] });
+
+    render(<GitHubImportModal isOpen onClose={onClose} onImport={onImport} tasks={[]} presentation={presentation} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Select issue #18/i }));
+    const input = await screen.findByTestId("github-import-issue-comment-input");
+    const submit = screen.getByTestId("github-import-issue-comment-submit");
+    expect(submit).toBeDisabled();
+
+    fireEvent.change(input, { target: { value: "A posted comment" } });
+    fireEvent.click(submit);
+
+    await waitFor(() => {
+      expect(apiAddGitHubIssueComment).toHaveBeenCalledWith("dustinbyrne/kb", 18, "A posted comment");
+      expect(input).toHaveValue("");
+      expect(screen.getByTestId("github-import-issue-comment-toast")).toHaveTextContent("Comment posted");
+      expect(screen.getByTestId("github-import-issue-comments")).toHaveTextContent("A posted comment");
+    });
+
+    // Switch away and back: a cache-first reselection must retain the optimistic append without refetching.
+    fireEvent.click(screen.getByRole("button", { name: /Select issue #19/i }));
+    await waitFor(() => expect(screen.getByTestId("github-import-preview-card")).toHaveTextContent("Other Issue"));
+    fireEvent.click(screen.getByRole("button", { name: /Select issue #18/i }));
+    await waitFor(() => expect(screen.getByTestId("github-import-issue-comments")).toHaveTextContent("A posted comment"));
+  });
+
+  it("preserves a failed comment for retry and never renders the composer on pulls", async () => {
+    vi.mocked(apiAddGitHubIssueComment).mockRejectedValueOnce(new Error("comment failed"));
+    await openDetail();
+    const input = await screen.findByTestId("github-import-issue-comment-input");
+    fireEvent.change(input, { target: { value: "Retry me" } });
+    fireEvent.click(screen.getByTestId("github-import-issue-comment-submit"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("github-import-issue-comment-toast")).toHaveTextContent("comment failed");
+      expect(input).toHaveValue("Retry me");
+    });
+
+    vi.mocked(apiFetchGitHubPulls).mockResolvedValueOnce([]);
+    fireEvent.click(screen.getByRole("tab", { name: /Pull Requests/i }));
+    await waitFor(() => expect(screen.queryByTestId("github-import-issue-comment-input")).toBeNull());
   });
 });
 });

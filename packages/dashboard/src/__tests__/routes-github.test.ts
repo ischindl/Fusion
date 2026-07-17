@@ -3710,3 +3710,83 @@ describe("PR conflict refresh + reclaim routes", () => {
     expect(mergeSpy).not.toHaveBeenCalled();
   });
 });
+
+
+describe("POST /github/issues/comment", () => {
+  let store: TaskStore;
+  let originalToken: string | undefined;
+
+  beforeEach(() => {
+    store = createMockStore();
+    originalToken = process.env.GITHUB_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+    mockIsGhAuthenticated.mockReturnValue(true);
+    vi.spyOn(GitHubClient.prototype, "addIssueComment").mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    if (originalToken === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = originalToken;
+    vi.restoreAllMocks();
+  });
+
+  function buildApp() {
+    const app = express();
+    app.use(express.json());
+    app.use("/api", createApiRoutes(store));
+    return app;
+  }
+
+  it("posts through an authenticated gh client", async () => {
+    const commentSpy = vi.spyOn(GitHubClient.prototype, "addIssueComment").mockResolvedValue(undefined);
+    const res = await REQUEST(buildApp(), "POST", "/api/github/issues/comment", JSON.stringify({
+      repo: "owner/repo", number: 42, body: "Thanks for the report",
+    }), { "content-type": "application/json" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+    expect(commentSpy).toHaveBeenCalledWith("owner", "repo", 42, "Thanks for the report");
+  });
+
+  it("permits a token-only host when gh is unauthenticated", async () => {
+    process.env.GITHUB_TOKEN = "ghp_token";
+    mockIsGhAuthenticated.mockReturnValue(false);
+    const commentSpy = vi.spyOn(GitHubClient.prototype, "addIssueComment").mockResolvedValue(undefined);
+
+    const res = await REQUEST(buildApp(), "POST", "/api/github/issues/comment", JSON.stringify({
+      repo: "owner/repo", number: 42, body: "Thanks for the report",
+    }), { "content-type": "application/json" });
+
+    expect(res.status).toBe(200);
+    expect(commentSpy).toHaveBeenCalledWith("owner", "repo", 42, "Thanks for the report");
+  });
+
+  it("rejects when neither gh nor a token is available", async () => {
+    mockIsGhAuthenticated.mockReturnValue(false);
+    const res = await REQUEST(buildApp(), "POST", "/api/github/issues/comment", JSON.stringify({
+      repo: "owner/repo", number: 42, body: "Thanks for the report",
+    }), { "content-type": "application/json" });
+
+    expect(res.status).toBe(401);
+  });
+
+  it.each([
+    { repo: "owner", number: 42, body: "Comment" },
+    { repo: "owner/repo", number: 0, body: "Comment" },
+    { repo: "owner/repo", number: 42, body: "   " },
+  ])("rejects invalid comment payloads", async (body) => {
+    const res = await REQUEST(buildApp(), "POST", "/api/github/issues/comment", JSON.stringify(body), {
+      "content-type": "application/json",
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("maps upstream not-found errors", async () => {
+    vi.spyOn(GitHubClient.prototype, "addIssueComment").mockRejectedValue(new Error("Issue #42 not found"));
+    const res = await REQUEST(buildApp(), "POST", "/api/github/issues/comment", JSON.stringify({
+      repo: "owner/repo", number: 42, body: "Comment",
+    }), { "content-type": "application/json" });
+
+    expect(res.status).toBe(404);
+  });
+});

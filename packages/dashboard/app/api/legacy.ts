@@ -1751,6 +1751,19 @@ export async function apiCloseGitHubIssue(repo: string, number: number): Promise
   });
 }
 
+
+/*
+FNXC:GitHubImport 2026-07-17-12:00:
+Posts a new comment to the upstream GitHub issue. This is deliberately separate from
+apiImportGitHubComment, which creates a Fusion resolve-feedback task from an existing comment.
+*/
+export async function apiAddGitHubIssueComment(repo: string, number: number, body: string): Promise<void> {
+  await api<{ ok: boolean }>("/github/issues/comment", {
+    method: "POST",
+    body: JSON.stringify({ repo, number, body }),
+  });
+}
+
 /** Import a specific GitHub pull request as a fn review task */
 export function apiImportGitHubPull(owner: string, repo: string, prNumber: number, projectId?: string): Promise<Task> {
   return api<Task>(withProjectId("/github/pulls/import", projectId), {

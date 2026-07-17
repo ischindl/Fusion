@@ -2467,6 +2467,11 @@
     "taskMatches": "Tareas coincidentes"
   },
   "git": {
+    "addComment": "Add comment",
+    "addCommentPlaceholder": "Write a comment…",
+    "commentAuthorYou": "You",
+    "commentPosted": "Comment posted",
+    "failedToPostComment": "Failed to post comment",
     "add": "Añadir",
     "addRemote": "Añadir remoto",
     "advancesHelpFix": "<strong>Solución:</strong> Fusion solo muestra <em>Sincronizar árbol de trabajo</em> cuando al menos un avance es genuinamente <code>pending</code> y HEAD no está alineado con la punta de integración. Si las entradas ya están gestionadas (subsumed/orphaned/reachable/superseded), no se ofrece ninguna acción de sincronización.",

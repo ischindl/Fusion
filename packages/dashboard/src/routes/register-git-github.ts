@@ -4716,6 +4716,62 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
     }
   });
 
+  /*
+  FNXC:GitHubImport 2026-07-17-12:00:
+  POST /api/github/issues/comment posts a new upstream comment from the Import Tasks issue preview.
+  Body: { repo: string ("owner/name"), number: number, body: string }. Returns { ok: true }.
+  */
+  router.post("/github/issues/comment", async (req, res) => {
+    try {
+      const { repo, number, body } = req.body;
+
+      if (!repo || typeof repo !== "string" || !repo.includes("/")) {
+        throw badRequest("repo is required and must be in 'owner/name' form");
+      }
+      if (!number || typeof number !== "number" || number < 1 || !Number.isInteger(number)) {
+        throw badRequest("number is required and must be a positive number");
+      }
+      if (typeof body !== "string" || !body.trim()) {
+        throw badRequest("body is required and must be a non-empty string");
+      }
+
+      const [owner, repoName] = repo.split("/");
+      if (!owner || !repoName || repo.split("/").length !== 2) {
+        throw badRequest("repo must be in 'owner/name' form");
+      }
+
+      const token = process.env.GITHUB_TOKEN?.trim();
+      /*
+      FNXC:GitHubImport 2026-07-17-12:00:
+      Unlike the older close route, token-only hosts are authorized here because isGhAuthenticated
+      checks only `gh auth status`; rejecting before constructing the client would make its REST
+      fallback unreachable for GITHUB_TOKEN deployments.
+      */
+      if (!isGhAuthenticated() && !token) {
+        throw unauthorized("Not authenticated with GitHub. Run `gh auth login` or provide GITHUB_TOKEN.");
+      }
+
+      const client = new GitHubClient(token);
+      try {
+        await client.addIssueComment(owner, repoName, number, body.trim());
+        res.json({ ok: true });
+      } catch (err: unknown) {
+        if (err instanceof ApiError) throw err;
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        if (errorMessage.includes("not found") || errorMessage.includes("404")) {
+          throw notFound(`Issue not found: ${repo}#${number}`);
+        }
+        if (errorMessage.includes("authentication") || errorMessage.includes("401") || errorMessage.includes("403")) {
+          throw unauthorized("Not authenticated with GitHub. Run `gh auth login` or provide GITHUB_TOKEN.");
+        }
+        throw new ApiError(502, `GitHub CLI error: ${errorMessage}`);
+      }
+    } catch (err: unknown) {
+      if (err instanceof ApiError) throw err;
+      rethrowAsApiError(err);
+    }
+  });
+
   /**
    * POST /api/github/pulls/import
    * Import a specific GitHub pull request as a fn review task.

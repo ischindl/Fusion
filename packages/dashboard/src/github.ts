@@ -4062,6 +4062,55 @@ export class GitHubClient {
     }
   }
 
+
+  /*
+  FNXC:GitHubImport 2026-07-17-12:00:
+  Import-preview operators can post a new comment to the upstream issue without leaving Fusion.
+  Prefer `gh issue comment` and fall back to the authenticated REST endpoint, matching closeIssue
+  so hosts with either CLI authentication or GITHUB_TOKEN remain supported.
+  */
+  async addIssueComment(owner: string, repo: string, number: number, body: string): Promise<void> {
+    if (this.hasGhAuth()) {
+      try {
+        await runGhAsync([
+          "issue", "comment", String(number),
+          "--repo", `${owner}/${repo}`,
+          "--body", body,
+        ]);
+        return;
+      } catch (err) {
+        if (this.token) {
+          await this.addIssueCommentWithApi(owner, repo, number, body);
+          return;
+        }
+        throw new Error(getGhErrorMessage(err));
+      }
+    }
+    if (this.token) {
+      await this.addIssueCommentWithApi(owner, repo, number, body);
+      return;
+    }
+    throw new Error("GitHub CLI (gh) is not available or not authenticated, and no GITHUB_TOKEN provided. Run 'gh auth login' to authenticate.");
+  }
+
+  private async addIssueCommentWithApi(owner: string, repo: string, number: number, body: string): Promise<void> {
+    const response = await fetch(
+      `${this.baseUrl}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${number}/comments`,
+      {
+        method: "POST",
+        headers: { ...this.buildHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ body }),
+      }
+    );
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new Error(`Issue #${number} not found in ${owner}/${repo}`);
+      }
+      const error = await response.json().catch(() => ({ message: response.statusText }));
+      throw new Error(`GitHub API error: ${response.status} ${error.message || response.statusText}`);
+    }
+  }
+
   /**
    * Fetch a single pull request by number.
    * Uses gh CLI if available, otherwise falls back to REST API.

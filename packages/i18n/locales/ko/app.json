@@ -2467,6 +2467,11 @@
     "taskMatches": "작업 검색 결과"
   },
   "git": {
+    "addComment": "Add comment",
+    "addCommentPlaceholder": "Write a comment…",
+    "commentAuthorYou": "You",
+    "commentPosted": "Comment posted",
+    "failedToPostComment": "Failed to post comment",
     "add": "추가",
     "addRemote": "원격 추가",
     "advancesHelpFix": "<strong>해결 방법:</strong> Fusion은 적어도 하나의 진행 항목이 진정으로 <code>pending</code> 상태이고 HEAD가 통합 끝점과 일치하지 않을 때만 <em>작업 트리 동기화</em>를 표시합니다. 항목이 이미 처리된 경우(subsumed/orphaned/reachable/superseded), 동기화 작업이 제공되지 않습니다.",

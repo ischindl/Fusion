@@ -2467,6 +2467,11 @@
     "taskMatches": "匹配的任务"
   },
   "git": {
+    "addComment": "Add comment",
+    "addCommentPlaceholder": "Write a comment…",
+    "commentAuthorYou": "You",
+    "commentPosted": "Comment posted",
+    "failedToPostComment": "Failed to post comment",
     "add": "添加",
     "addRemote": "添加远程",
     "advancesHelpFix": "<strong>修复：</strong>Fusion 仅在至少有一个确实为 <code>pending</code> 的推进且 HEAD 未与集成提示对齐时才显示<em>同步工作树</em>。如果条目已被处理（subsumed/orphaned/reachable/superseded），则不提供同步操作。",
