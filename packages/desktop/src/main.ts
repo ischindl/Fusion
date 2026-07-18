@@ -271,19 +271,51 @@ export function createMainWindow(state?: WindowState, launchTargetUrl?: string):
       force-killed, skipping all teardown. Electron's app "session-end" event
       flags that case; the default (full stop) then applies.
       */
+      /*
+      FNXC:DesktopClosePolicy 2026-07-18-06:40:
+      Operator request: Windows needs a close-to-tray background option like
+      macOS/Linux. The close dialog now offers it alongside the exit choices;
+      "Minimize to tray" keeps Fusion (and the embedded PostgreSQL) running in
+      the background, restorable from the tray icon. OS session end still skips
+      every dialog and performs the full stop.
+      */
+      if (osSessionEnding) {
+        return;
+      }
       const runtimeStatus = localRuntimeManager?.getStatus();
-      if (!osSessionEnding && runtimeStatus?.state === "running" && runtimeStatus.source === "embedded-local") {
+      if (runtimeStatus?.state === "running" && runtimeStatus.source === "embedded-local") {
         const choice = dialog.showMessageBoxSync(window, {
           type: "question",
           title: "Fusion",
-          message: "Also shut down the embedded PostgreSQL server?",
-          detail: "Other Fusion processes (like the fn CLI) can keep using it if you leave it running. It will be reused on the next start either way.",
-          buttons: ["Shut down PostgreSQL", "Leave it running"],
+          message: "Close Fusion?",
+          detail: "Minimize to tray keeps Fusion and the embedded PostgreSQL server running in the background. If you exit, other Fusion processes (like the fn CLI) can keep using PostgreSQL only if you leave it running.",
+          buttons: ["Minimize to tray", "Exit and stop PostgreSQL", "Exit, leave PostgreSQL running"],
           defaultId: 0,
           cancelId: 0,
           noLink: true,
         });
-        keepEmbeddedPostgresOnQuit = choice === 1;
+        if (choice === 0) {
+          event.preventDefault();
+          window.hide();
+          return;
+        }
+        keepEmbeddedPostgresOnQuit = choice === 2;
+        return;
+      }
+      const plainChoice = dialog.showMessageBoxSync(window, {
+        type: "question",
+        title: "Fusion",
+        message: "Close Fusion?",
+        detail: "Minimize to tray keeps Fusion running in the background; restore it from the tray icon.",
+        buttons: ["Minimize to tray", "Exit"],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      });
+      if (plainChoice === 0) {
+        event.preventDefault();
+        window.hide();
+        return;
       }
       return;
     }
