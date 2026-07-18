@@ -1496,7 +1496,7 @@ async function continueToSummaryAfterSuppressedQuestion(
   const followUp = (session.agent.session.state.messages as AgentMessage[])
     .filter((message) => message.role === "assistant")
     .pop();
-  const followUpText = typeof followUp?.content === "string"
+  let followUpText = typeof followUp?.content === "string"
     ? followUp.content
     : Array.isArray(followUp?.content)
       ? followUp.content
@@ -1504,9 +1504,34 @@ async function continueToSummaryAfterSuppressedQuestion(
         .map((block) => block.text)
         .join("")
       : "";
-  const complete = parseAgentResponse(followUpText);
-  if (complete.type !== "complete") {
-    throw new Error("Clarification-disabled follow-up did not produce a summary");
+  let complete: PlanningResponse | undefined;
+  let lastError: Error | undefined;
+  for (let attempt = 0; attempt <= MAX_PARSE_RETRIES; attempt++) {
+    try {
+      complete = parseAgentResponse(followUpText);
+      break;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      if (attempt === MAX_PARSE_RETRIES) break;
+      await (session.agent.session.prompt as (input: string, options?: { signal?: AbortSignal }) => Promise<void>)(
+        'Your previous response was incomplete or invalid. Return ONLY a complete valid JSON object: {"type":"complete","data":{...}}. No markdown or explanation.',
+        { signal: abortSignal },
+      );
+      const retry = (session.agent.session.state.messages as AgentMessage[])
+        .filter((message) => message.role === "assistant")
+        .pop();
+      followUpText = typeof retry?.content === "string"
+        ? retry.content
+        : Array.isArray(retry?.content)
+          ? retry.content
+            .filter((block): block is { type: "text"; text: string } => block.type === "text" && typeof block.text === "string")
+            .map((block) => block.text)
+            .join("")
+          : "";
+    }
+  }
+  if (!complete || complete.type !== "complete") {
+    throw new Error(buildRetryableParseErrorMessage(lastError ?? new Error("Clarification-disabled follow-up did not produce a summary")));
   }
   return setPendingSummaryCheckpoint(session, normalizePlanningSummaryPayload(complete.data, {
     title: session.title || session.initialPlan,
@@ -2545,7 +2570,7 @@ function parseJsonCandidateForShape(candidate: string): unknown | undefined {
     return JSON.parse(candidate);
   } catch {
     try {
-      return JSON.parse(repairJson(candidate));
+      return JSON.parse(repairJson(candidate).repaired);
     } catch {
       return undefined;
     }
@@ -2602,6 +2627,16 @@ function extractJsonCandidate(text: string): string | null {
   const planningCandidate = candidates.find((candidate) => isPlanningResponseShape(candidate.parsed));
   if (planningCandidate) return planningCandidate.text;
 
+  /*
+  FNXC:PlanningJsonRecovery 2026-07-28-12:00:
+  FN-8260 must prefer a truncated top-level completion over a complete nested
+  deliverable object, so a cutoff cannot silently select that nested object.
+  */
+  const trimmed = text.trim();
+  if (trimmed.startsWith("{") && isPlanningResponseShape(parseJsonCandidateForShape(trimmed))) {
+    return trimmed;
+  }
+
   // Pick the largest valid JSON candidate only after planning-shaped candidates are ruled out.
   const validCandidates = candidates.filter((candidate) => candidate.parsed !== undefined);
   if (validCandidates.length > 0) {
@@ -2610,7 +2645,6 @@ function extractJsonCandidate(text: string): string | null {
   }
 
   // 3. Last resort: try the full trimmed text so repairJson can close truncated objects.
-  const trimmed = text.trim();
   if (trimmed.startsWith("{")) return trimmed;
 
   return null;
@@ -2624,8 +2658,9 @@ function extractJsonCandidate(text: string): string | null {
  *
  * Returns the repaired string, or the original if no repair was possible.
  */
-function repairJson(text: string): string {
+function repairJson(text: string): { repaired: string; wasTruncationRepaired: boolean } {
   let repaired = text;
+  let wasTruncationRepaired = false;
 
   // Fix trailing commas before } or ]
   repaired = repaired.replace(/,\s*([}\]])/g, "$1");
@@ -2649,6 +2684,7 @@ function repairJson(text: string): string {
   // If we're in an unclosed string, close it
   if (inString) {
     repaired += '"';
+    wasTruncationRepaired = true;
   }
 
   // Re-count after potential string fix
@@ -2668,10 +2704,15 @@ function repairJson(text: string): string {
   }
 
   // Close unclosed brackets and braces
-  repaired += "]".repeat(Math.max(0, openBrackets));
-  repaired += "}".repeat(Math.max(0, openBraces));
+  const missingBrackets = Math.max(0, openBrackets);
+  const missingBraces = Math.max(0, openBraces);
+  if (missingBrackets > 0 || missingBraces > 0) {
+    wasTruncationRepaired = true;
+  }
+  repaired += "]".repeat(missingBrackets);
+  repaired += "}".repeat(missingBraces);
 
-  return repaired;
+  return { repaired, wasTruncationRepaired };
 }
 
 /**
@@ -2683,6 +2724,13 @@ function repairJson(text: string): string {
  * 3. If parse fails, attempt repair (truncated JSON, trailing commas)
  * 4. Validate the resulting structure
  */
+class TruncatedPlanningCompletionError extends Error {
+  constructor() {
+    super("AI returned a truncated completion response");
+    this.name = "TruncatedPlanningCompletionError";
+  }
+}
+
 export function parseAgentResponse(text: string): PlanningResponse {
   const candidate = extractJsonCandidate(text);
 
@@ -2692,13 +2740,15 @@ export function parseAgentResponse(text: string): PlanningResponse {
   }
 
   let parsed: unknown;
+  let wasTruncationRepaired = false;
   try {
     parsed = JSON.parse(candidate);
   } catch {
     // Attempt repair for truncated/malformed JSON
     try {
-      const repaired = repairJson(candidate);
-      parsed = JSON.parse(repaired);
+      const repair = repairJson(candidate);
+      wasTruncationRepaired = repair.wasTruncationRepaired;
+      parsed = JSON.parse(repair.repaired);
     } catch (repairErr) {
       diagnostics.error(
         "Failed to parse agent response (repair also failed)",
@@ -2712,6 +2762,17 @@ export function parseAgentResponse(text: string): PlanningResponse {
 
   // Validate structure
   if (isPlanningResponseShape(parsed)) {
+    /*
+    FNXC:PlanningJsonRecovery 2026-07-28-12:00:
+    FN-8260 / GitHub #2240 requires Planning Mode to treat a completion whose
+    structure was closed by recovery as incomplete generation. Retrying here
+    prevents a token-cutoff plan from reaching the checkpoint as an empty or
+    chopped summary, while clean payloads and benign question repairs remain
+    accepted.
+    */
+    if (parsed.type === "complete" && wasTruncationRepaired) {
+      throw new TruncatedPlanningCompletionError();
+    }
     return parsed;
   }
 
