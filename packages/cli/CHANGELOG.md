@@ -1,5 +1,16 @@
 # @runfusion/fusion
 
+## 0.70.1
+
+### Patch Changes
+
+- 09e519e: summary: Fix packaged desktop app crashing on first boot because PostgreSQL migrations were missing from the build.
+  category: fix
+  dev: "@fusion/core's bare tsc build never copies src/postgres/migrations/\*.sql into dist; the CLI compensates in packages/cli/tsup.config.ts but the desktop staging did not, so packaged Local mode crashed schema init (ENOENT dist/postgres/migrations/0000_initial.sql) after embedded Postgres started. packages/desktop/scripts/workspace-tools.ts now stages the migrations in buildCore(), re-stages them into the pnpm-deploy closure in stageDesktopDeploy(), and fails the build via verifyCoreMigrationsStaged() if the baseline migration is absent. Fixed in 6e5bb5d3d."
+- 9cafa04: summary: Fix PR-mode auto-merge failing with "Could not determine repository" in centrally-installed multi-project deployments.
+  category: fix
+  dev: processPullRequestMergeTask, createGroupPrCallback, and createPrNodeGithubOps now pass explicit owner/repo (resolved from the per-project cwd / task worktree) into findPrForBranch/createPr/mergePr instead of relying on GitHubClient.resolveRepo's process.cwd() fallback; the engine's buildRespondCallback resolves the review-response run cwd from the task's recorded worktree. Fixes Tchori-Labs/Fusion#4; non-workspace sibling of upstream #1924/FN-7610.
+
 ## 0.70.0
 
 ### Minor Changes

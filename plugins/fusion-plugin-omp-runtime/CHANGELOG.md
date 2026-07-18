@@ -1,5 +1,12 @@
 # @fusion-plugin-examples/omp-runtime
 
+## 0.1.2
+
+### Patch Changes
+
+- @fusion/core@0.70.1
+- @fusion/plugin-sdk@0.70.1
+
 ## 0.1.1
 
 ### Patch Changes
