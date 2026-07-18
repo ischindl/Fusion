@@ -1134,7 +1134,8 @@
     "backendError": {
       "failedFetch": "获取项目失败"
     },
-    "testMode": "测试模式 — 无实际 AI 调用"
+    "testMode": "测试模式 — 无实际 AI 调用",
+    "migrationInProgress": "数据库迁移进行中 — 完成后仪表盘将自动重新连接。"
   },
   "appName": "",
   "approval": {
@@ -1984,6 +1985,7 @@
     "connectRemoteButton": "连接到远程 Fusion",
     "couldNotStart": "无法启动本地 Fusion",
     "loading": "正在加载 Fusion…",
+    "migrationInProgress": "数据库迁移进行中 — 可能需要几分钟。",
     "opening": "正在打开…",
     "retry": "重试",
     "runLocalButton": "本地运行 Fusion",

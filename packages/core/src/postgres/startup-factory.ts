@@ -427,6 +427,15 @@ export interface CreateTaskStoreForBackendOptions {
    * constructor (matching `new TaskStore(rootDir)`).
    */
   readonly projectId?: string;
+  /*
+  FNXC:MigrationHoldingPage 2026-07-17-12:20:
+  During the one-time SQLite→PostgreSQL auto-migration the caller's HTTP server is
+  not yet listening, so the CLI binds a temporary holding server on the dashboard
+  port and needs the structured migration progress stream to surface it in the
+  browser. This observer receives the same MigrationProgressEvent stream that is
+  logged to the terminal; it must never throw (fire-and-forget UI plumbing).
+  */
+  readonly onMigrationProgress?: (event: import("./sqlite-migrator.js").MigrationProgressEvent) => void;
 }
 
 /**
@@ -651,6 +660,13 @@ export async function createTaskStoreForBackend(
               */
               onProgress: (event) => {
                 log.log(`startup-factory: SQLite migration — ${formatMigrationProgress(event)}`);
+                /*
+                FNXC:MigrationHoldingPage 2026-07-17-12:20:
+                Forward the same structured event to the caller (CLI holding server)
+                so the browser can show live migration progress; observer failures
+                must never abort the migration itself.
+                */
+                try { options.onMigrationProgress?.(event); } catch { /* ignore observer errors */ }
               },
             });
             /*

@@ -1144,7 +1144,8 @@
     "backendError": {
       "failedFetch": "Failed to fetch projects"
     },
-    "testMode": "Test mode — no real AI calls"
+    "testMode": "Test mode — no real AI calls",
+    "migrationInProgress": "Database migration in progress — the dashboard will reconnect when it completes."
   },
   "appName": "Fusion",
   "approval": {
@@ -1994,6 +1995,7 @@
     "connectRemoteButton": "Connect to Remote Fusion",
     "couldNotStart": "Couldn't start local Fusion",
     "loading": "Loading Fusion…",
+    "migrationInProgress": "Database migration in progress — this can take a few minutes.",
     "opening": "Opening…",
     "retry": "Retry",
     "runLocalButton": "Run Fusion Locally",

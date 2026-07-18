@@ -1134,7 +1134,8 @@
     "backendError": {
       "failedFetch": "取得項目失敗"
     },
-    "testMode": "測試模式 — 無實際 AI 呼叫"
+    "testMode": "測試模式 — 無實際 AI 呼叫",
+    "migrationInProgress": "資料庫遷移進行中 — 完成後儀表板將自動重新連線。"
   },
   "appName": "",
   "approval": {
@@ -1984,6 +1985,7 @@
     "connectRemoteButton": "連接到遠端 Fusion",
     "couldNotStart": "無法啟動本機 Fusion",
     "loading": "正在載入 Fusion…",
+    "migrationInProgress": "資料庫遷移進行中 — 可能需要幾分鐘。",
     "opening": "正在開啟…",
     "retry": "重試",
     "runLocalButton": "本機執行 Fusion",

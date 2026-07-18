@@ -1134,7 +1134,8 @@
     "backendError": {
       "failedFetch": "프로젝트를 불러오지 못했습니다"
     },
-    "testMode": "테스트 모드 — 실제 AI 호출 없음"
+    "testMode": "테스트 모드 — 실제 AI 호출 없음",
+    "migrationInProgress": "데이터베이스 마이그레이션 진행 중 — 완료되면 대시보드가 다시 연결됩니다."
   },
   "appName": "",
   "approval": {
@@ -1984,6 +1985,7 @@
     "connectRemoteButton": "원격 Fusion에 연결",
     "couldNotStart": "로컬 Fusion을 시작할 수 없습니다",
     "loading": "Fusion 로드 중…",
+    "migrationInProgress": "데이터베이스 마이그레이션 진행 중 — 몇 분 정도 걸릴 수 있습니다.",
     "opening": "열고 있는 중…",
     "retry": "다시 시도",
     "runLocalButton": "로컬에서 Fusion 실행",

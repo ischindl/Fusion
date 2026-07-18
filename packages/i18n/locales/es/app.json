@@ -1134,7 +1134,8 @@
     "backendError": {
       "failedFetch": "Error al obtener proyectos"
     },
-    "testMode": "Modo de prueba — sin llamadas reales de IA"
+    "testMode": "Modo de prueba — sin llamadas reales de IA",
+    "migrationInProgress": "Migración de base de datos en curso — el panel se reconectará cuando termine."
   },
   "appName": "",
   "approval": {
@@ -1984,6 +1985,7 @@
     "connectRemoteButton": "Conectarse a Fusion remoto",
     "couldNotStart": "No se puede iniciar Fusion local",
     "loading": "Cargando Fusion…",
+    "migrationInProgress": "Migración de base de datos en curso — puede tardar unos minutos.",
     "opening": "Abriendo…",
     "retry": "Reintentar",
     "runLocalButton": "Ejecutar Fusion localmente",
