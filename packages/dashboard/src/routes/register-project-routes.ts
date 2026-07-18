@@ -1,6 +1,7 @@
 import * as fsPromises from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import {
+  resolveGitBinary,
   countRunningAgentTasks,
   ensureMemoryFileWithBackend,
   isValidSqliteDatabaseFile,
@@ -370,7 +371,7 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
         }
 
         try {
-          await execFileAsync("git", ["clone", cloneSource, normalizedPath], {
+          await execFileAsync(await resolveGitBinary(), ["clone", cloneSource, normalizedPath], {
             timeout: 90_000,
             maxBuffer: 10 * 1024 * 1024,
             encoding: "utf-8",

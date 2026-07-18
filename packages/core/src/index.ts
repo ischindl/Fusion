@@ -1104,6 +1104,7 @@ export {
   type GitCliStatus,
   type ProbeGitCliStatusOptions,
 } from "./git-cli-status.js";
+export { resolveGitBinary, invalidateGitBinaryCache, isSpawnGitEnoent, wellKnownGitBinaryPaths } from "./git-binary.js";
 export {
   parseRepoSlug,
   isValidRepoSlug,
