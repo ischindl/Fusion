@@ -944,8 +944,9 @@ export function readPortFromPostmasterPid(dataDir: string): number | null {
   try {
     const content = readFileSync(join(dataDir, "postmaster.pid"), "utf-8");
     const lines = content.split("\n");
-    // Line 5 (index 4) is the TCP port in standard PostgreSQL postmaster.pid
-    const portStr = lines[4]?.trim();
+    // Line 4 (index 3) is the TCP port in standard PostgreSQL postmaster.pid
+    // (line 5/index 4 is the Unix socket directory).
+    const portStr = lines[3]?.trim();
     if (portStr) {
       const port = parseInt(portStr, 10);
       if (!isNaN(port) && port > 0) return port;
