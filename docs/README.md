@@ -21,6 +21,7 @@ For a full walkthrough (installation, onboarding, first task, and daily workflow
 |---|---|
 | [Core Product Vision](./vision.md) | North-star vision document: target users, core value proposition, primary outcomes, and the five strategic themes that ground the roadmap (M-MSL4E01A-0001-Y9QC) |
 | [Core Product Roadmap](./roadmap.md) | Prioritized, sequenced M2 roadmap across all five strategic themes (Fleet Observation, Model-Agnostic Execution, Human-in-the-Loop Control, Reliability/Durability/Observability, Shared Multi-Node Scaling) with mission→milestone→slice→feature lineage (M-MSL4E01A-0001-Y9QC) |
+| [Multi-Agent Orchestration & fleet observation](./roadmap-multi-agent-orchestration.md) | M2/S1 roadmap item: the operator-facing "single pane of glass" over the durable-agent fleet — roster (role/state/current-task/last-heartbeat), live agent state, AgentDetailView drill-down, and reports-to/direct-reports hierarchy (M-MSL4E01A-0001-Y9QC) |
 | [Human approval gates & operator oversight](./roadmap-human-approval-gates.md) | M2/S3 roadmap item: where Fusion adds human approval gates and operator oversight across the autonomous workflow (M-MSL4E01A-0001-Y9QC) |
 | [Shared multi-node deployment & scaling](./roadmap-shared-multi-node-scaling.md) | M2/S5 roadmap item: scaling from a single machine to shared multi-node deployments — shared task/mission state, node coordination, cross-node agent routing, storage/isolation, and failure containment (M-MSL4E01A-0001-Y9QC) |
 
