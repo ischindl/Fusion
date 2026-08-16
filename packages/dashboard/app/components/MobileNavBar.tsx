@@ -21,6 +21,7 @@ import {
   MoreHorizontal,
   Play,
   Settings,
+  Ship,
   Monitor,
   Search,
   Sparkles,
@@ -442,6 +443,15 @@ export function MobileNavBar({
     "command-center": { icon: <Gauge />, labelKey: "nav.commandCenter", fallback: "Dashboard", moreTestId: "mobile-more-item-command-center", isActive: view === "command-center", isAvailable: true, navigate: () => onChangeView("command-center") },
     tasks: { icon: <LayoutGrid />, labelKey: "nav.tasks", fallback: "Tasks", moreTestId: "mobile-more-item-tasks", isActive: view === "board" || view === "list", isAvailable: true, navigate: () => onChangeView(view === "board" || view === "list" ? view : "board") },
     agents: { icon: <Bot />, labelKey: "nav.agents", fallback: "Agents", moreTestId: "mobile-more-item-agents", isActive: view === "agents", isAvailable: true, navigate: () => onChangeView("agents") },
+    /*
+    FNXC:FleetObservation 2026-08-16-01:22:
+    Fleet is the single canonical mobile destination for the durable-agent roster,
+    mirroring the agents entry. It is an always-on view (isAvailable true, matching
+    agents and independent of the sidebar flag), so it resolves to its primary tab
+    (mobile-nav-tab-fleet) when promoted or its More item (mobile-more-item-fleet)
+    when omitted, navigating to the fleet task view.
+    */
+    fleet: { icon: <Ship />, labelKey: "nav.fleet", fallback: "Fleet", moreTestId: "mobile-more-item-fleet", isActive: view === "fleet", isAvailable: true, navigate: () => onChangeView("fleet") },
     missions: { icon: <Target />, labelKey: "nav.missions", fallback: "Missions", moreTestId: "mobile-more-item-missions", isActive: view === "missions", isAvailable: true, navigate: () => onChangeView("missions") },
     chat: { icon: <MessageSquare />, labelKey: "nav.chat", fallback: "Chat", moreTestId: "mobile-more-item-chat", isActive: view === "chat", isAvailable: true, navigate: () => onChangeView("chat"), indicator: chatHasUnreadResponse && view !== "chat", indicatorLabel: t("nav.chatUnreadAriaLabel", "Unread chat response") },
     mailbox: { icon: <Mail />, labelKey: "nav.mailbox", fallback: "Mailbox", moreTestId: "mobile-more-item-mailbox", isActive: view === "mailbox", isAvailable: true, navigate: () => onChangeView("mailbox"), indicator: mailboxPendingApprovalCount > 0 && view !== "mailbox", indicatorLabel: t("nav.mailboxPendingAriaLabel", "Pending approvals"), badge: mailboxUnreadCount },

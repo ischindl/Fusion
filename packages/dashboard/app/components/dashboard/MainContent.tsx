@@ -117,6 +117,7 @@ export function MainContent({
   agentAnchor,
   setAgentAnchor,
   agentsEnabled,
+  fleetViewEnabled,
   agentOnboardingEnabled,
   handleOpenTaskLogs,
   popOutTaskDetail,
@@ -190,6 +191,7 @@ export function MainContent({
   capacityRiskSignal,
   handleDismissCapacityRisk,
   AgentsView,
+  FleetDashboardView,
   ChatView,
   CommandCenter,
   DevServerView,
@@ -617,6 +619,24 @@ export function MainContent({
             agentOnboardingEnabled={agentOnboardingEnabled}
             focusAgent={agentAnchor}
           />
+        </Suspense>
+      </PageErrorBoundary>
+    );
+  }
+
+  /*
+  FNXC:FleetObservation 2026-08-16-01:22:
+  The F1 Fleet observation roster renders as a first-class main-content view under
+  the "fleet" task view when the always-on fleetViewEnabled flag is set, mirroring
+  the agents branch above. The view takes only addToast and the current project id;
+  the routing-guard revert in App.tsx redirects to the board when the flag is off so
+  a disabled fleet view can never strand the user on an unreachable task view.
+  */
+  if (taskView === "fleet" && fleetViewEnabled) {
+    return (
+      <PageErrorBoundary>
+        <Suspense fallback={null}>
+          <FleetDashboardView addToast={addToast} projectId={currentProject?.id} />
         </Suspense>
       </PageErrorBoundary>
     );

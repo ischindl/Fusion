@@ -134,6 +134,7 @@ const IS_TEST_ENV = import.meta.env.MODE === "test";
 export const TASK_DETAIL_FLOATING_GEOMETRY_KEY = "floating-window:task-detail";
 
 const AgentsView = lazy(() => import("./components/AgentsView").then((m) => ({ default: m.AgentsView })));
+const FleetDashboardView = lazy(() => import("./components/FleetDashboardView").then((m) => ({ default: m.FleetDashboardView })));
 const DocumentsView = lazy(() => import("./components/DocumentsView").then((m) => ({ default: m.DocumentsView })));
 const InsightsView = lazy(() => import("./components/InsightsView").then((m) => ({ default: m.InsightsView })));
 const ResearchView = lazy(() => import("./components/ResearchView").then((m) => ({ default: m.ResearchView })));
@@ -960,6 +961,11 @@ function AppInner() {
   const sidebarActive = leftSidebarNavEnabled && !isMobile && executorFooterVisible;
   const agentOnboardingEnabled = experimentalFeatures.agentOnboarding === true;
   const agentsEnabled = true;
+  /*
+  FNXC:FleetObservation 2026-08-16-01:22:
+  Fleet (the durable-agent roster/activity dashboard) is a first-class view gated by its own always-on flag, mirroring agentsEnabled. Keeping a dedicated flag (rather than piggybacking agentsEnabled) means the two durable-agent surfaces can be disabled independently later without touching MainContent's render branch.
+  */
+  const fleetViewEnabled = true;
 
   // Settings close handler with side effects — used by both AppModals
   // onSettingsClose and the nav entry close callback so back-navigation
@@ -993,6 +999,9 @@ function AppInner() {
     if (taskView === "agents" && !agentsEnabled) {
       handleChangeTaskView("board");
     }
+    if (taskView === "fleet" && !fleetViewEnabled) {
+      handleChangeTaskView("board");
+    }
     if (taskView === "memory" && !memoryEnabled) {
       handleChangeTaskView("board");
     }
@@ -1017,7 +1026,7 @@ function AppInner() {
     if (taskView === "goalsView" && !goalsEnabled) {
       handleChangeTaskView("board");
     }
-  }, [taskView, settingsLoaded, skillsEnabled, insightsEnabled, handleChangeTaskView, agentsEnabled, memoryEnabled, devServerEnabled, researchEnabled, evalsEnabled, ideationEnabled, goalsEnabled, graphPluginTaskView]);
+  }, [taskView, settingsLoaded, skillsEnabled, insightsEnabled, handleChangeTaskView, agentsEnabled, fleetViewEnabled, memoryEnabled, devServerEnabled, researchEnabled, evalsEnabled, ideationEnabled, goalsEnabled, graphPluginTaskView]);
 
   const {
     availableModels,
@@ -1728,6 +1737,7 @@ function AppInner() {
     agentAnchor,
     setAgentAnchor,
     agentsEnabled,
+    fleetViewEnabled,
     agentOnboardingEnabled,
     handleOpenTaskLogs,
     popOutTaskDetail: popOutTaskDetailForCurrentView,
@@ -1804,6 +1814,7 @@ function AppInner() {
     // so main-content views resolve lifecycle roles instead of matching column names.
     columnFlagsByTaskId: footerColumnFlagsByTaskId,
     AgentsView,
+    FleetDashboardView,
     ChatView,
     CommandCenter,
     DevServerView,
@@ -1990,6 +2001,7 @@ function AppInner() {
             }}
             pluginDashboardViews={pluginDashboardViews}
             showAgentsTab={agentsEnabled}
+            showFleetTab={fleetViewEnabled}
             showSkillsTab={skillsEnabled}
             projects={effectiveProjects}
             currentProject={currentProject}

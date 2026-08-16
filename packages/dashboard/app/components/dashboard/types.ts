@@ -48,6 +48,7 @@ import type { ChatReportHandoff } from "../chatReportHandoff";
 // spell their types via `typeof` so MainContent's JSX gets full prop checking.
 import { SettingsView } from "../SettingsModal";
 import { AgentsView } from "../AgentsView";
+import { FleetDashboardView } from "../FleetDashboardView";
 import { ChatView } from "../ChatView";
 import { CommandCenter } from "../command-center/CommandCenter";
 import { DevServerView } from "../DevServerView";
@@ -167,6 +168,7 @@ export interface MainContentProps {
   agentAnchor?: { agentId: string; requestId: number };
   setAgentAnchor?: (anchor: { agentId: string; requestId: number } | undefined) => void;
   agentsEnabled: boolean;
+  fleetViewEnabled: boolean;
   agentOnboardingEnabled: boolean;
   handleOpenTaskLogs: (taskId: string) => Promise<void>;
   popOutTaskDetail: (task: Task | TaskDetail) => void;
@@ -267,6 +269,7 @@ export interface MainContentProps {
   handleDismissCapacityRisk: () => void;
   // App-level lazy view chunks (declared in App.tsx, threaded in as props).
   AgentsView: LazyExoticComponent<typeof AgentsView>;
+  FleetDashboardView: LazyExoticComponent<typeof FleetDashboardView>;
   ChatView: LazyExoticComponent<typeof ChatView>;
   CommandCenter: LazyExoticComponent<typeof CommandCenter>;
   DevServerView: LazyExoticComponent<typeof DevServerView>;

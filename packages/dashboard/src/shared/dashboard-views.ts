@@ -8,6 +8,7 @@ export const DASHBOARD_VIEW_IDS = [
   "list",
   "graph",
   "agents",
+  "fleet",
   "missions",
   "chat",
   "documents",
@@ -55,6 +56,14 @@ export const DASHBOARD_VIEWS: readonly DashboardViewMetadata[] = [
   { id: "list", label: "List", labelKey: "nav.list" },
   { id: "graph", label: "Graph" },
   { id: "agents", label: "Agents", labelKey: "nav.agents" },
+  /*
+  FNXC:FleetObservation 2026-08-16-01:22:
+  The F1 Fleet roster is a first-class built-in task view registered in the same
+  shared registry as Agents so navigation labels and GET /api/views pick it up
+  from one source of truth. It mirrors the agents entry shape (id, label,
+  labelKey) so getDashboardViewLabel and the ui-metadata payload resolve it.
+  */
+  { id: "fleet", label: "Fleet", labelKey: "nav.fleet" },
   { id: "missions", label: "Missions", labelKey: "nav.missions" },
   { id: "chat", label: "Chat", labelKey: "nav.chat" },
   { id: "documents", label: "Artifacts", labelKey: "nav.documents" },

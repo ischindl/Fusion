@@ -22,6 +22,7 @@ import {
   Plus,
   Search,
   Settings,
+  Ship,
   Sparkles,
   Target,
   Workflow,
@@ -120,6 +121,7 @@ export interface LeftSidebarNavProps {
   experimentalFeatures?: LeftSidebarExperimentalFeatures;
   pluginDashboardViews?: PluginDashboardViewEntry[];
   showAgentsTab?: boolean;
+  showFleetTab?: boolean;
   showSkillsTab?: boolean;
   projects?: ProjectInfo[];
   currentProject?: ProjectInfo | null;
@@ -168,6 +170,7 @@ export function LeftSidebarNav({
   experimentalFeatures,
   pluginDashboardViews = [],
   showAgentsTab = false,
+  showFleetTab = false,
   showSkillsTab = false,
   footerVisible = false,
 }: LeftSidebarNavProps) {
@@ -356,6 +359,27 @@ export function LeftSidebarNav({
             icon: Bot,
             testId: "sidebar-nav-agents",
             onSelect: () => onChangeView("agents"),
+          },
+        ]
+      : []),
+    /*
+    FNXC:FleetObservation 2026-08-16-01:22:
+    Fleet is a first-class desktop destination in the left sidebar immediately after
+    Agents, gated by the always-on showFleetTab flag. It is the single canonical
+    desktop nav destination for the fleet view; the Header view-toggle row is
+    intentionally not extended so the Command-Center-directly-after-Agents ordering
+    asserted by the header tests stays intact.
+    */
+    ...(showFleetTab
+      ? [
+          {
+            id: "fleet",
+            label: t("nav.fleet", getDashboardViewLabel("fleet")),
+            view: "fleet" as TaskView,
+            isActive: view === "fleet",
+            icon: Ship,
+            testId: "sidebar-nav-fleet",
+            onSelect: () => onChangeView("fleet"),
           },
         ]
       : []),

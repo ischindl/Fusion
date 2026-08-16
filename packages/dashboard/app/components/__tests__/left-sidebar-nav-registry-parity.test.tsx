@@ -55,6 +55,7 @@ const SIDEBAR_REGISTRY_VIEW_IDS = [
   "planning",
   "missions",
   "agents",
+  "fleet",
   "chat",
   "mailbox",
   "skills",
@@ -82,6 +83,7 @@ describe("LeftSidebarNav ↔ dashboard view registry parity", () => {
         onNewTask={() => {}}
         onOpenSettings={() => {}}
         showAgentsTab
+        showFleetTab
         showSkillsTab
         experimentalFeatures={{
           insights: true,
