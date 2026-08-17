@@ -78,6 +78,24 @@ Future implementation work for this roadmap item should be filed against the **a
 
 Each new task should carry this lineage and reference **this document** as the roadmap definition it advances.
 
+## Implementation Status (RUFU-108)
+
+<!--
+FNXC:HumanInTheLoopControl 2026-08-17-08:11:
+Task RUFU-108 is the dedicated implementation owner of feature F-MSL72J08-000L-ZGFL (Roadmap: Human approval gates & operator oversight, M2/S3). It exists because the vision-and-roadmap mission reconcile kept re-deriving this feature back to `in-progress`: the roadmap content lives on main (authored under the shared RUFU-101/RUFU-107 reconcile/authoring work), but no single board task deterministically carried this feature's specific lineage, so the slice-milestone could not close. This section records that deterministic ownership, maps both of the feature's acceptance criteria to the doc sections that satisfy them, and closes the feature to `done` so slice S3 and milestone M2 can complete. The deliverable stays grounded in the M1 north-star (docs/vision.md, theme 3 "Human-in-the-Loop Control") and never moves the primary checkout off `main` or pushes to any remote.
+-->
+
+**Task:** RUFU-108 is the **dedicated implementation-owner task** for this roadmap item. It deterministically carries the feature's **`M2 / S3 / F-MSL72J08-000L-ZGFL → RUFU-108`** lineage, resolving the earlier strand where the roadmap content existed on `main` (under the shared RUFU-101 reconcile / RUFU-107 authoring work that does not carry this feature's specific lineage) but no single board task owned the feature — which is why the mission reconcile kept re-deriving F-MSL72J08-000L-ZGFL back to `in-progress` and slice **S3 — Human-in-the-Loop Control roadmap** / milestone **M2 — Roadmap Definition** could not close.
+
+This roadmap-definition deliverable is grounded in the M1 north-star vision ([`docs/vision.md`](./vision.md)), specifically **strategic theme 3 — Human-in-the-Loop Control** ("Keep humans accountable and in-control at the decision boundaries that matter: approval gates, pauses, promotions, and operator oversight…"), which this document expands into a durable, implementation-ready definition for the feature.
+
+**Acceptance criteria traceability:**
+
+- **AC 1 — "Roadmap item is defined and grounded in the M1 vision's human-in-the-loop control strategic theme."** Satisfied by the [Grounding](#grounding) section above (quotes theme 3 of `docs/vision.md` and advances it across the Scope, Targeted "Target users", "Key outcomes", and "Prioritized implementation sketch" sections).
+- **AC 2 — "Roadmap feature carries the approved M2/S3 lineage."** Satisfied by this document's lineage header (`M2 / S3 / F-MSL72J08-000L-ZGFL → M-MSL4E01A-0001-Y9QC`) together with this **Implementation Status** section, which records RUFU-108's `M2 / S3 / F-MSL72J08-000L-ZGFL → RUFU-108` ownership.
+
+**Acceptance closure:** Both of F-MSL72J08-000L-ZGFL's acceptance-criteria bullets are met by the committed artifact on the `fusion/rufu-108` main-based branch. With RUFU-108 deterministically owning the feature's lineage, the feature is closed to `done` (via `fn_feature_set_status`) and the mission reconcile closes slice **SL-MSL65MWM-000F-759C** (S3) and milestone **MS-MSL655GU-000A-GHJG** (M2).
+
 ## Related Documents
 
 - [Repository README](../README.md) — product positioning ("a software factory, run by a multi-agent orchestrator")
