@@ -65,7 +65,9 @@ capacity-model table drop that landed while this PR was open.
 /* FNXC:MessageArchive 2026-08-12-22:14: 0058 persists non-destructive mailbox archival on upgrades. */
 /* FNXC:TaskRecommendations 2026-08-13-22:23: upgrades must install the source-agent index before duplicate intake queries it. */
 /* FNXC:WorkspaceLease 2026-08-15-12:00: the baseline ceiling must include durable coordination tables so an upgraded database is never rejected by the current binary. */
-export const SCHEMA_BASELINE_VERSION = "0060";
+/* FNXC:MemoryFocus 2026-08-13-15:57: 0061 adds the per-conversation chat_sessions.memory_focus read-time topic column (RUFU-068); renumbered from 0059 (FN-9037), then 0060 (FN-9059 workspace leases claimed it), landing on 0061. */
+/* FNXC:MemoryFocus 2026-08-15-18:34: SCHEMA_BASELINE_VERSION advances to 0061 for the RUFU-068 chat_sessions.memory_focus column migration, which origin FN-9059 workspace coordination leases pushed to 0060 first. Advancing the baseline keeps the upgrade guard (${SCHEMA_BASELINE_VERSION} vs applied) from rejecting the database once 0061 lands. */
+export const SCHEMA_BASELINE_VERSION = "0061";
 /** FNXC:SymbolLock 2026-07-20-10:00: upgrades need durable task declarations before admission resolves symbols. */
 export const TASK_DECLARED_SYMBOLS_VERSION = "0028";
 const INITIAL_SCHEMA_VERSION = "0000";
@@ -226,6 +228,9 @@ export const PROJECT_OWNERSHIP_DEFAULT_RECONCILIATION_VERSION = "0057";
 export const MESSAGE_ARCHIVE_SCHEMA_VERSION = "0058";
 export const TASK_SOURCE_AGENT_INDEX_VERSION = "0059";
 export const WORKSPACE_COORDINATION_LEASES_SCHEMA_VERSION = "0060";
+
+/** FNXC:MemoryFocus 2026-08-13-15:57: explicit registration prevents the per-conversation memory-focus migration from being skipped. Renumbered to 0060 during the rebase onto origin/main (FN-9037 took 0059). */
+export const CHAT_SESSION_MEMORY_FOCUS_VERSION = "0061";
 
 /** SECURITY DEFINER helper that only inserts LEGACY_ADOPTION_DRAINED_MARKER. */
 export const LEGACY_ADOPTION_DRAINED_MARKER_FUNCTION = "fusion_mark_legacy_adoption_drained";
@@ -460,6 +465,8 @@ const PROJECT_OWNERSHIP_DEFAULT_RECONCILIATION_MIGRATION_PATH = join(MIGRATIONS_
 const MESSAGE_ARCHIVE_SCHEMA_MIGRATION_PATH = join(MIGRATIONS_DIR, "0058_fn_9014_message_archive.sql");
 const TASK_SOURCE_AGENT_INDEX_MIGRATION_PATH = join(MIGRATIONS_DIR, "0059_fn_9037_tasks_source_agent_index.sql");
 const WORKSPACE_COORDINATION_LEASES_MIGRATION_PATH = join(MIGRATIONS_DIR, "0060_fn_9059_workspace_coordination_leases.sql");
+/* FNXC:MemoryFocus 2026-08-14-10:30: renumbered to 0061 (FN-9059 workspace leases own 0060). */
+const CHAT_SESSION_MEMORY_FOCUS_MIGRATION_PATH = join(MIGRATIONS_DIR, "0061_chat_session_memory_focus.sql");
 
 /**
  * Ensure the migration bookkeeping table exists. Lives in the public schema so
@@ -590,6 +597,7 @@ export async function applySchemaBaseline(
     const messageArchiveSchemaAlreadyApplied = applied.includes(MESSAGE_ARCHIVE_SCHEMA_VERSION);
     const taskSourceAgentIndexAlreadyApplied = applied.includes(TASK_SOURCE_AGENT_INDEX_VERSION);
     const workspaceCoordinationLeasesAlreadyApplied = applied.includes(WORKSPACE_COORDINATION_LEASES_SCHEMA_VERSION);
+    const chatSessionMemoryFocusAlreadyApplied = applied.includes(CHAT_SESSION_MEMORY_FOCUS_VERSION);
     assertBinaryNotOlderThanDatabase(applied);
     let schemaChanged = false;
 
@@ -1301,6 +1309,13 @@ export async function applySchemaBaseline(
       const migrationSql = await readFile(WORKSPACE_COORDINATION_LEASES_MIGRATION_PATH, "utf8");
       await tx.execute(sql.raw(migrationSql));
       await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${WORKSPACE_COORDINATION_LEASES_SCHEMA_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    /* FNXC:MemoryFocus 2026-08-14-10:30: register 0061 explicitly. */
+    if (!chatSessionMemoryFocusAlreadyApplied) {
+      const migrationSql = await readFile(CHAT_SESSION_MEMORY_FOCUS_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${CHAT_SESSION_MEMORY_FOCUS_VERSION}) ON CONFLICT (version) DO NOTHING`);
       schemaChanged = true;
     }
     return { applied: schemaChanged, pluginHooksRun: pluginHooks.length };
