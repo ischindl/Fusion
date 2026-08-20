@@ -19,7 +19,7 @@ tags:
 
 # Observed suite-only flakes register
 
-This register has **3 active observation records** (entries 1, 2, and 7): **2 active first sightings** and **1 escalated second sighting**. It also has **1 merge-gate eviction record** (entry 6) and **8 archived closed records**. Only the active section drives quarantine and escalation decisions; the other sections preserve historical evidence.
+This register has **4 active observation records** (entries 1, 2, 7, and 13): **3 active first sightings** and **1 escalated second sighting**. It also has **1 merge-gate eviction record** (entry 6) and **8 archived closed records**. Only the active section drives quarantine and escalation decisions; the other sections preserve historical evidence.
 
 <!--
 FNXC:TestFlakeRegister 2026-08-19-11:14:
@@ -187,6 +187,34 @@ The 12-worker snapshots show 21 backends and concurrent template `CREATE DATABAS
 | D01 | configured pg gate / 4 forks | 3.6s | not selected | green, 2 files / 10 pass | 100/97; not sampled |
 | D02 | configured pg gate / 4 forks | 3.7s | not selected | green, 2 files / 10 pass | 100/97; not sampled |
 
+
+### 13. CLI bin no-args dashboard-launch test timeout
+
+- **Status:** QUARANTINED 2026-08-20 (second sighting; file-level quarantine in `scripts/lib/test-quarantine.json` + `packages/cli/vitest.config.ts` exclude, deletion deadline 2026-09-03) — evidence owner RUFU-128.
+
+- **File:** `packages/cli/src/__tests__/bin.test.ts`
+- **Exact test:** `bin command routing and fallbacks > launches dashboard when no args are provided`
+- **Observed tree/SHA:** `4eaa9b620e358f21f26ea705fac81ba808bf6675` (RUFU-128 worktree `azure-breeze`); second sighting at `a744b166c` (worktree `fast-finch`).
+- **Observed frequency:** first observation in a five-file concurrent cli test batch on a loaded host; an immediate re-run of the identical batch plus isolated file/test runs all passed. Second observation 2026-08-20 (UTC, host load average 15.22) on `fusion/rufu-128` during RUFU-128 post-review verification: whole-file run failed (23.8s, 1 failed / 76 passed), a repeat whole-file run failed (34.4s), and the single test isolated failed at 15.39s (transform 10.59s, test phase 15.02s).
+
+| run | result |
+|---|---|
+| 5-file cli batch (dashboard-supervise + dashboard-default-workflow-fallback + cli-active-count-lanes + bin + dashboard-mission-store-backend-guard) | **subject timed out** at the 15000ms test timeout (`bin.test.ts:406`); 1 failed / 108 passed across the batch |
+| identical 5-file batch re-run | green (15.2s) |
+| file alone (`--reporter=dot`) ×2 | green (15.3s / 15.6s file wall) |
+| single test alone (verbose) | green |
+| file alone at load avg 15.22 (2nd sighting) | **subject timed out** at the 15000ms test timeout; 1 failed / 76 passed, 23.8s file wall |
+| file alone again + single test isolated at load avg 15.22 (2nd sighting) | **subject timed out** again; isolated single test 15.39s (transform 10.59s, test phase 15.02s) |
+
+Mechanism: the file's own wall time (~15s of `runBin` invocations) approaches the 15000ms per-test budget, so under concurrent worker fan-out on a loaded host the affected test crossed the threshold; at sustained load average 15 even the isolated single test (whose subject is fully mocked) crossed it, consistent with CPU-scheduling/transform stall rather than test logic. The subject is a fully mocked unit test — `vi.mock("../commands/dashboard.js", factory)` means the real dashboard command module (the only `packages/cli` file RUFU-128 touched) is never loaded in this suite, excluding the RUFU-128 change as a cause. The same no-args dashboard-launch timeout signature appears in the 2026-06-20 FN-6839 loaded-lane history. Second sighting on 2026-08-20 → file-level quarantine per the deletion ratchet (no further discretion), with no timeout widening, retries, or assertion changes; the 76 remaining tests are evicted until a root-cause rescue or the 2026-09-03 deletion deadline.
+
+<!--
+FNXC:TestFlakeRegister 2026-08-20-07:30:
+RUFU-128 recorded this first sighting of the loaded-host per-test timeout in bin.test.ts while verifying the cli dashboard command wiring. The dashboard command is factory-mocked in the suite, so no RUFU-128 code path executes here; the file-level quarantine would evict 108+ passing tests over one load-dependent observation, which the first-sighting register exception exists to avoid.
+
+FNXC:TestFlakeRegister 2026-08-20-15:35:
+Second sighting at sustained load average 15.22 (whole file 23.8s and 34.4s, isolated single test 15.39s with 10.59s transform) while re-verifying fusion/rufu-128 after a harness-failed code-review round. The deletion ratchet makes a second sighting an on-sight file-level quarantine with no further discretion: mirrored in scripts/lib/test-quarantine.json and packages/cli/vitest.config.ts in the same commit, no timeout/retry/assertion appeasement, deletion deadline 2026-09-03.
+-->
 
 ### Common shape and investigated result
 
