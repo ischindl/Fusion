@@ -5792,9 +5792,9 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
               // unreadable checkout — fall back to clearing metadata
             }
           }
-          const patch: Partial<Task> = preservedWorktree
-            ? { branch: selected.branch }
-            : { branch: selected.branch, worktree: null as unknown as string };
+          const patch: Partial<Task> & { branchWriteOrigin?: "engine" } = preservedWorktree
+            ? { branch: selected.branch, branchWriteOrigin: "engine" as const }
+            : { branch: selected.branch, worktree: null as unknown as string, branchWriteOrigin: "engine" as const };
           if (!task.baseCommitSha) {
             const derivedBaseCommit = (await execAsync(
               `git merge-base ${shellQuote(integrationBase)} ${shellQuote(selected.branch)}`,
