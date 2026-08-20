@@ -144,6 +144,8 @@ export async function autoRecoverWorktreeSessionStartFailure(
     ...(nextStaleMetadataClearRecoveryCount === undefined ? {} : { recoveryRetryCount: nextStaleMetadataClearRecoveryCount }),
     worktree: clearWorktreeMetadata ? null : staleWorktree,
     branch: nextBranch,
+    // FNXC:BranchWriteOrigin 2026-08-20-16:10: engine-owned recovery metadata rewrite (FN-9161 store validation requires origin even for null clears).
+    branchWriteOrigin: "engine" as const,
     sessionFile: null,
   });
   await opts.auditor?.database({
