@@ -55,7 +55,8 @@ export async function reclaimExistingWorktree(
 ): Promise<void> {
   const targetPath = preservedWorktreeTargetPathForTask(task.id, livePath, settings, deps.rootDir);
   const normalizedPath = await deps.normalizeReclaimableWorktreePath(livePath, targetPath, task.id, settings);
-  await deps.store.updateTask(task.id, { worktree: normalizedPath, branch });
+  /* FNXC:BranchWriteOrigin 2026-08-20-14:40: FN-9161's store validation requires an explicit write origin on every branch write; reclaim re-pinning is engine-owned. */
+  await deps.store.updateTask(task.id, { worktree: normalizedPath, branch, branchWriteOrigin: "engine" as const });
   const latestTask = await deps.store.getTask(task.id);
   const baseRef = await resolveDiffBaseRef(normalizedPath, latestTask.baseCommitSha);
   if (baseRef) {
@@ -189,6 +190,8 @@ export async function handleBranchConflict(
       error: conflictMessage,
       branch: error.branchName,
       worktree: error.conflictingWorktreePath,
+      /* FNXC:BranchWriteOrigin 2026-08-20-14:40: FN-9161's store validation requires an explicit write origin on every branch write; the sticky-park record is engine-owned. */
+      branchWriteOrigin: "engine" as const,
       paused: true,
       pausedReason: "branch-conflict-unrecoverable",
     });
