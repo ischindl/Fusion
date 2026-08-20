@@ -19,6 +19,7 @@ import {
   type ChatFailureInfo,
   type ChatSessionListResponse,
   type ChatStreamErrorMeta,
+  type ChatStashBackfillResponse,
 } from "../api";
 import { subscribeSse } from "../sse-bus";
 import { createResyncRetryRunner } from "./resyncRetry";
@@ -187,6 +188,16 @@ export interface UseChatReturn {
   forceSendPendingMessage?: (index: number) => void;
   loadMoreMessages: () => Promise<void>;
   hasMoreMessages: boolean;
+
+  /**
+   * FNXC:ChatStashBackfill 2026-08-20-00:17:
+   * (RUFU-136, gate closed by RUFU-123) Backfill a chat's full history into Stash on demand;
+   * thin passthrough of backfillChatSessionToStash with the project scope. RUFU-136 shipped
+   * the implementation and the ChatView call site without declaring this field here, which
+   * left the dashboard typecheck red (TS2353 in the returned literal, TS2339 in ChatView);
+   * RUFU-123 added the declaration to close the typecheck gate for the merge.
+   */
+  backfillStashSession: (id: string) => Promise<ChatStashBackfillResponse>;
 
   // Search/filter
   searchQuery: string;
