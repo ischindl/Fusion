@@ -62,10 +62,49 @@ function summarizeRows(rows) {
   );
 }
 
+/*
+FNXC:QuarantineLockstep 2026-08-20-21:20:
+The naive regex strip (block-comment first, then line comments) is not string-aware, so the `/*` inside a glob literal such as `"node_modules/**"` opens a phantom block comment that swallows everything up to the next real closing comment marker. That phantom region deletes the quotes of the `exclude:` entries it crosses, mis-pairs the remaining quotes, and makes the check report `missing-exclude` for a quarantine exclusion that is present in the file (observed on the RUFU-072 task-wedge entry, whose `exclude` line sits directly after an FNXC block comment). Scan the source character-by-character, tracking the same `"`/`'` string state as extractBalancedArray, and only treat a slash-slash or a slash-star sequence as a comment when it occurs outside a string. Newlines are preserved so line layout stays readable in diagnostics.
+*/
 function stripComments(source) {
-  return source
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/^\s*\/\/.*$/gm, "");
+  let out = "";
+  let quote = null;
+  let escaped = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (quote) {
+      out += character;
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      quote = character;
+      out += character;
+      continue;
+    }
+    if (character === "/" && source[index + 1] === "/") {
+      let end = index + 2;
+      while (end < source.length && source[end] !== "\n") end += 1;
+      out += source.slice(index, end).replace(/[^\n]/g, " ");
+      index = end - 1;
+      continue;
+    }
+    if (character === "/" && source[index + 1] === "*") {
+      const close = source.indexOf("*/", index + 2);
+      const end = close === -1 ? source.length : close + 2;
+      out += source.slice(index, end).replace(/[^\n]/g, " ");
+      index = end - 1;
+      continue;
+    }
+    out += character;
+  }
+  return out;
 }
 
 function extractBalancedArray(source, openingBracket) {

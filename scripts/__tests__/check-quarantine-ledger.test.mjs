@@ -1,6 +1,9 @@
 /*
 FNXC:QuarantineLockstep 2026-08-17-11:14:
 Branch-B's real ledger is intentionally empty, so the real-tree assertion proves only that no dangling exclusion survives. Fixture negatives provide the non-vacuous proof that strict mode rejects each half of a broken quarantine decision.
+
+FNXC:QuarantineLockstep 2026-08-20-21:20:
+String-aware comment stripping regression: a glob literal containing `/*` (e.g. `"node_modules/**"`) must not open a phantom block comment that hides a real `exclude:` entry. The fixture reproduces the exact shape of packages/engine/vitest.config.ts that triggered the false positive on the RUFU-072 task-wedge quarantine.
 */
 
 import { test } from "node:test";
@@ -140,6 +143,33 @@ test("comment-only ledger file mention cannot satisfy an exclusion", () => {
   try {
     const ledgerPath = ledgerFixture(rootDir, healthyEntry(), '/* FNXC: historical "src/healthy.test.ts" */ exclude: []');
     assert.deepEqual(findLockstepViolations({ rootDir, ledger: readLedger(ledgerPath) }).map((row) => row.kind), ["missing-exclude"]);
+  } finally { rmSync(rootDir, { recursive: true, force: true }); }
+});
+
+test("glob strings containing /* do not mask a real exclusion (string-aware comment stripping)", () => {
+  const rootDir = tempRoot();
+  try {
+    const config = [
+      'export default {',
+      '  test: {',
+      '    name: "engine-default",',
+      '    include: ["src/**/*.test.ts"],',
+      '    exclude: [',
+      '      "node_modules/**",',
+      '      "dist/**",',
+      '      /*',
+      '      FNXC:EngineTests 2026-08-11-21:50:',
+      '      quarantine rationale that mentions "src/healthy.test.ts" in prose',
+      '      */',
+      '      "src/healthy.test.ts",',
+      '    ],',
+      '  },',
+      '};',
+    ].join("\n");
+    writeConfig(rootDir, "engine", config);
+    writeFile(rootDir, "packages/engine/src/healthy.test.ts");
+    const ledgerPath = writeLedger(rootDir, { entries: [healthyEntry()] });
+    assert.deepEqual(findLockstepViolations({ rootDir, ledger: readLedger(ledgerPath) }), []);
   } finally { rmSync(rootDir, { recursive: true, force: true }); }
 });
 
