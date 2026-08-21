@@ -1320,6 +1320,7 @@
     "noSkillsAvailable": "Nenhuma habilidade disponível",
     "noSkillsFound": "Nenhuma habilidade encontrada",
     "openQuickChat": "Abrir chat rápido",
+    "outputBudgetExhausted": "O modelo usou todo o seu orçamento de saída para raciocínio — aumente o maxTokens para este modelo.",
     "preserveToStash": "",
     "preserveToStashDone": "",
     "preserveToStashFailed": "",

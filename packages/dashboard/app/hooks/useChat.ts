@@ -8,7 +8,6 @@ import {
   updateChatSession,
   deleteChatSession,
   backfillChatSessionToStash,
-  editChatMessage,
   attachChatStream,
   streamChatResponse,
   cancelChatResponse,
