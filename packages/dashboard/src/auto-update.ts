@@ -1,4 +1,4 @@
-import { resolveGlobalDir, resolveUpdateAutomationSettings } from "@fusion/core";
+import { resolveGlobalDir, resolveUpdateAutomationSettings, resolveUpdatesExternallyManaged } from "@fusion/core";
 import type { UpdateChannel } from "@fusion/core";
 import { performUpdateCheck, performUpdateInstall } from "./update-check.js";
 import type { UpdateCheckResult, UpdateInstallResult } from "./update-check.js";
@@ -44,6 +44,7 @@ type AutoUpdateSettings = {
 export type AutoUpdateOutcome =
   | "disabled"
   | "checks-disabled"
+  | "externally-managed"
   | "unsupervised"
   | "up-to-date"
   | "check-failed"
@@ -70,6 +71,8 @@ export interface AutoUpdateDeps {
   fusionDir?: string;
   /** Host-injected checkout root: global npm cannot update this running program. */
   sourceWorkspaceRoot?: string;
+  /** Optional deterministic override for the deployment-owned update declaration. */
+  externallyManaged?: boolean;
   /** Test seams. */
   checkForUpdate?: typeof performUpdateCheck;
   installUpdate?: typeof performUpdateInstall;
@@ -108,6 +111,10 @@ export async function runAutoUpdateCycle(deps: AutoUpdateDeps): Promise<AutoUpda
   const automation = resolveUpdateAutomationSettings(settings);
   if (!automation.autoUpdateEnabled) return "disabled";
   if (settings.updateCheckEnabled === false) return "checks-disabled";
+  if (deps.externallyManaged ?? resolveUpdatesExternallyManaged()) {
+    deps.log.info("Auto-update skipped: updates are externally managed");
+    return "externally-managed";
+  }
 
   if (!deps.supervised) {
     deps.log.warn("Auto-update skipped: no supervising parent", {

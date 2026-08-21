@@ -34,7 +34,8 @@ export function useUpdateCheck(): UseUpdateCheckResult {
         // Record before ordinary update state so a hydrated pending restart never
         // flashes a second Update now action through a competing stale response.
         pendingUpdateInstallState.record(result.pendingInstall);
-        if (cancelled || result.disabled) return;
+        // Externally managed deployments are disabled by the server and must never mount an update offer.
+        if (cancelled || result.disabled || result.externallyManaged) return;
 
         setUpdateAvailable(result.updateAvailable === true);
         setLatestVersion(typeof result.latestVersion === "string" ? result.latestVersion : null);

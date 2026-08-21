@@ -30,6 +30,9 @@ export interface UpdateCheckResponse {
   };
   lastChecked?: number;
   disabled?: boolean;
+  /** Deployment owns update release management, so install surfaces are suppressed. */
+  externallyManaged?: boolean;
+  message?: string;
   error?: string;
 }
 

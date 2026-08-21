@@ -161,7 +161,7 @@ vi.mock("../../hooks/useMemoryBackendStatus", () => ({
   })),
 }));
 
-import { fetchAuthStatus, fetchDashboardHealth, fetchSettings, loginProvider, saveApiKey, updateSettings } from "../../api";
+import { checkForUpdates, fetchAuthStatus, fetchDashboardHealth, fetchSettings, loginProvider, saveApiKey, updateSettings } from "../../api";
 
 function setDocumentHidden(hidden: boolean): void {
   Object.defineProperty(document, "hidden", { configurable: true, value: hidden });
@@ -422,6 +422,28 @@ describe("SettingsModal mobile adaptations", () => {
     expect(queryByRole("button", { name: "Check for updates" })).toBeNull();
     expect(document.querySelector(".settings-modal-footer-version")).toBeTruthy();
     expect(document.querySelector(".settings-update-check")).toBeTruthy();
+  });
+
+  it("renders managed update guidance without an update-now shell in the mobile footer", async () => {
+    mockSettingsViewport(true);
+    vi.mocked(checkForUpdates).mockResolvedValueOnce({
+      currentVersion: "1.2.3",
+      latestVersion: null,
+      updateAvailable: false,
+      disabled: true,
+      externallyManaged: true,
+      message: "Managed deployment updates must be installed through its release pipeline.",
+    });
+    const user = userEvent.setup();
+    const { findByText, queryByRole } = render(<SettingsModal onClose={vi.fn()} addToast={vi.fn()} />);
+    await waitFor(() => expect(fetchSettings).toHaveBeenCalled());
+
+    const modalActions = document.querySelector(".modal-actions");
+    await user.click(within(modalActions as HTMLElement).getByRole("button", { name: "Check for updates" }));
+
+    expect(await findByText(/Managed deployment updates/)).toBeTruthy();
+    expect(queryByRole("button", { name: "Update now" })).toBeNull();
+    expect(document.querySelector(".settings-update-now-btn")).toBeNull();
   });
 
   it("keeps update-now button reachable from the mobile footer", async () => {

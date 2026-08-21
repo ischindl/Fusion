@@ -1950,6 +1950,10 @@ export function SettingsModal({
       return null;
     }
 
+    if (effectiveCheckResult.externallyManaged) {
+      return <span className="settings-update-install-status">{effectiveCheckResult.message}</span>;
+    }
+
     if (effectiveCheckResult.error) {
       return effectiveCheckResult.error;
     }

@@ -247,7 +247,7 @@ Unknown options and positional arguments are rejected with an error and non-zero
 
 If your installed CLI predates `--channel`, bootstrap onto beta with `npm install -g @runfusion/fusion@beta`. Once installed, use `fn update --channel beta` to persist the beta track.
 
-`fn upgrade` is an alias for `fn update`. Installs always pin the exact resolved version rather than a dist-tag, so a beta-channel install can never silently land on stable (or vice versa).
+`fn upgrade` is an alias for `fn update`. Installs always pin the exact resolved version rather than a dist-tag, so a beta-channel install can never silently land on stable (or vice versa). When `FUSION_UPDATES_EXTERNALLY_MANAGED` is `1`, `true`, `yes`, or `on`, `fn update` refuses installation so a deployment-owned release pipeline remains authoritative; use the deployment's normal update process instead.
 
 ---
 

@@ -553,6 +553,10 @@ export function SystemControlsArea({ projectId, addToast }: SystemControlsAreaPr
           toast(result.error, "error");
           return;
         }
+        if (result.externallyManaged) {
+          toast(t("systemControls.updatesExternallyManaged", "Updates are managed by this deployment"), "warning");
+          return;
+        }
         if (result.disabled) {
           toast(t("systemControls.updatesDisabled", "Update checks are disabled in global settings"), "warning");
           return;
@@ -953,6 +957,8 @@ export function SystemControlsArea({ projectId, addToast }: SystemControlsAreaPr
             <span>
               {pendingInstall
                 ? t("updateBanner.updateSuccess", "Updated to v{{version}} — restart Fusion to apply", { version: pendingInstall.latestVersion })
+                : updateCheckResult?.externallyManaged
+                  ? t("systemControls.updatesExternallyManaged", "Updates are managed by this deployment")
                 : updateCheckResult?.disabled
                   ? t("systemControls.updatesDisabled", "Update checks are disabled in global settings")
                 : updateCheckResult?.updateAvailable && updateCheckResult.latestVersion

@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import express from "express";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { request as performRequest } from "../../test-request.js";
 import { registerUpdateCheckRoutes } from "../register-update-check-routes.js";
 
@@ -53,6 +53,10 @@ describe("registerUpdateCheckRoutes", () => {
   beforeEach(() => {
     mockPerformUpdateCheck.mockReset();
     mockPerformUpdateInstall.mockReset();
+  });
+
+  afterEach(() => {
+    delete process.env.FUSION_UPDATES_EXTERNALLY_MANAGED;
   });
 
   it("returns a visible no-update outcome without installing", async () => {
@@ -114,5 +118,23 @@ describe("registerUpdateCheckRoutes", () => {
     const response = await performRequest(createApp(undefined, false), "GET", "/api/update-check");
     expect(response.body).toMatchObject({ disabled: true, updateAvailable: false });
     expect(mockPerformUpdateCheck).not.toHaveBeenCalled();
+  });
+
+  it("suppresses all routes before registry checks or installs when externally managed", async () => {
+    process.env.FUSION_UPDATES_EXTERNALLY_MANAGED = "1";
+    const app = createApp();
+
+    const get = await performRequest(app, "GET", "/api/update-check");
+    const refresh = await performRequest(app, "POST", "/api/update-check/refresh", "{}", { "content-type": "application/json" });
+    const install = await postInstall(app);
+
+    for (const response of [get, refresh]) {
+      expect(response.body).toMatchObject({ disabled: true, externallyManaged: true, updateAvailable: false, latestVersion: null });
+      expect(response.body.message).toMatch(/externally managed/i);
+    }
+    expect(install.body).toMatchObject({ updated: false, outcome: "unsupported-install-method" });
+    expect(install.body.error).toMatch(/externally managed/i);
+    expect(mockPerformUpdateCheck).not.toHaveBeenCalled();
+    expect(mockPerformUpdateInstall).not.toHaveBeenCalled();
   });
 });

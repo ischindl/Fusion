@@ -91,6 +91,11 @@ export type { OpenAiCodexProviderRegistration } from "./ai/openai-models.js";
 export { detectImageMimeFromBytes } from "./i18n/image-mime.js";
 export type { DetectedImageMime } from "./i18n/image-mime.js";
 export { resolveUpdateAutomationSettings } from "./config/update-automation.js";
+export {
+  EXTERNALLY_MANAGED_UPDATES_ENV,
+  EXTERNALLY_MANAGED_UPDATE_MESSAGE,
+  resolveUpdatesExternallyManaged,
+} from "./config/update-management.js";
 export { redactSecrets } from "./secrets/redact-secrets.js";
 export {
   evaluatePromptCondition,

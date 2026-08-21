@@ -1125,9 +1125,9 @@ The client treats mapping persistence as part of onboarding success. If mapping 
 | POST | `/api/secrets/sync-receive` | Receive pushed secrets payload (inbound). |
 | GET | `/api/secrets/sync-export` | Export local secrets sync envelope for remote pull flows. |
 | GET | `/api/settings/auth-export` | Export local `AuthMaterialSnapshot`. |
-| GET | `/api/update-check` | Read cached/TTL-guarded npm update status for `@runfusion/fusion` (respects `updateCheckEnabled`). |
-| POST | `/api/update-check/refresh` | Clear cached update data and force a fresh npm update check. |
-| POST | `/api/update-check/install` | Install the available package once; a successful install is retained by the old process until restart. |
+| GET | `/api/update-check` | Read cached/TTL-guarded npm update status for `@runfusion/fusion` (respects `updateCheckEnabled` and `FUSION_UPDATES_EXTERNALLY_MANAGED`). |
+| POST | `/api/update-check/refresh` | Clear cached update data and force a fresh npm update check unless updates are externally managed. |
+| POST | `/api/update-check/install` | Install the available package once unless externally managed; a successful install is retained by the old process until restart. |
 | GET | `/api/updates/check` | Perform an on-demand npm registry check for the latest `@runfusion/fusion` version (no cache). |
 
 Update-check responses may include `pendingInstall`, using the install response shape for a successful `installed` target plus restart flags. `pendingInstall` takes dashboard action/message precedence over ordinary availability, disabled checks, and cached status; while it exists GET, refresh, and install return it without another registry lookup or npm install. It is intentionally process-local and expires on host replacement, rather than being persisted in settings or storage.

@@ -283,6 +283,32 @@ describe("UpdateAvailableBanner", () => {
   });
 
   it.each([
+    ["npm missing guidance", {
+      currentVersion: "0.6.0",
+      latestVersion: "0.7.0",
+      updated: false,
+      outcome: "unsupported-install-method",
+      message: "npm is not available on this host; update it the way this install was installed.",
+    }],
+    ["externally managed guidance", {
+      currentVersion: "0.6.0",
+      latestVersion: "0.7.0",
+      updated: false,
+      outcome: "unsupported-install-method",
+      message: "This Fusion install declares updates externally managed via FUSION_UPDATES_EXTERNALLY_MANAGED.",
+    }],
+  ])("renders %s as non-error operator guidance", async (_label, response) => {
+    mockInstallUpdate.mockResolvedValueOnce(response);
+    renderBanner();
+
+    fireEvent.click(screen.getByRole("button", { name: "Update now" }));
+
+    const guidance = await screen.findByText(response.message);
+    expect(guidance).toHaveAttribute("aria-live", "polite");
+    expect(guidance).not.toHaveTextContent(/^Update failed:/);
+  });
+
+  it.each([
     ["supported", true],
     ["unsupported", false],
   ])("keeps the mobile action row and %s restart control in the document", async (_state, restartSupported) => {

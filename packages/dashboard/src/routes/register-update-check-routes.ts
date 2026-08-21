@@ -1,4 +1,9 @@
-import { resolveGlobalDir, resolveUpdateAutomationSettings } from "@fusion/core";
+import {
+  EXTERNALLY_MANAGED_UPDATE_MESSAGE,
+  resolveGlobalDir,
+  resolveUpdateAutomationSettings,
+  resolveUpdatesExternallyManaged,
+} from "@fusion/core";
 import { clearUpdateCheckCache, performUpdateCheck, performUpdateInstall } from "../update-check.js";
 import { getCliPackageVersion } from "../cli-package-version.js";
 import type { ApiRouteRegistrar } from "./types.js";
@@ -30,6 +35,23 @@ export const registerUpdateCheckRoutes: ApiRouteRegistrar = (ctx) => {
         res.json(pending);
         return;
       }
+      /*
+      FNXC:UpdateManagement 2026-08-21-16:37:
+      This declaration suppresses the offer, not merely the registry check: a managed
+      deployment's release pipeline owns the artifact and must not be bypassed by npm.
+      */
+      if (resolveUpdatesExternallyManaged()) {
+        res.json({
+          updateAvailable: false,
+          disabled: true,
+          externallyManaged: true,
+          currentVersion: cliPackageVersion,
+          latestVersion: null,
+          lastChecked: Date.now(),
+          message: EXTERNALLY_MANAGED_UPDATE_MESSAGE,
+        });
+        return;
+      }
       const globalSettings = await store.getGlobalSettingsStore().getSettings();
       if (globalSettings.updateCheckEnabled === false) {
         res.json({
@@ -59,6 +81,18 @@ export const registerUpdateCheckRoutes: ApiRouteRegistrar = (ctx) => {
         res.json(pending);
         return;
       }
+      if (resolveUpdatesExternallyManaged()) {
+        res.json({
+          updateAvailable: false,
+          disabled: true,
+          externallyManaged: true,
+          currentVersion: cliPackageVersion,
+          latestVersion: null,
+          lastChecked: Date.now(),
+          message: EXTERNALLY_MANAGED_UPDATE_MESSAGE,
+        });
+        return;
+      }
       const globalSettings = await store.getGlobalSettingsStore().getSettings();
       const fusionDir = resolveGlobalDir();
       await clearUpdateCheckCache(fusionDir);
@@ -79,6 +113,17 @@ export const registerUpdateCheckRoutes: ApiRouteRegistrar = (ctx) => {
       const pending = coordinator.getPendingInstall();
       if (pending) {
         res.json(pending);
+        return;
+      }
+      if (resolveUpdatesExternallyManaged()) {
+        res.json({
+          currentVersion: cliPackageVersion,
+          latestVersion: null,
+          updated: false,
+          outcome: "unsupported-install-method",
+          message: EXTERNALLY_MANAGED_UPDATE_MESSAGE,
+          error: EXTERNALLY_MANAGED_UPDATE_MESSAGE,
+        });
         return;
       }
       const globalSettings = await store.getGlobalSettingsStore().getSettings();

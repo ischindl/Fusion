@@ -405,6 +405,26 @@ describe("SettingsModal", () => {
     updateAvailable: true,
   };
 
+  it("renders externally managed guidance without an update-now control on desktop", async () => {
+    viewportMode = "desktop";
+    mockCheckForUpdates.mockResolvedValue({
+      currentVersion: "1.2.3",
+      latestVersion: null,
+      updateAvailable: false,
+      disabled: true,
+      externallyManaged: true,
+      message: "Managed deployment updates must be installed through its release pipeline.",
+    });
+    renderModal();
+    await waitForSettingsModalReady();
+
+    await settingsModalUser.click(screen.getByRole("button", { name: "Check for updates" }));
+
+    expect(await screen.findByText(/Managed deployment updates/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Update now" })).not.toBeInTheDocument();
+    expect(document.querySelector(".settings-update-now-btn")).toBeNull();
+  });
+
   async function renderUpdatedSettings() {
     mockCheckForUpdates.mockResolvedValue(availableUpdate);
     renderModal();

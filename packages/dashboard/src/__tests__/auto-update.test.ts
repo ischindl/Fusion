@@ -67,6 +67,16 @@ describe("runAutoUpdateCycle", () => {
     expect(deps.checkForUpdate).not.toHaveBeenCalled();
   });
 
+  it("does not check, install, or restart when updates are externally managed", async () => {
+    const deps = makeDeps({ externallyManaged: true });
+
+    await expect(runAutoUpdateCycle(deps)).resolves.toBe("externally-managed");
+
+    expect(deps.checkForUpdate).not.toHaveBeenCalled();
+    expect(deps.installUpdate).not.toHaveBeenCalled();
+    expect(deps.requestRestart).not.toHaveBeenCalled();
+  });
+
   it("never installs on an unsupervised host", async () => {
     const deps = makeDeps({ supervised: false });
 
