@@ -84,7 +84,10 @@
       "minutesAgo_other": ""
     },
     "title": "Registro de actividad",
-    "typeFilterBadge": ""
+    "typeFilterBadge": "",
+    "taskId": "ID de tarea",
+    "taskIdSearchPlaceholder": "Buscar ID de tarea (p. ej., FN-066)",
+    "taskIdFilterBadge": "Tarea: {{taskId}}"
   },
   "agentError": {
     "copied": "Copiado",
@@ -6206,6 +6209,10 @@
       "releaseChannelHelp": "",
       "autoUpdateAndRestart": "",
       "autoUpdateAndRestartHelp": "",
+      "autoUpdateEnabled": "",
+      "autoUpdateEnabledHelp": "",
+      "autoRestartAfterUpdate": "",
+      "autoRestartAfterUpdateHelp": "",
       "channelStable": "",
       "channelBeta": "",
       "agentToolOutputLimit": "",

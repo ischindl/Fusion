@@ -172,7 +172,6 @@ export interface TaskFormProps {
 
   // AI-assisted creation callbacks (create mode only)
   onPlanningMode?: (initialPlan: string, workflowId?: string | null) => void;
-  onSubtaskBreakdown?: (description: string, workflowId?: string | null) => void;
   onClose?: () => void;
 
   // Create-mode primary submission. NewTaskModal owns duplicate checks and payload shaping;
@@ -263,7 +262,6 @@ export function TaskForm({
   isActive = true,
   onAutoSaveDescription,
   onPlanningMode,
-  onSubtaskBreakdown,
   onClose,
   onCreateSubmit,
   createSubmitLabel,
@@ -1041,7 +1039,7 @@ export function TaskForm({
 
       FNXC:NewTaskDialogAffordances 2026-07-10-21:45:
       Priority and Fast are icon-only in the inline New Task row to match QuickEntryBox: priority uses the shared up/high, down/low, flag/normal, alert/urgent helper, and Fast uses Zap while title/aria-label/test-id semantics preserve accessibility and tests.
-      Plan/Subtask remain gated on their handoff callbacks. Model selectors, branch/base, node, review level, and GitHub tracking stay in the Advanced disclosure.
+      Plan remains gated on its handoff callback. Model selectors, branch/base, node, review level, and GitHub tracking stay in the Advanced disclosure.
 
       FNXC:NewTaskDialogAffordances 2026-06-23-21:20:
       The regular New Task dialog must visibly expose the screenshot quick-add button contract in the immediate action cluster while Advanced remains the deep configuration editor. TaskForm hosts the cluster so create payload state has one source of truth; NewTaskModal only supplies the submit handler and its existing dependency/agent quick controls.
@@ -1093,25 +1091,6 @@ export function TaskForm({
               data-testid="task-form-plan-button"
             >
               {t("taskForm.planButton", "Plan")}
-            </button>
-          )}
-          {onSubtaskBreakdown && (
-            <button
-              type="button"
-              className="btn btn-sm"
-              onClick={() => {
-                const trimmed = description.trim();
-                if (!trimmed) {
-                  addToast(t("taskForm.enterDescriptionFirst", "Enter a description first"), "error");
-                  return;
-                }
-                onClose?.();
-                onSubtaskBreakdown(trimmed);
-              }}
-              disabled={disabled || !description.trim()}
-              data-testid="task-form-subtask-button"
-            >
-              {t("taskForm.subtaskButton", "Subtask")}
             </button>
           )}
 

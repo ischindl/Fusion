@@ -96,7 +96,6 @@ describe("useModalManager", () => {
       result.current.openDetailTask(createTaskDetail("FN-1"));
       result.current.openGroupModal("group-1");
       result.current.openNewTaskWithDescription("draft");
-      result.current.openSubtaskBreakdown("subtask work");
       result.current.openPlanningWithSession("plan-1");
       result.current.openGitHubImport();
       result.current.openFiles("project", "/README.md");
@@ -116,8 +115,6 @@ describe("useModalManager", () => {
     expect(result.current.groupModalGroupId).toBeNull();
     expect(result.current.newTaskModalOpen).toBe(false);
     expect(result.current.newTaskInitialDescription).toBeNull();
-    expect(result.current.isSubtaskOpen).toBe(false);
-    expect(result.current.subtaskInitialDescription).toBeNull();
     expect(result.current.isPlanningOpen).toBe(false);
     expect(result.current.planningResumeSessionId).toBeUndefined();
     expect(result.current.planningInitialPlan).toBeNull();

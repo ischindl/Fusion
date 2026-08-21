@@ -703,6 +703,34 @@ base missing in one repo falls back to that repo's integration branch and record
 name in baseBranchFallbackFrom. Legacy entries without these fields remain pinned to their own
 integration branch and ignore task.baseBranch. Ref names live here and in task logs, never audit metadata.
 */
+/*
+FNXC:RepositoryScope 2026-08-20-23:07:
+Repository acquisition is an implementation detail, not task intent. This durable scope is the
+sole authority for workspace review, landing, and recovery; unprefixed file scope can seed it but
+must never expand it to every acquired checkout.
+*/
+export interface TaskRepositoryScope {
+  repositories: string[];
+  /** A proposal is visible before the planner confirms the repository intent. */
+  state?: "proposed" | "confirmed";
+  /** Monotonic intent generation used to fence stale review callbacks. */
+  revision?: number;
+  confirmedAt?: string;
+  confirmedBy?: "operator" | "plan" | "inferred";
+  /** FNXC:RepositoryScope 2026-08-21-01:18: Fresh landing accepts only the exact repository diff approved by Code Review. */
+  reviewEvidence?: Record<string, { fingerprint: string; approvedAt: string }>;
+  extensions?: Array<{
+    repository: string;
+    requestedAt: string;
+    requestedBy: string;
+    reason: string;
+    status: "accepted" | "refused";
+    refusedAt?: string;
+    refusedBy?: string;
+    refusalReason?: string;
+  }>;
+}
+
 export interface WorkspaceWorktreeEntry {
   worktreePath: string;
   branch: string;
@@ -714,6 +742,27 @@ export interface WorkspaceWorktreeEntry {
   landedSha?: string;
   revertBoundarySha?: string;
   landFailure?: { message: string; at: string; branch?: string };
+}
+
+export type AiMergeFindingDisposition = "pending" | "corrected" | "absent-from-squash" | "still-present" | "dismissed";
+
+export interface AiMergeReviewFinding {
+  id: string;
+  text: string;
+  disposition: AiMergeFindingDisposition;
+  audit?: Array<{ at: string; actor: string; disposition: AiMergeFindingDisposition; reason?: string }>;
+}
+
+/** Durable authority for AI merge review reconciliation; it is never reconstructed from task logs. */
+export interface AiMergeReviewReconciliation {
+  sourceSha: string;
+  integrationTipSha: string;
+  candidateSha?: string;
+  candidateTreeSha?: string;
+  findings: AiMergeReviewFinding[];
+  consecutiveCleanApprovals: number;
+  correctivePasses: number;
+  terminal?: boolean;
 }
 
 export interface Task {
@@ -735,8 +784,6 @@ export interface Task {
   /** Source column captured when this task is archived; used to restore sensibly. */
   preArchiveColumn?: Column;
   dependencies: string[];
-  /** User-requested hint for triage: prefer splitting into child tasks when appropriate. */
-  breakIntoSubtasks?: boolean;
   /** When true, this decision-only task is expected to complete without creating git commits. */
   noCommitsExpected?: boolean;
   worktree?: string;
@@ -774,6 +821,8 @@ export interface Task {
    * it alongside `landedSha`.
    */
   workspaceWorktrees?: Record<string, WorkspaceWorktreeEntry>;
+  /** Explicit repository intent. Missing legacy scope is intentionally not inferred from checkouts. */
+  repositoryScope?: TaskRepositoryScope;
   steps: TaskStep[];
   currentStep: number;
   /**
@@ -1008,6 +1057,12 @@ export interface Task {
   workflowStepResults?: WorkflowStepResult[];
   /** Number of merge retry attempts made for this task (auto-merge conflict recovery) */
   mergeRetries?: number;
+  /*
+  FNXC:AIMergeReviewReconciliation 2026-08-20-21:56:
+  FN-090 keeps finding authority, candidate identity, confirmation count, and corrective budget
+  together so interruption cannot grant a fresh budget to an old reviewer finding.
+  */
+  aiMergeReviewReconciliation?: AiMergeReviewReconciliation;
   /** Number of workflow step failure retry attempts made for this task.
    *  When pre-merge workflow steps fail, the executor retries up to MAX_WORKFLOW_STEP_RETRIES
    *  times before marking the task as failed. Cleared on successful workflow step completion. */
@@ -1211,7 +1266,8 @@ export interface Task {
    * mislabel a completed implementation as a plan awaiting approval.
    * Undefined means either no hold or a routine manual plan-approval hold.
    */
-  awaitingApprovalReason?: "release-authorization" | "plan-review-replan-cap" | "merge-blocked-by-policy";
+  /** FNXC:RepositoryScope 2026-08-21-01:53: repeated unchanged Code Review revisions park for an operator before a third remediation loop. */
+  awaitingApprovalReason?: "release-authorization" | "plan-review-replan-cap" | "merge-blocked-by-policy" | "code-review-non-convergence";
   /*
    * FNXC:PlanApproval 2026-07-04-22:41:
    * FN-7569 — records the computePlanApprovalFingerprint (packages/core/src/plan-approval.ts)
@@ -1539,9 +1595,10 @@ export interface TaskCreateInput {
    *  task can be replicated/created; flag-OFF creation only ever uses legacy ids. */
   column?: ColumnId;
   dependencies?: string[];
-  breakIntoSubtasks?: boolean;
   /** When true, this task is expected to complete without creating git commits. */
   noCommitsExpected?: boolean;
+  /** Explicit workspace repository intent selected by the operator at creation. */
+  repositoryScope?: string[];
   /** IDs of workflow steps to enable for this task */
   enabledWorkflowSteps?: string[];
   /**

@@ -275,6 +275,8 @@ interface ListViewProps {
   onMergeTask: (id: string) => Promise<MergeResult>;
   onResetTask?: (id: string) => Promise<Task>;
   onDuplicateTask?: (id: string) => Promise<Task>;
+  /** App-owned ingestion seam for successful split-detail refinements. */
+  onRefinementCreated?: (task: Task) => void;
   onOpenDetail: (task: Task | TaskDetail, options?: DetailTaskOpenOptions) => void;
   /*
   FNXC:FloatingWindow 2026-06-22-20:45:
@@ -296,10 +298,6 @@ interface ListViewProps {
    * Called when the user clicks the "Plan" button in the quick entry box.
    */
   onPlanningMode?: (initialPlan: string, workflowId?: string | null) => void;
-  /**
-   * Called when the user clicks the "Subtask" button in the quick entry box.
-   */
-  onSubtaskBreakdown?: (description: string, workflowId?: string | null) => void;
   /**
    * Called when tasks are updated (e.g., after bulk model update).
    * Allows parent to refresh task list or handle optimistically.
@@ -374,6 +372,7 @@ export function ListView({
   onMergeTask,
   onResetTask,
   onDuplicateTask,
+  onRefinementCreated,
   onPopOut,
   openMobileTasksInPopup = false,
   onOpenDetail,
@@ -387,7 +386,6 @@ export function ListView({
   onToggleFavorite,
   onToggleModelFavorite,
   onPlanningMode,
-  onSubtaskBreakdown,
   onTasksUpdated,
   projectId,
   projectName: _projectName,
@@ -1096,7 +1094,7 @@ export function ListView({
 
   /*
   FNXC:ListWorkflowSelection 2026-06-29-00:00:
-  List quick-add Plan/Subtask handoffs must inherit the same active workflow as direct quick-create. Passing null only while workflow mode has no selected workflow preserves stale-id fallback behavior without reverting to the project default lane.
+  List quick-add Plan handoffs must inherit the same active workflow as direct quick-create. Passing null only while workflow mode has no selected workflow preserves stale-id fallback behavior without reverting to the project default lane.
   */
   const listQuickEntryWorkflowId = workflowMode ? createTargetWorkflowId : undefined;
 
@@ -2710,7 +2708,7 @@ export function ListView({
         <Columns3 size={14} />
         {t("listView.viewOptions", "View")}
       </button>
-      {onNewTask ? (
+      {onNewTask && !isMobile ? (
         <button
           className="btn btn-task-create btn-sm list-new-task-action"
           onClick={() => onNewTask(isAllWorkflowsSelected ? undefined : selectedWorkflow?.id)}
@@ -2947,8 +2945,7 @@ export function ListView({
                 tasks={tasks}
                 availableModels={availableModels}
                 onPlanningMode={onPlanningMode}
-                onSubtaskBreakdown={onSubtaskBreakdown}
-                workflowId={listQuickEntryWorkflowId}
+                                workflowId={listQuickEntryWorkflowId}
                 workflowOptions={workflowMode ? workflowOptions : undefined}
                 defaultWorkflowId={workflowMode ? createTargetWorkflowId ?? boardWorkflows?.defaultWorkflowId ?? null : undefined}
                 projectId={projectId}
@@ -3592,6 +3589,7 @@ export function ListView({
                       Live board, SSE, and fetch snapshots remain on mergeTaskSnapshot so server clock
                       arbitration continues to protect lifecycle state outside this local callback.
                       */
+                      onRefinementCreated={onRefinementCreated}
                       onTaskUpdated={(updatedTask) => {
                         setSelectedTaskSnapshot((previous) => {
                           if (!previous || (updatedTask.id !== undefined && updatedTask.id !== previous.id)) return previous;

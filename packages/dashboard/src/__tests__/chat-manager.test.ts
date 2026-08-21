@@ -3379,10 +3379,17 @@ describe("ChatManager.sendMessage", () => {
     }
   });
 
-  it("cancelGeneration returns false when no active generation exists", async () => {
+  it("treats an idle cancellation as a successful no-op without durable side effects", async () => {
     const chatManager = createChatManager();
+    const events: Array<{ type: string; data: unknown }> = [];
+    const unsubscribe = chatStreamManager.subscribe("chat-001", (event) => events.push(event));
 
-    await expect(chatManager.cancelGeneration("chat-001")).resolves.toEqual({ success: false, interrupted: false });
+    await expect(chatManager.cancelGeneration("chat-001")).resolves.toEqual({ success: true, interrupted: false });
+
+    expect(mockChatStore.addMessage).not.toHaveBeenCalled();
+    expect(mockChatStore.setInFlightGeneration).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+    unsubscribe();
   });
 
   it("cancelGeneration returns true and aborts an active generation", async () => {

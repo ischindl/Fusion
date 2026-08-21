@@ -78,6 +78,13 @@ export const taskCreateParams = Type.Object({
         "Omit to inherit the project default workflow. Use fn_workflow_list to discover valid IDs.",
     }),
   ),
+  repository_scope: Type.Optional(
+    Type.Array(Type.String(), {
+      description:
+        "Explicit workspace repositories this task may modify. Names must match configured workspace repositories; " +
+        "omitting this lets the planner confirm a proposed scope.",
+    }),
+  ),
   mission_lineage: Type.Optional(missionLineageParams),
 });
 
@@ -128,6 +135,7 @@ export const acquireRepoWorktreeParams = Type.Object({
       "(e.g. 'wolf-server'). Must be one of the repos listed in the workspace. " +
       "If already acquired, returns the existing worktree path immediately.",
   }),
+  reason: Type.Optional(Type.String({ minLength: 1, description: "Why this repository is needed when it is outside the current task scope." })),
 });
 
 export const taskDocumentWriteParams = Type.Object({
@@ -1680,6 +1688,7 @@ export function createTaskCreateTool(
           description: params.description,
           dependencies: params.dependencies,
           priority: params.priority,
+          ...(params.repository_scope ? { repositoryScope: params.repository_scope } : {}),
           ...(workflowId ? { workflowId } : {}),
           ...(lineage ? { missionId: lineage.missionId, sliceId: lineage.sliceId } : {}),
           ...definedFeatureBootstrapInput(store, lineage),
@@ -2127,6 +2136,22 @@ export function createTaskDocumentReadTool(store: TaskStore, taskId: string): To
  * FNXC:WorkflowReviewers 2026-07-01-13:22:
  * Plan Review inline fixes must be able to rewrite the task's authoritative PROMPT.md, but that pre-execution reviewer should not need general source-file write tools. Route the write through TaskStore so existing PROMPT.md validation, task directory placement, and task.json sync remain the single persistence path.
  */
+/*
+FNXC:RepositoryScope 2026-08-20-23:40:
+A workspace plan confirms a task-level intent once, rather than turning each acquired checkout into
+an independent plan. The heading is mandatory for a workspace plan: retaining a creation proposal
+when a planner omitted or misspelled it would let review approve unconfirmed repository intent.
+*/
+function parsePlanRepositoryScope(content: string, configured: readonly string[]): string[] | undefined {
+  const match = content.match(/^##\s+Repository Scope\s*$([\s\S]*?)(?=^##\s|(?![\s\S]))/m);
+  if (!match) return undefined;
+  const repositories = [...match[1].matchAll(/^\s*[-*]\s+`?([^`\n]+?)`?\s*$/gm)]
+    .map((entry) => entry[1].trim())
+    .filter(Boolean);
+  if (repositories.length === 0 || repositories.some((repo) => !configured.includes(repo))) return undefined;
+  return [...new Set(repositories)].sort();
+}
+
 export function createTaskPromptWriteTool(store: TaskStore, taskId: string, runContext?: RunMutationContext): ToolDefinition {
   return {
     name: "fn_task_prompt_write",
@@ -2136,9 +2161,53 @@ export function createTaskPromptWriteTool(store: TaskStore, taskId: string, runC
       "Use during fresh triage planning, replanning, or Plan Review repair; provide the complete final PROMPT.md content.",
     parameters: taskPromptWriteParams,
     execute: async (_id: string, params: Static<typeof taskPromptWriteParams>) => {
+      /*
+      FNXC:RepositoryScope 2026-08-21-00:58:
+      updateTask's authoritative prompt path owns the planning lifecycle lock. Do not wrap this
+      tool in that non-reentrant lock: prompt publication would wait on itself before scope
+      confirmation could run, so the validated prompt-then-scope compensation remains sequential.
+      */
       try {
-        await store.updateTask(taskId, { prompt: params.content }, runContext);
-        const persisted = await store.getTask(taskId);
+        const rootDir = typeof (store as unknown as { getRootDir?: unknown }).getRootDir === "function"
+          ? store.getRootDir()
+          : undefined;
+        const configured = rootDir ? (await fusionCore.loadWorkspaceConfig(rootDir))?.repos ?? [] : [];
+        const plannedScope = parsePlanRepositoryScope(params.content, configured);
+        /*
+        FNXC:RepositoryScope 2026-08-20-23:57:
+        Workspace plans cannot persist before their Repository Scope is validated. This blocks a
+        Plan Review from approving a stale creation proposal when the planner omitted an empty, or
+        unknown scope heading; non-workspace plans retain their existing prompt-only contract.
+        */
+        if (configured.length > 0 && !plannedScope) {
+          throw new Error("Workspace PROMPT.md must include a non-empty ## Repository Scope with configured repository names");
+        }
+        const current = await store.getTask(taskId);
+        const hasStartedLanding = Object.values(current?.workspaceWorktrees ?? {}).some((entry) => Boolean(entry.landedSha));
+        if (plannedScope && hasStartedLanding && JSON.stringify(current?.repositoryScope?.repositories ?? []) !== JSON.stringify(plannedScope)) {
+          throw new Error(`Repository scope for ${taskId} cannot change after workspace landing has started`);
+        }
+        /*
+        FNXC:RepositoryScope 2026-08-21-01:18:
+        PROMPT.md and confirmed task intent are one observable generation. The authoritative
+        updateTask path holds the planning lifecycle lock and writes both fields in one task-row
+        transaction, so review, completion, and land readers never observe a new scope heading
+        paired with the prior repository_scope value. File projection follows the committed row.
+        */
+        const repositoryScope = plannedScope
+          ? {
+              repositories: plannedScope,
+              state: "confirmed" as const,
+              revision: (current?.repositoryScope?.revision ?? 0) + 1,
+              confirmedAt: new Date().toISOString(),
+              confirmedBy: "plan" as const,
+              extensions: current?.repositoryScope?.extensions,
+            }
+          : undefined;
+        const persisted = await store.updateTask(taskId, {
+          prompt: params.content,
+          ...(repositoryScope ? { repositoryScope } : {}),
+        }, runContext);
         if (persisted?.prompt !== params.content) {
           throw new Error("authoritative PROMPT.md read-back did not match the requested content; persistence could not be verified");
         }
@@ -6517,6 +6586,25 @@ export function createAcquireRepoWorktreeTool(opts: {
           details: {},
           isError: true,
         };
+      }
+      /*
+      FNXC:RepositoryScope 2026-08-20-23:40:
+      A successful pre-land acquisition outside explicit intent is an extension request, not evidence
+      that every acquired repository belongs to the task. Persist the accepted extension once so the
+      next review and land pass can deliberately include it.
+      */
+      if (!freshTask.repositoryScope?.repositories.includes(repo)) {
+        /*
+        FNXC:RepositoryScope 2026-08-21-01:53:
+        Acquisition extends intent as a durable delta after the checkout succeeds. A fresh
+        planning-locked read preserves a concurrent plan confirmation or operator decision.
+        */
+        await store.mutateTaskRepositoryScope(task.id, {
+          action: "add",
+          repositories: [repo],
+          reason: params.reason ?? "Executor acquired a repository required for implementation.",
+          actor: runContext?.agentId ?? "executor",
+        });
       }
       // FNXC:Workspace 2026-06-21-22:30: F2 — register a freshly-acquired sub-repo worktree in the executor's activeWorktrees Set (KTD2) so owner/liveness checks see live per-repo worktrees, not just the browse-only root.
       // FNXC:Workspace 2026-06-22-09:00: register UNCONDITIONALLY, including the

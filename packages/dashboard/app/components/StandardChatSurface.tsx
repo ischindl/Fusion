@@ -1,5 +1,5 @@
 import type { Agent } from "@fusion/core";
-import React, { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -16,6 +16,10 @@ import { nativeStructureChatRefMatcher, parseNativeStructureChatRef, splitNative
 import { MicButton } from "./MicButton";
 import { useComposerDictation } from "../hooks/useComposerDictation";
 import { ToolCallDetails, formatToolArgsPreview, formatToolPreview, hasToolCallDetails } from "./ToolCallDetails";
+import {
+  createChatInputAutosizeController,
+  type ChatInputAutosizeController,
+} from "../utils/chatInputAutosize";
 
 export interface StandardRoomContext {
   roomName: string;
@@ -557,9 +561,21 @@ function StandardChatMessageEditComposer({
 }) {
   const { t } = useTranslation("app");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const autosizeRef = useRef<ChatInputAutosizeController | null>(null);
   // FNXC:VoiceInput 2026-07-25-12:15: Message correction dictation must resolve availability
   // within the owning project; falling back to another project's settings can expose the mic incorrectly.
   const dictation = useComposerDictation({ textareaRef, value, onChange, projectId });
+
+  const handleTextareaRef = useCallback((textarea: HTMLTextAreaElement | null) => {
+    autosizeRef.current?.destroy();
+    autosizeRef.current = null;
+    textareaRef.current = textarea;
+    if (textarea) autosizeRef.current = createChatInputAutosizeController(textarea);
+  }, []);
+
+  useLayoutEffect(() => {
+    autosizeRef.current?.resize();
+  }, [value]);
 
   useEffect(() => {
     textareaRef.current?.focus();
@@ -569,7 +585,7 @@ function StandardChatMessageEditComposer({
   return (
     <div className="chat-message-edit-editor" data-testid={`chat-message-edit-editor-${messageId}`}>
       <textarea
-        ref={textareaRef}
+        ref={handleTextareaRef}
         className="input chat-message-edit-textarea"
         value={value}
         disabled={disabled}

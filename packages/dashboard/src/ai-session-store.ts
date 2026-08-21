@@ -1,12 +1,10 @@
 /**
  * AI Session Store
  *
- * Persists long-running AI session state (planning, subtask breakdown,
- * mission interview) to PostgreSQL so users can dismiss modals and return
+ * Persists long-running AI session state (planning, mission interview) to PostgreSQL so users can dismiss modals and return
  * later — even from a different browser.
  *
- * The in-memory session Maps in planning.ts / subtask-breakdown.ts /
- * mission-interview.ts remain the source of truth for live agent state.
+ * The in-memory session Maps in planning.ts / mission-interview.ts remain the source of truth for live agent state.
  * This store is the persistence shadow, updated at each state transition.
  */
 

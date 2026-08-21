@@ -199,7 +199,6 @@ function mainContentProps(overrides: Partial<MainContentProps> = {}): MainConten
     handleBoardQuickCreate: vi.fn(),
     openNewTaskWithNav: vi.fn(),
     subtaskBreakdownEnabled: true,
-    openSubtaskBreakdownWithNav: vi.fn(),
     toggleAutoMerge: vi.fn(),
     globalPaused: false,
     updateTask: vi.fn(),

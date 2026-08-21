@@ -86,7 +86,7 @@ Use this inventory as the documentation map for current workflow behavior:
 | Agent workflow tools | Agents can list/get/validate/create/update/delete workflows, inspect traits, read/write workflow settings, select workflows for explicit task contexts, and pass `workflow_id` when creating/delegating tasks. `fn_workflow_validate` is read-only and uses the same validator as create/update without persistence. Prompt-injectable lanes strip approval-bypass flags on workflow writes. | [Agents](./agents.md#interactive-cli-chat) and [CLI Reference](./cli-reference.md#published-agent-extension-workflow-tools). |
 | Routing boundary | Agents may select/change a workflow only for explicit user requests or tasks they created; no-commit markers do not imply Quick fix or any other workflow. | This page, [Selecting workflows](#selecting-workflows); [Agents](./agents.md#interactive-cli-chat). |
 | Dashboard board/list/graph selection | Board/List/Header/Graph share durable per-project workflow selection; stale saved ids fall back to a valid workflow. Board adds a dashboard-only **All workflows** aggregate and task workflow-name badges; Graph uses **All workflows** for the full active graph. | [Dashboard Guide → Board View](./dashboard-guide.md#board-view), [Graph View](./dashboard-guide.md#graph-view), and [Workflow Selection and Editor](./dashboard-guide.md#workflow-selection-and-editor). |
-| Create/planning forwarding | Quick-create task creation, Planning Mode, Subtask Breakdown, and the New Task dialog forward the active real workflow id when creating tasks; **All workflows** quick-create chooses a real workflow intake/default column instead of saving a synthetic aggregate id. | [Dashboard Guide → Planning Mode](./dashboard-guide.md#planning-mode). |
+| Create/planning forwarding | Quick-create task creation, Planning Mode, and the New Task dialog forward the active real workflow id when creating tasks; **All workflows** quick-create chooses a real workflow intake/default column instead of saving a synthetic aggregate id. | [Dashboard Guide → Planning Mode](./dashboard-guide.md#planning-mode). |
 | Manual-intake column parking | Dashboard create surfaces never send an explicit `column`; the store resolves the landing column from the (selected or project-default) workflow's intake column. A workflow whose intake column sets `autoTriage: false` parks new cards there instead of auto-planning them, until an operator promotes the card. Built-in Coding (Ideas)'s `ideas` composition is deprecated and hidden from new selection; copy that composition into a custom workflow when needed. Existing Coding (Ideas) selections remain resolvable. The full lifecycle — create → parked → operator "Start" promotion → poll-time todo-discovery of the still-unplanned (bootstrap-stub) card — is regression-tested at the engine (triage poll ordering/discovery), UI (`TaskCard` Start affordance), and store (create → `moveTask` promotion) layers (FN-7596). | [Dashboard Guide → Create/Planning Forwarding](./dashboard-guide.md#planning-mode). |
 
 ### Skill-backed workflow steps
@@ -952,12 +952,8 @@ declaration (drop-on-orphan) and falling back to the default.
 
 The **step-execution**, **review/approval**, **per-phase model-lane**,
 **triage/spec policy**, and **planner oversight** knobs are workflow settings
-declared by `builtin:coding`. Triage policy includes
-`triageProactiveSubtaskSplittingEnabled` (default `true`), which controls
-automatic large-task splitting guidance for oversized M/L work. Set it to `false`
-in a workflow's Values tab when triage should keep large tasks whole unless the
-task explicitly has `breakIntoSubtasks: true`; explicit subtask requests still
-follow the mandatory split flow. Planner oversight uses `plannerOversightLevel`
+declared by `builtin:coding`. Large tasks remain one task with a complete plan;
+triage does not fan them out. Planner oversight uses `plannerOversightLevel`
 (default `autonomous`) with `off`, `observe`, `steer`, and `autonomous` values —
 full steering/control is ON for every workflow unless explicitly changed. Tasks
 may set a nullable `Task.plannerOversightLevel` override that wins over the

@@ -131,6 +131,16 @@ test("runner stage installs ca-certificates alongside git", () => {
     /\bripgrep\b/,
     "runner stage must install ripgrep — the coding agents Fusion drives use `rg` as their primary search tool",
   );
+  /*
+  FNXC:DockerRun 2026-08-20-04:30:
+  Without git-lfs, git checks out 130-byte pointer files in place of LFS-tracked binaries and still
+  reports a clean tree — silent corruption of a working checkout rather than a visibly missing tool.
+  */
+  assert.match(
+    aptInstall,
+    /\bgit-lfs\b/,
+    "runner stage must install git-lfs — LFS-tracked assets otherwise check out as pointer stubs and git reports the tree clean",
+  );
 });
 
 /*

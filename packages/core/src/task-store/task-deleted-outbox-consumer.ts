@@ -68,8 +68,6 @@ function assertTaskDeletedOutboxEvent(event: OutboxEventForValidation): void {
     || (deleted.previousStatus !== null && typeof deleted.previousStatus !== "string")
     || typeof deleted.deletedAt !== "string" || typeof deleted.allowResurrection !== "boolean"
     || (deleted.githubIssueAction !== null && typeof deleted.githubIssueAction !== "string")
-    || (deleted.closureContext !== null && (!deleted.closureContext || typeof deleted.closureContext !== "object"
-      || Array.isArray(deleted.closureContext)))
     || (deleted.deletedBy !== null && typeof deleted.deletedBy !== "string")) {
     throw new TypeError("Malformed task:deleted lifecycle outbox payload");
   }
@@ -248,11 +246,9 @@ export class TaskDeletedOutboxConsumer {
           }
           const payload = event.payload as {
             githubIssueAction: import("../types.js").GithubIssueAction | null;
-            closureContext: import("../types.js").TaskDeleteClosureContext | null;
           };
           this.store.emitObservedTaskDeleted(task, event.eventId, {
             githubIssueAction: payload.githubIssueAction ?? "auto",
-            ...(payload.closureContext ? { closureContext: payload.closureContext } : {}),
           });
           dispatchedCount++;
           const acknowledged = await acknowledgeTaskLifecycleEvent(layer, {

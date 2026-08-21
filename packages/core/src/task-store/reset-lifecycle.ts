@@ -75,6 +75,7 @@ function buildResetTask(task: Task, intakeColumn: ColumnId): Task {
     scopeAutoWiden: [],
     stuckKillCount: 0,
     mergeRetries: undefined,
+    aiMergeReviewReconciliation: undefined,
     workflowStepRetries: undefined,
     resumeLimboCount: 0,
     executeRequeueLoopCount: 0,

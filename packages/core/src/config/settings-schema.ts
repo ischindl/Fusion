@@ -228,6 +228,15 @@ export const DEFAULT_GLOBAL_SETTINGS = {
   opt in before Fusion replaces its own binary and bounces the process under them.
   */
   autoUpdateAndRestart: false,
+  /*
+  FNXC:UpdateAutomation 2026-08-21-02:17:
+  Fresh installations require separate opt-ins for unattended installation and
+  restart. The legacy combined switch remains false and is only a fallback for
+  older persisted settings.
+  */
+  /* FNXC:UpdateAutomation 2026-08-21-02:48: Keep these schema keys unset because defaults merge into effective settings and `undefined` is distinct from explicit false. */
+  autoUpdateEnabled: undefined,
+  autoRestartAfterUpdate: undefined,
   autoReloadOnVersionChange: true,
   githubTrackingDefaultRepo: undefined,
   reportRoadmapDedupeEnabled: undefined,

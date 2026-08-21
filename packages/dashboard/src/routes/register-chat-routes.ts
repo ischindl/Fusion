@@ -1544,9 +1544,9 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
     try {
       const chatManager = await resolveScopedChatManager(req);
       const sessionId = String(req.params.id);
-      // FNXC:ChatCancellation 2026-08-18-21:52:
-      // Await cancellation so clients only reconcile or dequeue follow-up sends after
-      // the interrupted assistant prefix and checkpoint cleanup are durable.
+      // FNXC:ChatCancellation 2026-08-21-01:36:
+      // Await the server-authoritative barrier: active generations finish durable prefix/checkpoint
+      // ordering, while idle /new and /clear receive a successful no-op without recovery work.
       const result = await chatManager.cancelGeneration(sessionId);
       res.json(result);
     } catch (err: unknown) {

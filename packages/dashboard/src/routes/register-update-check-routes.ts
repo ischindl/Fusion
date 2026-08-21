@@ -1,11 +1,14 @@
-import { resolveGlobalDir } from "@fusion/core";
+import { resolveGlobalDir, resolveUpdateAutomationSettings } from "@fusion/core";
 import { clearUpdateCheckCache, performUpdateCheck, performUpdateInstall } from "../update-check.js";
 import { getCliPackageVersion } from "../cli-package-version.js";
 import type { ApiRouteRegistrar } from "./types.js";
+import { UpdateInstallCoordinator, processUpdateInstallCoordinator } from "../update-install-coordinator.js";
 
 export const registerUpdateCheckRoutes: ApiRouteRegistrar = (ctx) => {
   const { router, store, rethrowAsApiError } = ctx;
   const cliPackageVersion = getCliPackageVersion(import.meta.url);
+  /* FNXC:UpdateInstall 2026-08-21-02:48: A wired host shares its HTTP and watcher fence so a manual click cannot race the periodic installer. Isolated route harnesses intentionally get a fresh coordinator. */
+  const coordinator = ctx.options?.systemControl ? processUpdateInstallCoordinator : new UpdateInstallCoordinator();
 
   router.get("/update-check", async (_req, res) => {
     try {
@@ -77,11 +80,24 @@ export const registerUpdateCheckRoutes: ApiRouteRegistrar = (ctx) => {
         return;
       }
 
-      const result = await performUpdateInstall(updateCheck.currentVersion, updateCheck.latestVersion, {
+      const result = await coordinator.install(updateCheck.latestVersion, () => performUpdateInstall(updateCheck.currentVersion, updateCheck.latestVersion, {
         fusionDir,
         installMethod: { sourceWorkspaceRoot: ctx.options?.systemControl?.sourceWorkspaceRoot },
-      });
-      res.json(result);
+      }));
+      /* FNXC:UpdateInstall 2026-08-21-02:48: Re-read after a slow install so the operator's current restart choice governs the old host. */
+      let latestSettings: Parameters<typeof resolveUpdateAutomationSettings>[0];
+      try {
+        latestSettings = await store.getGlobalSettingsStore().getSettings();
+      } catch {
+        // FNXC:UpdateInstall 2026-08-21-03:09: A settings read failure after installation must not turn a completed update into an API error or hide the manual restart path.
+        latestSettings = {};
+      }
+      const restartAttempted = result.updated && result.outcome === "installed"
+        && resolveUpdateAutomationSettings(latestSettings).autoRestartAfterUpdate;
+      const restartScheduled = restartAttempted
+        ? coordinator.requestRestart(() => ctx.options?.systemControl?.requestRestart("update-install") === true)
+        : false;
+      res.json({ ...result, restartAttempted, restartScheduled, priorPid: restartAttempted ? process.pid : undefined });
     } catch (error) {
       rethrowAsApiError(error, "Failed to install update");
     }

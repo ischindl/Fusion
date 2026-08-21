@@ -4020,3 +4020,49 @@ reuse source-grid spacing so long structural finding labels and immutable proven
     grid-template-columns: 1fr;
   }
 }
+
+/* FNXC:AIMergeReviewReconciliation 2026-08-20-21:56: approved-but-unconfirmed findings need neutral status chrome rather than the rejected treatment, while terminal review state remains actionable on narrow hosts. */
+.ai-merge-review-reconciliation {
+  margin: var(--space-3) 0;
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--color-info-border);
+  border-radius: var(--radius-md);
+  background: var(--color-info-subtle);
+}
+.ai-merge-review-reconciliation-terminal {
+  border-color: var(--color-warning-border);
+  background: var(--color-warning-subtle);
+}
+.ai-merge-review-reconciliation h3 { margin: 0; }
+.ai-merge-review-reconciliation p { margin: var(--space-2) 0 0; }
+.ai-merge-review-reconciliation ul { margin: var(--space-2) 0 0; }
+@media (max-width: 768px) {
+  .ai-merge-review-reconciliation { margin-inline: var(--space-2); }
+}
+
+/*
+FNXC:RepositoryScope 2026-08-21-00:29:
+Task Detail exposes pre-land scope corrections beside acquired repository evidence. The controls
+use existing form and spacing tokens so desktop and compact modal layouts retain keyboard-accessible
+operator recovery without treating acquisition count as task intent.
+*/
+.workspace-repository-scope-controls {
+  display: grid;
+  gap: var(--space-sm);
+  margin-block: var(--space-md);
+}
+.workspace-repository-scope-controls label {
+  display: grid;
+  gap: var(--space-xs);
+  color: var(--text-muted);
+}
+.workspace-repository-scope-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+.workspace-repository-scope-error { color: var(--color-danger-text); }
+.workspace-repository-scope-history {
+  margin: var(--space-sm) 0;
+  padding-inline-start: var(--space-lg);
+}

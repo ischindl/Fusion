@@ -100,14 +100,15 @@ describe("POST /api/chat/sessions/:id/cancel", () => {
     expect(currentManager.cancelGeneration).toHaveBeenCalledWith("chat-1");
   });
 
-  it("returns no invented message when the scoped session is idle", async () => {
+  it("passes through the scoped manager's successful idle no-op without inventing a message", async () => {
     currentManager = {
-      cancelGeneration: vi.fn().mockResolvedValue({ success: false, interrupted: false }),
+      cancelGeneration: vi.fn().mockResolvedValue({ success: true, interrupted: false }),
     };
     const response = await request(makeApp(currentManager), "POST", "/api/chat/sessions/chat-idle/cancel?projectId=project-a");
 
     expect(response.status).toBe(200);
-    expect(response.body).toEqual({ success: false, interrupted: false });
+    expect(response.body).toEqual({ success: true, interrupted: false });
     expect(response.body.message).toBeUndefined();
+    expect(currentManager.cancelGeneration).toHaveBeenCalledWith("chat-idle");
   });
 });

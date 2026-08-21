@@ -75,7 +75,6 @@ vi.mock("../Column", () => ({
     defaultWorkflowId,
     canDropTask,
     onPlanningMode,
-    onSubtaskBreakdown,
     taskWorkflowBadges,
   }: {
     column: string;
@@ -101,12 +100,11 @@ vi.mock("../Column", () => ({
     defaultWorkflowId?: string | null;
     canDropTask?: unknown;
     onPlanningMode?: unknown;
-    onSubtaskBreakdown?: unknown;
     taskWorkflowBadges?: ReadonlyMap<string, { workflowId: string; workflowName: string }>;
   }) => {
     columnRenderCounts[column] = (columnRenderCounts[column] ?? 0) + 1;
     return (
-      <div data-testid={`column-${column}`} data-tasks={JSON.stringify(tasks)} data-workflow-badges={JSON.stringify(Object.fromEntries(taskWorkflowBadges ?? new Map()))} data-collapsed={collapsed ? "true" : "false"} data-has-quick-create={onQuickCreate ? "yes" : "no"} data-has-new-task={onNewTask ? "yes" : "no"} data-has-auto-merge-toggle={onToggleAutoMerge ? "yes" : "no"} data-has-plan-auto-approve-toggle={onTogglePlanAutoApprove ? "yes" : "no"} data-plan-auto-approve-enabled={planAutoApproveEnabled ? "true" : "false"} data-has-archive-all={onArchiveAllDone ? "yes" : "no"} data-favorite-providers={JSON.stringify(favoriteProviders ?? [])} data-favorite-models={JSON.stringify(favoriteModels ?? [])} data-has-toggle-favorite={onToggleFavorite ? "yes" : "no"} data-has-toggle-model-favorite={onToggleModelFavorite ? "yes" : "no"} data-is-search-active={isSearchActive ? "true" : "false"} data-done-sort-mode={doneSortMode ?? ""} data-has-done-sort-handler={onDoneSortModeChange ? "yes" : "no"} data-workflow-id={workflowId ?? ""} data-workflow-options={JSON.stringify((workflowOptions ?? []).map((workflow) => workflow.id))} data-default-workflow-id={defaultWorkflowId ?? ""} data-column-display-name={columnDisplayName ?? ""} data-has-can-drop={canDropTask ? "yes" : "no"} data-has-planning={onPlanningMode ? "yes" : "no"} data-has-subtask={onSubtaskBreakdown ? "yes" : "no"}>
+      <div data-testid={`column-${column}`} data-tasks={JSON.stringify(tasks)} data-workflow-badges={JSON.stringify(Object.fromEntries(taskWorkflowBadges ?? new Map()))} data-collapsed={collapsed ? "true" : "false"} data-has-quick-create={onQuickCreate ? "yes" : "no"} data-has-new-task={onNewTask ? "yes" : "no"} data-has-auto-merge-toggle={onToggleAutoMerge ? "yes" : "no"} data-has-plan-auto-approve-toggle={onTogglePlanAutoApprove ? "yes" : "no"} data-plan-auto-approve-enabled={planAutoApproveEnabled ? "true" : "false"} data-has-archive-all={onArchiveAllDone ? "yes" : "no"} data-favorite-providers={JSON.stringify(favoriteProviders ?? [])} data-favorite-models={JSON.stringify(favoriteModels ?? [])} data-has-toggle-favorite={onToggleFavorite ? "yes" : "no"} data-has-toggle-model-favorite={onToggleModelFavorite ? "yes" : "no"} data-is-search-active={isSearchActive ? "true" : "false"} data-done-sort-mode={doneSortMode ?? ""} data-has-done-sort-handler={onDoneSortModeChange ? "yes" : "no"} data-workflow-id={workflowId ?? ""} data-workflow-options={JSON.stringify((workflowOptions ?? []).map((workflow) => workflow.id))} data-default-workflow-id={defaultWorkflowId ?? ""} data-column-display-name={columnDisplayName ?? ""} data-has-can-drop={canDropTask ? "yes" : "no"} data-has-planning={onPlanningMode ? "yes" : "no"}>
         {onQuickCreate ? (
           <button type="button" data-testid={`mock-quick-create-${column}`} onClick={() => void (onQuickCreate as (input: { description: string; column?: string; workflowId?: string }) => Promise<unknown>)({ description: `Create from ${column}`, column, workflowId: "wf-custom" })}>
             quick-create-{column}
@@ -1734,40 +1732,6 @@ describe("Board", () => {
       expect(onOpenWorkflowEditor).toHaveBeenCalledWith("wf-custom");
     });
 
-    it("selects and persists the all-workflows aggregate view", async () => {
-      const projectId = "project-board-all-workflows";
-      enableFlag(
-        { "FN-1": "builtin:coding", "FN-2": "wf-custom" },
-        [DEFAULT_WORKFLOW, CUSTOM_WORKFLOW],
-      );
-      renderBoard({
-        projectId,
-        tasks: [mkTask({ id: "FN-1", column: "todo" }), mkTask({ id: "FN-2", column: "intake" })],
-        onPlanningMode: vi.fn(),
-        onSubtaskBreakdown: vi.fn(),
-      });
-
-      await selectWorkflow(ALL_WORKFLOWS_BOARD_VIEW_ID);
-
-      expect(screen.getByTestId("workflow-switcher")).toHaveTextContent("All workflows");
-      expect(screen.getByTestId("column-todo")).toHaveAttribute("data-tasks", expect.stringContaining("FN-1"));
-      expect(screen.getByTestId("column-intake")).toHaveAttribute("data-tasks", expect.stringContaining("FN-2"));
-      expect(JSON.parse(screen.getByTestId("column-todo").getAttribute("data-workflow-badges") || "{}")).toMatchObject({
-        "FN-1": { workflowId: "builtin:coding", workflowName: "Coding" },
-      });
-      expect(JSON.parse(screen.getByTestId("column-intake").getAttribute("data-workflow-badges") || "{}")).toMatchObject({
-        "FN-2": { workflowId: "wf-custom", workflowName: "Custom Flow" },
-      });
-      expect(screen.getByTestId("column-triage")).toHaveAttribute("data-workflow-id", "builtin:coding");
-      expect(screen.getByTestId("column-triage")).toHaveAttribute("data-has-can-drop", "no");
-      expect(screen.getByTestId("column-triage")).toHaveAttribute("data-has-planning", "yes");
-      expect(screen.getByTestId("column-triage")).toHaveAttribute("data-has-subtask", "yes");
-      expect(window.localStorage.getItem(scopedKey(BOARD_WORKFLOW_SELECTION_STORAGE_KEY, projectId))).toBe(ALL_WORKFLOWS_BOARD_VIEW_ID);
-
-      fireEvent.click(screen.getByTestId("workflow-switcher"));
-      expect(screen.queryByTestId("workflow-switcher-edit-__all_workflows__")).toBeNull();
-    });
-
     it("passes workflow options and the selected workflow default to per-workflow quick-add", async () => {
       enableFlag({ "FN-1": CUSTOM_WORKFLOW.id }, [DEFAULT_WORKFLOW, CUSTOM_WORKFLOW]);
       renderBoard({ tasks: [mkTask({ id: "FN-1", column: "intake" })] });
@@ -1788,6 +1752,23 @@ describe("Board", () => {
       fireEvent.click(screen.getByTestId("mock-new-task-intake"));
 
       expect(onNewTask).toHaveBeenCalledWith(CUSTOM_WORKFLOW.id);
+    });
+
+    it("keeps intake quick entry while omitting its full task button on mobile", async () => {
+      const mobile = installMobileBoardStabilizationHarness();
+      try {
+        const onNewTask = vi.fn();
+        enableFlag({ "FN-1": CUSTOM_WORKFLOW.id }, [DEFAULT_WORKFLOW, CUSTOM_WORKFLOW]);
+        renderBoard({ tasks: [mkTask({ id: "FN-1", column: "intake" })], onNewTask });
+
+        await selectWorkflow(CUSTOM_WORKFLOW.id);
+        const intakeColumn = screen.getByTestId("column-intake");
+        expect(intakeColumn).toHaveAttribute("data-has-quick-create", "yes");
+        expect(intakeColumn).toHaveAttribute("data-has-new-task", "no");
+        expect(screen.queryByTestId("mock-new-task-intake")).toBeNull();
+      } finally {
+        mobile.restore();
+      }
     });
 
     it("defaults All workflows quick-add to the default workflow and resolves selected workflow columns", async () => {
@@ -1940,37 +1921,6 @@ describe("Board", () => {
       expect(screen.getByRole("main").lastElementChild).toBe(screen.getByTestId("column-cold-storage"));
     });
 
-    it("creates aggregate tasks only from a real workflow intake column", async () => {
-      const customDefaultWorkflow = {
-        id: "wf-custom-default",
-        name: "Custom Default",
-        columns: [
-          { id: "inbox", name: "Inbox", flags: { intake: true } },
-          { id: "active", name: "Active", flags: { countsTowardWip: true } },
-          { id: "finished", name: "Finished", flags: { complete: true } },
-        ],
-      };
-      fetchBoardWorkflowsMock.mockResolvedValue({
-        flagEnabled: true,
-        defaultWorkflowId: "wf-custom-default",
-        workflows: [customDefaultWorkflow, DEFAULT_WORKFLOW],
-        taskWorkflowIds: { "FN-custom-default": "wf-custom-default" },
-      });
-      renderBoard({
-        tasks: [mkTask({ id: "FN-custom-default", column: "inbox" })],
-        onPlanningMode: vi.fn(),
-        onSubtaskBreakdown: vi.fn(),
-      });
-
-      await selectWorkflow("__all_workflows__");
-
-      expect(screen.getByTestId("column-inbox")).toHaveAttribute("data-has-quick-create", "yes");
-      expect(screen.getByTestId("column-inbox")).toHaveAttribute("data-workflow-id", "wf-custom-default");
-      expect(screen.getByTestId("column-inbox")).toHaveAttribute("data-has-planning", "yes");
-      expect(screen.getByTestId("column-triage")).toHaveAttribute("data-has-quick-create", "no");
-      expect(screen.getByTestId("column-triage")).toHaveAttribute("data-workflow-id", "");
-    });
-
     it("uses default workflow column labels and flags for duplicate aggregate column ids", async () => {
       const duplicateNameWorkflow = {
         id: "wf-duplicate",
@@ -2041,7 +1991,7 @@ describe("Board", () => {
       ]);
     });
 
-    it("pans selected and All-workflows Board roots only while the pointer moves", async () => {
+    it("restores safe empty-column descendant panning in selected and All-workflows Boards", async () => {
       enableFlag(
         { "FN-1": "builtin:coding", "FN-2": "wf-custom" },
         [DEFAULT_WORKFLOW, CUSTOM_WORKFLOW],
@@ -2050,45 +2000,41 @@ describe("Board", () => {
 
       const selectedBoard = screen.getByRole("main") as HTMLElement;
       makeBoardHorizontallyScrollable(selectedBoard);
-      fireEvent.pointerDown(selectedBoard, { button: 0, clientX: 100, clientY: 50, pointerId: 1, pointerType: "mouse" });
-      fireEvent.pointerMove(selectedBoard, { clientX: 40, clientY: 50, pointerId: 1, pointerType: "mouse" });
+      const selectedEmptyText = within(selectedBoard).getAllByText("No tasks")[0];
+      fireEvent.pointerDown(selectedEmptyText, { button: 0, clientX: 100, clientY: 50, pointerId: 1, pointerType: "mouse" });
+      fireEvent.pointerMove(selectedEmptyText, { clientX: 40, clientY: 50, pointerId: 1, pointerType: "mouse" });
       expect(selectedBoard.scrollLeft).toBe(160);
       expect(selectedBoard).toHaveClass("is-mouse-panning");
-      fireEvent.pointerUp(selectedBoard, { pointerId: 1, pointerType: "mouse" });
+      fireEvent.pointerUp(selectedEmptyText, { pointerId: 1, pointerType: "mouse" });
       expect(selectedBoard).not.toHaveClass("is-mouse-panning");
       expect(selectedBoard.scrollLeft).toBe(160);
 
       await selectWorkflow(ALL_WORKFLOWS_BOARD_VIEW_ID);
       const aggregateBoard = screen.getByRole("main") as HTMLElement;
       makeBoardHorizontallyScrollable(aggregateBoard);
-      fireEvent.pointerDown(aggregateBoard, { button: 0, clientX: 100, clientY: 50, pointerId: 2, pointerType: "mouse" });
-      fireEvent.pointerMove(aggregateBoard, { clientX: 40, clientY: 50, pointerId: 2, pointerType: "mouse" });
+      const aggregateEmptyText = within(aggregateBoard).getAllByText("No tasks")[0];
+      fireEvent.pointerDown(aggregateEmptyText, { button: 0, clientX: 100, clientY: 50, pointerId: 2, pointerType: "mouse" });
+      fireEvent.pointerMove(aggregateEmptyText, { clientX: 40, clientY: 50, pointerId: 2, pointerType: "mouse" });
       expect(aggregateBoard.scrollLeft).toBe(160);
-      fireEvent.pointerUp(aggregateBoard, { pointerId: 2, pointerType: "mouse" });
-      expect(aggregateBoard.scrollLeft).toBe(160);
+      fireEvent.pointerUp(aggregateEmptyText, { pointerId: 2, pointerType: "mouse" });
+      expect(aggregateBoard).not.toHaveClass("is-mouse-panning");
     });
 
-    it("keeps empty text and non-overflow Board surfaces outside mouse panning", async () => {
-      enableFlag(
-        { "FN-1": "builtin:coding", "FN-2": "wf-custom" },
-        [DEFAULT_WORKFLOW, CUSTOM_WORKFLOW],
-      );
-      renderBoard({ tasks: [mkTask({ id: "FN-1" }), mkTask({ id: "FN-2", column: "intake" })] });
+    it("keeps non-overflow Boards and stationary edgeward pointers outside continued panning", () => {
+      enableFlag({});
+      renderBoard();
+      const board = screen.getByRole("main") as HTMLElement;
+      makeBoardHorizontallyScrollable(board);
 
-      const selectedBoard = screen.getByRole("main") as HTMLElement;
-      makeBoardHorizontallyScrollable(selectedBoard);
-      dispatchMouseDrag(within(selectedBoard).getAllByText("No tasks")[0]);
-      expect(selectedBoard.scrollLeft).toBe(100);
+      fireEvent.pointerDown(within(board).getAllByText("No tasks")[0], { button: 0, clientX: 100, clientY: 50, pointerId: 1, pointerType: "mouse" });
+      fireEvent.pointerMove(board, { clientX: 190, clientY: 50, pointerId: 1, pointerType: "mouse" });
+      const scrollAfterPointerMove = board.scrollLeft;
+      fireEvent.pointerUp(board, { pointerId: 1, pointerType: "mouse" });
+      expect(board.scrollLeft).toBe(scrollAfterPointerMove);
 
-      Object.defineProperty(selectedBoard, "scrollWidth", { configurable: true, value: 200 });
-      dispatchMouseDrag(selectedBoard, 2);
-      expect(selectedBoard.scrollLeft).toBe(100);
-
-      await selectWorkflow(ALL_WORKFLOWS_BOARD_VIEW_ID);
-      const aggregateBoard = screen.getByRole("main") as HTMLElement;
-      makeBoardHorizontallyScrollable(aggregateBoard);
-      dispatchMouseDrag(within(aggregateBoard).getAllByText("No tasks")[0], 3);
-      expect(aggregateBoard.scrollLeft).toBe(100);
+      Object.defineProperty(board, "scrollWidth", { configurable: true, value: 200 });
+      dispatchMouseDrag(board, 2);
+      expect(board.scrollLeft).toBe(scrollAfterPointerMove);
     });
 
     it("keeps touch and task-card interactions native", async () => {
@@ -2121,6 +2067,29 @@ describe("Board", () => {
       fireEvent.pointerUp(quickCreate, { pointerId: 3, pointerType: "mouse" });
       fireEvent.click(quickCreate);
       expect(onQuickCreate).toHaveBeenCalledTimes(1);
+    });
+
+    it("disables desktop mouse panning at the mobile viewport without changing touch ownership", () => {
+      const harness = installMobileBoardStabilizationHarness();
+      try {
+        enableFlag({});
+        renderBoard();
+        const board = screen.getByRole("main") as HTMLElement;
+        makeBoardHorizontallyScrollable(board);
+        const emptyText = within(board).getAllByText("No tasks")[0];
+
+        fireEvent.pointerDown(emptyText, { button: 0, clientX: 100, clientY: 50, pointerId: 1, pointerType: "mouse" });
+        fireEvent.pointerMove(emptyText, { clientX: 40, clientY: 50, pointerId: 1, pointerType: "mouse" });
+        fireEvent.pointerUp(emptyText, { pointerId: 1, pointerType: "mouse" });
+        fireEvent.pointerDown(emptyText, { button: 0, clientX: 100, clientY: 50, pointerId: 2, pointerType: "touch" });
+        fireEvent.pointerMove(emptyText, { clientX: 40, clientY: 50, pointerId: 2, pointerType: "touch" });
+        fireEvent.pointerUp(emptyText, { pointerId: 2, pointerType: "touch" });
+
+        expect(board.scrollLeft).toBe(100);
+        expect(board).not.toHaveClass("is-mouse-panning");
+      } finally {
+        harness.restore();
+      }
     });
 
     it("preserves all-workflows board scroll during mobile visualViewport refresh stabilization", async () => {

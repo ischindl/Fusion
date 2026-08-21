@@ -3615,10 +3615,16 @@ export class ChatManager {
     }
   }
 
+  /**
+   * FNXC:ChatCancellation 2026-08-21-01:36:
+   * `/new` and `/clear` always cross this server-authoritative barrier because local streaming
+   * state can be stale. An idle session has no interrupted state to persist, so absence is a
+   * successful no-op; only an active generation that cannot become durable reports failure.
+   */
   async cancelGeneration(sessionId: string): Promise<ChatCancellationResult> {
     const entry = this.activeGenerations.get(sessionId);
     if (!entry) {
-      return { success: false, interrupted: false };
+      return { success: true, interrupted: false };
     }
 
     if (!entry.cancellationRequested) {

@@ -22,10 +22,12 @@ export interface AiMergeReviewVerdict {
   severity?: AiMergeReviewSeverity;
   /** Prior findings the reviewer explicitly confirmed are fixed in this squash. */
   resolvedPriorReasons: string[];
+  priorFindingDispositions?: Array<{ id: string; disposition: "corrected" | "absent-from-squash" | "still-present" }>;
 }
 
 export const REVIEW_VERDICT_MARKER = "REVIEW_VERDICT:";
 export const RESOLVED_PRIOR_FINDINGS_MARKER = "RESOLVED_PRIOR_FINDINGS:";
+export const PRIOR_FINDING_DISPOSITIONS_MARKER = "PRIOR_FINDING_DISPOSITIONS:";
 const VERDICT_LINE_RE = /REVIEW_VERDICT:\s*(approve|reject)\b/i;
 const SEVERITY_LINE_RE = /SEVERITY:\s*(blocking|advisory)\b/i;
 const RESOLVED_PRIOR_FINDINGS_LINE_RE = /RESOLVED_PRIOR_FINDINGS:\s*(.*)$/i;
@@ -78,7 +80,8 @@ export function parseReviewVerdict(
     };
   }
   const resolvedPriorReasons = extractResolvedPriorReasons(lines);
-  if (decision === "approve") return { verdict: "approve", reasons: [], resolvedPriorReasons };
+  const priorFindingDispositions = extractPriorFindingDispositions(lines);
+  if (decision === "approve") return { verdict: "approve", reasons: [], resolvedPriorReasons, ...(priorFindingDispositions.length ? { priorFindingDispositions } : {}) };
 
   const severity: AiMergeReviewSeverity = SEVERITY_LINE_RE.test(text)
     ? (text.match(SEVERITY_LINE_RE)![1].toLowerCase() as AiMergeReviewSeverity)
@@ -92,6 +95,7 @@ export function parseReviewVerdict(
       .filter((reason) => !resolvedKeys.has(normalizeReasonIdentity(reason))),
     severity,
     resolvedPriorReasons,
+    ...(priorFindingDispositions.length ? { priorFindingDispositions } : {}),
   };
 }
 
@@ -114,6 +118,19 @@ function extractResolvedPriorReasons(lines: string[]): string[] {
   return resolved;
 }
 
+/** Parse only explicit stable ids; prose never clears a structured prior finding. */
+function extractPriorFindingDispositions(lines: string[]): Array<{ id: string; disposition: "corrected" | "absent-from-squash" | "still-present" }> {
+  const index = lines.findIndex((line) => line.trim().toLowerCase().startsWith(PRIOR_FINDING_DISPOSITIONS_MARKER.toLowerCase()));
+  if (index === -1) return [];
+  const result: Array<{ id: string; disposition: "corrected" | "absent-from-squash" | "still-present" }> = [];
+  for (let i = index + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim() || VERDICT_LINE_RE.test(line) || SEVERITY_LINE_RE.test(line)) break;
+    const match = cleanReasonLine(line).match(/^([A-Za-z0-9_-]+)\s*:\s*(corrected|absent-from-squash|still-present)\s*$/i);
+    if (match) result.push({ id: match[1], disposition: match[2].toLowerCase() as "corrected" | "absent-from-squash" | "still-present" });
+  }
+  return result;
+}
 /** Strip bullet/numeric list markers and surrounding whitespace from one line. */
 function cleanReasonLine(line: string): string {
   return line.replace(/^\s*(?:[-*•]|\d+[.)])\s+/, "").trim();
@@ -366,6 +383,7 @@ export function buildReviewPrompt(input: {
   squashSha: string;
   diffStat: string;
   priorReasons?: string[];
+  priorFindings?: Array<{ id: string; text: string }>;
   userComments?: TaskComment[];
 }): string {
   const lines = [
@@ -390,15 +408,10 @@ export function buildReviewPrompt(input: {
   if (input.priorReasons && input.priorReasons.length > 0) {
     lines.push(
       "",
-      "A prior pass rejected an earlier squash for these findings. Inspect this",
-      "squash's fidelity, then explicitly identify only findings it resolves:",
-      `  ${RESOLVED_PRIOR_FINDINGS_MARKER}`,
-      "  - <repeat the resolved prior finding>",
-      "If none are resolved, write `RESOLVED_PRIOR_FINDINGS: none`. Omit this",
-      "marker only when you cannot determine resolution; omitted or malformed",
-      "evidence retains every prior blocker.",
+      "Report each numbered prior finding under PRIOR_FINDING_DISPOSITIONS: as <id>: corrected, absent-from-squash, or still-present.",
+      "Omitted, malformed, duplicate, and unknown IDs retain the finding; prose never clears it.",
       "Do not use whole-tree concerns outside this squash's footprint as blockers:",
-      ...input.priorReasons.map((r) => `  - ${r}`)
+      ...(input.priorFindings ?? input.priorReasons.map((text, index) => ({ id: `legacy-${index + 1}`, text }))).map((finding) => `  - ${finding.id}: ${finding.text}`)
     );
   }
   return lines.join("\n");

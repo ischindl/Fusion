@@ -544,13 +544,13 @@ describe("Column worktree grouping setting", () => {
     expect(screen.queryByTestId("task-FN-003")).toBeNull();
   });
 
-  it("passes workspace tasks to a workspace group instead of Unassigned", () => {
+  it("passes a single acquired workspace repo to a workspace group instead of stale singular routing", () => {
     const workspaceTask = {
       ...makeTask("FN-9044"),
       column: "exec" as ColumnType,
+      worktree: "/ws/unrelated/.worktrees/stale-worktree",
       workspaceWorktrees: {
         "repo-a": { worktreePath: "/ws/repo-a/.worktrees/FN-9044", branch: "fusion/FN-9044" },
-        "repo-b": { worktreePath: "/ws/repo-b/.worktrees/FN-9044", branch: "fusion/FN-9044" },
       },
     };
     render(
@@ -568,6 +568,7 @@ describe("Column worktree grouping setting", () => {
 
     expect(screen.getByTestId("worktree-group")).toHaveAttribute("data-kind", "workspace");
     expect(screen.getByTestId("worktree-group")).toHaveAttribute("data-label", "FN-9044");
+    expect(screen.queryByText("stale-worktree")).toBeNull();
     expect(screen.queryByText("Unassigned")).toBeNull();
     expect(screen.getByTestId("group-active-FN-9044")).toBeInTheDocument();
   });

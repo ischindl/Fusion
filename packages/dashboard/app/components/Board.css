@@ -45,9 +45,9 @@ The board needs a neutral first-paint shell whenever workflow lanes are enabled 
 }
 
 /*
-FNXC:BoardNavigation 2026-08-20-02:44:
-Feedback appears only after a qualifying direct-root desktop drag crosses horizontal intent. It
-cannot suppress selection for text, cards, controls, the loading skeleton, or mobile touch.
+FNXC:BoardNavigation 2026-08-20-04:47:
+Feedback begins only after an eligible desktop/tablet safe-surface drag crosses horizontal intent.
+It never activates for excluded cards or controls, the unbound skeleton, or the disabled mobile path.
 */
 .board.board-workflow-columns.is-mouse-panning {
   cursor: grabbing;

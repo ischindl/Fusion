@@ -16,7 +16,7 @@ import {
   createSharedPgTaskStoreTestHarness,
   type SharedPgTaskStoreHarness,
 } from "../../__test-utils__/pg-test-harness.js";
-import type { TaskStore } from "../../store.js";
+import { TaskHasDependentsError, type TaskStore } from "../../store.js";
 import { BUILTIN_CODING_WORKFLOW_IR } from "../../workflows/builtin-coding-workflow-ir.js";
 
 const pgTest = pgDescribe;
@@ -38,6 +38,128 @@ pgTest("TaskStore dependency mutations (PostgreSQL)", () => {
   });
 
   afterEach(h.afterEach);
+
+  it("refuses ordinary deletion with live dependents and atomically removes explicit references", async () => {
+    const parent = await store.createTask({ description: "dependency parent" });
+    const unrelated = await store.createTask({ description: "unrelated prerequisite" });
+    const first = await store.createTask({ description: "first dependent", dependencies: [parent.id, unrelated.id] });
+    const second = await store.createTask({ description: "second dependent", dependencies: [parent.id] });
+
+    const pending = await store.replaceActiveTaskWorkflowContinuation({
+      runId: `${first.id}:continuation:0`, taskId: first.id, nodeId: "plan-review",
+      kind: "task", state: "runnable", stableWorkflowRunId: `${first.id}:workflow`,
+      continuationSequence: 0, waitReason: "planning", sourceColumn: "todo", targetColumn: "todo", irHash: "ir-v1",
+    });
+    await store.updateTask(first.id, {
+      workflowStepResults: [{
+        workflowStepId: "plan-review", workflowStepName: "Plan Review", status: "passed", completedAt: "2026-08-20T17:41:00.000Z",
+      }],
+      approvedPlanFingerprint: "sha256:approved-before-delete",
+    });
+
+    await expect(store.deleteTask(parent.id)).rejects.toBeInstanceOf(TaskHasDependentsError);
+    expect((await store.getTask(parent.id)).deletedAt).toBeUndefined();
+    expect((await store.getTask(first.id)).dependencies).toEqual([parent.id, unrelated.id]);
+    expect((await store.getWorkflowWorkItem(pending.id))?.state).toBe("runnable");
+
+    await store.deleteTask(parent.id, { removeDependencyReferences: true });
+    expect((await store.getTask(parent.id, { includeDeleted: true })).deletedAt).toBeTruthy();
+    expect((await store.getTask(first.id)).dependencies).toEqual([unrelated.id]);
+    expect((await store.getTask(second.id)).dependencies).toEqual([]);
+    expect((await store.getTask(first.id)).status).toBe("needs-replan");
+    expect((await store.getTask(first.id)).approvedPlanFingerprint).toBeUndefined();
+    expect((await store.getTask(first.id)).workflowStepResults).toEqual([expect.objectContaining({ supersededReason: "dependency-change" })]);
+    expect((await store.getWorkflowWorkItem(pending.id))?.state).toBe("cancelled");
+  });
+
+  /*
+  FNXC:DependencyIntegrity 2026-08-20-17:53:
+  A dependency writer may resolve a live target before a concurrent operator deletes it. Hold the
+  writer at its authoritative target lock, then issue the forced delete: the delete must observe
+  and remove the committed edge before tombstoning its target, never leave a dangling dependency.
+  */
+  it("serializes a concurrent forced delete with dependency persistence", async () => {
+    const parent = await store.createTask({ description: "concurrently deleted prerequisite" });
+    const dependent = await store.createTask({ description: "concurrent dependency writer", column: "todo" });
+    let signalLocksHeld!: () => void;
+    const locksHeld = new Promise<void>((resolve) => { signalLocksHeld = resolve; });
+    let releaseWriter!: () => void;
+    const release = new Promise<void>((resolve) => { releaseWriter = resolve; });
+    (store as unknown as { __afterDependencyTargetLocksForTest?: () => Promise<void> }).__afterDependencyTargetLocksForTest = async () => {
+      signalLocksHeld();
+      await release;
+    };
+
+    try {
+      const dependencyMutation = store.updateTaskDependencies(dependent.id, {
+        operation: "add",
+        dependency: parent.id,
+      });
+      await locksHeld;
+      const deletion = store.deleteTask(parent.id, { removeDependencyReferences: true });
+      releaseWriter();
+      await Promise.all([dependencyMutation, deletion]);
+
+      expect((await store.getTask(parent.id, { includeDeleted: true })).deletedAt).toBeTruthy();
+      expect((await store.getTask(dependent.id)).dependencies).toEqual([]);
+    } finally {
+      releaseWriter();
+      delete (store as unknown as { __afterDependencyTargetLocksForTest?: () => Promise<void> }).__afterDependencyTargetLocksForTest;
+    }
+  });
+
+  /*
+  FNXC:DependencyIntegrity 2026-08-20-18:03:
+  Task creation shares the durable dependency contract: no create surface may store a missing,
+  deleted, or other-project prerequisite, and a deletion race must serialize through the target lock.
+  */
+  it("rejects missing, deleted, and cross-project dependencies during creation", async () => {
+    await expect(store.createTask({ description: "missing dependency", dependencies: ["FN-MISSING"] }))
+      .rejects.toThrow("Dependency task FN-MISSING not found");
+    await expect(store.createTaskWithReservedId(
+      { description: "missing reserved dependency", dependencies: ["FN-MISSING"] },
+      { taskId: "FN-RESERVED-MISSING" },
+    )).rejects.toThrow("Dependency task FN-MISSING not found");
+
+    const deleted = await store.createTask({ description: "deleted dependency" });
+    await store.deleteTask(deleted.id);
+    await expect(store.createTask({ description: "soft-deleted dependency", dependencies: [deleted.id] }))
+      .rejects.toThrow(`Dependency task ${deleted.id} not found`);
+
+    const foreign = await store.createTask({ description: "foreign project dependency" });
+    const { TaskStore: TaskStoreCtor } = await import("../../store.js");
+    const otherStore = new TaskStoreCtor(h.rootDir(), h.globalDir(), {
+      asyncLayer: { ...h.layer(), projectId: "dependency-integrity-other-project" },
+    });
+    await expect(otherStore.createTask({ description: "cross-project dependency", dependencies: [foreign.id] }))
+      .rejects.toThrow(`Dependency task ${foreign.id} not found`);
+  });
+
+  it("serializes a concurrent forced delete with task creation", async () => {
+    const parent = await store.createTask({ description: "creation-race prerequisite" });
+    let signalLocksHeld!: () => void;
+    const locksHeld = new Promise<void>((resolve) => { signalLocksHeld = resolve; });
+    let releaseCreator!: () => void;
+    const release = new Promise<void>((resolve) => { releaseCreator = resolve; });
+    (store as unknown as { __afterDependencyTargetLocksForTest?: () => Promise<void> }).__afterDependencyTargetLocksForTest = async () => {
+      signalLocksHeld();
+      await release;
+    };
+
+    try {
+      const creation = store.createTask({ description: "creation-race dependent", dependencies: [parent.id] });
+      await locksHeld;
+      const deletion = store.deleteTask(parent.id, { removeDependencyReferences: true });
+      releaseCreator();
+      const [dependent] = await Promise.all([creation, deletion]);
+
+      expect((await store.getTask(parent.id, { includeDeleted: true })).deletedAt).toBeTruthy();
+      expect((await store.getTask(dependent.id)).dependencies).toEqual([]);
+    } finally {
+      releaseCreator();
+      delete (store as unknown as { __afterDependencyTargetLocksForTest?: () => Promise<void> }).__afterDependencyTargetLocksForTest;
+    }
+  });
 
   it("captures a comparable drift revision after a live dependency mutation", async () => {
     const prerequisite = await store.createTask({ description: "locked prerequisite", column: "done" });

@@ -180,7 +180,7 @@ export interface UseChatReturn {
    * fences and rewinds before acceptance; the hook changes its local range only on acceptance.
    */
   editMessageAndResend: (messageId: string, newContent: string) => Promise<void>;
-  stopStreaming: () => void;
+  stopStreaming: () => Promise<void>;
   clearPendingMessage: (index?: number) => void;
   updatePendingMessage?: (index: number, content: string) => void;
   movePendingMessage?: (index: number, direction: -1 | 1) => void;
@@ -1507,9 +1507,10 @@ export function useChat(
   released until that barrier succeeds, so a closed transport or failed reconciliation cannot lose
   a pending turn or let a stale callback dispatch it into a different session incarnation.
   */
-  const cancelAndReconcile = useCallback((onReconciled: () => void) => {
+  const cancelAndReconcile = useCallback((onReconciled: () => void): Promise<void> | undefined => {
     const session = activeSessionRef.current;
-    if (!session || cancellationInProgressRef.current) return false;
+    if (!session) return undefined;
+    if (cancellationInProgressRef.current) return cancellationInProgressRef.current;
 
     pendingQueueActionRef.current = true;
     setPendingQueueAction(true);
@@ -1610,12 +1611,11 @@ export function useChat(
         }
       });
     cancellationInProgressRef.current = cancellation;
-    return true;
+    return cancellation;
   }, [addToast, projectId]);
 
-  const stopStreaming = useCallback(() => {
-    if (!activeSessionRef.current || cancellationInProgressRef.current) return;
-    cancelAndReconcile(flushPendingMessage);
+  const stopStreaming = useCallback((): Promise<void> => {
+    return cancelAndReconcile(flushPendingMessage) ?? Promise.resolve();
   }, [cancelAndReconcile, flushPendingMessage]);
 
   /**

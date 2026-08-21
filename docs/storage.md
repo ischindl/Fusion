@@ -101,7 +101,8 @@ See the [2026-07-14 PostgreSQL runtime cutover review](./postgres-migration-revi
 - Gate boundary: soft-deleted children and archived-column children do **not** block parent removal; only live non-archived children block.
 - `cleanupArchivedTasks` intentionally tolerates dangling lineage pointers in historical/archive cleanup flows; it does not run lineage rewrites.
 - For forensic reads, soft-deleted parents remain accessible through `readTaskFromDb(id, { includeDeleted: true })`.
-- Agent-facing tool layer (FN-7661): the `fn_task_archive` and `fn_task_delete` pi/CLI tools (`packages/cli/src/extension.ts`) both accept an optional `removeLineageReferences` boolean and forward it to `store.archiveTask` / `store.deleteTask`, so an agent that hits `TaskHasLineageChildrenError` can retry with `{ removeLineageReferences: true }` to clear the block — matching the recovery path the error message already advertises.
+- Agent-facing tool layer: the `fn_task_archive` and `fn_task_delete` pi/CLI tools (`packages/cli/src/extension.ts`) both accept optional `removeLineageReferences` and forward it to `store.archiveTask` / `store.deleteTask`. This clears incoming lineage-parent references (`sourceParentTaskId`) only after the normal `TaskHasLineageChildrenError` refusal.
+- `fn_task_delete` also accepts `removeDependencyReferences`. Normal deletion intentionally refuses live dependents; only an explicit retry with `{ removeDependencyReferences: true }` delegates to `store.deleteTask` to atomically remove incoming dependency edges, clear matching blockers, and return affected dependents to planning. It does not hard-delete the prerequisite or require direct PostgreSQL or `task.json` edits.
 
 ### Documents under soft-deleted tasks (FN-5140, FX-005)
 

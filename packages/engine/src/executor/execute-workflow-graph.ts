@@ -144,10 +144,14 @@ export async function persistWorkflowStepResult(
     & Partial<Pick<ExecuteWorkflowGraphDeps, "workflowGateActivityPrincipals" | "activeWorkflowPrincipals">>,
   taskId: string,
   result: CoreWorkflowStepResult,
-): Promise<void> {
-  if (typeof deps.store.updateTask !== "function") return;
+): Promise<boolean> {
+  if (typeof deps.store.updateTask !== "function") return true;
   try {
     const live = await deps.store.getTask(taskId);
+    const repositoryScopeRevision = typeof result.repositoryScopeRevision === "number"
+      ? result.repositoryScopeRevision
+      : undefined;
+    let scopeSuperseded = false;
     const isPlanReviewResult = result.workflowStepId === PLAN_REVIEW_GROUP_ID
       || result.workflowStepName === "Plan Review";
     const resultToPersist = isPlanReviewResult
@@ -195,6 +199,26 @@ export async function persistWorkflowStepResult(
         }, deps.getRunContextFor(taskId));
         await deps.store.reconcileSpecDriftWhilePlanningLocked(accepted);
       });
+    } else if (repositoryScopeRevision !== undefined && typeof deps.store.updateTaskAtomic === "function") {
+      /*
+      FNXC:RepositoryScope 2026-08-21-02:48:
+      Terminal Code Review state is the graph's edge-admission record. Persist it
+      under the callback's scope-generation CAS so a superseding scope mutation
+      cannot leave an old approval eligible to advance the graph.
+      */
+      await deps.store.updateTaskAtomic(taskId, (current) => {
+        if (current.repositoryScope?.revision !== repositoryScopeRevision) {
+          scopeSuperseded = true;
+          return null;
+        }
+        const currentUpserted = upsertWorkflowStepResult(current.workflowStepResults, resultToPersist);
+        const currentResults = applySupersededFindingIds(currentUpserted, resultToPersist.supersededFindingIds ?? [], {
+          excludeWorkflowStepId: resultToPersist.workflowStepId,
+          sourceWorkflowStepId: resultToPersist.supersededFindingSourceWorkflowStepId ?? "",
+        }) ?? currentUpserted;
+        return { workflowStepResults: currentResults };
+      }, deps.getRunContextFor(taskId));
+      if (scopeSuperseded) return false;
     } else {
       await deps.store.updateTask(taskId, { workflowStepResults: existing }, deps.getRunContextFor(taskId));
     }
@@ -261,6 +285,7 @@ export async function persistWorkflowStepResult(
         executorLog.warn(`[agent-activity] ${taskId}: failed to record workflow gate activity: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+    return true;
   } catch (error) {
     /*
     FNXC:AgentActivityStream 2026-08-09-13:43:
@@ -268,6 +293,7 @@ export async function persistWorkflowStepResult(
     failed persistence attempt without converting an otherwise valid graph run into a failure.
     */
     executorLog.warn(`[agent-activity] ${taskId}: failed to persist workflow step result: ${error instanceof Error ? error.message : String(error)}`);
+    return true;
   }
 }
 
@@ -622,6 +648,13 @@ export async function executeWorkflowGraph(
         },
         recordWorkflowStepResult: (taskId: string, result: CoreWorkflowStepResult) =>
           persistWorkflowStepResult(deps, taskId, result),
+        isRepositoryScopeReviewEdgeCurrent: async (taskId: string, workflowStepId: string, revision: number): Promise<boolean> => {
+          const current = await deps.store.getTask(taskId);
+          const result = current.workflowStepResults?.find((entry) => entry.workflowStepId === workflowStepId);
+          return current.repositoryScope?.revision === revision
+            && result?.repositoryScopeRevision === revision
+            && result?.status === "passed";
+        },
         requestPreMergeOptionalStepFix: (taskId, info) => deps.requestPreMergeOptionalStepFix(taskId, task, info),
         // U5c (U1 KTD-1/2/3/12): wire the production lifecycle-move hooks so the
         // graph interpreter owns the card's column moves (was reverted in U5a

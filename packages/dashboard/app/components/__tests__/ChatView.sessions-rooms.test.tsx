@@ -863,16 +863,40 @@ describe("Chat header New Chat button", () => {
     viewportSpy.mockRestore();
   });
 
-  it("renders New Chat only in the shared list header on mobile", async () => {
-    const viewportSpy = mockViewportMode("mobile");
-    setupMockChat({ activeSession });
+  it("renders one shared-header New Chat action after entering desktop detail from the list", async () => {
+    const viewportSpy = mockViewportMode("desktop");
+    setupMockChat({ activeSession, sessions: [activeSession], filteredSessions: [activeSession] });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await selectFirstConversation();
 
-    expect(screen.queryByTestId("chat-thread-new-chat-btn")).toBeNull();
-    expect(document.querySelector(".view-header [data-testid='chat-new-btn']")).toBeInTheDocument();
-
+    expect(document.querySelectorAll(".view-header [data-testid='chat-new-btn']")).toHaveLength(1);
+    expect(screen.getByTestId("chat-back-btn")).toBeInTheDocument();
+    expect(document.querySelector(".chat-thread-new-chat-btn")).toBeNull();
     viewportSpy.mockRestore();
+  });
+
+  it("creates a Direct chat from selected Room detail without treating it as room creation", async () => {
+    const room = createRoomFixture("ops");
+    const createSession = vi.fn().mockResolvedValue(activeSession);
+    localStorage.setItem("fusion:chat-scope", "rooms");
+    vi.mocked(apiModule.fetchSettings).mockResolvedValue({
+      chatNewSessionMode: "always-default",
+      chatDefaultKind: "agent",
+      chatDefaultAgentId: "agent-001",
+    });
+    setupMockChat({ activeSession, sessions: [activeSession], filteredSessions: [activeSession], createSession });
+    setupMockRooms({ rooms: [room], activeRoom: room });
+
+    await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} experimentalFeatures={{ chatRooms: true }} />);
+    await selectFirstConversation();
+    await waitFor(() => expect(apiModule.fetchSettings).toHaveBeenCalled());
+    await userEvent.click(screen.getByTestId("chat-new-btn"));
+
+    await waitFor(() => expect(createSession).toHaveBeenCalledWith({ agentId: "agent-001" }));
+    expect(screen.queryByRole("dialog", { name: "Create room" })).toBeNull();
+    expect(document.querySelector(".chat-room-thread-header")).toBeNull();
+    expect(within(document.querySelector(".chat-thread-header") as HTMLElement).getByText("Test Chat")).toBeInTheDocument();
   });
 });
 
@@ -889,9 +913,8 @@ describe("Chat pop-out header actions", () => {
     expect(onPopOut).toHaveBeenCalledTimes(1);
   });
 
-  it("renders maximize, minimize, and close actions in floating Chat", async () => {
+  it("renders only right-aligned maximize and close actions in floating Chat", async () => {
     const onMaximize = vi.fn();
-    const onMinimize = vi.fn();
     const onClose = vi.fn();
     setupMockChat({ sessions: [], filteredSessions: [] });
 
@@ -901,16 +924,20 @@ describe("Chat pop-out header actions", () => {
         addToast={vi.fn()}
         floating
         onMaximize={onMaximize}
-        onMinimize={onMinimize}
         onClose={onClose}
       />,
     );
 
-    fireEvent.click(screen.getByTestId("chat-modal-maximize"));
-    fireEvent.click(screen.getByTestId("chat-modal-minimize"));
-    fireEvent.click(screen.getByTestId("chat-modal-close"));
+    const header = document.querySelector(".view-header") as HTMLElement;
+    const maximize = screen.getByTestId("chat-modal-maximize");
+    const close = screen.getByTestId("chat-modal-close");
+    expect(header).toContainElement(maximize);
+    expect(header).toContainElement(close);
+    expect(screen.queryByTestId("chat-modal-minimize")).toBeNull();
+
+    fireEvent.click(maximize);
+    fireEvent.click(close);
     expect(onMaximize).toHaveBeenCalledTimes(1);
-    expect(onMinimize).toHaveBeenCalledTimes(1);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 

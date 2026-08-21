@@ -48,6 +48,10 @@ export interface UpdateInstallResponse {
   outcome?: "installed" | "no-update-available" | "check-failed" | "unsupported-install-method" | "failed";
   message?: string;
   error?: string;
+  restartAttempted?: boolean;
+  restartScheduled?: boolean;
+  /** PID of the process that accepted an automatic update restart. */
+  priorPid?: number;
 }
 
 export function installUpdate(projectId?: string): Promise<UpdateInstallResponse> {

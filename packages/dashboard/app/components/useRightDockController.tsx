@@ -279,6 +279,7 @@ export function useRightDockController(input: RightDockControllerInput): RightDo
       onResetTask={input.onResetTask}
       onDuplicateTask={input.onDuplicateTask}
       onTaskUpdated={input.onTaskUpdated}
+      onRefinementCreated={input.onTaskCreated}
       addToast={input.addToast}
       prAuthAvailable={input.prAuthAvailable}
       autoMergeEnabled={input.autoMerge}

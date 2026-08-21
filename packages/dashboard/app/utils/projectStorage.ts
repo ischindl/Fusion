@@ -6,7 +6,6 @@ export const VOLATILE_DRAFT_STORAGE_KEYS = [
   "kb-quick-entry-text",
   "kb-inline-create-text",
   "kb-planning-last-description",
-  "kb-subtask-last-description",
   "kb-mission-last-goal",
 ] as const;
 

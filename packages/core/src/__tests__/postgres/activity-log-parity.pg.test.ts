@@ -188,7 +188,7 @@ pgDescribe("activity log parity (PostgreSQL)", () => {
     const movedEvents = await store.getActivityLog({ type: "task:moved" });
     expect(movedEvents).toHaveLength(1);
     expect(movedEvents[0]?.metadata).toEqual({ from: "todo", to: "in-progress" });
-    expect((await store.getActivityLog({ since: "2026-07-13T20:01:30.000Z" })).map((event) => event.taskId)).toEqual(["FN-002"]);
+    expect((await store.getActivityLog({ since: "2026-07-13T20:01:30.000Z" })).map((event) => event.taskId)).toEqual(["FN-001", "FN-001"]);
 
     await store.clearActivityLog();
     expect(await store.getActivityLog()).toEqual([]);
@@ -197,6 +197,24 @@ pgDescribe("activity log parity (PostgreSQL)", () => {
       .from(schema.project.activityLog)
       .where(eq(schema.project.activityLog.projectId, "other-project"));
     expect(otherProject).toEqual([{ id: "other-project-event" }]);
+  });
+
+  it("filters exact task IDs durably without crossing the project partition", async () => {
+    const store = h.store();
+    const projectId = h.layer().projectId ?? "__legacy_unscoped__";
+    await h.adminDb().insert(schema.project.activityLog).values([
+      { projectId, id: "task-search-old", timestamp: "2026-08-20T04:15:00.000Z", type: "task:created", taskId: "FN-066", details: "first match" },
+      { projectId, id: "task-search-new", timestamp: "2026-08-20T04:16:00.000Z", type: "task:moved", taskId: "FN-066", details: "newest match" },
+      { projectId, id: "task-search-other", timestamp: "2026-08-20T04:17:00.000Z", type: "task:created", taskId: "FN-999", details: "different task" },
+      { projectId: "other-project", id: "task-search-isolated", timestamp: "2026-08-20T04:18:00.000Z", type: "task:moved", taskId: "FN-066", details: "must stay isolated" },
+    ]);
+
+    expect((await store.getActivityLog({ taskId: "FN-066" })).map((entry) => entry.id))
+      .toEqual(["task-search-new", "task-search-old"]);
+    expect((await store.getActivityLog({ taskId: "FN-066", type: "task:moved" })).map((entry) => entry.id))
+      .toEqual(["task-search-new"]);
+    expect((await store.getActivityLog({ taskId: "FN-066", since: "2026-08-20T04:16:00.000Z" })).map((entry) => entry.id))
+      .toEqual(["task-search-old"]);
   });
 
   it("serves reliability duration and merged-task metrics without accessing SQLite", async () => {

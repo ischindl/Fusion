@@ -2062,13 +2062,16 @@ export class CentralCore extends EventEmitter<CentralCoreEvents> {
   /**
    * Get recent activity from the unified feed.
    *
-   * @param options — Query options (limit, projectId filter, type filter)
+   * @param options — Query options (limit, older-than cursor, projectId filter, type filter)
    * @returns Array of activity entries, newest first
    */
   async getRecentActivity(options?: {
     limit?: number;
+    /** Strictly older-than pagination cursor for descending activity history. */
+    since?: string;
     projectId?: string;
     types?: ActivityEventType[];
+    taskId?: string;
   }): Promise<CentralActivityLogEntry[]> {
     this.ensureInitialized();
 

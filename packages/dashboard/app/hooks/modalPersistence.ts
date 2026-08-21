@@ -3,7 +3,6 @@ import { getScopedItem, MAX_PERSISTED_DRAFT_BYTES, removeScopedItem, setScopedIt
 // Storage keys — each modal type has independent storage
 export const STORED_PLANNING_KEY = "kb-planning-last-description";
 export const STORED_PLANNING_ACTIVE_SESSION_KEY = "kb-planning-active-session";
-export const STORED_SUBTASK_KEY = "kb-subtask-last-description";
 export const STORED_MISSION_KEY = "kb-mission-last-goal";
 export const STORED_GITHUB_IMPORT_KEY = "kb-dashboard-github-import-state";
 
@@ -48,19 +47,6 @@ export function clearPlanningActiveSession(projectId?: string): void {
   removeScopedItem(STORED_PLANNING_ACTIVE_SESSION_KEY, projectId);
 }
 
-// Subtask persistence
-
-export function saveSubtaskDescription(description: string, projectId?: string): void {
-  setScopedItem(STORED_SUBTASK_KEY, description, projectId, { maxBytes: MAX_PERSISTED_DRAFT_BYTES });
-}
-
-export function getSubtaskDescription(projectId?: string): string {
-  return getScopedItem(STORED_SUBTASK_KEY, projectId) || "";
-}
-
-export function clearSubtaskDescription(projectId?: string): void {
-  removeScopedItem(STORED_SUBTASK_KEY, projectId);
-}
 
 // Mission persistence
 

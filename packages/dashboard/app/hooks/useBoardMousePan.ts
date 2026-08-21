@@ -29,12 +29,21 @@ export interface BoardMousePanBindings {
 }
 
 /*
-FNXC:BoardNavigation 2026-08-20-02:44:
-Desktop Board navigation intentionally pans only from a direct primary-mouse drag on the bare
-overflowing Board root. Descendant text and controls remain native, edge proximity can never
-continue scrolling after pointer movement stops, and mobile touch remains owned by its separate
-column-snap hook.
+FNXC:BoardNavigation 2026-08-20-04:47:
+Desktop and tablet Board navigation restores primary-mouse click-drag panning from safe,
+noninteractive descendants such as empty-column text. Interactive, editable, native-draggable,
+and task-card descendants keep their native behavior. Mobile owns touch scrolling and column snap,
+so this hook is disabled there; edge proximity and stationary pointers never continue scrolling.
 */
+function isExcludedBoardPanTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return true;
+  return Boolean(
+    target.closest(
+      "button, a, input, textarea, select, option, label, summary, [contenteditable='true'], [draggable='true'], [data-id], [role='button'], [role='link'], [role='textbox'], [role='menuitem'], [role='checkbox'], [role='combobox'], [role='radio'], [role='slider'], [role='switch']",
+    ),
+  );
+}
+
 function releasePointerCapture(session: BoardMousePanSession): void {
   const { element, pointerId } = session;
   try {
@@ -46,7 +55,7 @@ function releasePointerCapture(session: BoardMousePanSession): void {
   }
 }
 
-export function useBoardMousePan(boardElement: HTMLElement | null): BoardMousePanBindings {
+export function useBoardMousePan(boardElement: HTMLElement | null, enabled: boolean): BoardMousePanBindings {
   const sessionRef = useRef<BoardMousePanSession | null>(null);
   const didPanRef = useRef(false);
   const [isPanning, setIsPanning] = useState(false);
@@ -63,9 +72,10 @@ export function useBoardMousePan(boardElement: HTMLElement | null): BoardMousePa
   const onPointerDown = useCallback((event: ReactPointerEvent<HTMLElement>) => {
     const element = event.currentTarget;
     if (
-      event.pointerType !== "mouse"
+      !enabled
+      || event.pointerType !== "mouse"
       || event.button !== 0
-      || event.target !== element
+      || isExcludedBoardPanTarget(event.target)
       || element.scrollWidth <= element.clientWidth
     ) {
       return;
@@ -81,9 +91,10 @@ export function useBoardMousePan(boardElement: HTMLElement | null): BoardMousePa
       isPanning: false,
     };
     element.setPointerCapture?.(event.pointerId);
-  }, []);
+  }, [enabled]);
 
   const onPointerMove = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    if (!enabled) return;
     const session = sessionRef.current;
     if (!session || session.pointerId !== event.pointerId) return;
 
@@ -100,7 +111,7 @@ export function useBoardMousePan(boardElement: HTMLElement | null): BoardMousePa
 
     event.preventDefault();
     session.element.scrollLeft = session.startScrollLeft - deltaX;
-  }, []);
+  }, [enabled]);
 
   const onPointerUp = useCallback((event: ReactPointerEvent<HTMLElement>) => {
     endSession(event.pointerId, false);
@@ -115,11 +126,11 @@ export function useBoardMousePan(boardElement: HTMLElement | null): BoardMousePa
   }, [endSession]);
 
   const onClickCapture = useCallback((event: ReactMouseEvent<HTMLElement>) => {
-    if (!didPanRef.current) return;
+    if (!enabled || !didPanRef.current) return;
     didPanRef.current = false;
     event.preventDefault();
     event.stopPropagation();
-  }, []);
+  }, [enabled]);
 
   useEffect(() => () => {
     const session = sessionRef.current;
@@ -127,7 +138,7 @@ export function useBoardMousePan(boardElement: HTMLElement | null): BoardMousePa
     sessionRef.current = null;
     didPanRef.current = false;
     setIsPanning(false);
-  }, [boardElement]);
+  }, [boardElement, enabled]);
 
   return {
     isPanning,

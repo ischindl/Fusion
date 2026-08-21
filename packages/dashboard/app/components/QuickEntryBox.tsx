@@ -8,7 +8,7 @@ import type { Task, Settings, TaskPriority, ResolvedWorkflowOptionalStep, Thinki
 import type { ModelInfo, Agent, CreateTaskInput, DuplicateMatch, BoardWorkflowDefinition, NodeInfo } from "../api";
 import { checkDuplicateTasks, fetchModels, fetchSettings, updateGlobalSettings, fetchAgents, uploadAttachment, fetchWorkflowOptionalSteps } from "../api";
 import { DuplicateWarningModal } from "./DuplicateWarningModal";
-import { Link, Paperclip, Brain, Lightbulb, ListTree, Sparkles, Save, ChevronDown, ChevronUp, ChevronRight, Bot, Server, Zap, Eye, EyeOff, Play } from "lucide-react";
+import { Link, Paperclip, Brain, Lightbulb, Sparkles, Save, ChevronDown, ChevronUp, ChevronRight, Bot, Server, Zap, Eye, EyeOff, Play } from "lucide-react";
 import { CustomModelDropdown } from "./CustomModelDropdown";
 import { LoadingSpinner } from "./LoadingSpinner";
 import { getScopedItem, MAX_PERSISTED_DRAFT_BYTES, removeScopedItem, setScopedItem } from "../utils/projectStorage";
@@ -62,10 +62,6 @@ interface QuickEntryBoxProps {
    * QuickEntryBox intentionally does not render a quick-add Plan button.
    */
   onPlanningMode?: (initialPlan: string, workflowId?: string | null) => void;
-  /**
-   * Called when the user clicks the "Subtask" button to trigger subtask breakdown.
-   */
-  onSubtaskBreakdown?: (description: string, workflowId?: string | null) => void;
   /** Selected workflow lane for AI-assisted create actions. Omit in legacy board mode to preserve project-default inheritance. */
   workflowId?: string | null;
   /** Real workflows available to the quick-add workflow selector. Board-only aggregate sentinels must be filtered before rendering/submission. */
@@ -161,7 +157,7 @@ function hasMeaningfulNodeChoice(nodes: NodeInfo[]): boolean {
   return nodes.length > 1 || nodes.some((node) => node.type !== "local");
 }
 
-export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], availableModels, onSubtaskBreakdown, workflowId, workflowOptions, defaultWorkflowId, projectId, autoExpand = true, defaultExpanded = true, singleLine = false, submitOnEnter, favoriteProviders: parentFavoriteProviders, favoriteModels: parentFavoriteModels, onToggleFavorite: parentToggleFavorite, onToggleModelFavorite: parentToggleModelFavorite, onOpenTask }: QuickEntryBoxProps) {
+export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], availableModels, workflowId, workflowOptions, defaultWorkflowId, projectId, autoExpand = true, defaultExpanded = true, singleLine = false, submitOnEnter, favoriteProviders: parentFavoriteProviders, favoriteModels: parentFavoriteModels, onToggleFavorite: parentToggleFavorite, onToggleModelFavorite: parentToggleModelFavorite, onOpenTask }: QuickEntryBoxProps) {
   const { t } = useTranslation("app");
   const contextSubmitOnEnter = useQuickAddSubmitOnEnter();
   const enterSubmits = submitOnEnter ?? contextSubmitOnEnter;
@@ -258,7 +254,7 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
   const [showWorkflowPicker, setShowWorkflowPicker] = useState(false);
   /*
   FNXC:QuickAddWorkflow 2026-06-30-00:00:
-  Quick-add needs an independent real workflow target because the main Board selector can be on the aggregate "All workflows" read view. Resolve only against real workflow ids and keep the aggregate sentinel out of task create, Plan, Subtask, and optional-step requests.
+  Quick-add needs an independent real workflow target because the main Board selector can be on the aggregate "All workflows" read view. Resolve only against real workflow ids and keep the aggregate sentinel out of task create, Plan, and optional-step requests.
   */
   const [quickEntryWorkflowId, setQuickEntryWorkflowId] = useState<string | null | undefined>(() => (
     resolveQuickAddWorkflowId(workflowId, defaultWorkflowId, getRealWorkflowOptions(workflowOptions))
@@ -1590,21 +1586,6 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
   FNXC:QuickEntry 2026-06-30-00:00:
   Quick-add intentionally exposes no Plan button, disabled Plan state, tooltip, test id, or click target. Keep non-quick-add planning entry points such as the New Task dialog and model-menu planning lane intact.
   */
-  const handleSubtaskClick = useCallback(() => {
-    const trimmed = description.trim();
-    if (!trimmed) {
-      addToast(t("tasks.enterDescriptionFirst", "Enter a description first"), "error");
-      return;
-    }
-    if (selectedWorkflowForCreate !== undefined) {
-      onSubtaskBreakdown?.(trimmed, selectedWorkflowForCreate);
-    } else {
-      onSubtaskBreakdown?.(trimmed);
-    }
-    // Clear the form after triggering subtask breakdown
-    resetForm();
-  }, [description, onSubtaskBreakdown, selectedWorkflowForCreate, addToast, resetForm]);
-
   /*
   FNXC:QuickAddStart 2026-07-24-11:20:
   Start stashes the workflow snapshot validated at click time in `startIntentRef` and then runs the SAME submit
@@ -1801,7 +1782,7 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
             FNXC:BoardComposer 2026-07-10-12:00:
             First-run review flagged the quick-add composer as disorganized: chips wrapped into four
             arbitrary-looking rows with Save buried mid-row. Reorganize into two logical clusters inside
-            the single wrapping action row: an options group (workflow, optional steps, subtask, deps,
+            the single wrapping action row: an options group (workflow, optional steps, deps,
             models, node, agent) and a right-aligned primary group (attach, GitHub tracking, Priority,
             Fast, Save) so status controls sit beside attach and Save still reads last/right.
 
@@ -1920,22 +1901,6 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
               disabled={isSubmitting || isDisabled}
               triggerTestId="quick-entry-optional-steps-trigger"
             />
-
-            {/* FNXC:QuickAddSubtaskFlag 2026-06-21-00:00: Render no Subtask button or click target unless App wires the default-off `subtaskBreakdown` experiment callback. */}
-            {onSubtaskBreakdown && (
-              <button
-                type="button"
-                className="btn btn-sm"
-                onClick={handleSubtaskClick}
-                onMouseDown={(e) => e.preventDefault()}
-                disabled={!description.trim()}
-                data-testid="subtask-button"
-                title={t("tasks.subtaskButtonTitle", "Break down into AI-generated subtasks")}
-              >
-                <ListTree size={12} style={{ verticalAlign: "middle", marginRight: 4 }} />
-                {t("tasks.subtask", "Subtask")}
-              </button>
-            )}
             {/*
               FNXC:QuickAddRefine 2026-06-30-00:00:
               Quick Add intentionally omits AI Refine so the compact create row has no refine button, menu, loading state, or /ai/refine-text path. New Task and TaskForm keep their dedicated refine affordance for richer task drafting.

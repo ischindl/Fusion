@@ -34,7 +34,7 @@ Fusion applies a deterministic guard for exact normalized content matches (title
 
 - Dashboard `POST /tasks`
 - CLI `fn task create` (`runTaskCreate`)
-- Engine `createAgentTask` (powers `fn_task_create`, including triage subtask splits)
+- Engine `createAgentTask` (powers `fn_task_create`)
 - Mission feature triage (`MissionStore.triageFeature`)
 
 Behavior is consistent across these surfaces:
@@ -197,11 +197,8 @@ On desktop/tablet, open **Planning** from the left sidebar to start or resume a 
 - AI asks clarifying questions
 - AI reasoning (thinking output) is preserved and visible throughout the session — expand the reasoning toggle to review the model's analysis before answering each question or accepting the summary
 - Produces summary + key deliverables
-- Create one task or **Break into Tasks** (multi-task generation with dependencies)
-- Summary view includes a **Priority** selector (`low`, `normal`, `high`, `urgent`) so single-task creation can set priority before task creation
-- Break-into-tasks mode includes per-subtask **Priority** selectors (`low`, `normal`, `high`, `urgent`) so each generated task can be prioritized before creation
-- Break-into-tasks descriptions are structured with subtask-specific guidance first, then a separate larger-plan context section (plus `## Planning Interview Context` when interview history exists)
-- Final multi-task creation now uses a compact request payload: unchanged generated subtask descriptions stay server-side, while any edits to title, description, size, priority, and dependencies are preserved when tasks are created
+- Creates one detailed task from the validated plan; complex requests retain their original task identity, plan, documents, and dependencies
+- Summary view includes a **Priority** selector (`low`, `normal`, `high`, `urgent`) so task creation can set priority before task creation
 - Sessions persist when the planning surface is closed or you navigate away — resume from the Planning sidebar list at any time; reasoning context is restored automatically
 - Back navigation rewinds the server-side planning session to the previous answered question so you can revise earlier answers and continue from the corrected turn
 - On the summary screen, **Refine Further** continues through the backend planning session (including resumed completed sessions) and waits for a real follow-up question or updated summary; it does not switch to an empty question view
@@ -213,25 +210,13 @@ In **Todos** view, each todo item includes a planning action:
 - Click the planning (💡) action on a todo item
 - Opens Planning Mode with that todo text pre-filled as the initial plan
 - Starts an AI planning interview (clarification questions + summary)
-- You can then create one task or break the plan into multiple tasks
+- You can then create one detailed task from the plan
 
 This action starts a planning session; it does **not** immediately create a task.
 
 For full Todo View behavior (enablement, list/item actions, API routes, and storage), see [Todo View](./todo-view.md).
 
-### 4) Subtask Breakdown Dialog
-
-Use the 🌳 button:
-
-- Generate 2–5 candidate subtasks
-- Shows live thinking/progress immediately while generation runs, before the candidate list is ready
-- Send the run to the background or close the dialog without canceling it; use the background-session indicator to resume running, waiting, or completed breakdowns
-- Drag to reorder
-- Add dependencies only on earlier items
-- Set each subtask's **Priority** (`low`, `normal`, `high`, `urgent`) before create
-- Create tasks in one action
-
-### 5) Expanded Controls
+### 4) Expanded Controls
 
 Expand the creation panel (▼) to access additional controls:
 
@@ -381,7 +366,7 @@ Board ordering behavior:
 
 ### Moving tasks on Board and List
 
-Use a task card or List row's context menu (**right-click**, **Shift+F10** / Context Menu key, the visible overflow control, or touch long-press), then choose **Move to**. When more than one legal destination is available, **Move to** opens one submenu containing each destination; a single destination remains a direct action. This changes only task movement: subtask drag-to-reorder remains available in the Subtask Breakdown dialog.
+Use a task card or List row's context menu (**right-click**, **Shift+F10** / Context Menu key, the visible overflow control, or touch long-press), then choose **Move to**. When more than one legal destination is available, **Move to** opens one submenu containing each destination; a single destination remains a direct action. This changes task movement only.
 
 ### Lifecycle commands
 
@@ -443,13 +428,16 @@ Task branch fields are intentionally distinct:
 
 When a task was created to resolve a temporary failure state in another task (for example, a preserved `in-review/failed` merge condition), its dependency contract may become stale after recovery.
 
+Dependencies must always target a live task in the same project. Fusion rejects a missing or soft-deleted dependency instead of persisting a durable blocker; a blocked execution that discovers one returns to planning so the prerequisite can be corrected.
+
 Use supported TaskStore/API paths to reconcile safely:
 
 - Remove/replace stale dependencies through task update APIs (do not hand-edit `task.json` or PostgreSQL rows)
+- Normal task deletion refuses when live dependents still reference the task. Where a supported caller explicitly removes dependency references, Fusion atomically removes those edges and returns affected dependents to planning.
 - Add a single comment/log entry explaining why the dependency changed
 - Keep downstream blockers coherent (only tasks that still truly depend on unfinished work should remain blocked)
 
-Completion gating treats dependencies as resolved only when the dependency task is in `done`, `in-review`, or `archived`.
+The PostgreSQL TaskStore/API boundary performs this validation and recovery. Do not use direct SQL or task JSON edits to remove dangling dependency references. Completion gating treats dependencies as resolved only when the dependency task is in `done`, `in-review`, or `archived`.
 
 Auto-merge recovery follow-up creation is deduplicated: Fusion creates at most one active (`not done/archived`) recovery task per unresolved parent failure, and merge-conflict recovery also deduplicates by active branch ownership to prevent parallel duplicate follow-ups on the same conflict branch.
 
@@ -749,8 +737,6 @@ Import issues:
 
 - GitHub-imported tasks retain typed source issue metadata (`sourceIssue.provider/repository/externalIssueId/issueNumber/url`), which executor and merger flows use to include `Ref: owner/repo#N` in commit bodies.
 - When `githubCloseSourceIssueOnDone` is enabled (default: `false`), Fusion also closes linked source-imported GitHub issues with `state_reason: completed` when the task moves into `done`. On startup, a bounded reconciliation sweep checks done tasks and closes any still-open source issue links that were missed due to transient failures.
-- When triage splits an imported GitHub task into subtasks and closes the parent, Fusion comments on each affected source/tracking issue with the parent and child task IDs immediately before closing it. A source and tracking link to the same issue have one deterministic owner, so that issue receives exactly one comment and one close; different issues each receive one of both. The `task:deleted` run-audit row records only `closureKind` and `closureChildTaskIds` (no comment prose). This notification is delivered by the deleting store's in-process event; PostgreSQL does not support cross-process observation of `task:deleted` through the legacy SQLite polling path.
-- GitLab mirrors this split-close handoff for resolved project issues: it posts one note naming the parent and unique child task IDs, then closes that same issue only after the note succeeds. Empty child lists do nothing, duplicate IDs retain their first occurrence, and merge requests are never auto-closed.
 - Deleting a task linked to a GitLab issue outside a split closes that issue by default. Callers can pass `githubIssueAction: "leave"` to opt out; `"delete"` safely degrades to closing because Fusion never hard-deletes GitLab issues. GitLab merge requests are never auto-closed by task deletion. This delete behavior is independent of `gitlabCloseSourceIssueOnDone`, which controls only task-moved done-close behavior.
 
 ```bash
@@ -781,7 +767,7 @@ GitHub tracking issues are optional issues Fusion can create from Fusion tasks. 
 
 ### Agent- and tool-created task coverage
 
-When task creation runs with tracking enabled, Fusion attempts issue creation via a **universal post-create hook** (`setTaskCreatedHook`) that fires for every task-creation path: dashboard HTTP routes, pi extension tools (`fn_task_create`, `fn_task_import_github*`, `fn_delegate_task`), CLI commands (`fn task add`, `fn task duplicate`, `fn task refine`), mission/feature triage, automation `create-task` workflow steps, agent-driven delegation, routine/cron-created tasks, and subtask creation paths. Dashboard REST API coverage explicitly includes `POST /api/tasks`, `POST /api/tasks/:id/duplicate`, `POST /api/tasks/:id/refine`, and `POST /api/subtasks/create-tasks`. The hook is registered once per process entrypoint by calling `registerGithubTrackingHook()` at startup before any reachable `store.createTask` path. See the FN-5057 audit matrix (task document `audit`) for the current surface-by-surface registration map and resolved `sourceType` values. The hook is best-effort and non-blocking: task creation still succeeds even if repo resolution fails or GitHub calls fail. For existing tasks, PATCH first persists any `githubTracking` mutation (enable/disable, repo override, or unlink), then evaluates whether the updated task is **enabled and still unlinked** and should trigger best-effort issue creation (including non-`githubTracking` edits). This keeps retry/create behavior consistent from Task Detail instead of relying on stale pre-patch state.
+When task creation runs with tracking enabled, Fusion attempts issue creation via a **universal post-create hook** (`setTaskCreatedHook`) that fires for every task-creation path: dashboard HTTP routes, pi extension tools (`fn_task_create`, `fn_task_import_github*`, `fn_delegate_task`), CLI commands (`fn task add`, `fn task duplicate`, `fn task refine`), mission/feature triage, automation `create-task` workflow steps, agent-driven delegation, and routine/cron-created tasks. Dashboard REST API coverage explicitly includes `POST /api/tasks`, `POST /api/tasks/:id/duplicate`, and `POST /api/tasks/:id/refine`. The hook is registered once per process entrypoint by calling `registerGithubTrackingHook()` at startup before any reachable `store.createTask` path. See the FN-5057 audit matrix (task document `audit`) for the current surface-by-surface registration map and resolved `sourceType` values. The hook is best-effort and non-blocking: task creation still succeeds even if repo resolution fails or GitHub calls fail. For existing tasks, PATCH first persists any `githubTracking` mutation (enable/disable, repo override, or unlink), then evaluates whether the updated task is **enabled and still unlinked** and should trigger best-effort issue creation (including non-`githubTracking` edits). This keeps retry/create behavior consistent from Task Detail instead of relying on stale pre-patch state.
 
 Tracking behavior is controlled per task:
 

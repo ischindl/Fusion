@@ -16,7 +16,7 @@ import {
 } from "../workflows/workflow-lifecycle-traits.js";
 import {resolveWorkflowIrForTask} from "../workflows/workflow-ir-resolver.js";
 import {InvalidFileScopeError} from "./errors.js";
-import {mkdir, readFile, writeFile} from "node:fs/promises";
+import {mkdir, readFile, stat, writeFile} from "node:fs/promises";
 import {join} from "node:path";
 import {existsSync} from "node:fs";
 import type {Task, Column, TaskLogEntry, RunMutationContext, TaskRecommendation} from "../types.js";
@@ -38,6 +38,7 @@ import {supersedePlanReviewResults} from "../planner/plan-approval.js";
 import {PLAN_REVIEW_GROUP_ID} from "../workflows/builtin-plan-review-group.js";
 import {validateTaskBranchName} from "../branch/branch-assignment.js";
 import {withTaskBranchContextInSourceMetadata} from "./branch-context.js";
+import {invalidateSupersededRepositoryScopeReviews} from "../tasks/repository-scope.js";
 
 /*
 FNXC:TaskRecommendations 2026-08-08-07:06:
@@ -193,6 +194,9 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
       if (!task.log) {
         task.log = [];
       }
+      if (updates.log !== undefined) {
+        task.log = updates.log;
+      }
 
       let titleNormalized = false;
       if (updates.title !== undefined) {
@@ -232,6 +236,31 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
       }
       if (updates.workspaceWorktrees !== undefined) {
         task.workspaceWorktrees = updates.workspaceWorktrees;
+      }
+      /*
+      FNXC:RepositoryScope 2026-08-21-01:18:
+      A validated workspace plan commits its prompt and repository intent through this one
+      task-row write. Do not route that paired publication through updateTaskRepositoryScope:
+      a second transaction would expose a new ## Repository Scope heading with stale intent.
+      */
+      if (updates.repositoryScope === null) {
+        task.repositoryScope = undefined;
+      } else if (updates.repositoryScope !== undefined) {
+        /*
+        FNXC:RepositoryScope 2026-08-21-02:48:
+        Prompt confirmation writes scope in the same task mutation. Its new revision
+        cannot inherit Code Review evidence captured for the old repository intent.
+        */
+        const scopeRevisionChanged = task.repositoryScope?.revision !== updates.repositoryScope.revision;
+        task.repositoryScope = scopeRevisionChanged
+          ? { ...updates.repositoryScope, reviewEvidence: undefined }
+          : updates.repositoryScope;
+        if (scopeRevisionChanged) {
+          task.workflowStepResults = invalidateSupersededRepositoryScopeReviews(
+            task.workflowStepResults,
+            task.repositoryScope.revision,
+          );
+        }
       }
       // New dependencies re-seed hold-lane tasks and exhausted Plan Review cap parks.
       let movedToTriage = false;
@@ -689,6 +718,8 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
       if (updates.size !== undefined) task.size = updates.size;
       if (updates.reviewLevel !== undefined) task.reviewLevel = updates.reviewLevel;
       if (updates.mergeRetries !== undefined) task.mergeRetries = updates.mergeRetries;
+      if (updates.aiMergeReviewReconciliation === null) task.aiMergeReviewReconciliation = undefined;
+      else if (updates.aiMergeReviewReconciliation !== undefined) task.aiMergeReviewReconciliation = updates.aiMergeReviewReconciliation;
       if (updates.workflowStepRetries !== undefined) task.workflowStepRetries = updates.workflowStepRetries;
       if (updates.stuckKillCount === null) {
         task.stuckKillCount = undefined;
@@ -1125,20 +1156,22 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
       }
       task.updatedAt = new Date().toISOString();
 
-      // FNXC:TaskDetailPromptResilience 2026-07-10-17:00 (merge port from main):
-      // Perform the explicit PROMPT.md write (and its File Scope validation)
-      // BEFORE committing the task row, so a failed write (EACCES/EISDIR/
-      // disk-full) or an invalid File Scope aborts the whole update atomically.
-      // Previously this ran AFTER the row/task.json commit, so a failed prompt
-      // write returned an error while the field changes stayed committed and
-      // PROMPT.md went stale — a partial commit.
+      /*
+      FNXC:RepositoryScopePublication 2026-08-21-01:36:
+      A plan's Repository Scope is authoritative only after its task-row generation commits. Validate
+      the PROMPT.md destination before that commit, but do not expose a new Repository Scope heading
+      while the old durable scope is still visible to review, completion, or land readers.
+      */
+      const promptPath = join(dir, "PROMPT.md");
       if (updates.prompt !== undefined) {
         const validation = validateFileScopeInPromptContent(updates.prompt);
         if (validation.invalid.length > 0) {
           throw new InvalidFileScopeError(id, validation.invalid);
         }
         await mkdir(dir, { recursive: true });
-        await writeFile(join(dir, "PROMPT.md"), updates.prompt);
+        if (existsSync(promptPath) && (await stat(promptPath)).isDirectory()) {
+          throw new Error(`Cannot write PROMPT.md for ${id}: destination is a directory`);
+        }
         /*
         FNXC:SpecLock 2026-08-09-12:34:
         An explicit full-spec write is an authoritative plan revision, not cosmetic title sync.
@@ -1167,6 +1200,15 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
         }, planningInvalidation, updates.prompt);
       } else {
         await store.atomicWriteTaskJsonWithAudit(dir, task, undefined, planningInvalidation, updates.prompt);
+      }
+
+      /*
+      FNXC:RepositoryScopePublication 2026-08-21-01:36:
+      The task-row commit is the observable scope-generation fence. Publish PROMPT.md only after it,
+      so no reader can dispatch work from a new heading paired with the preceding scope generation.
+      */
+      if (updates.prompt !== undefined) {
+        await writeFile(promptPath, updates.prompt);
       }
 
       if (store.isBackendMode() && updates.prompt !== undefined) {

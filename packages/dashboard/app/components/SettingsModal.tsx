@@ -11,6 +11,7 @@ import { DEFAULT_GLOBAL_SETTINGS } from "@fusion/core";
 import { fetchSettings, fetchSettingsByScope, updateSettings, updateGlobalSettings, fetchAuthStatus, loginProvider, logoutProvider, cancelProviderLogin, saveApiKey, clearApiKey, fetchModels, testNotification, fetchBackups, createBackup, exportSettings, importSettings, fetchMemoryFile, fetchMemoryFiles, saveMemoryFile, compactMemory, installQmd, testMemoryRetrieval, triggerMemoryDreams, fetchGitRemotes, fetchGitRemotesDetailed, fetchGitBranches, fetchProjects, fetchDashboardHealth, checkForUpdates, installUpdate, fetchSystemInfo, requestSystemRestart, fetchRemoteSettings, fetchRemoteStatus, installCloudflared, fetchRemoteQr, fetchRemoteUrl, submitProviderManualCode, fetchPlugins, formatProviderInstanceKey } from "../api";
 import type { AuthProvider, ManualOAuthCodeInfo, ModelInfo, BackupListResponse, SettingsExportData, MemoryFileInfo, MemoryRetrievalTestResult, GitRemote, GitRemoteDetailed, ProjectInfo, RemoteStatus, UpdateCheckResponse, UpdateInstallResponse, OAuthDeviceCodeInfo } from "../api";
 import { resolveScopedMcpSettings, splitSettingsSave, type McpSettingsScope } from "./settings/save-split";
+import { systemRestartRecovery, useSystemRestartRecovery } from "../hooks/useSystemRestartRecovery";
 import {
   ALL_PROJECT_RESET_KEYS,
   getResetIneligibleReason,
@@ -514,8 +515,6 @@ const KNOWN_EXPERIMENTAL_FEATURES: Record<string, string> = {
   ideationView: "Ideation View",
   qualityPlugin: "Quality Plugin",
   goalsView: "Goals View",
-  /* FNXC:QuickAddSubtaskFlag 2026-06-21-00:00: The AI subtask-breakdown quick-add affordance is exposed only through this default-off experimental flag so missing settings keep every quick-add Subtask button hidden. */
-  subtaskBreakdown: "Subtask Breakdown",
   leftSidebarNav: "Left Sidebar Navigation",
   sandbox: "Sandbox (command isolation)",
   chatRooms: "Chat Rooms",
@@ -1251,9 +1250,11 @@ export function SettingsModal({
   const [updateInstallLoading, setUpdateInstallLoading] = useState(false);
   const [updateInstallResult, setUpdateInstallResult] = useState<UpdateInstallResponse | null>(null);
   const [restartSupported, setRestartSupported] = useState<boolean | undefined>();
+  const [restartPriorPid, setRestartPriorPid] = useState<number | undefined>();
   const [restartLoading, setRestartLoading] = useState(false);
   const [restartScheduled, setRestartScheduled] = useState(false);
   const [restartError, setRestartError] = useState<string | null>(null);
+  const restartRecovery = useSystemRestartRecovery();
   const gitHubStarCount = useGitHubStarCount();
   const [starClicked, markStarClicked] = useStarClickedFlag();
   const [prefixError, setPrefixError] = useState<string | null>(null);
@@ -1831,6 +1832,10 @@ export function SettingsModal({
     try {
       const result = await installUpdate(projectId);
       setUpdateInstallResult(result);
+      if (result.restartScheduled && result.latestVersion) {
+        setRestartScheduled(true);
+        systemRestartRecovery.arm(result.latestVersion, result.priorPid ?? restartPriorPid);
+      }
 
       if (result.updated) {
         addToast(t("settings.general.updateSuccessToast", "Update installed. Restart Fusion to apply it."), "success");
@@ -1841,7 +1846,10 @@ export function SettingsModal({
         supervised host permanently unable to restart from Settings.
         */
         void fetchSystemInfo()
-          .then((info) => setRestartSupported(info.restartSupported))
+          .then((info) => {
+            setRestartSupported(info.restartSupported);
+            setRestartPriorPid(info.pid);
+          })
           .catch(() => {
             // Keep whatever the mount probe resolved; the guidance text covers it.
           });
@@ -1863,7 +1871,7 @@ export function SettingsModal({
     } finally {
       setUpdateInstallLoading(false);
     }
-  }, [addToast, appVersion, projectId, t, updateCheckResult]);
+  }, [addToast, appVersion, projectId, restartPriorPid, t, updateCheckResult]);
 
   /*
   FNXC:SettingsUpdate 2026-07-25-10:05:
@@ -1879,7 +1887,10 @@ export function SettingsModal({
 
     void fetchSystemInfo()
       .then((info) => {
-        if (!cancelled) setRestartSupported(info.restartSupported);
+        if (!cancelled) {
+          setRestartSupported(info.restartSupported);
+          setRestartPriorPid(info.pid);
+        }
       })
       .catch(() => {
         // Fail closed: system capability fetch errors must not expose an unavailable restart action.
@@ -1913,6 +1924,8 @@ export function SettingsModal({
       const result = await requestSystemRestart("settings-update");
       if (result.scheduled) {
         setRestartScheduled(true);
+        const targetVersion = updateInstallResult?.latestVersion ?? updateCheckResult?.latestVersion;
+        if (targetVersion) systemRestartRecovery.arm(targetVersion, restartPriorPid);
       } else {
         setRestartError(t("settings.general.restartFailed", "Restart could not be scheduled. Try restarting Fusion manually."));
       }
@@ -1921,7 +1934,7 @@ export function SettingsModal({
     } finally {
       setRestartLoading(false);
     }
-  }, [restartLoading, t]);
+  }, [restartLoading, restartPriorPid, t, updateCheckResult, updateInstallResult]);
 
   const renderUpdateCheckResultContent = useCallback(() => {
     if (!updateCheckResult) {
@@ -1959,9 +1972,16 @@ export function SettingsModal({
                 })}
               </span>
               {restartScheduled ? (
-                <span className="settings-update-install-status" aria-live="polite">
-                  {t("settings.general.restarting", "Restarting… Your connection will close shortly.")}
-                </span>
+                <>
+                  <span className="settings-update-install-status" aria-live="polite">
+                    {restartRecovery.phase === "back"
+                      ? t("settings.general.backOnline", "Fusion v{{version}} is back online — reloading…", { version: restartRecovery.version })
+                      : restartRecovery.phase === "timeout"
+                        ? t("settings.general.restartTimedOut", "Fusion did not return in time. Refresh when it is back online.")
+                        : t("settings.general.restarting", "Restarting… Your connection will close shortly.")}
+                  </span>
+                  {restartRecovery.phase === "timeout" && <button type="button" className="btn btn-sm settings-update-now-btn" onClick={() => systemRestartRecovery.retry()}>{t("settings.general.retryRestart", "Retry readiness check")}</button>}
+                </>
               ) : (
                 <button
                   type="button"
@@ -2031,7 +2051,7 @@ export function SettingsModal({
     }
 
     return t("settings.general.upToDate", "You're up to date ✓");
-  }, [handleInstallUpdate, handleRestart, restartError, restartLoading, restartScheduled, restartSupported, t, updateCheckResult, updateInstallLoading, updateInstallResult]);
+  }, [handleInstallUpdate, handleRestart, restartError, restartLoading, restartRecovery, restartScheduled, restartSupported, t, updateCheckResult, updateInstallLoading, updateInstallResult]);
 
   /*
   FNXC:SettingsUpdate 2026-07-25-19:40:

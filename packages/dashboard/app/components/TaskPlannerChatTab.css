@@ -262,8 +262,8 @@ it aligns with the send/stop buttons.
 }
 
 /*
-FNXC:ChatComposer 2026-08-19-17:58:
-Planner Chat uses the same five-line controller and desktop/tablet top-edge pointer resize as Activity Chat. Disable native resizing so the lower-right grip cannot compete; no fixed CSS max-height may block a deliberate current-draft expansion.
+FNXC:ChatComposer 2026-08-20-19:25:
+FN-076 requires Planner Chat to grow automatically through five rendered lines, internally scroll excess content, and shrink after deletion. Native mouse resizing is disabled and CSS leaves the controller's measured cap authoritative.
 */
 .task-planner-chat-input {
   box-sizing: border-box;

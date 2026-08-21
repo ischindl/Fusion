@@ -1,10 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useComposerDictation } from "../hooks/useComposerDictation";
 import { MicButton } from "./MicButton";
 import type { NativeStructureEmbed } from "@fusion/core";
 import { FN_AGENT_ID, useChat } from "../hooks/useChat";
 import "./ComposeChatPanel.css";
+import {
+  createChatInputAutosizeController,
+  type ChatInputAutosizeController,
+} from "../utils/chatInputAutosize";
 
 interface ComposeChatPanelProps {
   projectId?: string;
@@ -35,8 +39,20 @@ export function ComposeChatPanel({ projectId, embeds, draftBody, onUseDraft, onC
   const closed = useRef(false);
   const archivedSessionId = useRef<string | null>(null);
   const requestRef = useRef<HTMLTextAreaElement>(null);
+  const autosizeRef = useRef<ChatInputAutosizeController | null>(null);
   const dictation = useComposerDictation({ textareaRef: requestRef, value: request, onChange: setRequest, projectId });
   const restoredSessionId = useRef<string | null>(null);
+
+  const handleRequestRef = useCallback((textarea: HTMLTextAreaElement | null) => {
+    autosizeRef.current?.destroy();
+    autosizeRef.current = null;
+    requestRef.current = textarea;
+    if (textarea) autosizeRef.current = createChatInputAutosizeController(textarea);
+  }, []);
+
+  useLayoutEffect(() => {
+    autosizeRef.current?.resize();
+  }, [request]);
 
   const archiveScratchSession = useCallback((id = scratchSessionId.current) => {
     if (!id || archivedSessionId.current === id) return;
@@ -111,7 +127,7 @@ export function ComposeChatPanel({ projectId, embeds, draftBody, onUseDraft, onC
   return (
     <section id="compose-chat-panel" className="compose-chat-panel" aria-label={t("composeChat.ariaLabel", "Compose chat narrative helper")} data-testid="compose-chat-panel">
       <label className="message-composer-label" htmlFor="compose-chat-request">{t("composeChat.draftNarrative", "Draft narrative")}</label>
-      <textarea ref={requestRef} id="compose-chat-request" className="input compose-chat-panel__input" value={request} onChange={(event) => setRequest(event.target.value)} />
+      <textarea ref={handleRequestRef} id="compose-chat-request" className="input compose-chat-panel__input" value={request} onChange={(event) => setRequest(event.target.value)} />
       <div className="compose-chat-panel__output" aria-live="polite">{latestDraft || t("composeChat.emptyDraft", "Ask the assistant to draft the narrative around your attached structures.")}</div>
       <div className="compose-chat-panel__actions"><MicButton {...dictation.micProps} />
         <button className="btn btn-sm btn-primary" type="button" onClick={() => void send()} disabled={chat.isStreaming || isCreating || hasPendingPrompt || !request.trim()}>{t("composeChat.draft", "Draft")}</button>

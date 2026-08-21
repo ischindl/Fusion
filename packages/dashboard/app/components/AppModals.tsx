@@ -11,7 +11,6 @@ import { ModalErrorBoundary } from "./ErrorBoundary";
 import { TaskDetailModal } from "./TaskDetailModal";
 import type { BlockerFanoutColumnFlags } from "../hooks/useBlockerFanout";
 import { GitHubImportModal } from "./GitHubImportModal";
-import { SubtaskBreakdownModal } from "./SubtaskBreakdownModal";
 import { ScriptsModal } from "./ScriptsModal";
 import { FileBrowserModal } from "./FileBrowserModal";
 import { UsageIndicator } from "./UsageIndicator";
@@ -55,10 +54,11 @@ interface AppModalsProps {
   removeToast: (id: number) => void;
   modalManager: ModalManager;
   projectActions: Pick<UseProjectActionsResult, "handleAddProject" | "handleSetupComplete" | "handleModelOnboardingComplete">;
-  taskHandlers: Pick<UseTaskHandlersResult, "handleModalCreate" | "handlePlanningTaskCreated" | "handlePlanningTasksCreated" | "handleSubtaskTasksCreated" | "handleGitHubImport">;
+  taskHandlers: Pick<UseTaskHandlersResult, "handleModalCreate" | "handlePlanningTaskCreated" | "handlePlanningTasksCreated" | "handleGitHubImport">;
+  /** App-owned ingestion seam for a successful detail refinement. */
+  onRefinementCreated?: (task: Task) => void;
   onPlanningMode?: (initialPlan: string, workflowId?: string | null, sourceIssue?: { provider: "github"; repository: string; issueNumber: number; url: string; title?: string }) => void;
   onOpenChatWithPrefill?: (prefillText: string) => void;
-  onSubtaskBreakdown?: (description: string, workflowId?: string | null) => void;
   taskOperations: {
     moveTask: (taskId: string, column: Column, optionsOrPosition?: { preserveProgress?: boolean } | number) => Promise<Task>;
     deleteTask: (taskId: string, options?: {
@@ -132,9 +132,9 @@ export function AppModals({
   modalManager,
   projectActions,
   taskHandlers,
+  onRefinementCreated,
   onPlanningMode,
   onOpenChatWithPrefill,
-  onSubtaskBreakdown,
   taskOperations,
   deepLink,
   settings,
@@ -188,11 +188,6 @@ export function AppModals({
     removeNav(modalManager.closeGitHubImport);
     modalManager.closeGitHubImport();
   }, [modalManager.closeGitHubImport, removeNav]);
-
-  const closeSubtaskWithNav = useCallback(() => {
-    removeNav(modalManager.closeSubtask);
-    modalManager.closeSubtask();
-  }, [modalManager.closeSubtask, removeNav]);
 
   const closeScriptsWithNav = useCallback(() => {
     removeNav(modalManager.closeScripts);
@@ -288,11 +283,6 @@ export function AppModals({
     [deepLink, modalManager, pushNav],
   );
 
-  const openGroupModalWithNav = useCallback((groupId: string) => {
-    modalManager.openGroupModal(groupId);
-    pushNav({ type: "modal", close: modalManager.closeGroupModal });
-  }, [modalManager, pushNav]);
-
   const handleOnboardingViewTask = useCallback((task: Task) => {
     setFirstCreatedTask(null);
     modalManager.closeModelOnboarding();
@@ -347,6 +337,7 @@ export function AppModals({
             onResetTask={taskOperations.resetTask}
             onDuplicateTask={taskOperations.duplicateTask}
             onTaskUpdated={modalManager.updateDetailTask}
+            onRefinementCreated={onRefinementCreated}
             addToast={addToast}
             prAuthAvailable={settings.prAuthAvailable}
             autoMergeEnabled={settings.autoMerge}
@@ -437,29 +428,6 @@ export function AppModals({
         projectId={projectId}
       />
 
-      <ModalErrorBoundary>
-        {/*
-        FNXC:ProjectSwitchModalReset 2026-07-23-00:00:
-        Key the subtask breakdown by project so a project swap remounts it, mirroring the
-        embedded Planning view. Without the remount, the swap flipped isOpen=false and the
-        NEW projectId in the same render, so resetState persisted the old project's draft
-        description under the new project's storage key and kept it in memory — reopening
-        the breakdown in the new project showed the previous project's draft. The old
-        instance's unmount cleanup closes its stream and saves the draft under its own
-        project key.
-        */}
-        <SubtaskBreakdownModal
-          key={projectId ?? "no-project"}
-          isOpen={modalManager.isSubtaskOpen}
-          onClose={closeSubtaskWithNav}
-          initialDescription={modalManager.subtaskInitialDescription ?? ""}
-          onTasksCreated={taskHandlers.handleSubtaskTasksCreated}
-          projectId={projectId}
-          workflowId={modalManager.subtaskWorkflowId}
-          resumeSessionId={modalManager.subtaskResumeSessionId}
-          onOpenGroupModal={openGroupModalWithNav}
-        />
-      </ModalErrorBoundary>
 
       <ScriptsModal
         isOpen={modalManager.scriptsOpen}
@@ -508,7 +476,6 @@ export function AppModals({
           initialDescription={modalManager.newTaskInitialDescription ?? ""}
           initialWorkflowId={modalManager.newTaskInitialWorkflowId}
           onPlanningMode={onPlanningMode}
-          onSubtaskBreakdown={onSubtaskBreakdown}
         />
       </ModalErrorBoundary>
 

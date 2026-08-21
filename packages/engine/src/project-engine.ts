@@ -5163,11 +5163,11 @@ export class ProjectEngine {
                 await store.updateTask(taskId, {
                   status: "failed",
                   mergeRetries: maxAutoMergeRetriesOnErr,
-                  error: "AI merge review blocked landing; operator intervention is required.",
+                  error: `AI merge review blocked landing at ${taskOnErr?.aiMergeReviewReconciliation?.candidateSha ?? "the reviewed candidate"}: ${err.reasons.join("; ")}. Rebase/re-push, dismiss a finding with a reason, or land manually.`,
                 });
                 await store.logEntry(
                   taskId,
-                  `AI merge review exhausted its corrective budget; task parked for operator intervention (${Math.min(err.reasons.length, 8)} current blocking finding(s))`,
+                  `AI merge review exhausted its corrective budget at ${taskOnErr?.aiMergeReviewReconciliation?.candidateSha ?? "the reviewed candidate"}; rebase/re-push, dismiss a finding with justification, or land manually (${Math.min(err.reasons.length, 8)} current blocking finding(s))`,
                   "AiMergeReviewBlocked",
                 );
               } catch (recoveryErr) {

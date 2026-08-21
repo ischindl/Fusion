@@ -77,8 +77,13 @@ ENV PORT=4040
 # FNXC:DockerRun 2026-08-18-06:05: ripgrep ships by default because the coding agents Fusion drives
 # reach for `rg` as their primary search tool; without it they silently degrade to slower/partial
 # fallbacks inside the container while working fine on a developer machine that has it installed.
+# FNXC:DockerRun 2026-08-20-04:30: git-lfs ships by default because this repository stores binary
+# assets (screenshots) as LFS objects. Without it, git silently checks out 130-byte POINTER FILES
+# instead of the real content and reports a clean tree — so an agent reads a text stub where an image
+# should be, and `git lfs` subcommands in any workflow fail outright. It is a git dependency, not an
+# optional extra: the failure is silent corruption of a working checkout, not a missing feature.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends git ca-certificates ripgrep curl gnupg \
+  && apt-get install -y --no-install-recommends git git-lfs ca-certificates ripgrep curl gnupg \
   && rm -rf /var/lib/apt/lists/*
 
 # FNXC:DockerRun 2026-08-18-06:40: gh, tailscale, and cloudflared ship in the image.

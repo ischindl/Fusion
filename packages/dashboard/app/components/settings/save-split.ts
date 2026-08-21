@@ -204,8 +204,9 @@ export const GLOBAL_SECTION_KEYS: Record<string, ReadonlySet<string>> = {
     "updateCheckEnabled",
     "updateCheckFrequency",
     "updateChannel",
-    // FNXC:AutoUpdate 2026-07-25-10:05: global-general owns save/reset for the unattended-update opt-in.
-    "autoUpdateAndRestart",
+    // FNXC:UpdateAutomation 2026-08-21-02:48: only visible controls can enter global save patches; legacy compatibility remains read-only.
+    "autoUpdateEnabled",
+    "autoRestartAfterUpdate",
     "autoReloadOnVersionChange",
   ]),
   /*

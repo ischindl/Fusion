@@ -507,14 +507,15 @@ The Direct-chat context budget indicator is a secondary desktop/tablet header af
   color: var(--text-muted);
 }
 
-/* Detail has one route back to the list; conversation controls stay in the list. */
-.chat-view--detail > .view-header {
-  flex-wrap: nowrap;
-}
+/*
+FNXC:ChatNavigation 2026-08-20-05:25:
+FN-068 puts the only Back action beside the selected conversation title. Do not override ViewHeader actions for detail mode: floating Open in Chat view and Close must retain ViewHeader's canonical right alignment.
 
-.chat-view--detail > .view-header .view-header__actions {
-  flex: 1 1 auto;
-  justify-content: flex-start;
+FNXC:ChatNavigation 2026-08-20-23:57:
+FN-096 keeps the shared-header New Chat action visible in selected detail as well as list mode. Its shrinkable token-based sizing preserves the floating Close and the thread-row Back action on narrow embedded, floating, and dock hosts.
+*/
+.chat-thread-header-back {
+  flex: 0 0 auto;
 }
 
 .chat-view-header-new-chat {
@@ -585,8 +586,8 @@ The Direct-chat context budget indicator is a secondary desktop/tablet header af
 }
 
 /*
-FNXC:ChatModal 2026-06-22-13:22:
-The old Quick Chat panel is replaced by the full ChatView inside a movable FloatingWindow. In floating mode ChatView's shared header is the only visible modal header and doubles as the drag handle, with minimize/close controls in the same action row.
+FNXC:ChatModal 2026-08-20-05:25:
+FN-068 keeps the floating Chat ViewHeader as the only visible modal header and drag handle. Its action row contains Open in Chat view and Close only; Close remains available at narrow sizes while CSS hides only Open in Chat view when it cannot fit.
 */
 .chat-view--floating .view-header {
   cursor: grab;
@@ -645,8 +646,8 @@ A narrow floating host uses the same full-pane list/detail flow as every other C
 }
 
 /*
-FNXC:ChatModal 2026-06-22-18:00:
-In the narrow/mobile chat layout there is no room for an expand/maximize affordance in the header. Hide only the expand controls (main Chat pop-out and floating-modal maximize); keep minimize/close visible so the user can still dismiss or dock the chat.
+FNXC:ChatModal 2026-08-20-05:25:
+In the narrow/mobile chat layout there is no room for an Open in Chat view affordance in the header. Hide only the expand controls (main Chat pop-out and floating-modal maximize); keep Close visible so the user can still dismiss floating Chat.
 */
 .chat-view--narrow [data-testid="chat-pop-out"],
 .chat-view--narrow [data-testid="chat-modal-maximize"] {
@@ -1187,7 +1188,9 @@ User messages in direct (model-loop) chat carry a compact edit affordance inline
 
 .chat-message-edit-textarea {
   width: 100%;
-  resize: vertical;
+  resize: none;
+  overflow-y: hidden;
+  max-height: none;
   min-height: calc(var(--space-lg) * 4);
   font: inherit;
   color: var(--text);
@@ -1651,8 +1654,8 @@ error; design tokens only per the styling guide.
 }
 
 /*
-FNXC:ChatComposer 2026-08-19-17:58:
-ChatView's inline controller supplies the five-line automatic height and owns desktop/tablet top-edge pointer resizing. Disable native resizing at every breakpoint so the lower-right grip cannot compete; mobile remains automatic-only.
+FNXC:ChatComposer 2026-08-20-19:25:
+FN-076 requires ChatView composers to use automatic-only sizing through five rendered lines. The controller owns capped overflow and shrink-to-minimum behavior, while this rule removes native mouse resizing at every breakpoint.
 */
 .chat-input-textarea {
   /* FN-5322: this textarea sits directly inside `.chat-input-wrapper`, which

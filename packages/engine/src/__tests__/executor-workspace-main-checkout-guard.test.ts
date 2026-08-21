@@ -62,6 +62,19 @@ describeIfGit("workspace main-checkout guard", () => {
     expect(result.violations.find((finding) => finding.repo === "repo-b")?.files).toContain("src/new.ts");
   });
 
+  it("treats repo-local File Scope as declared scope for a single workspace repository", async () => {
+    fixture = await createWorkspaceFixture(["repo-a"]);
+    const activeTask = task();
+    const file = path.join(fixture.repoPath("repo-a"), "src", "local.ts");
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, "export {};\n");
+    const changed = new Date(Date.parse(activeTask.firstExecutionAt!) + 10_000);
+    await import("node:fs/promises").then(({ utimes }) => utimes(file, changed, changed));
+
+    const result = await detectWorkspaceMainCheckoutWork({ rootDir: fixture.rootDir, settings }, activeTask, fixture.repos, ["src/**"]);
+    expect(result.violations).toContainEqual(expect.objectContaining({ repo: "repo-a", files: ["src/local.ts"], evidence: "declared-scope-change" }));
+  });
+
   it("uses firstExecutionAt instead of the later retry attempt anchor", async () => {
     fixture = await createWorkspaceFixture(["repo-a"]);
     const first = new Date(Date.now() + 1_000).toISOString();

@@ -38,6 +38,8 @@ interface TaskChatTabProps {
   addToast: (msg: string, type?: ToastType) => void;
   sessionLive?: boolean;
   onTaskUpdated?: (task: Task) => void;
+  /** Publishes the server-returned refinement child to shared board state. */
+  onRefinementCreated?: (task: Task) => void;
   expanded?: boolean;
   onToggleExpanded?: () => void;
   effectiveModels?: Partial<Record<"triage" | "executor" | "reviewer" | "merger", TaskChatModelInfo | null>>;
@@ -674,7 +676,7 @@ function TaskChatUserMessage({ message }: { message: UserChatMessage }) {
   );
 }
 
-export function TaskChatTab({ task, columnFlags, projectId, active, addToast, onTaskUpdated, expanded = false, onToggleExpanded, effectiveModels }: TaskChatTabProps) {
+export function TaskChatTab({ task, columnFlags, projectId, active, addToast, onTaskUpdated, onRefinementCreated, expanded = false, onToggleExpanded, effectiveModels }: TaskChatTabProps) {
   const { t } = useTranslation("app");
   const chatMessageLayout = useChatMessageLayout();
   const { entries, loading, loadMore, hasMore, loadingMore } = useAgentLogs(task.id, active, projectId);
@@ -745,8 +747,8 @@ export function TaskChatTab({ task, columnFlags, projectId, active, addToast, on
 
   const showLoadingIndicator = loadingIndicatorTaskId === task.id;
 
-  const resizeComposer = useCallback((options?: { resetManual?: boolean }) => {
-    autosizeRef.current?.resize(options);
+  const resizeComposer = useCallback(() => {
+    autosizeRef.current?.resize();
   }, []);
 
   const handleComposerRef = useCallback((textarea: HTMLTextAreaElement | null) => {
@@ -758,14 +760,8 @@ export function TaskChatTab({ task, columnFlags, projectId, active, addToast, on
   }, []);
 
   useLayoutEffect(() => {
-    resizeComposer({ resetManual: draft.length === 0 });
+    resizeComposer();
   }, [draft, resizeComposer]);
-
-  useLayoutEffect(() => {
-    // FNXC:ChatComposer 2026-08-19-02:00: Reused task-detail instances must not carry a
-    // manually enlarged Activity composer into another task's draft.
-    autosizeRef.current?.reset();
-  }, [task.id]);
 
   const cancelAnchorTranscriptFrame = useCallback(() => {
     if (anchorFrameRef.current === null) return;
@@ -977,6 +973,12 @@ export function TaskChatTab({ task, columnFlags, projectId, active, addToast, on
     try {
       if (isDoneTask) {
         const newTask = await refineTask(task.id, text, projectId);
+        /*
+        FNXC:TaskRefinementBoardVisibility 2026-08-20-20:43:
+        A successful refinement must publish the exact server-returned child immediately. SSE can
+        arrive later or not at all, and the server alone owns its workflow-derived destination.
+        */
+        onRefinementCreated?.(newTask);
         addToast(`Refinement task created: ${newTask.id}`, "success");
         /*
         FNXC:TaskDetailChat 2026-06-29-21:30:
@@ -1005,7 +1007,7 @@ export function TaskChatTab({ task, columnFlags, projectId, active, addToast, on
       sendingRef.current = false;
       setSending(false);
     }
-  }, [addToast, draft, entries, isDoneTask, onTaskUpdated, projectId, task.id, userMessages]);
+  }, [addToast, draft, entries, isDoneTask, onRefinementCreated, onTaskUpdated, projectId, task.id, userMessages]);
 
   /**
    * FNXC:TaskDetailChat 2026-06-13-19:05:

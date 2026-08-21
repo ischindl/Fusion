@@ -626,6 +626,26 @@ describe("ProjectModelsSection", () => {
     });
   });
 
+  it("places the sole title toggle directly after task language and updates project form state", () => {
+    const setForm = vi.fn();
+    render(
+      <ProjectModelsSection
+        form={{ autoSummarizeTitles: false } as SettingsFormState}
+        setForm={setForm}
+        models={models}
+        addToast={vi.fn()}
+      />,
+    );
+
+    const language = screen.getByRole("combobox", { name: "AI-authored task language" });
+    const toggle = screen.getByRole("checkbox", { name: "Auto-summarize task titles" });
+    expect(screen.getAllByRole("checkbox", { name: "Auto-summarize task titles" })).toHaveLength(1);
+    expect(language.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(toggle);
+    const update = setForm.mock.calls[0]?.[0] as (form: SettingsFormState) => SettingsFormState;
+    expect(update({ autoSummarizeTitles: false } as SettingsFormState)).toMatchObject({ autoSummarizeTitles: true });
+  });
+
   it("colocates summarization model controls with AI summarization settings", () => {
     render(
       <ProjectModelsSection
@@ -646,14 +666,13 @@ describe("ProjectModelsSection", () => {
 
     const summarizationSection = screen.getByTestId("project-models-ai-summarization");
     const heading = screen.getByRole("heading", { name: "AI Title and Git Commit Message Summarization" });
-    const autoSummarizeTitles = screen.getByRole("checkbox", { name: "Auto-summarize task titles" });
     const summarizationDropdown = screen.getByTestId("mock-model-dropdown-summarizationModel");
     const fallbackDropdown = screen.getByTestId("mock-model-dropdown-titleSummarizerFallbackModel");
     const defaultDropdown = screen.getByTestId("mock-model-dropdown-defaultModel");
     const mergerDropdown = screen.getByTestId("mock-model-dropdown-mergerModel");
 
     expect(summarizationSection).toContainElement(heading);
-    expect(summarizationSection).toContainElement(autoSummarizeTitles);
+    expect(summarizationSection).not.toContainElement(screen.getByRole("checkbox", { name: "Auto-summarize task titles" }));
     expect(summarizationSection).toContainElement(summarizationDropdown);
     expect(summarizationSection).toContainElement(fallbackDropdown);
     expect(defaultDropdown.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

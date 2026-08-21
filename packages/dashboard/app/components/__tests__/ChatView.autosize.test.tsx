@@ -311,7 +311,7 @@ describe("ChatView composer autosize", () => {
     }
   });
 
-  it("top-edge expands direct chat and clearing its draft restores the default height", async () => {
+  it("ignores the former top-edge pointer drag and clears direct chat to its minimum", async () => {
     const sendMessage = vi.fn();
     setup({ sendMessage });
     renderChatView();
@@ -324,17 +324,14 @@ describe("ChatView composer autosize", () => {
 
     await userEvent.type(textarea, "long draft");
     const automaticHeight = Number.parseInt(textarea.style.height, 10);
-    vi.spyOn(textarea, "getBoundingClientRect").mockReturnValue({
-      bottom: 400, height: 118, left: 0, right: 600, top: 282, width: 600, x: 0, y: 282, toJSON: () => ({}),
-    });
     const pointer = (type: string, clientY: number) => textarea.dispatchEvent(Object.assign(
       new Event(type, { bubbles: true, cancelable: true }), { clientY, pointerId: 1, pointerType: "mouse" },
     ));
-    pointer("pointerdown", 284);
-    pointer("pointermove", 0);
-    pointer("pointerup", 0);
+    pointer("pointerdown", 0);
+    pointer("pointermove", -200);
+    pointer("pointerup", -200);
 
-    expect(Number.parseInt(textarea.style.height, 10)).toBeGreaterThan(automaticHeight);
+    expect(Number.parseInt(textarea.style.height, 10)).toBe(automaticHeight);
 
     await userEvent.click(screen.getAllByTestId("chat-send-btn")[0]);
     await waitFor(() => {
@@ -344,7 +341,7 @@ describe("ChatView composer autosize", () => {
     });
   });
 
-  it("top-edge expands rooms chat and clearing its draft restores the default height", async () => {
+  it("ignores the former top-edge pointer drag and clears rooms chat to its minimum", async () => {
     localStorage.setItem("fusion:chat-scope", "rooms");
     renderChatView();
 
@@ -355,16 +352,13 @@ describe("ChatView composer autosize", () => {
     });
     await userEvent.type(textarea, "long room draft");
     const automaticHeight = Number.parseInt(textarea.style.height, 10);
-    vi.spyOn(textarea, "getBoundingClientRect").mockReturnValue({
-      bottom: 400, height: 118, left: 0, right: 600, top: 282, width: 600, x: 0, y: 282, toJSON: () => ({}),
-    });
     const pointer = (type: string, clientY: number) => textarea.dispatchEvent(Object.assign(
       new Event(type, { bubbles: true, cancelable: true }), { clientY, pointerId: 1, pointerType: "mouse" },
     ));
-    pointer("pointerdown", 284);
-    pointer("pointermove", 0);
-    pointer("pointerup", 0);
-    expect(Number.parseInt(textarea.style.height, 10)).toBeGreaterThan(automaticHeight);
+    pointer("pointerdown", 0);
+    pointer("pointermove", -200);
+    pointer("pointerup", -200);
+    expect(Number.parseInt(textarea.style.height, 10)).toBe(automaticHeight);
 
     await userEvent.clear(textarea);
     await waitFor(() => {

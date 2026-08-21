@@ -3,31 +3,29 @@ import { fireEvent, render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { useBoardMousePan } from "../useBoardMousePan";
 
-function PanHarness({ onClick = vi.fn() }: { onClick?: () => void }) {
+function PanHarness({ enabled = true, onClick = vi.fn() }: { enabled?: boolean; onClick?: () => void }) {
   const [boardElement, setBoardElement] = useState<HTMLElement | null>(null);
-  const { isPanning, ...bindings } = useBoardMousePan(boardElement);
+  const { isPanning, ...bindings } = useBoardMousePan(boardElement, enabled);
   return (
-    <main
-      ref={setBoardElement}
-      className={isPanning ? "is-mouse-panning" : ""}
-      data-panning={isPanning ? "true" : "false"}
-      data-testid="board"
-      onClick={onClick}
-      {...bindings}
-    >
+    <main ref={setBoardElement} className={isPanning ? "is-mouse-panning" : ""} data-panning={String(isPanning)} data-testid="board" onClick={onClick} {...bindings}>
       <p data-testid="empty-text">No tasks</p>
+      <div data-testid="surface">Safe surface</div>
       <button type="button" data-testid="button">Button</button>
       <input aria-label="Editable" data-testid="input" />
-      <article data-testid="card">Card</article>
+      <div contentEditable data-testid="contenteditable">Editable content</div>
+      <div draggable data-testid="draggable">Draggable</div>
+      <article data-id="FN-1" data-testid="card">Card</article>
     </main>
   );
 }
 
-function renderPanHarness(onClick = vi.fn()) {
-  const result = render(<PanHarness onClick={onClick} />);
+function renderPanHarness(enabled = true, onClick = vi.fn()) {
+  const result = render(<PanHarness enabled={enabled} onClick={onClick} />);
   const board = result.getByTestId("board");
-  Object.defineProperty(board, "clientWidth", { configurable: true, value: 200 });
-  Object.defineProperty(board, "scrollWidth", { configurable: true, value: 600 });
+  Object.defineProperties(board, {
+    clientWidth: { configurable: true, value: 200 },
+    scrollWidth: { configurable: true, value: 600 },
+  });
   return { ...result, board };
 }
 
@@ -44,15 +42,15 @@ function pointerUp(target: HTMLElement, pointerId = 1, pointerType = "mouse") {
 }
 
 describe("useBoardMousePan", () => {
-  it("pans direct Board-root primary mouse drags by inverse horizontal delta in both directions", () => {
-    const { board } = renderPanHarness();
+  it("pans safe descendants and the root by inverse horizontal delta in both directions", () => {
+    const { board, getByTestId } = renderPanHarness();
     board.scrollLeft = 100;
 
-    pointerDown(board);
-    pointerMove(board, 140);
+    pointerDown(getByTestId("empty-text"));
+    pointerMove(getByTestId("empty-text"), 140);
     expect(board.scrollLeft).toBe(60);
     expect(board).toHaveAttribute("data-panning", "true");
-    pointerUp(board);
+    pointerUp(getByTestId("empty-text"));
 
     board.scrollLeft = 100;
     pointerDown(board, 100, 50, 2);
@@ -60,79 +58,75 @@ describe("useBoardMousePan", () => {
     expect(board.scrollLeft).toBe(130);
   });
 
-  it("does not pan before horizontal intent, vertically, or without overflow", () => {
-    const { board } = renderPanHarness();
-    board.scrollLeft = 100;
-
-    pointerDown(board);
-    pointerMove(board, 103);
-    pointerMove(board, 104, 110);
-    pointerUp(board);
-    expect(board.scrollLeft).toBe(100);
-
-    Object.defineProperty(board, "scrollWidth", { configurable: true, value: 200 });
-    pointerDown(board, 100, 50, 2);
-    pointerMove(board, 140, 50, 2);
-    pointerUp(board, 2);
-    expect(board.scrollLeft).toBe(100);
-  });
-
-  it("never starts from text, cards, or controls", () => {
+  it("leaves excluded interactive, editable, native-draggable, and task surfaces native", () => {
     const { board, getByTestId } = renderPanHarness();
     board.scrollLeft = 100;
 
-    for (const [index, target] of [
-      getByTestId("empty-text"),
-      getByTestId("card"),
-      getByTestId("button"),
-      getByTestId("input"),
-    ].entries()) {
-      const pointerId = index + 1;
-      pointerDown(target, 100, 50, pointerId);
-      pointerMove(target, 40, 50, pointerId);
-      pointerUp(target, pointerId);
+    for (const [index, target] of ["button", "input", "contenteditable", "draggable", "card"].map(getByTestId).entries()) {
+      pointerDown(target, 100, 50, index + 1);
+      pointerMove(target, 40, 50, index + 1);
+      pointerUp(target, index + 1);
     }
 
     expect(board.scrollLeft).toBe(100);
     expect(board).toHaveAttribute("data-panning", "false");
   });
 
-  it("ignores touch, pen, and non-primary mouse input", () => {
-    const { board } = renderPanHarness();
-    board.scrollLeft = 100;
-
-    for (const [pointerType, pointerId] of [["touch", 1], ["pen", 2]] as const) {
-      pointerDown(board, 100, 50, pointerId, pointerType);
-      pointerMove(board, 40, 50, pointerId, pointerType);
-      pointerUp(board, pointerId, pointerType);
-    }
-    pointerDown(board, 100, 50, 3, "mouse", 2);
-    pointerMove(board, 40, 50, 3);
-    pointerUp(board, 3);
-
-    expect(board.scrollLeft).toBe(100);
-    expect(board).toHaveAttribute("data-panning", "false");
-  });
-
-  it("only changes scrollLeft during pointer moves and suppresses one compatibility click after panning", () => {
+  it("is inert when disabled for mobile and for touch, pen, or non-primary input", () => {
     const onClick = vi.fn();
-    const { board } = renderPanHarness(onClick);
+    const { board, getByTestId, rerender } = renderPanHarness(false, onClick);
     board.scrollLeft = 100;
+    const surface = getByTestId("surface");
 
-    pointerDown(board);
-    pointerMove(board, 190);
-    const scrollAfterMove = board.scrollLeft;
-    pointerUp(board);
-    expect(board.scrollLeft).toBe(scrollAfterMove);
-    fireEvent.click(board);
-    fireEvent.click(board);
-
+    pointerDown(surface);
+    pointerMove(surface, 40);
+    pointerUp(surface);
+    fireEvent.click(surface);
+    expect(board.scrollLeft).toBe(100);
+    expect(board).toHaveAttribute("data-panning", "false");
     expect(onClick).toHaveBeenCalledTimes(1);
+
+    rerender(<PanHarness />);
+    board.scrollLeft = 100;
+    for (const [pointerType, pointerId] of [["touch", 1], ["pen", 2]] as const) {
+      pointerDown(getByTestId("surface"), 100, 50, pointerId, pointerType);
+      pointerMove(getByTestId("surface"), 40, 50, pointerId, pointerType);
+      pointerUp(getByTestId("surface"), pointerId, pointerType);
+    }
+    pointerDown(getByTestId("surface"), 100, 50, 3, "mouse", 2);
+    pointerMove(getByTestId("surface"), 40, 50, 3);
+    expect(board.scrollLeft).toBe(100);
   });
 
-  it("cleans active feedback and click guards on cancellation, lost capture, and unmount", () => {
+  it("does not pan before horizontal intent, without overflow, or after a stationary edgeward pointer", () => {
+    const { board, getByTestId } = renderPanHarness();
+    const surface = getByTestId("surface");
+    board.scrollLeft = 100;
+
+    pointerDown(surface);
+    pointerMove(surface, 103);
+    pointerMove(surface, 104, 110);
+    pointerUp(surface);
+    expect(board.scrollLeft).toBe(100);
+
+    Object.defineProperty(board, "scrollWidth", { configurable: true, value: 200 });
+    pointerDown(surface, 100, 50, 2);
+    pointerMove(surface, 190, 50, 2);
+    pointerUp(surface, 2);
+    expect(board.scrollLeft).toBe(100);
+
+    Object.defineProperty(board, "scrollWidth", { configurable: true, value: 600 });
+    pointerDown(surface, 100, 50, 3);
+    pointerMove(surface, 190, 50, 3);
+    const scrollAfterMove = board.scrollLeft;
+    pointerUp(surface, 3);
+    expect(board.scrollLeft).toBe(scrollAfterMove);
+  });
+
+  it("suppresses one compatibility click after a pan and cleans up cancellation, lost capture, and unmount", () => {
     const onClick = vi.fn();
-    const { board, unmount } = renderPanHarness(onClick);
+    const { board, getByTestId, unmount } = renderPanHarness(true, onClick);
+    const surface = getByTestId("surface");
     const setPointerCapture = vi.fn();
     const hasPointerCapture = vi.fn(() => true);
     const releasePointerCapture = vi.fn();
@@ -142,22 +136,29 @@ describe("useBoardMousePan", () => {
       releasePointerCapture: { configurable: true, value: releasePointerCapture },
     });
 
-    pointerDown(board);
-    pointerMove(board, 140);
-    fireEvent.pointerCancel(board, { pointerId: 1 });
-    expect(board).toHaveAttribute("data-panning", "false");
-    fireEvent.click(board);
+    pointerDown(surface);
+    pointerMove(surface, 140);
+    pointerUp(surface);
+    fireEvent.click(surface);
+    fireEvent.click(surface);
+    expect(onClick).toHaveBeenCalledTimes(1);
 
-    pointerDown(board, 100, 50, 2);
-    pointerMove(board, 140, 50, 2);
-    fireEvent.lostPointerCapture(board, { pointerId: 2 });
+    pointerDown(surface, 100, 50, 2);
+    pointerMove(surface, 140, 50, 2);
+    fireEvent.pointerCancel(surface, { pointerId: 2 });
     expect(board).toHaveAttribute("data-panning", "false");
-    fireEvent.click(board);
+    fireEvent.click(surface);
 
-    pointerDown(board, 100, 50, 3);
+    pointerDown(surface, 100, 50, 3);
+    pointerMove(surface, 140, 50, 3);
+    fireEvent.lostPointerCapture(surface, { pointerId: 3 });
+    expect(board).toHaveAttribute("data-panning", "false");
+    fireEvent.click(surface);
+
+    pointerDown(surface, 100, 50, 4);
     unmount();
-    expect(setPointerCapture).toHaveBeenCalledWith(3);
-    expect(releasePointerCapture).toHaveBeenCalledWith(3);
-    expect(onClick).toHaveBeenCalledTimes(2);
+    expect(setPointerCapture).toHaveBeenCalledWith(4);
+    expect(releasePointerCapture).toHaveBeenCalledWith(4);
+    expect(onClick).toHaveBeenCalledTimes(3);
   });
 });

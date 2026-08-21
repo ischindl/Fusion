@@ -65,9 +65,9 @@ capacity-model table drop that landed while this PR was open.
 /* FNXC:MessageArchive 2026-08-12-22:14: 0058 persists non-destructive mailbox archival on upgrades. */
 /* FNXC:TaskRecommendations 2026-08-13-22:23: upgrades must install the source-agent index before duplicate intake queries it. */
 /* FNXC:WorkspaceLease 2026-08-15-12:00: the baseline ceiling must include durable coordination tables so an upgraded database is never rejected by the current binary. */
-/* FNXC:MemoryFocus 2026-08-13-15:57: 0061 adds the per-conversation chat_sessions.memory_focus read-time topic column (RUFU-068); renumbered from 0059 (FN-9037), then 0060 (FN-9059 workspace leases claimed it), landing on 0061. */
-/* FNXC:MemoryFocus 2026-08-15-18:34: SCHEMA_BASELINE_VERSION advances to 0061 for the RUFU-068 chat_sessions.memory_focus column migration, which origin FN-9059 workspace coordination leases pushed to 0060 first. Advancing the baseline keeps the upgrade guard (${SCHEMA_BASELINE_VERSION} vs applied) from rejecting the database once 0061 lands. */
-export const SCHEMA_BASELINE_VERSION = "0061";
+/* FNXC:ActivityLogTaskSearch 2026-08-20-04:17: advance the schema ceiling so durable central task-ID lookups receive their indexed upgrade. */
+/* FNXC:MemoryFocus 2026-08-21-06:10: 0065 adds the per-conversation chat_sessions.memory_focus read-time topic column (RUFU-068); renumbered from 0059 (FN-9037), then 0060 (FN-9059 workspace leases), then 0061 (FN-066 activity-log index), landing on 0065 above the FN-066..FN-101 batch. Advancing the baseline to 0065 keeps the upgrade guard (${SCHEMA_BASELINE_VERSION} vs applied) from rejecting databases that already carry the batch. */
+export const SCHEMA_BASELINE_VERSION = "0065";
 /** FNXC:SymbolLock 2026-07-20-10:00: upgrades need durable task declarations before admission resolves symbols. */
 export const TASK_DECLARED_SYMBOLS_VERSION = "0028";
 const INITIAL_SCHEMA_VERSION = "0000";
@@ -228,9 +228,15 @@ export const PROJECT_OWNERSHIP_DEFAULT_RECONCILIATION_VERSION = "0057";
 export const MESSAGE_ARCHIVE_SCHEMA_VERSION = "0058";
 export const TASK_SOURCE_AGENT_INDEX_VERSION = "0059";
 export const WORKSPACE_COORDINATION_LEASES_SCHEMA_VERSION = "0060";
+/** FNXC:ActivityLogTaskSearch 2026-08-20-04:17: explicit registration prevents the central durable task-ID index from being skipped on upgrades. */
+export const ACTIVITY_LOG_TASK_ID_INDEX_VERSION = "0061";
+export const REMOVE_TASK_SUBTASK_SPLITTING_VERSION = "0062";
+export const AI_MERGE_REVIEW_RECONCILIATION_VERSION = "0063";
+/** FNXC:RepositoryScope 2026-08-20-23:07: upgraded projects need explicit task repository intent before workspace lifecycle readers use it. */
+export const TASK_REPOSITORY_SCOPE_VERSION = "0064";
 
-/** FNXC:MemoryFocus 2026-08-13-15:57: explicit registration prevents the per-conversation memory-focus migration from being skipped. Renumbered to 0060 during the rebase onto origin/main (FN-9037 took 0059). */
-export const CHAT_SESSION_MEMORY_FOCUS_VERSION = "0061";
+/** FNXC:MemoryFocus 2026-08-21-06:10: explicit registration prevents the per-conversation memory-focus migration from being skipped. Renumbered to 0060, then 0061, then 0065: the upstream FN-066..FN-101 batch (2026-08-21) owns 0061-0064 (activity-log index, splitting removal, AI-merge review, repository scope). */
+export const CHAT_SESSION_MEMORY_FOCUS_VERSION = "0065";
 
 /** SECURITY DEFINER helper that only inserts LEGACY_ADOPTION_DRAINED_MARKER. */
 export const LEGACY_ADOPTION_DRAINED_MARKER_FUNCTION = "fusion_mark_legacy_adoption_drained";
@@ -465,8 +471,12 @@ const PROJECT_OWNERSHIP_DEFAULT_RECONCILIATION_MIGRATION_PATH = join(MIGRATIONS_
 const MESSAGE_ARCHIVE_SCHEMA_MIGRATION_PATH = join(MIGRATIONS_DIR, "0058_fn_9014_message_archive.sql");
 const TASK_SOURCE_AGENT_INDEX_MIGRATION_PATH = join(MIGRATIONS_DIR, "0059_fn_9037_tasks_source_agent_index.sql");
 const WORKSPACE_COORDINATION_LEASES_MIGRATION_PATH = join(MIGRATIONS_DIR, "0060_fn_9059_workspace_coordination_leases.sql");
-/* FNXC:MemoryFocus 2026-08-14-10:30: renumbered to 0061 (FN-9059 workspace leases own 0060). */
-const CHAT_SESSION_MEMORY_FOCUS_MIGRATION_PATH = join(MIGRATIONS_DIR, "0061_chat_session_memory_focus.sql");
+const ACTIVITY_LOG_TASK_ID_INDEX_MIGRATION_PATH = join(MIGRATIONS_DIR, "0061_fn_066_activity_log_task_id_index.sql");
+const REMOVE_TASK_SUBTASK_SPLITTING_MIGRATION_PATH = join(MIGRATIONS_DIR, "0062_remove_task_subtask_splitting.sql");
+const AI_MERGE_REVIEW_RECONCILIATION_MIGRATION_PATH = join(MIGRATIONS_DIR, "0063_fn_090_ai_merge_review_reconciliation.sql");
+const TASK_REPOSITORY_SCOPE_MIGRATION_PATH = join(MIGRATIONS_DIR, "0064_fn_094_task_repository_scope.sql");
+/* FNXC:MemoryFocus 2026-08-21-06:10: renumbered to 0065 (the FN-066..FN-101 batch owns 0061-0064). */
+const CHAT_SESSION_MEMORY_FOCUS_MIGRATION_PATH = join(MIGRATIONS_DIR, "0065_chat_session_memory_focus.sql");
 
 /**
  * Ensure the migration bookkeeping table exists. Lives in the public schema so
@@ -597,6 +607,10 @@ export async function applySchemaBaseline(
     const messageArchiveSchemaAlreadyApplied = applied.includes(MESSAGE_ARCHIVE_SCHEMA_VERSION);
     const taskSourceAgentIndexAlreadyApplied = applied.includes(TASK_SOURCE_AGENT_INDEX_VERSION);
     const workspaceCoordinationLeasesAlreadyApplied = applied.includes(WORKSPACE_COORDINATION_LEASES_SCHEMA_VERSION);
+    const activityLogTaskIdIndexAlreadyApplied = applied.includes(ACTIVITY_LOG_TASK_ID_INDEX_VERSION);
+    const removeTaskSubtaskSplittingAlreadyApplied = applied.includes(REMOVE_TASK_SUBTASK_SPLITTING_VERSION);
+    const aiMergeReviewReconciliationAlreadyApplied = applied.includes(AI_MERGE_REVIEW_RECONCILIATION_VERSION);
+    const taskRepositoryScopeAlreadyApplied = applied.includes(TASK_REPOSITORY_SCOPE_VERSION);
     const chatSessionMemoryFocusAlreadyApplied = applied.includes(CHAT_SESSION_MEMORY_FOCUS_VERSION);
     assertBinaryNotOlderThanDatabase(applied);
     let schemaChanged = false;
@@ -1311,7 +1325,39 @@ export async function applySchemaBaseline(
       await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${WORKSPACE_COORDINATION_LEASES_SCHEMA_VERSION}) ON CONFLICT (version) DO NOTHING`);
       schemaChanged = true;
     }
-    /* FNXC:MemoryFocus 2026-08-14-10:30: register 0061 explicitly. */
+    if (!activityLogTaskIdIndexAlreadyApplied) {
+      const migrationSql = await readFile(ACTIVITY_LOG_TASK_ID_INDEX_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${ACTIVITY_LOG_TASK_ID_INDEX_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+
+    /* FNXC:TaskSplittingRemoval 2026-08-20-17:42: Explicit registration guarantees upgrades drop only the obsolete split request column before current task persistence runs. */
+    if (!removeTaskSubtaskSplittingAlreadyApplied) {
+      const migrationSql = await readFile(REMOVE_TASK_SUBTASK_SPLITTING_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${REMOVE_TASK_SUBTASK_SPLITTING_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    /*
+    FNXC:AIMergeReviewReconciliation 2026-08-20-21:56:
+    FN-090 has one durable, structured review authority. Explicit migration registration is
+    required because migrations are never discovered and upgraded projects must not fall back to log parsing.
+    */
+    if (!aiMergeReviewReconciliationAlreadyApplied) {
+      const migrationSql = await readFile(AI_MERGE_REVIEW_RECONCILIATION_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${AI_MERGE_REVIEW_RECONCILIATION_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    /* FNXC:RepositoryScope 2026-08-20-23:07: migrations are explicitly registered so upgrade paths cannot silently omit task intent. */
+    if (!taskRepositoryScopeAlreadyApplied) {
+      const migrationSql = await readFile(TASK_REPOSITORY_SCOPE_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${TASK_REPOSITORY_SCOPE_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    /* FNXC:MemoryFocus 2026-08-21-06:10: register 0065 explicitly after the FN-066..FN-101 batch migrations. */
     if (!chatSessionMemoryFocusAlreadyApplied) {
       const migrationSql = await readFile(CHAT_SESSION_MEMORY_FOCUS_MIGRATION_PATH, "utf8");
       await tx.execute(sql.raw(migrationSql));

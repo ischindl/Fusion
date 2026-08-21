@@ -96,7 +96,6 @@ function taskDeletedEvent(seq: bigint, taskId: string, eventId?: string): Lifecy
       deletedAt: "2026-01-02T00:00:00.000Z",
       allowResurrection: false,
       githubIssueAction: null,
-      closureContext: null,
       deletedBy: null,
     },
   };

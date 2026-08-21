@@ -35,6 +35,7 @@ import { commitIdentityArgs, resolveCommitIdentity } from "../git-identity.js";
  * Pure helpers (prompt builders, verdict parser) are exported for unit testing;
  * the orchestrator accepts injectable agent functions for the same reason.
  */
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { realpathSync, readdirSync } from "node:fs";
@@ -214,25 +215,7 @@ function short(sha: string): string {
   return /^[0-9a-f]{7,40}$/i.test(sha) ? sha.slice(0, 8) : sha;
 }
 
-function getApprovedAiMergeReviewShas(task: Task | undefined): Set<string> {
-  const shas = new Set<string>();
-  for (const entry of task?.log ?? []) {
-    if (typeof entry.action !== "string") continue;
-    const match = entry.action.match(/AI merge review \(pass \d+\): approved(?:\s+(?:squash|commit)\s+([0-9a-f]{7,40}))?/i);
-    if (match?.[1]) shas.add(match[1].toLowerCase());
-  }
-  return shas;
-}
-
-function taskHasApprovedAiMergeReview(task: Task | undefined): boolean {
-  return (task?.log ?? []).some((entry) =>
-    typeof entry.action === "string"
-    && /AI merge review \(pass \d+\): approved/.test(entry.action)
-  );
-}
-
 const MAX_BLOCKING_REVIEW_REASONS = 8;
-const MAX_BLOCKING_REVIEW_REASON_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 function normalizeBlockingReviewReason(reason: string): string {
   return reason.trim().toLocaleLowerCase().replace(/[\s\p{P}]+/gu, " ").trim();
@@ -250,28 +233,6 @@ function boundBlockingReviewReasons(reasons: readonly string[]): string[] {
     if (bounded.length === MAX_BLOCKING_REVIEW_REASONS) break;
   }
   return bounded;
-}
-
-function getOutstandingBlockingMergeReasons(task: Task | undefined): string[] {
-  const entries = task?.log ?? [];
-  for (let index = entries.length - 1; index >= 0; index--) {
-    const entry = entries[index];
-    const action = entry.action;
-    if (/AI merge: (?:landed|finalized).*task → done/i.test(action) || /AI merge review \(pass \d+\): approved/i.test(action)) return [];
-    const current = action.match(/AI merge (?:BLOCKED .*?unresolved correctness concern:\s*|review \(pass \d+\): rejected \(blocking\) —\s*)(.+)$/i);
-    if (!current?.[1]) continue;
-    const ageMs = Date.now() - Date.parse(entry.timestamp);
-    // Invalid legacy timestamps remain recoverable; only provably stale contracts expire.
-    if (Number.isFinite(ageMs) && ageMs > MAX_BLOCKING_REVIEW_REASON_AGE_MS) return [];
-    return boundBlockingReviewReasons(current[1].split(/;\s*/));
-  }
-  return [];
-}
-
-function matchesApprovedAiMergeSha(squashSha: string, approvedShas: Set<string>): boolean {
-  if (approvedShas.size === 0) return true;
-  const normalized = squashSha.toLowerCase();
-  return Array.from(approvedShas).some((approved) => normalized === approved || normalized.startsWith(approved) || approved.startsWith(normalized));
 }
 
 type PreexistingAiMergeRecoveryCandidate = {
@@ -316,10 +277,15 @@ async function recoverApprovedPreexistingAiMergeWorktree(
   const { taskId, settings, store, audit, log, allowDirtyLocalCheckoutSync, stashResolveAgent, signal } = ctx;
   throwIfAborted(signal, taskId);
   const task = await store.getTask(taskId).catch(() => undefined);
-  if (!taskHasApprovedAiMergeReview(task)) return null;
-
-  const approvedShas = getApprovedAiMergeReviewShas(task);
+  const state = task?.aiMergeReviewReconciliation;
+  const sourceSha = await git(["rev-parse", "--verify", branch], repoRootDir);
   const tipSha = await git(["rev-parse", "--verify", `refs/heads/${integrationBranch}`], repoRootDir);
+  /*
+  FNXC:AIMergeReviewReconciliation 2026-08-20-22:27:
+  Recovery may land only the durable, twice-confirmed candidate for the current source and
+  integration identities. Task-log prose is audit history, never authority to revive a squash.
+  */
+  if (!state?.candidateSha || state.consecutiveCleanApprovals < 2 || state.sourceSha !== sourceSha || state.integrationTipSha !== tipSha) return null;
   const recoverableCandidates: PreexistingAiMergeRecoveryCandidate[] = [];
   for (const candidate of listAiMergeWorktreeCandidates(taskId, repoRootDir, settings)) {
     let mergeRoot = candidate;
@@ -329,8 +295,8 @@ async function recoverApprovedPreexistingAiMergeWorktree(
     try {
       throwIfAborted(signal, taskId);
       const squashSha = await git(["rev-parse", "--verify", "HEAD"], mergeRoot);
-      if (!squashSha || squashSha === tipSha) continue;
-      if (!matchesApprovedAiMergeSha(squashSha, approvedShas)) continue;
+      if (!squashSha || squashSha === tipSha || squashSha !== state.candidateSha) continue;
+      if (state.candidateTreeSha && await git(["rev-parse", `${squashSha}^{tree}`], mergeRoot) !== state.candidateTreeSha) continue;
       const show = await git(["show", "-s", "--format=%s%x1f%b", squashSha], mergeRoot);
       const [subject = "", body = ""] = show.split("\x1f");
       if (!getCommitTaskOwnership(taskId, task?.lineageId, subject, body).owned) continue;
@@ -345,8 +311,10 @@ async function recoverApprovedPreexistingAiMergeWorktree(
   }
 
   /*
-  FNXC:AIMergeRecovery 2026-07-10-23:06:
-  Approved clean-room recovery must bind the candidate commit to the reviewed squash. New review logs carry the squash SHA; legacy logs without a SHA can recover only when exactly one same-task candidate is possible, otherwise recovery defers to the normal merge path rather than finalizing the wrong clean room.
+  FNXC:AIMergeReviewReconciliation 2026-08-20-22:27:
+  A recovered clean room is safe only after structured reconciliation has bound its exact
+  candidate SHA/tree and current source/integration identity. Ambiguous candidates defer to a
+  fresh merge rather than turning historical review text into landing authority.
   */
   if (recoverableCandidates.length !== 1) {
     if (recoverableCandidates.length > 1) {
@@ -373,11 +341,13 @@ async function recoverApprovedPreexistingAiMergeWorktree(
       signal,
     });
     if (land.outcome !== "advanced") return null;
+    await store.updateTask(taskId, { aiMergeReviewReconciliation: null });
     await log(`AI merge: recovered approved pre-existing clean-room commit ${short(selected.squashSha)} before pruning`);
     await audit.git({ type: "merge:ai-landed", target: integrationBranch, metadata: { taskId, landedSha: selected.squashSha, source: "pre-prune-clean-room-recovery", mergeRoot: selected.mergeRoot } }).catch(() => undefined);
     return { outcome: "landed", squashSha: selected.squashSha, localSync: land.localSync, tipSha: selected.tipSha, integrationBranch };
   }
 
+  await store.updateTask(taskId, { aiMergeReviewReconciliation: null });
   await log(`AI merge: recovered already-landed clean-room commit ${short(selected.squashSha)} before pruning`);
   return { outcome: "landed", squashSha: selected.squashSha, localSync: "skipped-other-branch", tipSha: selected.tipSha, integrationBranch };
 }
@@ -482,6 +452,19 @@ export class AiMergeBlockedError extends Error {
     this.name = "AiMergeBlockedError";
     this.taskId = taskId;
     this.reasons = reasons;
+  }
+}
+
+/**
+ * FNXC:AIMergeReviewReconciliation 2026-08-20-22:38:
+ * A dismissal or source/tip replacement invalidates the entire reconciliation episode. The
+ * clean-room caller catches this sentinel and starts a fresh episode rather than allowing a
+ * reviewer response captured against stale state to recreate the dismissed candidate.
+ */
+class AiMergeReviewReconciliationInvalidatedError extends Error {
+  constructor() {
+    super("AI merge review reconciliation was invalidated during review");
+    this.name = "AiMergeReviewReconciliationInvalidatedError";
   }
 }
 
@@ -901,7 +884,7 @@ export interface LandRepoContext {
   */
   noCommitsExpected?: boolean;
   /** FNXC:Workspace 2026-08-15-08:36: Present only for workspace sub-repos; it fences the durable intent and remote ref advance. */
-  workspaceLand?: { handle: WorkspaceLeaseHandle; repoRelPath: string; remote: string };
+  workspaceLand?: { getHandle: () => WorkspaceLeaseHandle; repoRelPath: string; remote: string; assertLive: () => void };
   /** FNXC:WorkspaceMergeDispatch 2026-08-15-22:55: Task-level pin that fences every merge-body ref advance. */
   workspaceDispatchFence?: { fenceRefName: string; fenceRefSha: string };
   store: TaskStore;
@@ -962,8 +945,8 @@ export async function landOneRepo(
     await log(`AI merge: pre-merge prune failed: ${getErrorMessage(err)}`);
   }
   let advanceRetries = 0;
-  const taskAtStart = await store.getTask(taskId);
-  let outstandingReviewReasons = getOutstandingBlockingMergeReasons(taskAtStart);
+  // Structured reconciliation state is read by mergeAndReview; task logs are not a fallback authority.
+  let outstandingReviewReasons: string[] = [];
   while (true) {
     throwIfAborted(signal, taskId);
     const tipSha = await git(["rev-parse", "--verify", `refs/heads/${integrationBranch}`], repoRootDir);
@@ -1139,11 +1122,20 @@ export async function landOneRepo(
       }
 
       // 2 + 3. Merge + review loop (corrective passes).
-      const reviewResult = await mergeAndReview({
-        mergeRoot, branch, integrationBranch, tipSha, taskTitle, includeTaskId, trailers, taskId,
-        maxPasses, mergeAgent, reviewAgent, audit, log, setStatus, store, signal,
-        initialPriorReasons: outstandingReviewReasons,
-      });
+      let reviewResult: Awaited<ReturnType<typeof mergeAndReview>>;
+      try {
+        reviewResult = await mergeAndReview({
+          mergeRoot, branch, integrationBranch, tipSha, taskTitle, includeTaskId, trailers, taskId,
+          maxPasses, mergeAgent, reviewAgent, audit, log, setStatus, store, signal,
+          initialPriorReasons: outstandingReviewReasons,
+        });
+      } catch (error) {
+        if (error instanceof AiMergeReviewReconciliationInvalidatedError) {
+          await log("AI merge: reconciliation episode changed during review — rebuilding from current source and integration identities");
+          continue;
+        }
+        throw error;
+      }
       const squashSha = reviewResult.squashSha;
       outstandingReviewReasons = reviewResult.priorReasons;
 
@@ -1168,7 +1160,9 @@ export async function landOneRepo(
       // move. A later reconciler can then settle an interrupted remote advance without re-squashing.
       let workspaceFence: { remote: string; fenceRefName: string; fenceRefSha: string } | undefined;
       if (ctx.workspaceLand) {
-        const { handle, repoRelPath, remote } = ctx.workspaceLand;
+        ctx.workspaceLand.assertLive();
+        const { repoRelPath, remote } = ctx.workspaceLand;
+        const handle = ctx.workspaceLand.getHandle();
         if (!handle.fenceRefName || !handle.fenceRefSha) {
           throw new Error(`Workspace land lease ${handle.leaseKey} is missing its fence pin`);
         }
@@ -1186,6 +1180,7 @@ export async function landOneRepo(
 
       // 4 + 5. Land the squash on the target branch and sync the user's
       //        checkout (AI reconciles a conflicting restore).
+      ctx.workspaceLand?.assertLive();
       await setStatus("landing");
       const landed = await landSquash({
         projectRootDir: repoRootDir, mergeRoot, integrationBranch, tipSha, squashSha, taskId, audit,
@@ -1203,6 +1198,8 @@ export async function landOneRepo(
         }
         throw new Error(`AI merge could not advance ${integrationBranch} for ${taskId} after ${advanceRetries} retries (concurrent advances)`);
       }
+      /* FNXC:AIMergeReviewReconciliation 2026-08-20-22:27: once the exact confirmed candidate lands, clear its findings, confirmation count, and corrective budget together so completed work cannot be revived. */
+      await store.updateTask(taskId, { aiMergeReviewReconciliation: null });
       await log(`AI merge: advanced ${integrationBranch} → ${short(squashSha)} (local checkout: ${landed.localSync})`);
       return { outcome: "landed", squashSha, localSync: landed.localSync, tipSha, integrationBranch };
     } finally {
@@ -2158,9 +2155,92 @@ export async function landWorkspaceTask(
   const trailers = taskTrailers(taskId, task.lineageId, settings);
   const taskTitle = task.title?.trim() ? task.title.split("\n")[0] : undefined;
 
+  /*
+  FNXC:RepositoryScope 2026-08-21-00:44:
+  Landing captures qualified per-repository diffs at the merge boundary, after all execution and
+  review work has finished. Persisting this snapshot prevents a stale executor capture from
+  omitting a newly changed scoped repository from leases, review obligations, or land intents.
+  */
+  const liveMergeBoundaryTask = await store.getTask(taskId).catch(() => undefined);
+  const mergeBoundaryTask = liveMergeBoundaryTask?.workspaceWorktrees ? liveMergeBoundaryTask : task;
+  const confirmedScope = mergeBoundaryTask.repositoryScope?.state === "confirmed"
+    ? new Set(mergeBoundaryTask.repositoryScope.repositories)
+    : undefined;
+  const mergeBoundaryModifiedFiles: string[] = [];
+  const mergeBoundaryFingerprints: Record<string, string> = {};
+  const modifiedOutOfScopeRepositories = new Set<string>();
+  const netZeroBranchRepositories = new Set<string>();
+  for (const [repoRel, entry] of Object.entries(mergeBoundaryTask.workspaceWorktrees ?? {})
+    // FNXC:RepositoryScope 2026-08-21-02:17: every acquired checkout is inspected for dirty
+    // out-of-scope work before land selection. Acquisition is not intent, but it is still a
+    // completion safety surface; filtering it out here could erase unapproved changes on update.
+    .filter(([repoRel, entry]) => !entry.landedSha || !confirmedScope?.has(repoRel))
+    .sort(([left], [right]) => left.localeCompare(right))) {
+    if (!entry.branch) throw new Error(`Workspace repository ${repoRel} has no task branch for fresh merge evidence`);
+    try {
+      const { stdout: mergeBase } = await execFileAsync("git", ["merge-base", "HEAD", entry.branch], { cwd: entry.worktreePath, encoding: "utf8" });
+      const { stdout } = await execFileAsync("git", ["diff", "--name-only", `${mergeBase.trim()}..${entry.branch}`], { cwd: entry.worktreePath, encoding: "utf8" });
+      const files = stdout.split("\n").map((file) => file.trim()).filter(Boolean);
+      if (files.length > 0) {
+        const { stdout: diffContent } = await execFileAsync("git", ["diff", "--binary", `${entry.baseCommitSha ?? mergeBase.trim()}..HEAD`], { cwd: entry.worktreePath, encoding: "utf8" });
+        mergeBoundaryFingerprints[repoRel] = createHash("sha256").update(diffContent).digest("hex");
+      }
+      if (files.length > 0 && !confirmedScope?.has(repoRel)) {
+        modifiedOutOfScopeRepositories.add(repoRel);
+      } else if (confirmedScope?.has(repoRel)) {
+        mergeBoundaryModifiedFiles.push(...files.map((file) => `${repoRel}/${file}`));
+        if (files.length === 0) {
+          const { stdout: aheadCount } = await execFileAsync("git", ["rev-list", "--count", `HEAD..${entry.branch}`], { cwd: entry.worktreePath, encoding: "utf8" });
+          if (Number(aheadCount.trim()) > 0) netZeroBranchRepositories.add(repoRel);
+        }
+      }
+    } catch (error) {
+      throw new Error(`Cannot capture fresh merge evidence for workspace repository ${repoRel}: ${getErrorMessage(error)}`);
+    }
+  }
+  if (modifiedOutOfScopeRepositories.size > 0) {
+    throw new Error(`Workspace repositories modified outside confirmed scope for ${taskId}: ${[...modifiedOutOfScopeRepositories].sort().join(", ")}`);
+  }
+  const normalizedMergeBoundaryFiles = [...new Set(mergeBoundaryModifiedFiles)].sort();
+  const persistedReviewFiles = [...new Set(mergeBoundaryTask.modifiedFiles ?? [])].sort();
+  /*
+  FNXC:RepositoryScope 2026-08-21-00:58:
+  Landing must not convert fresh evidence into approved evidence. A changed repository/file set after
+  Code Review has no matching reviewer episode, so return it through the normal review path instead
+  of silently persisting the new snapshot and landing it. Persist failure is likewise a hard fence:
+  a later recovery must never infer an unrecorded merge boundary.
+  */
+  const approvedReviewEvidence = mergeBoundaryTask.repositoryScope?.reviewEvidence ?? {};
+  const missingOrStaleReviewApproval = Object.entries(mergeBoundaryFingerprints)
+    .some(([repoRel, fingerprint]) => approvedReviewEvidence[repoRel]?.fingerprint !== fingerprint);
+  if (
+    normalizedMergeBoundaryFiles.some((file) => !persistedReviewFiles.includes(file))
+    || missingOrStaleReviewApproval
+  ) {
+    /*
+    FNXC:RepositoryScope 2026-08-21-01:36:
+    Every fresh land-required repository needs the exact fingerprint persisted by its approving
+    Code Review episode. An empty reviewEvidence map is missing approval evidence, not a legacy
+    exemption: otherwise a modified repository could publish without any reviewer authorization.
+    */
+    throw new Error(`Workspace merge evidence changed after review for ${taskId}; return the task to Code Review before landing`);
+  }
+  await store.updateTask(taskId, { modifiedFiles: normalizedMergeBoundaryFiles });
+  task = { ...mergeBoundaryTask, modifiedFiles: normalizedMergeBoundaryFiles };
   const workspaceWorktrees = task.workspaceWorktrees ?? {};
-  // SORTED keys for deterministic land order (KTD1).
-  const repoKeys = Object.keys(workspaceWorktrees).sort();
+  /*
+  FNXC:RepositoryScope 2026-08-20-23:57:
+  Landing obligations come from confirmed task intent plus actual qualified diff evidence. An
+  ambiguous legacy row must park for operator confirmation rather than treating every acquired
+  checkout as intent, because that recreates the clean-peer partial-land livelock.
+  */
+  const explicitScope = task.repositoryScope?.state === "confirmed" ? task.repositoryScope.repositories : undefined;
+  if (!explicitScope) {
+    throw new Error(`Workspace repository scope is unresolved for ${taskId}; operator confirmation is required before landing`);
+  }
+  const repoKeys = Object.keys(workspaceWorktrees)
+    .filter((repoRel) => explicitScope.includes(repoRel) && ((task.modifiedFiles ?? []).some((file) => file.startsWith(`${repoRel}/`)) || netZeroBranchRepositories.has(repoRel)))
+    .sort();
   const repos: WorkspaceRepoLandResult[] = [];
   let allLanded = true;
 
@@ -2372,11 +2452,45 @@ export async function landWorkspaceTask(
       throw error;
     }
 
+    /*
+    FNXC:Workspace 2026-08-20-19:45:
+    A repository land can legitimately outlive the five-minute durable TTL while dependency sync and
+    AI review run. Renew its current owner/fence handle during the complete land body, but keep every
+    intent and push fenced by the durable handle: a failed renewal aborts before the next commit point.
+    */
+    let leaseLost = false;
+    const leaseAbort = new AbortController();
+    let renewalInFlight: Promise<void> | undefined;
+    const renewWorkspaceLease = (store as Partial<TaskStore>).renewWorkspaceLease;
+    const renewLease = async (): Promise<void> => {
+      if (!durableLandLease || typeof renewWorkspaceLease !== "function" || leaseLost) return;
+      try {
+        const renewed = await renewWorkspaceLease.call(store, durableLandLease, 5 * 60_000);
+        if (!renewed) throw new Error("Workspace lease renewal was refused");
+        durableLandLease = renewed;
+      } catch {
+        leaseLost = true;
+        leaseAbort.abort("workspace-repo-land-lease-lost");
+      }
+    };
+    const renewalTimer = durableLandLease && typeof renewWorkspaceLease === "function"
+      ? setInterval(() => {
+        if (!renewalInFlight) {
+          renewalInFlight = renewLease().finally(() => { renewalInFlight = undefined; });
+        }
+      }, 60_000)
+      : undefined;
+    renewalTimer?.unref?.();
+    const landSignal = options.signal ? AbortSignal.any([options.signal, leaseAbort.signal]) : leaseAbort.signal;
+    const assertLeaseLive = () => {
+      if (leaseLost || leaseAbort.signal.aborted) throw new WorkspaceRepoLandBusyError(repoRel, "durable-workspace-lease", taskId);
+    };
+
     try {
       const landResult = await landOneRepo(repoRootDir, entry.branch, integrationBranch, {
         taskId, settings, audit, log, setStatus, maxPasses,
         mergeAgent, reviewAgent, stashResolveAgent,
-        includeTaskId, trailers, taskTitle, signal: options.signal,
+        includeTaskId, trailers, taskTitle, signal: landSignal,
         allowDirtyLocalCheckoutSync,
         // FNXC:Workspace 2026-06-24-23:50: one sub-repo's dependency-sync failure must not block
         // landing the others — degrade verification for that repo, still land the git squash.
@@ -2385,10 +2499,11 @@ export async function landWorkspaceTask(
         noCommitsExpected: task.noCommitsExpected === true,
         repoRel,
         repoKeys,
-        ...(durableLandLease ? { workspaceLand: { handle: durableLandLease, repoRelPath: repoRel, remote: "origin" } } : {}),
+        ...(durableLandLease ? { workspaceLand: { getHandle: () => { assertLeaseLive(); return durableLandLease!; }, repoRelPath: repoRel, remote: "origin", assertLive: assertLeaseLive } } : {}),
         ...(workspaceDispatchFence ? { workspaceDispatchFence } : {}),
         store,
       });
+      assertLeaseLive();
       if (landResult.outcome === "landed") {
         /*
         FNXC:Workspace 2026-06-22-04:10 (Phase C review A1 — persist-after-advance is a HARD failure):
@@ -2401,6 +2516,7 @@ export async function landWorkspaceTask(
         */
         try {
           if (durableLandLease) {
+            assertLeaseLive();
             const resolved = await store.resolveWorkspaceLandIntent({
               handle: durableLandLease,
               taskId,
@@ -2439,6 +2555,12 @@ export async function landWorkspaceTask(
         repos.push({ repo: repoRel, repoRootDir, integrationBranch, branch: entry.branch, status: "empty" });
       }
     } catch (err: unknown) {
+      /*
+      FNXC:Workspace 2026-08-20-19:58:
+      A lost repository tenancy is not a repository land failure: writing landFailure here would
+      let a stale owner mutate workspace state after its durable lease was revoked.
+      */
+      if (leaseLost) throw new WorkspaceRepoLandBusyError(repoRel, "durable-workspace-lease", taskId);
       if (isMergeAbortedError(err)) throw err;
       // A WorkspacePartialLandError from the persist-failure window above must PROPAGATE
       // (the engine parks/retries). The outer try/finally below resets status first (A3).
@@ -2459,6 +2581,8 @@ export async function landWorkspaceTask(
       // loop and the landed predicate above skips them (only the failed repo retries).
       break;
     } finally {
+      if (renewalTimer) clearInterval(renewalTimer);
+      await renewalInFlight?.catch(() => undefined);
       /*
       FNXC:Workspace 2026-06-22-02:10 (Phase C U3, KTD4):
       Release the land lease — on land SUCCESS or land FAILURE — but ONLY when WE hold
@@ -2699,128 +2823,120 @@ async function finalizeWorkspaceTask(
 }
 
 async function mergeAndReview(input: {
-  mergeRoot: string;
-  branch: string;
-  integrationBranch: string;
-  tipSha: string;
-  taskTitle?: string;
-  includeTaskId: boolean;
-  trailers: string[];
-  taskId: string;
-  maxPasses: number;
-  mergeAgent: (cwd: string, prompt: string) => Promise<void>;
-  reviewAgent: (cwd: string, prompt: string) => Promise<string>;
-  audit: RunAuditor;
-  log: (message: string) => Promise<void>;
-  setStatus: (status: string | null) => Promise<unknown>;
-  store: TaskStore;
-  signal?: AbortSignal;
-  initialPriorReasons?: string[];
+  mergeRoot: string; branch: string; integrationBranch: string; tipSha: string; taskTitle?: string;
+  includeTaskId: boolean; trailers: string[]; taskId: string; maxPasses: number;
+  mergeAgent: (cwd: string, prompt: string) => Promise<void>; reviewAgent: (cwd: string, prompt: string) => Promise<string>;
+  audit: RunAuditor; log: (message: string) => Promise<void>; setStatus: (status: string | null) => Promise<unknown>; store: TaskStore;
+  signal?: AbortSignal; initialPriorReasons?: string[];
 }): Promise<{ squashSha: string | null; priorReasons: string[] }> {
   const { mergeRoot, branch, integrationBranch, tipSha, taskTitle, includeTaskId, trailers, taskId, maxPasses, mergeAgent, reviewAgent, audit, log, setStatus, store, signal } = input;
-  let priorReasons = boundBlockingReviewReasons(input.initialPriorReasons ?? []);
-  // Only findings introduced by the immediately preceding review are actionable
-  // merger instructions; older findings remain reviewer-verification evidence.
-  let correctiveReasons: string[] = [];
-
-  for (let attempt = 0; ; attempt++) {
-    throwIfAborted(signal, taskId);
-    // Reset the clean room to the tip before each (re)merge so corrective passes
-    // start from a known-good base, not a half-resolved tree.
-    await git(["reset", "--hard", tipSha], mergeRoot);
-    await git(["clean", "-fd"], mergeRoot);
-
-    if (attempt > 0) {
-      await setStatus("merging");
-      await log(`AI merge: corrective re-merge (pass ${attempt}/${maxPasses}) addressing new findings: ${correctiveReasons.join("; ") || "reviewer reconciliation"}`);
-    }
-    const latestTaskForMergePrompt = await store.getTask(taskId);
-    const mergeUserComments = selectUserCommentsForAgentContext(latestTaskForMergePrompt);
-    await mergeAgent(mergeRoot, buildMergePrompt({
-      taskId, branch, integrationBranch, tipSha, taskTitle, includeTaskId, trailers,
-      correctiveReasons: correctiveReasons.length ? correctiveReasons : undefined,
-      userComments: mergeUserComments,
-    }));
-
-    let head = await git(["rev-parse", "HEAD"], mergeRoot);
-    const emptyMerge = head === tipSha;
-    if (emptyMerge && priorReasons.length === 0) return { squashSha: null, priorReasons }; // empty initial merge — nothing landed
-
-    // Guarantee the squash's task metadata (task-id subject prefix + board
-    // association trailers) even if the agent omitted it — this amends HEAD, so
-    // re-read the sha afterwards.
-    if (!emptyMerge) {
-      await ensureCommitTaskMetadata(mergeRoot, taskId, includeTaskId, trailers);
-      head = await git(["rev-parse", "HEAD"], mergeRoot);
-    }
-
-    await setStatus("reviewing");
-    const diffStat = await git(["diff", "--stat", `${tipSha}..${head}`], mergeRoot);
-    const latestTaskForReviewPrompt = await store.getTask(taskId);
-    const reviewUserComments = selectUserCommentsForAgentContext(latestTaskForReviewPrompt);
-    const verdict = parseReviewVerdict(await reviewAgent(mergeRoot, buildReviewPrompt({
-      taskId, branch, integrationBranch, tipSha, squashSha: head, diffStat, priorReasons,
-      userComments: reviewUserComments,
-    })));
-    await audit.git({
-      type: "merge:ai-review-verdict",
-      target: integrationBranch,
-      metadata: { taskId, attempt, verdict: verdict.verdict, severity: verdict.severity, reasons: verdict.reasons, squashSha: head },
+  const current = await store.getTask(taskId);
+  const sourceSha = await git(["rev-parse", "--verify", branch], mergeRoot);
+  let state: NonNullable<Task["aiMergeReviewReconciliation"]> | undefined = current?.aiMergeReviewReconciliation;
+  if (!state || state.sourceSha !== sourceSha || state.integrationTipSha !== tipSha) {
+    const legacy = boundBlockingReviewReasons(input.initialPriorReasons ?? []);
+    state = { sourceSha, integrationTipSha: tipSha, findings: legacy.map((text, index) => ({ id: `legacy-${index + 1}`, text, disposition: "pending" as const })), consecutiveCleanApprovals: 0, correctivePasses: 0 };
+  }
+  let needsMerge = !state.candidateSha;
+  let persistedState = current?.aiMergeReviewReconciliation;
+  const sameState = (left: Task["aiMergeReviewReconciliation"], right: Task["aiMergeReviewReconciliation"]): boolean => JSON.stringify(left) === JSON.stringify(right);
+  const persistState = async (expected: Task["aiMergeReviewReconciliation"], next: NonNullable<Task["aiMergeReviewReconciliation"]>): Promise<void> => {
+    await store.updateTaskAtomic(taskId, (live) => {
+      if (!sameState(live.aiMergeReviewReconciliation, expected)) throw new AiMergeReviewReconciliationInvalidatedError();
+      return { aiMergeReviewReconciliation: next };
     });
-
-    /*
-    FNXC:MergeReviewReconciliation 2026-08-20-02:02:
-    Review findings are a current squash-fidelity contract, not a permanent transcript.
-    A reviewer must explicitly acknowledge every supplied blocking finding before approval;
-    unknown acknowledgements are new findings, never silently discarded. Advisory findings
-    remain landable and are never carried into the next approval gate.
-    */
-    const priorKeys = new Set(priorReasons.map(normalizeBlockingReviewReason));
-    const acknowledgedKeys = new Set(
-      verdict.resolvedPriorReasons
-        .map(normalizeBlockingReviewReason)
-        .filter((key) => priorKeys.has(key)),
-    );
-    const unknownAcknowledgements = verdict.resolvedPriorReasons.filter(
-      (reason) => !priorKeys.has(normalizeBlockingReviewReason(reason)),
-    );
-    const retainedPriorReasons = priorReasons.filter(
-      (reason) => !acknowledgedKeys.has(normalizeBlockingReviewReason(reason)),
-    );
-    const acknowledgedReasonKeys = new Set(
-      verdict.resolvedPriorReasons
-        .filter((reason) => acknowledgedKeys.has(normalizeBlockingReviewReason(reason)))
-        .map(normalizeBlockingReviewReason),
-    );
-    const reportedNewReasons = verdict.reasons.filter(
-      (reason) => !acknowledgedReasonKeys.has(normalizeBlockingReviewReason(reason)),
-    );
-    const newReasons = verdict.verdict === "approve" || verdict.severity === "blocking"
-      ? [...reportedNewReasons, ...unknownAcknowledgements]
-      : [];
-    const unresolvedReasons = boundBlockingReviewReasons([...retainedPriorReasons, ...newReasons]);
-    const budgetExhausted = attempt >= maxPasses;
-
-    if (verdict.verdict === "approve" && unresolvedReasons.length === 0) {
-      await log(`AI merge review (pass ${attempt + 1}): approved squash ${head}`);
-      return { squashSha: emptyMerge ? null : head, priorReasons };
+    persistedState = next;
+  };
+  const assertCurrentEpisodeIdentity = async (): Promise<void> => {
+    const expectedState = state;
+    if (!expectedState) throw new AiMergeReviewReconciliationInvalidatedError();
+    const liveTask = await store.getTask(taskId);
+    const liveBranch = liveTask?.branch ?? branch;
+    const liveSourceSha = await git(["rev-parse", "--verify", liveBranch], mergeRoot);
+    const liveTipSha = await git(["rev-parse", "--verify", `refs/heads/${integrationBranch}`], mergeRoot);
+    if (
+      liveBranch !== branch
+      || liveSourceSha !== expectedState.sourceSha
+      || liveTipSha !== expectedState.integrationTipSha
+      || !sameState(liveTask?.aiMergeReviewReconciliation, expectedState)
+    ) {
+      await store.updateTaskAtomic(taskId, (currentTask) => {
+        if (!sameState(currentTask.aiMergeReviewReconciliation, expectedState)) return undefined;
+        return { aiMergeReviewReconciliation: null, mergeRetries: undefined };
+      });
+      throw new AiMergeReviewReconciliationInvalidatedError();
     }
-
-    if (budgetExhausted && (verdict.severity === "blocking" || unresolvedReasons.length > 0)) {
-      await audit.git({ type: "merge:ai-review-blocked", target: integrationBranch, metadata: { taskId, attempt, reasons: unresolvedReasons } });
-      await log(`AI merge BLOCKED after ${attempt} corrective pass(es) — unresolved correctness concern: ${unresolvedReasons.join("; ")}`);
-      throw new AiMergeBlockedError(taskId, unresolvedReasons);
+  };
+  while (true) {
+    throwIfAborted(signal, taskId);
+    const actionable = state.findings.filter((finding) => finding.disposition === "still-present");
+    if (needsMerge) {
+      if (state.correctivePasses > 0 && actionable.length === 0) {
+        throw new AiMergeBlockedError(taskId, ["review reconciliation has no actionable finding"]);
+      }
+      await git(["reset", "--hard", tipSha], mergeRoot); await git(["clean", "-fd"], mergeRoot);
+      if (state.correctivePasses > 0) {
+        await setStatus("merging");
+        await log(`AI merge: corrective re-merge (pass ${state.correctivePasses}/${maxPasses}) addressing findings: ${actionable.map((finding) => finding.text).join("; ")}`);
+      }
+      const task = await store.getTask(taskId);
+      await mergeAgent(mergeRoot, buildMergePrompt({ taskId, branch, integrationBranch, tipSha, taskTitle, includeTaskId, trailers, correctiveReasons: actionable.map((finding) => `[${finding.id}] ${finding.text}`), userComments: selectUserCommentsForAgentContext(task) }));
+      let candidateSha = await git(["rev-parse", "HEAD"], mergeRoot);
+      if (candidateSha === tipSha && state.findings.length === 0) return { squashSha: null, priorReasons: [] };
+      if (candidateSha !== tipSha) { await ensureCommitTaskMetadata(mergeRoot, taskId, includeTaskId, trailers); candidateSha = await git(["rev-parse", "HEAD"], mergeRoot); }
+      state = { ...state, candidateSha, candidateTreeSha: await git(["rev-parse", `${candidateSha}^{tree}`], mergeRoot), consecutiveCleanApprovals: 0 };
+      await persistState(persistedState, state);
+      needsMerge = false;
     }
-    if (budgetExhausted) {
-      // Advisory: land the squash with the concern logged, without poisoning the next pass.
-      await audit.git({ type: "merge:ai-review-landed-with-concerns", target: integrationBranch, metadata: { taskId, attempt, reasons: reportedNewReasons, squashSha: head } });
-      await log(`AI merge: landing with unresolved advisory concern(s): ${reportedNewReasons.join("; ")}`);
-      return { squashSha: emptyMerge ? null : head, priorReasons: [] };
+    const candidateSha = state.candidateSha!;
+    await assertCurrentEpisodeIdentity();
+    await setStatus("reviewing");
+    const diffStat = await git(["diff", "--stat", `${tipSha}..${candidateSha}`], mergeRoot);
+    const task = await store.getTask(taskId);
+    const activePriorFindings = state.findings.filter((finding) => finding.disposition === "pending" || finding.disposition === "still-present");
+    const verdict = parseReviewVerdict(await reviewAgent(mergeRoot, buildReviewPrompt({ taskId, branch, integrationBranch, tipSha, squashSha: candidateSha, diffStat, priorReasons: activePriorFindings.map((finding) => finding.text), priorFindings: activePriorFindings.map((finding) => ({ id: finding.id, text: finding.text })), userComments: selectUserCommentsForAgentContext(task) })));
+    // A review response can arrive after an operator dismisses its finding or pushes a new source.
+    await assertCurrentEpisodeIdentity();
+    const ids = new Set(state.findings.map((finding) => finding.id));
+    const seen = new Set<string>();
+    const invalidAcknowledgement = (verdict.priorFindingDispositions ?? []).some(({ id }) => !ids.has(id) || seen.has(id) || !seen.add(id));
+    const dispositions = new Map((verdict.priorFindingDispositions ?? []).map((entry) => [entry.id, entry.disposition]));
+    const findings: NonNullable<Task["aiMergeReviewReconciliation"]>["findings"] = state.findings.map((finding) => {
+      const disposition = dispositions.get(finding.id);
+      return disposition === "corrected" || disposition === "absent-from-squash" ? { ...finding, disposition } : disposition === "still-present" ? { ...finding, disposition } : finding;
+    });
+    const newFindings = verdict.verdict === "reject" && verdict.severity !== "advisory" ? boundBlockingReviewReasons(verdict.reasons).map((text, index) => ({ id: `finding-${state!.correctivePasses + 1}-${index + 1}`, text, disposition: "still-present" as const })) : [];
+    state = { ...state, findings: [...findings, ...newFindings] };
+    const stillPresent: NonNullable<Task["aiMergeReviewReconciliation"]>["findings"] = state.findings.filter((finding) => finding.disposition === "still-present");
+    const clean = verdict.verdict === "approve" && !invalidAcknowledgement && stillPresent.length === 0;
+    await audit.git({ type: "merge:ai-review-verdict", target: integrationBranch, metadata: { taskId, verdict: verdict.verdict, severity: verdict.severity, squashSha: candidateSha } });
+    if (verdict.verdict === "approve") {
+      const unconfirmed = state.findings.filter((finding) => finding.disposition === "pending").length;
+      state = { ...state, consecutiveCleanApprovals: clean ? state.consecutiveCleanApprovals + 1 : 0 };
+      await persistState(persistedState, state);
+      await log(clean ? `AI merge review: approved${unconfirmed ? ` — ${unconfirmed} prior finding(s) unconfirmed` : ""} squash ${candidateSha}` : `AI merge review: approved — reconciliation acknowledgement invalid`);
+      if (clean && state.consecutiveCleanApprovals >= 2) {
+        await assertCurrentEpisodeIdentity();
+        return { squashSha: candidateSha === tipSha ? null : candidateSha, priorReasons: [] };
+      }
+      if (clean) continue; // direct confirmation review of exactly the same candidate; no merge agent and no budget spend.
     }
-
-    priorReasons = unresolvedReasons;
-    correctiveReasons = boundBlockingReviewReasons(newReasons);
-    await log(`AI merge review (pass ${attempt + 1}): rejected (${verdict.severity ?? "blocking"}) — ${unresolvedReasons.join("; ")}`);
+    if (verdict.verdict === "reject" && verdict.severity === "advisory" && stillPresent.length === 0) {
+      await log(`AI merge: landing with unresolved advisory concern(s): ${verdict.reasons.join("; ")}`);
+      return { squashSha: candidateSha === tipSha ? null : candidateSha, priorReasons: [] };
+    }
+    if (stillPresent.length === 0) {
+      state = { ...state, terminal: true }; await persistState(persistedState, state);
+      throw new AiMergeBlockedError(taskId, ["review acknowledgement is malformed or non-actionable"]);
+    }
+    if (state.correctivePasses >= maxPasses) {
+      state = { ...state, terminal: true }; await persistState(persistedState, state);
+      await log(`AI merge BLOCKED after ${state.correctivePasses} corrective pass(es) — candidate ${candidateSha}: ${stillPresent.map((finding) => finding.text).join("; ")}`);
+      throw new AiMergeBlockedError(taskId, stillPresent.map((finding) => finding.text));
+    }
+    state = { ...state, correctivePasses: state.correctivePasses + 1, consecutiveCleanApprovals: 0 };
+    await persistState(persistedState, state);
+    needsMerge = true;
   }
 }
 

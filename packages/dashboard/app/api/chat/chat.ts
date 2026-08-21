@@ -446,9 +446,10 @@ export function clearChatRoomMessages(
 
 /**
  * Cancel an in-flight chat generation and await its durable interrupted-message result.
- * FNXC:ChatCancellation 2026-08-18-21:55:
+ * FNXC:ChatCancellation 2026-08-21-01:36:
  * Stop callers need the persisted assistant prefix before they reconcile the thread or
- * release a queued follow-up; the server response is the cancellation barrier.
+ * release a queued follow-up; `/new` and `/clear` also use this barrier while idle, where a
+ * successful no-op confirms there was no interrupted response to persist.
  */
 export function cancelChatResponse(
   sessionId: string,

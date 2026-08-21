@@ -867,6 +867,23 @@ export function ProjectModelsSection({ form, setForm, models, projectId, onOpenW
         }))}
       />
 
+      {/*
+      FNXC:TitleSummarization 2026-08-20-20:19:
+      The automatic title policy belongs immediately beside its task-language selector so operators
+      can see that every enabled create snapshots this language for title generation. Keep this
+      project form row outside the model guard: availability of a model must not hide the policy.
+      */}
+      <SettingsToggleRow
+        descriptor={{
+          key: "autoSummarizeTitles",
+          label: t("settings.projectModels.autoSummarizeLongDescriptionsAsTitles", " Auto-summarize task titles "),
+          help: t("settings.projectModels.whenEnabledTasksCreatedWithoutATitleBut", " When enabled, every non-empty task description created without a title receives an AI-generated title (max 60 characters). Explicit titles are preserved, and manual or explicit force requests remain available when this is disabled. The same model is also used for merge commit summaries and GitHub tracking issue titles. Default: disabled. "),
+          scope: "project",
+        }}
+        value={form.autoSummarizeTitles || false}
+        onChange={(v) => setForm((f) => ({ ...f, autoSummarizeTitles: v === true }))}
+      />
+
       {/* --- AI Title and Git Commit Message Summarization --- */}
       <section data-testid="project-models-ai-summarization">
         {/*
@@ -905,26 +922,6 @@ export function ProjectModelsSection({ form, setForm, models, projectId, onOpenW
               </div>
             </div>
           </>)}
-        {/*
-        FNXC:SettingsSearch 2026-07-15-17:35:
-        This is the row operators searched "summarize" for and could not find (FN-7907, patched again 2026-07-14). It is now indexed by descriptor key from ProjectModelsSection.search.ts, so the word in its own label is what search matches — no hand-maintained keyword list to fall behind again.
-        */}
-        <SettingsToggleRow
-          descriptor={{
-            key: "autoSummarizeTitles",
-            /*
-            FNXC:TitleSummarization 2026-08-19-13:43:
-            The project toggle describes the all-length automatic policy. Keep explicit titles and
-            manual/force requests as separate precedence paths rather than implying this toggle is a permission gate.
-            */
-            label: t("settings.projectModels.autoSummarizeLongDescriptionsAsTitles", " Auto-summarize task titles "),
-            help: t("settings.projectModels.whenEnabledTasksCreatedWithoutATitleBut", " When enabled, every non-empty task description created without a title receives an AI-generated title (max 60 characters). Explicit titles are preserved, and manual or explicit force requests remain available when this is disabled. The same model is also used for merge commit summaries and GitHub tracking issue titles. Default: disabled. "),
-            scope: "project",
-          }}
-          value={form.autoSummarizeTitles || false}
-          onChange={(v) => setForm((f) => ({ ...f, autoSummarizeTitles: v === true }))}
-        />
-
         <SettingsToggleRow
           descriptor={{
             key: "useAiMergeCommitSummary",

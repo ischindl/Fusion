@@ -1,13 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
 import { UpdateAvailableBanner } from "../UpdateAvailableBanner";
+import { __test_resetSystemRestartRecovery } from "../../hooks/useSystemRestartRecovery";
 
+const mockFetchDashboardHealth = vi.hoisted(() => vi.fn());
 const mockFetchSystemInfo = vi.hoisted(() => vi.fn());
 const mockInstallUpdate = vi.hoisted(() => vi.fn());
 const mockRequestSystemRestart = vi.hoisted(() => vi.fn());
 
 vi.mock("../../api", () => ({
+  fetchDashboardHealth: (...args: unknown[]) => mockFetchDashboardHealth(...args),
   fetchSystemInfo: (...args: unknown[]) => mockFetchSystemInfo(...args),
   installUpdate: (...args: unknown[]) => mockInstallUpdate(...args),
   requestSystemRestart: (...args: unknown[]) => mockRequestSystemRestart(...args),
@@ -34,6 +37,9 @@ async function completeInstall() {
 
 describe("UpdateAvailableBanner", () => {
   beforeEach(() => {
+    __test_resetSystemRestartRecovery();
+    mockFetchDashboardHealth.mockReset();
+    mockFetchDashboardHealth.mockResolvedValue({ version: "not-ready", status: "starting", holding: true });
     mockFetchSystemInfo.mockReset();
     mockInstallUpdate.mockReset();
     mockRequestSystemRestart.mockReset();
@@ -111,6 +117,57 @@ describe("UpdateAvailableBanner", () => {
 
     await waitFor(() => expect(mockRequestSystemRestart).toHaveBeenCalledWith("update-banner"));
     expect(await screen.findByText("Restarting… Your connection will close shortly.")).toBeInTheDocument();
+  });
+
+  it("ignores old, unavailable, and holding hosts before banner recovery reloads the installed beta", async () => {
+    vi.useFakeTimers();
+    const reload = vi.fn();
+    vi.stubGlobal("location", { reload });
+    mockFetchSystemInfo
+      .mockResolvedValueOnce({ restartSupported: true, pid: 10 })
+      .mockResolvedValueOnce({ pid: 10 })
+      .mockResolvedValueOnce({ pid: 11 })
+      .mockResolvedValueOnce({ pid: 12 })
+      .mockResolvedValueOnce({ pid: 13 });
+    mockFetchDashboardHealth
+      .mockResolvedValueOnce({ version: "0.77.0-beta.2", status: "ok" })
+      .mockRejectedValueOnce(new Error("host is restarting"))
+      .mockResolvedValueOnce({ version: "0.77.0-beta.4", status: "starting", holding: true })
+      .mockResolvedValueOnce({ version: "0.77.0-beta.4", status: "degraded", holding: false });
+    mockInstallUpdate.mockResolvedValueOnce({ currentVersion: "0.77.0-beta.2", latestVersion: "0.77.0-beta.4", updated: true, outcome: "installed" });
+
+    render(<UpdateAvailableBanner latestVersion="0.77.0-beta.4" currentVersion="0.77.0-beta.2" onDismiss={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Update now" }));
+    await act(async () => { await Promise.resolve(); });
+    fireEvent.click(screen.getByRole("button", { name: "Restart Fusion" }));
+    await act(async () => { await Promise.resolve(); });
+
+    expect(screen.getByText("Restarting… Your connection will close shortly.")).toBeInTheDocument();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+
+    expect(screen.getByText("Fusion v0.77.0-beta.4 is back online — reloading…")).toBeInTheDocument();
+    expect(reload).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("shows the replacement beta version and reloads after banner-triggered recovery", async () => {
+    const reload = vi.fn();
+    vi.stubGlobal("location", { reload });
+    mockFetchSystemInfo.mockResolvedValueOnce({ restartSupported: true, pid: 20 }).mockResolvedValueOnce({ pid: 21 });
+    mockFetchDashboardHealth.mockResolvedValueOnce({ version: "0.77.0-beta.4", status: "degraded", holding: false });
+    mockInstallUpdate.mockResolvedValueOnce({ currentVersion: "0.77.0-beta.2", latestVersion: "0.77.0-beta.4", updated: true, outcome: "installed" });
+
+    render(<UpdateAvailableBanner latestVersion="0.77.0-beta.4" currentVersion="0.77.0-beta.2" onDismiss={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Update now" }));
+    await screen.findByRole("button", { name: "Restart Fusion" });
+    fireEvent.click(screen.getByRole("button", { name: "Restart Fusion" }));
+
+    expect(await screen.findByText("Fusion v0.77.0-beta.4 is back online — reloading…")).toBeInTheDocument();
+    expect(reload).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
   });
 
   /*

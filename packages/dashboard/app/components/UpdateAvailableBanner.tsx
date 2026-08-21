@@ -5,6 +5,7 @@ import { useTranslation, Trans } from "react-i18next";
 import { getErrorMessage } from "@fusion/core";
 import { fetchSystemInfo, installUpdate, requestSystemRestart } from "../api";
 import type { UpdateInstallResponse } from "../api";
+import { systemRestartRecovery, useSystemRestartRecovery } from "../hooks/useSystemRestartRecovery";
 
 interface UpdateAvailableBannerProps {
   latestVersion: string;
@@ -17,16 +18,21 @@ export function UpdateAvailableBanner({ latestVersion, currentVersion, onDismiss
   const [installLoading, setInstallLoading] = useState(false);
   const [installResult, setInstallResult] = useState<UpdateInstallResponse | null>(null);
   const [restartSupported, setRestartSupported] = useState<boolean | undefined>();
+  const [priorPid, setPriorPid] = useState<number | undefined>();
   const [restartLoading, setRestartLoading] = useState(false);
   const [restartScheduled, setRestartScheduled] = useState(false);
   const [restartError, setRestartError] = useState<string | null>(null);
+  const recovery = useSystemRestartRecovery();
 
   useEffect(() => {
     let active = true;
 
     void fetchSystemInfo()
       .then((info) => {
-        if (active) setRestartSupported(info.restartSupported);
+        if (active) {
+          setRestartSupported(info.restartSupported);
+          setPriorPid(info.pid);
+        }
       })
       .catch(() => {
         // Fail closed: an unavailable capability response must not offer a restart that cannot run.
@@ -43,7 +49,12 @@ export function UpdateAvailableBanner({ latestVersion, currentVersion, onDismiss
     setInstallResult(null);
 
     try {
-      setInstallResult(await installUpdate());
+      const result = await installUpdate();
+      setInstallResult(result);
+      if (result.restartScheduled && result.latestVersion) {
+        setRestartScheduled(true);
+        systemRestartRecovery.arm(result.latestVersion, result.priorPid ?? priorPid);
+      }
     } catch (error) {
       setInstallResult({
         currentVersion,
@@ -76,6 +87,7 @@ export function UpdateAvailableBanner({ latestVersion, currentVersion, onDismiss
       const result = await requestSystemRestart("update-banner");
       if (result.scheduled) {
         setRestartScheduled(true);
+        if (installResult?.latestVersion ?? latestVersion) systemRestartRecovery.arm(installResult?.latestVersion ?? latestVersion, priorPid);
       } else {
         setRestartError(t("updateBanner.restartFailed", "Restart could not be scheduled. Try restarting Fusion manually."));
       }
@@ -126,9 +138,20 @@ export function UpdateAvailableBanner({ latestVersion, currentVersion, onDismiss
                 })}
               </span>
               {restartScheduled ? (
-                <span className="update-available-banner__install-status" aria-live="polite">
-                  {t("updateBanner.restarting", "Restarting… Your connection will close shortly.")}
-                </span>
+                <>
+                  <span className="update-available-banner__install-status" aria-live="polite">
+                    {recovery.phase === "back"
+                      ? t("updateBanner.backOnline", "Fusion v{{version}} is back online — reloading…", { version: recovery.version })
+                      : recovery.phase === "timeout"
+                        ? t("updateBanner.restartTimedOut", "Fusion did not return in time. Refresh when it is back online.")
+                        : t("updateBanner.restarting", "Restarting… Your connection will close shortly.")}
+                  </span>
+                  {recovery.phase === "timeout" && (
+                    <button type="button" className="btn btn-sm update-available-banner__restart-btn" onClick={() => systemRestartRecovery.retry()}>
+                      {t("updateBanner.retryRestart", "Retry readiness check")}
+                    </button>
+                  )}
+                </>
               ) : (
                 <button
                   type="button"

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { act, render, screen, fireEvent, waitFor, within, cleanup } from "@testing-library/react";
 import path from "path";
 import { SettingsModal } from "../SettingsModal";
+import { __test_resetSystemRestartRecovery, systemRestartRecovery } from "../../hooks/useSystemRestartRecovery";
 import { ModalDismissPreferenceProvider } from "../../hooks/useOverlayDismiss";
 import {
   mockFetchSettings,
@@ -429,6 +430,44 @@ describe("SettingsModal", () => {
       expect(restartButton).toHaveAccessibleName("Restart Fusion");
       expect(restartButton.closest(".settings-update-install-succeeded")).toBeInTheDocument();
       expect(settingsModalCss).toMatch(/\.settings-modal \.settings-update-check\s*\{[^}]*flex-wrap: wrap;/s);
+    });
+
+    it("ignores old, unavailable, and holding hosts before Settings recovery reloads the installed beta", async () => {
+      __test_resetSystemRestartRecovery();
+      const reload = vi.fn();
+      vi.stubGlobal("location", { reload });
+      mockCheckForUpdates.mockResolvedValue({ currentVersion: "0.77.0-beta.2", latestVersion: "0.77.0-beta.4", updateAvailable: true });
+      mockInstallUpdate.mockResolvedValue({ currentVersion: "0.77.0-beta.2", latestVersion: "0.77.0-beta.4", updated: true, outcome: "installed" });
+      mockFetchSystemInfo
+        .mockResolvedValueOnce({ supervised: true, restartSupported: true, pid: 10 })
+        .mockResolvedValueOnce({ pid: 10 })
+        .mockResolvedValueOnce({ pid: 11 })
+        .mockResolvedValueOnce({ pid: 12 })
+        .mockResolvedValueOnce({ pid: 13 });
+      mockFetchDashboardHealth
+        .mockResolvedValueOnce({ version: "0.77.0-beta.2", status: "ok" })
+        .mockRejectedValueOnce(new Error("host is restarting"))
+        .mockResolvedValueOnce({ version: "0.77.0-beta.4", status: "migrating", holding: true })
+        .mockResolvedValueOnce({ version: "0.77.0-beta.4", status: "degraded", holding: false });
+
+      renderModal();
+      await waitForSettingsModalReady();
+      await settingsModalUser.click(screen.getByRole("button", { name: "Check for updates" }));
+      await settingsModalUser.click(await screen.findByRole("button", { name: "Update now" }));
+      await screen.findByRole("button", { name: "Restart Fusion" });
+      vi.useFakeTimers();
+      fireEvent.click(screen.getByRole("button", { name: "Restart Fusion" }));
+      await act(async () => { await Promise.resolve(); });
+
+      expect(screen.getByText("Restarting… Your connection will close shortly.")).toBeInTheDocument();
+      await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+
+      expect(screen.getByText("Fusion v0.77.0-beta.4 is back online — reloading…")).toBeInTheDocument();
+      expect(reload).toHaveBeenCalledTimes(1);
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
     });
 
     it("requests the supervised restart with the Settings update reason", async () => {

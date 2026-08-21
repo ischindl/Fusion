@@ -204,8 +204,6 @@ export interface MainContentProps {
   openGroupModalWithNav: (groupId: string) => void;
   handleBoardQuickCreate: (input: TaskCreateInput) => Promise<Task>;
   openNewTaskWithNav: (workflowId?: string | null) => void;
-  subtaskBreakdownEnabled: boolean;
-  openSubtaskBreakdownWithNav: (description: string, workflowId?: string | null) => void;
   toggleAutoMerge: () => Promise<void>;
   togglePlanAutoApprove: () => Promise<void>;
   globalPaused: boolean;

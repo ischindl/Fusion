@@ -132,17 +132,20 @@ describe("groupByWorktree", () => {
     expect(groups.find((group) => group.kind === "unassigned")).toBeUndefined();
   });
 
-  it("uses a workspace group for a single acquired repo", () => {
+  it("uses a workspace group for a single acquired repo despite stale singular routing", () => {
     const workspaceTask = makeTask({
       id: "FN-9044",
+      worktree: "/ws/unrelated/.worktrees/stale-worktree",
       workspaceWorktrees: {
         "repo-a": { worktreePath: "/ws/repo-a/.worktrees/FN-9044", branch: "fusion/FN-9044" },
       },
     });
 
-    expect(groupByWorktree([workspaceTask], [workspaceTask], 2)[0]).toMatchObject({
-      kind: "workspace", repoCount: 1, label: "FN-9044",
-    });
+    const groups = groupByWorktree([workspaceTask], [workspaceTask], 2);
+    expect(groups).toEqual([expect.objectContaining({
+      id: "workspace:FN-9044", kind: "workspace", repoCount: 1, label: "FN-9044",
+    })]);
+    expect(groups.some((group) => group.label === "stale-worktree" || group.kind === "unassigned")).toBe(false);
   });
 
   it("keeps tasks without acquired workspace worktrees unassigned", () => {
@@ -156,17 +159,18 @@ describe("groupByWorktree", () => {
     })]);
   });
 
-  it("prefers a singular worktree for transient rows that contain both shapes", () => {
-    const transient = makeTask({
+  it("derives a multi-repository workspace label from the sorted acquired entries, never stale routing", () => {
+    const workspaceTask = makeTask({
       id: "FN-transient",
-      worktree: "/ws/.worktrees/single-worktree",
+      worktree: "/ws/.worktrees/unrelated-stale-worktree",
       workspaceWorktrees: {
-        "repo-a": { worktreePath: "/ws/repo-a/.worktrees/FN-transient", branch: "fusion/FN-transient" },
+        "repo-z": { worktreePath: "/ws/repo-z/.worktrees/acquired-z", branch: "fusion/FN-transient" },
+        "repo-a": { worktreePath: "/ws/repo-a/.worktrees/acquired-a", branch: "fusion/FN-transient" },
       },
     });
 
-    expect(groupByWorktree([transient], [transient], 2)).toEqual([expect.objectContaining({
-      id: "/ws/.worktrees/single-worktree", kind: "worktree", label: "single-worktree",
+    expect(groupByWorktree([workspaceTask], [workspaceTask], 2)).toEqual([expect.objectContaining({
+      id: "workspace:FN-transient", kind: "workspace", label: "acquired-a", repoCount: 2,
     })]);
   });
 

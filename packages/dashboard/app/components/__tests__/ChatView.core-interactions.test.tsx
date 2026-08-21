@@ -420,15 +420,16 @@ describe("ChatView core interactions", () => {
   });
 
   describe("agent mentions", () => {
-    it("shows mention popup when @ is typed", async () => {
+    it("opens direct-chat mention popup above the composer when @ is typed", async () => {
       setupMockChat({ activeSession: activeSessionFixture, messages: [] });
 
       await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
 
+      await userEvent.click(screen.getByTestId("chat-session-session-001"));
       const textarea = screen.getByTestId("chat-input");
       await userEvent.type(textarea, "@");
 
-      expect(await screen.findByTestId("agent-mention-popup")).toBeInTheDocument();
+      expect(await screen.findByTestId("agent-mention-popup")).toHaveClass("agent-mention-popup--above");
     });
 
     it("filters mention popup by text after @", async () => {
@@ -436,6 +437,7 @@ describe("ChatView core interactions", () => {
 
       await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
 
+      await userEvent.click(screen.getByTestId("chat-session-session-001"));
       const textarea = screen.getByTestId("chat-input");
       await userEvent.type(textarea, "@be");
 
@@ -448,6 +450,7 @@ describe("ChatView core interactions", () => {
 
       await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
 
+      await userEvent.click(screen.getByTestId("chat-session-session-001"));
       const textarea = screen.getByTestId("chat-input");
       await userEvent.type(textarea, "@");
       expect(await screen.findByTestId("agent-mention-popup")).toBeInTheDocument();
@@ -461,6 +464,7 @@ describe("ChatView core interactions", () => {
 
       await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
 
+      await userEvent.click(screen.getByTestId("chat-session-session-001"));
       const textarea = screen.getByTestId("chat-input") as HTMLTextAreaElement;
       await userEvent.type(textarea, "@al");
 
@@ -473,16 +477,18 @@ describe("ChatView core interactions", () => {
 
     it("uses room member ordering in popup and marks non-member mention chips in room messages", async () => {
       setupMockChat({ activeSession: activeSessionFixture, messages: [] });
+      const activeRoom = {
+        id: "room-001",
+        slug: "engineering",
+        name: "engineering",
+        createdBy: "agent-001",
+        status: "active" as const,
+        createdAt: "2026-04-08T00:00:00.000Z",
+        updatedAt: "2026-04-08T00:00:00.000Z",
+      };
       setupMockRooms({
-        activeRoom: {
-          id: "room-001",
-          slug: "engineering",
-          name: "engineering",
-          createdBy: "agent-001",
-          status: "active",
-          createdAt: "2026-04-08T00:00:00.000Z",
-          updatedAt: "2026-04-08T00:00:00.000Z",
-        },
+        rooms: [activeRoom],
+        activeRoom,
         activeRoomMembers: [
           { roomId: "room-001", agentId: "agent-001", role: "member", addedAt: "2026-04-08T00:00:00.000Z" },
         ],
@@ -510,9 +516,11 @@ describe("ChatView core interactions", () => {
 
       const user = userEvent.setup({ delay: null });
       await user.click(screen.getByTestId("chat-sidebar-scope-rooms"));
+      await user.click(screen.getByTestId("chat-room-item-engineering"));
       const textarea = screen.getByTestId("chat-input");
       await user.type(textarea, "@");
 
+      expect(await screen.findByTestId("agent-mention-popup")).toHaveClass("agent-mention-popup--above");
       expect(screen.getByTestId("agent-mention-members-header")).toBeInTheDocument();
       expect(screen.queryByTestId("agent-mention-others-header")).not.toBeInTheDocument();
 
@@ -545,6 +553,7 @@ describe("ChatView core interactions", () => {
 
       await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
 
+      await userEvent.click(screen.getByTestId("chat-session-session-001"));
       await waitFor(() => {
         expect(screen.getByText(/Talk to @Alpha and @Unknown next\./)).toBeInTheDocument();
       });
@@ -1546,7 +1555,7 @@ describe("ChatView core interactions", () => {
     expect(within(sessionItem).getByText("my-custom-agent")).toBeInTheDocument();
   });
 
-  it("shows formatted model name in thread header title for fn agent sessions", async () => {
+  it("shows the saved title before model metadata for model-backed fn agent sessions", async () => {
     setupMockChat({
       activeSession: {
         id: "session-001",
@@ -1566,8 +1575,65 @@ describe("ChatView core interactions", () => {
 
     const title = document.querySelector(".chat-thread-header-title") as HTMLElement | null;
     expect(title).toBeInTheDocument();
-    expect(title).toHaveTextContent("Claude Sonnet 4.5");
-    expect(title).not.toHaveTextContent("Fusion");
+    expect(title).toHaveTextContent("Test Chat");
+    expect(title).not.toHaveTextContent("Claude Sonnet 4.5");
+  });
+
+  it("keeps a long saved title in the truncating title slot", async () => {
+    const longTitle = "A deliberately long saved conversation title that must remain the direct-thread identity";
+    setupMockChat({
+      activeSession: {
+        id: "session-001",
+        agentId: "__fn_agent__",
+        status: "active",
+        title: longTitle,
+        modelProvider: "anthropic",
+        modelId: "claude-sonnet-4-5",
+        createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z",
+      },
+      messages: [{ id: "msg-001", sessionId: "session-001", role: "assistant", content: "Hi!", createdAt: "2026-04-08T00:00:00.000Z" }],
+    });
+
+    await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+
+    const title = document.querySelector(".chat-thread-header-title") as HTMLElement;
+    expect(title).toHaveTextContent(longTitle);
+    expect(title).toHaveAttribute("title", longTitle);
+    expect(title).toHaveClass("chat-thread-header-title");
+    const allCss = await loadAllAppCss();
+    expect(allCss).toMatch(/\.chat-thread-header-title\s*\{[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/);
+  });
+
+  it("uses a stable non-model fallback for titleless direct sessions", async () => {
+    setupMockChat({
+      activeSession: {
+        id: "session-001",
+        agentId: "__fn_agent__",
+        status: "active",
+        title: "",
+        modelProvider: "anthropic",
+        modelId: "claude-sonnet-4-5",
+        createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z",
+      },
+      messages: [{ id: "msg-001", sessionId: "session-001", role: "assistant", content: "Hi!", createdAt: "2026-04-08T00:00:00.000Z" }],
+    });
+
+    await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+
+    expect(document.querySelector(".chat-thread-header-title")).toHaveTextContent("Untitled conversation");
+    expect(document.querySelector(".chat-thread-header-title")).not.toHaveTextContent("Claude Sonnet 4.5");
+  });
+
+  it("keeps equal saved titles bound to their selected session", async () => {
+    const duplicateTitle = "Duplicate title";
+    const selected = { id: "session-001", agentId: "agent-001", status: "active" as const, title: duplicateTitle, createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" };
+    const duplicate = { ...selected, id: "session-002" };
+    setupMockChat({ activeSession: selected, sessions: [selected, duplicate], filteredSessions: [selected, duplicate] });
+
+    await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+
+    expect(screen.getAllByText(duplicateTitle)).toHaveLength(3);
+    expect(document.querySelector(".chat-thread-header-title")).toHaveTextContent(duplicateTitle);
   });
 
   it("shows model tag in thread header when non-fn session has model", async () => {
@@ -1613,10 +1679,10 @@ describe("ChatView core interactions", () => {
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
 
     const title = document.querySelector(".chat-thread-header-title") as HTMLElement | null;
-    expect(title).toHaveTextContent("Claude Sonnet 4.5");
+    expect(title).toHaveTextContent("Test Chat");
 
     const headerModelTag = document.querySelector(".chat-thread-header .chat-model-tag") as HTMLElement | null;
-    expect(headerModelTag).toBeNull();
+    expect(headerModelTag).toHaveTextContent("Claude Sonnet 4.5");
   });
 
   // FNXC:ChatRenderToggle 2026-07-04-00:00: the render toggle previously

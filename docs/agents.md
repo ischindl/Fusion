@@ -1723,6 +1723,14 @@ Seven coordination tools support spawning, provisioning, discovery, delegation, 
 - `delegate_task` — Create + assign task to a specific agent. Implementation tasks require executor-role target unless `override: true`. Cannot target ephemeral agents (use `spawn_agent`).
 - `get_agent_config` / `update_agent_config` — Read/write soul, instructions, heartbeat interval/timeout, max concurrent runs, message response mode. **Authorization**: caller can only act on agents where `target.reportsTo === caller.id`. Cannot operate on ephemeral agents.
 
+## Workspace repository scope tools
+
+`fn_task_create` accepts an optional `repository_scope` list for an explicit operator-selected workspace scope. Omit it only when the planner will confirm the proposed scope in `## Repository Scope` of the task plan; a workspace plan without a valid non-empty heading is rejected before it is persisted.
+
+`fn_acquire_repo_worktree` acquires a configured member checkout; it does not make that member task intent merely by acquiring it. When the member is outside the current pre-land scope, provide a reason: Fusion records one accepted scope-extension history entry so later review and landing can include that member deliberately. An acquisition after review or landing has started is refused with follow-up-task guidance.
+
+For workspace tasks, `fn_task_file_scope_add` must use qualified paths such as `repo-a/src/file.ts`. A relative entry is only unambiguous when the task has one active repository; never use an unqualified path to imply every acquired workspace repository.
+
 ## Checkout leasing
 
 - 409 Conflict = ownership contention. Response: `{ error, currentHolder, taskId }`. **Never auto-retry 409.**

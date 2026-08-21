@@ -2527,6 +2527,43 @@ describe("useChat", () => {
     expect(result.current.messages.some((message) => message.failureInfo)).toBe(false);
   });
 
+  it("keeps the interrupted prefix and reports a real cancellation durability failure", async () => {
+    const session = makeSession({ id: "session-001", agentId: "agent-001" });
+    const addToast = vi.fn();
+    mockFetchChatSessions.mockResolvedValueOnce({ sessions: [session] });
+    mockFetchChatMessages.mockResolvedValue({ messages: [] });
+    const cancellation = createDeferredPromise<{ success: boolean; interrupted: boolean }>();
+    mockCancelChatResponse.mockReturnValue(cancellation.promise);
+
+    let streamHandlers: StreamAppendHandlers | undefined;
+    mockStreamChatResponse.mockImplementation((_sessionId, _content, handlers) => {
+      streamHandlers = handlers as StreamAppendHandlers;
+      return { close: vi.fn(), isConnected: () => true };
+    });
+
+    const { result } = renderHook(() => useChat("proj-123", addToast));
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    act(() => result.current.selectSession("session-001"));
+    await waitFor(() => expect(result.current.activeSession?.id).toBe("session-001"));
+    act(() => result.current.sendMessage("Hello"));
+    await waitFor(() => expect(result.current.isStreaming).toBe(true));
+    act(() => streamHandlers?.onText("Durable recovery prefix"));
+    await waitFor(() => expect(result.current.streamingText).toBe("Durable recovery prefix"));
+
+    act(() => { void result.current.stopStreaming(); });
+    await waitFor(() => expect(result.current.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "assistant", content: "Durable recovery prefix" }),
+    ])));
+    cancellation.resolve({ success: false, interrupted: false });
+    await waitFor(() => expect(addToast).toHaveBeenCalledWith(
+      "Failed to save the interrupted response; it remains visible for recovery.",
+      "error",
+    ));
+    expect(result.current.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "assistant", content: "Durable recovery prefix" }),
+    ]));
+  });
+
   it("retains the optimistic interrupted prefix when history has no matching durable row", async () => {
     const session = makeSession({ id: "session-001", agentId: "agent-001" });
     mockFetchChatSessions.mockResolvedValueOnce({ sessions: [session] });

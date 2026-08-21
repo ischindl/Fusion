@@ -1,7 +1,8 @@
-import { resolveGlobalDir } from "@fusion/core";
+import { resolveGlobalDir, resolveUpdateAutomationSettings } from "@fusion/core";
 import type { UpdateChannel } from "@fusion/core";
 import { performUpdateCheck, performUpdateInstall } from "./update-check.js";
 import type { UpdateCheckResult, UpdateInstallResult } from "./update-check.js";
+import { UpdateInstallCoordinator, processUpdateInstallCoordinator } from "./update-install-coordinator.js";
 
 /*
 FNXC:AutoUpdate 2026-07-25-10:05:
@@ -34,6 +35,8 @@ const DEFAULT_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 type AutoUpdateSettings = {
   autoUpdateAndRestart?: boolean;
+  autoUpdateEnabled?: boolean;
+  autoRestartAfterUpdate?: boolean;
   updateCheckEnabled?: boolean;
   updateChannel?: UpdateChannel;
 };
@@ -69,6 +72,7 @@ export interface AutoUpdateDeps {
   /** Test seams. */
   checkForUpdate?: typeof performUpdateCheck;
   installUpdate?: typeof performUpdateInstall;
+  coordinator?: UpdateInstallCoordinator;
 }
 
 /*
@@ -84,7 +88,7 @@ export function buildAutoUpdateDeps(input: {
   log: AutoUpdateLogger;
   fusionDir?: string;
 }): AutoUpdateDeps {
-  return { getSettings: input.getSettings, currentVersion: input.currentVersion, supervised: input.systemControl.supervised, requestRestart: input.systemControl.requestRestart, sourceWorkspaceRoot: input.systemControl.sourceWorkspaceRoot, log: input.log, fusionDir: input.fusionDir };
+  return { getSettings: input.getSettings, currentVersion: input.currentVersion, supervised: input.systemControl.supervised, requestRestart: input.systemControl.requestRestart, sourceWorkspaceRoot: input.systemControl.sourceWorkspaceRoot, log: input.log, fusionDir: input.fusionDir, coordinator: processUpdateInstallCoordinator };
 }
 
 /**
@@ -100,7 +104,8 @@ export async function runAutoUpdateCycle(deps: AutoUpdateDeps): Promise<AutoUpda
     return "disabled";
   }
 
-  if (settings.autoUpdateAndRestart !== true) return "disabled";
+  const automation = resolveUpdateAutomationSettings(settings);
+  if (!automation.autoUpdateEnabled) return "disabled";
   if (settings.updateCheckEnabled === false) return "checks-disabled";
 
   if (!deps.supervised) {
@@ -139,10 +144,11 @@ export async function runAutoUpdateCycle(deps: AutoUpdateDeps): Promise<AutoUpda
 
   let installed: UpdateInstallResult;
   try {
-    installed = await install(result.currentVersion, result.latestVersion, {
+    const coordinator = deps.coordinator ?? new UpdateInstallCoordinator();
+    installed = await coordinator.install(result.latestVersion, () => install(result.currentVersion, result.latestVersion, {
       fusionDir,
       installMethod: { sourceWorkspaceRoot: deps.sourceWorkspaceRoot },
-    });
+    }));
   } catch (error) {
     deps.log.error("Auto-update install failed", { message: errorMessage(error) });
     return "install-failed";
@@ -158,7 +164,11 @@ export async function runAutoUpdateCycle(deps: AutoUpdateDeps): Promise<AutoUpda
     return "install-failed";
   }
 
-  const scheduled = deps.requestRestart("auto-update");
+  // Re-read after npm completes: an operator may opt out while it was running.
+  let latestSettings: AutoUpdateSettings;
+  try { latestSettings = await deps.getSettings(); } catch { latestSettings = {}; }
+  if (!resolveUpdateAutomationSettings(latestSettings).autoRestartAfterUpdate) return "up-to-date";
+  const scheduled = (deps.coordinator ?? new UpdateInstallCoordinator()).requestRestart(() => deps.requestRestart("auto-update"));
   if (!scheduled) {
     deps.log.warn("Auto-update installed but restart was not scheduled", {
       message: `v${installed.latestVersion} is installed; restart Fusion manually to run it.`,

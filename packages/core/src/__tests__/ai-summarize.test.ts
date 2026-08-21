@@ -173,6 +173,24 @@ describe("ai-summarize", () => {
       expect(getFnAgentMock).toHaveBeenCalledTimes(1);
     });
 
+    it.each([
+      ["English", { mode: "english", locale: "en", instruction: "English" }, "Write the title in English."],
+      ["interface", { mode: "interface", locale: "fr", instruction: "French" }, "Write the title in Français (fr)."],
+      ["input", { mode: "input", locale: "es", instruction: "input language" }, "SAME language as the task description"],
+    ] as const)("honors the resolved %s output target", async (_mode, target, expectedInstruction) => {
+      const prompt = vi.fn().mockResolvedValue(undefined);
+      getFnAgentMock.mockResolvedValue(() => Promise.resolve({
+        session: {
+          prompt,
+          dispose: vi.fn(),
+          state: { messages: [{ role: "assistant", content: "Generated task title" }] },
+        },
+      }));
+
+      await expect(summarizeTitle("Necesitamos mejorar la creación de tareas.", "/tmp", undefined, undefined, target)).resolves.toBe("Generated task title");
+      expect(prompt.mock.calls[0][0]).toContain(expectedInstruction);
+    });
+
     it.each(["", "   ", "\n\t"]) ("rejects invalid %j before creating an agent", async (description) => {
       await expect(summarizeTitle(description, "/tmp")).rejects.toThrow(ValidationError);
       expect(getFnAgentMock).not.toHaveBeenCalled();

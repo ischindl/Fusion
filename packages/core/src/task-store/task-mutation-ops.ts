@@ -21,7 +21,7 @@ import {randomUUID} from "node:crypto";
 import {mkdir, readFile, writeFile, rename, unlink} from "node:fs/promises";
 import {join} from "node:path";
 import {existsSync} from "node:fs";
-import type {Task, TaskCreateInput, TaskAttachment, BoardConfig, ActivityLogEntry, ActivityEventType, Artifact, ArtifactCreateInput, RunMutationContext, MergeQueueEntry, BranchGroup, BranchGroupUpdate, CompletionHandoffMarker, WorkflowWorkItem, WorkflowWorkItemKind, PrEntity, PrEntityUpdate, TaskRecommendation, WorkspaceWorktreeEntry} from "../types.js";
+import type {Task, TaskCreateInput, TaskAttachment, BoardConfig, ActivityLogEntry, ActivityEventType, Artifact, ArtifactCreateInput, RunMutationContext, MergeQueueEntry, BranchGroup, BranchGroupUpdate, CompletionHandoffMarker, WorkflowWorkItem, WorkflowWorkItemKind, PrEntity, PrEntityUpdate, TaskRecommendation, WorkspaceWorktreeEntry, TaskRepositoryScope} from "../types.js";
 import { CONFIG_CHANGED_BY_SYSTEM } from "../types.js";
 import {validateSettingValuePatch, WorkflowSettingRejectionError} from "../workflows/workflow-settings.js";
 import "../builtin-traits.js";
@@ -46,10 +46,12 @@ import {insertArtifactRow as insertArtifactRowAsync} from "../task-store/async/a
 import {appendConfigurationRevision, createConfigurationRevision, getConfigurationRevision, rollbackConfiguration} from "../async-stores/async-configuration-revision-store.js";
 import {readProjectConfig, writeProjectConfig} from "./async/async-settings.js";
 import {publishSettingsUpdated} from "./settings-ops.js";
+import {loadWorkspaceConfig} from "../git/git-repository.js";
 import { mergeRestoredProjectSettings } from "../config/settings-schema.js";
 import type {ConfigChangedBy, ConfigurationRevision} from "../types.js";
 import { resolveArchivedLanes } from "../project-lane-vocabulary.js";
 import { acquireTaskAdvisoryXactLock } from "./task-advisory-lock.js";
+import { invalidateSupersededRepositoryScopeReviews } from "../tasks/repository-scope.js";
 
 export function getTaskSelectClauseWithActivityLogLimitImpl(store: TaskStore, limit: number): string {
     const columns = [
@@ -58,7 +60,7 @@ export function getTaskSelectClauseWithActivityLogLimitImpl(store: TaskStore, li
       "modelPresetId", "modelProvider", "credentialInstanceId", "modelId",
       "validatorModelProvider", "validatorCredentialInstanceId", "validatorModelId",
       "planningModelProvider", "planningCredentialInstanceId", "planningModelId", "mergerModelProvider", "mergerCredentialInstanceId", "mergerModelId",
-      "mergeRetries", "workflowStepRetries", "stuckKillCount", "resumeLimboCount", "executeRequeueLoopCount", "graphResumeRetryCount", "consecutiveToolFailureRetryCount", "executorEscalationAttempted", "toolFailureDetectorLogCursor", "toolFailureRetryExhaustedAuditEmitted", "resumeLimboTipSha", "resumeLimboStepSignature", "executeRequeueLoopSignature", "postReviewFixCount", "planReviewReplanCount", "recoveryRetryCount", "taskDoneRetryCount", "bulkCompletionRefusalAt", "worktreeSessionRetryCount", "completionHandoffLimboRecoveryCount", "verificationFailureCount", "mergeConflictBounceCount", "mergeAuditBounceCount", "mergeTransientRetryCount", "branchConflictRecoveryCount", "reviewerContextRetryCount", "reviewerFallbackRetryCount", "nextRecoveryAt",
+      "mergeRetries", "aiMergeReviewReconciliation", "workflowStepRetries", "stuckKillCount", "resumeLimboCount", "executeRequeueLoopCount", "graphResumeRetryCount", "consecutiveToolFailureRetryCount", "executorEscalationAttempted", "toolFailureDetectorLogCursor", "toolFailureRetryExhaustedAuditEmitted", "resumeLimboTipSha", "resumeLimboStepSignature", "executeRequeueLoopSignature", "postReviewFixCount", "planReviewReplanCount", "recoveryRetryCount", "taskDoneRetryCount", "bulkCompletionRefusalAt", "worktreeSessionRetryCount", "completionHandoffLimboRecoveryCount", "verificationFailureCount", "mergeConflictBounceCount", "mergeAuditBounceCount", "mergeTransientRetryCount", "branchConflictRecoveryCount", "reviewerContextRetryCount", "reviewerFallbackRetryCount", "nextRecoveryAt",
       // FNXC:WorkflowIrPin 2026-07-19-03:10 (U9b / KTD-3 + KTD-8): this projection is a SECOND
       // copy of the slim column list (see getTaskSelectClauseImpl2). The IR pin, its node entry,
       // and the adoption stamp must appear in BOTH or a task read through this path reads as
@@ -68,8 +70,8 @@ export function getTaskSelectClauseWithActivityLogLimitImpl(store: TaskStore, li
       "tokenUsageInputTokens", "tokenUsageOutputTokens", "tokenUsageCachedTokens", "tokenUsageCacheWriteTokens", "tokenUsageTotalTokens", "tokenUsageFirstUsedAt", "tokenUsageLastUsedAt", "tokenUsageModelProvider", "tokenUsageModelId", "tokenUsagePerModel", "tokenBudgetSoftAlertedAt", "tokenBudgetHardAlertedAt", "tokenBudgetOverride",
       "createdAt", "updatedAt", "columnMovedAt", "firstExecutionAt", "cumulativeActiveMs", "cumulativePlanningMs", "planningStartedAt", "executionStartedAt", "executionCompletedAt",
       "dependencies", "steps", "customFields", "attachments", "steeringComments",
-      "comments", "review", "reviewState", "workflowStepResults", "prInfo", "prInfos", "issueInfo", "githubTracking", "sourceIssueProvider", "sourceIssueRepository", "sourceIssueExternalIssueId", "sourceIssueNumber", "sourceIssueUrl", "sourceIssueClosedAt", "mergeDetails", "workspaceWorktrees",
-      "breakIntoSubtasks", "noCommitsExpected", "enabledWorkflowSteps", "modifiedFiles", "declaredSymbols",
+      "comments", "review", "reviewState", "workflowStepResults", "prInfo", "prInfos", "issueInfo", "githubTracking", "sourceIssueProvider", "sourceIssueRepository", "sourceIssueExternalIssueId", "sourceIssueNumber", "sourceIssueUrl", "sourceIssueClosedAt", "mergeDetails", "workspaceWorktrees", "repositoryScope",
+      "noCommitsExpected", "enabledWorkflowSteps", "modifiedFiles", "declaredSymbols",
       "missionId", "sliceId", "scopeOverride", "scopeOverrideReason", "scopeAutoWiden", "assignedAgentId", "pausedByAgentId", "assigneeUserId", "nodeId", "effectiveNodeId", "effectiveNodeSource",
       "sourceType", "sourceAgentId", "sourceRunId", "sourceSessionId", "sourceMessageId", "sourceParentTaskId", "sourceMetadata",
       "checkedOutBy", "checkedOutAt", "checkoutNodeId", "checkoutRunId", "checkoutLeaseRenewedAt", "checkoutLeaseEpoch", "deletedAt", "allowResurrection",
@@ -572,6 +574,131 @@ export async function mergeWorkspaceWorktreeEntryImpl(
     }
     return outcome.task;
   });
+}
+
+/*
+FNXC:RepositoryScope 2026-08-20-23:07:
+Scope changes are a project-scoped read-modify-write under the task advisory lock. This updates only
+repository_scope, so an operator scope decision cannot overwrite concurrent per-repository acquisition
+or landing entries.
+*/
+export type TaskRepositoryScopeMutation = {
+  action: "add" | "remove" | "refuse";
+  repositories: string[];
+  reason: string;
+  actor: string;
+};
+
+export async function updateTaskRepositoryScopeImpl(
+  store: TaskStore,
+  id: string,
+  requestedScope: TaskRepositoryScope | TaskRepositoryScopeMutation | undefined,
+): Promise<Task> {
+  const configuredRepositories = (await loadWorkspaceConfig(store.getRootDir()))?.repos ?? [];
+  const isMutation = requestedScope !== undefined && "action" in requestedScope;
+  const requestedRepositories = requestedScope && "repositories" in requestedScope
+    ? requestedScope.repositories
+    : undefined;
+  const normalizedRepositories = requestedRepositories
+    ? [...new Set(requestedRepositories.map((repo) => repo.trim()).filter(Boolean))].sort()
+    : undefined;
+  if (normalizedRepositories && configuredRepositories.length > 0) {
+    const unknown = normalizedRepositories.filter((repo) => !configuredRepositories.includes(repo));
+    if (unknown.length > 0) throw new Error(`Unknown workspace repository scope: ${unknown.join(", ")}`);
+  }
+  /*
+  FNXC:RepositoryScope 2026-08-21-01:53:
+  Scope intent shares planning lifecycle serialization with plan confirmation. Acquire that lock
+  before the task/advisory transaction so a delta always merges the current scope and appends its
+  event instead of restoring a stale client snapshot over a planner or executor extension.
+  */
+  return store.withPlanningLifecycleLock(id, () => store.withTaskLock(id, async () => {
+    const layer = store.asyncLayer!;
+    const outcome = await layer.transactionImmediate(async (tx) => {
+      await acquireTaskAdvisoryXactLock(tx, layer.projectId, id);
+      const row = await readTaskRowInTransaction(tx, id, { includeDeleted: true }, layer.projectId);
+      if (!row) throw new TaskNotFoundError(id);
+      if (row.deletedAt) throw new TaskDeletedError(id, row.deletedAt as string);
+      const current = store.rowToTask(store.pgRowToTaskRow(row));
+      const hasLandedRepository = Object.values(current.workspaceWorktrees ?? {}).some((entry) => Boolean(entry.landedSha));
+      const [pendingIntent] = await tx.select({ taskId: schema.project.workspaceLandIntents.taskId })
+        .from(schema.project.workspaceLandIntents)
+        .where(and(
+          eq(schema.project.workspaceLandIntents.projectId, layer.projectId?.trim() || "__legacy_unscoped__"),
+          eq(schema.project.workspaceLandIntents.taskId, id),
+          eq(schema.project.workspaceLandIntents.status, "pending"),
+        ))
+        .limit(1);
+      /*
+      FNXC:RepositoryScope 2026-08-21-00:12:
+      Repository intent becomes immutable once a land intent is pending or any repository has
+      landed. This transaction-level fence prevents an already-acquired clean checkout from
+      changing review or landing obligations after integration begins.
+      */
+      const now = new Date().toISOString();
+      const currentRepositories = current.repositoryScope?.repositories ?? [];
+      const mutation = isMutation ? requestedScope as TaskRepositoryScopeMutation : undefined;
+      const nextRepositories = mutation?.action === "add"
+        ? [...new Set([...currentRepositories, ...normalizedRepositories!])].sort()
+        : mutation
+          ? currentRepositories.filter((repository) => !normalizedRepositories!.includes(repository))
+          : normalizedRepositories;
+      const scopeChanged = JSON.stringify([...currentRepositories].sort()) !== JSON.stringify(nextRepositories ?? []);
+      if ((pendingIntent || hasLandedRepository) && scopeChanged) {
+        throw new Error(`Repository scope for ${id} cannot change after workspace landing has started`);
+      }
+      const priorExtensions = current.repositoryScope?.extensions ?? [];
+      const mutationEvents = mutation
+        ? normalizedRepositories!.map((repository) => ({
+            repository,
+            requestedAt: now,
+            requestedBy: mutation.actor,
+            reason: mutation.reason,
+            status: mutation.action === "refuse" ? "refused" as const : "accepted" as const,
+            ...(mutation.action === "refuse" ? { refusedAt: now, refusedBy: mutation.actor, refusalReason: mutation.reason } : {}),
+          }))
+        : [];
+      const replacement = isMutation
+        ? {
+            ...(current.repositoryScope ?? {}),
+            repositories: nextRepositories ?? [],
+            state: "confirmed" as const,
+            confirmedAt: now,
+            confirmedBy: mutation!.actor === "operator" ? "operator" as const : current.repositoryScope?.confirmedBy,
+            extensions: [...priorExtensions, ...mutationEvents],
+          }
+        : requestedScope;
+      /*
+      FNXC:RepositoryScope 2026-08-21-02:48:
+      A repository-scope mutation invalidates approvals captured for the prior intent
+      generation. Never carry review evidence into a new revision: landing may only
+      accept fingerprints reviewed against the current confirmed repository set.
+      */
+      const normalized = nextRepositories && replacement && {
+        ...replacement,
+        repositories: nextRepositories,
+        revision: Math.max((current.repositoryScope?.revision ?? 0) + 1, replacement.revision ?? 0),
+        ...(scopeChanged ? { reviewEvidence: undefined } : {}),
+      };
+      const [updatedRow] = await tx
+        .update(schema.project.tasks)
+        .set({
+          repositoryScope: normalized ?? null,
+          workflowStepResults: scopeChanged
+            ? invalidateSupersededRepositoryScopeReviews(current.workflowStepResults, normalized?.revision)
+            : current.workflowStepResults,
+          updatedAt: new Date().toISOString(),
+        })
+        .where(and(eq(schema.project.tasks.id, id), taskProjectScope(layer)))
+        .returning();
+      if (!updatedRow) throw new TaskNotFoundError(id);
+      return store.rowToTask(store.pgRowToTaskRow(updatedRow));
+    });
+    await store.writeTaskJsonFile(store.taskDir(id), outcome);
+    if (store.isWatching) store.taskCache.set(id, { ...outcome });
+    store.emitTaskLifecycleEventSafely("task:updated", [outcome]);
+    return outcome;
+  }));
 }
 
 export async function resolveTaskWedgeNotificationEpisodeImpl(

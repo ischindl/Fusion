@@ -103,6 +103,7 @@ import {
   MESSAGE_ARCHIVE_SCHEMA_VERSION,
   TASK_SOURCE_AGENT_INDEX_VERSION,
   WORKSPACE_COORDINATION_LEASES_SCHEMA_VERSION,
+  ACTIVITY_LOG_TASK_ID_INDEX_VERSION,
   CHAT_SESSION_MEMORY_FOCUS_VERSION,
 } from "../../postgres/schema-applier.js";
 import { ProjectPartitionRekeyError, rekeyFallbackProjectPartition } from "../../postgres/migration-stamping.js";
@@ -138,8 +139,9 @@ describe("schema-applier: immutable migration identities", () => {
        coordination leases/intents), and 0061 (RUFU-068 chat_sessions.memory_focus) advance the baseline to 0061. */
     expect(TASK_SOURCE_AGENT_INDEX_VERSION).toBe("0059");
     expect(WORKSPACE_COORDINATION_LEASES_SCHEMA_VERSION).toBe("0060");
-    expect(CHAT_SESSION_MEMORY_FOCUS_VERSION).toBe("0061");
-    expect(SCHEMA_BASELINE_VERSION).toBe("0061");
+    expect(ACTIVITY_LOG_TASK_ID_INDEX_VERSION).toBe("0061");
+    expect(CHAT_SESSION_MEMORY_FOCUS_VERSION).toBe("0065");
+    expect(SCHEMA_BASELINE_VERSION).toBe("0065");
   });
 
   it("keeps monitor and approval isolation assigned to version 0003", () => {

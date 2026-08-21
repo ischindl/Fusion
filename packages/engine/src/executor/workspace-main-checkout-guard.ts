@@ -9,7 +9,7 @@ import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { Settings, Task } from "@fusion/core";
-import { deriveRepoScopeSubset, normalizeRepoRelPath } from "../worktree/workspace-paths.js";
+import { normalizeRepoRelPath, resolveRepoDeclaredScope } from "../worktree/workspace-paths.js";
 import { resolveWorktreesDir } from "../worktree/worktree-paths.js";
 import { isAlwaysAllowedScopeLeakPath, workflowPathMatchesDeclaredScope } from "./workflow-feedback-paths.js";
 
@@ -92,7 +92,7 @@ export async function detectWorkspaceMainCheckoutWork(
         continue;
       }
     } catch { skipped.push(repo); continue; }
-    const repoScope = deriveRepoScopeSubset(declaredScope, repo);
+    const repoScope = resolveRepoDeclaredScope(declaredScope, repo, repoKeys).scope;
     const worktreesDir = path.resolve(resolveWorktreesDir(checkout, deps.settings, { workspaceRootDir: deps.rootDir, repoRelPath: repo }));
     const excluded = (file: string) => {
       const absolute = path.resolve(checkout, file);

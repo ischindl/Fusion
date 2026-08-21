@@ -19,6 +19,7 @@ import {
   fetchGitRemotes,
   uploadAttachment,
   fetchBoardWorkflows,
+  fetchWorkspaceRepos,
   type BoardWorkflowsPayload,
   type CreateTaskInput,
   type DuplicateMatch,
@@ -61,7 +62,6 @@ interface NewTaskModalProps {
   initialDescription?: string;
   initialWorkflowId?: string | null;
   onPlanningMode?: (initialPlan: string, workflowId?: string | null) => void;
-  onSubtaskBreakdown?: (description: string, workflowId?: string | null) => void;
 }
 
 /*
@@ -342,7 +342,7 @@ function NewTaskGitHubReferencePicker({ isOpen, projectId, disabled = false, onS
   );
 }
 
-export function NewTaskModal({ isOpen, onClose, projectId, tasks, onCreateTask, onMoveTask, addToast, initialDescription = "", initialWorkflowId, onPlanningMode, onSubtaskBreakdown }: NewTaskModalProps) {
+export function NewTaskModal({ isOpen, onClose, projectId, tasks, onCreateTask, onMoveTask, addToast, initialDescription = "", initialWorkflowId, onPlanningMode }: NewTaskModalProps) {
   const { t } = useTranslation("app");
   const { confirm } = useConfirm();
   const viewportMode = useViewportMode();
@@ -370,6 +370,8 @@ export function NewTaskModal({ isOpen, onClose, projectId, tasks, onCreateTask, 
   const isFloating = viewportMode !== "mobile";
 
   const [dependencies, setDependencies] = useState<string[]>([]);
+  const [workspaceRepositories, setWorkspaceRepositories] = useState<string[]>([]);
+  const [selectedRepositoryScope, setSelectedRepositoryScope] = useState<string[]>([]);
   const [branchMode, setBranchMode] = useState<BranchSelectionMode>("project-default");
   const [branch, setBranch] = useState("");
   const [baseBranch, setBaseBranch] = useState("");
@@ -640,10 +642,11 @@ export function NewTaskModal({ isOpen, onClose, projectId, tasks, onCreateTask, 
       branchMode !== "project-default" ||
       branch !== "" ||
       baseBranch !== "" ||
+      selectedRepositoryScope.length > 0 ||
       githubTrackingEnabled !== initialDefaultValues.githubTrackingEnabled ||
       githubRepoOverrideTrimmed !== "";
     setHasDirtyState(isDirty);
-  }, [description, dependencies, pendingImages, selectedWorkflowId, hasUserSelectedEnabledWorkflowSteps, executorModel, validatorModel, planningModel, thinkingLevel, plannerOversightLevel, selectedAgentId, reviewLevel, autoMerge, priority, nodeId, executionMode, branchMode, branch, baseBranch, githubTrackingEnabled, githubRepoOverrideTrimmed, initialDefaultValues]);
+  }, [description, dependencies, pendingImages, selectedWorkflowId, hasUserSelectedEnabledWorkflowSteps, executorModel, validatorModel, planningModel, thinkingLevel, plannerOversightLevel, selectedAgentId, reviewLevel, autoMerge, priority, nodeId, executionMode, branchMode, branch, baseBranch, selectedRepositoryScope, githubTrackingEnabled, githubRepoOverrideTrimmed, initialDefaultValues]);
 
   const resetForm = useCallback(() => {
     // Clean up object URLs
@@ -652,6 +655,7 @@ export function NewTaskModal({ isOpen, onClose, projectId, tasks, onCreateTask, 
     setPendingImages([]);
     setDescription("");
     setDependencies([]);
+    setSelectedRepositoryScope([]);
     setExecutorModel("");
     setCredentialInstanceId(undefined);
     setValidatorModel("");
@@ -684,6 +688,11 @@ export function NewTaskModal({ isOpen, onClose, projectId, tasks, onCreateTask, 
     githubGeneratedDescriptionRef.current = "";
   }, [pendingImages]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    void fetchWorkspaceRepos(projectId).then(({ repos }) => setWorkspaceRepositories(repos)).catch(() => setWorkspaceRepositories([]));
+  }, [isOpen, projectId]);
+
   const handleClose = useCallback(async () => {
     if (hasDirtyState) {
       const shouldDiscard = await confirm({
@@ -699,7 +708,7 @@ export function NewTaskModal({ isOpen, onClose, projectId, tasks, onCreateTask, 
 
   /**
    * FNXC:NewTaskDialogAffordances 2026-06-21-17:50:
-   * The New Task dialog must expose the same Plan and Subtask quick-add handoff affordances as QuickEntryBox. Close without the dirty-state discard confirmation because the typed description is intentionally handed off to the planning/subtask modal instead of discarded.
+   * The New Task dialog must expose the Plan quick-add handoff affordance as QuickEntryBox. Close without the dirty-state discard confirmation because the typed description is intentionally handed off to the planning modal instead of discarded.
    */
   const handleAiAssistClose = useCallback(() => {
     resetForm();
@@ -724,7 +733,7 @@ export function NewTaskModal({ isOpen, onClose, projectId, tasks, onCreateTask, 
       title: undefined,
       description: trimmedDesc,
       dependencies: dependencies.length ? dependencies : undefined,
-      // U6/R3: forward the workflow selection only when the user changed it.
+      ...(selectedRepositoryScope.length > 0 ? { repositoryScope: selectedRepositoryScope } : {}),      // U6/R3: forward the workflow selection only when the user changed it.
       //  - undefined → omit (store inherits the project default, today's behavior)
       //  - null      → explicit "No workflow" (store skips default materialization)
       //  - string    → that workflow, materialized atomically at create time.
@@ -1212,8 +1221,7 @@ export function NewTaskModal({ isOpen, onClose, projectId, tasks, onCreateTask, 
         isActive={isOpen}
         onClose={handleAiAssistClose}
         onPlanningMode={onPlanningMode}
-        onSubtaskBreakdown={onSubtaskBreakdown}
-        planningModel={planningModel}
+                planningModel={planningModel}
         onPlanningModelChange={(value) => { setPlanningCredentialInstanceId(undefined); setPlanningModel(value); }}
         planningCredentialInstanceId={planningCredentialInstanceId}
         onPlanningCredentialInstanceIdChange={(instanceId) => setPlanningCredentialInstanceId(instanceId || undefined)}
@@ -1248,7 +1256,7 @@ export function NewTaskModal({ isOpen, onClose, projectId, tasks, onCreateTask, 
         onStartSubmit={canStartTask && (Boolean(description.trim()) || isSubmitting) ? handleStartSubmit : undefined}
         startSubmitLabel={isSubmitting ? t("newTaskModal.starting", "Starting...") : t("newTaskModal.startTask", "Start")}
         startSubmitDisabled={!canStartTaskNow}
-        renderBelowPrimary={quickFields}
+        renderBelowPrimary={<>{quickFields}{workspaceRepositories.length > 0 && <fieldset className="form-group" data-testid="repository-scope-selector"><legend>{t("newTaskModal.repositoryScope", "Repository scope")}</legend><p className="form-hint">{t("newTaskModal.repositoryScopeHint", "Select the repositories this task intends to change.")}</p>{workspaceRepositories.map((repository) => <label key={repository} className="checkbox-label"><input type="checkbox" checked={selectedRepositoryScope.includes(repository)} onChange={() => setSelectedRepositoryScope((current) => current.includes(repository) ? current.filter((item) => item !== repository) : [...current, repository])} />{repository}</label>)}</fieldset>}</>}
         hideDependencies={true}
         autoExpandMoreOptionsOnSelection={false}
       />

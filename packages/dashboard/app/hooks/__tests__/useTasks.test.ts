@@ -3378,6 +3378,44 @@ describe("useTasks", () => {
       expect(result.current.tasks[0]?.id).toBe("FN-020");
     });
 
+    it("merges a duplicate live arrival after immediately ingesting a refinement child", async () => {
+      mockFetchTasks.mockResolvedValueOnce([]);
+      const refinementChild = createMockTask({
+        id: "FN-REFINE",
+        column: "todo",
+        updatedAt: "2026-01-01T00:00:00Z",
+      });
+      const liveUpdate = createMockTask({
+        id: "FN-REFINE",
+        column: "todo",
+        updatedAt: "2026-01-02T00:00:00Z",
+        size: "L",
+      });
+
+      const { result } = renderHook(() => useTasks());
+      await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+
+      act(() => result.current.ingestCreatedTasks([refinementChild]));
+      expect(result.current.tasks).toHaveLength(1);
+      expect(result.current.tasks[0]?.id).toBe("FN-REFINE");
+
+      act(() => MockEventSource.instances[0]._emit("task:created", liveUpdate));
+      expect(result.current.tasks).toHaveLength(1);
+      expect(result.current.tasks[0]).toMatchObject({ id: "FN-REFINE", updatedAt: "2026-01-02T00:00:00Z", size: "L" });
+    });
+
+    it("refetches active search instead of locally inserting a refinement child", async () => {
+      mockFetchTasks.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+      const { result } = renderHook(() => useTasks({ searchQuery: "matching-only" }));
+      await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+      mockFetchTasks.mockClear();
+
+      act(() => result.current.ingestCreatedTasks([createMockTask({ id: "FN-NONMATCH", column: "todo" })]));
+
+      await waitFor(() => expect(mockFetchTasks).toHaveBeenCalledTimes(1));
+      expect(result.current.tasks).toEqual([]);
+    });
+
     it("does not overwrite fresher task data when SSE already updated the task", async () => {
       mockFetchTasks.mockResolvedValueOnce([]);
       const createdTask = createMockTask({

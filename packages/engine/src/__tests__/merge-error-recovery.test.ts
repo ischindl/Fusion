@@ -95,6 +95,7 @@ type MockTask = {
   customFields?: Record<string, unknown>;
   updatedAt: string;
   log: Array<{ action?: string }>;
+  aiMergeReviewReconciliation?: { candidateSha?: string };
 };
 
 type MockTaskStore = {
@@ -366,7 +367,7 @@ describe("ProjectEngine merge error recovery", () => {
     vi.useFakeTimers();
     const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
     const store = makeStore({
-      tasks: [makeTask({ mergeRetries: 0 }), makeTask({ mergeRetries: 3 })],
+      tasks: [makeTask({ mergeRetries: 0, aiMergeReviewReconciliation: { candidateSha: "abc123def456" } }), makeTask({ mergeRetries: 3, aiMergeReviewReconciliation: { candidateSha: "abc123def456" } })],
     });
     vi.mocked(runAiMerge).mockRejectedValueOnce(
       new AiMergeBlockedError(TASK_ID, ["review assertions conflicts with builtin settings"]),
@@ -378,7 +379,7 @@ describe("ProjectEngine merge error recovery", () => {
     expect(store.updateTask).toHaveBeenCalledWith(TASK_ID, {
       status: "failed",
       mergeRetries: 3,
-      error: "AI merge review blocked landing; operator intervention is required.",
+      error: "AI merge review blocked landing at abc123def456: review assertions conflicts with builtin settings. Rebase/re-push, dismiss a finding with a reason, or land manually.",
     });
     expect(store.updateTask).not.toHaveBeenCalledWith(TASK_ID, expect.objectContaining({ status: null }));
     expect(store.moveTask).not.toHaveBeenCalled();

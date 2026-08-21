@@ -143,13 +143,14 @@ Unarchive an archived task (move from archived → its restore column). Restores
 
 ### fn_task_delete
 
-Soft-delete a task from active Fusion board views. The task row and artifacts are preserved; optional allowResurrection marks the ID for intentional recreation. If the task is still referenced as a lineage parent by another task, deletion is rejected unless removeLineageReferences:true is passed.
+Soft-delete a task from active Fusion board views. The task row and artifacts are preserved; optional allowResurrection marks the ID for intentional recreation. If live lineage children or dependents still reference the task, deletion is rejected unless the matching explicit reference-removal option is passed.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `id` | string | ✓ | Task ID to delete (e.g. FN-001) |
 | `allowResurrection` | boolean | — | When true, mark this tombstone as explicitly reusable for future recreation. |
 | `removeLineageReferences` | boolean | — | When true, clear incoming lineage-parent references (child sourceParentTaskId) before deleting, so a task still referenced as a lineage parent can be removed. |
+| `removeDependencyReferences` | boolean | — | When true, remove incoming dependency edges before soft deletion. Omit or pass false to retain the dependent-conflict refusal. |
 
 ### fn_task_browse_gitlab_project_issues
 

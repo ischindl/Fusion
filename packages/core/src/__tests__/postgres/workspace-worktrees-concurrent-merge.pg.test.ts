@@ -54,6 +54,25 @@ pgTest("workspace worktree per-repo atomic merge (PostgreSQL)", () => {
     });
   });
 
+  it("persists explicit scope without treating acquired entries as intent or clobbering them", async () => {
+    const first = h.store();
+    const second = h.store();
+    const task = await first.createTask({ description: "repository scope is explicit" });
+    await first.mergeWorkspaceWorktreeEntry(task.id, "repo-a", { worktreePath: "/tmp/repo-a", branch: "fusion/a" });
+
+    await Promise.all([
+      first.updateTaskRepositoryScope(task.id, { repositories: ["repo-b", "repo-a", "repo-a"], confirmedBy: "operator" }),
+      second.mergeWorkspaceWorktreeEntry(task.id, "repo-b", { worktreePath: "/tmp/repo-b", branch: "fusion/b" }),
+    ]);
+
+    const current = await first.getTask(task.id);
+    expect(current.repositoryScope).toMatchObject({ repositories: ["repo-a", "repo-b"], confirmedBy: "operator" });
+    expect(current.workspaceWorktrees).toEqual({
+      "repo-a": { worktreePath: "/tmp/repo-a", branch: "fusion/a" },
+      "repo-b": { worktreePath: "/tmp/repo-b", branch: "fusion/b" },
+    });
+  });
+
   it("clears singular state in the same per-key update", async () => {
     const store = h.store();
     const task = await store.createTask({ description: "workspace singular state" });

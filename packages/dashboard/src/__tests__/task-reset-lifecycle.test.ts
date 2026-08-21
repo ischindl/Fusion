@@ -68,7 +68,12 @@ function createApp(store: TaskStore) {
   return app;
 }
 
-function createStore(root: string, task: Task, events: string[], publish: (id: string, intake: string) => Promise<Task>) {
+function createStore(
+  root: string,
+  task: Task,
+  events: string[],
+  publish: (this: TaskStore, id: string, intake: string) => Promise<Task>,
+) {
   return {
     getRootDir: vi.fn().mockReturnValue(root),
     getSettings: vi.fn().mockResolvedValue({ worktreesDir: ".worktrees" }),
@@ -89,7 +94,7 @@ function createStore(root: string, task: Task, events: string[], publish: (id: s
 describe("POST /tasks/:id/reset", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("fences cancellation, removes worktree and plan, then publishes Planning atomically", async () => {
+  it("preserves the TaskStore receiver while publishing the confirmed reset", async () => {
     const root = await mkdtemp(join(tmpdir(), "fusion-reset-route-"));
     const worktree = join(root, ".worktrees", "fn-400");
     const taskDir = join(root, ".fusion", "tasks", "FN-400");
@@ -100,7 +105,12 @@ describe("POST /tasks/:id/reset", () => {
     const task = taskFixture(worktree);
     vi.mocked(getRegisteredWorktreeBranches).mockResolvedValue([{ branch: task.branch!, worktreePath: worktree }]);
     const reset = { ...task, column: "triage", status: "needs-replan", worktree: undefined, branch: undefined, steps: task.steps.map((step) => ({ ...step, status: "pending" as const })) };
-    const store = createStore(root, task, events, async () => {
+    let store!: TaskStore;
+    store = createStore(root, task, events, async function (this: TaskStore, id, intake) {
+      void (this as unknown as { asyncLayer: unknown }).asyncLayer;
+      expect(this).toBe(store);
+      expect(id).toBe("FN-400");
+      expect(intake).toBe("triage");
       events.push("published");
       return reset;
     });
@@ -111,6 +121,8 @@ describe("POST /tasks/:id/reset", () => {
     try {
       const res = await performRequest(createApp(store), "POST", "/api/tasks/FN-400/reset", JSON.stringify({ confirm: true }), { "content-type": "application/json" });
       expect(res.status).toBe(200);
+      expect(vi.mocked(store.resetTaskPublication)).toHaveBeenCalledWith("FN-400", "triage");
+      expect(vi.mocked(store.resetTaskPublication).mock.contexts).toEqual([store]);
       expect(events).toEqual(["cancelled", "published"]);
       await expect(readFile(join(taskDir, "PROMPT.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
       await expect(readFile(worktree, "utf8")).rejects.toMatchObject({ code: "ENOENT" });

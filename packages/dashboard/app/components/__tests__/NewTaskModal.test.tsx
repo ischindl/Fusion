@@ -46,6 +46,7 @@ vi.mock("../../api", () => ({
   checkDuplicateTasks: vi.fn().mockResolvedValue([]),
   fetchGitRemotes: vi.fn().mockResolvedValue([]),
   fetchBoardWorkflows: vi.fn().mockResolvedValue({ flagEnabled: true, defaultWorkflowId: "builtin:coding", workflows: [], taskWorkflowIds: {} }),
+  fetchWorkspaceRepos: vi.fn().mockResolvedValue({ repos: [] }),
   apiFetchGitHubIssues: vi.fn().mockResolvedValue([]),
   apiFetchGitHubPulls: vi.fn().mockResolvedValue([]),
   fetchModels: vi.fn().mockResolvedValue({ models: [
@@ -509,7 +510,6 @@ describe("NewTaskModal", () => {
   it("exposes New Task dialog quick-add affordance parity when AI handoff callbacks are supplied", () => {
     renderNewTaskModal({
       onPlanningMode: vi.fn(),
-      onSubtaskBreakdown: vi.fn(),
     });
 
     const advancedSection = screen.getByTestId("task-form-more-options");
@@ -710,53 +710,6 @@ describe("NewTaskModal", () => {
     rerender(<NewTaskModal {...props} isOpen={true} />);
 
     expect(screen.getByTestId("task-form-execution-mode-select")).toHaveValue("standard");
-  });
-
-  it("hands trimmed descriptions to planning and subtask callbacks without discard confirmation", () => {
-    const onPlanningMode = vi.fn();
-    const onSubtaskBreakdown = vi.fn();
-    const { unmount, props } = renderNewTaskModal({
-      onPlanningMode,
-      onSubtaskBreakdown,
-    });
-
-    fireEvent.change(screen.getByPlaceholderText("What needs to be done?"), { target: { value: "  Break this down  " } });
-    fireEvent.click(screen.getByTestId("task-form-plan-button"));
-
-    expect(props.onClose).toHaveBeenCalledTimes(1);
-    expect(mockConfirm).not.toHaveBeenCalled();
-    expect(onPlanningMode).toHaveBeenCalledWith("Break this down");
-    expect(onSubtaskBreakdown).not.toHaveBeenCalled();
-
-    unmount();
-    renderNewTaskModal({
-      onPlanningMode,
-      onSubtaskBreakdown,
-    });
-
-    fireEvent.change(screen.getByPlaceholderText("What needs to be done?"), { target: { value: "  Split into subtasks  " } });
-    fireEvent.click(screen.getByTestId("task-form-subtask-button"));
-
-    expect(onSubtaskBreakdown).toHaveBeenCalledWith("Split into subtasks");
-    expect(onPlanningMode).toHaveBeenCalledTimes(1);
-  });
-
-  it("disables Plan and Subtask handoff buttons until a description is present", () => {
-    renderNewTaskModal({
-      onPlanningMode: vi.fn(),
-      onSubtaskBreakdown: vi.fn(),
-    });
-
-    const planButton = screen.getByTestId("task-form-plan-button");
-    const subtaskButton = screen.getByTestId("task-form-subtask-button");
-
-    expect(planButton).toBeDisabled();
-    expect(subtaskButton).toBeDisabled();
-
-    fireEvent.change(screen.getByPlaceholderText("What needs to be done?"), { target: { value: "Ready to plan" } });
-
-    expect(planButton).not.toBeDisabled();
-    expect(subtaskButton).not.toBeDisabled();
   });
 
   // FNXC:NewTask 2026-06-23-00:10: The New Task dialog NO LONGER force-opens TaskForm's advanced controls. The DEEP/advanced options (model selectors, workflow picker, etc.) are collapsed behind a disclosure relabeled "Advanced"; the common quick-add buttons (Attach/Fast/Priority) are surfaced inline next to Plan and are always visible.

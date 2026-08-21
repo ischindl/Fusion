@@ -54,7 +54,6 @@ import { GitLabIssueCommentService } from "../gitlab-issue-comment.js";
 import { GitLabTrackingCommentService } from "../gitlab-tracking-comments.js";
 import { GitLabTrackingStateService } from "../gitlab-tracking-state.js";
 import { GitLabSourceIssueCloseService } from "../gitlab-source-issue-close.js";
-import { GitLabSplitCloseService } from "../gitlab-split-close.js";
 import { GitLabDeleteCloseService } from "../gitlab-delete-close.js";
 import { KnowledgeIndexRefreshService } from "../knowledge-index-refresh.js";
 import { githubRateLimiter } from "../github-poll.js";
@@ -2750,10 +2749,6 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
     gitlabSourceIssueCloseService.start();
     ctx.registerDispose(() => gitlabSourceIssueCloseService.stop());
 
-    const gitlabSplitCloseService = new GitLabSplitCloseService(store);
-    gitlabSplitCloseService.start();
-    ctx.registerDispose(() => gitlabSplitCloseService.stop());
-
     const gitlabDeleteCloseService = new GitLabDeleteCloseService(store);
     gitlabDeleteCloseService.start();
     ctx.registerDispose(() => gitlabDeleteCloseService.stop());
@@ -2818,7 +2813,6 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
       githubSourceIssueCloseService.attach(projectStore);
       gitlabTrackingStateService.attach(projectStore);
       gitlabSourceIssueCloseService.attach(projectStore);
-      gitlabSplitCloseService.attach(projectStore);
       gitlabDeleteCloseService.attach(projectStore);
       // FNXC:Knowledge 2026-06-16-14:32:
       // Knowledge index refresh on task:moved→done must run for every registered project store, not just the primary.

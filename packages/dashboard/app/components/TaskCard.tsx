@@ -916,7 +916,6 @@ function areTaskCardPropsEqual(previous: TaskCardProps, next: TaskCardProps): bo
       JSON.stringify(nextTask.workspaceWorktrees ?? null) &&
     previousTask.branch === nextTask.branch &&
     previousTask.baseBranch === nextTask.baseBranch &&
-    previousTask.breakIntoSubtasks === nextTask.breakIntoSubtasks &&
     previousTask.currentStep === nextTask.currentStep &&
     previousTask.modelProvider === nextTask.modelProvider &&
     previousTask.modelId === nextTask.modelId &&

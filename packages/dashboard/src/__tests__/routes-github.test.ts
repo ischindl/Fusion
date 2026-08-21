@@ -44,8 +44,6 @@ import { __resetBatchImportRateLimiter, __setCreateFnAgentForRefine } from "../r
 import * as agentGenerationModule from "../agent-generation.js";
 import { __resetPlanningState, __setCreateFnAgent, planningStreamManager } from "../planning.js";
 import * as planningModule from "../planning.js";
-import { __resetSubtaskBreakdownState, subtaskStreamManager } from "../subtask-breakdown.js";
-import * as subtaskBreakdownModule from "../subtask-breakdown.js";
 import { SESSION_CLEANUP_DEFAULT_MAX_AGE_MS } from "../ai-session-store.js";
 import * as usageModule from "../usage.js";
 import * as claudeCliProbeModule from "../claude-cli-probe.js";
@@ -1870,7 +1868,6 @@ describe("projectId store scoping regressions", () => {
   beforeEach(() => {
     __resetBatchImportRateLimiter();
     __resetPlanningState();
-    __resetSubtaskBreakdownState();
     mockIsGhAuthenticated.mockReturnValue(true);
 
     defaultStore = createMockStore({
@@ -2070,96 +2067,7 @@ describe("projectId store scoping regressions", () => {
     expect(defaultStore.createTask).not.toHaveBeenCalled();
   });
 
-  it("routes planning create-tasks mutations to scoped store when projectId is provided", async () => {
-    vi.spyOn(planningModule, "getSession").mockReturnValue({
-      id: "plan-session-2",
-      initialPlan: "Scoped multi task plan",
-      history: [],
-      // FNXC:PlanningMode 2026-07-19-01:45: FN-8341 create-tasks requires validated sessions.
-      validated: true,
-      summary: {
-        title: "Plan",
-        description: "Plan description",
-        suggestedSize: "M",
-        suggestedDependencies: [],
-        keyDeliverables: ["Deliverable 1", "Deliverable 2"],
-      },
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    } as any);
-    vi.spyOn(planningModule, "formatInterviewQA").mockReturnValue("Q: Scope\nA: Medium");
-    vi.spyOn(planningModule, "cleanupSession").mockImplementation(() => {});
 
-    (scopedStore.createTask as ReturnType<typeof vi.fn>)
-      .mockResolvedValueOnce({ ...FAKE_TASK_DETAIL, id: "FN-SCOPE-6", column: "triage" })
-      .mockResolvedValueOnce({ ...FAKE_TASK_DETAIL, id: "FN-SCOPE-7", column: "triage" });
-
-    const res = await REQUEST(
-      buildApp(),
-      "POST",
-      "/api/planning/create-tasks",
-      JSON.stringify({
-        planningSessionId: "plan-session-2",
-        projectId,
-        subtasks: [
-          { id: "subtask-1", title: "First scoped task", description: "First", suggestedSize: "S", dependsOn: [] },
-          { id: "subtask-2", title: "Second scoped task", description: "Second", suggestedSize: "M", dependsOn: ["subtask-1"] },
-        ],
-      }),
-      { "Content-Type": "application/json" },
-    );
-
-    expect(res.status).toBe(201);
-    expect(scopedStore.createTask).toHaveBeenCalledTimes(2);
-    expect(defaultStore.createTask).not.toHaveBeenCalled();
-  });
-
-  it("routes subtask create-tasks mutations to scoped store when projectId is provided", async () => {
-    vi.spyOn(subtaskBreakdownModule, "getSubtaskSession").mockReturnValue({
-      sessionId: "subtask-session-1",
-      initialDescription: "Break down scoped work",
-      subtasks: [],
-      status: "complete",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      thinkingOutput: "",
-    } as any);
-    vi.spyOn(subtaskBreakdownModule, "cleanupSubtaskSession").mockImplementation(() => {});
-
-    (scopedStore.createTask as ReturnType<typeof vi.fn>)
-      .mockResolvedValueOnce({ ...FAKE_TASK_DETAIL, id: "FN-SCOPE-8", column: "triage" })
-      .mockResolvedValueOnce({ ...FAKE_TASK_DETAIL, id: "FN-SCOPE-9", column: "triage" });
-
-    const res = await REQUEST(
-      buildApp(),
-      "POST",
-      "/api/subtasks/create-tasks",
-      JSON.stringify({
-        sessionId: "subtask-session-1",
-        projectId,
-        parentTaskId: "FN-PARENT",
-        subtasks: [
-          { tempId: "temp-1", title: "Scoped subtask one", description: "One", size: "S", dependsOn: [] },
-          { tempId: "temp-2", title: "Scoped subtask two", description: "Two", size: "M", dependsOn: ["temp-1"] },
-        ],
-      }),
-      { "Content-Type": "application/json" },
-    );
-
-    expect(res.status).toBe(201);
-    expect(scopedStore.getTask).toHaveBeenCalledWith("FN-PARENT");
-    expect(defaultStore.getTask).not.toHaveBeenCalled();
-    expect(scopedStore.createTask).toHaveBeenCalledTimes(2);
-    expect(defaultStore.createTask).not.toHaveBeenCalled();
-    expect(scopedStore.deleteTask).toHaveBeenCalledWith("FN-PARENT", expect.objectContaining({
-      auditContext: expect.objectContaining({
-        agentId: "system",
-        runId: expect.stringMatching(/^synthetic-planning-delete-FN-PARENT-/),
-        sessionId: "subtask-session-1",
-      }),
-    }));
-    expect(defaultStore.deleteTask).not.toHaveBeenCalled();
-  });
 });
 
 // --- Spec Revision route tests ---

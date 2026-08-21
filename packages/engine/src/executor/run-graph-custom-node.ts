@@ -34,6 +34,8 @@ import {
 } from "./workflow-step-verdict.js";
 import { parseAwaitInputSentinel } from "./await-input-parse.js";
 import { buildAgentPersona } from "./agent-binding-pure.js";
+import { reviewWorkspacePerRepo } from "./workspace-review-per-repo.js";
+import type { ReviewResult } from "../execution/reviewer.js";
 
 const WORKFLOW_THINKING_LEVEL_SET: ReadonlySet<string> = new Set(THINKING_LEVELS);
 
@@ -477,53 +479,96 @@ export async function runGraphCustomNode(
       ? graphContext["workflow:principal-agent-id"]
       : undefined;
     let outcome: WorkflowStepOutcome;
-    const workspaceReviewPaths = workspaceConfig && declaredReviewKind
-      ? Object.keys(executionTarget.workspaceWorktrees ?? {})
-        .filter((repoRelPath) => workspaceConfig.repos.includes(repoRelPath))
-        .sort()
-        .map((repoRelPath) => executionTarget.workspaceWorktrees?.[repoRelPath]?.worktreePath)
-        .filter((path): path is string => typeof path === "string" && path.length > 0)
+    const scopedWorkspacePaths = workspaceConfig && declaredReviewKind
+      ? (live.repositoryScope?.state === "confirmed"
+          ? live.repositoryScope.repositories
+            .map((repoRelPath) => executionTarget.workspaceWorktrees?.[repoRelPath]?.worktreePath)
+            .filter((path): path is string => typeof path === "string" && path.length > 0)
+          : [])
       : [];
-    if (workspaceConfig && declaredReviewKind) {
+    if (workspaceConfig && declaredReviewKind === "code") {
       /*
-      FNXC:WorkspaceRootRouting 2026-08-19-12:15:
-      Explicit graph plan/code review nodes are per-repository reviews, not a single review against
-      the coordinator checkout. Evaluate declared worktrees deterministically, stop at the first real
-      non-approval, and preserve that repository's actual outcome for the graph's existing edges.
+      FNXC:RepositoryScope 2026-08-21-00:44:
+      Graph custom code-review nodes share the authoritative scoped fresh-diff aggregator with
+      step-review. Acquisition is never review intent: clean peers are NOT_REVIEWED and only
+      modified confirmed repositories can produce a blocking verdict.
       */
-      if (workspaceReviewPaths.length === 0) {
-        outcome = { success: false, error: "No acquired declared-repository worktree was available for workspace review", failureValue: "workspace-review-no-worktrees" };
+      if (live.repositoryScope?.state !== "confirmed") {
+        outcome = { success: false, error: "Workspace Code Review requires confirmed repository scope", failureValue: "workspace-review-scope-unresolved" };
       } else {
-        const perRepoOutcomes: WorkflowStepOutcome[] = [];
-        for (const repoWorktreePath of workspaceReviewPaths) {
+        let aggregate = await reviewWorkspacePerRepo(live, async (repoWorktreePath): Promise<ReviewResult> => {
           const repoEnv = mode === "prompt"
             ? (await deps.buildInjectedRuntimeEnv(live.id, repoWorktreePath, undefined)).env
             : nodeEnv;
           const repoOutcome = mode === "script"
             ? await deps.executeScriptWorkflowStep(live, step, repoWorktreePath, settings, repoEnv)
             : await deps.executeWorkflowStep(live, step, repoWorktreePath, settings, repoEnv, { unattended, principalAgentId, outputLanguage });
-          perRepoOutcomes.push(repoOutcome);
-          const approval = repoOutcome.verdict === undefined
-            || repoOutcome.verdict === "APPROVE"
-            || repoOutcome.verdict === "APPROVE_WITH_NOTES"
-            || repoOutcome.verdict === "CLOSE_NO_OP";
-          if (!repoOutcome.success || !approval) break;
+          return {
+            verdict: (repoOutcome.verdict ?? (repoOutcome.success ? "APPROVE" : "UNAVAILABLE")) as ReviewResult["verdict"],
+            review: repoOutcome.output ?? repoOutcome.error ?? "",
+            summary: repoOutcome.output ?? repoOutcome.error ?? "",
+            retryable: !repoOutcome.success,
+          };
+        }, { workspaceRepos: workspaceConfig.repos, workspaceRootDir: deps.rootDir });
+        /*
+        FNXC:RepositoryScope 2026-08-21-02:35:
+        Custom review nodes use the same generation fence as step-review. A callback from an
+        older scope must be unavailable rather than contribute approval evidence or a graph edge.
+        */
+        let reviewSuperseded = false;
+        if (aggregate.repositoryScopeRevision !== undefined) {
+          const approvedAt = new Date().toISOString();
+          await deps.store.updateTaskAtomic(live.id, (current) => {
+            const currentScope = current.repositoryScope;
+            if (!currentScope || currentScope.revision !== aggregate.repositoryScopeRevision) {
+              reviewSuperseded = true;
+              return null;
+            }
+            if (aggregate.verdict !== "APPROVE" || !aggregate.repositoryDiffFingerprints || Object.keys(aggregate.repositoryDiffFingerprints).length === 0) {
+              return null;
+            }
+            return {
+              repositoryScope: {
+                ...currentScope,
+                reviewEvidence: Object.fromEntries(Object.entries(aggregate.repositoryDiffFingerprints).map(([repo, fingerprint]) => [repo, { fingerprint, approvedAt }])),
+              },
+            };
+          });
+          /* FNXC:RepositoryScope 2026-08-21-02:48: Fence the return handed to graph-result persistence as well as the evidence write. */
+          const afterEvidence = await deps.store.getTask(live.id);
+          if (afterEvidence.repositoryScope?.revision !== aggregate.repositoryScopeRevision) reviewSuperseded = true;
         }
-        const firstFailure = perRepoOutcomes.find((candidate) => {
-          const approval = candidate.verdict === undefined
-            || candidate.verdict === "APPROVE"
-            || candidate.verdict === "APPROVE_WITH_NOTES"
-            || candidate.verdict === "CLOSE_NO_OP";
-          return !candidate.success || !approval;
-        });
-        const selected = firstFailure ?? perRepoOutcomes[perRepoOutcomes.length - 1];
+        if (reviewSuperseded) {
+          aggregate = {
+            verdict: "UNAVAILABLE",
+            retryable: false,
+            review: "Workspace Code Review result superseded by a repository scope change.",
+            summary: "Unavailable: repository scope changed during review",
+            repositoryReviewOutcomes: aggregate.repositoryReviewOutcomes,
+            repositoryScopeRevision: aggregate.repositoryScopeRevision,
+          };
+        }
         outcome = {
-          ...selected,
-          output: perRepoOutcomes.map((candidate, index) => `[${workspaceReviewPaths[index]}]\n${candidate.output ?? ""}`).join("\n\n"),
-          ...(perRepoOutcomes.some((candidate) => candidate.findings?.length)
-            ? { findings: perRepoOutcomes.flatMap((candidate) => candidate.findings ?? []) }
-            : {}),
+          success: aggregate.verdict === "APPROVE",
+          verdict: aggregate.verdict as WorkflowStepOutcome["verdict"],
+          output: aggregate.review,
+          repositoryReviewOutcomes: aggregate.repositoryReviewOutcomes,
+          repositoryScopeRevision: aggregate.repositoryScopeRevision,
+          ...(aggregate.verdict === "UNAVAILABLE" ? { failureValue: "workspace-review-unavailable" } : {}),
         };
+      }
+    } else if (workspaceConfig && declaredReviewKind === "plan") {
+      /* FNXC:RepositoryScope 2026-08-21-00:44: Plan Review is one task-document session using a scoped coordinator, never a per-checkout fan-out. */
+      const coordinator = scopedWorkspacePaths.sort()[0];
+      if (!coordinator) {
+        outcome = { success: false, error: "Workspace Plan Review requires a confirmed scoped repository checkout", failureValue: "workspace-review-no-worktrees" };
+      } else {
+        const coordinatorEnv = mode === "prompt"
+          ? (await deps.buildInjectedRuntimeEnv(live.id, coordinator, undefined)).env
+          : nodeEnv;
+        outcome = mode === "script"
+          ? await deps.executeScriptWorkflowStep(live, step, coordinator, settings, coordinatorEnv)
+          : await deps.executeWorkflowStep(live, step, coordinator, settings, coordinatorEnv, { unattended, principalAgentId, outputLanguage });
       }
     } else {
       outcome = mode === "script"
@@ -583,6 +628,9 @@ export async function runGraphCustomNode(
     if (typeof stepNotes === "string" && stepNotes) contextPatch.notes = stepNotes;
     const stepFindings = outcome.findings;
     if (stepFindings?.length) contextPatch.findings = stepFindings;
+    const repositoryReviewOutcomes = outcome.repositoryReviewOutcomes;
+    if (repositoryReviewOutcomes?.length) contextPatch.repositoryReviewOutcomes = repositoryReviewOutcomes;
+    if (outcome.repositoryScopeRevision !== undefined) contextPatch.repositoryScopeRevision = outcome.repositoryScopeRevision;
     if (outcome.supersededFindingIds?.length && outcome.supersededFindingSourceWorkflowStepId) {
       contextPatch.supersededFindingSourceWorkflowStepId = outcome.supersededFindingSourceWorkflowStepId;
       contextPatch.supersededFindingIds = outcome.supersededFindingIds;
@@ -611,7 +659,13 @@ export async function runGraphCustomNode(
     Malformed review output (no parseable verdict, even after the fallback-model retry in executeWorkflowStep) is treated as a NON-BLOCKING advisory rather than a hard gate failure. Operators asked that an unparseable reviewer response not block a task in review — a genuine REVISE (parsed verdict) still blocks, and the advisory_failure value keeps the malformed result visible on the Workflow tab. Only `malformed` relaxes a gate; every parsed non-pass verdict continues to block exactly as before.
     */
     return {
-      outcome: outcome.success || !blocking || malformed ? "success" : "failure",
+      /*
+      FNXC:RepositoryScope 2026-08-21-03:05:
+      An advisory review may tolerate malformed reviewer text, but a scope-superseded
+      UNAVAILABLE result is never a pass. Returning success here would persist it as passed
+      and admit an obsolete Code Review edge.
+      */
+      outcome: outcome.success || ((!blocking || malformed) && verdict !== "UNAVAILABLE") ? "success" : "failure",
       value: (outcome as WorkflowStepOutcome).failureValue ?? verdict ?? (outcome.success ? "passed" : advisoryFailureValue),
       ...(Object.keys(contextPatch).length > 0 ? { contextPatch } : {}),
     };

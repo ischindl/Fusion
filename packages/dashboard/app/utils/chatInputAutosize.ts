@@ -1,6 +1,6 @@
 /*
-FNXC:ChatComposer 2026-08-19-17:58:
-Primary conversation composers protect the transcript by growing automatically through five rendered lines, then scrolling their own overflow. Desktop/tablet resizing is owned by a top-edge pointer drag so the bottom edge stays fixed; its current-draft override is never persisted and collapses as soon as measured content no longer warrants the chosen height.
+FNXC:ChatComposer 2026-08-20-19:25:
+FN-076 requires every dashboard chat textarea to grow automatically through five rendered lines, scroll excess content internally, and return to its minimum height after content is removed or cleared. Manual mouse resizing is intentionally unavailable so one controller-owned measurement remains the only height authority.
 */
 
 export const CHAT_INPUT_MAX_LINES = 5;
@@ -18,8 +18,7 @@ export interface ChatInputBoxMetrics {
 }
 
 export interface ChatInputAutosizeController {
-  resize(options?: { resetManual?: boolean }): void;
-  reset(): void;
+  resize(): void;
   destroy(): void;
 }
 
@@ -96,135 +95,28 @@ export function clampChatInputHeight(
   return Math.max(CHAT_INPUT_MIN_HEIGHT_PX, Math.min(safeScrollHeight, safeMaxHeight));
 }
 
-function readBorderBoxHeight(textarea: HTMLTextAreaElement, entry?: ResizeObserverEntry): number {
-  const borderBoxSize = entry?.borderBoxSize;
-  const observedSize = Array.isArray(borderBoxSize) ? borderBoxSize[0] : borderBoxSize;
-  if (observedSize?.blockSize && observedSize.blockSize > 0) return observedSize.blockSize;
-
-  const contentHeight = entry?.contentRect.height ?? 0;
-  if (contentHeight > 0) {
-    const metrics = getChatInputBoxMetrics(textarea);
-    return contentHeight + metrics.paddingTopPx + metrics.paddingBottomPx + metrics.borderTopPx + metrics.borderBottomPx;
-  }
-
-  const rectHeight = textarea.getBoundingClientRect().height;
-  if (rectHeight > 0) return rectHeight;
-  if (textarea.offsetHeight > 0) return textarea.offsetHeight;
-  return parseCssPixels(textarea.style.height) ?? 0;
-}
-
-/** Attach autosizing and desktop/tablet top-edge resizing to one mounted primary composer. */
+/** Attach automatic-only five-line sizing to one mounted dashboard chat textarea. */
 export function createChatInputAutosizeController(textarea: HTMLTextAreaElement): ChatInputAutosizeController {
-  let manualHeight: number | null = null;
-  let appliedHeight = 0;
-  let automaticMaxHeight = CHAT_INPUT_DEFAULT_MAX_HEIGHT_PX;
-  let activePointerId: number | null = null;
-  let dragStartY = 0;
-  let dragStartHeight = 0;
-  let previousUserSelect = "";
   let destroyed = false;
 
-  const isAutomaticOnlyViewport = () => typeof window !== "undefined"
-    && typeof window.matchMedia === "function"
-    && window.matchMedia("(max-width: 768px)").matches;
-
-  const finishResize = () => {
-    if (activePointerId === null) return;
-    if (typeof textarea.hasPointerCapture === "function" && textarea.hasPointerCapture(activePointerId)) {
-      textarea.releasePointerCapture(activePointerId);
-    }
-    activePointerId = null;
-    document.body.style.userSelect = previousUserSelect;
-  };
-
-  const apply = (resetManual = false) => {
+  const resize = () => {
     if (destroyed) return;
-    if (resetManual) manualHeight = null;
 
-    automaticMaxHeight = getChatInputAutomaticMaxHeight(getChatInputBoxMetrics(textarea));
+    // Clear the previous used size before measurement so shortened and empty controlled drafts shrink.
+    textarea.style.height = "0px";
+    const maxHeight = getChatInputAutomaticMaxHeight(getChatInputBoxMetrics(textarea));
     const contentHeight = Number.isFinite(textarea.scrollHeight) ? textarea.scrollHeight : 0;
-    const automaticHeight = clampChatInputHeight(contentHeight, automaticMaxHeight);
-
-    // A manual height only belongs to the current measured draft. Once content is shorter than
-    // it, resume automatic sizing rather than leaving an empty or shortened composer enlarged.
-    if (manualHeight !== null && contentHeight < manualHeight) manualHeight = null;
-    const nextHeight = manualHeight ?? automaticHeight;
-
-    if (manualHeight === null) {
-      // Reset the used height before reading scrollHeight so shrinking drafts recalculate too.
-      textarea.style.height = "0px";
-    }
+    const nextHeight = clampChatInputHeight(contentHeight, maxHeight);
     textarea.style.height = `${nextHeight}px`;
-    textarea.style.overflowY = resolveChatInputOverflowY(contentHeight, nextHeight);
-    appliedHeight = nextHeight;
+    textarea.style.overflowY = resolveChatInputOverflowY(contentHeight, maxHeight);
   };
 
-  const onPointerDown = (event: PointerEvent) => {
-    if (destroyed || event.pointerType !== "mouse" || isAutomaticOnlyViewport()) return;
-    const rect = textarea.getBoundingClientRect();
-    if (rect.height <= 0) return;
-    const topResizeBorder = Math.min(12, rect.height);
-    if (event.clientY < rect.top || event.clientY > rect.top + topResizeBorder) return;
-
-    event.preventDefault();
-    activePointerId = event.pointerId;
-    dragStartY = event.clientY;
-    dragStartHeight = Math.max(appliedHeight, readBorderBoxHeight(textarea));
-    previousUserSelect = document.body.style.userSelect;
-    document.body.style.userSelect = "none";
-    textarea.setPointerCapture?.(event.pointerId);
-  };
-
-  const onPointerMove = (event: PointerEvent) => {
-    if (event.pointerId !== activePointerId) return;
-    event.preventDefault();
-    const contentHeight = Number.isFinite(textarea.scrollHeight) ? textarea.scrollHeight : 0;
-    const automaticHeight = clampChatInputHeight(contentHeight, automaticMaxHeight);
-    const draggedHeight = Math.max(automaticHeight, dragStartHeight + dragStartY - event.clientY);
-    manualHeight = draggedHeight > automaticHeight ? draggedHeight : null;
-    textarea.style.height = `${manualHeight ?? automaticHeight}px`;
-    textarea.style.overflowY = resolveChatInputOverflowY(contentHeight, manualHeight ?? automaticHeight);
-    appliedHeight = manualHeight ?? automaticHeight;
-  };
-
-  const onPointerEnd = (event: PointerEvent) => {
-    if (event.pointerId === activePointerId) finishResize();
-  };
-
-  textarea.addEventListener("pointerdown", onPointerDown);
-  textarea.addEventListener("pointermove", onPointerMove);
-  textarea.addEventListener("pointerup", onPointerEnd);
-  textarea.addEventListener("pointercancel", onPointerEnd);
-
-  // Keep the observer fence for layout-driven box changes, but never treat a controller-authored
-  // resize as a new manual override. Pointer movement is the sole manual-resize authority.
-  const resizeObserver = typeof ResizeObserver === "undefined"
-    ? null
-    : new ResizeObserver((entries) => {
-        const entry = entries.find((candidate) => candidate.target === textarea);
-        if (!entry || destroyed || Math.abs(readBorderBoxHeight(textarea, entry) - appliedHeight) < 1) return;
-        automaticMaxHeight = getChatInputAutomaticMaxHeight(getChatInputBoxMetrics(textarea));
-      });
-  resizeObserver?.observe(textarea);
-
-  apply();
+  resize();
 
   return {
-    resize(options) {
-      apply(options?.resetManual === true);
-    },
-    reset() {
-      apply(true);
-    },
+    resize,
     destroy() {
-      if (destroyed) return;
-      finishResize();
       destroyed = true;
-      textarea.removeEventListener("pointerdown", onPointerDown);
-      textarea.removeEventListener("pointermove", onPointerMove);
-      textarea.removeEventListener("pointerup", onPointerEnd);
-      textarea.removeEventListener("pointercancel", onPointerEnd);
-      resizeObserver?.disconnect();
     },
   };
 }

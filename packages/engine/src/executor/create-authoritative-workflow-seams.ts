@@ -355,7 +355,9 @@ export function createAuthoritativeWorkflowSeams(
           : deps.workspaceConfig;
         const workspaceCoordinator = workspaceConfig
           ? Object.keys(detail.workspaceWorktrees ?? {})
-            .filter((repoRelPath) => workspaceConfig.repos.includes(repoRelPath))
+            // FNXC:RepositoryScope 2026-08-20-23:40: Plan Review needs one real scoped checkout for
+            // task-document context; acquisition alone never authorizes a reviewer cwd.
+            .filter((repoRelPath) => workspaceConfig.repos.includes(repoRelPath) && detail.repositoryScope?.repositories.includes(repoRelPath))
             .sort()
             .map((repoRelPath) => detail.workspaceWorktrees?.[repoRelPath]?.worktreePath)
             .find((path): path is string => typeof path === "string" && path.length > 0)
@@ -378,6 +380,9 @@ export function createAuthoritativeWorkflowSeams(
         if (reviewCwd) logReviewCheckoutRouting(seamTask.id, detail, reviewCwd, worktreePath);
         const stepName = detail.steps[stepIndex]?.name ?? `Step ${stepIndex}`;
         const promptContent = detail.prompt ?? "";
+        const planScopeContext = workspaceConfig && config.type === "plan"
+          ? `\n\nRepository scope (task-level; review this plan once): ${detail.repositoryScope?.repositories.join(", ") || "unconfirmed"}.`
+          : "";
         const userComments = selectUserCommentsForAgentContext(detail, { limit: null });
         // Merge per-task effective workflow settings (U3, KTD-3) so the validator
         // model-lane reads below pick up workflow values. Behavior-inert by default.
@@ -404,7 +409,7 @@ export function createAuthoritativeWorkflowSeams(
             stepIndex,
             stepName,
             type: config.type,
-            promptContent,
+            promptContent: `${promptContent}${planScopeContext}`,
             // Code reviews diff against the per-step baseline captured at
             // step-execute; plan reviews pass no baseline (advisory).
             baselineSha: config.type === "code" ? active.baselineSha : undefined,
@@ -459,13 +464,20 @@ export function createAuthoritativeWorkflowSeams(
           return sem ? sem.runNested(invoke) : invoke();
         };
         /*
-        FNXC:WorkspaceRootRouting 2026-08-19-12:15:
-        Every workspace step-review is aggregated across the acquired repository set. Prompt-node
-        review routing is handled by runGraphCustomNode's matching per-repository coordinator loop;
-        no review form may use the singular detail.worktree or workspace root as a fallback.
+        FNXC:RepositoryScope 2026-08-20-23:40:
+        Plan Review is one task-document session even in a workspace. Code Review alone aggregates
+        modified scoped repositories. This prevents a clean acquired checkout from producing either
+        an extra plan session or an unavailable verdict before implementation starts.
         */
         const invokeReviewer = () =>
-          workspaceConfig
+          workspaceConfig && config.type === "code" && detail.repositoryScope?.state !== "confirmed"
+            ? Promise.resolve({
+                verdict: "UNAVAILABLE" as const,
+                retryable: false,
+                review: "Workspace Code Review requires a confirmed repository scope.",
+                summary: "Unavailable: repository scope is not confirmed",
+              })
+            : workspaceConfig && config.type === "code"
             ? deps.reviewWorkspacePerRepo(detail, (cwd: string) => runForCwd(cwd), {
                 workspaceRepos: workspaceConfig.repos,
                 workspaceRootDir: deps.rootDir,
@@ -479,7 +491,9 @@ export function createAuthoritativeWorkflowSeams(
                 noOpCompletion: detail.noCommitsExpected === true,
                 noOpCompletionReason: "verified no-op completion persisted by fn_task_done",
               })
-            : runForCwd(reviewCwd);
+            : workspaceConfig && !reviewCwd
+              ? Promise.resolve({ verdict: "UNAVAILABLE" as const, retryable: false, review: "Workspace Plan Review requires a confirmed scoped repository checkout.", summary: "Unavailable: no scoped repository checkout" })
+              : runForCwd(reviewCwd);
 
         let review: ReviewResult;
         try {
@@ -490,6 +504,43 @@ export function createAuthoritativeWorkflowSeams(
           const narration = buildReviewUnavailableMessage(err);
           void emitProactiveStatus(deps.store, seamTask.id, narration, "reviewer", sanitizeFailureReason(err));
           return { verdict: "UNAVAILABLE", review: `reviewer error: ${message}` };
+        }
+
+        /*
+        FNXC:RepositoryScope 2026-08-21-02:35:
+        A workspace Code Review callback belongs to the scope generation used to capture its
+        per-repository diff evidence. Check that generation under the task lock before persisting
+        approval or advancing the graph: an operator scope change supersedes the whole callback.
+        */
+        let reviewSuperseded = false;
+        if (workspaceConfig && config.type === "code" && review.repositoryScopeRevision !== undefined) {
+          const approvedAt = new Date().toISOString();
+          await deps.store.updateTaskAtomic(seamTask.id, (current) => {
+            const currentScope = current.repositoryScope;
+            if (!currentScope || currentScope.revision !== review.repositoryScopeRevision) {
+              reviewSuperseded = true;
+              return null;
+            }
+            if (review.verdict !== "APPROVE" || !review.repositoryDiffFingerprints || Object.keys(review.repositoryDiffFingerprints).length === 0) {
+              return null;
+            }
+            return {
+              repositoryScope: {
+                ...currentScope,
+                reviewEvidence: Object.fromEntries(Object.entries(review.repositoryDiffFingerprints).map(([repo, fingerprint]) => [repo, { fingerprint, approvedAt }])),
+              },
+            };
+          });
+        }
+        if (reviewSuperseded) {
+          review = {
+            verdict: "UNAVAILABLE",
+            retryable: false,
+            review: "Workspace Code Review result superseded by a repository scope change.",
+            summary: "Unavailable: repository scope changed during review",
+            repositoryReviewOutcomes: review.repositoryReviewOutcomes,
+            repositoryScopeRevision: review.repositoryScopeRevision,
+          };
         }
 
         await deps.store.logEntry(
@@ -515,6 +566,24 @@ export function createAuthoritativeWorkflowSeams(
         if (review.verdict === "APPROVE" && !config.advisory) {
           try {
             const cur = await deps.store.getTask(seamTask.id);
+            /*
+            FNXC:RepositoryScope 2026-08-21-02:48:
+            The step-inversion path has its own graph-advance projection. Re-read
+            the scope generation after evidence persistence and before marking the
+            step done, so an intervening scope mutation routes this callback as
+            unavailable instead of allowing its old APPROVE edge to advance.
+            */
+            if (workspaceConfig && config.type === "code" && review.repositoryScopeRevision !== undefined
+              && cur.repositoryScope?.revision !== review.repositoryScopeRevision) {
+              return {
+                verdict: "UNAVAILABLE",
+                retryable: false,
+                review: "Workspace Code Review result superseded by a repository scope change.",
+                summary: "Unavailable: repository scope changed during review before graph advancement",
+                repositoryReviewOutcomes: review.repositoryReviewOutcomes,
+                repositoryScopeRevision: review.repositoryScopeRevision,
+              };
+            }
             const status = cur.steps[stepIndex]?.status;
             if (stepIndex >= 0 && stepIndex < cur.steps.length && status !== "done" && status !== "skipped") {
               await deps.updateStepGraph(seamTask.id, stepIndex, "done");
@@ -530,7 +599,15 @@ export function createAuthoritativeWorkflowSeams(
           }
         }
 
-        return { verdict: review.verdict, review: review.review, summary: review.summary, retryable: review.retryable };
+        return {
+          verdict: review.verdict,
+          review: review.review,
+          summary: review.summary,
+          retryable: review.retryable,
+          repositoryDiffFingerprints: review.repositoryDiffFingerprints,
+          repositoryReviewOutcomes: review.repositoryReviewOutcomes,
+          repositoryScopeRevision: review.repositoryScopeRevision,
+        };
       },
     };
 }

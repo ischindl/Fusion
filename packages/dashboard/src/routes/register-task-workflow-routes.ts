@@ -130,7 +130,7 @@ import {
 import { buildBoardWorkflowsPayload } from "./board-workflows.js";
 import { resolveNativeStructurePreview } from "../native-structure-preview.js";
 import { isBackwardMoveBlockedByOpenPr, PR_OPEN_BLOCKS_MOVE_BACK_MESSAGE } from "./register-pull-requests-routes.js";
-import { computePlanApprovalFingerprint, isTaskAwaitingPlanning, isWorkspaceTask, type RunAuditEventInput } from "@fusion/core";
+import { allowsAutoMergeProcessing, computePlanApprovalFingerprint, isTaskAwaitingPlanning, isWorkspaceTask, type RunAuditEventInput } from "@fusion/core";
 import { FUSION_CLIENT_HEADER, resolveHttpDeleteCallerKind, isValidTaskBranchName } from "@fusion/core";
 import { ApiError, badRequest, conflict, notFound } from "../api-error.js";
 // FNXC:TaskLookup404 2026-07-26-11:40: shared task-miss -> 404 mapping seam.
@@ -1632,7 +1632,6 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         description,
         column,
         dependencies,
-        breakIntoSubtasks,
         enabledWorkflowSteps,
         workflowId,
         agentId,
@@ -1664,6 +1663,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         sessionAdvisorEnabled,
         acknowledgedDuplicates,
         bypassDuplicateCheck,
+        repositoryScope,
       } = req.body;
       if (!description || typeof description !== "string") {
         throw badRequest("description is required");
@@ -1678,8 +1678,11 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       if (bypassDuplicateCheck !== undefined && typeof bypassDuplicateCheck !== "boolean") {
         throw badRequest("bypassDuplicateCheck must be a boolean");
       }
-      if (breakIntoSubtasks !== undefined && typeof breakIntoSubtasks !== "boolean") {
-        throw badRequest("breakIntoSubtasks must be a boolean");
+      if (repositoryScope !== undefined && (!Array.isArray(repositoryScope) || !repositoryScope.every((repo: unknown) => typeof repo === "string" && repo.trim().length > 0))) {
+        throw badRequest("repositoryScope must be an array of non-empty repository names");
+      }
+      if (Object.hasOwn(req.body as object, "breakIntoSubtasks")) {
+        throw badRequest("breakIntoSubtasks is no longer supported; create one detailed task instead");
       }
 
       const validatedModelProvider = validateOptionalModelField(modelProvider, "modelProvider");
@@ -2091,13 +2094,19 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       }
 
       const normalizedTaskSource = normalizedSource as TaskSource;
+      /*
+      FNXC:RepositoryScope 2026-08-21-00:12:
+      The dashboard forwards explicit create-time repository intent unchanged to the guarded
+      TaskStore boundary. Server validation keeps a browser payload from naming a checkout that
+      is not configured for this project.
+      */
       const createInput = {
         title: normalizedTitle,
         description: normalizedDescription,
         column,
         dependencies,
-        breakIntoSubtasks,
         enabledWorkflowSteps,
+        ...(repositoryScope !== undefined ? { repositoryScope: repositoryScope.map((repo: string) => repo.trim()) } : {}),
         // U6/R3: forward only when the client set it (string | null). Leaving it
         // absent preserves the project-default inheritance behavior.
         ...(workflowId !== undefined ? { workflowId: workflowId as string | null } : {}),
@@ -2284,6 +2293,43 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
   // Ordinary dashboard creation deliberately shares the guarded production intake above.
   router.post("/tasks", async (req, res) => {
     await createTaskThroughGuardedIntake(req, res);
+  });
+
+  /*
+  FNXC:RepositoryScope 2026-08-21-00:12:
+  Operators can correct, extend, or refuse repository intent before landing. The core mutation
+  re-checks pending intents and landed SHA state under its advisory transaction, so this route
+  returns the authoritative snapshot instead of trusting a stale dashboard copy.
+  */
+  router.post("/tasks/:id/repository-scope", async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      const id = req.params.id;
+      const { repositories, reason, action } = req.body ?? {};
+      if (!Array.isArray(repositories) || !repositories.every((repo: unknown) => typeof repo === "string" && repo.trim().length > 0)) {
+        throw badRequest("repositories must be an array of non-empty repository names");
+      }
+      if (typeof reason !== "string" || reason.trim().length === 0) throw badRequest("reason is required");
+      if (action !== undefined && action !== "add" && action !== "remove" && action !== "refuse") throw badRequest("action must be add, remove, or refuse");
+      const task = await scopedStore.getTask(id);
+      if (!task) throw new ApiError(404, `Task ${id} not found`);
+      /*
+      FNXC:RepositoryScope 2026-08-21-01:53:
+      Send an operator delta, never a replacement assembled from this read. The store takes the
+      planning lifecycle lock and appends the event to the current durable scope with plan and
+      executor changes serialized ahead of the task advisory transaction.
+      */
+      const updated = await scopedStore.mutateTaskRepositoryScope(id, {
+        action: action ?? "add",
+        repositories: repositories.map((repository: string) => repository.trim()),
+        reason: reason.trim(),
+        actor: "operator",
+      });
+      res.json(updated);
+    } catch (err: unknown) {
+      if (err instanceof ApiError) throw err;
+      rethrowAsApiError(err);
+    }
   });
 
   /*
@@ -3516,6 +3562,28 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
           ...buildManualRetryResetPatch({ resetMergeRetries: true }),
         });
         await scopedStore.logEntry(req.params.id, `Retry requested from dashboard (in-review merge retry, mergeRetries reset${retryLogSuffix})`);
+
+        /*
+        FNXC:WorkspaceRetry 2026-08-20-20:46:
+        A lease-loss workspace merge must resume promptly when an operator selects Retry, without
+        waiting for periodic recovery. Delegate only to ProjectEngine's fenced queue after its
+        authoritative pending-owner probe says no local or remote owner exists; probe failures stay
+        fail-closed so this route never duplicates an active land attempt or handles leases itself.
+        */
+        const isCompletedWorkspaceMerge = isWorkspaceTask(task)
+          && task.steps.every((step) => step.status === "done" || step.status === "skipped");
+        const isUserControlledPause = task.userPaused === true || (task.paused === true && !task.pausedReason);
+        if (engine && isCompletedWorkspaceMerge && !isUserControlledPause) {
+          const settings = await scopedStore.getSettings();
+          if (allowsAutoMergeProcessing(task, settings)) {
+            try {
+              if (!(await engine.isMergePending(task.id))) engine.enqueueMerge(task.id);
+            } catch {
+              // An unreadable pending-owner probe must preserve the retry reset but not dispatch.
+            }
+          }
+        }
+
         const updated = await scopedStore.getTask(req.params.id);
         res.json(updated);
         return;
@@ -3586,6 +3654,23 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         throw err;
       }
       rethrowTaskApiError(err, req.params.id);
+    }
+  });
+
+  /* FNXC:AIMergeReviewReconciliation 2026-08-20-21:56: dashboard dismissal is distinct from failed workflow-step bypass and requires server-derived actor plus a nonblank reason. */
+  router.post("/tasks/:id/ai-merge-review-findings/:findingId/dismiss", async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      const { reason } = (req.body ?? {}) as { reason?: unknown };
+      if (typeof reason !== "string" || !reason.trim()) throw badRequest("reason is required to dismiss an AI merge finding");
+      const updated = await scopedStore.dismissAiMergeReviewFinding(req.params.id, req.params.findingId, reason.trim(), "dashboard-operator");
+      res.json(updated);
+    } catch (err: unknown) {
+      if (err instanceof ApiError) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("not active") || message.includes("not found")) throw notFound(message);
+      if (message.includes("requires a nonblank")) throw badRequest(message);
+      rethrowAsApiError(err);
     }
   });
 
@@ -3765,13 +3850,19 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
             throw conflict(`Reset incomplete; runtime finalization failed: ${error instanceof Error ? error.message : String(error)}`);
           }
 
-          const publish = (scopedStore as TaskStore & {
+          const storeWithPublisher = scopedStore as TaskStore & {
             resetTaskPublication?: (taskId: string, intake: string) => Promise<Task>;
-          }).resetTaskPublication;
-          if (typeof publish !== "function") {
+          };
+          if (typeof storeWithPublisher.resetTaskPublication !== "function") {
             throw new Error("Atomic task reset publication is unavailable");
           }
-          return publish(req.params.id, intakeColumn);
+          /*
+          FNXC:TaskReset 2026-08-20-05:53:
+          Reset publication is a TaskStore instance method whose PostgreSQL implementation reads
+          `this.asyncLayer`. Invoke it through the scoped store so the atomic publisher retains its
+          project-scoped receiver after cleanup and runtime finalization.
+          */
+          return storeWithPublisher.resetTaskPublication(req.params.id, intakeColumn);
         } finally {
           if (reservation?.state === "held") {
             try {

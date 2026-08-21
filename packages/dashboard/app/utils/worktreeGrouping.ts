@@ -90,14 +90,15 @@ export function groupByWorktree(
   dependencyColumnFlags?: ReadonlyMap<string, Parameters<typeof isCompleteColumnRole>[0]>,
 ): WorktreeGroupData[] {
   /*
-  FNXC:Workspace 2026-08-15-03:35:
-  A workspace task legitimately has no singular `worktree` while owning one per-repository
-  worktree. Boolean(task.worktree) therefore is not its assignment test. Workspace worktrees
-  commonly share a basename, so groups use stable ids rather than labels as React keys.
+  FNXC:Workspace 2026-08-20-20:05:
+  A populated workspaceWorktrees map is authoritative over a stale singular worktree delivered
+  before asynchronous store normalization. Classify it as workspace first so a one-repository
+  workspace cannot be hidden under an unrelated singular group; stable ids still prevent
+  basename collisions between acquired repository paths.
   */
-  const assigned = inProgressTasks.filter((task) => Boolean(task.worktree));
-  const workspaceTasks = inProgressTasks.filter((task) => !task.worktree && isWorkspaceTask(task));
-  const unassigned = inProgressTasks.filter((task) => !task.worktree && !isWorkspaceTask(task));
+  const workspaceTasks = inProgressTasks.filter(isWorkspaceTask);
+  const assigned = inProgressTasks.filter((task) => !isWorkspaceTask(task) && Boolean(task.worktree));
+  const unassigned = inProgressTasks.filter((task) => !isWorkspaceTask(task) && !task.worktree);
 
   // Group assigned tasks by worktree
   const worktreeMap = new Map<string, Task[]>();

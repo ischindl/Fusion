@@ -84,7 +84,10 @@
       "minutesAgo_other": ""
     },
     "title": "활동 로그",
-    "typeFilterBadge": ""
+    "typeFilterBadge": "",
+    "taskId": "작업 ID",
+    "taskIdSearchPlaceholder": "작업 ID 검색(예: FN-066)",
+    "taskIdFilterBadge": "작업: {{taskId}}"
   },
   "agentError": {
     "copied": "복사됨",
@@ -6206,6 +6209,10 @@
       "releaseChannelHelp": "",
       "autoUpdateAndRestart": "",
       "autoUpdateAndRestartHelp": "",
+      "autoUpdateEnabled": "",
+      "autoUpdateEnabledHelp": "",
+      "autoRestartAfterUpdate": "",
+      "autoRestartAfterUpdateHelp": "",
       "channelStable": "",
       "channelBeta": "",
       "agentToolOutputLimit": "",

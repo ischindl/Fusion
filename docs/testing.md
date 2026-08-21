@@ -941,3 +941,15 @@ FN-9136 evaluated and rejected per-fork `TRUNCATE` database reuse: its two-sided
 FN-9130 evaluated a reusable advisory admission primitive: server session locks coordinate forks while a process-local ledger coordinates counted same-session locks within a fork; async context allows true nesting only. It uses one maintenance-database connection per fork, holds a slot for one statement only, and reports fail-open degradation. `FUSION_PG_TEST_DDL_MAX_CONCURRENCY` and `FUSION_PG_TEST_DDL_ADMISSION_ACQUIRE_TIMEOUT_MS` configure that primitive for its deterministic coverage.
 
 The harness does **not** currently wire the primitive into `CREATE DATABASE` or `DROP DATABASE`. Uniform CREATE/DROP pooling regressed the 12-worker lane (49 watchdogs / 5,068ms versus a 4–5 / 3,284ms baseline); drop-only wiring also regressed (27 / 3,361ms). A bounded off-hook reaper (R=2/Q=8, flush, and dead-pid sweep) was then measured and reverted: its watchdog zero was structural, but green runs took 117.2s and 122.4s against a 108.1s baseline maximum and a later run timed out. FN-9136 subsequently evaluated and rejected candidate C (per-fork reuse plus `TRUNCATE`) because its seven-pair campaign leaked dead-fork pooled databases. The pg-gate's four-worker cap remains a separate lane-shape policy.
+
+### Workspace lifecycle parity regression
+
+Use focused workspace tests for a two-repository task with one explicitly scoped, modified repository:
+
+```bash
+pnpm --filter @fusion/core exec vitest run src/__tests__/postgres/workspace-worktrees-concurrent-merge.pg.test.ts --silent=passed-only --reporter=dot
+pnpm --filter @fusion/engine exec vitest run src/__tests__/reviewer-workspace.test.ts src/__tests__/self-healing-workspace.test.ts src/__tests__/workspace-merger.test.ts --silent=passed-only --reporter=dot
+pnpm --filter @fusion/dashboard exec vitest run app/components/__tests__/WorkspaceWorktreesSummary.test.tsx --silent=passed-only --reporter=dot
+```
+
+The parity invariant is that a mono-repository task and a workspace task changing one scoped repository have identical review, completion, and landing outcomes. The acquired clean peer must be displayed as **No changes — not reviewed**, must not get a blocking verdict, and must not become a partial-land target.

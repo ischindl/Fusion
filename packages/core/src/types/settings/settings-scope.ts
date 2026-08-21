@@ -633,6 +633,14 @@ export interface GlobalSettings {
    * install entirely and logs why instead.
    */
   autoUpdateAndRestart?: boolean;
+  /*
+  FNXC:UpdateAutomation 2026-08-21-02:17:
+  Automatic installation and post-install restart are separate operator choices.
+  An explicit new value wins; the deprecated combined key is read only as a
+  compatibility fallback for existing opt-ins.
+  */
+  autoUpdateEnabled?: boolean;
+  autoRestartAfterUpdate?: boolean;
   /** When true (default), the dashboard automatically reloads when a new build
    *  version is detected via /version.json polling or service worker activation.
    *  Set to false to suppress automatic reloads — the user must manually

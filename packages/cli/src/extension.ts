@@ -2953,7 +2953,7 @@ export default function kbExtension(pi: ExtensionAPI) {
     description:
       "Soft-delete a task from active Fusion board views. " +
       "The task row and artifacts are preserved; optional allowResurrection marks the ID for intentional recreation. " +
-      "If the task is still referenced as a lineage parent by another task, deletion is rejected unless removeLineageReferences:true is passed.",
+      "If live lineage children or dependents still reference the task, deletion is rejected unless the matching explicit reference-removal option is passed.",
     promptSnippet: "Soft-delete a Fusion task",
     promptGuidelines: [
       "Use for cleaning up test tasks or tasks created in error when you want the task hidden from active board views",
@@ -2962,16 +2962,23 @@ export default function kbExtension(pi: ExtensionAPI) {
       "Use fn_task_archive for completed work you want to keep referenceable in the board",
       "True hard removal is handled by archive cleanup paths (archiveTaskAndCleanup / cleanupArchivedTasks), not fn_task_delete",
       "If deletion fails because the task is still referenced as a lineage parent by another task, retry with removeLineageReferences:true to clear that reference and unblock the delete",
+      "If deletion fails because live tasks depend on it, first review the conflict, then deliberately retry with removeDependencyReferences:true to atomically remove only those incoming dependency edges and replan affected tasks",
     ],
     /*
     FNXC:TaskLifecycleTools 2026-07-07-00:00:
     See matching comment on fn_task_archive above (FN-7661): the store's TaskHasLineageChildrenError message
     advertises { removeLineageReferences: true } as the recovery path, so this tool must expose and forward it too.
+
+    FNXC:DependencyIntegrity 2026-08-20-19:00:
+    FN-075 exposes the store's explicit dependent-conflict recovery at the CLI bridge. The bridge
+    must delegate incoming-edge removal, stale-blocker clearing, and dependency replan fencing to
+    the PostgreSQL delete transaction; it must not mutate dependency arrays itself.
     */
     parameters: Type.Object({
       id: Type.String({ description: "Task ID to delete (e.g. FN-001)" }),
       allowResurrection: Type.Optional(Type.Boolean({ description: "When true, mark this tombstone as explicitly reusable for future recreation." })),
       removeLineageReferences: Type.Optional(Type.Boolean({ description: "When true, clear incoming lineage-parent references (child sourceParentTaskId) before deleting, so a task still referenced as a lineage parent can be removed." })),
+      removeDependencyReferences: Type.Optional(Type.Boolean({ description: "When true, remove incoming dependency edges before soft deletion. Omit or pass false to retain the dependent-conflict refusal." })),
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -2983,6 +2990,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       const task = await store.deleteTask(params.id, {
         allowResurrection: params.allowResurrection === true,
         removeLineageReferences: params.removeLineageReferences === true,
+        removeDependencyReferences: params.removeDependencyReferences === true,
         auditContext: {
           /*
           FNXC:TaskDeleteAttribution 2026-07-26-14:30:

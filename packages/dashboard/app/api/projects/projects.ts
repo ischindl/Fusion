@@ -294,6 +294,7 @@ export interface FeedOptions {
   since?: string;
   projectId?: string;
   type?: ActivityFeedEntry["type"];
+  taskId?: string;
 }
 
 /** Global concurrency state across all projects */
@@ -811,7 +812,8 @@ export function fetchActivityFeed(options?: FeedOptions): Promise<ActivityFeedEn
   if (options?.limit !== undefined) params.set("limit", String(options.limit));
   if (options?.since) params.set("since", options.since);
   if (options?.projectId) params.set("projectId", options.projectId);
-  if (options?.type) params.set("type", options.type);
+  if (options?.type) params.set("types", options.type);
+  if (options?.taskId) params.set("taskId", options.taskId);
   
   const query = params.size > 0 ? `?${params.toString()}` : "";
   return api<ActivityFeedEntry[]>(`/activity-feed${query}`);

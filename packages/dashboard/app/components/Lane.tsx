@@ -55,7 +55,6 @@ export interface LaneProps {
   }) => Promise<Task>;
   availableModels?: ModelInfo[];
   onPlanningMode?: (initialPlan: string, workflowId?: string | null) => void;
-  onSubtaskBreakdown?: (description: string, workflowId?: string | null) => void;
   onOpenDetailWithTab?: (task: Task | TaskDetail, initialTab: "changes" | "retries" | "workflow") => void;
   favoriteProviders?: string[];
   favoriteModels?: string[];
@@ -207,7 +206,7 @@ function LaneComponent(props: LaneProps) {
               blockerFanoutMap={props.blockerFanoutMap}
               prAuthAvailable={props.prAuthAvailable}
               autoMerge={props.autoMerge}
-              {...(isCreateColumn ? { onQuickCreate: props.onQuickCreate, onNewTask: props.onNewTask, onPlanningMode: props.onPlanningMode, onSubtaskBreakdown: props.onSubtaskBreakdown } : {})}
+              {...(isCreateColumn ? { onQuickCreate: props.onQuickCreate, onNewTask: props.onNewTask, onPlanningMode: props.onPlanningMode } : {})}
               {...((col.flags.mergeBlocker || col.flags.humanReview) && props.onToggleAutoMerge ? { onToggleAutoMerge: props.onToggleAutoMerge } : {})}
             />
             );

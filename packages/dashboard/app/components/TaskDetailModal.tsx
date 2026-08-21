@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { Pencil, Bot, X, ChevronDown, ChevronRight, GitBranch, ArrowLeft, Zap, Loader2, AlertTriangle, Sparkles, Maximize2, Minimize2, Send, Square, Info, Paperclip, Eye, EyeOff, Copy } from "lucide-react";
 import { useViewportMode } from "../hooks/useViewportMode";
 import { mergeTaskSnapshot } from "../hooks/useTasks";
+import { dismissAiMergeReviewFinding } from "../api/tasks/tasks-lifecycle";
 import { FloatingWindow } from "./FloatingWindow";
 import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
 import { useModalDismissPreference, useOverlayDismiss } from "../hooks/useOverlayDismiss";
@@ -36,6 +37,7 @@ import {
 } from "../utils/columnRoles";
 import { resolveEffectiveAutoMerge } from "../../../core/src/merge/task-merge";
 import { uploadAttachment, deleteAttachment, updateTask, repairOverlapBlocker, fetchTaskDetail, fetchTaskPrompt, fetchSpecLock, fetchTaskVerificationRequest, fetchSettings, fetchTaskEffectiveSettings, fetchGlobalSettings, requestSpecRevision, rebuildTaskSpec, approvePlan, rejectPlan, refineTask, fetchWorkflowResults, assignTask, fetchAgents, fetchAgent, refreshPrStatus, fetchBoardWorkflows, updateTaskCustomFields, summarizeTitle, fetchWorkflowSettingValues, nudgeOverseer, stopOverseer, explainOverseer, fetchModels, fetchNodes, api } from "../api";
+import { updateTaskRepositoryScope } from "../api/tasks/tasks";
 import type { RevertTaskOptions, RevertTaskResult, ModelInfo, NodeInfo, SpecLockResponse } from "../api";
 import type { BoardWorkflowsPayload, WorkflowFieldDefinition, CustomFieldRejection } from "../api";
 import { WorkflowIcon } from "./WorkflowIcon";
@@ -426,6 +428,8 @@ export interface TaskDetailModalProps {
   onResetTask?: (id: string) => Promise<Task>;
   onDuplicateTask?: (id: string) => Promise<Task>;
   onTaskUpdated?: (task: Task) => void;
+  /** Publishes a successfully created refinement child to shared board state. */
+  onRefinementCreated?: (task: Task) => void;
   addToast: (message: string, type?: ToastType) => void;
   prAuthAvailable?: boolean;
   autoMergeEnabled?: boolean;
@@ -810,6 +814,7 @@ export function TaskDetailContent({
   onResetTask,
   onDuplicateTask,
   onTaskUpdated,
+  onRefinementCreated,
   addToast,
   prAuthAvailable,
   autoMergeEnabled: autoMergeEnabledProp,
@@ -994,6 +999,18 @@ export function TaskDetailContent({
     } as TaskDetail)
     : ({ ...task, prompt: "" } as TaskDetail);
   const activityLog = workingTask.log ?? [];
+  /*
+  FNXC:RepositoryScope 2026-08-21-00:29:
+  Scope edits must replace the local snapshot with the server's authoritative, land-fenced task.
+  This keeps an operator from making a second edit against stale intent after another session has
+  started a repository land.
+  */
+  const handleRepositoryScopeChange = useCallback(async (input: { repositories: string[]; reason: string; action: "add" | "remove" | "refuse" }) => {
+    const updated = await updateTaskRepositoryScope(workingTask.id, input, projectId);
+    setFullDetail((previous) => previous ? ({ ...previous, ...updated } as TaskDetail) : (updated as TaskDetail));
+    onTaskUpdated?.(updated);
+  }, [onTaskUpdated, projectId, workingTask.id]);
+
   const handleCopyActivityLogs = useCallback(async () => {
     if (detailLoading || activityLog.length === 0) return;
     const copied = await copyTextToClipboard(serializeTaskActivityLogs(activityLog));
@@ -1598,6 +1615,8 @@ export function TaskDetailContent({
 
   const [editTitle, setEditTitle] = useState(task.title || "");
   const [editDescription, setEditDescription] = useState(task.description || "");
+  const editDescriptionRef = useRef(editDescription);
+  editDescriptionRef.current = editDescription;
   const [editDependencies, setEditDependencies] = useState<string[]>(task.dependencies || []);
   const [editBranch, setEditBranch] = useState(task.branch ?? "");
   const [editBaseBranch, setEditBaseBranch] = useState(task.baseBranch ?? "");
@@ -2407,6 +2426,15 @@ export function TaskDetailContent({
   const editAutoSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editAutoSaveRevisionRef = useRef(0);
   const editSaveTriggeredReplanRef = useRef(false);
+  const blankDescriptionDeletePendingRef = useRef(false);
+  const lastBlankDescriptionDeleteAttemptRef = useRef<string | null>(null);
+  const handleDeleteRef = useRef<((canProceed?: () => boolean) => Promise<boolean | undefined>) | null>(null);
+
+  useEffect(() => {
+    if (editDescription.trim().length > 0) {
+      lastBlankDescriptionDeleteAttemptRef.current = null;
+    }
+  }, [editDescription]);
 
   const buildEditUpdates = useCallback((includeDescription: boolean) => {
     const updates: Record<string, unknown> = {};
@@ -2503,7 +2531,37 @@ export function TaskDetailContent({
     return { updates, error: null as string | null };
   }, [editBaseBranch, editBranch, editDependencies, editDescription, editExecutionMode, editCredentialInstanceId, editExecutorModel, editNodeId, editPlanningCredentialInstanceId, editPlanningModel, editPriority, editReviewLevel, editSelectedWorkflowSteps, editSourceIssueExternalId, editSourceIssueProvider, editSourceIssueRepository, editSourceIssueUrl, editThinkingLevel, editPlannerOversightLevel, editTitle, editValidatorCredentialInstanceId, editValidatorModel, task]);
 
-  const persistEditChanges = useCallback(async (includeDescription: boolean) => {
+  const requestBlankDescriptionDeletion = useCallback(async (descriptionAtRequest: string, force: boolean): Promise<boolean> => {
+    if (blankDescriptionDeletePendingRef.current || (!force && lastBlankDescriptionDeleteAttemptRef.current === descriptionAtRequest)) return false;
+
+    lastBlankDescriptionDeleteAttemptRef.current = descriptionAtRequest;
+    blankDescriptionDeletePendingRef.current = true;
+    try {
+      /*
+      FNXC:TaskDescriptionDeletion 2026-08-20-05:48:
+      Clearing a previously populated Task Detail description is an intentional destructive gesture,
+      so it must reuse the shared confirmation and deletion lifecycle rather than persist an empty
+      description. The snapshot fence prevents either debounce timer from deleting a draft restored
+      while its confirmation is open.
+      */
+      return Boolean(await handleDeleteRef.current?.(() =>
+        editDescriptionRef.current === descriptionAtRequest
+        && editDescriptionRef.current.trim().length === 0,
+      ));
+    } finally {
+      blankDescriptionDeletePendingRef.current = false;
+    }
+  }, []);
+
+  const persistEditChanges = useCallback(async (includeDescription: boolean, forceBlankDescriptionDeletion = false) => {
+    const trimmedDescription = editDescription.trim();
+    if (includeDescription && task.description.trim().length > 0 && trimmedDescription.length === 0) {
+      return requestBlankDescriptionDeletion(editDescription, forceBlankDescriptionDeletion);
+    }
+    if (trimmedDescription.length > 0) {
+      lastBlankDescriptionDeleteAttemptRef.current = null;
+    }
+
     const { updates, error } = buildEditUpdates(includeDescription);
     if (!updates) {
       setEditAutoSaveStatus("error");
@@ -2562,7 +2620,7 @@ export function TaskDetailContent({
         setIsSaving(false);
       }
     }
-  }, [addToast, buildEditUpdates, confirm, detailColumnFlags, onTaskUpdated, projectId, requestClose, task.column, task.executionMode, task.id]);
+  }, [addToast, buildEditUpdates, confirm, detailColumnFlags, editDescription, onTaskUpdated, projectId, requestBlankDescriptionDeletion, requestClose, task.column, task.description, task.executionMode, task.id]);
 
   const handleAutoSaveDescription = useCallback(async (_description: string) => {
     await persistEditChanges(true);
@@ -2570,7 +2628,7 @@ export function TaskDetailContent({
 
   const handleSave = useCallback(async () => {
     editSaveTriggeredReplanRef.current = false;
-    const didSave = await persistEditChanges(true);
+    const didSave = await persistEditChanges(true, true);
     if (!didSave || editSaveTriggeredReplanRef.current) {
       return;
     }
@@ -3064,19 +3122,20 @@ export function TaskDetailContent({
     [task.id, task.steps, onMoveTask, requestClose, addToast, confirm],
   );
 
-  const handleDelete = useCallback(async () => {
+  const handleDelete = useCallback(async (canProceed: () => boolean = () => true) => {
     let allowResurrection = false;
+    let deletionSucceeded = false;
     let deleteCloseRequested = false;
     const closeBeforeDeleteRequest = () => {
-      if (deleteCloseRequested) {
-        return;
-      }
+      if (!canProceed()) return false;
+      if (deleteCloseRequested) return true;
       /*
       FNXC:TaskDetailDelete 2026-07-01-09:40:
       Task detail hosts must close optimistically after the operator completes every required delete prompt and before each server delete request starts. Keep this helper idempotent so dependency/lineage retries preserve async prompts and toasts without reopening or repeatedly closing the modal, main panel, list split, or right-dock host.
       */
       requestClose();
       deleteCloseRequested = true;
+      return true;
     };
 
     if (!isArchivedColumn && onArchiveTask) {
@@ -3165,7 +3224,7 @@ export function TaskDetailContent({
     }
 
     try {
-      closeBeforeDeleteRequest();
+      if (!closeBeforeDeleteRequest()) return false;
       if (githubIssueAction) {
         await onDeleteTask(task.id, { githubIssueAction, allowResurrection });
       } else {
@@ -3174,7 +3233,9 @@ export function TaskDetailContent({
       const issueSuffix = trackedIssue?.owner && trackedIssue.repo && trackedIssue.number && githubIssueAction
         ? ` ${t("taskDetail.delete.issueSuffix", "and {{action}} issue {{ref}}", { action: githubIssueAction === "close" ? t("taskDetail.delete.actionClosed", "closed") : githubIssueAction === "delete" ? t("taskDetail.delete.actionDeleted", "deleted") : t("taskDetail.delete.actionLeft", "left"), ref: `${trackedIssue.owner}/${trackedIssue.repo}#${trackedIssue.number}` })}`
         : "";
+      deletionSucceeded = true;
       addToast(t("taskDetail.delete.deletedToast", "Deleted {{id}}{{suffix}}", { id: task.id, suffix: issueSuffix }), "info");
+      return deletionSucceeded;
     } catch (err) {
       const dependencyConflict = extractDependencyDeleteConflict(err);
       if (dependencyConflict && dependencyConflict.dependentIds.length > 0) {
@@ -3264,6 +3325,7 @@ export function TaskDetailContent({
       }
     }
   }, [task.column, task.githubTracking?.enabled, task.githubTracking?.issue, task.id, onDeleteTask, onArchiveTask, requestClose, addToast, confirm, confirmWithChoice, confirmWithCheckbox, isArchivedColumn]);
+  handleDeleteRef.current = handleDelete;
 
   const handleMerge = useCallback(async () => {
     const shouldMerge = await confirm({
@@ -3364,6 +3426,22 @@ export function TaskDetailContent({
         addToast(getErrorMessage(err), "error");
       });
   }, [task.id, onBypassReview, onTaskUpdated, addToast, t]);
+
+  /*
+  FNXC:AIMergeReviewReconciliation 2026-08-20-22:14:
+  A dismissal is an explicit, audited operator decision, so eligible active findings collect a
+  required reason and use their dedicated reconciliation endpoint rather than workflow bypass.
+  */
+  const handleDismissAiMergeFinding = useCallback((findingId: string) => {
+    const reason = window.prompt(t("taskDetail.aiMergeReview.dismissPrompt", "Reason for dismissing this AI merge finding (required, audit-logged):"));
+    if (!reason?.trim()) return;
+    dismissAiMergeReviewFinding(task.id, findingId, reason.trim(), projectId)
+      .then((updated) => {
+        onTaskUpdated?.(updated);
+        addToast(t("taskDetail.aiMergeReview.dismissed", "Dismissed AI merge finding for {{id}}", { id: task.id }), "success");
+      })
+      .catch((err) => addToast(getErrorMessage(err), "error"));
+  }, [addToast, onTaskUpdated, projectId, t, task.id]);
 
   /*
   FNXC:TaskReset 2026-08-19-06:45:
@@ -3680,6 +3758,12 @@ export function TaskDetailContent({
     setIsRefining(true);
     try {
       const newTask = await refineTask(task.id, refineFeedback.trim(), projectId);
+      /*
+      FNXC:TaskRefinementBoardVisibility 2026-08-20-20:43:
+      The returned child enters shared board state before this source detail closes, rather than
+      relying on delayed SSE delivery. Its server-selected column must remain untouched here.
+      */
+      onRefinementCreated?.(newTask);
       addToast(t("taskDetail.refine.taskCreated", "Refinement task created: {{id}}", { id: newTask.id }), "success");
       requestClose();
     } catch (err) {
@@ -3687,7 +3771,7 @@ export function TaskDetailContent({
     } finally {
       setIsRefining(false);
     }
-  }, [task.id, refineFeedback, addToast, requestClose]);
+  }, [task.id, refineFeedback, addToast, onRefinementCreated, projectId, requestClose]);
 
   const uploadFile = useCallback(async (file: File) => {
     setUploading(true);
@@ -5522,6 +5606,18 @@ export function TaskDetailContent({
                     </span>
                   </div>
                 )}
+                {task.aiMergeReviewReconciliation && (() => {
+                  const reconciliation = task.aiMergeReviewReconciliation;
+                  const pending = reconciliation.findings.filter((finding) => finding.disposition === "pending" || finding.disposition === "still-present");
+                  return (
+                    <section className={`ai-merge-review-reconciliation ${reconciliation.terminal ? "ai-merge-review-reconciliation-terminal" : ""}`} aria-label="AI merge review reconciliation">
+                      <h3>{reconciliation.consecutiveCleanApprovals > 0 ? `Approved — ${pending.length} prior finding(s) unconfirmed` : "AI merge review reconciliation"}</h3>
+                      {reconciliation.candidateSha && <p>Candidate: <code>{reconciliation.candidateSha}</code></p>}
+                      {pending.length > 0 && <ul>{pending.map((finding) => <li key={finding.id}>{finding.text}{(reconciliation.terminal || finding.disposition === "still-present") && <button type="button" className="btn btn-secondary" onClick={() => handleDismissAiMergeFinding(finding.id)}>Dismiss this finding</button>}</li>)}</ul>}
+                      {reconciliation.terminal && <p>Rebase or re-push the branch, dismiss a finding with justification, or land manually.</p>}
+                    </section>
+                  );
+                })()}
                 {(task.prInfo?.number || task.mergeDetails?.prNumber) && (
                   <div className="detail-provenance detail-pr-link-row">
                     <GitBranch aria-hidden="true" />
@@ -5586,7 +5682,7 @@ export function TaskDetailContent({
                   workingTask, not the sparse task row. workspaceWorktrees is only
                   present in fetched detail, so keying off task renders blank on the
                   optimistic-open path before the detail fetch resolves. */}
-              {isWorkspaceTask(workingTask) && <WorkspaceWorktreesSummary task={workingTask} />}
+              {isWorkspaceTask(workingTask) && <WorkspaceWorktreesSummary task={workingTask} onScopeChange={handleRepositoryScopeChange} />}
             </>
           )}
           {shouldShowTaskFailureAlert && (
@@ -5909,6 +6005,7 @@ export function TaskDetailContent({
                   addToast={addToast}
                   sessionLive={isCliSessionLive(cliSession)}
                   onTaskUpdated={handleChatTaskUpdated}
+                  onRefinementCreated={onRefinementCreated}
                   expanded={isActivityExpanded}
                   onToggleExpanded={() => setActivityExpanded((value) => !value)}
                   effectiveModels={{
@@ -7204,7 +7301,7 @@ export function TaskDetailContent({
               */}
               {isTaskReverted(task.sourceMetadata) && (
                 <>
-                  <button className="btn btn-sm btn-danger" onClick={handleDelete} aria-label={t("taskDetail.reverted.deleteAria", "Delete reverted task")}>{t("taskDetail.delete.btn", "Delete")}</button>
+                  <button className="btn btn-sm btn-danger" onClick={() => void handleDelete()} aria-label={t("taskDetail.reverted.deleteAria", "Delete reverted task")}>{t("taskDetail.delete.btn", "Delete")}</button>
                   {onReviseTask && <button className="btn btn-sm" onClick={() => { onReviseTask(task); requestClose?.(); }}>{t("taskDetail.revise", "Revise")}</button>}
                 </>
               )}
@@ -7216,7 +7313,7 @@ export function TaskDetailContent({
               {isIntakeColumn && !isAwaitingApproval && !canRetryTask && (
                 <button
                   className="btn btn-sm btn-danger"
-                  onClick={handleDelete}
+                  onClick={() => void handleDelete()}
                   aria-label={t("taskDetail.delete.ariaLabel", "Delete task")}
                   title={t("taskDetail.delete.ariaLabel", "Delete task")}
                 >

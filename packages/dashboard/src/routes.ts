@@ -29,7 +29,6 @@ import {
 import type { ServerOptions } from "./server.js";
 import { SESSION_CLEANUP_DEFAULT_MAX_AGE_MS, type AiSessionType } from "./ai-session-store.js";
 import { getSession as getPlanningSession, cleanupSession as cleanupPlanningSession, normalizePlanningSummaryPayload } from "./planning.js";
-import { getSubtaskSession, cleanupSubtaskSession } from "./subtask-breakdown.js";
 import { getMissionInterviewSession, cleanupMissionInterviewSession } from "./mission-interview.js";
 import { getTargetInterviewSession, cleanupTargetInterviewSession } from "./milestone-slice-interview.js";
 import { writeSSEEvent } from "./sse-buffer.js";
@@ -1800,11 +1799,6 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
       await aiSessionStore.delete(id);
     }
 
-    try {
-      if (await getSubtaskSession(id)) cleanupSubtaskSession(id);
-    } catch {
-      // Session may not belong to subtask breakdown or may already be cleaned up.
-    }
 
     try {
       if (await getMissionInterviewSession(id)) cleanupMissionInterviewSession(id);

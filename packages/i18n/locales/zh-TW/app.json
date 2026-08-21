@@ -84,7 +84,10 @@
       "minutesAgo_other": ""
     },
     "title": "活動日誌",
-    "typeFilterBadge": ""
+    "typeFilterBadge": "",
+    "taskId": "任務 ID",
+    "taskIdSearchPlaceholder": "搜尋任務 ID（例如 FN-066）",
+    "taskIdFilterBadge": "任務：{{taskId}}"
   },
   "agentError": {
     "copied": "已複製",
@@ -6206,6 +6209,10 @@
       "releaseChannelHelp": "",
       "autoUpdateAndRestart": "",
       "autoUpdateAndRestartHelp": "",
+      "autoUpdateEnabled": "",
+      "autoUpdateEnabledHelp": "",
+      "autoRestartAfterUpdate": "",
+      "autoRestartAfterUpdateHelp": "",
       "channelStable": "",
       "channelBeta": "",
       "agentToolOutputLimit": "",

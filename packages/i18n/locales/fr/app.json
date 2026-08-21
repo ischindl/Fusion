@@ -84,7 +84,10 @@
       "minutesAgo_other": ""
     },
     "title": "Journal d'activité",
-    "typeFilterBadge": ""
+    "typeFilterBadge": "",
+    "taskId": "ID de tâche",
+    "taskIdSearchPlaceholder": "Rechercher un ID de tâche (par ex. FN-066)",
+    "taskIdFilterBadge": "Tâche : {{taskId}}"
   },
   "agentError": {
     "copied": "Copié",
@@ -6206,6 +6209,10 @@
       "releaseChannelHelp": "",
       "autoUpdateAndRestart": "",
       "autoUpdateAndRestartHelp": "",
+      "autoUpdateEnabled": "",
+      "autoUpdateEnabledHelp": "",
+      "autoRestartAfterUpdate": "",
+      "autoRestartAfterUpdateHelp": "",
       "channelStable": "",
       "channelBeta": "",
       "agentToolOutputLimit": "",

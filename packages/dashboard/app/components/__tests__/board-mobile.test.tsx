@@ -98,13 +98,13 @@ describe("mobile board magnetic column snap wiring (FN-8235)", () => {
   remain are the selected and aggregate workflow-column renders, and the point of this guard is that
   BOTH share the one scroll-snap hook, which still holds.
   */
-  it("shares mobile snap and bounded mouse-pan wiring across the selected and aggregate live boards", () => {
+  it("shares mobile snap and explicitly disabled mouse-pan wiring across the selected and aggregate live boards", () => {
     const boardSource = readAppFile("components/Board.tsx");
 
     expect(boardSource).toContain('import { useColumnScrollSnap } from "../hooks/useColumnScrollSnap";');
     expect(boardSource).toContain('import { useBoardMousePan } from "../hooks/useBoardMousePan";');
     expect(boardSource).toContain("useColumnScrollSnap(boardElement, { mobileOnly: true });");
-    expect(boardSource).toContain("useBoardMousePan(boardElement)");
+    expect(boardSource).toContain('useBoardMousePan(boardElement, viewportMode !== "mobile")');
     expect(boardSource.match(/ref=\{setBoardRef\}/g)).toHaveLength(2);
     expect(boardSource.match(/\{\.\.\.boardMousePanBindings\}/g)).toHaveLength(2);
     expect(boardSource.match(/className=\{boardClassName\}/g)).toHaveLength(2);
@@ -730,26 +730,6 @@ describe("InlineCreateCard mobile", () => {
     const mobileSection = getMainMobileSection(css);
 
     expectRuleToContain(mobileSection, ".inline-create-priority-select", "min-height: 36px;");
-  });
-
-  it("renders Subtask but no Plan button when expanded", () => {
-    render(
-      <InlineCreateCard
-        tasks={[]}
-        onSubmit={vi.fn().mockResolvedValue(createTask({ id: "FN-300" }))}
-        onCancel={vi.fn()}
-        addToast={vi.fn()}
-        availableModels={[]}
-        onPlanningMode={vi.fn()}
-        onSubtaskBreakdown={vi.fn()}
-      />,
-    );
-
-    fireEvent.click(screen.getByTestId("inline-create-toggle"));
-
-    expect(screen.queryByTestId("plan-button")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Plan" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Subtask" })).toBeTruthy();
   });
 
   it("renders dependency dropdown when Deps button is clicked", () => {

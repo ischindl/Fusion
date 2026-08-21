@@ -94,7 +94,10 @@
       "minutesAgo_other": "{{count}}m ago"
     },
     "title": "Activity Log",
-    "typeFilterBadge": "Type: {{type}}"
+    "typeFilterBadge": "Type: {{type}}",
+    "taskId": "Task ID",
+    "taskIdSearchPlaceholder": "Search task ID (e.g. FN-066)",
+    "taskIdFilterBadge": "Task: {{taskId}}"
   },
   "agentError": {
     "copied": "Copied",
@@ -6236,6 +6239,10 @@
       "releaseChannelHelp": "Stable follows official releases. Beta follows pre-releases cut from main and also picks up each stable release once it overtakes the beta. Switching back to Stable never downgrades. Default: stable.",
       "autoUpdateAndRestart": " Auto-update and restart ",
       "autoUpdateAndRestartHelp": "When enabled, Fusion installs available updates on the selected release channel by itself and then restarts to apply them. Requires a supervising parent (the default for `fn dashboard`); hosts started with --no-supervise skip the install. Default: disabled.",
+      "autoUpdateEnabled": " Automatically install updates ",
+      "autoUpdateEnabledHelp": "Installs updates from the selected release channel during the background update check. Unset: disabled.",
+      "autoRestartAfterUpdate": " Automatically restart after an update ",
+      "autoRestartAfterUpdateHelp": "After a dashboard update installs, requests a supervised restart. Without a supervisor, Fusion keeps the manual restart path. Unset: disabled.",
       "channelStable": "Stable (recommended)",
       "channelBeta": "Beta — early builds from main"
     },

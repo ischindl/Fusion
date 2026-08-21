@@ -498,14 +498,8 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
   }, []);
 
   useLayoutEffect(() => {
-    autosizeRef.current?.resize({ resetManual: draft.length === 0 });
+    autosizeRef.current?.resize();
   }, [draft]);
-
-  useLayoutEffect(() => {
-    // FNXC:ChatComposer 2026-08-19-02:00: Task and planner-session replacement starts a
-    // fresh draft target, so an intentional resize from the prior conversation is cleared.
-    autosizeRef.current?.reset();
-  }, [task.id, sessionId]);
 
   const replacePendingMessages = useCallback((nextMessages: readonly string[], resolvedSessionId = sessionIdRef.current) => {
     const normalizedMessages = normalizePendingMessages(nextMessages);
@@ -1656,6 +1650,11 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
             onChange={(value) => void handleTaskChatModelChange(value)}
             placeholder={t("model.selectPlaceholder", "Select a model…")}
             defaultOptionLabel={t("models.useDefault", "Use project default")}
+            /*
+            FNXC:TaskChatModelMenu 2026-08-21-01:12:
+            Task Chat keeps its compact composer trigger, but long provider/model names need Direct Chat's readable, viewport-clamped portaled menu on desktop and mobile.
+            */
+            menuWidth="readable"
             favoriteProviders={favoriteProviders}
             favoriteModels={favoriteModels}
             disabled={queueActionPending || composerState === "sending"}

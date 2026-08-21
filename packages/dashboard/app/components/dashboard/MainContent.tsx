@@ -149,8 +149,6 @@ export function MainContent({
   openGroupModalWithNav,
   handleBoardQuickCreate,
   openNewTaskWithNav,
-  subtaskBreakdownEnabled,
-  openSubtaskBreakdownWithNav,
   toggleAutoMerge,
   togglePlanAutoApprove,
   globalPaused,
@@ -917,7 +915,6 @@ export function MainContent({
             onQuickCreate={handleBoardQuickCreate}
             onNewTask={openNewTaskWithNav}
             onPlanningMode={openPlanningWithInitialPlanWithNav}
-            onSubtaskBreakdown={subtaskBreakdownEnabled ? openSubtaskBreakdownWithNav : undefined}
             autoMerge={autoMerge}
             mergeStrategy={mergeStrategy}
             onToggleAutoMerge={toggleAutoMerge}
@@ -1001,6 +998,7 @@ export function MainContent({
               The full-panel task-detail must dismiss back to the board when a destructive/terminal action (delete/merge/archive/retry/reset/duplicate) fires, mirroring the modal path. Without onRequestClose the panel kept showing a ghost of the just-acted-on task.
               */
               onRequestClose={closeTaskDetailMainPanel}
+              onRefinementCreated={(task) => ingestCreatedTasks([task])}
               onTaskUpdated={(updatedTask) => {
                 setMainPanelDetailTask((previous) => {
                   if (!previous || (updatedTask.id !== undefined && updatedTask.id !== previous.id)) return previous;
@@ -1038,7 +1036,6 @@ export function MainContent({
           onQuickCreate={handleBoardQuickCreate}
           onNewTask={openNewTaskWithNav}
           onPlanningMode={openPlanningWithInitialPlanWithNav}
-          onSubtaskBreakdown={subtaskBreakdownEnabled ? openSubtaskBreakdownWithNav : undefined}
           autoMerge={autoMerge}
           mergeStrategy={mergeStrategy}
           onToggleAutoMerge={toggleAutoMerge}
@@ -1099,6 +1096,7 @@ export function MainContent({
         onMergeTask={mergeTask}
         onResetTask={resetTask}
         onDuplicateTask={duplicateTask}
+        onRefinementCreated={(task) => ingestCreatedTasks([task])}
         onOpenDetail={(task, options) => openDetailTask(task, undefined, options)}
         onPopOut={popOutTaskDetail}
         addToast={addToast}
@@ -1106,7 +1104,6 @@ export function MainContent({
         onNewTask={openNewTaskWithNav}
         onQuickCreate={handleBoardQuickCreate}
         onPlanningMode={openPlanningWithInitialPlanWithNav}
-        onSubtaskBreakdown={subtaskBreakdownEnabled ? openSubtaskBreakdownWithNav : undefined}
         availableModels={availableModels}
         favoriteProviders={favoriteProviders}
         favoriteModels={favoriteModels}

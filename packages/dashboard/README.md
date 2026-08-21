@@ -476,6 +476,7 @@ View a centralized timeline of all task lifecycle events. Click the history icon
 - **Event Types**: Track task:created, task:moved, task:merged, task:failed, task:deleted, and settings:updated events
 - **Task Links**: Click any task ID in the log to open its detail modal
 - **Filter by Type**: Use the dropdown to show only specific event types (e.g., only failures, only merges)
+- **Exact Task-ID Search**: Enter a task ID (for example, `FN-066`) to retrieve its complete durable history. The task filter composes with project and event-type filters in both the modal and right dock.
 - **Auto-refresh**: Log updates automatically every 30 seconds when the modal is open
 - **Pagination**: "Load More" button fetches older entries (100 entries per request, max 1000)
 - **Clear Log**: Maintenance function to clear all activity history (with confirmation)

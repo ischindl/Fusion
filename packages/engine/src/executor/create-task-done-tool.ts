@@ -14,6 +14,7 @@
 import { Type } from "@earendil-works/pi-ai";
 import type { Settings, Task, TaskDetail, TaskRecommendation, TaskStore } from "@fusion/core";
 import {
+  isTaskNotFoundError,
   parseNoOpCompletionMarker,
   resolveWipTargetForTask,
 } from "@fusion/core";
@@ -166,8 +167,28 @@ export function createTaskDoneTool(
           and reason prose never makes a block durable. Task deps → durable failed park (requeues
           when deps complete); no deps → plan defect → needs-replan (FN-8634).
           */
-          const classification = classifyBlockedExit(reason, rawBlockedBy);
-          const { taskIds: blockedByIds } = partitionBlockedByRefs(rawBlockedBy);
+          const { taskIds: requestedBlockedByIds } = partitionBlockedByRefs(rawBlockedBy);
+          /*
+          FNXC:DependencyIntegrity 2026-08-20-17:27:
+          A task-like blocker must resolve before it becomes a durable dependency edge. Missing or
+          soft-deleted IDs are stale preflight evidence, not external work that can unblock itself;
+          parking on one would retain an unshowable `FN-*` reference and create a retry loop.
+          */
+          let hasMissingTaskBlocker = false;
+          for (const blockerId of requestedBlockedByIds) {
+            try {
+              const blocker = await store.getTask(blockerId, { includeDeleted: true });
+              if (blocker.deletedAt) hasMissingTaskBlocker = true;
+            } catch (error) {
+              if (isTaskNotFoundError(error)) {
+                hasMissingTaskBlocker = true;
+                continue;
+              }
+              throw error;
+            }
+          }
+          const blockedByIds = hasMissingTaskBlocker ? [] : requestedBlockedByIds;
+          const classification = classifyBlockedExit(reason, blockedByIds);
           const thrashCount = countBlockedThrashHits(
             blockedTask.log,
             classification.thrashSignature,

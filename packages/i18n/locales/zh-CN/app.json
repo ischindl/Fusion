@@ -84,7 +84,10 @@
       "minutesAgo_other": ""
     },
     "title": "活动日志",
-    "typeFilterBadge": ""
+    "typeFilterBadge": "",
+    "taskId": "任务 ID",
+    "taskIdSearchPlaceholder": "搜索任务 ID（例如 FN-066）",
+    "taskIdFilterBadge": "任务：{{taskId}}"
   },
   "agentError": {
     "copied": "已复制",
@@ -6206,6 +6209,10 @@
       "releaseChannelHelp": "",
       "autoUpdateAndRestart": "",
       "autoUpdateAndRestartHelp": "",
+      "autoUpdateEnabled": "",
+      "autoUpdateEnabledHelp": "",
+      "autoRestartAfterUpdate": "",
+      "autoRestartAfterUpdateHelp": "",
       "channelStable": "",
       "channelBeta": "",
       "agentToolOutputLimit": "",
