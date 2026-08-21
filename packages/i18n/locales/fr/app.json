@@ -6324,6 +6324,8 @@
     "keepRemote": "Garder la version distante",
     "loading": "Chargement…",
     "memory": {
+      "chatContextBudget": "",
+      "chatContextBudgetHelp": "",
       "03": "",
       "agentsGetMemorySearchMemoryGetAndMemory": "",
       "agentsSearchWithQmdFirstFallBackTo": "",
