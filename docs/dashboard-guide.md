@@ -1431,6 +1431,10 @@ Features:
 
 Command Center is the combined analytics and live-operations surface for a project: it pairs historical usage, cost, throughput analytics, live system telemetry, and a live Mission Control panel.
 
+### Task concurrency capacity
+
+**Settings → Scheduling**, Command Center controls, and the Engine Control menu all edit the same project-scoped **Max Concurrent Tasks** setting (range 1–50; default 2). When worktree limiting is on, Fusion shows the effective ceiling as the lower of Max Concurrent Tasks and Max Worktrees and names the setting that binds. Team status and the board's **Up Next** grouping use that effective ceiling, so they do not promise more parallel work than admission can start.
+
 Navigation:
 - Desktop/tablet: primary header view toggle, immediately after **Agents**
 - Mobile: bottom nav tab, immediately after **Mailbox**

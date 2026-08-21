@@ -32,6 +32,8 @@ interface BoardProps {
   tasks: Task[];
   projectId?: string;
   maxConcurrent: number;
+  /** Shared engine-enforced capacity for the board's Up Next preview. */
+  effectiveMaxConcurrent?: number;
   showWorktreeGrouping: boolean;
   onMoveTask: (id: string, column: ColumnId) => Promise<Task>;
   onPauseTask?: (id: string) => Promise<Task>;
@@ -177,7 +179,7 @@ function columnDefOffersArchiveAllDone(columnDef: { flags: { complete?: boolean;
   return columnDef.flags.complete === true && columnDef.flags.archived !== true;
 }
 
-export function Board({ tasks, projectId, maxConcurrent, showWorktreeGrouping, onMoveTask, onPauseTask, onUnpauseTask, onResetTask, onDuplicateTask, onMergeTask, onOpenDetail, onOpenRefine, onOpenGroupModal, addToast, onQuickCreate, onNewTask, autoMerge, mergeStrategy = "direct", onToggleAutoMerge, planAutoApproveEnabled, onTogglePlanAutoApprove, globalPaused, onUpdateTask, onRetryTask, onArchiveTask, onUnarchiveTask, onRevertTask, onReviseTask, onDeleteTask, onArchiveAllDone, onLoadArchivedTasks, onLoadMoreArchivedTasks, archivedSortMode, onArchivedSortModeChange, archivedHasMore, archivedLoadingMore, searchQuery = "", availableModels, onPlanningMode, onOpenDetailWithTab, favoriteProviders, favoriteModels, onToggleFavorite, onToggleModelFavorite, onOpenMission, staleHighFanoutBlockerAgeThresholdMs, lastFetchTimeMs, prAuthAvailable, onOpenWorkflowEditor, onCreateWorkflow, workflowControlsInHeader = false }: BoardProps) {
+export function Board({ tasks, projectId, maxConcurrent, effectiveMaxConcurrent = maxConcurrent, showWorktreeGrouping, onMoveTask, onPauseTask, onUnpauseTask, onResetTask, onDuplicateTask, onMergeTask, onOpenDetail, onOpenRefine, onOpenGroupModal, addToast, onQuickCreate, onNewTask, autoMerge, mergeStrategy = "direct", onToggleAutoMerge, planAutoApproveEnabled, onTogglePlanAutoApprove, globalPaused, onUpdateTask, onRetryTask, onArchiveTask, onUnarchiveTask, onRevertTask, onReviseTask, onDeleteTask, onArchiveAllDone, onLoadArchivedTasks, onLoadMoreArchivedTasks, archivedSortMode, onArchivedSortModeChange, archivedHasMore, archivedLoadingMore, searchQuery = "", availableModels, onPlanningMode, onOpenDetailWithTab, favoriteProviders, favoriteModels, onToggleFavorite, onToggleModelFavorite, onOpenMission, staleHighFanoutBlockerAgeThresholdMs, lastFetchTimeMs, prAuthAvailable, onOpenWorkflowEditor, onCreateWorkflow, workflowControlsInHeader = false }: BoardProps) {
   const { t } = useTranslation("app");
   const [archivedCollapsed, setArchivedCollapsed] = useState(true);
   /*
@@ -970,6 +972,7 @@ export function Board({ tasks, projectId, maxConcurrent, showWorktreeGrouping, o
                   tasks={aggregateTasksByColumn[columnDef.id] ?? []}
                   projectId={projectId}
                   maxConcurrent={maxConcurrent}
+                  effectiveMaxConcurrent={effectiveMaxConcurrent}
                   showWorktreeGrouping={showWorktreeGrouping}
                   onMoveTask={onMoveTask}
                   onPauseTask={onPauseTask}
@@ -1066,6 +1069,7 @@ export function Board({ tasks, projectId, maxConcurrent, showWorktreeGrouping, o
                 allTasks={selectedWorkflowTasks}
                 projectId={projectId}
                 maxConcurrent={maxConcurrent}
+                effectiveMaxConcurrent={effectiveMaxConcurrent}
                 showWorktreeGrouping={showWorktreeGrouping}
                 onMoveTask={onMoveTask}
                 onPromote={handlePromote}
@@ -1130,6 +1134,7 @@ export function Board({ tasks, projectId, maxConcurrent, showWorktreeGrouping, o
               allTasks={selectedWorkflowTasks}
               projectId={projectId}
               maxConcurrent={maxConcurrent}
+              effectiveMaxConcurrent={effectiveMaxConcurrent}
               showWorktreeGrouping={showWorktreeGrouping}
               onMoveTask={onMoveTask}
               onPromote={handlePromote}

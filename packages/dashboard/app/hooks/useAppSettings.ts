@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchConfig, fetchSettings, updateSettings, updateGlobalSettings } from "../api";
-import type { GlobalSettings, ProjectSettings } from "@fusion/core";
+import { DEFAULT_PROJECT_SETTINGS, type GlobalSettings, type ProjectSettings } from "@fusion/core";
 import { resolveMobileNavPrimaryItems } from "../../../core/src/board/mobile-nav-primary-items";
 import type { ModelPricingOverrides } from "../../../core/src/ai/model-pricing";
 import { setAutoReloadEnabled } from "../versionCheck";
@@ -23,6 +23,8 @@ export function normalizeChatMessageLayout(value: unknown): ChatMessageLayout {
  */
 export interface UseAppSettingsResult {
   maxConcurrent: number;
+  /** Engine-enforced ceiling after the optional worktree limit is applied. */
+  effectiveMaxConcurrent: number;
   rootDir: string;
   autoMerge: boolean;
   mergeStrategy: string;
@@ -83,7 +85,8 @@ export interface UseAppSettingsResult {
  * Loads per-project dashboard settings and exposes optimistic toggle handlers.
  */
 export function useAppSettings(projectId?: string): UseAppSettingsResult {
-  const [maxConcurrent, setMaxConcurrent] = useState(2);
+  const [maxConcurrent, setMaxConcurrent] = useState(DEFAULT_PROJECT_SETTINGS.maxConcurrent);
+  const [effectiveMaxConcurrent, setEffectiveMaxConcurrent] = useState(DEFAULT_PROJECT_SETTINGS.maxConcurrent);
   const [rootDir, setRootDir] = useState<string>(".");
   const [autoMerge, setAutoMerge] = useState(true);
   const [mergeStrategy, setMergeStrategy] = useState("direct");
@@ -149,6 +152,7 @@ export function useAppSettings(projectId?: string): UseAppSettingsResult {
 
     if (configResult.status === "fulfilled") {
       setMaxConcurrent(configResult.value.maxConcurrent);
+      setEffectiveMaxConcurrent(configResult.value.effectiveMaxConcurrent);
       setRootDir(configResult.value.rootDir);
     }
 
@@ -393,6 +397,7 @@ export function useAppSettings(projectId?: string): UseAppSettingsResult {
 
   return {
     maxConcurrent,
+    effectiveMaxConcurrent,
     rootDir,
     autoMerge,
     mergeStrategy,

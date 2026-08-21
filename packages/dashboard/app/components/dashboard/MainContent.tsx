@@ -141,6 +141,7 @@ export function MainContent({
   mainPanelDetailTask,
   filteredBoardTasks,
   maxConcurrent,
+  effectiveMaxConcurrent,
   showWorktreeGrouping,
   moveTask,
   pauseTask,
@@ -905,6 +906,7 @@ export function MainContent({
             tasks={filteredBoardTasks}
             projectId={currentProject?.id}
             maxConcurrent={maxConcurrent}
+            effectiveMaxConcurrent={effectiveMaxConcurrent}
             showWorktreeGrouping={showWorktreeGrouping}
             onMoveTask={moveTask}
             onPauseTask={pauseTask}
@@ -1026,6 +1028,7 @@ export function MainContent({
           tasks={filteredBoardTasks}
           projectId={currentProject?.id}
           maxConcurrent={maxConcurrent}
+          effectiveMaxConcurrent={effectiveMaxConcurrent}
           showWorktreeGrouping={showWorktreeGrouping}
           onMoveTask={moveTask}
           onPauseTask={pauseTask}

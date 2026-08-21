@@ -192,6 +192,8 @@ export interface MainContentProps {
   mainPanelDetailTask: Task | TaskDetail | null;
   filteredBoardTasks: Task[];
   maxConcurrent: number;
+  /** Shared effective ceiling used by board previews and engine admission. */
+  effectiveMaxConcurrent: number;
   showWorktreeGrouping: boolean;
   moveTask: (
     id: string,

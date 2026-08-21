@@ -4326,8 +4326,8 @@ export class ProjectEngine {
             await projectAdmissionCoordinator.admitNext({
               projectId: cwd,
               maxConcurrent: resolveActiveTaskCapacityLimit({
-                maxConcurrent: admissionSettings.maxConcurrent ?? 2,
-                maxWorktrees: admissionSettings.maxWorktrees ?? 4,
+                maxConcurrent: admissionSettings.maxConcurrent,
+                maxWorktrees: admissionSettings.maxWorktrees,
                 worktreeLimitEnabled: admissionSettings.worktreeLimitEnabled,
               }),
               claimed: async () => (await getMergeClaimSnapshot()).count,
@@ -4346,8 +4346,8 @@ export class ProjectEngine {
             if (!selected) {
               const snapshot = await getMergeClaimSnapshot();
               const limit = resolveActiveTaskCapacityLimit({
-                maxConcurrent: admissionSettings.maxConcurrent ?? 2,
-                maxWorktrees: admissionSettings.maxWorktrees ?? 4,
+                maxConcurrent: admissionSettings.maxConcurrent,
+                maxWorktrees: admissionSettings.maxWorktrees,
                 worktreeLimitEnabled: admissionSettings.worktreeLimitEnabled,
               });
               if (snapshot.count >= limit) {
@@ -4358,8 +4358,8 @@ export class ProjectEngine {
                 snapshot proves exhaustion rather than a higher-priority candidate winning.
                 */
                 const reason = formatAdmissionCapacityQueuedReason({
-                  maxConcurrent: admissionSettings.maxConcurrent ?? 2,
-                  maxWorktrees: admissionSettings.maxWorktrees ?? 4,
+                  maxConcurrent: admissionSettings.maxConcurrent,
+                  maxWorktrees: admissionSettings.maxWorktrees,
                   worktreeLimitEnabled: admissionSettings.worktreeLimitEnabled,
                   claimed: snapshot.count,
                   holderTaskIds: snapshot.ids,

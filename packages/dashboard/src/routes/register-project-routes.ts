@@ -14,6 +14,7 @@ import {
   columnsWithFlag,
   resolveTaskLifecycleColumns,
   isTerminalColumnRole,
+  resolveEffectiveConcurrency,
 } from "@fusion/core";
 import type { CentralCore as CentralCoreApi, WorkflowIr } from "@fusion/core";
 import { ApiError, badRequest, notFound } from "../api-error.js";
@@ -1017,8 +1018,19 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
         throw notFound("Project not found");
       }
 
+      /*
+      FNXC:CapacityModel 2026-08-21-15:25:
+      FN-9185 replaces this route's historical literal `2` with the target project's
+      live settings blob. Registry metadata only establishes existence and rootDir.
+      */
+      const settings = await (await getOrCreateProjectStore(req.params.id)).getSettingsFast();
+      const capacity = resolveEffectiveConcurrency(settings);
       res.json({
-        maxConcurrent: 2,
+        maxConcurrent: capacity.maxConcurrent,
+        maxWorktrees: capacity.worktreeLimit ?? settings.maxWorktrees,
+        effectiveMaxConcurrent: capacity.effectiveLimit,
+        worktreeLimitEnabled: settings.worktreeLimitEnabled !== false,
+        concurrencyBindingKnob: capacity.bindingKnob,
         rootDir: project.path,
       });
     } catch (err: unknown) {

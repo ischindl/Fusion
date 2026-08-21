@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { groupByWorktree, getWorktreeLabel } from "../worktreeGrouping";
-import type { Task } from "@fusion/core";
+import { resolveEffectiveConcurrency, type Task } from "@fusion/core";
 
 function makeTask(overrides: Partial<Task> & { id: string }): Task {
   return {
@@ -85,6 +85,16 @@ describe("groupByWorktree", () => {
     const groups = groupByWorktree([active], [active, blocked], 2);
 
     expect(groups.find((g) => g.label === "Up Next")).toBeUndefined();
+  });
+
+  it("caps Up Next at the effective worktree-bound ceiling, not configured max concurrent", () => {
+    const active = makeTask({ id: "FN-001", worktree: ".worktrees/swift-falcon" });
+    const queued = ["FN-010", "FN-011", "FN-012", "FN-013", "FN-014"].map((id) => makeTask({ id, column: "todo" }));
+    const capacity = resolveEffectiveConcurrency({ maxConcurrent: 8, maxWorktrees: 4, worktreeLimitEnabled: true });
+
+    const upNext = groupByWorktree([active], [active, ...queued], capacity.effectiveLimit).find((group) => group.label === "Up Next");
+    expect(capacity).toMatchObject({ maxConcurrent: 8, effectiveLimit: 4, bindingKnob: "maxWorktrees" });
+    expect(upNext?.queuedTasks).toHaveLength(4);
   });
 
   it("respects maxConcurrent limit on queued tasks shown", () => {

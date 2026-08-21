@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
-import { CentralCore, GlobalSettingsStore, getDefaultCentralDbPath } from "@fusion/core";
+import { resolveEffectiveConcurrency, CentralCore, GlobalSettingsStore, getDefaultCentralDbPath } from "@fusion/core";
 import { createFusionAuthStorage, createFusionModelRegistry } from "@fusion/engine";
 import { resolveProject } from "../project-context.js";
 import { promptOutputStream } from "../output.js";
@@ -405,7 +405,7 @@ export async function runOnboard(options: OnboardOptions = {}): Promise<void> {
       if (projectContext) {
         const rawMaxConcurrent = await prompts.prompt(
           "Set maxConcurrent for this project",
-          String((await projectContext.store.getSettings()).maxConcurrent ?? 2),
+          String(resolveEffectiveConcurrency(await projectContext.store.getSettings()).maxConcurrent),
         );
         const maxConcurrent = validateMaxConcurrent(rawMaxConcurrent);
         await projectContext.store.updateSettings({ maxConcurrent });

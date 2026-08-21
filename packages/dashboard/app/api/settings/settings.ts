@@ -9,9 +9,19 @@ import { withProjectId } from "../client/health.js";
 import type { UpdateCheckResponse } from "../client/health.js";
 import { dedupe } from "../client/dedupe.js";
 
-export function fetchConfig(projectId?: string): Promise<{ maxConcurrent: number; rootDir: string }> {
+export function fetchConfig(projectId?: string): Promise<{
+  maxConcurrent: number;
+  effectiveMaxConcurrent: number;
+  concurrencyBindingKnob: "maxConcurrent" | "maxWorktrees";
+  rootDir: string;
+}> {
   const path = withProjectId("/config", projectId);
-  return dedupe(path, () => api<{ maxConcurrent: number; rootDir: string }>(path));
+  return dedupe(path, () => api<{
+    maxConcurrent: number;
+    effectiveMaxConcurrent: number;
+    concurrencyBindingKnob: "maxConcurrent" | "maxWorktrees";
+    rootDir: string;
+  }>(path));
 }
 
 export function fetchSettings(projectId?: string, options?: FetchOptions): Promise<Settings> {

@@ -25,6 +25,7 @@ import {
   writeAgentMemoryFile,
   resolveWorkflowIrForTask,
   columnsWithFlag,
+  resolveEffectiveConcurrency,
 } from "@fusion/core";
 import type { ServerOptions } from "./server.js";
 import { SESSION_CLEANUP_DEFAULT_MAX_AGE_MS, type AiSessionType } from "./ai-session-store.js";
@@ -1239,10 +1240,13 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
         // If we can't get activity log, that's OK - just leave lastActivityAt undefined
       }
 
+      const capacity = resolveEffectiveConcurrency(settings);
       res.json({
         globalPause: settings.globalPause ?? false,
         enginePaused: settings.enginePaused ?? false,
-        maxConcurrent: settings.maxConcurrent ?? 2,
+        maxConcurrent: capacity.maxConcurrent,
+        effectiveMaxConcurrent: capacity.effectiveLimit,
+        concurrencyBindingKnob: capacity.bindingKnob,
         lastActivityAt,
       });
     } catch (err: unknown) {

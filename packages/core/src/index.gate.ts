@@ -467,7 +467,7 @@ export {
 } from "./plugins/plugin-gate-verdict.js";
 export type { PluginGateVerdict, ColumnPluginGate } from "./plugins/plugin-gate-verdict.js";
 // ── U6: workflow capacity (WIP) resolution shared by store + sweep ───────────
-export { resolveColumnCapacity, DEFAULT_WORKFLOW_POOL_ID, resolveCapacityPoolId, resolveWorktreeCapacityLimit} from "./workflows/workflow-capacity.js";
+export { resolveColumnCapacity, DEFAULT_WORKFLOW_POOL_ID, resolveCapacityPoolId, resolveWorktreeCapacityLimit, resolveMaxConcurrentSetting, resolveEffectiveConcurrency, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_WORKTREES } from "./workflows/workflow-capacity.js";
 export type { ColumnCapacity } from "./workflows/workflow-capacity.js";
 // ── U5: workflow lifecycle reconciliation (switch / edit / delete) ───────────
 export {

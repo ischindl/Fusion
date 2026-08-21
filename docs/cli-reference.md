@@ -389,6 +389,7 @@ Remote actions support:
 > ⚠️ Remote URL/QR payloads include tokenized query data. Treat them like credentials and avoid sharing them in screenshots/chat/logs. Prefer short-lived links for ad-hoc phone login.
 
 Settings pane navigation and editing:
+- The TUI shows the live project **Max Concurrent Tasks** and **Max Worktrees** values. Max Concurrent Tasks defaults to 2; when worktree limiting is on, admission uses the lower value and dashboard status surfaces identify the binding setting.
 - `Tab` switches focus between the settings list and the detail/edit pane.
 - In the settings list, `↑`/`↓` or `k`/`j` moves the selected setting.
 - In the detail/edit pane, `←`/`→` or `h`/`l` cycles enum values such as **Remote Provider**; `Space` toggles booleans; `+`/`-` adjusts numbers.

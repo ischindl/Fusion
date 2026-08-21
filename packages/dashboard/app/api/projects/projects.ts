@@ -108,8 +108,12 @@ export interface ExecutorStats {
   inReviewCount: number;
   /** Derived executor state: "idle", "running", "paused", or "stopped" */
   executorState: ExecutorState;
-  /** Maximum concurrent tasks allowed from settings */
+  /** Configured maximum concurrent tasks. */
   maxConcurrent: number;
+  /** Engine-enforced ceiling after the worktree limit is applied. */
+  effectiveMaxConcurrent: number;
+  /** Setting that currently binds the effective ceiling. */
+  concurrencyBindingKnob: "maxConcurrent" | "maxWorktrees";
   /** ISO timestamp of most recent task event from activity log */
   lastActivityAt?: string;
 }
@@ -708,6 +712,8 @@ export function fetchExecutorStats(projectId?: string): Promise<{
   globalPause: boolean;
   enginePaused: boolean;
   maxConcurrent: number;
+  effectiveMaxConcurrent: number;
+  concurrencyBindingKnob: "maxConcurrent" | "maxWorktrees";
   lastActivityAt?: string;
 }> {
   const path = withProjectId("/executor/stats", projectId);
@@ -715,6 +721,8 @@ export function fetchExecutorStats(projectId?: string): Promise<{
     globalPause: boolean;
     enginePaused: boolean;
     maxConcurrent: number;
+    effectiveMaxConcurrent: number;
+    concurrencyBindingKnob: "maxConcurrent" | "maxWorktrees";
     lastActivityAt?: string;
   }>(path));
 }

@@ -2145,7 +2145,7 @@ export class TriageProcessor {
       same maxConcurrent live-agent claim as execute/review so a project cannot
       exceed its operator-facing top-level capacity in a different lane.
       */
-      const maxConcurrent = settings.maxConcurrent ?? 2;
+      const maxConcurrent = fusionCore.resolveMaxConcurrentSetting(settings);
       // processing entries that have not yet written status:"planning" still claim a future slot.
       let pendingSpecifyCount = 0;
       for (const id of this.processing) {
@@ -2179,15 +2179,8 @@ export class TriageProcessor {
       reuse/cleanup without consuming admission capacity. Every newly admitted planner becomes live
       and spends one slot below, even when it reuses an existing directory.
       */
-      const maxWorktrees = resolveWorktreeCapacityLimit({
-        maxWorktrees: settings.maxWorktrees ?? 4,
-        worktreeLimitEnabled: settings.worktreeLimitEnabled,
-      });
-      const activeTaskLimit = resolveActiveTaskCapacityLimit({
-        maxConcurrent,
-        maxWorktrees: settings.maxWorktrees ?? 4,
-        worktreeLimitEnabled: settings.worktreeLimitEnabled,
-      });
+      const maxWorktrees = resolveWorktreeCapacityLimit(settings);
+      const activeTaskLimit = resolveActiveTaskCapacityLimit(settings);
       const worktreeRoom = maxWorktrees === null
         ? Number.POSITIVE_INFINITY
         : Math.max(0, maxWorktrees - claimed);
@@ -2208,7 +2201,7 @@ export class TriageProcessor {
         const blockedBy = worktreeRoom <= 0 && projectRoom > 0 ? "worktree cap" : "running-agent cap";
         const capacityReason = formatAdmissionCapacityQueuedReason({
           maxConcurrent,
-          maxWorktrees: settings.maxWorktrees ?? 4,
+          maxWorktrees: settings.maxWorktrees,
           worktreeLimitEnabled: settings.worktreeLimitEnabled,
           claimed,
           holderTaskIds: await persistedTopLevelAgentTaskIdsFromStore(this.store, allTasks),

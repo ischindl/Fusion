@@ -37,8 +37,20 @@ import {
   isPostgresUniqueError,
   ProjectPartitionRekeyError,
   resolveTaskLifecycleColumns,
+  DEFAULT_PROJECT_SETTINGS,
+  resolveEffectiveConcurrency,
+  resolveWorktreeCapacityLimit,
   type WorkflowIr,
 } from "@fusion/core";
+
+export function mapTuiConcurrencySettings(settings: Record<string, unknown> | null | undefined): { maxConcurrent: number; maxWorktrees: number } {
+  const capacity = resolveEffectiveConcurrency(settings);
+  return {
+    maxConcurrent: capacity.maxConcurrent,
+    // FNXC:CapacityModel 2026-08-21-16:18: TUI settings display the configured worktree value even when its admission gate is off.
+    maxWorktrees: resolveWorktreeCapacityLimit({ ...(settings ?? {}), worktreeLimitEnabled: true })!,
+  };
+}
 
 /*
 FNXC:WorkflowLifecycleColumns 2026-08-02-08:50 (fleet: CLI dashboard/serve stats):
@@ -902,8 +914,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
           const fullSettings = await store.getSettings();
           // Return SettingsValues subset for TUI
           return {
-            maxConcurrent: fullSettings.maxConcurrent ?? 1,
-            maxWorktrees: fullSettings.maxWorktrees ?? 2,
+            ...mapTuiConcurrencySettings(fullSettings),
             autoMerge: fullSettings.autoMerge ?? false,
             mergeStrategy: fullSettings.mergeStrategy ?? "direct",
             pollIntervalMs: fullSettings.pollIntervalMs ?? 60_000,
@@ -915,8 +926,8 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
           };
         }
         return {
-          maxConcurrent: 1,
-          maxWorktrees: 2,
+          maxConcurrent: DEFAULT_PROJECT_SETTINGS.maxConcurrent,
+          maxWorktrees: DEFAULT_PROJECT_SETTINGS.maxWorktrees,
           autoMerge: false,
           mergeStrategy: "direct",
           pollIntervalMs: 60_000,
@@ -1259,8 +1270,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     try {
       const settings = await store.getSettings();
       tui.setSettings({
-        maxConcurrent: settings.maxConcurrent ?? 1,
-        maxWorktrees: settings.maxWorktrees ?? 2,
+        ...mapTuiConcurrencySettings(settings),
         autoMerge: settings.autoMerge ?? false,
         mergeStrategy: settings.mergeStrategy ?? "direct",
         pollIntervalMs: settings.pollIntervalMs ?? 60_000,
@@ -3150,8 +3160,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
       applyTunnelUrl();
       tui.setReady(true);
       tui.setSettings({
-        maxConcurrent: settings.maxConcurrent ?? 1,
-        maxWorktrees: settings.maxWorktrees ?? 2,
+        ...mapTuiConcurrencySettings(settings),
         autoMerge: settings.autoMerge ?? false,
         mergeStrategy: settings.mergeStrategy ?? "direct",
         pollIntervalMs: settings.pollIntervalMs ?? 60_000,
@@ -3300,8 +3309,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
           getSettings: async () => {
             const s = await store.getSettings();
             return {
-              maxConcurrent: s.maxConcurrent ?? 1,
-              maxWorktrees: s.maxWorktrees ?? 2,
+              ...mapTuiConcurrencySettings(s),
               autoMerge: s.autoMerge ?? false,
               mergeStrategy: s.mergeStrategy ?? "direct",
               pollIntervalMs: s.pollIntervalMs ?? 60_000,

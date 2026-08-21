@@ -44,7 +44,7 @@ import { BacklogPressureReporter } from "./scheduling/backlog-pressure-reporter.
 import { UnlinkedMissionsAdvisoryReporter } from "./missions/unlinked-missions-advisory-reporter.js";
 import { createRunAuditor, generateSyntheticRunId } from "./util/run-audit.js";
 import type { TaskMoveLanes } from "@fusion/core";
-import { resolveProjectColumnsForRoles, resolveWorkflowIrForTask, resolveWorkflowIrById, resolveColumnFlags, resolveWorktreeCapacityLimit, resolveLifecycleColumns, isWipColumnRole, isReviewColumnRole, isCompleteColumnRole, columnsWithFlag } from "@fusion/core";
+import { resolveProjectColumnsForRoles, resolveWorkflowIrForTask, resolveWorkflowIrById, resolveColumnFlags, resolveWorktreeCapacityLimit, resolveMaxConcurrentSetting, resolveLifecycleColumns, isWipColumnRole, isReviewColumnRole, isCompleteColumnRole, columnsWithFlag } from "@fusion/core";
 import type { WorkflowIr, WorkflowIrV2, WorkflowSelectionCache } from "@fusion/core";
 import type { ColumnRoleTraitFlags } from "@fusion/core";
 
@@ -790,13 +790,21 @@ function computeConcurrencyGateDiagnostic(params: {
   };
 }
 
-function formatConcurrencyLimitReason(diagnostic: ConcurrencyGateDiagnostic): string {
+export function formatConcurrencyLimitReason(diagnostic: ConcurrencyGateDiagnostic): string {
   const holdersText = (gate: ConcurrencyGateName): string => {
     const holders = diagnostic.holders[gate];
     return holders && holders.length > 0 ? holders.join(", ") : "none";
   };
   const gateLabel = diagnostic.bindingGates.join(", ");
+  const effectiveLimit = Math.min(
+    diagnostic.maxConcurrentGate.limit,
+    diagnostic.maxWorktreesGate?.limit ?? Infinity,
+  );
+  const bindingKnob = diagnostic.maxWorktreesGate && diagnostic.maxWorktreesGate.limit <= diagnostic.maxConcurrentGate.limit
+    ? "maxWorktrees"
+    : "maxConcurrent";
   const details = [
+    `effectiveLimit=${effectiveLimit} (bindingKnob=${bindingKnob})`,
     `maxConcurrent used=${diagnostic.maxConcurrentGate.used}/${diagnostic.maxConcurrentGate.limit} (holders: ${holdersText("maxConcurrent")})`,
   ];
   /*
@@ -2302,16 +2310,15 @@ export class Scheduler {
     try {
       // FNXC:CapacityModel 2026-07-28-11:35: null = worktrees are not a capacity
       // dimension for this project (worktreeLimitEnabled false), NOT unlimited.
-      const maxWorktrees = resolveWorktreeCapacityLimit({
-        maxWorktrees: settings.maxWorktrees ?? this.options.maxWorktrees ?? 4,
-        worktreeLimitEnabled: settings.worktreeLimitEnabled,
-      });
-      const maxConcurrent = settings.maxConcurrent ?? this.options.maxConcurrent ?? 2;
-      const activeTaskLimit = resolveActiveTaskCapacityLimit({
-        maxConcurrent,
-        maxWorktrees: settings.maxWorktrees ?? this.options.maxWorktrees ?? 4,
-        worktreeLimitEnabled: settings.worktreeLimitEnabled,
-      });
+      /* FNXC:CapacityModel 2026-08-21-15:25: live project settings are authoritative;
+       * scheduler boot options remain fallback-only when a setting is absent. */
+      const capacitySettings = {
+        ...this.options,
+        ...settings,
+      };
+      const maxWorktrees = resolveWorktreeCapacityLimit(capacitySettings);
+      const maxConcurrent = resolveMaxConcurrentSetting(capacitySettings);
+      const activeTaskLimit = resolveActiveTaskCapacityLimit(capacitySettings);
       /*
       FNXC:WorkflowScheduling 2026-07-19-02:35 (U4/KTD-9):
       Count active WIP reservations by the `wip` trait, not the literal

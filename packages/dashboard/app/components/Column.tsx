@@ -118,6 +118,8 @@ interface ColumnProps {
   tasks: Task[];
   projectId?: string;
   maxConcurrent: number;
+  /** Effective engine ceiling, including a binding worktree limit when enabled. */
+  effectiveMaxConcurrent?: number;
   showWorktreeGrouping: boolean;
   onMoveTask: (id: string, column: ColumnId, optionsOrPosition?: { preserveProgress?: boolean } | number) => Promise<Task>;
   onPauseTask?: (id: string) => Promise<Task>;
@@ -227,7 +229,7 @@ interface ColumnProps {
   onPromote?: (taskId: string, options?: { force?: boolean }) => Promise<void>;
 }
 
-function ColumnComponent({ column, tasks, projectId, maxConcurrent, showWorktreeGrouping, onMoveTask, onPauseTask, onUnpauseTask, onResetTask, onDuplicateTask, onMergeTask, onOpenDetail, onOpenRefine, onOpenGroupModal, addToast, onQuickCreate, onNewTask, autoMerge, mergeStrategy = "direct", onToggleAutoMerge, planAutoApproveEnabled, onTogglePlanAutoApprove, globalPaused, onUpdateTask, onRetryTask, onArchiveTask, onUnarchiveTask, onRevertTask, onDeleteTask, onArchiveAllDone, sortMode, onSortModeChange, doneSortMode, onDoneSortModeChange, collapsed, onToggleCollapse, archivedHasMore, archivedLoadingMore, onLoadMoreArchived, allTasks, availableModels, onPlanningMode, onOpenDetailWithTab, favoriteProviders, favoriteModels, onToggleFavorite, onToggleModelFavorite, isSearchActive, onOpenMission, lastFetchTimeMs, taskCardFieldDefs, taskWorkflowBadges, blockerFanoutMap, prAuthAvailable, holdTaskIds, workflowMode, workflowId, workflowOptions, defaultWorkflowId, columnDisplayName, columnDescription, columnFlags, workflowContextMenuColumns, taskContextMenuColumnsByTaskId, onPromote }: ColumnProps) {
+function ColumnComponent({ column, tasks, projectId, maxConcurrent, effectiveMaxConcurrent = maxConcurrent, showWorktreeGrouping, onMoveTask, onPauseTask, onUnpauseTask, onResetTask, onDuplicateTask, onMergeTask, onOpenDetail, onOpenRefine, onOpenGroupModal, addToast, onQuickCreate, onNewTask, autoMerge, mergeStrategy = "direct", onToggleAutoMerge, planAutoApproveEnabled, onTogglePlanAutoApprove, globalPaused, onUpdateTask, onRetryTask, onArchiveTask, onUnarchiveTask, onRevertTask, onDeleteTask, onArchiveAllDone, sortMode, onSortModeChange, doneSortMode, onDoneSortModeChange, collapsed, onToggleCollapse, archivedHasMore, archivedLoadingMore, onLoadMoreArchived, allTasks, availableModels, onPlanningMode, onOpenDetailWithTab, favoriteProviders, favoriteModels, onToggleFavorite, onToggleModelFavorite, isSearchActive, onOpenMission, lastFetchTimeMs, taskCardFieldDefs, taskWorkflowBadges, blockerFanoutMap, prAuthAvailable, holdTaskIds, workflowMode, workflowId, workflowOptions, defaultWorkflowId, columnDisplayName, columnDescription, columnFlags, workflowContextMenuColumns, taskContextMenuColumnsByTaskId, onPromote }: ColumnProps) {
   const { t } = useTranslation("app");
   // Anchor the board.rejection.* catalog keys for the i18next extractor (it
   // scopes `t` to the useTranslation binding, so the shared translateRejection
@@ -497,14 +499,19 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, showWorktree
     return index;
   }, [allTasks, tasks, taskContextMenuColumnsByTaskId]);
 
+  /*
+  FNXC:CapacityModel 2026-08-21-15:45:
+  FN-9185 requires the board's Up Next preview to use the same effective ceiling as engine admission.
+  The configured max can be shadowed by an enabled worktree cap, so showing it here would promise slots the scheduler cannot grant.
+  */
   const worktreeGroups = useMemo(() => {
     if (!showWorktreeGroups) return [];
-    return groupByWorktree(tasks, allTasks ?? tasks, maxConcurrent, holdTaskIds, dependencyColumnFlags);
+    return groupByWorktree(tasks, allTasks ?? tasks, effectiveMaxConcurrent, holdTaskIds, dependencyColumnFlags);
     // `holdTaskIds` IS a dependency: the board resolves it after the workflows fetch, so
     // omitting it would pin the first-paint value and the upcoming-work list would keep
     // using the legacy-id fallback for the rest of the session. This repo has no
     // react-hooks/exhaustive-deps rule, so nothing catches that but reading it.
-  }, [showWorktreeGroups, tasks, allTasks, maxConcurrent, holdTaskIds, dependencyColumnFlags]);
+  }, [showWorktreeGroups, tasks, allTasks, effectiveMaxConcurrent, holdTaskIds, dependencyColumnFlags]);
 
   const visibleTasks = useMemo(() => {
     if (!shouldPaginate) return tasks;

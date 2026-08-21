@@ -617,8 +617,8 @@ export async function admitPlanningContinuation(input: {
   await projectAdmissionCoordinator.admitNext({
     projectId: input.projectId,
     maxConcurrent: resolveActiveTaskCapacityLimit({
-      maxConcurrent: settings.maxConcurrent ?? 2,
-      maxWorktrees: settings.maxWorktrees ?? 4,
+      maxConcurrent: settings.maxConcurrent,
+      maxWorktrees: settings.maxWorktrees,
       worktreeLimitEnabled: settings.worktreeLimitEnabled,
     }),
     claimed: async () => (await getAdmissionSnapshot()).count,
@@ -665,8 +665,8 @@ export async function admitPlanningContinuation(input: {
   }
   const snapshot = await getAdmissionSnapshot();
   const limit = resolveActiveTaskCapacityLimit({
-    maxConcurrent: settings.maxConcurrent ?? 2,
-    maxWorktrees: settings.maxWorktrees ?? 4,
+    maxConcurrent: settings.maxConcurrent,
+    maxWorktrees: settings.maxWorktrees,
     worktreeLimitEnabled: settings.worktreeLimitEnabled,
   });
   if (snapshot.count >= limit) {
@@ -677,8 +677,8 @@ export async function admitPlanningContinuation(input: {
     execute, triage, and merge admission; unchanged retries remain deduplicated.
     */
     const reason = formatAdmissionCapacityQueuedReason({
-      maxConcurrent: settings.maxConcurrent ?? 2,
-      maxWorktrees: settings.maxWorktrees ?? 4,
+      maxConcurrent: settings.maxConcurrent,
+      maxWorktrees: settings.maxWorktrees,
       worktreeLimitEnabled: settings.worktreeLimitEnabled,
       claimed: snapshot.count,
       holderTaskIds: snapshot.ids,
