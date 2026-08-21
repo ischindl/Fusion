@@ -143,9 +143,15 @@ export async function autoRecoverWorktreeSessionStartFailure(
     worktreeSessionRetryCount: nextCount,
     ...(nextStaleMetadataClearRecoveryCount === undefined ? {} : { recoveryRetryCount: nextStaleMetadataClearRecoveryCount }),
     worktree: clearWorktreeMetadata ? null : staleWorktree,
-    branch: nextBranch,
-    // FNXC:BranchWriteOrigin 2026-08-20-16:10: engine-owned recovery metadata rewrite (FN-9161 store validation requires origin even for null clears).
-    branchWriteOrigin: "engine" as const,
+    /*
+     * FNXC:BranchNaming 2026-08-21-09:36:
+     * Session recovery often changes only worktree/session metadata. Do not reassert an unchanged
+     * branch with engine provenance: that would erase a matching operator override and later make
+     * its branch eligible for engine cleanup. A real canonical clear remains an explicit engine write.
+     */
+    ...((task.branch ?? null) === nextBranch
+      ? {}
+      : { branch: nextBranch, branchWriteOrigin: "engine" as const }),
     sessionFile: null,
   });
   await opts.auditor?.database({

@@ -533,6 +533,9 @@ export type DatabaseMutationType =
   */
   | "task:auto-recover-terminal-failure"
   | "task:auto-recover-terminal-failure-exhausted"
+  /** Metadata: { taskId, column, attempt, maxAttempts, delayMs?, outcome } — ids/counts/outcomes only. */
+  | "task:no-progress-no-task-done-requeue"
+  | "task:no-progress-no-task-done-requeue-exhausted"
   | "task:auto-recover-finalize-already-on-main"
   /** Metadata: { taskId, previousColumn, targetColumn, commitSha, status, blockedBy, overlapBlockedBy, reason } */
   | "task:auto-merge-finalize-column-mismatch-reconciled"
@@ -572,6 +575,8 @@ export type DatabaseMutationType =
   // task:auto-archived-duplicate metadata: { siblingTaskIds: string[]; scores: Record<string, number> }
   | "task:auto-archived-ghost-bug"
   | "task:auto-archived-duplicate"
+  /** Metadata: { taskId, attempts, maxAttempts, reason: "lineage-children" | "task-live" | "dependents" | "not-found" | "unknown" } */
+  | "task:auto-archive-failure-budget-exhausted"
   | "task:auto-reconciled-self-defeating-dep"
   | "task:soft-delete-column-reconciled"
   | "task:dependency-cycle-rejected"

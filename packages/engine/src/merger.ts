@@ -6649,8 +6649,7 @@ async function tryEarlyEmptyOwnDiffFinalize(input: {
       await store.updateTask(taskId, {
         worktree: worktreeRemoved ? null : task.worktree,
         branch: branchDeleted ? null : task.branch,
-        // FNXC:BranchWriteOrigin 2026-08-20-16:10: engine-owned post-merge cleanup re-pin/clear (FN-9161 store validation).
-        branchWriteOrigin: "engine" as const,
+        ...(branchDeleted ? { branchWriteOrigin: "engine" as const } : {}),
       });
       // Keep the in-memory task in sync with the DB so the returned
       // MergeResult.task does not advertise a removed path / deleted branch.

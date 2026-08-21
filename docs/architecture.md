@@ -1127,7 +1127,10 @@ The client treats mapping persistence as part of onboarding success. If mapping 
 | GET | `/api/settings/auth-export` | Export local `AuthMaterialSnapshot`. |
 | GET | `/api/update-check` | Read cached/TTL-guarded npm update status for `@runfusion/fusion` (respects `updateCheckEnabled`). |
 | POST | `/api/update-check/refresh` | Clear cached update data and force a fresh npm update check. |
+| POST | `/api/update-check/install` | Install the available package once; a successful install is retained by the old process until restart. |
 | GET | `/api/updates/check` | Perform an on-demand npm registry check for the latest `@runfusion/fusion` version (no cache). |
+
+Update-check responses may include `pendingInstall`, using the install response shape for a successful `installed` target plus restart flags. `pendingInstall` takes dashboard action/message precedence over ordinary availability, disabled checks, and cached status; while it exists GET, refresh, and install return it without another registry lookup or npm install. It is intentionally process-local and expires on host replacement, rather than being persisted in settings or storage.
 
 When adding a new node settings/auth sync endpoint, add it to the `ENDPOINTS` catalog in `packages/dashboard/src/__tests__/routes-nodes-sync-contract.test.ts` so the auth/error/payload parity matrix covers it. Inbound sync endpoints (including `/api/secrets/sync-receive` and `/api/secrets/sync-export`) must validate `Authorization: Bearer <apiKey>` against the local node API key.
 
@@ -2165,6 +2168,8 @@ The GitHub tracking state listener now attaches to every registered project stor
 #### Automated follow-up dedup (FN-5232 — REMOVED 2026-07-26)
 `packages/engine/src/verification-followup-dedup.ts` and its `createAutomatedFollowup`/`decideAutomatedFollowup` engine are DELETED, together with the meta-task auto-archive sweeps that existed to garbage-collect the cards it filed. Do not reintroduce either.
 
+The surviving retention-driven `archiveStaleDoneTasks()` sweep is intentionally narrower: it pre-filters live lineage parents rather than clearing child provenance with `removeLineageReferences`, and it bounds each remaining same-reason archive failure with `MAX_STARVATION_DROPS`. Exhaustion writes one task log entry and `task:auto-archive-failure-budget-exhausted` audit event for operator action instead of retrying indefinitely.
+
 - The engine filed a `sourceType: "recovery"` card whenever auto-merge gave up on verification or merge conflicts. That card mostly restated state already durable on the parent, which is parked `failed` with a descriptive `error` (verification) or carries an "Auto-merge gave up after conflict retries exhausted" `logEntry` (conflict). Those parent-side signals are the contract now; the card was redundant.
 - Because the classifier that cleaned these cards up (`classifyMetaTask`) matched a regex over title+description, it also matched ordinary feature work — and `resolveMetaTargetTaskId` bound an unmatched card to an unrelated task by creation order. Auto-archiving live work was the failure mode that motivated deleting the whole layer rather than tuning it.
 - The autostash-orphan path was the one caller carrying information found nowhere else, so it survives as a log entry + task comment (see the Stash Recovery bullets above) rather than a task.
@@ -2446,3 +2451,15 @@ An approval remains an approval. A clean approval is reviewed a second time agai
 Workspace acquisition prepares Git worktrees for every configured repository before planning; it does not declare task intent. A task's explicit repository scope is the authority for downstream work. Planning confirms that scope, and a pre-land extension is recorded with its acceptance or refusal history. A late extension after any repository has landed is refused so operators can create a follow-up rather than mutate an integration episode.
 
 Review and landing use the intersection of confirmed scope and qualified changed-file evidence. Clean scoped repositories are recorded as **No changes — not reviewed** and have no reviewer verdict. Acquired out-of-scope repositories are not opened by reviewers or selected as land/recovery targets. Workspace tasks keep their worktree and branch state per repository; an absent singular `task.worktree` is normal and must not trigger root-worktree recovery.
+
+## Branch assignment provenance
+
+Every populated or cleared task `branch` mutation declares `branchWriteOrigin`: use `operator` only for a matching persisted override and `engine` for canonical, group-derived, recovery, and clear writes. Single-repository acquisition creates or attaches the checkout, persists its singular branch assignment, then exposes it. If that persistence fails, it removes only the checkout created by the attempt through the backend-aware removal path and preserves the branch. A provenance validation failure is deterministic and terminal, never a provider retry.
+
+## Workspace finalization readiness
+
+Workspace landing derives its repository obligations from confirmed repository scope and durable per-repository evidence. A repository with a recorded `landedSha` remains an obligation on a finalize-once retry even when its current task-branch diff is empty. Undefined scope, duplicate repository declarations or worktree paths, and unexplained empty obligations fail closed; only an explicit commit-free task may take the no-op path.
+
+Every land and recovery door evaluates graph-owned pre-merge blockers before changing merge state, acquiring leases, or writing Git. Recovery uses the persisted transient merge counter and reports scheduling separately from observed finalization. Main-checkout committed-work detection requires task ownership after the repository baseline; historical task-ID commits, recorded landings, and foreign shared-checkout commits do not become task violations. A scope revision atomically clears both its approval fingerprints and Code Review remediation target; a current-scope approval likewise clears that target, so a successor cannot inherit a stale remediation coordinator.
+
+- **Bounded no-progress recovery (FN-9186):** `recoverNoProgressNoTaskDoneFailures()` spends the durable `taskDoneRetryCount` budget (maximum three) and writes the `recoveryRetryCount`/`nextRecoveryAt` display mirror using exponential backoff before requeuing a clean zero-progress failure. `recoveryRetryCount` cannot be the budget because terminal-failure recovery clears an expired mirror after a re-failure. On exhaustion the task stays failed with `NO_PROGRESS_REQUEUE_BUDGET_EXHAUSTED:`; the specific wedge descriptor prevents generic terminal-failure recovery from reopening it, and restart recovery also preserves the park. Manual Retry clears the error and counters to grant a fresh budget.

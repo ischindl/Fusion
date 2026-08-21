@@ -2,6 +2,22 @@
 
 User-facing release notes aggregated across all packages. This file is auto-synced from each `packages/*/CHANGELOG.md` by `scripts/release.mjs` — do not edit by hand.
 
+## 0.77.0-beta.6
+
+### Highlights
+
+- Chat logs and supported file-editor saves up to 2 MiB save without payload errors
+- Workspace merges stop retry-looping once repositories have already landed
+- Single-repository worktree acquisition works again, with no destructive validation retries
+- Settings keeps the installed-update restart prompt when you reopen it
+
+### Fixed
+
+- Larger chat logs and supported file-editor saves now go through instead of failing with a payload error; the chat and escaped-file routes accept up to 2 MiB while every other route keeps the default limit.
+- Workspace merge retries no longer loop after their repositories have landed. Durable landing obligations are preserved, and workspace merge failures are reported truthfully instead of being retried away.
+- Single-repository worktree acquisition is restored, and deterministic acquisition validation failures now stop instead of retrying destructively. Branch-write provenance is enforced across production callers.
+- Reopening Settings after an update installs no longer loses the restart prompt; the outgoing dashboard process keeps reporting its pending install until it is replaced.
+
 ## 0.77.0-beta.5
 
 ### Highlights

@@ -295,7 +295,7 @@ Disable daily update checks globally:
 fn settings set updateCheckEnabled false
 ```
 
-When the dashboard footer reports that a newer `@runfusion/fusion` version is available, **Update now** uses a pinned global npm install and retries once with `--force` for the legacy `fn`/`fusion` binary-collision case. Every request reports an explicit outcome: `installed`, `no-update-available`, `check-failed`, `unsupported-install-method`, or `failed`. A failed registry check is reported as a failure, never as “already up to date”. Source checkouts, Homebrew installs, and hosts without `npm` are refused before installation with actionable guidance; source-checkout auto-update logs a skip and never requests a restart. A successful install updates the global package on disk, but the currently running Fusion server is not hot-swapped; restart Fusion to run the newly installed version.
+When the dashboard footer reports that a newer `@runfusion/fusion` version is available, **Update now** uses a pinned global npm install and retries once with `--force` for the legacy `fn`/`fusion` binary-collision case. Every request reports an explicit outcome: `installed`, `no-update-available`, `check-failed`, `unsupported-install-method`, or `failed`. A failed registry check is reported as a failure, never as “already up to date”. Source checkouts, Homebrew installs, and hosts without `npm` are refused before installation with actionable guidance; source-checkout auto-update logs a skip and never requests a restart. A successful install updates the global package on disk, but the currently running Fusion server is not hot-swapped; restart Fusion to run the newly installed version. The old server process retains that successful target as a pending install until process replacement, so reopening Settings or another dashboard update surface keeps **Restart Fusion** available and cannot launch a second installation. This is process-local state, not a saved setting: it naturally clears when Fusion restarts.
 
 ---
 
@@ -719,7 +719,7 @@ Default notes:
 | `maxSpawnedAgentsPerParent` | `number` | `5` | Max child agents per parent task. |
 | `maxSpawnedAgentsGlobal` | `number` | `20` | Max spawned agents across one executor instance. |
 | `maintenanceIntervalMs` | `number` | `300000` | Periodic maintenance interval in ms (5 min). |
-| `autoArchiveDoneTasksEnabled` | `boolean` | `true` | Enable periodic auto-archiving of done tasks. |
+| `autoArchiveDoneTasksEnabled` | `boolean` | `true` | Enable periodic auto-archiving of done tasks; tasks with live lineage children are retained for operator action. |
 | `autoArchiveDoneAfterMs` | `number` | `172800000` | Age in ms after entering done before auto-archive (48h). |
 | `doneAutoArchiveDays` | `number` | `0` | Integer day-based done-task retention. `0` disables day override; values `> 0` take precedence over `autoArchiveDoneAfterMs`. |
 | `autoArchiveDuplicateTasksEnabled` | `boolean` | `false` | FN-7658/FN-8401: gates whether same-agent duplicate intake on every create backend auto-archives the later/new task. Default `false` — the duplicate is flagged in place (`nearDuplicateOf`/`nearDuplicateScore` marker, yellow "Duplicate" chip with Keep/Archive actions), and no live sibling is deleted or archived automatically. Set `true` to restore opt-in archival of the new task only. Does not affect ghost-bug preflight or tombstone-resurrection blocking. |

@@ -50,6 +50,7 @@ export const DELIVERY_PIPELINE_RUN_AUDIT_EVENTS_LITERALS = [
   /* ── 2. Self-healing reconciliation events ─────────────────────────────── */
   "task:auto-recover-paused-abort-park",
   "task:auto-rebound-paused-scope-decay",
+  "task:auto-archive-failure-budget-exhausted",
   "task:reclaim-phantom-executor-binding",
   "task:reconcile-orphaned-pending-step-results",
   "task:reconcile-stale-duplicate-decision",
@@ -122,6 +123,8 @@ export const DELIVERY_PIPELINE_RUN_AUDIT_EVENT_NOTES: Readonly<Record<DeliveryPi
     "Self-healing clears a benign pause-abort operator park and requeues the task.",
   "task:auto-rebound-paused-scope-decay":
     "Self-healing rebounds a task whose paused scope decayed past its floor, unblocking followers.",
+  "task:auto-archive-failure-budget-exhausted":
+    "Self-healing abandons a repeatedly failing stale-task archive and surfaces it for operator action.",
   "task:reclaim-phantom-executor-binding":
     "Self-healing proves an in-memory executor-active binding is stale and requeues the task.",
   "task:reconcile-orphaned-pending-step-results":

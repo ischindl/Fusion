@@ -1,5 +1,22 @@
 # @runfusion/fusion
 
+## 0.77.0-beta.6
+
+### Patch Changes
+
+- 2bdc444: summary: Allow larger chat logs and supported file-editor saves without payload errors.
+  category: fix
+  dev: Adds finite route-scoped 2 MiB chat and escaped-file JSON parsers while retaining default limits.
+- b2125ae: summary: Preserve installed update restart state when Settings reopens.
+  category: fix
+  dev: The old dashboard process exposes its pending install until replacement.
+- c91e5ce: summary: Prevent workspace merge retries from looping after repositories already land.
+  category: fix
+  dev: Preserves durable landing obligations and reports workspace merge failures truthfully.
+- 3717fc5: summary: Restore single-repository worktree acquisition and stop destructive validation retries.
+  category: fix
+  dev: Enforces branch-write provenance across production callers and terminalizes deterministic acquisition validation failures.
+
 ## 0.77.0-beta.5
 
 ### Minor Changes

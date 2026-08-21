@@ -500,11 +500,14 @@ export async function archiveTaskBackendImpl(store: TaskStore, id: string, optio
     const entry = await store.taskToArchiveEntry(task, archivedAt);
 
     /*
-    FNXC:SpecLockLineageInvalidation 2026-08-10-14:33:
-    Archive keeps its legacy archived-lane semantics (undefined -> "archived") but threads that
-    one value through pre-read and gate. The workspace reservation is created inside the locked body.
+    FNXC:SelfHealing 2026-08-21-15:11:
+    Runfusion/Fusion#3497 requires the retention sweep and this transactional lineage gate to share
+    the project archive vocabulary. A renamed archived child is already filed and must not make the
+    sweep issue a guaranteed TaskHasLineageChildrenError; resolution failure remains fail-soft to the
+    legacy `archived` id.
     */
-    const archiveLineageArchivedLanes: ReadonlySet<string> | undefined = undefined;
+    const archiveLineageArchivedLanes = await resolveProjectColumnsForRoles(store, ["archived"])
+      .catch(() => undefined);
     // Resolve configuration before the transaction; only its durable row verdict is authoritative.
     const livenessWipLanes = liveExecutionGuard === "refuse" ? await resolveArchiveLivenessWipLanes(store, id) : undefined;
     const archiveRun = async (context?: { candidateIds: string[]; promptByChildId: ReadonlyMap<string, string>; locksHeld: boolean; attempt: number }) => {
