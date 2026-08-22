@@ -331,10 +331,19 @@ export default defineConfig({
           include: ["src/**/*.test.ts"],
           exclude: [
             /*
-            FNXC:EngineTests 2026-08-11-21:50:
-            RUFU-072 quarantine (run-time OOM): RUNNING this single file inside the engine-default project drives superlinear RSS to 120G in ~90s and trips the operator watchdog (64G baseline), even though `vitest list` proves the file correctly maps to [engine-default] (25 tests, single-file enumeration — whole-workspace discovery is NOT the cause). The leak is a retained-object cycle (per-test NotificationService/scheduler/registry) in the execute path itself. This machine was halted 4+ times by this file before the watchdog was added. Quarantined per AGENTS.md deletion ratchet; do NOT widen limits/retries (anti-appeasement). See scripts/lib/test-quarantine.json + PROMPT.md Symptom Verification. RUFU-069's verification lane must treat this file as unavailable until root-caused+rescued.
+            FNXC:EngineTests 2026-08-22-21:57 (RUFU-156):
+            EVICTED the RUFU-072 quarantine of
+            src/notification/__tests__/task-wedge-notification.test.ts — quarantined
+            2026-08-11 (run-time OOM: superlinear RSS 64G->120G in ~90s, host halted
+            4+ times), deletion-ratchet deadline 2026-08-25, early eviction
+            CEO-approved 2026-08-21 on the audit findings. Rescue was infeasible on
+            this host (~3G free RAM, full swap; re-run after a watchdog trip is
+            forbidden; no deterministic code root cause). The test file is deleted
+            but remains in git history for a later root-cause rescue; the production
+            module notification/task-wedge-notification.ts is untouched. Upstream CI
+            runs the test on an empty ledger — the quarantine was local-machine
+            state only and was never carried into any PR.
             */
-            "src/notification/__tests__/task-wedge-notification.test.ts",
             "src/__tests__/reliability-interactions/**/*.test.ts",
             // Real-git heavy files run in the engine-slow project so local
             // `pnpm test` stays snappy. CI picks them up via `test:slow`
