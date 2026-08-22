@@ -14,9 +14,9 @@ vi.mock("lucide-react", async (importOriginal) => {
 });
 
 const agents: Agent[] = [
-  { id: "agent-001", name: "Alpha", role: "executor", state: "idle", createdAt: "2026-04-01T00:00:00.000Z", updatedAt: "2026-04-01T00:00:00.000Z", metadata: {} },
-  { id: "agent-002", name: "Alfred", role: "reviewer", state: "idle", createdAt: "2026-04-01T00:00:00.000Z", updatedAt: "2026-04-01T00:00:00.000Z", metadata: {} },
-  { id: "agent-003", name: "Alex", role: "triage", state: "idle", createdAt: "2026-04-01T00:00:00.000Z", updatedAt: "2026-04-01T00:00:00.000Z", metadata: {} },
+  { id: "agent-001", name: "Alpha", role: "executor", roles: ["executor"], state: "idle", createdAt: "2026-04-01T00:00:00.000Z", updatedAt: "2026-04-01T00:00:00.000Z", metadata: {} },
+  { id: "agent-002", name: "Alfred", role: "reviewer", roles: ["reviewer"], state: "idle", createdAt: "2026-04-01T00:00:00.000Z", updatedAt: "2026-04-01T00:00:00.000Z", metadata: {} },
+  { id: "agent-003", name: "Alex", role: "triage", roles: ["triage"], state: "idle", createdAt: "2026-04-01T00:00:00.000Z", updatedAt: "2026-04-01T00:00:00.000Z", metadata: {} },
 ];
 
 describe("AgentMentionPopup room behavior", () => {

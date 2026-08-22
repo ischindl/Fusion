@@ -285,7 +285,7 @@ describe("Chat pinned session sections", () => {
       expect(screen.getByTestId("chat-session-section-pinned")).toBeInTheDocument();
       expect(screen.getByTestId("chat-session-section-recent")).toBeInTheDocument();
     } finally {
-      restoreMatchMedia();
+      restoreMatchMedia.mockRestore();
     }
   });
 });
@@ -342,7 +342,7 @@ describe("Chat Session Action Menu", () => {
 
     await userEvent.click(screen.getByTestId("chat-session-menu-btn"));
 
-    const menu = document.querySelector(".chat-session-context-menu");
+    const menu = document.querySelector<HTMLElement>(".chat-session-context-menu");
     expect(menu).toBeInTheDocument();
     expect(within(menu!).getByTestId("chat-context-pin")).toHaveTextContent("Pin");
     expect(within(menu!).getByTestId("chat-context-rename")).toHaveTextContent("Rename");
@@ -479,7 +479,7 @@ describe("Chat Session Action Menu", () => {
       expect(screen.queryByTestId("chat-mobile-session-trigger")).toBeNull();
       expect(screen.queryByTestId("chat-mobile-session-rename-session-001")).toBeNull();
     } finally {
-      restoreMatchMedia();
+      restoreMatchMedia.mockRestore();
     }
   });
 

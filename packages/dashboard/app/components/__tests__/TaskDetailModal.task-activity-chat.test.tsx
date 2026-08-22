@@ -196,7 +196,7 @@ describe("TaskDetailModal Activity and planner Chat tab integration", () => {
     expect(feedList).not.toBeNull();
     expect(footer).not.toBeNull();
     expect(feedBody?.parentElement).toBe(footer?.parentElement);
-    expect(feedBody).not.toContainElement(footer);
+    expect(feedBody).not.toContainElement(footer ?? null);
     expect(feedList).toContainElement(screen.getByText("Repeated Feed entry 80"));
     expect(screen.getByTestId("task-chat-expand-toggle")).toBeVisible();
 

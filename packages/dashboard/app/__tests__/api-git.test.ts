@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { API_JSON_HEADERS } from "../test/apiRequestHeaders";
+import type { PlanningSession } from "../api/planning/planning";
 import {
   fetchTaskDetail,
   uploadAttachment,
@@ -10,7 +11,6 @@ import {
   updateTask,
   createTask,
   connectPlanningStream,
-  connectSubtaskStream,
   connectMissionInterviewStream,
   assignTask,
   fetchAgentTasks,
@@ -59,7 +59,6 @@ import {
   resumeProject,
   fetchFirstRunStatus,
   fetchGlobalConcurrency,
-  updateGlobalConcurrency,
   fetchPiSettings,
   updatePiSettings,
   installPiPackage,
@@ -88,6 +87,7 @@ const TASK_TOKEN_USAGE_FIXTURE = {
   inputTokens: 1000,
   outputTokens: 300,
   cachedTokens: 125,
+  cacheWriteTokens: 0,
   totalTokens: 1425,
   firstUsedAt: "2026-04-24T08:00:00.000Z",
   lastUsedAt: "2026-04-24T09:30:00.000Z",
@@ -1017,7 +1017,7 @@ describe("Planning Mode API", () => {
       const response = { sessionId: "plan-123", currentQuestion: FAKE_QUESTION, summary: null };
       globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, response));
 
-      const result = await respondToPlanning("plan-123", { scope: "small" });
+      const result = (await respondToPlanning("plan-123", { scope: "small" })) as PlanningSession;
 
       expect(result.sessionId).toBe("plan-123");
       expect(globalThis.fetch).toHaveBeenCalledWith("/api/planning/respond", {
@@ -1031,7 +1031,7 @@ describe("Planning Mode API", () => {
       const response = { sessionId: "plan-123", currentQuestion: null, summary: FAKE_SUMMARY };
       globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, response));
 
-      const result = await respondToPlanning("plan-123", { final: "yes" });
+      const result = (await respondToPlanning("plan-123", { final: "yes" })) as PlanningSession;
 
       expect(result.summary).toEqual(FAKE_SUMMARY);
       expect(result.currentQuestion).toBeNull();

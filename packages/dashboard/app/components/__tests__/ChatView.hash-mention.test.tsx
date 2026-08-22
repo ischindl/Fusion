@@ -81,6 +81,23 @@ const defaultChatState: UseChatReturn = {
   filteredSessions: [activeSession],
   refreshSessions: vi.fn(),
   agentsMap: new Map(),
+
+  tags: [],
+  selectedTagId: null,
+  setSelectedTagId: vi.fn(),
+  archivedSessions: [],
+  refreshArchivedSessions: vi.fn(),
+  unarchiveSession: vi.fn(),
+  renameSession: vi.fn(),
+  pinSession: vi.fn(),
+  pinnedCount: 0,
+  setSessionModel: vi.fn(),
+  setSessionThinkingLevel: vi.fn(),
+  createTag: vi.fn(),
+  renameTag: vi.fn(),
+  deleteTag: vi.fn(),
+  setSessionTags: vi.fn(),
+  backfillStashSession: vi.fn(),
 };
 
 describe("ChatView hash mentions", () => {
@@ -91,8 +108,8 @@ describe("ChatView hash mentions", () => {
 
   it("inserts a task id from the shared hash mention popup", async () => {
     render(
-      <FileBrowserProvider>
-        <ChatView />
+      <FileBrowserProvider openFile={vi.fn()}>
+        <ChatView addToast={vi.fn()} />
       </FileBrowserProvider>,
     );
 

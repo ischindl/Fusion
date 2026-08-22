@@ -15,7 +15,7 @@ describe("useModelsCache", () => {
     vi.clearAllMocks();
     localStorage.clear();
     mockFetchModels.mockResolvedValue({
-      models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o" }],
+      models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o", reasoning: false, contextWindow: 200000 }],
       favoriteProviders: ["openai"],
       favoriteModels: ["gpt-4o"],
       defaultProvider: "openai",
@@ -29,7 +29,7 @@ describe("useModelsCache", () => {
       JSON.stringify({
         savedAt: Date.now(),
         data: {
-          models: [{ provider: "anthropic", id: "claude", name: "Claude" }],
+          models: [{ provider: "anthropic", id: "claude", name: "Claude", reasoning: false, contextWindow: 200000 }],
           favoriteProviders: ["anthropic"],
           favoriteModels: ["claude"],
           defaultProvider: "anthropic",
@@ -75,7 +75,7 @@ describe("useModelsCache", () => {
       }),
     );
     mockFetchModels.mockResolvedValueOnce({
-      models: [{ provider: "pi-claude-cli", id: "claude-sonnet-5", name: "Claude Sonnet 5 (CLI)" }],
+      models: [{ provider: "pi-claude-cli", id: "claude-sonnet-5", name: "Claude Sonnet 5 (CLI)", reasoning: false, contextWindow: 200000 }],
       favoriteProviders: [],
       favoriteModels: [],
     });
@@ -115,7 +115,7 @@ describe("useModelsCache", () => {
 
     await act(async () => {
       resolveFetch?.({
-        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o" }],
+        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o", reasoning: false, contextWindow: 200000 }],
         favoriteProviders: ["openai"],
         favoriteModels: ["gpt-4o"],
         defaultProvider: "openai",
@@ -152,7 +152,7 @@ describe("useModelsCache", () => {
     });
 
     mockFetchModels.mockResolvedValueOnce({
-      models: [{ provider: "anthropic", id: "claude", name: "Claude" }],
+      models: [{ provider: "anthropic", id: "claude", name: "Claude", reasoning: false, contextWindow: 200000 }],
       favoriteProviders: ["anthropic"],
       favoriteModels: ["claude"],
       defaultProvider: "anthropic",
@@ -173,7 +173,7 @@ describe("useModelsCache", () => {
     it("updates every mounted useModelsCache() subscriber in place after a CLI provider toggle, for grok-cli", async () => {
       // Seed the shared cache with a catalog that has NO grok-cli rows (pre-toggle state).
       mockFetchModels.mockResolvedValueOnce({
-        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o" }],
+        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o", reasoning: false, contextWindow: 200000 }],
         favoriteProviders: [],
         favoriteModels: [],
       });
@@ -193,8 +193,8 @@ describe("useModelsCache", () => {
       // Simulate toggling Grok CLI on: fetchModels() now returns grok-cli rows too.
       mockFetchModels.mockResolvedValueOnce({
         models: [
-          { provider: "openai", id: "gpt-4o", name: "GPT-4o" },
-          { provider: "grok-cli", id: "grok-4", name: "Grok 4 (CLI)" },
+          { provider: "openai", id: "gpt-4o", name: "GPT-4o", reasoning: false, contextWindow: 200000 },
+          { provider: "grok-cli", id: "grok-4", name: "Grok 4 (CLI)", reasoning: false, contextWindow: 200000 },
         ],
         favoriteProviders: [],
         favoriteModels: [],
@@ -210,7 +210,7 @@ describe("useModelsCache", () => {
 
       // Disabling propagates too: a subsequent refresh with grok-cli rows removed hides them again.
       mockFetchModels.mockResolvedValueOnce({
-        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o" }],
+        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o", reasoning: false, contextWindow: 200000 }],
         favoriteProviders: [],
         favoriteModels: [],
       });
@@ -225,7 +225,7 @@ describe("useModelsCache", () => {
 
     it("updates mounted subscribers after a cursor-cli toggle", async () => {
       mockFetchModels.mockResolvedValueOnce({
-        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o" }],
+        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o", reasoning: false, contextWindow: 200000 }],
         favoriteProviders: [],
         favoriteModels: [],
       });
@@ -236,8 +236,8 @@ describe("useModelsCache", () => {
 
       mockFetchModels.mockResolvedValueOnce({
         models: [
-          { provider: "openai", id: "gpt-4o", name: "GPT-4o" },
-          { provider: "cursor-cli", id: "cursor/gpt-5", name: "GPT-5 (Cursor CLI)" },
+          { provider: "openai", id: "gpt-4o", name: "GPT-4o", reasoning: false, contextWindow: 200000 },
+          { provider: "cursor-cli", id: "cursor/gpt-5", name: "GPT-5 (Cursor CLI)", reasoning: false, contextWindow: 200000 },
         ],
         favoriteProviders: [],
         favoriteModels: [],
@@ -252,7 +252,7 @@ describe("useModelsCache", () => {
 
     it("writes through SWR_CACHE_KEYS.MODELS on refresh", async () => {
       mockFetchModels.mockResolvedValueOnce({
-        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o" }],
+        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o", reasoning: false, contextWindow: 200000 }],
         favoriteProviders: [],
         favoriteModels: [],
       });
@@ -260,7 +260,7 @@ describe("useModelsCache", () => {
       await waitFor(() => expect(mockFetchModels).toHaveBeenCalledTimes(1));
 
       mockFetchModels.mockResolvedValueOnce({
-        models: [{ provider: "grok-cli", id: "grok-4", name: "Grok 4" }],
+        models: [{ provider: "grok-cli", id: "grok-4", name: "Grok 4", reasoning: false, contextWindow: 200000 }],
         favoriteProviders: [],
         favoriteModels: [],
       });
@@ -276,7 +276,7 @@ describe("useModelsCache", () => {
 
     it("single-flights concurrent refreshModelsCache() calls", async () => {
       mockFetchModels.mockResolvedValueOnce({
-        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o" }],
+        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o", reasoning: false, contextWindow: 200000 }],
         favoriteProviders: [],
         favoriteModels: [],
       });
@@ -298,7 +298,7 @@ describe("useModelsCache", () => {
 
       await act(async () => {
         resolveFetch?.({
-          models: [{ provider: "grok-cli", id: "grok-4", name: "Grok 4" }],
+          models: [{ provider: "grok-cli", id: "grok-4", name: "Grok 4", reasoning: false, contextWindow: 200000 }],
           favoriteProviders: [],
           favoriteModels: [],
         });
@@ -310,7 +310,7 @@ describe("useModelsCache", () => {
 
     it("never throws and leaves an existing good list intact when the forced refresh fails", async () => {
       mockFetchModels.mockResolvedValueOnce({
-        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o" }],
+        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o", reasoning: false, contextWindow: 200000 }],
         favoriteProviders: [],
         favoriteModels: [],
       });

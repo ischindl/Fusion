@@ -208,7 +208,7 @@ describe("projectStorage", () => {
   });
 
   it("declares every volatile draft key as project-scoped storage", () => {
-    expect(PROJECT_STORAGE_KEYS).toEqual(expect.arrayContaining(VOLATILE_DRAFT_STORAGE_KEYS));
+    expect(PROJECT_STORAGE_KEYS).toEqual(expect.arrayContaining([...VOLATILE_DRAFT_STORAGE_KEYS]));
   });
 
   it("removeScopedItem is a no-op when localStorage.removeItem is unavailable", () => {

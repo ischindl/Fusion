@@ -94,7 +94,25 @@ function chatState(session: ChatSessionInfo): UseChatReturn {
     filteredSessions: [session],
     refreshSessions: vi.fn(),
     agentsMap: new Map(),
-  };
+  
+    tags: [],
+    selectedTagId: null,
+    setSelectedTagId: vi.fn(),
+    archivedSessions: [],
+    refreshArchivedSessions: vi.fn(),
+    unarchiveSession: vi.fn(),
+    renameSession: vi.fn(),
+    pinSession: vi.fn(),
+    pinnedCount: 0,
+    setSessionModel: vi.fn(),
+    setSessionThinkingLevel: vi.fn(),
+    createTag: vi.fn(),
+    renameTag: vi.fn(),
+    deleteTag: vi.fn(),
+    setSessionTags: vi.fn(),
+    editMessageAndResend: vi.fn(),
+    backfillStashSession: vi.fn(),
+};
 }
 
 const defaultRoomsState: UseChatRoomsResult = {
@@ -110,6 +128,9 @@ const defaultRoomsState: UseChatRoomsResult = {
   deleteRoom: vi.fn(),
   sendRoomMessage: vi.fn().mockResolvedValue(undefined),
   refreshRooms: vi.fn(),
+
+  updateRoomSettings: vi.fn(),
+  clearRoom: vi.fn(),
 };
 
 describe("ChatView CLI-backed session mount", () => {

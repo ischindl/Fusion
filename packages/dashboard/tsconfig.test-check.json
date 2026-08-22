@@ -1,17 +1,54 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "rootDir": ".",
+    /*
+    FNXC:RUFU-140 2026-08-20-19:42:
+    This program is the repo's ONLY typecheck surface that includes dashboard test
+    files (its include covers the whole app/ tree with no test exclusions).
+    rootDir must be the repo root ("../.."), not app.json's "..": the program
+    pulls packages/core/src in via the @fusion/core types->source resolution
+    (116 files — all of the 2026-08-20 census TS6059 noise was rootDir-scoped)
+    AND plugins/ via relative imports, and app.json's packages/-scoped rootDir
+    cannot cover plugins/. A distinct tsBuildInfoFile (same pattern as app.json's
+    FNXC:CIGateSpeed fix) keeps this program's incremental state from clobbering
+    the tsconfig.json / app.json buildinfo files, which all share ${configDir}
+    = packages/dashboard.
+    */
+    "rootDir": "../..",
+    "tsBuildInfoFile": "${configDir}/dist/.tsbuildinfo-test-check",
     "jsx": "react-jsx",
     "moduleResolution": "bundler",
     "module": "ESNext",
     "noEmit": true,
+    /*
+    FNXC:RUFU-140 2026-08-21-03:58:
+    declaration/declarationMap stay off in this program. tsconfig.app.json EXCLUDES
+    every test file (the *.test.* patterns and the __tests__ directories), and all
+    dashboard programs are noEmit, so nothing this program checks is ever
+    declaration-emitted.
+    With the base config's declaration:true the checker runs declaration-portability
+    naming on exported symbols (TS2742) — pure emit metadata with no typecheck value
+    here, which surfaced as 110 spurious errors in five exported-mock test harnesses
+    the moment a repo-root .mjs declaration (eslint.config.d.mts) joined the program.
+    Turning declaration off removes zero code checking; it only stops asking
+    unemitted test files for emit-portable type names.
+    */
+    "declaration": false,
+    "declarationMap": false,
     "types": ["vitest/globals", "@testing-library/jest-dom", "node", "vite/client"],
     "paths": {
       "@fusion/test-utils": ["../core/src/__test-utils__/workspace.ts"],
       "node-pty": ["./src/types/node-pty/index.d.ts"],
       "@fusion/dashboard/app/components/TaskCard": ["./app/components/TaskCard.tsx"],
       "@fusion/dashboard/app/components/ViewHeader": ["./app/components/ViewHeader.tsx"],
+      /*
+      FNXC:RUFU-140 2026-08-20-19:42:
+      plugins/fusion-plugin-quality/src/dashboard-view.tsx imports this module by
+      alias; the alias must exist in EVERY program that typechecks that plugin
+      file (app.json has the same entry). Runtime resolution for the plugin goes
+      through the vite/vitest aliases, which are untouched.
+      */
+      "@fusion/dashboard/app/api/tasks/task-content": ["./app/api/tasks/task-content.ts"],
       "@fusion/dashboard/app/plugins/types": ["./app/plugins/types.ts"],
       "@fusion/dashboard/app/utils/projectStorage": ["./app/utils/projectStorage.ts"]
     }

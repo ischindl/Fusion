@@ -90,14 +90,14 @@ const mockSubscribeSse = vi.fn((_url: string, options: { events?: Record<string,
 });
 
 vi.mock("../../sse-bus", () => ({
-  subscribeSse: (...args: unknown[]) => mockSubscribeSse(...args),
+  subscribeSse: (...args: unknown[]) => (mockSubscribeSse as (..._a: unknown[]) => () => void)(...args),
 }));
 
 vi.mock("../../api", async (importOriginal) => {
   const { createDashboardApiMock } = await import("../../test/mockApi");
   return createDashboardApiMock(() => importOriginal<typeof import("../../api")>(), {
     fetchSettings: (...args: unknown[]) => mockFetchSettings(...args),
-    listDiscussionCategories: (...args: unknown[]) => mockListDiscussionCategories(...args),
+    listDiscussionCategories: (...args: unknown[]) => mockListDiscussionCategories(...(args as [])),
     fetchSettingsByScope: (...args: unknown[]) => mockFetchSettingsByScope(...args),
     updateSettings: (...args: unknown[]) => mockUpdateSettings(...args),
     updateGlobalSettings: (...args: unknown[]) => mockUpdateGlobalSettings(...args),

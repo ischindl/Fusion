@@ -12,7 +12,7 @@ describe("ShellHostContext", () => {
   beforeEach(() => {
     __resetShellHostContextForTests();
     window.history.replaceState({}, "", "/");
-    delete (window as Window & Record<string, unknown>).__FUSION_SHELL_HOST_CONTEXT__;
+    delete (window as unknown as Record<string, unknown>).__FUSION_SHELL_HOST_CONTEXT__;
   });
 
   it("provides browser defaults", () => {
@@ -28,7 +28,7 @@ describe("ShellHostContext", () => {
   });
 
   it("provides normalized shell fields", () => {
-    (window as Window & Record<string, unknown>).__FUSION_SHELL_HOST_CONTEXT__ = {
+    (window as unknown as Record<string, unknown>).__FUSION_SHELL_HOST_CONTEXT__ = {
       kind: "desktop-shell",
       mode: "remote",
       connectionId: "conn-2",

@@ -22,12 +22,13 @@ function mockClipboardFallback(result: boolean) {
 
 function mockStatus() {
   vi.mocked(fetchFnBinaryStatus).mockResolvedValue({
-    binary: { binary: "fn", installed: false, path: null, version: null },
+    binary: { binary: "fn", installed: false, path: undefined, version: undefined, invocation: "fn" },
     expectedVersion: "1.2.3",
     state: "missing",
     install: {
       npm: "npm install -g @runfusion/fusion",
       curl: "curl -fsSL https://example.test/install.sh | sh",
+      package: "@runfusion/fusion",
     },
   });
   vi.mocked(installFnBinary).mockResolvedValue({} as never);

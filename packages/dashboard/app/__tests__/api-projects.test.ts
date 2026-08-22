@@ -10,7 +10,6 @@ import {
   updateTask,
   createTask,
   connectPlanningStream,
-  connectSubtaskStream,
   connectMissionInterviewStream,
   assignTask,
   fetchAgentTasks,
@@ -92,6 +91,7 @@ const TASK_TOKEN_USAGE_FIXTURE = {
   outputTokens: 300,
   cachedTokens: 125,
   totalTokens: 1425,
+  cacheWriteTokens: 0,
   firstUsedAt: "2026-04-24T08:00:00.000Z",
   lastUsedAt: "2026-04-24T09:30:00.000Z",
 };
@@ -1133,6 +1133,8 @@ describe("ExecutorStats type", () => {
       inReviewCount: 4,
       executorState: "running",
       maxConcurrent: 4,
+      effectiveMaxConcurrent: 4,
+      concurrencyBindingKnob: "maxConcurrent",
       lastActivityAt: "2026-04-01T12:00:00.000Z",
     };
 
@@ -1153,6 +1155,8 @@ describe("ExecutorStats type", () => {
       inReviewCount: 0,
       executorState: "idle",
       maxConcurrent: 2,
+      effectiveMaxConcurrent: 2,
+      concurrencyBindingKnob: "maxConcurrent",
     };
 
     const runningStats: ExecutorStats = {
@@ -1162,6 +1166,8 @@ describe("ExecutorStats type", () => {
       inReviewCount: 1,
       executorState: "running",
       maxConcurrent: 2,
+      effectiveMaxConcurrent: 2,
+      concurrencyBindingKnob: "maxConcurrent",
     };
 
     const pausedStats: ExecutorStats = {
@@ -1171,6 +1177,8 @@ describe("ExecutorStats type", () => {
       inReviewCount: 2,
       executorState: "paused",
       maxConcurrent: 2,
+      effectiveMaxConcurrent: 2,
+      concurrencyBindingKnob: "maxConcurrent",
     };
 
     expect(idleStats.executorState).toBe("idle");
@@ -1186,6 +1194,8 @@ describe("ExecutorStats type", () => {
       inReviewCount: 0,
       executorState: "idle",
       maxConcurrent: 2,
+      effectiveMaxConcurrent: 2,
+      concurrencyBindingKnob: "maxConcurrent",
     };
 
     expect(stats.lastActivityAt).toBeUndefined();

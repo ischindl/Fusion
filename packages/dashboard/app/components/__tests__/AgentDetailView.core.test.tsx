@@ -3,7 +3,7 @@ import { render, screen, waitFor, fireEvent, act, cleanup } from "@testing-libra
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { loadAllAppCss } from "../../test/cssFixture";
-import type { AgentHeartbeatRun } from "../../api";
+import type { AgentDetail, AgentHeartbeatRun } from "../../api";
 import type { AgentLogEntry } from "@fusion/core";
 import { DEFAULT_HEARTBEAT_INTERVAL_MS } from "../../utils/heartbeatIntervals";
 import {

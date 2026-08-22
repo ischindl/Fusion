@@ -16,7 +16,7 @@ separate desktop-only assertion path.
 */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import type { PlannerOverseerRuntimeSnapshot } from "@fusion/core";
+import type { PlannerOverseerRuntimeSnapshot, TaskDetail } from "@fusion/core";
 import {
   makeTask,
   makeUpdatedTask,
@@ -106,7 +106,7 @@ describe("TaskDetailModal oversight controls", () => {
     vi.mocked(api.fetchWorkflowSettingValues).mockResolvedValueOnce({
       stored: {},
       effective: { plannerOversightLevel: "off", plannerOverseerAdvisorEnabled: true },
-      defaults: {},
+      orphaned: [],
     });
 
     render(
@@ -148,7 +148,7 @@ describe("TaskDetailModal oversight controls", () => {
     vi.mocked(api.fetchWorkflowSettingValues).mockResolvedValueOnce({
       stored: {},
       effective: { plannerOversightLevel: "off", plannerOverseerAdvisorEnabled: false },
-      defaults: {},
+      orphaned: [],
     });
 
     render(
@@ -265,7 +265,7 @@ describe("TaskDetailModal oversight controls", () => {
     vi.mocked(api.fetchWorkflowSettingValues).mockResolvedValueOnce({
       stored: {},
       effective: { plannerOversightLevel: "off", plannerOverseerAdvisorEnabled: true },
-      defaults: {},
+      orphaned: [],
     });
     vi.mocked(api.updateTask).mockImplementation(async (_id, patch) => {
       currentTask = makeUpdatedTask(currentTask, patch);
@@ -370,12 +370,12 @@ describe("TaskDetailModal oversight controls", () => {
     let currentTask = makeTask({ id: "FN-8894-equal-clock", column: "in-progress", plannerOversightLevel: "off", sessionAdvisorEnabled: false });
     vi.mocked(api.fetchSettings).mockResolvedValueOnce({ modelPresets: [], autoSelectModelPreset: false, defaultPresetBySize: {}, sessionAdvisorEnabledByDefault: false } as any);
     vi.mocked(api.fetchBoardWorkflows).mockResolvedValue({ flagEnabled: true, defaultWorkflowId: "WF-8894-equal-clock", workflows: [{ id: "WF-8894-equal-clock", name: "Equal-clock workflow", columns: [] } as any], taskWorkflowIds: { [currentTask.id]: "WF-8894-equal-clock" } });
-    vi.mocked(api.fetchWorkflowSettingValues).mockResolvedValue({ stored: {}, effective: { plannerOversightLevel: "off", plannerOverseerAdvisorEnabled: true }, defaults: {} });
+    vi.mocked(api.fetchWorkflowSettingValues).mockResolvedValue({ stored: {}, effective: { plannerOversightLevel: "off", plannerOverseerAdvisorEnabled: true }, orphaned: [] });
     let updateCount = 0;
     vi.mocked(api.updateTask).mockImplementation(async (_id, patch) => {
       updateCount += 1;
       currentTask = updateCount === 1
-        ? makeTask({ ...currentTask, ...patch, updatedAt: currentTask.updatedAt })
+        ? makeTask({ ...currentTask, ...(patch as Partial<TaskDetail>), updatedAt: currentTask.updatedAt })
         : makeUpdatedTask(currentTask, patch);
       return currentTask as any;
     });
@@ -405,9 +405,9 @@ describe("TaskDetailModal oversight controls", () => {
     let currentTask = makeTask({ id: "FN-8894-absent-clock", column: "in-progress", plannerOversightLevel: "off", sessionAdvisorEnabled: undefined });
     vi.mocked(api.fetchSettings).mockResolvedValueOnce({ modelPresets: [], autoSelectModelPreset: false, defaultPresetBySize: {}, sessionAdvisorEnabledByDefault: false } as any);
     vi.mocked(api.fetchBoardWorkflows).mockResolvedValue({ flagEnabled: true, defaultWorkflowId: "WF-8894-absent-clock", workflows: [{ id: "WF-8894-absent-clock", name: "Absent-clock workflow", columns: [] } as any], taskWorkflowIds: { [currentTask.id]: "WF-8894-absent-clock" } });
-    vi.mocked(api.fetchWorkflowSettingValues).mockResolvedValue({ stored: {}, effective: { plannerOversightLevel: "off", plannerOverseerAdvisorEnabled: true }, defaults: {} });
+    vi.mocked(api.fetchWorkflowSettingValues).mockResolvedValue({ stored: {}, effective: { plannerOversightLevel: "off", plannerOverseerAdvisorEnabled: true }, orphaned: [] });
     vi.mocked(api.updateTask).mockImplementation(async (_id, patch) => {
-      currentTask = makeTask({ ...currentTask, ...patch, updatedAt: currentTask.updatedAt });
+      currentTask = makeTask({ ...currentTask, ...(patch as Partial<TaskDetail>), updatedAt: currentTask.updatedAt });
       return currentTask as any;
     });
 
@@ -430,7 +430,7 @@ describe("TaskDetailModal oversight controls", () => {
     mockConfirm.mockResolvedValue(true);
     const api = await import("../../api");
     vi.mocked(api.fetchBoardWorkflows).mockResolvedValue({ flagEnabled: false, defaultWorkflowId: "", workflows: [], taskWorkflowIds: {} });
-    vi.mocked(api.fetchWorkflowSettingValues).mockResolvedValue({ stored: {}, effective: {}, defaults: {} });
+    vi.mocked(api.fetchWorkflowSettingValues).mockResolvedValue({ stored: {}, effective: {}, orphaned: [] });
     vi.mocked(api.nudgeOverseer).mockResolvedValue({ applied: false, reason: "oversight-off" });
     vi.mocked(api.stopOverseer).mockResolvedValue({ applied: true, reason: "stopped" });
     vi.mocked(api.explainOverseer).mockResolvedValue({ snapshot: null });
@@ -836,7 +836,7 @@ describe("TaskDetailModal oversight controls — snapshot delivered via fetched 
     mockConfirm.mockResolvedValue(true);
     const api = await import("../../api");
     vi.mocked(api.fetchBoardWorkflows).mockResolvedValue({ flagEnabled: false, defaultWorkflowId: "", workflows: [], taskWorkflowIds: {} });
-    vi.mocked(api.fetchWorkflowSettingValues).mockResolvedValue({ stored: {}, effective: {}, defaults: {} });
+    vi.mocked(api.fetchWorkflowSettingValues).mockResolvedValue({ stored: {}, effective: {}, orphaned: [] });
     vi.mocked(api.nudgeOverseer).mockResolvedValue({ applied: false, reason: "oversight-off" });
     vi.mocked(api.stopOverseer).mockResolvedValue({ applied: true, reason: "stopped" });
     vi.mocked(api.explainOverseer).mockResolvedValue({ snapshot: null });
@@ -979,7 +979,7 @@ describe("TaskDetailModal oversight controls — narrow-viewport regression guar
     mockConfirm.mockResolvedValue(true);
     const api = await import("../../api");
     vi.mocked(api.fetchBoardWorkflows).mockResolvedValue({ flagEnabled: false, defaultWorkflowId: "", workflows: [], taskWorkflowIds: {} });
-    vi.mocked(api.fetchWorkflowSettingValues).mockResolvedValue({ stored: {}, effective: {}, defaults: {} });
+    vi.mocked(api.fetchWorkflowSettingValues).mockResolvedValue({ stored: {}, effective: {}, orphaned: [] });
     vi.mocked(api.nudgeOverseer).mockResolvedValue({ applied: false, reason: "oversight-off" });
     vi.mocked(api.stopOverseer).mockResolvedValue({ applied: true, reason: "stopped" });
     vi.mocked(api.explainOverseer).mockResolvedValue({ snapshot: null });
@@ -1119,7 +1119,7 @@ describe("Intervention Timeline relocation into the Activity dropdown (FN-7571)"
     mockConfirm.mockResolvedValue(true);
     const api = await import("../../api");
     vi.mocked(api.fetchBoardWorkflows).mockResolvedValue({ flagEnabled: false, defaultWorkflowId: "", workflows: [], taskWorkflowIds: {} });
-    vi.mocked(api.fetchWorkflowSettingValues).mockResolvedValue({ stored: {}, effective: {}, defaults: {} });
+    vi.mocked(api.fetchWorkflowSettingValues).mockResolvedValue({ stored: {}, effective: {}, orphaned: [] });
     vi.mocked(api.nudgeOverseer).mockResolvedValue({ applied: false, reason: "oversight-off" });
     vi.mocked(api.stopOverseer).mockResolvedValue({ applied: true, reason: "stopped" });
     vi.mocked(api.explainOverseer).mockResolvedValue({ snapshot: null });

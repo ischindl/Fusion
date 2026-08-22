@@ -358,8 +358,8 @@ describe("Runs Tab — click to show logs", () => {
       if (typeof callback === "function") {
         intervalCallbacks.push(callback as () => void);
       }
-      return 1 as ReturnType<typeof setInterval>;
-    }) as typeof setInterval);
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as unknown as typeof setInterval);
     const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval").mockImplementation(((id?: ReturnType<typeof setInterval>) => {
       void id;
     }) as typeof clearInterval);

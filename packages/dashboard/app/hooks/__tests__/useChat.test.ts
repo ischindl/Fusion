@@ -9,7 +9,7 @@ import { FN_AGENT_ID, useChat } from "../useChat";
 import * as apiModule from "../../api";
 import { getChatPendingMessageKey } from "../chatPendingMessageStorage";
 import * as swrCacheModule from "../../utils/swrCache";
-import type { ChatSession, ChatMessage } from "@fusion/core";
+import type { ChatSession, ChatMessage, EnrichedChatSession } from "@fusion/core";
 
 // Mock the API module
 vi.mock("../../api", () => ({
@@ -24,8 +24,8 @@ vi.mock("../../api", () => ({
   attachChatStream: vi.fn(),
   cancelChatResponse: vi.fn(),
   fetchAgents: vi.fn().mockResolvedValue([
-    { id: "agent-001", name: "Alpha", role: "executor", state: "idle", icon: undefined, createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z", metadata: {} },
-    { id: "agent-002", name: "Beta", role: "reviewer", state: "idle", icon: undefined, createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z", metadata: {} },
+    { id: "agent-001", name: "Alpha", role: "executor", state: "idle", icon: undefined, createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z", metadata: {}, roles: ["executor"] },
+    { id: "agent-002", name: "Beta", role: "reviewer", state: "idle", icon: undefined, createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z", metadata: {}, roles: ["executor"] },
   ]),
 }));
 
@@ -73,6 +73,8 @@ function makeSession(overrides: Partial<ChatSession> & Pick<ChatSession, "id" | 
     createdAt: overrides.createdAt ?? "2026-04-08T00:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2026-04-08T00:00:00.000Z",
     pinnedAt: overrides.pinnedAt ?? null,
+    tags: overrides.tags ?? [],
+    memoryFocus: overrides.memoryFocus ?? null,
     cliSessionFile: null,
     cliExecutorAdapterId: null,
     inFlightGeneration: null,
@@ -102,12 +104,20 @@ function createDeferredPromise<T>() {
   return { promise, resolve, reject };
 }
 
+/*
+FNXC:ChatStreamContract 2026-08-20-00:00:
+The captured handlers are the api-level ChatStreamHandlers (all members optional); keep this
+local mirror structurally a supertype so vi.mocked values assign, while test call-sites chain
+optionally. accumulated stays OPTIONAL — the hook still consumes it from its own options.onDone
+path; api-level onDone payloads no longer carry it.
+*/
 type StreamAppendHandlers = {
-  onText: (delta: string) => void;
-  onThinking: (delta: string) => void;
-  onToolStart: (data: { toolName: string; args?: Record<string, unknown> }) => void;
-  onToolEnd: (data: { toolName: string; isError: boolean; result?: unknown }) => void;
-  onDone?: (data: { messageId?: string; message?: ChatMessage; accumulated: { text: string; thinking: string; toolCalls: unknown[]; fallbackInfo?: unknown } }) => void;
+  onText?: (delta: string) => void;
+  onThinking?: (delta: string) => void;
+  onToolStart?: (data: { toolName: string; args?: Record<string, unknown> }) => void;
+  onToolEnd?: (data: { toolName: string; isError: boolean; result?: unknown }) => void;
+  onDone?: (data: { messageId: string; message?: ChatMessage; interrupted?: boolean; accumulated?: { text: string; thinking: string; toolCalls: unknown[]; fallbackInfo?: unknown } }) => void;
+  onError?: (data: string | apiModule.ChatFailureInfo, meta?: apiModule.ChatStreamErrorMeta) => void;
 };
 
 function cacheMessages(projectId: string, sessionId: string, messages: ChatMessage[]) {
@@ -132,7 +142,7 @@ describe("useChat", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
-    mockGetScopedItem.mockReturnValue(undefined);
+    mockGetScopedItem.mockReturnValue(null);
     mockFetchChatSessions.mockResolvedValue({ sessions: [] });
     mockFetchChatSession.mockResolvedValue({
       session: makeSession({ id: "session-001", agentId: "agent-001" }),
@@ -147,7 +157,7 @@ describe("useChat", () => {
     mockDeleteChatSession.mockResolvedValue({ success: true });
     mockStreamChatResponse.mockReturnValue({ close: vi.fn(), isConnected: () => true });
     mockAttachChatStream.mockReturnValue({ close: vi.fn(), isConnected: () => true });
-    mockCancelChatResponse.mockResolvedValue({ success: true });
+    mockCancelChatResponse.mockResolvedValue({ success: true, interrupted: false });
   });
 
   afterEach(() => {
@@ -582,10 +592,10 @@ describe("useChat", () => {
     // Simulate slow agent fetch for project-001 and fast fetch for project-002
     mockFetchAgents
       .mockResolvedValueOnce([
-        { id: "stale-agent", name: "Stale Agent (proj-001)", role: "executor", state: "idle", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z", metadata: {} },
+        { id: "stale-agent", name: "Stale Agent (proj-001)", role: "executor", state: "idle", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z", metadata: {}, roles: ["executor"] },
       ])
       .mockResolvedValueOnce([
-        { id: "fresh-agent", name: "Fresh Agent (proj-002)", role: "executor", state: "idle", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z", metadata: {} },
+        { id: "fresh-agent", name: "Fresh Agent (proj-002)", role: "executor", state: "idle", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z", metadata: {}, roles: ["executor"] },
       ]);
 
     const { rerender } = renderHook(
@@ -991,7 +1001,7 @@ describe("useChat", () => {
       title: "New title",
       updatedAt: "2026-04-09T00:00:00.000Z",
     });
-    const deferred = createDeferredPromise<{ session: ChatSession }>();
+    const deferred = createDeferredPromise<{ session: EnrichedChatSession }>();
     mockFetchChatSessions.mockResolvedValueOnce({ sessions: [session] });
     mockFetchChatMessages.mockResolvedValue({ messages: [] });
     mockUpdateChatSession.mockReturnValueOnce(deferred.promise);
@@ -1025,7 +1035,7 @@ describe("useChat", () => {
 
   it("renames an untitled session to a named title optimistically", async () => {
     const session = makeSession({ id: "session-001", agentId: "agent-001", title: null });
-    const deferred = createDeferredPromise<{ session: ChatSession }>();
+    const deferred = createDeferredPromise<{ session: EnrichedChatSession }>();
     mockFetchChatSessions.mockResolvedValueOnce({ sessions: [session] });
     mockFetchChatMessages.mockResolvedValue({ messages: [] });
     mockUpdateChatSession.mockReturnValueOnce(deferred.promise);
@@ -1108,7 +1118,7 @@ describe("useChat", () => {
         modelId: "gpt-4o",
         updatedAt: "2026-04-09T00:00:00.000Z",
       });
-      const deferred = createDeferredPromise<{ session: ChatSession }>();
+      const deferred = createDeferredPromise<{ session: EnrichedChatSession }>();
       mockFetchChatSessions.mockResolvedValueOnce({ sessions: [session] });
       mockFetchChatMessages.mockResolvedValue({ messages: [] });
       mockUpdateChatSession.mockReturnValueOnce(deferred.promise);
@@ -1157,7 +1167,7 @@ describe("useChat", () => {
     it("switches an active session to an agent optimistically and clears the model pair", async () => {
       const session = makeSession({ id: "session-001", agentId: FN_AGENT_ID, modelProvider: "anthropic", modelId: "claude-sonnet-4-5" });
       const updatedSession = makeSession({ id: "session-001", agentId: "agent-specialist", modelProvider: null, modelId: null });
-      const deferred = createDeferredPromise<{ session: ChatSession }>();
+      const deferred = createDeferredPromise<{ session: EnrichedChatSession }>();
       mockFetchChatSessions.mockResolvedValueOnce({ sessions: [session] });
       mockFetchChatMessages.mockResolvedValue({ messages: [] });
       mockUpdateChatSession.mockReturnValueOnce(deferred.promise);
@@ -1224,7 +1234,7 @@ describe("useChat", () => {
     it("updates only the matching sessions entry when the session is not active", async () => {
       const activeSessionSeed = makeSession({ id: "session-active", agentId: "agent-001" });
       const otherSession = makeSession({ id: "session-other", agentId: "agent-002", modelProvider: null, modelId: null });
-      const deferred = createDeferredPromise<{ session: ChatSession }>();
+      const deferred = createDeferredPromise<{ session: EnrichedChatSession }>();
       mockFetchChatSessions.mockResolvedValueOnce({ sessions: [activeSessionSeed, otherSession] });
       mockFetchChatMessages.mockResolvedValue({ messages: [] });
       mockUpdateChatSession.mockReturnValueOnce(deferred.promise);
@@ -1274,7 +1284,7 @@ describe("useChat", () => {
         thinkingLevel: "high",
         updatedAt: "2026-04-09T00:00:00.000Z",
       });
-      const deferred = createDeferredPromise<{ session: ChatSession }>();
+      const deferred = createDeferredPromise<{ session: EnrichedChatSession }>();
       mockFetchChatSessions.mockResolvedValueOnce({ sessions: [session] });
       mockFetchChatMessages.mockResolvedValue({ messages: [] });
       mockUpdateChatSession.mockReturnValueOnce(deferred.promise);
@@ -1338,7 +1348,7 @@ describe("useChat", () => {
     it("updates only the matching sessions entry when the session is not active", async () => {
       const activeSessionSeed = makeSession({ id: "session-active", agentId: "agent-001", thinkingLevel: "low" });
       const otherSession = makeSession({ id: "session-other", agentId: "agent-002", thinkingLevel: null });
-      const deferred = createDeferredPromise<{ session: ChatSession }>();
+      const deferred = createDeferredPromise<{ session: EnrichedChatSession }>();
       mockFetchChatSessions.mockResolvedValueOnce({ sessions: [activeSessionSeed, otherSession] });
       mockFetchChatMessages.mockResolvedValue({ messages: [] });
       mockUpdateChatSession.mockReturnValueOnce(deferred.promise);
@@ -1473,7 +1483,7 @@ describe("useChat", () => {
     mockFetchChatSessions.mockResolvedValue({ sessions: [session] });
     mockFetchChatMessages.mockResolvedValue({ messages: [] });
 
-    const { result } = renderHook(() => useChat(undefined, "project-123"));
+    const { result } = renderHook(() => useChat("project-123"));
 
     await waitFor(() => {
       expect(result.current.sessions).toHaveLength(1);
@@ -1929,7 +1939,7 @@ describe("useChat", () => {
         status: "generating" as const,
         streamingText: "partial text",
         streamingThinking: "thinking",
-        toolCalls: [{ id: "tool-1", type: "function", function: { name: "search", arguments: "{}" } }],
+        toolCalls: [{ id: "tool-1", toolName: "search", args: {}, isError: false, status: "running" as const }],
         replayFromEventId: 19,
         updatedAt: "2026-04-08T00:00:00.000Z",
       },
@@ -2095,7 +2105,7 @@ describe("useChat", () => {
       inFlightGeneration: null,
     };
     mockFetchChatSessions.mockResolvedValueOnce({ sessions: [sessionA, sessionB] });
-    const deferredRefresh = createDeferredPromise<{ session: ChatSession }>();
+    const deferredRefresh = createDeferredPromise<{ session: EnrichedChatSession }>();
     mockFetchChatSession.mockReturnValueOnce(deferredRefresh.promise);
     mockFetchChatMessages.mockResolvedValue({ messages: [] });
 
@@ -2143,7 +2153,7 @@ describe("useChat", () => {
         updatedAt: "2026-07-20T19:00:00.000Z",
       },
     };
-    const authoritativeRefresh = createDeferredPromise<{ session: ChatSession }>();
+    const authoritativeRefresh = createDeferredPromise<{ session: EnrichedChatSession }>();
     mockFetchChatSessions.mockResolvedValueOnce({ sessions: [staleListSession] });
     mockFetchChatSession.mockReturnValueOnce(authoritativeRefresh.promise);
     mockFetchChatMessages.mockResolvedValue({ messages: [] });
@@ -2199,8 +2209,8 @@ describe("useChat", () => {
       isGenerating: false,
       inFlightGeneration: null,
     };
-    const oldARefresh = createDeferredPromise<{ session: ChatSession }>();
-    const currentARefresh = createDeferredPromise<{ session: ChatSession }>();
+    const oldARefresh = createDeferredPromise<{ session: EnrichedChatSession }>();
+    const currentARefresh = createDeferredPromise<{ session: EnrichedChatSession }>();
     let aFetches = 0;
     mockFetchChatSessions.mockResolvedValueOnce({ sessions: [sessionA, sessionB] });
     mockFetchChatSession.mockImplementation((id) => {
@@ -2514,7 +2524,7 @@ describe("useChat", () => {
 
     act(() => result.current.sendMessage("Hello"));
     await waitFor(() => expect(result.current.isStreaming).toBe(true));
-    act(() => streamHandlers?.onText("Distinct direct prefix"));
+    act(() => streamHandlers?.onText?.("Distinct direct prefix"));
     await waitFor(() => expect(result.current.streamingText).toBe("Distinct direct prefix"));
 
     act(() => result.current.stopStreaming());
@@ -2547,7 +2557,7 @@ describe("useChat", () => {
     await waitFor(() => expect(result.current.activeSession?.id).toBe("session-001"));
     act(() => result.current.sendMessage("Hello"));
     await waitFor(() => expect(result.current.isStreaming).toBe(true));
-    act(() => streamHandlers?.onText("Durable recovery prefix"));
+    act(() => streamHandlers?.onText?.("Durable recovery prefix"));
     await waitFor(() => expect(result.current.streamingText).toBe("Durable recovery prefix"));
 
     act(() => { void result.current.stopStreaming(); });
@@ -2582,7 +2592,7 @@ describe("useChat", () => {
     await waitFor(() => expect(result.current.activeSession?.id).toBe("session-001"));
     act(() => result.current.sendMessage("Hello"));
     await waitFor(() => expect(result.current.isStreaming).toBe(true));
-    act(() => streamHandlers?.onText("Distinct retained prefix"));
+    act(() => streamHandlers?.onText?.("Distinct retained prefix"));
     await waitFor(() => expect(result.current.streamingText).toBe("Distinct retained prefix"));
 
     act(() => result.current.stopStreaming());
@@ -2655,7 +2665,7 @@ describe("useChat", () => {
     expect(mockCancelChatResponse).toHaveBeenCalledWith("session-001", "proj-123");
     expect(result.current.pendingMessages).toEqual(["Keep first", "Force second"]);
 
-    act(() => streamHandlers[0]?.onText(" stale callback"));
+    act(() => streamHandlers[0]?.onText?.(" stale callback"));
     cancelDeferred.resolve({ success: true, interrupted: true });
     await waitFor(() => {
       expect(mockStreamChatResponse).toHaveBeenCalledTimes(2);
@@ -2736,7 +2746,7 @@ describe("useChat", () => {
       result.current.sendMessage("Queued follow-up");
     });
 
-    expect(localStorage.getItem(getChatPendingMessageKey("session-001"))).toBe(JSON.stringify(["Queued follow-up"]));
+    expect(localStorage.getItem(getChatPendingMessageKey("session-001")!)).toBe(JSON.stringify(["Queued follow-up"]));
   });
 
   it("rehydrates queued message from localStorage after remount", async () => {
@@ -2744,10 +2754,13 @@ describe("useChat", () => {
       ...makeSession({ id: "session-001", agentId: "agent-001" }),
       isGenerating: true,
       inFlightGeneration: {
+        status: "generating" as const,
         streamingText: "partial",
         streamingThinking: "",
         toolCalls: [],
-      },
+        replayFromEventId: 0,
+        updatedAt: "2026-04-08T00:00:00.000Z",
+},
     };
     mockFetchChatSessions.mockResolvedValue({ sessions: [session] });
     mockFetchChatMessages.mockResolvedValue({ messages: [] });
@@ -2773,7 +2786,7 @@ describe("useChat", () => {
     });
 
     await waitFor(() => {
-      expect(localStorage.getItem(getChatPendingMessageKey("session-001"))).toBe(JSON.stringify(["Queued follow-up"]));
+      expect(localStorage.getItem(getChatPendingMessageKey("session-001")!)).toBe(JSON.stringify(["Queued follow-up"]));
     });
 
     firstHook.unmount();
@@ -2798,10 +2811,13 @@ describe("useChat", () => {
       ...makeSession({ id: "session-001", agentId: "agent-001" }),
       isGenerating: true,
       inFlightGeneration: {
+        status: "generating" as const,
         streamingText: "partial",
         streamingThinking: "",
         toolCalls: [],
-      },
+        replayFromEventId: 0,
+        updatedAt: "2026-04-08T00:00:00.000Z",
+},
     };
     mockFetchChatSessions.mockResolvedValue({ sessions: [session] });
     mockFetchChatMessages.mockResolvedValue({ messages: [] });
@@ -3202,10 +3218,13 @@ describe("useChat", () => {
       ...makeSession({ id: "session-001", agentId: "agent-001" }),
       isGenerating: true,
       inFlightGeneration: {
+        status: "generating" as const,
         streamingText: "partial",
         streamingThinking: "",
         toolCalls: [],
-      },
+        replayFromEventId: 0,
+        updatedAt: "2026-04-08T00:00:00.000Z",
+},
     };
 
     mockFetchChatSessions.mockResolvedValueOnce({ sessions: [sessionA] });
@@ -3232,7 +3251,7 @@ describe("useChat", () => {
 
     await waitFor(() => {
       expect(result.current.pendingMessages).toEqual(["Queued follow-up"]);
-      expect(localStorage.getItem(getChatPendingMessageKey("session-001"))).toBe(JSON.stringify(["Queued follow-up"]));
+      expect(localStorage.getItem(getChatPendingMessageKey("session-001")!)).toBe(JSON.stringify(["Queued follow-up"]));
     });
 
     act(() => {
@@ -3245,7 +3264,7 @@ describe("useChat", () => {
       expect(result.current.isStreaming).toBe(false);
     });
 
-    expect(localStorage.getItem(getChatPendingMessageKey("session-001"))).toBe(JSON.stringify(["Queued follow-up"]));
+    expect(localStorage.getItem(getChatPendingMessageKey("session-001")!)).toBe(JSON.stringify(["Queued follow-up"]));
 
     act(() => {
       result.current.selectSession("session-001");
@@ -3272,10 +3291,13 @@ describe("useChat", () => {
         ...sessionA,
         isGenerating: true,
         inFlightGeneration: {
+          status: "generating" as const,
           streamingText: "partial",
           streamingThinking: "",
           toolCalls: [],
-        },
+          replayFromEventId: 0,
+          updatedAt: "2026-04-08T00:00:00.000Z",
+},
       },
     });
 
@@ -3306,7 +3328,7 @@ describe("useChat", () => {
     });
 
     expect(mockStreamChatResponse).not.toHaveBeenCalled();
-    expect(localStorage.getItem(getChatPendingMessageKey("session-001"))).toBe(JSON.stringify(["Queued follow-up"]));
+    expect(localStorage.getItem(getChatPendingMessageKey("session-001")!)).toBe(JSON.stringify(["Queued follow-up"]));
 
     // Once the attached generation completes, the queued message flushes.
     act(() => {
@@ -3318,7 +3340,7 @@ describe("useChat", () => {
       expect(mockStreamChatResponse.mock.calls[0]?.[0]).toBe("session-001");
       expect(mockStreamChatResponse.mock.calls[0]?.[1]).toBe("Queued follow-up");
       expect(result.current.pendingMessages).toEqual([]);
-      expect(localStorage.getItem(getChatPendingMessageKey("session-001"))).toBeNull();
+      expect(localStorage.getItem(getChatPendingMessageKey("session-001")!)).toBeNull();
     });
   });
 
@@ -3331,10 +3353,13 @@ describe("useChat", () => {
         ...sessionA,
         isGenerating: true,
         inFlightGeneration: {
+          status: "generating" as const,
           streamingText: "partial",
           streamingThinking: "",
           toolCalls: [],
-        },
+          replayFromEventId: 0,
+          updatedAt: "2026-04-08T00:00:00.000Z",
+},
       },
     });
 
@@ -3371,7 +3396,7 @@ describe("useChat", () => {
       expect(result.current.pendingMessages).toEqual(["Queued follow-up"]);
       expect(result.current.isStreaming).toBe(true);
       expect(mockStreamChatResponse).not.toHaveBeenCalled();
-      expect(localStorage.getItem(getChatPendingMessageKey("session-001"))).toBe(JSON.stringify(["Queued follow-up"]));
+      expect(localStorage.getItem(getChatPendingMessageKey("session-001")!)).toBe(JSON.stringify(["Queued follow-up"]));
     });
   });
 
@@ -3399,12 +3424,12 @@ describe("useChat", () => {
     await waitFor(() => {
       expect(result.current.pendingMessages).toEqual(["Queued follow-up"]);
       expect(mockStreamChatResponse).not.toHaveBeenCalled();
-      expect(localStorage.getItem(getChatPendingMessageKey("session-001"))).toBe(JSON.stringify(["Queued follow-up"]));
+      expect(localStorage.getItem(getChatPendingMessageKey("session-001")!)).toBe(JSON.stringify(["Queued follow-up"]));
     });
 
     expect(result.current.pendingMessages).toEqual(["Queued follow-up"]);
     expect(mockStreamChatResponse).not.toHaveBeenCalled();
-    expect(localStorage.getItem(getChatPendingMessageKey("session-001"))).toBe(JSON.stringify(["Queued follow-up"]));
+    expect(localStorage.getItem(getChatPendingMessageKey("session-001")!)).toBe(JSON.stringify(["Queued follow-up"]));
   });
 
   it("preserves queued messages across session switches and rehydrates them when returning", async () => {
@@ -3412,10 +3437,13 @@ describe("useChat", () => {
       ...makeSession({ id: "session-001", agentId: "agent-001" }),
       isGenerating: true,
       inFlightGeneration: {
+        status: "generating" as const,
         streamingText: "partial",
         streamingThinking: "",
         toolCalls: [],
-      },
+        replayFromEventId: 0,
+        updatedAt: "2026-04-08T00:00:00.000Z",
+},
     };
     const sessionB = makeSession({ id: "session-002", agentId: "agent-002" });
     mockFetchChatSessions.mockResolvedValueOnce({ sessions: [sessionA, sessionB] });
@@ -3454,7 +3482,7 @@ describe("useChat", () => {
       expect(result.current.isStreaming).toBe(false);
     });
 
-    expect(localStorage.getItem(getChatPendingMessageKey("session-001"))).toBe(JSON.stringify(["Queued follow-up"]));
+    expect(localStorage.getItem(getChatPendingMessageKey("session-001")!)).toBe(JSON.stringify(["Queued follow-up"]));
 
     act(() => {
       result.current.selectSession("session-001");
@@ -3530,7 +3558,7 @@ describe("useChat", () => {
     });
 
     expect(result.current.pendingMessages).toEqual(["Queued A", "Queued C"]);
-    expect(localStorage.getItem(getChatPendingMessageKey("session-001"))).toBe(JSON.stringify(["Queued A", "Queued C"]));
+    expect(localStorage.getItem(getChatPendingMessageKey("session-001")!)).toBe(JSON.stringify(["Queued A", "Queued C"]));
   });
 
   it("clearPendingMessage clears pending message and removes persisted queue entry", async () => {
@@ -3575,7 +3603,7 @@ describe("useChat", () => {
     });
 
     expect(result.current.pendingMessages).toEqual([]);
-    expect(localStorage.getItem(getChatPendingMessageKey("session-001"))).toBeNull();
+    expect(localStorage.getItem(getChatPendingMessageKey("session-001")!)).toBeNull();
   });
 
   it("createSession removes the prior session's persisted queued messages", async () => {
@@ -3583,10 +3611,13 @@ describe("useChat", () => {
       ...makeSession({ id: "session-001", agentId: "agent-001" }),
       isGenerating: true,
       inFlightGeneration: {
+        status: "generating" as const,
         streamingText: "partial",
         streamingThinking: "",
         toolCalls: [],
-      },
+        replayFromEventId: 0,
+        updatedAt: "2026-04-08T00:00:00.000Z",
+},
     };
     const newSession = makeSession({ id: "session-002", agentId: "agent-001", title: "Fresh" });
 
@@ -3614,7 +3645,7 @@ describe("useChat", () => {
     });
 
     await waitFor(() => {
-      expect(localStorage.getItem(getChatPendingMessageKey("session-001"))).toBe(JSON.stringify(["Queued follow-up"]));
+      expect(localStorage.getItem(getChatPendingMessageKey("session-001")!)).toBe(JSON.stringify(["Queued follow-up"]));
     });
 
     await act(async () => {
@@ -3625,7 +3656,7 @@ describe("useChat", () => {
       expect(result.current.activeSession?.id).toBe("session-002");
     });
 
-    expect(localStorage.getItem(getChatPendingMessageKey("session-001"))).toBeNull();
+    expect(localStorage.getItem(getChatPendingMessageKey("session-001")!)).toBeNull();
   });
 
   it("archiveSession removes the archived session's persisted queued messages", async () => {
@@ -3633,10 +3664,13 @@ describe("useChat", () => {
       ...makeSession({ id: "session-001", agentId: "agent-001" }),
       isGenerating: true,
       inFlightGeneration: {
+        status: "generating" as const,
         streamingText: "partial",
         streamingThinking: "",
         toolCalls: [],
-      },
+        replayFromEventId: 0,
+        updatedAt: "2026-04-08T00:00:00.000Z",
+},
     };
 
     mockFetchChatSessions.mockResolvedValueOnce({ sessions: [session] });
@@ -3662,14 +3696,14 @@ describe("useChat", () => {
     });
 
     await waitFor(() => {
-      expect(localStorage.getItem(getChatPendingMessageKey("session-001"))).toBe(JSON.stringify(["Queued follow-up"]));
+      expect(localStorage.getItem(getChatPendingMessageKey("session-001")!)).toBe(JSON.stringify(["Queued follow-up"]));
     });
 
     await act(async () => {
       await result.current.archiveSession("session-001");
     });
 
-    expect(localStorage.getItem(getChatPendingMessageKey("session-001"))).toBeNull();
+    expect(localStorage.getItem(getChatPendingMessageKey("session-001")!)).toBeNull();
   });
 
   it("deleteSession removes the deleted session's persisted queued messages", async () => {
@@ -3677,10 +3711,13 @@ describe("useChat", () => {
       ...makeSession({ id: "session-001", agentId: "agent-001" }),
       isGenerating: true,
       inFlightGeneration: {
+        status: "generating" as const,
         streamingText: "partial",
         streamingThinking: "",
         toolCalls: [],
-      },
+        replayFromEventId: 0,
+        updatedAt: "2026-04-08T00:00:00.000Z",
+},
     };
 
     mockFetchChatSessions.mockResolvedValueOnce({ sessions: [session] });
@@ -3706,14 +3743,14 @@ describe("useChat", () => {
     });
 
     await waitFor(() => {
-      expect(localStorage.getItem(getChatPendingMessageKey("session-001"))).toBe(JSON.stringify(["Queued follow-up"]));
+      expect(localStorage.getItem(getChatPendingMessageKey("session-001")!)).toBe(JSON.stringify(["Queued follow-up"]));
     });
 
     await act(async () => {
       await result.current.deleteSession("session-001");
     });
 
-    expect(localStorage.getItem(getChatPendingMessageKey("session-001"))).toBeNull();
+    expect(localStorage.getItem(getChatPendingMessageKey("session-001")!)).toBeNull();
   });
 
   it("restored queued message auto-sends once after generation already completed", async () => {
@@ -3737,7 +3774,7 @@ describe("useChat", () => {
       expect(mockStreamChatResponse.mock.calls[0]?.[1]).toBe("Queued follow-up");
     });
 
-    expect(localStorage.getItem(getChatPendingMessageKey("session-001"))).toBeNull();
+    expect(localStorage.getItem(getChatPendingMessageKey("session-001")!)).toBeNull();
   });
 
   it("stopStreaming flushes pendingMessages", async () => {
@@ -3780,7 +3817,7 @@ describe("useChat", () => {
       expect(result.current.pendingMessages).toEqual([]);
     });
 
-    expect(localStorage.getItem(getChatPendingMessageKey("session-001"))).toBeNull();
+    expect(localStorage.getItem(getChatPendingMessageKey("session-001")!)).toBeNull();
   });
 
   it("loads more messages with pagination", async () => {
@@ -4200,7 +4237,7 @@ describe("useChat", () => {
           replayFromEventId: 23,
         },
       };
-      const refresh = createDeferredPromise<{ session: ChatSession }>();
+      const refresh = createDeferredPromise<{ session: EnrichedChatSession }>();
       mockFetchChatSessions.mockResolvedValueOnce({ sessions: [staleSession] });
       mockFetchChatSession.mockReturnValueOnce(refresh.promise);
       mockFetchChatMessages.mockResolvedValue({ messages: [] });
@@ -4260,7 +4297,7 @@ describe("useChat", () => {
         makeMessage({ id: "msg-001", sessionId: generatingSession.id, role: "user", content: "First question" }),
       ];
 
-      mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? generatingSession.id : undefined);
+      mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? generatingSession.id : null);
       mockFetchChatSessions.mockResolvedValueOnce({ sessions: [generatingSession] });
       mockFetchChatSession.mockResolvedValueOnce({ session: generatingSession });
       mockFetchChatMessages.mockResolvedValueOnce({ messages: priorThreadNewestFirst });
@@ -4333,7 +4370,7 @@ describe("useChat", () => {
       // FNXC:ChatMessageOrder 2026-07-19-00:00: This restored partial cache has no temp row,
       // but does retain a later assistant turn before the authoritative mid-stream reload.
       cacheMessages("proj-123", generatingSession.id, [priorUser, laterAssistant]);
-      mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? generatingSession.id : undefined);
+      mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? generatingSession.id : null);
       mockFetchChatSessions.mockResolvedValueOnce({ sessions: [generatingSession] });
       mockFetchChatSession.mockResolvedValueOnce({ session: generatingSession });
       mockFetchChatMessages.mockResolvedValueOnce({ messages: [laterAssistant, persistedUser, priorUser] });
@@ -4390,7 +4427,7 @@ describe("useChat", () => {
       let attachedHandlers: StreamAppendHandlers | undefined;
 
       cacheMessages("proj-123", generatingSession.id, priorThread);
-      mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? generatingSession.id : undefined);
+      mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? generatingSession.id : null);
       mockFetchChatSessions.mockResolvedValueOnce({ sessions: [generatingSession] });
       mockFetchChatMessages.mockReturnValue(staleFetch.promise);
       mockAttachChatStream.mockImplementation((_sessionId, handlers) => {
@@ -4433,9 +4470,9 @@ describe("useChat", () => {
 
       vi.useFakeTimers();
       act(() => {
-        attachedHandlers?.onToolStart({ toolName: "read", args: { path: "README.md" } });
-        attachedHandlers?.onText(" now");
-        attachedHandlers?.onToolEnd({ toolName: "read", isError: false, result: "ok" });
+        attachedHandlers?.onToolStart?.({ toolName: "read", args: { path: "README.md" } });
+        attachedHandlers?.onText?.(" now");
+        attachedHandlers?.onToolEnd?.({ toolName: "read", isError: false, result: "ok" });
       });
       act(() => {
         vi.advanceTimersToNextTimer();
@@ -4517,7 +4554,7 @@ describe("useChat", () => {
 
       vi.useFakeTimers();
       act(() => {
-        streamHandlers?.onText("Partial answer");
+        streamHandlers?.onText?.("Partial answer");
         subscribeHandler["chat:session:updated"]?.({
           data: JSON.stringify({
             ...session,
@@ -4681,10 +4718,10 @@ describe("useChat", () => {
 
       vi.useFakeTimers();
       act(() => {
-        attachedHandlers?.onText("world");
-        attachedHandlers?.onText("!");
-        attachedHandlers?.onThinking("more");
-        attachedHandlers?.onToolEnd({ toolName: "read", isError: false, result: "done" });
+        attachedHandlers?.onText?.("world");
+        attachedHandlers?.onText?.("!");
+        attachedHandlers?.onThinking?.("more");
+        attachedHandlers?.onToolEnd?.({ toolName: "read", isError: false, result: "done" });
       });
       act(() => {
         vi.advanceTimersToNextTimer();
@@ -4762,7 +4799,7 @@ describe("useChat", () => {
 
       vi.useFakeTimers();
       act(() => {
-        attachedHandlers?.onText(" plus");
+        attachedHandlers?.onText?.(" plus");
       });
       act(() => {
         vi.advanceTimersToNextTimer();
@@ -4791,7 +4828,7 @@ describe("useChat", () => {
           updatedAt: "2026-04-08T00:00:00.000Z",
         },
       };
-      let onError: ((data: string | apiModule.ChatFailureInfo, tempUserMessageId: string) => void) | undefined;
+      let onError: ((data: string | apiModule.ChatFailureInfo, meta?: apiModule.ChatStreamErrorMeta) => void) | undefined;
 
       mockFetchChatSessions
         .mockResolvedValueOnce({ sessions: [session] })
@@ -4823,7 +4860,15 @@ describe("useChat", () => {
 
       act(() => {
         result.current.sendMessage("Continue");
-        onError?.("Failed to fetch", "temp-reconnect");
+        /*
+        FNXC:ChatReconnect 2026-08-22-03:07:
+        FN-6496 regression intent: the stream died before the server acknowledged the send, so
+        acceptedByServer must stay false — the hook drops the optimistic temp message and the
+        silent reconnect reloads the persisted prior thread. requestAccepted:true would keep the
+        temp bubble and legitimately skip the prior-thread load, which is what the pre-campaign
+        string second-argument (ignored meta slot) accidentally encoded.
+        */
+        onError?.("Failed to fetch", { requestAccepted: false, receivedStreamEvent: false });
       });
 
       await waitFor(() => {
@@ -5870,7 +5915,7 @@ describe("useChat", () => {
 
       vi.useFakeTimers();
       act(() => {
-        handlers[0]?.onText("world");
+        handlers[0]?.onText?.("world");
       });
       act(() => {
         vi.advanceTimersToNextTimer();
@@ -5902,8 +5947,8 @@ describe("useChat", () => {
 
       vi.useFakeTimers();
       act(() => {
-        handlers[1]?.onText("!");
-        handlers[1]?.onThinking("step");
+        handlers[1]?.onText?.("!");
+        handlers[1]?.onThinking?.("step");
       });
       act(() => {
         vi.advanceTimersToNextTimer();

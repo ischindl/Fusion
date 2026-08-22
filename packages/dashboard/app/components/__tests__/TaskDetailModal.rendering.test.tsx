@@ -44,7 +44,8 @@ import {
 import { TaskDetailModal, TaskDetailContent } from "../TaskDetailModal";
 import * as dashboardApi from "../../api";
 import { FileBrowserProvider } from "../../context/FileBrowserContext";
-import type { Task } from "@fusion/core";
+import type { Task, TaskDetail } from "@fusion/core";
+import type { BoardWorkflowsPayload } from "../../api";
 
 setupTaskDetailModalHooks();
 
@@ -109,7 +110,7 @@ describe("TaskDetailModal", () => {
       const promptFetch = vi.mocked(dashboardApi.fetchTaskPrompt);
       promptFetch.mockResolvedValue({ id: "FN-POLL", prompt: "# Updated definition" });
       const fullFetch = vi.mocked(dashboardApi.fetchTaskDetail);
-      const queued = makeTask({ id: "FN-POLL", column: "in-progress", status: "queued", prompt: "# Initial definition", workflowStepResults: [{ workflowStepId: "plan-review", status: "running", startedAt: "2026-08-05T00:00:00.000Z" }] });
+      const queued = makeTask({ id: "FN-POLL", column: "in-progress", status: "queued", prompt: "# Initial definition", workflowStepResults: [{ workflowStepId: "plan-review", workflowStepName: "Plan Review", status: "pending", startedAt: "2026-08-05T00:00:00.000Z" }] });
       render(<TaskDetailContent embedded active initialTab="definition" task={queued} onMoveTask={noopMove} onDeleteTask={noopDelete} onMergeTask={noopMerge} onOpenDetail={noopOpenDetail} addToast={noop} />);
 
       await act(async () => {});
@@ -143,7 +144,7 @@ describe("TaskDetailModal", () => {
         workflows: [{ id: "builtin:coding", name: "Coding", columns: [], fields: [] }], taskWorkflowIds: {},
       });
       vi.mocked(dashboardApi.fetchTaskPrompt).mockResolvedValue({ id: "FN-DONE-POLL", prompt: "# Refreshed definition" });
-      const done = makeTask({ id: "FN-DONE-POLL", column: "done", status: "done", prompt: "# Original definition", workflowStepResults: [{ workflowStepId: "plan-review", status: "running", startedAt: "2026-08-05T00:00:00.000Z" }] });
+      const done = makeTask({ id: "FN-DONE-POLL", column: "done", status: "done", prompt: "# Original definition", workflowStepResults: [{ workflowStepId: "plan-review", workflowStepName: "Plan Review", status: "pending", startedAt: "2026-08-05T00:00:00.000Z" }] });
       render(<TaskDetailContent embedded active initialTab="definition" task={done} onMoveTask={noopMove} onDeleteTask={noopDelete} onMergeTask={noopMerge} onOpenDetail={noopOpenDetail} addToast={noop} />);
 
       await act(async () => {});
@@ -242,7 +243,7 @@ describe("TaskDetailModal", () => {
   });
 
   describe("workflow timestamp badge", () => {
-    const workflowPayload = {
+    const workflowPayload: BoardWorkflowsPayload = {
       flagEnabled: true,
       defaultWorkflowId: "builtin:coding",
       workflows: [
@@ -903,7 +904,7 @@ describe("TaskDetailModal", () => {
 
       expect(provenance).toBeTruthy();
       expect(timestamps).toBeTruthy();
-      expect(provenance?.compareDocumentPosition(timestamps as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect((provenance?.compareDocumentPosition(timestamps as Node) ?? 0) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
     it("keeps inline controls, provenance, and timestamps as direct detail-meta children", () => {
@@ -937,7 +938,15 @@ describe("TaskDetailModal", () => {
           initialTab="definition"
           task={makeTask({
             sourceType: "dashboard_ui",
-            prInfo: { number: 42, url: "https://github.com/owner/repo/pull/42" },
+            prInfo: {
+            number: 42,
+            url: "https://github.com/owner/repo/pull/42",
+            status: "open",
+            title: "Test PR",
+            headBranch: "fusion/fn-099",
+            baseBranch: "main",
+            commentCount: 0,
+          },
           })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -1399,10 +1408,10 @@ describe("TaskDetailModal", () => {
 
   describe("branch reattachment affordance absence", () => {
     it.each([
-      ["null branch and worktree", makeTask({ column: "in-review", branch: null, worktree: null })],
-      ["undefined branch with missing worktree", makeTask({ column: "in-review", branch: undefined, worktree: null })],
+      ["null branch and worktree", makeTask({ column: "in-review", branch: undefined, worktree: undefined })],
+      ["undefined branch with missing worktree", makeTask({ column: "in-review", branch: undefined, worktree: undefined })],
       ["populated branch control", makeTask({ column: "in-review", branch: "fusion/fn-099", worktree: "/tmp/fn-099" })],
-      ["non-in-review missing branch", makeTask({ column: "todo", branch: null, worktree: null })],
+      ["non-in-review missing branch", makeTask({ column: "todo", branch: undefined, worktree: undefined })],
     ] as const)("renders no reattachment banner for %s", (_label, task) => {
       const { container } = renderTaskDetail(task);
 
@@ -1412,7 +1421,7 @@ describe("TaskDetailModal", () => {
     it("renders no reattachment banner for workspace in-review tasks with no singular branch", () => {
       const task = makeTask({
         column: "in-review",
-        worktree: null,
+        worktree: undefined,
         workspaceWorktrees: {
           "repo-a": { worktreePath: "/tmp/fn-099/repo-a", branch: "fusion/fn-099", baseCommitSha: "abc123" },
           "repo-b": { worktreePath: "/tmp/fn-099/repo-b", branch: "fusion/fn-099" },
@@ -1426,7 +1435,7 @@ describe("TaskDetailModal", () => {
     });
 
     it("keeps the removed mobile rebind action shell absent in narrow task detail rendering", () => {
-      const { container } = renderTaskDetail(makeTask({ column: "in-review", branch: null, worktree: null }), "back");
+      const { container } = renderTaskDetail(makeTask({ column: "in-review", branch: undefined, worktree: undefined }), "back");
 
       expect(screen.getByRole("button", { name: "Back to task list" })).toBeInTheDocument();
       expectNoBranchReattachmentAffordance(container);
@@ -1435,7 +1444,7 @@ describe("TaskDetailModal", () => {
     it("renders no reattachment banner from embedded TaskDetailContent", () => {
       const { container } = render(
         <TaskDetailContent
-          task={makeTask({ column: "in-review", branch: null, worktree: null })}
+          task={makeTask({ column: "in-review", branch: undefined, worktree: undefined })}
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}

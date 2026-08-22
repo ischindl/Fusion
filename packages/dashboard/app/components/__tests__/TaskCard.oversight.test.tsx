@@ -323,7 +323,7 @@ describe("TaskCard workflow-effective oversight level (FN-7516 code-review fix)"
   });
 
   it("does not render the schema-default badge while the workflow-tier fetch is pending (round-2 code-review fix)", async () => {
-    let resolveFetch!: (value: { stored: Record<string, unknown>; effective: Record<string, unknown>; orphaned: unknown[] }) => void;
+    let resolveFetch!: (value: Awaited<ReturnType<typeof fetchWorkflowSettingValues>>) => void;
     vi.mocked(fetchWorkflowSettingValues).mockReturnValueOnce(
       new Promise((resolve) => {
         resolveFetch = resolve;

@@ -349,7 +349,7 @@ describe("TaskContextMenu shared task action model", () => {
     expect("items" in items[0] && items[0].items.map((item) => item.id)).toEqual(["move-todo", "move-in-review"]);
 
     render(<TaskContextMenu actions={items} />);
-    const parent = screen.getByRole("menuitem", { name: "Move to", exact: true });
+    const parent = screen.getByRole("menuitem", { name: /^Move to$/ });
     fireEvent.keyDown(parent, { key: "ArrowRight" });
     const todo = screen.getByRole("menuitem", { name: "Move to Todo" });
     expect(todo).toHaveFocus();
@@ -369,7 +369,7 @@ describe("TaskContextMenu shared task action model", () => {
     ], vi.fn(), "Move to");
 
     render(<TaskContextMenu actions={items} />);
-    const parent = screen.getByRole("menuitem", { name: "Move to", exact: true });
+    const parent = screen.getByRole("menuitem", { name: /^Move to$/ });
     fireEvent.click(parent);
 
     expect(parent.parentElement?.querySelector(".task-context-menu__submenu"))

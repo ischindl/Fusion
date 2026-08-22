@@ -130,7 +130,7 @@ describe("MainContent roadmap native structures", () => {
       taskView: "plugin:fusion-plugin-roadmap:roadmaps",
       pluginDashboardViews: [{
         pluginId: "fusion-plugin-roadmap",
-        view: { viewId: "roadmaps", label: "Roadmaps", placement: "primary" },
+        view: { viewId: "roadmaps", label: "Roadmaps", placement: "primary", componentPath: "app/views/RoadmapsView.tsx" },
       }],
     })} />);
 
@@ -155,7 +155,7 @@ describe("MainContent roadmap native structures", () => {
       taskView: "plugin:fusion-plugin-roadmap:roadmaps",
       pluginDashboardViews: [{
         pluginId: "fusion-plugin-roadmap",
-        view: { viewId: "roadmaps", label: "Roadmaps", placement: "primary" },
+        view: { viewId: "roadmaps", label: "Roadmaps", placement: "primary", componentPath: "app/views/RoadmapsView.tsx" },
       }],
     })} />);
 

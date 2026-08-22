@@ -80,6 +80,8 @@ function mockRoomsIdle() {
     deleteRoom: vi.fn(),
     sendRoomMessage: vi.fn(),
     refreshRooms: vi.fn(),
+    updateRoomSettings: vi.fn(),
+    clearRoom: vi.fn(),
   });
 }
 
@@ -115,6 +117,23 @@ function StatefulChatView() {
     filteredSessions: [session],
     refreshSessions: vi.fn(),
     agentsMap: new Map(),
+    tags: [],
+    selectedTagId: null,
+    setSelectedTagId: vi.fn(),
+    archivedSessions: [],
+    refreshArchivedSessions: vi.fn(),
+    unarchiveSession: vi.fn(),
+    renameSession: vi.fn(),
+    pinSession: vi.fn(),
+    pinnedCount: 0,
+    setSessionModel: vi.fn(),
+    setSessionThinkingLevel: vi.fn(),
+    createTag: vi.fn(),
+    renameTag: vi.fn(),
+    deleteTag: vi.fn(),
+    setSessionTags: vi.fn(),
+    editMessageAndResend: vi.fn(),
+    backfillStashSession: vi.fn(),
   }));
 
   mockRoomsIdle();
@@ -148,6 +167,23 @@ function RestoredActiveSessionChatView() {
     filteredSessions: [session],
     refreshSessions: vi.fn(),
     agentsMap: new Map(),
+    tags: [],
+    selectedTagId: null,
+    setSelectedTagId: vi.fn(),
+    archivedSessions: [],
+    refreshArchivedSessions: vi.fn(),
+    unarchiveSession: vi.fn(),
+    renameSession: vi.fn(),
+    pinSession: vi.fn(),
+    pinnedCount: 0,
+    setSessionModel: vi.fn(),
+    setSessionThinkingLevel: vi.fn(),
+    createTag: vi.fn(),
+    renameTag: vi.fn(),
+    deleteTag: vi.fn(),
+    setSessionTags: vi.fn(),
+    editMessageAndResend: vi.fn(),
+    backfillStashSession: vi.fn(),
   });
   mockRoomsIdle();
 

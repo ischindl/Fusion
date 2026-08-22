@@ -11,7 +11,7 @@ function makeStatus(overrides: Partial<ShellConnectionNativeResult> = {}): Shell
     profileId: "p1",
     profileLabel: "Prod",
     serverOrigin: "https://fusion.example.com",
-    openConnectionManager: vi.fn(async () => ({ ok: true })),
+    openConnectionManager: vi.fn(async () => ({ ok: true as const })),
     ...overrides,
   };
 }

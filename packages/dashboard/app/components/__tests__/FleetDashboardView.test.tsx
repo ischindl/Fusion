@@ -43,6 +43,7 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
   return {
     id: "agent-" + Math.random(),
     name: "Agent",
+    roles: [],
     role: "executor" as AgentCapability,
     state: "active" as AgentState,
     createdAt: "2026-08-16T00:00:00.000Z",

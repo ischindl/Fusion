@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { useState } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, render, screen, waitFor, cleanup, within } from "@testing-library/react";
-import { parseWorkflowIr, type WorkflowDefinition, type Settings } from "@fusion/core";
+import { parseWorkflowIr, type WorkflowDefinition, type Settings, type WorkflowNodeLayout } from "@fusion/core";
+import type { ModelInfo } from "../../api/planning/models-usage";
 
 // FNXC:WorkflowStepTemplate 2026-06-25-00:00: U6 deleted the built-in
 // WORKFLOW_STEP_TEMPLATES catalog. These palette tests only need an arbitrary set of
@@ -189,7 +190,7 @@ function mockWorkflowEditorViewport(mode: "desktop" | "mobile" | "tablet" = "des
 // tests override fetchSettings to flip the flags on. fetchAgents defaults empty.
 viBeforeEach(() => {
   mockWorkflowEditorViewport("desktop");
-  vi.mocked(fetchConfig).mockResolvedValue({ maxConcurrent: 2, rootDir: "." });
+  vi.mocked(fetchConfig).mockResolvedValue({ maxConcurrent: 2, effectiveMaxConcurrent: 2, concurrencyBindingKnob: "maxConcurrent", rootDir: "." });
   vi.mocked(fetchSettings).mockResolvedValue({} as never);
   vi.mocked(fetchAgents).mockResolvedValue([]);
   vi.mocked(fetchWorkflowPromptOverrides).mockResolvedValue({ stored: {}, effective: {}, defaults: {} });
@@ -485,7 +486,7 @@ describe("workflow-flow-mapping", () => {
     expect(populated).toBeDefined();
     edgeRenderableAssertion(populated!);
     edgeRenderableAssertion({ ...populated!, layout: {} });
-    edgeRenderableAssertion({ ...populated!, layout: undefined });
+    edgeRenderableAssertion({ ...populated!, layout: undefined as unknown as Record<string, WorkflowNodeLayout> });
   });
 
   it("projects custom v1 and v2 workflows to the same connected edge contract", () => {
@@ -538,7 +539,7 @@ describe("WorkflowNodeEditor", () => {
     vi.mocked(fetchWorkflows).mockResolvedValue([]);
     vi.mocked(fetchTraits).mockResolvedValue(TRAIT_CATALOG);
     vi.mocked(fetchStepParsers).mockResolvedValue(["step-headings", "json-steps"]);
-    vi.mocked(fetchModels).mockResolvedValue({ models: [] });
+    vi.mocked(fetchModels).mockResolvedValue({ models: [] as ModelInfo[], favoriteProviders: [], favoriteModels: [] });
   });
 
   afterEach(() => {
@@ -1296,7 +1297,7 @@ describe("WorkflowNodeEditor", () => {
   it("wires thinking controls only on workflow model pickers and persists clear semantics", async () => {
     const source = thinkingModelDef();
     vi.mocked(fetchWorkflows).mockResolvedValue([source]);
-    vi.mocked(fetchModels).mockResolvedValue({ models: [{ provider: "anthropic", id: "claude-sonnet", name: "Claude Sonnet" }] });
+    vi.mocked(fetchModels).mockResolvedValue({ models: [{ provider: "anthropic", id: "claude-sonnet", name: "Claude Sonnet", reasoning: true, contextWindow: 200000 }], favoriteProviders: [], favoriteModels: [] });
     vi.mocked(fetchSettings).mockResolvedValue({ defaultThinkingLevel: "medium" } as Settings);
     vi.mocked(updateWorkflow).mockImplementation(async (_id, updates) => ({ ...source, ...(updates as object) }));
 
@@ -1707,7 +1708,7 @@ describe("WorkflowNodeEditor — embedded presentation", () => {
     vi.mocked(fetchWorkflows).mockResolvedValue([]);
     vi.mocked(fetchTraits).mockResolvedValue(TRAIT_CATALOG);
     vi.mocked(fetchStepParsers).mockResolvedValue(["step-headings", "json-steps"]);
-    vi.mocked(fetchModels).mockResolvedValue({ models: [] });
+    vi.mocked(fetchModels).mockResolvedValue({ models: [] as ModelInfo[], favoriteProviders: [], favoriteModels: [] });
   });
 
   afterEach(() => {
@@ -1990,7 +1991,7 @@ describe("WorkflowNodeEditor — U3 deletion", () => {
   beforeEach(() => {
     vi.mocked(fetchTraits).mockResolvedValue(TRAIT_CATALOG);
     vi.mocked(fetchStepParsers).mockResolvedValue(["step-headings", "json-steps"]);
-    vi.mocked(fetchModels).mockResolvedValue({ models: [] });
+    vi.mocked(fetchModels).mockResolvedValue({ models: [] as ModelInfo[], favoriteProviders: [], favoriteModels: [] });
   });
   afterEach(() => cleanup());
 
@@ -2024,7 +2025,7 @@ describe("WorkflowNodeEditor — U5 auto-layout", () => {
   beforeEach(() => {
     vi.mocked(fetchTraits).mockResolvedValue(TRAIT_CATALOG);
     vi.mocked(fetchStepParsers).mockResolvedValue(["step-headings", "json-steps"]);
-    vi.mocked(fetchModels).mockResolvedValue({ models: [] });
+    vi.mocked(fetchModels).mockResolvedValue({ models: [] as ModelInfo[], favoriteProviders: [], favoriteModels: [] });
   });
   afterEach(() => cleanup());
 
@@ -2661,7 +2662,7 @@ describe("WorkflowNodeEditor — U8 step-inversion authoring", () => {
 
   it("edits step-review type and shows the verdict edge inspector with a rework toggle", async () => {
     vi.mocked(fetchWorkflows).mockResolvedValue([stepwiseDef()]);
-    vi.mocked(fetchModels).mockResolvedValue({ models: [] });
+    vi.mocked(fetchModels).mockResolvedValue({ models: [] as ModelInfo[], favoriteProviders: [], favoriteModels: [] });
     render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
     // Select the step-review template child.
     const reviewNode = await screen.findByTestId("wf-node-step-review");
@@ -2871,7 +2872,7 @@ describe("WorkflowNodeEditor — built-in stepwise selection render path", () =>
   beforeEach(() => {
     vi.mocked(fetchTraits).mockResolvedValue(TRAIT_CATALOG);
     vi.mocked(fetchStepParsers).mockResolvedValue(["step-headings", "json-steps"]);
-    vi.mocked(fetchModels).mockResolvedValue({ models: [] });
+    vi.mocked(fetchModels).mockResolvedValue({ models: [] as ModelInfo[], favoriteProviders: [], favoriteModels: [] });
   });
   afterEach(() => {
     cleanup();
@@ -3079,7 +3080,7 @@ describe("WorkflowNodeEditor — U4 create dialog / delete / inline rename / dir
   beforeEach(() => {
     vi.mocked(fetchTraits).mockResolvedValue(TRAIT_CATALOG);
     vi.mocked(fetchStepParsers).mockResolvedValue(["step-headings", "json-steps"]);
-    vi.mocked(fetchModels).mockResolvedValue({ models: [] });
+    vi.mocked(fetchModels).mockResolvedValue({ models: [] as ModelInfo[], favoriteProviders: [], favoriteModels: [] });
   });
   afterEach(() => {
     cleanup();
@@ -3543,7 +3544,7 @@ describe("WorkflowNodeEditor — U5 import/export", () => {
   beforeEach(() => {
     vi.mocked(fetchTraits).mockResolvedValue(TRAIT_CATALOG);
     vi.mocked(fetchStepParsers).mockResolvedValue(["step-headings", "json-steps"]);
-    vi.mocked(fetchModels).mockResolvedValue({ models: [] });
+    vi.mocked(fetchModels).mockResolvedValue({ models: [] as ModelInfo[], favoriteProviders: [], favoriteModels: [] });
   });
   afterEach(() => {
     cleanup();
@@ -3576,6 +3577,8 @@ describe("WorkflowNodeEditor — U5 import/export", () => {
       description: "",
       ir: v2Def().ir,
       layout: {},
+      settingValues: {},
+      promptOverrides: {},
     });
     render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
     const exportBtn = await screen.findByTestId("wf-export");
@@ -3592,6 +3595,8 @@ describe("WorkflowNodeEditor — U5 import/export", () => {
       workflow: imported,
       strippedApprovalFlags: false,
       warnings: [],
+      settingValues: {},
+      promptOverrides: {},
     });
 
     render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={addToast} />);
@@ -3642,6 +3647,8 @@ describe("WorkflowNodeEditor — U5 import/export", () => {
       workflow: imported,
       strippedApprovalFlags: true,
       warnings: [],
+      settingValues: {},
+      promptOverrides: {},
     });
 
     render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={addToast} />);
@@ -3737,7 +3744,7 @@ describe("WorkflowNodeEditor — U9 palette Templates section", () => {
   beforeEach(() => {
     vi.mocked(fetchTraits).mockResolvedValue(TRAIT_CATALOG);
     vi.mocked(fetchStepParsers).mockResolvedValue(["step-headings", "json-steps"]);
-    vi.mocked(fetchModels).mockResolvedValue({ models: [] });
+    vi.mocked(fetchModels).mockResolvedValue({ models: [] as ModelInfo[], favoriteProviders: [], favoriteModels: [] });
     vi.mocked(fetchWorkflowStepTemplates).mockResolvedValue({ templates: [] });
     vi.mocked(fetchPluginWorkflowStepTemplates).mockResolvedValue({ templates: [] });
     try {
@@ -4075,7 +4082,7 @@ describe("WorkflowNodeEditor — U10 design-with-AI", () => {
   beforeEach(() => {
     vi.mocked(fetchTraits).mockResolvedValue(TRAIT_CATALOG);
     vi.mocked(fetchStepParsers).mockResolvedValue(["step-headings", "json-steps"]);
-    vi.mocked(fetchModels).mockResolvedValue({ models: [] });
+    vi.mocked(fetchModels).mockResolvedValue({ models: [] as ModelInfo[], favoriteProviders: [], favoriteModels: [] });
   });
   afterEach(() => {
     cleanup();
@@ -4256,7 +4263,7 @@ describe("WorkflowNodeEditor — U10 design-with-AI", () => {
 // ── U6: per-column agent picker, mode toggle, stale-id + override surfaces ────
 
 function settingsWithStaleWorkflowFlags(): Settings {
-  return { experimentalFeatures: { workflowColumns: true, workflowGraphExecutor: true } } as Settings;
+  return { experimentalFeatures: { workflowColumns: true, workflowGraphExecutor: true } } as unknown as Settings;
 }
 
 function agentList(): Agent[] {
@@ -4284,7 +4291,7 @@ describe("WorkflowNodeEditor — U6 column agents", () => {
     vi.mocked(fetchStepParsers).mockResolvedValue(["step-headings", "json-steps"]);
     vi.mocked(fetchSettings).mockResolvedValue(settingsWithStaleWorkflowFlags());
     vi.mocked(fetchAgents).mockResolvedValue(agentList());
-    vi.mocked(fetchModels).mockResolvedValue({ models: [] });
+    vi.mocked(fetchModels).mockResolvedValue({ models: [] as ModelInfo[], favoriteProviders: [], favoriteModels: [] });
   });
   afterEach(() => {
     cleanup();
@@ -4424,7 +4431,7 @@ describe("WorkflowNodeEditor simplified view modes", () => {
     vi.mocked(fetchWorkflows).mockResolvedValue([def()]);
     vi.mocked(fetchTraits).mockResolvedValue(TRAIT_CATALOG);
     vi.mocked(fetchStepParsers).mockResolvedValue(["step-headings", "json-steps"]);
-    vi.mocked(fetchModels).mockResolvedValue({ models: [] });
+    vi.mocked(fetchModels).mockResolvedValue({ models: [] as ModelInfo[], favoriteProviders: [], favoriteModels: [] });
   });
 
   afterEach(() => {
@@ -4506,7 +4513,7 @@ describe("WorkflowNodeEditor simplified view modes", () => {
     // the optional-group template variant must wire into the targeted edge,
     // not land free-floating.
     vi.mocked(fetchWorkflowStepTemplates).mockResolvedValue({
-      templates: [{ id: "tpl-sec", name: "Security review", prompt: "Review security", defaultOn: true }],
+      templates: [{ id: "tpl-sec", name: "Security review", description: "Review security", prompt: "Review security", category: "security", defaultOn: true }],
     });
     vi.mocked(updateWorkflow).mockImplementation(async (_id, updates) => ({ ...def(), ...(updates as object) }));
     render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useState } from "react";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { TaskForm } from "../TaskForm";
-import type { Task, Column } from "@fusion/core";
+import type { Task, Column, Settings } from "@fusion/core";
 
 // Mock lucide-react
 vi.mock("lucide-react", () => ({
@@ -1494,7 +1494,7 @@ describe("TaskForm focus behavior (FN-1459)", () => {
         autoSelectModelPreset: false,
         defaultPresetBySize: {},
         githubTrackingEnabledByDefault: true,
-      });
+      } as unknown as Settings);
 
       const onGithubTrackingEnabledChange = vi.fn();
       renderTaskForm({

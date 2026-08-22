@@ -345,6 +345,8 @@ describe("useExecutorStats", () => {
           globalPause: false,
           enginePaused: false,
           maxConcurrent: 6,
+          effectiveMaxConcurrent: 6,
+          concurrencyBindingKnob: "maxConcurrent",
           lastActivityAt: "2026-04-01T12:05:00.000Z",
         });
         await projectBFetch.promise;
@@ -429,6 +431,8 @@ describe("useExecutorStats", () => {
           globalPause: false,
           enginePaused: false,
           maxConcurrent: 4,
+          effectiveMaxConcurrent: 4,
+          concurrencyBindingKnob: "maxConcurrent",
           lastActivityAt: "2026-04-01T12:00:00.000Z",
         });
         await initialFetch.promise;
@@ -467,6 +471,8 @@ describe("useExecutorStats", () => {
           globalPause: false,
           enginePaused: false,
           maxConcurrent: 7,
+          effectiveMaxConcurrent: 7,
+          concurrencyBindingKnob: "maxConcurrent",
           lastActivityAt: "2026-04-01T12:05:00.000Z",
         });
         await backgroundFetch.promise;

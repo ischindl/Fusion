@@ -839,7 +839,7 @@ describe("Column QuickEntryBox", () => {
 
   it("preserves the explicit Coding Ideas Start column in workflow mode", async () => {
     const onQuickCreate = vi.fn().mockResolvedValue({});
-    render(<Column {...defaultProps} column="ideas" workflowMode workflowId="builtin:coding-ideas" workflowOptions={[{ id: "builtin:coding-ideas", name: "Coding (Ideas)", columns: [{ id: "ideas", name: "Ideas", flags: { intake: true, hold: true, manualIntake: true } }] }]} tasks={[]} onQuickCreate={onQuickCreate} />);
+    render(<Column {...defaultProps} column={"ideas" as ColumnType} workflowMode workflowId="builtin:coding-ideas" workflowOptions={[{ id: "builtin:coding-ideas", name: "Coding (Ideas)", columns: [{ id: "ideas", name: "Ideas", flags: { intake: true, hold: true, manualIntake: true } }] }]} tasks={[]} onQuickCreate={onQuickCreate} />);
 
     fireEvent.click(screen.getByTestId("quick-entry-start"));
 

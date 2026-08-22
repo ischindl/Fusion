@@ -37,12 +37,12 @@ describe("isWorkspaceTask", () => {
   });
 
   it("is false when workspaceWorktrees is an empty record", () => {
-    expect(isWorkspaceTask({ worktree: undefined, workspaceWorktrees: {} })).toBe(false);
+    expect(isWorkspaceTask({ workspaceWorktrees: {} })).toBe(false);
   });
 
-  it("prefers populated acquired workspace entries over stale singular routing", () => {
+  it("prefers populated acquired workspace entries", () => {
     expect(
-      isWorkspaceTask({ worktree: "/wt/stale", workspaceWorktrees: workspaceTask.workspaceWorktrees }),
+      isWorkspaceTask({ workspaceWorktrees: workspaceTask.workspaceWorktrees }),
     ).toBe(true);
   });
 });

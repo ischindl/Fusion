@@ -1,5 +1,6 @@
 import { createElement, type ReactNode } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import type { Mock } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import {
   NavigationHistoryProvider,
@@ -13,15 +14,15 @@ describe("useNavigationHistory", () => {
   const originalReplaceState = window.history.replaceState;
   const originalBack = window.history.back;
 
-  let pushStateSpy: ReturnType<typeof vi.fn>;
-  let replaceStateSpy: ReturnType<typeof vi.fn>;
-  let backSpy: ReturnType<typeof vi.fn>;
+  let pushStateSpy: Mock<(data: any, unused: string, url?: string | URL | null) => void>;
+  let replaceStateSpy: Mock<(data: any, unused: string, url?: string | URL | null) => void>;
+  let backSpy: Mock<() => void>;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    pushStateSpy = vi.fn();
-    replaceStateSpy = vi.fn();
-    backSpy = vi.fn();
+    pushStateSpy = vi.fn<(data: any, unused: string, url?: string | URL | null) => void>();
+    replaceStateSpy = vi.fn<(data: any, unused: string, url?: string | URL | null) => void>();
+    backSpy = vi.fn<() => void>();
     // Use real replaceState for setup so history.state is actually set,
     // then install spies for assertions.
     window.history.replaceState = originalReplaceState;

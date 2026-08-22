@@ -14,6 +14,7 @@ import * as useChatModule from "../../hooks/useChat";
 import * as useChatRoomsModule from "../../hooks/useChatRooms";
 import type { ChatSessionInfo, UseChatReturn } from "../../hooks/useChat";
 import type { UseChatRoomsResult } from "../../hooks/useChatRooms";
+import type { Agent } from "@fusion/core";
 import { _resetInitialViewportHeight } from "../../hooks/useMobileKeyboard";
 
 Element.prototype.scrollIntoView = vi.fn();
@@ -124,6 +125,19 @@ function chatState(overrides: Partial<UseChatReturn> = {}): UseChatReturn {
     filteredSessions: session ? [session] : [],
     refreshSessions: vi.fn(),
     agentsMap: new Map(),
+    tags: [],
+    selectedTagId: null,
+    setSelectedTagId: vi.fn(),
+    archivedSessions: [],
+    refreshArchivedSessions: vi.fn(),
+    unarchiveSession: vi.fn(),
+    pinSession: vi.fn(),
+    pinnedCount: 0,
+    createTag: vi.fn(),
+    renameTag: vi.fn(),
+    deleteTag: vi.fn(),
+    setSessionTags: vi.fn(),
+    backfillStashSession: vi.fn(),
     ...overrides,
   };
 }
@@ -136,6 +150,7 @@ const roomA = {
   projectId: "proj-123",
   createdBy: "agent-1",
   status: "active" as const,
+  thinkingLevel: null,
   createdAt: "2026-04-08T00:00:00.000Z",
   updatedAt: "2026-04-08T00:00:00.000Z",
 };
@@ -154,6 +169,8 @@ function roomsState(overrides: Partial<UseChatRoomsResult> = {}): UseChatRoomsRe
     deleteRoom: vi.fn(),
     sendRoomMessage: vi.fn(),
     refreshRooms: vi.fn(),
+    updateRoomSettings: vi.fn(),
+    clearRoom: vi.fn(),
     ...overrides,
   };
 }
@@ -235,8 +252,8 @@ describe("ChatView thinking-level control (FN-7898)", () => {
     const setSessionModel = vi.fn();
     const session = makeSession({ id: "sess-agent", cliExecutorAdapterId: null, agentId: useChatModule.FN_AGENT_ID, modelProvider: "openai", modelId: "gpt-4o" });
     const agentsMap = new Map([
-      ["agent-001", { id: "agent-001", name: "Alpha", role: "executor" }],
-      ["agent-002", { id: "agent-002", name: "Beta", role: "reviewer" }],
+      ["agent-001", { id: "agent-001", name: "Alpha", role: "executor" } as unknown as Agent],
+      ["agent-002", { id: "agent-002", name: "Beta", role: "reviewer" } as unknown as Agent],
     ] as const);
     mockUseChat.mockReturnValue(chatState({ activeSession: session, sessions: [session], setSessionModel, agentsMap }));
 
@@ -307,7 +324,7 @@ describe("ChatView thinking-level control (FN-7898)", () => {
     expect(screen.getByTestId("custom-model-dropdown")).toHaveAttribute("data-value", "openai/gpt-4o");
 
     const sessionWithoutLevel = makeSession({ id: "sess-without-level", cliExecutorAdapterId: null, agentId: "agent-001", thinkingLevel: null });
-    const agentsMap = new Map([["agent-001", { id: "agent-001", name: "Alpha", role: "executor" }]] as const);
+    const agentsMap = new Map([["agent-001", { id: "agent-001", name: "Alpha", role: "executor" } as unknown as Agent]] as const);
     mockUseChat.mockReturnValue(chatState({ activeSession: sessionWithoutLevel, sessions: [sessionWithoutLevel], agentsMap }));
 
     await act(async () => {
@@ -327,8 +344,8 @@ describe("ChatView thinking-level control (FN-7898)", () => {
     const setSessionModel = vi.fn();
     const session = makeSession({ id: `sess-${name.replaceAll(" ", "-")}`, cliExecutorAdapterId: null, agentId: useChatModule.FN_AGENT_ID });
     const agentsMap = new Map([
-      ["agent-001", { id: "agent-001", name: "Alpha", role: "executor" }],
-      ["agent-002", { id: "agent-002", name: "Beta", role: "reviewer" }],
+      ["agent-001", { id: "agent-001", name: "Alpha", role: "executor" } as unknown as Agent],
+      ["agent-002", { id: "agent-002", name: "Beta", role: "reviewer" } as unknown as Agent],
     ] as const);
     mockUseChat.mockReturnValue(chatState({ activeSession: session, sessions: [session], agentsMap, setSessionModel }));
 

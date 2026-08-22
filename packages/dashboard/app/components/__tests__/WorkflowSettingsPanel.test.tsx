@@ -592,7 +592,7 @@ describe("WorkflowSettingsPanel — Values tab", () => {
     ]);
     const renderedLaneTestIds = Array.from(document.querySelectorAll<HTMLElement>("[data-testid^='wf-settings-value-']"))
       .map((element) => element.dataset.testid)
-      .filter((testId): testId is string => laneTestIds.has(testId));
+      .filter((testId): testId is string => typeof testId === "string" && laneTestIds.has(testId));
 
     expect(renderedLaneTestIds).toEqual([
       "wf-settings-value-planning",

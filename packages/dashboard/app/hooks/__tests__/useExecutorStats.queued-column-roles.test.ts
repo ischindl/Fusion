@@ -29,7 +29,7 @@ import { describe, it, expect } from "vitest";
 import type { Task } from "@fusion/core";
 import { deriveStatsFromTasks } from "../useExecutorStats";
 
-type Flags = Parameters<typeof deriveStatsFromTasks>[3] extends ReadonlyMap<string, infer F> ? F : never;
+type Flags = Parameters<typeof deriveStatsFromTasks>[1] extends ReadonlyMap<string, infer F> ? F : never;
 
 function card(id: string, column: string): Task {
   return { id, column, description: `card ${id}`, title: `card ${id}` } as unknown as Task;
@@ -44,7 +44,7 @@ describe("footer queued count resolves the intake/hold ROLE, not the legacy colu
   it("counts a card in a RENAMED hold lane as queued when flags are supplied", () => {
     const flags = new Map<string, Flags>([[RENAMED_HOLD, { hold: true } as Flags]]);
 
-    const stats = deriveStatsFromTasks([card("FN-Q-1", RENAMED_HOLD)], undefined, undefined, flags);
+    const stats = deriveStatsFromTasks([card("FN-Q-1", RENAMED_HOLD)], flags);
 
     expect(stats.queuedTaskCount).toBe(1);
   });
@@ -55,7 +55,7 @@ describe("footer queued count resolves the intake/hold ROLE, not the legacy colu
        card would double-count every card on the post-U11 default board. */
     const flags = new Map<string, Flags>([[MERGED_LANE, { intake: true, hold: true } as Flags]]);
 
-    const stats = deriveStatsFromTasks([card("FN-Q-2", MERGED_LANE)], undefined, undefined, flags);
+    const stats = deriveStatsFromTasks([card("FN-Q-2", MERGED_LANE)], flags);
 
     expect(stats.queuedTaskCount).toBe(1);
   });
@@ -65,7 +65,7 @@ describe("footer queued count resolves the intake/hold ROLE, not the legacy colu
        counted all cards — which is how this guard could go dead while looking covered. */
     const flags = new Map<string, Flags>([["building", { countsTowardWip: true } as Flags]]);
 
-    const stats = deriveStatsFromTasks([card("FN-Q-3", "building")], undefined, undefined, flags);
+    const stats = deriveStatsFromTasks([card("FN-Q-3", "building")], flags);
 
     expect(stats.queuedTaskCount).toBe(0);
   });
@@ -74,7 +74,7 @@ describe("footer queued count resolves the intake/hold ROLE, not the legacy colu
     /* The fallback's INTENDED use: an unresolved column on the legacy board still counts. This is
        the behaviour the fallback exists to preserve, so it is pinned separately from the defect
        below — otherwise a conversion could delete both and only one test would notice. */
-    const stats = deriveStatsFromTasks([card("FN-Q-4", "todo")], undefined, undefined, undefined);
+    const stats = deriveStatsFromTasks([card("FN-Q-4", "todo")]);
 
     expect(stats.queuedTaskCount).toBe(1);
   });
@@ -89,7 +89,7 @@ describe("footer queued count resolves the intake/hold ROLE, not the legacy colu
     the role (or to treat an absent flag set as intake), this expectation becomes 1 and this test
     is the one that tells you the operator-visible count moved.
     */
-    const stats = deriveStatsFromTasks([card("FN-Q-5", RENAMED_HOLD)], undefined, undefined, undefined);
+    const stats = deriveStatsFromTasks([card("FN-Q-5", RENAMED_HOLD)]);
 
     expect(stats.queuedTaskCount).toBe(0);
     // ...and it is not silently absorbed into another bucket either — it vanishes from all of them.

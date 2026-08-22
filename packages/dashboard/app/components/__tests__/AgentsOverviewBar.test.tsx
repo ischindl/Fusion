@@ -25,6 +25,7 @@ function makeAgent(id: string, state: Agent["state"]): Agent {
     id,
     name: id,
     role: "executor",
+    roles: ["executor"],
     state,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),

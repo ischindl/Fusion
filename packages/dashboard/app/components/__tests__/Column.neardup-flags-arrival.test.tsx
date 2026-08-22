@@ -60,12 +60,12 @@ const props = {
   column: "drafting" as ColumnType,
   maxConcurrent: 2,
   showWorktreeGrouping: false,
-  onMoveTask: vi.fn().mockResolvedValue({} as Task),
+  onMoveTask: vi.fn().mockResolvedValue({} as unknown as Task),
   onOpenDetail: vi.fn(),
   addToast: vi.fn(),
   tasks: [duplicate],
   allTasks,
-};
+} as unknown as React.ComponentProps<typeof Column>;
 
 /** The traits the board resolves once its workflow fetch lands. */
 const arrivedTraits = new Map([
@@ -76,13 +76,13 @@ const arrivedTraits = new Map([
 describe("the near-duplicate canonical check when column traits arrive after first paint", () => {
   it("re-resolves the canonical once traits arrive, without a task-list change", () => {
     seen.length = 0;
-    const { rerender } = render(<Column {...(props as never)} />);
+    const { rerender } = render(<Column {...props} />);
 
     /* Pre-load: no traits, so the legacy fallback cannot see `shipped` as terminal. Correct for
        what it knows — the canonical genuinely has not been proven inactive yet. */
     expect(seen[seen.length - 1]).not.toBe(true);
 
-    rerender(<Column {...(props as never)} taskContextMenuColumnsByTaskId={arrivedTraits as never} />);
+    rerender(<Column {...props} taskContextMenuColumnsByTaskId={arrivedTraits as never} />);
 
     /* The traits now prove the canonical landed, so the chip must be suppressed. */
     expect(seen[seen.length - 1]).toBe(true);
@@ -104,7 +104,7 @@ describe("the near-duplicate canonical check when column traits arrive after fir
 
     render(
       <Column
-        {...(props as never)}
+        {...props}
         allTasks={liveAll as never}
         taskContextMenuColumnsByTaskId={liveTraits as never}
       />,

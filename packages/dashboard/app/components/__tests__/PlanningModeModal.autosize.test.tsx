@@ -115,7 +115,7 @@ vi.mock("../../hooks/useViewportMode", () => ({
 }));
 
 vi.mock("../../hooks/useMobileKeyboard", () => ({
-  useMobileKeyboard: (...args: any[]) => mockUseMobileKeyboard(...args),
+  useMobileKeyboard: (...args: any[]) => (mockUseMobileKeyboard as unknown as (..._a: unknown[]) => never)(...args),
 }));
 
 const originalScrollHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "scrollHeight");

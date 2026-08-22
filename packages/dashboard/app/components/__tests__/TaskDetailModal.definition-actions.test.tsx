@@ -26,7 +26,7 @@ import {
 import { TaskDetailModal, TaskDetailContent } from "../TaskDetailModal";
 import { FileBrowserProvider } from "../../context/FileBrowserContext";
 import { readBoardWorkflowSelection, removeBoardWorkflowSelection, writeBoardWorkflowSelection } from "../../utils/boardWorkflowSelection";
-import type { Task } from "@fusion/core";
+import type { Task, Column, TaskDetail } from "@fusion/core";
 
 function PauseDetailHarness({ mobileHeaderMode }: { mobileHeaderMode?: "back" }) {
   const [task, setTask] = useState(() => makeTask({ id: "FN-UNPAUSE", column: "todo", paused: true, userPaused: true }));
@@ -43,7 +43,7 @@ function PauseDetailHarness({ mobileHeaderMode }: { mobileHeaderMode?: "back" })
       onMergeTask={noopMerge}
       onOpenDetail={noopOpenDetail}
       onUnpauseTask={onUnpauseTask}
-      onTaskUpdated={setTask}
+      onTaskUpdated={(task) => setTask(task as unknown as TaskDetail)}
       addToast={noop}
     />
   );
@@ -1845,7 +1845,7 @@ describe("TaskDetailModal", () => {
         .mockResolvedValueOnce({ id: "FN-edit", prompt: "# Server revision" })
         .mockResolvedValueOnce({ id: "FN-edit", prompt: "# New server revision" });
 
-      render(<TaskDetailContent task={makeTask({ id: "FN-edit", column: "todo", prompt: "# Initial", workflowStepResults: [{ workflowStepId: "plan-review", status: "pending", startedAt: "2026-08-03T02:00:00Z" }] })} initialTab="definition" onMoveTask={noopMove} onDeleteTask={noopDelete} onMergeTask={noopMerge} onOpenDetail={noopOpenDetail} addToast={noop} />);
+      render(<TaskDetailContent task={makeTask({ id: "FN-edit", column: "todo", prompt: "# Initial", workflowStepResults: [{ workflowStepId: "plan-review", workflowStepName: "Plan Review", status: "pending", startedAt: "2026-08-03T02:00:00Z" }] })} initialTab="definition" onMoveTask={noopMove} onDeleteTask={noopDelete} onMergeTask={noopMerge} onOpenDetail={noopOpenDetail} addToast={noop} />);
       await act(async () => { await vi.advanceTimersByTimeAsync(0); });
       expect(screen.getByText("Server revision")).toBeTruthy();
 

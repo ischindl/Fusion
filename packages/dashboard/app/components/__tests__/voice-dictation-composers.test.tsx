@@ -11,10 +11,12 @@ import { TaskPlannerChatTab } from "../TaskPlannerChatTab";
 import { TaskChatTab } from "../TaskChatTab";
 import { PlanningModeModal, QuestionForm, SummaryView } from "../PlanningModeModal";
 import { StandardChatMessageItem } from "../StandardChatSurface";
+import type { ChatMessageInfo } from "../../hooks/chatTypes";
 import { ChatView } from "../ChatView";
 import { QuickChatFAB } from "../QuickChatFAB";
 import { ToastProvider } from "../../hooks/useToast";
 import { NavigationHistoryProvider } from "../../hooks/useNavigationHistory";
+import type { UseNavigationHistoryResult } from "../../hooks/useNavigationHistory";
 
 const mockFetchAiSession = vi.hoisted(() => vi.fn());
 
@@ -99,7 +101,7 @@ function QuickChatVoicePath() {
 
 function ControlledSummaryView() {
   const [summary, setSummary] = useState({ title: "Voice", description: "before-after", priority: "normal", suggestedDependencies: [] } as any);
-  return <SummaryView projectId="project-1" summary={summary} historyEntries={[]} onSummaryChange={setSummary} tasks={[]} branchMode="project-default" branchName="" baseBranch="main" onBranchModeChange={vi.fn()} onBranchNameChange={vi.fn()} onBaseBranchChange={vi.fn()} onCreateTask={vi.fn()} onBreakIntoTasks={vi.fn()} isCreatingTask={false} isStartingBreakdown={false} isRefiningSummary={false} />;
+  return <SummaryView projectId="project-1" summary={summary} historyEntries={[]} onSummaryChange={setSummary} tasks={[]} branchMode="project-default" branchName="" baseBranch="main" onBranchModeChange={vi.fn()} onBranchNameChange={vi.fn()} onBaseBranchChange={vi.fn()} onCreateTask={vi.fn()} isCreatingTask={false} isRefiningSummary={false} />;
 }
 
 /** Reaches the modal's primary refinement composer rather than a shallow surrogate. */
@@ -117,10 +119,10 @@ async function renderRefinementComposer() {
 const primarySurfaceRenders = [
   { name: "ChatView primary composer", render: () => { activeRoom = null; return render(<ChatView projectId="project-1" addToast={vi.fn()} />); } },
   { name: "ChatView secondary room composer", render: () => { activeRoom = { id: "room-1", name: "Room" }; return render(<ChatView projectId="project-1" addToast={vi.fn()} />); } },
-  { name: "StandardChatSurface correction composer", render: () => { const result = render(<StandardChatMessageItem message={{ id: "message-1", role: "user", content: "Populated", createdAt: "2026-07-24T00:00:00.000Z" } as any} forcePlain={false} agentName="Agent" hideAssistantIdentity={false} showAssistantModelTag={false} activeSessionId="session-1" canEdit onEditMessage={vi.fn()} />); fireEvent.click(screen.getByRole("button", { name: /edit/i })); return result; } },
+  { name: "StandardChatSurface correction composer", render: () => { const result = render(<StandardChatMessageItem message={{ id: "message-1", role: "user", content: "Populated", createdAt: "2026-07-24T00:00:00.000Z" } as unknown as ChatMessageInfo} forcePlain={false} agentName="Agent" hideAssistantIdentity={false} showAssistantModelTag={false} activeModelTag={null} activeModelProvider={null} activeSessionId="session-1" canEdit onEditMessage={vi.fn()} />); fireEvent.click(screen.getByRole("button", { name: /edit/i })); return result; } },
   { name: "QuickChatFAB-opened shared ChatView composer", render: () => { const result = render(<QuickChatVoicePath />); fireEvent.click(screen.getByTestId("quick-chat-fab")); return result; } },
   { name: "ComposeChatPanel request composer", render: () => render(<ComposeChatPanel embeds={[]} draftBody="" onUseDraft={vi.fn()} onClose={vi.fn()} />) },
-  { name: "TaskPlannerChatTab composer", render: () => render(<ToastProvider><NavigationHistoryProvider value={{ pushNav: vi.fn(), removeNav: vi.fn() } as any}><TaskPlannerChatTab task={taskWithComment()} active planningModel={{ provider: "mock", modelId: "mock" }} addToast={vi.fn()} /></NavigationHistoryProvider></ToastProvider>) },
+  { name: "TaskPlannerChatTab composer", render: () => render(<ToastProvider><NavigationHistoryProvider value={{ pushNav: vi.fn(), removeNav: vi.fn() } as unknown as UseNavigationHistoryResult}><TaskPlannerChatTab task={taskWithComment()} active taskChatModel={{ provider: "mock", modelId: "mock" }} addToast={vi.fn()} /></NavigationHistoryProvider></ToastProvider>) },
   { name: "TaskChatTab composer", render: () => render(<TaskChatTab task={taskWithComment()} active projectId="project-1" addToast={vi.fn()} />) },
   { name: "QuickEntryBox composer", render: () => render(<QuickEntryBox addToast={vi.fn()} tasks={[]} defaultExpanded />) },
   { name: "TaskForm description composer", render: () => render(<ControlledTaskForm />) },

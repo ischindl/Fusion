@@ -175,7 +175,7 @@ describe("MobileNavBar", () => {
     const gated = new Set(["skills", "insights", "memory", "research", "evals", "ideation", "goals", "todos", "dev-server"]);
     const moreTestIds: Record<string, string> = { automation: "schedules", "github-import": "github", workflows: "workflow" };
     for (const item of MOBILE_NAV_SELECTABLE_ITEMS) {
-      const { unmount } = render(<MobileNavBar {...createDefaultProps()} mobileNavPrimaryItems={[item]} showSkillsTab experimentalFeatures={{ insights: true, memoryView: true, researchView: true, evalsView: true, ideationView: true, goalsView: true, todoView: true, devServerView: true }} />);
+      const { unmount } = render(<MobileNavBar {...createDefaultProps()} mobileNavPrimaryItems={[item]} showSkillsTab experimentalFeatures={{ insights: true, memoryView: true, researchView: true, evalsView: true, ideationView: true, goalsView: true, devServerView: true }} />);
       if (item === "ideation") {
         expect(screen.queryByTestId("mobile-nav-tab-ideation")).toBeNull();
         fireEvent.click(screen.getByTestId("mobile-nav-tab-more"));

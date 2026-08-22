@@ -87,6 +87,7 @@ const roomA = {
   projectId: "proj-123",
   createdBy: "agent-1",
   status: "active" as const,
+  thinkingLevel: null,
   createdAt: "2026-04-08T00:00:00.000Z",
   updatedAt: "2026-04-08T00:00:00.000Z",
 };
@@ -106,6 +107,7 @@ function baseRoomsState(overrides: Partial<UseChatRoomsResult> = {}): UseChatRoo
     sendRoomMessage: vi.fn(),
     clearRoom: vi.fn(),
     refreshRooms: vi.fn(),
+    updateRoomSettings: vi.fn(),
     ...overrides,
   };
 }
@@ -140,6 +142,20 @@ function baseChatState(overrides: Partial<UseChatReturn> = {}): UseChatReturn {
     filteredSessions: [session],
     refreshSessions: vi.fn(),
     agentsMap: new Map(),
+    tags: [],
+    selectedTagId: null,
+    setSelectedTagId: vi.fn(),
+    archivedSessions: [],
+    refreshArchivedSessions: vi.fn(),
+    unarchiveSession: vi.fn(),
+    pinSession: vi.fn(),
+    pinnedCount: 0,
+    setSessionModel: vi.fn(),
+    createTag: vi.fn(),
+    renameTag: vi.fn(),
+    deleteTag: vi.fn(),
+    setSessionTags: vi.fn(),
+    backfillStashSession: vi.fn(),
     ...overrides,
   };
 }
@@ -197,7 +213,7 @@ describe("ChatView message edit affordance", () => {
     mockUseChatRooms.mockReturnValue(baseRoomsState({
       activeRoom: roomA,
       messages: [
-        { id: "room-user-1", roomId: roomA.id, role: "user", content: "hey room", createdAt: "2026-04-08T00:00:00.000Z", senderAgentId: "agent-1", mentions: [] },
+        { id: "room-user-1", roomId: roomA.id, role: "user", content: "hey room", thinkingOutput: null, metadata: null, createdAt: "2026-04-08T00:00:00.000Z", senderAgentId: "agent-1", mentions: [] },
       ],
     }));
 

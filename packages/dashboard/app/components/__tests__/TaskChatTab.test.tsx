@@ -241,7 +241,7 @@ function restoreMetricDescriptor(name: "scrollTop" | "scrollHeight" | "clientHei
     Object.defineProperty(HTMLElement.prototype, name, descriptor);
     return;
   }
-  delete (HTMLElement.prototype as Record<string, unknown>)[name];
+  delete (HTMLElement.prototype as unknown as Record<string, unknown>)[name];
 }
 
 function mockTranscriptMetrics({
@@ -845,7 +845,7 @@ describe("TaskChatTab", () => {
   ] as const)("uses placeholder-only planning composer in the %s task chat surface", (_label, expanded, status) => {
     render(
       <TaskChatTab
-        task={makeTask({ column: "triage", status, assignedAgentId: undefined, checkedOutBy: undefined })}
+        task={makeTask({ column: "triage", status: status ?? undefined, assignedAgentId: undefined, checkedOutBy: undefined })}
         active
         expanded={expanded}
         onToggleExpanded={expanded ? vi.fn() : undefined}
@@ -866,7 +866,7 @@ describe("TaskChatTab", () => {
       checkedOutBy: undefined,
       steeringComments: [makeSteeringComment({ id: "planning-populated-user", text: "Earlier planning guidance" })],
     })],
-    ["loading", [], true, makeTask({ column: "triage", status: null, assignedAgentId: undefined, checkedOutBy: undefined })],
+    ["loading", [], true, makeTask({ column: "triage", status: undefined, assignedAgentId: undefined, checkedOutBy: undefined })],
   ] as const)("keeps planning-session composer placeholder-only with an %s transcript", (_label, entries, loading, task) => {
     mockLogs([...entries], loading);
     render(<TaskChatTab task={task} active addToast={vi.fn()} sessionLive={false} />);
@@ -2035,7 +2035,7 @@ describe("TaskChatTab", () => {
   it.each([undefined, null, "failed", "done"])("routes done-task sends to refineTask regardless of %s status", async (status) => {
     const user = userEvent.setup();
     mockedRefineTask.mockResolvedValue(makeTask({ id: "FN-333", column: "todo" }));
-    render(<TaskChatTab task={makeTask({ column: "done", status })} projectId="project-1" active addToast={vi.fn()} />);
+    render(<TaskChatTab task={makeTask({ column: "done", status: status ?? undefined })} projectId="project-1" active addToast={vi.fn()} />);
 
     await user.type(screen.getByLabelText("Message active agent session"), `Refine from ${String(status)}`);
     await user.click(screen.getByRole("button", { name: "Send" }));
@@ -2322,7 +2322,7 @@ describe("TaskChatTab", () => {
   ])("enables in-progress steering for realistic %s status and posts guidance", async (status, message) => {
     const user = userEvent.setup();
     mockedAddSteeringComment.mockResolvedValue(makeTask({ status }));
-    render(<TaskChatTab task={makeTask({ column: "in-progress", assignedAgentId: "agent-1", status })} projectId="project-1" active addToast={vi.fn()} />);
+    render(<TaskChatTab task={makeTask({ column: "in-progress", assignedAgentId: "agent-1", status: status ?? undefined })} projectId="project-1" active addToast={vi.fn()} />);
 
     expect(screen.queryByText(/No active steerable agent session/)).not.toBeInTheDocument();
     const input = screen.getByLabelText("Message active agent session");
@@ -2510,7 +2510,7 @@ describe("TaskChatTab", () => {
   it.each([undefined, null, "queued", "planning", "merging", "merging-fix"])(
     "enables in-progress steering for assigned agents with %s status",
     (status) => {
-      render(<TaskChatTab task={makeTask({ column: "in-progress", assignedAgentId: "agent-1", status })} active addToast={vi.fn()} sessionLive={false} />);
+      render(<TaskChatTab task={makeTask({ column: "in-progress", assignedAgentId: "agent-1", status: status ?? undefined })} active addToast={vi.fn()} sessionLive={false} />);
 
       expect(screen.queryByText(/No active steerable agent session/)).not.toBeInTheDocument();
       expect(screen.getByLabelText("Message active agent session")).not.toBeDisabled();

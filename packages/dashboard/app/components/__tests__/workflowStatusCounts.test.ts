@@ -68,14 +68,14 @@ function task(id: string, column: string): Task {
     dependencies: [],
     steps: [],
     currentStep: 0,
-  } as Task;
+  } as unknown as Task;
 }
 
 function taskWithStatus(id: string, column: string, status: string): Task {
   return {
     ...task(id, column),
     status,
-  } as Task;
+  } as unknown as Task;
 }
 
 function builtinWorkflowColumns(id: string): BoardWorkflowColumn[] {
@@ -87,7 +87,7 @@ function builtinWorkflowColumns(id: string): BoardWorkflowColumn[] {
   return workflow.ir.columns.map((column) => ({
     id: column.id,
     name: column.name,
-    flags: resolveColumnFlags(column),
+    flags: resolveColumnFlags(column) as unknown as BoardWorkflowColumn["flags"],
   }));
 }
 

@@ -24,6 +24,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, fireEvent, waitFor } from "@testing-library/react";
 import type { Task, Column as ColumnType } from "@fusion/core";
 import { Column } from "../Column";
+import type { ComponentProps } from "react";
 
 const confirmMock = vi.hoisted(() => vi.fn());
 vi.mock("../../hooks/useConfirm", () => ({ useConfirm: () => ({ confirm: confirmMock }) }));
@@ -68,8 +69,8 @@ describe("the drop-progress prompt when column traits arrive after first paint",
     confirmMock.mockReset();
     confirmMock.mockResolvedValue(true);
 
-    const { container, rerender } = render(<Column {...(props as never)} />);
-    rerender(<Column {...(props as never)} columnFlags={DRAFTING_IS_INTAKE as never} />);
+    const { container, rerender } = render(<Column {...(props as ComponentProps<typeof Column>)} />);
+    rerender(<Column {...(props as ComponentProps<typeof Column>)} columnFlags={DRAFTING_IS_INTAKE as never} />);
 
     dropOnto(container);
 
@@ -87,8 +88,8 @@ describe("the drop-progress prompt when column traits arrive after first paint",
     confirmMock.mockReset();
     confirmMock.mockResolvedValue(true);
 
-    const { container, rerender } = render(<Column {...(props as never)} />);
-    rerender(<Column {...(props as never)} columnFlags={{ countsTowardWip: true } as never} />);
+    const { container, rerender } = render(<Column {...(props as ComponentProps<typeof Column>)} />);
+    rerender(<Column {...(props as ComponentProps<typeof Column>)} columnFlags={{ countsTowardWip: true } as never} />);
 
     dropOnto(container);
 

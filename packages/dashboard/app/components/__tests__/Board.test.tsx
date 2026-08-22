@@ -1,4 +1,5 @@
 import React from "react";
+import type { BoardWorkflowDefinition, BoardWorkflowsPayload } from "../../api/projects/board-workflows";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import { Board } from "../Board";
@@ -23,7 +24,7 @@ vi.mock("../../hooks/useBatchBadgeFetch", () => ({
 }));
 
 const pendingBoardWorkflows = () => new Promise<never>(() => {});
-const fetchBoardWorkflowsMock = vi.fn().mockImplementation(pendingBoardWorkflows);
+const fetchBoardWorkflowsMock = vi.fn<(..._args: unknown[]) => Promise<BoardWorkflowsPayload>>().mockImplementation(pendingBoardWorkflows);
 const promoteTaskMock = vi.fn().mockResolvedValue({});
 
 vi.mock("../../api", () => ({
@@ -229,6 +230,7 @@ function createBoardProps(overrides = {}) {
     planAutoApproveEnabled: false,
     onTogglePlanAutoApprove: noop,
     globalPaused: false,
+    showWorktreeGrouping: false,
     onUpdateTask: undefined,
     onArchiveTask: undefined,
     onUnarchiveTask: undefined,
@@ -291,7 +293,7 @@ function installMobileBoardStabilizationHarness() {
       if (visualViewportDescriptor) {
         Object.defineProperty(window, "visualViewport", visualViewportDescriptor);
       } else {
-        delete (window as typeof window & { visualViewport?: VisualViewport }).visualViewport;
+        delete ((window as unknown) as { visualViewport?: VisualViewport }).visualViewport;
       }
     },
   };
@@ -402,7 +404,7 @@ describe("Board", () => {
           log: [],
           createdAt: "2024-01-01T00:00:00.000Z",
           updatedAt: "2024-01-01T00:00:00.000Z",
-          prInfo: { number: 123, owner: "runfusion", repo: "fusion" } as Task["prInfo"],
+          prInfo: { number: 123, owner: "runfusion", repo: "fusion" } as unknown as Task["prInfo"],
         },
         {
           id: "FN-ISSUE-1",
@@ -415,7 +417,7 @@ describe("Board", () => {
           log: [],
           createdAt: "2024-01-01T00:00:00.000Z",
           updatedAt: "2024-01-01T00:00:00.000Z",
-          issueInfo: { number: 456, owner: "runfusion", repo: "fusion" } as Task["issueInfo"],
+          issueInfo: { number: 456, owner: "runfusion", repo: "fusion" } as unknown as Task["issueInfo"],
         },
       ];
 
@@ -504,7 +506,8 @@ describe("Board", () => {
   });
 
   describe("search functionality", () => {
-    const createTask = (overrides: Partial<Task> & { id: string; description: string }): Task => ({
+    const createTask = (overrides: Partial<Task> & { id: string; description?: string }): Task => ({
+      description: "Task",
       column: "todo",
       dependencies: [],
       steps: [],
@@ -759,7 +762,7 @@ describe("Board", () => {
 
         const taskWithCreatedAtOnly = tasks[1];
         delete taskWithCreatedAtOnly.columnMovedAt;
-        delete taskWithCreatedAtOnly.updatedAt;
+        delete (taskWithCreatedAtOnly as unknown as { updatedAt?: unknown }).updatedAt;
 
         renderBoard({ tasks });
 
@@ -1239,7 +1242,7 @@ describe("Board", () => {
       ],
     };
 
-    function enableFlag(taskWorkflowIds: Record<string, string>, workflows = [DEFAULT_WORKFLOW]) {
+    function enableFlag(taskWorkflowIds: Record<string, string>, workflows: BoardWorkflowDefinition[] = [DEFAULT_WORKFLOW]) {
       fetchBoardWorkflowsMock.mockResolvedValue({
         flagEnabled: true,
         defaultWorkflowId: "builtin:coding",

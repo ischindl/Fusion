@@ -23,6 +23,7 @@ import { GlobalModelsSection } from "../components/settings/sections/GlobalModel
 import { PromptsSection } from "../components/settings/sections/PromptsSection";
 import { SecretsSection } from "../components/settings/sections/SecretsSection";
 import { WorktreesSection } from "../components/settings/sections/WorktreesSection";
+import type { WorktreesSectionProps } from "../components/settings/sections/WorktreesSection";
 import type { SettingsFormState } from "../components/settings/sections/context";
 import { fetchWorkflow, fetchWorkflows, fetchWorkflowSettingValues, updateWorkflowSettingValues } from "../api";
 import type { WorkflowSettingValuesPayload } from "../api";
@@ -135,9 +136,6 @@ describe("GeneralSection", () => {
         addToast={vi.fn()}
         prefixError={null}
         setPrefixError={vi.fn()}
-        projectTrackingRepoOptions={[]}
-        projectTrackingRepoLoading={false}
-        projectTrackingRepoError={null}
       />,
     );
 
@@ -162,9 +160,6 @@ describe("GeneralSection", () => {
           addToast={vi.fn()}
           prefixError={null}
           setPrefixError={vi.fn()}
-          projectTrackingRepoOptions={[]}
-          projectTrackingRepoLoading={false}
-          projectTrackingRepoError={null}
         />
       );
     }
@@ -313,12 +308,12 @@ describe("WorktreesSection", () => {
     onRemoveWorktreeCopyFile: vi.fn(),
     onAddWorktreeCopyFile: vi.fn(),
     onOpenWorktreeCopyFilePicker: vi.fn(),
-  } as never;
+  } as Omit<WorktreesSectionProps, "form" | "setForm">;
 
   it("enables the Max Worktrees control while worktrees are on", () => {
     render(
       <WorktreesSection
-        form={{ recycleWorktrees: false, worktreeCopyFiles: [], maxWorktrees: 4, worktreeLimitEnabled: true } as SettingsFormState}
+        form={{ recycleWorktrees: false, worktreeCopyFiles: [], maxWorktrees: 4, worktreeLimitEnabled: true } as unknown as SettingsFormState}
         setForm={vi.fn()}
         {...worktreeCapacityProps}
       />,
@@ -329,7 +324,7 @@ describe("WorktreesSection", () => {
   it("disables the Max Worktrees control while worktrees are off", () => {
     render(
       <WorktreesSection
-        form={{ recycleWorktrees: false, worktreeCopyFiles: [], maxWorktrees: 4, worktreeLimitEnabled: false } as SettingsFormState}
+        form={{ recycleWorktrees: false, worktreeCopyFiles: [], maxWorktrees: 4, worktreeLimitEnabled: false } as unknown as SettingsFormState}
         setForm={vi.fn()}
         {...worktreeCapacityProps}
       />,
@@ -343,7 +338,7 @@ describe("WorktreesSection", () => {
     // on — and the control would grey out with no one having asked for it.
     render(
       <WorktreesSection
-        form={{ recycleWorktrees: false, worktreeCopyFiles: [], maxWorktrees: 4 } as SettingsFormState}
+        form={{ recycleWorktrees: false, worktreeCopyFiles: [], maxWorktrees: 4 } as unknown as SettingsFormState}
         setForm={vi.fn()}
         {...worktreeCapacityProps}
       />,
@@ -360,7 +355,7 @@ describe("WorktreesSection", () => {
     );
     render(
       <WorktreesSection
-        form={{ recycleWorktrees: false, worktreeCopyFiles: [], maxWorktrees: 4, worktreeLimitEnabled: true } as SettingsFormState}
+        form={{ recycleWorktrees: false, worktreeCopyFiles: [], maxWorktrees: 4, worktreeLimitEnabled: true } as unknown as SettingsFormState}
         setForm={setForm}
         {...worktreeCapacityProps}
       />,
@@ -380,7 +375,7 @@ describe("WorktreesSection", () => {
 
     render(
       <WorktreesSection
-        form={{ recycleWorktrees: false, showWorktreeGrouping: false, worktreeCopyFiles: [] } as SettingsFormState}
+        form={{ recycleWorktrees: false, showWorktreeGrouping: false, worktreeCopyFiles: [] } as unknown as SettingsFormState}
         setForm={setForm}
         gitRemotes={[]}
         worktrunkInstall={worktrunkInstall}
@@ -487,7 +482,7 @@ describe("GlobalModelsSection", () => {
       <GlobalModelsSection
         form={{ defaultThinkingLevel: "low" } as SettingsFormState}
         setForm={vi.fn()}
-        availableModels={[{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }]}
+        availableModels={[{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", reasoning: false, contextWindow: 200000 }]}
         modelsLoading={false}
         globalModelLanes={[{ laneId: "execution", label: "Execution", helperText: "Execution", fallbackOrder: "default", globalProviderKey: "executionGlobalProvider", globalModelKey: "executionGlobalModelId", globalThinkingKey: "executionGlobalThinkingLevel" } as never]}
         getLaneThinkingValue={() => "medium"}
@@ -520,7 +515,7 @@ describe("GlobalModelsSection", () => {
         <GlobalModelsSection
           form={form}
           setForm={setForm}
-          availableModels={[{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", reasoning: true }]}
+          availableModels={[{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", reasoning: true, contextWindow: 200000 }]}
           modelsLoading={false}
           globalModelLanes={[]}
           getLaneThinkingValue={() => ""}
@@ -588,7 +583,7 @@ describe("ProjectModelsSection", () => {
             { laneId: "default", label: "Default", helperText: "Default", fallbackOrder: "global" },
             { laneId: "summarization", label: "Summarization", helperText: "Summarization", fallbackOrder: "global" },
           ] as never,
-          availableModels: [{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }],
+          availableModels: [{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", reasoning: false, contextWindow: 200000 }],
           presetDraft: { id: "preset", name: "Preset", executorProvider: undefined, executorModelId: undefined, validatorProvider: undefined, validatorModelId: undefined },
         }}
         addToast={vi.fn()}
@@ -658,7 +653,7 @@ describe("ProjectModelsSection", () => {
             { laneId: "merger", label: "Merger", helperText: "Merger", fallbackOrder: "global" },
             { laneId: "summarization", label: "Summarization", helperText: "Summarization", fallbackOrder: "global" },
           ] as never,
-          availableModels: [{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }],
+          availableModels: [{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", reasoning: false, contextWindow: 200000 }],
         }}
         addToast={vi.fn()}
       />,
@@ -720,7 +715,7 @@ describe("ProjectModelsSection", () => {
           updateLaneThinkingValue,
           resetLaneThinkingValue,
           resetLaneValue,
-          availableModels: [{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }],
+          availableModels: [{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", reasoning: false, contextWindow: 200000 }],
         }}
         addToast={vi.fn()}
       />,
@@ -752,7 +747,7 @@ describe("ProjectModelsSection", () => {
           setForm={setForm}
           models={{
             ...models,
-            availableModels: [{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }],
+            availableModels: [{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", reasoning: false, contextWindow: 200000 }],
           }}
           addToast={vi.fn()}
         />
@@ -795,7 +790,7 @@ describe("ProjectModelsSection", () => {
             { laneId: "merger", label: "Merger", helperText: "Merger", fallbackOrder: "global" },
             { laneId: "import-translate", label: "Translate", helperText: "Translate", fallbackOrder: "global" },
           ] as never,
-          availableModels: [{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }],
+          availableModels: [{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", reasoning: false, contextWindow: 200000 }],
         }}
         addToast={vi.fn()}
       />;
@@ -841,7 +836,7 @@ describe("ProjectModelsSection", () => {
         setForm={vi.fn()}
         models={{
           ...models,
-          availableModels: [{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }],
+          availableModels: [{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", reasoning: false, contextWindow: 200000 }],
         }}
         projectId="project-1"
         addToast={vi.fn()}
@@ -904,7 +899,7 @@ describe("ProjectModelsSection", () => {
         setForm={vi.fn()}
         models={{
           ...models,
-          availableModels: [{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }],
+          availableModels: [{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", reasoning: false, contextWindow: 200000 }],
         }}
         projectId="project-1"
         addToast={vi.fn()}
@@ -956,7 +951,7 @@ describe("ProjectModelsSection", () => {
         setForm={vi.fn()}
         models={{
           ...models,
-          availableModels: [{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }],
+          availableModels: [{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", reasoning: false, contextWindow: 200000 }],
         }}
         projectId="project-1"
         addToast={vi.fn()}
@@ -1002,7 +997,7 @@ describe("ProjectModelsSection", () => {
         setForm={vi.fn()}
         models={{
           ...models,
-          availableModels: [{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }],
+          availableModels: [{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", reasoning: false, contextWindow: 200000 }],
         }}
         projectId="project-1"
         addToast={vi.fn()}

@@ -23,7 +23,7 @@ vi.mock("lucide-react", () => ({ Mail: () => null, Send: () => null, Inbox: () =
 import * as api from "../../api";
 
 const agents = [{ id: "agent-1", name: "Agent", role: "executor", state: "idle", createdAt: "2026-08-15T00:00:00.000Z", updatedAt: "2026-08-15T00:00:00.000Z", metadata: {} }];
-const recommendationNotice = (id: string): Message => ({ id, fromId: "agent-1", fromType: "agent", toId: "dashboard", toType: "user", type: "agent-to-user", read: true, content: "Recommendations", createdAt: "2026-08-15T00:00:00.000Z", updatedAt: "2026-08-15T00:00:00.000Z", metadata: { kind: "task-recommendation-notice", taskId: "FN-9100", recommendationIds: ["rec-1"] } });
+const recommendationNotice = (id: string): Message => ({ id, fromId: "agent-1", fromType: "agent", toId: "dashboard", toType: "user", type: "agent-to-user", read: true, archived: false, content: "Recommendations", createdAt: "2026-08-15T00:00:00.000Z", updatedAt: "2026-08-15T00:00:00.000Z", metadata: { kind: "task-recommendation-notice", taskId: "FN-9100", recommendationIds: ["rec-1"] } });
 const ordinary = (id: string): Message => ({ ...recommendationNotice(id), metadata: undefined, content: "Ordinary" });
 
 /**

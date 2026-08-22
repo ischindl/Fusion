@@ -202,6 +202,8 @@ describe("ChatView context-window indicator", () => {
           roomId: room.id,
           role: "user",
           content: "Room hello",
+          thinkingOutput: null,
+          metadata: null,
           createdAt: "2026-04-08T00:00:00.000Z",
           senderAgentId: null,
           mentions: [],

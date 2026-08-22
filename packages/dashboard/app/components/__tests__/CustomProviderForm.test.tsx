@@ -90,7 +90,7 @@ describe("legacy create path — per-model window carry-through (RUFU-123)", () 
       models: [{ id: "deepseek-v4", name: "DeepSeek V4", contextWindow: 32768, maxTokens: 4096 }],
     });
 
-    render(<CustomProviderForm onSave={(config) => createSpy(config)} />);
+    render(<CustomProviderForm onSave={(config) => { createSpy(config); }} />);
     const user = userEvent.setup();
     await user.type(screen.getByLabelText("Provider ID"), "my-proxy");
     await user.type(screen.getByLabelText("Base URL"), "https://proxy.example.com/v1");

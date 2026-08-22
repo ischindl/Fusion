@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import { render } from "@testing-library/react";
-import type { Task } from "@fusion/core";
+import type { RetrySummary, Task } from "@fusion/core";
 import { TaskCard } from "../TaskCard";
 import { loadAllAppCss } from "../../test/cssFixture";
 
@@ -75,6 +75,15 @@ vi.mock("../../hooks/useToast", () => ({
 
 const noop = () => {};
 
+/** RUFU-140: RetrySummary fixtures must carry every counter (type now requires all fields). */
+function makeRetrySummary(total: number): RetrySummary {
+  return {
+    stuckKill: 0, recovery: 0, taskDone: 0, worktreeSession: 0, workflowStep: 0,
+    verification: 0, postReviewFix: 0, mergeConflict: 0, branchConflict: 0,
+    reviewerContext: 0, reviewerFallback: 0, total,
+  };
+}
+
 function makeTask(): Task {
   return {
     id: "FN-4598",
@@ -101,9 +110,9 @@ function makeTask(): Task {
         createdAt: new Date().toISOString(),
       },
     },
-    retrySummary: { total: 2 },
+    retrySummary: makeRetrySummary(2),
     columnMovedAt: new Date(Date.now() - 60_000).toISOString(),
-  } as Task;
+  } as unknown as Task;
 }
 
 describe("FN-4598 TaskCard footer chip alignment", () => {
@@ -155,7 +164,7 @@ describe("FN-4598 TaskCard footer chip alignment", () => {
           ...makeTask(),
           sourceType: "dashboard_ui",
           column: "in-review",
-          retrySummary: { total: 2 },
+          retrySummary: makeRetrySummary(2),
           executionStartedAt: "2026-05-12T00:00:00.000Z",
           executionCompletedAt: "2026-05-12T00:05:00.000Z",
           updatedAt: "2026-05-12T00:05:00.000Z",
@@ -192,7 +201,7 @@ describe("FN-4598 TaskCard footer chip alignment", () => {
           ...makeTask(),
           column: "in-review",
           sourceType: "github_import",
-          retrySummary: { total: 3 },
+          retrySummary: makeRetrySummary(3),
           executionStartedAt: "2026-05-12T00:00:00.000Z",
           executionCompletedAt: "2026-05-12T00:05:00.000Z",
           updatedAt: "2026-05-12T00:05:00.000Z",

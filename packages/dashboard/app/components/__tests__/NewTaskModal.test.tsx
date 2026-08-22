@@ -3,10 +3,9 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { readFileSync } from "node:fs";
 import { NewTaskModal } from "../NewTaskModal";
-import type { Task, Column } from "@fusion/core";
+import type { Task, Column, Settings } from "@fusion/core";
 import { apiFetchGitHubIssues, apiFetchGitHubPulls, checkDuplicateTasks, fetchAgents, fetchBoardWorkflows, fetchGitRemotes, type BoardWorkflowsPayload } from "../../api";
 import { writeBoardWorkflowsCache } from "../../utils/boardWorkflowsCache";
-import { writeLastSelectedWorkflowId } from "../../utils/lastSelectedWorkflow";
 import { GITHUB_SETUP_WARNING_DELAY_MS, GITHUB_SETUP_WARNING_MISSING_SINCE_KEY } from "../../hooks/useGithubSetupWarningDelay";
 import { __test_clearCache as clearSetupReadinessCache } from "../../hooks/useSetupReadiness";
 import { scopedKey } from "../../utils/projectStorage";
@@ -903,7 +902,7 @@ describe("NewTaskModal", () => {
     ] as const)("closes a blank modal with inherited default-on steps through %s without confirmation", async (_closePath, viewport, close) => {
       const { fetchSettings, fetchWorkflowOptionalSteps } = await import("../../api");
       mockViewportMode = viewport;
-      vi.mocked(fetchSettings).mockResolvedValue({ modelPresets: [], autoSelectModelPreset: false, defaultPresetBySize: {}, defaultWorkflowId: "wf-x" });
+      vi.mocked(fetchSettings).mockResolvedValue({ modelPresets: [], autoSelectModelPreset: false, defaultPresetBySize: {}, defaultWorkflowId: "wf-x" } as unknown as Settings);
       vi.mocked(fetchWorkflowOptionalSteps).mockResolvedValue([{ ...STEP, defaultOn: true }]);
 
       const { props } = renderNewTaskModal();
@@ -927,7 +926,7 @@ describe("NewTaskModal", () => {
         autoSelectModelPreset: true,
         defaultPresetBySize: {},
         githubTrackingEnabledByDefault: true,
-      });
+      } as unknown as Settings);
 
       const { props } = renderNewTaskModal();
       await waitFor(() => expect(screen.getByTestId("task-form-inline-github")).toHaveAttribute("aria-pressed", "true"));
@@ -973,7 +972,7 @@ describe("NewTaskModal", () => {
         autoSelectModelPreset: false,
         defaultPresetBySize: {},
         githubTrackingEnabledByDefault: true,
-      });
+      } as unknown as Settings);
       const { props } = renderNewTaskModal();
       const githubToggle = await screen.findByTestId("task-form-inline-github");
       await waitFor(() => expect(githubToggle).toHaveAttribute("aria-pressed", "true"));
@@ -991,7 +990,7 @@ describe("NewTaskModal", () => {
       ["default workflow with no optional steps", "wf-x", []],
     ])("closes directly after $0 initialization metadata", async (_label, defaultWorkflowId, steps) => {
       const { fetchSettings, fetchWorkflowOptionalSteps } = await import("../../api");
-      vi.mocked(fetchSettings).mockResolvedValue({ modelPresets: [], autoSelectModelPreset: false, defaultPresetBySize: {}, ...(defaultWorkflowId ? { defaultWorkflowId } : {}) });
+      vi.mocked(fetchSettings).mockResolvedValue({ modelPresets: [], autoSelectModelPreset: false, defaultPresetBySize: {}, ...(defaultWorkflowId ? { defaultWorkflowId } : {}) } as unknown as Settings);
       vi.mocked(fetchWorkflowOptionalSteps).mockResolvedValue(steps);
 
       const { props } = renderNewTaskModal();
@@ -1004,7 +1003,7 @@ describe("NewTaskModal", () => {
 
     it("still confirms a user-selected optional step and keeps the modal open when discard is declined", async () => {
       const { fetchSettings, fetchWorkflowOptionalSteps } = await import("../../api");
-      vi.mocked(fetchSettings).mockResolvedValue({ modelPresets: [], autoSelectModelPreset: false, defaultPresetBySize: {}, defaultWorkflowId: "wf-x" });
+      vi.mocked(fetchSettings).mockResolvedValue({ modelPresets: [], autoSelectModelPreset: false, defaultPresetBySize: {}, defaultWorkflowId: "wf-x" } as unknown as Settings);
       vi.mocked(fetchWorkflowOptionalSteps).mockResolvedValue([STEP]);
 
       const { props } = renderNewTaskModal();
@@ -2089,7 +2088,7 @@ describe("NewTaskModal", () => {
     it("shows dropdown when agent button is clicked", async () => {
       const { fetchAgents } = await import("../../api");
       vi.mocked(fetchAgents).mockResolvedValueOnce([
-        { id: "agent-1", name: "Executor Bot", role: "executor", state: "active" as const, metadata: {}, createdAt: "", updatedAt: "" },
+        { id: "agent-1", name: "Executor Bot", role: "executor", roles: ["executor"], state: "active" as const, metadata: {}, createdAt: "", updatedAt: "" },
       ]);
 
       renderNewTaskModal();
@@ -2105,7 +2104,7 @@ describe("NewTaskModal", () => {
     it("shows selected agent name in button", async () => {
       const { fetchAgents } = await import("../../api");
       vi.mocked(fetchAgents).mockResolvedValueOnce([
-        { id: "agent-1", name: "Executor Bot", role: "executor", state: "active" as const, metadata: {}, createdAt: "", updatedAt: "" },
+        { id: "agent-1", name: "Executor Bot", role: "executor", roles: ["executor"], state: "active" as const, metadata: {}, createdAt: "", updatedAt: "" },
       ]);
 
       renderNewTaskModal();
@@ -2126,7 +2125,7 @@ describe("NewTaskModal", () => {
     it("includes assignedAgentId in payload when agent is selected", async () => {
       const { fetchAgents } = await import("../../api");
       vi.mocked(fetchAgents).mockResolvedValueOnce([
-        { id: "agent-1", name: "Executor Bot", role: "executor", state: "active" as const, metadata: {}, createdAt: "", updatedAt: "" },
+        { id: "agent-1", name: "Executor Bot", role: "executor", roles: ["executor"], state: "active" as const, metadata: {}, createdAt: "", updatedAt: "" },
       ]);
 
       const { props } = renderNewTaskModal();
@@ -2174,7 +2173,7 @@ describe("NewTaskModal", () => {
     it("omits assignedAgentId from payload after clearing selection", async () => {
       const { fetchAgents } = await import("../../api");
       vi.mocked(fetchAgents).mockResolvedValueOnce([
-        { id: "agent-1", name: "Executor Bot", role: "executor", state: "active" as const, metadata: {}, createdAt: "", updatedAt: "" },
+        { id: "agent-1", name: "Executor Bot", role: "executor", roles: ["executor"], state: "active" as const, metadata: {}, createdAt: "", updatedAt: "" },
       ]);
 
       const { props } = renderNewTaskModal();
@@ -2215,7 +2214,7 @@ describe("NewTaskModal", () => {
     it("triggers dirty state when agent is selected", async () => {
       const { fetchAgents } = await import("../../api");
       vi.mocked(fetchAgents).mockResolvedValueOnce([
-        { id: "agent-1", name: "Executor Bot", role: "executor", state: "active" as const, metadata: {}, createdAt: "", updatedAt: "" },
+        { id: "agent-1", name: "Executor Bot", role: "executor", roles: ["executor"], state: "active" as const, metadata: {}, createdAt: "", updatedAt: "" },
       ]);
 
       renderNewTaskModal();
@@ -2244,7 +2243,7 @@ describe("NewTaskModal", () => {
     it("resets agent selection after successful task creation", async () => {
       const { fetchAgents } = await import("../../api");
       vi.mocked(fetchAgents).mockResolvedValueOnce([
-        { id: "agent-1", name: "Executor Bot", role: "executor", state: "active" as const, metadata: {}, createdAt: "", updatedAt: "" },
+        { id: "agent-1", name: "Executor Bot", role: "executor", roles: ["executor"], state: "active" as const, metadata: {}, createdAt: "", updatedAt: "" },
       ]);
 
       renderNewTaskModal();
@@ -2290,7 +2289,7 @@ describe("NewTaskModal", () => {
         autoSelectModelPreset: false,
         defaultPresetBySize: {},
         githubTrackingEnabledByDefault: true,
-      });
+      } as unknown as Settings);
 
       const { props } = renderNewTaskModal();
       fireEvent.change(screen.getByPlaceholderText("What needs to be done?"), { target: { value: "Task with tracking" } });

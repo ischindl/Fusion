@@ -57,7 +57,7 @@ describe("MailboxModal cache hydration", () => {
 
   it("writes inbox cache on successful load", async () => {
     mockFetchInbox.mockResolvedValueOnce({
-      messages: [{ id: "msg-1", fromId: "agent-1", fromType: "agent", toId: "dashboard", toType: "user", content: "live", type: "agent-to-user", read: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }],
+      messages: [{ id: "msg-1", fromId: "agent-1", fromType: "agent", toId: "dashboard", toType: "user", content: "live", type: "agent-to-user", read: false, archived: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }],
       total: 1,
       unreadCount: 1,
     });
@@ -85,6 +85,7 @@ describe("MailboxModal cache hydration", () => {
       content: `message ${index}`,
       type: "agent-to-user" as const,
       read: false,
+      archived: false,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     }));

@@ -20,17 +20,13 @@ const baseTask: Task = {
   createdAt: "2026-06-25T00:00:00Z",
   updatedAt: "2026-06-25T00:00:00Z",
   dependencies: [],
-  outputBranch: null,
   prompt: "",
-  baseBranch: null,
-  assignee: null,
-  labels: [],
+  baseBranch: undefined,
   priority: "normal",
   autoMerge: false,
-  autoMergeMode: "squash",
   paused: false,
   userPaused: false,
-} as Task;
+} as unknown as Task;
 
 const settings: Settings = {
   executionProvider: "settings-executor",
@@ -131,7 +127,7 @@ describe("effective model resolution", () => {
     expect(resolveEffectiveExecutor(task, [log("executor", "Executor using model: log-provider/log-model")], runtimeAgent({ model: "runtime-provider/runtime-model" }), settings)).toEqual({ provider: "log-provider", modelId: "log-model" });
     expect(resolveEffectiveExecutor(task, [], runtimeAgent({ model: "runtime-provider/runtime-model" }), settings)).toEqual({ provider: "runtime-provider", modelId: "runtime-model" });
     expect(resolveEffectiveExecutor({ ...task, status: "todo", column: "todo" } as Task, [], runtimeAgent({ model: "runtime-provider/runtime-model" }), settings)).toEqual({ provider: "task-provider", modelId: "task-model" });
-    expect(resolveEffectiveExecutor({ ...baseTask, modelProvider: null, modelId: null } as Task, [], null, settings)).toEqual({ provider: "settings-executor", modelId: "settings-executor-model" });
+    expect(resolveEffectiveExecutor({ ...baseTask, modelProvider: null, modelId: null } as unknown as Task, [], null, settings)).toEqual({ provider: "settings-executor", modelId: "settings-executor-model" });
   });
 
   it("resolves validator from reviewer log marker before assigned runtime, task override, and settings fallback", () => {
@@ -140,15 +136,15 @@ describe("effective model resolution", () => {
     expect(resolveEffectiveValidator(task, [log("reviewer", "Reviewer using model: log-reviewer/log-reviewer-model")], runtimeAgent({ model: "runtime-provider/runtime-model" }), settings)).toEqual({ provider: "log-reviewer", modelId: "log-reviewer-model" });
     expect(resolveEffectiveValidator(task, [], runtimeAgent({ model: "runtime-provider/runtime-model" }), settings)).toEqual({ provider: "runtime-provider", modelId: "runtime-model" });
     expect(resolveEffectiveValidator({ ...task, status: "done", column: "done" } as Task, [], runtimeAgent({ model: "runtime-provider/runtime-model" }), settings)).toEqual({ provider: "task-reviewer", modelId: "task-reviewer-model" });
-    expect(resolveEffectiveValidator({ ...baseTask, validatorModelProvider: null, validatorModelId: null } as Task, [], null, settings)).toEqual({ provider: "settings-reviewer", modelId: "settings-reviewer-model" });
+    expect(resolveEffectiveValidator({ ...baseTask, validatorModelProvider: null, validatorModelId: null } as unknown as Task, [], null, settings)).toEqual({ provider: "settings-reviewer", modelId: "settings-reviewer-model" });
   });
 
   it("resolves planning from task override before triage log marker and settings fallback", () => {
     const task = { ...baseTask, planningModelProvider: "task-planning", planningModelId: "task-planning-model" } as Task;
 
     expect(resolveEffectivePlanning(task, [log("triage", "Planning using model: log-planning/log-planning-model")], settings)).toEqual({ provider: "task-planning", modelId: "task-planning-model" });
-    expect(resolveEffectivePlanning({ ...baseTask, planningModelProvider: null, planningModelId: null } as Task, [log("triage", "Planning using model: log-planning/log-planning-model")], settings)).toEqual({ provider: "log-planning", modelId: "log-planning-model" });
-    expect(resolveEffectivePlanning({ ...baseTask, planningModelProvider: null, planningModelId: null } as Task, [], settings)).toEqual({ provider: "settings-planning", modelId: "settings-planning-model" });
+    expect(resolveEffectivePlanning({ ...baseTask, planningModelProvider: null, planningModelId: null } as unknown as Task, [log("triage", "Planning using model: log-planning/log-planning-model")], settings)).toEqual({ provider: "log-planning", modelId: "log-planning-model" });
+    expect(resolveEffectivePlanning({ ...baseTask, planningModelProvider: null, planningModelId: null } as unknown as Task, [], settings)).toEqual({ provider: "settings-planning", modelId: "settings-planning-model" });
   });
 
   it("resolves task Chat from the complete Direct Chat model and thinking target", () => {

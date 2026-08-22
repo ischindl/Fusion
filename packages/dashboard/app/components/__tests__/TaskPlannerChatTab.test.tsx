@@ -141,7 +141,7 @@ function restoreMetricDescriptor(name: "scrollTop" | "scrollHeight" | "clientHei
     Object.defineProperty(HTMLElement.prototype, name, descriptor);
     return;
   }
-  delete (HTMLElement.prototype as Record<string, unknown>)[name];
+  delete ((HTMLElement.prototype as unknown as Record<string, unknown>)[name]);
 }
 
 function mockPlannerTranscriptMetrics({ scrollHeight = 1200, clientHeight = 240, initialScrollTop = 0 } = {}) {

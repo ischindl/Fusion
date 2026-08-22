@@ -4,7 +4,7 @@ import { captureBoardScrollSnapshot, restoreBoardScrollSnapshot } from "../board
 describe("boardScrollSnapshot", () => {
   afterEach(() => {
     vi.restoreAllMocks();
-    delete (document as Document & { scrollingElement?: Element | null }).scrollingElement;
+    delete ((document as unknown) as { scrollingElement?: Element | null }).scrollingElement;
     Object.defineProperty(window, "scrollX", { configurable: true, writable: true, value: 0 });
     Object.defineProperty(window, "scrollY", { configurable: true, writable: true, value: 0 });
     document.body.innerHTML = "";

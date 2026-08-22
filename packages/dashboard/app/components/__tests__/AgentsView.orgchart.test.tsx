@@ -51,11 +51,17 @@ const orgTree = [{ agent: { id: "ceo", name: "CEO", role: "scheduler", state: "a
 ] }, { agent: { id: "cfo", name: "CFO", role: "triage", state: "idle", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), metadata: {} }, children: [] }];
 
 function mockRects() {
-  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function () {
-    const el = this as HTMLElement;
-    if (el.classList.contains("agent-org-chart-viewport")) return { left: 0, top: 0, width: 400, height: 280, right: 400, bottom: 280, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
-    if (el.classList.contains("agent-org-chart")) return { left: 0, top: 0, width: 700, height: 500, right: 700, bottom: 500, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
-    const id = el.getAttribute("data-agent-id");
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    /*
+    FNXC:RUFU-140 2026-08-21-04:35:
+    The (this: HTMLElement) parameter satisfies noImplicitThis (the pre-RUFU-140
+    form `const el = this as HTMLElement` on an untyped function tripped TS2683
+    once test files entered the typecheck program), and the no-this-alias rule
+    forbids re-aliasing `this` to a local — so read `this` directly.
+    */
+    if (this.classList.contains("agent-org-chart-viewport")) return { left: 0, top: 0, width: 400, height: 280, right: 400, bottom: 280, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+    if (this.classList.contains("agent-org-chart")) return { left: 0, top: 0, width: 700, height: 500, right: 700, bottom: 500, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+    const id = this.getAttribute("data-agent-id");
     const map: Record<string, DOMRect> = {
       ceo: { left: 200, top: 20, width: 140, height: 80, right: 340, bottom: 100, x: 200, y: 20, toJSON: () => ({}) } as DOMRect,
       cto: { left: 120, top: 180, width: 140, height: 80, right: 260, bottom: 260, x: 120, y: 180, toJSON: () => ({}) } as DOMRect,

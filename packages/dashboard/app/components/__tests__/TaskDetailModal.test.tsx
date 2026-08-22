@@ -19,7 +19,7 @@ import {
   mockConfirmWithChoice,
   readDashboardStylesSource,
 } from "./TaskDetailModal.test-helpers";
-import { TaskDetailContent, TaskDetailModal } from "../TaskDetailModal";
+import { TaskDetailContent, TaskDetailModal, type TaskDetailContentProps } from "../TaskDetailModal";
 
 /*
 FNXC:FloatingWindow 2026-07-30-08:30:
@@ -76,7 +76,7 @@ function expectActivityView(value: ActivitySegmentTestValue) {
   expect(screen.getByRole("menuitem", { name: ACTIVITY_VIEW_LABELS[value] })).toHaveAttribute("aria-current", "true");
 }
 
-function renderSummarizeTitleModal(overrides: Parameters<typeof makeTask>[0] = {}, props: Partial<ComponentProps<typeof TaskDetailModal>> = {}) {
+function renderSummarizeTitleModal(overrides: Parameters<typeof makeTask>[0] = {}, props: Partial<TaskDetailContentProps> = {}) {
   const addToast = props.addToast ?? vi.fn();
   const onTaskUpdated = props.onTaskUpdated ?? vi.fn();
   const task = makeTask({
@@ -848,11 +848,11 @@ describe("TaskDetailModal Activity feed loading", () => {
   afterEach(() => {
     if (clipboardCaptured) {
       if (clipboardDescriptor) Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
-      else delete (navigator as Navigator & { clipboard?: unknown }).clipboard;
+      else delete ((navigator as unknown) as { clipboard?: unknown }).clipboard;
     }
     if (execCommandCaptured) {
       if (execCommandDescriptor) Object.defineProperty(document, "execCommand", execCommandDescriptor);
-      else delete (document as Document & { execCommand?: unknown }).execCommand;
+      else delete ((document as unknown) as { execCommand?: unknown }).execCommand;
     }
     clipboardDescriptor = undefined;
     clipboardCaptured = false;

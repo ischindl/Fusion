@@ -56,7 +56,7 @@ describe("NewAgentDialog portaled model menu", () => {
 
   it.each([{ mobile: false }, { mobile: true }])("keeps the empty $mobile model menu attached to New Agent after a portal-origin gesture", async ({ mobile }) => {
     setViewport(mobile);
-    vi.mocked(api.fetchModels).mockResolvedValueOnce({ models: [] } as Awaited<ReturnType<typeof api.fetchModels>>);
+    vi.mocked(api.fetchModels).mockResolvedValueOnce({ models: [] } as unknown as Awaited<ReturnType<typeof api.fetchModels>>);
     const onClose = vi.fn();
     render(<NewAgentDialog isOpen onClose={onClose} onCreated={vi.fn()} />);
     fireEvent.click(screen.getByTestId("agent-dialog-tab-custom"));

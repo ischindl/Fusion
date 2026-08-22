@@ -12,6 +12,7 @@ import {
   type RightDockProps,
 } from "../RightDock";
 import { RightDockExpandModal } from "../RightDockExpandModal";
+import type { Task, TaskDetail } from "@fusion/core";
 import { useRightDockController, type RightDockControllerInput } from "../useRightDockController";
 import { DOCK_FILES_CURRENT_KEY } from "../DockFilesView";
 import { setScopedItem } from "../../utils/projectStorage";
@@ -166,7 +167,7 @@ describe("RightDock", () => {
   it("threads delete into the compact Tasks tab cards", () => {
     const tasks = [
       { id: "FN-DELETE", title: "Right dock delete", column: "triage" },
-    ];
+    ] as unknown as Task[];
     const onDeleteTask = vi.fn();
 
     render(<TestRightDock open={true} renderProps={{ ...renderProps, tasks, onDeleteTask }} />);
@@ -180,7 +181,7 @@ describe("RightDock", () => {
       { id: "FN-ACTIVE", title: "Active dock task", column: "todo" },
       { id: "FN-DONE", title: "Done dock task", column: "done" },
       { id: "FN-ARCHIVED", title: "Archived dock task", column: "archived" },
-    ];
+    ] as unknown as Task[];
     const { unmount } = render(<TestRightDock open={true} renderProps={{ ...renderProps, tasks }} />);
     fireEvent.click(screen.getByTestId("right-dock-tab-tasks"));
     expect(screen.getByTestId("dock-task-list")).toBeInTheDocument();
@@ -440,7 +441,7 @@ describe("RightDock", () => {
       footerVisible: false,
     } as unknown as RightDockControllerInput;
 
-    function Harness({ active, tasks = [firstTask, secondTask] }: { active: boolean; tasks?: Array<typeof firstTask> }) {
+    function Harness({ active, tasks = [firstTask, secondTask] as unknown as (Task | TaskDetail)[] }: { active: boolean; tasks?: (Task | TaskDetail)[] }) {
       const controller = useRightDockController({ ...controllerInput, active, tasks });
       return (
         <>
@@ -630,7 +631,7 @@ describe("RightDock", () => {
             goalsView: true,
           },
           showSkillsTab: true,
-          pluginDashboardViews: [{ pluginId: "fusion-plugin-todos", view: { viewId: "todos", label: "Todos", placement: "overflow", order: 70 } }],
+          pluginDashboardViews: [{ pluginId: "fusion-plugin-todos", view: { viewId: "todos", label: "Todos", componentPath: "TodosView", placement: "overflow", order: 70 } }],
         }}
       />,
     );
@@ -798,7 +799,7 @@ describe("RightDock", () => {
     render(
       <RightDockExpandModal
         viewKey="tasks"
-        renderProps={{ ...renderProps, tasks: [task, doneTask, archivedTask], onOpenTaskInDock }}
+        renderProps={{ ...renderProps, tasks: [task, doneTask, archivedTask] as unknown as (Task | TaskDetail)[], onOpenTaskInDock }}
         onClose={vi.fn()}
       />,
     );
@@ -820,7 +821,7 @@ describe("RightDock", () => {
   it("does not render the expanded modal for action entries", () => {
     render(
       <RightDockExpandModal
-        viewKey="automation"
+        viewKey={"automation" as unknown as import("../overflowViewRegistry").OverflowViewKey}
         renderProps={renderProps}
         onClose={vi.fn()}
       />,

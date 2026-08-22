@@ -670,7 +670,7 @@ describe("LeftSidebarNav", () => {
 
   it("routes clicks to view changes and settings callback without Secrets/Todos shortcuts", () => {
     const onOpenSettings = vi.fn();
-    const { onChangeView } = renderSidebar({ todosEnabled: true, onOpenSettings });
+    const { onChangeView } = renderSidebar({ onOpenSettings });
 
     fireEvent.click(screen.getByTestId("sidebar-nav-list"));
     expect(onChangeView).toHaveBeenCalledWith("list");

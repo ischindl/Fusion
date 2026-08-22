@@ -13,7 +13,7 @@ describe("roomOpenDiagnostics", () => {
   });
 
   it("does not emit logs when gate is off", async () => {
-    vi.stubEnv("DEV", "");
+    vi.stubEnv("DEV", false);
     vi.resetModules();
     vi.stubGlobal("performance", { now: vi.fn(() => 10) });
     const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});

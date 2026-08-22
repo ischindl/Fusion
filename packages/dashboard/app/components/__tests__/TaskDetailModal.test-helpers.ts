@@ -261,13 +261,23 @@ export function makeTask(overrides: Partial<TaskDetail> = {}): TaskDetail {
  * `mergeTaskSnapshot` intentionally preserves populated fields from an equal-clock sparse response,
  * so reusing `makeTask`'s fixed clock would simulate a stale payload rather than a server mutation.
  */
-export function makeUpdatedTask(current: TaskDetail, patch: Partial<TaskDetail>): TaskDetail {
+/*
+FNXC:RUFU-140 2026-08-20-19:45:
+updateTask's inline `updates` parameter type allows `null` on optional override fields
+(e.g. `priority?: TaskPriority | null`) while the Task/TaskDetail model types use `undefined`,
+so test call sites pass the mock's patch through here. Accept the structural patch shape and
+narrow once inside the spread.
+*/
+export function makeUpdatedTask(
+  current: TaskDetail,
+  patch: Partial<TaskDetail> | Record<string, unknown>,
+): TaskDetail {
   const currentUpdatedAt = Date.parse(current.updatedAt);
   const nextUpdatedAt = new Date(
     Number.isFinite(currentUpdatedAt) ? currentUpdatedAt + 1_000 : Date.now(),
   ).toISOString().replace(/\.\d{3}Z$/, "Z");
 
-  return makeTask({ ...current, ...patch, updatedAt: nextUpdatedAt });
+  return makeTask({ ...current, ...(patch as Partial<TaskDetail>), updatedAt: nextUpdatedAt });
 }
 
 /*

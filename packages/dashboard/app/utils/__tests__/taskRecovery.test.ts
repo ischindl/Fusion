@@ -23,7 +23,7 @@ describe("task recovery presentation", () => {
     expect(hasPendingAutomaticRecovery(makeTask({ nextRecoveryAt: new Date(nowMs).toISOString() }), nowMs)).toBe(false);
     expect(hasPendingAutomaticRecovery(makeTask({ nextRecoveryAt: new Date(nowMs - 1).toISOString() }), nowMs)).toBe(false);
     expect(hasPendingAutomaticRecovery(makeTask({ nextRecoveryAt: "not-a-date" }), nowMs)).toBe(false);
-    expect(hasPendingAutomaticRecovery(makeTask({ nextRecoveryAt: null }), nowMs)).toBe(false);
+    expect(hasPendingAutomaticRecovery(makeTask({ nextRecoveryAt: undefined }), nowMs)).toBe(false);
   });
 
   it("suppresses manual retry for future automatic recovery in active columns", () => {
@@ -56,7 +56,7 @@ describe("task recovery presentation", () => {
       nextRecoveryAt: new Date(nowMs - 60_000).toISOString(),
     }), nowMs)).toBe(true);
     expect(isTaskManuallyRetryable(makeTask({ status: "failed", recoveryRetryCount: 1 }), nowMs)).toBe(true);
-    expect(isTaskManuallyRetryable(makeTask({ status: "failed", recoveryRetryCount: null, nextRecoveryAt: null }), nowMs)).toBe(true);
+    expect(isTaskManuallyRetryable(makeTask({ status: "failed", recoveryRetryCount: undefined, nextRecoveryAt: undefined }), nowMs)).toBe(true);
   });
 
   it("keeps established terminal retry states retryable without a pending schedule", () => {

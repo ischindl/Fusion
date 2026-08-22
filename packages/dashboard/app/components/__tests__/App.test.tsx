@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
-import type { NodeConfig, Settings } from "@fusion/core";
+import type { NodeConfig, Settings, Task } from "@fusion/core";
+import type { InsightSection } from "../../hooks/useInsights";
+import type { ShellConnectionNativeResult } from "../../shell-native";
+import type { ShellHostContextValue } from "../../context/ShellHostContext";
 import type { AiSessionSummary, ProjectInfo } from "../../api";
 import { scopedKey } from "../../utils/projectStorage";
 import { useFileBrowser } from "../../context/FileBrowserContext";
@@ -104,7 +107,7 @@ vi.mock("../../api", async (importOriginal) => {
 const mockCreateTask = vi.fn();
 
 const mockUseTasks = vi.fn(() => ({
-  tasks: [],
+  tasks: [] as Task[],
   createTask: mockCreateTask,
   moveTask: vi.fn(),
   pauseTask: vi.fn(),
@@ -134,7 +137,7 @@ vi.mock("../../hooks/useTasks", async (importOriginal) => ({
 
 // Mock useRemoteNodeData
 const mockUseInsights = vi.fn(() => ({
-  sections: [],
+  sections: [] as InsightSection[],
   loading: false,
   error: null,
   latestRun: null,
@@ -174,10 +177,10 @@ vi.mock("../../hooks/useRemoteNodeEvents", () => ({
 }));
 
 const mockUseBackgroundSessions = vi.fn(() => ({
-  sessions: [],
+  sessions: [] as AiSessionSummary[],
   generating: false,
   needsInput: false,
-  planningSessions: [],
+  planningSessions: [] as AiSessionSummary[],
   dismissSession: vi.fn(),
 }));
 
@@ -205,10 +208,10 @@ vi.mock("../../context/NodeContext", () => ({
   useNodeContext: vi.fn(() => mockNodeContextValue),
 }));
 
-const mockShellHostContextValue = {
-  host: { kind: "browser" as const },
+const mockShellHostContextValue: ShellHostContextValue = {
+  host: { kind: "browser" },
   isNativeShell: false,
-  kind: "browser" as const,
+  kind: "browser",
 };
 
 vi.mock("../../context/ShellHostContext", () => ({
@@ -223,10 +226,10 @@ const mockShellConnectionState = {
   activeProfileId: null,
 };
 
-const mockGetShellConnectionNativeResult = vi.fn(async () => ({
+const mockGetShellConnectionNativeResult = vi.fn(async (..._args: unknown[]): Promise<ShellConnectionNativeResult> => ({
   hostKind: "browser" as const,
   available: false,
-  openConnectionManager: async () => ({ ok: false as const, reason: "unsupported" as const }),
+  openConnectionManager: async () => ({ ok: false, reason: "unsupported" }),
 }));
 
 vi.mock("../../hooks/useShellConnection", () => ({
@@ -631,14 +634,18 @@ vi.mock("../../hooks/useNodes", () => ({
     update: vi.fn(),
     unregister: vi.fn(),
     healthCheck: vi.fn(),
+    fetchDockerConfig: vi.fn(),
+    patchDockerConfig: vi.fn(),
+    fetchDockerDiff: vi.fn(),
+    discoverRemoteProjects: vi.fn(),
   })),
 }));
 
 // Mock useMobileKeyboard for modal keyboard isolation tests (FN-3290).
 // Default: keyboard closed, matching real test-environment behavior.
-const mockUseMobileKeyboard = vi.fn(() => ({
+const mockUseMobileKeyboard = vi.fn((..._args: unknown[]) => ({
   keyboardOverlap: 0,
-  viewportHeight: null,
+  viewportHeight: null as number | null,
   viewportOffsetTop: 0,
   keyboardOpen: false,
 }));
@@ -648,7 +655,7 @@ vi.mock("../../hooks/useMobileKeyboard", () => ({
 
 // Mock useViewportMode so tests can simulate mobile viewport without
 // depending on window.matchMedia in jsdom.
-const mockUseViewportMode = vi.fn(() => "desktop");
+const mockUseViewportMode = vi.fn((..._args: unknown[]) => "desktop");
 /* `(max-height: 480px)` in production — independent of the width-driven mode. See the note below. */
 const mockIsShortViewport = vi.fn(() => false);
 vi.mock("../../hooks/useViewportMode", () => ({
@@ -1396,6 +1403,7 @@ describe("App approval notification banner", () => {
       ingestCreatedTasks: vi.fn(),
       refreshTasks: vi.fn(),
       lastFetchTimeMs: Date.now(),
+      unpauseTask: vi.fn(),
     }));
 
     render(<App />);
@@ -1439,6 +1447,7 @@ describe("App approval notification banner", () => {
       ingestCreatedTasks: vi.fn(),
       refreshTasks: vi.fn(),
       lastFetchTimeMs: Date.now(),
+      unpauseTask: vi.fn(),
     }));
 
     const { unmount } = render(<App />);
@@ -1507,6 +1516,7 @@ describe("App approval notification banner", () => {
       ingestCreatedTasks: vi.fn(),
       refreshTasks: vi.fn(),
       lastFetchTimeMs: Date.now(),
+      unpauseTask: vi.fn(),
     }));
 
     render(<App />);
@@ -2360,7 +2370,7 @@ describe("App auto-open Settings on unauthenticated", () => {
     fireEvent.click(settingsButton);
 
     // Settings should open with Authentication section (first/default)
-    await waitFor(() => expect(fetchSettings.mock.calls.length).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(vi.mocked(fetchSettings).mock.calls.length).toBeGreaterThanOrEqual(2));
     await waitFor(() => expect(fetchAuthStatus).toHaveBeenCalled());
 
     // Authentication section content should be visible (providers listed).
@@ -3891,7 +3901,11 @@ describe("App node mode switching", () => {
       update: vi.fn(),
       unregister: vi.fn(),
       healthCheck: vi.fn(),
-    });
+      fetchDockerConfig: vi.fn(),
+      patchDockerConfig: vi.fn(),
+      fetchDockerDiff: vi.fn(),
+      discoverRemoteProjects: vi.fn(),
+      });
 
     render(<App />);
 
@@ -3927,7 +3941,11 @@ describe("App node mode switching", () => {
       update: vi.fn(),
       unregister: vi.fn(),
       healthCheck: vi.fn(),
-    });
+      fetchDockerConfig: vi.fn(),
+      patchDockerConfig: vi.fn(),
+      fetchDockerDiff: vi.fn(),
+      discoverRemoteProjects: vi.fn(),
+      });
 
     // Mock node context to return remote node
     mockNodeContextValue.currentNode = {
@@ -3974,7 +3992,11 @@ describe("App node mode switching", () => {
       update: vi.fn(),
       unregister: vi.fn(),
       healthCheck: vi.fn(),
-    });
+      fetchDockerConfig: vi.fn(),
+      patchDockerConfig: vi.fn(),
+      fetchDockerDiff: vi.fn(),
+      discoverRemoteProjects: vi.fn(),
+      });
 
     // Mock node context to return remote node
     mockNodeContextValue.currentNode = {
@@ -4044,7 +4066,11 @@ describe("App node mode switching", () => {
       update: vi.fn(),
       unregister: vi.fn(),
       healthCheck: vi.fn(),
-    });
+      fetchDockerConfig: vi.fn(),
+      patchDockerConfig: vi.fn(),
+      fetchDockerDiff: vi.fn(),
+      discoverRemoteProjects: vi.fn(),
+      });
 
     render(<App />);
 
@@ -4127,7 +4153,11 @@ describe("App search query propagation to remote mode", () => {
       update: vi.fn(),
       unregister: vi.fn(),
       healthCheck: vi.fn(),
-    });
+      fetchDockerConfig: vi.fn(),
+      patchDockerConfig: vi.fn(),
+      fetchDockerDiff: vi.fn(),
+      discoverRemoteProjects: vi.fn(),
+      });
 
     // Mock node context to return remote node
     mockNodeContextValue.currentNode = {
@@ -4181,7 +4211,11 @@ describe("App search query propagation to remote mode", () => {
       update: vi.fn(),
       unregister: vi.fn(),
       healthCheck: vi.fn(),
-    });
+      fetchDockerConfig: vi.fn(),
+      patchDockerConfig: vi.fn(),
+      fetchDockerDiff: vi.fn(),
+      discoverRemoteProjects: vi.fn(),
+      });
 
     // Mock node context to return remote node
     mockNodeContextValue.currentNode = {
@@ -4575,6 +4609,12 @@ describe("App board branch filters", () => {
       unarchiveTask: vi.fn(),
       archiveAllDone: vi.fn(),
       refreshTasks: vi.fn(),
+      pauseTask: vi.fn(),
+      unpauseTask: vi.fn(),
+      resetTask: vi.fn(),
+      loadArchivedTasks: vi.fn(),
+      ingestCreatedTasks: vi.fn(),
+      lastFetchTimeMs: 0,
     }));
 
     render(<App />);
@@ -4607,6 +4647,12 @@ describe("App board branch filters", () => {
       unarchiveTask: vi.fn(),
       archiveAllDone: vi.fn(),
       refreshTasks: vi.fn(),
+      pauseTask: vi.fn(),
+      unpauseTask: vi.fn(),
+      resetTask: vi.fn(),
+      loadArchivedTasks: vi.fn(),
+      ingestCreatedTasks: vi.fn(),
+      lastFetchTimeMs: 0,
     }));
 
     render(<App />);
@@ -4638,6 +4684,12 @@ describe("App board branch filters", () => {
       unarchiveTask: vi.fn(),
       archiveAllDone: vi.fn(),
       refreshTasks: vi.fn(),
+      pauseTask: vi.fn(),
+      unpauseTask: vi.fn(),
+      resetTask: vi.fn(),
+      loadArchivedTasks: vi.fn(),
+      ingestCreatedTasks: vi.fn(),
+      lastFetchTimeMs: 0,
     }));
 
     render(<App />);
@@ -4704,6 +4756,12 @@ describe("App board branch filters", () => {
       unarchiveTask: vi.fn(),
       archiveAllDone: vi.fn(),
       refreshTasks: vi.fn(),
+      pauseTask: vi.fn(),
+      unpauseTask: vi.fn(),
+      resetTask: vi.fn(),
+      loadArchivedTasks: vi.fn(),
+      ingestCreatedTasks: vi.fn(),
+      lastFetchTimeMs: 0,
     }));
 
     render(<App />);
@@ -4746,6 +4804,12 @@ describe("App board branch filters", () => {
       unarchiveTask: vi.fn(),
       archiveAllDone: vi.fn(),
       refreshTasks: vi.fn(),
+      pauseTask: vi.fn(),
+      unpauseTask: vi.fn(),
+      resetTask: vi.fn(),
+      loadArchivedTasks: vi.fn(),
+      ingestCreatedTasks: vi.fn(),
+      lastFetchTimeMs: 0,
     }));
 
     const { rerender } = render(<App />);
@@ -4804,6 +4868,12 @@ describe("App board branch filters", () => {
       unarchiveTask: vi.fn(),
       archiveAllDone: vi.fn(),
       refreshTasks: vi.fn(),
+      pauseTask: vi.fn(),
+      unpauseTask: vi.fn(),
+      resetTask: vi.fn(),
+      loadArchivedTasks: vi.fn(),
+      ingestCreatedTasks: vi.fn(),
+      lastFetchTimeMs: 0,
     }));
 
     render(<App />);

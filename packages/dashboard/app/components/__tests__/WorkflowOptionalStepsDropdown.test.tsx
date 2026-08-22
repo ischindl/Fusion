@@ -20,15 +20,16 @@ const STEP_TWO: ResolvedWorkflowOptionalStep = {
   name: "Test Review",
   description: "Review test coverage",
   icon: "check-circle",
-  phase: "post-implementation",
+  phase: "post-merge",
   defaultOn: false,
 };
 
 const STEP_WITHOUT_DESCRIPTION: ResolvedWorkflowOptionalStep = {
   templateId: "docs",
   name: "Docs",
+  description: "",
   icon: "file-text",
-  phase: "post-implementation",
+  phase: "post-merge",
   defaultOn: false,
 };
 

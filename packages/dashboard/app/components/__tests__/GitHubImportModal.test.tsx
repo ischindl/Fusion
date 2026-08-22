@@ -332,7 +332,7 @@ describe("GitHubImportModal", () => {
       body: "Capture the original issue context.",
       html_url: "https://github.com/owner/repo/issues/42",
       labels: [],
-      state: "open",
+      state: "open" as const,
     })).toContain("Plan import");
     expect(buildIssuePlanningSeed({
       number: 42,
@@ -340,7 +340,7 @@ describe("GitHubImportModal", () => {
       body: "Capture the original issue context.",
       html_url: "https://github.com/owner/repo/issues/42",
       labels: [],
-      state: "open",
+      state: "open" as const,
     })).toContain("Capture the original issue context.");
     expect(buildIssuePlanningSeed({
       number: 42,
@@ -348,7 +348,7 @@ describe("GitHubImportModal", () => {
       body: "Capture the original issue context.",
       html_url: "https://github.com/owner/repo/issues/42",
       labels: [],
-      state: "open",
+      state: "open" as const,
     })).toContain("https://github.com/owner/repo/issues/42");
   });
 
@@ -358,7 +358,7 @@ describe("GitHubImportModal", () => {
   });
 
   it("opens Chat with a selected GitHub issue link without importing", async () => {
-    const issue = { number: 44, title: "Chat import", body: "Issue body", html_url: "https://github.com/owner/repo/issues/44", labels: [], state: "open" };
+    const issue = { number: 44, title: "Chat import", body: "Issue body", html_url: "https://github.com/owner/repo/issues/44", labels: [], state: "open" as const };
     const onOpenChatWithPrefill = vi.fn();
     vi.mocked(fetchGitRemotes).mockResolvedValueOnce(singleRemote);
     vi.mocked(apiFetchGitHubIssues).mockResolvedValueOnce([issue]);
@@ -401,7 +401,7 @@ describe("GitHubImportModal", () => {
   });
 
   it("plans a selected issue after closing the embedded import surface", async () => {
-    const issue = { number: 42, title: "Plan import", body: "Capture the original issue context.", html_url: "https://github.com/owner/repo/issues/42", labels: [], state: "open" };
+    const issue = { number: 42, title: "Plan import", body: "Capture the original issue context.", html_url: "https://github.com/owner/repo/issues/42", labels: [], state: "open" as const };
     const sequence: string[] = [];
     let destination = "import";
     const onPlanningMode = vi.fn((seed: string) => {
@@ -445,7 +445,7 @@ describe("GitHubImportModal", () => {
   });
 
   it("passes structured GitHub source context from the modal Plan action", async () => {
-    const issue = { number: 45, title: "Modal plan", body: "Keep this issue context.", html_url: "https://github.com/dustinbyrne/kb/issues/45", labels: [], state: "open" };
+    const issue = { number: 45, title: "Modal plan", body: "Keep this issue context.", html_url: "https://github.com/dustinbyrne/kb/issues/45", labels: [], state: "open" as const };
     const onPlanningMode = vi.fn();
     vi.mocked(fetchGitRemotes).mockResolvedValueOnce(singleRemote);
     vi.mocked(apiFetchGitHubIssues).mockResolvedValueOnce([issue]);
@@ -474,8 +474,8 @@ describe("GitHubImportModal", () => {
   The per-issue cache is the provenance source; absent selected-issue cache records the L1 partial-capture marker.
   */
   it("does not capture stale selected-issue comments while the next issue detail loads", async () => {
-    const firstIssue = { number: 46, title: "First issue", body: "![first body](https://github.com/user-attachments/assets/first-body)", html_url: "https://github.com/dustinbyrne/kb/issues/46", labels: [], state: "open" };
-    const secondIssue = { number: 47, title: "Second issue", body: "![second body](https://github.com/user-attachments/assets/second-body)", html_url: "https://github.com/dustinbyrne/kb/issues/47", labels: [], state: "open" };
+    const firstIssue = { number: 46, title: "First issue", body: "![first body](https://github.com/user-attachments/assets/first-body)", html_url: "https://github.com/dustinbyrne/kb/issues/46", labels: [], state: "open" as const };
+    const secondIssue = { number: 47, title: "Second issue", body: "![second body](https://github.com/user-attachments/assets/second-body)", html_url: "https://github.com/dustinbyrne/kb/issues/47", labels: [], state: "open" as const };
     const onPlanningMode = vi.fn();
     vi.mocked(fetchGitRemotes).mockResolvedValueOnce(singleRemote);
     vi.mocked(apiFetchGitHubIssues).mockResolvedValueOnce([firstIssue, secondIssue]);
@@ -516,7 +516,7 @@ describe("GitHubImportModal", () => {
     Object.defineProperty(window, "innerWidth", { writable: true, configurable: true, value: width });
     window.dispatchEvent(new Event("resize"));
     try {
-      const issue = { number: 48, title: "Comment screenshots", body: "![body](https://github.com/user-attachments/assets/body)", html_url: "https://github.com/dustinbyrne/kb/issues/48", labels: [], state: "open" };
+      const issue = { number: 48, title: "Comment screenshots", body: "![body](https://github.com/user-attachments/assets/body)", html_url: "https://github.com/dustinbyrne/kb/issues/48", labels: [], state: "open" as const };
       const unresolved = Array.from({ length: 12 }, (_, index) => `![bad-${index}](https://example.com/${index}.png)`).join("\n");
       const later = "![later](https://github.com/user-attachments/assets/later)";
       const onPlanningMode = vi.fn();
@@ -550,8 +550,8 @@ describe("GitHubImportModal", () => {
   repository's cached comments for an identically numbered issue.
   */
   it("keeps captured comment bodies isolated when repositories reuse an issue number", async () => {
-    const originIssue = { number: 48, title: "Origin screenshot", body: "![origin](https://github.com/user-attachments/assets/origin-body)", html_url: "https://github.com/dustinbyrne/kb/issues/48", labels: [], state: "open" };
-    const upstreamIssue = { number: 48, title: "Upstream screenshot", body: "![upstream](https://github.com/user-attachments/assets/upstream-body)", html_url: "https://github.com/upstream/kb/issues/48", labels: [], state: "open" };
+    const originIssue = { number: 48, title: "Origin screenshot", body: "![origin](https://github.com/user-attachments/assets/origin-body)", html_url: "https://github.com/dustinbyrne/kb/issues/48", labels: [], state: "open" as const };
+    const upstreamIssue = { number: 48, title: "Upstream screenshot", body: "![upstream](https://github.com/user-attachments/assets/upstream-body)", html_url: "https://github.com/upstream/kb/issues/48", labels: [], state: "open" as const };
     const onPlanningMode = vi.fn();
     vi.mocked(fetchGitRemotes).mockResolvedValueOnce(multipleRemotes);
     vi.mocked(apiFetchGitHubIssues).mockResolvedValueOnce([originIssue]).mockResolvedValueOnce([upstreamIssue]);
@@ -578,7 +578,7 @@ describe("GitHubImportModal", () => {
 
   it("drops an oversized image-bearing body whole and records the partial capture", async () => {
     const oversized = `![large](https://github.com/user-attachments/assets/large)${"x".repeat(256_000)}`;
-    const issue = { number: 49, title: "Large screenshot", body: oversized, html_url: "https://github.com/dustinbyrne/kb/issues/49", labels: [], state: "open" };
+    const issue = { number: 49, title: "Large screenshot", body: oversized, html_url: "https://github.com/dustinbyrne/kb/issues/49", labels: [], state: "open" as const };
     const onPlanningMode = vi.fn();
     vi.mocked(fetchGitRemotes).mockResolvedValueOnce(singleRemote);
     vi.mocked(apiFetchGitHubIssues).mockResolvedValueOnce([issue]);
@@ -592,7 +592,7 @@ describe("GitHubImportModal", () => {
   });
 
   it("renders Plan only for selectable GitHub issues with Planning Mode", async () => {
-    const issue = { number: 43, title: "Optional plan", body: "Issue body", html_url: "https://github.com/owner/repo/issues/43", labels: [], state: "open" };
+    const issue = { number: 43, title: "Optional plan", body: "Issue body", html_url: "https://github.com/owner/repo/issues/43", labels: [], state: "open" as const };
     vi.mocked(fetchGitRemotes).mockResolvedValueOnce(singleRemote);
     vi.mocked(apiFetchGitHubIssues).mockResolvedValueOnce([issue]);
 
@@ -623,7 +623,7 @@ describe("GitHubImportModal", () => {
   it("keeps provider-less detail selection and close behavior available", async () => {
     vi.mocked(fetchGitRemotes).mockResolvedValueOnce(singleRemote);
     vi.mocked(apiFetchGitHubIssues).mockResolvedValueOnce([
-      { number: 71, title: "Provider-less issue", body: "Body", html_url: "https://github.com/owner/repo/issues/71", labels: [], state: "open" },
+      { number: 71, title: "Provider-less issue", body: "Body", html_url: "https://github.com/owner/repo/issues/71", labels: [], state: "open" as const },
     ]);
 
     render(<GitHubImportModal isOpen onClose={onClose} onImport={onImport} tasks={[]} projectId="project-1" />);
@@ -648,7 +648,7 @@ describe("GitHubImportModal", () => {
       if (surface === "issue") {
         vi.mocked(fetchGitRemotes).mockResolvedValueOnce(singleRemote);
         vi.mocked(apiFetchGitHubIssues).mockResolvedValueOnce([
-          { number: 72, title: "Swipe issue", body: "Body", html_url: "https://github.com/owner/repo/issues/72", labels: [], state: "open" },
+          { number: 72, title: "Swipe issue", body: "Body", html_url: "https://github.com/owner/repo/issues/72", labels: [], state: "open" as const },
         ]);
       } else if (surface === "pull") {
         vi.mocked(fetchGitRemotes).mockResolvedValueOnce(singleRemote);
@@ -704,7 +704,7 @@ describe("GitHubImportModal", () => {
     try {
       vi.mocked(fetchGitRemotes).mockResolvedValueOnce(singleRemote);
       vi.mocked(apiFetchGitHubIssues).mockResolvedValueOnce([
-        { number: 75, title: "Embedded swipe issue", body: "Body", html_url: "https://github.com/owner/repo/issues/75", labels: [], state: "open" },
+        { number: 75, title: "Embedded swipe issue", body: "Body", html_url: "https://github.com/owner/repo/issues/75", labels: [], state: "open" as const },
       ]);
 
       render(
@@ -735,7 +735,7 @@ describe("GitHubImportModal", () => {
     try {
       vi.mocked(fetchGitRemotes).mockResolvedValueOnce(singleRemote);
       vi.mocked(apiFetchGitHubIssues).mockResolvedValueOnce([
-        { number: 74, title: "Reopen issue", body: "Body", html_url: "https://github.com/owner/repo/issues/74", labels: [], state: "open" },
+        { number: 74, title: "Reopen issue", body: "Body", html_url: "https://github.com/owner/repo/issues/74", labels: [], state: "open" as const },
       ]);
       renderWithMobileNavigation();
       const row = await screen.findByRole("button", { name: /Select issue #74/i });
@@ -3434,7 +3434,7 @@ describe("GitHubImportModal — compact mobile layout (operator report)", () => 
     Object.defineProperty(window, "innerWidth", { writable: true, configurable: true, value: 412 });
     window.dispatchEvent(new Event("resize"));
     vi.mocked(apiFetchGitHubIssues).mockResolvedValueOnce([
-      { number: 9, title: "Mobile Close Issue", body: "Mobile body", html_url: "https://github.com/dustinbyrne/kb/issues/9", labels: [], state: "open" },
+      { number: 9, title: "Mobile Close Issue", body: "Mobile body", html_url: "https://github.com/dustinbyrne/kb/issues/9", labels: [], state: "open" as const },
     ]);
 
     try {
@@ -3485,7 +3485,7 @@ describe("GitHubImportModal — detail actions sit at the bottom (operator repor
 
   const openDetail = async () => {
     vi.mocked(apiFetchGitHubIssues).mockResolvedValueOnce([
-      { number: 1, title: "First Issue", body: "Body 1", html_url: "https://github.com/dustinbyrne/kb/issues/1", labels: [], state: "open" },
+      { number: 1, title: "First Issue", body: "Body 1", html_url: "https://github.com/dustinbyrne/kb/issues/1", labels: [], state: "open" as const },
     ]);
     render(<GitHubImportModal isOpen={true} onClose={onClose} onImport={onImport} tasks={[]} />);
     await waitFor(() => expect(screen.getByText("First Issue")).toBeTruthy());
@@ -3541,7 +3541,7 @@ describe("GitHubImportModal — detail actions sit at the bottom (operator repor
 
   it("keeps the four populated issue actions uniquely ordered in the shared mobile bar", async () => {
     vi.mocked(apiFetchGitHubIssues).mockResolvedValueOnce([
-      { number: 44, title: "Four actions", body: "Body", html_url: "https://github.com/dustinbyrne/kb/issues/44", labels: [], state: "open" },
+      { number: 44, title: "Four actions", body: "Body", html_url: "https://github.com/dustinbyrne/kb/issues/44", labels: [], state: "open" as const },
     ]);
     render(
       <GitHubImportModal

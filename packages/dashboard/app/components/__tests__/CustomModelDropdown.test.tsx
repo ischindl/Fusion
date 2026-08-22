@@ -104,8 +104,8 @@ describe("CustomModelDropdown", () => {
 
     const list = screen.getByTestId("model-combobox-portal").querySelector(".model-combobox-list");
     expect(list).not.toBeNull();
-    expect(within(list!).getByText("anthropic").closest(".model-combobox-optgroup")).not.toBeNull();
-    expect(within(list!).getByText("openai").closest(".model-combobox-optgroup")).not.toBeNull();
+    expect(within(list! as HTMLElement).getByText("anthropic").closest(".model-combobox-optgroup")).not.toBeNull();
+    expect(within(list! as HTMLElement).getByText("openai").closest(".model-combobox-optgroup")).not.toBeNull();
   });
 
   it.each([

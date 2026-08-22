@@ -79,9 +79,6 @@ function GeneralHost({ initialForm, onSetForm }: {
       addToast={vi.fn()}
       prefixError={null}
       setPrefixError={vi.fn()}
-      projectTrackingRepoOptions={[]}
-      projectTrackingRepoLoading={false}
-      projectTrackingRepoError={null}
     />
   );
 }

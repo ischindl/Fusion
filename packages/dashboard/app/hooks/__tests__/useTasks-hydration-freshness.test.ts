@@ -103,7 +103,7 @@ function createInProgressTask(id: string, updatedAtMs: number): Task {
     log: [],
     createdAt: new Date(updatedAtMs - 60_000).toISOString(),
     updatedAt: new Date(updatedAtMs).toISOString(),
-  } as Task;
+  } as unknown as Task;
 }
 
 /** Seed the project snapshot with an explicit write time, mimicking a tab discarded `ageMs` ago. */
@@ -172,13 +172,13 @@ describe("task snapshot lifecycle freshness", () => {
       status: "queued-overlap",
       updatedAt: "2026-08-05T10:02:00.000Z",
       overlapBlockedBy: "FN-HOLDER",
-      workflowStepResults: [{ stepId: "plan", status: "failed" }],
+      workflowStepResults: [{ stepId: "plan", status: "failed" as const, workflowStepName: "Plan", workflowStepId: "plan-review" }],
     };
     const equalSparseEvent = {
       ...todo,
       status: "todo",
       updatedAt: queued.updatedAt,
-      overlapBlockedBy: null,
+      overlapBlockedBy: null as unknown as string | undefined,
       workflowStepResults: [],
       title: "Scheduler summary",
     };
@@ -292,7 +292,7 @@ describe("task snapshot lifecycle freshness", () => {
     const completeFetch = {
       ...todo,
       column: "in-progress",
-      status: null,
+      status: null as unknown as string | undefined,
       updatedAt: current.updatedAt,
     } as Task;
 
@@ -335,7 +335,7 @@ describe("task snapshot lifecycle freshness", () => {
     const staleCompleteFetch = {
       ...todo,
       column: "triage",
-      status: null,
+      status: null as unknown as string | undefined,
       updatedAt: current.updatedAt,
       columnMovedAt: current.columnMovedAt,
     } as Task;
@@ -512,7 +512,7 @@ describe("applyLocalTaskPatch", () => {
   });
 
   it("applies a patch clock when the current row has no clock", () => {
-    const clocklessCurrent = { ...current, updatedAt: undefined, columnMovedAt: undefined } as Task;
+    const clocklessCurrent = { ...current, updatedAt: undefined, columnMovedAt: undefined } as unknown as Task;
     expect(applyLocalTaskPatch(clocklessCurrent, {
       column: "done",
       columnMovedAt: "2026-08-09T11:00:00.000Z",

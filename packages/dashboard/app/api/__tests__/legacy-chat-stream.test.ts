@@ -223,9 +223,10 @@ describe("streamChatResponse SSE parser", () => {
 
     expect(onError).not.toHaveBeenCalled();
 
-    streamController?.enqueue(encoder.encode("event: text\ndata: \"Late reply\"\n\n"));
-    streamController?.enqueue(encoder.encode("event: done\ndata: {\"messageId\":\"msg-late\"}\n\n"));
-    streamController?.close();
+    const lateStreamController = streamController as ReadableStreamDefaultController<Uint8Array> | null;
+    lateStreamController?.enqueue(encoder.encode("event: text\ndata: \"Late reply\"\n\n"));
+    lateStreamController?.enqueue(encoder.encode("event: done\ndata: {\"messageId\":\"msg-late\"}\n\n"));
+    lateStreamController?.close();
 
     await vi.waitFor(() => {
       expect(textChunks).toEqual(["Late reply"]);
@@ -356,7 +357,7 @@ describe("attachChatStream", () => {
   it("aborts fetch when close is called", async () => {
     let signal: AbortSignal | undefined;
     vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => {
-      signal = init?.signal;
+      signal = init?.signal ?? undefined;
       return new Promise<Response>(() => {
         // keep open until aborted
       });

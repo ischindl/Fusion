@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { DiscoveredSkill } from "../../api";
 import { classifyAgentSkill, formatAgentSkillBadgeLabel } from "../agentSkills";
 
 const discovered = [
@@ -14,7 +15,7 @@ describe("classifyAgentSkill", () => {
     ["disabled", discovered, false, "disabled"],
     ["disabled", discovered, true, "disabled"],
     ["missing", discovered, false, "unknown"],
-    ["missing", [], true, "unknown"],
+    ["missing", [] as DiscoveredSkill[], true, "unknown"],
     ["missing", null, false, "pending"],
   ] as const)("classifies %s consistently", (id, skills, forced, state) => {
     const result = classifyAgentSkill(id, skills, { forced });

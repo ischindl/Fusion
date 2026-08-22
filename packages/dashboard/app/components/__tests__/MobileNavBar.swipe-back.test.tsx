@@ -129,15 +129,15 @@ describe("MobileNavBar More sheet navigation history", () => {
   }
 
   it("consumes the More entry on backdrop close", async () => {
-    await expectProgrammaticCloseConsumesMoreEntry(() => fireEvent.click(document.querySelector(".mobile-more-sheet-backdrop")!));
+    await expectProgrammaticCloseConsumesMoreEntry(() => { fireEvent.click(document.querySelector(".mobile-more-sheet-backdrop")!); });
   });
 
   it("replaces the More entry before opening Import so delayed Back cannot consume it", async () => {
     const importClose = vi.fn();
     const props = createDefaultProps();
-    props.onOpenGitHubImport = () => {
+    props.onOpenGitHubImport = vi.fn(() => {
       navigationHistory?.pushNav({ type: "modal", close: importClose });
-    };
+    });
     renderWithHistory(props);
     await openMore();
 
@@ -151,7 +151,7 @@ describe("MobileNavBar More sheet navigation history", () => {
   });
 
   it("consumes the More entry on Escape", async () => {
-    await expectProgrammaticCloseConsumesMoreEntry(() => fireEvent.keyDown(document, { key: "Escape" }));
+    await expectProgrammaticCloseConsumesMoreEntry(() => { fireEvent.keyDown(document, { key: "Escape" }); });
   });
 
   it("consumes the More entry on drag dismissal", async () => {
@@ -165,7 +165,7 @@ describe("MobileNavBar More sheet navigation history", () => {
   });
 
   it("consumes the More entry when its tab toggles closed", async () => {
-    await expectProgrammaticCloseConsumesMoreEntry(() => fireEvent.click(screen.getByTestId("mobile-nav-tab-more")));
+    await expectProgrammaticCloseConsumesMoreEntry(() => { fireEvent.click(screen.getByTestId("mobile-nav-tab-more")); });
   });
 
   it("consumes the More entry when a script runs", async () => {

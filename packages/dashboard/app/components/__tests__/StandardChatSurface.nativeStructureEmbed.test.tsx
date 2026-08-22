@@ -257,7 +257,7 @@ describe("StandardChatSurface native structure embeds", () => {
   });
 
   function setupPlannerMessages(messages: Array<Record<string, unknown>>, sessionOverrides: Record<string, unknown> = {}) {
-    const session = { id: "planner-session", agentId: "task-planner:FN-1", title: null, status: "active", projectId: "project-1", modelProvider: "anthropic", modelId: "claude", createdAt: "2026-07-19T00:00:00.000Z", updatedAt: "2026-07-19T00:00:00.000Z", cliSessionFile: null, cliExecutorAdapterId: null, inFlightGeneration: null, ...sessionOverrides };
+    const session = { id: "planner-session", agentId: "task-planner:FN-1", title: null, status: "active" as const, projectId: "project-1", modelProvider: "anthropic", modelId: "claude", createdAt: "2026-07-19T00:00:00.000Z", updatedAt: "2026-07-19T00:00:00.000Z", cliSessionFile: null, cliExecutorAdapterId: null, inFlightGeneration: null, tags: [], thinkingLevel: null, memoryFocus: null, pinnedAt: null, ...sessionOverrides };
     fetchPlannerSession.mockResolvedValue({ session });
     ensurePlannerSession.mockResolvedValue({ session });
     fetchSession.mockResolvedValue({ session });

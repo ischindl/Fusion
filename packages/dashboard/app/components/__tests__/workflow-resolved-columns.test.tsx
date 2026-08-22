@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
-import type { Task } from "@fusion/core";
+import type { Task, ColumnId } from "@fusion/core";
 import { Board } from "../Board";
 import { ListView } from "../ListView";
 import { getTaskMoveTransitions, type TaskContextMenuColumnMetadata } from "../TaskContextMenu";
@@ -128,7 +128,6 @@ function renderBoard(tasks: Task[]) {
       onToggleAutoMerge={vi.fn()}
       planAutoApproveEnabled={false}
       onTogglePlanAutoApprove={vi.fn()}
-      settingsLoaded
     />,
   );
 }
@@ -148,7 +147,6 @@ function renderList(tasks: Task[]) {
       addToast={vi.fn()}
       globalPaused={false}
       onNewTask={vi.fn()}
-      settingsLoaded
     />,
   );
 }

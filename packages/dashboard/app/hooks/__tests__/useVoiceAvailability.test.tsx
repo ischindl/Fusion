@@ -22,7 +22,7 @@ describe("useVoiceAvailability", () => {
 
   it("deduplicates concurrent project requests and evicts settled entries", async () => {
     const first = deferred<Response>();
-    vi.mocked(fetch).mockResolvedValueOnce(first.promise).mockResolvedValue(new Response(JSON.stringify({ enabled: false })));
+    vi.mocked(fetch).mockImplementationOnce(() => first.promise).mockResolvedValue(new Response(JSON.stringify({ enabled: false })));
     const view = render(<><Harness projectId="alpha" label="first" /><Harness projectId="alpha" label="second" /></>);
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(fetch).toHaveBeenCalledWith("/api/voice/status?projectId=alpha");

@@ -21,7 +21,7 @@ vi.mock("../../hooks/useToast", () => ({
 import { NavigationHistoryProvider, useNavigationHistory } from "../../hooks/useNavigationHistory";
 import { useOverlayDismiss } from "../../hooks/useOverlayDismiss";
 import type { ConfirmOptions } from "../../hooks/useConfirm";
-import { TASK_PRIORITIES, type Task, type TaskPriority } from "@fusion/core";
+import { TASK_PRIORITIES, type BlockerFanoutEntry, type Task, type TaskDetail, type TaskPriority } from "@fusion/core";
 import { getPriorityColorVar, getPriorityLabel } from "../../utils/priorityIndicator";
 
 // Mock lucide-react to avoid SVG rendering issues in test env
@@ -82,7 +82,9 @@ vi.mock("../PrCreateModal", () => ({
   ),
 }));
 
-const useTaskDiffStatsMock = vi.fn(() => ({ stats: null, loading: false }));
+const useTaskDiffStatsMock = vi.fn(
+  (..._args: unknown[]): { stats: { filesChanged: number; additions: number; deletions: number } | null; loading: boolean } => ({ stats: null, loading: false }),
+);
 vi.mock("../../hooks/useTaskDiffStats", () => ({
   useTaskDiffStats: (...args: any[]) => useTaskDiffStatsMock(...args),
 }));
@@ -261,7 +263,7 @@ function expectBoardContextMenuPortaled() {
   return popover!;
 }
 
-const highFanout = {
+const highFanout: BlockerFanoutEntry = {
   totalCount: 7,
   activeTodoCount: 3,
   dependentIds: ["FN-002", "FN-003"],
@@ -271,7 +273,7 @@ const highFanout = {
   overlapBlockedTodoCount: 3,
   staleBlockedByDependentIds: [],
   isHighFanout: true,
-} as const;
+};
 
 afterEach(() => {
   vi.useRealTimers();
@@ -654,7 +656,7 @@ describe("TaskCard", () => {
     const cleanupGeometry = mockBoardContextMenuGeometry();
     const onPauseTask = vi.fn(async () => makeTask({ paused: true }));
     const nativeFocus = HTMLElement.prototype.focus;
-    const focusSpy = vi.spyOn(HTMLElement.prototype, "focus").mockImplementation(function focusWithBrowserScroll(options?: FocusOptions) {
+    const focusSpy = vi.spyOn(HTMLElement.prototype, "focus").mockImplementation(function focusWithBrowserScroll(this: HTMLElement, options?: FocusOptions) {
       nativeFocus.call(this);
       if (!options?.preventScroll) {
         window.setTimeout(() => window.dispatchEvent(new Event("scroll")), 0);
@@ -1033,7 +1035,7 @@ describe("TaskCard", () => {
   });
 
   it("matches detail PR review labels before and during PR automation", () => {
-    const onMergeTask = vi.fn(async () => ({ merged: false }));
+    const onMergeTask = vi.fn(async (..._args: unknown[]) => ({ merged: false }) as never);
     const { rerender } = render(
       <TaskCard
         task={makeTask({ column: "in-review" })}
@@ -1967,7 +1969,6 @@ describe("TaskCard", () => {
           prInfo: {
             url: "https://github.com/owner/repo/pull/42",
             number: 42,
-            status: "open",
             title: "PR",
             headBranch: "fusion/fn-001",
             baseBranch: "main",
@@ -1978,7 +1979,6 @@ describe("TaskCard", () => {
             {
               url: "https://github.com/owner/repo/pull/42",
               number: 42,
-              status: "open",
               title: "PR",
               headBranch: "fusion/fn-001",
               baseBranch: "main",
@@ -2818,7 +2818,7 @@ describe("TaskCard", () => {
           id: "FN-READY-IDLE",
           column: "todo",
           status: null as any,
-          steps: [{ id: "s1", title: "Step 1", status: "pending" }] as Task["steps"],
+          steps: [{ id: "s1", title: "Step 1", status: "pending" }] as unknown as Task["steps"],
           enabledWorkflowSteps: ["plan-review"],
           workflowStepResults: [{
             workflowStepId: "plan-review",
@@ -2844,7 +2844,7 @@ describe("TaskCard", () => {
           id: "FN-READY-REVIEW",
           column: "todo",
           status: null as any,
-          steps: [{ id: "s1", title: "Step 1", status: "pending" }] as Task["steps"],
+          steps: [{ id: "s1", title: "Step 1", status: "pending" }] as unknown as Task["steps"],
           enabledWorkflowSteps: ["plan-review"],
           workflowStepResults: [{
             workflowStepId: "plan-review",
@@ -2869,7 +2869,7 @@ describe("TaskCard", () => {
           id: "FN-READY-QUEUED",
           column: "todo",
           status: null as any,
-          steps: [{ id: "s1", title: "Step 1", status: "pending" }] as Task["steps"],
+          steps: [{ id: "s1", title: "Step 1", status: "pending" }] as unknown as Task["steps"],
           enabledWorkflowSteps: ["plan-review"],
           workflowStepResults: [{
             workflowStepId: "plan-review",
@@ -4699,7 +4699,7 @@ describe("TaskCard", () => {
     expect(sizeBadge).not.toBeNull();
     expect(sizeBadge?.parentElement).toBe(header);
     expect(cardId?.nextElementSibling).toBe(sizeBadge);
-    expect(sizeBadge?.compareDocumentPosition(headerBadges!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(!!(sizeBadge && (sizeBadge.compareDocumentPosition(headerBadges!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBeTruthy();
     expect(actionsContainer?.contains(menuButton)).toBe(true);
     expect(actionsContainer?.contains(sizeBadge)).toBe(false);
   });
@@ -4787,7 +4787,7 @@ describe("TaskCard", () => {
     expect(screen.queryByRole("button", { name: "Send back" })).toBeNull();
 
     fireEvent.click(screen.getByTestId("card-menu-btn-FN-001"));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Move to", exact: true }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Move to$/ }));
 
     expect(screen.getByRole("menuitem", { name: "Done (no merge)" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Move to Planning" })).toBeTruthy();
@@ -4819,7 +4819,7 @@ describe("TaskCard", () => {
     );
 
     fireEvent.click(screen.getByTestId("card-menu-btn-FN-001"));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Move to", exact: true }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Move to$/ }));
 
     const planningMoves = screen.getAllByRole("menuitem", { name: "Move to Planning" });
     expect(planningMoves).toHaveLength(1);
@@ -4830,7 +4830,7 @@ describe("TaskCard", () => {
     await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument());
 
     fireEvent.contextMenu(document.querySelector(".card")!, { clientX: 24, clientY: 28 });
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Move to", exact: true }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /^Move to$/ }));
     await waitFor(() => expect(screen.getAllByRole("menuitem", { name: "Move to Planning" })).toHaveLength(1));
     expect(screen.getByRole("menuitem", { name: "Move to Done" })).toBeTruthy();
   });
@@ -4855,7 +4855,7 @@ describe("TaskCard", () => {
     );
 
     fireEvent.click(screen.getByTestId("card-menu-btn-FN-001"));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Move to", exact: true }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Move to$/ }));
     const planningMoves = screen.getAllByRole("menuitem", { name: "Move to Planning" });
     expect(planningMoves).toHaveLength(1);
     fireEvent.click(planningMoves[0]);
@@ -4871,7 +4871,7 @@ describe("TaskCard", () => {
       />,
     );
     fireEvent.click(screen.getByTestId("card-menu-btn-FN-001"));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Move to", exact: true }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Move to$/ }));
     expect(screen.queryByRole("menuitem", { name: "Done (no merge)" })).toBeNull();
     expect(screen.getAllByRole("menuitem", { name: "Move to Planning" })).toHaveLength(1);
   });
@@ -4893,7 +4893,7 @@ describe("TaskCard", () => {
     );
 
     fireEvent.click(screen.getByTestId("card-menu-btn-FN-001"));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Move to", exact: true }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Move to$/ }));
     expect(screen.getByRole("menuitem", { name: "Move to Planning" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Move to Done" })).toBeTruthy();
     expect(screen.queryByRole("menuitem", { name: "Done (no merge)" })).toBeNull();
@@ -4913,7 +4913,7 @@ describe("TaskCard", () => {
     expect(screen.queryByRole("button", { name: "Send back" })).toBeNull();
 
     fireEvent.click(screen.getByTestId("card-menu-btn-FN-001"));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Move to", exact: true }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Move to$/ }));
 
     expect(screen.getByRole("menuitem", { name: "Move to Todo" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Move to Planning" })).toBeTruthy();
@@ -5115,7 +5115,8 @@ describe("TaskCard", () => {
       <TaskCard
         task={makeTask({
           column: "todo",
-          status: null,
+          // Wire shape: the task row persists status:null; Task.status is string|undefined.
+          status: null as unknown as string,
           sourceType: "dashboard_ui",
           githubTracking: {
             issue: {
@@ -8121,14 +8122,14 @@ describe("TaskCard mission badge", () => {
     const expectSuppressedWithControl = (name: string, planning: Partial<Task>, control: Partial<Task>, flags: any) => {
       const planningTask = makePromoteFixture(planning);
       const suppressed = renderPromoteFixture(planningTask, flags);
-      expect(screen.getByText(planningTask.title), `${name}: card must render`).toBeInTheDocument();
+      expect(screen.getByText(planningTask.title!), `${name}: card must render`).toBeInTheDocument();
       // FNXC:TaskCardPromote 2026-08-11-09:13: Soft assertion keeps the gate-only revert evidence comprehensive by reporting every named escape in one run.
       expect.soft(screen.queryByTestId(`card-promote-${planningTask.id}`), `${name}: Promote must be suppressed`).toBeNull();
       suppressed.unmount();
 
       const controlTask = makePromoteFixture(control);
       const positive = renderPromoteFixture(controlTask, flags);
-      expect(screen.getByText(controlTask.title), `${name}: control card must render`).toBeInTheDocument();
+      expect(screen.getByText(controlTask.title!), `${name}: control card must render`).toBeInTheDocument();
       expect(screen.getByTestId(`card-promote-${controlTask.id}`), `${name}: control must keep Promote`).toBeInTheDocument();
       positive.unmount();
     };
@@ -8193,7 +8194,7 @@ describe("TaskCard mission badge", () => {
       firstUsedAt: "2026-08-09T00:00:00Z", lastUsedAt: "2026-08-09T00:00:00Z", modelProvider: "openai", modelId: "gpt-5-mini",
     } });
     const pricedSuppressed = renderPromoteFixture(pricedPlanning, { hold: true }, true);
-    expect(screen.getByText(pricedPlanning.title)).toBeInTheDocument();
+    expect(screen.getByText(pricedPlanning.title!)).toBeInTheDocument();
     expect(pricedSuppressed.container.querySelector(".card-action-row")).toBeNull();
     expect(pricedSuppressed.container.querySelector(".card-promote-action")).toBeNull();
     expect(pricedSuppressed.container.querySelector(".card-send-back-btn")).toBeNull();
@@ -8318,7 +8319,7 @@ describe("TaskCard Android tap regression", () => {
   }: {
     task: Task;
     onOpenDetail: (task: Task) => void;
-    onOpenDetailWithTab: (task: Task, tab: "changes") => void;
+    onOpenDetailWithTab: (task: Task | TaskDetail, initialTab: "workflow" | "changes" | "retries") => void;
     onClose: () => void;
   }) {
     const [isOpen, setIsOpen] = React.useState(false);
@@ -8918,7 +8919,7 @@ describe("TaskCard trailing-row layout (FN-8631)", () => {
       expanded.unmount();
 
       const editing = render(
-        <TaskCard task={makeTask({ id: `FN-editing-${width}`, column: "todo" })} onOpenDetail={noop} addToast={noop} onUpdateTask={noop} />,
+        <TaskCard task={makeTask({ id: `FN-editing-${width}`, column: "todo" })} onOpenDetail={noop} addToast={noop} onUpdateTask={vi.fn()} />,
       );
       // Editing returns early with only edit content, so none of the normal trailing rows can leave an empty shell.
       fireEvent.click(editing.container.querySelector(".card-edit-btn") as HTMLButtonElement);
@@ -8947,7 +8948,7 @@ describe("TaskCard field editability resolves column traits (U12 — R8)", () =>
       <TaskCard
         task={makeTask({ column: "backlog" as any })}
         taskColumnFlags={{ intake: true, hold: true }}
-        onUpdateTask={noop}
+        onUpdateTask={vi.fn()}
         onOpenDetail={noop}
         addToast={noop}
       />,
@@ -8963,7 +8964,7 @@ describe("TaskCard field editability resolves column traits (U12 — R8)", () =>
       <TaskCard
         task={makeTask({ column: "building" as any })}
         taskColumnFlags={{ countsTowardWip: true }}
-        onUpdateTask={noop}
+        onUpdateTask={vi.fn()}
         onOpenDetail={noop}
         addToast={noop}
       />,
@@ -8977,7 +8978,7 @@ describe("TaskCard field editability resolves column traits (U12 — R8)", () =>
       <TaskCard
         task={makeTask({ column: "backlog" as any })}
         taskColumnFlags={{ hold: true, mergeBlocker: true }}
-        onUpdateTask={noop}
+        onUpdateTask={vi.fn()}
         onOpenDetail={noop}
         addToast={noop}
       />,
@@ -8987,7 +8988,7 @@ describe("TaskCard field editability resolves column traits (U12 — R8)", () =>
 
   it("still renders it for a legacy `todo` card with no flags resolved", () => {
     // The pre-load window, and what every board did before the conversion.
-    render(<TaskCard task={makeTask({ column: "todo" as any })} onUpdateTask={noop} onOpenDetail={noop} addToast={noop} />);
+    render(<TaskCard task={makeTask({ column: "todo" })} onUpdateTask={vi.fn()} onOpenDetail={noop} addToast={noop} />);
     expect(screen.getByRole("button", EDIT_LABEL)).toBeInTheDocument();
   });
 });

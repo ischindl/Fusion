@@ -99,8 +99,6 @@ vi.mock("lucide-react", () => ({
   Zap: () => null,
   Maximize2: () => null,
   Minimize2: () => null,
-  Eye: () => null,
-  EyeOff: () => null,
 }));
 
 vi.mock("../components/ModelSelectionModal", () => ({

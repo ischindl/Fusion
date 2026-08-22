@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { JSX } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { TaskDetail } from "@fusion/core";
@@ -32,7 +33,7 @@ const detailTask = {
   createdAt: "2026-08-09T10:00:00.000Z",
   updatedAt: "2026-08-09T10:00:00.000Z",
   columnMovedAt: "2026-08-09T10:00:00.000Z",
-} as TaskDetail;
+} as unknown as TaskDetail;
 
 function DetailHost(): JSX.Element {
   const [task, setTask] = useState<TaskDetail>(detailTask);

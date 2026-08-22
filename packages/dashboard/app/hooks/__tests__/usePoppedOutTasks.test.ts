@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { usePoppedOutTasks } from "../usePoppedOutTasks";
+import type { Task } from "@fusion/core";
 
-const task = (id: string) => ({ id, title: id, status: "todo" } as never);
+const task = (id: string): Task => ({ id, title: id, status: "todo" } as unknown as Task);
 
 describe("usePoppedOutTasks", () => {
   it("refreshes duplicate snapshots only for the same task and origin view", () => {

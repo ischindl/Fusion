@@ -830,7 +830,20 @@ describe("TaskDetailModal Summary tab", () => {
           mergeDetails: undefined,
           steps: [],
           workflowStepResults: [],
-          retrySummary: { total: 0 },
+          retrySummary: {
+            stuckKill: 0,
+            recovery: 0,
+            taskDone: 0,
+            worktreeSession: 0,
+            workflowStep: 0,
+            verification: 0,
+            postReviewFix: 0,
+            mergeConflict: 0,
+            branchConflict: 0,
+            reviewerContext: 0,
+            reviewerFallback: 0,
+            total: 0,
+          },
         })}
         onClose={noop}
         initialTab="summary"

@@ -3,10 +3,10 @@ FNXC:TaskDetailTabs 2026-06-17-08:20:
 FN-7306 labels the stable internal `chat` tab as Activity and keeps it as the default TaskDetailModal tab. Tests that assert Definition-only sections must opt into `initialTab="definition"` so they verify the intended surface instead of the Activity landing state.
 */
 import { describe, it, expect, vi } from "vitest";
-import { useState, type Dispatch, type SetStateAction } from "react";
+import { useState, type Dispatch, type JSX, type SetStateAction } from "react";
 import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { Task, TaskDetail } from "@fusion/core";
+import type { Task, TaskDetail, TaskPriority } from "@fusion/core";
 import {
   makeTask,
   noop,
@@ -1245,8 +1245,8 @@ describe("TaskDetailModal", () => {
       const { updateTask, rebuildTaskSpec } = await import("../../api");
       const mockUpdate = vi.mocked(updateTask);
       const mockRebuild = vi.mocked(rebuildTaskSpec);
-      mockUpdate.mockResolvedValueOnce(makeTask({ id: "FN-001", column: "todo", title: "Test", description: "Desc", executionMode: null }) as Task);
-      mockRebuild.mockResolvedValueOnce(makeTask({ id: "FN-001", column: "triage", status: "needs-replan", executionMode: null }) as Task);
+      mockUpdate.mockResolvedValueOnce(makeTask({ id: "FN-001", column: "todo", title: "Test", description: "Desc", executionMode: undefined }) as Task);
+      mockRebuild.mockResolvedValueOnce(makeTask({ id: "FN-001", column: "triage", status: "needs-replan", executionMode: undefined }) as Task);
 
       const { container } = render(
         <TaskDetailModal
@@ -1534,8 +1534,8 @@ describe("TaskDetailModal", () => {
       const { updateTask, rebuildTaskSpec } = await import("../../api");
       const mockUpdate = vi.mocked(updateTask);
       const mockRebuild = vi.mocked(rebuildTaskSpec);
-      mockUpdate.mockResolvedValueOnce(makeTask({ id: "FN-001", column: "todo", executionMode: null }) as Task);
-      mockRebuild.mockResolvedValueOnce(makeTask({ id: "FN-001", column: "triage", status: "needs-replan", executionMode: null }) as Task);
+      mockUpdate.mockResolvedValueOnce(makeTask({ id: "FN-001", column: "todo", executionMode: undefined }) as Task);
+      mockRebuild.mockResolvedValueOnce(makeTask({ id: "FN-001", column: "triage", status: "needs-replan", executionMode: undefined }) as Task);
 
       render(
         <TaskDetailModal
@@ -1922,11 +1922,18 @@ describe("TaskDetailModal", () => {
       });
 
       const initialTask = makeTask({ id: "FN-001", column: "triage", title: "Model sync test" });
+      /*
+      FNXC:RUFU-140 2026-08-21-04:55:
+      The mock-resolved task shapes carry null credential-instance ids (the wire shape for "no
+      instance selected"); the Task type models absence as an optional string, so the null runtime
+      values are kept through localized casts — the onTaskUpdated assertion below checks
+      `validatorCredentialInstanceId: null` via objectContaining and must keep seeing null.
+      */
       const updatedAfterExecutor: Task = {
         ...initialTask,
         modelProvider: "anthropic",
         modelId: "claude-sonnet-4-5",
-        credentialInstanceId: null,
+        credentialInstanceId: null as unknown as string,
       };
       const updatedAfterExecutorInstance: Task = {
         ...updatedAfterExecutor,
@@ -1936,7 +1943,7 @@ describe("TaskDetailModal", () => {
         ...updatedAfterExecutorInstance,
         validatorModelProvider: "openai",
         validatorModelId: "gpt-4o",
-        validatorCredentialInstanceId: null,
+        validatorCredentialInstanceId: null as unknown as string,
       };
 
       mockUpdateTask
@@ -3148,7 +3155,7 @@ describe("TaskDetailModal", () => {
             state: "open",
           },
         },
-      } as Task);
+      } as unknown as Task);
 
       await waitFor(() => {
         expect(screen.queryByRole("status", { name: "Enabling GitHub tracking" })).toBeNull();
@@ -3656,7 +3663,10 @@ describe("TaskDetailModal inline action row parity (FN-8194)", () => {
           iid: 1,
           title: "GitLab issue",
           url: "https://gitlab.com/acme/app/-/issues/1",
+          instanceUrl: "https://gitlab.com",
+          host: "gitlab.com",
           state: "opened",
+          createdAt: "2026-01-01T00:00:00Z",
         },
       },
     }) as Task);

@@ -29,6 +29,8 @@ describe("useAppSettings", () => {
 
     mockFetchConfig.mockResolvedValue({
       maxConcurrent: 4,
+      effectiveMaxConcurrent: 4,
+      concurrencyBindingKnob: "maxConcurrent",
       rootDir: "/workspace/project",
     });
 

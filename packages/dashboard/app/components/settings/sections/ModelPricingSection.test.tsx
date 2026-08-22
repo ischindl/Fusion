@@ -42,7 +42,7 @@ const initialForm = (): SettingsFormState => ({
       source: "manual",
     },
   },
-} as SettingsFormState);
+} as unknown as SettingsFormState);
 
 function openPricingTable() {
   fireEvent.click(screen.getByRole("button", { name: "View pricing table" }));

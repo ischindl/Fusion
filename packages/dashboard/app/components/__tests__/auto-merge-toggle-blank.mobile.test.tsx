@@ -179,6 +179,8 @@ function BaseBoardHarness({
         autoMerge={autoMerge}
         onToggleAutoMerge={onToggleAutoMerge}
         globalPaused={false}
+        planAutoApproveEnabled={false}
+        onTogglePlanAutoApprove={vi.fn()}
       />
     </PageErrorBoundary>
   );

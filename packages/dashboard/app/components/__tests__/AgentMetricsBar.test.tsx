@@ -22,6 +22,8 @@ function makeStats(overrides: Partial<AgentStats> = {}): AgentStats {
     completedRuns: 42,
     failedRuns: 3,
     successRate: 0.933,
+    idleNonEphemeralCount: 1,
+    todoTaskCount: 2,
     ...overrides,
   };
 }

@@ -93,6 +93,9 @@ const defaultRoomsState: UseChatRoomsResult = {
   deleteRoom: vi.fn(),
   sendRoomMessage: vi.fn(),
   refreshRooms: vi.fn(),
+
+  updateRoomSettings: vi.fn(),
+  clearRoom: vi.fn(),
 };
 
 function makeSession(overrides: Partial<ChatSession> & Pick<ChatSession, "id" | "agentId">): ChatSession {
@@ -106,8 +109,13 @@ function makeSession(overrides: Partial<ChatSession> & Pick<ChatSession, "id" | 
     modelId: overrides.modelId ?? null,
     createdAt: overrides.createdAt ?? "2026-04-08T00:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2026-04-08T00:00:00.000Z",
-    isGenerating: overrides.isGenerating,
-    inFlightGeneration: overrides.inFlightGeneration,
+    inFlightGeneration: overrides.inFlightGeneration ?? null,
+    tags: [],
+    thinkingLevel: null,
+    memoryFocus: null,
+    pinnedAt: null,
+    cliSessionFile: null,
+    cliExecutorAdapterId: null,
   };
 }
 
@@ -125,9 +133,9 @@ function makeMessage(overrides: Partial<ChatMessage> & Pick<ChatMessage, "id" | 
 }
 
 type StreamAppendHandlers = {
-  onText: (delta: string) => void;
-  onToolStart: (data: { toolName: string; args?: Record<string, unknown> }) => void;
-  onToolEnd: (data: { toolName: string; isError: boolean; result?: unknown }) => void;
+  onText?: (delta: string) => void;
+  onToolStart?: (data: { toolName: string; args?: Record<string, unknown> }) => void;
+  onToolEnd?: (data: { toolName: string; isError: boolean; result?: unknown }) => void;
 };
 
 function createDeferredPromise<T>() {
@@ -152,7 +160,7 @@ describe("FN-6599 ChatView streaming prior thread", () => {
     vi.clearAllMocks();
     localStorage.clear();
     mockUseChatRooms.mockReturnValue(defaultRoomsState);
-    mockGetScopedItem.mockReturnValue(undefined);
+    mockGetScopedItem.mockReturnValue(null);
     mockSubscribeSse.mockReturnValue(() => {});
     mockFetchChatSession.mockResolvedValue({ session: makeSession({ id: "session-001", agentId: "agent-001" }) });
     mockStreamChatResponse.mockReturnValue({ close: vi.fn(), isConnected: () => true });
@@ -175,7 +183,6 @@ describe("FN-6599 ChatView streaming prior thread", () => {
       id: "session-restored-streaming",
       agentId: "agent-001",
       title: "Restored streaming",
-      isGenerating: true,
       inFlightGeneration: {
         status: "generating" as const,
         streamingText: "live partial response",
@@ -192,7 +199,7 @@ describe("FN-6599 ChatView streaming prior thread", () => {
       makeMessage({ id: "msg-001", sessionId: generatingSession.id, role: "user", content: "First question" }),
     ];
 
-    mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? generatingSession.id : undefined);
+    mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? generatingSession.id : null);
     mockFetchChatSessions.mockResolvedValue({ sessions: [generatingSession] });
     mockFetchChatMessages.mockResolvedValue({ messages: priorThreadNewestFirst });
 
@@ -220,7 +227,6 @@ describe("FN-6599 ChatView streaming prior thread", () => {
       id: "session-reentry",
       agentId: "agent-001",
       title: "Re-entry",
-      isGenerating: true,
       inFlightGeneration: {
         status: "generating" as const,
         streamingText: "authoritative partial response",
@@ -231,7 +237,7 @@ describe("FN-6599 ChatView streaming prior thread", () => {
       },
     });
     const priorMessage = makeMessage({ id: "msg-prior", sessionId: generatingSession.id, role: "user", content: "Prior question" });
-    mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? generatingSession.id : undefined);
+    mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? generatingSession.id : null);
     mockFetchChatSessions.mockResolvedValue({ sessions: [generatingSession] });
     mockFetchChatSession.mockResolvedValue({ session: generatingSession });
     mockFetchChatMessages.mockResolvedValue({ messages: [priorMessage] });
@@ -272,7 +278,7 @@ describe("FN-6599 ChatView streaming prior thread", () => {
       metadata: { interrupted: true },
       createdAt: "2026-08-18T21:55:00.000Z",
     });
-    mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? session.id : undefined);
+    mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? session.id : null);
     mockFetchChatSessions.mockResolvedValue({ sessions: [session] });
     mockFetchChatSession.mockResolvedValue({ session });
     mockFetchChatMessages
@@ -317,7 +323,6 @@ describe("FN-6599 ChatView streaming prior thread", () => {
       id: "session-mid-turn-stable",
       agentId: "agent-001",
       title: "Mid turn stable",
-      isGenerating: true,
       inFlightGeneration: {
         status: "generating" as const,
         streamingText: "working",
@@ -338,7 +343,7 @@ describe("FN-6599 ChatView streaming prior thread", () => {
     let subscribeHandler: Record<string, (event: MessageEvent) => void> = {};
 
     cacheMessages("proj-123", generatingSession.id, priorThread);
-    mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? generatingSession.id : undefined);
+    mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? generatingSession.id : null);
     mockFetchChatSessions.mockResolvedValue({ sessions: [generatingSession] });
     mockFetchChatMessages.mockReturnValue(staleFetch.promise);
     mockAttachChatStream.mockImplementation((_sessionId, handlers) => {
@@ -382,7 +387,7 @@ describe("FN-6599 ChatView streaming prior thread", () => {
     Object.defineProperty(messagesContainer, "clientHeight", { configurable: true, value: 240 });
     fireEvent.scroll(messagesContainer);
     scrollHeight = 1500;
-    act(() => attachedHandlers?.onText(" while reading earlier output"));
+    act(() => attachedHandlers?.onText?.(" while reading earlier output"));
     expect(scrollTop).toBe(180);
 
     act(() => {
@@ -396,9 +401,9 @@ describe("FN-6599 ChatView streaming prior thread", () => {
     expectPriorThreadVisible();
 
     act(() => {
-      attachedHandlers?.onToolStart({ toolName: "read", args: { path: "README.md" } });
-      attachedHandlers?.onText(" now");
-      attachedHandlers?.onToolEnd({ toolName: "read", isError: false, result: "ok" });
+      attachedHandlers?.onToolStart?.({ toolName: "read", args: { path: "README.md" } });
+      attachedHandlers?.onText?.(" now");
+      attachedHandlers?.onToolEnd?.({ toolName: "read", isError: false, result: "ok" });
     });
     await act(async () => {
       await Promise.resolve();
@@ -433,17 +438,17 @@ describe("FN-6599 ChatView streaming prior thread", () => {
   ])("FN-100 starts a fresh Direct thread from idle exact /new and /clear without a recovery toast on %s", async (_label, width) => {
     Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
     window.dispatchEvent(new Event("resize"));
-    const idleSession = makeSession({ id: "session-idle", agentId: "agent-001", isGenerating: false });
+    const idleSession = makeSession({ id: "session-idle", agentId: "agent-001" });
     const freshSessions = [
-      makeSession({ id: "session-fresh-1", agentId: "agent-001", title: "Fresh one", isGenerating: false }),
-      makeSession({ id: "session-fresh-2", agentId: "agent-001", title: "Fresh two", isGenerating: false }),
+      makeSession({ id: "session-fresh-1", agentId: "agent-001", title: "Fresh one" }),
+      makeSession({ id: "session-fresh-2", agentId: "agent-001", title: "Fresh two" }),
     ];
     const addToast = vi.fn();
     const idleCancellation = createDeferredPromise<{ success: boolean; interrupted: boolean }>();
     mockCancelChatResponse
       .mockImplementationOnce(() => idleCancellation.promise)
       .mockResolvedValue({ success: true, interrupted: false });
-    mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? idleSession.id : undefined);
+    mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? idleSession.id : null);
     mockFetchChatSessions.mockResolvedValue({ sessions: [idleSession] });
     mockFetchChatSession
       .mockResolvedValueOnce({ session: idleSession })

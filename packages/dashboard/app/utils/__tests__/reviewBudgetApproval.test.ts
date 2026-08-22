@@ -51,7 +51,7 @@ describe("FN-8950 plan-review gate contract", () => {
     [["code-review"], false],
     [["plan-review"], true],
     [["plan-review", "code-review"], true],
-  ] as const)("matches core enablement for %j", (enabledWorkflowSteps, applicable) => {
+  ] as Array<[string[] | null | undefined, boolean]>)("matches core enablement for %j", (enabledWorkflowSteps, applicable) => {
     expect(isWorkflowOptionalGroupEnabled(enabledWorkflowSteps ?? undefined, "plan-review", true)).toBe(applicable);
     expect(isPlanReviewGateUnsatisfied(gateTask(undefined, enabledWorkflowSteps))).toBe(applicable);
   });

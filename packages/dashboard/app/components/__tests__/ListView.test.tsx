@@ -277,7 +277,7 @@ const renderListView = (
     onMoveTask: vi.fn(async () => createMockTask()),
     onRetryTask: vi.fn(async () => createMockTask()),
     onDeleteTask: vi.fn(async () => createMockTask()),
-    onMergeTask: vi.fn(async () => ({ merged: false })),
+    onMergeTask: vi.fn(async (..._args: unknown[]) => ({ merged: false }) as never),
     onResetTask: vi.fn(async () => createMockTask()),
     onDuplicateTask: vi.fn(async () => createMockTask()),
     onOpenDetail: vi.fn(),
@@ -642,7 +642,7 @@ describe("ListView unmapped-workflow self-heal", () => {
     await waitFor(() => expect(forcedProjects).toEqual(["project-a"]));
 
     // Switch projects while the repair is still in flight, then let it settle.
-    view.rerender(<ListView tasks={tasks} projectId="project-b" onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} />);
+    view.rerender(<ListView tasks={tasks} projectId="project-b" onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} onDeleteTask={vi.fn()} onMergeTask={vi.fn()} />);
     await act(async () => { releaseFirstForced?.(); await Promise.resolve(); });
     // FNXC:WorkflowBoard 2026-08-01-17:20: deterministic fake-timer advance past RETRY_DELAY_MS replaces a real 400ms wall wait. The settled continuation abandons on the project-id mismatch and arms no follow-up timer; a regression that dropped the projectIdRef guard would arm one and this advance would fire it, keeping the REVERT CHECK intact.
     await act(async () => {
@@ -713,6 +713,8 @@ describe("ListView unmapped-workflow self-heal", () => {
           onMoveTask={vi.fn()}
           onOpenDetail={vi.fn()}
           addToast={mockAddToast}
+          onDeleteTask={vi.fn()}
+          onMergeTask={vi.fn()}
         />
       </React.StrictMode>,
     );
@@ -1056,7 +1058,7 @@ describe("ListView", () => {
     expect(screen.queryByText("FN-002")).toBeNull();
 
     // Re-render with empty searchQuery
-    rerender(<ListView tasks={tasks} searchQuery="" onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} />);
+    rerender(<ListView tasks={tasks} searchQuery="" onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} onDeleteTask={vi.fn()} onMergeTask={vi.fn()} />);
 
     // Both tasks should be visible again
     expect(screen.getByText("FN-001")).toBeDefined();
@@ -1231,7 +1233,7 @@ describe("ListView", () => {
     read "Back to In Progress" — they go through the no-metadata fallback, which uses
     the legacy column label map.
     */
-    expect(screen.getByRole("menuitem", { name: "Move to", exact: true })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /^Move to$/ })).toBeInTheDocument();
 
     fireEvent.contextMenu(document.querySelector('.list-row[data-id="FN-006"]') as HTMLElement, { clientX: 40, clientY: 50 });
     expect(screen.getByRole("menuitem", { name: "Merge & Close" })).toBeInTheDocument();
@@ -1739,7 +1741,7 @@ describe("ListView", () => {
       onMoveTask: vi.fn(async () => createMockTask()),
       onRetryTask: vi.fn(async () => createMockTask()),
       onDeleteTask: vi.fn(async () => createMockTask()),
-      onMergeTask: vi.fn(async () => ({ merged: false })),
+      onMergeTask: vi.fn(async (..._args: unknown[]) => ({ merged: false }) as never),
       onResetTask: vi.fn(async () => createMockTask()),
       onDuplicateTask: vi.fn(async () => createMockTask()),
       onOpenDetail: vi.fn(),
@@ -2179,7 +2181,7 @@ describe("ListView", () => {
         onMoveTask={vi.fn(async () => createMockTask())}
         onRetryTask={vi.fn(async () => createMockTask())}
         onDeleteTask={vi.fn(async () => createMockTask())}
-        onMergeTask={vi.fn(async () => ({ merged: false }))}
+        onMergeTask={vi.fn(async (..._args: unknown[]) => ({ merged: false }) as never)}
         onResetTask={vi.fn(async () => createMockTask())}
         onDuplicateTask={vi.fn(async () => createMockTask())}
         onOpenDetail={vi.fn()}
@@ -2312,6 +2314,8 @@ describe("ListView", () => {
         onMoveTask={vi.fn()}
         onOpenDetail={vi.fn()}
         addToast={mockAddToast}
+        onDeleteTask={vi.fn()}
+        onMergeTask={vi.fn()}
         projectId="project-a"
       />
     );
@@ -2324,6 +2328,8 @@ describe("ListView", () => {
         onMoveTask={vi.fn()}
         onOpenDetail={vi.fn()}
         addToast={mockAddToast}
+        onDeleteTask={vi.fn()}
+        onMergeTask={vi.fn()}
         projectId="project-b"
       />
     );
@@ -4813,7 +4819,7 @@ describe("ListView - Bulk Selection", () => {
 
   it("shows selection checkbox in header", () => {
     const tasks = [createMockTask({ id: "FN-001" })];
-    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} />);
+    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} onDeleteTask={vi.fn()} onMergeTask={vi.fn()} />);
     enterBulkEditMode();
 
     const headerCheckbox = screen.getByLabelText("Select all visible tasks");
@@ -4825,7 +4831,7 @@ describe("ListView - Bulk Selection", () => {
       createMockTask({ id: "FN-001" }),
       createMockTask({ id: "FN-002" }),
     ];
-    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} />);
+    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} onDeleteTask={vi.fn()} onMergeTask={vi.fn()} />);
     enterBulkEditMode();
 
     const checkboxes = screen.getAllByLabelText(/Select FN-/);
@@ -4836,7 +4842,7 @@ describe("ListView - Bulk Selection", () => {
     const tasks = [
       createMockTask({ id: "FN-001", column: "archived" }),
     ];
-    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} />);
+    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} onDeleteTask={vi.fn()} onMergeTask={vi.fn()} />);
     enterBulkEditMode();
 
     const checkbox = screen.getByLabelText("Select FN-001");
@@ -4863,7 +4869,7 @@ describe("ListView - Bulk Selection", () => {
       createMockTask({ id: "FN-001", column: "parked" }),
     ];
 
-    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} />);
+    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} onDeleteTask={vi.fn()} onMergeTask={vi.fn()} />);
     await waitFor(() => expect(screen.queryAllByText("Parked").length).toBeGreaterThan(0));
     enterBulkEditMode();
 
@@ -4875,7 +4881,7 @@ describe("ListView - Bulk Selection", () => {
       createMockTask({ id: "FN-001" }),
       createMockTask({ id: "FN-002" }),
     ];
-    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} />);
+    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} onDeleteTask={vi.fn()} onMergeTask={vi.fn()} />);
     enterBulkEditMode();
 
     const checkbox = screen.getByLabelText("Select FN-001");
@@ -4888,7 +4894,7 @@ describe("ListView - Bulk Selection", () => {
     const tasks = [
       createMockTask({ id: "FN-001" }),
     ];
-    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} />);
+    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} onDeleteTask={vi.fn()} onMergeTask={vi.fn()} />);
     enterBulkEditMode();
 
     const checkbox = screen.getByLabelText("Select FN-001");
@@ -4906,7 +4912,7 @@ describe("ListView - Bulk Selection", () => {
       createMockTask({ id: "FN-001" }),
       createMockTask({ id: "FN-002" }),
     ];
-    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} />);
+    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} onDeleteTask={vi.fn()} onMergeTask={vi.fn()} />);
     enterBulkEditMode();
 
     const selectAllCheckbox = screen.getByLabelText("Select all visible tasks");
@@ -4929,6 +4935,8 @@ describe("ListView - Bulk Selection", () => {
         onMoveTask={vi.fn()}
         onOpenDetail={vi.fn()}
         addToast={mockAddToast} projectId={TEST_PROJECT_ID}
+        onDeleteTask={vi.fn()}
+        onMergeTask={vi.fn()}
         availableModels={availableModels}
         favoriteProviders={["openai"]}
         favoriteModels={["openai/gpt-4o"]}
@@ -4957,6 +4965,8 @@ describe("ListView - Bulk Selection", () => {
         onMoveTask={vi.fn()}
         onOpenDetail={vi.fn()}
         addToast={mockAddToast} projectId={TEST_PROJECT_ID}
+        onDeleteTask={vi.fn()}
+        onMergeTask={vi.fn()}
         availableModels={availableModels}
       />
     );
@@ -4980,6 +4990,8 @@ describe("ListView - Bulk Selection", () => {
         onMoveTask={vi.fn()}
         onOpenDetail={vi.fn()}
         addToast={mockAddToast} projectId={TEST_PROJECT_ID}
+        onDeleteTask={vi.fn()}
+        onMergeTask={vi.fn()}
         availableModels={availableModels}
       />
     );
@@ -5485,7 +5497,7 @@ describe("ListView - Bulk Selection", () => {
 
   it("persists selection to localStorage", () => {
     const tasks = [createMockTask({ id: "FN-001" })];
-    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} />);
+    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} onDeleteTask={vi.fn()} onMergeTask={vi.fn()} />);
     enterBulkEditMode();
 
     const checkbox = screen.getByLabelText("Select FN-001");
@@ -5499,7 +5511,7 @@ describe("ListView - Bulk Selection", () => {
       createMockTask({ id: "FN-001" }),
       createMockTask({ id: "FN-002" }),
     ];
-    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} />);
+    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} onDeleteTask={vi.fn()} onMergeTask={vi.fn()} />);
     enterBulkEditMode();
 
     const checkboxes = screen.getAllByLabelText(/Select FN-/);
@@ -5537,6 +5549,8 @@ describe("ListView - Bulk Selection", () => {
         onMoveTask={vi.fn()}
         onOpenDetail={vi.fn()}
         addToast={mockAddToast} projectId={TEST_PROJECT_ID}
+        onDeleteTask={vi.fn()}
+        onMergeTask={vi.fn()}
         availableModels={availableModels}
       />
     );
@@ -5611,7 +5625,7 @@ describe("ListView - Bulk Selection", () => {
     const mockedBatchUpdateTaskModels = vi.mocked(batchUpdateTaskModels);
     mockedBatchUpdateTaskModels.mockResolvedValue({ updated: [{ ...tasks[0], thinkingLevel: "high" }], count: 1 });
 
-    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} />);
+    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} onDeleteTask={vi.fn()} onMergeTask={vi.fn()} />);
     enterBulkEditMode();
     await user.click(screen.getByLabelText("Select FN-001"));
 
@@ -5646,7 +5660,7 @@ describe("ListView - Bulk Selection", () => {
       const tasks = [createMockTask({ id: "FN-001" })];
       vi.mocked(fetchNodes).mockResolvedValue([{ id: "node-1", name: "Node One", status: "online" } as never]);
 
-      render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} />);
+      render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} onDeleteTask={vi.fn()} onMergeTask={vi.fn()} />);
       enterBulkEditMode();
       clickInAct(screen.getByLabelText("Select FN-001"));
 
@@ -5658,7 +5672,7 @@ describe("ListView - Bulk Selection", () => {
       const tasks = [createMockTask({ id: "FN-001" })];
       vi.mocked(fetchNodes).mockResolvedValue([{ id: "node-2", name: "Node Two", status: "offline" } as never]);
 
-      render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} />);
+      render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} onDeleteTask={vi.fn()} onMergeTask={vi.fn()} />);
       enterBulkEditMode();
       clickInAct(screen.getByLabelText("Select FN-001"));
 
@@ -5670,7 +5684,7 @@ describe("ListView - Bulk Selection", () => {
       const tasks = [createMockTask({ id: "FN-001" })];
       vi.mocked(fetchNodes).mockResolvedValue([{ id: "node-abc", name: "Node ABC", status: "online" } as never]);
 
-      render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} />);
+      render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} onDeleteTask={vi.fn()} onMergeTask={vi.fn()} />);
       enterBulkEditMode();
       await user.click(screen.getByLabelText("Select FN-001"));
 
@@ -5687,7 +5701,7 @@ describe("ListView - Bulk Selection", () => {
       vi.mocked(fetchNodes).mockResolvedValue([{ id: "node-abc", name: "Node ABC", status: "online" } as never]);
       vi.mocked(batchUpdateTaskModels).mockResolvedValue({ updated: tasks, count: 1 });
 
-      render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} />);
+      render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} onDeleteTask={vi.fn()} onMergeTask={vi.fn()} />);
       enterBulkEditMode();
       await user.click(screen.getByLabelText("Select FN-001"));
 
@@ -5707,7 +5721,7 @@ describe("ListView - Bulk Selection", () => {
       vi.mocked(fetchNodes).mockResolvedValue([{ id: "node-abc", name: "Node ABC", status: "online" } as never]);
       vi.mocked(batchUpdateTaskModels).mockResolvedValue({ updated: tasks, count: 1 });
 
-      render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} />);
+      render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} onDeleteTask={vi.fn()} onMergeTask={vi.fn()} />);
       enterBulkEditMode();
       await user.click(screen.getByLabelText("Select FN-001"));
       await user.selectOptions(await screen.findByLabelText("Node Override"), "");
@@ -5723,7 +5737,7 @@ describe("ListView - Bulk Selection", () => {
       const tasks = [createMockTask({ id: "FN-001" })];
       vi.mocked(fetchNodes).mockResolvedValue([{ id: "node-abc", name: "Node ABC", status: "online" } as never]);
 
-      render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} />);
+      render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} onDeleteTask={vi.fn()} onMergeTask={vi.fn()} />);
       enterBulkEditMode();
       clickInAct(screen.getByLabelText("Select FN-001"));
 
@@ -5745,6 +5759,8 @@ describe("ListView - Bulk Selection", () => {
         onMoveTask={vi.fn()}
         onOpenDetail={vi.fn()}
         addToast={mockAddToast} projectId={TEST_PROJECT_ID}
+        onDeleteTask={vi.fn()}
+        onMergeTask={vi.fn()}
         onQuickCreate={vi.fn().mockResolvedValue(undefined)}
         availableModels={availableModels}
         favoriteProviders={["anthropic"]}
@@ -6063,7 +6079,7 @@ describe("ListView titleless display fallback (FN-044)", () => {
         onMoveTask={vi.fn(async () => createMockTask())}
         onRetryTask={vi.fn(async () => createMockTask())}
         onDeleteTask={vi.fn(async () => createMockTask())}
-        onMergeTask={vi.fn(async () => ({ merged: false }))}
+        onMergeTask={vi.fn(async (..._args: unknown[]) => ({ merged: false }) as never)}
         onResetTask={vi.fn(async () => createMockTask())}
         onDuplicateTask={vi.fn(async () => createMockTask())}
         onOpenDetail={vi.fn()}
@@ -6091,7 +6107,7 @@ describe("ListView titleless display fallback (FN-044)", () => {
         onMoveTask={vi.fn(async () => createMockTask())}
         onRetryTask={vi.fn(async () => createMockTask())}
         onDeleteTask={vi.fn(async () => createMockTask())}
-        onMergeTask={vi.fn(async () => ({ merged: false }))}
+        onMergeTask={vi.fn(async (..._args: unknown[]) => ({ merged: false }) as never)}
         onResetTask={vi.fn(async () => createMockTask())}
         onDuplicateTask={vi.fn(async () => createMockTask())}
         onOpenDetail={vi.fn()}

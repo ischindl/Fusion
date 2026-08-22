@@ -2,6 +2,7 @@
 FNXC:TaskDetailTabs 2026-06-17-08:20:
 FN-7306 labels the stable internal `chat` tab as Activity and keeps it as the default TaskDetailModal tab. Tests that assert Definition-only sections must opt into `initialTab="definition"` so they verify the intended surface instead of the Activity landing state.
 */
+import type { Column, MergeResult, Settings, Task, TaskDetail } from "@fusion/core";
 import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -974,7 +975,7 @@ describe("TaskDetailModal", () => {
         />,
       );
       const rendered = mount();
-      const header = rendered.baseElement.querySelector("[data-testid='floating-window-task-detail'] .modal-header");
+      const header = rendered.baseElement.querySelector<HTMLElement>("[data-testid='floating-window-task-detail'] .modal-header");
       expect(header).not.toBeNull();
       assertRenderedModalTouchGeometry("task-detail", header!);
       rendered.unmount();
@@ -1689,7 +1690,7 @@ describe("TaskDetailModal", () => {
         defaultPresetBySize: {},
         mergeStrategy: "pull-request",
         autoMerge: true,
-      });
+      } as unknown as Settings);
 
       render(
         <TaskDetailModal
@@ -1719,7 +1720,7 @@ describe("TaskDetailModal", () => {
         defaultPresetBySize: {},
         mergeStrategy: "pull-request",
         autoMerge: false,
-      });
+      } as unknown as Settings);
 
       render(
         <TaskDetailModal
@@ -1753,7 +1754,7 @@ describe("TaskDetailModal", () => {
         defaultPresetBySize: {},
         mergeStrategy: "pull-request",
         autoMerge: false,
-      });
+      } as unknown as Settings);
       vi.mocked(refreshPrStatus).mockResolvedValueOnce({
         prInfo: {
           url: "https://github.com/owner/repo/pull/42",
@@ -1763,6 +1764,25 @@ describe("TaskDetailModal", () => {
           headBranch: "fusion/fn-099",
           baseBranch: "main",
           commentCount: 1,
+        },
+        mergeReady: false,
+        blockingReasons: [],
+        reviewDecision: null,
+        checks: [],
+        primary: {
+          prInfo: {
+            url: "https://github.com/owner/repo/pull/42",
+            number: 42,
+            status: "open",
+            title: "Task",
+            headBranch: "fusion/fn-099",
+            baseBranch: "main",
+            commentCount: 1,
+          },
+          mergeReady: false,
+          blockingReasons: [],
+          reviewDecision: null,
+          checks: [],
         },
         all: [],
       });
@@ -1814,7 +1834,7 @@ describe("TaskDetailModal", () => {
         defaultPresetBySize: {},
         mergeStrategy: "pull-request",
         autoMerge: false,
-      });
+      } as unknown as Settings);
       vi.mocked(refreshPrStatus).mockRejectedValueOnce(new Error("refresh failed"));
 
       render(
@@ -1862,7 +1882,7 @@ describe("TaskDetailModal", () => {
         defaultPresetBySize: {},
         mergeStrategy: "pull-request",
         autoMerge: false,
-      });
+      } as unknown as Settings);
 
       render(
         <TaskDetailModal

@@ -401,7 +401,7 @@ describe("TaskCard badge wrapping (FN-5162)", () => {
           size: "M",
           priority: "urgent" as Task["priority"],
           executionMode: "fast",
-          plannerOverseerState: { state: "monitoring" },
+          plannerOverseerState: { state: "watching", oversightLevel: "observe" },
         })}
         onOpenDetail={noop}
         addToast={noop}

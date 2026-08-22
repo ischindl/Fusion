@@ -222,7 +222,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  (globalThis as typeof globalThis & { WebSocket?: typeof WebSocket }).WebSocket = originalWebSocket;
+  (globalThis as { WebSocket?: typeof WebSocket }).WebSocket = originalWebSocket;
   vi.clearAllMocks();
 });
 

@@ -63,7 +63,7 @@ describe("TaskDetailModal oversight controls — mobile overflow menu", () => {
     setViewportWidth(MOBILE_WIDTH);
     const api = await import("../../api");
     vi.mocked(api.fetchBoardWorkflows).mockResolvedValue({ flagEnabled: false, defaultWorkflowId: "", workflows: [], taskWorkflowIds: {} });
-    vi.mocked(api.fetchWorkflowSettingValues).mockResolvedValue({ stored: {}, effective: {}, defaults: {} });
+    vi.mocked(api.fetchWorkflowSettingValues).mockResolvedValue({ stored: {}, effective: {}, orphaned: [] });
     vi.mocked(api.nudgeOverseer).mockResolvedValue({ applied: false, reason: "oversight-off" });
     vi.mocked(api.stopOverseer).mockResolvedValue({ applied: true, reason: "stopped" });
     vi.mocked(api.explainOverseer).mockResolvedValue({ snapshot: null });
@@ -90,7 +90,7 @@ describe("TaskDetailModal oversight controls — mobile overflow menu", () => {
     vi.mocked(api.fetchWorkflowSettingValues).mockResolvedValueOnce({
       stored: {},
       effective: { plannerOversightLevel: "off", plannerOverseerAdvisorEnabled: false },
-      defaults: {},
+      orphaned: [],
     });
 
     render(
@@ -136,7 +136,7 @@ describe("TaskDetailModal oversight controls — mobile overflow menu", () => {
     vi.mocked(api.fetchWorkflowSettingValues).mockResolvedValueOnce({
       stored: {},
       effective: { plannerOversightLevel: "off", plannerOverseerAdvisorEnabled: true },
-      defaults: {},
+      orphaned: [],
     });
     vi.mocked(api.updateTask).mockImplementation(async (_id, patch) => {
       currentTask = makeUpdatedTask(currentTask, patch);

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BoardWorkflowDefinition, BoardWorkflowsPayload } from "../api";
+import type { SseSubscription } from "../sse-bus";
 import { HeaderWorkflowSwitcherSlot, type HeaderWorkflowSelection } from "../components/HeaderWorkflowSwitcherSlot";
 import { ALL_WORKFLOWS_BOARD_VIEW_ID } from "../utils/boardWorkflowSelection";
 import {
@@ -11,14 +12,21 @@ import {
 } from "../components/GraphWorkflowSwitcherSlot";
 
 const fetchBoardWorkflowsMock = vi.fn();
-const subscribeSseMock = vi.fn(() => vi.fn());
+const subscribeSseMock = vi.fn((_url: string, _sub?: SseSubscription) => vi.fn());
 
 vi.mock("../api", () => ({
   fetchBoardWorkflows: (...args: unknown[]) => fetchBoardWorkflowsMock(...args),
 }));
 
+/*
+FNXC:SseBusMock 2026-08-22-03:12:
+Forward the real (url, sub) arguments into the mock: the pre-campaign spread failed typecheck
+because an implemented vi.fn infers its parameter list, and the tests below read the subscription
+back from mock.calls[0][1]. Dropping the args (the _args variant) typechecked but broke every
+SSE-driven assertion in the file.
+*/
 vi.mock("../sse-bus", () => ({
-  subscribeSse: (...args: unknown[]) => subscribeSseMock(...args),
+  subscribeSse: (url: string, sub?: SseSubscription) => subscribeSseMock(url, sub),
 }));
 
 const DEFAULT_WORKFLOW: BoardWorkflowDefinition = {

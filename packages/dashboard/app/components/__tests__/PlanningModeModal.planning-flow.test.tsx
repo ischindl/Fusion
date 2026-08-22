@@ -534,7 +534,8 @@ describe("PlanningModeModal sequential flow", () => {
     fireEvent.change(suggestionInput, { target: { value: "Explain the audit path." } });
     // Editor selections are not plan selections: the frozen open quote must remain the Markdown text.
     act(() => {
-      suggestionInput.setSelectionRange(0, suggestionInput.value.length);
+      const suggestionTextArea = suggestionInput as HTMLTextAreaElement;
+      suggestionTextArea.setSelectionRange(0, suggestionTextArea.value.length);
       fireEvent.mouseUp(suggestionInput);
       document.dispatchEvent(new Event("selectionchange"));
     });

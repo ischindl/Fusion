@@ -90,6 +90,23 @@ const defaultChatState: UseChatReturn = {
   filteredSessions: [activeSession],
   refreshSessions: vi.fn(),
   agentsMap: new Map(),
+
+  tags: [],
+  selectedTagId: null,
+  setSelectedTagId: vi.fn(),
+  archivedSessions: [],
+  refreshArchivedSessions: vi.fn(),
+  unarchiveSession: vi.fn(),
+  renameSession: vi.fn(),
+  pinSession: vi.fn(),
+  pinnedCount: 0,
+  setSessionModel: vi.fn(),
+  setSessionThinkingLevel: vi.fn(),
+  createTag: vi.fn(),
+  renameTag: vi.fn(),
+  deleteTag: vi.fn(),
+  setSessionTags: vi.fn(),
+  backfillStashSession: vi.fn(),
 };
 
 const roomA = {
@@ -100,6 +117,7 @@ const roomA = {
   projectId: "proj-123",
   createdBy: "agent-1",
   status: "active" as const,
+  thinkingLevel: null,
   createdAt: "2026-04-08T00:00:00.000Z",
   updatedAt: "2026-04-08T00:00:00.000Z",
 };
@@ -118,6 +136,8 @@ const defaultRoomsState: UseChatRoomsResult = {
   sendRoomMessage: vi.fn(),
   clearRoom: vi.fn(),
   refreshRooms: vi.fn(),
+
+  updateRoomSettings: vi.fn(),
 };
 
 async function setup(chatOverrides: Partial<UseChatReturn> = {}, roomsOverrides: Partial<UseChatRoomsResult> = {}, experimentalFeatures?: Record<string, boolean>) {
@@ -259,7 +279,7 @@ describe("ChatView scroll-to-top message affordance", () => {
       },
       {
         messages: [
-          { id: "room-assistant-1", roomId: roomA.id, role: "assistant", content: "Room response", createdAt: "2026-04-08T00:00:00.000Z", senderAgentId: "agent-1", mentions: [] },
+          { id: "room-assistant-1", roomId: roomA.id, role: "assistant", content: "Room response", thinkingOutput: null, metadata: null, createdAt: "2026-04-08T00:00:00.000Z", senderAgentId: "agent-1", mentions: [] },
         ],
       },
       { chatRooms: true },
@@ -275,7 +295,7 @@ describe("ChatView scroll-to-top message affordance", () => {
       { sessions: [activeSession], activeSession },
       {
         messages: [
-          { id: "room-assistant-1", roomId: roomA.id, role: "assistant", content: "Room response", createdAt: "2026-04-08T00:00:00.000Z", senderAgentId: "agent-1", mentions: [] },
+          { id: "room-assistant-1", roomId: roomA.id, role: "assistant", content: "Room response", thinkingOutput: null, metadata: null, createdAt: "2026-04-08T00:00:00.000Z", senderAgentId: "agent-1", mentions: [] },
         ],
       },
       { chatRooms: true },

@@ -20,7 +20,7 @@ describe("shell-native", () => {
     const target = {
       ...window,
       fusionAPI: { openConnectionManager },
-    } as Window & typeof globalThis & { fusionAPI: { openConnectionManager: () => Promise<void> } };
+    } as unknown as Window & typeof globalThis & { fusionAPI: { openConnectionManager: () => Promise<void> } };
 
     const result = await getShellConnectionNativeResult({ kind: "desktop-shell", mode: "local" }, target);
     expect(result.available).toBe(true);
@@ -81,7 +81,7 @@ describe("shell-native", () => {
           throw new Error("boom");
         }),
       },
-    } as Window & typeof globalThis;
+    } as unknown as Window & typeof globalThis;
 
     const result = await getShellConnectionNativeResult({ kind: "desktop-shell", mode: "remote" }, target);
     await expect(result.openConnectionManager()).resolves.toEqual({ ok: false, reason: "failed", error: "boom" });

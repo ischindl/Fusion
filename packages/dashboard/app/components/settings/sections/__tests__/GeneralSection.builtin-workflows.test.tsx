@@ -30,9 +30,6 @@ function GeneralHost({ initialForm }: { initialForm: Partial<SettingsFormState> 
       addToast={vi.fn()}
       prefixError={null}
       setPrefixError={vi.fn()}
-      projectTrackingRepoOptions={[]}
-      projectTrackingRepoLoading={false}
-      projectTrackingRepoError={null}
     />
   );
 }

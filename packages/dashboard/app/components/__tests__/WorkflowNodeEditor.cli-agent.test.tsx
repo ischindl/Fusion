@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, cleanup, fireEvent } from "@testing-library/react";
-import type { WorkflowDefinition } from "@fusion/core";
+import type { Settings, WorkflowDefinition } from "@fusion/core";
 
 vi.mock("../../api", () => ({
   fetchWorkflows: vi.fn(),
@@ -45,6 +45,7 @@ function promptDef(): WorkflowDefinition {
     id: "WF-CLI",
     name: "CLI",
     description: "",
+    kind: "workflow",
     ir: {
       version: "v2",
       name: "CLI",
@@ -81,9 +82,9 @@ describe("WorkflowNodeEditor — cli-agent executor (U15)", () => {
     vi.mocked(fetchWorkflows).mockResolvedValue([promptDef()]);
     vi.mocked(fetchTraits).mockResolvedValue(TRAIT_CATALOG);
     vi.mocked(fetchStepParsers).mockResolvedValue([]);
-    vi.mocked(fetchModels).mockResolvedValue({ models: [] });
-    vi.mocked(fetchConfig).mockResolvedValue({ maxConcurrent: 2, rootDir: "/tmp/project" });
-    vi.mocked(fetchSettings).mockResolvedValue({ autoMerge: true });
+    vi.mocked(fetchModels).mockResolvedValue({ models: [], favoriteProviders: [], favoriteModels: [] });
+    vi.mocked(fetchConfig).mockResolvedValue({ maxConcurrent: 2, effectiveMaxConcurrent: 2, concurrencyBindingKnob: "maxConcurrent", rootDir: "/tmp/project" });
+    vi.mocked(fetchSettings).mockResolvedValue({ autoMerge: true } as Settings);
     vi.mocked(updateWorkflow).mockResolvedValue(promptDef());
     // Stub the adapter-catalog fetch.
     vi.stubGlobal(

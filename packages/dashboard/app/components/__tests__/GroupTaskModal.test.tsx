@@ -72,7 +72,7 @@ describe("GroupTaskModal", () => {
   });
 
   it("renders group summary and member open action", async () => {
-    mockedGet.mockResolvedValue({ group: makeGroup() } as Awaited<ReturnType<typeof apiGetBranchGroup>>);
+    mockedGet.mockResolvedValue({ group: makeGroup() } as unknown as Awaited<ReturnType<typeof apiGetBranchGroup>>);
     const onOpenMemberTask = vi.fn();
 
     render(<GroupTaskModal isOpen onClose={vi.fn()} groupId="BG-1" onOpenMemberTask={onOpenMemberTask} />);
@@ -84,7 +84,7 @@ describe("GroupTaskModal", () => {
   });
 
   it("uses the production group header for touch drag and resize", async () => {
-    mockedGet.mockResolvedValue({ group: makeGroup() } as Awaited<ReturnType<typeof apiGetBranchGroup>>);
+    mockedGet.mockResolvedValue({ group: makeGroup() } as unknown as Awaited<ReturnType<typeof apiGetBranchGroup>>);
     render(<GroupTaskModal isOpen onClose={vi.fn()} groupId="BG-1" onOpenMemberTask={vi.fn()} />);
     await screen.findByText("feature/shared");
     assertRenderedModalTouchGeometry("group-task", screen.getByRole("heading", { name: "Branch Group BG-1" }).closest(".modal-header") as HTMLElement);
@@ -92,7 +92,7 @@ describe("GroupTaskModal", () => {
   });
 
   it("hides promote controls until complete", async () => {
-    mockedGet.mockResolvedValue({ group: makeGroup() } as Awaited<ReturnType<typeof apiGetBranchGroup>>);
+    mockedGet.mockResolvedValue({ group: makeGroup() } as unknown as Awaited<ReturnType<typeof apiGetBranchGroup>>);
 
     render(<GroupTaskModal isOpen onClose={vi.fn()} groupId="BG-1" onOpenMemberTask={vi.fn()} />);
 
@@ -107,12 +107,12 @@ describe("GroupTaskModal", () => {
           { taskId: "FN-1", title: "First", column: "done", landed: true },
           { taskId: "FN-2", title: "Second", column: "done", landed: true },
         ] }),
-      } as Awaited<ReturnType<typeof apiGetBranchGroup>>)
+      } as unknown as Awaited<ReturnType<typeof apiGetBranchGroup>>)
       .mockResolvedValueOnce({
         group: makeGroup({ completion: { landed: 2, total: 2, complete: true } }),
-      } as Awaited<ReturnType<typeof apiGetBranchGroup>>);
+      } as unknown as Awaited<ReturnType<typeof apiGetBranchGroup>>);
 
-    mockedPromote.mockResolvedValue({ ok: true } as Awaited<ReturnType<typeof apiPromoteBranchGroup>>);
+    mockedPromote.mockResolvedValue({ ok: true } as unknown as Awaited<ReturnType<typeof apiPromoteBranchGroup>>);
 
     render(<GroupTaskModal isOpen onClose={vi.fn()} groupId="BG-1" onOpenMemberTask={vi.fn()} />);
 
@@ -129,7 +129,7 @@ describe("GroupTaskModal", () => {
         prUrl: "https://github.com/org/repo/pull/1",
         prNumber: 1,
       }),
-    } as Awaited<ReturnType<typeof apiGetBranchGroup>>);
+    } as unknown as Awaited<ReturnType<typeof apiGetBranchGroup>>);
 
     render(<GroupTaskModal isOpen onClose={vi.fn()} groupId="BG-1" onOpenMemberTask={vi.fn()} />);
 
@@ -141,8 +141,8 @@ describe("GroupTaskModal", () => {
   it("abandons an open group PR", async () => {
     mockedGet.mockResolvedValue({
       group: makeGroup({ completion: { landed: 2, total: 2, complete: true }, members: completeMembers, prState: "open", prNumber: 2, prUrl: "https://github.com/org/repo/pull/2" }),
-    } as Awaited<ReturnType<typeof apiGetBranchGroup>>);
-    mockedAbandon.mockResolvedValue({ groupId: "BG-1", group: makeGroup({ status: "abandoned", prState: "closed" }) } as Awaited<ReturnType<typeof apiAbandonBranchGroup>>);
+    } as unknown as Awaited<ReturnType<typeof apiGetBranchGroup>>);
+    mockedAbandon.mockResolvedValue({ groupId: "BG-1", group: makeGroup({ status: "abandoned", prState: "closed" }) } as unknown as Awaited<ReturnType<typeof apiAbandonBranchGroup>>);
 
     render(<GroupTaskModal isOpen onClose={vi.fn()} groupId="BG-1" onOpenMemberTask={vi.fn()} />);
 
@@ -166,7 +166,7 @@ describe("GroupTaskModal", () => {
         prNumber: 4,
         prUrl: "https://github.com/org/repo/pull/4",
       }),
-    } as Awaited<ReturnType<typeof apiGetBranchGroup>>);
+    } as unknown as Awaited<ReturnType<typeof apiGetBranchGroup>>);
 
     render(<GroupTaskModal isOpen onClose={vi.fn()} groupId="BG-1" onOpenMemberTask={vi.fn()} />);
 
@@ -177,10 +177,10 @@ describe("GroupTaskModal", () => {
 
   it("refetches on task:moved and updates completion-gated actions in place", async () => {
     mockedGet
-      .mockResolvedValueOnce({ group: makeGroup() } as Awaited<ReturnType<typeof apiGetBranchGroup>>)
+      .mockResolvedValueOnce({ group: makeGroup() } as unknown as Awaited<ReturnType<typeof apiGetBranchGroup>>)
       .mockResolvedValueOnce({
         group: makeGroup({ completion: { landed: 2, total: 2, complete: true }, members: completeMembers }),
-      } as Awaited<ReturnType<typeof apiGetBranchGroup>>);
+      } as unknown as Awaited<ReturnType<typeof apiGetBranchGroup>>);
 
     render(<GroupTaskModal isOpen onClose={vi.fn()} groupId="BG-1" onOpenMemberTask={vi.fn()} />);
     await screen.findByText("1 of 2 members finished");
@@ -197,10 +197,10 @@ describe("GroupTaskModal", () => {
 
   it("refetches the open group modal on reconnect", async () => {
     mockedGet
-      .mockResolvedValueOnce({ group: makeGroup() } as Awaited<ReturnType<typeof apiGetBranchGroup>>)
+      .mockResolvedValueOnce({ group: makeGroup() } as unknown as Awaited<ReturnType<typeof apiGetBranchGroup>>)
       .mockResolvedValueOnce({
         group: makeGroup({ completion: { landed: 2, total: 2, complete: true }, members: completeMembers }),
-      } as Awaited<ReturnType<typeof apiGetBranchGroup>>);
+      } as unknown as Awaited<ReturnType<typeof apiGetBranchGroup>>);
 
     render(<GroupTaskModal isOpen onClose={vi.fn()} groupId="BG-1" onOpenMemberTask={vi.fn()} />);
     await screen.findByText("1 of 2 members finished");
@@ -215,7 +215,7 @@ describe("GroupTaskModal", () => {
   it("shows terminal state and hides controls when merged", async () => {
     mockedGet.mockResolvedValue({
       group: makeGroup({ completion: { landed: 2, total: 2, complete: true }, members: completeMembers, prState: "merged", prNumber: 3, prUrl: "https://github.com/org/repo/pull/3" }),
-    } as Awaited<ReturnType<typeof apiGetBranchGroup>>);
+    } as unknown as Awaited<ReturnType<typeof apiGetBranchGroup>>);
 
     render(<GroupTaskModal isOpen onClose={vi.fn()} groupId="BG-1" onOpenMemberTask={vi.fn()} />);
 

@@ -26,6 +26,7 @@ function createAgent(overrides: Partial<Agent> = {}): Agent {
     id: "agent-1",
     name: "Agent One",
     role: "executor" as AgentCapability,
+    roles: ["executor"],
     state: "idle" as AgentState,
     metadata: {},
     createdAt: "2026-01-01T00:00:00.000Z",
@@ -39,6 +40,8 @@ const defaultStats: AgentStats = {
   assignedTaskCount: 2,
   completedRuns: 10,
   failedRuns: 1,
+  idleNonEphemeralCount: 0,
+  todoTaskCount: 0,
   successRate: 0.9,
 };
 

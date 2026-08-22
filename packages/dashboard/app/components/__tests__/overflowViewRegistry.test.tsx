@@ -49,10 +49,10 @@ describe("overflowViewRegistry", () => {
 
   it("adds enabled non-primary plugin views after static tool entries", () => {
     const pluginDashboardViews: PluginDashboardViewEntry[] = [
-      { pluginId: "fusion-plugin-todos", view: { viewId: "todos", label: "Todos", placement: "overflow", order: 70 } },
-      { pluginId: "plugin-a", view: { viewId: "primary", label: "Primary", placement: "primary" } },
-      { pluginId: "plugin-a", view: { viewId: "tools", label: "Tools", placement: "overflow", order: 2 } },
-      { pluginId: "plugin-b", view: { viewId: "audit", label: "Audit", placement: "secondary", order: 1 } },
+      { pluginId: "fusion-plugin-todos", view: { viewId: "todos", label: "Todos", componentPath: "todos", placement: "overflow", order: 70 } },
+      { pluginId: "plugin-a", view: { viewId: "primary", label: "Primary", componentPath: "primary", placement: "primary" } },
+      { pluginId: "plugin-a", view: { viewId: "tools", label: "Tools", componentPath: "tools", placement: "overflow", order: 2 } },
+      { pluginId: "plugin-b", view: { viewId: "audit", label: "Audit", componentPath: "audit", placement: "secondary", order: 1 } as unknown as PluginDashboardViewEntry["view"] },
     ];
 
     const entries = getVisibleOverflowViewEntries({ experimentalFeatures: { devServerView: true }, pluginDashboardViews });
@@ -65,8 +65,8 @@ describe("overflowViewRegistry", () => {
 
   it("excludes the dependency-graph plugin from the right dock", () => {
     const pluginDashboardViews: PluginDashboardViewEntry[] = [
-      { pluginId: "fusion-plugin-dependency-graph", view: { viewId: "graph", label: "Dependency Graph", placement: "overflow", order: 1 } },
-      { pluginId: "plugin-c", view: { viewId: "report", label: "Report", placement: "overflow", order: 2 } },
+      { pluginId: "fusion-plugin-dependency-graph", view: { viewId: "graph", label: "Dependency Graph", componentPath: "graph", placement: "overflow", order: 1 } },
+      { pluginId: "plugin-c", view: { viewId: "report", label: "Report", componentPath: "report", placement: "overflow", order: 2 } },
     ];
 
     const keys = getVisibleOverflowViewEntries({ pluginDashboardViews }).map((entry) => entry.key);
@@ -77,7 +77,7 @@ describe("overflowViewRegistry", () => {
   it("injects the native-structure drag hook into a prebuilt right-dock plugin context", () => {
     receivedPluginContexts.length = 0;
     const entry = getVisibleOverflowViewEntries({
-      pluginDashboardViews: [{ pluginId: "fusion-plugin-roadmap", view: { viewId: "roadmaps", label: "Roadmaps", placement: "overflow" } }],
+      pluginDashboardViews: [{ pluginId: "fusion-plugin-roadmap", view: { viewId: "roadmaps", label: "Roadmaps", componentPath: "roadmaps", placement: "overflow" } }],
     }).find((candidate) => candidate.key === "plugin:fusion-plugin-roadmap:roadmaps");
     expect(entry?.render).toBeTypeOf("function");
 
@@ -110,7 +110,7 @@ describe("overflowViewRegistry", () => {
     receivedPluginContexts.length = 0;
     vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: true })));
     const entry = getVisibleOverflowViewEntries({
-      pluginDashboardViews: [{ pluginId: "fusion-plugin-roadmap", view: { viewId: "roadmaps", label: "Roadmaps", placement: "overflow" } }],
+      pluginDashboardViews: [{ pluginId: "fusion-plugin-roadmap", view: { viewId: "roadmaps", label: "Roadmaps", componentPath: "roadmaps", placement: "overflow" } }],
     }).find((candidate) => candidate.key === "plugin:fusion-plugin-roadmap:roadmaps");
 
     render(<>{entry?.render?.({ projectId: "project-1", addToast: vi.fn() })}</>);

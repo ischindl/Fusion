@@ -251,14 +251,14 @@ describe("PrPanel", () => {
     { status: "closed", rollup: "none", expectMerge: false, expectReadonly: true, expectChecksVisible: false },
   ])("handles state=$status and checks=$rollup", async ({ status, rollup, expectMerge, expectReadonly, expectChecksVisible }) => {
     (refreshPrStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      prInfo: { ...mockPrInfo, status, draft: status === "draft" },
-      checks: checksByRollup[rollup],
+      prInfo: { ...mockPrInfo, status: status as (typeof mockPrInfo)["status"], draft: status === "draft" },
+      checks: checksByRollup[rollup as keyof typeof checksByRollup],
       reviewDecision: null,
       blockingReasons: status === "open" && rollup === "success" ? [] : ["waiting"],
       mergeReady: status === "open" && rollup === "success",
     });
 
-    render(<PrPanel taskId="FN-001" prInfo={{ ...mockPrInfo, status, draft: status === "draft" }} prAuthAvailable={true} onPrUpdated={mockOnPrUpdated} addToast={mockAddToast} />);
+    render(<PrPanel taskId="FN-001" prInfo={{ ...mockPrInfo, status: status as (typeof mockPrInfo)["status"], draft: status === "draft" }} prAuthAvailable={true} onPrUpdated={mockOnPrUpdated} addToast={mockAddToast} />);
     await waitFor(() => {
       expect(screen.getByTitle("Refresh PR status")).toBeEnabled();
     });

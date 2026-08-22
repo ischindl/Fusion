@@ -174,7 +174,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  (globalThis as typeof globalThis & { WebSocket?: typeof WebSocket }).WebSocket = originalWebSocket;
+  (globalThis as { WebSocket?: unknown }).WebSocket = originalWebSocket;
   if (originalScreenDescriptor) {
     Object.defineProperty(window, "screen", originalScreenDescriptor);
   }
@@ -238,7 +238,7 @@ describe("SessionTerminal (mobile)", () => {
     ["idle", { mode: "idle" as const }],
     ["ended", { mode: "ended" as const }],
   ])("does not render the mobile bar when %s", async (_label, props) => {
-    if (props.readOnly) {
+    if ((props as { readOnly?: boolean }).readOnly) {
       apiMock.mockResolvedValue({ ticket: "tkt-1", expiresAt: "", readOnly: true });
     }
     await renderMobile(props);

@@ -126,6 +126,20 @@ function chatState(overrides: Partial<UseChatReturn> = {}): UseChatReturn {
     filteredSessions: sessions,
     refreshSessions: vi.fn(),
     agentsMap: new Map(),
+    tags: [],
+    selectedTagId: null,
+    setSelectedTagId: vi.fn(),
+    archivedSessions: [],
+    refreshArchivedSessions: vi.fn(),
+    unarchiveSession: vi.fn(),
+    pinSession: vi.fn(),
+    pinnedCount: 0,
+    setSessionModel: vi.fn(),
+    createTag: vi.fn(),
+    renameTag: vi.fn(),
+    deleteTag: vi.fn(),
+    setSessionTags: vi.fn(),
+    backfillStashSession: vi.fn(),
     ...overrides,
   };
 }
@@ -144,6 +158,8 @@ function roomsState(overrides: Partial<UseChatRoomsResult> = {}): UseChatRoomsRe
     deleteRoom: vi.fn(),
     sendRoomMessage: vi.fn(),
     refreshRooms: vi.fn(),
+    updateRoomSettings: vi.fn(),
+    clearRoom: vi.fn(),
     ...overrides,
   };
 }

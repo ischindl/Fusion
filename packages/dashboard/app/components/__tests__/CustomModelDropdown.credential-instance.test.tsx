@@ -21,7 +21,7 @@ describe("CustomModelDropdown credential instance", () => {
   it.each([undefined, {}, { openai: { instances: [] } }, { openai: { instances: [{ id: "only", isDefault: true }] } }])(
     "renders no instance control unless the selected provider has two instances",
     async (credentialInstances) => {
-      await openDropdown({ credentialInstances });
+      await openDropdown({ credentialInstances: credentialInstances as ComponentProps<typeof CustomModelDropdown>["credentialInstances"] });
       expect(screen.queryByTestId("custom-model-dropdown-credential-instance")).toBeNull();
       expect(screen.queryByTestId("custom-model-dropdown-credential-instance-badge")).toBeNull();
     },

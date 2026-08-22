@@ -364,7 +364,7 @@ describe("useDeepLink", () => {
       configurable: true,
       value: new URL("http://localhost:3000/?project=proj_123&task=FN-123"),
     });
-    const replaceStateMock = window.history.replaceState as ReturnType<typeof vi.fn>;
+    const replaceStateMock = window.history.replaceState as typeof window.history.replaceState;
     window.history.replaceState = originalReplaceState;
     window.history.replaceState({ navIndex: 2, existing: "value" }, "");
     window.history.replaceState = replaceStateMock;

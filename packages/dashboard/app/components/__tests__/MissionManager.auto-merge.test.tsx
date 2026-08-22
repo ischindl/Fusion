@@ -100,7 +100,7 @@ function expectMergeGuidance(form: HTMLElement) {
 function getMissionForm(control: HTMLElement) {
   const form = control.closest(".mission-form-card");
   if (!form) throw new Error("Mission merge behavior control must be rendered in its production form card");
-  return form;
+  return form as HTMLElement;
 }
 
 async function findManualMissionCreateLink() {
@@ -142,7 +142,7 @@ describe("MissionManager auto-merge override", () => {
 
     render(<MissionManager isInline isOpen onClose={() => {}} addToast={() => {}} projectId="project-1" />);
     fireEvent.click(await screen.findByText("Single PR Mission"));
-    const listItem = screen.getByText("List Edit Mission").closest(".mission-list__item");
+    const listItem = screen.getByText("List Edit Mission").closest(".mission-list__item") as HTMLElement | null;
     if (!listItem) throw new Error("List edit mission row must be rendered");
     fireEvent.click(within(listItem).getByRole("button", { name: "Edit mission" }));
 

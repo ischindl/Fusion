@@ -15,7 +15,7 @@ describe("useAgentsMapCache", () => {
     vi.clearAllMocks();
     localStorage.clear();
     mockFetchAgents.mockResolvedValue([
-      { id: "agent-1", name: "Alpha", role: "executor", state: "idle", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", metadata: {} },
+      { id: "agent-1", name: "Alpha", role: "executor", roles: ["executor"], state: "idle", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", metadata: {} },
     ]);
   });
 
@@ -65,7 +65,7 @@ describe("useAgentsMapCache", () => {
 
     await act(async () => {
       resolveFetch?.([
-        { id: "agent-1", name: "Alpha", role: "executor", state: "idle", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", metadata: {} },
+        { id: "agent-1", name: "Alpha", role: "executor", roles: ["executor"], state: "idle", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", metadata: {} },
       ]);
     });
 
@@ -92,7 +92,7 @@ describe("useAgentsMapCache", () => {
   it("hydrates per-project cache on switch and fetches the new project once", async () => {
     localStorage.setItem(
       `${SWR_CACHE_KEYS.CHAT_AGENTS_MAP_PREFIX}p1`,
-      JSON.stringify({ savedAt: Date.now(), data: [{ id: "agent-p1", name: "Project One", role: "executor", state: "idle", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", metadata: {} }] }),
+      JSON.stringify({ savedAt: Date.now(), data: [{ id: "agent-p1", name: "Project One", role: "executor", roles: ["executor"], state: "idle", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", metadata: {} }] }),
     );
     localStorage.setItem(
       `${SWR_CACHE_KEYS.CHAT_AGENTS_MAP_PREFIX}p2`,

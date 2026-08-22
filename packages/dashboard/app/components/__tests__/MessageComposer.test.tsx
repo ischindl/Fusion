@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MessageComposer, resolveDroppedNativeStructureRef } from "../MessageComposer";
 import * as apiModule from "../../api";
 import type { Agent } from "../../api";
+import type { NativeStructureRef } from "@fusion/core";
 import { isNativeStructureDragEnabled, NATIVE_STRUCTURE_DRAG_MIME } from "../../utils/nativeStructureDrag";
 
 const composeChatProps = vi.fn();
@@ -42,6 +43,7 @@ const mockAgents: Agent[] = [
     id: "agent-001",
     name: "Test Agent",
     role: "executor",
+    roles: ["executor"],
     state: "idle",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -69,6 +71,7 @@ describe("MessageComposer", () => {
       content: "Test message",
       type: "user-to-agent",
       read: false,
+      archived: false,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
@@ -248,7 +251,13 @@ describe("MessageComposer", () => {
   it("preserves a long structure label when attaching from the shared picker", () => {
     const longLabel = "A deliberately long structure label that must remain available without changing attachment metadata";
     render(<MessageComposer {...defaultProps} nativeStructureCandidates={[
-      { ref: { kind: "mission-with-a-deliberately-long-kind", id: "M-long" }, label: longLabel },
+      /*
+      FNXC:RUFU-140 2026-08-21-04:55:
+      The long, non-canonical kind string is deliberate — this test proves the picker passes an
+      arbitrary kind through to the option label verbatim. The ref type constrains kind to the
+      canonical union, so the runtime value is kept through a localized cast.
+      */
+      { ref: { kind: "mission-with-a-deliberately-long-kind" as unknown as NativeStructureRef["kind"], id: "M-long" }, label: longLabel },
     ]} />);
 
     const picker = screen.getByTestId("message-composer-attach-structure");

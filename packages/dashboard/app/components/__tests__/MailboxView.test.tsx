@@ -113,6 +113,7 @@ const mockAgents: Agent[] = [
     id: "agent-001",
     name: "Test Agent 1",
     role: "executor",
+    roles: ["executor"],
     state: "idle",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -122,6 +123,7 @@ const mockAgents: Agent[] = [
     id: "agent-002",
     name: "Test Agent 2",
     role: "triage",
+    roles: ["triage"],
     state: "active",
     taskId: "FN-001",
     createdAt: new Date().toISOString(),
@@ -139,6 +141,7 @@ const mockMessage: Message = {
   content: "Hello, this is a test message from the agent.",
   type: "agent-to-user",
   read: false,
+  archived: false,
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
 };
@@ -159,6 +162,7 @@ const mockOutboxMessage: Message = {
   content: "This is a sent message from the agent.",
   type: "agent-to-user",
   read: true,
+  archived: false,
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
 };
@@ -172,6 +176,7 @@ const mockAgentToAgentMessage: Message = {
   content: "Agent to agent ping.",
   type: "agent-to-agent",
   read: false,
+  archived: false,
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
 };
@@ -2096,6 +2101,7 @@ describe("MailboxView", () => {
         content: "Hello from another agent",
         type: "agent-to-agent",
         read: false,
+        archived: false,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -2138,6 +2144,7 @@ describe("MailboxView", () => {
         content: "Important — please reply",
         type: "user-to-agent",
         read: false,
+        archived: false,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };

@@ -39,9 +39,18 @@ export const dashboardApiMocks: Record<string, AnyFn> = {
   fetchUnreadCount: vi.fn(async () => ({ unreadCount: 0 })),
 };
 
+/*
+FNXC:RUFU-140 2026-08-20-19:42:
+The overrides parameter is deliberately wider than AnyFn (= Mock): test suites
+pass typed passthrough wrappers (e.g. `fetchSettings: (...args: unknown[]) =>
+mockFetchSettings(...args)`) that are not vitest Mocks, and forcing them to be
+Mock caused the 381 TS2322 errors in the 2026-08-20 test-check census. Only the
+overrides parameter is widened; dashboardApiMocks/fallbackFns/getFallback keep
+AnyFn = Mock because they call .mockReset() in resetDashboardApiMockState.
+*/
 export async function createDashboardApiMock(
   importActual: () => Promise<AnyModule>,
-  overrides: Record<string, AnyFn> = {},
+  overrides: Record<string, AnyFn | ((...args: never[]) => unknown)> = {},
 ): Promise<AnyModule> {
   const actual = await importActual();
   const mocked: AnyModule = { ...actual, ...dashboardApiMocks, ...overrides };

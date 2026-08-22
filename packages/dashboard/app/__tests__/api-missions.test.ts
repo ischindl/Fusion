@@ -12,7 +12,6 @@ import {
   updateTask,
   createTask,
   connectPlanningStream,
-  connectSubtaskStream,
   connectMissionInterviewStream,
   assignTask,
   fetchAgentTasks,
@@ -60,7 +59,6 @@ import {
   resumeProject,
   fetchFirstRunStatus,
   fetchGlobalConcurrency,
-  updateGlobalConcurrency,
   fetchPiSettings,
   updatePiSettings,
   installPiPackage,
@@ -84,11 +82,13 @@ import {
 } from "../api";
 import type { Task, TaskDetail, BatchStatusResponse, MergeResult } from "@fusion/core";
 import { clearAuthToken } from "../auth";
+import type { ChatFailureInfo } from "../api/chat/chat";
 
 const TASK_TOKEN_USAGE_FIXTURE = {
   inputTokens: 1000,
   outputTokens: 300,
   cachedTokens: 125,
+  cacheWriteTokens: 0,
   totalTokens: 1425,
   firstUsedAt: "2026-04-24T08:00:00.000Z",
   lastUsedAt: "2026-04-24T09:30:00.000Z",
@@ -553,27 +553,6 @@ describe("resilient SSE reconnect", () => {
     expect(stream.readyState).toBe(ControlledEventSource.CLOSED);
   });
 
-  it("stops subtask keep-alive after complete event", () => {
-    connectSubtaskStream("subtask-session", undefined, {});
-    const stream = ControlledEventSource.instances[0]!;
-
-    stream.emitOpen();
-    vi.advanceTimersByTime(25_000);
-
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "/api/ai-sessions/subtask-session/ping",
-      expect.objectContaining({ method: "POST" }),
-    );
-
-    const pingCallsBeforeComplete = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length;
-    stream.emitEvent("complete", "");
-
-    vi.advanceTimersByTime(50_000);
-
-    expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(pingCallsBeforeComplete);
-    expect(stream.readyState).toBe(ControlledEventSource.CLOSED);
-  });
-
   it("stops mission interview keep-alive after complete event", () => {
     connectMissionInterviewStream("mission-session", undefined, {});
     const stream = ControlledEventSource.instances[0]!;
@@ -825,7 +804,7 @@ describe("streamChatResponse", () => {
       thinking: string[];
       text: string[];
       done: Array<{ messageId: string }>;
-      error: string[];
+      error: Array<string | ChatFailureInfo>;
       connectionStates: string[];
     }) => void,
   ) => {
@@ -833,7 +812,7 @@ describe("streamChatResponse", () => {
       thinking: [] as string[],
       text: [] as string[],
       done: [] as Array<{ messageId: string }>,
-      error: [] as string[],
+      error: [] as Array<string | ChatFailureInfo>,
       connectionStates: [] as string[],
     };
 
@@ -987,7 +966,7 @@ describe("streamChatResponse", () => {
       thinking: [] as string[],
       text: [] as string[],
       done: [] as Array<{ messageId: string }>,
-      error: [] as string[],
+      error: [] as Array<string | ChatFailureInfo>,
       connectionStates: [] as string[],
     };
 
@@ -1067,7 +1046,7 @@ describe("mission interview draft api helpers", () => {
 
   it("fires onError when fetch aborts unexpectedly", async () => {
     const callbacks = {
-      error: [] as string[],
+      error: [] as Array<string | ChatFailureInfo>,
     };
 
     globalThis.fetch = vi.fn().mockRejectedValue(new DOMException("The operation was aborted", "AbortError"));
@@ -1084,7 +1063,7 @@ describe("mission interview draft api helpers", () => {
 
   it("does not fire onError when abort is initiated by close", async () => {
     const callbacks = {
-      error: [] as string[],
+      error: [] as Array<string | ChatFailureInfo>,
     };
 
     globalThis.fetch = vi.fn().mockImplementation((_, init?: RequestInit) => {

@@ -72,6 +72,7 @@ describe("WorkflowResultsTab", () => {
       name: "QA Check",
       description: "Run test suite",
       mode: "prompt",
+      gateMode: "gate",
       phase: "pre-merge",
       prompt: "Run QA checks",
       enabled: true,
@@ -83,6 +84,7 @@ describe("WorkflowResultsTab", () => {
       name: "Docs Review",
       description: "Review docs",
       mode: "prompt",
+      gateMode: "gate",
       phase: "post-merge",
       prompt: "Review docs",
       enabled: true,
@@ -94,6 +96,7 @@ describe("WorkflowResultsTab", () => {
       name: "Browser Verification",
       description: "Verify web application functionality using browser automation",
       mode: "prompt",
+      gateMode: "gate",
       phase: "pre-merge",
       prompt: "Verify browser flows",
       enabled: true,
@@ -119,7 +122,7 @@ describe("WorkflowResultsTab", () => {
         { from: "execute", to: "end" },
       ],
     },
-  } as WorkflowDefinition;
+  } as unknown as WorkflowDefinition;
 
   const selectedWorkflow: WorkflowDefinition = {
     id: "WF-001",
@@ -137,7 +140,7 @@ describe("WorkflowResultsTab", () => {
         { from: "prompt-1", to: "end" },
       ],
     },
-  } as WorkflowDefinition;
+  } as unknown as WorkflowDefinition;
 
   const baseTask: Task = {
     id: "FN-001",
@@ -164,7 +167,7 @@ describe("WorkflowResultsTab", () => {
     autoMergeMode: "squash",
     paused: false,
     userPaused: false,
-  } as Task;
+  } as unknown as Task;
 
   const mockSettings: Settings = {
     modelProvider: "openai",
@@ -173,7 +176,7 @@ describe("WorkflowResultsTab", () => {
     validatorModel: "claude-3-5-haiku",
     planningModelProvider: "google",
     planningModel: "gemini-2.5-flash",
-  } as Settings;
+  } as unknown as Settings;
 
   afterAll(() => {
     vi.restoreAllMocks();
@@ -285,10 +288,10 @@ describe("WorkflowResultsTab", () => {
   });
 
   it.each([
-    { name: "not started", task: { ...baseTask, status: "todo", column: "todo" } as Task, results: [] as WorkflowStepResult[], testId: "workflow-phase-badge-not-started", text: "Not started" },
-    { name: "in progress", task: { ...baseTask, status: "in-progress", column: "in-progress" } as Task, results: [{ workflowStepId: "WS-004", workflowStepName: "Performance Check", phase: "pre-merge", status: "pending" }] as WorkflowStepResult[], testId: "workflow-phase-badge-pre-merge", text: "Pre-merge steps running" },
-    { name: "paused", task: { ...baseTask, status: "paused", column: "in-progress" } as Task, results: [] as WorkflowStepResult[], testId: "workflow-phase-badge-paused", text: "Paused" },
-    { name: "completed", task: { ...baseTask, status: "done", column: "done" } as Task, results: [{ workflowStepId: "WS-001", workflowStepName: "QA Check", phase: "pre-merge", status: "passed" }] as WorkflowStepResult[], testId: "workflow-phase-badge-completed", text: "Completed" },
+    { name: "not started", task: { ...baseTask, status: "todo", column: "todo" } as unknown as Task, results: [] as WorkflowStepResult[], testId: "workflow-phase-badge-not-started", text: "Not started" },
+    { name: "in progress", task: { ...baseTask, status: "in-progress", column: "in-progress" } as unknown as Task, results: [{ workflowStepId: "WS-004", workflowStepName: "Performance Check", phase: "pre-merge", status: "pending" }] as WorkflowStepResult[], testId: "workflow-phase-badge-pre-merge", text: "Pre-merge steps running" },
+    { name: "paused", task: { ...baseTask, status: "paused", column: "in-progress" } as unknown as Task, results: [] as WorkflowStepResult[], testId: "workflow-phase-badge-paused", text: "Paused" },
+    { name: "completed", task: { ...baseTask, status: "done", column: "done" } as unknown as Task, results: [{ workflowStepId: "WS-001", workflowStepName: "QA Check", phase: "pre-merge", status: "passed" }] as WorkflowStepResult[], testId: "workflow-phase-badge-completed", text: "Completed" },
   ])("shows correct workflow phase for $name", async ({ task, results, testId, text }) => {
     render(<WorkflowResultsTab taskId="FN-001" task={task} settings={mockSettings} results={results} taskStatus={task.status} />);
     await waitFor(() => expect(screen.getByTestId(testId)).toHaveTextContent(text));
@@ -439,8 +442,8 @@ describe("WorkflowResultsTab", () => {
 
   it("shows graph unavailable when a fetched workflow has no mappable nodes", async () => {
     mockedFetchTaskWorkflow.mockResolvedValueOnce({ workflowId: "WF-EMPTY" });
-    mockedFetchWorkflows.mockResolvedValue([{ id: "WF-EMPTY", name: "Empty Workflow", ir: { version: 1, nodes: [], edges: [] } } as WorkflowDefinition]);
-    mockedFetchWorkflow.mockResolvedValueOnce({ id: "WF-EMPTY", name: "Empty Workflow", ir: { version: 1, nodes: [], edges: [] } } as WorkflowDefinition);
+    mockedFetchWorkflows.mockResolvedValue([{ id: "WF-EMPTY", name: "Empty Workflow", ir: { version: 1, nodes: [], edges: [] } } as unknown as WorkflowDefinition]);
+    mockedFetchWorkflow.mockResolvedValueOnce({ id: "WF-EMPTY", name: "Empty Workflow", ir: { version: 1, nodes: [], edges: [] } } as unknown as unknown as WorkflowDefinition);
 
     render(<WorkflowResultsTab taskId="FN-001" task={baseTask} settings={mockSettings} results={mockResults} projectId="project-empty" />);
 
@@ -560,7 +563,7 @@ describe("WorkflowResultsTab", () => {
       validatorModelId: "configured-reviewer-model",
       planningModelProvider: null,
       planningModelId: null,
-    } as Task;
+    } as unknown as Task;
     const agentLogEntries: AgentLogEntry[] = [
       {
         timestamp: "2026-06-25T00:00:00Z",
@@ -593,7 +596,7 @@ describe("WorkflowResultsTab", () => {
       updatedAt: "2026-06-25T00:00:00Z",
       metadata: {},
       runtimeConfig: { model: "assigned-provider/assigned-model" },
-    } as Agent;
+    } as unknown as Agent;
 
     render(
       <WorkflowResultsTab
@@ -629,7 +632,7 @@ describe("WorkflowResultsTab", () => {
       validatorModelId: null,
       planningModelProvider: null,
       planningModelId: null,
-    } as Task;
+    } as unknown as Task;
     const workflowOverlaidSettings = {
       ...mockSettings,
       executionProvider: "workflow-executor",
@@ -638,7 +641,7 @@ describe("WorkflowResultsTab", () => {
       validatorModelId: "workflow-reviewer-model",
       planningProvider: "workflow-planner",
       planningModelId: "workflow-planner-model",
-    } as Settings;
+    } as unknown as Settings;
 
     render(<WorkflowResultsTab taskId="FN-001" task={taskWithoutOverrides} settings={workflowOverlaidSettings} results={mockResults} />);
 
@@ -668,7 +671,7 @@ describe("WorkflowResultsTab", () => {
     rerender(
       <WorkflowResultsTab
         taskId="FN-001"
-        task={{ ...baseTask, modelProvider: null, modelId: null, validatorModelProvider: null, validatorModelId: null, planningModelProvider: null, planningModelId: null, thinkingLevel: null } as Task}
+        task={{ ...baseTask, modelProvider: null, modelId: null, validatorModelProvider: null, validatorModelId: null, planningModelProvider: null, planningModelId: null, thinkingLevel: null } as unknown as Task}
         settings={undefined}
         results={mockResults}
       />,

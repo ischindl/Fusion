@@ -204,8 +204,8 @@ vi.mock("../../api", () => ({
 vi.mock("../../hooks/useNodes", () => ({
   useNodes: vi.fn(() => ({
     nodes: [
-      { id: "node-1", name: "Node One", status: "online", type: "remote", createdAt: "", updatedAt: "" },
-      { id: "node-2", name: "Node Two", status: "offline", type: "remote", createdAt: "", updatedAt: "" },
+      { id: "node-1", name: "Node One", status: "online", type: "remote", maxConcurrent: 2, createdAt: "", updatedAt: "" },
+      { id: "node-2", name: "Node Two", status: "offline", type: "remote", maxConcurrent: 2, createdAt: "", updatedAt: "" },
     ],
     loading: false,
     error: null,
@@ -318,7 +318,7 @@ vi.mock("../CustomModelDropdown", () => ({
 
 function mockQuickEntryNodes(nodes: Array<{ id: string; name: string; status: "online" | "offline" | "connecting" | "error"; type: "local" | "remote" }>) {
   vi.mocked(useNodes).mockReturnValue({
-    nodes: nodes.map((node) => ({ ...node, createdAt: "", updatedAt: "" })),
+    nodes: nodes.map((node) => ({ ...node, maxConcurrent: 2, createdAt: "", updatedAt: "" })),
     loading: false,
     error: null,
     refresh: vi.fn(),
@@ -326,6 +326,10 @@ function mockQuickEntryNodes(nodes: Array<{ id: string; name: string; status: "o
     update: vi.fn(),
     unregister: vi.fn(),
     healthCheck: vi.fn(),
+    fetchDockerConfig: vi.fn(),
+    patchDockerConfig: vi.fn(),
+    fetchDockerDiff: vi.fn(),
+    discoverRemoteProjects: vi.fn(),
   });
 }
 
@@ -504,8 +508,8 @@ describe("QuickEntryBox", () => {
     vi.mocked(fetchAgents).mockResolvedValue([]);
     vi.mocked(useNodes).mockReturnValue({
       nodes: [
-        { id: "node-1", name: "Node One", status: "online", type: "remote", createdAt: "", updatedAt: "" },
-        { id: "node-2", name: "Node Two", status: "offline", type: "remote", createdAt: "", updatedAt: "" },
+        { id: "node-1", name: "Node One", status: "online", type: "remote", maxConcurrent: 2, createdAt: "", updatedAt: "" },
+        { id: "node-2", name: "Node Two", status: "offline", type: "remote", maxConcurrent: 2, createdAt: "", updatedAt: "" },
       ],
       loading: false,
       error: null,
@@ -514,6 +518,10 @@ describe("QuickEntryBox", () => {
       update: vi.fn(),
       unregister: vi.fn(),
       healthCheck: vi.fn(),
+      fetchDockerConfig: vi.fn(),
+      patchDockerConfig: vi.fn(),
+      fetchDockerDiff: vi.fn(),
+      discoverRemoteProjects: vi.fn(),
     });
     vi.mocked(uploadAttachment).mockResolvedValue({} as any);
     vi.mocked(checkDuplicateTasks).mockResolvedValue([]);
@@ -3427,7 +3435,7 @@ describe("QuickEntryBox", () => {
       fireEvent.keyDown(textarea, { key: "Enter" });
 
       await waitFor(() => expect(uploadAttachment).toHaveBeenCalledTimes(2));
-      expect(uploadAttachment.mock.calls.map((call) => call[1])).toEqual([photo, note]);
+      expect(vi.mocked(uploadAttachment).mock.calls.map((call) => call[1])).toEqual([photo, note]);
       expect(addToast).toHaveBeenCalledWith("Failed to upload: note.txt", "error");
     });
 

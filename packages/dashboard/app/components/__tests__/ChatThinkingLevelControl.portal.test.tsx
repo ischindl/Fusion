@@ -101,7 +101,7 @@ describe("ChatThinkingLevelControl mobile popover CSS contract", () => {
   });
 });
 
-async function openModelPortalWithRender({ onChangeModel }: { onChangeModel: ReturnType<typeof vi.fn> }) {
+async function openModelPortalWithRender({ onChangeModel }: { onChangeModel: (selection: { agentId?: string; modelProvider?: string | null; modelId?: string | null }) => void | Promise<void> }) {
   render(<ChatThinkingLevelControl level={null} onChange={vi.fn()} onChangeModel={onChangeModel} models={models} agents={agents} />);
   return openModelPortal();
 }

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { NativeShellConnectionManager } from "../NativeShellConnectionManager";
+import type { FusionShellApi, ShellConnectionProfile, ShellConnectionState } from "../../types/native-shell";
 
 function createShellApi() {
   return {
@@ -15,8 +16,8 @@ function createShellApi() {
       updatedAt: "",
     })),
     deleteProfile: vi.fn(async () => undefined),
-    setActiveProfile: vi.fn(async () => ({ host: "mobile-shell", activeProfileId: "p1", profiles: [] })),
-    setDesktopMode: vi.fn(async () => ({ host: "desktop-shell", desktopMode: "remote", activeProfileId: null, profiles: [] })),
+    setActiveProfile: vi.fn(async () => ({ host: "mobile-shell", activeProfileId: "p1", profiles: [] as ShellConnectionProfile[] } as ShellConnectionState)),
+    setDesktopMode: vi.fn(async () => ({ host: "desktop-shell", desktopMode: "remote", activeProfileId: null, profiles: [] as ShellConnectionProfile[] } as ShellConnectionState)),
     startQrScan: vi.fn(async () => ({ serverUrl: "https://qr.example.com", authToken: "token" })),
     openConnectionManager: vi.fn(),
     subscribe: vi.fn(() => () => undefined),

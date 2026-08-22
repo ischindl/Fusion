@@ -752,7 +752,7 @@ describe("DocumentsView", () => {
 
   it("filters task documents and task artifacts with the task search query", async () => {
     mockUseDocuments.mockImplementation((options) => ({
-      documents: options.searchQuery ? [] : mockTaskDocuments,
+      documents: options?.searchQuery ? [] : mockTaskDocuments,
       projectFiles: [],
       loading: false,
       error: null,

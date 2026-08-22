@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { Mock } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { useBoardWorkflows } from "../useBoardWorkflows";
+import type { SseSubscription } from "../../sse-bus";
 import type { BoardWorkflowsPayload } from "../../api";
 import { ALL_WORKFLOWS_BOARD_VIEW_ID, readBoardWorkflowViewSelection } from "../../utils/boardWorkflowSelection";
 import {
@@ -23,11 +25,11 @@ function makePayload(overrides: Partial<BoardWorkflowsPayload> = {}): BoardWorkf
 
 describe("useBoardWorkflows", () => {
   let subscribeHandlers: Record<string, (payload?: unknown) => void>;
-  let unsubscribe: ReturnType<typeof vi.fn>;
+  let unsubscribe: Mock<() => void>;
 
   beforeEach(() => {
     subscribeHandlers = {};
-    unsubscribe = vi.fn();
+    unsubscribe = vi.fn<() => void>();
     localStorage.clear();
     sessionStorage.clear();
     __test_clearWorkflowSettingValuesRevisions();
@@ -36,11 +38,11 @@ describe("useBoardWorkflows", () => {
   function makeDeps(fetchImpl: () => Promise<BoardWorkflowsPayload>) {
     return {
       fetchBoardWorkflows: vi.fn(fetchImpl),
-      subscribeSse: vi.fn((_url: string, sub: { events?: Record<string, (p?: unknown) => void> }) => {
-        subscribeHandlers = { ...(sub.events ?? {}) };
+      subscribeSse: vi.fn((_url: string, sub?: SseSubscription) => {
+        subscribeHandlers = { ...(sub?.events ?? {}) } as Record<string, (payload?: unknown) => void>;
         return unsubscribe;
       }),
-      readBoardWorkflowsCache: vi.fn(() => null),
+      readBoardWorkflowsCache: vi.fn((..._args: unknown[]) => null as BoardWorkflowsPayload | null),
       writeBoardWorkflowsCache: vi.fn(),
       /*
       FNXC:OriginWorkflowSelection 2026-07-26-19:40:
@@ -112,7 +114,8 @@ describe("useBoardWorkflows", () => {
       workflows: [{ id: "wf-c", name: "Gamma", columns: [] }],
     });
     const deps = makeDeps(() => new Promise<BoardWorkflowsPayload>(() => {}));
-    deps.readBoardWorkflowsCache.mockImplementation((projectId?: string) => {
+    deps.readBoardWorkflowsCache.mockImplementation((..._args: unknown[]) => {
+      const projectId = _args[0] as string | undefined;
       if (projectId === "p1") return projectOnePayload;
       if (projectId === "p2") return projectTwoPayload;
       return null;
@@ -359,21 +362,23 @@ describe("useBoardWorkflows — board lane server mirror", () => {
     sessionStorage.clear();
   });
 
-  function makeMirrorDeps(persist: ReturnType<typeof vi.fn>) {
+  type PersistFn = (workflowId: string | null, projectId?: string) => Promise<{ workflowId: string | null }>;
+
+  function makeMirrorDeps(persist: Mock<PersistFn>) {
     return {
       fetchBoardWorkflows: vi.fn(() => Promise.resolve(makePayload())),
-      subscribeSse: vi.fn((_url: string, sub: { events?: Record<string, (p?: unknown) => void> }) => {
-        subscribeHandlers = { ...(sub.events ?? {}) };
+      subscribeSse: vi.fn((_url: string, sub?: SseSubscription) => {
+        subscribeHandlers = { ...(sub?.events ?? {}) } as Record<string, (payload?: unknown) => void>;
         return vi.fn();
       }),
-      readBoardWorkflowsCache: vi.fn(() => null),
+      readBoardWorkflowsCache: vi.fn((..._args: unknown[]) => null as BoardWorkflowsPayload | null),
       writeBoardWorkflowsCache: vi.fn(),
       persistBoardWorkflowSelection: persist,
     };
   }
 
   it("mirrors a user lane change to the server alongside the local write", async () => {
-    const persist = vi.fn(() => Promise.resolve({ workflowId: "wf-b" }));
+    const persist = vi.fn<PersistFn>(() => Promise.resolve({ workflowId: "wf-b" }));
     const { result } = renderHook(() => useBoardWorkflows({ projectId: "p1", ...makeMirrorDeps(persist) }));
     await waitFor(() => expect(result.current.workflowOptions.length).toBe(2));
 
@@ -386,7 +391,7 @@ describe("useBoardWorkflows — board lane server mirror", () => {
   // The aggregate view is a Board-only sentinel, never a real workflow id. Mirroring it
   // would hand task creation "__all_workflows__" as a workflow to resolve.
   it("clears the mirror instead of persisting the all-workflows sentinel", async () => {
-    const persist = vi.fn(() => Promise.resolve({ workflowId: null }));
+    const persist = vi.fn<PersistFn>(() => Promise.resolve({ workflowId: null }));
     const { result } = renderHook(() => useBoardWorkflows({ projectId: "p1", ...makeMirrorDeps(persist) }));
     await waitFor(() => expect(result.current.workflowOptions.length).toBe(2));
 
@@ -398,7 +403,7 @@ describe("useBoardWorkflows — board lane server mirror", () => {
   });
 
   it("clears the mirror when the selection is cleared", async () => {
-    const persist = vi.fn(() => Promise.resolve({ workflowId: null }));
+    const persist = vi.fn<PersistFn>(() => Promise.resolve({ workflowId: null }));
     const { result } = renderHook(() => useBoardWorkflows({ projectId: "p1", ...makeMirrorDeps(persist) }));
     await waitFor(() => expect(result.current.workflowOptions.length).toBe(2));
 
@@ -410,7 +415,7 @@ describe("useBoardWorkflows — board lane server mirror", () => {
   // localStorage already holds the authoritative selection; a mirror failure is a
   // best-effort miss, not a reason to revert or surface an error to the operator.
   it("keeps the lane switch when the mirror request rejects", async () => {
-    const persist = vi.fn(() => Promise.reject(new Error("offline")));
+    const persist = vi.fn<PersistFn>(() => Promise.reject(new Error("offline")));
     const { result } = renderHook(() => useBoardWorkflows({ projectId: "p1", ...makeMirrorDeps(persist) }));
     await waitFor(() => expect(result.current.workflowOptions.length).toBe(2));
 
@@ -422,7 +427,7 @@ describe("useBoardWorkflows — board lane server mirror", () => {
   });
 
   it("does not mirror on mount, before the operator has chosen a lane", async () => {
-    const persist = vi.fn(() => Promise.resolve({ workflowId: null }));
+    const persist = vi.fn<PersistFn>(() => Promise.resolve({ workflowId: null }));
     const { result } = renderHook(() => useBoardWorkflows({ projectId: "p1", ...makeMirrorDeps(persist) }));
     await waitFor(() => expect(result.current.workflowOptions.length).toBe(2));
 

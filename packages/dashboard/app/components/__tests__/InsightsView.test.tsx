@@ -1,6 +1,7 @@
 /**
  * InsightsView Component Tests
  */
+import type { TaskRecommendationListItem } from "@fusion/core";
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
@@ -82,10 +83,30 @@ vi.mock("lucide-react", () => ({
   ),
 }));
 
-import { useInsights } from "../../hooks/useInsights";
+import { useInsights, type InsightActionState } from "../../hooks/useInsights";
 import { useTaskRecommendations } from "../../hooks/useTaskRecommendations";
 
 const mockUseInsights = vi.mocked(useInsights);
+
+// Shared defaults for the archive-era useInsights members so per-test
+// mockReturnValue payloads can stay focused on sections/run state.
+const insightsResultBase = {
+  refresh: vi.fn(async () => {}),
+  runInsights: vi.fn(async () => {}),
+  dismiss: vi.fn(async () => {}),
+  createTask: vi.fn(async () => null),
+  archive: vi.fn(async () => {}),
+  unarchive: vi.fn(async () => {}),
+  toggleShowArchived: vi.fn(),
+  dismissStates: new Map<string, InsightActionState>(),
+  createTaskStates: new Map<string, InsightActionState>(),
+  archiveStates: new Map<string, InsightActionState>(),
+  unarchiveStates: new Map<string, InsightActionState>(),
+  totalCount: 0,
+  dismissedCount: 0,
+  archivedCount: 0,
+  showArchived: false,
+};
 const mockUseTaskRecommendations = vi.mocked(useTaskRecommendations);
 
 describe("InsightsView", () => {
@@ -118,7 +139,7 @@ describe("InsightsView", () => {
       createTask: vi.fn(),
       createStates: new Map(),
     });
-    mockUseInsights.mockReturnValue({
+    mockUseInsights.mockReturnValue({ ...insightsResultBase,
       sections: mockSections,
       loading: false,
       error: null,
@@ -242,7 +263,7 @@ describe("InsightsView", () => {
         },
       ];
 
-      mockUseInsights.mockReturnValue({
+      mockUseInsights.mockReturnValue({ ...insightsResultBase,
         sections: populatedSections,
         loading: false,
         error: null,
@@ -272,7 +293,7 @@ describe("InsightsView", () => {
     });
 
     it("renders active-section insight titles newest-first in document order", () => {
-      mockUseInsights.mockReturnValue({
+      mockUseInsights.mockReturnValue({ ...insightsResultBase,
         sections: [
           {
             ...mockSections[0],
@@ -313,12 +334,12 @@ describe("InsightsView", () => {
     });
 
     it("should render loading state", () => {
-      mockUseInsights.mockReturnValue({
+      mockUseInsights.mockReturnValue({ ...insightsResultBase,
         ...mockUseInsights("test"),
         loading: true,
       });
       // Use default mock
-      mockUseInsights.mockReturnValue({
+      mockUseInsights.mockReturnValue({ ...insightsResultBase,
         sections: mockSections,
         loading: true,
         error: null,
@@ -341,7 +362,7 @@ describe("InsightsView", () => {
     });
 
     it("should render top-level error state", () => {
-      mockUseInsights.mockReturnValue({
+      mockUseInsights.mockReturnValue({ ...insightsResultBase,
         sections: mockSections,
         loading: false,
         error: "Failed to load insights",
@@ -365,7 +386,7 @@ describe("InsightsView", () => {
     });
 
     it("should render run-level error state from failed insight runs", () => {
-      mockUseInsights.mockReturnValue({
+      mockUseInsights.mockReturnValue({ ...insightsResultBase,
         sections: mockSections,
         loading: false,
         error: null,
@@ -380,6 +401,8 @@ describe("InsightsView", () => {
           insightsUpdated: 0,
           inputMetadata: {},
           outputMetadata: {},
+          cancelledAt: null,
+          lifecycle: {},
           createdAt: "2024-01-01T00:00:00Z",
           startedAt: "2024-01-01T00:00:01Z",
           completedAt: "2024-01-01T00:00:10Z",
@@ -403,7 +426,7 @@ describe("InsightsView", () => {
     });
 
     it("should show friendly active-run conflict error and still render latest run details", () => {
-      mockUseInsights.mockReturnValue({
+      mockUseInsights.mockReturnValue({ ...insightsResultBase,
         sections: mockSections,
         loading: false,
         error: null,
@@ -418,6 +441,8 @@ describe("InsightsView", () => {
           insightsUpdated: 0,
           inputMetadata: {},
           outputMetadata: {},
+          cancelledAt: null,
+          lifecycle: {},
           createdAt: "2024-01-01T00:00:00Z",
           startedAt: "2024-01-01T00:00:01Z",
           completedAt: null,
@@ -443,7 +468,7 @@ describe("InsightsView", () => {
     });
 
     it("should render global empty state when all sections are empty", () => {
-      mockUseInsights.mockReturnValue({
+      mockUseInsights.mockReturnValue({ ...insightsResultBase,
         sections: mockSections,
         loading: false,
         error: null,
@@ -492,7 +517,7 @@ describe("InsightsView", () => {
         ...mockSections.slice(1),
       ];
 
-      mockUseInsights.mockReturnValue({
+      mockUseInsights.mockReturnValue({ ...insightsResultBase,
         sections: sectionsWithOne,
         loading: false,
         error: null,
@@ -582,7 +607,7 @@ describe("InsightsView", () => {
         },
       ];
 
-      mockUseInsights.mockReturnValue({
+      mockUseInsights.mockReturnValue({ ...insightsResultBase,
         sections: sectionsWithTwo,
         loading: false,
         error: null,
@@ -639,7 +664,7 @@ describe("InsightsView", () => {
         ...mockSections.slice(1),
       ];
 
-      mockUseInsights.mockReturnValue({
+      mockUseInsights.mockReturnValue({ ...insightsResultBase,
         sections: sectionsWithInsight,
         loading: false,
         error: null,
@@ -690,7 +715,7 @@ describe("InsightsView", () => {
         ...mockSections.slice(1),
       ];
 
-      mockUseInsights.mockReturnValue({
+      mockUseInsights.mockReturnValue({ ...insightsResultBase,
         sections: sectionsWithInsight,
         loading: false,
         error: null,
@@ -725,7 +750,7 @@ describe("InsightsView", () => {
 
     it("should trigger run insights on button click", async () => {
       const runInsights = vi.fn().mockResolvedValue(undefined);
-      mockUseInsights.mockReturnValue({
+      mockUseInsights.mockReturnValue({ ...insightsResultBase,
         sections: mockSections,
         loading: false,
         error: null,
@@ -753,7 +778,7 @@ describe("InsightsView", () => {
     });
 
     it("should disable run button while in-flight", () => {
-      mockUseInsights.mockReturnValue({
+      mockUseInsights.mockReturnValue({ ...insightsResultBase,
         sections: mockSections,
         loading: false,
         error: null,
@@ -803,7 +828,7 @@ describe("InsightsView", () => {
         ...mockSections.slice(1),
       ];
 
-      mockUseInsights.mockReturnValue({
+      mockUseInsights.mockReturnValue({ ...insightsResultBase,
         sections: sectionsWithInsight,
         loading: false,
         error: null,
@@ -858,7 +883,7 @@ describe("InsightsView", () => {
         ...mockSections.slice(1),
       ];
 
-      mockUseInsights.mockReturnValue({
+      mockUseInsights.mockReturnValue({ ...insightsResultBase,
         sections: sectionsWithInsight,
         loading: false,
         error: null,
@@ -921,7 +946,7 @@ describe("InsightsView", () => {
         ...mockSections.slice(1),
       ];
 
-      mockUseInsights.mockReturnValue({
+      mockUseInsights.mockReturnValue({ ...insightsResultBase,
         sections: sectionsWithInsight,
         loading: false,
         error: null,
@@ -952,7 +977,7 @@ describe("InsightsView", () => {
 
     it("should show toast on run success", async () => {
       const runInsights = vi.fn().mockResolvedValue(undefined);
-      mockUseInsights.mockReturnValue({
+      mockUseInsights.mockReturnValue({ ...insightsResultBase,
         sections: mockSections,
         loading: false,
         error: null,
@@ -983,7 +1008,7 @@ describe("InsightsView", () => {
 
     it("should show toast on run failure", async () => {
       const runInsights = vi.fn().mockRejectedValue(new Error("Generation failed"));
-      mockUseInsights.mockReturnValue({
+      mockUseInsights.mockReturnValue({ ...insightsResultBase,
         sections: mockSections,
         loading: false,
         error: null,
@@ -1043,7 +1068,7 @@ describe("InsightsView", () => {
         ...mockSections.slice(1),
       ];
 
-      mockUseInsights.mockReturnValue({
+      mockUseInsights.mockReturnValue({ ...insightsResultBase,
         sections: sectionsWithInsight,
         loading: false,
         error: null,
@@ -1101,7 +1126,7 @@ describe("InsightsView", () => {
         ...mockSections.slice(1),
       ];
 
-      mockUseInsights.mockReturnValue({
+      mockUseInsights.mockReturnValue({ ...insightsResultBase,
         sections: sectionsWithInsight,
         loading: false,
         error: null,
@@ -1177,7 +1202,7 @@ describe("InsightsView", () => {
     };
 
     it("hides toggle when no backlog-health insights exist", () => {
-      mockUseInsights.mockReturnValue({
+      mockUseInsights.mockReturnValue({ ...insightsResultBase,
         sections: [qualitySection, ...mockSections],
         loading: false,
         error: null,
@@ -1200,7 +1225,7 @@ describe("InsightsView", () => {
     });
 
     it("shows toggle with count and toggles filtered/unfiltered view", async () => {
-      mockUseInsights.mockReturnValue({
+      mockUseInsights.mockReturnValue({ ...insightsResultBase,
         sections: [qualitySection, workflowSection, ...mockSections],
         loading: false,
         error: null,
@@ -1251,7 +1276,7 @@ describe("InsightsView", () => {
     });
 
     it("resets selected category when active category has no backlog-health matches", async () => {
-      mockUseInsights.mockReturnValue({
+      mockUseInsights.mockReturnValue({ ...insightsResultBase,
         sections: [qualitySection, workflowSection, ...mockSections],
         loading: false,
         error: null,
@@ -1311,7 +1336,7 @@ describe("InsightsView", () => {
         ...mockSections.slice(1),
       ];
 
-      mockUseInsights.mockReturnValue({
+      mockUseInsights.mockReturnValue({ ...insightsResultBase,
         sections: sectionsWithArchived,
         loading: false,
         error: null,
@@ -1386,7 +1411,7 @@ describe("InsightsView", () => {
 
       const dismissStates = new Map([["INS-1", { running: true, error: null }]]);
 
-      mockUseInsights.mockReturnValue({
+      mockUseInsights.mockReturnValue({ ...insightsResultBase,
         sections: sectionsWithInsight,
         loading: false,
         error: null,
@@ -1453,7 +1478,7 @@ describe("InsightsView", () => {
         ...mockSections,
       ];
 
-      mockUseInsights.mockReturnValue({
+      mockUseInsights.mockReturnValue({ ...insightsResultBase,
         sections: maximalSections,
         loading: false,
         error: null,
@@ -1521,15 +1546,19 @@ describe("InsightsView", () => {
   });
 
   describe("task recommendations", () => {
-    const recommendations = [
+    const recommendations: TaskRecommendationListItem[] = [
       {
         taskId: "FN-1",
         taskTitle: "First source",
+        taskColumn: "done",
+        updatedAt: "2026-01-01T00:00:00.000Z",
         recommendation: { id: "shared-id", title: "First follow-up", description: "First description", category: "improvement" },
       },
       {
         taskId: "FN-2",
         taskTitle: "Second source",
+        taskColumn: "todo",
+        updatedAt: "2026-01-02T00:00:00.000Z",
         recommendation: { id: "shared-id", title: "Second follow-up", description: "Second description", category: "bug" },
       },
     ];

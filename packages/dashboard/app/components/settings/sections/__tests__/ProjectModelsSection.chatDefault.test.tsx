@@ -76,7 +76,7 @@ const models: ProjectModelsSectionModelProps = {
   getLaneThinkingValue: () => "",
   updateLaneThinkingValue: vi.fn(),
   resetLaneThinkingValue: vi.fn(),
-  availableModels: [{ id: "claude-sonnet-4-5", provider: "anthropic", name: "Claude Sonnet" }],
+  availableModels: [{ id: "claude-sonnet-4-5", provider: "anthropic", name: "Claude Sonnet", reasoning: true, contextWindow: 200000 }],
   modelsLoading: false,
   favoriteProviders: [],
   favoriteModels: [],

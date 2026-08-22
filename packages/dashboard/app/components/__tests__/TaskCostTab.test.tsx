@@ -17,14 +17,14 @@ function usage(overrides: Partial<TaskTokenUsage> = {}): TaskTokenUsage {
 }
 
 function task(tokenUsage?: TaskTokenUsage): TaskDetail {
-  return { id: "FN-7820", title: "Cost", column: "in-progress", steps: [], dependencies: [], tokenUsage } as TaskDetail;
+  return { id: "FN-7820", title: "Cost", column: "in-progress", steps: [], dependencies: [], tokenUsage } as unknown as TaskDetail;
 }
 
 describe("TaskCostTab", () => {
   it("renders per-model cost breakdown and task total", () => {
     render(<TaskCostTab task={task(usage({
       perModel: [
-        { modelProvider: "openai", modelId: "gpt-5-mini", inputTokens: 1_000_000, outputTokens: 1_000_000, cachedTokens: 0, cacheWriteTokens: 0, totalTokens: 2_000_000 },
+        { modelProvider: "openai", modelId: "gpt-5-mini", inputTokens: 1_000_000, outputTokens: 1_000_000, cachedTokens: 0, cacheWriteTokens: 0, totalTokens: 2_000_000, firstUsedAt: "2026-01-01T00:00:00Z", lastUsedAt: "2026-01-01T00:00:00Z" },
       ],
     }))} />);
 

@@ -62,6 +62,7 @@ describe("chat-commands registry", () => {
         trigger: "/retry",
         name: "retry",
         description: "test",
+        requiresAgent: false,
         run: vi.fn(),
       };
       const match = matchChatCommand("/retry now", [fakeCommand]);
@@ -96,7 +97,7 @@ describe("chat-commands registry", () => {
       mockAddSteeringComment.mockResolvedValueOnce({ id: "TASK-1" } as any);
       const steerCommand = CHAT_COMMANDS.find((command) => command.name === "steer")!;
 
-      await steerCommand.run({ taskId: "TASK-1", projectId: "proj-123", remainder: "focus on the auth bug" });
+      await steerCommand.run({ taskId: "TASK-1", sessionId: "session-1", projectId: "proj-123", remainder: "focus on the auth bug" });
 
       expect(mockAddSteeringComment).toHaveBeenCalledWith("TASK-1", "focus on the auth bug", "proj-123");
     });
@@ -105,7 +106,7 @@ describe("chat-commands registry", () => {
       mockAddSteeringComment.mockRejectedValueOnce(new Error("network down"));
       const steerCommand = CHAT_COMMANDS.find((command) => command.name === "steer")!;
 
-      await expect(steerCommand.run({ taskId: "TASK-1", remainder: "text" })).rejects.toThrow("network down");
+      await expect(steerCommand.run({ taskId: "TASK-1", sessionId: "session-1", remainder: "text" })).rejects.toThrow("network down");
     });
   });
 });

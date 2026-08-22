@@ -23,7 +23,7 @@ describe("McpServersCard built-in memory server", () => {
 
   it("renders an uneditable built-in row and writes a tombstone then deletes it", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ servers: [] }) }));
-    const result = renderCard("global", { mcpServers: { enabled: true, servers: [] } } as Settings);
+    const result = renderCard("global", { mcpServers: { enabled: true, servers: [] } } as unknown as Settings);
     expect(screen.getByTestId("mcp-server-row-fusion-memory")).toHaveTextContent("Fusion memory");
     expect(screen.queryByLabelText("Remove fusion-memory")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Disable" }));
@@ -35,7 +35,7 @@ describe("McpServersCard built-in memory server", () => {
 
   it("uses the project marker only when cancelling a global tombstone", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ servers: [] }) }));
-    const result = renderCard("project", { mcpServers: { enabled: true, servers: [{ name: "fusion-memory", enabled: false } as never] } as never } as Settings, { mcpServers: { enabled: true, servers: [{ name: "fusion-memory", enabled: false } as never] } as never } as Settings);
+    const result = renderCard("project", { mcpServers: { enabled: true, servers: [{ name: "fusion-memory", enabled: false } as never] } as never } as unknown as Settings, { mcpServers: { enabled: true, servers: [{ name: "fusion-memory", enabled: false } as never] } as never } as unknown as Settings);
     fireEvent.click(screen.getByRole("button", { name: "Enable" }));
     expect(result.form().mcpServers?.servers).toEqual([{ name: "fusion-memory", enabled: true }]);
     expect(screen.getByTestId("mcp-server-row-fusion-memory")).toHaveTextContent("built-in");

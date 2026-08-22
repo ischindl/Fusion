@@ -244,6 +244,19 @@ pnpm --filter @fusion/dashboard test:build          # built client output contra
 
 Run `test:deep` when changing broad dashboard architecture, shared modal/view infrastructure, or route registration. Run `test:browser-smoke` for layout/responsive/navigation/modal/CSS changes. Run `test:build` for Vite output, lazy-loading, chunking, or client-dist changes.
 
+### Dashboard test-file typecheck (`tsconfig.test-check.json`)
+
+```bash
+pnpm --filter @fusion/dashboard exec tsc --noEmit -p tsconfig.test-check.json
+```
+
+`packages/dashboard/tsconfig.test-check.json` is the only typecheck program that covers dashboard test files: `tsconfig.app.json` excludes every `__tests__` directory and `*.test.*` pattern, so test code is otherwise untyped at compile time. The program reuses `tsconfig.base.json`, checks `app/**/*` under `strict`, and writes incremental state to `packages/dashboard/dist/.tsbuildinfo-test-check`.
+
+Its `declaration: false` / `declarationMap: false` settings are honest scoping, not a relaxation: all dashboard programs are `noEmit` and no test file is ever declaration-emitted, so the emit-portability naming checks those options control are inapplicable to this program. `declaration: true` would demand emit-portable names for mock-const types (TS2742) that nothing consumes.
+
+<!-- FNXC:DashboardTestCheckRatchet 2026-08-21-05:25: RUFU-140 makes `tsconfig.test-check.json` green (~2,012 pre-existing errors across ~400 test files, fixed with fixtures, localized `as unknown as T` casts, and adjacent `.d.mts` shims — no tsconfig weakening, no assertion changes) and pins the contract with a fast ratchet under `pnpm test:scripts`. The ratchet must parse the JSONC string-aware: a naive `/* */` comment strip corrupts the `"app/**/*"` include glob. -->
+The config's invariants are ratcheted by `scripts/__tests__/dashboard-test-check-config.test.mjs` (part of `pnpm test:scripts`): full `app/**/*` include coverage, no exclude patterns referencing `__tests__` / `*.test.*` / `test-harness` / `test-helpers`, no compiler-option relaxations (`strict`, `noImplicitAny`, `skipLibCheck`), `noEmit`, the documented `declaration`/`declarationMap` scoping, and the `paths` aliases test code depends on (including the adjacent `.d.mts` shims for relative `.mjs` imports, which `moduleResolution: "bundler"` requires because ambient `declare module` only covers bare specifiers).
+
 <!-- FNXC:DashboardStyling 2026-06-19-00:00: FN-6693 promotes the dashboard-wide raw-CSS token-validity guard because jsdom does not resolve custom properties; run `app/__tests__/dashboard-css-token-validity.css.test.ts` with the CSS contract tests when adding component CSS variables or remapping design tokens. -->
 The dashboard CSS contract lane includes `app/__tests__/dashboard-css-token-validity.css.test.ts`, which scans raw component/app CSS and fails any `var(--token)` reference that is not defined by CSS, assigned by React inline style, or explicitly allowlisted as runtime-local. Run it with `component-css-no-raw-rgba`, `dashboard-component-color-tokenization`, and `text-token-canonicalization` when touching design-token usage.
 

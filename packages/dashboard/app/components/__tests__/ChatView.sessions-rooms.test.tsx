@@ -881,6 +881,11 @@ describe("Chat header New Chat button", () => {
     const createSession = vi.fn().mockResolvedValue(activeSession);
     localStorage.setItem("fusion:chat-scope", "rooms");
     vi.mocked(apiModule.fetchSettings).mockResolvedValue({
+      maxConcurrent: 2,
+      maxWorktrees: 4,
+      pollIntervalMs: 15000,
+      groupOverlappingFiles: true,
+      autoMerge: true,
       chatNewSessionMode: "always-default",
       chatDefaultKind: "agent",
       chatDefaultAgentId: "agent-001",

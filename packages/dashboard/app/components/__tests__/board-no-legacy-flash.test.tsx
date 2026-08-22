@@ -123,6 +123,9 @@ const boardProps = {
   onNewTask: vi.fn(),
   autoMerge: true,
   onToggleAutoMerge: vi.fn(),
+  showWorktreeGrouping: false,
+  planAutoApproveEnabled: false,
+  onTogglePlanAutoApprove: vi.fn(),
 };
 
 const listProps = {

@@ -379,7 +379,13 @@ export function setupAgentDetailMocks() {
     { pluginId: "fusion-plugin-openclaw-runtime", runtimeId: "openclaw", name: "OpenClaw", description: "OpenClaw runtime", version: "1.0.0" },
     { pluginId: "fusion-plugin-hermes-runtime", runtimeId: "hermes", name: "Hermes", description: "Hermes runtime", version: "1.1.0" },
   ]);
+  /*
+  FNXC:RUFU-140 2026-08-20-19:42:
+  upgradeAgentHeartbeatProcedure's return type gained the resolved `agent`
+  (Agent) alongside the path/seeded flags after this mock was written.
+  */
   mockUpgradeAgentHeartbeatProcedure.mockResolvedValue({
+    agent: createMockAgent(),
     heartbeatProcedurePath: ".fusion/agents/agent-001/HEARTBEAT.md",
     procedureFileSeeded: true,
   });

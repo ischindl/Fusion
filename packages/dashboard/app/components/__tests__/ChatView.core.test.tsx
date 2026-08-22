@@ -325,8 +325,8 @@ describe("ChatView", () => {
   it("keeps Create disabled in model mode when no default model is resolvable", async () => {
     mockFetchModels.mockResolvedValue({
       ...defaultModelsResponse,
-      defaultProvider: null,
-      defaultModelId: null,
+      defaultProvider: undefined,
+      defaultModelId: undefined,
     });
     const createSession = vi.fn().mockResolvedValue({ id: "session-new", agentId: "__fn_agent__" });
     setupMockChat({ sessions: [], filteredSessions: [], createSession });
@@ -1610,7 +1610,12 @@ describe("ChatView", () => {
       activeRoom: {
         id: "room-001",
         projectId: "proj-123",
+        slug: "backend",
         name: "backend",
+        description: null,
+        createdBy: "agent-001",
+        status: "active" as const,
+        thinkingLevel: null,
         createdAt: "2026-04-08T00:00:00.000Z",
         updatedAt: "2026-04-08T00:00:00.000Z",
       },
@@ -1638,7 +1643,12 @@ describe("ChatView", () => {
       activeRoom: {
         id: "room-001",
         projectId: "proj-123",
+        slug: "backend",
         name: "backend",
+        description: null,
+        createdBy: "agent-001",
+        status: "active" as const,
+        thinkingLevel: null,
         createdAt: "2026-04-08T00:00:00.000Z",
         updatedAt: "2026-04-08T00:00:00.000Z",
       },
@@ -1668,7 +1678,12 @@ describe("ChatView", () => {
       activeRoom: {
         id: "room-001",
         projectId: "proj-123",
+        slug: "backend",
         name: "backend",
+        description: null,
+        createdBy: "agent-001",
+        status: "active" as const,
+        thinkingLevel: null,
         createdAt: "2026-04-08T00:00:00.000Z",
         updatedAt: "2026-04-08T00:00:00.000Z",
       },

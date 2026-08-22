@@ -1135,7 +1135,7 @@ describe("useTasks", () => {
 
   it("refreshes immediately when project context changes while tab is hidden", async () => {
     vi.useFakeTimers();
-    const visibilityState = { value: "visible" as VisibilityState };
+    const visibilityState = { value: "visible" as "visible" | "hidden" };
     Object.defineProperty(document, "visibilityState", {
       configurable: true,
       get: () => visibilityState.value,
@@ -1179,7 +1179,7 @@ describe("useTasks", () => {
     it("drops a carried verdict when SSE changes visible evidence or advances the row clock", async () => {
       const evaluatedAt = new Date().toISOString();
       const initial = createMockTask({
-        id: "FN-RELEASE-SSE", updatedAt: evaluatedAt, status: null,
+        id: "FN-RELEASE-SSE", updatedAt: evaluatedAt, status: undefined,
         releaseGate: {
           promoteBlocked: false, unplannedForExecution: false, blockedOnApproval: false, reason: null,
           readyAtCapacityBoundary: false, evaluatedAt, evaluatedForUpdatedAt: evaluatedAt,
@@ -1316,6 +1316,7 @@ describe("useTasks", () => {
           inputTokens: 100,
           outputTokens: 40,
           cachedTokens: 10,
+          cacheWriteTokens: 0,
           totalTokens: 150,
           firstUsedAt: "2026-01-02T00:00:00Z",
           lastUsedAt: "2026-01-02T00:01:00Z",
@@ -2181,7 +2182,7 @@ describe("useTasks", () => {
     });
 
     it("keeps merged archived rows after a tab-visibility-regain refresh", async () => {
-      const visibilityState = { value: "visible" as VisibilityState };
+      const visibilityState = { value: "visible" as "visible" | "hidden" };
       Object.defineProperty(document, "visibilityState", {
         configurable: true,
         get: () => visibilityState.value,
@@ -2276,7 +2277,7 @@ describe("useTasks", () => {
         column: "todo" as Column,
         paused: true,
         userPaused: true,
-        pausedByAgentId: null,
+        pausedByAgentId: undefined,
         pausedReason: "operator",
       });
       const keep = createMockTask({ id: "FN-KEEP", column: "in-progress" as Column, paused: false, userPaused: false });
@@ -2326,15 +2327,15 @@ describe("useTasks", () => {
         column: "todo" as Column,
         paused: false,
         userPaused: false,
-        pausedByAgentId: null,
-        pausedReason: null,
+        pausedByAgentId: undefined,
+        pausedReason: undefined,
       });
       const keep = createMockTask({ id: "FN-KEEP", column: "in-progress" as Column, paused: false, userPaused: false });
       const paused = createMockTask({
         ...unpaused,
         paused: true,
         userPaused: true,
-        pausedByAgentId: null,
+        pausedByAgentId: undefined,
         pausedReason: "operator",
         updatedAt: "2026-07-12T00:01:00.000Z",
       });
@@ -2401,7 +2402,7 @@ describe("useTasks", () => {
     it("keeps newer SSE state authoritative when it arrives before the unpause response", async () => {
       const paused = createMockTask({ id: "FN-PAUSE", column: "todo" as Column, paused: true, userPaused: true, updatedAt: "2026-07-12T00:00:00.000Z" });
       const newerServerState = createMockTask({ ...paused, paused: true, userPaused: true, pausedReason: "newer server decision", updatedAt: "2026-07-12T00:02:00.000Z" });
-      const staleUnpauseResponse = createMockTask({ ...paused, paused: false, userPaused: false, pausedReason: null, updatedAt: "2026-07-12T00:01:00.000Z" });
+      const staleUnpauseResponse = createMockTask({ ...paused, paused: false, userPaused: false, pausedReason: undefined, updatedAt: "2026-07-12T00:01:00.000Z" });
       let resolveUnpause!: (task: Task) => void;
       mockFetchTasks.mockResolvedValueOnce([paused]);
       mockUnpauseTask.mockImplementationOnce(() => new Promise<Task>((resolve) => { resolveUnpause = resolve; }));
@@ -2496,14 +2497,20 @@ describe("useTasks", () => {
         branch: "fusion/FN-RETRY-review",
         currentStep: 3,
       });
+      /*
+      FNXC:RUFU-140 2026-08-21-04:55:
+      The retried-task wire shape carries explicit null status/error/worktree/branch (cleared on
+      retry); the Task type models absence as optional string, so the null runtime values are kept
+      through localized casts — the assertions below check `=== null` directly and must keep seeing null.
+      */
       const retried = createMockTask({
         id: "FN-RETRY",
         title: "Retried from server",
         column: "todo" as Column,
-        status: null,
-        error: null,
-        worktree: null,
-        branch: null,
+        status: null as unknown as string,
+        error: null as unknown as string,
+        worktree: null as unknown as string,
+        branch: null as unknown as string,
         currentStep: 0,
         updatedAt: "2026-06-30T12:00:00.000Z",
       });
@@ -2528,7 +2535,7 @@ describe("useTasks", () => {
     });
 
     it("leaves empty and missing-id task collections stable after retry success", async () => {
-      const retried = createMockTask({ id: "FN-MISSING", column: "todo" as Column, status: null, error: null });
+      const retried = createMockTask({ id: "FN-MISSING", column: "todo" as Column, status: undefined, error: undefined });
       mockFetchTasks.mockResolvedValueOnce([]);
       mockRetryTask.mockResolvedValueOnce(retried);
 
@@ -2562,7 +2569,7 @@ describe("useTasks", () => {
     it("updates project SWR task cache after retry success for array and absent payloads", async () => {
       const failed = createMockTask({ id: "FN-RETRY", column: "in-progress" as Column, status: "failed", error: "boom" });
       const keep = createMockTask({ id: "FN-KEEP", column: "todo" as Column });
-      const retried = createMockTask({ id: "FN-RETRY", column: "todo" as Column, status: null, error: null });
+      const retried = createMockTask({ id: "FN-RETRY", column: "todo" as Column, status: undefined, error: undefined });
       mockFetchTasks.mockResolvedValueOnce([failed, keep]);
       mockRetryTask.mockResolvedValueOnce(retried);
 
@@ -2593,7 +2600,7 @@ describe("useTasks", () => {
       mockWriteCache.mockClear();
       mockClearCache.mockClear();
       mockReadCache.mockReturnValueOnce(null);
-      const retriedAgain = createMockTask({ id: "FN-RETRY", column: "todo" as Column, status: null, error: null, updatedAt: "2026-06-30T12:01:00.000Z" });
+      const retriedAgain = createMockTask({ id: "FN-RETRY", column: "todo" as Column, status: undefined, error: undefined, updatedAt: "2026-06-30T12:01:00.000Z" });
       mockRetryTask.mockResolvedValueOnce(retriedAgain);
 
       await act(async () => {
@@ -2610,7 +2617,7 @@ describe("useTasks", () => {
 
     it("clears malformed project SWR task cache payloads after retry success", async () => {
       const failed = createMockTask({ id: "FN-RETRY", column: "in-progress" as Column, status: "failed", error: "boom" });
-      const retried = createMockTask({ id: "FN-RETRY", column: "todo" as Column, status: null, error: null });
+      const retried = createMockTask({ id: "FN-RETRY", column: "todo" as Column, status: undefined, error: undefined });
       mockFetchTasks.mockResolvedValueOnce([failed]);
       mockRetryTask.mockResolvedValueOnce(retried);
 
@@ -2634,7 +2641,7 @@ describe("useTasks", () => {
     it("does not let an older in-flight fetch restore stale failed retry state", async () => {
       const failed = createMockTask({ id: "FN-RETRY", column: "in-progress" as Column, status: "failed", error: "boom" });
       const keep = createMockTask({ id: "FN-KEEP", column: "todo" as Column });
-      const retried = createMockTask({ id: "FN-RETRY", column: "todo" as Column, status: null, error: null });
+      const retried = createMockTask({ id: "FN-RETRY", column: "todo" as Column, status: undefined, error: undefined });
       let resolveRefresh!: (tasks: Task[]) => void;
       mockReadCache.mockReturnValue([failed, keep]);
       mockFetchTasks.mockImplementationOnce(() => new Promise<Task[]>((resolve) => {
@@ -2698,13 +2705,13 @@ describe("useTasks", () => {
       const failing = createMockTask({
         id: "FN-BYP",
         column: "in-review" as Column,
-        status: null,
+        status: undefined,
       });
       const keep = createMockTask({ id: "FN-KEEP", column: "todo" as Column });
       const bypassed = createMockTask({
         id: "FN-BYP",
         column: "in-review" as Column,
-        status: null,
+        status: undefined,
       });
       mockFetchTasks.mockResolvedValueOnce([failing, keep]);
       mockBypassReview.mockResolvedValueOnce(bypassed);
@@ -2724,7 +2731,7 @@ describe("useTasks", () => {
     });
 
     it("keeps local state untouched when the bypass API call rejects", async () => {
-      const failing = createMockTask({ id: "FN-BYP", column: "in-review" as Column, status: null });
+      const failing = createMockTask({ id: "FN-BYP", column: "in-review" as Column, status: undefined });
       const keep = createMockTask({ id: "FN-KEEP", column: "todo" as Column });
       mockFetchTasks.mockResolvedValueOnce([failing, keep]);
       mockBypassReview.mockRejectedValueOnce(new Error("reason is required"));
@@ -4274,7 +4281,7 @@ describe("useTasks", () => {
     it("marks fresh planner logs transiently active and clears the signal on an authoritative update", async () => {
       const initialTask = createMockTask({
         column: "triage",
-        status: null,
+        status: undefined,
         updatedAt: "2026-07-28T12:00:00.000Z",
       });
       mockFetchTasks.mockResolvedValueOnce([initialTask]);
@@ -4340,7 +4347,7 @@ describe("useTasks", () => {
     it("stamps planner activity for a card in the MERGED planning column", async () => {
       const initialTask = createMockTask({
         column: "todo",
-        status: null,
+        status: undefined,
         updatedAt: "2026-07-28T12:00:00.000Z",
       });
       mockFetchTasks.mockResolvedValueOnce([initialTask]);
@@ -4374,7 +4381,7 @@ describe("useTasks", () => {
     it("stamps planner activity for a card in a RENAMED intake lane", async () => {
       const initialTask = createMockTask({
         column: "drafting",
-        status: null,
+        status: undefined,
         updatedAt: "2026-07-28T12:00:00.000Z",
       });
       mockFetchTasks.mockResolvedValueOnce([initialTask]);
@@ -4398,7 +4405,7 @@ describe("useTasks", () => {
     it("does not stamp planner activity for a card in a RENAMED wip lane", async () => {
       const initialTask = createMockTask({
         column: "building",
-        status: null,
+        status: undefined,
         updatedAt: "2026-07-28T12:00:00.000Z",
       });
       mockFetchTasks.mockResolvedValueOnce([initialTask]);
@@ -4422,7 +4429,7 @@ describe("useTasks", () => {
       // The stamp must still NARROW: an executing card is not planner activity.
       const initialTask = createMockTask({
         column: "in-progress",
-        status: null,
+        status: undefined,
         updatedAt: "2026-07-28T12:00:00.000Z",
       });
       mockFetchTasks.mockResolvedValueOnce([initialTask]);

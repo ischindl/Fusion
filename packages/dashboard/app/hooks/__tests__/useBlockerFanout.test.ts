@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { Task } from "@fusion/core";
-import { computeBlockerFanoutMap, MAX_AUTO_MERGE_RETRIES } from "../useBlockerFanout";
+import { computeBlockerFanoutMap, MAX_AUTO_MERGE_RETRIES, type BlockerFanoutColumnFlags } from "../useBlockerFanout";
 
 function createTask(id: string, column: Task["column"], overrides: Partial<Task> = {}): Task {
   return {
@@ -166,7 +166,7 @@ describe("computeBlockerFanoutMap on a RENAMED board", () => {
   it("does NOT count a dependent of a FINISHED card as active", () => {
     const blocker = createTask("FN-BLOCKER", "shipped");
     const dependent = createTask("FN-DEPENDENT", "drafting", { dependencies: ["FN-BLOCKER"] });
-    const flags = new Map([
+    const flags = new Map<string, BlockerFanoutColumnFlags>([
       ["FN-BLOCKER", shippedFlags],
       ["FN-DEPENDENT", draftingFlags],
     ]);

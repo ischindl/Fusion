@@ -68,6 +68,7 @@ const roomOne = {
   projectId: "proj-123",
   createdBy: "agent-001",
   status: "active" as const,
+  thinkingLevel: null,
   createdAt: "2026-04-08T00:00:00.000Z",
   updatedAt: "2026-04-08T00:00:00.000Z",
 };
@@ -98,6 +99,23 @@ const defaultChatState: UseChatReturn = {
   filteredSessions: [sessionOne, sessionTwo],
   refreshSessions: vi.fn(),
   agentsMap: new Map(),
+
+  tags: [],
+  selectedTagId: null,
+  setSelectedTagId: vi.fn(),
+  archivedSessions: [],
+  refreshArchivedSessions: vi.fn(),
+  unarchiveSession: vi.fn(),
+  renameSession: vi.fn(),
+  pinSession: vi.fn(),
+  pinnedCount: 0,
+  setSessionModel: vi.fn(),
+  setSessionThinkingLevel: vi.fn(),
+  createTag: vi.fn(),
+  renameTag: vi.fn(),
+  deleteTag: vi.fn(),
+  setSessionTags: vi.fn(),
+  backfillStashSession: vi.fn(),
 };
 
 const defaultRoomsState: UseChatRoomsResult = {
@@ -113,6 +131,9 @@ const defaultRoomsState: UseChatRoomsResult = {
   deleteRoom: vi.fn(),
   sendRoomMessage: vi.fn().mockResolvedValue(undefined),
   refreshRooms: vi.fn(),
+
+  updateRoomSettings: vi.fn(),
+  clearRoom: vi.fn(),
 };
 
 function setup(chatOverrides: Partial<UseChatReturn> = {}, roomsOverrides: Partial<UseChatRoomsResult> = {}) {

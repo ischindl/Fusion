@@ -9,7 +9,7 @@ import type { BoardWorkflowsPayload } from "../../api";
 const fetchBoardWorkflowsMock = vi.fn();
 const fetchTaskDetailMock = vi.fn();
 const batchUpdateTaskModelsMock = vi.fn();
-const fetchNodesMock = vi.fn(() => new Promise(() => {}));
+const fetchNodesMock = vi.fn((..._args: unknown[]) => new Promise(() => {}));
 
 vi.mock("../../api", () => ({
   fetchWorkflowSteps: vi.fn(() => new Promise(() => {})),

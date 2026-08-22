@@ -1,5 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import type { Task } from "@fusion/core";
 import { closeTopmostDashboardPopupForShortcut } from "../App";
 import { useDashboardKeyboardShortcuts } from "../hooks/useDashboardKeyboardShortcuts";
 import { useNavigationHistory } from "../hooks/useNavigationHistory";
@@ -149,7 +150,7 @@ describe("App dashboard keyboard shortcuts", () => {
       {
         // FN-8016: explicit globally-visible opt-out can expose both same-id entries;
         // Escape must preserve origin identity and close only the topmost one.
-        poppedOutTaskEntries: [{ task: { id: "FN-1" }, originTaskView: "board" }, { task: { id: "FN-1" }, originTaskView: "planning" }],
+        poppedOutTaskEntries: [{ task: { id: "FN-1" } as unknown as Task, originTaskView: "board" }, { task: { id: "FN-1" } as unknown as Task, originTaskView: "planning" }],
         quickChatOpen: true,
         terminalOpen: true,
         modalClosers: [[true, closeSettings], [true, closeTaskDetail]],

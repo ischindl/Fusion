@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen } from "@testing-library/react";
 import { SystemControlsArea } from "../SystemControlsArea";
+import type { ToastType } from "../../../../hooks/useToast";
 import { __sseBusResyncAudit, SSE_HIDDEN_SUSPEND_DELAY_MS } from "../../../../sse-bus";
 import {
   fetchCurrentSystemRebuild,
@@ -187,7 +188,7 @@ const originalEventSource = (globalThis as { EventSource?: unknown }).EventSourc
 let reloadSpy: ReturnType<typeof vi.fn>;
 let toasts: Array<{ message: string; type?: string }>;
 
-function addToast(message: string, type?: string): void {
+function addToast(message: string, type?: ToastType): void {
   toasts.push({ message, type });
 }
 
@@ -201,7 +202,7 @@ async function flush(ms = 0): Promise<void> {
 async function renderWithRunningJob(): Promise<void> {
   fetchSystemInfoMock.mockResolvedValue(info(1000));
   fetchCurrentSystemRebuildMock.mockResolvedValue({ job: runningJob() });
-  render(<SystemControlsArea addToast={addToast as (m: string, t?: never) => void} />);
+  render(<SystemControlsArea addToast={addToast} />);
   await flush();
   expect(screen.getByText("Running…")).toBeInTheDocument();
   latestJobStream(JOB_ID).emitOpen();

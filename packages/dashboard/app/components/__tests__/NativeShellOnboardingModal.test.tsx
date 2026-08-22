@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { NativeShellOnboardingModal } from "../NativeShellOnboardingModal";
+import type { ShellConnectionState } from "../../types/native-shell";
 
 describe("NativeShellOnboardingModal", () => {
   it("shows desktop mode options", () => {
@@ -57,15 +58,16 @@ describe("NativeShellOnboardingModal", () => {
   });
 
   it("saves remote profile and redirects to remote dashboard", async () => {
-    const saveProfile = vi.fn(async () => ({ id: "p1", serverUrl: "https://fusion.example.com", authToken: "abc" }));
-    const setActiveProfile = vi.fn(async () => ({
-      host: "mobile-shell",
-      activeProfileId: "p1",
-      profiles: [
-        { id: "existing", name: "Existing", serverUrl: "https://existing.example.com", createdAt: "", updatedAt: "" },
-        { id: "p1", name: "Remote Server", serverUrl: "https://fusion.example.com", createdAt: "", updatedAt: "" },
-      ],
-    }));
+    const saveProfile = vi.fn(async () => ({ id: "p1", name: "Remote Server", serverUrl: "https://fusion.example.com", authToken: "abc", createdAt: "", updatedAt: "" }));
+    const setActiveProfile = vi.fn(async () =>
+      ({
+        host: "mobile-shell",
+        activeProfileId: "p1",
+        profiles: [
+          { id: "existing", name: "Existing", serverUrl: "https://existing.example.com", createdAt: "", updatedAt: "" },
+          { id: "p1", name: "Remote Server", serverUrl: "https://fusion.example.com", createdAt: "", updatedAt: "" },
+        ],
+      } as ShellConnectionState));
     const onComplete = vi.fn();
     const originalLocation = window.location;
     Object.defineProperty(window, "location", {

@@ -14,7 +14,7 @@
  * so it stays honest about which keys land in which scope.
  */
 import { describe, it, expect } from "vitest";
-import { isGlobalSettingsKey, isProjectSettingsKey } from "@fusion/core";
+import { isGlobalSettingsKey, isProjectSettingsKey, type McpServersSettings } from "@fusion/core";
 import { resolveScopedMcpSettings, splitSettingsSave, MODEL_LANE_KEYS } from "../components/settings/save-split";
 
 // Sanity-anchor the scope of the concrete keys this test relies on, so the
@@ -455,10 +455,10 @@ describe("splitSettingsSave", () => {
   });
 
   it("persists changed MCP scopes after navigating away from the MCP sections", () => {
-    const initialGlobalMcp = { enabled: false, servers: [] } as const;
-    const initialProjectMcp = { enabled: true, servers: [{ name: "deepwiki", transport: "stdio", command: "docs" }] } as const;
-    const nextGlobalMcp = { enabled: true, servers: [{ name: "global-docs", transport: "stdio", command: "docs" }] } as const;
-    const nextProjectMcp = { enabled: false, servers: [{ name: "deepwiki", transport: "stdio", command: "docs" }] } as const;
+    const initialGlobalMcp = { enabled: false, servers: [] } as McpServersSettings;
+    const initialProjectMcp = { enabled: true, servers: [{ name: "deepwiki", transport: "stdio", command: "docs" }] } as McpServersSettings;
+    const nextGlobalMcp = { enabled: true, servers: [{ name: "global-docs", transport: "stdio", command: "docs" }] } as McpServersSettings;
+    const nextProjectMcp = { enabled: false, servers: [{ name: "deepwiki", transport: "stdio", command: "docs" }] } as McpServersSettings;
 
     const { globalPatch, projectPatch } = splitSettingsSave({
       payload: { mcpServers: initialProjectMcp, language: "en" },
@@ -479,7 +479,7 @@ describe("splitSettingsSave", () => {
   });
 
   it("does not materialize inherited global MCP settings as a project override on a no-op save", () => {
-    const globalMcp = { enabled: true, servers: [{ name: "global-docs", transport: "stdio", command: "docs" }] } as const;
+    const globalMcp = { enabled: true, servers: [{ name: "global-docs", transport: "stdio", command: "docs" }] } as McpServersSettings;
     const { globalPatch, projectPatch } = splitSettingsSave({
       payload: { language: "en" },
       initialValues: { language: "en", mcpServers: globalMcp } as never,
@@ -499,8 +499,8 @@ describe("splitSettingsSave", () => {
   });
 
   it("persists scoped MCP edits when the initial scoped snapshot is unavailable", () => {
-    const globalMcp = { enabled: true, servers: [{ name: "global-docs", transport: "stdio", command: "docs" }] } as const;
-    const projectMcp = { enabled: true, servers: [{ name: "project-docs", transport: "stdio", command: "project-docs" }] } as const;
+    const globalMcp = { enabled: true, servers: [{ name: "global-docs", transport: "stdio", command: "docs" }] } as McpServersSettings;
+    const projectMcp = { enabled: true, servers: [{ name: "project-docs", transport: "stdio", command: "project-docs" }] } as McpServersSettings;
     const { globalPatch, projectPatch } = splitSettingsSave({
       payload: {},
       initialValues: null,

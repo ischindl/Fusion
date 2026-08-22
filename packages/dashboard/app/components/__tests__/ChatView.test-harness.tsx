@@ -10,6 +10,7 @@ import * as apiModule from "../../api";
 import { _resetInitialViewportHeight } from "../../hooks/useMobileKeyboard";
 import * as useChatRoomsModule from "../../hooks/useChatRooms";
 import type { UseChatRoomsResult } from "../../hooks/useChatRooms";
+import type { ChatRoom } from "@fusion/core";
 
 /*
 FNXC:DashboardTests 2026-06-25-16:30:
@@ -54,6 +55,25 @@ export const defaultChatState: UseChatReturn = {
   sessions: [],
   activeSession: null,
   sessionsLoading: false,
+  /*
+  FNXC:RUFU-140 2026-08-20-19:42:
+  tags/selectedTagId, pinSession, tag CRUD and backfillStashSession (RUFU-123,
+  2026-08-20) became REQUIRED on UseChatReturn after this fixture was written;
+  the shared double carries them so every ChatView.* split file that spreads
+  defaultChatState typechecks. backfillStashSession resolves the minimal
+  ChatStashBackfillResponse shape (ok/inserted/skipped/uploaded).
+  */
+  tags: [],
+  selectedTagId: null,
+  setSelectedTagId: vi.fn(),
+  pinSession: vi.fn().mockResolvedValue(undefined),
+  pinnedCount: 0,
+  setSessionModel: vi.fn().mockResolvedValue(undefined),
+  createTag: vi.fn().mockResolvedValue({ id: "tag-new", name: "tag" } as never),
+  renameTag: vi.fn().mockResolvedValue(undefined),
+  deleteTag: vi.fn().mockResolvedValue(undefined),
+  setSessionTags: vi.fn().mockResolvedValue(undefined),
+  backfillStashSession: vi.fn().mockResolvedValue({ ok: true, inserted: 0, skipped: 0, uploaded: 0 }),
   messages: [],
   messagesLoading: false,
   isStreaming: false,
@@ -93,8 +113,15 @@ export const defaultRoomsState: UseChatRoomsResult = {
   messagesLoading: false,
   selectRoom: vi.fn(),
   createRoom: vi.fn(),
+  /*
+  FNXC:RUFU-140 2026-08-20-19:42:
+  updateRoomSettings (room thinkingLevel, 2026-07-12) and clearRoom became
+  required on UseChatRoomsResult after this double was written.
+  */
+  updateRoomSettings: vi.fn(),
   deleteRoom: vi.fn(),
   sendRoomMessage: vi.fn(),
+  clearRoom: vi.fn().mockResolvedValue(undefined),
   refreshRooms: vi.fn(),
 };
 
@@ -144,12 +171,23 @@ export function setupMockRooms(overrides: Partial<UseChatRoomsResult> = {}) {
   mockUseChatRooms.mockReturnValue(state);
 }
 
-export function createRoomFixture(name: string) {
+/*
+FNXC:RUFU-140 2026-08-20-19:42:
+createRoomFixture now returns a fully-typed ChatRoom: description/createdBy/
+status/thinkingLevel became required (non-optional) on ChatRoom after this
+fixture was written, and the untyped shape leaked TS2739/TS2345 into every
+file that spreads or returns it.
+*/
+export function createRoomFixture(name: string): ChatRoom {
   return {
     id: `room-${name}`,
     projectId: "proj-123",
     slug: name,
     name,
+    description: null,
+    createdBy: null,
+    status: "active",
+    thinkingLevel: null,
     createdAt: "2026-05-12T00:00:00.000Z",
     updatedAt: "2026-05-12T00:00:00.000Z",
   };

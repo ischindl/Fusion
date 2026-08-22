@@ -54,6 +54,7 @@ const mockFetchAgents = vi.mocked(apiModule.fetchAgents);
 
 const assistantMessage: ChatMessageInfo = {
   id: "msg-1",
+  sessionId: "session-1",
   role: "assistant",
   content: "hello",
   createdAt: "2026-05-19T00:00:00.000Z",
@@ -95,13 +96,30 @@ function setupMockChat(session: ChatSessionInfo): void {
     filteredSessions: [session],
     refreshSessions: vi.fn(),
     agentsMap: new Map(),
-  };
+  
+    tags: [],
+    selectedTagId: null,
+    setSelectedTagId: vi.fn(),
+    archivedSessions: [],
+    refreshArchivedSessions: vi.fn(),
+    unarchiveSession: vi.fn(),
+    renameSession: vi.fn(),
+    pinSession: vi.fn(),
+    pinnedCount: 0,
+    setSessionModel: vi.fn(),
+    setSessionThinkingLevel: vi.fn(),
+    createTag: vi.fn(),
+    renameTag: vi.fn(),
+    deleteTag: vi.fn(),
+    setSessionTags: vi.fn(),
+    backfillStashSession: vi.fn(),
+};
   mockUseChat.mockReturnValue(state);
 }
 
 function renderView() {
   return render(
-    <FileBrowserProvider>
+    <FileBrowserProvider openFile={vi.fn()}>
       <ChatView addToast={vi.fn()} />
     </FileBrowserProvider>,
   );
@@ -110,12 +128,12 @@ function renderView() {
 describe("resolveSessionProvider", () => {
   it("resolves precedence and edge cases", () => {
     const defaults = { provider: "anthropic", modelId: "claude-sonnet-4-5" };
-    const agent = { runtimeConfig: { modelProvider: "google", modelId: "gemini-2.5-pro" } } as Agent;
+    const agent = { runtimeConfig: { modelProvider: "google", modelId: "gemini-2.5-pro" } } as unknown as Agent;
 
     expect(resolveSessionProvider({ modelProvider: "openai", modelId: "gpt-4o" }, agent, defaults)).toEqual({ provider: "openai", modelId: "gpt-4o" });
     expect(resolveSessionProvider({}, agent, defaults)).toEqual({ provider: "google", modelId: "gemini-2.5-pro" });
-    expect(resolveSessionProvider({}, { runtimeConfig: { modelProvider: "google" } } as Agent, defaults)).toEqual(defaults);
-    expect(resolveSessionProvider({}, { runtimeConfig: { modelId: "gemini-2.5-pro" } } as Agent, defaults)).toEqual(defaults);
+    expect(resolveSessionProvider({}, { runtimeConfig: { modelProvider: "google" } } as unknown as Agent, defaults)).toEqual(defaults);
+    expect(resolveSessionProvider({}, { runtimeConfig: { modelId: "gemini-2.5-pro" } } as unknown as Agent, defaults)).toEqual(defaults);
     expect(resolveSessionProvider({}, { runtimeConfig: "bad" as unknown as Record<string, unknown> } as Agent, defaults)).toEqual(defaults);
     expect(resolveSessionProvider({}, undefined, { provider: null, modelId: null })).toBeNull();
   });
@@ -165,7 +183,7 @@ describe("ChatView default model icon", () => {
         updatedAt: "2026-05-19T00:00:00.000Z",
         metadata: {},
         runtimeConfig: { modelProvider: "google", modelId: "gemini-2.5-pro" },
-      } as Agent,
+      } as unknown as Agent,
     ]);
 
     renderView();

@@ -5,12 +5,19 @@ Command Center Overview must consume the same analytics endpoints as the detail 
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, within, waitFor, act } from "@testing-library/react";
 import { CommandCenter } from "../CommandCenter";
+import type { SseSubscription } from "../../../sse-bus";
 
 const apiMock = vi.fn();
 const { getAgentActivityMock } = vi.hoisted(() => ({ getAgentActivityMock: vi.fn() }));
-const subscribeSseMock = vi.fn(() => () => undefined);
+const subscribeSseMock = vi.fn((_url: string, _sub?: SseSubscription) => () => undefined);
+/*
+FNXC:SseBusMock 2026-08-22-03:12:
+Forward the real (url, sub) arguments into the mock: an implemented vi.fn infers its parameter
+list, so the pre-campaign spread of unknown[] failed typecheck, and dropping the args broke the
+live-strip test that reads the subscription back from mock.calls[0][1].
+*/
 vi.mock("../../../sse-bus", () => ({
-  subscribeSse: (...args: unknown[]) => subscribeSseMock(...args),
+  subscribeSse: (url: string, sub?: SseSubscription) => subscribeSseMock(url, sub),
 }));
 vi.mock("../../../api/legacy", () => ({
   api: (path: string, opts?: RequestInit) => apiMock(path, opts),

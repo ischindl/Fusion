@@ -63,7 +63,7 @@ vi.mock("../CustomModelDropdown", () => ({
 }));
 
 vi.mock("../CustomProviderForm", () => ({
-  CustomProviderForm: ({ onSave }: { onSave?: () => void | Promise<void> }) => (
+  CustomProviderForm: ({ onSave }: { onSave?: (config: { id: string; name: string; baseUrl: string; api: string; models: { id: string }[] }) => void | Promise<void> }) => (
     <button
       type="button"
       data-testid="custom-providers-section"
@@ -4145,7 +4145,7 @@ describe("ModelOnboardingModal", () => {
       });
       expect(screen.queryByText("Cancel")).toBeNull();
 
-      resolveLogout?.();
+      (resolveLogout as unknown as (() => void) | null)?.();
     });
 
     it("shows GitHub login instructions during connect attempts", async () => {
@@ -5128,8 +5128,6 @@ describe("Custom providers disclosure", () => {
   it("shows add custom provider control on ai-setup and keeps form collapsed initially", async () => {
     render(
       <ModelOnboardingModal
-        isOpen
-        onClose={() => {}}
         onComplete={() => {}}
         addToast={() => {}}
       />,
@@ -5145,8 +5143,6 @@ describe("Custom providers disclosure", () => {
   it("expands custom provider form when add custom provider is clicked", async () => {
     render(
       <ModelOnboardingModal
-        isOpen
-        onClose={() => {}}
         onComplete={() => {}}
         addToast={() => {}}
       />,
@@ -5161,8 +5157,6 @@ describe("Custom providers disclosure", () => {
   it("refreshes auth status and models after custom provider save", async () => {
     render(
       <ModelOnboardingModal
-        isOpen
-        onClose={() => {}}
         onComplete={() => {}}
         addToast={() => {}}
       />,
@@ -5183,9 +5177,9 @@ describe("Custom providers disclosure", () => {
   });
 
   it("uses its production header for touch drag and resize", async () => {
-    render(<ModelOnboardingModal isOpen onClose={vi.fn()} onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
+    render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
     await screen.findByTestId("floating-window-model-onboarding");
     assertRenderedModalTouchGeometry("model-onboarding", screen.getByTestId("floating-window-model-onboarding").querySelector(".model-onboarding-header") as HTMLElement);
-    assertModalGeometryRecoveryAndSheetContracts("model-onboarding", () => render(<ModelOnboardingModal isOpen onClose={vi.fn()} onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />));
+    assertModalGeometryRecoveryAndSheetContracts("model-onboarding", () => render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />));
   });
 });

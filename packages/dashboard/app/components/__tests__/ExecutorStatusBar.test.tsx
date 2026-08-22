@@ -45,7 +45,7 @@ vi.mock("../EngineControlMenu", async () => {
 });
 
 import { useExecutorStats } from "../../hooks/useExecutorStats";
-import type { AiSessionSummary, ExecutorStats } from "../../api";
+import type { ExecutorStats } from "../../api";
 
 const mockUseExecutorStats = useExecutorStats as ReturnType<typeof vi.fn>;
 const executorStatusBarCss = fs.readFileSync(path.join(__dirname, "../ExecutorStatusBar.css"), "utf-8");
@@ -98,17 +98,6 @@ function expectSegmentCount(label: string, count: string): void {
   expect(within(getSegmentByLabel(label)).getByText(count)).toBeInTheDocument();
 }
 
-function makeBackgroundSession(id: string, status: AiSessionSummary["status"]): AiSessionSummary {
-  return {
-    id,
-    type: "planning",
-    status,
-    title: `Background ${id}`,
-    projectId: "project-1",
-    updatedAt: "2026-07-03T12:00:00.000Z",
-  };
-}
-
 // FNXC:StuckTagRemoval 2026-08-17-22:30: stuck-task tagging removed from the dashboard; stuck coverage deleted with it.
 describe("ExecutorStatusBar", () => {
   const defaultStats: ExecutorStats = {
@@ -118,6 +107,8 @@ describe("ExecutorStatusBar", () => {
     inReviewCount: 3,
     executorState: "running",
     maxConcurrent: 4,
+    effectiveMaxConcurrent: 4,
+    concurrencyBindingKnob: "maxConcurrent",
     lastActivityAt: new Date().toISOString(),
   };
 
@@ -178,14 +169,6 @@ describe("ExecutorStatusBar", () => {
         <ExecutorStatusBar
           tasks={tasks as any[]}
           staleHighFanoutBlockerAgeThresholdMs={60 * 60 * 1000}
-          backgroundSessions={[
-            makeBackgroundSession("ai-1", "generating"),
-            makeBackgroundSession("ai-2", "awaiting_input"),
-          ]}
-          backgroundGenerating={1}
-          backgroundNeedsInput={1}
-          onOpenBackgroundSession={vi.fn()}
-          onDismissBackgroundSession={vi.fn()}
         />,
       );
 

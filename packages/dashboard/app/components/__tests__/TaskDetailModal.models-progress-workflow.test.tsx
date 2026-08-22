@@ -2,6 +2,7 @@
 FNXC:TaskDetailTabs 2026-06-17-08:20:
 FN-7306 labels the stable internal `chat` tab as Activity and keeps it as the default TaskDetailModal tab. Tests that assert Definition-only sections must opt into `initialTab="definition"` so they verify the intended surface instead of the Activity landing state.
 */
+import type { StepStatus, TaskDetail } from "@fusion/core";
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -820,7 +821,7 @@ describe("TaskDetailModal", () => {
               { name: "Step 2", status: "in-progress" },
               { name: "Step 3", status: "pending" },
               { name: "Step 4", status: "skipped" },
-              { name: "Step 5", status: "mystery" },
+              { name: "Step 5", status: "mystery" as unknown as StepStatus },
             ],
           })}
           onClose={noop}

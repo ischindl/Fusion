@@ -1,5 +1,6 @@
 import { vi, beforeEach, afterEach, expect } from "vitest";
 import type { ComponentProps } from "react";
+import type { Settings } from "@fusion/core";
 import { act, render, screen, waitFor, cleanup, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import fs from "fs";
@@ -24,8 +25,8 @@ all assertions while avoiding inactive-section setup and real-timer polling in t
 
 export const settingsModalCss = fs.readFileSync(path.resolve(__dirname, "../SettingsModal.css"), "utf8");
 
-export const mockFetchSettings = vi.fn();
-export const mockFetchSettingsByScope = vi.fn();
+export const mockFetchSettings = vi.fn((..._args: unknown[]): Promise<unknown> => Promise.resolve(undefined));
+export const mockFetchSettingsByScope = vi.fn((..._args: unknown[]): Promise<unknown> => Promise.resolve(undefined));
 export const mockExportSettings = vi.fn();
 export const mockUpdateSettings = vi.fn();
 export const mockUpdateGlobalSettings = vi.fn();
@@ -93,7 +94,7 @@ export const mockUseMobileKeyboard = vi.fn();
 
 export const noop = () => {};
 
-export const defaultSettings = {
+export const defaultSettings: Settings = {
   maxConcurrent: 2,
   maxWorktrees: 4,
   pollIntervalMs: 15000,

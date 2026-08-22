@@ -2,7 +2,7 @@ import type { ComponentProps } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { InlineCreateCard } from "../InlineCreateCard";
-import type { Task, Column } from "@fusion/core";
+import type { Task, Column, WorkflowDefinition } from "@fusion/core";
 import { fetchModels, fetchSettings, fetchAgents, checkDuplicateTasks, fetchWorkflows, fetchWorkflowOptionalSteps, selectTaskWorkflow } from "../../api";
 import { useNodes } from "../../hooks/useNodes";
 import type { ModelInfo } from "../../api";
@@ -103,8 +103,8 @@ vi.mock("../ModelSelectionModal", () => ({
 vi.mock("../../hooks/useNodes", () => ({
   useNodes: vi.fn(() => ({
     nodes: [
-      { id: "node-1", name: "Node One", status: "online", type: "remote", createdAt: "", updatedAt: "" },
-      { id: "node-2", name: "Node Two", status: "offline", type: "remote", createdAt: "", updatedAt: "" },
+      { id: "node-1", name: "Node One", status: "online", type: "remote", maxConcurrent: 2, createdAt: "", updatedAt: "" },
+      { id: "node-2", name: "Node Two", status: "offline", type: "remote", maxConcurrent: 2, createdAt: "", updatedAt: "" },
     ],
     loading: false,
     error: null,
@@ -194,7 +194,7 @@ function createMockTask(overrides: Partial<Task> = {}): Task {
 
 function mockInlineNodes(nodes: Array<{ id: string; name: string; status: "online" | "offline" | "connecting" | "error"; type: "local" | "remote" }>) {
   vi.mocked(useNodes).mockReturnValue({
-    nodes: nodes.map((node) => ({ ...node, createdAt: "", updatedAt: "" })),
+    nodes: nodes.map((node) => ({ ...node, maxConcurrent: 2, createdAt: "", updatedAt: "" })),
     loading: false,
     error: null,
     refresh: vi.fn(),
@@ -202,6 +202,10 @@ function mockInlineNodes(nodes: Array<{ id: string; name: string; status: "onlin
     update: vi.fn(),
     unregister: vi.fn(),
     healthCheck: vi.fn(),
+    fetchDockerConfig: vi.fn(),
+    patchDockerConfig: vi.fn(),
+    fetchDockerDiff: vi.fn(),
+    discoverRemoteProjects: vi.fn(),
   });
 }
 
@@ -242,8 +246,8 @@ beforeEach(() => {
   vi.mocked(fetchAgents).mockResolvedValue([]);
   vi.mocked(useNodes).mockReturnValue({
     nodes: [
-      { id: "node-1", name: "Node One", status: "online", type: "remote", createdAt: "", updatedAt: "" },
-      { id: "node-2", name: "Node Two", status: "offline", type: "remote", createdAt: "", updatedAt: "" },
+      { id: "node-1", name: "Node One", status: "online", type: "remote", maxConcurrent: 2, createdAt: "", updatedAt: "" },
+      { id: "node-2", name: "Node Two", status: "offline", type: "remote", maxConcurrent: 2, createdAt: "", updatedAt: "" },
     ],
     loading: false,
     error: null,
@@ -252,6 +256,10 @@ beforeEach(() => {
     update: vi.fn(),
     unregister: vi.fn(),
     healthCheck: vi.fn(),
+    fetchDockerConfig: vi.fn(),
+    patchDockerConfig: vi.fn(),
+    fetchDockerDiff: vi.fn(),
+    discoverRemoteProjects: vi.fn(),
   });
   vi.mocked(checkDuplicateTasks).mockResolvedValue([]);
   vi.mocked(fetchSettings).mockResolvedValue({
@@ -267,7 +275,7 @@ beforeEach(() => {
   vi.mocked(fetchWorkflows).mockResolvedValue([
     { id: "wf-a", name: "Workflow A" },
     { id: "wf-b", name: "Workflow B" },
-  ]);
+  ] as unknown as WorkflowDefinition[]);
   vi.mocked(fetchWorkflowOptionalSteps).mockResolvedValue([
     {
       templateId: "browser-verification",
@@ -1683,7 +1691,7 @@ describe("InlineCreateCard workflow selection at create time (FN-7591)", () => {
     vi.mocked(fetchWorkflows).mockResolvedValue([
       { id: "wf-a", name: "Workflow A" },
       { id: "builtin:coding-ideas", name: "Coding (Ideas)" },
-    ]);
+    ] as unknown as WorkflowDefinition[]);
   });
 
   it("submits workflowId in the create input and omits column:triage when a workflow is selected", async () => {

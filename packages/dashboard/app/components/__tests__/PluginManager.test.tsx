@@ -139,7 +139,7 @@ function getBuiltInPluginCard(name: string): HTMLElement {
     .map((node) => node.closest(".plugin-builtins-item"))
     .find((node): node is HTMLElement => node instanceof HTMLElement);
   expect(card).toBeTruthy();
-  return card;
+  return card as HTMLElement;
 }
 
 function expectEventsUrl(url: string, projectId?: string) {
@@ -903,7 +903,20 @@ describe("PluginManager", () => {
     await userEvent.click(screen.getByTitle("Settings"));
 
     expect(await screen.findByTestId("whatsapp-pairing-instructions")).toBeTruthy();
-    expect(screen.getAllByText("Allowed WhatsApp Senders")).toHaveLength(2);
+    /*
+    FNXC:PluginManagerWhatsApp 2026-08-20-18:40:
+    RUFU-140 discovered this pre-existing (main, since i18n commit d295202768) stale
+    expectation: the pairing instructions used to wrap the label in a standalone
+    <strong> element, so the EXACT text "Allowed WhatsApp Senders" matched twice
+    (the <strong> plus the settings-form label). i18n localization flattened the list
+    item into one interpolated sentence ("Set {{label}}; an empty list blocks all
+    inbound messages."), leaving only the form label as an exact match — the suite
+    went red (expected 2, got 1) while the product still references the setting.
+    The intent — the instructions mention the senders setting AND the form renders
+    its label, i.e. two occurrences — is preserved by the substring matcher, which
+    matches both the flattened list item and the form label (count stays 2).
+    */
+    expect(screen.getAllByText(/Allowed WhatsApp Senders/)).toHaveLength(2);
   });
 
   it("shows plugin detail view when settings button is clicked", async () => {

@@ -16,7 +16,7 @@ const proposalMetadata: MessageMetadata = {
 function createdMessage(): Message {
   return {
     id: "message-1", fromId: "agent-1", fromType: "agent", toId: "dashboard-user", toType: "user",
-    content: "Proposal", type: "agent-to-user", read: false, metadata: {
+    content: "Proposal", type: "agent-to-user", read: false, archived: false, metadata: {
       ...proposalMetadata, proposalStatus: "created", createdTaskId: "FN-8265",
     }, createdAt: "2026-07-30T00:00:00.000Z", updatedAt: "2026-07-30T00:00:00.000Z",
   };

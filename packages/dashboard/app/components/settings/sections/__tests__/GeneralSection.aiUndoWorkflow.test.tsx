@@ -64,9 +64,6 @@ function GeneralHost({ initialForm, onSetForm }: {
       addToast={vi.fn()}
       prefixError={null}
       setPrefixError={vi.fn()}
-      projectTrackingRepoOptions={[]}
-      projectTrackingRepoLoading={false}
-      projectTrackingRepoError={null}
     />
   );
 }
@@ -99,7 +96,7 @@ describe("GeneralSection - project controls", () => {
       <GeneralHost
         initialForm={{}}
         onSetForm={(getNext) => {
-          latestForm = getNext();
+          latestForm = getNext({} as SettingsFormState);
         }}
       />,
     );
@@ -118,7 +115,7 @@ describe("GeneralSection - project controls", () => {
       <GeneralHost
         initialForm={{ aiUndoTaskWorkflowId: "builtin:coding" }}
         onSetForm={(getNext) => {
-          latestForm = getNext();
+          latestForm = getNext({} as SettingsFormState);
         }}
       />,
     );

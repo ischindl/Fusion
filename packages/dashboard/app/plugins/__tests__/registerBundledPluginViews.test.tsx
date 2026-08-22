@@ -7,13 +7,13 @@ import {
   registerBundledPluginViews,
 } from "../registerBundledPluginViews";
 
-const MockDependencyGraphDashboardView = () => createElement("div", { "data-testid": "dep-graph-view" });
-const MockCompoundEngineeringDashboardView = () => createElement("div", { "data-testid": "ce-view" });
-const MockCliPrintingPressWizardView = () => createElement("div", { "data-testid": "cli-printing-press-view" });
-const MockCliPrintingPressManageView = () => createElement("div", { "data-testid": "cli-printing-press-manage-view" });
-const MockLinearImportView = () => createElement("div", { "data-testid": "linear-import-view" });
-const MockTodoDashboardView = () => createElement("div", { "data-testid": "todos-view" });
-const MockRoadmapDashboardView = () => createElement("div", { "data-testid": "roadmaps-view" });
+const MockDependencyGraphDashboardView = (..._args: unknown[]) => createElement("div", { "data-testid": "dep-graph-view" });
+const MockCompoundEngineeringDashboardView = (..._args: unknown[]) => createElement("div", { "data-testid": "ce-view" });
+const MockCliPrintingPressWizardView = (..._args: unknown[]) => createElement("div", { "data-testid": "cli-printing-press-view" });
+const MockCliPrintingPressManageView = (..._args: unknown[]) => createElement("div", { "data-testid": "cli-printing-press-manage-view" });
+const MockLinearImportView = (..._args: unknown[]) => createElement("div", { "data-testid": "linear-import-view" });
+const MockTodoDashboardView = (..._args: unknown[]) => createElement("div", { "data-testid": "todos-view" });
+const MockRoadmapDashboardView = (..._args: unknown[]) => createElement("div", { "data-testid": "roadmaps-view" });
 
 vi.mock("@fusion-plugin-examples/dependency-graph/dashboard-view", () => ({
   DependencyGraphDashboardView: (...args: unknown[]) => MockDependencyGraphDashboardView(...args),

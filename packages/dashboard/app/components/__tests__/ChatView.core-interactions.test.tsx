@@ -481,8 +481,11 @@ describe("ChatView core interactions", () => {
         id: "room-001",
         slug: "engineering",
         name: "engineering",
+        description: null,
+        projectId: "proj-123",
         createdBy: "agent-001",
         status: "active" as const,
+        thinkingLevel: null,
         createdAt: "2026-04-08T00:00:00.000Z",
         updatedAt: "2026-04-08T00:00:00.000Z",
       };
@@ -498,6 +501,7 @@ describe("ChatView core interactions", () => {
             roomId: "room-001",
             role: "user",
             content: "Ping @Alpha and @Beta",
+            thinkingOutput: null,
             senderAgentId: "agent-001",
             metadata: null,
             attachments: [],
@@ -1528,8 +1532,8 @@ describe("ChatView core interactions", () => {
       models: [],
       favoriteProviders: [],
       favoriteModels: [],
-      defaultProvider: null,
-      defaultModelId: null,
+      defaultProvider: undefined,
+      defaultModelId: undefined,
     });
     setupMockChat({
       sessions: [{ id: "session-001", agentId: "__fn_agent__", status: "active", title: "My Chat", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" }],

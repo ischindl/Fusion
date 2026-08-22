@@ -16,15 +16,15 @@ function usage(overrides: Partial<TaskTokenUsage> = {}): TaskTokenUsage {
 }
 
 function task(tokenUsage?: TaskTokenUsage): TaskDetail {
-  return { id: "FN-7820", title: "Cost", column: "done", steps: [], dependencies: [], tokenUsage } as TaskDetail;
+  return { id: "FN-7820", title: "Cost", column: "done", steps: [], dependencies: [], tokenUsage } as unknown as TaskDetail;
 }
 
 describe("taskTokenCost", () => {
   it("prices and merges per-model buckets", () => {
     const rows = buildTokenCostRows(task(usage({
       perModel: [
-        { modelProvider: "openai", modelId: "gpt-5-mini", inputTokens: 1_000_000, outputTokens: 1_000_000, cachedTokens: 0, cacheWriteTokens: 0, totalTokens: 2_000_000 },
-        { modelProvider: "openai", modelId: "gpt-5-mini", inputTokens: 500_000, outputTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, totalTokens: 500_000 },
+        { modelProvider: "openai", modelId: "gpt-5-mini", inputTokens: 1_000_000, outputTokens: 1_000_000, cachedTokens: 0, cacheWriteTokens: 0, totalTokens: 2_000_000, firstUsedAt: "2026-01-01T00:00:00Z", lastUsedAt: "2026-01-01T00:00:00Z" },
+        { modelProvider: "openai", modelId: "gpt-5-mini", inputTokens: 500_000, outputTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, totalTokens: 500_000, firstUsedAt: "2026-01-01T00:00:00Z", lastUsedAt: "2026-01-01T00:00:00Z" },
       ],
     })), "(unknown)");
 
@@ -49,8 +49,8 @@ describe("taskTokenCost", () => {
   it("keeps mixed priced and unpriced per-model usage unavailable", () => {
     const total = taskTotalCost(task(usage({
       perModel: [
-        { modelProvider: "openai", modelId: "gpt-5-mini", inputTokens: 1_000_000, outputTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, totalTokens: 1_000_000 },
-        { modelProvider: "unknown", modelId: "no-price", inputTokens: 1, outputTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, totalTokens: 1 },
+        { modelProvider: "openai", modelId: "gpt-5-mini", inputTokens: 1_000_000, outputTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, totalTokens: 1_000_000, firstUsedAt: "2026-01-01T00:00:00Z", lastUsedAt: "2026-01-01T00:00:00Z" },
+        { modelProvider: "unknown", modelId: "no-price", inputTokens: 1, outputTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, totalTokens: 1, firstUsedAt: "2026-01-01T00:00:00Z", lastUsedAt: "2026-01-01T00:00:00Z" },
       ],
     })));
 
@@ -68,6 +68,6 @@ describe("taskTokenCost", () => {
     expect(hasTaskCost(task())).toBe(false);
     expect(hasTaskCost(task(usage()))).toBe(false);
     expect(hasTaskCost(task(usage({ totalTokens: 1 })))).toBe(true);
-    expect(hasTaskCost(task(usage({ perModel: [{ modelProvider: "x", modelId: "y", inputTokens: 1, outputTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, totalTokens: 1 }] })))).toBe(true);
+    expect(hasTaskCost(task(usage({ perModel: [{ modelProvider: "x", modelId: "y", inputTokens: 1, outputTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, totalTokens: 1, firstUsedAt: "2026-01-01T00:00:00Z", lastUsedAt: "2026-01-01T00:00:00Z" }] })))).toBe(true);
   });
 });

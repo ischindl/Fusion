@@ -19,6 +19,7 @@ function makeAgent(id: string): Agent {
     id,
     name: `Agent ${id}`,
     role: "executor",
+    roles: ["executor"],
     state: "active",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -58,7 +59,7 @@ describe("AgentsOverviewBar mobile scroll contract", () => {
     const onToggle = vi.fn();
     const { container, rerender } = render(
       <div className="agents-view">
-        <AgentsOverviewBar stats={{ activeCount: 13, assignedTaskCount: 13, completedRuns: 0, failedRuns: 0, successRate: 1 }} activeAgents={[...agents, agents[0]]} isOpen onToggle={onToggle} />
+        <AgentsOverviewBar stats={{ activeCount: 13, assignedTaskCount: 13, completedRuns: 0, failedRuns: 0, successRate: 1, idleNonEphemeralCount: 0, todoTaskCount: 0 }} activeAgents={[...agents, agents[0]]} isOpen onToggle={onToggle} />
       </div>,
     );
 
@@ -79,7 +80,7 @@ describe("AgentsOverviewBar mobile scroll contract", () => {
 
     rerender(
       <div className="agents-view">
-        <AgentsOverviewBar stats={{ activeCount: 0, assignedTaskCount: 0, completedRuns: 0, failedRuns: 0, successRate: 1 }} activeAgents={[]} isOpen onToggle={onToggle} />
+        <AgentsOverviewBar stats={{ activeCount: 0, assignedTaskCount: 0, completedRuns: 0, failedRuns: 0, successRate: 1, idleNonEphemeralCount: 0, todoTaskCount: 0 }} activeAgents={[]} isOpen onToggle={onToggle} />
       </div>,
     );
     const emptyContent = container.querySelector(".agents-overview-bar__content");
@@ -88,7 +89,7 @@ describe("AgentsOverviewBar mobile scroll contract", () => {
 
     rerender(
       <div className="agents-view">
-        <AgentsOverviewBar stats={{ activeCount: 13, assignedTaskCount: 13, completedRuns: 0, failedRuns: 0, successRate: 1 }} activeAgents={agents} isOpen={false} onToggle={onToggle} />
+        <AgentsOverviewBar stats={{ activeCount: 13, assignedTaskCount: 13, completedRuns: 0, failedRuns: 0, successRate: 1, idleNonEphemeralCount: 0, todoTaskCount: 0 }} activeAgents={agents} isOpen={false} onToggle={onToggle} />
       </div>,
     );
     expect(container.querySelector(".agents-overview-bar__content")).toBeNull();

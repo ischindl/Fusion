@@ -88,6 +88,23 @@ const defaultChatState: UseChatReturn = {
   filteredSessions: [activeSession],
   refreshSessions: vi.fn(),
   agentsMap: new Map(),
+
+  tags: [],
+  selectedTagId: null,
+  setSelectedTagId: vi.fn(),
+  archivedSessions: [],
+  refreshArchivedSessions: vi.fn(),
+  unarchiveSession: vi.fn(),
+  renameSession: vi.fn(),
+  pinSession: vi.fn(),
+  pinnedCount: 0,
+  setSessionModel: vi.fn(),
+  setSessionThinkingLevel: vi.fn(),
+  createTag: vi.fn(),
+  renameTag: vi.fn(),
+  deleteTag: vi.fn(),
+  setSessionTags: vi.fn(),
+  backfillStashSession: vi.fn(),
 };
 
 const roomA = {
@@ -109,7 +126,7 @@ const defaultRoomsState: UseChatRoomsResult = {
   roomsError: null,
   activeRoom: roomA,
   activeRoomMembers: [],
-  messages: [{ id: "rmsg-1", roomId: "room-a", role: "user", content: "Room hello", createdAt: "2026-04-08T00:00:00.000Z", senderAgentId: null, mentions: [] }],
+  messages: [{ id: "rmsg-1", roomId: "room-a", role: "user", content: "Room hello", thinkingOutput: null, metadata: null, createdAt: "2026-04-08T00:00:00.000Z", senderAgentId: null, mentions: [] }],
   messagesLoading: false,
   selectRoom: vi.fn(),
   createRoom: vi.fn(),
@@ -221,12 +238,12 @@ function mockMessagesContainerMetrics({
       if (scrollHeightDescriptor) {
         Object.defineProperty(HTMLDivElement.prototype, "scrollHeight", scrollHeightDescriptor);
       } else {
-        delete (HTMLDivElement.prototype as Partial<HTMLDivElement>).scrollHeight;
+        delete (HTMLDivElement.prototype as unknown as Record<string, unknown>).scrollHeight;
       }
       if (clientHeightDescriptor) {
         Object.defineProperty(HTMLDivElement.prototype, "clientHeight", clientHeightDescriptor);
       } else {
-        delete (HTMLDivElement.prototype as Partial<HTMLDivElement>).clientHeight;
+        delete (HTMLDivElement.prototype as unknown as Record<string, unknown>).clientHeight;
       }
       if (scrollTopDescriptor) {
         Object.defineProperty(HTMLDivElement.prototype, "scrollTop", scrollTopDescriptor);
@@ -296,9 +313,9 @@ describe("ChatView — rooms (FN-3805..FN-3811 contract)", () => {
     // This state is the ascending result of the newest-first API fixture covered by useChatRooms.
     setup({}, {
       messages: [
-        { id: "room-user-hi", roomId: roomA.id, role: "user", content: "Old user Hi", createdAt: "2026-04-08T00:00:00.000Z", senderAgentId: null, mentions: [] },
-        { id: "room-cto-reply", roomId: roomA.id, role: "assistant", content: "Newer CTO reply", createdAt: "2026-04-08T00:02:00.000Z", senderAgentId: "cto", mentions: [] },
-        { id: "room-pm-reply", roomId: roomA.id, role: "assistant", content: "Newest PM reply", createdAt: "2026-04-08T00:02:01.000Z", senderAgentId: "pm", mentions: [] },
+        { id: "room-user-hi", roomId: roomA.id, role: "user", content: "Old user Hi", thinkingOutput: null, metadata: null, createdAt: "2026-04-08T00:00:00.000Z", senderAgentId: null, mentions: [] },
+        { id: "room-cto-reply", roomId: roomA.id, role: "assistant", content: "Newer CTO reply", thinkingOutput: null, metadata: null, createdAt: "2026-04-08T00:02:00.000Z", senderAgentId: "cto", mentions: [] },
+        { id: "room-pm-reply", roomId: roomA.id, role: "assistant", content: "Newest PM reply", thinkingOutput: null, metadata: null, createdAt: "2026-04-08T00:02:01.000Z", senderAgentId: "pm", mentions: [] },
       ],
     });
 
@@ -331,8 +348,8 @@ describe("ChatView — rooms (FN-3805..FN-3811 contract)", () => {
   it("filters room messages that are trimmed-exact skip sentinels", async () => {
     setup({}, {
       messages: [
-        { id: "rmsg-skip", roomId: "room-a", role: "assistant", content: "  __SKIP__  ", createdAt: "2026-04-08T00:00:00.000Z", senderAgentId: "agent-1", mentions: [] },
-        { id: "rmsg-token", roomId: "room-a", role: "assistant", content: "use __SKIP__ as a token", createdAt: "2026-04-08T00:01:00.000Z", senderAgentId: "agent-1", mentions: [] },
+        { id: "rmsg-skip", roomId: "room-a", role: "assistant", content: "  __SKIP__  ", thinkingOutput: null, metadata: null, createdAt: "2026-04-08T00:00:00.000Z", senderAgentId: "agent-1", mentions: [] },
+        { id: "rmsg-token", roomId: "room-a", role: "assistant", content: "use __SKIP__ as a token", thinkingOutput: null, metadata: null, createdAt: "2026-04-08T00:01:00.000Z", senderAgentId: "agent-1", mentions: [] },
       ],
     });
 
@@ -745,9 +762,9 @@ describe("ChatView — rooms (FN-3805..FN-3811 contract)", () => {
 
   it("supports delete-room confirm/cancel and rerenders messages from hook state", async () => {
     const deleteRoom = vi.fn().mockResolvedValue(undefined);
-    const rerenderedRooms = {
+    const rerenderedRooms: UseChatRoomsResult = {
       ...defaultRoomsState,
-      messages: [{ id: "rmsg-2", roomId: "room-a", role: "assistant", content: "Updated room reply", createdAt: "2026-04-08T00:00:10.000Z", senderAgentId: "agent-2", mentions: [] }],
+      messages: [{ id: "rmsg-2", roomId: "room-a", role: "assistant", content: "Updated room reply", thinkingOutput: null, metadata: null, createdAt: "2026-04-08T00:00:10.000Z", senderAgentId: "agent-2", mentions: [] }],
       deleteRoom,
     };
 
@@ -792,7 +809,7 @@ describe("ChatView — rooms (FN-3805..FN-3811 contract)", () => {
       },
       {
         activeRoom: roomA,
-        messages: [{ id: "rmsg-1", roomId: roomA.id, role: "assistant", content: "Room hello", createdAt: "2026-04-08T00:00:00.000Z", senderAgentId: "agent-1", mentions: [] }],
+        messages: [{ id: "rmsg-1", roomId: roomA.id, role: "assistant", content: "Room hello", thinkingOutput: null, metadata: null, createdAt: "2026-04-08T00:00:00.000Z", senderAgentId: "agent-1", mentions: [] }],
       },
     );
 
@@ -961,7 +978,7 @@ describe("ChatView — rooms (FN-3805..FN-3811 contract)", () => {
     try {
       setup({}, {
         activeRoom: roomA,
-        messages: [{ id: "rmsg-1", roomId: roomA.id, role: "assistant", content: "One", createdAt: "2026-04-08T00:00:00.000Z", senderAgentId: "agent-1", mentions: [] }],
+        messages: [{ id: "rmsg-1", roomId: roomA.id, role: "assistant", content: "One", thinkingOutput: null, metadata: null, createdAt: "2026-04-08T00:00:00.000Z", senderAgentId: "agent-1", mentions: [] }],
       });
       const { rerender } = await renderRoomDetailWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} experimentalFeatures={{ chatRooms: true }} />);
 
@@ -971,8 +988,8 @@ describe("ChatView — rooms (FN-3805..FN-3811 contract)", () => {
       setup({}, {
         activeRoom: roomA,
         messages: [
-          { id: "rmsg-1", roomId: roomA.id, role: "assistant", content: "One", createdAt: "2026-04-08T00:00:00.000Z", senderAgentId: "agent-1", mentions: [] },
-          { id: "rmsg-2", roomId: roomA.id, role: "assistant", content: "Two", createdAt: "2026-04-08T00:00:10.000Z", senderAgentId: "agent-1", mentions: [] },
+          { id: "rmsg-1", roomId: roomA.id, role: "assistant", content: "One", thinkingOutput: null, metadata: null, createdAt: "2026-04-08T00:00:00.000Z", senderAgentId: "agent-1", mentions: [] },
+          { id: "rmsg-2", roomId: roomA.id, role: "assistant", content: "Two", thinkingOutput: null, metadata: null, createdAt: "2026-04-08T00:00:10.000Z", senderAgentId: "agent-1", mentions: [] },
         ],
       });
       rerender(<ChatView projectId="proj-123" addToast={vi.fn()} experimentalFeatures={{ chatRooms: true }} />);
@@ -994,7 +1011,7 @@ describe("ChatView — rooms (FN-3805..FN-3811 contract)", () => {
     try {
       setup({}, {
         activeRoom: roomA,
-        messages: [{ id: "rmsg-1", roomId: roomA.id, role: "assistant", content: "One", createdAt: "2026-04-08T00:00:00.000Z", senderAgentId: "agent-1", mentions: [] }],
+        messages: [{ id: "rmsg-1", roomId: roomA.id, role: "assistant", content: "One", thinkingOutput: null, metadata: null, createdAt: "2026-04-08T00:00:00.000Z", senderAgentId: "agent-1", mentions: [] }],
       });
 
       await renderRoomDetailWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} experimentalFeatures={{ chatRooms: true }} />);
@@ -1024,7 +1041,7 @@ describe("ChatView — rooms (FN-3805..FN-3811 contract)", () => {
     try {
       setup({}, {
         activeRoom: roomA,
-        messages: [{ id: "rmsg-1", roomId: roomA.id, role: "assistant", content: "One", createdAt: "2026-04-08T00:00:00.000Z", senderAgentId: "agent-1", mentions: [] }],
+        messages: [{ id: "rmsg-1", roomId: roomA.id, role: "assistant", content: "One", thinkingOutput: null, metadata: null, createdAt: "2026-04-08T00:00:00.000Z", senderAgentId: "agent-1", mentions: [] }],
       });
 
       await renderRoomDetailWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} experimentalFeatures={{ chatRooms: true }} />);
@@ -1048,7 +1065,7 @@ describe("ChatView — rooms (FN-3805..FN-3811 contract)", () => {
     try {
       setup({}, {
         activeRoom: roomA,
-        messages: [{ id: "rmsg-1", roomId: roomA.id, role: "assistant", content: "One", createdAt: "2026-04-08T00:00:00.000Z", senderAgentId: "agent-1", mentions: [] }],
+        messages: [{ id: "rmsg-1", roomId: roomA.id, role: "assistant", content: "One", thinkingOutput: null, metadata: null, createdAt: "2026-04-08T00:00:00.000Z", senderAgentId: "agent-1", mentions: [] }],
       });
 
       await renderRoomDetailWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} experimentalFeatures={{ chatRooms: true }} />);

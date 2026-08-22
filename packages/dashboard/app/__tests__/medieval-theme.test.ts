@@ -1,7 +1,7 @@
 import { createElement as h } from "react";
 import { describe, expect, it, afterEach, beforeEach, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { COLOR_THEMES as CORE_COLOR_THEMES, type ColorTheme, type MergeResult, type Task, type TaskDetail } from "@fusion/core";
+import { COLOR_THEMES as CORE_COLOR_THEMES, type ColorTheme, type MergeResult, type Settings, type Task, type TaskDetail } from "@fusion/core";
 import { COLOR_THEMES as DASHBOARD_COLOR_THEMES } from "../components/themeOptions";
 import { TaskDetailModal } from "../components/TaskDetailModal";
 import { ThemeSelector } from "../components/ThemeSelector";
@@ -41,7 +41,7 @@ describe("Medieval color theme", () => {
     mockFetchGlobalSettings.mockReset();
     mockFetchGlobalSettings.mockImplementation(() => new Promise(() => {}));
     mockUpdateGlobalSettings.mockReset();
-    mockUpdateGlobalSettings.mockResolvedValue({});
+    mockUpdateGlobalSettings.mockResolvedValue({} as unknown as Settings);
     stylesheet = document.createElement("style");
     stylesheet.textContent = `${themeData}\n${styles}\n${documentsStyles}`;
     document.head.appendChild(stylesheet);
@@ -184,7 +184,7 @@ const medievalTask = {
   createdAt: "2026-08-20T00:00:00.000Z",
   updatedAt: "2026-08-20T00:00:00.000Z",
   prInfo: { number: 61, url: "https://example.test/pull/61" },
-} as TaskDetail;
+} as unknown as TaskDetail;
 
 const noop = () => undefined;
 

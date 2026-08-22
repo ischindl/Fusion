@@ -101,6 +101,9 @@ function mainContentProps(overrides: Partial<MainContentProps> = {}): MainConten
     setShadcnCustomColors: vi.fn(),
     resolvedThemeMode: "light",
     setQuickChatButtonModeImmediate: vi.fn(),
+    setMobileNavPrimaryItemsImmediate: vi.fn(),
+    openBoardTaskDetail: vi.fn(),
+    revertTask: vi.fn(),
     setChatMessageLayoutImmediate: vi.fn(),
     setOpenTasksInRightSidebarImmediate: vi.fn(),
     setOpenMobileTasksInPopupImmediate: vi.fn(),
@@ -108,6 +111,17 @@ function mainContentProps(overrides: Partial<MainContentProps> = {}): MainConten
     setShowCostBadgeOnCardsImmediate: vi.fn(),
     setTaskDetailChatFirstImmediate: vi.fn(),
     reopenOnboardingWithNav: vi.fn(),
+    planAutoApproveEnabled: false,
+    togglePlanAutoApprove: vi.fn(),
+    loadMoreArchivedTasks: vi.fn(),
+    changeArchivedSortMode: vi.fn(),
+    archivedSortMode: "completion-date-desc",
+    archivedHasMore: false,
+    archivedLoadingMore: false,
+    fleetViewEnabled: false,
+    ideationEnabled: false,
+    showWorktreeGrouping: false,
+    FleetDashboardView: LazyStub as unknown as MainContentProps["FleetDashboardView"],
     viewMode: "project",
     projects: [],
     projectsLoading: false,
@@ -144,7 +158,6 @@ function mainContentProps(overrides: Partial<MainContentProps> = {}): MainConten
     subscribePluginEvents: vi.fn(() => vi.fn()),
     openDetailTask: vi.fn(),
     openFileInBrowser: vi.fn(),
-    workflowStepNameLookup: new Map(),
     prAuthAvailable: false,
     autoMerge: true,
     mergeStrategy: "direct",
@@ -185,20 +198,18 @@ function mainContentProps(overrides: Partial<MainContentProps> = {}): MainConten
     ingestCreatedTasks: vi.fn(),
     nodesEnabled: true,
     openWorkflowEditorWithNav: vi.fn(),
-    handlePlanningTaskCreated: vi.fn(),
-    handlePlanningTasksCreated: vi.fn(),
     handleGitHubImport: vi.fn(),
     devServerEnabled: true,
     mainPanelDetailTask: null,
     filteredBoardTasks: [],
     maxConcurrent: 2,
+    effectiveMaxConcurrent: 2,
     moveTask: vi.fn(),
     pauseTask: vi.fn(),
     openTaskDetailInMainPanel: vi.fn(),
     openGroupModalWithNav: vi.fn(),
     handleBoardQuickCreate: vi.fn(),
     openNewTaskWithNav: vi.fn(),
-    subtaskBreakdownEnabled: true,
     toggleAutoMerge: vi.fn(),
     globalPaused: false,
     updateTask: vi.fn(),
@@ -231,23 +242,23 @@ function mainContentProps(overrides: Partial<MainContentProps> = {}): MainConten
     capacityRiskDismissed: false,
     capacityRiskSignal: { level: "low", reasons: [] } as unknown as MainContentProps["capacityRiskSignal"],
     handleDismissCapacityRisk: vi.fn(),
-    AgentsView: LazyStub as MainContentProps["AgentsView"],
-    ChatView: LazyStub as MainContentProps["ChatView"],
-    CommandCenter: LazyStub as MainContentProps["CommandCenter"],
-    DevServerView: LazyStub as MainContentProps["DevServerView"],
-    DocumentsView: LazyStub as MainContentProps["DocumentsView"],
-    EvalsView: LazyStub as MainContentProps["EvalsView"],
-    GoalsView: LazyStub as MainContentProps["GoalsView"],
-    InsightsView: LazyStub as MainContentProps["InsightsView"],
-    MemoryView: LazyStub as MainContentProps["MemoryView"],
-    PullRequestView: LazyStub as MainContentProps["PullRequestView"],
-    ResearchView: LazyStub as MainContentProps["ResearchView"],
-    SecretsView: LazyStub as MainContentProps["SecretsView"],
-    SkillsView: LazyStub as MainContentProps["SkillsView"],
-    _AutomationsView: LazyStub as MainContentProps["_AutomationsView"],
-    _ImportTasksView: LazyStub as MainContentProps["_ImportTasksView"],
-    _SettingsView: LazyStub as MainContentProps["_SettingsView"],
-    _WorkflowEditorView: LazyStub as MainContentProps["_WorkflowEditorView"],
+    AgentsView: LazyStub as unknown as MainContentProps["AgentsView"],
+    ChatView: LazyStub as unknown as MainContentProps["ChatView"],
+    CommandCenter: LazyStub as unknown as MainContentProps["CommandCenter"],
+    DevServerView: LazyStub as unknown as MainContentProps["DevServerView"],
+    DocumentsView: LazyStub as unknown as MainContentProps["DocumentsView"],
+    EvalsView: LazyStub as unknown as MainContentProps["EvalsView"],
+    GoalsView: LazyStub as unknown as MainContentProps["GoalsView"],
+    InsightsView: LazyStub as unknown as MainContentProps["InsightsView"],
+    MemoryView: LazyStub as unknown as MainContentProps["MemoryView"],
+    PullRequestView: LazyStub as unknown as MainContentProps["PullRequestView"],
+    ResearchView: LazyStub as unknown as MainContentProps["ResearchView"],
+    SecretsView: LazyStub as unknown as MainContentProps["SecretsView"],
+    SkillsView: LazyStub as unknown as MainContentProps["SkillsView"],
+    _AutomationsView: LazyStub as unknown as MainContentProps["_AutomationsView"],
+    _ImportTasksView: LazyStub as unknown as MainContentProps["_ImportTasksView"],
+    _SettingsView: LazyStub as unknown as MainContentProps["_SettingsView"],
+    _WorkflowEditorView: LazyStub as unknown as MainContentProps["_WorkflowEditorView"],
     ...overrides,
   };
 }
@@ -298,11 +309,12 @@ describe("MainContent graph task pop-out wiring", () => {
       showCostBadgeOnCards: true,
       taskDetailChatFirst: true,
       ...setters,
-      _SettingsView: LazySettingsBridgeStub as MainContentProps["_SettingsView"],
+      _SettingsView: LazySettingsBridgeStub as unknown as MainContentProps["_SettingsView"],
     })} />);
 
     await screen.findByText("Embedded settings bridge");
-    expect(embeddedSettingsProps).toMatchObject({
+    const bridgeProps = embeddedSettingsProps as Record<string, unknown> | undefined;
+    expect(bridgeProps).toMatchObject({
       chatMessageLayout: "full-width",
       openTasksInRightSidebar: true,
       openMobileTasksInPopup: true,
@@ -311,12 +323,12 @@ describe("MainContent graph task pop-out wiring", () => {
       taskDetailChatFirst: true,
     });
 
-    (embeddedSettingsProps?.onChatMessageLayoutChange as (value: "bubbles" | "full-width") => void)("bubbles");
-    (embeddedSettingsProps?.onOpenTasksInRightSidebarChange as (value: boolean) => void)(false);
-    (embeddedSettingsProps?.onOpenMobileTasksInPopupChange as (value: boolean) => void)(false);
-    (embeddedSettingsProps?.onTaskPopupsBoardListOnlyChange as (value: boolean) => void)(true);
-    (embeddedSettingsProps?.onShowCostBadgeOnCardsChange as (value: boolean) => void)(false);
-    (embeddedSettingsProps?.onTaskDetailChatFirstChange as (value: boolean) => void)(false);
+    (bridgeProps?.onChatMessageLayoutChange as (value: "bubbles" | "full-width") => void)("bubbles");
+    (bridgeProps?.onOpenTasksInRightSidebarChange as (value: boolean) => void)(false);
+    (bridgeProps?.onOpenMobileTasksInPopupChange as (value: boolean) => void)(false);
+    (bridgeProps?.onTaskPopupsBoardListOnlyChange as (value: boolean) => void)(true);
+    (bridgeProps?.onShowCostBadgeOnCardsChange as (value: boolean) => void)(false);
+    (bridgeProps?.onTaskDetailChatFirstChange as (value: boolean) => void)(false);
 
     expect(setters.setChatMessageLayoutImmediate).toHaveBeenCalledWith("bubbles");
     expect(setters.setOpenTasksInRightSidebarImmediate).toHaveBeenCalledWith(false);

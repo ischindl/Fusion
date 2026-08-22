@@ -7,7 +7,7 @@ function transfer(): DataTransfer {
   return {
     types: [] as unknown as DOMStringList,
     effectAllowed: "none",
-    setData(type: string, value: string) {
+    setData(this: { types: unknown }, type: string, value: string) {
       data.set(type, value);
       (this.types as unknown as string[]) = [...data.keys()];
     },

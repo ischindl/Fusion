@@ -1167,7 +1167,7 @@ describe("SettingsModal", () => {
       // Spy on createElement to capture the download link's filename
       const originalCreateElement = document.createElement.bind(document);
       const createdElements: { tagName: string; download: string; href: string }[] = [];
-      vi.spyOn(document, "createElement").mockImplementation((tagName: string) => {
+      vi.spyOn(document, "createElement").mockImplementation((tagName) => {
         const el = originalCreateElement(tagName);
         if (tagName.toLowerCase() === "a") {
           // Capture the download attribute when set
@@ -1177,7 +1177,7 @@ describe("SettingsModal", () => {
           );
           Object.defineProperty(el, "download", {
             set(v: string) {
-              createdElements.push({ tagName, download: v, href: (el as HTMLAnchorElement).href });
+              createdElements.push({ tagName, download: v, href: (el as unknown as HTMLAnchorElement).href });
               origDownloadDescriptor?.set?.call(el, v);
             },
             get() {

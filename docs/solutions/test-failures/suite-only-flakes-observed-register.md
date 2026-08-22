@@ -479,3 +479,51 @@ AssertionError: expected [ 'approved', 'created' ] to deeply equal [ 'created', 
 This resolves the previously unclassified “unrelated satellite-store ordering failure” mentions in entry 1's 12-worker verification table, entry 2's 12-worker verification table, and entry 11's FN-9129 4-worker run table. Those sightings are now classified separately from their entries' identity and DDL investigations.
 
 **Terminal negative 2026-08-17 (FN-9131):** The reproduced 27-worker PostgreSQL-directory symptom was investigated with a cluster-shared connection-budget primitive. The first harness wiring and a follow-up that queued registry over-subscription while retaining leases both made the loaded run worse (135 failed files in 174.1s, then 144 failed files in 223.3s); the subject itself was not the only failure. The harness wiring was reverted, the primitive remains characterized independently, and FN-9139 owns a setup-safe admission boundary. No quarantine, timeout change, test retry, skip, worker cap, or assertion change was made.
+
+### 14. WorkflowNodeEditor suite-only single-test flake under full-suite parallel load
+
+- **Status:** Open (first sighting) — recorded per the standing first-sighting rule instead of quarantined; a second sighting of the same test is an ordinary on-sight quarantine.
+
+- **File:** `packages/dashboard/app/components/__tests__/WorkflowNodeEditor.test.tsx`
+- **Exact test:** a single test in this file (182 tests total; the other 181 pass deterministically). The verbatim `suite > case` identity was **not captured**: the vitest output of the loaded full-suite run in which it failed was compacted before the failure block appeared, and the vitest `json` reporter is coverage-only and disabled, so no JSON report exists. Primary uncaptured-name record: RUFU-140 task document `reverify-final-4` ("the failing file/case name was NOT captured"). File-level identification as WorkflowNodeEditor.test.tsx comes from the RUFU-140 verification session record of the same observation window.
+- **Observed tree/SHA:** `71767170f13bb0a5f139af133aa455382e5eae8e` (branch `fusion/rufu-140`, 27 RUFU-140 commits on fleet base `f783e21c5e`), worktree `jade-quail`.
+- **Observed frequency:** one failed test in the `dashboard-app-quality-components-b` curated shard (50 files / 1756 tests) during the RUFU-140 verification battery (full package-quality-suite runs, 2026-08-21 23:30–2026-08-22 ~03:50 UTC). Not a campaign regression: the file passes in the pre-campaign A/B full run at base content and in every current-tree full run (backfill `--no-fail-fast` run: not among the 68 failing files).
+
+| run | result |
+|---|---|
+| full package-quality-suite, 1st run (loaded, 15 lanes) | **failed** — 1 test in the components-b shard, name not captured; components-a showed only the tracked RUFU-153 red (5 files / 30 tests) |
+| full package-quality-suite, 2nd run (same tree, minutes later) | **passed** — components-b 50/50 files, 1756/1756 tests |
+| components-b shard, isolated re-run | **passed** — 50/50 files, 1756/1756 tests (91.6s) |
+| `WorkflowNodeEditor.test.tsx`, isolated full-file run | **passed** — all 182 tests |
+| current-tree backfill `--no-fail-fast` full run | **passed** — file not in the 68 failing files |
+| pre-campaign A/B full run (242 campaign files at `f783e21c5e` content) | **passed** — file not in the pre-campaign-only failure set |
+
+No appeasement was attempted: no timeout widening, no retry added, no assertion loosened, no `.skip`, no worker-cap change. The file retains 181 passing tests, so file-level quarantine over a single uncaptured observation would evict substantial coverage; the first-sighting record preserves the evidence for an immediate second-sighting quarantine (entry in `scripts/lib/test-quarantine.json` plus the matching one-line `exclude` in the dashboard vitest config, same commit).
+
+### 15. voice-dictation-composers real-ChatView-surface cases fail (pre-existing ChatView composer drift, RUFU-153 family)
+
+- **Status:** Closed 2026-08-22 by RUFU-140 — quarantined on sight per the escalation declared above: the 2026-08-22 ~09:57 UTC RUFU-140 verification session (worktree faint-raven, HEAD `016db03e46`) produced the next standalone failure (11-file targeted batch: the same 7 cases failed / 804 passed). Ledger entry added to `scripts/lib/test-quarantine.json` (`quarantinedAt` 2026-08-22; deletion-ratchet deadline 2026-09-05) with the matching excludes in `packages/dashboard/vitest.config.ts` (the `quarantinedDashboardTests` const array plus a concrete `coverage.exclude` entry for lockstep-checker visibility) in the same commit. No appeasement. Rescue requires the RUFU-153 root-cause fix, not stabilization passes.
+- **Prior observation (task-document only, not register-recorded):** RUFU-140 verification session of 2026-08-21 ~20:24 UTC (worktree `jade-quail`, HEAD `71767170f1`, task document `docs` rev 4) observed the same 7 isolated-run failures with the same A/B signature (base content 14 ⊇ 7) and judged the full package suite green the authoritative signal. That observation is disclosed here so the escalation clock is explicit: the next standalone failure of these tests quarantines the file.
+
+- **File:** `packages/dashboard/app/components/__tests__/voice-dictation-composers.test.tsx`
+- **Exact tests (7 of 38; all real-`ChatView`-surface cases — the other 31 pass deterministically):**
+  - `voice dictation composer inventory > opens the reachable shared ChatView composer from QuickChatFAB`
+  - `voice dictation composer inventory > renders exactly a shared mic on 'ChatView primary composer' and removes its subscription on unmount`
+  - `voice dictation composer inventory > renders exactly a shared mic on 'ChatView secondary room composer' and removes its subscription on unmount`
+  - `voice dictation composer inventory > renders exactly a shared mic on 'QuickChatFAB-opened shared ChatView composer' and removes its subscription on unmount`
+  - `voice dictation composer inventory > drives anchored partial → final replacement through real 'ChatView primary composer'`
+  - `voice dictation composer inventory > drives anchored partial → final replacement through real 'ChatView secondary room composer'`
+  - `voice dictation composer inventory > drives anchored partial → final replacement through real 'QuickChatFAB-opened shared ChatView composer'`
+- **Observed tree/SHA:** `e36d9149a716357b20767e42825a4b3b12ffca24` (branch `fusion/rufu-140`, 28 commits on fleet base `f783e21c5e`), worktree `jade-quail`, 2026-08-22 ~04:45–05:00 UTC.
+- **Observed frequency:** (1) 2026-08-21 ~20:24 UTC solo isolated run at HEAD `71767170f1` — same 7 cases failed (task document `docs` rev 4; same-SHA full package suite green). (2) 2026-08-22 RUFU-140 verification session: 11-file targeted batch (7 failed, 804 passed), then solo file run ×2 (same 7 failed / 31 passed each), at HEAD `e36d9149a7`. NOT observed in the same-SHA full package suite run of 2026-08-22 04:11–04:26 UTC (that run's red set was the five tracked RUFU-153 `ChatView.*` shard files only) — the failure is context-dependent (solo/targeted runs fail; the loaded sharded suite runs passed), consistent with the real `ChatView` composer's async session/composer effect ordering under different load shapes.
+
+**A/B attribution (same product tree; only the test-file content differs):** the pre-campaign test-file content (the `f783e21c5e` version of this file) run against the current product code fails **14** tests — the same 7 real-`ChatView` cases plus 7 more (TaskPlannerChatTab-surface and whole-inventory cases) that the RUFU-140 fixture repairs (the `planningModel` → `taskChatModel` prop rename matching the current `TaskPlannerChatTab` prop, plus type-cast fixes) repaired. All 7 remaining failures fail identically under both file versions with the same symptom: the real `ChatView` composer renders no `textarea` after a single `act` flush, so `expect(textarea).not.toBeNull()` / the mic `aria-label` query throws. This is the RUFU-153 failure family (ChatView composer/streaming refactor DOM-structure/effect-ordering drift; `app/components/ChatView.tsx` is product code, out of RUFU-140's scope) surfacing in a non-`ChatView*`-named file that exercises real ChatView composer surfaces. The RUFU-140 edits strictly reduced this file's failures (14 → 7); no assertion was changed and the failing assertions are the file's pre-existing ones.
+
+| run | result |
+|---|---|
+| 11-file targeted batch, HEAD `e36d9149a7` | **7 failed** (all in this file, real-ChatView surfaces) / 804 passed |
+| solo file run ×2, HEAD `e36d9149a7` | **7 failed / 31 passed** each |
+| solo file run, **base test-file content** (`f783e21c5e` version) at current product | **14 failed / 24 passed** — strict superset; the same 7 cases fail under both versions |
+| full package suite, 2026-08-22 04:11–04:26 UTC, same SHA (prior RUFU-140 verification battery) | passed — red set was the five tracked RUFU-153 `ChatView.*` shard files only |
+
+No appeasement was attempted: no timeout widening, no retry added, no assertion loosened, no `.skip`, no worker-cap change. The file retains 31 passing tests, so file-level quarantine over this first sighting would evict substantial coverage; the first-sighting record preserves the evidence for an immediate second-sighting quarantine (entry in `scripts/lib/test-quarantine.json` plus the matching one-line `exclude` in the dashboard vitest config, same commit). Root-cause ownership: RUFU-153 (ChatView composer product drift).

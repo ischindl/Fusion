@@ -224,7 +224,7 @@ describe("UsageIndicator", () => {
       expect(info).toBeInTheDocument();
       expect(actions).toBeInTheDocument();
       expect(handle).toBeInTheDocument();
-      expect(actions).toContainElement(handle);
+      expect(actions).toContainElement(handle as HTMLElement | null);
       expect(info?.contains(handle)).toBe(false);
       expect(headerChildren[0]).toBe(info);
     });
@@ -1348,7 +1348,7 @@ describe("UsageIndicator", () => {
       refresh: mockRefresh,
     }));
 
-    const onSubmit = vi.fn((event: Event) => {
+    const onSubmit = vi.fn((event: { preventDefault(): void }) => {
       event.preventDefault();
     });
 

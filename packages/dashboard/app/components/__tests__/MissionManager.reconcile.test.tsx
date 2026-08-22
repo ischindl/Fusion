@@ -48,7 +48,7 @@ function mission(id = "M-1") {
     milestones: [{ id: `${id}-MS`, missionId: id, title: "Milestone", status: "active", interviewState: "completed", orderIndex: 0, dependencies: [], createdAt: "", updatedAt: "", slices: [{ id: `${id}-SL`, milestoneId: `${id}-MS`, title: "Slice", status: "active", orderIndex: 0, dependencies: [], createdAt: "", updatedAt: "", features: [{ id: "F-1", title: "Feature title", status: "in-progress", createdAt: "", updatedAt: "" }] }] }],
   };
 }
-const result = (planned = [{ featureId: "F-1", action: "status" as const }]) => ({ missionsScanned: 1, featuresScanned: 1, statusUpdates: 1, badgeRepairs: 0, badgeRepairsSkipped: 0, terminalRepairs: 0, terminalSkipped: 0, conflicts: 0, failures: 0, planned });
+const result = (planned: Array<{ featureId: string; action: "status" | "terminal-done" | "badge-clear" }> = [{ featureId: "F-1", action: "status" as const }]) => ({ missionsScanned: 1, featuresScanned: 1, statusUpdates: 1, badgeRepairs: 0, badgeRepairsSkipped: 0, terminalRepairs: 0, terminalSkipped: 0, conflicts: 0, failures: 0, planned });
 
 /*
 FNXC:MissionReconcileControl 2026-08-11-06:49:
@@ -83,7 +83,7 @@ describe("MissionManager reconcile control", () => {
   });
 
   it("applies only after explicit confirmation and refreshes", async () => {
-    reconcileMission.mockResolvedValueOnce(result()).mockResolvedValueOnce({ ...result(), planned: undefined });
+    reconcileMission.mockResolvedValueOnce(result()).mockResolvedValueOnce({ ...result(), planned: undefined as unknown as Array<{ featureId: string; action: "status" }> });
     const { container, addToast } = renderManager(); await screen.findByText("Feature title");
     fireEvent.click(screen.getByTestId("mission-reconcile-now")); await screen.findByTestId("mission-reconcile-apply");
     fireEvent.click(screen.getByTestId("mission-reconcile-apply"));
@@ -221,7 +221,7 @@ describe("MissionManager reconcile control", () => {
     fireEvent.click(screen.getByTestId("mission-reconcile-now")); await screen.findByTestId("mission-reconcile-apply");
     fireEvent.click(screen.getByTestId("mission-reconcile-apply")); await openM2();
     const callsBefore = fetchMission.mock.calls.filter(([id]) => id === "M-1").length;
-    apply.resolve({ ...result(), planned: undefined }); await act(async () => {});
+    apply.resolve({ ...result(), planned: undefined as unknown as Array<{ featureId: string; action: "status" }> }); await act(async () => {});
     expect(addToast).not.toHaveBeenCalledWith(expect.stringContaining("Reconciled:"), "success");
     expect(fetchMission.mock.calls.filter(([id]) => id === "M-1")).toHaveLength(callsBefore);
 
@@ -242,7 +242,7 @@ describe("MissionManager reconcile control", () => {
     preview.resolve(result()); await screen.findByTestId("mission-reconcile-apply");
     const applyButton = screen.getByTestId("mission-reconcile-apply"); fireEvent.click(applyButton); fireEvent.click(applyButton); fireEvent.click(applyButton);
     expect(reconcileMission).toHaveBeenCalledTimes(2); expect(applyButton).toBeDisabled();
-    apply.resolve({ ...result(), planned: undefined }); await waitFor(() => expect(screen.queryByTestId("mission-reconcile-apply")).toBeNull());
+    apply.resolve({ ...result(), planned: undefined as unknown as Array<{ featureId: string; action: "status" }> }); await waitFor(() => expect(screen.queryByTestId("mission-reconcile-apply")).toBeNull());
   });
 
   it("renders unknown and duplicate planned features without key warnings", async () => {
@@ -271,7 +271,7 @@ describe("MissionManager reconcile control", () => {
     const apply = deferred<ReturnType<typeof result>>();
     reconcileMission.mockResolvedValueOnce(result()).mockReturnValueOnce(apply.promise);
     const second = renderManager(); await screen.findByText("Feature title"); fireEvent.click(screen.getByTestId("mission-reconcile-now")); await screen.findByTestId("mission-reconcile-apply");
-    fireEvent.click(screen.getByTestId("mission-reconcile-apply")); second.unmount(); apply.resolve({ ...result(), planned: undefined }); await act(async () => {});
+    fireEvent.click(screen.getByTestId("mission-reconcile-apply")); second.unmount(); apply.resolve({ ...result(), planned: undefined as unknown as Array<{ featureId: string; action: "status" }> }); await act(async () => {});
     expect(error.mock.calls.join(" ")).not.toMatch(/state update on an unmounted|not wrapped in act/i); error.mockRestore();
   });
 });

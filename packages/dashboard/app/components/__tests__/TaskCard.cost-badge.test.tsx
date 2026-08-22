@@ -141,8 +141,8 @@ describe("TaskCard cost badge", () => {
                 modelProvider: "unknown",
                 modelId: "no-price",
                 perModel: [
-                  { modelProvider: "openai", modelId: "gpt-5-mini", inputTokens: 1_000_000, outputTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, totalTokens: 1_000_000 },
-                  { modelProvider: "unknown", modelId: "no-price", inputTokens: 1, outputTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, totalTokens: 1 },
+                  { modelProvider: "openai", modelId: "gpt-5-mini", inputTokens: 1_000_000, outputTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, totalTokens: 1_000_000, firstUsedAt: "2026-04-08T00:00:00.000Z", lastUsedAt: "2026-04-08T00:00:00.000Z" },
+                  { modelProvider: "unknown", modelId: "no-price", inputTokens: 1, outputTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, totalTokens: 1, firstUsedAt: "2026-04-08T00:00:00.000Z", lastUsedAt: "2026-04-08T00:00:00.000Z" },
                 ],
               },
             })}

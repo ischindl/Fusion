@@ -12,7 +12,7 @@ import { ALL_WORKFLOWS_BOARD_VIEW_ID } from "../../utils/boardWorkflowSelection"
 import { PlanningWorkflowSwitcherSlot } from "../PlanningWorkflowSwitcherSlot";
 
 const fetchBoardWorkflowsMock = vi.fn();
-const subscribeSseMock = vi.fn(() => vi.fn());
+const subscribeSseMock = vi.fn((..._args: unknown[]) => vi.fn());
 
 vi.mock("../../api", () => ({
   fetchBoardWorkflows: (...args: unknown[]) => fetchBoardWorkflowsMock(...args),

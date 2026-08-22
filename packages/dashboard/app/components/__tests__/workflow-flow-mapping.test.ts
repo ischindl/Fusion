@@ -1,7 +1,7 @@
-import { createElement } from "react";
+import { createElement, type ComponentType } from "react";
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import type { WorkflowDefinition, WorkflowIrNodeKind } from "@fusion/core";
+import type { WorkflowDefinition, WorkflowIrNodeKind, WorkflowIrV2 } from "@fusion/core";
 import {
   BUILTIN_CODING_WORKFLOW_IR,
   BUILTIN_STEPWISE_CODING_WORKFLOW_IR,
@@ -74,7 +74,7 @@ function assertRenderedHandles(
 ): void {
   const Component = workflowNodeTypes[kind];
   const { container, unmount } = render(
-    createElement(ReactFlowProvider, null, createElement(Component, { data, id: `${kind}-handle-check` })),
+    createElement(ReactFlowProvider, null, createElement(Component as unknown as ComponentType<Record<string, unknown>>,{ data, id: `${kind}-handle-check` })),
   );
   try {
     const root = container.querySelector(`[data-testid="wf-node-${kind}"]`);
@@ -1448,7 +1448,7 @@ describe("workflow-flow-mapping foreach + rework round-trip", () => {
     const consecutiveMixedContainers: WorkflowDefinition["ir"] = {
       version: "v2",
       name: "mixed-containers",
-      columns: BUILTIN_CODING_WORKFLOW_IR.columns,
+      columns: (BUILTIN_CODING_WORKFLOW_IR as WorkflowIrV2).columns,
       nodes: [
         { id: "start", kind: "start", column: "todo" },
         {
@@ -1517,7 +1517,7 @@ describe("workflow-flow-mapping foreach + rework round-trip", () => {
     const compactManualIr: WorkflowDefinition["ir"] = {
       version: "v2",
       name: "compact-manual-containers",
-      columns: BUILTIN_CODING_WORKFLOW_IR.columns,
+      columns: (BUILTIN_CODING_WORKFLOW_IR as WorkflowIrV2).columns,
       nodes: [
         { id: "start", kind: "start", column: "todo" },
         { id: "optional", kind: "optional-group", column: "in-progress", config: { template: { nodes: [], edges: [] } } },
@@ -2396,7 +2396,7 @@ describe("copyIrWithFreshIds", () => {
     // Columns preserved untouched.
     expect(result.ir.version).toBe("v2");
     if (result.ir.version === "v2") {
-      expect(result.ir.columns).toEqual(ir.columns);
+      expect(result.ir.columns).toEqual((ir as WorkflowIrV2).columns);
       // Node columns carried through.
       expect(result.ir.nodes.every((n) => n.column === "in-progress")).toBe(true);
     }

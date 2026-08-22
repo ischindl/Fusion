@@ -351,7 +351,7 @@ describe("TaskTokenStatsPanel", () => {
   it("uses the active theme accent for populated imported-source links across shared Stats surfaces", () => {
     const issueUrl = "https://github.com/Runfusion/Fusion/issues/2410";
     render(<TaskTokenStatsPanel loading={false} tokenUsage={undefined} task={makeTask({
-      sourceType: "github",
+      sourceType: "github_import",
       sourceMetadata: { issueUrl },
     })} />);
 

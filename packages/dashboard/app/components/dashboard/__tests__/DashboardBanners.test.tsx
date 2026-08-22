@@ -203,8 +203,12 @@ function buildModalManager(overrides: Partial<ModalManager> = {}): ModalManager 
     onPlanningTaskCreated: noop,
     onPlanningTasksCreated: noop,
     onSubtaskTasksCreated: noop,
+    newTaskInitialWorkflowId: null,
+    planningSourceIssue: undefined,
+    planningEntryGeneration: 0,
+    detailTaskInitialAction: null,
     ...overrides,
-  };
+  } as ModalManager;
 }
 
 function buildProps(overrides: Partial<DashboardBannersProps> = {}): DashboardBannersProps {
@@ -264,7 +268,7 @@ function unavailableEngineHealth(): DashboardBannersProps["dashboardHealth"] {
     engine: { available: false, status: "unavailable" },
     database: { healthy: true, corruptionDetected: false, corruptionErrors: [], lastCheckedAt: null },
     taskIdIntegrity: { status: "ok" },
-  } as DashboardBannersProps["dashboardHealth"];
+  } as unknown as DashboardBannersProps["dashboardHealth"];
 }
 
 function AuthRecoveryBannerShell({

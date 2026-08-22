@@ -26,7 +26,7 @@ vi.mock("../../sse-bus", () => ({
 
 const fetchUnreadCount = vi.fn(async () => ({ unreadCount: 0 }));
 vi.mock("../../api", () => ({
-  fetchUnreadCount: (...a: unknown[]) => fetchUnreadCount(...a),
+  fetchUnreadCount: (...a: unknown[]) => (fetchUnreadCount as unknown as (..._x: unknown[]) => never)(...a),
 }));
 
 import { useMailboxUnread } from "../useMailboxUnread";

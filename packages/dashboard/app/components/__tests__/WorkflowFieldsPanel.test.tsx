@@ -221,7 +221,6 @@ vi.mock("../../api", async (importOriginal) => {
     createWorkflow: vi.fn(),
     updateWorkflow: vi.fn(),
     deleteWorkflow: vi.fn(),
-    compileWorkflow: vi.fn(),
     fetchTraits: vi.fn(),
     fetchModels: vi.fn(),
     fetchAgents: vi.fn(),
@@ -229,7 +228,7 @@ vi.mock("../../api", async (importOriginal) => {
   };
 });
 
-import { fetchWorkflows, fetchTraits, updateWorkflow, compileWorkflow, fetchModels } from "../../api";
+import { fetchWorkflows, fetchTraits, updateWorkflow, fetchModels } from "../../api";
 import { WorkflowNodeEditor } from "../WorkflowNodeEditor";
 
 function v2DefWithField(): WorkflowDefinition {
@@ -237,6 +236,7 @@ function v2DefWithField(): WorkflowDefinition {
     id: "WF-100",
     name: "Custom",
     description: "",
+    kind: "workflow",
     ir: {
       version: "v2",
       name: "Custom",
@@ -280,7 +280,7 @@ describe("WorkflowFieldsPanel — editor round-trip", () => {
       { id: "intake", name: "Intake", builtin: true, flags: { intake: true } },
       { id: "complete", name: "Complete", builtin: true, flags: { complete: true } },
     ]);
-    vi.mocked(fetchModels).mockResolvedValue([]);
+    vi.mocked(fetchModels).mockResolvedValue({ models: [], favoriteProviders: [], favoriteModels: [] });
   });
 
   it("mounts the Fields panel and round-trips an added field into the saved IR", async () => {
@@ -289,7 +289,6 @@ describe("WorkflowFieldsPanel — editor round-trip", () => {
       ...v2DefWithField(),
       ...(updates as object),
     }));
-    vi.mocked(compileWorkflow).mockResolvedValue({ steps: [] });
 
     render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
     await screen.findByText("Save");

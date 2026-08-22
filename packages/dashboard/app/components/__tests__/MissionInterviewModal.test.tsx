@@ -42,7 +42,7 @@ const mockSaveMissionGoal = vi.fn();
 
 vi.mock("../../hooks/modalPersistence", () => ({
   saveMissionGoal: (...args: any[]) => mockSaveMissionGoal(...args),
-  getMissionGoal: (...args: any[]) => mockGetMissionGoal(...args),
+  getMissionGoal: (...args: any[]) => (mockGetMissionGoal as unknown as (..._a: unknown[]) => never)(...args),
   clearMissionGoal: vi.fn(),
 }));
 

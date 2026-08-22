@@ -93,7 +93,7 @@ describe("useConfirm", () => {
   });
 
   it("skips dialogs with the primary/default outcomes when enabled", async () => {
-    render(React.createElement(ConfirmDialogProvider, { skipConfirmations: true }, React.createElement(Harness)));
+    render(React.createElement(ConfirmDialogProvider, { skipConfirmations: true, children: React.createElement(Harness) }));
 
     fireEvent.click(screen.getByText("open"));
     await waitFor(() => expect(screen.getByTestId("result")).toHaveTextContent("confirmed"));

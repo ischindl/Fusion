@@ -100,7 +100,7 @@ describe("useTerminalSessions", () => {
       const { result, rerender } = renderHook(
         ({ storageScope }: { storageScope?: string }) =>
           useTerminalSessions(TEST_PROJECT_ID, { storageScope }),
-        { initialProps: { storageScope: undefined }, wrapper: StrictMode },
+        { initialProps: { storageScope: undefined } as { storageScope?: string }, wrapper: StrictMode },
       );
 
       await waitFor(() => {
@@ -645,10 +645,10 @@ describe("useTerminalSessions", () => {
         },
       ];
       localStorageMock.getItem.mockReturnValue(JSON.stringify(storedTabs));
-      let resolveList: (val: unknown[]) => void;
+      let resolveList: (val: unknown[]) => void = () => {};
       mockListTerminalSessions.mockReturnValue(
         new Promise((resolve) => {
-          resolveList = resolve;
+          resolveList = resolve as unknown as (val: unknown[]) => void;
         }),
       );
       mockCreateTerminalSession.mockResolvedValue({
@@ -687,8 +687,8 @@ describe("useTerminalSessions", () => {
     it("adopts the server's existing sessions instead of spawning a private one", async () => {
       localStorageMock.getItem.mockReturnValue(null);
       mockListTerminalSessions.mockResolvedValue([
-        { id: "session-b", cwd: "/project/api", shell: "/bin/bash", createdAt: "2026-08-19T02:00:00.000Z", lastActivityAt: "2026-08-19T02:30:00.000Z" },
-        { id: "session-a", cwd: "/project/web", shell: "/bin/bash", createdAt: "2026-08-19T01:00:00.000Z", lastActivityAt: "2026-08-19T02:30:00.000Z" },
+        { id: "session-b", cwd: "/project/api", shell: "/bin/bash", createdAt: "2026-08-19T02:00:00.000Z" },
+        { id: "session-a", cwd: "/project/web", shell: "/bin/bash", createdAt: "2026-08-19T01:00:00.000Z" },
       ]);
       mockCreateTerminalSession.mockResolvedValue({ sessionId: "session-private", shell: "/bin/bash", cwd: "/project" });
 
@@ -737,8 +737,8 @@ describe("useTerminalSessions", () => {
       const storedTabs = [{ id: "tab-1", sessionId: "session-mine", title: "bash", isActive: true, createdAt: Date.now() }];
       localStorageMock.getItem.mockReturnValue(JSON.stringify(storedTabs));
       mockListTerminalSessions.mockResolvedValue([
-        { id: "session-mine", cwd: "/project", shell: "/bin/bash", createdAt: "2026-08-19T01:00:00.000Z", lastActivityAt: "2026-08-19T02:30:00.000Z" },
-        { id: "session-someone-else", cwd: "/project/api", shell: "/bin/bash", createdAt: "2026-08-19T02:00:00.000Z", lastActivityAt: "2026-08-19T02:30:00.000Z" },
+        { id: "session-mine", cwd: "/project", shell: "/bin/bash", createdAt: "2026-08-19T01:00:00.000Z" },
+        { id: "session-someone-else", cwd: "/project/api", shell: "/bin/bash", createdAt: "2026-08-19T02:00:00.000Z" },
       ]);
 
       const { result } = renderHook(() => useTerminalSessions(TEST_PROJECT_ID));
@@ -765,8 +765,8 @@ describe("useTerminalSessions", () => {
     it("leaves the server session running when the tab is only detached", async () => {
       localStorageMock.getItem.mockReturnValue(JSON.stringify(twoTabs));
       mockListTerminalSessions.mockResolvedValue([
-        { id: "session-1", cwd: "/project", shell: "/bin/bash", createdAt: "2026-08-19T01:00:00.000Z", lastActivityAt: "2026-08-19T01:00:00.000Z" },
-        { id: "session-2", cwd: "/project", shell: "/bin/bash", createdAt: "2026-08-19T02:00:00.000Z", lastActivityAt: "2026-08-19T02:00:00.000Z" },
+        { id: "session-1", cwd: "/project", shell: "/bin/bash", createdAt: "2026-08-19T01:00:00.000Z" },
+        { id: "session-2", cwd: "/project", shell: "/bin/bash", createdAt: "2026-08-19T02:00:00.000Z" },
       ]);
 
       const { result } = renderHook(() => useTerminalSessions(TEST_PROJECT_ID));
@@ -783,8 +783,8 @@ describe("useTerminalSessions", () => {
     it("kills the server session when the operator ends it", async () => {
       localStorageMock.getItem.mockReturnValue(JSON.stringify(twoTabs));
       mockListTerminalSessions.mockResolvedValue([
-        { id: "session-1", cwd: "/project", shell: "/bin/bash", createdAt: "2026-08-19T01:00:00.000Z", lastActivityAt: "2026-08-19T01:00:00.000Z" },
-        { id: "session-2", cwd: "/project", shell: "/bin/bash", createdAt: "2026-08-19T02:00:00.000Z", lastActivityAt: "2026-08-19T02:00:00.000Z" },
+        { id: "session-1", cwd: "/project", shell: "/bin/bash", createdAt: "2026-08-19T01:00:00.000Z" },
+        { id: "session-2", cwd: "/project", shell: "/bin/bash", createdAt: "2026-08-19T02:00:00.000Z" },
       ]);
 
       const { result } = renderHook(() => useTerminalSessions(TEST_PROJECT_ID));
@@ -803,8 +803,8 @@ describe("useTerminalSessions", () => {
       const storedTabs = [{ id: "tab-1", sessionId: "session-mine", title: "mine", isActive: true, createdAt: 1 }];
       localStorageMock.getItem.mockReturnValue(JSON.stringify(storedTabs));
       mockListTerminalSessions.mockResolvedValue([
-        { id: "session-mine", cwd: "/project", shell: "/bin/bash", createdAt: "2026-08-19T01:00:00.000Z", lastActivityAt: "2026-08-19T01:00:00.000Z" },
-        { id: "session-theirs", cwd: "/project/api", shell: "/bin/bash", createdAt: "2026-08-19T02:00:00.000Z", lastActivityAt: "2026-08-19T02:00:00.000Z" },
+        { id: "session-mine", cwd: "/project", shell: "/bin/bash", createdAt: "2026-08-19T01:00:00.000Z" },
+        { id: "session-theirs", cwd: "/project/api", shell: "/bin/bash", createdAt: "2026-08-19T02:00:00.000Z" },
       ]);
 
       const { result } = renderHook(() => useTerminalSessions(TEST_PROJECT_ID));
@@ -836,8 +836,8 @@ describe("useTerminalSessions", () => {
       ];
       localStorageMock.getItem.mockReturnValue(JSON.stringify(storedTabs));
       mockListTerminalSessions.mockResolvedValue([
-        { id: "session-1", cwd: "/project", shell: "/bin/bash", createdAt: "2026-08-19T01:00:00.000Z", lastActivityAt: "2026-08-19T01:00:00.000Z" },
-        { id: "session-2", cwd: "/project", shell: "/bin/bash", createdAt: "2026-08-19T02:00:00.000Z", lastActivityAt: "2026-08-19T02:00:00.000Z" },
+        { id: "session-1", cwd: "/project", shell: "/bin/bash", createdAt: "2026-08-19T01:00:00.000Z" },
+        { id: "session-2", cwd: "/project", shell: "/bin/bash", createdAt: "2026-08-19T02:00:00.000Z" },
       ]);
 
       const { result } = renderHook(() => useTerminalSessions(TEST_PROJECT_ID));

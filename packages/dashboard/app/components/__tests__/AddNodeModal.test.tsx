@@ -17,6 +17,7 @@ describe("AddNodeModal", () => {
         name: "Project One",
         path: "/workspace/project-one",
         status: "active" as const,
+        isolationMode: "in-process" as const,
         createdAt: "2026-01-01T00:00:00.000Z",
         updatedAt: "2026-01-01T00:00:00.000Z",
       },
@@ -25,6 +26,7 @@ describe("AddNodeModal", () => {
         name: "Project Two",
         path: "/workspace/project-two",
         status: "active" as const,
+        isolationMode: "in-process" as const,
         createdAt: "2026-01-01T00:00:00.000Z",
         updatedAt: "2026-01-01T00:00:00.000Z",
       },
@@ -258,7 +260,7 @@ describe("AddNodeModal", () => {
         name: "Project One",
         path: "/srv/project-one",
         status: "active",
-        isolationMode: "in-process",
+        isolationMode: "in-process" as const,
       }],
     });
     render(<AddNodeModal {...defaultProps} onDiscoverRemoteProjects={onDiscoverRemoteProjects} />);
@@ -357,7 +359,7 @@ describe("AddNodeModal", () => {
         name: "Project One",
         path: "/remote/project-one",
         status: "active",
-        isolationMode: "in-process",
+        isolationMode: "in-process" as const,
       }],
     });
     render(<AddNodeModal {...defaultProps} onDiscoverRemoteProjects={onDiscoverRemoteProjects} />);
@@ -384,7 +386,7 @@ describe("AddNodeModal", () => {
           name: "Project One",
           path: "/remote/project-one-a",
           status: "active",
-          isolationMode: "in-process",
+          isolationMode: "in-process" as const,
         },
         {
           id: "remote-2",

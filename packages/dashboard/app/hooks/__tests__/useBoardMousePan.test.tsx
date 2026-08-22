@@ -62,7 +62,7 @@ describe("useBoardMousePan", () => {
     const { board, getByTestId } = renderPanHarness();
     board.scrollLeft = 100;
 
-    for (const [index, target] of ["button", "input", "contenteditable", "draggable", "card"].map(getByTestId).entries()) {
+    for (const [index, target] of ["button", "input", "contenteditable", "draggable", "card"].map((id) => getByTestId(id)).entries()) {
       pointerDown(target, 100, 50, index + 1);
       pointerMove(target, 40, 50, index + 1);
       pointerUp(target, index + 1);

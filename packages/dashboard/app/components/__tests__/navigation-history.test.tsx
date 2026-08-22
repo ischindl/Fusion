@@ -85,7 +85,7 @@ vi.mock("../../api", async (importOriginal) => {
 
 const mockCreateTask = vi.fn();
 const mockUseTasks = vi.fn(() => ({
-  tasks: [],
+  tasks: [] as Task[],
   createTask: mockCreateTask,
   moveTask: vi.fn(),
   deleteTask: vi.fn(),
@@ -372,7 +372,7 @@ vi.mock("../../hooks/useNodes", () => ({
 
 // ── Viewport / keyboard mocks ──────────────────────────────────────────────
 
-const mockUseViewportMode = vi.fn(() => "desktop");
+const mockUseViewportMode = vi.fn((..._args: unknown[]) => "desktop");
 vi.mock("../../hooks/useViewportMode", () => ({
   MOBILE_MEDIA_QUERY: "(max-width: 768px), (max-height: 480px)",
   isFullScreenSheetViewport: () => false,
@@ -383,7 +383,7 @@ vi.mock("../../hooks/useViewportMode", () => ({
   useViewportMode: (..._args: unknown[]) => mockUseViewportMode(..._args),
 }));
 
-const mockUseMobileKeyboard = vi.fn(() => ({
+const mockUseMobileKeyboard = vi.fn((..._args: unknown[]) => ({
   keyboardOverlap: 0, viewportHeight: null, viewportOffsetTop: 0, keyboardOpen: false,
 }));
 

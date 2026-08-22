@@ -35,7 +35,7 @@ vi.mock("lucide-react", () => ({
 import * as api from "../../api";
 
 const report = (id: string, overrides: Partial<Message> = {}): Message => ({
-  id, fromId: "agent-1", fromType: "agent", toId: "dashboard", toType: "user", type: "agent-to-user", read: false,
+  id, fromId: "agent-1", fromType: "agent", toId: "dashboard", toType: "user", type: "agent-to-user", read: false, archived: false,
   content: "Report cover message", createdAt: "2026-08-09T00:00:00.000Z", updatedAt: "2026-08-09T00:00:00.000Z",
   metadata: { mailKind: "report", report: { title: "Release report", sections: [{ heading: "Summary", body: "| A | B |\n| - | - |\n| 1 | 2 |" }] } }, ...overrides,
 });
@@ -112,7 +112,7 @@ describe("structural mail production surfaces", () => {
     vi.mocked(api.fetchInbox).mockResolvedValueOnce({ messages: refreshedMessages, total: refreshedMessages.length, unreadCount: 2 });
     await waitFor(() => expect(subscribeSse).toHaveBeenCalled());
     const subscription = vi.mocked(subscribeSse).mock.calls.at(-1)?.[1];
-    subscription?.events?.["message:received"]?.();
+    subscription?.events?.["message:received"]?.(new MessageEvent("message:received"));
 
     await waitFor(() => expect(screen.getByTestId("mailbox-message-detail")).toHaveAttribute("id", expect.stringContaining("ordinary")));
     const backToList = screen.queryByTestId("mailbox-back-to-list");

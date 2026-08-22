@@ -14,7 +14,7 @@ vi.mock("../../sse-bus", () => ({
 const mockUseViewportMode = vi.fn(() => "desktop");
 const mockUseMobileKeyboard = vi.fn(() => ({
   keyboardOverlap: 0,
-  viewportHeight: null,
+  viewportHeight: null as number | null,
   viewportOffsetTop: 0,
   keyboardOpen: false,
 }));
@@ -1724,7 +1724,7 @@ describe("GitManagerModal", () => {
     await user.click(await screen.findByRole("button", { name: "View" }));
     expect(screen.getByText("Loading stash diff…")).toBeInTheDocument();
 
-    resolveDiff?.({ stat: " README.md | 1 +", patch: "diff --git a/README.md b/README.md\n+ok" });
+    (resolveDiff as unknown as ((value: { stat: string; patch: string }) => void) | null)?.({ stat: " README.md | 1 +", patch: "diff --git a/README.md b/README.md\n+ok" });
     await waitFor(() => {
       expect(screen.getByText("README.md | 1 +")).toBeInTheDocument();
     });

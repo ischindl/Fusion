@@ -6,6 +6,8 @@ import * as useChatModule from "../../hooks/useChat";
 import * as useChatRoomsModule from "../../hooks/useChatRooms";
 import type { ChatMessageInfo, ChatSessionInfo, UseChatReturn } from "../../hooks/useChat";
 import type { UseChatRoomsResult } from "../../hooks/useChatRooms";
+import type { Agent } from "@fusion/core";
+import type { JSX } from "react";
 import { _resetInitialViewportHeight } from "../../hooks/useMobileKeyboard";
 
 Element.prototype.scrollIntoView = vi.fn();
@@ -77,7 +79,24 @@ const defaultChatState: UseChatReturn = {
   setSearchQuery: vi.fn(),
   filteredSessions: [],
   refreshSessions: vi.fn(),
-  agentsMap: new Map([["agent-001", { id: "agent-001", name: "Alpha" }]]),
+  agentsMap: new Map([["agent-001", { id: "agent-001", name: "Alpha" } as unknown as Agent]]),
+
+  tags: [],
+  selectedTagId: null,
+  setSelectedTagId: vi.fn(),
+  archivedSessions: [],
+  refreshArchivedSessions: vi.fn(),
+  unarchiveSession: vi.fn(),
+  renameSession: vi.fn(),
+  pinSession: vi.fn(),
+  pinnedCount: 0,
+  setSessionModel: vi.fn(),
+  setSessionThinkingLevel: vi.fn(),
+  createTag: vi.fn(),
+  renameTag: vi.fn(),
+  deleteTag: vi.fn(),
+  setSessionTags: vi.fn(),
+  backfillStashSession: vi.fn(),
 };
 
 const defaultRoomsState: UseChatRoomsResult = {
@@ -93,10 +112,13 @@ const defaultRoomsState: UseChatRoomsResult = {
   deleteRoom: vi.fn(),
   sendRoomMessage: vi.fn().mockResolvedValue(undefined),
   refreshRooms: vi.fn(),
+
+  updateRoomSettings: vi.fn(),
+  clearRoom: vi.fn(),
 };
 
 function ensureMatchMedia() {
-  if (window.matchMedia) {
+  if (typeof window.matchMedia === "function") {
     return;
   }
   Object.defineProperty(window, "matchMedia", {
@@ -315,6 +337,10 @@ describe("FN-5997 mobile chat message pane rendering", () => {
         projectId: "proj-123",
         slug: "eng",
         name: "eng",
+        description: null,
+        createdBy: "agent-001",
+        status: "active" as const,
+        thinkingLevel: null,
         createdAt: "2026-06-03T00:00:00.000Z",
         updatedAt: "2026-06-03T00:00:00.000Z",
       };
@@ -349,6 +375,7 @@ describe("FN-5997 mobile chat message pane rendering", () => {
           roomId: activeRoom.id,
           role: "assistant",
           content: "Room message",
+          thinkingOutput: null,
           senderAgentId: "agent-001",
           attachments: [],
           metadata: null,

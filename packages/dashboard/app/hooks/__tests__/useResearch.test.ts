@@ -3,6 +3,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { useResearch } from "../useResearch";
 import { ApiRequestError } from "../../api";
 import { SWR_CACHE_KEYS } from "../../utils/swrCache";
+import type { SseSubscription } from "../../sse-bus";
 
 const mockListResearchRuns = vi.fn();
 const mockGetResearchRun = vi.fn();
@@ -12,7 +13,7 @@ const mockRetryResearchRun = vi.fn();
 const mockExportResearchRun = vi.fn();
 const mockCreateTaskFromResearchRun = vi.fn();
 const mockAttachResearchRunToTask = vi.fn();
-const mockSubscribeSse = vi.fn(() => vi.fn());
+const mockSubscribeSse = vi.fn((_url: string, _sub?: SseSubscription) => vi.fn());
 
 vi.mock("../../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../api")>();
@@ -29,8 +30,14 @@ vi.mock("../../api", async (importOriginal) => {
   };
 });
 
+/*
+FNXC:SseBusMock 2026-08-22-03:12:
+Forward the real (url, sub) arguments into the mock: an implemented vi.fn infers its parameter
+list, so the pre-campaign spread of unknown[] failed typecheck, and dropping the args broke both
+SSE tests — the calledWith(url, sub) assertion and the handlers lookup through _args[1].
+*/
 vi.mock("../../sse-bus", () => ({
-  subscribeSse: (...args: unknown[]) => mockSubscribeSse(...args),
+  subscribeSse: (url: string, sub?: SseSubscription) => mockSubscribeSse(url, sub),
 }));
 
 describe("useResearch", () => {
@@ -266,8 +273,8 @@ describe("useResearch", () => {
 
   it("refreshes list and selected run on reconnect", async () => {
     let handlers: { onReconnect?: () => void; events?: Record<string, () => void> } = {};
-    mockSubscribeSse.mockImplementationOnce((_url, opts) => {
-      handlers = opts;
+    mockSubscribeSse.mockImplementationOnce((_url, sub) => {
+      handlers = (sub ?? {}) as { onReconnect?: () => void; events?: Record<string, () => void> };
       return vi.fn();
     });
 

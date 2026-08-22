@@ -81,7 +81,7 @@ describe("useChatRooms", () => {
     capturedEvents = {};
     unsubscribe = vi.fn();
     mockSubscribeSse.mockImplementation((_url, sub) => {
-      capturedEvents = sub.events ?? {};
+      capturedEvents = sub?.events ?? {};
       return unsubscribe;
     });
     window.localStorage.clear();

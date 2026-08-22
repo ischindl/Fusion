@@ -22,8 +22,8 @@ vi.mock("../../hooks/useNavigationHistory", () => ({
 vi.mock("../../hooks/useModelsCache", () => ({
   useModelsCache: () => ({
     models: [
-      { id: "gpt-4o", provider: "openai", name: "GPT-4o" },
-      { id: "claude-sonnet", provider: "anthropic", name: "Claude Sonnet" },
+      { id: "gpt-4o", provider: "openai", name: "GPT-4o", reasoning: false, contextWindow: 200000 },
+      { id: "claude-sonnet", provider: "anthropic", name: "Claude Sonnet", reasoning: false, contextWindow: 200000 },
     ],
     favoriteProviders: [], favoriteModels: [], defaultProvider: "openai", defaultModelId: "gpt-4o",
     loading: false, refresh: vi.fn(async () => undefined),
@@ -37,8 +37,8 @@ vi.mock("../../api", async (importOriginal) => ({
   fetchDiscoveredSkills: vi.fn().mockResolvedValue([]), fetchTasks: vi.fn().mockResolvedValue([]),
   fetchSettings: vi.fn().mockResolvedValue({}), searchFiles: vi.fn().mockResolvedValue({ files: [] }),
   fetchModels: vi.fn().mockResolvedValue({ models: [
-    { id: "gpt-4o", provider: "openai", name: "GPT-4o" },
-    { id: "claude-sonnet", provider: "anthropic", name: "Claude Sonnet" },
+    { id: "gpt-4o", provider: "openai", name: "GPT-4o", reasoning: false, contextWindow: 200000 },
+    { id: "claude-sonnet", provider: "anthropic", name: "Claude Sonnet", reasoning: false, contextWindow: 200000 },
   ] }),
   fetchAgents: vi.fn().mockResolvedValue([]), fetchPluginRuntimes: vi.fn().mockResolvedValue({ runtimes: [] }),
   createAgent: vi.fn().mockResolvedValue({ id: "agent-1" }),
@@ -56,11 +56,11 @@ function chatState(): UseChatReturn {
     setSessionThinkingLevel: vi.fn(), deleteSession: vi.fn(), sendMessage: vi.fn(), editMessageAndResend: vi.fn(),
     stopStreaming: vi.fn(), pendingMessages: [], clearPendingMessage: vi.fn(), loadMoreMessages: vi.fn(),
     hasMoreMessages: false, searchQuery: "", setSearchQuery: vi.fn(), filteredSessions: [], refreshSessions: vi.fn(), agentsMap: new Map(),
-  };
+  } as unknown as UseChatReturn;
 }
 
 function roomsState(): UseChatRoomsResult {
-  return { rooms: [], roomsLoading: false, roomsError: null, activeRoom: null, activeRoomMembers: [], messages: [], messagesLoading: false, selectRoom: vi.fn(), createRoom: vi.fn(), deleteRoom: vi.fn(), sendRoomMessage: vi.fn(), refreshRooms: vi.fn() };
+  return { rooms: [], roomsLoading: false, roomsError: null, activeRoom: null, activeRoomMembers: [], messages: [], messagesLoading: false, selectRoom: vi.fn(), createRoom: vi.fn(), deleteRoom: vi.fn(), sendRoomMessage: vi.fn(), refreshRooms: vi.fn() } as unknown as UseChatRoomsResult;
 }
 
 function setViewport(mobile: boolean) {
@@ -110,8 +110,8 @@ describe("model-menu filter host dismissal", () => {
     render(<ModelSelectionModal
       isOpen onClose={onClose}
       models={[
-        { id: "gpt-4o", provider: "openai", name: "GPT-4o" },
-        { id: "claude-sonnet", provider: "anthropic", name: "Claude Sonnet" },
+        { id: "gpt-4o", provider: "openai", name: "GPT-4o", reasoning: false, contextWindow: 200000 },
+        { id: "claude-sonnet", provider: "anthropic", name: "Claude Sonnet", reasoning: false, contextWindow: 200000 },
       ]}
       executorValue="" validatorValue="" onExecutorChange={vi.fn()} onValidatorChange={vi.fn()}
       modelsLoading={false} modelsError={null} onRetry={vi.fn()}
@@ -149,7 +149,7 @@ describe("model-menu filter host dismissal", () => {
   it.each([{ mobile: false }, { mobile: true }])("keeps the thinking popup open after a $mobile portal-origin filter gesture but closes for an outside press", async ({ mobile }) => {
     setViewport(mobile);
     render(<ChatThinkingLevelControl level={null} onChange={vi.fn()} onChangeModel={vi.fn()} models={[
-      { id: "gpt-4o", provider: "openai", name: "GPT-4o" },
+      { id: "gpt-4o", provider: "openai", name: "GPT-4o", reasoning: false, contextWindow: 200000 },
     ]} />);
     fireEvent.click(screen.getByTestId("chat-thinking-btn"));
     fireEvent.click(screen.getByLabelText("Model"));

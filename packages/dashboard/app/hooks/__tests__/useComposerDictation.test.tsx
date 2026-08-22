@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { useRef, useState } from "react";
 
-const voice = { enabled: true, supported: true, state: "idle" as const, partialText: "", finalText: "", error: undefined, start: vi.fn(), stop: vi.fn() };
+const voice = { enabled: true, supported: true, state: "idle" as "idle" | "listening", partialText: "", finalText: "", error: undefined, start: vi.fn(), stop: vi.fn() };
 vi.mock("../useVoiceDictation", () => ({ useVoiceDictation: () => voice }));
 import { useComposerDictation } from "../useComposerDictation";
 

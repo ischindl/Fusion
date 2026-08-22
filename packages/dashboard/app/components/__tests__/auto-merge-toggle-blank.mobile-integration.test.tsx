@@ -296,6 +296,9 @@ function SettingsBoardHarness({
           autoMerge={autoMerge}
           onToggleAutoMerge={toggleAutoMerge}
           globalPaused={false}
+          planAutoApproveEnabled={false}
+          onTogglePlanAutoApprove={vi.fn()}
+          showWorktreeGrouping={false}
           prAuthAvailable={true}
         />
         {selectedTask ? (
@@ -331,6 +334,9 @@ function AppShellMobileHarness({ tasks }: { tasks: Task[] }) {
             autoMerge={autoMerge}
             onToggleAutoMerge={toggleAutoMerge}
             globalPaused={false}
+            planAutoApproveEnabled={false}
+            onTogglePlanAutoApprove={vi.fn()}
+            showWorktreeGrouping={false}
             prAuthAvailable={true}
           />
         </PageErrorBoundary>

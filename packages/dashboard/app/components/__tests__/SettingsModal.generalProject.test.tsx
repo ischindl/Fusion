@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { act, render, screen, fireEvent, waitFor, within, cleanup } from "@testing-library/react";
 import path from "path";
 import { SettingsModal } from "../SettingsModal";
+import type { DiscussionCategoryOption } from "../../api/system/report";
 import { ModalDismissPreferenceProvider } from "../../hooks/useOverlayDismiss";
 import {
   mockFetchSettings,
@@ -87,9 +88,10 @@ import {
   expectSettingPersists,
   installSettingsModalEnv,
   flushSettingsAutoSave,
+  PersistSettingInput,
 } from "./SettingsModal.test-harness";
 
-const mockListDiscussionCategories = vi.fn(async () => ({ categories: [] }));
+const mockListDiscussionCategories = vi.fn(async (..._args: unknown[]): Promise<{ categories: DiscussionCategoryOption[] }> => ({ categories: [] }));
 let pluginLifecycleListener: ((event: MessageEvent) => void) | undefined;
 const mockSubscribeSse = vi.fn((_url: string, options: { events?: Record<string, (event: MessageEvent) => void> }) => {
   pluginLifecycleListener = options.events?.["plugin:lifecycle"];
@@ -97,7 +99,7 @@ const mockSubscribeSse = vi.fn((_url: string, options: { events?: Record<string,
 });
 
 vi.mock("../../sse-bus", () => ({
-  subscribeSse: (...args: unknown[]) => mockSubscribeSse(...args),
+  subscribeSse: (...args: unknown[]) => mockSubscribeSse(args[0] as string, args[1] as { events?: Record<string, (event: MessageEvent) => void> }),
 }));
 
 vi.mock("../../api", async (importOriginal) => {
