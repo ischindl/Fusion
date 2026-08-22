@@ -2,16 +2,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import type { Settings, Task, TaskStore, WorkflowStepResult } from "@fusion/core";
 
-const { recordRunAuditEventMock } = vi.hoisted(() => ({
-  recordRunAuditEventMock: vi.fn(async () => undefined),
-}));
-vi.mock("../run-audit.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../util/run-audit.js")>();
-  return {
-    ...actual,
-    createRunAuditor: vi.fn(() => ({ database: recordRunAuditEventMock, git: vi.fn(), filesystem: vi.fn(), sandbox: vi.fn() })),
-  };
-});
+/*
+FNXC:OrphanedPendingSteps 2026-08-22-14:19 (RUFU-151):
+Audit assertions target the CURRENT emit path (createRunAuditor → emitBoundedRunAudit →
+store `recordRunAuditEvent`, FN-9175) instead of a module mock. The previous top-level
+`vi.mock` factory replaced `createRunAuditor` for a root-level module path production no
+longer imports (the sweep imports the auditor from the `./util` subtree), so the factory
+never engaged: the audited mock stayed at 0 calls while the real emission went unobserved.
+The event at the store sink is the `RunAuditEventInput` shape (`mutationType`/`domain`/
+merged metadata that also carries `phase` and `needsOperatorBypass`), not the raw
+database-input shape — assertions pin the ids/counts-only subset, never a raw-input
+`type` key.
+*/
 
 import { SelfHealingManager } from "../self-healing.js";
 import { activeSessionRegistry, executingTaskLock } from "../agents/active-session-registry.js";
@@ -75,7 +77,15 @@ function storeFor(tasks: Task[]): TaskStore & EventEmitter {
       tasksById.set(id, next);
       return next;
     }),
+    /* FN-9175 sink: the real createRunAuditor → emitBoundedRunAudit path writes here;
+       without it createRunAuditor no-ops and audit assertions would be vacuous. */
+    recordRunAuditEvent: vi.fn(async () => undefined),
   }) as unknown as TaskStore & EventEmitter;
+}
+
+/** Run-audit sink accessor for assertions — mirrors the file's vi.fn cast idiom. */
+function auditSink(store: TaskStore & EventEmitter) {
+  return store.recordRunAuditEvent as ReturnType<typeof vi.fn>;
 }
 
 describe("FN-8492: reconcile orphaned pending step results", () => {
@@ -102,10 +112,12 @@ describe("FN-8492: reconcile orphaned pending step results", () => {
     expect(recovered?.workflowStepResults?.[0]?.status).toBe("passed");
     expect(recovered?.workflowStepResults?.[1]?.status).toBe("failed");
     expect(recovered?.workflowStepResults?.[1]?.completedAt).toBeTruthy();
-    expect(recordRunAuditEventMock).toHaveBeenCalledTimes(1);
-    expect(recordRunAuditEventMock).toHaveBeenCalledWith(expect.objectContaining({
-      type: "task:reconcile-orphaned-pending-step-results",
+    const audit = auditSink(store);
+    expect(audit).toHaveBeenCalledTimes(1);
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+      mutationType: "task:reconcile-orphaned-pending-step-results",
       target: "FN-1",
+      domain: "database",
       metadata: expect.objectContaining({ taskId: "FN-1", orphanedCount: 1, resultCount: 2 }),
     }));
   });
@@ -126,7 +138,7 @@ describe("FN-8492: reconcile orphaned pending step results", () => {
     for (const id of ["FN-CB", "FN-REG", "FN-LOCK"]) {
       expect((await store.getTask(id))?.workflowStepResults?.[0]?.status).toBe("pending");
     }
-    expect(recordRunAuditEventMock).not.toHaveBeenCalled();
+    expect(auditSink(store)).not.toHaveBeenCalled();
   });
 
   it("skips user-paused and in-progress rows, and tasks with no pending results", async () => {
@@ -152,7 +164,7 @@ describe("FN-8492: reconcile orphaned pending step results", () => {
     expect((await store.getTask("FN-PAUSED"))?.workflowStepResults?.[0]?.status).toBe("pending");
     expect((await store.getTask("FN-INPROG"))?.workflowStepResults?.[0]?.status).toBe("pending");
     expect((await store.getTask("FN-DONE-STEPS"))?.workflowStepResults).toHaveLength(2);
-    expect(recordRunAuditEventMock).not.toHaveBeenCalled();
+    expect(auditSink(store)).not.toHaveBeenCalled();
   });
 
   it("paginates past 500 rows and recovers orphans on every page", async () => {
@@ -181,8 +193,9 @@ describe("FN-8492: reconcile orphaned pending step results", () => {
 
     expect(await manager.reconcileOrphanedPendingStepResults()).toBe(1);
     expect((await store.getTask("FN-OK"))?.workflowStepResults?.[0]?.status).toBe("failed");
-    expect(recordRunAuditEventMock).toHaveBeenCalledTimes(1);
-    expect(recordRunAuditEventMock).toHaveBeenCalledWith(expect.objectContaining({ target: "FN-OK" }));
+    const audit = auditSink(store);
+    expect(audit).toHaveBeenCalledTimes(1);
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ target: "FN-OK" }));
   });
 });
 
@@ -291,7 +304,7 @@ describe("review-gate lease liveness (in-review gates)", () => {
     expect(await manager.reconcileOrphanedPendingStepResults()).toBe(0);
     /* The executor's lease is untouched. */
     expect((await store.getTask("FN-WIP"))?.workflowStepResults?.[0]?.status).toBe("pending");
-    expect(recordRunAuditEventMock).not.toHaveBeenCalled();
+    expect(auditSink(store)).not.toHaveBeenCalled();
   });
 
   it("still recovers a genuine orphan on that same renamed board", async () => {
