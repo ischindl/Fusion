@@ -185,7 +185,9 @@ describe("task_document_write tool", () => {
 
 describe("task_prompt_write tool", () => {
   it("reports success only after the authoritative store reads back the exact prompt", async () => {
-    const updateTask = vi.fn().mockResolvedValue({});
+    // The read-back compares against updateTask's returned task: the fixed store contract
+    // (STAS-103) carries the persisted prompt on that return, so the mock must too.
+    const updateTask = vi.fn().mockResolvedValue({ id: TASK_ID, prompt: "# Verified plan" });
     const getTask = vi.fn().mockResolvedValue({ id: TASK_ID, prompt: "# Verified plan" });
     const store = { updateTask, getTask } as unknown as TaskStore;
 
