@@ -19,6 +19,12 @@ const describeIfGit = hasGit ? describe : describe.skip;
 
 function makeFakeStore(task: Task): { store: TaskStore; current: () => Task } {
   let current = task;
+  /*
+  FNXC:WorkspaceRootRouting 2026-08-21-08:34:
+  This focused routing fake mirrors TaskStore's per-task merge lock and post-callback authoritative
+  re-read so callback-based acquisitions cannot clobber sibling entries or external task updates.
+  */
+  let workspaceMergeTail = Promise.resolve();
   const store = {
     async updateTask(id: string, patch: Partial<Task>): Promise<void> {
       if (id === current.id) current = { ...current, ...patch };
@@ -26,20 +32,46 @@ function makeFakeStore(task: Task): { store: TaskStore; current: () => Task } {
     async mergeWorkspaceWorktreeEntry(
       id: string,
       repoRelPath: string,
-      patch: Partial<NonNullable<Task["workspaceWorktrees"]>[string]>,
-      options?: { clearSingularWorktree?: boolean },
+      patch: Partial<NonNullable<Task["workspaceWorktrees"]>[string]>
+        | ((freshTask: Task) => Promise<Partial<NonNullable<Task["workspaceWorktrees"]>[string]>>),
+      options?: {
+        requireExistingEntry?: boolean;
+        clearSingularWorktree?: boolean;
+        validateBeforePersist?: (freshTask: Task) => Promise<void>;
+      },
     ): Promise<Task> {
-      if (id !== current.id) throw new Error(`Task ${id} not found`);
-      const existing = current.workspaceWorktrees?.[repoRelPath];
-      current = {
-        ...current,
-        workspaceWorktrees: {
-          ...(current.workspaceWorktrees ?? {}),
-          [repoRelPath]: { ...existing, ...patch },
-        },
-        ...(options?.clearSingularWorktree ? { worktree: undefined, branch: undefined } : {}),
-      };
-      return current;
+      const operation = workspaceMergeTail.then(async () => {
+        if (id !== current.id) throw new Error(`Task ${id} not found`);
+        const existing = current.workspaceWorktrees?.[repoRelPath];
+        if (options?.requireExistingEntry && !existing) return current;
+        const callbackTask = current;
+        const resolvedPatch = typeof patch === "function" ? await patch(callbackTask) : patch;
+        const freshExisting = current.workspaceWorktrees?.[repoRelPath];
+        if (options?.requireExistingEntry && !freshExisting) return current;
+        await options?.validateBeforePersist?.(current);
+        current = {
+          ...current,
+          workspaceWorktrees: {
+            ...(current.workspaceWorktrees ?? {}),
+            [repoRelPath]: {
+              ...freshExisting,
+              ...resolvedPatch,
+            } as NonNullable<Task["workspaceWorktrees"]>[string],
+          },
+          ...(options?.clearSingularWorktree
+            ? {
+                worktree: null,
+                branch: null,
+                branchWriteOrigin: "engine" as const,
+                executionStartBranch: null,
+                baseCommitSha: null,
+              }
+            : {}),
+        };
+        return current;
+      });
+      workspaceMergeTail = operation.then(() => undefined, () => undefined);
+      return operation;
     },
     async logEntry(): Promise<void> {},
     async getTask(id: string): Promise<Task> {
@@ -64,6 +96,73 @@ function makeTask(id: string): Task {
     updatedAt: new Date().toISOString(),
   } as Task;
 }
+
+describe("workspace root routing store fake", () => {
+  /*
+  FNXC:WorkspaceRootRouting 2026-08-21-08:34:
+  The focused routing fake must hold the same concurrent-merge invariant as the shared executor fake;
+  exercising both surfaces prevents one fixture from silently reverting to stale snapshot writes.
+
+  FNXC:WorkspaceRootRouting 2026-08-21-16:42:
+  Clearing singular routing metadata must return null on this focused fake, matching persisted TaskStore
+  reads and the shared executor fake instead of exposing fixture-only undefined values.
+  */
+  it("serializes callback merges without dropping sibling repository entries", async () => {
+    const task = makeTask("FN-routing-merge");
+    Object.assign(task, {
+      worktree: "/tmp/singular",
+      branch: "fusion/singular",
+      executionStartBranch: "main",
+      baseCommitSha: "base",
+    });
+    const { store, current } = makeFakeStore(task);
+    let releaseFirst!: () => void;
+    let markFirstStarted!: () => void;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+
+    const first = store.mergeWorkspaceWorktreeEntry(
+      "FN-routing-merge",
+      "repo-a",
+      async () => {
+        markFirstStarted();
+        await firstGate;
+        return { worktreePath: "/tmp/repo-a", branch: "fusion/a" };
+      },
+    );
+    await firstStarted;
+    await store.updateTask("FN-routing-merge", {
+      workspaceWorktrees: {
+        "repo-c": { worktreePath: "/tmp/repo-c", branch: "fusion/c" },
+      },
+    });
+
+    let secondStarted = false;
+    const second = store.mergeWorkspaceWorktreeEntry(
+      "FN-routing-merge",
+      "repo-b",
+      async (freshTask) => {
+        secondStarted = true;
+        expect(freshTask.workspaceWorktrees?.["repo-a"]?.worktreePath).toBe("/tmp/repo-a");
+        return { worktreePath: "/tmp/repo-b", branch: "fusion/b" };
+      },
+      { clearSingularWorktree: true },
+    );
+
+    await Promise.resolve();
+    expect(secondStarted).toBe(false);
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(Object.keys(current().workspaceWorktrees ?? {}).sort()).toEqual(["repo-a", "repo-b", "repo-c"]);
+    expect(current()).toEqual(expect.objectContaining({
+      worktree: null,
+      branch: null,
+      branchWriteOrigin: "engine",
+      executionStartBranch: null,
+      baseCommitSha: null,
+    }));
+  });
+});
 
 const settings: Partial<Settings> = {
   worktreeNaming: "task-id",
@@ -127,7 +226,7 @@ describeIfGit("FN-034 workspace root worktree routing", { timeout: 60_000 }, () 
 
     expect(result.coordinatorWorktreePath).toBe(result.task.workspaceWorktrees?.["repo-b"]?.worktreePath);
     expect(result.coordinatorWorktreePath).not.toContain(join(fixture.rootDir, ".worktrees"));
-    expect(result.task.worktree).toBeUndefined();
+    expect(result.task.worktree).toBeNull();
   });
 
   it("rejects a stale review target instead of falling back to another repository", async () => {

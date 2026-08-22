@@ -66,6 +66,79 @@ function createWorktreeExecutor(store: any, rootDir: string, options: any = {}) 
 }
 
 describe("worktree workflow routing fixture", () => {
+  /*
+  FNXC:EngineTests 2026-08-21-08:34:
+  The shared executor fake is a production-contract seam: concurrent callback merges must preserve
+  every repository entry, missing required entries are no-ops, and workspace routing clears all
+  singular-checkout metadata.
+
+  FNXC:EngineTests 2026-08-21-09:29:
+  Cleared singular-checkout metadata must use null, matching the persisted TaskStore row shape;
+  undefined would let fixture-only behavior diverge from production reads.
+  */
+  it("mirrors atomic workspace worktree merge semantics", async () => {
+    const store = createMockStore();
+    store._setRow("FN-workspace-merge", {
+      worktree: "/tmp/singular",
+      branch: "fusion/singular",
+      executionStartBranch: "main",
+      baseCommitSha: "base",
+      workspaceWorktrees: {},
+    });
+
+    const missing = await store.mergeWorkspaceWorktreeEntry(
+      "FN-workspace-merge",
+      "missing",
+      { worktreePath: "/tmp/missing" },
+      { requireExistingEntry: true },
+    );
+    expect(missing.workspaceWorktrees?.missing).toBeUndefined();
+
+    let releaseFirst!: () => void;
+    let markFirstStarted!: () => void;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+    const first = store.mergeWorkspaceWorktreeEntry(
+      "FN-workspace-merge",
+      "repo-a",
+      async () => {
+        markFirstStarted();
+        await firstGate;
+        return { worktreePath: "/tmp/repo-a", branch: "fusion/a" };
+      },
+    );
+    await firstStarted;
+    store._setRow("FN-workspace-merge", {
+      workspaceWorktrees: {
+        "repo-c": { worktreePath: "/tmp/repo-c", branch: "fusion/c" },
+      },
+    });
+
+    let secondStarted = false;
+    const second = store.mergeWorkspaceWorktreeEntry(
+      "FN-workspace-merge",
+      "repo-b",
+      async (freshTask: Task) => {
+        secondStarted = true;
+        expect(freshTask.workspaceWorktrees?.["repo-a"]?.worktreePath).toBe("/tmp/repo-a");
+        return { worktreePath: "/tmp/repo-b", branch: "fusion/b" };
+      },
+      { clearSingularWorktree: true },
+    );
+
+    await Promise.resolve();
+    expect(secondStarted).toBe(false);
+    releaseFirst();
+    const [, result] = await Promise.all([first, second]);
+
+    expect(Object.keys(result.workspaceWorktrees ?? {}).sort()).toEqual(["repo-a", "repo-b", "repo-c"]);
+    expect(result).toEqual(expect.objectContaining({ branchWriteOrigin: "engine" }));
+    expect(result.worktree).toBeNull();
+    expect(result.branch).toBeNull();
+    expect(result.executionStartBranch).toBeNull();
+    expect(result.baseCommitSha).toBeNull();
+  });
+
   it("selects its eligible executor from the role pool", async () => {
     const store = createMockStore();
     const fixture = createWorkflowRoutingAgentStore(store);
