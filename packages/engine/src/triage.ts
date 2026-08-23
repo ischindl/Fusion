@@ -22,7 +22,7 @@ import {
   isUnplannedSeedPrompt,
   isTaskAwaitingPlanning,
   getTaskDuplicateLineage,
-  parseExplicitDuplicateMarker,
+  resolveExplicitDuplicateMarker,
   resolveAgentPrompt,
   buildPlanningDuplicatePolicyInstruction,
   builtinSeamPrompt,
@@ -1560,7 +1560,7 @@ export class TriageProcessor {
     to flag/delete/clear in finalizeApprovedTask. Requiring step headings for those markers
     withheld recovery forever (empty steps) so the marker path never ran.
     */
-    const isExplicitDuplicateRedirect = Boolean(parseExplicitDuplicateMarker(written));
+    const isExplicitDuplicateRedirect = Boolean(resolveExplicitDuplicateMarker(written, task.title).marker);
     const workflow = await resolveWorkflowIrForTask(this.store, task.id).catch(() => undefined);
     const requiresPromptImplementationSteps = workflow?.nodes.some((node) =>
       node.kind === "parse-steps"
@@ -2353,7 +2353,15 @@ export class TriageProcessor {
           Fire-and-forget. Awaiting a store write inside the 15s poll let a slow/hung write delay the
           NEXT poll's chance to notice freed capacity -- compounding the very stall being recorded.
           */
-          void throttleAuditor.database({
+          /*
+          FNXC:ConcurrencyAdmission 2026-08-23-18:30:
+          Use the outcome-reporting seam. FN-9175 made `auditor.database` swallow sink failures, so
+          its promise resolved even when the row never landed — the `.then()` below then set the
+          dedupe marker on a FAILED write and suppressed the whole stall, silently reverting the
+          FN-8600 retry guarantee this branch exists for. `absent` (a store with no audit sink) is
+          treated as recorded because there is nothing to retry there.
+          */
+          void (throttleAuditor.databaseWithOutcome ?? throttleAuditor.database)({
             type: "task:plan-admission-throttled",
             target: eligibleIds[0] ?? this.rootDir,
             metadata: {
@@ -2367,7 +2375,9 @@ export class TriageProcessor {
               processingTaskIds: processingIds,
             },
           })
-            .then(() => {
+            .then((result: unknown) => {
+              const outcome = (result as { outcome?: string } | undefined)?.outcome;
+              if (outcome !== "recorded" && outcome !== "absent") return;
               /*
               FNXC:ConcurrencyAdmission 2026-07-26-10:45:
               Mark the stall as recorded ONLY once the write lands. Setting the marker up front meant
@@ -2561,6 +2571,54 @@ export class TriageProcessor {
     }
   }
 
+  /**
+   * Resolves an exact prompt/title redirect before this task claims any planning capacity.
+   *
+   * FNXC:DuplicateIntake 2026-08-09-01:31:
+   * FN-8840 requires title redirects to take the same duplicate-decision route as prompt
+   * redirects before `specifyTask()` can start a planner session. Reading the prompt here is
+   * required only to detect a conflicting exact marker; a missing or unreadable prompt leaves
+   * a title-only redirect actionable and never lets it consume an implementation session.
+  *
+   * FNXC:DuplicateIntake 2026-08-23-18:30:
+   * This whole title-aware path (plus the `source: "prompt" | "title"` plumbing in
+   * `clearExplicitDuplicateMarker` and the conflict guard in `finalizeApprovedTaskBody`) was
+   * removed by accident in 1cf86baa1c ("refactor: package code organization wave 18"), which
+   * reverted FN-8840 in triage.ts only — every other FN-8840 surface (dashboard task routes,
+   * `handle-graph-failure.ts`, core `resolveExplicitDuplicateMarker`) kept it. A title-only
+   * `DUPLICATE: <id>` card therefore consumed a full planner session again instead of taking the
+   * duplicate-decision route. Restored here; do not "simplify" back to prompt-only parsing.
+   */
+  private async finalizeExplicitDuplicateBeforePlanning(task: Task): Promise<boolean> {
+    try {
+      const liveTask = await this.store.getTask(task.id).catch(() => null);
+      if (!liveTask || liveTask.paused === true || liveTask.userPaused === true) return false;
+
+      const promptPath = join(this.rootDir, ".fusion", "tasks", liveTask.id, "PROMPT.md");
+      const written = await readFile(promptPath, "utf-8").catch(() => "");
+      const duplicateResolution = resolveExplicitDuplicateMarker(written, liveTask.title);
+      if (!duplicateResolution.marker && !duplicateResolution.conflict) return false;
+
+      const settings = await mergeEffectiveSettings(this.store, liveTask, await this.store.getSettings());
+      if (duplicateResolution.conflict) {
+        await this.finalizeApprovedTask(liveTask, written, settings);
+        return true;
+      }
+
+      return await this.tryFinalizeExplicitDuplicateMarker(liveTask, written, settings);
+    } catch (error: unknown) {
+      /*
+      FNXC:DuplicateIntake 2026-08-09-01:49:
+      Duplicate detection is an admission optimization, not a second source of planning failure.
+      If settings or lifecycle finalization is unavailable, retain the existing fail-open planner
+      path so a pre-held coordinator slot cannot leak before `specifyTask()` reaches its cleanup.
+      */
+      const message = error instanceof Error ? error.message : String(error);
+      planLog.warn(`${task.id}: pre-planning duplicate resolution failed open: ${message}`);
+      return false;
+    }
+  }
+
   async specifyTask(task: Task): Promise<void> {
     if (this.resetFence.isResetHoldActive(task.id)) {
       if (dropPreHeldExecutorSlot(task.id)) this.options.semaphore?.release();
@@ -2582,6 +2640,12 @@ export class TriageProcessor {
       // FNXC:ConcurrencyAdmission 2026-08-03-09:00:
       // A coordinator winner owns a real pre-held host slot. A duplicate/stale
       // planner handoff must return it instead of pinning max concurrency.
+      if (dropPreHeldExecutorSlot(task.id)) this.options.semaphore?.release();
+      this.coordinatorAdmittedTaskIds.delete(task.id);
+      return;
+    }
+
+    if (await this.finalizeExplicitDuplicateBeforePlanning(task)) {
       if (dropPreHeldExecutorSlot(task.id)) this.options.semaphore?.release();
       this.coordinatorAdmittedTaskIds.delete(task.id);
       return;
@@ -3511,12 +3575,28 @@ export class TriageProcessor {
               content,
               false,
             ),
+            /*
+            FNXC:PlanArtifactPersistence 2026-08-23-19:24:
+            The project-database mirror is BEST-EFFORT — the comment above says so and validation below
+            owns the verdict. FN-151 (c1818ea819) routed it through the reset-fenced writer, which does
+            not swallow, so an infrastructure failure inside the lifecycle lock (e.g. a
+            PlanningLifecycleLockTransportError) aborted a planning attempt whose authoritative PROMPT.md
+            had already been written, and pre-empted both the unchanged-PROMPT verdict and FN-8911's
+            marker-consuming path. Degrade the mirror the way `mirrorPlanToProjectDb` always did; the
+            authoritative `writeAuthoritativePrompt` half deliberately still throws, and only a
+            lifecycle-lock TRANSPORT rejection is degraded here — every other mirror failure keeps
+            aborting the attempt exactly as before.
+            */
             mirrorAuthoritativePlan: async (content) => await this.persistResetFencedPlanningArtifact(
               task,
               planningGeneration,
               content,
               true,
-            ),
+            ).catch((error: unknown) => {
+              if (!isPlanningLifecycleLockTransportError(error)) throw error;
+              planLog.warn(`${task.id}: lifecycle-lock transport failure while mirroring the authoritative plan into the project database: ${error.message}`);
+              return false;
+            }),
           });
           if (planPersistence.outcome === "recovery-fenced") return;
           if (planPersistence.outcome === "recovered") {
@@ -4423,12 +4503,12 @@ export class TriageProcessor {
     report: PlanningHandoffReport = { outcome: "parked" },
   ): Promise<boolean> {
     try {
-      const explicitDuplicateMarker = parseExplicitDuplicateMarker(written);
-      if (!explicitDuplicateMarker) {
+      const duplicateResolution = resolveExplicitDuplicateMarker(written, task.title);
+      if (!duplicateResolution.marker || duplicateResolution.conflict) {
         return false;
       }
 
-      const canonicalId = explicitDuplicateMarker.canonicalId;
+      const canonicalId = duplicateResolution.marker.canonicalId;
       // A transient lookup failure must still fail open; only a genuine missing row is inactive.
       const canonicalTask = await this.store.getTask(canonicalId);
       if (canonicalTask?.id.toLowerCase() === task.id.toLowerCase()) {
@@ -4621,10 +4701,23 @@ export class TriageProcessor {
     task: Task,
     canonicalId: string,
     feedback: string,
-    options?: { exhausted?: boolean; priorClearCount?: number },
+    options?: { exhausted?: boolean; priorClearCount?: number; source?: "prompt" | "title" },
   ): Promise<boolean> {
     if (!await this.runIfStillPlanningUnderTaskLock(task, async () => {
-      await rm(join(this.rootDir, ".fusion", "tasks", task.id, "PROMPT.md"), { force: true });
+      /*
+      FNXC:DuplicateIntake 2026-08-09-02:14:
+      A title-only redirect can coexist with a complete operator-authored PROMPT.md. Keep that
+      plan when clearing the title source; deleting it would turn an acknowledged redirect into
+      avoidable user-work loss. A prompt source (including same-ID dual sources) still clears the
+      marker-only file, and the matching title is cleared with it.
+      */
+      if (options?.source !== "title") {
+        await rm(join(this.rootDir, ".fusion", "tasks", task.id, "PROMPT.md"), { force: true });
+      }
+      // Same-ID dual-source redirects are one decision; clear both exact sources together.
+      if (resolveExplicitDuplicateMarker(null, task.title).marker?.canonicalId === canonicalId) {
+        await this.store.updateTask(task.id, { title: `Duplicate redirect cleared: ${canonicalId}` });
+      }
     })) return false;
 
     const priorClearCount = options?.priorClearCount ?? 0;
@@ -4669,11 +4762,21 @@ export class TriageProcessor {
     report: PlanningHandoffReport = { outcome: "parked" },
   ): Promise<void> {
     let written = writtenInput;
-    // FNXC:WorkflowArtifacts 2026-07-21-17:00: Confirm the authoritative plan
-    // exists before persisting any dependencies, steps, metadata, or review state
-    // derived from it; a missing plan must leave no partially accepted projection.
-    if (await this.recoverMissingPromptBeforeRelease(task)) return;
-    const explicitDuplicateMarker = parseExplicitDuplicateMarker(written);
+    const duplicateResolution = resolveExplicitDuplicateMarker(written, task.title);
+    if (duplicateResolution.conflict) {
+      /*
+      FNXC:DuplicateIntake 2026-08-09-01:02:
+      Conflicting exact title and prompt redirects must never select a canonical implicitly.
+      Keep the card in planning for operator correction rather than admitting it or inventing a
+      duplicate decision.
+      */
+      await this.updatePlanningStateIfStillCurrent(task, { status: "needs-replan", error: null });
+      await this.store.logEntry(task.id, "Duplicate redirect sources conflict", "PROMPT.md and task title name different canonical tasks; correct one exact redirect before planning.");
+      return;
+    }
+    // A title-only redirect is authoritative even when there is no prompt file to recover.
+    if (!duplicateResolution.marker && await this.recoverMissingPromptBeforeRelease(task)) return;
+    const explicitDuplicateMarker = duplicateResolution.marker;
 
     /*
      * FNXC:DuplicateIntake 2026-07-16-13:00:
@@ -4687,6 +4790,7 @@ export class TriageProcessor {
         return { customFields };
       });
       const canonicalId = explicitDuplicateMarker.canonicalId;
+      const duplicateSource = duplicateResolution.source ?? "prompt";
       const canonicalTask = await this.store.getTask(canonicalId).catch(() => null);
       const canClearInactiveMarker = task.userPaused !== true
         && (task.paused !== true || task.pausedReason === "duplicate-decision-required")
@@ -4720,7 +4824,7 @@ export class TriageProcessor {
             task,
             canonicalId,
             buildInactiveDuplicateClearFeedback(canonicalId),
-            { exhausted: false, priorClearCount },
+            { exhausted: false, priorClearCount, source: duplicateSource },
           );
         }
         return;
@@ -4741,7 +4845,7 @@ export class TriageProcessor {
             task,
             canonicalId,
             buildKeepDuplicateClearFeedback(canonicalId),
-            { exhausted: priorClearCount >= 1, priorClearCount },
+            { exhausted: priorClearCount >= 1, priorClearCount, source: duplicateSource },
           );
         }
         return;
@@ -4778,6 +4882,7 @@ export class TriageProcessor {
         task,
         canonicalId,
         buildKeepDuplicateClearFeedback(canonicalId),
+        { source: duplicateSource },
       );
       return;
     }

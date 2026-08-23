@@ -4,7 +4,7 @@ import { userEvent } from "@testing-library/user-event";
 import { ChatView } from "../ChatView";
 import { CHAT_TITLE_SWITCHER_MAX_ITEMS } from "../ChatThreadTitleSwitcher";
 import type { ChatSessionInfo } from "../../hooks/useChat";
-import { loadAllAppCss } from "../../test/cssFixture";
+import { loadAllAppCss, loadStylesCss } from "../../test/cssFixture";
 import {
   activeSessionFixture,
   defaultChatState,
@@ -48,7 +48,14 @@ function session(id: string, title: string | null = id): ChatSessionInfo {
   };
 }
 
-async function renderDirect(options: { sessions?: ChatSessionInfo[]; activeSession?: ChatSessionInfo; floating?: boolean } = {}) {
+async function renderDirect(options: {
+  sessions?: ChatSessionInfo[];
+  activeSession?: ChatSessionInfo;
+  floating?: boolean;
+  compactLayout?: boolean;
+  viewport?: "mobile" | "desktop";
+} = {}) {
+  const viewportSpy = options.viewport ? mockViewportMode(options.viewport) : undefined;
   const activeSession = options.activeSession ?? session("session-001", "Alpha");
   const sessions = options.sessions ?? [activeSession, session("session-002", "Beta"), session("session-003", "Gamma")];
   const selectSession = vi.fn();
@@ -60,9 +67,53 @@ async function renderDirect(options: { sessions?: ChatSessionInfo[]; activeSessi
     messages: [{ id: "message-001", sessionId: activeSession.id, role: "assistant", content: "Hello", createdAt: "2026-08-23T00:00:00.000Z" }],
     selectSession,
   });
-  await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} floating={options.floating} />);
+  await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} floating={options.floating} compactLayout={options.compactLayout} />);
   await userEvent.click(screen.getByTestId(`chat-session-${activeSession.id}`));
-  return { activeSession, sessions, selectSession };
+  return { activeSession, sessions, selectSession, restoreViewport: () => viewportSpy?.mockRestore() };
+}
+
+async function installAllAppCss() {
+  const style = document.createElement("style");
+  style.textContent = await loadAllAppCss();
+  document.head.append(style);
+  return () => style.remove();
+}
+
+function nearestPositionedAncestor(element: Element) {
+  let ancestor = element.parentElement;
+  while (ancestor && getComputedStyle(ancestor).position === "static") ancestor = ancestor.parentElement;
+  return ancestor;
+}
+
+/*
+FNXC:DashboardTests 2026-08-23-16:00:
+FN-9198 must measure floating ChatView hosts explicitly because the global ResizeObserver observes
+nothing in jsdom. The synchronous width measurement determines floatingNarrow; popped-out windows
+share this floating path, so this fixture protects both surfaces without relying on a zero-width rect.
+*/
+function withFloatingHost(width: number) {
+  const originalResizeObserver = globalThis.ResizeObserver;
+  const rectSpy = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+    x: 0, y: 0, width, height: 640, top: 0, right: width, bottom: 640, left: 0, toJSON: () => ({}),
+  });
+
+  class MockResizeObserver implements ResizeObserver {
+    readonly observe = vi.fn();
+    readonly unobserve = vi.fn();
+    readonly disconnect = vi.fn();
+    constructor(_callback: ResizeObserverCallback) {}
+  }
+
+  globalThis.ResizeObserver = MockResizeObserver;
+  return () => {
+    globalThis.ResizeObserver = originalResizeObserver;
+    rectSpy.mockRestore();
+  };
+}
+
+async function openTitleSwitcherMenu() {
+  await userEvent.click(screen.getByTestId("chat-thread-title-trigger"));
+  return screen.findByTestId("chat-thread-title-menu");
 }
 
 describe("ChatView title switcher", () => {
@@ -128,6 +179,91 @@ describe("ChatView title switcher", () => {
       viewportSpy.mockRestore();
     },
   );
+
+  it.each([
+    { name: "mobile", viewport: "mobile" as const },
+    { name: "compact dock", compactLayout: true },
+    { name: "floating", floating: true, floatingWidth: 560 },
+  ])("anchors the menu to the header in the narrow $name host", async ({ viewport, compactLayout, floating, floatingWidth }) => {
+    const restoreFloating = floatingWidth ? withFloatingHost(floatingWidth) : undefined;
+    const removeCss = await installAllAppCss();
+    let restoreViewport: (() => void) | undefined;
+    try {
+      ({ restoreViewport } = await renderDirect({ viewport, compactLayout, floating }));
+      const narrowHost = document.querySelector(".chat-view--narrow");
+      expect(narrowHost).toBeTruthy();
+      if (floating) expect(document.querySelector(".chat-view--floating.chat-view--narrow")).toBeTruthy();
+
+      const menu = await openTitleSwitcherMenu();
+      const header = document.querySelector(".chat-thread-header");
+      const thread = document.querySelector(".chat-thread");
+      expect(nearestPositionedAncestor(menu)).toBe(header);
+      expect(nearestPositionedAncestor(menu)).not.toBe(thread);
+      expect(screen.getByTestId("chat-back-btn")).toBeInTheDocument();
+      expect(screen.getByTestId("chat-thread-header-identity")).toBeInTheDocument();
+      expect(screen.getByTestId("chat-thread-title-trigger")).toBeInTheDocument();
+    } finally {
+      restoreViewport?.();
+      removeCss();
+      restoreFloating?.();
+    }
+  });
+
+  it("keeps wide floating ChatView non-narrow and anchors its menu to the switcher", async () => {
+    const restoreFloating = withFloatingHost(1200);
+    const removeCss = await installAllAppCss();
+    let restoreViewport: (() => void) | undefined;
+    try {
+      ({ restoreViewport } = await renderDirect({ viewport: "desktop", floating: true }));
+      expect(document.querySelector(".chat-view--narrow")).toBeNull();
+      const menu = await openTitleSwitcherMenu();
+      expect(nearestPositionedAncestor(menu)).toBe(document.querySelector(".chat-thread-title-switcher"));
+    } finally {
+      restoreViewport?.();
+      removeCss();
+      restoreFloating();
+    }
+  });
+
+  it("preserves the desktop switcher anchor and the thread positioning contract", async () => {
+    const removeCss = await installAllAppCss();
+    let restoreViewport: (() => void) | undefined;
+    try {
+      ({ restoreViewport } = await renderDirect({ viewport: "desktop" }));
+      const menu = await openTitleSwitcherMenu();
+      expect(nearestPositionedAncestor(menu)).toBe(document.querySelector(".chat-thread-title-switcher"));
+      expect(getComputedStyle(document.querySelector(".chat-thread")!).position).toBe("relative");
+    } finally {
+      restoreViewport?.();
+      removeCss();
+    }
+  });
+
+  it("anchors the single-session empty menu to the narrow header", async () => {
+    const removeCss = await installAllAppCss();
+    let restoreViewport: (() => void) | undefined;
+    try {
+      const active = session("session-001", "Alpha");
+      ({ restoreViewport } = await renderDirect({ viewport: "mobile", activeSession: active, sessions: [active] }));
+      expect(document.querySelector(".chat-view--narrow")).toBeTruthy();
+      const menu = await openTitleSwitcherMenu();
+      expect(screen.getByTestId("chat-thread-title-menu-empty")).toBeInTheDocument();
+      expect(nearestPositionedAncestor(menu)).toBe(document.querySelector(".chat-thread-header"));
+      expect(getComputedStyle(document.querySelector(".chat-thread")!).position).toBe("relative");
+    } finally {
+      restoreViewport?.();
+      removeCss();
+    }
+  });
+
+  it("defines the focus-ring spacing token without a component fallback", async () => {
+    const styles = await loadStylesCss();
+    expect(styles).toMatch(/\/\* Spacing Scale \*\/[\s\S]*--space-3xs:\s*2px;/);
+    const css = await loadAllAppCss();
+    expect(css).not.toContain("var(--space-3xs,");
+
+    expect(css).toMatch(/\.chat-thread-title-trigger:focus-visible\s*\{[^}]*outline:\s*var\(--space-3xs\) solid var\(--accent\);[^}]*outline-offset:\s*var\(--space-3xs\);/);
+  });
 
   it("closes on outside press and Escape, and keyboard selects the first row", async () => {
     const { selectSession } = await renderDirect();

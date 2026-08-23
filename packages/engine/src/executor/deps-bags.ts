@@ -772,6 +772,7 @@ export function buildBuildActionGateContextDeps(host: any): any {
     agentStore: host.options.agentStore,
     // Lazy getter: only construct the PostgreSQL-backed store when a gate needs it.
     get approvalRequestStore() { return host.approvalRequestStore; },
+    messageStore: host.options.messageStore,
     activeWorkflowAuthorities: host.activeWorkflowAuthorities,
     activeWorkflowGraphAbortControllers: host.activeWorkflowGraphAbortControllers,
   };
@@ -922,6 +923,7 @@ export function buildBuildPermanentAgentGatingContextDeps(host: any): any {
     ...buildStoreRunContextDeps(host),
     approvalSuspended: host.approvalSuspended,
     get approvalRequestStore() { return host.approvalRequestStore; },
+    messageStore: host.options.messageStore,
   };
 }
 

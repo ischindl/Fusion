@@ -122,7 +122,24 @@ describe("NativeWorktreeBackend", () => {
       'git worktree add -b "fusion/fn-1" "/repo/.worktrees/fn-1" "main"',
       expect.objectContaining({ cwd: "/repo", timeout: 120000, maxBuffer: 10485760 }),
     );
-    expect(installGuardMock).toHaveBeenCalledWith({ worktreePath: "/repo/.worktrees/fn-1", taskId: "FN-1" });
+    /*
+    FNXC:WorktreeIdentityGuard 2026-08-23-18:45:
+    The identity guard is installed with the branch Git actually checked out (sibling-collision
+    recovery can rename it) plus the commit-msg/author settings it stamps. With no settings on the
+    backend those resolve to undefined; the assertion records the full argument so a dropped field
+    fails rather than passing under a partial match.
+    */
+    expect(installGuardMock).toHaveBeenCalledWith({
+      worktreePath: "/repo/.worktrees/fn-1",
+      taskId: "FN-1",
+      expectedBranch: "fusion/fn-1",
+      commitMsgHookEnabled: undefined,
+      taskPrefix: undefined,
+      taskAttributionTrailerName: undefined,
+      commitAuthorEnabled: undefined,
+      commitAuthorName: undefined,
+      commitAuthorEmail: undefined,
+    });
   });
 
   it("propagates installer failure after cleanup", async () => {

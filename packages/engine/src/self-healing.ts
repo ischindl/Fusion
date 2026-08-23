@@ -30,7 +30,15 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync,
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { loadWorkspaceConfig, type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, hasSharedBranchMemberAutoMergeHold, resolveEffectiveAutoMerge, countRecentIdenticalStallEntries, detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getTaskMergeBlocker, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isLiveSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, parseExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveReboundTarget, resolveReboundTargetForTask, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, type Agent, type AgentStore, type ChatSession, type ChatInFlightGenerationState, type ChatStore, type MessageStore, type TaskStore, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult, type WorkflowStepResult, type WorkflowIr,
+/*
+FNXC:SelfHealing 2026-08-24-14:38 (merge origin/main 4475342145 → main):
+Import = union of both sides: upstream's renamed resolveExplicitDuplicateMarker +
+getMergeConfirmedFinalizationBlocker (beta.8 merge-boundary feature), plus the two local
+type imports (ChatSession ~line 6869, ChatInFlightGenerationState ~line 6932) that the
+post-merge body still uses. parseExplicitDuplicateMarker survives only in an FNXC
+history comment — every call site uses the renamed resolver.
+*/
+import { loadWorkspaceConfig, type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, hasSharedBranchMemberAutoMergeHold, resolveEffectiveAutoMerge, countRecentIdenticalStallEntries, detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getMergeConfirmedFinalizationBlocker, getTaskMergeBlocker, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isLiveSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, resolveExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveReboundTarget, resolveReboundTargetForTask, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, type Agent, type AgentStore, type ChatSession, type ChatInFlightGenerationState, type ChatStore, type MessageStore, type TaskStore, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult, type WorkflowStepResult, type WorkflowIr,
   resolveNearDuplicateCanonicalFlags,
   LEGACY_COLUMN_IDS_BY_ROLE,
   TERMINAL_ROLES,
@@ -7739,15 +7747,35 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           without a real PROMPT. Drop a still-present DUPLICATE marker file when present.
           */
           const promptPath = join(this.options.rootDir, ".fusion", "tasks", task.id, "PROMPT.md");
-          if (existsSync(promptPath)) {
+          const written = existsSync(promptPath) ? readFileSync(promptPath, "utf-8") : "";
+          const duplicateResolution = resolveExplicitDuplicateMarker(written, task.title);
+          const canonicalMarkerId = canonicalId.toUpperCase();
+          /*
+          FNXC:DuplicateIntake 2026-08-09-02:54:
+          FN-8840 requires stale-decision recovery to fail closed when PROMPT.md and the title
+          disagree, or when either points to a different canonical than the stale metadata. Never
+          erase either operator redirect or release its decision hold without an unambiguous match.
+
+          FNXC:DuplicateIntake 2026-08-23-19:55:
+          Restored after 1cf86baa1c ("package code organization wave 18", declared behavior-
+          preserving) replaced this resolver with the prompt-only `parseExplicitDuplicateMarker`,
+          silently deleting FN-8840's title-redirect handling: a title-only redirect stopped being
+          recognized, a conflicting prompt/title pair stopped failing closed, and an executable
+          PROMPT.md was erased for a redirect that lived only in the title.
+          */
+          if (duplicateResolution.conflict
+            || (duplicateResolution.marker && duplicateResolution.marker.canonicalId !== canonicalMarkerId)) {
+            continue;
+          }
+          if (duplicateResolution.source === "prompt") {
             try {
-              const written = readFileSync(promptPath, "utf-8");
-              if (parseExplicitDuplicateMarker(written)) {
-                rmSync(promptPath, { force: true });
-              }
+              rmSync(promptPath, { force: true });
             } catch {
               // best-effort marker removal; status write still proceeds
             }
+          }
+          if (resolveExplicitDuplicateMarker(null, task.title).marker?.canonicalId === canonicalMarkerId) {
+            await this.store.updateTask(task.id, { title: `Duplicate redirect cleared: ${canonicalMarkerId}` });
           }
           await this.store.updateTask(task.id, buildMarkerClearedReplanTaskPatch(canonicalId));
           if (typeof this.store.logEntry === "function") {
@@ -12249,8 +12277,11 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
             mergeTargetSource: mergeTarget.source,
           };
 
-          /* Wired: unwired, this would decline every card the widened read now finds. */
-          const hardBlocker = getTaskHardMergeBlocker({
+          /* Wired: unwired, this would decline every card the widened read now finds.
+             FNXC:MergeConfirmedFinalization 2026-08-23-21:40 (FN-9193): this sweep has already
+             proven the content landed on the base branch, so incomplete steps must not hold the
+             card — that hold is what left FN-9193 unfinalizable, and a restart re-created it. */
+          const hardBlocker = getMergeConfirmedFinalizationBlocker({
             ...task,
             steps: task.steps ?? [],
             workflowStepResults: task.workflowStepResults,
@@ -12513,8 +12544,10 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
             mergeTargetSource: mergeTarget.source,
           };
 
-          /* Wired with THIS card's review lanes — see the note on `ownReviewLanesForAlreadyMerged` above. */
-          const hardBlocker = getTaskHardMergeBlocker({
+          /* Wired with THIS card's review lanes — see the note on `ownReviewLanesForAlreadyMerged` above.
+             FNXC:MergeConfirmedFinalization 2026-08-23-21:40 (FN-9193): merged content is already
+             proven on the base branch here, so incomplete steps must not block finalization. */
+          const hardBlocker = getMergeConfirmedFinalizationBlocker({
             ...task,
             steps: task.steps ?? [],
             workflowStepResults: task.workflowStepResults,
@@ -16083,15 +16116,18 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
       for (const task of candidates) {
         try {
           const promptPath = join(this.options.rootDir, ".fusion", "tasks", task.id, "PROMPT.md");
-          if (!existsSync(promptPath)) {
+          const written = existsSync(promptPath) ? readFileSync(promptPath, "utf-8") : "";
+          /*
+          FNXC:DuplicateIntake 2026-08-23-19:55:
+          Restored FN-8840 title-redirect resolution after 1cf86baa1c reverted this sweep to a
+          prompt-only marker read. A conflict has no safe canonical target; leave it for
+          planning/operator correction.
+          */
+          const duplicateResolution = resolveExplicitDuplicateMarker(written, task.title);
+          if (!duplicateResolution.marker || duplicateResolution.conflict) {
             continue;
           }
-
-          const written = readFileSync(promptPath, "utf-8");
-          const marker = parseExplicitDuplicateMarker(written);
-          if (!marker) {
-            continue;
-          }
+          const marker = duplicateResolution.marker;
           if (processedMarkers >= 50) {
             break;
           }
@@ -16118,7 +16154,11 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
           const canonicalFlags = await resolveNearDuplicateCanonicalFlags(this.store, canonicalTask);
           if (!canonicalTask || isNearDuplicateCanonicalInactive(canonicalTask, canonicalFlags)) {
             if (canClearInactiveMarker) {
-              rmSync(promptPath, { force: true });
+              // FNXC:DuplicateIntake 2026-08-09-02:14: preserve a real PROMPT.md for a title-only redirect.
+              if (duplicateResolution.source !== "title") rmSync(promptPath, { force: true });
+              if (resolveExplicitDuplicateMarker(null, task.title).marker?.canonicalId === marker.canonicalId) {
+                await this.store.updateTask(task.id, { title: `Duplicate redirect cleared: ${marker.canonicalId}` });
+              }
               const priorClearCount = typeof task.sourceMetadata?.duplicateMarkerClearCount === "number"
                 ? task.sourceMetadata.duplicateMarkerClearCount
                 : 0;
@@ -16145,7 +16185,11 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
           */
           if (resolution === "prompt" && isTriageDuplicateKeepAcknowledged(task.sourceMetadata, canonicalTask.id)) {
             if (canClearInactiveMarker) {
-              rmSync(promptPath, { force: true });
+              // FNXC:DuplicateIntake 2026-08-09-02:14: preserve a real PROMPT.md for a title-only redirect.
+              if (duplicateResolution.source !== "title") rmSync(promptPath, { force: true });
+              if (resolveExplicitDuplicateMarker(null, task.title).marker?.canonicalId === marker.canonicalId) {
+                await this.store.updateTask(task.id, { title: `Duplicate redirect cleared: ${marker.canonicalId}` });
+              }
               const priorKeepClears = typeof task.sourceMetadata?.duplicateMarkerClearCount === "number"
                 ? task.sourceMetadata.duplicateMarkerClearCount
                 : 0;
@@ -16175,7 +16219,11 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
             await flagTriageDuplicate(this.store, task.id, canonicalTask.id);
             await this.store.updateTask(task.id, { paused: true, pausedReason: "duplicate-decision-required", status: null });
           } else {
-            rmSync(promptPath, { force: true });
+            // FNXC:DuplicateIntake 2026-08-09-02:14: title-only redirects must not erase executable prompts.
+            if (duplicateResolution.source !== "title") rmSync(promptPath, { force: true });
+            if (resolveExplicitDuplicateMarker(null, task.title).marker?.canonicalId === marker.canonicalId) {
+              await this.store.updateTask(task.id, { title: `Duplicate redirect cleared: ${marker.canonicalId}` });
+            }
             await this.store.updateTask(task.id, buildMarkerClearedReplanTaskPatch(canonicalTask.id));
             if (typeof this.store.logEntry === "function") {
               await Promise.resolve(this.store.logEntry(

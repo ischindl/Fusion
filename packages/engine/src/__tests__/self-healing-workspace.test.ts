@@ -252,7 +252,18 @@ pgDescribeIfGit("FN-9048 workspace archive restore reaches self-healing cleanly"
       { description: "archive workspace restore regression", column: "in-review" },
       { taskId: id, applyDefaultWorkflowSteps: false },
     );
-    await store.updateTask(id, { workspaceWorktrees, branch: undefined } as never);
+    /* FNXC:RepositoryScope 2026-08-23-23:59: partial-land recovery admits only CONFIRMED repository
+       intent plus qualified modified evidence (see makeWorkspaceTask above). This card is built
+       through the real store, so it must state the same contract or the sweep never considers it. */
+    await store.updateTask(id, {
+      workspaceWorktrees,
+      branch: undefined,
+      repositoryScope: { repositories: [...fx.repos].sort(), state: "confirmed", revision: 1 },
+      /* Recovery is another merge door: default task creation seeds pending implementation steps and
+         `getTaskMergeBlocker` refuses them, so this post-implementation fixture states them done. */
+      steps: [{ name: "Implementation", status: "done" }],
+      modifiedFiles: [...fx.repos].sort().map((repo) => `${repo}/feature.txt`),
+    } as never);
     const stalePreArchive = (await store.getTask(id))!;
     const unregister = registerArchiveWorkspaceWorktreeDisposer(store, async (_task, plan) => {
       for (const entry of plan) {

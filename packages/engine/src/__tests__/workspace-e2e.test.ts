@@ -38,6 +38,7 @@ import { WorkflowReviewService } from "../workflows/workflow-review-service.js";
 import { FOREACH_ACTIVE_CONTEXT_KEY } from "../workflows/workflow-node-handlers.js";
 import { SelfHealingManager } from "../self-healing.js";
 import { activeSessionRegistry } from "../agents/active-session-registry.js";
+import { captureWorkspaceReviewEvidence } from "../worktree/workspace-review-evidence.js";
 import { createWorkspaceFixture, hasGit, type WorkspaceFixture } from "./_workspace-fixture.js";
 
 const describeIfGit = hasGit ? describe : describe.skip;
@@ -180,6 +181,17 @@ const approveReviewAgent = async (): Promise<string> => "REVIEW_VERDICT: approve
  * callback fence and approval writer. Only the model-facing review service is faked.
  */
 async function approveWorkspaceReview(store: TaskStore, task: Task, workspaceRootDir: string): Promise<void> {
+  /*
+  FNXC:WorkspaceReviewEvidence 2026-08-23-22:05:
+  The per-repo review loop opens EXACTLY one reviewer episode per scoped repository that carries diff
+  evidence, so derive the expected episode count from the same production capture the loop uses
+  instead of hard-coding one. A fixture with two scoped modified repositories legitimately reviews
+  twice; asserting a constant hid that and only agreed while a fingerprint bug suppressed a repo.
+  */
+  const evidence = await captureWorkspaceReviewEvidence({ task, workspaceRootDir, settings: {} });
+  const scopedRepositories = new Set(task.repositoryScope?.repositories ?? []);
+  const expectedEpisodes = evidence.repositories
+    .filter((repository) => scopedRepositories.has(repository.repository) && repository.files.length > 0).length;
   const executor = new TaskExecutor(store, workspaceRootDir);
   (executor as any).workspaceConfig = { repos: Object.keys(task.workspaceWorktrees ?? {}) };
   const reviewStep = vi.spyOn(WorkflowReviewService.prototype, "reviewStep")
@@ -190,7 +202,7 @@ async function approveWorkspaceReview(store: TaskStore, task: Task, workspaceRoo
       [FOREACH_ACTIVE_CONTEXT_KEY]: { stepIndex: 0, worktreePath: Object.values(task.workspaceWorktrees ?? {})[0]?.worktreePath },
     }, { type: "code", advisory: true } as any);
     expect(result.verdict).toBe("APPROVE");
-    expect(reviewStep).toHaveBeenCalledTimes(1);
+    expect(reviewStep).toHaveBeenCalledTimes(expectedEpisodes);
   } finally {
     reviewStep.mockRestore();
   }
@@ -477,7 +489,8 @@ pgDescribeIfGit("workspace local-only PostgreSQL landing", () => {
   it("lands one reviewed local repository through durable coordination without a remote operation", async () => {
     const taskId = "FN-122-PG-LOCAL";
     const repoA = addLinkedTaskWorktreeWithEdit(fx, "repo-a", "postgres local feature\n");
-    const repoB = fx.createLinkedTaskWorktree("repo-b", BRANCH);
+    /* FNXC:WorkspaceReviewEvidence 2026-08-23-22:25: `createLinkedTaskWorktree` returns only path+base, but every workspace entry must name its task branch — `captureWorkspaceReviewEvidence` fails closed on an entry with no branch, and production acquisition always records one. */
+    const repoB = { ...fx.createLinkedTaskWorktree("repo-b", BRANCH), branch: BRANCH };
     const source = makeTask({ "repo-a": repoA, "repo-b": repoB }, {
       id: taskId,
       repositoryScope: { repositories: ["repo-a"], state: "confirmed", revision: 1 },
@@ -490,6 +503,16 @@ pgDescribeIfGit("workspace local-only PostgreSQL landing", () => {
     );
     await store.updateTask(taskId, {
       branch: BRANCH,
+      // FNXC:WorkspaceIntegration 2026-08-23-21:30: writing `branch` is a provenance boundary; these fixtures bind the task to the branch the ENGINE created for it.
+      branchWriteOrigin: "engine",
+      /*
+      FNXC:WorkspaceIntegration 2026-08-23-21:34:
+      Reserved-ID creation seeds the default implementation steps (`applyDefaultWorkflowSteps:false`
+      governs the review-gate list, not the card's steps), and the merge door refuses a card with a
+      non-terminal step. These fixtures exercise LANDING, which a real card reaches only after its
+      implementation steps completed, so complete them here rather than fighting the seeding.
+      */
+      steps: ((await store.getTask(taskId))?.steps ?? []).map((step) => ({ ...step, status: "done" as const })),
       workspaceWorktrees: source.workspaceWorktrees,
       repositoryScope: source.repositoryScope,
       modifiedFiles: source.modifiedFiles,
@@ -518,7 +541,8 @@ pgDescribeIfGit("workspace local-only PostgreSQL landing", () => {
   it("drives the local-only durable land through ProjectEngine's merge route", async () => {
     const taskId = "FN-122-PG-ENGINE";
     const repoA = addLinkedTaskWorktreeWithEdit(fx, "repo-a", "project engine local feature\n");
-    const repoB = fx.createLinkedTaskWorktree("repo-b", BRANCH);
+    /* FNXC:WorkspaceReviewEvidence 2026-08-23-22:25: `createLinkedTaskWorktree` returns only path+base, but every workspace entry must name its task branch — `captureWorkspaceReviewEvidence` fails closed on an entry with no branch, and production acquisition always records one. */
+    const repoB = { ...fx.createLinkedTaskWorktree("repo-b", BRANCH), branch: BRANCH };
     const source = makeTask({ "repo-a": repoA, "repo-b": repoB }, {
       id: taskId,
       repositoryScope: { repositories: ["repo-a"], state: "confirmed", revision: 1 },
@@ -531,6 +555,16 @@ pgDescribeIfGit("workspace local-only PostgreSQL landing", () => {
     );
     await store.updateTask(taskId, {
       branch: BRANCH,
+      // FNXC:WorkspaceIntegration 2026-08-23-21:30: writing `branch` is a provenance boundary; these fixtures bind the task to the branch the ENGINE created for it.
+      branchWriteOrigin: "engine",
+      /*
+      FNXC:WorkspaceIntegration 2026-08-23-21:34:
+      Reserved-ID creation seeds the default implementation steps (`applyDefaultWorkflowSteps:false`
+      governs the review-gate list, not the card's steps), and the merge door refuses a card with a
+      non-terminal step. These fixtures exercise LANDING, which a real card reaches only after its
+      implementation steps completed, so complete them here rather than fighting the seeding.
+      */
+      steps: ((await store.getTask(taskId))?.steps ?? []).map((step) => ({ ...step, status: "done" as const })),
       workspaceWorktrees: source.workspaceWorktrees,
       repositoryScope: source.repositoryScope,
       modifiedFiles: source.modifiedFiles,
@@ -550,6 +584,15 @@ pgDescribeIfGit("workspace local-only PostgreSQL landing", () => {
         reviewAgent: approveReviewAgent,
       }),
     );
+    /*
+    FNXC:WorkspaceIntegration 2026-08-23-22:40:
+    `drainMergeQueue` roots every merge git operation at the STORE's project root (the engine config
+    is only a fallback — see its 2026-07-10 note), because in production the store IS project-rooted
+    at the workspace root. The shared PG harness owns its own temp rootDir, so point the store at the
+    workspace fixture root to restore the production invariant `storeRoot === workspaceRoot`; without
+    it the land planner resolves `<harnessRoot>/repo-a` and dies with `spawn git ENOENT`.
+    */
+    vi.spyOn(store, "getRootDir").mockReturnValue(fx.rootDir);
     const engine = new ProjectEngine({
       projectId: "fn-122-pg-local",
       workingDirectory: fx.rootDir,
@@ -557,7 +600,15 @@ pgDescribeIfGit("workspace local-only PostgreSQL landing", () => {
       maxConcurrent: 1,
       maxWorktrees: 1,
     } as never, {} as never, { skipNotifier: true });
-    (engine as any).runtime = { getTaskStore: () => store };
+    (engine as any).runtime = { getTaskStore: () => store, getPluginRunner: () => undefined };
+    /*
+    FNXC:WorkspaceIntegration 2026-08-23-22:35:
+    `internalEnqueueMerge` no-ops before `start()` (the post-boot gate), so an unstarted engine
+    rejects every `onMerge` with "Merge enqueue rejected". This fixture exercises the MERGE ROUTE,
+    not the boot sequence — booting a real engine here would also start triage/self-healing polling
+    against the shared PG harness — so mark it started the same way the merge-pump unit tests do.
+    */
+    (engine as unknown as { started: boolean }).started = true;
 
     try {
       const result = await engine.onMerge(taskId);

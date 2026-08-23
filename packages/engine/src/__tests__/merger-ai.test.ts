@@ -88,6 +88,16 @@ function makeStore(
     worktree: null,
     title: "do the thing",
     steps: [],
+    /*
+    FNXC:RequiredPreMergeSteps 2026-08-23-00:20:
+    These fixtures exercise AI-MERGE MECHANICS — clean-room setup, push, abort, cleanup, lease
+    handling — not review gating. The merge door refuses any card whose enabled optional pre-merge
+    groups have produced no result, and the built-in coding workflow enables Plan Review and Code
+    Review by default, so an unspecified list made every fixture here fail the door before reaching
+    the behaviour under test. Declaring an EXPLICIT empty list states the intent these tests always
+    had: no optional gates are in play. A test that wants a gate opts in via `taskOverrides`.
+    */
+    enabledWorkflowSteps: [],
     baseBranch: undefined,
     ...taskOverrides,
   };

@@ -1463,7 +1463,17 @@ describe("createFnAgent", () => {
     const { ChatManager, __resetChatState, __setCreateResolvedAgentSession } = await import("../../../dashboard/src/chat.js");
     __clearFusionSessionIdentityRegistryForTests();
     const observedPrincipals: unknown[] = [];
-    createAgentSessionMock.mockResolvedValueOnce({
+    /*
+    FNXC:SecretsAccessApproval 2026-08-23-19:45:
+    Arm the observing session for the DURABLE CHAT session specifically, not for whichever pi session
+    happens to be created first. `ChatManager.sendMessage` also runs `summarizeTitle`, which builds
+    its own anonymous `engine-session-*` principal through `agent-session-helpers`. A bare
+    `mockResolvedValueOnce` was consumed by that title summarizer, so the prompt under inspection was
+    the summarizer's and the assertion read its anonymous identity instead of the bound agent's. The
+    injected `createResolvedAgentSession` seam is reached ONLY by the chat session, which makes it the
+    correct place to arm the instrumented session.
+    */
+    const armObservingSession = () => createAgentSessionMock.mockResolvedValueOnce({
       session: {
         prompt: vi.fn(async () => {
           // This mirrors a host-extension callback: pi supplies cwd but no agentId.
@@ -1475,7 +1485,16 @@ describe("createFnAgent", () => {
       },
     });
     const chatStore = {
-      getSession: vi.fn(() => ({ id: "chat-secret", agentId: "agent-1a009724", status: "active" })),
+      /*
+      FNXC:SecretsAccessApproval 2026-08-23-19:58:
+      The session carries a title so `ChatManager.sendMessage` does not also fire its non-blocking
+      title summarizer. That summarizer builds its OWN anonymous `engine-session-*` pi session
+      concurrently with the chat session, and the two race for the mocked session queue — the
+      observed host-tool principal then came from whichever won, which is what made this read the
+      summarizer's anonymous identity instead of the bound agent's. Titling the session removes the
+      unrelated concurrent session rather than trying to order the race.
+      */
+      getSession: vi.fn(() => ({ id: "chat-secret", agentId: "agent-1a009724", status: "active", title: "Prompt-gated secret" })),
       addMessage: vi.fn((message) => ({ id: `message-${message.role}`, ...message })),
       getMessages: vi.fn(() => []),
       setInFlightGeneration: vi.fn(async () => undefined),
@@ -1499,12 +1518,15 @@ describe("createFnAgent", () => {
     resolved-session options and pi's host-tool prompt dispatch, where the
     immediate extension context intentionally omits agentId.
     */
-    __setCreateResolvedAgentSession(async (options: any) => createFnAgent({
-      ...options,
-      tools: "coding",
-      defaultProvider: "mock",
-      defaultModelId: "scripted",
-    }) as any);
+    __setCreateResolvedAgentSession(async (options: any) => {
+      armObservingSession();
+      return createFnAgent({
+        ...options,
+        tools: "coding",
+        defaultProvider: "mock",
+        defaultModelId: "scripted",
+      }) as any;
+    });
 
     try {
       const manager = new ChatManager(

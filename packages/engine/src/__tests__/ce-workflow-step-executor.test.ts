@@ -39,6 +39,7 @@ vi.mock("../executor/worktree-git-refs.js", async (importOriginal) => ({
 import { TaskExecutor } from "../executor.js";
 import type { PluginRunner } from "../plugins/plugin-runner.js";
 import { WorkflowGraphExecutor } from "../workflows/workflow-graph-executor.js";
+import { MERGE_BOUNDARY_UNPROVEN_VALUE } from "../workflows/workflow-merge-nodes.js";
 import { WorktreeBaseRefreshError } from "../worktree/worktree-acquisition.js";
 import {
   createMockStore,
@@ -703,9 +704,17 @@ describe("CE workflow-step executor integration", () => {
         live,
       );
 
+      /*
+      FNXC:WorkflowMerge 2026-08-23-23:50:
+      FN-9157 made an unprovable merge boundary its own TERMINAL failure value
+      (`MERGE_BOUNDARY_UNPROVEN_VALUE`) instead of the retryable `implementation-incomplete`
+      classification, precisely so a card that cannot prove implementation is parked rather than
+      re-entering the bounded merge retry. The property this case owns — the requester is never
+      called and the card never reaches review — is unchanged.
+      */
       expect(result).toEqual(expect.objectContaining({
         outcome: "failure",
-        value: "implementation-incomplete",
+        value: MERGE_BOUNDARY_UNPROVEN_VALUE,
       }));
       expect(mergeRequester).not.toHaveBeenCalled();
       /*
@@ -730,12 +739,13 @@ describe("CE workflow-step executor integration", () => {
         undefined,
         undefined,
       );
-      expect(store.logEntry).toHaveBeenCalledWith(
-        "FN-CE-1",
-        expect.stringContaining("implementation did not run:"),
-        undefined,
-        undefined,
-      );
+      /*
+      FNXC:WorkflowMerge 2026-08-23-23:50:
+      The later "implementation did not run:" diagnostic belonged to the implementation-proof check
+      that ran AFTER the boundary; FN-9157's boundary now refuses first (here: "no pre-merge node
+      result recorded"), so that second log line is unreachable on this path and asserting it would
+      only re-describe the retired two-stage order.
+      */
       // The card must never reach the review column on unproven implementation.
       expect(store.moveTask).not.toHaveBeenCalledWith("FN-CE-1", "in-review", expect.anything());
       expect(store.moveTask).not.toHaveBeenCalledWith("FN-CE-1", "in-review");

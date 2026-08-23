@@ -214,6 +214,16 @@ export interface LegacyAdoptionCandidate {
   legacyAdoptedAt?: string | null;
 }
 
+/*
+FNXC:LegacyAdoption 2026-08-23-18:00:
+DELIBERATE-LITERAL — compare the persisted pre-cutover physical lane IDs
+(`in-review`/`done`/`archived`). Those are the values old rows actually carry.
+Resolving the current workflow's review/complete/archived lanes would skip rows
+that still sit on the historical names, which is the population FN-158's
+reviewLevel-backfill withhold exists to protect. This planner is also
+storage-agnostic by design (no workflow IR) so both store-open and the
+self-healing startup sweep share one decision.
+*/
 function isAtOrPastReviewLane(column: string | null | undefined): boolean {
   return column === "in-review" || column === "done" || column === "archived";
 }

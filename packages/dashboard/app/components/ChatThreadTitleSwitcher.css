@@ -13,7 +13,7 @@ hosts without changing the legacy title truncation rule asserted elsewhere.
 
 .chat-thread-title-trigger {
   border: none;
-  padding: var(--space-3xs, var(--space-xs));
+  padding: var(--space-3xs);
   background: transparent;
   color: inherit;
   cursor: pointer;
@@ -114,6 +114,15 @@ hosts without changing the legacy title truncation rule asserted elsewhere.
 
 .chat-thread-title-menu-empty {
   color: var(--text-muted);
+}
+
+/*
+FNXC:ChatTitleSwitcher 2026-08-23-16:00:
+Narrow ChatView hosts keep the switcher root static so its menu can span the pane. The header owns
+its containing block; otherwise the absolute menu resolves below the clipped full-height thread.
+*/
+.chat-view--narrow .chat-thread-header {
+  position: relative;
 }
 
 .chat-view--narrow .chat-thread-title-switcher {

@@ -19,7 +19,14 @@ import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { AgentHeartbeatRun, AgentStore, MessageStore, PermanentAgentGatingContext, ProviderInstanceRef, ResolvedMcpServerDefinition, TaskDetail, Settings, SteeringComment, TaskStore } from "@fusion/core";
-import { buildPerTurnMemoryRecallCue, isFusionDeletableBranch, isValidProviderInstanceId, resolvePersistAgentThinkingLog, resolveExecutorFallbackModel } from "@fusion/core";
+/*
+FNXC:StepSessionExecutor 2026-08-24-14:35 (merge origin/main 4475342145 → main):
+Upstream removed the `isFusionDeletableBranch` call sites (FN-9161 branch-deletability
+check) from the executor body; RUFU-132's per-turn memory recall cue (`buildPerTurnMemoryRecallCue`,
+called below) is local work that must survive the merge. Import the union of what the
+post-merge body actually calls: upstream's three core helpers + RUFU-132's recall cue.
+*/
+import { buildPerTurnMemoryRecallCue, isValidProviderInstanceId, resolvePersistAgentThinkingLog, resolveExecutorFallbackModel } from "@fusion/core";
 
 import {
   createResolvedAgentSession,
@@ -1061,6 +1068,24 @@ export class StepSessionExecutor {
    * Safe to call multiple times (idempotent). Call this in a `finally` block
    * after `executeAll()`.
    */
+  /**
+   * FNXC:StepParallelWorktrees 2026-08-23-21:40:
+   * `parallelBranches` holds only branches THIS executor created in `createStepWorktree`
+   * (`fusion/step-<idx>-<worktree-name>`), so their provenance is known here rather than inferred.
+   * FN-9161's `isFusionDeletableBranch` answers by NAME and reads anything that is not
+   * `fusion/<task-id>...` as operator-supplied, so applying it here silently skipped every
+   * step branch and leaked one ref per parallel step. Protect what an operator can actually own —
+   * the task's working branch and its explicit override — and dispose of the rest.
+   */
+  private isDisposableStepBranch(branchName: string): boolean {
+    const task = this.options.taskDetail as { branch?: string; branchContext?: { branchOverride?: { branch?: string } } };
+    const operatorOwned = [task.branch, task.branchContext?.branchOverride?.branch]
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .map((value) => value.trim());
+    // Callers pass only branches recorded in `parallelBranches`, i.e. ones this executor created.
+    return !operatorOwned.includes(branchName.trim());
+  }
+
   async cleanup(): Promise<void> {
     // Terminate any remaining sessions
     if (this.activeSessions.size > 0) {
@@ -1092,7 +1117,7 @@ export class StepSessionExecutor {
     // Delete branches created for parallel worktrees
     for (const [stepIdx, branchName] of this.parallelBranches) {
       try {
-        if (!isFusionDeletableBranch(this.options.taskDetail, branchName)) continue;
+        if (!this.isDisposableStepBranch(branchName)) continue;
         await execAsync(`git branch -D "${branchName}"`, {
           cwd: this.options.rootDir,
         });
@@ -1873,7 +1898,7 @@ Follow instructions precisely and avoid unrelated changes.`,
             });
           }
           const branch = this.parallelBranches.get(stepIdx);
-          if (branch && isFusionDeletableBranch(this.options.taskDetail, branch)) {
+          if (branch && this.isDisposableStepBranch(branch)) {
             await execAsync(`git branch -D "${branch}"`, {
               cwd: this.options.rootDir,
             });

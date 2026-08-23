@@ -140,22 +140,32 @@ function addRepoRevertedBranch(fx: WorkspaceFixture, repoRel: string): void {
   fx.git(repoRel, `git worktree remove --force ${worktreePath}`);
 }
 
-/** Make a sub-repo's integration tip and the task branch BOTH edit README so the
- *  squash conflicts. */
-function makeConflictingRepo(fx: WorkspaceFixture, repoRel: string): void {
+/*
+FNXC:WorkspaceReviewEvidence 2026-08-23-20:10:
+Production records a workspace entry whose `worktreePath` is a LIVE task worktree sitting at the
+branch tip, and `computeReviewDiffFingerprint` reads `baseCommitSha..HEAD` from that path. A fixture
+that points the entry at the repo's main checkout therefore produces an EMPTY diff and an undefined
+fingerprint, which silently disables the whole merge-boundary review fence. This variant keeps the
+conflicting-README setup but leaves the task worktree registered at the branch tip so the fence is
+exercised for real.
+*/
+function makeConflictingRepoWithRegisteredWorktree(
+  fx: WorkspaceFixture,
+  repoRel: string,
+): { worktreePath: string; baseCommitSha: string } {
   const repoDir = fx.repoPath(repoRel);
-  // Task branch edits README on a new commit.
-  const worktreePath = path.join(repoDir, ".wt-conflict");
+  const worktreePath = path.join(fx.rootDir, `.task-worktree-${repoRel}`);
+  const baseCommitSha = fx.git(repoRel, "git rev-parse HEAD");
   fx.git(repoRel, `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
   configureIdentity(worktreePath);
   writeFileSync(path.join(worktreePath, "README.md"), "# branch-side change\n", "utf-8");
   execSync("git add README.md", { cwd: worktreePath, stdio: "pipe" });
   execSync(`git commit -m "feat(${TASK_ID}): branch README"`, { cwd: worktreePath, stdio: "pipe" });
-  fx.git(repoRel, `git worktree remove --force ${worktreePath}`);
   // Integration tip (main) diverges with a conflicting README edit.
   writeFileSync(path.join(repoDir, "README.md"), "# main-side change\n", "utf-8");
   fx.git(repoRel, "git add README.md");
   fx.git(repoRel, 'git commit -m "main diverge README"');
+  return { worktreePath, baseCommitSha };
 }
 
 /** A merge agent that performs the real squash in the clean room (no AI). */
@@ -183,6 +193,11 @@ const approveReviewAgent = async (): Promise<string> => "REVIEW_VERDICT: approve
 
 function makeTask(workspaceWorktrees: Task["workspaceWorktrees"]): Task {
   return {
+    /* FNXC:RequiredPreMergeSteps 2026-08-23-00:20: merge-mechanics fixture, not a review-gating one.
+       The door refuses a card whose enabled optional pre-merge groups produced no result, and the
+       built-in workflow enables Plan and Code Review by default, so an unspecified list failed the
+       door before the behaviour under test ran. An explicit empty list states the intent. */
+    enabledWorkflowSteps: [],
     id: TASK_ID,
     title: "Workspace merge task",
     description: "",
@@ -358,9 +373,15 @@ describeIfGit("landWorkspaceTask — per-repo merge loop (Phase C U1)", () => {
 
   it("rejects a modified repository with no approving review fingerprint", async () => {
     fx = await createWorkspaceFixture(["repo-a"]);
-    addRepoBranchWithEdit(fx, "repo-a", "review evidence is mandatory\n");
+    /*
+    FNXC:WorkspaceReviewEvidence 2026-08-23-20:10:
+    The entry must be a live task worktree at the branch tip: the merge-boundary fingerprint is read
+    as `baseCommitSha..HEAD` from `worktreePath`, so an entry pointing at the repo's main checkout
+    yields no fingerprint at all and the approval-missing fence never evaluates.
+    */
+    const linked = addRegisteredTaskWorktreeWithEdit(fx, "repo-a", "review evidence is mandatory\n");
     const store = createStore();
-    const task = makeTask({ "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH } });
+    const task = makeTask({ "repo-a": { worktreePath: linked.worktreePath, branch: BRANCH, baseCommitSha: linked.baseCommitSha } });
     task.repositoryScope!.reviewEvidence = {};
 
     await expect(landWorkspaceTask(store, task, fx.rootDir, {}, {
@@ -386,15 +407,22 @@ describeIfGit("landWorkspaceTask — per-repo merge loop (Phase C U1)", () => {
 
   it("partial: repo B conflict → repo A lands, B reports failure, task NOT moved done", async () => {
     fx = await createWorkspaceFixture(["repo-a", "repo-b"]);
-    addRepoBranchWithEdit(fx, "repo-a", "a feature\n");
-    makeConflictingRepo(fx, "repo-b");
+    /*
+    FNXC:WorkspaceReviewEvidence 2026-08-23-20:10:
+    Both entries are live task worktrees at their branch tips so the merge-boundary fingerprints
+    actually describe the task branches. With the entries pointed at the repos' main checkouts,
+    repo-b's fingerprint described main's diverged README instead and the review fence rejected the
+    land as "content changed after approval" before the conflict under test could occur.
+    */
+    const linkedA = addRegisteredTaskWorktreeWithEdit(fx, "repo-a", "a feature\n");
+    const linkedB = makeConflictingRepoWithRegisteredWorktree(fx, "repo-b");
 
     const tipABefore = fx.git("repo-a", "git rev-parse refs/heads/main");
 
     const store = createStore();
     const task = makeTask({
-      "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH },
-      "repo-b": { worktreePath: fx.repoPath("repo-b"), branch: BRANCH },
+      "repo-a": { worktreePath: linkedA.worktreePath, branch: BRANCH, baseCommitSha: linkedA.baseCommitSha },
+      "repo-b": { worktreePath: linkedB.worktreePath, branch: BRANCH, baseCommitSha: linkedB.baseCommitSha },
     });
     // FNXC:RepositoryScope 2026-08-21-00:58: the merge boundary only admits fresh
     // changes that were present in the persisted Code Review evidence.

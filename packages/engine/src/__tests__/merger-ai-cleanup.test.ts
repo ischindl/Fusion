@@ -142,6 +142,11 @@ function initRepoWithBranch(taskId = "FN-1"): { dir: string } {
 
 function makeStore(taskId = "FN-1") {
   const task: any = {
+    /* FNXC:RequiredPreMergeSteps 2026-08-23-00:20: merge-mechanics fixture, not a review-gating one.
+       The door refuses a card whose enabled optional pre-merge groups produced no result, and the
+       built-in workflow enables Plan and Code Review by default, so an unspecified list failed the
+       door before the behaviour under test ran. An explicit empty list states the intent. */
+    enabledWorkflowSteps: [],
     id: taskId,
     column: "in-review",
     status: null,
@@ -156,6 +161,14 @@ function makeStore(taskId = "FN-1") {
     getTask: vi.fn(async () => task),
     getSettings: vi.fn(async () => ({ merger: { mode: "ai", maxReviewPasses: 1 } })),
     updateTask: vi.fn(async (_id: string, patch: Record<string, unknown>) => { Object.assign(task, patch); return task; }),
+    /* FNXC:MergeMockDrift 2026-08-23-00:20: `updateTaskAtomic` is a production write seam the merge
+       path uses; a fake store that omits it throws TypeError before the behaviour under test runs.
+       Same read-modify-write shape as the sibling fake in `merger-ai.test.ts`. */
+    updateTaskAtomic: vi.fn(async (_id: string, updater: (current: typeof task) => Record<string, unknown> | undefined) => {
+      const patch = await updater(task);
+      if (patch) Object.assign(task, patch);
+      return task;
+    }),
     moveTask: vi.fn(async (_id: string, column: string) => { task.column = column; return task; }),
     emit: vi.fn(),
     logEntry: vi.fn(async (_id: string, message: string) => { logs.push(message); }),

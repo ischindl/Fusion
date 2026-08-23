@@ -40,6 +40,13 @@ type MovedProjectSettingsKey =
   | "maxReviewerContextRetries"
   | "maxReviewerFallbackRetries"
   | "reflectionEnabled"
+  /* FNXC:ReviewConvergence 2026-08-23-21:15: FN-149 declared these six in BUILTIN_WORKFLOW_SETTINGS but never registered them as moved, so they stayed in ProjectSettingsSchema and DEFAULT_PROJECT_SETTINGS had to re-declare their defaults — the dual-regime drift `workflow-settings-fallback-alignment` guards. They are workflow-native, so they belong to the moved regime. */
+  | "reviewConvergenceEscalationEnabled"
+  | "reviewConvergenceEscalationProvider"
+  | "reviewConvergenceEscalationModelId"
+  | "reviewArbitrationEnabled"
+  | "reviewArbitrationProvider"
+  | "reviewArbitrationModelId"
   | "executionProvider"
   | "executionCredentialInstanceId"
   | "executionModelId"
@@ -633,12 +640,16 @@ export const DEFAULT_PROJECT_SETTINGS = {
   executorEscalationProvider: undefined,
   executorEscalationModelId: undefined,
   executorEscalationNodeId: undefined,
-  reviewConvergenceEscalationEnabled: true,
-  reviewConvergenceEscalationProvider: undefined,
-  reviewConvergenceEscalationModelId: undefined,
-  reviewArbitrationEnabled: true,
-  reviewArbitrationProvider: undefined,
-  reviewArbitrationModelId: undefined,
+  /*
+  FNXC:ReviewConvergence 2026-08-23-21:05:
+  FN-149's six review-convergence/arbitration keys are declared in BUILTIN_WORKFLOW_SETTINGS, which
+  the U4 hard-move made the SINGLE source of truth for a moved key's default. Re-declaring them here
+  put them back in the legacy object the hard-move emptied, so an undeclared key on a custom workflow
+  could resolve to this literal instead of the declaration default — the exact drift
+  `workflow-settings-fallback-alignment` guards. The declaration defaults are identical (both
+  `*Enabled` default true, the provider/model lanes carry no default), and the reader uses
+  `!== false`, so removing them here preserves behaviour and restores the invariant.
+  */
   /**
    * FNXC:Merge 2026-06-26-00:00:
    * New and unconfigured projects default AI merge to sync a dirty checked-out integration branch, restoring the legacy stash → fast-forward → restore landing behavior. Explicit persisted merger.allowDirtyLocalCheckoutSync values still win, and no existing-project migration stamps this default into storage.

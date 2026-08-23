@@ -325,6 +325,14 @@ export async function makeReliabilityFixture(input: {
     description: "reliability fixture task",
     column: "in-review",
     branch: `fusion/${id.toLowerCase()}`,
+    /*
+    FNXC:BranchNaming 2026-08-23-00:40:
+    Creation is a branch-write boundary (`normalizeCreateBranchProvenance`): supplying `branch`
+    without an explicit origin throws `BranchWriteProvenanceError`. This fixture stands in for a
+    card whose branch the ENGINE created, which is what every reliability scenario built on it
+    assumes. Without this the fixture threw before any scenario ran.
+    */
+    branchWriteOrigin: "engine",
     baseBranch: "main",
     prompt: `## File Scope\n- packages/engine/src/__tests__/reliability-interactions/**/*.ts\n`,
     steps: [],

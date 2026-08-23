@@ -37,6 +37,10 @@
 FNXC:ViewportChrome 2026-08-23-03:40:
 FN-9193 tablet-class touch devices can be 768 CSS pixels wide, so this scoped docked rule
 must override the mobile one-pane rule while phone mode remains unchanged.
+
+FNXC:ViewportChrome 2026-08-23-17:07:
+FN-9200 keeps the docked pane width exclusively in its inline width and min-width style because
+no docked-sidebar custom-property producer exists; the tablet cascade only restores its layout bounds.
 */
 .chat-view--docked-list .chat-sidebar--docked {
   flex: 0 0 auto;
@@ -69,7 +73,6 @@ must override the mobile one-pane rule while phone mode remains unchanged.
 }
 
 html[data-viewport-mode="tablet"] .chat-view--docked-list .chat-sidebar--docked {
-  width: var(--chat-docked-sidebar-width, auto);
   min-width: 0;
   max-width: none;
   height: auto;
@@ -496,6 +499,31 @@ FN-8191 gives the conversation action menu a token-composed border-box width. Ch
   position: relative;
 }
 
+/*
+FNXC:ChatComposer 2026-08-23-16:07:
+This clamp is class-gated rather than width-gated: iPhone landscape, iPad, compact dock, and
+narrow floating Chat can all have a visible keyboard outside a phone-width media query. The
+measured thread top accounts for host chrome above Chat instead of assuming only the app header.
+*/
+.chat-thread--keyboard-active {
+  height: calc(var(--vv-height, calc(100dvh - var(--keyboard-overlap, 0px))) - var(--chat-thread-viewport-top, var(--header-height)));
+  max-height: calc(var(--vv-height, calc(100dvh - var(--keyboard-overlap, 0px))) - var(--chat-thread-viewport-top, var(--header-height)));
+  /* NOTE: the translateY drift compensation is applied imperatively in
+     JS (see ChatView's vv `apply()`), NOT here. Declaring
+     `transform`/`will-change: transform` in CSS keeps a non-`none`
+     transform on .chat-thread for the entire keyboard-active window —
+     and since .chat-thread is an ancestor of the focused composer
+     textarea, iOS Safari treats establishing that containing block as a
+     reason to blur the input and collapse the keyboard the instant it
+     opens. JS only sets a transform when there is real viewport drift
+     (offsetTop > 0); at the focus moment offsetTop is 0, so the
+     ancestor stays `transform: none` and the keyboard stays up. */
+}
+
+.chat-thread--keyboard-active .chat-input-area {
+  padding-bottom: calc(var(--space-md) + env(safe-area-inset-bottom, 0px) + var(--chat-keyboard-accessory-clearance, 0px));
+}
+
 .chat-thread-header {
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
@@ -679,6 +707,10 @@ A narrow floating host keeps the one-pane list/detail flow. FN-9193 adds a docke
 
 .chat-view--narrow .chat-sidebar-search {
   min-height: calc(var(--space-2xl) + var(--space-xs));
+}
+
+.chat-view--narrow .chat-sidebar-filter-row {
+  flex-wrap: wrap;
 }
 
 .chat-view--narrow .chat-sidebar-list {
@@ -2198,7 +2230,7 @@ Thinking-section text uses the defined muted text token across all themes. The m
    visible, the thread is hidden; when the sidebar is hidden (a session is
    open), the sidebar is collapsed via .chat-sidebar--hidden and the
    thread takes the full viewport. The thread already renders a back
-   button (ChevronLeft) on mobile to flip back to the session list. */
+   button (ArrowLeft) on mobile to flip back to the session list. */
 @media (max-width: 768px) {
   html[data-viewport-mode="tablet"] .chat-view--docked-list .chat-view__body {
     flex-direction: row;
@@ -2239,25 +2271,6 @@ Thinking-section text uses the defined muted text token across all themes. The m
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-  }
-
-  .chat-thread--keyboard-active {
-    height: calc(var(--vv-height, calc(100dvh - var(--keyboard-overlap, 0px))) - var(--header-height));
-    max-height: calc(var(--vv-height, calc(100dvh - var(--keyboard-overlap, 0px))) - var(--header-height));
-    /* NOTE: the translateY drift compensation is applied imperatively in
-       JS (see ChatView's vv `apply()`), NOT here. Declaring
-       `transform`/`will-change: transform` in CSS keeps a non-`none`
-       transform on .chat-thread for the entire keyboard-active window —
-       and since .chat-thread is an ancestor of the focused composer
-       textarea, iOS Safari treats establishing that containing block as a
-       reason to blur the input and collapse the keyboard the instant it
-       opens. JS only sets a transform when there is real viewport drift
-       (offsetTop > 0); at the focus moment offsetTop is 0, so the
-       ancestor stays `transform: none` and the keyboard stays up. */
-  }
-
-  .chat-thread--keyboard-active .chat-input-area {
-    padding-bottom: calc(var(--space-md) + env(safe-area-inset-bottom, 0px) + var(--chat-keyboard-accessory-clearance, 0px));
   }
 
   /* On mobile, the active scope affordance uses a full-width pinned footer. */
@@ -2503,9 +2516,23 @@ Thinking-section text uses the defined muted text token across all themes. The m
   border-color: color-mix(in srgb, var(--color-warning) 55%, transparent);
 }
 
-/* FNXC:ChatTags 2026-08-05-10:55: shared ChatView hosts expose Direct-only tag filters and compact chips without introducing a second sidebar layout. */
-.chat-tag-filter { display: flex; align-items: center; gap: var(--space-xs); color: var(--text-muted); }
-.chat-tag-filter select { flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg); color: var(--text); padding: var(--space-xs); }
+/*
+FNXC:ChatTags 2026-08-05-10:55:
+Shared ChatView hosts expose Direct-only tag filters and compact chips without introducing a second sidebar layout.
+
+FNXC:ChatTags 2026-08-23-15:51:
+The tag filter select must use the sibling sidebar search input's comfortable token-based inner padding so "All tags" is not flush against its border across desktop, narrow, and mobile hosts.
+
+FNXC:ChatArchived 2026-08-23-16:27:
+The compact Archived toggle shares the narrowed tag-filter line, with tokenized row padding separating the search input and session list. Narrow and mobile sidebars may wrap the controls rather than clipping or horizontally overflowing them.
+*/
+.chat-sidebar-filter-row { display: flex; align-items: center; gap: var(--space-xs); padding: var(--space-xs) 0; min-width: 0; }
+.chat-tag-filter { display: flex; flex: 1 1 auto; align-items: center; gap: var(--space-xs); min-width: 0; overflow: hidden; color: var(--text-muted); }
+.chat-tag-filter > svg,
+.chat-tag-filter > .btn-icon { flex: 0 0 auto; }
+.chat-tag-filter select { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg); color: var(--text); padding: var(--space-sm) var(--space-md); }
+.chat-archived-toggle { flex: 0 0 auto; padding-inline: var(--space-sm); white-space: nowrap; }
+.chat-archived-toggle--active { background: color-mix(in srgb, var(--accent) 16%, var(--surface-2)); color: var(--accent-text); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
 .chat-session-tags { display: flex; flex-wrap: wrap; gap: var(--space-xs); overflow: hidden; }
 .chat-session-tag { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 var(--space-xs); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text-muted); font-size: var(--font-size-xs); }
 /* FNXC:ChatTags 2026-08-05-12:15: direct-conversation tag controls keep assignment, rename, and deletion in the existing context menu so shared Chat hosts do not grow another sidebar action row. */
@@ -2516,6 +2543,7 @@ Thinking-section text uses the defined muted text token across all themes. The m
 .chat-tag-create-row { display: flex; gap: var(--space-xs); }
 .chat-tag-create-row .input { min-width: 0; }
 @media (max-width: 768px) {
+  .chat-sidebar-filter-row { flex-wrap: wrap; }
   .chat-session-tags { max-height: calc(var(--space-lg) * 2); }
   /*
   FNXC:ChatTags 2026-07-24-23:05:

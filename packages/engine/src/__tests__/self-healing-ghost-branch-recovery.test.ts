@@ -75,7 +75,10 @@ describe("self-healing ghost branch reclaim", () => {
 
     await manager.reclaimSelfOwnedBranchConflicts();
 
-    expect(store.updateTask).toHaveBeenCalledWith("FN-9001", { worktree: null, branch: null, baseCommitSha: null });
+    // FNXC:BranchNaming 2026-08-23-18:35: clearing `branch` is a branch write, so the engine-owned
+    // reclaim must declare `branchWriteOrigin: "engine"`. Assert it rather than loosening the shape —
+    // a missing provenance is exactly what the store guard rejects.
+    expect(store.updateTask).toHaveBeenCalledWith("FN-9001", { worktree: null, branch: null, branchWriteOrigin: "engine", baseCommitSha: null });
     expect(execMock).not.toHaveBeenCalledWith(expect.stringContaining("git branch -D"), expect.anything());
   });
 

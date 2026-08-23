@@ -139,6 +139,8 @@ html {
   --line-height-tight: 1.25;
 
   /* Spacing Scale */
+  /* FNXC:DashboardStyling 2026-08-23-16:00: FN-9198 uses this 2px token for chat title-switcher focus-ring widths and offsets. */
+  --space-3xs: 2px;
   --space-xs: 4px;
   --space-sm: 8px;
   --space-md: 12px;

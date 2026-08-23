@@ -162,6 +162,16 @@ function createMockStore(overrides: Partial<TaskStore> = {}): TaskStore {
       return { task: task as Task, moved: true };
     }),
     withTaskLock: vi.fn(async (_id, callback) => callback()),
+    /*
+    FNXC:TriageTestMock 2026-08-23-18:35:
+    FN-151's reset-fenced planning artifact write (`persistResetFencedPlanningArtifact`) holds the
+    non-reentrant planning lifecycle lock unconditionally, so a store fixture without it makes every
+    plan persistence throw. Production TaskStore always exposes this surface; model it as a
+    pass-through so triage unit tests exercise the real persistence path.
+    */
+    withPlanningLifecycleLock: vi.fn(async (_id, callback) => callback()),
+    updateTaskUnlocked: vi.fn(async (id, patch) => ({ ...((await store.getTask?.(id)) ?? { id }), ...patch }) as Task),
+    isBackendMode: vi.fn(() => false),
     readTaskForMove: vi.fn(async (id) => (await store.getTask?.(id)) ?? ({ id, column: "triage", status: "planning" } as Task)),
     updateTask: vi.fn().mockResolvedValue(undefined),
     deleteTask: vi.fn(),
@@ -6630,8 +6640,17 @@ describe("specifyTask — status restore failure diagnostics", () => {
       });
 
       const specifyPromise = processor.specifyTask(task);
-      // FNXC:TriagePlanningRetry 2026-08-09-15:55: Runtime setup is async; schedule its retry sleep before advancing fake time.
-      await vi.advanceTimersByTimeAsync(0);
+      /*
+      FNXC:TriagePlanningRetry 2026-08-09-15:55: Runtime setup is async; schedule its retry sleep before advancing fake time.
+      FNXC:TriagePlanningRetry 2026-08-23-18:30: `specifyTask` now awaits real work (the FN-8840
+      pre-planning duplicate check reads PROMPT.md) before it reaches the planner, so ONE zero-tick
+      no longer reaches the retry sleep and advancing 60s scheduled nothing — the promise never
+      settled. Drain pending async setup until the sleep exists instead of guessing a tick count;
+      this only flushes setup, it does not relax the retry assertions below.
+      */
+      for (let tick = 0; tick < 20 && vi.getTimerCount() === 0; tick += 1) {
+        await vi.advanceTimersByTimeAsync(0);
+      }
       await vi.advanceTimersByTimeAsync(60_000);
       await expect(specifyPromise).resolves.toBeUndefined();
       expect(warnSpy).toHaveBeenCalledWith(

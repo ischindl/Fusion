@@ -223,7 +223,20 @@ export async function cleanupAiMergeWorktree(input: {
   }
   const removalTargets = canonicalRoot === mergeRoot ? [mergeRoot] : [canonicalRoot, mergeRoot];
   const cleanupMetadata = { taskId, mergeRoot: canonicalRoot, requestedMergeRoot: mergeRoot };
-  let alreadyAbsent = false;
+  /*
+  FNXC:AiMerge 2026-08-23-19:20:
+  FN-6257's contract is that a clean room which vanishes after the squash lands is reclaimed
+  IDEMPOTENTLY and says so: `alreadyAbsent`/`idempotent` on the cleanup audits is the only signal
+  that distinguishes "nothing to remove" from "removed real work". FN-9169 replaced FN-6257's
+  absent-path short-circuit with the benign-error classifier so a missing-but-registered clean room
+  still reaches Git (see 2026-08-20-03:08 below) — but real `git worktree remove --force` SUCCEEDS on
+  a registered worktree whose directory is gone, and `rm(..., { force: true })` does not throw on an
+  absent path either. Neither one therefore raises the benign error the classifier waits for, and the
+  signal was silently lost on the real-git path while the mocked-runner unit lane still saw it.
+  Probe once here, before Git runs: Git is still invoked (FN-9169's registration reclaim is intact),
+  and the absence observed at entry is what marks the cleanup idempotent.
+  */
+  let alreadyAbsent = removalTargets.every((target) => !existsSync(target));
 
   if (worktreeAdded) {
     /*
@@ -232,7 +245,8 @@ export async function cleanupAiMergeWorktree(input: {
     */
     try {
       await gitRunner(["worktree", "remove", "--force", canonicalRoot], projectRootDir);
-      await audit.git({ type: "merge:ai-worktree-cleanup", target: canonicalRoot, metadata: { ...cleanupMetadata, phase: "git-remove", success: true } });
+      if (alreadyAbsent) await log(`AI merge cleanup: worktree ${canonicalRoot} was already absent before git removal; treating cleanup as idempotent`);
+      await audit.git({ type: "merge:ai-worktree-cleanup", target: canonicalRoot, metadata: { ...cleanupMetadata, phase: "git-remove", success: true, ...(alreadyAbsent ? { alreadyAbsent: true, idempotent: true } : {}) } });
     } catch (err: unknown) {
       const error = describeCleanupError(err);
       const code = getErrorStringProperty(err, "code");

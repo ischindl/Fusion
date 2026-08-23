@@ -65,7 +65,9 @@ describe("ChatView mobile list/detail navigation", () => {
     expect(sidebar).toHaveClass("chat-sidebar--hidden");
     const back = screen.getByTestId("chat-back-btn");
     expect(back).toHaveAccessibleName("Back to conversations");
-    expect(back).toHaveTextContent("< BACK");
+    expect(back.textContent ?? "").not.toContain("<");
+    expect(back.querySelector("svg")).toBeInTheDocument();
+    expect(back).toHaveTextContent("Back");
     expect(back.closest(".chat-thread-header")).toBeInTheDocument();
     expect(back.closest(".view-header")).toBeNull();
     expect(screen.getAllByTestId("chat-back-btn")).toHaveLength(1);

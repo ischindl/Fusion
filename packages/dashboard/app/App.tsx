@@ -50,6 +50,7 @@ import { useDeepLink } from "./hooks/useDeepLink";
 import { useFavorites } from "./hooks/useFavorites";
 import { useAuthOnboarding } from "./hooks/useAuthOnboarding";
 import { useMobileKeyboard } from "./hooks/useMobileKeyboard";
+import { useKeyboardFocusPending } from "./hooks/useKeyboardFocusPending";
 import { isIOS, useMobileKeyboardViewportLock, useMobileViewportRestoreReset } from "./hooks/useMobileScrollLock";
 import { computeMobileBarKeyboardFlags } from "./utils/mobileBarKeyboardFlags";
 import { recordActivity } from "./utils/activity-trace";
@@ -197,6 +198,35 @@ function prefetchLazyViews() {
 }
 
 registerBundledPluginViews();
+
+/*
+FNXC:ViewportChrome 2026-08-23-18:14:
+App-level keyboard state follows Fusion's viewport-mode classification rather than useMobileKeyboard's <=768px heuristic. Landscape phones render the nav in mobile mode; this production seam keeps that path executable in tests.
+*/
+export function useMobileBarKeyboardState({
+  isMobile,
+  anyModalOpen,
+  overlayOpen,
+}: {
+  isMobile: boolean;
+  anyModalOpen: boolean;
+  overlayOpen: boolean;
+}) {
+  const { keyboardOpen } = useMobileKeyboard({ enabled: isMobile, allowNonMobileViewport: isMobile });
+  const keyboardFocusPending = useKeyboardFocusPending(isMobile) || false;
+  return {
+    keyboardOpen,
+    keyboardFocusPending,
+    ...computeMobileBarKeyboardFlags({
+      isMobile,
+      keyboardOpen,
+      keyboardFocusPending,
+      anyModalOpen,
+      overlayOpen,
+      isIOS: isIOS(),
+    }),
+  };
+}
 
 export function shouldOpenBoardTaskInDock(openTasksInRightSidebar: boolean, rightDockActive: boolean, initialTab?: DetailTaskTab): boolean {
   return !initialTab && openTasksInRightSidebar && rightDockActive;
@@ -755,7 +785,11 @@ function AppInner() {
     setQuickChatOpen(true);
   }, []);
 
-  const { keyboardOpen } = useMobileKeyboard({ enabled: isMobile });
+  const { footerHidden, navKeyboardOpen, footerKeyboardOpen } = useMobileBarKeyboardState({
+    isMobile,
+    anyModalOpen: modalManager.anyModalOpen,
+    overlayOpen: isMobile && quickChatOpen,
+  });
   // Keyboard visibility controls both MobileNavBar rendering and whether
   // the project content reserves bottom padding for the mobile nav bar.
   // When a modal is open, modal-local inputs can trigger the keyboard without
@@ -773,13 +807,6 @@ function AppInner() {
   // `footerKeyboardOpen` (the footer `bottom: 0` collapse class) stays
   // iOS-only: it only matters when the footer is still rendered (e.g. over
   // a modal), where Android's resizes-content already stacks it correctly.
-  const { footerHidden, navKeyboardOpen, footerKeyboardOpen } = computeMobileBarKeyboardFlags({
-    isMobile,
-    keyboardOpen,
-    anyModalOpen: modalManager.anyModalOpen,
-    overlayOpen: isMobile && quickChatOpen,
-    isIOS: isIOS(),
-  });
   const mobileKeyboardOpen = footerHidden;
   const mobileNavKeyboardOpen = navKeyboardOpen;
   // App-level scroll lock for inline editing (TaskCard inline edit, etc.):

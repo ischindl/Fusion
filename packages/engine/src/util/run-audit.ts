@@ -42,7 +42,7 @@
  */
 
 import type { TaskStore, RunAuditEventInput } from "@fusion/core";
-import { emitBoundedRunAudit } from "./emit-bounded-run-audit.js";
+import { emitBoundedRunAudit, emitBoundedRunAuditWithOutcome, type BoundedRunAuditResult } from "./emit-bounded-run-audit.js";
 
 /** Structured context for a run correlation ID. */
 export interface EngineRunContext {
@@ -1143,6 +1143,15 @@ export interface RunAuditor {
   git(input: GitAuditInput): Promise<void>;
   /** Emit a database-domain audit event. No-op if no run context is available. */
   database(input: DatabaseAuditInput): Promise<void>;
+  /*
+  FNXC:RunAudit 2026-08-23-18:30:
+  Same write as `database`, but it REPORTS whether the row landed. FN-9175 made every audit write
+  swallow its sink failure, which silently broke the emitters that gate their own dedupe marker on
+  a proven write (triage's plan-admission throttle sets its marker only on success so a contended
+  write retries next poll). Optional on the interface so the many RunAuditor-shaped test doubles
+  stay valid; `createRunAuditor` always supplies it, including on its no-op paths.
+  */
+  databaseWithOutcome?(input: DatabaseAuditInput): Promise<BoundedRunAuditResult>;
   /** Emit a filesystem-domain audit event. No-op if no run context is available. */
   filesystem(input: FilesystemAuditInput): Promise<void>;
   /** Emit a sandbox-domain audit event. No-op if no run context is available. */
@@ -1165,6 +1174,7 @@ export function createRunAuditor(store: TaskStore, context: EngineRunContext | n
     return {
       git: async () => { /* no-op */ },
       database: async () => { /* no-op */ },
+      databaseWithOutcome: async () => ({ outcome: "absent" as const }),
       filesystem: async () => { /* no-op */ },
       sandbox: async () => { /* no-op */ },
     };
@@ -1178,6 +1188,7 @@ export function createRunAuditor(store: TaskStore, context: EngineRunContext | n
     return {
       git: async () => { /* no-op */ },
       database: async () => { /* no-op */ },
+      databaseWithOutcome: async () => ({ outcome: "absent" as const }),
       filesystem: async () => { /* no-op */ },
       sandbox: async () => { /* no-op */ },
     };
@@ -1225,6 +1236,31 @@ export function createRunAuditor(store: TaskStore, context: EngineRunContext | n
         },
       };
       await emitBoundedRunAudit(store, eventInput);
+    },
+
+    /*
+    FNXC:RunAudit 2026-08-23-18:30:
+    Identical write to `database`, returning whether the row landed for the emitters that gate their
+    own state on a proven write (see the interface note). Still bounded and non-throwing.
+    */
+    databaseWithOutcome: async (input: DatabaseAuditInput) => {
+      const inferredTaskId = input.target.startsWith("FN-") || input.target.startsWith("KB-")
+        ? input.target
+        : context.taskId;
+      return await emitBoundedRunAuditWithOutcome(store, {
+        taskId: inferredTaskId,
+        agentId: context.agentId,
+        runId: context.runId,
+        domain: "database",
+        mutationType: input.type,
+        target: input.target,
+        metadata: {
+          phase: context.phase,
+          ...(context.source ? { source: context.source } : {}),
+          ...(context.taskLineageId ? { taskLineageId: context.taskLineageId } : {}),
+          ...input.metadata,
+        },
+      } as RunAuditEventInput);
     },
 
     filesystem: async (input: FilesystemAuditInput) => {

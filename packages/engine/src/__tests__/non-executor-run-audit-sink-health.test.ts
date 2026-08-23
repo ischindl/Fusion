@@ -275,7 +275,11 @@ describe("FN-9175 non-executor audit sink health", () => {
     it.each(hostileModes)("returns a resolving fence audit promise with a %s sink", async (mode) => {
       mergerAiAuditCapture.fences.length = 0;
       const sink = sinkFor(mode);
-      const task = { id: "FN-9175", title: "merge", description: "", column: "in-review", branch: "missing-fn-9175", steps: [{ name: "Ship", status: "done" }], currentStep: 1, workflowStepResults: [], dependencies: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+      /* FNXC:RequiredPreMergeSteps 2026-08-23-00:40: this fixture must REACH runAiMerge's generation
+         fence (see the note below), so it must clear the merge door first. An unspecified optional-step
+         list makes the door refuse on the workflow's default-on Plan/Code Review groups before any
+         fence is constructed, leaving `fences` empty and `recordAudit` undefined. */
+      const task = { id: "FN-9175", title: "merge", description: "", column: "in-review", branch: "missing-fn-9175", enabledWorkflowSteps: [], steps: [{ name: "Ship", status: "done" }], currentStep: 1, workflowStepResults: [], dependencies: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
       const store = { ...sink.host, getTask: vi.fn().mockResolvedValue(task), getSettings: vi.fn().mockResolvedValue({ integrationBranch: "main" }), getTaskWorkflowSelection: vi.fn().mockReturnValue(undefined), updateTask: vi.fn().mockResolvedValue(undefined), logEntry: vi.fn().mockResolvedValue(undefined), appendAgentLog: vi.fn().mockResolvedValue(undefined) };
       // The missing branch is intentional: runAiMerge constructs its real generation fence before
       // git rejects the branch, allowing this test to exercise the closure the production path gave it.

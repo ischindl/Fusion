@@ -63,8 +63,14 @@ function summarizeRows(rows) {
 }
 
 /*
-FNXC:QuarantineLockstep 2026-08-20-21:20:
-The naive regex strip (block-comment first, then line comments) is not string-aware, so the `/*` inside a glob literal such as `"node_modules/**"` opens a phantom block comment that swallows everything up to the next real closing comment marker. That phantom region deletes the quotes of the `exclude:` entries it crosses, mis-pairs the remaining quotes, and makes the check report `missing-exclude` for a quarantine exclusion that is present in the file (observed on the RUFU-072 task-wedge entry, whose `exclude` line sits directly after an FNXC block comment). Scan the source character-by-character, tracking the same `"`/`'` string state as extractBalancedArray, and only treat a slash-slash or a slash-star sequence as a comment when it occurs outside a string. Newlines are preserved so line layout stays readable in diagnostics.
+FNXC:QuarantineLockstep 2026-08-23-22:45:
+STRING-AWARE. The previous regex stripper treated the `/**` inside a glob literal such as
+"src/**\/*.slow.test.ts" or "node_modules/**" as the start of a block comment, so it deleted from
+there to the next "*\/" — swallowing whole array literals and the entries after them. A concrete
+quarantine exclude placed after any such glob was then invisible, and this guard reported
+`missing-exclude` for a file that WAS excluded (observed 2026-08-23 quarantining
+self-healing-pending-wedge-notification.test.ts). Scan character by character instead, tracking
+string literals, so comment markers inside strings are left alone.
 */
 function stripComments(source) {
   let out = "";
@@ -74,31 +80,24 @@ function stripComments(source) {
     const character = source[index];
     if (quote) {
       out += character;
-      if (escaped) {
-        escaped = false;
-      } else if (character === "\\") {
-        escaped = true;
-      } else if (character === quote) {
-        quote = null;
-      }
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === quote) quote = null;
       continue;
     }
-    if (character === "\"" || character === "'") {
+    if (character === '"' || character === "'" || character === "`") {
       quote = character;
       out += character;
       continue;
     }
-    if (character === "/" && source[index + 1] === "/") {
-      let end = index + 2;
-      while (end < source.length && source[end] !== "\n") end += 1;
-      out += source.slice(index, end).replace(/[^\n]/g, " ");
-      index = end - 1;
+    if (character === "/" && source[index + 1] === "*") {
+      const end = source.indexOf("*/", index + 2);
+      index = end === -1 ? source.length : end + 1;
       continue;
     }
-    if (character === "/" && source[index + 1] === "*") {
-      const close = source.indexOf("*/", index + 2);
-      const end = close === -1 ? source.length : close + 2;
-      out += source.slice(index, end).replace(/[^\n]/g, " ");
+    if (character === "/" && source[index + 1] === "/") {
+      const end = source.indexOf("\n", index);
+      if (end === -1) break;
       index = end - 1;
       continue;
     }
@@ -136,42 +135,9 @@ function extractBalancedArray(source, openingBracket) {
   return null;
 }
 
-function extractConcreteTestFiles(arrayText) {
-  const files = [];
-  const strings = /"((?:\\.|[^"\\])*)"/g;
-  let stringMatch;
-  while ((stringMatch = strings.exec(arrayText))) {
-    const value = JSON.parse(`"${stringMatch[1]}"`);
-    if (/\.test\.tsx?$/.test(value) && !/[*?{}]/.test(value)) files.push(value);
-  }
-  return files;
-}
-
-/*
-FNXC:QuarantineLedgerConstArray 2026-08-23-00:27:
-RUFU-157: the four package vitest configs (cli, core, dashboard, desktop) quarantine flaky files through the
-documented const-array shape — `const quarantined<Package>Tests: string[] = [...]` — spread into `test.exclude`
-through a filtered identifier (e.g. the CLI's `activeQuarantinedCliTests` requested-file filter), so the concrete
-path appears in no inline `exclude:` literal and the literal-only scanner reported a false `missing-exclude`
-for the RUFU-128 bin.test.ts quarantine. The concrete-exclude scan therefore also reads `const <name>: string[] = [...]`
-declarations: a const-array entry satisfies `missing-exclude`, and a stale const-array entry surfaces as
-`dangling-exclude` through the same existsSync direction.
-Superset semantics with a documented masking trade-off: any concrete `.test.ts`/`.test.tsx` path in ANY typed
-`string[]` const array of a config counts as an exclude, including a path that actually lives only in an unrelated
-`string[]` array in that config. The trade-off is bounded by the concrete test-file filter (no `*?{}` glob
-characters, path must end in `.test.ts`/`.test.tsx`) and is pinned by fixtures. Conservative scope: only
-`const <name>: string[] = [` declarations are scanned — untyped const arrays, `let`/`var` declarations, and
-`readonly string[]`/ReadonlyArray shapes are intentionally out of scope. Concrete paths are deduplicated across
-inline `exclude:` literals and const-array declarations so a path double-covered (dashboard's `coverage.exclude`
-no-op plus its const array) verifies exactly once.
-*/
 function extractConcreteExcludes(source) {
   const commentFree = stripComments(source);
-  const excludes = new Set();
-  const collect = (array) => {
-    for (const file of extractConcreteTestFiles(array)) excludes.add(file);
-  };
-
+  const excludes = [];
   const excludePattern = /\bexclude\s*:/g;
   let match;
   while ((match = excludePattern.exec(commentFree))) {
@@ -180,22 +146,15 @@ function extractConcreteExcludes(source) {
     if (commentFree[index] !== "[") continue;
     const array = extractBalancedArray(commentFree, index);
     if (array == null) continue;
-    collect(array);
+    const strings = /"((?:\\.|[^"\\])*)"/g;
+    let stringMatch;
+    while ((stringMatch = strings.exec(array))) {
+      const value = JSON.parse(`"${stringMatch[1]}"`);
+      if (/\.test\.tsx?$/.test(value) && !/[*?{}]/.test(value)) excludes.push(value);
+    }
     excludePattern.lastIndex = index + array.length;
   }
-
-  const constArrayPattern = /\bconst\s+[A-Za-z_$][\w$]*\s*:\s*string\[\]\s*=\s*\[/g;
-  while ((match = constArrayPattern.exec(commentFree))) {
-    const openingBracket = match.index + match[0].length - 1;
-    const array = extractBalancedArray(commentFree, openingBracket);
-    if (array == null) {
-      constArrayPattern.lastIndex = openingBracket + 1;
-      continue;
-    }
-    collect(array);
-    constArrayPattern.lastIndex = openingBracket + array.length;
-  }
-  return [...excludes];
+  return excludes;
 }
 
 function discoverPackageConfigs(rootDir) {

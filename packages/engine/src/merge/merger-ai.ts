@@ -2287,7 +2287,18 @@ export async function landWorkspaceTask(
       && approvedReviewEvidence?.[repoRel]?.fingerprint !== fingerprint)
     .map(([repoRel]) => repoRel)
     .sort();
-  const changedFiles = normalizedMergeBoundaryFiles.filter((file) => !persistedReviewFiles.includes(file)).sort();
+  /*
+  FNXC:WorkspaceFinalization 2026-08-23-21:55:
+  Gate the file comparison on the SAME `requiresRepositoryReviewEvidence` fence as the two repository
+  comparisons above. Without it a legacy/direct workspace caller — no recorded review evidence and no
+  enabled review step — was compared against an empty `task.modifiedFiles` and hard-failed with
+  `content-changed` for every file it touched, which contradicts the 2026-08-21-08:52 rule directly
+  above that such callers retain the established merge-agent review path. A card that DOES carry a
+  review episode still has every file compared, so the post-approval drift fence is unchanged.
+  */
+  const changedFiles = requiresRepositoryReviewEvidence
+    ? normalizedMergeBoundaryFiles.filter((file) => !persistedReviewFiles.includes(file)).sort()
+    : [];
   if (approvalMissingRepositories.length > 0) {
     throw new WorkspaceReviewRequiredError(taskId, {
       kind: "approval-missing",
@@ -2640,7 +2651,16 @@ export async function landWorkspaceTask(
         recorded as `landed` in the in-memory result first so the error payload is accurate.
         */
         try {
-          if (durableLandLease) {
+          /*
+          FNXC:Workspace 2026-08-23-22:15:
+          Resolve the write-ahead land intent ONLY when one was written. `landOneRepo` records an
+          intent solely for a REMOTE target (it needs the tenancy fence pin and the remote URL), so a
+          local-only workspace land — the FN-122 contract: no remote, no fence, no intent — reached
+          this resolver with nothing to resolve, got `missing`, and hard-failed a fully landed repo as
+          a partial land after its integration ref had already advanced. Gate both sides on the same
+          condition so the intent lifecycle cannot be half-applied.
+          */
+          if (durableLandLease && workspaceTarget.target.kind === "remote") {
             assertLeaseLive();
             const resolved = await store.resolveWorkspaceLandIntent({
               handle: durableLandLease,

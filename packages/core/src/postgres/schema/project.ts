@@ -2620,4 +2620,12 @@ export const projectTableNames = [
   "approval_requests",
   "approval_request_audit_events", "agent_activity_events", "agent_activity_event_seq", "memory_recall_records", "chat_rooms", "chat_room_members",
   "chat_room_messages", "chat_token_usage",
+  /*
+  FNXC:WorkspaceCoordination 2026-08-23-20:05:
+  FN-9059 (migration 0060) added these two tables to the schema without registering them here, so
+  every registry consumer under-counted them: the PostgreSQL test harness never TRUNCATEd them
+  between tests (a held `repo:<repo>` lease leaked from one case into the next and made the next
+  land report the previous test's successor as the busy holder), and health compaction skipped them.
+  */
+  "workspace_coordination_leases", "workspace_land_intents",
 ] as const;

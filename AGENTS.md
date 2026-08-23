@@ -210,6 +210,23 @@ FNXC:TestFlakeRegister 2026-08-01-07:00: Issue #2862 recorded three suite-only P
 - Motivating incident for UI affordances: the workflow-row drop-down arrow removal took three tasks (FN-6115 → FN-6118 → FN-6123) because the affordance rendered in two components and mobile kept an empty 36×36 `btn-icon` button shell.
 - If a regression test only proves the exact reported case, it is incomplete; extend it until the invariant holds across all known surfaces.
 
+### Standing Rule: A Behavior Change Owns Every Test That Asserts The Old Behavior
+
+**Changing behavior is not done until the tests that encoded the old behavior are updated or deleted — in the same change.** This is not the same rule as "keep the tests green": targeted verification runs the tests for the files you touched, and the stale assertions are almost always in files you did not touch, so a green targeted run is not evidence that no test still encodes the behavior you just changed.
+
+Before finishing a change that alters, gates, or removes behavior, actively search for what encodes the old contract:
+
+- **You added a guard, validation, or refusal** (a new required field, a new blocker, a stricter door). Search for the FIXTURES that will now be refused. They will not be in your file scope. Grep for the construct the guard rejects — a `createTask({ branch` without provenance, a task fixture with no `enabledWorkflowSteps` — and fix each fixture to state its intent explicitly.
+- **You removed a feature.** Delete its tests. A test asserting a deliberately removed contract guards nothing, and "fixing" it later means re-adding the removed behavior. Grep for the removed symbol, prompt string, flag, or route.
+- **You changed an order, a default, a constant, or a prompt.** Grep for the literal. Topology lists, prompt-content assertions, and snapshot fixtures live far from the code they describe. Prompt text also has SIZE budgets (`agent-prompts.test.ts` caps the fast triage prompt) — an addition can break a guard nowhere near the words you wrote.
+- **You added a public store/service method.** Check the inventory and drift guards that require every public surface to be classified.
+
+Prefer fixing at the SHARED FACTORY, not per test: one fixture helper usually explains dozens of failures, and per-test patches leave the next author the same trap.
+
+Never make a stale test pass by weakening it. The honest resolutions are: update the fixture to state the intent it always had, record the new truth in the assertion, or delete the test with a comment naming the change that removed its subject. Restoring removed behavior to satisfy a test is a defect, not a fix.
+
+**Motivating incidents (measured 2026-08-24, one full engine suite run):** 297 failing tests, of which ~135 traced to exactly five behavior changes whose tests were never updated — the FN-158 required-pre-merge-gate guard (~70 fixtures across 13 files), the branch-write provenance guard (18 failures from ONE shared reliability fixture), a workflow-IR reorder that moved `completion-summary` before `code-review` (10 stale topology assertions), an `updateTaskAtomic` store seam missing from fake stores (~9), and FN-074's task-splitting removal leaving 4 reviewer-prompt tests asserting a deleted contract. Every one of those changes passed its own targeted verification. `merger-ai.test.ts` alone carried 37 failures that one fixture line fixed.
+
 ### Port 4040 is Reserved
 
 Never kill processes on port 4040 and never start test servers on 4040. Use `--port 0` or another free port.

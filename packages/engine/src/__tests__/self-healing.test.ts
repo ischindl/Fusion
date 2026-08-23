@@ -7871,9 +7871,19 @@ describe("SelfHealingManager", () => {
       (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([{
         ...baseTask,
         postReviewFixCount: 2,
+        reviewConvergenceStage: 3,
         log: [revisionLog("Browser Verification", "WS-004", 1), revisionLog("Browser Verification", "WS-004", 2)],
       }]);
 
+      /*
+       * FNXC:ReviewConvergence 2026-08-23-18:30:
+       * FN-149 (a786c45bb9) removed the terminal "cap exhausted -> park for a human" filter here:
+       * an exhausted per-step budget is now handed to the shared convergence ladder in
+       * `recoverFailedPreMergeWorkflowStep`, which takes one bounded AI action per rung and only
+       * parks once `reviewConvergenceStage` reaches 3 (human escalation). Exhaustion alone is
+       * therefore NOT a skip; exhaustion at stage 3 is. Fixtures that mean "already escalated to a
+       * human" must say so with `reviewConvergenceStage: 3`.
+       */
       await expect(managerWithRecovery.recoverReviewTasksWithFailedPreMergeSteps()).resolves.toBe(0);
       expect(recoverFn).not.toHaveBeenCalled();
 
@@ -8055,6 +8065,7 @@ describe("SelfHealingManager", () => {
         ...baseTask,
         status: "failed",
         error: "Workflow graph terminated with failure at node 'code-review-remediation'",
+        reviewConvergenceStage: 3,
         log: [revisionLog("Code Review", "code-review", 1)],
         workflowStepResults: [
           {
@@ -8067,6 +8078,15 @@ describe("SelfHealingManager", () => {
       (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([cappedTask]);
       (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue(cappedTask);
 
+      /*
+       * FNXC:ReviewConvergence 2026-08-23-18:30:
+       * FN-149 (a786c45bb9) removed the terminal "cap exhausted -> park for a human" filter here:
+       * an exhausted per-step budget is now handed to the shared convergence ladder in
+       * `recoverFailedPreMergeWorkflowStep`, which takes one bounded AI action per rung and only
+       * parks once `reviewConvergenceStage` reaches 3 (human escalation). Exhaustion alone is
+       * therefore NOT a skip; exhaustion at stage 3 is. Fixtures that mean "already escalated to a
+       * human" must say so with `reviewConvergenceStage: 3`.
+       */
       await expect(managerWithRecovery.recoverReviewTasksWithFailedPreMergeSteps()).resolves.toBe(0);
 
       expect(recoverFn).not.toHaveBeenCalled();
@@ -8138,14 +8158,51 @@ describe("SelfHealingManager", () => {
         maxPostReviewFixes: 2,
       });
       (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([
-        { ...baseTask, postReviewFixCount: 2, log: [revisionLog("Browser Verification", "WS-004", 1), revisionLog("Browser Verification", "WS-004", 2)] },
+        { ...baseTask, postReviewFixCount: 2, reviewConvergenceStage: 3, log: [revisionLog("Browser Verification", "WS-004", 1), revisionLog("Browser Verification", "WS-004", 2)] },
       ]);
 
+      /*
+       * FNXC:ReviewConvergence 2026-08-23-18:30:
+       * FN-149 (a786c45bb9) removed the terminal "cap exhausted -> park for a human" filter here:
+       * an exhausted per-step budget is now handed to the shared convergence ladder in
+       * `recoverFailedPreMergeWorkflowStep`, which takes one bounded AI action per rung and only
+       * parks once `reviewConvergenceStage` reaches 3 (human escalation). Exhaustion alone is
+       * therefore NOT a skip; exhaustion at stage 3 is. Fixtures that mean "already escalated to a
+       * human" must say so with `reviewConvergenceStage: 3`.
+       */
       const result = await managerWithRecovery.recoverReviewTasksWithFailedPreMergeSteps();
 
       expect(result).toBe(0);
       expect(recoverFn).not.toHaveBeenCalled();
       expect(store.updateTask).not.toHaveBeenCalled();
+
+      managerWithRecovery.stop();
+    });
+
+    it("hands an exhausted per-step budget to the convergence ladder before human escalation (FN-149)", async () => {
+      /*
+       * FNXC:ReviewConvergence 2026-08-23-18:30:
+       * The counterpart to the stage-3 skips above. FN-149 requires an exhausted review cycle to
+       * take one bounded ladder action (dispute -> arbitration -> human escalation) instead of
+       * parking silently, so an exhausted card that has not yet reached stage 3 is still delegated
+       * to `recoverFailedPreMergeStep`, which owns the rung claim.
+       */
+      const recoverFn = vi.fn().mockResolvedValue(true);
+      const managerWithRecovery = new SelfHealingManager(store, {
+        rootDir: "/tmp/test-project",
+        recoverFailedPreMergeStep: recoverFn,
+      });
+      (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+        maxPostReviewFixes: 2,
+      });
+      (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { ...baseTask, postReviewFixCount: 2, reviewConvergenceStage: 2, log: [revisionLog("Browser Verification", "WS-004", 1), revisionLog("Browser Verification", "WS-004", 2)] },
+      ]);
+
+      const result = await managerWithRecovery.recoverReviewTasksWithFailedPreMergeSteps();
+
+      expect(result).toBe(1);
+      expect(recoverFn).toHaveBeenCalledWith(expect.objectContaining({ id: "FN-1572" }));
 
       managerWithRecovery.stop();
     });
@@ -8160,11 +8217,12 @@ describe("SelfHealingManager", () => {
         maxPostReviewFixes: 2,
       });
       (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([
-        { ...baseTask, postReviewFixCount: 2, log: [] },
+        { ...baseTask, postReviewFixCount: 2, reviewConvergenceStage: 3, log: [] },
       ]);
       (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue({
         ...baseTask,
         postReviewFixCount: 2,
+        reviewConvergenceStage: 3,
         log: [revisionLog("Browser Verification", "WS-004", 1), revisionLog("Browser Verification", "WS-004", 2)],
       });
 

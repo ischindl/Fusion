@@ -806,7 +806,12 @@ describe("ChatView — rooms (FN-3805..FN-3811 contract)", () => {
     await renderRoomDetailWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} experimentalFeatures={{ chatRooms: true }} />);
     await userEvent.click(screen.getByTestId("chat-room-item-room-a"));
 
-    expect(screen.getByTestId("chat-back-btn")).toBeInTheDocument();
+    const back = screen.getByTestId("chat-back-btn");
+    expect(back).toBeInTheDocument();
+    expect(back).toHaveAccessibleName("Back to conversations");
+    expect(back.textContent ?? "").not.toContain("<");
+    expect(back.querySelector("svg")).toBeInTheDocument();
+    expect(back).toHaveTextContent("Back");
     mediaSpy.mockRestore();
   });
 

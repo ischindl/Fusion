@@ -344,6 +344,8 @@ export default defineConfig({
             runs the test on an empty ledger — the quarantine was local-machine
             state only and was never carried into any PR.
             */
+            // FNXC:WedgeNotificationFlake 2026-08-23-22:35 — quarantined (2nd sighting); see scripts/lib/test-quarantine.json for the evidence and the 2026-09-06 deletion deadline.
+            "src/__tests__/self-healing-pending-wedge-notification.test.ts",
             "src/__tests__/reliability-interactions/**/*.test.ts",
             // Real-git heavy files run in the engine-slow project so local
             // `pnpm test` stays snappy. CI picks them up via `test:slow`

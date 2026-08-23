@@ -156,6 +156,17 @@ function makeStore({
       globalPause: false,
       enginePaused: false,
       pollIntervalMs: 15_000,
+      /*
+      FNXC:EngineTests 2026-08-23-18:49:
+      `baseBranch` is not decoration here: the auto-merge sweep resolves each candidate's shared-
+      branch integration target through `resolveIntegrationBranch`, which falls back to SHELLING OUT
+      to `git symbolic-ref .../origin/HEAD` when settings name no branch. Real subprocess I/O cannot
+      be advanced by `vi.advanceTimersByTimeAsync`, so under fake timers the sweep never settles: its
+      `finally` never runs, no retry timer is rescheduled, and the failure surfaces as a missing log
+      line far from the cause. Naming the branch — as every real project does — keeps resolution in
+      settings and off the real clock.
+      */
+      baseBranch: "main",
       // FNXC:MergerUnification 2026-06-21-19:05: U0 unified merges onto runAiMerge;
       // these tests mock/assert runAiMerge directly. No `merger.mode` pin needed —
       // the dispatch ignores the value.
@@ -274,7 +285,8 @@ describe("ProjectEngine merge error recovery", () => {
     const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
     const store = makeStore();
     store.getSettings
-      .mockResolvedValueOnce({ autoMerge: true, globalPause: false, enginePaused: false })
+      // baseBranch: see makeStore — an unnamed integration branch shells out to git under fake timers.
+      .mockResolvedValueOnce({ autoMerge: true, globalPause: false, enginePaused: false, baseBranch: "main" })
       .mockRejectedValueOnce(new Error("interval unavailable"));
 
     const engine = createEngine(store);
@@ -287,6 +299,10 @@ describe("ProjectEngine merge error recovery", () => {
     await vi.advanceTimersByTimeAsync(15_000);
     await vi.runAllTicks();
 
+    // eslint-disable-next-line no-console
+    await vi.advanceTimersByTimeAsync(60_000);
+    for (let i = 0; i < 50; i++) await Promise.resolve();
+    console.warn("PROBE counts:", JSON.stringify(Object.fromEntries(Object.entries(store).filter(([, v]) => typeof v === "function" && (v as any).mock).map(([k, v]) => [k, (v as any).mock.calls.length]).filter(([, n]) => (n as number) > 0))), "timers:", vi.getTimerCount(), "warns:", JSON.stringify(warnSpy.mock.calls), "errors:", JSON.stringify(errorSpy.mock.calls));
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining("Auto-merge retry: failed to read pollIntervalMs, using default 15s: interval unavailable"),
     );

@@ -54,6 +54,21 @@ export async function enforceAiMergeSquashGates(params: { store: TaskStore; task
     */
     await execFileAsync("git", ["reset", "--hard", params.tipSha], { cwd: params.mergeRoot });
     await execFileAsync("git", ["clean", "-fd"], { cwd: params.mergeRoot });
+    /*
+    FNXC:AIMergeReviewReconciliation 2026-08-23-22:05:
+    Resetting the clean room is no longer enough to stop a retry re-selecting the rejected squash.
+    FN-090 made `aiMergeReviewReconciliation` a SECOND selector: `mergeAndReview` skips its merge
+    agent entirely while the record still carries a `candidateSha`, and pre-existing clean-room
+    recovery admits that same twice-confirmed candidate. A file-scope violation is a verdict on the
+    candidate itself, so the durable record must be dropped with the commit — otherwise every retry
+    re-enters the gate on a squash the invariant already rejected and never re-merges.
+    Best effort: the violation is the caller's answer and must not be masked by a store failure.
+    */
+    try {
+      await params.store.updateTask(params.taskId, { aiMergeReviewReconciliation: null });
+    } catch {
+      // The clean-room reset already removed the HEAD-based selector; report the violation.
+    }
     throw error;
   }
 }

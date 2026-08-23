@@ -7,6 +7,7 @@ import {
   Search,
   Trash2,
   Archive,
+  ArrowLeft,
   Pencil,
   Bot,
   Paperclip,
@@ -960,6 +961,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
   const isMobile = mode === "mobile";
   const isTablet = mode === "tablet";
   const chatViewRef = useRef<HTMLDivElement>(null);
+  const appliedThreadTranslateYRef = useRef(0);
   const [floatingNarrow, setFloatingNarrow] = useState(false);
   /*
   FNXC:ChatModal 2026-06-22-14:38:
@@ -986,6 +988,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
     return () => observer.disconnect();
   }, [floating]);
   const isChatMobile = isMobile || floatingNarrow || compactLayout;
+  const keyboardTrackedHost = isChatMobile || isTablet;
   /*
   FNXC:ChatNavigation 2026-08-23-03:40:
   FN-9193 restores an optional conversation list only for non-floating tablet-or-wider hosts.
@@ -1101,9 +1104,15 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
   }, [activeDraftKey, messageInput]);
 
   const roomThreadActive = chatRoomsEnabled && chatScope === "rooms" && !!rooms.activeRoom;
+  /*
+  FNXC:ChatComposer 2026-08-23-16:07:
+  The composer must track the soft keyboard on every Fusion-classified Chat host, not only a
+  phone-width viewport. Keep enabled and allowNonMobileViewport on keyboardTrackedHost so the
+  hook's internal width heuristic cannot disagree with Chat's tablet, dock, or floating host.
+  */
   const { keyboardOverlap, keyboardOpen } = useMobileKeyboard({
-    enabled: (isChatMobile || isTablet) && (!!activeSession || roomThreadActive),
-    allowNonMobileViewport: isTablet,
+    enabled: keyboardTrackedHost && (!!activeSession || roomThreadActive),
+    allowNonMobileViewport: keyboardTrackedHost,
   });
 
   const filteredSkills = useMemo(() => {
@@ -1544,10 +1553,18 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
   // window.scrollTo(0, 0) on cleanup to recover from any iOS drift.
   useMobileKeyboardViewportLock(isMobile && keyboardOpen);
 
-  // FN-5365: mirror QuickChatFAB keyboard handling by writing visualViewport
-  // metrics directly to .chat-thread, avoiding React commit lag/jitter.
+  /*
+  FNXC:ChatComposer 2026-08-23-16:07:
+  The composer must remain inside the visual viewport whenever Fusion knows a soft keyboard is
+  up on phone portrait/landscape, tablet, compact dock, or narrow floating Chat. The writer,
+  hook enabled state, and allowNonMobileViewport deliberately share keyboardTrackedHost so their
+  host gates cannot drift. Detection remains a layout-height-minus-visual-height gap; the measured
+  thread top lets CSS account for dock/floating chrome instead of assuming only the app header.
+  Landscape-phone keyboard state newly reaches the existing touch guard while its body lock keeps
+  its own phone-width iOS gate, so this does not add body pinning on wide hosts.
+  */
   useLayoutEffect(() => {
-    if (!isMobile || (!activeSession && !roomThreadActive)) return;
+    if (!keyboardTrackedHost || (!activeSession && !roomThreadActive)) return;
     if (typeof window === "undefined") return;
 
     const thread = chatThreadRef.current;
@@ -1566,8 +1583,10 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
       if (suppressVvShrinkRef.current) {
         thread.classList.remove("chat-thread--keyboard-active");
         thread.style.setProperty("--chat-keyboard-accessory-clearance", "0px");
+        thread.style.removeProperty("--chat-thread-viewport-top");
         thread.style.transform = "";
         thread.style.willChange = "";
+        appliedThreadTranslateYRef.current = 0;
         return;
       }
       const overlap = Math.max(0, window.innerHeight - vv.offsetTop - vv.height);
@@ -1575,6 +1594,15 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
       thread.style.setProperty("--vv-height", `${vv.height}px`);
       thread.style.setProperty("--vv-offset-top", `${offsetTop}px`);
       thread.style.setProperty("--keyboard-overlap", `${overlap}px`);
+
+      const threadRect = thread.getBoundingClientRect();
+      if (threadRect.height > 0) {
+        const untransformedTop = Math.max(0, threadRect.top - appliedThreadTranslateYRef.current - offsetTop);
+        const viewportTop = Math.min(vv.height, untransformedTop);
+        thread.style.setProperty("--chat-thread-viewport-top", `${viewportTop}px`);
+      } else {
+        thread.style.removeProperty("--chat-thread-viewport-top");
+      }
 
       const keyboardActive = (overlap > 0 || offsetTop > 0) && isKeyboardTrackingFocusable(document.activeElement);
       thread.classList.toggle("chat-thread--keyboard-active", keyboardActive);
@@ -1598,9 +1626,11 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
       if (keyboardActive && offsetTop > 0) {
         thread.style.transform = `translateY(${offsetTop}px)`;
         thread.style.willChange = "transform";
+        appliedThreadTranslateYRef.current = offsetTop;
       } else {
         thread.style.transform = "";
         thread.style.willChange = "";
+        appliedThreadTranslateYRef.current = 0;
       }
     };
 
@@ -1620,10 +1650,12 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
       document.removeEventListener("visibilitychange", apply);
       thread.classList.remove("chat-thread--keyboard-active");
       thread.style.setProperty("--chat-keyboard-accessory-clearance", "0px");
+      thread.style.removeProperty("--chat-thread-viewport-top");
       thread.style.transform = "";
       thread.style.willChange = "";
+      appliedThreadTranslateYRef.current = 0;
     };
-  }, [activeSession, isMobile, roomThreadActive]);
+  }, [activeSession, keyboardTrackedHost, roomThreadActive]);
 
   // Close context menu on outside click
   useEffect(() => {
@@ -3580,23 +3612,39 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
                   data-testid="chat-search-input"
                 />
               </div>
-              <label className="chat-tag-filter" htmlFor="chat-tag-filter">
-                <Tag size={14} aria-hidden="true" />
-                <select
-                  id="chat-tag-filter"
-                  value={selectedTagId ?? ""}
-                  onChange={(event) => setSelectedTagId(event.target.value || null)}
-                  data-testid="chat-tag-filter"
-                  aria-label={t("chat.filterByTag", "Filter conversations by tag")}
+              {/*
+              FNXC:ChatArchived 2026-08-23-16:27:
+              The archived affordance is a compact Archived toggle sharing the tag-filter line, so the sidebar does not spend a full row on it. aria-pressed and active styling convey state instead of changing the visible label.
+              */}
+              <div className="chat-sidebar-filter-row">
+                <label className="chat-tag-filter" htmlFor="chat-tag-filter">
+                  <Tag size={14} aria-hidden="true" />
+                  <select
+                    id="chat-tag-filter"
+                    value={selectedTagId ?? ""}
+                    onChange={(event) => setSelectedTagId(event.target.value || null)}
+                    data-testid="chat-tag-filter"
+                    aria-label={t("chat.filterByTag", "Filter conversations by tag")}
+                  >
+                    <option value="">{t("chat.allTags", "All tags")}</option>
+                    {tags.map((tag) => <option key={tag.id} value={tag.id}>{tag.name}</option>)}
+                  </select>
+                  {selectedTagId ? <button type="button" className="btn-icon" aria-label={t("chat.clearTagFilter", "Clear tag filter")} onClick={() => setSelectedTagId(null)}><X size={14} /></button> : null}
+                </label>
+                <button
+                  type="button"
+                  className={`btn btn-sm chat-archived-toggle${showArchivedSessions ? " chat-archived-toggle--active" : ""}`}
+                  data-testid="chat-archived-toggle"
+                  aria-pressed={showArchivedSessions}
+                  title={t("chat.showArchivedConversations", "Show archived conversations")}
+                  aria-label={t("chat.showArchivedConversations", "Show archived conversations")}
+                  onClick={() => { const next = !showArchivedSessions; setShowArchivedSessions(next); if (next) void refreshArchivedSessions(); }}
                 >
-                  <option value="">{t("chat.allTags", "All tags")}</option>
-                  {tags.map((tag) => <option key={tag.id} value={tag.id}>{tag.name}</option>)}
-                </select>
-                {selectedTagId ? <button type="button" className="btn-icon" aria-label={t("chat.clearTagFilter", "Clear tag filter")} onClick={() => setSelectedTagId(null)}><X size={14} /></button> : null}
-              </label>
+                  {t("chat.archived", "Archived")}
+                </button>
+              </div>
             </div>
             {/* Session list section */}
-            <div className="chat-archived-toggle"><button type="button" className="btn btn-sm btn-secondary" data-testid="chat-archived-toggle" onClick={() => { const next = !showArchivedSessions; setShowArchivedSessions(next); if (next) void refreshArchivedSessions(); }}>{showArchivedSessions ? "Active conversations" : "Archived conversations"}</button></div>
             <div className="chat-session-list chat-sidebar-list">
               {sessionsLoading ? (
                 <div className="chat-empty-state chat-empty-state--padded">{t("chat.loadingConversations", "Loading...")}</div>
@@ -4027,6 +4075,13 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
           {rooms.activeRoom ? (
             <>
               <div className="chat-room-thread-header">
+                {/*
+                FNXC:ChatNavigation 2026-08-23-15:54:
+                FN-9199 requires the chat detail Back affordance to render a real lucide ArrowLeft
+                glyph, never a literal less-than text character. Both Rooms and Direct thread
+                headers use this same icon-and-translated-label pattern on every chat host and
+                breakpoint, while aria-label retains the fuller accessible name.
+                */}
                 {!dockedSidebarVisible ? <button
                   type="button"
                   className="btn btn-sm chat-thread-header-back chat-back-btn"
@@ -4034,7 +4089,8 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
                   data-testid="chat-back-btn"
                   aria-label={t("chat.backToConversations", "Back to conversations")}
                 >
-                  {"< BACK"}
+                  <ArrowLeft size={14} aria-hidden="true" />
+                  <span>{t("chat.back", "Back")}</span>
                 </button> : null}
                 <span className="chat-thread-header-title">#{rooms.activeRoom.name}</span>
                 <div className="chat-room-thread-members">
@@ -4247,7 +4303,8 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
               data-testid="chat-back-btn"
               aria-label={t("chat.backToConversations", "Back to conversations")}
             >
-              {"< BACK"}
+              <ArrowLeft size={14} aria-hidden="true" />
+              <span>{t("chat.back", "Back")}</span>
             </button> : null}
             <div className="chat-thread-header-identity" data-testid="chat-thread-header-identity">
               {activeModelProvider ? <ProviderIcon provider={activeModelProvider} size="md" /> : <Bot size={16} />}

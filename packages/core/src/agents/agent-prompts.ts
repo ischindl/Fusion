@@ -240,6 +240,13 @@ Lint, tests, and typecheck are also hard quality gates:
 - Keep fixing failures caused by your change until lint, impacted tests, build, and typecheck pass.
 - If the repository exposes a typecheck command, run it and fix failures caused by your change.
 - When tests fail, classify whether the failure is caused by your change, a pre-existing defect, an unrelated flaky test, or an outdated test expectation.
+
+**A behavior change owns every test that asserts the old behavior.** Targeted verification runs the tests for files you TOUCHED; the tests encoding the behavior you just changed usually live in files you did NOT touch, so a green targeted run is not evidence that none exist. Before finishing, search for them:
+- Added a guard, validation, or required field? Grep for the FIXTURES it will now refuse — they are outside your File Scope — and fix each to state its intent explicitly.
+- Removed a feature? Delete its tests. A test asserting a deliberately removed contract guards nothing, and making it pass later means re-adding removed behavior.
+- Changed an order, default, constant, or prompt string? Grep for the literal; topology lists, prompt-content assertions, and size budgets live far from the code they describe.
+- Added a public store/service method? Update the inventory/drift guards that require every public surface to be classified.
+Fix at the SHARED FIXTURE FACTORY, not per test — one helper usually explains dozens of failures. Never make a stale test pass by weakening it: update the fixture, record the new truth, or delete the test naming the change that removed its subject.
 - If broad workspace verification fails on unrelated or pre-existing failures after impacted checks pass, do NOT expand this task by fixing unrelated areas. Log the evidence, quarantine flakes per project policy, or create/link a follow-up task.
 - Do not repeatedly rerun a broad failing or hanging workspace command without a new hypothesis and a narrower confirming command.
 
@@ -528,6 +535,7 @@ files with assertions that run via a test runner. Typechecks and builds are NOT
 tests. Manual verification is NOT a test.
 
 - Each implementation step should include writing tests for the code being changed
+- **If the task CHANGES, GATES, or REMOVES existing behavior, include a step to find and update the tests that assert the OLD behavior.** Name the search in that step: the fixtures a new guard will now refuse, the tests of a removed feature, or the literal to grep for a changed order/default/constant/prompt string. Those tests live OUTSIDE the File Scope, so targeted verification will not surface them and the executor will not find them by accident. Measured 2026-08-24: five such changes left ~135 stale failing tests behind, every one having passed its own targeted verification; one shared fixture line accounted for 37 of them.
 - For bug fixes and UI-affordance add/remove tasks, the spec MUST include a \`## Surface Enumeration\` section. The workflow Plan Review gate validates this before execution when plan review is enabled; missing coverage is a blocking REVISE.
 - For bug fixes and UI-affordance add/remove tasks, populate \`## Surface Enumeration\` with this checklist from \`docs/testing.md\`: providers/bridges/execution paths; desktop + mobile breakpoints/platforms; empty/undefined/duplicate/populated data states; shared hooks/components/modules/helpers; every component that renders the affordance; leftover shells after removal.
 - For bug fixes and UI-affordance add/remove tasks, regression tests must assert the invariant across all known surfaces — enumerate every provider/bridge, desktop + mobile breakpoints, empty/undefined/populated data states, and for UI-affordance changes every component rendering the affordance plus leftover shells after removal — not just the reported repro (see FN-5787/FN-5789/FN-5803, FN-5751, and FN-6115/FN-6118/FN-6123)

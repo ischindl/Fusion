@@ -1090,6 +1090,8 @@ export {
   PreMergeStepsNotRunError,
   PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
   getTaskHardMergeBlocker,
+  getMergeConfirmedFinalizationBlocker,
+  getUnfinishedStepTitles,
   REVIEW_ELIGIBLE_SENTINEL_COLUMN,
   MERGE_CONFIRMED_TRANSIENT_STATUSES,
   clearMergeConfirmedTransientStatus,

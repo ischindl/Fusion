@@ -118,7 +118,7 @@ In an active visible Chat list, <kbd>Ctrl+F</kbd> or <kbd>Cmd+F</kbd> focuses th
 
 ### Direct conversation switcher
 
-When a Direct conversation is open, click its thread title or activate it with the keyboard to open the conversation switcher. Pick a listed conversation to switch in place, or choose **All conversations** to return to the full list. The menu shows pinned conversations first and then recent conversations, with up to 12 entries; the current conversation is marked. Room titles remain plain text and do not open this switcher.
+When a Direct conversation is open, click its thread title or activate it with the keyboard to open the conversation switcher. The menu opens below the thread header in full, mobile, floating, and compact docked Chat surfaces. Pick a listed conversation to switch in place, or choose **All conversations** to return to the full list. The menu shows pinned conversations first and then recent conversations, with up to 12 entries; the current conversation is marked. Room titles remain plain text and do not open this switcher.
 
 <!-- FNXC:ModalGeometryPersistenceDocs 2026-07-16-00:40: Full-screen mobile FloatingWindow sheets must preserve, rather than overwrite, the movable desktop geometry record so a later desktop reopen restores the user's chosen location and size. -->
 <!-- FNXC:GitHubImport 2026-08-02-02:51: FN-8722 confirms that standalone GitHub Import also uses the canonical width-or-height sheet contract, so the operator guide must not describe short-sheet preservation as Artifact Gallery-only. -->
@@ -221,6 +221,8 @@ While the sidebar is active on desktop/tablet project screens, Board and List wo
 The active nav-item highlight and the resize-handle hover/focus accent track the active color theme's `--accent` token across all themes, so shadcn, forest, ocean, and other themes no longer show a fixed blue selected state. The Header retains the Fusion brand and project selector, keeps non-navigation controls, and hides duplicate desktop view-toggle entries while the sidebar is active.
 
 On mobile viewports (`<=768px`), the sidebar is not rendered even when the default-on setting is enabled. The Header's **New Task** action opens the existing full form from any active project view. The bottom `MobileNavBar` provides separate **Tasks** (Board) and **List** destinations, while the Planning column keeps its inline quick-entry composer. Mobile-only More-sheet entries remain available for compact tools such as Git Manager, Terminal, Files, and **Import from GitHub**.
+
+When a soft keyboard opens, fixed mobile bottom bars never rise with it. The navigation bar slides completely off-screen as soon as a text field gains focus, including landscape phones. While a text field is focused at normal scale, viewport compensation clamps `--icb-bottom-offset` to `0px`, including in hosts without the visual viewport API, so stale viewport measurements cannot lift fixed chrome.
 
 <!-- FNXC:DashboardResponsiveDocs 2026-07-25-22:57: Project overview has no task destinations, so the mobile navigation and its published height must be absent rather than leaving dead bottom space. Document the 320px responsive and token conventions alongside the operator-visible behavior. -->
 <!-- FNXC:ProjectOverviewHealthHydration 2026-08-01-15:40: Registered projects are the navigation-critical content of the all-projects view, so optional per-project health telemetry hydrates progressively rather than delaying cards and their controls. -->
@@ -758,7 +760,7 @@ The full **New Task** dialog includes a compact **GitHub issue or PR** picker ne
 
 ## Chat View
 
-Chat view provides project-scoped conversations with agents. Every host—embedded Chat, Quick Chat, and the dock—starts at the conversation list. Select a conversation to open its thread.
+Chat view provides project-scoped conversations with agents. Every host—embedded Chat, Quick Chat, and the dock—starts at the conversation list. Select a conversation to open its thread. When the software keyboard is open, the composer remains visible on phones in portrait and landscape, tablets/iPad, compact right-dock Chat, and narrow floating Quick Chat; desktop Chat is unaffected.
 
 ### Docked conversation sidebar
 
@@ -2327,7 +2329,7 @@ Small fixed notification cards (for example the first-task GitHub star prompt) s
 
 Breakpoints: 768px (primary mobile), 1024px (tablet `min-width: 769px and max-width: 1024px`), 640px (compact), 480px (xs). Mobile overrides go in `@media (max-width: 768px)` blocks at the bottom of `styles.css` after base styles.
 
-**Bottom spacing:** `--mobile-nav-height` (44px) + `env(safe-area-inset-bottom, 0px)` + `--standalone-bottom-gap` (0/8px PWA). All bottom-positioned mobile elements compose those. When the soft keyboard opens, the mobile nav bar stays pinned to page bottom cross-platform; the executor footer keyboard-collapse pin is iOS-only. On Android (`interactive-widget=resizes-content`), the footer keeps its stacked position above the nav bar to avoid overlap after keyboard dismiss.
+**Bottom spacing:** `--mobile-nav-height` (44px) + `env(safe-area-inset-bottom, 0px)` + `--standalone-bottom-gap` (0/8px PWA). All bottom-positioned mobile elements compose those. Fixed mobile bottom bars never rise with the soft keyboard: on keyboard-focusable text focus at scale ≤ 1.01, `--icb-bottom-offset` is clamped to `0px` so an absent or stale viewport baseline cannot lift them, including landscape phones and hosts without `visualViewport`. The mobile nav slides fully off-screen on that focus transition rather than waiting for a settled viewport sample. The executor footer keyboard-collapse pin is iOS-only. On Android (`interactive-widget=resizes-content`), the footer keeps its stacked position above the nav bar to avoid overlap after keyboard dismiss.
 
 **Footer-safe fill layouts:** View wrappers that reserve footer/mobile-nav space (for example `.project-content`) should be flex containers with `min-height: 0` / `min-width: 0`, and child surfaces like `.board` should use `flex: 1 1 auto` plus the same min-size guards. Workflow-mode board wrappers (`.board-workflow-view` → `.board-workflow-columns`) also keep a definite `height: 100%`/`max-height: 100%` chain so the workflow toolbar and columns split the available space on tablet as well as desktop/mobile. This keeps the board/columns stretched between the header and fixed bottom bars across desktop, tablet, and mobile while allowing internal scroll regions to own overflow.
 

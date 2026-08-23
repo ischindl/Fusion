@@ -430,12 +430,19 @@ export function getTaskMergeBlocker(
   the resolved lanes when they are known, so it can never point at a column the board does not have.
   */
   if (!options.skipColumnIdentityCheck) {
-    const inReviewLane = options.reviewColumns
-      ? options.reviewColumns.has(task.column)
+    /*
+    FNXC:MergeReadiness 2026-08-23-18:49:
+    An empty resolved lane set means the workflow supplied no usable trait answer. Preserve the
+    documented legacy identity fallback until at least one resolved review lane is available; treating
+    an empty Set as authoritative would make every column fail while the error still names `in-review`.
+    */
+    const reviewColumns = options.reviewColumns?.size ? options.reviewColumns : undefined;
+    const inReviewLane = reviewColumns
+      ? reviewColumns.has(task.column)
       : task.column === "in-review";
     if (!inReviewLane) {
-      const expected = options.reviewColumns && options.reviewColumns.size > 0
-        ? [...options.reviewColumns].map((c) => `'${c}'`).join(" or ")
+      const expected = reviewColumns
+        ? [...reviewColumns].map((c) => `'${c}'`).join(" or ")
         : "'in-review'";
       return `task is in '${task.column}', must be in ${expected}`;
     }
@@ -590,6 +597,69 @@ export function getTaskHardMergeBlocker(
   });
 }
 
+/*
+FNXC:MergeConfirmedFinalization 2026-08-23-21:40 (FN-9193 aftermath — the wedge that outlived the race):
+A CARD WHOSE BRANCH IS ALREADY ON THE TARGET MUST ALWAYS BE ABLE TO FINALIZE. FN-9193 landed
+eaa1d47c on main and was then left `mergeConfirmed: true` WITH incomplete steps, because a Code
+Review revision request reset its steps while the approved merge was in flight. Every finalization
+site evaluated `getTaskHardMergeBlocker`, which counts incomplete steps, so the card could never
+reach `done` — it sat `failed` re-reading its own contradiction for five hours, and a RESTART made it
+strictly worse: replanning issued seven fresh `pending` steps, so the retry that was supposed to
+rescue the card re-created the exact condition blocking it. A self-defeating loop with no exit.
+
+Incomplete steps are not a safety property here. Holding the card out of `done` does not un-merge
+anything; the code is live on the target branch either way. The only thing the hold buys is an
+inconsistent board and an alarming failed card. Landing proof is established BEFORE this check by
+the callers' `hasDurableMergeProof` / reachability verification, so this is not a laundering path:
+`mergeConfirmed` alone never reaches here.
+
+What still blocks: a failed or pending PRE-MERGE workflow step (a review that actually rejected this
+content is a real signal even post-landing, and the operator-bypass path exists for it). What no
+longer blocks: incomplete `steps`, which describe implementation work that the landed branch has
+already superseded. Callers must surface the unfinished steps rather than silently dropping them.
+*/
+export function getMergeConfirmedFinalizationBlocker(
+  task: Pick<Task, "column" | "paused" | "status" | "error" | "steps" | "workflowStepResults" | "mergeDetails">,
+  options: { reviewColumns?: ReadonlySet<string>; requiredPreMergeStepIds?: ReadonlySet<string> } = {},
+): string | undefined {
+  /*
+  FNXC:MergeConfirmedFinalization 2026-08-23-17:55:
+  THE EXEMPTION NEEDS A DURABLE MERGE RECORD, not merely a belief that content landed. Two nearby
+  paths look similar and are not:
+
+    - FN-9193's shape: `mergeConfirmed` with the landed `commitSha` — this engine performed the
+      merge and recorded it. Incomplete steps here describe work the landed branch superseded, so
+      they must not hold the card.
+    - The content-scan recovery (`recoverAlreadyMergedReviewTasks`): mergeDetails is ABSENT and the
+      sweep infers landing by finding matching content on the base branch, then synthesizes a
+      record. That heuristic can match a cherry-pick or a similar commit, so exempting steps there
+      would launder a genuinely unfinished task to `done` on a guess. Its own reliability test
+      (`landed-content-soft-blocker.real-git.test.ts`) pins that distinction: soft blockers clear,
+      incomplete steps hold.
+
+  A no-op merge with no commit sha also fails this test, which is what the executor's no-op branch
+  in `merge-confirmed-finalize.ts` depends on.
+  */
+  const hasDurableMergeRecord = task.mergeDetails?.mergeConfirmed === true
+    && typeof task.mergeDetails.commitSha === "string"
+    && task.mergeDetails.commitSha.length > 0;
+  /*
+  FNXC:MergeConfirmedFinalization 2026-08-23-09:38:
+  Forward the resolved review-lane context explicitly so finalization keeps project workflow semantics and the lane-wiring ratchet can prove the seam is active.
+  */
+  return getTaskHardMergeBlocker(hasDurableMergeRecord ? { ...task, steps: [] } : task, {
+    reviewColumns: options.reviewColumns,
+    requiredPreMergeStepIds: options.requiredPreMergeStepIds,
+  });
+}
+
+/** Non-terminal steps on a card being finalized after a proven merge — recorded, never silently dropped. */
+export function getUnfinishedStepTitles(task: Pick<Task, "steps">): string[] {
+  return (task.steps ?? [])
+    .filter((step) => NON_TERMINAL_STEP_STATUSES.has(step.status))
+    .map((step, index) => step.name?.trim() || `step ${index + 1}`);
+}
+
 export function getTaskDoneBypassBlocker(
   task: Pick<Task, "noCommitsExpected" | "mergeDetails" | "prInfo" | "prInfos">,
 ): string | undefined {
@@ -602,9 +672,12 @@ export function getTaskDoneBypassBlocker(
 
 export function isTaskReadyForMerge(
   task: Pick<Task, "column" | "paused" | "status" | "error" | "steps" | "workflowStepResults">,
-  options: { requiredPreMergeStepIds?: ReadonlySet<string> } = {},
+  options: { reviewColumns?: ReadonlySet<string>; requiredPreMergeStepIds?: ReadonlySet<string> } = {},
 ): boolean {
-  return getTaskMergeBlocker(task, options) === undefined;
+  return getTaskMergeBlocker(task, {
+    reviewColumns: options.reviewColumns,
+    requiredPreMergeStepIds: options.requiredPreMergeStepIds,
+  }) === undefined;
 }
 
 export interface TaskCompletionBlockerOptions {
