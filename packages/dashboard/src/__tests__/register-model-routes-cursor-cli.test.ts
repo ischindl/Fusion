@@ -30,10 +30,20 @@ function setup(
   registryModels?: Array<{ provider: string; id: string; name: string; reasoning: boolean; contextWindow: number }>,
   cursorCliBinaryPath?: unknown,
 ) {
+  /*
+  FNXC:ModelCatalog 2026-08-23-02:16:
+  RUFU-163: production registerModelRoutes also registers POST /models/refresh
+  (register-model-routes.ts:259); the fixture router must expose the full
+  production route surface or registration throws at setup.
+  */
   const getHandlers = new Map<string, (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>>();
+  const postHandlers = new Map<string, (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>>();
   const router = {
     get: vi.fn((path: string, handler: (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>) => {
       getHandlers.set(path, handler);
+    }),
+    post: vi.fn((path: string, handler: (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>) => {
+      postHandlers.set(path, handler);
     }),
   } as unknown as Router;
 
@@ -63,7 +73,7 @@ function setup(
     options: { modelRegistry } as never,
   } as never);
 
-  return getHandlers.get("/models")!;
+  return { handler: getHandlers.get("/models")!, refreshCatalog: postHandlers.get("/models/refresh")! };
 }
 
 async function invoke(handler: (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>) {
@@ -81,7 +91,7 @@ describe("registerModelRoutes cursor-cli merge and filter", () => {
     mockedGetCursorPickerModels.mockResolvedValue([
       { provider: "cursor-cli", id: "cursor/gpt-5", name: "GPT-5", reasoning: false, contextWindow: 0 },
     ]);
-    const handler = setup(false);
+    const { handler } = setup(false);
     const response = await invoke(handler);
     expect(response.models.some((model) => model.provider === "cursor-cli")).toBe(false);
     // Discovery must not even be attempted when the toggle is off.
@@ -93,7 +103,7 @@ describe("registerModelRoutes cursor-cli merge and filter", () => {
       { provider: "cursor-cli", id: "cursor/gpt-5", name: "GPT-5", reasoning: false, contextWindow: 0 },
       { provider: "cursor-cli", id: "cursor/sonnet", name: "Sonnet", reasoning: false, contextWindow: 0 },
     ]);
-    const handler = setup(true);
+    const { handler } = setup(true);
     const response = await invoke(handler);
     const cursorRows = response.models.filter((m) => m.provider === "cursor-cli");
     expect(cursorRows.map((m) => m.id).sort()).toEqual(["cursor/gpt-5", "cursor/sonnet"]);
@@ -107,7 +117,7 @@ describe("registerModelRoutes cursor-cli merge and filter", () => {
       { provider: "openai", id: "gpt-5", name: "GPT-5", reasoning: true, contextWindow: 128000 },
       { provider: "droid-cli", id: "droid-1", name: "Droid 1", reasoning: false, contextWindow: 0 },
     ];
-    const handler = setup(true, registryModels);
+    const { handler } = setup(true, registryModels);
     const response = await invoke(handler);
     expect(response.models.some((m) => m.provider === "openai" && m.id === "gpt-5")).toBe(true);
     expect(response.models.some((m) => m.provider === "cursor-cli" && m.id === "cursor/gpt-5")).toBe(true);
@@ -120,7 +130,7 @@ describe("registerModelRoutes cursor-cli merge and filter", () => {
     mockedGetCursorPickerModels.mockResolvedValue([
       { provider: "cursor-cli", id: "cursor/gpt-5", name: "Discovered GPT-5 (should be dropped)", reasoning: false, contextWindow: 0 },
     ]);
-    const handler = setup(true, registryModels);
+    const { handler } = setup(true, registryModels);
     const response = await invoke(handler);
     const cursorRows = response.models.filter((m) => m.provider === "cursor-cli" && m.id === "cursor/gpt-5");
     expect(cursorRows).toHaveLength(1);
@@ -129,7 +139,7 @@ describe("registerModelRoutes cursor-cli merge and filter", () => {
 
   it("degrades to zero cursor-cli rows (HTTP 200, existing rows intact) when discovery returns empty", async () => {
     mockedGetCursorPickerModels.mockResolvedValue([]);
-    const handler = setup(true);
+    const { handler } = setup(true);
     const response = await invoke(handler);
     expect(response.models.some((m) => m.provider === "cursor-cli")).toBe(false);
     expect(response.models.some((m) => m.provider === "openai" && m.id === "gpt-5")).toBe(true);
@@ -137,7 +147,7 @@ describe("registerModelRoutes cursor-cli merge and filter", () => {
 
   it("degrades to zero cursor-cli rows (never rejects the handler) when discovery throws", async () => {
     mockedGetCursorPickerModels.mockRejectedValue(new Error("cursor-agent unavailable"));
-    const handler = setup(true);
+    const { handler } = setup(true);
     const response = await invoke(handler);
     expect(response.models.some((m) => m.provider === "cursor-cli")).toBe(false);
     expect(response.models.some((m) => m.provider === "openai" && m.id === "gpt-5")).toBe(true);
@@ -147,7 +157,7 @@ describe("registerModelRoutes cursor-cli merge and filter", () => {
     mockedGetCursorPickerModels.mockResolvedValue([
       { provider: "cursor-cli", id: "cursor/only", name: "Only", reasoning: false, contextWindow: 0 },
     ]);
-    const handler = setup(true);
+    const { handler } = setup(true);
     const response = await invoke(handler);
     expect(response.models.filter((m) => m.provider === "cursor-cli")).toHaveLength(1);
   });
@@ -160,10 +170,19 @@ describe("registerModelRoutes cursor-cli merge and filter", () => {
       { provider: "openai", id: "gpt-5", name: "GPT-5", reasoning: true, contextWindow: 128000 },
       { provider: "openai", id: "gpt-5", name: "GPT-5 dup", reasoning: true, contextWindow: 128000 },
     ];
-    const handler = setup(true, registryModels);
+    const { handler } = setup(true, registryModels);
     const response = await invoke(handler);
     const keys = response.models.map((m) => `${m.provider}/${m.id}`);
     expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it("registers POST /models/refresh alongside GET /models with production refresh semantics", async () => {
+    const { handler, refreshCatalog } = setup(true);
+    expect(handler).toBeTypeOf("function");
+    expect(refreshCatalog).toBeTypeOf("function");
+    const json = vi.fn();
+    await refreshCatalog({}, { json });
+    expect(json.mock.calls[0][0]).toEqual({ outcome: "completed" });
   });
 });
 
@@ -182,7 +201,7 @@ describe("registerModelRoutes cursorCliBinaryPath threading", () => {
     mockedGetCursorPickerModels.mockResolvedValue([
       { provider: "cursor-cli", id: "cursor/gpt-5", name: "GPT-5", reasoning: false, contextWindow: 0 },
     ]);
-    const handler = setup(true, undefined, "/opt/Cursor/cursor-agent");
+    const { handler } = setup(true, undefined, "/opt/Cursor/cursor-agent");
     const response = await invoke(handler);
     expect(mockedGetCursorPickerModels).toHaveBeenCalledWith({ binaryPath: "/opt/Cursor/cursor-agent" });
     expect(response.models.some((m) => m.provider === "cursor-cli" && m.id === "cursor/gpt-5")).toBe(true);
@@ -191,34 +210,34 @@ describe("registerModelRoutes cursorCliBinaryPath threading", () => {
   it("threads a Windows-shim-style override path verbatim, with no mangling", async () => {
     mockedGetCursorPickerModels.mockResolvedValue([]);
     const winPath = "C:\\Users\\A User\\AppData\\Roaming\\npm\\cursor-agent.cmd";
-    const handler = setup(true, undefined, winPath);
+    const { handler } = setup(true, undefined, winPath);
     await invoke(handler);
     expect(mockedGetCursorPickerModels).toHaveBeenCalledWith({ binaryPath: winPath });
   });
 
   it("passes binaryPath: undefined when cursorCliBinaryPath is absent (PATH auto-detection preserved)", async () => {
     mockedGetCursorPickerModels.mockResolvedValue([]);
-    const handler = setup(true, undefined, undefined);
+    const { handler } = setup(true, undefined, undefined);
     await invoke(handler);
     expect(mockedGetCursorPickerModels).toHaveBeenCalledWith({ binaryPath: undefined });
   });
 
   it("passes binaryPath: undefined when cursorCliBinaryPath is blank/whitespace-only", async () => {
     mockedGetCursorPickerModels.mockResolvedValue([]);
-    const handler = setup(true, undefined, "   ");
+    const { handler } = setup(true, undefined, "   ");
     await invoke(handler);
     expect(mockedGetCursorPickerModels).toHaveBeenCalledWith({ binaryPath: undefined });
   });
 
   it("passes binaryPath: undefined when cursorCliBinaryPath is an empty string", async () => {
     mockedGetCursorPickerModels.mockResolvedValue([]);
-    const handler = setup(true, undefined, "");
+    const { handler } = setup(true, undefined, "");
     await invoke(handler);
     expect(mockedGetCursorPickerModels).toHaveBeenCalledWith({ binaryPath: undefined });
   });
 
   it("does not surface cursor-cli rows or call getCursorPickerModels when useCursorCli is false, regardless of cursorCliBinaryPath", async () => {
-    const handler = setup(false, undefined, "/opt/Cursor/cursor-agent");
+    const { handler } = setup(false, undefined, "/opt/Cursor/cursor-agent");
     const response = await invoke(handler);
     expect(mockedGetCursorPickerModels).not.toHaveBeenCalled();
     expect(response.models.some((m) => m.provider === "cursor-cli")).toBe(false);

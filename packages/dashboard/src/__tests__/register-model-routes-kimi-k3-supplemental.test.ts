@@ -12,10 +12,20 @@ remain visible without changing timeout budgets or adding retries.
 */
 
 function createModelsHandler(modelRegistry: ReturnType<typeof createKimiModelCatalogRegistry>) {
+  /*
+  FNXC:ModelCatalog 2026-08-23-02:16:
+  RUFU-163: production registerModelRoutes also registers POST /models/refresh
+  (register-model-routes.ts:259); the fixture router must expose the full
+  production route surface or registration throws at setup.
+  */
   const handlers = new Map<string, (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>>();
+  const postHandlers = new Map<string, (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>>();
   const router = {
     get: vi.fn((path: string, handler: (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>) => {
       handlers.set(path, handler);
+    }),
+    post: vi.fn((path: string, handler: (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>) => {
+      postHandlers.set(path, handler);
     }),
   } as unknown as Router;
   const authStorage = {
@@ -37,11 +47,11 @@ function createModelsHandler(modelRegistry: ReturnType<typeof createKimiModelCat
     options: { modelRegistry, authStorage } as never,
   } as never);
 
-  return handlers.get("/models")!;
+  return { handler: handlers.get("/models")!, refreshCatalog: postHandlers.get("/models/refresh")! };
 }
 
 async function getK3Rows(modelRegistry: ReturnType<typeof createKimiModelCatalogRegistry>) {
-  const handler = createModelsHandler(modelRegistry);
+  const { handler } = createModelsHandler(modelRegistry);
   const json = vi.fn();
 
   await handler({}, { json });
@@ -50,19 +60,34 @@ async function getK3Rows(modelRegistry: ReturnType<typeof createKimiModelCatalog
   return response.models.filter((model) => model.provider === "kimi-coding" && model.id === "k3");
 }
 
+/*
+FNXC:ModelCatalog 2026-08-23-02:16:
+RUFU-163: GET /models now surfaces the SDK-derived supportedThinkingLevels
+beside each registry-derived row (register-model-routes.ts:393); the k3 row's
+levels come from pi-ai's pinned catalog thinkingLevelMap.
+*/
 describe("FN-8180: Kimi K3 /api/models catalog", () => {
   it("surfaces the native K3 model once for a configured Kimi provider", async () => {
     const k3Rows = await getK3Rows(createKimiModelCatalogRegistry());
-    expect(k3Rows).toEqual([{ provider: "kimi-coding", id: "k3", name: "Kimi K3", reasoning: true, contextWindow: 1_048_576 }]);
+    expect(k3Rows).toEqual([{ provider: "kimi-coding", id: "k3", name: "Kimi K3", reasoning: true, contextWindow: 1_048_576, supportedThinkingLevels: ["low", "high", "max"] }]);
   });
 
   it("dedupes a colliding native K3 row after the route's supplemental merges", async () => {
     const k3Rows = await getK3Rows(createKimiModelCatalogRegistry({ duplicateK3: true }));
-    expect(k3Rows).toEqual([{ provider: "kimi-coding", id: "k3", name: "Kimi K3", reasoning: true, contextWindow: 1_048_576 }]);
+    expect(k3Rows).toEqual([{ provider: "kimi-coding", id: "k3", name: "Kimi K3", reasoning: true, contextWindow: 1_048_576, supportedThinkingLevels: ["low", "high", "max"] }]);
   });
 
   it("makes a missing native K3 catalog row explicit instead of passing vacuously", async () => {
     const k3Rows = await getK3Rows(createKimiModelCatalogRegistry({ omitK3: true }));
     expect(k3Rows).toEqual([]);
+  });
+
+  it("registers POST /models/refresh alongside GET /models with production refresh semantics", async () => {
+    const { handler, refreshCatalog } = createModelsHandler(createKimiModelCatalogRegistry());
+    expect(handler).toBeTypeOf("function");
+    expect(refreshCatalog).toBeTypeOf("function");
+    const json = vi.fn();
+    await refreshCatalog({}, { json });
+    expect(json.mock.calls[0][0]).toEqual({ outcome: "completed" });
   });
 });
