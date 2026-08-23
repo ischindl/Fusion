@@ -308,6 +308,17 @@ height rather than relying on the global button minimum.
     right: var(--space-sm);
   }
 
+  /*
+  FNXC:TaskChatDefaultModel 2026-08-23-03:56:
+  FN-033 (aad4b73a4) re-laid the narrow-layout composer as a wrapping row per
+  the 2026-08-19-12:12 note above: the model and thinking controls row wraps
+  to its own full-width row while the input and send row stays single-row. This
+  supersedes the 2026-07-01-23:54 single-row composer requirement for the
+  controls row only. Do not revert to a non-wrapping layout: the wrapping row
+  is the intended, documented product behavior (decision recorded 2026-08-20
+  21:21 UTC), and the contract is pinned by the responsive-and-dependencies
+  test.
+  */
   .task-planner-chat-composer {
     flex-direction: row;
     flex-wrap: wrap;

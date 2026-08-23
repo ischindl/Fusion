@@ -134,6 +134,18 @@ function expectNoSpacingOverrides(ruleBlock: string, surface: string): void {
 
 describe("TaskDetailModal", () => {
   describe("mobile responsive structure", () => {
+    /*
+    FNXC:TaskDetailPlannerChat 2026-08-23-03:56:
+    The mobile composer layout this test pins was re-laid by FN-033 (aad4b73a4)
+    as a wrapping row per FNXC:TaskChatDefaultModel 2026-08-19-12:12 in
+    TaskPlannerChatTab.css: on narrow task-detail layouts the controls row
+    (model + thinking trigger) wraps to its own full-width row while the
+    input + send row stays single-row, so the 2026-07-01-23:54 single-row
+    composer requirement is superseded for the controls row. The mobile input
+    defers to the controller's measured cap (max-height: none) per the composer
+    autosize contract, so the assertions pin the intentional current values
+    and would fail if the CSS were ever reverted to a non-wrapping row.
+    */
     it("keeps planner chat composer usable on narrow task-detail layouts", () => {
       const css = readDashboardStylesSource();
       const modelBlock = getExactCssRuleBlock(css, ".task-planner-chat-empty-model");
@@ -170,11 +182,11 @@ describe("TaskDetailModal", () => {
       expect(inputBlock).toContain("min-height: calc(var(--space-2xl) + var(--space-sm));");
       expect(inputBlock).not.toContain("min-height: 5rem;");
       expect(mobileComposerBlock).toContain("flex-direction: row;");
-      expect(mobileComposerBlock).toContain("flex-wrap: nowrap;");
+      expect(mobileComposerBlock).toContain("flex-wrap: wrap;");
       expect(mobileComposerBlock).toContain("align-items: flex-end;");
       expect(mobileInputBlock).toContain("height: calc(var(--space-2xl) + var(--space-lg));");
       expect(mobileInputBlock).toContain("min-height: calc(var(--space-2xl) + var(--space-lg));");
-      expect(mobileInputBlock).toContain("max-height: calc(var(--space-2xl) + var(--space-lg));");
+      expect(mobileInputBlock).toContain("max-height: none;");
       expect(mobileInputBlock).toContain("resize: none;");
       expect(mobileSendBlock).toContain("justify-content: center;");
       expect(mobileSendBlock).toContain("inline-size: calc(var(--space-2xl) + var(--space-lg));");
