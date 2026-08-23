@@ -309,7 +309,13 @@ export interface SpawnCliSessionOptions {
    * duplicate record. The adapter MUST advertise `supportsResume`/`buildResume`.
    */
   resume?: {
-    /** The existing session record id to relaunch in place. */
+    /**
+     * The existing session record id to relaunch in place. The chat-runner
+     * resume path only knows the CHAT session id (the minted `cli-<…>` record
+     * id is not available to it), so this may be the chat session id; when the
+     * direct lookup misses, the manager resolves the record through the spawn
+     * `chatSessionId` linkage (FNXC:CliChatResumeIdLinkage).
+     */
     sessionId: string;
     /** The recorded native (vendor) session id handed to `buildResume`. */
     nativeSessionId: string;
@@ -472,10 +478,35 @@ export class CliSessionManager {
       if (!adapter.capabilities.supportsResume || typeof adapter.buildResume !== "function") {
         throw new CliResumeUnsupportedError(options.adapterId);
       }
-      const existing = this.store.getSession(options.resume.sessionId);
+      let existing = this.store.getSession(options.resume.sessionId);
+      /*
+      FNXC:CliChatResumeIdLinkage 2026-08-23-02:51:
+      RUFU-142 closes the id-linkage gap RUFU-128 sidestepped: the chat-runner
+      resume path identifies the session by its CHAT session id because the
+      minted cli-<…> record id is not available to the runner (the cli_sessions
+      row is minted under a fresh id at spawn; the runner only remembers the
+      native session id persisted on the chat record). When the direct
+      getSession lookup misses, resolve the record through the persisted
+      chat_session_id linkage (listByChatSession sorts updatedAt desc): prefer
+      the record whose nativeSessionId matches the resume request, else the
+      newest record for the chat. The resume-coordinator caller passes the real
+      record id, so the direct lookup wins there and this fallback is a no-op.
+      A chat with zero records still throws UnknownCliSessionError carrying the
+      caller's (chat) id for operator traceability.
+      */
+      if (!existing && options.chatSessionId) {
+        // Narrowed local — property narrowing on options.resume does not
+        // survive into the find() closure.
+        const resumeNativeId = options.resume.nativeSessionId;
+        const chatRecords = this.store.listByChatSession(options.chatSessionId);
+        existing =
+          chatRecords.find((r) => r.nativeSessionId === resumeNativeId) ??
+          chatRecords[0];
+      }
       if (!existing) throw new UnknownCliSessionError(options.resume.sessionId);
-      // Move the reused record back to "starting" for the relaunch.
-      record = this.store.updateSession(options.resume.sessionId, {
+      // Move the reused record back to "starting" for the relaunch. Always by
+      // the record's OWN id — the caller may have identified it by chat id.
+      record = this.store.updateSession(existing.id, {
         agentState: "starting",
         worktreePath: options.worktreePath ?? existing.worktreePath ?? null,
       }) ?? existing;
@@ -489,7 +520,11 @@ export class CliSessionManager {
       (task session / settings off) leaves the bare resume unchanged.
       */
       launchCtx = {
-        settings: await this.mergeLaunchSettings(baseSettings, options.resume.sessionId),
+        // FNXC:CliChatResumeIdLinkage 2026-08-23-02:51:
+        // The launch-settings provider (RUFU-128 provisioner) is keyed by the
+        // record id — it does getSession(sessionId) — so pass the resolved
+        // record's own id, which may differ from the caller's (chat) id.
+        settings: await this.mergeLaunchSettings(baseSettings, existing.id),
         posture,
       };
       launch = adapter.buildResume({ ...launchCtx, nativeSessionId: options.resume.nativeSessionId });
