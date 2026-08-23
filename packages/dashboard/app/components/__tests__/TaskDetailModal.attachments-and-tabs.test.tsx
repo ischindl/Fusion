@@ -1,3 +1,10 @@
+/*
+FNXC:RUFU153 2026-08-23-00:21:
+Planner-chat tab label contract (FN-033): TaskPlannerChatTab's inline defaults are the live contract —
+"Expand task chat" / "Collapse task chat" / "Message task chat" — because the en i18n catalog defines no
+taskDetail.plannerChat.* keys, so the inline defaults win. The tests assert the current labels (and the
+task-planner-chat-expand-toggle structure) instead of the stale "planner chat" strings.
+*/
 import type { Column, Task } from "@fusion/core";
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
@@ -512,7 +519,8 @@ describe("TaskDetailModal", () => {
       expect(screen.queryByRole("button", { name: "Logs" })).toBeNull();
       expect(screen.getByRole("button", { name: "Chat" })).toHaveClass("detail-tab-active");
       expect(screen.getByTestId("task-planner-chat-panel")).toBeTruthy();
-      expect(screen.getByTestId("task-planner-chat-expand-toggle")).toHaveAttribute("aria-label", "Expand planner chat");
+      // RUFU-153: the expand toggle's aria-label now uses the "task chat" naming (TaskPlannerChatTab t("taskDetail.plannerChat.expand")).
+      expect(screen.getByTestId("task-planner-chat-expand-toggle")).toHaveAttribute("aria-label", "Expand task chat");
       expect(container.querySelector(".task-detail-content")).not.toHaveClass("task-detail-content--planner-chat-expanded");
       expect(container.querySelector(".activity-segmented-control")).toBeNull();
       expect(container.querySelector(".activity-segment")).toBeNull();
@@ -1013,7 +1021,8 @@ describe("TaskDetailModal", () => {
       );
 
       const content = container.querySelector(".task-detail-content");
-      expect(screen.getByTestId("task-planner-chat-expand-toggle")).toHaveAttribute("aria-label", "Expand planner chat");
+      // RUFU-153: the expand toggle's aria-label now uses the "task chat" naming (TaskPlannerChatTab t("taskDetail.plannerChat.expand")).
+      expect(screen.getByTestId("task-planner-chat-expand-toggle")).toHaveAttribute("aria-label", "Expand task chat");
       expect(screen.queryByTestId("task-chat-expand-toggle")).toBeNull();
 
       fireEvent.click(screen.getByRole("button", { name: "Activity" }));
@@ -1346,18 +1355,19 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      const composer = screen.getByLabelText("Message planner chat") as HTMLTextAreaElement;
+      // RUFU-153: the composer's aria-label now uses the "task chat" naming (TaskPlannerChatTab t("taskDetail.plannerChat.inputLabel")).
+      const composer = screen.getByLabelText("Message task chat") as HTMLTextAreaElement;
       fireEvent.change(composer, { target: { value: "unsent planner draft" } });
       expect(screen.getByTestId("planner-chat-keep-alive")).not.toHaveAttribute("aria-hidden");
 
       fireEvent.click(screen.getByRole("button", { name: "Activity" }));
       // Mounted-but-hidden: same instance, draft intact, wrapper inert for assistive tech.
       expect(screen.getByTestId("planner-chat-keep-alive")).toHaveAttribute("aria-hidden", "true");
-      expect((screen.getByLabelText("Message planner chat") as HTMLTextAreaElement).value).toBe("unsent planner draft");
+      expect((screen.getByLabelText("Message task chat") as HTMLTextAreaElement).value).toBe("unsent planner draft");
 
       fireEvent.click(screen.getByRole("button", { name: "Chat" }));
       expect(screen.getByTestId("planner-chat-keep-alive")).not.toHaveAttribute("aria-hidden");
-      expect((screen.getByLabelText("Message planner chat") as HTMLTextAreaElement).value).toBe("unsent planner draft");
+      expect((screen.getByLabelText("Message task chat") as HTMLTextAreaElement).value).toBe("unsent planner draft");
     });
 
     it("FN-6347 removes the chat body modifier while editing", () => {

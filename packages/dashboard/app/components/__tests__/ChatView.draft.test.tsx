@@ -1,3 +1,10 @@
+/*
+FNXC:RUFU153 2026-08-23-00:21:
+Per FNXC:ChatNavigation (ChatView.tsx) the composer (and hence draft persistence) lives in the gated
+main pane, which is closed by default and opens only on a user row click. Direct-scope tests click the
+session row (chat-session-<id>); the rooms-scope test clicks the room row (chat-room-item-<slug>) —
+exposed via a mocked room row — before asserting composer DOM.
+*/
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render as rtlRender, screen, waitFor } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
@@ -178,6 +185,8 @@ describe("ChatView draft persistence", () => {
 
   it("writes direct-session drafts to localStorage while typing", async () => {
     await renderChatView();
+    // RUFU-153: the detail pane (composer included) opens only on row click (FNXC:ChatNavigation 2026-08-19-19:36).
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
 
     await userEvent.type(screen.getByPlaceholderText("Type a message..."), "hello draft");
 
@@ -195,6 +204,7 @@ describe("ChatView draft persistence", () => {
     });
 
     await renderChatView();
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const composer = screen.getByPlaceholderText("Type a message...");
     await expect(userEvent.type(composer, "still sends despite quota")).resolves.toBeUndefined();
 
@@ -206,6 +216,7 @@ describe("ChatView draft persistence", () => {
   it("keeps empty-draft removal throw-safe", async () => {
     const draftKey = "fusion:chat-draft:direct:session-001";
     await renderChatView();
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const composer = screen.getByPlaceholderText("Type a message...");
     await userEvent.type(composer, "temporary");
     vi.spyOn(localStorage, "removeItem").mockImplementation((key) => {
@@ -220,10 +231,13 @@ describe("ChatView draft persistence", () => {
     localStorage.setItem("fusion:chat-draft:direct:session-001", "saved draft");
 
     const { unmount } = await renderChatView();
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     expect(screen.getByPlaceholderText("Type a message...")).toHaveValue("saved draft");
 
     unmount();
     await renderChatView();
+    // RUFU-153: a remount resets the pane's open state, so the row is clicked again.
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
 
     expect(screen.getByPlaceholderText("Type a message...")).toHaveValue("saved draft");
   });
@@ -232,6 +246,7 @@ describe("ChatView draft persistence", () => {
     localStorage.setItem("fusion:chat-draft:direct:session-002", "session two draft");
 
     const { rerender } = await renderChatView();
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     expect(screen.getByPlaceholderText("Type a message...")).toHaveValue("");
 
     setup({
@@ -251,6 +266,7 @@ describe("ChatView draft persistence", () => {
     setup({ sendMessage });
 
     await renderChatView();
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
 
     await userEvent.type(screen.getByPlaceholderText("Type a message..."), "send me");
     await userEvent.click(screen.getAllByTestId("chat-send-btn")[0]);
@@ -266,6 +282,7 @@ describe("ChatView draft persistence", () => {
 
   it("removes the storage key when the draft becomes empty", async () => {
     await renderChatView();
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
 
     const textarea = screen.getByPlaceholderText("Type a message...");
     await userEvent.type(textarea, "temporary");
@@ -292,10 +309,14 @@ describe("ChatView draft persistence", () => {
       />,
     );
 
+    // RUFU-153: the detail pane starts closed, so the mount-time seed cannot focus a composer
+    // that has not mounted yet; open the pane on the session row, then let the second nonce
+    // reseed focus the now-mounted composer. The scope toggle itself only renders while the
+    // pane is closed, so its selected state is asserted before the row click.
+    await waitFor(() => expect(screen.getByRole("tab", { name: /Direct/i })).toHaveAttribute("aria-selected", "true"));
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByPlaceholderText("Type a message...");
     await waitFor(() => expect(textarea).toHaveValue("https://github.com/owner/repo/issues/42\n\n"));
-    expect(textarea).toHaveFocus();
-    expect(screen.getByRole("tab", { name: /Direct/i })).toHaveAttribute("aria-selected", "true");
 
     rerender(
       <ChatView
@@ -307,6 +328,7 @@ describe("ChatView draft persistence", () => {
       />,
     );
     await waitFor(() => expect(textarea).toHaveValue("https://github.com/owner/repo/pull/42\n\n"));
+    expect(textarea).toHaveFocus();
   });
 
   it("restores another session's draft after an always-default prefill session fails", async () => {
@@ -321,6 +343,7 @@ describe("ChatView draft persistence", () => {
     } as Awaited<ReturnType<typeof api.fetchSettings>>);
 
     const view = await renderChatView();
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     await waitFor(() => expect(mockFetchSettings).toHaveBeenCalled());
 
     view.rerender(
@@ -356,6 +379,8 @@ describe("ChatView draft persistence", () => {
     localStorage.setItem("fusion:chat-draft:rooms:room-001", "room draft");
 
     await renderChatView();
+    // RUFU-153: the detail pane (and its room composer) opens via an explicit room-row selection.
+    await userEvent.click(screen.getByTestId("chat-room-item-room-one"));
 
     const textarea = screen.getByPlaceholderText("Type a message...");
     expect(textarea).toHaveValue("room draft");

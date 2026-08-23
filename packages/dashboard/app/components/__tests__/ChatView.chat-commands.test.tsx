@@ -1,4 +1,11 @@
 /*
+FNXC:RUFU153 2026-08-23-00:21:
+Per FNXC:ChatNavigation (ChatView.tsx) the main pane (messages + composer) is gated behind the
+closed-by-default detailOpen state and opens only on a user row click. Every test clicks the active
+session row (chat-session-<id>) through the canonical user path before asserting command-menu and
+composer DOM, keeping the original assertions intact.
+*/
+/*
 FNXC:DashboardTests 2026-07-08-00:00:
 Sibling ChatView test file (kept separate from ChatView.core-interactions.test.tsx per the
 suite's split convention) covering the generalized "/" command registry: the /steer entry
@@ -62,6 +69,8 @@ describe("ChatView slash-command dispatch (/steer)", () => {
     setupMockChat({ activeSession: activeSessionFixture, messages: [] });
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
 
+    // RUFU-153: the detail pane (composer included) opens only on row click (FNXC:ChatNavigation 2026-08-19-19:36).
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByTestId("chat-input");
     await userEvent.type(textarea, "/");
 
@@ -79,6 +88,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
       <ChatView projectId="proj-123" addToast={vi.fn()} chatCommandContext={commandContext} />,
     );
 
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByTestId("chat-input");
     await userEvent.type(textarea, "/");
 
@@ -96,6 +106,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
       <ChatView projectId="proj-123" addToast={vi.fn()} chatCommandContext={commandContext} />,
     );
 
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByTestId("chat-input");
     await userEvent.type(textarea, "/ste");
 
@@ -109,6 +120,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
       <ChatView projectId="proj-123" addToast={vi.fn()} chatCommandContext={commandContext} />,
     );
 
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByTestId("chat-input");
     await userEvent.type(textarea, "/");
     await userEvent.click(await screen.findByRole("option", { name: /steer/i }));
@@ -128,6 +140,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
       <ChatView projectId="proj-123" addToast={vi.fn()} chatCommandContext={commandContext} />,
     );
 
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByTestId("chat-input");
     await userEvent.type(textarea, "/re");
     await userEvent.click(await screen.findByRole("option", { name: /review\/pr/i }));
@@ -145,6 +158,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
       <ChatView projectId="proj-123" addToast={addToast} chatCommandContext={commandContext} />,
     );
 
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByTestId("chat-input");
     fireEvent.change(textarea, { target: { value: "/steer do X" } });
     fireEvent.keyDown(textarea, { key: "Enter" });
@@ -163,6 +177,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
       <ChatView projectId="proj-123" addToast={addToast} chatCommandContext={commandContext} />,
     );
 
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByTestId("chat-input");
     fireEvent.change(textarea, { target: { value: "hello there" } });
     fireEvent.keyDown(textarea, { key: "Enter" });
@@ -190,6 +205,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
       <ChatView projectId="proj-123" addToast={addToast} chatCommandContext={commandContext} />,
     );
 
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByTestId("chat-input");
     fireEvent.change(textarea, { target: { value: "please /steer this" } });
     fireEvent.keyDown(textarea, { key: "Enter" });
@@ -215,6 +231,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
       />,
     );
 
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByTestId("chat-input");
     fireEvent.change(textarea, { target: { value: "/steer do X" } });
     fireEvent.keyDown(textarea, { key: "Enter" });
@@ -235,6 +252,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
       />,
     );
 
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByTestId("chat-input");
     await userEvent.type(textarea, "/");
 
@@ -258,6 +276,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
       <ChatView projectId="proj-123" addToast={addToast} chatCommandContext={commandContext} />,
     );
 
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByTestId("chat-input");
     fireEvent.change(textarea, { target: { value: "/steer do X" } });
     fireEvent.keyDown(textarea, { key: "Enter" });
@@ -280,6 +299,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
       <ChatView projectId="proj-123" addToast={addToast} chatCommandContext={commandContext} />,
     );
 
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByTestId("chat-input");
     fireEvent.change(textarea, { target: { value: "/steer do X" } });
     fireEvent.keyDown(textarea, { key: "Enter" });
@@ -304,6 +324,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
       <ChatView projectId="proj-123" addToast={addToast} chatCommandContext={commandContext} />,
     );
 
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByTestId("chat-input");
     const file = new File(["hi"], "note.txt", { type: "text/plain" });
     const fileInput = screen.getByTestId("chat-file-input");

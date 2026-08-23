@@ -1,3 +1,11 @@
+/*
+FNXC:RUFU153 2026-08-23-00:21:
+Per FNXC:ChatNavigation (ChatView.tsx) the message-pane + composer region only renders once the detail
+pane is opened by a user click (closed by default, no auto-open path). The tests click the active
+session row (chat-session-<id>) before asserting the <CliChatSurface> handoff or the provider composer
+fallback.
+*/
+
 // ChatView CLI-backed mount test (CLI Agent Executor, U12 completion).
 //
 // Asserts ChatView delegates the message-pane + composer region to
@@ -8,6 +16,7 @@
 // CliChatSurface renders it under the hood.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render as rtlRender, screen } from "@testing-library/react";
+import { userEvent } from "@testing-library/user-event";
 import { ChatView } from "../ChatView";
 import * as useChatModule from "../../hooks/useChat";
 import * as useChatRoomsModule from "../../hooks/useChatRooms";
@@ -145,6 +154,8 @@ describe("ChatView CLI-backed session mount", () => {
       chatState(makeSession({ cliExecutorAdapterId: "claude-code", cliSessionFile: "cli-native-1" })),
     );
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    // RUFU-153: the detail pane (message pane + composer region) opens only on row click (FNXC:ChatNavigation 2026-08-19-19:36).
+    await userEvent.click(screen.getByTestId("chat-session-sess-1"));
 
     // CliChatSurface renders the transcript/terminal toggle tablist.
     expect(screen.getByRole("tab", { name: /transcript/i })).toBeInTheDocument();
@@ -159,6 +170,7 @@ describe("ChatView CLI-backed session mount", () => {
       chatState(makeSession({ cliExecutorAdapterId: "claude-code", cliSessionFile: "cli-native-1" })),
     );
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-sess-1"));
     // Switch to the terminal tab to mount SessionTerminal.
     fireEvent.click(screen.getByRole("tab", { name: /terminal/i }));
     expect(screen.getByTestId("session-terminal").getAttribute("data-session-id")).toBe("cli-native-1");
@@ -167,6 +179,7 @@ describe("ChatView CLI-backed session mount", () => {
   it("generic-tier cli session renders terminal-only (no toggle)", async () => {
     mockUseChat.mockReturnValue(chatState(makeSession({ cliExecutorAdapterId: "generic" })));
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-sess-1"));
     expect(screen.getByTestId("session-terminal")).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /transcript/i })).toBeNull();
   });
@@ -174,6 +187,7 @@ describe("ChatView CLI-backed session mount", () => {
   it("renders the normal provider composer for a regular (non-cli) session", async () => {
     mockUseChat.mockReturnValue(chatState(makeSession({ cliExecutorAdapterId: null })));
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-sess-1"));
     // Normal composer present, CLI toggle absent.
     expect(screen.getByPlaceholderText("Type a message...")).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /transcript/i })).toBeNull();

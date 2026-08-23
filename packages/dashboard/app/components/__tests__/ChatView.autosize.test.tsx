@@ -1,3 +1,10 @@
+/*
+FNXC:RUFU153 2026-08-23-00:21:
+The composer-height assertions target the gated main pane. Per FNXC:ChatNavigation (ChatView.tsx) the
+detail pane is closed by default and opens only on a user row click (no auto-open path), so every test
+clicks the active session row (chat-session-<id>) through the canonical user path before asserting the
+chat-input composer DOM.
+*/
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
@@ -169,6 +176,8 @@ describe("ChatView composer autosize", () => {
     const sendMessage = vi.fn();
     setup({ sendMessage });
     renderChatView();
+    // RUFU-153: the detail pane (composer included) opens only on row click (FNXC:ChatNavigation 2026-08-19-19:36).
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
 
     const textarea = screen.getByPlaceholderText("Type a message...") as HTMLTextAreaElement;
     Object.defineProperty(textarea, "scrollHeight", {
@@ -205,6 +214,7 @@ describe("ChatView composer autosize", () => {
     });
 
     const { rerender } = renderChatView();
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByPlaceholderText("Type a message...") as HTMLTextAreaElement;
 
     await waitFor(() => {
@@ -232,6 +242,7 @@ describe("ChatView composer autosize", () => {
 
   it("grows composer height as direct-chat content grows below cap", async () => {
     renderChatView();
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
 
     const textarea = screen.getByPlaceholderText("Type a message...") as HTMLTextAreaElement;
     Object.defineProperty(textarea, "scrollHeight", {
@@ -251,6 +262,7 @@ describe("ChatView composer autosize", () => {
 
   it("caps direct-chat text at five rendered lines and scrolls overflow internally", async () => {
     renderChatView();
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
 
     const textarea = screen.getByPlaceholderText("Type a message...") as HTMLTextAreaElement;
     Object.defineProperty(textarea, "scrollHeight", {
@@ -267,6 +279,7 @@ describe("ChatView composer autosize", () => {
   it("grows composer height in rooms scope", async () => {
     localStorage.setItem("fusion:chat-scope", "rooms");
     renderChatView();
+    await userEvent.click(screen.getByTestId("chat-room-item-room-one"));
 
     const textarea = screen.getByTestId("chat-input") as HTMLTextAreaElement;
     Object.defineProperty(textarea, "scrollHeight", {
@@ -283,6 +296,7 @@ describe("ChatView composer autosize", () => {
   it("caps rooms text at five rendered lines and scrolls overflow internally", async () => {
     localStorage.setItem("fusion:chat-scope", "rooms");
     renderChatView();
+    await userEvent.click(screen.getByTestId("chat-room-item-room-one"));
 
     const textarea = screen.getByTestId("chat-input") as HTMLTextAreaElement;
     Object.defineProperty(textarea, "scrollHeight", {
@@ -312,6 +326,7 @@ describe("ChatView composer autosize", () => {
 
     setup({}, { rooms: [roomOne, roomTwo], activeRoom: roomOne });
     const { rerender } = renderChatView();
+    await userEvent.click(screen.getByTestId("chat-room-item-room-one"));
     const textarea = screen.getByTestId("chat-input") as HTMLTextAreaElement;
 
     await waitFor(() => {
@@ -336,6 +351,7 @@ describe("ChatView composer autosize", () => {
     const sendMessage = vi.fn();
     setup({ sendMessage });
     renderChatView();
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
 
     const textarea = screen.getByPlaceholderText("Type a message...") as HTMLTextAreaElement;
     Object.defineProperty(textarea, "scrollHeight", {
@@ -365,6 +381,7 @@ describe("ChatView composer autosize", () => {
   it("ignores the former top-edge pointer drag and clears rooms chat to its minimum", async () => {
     localStorage.setItem("fusion:chat-scope", "rooms");
     renderChatView();
+    await userEvent.click(screen.getByTestId("chat-room-item-room-one"));
 
     const textarea = screen.getByTestId("chat-input") as HTMLTextAreaElement;
     Object.defineProperty(textarea, "scrollHeight", {
@@ -393,6 +410,7 @@ describe("ChatView composer autosize", () => {
     const sendMessage = vi.fn();
     setup({ sendMessage });
     renderChatView();
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
 
     const textarea = screen.getByPlaceholderText("Type a message...") as HTMLTextAreaElement;
     Object.defineProperty(textarea, "scrollHeight", {

@@ -1,3 +1,9 @@
+/*
+FNXC:RUFU153 2026-08-23-00:21:
+Per FNXC:ChatNavigation (ChatView.tsx) the composer and send affordances live in the gated main pane,
+which is closed by default and opens only on a user row click. The tests click the active session row
+(chat-session-<id>) before asserting the send-as-report DOM.
+*/
 import { describe, expect, it, vi } from "vitest";
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -33,6 +39,8 @@ describe("ChatView send as report", () => {
     setupAssistantChat();
     const onSendAsReport = vi.fn();
     await renderWithAct(<ChatView projectId="project-1" addToast={vi.fn()} onSendAsReport={onSendAsReport} />);
+    // RUFU-153: the detail pane is gated on an explicit session selection.
+    await user.click(screen.getByTestId("chat-session-s-1"));
     const reportAction = await screen.findByTestId("chat-send-as-report-m-1");
     await user.click(reportAction);
     expect(onSendAsReport).toHaveBeenCalledTimes(1);
@@ -42,8 +50,11 @@ describe("ChatView send as report", () => {
   });
 
   it("wires completed messages in both streaming branches but never the unfinished streaming item", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
     setupAssistantChat();
     const { rerender } = await renderWithAct(<ChatView projectId="project-1" addToast={vi.fn()} onSendAsReport={vi.fn()} />);
+    // RUFU-153: the detail pane is gated on an explicit session selection.
+    await user.click(screen.getByTestId("chat-session-s-1"));
     expect(await screen.findByTestId("chat-send-as-report-m-1")).toBeInTheDocument();
 
     setupMockChat({
@@ -57,9 +68,12 @@ describe("ChatView send as report", () => {
   });
 
   it("renders for mobile and CLI transcript hosts but not blank, user, or handler-less messages", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
     const mobile = mockViewportMode("mobile");
     setupAssistantChat();
     const { rerender } = await renderWithAct(<ChatView projectId="project-1" addToast={vi.fn()} onSendAsReport={vi.fn()} />);
+    // RUFU-153: the detail pane is gated on an explicit session selection.
+    await user.click(screen.getByTestId("chat-session-s-1"));
     expect(await screen.findByTestId("chat-send-as-report-m-1")).toBeInTheDocument();
 
     mobile.mockRestore();
@@ -88,6 +102,8 @@ describe("ChatView send as report", () => {
     const activeSession = session();
     setupMockChat({ sessions: [activeSession], filteredSessions: [activeSession], activeSession, messages: [{ id: "long", sessionId: "s-1", role: "assistant", content, createdAt: "2026-01-01" }] });
     await renderWithAct(<ChatView projectId="project-1" addToast={addToast} onSendAsReport={onSendAsReport} />);
+    // RUFU-153: the detail pane is gated on an explicit session selection.
+    await user.click(screen.getByTestId("chat-session-s-1"));
     await user.click(await screen.findByTestId("chat-send-as-report-long"));
     expect(onSendAsReport.mock.calls[0][0]).toEqual(expect.objectContaining({ title: "Long report" }));
     expect(onSendAsReport.mock.calls[0][0].body).toHaveLength(2000);

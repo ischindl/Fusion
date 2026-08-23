@@ -1,4 +1,12 @@
 /*
+FNXC:RUFU153 2026-08-23-00:21:
+Per FNXC:ChatNavigation (ChatView.tsx) the main pane is gated behind the closed-by-default detailOpen
+state and opens only on a user row click. Direct-scope tests click the session row (chat-session-<id>);
+rooms-scope tests expose a room row in the mock (rooms: [room]) and click the room row
+(chat-room-item-<slug>) — the default mock rooms list is empty and renders no rows — before asserting
+main-pane DOM.
+*/
+/*
 FNXC:DashboardTests 2026-06-25-16:30:
 ChatView suite split 1/5 (core) (was ChatView.test.tsx). Shares ChatView.test-harness for fixtures,
 helpers, vi.mocked handles, and installChatViewEnv(). vi.mock factories stay inline & self
@@ -127,7 +135,10 @@ describe("ChatView", () => {
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
 
-    expect(screen.getByText("Start a new conversation")).toBeInTheDocument();
+    // RUFU-153: the detail pane is gated on an explicit selection, so the pane's
+    // "Start a new conversation" empty state is unreachable with zero sessions; the
+    // reachable empty state is the sidebar's, with the New Chat button in the view header.
+    expect(screen.getByText("No conversations yet")).toBeInTheDocument();
     expect(screen.getByTestId("chat-new-btn")).toBeInTheDocument();
   });
 
@@ -465,6 +476,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     expect(screen.getByText("Hello")).toBeInTheDocument();
     expect(screen.getByText("Hi there!")).toBeInTheDocument();
@@ -495,6 +508,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     const persisted = screen.getByTestId("chat-message-msg-source");
     const streaming = document.querySelector(".chat-message--streaming") as HTMLElement;
@@ -520,6 +535,8 @@ describe("ChatView", () => {
         <ChatView projectId="proj-123" addToast={vi.fn()} />
       </FileBrowserProvider>,
     );
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     const fileLink = screen.getByRole("button", { name: "packages/foo/bar.ts:42" });
     const code = fileLink.closest("code");
@@ -557,6 +574,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     const firstBubble = screen.getByTestId("chat-message-msg-001");
     const secondBubble = screen.getByTestId("chat-message-msg-002");
@@ -576,6 +595,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     const persistedBubble = screen.getByTestId("chat-message-msg-001");
     const streamingBubble = document.querySelector(".chat-message--streaming") as HTMLElement;
@@ -609,6 +630,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     expect(screen.getByText("read")).toBeInTheDocument();
     const preview = document.querySelector(".chat-tool-call-preview") as HTMLElement | null;
@@ -627,6 +650,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     const details = document.querySelector(".chat-tool-call") as HTMLDetailsElement;
     expect(details.open).toBe(false);
@@ -654,6 +679,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     const streamingBubble = document.querySelector(".chat-message--streaming") as HTMLElement | null;
     expect(streamingBubble).toBeInTheDocument();
@@ -678,7 +705,12 @@ describe("ChatView", () => {
     mockUseChat
       .mockReturnValueOnce({
         ...defaultChatState,
+        // RUFU-153: the detail pane is gated on a detail selection, so the raw mock
+        // (which bypasses setupMockChat's session derivation) must carry the session
+        // list for the sidebar row that opens the pane.
         activeSession: activeSessionFixture,
+        sessions: [activeSessionFixture],
+        filteredSessions: [activeSessionFixture],
         messages: [],
         isStreaming: true,
         streamingText: "Working...",
@@ -687,6 +719,8 @@ describe("ChatView", () => {
       .mockReturnValue({
         ...defaultChatState,
         activeSession: activeSessionFixture,
+        sessions: [activeSessionFixture],
+        filteredSessions: [activeSessionFixture],
         messages: [],
         isStreaming: true,
         streamingText: "Working...",
@@ -694,6 +728,8 @@ describe("ChatView", () => {
       });
 
     const { rerender } = await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
     const group = screen.getByTestId("chat-tool-calls-group") as HTMLDetailsElement;
     expect(group).not.toHaveAttribute("open");
 
@@ -741,6 +777,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     const group = screen.getByTestId("chat-tool-calls-group") as HTMLDetailsElement;
     expect(group).toBeInTheDocument();
@@ -780,6 +818,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     const group = screen.getByTestId("chat-tool-calls-group") as HTMLDetailsElement;
     expect(group).toBeInTheDocument();
@@ -821,6 +861,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     expect(screen.getByText("(1 running)")).toBeInTheDocument();
   });
@@ -854,6 +896,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     expect(screen.getByText("(1 error)")).toBeInTheDocument();
   });
@@ -887,6 +931,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     const group = screen.getByTestId("chat-tool-calls-group") as HTMLDetailsElement;
     expect(group.open).toBe(false);
@@ -922,6 +968,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     expect(screen.queryByTestId("chat-tool-calls-group")).not.toBeInTheDocument();
     const details = document.querySelector(".chat-tool-call") as HTMLDetailsElement | null;
@@ -949,6 +997,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     expect(screen.getByTestId("chat-question-response")).toBeInTheDocument();
     expect(document.querySelector(".chat-tool-call")).not.toBeInTheDocument();
@@ -976,6 +1026,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     expect(screen.getByTestId("chat-question-response")).toHaveTextContent("Answered");
     expect(screen.getByTestId("chat-question-response-submitted-answer")).toHaveTextContent("Beta");
@@ -1005,6 +1057,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     expect(screen.getByText("read, edit, bash, grep, write, +1 more")).toBeInTheDocument();
     // Tool events with no available arguments or result remain readable but are not dead disclosures.
@@ -1033,6 +1087,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     expect(document.querySelector(".chat-tool-call--running")).toBeInTheDocument();
   });
@@ -1060,6 +1116,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     expect(document.querySelector(".chat-tool-call--error")).toBeInTheDocument();
   });
@@ -1073,6 +1131,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     const avatar = document.querySelector(".chat-message-avatar") as HTMLElement | null;
     expect(avatar).toBeInTheDocument();
@@ -1095,6 +1155,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     const messageBubble = screen.getByTestId("chat-message-msg-001");
     expect(messageBubble.querySelector(".chat-message-avatar")).toBeNull();
@@ -1117,12 +1179,16 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     const messageBubble = screen.getByTestId("chat-message-msg-001");
     expect(messageBubble.querySelector(".chat-message-avatar")).toBeNull();
-    // The model name still appears once in the thread header.
+    // The model name still appears once in the thread header (the sidebar session
+    // meta also shows the model tag, so scope the assertion to the header identity).
+    const headerIdentity = screen.getByTestId("chat-thread-header-identity");
     await waitFor(() => {
-      expect(screen.getByText("Claude Sonnet 4.5")).toBeInTheDocument();
+      expect(within(headerIdentity).getByText("Claude Sonnet 4.5")).toBeInTheDocument();
     });
   });
 
@@ -1145,6 +1211,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     expect(screen.getByTestId("chat-copy-response-msg-assistant")).toBeInTheDocument();
     expect(screen.queryByTestId("chat-copy-response-msg-user")).not.toBeInTheDocument();
@@ -1168,6 +1236,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     const copyButton = screen.getByTestId("chat-copy-response-msg-assistant");
     expect(copyButton).not.toHaveTextContent("Copy");
@@ -1212,6 +1282,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     const messageBubble = screen.getByTestId("chat-message-msg-failure");
     expect(messageBubble).toHaveClass("chat-message--failure");
@@ -1258,6 +1330,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     const messageBubble = screen.getByTestId("chat-message-msg-run-failure");
     await userEvent.click(within(messageBubble).getByText("Failure details"));
@@ -1290,6 +1364,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     expect(screen.getByTestId("chat-message-msg-user")).toHaveClass("chat-message", "chat-message--user");
     expect(screen.getByTestId("chat-message-msg-assistant")).toHaveClass("chat-message", "chat-message--assistant");
@@ -1321,6 +1397,8 @@ describe("ChatView", () => {
         <ChatView projectId="proj-123" addToast={vi.fn()} />
       </ChatMessageLayoutProvider>,
     );
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     expect(screen.getByTestId("chat-message-layout-user")).toHaveClass("chat-message--user");
     expect(screen.getByTestId("chat-message-layout-assistant")).toHaveClass("chat-message--assistant");
@@ -1356,6 +1434,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     expect(screen.getByTestId("chat-copy-response-streaming")).toBeInTheDocument();
   });
@@ -1387,6 +1467,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     const avatar = document.querySelector(".chat-message--streaming .chat-message-avatar") as HTMLElement | null;
     expect(avatar).toBeInTheDocument();
@@ -1399,7 +1481,10 @@ describe("ChatView", () => {
   it("intercepts exact /clear and starts a fresh session instead of sending message", async () => {
     const sendMessage = vi.fn();
     const createSession = vi.fn().mockResolvedValue({ id: "session-new", agentId: "agent-001" });
-    const stopStreaming = vi.fn();
+    // RUFU-153: /clear now chains on the cancellation barrier — production awaits
+    // stopStreaming()'s promise before replacing the session (FNXC:ChatCancellation
+    // 2026-08-21-01:36), so the mock must return a settled promise, not undefined.
+    const stopStreaming = vi.fn().mockResolvedValue(undefined);
     const clearPendingMessage = vi.fn();
 
     setupMockChat({
@@ -1412,6 +1497,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     const textarea = screen.getByTestId("chat-input");
     await userEvent.type(textarea, "  /clear  {enter}");
@@ -1425,7 +1512,8 @@ describe("ChatView", () => {
   it("intercepts exact /new and starts a fresh session instead of sending message", async () => {
     const sendMessage = vi.fn();
     const createSession = vi.fn().mockResolvedValue({ id: "session-new", agentId: "agent-001" });
-    const stopStreaming = vi.fn();
+    // RUFU-153: same cancellation-barrier promise contract as the /clear test above.
+    const stopStreaming = vi.fn().mockResolvedValue(undefined);
     const clearPendingMessage = vi.fn();
 
     setupMockChat({
@@ -1438,6 +1526,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     const textarea = screen.getByTestId("chat-input");
     await userEvent.type(textarea, "  /new  {enter}");
@@ -1471,6 +1561,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={addToast} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     const textarea = screen.getByTestId("chat-input");
     await userEvent.type(textarea, `  ${command}  {enter}`);
@@ -1494,6 +1586,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     const textarea = screen.getByTestId("chat-input");
     await userEvent.type(textarea, "/new now{enter}");
@@ -1513,6 +1607,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     const textarea = screen.getByTestId("chat-input");
     await userEvent.type(textarea, "/clear now{enter}");
@@ -1530,6 +1626,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     const textarea = screen.getByTestId("chat-input");
     await userEvent.type(textarea, "Hello world{enter}");
@@ -1549,6 +1647,8 @@ describe("ChatView", () => {
       });
 
       await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+      await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
       const textarea = screen.getByTestId("chat-input");
       await userEvent.type(textarea, "Touch hello");
@@ -1580,6 +1680,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     const textarea = screen.getByTestId("chat-input") as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: "Direct first" } });
@@ -1606,23 +1708,23 @@ describe("ChatView", () => {
     localStorage.setItem("fusion:chat-scope", "rooms");
     const sendRoomMessage = vi.fn().mockResolvedValue(undefined);
     setupMockChat({ activeSession: activeSessionFixture, messages: [] });
-    setupMockRooms({
-      activeRoom: {
-        id: "room-001",
-        projectId: "proj-123",
-        slug: "backend",
-        name: "backend",
-        description: null,
-        createdBy: "agent-001",
-        status: "active" as const,
-        thinkingLevel: null,
-        createdAt: "2026-04-08T00:00:00.000Z",
-        updatedAt: "2026-04-08T00:00:00.000Z",
-      },
-      sendRoomMessage,
-    });
+    const backendRoom = {
+      id: "room-001",
+      projectId: "proj-123",
+      slug: "backend",
+      name: "backend",
+      description: null,
+      createdBy: "agent-001",
+      status: "active" as const,
+      thinkingLevel: null,
+      createdAt: "2026-04-08T00:00:00.000Z",
+      updatedAt: "2026-04-08T00:00:00.000Z",
+    };
+    setupMockRooms({ rooms: [backendRoom], activeRoom: backendRoom, sendRoomMessage });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} experimentalFeatures={{ chatRooms: true }} />);
+    // RUFU-153: the detail pane (and its room composer) opens via an explicit room-row selection.
+    await userEvent.click(screen.getByTestId("chat-room-item-backend"));
 
     const textarea = screen.getByTestId("chat-input") as HTMLTextAreaElement;
     await userEvent.type(textarea, "Room hello{enter}");
@@ -1639,23 +1741,23 @@ describe("ChatView", () => {
     const sendRoomMessage = vi.fn().mockResolvedValue(undefined);
     const sendMessage = vi.fn();
     setupMockChat({ activeSession: activeSessionFixture, messages: [], sendMessage });
-    setupMockRooms({
-      activeRoom: {
-        id: "room-001",
-        projectId: "proj-123",
-        slug: "backend",
-        name: "backend",
-        description: null,
-        createdBy: "agent-001",
-        status: "active" as const,
-        thinkingLevel: null,
-        createdAt: "2026-04-08T00:00:00.000Z",
-        updatedAt: "2026-04-08T00:00:00.000Z",
-      },
-      sendRoomMessage,
-    });
+    const backendRoom = {
+      id: "room-001",
+      projectId: "proj-123",
+      slug: "backend",
+      name: "backend",
+      description: null,
+      createdBy: "agent-001",
+      status: "active" as const,
+      thinkingLevel: null,
+      createdAt: "2026-04-08T00:00:00.000Z",
+      updatedAt: "2026-04-08T00:00:00.000Z",
+    };
+    setupMockRooms({ rooms: [backendRoom], activeRoom: backendRoom, sendRoomMessage });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} experimentalFeatures={{ chatRooms: true }} />);
+    // RUFU-153: the detail pane (and its room composer) opens via an explicit room-row selection.
+    await userEvent.click(screen.getByTestId("chat-room-item-backend"));
 
     const textarea = screen.getByTestId("chat-input") as HTMLTextAreaElement;
     await userEvent.type(textarea, "Room click hello");
@@ -1674,24 +1776,24 @@ describe("ChatView", () => {
     const sendRoomMessage = vi.fn().mockResolvedValue(undefined);
     const sendMessage = vi.fn();
     setupMockChat({ activeSession: activeSessionFixture, messages: [], sendMessage });
-    setupMockRooms({
-      activeRoom: {
-        id: "room-001",
-        projectId: "proj-123",
-        slug: "backend",
-        name: "backend",
-        description: null,
-        createdBy: "agent-001",
-        status: "active" as const,
-        thinkingLevel: null,
-        createdAt: "2026-04-08T00:00:00.000Z",
-        updatedAt: "2026-04-08T00:00:00.000Z",
-      },
-      sendRoomMessage,
-    });
+    const backendRoom = {
+      id: "room-001",
+      projectId: "proj-123",
+      slug: "backend",
+      name: "backend",
+      description: null,
+      createdBy: "agent-001",
+      status: "active" as const,
+      thinkingLevel: null,
+      createdAt: "2026-04-08T00:00:00.000Z",
+      updatedAt: "2026-04-08T00:00:00.000Z",
+    };
+    setupMockRooms({ rooms: [backendRoom], activeRoom: backendRoom, sendRoomMessage });
 
     try {
       await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} experimentalFeatures={{ chatRooms: true }} />);
+      // RUFU-153: the detail pane (and its room composer) opens via an explicit room-row selection.
+      await userEvent.click(screen.getByTestId("chat-room-item-backend"));
 
       const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
       const textFile = new File(["room"], "room.txt", { type: "text/plain" });
@@ -1725,6 +1827,8 @@ describe("ChatView", () => {
     setupMockRooms({ sendRoomMessage });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} experimentalFeatures={{ chatRooms: true }} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     const textarea = screen.getByTestId("chat-input") as HTMLTextAreaElement;
     await userEvent.type(textarea, "Direct hello{enter}");
@@ -1744,6 +1848,8 @@ describe("ChatView", () => {
     });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+
 
     const textarea = screen.getByTestId("chat-input");
     await userEvent.type(textarea, "Hello world{Shift>}{Enter}{/Shift}");

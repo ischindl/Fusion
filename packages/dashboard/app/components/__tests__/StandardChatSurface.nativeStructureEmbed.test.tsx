@@ -1,6 +1,14 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import type { NativeStructurePreviewResult } from "@fusion/core";
+/*
+FNXC:RUFU153 2026-08-23-00:21:
+The inline vi.mock("../../api") factory must give fetchChatSession a RESOLVED implementation
+(.mockResolvedValue({ session: { memoryFocus: null } })): ChatView runs
+void fetchChatSession(sessionId, projectId) and resolves .then, so a bare vi.fn() rejects with
+TypeError "Cannot read properties of undefined (reading 'then')". The API mock stays per-file (not in
+the shared harness) per the harness TDZ note.
+*/
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { EnrichedChatSession, NativeStructurePreviewResult } from "@fusion/core";
 import type { ChatMessageInfo } from "../../hooks/chatTypes";
 import { attachChatStream, ensureTaskPlannerChatSession, fetchChatMessages, fetchChatSession, fetchNativeStructurePreview, fetchTaskPlannerChatSession } from "../../api";
 import { StandardChatMessageItem, StandardStreamingMessage } from "../StandardChatSurface";
@@ -94,6 +102,18 @@ describe("StandardChatSurface native structure embeds", () => {
     fetchSession.mockReset();
     fetchMessages.mockReset();
     attachStream.mockReset();
+  });
+
+  /*
+  FNXC:RUFU-153 2026-08-22-23:08:
+  ChatView's session-focus effect chains .then on fetchChatSession(sessionId, projectId),
+  and the afterEach mockReset wipes any prior implementation. Re-establish the resolved
+  seam before every test so full-ChatView renders with an active session do not throw
+  "Cannot read properties of undefined (reading 'then')". The focus effect only reads
+  session?.memoryFocus, so the minimal stub cast is the full contract the effect needs.
+  */
+  beforeEach(() => {
+    fetchSession.mockResolvedValue({ session: { memoryFocus: null } as unknown as EnrichedChatSession });
   });
 
   it.each([
@@ -306,6 +326,8 @@ describe("StandardChatSurface native structure embeds", () => {
       messages: [{ id: "room-message", sessionId: activeSessionFixture.id, role, content: "fusion://mission/M-001", createdAt: "2026-07-19T00:00:00.000Z" } as never],
     });
     await renderWithAct(<ChatView projectId="project-1" addToast={vi.fn()} {...layout} />);
+    // RUFU-153: the message pane (and its embedded preview) opens via an explicit session selection.
+    fireEvent.click(screen.getByTestId("chat-session-session-001"));
     await expectPreview();
   });
 });

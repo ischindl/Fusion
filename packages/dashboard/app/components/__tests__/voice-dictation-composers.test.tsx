@@ -1,3 +1,11 @@
+/*
+FNXC:RUFU153 2026-08-23-00:21:
+Fixtures follow the CURRENT component prop contracts (TaskPlannerChatTab takes taskChatModel,
+StandardChatMessageItem takes activeModelTag/activeModelProvider, SummaryView no longer accepts
+isStartingBreakdown), and the real-ChatView cases drive the list-first user path — session row click
+(chat-session-<id>), room row click (chat-room-item-<slug>), QuickChatFAB open — because per
+FNXC:ChatNavigation (ChatView.tsx) the chat detail pane opens only on user action (closed by default).
+*/
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -60,7 +68,10 @@ const chatState = {
 };
 let activeRoom: any = null;
 vi.mock("../../hooks/useChat", async (importOriginal) => ({ ...(await importOriginal<typeof import("../../hooks/useChat")>()), useChat: () => chatState }));
-vi.mock("../../hooks/useChatRooms", () => ({ useChatRooms: () => ({ rooms: [], roomsLoading: false, roomsError: null, activeRoom, activeRoomMembers: [], messages: [], messagesLoading: false, selectRoom: vi.fn(), createRoom: vi.fn(), deleteRoom: vi.fn(), sendRoomMessage: vi.fn(), clearRoom: vi.fn(), refreshRooms: vi.fn() }) }));
+// RUFU-153: mutable room list (mirrors the activeRoom seam) so the real-ChatView room-composer
+// surface can render a clickable room row; the mock returns the same array instance.
+const chatRooms: any[] = [];
+vi.mock("../../hooks/useChatRooms", () => ({ useChatRooms: () => ({ rooms: chatRooms, roomsLoading: false, roomsError: null, activeRoom, activeRoomMembers: [], messages: [], messagesLoading: false, selectRoom: vi.fn(), createRoom: vi.fn(), deleteRoom: vi.fn(), sendRoomMessage: vi.fn(), clearRoom: vi.fn(), refreshRooms: vi.fn() }) }));
 vi.mock("../../hooks/useNavigationHistory", async (importOriginal) => ({ ...(await importOriginal<typeof import("../../hooks/useNavigationHistory")>()), useNavigationHistoryContext: () => ({ pushNav: vi.fn(), replaceCurrent: vi.fn() }) }));
 vi.mock("../../api", async (importOriginal) => ({ ...(await importOriginal<typeof import("../../api")>()), fetchAiSession: (...args: unknown[]) => mockFetchAiSession(...args), fetchSettings: vi.fn().mockResolvedValue({}), fetchAgents: vi.fn().mockResolvedValue([]), fetchDiscoveredSkills: vi.fn().mockResolvedValue([]), fetchTasks: vi.fn().mockResolvedValue([]), searchFiles: vi.fn().mockResolvedValue({ files: [] }) }));
 
@@ -117,10 +128,11 @@ async function renderRefinementComposer() {
 }
 
 const primarySurfaceRenders = [
-  { name: "ChatView primary composer", render: () => { activeRoom = null; return render(<ChatView projectId="project-1" addToast={vi.fn()} />); } },
-  { name: "ChatView secondary room composer", render: () => { activeRoom = { id: "room-1", name: "Room" }; return render(<ChatView projectId="project-1" addToast={vi.fn()} />); } },
+  { name: "ChatView primary composer", render: () => { activeRoom = null; localStorage.setItem("fusion:chat-scope", "direct"); const result = render(<ChatView projectId="project-1" addToast={vi.fn()} />); fireEvent.click(screen.getByTestId("chat-session-voice-session")); return result; } },
+  // RUFU-153: the list-first contract (FN-054/FN-068) opens the detail pane through the session/room row.
+  { name: "ChatView secondary room composer", render: () => { const room = { id: "room-1", slug: "room-1", name: "Room" }; chatRooms.length = 0; chatRooms.push(room); activeRoom = room; localStorage.setItem("fusion:chat-scope", "rooms"); const result = render(<ChatView projectId="project-1" addToast={vi.fn()} />); fireEvent.click(screen.getByTestId("chat-room-item-room-1")); return result; } },
   { name: "StandardChatSurface correction composer", render: () => { const result = render(<StandardChatMessageItem message={{ id: "message-1", role: "user", content: "Populated", createdAt: "2026-07-24T00:00:00.000Z" } as unknown as ChatMessageInfo} forcePlain={false} agentName="Agent" hideAssistantIdentity={false} showAssistantModelTag={false} activeModelTag={null} activeModelProvider={null} activeSessionId="session-1" canEdit onEditMessage={vi.fn()} />); fireEvent.click(screen.getByRole("button", { name: /edit/i })); return result; } },
-  { name: "QuickChatFAB-opened shared ChatView composer", render: () => { const result = render(<QuickChatVoicePath />); fireEvent.click(screen.getByTestId("quick-chat-fab")); return result; } },
+  { name: "QuickChatFAB-opened shared ChatView composer", render: () => { localStorage.setItem("fusion:chat-scope", "direct"); const result = render(<QuickChatVoicePath />); fireEvent.click(screen.getByTestId("quick-chat-fab")); fireEvent.click(screen.getByTestId("chat-session-voice-session")); return result; } },
   { name: "ComposeChatPanel request composer", render: () => render(<ComposeChatPanel embeds={[]} draftBody="" onUseDraft={vi.fn()} onClose={vi.fn()} />) },
   { name: "TaskPlannerChatTab composer", render: () => render(<ToastProvider><NavigationHistoryProvider value={{ pushNav: vi.fn(), removeNav: vi.fn() } as unknown as UseNavigationHistoryResult}><TaskPlannerChatTab task={taskWithComment()} active taskChatModel={{ provider: "mock", modelId: "mock" }} addToast={vi.fn()} /></NavigationHistoryProvider></ToastProvider>) },
   { name: "TaskChatTab composer", render: () => render(<TaskChatTab task={taskWithComment()} active projectId="project-1" addToast={vi.fn()} />) },
@@ -160,7 +172,7 @@ async function exerciseRealComposer(renderSurface: () => ReturnType<typeof rende
 
 describe("voice dictation composer inventory", () => {
   beforeEach(async () => {
-    vi.clearAllMocks(); activeRoom = null; voiceProjectIds.length = 0;
+    vi.clearAllMocks(); activeRoom = null; chatRooms.length = 0; localStorage.clear(); voiceProjectIds.length = 0;
     await act(async () => { setVoice({ enabled: true, supported: true, state: "idle", partialText: "", finalText: "", error: undefined }); });
   });
   afterEach(cleanup);
@@ -177,6 +189,8 @@ describe("voice dictation composer inventory", () => {
   it("opens the reachable shared ChatView composer from QuickChatFAB", () => {
     render(<QuickChatVoicePath />);
     fireEvent.click(screen.getByTestId("quick-chat-fab"));
+    // RUFU-153: the shared ChatView opens the detail pane through the session row (list-first contract FN-054/FN-068).
+    fireEvent.click(screen.getByTestId("chat-session-voice-session"));
     expect(screen.getByRole("button", { name: "Start voice dictation" })).toBeInTheDocument();
   });
 

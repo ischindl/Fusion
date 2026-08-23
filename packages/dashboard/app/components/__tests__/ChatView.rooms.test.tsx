@@ -1,3 +1,11 @@
+/*
+FNXC:RUFU153 2026-08-23-00:21:
+Per FNXC:ChatNavigation (ChatView.tsx) the rooms detail pane is closed by default and opens only on a
+user room-row click: rooms-scope tests expose a room row in the mock and click it
+(chat-room-item-<slug>) before asserting room-composer DOM. The shared ViewHeader keeps the canonical
+New Chat button (chat-new-btn) in BOTH list and detail states (FN-096), so the mobile-footer test
+asserts the Create-room button plus the shared New Chat button's presence, not its absence.
+*/
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
@@ -361,14 +369,16 @@ describe("ChatView — rooms (FN-3805..FN-3811 contract)", () => {
     });
   });
 
-  it("shows Create room in mobile footer for Rooms scope and hides New Chat + rooms header", async () => {
+  it("shows Create room in mobile footer for Rooms scope, keeps shared-header New Chat, and hides rooms header", async () => {
     const viewportSpy = mockMobileViewport();
 
     const { container } = await renderRoomDetailWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} experimentalFeatures={{ chatRooms: true }} />);
 
     const createRoomButton = screen.getByTestId("chat-create-room-btn");
     expect(createRoomButton.closest(".chat-sidebar-footer")).toBeInTheDocument();
-    expect(screen.queryByTestId("chat-new-btn")).not.toBeInTheDocument();
+    // RUFU-153: FN-096 keeps the canonical New Chat action in the shared ViewHeader for all hosts
+    // and scopes — it is no longer hidden in the mobile Rooms scope.
+    expect(screen.getByTestId("chat-new-btn").closest("header.view-header")).toBeInTheDocument();
     expect(container.querySelector(".chat-sidebar-rooms-header")).not.toBeInTheDocument();
 
     viewportSpy.mockRestore();

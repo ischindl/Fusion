@@ -1,4 +1,11 @@
+/*
+FNXC:RUFU153 2026-08-23-00:21:
+Per FNXC:ChatNavigation (ChatView.tsx) the main pane is gated behind the closed-by-default detailOpen
+state and opens only on a user row click. The test clicks the active session row (chat-session-<id>)
+through the canonical user path before asserting the hash-mention composer DOM.
+*/
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { userEvent } from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatView } from "../ChatView";
 import { FileBrowserProvider } from "../../context/FileBrowserContext";
@@ -112,6 +119,8 @@ describe("ChatView hash mentions", () => {
         <ChatView addToast={vi.fn()} />
       </FileBrowserProvider>,
     );
+    // RUFU-153: the detail pane (composer included) opens only on row click (FNXC:ChatNavigation 2026-08-19-19:36).
+    await userEvent.click(screen.getByTestId("chat-session-session-1"));
 
     const textarea = screen.getByPlaceholderText("Type a message...") as HTMLTextAreaElement;
     fireEvent.change(textarea, {

@@ -1,3 +1,11 @@
+/*
+FNXC:RUFU153 2026-08-23-00:21:
+The thinking-level control renders inside the gated composer region. Per FNXC:ChatNavigation
+(ChatView.tsx) the main pane is closed by default and opens only on a user row click: direct-scope
+tests click the session row (chat-session-<id>), and the rooms-scope test clicks the room row
+(chat-room-item-<slug>, exposed via a mocked room row) before asserting the control.
+*/
+
 // ChatView thinking-level control mount test (FN-7898).
 //
 // Asserts the Brain-icon ChatThinkingLevelControl renders in the direct-session
@@ -225,6 +233,7 @@ describe("ChatView thinking-level control (FN-7898)", () => {
     mockUseChat.mockReturnValue(chatState({ activeSession: session, sessions: [session], setSessionThinkingLevel }));
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    fireEvent.click(screen.getByTestId("chat-session-sess-a"));
 
     const trigger = screen.getByTestId("chat-thinking-btn");
     expect(trigger).toBeInTheDocument();
@@ -241,6 +250,7 @@ describe("ChatView thinking-level control (FN-7898)", () => {
     mockUseChat.mockReturnValue(chatState({ activeSession: session, sessions: [session], setSessionModel }));
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    fireEvent.click(screen.getByTestId("chat-session-sess-model"));
 
     fireEvent.click(screen.getByTestId("chat-thinking-btn"));
     fireEvent.click(screen.getByTestId("custom-model-dropdown"));
@@ -258,6 +268,7 @@ describe("ChatView thinking-level control (FN-7898)", () => {
     mockUseChat.mockReturnValue(chatState({ activeSession: session, sessions: [session], setSessionModel, agentsMap }));
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    fireEvent.click(screen.getByTestId("chat-session-sess-agent"));
 
     fireEvent.click(screen.getByTestId("chat-thinking-btn"));
     const agentMode = screen.getByTestId("chat-thinking-mode-agent");
@@ -287,6 +298,8 @@ describe("ChatView thinking-level control (FN-7898)", () => {
     localStorage.setItem("fusion:chat-scope", "rooms");
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} experimentalFeatures={{ chatRooms: true }} />);
+    // RUFU-153: the detail pane (and its room composer) opens via an explicit room-row selection.
+    fireEvent.click(screen.getByTestId("chat-room-item-room-a"));
 
     const attachButton = screen.getByTestId("chat-attach-btn");
     const thinkingButton = screen.getByTestId("chat-thinking-btn");
@@ -318,6 +331,7 @@ describe("ChatView thinking-level control (FN-7898)", () => {
       });
       return result!;
     })();
+    fireEvent.click(screen.getByTestId("chat-session-sess-with-level"));
 
     expect(screen.getByTestId("chat-thinking-btn").className).toContain("chat-thinking-btn--active");
     fireEvent.click(screen.getByTestId("chat-thinking-btn"));
@@ -350,6 +364,7 @@ describe("ChatView thinking-level control (FN-7898)", () => {
     mockUseChat.mockReturnValue(chatState({ activeSession: session, sessions: [session], agentsMap, setSessionModel }));
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} {...props} />);
+    fireEvent.click(screen.getByTestId(`chat-session-sess-${name.replaceAll(" ", "-")}`));
 
     expect(document.querySelector(".chat-view--narrow")).toBeTruthy();
     if (props.floating) expect(document.querySelector(".chat-view--floating")).toBeTruthy();
@@ -378,6 +393,7 @@ describe("ChatView thinking-level control (FN-7898)", () => {
     mockUseChat.mockReturnValue(chatState({ activeSession: session, sessions: [session] }));
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    fireEvent.click(screen.getByTestId("chat-session-sess-default-medium"));
 
     fireEvent.click(screen.getByTestId("chat-thinking-btn"));
     expect(await screen.findByText("Default (medium)")).toBeInTheDocument();
@@ -394,6 +410,7 @@ describe("ChatView thinking-level control (FN-7898)", () => {
     mockUseChat.mockReturnValue(chatState({ activeSession: session, sessions: [session] }));
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    fireEvent.click(screen.getByTestId("chat-session-sess-default-off"));
 
     fireEvent.click(screen.getByTestId("chat-thinking-btn"));
     expect(screen.getByText("Default (off)")).toBeInTheDocument();

@@ -1,3 +1,11 @@
+/*
+FNXC:RUFU153 2026-08-23-00:21:
+Per FNXC:ChatNavigation (ChatView.tsx) the main pane is closed by default and opens only on a user row
+click (no auto-open path), so the tests click the session row (chat-session-<id>; async sessions via
+findByTestId) before asserting streaming DOM. A remount resets detailOpen, so multi-mount tests click
+once per mount. Generating fixtures keep isGenerating: true so useChat's attachIfGenerating restore
+path runs off the raw fetched session object.
+*/
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatView } from "../ChatView";
@@ -98,7 +106,12 @@ const defaultRoomsState: UseChatRoomsResult = {
   clearRoom: vi.fn(),
 };
 
-function makeSession(overrides: Partial<ChatSession> & Pick<ChatSession, "id" | "agentId">): ChatSession {
+// RUFU-153: the real useChat restore/attach seams (app/hooks/useChat.ts attachIfGenerating)
+// read the server-derived `isGenerating` flag off the raw session object; the core
+// ChatSession type does not declare it, so the generating fixtures declare it explicitly.
+type ChatSessionWithGeneration = ChatSession & { isGenerating?: boolean };
+
+function makeSession(overrides: Partial<ChatSessionWithGeneration> & Pick<ChatSessionWithGeneration, "id" | "agentId">): ChatSessionWithGeneration {
   return {
     id: overrides.id,
     agentId: overrides.agentId,
@@ -107,6 +120,8 @@ function makeSession(overrides: Partial<ChatSession> & Pick<ChatSession, "id" | 
     projectId: overrides.projectId ?? null,
     modelProvider: overrides.modelProvider ?? null,
     modelId: overrides.modelId ?? null,
+    // RUFU-153: pass the server-derived generating flag through; the restore/attach paths key off it.
+    isGenerating: overrides.isGenerating,
     createdAt: overrides.createdAt ?? "2026-04-08T00:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2026-04-08T00:00:00.000Z",
     inFlightGeneration: overrides.inFlightGeneration ?? null,
@@ -183,6 +198,8 @@ describe("FN-6599 ChatView streaming prior thread", () => {
       id: "session-restored-streaming",
       agentId: "agent-001",
       title: "Restored streaming",
+      // RUFU-153: the restore/attach paths key off the server-derived isGenerating flag.
+      isGenerating: true,
       inFlightGeneration: {
         status: "generating" as const,
         streamingText: "live partial response",
@@ -202,10 +219,14 @@ describe("FN-6599 ChatView streaming prior thread", () => {
     mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? generatingSession.id : null);
     mockFetchChatSessions.mockResolvedValue({ sessions: [generatingSession] });
     mockFetchChatMessages.mockResolvedValue({ messages: priorThreadNewestFirst });
+    // RUFU-153: the authoritative session detail fetch must return the generating session itself.
+    mockFetchChatSession.mockResolvedValue({ session: generatingSession });
 
     await act(async () => {
       render(<ChatView projectId="proj-123" addToast={vi.fn()} />);
     });
+    // RUFU-153: the detail pane is gated on an explicit session selection.
+    fireEvent.click(await screen.findByTestId("chat-session-session-restored-streaming"));
 
     await waitFor(() => {
       expect(screen.getByText("live partial response")).toBeInTheDocument();
@@ -227,6 +248,8 @@ describe("FN-6599 ChatView streaming prior thread", () => {
       id: "session-reentry",
       agentId: "agent-001",
       title: "Re-entry",
+      // RUFU-153: the restore/attach paths key off the server-derived isGenerating flag.
+      isGenerating: true,
       inFlightGeneration: {
         status: "generating" as const,
         streamingText: "authoritative partial response",
@@ -243,10 +266,14 @@ describe("FN-6599 ChatView streaming prior thread", () => {
     mockFetchChatMessages.mockResolvedValue({ messages: [priorMessage] });
 
     const firstView = render(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    // RUFU-153: the detail pane is gated on an explicit session selection.
+    fireEvent.click(await screen.findByTestId("chat-session-session-reentry"));
     await screen.findByText("authoritative partial response");
     firstView.unmount();
 
     render(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    // RUFU-153: the remounted view also starts with the pane closed.
+    fireEvent.click(await screen.findByTestId("chat-session-session-reentry"));
     await waitFor(() => {
       expect(screen.getByText("authoritative partial response")).toBeInTheDocument();
       expect(screen.getByText("Thinking")).toBeInTheDocument();
@@ -295,6 +322,8 @@ describe("FN-6599 ChatView streaming prior thread", () => {
     });
 
     const rendered = render(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    // RUFU-153: the detail pane (and its composer) is gated on an explicit session selection.
+    fireEvent.click(await screen.findByTestId("chat-session-session-stop"));
     const input = await screen.findByTestId("chat-input");
     fireEvent.change(input, { target: { value: "Keep this" } });
     fireEvent.click(await screen.findByTestId("chat-send-btn"));
@@ -310,6 +339,8 @@ describe("FN-6599 ChatView streaming prior thread", () => {
 
     rendered.unmount();
     render(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    // RUFU-153: the remounted view also starts with the pane closed.
+    fireEvent.click(await screen.findByTestId("chat-session-session-stop"));
     expect(await screen.findByText("Distinct direct stopped prefix")).toBeInTheDocument();
   });
 
@@ -323,6 +354,8 @@ describe("FN-6599 ChatView streaming prior thread", () => {
       id: "session-mid-turn-stable",
       agentId: "agent-001",
       title: "Mid turn stable",
+      // RUFU-153: the restore/attach paths key off the server-derived isGenerating flag.
+      isGenerating: true,
       inFlightGeneration: {
         status: "generating" as const,
         streamingText: "working",
@@ -358,6 +391,8 @@ describe("FN-6599 ChatView streaming prior thread", () => {
     await act(async () => {
       render(<ChatView projectId="proj-123" addToast={vi.fn()} />);
     });
+    // RUFU-153: the detail pane is gated on an explicit session selection.
+    fireEvent.click(await screen.findByTestId("chat-session-session-mid-turn-stable"));
 
     await waitFor(() => {
       expect(screen.getByText("working")).toBeInTheDocument();

@@ -361,28 +361,6 @@ roughly 300-second stall. Its paired ledger entry is removed in the same commit;
 */
 const quarantinedDashboardTests: string[] = [
   /*
-  FNXC:DashboardTestQuarantine 2026-08-22-09:56:
-  RUFU-140 quarantines voice-dictation-composers because register entry 15
-  (docs/solutions/test-failures/suite-only-flakes-observed-register.md) declared "the NEXT
-  standalone failure of the same tests is an on-sight quarantine with no further discretion"
-  (deletion ratchet, AGENTS.md "Flaky Tests Are Quarantined On Sight"), and the 2026-08-22
-  ~09:57 UTC RUFU-140 verification session (worktree faint-raven, HEAD 016db03e46) produced
-  exactly that: 11-file targeted batch 7 failed / 804 passed, all 7 in this file. Prior
-  observations recorded in entry 15: 2026-08-21 ~20:24 UTC (task-document only) and
-  2026-08-22 ~04:45-05:00 UTC at e36d9149a7 (11-file batch + solo runs, 7 failed / 31
-  passed; A/B there proved the base test-file content fails 14 ⊇ 7, so the RUFU-140 fixture
-  repairs strictly reduced 14→7). Context-dependent: the loaded full package suite at the
-  same SHA passed the file. Root-cause A/B attribution per entry 15: tracked RUFU-153
-  ChatView composer/streaming-refactor DOM/effect-ordering drift — app/components/ChatView.tsx
-  is product code outside RUFU-140 scope. NO appeasement: no timeout widening, retries,
-  assertion changes, or .skip. Mirrored in scripts/lib/test-quarantine.json (quarantinedAt
-  2026-08-22, deadline 2026-09-05) and in the concrete coverage.exclude entry below (the
-  lockstep checker scans concrete exclude literals only; const-array verification is tracked
-  by RUFU-157). Remove all three together on rescue (requires the RUFU-153 root-cause fix,
-  not stabilization passes).
-  */
-  "app/components/__tests__/voice-dictation-composers.test.tsx",
-  /*
   FNXC:DashboardTestQuarantine 2026-07-17-16:50:
   FN-8245 re-admits all three UI files with their ledger rows removed in lockstep.
   QuickEntryBox restores focus from its resolved submit path while isolated jsdom
@@ -887,21 +865,17 @@ export default defineConfig({
       reportsDirectory: "./coverage",
       include: ["app/**/*.{ts,tsx}", "src/**/*.{ts,tsx}"],
       /*
-      FNXC:DashboardTestQuarantine 2026-08-22-09:56:
-      The voice-dictation-composers entry is a CONCRETE string (not only a member of the
-      quarantinedDashboardTests const) so scripts/check-quarantine-ledger.mjs — which
-      verifies lockstep against concrete `exclude:` literals only — can see the RUFU-140
-      quarantine. This coverage lane already excludes every test file via the test-file
-      wildcard that is the first entry of the array below, so the extra entry is a runtime
-      no-op for coverage. Remove it
-      together with the ledger row and the const-array entry when the ratchet expires
-      (2026-09-05) or the RUFU-153 root-cause fix rescues the file.
+      FNXC:DashboardTestQuarantine 2026-08-22-23:28:
+      RUFU-153 rescues the voice-dictation-composers quarantine before its 2026-09-05 deadline:
+      the seven stale real-ChatView-surface cases now drive the list-first user path (session
+      row / room row / QuickChatFAB open + session row), so the concrete coverage.exclude entry
+      and the paired quarantinedDashboardTests const-array entry are removed in the same commit,
+      in lockstep with the scripts/lib/test-quarantine.json ledger row.
       */
       exclude: [
         "**/*.test.{ts,tsx}",
         "**/*.d.ts",
         "dist/**",
-        "app/components/__tests__/voice-dictation-composers.test.tsx",
       ],
     },
   },

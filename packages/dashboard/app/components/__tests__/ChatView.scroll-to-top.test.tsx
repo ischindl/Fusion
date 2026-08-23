@@ -1,3 +1,9 @@
+/*
+FNXC:RUFU153 2026-08-23-00:21:
+Per FNXC:ChatNavigation (ChatView.tsx) the scroll target (message list + jump-to-top control) lives in
+the gated main pane, which is closed by default and opens only on a user row click. The tests click the
+active session row (chat-session-<id>) before asserting the scroll DOM.
+*/
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render as rtlRender, screen, waitFor } from "@testing-library/react";
 import { ChatView } from "../ChatView";
@@ -170,13 +176,15 @@ describe("ChatView scroll-to-top message affordance", () => {
   });
 
   it("renders on assistant messages and not on user or failed assistant messages", async () => {
-    await setup({
+    const view = await setup({
       messages: [
         { id: "assistant-ok", sessionId: activeSession.id, role: "assistant", content: "hello", createdAt: "2026-04-08T00:00:00.000Z" },
         { id: "assistant-failed", sessionId: activeSession.id, role: "assistant", content: "failed", createdAt: "2026-04-08T00:00:01.000Z", failureInfo: { summary: "oops" } },
         { id: "user-1", sessionId: activeSession.id, role: "user", content: "hey", createdAt: "2026-04-08T00:00:02.000Z" },
       ],
     });
+    // RUFU-153: the detail pane is gated on an explicit session selection.
+    fireEvent.click(screen.getByTestId("chat-session-session-001"));
 
     expect(screen.getByTestId("chat-message-scroll-to-top-assistant-ok")).toHaveAttribute("aria-label", "Scroll message to top");
     expect(screen.queryByTestId("chat-message-scroll-to-top-assistant-failed")).toBeNull();
@@ -189,6 +197,8 @@ describe("ChatView scroll-to-top message affordance", () => {
         { id: "assistant-ok", sessionId: activeSession.id, role: "assistant", content: "hello", createdAt: "2026-04-08T00:00:00.000Z" },
       ],
     });
+    // RUFU-153: the detail pane is gated on an explicit session selection.
+    fireEvent.click(screen.getByTestId("chat-session-session-001"));
 
     const container = document.querySelector(".chat-messages") as HTMLDivElement;
     const target = screen.getByTestId("chat-message-assistant-ok") as HTMLDivElement;
@@ -218,6 +228,8 @@ describe("ChatView scroll-to-top message affordance", () => {
         { id: "assistant-ok", sessionId: activeSession.id, role: "assistant", content: "hello", createdAt: "2026-04-08T00:00:00.000Z" },
       ],
     });
+    // RUFU-153: the detail pane is gated on an explicit session selection.
+    fireEvent.click(screen.getByTestId("chat-session-session-001"));
 
     const container = document.querySelector(".chat-messages") as HTMLDivElement;
     const target = screen.getByTestId("chat-message-assistant-ok") as HTMLDivElement;
@@ -238,6 +250,8 @@ describe("ChatView scroll-to-top message affordance", () => {
         { id: "assistant-ok", sessionId: activeSession.id, role: "assistant", content: "hello", createdAt: "2026-04-08T00:00:00.000Z" },
       ],
     });
+    // RUFU-153: the detail pane is gated on an explicit session selection.
+    fireEvent.click(screen.getByTestId("chat-session-session-001"));
 
     const container = document.querySelector(".chat-messages") as HTMLDivElement;
     const target = screen.getByTestId("chat-message-assistant-ok") as HTMLDivElement;
@@ -261,6 +275,8 @@ describe("ChatView scroll-to-top message affordance", () => {
         { id: "assistant-thinking", sessionId: activeSession.id, role: "assistant", content: "hello", thinkingOutput: "reasoning", createdAt: "2026-04-08T00:00:00.000Z" },
       ],
     });
+    // RUFU-153: the detail pane is gated on an explicit session selection.
+    fireEvent.click(screen.getByTestId("chat-session-session-001"));
 
     const message = screen.getByTestId("chat-message-assistant-thinking");
     const row = message.querySelector(".chat-message-thinking-row");
@@ -286,6 +302,8 @@ describe("ChatView scroll-to-top message affordance", () => {
     );
 
     fireEvent.click(screen.getByTestId("chat-sidebar-scope-rooms"));
+    // RUFU-153: opening the pane in rooms scope requires the room row selection.
+    fireEvent.click(screen.getByTestId("chat-room-item-room-a"));
 
     expect(screen.getByTestId("chat-message-scroll-to-top-room-assistant-1")).toBeInTheDocument();
   });
@@ -302,6 +320,8 @@ describe("ChatView scroll-to-top message affordance", () => {
     );
 
     fireEvent.click(screen.getByTestId("chat-sidebar-scope-rooms"));
+    // RUFU-153: opening the pane in rooms scope requires the room row selection.
+    fireEvent.click(screen.getByTestId("chat-room-item-room-a"));
     const container = document.querySelector(".chat-messages") as HTMLDivElement;
     const target = screen.getByTestId("chat-message-room-assistant-1") as HTMLDivElement;
     const button = screen.getByTestId("chat-message-scroll-to-top-room-assistant-1");
@@ -319,18 +339,31 @@ describe("ChatView scroll-to-top message affordance", () => {
   });
 
   it("does not reset to top when a stale zero snapshot is captured while user is reading older messages", async () => {
+    // RUFU-153: the room-scope tests earlier in this file persist chatScope="rooms" to
+    // localStorage; this test exercises the direct-session thread, so start from a clean store.
+    localStorage.clear();
     const state: UseChatReturn = {
       ...defaultChatState,
-      messages: [
-        { id: "assistant-1", sessionId: activeSession.id, role: "assistant", content: "hello", createdAt: "2026-04-08T00:00:00.000Z" },
-        { id: "assistant-2", sessionId: activeSession.id, role: "assistant", content: "world", createdAt: "2026-04-08T00:00:01.000Z" },
-      ],
+      messages: [],
     };
 
     mockUseChat.mockImplementation(() => state);
     mockUseChatRooms.mockReturnValue(defaultRoomsState);
 
     const { rerender } = await renderWithAct(<ChatView addToast={vi.fn()} />);
+    // RUFU-153: the detail pane is gated on an explicit session selection.
+    fireEvent.click(screen.getByTestId("chat-session-session-001"));
+    // RUFU-153: messages arrive after the pane opens (as with a production load), which
+    // establishes the thread's bottom-anchor state before the reader scrolls into history.
+    state.messages = [
+      { id: "assistant-1", sessionId: activeSession.id, role: "assistant", content: "hello", createdAt: "2026-04-08T00:00:00.000Z" },
+      { id: "assistant-2", sessionId: activeSession.id, role: "assistant", content: "world", createdAt: "2026-04-08T00:00:01.000Z" },
+    ];
+    rerender(<ChatView addToast={vi.fn()} />);
+    // Settle the forced bottom-anchor animation frames before the reader takes over.
+    await flushAnimationFrame();
+    await flushAnimationFrame();
+    await flushAnimationFrame();
     const container = document.querySelector(".chat-messages") as HTMLDivElement;
 
     let scrollTopValue = 600;

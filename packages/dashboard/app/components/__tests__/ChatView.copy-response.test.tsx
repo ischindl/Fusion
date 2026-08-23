@@ -1,4 +1,10 @@
 /*
+FNXC:RUFU153 2026-08-23-00:21:
+The copy assertions target the gated main pane. Per FNXC:ChatNavigation (ChatView.tsx) the detail pane
+is closed by default and opens only on a user row click, so the test clicks the active session row
+(chat-session-<id>) before asserting the provider-response copy affordance.
+*/
+/*
 FNXC:DashboardTests 2026-07-12-17:50:
 ChatView provider-response copy regressions must recreate secure Clipboard API and non-secure-origin fallback paths so the shared copyTextToClipboard invariant stays covered at the real affordance.
 */
@@ -113,6 +119,8 @@ function mockExecCommand(result: boolean) {
 async function renderAndClickCopy() {
   setupProviderResponse();
   await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+  // RUFU-153: the detail pane (message list + composer) opens only on row click (FNXC:ChatNavigation 2026-08-19-19:36).
+  await userEvent.click(screen.getByTestId("chat-session-session-001"));
   const copyButton = await screen.findByTestId("chat-copy-response-msg-copy");
   await userEvent.click(copyButton);
   return copyButton;

@@ -1,4 +1,10 @@
 /*
+FNXC:RUFU153 2026-08-23-00:21:
+The edit affordance renders inside the gated main pane. Per FNXC:ChatNavigation (ChatView.tsx) the
+detail pane is closed by default and opens only on a user row click, so the tests click the active
+session row (chat-session-<id>) before asserting the message-edit DOM.
+*/
+/*
 FNXC:ChatMessageEdit 2026-07-07-09:00:
 Covers the FN-7628 chat message edit affordance across the surfaces enumerated in
 PROMPT.md: renders only for user messages in direct/model-loop chat, is absent for
@@ -182,6 +188,8 @@ describe("ChatView message edit affordance", () => {
     }));
 
     await renderWithAct(<ChatView addToast={vi.fn()} />);
+    // RUFU-153: the detail pane is gated on an explicit session selection.
+    fireEvent.click(screen.getByTestId("chat-session-session-001"));
 
     const editButton = screen.getByTestId("chat-message-edit-user-1");
     const userMessage = screen.getByTestId("chat-message-user-1");
@@ -247,6 +255,8 @@ describe("ChatView message edit affordance", () => {
     }));
 
     await renderWithAct(<ChatView addToast={vi.fn()} />);
+    // RUFU-153: the detail pane is gated on an explicit session selection.
+    fireEvent.click(screen.getByTestId("chat-session-session-001"));
 
     fireEvent.click(screen.getByTestId("chat-message-edit-user-1"));
 
@@ -295,6 +305,8 @@ describe("ChatView message edit affordance", () => {
     }));
 
     await renderWithAct(<ChatView addToast={vi.fn()} />);
+    // RUFU-153: the detail pane is gated on an explicit session selection.
+    fireEvent.click(screen.getByTestId("chat-session-session-001"));
 
     fireEvent.click(screen.getByTestId("chat-message-edit-user-1"));
     const editor = screen.getByTestId("chat-message-edit-editor-user-1");
@@ -367,6 +379,8 @@ describe("ChatView message edit affordance", () => {
     }));
 
     await renderWithAct(<ChatView addToast={vi.fn()} />);
+    // RUFU-153: the detail pane is gated on an explicit session selection.
+    fireEvent.click(screen.getByTestId("chat-session-session-001"));
 
     const assistantMessage = screen.getByTestId("chat-message-assistant-1");
     expect(assistantMessage.querySelector("[aria-label='Edit message']")).toBeNull();

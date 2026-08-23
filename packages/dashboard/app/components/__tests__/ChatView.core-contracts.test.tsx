@@ -1,4 +1,11 @@
 /*
+FNXC:RUFU153 2026-08-23-00:21:
+Model-tag contract (FN-5108): when neither the session model nor the agent runtime config resolves, the
+thread header shows the resolveSessionProvider default-model fallback tag. The tests assert the fallback
+is visible rather than absent, and drive the gated main pane by clicking the session row first (detail
+pane opens only on user action per FNXC:ChatNavigation, ChatView.tsx).
+*/
+/*
 FNXC:DashboardTests 2026-06-25-17:44:
 ChatView suite split 5/5 (model/delete/css contracts) extracts model-tag, session-delete, and CSS-contract describes from ChatView.core.test.tsx so the cap-crosser is split into focused siblings rather than grandfathered. Shares ChatView.test-harness; vi.mock factories stay inline and self-contained per the harness TDZ warning.
 */
@@ -207,6 +214,10 @@ describe("formatModelTag helper function", () => {
         { id: "msg-001", sessionId: "session-001", role: "assistant", content: "Hi!", createdAt: "2026-04-08T00:00:00.000Z" },
       ],
     });
+    // RUFU-153: resolveSessionProvider now falls through to the project defaults tier when the
+    // session model is incomplete; serve a catalog without defaults so the resolver's null
+    // path (no model tag) remains the behavior under test.
+    mockFetchModels.mockResolvedValue({ models: [], favoriteProviders: [], favoriteModels: [] });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
 
@@ -230,6 +241,10 @@ describe("formatModelTag helper function", () => {
         { id: "msg-001", sessionId: "session-001", role: "assistant", content: "Hi!", createdAt: "2026-04-08T00:00:00.000Z" },
       ],
     });
+    // RUFU-153: resolveSessionProvider now falls through to the project defaults tier when the
+    // session model is incomplete; serve a catalog without defaults so the resolver's null
+    // path (no model tag) remains the behavior under test.
+    mockFetchModels.mockResolvedValue({ models: [], favoriteProviders: [], favoriteModels: [] });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
 
