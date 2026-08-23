@@ -1263,11 +1263,15 @@
     "cancelButton": "Cancel",
     "clearConversationFailed": "Failed to clear conversation",
     "closeQuickChat": "Close quick chat",
+    "openInNewWindow": "Open in new window",
     "conversationArchived": "Conversation archived",
     "conversationDeleted": "Conversation deleted",
     "conversationName": "Conversation name",
     "conversationRenamed": "Conversation renamed",
     "contextWindowAria": "Estimated {{used}} of {{total}} context tokens",
+    "contextWindowMeasuredAria": "Session context {{used}} of {{total}} tokens ({{percent}}%), provider-reported input and output",
+    "contextWindowPendingAria": "Session context unknown until the next reply — {{total}} token window",
+    "contextWindowPendingValue": "— / {{total}}",
     "copyFailed": "Copy failed",
     "copyResponse": "Copy response",
     "create": "Create",
@@ -1384,6 +1388,13 @@
     "scopeRooms": "Rooms",
     "scrollMessageToTop": "Scroll message to top",
     "searchConversations": "Search conversations...",
+    "conversationSearchPlaceholder": "Find in conversation",
+    "conversationSearchLabel": "Find in conversation",
+    "conversationSearchNoMatches": "No matches",
+    "conversationSearchMatchCount": "{{current}} of {{count}} matches",
+    "conversationSearchPrevious": "Previous match",
+    "conversationSearchNext": "Next match",
+    "conversationSearchClose": "Close search",
     "selectAgentForNewChat": "Select agent for new chat",
     "selectAgentPlaceholder": "Select an agent to start chatting",
     "selectModel": "Select a model",
@@ -9704,5 +9715,13 @@
     "status": "Status:",
     "waitConnected": "Wait for the status above to become {{status}}.",
     "waitingQr": "Waiting for a fresh QR code. Keep this panel open and refresh if needed."
+  },
+  "thinking": {
+    "expandAll": "Expand all",
+    "collapseAll": "Collapse all",
+    "noDetail": "No reasoning captured for this step",
+    "untitledSection": "Untitled reasoning",
+    "sectionCount": "{{count}} section",
+    "sectionCountPlural": "{{count}} sections"
   }
 }

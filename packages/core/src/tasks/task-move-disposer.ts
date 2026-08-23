@@ -20,6 +20,11 @@ export interface TaskMoveDisposalInput {
  * owned by another store. A set preserves every live owner during overlap.
  */
 const disposers = new WeakMap<TaskStore, Set<TaskMoveDisposer>>();
+/*
+FNXC:TaskReset 2026-08-22-04:32:
+Reset fences planner owners in addition to move owners because a reset discards task state while an ordinary move does not. Reset disposers run under the caller's held, non-reentrant planning-lifecycle lock, so they must never wait on work that needs that lock.
+*/
+const resetDisposers = new WeakMap<TaskStore, Set<TaskResetDisposer>>();
 const TASK_MOVE_DISPOSAL_TIMEOUT_MS = 30_000;
 let taskMoveDisposalTimeoutMs = TASK_MOVE_DISPOSAL_TIMEOUT_MS;
 
@@ -42,6 +47,25 @@ export function registerTaskMoveDisposer(store: TaskStore, disposer: TaskMoveDis
 
 export function getTaskMoveDisposer(store: TaskStore): TaskMoveDisposer | undefined {
   const registered = disposers.get(store);
+  if (!registered?.size) return undefined;
+  return async (task) => {
+    await Promise.all([...registered].map((disposer) => disposer(task)));
+  };
+}
+
+export function registerTaskResetDisposer(store: TaskStore, disposer: TaskResetDisposer): () => void {
+  const registered = resetDisposers.get(store) ?? new Set<TaskResetDisposer>();
+  registered.add(disposer);
+  resetDisposers.set(store, registered);
+  return () => {
+    const current = resetDisposers.get(store);
+    current?.delete(disposer);
+    if (current?.size === 0) resetDisposers.delete(store);
+  };
+}
+
+export function getTaskResetDisposer(store: TaskStore): TaskResetDisposer | undefined {
+  const registered = resetDisposers.get(store);
   if (!registered?.size) return undefined;
   return async (task) => {
     await Promise.all([...registered].map((disposer) => disposer(task)));
@@ -133,13 +157,19 @@ FNXC:TaskReset 2026-08-19-06:30:
 Reset is a destructive fresh-planning boundary, so it fences every registered runtime owner regardless of the task's current column before filesystem cleanup begins. The timeout is fail-closed: worktree and plan deletion never starts while an executor, agent, CLI, or planner still holds the task.
 */
 export async function disposeTaskBeforeReset(store: TaskStore, task: Task): Promise<void> {
-  const disposer = getTaskMoveDisposer(store);
-  if (!disposer) return;
+  const moveDisposer = getTaskMoveDisposer(store);
+  const resetDisposer = getTaskResetDisposer(store);
+  if (!moveDisposer && !resetDisposer) return;
 
+  // Start both domains before awaiting either so cancellation cannot serialize owners.
+  const disposal = Promise.all([
+    moveDisposer?.(task),
+    resetDisposer?.(task),
+  ]);
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
-      disposer(task),
+      disposal,
       new Promise<void>((_resolve, reject) => {
         timeout = setTimeout(() => {
           reject(new Error(`Timed out stopping active work for ${task.id} before resetting the task`));

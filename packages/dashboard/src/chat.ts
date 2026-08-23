@@ -394,8 +394,29 @@ export function chatToolAllowlist(customToolNames: string[]): string[] {
 
 const ROOM_AMBIENT_MAX_RESPONDERS = 5;
 
-type ChatSessionStatsLike = { tokens?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; total?: number } };
+type ChatSessionStatsLike = {
+  tokens?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; total?: number };
+  contextUsage?: unknown;
+};
 type ChatTokenDelta = Pick<ChatTokenUsageCreateInput, "inputTokens" | "outputTokens" | "cachedTokens" | "cacheWriteTokens" | "totalTokens">;
+
+export type ChatMessageContextUsage = {
+  tokens: number | null;
+  contextWindow: number;
+  percent: number | null;
+};
+
+export function normalizeChatContextUsage(value: unknown): ChatMessageContextUsage | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const { tokens, contextWindow, percent } = value as Record<string, unknown>;
+  if (typeof contextWindow !== "number" || !Number.isFinite(contextWindow) || contextWindow <= 0) return undefined;
+  if (tokens !== null && (typeof tokens !== "number" || !Number.isFinite(tokens))) return undefined;
+  return {
+    tokens: tokens === null ? null : Math.max(0, Math.trunc(tokens)),
+    contextWindow: Math.max(1, Math.trunc(contextWindow)),
+    percent: typeof percent === "number" && Number.isFinite(percent) ? percent : null,
+  };
+}
 
 function normalizeChatTokenDelta(stats: ChatSessionStatsLike | undefined): ChatTokenDelta | undefined {
   const tokens = stats?.tokens;
@@ -409,14 +430,35 @@ function normalizeChatTokenDelta(stats: ChatSessionStatsLike | undefined): ChatT
   return { inputTokens, outputTokens, cachedTokens, cacheWriteTokens, totalTokens };
 }
 
-async function readChatSessionTokenDelta(session: unknown): Promise<ChatTokenDelta | undefined> {
-  const accessor = (session as { getSessionStats?: () => ChatSessionStatsLike | Promise<ChatSessionStatsLike> }).getSessionStats;
-  if (typeof accessor !== "function") return undefined;
+/*
+FNXC:ChatContextWindow 2026-08-22-23:57:
+pi is the source of truth for conversation context: contextUsage.tokens is calculateContextTokens(usage), using total tokens or input, output, cache-read, and cache-write tokens. pi reports tokens and percent as null immediately after compaction until a fresh assistant reply. Read this counts-only metadata best-effort so absent or failing session accessors never block a successful chat turn.
+*/
+async function readChatSessionUsageSnapshot(session: unknown): Promise<{ tokens?: ChatTokenDelta; contextUsage?: ChatMessageContextUsage }> {
+  let stats: ChatSessionStatsLike | undefined;
   try {
-    return normalizeChatTokenDelta(await accessor.call(session));
+    const statsAccessor = (session as { getSessionStats?: () => ChatSessionStatsLike | Promise<ChatSessionStatsLike | undefined> }).getSessionStats;
+    stats = typeof statsAccessor === "function" ? await statsAccessor.call(session) : undefined;
   } catch {
-    return undefined;
+    stats = undefined;
   }
+
+  const tokens = normalizeChatTokenDelta(stats);
+  let contextUsage = normalizeChatContextUsage(stats?.contextUsage);
+  if (!contextUsage) {
+    try {
+      const contextAccessor = (session as { getContextUsage?: () => unknown | Promise<unknown> }).getContextUsage;
+      contextUsage = typeof contextAccessor === "function"
+        ? normalizeChatContextUsage(await contextAccessor.call(session))
+        : undefined;
+    } catch {
+      contextUsage = undefined;
+    }
+  }
+  return {
+    ...(tokens ? { tokens } : {}),
+    ...(contextUsage ? { contextUsage } : {}),
+  };
 }
 
 function modelSnapshotForTokenUsage(session: unknown, fallback?: { fallbackModel?: string }): { provider: string | null; modelId: string | null } {
@@ -2483,7 +2525,7 @@ export class ChatManager {
         throw new Error("Room responder returned an empty reply");
       }
 
-      const tokenDelta = await readChatSessionTokenDelta(resolvedSession.session);
+      const { tokens: tokenDelta } = await readChatSessionUsageSnapshot(resolvedSession.session);
       const model = modelSnapshotForTokenUsage(resolvedSession.session, roomFallbackInfo);
       return {
         content: finalContent,
@@ -3319,6 +3361,10 @@ export class ChatManager {
       if (lastMessage?.stopReason === "length" && finalResponseText.trim().length === 0) {
         assistantMetadata.budgetExhausted = true;
       }
+      const usageSnapshot = await readChatSessionUsageSnapshot(agentResult.session);
+      if (usageSnapshot.contextUsage) {
+        assistantMetadata.contextUsage = usageSnapshot.contextUsage;
+      }
       const assistantMessage = await this.chatStore.addMessage(sessionId, {
         role: "assistant",
         content: finalResponseText,
@@ -3326,8 +3372,7 @@ export class ChatManager {
         metadata: Object.keys(assistantMetadata).length > 0 ? assistantMetadata : undefined,
       });
 
-      const tokenDelta = await readChatSessionTokenDelta(agentResult.session);
-      if (tokenDelta) {
+      if (usageSnapshot.tokens) {
         const model = modelSnapshotForTokenUsage(agentResult.session, fallbackInfo);
         /*
          * FNXC:ChatTokenAccounting 2026-07-02-00:00:
@@ -3342,7 +3387,7 @@ export class ChatManager {
           modelProvider: model.provider,
           modelId: model.modelId,
           createdAt: assistantMessage.createdAt,
-          ...tokenDelta,
+          ...usageSnapshot.tokens,
         });
       }
 

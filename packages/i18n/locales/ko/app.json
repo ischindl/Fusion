@@ -1253,6 +1253,7 @@
     "cancelButton": "취소",
     "clearConversationFailed": "대화 초기화 실패",
     "closeQuickChat": "빠른 채팅 닫기",
+    "openInNewWindow": "",
     "conversationArchived": "대화가 보관되었습니다",
     "conversationDeleted": "대화가 삭제되었습니다",
     "conversationName": "",
@@ -1371,6 +1372,13 @@
     "scopeRooms": "방",
     "scrollMessageToTop": "메시지를 맨 위로 스크롤",
     "searchConversations": "대화 검색...",
+    "conversationSearchPlaceholder": "대화에서 찾기",
+    "conversationSearchLabel": "대화에서 찾기",
+    "conversationSearchNoMatches": "일치하는 항목 없음",
+    "conversationSearchMatchCount": "{{current}} / {{count}} 일치",
+    "conversationSearchPrevious": "이전 일치",
+    "conversationSearchNext": "다음 일치",
+    "conversationSearchClose": "검색 닫기",
     "selectAgentForNewChat": "새 채팅을 위한 에이전트 선택",
     "selectAgentPlaceholder": "채팅을 시작할 에이전트를 선택하세요",
     "selectModel": "모델 선택",
@@ -1404,6 +1412,9 @@
     "workingStatus": "작업 중…",
     "you": "나",
     "contextWindowAria": "Estimated {{used}} of {{total}} context tokens",
+    "contextWindowMeasuredAria": "",
+    "contextWindowPendingAria": "",
+    "contextWindowPendingValue": "",
     "noMessage": "",
     "modelAgentSection": "Model / Agent",
     "thinkingLevelSection": "Thinking level",
@@ -9704,5 +9715,13 @@
     "status": "",
     "waitConnected": "",
     "waitingQr": ""
+  },
+  "thinking": {
+    "expandAll": "",
+    "collapseAll": "",
+    "noDetail": "",
+    "untitledSection": "",
+    "sectionCount": "",
+    "sectionCountPlural": ""
   }
 }

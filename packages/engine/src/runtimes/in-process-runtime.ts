@@ -1809,8 +1809,8 @@ export class InProcessRuntime
           agentStore: this.agentStore,
           messageStore: this.messageStore,
           pluginRunner: this.pluginRunner,
-          // FNXC:NodeWorktreeIsolation 2026-07-25-22:10: planning acquires (or reuses) the task's own
-          // worktree through the executor's acquisition path, so no lane runs in the shared checkout.
+          // FNXC:WorkspaceBoundary 2026-08-22-22:54: single-repo planning acquires its
+          // known scope; workspace planning receives a declared read-only root until it confirms scope.
           acquirePlanningWorktree: (taskId) => this.executor.ensureTaskWorktreeForPlanning(taskId),
           onSpecifyStart: (t) => {
             this.recordActivity();

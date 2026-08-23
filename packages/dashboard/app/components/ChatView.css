@@ -33,6 +33,48 @@
   display: none;
 }
 
+/*
+FNXC:ViewportChrome 2026-08-23-03:40:
+FN-9193 tablet-class touch devices can be 768 CSS pixels wide, so this scoped docked rule
+must override the mobile one-pane rule while phone mode remains unchanged.
+*/
+.chat-view--docked-list .chat-sidebar--docked {
+  flex: 0 0 auto;
+  position: relative;
+  border-right: 1px solid var(--border);
+  min-width: 0;
+}
+
+.chat-view--docked-list .chat-sidebar--docked .chat-sidebar-list {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+}
+
+.chat-sidebar__resize-handle {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: calc(var(--space-xs) / -2);
+  width: var(--space-sm);
+  cursor: col-resize;
+  z-index: 1;
+  border-radius: var(--radius-sm);
+  transition: background-color var(--duration-fast) var(--transition-default);
+}
+
+.chat-sidebar__resize-handle:hover,
+.chat-sidebar__resize-handle:focus-visible {
+  background: color-mix(in srgb, var(--border), transparent 35%);
+  outline: none;
+}
+
+html[data-viewport-mode="tablet"] .chat-view--docked-list .chat-sidebar--docked {
+  width: var(--chat-docked-sidebar-width, auto);
+  min-width: 0;
+  max-width: none;
+  height: auto;
+}
+
 .chat-sidebar-scope-toggle {
   display: flex;
   gap: var(--space-xs);
@@ -613,8 +655,8 @@ desktop geometry, and every other ViewHeader consumer remain unchanged.
 }
 
 /*
-FNXC:ChatNavigation 2026-08-19-20:40:
-A narrow floating host uses the same full-pane list/detail flow as every other Chat host. Keep this layout class for surrounding list sizing only; selected detail hides the list through .chat-sidebar--hidden rather than restoring a split pane.
+FNXC:ChatNavigation 2026-08-23-03:55:
+A narrow floating host keeps the one-pane list/detail flow. FN-9193 adds a docked list only for non-floating tablet-or-wider hosts, so this narrow layout must still hide selected detail through .chat-sidebar--hidden.
 */
 .chat-view--narrow .chat-view__body {
   flex-direction: column;
@@ -677,6 +719,47 @@ In the narrow/mobile chat layout there is no room for an Open in Chat view affor
 FNXC:ChatRenderToggle 2026-07-04-00:00:
 The thread-wide Markdown/plain render toggle (`.chat-thread-header-render-toggle*`, desktop + mobile floating variants) was removed per FN-7541. Chat always renders Markdown now; the button and its CSS shells no longer exist.
 */
+
+/*
+FNXC:ChatFind 2026-08-21-16:29:
+FN-110 keeps the conversation-local Find row compact across Chat hosts and distinguishes a matching row from the currently navigated result using existing semantic tokens.
+*/
+.chat-conversation-search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.chat-conversation-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.chat-conversation-search-status {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.chat-message--search-match {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-warning) 55%, transparent);
+}
+
+.chat-message--search-active {
+  box-shadow: inset 0 0 0 2px var(--color-warning);
+}
+
+@media (max-width: 768px) {
+  .chat-conversation-search {
+    flex-wrap: wrap;
+  }
+
+  .chat-conversation-search-input {
+    min-inline-size: 0;
+  }
+}
 
 /* Messages */
 .chat-messages {
@@ -1297,14 +1380,14 @@ User messages in direct (model-loop) chat carry a compact edit affordance inline
 }
 
 .chat-message-thinking-content {
-  font-size: 13px;
+  font-size: var(--font-size-sm);
   color: var(--text-muted);
-  padding: 8px;
+  padding: var(--space-2);
   background: var(--bg);
-  border-radius: 6px;
-  margin-top: 4px;
+  border-radius: var(--radius-sm);
+  margin-top: var(--space-1);
   white-space: pre-wrap;
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
   overflow-x: auto;
 }
 
@@ -2117,6 +2200,18 @@ Thinking-section text uses the defined muted text token across all themes. The m
    thread takes the full viewport. The thread already renders a back
    button (ChevronLeft) on mobile to flip back to the session list. */
 @media (max-width: 768px) {
+  html[data-viewport-mode="tablet"] .chat-view--docked-list .chat-view__body {
+    flex-direction: row;
+  }
+
+  html[data-viewport-mode="tablet"] .chat-view--docked-list .chat-sidebar--docked {
+    min-width: 0;
+    max-width: none;
+    height: auto;
+    border-right: 1px solid var(--border);
+    border-bottom: none;
+  }
+
   .chat-view__body {
     flex-direction: column;
   }

@@ -67,6 +67,8 @@ function makeFingerprintableCheckout(): { path: string; baseCommitSha: string } 
   execFileSync("git", ["commit", "-m", "base"], { cwd: path, stdio: "ignore" });
   const baseCommitSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: path, encoding: "utf8" }).trim();
   writeFileSync(join(path, "changed.ts"), "export const after = true;\n");
+  execFileSync("git", ["add", "changed.ts"], { cwd: path });
+  execFileSync("git", ["commit", "-m", "reviewable change"], { cwd: path, stdio: "ignore" });
   return { path, baseCommitSha };
 }
 
@@ -433,7 +435,7 @@ describe("U2 KTD3 — step-inversion review seam (executor.ts:5668) loops per su
     expect(task.repositoryScope?.reviewEvidence).toBeUndefined();
   });
 
-  it("dispatches workspace Plan Review once through the scoped coordinator", async () => {
+  it("dispatches workspace Plan Review once through the read-only workspace root", async () => {
     const task = makeTask({
       workspaceWorktrees: TWO_REPO_WORKTREES,
       repositoryScope: { repositories: ["repo-a"], state: "confirmed", revision: 2 },
@@ -449,9 +451,35 @@ describe("U2 KTD3 — step-inversion review seam (executor.ts:5668) loops per su
     const result = await seams.stepReview!(task as any, context, { type: "plan", advisory: true } as any);
 
     expect(result.verdict).toBe("APPROVE");
-    expect(seen).toEqual([WT_A]);
+    expect(seen).toEqual([ROOT]);
     expect(mockedReviewStep).toHaveBeenCalledTimes(1);
     expect(mockedReviewStep.mock.calls[0]?.[5]).toContain("Repository scope (task-level; review this plan once): repo-a");
+  });
+
+  it("refuses a workspace script Plan Review instead of running it in the operator checkout", async () => {
+    const task = makeTask({
+      repositoryScope: { repositories: ["repo-a"], state: "confirmed", revision: 2 },
+      modifiedFiles: [],
+    });
+    const store = makeStore(task);
+    const executor = workspaceExecutor(store);
+    const executeScript = vi.spyOn(executor as any, "executeScriptWorkflowStep").mockResolvedValue({ success: true, output: "unsafe" });
+
+    const result = await (executor as any).runGraphCustomNode(
+      { id: "workspace-plan-script", kind: "script", config: { name: "Plan Review", reviewKind: "plan", scriptName: "plan-review-script" } },
+      task,
+      {},
+      undefined,
+    );
+
+    expect(result).toMatchObject({ outcome: "failure", value: "workspace-plan-review-script-readonly-required" });
+    expect(executeScript).not.toHaveBeenCalled();
+    expect(store.logEntry).toHaveBeenCalledWith(
+      task.id,
+      expect.stringContaining("cannot run under the declared read-only boundary"),
+      undefined,
+      undefined,
+    );
   });
 
   it("preserves fn_task_done's persisted no-op eligibility through the production step-review seam", async () => {

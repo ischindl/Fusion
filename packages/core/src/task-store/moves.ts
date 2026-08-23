@@ -43,6 +43,7 @@ import {acquireTaskAdvisoryXactLock} from "./task-advisory-lock.js";
 import "../builtin-traits.js";
 import {recordRunAuditEventWithinTransaction} from "../postgres/data-layer.js";
 import {getTaskMergeBlocker} from "../merge/task-merge.js";
+import {resolveRequiredPreMergeStepIds} from "../merge/required-pre-merge-steps.js";
 import {__setTaskActivityLogLimitsForTesting} from "../task-store/comments.js";
 import {readTaskRow as readTaskRowAsync, readTaskRowInTransaction, upsertTaskRowInTransaction} from "./async/async-persistence.js";
 import {disposeTaskBeforeMove} from "../tasks/task-move-disposer.js";
@@ -724,7 +725,10 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
         const toFacts = resolveTransitionColumnFacts(workflowIr, toColumn);
         const mergeBlockerReason =
           !bypassGuards && toFacts.flags.complete && fromFacts.flags.mergeBlocker === true
-            ? (getTaskMergeBlocker(task, { skipColumnIdentityCheck: true }) ?? null)
+            ? (getTaskMergeBlocker(task, {
+              skipColumnIdentityCheck: true,
+              requiredPreMergeStepIds: resolveRequiredPreMergeStepIds(workflowIr, task.enabledWorkflowSteps),
+            }) ?? null)
             : null;
         const decision = evaluateTransitionInvariants({
           taskId: id,
@@ -898,9 +902,10 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
         validated as legal and then rejected by its own guard. Passing the resolved lane is what makes
         the outer and inner questions the same question.
         */
-        const mergeBlocker = getTaskMergeBlocker(task, moveLifecycle?.review
-          ? { reviewColumns: new Set([moveLifecycle.review]) }
-          : {});
+        const mergeBlocker = getTaskMergeBlocker(task, {
+          reviewColumns: moveLifecycle?.review ? new Set([moveLifecycle.review]) : undefined,
+          requiredPreMergeStepIds: resolveRequiredPreMergeStepIds(workflowIr, task.enabledWorkflowSteps),
+        });
         if (mergeBlocker) {
           throw new Error(`Cannot move ${id} to done: ${mergeBlocker}`);
         }
@@ -1495,7 +1500,8 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
       "legacy" — so a listener keeps its own fallback rather than being handed a wrong answer.
       */
       const lanes = toTaskMoveLanes(await resolveWorkflowIrForTask(store, task.id).catch(() => undefined));
-      store.laneCache.set(task.id, lanes);
+      /* FNXC:WorkflowEvents 2026-08-22-00:13: an unresolved payload is unknown; retain a warm real cache answer until its TTL expires. */
+      if (lanes) store.laneCache.set(task.id, lanes);
       store.emit("task:moved", { task, from: fromColumn, to: toColumn, source: moveSource, lanes });
       /*
       FNXC:WorkflowEvents 2026-07-27-11:45 (U3 / R5, R6):

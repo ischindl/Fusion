@@ -38,6 +38,8 @@ import {
   resolveTaskGithubTracking,
   formatCurrentTaskLine,
   resolveFusionSessionPrincipal,
+  isTaskExecutionSessionPrincipal,
+  taskExecutionTaskCreationRefusalText,
   resolveEffectiveAgentPermissionPolicy,
   type FusionSessionPrincipal,
   type AgentPermissionPolicy,
@@ -1027,10 +1029,29 @@ async function findLatestApprovalRequestByDedupeKey(
 }
 
 /**
- * FNXC:ToolPermissionGates 2026-07-26-13:55:
- * Shared hard-deny for the withheld list above. Returns null for operator principals
- * (tool proceeds unchanged) and a structured error result for agent/ambiguous principals.
+ * FNXC:TaskExecutionTaskCreation 2026-08-21-23:43:
+ * FN-125 closes every host-extension route that can add a board card, not only
+ * fn_task_create and fn_delegate_task. Pi injects this extension into coding sessions,
+ * so duplicate, refine, imports, and planning share this execute-time fence.
  */
+function denyTaskCreationForTaskExecutionPrincipal(
+  toolName: string,
+  ctx: ExtensionCallerContext,
+): AgentGateDenyResult | null {
+  /* FNXC:TaskExecutionTaskCreation 2026-08-21-23:16: explicit ctx.agentId
+  synthesizes an identity without the execution marker, so inspect the registry too. */
+  const resolved = resolveExtensionCallerPrincipal(ctx);
+  const registry = resolveFusionSessionPrincipal(typeof ctx.cwd === "string" && ctx.cwd ? ctx.cwd : process.cwd());
+  if (!isTaskExecutionSessionPrincipal(resolved) && !isTaskExecutionSessionPrincipal(registry)) return null;
+  const agentId = resolved.kind === "agent" ? resolved.identity.agentId : undefined;
+  const taskId = resolved.kind === "agent" ? resolved.identity.taskId : undefined;
+  return {
+    content: [{ type: "text", text: taskExecutionTaskCreationRefusalText(toolName) }],
+    isError: true,
+    details: { rule: "task-execution-cannot-create-tasks", tool: toolName, ...(taskId ? { taskId } : {}), ...(agentId ? { agentId } : {}) },
+  };
+}
+
 function denyWithheldToolForAgentPrincipal(
   toolName: string,
   ctx: ExtensionCallerContext,
@@ -1732,6 +1753,8 @@ export default function kbExtension(pi: ExtensionAPI) {
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const taskExecutionDenied = denyTaskCreationForTaskExecutionPrincipal("fn_task_create", ctx as ExtensionCallerContext);
+      if (taskExecutionDenied) return taskExecutionDenied;
       const store = await getStore(ctx.cwd);
 
       /*
@@ -2816,6 +2839,8 @@ export default function kbExtension(pi: ExtensionAPI) {
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const taskExecutionDenied = denyTaskCreationForTaskExecutionPrincipal("fn_task_duplicate", ctx as ExtensionCallerContext);
+      if (taskExecutionDenied) return taskExecutionDenied;
       const store = await getStore(ctx.cwd);
       const newTask = await store.duplicateTask(params.id);
 
@@ -2852,6 +2877,8 @@ export default function kbExtension(pi: ExtensionAPI) {
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const taskExecutionDenied = denyTaskCreationForTaskExecutionPrincipal("fn_task_refine", ctx as ExtensionCallerContext);
+      if (taskExecutionDenied) return taskExecutionDenied;
       const store = await getStore(ctx.cwd);
       const newTask = await store.refineTask(params.id, params.feedback);
 
@@ -3049,6 +3076,8 @@ export default function kbExtension(pi: ExtensionAPI) {
     }),
 
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const taskExecutionDenied = denyTaskCreationForTaskExecutionPrincipal("fn_task_import_github", ctx as ExtensionCallerContext);
+      if (taskExecutionDenied) return taskExecutionDenied;
       const [owner, repo] = params.ownerRepo.split("/");
       const limit = clampImportBrowseLimit(params.limit, 30);
       const labels = params.labels;
@@ -3143,6 +3172,8 @@ export default function kbExtension(pi: ExtensionAPI) {
     }),
 
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const taskExecutionDenied = denyTaskCreationForTaskExecutionPrincipal("fn_task_import_github_issue", ctx as ExtensionCallerContext);
+      if (taskExecutionDenied) return taskExecutionDenied;
       const { owner, repo, issueNumber } = params;
       const issue = await fetchGitHubIssueViaGh(owner, repo, issueNumber, { signal });
 
@@ -3348,6 +3379,8 @@ export default function kbExtension(pi: ExtensionAPI) {
     promptSnippet: "Import GitLab project issues",
     parameters: Type.Object({ project: Type.String({ description: "GitLab project path or numeric ID" }), limit: Type.Optional(Type.Number({ minimum: 1, maximum: 50 })), labels: Type.Optional(Type.Array(Type.String())) }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
+      const taskExecutionDenied = denyTaskCreationForTaskExecutionPrincipal("fn_task_import_gitlab_project_issues", ctx as ExtensionCallerContext);
+      if (taskExecutionDenied) return taskExecutionDenied;
       const { client } = await createGitLabClient(ctx);
       const issues = await client.listProjectIssues(params.project, { limit: clampImportBrowseLimit(params.limit, 30), labels: params.labels });
       const createdTasks = await importGitLabItems(ctx, "project_issue", params.project, issues);
@@ -3375,6 +3408,8 @@ export default function kbExtension(pi: ExtensionAPI) {
     promptSnippet: "Import GitLab group issues",
     parameters: Type.Object({ group: Type.String({ description: "GitLab group path or numeric ID" }), limit: Type.Optional(Type.Number({ minimum: 1, maximum: 50 })), labels: Type.Optional(Type.Array(Type.String())) }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
+      const taskExecutionDenied = denyTaskCreationForTaskExecutionPrincipal("fn_task_import_gitlab_group_issues", ctx as ExtensionCallerContext);
+      if (taskExecutionDenied) return taskExecutionDenied;
       const { client } = await createGitLabClient(ctx);
       const issues = await client.listGroupIssues(params.group, { limit: clampImportBrowseLimit(params.limit, 30), labels: params.labels });
       const createdTasks = await importGitLabItems(ctx, "group_issue", params.group, issues);
@@ -3402,6 +3437,8 @@ export default function kbExtension(pi: ExtensionAPI) {
     promptSnippet: "Import GitLab merge requests",
     parameters: Type.Object({ project: Type.String({ description: "GitLab project path or numeric ID" }), limit: Type.Optional(Type.Number({ minimum: 1, maximum: 50 })), labels: Type.Optional(Type.Array(Type.String())) }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
+      const taskExecutionDenied = denyTaskCreationForTaskExecutionPrincipal("fn_task_import_gitlab_merge_requests", ctx as ExtensionCallerContext);
+      if (taskExecutionDenied) return taskExecutionDenied;
       const { client } = await createGitLabClient(ctx);
       const mergeRequests = await client.listMergeRequests(params.project, { limit: clampImportBrowseLimit(params.limit, 30), labels: params.labels });
       const createdTasks = await importGitLabItems(ctx, "merge_request", params.project, mergeRequests);
@@ -3434,7 +3471,9 @@ export default function kbExtension(pi: ExtensionAPI) {
       resumeSessionId: Type.Optional(Type.String({ description: "Existing planning session id to resume instead of starting a new session" })),
     }),
 
-    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const taskExecutionDenied = denyTaskCreationForTaskExecutionPrincipal("fn_task_plan", ctx as ExtensionCallerContext);
+      if (taskExecutionDenied) return taskExecutionDenied;
       // Import the planning function dynamically to avoid circular dependencies
       const { runTaskPlan } = await import("./commands/task.js");
 
@@ -6538,6 +6577,8 @@ export default function kbExtension(pi: ExtensionAPI) {
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const taskExecutionDenied = denyTaskCreationForTaskExecutionPrincipal("fn_delegate_task", ctx as ExtensionCallerContext);
+      if (taskExecutionDenied) return taskExecutionDenied;
       /*
       FNXC:ToolPermissionGates 2026-07-26-13:55:
       Ordinary delegation stays ungated (coordination primitive), but the executor-role

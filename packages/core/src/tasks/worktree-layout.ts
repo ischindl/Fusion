@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { basename, isAbsolute, join, normalize, resolve, sep } from "node:path";
+import { basename, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import type { Settings } from "../types/settings/settings-scope.js";
 
 export interface WorkspaceWorktreeContext {
@@ -74,4 +74,45 @@ export function resolveWorktreesDirLayout(
   const configuredRoot = resolve(resolutionRoot, expandedRepo);
   if (!workspaceContext) return configuredRoot;
   return join(configuredRoot, workspaceWorktreeGroupSegment(workspaceContext.workspaceRootDir), workspaceRepoSegment(workspaceContext.repoRelPath));
+}
+
+/*
+FNXC:WorkspaceWorktree 2026-08-22-21:24:
+A workspace task owns one directory, not a coordinator repository. Its child paths
+preserve repository-relative identity so session, boundary, review, and landing all
+refer to the same `repo/path` spelling; a one-repository workspace is the degenerate case.
+*/
+export function resolveWorkspaceTaskWorktreeDir(
+  workspaceRootDir: string,
+  settings: Pick<Settings, "worktreesDir"> | undefined,
+  taskId: string,
+): string {
+  const normalizedTaskId = taskId.toLowerCase();
+  if (!settings?.worktreesDir) return join(workspaceRootDir, ".fusion", "worktrees", normalizedTaskId);
+  return join(
+    resolveWorktreesDirLayout(workspaceRootDir, settings),
+    workspaceWorktreeGroupSegment(workspaceRootDir),
+    normalizedTaskId,
+  );
+}
+
+/** Resolves a repository child without flattening nested workspace repository names. */
+export function resolveWorkspaceRepoWorktreePath(taskDir: string, repoRelPath: string): string {
+  assertWorkspaceRepoRelPath(repoRelPath);
+  return join(taskDir, repoRelPath);
+}
+
+/**
+ * Existing tasks retain their persisted per-repository paths; only a task whose
+ * entries all live under its task directory uses the single-root layout.
+ */
+export function isLegacyWorkspaceWorktreeLayout(
+  task: { workspaceWorktrees?: Record<string, { worktreePath?: string }> },
+  taskDir: string,
+): boolean {
+  return Object.values(task.workspaceWorktrees ?? {}).some((entry) => {
+    if (!entry.worktreePath) return false;
+    const rel = relative(resolve(taskDir), resolve(entry.worktreePath));
+    return rel === "" || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+  });
 }

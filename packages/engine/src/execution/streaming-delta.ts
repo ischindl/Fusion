@@ -97,6 +97,10 @@ function derivePreviousTextFromEvent(
   return previousText;
 }
 
+/*
+FNXC:ThinkingTrace 2026-08-22-16:56:
+FN-155 regression coverage proves the normalizer returns multi-section thinking deltas losslessly. A titles-only trace therefore originates in the provider payload, not this Fusion capture chokepoint.
+*/
 export function createStreamingDeltaNormalizer(): {
   normalize: (
     partial: StreamingPartialMessage | undefined,

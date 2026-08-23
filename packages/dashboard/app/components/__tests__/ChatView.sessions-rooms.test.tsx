@@ -198,12 +198,17 @@ async function selectFirstConversation() {
   const item = document.querySelector<HTMLElement>("[data-testid^=\"chat-session-session-\"], [data-testid^=\"chat-room-item-\"]");
   if (!item) throw new Error("Expected a conversation list item");
   await userEvent.click(item);
-  await waitFor(() => expect(screen.getByTestId("chat-back-btn")).toBeInTheDocument());
+  await waitFor(() => expect(document.querySelector(".chat-thread")).toBeInTheDocument());
 }
 
 async function returnToConversationList() {
-  await userEvent.click(screen.getByTestId("chat-back-btn"));
-  await waitFor(() => expect(screen.queryByTestId("chat-back-btn")).toBeNull());
+  const back = screen.queryByTestId("chat-back-btn");
+  if (back) await userEvent.click(back);
+  else {
+    await userEvent.click(screen.getByTestId("chat-docked-sidebar-toggle"));
+    await userEvent.click(screen.getByTestId("chat-back-btn"));
+  }
+  await waitFor(() => expect(document.querySelector(".chat-sidebar")).not.toHaveClass("chat-sidebar--hidden"));
 }
 
 describe("ChatView sidebar structure", () => {
@@ -291,11 +296,11 @@ describe("room creation", () => {
     viewportSpy.mockRestore();
   });
 
-  it("opens the newly created room in full-pane detail on desktop", async () => {
+  it("keeps the newly created room in the desktop docked list", async () => {
     const { createRoom, viewportSpy } = await renderRoomCreation({ viewport: "desktop" });
 
     expect(createRoom).toHaveBeenCalledWith({ name: "newroom", memberAgentIds: ["agent-001"] });
-    expect(document.querySelector(".chat-sidebar")).toHaveClass("chat-sidebar--hidden");
+    expect(document.querySelector(".chat-sidebar")).toHaveClass("chat-sidebar--docked");
     expect(screen.queryByRole("dialog", { name: "Create room" })).toBeNull();
     expect(within(document.querySelector(".chat-room-thread-header") as HTMLElement).getByText("#newroom")).toBeInTheDocument();
 
@@ -814,17 +819,15 @@ describe("FN-5720 room re-entry anchoring", () => {
   });
 });
 
-describe("full-pane conversation list", () => {
-  it("does not render a split-pane resize separator or persisted width shell", async () => {
+describe("docked conversation list", () => {
+  it("renders the persisted split-pane shell on desktop", async () => {
     const viewportSpy = mockViewportMode("desktop");
-    localStorage.setItem("fusion:chat-sidebar-width", "350");
     setupMockChat({ sessions: [], filteredSessions: [] });
 
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
 
-    expect(screen.queryByRole("separator", { name: "Resize chat sidebar" })).toBeNull();
-    expect((document.querySelector(".chat-sidebar") as HTMLElement).style.width).toBe("");
-    expect(localStorage.getItem("fusion:chat-sidebar-width")).toBe("350");
+    expect(screen.getByRole("separator", { name: "Resize chat sidebar" })).toBeInTheDocument();
+    expect((document.querySelector(".chat-sidebar") as HTMLElement).style.width).toBe("300px");
     viewportSpy.mockRestore();
   });
 });
@@ -871,7 +874,7 @@ describe("Chat header New Chat button", () => {
     await selectFirstConversation();
 
     expect(document.querySelectorAll(".view-header [data-testid='chat-new-btn']")).toHaveLength(1);
-    expect(screen.getByTestId("chat-back-btn")).toBeInTheDocument();
+    expect(screen.queryByTestId("chat-back-btn")).toBeNull();
     expect(document.querySelector(".chat-thread-new-chat-btn")).toBeNull();
     viewportSpy.mockRestore();
   });
@@ -960,7 +963,7 @@ describe("Chat pop-out header actions", () => {
 
     expect(css).toMatch(/\.chat-view--narrow \.chat-view__body\s*\{[^}]*flex-direction:\s*column;/);
     expect(css).toMatch(/\.chat-view--narrow \.chat-sidebar\s*\{[^}]*min-width:\s*100%;[^}]*border-right:\s*none;/);
-    expect(css).not.toContain("chat-sidebar-resize-handle");
+    expect(css).toContain("chat-sidebar__resize-handle");
     expect(css).toMatch(/\.chat-sidebar--hidden\s*\{[^}]*display:\s*none;/);
     expect(css).toMatch(/\.chat-view--narrow \[data-testid="chat-modal-maximize"\]\s*\{[^}]*display:\s*none;/);
     expect(css).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.chat-view \[data-testid="chat-modal-maximize"\]\s*\{[^}]*display:\s*none;/);

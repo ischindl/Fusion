@@ -241,7 +241,8 @@ export function WorktreesSection({ form, setForm, gitRemotes, worktrunkInstall, 
       {form.worktreeRebaseBeforeMerge !== false && (<div className="form-group">
           <div className="settings-field-label-row">
             <label htmlFor="worktreeRebaseRemote">{t("settings.worktrees.rebaseRemote", "Rebase Remote")}</label>
-            <SettingsHelpTip settingKey="worktreeRebaseRemote">{t("settings.worktrees.whichRemoteToFetchForThePreMerge", " Which remote to fetch for the pre-merge rebase. \"Use git default\" falls back to the remote configured for the default branch (typically ")}<code>origin</code>{t("settings.worktrees.closeParenPeriod", ").")}</SettingsHelpTip>
+            {/* FNXC:WorkspaceIntegration 2026-08-21-21:46: this remote policy also selects remote workspace integration; no configured repository remote remains a supported local-only landing mode. */}
+            <SettingsHelpTip settingKey="worktreeRebaseRemote">{t("settings.worktrees.whichRemoteToFetchForThePreMerge", " Which remote to fetch for the pre-merge rebase and remote workspace integration. \"Use git default\" resolves the actual integration-branch, sole, or existing origin remote; repositories with no remote land locally.")}</SettingsHelpTip>
           </div>
           <select id="worktreeRebaseRemote" value={form.worktreeRebaseRemote ?? ""} onChange={(e) => setForm((f) => ({ ...f, worktreeRebaseRemote: e.target.value || undefined }))}>
             <option value="">{t("settings.worktrees.useGitDefault", "Use git default")}</option>

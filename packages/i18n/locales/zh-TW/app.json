@@ -1253,6 +1253,7 @@
     "cancelButton": "取消",
     "clearConversationFailed": "清除對話失敗",
     "closeQuickChat": "關閉快速聊天",
+    "openInNewWindow": "",
     "conversationArchived": "對話已封存",
     "conversationDeleted": "對話已刪除",
     "conversationName": "",
@@ -1371,6 +1372,13 @@
     "scopeRooms": "頻道",
     "scrollMessageToTop": "將訊息捲動至頂部",
     "searchConversations": "搜尋對話...",
+    "conversationSearchPlaceholder": "在對話中尋找",
+    "conversationSearchLabel": "在對話中尋找",
+    "conversationSearchNoMatches": "沒有相符項目",
+    "conversationSearchMatchCount": "第 {{current}} 項，共 {{count}} 項",
+    "conversationSearchPrevious": "上一個相符項目",
+    "conversationSearchNext": "下一個相符項目",
+    "conversationSearchClose": "關閉搜尋",
     "selectAgentForNewChat": "為新聊天選擇代理",
     "selectAgentPlaceholder": "選擇代理以開始聊天",
     "selectModel": "選擇模型",
@@ -1404,6 +1412,9 @@
     "workingStatus": "處理中……",
     "you": "你",
     "contextWindowAria": "Estimated {{used}} of {{total}} context tokens",
+    "contextWindowMeasuredAria": "",
+    "contextWindowPendingAria": "",
+    "contextWindowPendingValue": "",
     "noMessage": "",
     "modelAgentSection": "Model / Agent",
     "thinkingLevelSection": "Thinking level",
@@ -9704,5 +9715,13 @@
     "status": "",
     "waitConnected": "",
     "waitingQr": ""
+  },
+  "thinking": {
+    "expandAll": "",
+    "collapseAll": "",
+    "noDetail": "",
+    "untitledSection": "",
+    "sectionCount": "",
+    "sectionCountPlural": ""
   }
 }

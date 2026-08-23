@@ -5,7 +5,7 @@ import type { WorkflowNodeResult } from "./workflow-graph-executor.js";
 /** A terminal graph value: retrying cannot create missing merge-boundary proof. */
 export const MERGE_BOUNDARY_UNPROVEN_VALUE = "merge-boundary-unproven";
 
-export const PRESERVED_MERGE_FAILURE_REASONS = new Set(["implementation-incomplete", "merge-unavailable"]);
+export const PRESERVED_MERGE_FAILURE_REASONS = new Set(["implementation-incomplete", "merge-unavailable", "workspace-review-required"]);
 
 export interface WorkflowMergeNodeDeps {
   primitives: Pick<WorkflowRuntimePrimitives, "requestMerge" | "audit">;
@@ -83,6 +83,10 @@ function classifyMergeFailure(reason: string): WorkflowNodeResult {
   merge-proof route; merge-unavailable deliberately remains non-terminal because it is emitted only
   when mergeRequester is absent and routeGraphMergeFailureToRetry returns false on that same absence.
   Marking it terminal would instead park both paths as operator-action-required failures.
+
+  FNXC:WorkspaceReviewReroute 2026-08-21-20:11:
+  A live workspace merge rejection returns this exact typed value so the graph follows its
+  explicit merge-attempt → Code Review rework edge instead of terminalizing as merge-failed.
   */
   if (PRESERVED_MERGE_FAILURE_REASONS.has(normalized)) {
     return { outcome: "failure", value: normalized };

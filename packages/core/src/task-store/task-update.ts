@@ -15,7 +15,7 @@ import {
   type TaskMoveLanes,
 } from "../workflows/workflow-lifecycle-traits.js";
 import {resolveWorkflowIrForTask} from "../workflows/workflow-ir-resolver.js";
-import {InvalidFileScopeError} from "./errors.js";
+import {InvalidFileScopeError, SelfSpawnedDependencyError, detectSelfSpawnedDependency} from "./errors.js";
 import {mkdir, readFile, stat, writeFile} from "node:fs/promises";
 import {join} from "node:path";
 import {existsSync} from "node:fs";
@@ -117,6 +117,14 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
       update clears checkedOutBy during reassignment later in this pass; reading the mutated task there would
       wrongly invalidate the in-flight route of a task that was checked out on read (issue #3365).
       */
+      if (updates.dependencies !== undefined) {
+        const existing = new Set(task.dependencies ?? []);
+        const candidates = await Promise.all(updates.dependencies
+          .filter((dependencyId) => !existing.has(dependencyId))
+          .map(async (dependencyId) => await store.readTaskJson(store.taskDir(dependencyId))));
+        const selfSpawned = detectSelfSpawnedDependency(id, candidates);
+        if (selfSpawned) throw new SelfSpawnedDependencyError(id, selfSpawned.dependencyId);
+      }
       const wasCheckedOutOnRead = Boolean(task.checkedOutBy);
       const preUpdateNodeId = task.nodeId;
       const preUpdateEffectiveNodeId = task.effectiveNodeId;
@@ -863,6 +871,10 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
       } else if (updates.reviewerFallbackRetryCount !== undefined) {
         task.reviewerFallbackRetryCount = updates.reviewerFallbackRetryCount;
       }
+      if (updates.reviewConvergenceStage === null) task.reviewConvergenceStage = undefined;
+      else if (updates.reviewConvergenceStage !== undefined) task.reviewConvergenceStage = updates.reviewConvergenceStage;
+      if (updates.reviewConvergenceEscalationCount === null) task.reviewConvergenceEscalationCount = undefined;
+      else if (updates.reviewConvergenceEscalationCount !== undefined) task.reviewConvergenceEscalationCount = updates.reviewConvergenceEscalationCount;
       if (updates.nextRecoveryAt === null) {
         task.nextRecoveryAt = undefined;
       } else if (updates.nextRecoveryAt !== undefined) {
@@ -1337,7 +1349,8 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
 
            FNXC:WorkflowEvents 2026-08-03-02:16: emit only when respecifyMoveLanes is present from the
            same IR used for the relocation — never a second IR lookup that can fail after the move. */
-        store.laneCache.set(task.id, respecifyMoveLanes);
+        /* FNXC:WorkflowEvents 2026-08-22-00:13: an unresolved payload is unknown; retain a warm real cache answer until its TTL expires. */
+      if (respecifyMoveLanes) store.laneCache.set(task.id, respecifyMoveLanes);
         store.emit("task:moved", {
           task,
           from: respecifyFromColumn as Column,

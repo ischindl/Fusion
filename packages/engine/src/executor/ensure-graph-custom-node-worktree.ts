@@ -17,7 +17,6 @@ import { captureBaseCommitSha } from "./worktree-git-refs.js";
 import { createConfiguredCommandAbortError } from "./task-predicates.js";
 import type { WorktreePool } from "../worktree/worktree-pool.js";
 import { resolveWorkspaceConfigOnce } from "./workspace-config-resolver.js";
-import { resolveWorkspaceReviewRemediationRepository } from "./workspace-review-remediation.js";
 
 export type EnsureGraphCustomNodeWorktreeDeps = {
   store: TaskStore;
@@ -76,21 +75,19 @@ export async function ensureGraphCustomNodeWorktree(
     );
 
     /*
-    FNXC:WorkspaceRootRouting 2026-08-19-12:15:
-    Workspace sessions are never rooted at the non-Git workspace directory. Acquire or reuse every
-    declared repository before returning so planning and graph nodes have a real coordinator cwd,
-    while the durable map remains the authority for all repository worktrees.
+    FNXC:WorkspaceWorktree 2026-08-22-22:42:
+    FN-158 acquires only the planner-confirmed repository scope. Callers reach
+    this seam solely for write-capable nodes; read-only planning never creates a
+    branch, lease, or worktree before it can declare its scope.
     */
     if (workspaceConfig) {
-      /*
-      FNXC:WorkspaceFinalization 2026-08-21-09:33:
-      Graph-node reacquisition is a production rerun path too. Preserve the durable failing
-      repository as coordinator and let acquisition reject a stale or foreign scope target.
-      */
-      const remediationRepository = resolveWorkspaceReviewRemediationRepository(task, workspaceConfig.repos);
+      if (task.repositoryScope?.state !== "confirmed") {
+        throw new Error("Workspace acquisition requires a confirmed ## Repository Scope");
+      }
       const workspace = await acquireWorkspaceTaskWorktrees({
         workspaceConfig,
         workspaceRootDir: deps.rootDir,
+        repoRelPaths: task.repositoryScope.repositories,
         task,
         store: deps.store,
         settings,
@@ -114,10 +111,9 @@ export async function ensureGraphCustomNodeWorktree(
           }),
         taskEnv: process.env,
         addActiveWorktree: deps.addActiveWorktree,
-        remediationRepository,
       });
-      deps.onStart?.(workspace.task, workspace.coordinatorWorktreePath);
-      executorLog.debug(`${task.id}: workflow node '${nodeId}' using workspace coordinator ${workspace.coordinatorWorktreePath}`);
+      deps.onStart?.(workspace.task, workspace.taskWorktreeDir);
+      executorLog.debug(`${task.id}: workflow node '${nodeId}' using workspace task directory ${workspace.taskWorktreeDir}`);
       return { ...task, ...workspace.task } as TaskDetail;
     }
 

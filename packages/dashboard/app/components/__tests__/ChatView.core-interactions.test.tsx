@@ -1123,6 +1123,31 @@ describe("ChatView core interactions", () => {
     viewportSpy.mockRestore();
   });
 
+  it("sections persisted titled thinking without hiding other reasoning", async () => {
+    const trace = "**Ensuring Docker build includes dev dependencies for tests**\n\nDocker tests need development dependencies.\n\n**Planning deployment commit structure**\n\nDeployment commits remain independently reviewable.\n\n**Editing README content**\n\nREADME edits remain visible in their own section.";
+    setupMockChat({
+      sessions: [activeSessionFixture],
+      filteredSessions: [activeSessionFixture],
+      activeSession: activeSessionFixture,
+      messages: [{ id: "msg-titled", sessionId: "session-001", role: "assistant", content: "Done", thinkingOutput: trace, createdAt: "2026-04-08T00:00:00.000Z" }],
+    });
+
+    await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
+    const message = await screen.findByTestId("chat-message-msg-titled");
+    const disclosure = message.querySelector("details.chat-message-thinking")!;
+    fireEvent.click(disclosure.querySelector("summary")!);
+    const sections = disclosure.querySelectorAll<HTMLElement>("[data-testid='thinking-trace-section']");
+    expect(sections).toHaveLength(3);
+    const deployment = [...sections].find((section) => section.textContent?.includes("Planning deployment commit structure"))!;
+    expect(deployment).toHaveAttribute("open");
+    expect(deployment).toHaveTextContent("Deployment commits remain independently reviewable.");
+    expect([...sections].filter((section) => section !== deployment).some((section) => section.textContent?.includes("Deployment commits remain independently reviewable."))).toBe(false);
+    fireEvent.click(deployment.querySelector("summary")!);
+    expect(deployment).not.toHaveAttribute("open");
+    expect([...sections].find((section) => section.textContent?.includes("README edits"))).toHaveAttribute("open");
+  });
+
   /*
   FNXC:DashboardTests 2026-07-15-16:30:
   Mobile Chat restores the sidebar after a remount even when useChat restores an active

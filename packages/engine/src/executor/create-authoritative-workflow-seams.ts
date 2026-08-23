@@ -46,6 +46,38 @@ const WORKFLOW_THINKING_LEVEL_SET: ReadonlySet<string> = new Set(THINKING_LEVELS
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mirror TaskExecutor method surface
 type AnyFn = (...args: any[]) => any;
 
+/*
+FNXC:WorkspaceReviewEvidence 2026-08-21-19:52:
+Both authoritative and graph review producers must publish the exact approval shape landing reads.
+Keep this fenced writer exported so the real producer-to-consumer regression cannot recreate it in a test.
+*/
+export async function persistWorkspaceCodeReviewApproval(
+  store: TaskStore,
+  taskId: string,
+  review: Pick<ReviewResult, "verdict" | "repositoryScopeRevision" | "repositoryDiffFingerprints" | "repositoryModifiedFiles">,
+): Promise<boolean> {
+  if (review.repositoryScopeRevision === undefined) return false;
+  let superseded = false;
+  const approvedAt = new Date().toISOString();
+  await store.updateTaskAtomic(taskId, (current) => {
+    const scope = current.repositoryScope;
+    if (!scope || scope.revision !== review.repositoryScopeRevision) {
+      superseded = true;
+      return null;
+    }
+    if (review.verdict !== "APPROVE" || !review.repositoryDiffFingerprints || Object.keys(review.repositoryDiffFingerprints).length === 0) return null;
+    return {
+      repositoryScope: {
+        ...scope,
+        reviewEvidence: Object.fromEntries(Object.entries(review.repositoryDiffFingerprints).map(([repo, fingerprint]) => [repo, { fingerprint, approvedAt }])),
+        ...(scope.reviewRemediation?.scopeRevision === review.repositoryScopeRevision ? { reviewRemediation: undefined } : {}),
+      },
+      ...(review.repositoryModifiedFiles ? { modifiedFiles: review.repositoryModifiedFiles } : {}),
+    };
+  });
+  return superseded;
+}
+
 export type CreateAuthoritativeWorkflowSeamsDeps = {
   store: TaskStore;
   rootDir: string;
@@ -353,15 +385,6 @@ export function createAuthoritativeWorkflowSeams(
         const workspaceConfig = deps.ensureWorkspaceConfig
           ? await deps.ensureWorkspaceConfig()
           : deps.workspaceConfig;
-        const workspaceCoordinator = workspaceConfig
-          ? Object.keys(detail.workspaceWorktrees ?? {})
-            // FNXC:RepositoryScope 2026-08-20-23:40: Plan Review needs one real scoped checkout for
-            // task-document context; acquisition alone never authorizes a reviewer cwd.
-            .filter((repoRelPath) => workspaceConfig.repos.includes(repoRelPath) && detail.repositoryScope?.repositories.includes(repoRelPath))
-            .sort()
-            .map((repoRelPath) => detail.workspaceWorktrees?.[repoRelPath]?.worktreePath)
-            .find((path): path is string => typeof path === "string" && path.length > 0)
-          : undefined;
         if (workspaceConfig) {
           /*
           FNXC:WorkspaceRootRouting 2026-08-19-12:15:
@@ -371,12 +394,11 @@ export function createAuthoritativeWorkflowSeams(
           */
           detail = await normalizeWorkspaceTaskRouting(deps.store, seamTask.id) as typeof detail;
         }
-        // Worktree isolation (KTD-11): workspace review uses the durable per-repo set; single-repo
-        // review uses the instance's own worktree. Neither path falls back to the workspace root.
-        const worktreePath = workspaceCoordinator || active.worktreePath || detail.worktree || deps.rootDir;
-        const reviewCwd = workspaceConfig
-          ? workspaceCoordinator ?? ""
-          : resolveReviewCheckoutCwd(detail, worktreePath);
+        // Workspace Code Review fans out over durable repository entries. Plan Review
+        // reads the workspace under its declared read-only boundary; only single-repo
+        // review resolves a checkout here.
+        const worktreePath = active.worktreePath || detail.worktree || deps.rootDir;
+        const reviewCwd = workspaceConfig ? deps.rootDir : resolveReviewCheckoutCwd(detail, worktreePath);
         if (reviewCwd) logReviewCheckoutRouting(seamTask.id, detail, reviewCwd, worktreePath);
         const stepName = detail.steps[stepIndex]?.name ?? `Step ${stepIndex}`;
         const promptContent = detail.prompt ?? "";
@@ -481,6 +503,7 @@ export function createAuthoritativeWorkflowSeams(
             ? deps.reviewWorkspacePerRepo(detail, (cwd: string) => runForCwd(cwd), {
                 workspaceRepos: workspaceConfig.repos,
                 workspaceRootDir: deps.rootDir,
+                settings,
                 /*
                 FNXC:Workspace 2026-08-15-04:49:
                 fn_task_done persists an accepted no-op sentinel as noCommitsExpected
@@ -512,28 +535,9 @@ export function createAuthoritativeWorkflowSeams(
         per-repository diff evidence. Check that generation under the task lock before persisting
         approval or advancing the graph: an operator scope change supersedes the whole callback.
         */
-        let reviewSuperseded = false;
-        if (workspaceConfig && config.type === "code" && review.repositoryScopeRevision !== undefined) {
-          const approvedAt = new Date().toISOString();
-          await deps.store.updateTaskAtomic(seamTask.id, (current) => {
-            const currentScope = current.repositoryScope;
-            if (!currentScope || currentScope.revision !== review.repositoryScopeRevision) {
-              reviewSuperseded = true;
-              return null;
-            }
-            if (review.verdict !== "APPROVE" || !review.repositoryDiffFingerprints || Object.keys(review.repositoryDiffFingerprints).length === 0) {
-              return null;
-            }
-            return {
-              repositoryScope: {
-                ...currentScope,
-                reviewEvidence: Object.fromEntries(Object.entries(review.repositoryDiffFingerprints).map(([repo, fingerprint]) => [repo, { fingerprint, approvedAt }])),
-                // FNXC:WorkspaceFinalization 2026-08-21-09:50: An APPROVE for this fenced scope ends its REVISE episode; retaining its target would misroute later acquisition.
-                ...(currentScope.reviewRemediation?.scopeRevision === review.repositoryScopeRevision ? { reviewRemediation: undefined } : {}),
-              },
-            };
-          });
-        }
+        const reviewSuperseded = workspaceConfig && config.type === "code"
+          ? await persistWorkspaceCodeReviewApproval(deps.store, seamTask.id, review)
+          : false;
         if (reviewSuperseded) {
           review = {
             verdict: "UNAVAILABLE",
@@ -607,6 +611,7 @@ export function createAuthoritativeWorkflowSeams(
           summary: review.summary,
           retryable: review.retryable,
           repositoryDiffFingerprints: review.repositoryDiffFingerprints,
+          repositoryModifiedFiles: review.repositoryModifiedFiles,
           repositoryReviewOutcomes: review.repositoryReviewOutcomes,
           repositoryScopeRevision: review.repositoryScopeRevision,
         };

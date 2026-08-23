@@ -142,6 +142,8 @@ export function rowToTask(row: TaskRow): Task {
     branchConflictRecoveryCount: row.branchConflictRecoveryCount ?? undefined,
     reviewerContextRetryCount: row.reviewerContextRetryCount ?? undefined,
     reviewerFallbackRetryCount: row.reviewerFallbackRetryCount ?? undefined,
+    reviewConvergenceStage: row.reviewConvergenceStage ?? undefined,
+    reviewConvergenceEscalationCount: row.reviewConvergenceEscalationCount ?? undefined,
     nextRecoveryAt: row.nextRecoveryAt || undefined,
     error: row.error || undefined,
     summary: row.summary || undefined,

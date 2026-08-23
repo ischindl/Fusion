@@ -82,6 +82,8 @@ export const COLOR_THEMES: { value: ColorTheme; label: string; className: string
   { value: "sage", label: "Sage", className: "theme-swatch-sage" },
   { value: "midnight", label: "Midnight", className: "theme-swatch-midnight" },
   { value: "velvet", label: "Velvet", className: "theme-swatch-velvet" },
+  // FNXC:DashboardTheming 2026-08-23-01:51: Iceberg follows Velvet in the shared selector source so Settings and Command Center preserve the persisted registry order and swatch mapping.
+  { value: "iceberg", label: "Iceberg", className: "theme-swatch-iceberg" },
   { value: "factory-dark", label: "Factory Dark", className: "theme-swatch-factory-dark" },
   { value: "factory-light", label: "Factory Light", className: "theme-swatch-factory-light" },
   { value: "shadcn", label: "Shadcn", className: "theme-swatch-shadcn" },

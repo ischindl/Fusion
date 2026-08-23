@@ -114,6 +114,13 @@ import { isLikelyTabSuspensionError, useTabVisibilitySuspension } from "./visibi
 import { clearCache, readCache, SWR_CACHE_KEYS, SWR_TASKS_MAX_AGE_MS, writeCache } from "../utils/swrCache";
 import { useAgentsMapCache } from "./useAgentsMapCache";
 
+export interface UseChatOptions {
+  /** Forces a window-local Direct selection instead of restoring the shared host selection. */
+  initialSession?: ChatSessionInfo;
+  /** Secondary Quick Chats must never rewrite the ordinary host's session preference. */
+  persistActiveSession?: boolean;
+}
+
 export interface UseChatReturn {
   // Session state
   sessions: ChatSessionInfo[];
@@ -429,7 +436,10 @@ function reconcileOptimisticSentMessage(previous: ChatMessageInfo[], persisted: 
 export function useChat(
   projectId?: string,
   addToast?: (msg: string, type?: "success" | "error" | "warning") => void,
+  options: UseChatOptions = {},
 ): UseChatReturn {
+  const persistActiveSession = options.persistActiveSession !== false;
+  const initialSession = options.initialSession;
   // Note: We use i18n lazy - the t function is only used for fallback messages
   // and can be undefined since normalizeFailureInfo has a safe default
   const getChatSessionsCacheKey = useCallback(
@@ -652,6 +662,22 @@ export function useChat(
   useEffect(() => {
     if (sessionsLoading || hasRestoredActiveSessionRef.current || activeSessionRef.current) return;
 
+    /*
+    FNXC:ChatWindows 2026-08-21-18:24:
+    A secondary Quick Chat owns an explicit session and must not let a stale ordinary-host
+    preference replace it. Its later selections stay local when persistence is disabled.
+    */
+    if (initialSession) {
+      hasRestoredActiveSessionRef.current = true;
+      selectSessionRef.current(initialSession.id, initialSession);
+      return;
+    }
+
+    if (!persistActiveSession) {
+      hasRestoredActiveSessionRef.current = true;
+      return;
+    }
+
     const savedSessionId = getScopedItem(ACTIVE_SESSION_STORAGE_KEY, projectId);
     if (!savedSessionId) {
       hasRestoredActiveSessionRef.current = true;
@@ -666,7 +692,7 @@ export function useChat(
     }
 
     hasRestoredActiveSessionRef.current = true;
-  }, [sessionsLoading, sessions, projectId]);
+  }, [initialSession, persistActiveSession, sessionsLoading, sessions, projectId]);
 
   const readCachedMessages = useCallback(
     (targetProjectId?: string, sessionId?: string | null) => {
@@ -1136,14 +1162,16 @@ export function useChat(
         setMessages([]);
       }
 
-      // Persist active session to localStorage
-      if (id) {
-        setScopedItem(ACTIVE_SESSION_STORAGE_KEY, id, projectId);
-      } else {
-        removeScopedItem(ACTIVE_SESSION_STORAGE_KEY, projectId);
+      // Ordinary Chat hosts retain the project-scoped selection; secondary windows do not.
+      if (persistActiveSession) {
+        if (id) {
+          setScopedItem(ACTIVE_SESSION_STORAGE_KEY, id, projectId);
+        } else {
+          removeScopedItem(ACTIVE_SESSION_STORAGE_KEY, projectId);
+        }
       }
     },
-    [attachIfGenerating, hydrateMessagesFromCache, sessions, loadMessages, projectId, resetTransientComposerState],
+    [attachIfGenerating, hydrateMessagesFromCache, sessions, loadMessages, persistActiveSession, projectId, resetTransientComposerState],
   );
 
   // Update the ref to point to the actual selectSession function

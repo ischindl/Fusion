@@ -495,6 +495,15 @@ export type DatabaseMutationType =
   | "task:checkout"
   /** Metadata: { taskId, artifactKeys, owner, source, action, attempt, maxAttempts, nodeId? } */
   | "task:required-artifact-missing"
+  /*
+  FNXC:ReviewConvergence 2026-08-22-16:17:
+  FN-149 records review convergence as bounded best-effort telemetry. These events contain only
+  task/gate identifiers, counts, and fixed outcomes; reviewer feedback and dispute rationale stay in task records.
+  */
+  | "task:review-finding-disputed"
+  | "task:review-convergence-escalation"
+  | "task:review-arbitration"
+  | "task:review-convergence-human-escalation"
   /**
    * Planning admission was withheld because no top-level slot was reservable.
    * Metadata: { blockedBy, maxConcurrent, claimed, projectRoom, eligibleCount, eligibleTaskIds,

@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { ColumnId, Task, TaskStep } from "../types.js";
 import * as schema from "../postgres/schema/index.js";
 import { projectScopeFor } from "../postgres/data-layer.js";
@@ -7,6 +7,7 @@ import { withTaskWorkflowSerialization } from "./async/async-workflow-workitems.
 import { readTaskRowInTransaction, upsertTaskRowInTransaction } from "./async/async-persistence.js";
 import type { TaskStore } from "../store.js";
 import { createLogger } from "../process/logger.js";
+import { resolveTaskSymbolsForTask } from "../tasks/task-symbol-resolution.js";
 
 const resetLog = createLogger("task-store-reset-lifecycle");
 const ACTIVE_TASK_CONTINUATION_STATES = ["runnable", "running", "held", "retrying"] as const;
@@ -101,6 +102,8 @@ function buildResetTask(task: Task, intakeColumn: ColumnId): Task {
     branchConflictRecoveryCount: 0,
     reviewerContextRetryCount: 0,
     reviewerFallbackRetryCount: 0,
+    reviewConvergenceStage: 0,
+    reviewConvergenceEscalationCount: 0,
     nextRecoveryAt: undefined,
     workflowIrPin: undefined,
     workflowIrPinNodeId: undefined,
@@ -136,6 +139,14 @@ export async function resetTaskPublicationImpl(
     throw new Error("Atomic task reset publication requires the PostgreSQL backend");
   }
   const projectId = layer.projectId;
+  const beforeReset = await store.getTask(taskId);
+  if (!beforeReset) throw new Error(`Task ${taskId} not found`);
+  const symbols = resolveTaskSymbolsForTask(beforeReset);
+  /*
+  FNXC:TaskReset 2026-08-22-04:45:
+  Symbol release is intentionally before publication: it owns a separate transaction, while publication clears declaredSymbols. Releasing preserves audit history instead of leaking held rows until expiry.
+  */
+  if (store.backendMode && symbols.resolvable) await store.releaseSymbolLocks(symbols.symbols, taskId);
   let published!: Task;
 
   await layer.transactionImmediate(async (tx) => {
@@ -159,6 +170,33 @@ export async function resetTaskPublicationImpl(
           .where(and(scope, inArray(schema.project.workflowWorkItems.id, active.map((row) => row.id))));
       }
       await resetPublicationFailureForTesting?.();
+      const documentScope = projectScopeFor(schema.project.taskDocuments.projectId, projectId);
+      const revisionScope = projectScopeFor(schema.project.taskDocumentRevisions.projectId, projectId);
+      const documents = await tx.select({ key: schema.project.taskDocuments.key, author: schema.project.taskDocuments.author })
+        .from(schema.project.taskDocuments).where(and(documentScope, eq(schema.project.taskDocuments.taskId, taskId)));
+      const revisions = await tx.select({ key: schema.project.taskDocumentRevisions.key, author: schema.project.taskDocumentRevisions.author })
+        .from(schema.project.taskDocumentRevisions).where(and(revisionScope, eq(schema.project.taskDocumentRevisions.taskId, taskId)));
+      /*
+      FNXC:TaskReset 2026-08-22-04:45:
+      Reset retains user-authored documents and their complete revision history. Agent-only documents and run projections are discarded, while attachments, spec-locks, commit associations, and audit history remain operator history.
+      */
+      const userTouchedKeys = new Set([...documents, ...revisions].filter((row) => row.author === "user").map((row) => row.key));
+      const removableKeys = documents.filter((row) => !userTouchedKeys.has(row.key)).map((row) => row.key);
+      if (removableKeys.length) {
+        await tx.delete(schema.project.taskDocumentRevisions).where(and(revisionScope, eq(schema.project.taskDocumentRevisions.taskId, taskId), inArray(schema.project.taskDocumentRevisions.key, removableKeys)));
+        await tx.delete(schema.project.taskDocuments).where(and(documentScope, eq(schema.project.taskDocuments.taskId, taskId), inArray(schema.project.taskDocuments.key, removableKeys)));
+      }
+      await tx.delete(schema.project.currentPlanEvidence).where(and(projectScopeFor(schema.project.currentPlanEvidence.projectId, projectId), eq(schema.project.currentPlanEvidence.taskId, taskId)));
+      await tx.delete(schema.project.specDriftReports).where(and(projectScopeFor(schema.project.specDriftReports.projectId, projectId), eq(schema.project.specDriftReports.taskId, taskId)));
+      await tx.delete(schema.project.taskVerificationRequests).where(and(projectScopeFor(schema.project.taskVerificationRequests.projectId, projectId), eq(schema.project.taskVerificationRequests.taskId, taskId)));
+      await tx.delete(schema.project.unplannedExecutionBlocks).where(and(projectScopeFor(schema.project.unplannedExecutionBlocks.projectId, projectId), eq(schema.project.unplannedExecutionBlocks.taskId, taskId)));
+      await tx.delete(schema.project.completionHandoffMarkers).where(and(projectScopeFor(schema.project.completionHandoffMarkers.projectId, projectId), eq(schema.project.completionHandoffMarkers.taskId, taskId)));
+      await tx.delete(schema.project.mergeQueue).where(and(projectScopeFor(schema.project.mergeQueue.projectId, projectId), eq(schema.project.mergeQueue.taskId, taskId)));
+      await tx.delete(schema.project.mergeRequests).where(and(projectScopeFor(schema.project.mergeRequests.projectId, projectId), eq(schema.project.mergeRequests.taskId, taskId)));
+      await tx.delete(schema.project.artifacts).where(and(
+        projectScopeFor(schema.project.artifacts.projectId, projectId), eq(schema.project.artifacts.taskId, taskId),
+        sql`coalesce(${schema.project.artifacts.metadata}->>'source', '') <> 'attachment'`,
+      ));
       await tx.delete(schema.project.workflowRunStepInstances).where(and(
         projectScopeFor(schema.project.workflowRunStepInstances.projectId, projectId),
         eq(schema.project.workflowRunStepInstances.taskId, taskId),

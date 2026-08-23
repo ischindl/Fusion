@@ -4,7 +4,9 @@ import {
   __setTaskMoveDisposalTimeoutForTesting,
   disposeTaskBeforeMove,
   disposeTaskBeforeReset,
+  getTaskResetDisposer,
   registerTaskMoveDisposer,
+  registerTaskResetDisposer,
 } from "../tasks/task-move-disposer.js";
 
 describe("task move disposer", () => {
@@ -160,6 +162,42 @@ describe("task move disposer", () => {
     releaseSecond?.();
     await reset;
     expect(resetReady).toBe(true);
+  });
+
+  it("starts move and reset owners concurrently before awaiting either", async () => {
+    const store = {} as never;
+    let releaseMove!: () => void;
+    let releaseReset!: () => void;
+    const move = vi.fn(() => new Promise<void>((resolve) => { releaseMove = resolve; }));
+    const reset = vi.fn(() => new Promise<void>((resolve) => { releaseReset = resolve; }));
+    registerTaskMoveDisposer(store, move);
+    registerTaskResetDisposer(store, reset);
+    const pending = disposeTaskBeforeReset(store, { id: "FN-BOTH" } as never);
+    await Promise.resolve();
+    expect(move).toHaveBeenCalledOnce();
+    expect(reset).toHaveBeenCalledOnce();
+    releaseMove();
+    releaseReset();
+    await expect(pending).resolves.toBeUndefined();
+  });
+
+  it("supports store-scoped reset disposers and independent unregistration", async () => {
+    const first = {} as never;
+    const second = {} as never;
+    const disposer = vi.fn().mockResolvedValue(undefined);
+    const unregister = registerTaskResetDisposer(first, disposer);
+    await disposeTaskBeforeReset(second, { id: "FN-OTHER" } as never);
+    expect(disposer).not.toHaveBeenCalled();
+    await disposeTaskBeforeReset(first, { id: "FN-FIRST" } as never);
+    expect(disposer).toHaveBeenCalledOnce();
+    unregister();
+    expect(getTaskResetDisposer(first)).toBeUndefined();
+  });
+
+  it("propagates reset-only disposer rejection", async () => {
+    const store = {} as never;
+    registerTaskResetDisposer(store, vi.fn().mockRejectedValue(new Error("planner still active")));
+    await expect(disposeTaskBeforeReset(store, { id: "FN-RESET-ONLY" } as never)).rejects.toThrow("planner still active");
   });
 
   it("is a no-op when reset has no registered runtime owners", async () => {

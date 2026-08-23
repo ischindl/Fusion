@@ -71,8 +71,7 @@ describe("dashboard concurrency surface data", () => {
     api.fetchSettings.mockResolvedValue({ maxConcurrent: 6, maxWorktrees: 9, worktreeLimitEnabled: true });
     api.fetchConfig.mockResolvedValue({ maxConcurrent: 6, maxWorktrees: 9, effectiveMaxConcurrent: 6, concurrencyBindingKnob: "maxConcurrent" });
     const { getByTestId } = render(<>
-      <CommandCenterControls colorTheme="default" themeMode="dark" onColorThemeChange={() => {}} onThemeModeChange={() => {}} />
-      <EngineControlMenu />
+      <CommandCenterControls colorTheme="violet" themeMode="dark" onColorThemeChange={() => {}} onThemeModeChange={() => {}} />      <EngineControlMenu />
     </>);
 
     fireEvent.click(getByTestId("engine-control-menu-trigger"));
@@ -91,8 +90,7 @@ describe("dashboard concurrency surface data", () => {
   it("renders worktree-bound values through both editable control surfaces", async () => {
     api.fetchSettings.mockResolvedValue({ maxConcurrent: 8, maxWorktrees: 4, worktreeLimitEnabled: true });
     const { getByTestId } = render(<>
-      <CommandCenterControls colorTheme="default" themeMode="dark" onColorThemeChange={() => {}} onThemeModeChange={() => {}} />
-      <EngineControlMenu />
+      <CommandCenterControls colorTheme="violet" themeMode="dark" onColorThemeChange={() => {}} onThemeModeChange={() => {}} />      <EngineControlMenu />
     </>);
 
     fireEvent.click(getByTestId("engine-control-menu-trigger"));
@@ -109,8 +107,7 @@ describe("dashboard concurrency surface data", () => {
   it("renders shipped resolver defaults through both editable control surfaces", async () => {
     api.fetchSettings.mockResolvedValue({});
     const { getByTestId } = render(<>
-      <CommandCenterControls colorTheme="default" themeMode="dark" onColorThemeChange={() => {}} onThemeModeChange={() => {}} />
-      <EngineControlMenu />
+      <CommandCenterControls colorTheme="violet" themeMode="dark" onColorThemeChange={() => {}} onThemeModeChange={() => {}} />      <EngineControlMenu />
     </>);
 
     fireEvent.click(getByTestId("engine-control-menu-trigger"));

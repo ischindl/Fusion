@@ -26,8 +26,17 @@ export interface AiMergeReviewVerdict {
 }
 
 export const REVIEW_VERDICT_MARKER = "REVIEW_VERDICT:";
+export const SEVERITY_MARKER = "SEVERITY:";
 export const RESOLVED_PRIOR_FINDINGS_MARKER = "RESOLVED_PRIOR_FINDINGS:";
 export const PRIOR_FINDING_DISPOSITIONS_MARKER = "PRIOR_FINDING_DISPOSITIONS:";
+/*
+FNXC:MergerAiReview 2026-08-22-22:04:
+FN-090 added the fourth protocol marker without teaching reason recovery about it, letting
+Fusion persist its own acknowledgement syntax as blocking feedback. Keep every marker in this
+registry so a future fifth marker is rejected by construction at both parser and durable seams.
+*/
+export const AI_MERGE_PROTOCOL_MARKERS = [REVIEW_VERDICT_MARKER, SEVERITY_MARKER, RESOLVED_PRIOR_FINDINGS_MARKER, PRIOR_FINDING_DISPOSITIONS_MARKER] as const;
+const DISPOSITION_BODY_RE = /^[A-Za-z0-9_-]+\s*:\s*(corrected|absent-from-squash|still-present)$/i;
 const VERDICT_LINE_RE = /REVIEW_VERDICT:\s*(approve|reject)\b/i;
 const SEVERITY_LINE_RE = /SEVERITY:\s*(blocking|advisory)\b/i;
 const RESOLVED_PRIOR_FINDINGS_LINE_RE = /RESOLVED_PRIOR_FINDINGS:\s*(.*)$/i;
@@ -39,6 +48,7 @@ free-form analysis can run long; the corrective re-merge prompt only needs the c
 and an unbounded splice would paste an entire transcript into it.
 */
 const MAX_RECOVERED_PRECEDING_REASONS = 8;
+export const MAX_REASON_CHARS = 500;
 
 /**
  * Parse the reviewer's free-form output. Fail-safe: no/garbled output, or a
@@ -111,7 +121,7 @@ function extractResolvedPriorReasons(lines: string[]): string[] {
   const resolved = inline && !/^none\b/i.test(inline) ? [inline] : [];
   for (let index = markerIndex + 1; index < lines.length; index++) {
     const line = lines[index];
-    if (VERDICT_LINE_RE.test(line) || SEVERITY_LINE_RE.test(line) || !line.trim()) break;
+    if (VERDICT_LINE_RE.test(line) || SEVERITY_LINE_RE.test(line) || line.trim().toLowerCase().startsWith(PRIOR_FINDING_DISPOSITIONS_MARKER.toLowerCase()) || !line.trim()) break;
     if (!/^\s*(?:[-*•]|\d+[.)])\s+/.test(line)) return [];
     resolved.push(cleanReasonLine(line));
   }
@@ -125,7 +135,7 @@ function extractPriorFindingDispositions(lines: string[]): Array<{ id: string; d
   const result: Array<{ id: string; disposition: "corrected" | "absent-from-squash" | "still-present" }> = [];
   for (let i = index + 1; i < lines.length; i++) {
     const line = lines[i];
-    if (!line.trim() || VERDICT_LINE_RE.test(line) || SEVERITY_LINE_RE.test(line)) break;
+    if (!line.trim() || VERDICT_LINE_RE.test(line) || SEVERITY_LINE_RE.test(line) || line.trim().toLowerCase().startsWith(RESOLVED_PRIOR_FINDINGS_MARKER.toLowerCase())) break;
     const match = cleanReasonLine(line).match(/^([A-Za-z0-9_-]+)\s*:\s*(corrected|absent-from-squash|still-present)\s*$/i);
     if (match) result.push({ id: match[1], disposition: match[2].toLowerCase() as "corrected" | "absent-from-squash" | "still-present" });
   }
@@ -140,13 +150,22 @@ function normalizeReasonIdentity(reason: string): string {
   return reason.trim().toLocaleLowerCase().replace(/[\s\p{P}]+/gu, " ").trim();
 }
 
+/** Whether a line is Fusion review protocol rather than reviewer reasoning. */
+export function isAiMergeProtocolLine(text: string): boolean {
+  const clean = cleanReasonLine(text);
+  return AI_MERGE_PROTOCOL_MARKERS.some((marker) => clean.toLowerCase().includes(marker.toLowerCase())) || DISPOSITION_BODY_RE.test(clean);
+}
+
 /** Lines that carry no reviewer reasoning and must never be reported as a reason. */
-function isNonReasonLine(line: string): boolean {
+export function isNonReasonLine(line: string): boolean {
   const t = line.trim();
   if (!t) return true;
   if (SEVERITY_LINE_RE.test(t)) return true;
   if (VERDICT_LINE_RE.test(t)) return true;
   if (RESOLVED_PRIOR_FINDINGS_LINE_RE.test(t)) return true;
+  /* FNXC:MergerAiReview 2026-08-22-22:26: Protocol markers at line start stay non-reasons even with malformed values; inline marker prose is left to the durable-corpus defence-in-depth boundary. */
+  if (AI_MERGE_PROTOCOL_MARKERS.some((marker) => t.toLowerCase().startsWith(marker.toLowerCase()))) return true;
+  if (DISPOSITION_BODY_RE.test(cleanReasonLine(t))) return true;
   // Markdown scaffolding the reviewer may emit around its analysis.
   if (/^#{1,6}\s/.test(t)) return true;
   if (/^(?:-{3,}|={3,}|`{3,})/.test(t)) return true;
@@ -156,20 +175,34 @@ function isNonReasonLine(line: string): boolean {
 /*
 FNXC:MergerAiReview 2026-07-15-14:45:
 FN-8004 corrective merges must receive reviewer conclusions, never pasted diff or tool output. Track Markdown fences while recovering reasons on either side of a verdict so nearby evidence cannot displace actionable feedback.
+
+FNXC:MergerAiReview 2026-08-22-22:04:
+FN-159 groups contiguous review prose because treating every line as a finding split one actionable
+multi-line objection into truncated fragments that no corrective merge could address reliably.
 */
 function collectReasonLines(lines: string[], start: number, end: number, step: 1 | -1): string[] {
   const reasons: string[] = [];
+  let group: string[] = [];
   let inFence = false;
+  const flush = () => {
+    if (!group.length) return;
+    const ordered = step === -1 ? group.reverse() : group;
+    const reason = ordered.join(" ");
+    reasons.push(reason.length > MAX_REASON_CHARS ? `${reason.slice(0, MAX_REASON_CHARS - 1)}…` : reason);
+    group = [];
+  };
   for (let i = start; step === 1 ? i < end : i >= end; i += step) {
-    if (/^\s*(?:`{3,}|~{3,})/.test(lines[i])) {
-      inFence = !inFence;
-      continue;
-    }
-    if (inFence || isNonReasonLine(lines[i])) continue;
-    reasons.push(cleanReasonLine(lines[i]));
+    const line = lines[i];
+    const bullet = /^\s*(?:[-*•]|\d+[.)])\s+/.test(line);
+    if (/^\s*(?:`{3,}|~{3,})/.test(line)) { flush(); inFence = !inFence; continue; }
+    if (inFence || isNonReasonLine(line)) { flush(); continue; }
+    if (bullet && step === 1) flush();
+    group.push(cleanReasonLine(line));
+    if (bullet && step === -1) flush();
     if (reasons.length >= MAX_RECOVERED_PRECEDING_REASONS) break;
   }
-  return reasons;
+  flush();
+  return reasons.slice(0, MAX_RECOVERED_PRECEDING_REASONS);
 }
 
 /*

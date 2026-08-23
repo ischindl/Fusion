@@ -231,6 +231,7 @@ export async function adoptLegacyTaskRowsOnOpen(store: TaskStore): Promise<numbe
         const plan = planLegacyAdoption(
           {
             status: task.status,
+            column: task.column,
             reviewLevel: task.reviewLevel,
             enabledWorkflowSteps: task.enabledWorkflowSteps,
             legacyAdoptedAt: task.legacyAdoptedAt,

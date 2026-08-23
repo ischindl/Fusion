@@ -5,8 +5,8 @@ import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { Task, TaskStore } from "@fusion/core";
-import { registerTaskMoveDisposer } from "@fusion/core";
-import { getRegisteredWorktreeBranches } from "@fusion/engine";
+import { registerTaskMoveDisposer, registerTaskResetDisposer } from "@fusion/core";
+import { activeSessionRegistry, getRegisteredWorktreeBranches, registerPlanningLivenessProbe } from "@fusion/engine";
 import { createApiRoutes } from "../routes.js";
 import { request as performRequest } from "../test-request.js";
 
@@ -19,6 +19,14 @@ vi.mock("@fusion/engine", async () => {
       await rm(input.worktreePath, { recursive: true, force: true });
       return { removed: true, classification: "removed" };
     }),
+    removeTaskResetWorktree: vi.fn(async (input: Parameters<typeof actual.removeTaskResetWorktree>[0]) => await actual.removeTaskResetWorktree({
+      ...input,
+      remove: async ({ worktreePath }) => {
+        const { rm } = await import("node:fs/promises");
+        await rm(worktreePath, { recursive: true, force: true });
+        return { removed: true, classification: "removed" };
+      },
+    })),
     pruneWorktreeAdminEntries: vi.fn().mockResolvedValue(undefined),
     getRegisteredWorktreeBranches: vi.fn().mockResolvedValue([]),
   };
@@ -130,6 +138,104 @@ describe("POST /tasks/:id/reset", () => {
       expect(res.body.steps.every((step: { status: string }) => step.status === "pending")).toBe(true);
     } finally {
       unregister();
+    }
+  });
+
+  it("resets a planning-owned worktree after the planner reset fence releases it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fusion-reset-route-planning-"));
+    const worktree = join(root, ".worktrees", "fn-400");
+    const taskDir = join(root, ".fusion", "tasks", "FN-400");
+    await mkdir(worktree, { recursive: true });
+    await mkdir(taskDir, { recursive: true });
+    await writeFile(join(taskDir, "PROMPT.md"), "# Discarded plan\n");
+    const task = taskFixture(worktree);
+    vi.mocked(getRegisteredWorktreeBranches).mockResolvedValue([{ branch: task.branch!, worktreePath: worktree }]);
+    activeSessionRegistry.registerPath(worktree, { taskId: task.id, kind: "planning", ownerKey: `planning:${task.id}` });
+    const publication = vi.fn().mockResolvedValue({ ...task, column: "triage", status: "needs-replan", worktree: undefined, branch: undefined });
+    const store = createStore(root, task, [], publication);
+    const unregister = registerTaskResetDisposer(store, async () => activeSessionRegistry.unregisterPath(worktree));
+    try {
+      const res = await performRequest(createApp(store), "POST", "/api/tasks/FN-400/reset", JSON.stringify({ confirm: true }), { "content-type": "application/json" });
+      expect(res.status).toBe(200);
+      expect(publication).toHaveBeenCalledOnce();
+      expect(activeSessionRegistry.lookupByPath(worktree)).toBeNull();
+      await expect(readFile(join(taskDir, "PROMPT.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(stat(worktree)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(JSON.stringify(res.body)).not.toContain("cannot remove active-session worktree");
+    } finally {
+      unregister();
+      activeSessionRegistry.unregisterPath(worktree);
+    }
+  });
+
+  it("reconciles an aged orphaned planning registration when no disposer owns it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fusion-reset-route-stale-planning-"));
+    const worktree = join(root, ".worktrees", "fn-400");
+    await mkdir(worktree, { recursive: true });
+    await mkdir(join(root, ".fusion", "tasks", "FN-400"), { recursive: true });
+    await writeFile(join(root, ".fusion", "tasks", "FN-400", "PROMPT.md"), "# Discarded plan\n");
+    const task = taskFixture(worktree);
+    vi.mocked(getRegisteredWorktreeBranches).mockResolvedValue([{ branch: task.branch!, worktreePath: worktree }]);
+    activeSessionRegistry.registerPath(worktree, { taskId: task.id, kind: "planning", ownerKey: `planning:${task.id}` });
+    (activeSessionRegistry.lookupByPath(worktree) as { registeredAt: number }).registeredAt = 0;
+    const publication = vi.fn().mockResolvedValue({ ...task, column: "triage", status: "needs-replan", worktree: undefined, branch: undefined });
+    const store = createStore(root, task, [], publication);
+    try {
+      const res = await performRequest(createApp(store), "POST", "/api/tasks/FN-400/reset", JSON.stringify({ confirm: true }), { "content-type": "application/json" });
+      expect(res.status).toBe(200);
+      expect(activeSessionRegistry.lookupByPath(worktree)).toBeNull();
+      expect(publication).toHaveBeenCalledOnce();
+    } finally {
+      activeSessionRegistry.unregisterPath(worktree);
+    }
+  });
+
+  it("reports a live planner as an actionable conflict without deleting its plan", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fusion-reset-route-live-planning-"));
+    const worktree = join(root, ".worktrees", "fn-400");
+    const promptPath = join(root, ".fusion", "tasks", "FN-400", "PROMPT.md");
+    await mkdir(worktree, { recursive: true });
+    await mkdir(join(root, ".fusion", "tasks", "FN-400"), { recursive: true });
+    await writeFile(promptPath, "# Keep plan\n");
+    const task = taskFixture(worktree);
+    vi.mocked(getRegisteredWorktreeBranches).mockResolvedValue([{ branch: task.branch!, worktreePath: worktree }]);
+    activeSessionRegistry.registerPath(worktree, { taskId: task.id, kind: "planning", ownerKey: `planning:${task.id}` });
+    (activeSessionRegistry.lookupByPath(worktree) as { registeredAt: number }).registeredAt = 0;
+    const unregisterProbe = registerPlanningLivenessProbe((id) => id === task.id);
+    const publication = vi.fn();
+    const store = createStore(root, task, [], publication);
+    try {
+      const res = await performRequest(createApp(store), "POST", "/api/tasks/FN-400/reset", JSON.stringify({ confirm: true }), { "content-type": "application/json" });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/active task FN-400 \(planning\).*stop or finish/i);
+      expect(publication).not.toHaveBeenCalled();
+      await expect(readFile(promptPath, "utf8")).resolves.toBe("# Keep plan\n");
+    } finally {
+      unregisterProbe();
+      activeSessionRegistry.unregisterPath(worktree);
+    }
+  });
+
+  it("reports a foreign session holder as an actionable conflict", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fusion-reset-route-foreign-session-"));
+    const worktree = join(root, ".worktrees", "fn-400");
+    const promptPath = join(root, ".fusion", "tasks", "FN-400", "PROMPT.md");
+    await mkdir(worktree, { recursive: true });
+    await mkdir(join(root, ".fusion", "tasks", "FN-400"), { recursive: true });
+    await writeFile(promptPath, "# Keep plan\n");
+    const task = taskFixture(worktree);
+    vi.mocked(getRegisteredWorktreeBranches).mockResolvedValue([{ branch: task.branch!, worktreePath: worktree }]);
+    activeSessionRegistry.registerPath(worktree, { taskId: "FN-OTHER", kind: "planning", ownerKey: "planning:FN-OTHER" });
+    const publication = vi.fn();
+    const store = createStore(root, task, [], publication);
+    try {
+      const res = await performRequest(createApp(store), "POST", "/api/tasks/FN-400/reset", JSON.stringify({ confirm: true }), { "content-type": "application/json" });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/active task FN-OTHER \(planning\).*stop or finish/i);
+      expect(publication).not.toHaveBeenCalled();
+      await expect(readFile(promptPath, "utf8")).resolves.toBe("# Keep plan\n");
+    } finally {
+      activeSessionRegistry.unregisterPath(worktree);
     }
   });
 

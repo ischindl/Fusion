@@ -14,7 +14,7 @@ import {and, eq, inArray, isNull, like, lt, or} from "drizzle-orm";
 import type {WorkflowWorkItem, WorkflowWorkItemState, WorkflowWorkItemTransitionPatch, WorkflowWorkItemUpsertInput} from "../types.js";
 import "../builtin-traits.js";
 import {__setTaskActivityLogLimitsForTesting} from "../task-store/comments.js";
-import {replaceActiveTaskWorkflowContinuation as replaceActiveTaskWorkflowContinuationAsync, seedStrandedPlanReviewContinuation as seedStrandedPlanReviewContinuationAsync, upsertWorkflowWorkItem as upsertWorkflowWorkItemAsync, transitionWorkflowWorkItem as transitionWorkflowWorkItemAsync, getWorkflowWorkItem as getWorkflowWorkItemAsync, withTaskWorkflowSerialization} from "../task-store/async/async-workflow-workitems.js";
+import {replaceActiveTaskWorkflowContinuation as replaceActiveTaskWorkflowContinuationAsync, seedStrandedPlanReviewContinuation as seedStrandedPlanReviewContinuationAsync, seedWorkspaceCodeReviewContinuationIfIdle as seedWorkspaceCodeReviewContinuationIfIdleAsync, upsertWorkflowWorkItem as upsertWorkflowWorkItemAsync, transitionWorkflowWorkItem as transitionWorkflowWorkItemAsync, getWorkflowWorkItem as getWorkflowWorkItemAsync, withTaskWorkflowSerialization} from "../task-store/async/async-workflow-workitems.js";
 import { projectScopeFor, type DbTransaction } from "../postgres/data-layer.js";
 
 export async function upsertWorkflowWorkItemImpl(store: TaskStore, input: WorkflowWorkItemUpsertInput, tx?: DbTransaction): Promise<WorkflowWorkItem> {
@@ -26,6 +26,10 @@ export async function replaceActiveTaskWorkflowContinuationImpl(
   input: WorkflowWorkItemUpsertInput & { kind: "task" },
 ): Promise<WorkflowWorkItem> {
     return replaceActiveTaskWorkflowContinuationAsync(store.asyncLayer!, input);
+}
+
+export async function seedWorkspaceCodeReviewContinuationIfIdleImpl(store: TaskStore, input: WorkflowWorkItemUpsertInput & { kind: "task" }): Promise<{ seeded: boolean; reason?: "active-continuation"; workItemId?: string }> {
+  return seedWorkspaceCodeReviewContinuationIfIdleAsync(store.asyncLayer!, input);
 }
 
 export async function seedStrandedPlanReviewContinuationImpl(store: TaskStore, input: WorkflowWorkItemUpsertInput & { kind: "task" }, options: { retirePredecessorId?: string } = {}): Promise<{ seeded: boolean; reason?: "active-continuation" | "plan-review-passed"; workItemId?: string }> {

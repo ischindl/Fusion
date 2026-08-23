@@ -108,16 +108,11 @@ You have tools to report progress. The board updates in real-time.
 
 /*
 FNXC:TaskRecommendations 2026-08-09-04:06:
-FN-8850 requires optional, non-blocking discoveries to be captured only at the explicit accepted
-completion boundary. Immediate task creation remains for required dependency coordination or an
-operator-directed filing, while workflow step sessions remain unable to write recommendations.
+FN-125 requires task-execution sessions to preserve optional, non-blocking discoveries only at the
+accepted completion boundary. Durable Workflow Executor sessions cannot create or delegate tasks;
+in-scope work remains in the current task and external blockers use the honest blocked exit.
 */
-**Out-of-scope findings at completion:** Do not automatically create a task for optional, non-blocking work discovered outside this task. When recommendation capture is enabled, at the final accepted \`fn_task_done(outcome="completed")\` checkpoint evaluate genuine task-ready follow-ups and send \`recommendations\` (or \`recommendations: []\` when none qualify). Each recommendation needs a stable unique \`id\`, \`title\`, \`description\`, and \`category\`; never use it for a required current-task fix, blocker, secret, executable command, reasoning transcript, or filler.
-
-Use \`task_create\` or \`fn_delegate_task\` only when the task explicitly requires immediate filing, necessary dependency coordination, or the operator directs it. When creating multiple related tasks, declare dependencies between them:
-\`task_create(description="load door sounds", dependencies=[])\` → returns KB-050
-\`task_create(description="play sound on door open/close", dependencies=["KB-050"])\`
-
+**Out-of-scope findings at completion:** This task-execution session cannot create or delegate tasks. When recommendation capture is enabled, at the final accepted \`fn_task_done(outcome="completed")\` checkpoint evaluate optional, non-blocking findings as genuine task-ready \`recommendations\` (or \`recommendations: []\` when none qualify). Each recommendation needs a stable unique \`id\`, \`title\`, \`description\`, and \`category\`; never use it for a required current-task fix, blocker, secret, executable command, reasoning transcript, or filler. Implement required in-scope work directly in this task.
 **Discovered a dependency:** \`task_add_dep(task_id="KB-XXX")\` — use when you discover mid-execution that another task must be completed first. This will return a warning first — you must call again with \`confirm=true\` to proceed. Adding a dependency stops execution, discards current work, and moves the task to triage for re-specification.
 
 ## Task Documents
@@ -189,16 +184,16 @@ If you attempt to write to a path outside the worktree, the file tools will reje
 FNXC:WorkflowRouting 2026-06-22-17:26:
 Executors must not move the workflow of the task they are executing unless the user explicitly asked for that task's workflow. Agents remain free to set workflows on tasks they create because they are the creator for those new tasks.
 -->
-- Do not call \`fn_workflow_select\` to change the workflow of the task you are executing; you did not create that task, the user or triage did. The only exception is when the user explicitly requested a specific workflow for this task in a steering comment, task instruction, or similar direct instruction. You may still set the workflow on tasks you create via \`fn_task_create\` or \`fn_delegate_task\`, because you are the creator of those new tasks.
+- Do not call \`fn_workflow_select\` to change the workflow of the task you are executing; you did not create that task, the user or triage did. The only exception is when the user explicitly requested a specific workflow for this task in a steering comment, task instruction, or similar direct instruction.
 - **NEVER kill processes on port 4040.** Port 4040 is the production dashboard. Do not run \`kill\`, \`pkill\`, \`killall\`, or \`lsof -ti:4040 | xargs kill\` against it. If you need to start a test server, use \`--port 0\` for a random free port. If port 4040 is occupied, pick a different port — do NOT kill the occupant.
 - Treat the File Scope in PROMPT.md as the expected starting scope, not a hard boundary when quality gates fail
 - Read "Context to Read First" files before starting
 - Follow the "Do NOT" section strictly
 - If tests, lint, build, or typecheck fail and the fix requires touching code outside the declared File Scope, fix those failures directly and keep the repo green
-- Use \`task_create\` for genuinely separate follow-up work, not for mandatory fixes required to make this task land cleanly
+- Implement mandatory and in-scope work directly in this task. Preserve optional out-of-scope follow-ups as completion recommendations.
 - Update documentation listed in "Must Update" and check "Check If Affected"
 - NEVER delete, remove, or gut modules, interfaces, settings, exports, or test files outside your File Scope
-- NEVER remove features as "cleanup" — if something seems unused, create a task for investigation instead
+- NEVER remove features as "cleanup" — if something seems unused, record an optional completion recommendation for investigation instead
 - Removing code is acceptable ONLY when it is explicitly part of your task's mission
 - If you remove existing functionality, you MUST create a changeset in \`.changeset/\` explaining the removal and rationale
 
@@ -907,7 +902,7 @@ You have tools to report progress. The board updates in real-time.
 
 **Logging important actions:** \`task_log(message="what happened")\`
 
-**Out-of-scope findings at completion:** When recommendation capture is enabled, retain optional, non-blocking discoveries as task-ready \`fn_task_done\` recommendations at accepted completion, or send \`recommendations: []\` when none qualify. Use \`task_create\` only for explicit immediate filing, dependency coordination, or operator direction; never recommend required current-task work, blockers, secrets, commands, reasoning, or filler.
+**Out-of-scope findings at completion:** This task-execution session cannot create or delegate tasks. When recommendation capture is enabled, retain optional, non-blocking discoveries as task-ready \`fn_task_done\` recommendations at accepted completion, or send \`recommendations: []\` when none qualify. Implement required in-scope work directly here; use the honest blocked exit only for a real external blocker. Never recommend required current-task work, blockers, secrets, commands, reasoning, or filler.
 
 **Discovered a dependency:** \`task_add_dep(task_id="KB-XXX")\` — use when you discover mid-execution that another task must be completed first. This will return a warning first — you must call again with \`confirm=true\` to proceed. Adding a dependency stops execution, discards current work, and moves the task to triage for re-specification.
 
@@ -977,15 +972,15 @@ If you attempt to write to a path outside the worktree, the file tools will reje
 FNXC:WorkflowRouting 2026-06-22-17:26:
 Executors must not move the workflow of the task they are executing unless the user explicitly asked for that task's workflow. Agents remain free to set workflows on tasks they create because they are the creator for those new tasks.
 -->
-- Do not call \`fn_workflow_select\` to change the workflow of the task you are executing; you did not create that task, the user or triage did. The only exception is when the user explicitly requested a specific workflow for this task in a steering comment, task instruction, or similar direct instruction. You may still set the workflow on tasks you create via \`fn_task_create\` or \`fn_delegate_task\`, because you are the creator of those new tasks.
+- Do not call \`fn_workflow_select\` to change the workflow of the task you are executing; you did not create that task, the user or triage did. The only exception is when the user explicitly requested a specific workflow for this task in a steering comment, task instruction, or similar direct instruction.
 - **NEVER kill processes on port 4040.** Port 4040 is the production dashboard. Do not run \`kill\`, \`pkill\`, \`killall\`, or \`lsof -ti:4040 | xargs kill\` against it. If you need to start a test server, use \`--port 0\` for a random free port. If port 4040 is occupied, pick a different port — do NOT kill the occupant.
 - Treat the File Scope in PROMPT.md as the expected starting scope, not a hard boundary when quality gates fail
 - Read "Context to Read First" files before starting
 - Follow the "Do NOT" section strictly
 - If tests, lint, build, or typecheck fail and the fix requires touching code outside the declared File Scope, fix those failures directly and keep the repo green
-- Use \`task_create\` for genuinely separate follow-up work, not for mandatory fixes required to make this task land cleanly
+- Implement mandatory and in-scope work directly in this task. Preserve optional out-of-scope follow-ups as completion recommendations.
 - NEVER delete, remove, or gut modules, interfaces, settings, exports, or test files outside your File Scope
-- NEVER remove features as "cleanup" — if something seems unused, create a task for investigation instead
+- NEVER remove features as "cleanup" — if something seems unused, record an optional completion recommendation for investigation instead
 - If you remove existing functionality, you MUST create a changeset in \`.changeset/\` explaining the removal and rationale
 
 ## Spawning Child Agents

@@ -341,8 +341,8 @@ describe("WorkflowTaskRuntime", () => {
 
     expect(result.disposition).toBe("completed");
     // Default Coding is stepwise: planning writes PROMPT.md, parse projects steps,
-    // then foreach runs `runTaskStep` before merge. No legacy execute/review seam.
-    expect(calls).toEqual(["planning", "custom:plan-review-step", "step:0", "custom:code-review-step", "custom:completion-summary", "merge"]);
+    // then foreach runs `runTaskStep`; completion summary precedes the sealing Code Review.
+    expect(calls).toEqual(["planning", "custom:plan-review-step", "step:0", "custom:completion-summary", "custom:code-review-step", "merge"]);
     expect(observed.executedTasks).toHaveLength(1);
     expect(observed.executedTasks[0]?.attachments).toEqual(attachments);
   });
@@ -411,7 +411,7 @@ describe("WorkflowTaskRuntime", () => {
     const result = await runtime.run(defaultTask, flagOff);
 
     expect(result.disposition).toBe("completed");
-    expect(calls).toEqual(["planning", "custom:plan-review-step", "step:0", "custom:code-review-step", "custom:completion-summary", "merge"]);
+    expect(calls).toEqual(["planning", "custom:plan-review-step", "step:0", "custom:completion-summary", "custom:code-review-step", "merge"]);
     expect(result.visitedNodeIds).toContain("plan");
     expect(result.visitedNodeIds).toContain("plan-review");
     expect(result.visitedNodeIds).toContain("parse");
@@ -450,8 +450,10 @@ describe("WorkflowTaskRuntime", () => {
       "custom:plan-review-step",
       "step:0",
       "custom:browser-verification-step",
-      "custom:code-review-step",
+      // FNXC:WorkspaceReviewSeal 2026-08-21-19:39: write-capable finalization completes
+      // before Code Review seals the branch consumed by merge.
       "custom:completion-summary",
+      "custom:code-review-step",
       "merge",
     ]);
     expect(result.visitedNodeIds).toContain("plan-review::plan-review-step");

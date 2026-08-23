@@ -162,6 +162,21 @@ RUN chown node:node /app \
   && mkdir -p /workspace /home/node/.fusion \
   && chown node:node /workspace /home/node/.fusion
 
+# FNXC:DockerRun 2026-08-23-02:03: tailscaled runs as `node`, not root, so its default socket and
+# state directories must exist node-owned BEFORE the USER switch — the daemon cannot mkdir them under
+# root-owned /var/run and /var/lib itself. /var/lib/tailscale is a SYMLINK into /home/node/.tailscale
+# rather than a real directory: the documented `-v <vol>:/home/node` mount then carries the node's
+# login state, so an authenticated container survives `docker rm` + recreate instead of demanding a
+# fresh `tailscale up` every rebuild. /var/log/tailscaled.log is pre-created for the same
+# ownership reason.
+RUN mkdir -p /var/run/tailscale /home/node/.tailscale \
+  && rm -rf /var/lib/tailscale \
+  && ln -sfn /home/node/.tailscale /var/lib/tailscale \
+  && touch /var/log/tailscaled.log \
+  && chown node:node /var/run/tailscale /home/node/.tailscale /var/log/tailscaled.log
+
+COPY --chmod=0755 scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
 USER node
 
 # FNXC:DockerRun 2026-08-18-06:55: A DEFAULT GIT IDENTITY, because a container has none and Fusion
@@ -189,5 +204,9 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 
 # FNXC:DockerRun 2026-07-23-00:00: Entrypoint uses the absolute app path so it works
 # regardless of the working directory or any volume mounted at /workspace.
-ENTRYPOINT ["node", "/app/packages/cli/dist/bin.js"]
+# FNXC:DockerRun 2026-08-23-02:03: The wrapper script consumes its own opt-in `--tailscale` flag and
+# then `exec`s that same absolute-path node invocation with the REMAINING args verbatim, so PID 1,
+# signal handling, and every documented `docker run ... dashboard --host 0.0.0.0` argument list behave
+# exactly as before.
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["dashboard", "--host", "0.0.0.0"]

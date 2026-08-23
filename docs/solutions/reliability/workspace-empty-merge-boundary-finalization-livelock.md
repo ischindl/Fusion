@@ -35,6 +35,16 @@ Workspace review remediation stores only the scope revision, failing repository,
 | H12 optional deployment callback | Confirmed risk | Direct `landWorkspaceTask` performs its own canonical blocker check. |
 | H13 planning dispatch noise | Non-causal signal | Existing PostgreSQL planning-episode deduplication remains unchanged. |
 
+## FN-112 linked-task-worktree regression
+
+FN-106 correctly rejected unexplained empty obligations, but its landing capture compared `HEAD` with `entry.branch` from `entry.worktreePath`. In production that path is the live linked task worktree, where both names normally resolve to the same task tip. The self-comparison made reviewed changes look empty and produced `Workspace merge has no evidenced landing obligations`.
+
+Landing now uses one range for all evidence: the immutable acquisition `baseCommitSha` to the persisted task branch. Legacy entries without that SHA resolve their recorded repository target and derive a merge base against that branch. This matches Code Review's acquisition-base-to-linked-`HEAD` fingerprint while retaining the fail-closed readiness rule for unreadable bases, stale review fingerprints, out-of-scope work, duplicates, net-zero branches, and unexplained emptiness. Real-Git lifecycle coverage keeps a registered linked task worktree alive rather than substituting the main checkout, and proves exactly-once integration advancement, durable per-repository and aggregate landing proof, and terminal finalization.
+
 ## Regression coverage
 
-Run the targeted engine workspace merger, self-healing, checkout-guard, review-routing, lease, real-Git slow, PostgreSQL workspace, CLI, and dashboard consumer tests listed in FN-106. The symptom fixture covers a pre-baseline same-ID commit, a previously landed scoped repository, an all-landed second pass, failed Code Review admission, and recreated recovery owners.
+Run the targeted engine workspace merger, self-healing, checkout-guard, review-routing, lease, real-Git slow, PostgreSQL workspace, CLI, and dashboard consumer tests listed in FN-106. The symptom fixture covers a pre-baseline same-ID commit, a previously landed scoped repository, an all-landed second pass, failed Code Review admission, recreated recovery owners, and the live linked-task-worktree shape repaired by FN-112.
+
+## FN-120: review producer and landing consumer must share evidence
+
+A valid merge boundary cannot be tested by constructing the verifier's fingerprint in fixtures. The production review capture must produce the approval consumed by landing, including the clean acquired-peer case. Otherwise attribution-aware review selection and raw branch-range landing can disagree while unit tests remain green.

@@ -357,10 +357,20 @@ function linear(spec: BuiltinSpec): WorkflowDefinition {
         ...(hasCodeReview ? [codeReviewRemediationNode("in-progress")] : []),
       ]
     : [];
+  /*
+   * FNXC:PlanReviewNoOp 2026-08-22-03:37:
+   * Optional Plan Review is available on linear built-ins too. CLOSE_NO_OP needs an explicit
+   * terminal action rather than falling through the ordinary success path, or duplicate plans
+   * hold indefinitely despite a valid reviewer verdict.
+   */
+  const noOpTerminalNode: WorkflowIrNode | undefined = hasPlanReview
+    ? { id: "plan-review-no-op", kind: "gate", column: "todo", config: { workflowAction: "plan-review-no-op" } }
+    : undefined;
   const nodes: WorkflowIr["nodes"] = [
     { id: "start", kind: "start" },
     ...workflowNodes,
     ...remediationNodes,
+    ...(noOpTerminalNode ? [noOpTerminalNode] : []),
     { id: "end", kind: "end" },
   ];
   const edges: WorkflowIr["edges"] = [];
@@ -388,6 +398,8 @@ function linear(spec: BuiltinSpec): WorkflowDefinition {
    */
   if (hasPlanReview) {
     edges.push({ from: "plan-replan", to: "plan-review", condition: "success", kind: "rework" });
+    edges.push({ from: "plan-review", to: "plan-review-no-op", condition: "outcome:close-no-op" });
+    edges.push({ from: "plan-review-no-op", to: "end", condition: "success" });
   }
   if (hasBrowserVerification) {
     edges.push({

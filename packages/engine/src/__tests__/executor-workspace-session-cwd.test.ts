@@ -44,7 +44,7 @@ function inProgressTask(overrides: Record<string, unknown> = {}) {
   } as any;
 }
 
-describe("FN-034 — workspace sessions use a declared repository worktree", () => {
+describe("FN-158 — workspace sessions use one task directory", () => {
   beforeEach(() => {
     resetExecutorMocks();
     // Make any accidental git invocation observable: empty stdout keeps real-git
@@ -53,16 +53,22 @@ describe("FN-034 — workspace sessions use a declared repository worktree", () 
   });
   afterEach(() => vi.restoreAllMocks());
 
-  it("skips root acquireTaskWorktree and creates every session (initial + retry) with cwd === rootDir", async () => {
+  it("skips root acquireTaskWorktree and creates every session in the task directory", async () => {
     const store = createMockStore();
+    const scopedTask = inProgressTask({
+      worktree: null,
+      repositoryScope: { state: "confirmed", revision: 1, repositories: ["repo-a", "repo-b"] },
+    });
+    (store.getTask as any).mockResolvedValue(scopedTask);
     mockedAcquireWorkspaceTaskWorktrees.mockResolvedValue({
       task: inProgressTask({
+        repositoryScope: { state: "confirmed", revision: 1, repositories: ["repo-a", "repo-b"] },
         workspaceWorktrees: {
-          "repo-a": { worktreePath: "/tmp/workspace-root/repo-a/.worktrees/fn-001", branch: "fusion/fn-001" },
-          "repo-b": { worktreePath: "/tmp/workspace-root/repo-b/.worktrees/fn-001", branch: "fusion/fn-001" },
+          "repo-a": { worktreePath: "/tmp/workspace-root/.fusion/worktrees/fn-001/repo-a", branch: "fusion/fn-001" },
+          "repo-b": { worktreePath: "/tmp/workspace-root/.fusion/worktrees/fn-001/repo-b", branch: "fusion/fn-001" },
         },
       }),
-      coordinatorWorktreePath: "/tmp/workspace-root/repo-a/.worktrees/fn-001",
+      taskWorktreeDir: "/tmp/workspace-root/.fusion/worktrees/fn-001",
     });
     const mockPrompt = vi.fn().mockResolvedValue(undefined); // no fn_task_done → drives retries too
     mockedCreateFnAgent.mockResolvedValue({
@@ -74,19 +80,23 @@ describe("FN-034 — workspace sessions use a declared repository worktree", () 
     // Drive the genuine workspace gate (loadWorkspaceConfig is covered elsewhere).
     (executor as any).workspaceConfig = { repos: ["repo-a", "repo-b"] } as WorkspaceConfig;
 
-    await executor.execute(inProgressTask({ worktree: null }));
+    await executor.execute(scopedTask);
 
     // The workspace root is never acquired as a task worktree.
     expect(mockedAcquireTaskWorktree).not.toHaveBeenCalled();
     expect(mockedAcquireWorkspaceTaskWorktrees).toHaveBeenCalled();
 
-    // Every agent session (initial + the retries fired because fn_task_done was
-    // never called) is rooted at an acquired declared sub-repository worktree.
-    const coordinator = "/tmp/workspace-root/repo-a/.worktrees/fn-001";
-    expect(mockedCreateFnAgent.mock.calls.length).toBeGreaterThanOrEqual(2);
+    // The execution session is rooted at the task directory containing every repository.
+    const taskDirectory = "/tmp/workspace-root/.fusion/worktrees/fn-001";
+    expect(mockedCreateFnAgent.mock.calls.length).toBeGreaterThan(0);
     for (const call of mockedCreateFnAgent.mock.calls) {
-      expect((call[0] as any).cwd).toBe(coordinator);
+      expect((call[0] as any).cwd).toBe(taskDirectory);
       expect((call[0] as any).cwd).not.toBe(ROOT);
+      expect((call[0] as any).sessionBoundary).toMatchObject({
+        kind: "workspace-task-dir",
+        writableRoot: taskDirectory,
+        projectRoot: ROOT,
+      });
     }
 
     // task.worktree is never set in workspace mode.
@@ -101,11 +111,11 @@ describe("FN-034 — workspace sessions use a declared repository worktree", () 
     mockedAcquireWorkspaceTaskWorktrees.mockResolvedValue({
       task: inProgressTask({
         workspaceWorktrees: {
-          "repo-a": { worktreePath: "/tmp/workspace-root/repo-a/.worktrees/fn-001", branch: "fusion/fn-001" },
-          "repo-b": { worktreePath: "/tmp/workspace-root/repo-b/.worktrees/fn-001", branch: "fusion/fn-001" },
+          "repo-a": { worktreePath: "/tmp/workspace-root/.fusion/worktrees/fn-001/repo-a", branch: "fusion/fn-001" },
+          "repo-b": { worktreePath: "/tmp/workspace-root/.fusion/worktrees/fn-001/repo-b", branch: "fusion/fn-001" },
         },
       }),
-      coordinatorWorktreePath: "/tmp/workspace-root/repo-b/.worktrees/fn-001",
+      taskWorktreeDir: "/tmp/workspace-root/.fusion/worktrees/fn-001",
     });
     mockedCreateFnAgent.mockResolvedValue({
       session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn() },
@@ -126,10 +136,10 @@ describe("FN-034 — workspace sessions use a declared repository worktree", () 
     await executor.execute(task);
 
     expect(mockedAcquireWorkspaceTaskWorktrees).toHaveBeenCalledWith(expect.objectContaining({
-      remediationRepository: "repo-b",
+      workspaceRootDir: ROOT,
     }));
     expect(mockedCreateFnAgent.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
-      cwd: "/tmp/workspace-root/repo-b/.worktrees/fn-001",
+      cwd: "/tmp/workspace-root/.fusion/worktrees/fn-001",
     }));
   });
 });

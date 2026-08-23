@@ -2041,6 +2041,7 @@ describe("POST /tasks/:id/review/address", () => {
         findings: [
           { id: "receipt", title: "Receipt", body: "Fixed in review", resolution: "resolved-in-review" },
           { id: "stale", title: "Stale", body: "Fixed later", resolution: "superseded" },
+          { id: "upheld", title: "Upheld", body: "Dispute adjudicated against implementer", resolution: "dispute-upheld" },
           { id: "open", title: "Open", body: "Still needs work" },
         ],
       }],
@@ -2056,6 +2057,7 @@ describe("POST /tasks/:id/review/address", () => {
     expect(review.body.items).toEqual(expect.arrayContaining([
       expect.objectContaining({ resolution: "resolved-in-review" }),
       expect.objectContaining({ resolution: "superseded" }),
+      expect.objectContaining({ resolution: "dispute-upheld" }),
       expect.not.objectContaining({ resolution: expect.anything() }),
     ]));
     const byBody = new Map(review.body.items.map((item: { itemId: string; body: string }) => [item.body, item.itemId]));
@@ -2063,6 +2065,11 @@ describe("POST /tasks/:id/review/address", () => {
       selectedItems: [{ id: byBody.get("Fixed in review"), source: "reviewer-agent" }],
     }), { "Content-Type": "application/json" });
     expect(resolved.status).toBe(400);
+
+    const upheld = await REQUEST(buildApp(), "POST", "/api/tasks/FN-8956/review/address", JSON.stringify({
+      selectedItems: [{ id: byBody.get("Dispute adjudicated against implementer"), source: "reviewer-agent" }],
+    }), { "Content-Type": "application/json" });
+    expect(upheld.status).toBe(400);
 
     const open = await REQUEST(buildApp(), "POST", "/api/tasks/FN-8956/review/address", JSON.stringify({
       selectedItems: [{ id: byBody.get("Still needs work"), source: "reviewer-agent" }],

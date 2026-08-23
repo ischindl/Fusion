@@ -53,6 +53,7 @@ import {
   resolveEffectiveAutoMerge,
   isTaskBlockedOnApproval,
   isPlanReviewSatisfied,
+  resolveWorkflowOptionalSteps,
   type TaskStore,
   type Task,
   type TaskReleaseGateVerdict,
@@ -976,6 +977,34 @@ export async function promoteHeldTask(
 
   let promoted = task;
   if (unplanned) {
+    /*
+    FNXC:RequiredPreMergeSteps 2026-08-22-21:27:
+    A forced release explicitly waives the plan gate. Persist that waiver as a
+    terminal skipped result, otherwise the merge-door resultless-gate check
+    would silently reverse the operator's force-promote decision later.
+    */
+    const planReview = resolveWorkflowOptionalSteps(ir).find((step) => step.templateId === PLAN_REVIEW_GROUP_ID);
+    const planGateWaived = planReview
+      && isWorkflowOptionalGroupEnabled(task.enabledWorkflowSteps, planReview.templateId, planReview.defaultOn)
+      && !task.workflowStepResults?.some((result) => result.workflowStepId === planReview.templateId);
+    if (planGateWaived) {
+      const now = new Date().toISOString();
+      const workflowStepResults = [
+        ...(task.workflowStepResults ?? []),
+        {
+          workflowStepId: planReview.templateId,
+          workflowStepName: planReview.name,
+          phase: "pre-merge" as const,
+          status: "skipped" as const,
+          bypassedBy: "operator-force-promote",
+          bypassedAt: now,
+          bypassReason: "forced-promote waived plan gate",
+          bypassedFromStatus: "absent" as const,
+        },
+      ];
+      await store.updateTask(task.id, { workflowStepResults });
+      promoted = { ...promoted, workflowStepResults };
+    }
     // Clear the durable replan signal so triage's todo rediscovery and this
     // module's own gate do not pull the card back into the waived replan.
     if (task.status === "needs-replan" || task.status === "plan-review-unavailable") {

@@ -2,6 +2,51 @@
 
 User-facing release notes aggregated across all packages. This file is auto-synced from each `packages/*/CHANGELOG.md` by `scripts/release.mjs` — do not edit by hand.
 
+## 0.77.0-beta.7
+
+### Highlights
+
+- Executing agents can no longer create tasks; out-of-scope findings become recommendations
+- Startup crash fixed: Fusion no longer rejects the database it just migrated
+- Auto-merge that runs before a Code Review gate now defers instead of failing the task
+- Board cards open task detail on click again, and empty card areas pan the board
+- OrcaRouter joins the provider list with a startup model-catalog sync
+
+### Breaking
+
+- Agents running a task can no longer create or delegate new tasks. Out-of-scope findings now come back as completion recommendations instead of self-spawned work.
+
+### New
+
+- OrcaRouter is available as a named model provider, with its model catalog synced at startup and surfaced in the auth catalog, onboarding quick start, provider icons, and settings.
+- Quick Chat pop-outs let you keep several conversations open in independent windows, each with its own session preferences.
+- Chat has contextual Find: Ctrl/Cmd+F searches the active conversation list or transcript.
+- Titled AI thinking traces expand and collapse independently across dashboard transcripts.
+- Automated review revisions now converge on a verdict while preserving the full review history, including disputed findings and arbitration.
+- Managed deployments can suppress in-app updates via FUSION_UPDATES_EXTERNALLY_MANAGED, and the updater explains when an npm install path is unsupported.
+
+### Fixed
+
+- Fusion no longer crashes on startup by rejecting a database it had just migrated itself.
+- A task no longer fails permanently when auto-merge runs before its Code Review gate; the merge defers and in-review cards stay out of the merge queue until every enabled pre-merge gate has a result.
+- Clicking a Board task card opens task detail again; panning starts only once horizontal intent is clear, and card bodies pan the Board on desktop and tablet while moves stay in the Move to menu.
+- Workflow steps run by ACP agents (Hermes, Prime, Grok) no longer crash before producing a verdict; ACP sessions now stream events to subscribers as well as callbacks.
+- Planning no longer loops on missed plan-save confirmations; the prompt write is verified with a read-back.
+- Renamed board columns are respected: task moves land on their real workflow lanes, and late workspace repository acquisition is refused based on the task's selected workflow.
+- Workspace auto-merge works for linked task worktrees, stale workspace changes get re-reviewed before landing, and repositories without a remote can land locally.
+- Workspace tasks now run inside one scoped directory with sandbox delegation and clearer merge-door gates.
+- AI merge no longer blocks on its own review protocol markers.
+- Direct chat headers show provider-reported session context usage.
+- Task reset safely fences active planning sessions, releasing held locks while keeping operator input.
+- Task concurrency settings and the capacity actually enforced now agree.
+- Self-healing stops retrying no-progress tasks forever; retries use a persisted budget with backoff before parking for an operator.
+- Impossible auto-archives stop retrying and surface the abandoned archive on the task.
+- Tailscale remote access in the Docker image no longer dies with "process exited 1": the daemon starts in userspace mode when opted in with --tailscale or FUSION_TAILSCALE=1, login state persists across container recreates, and an unreachable or logged-out backend reports an actionable reason.
+
+### Internal
+
+- The bundled dependency-graph plugin tracks the current dashboard task card and scoped-storage APIs.
+
 ## 0.77.0-beta.6
 
 ### Highlights

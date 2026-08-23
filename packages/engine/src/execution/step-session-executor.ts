@@ -44,16 +44,12 @@ import { createRunAuditor, generateSyntheticRunId } from "../util/run-audit.js";
 import { isContextLimitError } from "../errors/context-limit-detector.js";
 import { checkSessionError, isUsageLimitError } from "../errors/usage-limit-detector.js";
 import {
-  createDelegateTaskTool,
   createTaskAssignTool,
   createListAgentsTool,
   createMemoryTools,
   createWebFetchTool,
   createReadMessagesTool,
   createSendMessageTool,
-  createTaskCreateTool,
-  isAgentTaskCreateToolAvailable,
-  isAgentDelegateTaskToolAvailable,
   createTaskDocumentReadTool,
   createTaskDocumentWriteTool,
   createTaskLogTool,
@@ -1433,9 +1429,9 @@ export class StepSessionExecutor {
           execution session: an ephemeral step worker under `deny` is never handed
           fn_task_create, rather than being handed a tool that only refuses on call.
           */
-          const taskCreateTool = this.options.store && isAgentTaskCreateToolAvailable(settings, this.options.callerIsEphemeral)
-            ? [createTaskCreateTool(this.options.store, undefined, { rootDir: this.options.rootDir, callerIsEphemeral: this.options.callerIsEphemeral, sourceTaskId: this.options.sourceTaskId ?? taskDetail.id, sourceAgentId: this.options.sourceAgentId ?? taskDetail.assignedAgentId, messageStore: this.options.messageStore })]
-            : [];
+          // FNXC:TaskExecutionTaskCreation 2026-08-21-23:16: model-node
+          // task sessions are marked and structurally withheld from task creation.
+          const taskCreateTool: never[] = [];
 
           /*
           FNXC:EphemeralAgentTaskCreation 2026-07-26-07:40:
@@ -1447,9 +1443,7 @@ export class StepSessionExecutor {
           const delegationTools = this.options.agentStore
             ? [
                 createListAgentsTool(this.options.agentStore),
-                ...(isAgentDelegateTaskToolAvailable(settings, this.options.callerIsEphemeral)
-                  ? [createDelegateTaskTool(this.options.agentStore, this.options.store!, { rootDir: this.options.rootDir, sourceTaskId: this.options.sourceTaskId ?? taskDetail.id, sourceAgentId: this.options.sourceAgentId ?? taskDetail.assignedAgentId, callerIsEphemeral: this.options.callerIsEphemeral })]
-                  : []),
+                // FN-125: delegation creates board tasks and is unavailable in this lane.
                 createTaskAssignTool(this.options.agentStore, this.options.store!),
               ]
             : [];
@@ -1495,6 +1489,7 @@ export class StepSessionExecutor {
           } else {
             const createResult = await createResolvedAgentSession({
               sessionPurpose: "executor",
+            taskExecutionSession: true,
               runtimeHint: this.options.runtimeHint,
               pluginRunner: this.options.pluginRunner,
               cwd: worktreePath,

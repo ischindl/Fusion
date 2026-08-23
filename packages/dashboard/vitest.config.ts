@@ -248,6 +248,7 @@ FNXC:ChatNavigation 2026-08-19-21:10:
 FN-054 requires the focused Chat lane to collect every suite that protects shared list-to-detail navigation. Keep responsive, history, creation, and mount contracts together so the task command cannot silently omit stale selector or split-pane assertions.
 */
 const qualityAppChatOnlyTests = [
+  "app/components/__tests__/ChatView.content-search.test.tsx",
   "app/components/__tests__/ChatView.core.test.tsx",
   "app/components/__tests__/ChatView.core-contracts.test.tsx",
   "app/components/__tests__/ChatView.context-window.test.tsx",

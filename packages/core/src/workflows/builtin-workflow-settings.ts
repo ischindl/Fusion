@@ -576,6 +576,49 @@ export const BUILTIN_REVIEW_REVISION_SETTINGS: WorkflowSettingDefinition[] = [
     description:
       "Minimum finding severity that lets Code Review block merge. A REVISE carrying no finding at or above this level is recorded as APPROVE_WITH_NOTES and its findings are handed to the implementer. Choose \"any\" to block on every REVISE.",
   },
+  /*
+   * FNXC:ReviewConvergence 2026-08-22-05:42:
+   * FN-149 keeps recovery targets workflow-native so operators choose the cost and
+   * capability of automatic review convergence without widening project policy.
+   */
+  {
+    id: "reviewConvergenceEscalationEnabled",
+    name: "Review convergence escalation",
+    type: "boolean",
+    default: true,
+    description: "Run one bounded alternate-model or replan recovery when a review repeats unchanged input.",
+  },
+  {
+    id: "reviewConvergenceEscalationProvider",
+    name: "Review convergence escalation provider",
+    type: "string",
+    description: "Provider for the optional alternate-model review remediation target.",
+  },
+  {
+    id: "reviewConvergenceEscalationModelId",
+    name: "Review convergence escalation model",
+    type: "string",
+    description: "Model for the optional alternate-model review remediation target.",
+  },
+  {
+    id: "reviewArbitrationEnabled",
+    name: "Review arbitration",
+    type: "boolean",
+    default: true,
+    description: "Enable bounded third-model arbitration after a review disagreement persists.",
+  },
+  {
+    id: "reviewArbitrationProvider",
+    name: "Review arbitration provider",
+    type: "string",
+    description: "Provider for the optional review arbitration target.",
+  },
+  {
+    id: "reviewArbitrationModelId",
+    name: "Review arbitration model",
+    type: "string",
+    description: "Model for the optional review arbitration target.",
+  },
   {
     id: "planReviewReplanCap",
     name: "Plan Review replan cap",

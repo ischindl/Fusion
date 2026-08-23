@@ -187,7 +187,23 @@ export function createTaskDoneTool(
               throw error;
             }
           }
-          const blockedByIds = hasMissingTaskBlocker ? [] : requestedBlockedByIds;
+          /*
+          FNXC:TaskExecutionTaskCreation 2026-08-21-23:16:
+          FN-125 treats a self-spawned blocker as a plan defect, not external work.
+          Drop it before classification so an all-self-spawned list follows the no-dependency replan path.
+          */
+          const selfSpawnedBlockedByIds = hasMissingTaskBlocker
+            ? []
+            : (await Promise.all(requestedBlockedByIds.map(async (blockerId) => {
+              const blocker = await store.getTask(blockerId);
+              return blocker.sourceParentTaskId === taskId ? blockerId : null;
+            }))).flatMap((blockerId) => blockerId ? [blockerId] : []);
+          const blockedByIds = hasMissingTaskBlocker
+            ? []
+            : requestedBlockedByIds.filter((blockerId) => !selfSpawnedBlockedByIds.includes(blockerId));
+          if (selfSpawnedBlockedByIds.length > 0) {
+            await store.logEntry(taskId, `Ignored self-spawned blockedBy task(s): ${selfSpawnedBlockedByIds.join(", ")}.`);
+          }
           const classification = classifyBlockedExit(reason, blockedByIds);
           const thrashCount = countBlockedThrashHits(
             blockedTask.log,

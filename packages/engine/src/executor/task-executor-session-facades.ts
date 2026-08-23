@@ -120,7 +120,7 @@ export abstract class TaskExecutorSessionFacades extends TaskExecutorWorktreePur
     this.chatMemoryCaptureDetach = null;
   }
   protected scheduleCompletedTaskWatchdog(taskId: string, trigger: string): void { impl.scheduleCompletedTaskWatchdogImpl(bags.buildScheduleCompletedTaskWatchdogDeps(this, constants.COMPLETED_TASK_WATCHDOG_MS), taskId, trigger); }
-  protected async clearTerminalStepFailuresForRetry(taskId: string): ReturnType<typeof impl.clearTerminalStepFailuresForRetryImpl> { return impl.clearTerminalStepFailuresForRetryImpl(bags.buildStoreRunContextDeps(this), taskId); }
+  protected async clearTerminalStepFailuresForRetry(taskId: string, mode: "archive" | "clear"): ReturnType<typeof impl.clearTerminalStepFailuresForRetryImpl> { return impl.clearTerminalStepFailuresForRetryImpl(bags.buildStoreRunContextDeps(this), taskId, mode); }
   protected async performWorkflowRerunBounce(...args: FacadeRestArgs<typeof impl.performWorkflowRerunBounceImpl>): ReturnType<typeof impl.performWorkflowRerunBounceImpl> { return impl.performWorkflowRerunBounceImpl(bags.buildPerformWorkflowRerunBounceDeps(this), ...args); }
   protected scheduleWorkflowRerun(...args: FacadeRestArgs<typeof impl.scheduleWorkflowRerunImpl>): void { impl.scheduleWorkflowRerunImpl(bags.buildScheduleWorkflowRerunDeps(this, constants.WORKFLOW_RERUN_WATCHDOG_MS), ...args); }
   protected async parkCompletedBlockedTask(...args: FacadeRestArgs<typeof impl.parkCompletedBlockedTaskImpl>): ReturnType<typeof impl.parkCompletedBlockedTaskImpl> { return impl.parkCompletedBlockedTaskImpl(bags.buildCompletionFinalizationFacadeDeps(this), ...args); }
@@ -160,6 +160,7 @@ export abstract class TaskExecutorSessionFacades extends TaskExecutorWorktreePur
   protected async evaluateTaskDoneScopeLeak(...args: FacadeRestArgs<typeof impl.evaluateTaskDoneScopeLeakImpl>): ReturnType<typeof impl.evaluateTaskDoneScopeLeakImpl> { return impl.evaluateTaskDoneScopeLeakImpl(bags.buildEvaluateTaskDoneScopeLeakDeps(this), ...args); }
   protected async handleImplicitTaskDoneRefusal(...args: FacadeRestArgs<typeof impl.handleImplicitTaskDoneRefusalImpl>): ReturnType<typeof impl.handleImplicitTaskDoneRefusalImpl> { return impl.handleImplicitTaskDoneRefusalImpl(bags.buildHandleImplicitTaskDoneRefusalDeps(this), ...args); }
   protected createTaskDoneTool(...args: FacadeRestArgs<typeof impl.createTaskDoneToolImpl>): ReturnType<typeof impl.createTaskDoneToolImpl> { return impl.createTaskDoneToolImpl(bags.buildCreateTaskDoneToolDeps(this), ...args); }
+  protected createReviewDisputeTool(...args: FacadeRestArgs<typeof impl.createReviewDisputeToolImpl>): ReturnType<typeof impl.createReviewDisputeToolImpl> { return impl.createReviewDisputeToolImpl({ store: this.store, getRunContextFor: this.getRunContextFor.bind(this) }, ...args); }
   /*
   FNXC:CodeOrganization 2026-08-09-22:15:
   Instance method mirrors main's private helper so tests/callers that touch the executor instance keep working.

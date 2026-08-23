@@ -149,6 +149,8 @@ export const tasks = projectSchema.table("tasks", {
   branchConflictRecoveryCount: integer("branch_conflict_recovery_count").default(0),
   reviewerContextRetryCount: integer("reviewer_context_retry_count").default(0),
   reviewerFallbackRetryCount: integer("reviewer_fallback_retry_count").default(0),
+  reviewConvergenceStage: integer("review_convergence_stage").default(0),
+  reviewConvergenceEscalationCount: integer("review_convergence_escalation_count").default(0),
   nextRecoveryAt: text("next_recovery_at"),
   error: text("error"),
   summary: text("summary"),

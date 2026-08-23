@@ -102,6 +102,7 @@ export function MainContent({
   experimentalFeatures,
   setQuickChatOpen,
   chatComposerPrefill,
+  onOpenSessionInNewWindow,
   mailComposerPrefill,
   onSendAsReport,
   onOpenChatWithPrefill,
@@ -508,6 +509,7 @@ export function MainContent({
             initialComposerDraft={chatComposerPrefill?.text}
             initialComposerDraftNonce={chatComposerPrefill?.nonce}
             onPopOut={() => setQuickChatOpen(true)}
+            onOpenSessionInNewWindow={onOpenSessionInNewWindow}
             onSendAsReport={onSendAsReport}
           />
         </Suspense>

@@ -1201,6 +1201,22 @@ describe("TaskChatTab", () => {
     expect(screen.getByText("I am considering options")).toBeVisible();
   });
 
+  it("sections titled Task Activity thinking independently after the host disclosure opens", () => {
+    const trace = "**Ensuring Docker build includes dev dependencies for tests**\n\nDocker tests need development dependencies.\n\n**Planning deployment commit structure**\n\nDeployment commits remain independently reviewable.\n\n**Editing README content**\n\nREADME edits remain visible in their own section.";
+    mockLogs([makeEntry({ agent: "executor", type: "thinking", text: trace })]);
+    render(<TaskChatTab task={makeTask()} active addToast={vi.fn()} />);
+
+    const host = screen.getByTestId("task-chat-thinking");
+    fireEvent.click(host.querySelector("summary")!);
+    const sections = host.querySelectorAll<HTMLElement>("[data-testid='thinking-trace-section']");
+    expect(sections).toHaveLength(3);
+    const deployment = [...sections].find((section) => section.textContent?.includes("Planning deployment commit structure"))!;
+    expect(deployment).toHaveTextContent("Deployment commits remain independently reviewable.");
+    fireEvent.click(deployment.querySelector("summary")!);
+    expect(deployment).not.toHaveAttribute("open");
+    expect([...sections].find((section) => section.textContent?.includes("README edits"))).toHaveAttribute("open");
+  });
+
   it("renders consecutive thinking entries as one continuous section", () => {
     mockLogs([
       makeEntry({ agent: "triage", type: "thinking", text: "First" }),

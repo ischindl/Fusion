@@ -1,5 +1,5 @@
 import { TaskStore, COLUMNS, COLUMN_LABELS, resolveProjectColumnsForRoles, TERMINAL_ROLES, resolveReviewColumns, resolveTaskLifecycleColumns, resolveWorkflowIrForTask, CentralCore, buildAutoPauseClearPatch, buildManualRetryResetPatch, extractIntentSignature, findNearDuplicates, getTaskDuplicateLineage, isValidRepoSlug, isWorkspaceTask, reconcileDeterministicDuplicate, resolveTaskGithubTracking, runDeterministicDuplicateGuard, evaluateArchiveTaskLiveness, describeArchiveLiveness, TaskIsLiveError, type Settings, type Column, type ColumnId, type StepStatus, type AgentLogType, type AgentLogEntry, type IntentSignature, type NearDuplicateCandidate, type NearDuplicateMatch, type TaskDependencyMutation } from "@fusion/core";
-import { isInReviewMissingWorktreeSessionStartFailure, runAiMerge, landWorkspaceTask, installBaselineArchiveWorktreeDisposer, clearOwnedMergeStamp, reconcileUnownedStaleMergeStamp } from "@fusion/engine";
+import { isInReviewMissingWorktreeSessionStartFailure, runAiMerge, landWorkspaceTask, withWorkspaceMergeDispatchLease, installBaselineArchiveWorktreeDisposer, clearOwnedMergeStamp, reconcileUnownedStaleMergeStamp } from "@fusion/engine";
 import { createInterface } from "node:readline/promises";
 import type { PlanningQuestion, PlanningSummary } from "@fusion/core";
 import { createSession, createTaskFromPlanSession, ensureDurablePlanningSessionStore, getSession as getPlanningSession, submitResponse, validateSession, RateLimitError, SessionNotFoundError, InvalidSessionStateError } from "@fusion/dashboard/planning";
@@ -1332,10 +1332,14 @@ export async function runTaskMerge(id: string, projectName?: string) {
     const mergeTaskRecord = await store.getTask(id).catch(() => null);
     const isWorkspaceMerge = !!mergeTaskRecord && isWorkspaceTask(mergeTaskRecord);
     if (isWorkspaceMerge) {
-      const workspaceResult = await landWorkspaceTask(mergeStore, mergeTaskRecord!, projectPath, {
-        onAgentText: (delta) => process.stdout.write(delta),
-        signal: abortController.signal,
-      });
+      const workspaceResult = await withWorkspaceMergeDispatchLease(mergeStore, id, (workspaceDispatchFence) =>
+        landWorkspaceTask(mergeStore, mergeTaskRecord!, projectPath, {
+          onAgentText: (delta) => process.stdout.write(delta),
+          signal: abortController.signal,
+          workspaceDispatchFence,
+          manual: true,
+        }),
+      );
       console.log();
       for (const repo of workspaceResult.repos) {
         const label = repo.status === "landed" ? `landed ${repo.landedSha?.slice(0, 8) ?? ""} → ${repo.integrationBranch}` : repo.status === "empty" ? "no net changes" : `failed: ${repo.error ?? "unknown"}`;

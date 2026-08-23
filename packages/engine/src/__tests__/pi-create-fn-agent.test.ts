@@ -481,6 +481,22 @@ describe("worktree path boundary helpers", () => {
       expect(result).toEqual({ ok: true, content: [{ type: "text", text: "daily memory" }] });
     });
 
+    it("rejects bash command targets and verification cwd outside the same boundary", async () => {
+      const makeTool = (name: string) => ({ name, label: name, description: name, parameters: {}, execute: vi.fn().mockResolvedValue({ ok: true }) });
+      const bash = makeTool("bash");
+      const verification = makeTool("fn_run_verification");
+      const { wrapToolsWithBoundary } = await import("../pi.js");
+      const wrapped = wrapToolsWithBoundary([bash, verification] as any, "/project/.worktrees/fn-158", "/project");
+
+      const bashResult = await (wrapped[0] as any).execute("bash", { command: "cd ../../other-repo && touch x" });
+      const verificationResult = await (wrapped[1] as any).execute("verify", { cwd: "/project/other-repo", command: "pnpm test" });
+
+      expect(bashResult).toMatchObject({ ok: false, error: expect.stringContaining("outside the worktree boundary") });
+      expect(verificationResult).toMatchObject({ ok: false, error: expect.stringContaining("outside the worktree boundary") });
+      expect(bash.execute).not.toHaveBeenCalled();
+      expect(verification.execute).not.toHaveBeenCalled();
+    });
+
     it("allows task attachments from worktree session", async () => {
       const mockReadTool = {
         name: "read",

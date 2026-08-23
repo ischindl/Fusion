@@ -64,6 +64,7 @@ import { sql } from "drizzle-orm";
 import type { ResolvedBackend } from "../postgres/backend-resolver.js";
 import { createConnectionSetFromUrl } from "../postgres/connection.js";
 import { applySchemaBaseline } from "../postgres/schema-applier.js";
+import { decoratePgProvisioningError } from "./pg-provisioning-diagnostics.js";
 import {
   createAsyncDataLayer,
   type AsyncDataLayer,
@@ -572,6 +573,8 @@ async function withMaintenanceSql<T>(
   });
   try {
     return await fn(client);
+  } catch (error) {
+    throw decoratePgProvisioningError(error, PG_TEST_URL_BASE);
   } finally {
     await client.end({ timeout: 5 }).catch(() => {});
   }
@@ -734,6 +737,8 @@ function ensureGoldenTemplate(): Promise<string> {
         });
         try {
           await applySchemaBaseline(schemaConnections.migration);
+        } catch (error) {
+          throw decoratePgProvisioningError(error, PG_TEST_URL_BASE);
         } finally {
           await schemaConnections.close();
         }

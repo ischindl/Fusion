@@ -80,6 +80,65 @@ outside the container while a login is in flight; it is short-lived and validate
 but prefer publishing these ports only on a trusted network (`-p 127.0.0.1:53692:53692` restricts
 them to the host).
 
+## Helper script
+
+`scripts/run-container.sh` runs the container with a complete argument list — the OAuth callback
+ports, the `/home/node` volume, and the correct placement of `--tailscale` before the CLI arguments:
+
+```bash
+scripts/run-container.sh --tailscale
+scripts/run-container.sh --build --recreate --tailscale   # rebuild, then replace the container
+scripts/run-container.sh --dry-run                        # print the docker command, run nothing
+```
+
+Every knob is an environment variable (`--help` lists them). Keep a per-container config in a file
+outside the repo — it holds your dashboard token — and pass it with `--env-file`:
+
+```bash
+scripts/run-container.sh --env-file ~/.config/fusion/my-box.env --tailscale --recreate
+```
+
+An existing container is never replaced without `--recreate`, and volumes are never removed, so a
+recreate keeps the database, settings, and tailnet login.
+
+## Tailscale remote access
+
+The image ships the `tailscale` CLI, but the `tailscaled` daemon does **not** run by default — most
+containers never use remote access. Fusion's tunnel spawns a bare `tailscale funnel <port>`, which
+talks to that daemon over a local socket, so without it the tunnel dies immediately with
+`failed to connect to local tailscaled` and exit 1.
+
+Start the daemon by passing `--tailscale` before the normal CLI arguments:
+
+```bash
+docker run -p 4040:4040 \
+  -v /path/to/project:/workspace \
+  -v fusion-home:/home/node \
+  fusion --tailscale dashboard --host 0.0.0.0
+```
+
+The flag is consumed by the entrypoint and stripped from the argument list, so everything after it
+is an ordinary Fusion CLI invocation. `FUSION_TAILSCALE=1` does the same thing for Compose files and
+other env-driven setups; `--no-tailscale` overrides it back off.
+
+The daemon runs in **userspace networking** mode, so it needs neither `--cap-add NET_ADMIN` nor
+`--device /dev/net/tun` — the documented `docker run` above is complete. That mode is sufficient for
+`tailscale serve`/`funnel`, which proxy to a local port rather than route packets.
+
+It starts **logged out**. Authenticate the machine once:
+
+```bash
+docker exec -it <container> tailscale up
+```
+
+Open the printed URL to approve the node. Login state is written under `/var/lib/tailscale`, which
+the image symlinks into `/home/node/.tailscale` — so mounting a volume at `/home/node` (as above)
+persists the login across container recreates. Funnel additionally requires HTTPS certificates
+enabled and the `funnel` node attribute granted in your tailnet's ACL policy.
+
+If the daemon is missing, logged out, or stopped, the dashboard's remote-access card reports that
+directly rather than failing with an unexplained exit code.
+
 ## Pass additional CLI flags
 
 You can append normal CLI arguments after the image name:

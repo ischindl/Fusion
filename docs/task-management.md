@@ -362,11 +362,13 @@ Board ordering behavior:
 - The `done` column is recency-ordered by completion time (newest first), using `columnMovedAt` as primary and falling back to `updatedAt` then `createdAt` for legacy tasks.
 - The dashboard **list view default ordering matches these same per-column semantics** until a user clicks a sortable header (manual list sorting still overrides defaults).
 
-<!-- FNXC:TaskCardMovement 2026-08-19-18:35: Task movement is contextual so Board and List retain one accessible, validated transition path without native task drag-and-drop. -->
+<!-- FNXC:TaskCardMovement 2026-08-21-16:09: FN-109 separates desktop/tablet Board viewport panning from contextual task movement so card-body drags cannot restore native relocation. -->
 
 ### Moving tasks on Board and List
 
 Use a task card or List row's context menu (**right-click**, **Shift+F10** / Context Menu key, the visible overflow control, or touch long-press), then choose **Move to**. When more than one legal destination is available, **Move to** opens one submenu containing each destination; a single destination remains a direct action. This changes task movement only.
+
+On desktop and tablet Boards, dragging a task card's noninteractive body or text pans the Board viewport without moving the task. Controls and editing remain native; **Move to** remains the only task-relocation path.
 
 ### Lifecycle commands
 

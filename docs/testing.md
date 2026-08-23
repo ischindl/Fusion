@@ -31,6 +31,16 @@ FN-9131 retains `pg-connection-budget.ts` as a tested cluster-shared advisory-lo
 
 The initial harness wiring made a 27-worker PostgreSQL directory run worse, even after registry contention was changed from bounded rejection to queueing. Do not restore the wiring, alter test timeouts, add retries, or cap workers as a workaround. FN-9139 owns selecting a per-worker lifecycle point that is inert for non-PostgreSQL lanes and can charge admission wait outside individual test budgets. See [the terminal-negative record](solutions/test-failures/pg-harness-connection-budget.md).
 
+### Local PostgreSQL test server provisioning
+
+<!-- FNXC:PgTestProvisioning 2026-08-22-17:08: FN-152 makes a durable local PostgreSQL test server opt-in because a postmaster derives `$libdir` from its executable and cannot survive deletion of an in-worktree payload. -->
+
+Use `pnpm pg:test:up`, `pnpm pg:test:status`, and `pnpm pg:test:down`; forward flags as `pnpm pg:test:up -- --replace` and `pnpm pg:test:down -- --purge`. The script stages the pinned embedded PostgreSQL binaries under `~/.fusion/pg-test-server` (or `FUSION_PG_TEST_SERVER_HOME`) and never starts a relative or worktree-native executable. `dynamic_library_path` cannot repair `$libdir/plpgsql` because PostgreSQL resolves that path from its executable.
+
+The configured identity follows `postgres@3.4.9`: role is URL username, then `PGUSERNAME`, `PGUSER`, and the OS user; password is URL password then `PGPASSWORD`; database is URL path, then `PGDATABASE`, then the role name. A role-only repair therefore still fails when its role-named database is absent. The readiness gate runs configured login, PL/pgSQL, maintenance, and admin-DDL probes. A bare or CI-shaped probe is diagnostic-only unless its independently resolved role/database is one the script provisions; no harness connect dials a path-less base URL.
+
+`FUSION_PG_TEST_URL_BASE` is shared by `up`, `status`, and `down`; export the same non-default URL for all three. A path-bearing URL is provisionable but reports `harness-url-concat`, since `${PG_TEST_URL_BASE}/${dbName}` corrupts the 24 harness URL constructions. The script refuses URL/`--port` conflicts and `PGHOST`/`PGPORT` endpoint divergence. It reuses healthy servers, never mutates a foreign server's roles or databases, and requires a proven data-directory/PID ownership chain before `--replace` can stop a broken PostgreSQL server. `pg_ctl` daemonizes the postmaster, avoiding detached process spawning. A skipped `pgDescribe` block is not PostgreSQL verification evidence.
+
 ### PostgreSQL setup-boundary participation and measurement
 
 <!-- FNXC:PgTestPreAdmission 2026-08-17-03:20: FN-9139 requires the shared Vitest setup path to remain connectionless for every non-PostgreSQL lane. Participation is an explicit environment signal, rather than a reachability probe, because importing the harness itself performs a TCP probe. -->
@@ -46,6 +56,16 @@ Use `scripts/pg-setup-boundary-probe.mjs` to survey setup boundaries before chan
 
 <!-- FNXC:EngineTests 2026-07-08-05:30: FN-7669 pre-bundles the gate-safe @fusion/core barrel to attack the FN-7668-identified import-phase-dominated wall-time cost. -->
 **Pre-bundled `@fusion/core` gate bundle:** FN-7668 profiled the gate's dominant wall-time cost as vitest/Vite SSR's **import-phase** — each fork worker independently re-resolves+evaluates the barrel closure from scratch with zero cross-fork sharing. `engine-core`'s `@fusion/core` alias now points at a single esbuild-bundled ESM file (`scripts/build-engine-core-gate-bundle.mjs`, entrypoint `packages/core/src/index.gate.ts`, `packages:"external"` so only the first-party closure — 411 inputs in the FN-9122 re-measurement — is inlined) instead of directly at `index.gate.ts`'s source, collapsing those per-fork Vite SSR module-loader round-trips into 1 file load per fork. The bundle is **rebuilt fresh on every gate invocation** via the `engine-core` project's `globalSetup` (the builder's own esbuild dependency graph determines what gets bundled — never a hand-maintained file/symbol list, so there is no drift surface), and lives at `packages/core/.gate-bundle/core.mjs` — a gitignored, non-committed artifact placed as a **sibling of `packages/core/node_modules/`, deliberately not nested inside it**: nesting inside `node_modules` triggers Vite's SSR external-dep heuristic (loads the whole bundle via Node's native loader, bypassing Vite's mock-interception pipeline) and silently defeats `vi.mock` for imports nested inside the bundle (see the FNXC comment in the builder script for the full repro/fix). Measured A/B (5 alternating runs each, FN-7669 task docs): median real wall-time −5.5%, import-phase aggregate −14.0%, transform-phase aggregate −25.9%, with full coverage parity (335/335 gate tests, identical per-file counts) — a modest but real, reproducible, zero-downside win. `@fusion/engine` stays on the full (unbundled) barrel: no gate file imports it directly, so bundling it would be zero-benefit churn against the core↔engine circular-import DI. Bundling the `@fusion/engine` relative-import graph (`merger.ts` et al., the untouched remainder of FN-7668's ~430-file closure) is a natural, larger-payoff follow-up, filed separately.
+
+## Workspace local/remote landing matrix
+
+Workspace landing regressions must use real Git repositories under a non-Git workspace root. Cover a remote-free modified repository (local CAS and durable leases, with no remote Git operation), remote-enabled targets (configured/default remote fences and atomic push), and mixed workspaces where clean acquired peers have no review or landing obligation. The focused local-only regression is:
+
+```bash
+pnpm --filter @fusion/engine exec vitest run src/__tests__/workspace-e2e.test.ts --silent=passed-only --reporter=dot
+```
+
+Do not replace this with a structural store that omits workspace lease APIs: that shape can hide remote fence and intent behavior.
 
 ## Weekly signal-per-second baseline
 
@@ -970,3 +990,7 @@ The parity invariant is that a mono-repository task and a workspace task changin
 ### Branch-writer validation regressions
 
 When task-branch validation changes, test production acquisition and task creation callers in addition to the validation boundary. Keep a source census of direct and computed branch patches, and exercise single-repository assignment persistence failure plus workspace suppression so a caller cannot silently omit provenance.
+
+### Workspace review-to-land regression
+
+Workspace merge regressions must use the production per-repository review capture before landing. Cover a modified scoped repository, a clean acquired peer (`NOT_REVIEWED`), approval-missing, content-changed, and out-of-scope changes; do not manufacture the landing fingerprint as the decisive happy-path oracle.

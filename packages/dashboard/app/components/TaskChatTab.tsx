@@ -25,6 +25,7 @@ import {
 } from "../utils/chatInputAutosize";
 import { formatAgentLogTimingLabels, markdownComponents } from "./AgentLogViewer";
 import { ToolCallDetails } from "./ToolCallDetails";
+import { ThinkingTrace, isInteractiveDisclosureTarget } from "./ThinkingTrace";
 import { parseRuntimeModelMarker } from "./effective-model-resolution";
 import { useChatMessageLayout } from "../context/ChatMessageLayoutContext";
 import "./TaskChatTab.css";
@@ -597,17 +598,14 @@ function TaskChatToolGroup({ entries }: { entries: AgentLogEntry[] }) {
 FNXC:TaskChatDisclosure 2026-08-19-02:47:
 Task Activity thinking is user-owned disclosure: every new segment starts collapsed, streaming appends preserve its controlled state, and a click on non-interactive body content closes an expanded segment without requiring a return to its summary. Interactive descendants remain usable.
 */
-function isInteractiveDisclosureTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof Element)) return false;
-  return Boolean(target.closest("a,button,input,textarea,select,summary,[role=\"button\"],[contenteditable=\"true\"]"));
-}
-
 function TaskChatThinking({ entries }: { entries: AgentLogEntry[] }) {
   const { t } = useTranslation("app");
   const [open, setOpen] = useState(false);
   const combinedThinkingText = entries.map((entry) => entry.text).join("");
   const handleBodyClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     if (isInteractiveDisclosureTarget(event.target)) return;
+    // FNXC:ThinkingTrace 2026-08-22-16:56: A titled trace owns body clicks per section; do not also close Task Activity's host disclosure.
+    if (event.target instanceof Element && event.target.closest(".thinking-trace-section-body")) return;
     setOpen(false);
   }, []);
 
@@ -623,14 +621,7 @@ function TaskChatThinking({ entries }: { entries: AgentLogEntry[] }) {
         <TaskChatTimestamp timestamp={getLatestEntryTimestamp(entries)} label="Thinking block timestamp" />
       </summary>
       <div className="task-chat-thinking-body" onClick={handleBodyClick}>
-        <div
-          className="markdown-body task-chat-markdown task-chat-thinking-markdown"
-          data-testid="task-chat-entry-thinking"
-        >
-          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-            {combinedThinkingText}
-          </ReactMarkdown>
-        </div>
+        <ThinkingTrace text={combinedThinkingText} format="markdown" testId="task-chat-entry-thinking" />
       </div>
     </details>
   );

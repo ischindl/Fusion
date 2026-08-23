@@ -99,6 +99,7 @@ import {
 import {
   runAiMerge,
   landWorkspaceTask,
+  withWorkspaceMergeDispatchLease,
   MissionAutopilot,
   MissionExecutionLoop,
   HeartbeatMonitor,
@@ -1676,11 +1677,15 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     // (the engine/CLI canonical predicate) instead of re-inlining the workspaceWorktrees check.
     const isWorkspaceMerge = !!mergeTask && isWorkspaceTask(mergeTask);
     if (isWorkspaceMerge) {
-      const workspaceResult = await landWorkspaceTask(store, mergeTask!, cwd, {
-        agentStore,
-        // FNXC:GrokCliRouting 2026-07-15-10:17: UI-only has no engine PluginRunner.
-        pluginRunner: undefined,
-      });
+      const workspaceResult = await withWorkspaceMergeDispatchLease(store, taskId, (workspaceDispatchFence) =>
+        landWorkspaceTask(store, mergeTask!, cwd, {
+          agentStore,
+          workspaceDispatchFence,
+          manual: true,
+          // FNXC:GrokCliRouting 2026-07-15-10:17: UI-only has no engine PluginRunner.
+          pluginRunner: undefined,
+        }),
+      );
       const latest = await store.getTask(taskId).catch(() => mergeTask!);
       /*
       FNXC:Workspace 2026-08-15-04:22:

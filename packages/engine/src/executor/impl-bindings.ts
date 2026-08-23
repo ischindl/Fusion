@@ -147,6 +147,7 @@ export { createSpawnAgentTool as createSpawnAgentToolImpl } from "./create-spawn
 export { createTaskUpdateTool as createTaskUpdateToolImpl } from "./create-task-update-tool.js";
 export { attemptExecutorVerificationFix as attemptExecutorVerificationFixImpl } from "./attempt-executor-verification-fix.js";
 export { createTaskDoneTool as createTaskDoneToolImpl } from "./create-task-done-tool.js";
+export { createReviewDisputeTool as createReviewDisputeToolImpl } from "./create-review-dispute-tool.js";
 export {
   finalizeAcceptedNoOpCompletion as finalizeAcceptedNoOpCompletionImpl,
   completePlanReviewNoOp as completePlanReviewNoOpImpl,

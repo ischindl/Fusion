@@ -29,6 +29,8 @@ import {
   resolveWorkflowIrForTask,
   upsertWorkflowStepResult,
   applySupersededFindingIds,
+  applySupersededPriorAttemptFindingIds,
+  closeUnrebuttedDisputedFindings,
   isTerminalStepResult,
 } from "@fusion/core";
 import { resolveWorkflowGateActivityClaim } from "./workflow-gate-activity.js";
@@ -46,6 +48,7 @@ import type { EngineRunContext } from "../util/run-audit.js";
 import { emitBoundedRunAudit } from "./emit-bounded-run-audit.js";
 import { takePreHeldExecutorSlot } from "../concurrency/concurrency.js";
 import { resolveCompleteColumnFor } from "./lifecycle-columns.js";
+import { workflowNodeRequiresWorktree } from "../workflows/workflow-node-execution-needs.js";
 import { nextPlanReviewAttemptCount, PLAN_REVIEW_FEEDBACK_HISTORY_LIMIT } from "../plan-review-feedback-history.js";
 import type { AgentSemaphore } from "../concurrency/concurrency.js";
 import type { WorkflowAgentCapacity } from "../agents/workflow-agent-capacity.js";
@@ -135,6 +138,28 @@ export function clearPrincipalHoldBackoff(taskId: string): void {
   principalHoldBackoff.delete(taskId);
 }
 
+/*
+FNXC:ReviewConvergence 2026-08-22-06:06:
+FN-149 scopes convergence state to one uninterrupted review episode. A terminal approval ends the
+whole episode, while a changed durable review fingerprint proves progress and re-arms only the
+stage; the monotonic cycle count remains spent until approval or an operator retry bounds
+progress-then-reject loops.
+*/
+function reviewConvergenceResetPatch(
+  previous: CoreWorkflowStepResult | undefined,
+  incoming: CoreWorkflowStepResult,
+): Pick<Task, "reviewConvergenceStage" | "reviewConvergenceEscalationCount"> | undefined {
+  if (incoming.phase !== "pre-merge" || !incoming.reviewKind) return undefined;
+  const approved = isTerminalStepResult(incoming)
+    && (incoming.verdict === "APPROVE" || incoming.verdict === "APPROVE_WITH_NOTES");
+  if (approved) return { reviewConvergenceStage: 0, reviewConvergenceEscalationCount: 0 };
+  if (previous?.reviewInputFingerprint && incoming.reviewInputFingerprint
+    && previous.reviewInputFingerprint !== incoming.reviewInputFingerprint) {
+    return { reviewConvergenceStage: 0 };
+  }
+  return undefined;
+}
+
 /**
  * Persists graph review evidence and applies explicit prior-lane supersession in
  * the same write. Exported for production-shaped graph-writer tests.
@@ -173,10 +198,17 @@ export async function persistWorkflowStepResult(
     Prompt and declared-script review nodes converge at this persistence sink. A supersession claim names
     its prior workflow result, so duplicate finding IDs in other review lanes remain actionable.
     */
-    const existing = applySupersededFindingIds(upserted, resultToPersist.supersededFindingIds ?? [], {
+    const crossLane = applySupersededFindingIds(upserted, resultToPersist.supersededFindingIds ?? [], {
       excludeWorkflowStepId: resultToPersist.workflowStepId,
       sourceWorkflowStepId: resultToPersist.supersededFindingSourceWorkflowStepId ?? "",
     }) ?? upserted;
+    const sameGate = resultToPersist.supersededFindingSourceWorkflowStepId === resultToPersist.workflowStepId
+      ? applySupersededPriorAttemptFindingIds(crossLane, { workflowStepId: resultToPersist.workflowStepId, findingIds: resultToPersist.supersededFindingIds ?? [] }) ?? crossLane
+      : crossLane;
+    const existing = closeUnrebuttedDisputedFindings(sameGate, resultToPersist, {
+      revisionKey: resultToPersist.workflowStepId,
+      workflowStepId: resultToPersist.workflowStepId,
+    }) ?? sameGate;
     if (isPlanReviewResult && isPlanReviewSatisfied(resultToPersist) && deps.store.isBackendMode()) {
       const prompt = await deps.readTaskArtifact(taskId, "PROMPT.md");
       if (!prompt?.trim()) throw new Error("Plan Review cannot accept an unreadable PROMPT.md without a spec lock");
@@ -188,14 +220,25 @@ export async function persistWorkflowStepResult(
           resultToPersist,
           { maxPriorAttempts: PLAN_REVIEW_FEEDBACK_HISTORY_LIMIT },
         );
-        const acceptedResult = applySupersededFindingIds(acceptedUpserted, resultToPersist.supersededFindingIds ?? [], {
+        const acceptedCrossLane = applySupersededFindingIds(acceptedUpserted, resultToPersist.supersededFindingIds ?? [], {
           excludeWorkflowStepId: resultToPersist.workflowStepId,
           sourceWorkflowStepId: resultToPersist.supersededFindingSourceWorkflowStepId ?? "",
         }) ?? acceptedUpserted;
+        const acceptedSameGate = resultToPersist.supersededFindingSourceWorkflowStepId === resultToPersist.workflowStepId
+          ? applySupersededPriorAttemptFindingIds(acceptedCrossLane, { workflowStepId: resultToPersist.workflowStepId, findingIds: resultToPersist.supersededFindingIds ?? [] }) ?? acceptedCrossLane
+          : acceptedCrossLane;
+        const acceptedResult = closeUnrebuttedDisputedFindings(acceptedSameGate, resultToPersist, {
+          revisionKey: resultToPersist.workflowStepId,
+          workflowStepId: resultToPersist.workflowStepId,
+        }) ?? acceptedSameGate;
         await deps.store.lockCurrentPlanWhilePlanningLocked(taskId, fingerprint, prompt);
         const accepted = await deps.store.updateTask(taskId, {
           workflowStepResults: acceptedResult,
           approvedPlanFingerprint: fingerprint,
+          ...reviewConvergenceResetPatch(
+            fresh.workflowStepResults?.find((entry) => entry.workflowStepId === resultToPersist.workflowStepId),
+            resultToPersist,
+          ),
         }, deps.getRunContextFor(taskId));
         await deps.store.reconcileSpecDriftWhilePlanningLocked(accepted);
       });
@@ -212,15 +255,34 @@ export async function persistWorkflowStepResult(
           return null;
         }
         const currentUpserted = upsertWorkflowStepResult(current.workflowStepResults, resultToPersist);
-        const currentResults = applySupersededFindingIds(currentUpserted, resultToPersist.supersededFindingIds ?? [], {
+        const currentCrossLane = applySupersededFindingIds(currentUpserted, resultToPersist.supersededFindingIds ?? [], {
           excludeWorkflowStepId: resultToPersist.workflowStepId,
           sourceWorkflowStepId: resultToPersist.supersededFindingSourceWorkflowStepId ?? "",
         }) ?? currentUpserted;
-        return { workflowStepResults: currentResults };
+        const currentSameGate = resultToPersist.supersededFindingSourceWorkflowStepId === resultToPersist.workflowStepId
+          ? applySupersededPriorAttemptFindingIds(currentCrossLane, { workflowStepId: resultToPersist.workflowStepId, findingIds: resultToPersist.supersededFindingIds ?? [] }) ?? currentCrossLane
+          : currentCrossLane;
+        const currentResults = closeUnrebuttedDisputedFindings(currentSameGate, resultToPersist, {
+          revisionKey: resultToPersist.workflowStepId,
+          workflowStepId: resultToPersist.workflowStepId,
+        }) ?? currentSameGate;
+        return {
+          workflowStepResults: currentResults,
+          ...reviewConvergenceResetPatch(
+            current.workflowStepResults?.find((entry) => entry.workflowStepId === resultToPersist.workflowStepId),
+            resultToPersist,
+          ),
+        };
       }, deps.getRunContextFor(taskId));
       if (scopeSuperseded) return false;
     } else {
-      await deps.store.updateTask(taskId, { workflowStepResults: existing }, deps.getRunContextFor(taskId));
+      await deps.store.updateTask(taskId, {
+        workflowStepResults: existing,
+        ...reviewConvergenceResetPatch(
+          live?.workflowStepResults?.find((entry) => entry.workflowStepId === resultToPersist.workflowStepId),
+          resultToPersist,
+        ),
+      }, deps.getRunContextFor(taskId));
     }
     /*
     FNXC:AgentActivityStream 2026-08-09-09:38 (restored 2026-08-15-22:15 after wave-18 shell-ification dropped it):
@@ -549,8 +611,8 @@ export async function executeWorkflowGraph(
         seams: deps.createAuthoritativeWorkflowSeams(settings, outputLanguage),
         prepareNodeExecution: (node, nodeTask, requirement) =>
           deps.prepareGraphNodeExecution(node, nodeTask, settings, requirement),
-        beforeNodeExecution: async (node, nodeTask, context) =>
-          admitWorkflowPrincipalBeforeNode(
+        beforeNodeExecution: async (node, nodeTask, context) => {
+          const principalAdmission = await admitWorkflowPrincipalBeforeNode(
             {
               store: deps.store,
               options: deps.options,
@@ -569,7 +631,29 @@ export async function executeWorkflowGraph(
             node,
             nodeTask,
             context,
-          ),
+          );
+          if (principalAdmission) return principalAdmission;
+          const live = await deps.store.getTask(nodeTask.id);
+          const name = typeof node.config?.name === "string" ? node.config.name : "";
+          const isCodeReview = node.id === "code-review" || node.config?.reviewKind === "code" || /code review/i.test(name);
+          const writeCapable = workflowNodeRequiresWorktree(node, { reviewerInlineFixes: settings.reviewerInlineFixes === false ? false : undefined }) || node.kind === "code";
+          const hasCurrentCodeReviewApproval = live.workflowStepResults?.some((result) =>
+            result.reviewKind === "code"
+            && result.status === "passed"
+            && result.verdict === "APPROVE"
+            && (live.repositoryScope === undefined || result.repositoryScopeRevision === undefined || result.repositoryScopeRevision === live.repositoryScope.revision),
+          ) === true;
+          if (!isCodeReview && writeCapable && hasCurrentCodeReviewApproval) {
+            /*
+            FNXC:WorkflowReviewSeal 2026-08-21-20:11:
+            A passed Code Review seals every task branch, not only workspace rows that carry
+            repository evidence. Refuse a later write-capable node before worktree preparation or
+            session creation so its explicit re-review route runs before any mutation.
+            */
+            return { outcome: "failure", value: "workspace-review-seal-required" };
+          }
+          return undefined;
+        },
         runCustomNode: customNodeExecution.runner(settings),
         publishTaskProjection: async (taskId, patch) => {
           await deps.store.updateTaskAtomic(taskId, (liveTask) => {

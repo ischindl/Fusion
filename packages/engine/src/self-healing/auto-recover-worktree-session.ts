@@ -24,7 +24,7 @@ export async function autoRecoverWorktreeSessionStartFailure(
   task: Task,
   opts: {
     failure: unknown;
-    source: "executor-session-start" | "in-review-sweep" | "merge-active-sweep" | "resume-guard";
+    source: "executor-session-start" | "workspace-preparation" | "in-review-sweep" | "merge-active-sweep" | "resume-guard";
     auditor: RunAuditor | null;
     forceClearWorktreeMetadata?: boolean;
     resetRetryBudgetOnStaleMetadataClear?: boolean;

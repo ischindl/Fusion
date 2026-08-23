@@ -5,6 +5,9 @@ import { describe, expect, it } from "vitest";
 import {
   assertWorkspaceRepoRelPath,
   resolveWorktreesDirLayout,
+  resolveWorkspaceRepoWorktreePath,
+  resolveWorkspaceTaskWorktreeDir,
+  isLegacyWorkspaceWorktreeLayout,
   sanitizePathSegment,
   workspaceRepoSegment,
   workspaceWorktreeGroupSegment,
@@ -40,6 +43,32 @@ describe("workspace worktree layout", () => {
     expect(workspaceRepoSegment("group/api")).toMatch(/^group-api-[a-f0-9]{8}$/);
     expect(workspaceRepoSegment("group/api")).not.toBe(workspaceRepoSegment("group-api"));
     expect(workspaceRepoSegment("group\\api")).toBe(workspaceRepoSegment("group/api"));
+  });
+
+  it("resolves one task directory with repository-relative children", () => {
+    const defaultTaskDir = resolveWorkspaceTaskWorktreeDir(workspace, undefined, "FN-158");
+    expect(defaultTaskDir).toBe(join(workspace, ".fusion", "worktrees", "fn-158"));
+    expect(resolveWorkspaceRepoWorktreePath(defaultTaskDir, "apps/web")).toBe(join(defaultTaskDir, "apps", "web"));
+
+    const configuredTaskDir = resolveWorkspaceTaskWorktreeDir(workspace, { worktreesDir: "/var/tmp/trees" } as any, "FN-158");
+    expect(configuredTaskDir).toBe("/var/tmp/trees/PRD-1234-my-slug/fn-158");
+    expect(() => resolveWorkspaceRepoWorktreePath(defaultTaskDir, "../outside")).toThrow();
+  });
+
+  it("distinguishes persisted legacy repository worktrees from task-directory children", () => {
+    const taskDir = resolveWorkspaceTaskWorktreeDir(workspace, undefined, "FN-158");
+    expect(isLegacyWorkspaceWorktreeLayout({
+      workspaceWorktrees: { api: { worktreePath: join(taskDir, "api") } },
+    }, taskDir)).toBe(false);
+    expect(isLegacyWorkspaceWorktreeLayout({
+      workspaceWorktrees: { api: { worktreePath: join(workspace, "api", ".worktrees", "fn-158") } },
+    }, taskDir)).toBe(true);
+    expect(isLegacyWorkspaceWorktreeLayout({
+      workspaceWorktrees: {
+        api: { worktreePath: join(taskDir, "api") },
+        web: { worktreePath: join(workspace, "web", ".worktrees", "fn-158") },
+      },
+    }, taskDir)).toBe(true);
   });
 
   it("sanitizes and rejects escaping paths", () => {

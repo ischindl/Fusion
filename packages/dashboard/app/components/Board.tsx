@@ -231,10 +231,11 @@ export function Board({ tasks, projectId, maxConcurrent, effectiveMaxConcurrent 
   const mobileFullTaskModalHidden = viewportMode === "mobile";
   useColumnScrollSnap(boardElement, { mobileOnly: true });
   /*
-  FNXC:BoardNavigation 2026-08-20-04:47:
-  Selected and All-workflows live roots share safe-surface primary-mouse panning outside mobile;
-  empty-column text may pan, while cards and controls remain native. The skeleton stays unbound,
-  and the separate mobile-only snap owner plus mobile styles remain unchanged.
+  FNXC:BoardNavigation 2026-08-21-18:12:
+  FN-115 keeps the shared non-mobile mouse-pan owner on both live Board roots, but card activation
+  remains native until horizontal intent is proven. A real pan captures and consumes its compatibility
+  click; stationary card bodies/text retain their configured detail route, while controls, editing,
+  the skeleton, and mobile snap ownership remain unchanged.
   */
   const { isPanning: isBoardMousePanning, ...boardMousePanBindings } = useBoardMousePan(boardElement, viewportMode !== "mobile");
   const boardClassName = `board board-workflow-columns${isBoardMousePanning ? " is-mouse-panning" : ""}`;

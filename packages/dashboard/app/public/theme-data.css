@@ -34,6 +34,11 @@
   --velvet-swatch-sample-2: #2b1d24;
   --velvet-swatch-sample-3: #c99a89;
   --velvet-swatch-sample-4: #b66b7d;
+  /* FNXC:DashboardTheming 2026-08-23-01:51: Iceberg preview samples stay global so its selector chip remains accurate even while another persisted theme supplies active tokens. */
+  --iceberg-swatch-sample-1: #161821;
+  --iceberg-swatch-sample-2: #242940;
+  --iceberg-swatch-sample-3: #84a0c6;
+  --iceberg-swatch-sample-4: #a093c7;
   --medieval-swatch-sample-1: #21170f;
   --medieval-swatch-sample-2: #392417;
   --medieval-swatch-sample-3: #d5ad67;
@@ -73,6 +78,10 @@
   --velvet-swatch-sample-2: #f0e2e0;
   --velvet-swatch-sample-3: #8a4a55;
   --velvet-swatch-sample-4: #a9636f;
+  --iceberg-swatch-sample-1: #f3f5f9;
+  --iceberg-swatch-sample-2: #dfe5f0;
+  --iceberg-swatch-sample-3: #2d539e;
+  --iceberg-swatch-sample-4: #6142a0;
   --medieval-swatch-sample-1: #f4ead2;
   --medieval-swatch-sample-2: #e1ceb0;
   --medieval-swatch-sample-3: #765125;
@@ -7687,6 +7696,82 @@ Velvet gives operators deep plum and burgundy surfaces with rose-gold actions in
   --cta-border-hover: #5d2f38;
   --cta-glow: 0 0 8px color-mix(in srgb, var(--cta-border) 24%, transparent);
   --accent: #8a4a55;
+  --accent-text: #ffffff;
+  --logo-accent: var(--accent);
+  --shadow-glow: 0 0 10px color-mix(in srgb, var(--accent) 20%, transparent);
+  --focus-ring: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+  --focus-ring-strong: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+/*
+FNXC:DashboardTheming 2026-08-23-01:51:
+Iceberg is a persisted navy-slate palette with a pale blue-gray light counterpart. Keep its id/order synchronized across the core union, selector metadata, web/Electron first-paint validators, token blocks, and swatch CSS so saved selections never flash or fall back.
+*/
+[data-color-theme="iceberg"] {
+  --bg: #161821;
+  --surface: #1e2132;
+  --card: #242940;
+  --card-hover: #2e3450;
+  --surface-hover: color-mix(in srgb, var(--surface) 90%, var(--text) 10%);
+  --border: #3d4363;
+  --text: #e8eaf5;
+  --text-muted: #b4bbd6;
+  --text-dim: #838aa8;
+
+  --todo: #a6accd;
+  --in-progress: #84a0c6;
+  --in-progress-rgb: 132, 160, 198;
+  --in-review: #a093c7;
+  --triage: #e2a478;
+  --done: #8b93b0;
+  --color-success: #b4be82;
+  --color-warning: #e2a478;
+  --color-error: #e27878;
+  --color-info: #89b8c2;
+
+  --cta-bg: #84a0c6;
+  --cta-border: #a3bcdf;
+  --cta-text: #161821;
+  --cta-bg-hover: #94b0d6;
+  --cta-border-hover: #c2d4ee;
+  --cta-glow: 0 0 8px color-mix(in srgb, var(--cta-border) 30%, transparent);
+  --accent: #84a0c6;
+  --accent-text: #161821;
+  --logo-accent: var(--accent);
+  --shadow-glow: 0 0 12px color-mix(in srgb, var(--accent) 28%, transparent);
+  --focus-ring: 0 0 0 2px color-mix(in srgb, var(--accent) 24%, transparent);
+  --focus-ring-strong: 0 0 0 2px color-mix(in srgb, var(--accent) 36%, transparent);
+}
+
+[data-color-theme="iceberg"][data-theme="light"] {
+  --bg: #f3f5f9;
+  --surface: #e8ecf4;
+  --card: #ffffff;
+  --card-hover: #dfe5f0;
+  --surface-hover: color-mix(in srgb, var(--surface) 92%, var(--text) 8%);
+  --border: #c6cee0;
+  --text: #1f2233;
+  --text-muted: #4c5470;
+  --text-dim: #767e99;
+
+  --todo: #5b6486;
+  --in-progress: #2d539e;
+  --in-progress-rgb: 45, 83, 158;
+  --in-review: #6142a0;
+  --triage: #8a5216;
+  --done: #6b7290;
+  --color-success: #4d6b1f;
+  --color-warning: #8a5216;
+  --color-error: #b0413e;
+  --color-info: #276a80;
+
+  --cta-bg: #2d539e;
+  --cta-border: #24437f;
+  --cta-text: #ffffff;
+  --cta-bg-hover: #24437f;
+  --cta-border-hover: #1b3363;
+  --cta-glow: 0 0 8px color-mix(in srgb, var(--cta-border) 24%, transparent);
+  --accent: #2d539e;
   --accent-text: #ffffff;
   --logo-accent: var(--accent);
   --shadow-glow: 0 0 10px color-mix(in srgb, var(--accent) 20%, transparent);

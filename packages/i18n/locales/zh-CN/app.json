@@ -1253,6 +1253,7 @@
     "cancelButton": "取消",
     "clearConversationFailed": "清除对话失败",
     "closeQuickChat": "关闭快速聊天",
+    "openInNewWindow": "",
     "conversationArchived": "对话已归档",
     "conversationDeleted": "对话已删除",
     "conversationName": "",
@@ -1371,6 +1372,13 @@
     "scopeRooms": "频道",
     "scrollMessageToTop": "将消息滚动到顶部",
     "searchConversations": "搜索对话...",
+    "conversationSearchPlaceholder": "在对话中查找",
+    "conversationSearchLabel": "在对话中查找",
+    "conversationSearchNoMatches": "无匹配项",
+    "conversationSearchMatchCount": "第 {{current}} 项，共 {{count}} 项",
+    "conversationSearchPrevious": "上一个匹配项",
+    "conversationSearchNext": "下一个匹配项",
+    "conversationSearchClose": "关闭搜索",
     "selectAgentForNewChat": "为新聊天选择代理",
     "selectAgentPlaceholder": "选择代理开始聊天",
     "selectModel": "选择模型",
@@ -1404,6 +1412,9 @@
     "workingStatus": "处理中……",
     "you": "你",
     "contextWindowAria": "Estimated {{used}} of {{total}} context tokens",
+    "contextWindowMeasuredAria": "",
+    "contextWindowPendingAria": "",
+    "contextWindowPendingValue": "",
     "noMessage": "",
     "modelAgentSection": "Model / Agent",
     "thinkingLevelSection": "Thinking level",
@@ -9704,5 +9715,13 @@
     "status": "",
     "waitConnected": "",
     "waitingQr": ""
+  },
+  "thinking": {
+    "expandAll": "",
+    "collapseAll": "",
+    "noDetail": "",
+    "untitledSection": "",
+    "sectionCount": "",
+    "sectionCountPlural": ""
   }
 }

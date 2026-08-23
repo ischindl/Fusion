@@ -117,7 +117,20 @@ describe("normalizeStreamingDeltaFromEvent", () => {
   });
 });
 
+const multiSectionThinkingFixture = "Preamble remains visible.\n\n**Ensuring Docker build includes dev dependencies for tests**\n\nFirst build rationale.\n\nSecond build rationale.\n\n**Planning deployment commit structure**\n\nFirst deployment rationale.\n\nSecond deployment rationale.\n\n**Editing README content**\n\nFirst documentation rationale.\n\nSecond documentation rationale.";
+
 describe("createStreamingDeltaNormalizer", () => {
+  it("preserves multi-section thinking byte-for-byte across streamed deltas", () => {
+    const normalizer = createStreamingDeltaNormalizer();
+    const chunks = [multiSectionThinkingFixture.slice(0, 73), multiSectionThinkingFixture.slice(73, 169), multiSectionThinkingFixture.slice(169)];
+    let accumulated = "";
+    const output = chunks.map((delta) => {
+      accumulated += delta;
+      return normalizer.normalize({ content: [{ type: "thinking", thinking: accumulated }] }, 0, delta, "thinking");
+    }).join("");
+    expect(output).toBe(multiSectionThinkingFixture);
+  });
+
   it("repairs punctuation boundaries across separate assistant messages", () => {
     const normalizer = createStreamingDeltaNormalizer();
 

@@ -56,6 +56,7 @@ import { getRelativeTimeBucket } from "../utils/relativeTimeAgo";
 import { Lightbulb, X, Loader2, CheckCircle, ArrowLeft, ArrowRight, Sparkles, Trash2, RefreshCw, ChevronLeft, MessageSquarePlus, AlertCircle, Clock, HelpCircle, StopCircle, Archive, ArchiveRestore, Pencil, History } from "lucide-react";
 import { CustomModelDropdown } from "./CustomModelDropdown";
 import { ConversationHistory } from "./ConversationHistory";
+import { ThinkingTrace } from "./ThinkingTrace";
 import { MailboxMessageContent } from "./MailboxMessageContent";
 import { OnboardingDisclosure } from "./OnboardingDisclosure";
 import { isShortViewport, useViewportMode } from "../hooks/useViewportMode";
@@ -3968,7 +3969,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
                 </div>
                 {showThinking && streamingOutput && (
                   <div className="planning-thinking-output" ref={thinkingOutputRef}>
-                    <pre>{streamingOutput}</pre>
+                    <ThinkingTrace text={streamingOutput} format="plain" />
                   </div>
                 )}
               </div>
@@ -4088,8 +4089,12 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
                       {showThinking ? t("planning.hideThinking", "Hide thinking") : t("planning.showThinking", "Show thinking")}
                     </button>
                     {showThinking && streamingOutput && (
+                      /*
+                      FNXC:ThinkingTrace 2026-08-22-16:56:
+                      Both Planning Mode live panes section titled provider traces while each section remains expanded by default. This preserves the requirement that every generation step streams its full thinking to the operator.
+                      */
                       <div className="planning-thinking-output" ref={thinkingOutputRef}>
-                        <pre>{streamingOutput}</pre>
+                        <ThinkingTrace text={streamingOutput} format="plain" />
                       </div>
                     )}
                   </div>

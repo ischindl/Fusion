@@ -253,14 +253,19 @@ export function ensureMatchMedia() {
   }
 }
 
-export function mockViewportMode(mode: "mobile" | "desktop") {
+/*
+FNXC:DashboardTests 2026-08-23-03:40:
+FN-9193 needs real tablet mode rather than desktop-shaped assertions; retain existing mobile and
+ desktop matching semantics while providing the 769–1024px media-query shape.
+*/
+export function mockViewportMode(mode: "mobile" | "tablet" | "desktop") {
   ensureMatchMedia();
-  const isMobile = mode === "mobile";
-  Object.defineProperty(window, "innerWidth", { value: isMobile ? 375 : 1280, configurable: true });
+  const width = { mobile: 375, tablet: 900, desktop: 1280 }[mode];
+  Object.defineProperty(window, "innerWidth", { value: width, configurable: true });
   return vi.spyOn(window, "matchMedia").mockImplementation((query: string) => ({
     matches:
-      isMobile &&
-      (query === "(max-width: 768px)" || query === "(max-width: 768px), (max-height: 480px)"),
+      (mode === "mobile" && (query === "(max-width: 768px)" || query === "(max-width: 768px), (max-height: 480px)")) ||
+      (mode === "tablet" && query.includes("min-width: 769px") && query.includes("max-width: 1024px")),
     media: query,
     onchange: null,
     addListener: vi.fn(),
@@ -269,6 +274,32 @@ export function mockViewportMode(mode: "mobile" | "desktop") {
     removeEventListener: vi.fn(),
     dispatchEvent: vi.fn(),
   }));
+}
+
+/*
+FNXC:DashboardTests 2026-08-23-03:40:
+FN-9193 also covers tablet-class touch hardware at 768 CSS pixels. Touch and physical screen
+signals are required by useViewportMode; without them this setup silently becomes mobile.
+*/
+export function mockTabletClassTouchViewport() {
+  ensureMatchMedia();
+  const previousWidth = window.innerWidth;
+  const previousScreen = window.screen;
+  const maxTouchDescriptor = Object.getOwnPropertyDescriptor(navigator, "maxTouchPoints");
+  Object.defineProperty(window, "innerWidth", { value: 768, configurable: true });
+  Object.defineProperty(navigator, "maxTouchPoints", { value: 1, configurable: true });
+  Object.defineProperty(window, "screen", { value: { width: 768, height: 1024 }, configurable: true });
+  const spy = vi.spyOn(window, "matchMedia").mockImplementation((query: string) => ({
+    matches: query.includes("max-width: 768px") && !query.includes("max-width: 600px") && !query.includes("max-height: 480px"),
+    media: query, onchange: null, addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn(),
+  }));
+  return () => {
+    spy.mockRestore();
+    Object.defineProperty(window, "innerWidth", { value: previousWidth, configurable: true });
+    Object.defineProperty(window, "screen", { value: previousScreen, configurable: true });
+    if (maxTouchDescriptor) Object.defineProperty(navigator, "maxTouchPoints", maxTouchDescriptor);
+    else delete (navigator as { maxTouchPoints?: number }).maxTouchPoints;
+  };
 }
 
 /**

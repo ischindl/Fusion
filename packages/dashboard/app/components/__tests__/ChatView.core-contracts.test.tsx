@@ -394,6 +394,21 @@ describe("Chat Session Action Menu", () => {
     expect(unarchiveSession).toHaveBeenCalledWith("session-archived");
   });
 
+  it("opens the exact Direct snapshot without selecting the source host", async () => {
+    const selectSession = vi.fn();
+    const onOpenSessionInNewWindow = vi.fn();
+    const session = { id: "session-window", agentId: "agent-001", status: "active" as const, title: "Window Chat", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" };
+    setupMockChat({ sessions: [session], filteredSessions: [session], selectSession });
+
+    await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} onOpenSessionInNewWindow={onOpenSessionInNewWindow} />);
+    fireEvent.contextMenu(screen.getByTestId("chat-session-session-window"));
+    await userEvent.click(screen.getByTestId("chat-context-open-window"));
+
+    expect(onOpenSessionInNewWindow).toHaveBeenCalledWith(session);
+    expect(selectSession).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("chat-context-open-window")).not.toBeInTheDocument();
+  });
+
   it("clicking the action menu button does not select the session", async () => {
     const selectSession = vi.fn();
     setupMockChat({

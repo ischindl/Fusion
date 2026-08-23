@@ -738,6 +738,19 @@ export interface TaskRepositoryScope {
   }>;
 }
 
+export interface WorkspaceLandFailure {
+  /** Safe operator-facing failure family; technical detail is deliberately separate. */
+  category: "environment" | "review" | "content-conflict" | "internal-technical";
+  message: string;
+  at: string;
+  branch?: string;
+  repository?: string;
+  resource?: string;
+  action?: string;
+  /** Bounded diagnostics for agent logs only; never primary dashboard or CLI copy. */
+  technicalDetail?: string;
+}
+
 export interface WorkspaceWorktreeEntry {
   worktreePath: string;
   branch: string;
@@ -748,7 +761,8 @@ export interface WorkspaceWorktreeEntry {
   baseCommitSha?: string;
   landedSha?: string;
   revertBoundarySha?: string;
-  landFailure?: { message: string; at: string; branch?: string };
+  /** Legacy rows containing only message/at/branch remain readable. */
+  landFailure?: WorkspaceLandFailure;
 }
 
 export type AiMergeFindingDisposition = "pending" | "corrected" | "absent-from-squash" | "still-present" | "dismissed";
@@ -769,6 +783,12 @@ export interface AiMergeReviewReconciliation {
   findings: AiMergeReviewFinding[];
   consecutiveCleanApprovals: number;
   correctivePasses: number;
+  /*
+  FNXC:AIMergeReviewReconciliation 2026-08-22-22:04:
+  FN-159 permits one same-candidate re-ask for malformed acknowledgements so reviewer protocol
+  defects cannot reset clean approvals forever; omit the field until that first re-ask.
+  */
+  invalidAcknowledgementCandidateSha?: string;
   terminal?: boolean;
 }
 
@@ -1239,6 +1259,9 @@ export interface Task {
   /** Number of reviewer fallback retries consumed by FN-4092 fallback-model
    *  and same-model strict-prompt retry paths. */
   reviewerFallbackRetryCount?: number;
+  /* FNXC:ReviewConvergence 2026-08-22-05:42: FN-149 tracks the spent recovery rung separately from its monotonic episode ceiling. */
+  reviewConvergenceStage?: number;
+  reviewConvergenceEscalationCount?: number;
   /** Derived retry aggregation computed at read time from retry counters.
    *  This field is not persisted to SQLite. */
   retrySummary?: RetrySummary;

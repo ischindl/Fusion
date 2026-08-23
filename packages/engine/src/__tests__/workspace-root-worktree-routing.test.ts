@@ -176,7 +176,7 @@ describeIfGit("FN-034 workspace root worktree routing", { timeout: 60_000 }, () 
 
   afterEach(() => fixture?.cleanup());
 
-  it("acquires only declared repository worktrees and returns a real coordinator cwd", async () => {
+  it("acquires declared repository worktrees beneath one task directory", async () => {
     fixture = await createWorkspaceFixture(["repo-a", "repo-b"]);
     const { store, current } = makeFakeStore(makeTask("FN-034"));
     const activePaths: string[] = [];
@@ -193,18 +193,18 @@ describeIfGit("FN-034 workspace root worktree routing", { timeout: 60_000 }, () 
     const result = await acquireWorkspaceTaskWorktrees(options);
     const entries = result.task.workspaceWorktrees ?? {};
 
-    expect(result.coordinatorWorktreePath).toBe(entries["repo-a"]?.worktreePath);
+    expect(result.taskWorktreeDir).toBe(join(fixture.rootDir, ".fusion", "worktrees", "fn-034"));
     expect(Object.keys(entries).sort()).toEqual(["repo-a", "repo-b"]);
-    expect(entries["repo-a"]?.worktreePath).toContain(join("repo-a", ".worktrees"));
-    expect(entries["repo-b"]?.worktreePath).toContain(join("repo-b", ".worktrees"));
+    expect(entries["repo-a"]?.worktreePath).toBe(join(result.taskWorktreeDir, "repo-a"));
+    expect(entries["repo-b"]?.worktreePath).toBe(join(result.taskWorktreeDir, "repo-b"));
     expect(activePaths.sort()).toEqual([
       entries["repo-a"]?.worktreePath,
       entries["repo-b"]?.worktreePath,
     ].sort());
-    expect(existsSync(join(fixture.rootDir, ".worktrees", "FN-034"))).toBe(false);
+    expect(existsSync(result.taskWorktreeDir)).toBe(true);
   });
 
-  it("uses a current-scope later review target instead of the default coordinator", async () => {
+  it("does not let a current-scope review target choose the task session root", async () => {
     fixture = await createWorkspaceFixture(["repo-a", "repo-b"]);
     const task = makeTask("FN-106");
     task.repositoryScope = {
@@ -221,12 +221,10 @@ describeIfGit("FN-034 workspace root worktree routing", { timeout: 60_000 }, () 
       store,
       settings,
       registry: new ActiveSessionRegistry(),
-      remediationRepository: "repo-b",
     });
 
-    expect(result.coordinatorWorktreePath).toBe(result.task.workspaceWorktrees?.["repo-b"]?.worktreePath);
-    expect(result.coordinatorWorktreePath).not.toContain(join(fixture.rootDir, ".worktrees"));
-    expect(result.task.worktree).toBeNull();
+    expect(result.taskWorktreeDir).toBe(join(fixture.rootDir, ".fusion", "worktrees", "fn-106"));
+    expect(result.taskWorktreeDir).not.toBe(result.task.workspaceWorktrees?.["repo-b"]?.worktreePath);    expect(result.task.worktree).toBeNull();
   });
 
   it("rejects a stale review target instead of falling back to another repository", async () => {
@@ -247,7 +245,6 @@ describeIfGit("FN-034 workspace root worktree routing", { timeout: 60_000 }, () 
       store,
       settings,
       registry: new ActiveSessionRegistry(),
-      remediationRepository: "repo-b",
     })).rejects.toThrow("remediation target is stale");
   });
 });

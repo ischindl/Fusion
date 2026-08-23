@@ -114,8 +114,9 @@ import {
   // FN-8004 follow-up: shared with SelfHealingManager.recoverStaleMergingStatus so the manual
   // Retry gate and the automatic sweep agree on when a merge-active stamp is orphaned.
   isStaleMergeActiveStatus,
-  removeWorktree,
-  RemovalReason,
+  removeTaskResetWorktree,
+  ResetWorktreeForeignSessionError,
+  ActiveSessionWorktreeRemovalError,
   getRegisteredWorktreeBranches,
   pruneWorktreeAdminEntries,
   isInsideConfiguredWorktreesDir,
@@ -3815,14 +3816,22 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
 
           if (worktreePath) {
             if (existsSync(worktreePath)) {
-              const removal = await removeWorktree({
-                worktreePath,
-                rootDir,
-                settings,
-                reason: RemovalReason.TaskReset,
-                taskId: req.params.id,
-                expectedOwnerTaskId: req.params.id,
-              });
+              /*
+              FNXC:TaskReset 2026-08-22-04:32:
+              Reset has fenced planner and executor owners while holding the planning lock. The helper only reconciles proven-stale self-owned registrations under the normal staleness gates; it never forces a live session.
+              */
+              let removal;
+              try {
+                removal = await removeTaskResetWorktree({ worktreePath, rootDir, settings, taskId: req.params.id });
+              } catch (error) {
+                if (error instanceof ResetWorktreeForeignSessionError || error instanceof ActiveSessionWorktreeRemovalError) {
+                  const message = error instanceof ResetWorktreeForeignSessionError
+                    ? `Reset is blocked by active task ${error.details.holderTaskId} (${error.details.holderKind}); stop or finish it before retrying Reset`
+                    : `Reset is blocked by active task ${error.details.taskId} (${error.details.kind}); stop or finish it before retrying Reset`;
+                  throw conflict(message);
+                }
+                throw error;
+              }
               if (!removal.removed && existsSync(worktreePath)) {
                 throw conflict(`Reset incomplete; worktree removal failed for ${req.params.id}`);
               }
@@ -6922,8 +6931,8 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
 
       const canonicalById = new Map(reviewState.items.map((item) => [item.id, item] as const));
       const resolvedSelection = selectedItems.find((selected) => {
-        const item = canonicalById.get(selected.id);
-        return item?.resolution === "resolved-in-review" || item?.resolution === "superseded";
+        const resolution = canonicalById.get(selected.id)?.resolution as string | undefined;
+        return resolution === "resolved-in-review" || resolution === "superseded" || resolution === "dispute-upheld";
       });
       if (resolvedSelection) {
         throw badRequest("Review items already resolved during review cannot be selected for revision");

@@ -9,30 +9,33 @@ U1 partial-land reconciler (`reconcileWorkspacePartialLands`) directly under FAK
 mock-the-world ProjectEngine shell, no real AI (the merge/review agents are injected deps and the
 squash is a plain `git merge --squash`), no unbounded temp walk, never touches port 4040 (FN-5048).
 
-NO-PUSH INVARIANT (the whole D2/D5 premise — a HARD assertion):
-Each sub-repo gets a REAL bare `origin` remote that we push initial state to. We snapshot
-`git for-each-ref` over BOTH the bare origin AND the working repo's `refs/remotes/*` BEFORE and
-AFTER `landWorkspaceTask`. landWorkspaceTask lands each sub-repo onto its own LOCAL integration ref
-via CAS with NO remote push, so the origin's refs and every `refs/remotes/*` tracking ref must be
-BYTE-FOR-BYTE UNCHANGED while the LOCAL `refs/heads/main` advances. A leaked `git push` would move
-an origin ref and fail the snapshot equality — this is the strongest available proof of no-push.
+LOCAL-ONLY INVARIANT (the FN-122 regression contract):
+The workspace root is non-Git and each acquired repository has NO remote. The production landing
+planner must select local-only before any fence/intent/push operation, while local `refs/heads/main`
+advance through the existing CAS path. This test deliberately does not create `origin`: a leaked
+`git ls-remote origin` or `git push origin` fails the land rather than being hidden by a fixture.
 
 Surfaces (FN-5893):
-- e2e happy + no-push: two acquired repos both land → BOTH local integration refs advance,
-  per-repo `landedSha` is set, the task is finalized done EXACTLY once, AND origin/remote refs are
-  unchanged (no push).
+- e2e happy + local-only: two acquired repos both land → BOTH local integration refs advance,
+  per-repo `landedSha` is set, and the task is finalized done EXACTLY once without a remote.
 - e2e partial-land recovery: force repo B to conflict → repo A lands (landedSha + ref advance), task
   NOT done; resolve B and run the U1 reconciler (re-enqueue → idempotent landWorkspaceTask) → B
   lands, task done, and repo A's ref did NOT advance a second time (isRepoLanded skip — no double-land).
 */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Settings, Task, TaskStore } from "@fusion/core";
+import { createSharedPgTaskStoreTestHarness, pgDescribe, type SharedPgTaskStoreHarness } from "../../../core/src/__test-utils__/pg-test-harness.js";
+import * as mergerAi from "../merge/merger-ai.js";
 import { landWorkspaceTask } from "../merge/merger-ai.js";
+import { ProjectEngine } from "../project-engine.js";
+import { TaskExecutor } from "../executor.js";
+import { WorkflowReviewService } from "../workflows/workflow-review-service.js";
+import { FOREACH_ACTIVE_CONTEXT_KEY } from "../workflows/workflow-node-handlers.js";
 import { SelfHealingManager } from "../self-healing.js";
 import { activeSessionRegistry } from "../agents/active-session-registry.js";
 import { createWorkspaceFixture, hasGit, type WorkspaceFixture } from "./_workspace-fixture.js";
@@ -120,7 +123,7 @@ function makeTask(workspaceWorktrees: Task["workspaceWorktrees"], extra: Partial
     .filter(([repo]) => scopedRepositories.includes(repo))
     .map(([repo, entry]) => {
       const mergeBase = execSync(`git merge-base HEAD ${entry.branch}`, { cwd: entry.worktreePath, encoding: "utf8" }).trim();
-      const diff = execSync(`git diff --binary ${entry.baseCommitSha ?? mergeBase}..HEAD`, { cwd: entry.worktreePath, encoding: "utf8" });
+      const diff = execSync(`git diff --binary ${entry.baseCommitSha ?? mergeBase}..${entry.branch}`, { cwd: entry.worktreePath, encoding: "utf8" });
       return [repo, { fingerprint: createHash("sha256").update(diff).digest("hex"), approvedAt: new Date().toISOString() }];
     }));
   const task = {
@@ -129,6 +132,7 @@ function makeTask(workspaceWorktrees: Task["workspaceWorktrees"], extra: Partial
     description: "",
     column: "in-review",
     branch: BRANCH,
+    branchWriteOrigin: "engine",
     worktree: null,
     dependencies: [],
     steps: [],
@@ -136,6 +140,9 @@ function makeTask(workspaceWorktrees: Task["workspaceWorktrees"], extra: Partial
     log: [],
     paused: false,
     workspaceWorktrees,
+    // Direct landing fixtures model an explicit Review Level 0 opt-out; graph
+    // fixtures that exercise review gates provide their own enabled step state.
+    enabledWorkflowSteps: [],
     // FNXC:RepositoryScope 2026-08-21-01:36: workspace e2e fixtures model the
     // exact fingerprint that the production Code Review episode must approve before land.
     repositoryScope: { repositories: Object.keys(workspaceWorktrees ?? {}).sort(), state: "confirmed" as const, revision: 1, reviewEvidence },
@@ -168,25 +175,25 @@ function squashMergeAgent(branch: string) {
 const approveReviewAgent = async (): Promise<string> => "REVIEW_VERDICT: approve";
 
 /**
- * Give a sub-repo a REAL bare `origin` remote and push its initial state. Returns the bare repo
- * path so the test can snapshot its refs. Used to prove the NO-PUSH invariant: the origin must not
- * move across a land.
+ * FNXC:WorkspaceReviewEvidence 2026-08-21-20:11:
+ * The decisive landing regression crosses the production step-review seam, including its scoped
+ * callback fence and approval writer. Only the model-facing review service is faked.
  */
-function addOriginRemote(fx: WorkspaceFixture, repoRel: string): string {
-  const repoDir = fx.repoPath(repoRel);
-  const originDir = path.join(repoDir, "..", `${repoRel}-origin.git`);
-  execSync(`git init --bare ${originDir}`, { cwd: repoDir, stdio: "pipe" });
-  fx.git(repoRel, `git remote add origin ${originDir}`);
-  fx.git(repoRel, "git push origin --all");
-  return originDir;
-}
-
-/** Snapshot ALL refs of a git dir (sha + name), normalized, for byte-for-byte comparison. */
-function snapshotRefs(gitDir: string): string {
-  return execSync("git for-each-ref --format='%(objectname) %(refname)'", {
-    cwd: gitDir,
-    encoding: "utf-8",
-  }).trim();
+async function approveWorkspaceReview(store: TaskStore, task: Task, workspaceRootDir: string): Promise<void> {
+  const executor = new TaskExecutor(store, workspaceRootDir);
+  (executor as any).workspaceConfig = { repos: Object.keys(task.workspaceWorktrees ?? {}) };
+  const reviewStep = vi.spyOn(WorkflowReviewService.prototype, "reviewStep")
+    .mockResolvedValue({ verdict: "APPROVE", review: "approved", summary: "approved" });
+  try {
+    const seams = executor.createAuthoritativeWorkflowSeams({ autoMerge: false } as any);
+    const result = await seams.stepReview!(task as any, {
+      [FOREACH_ACTIVE_CONTEXT_KEY]: { stepIndex: 0, worktreePath: Object.values(task.workspaceWorktrees ?? {})[0]?.worktreePath },
+    }, { type: "code", advisory: true } as any);
+    expect(result.verdict).toBe("APPROVE");
+    expect(reviewStep).toHaveBeenCalledTimes(1);
+  } finally {
+    reviewStep.mockRestore();
+  }
 }
 
 /** Add a real `fusion/<id>` branch in a sub-repo with one non-conflicting own commit. */
@@ -199,6 +206,19 @@ function addRepoBranchWithEdit(fx: WorkspaceFixture, repoRel: string, content: s
   execSync("git add feature.txt", { cwd: wt, stdio: "pipe" });
   execSync(`git commit -m "feat(${TASK_ID}): add feature in ${repoRel}"`, { cwd: wt, stdio: "pipe" });
   fx.git(repoRel, `git worktree remove --force ${wt}`);
+}
+
+function addLinkedTaskWorktreeWithEdit(
+  fx: WorkspaceFixture,
+  repoRel: string,
+  content: string,
+): { worktreePath: string; branch: string; baseCommitSha: string } {
+  const linked = fx.createLinkedTaskWorktree(repoRel, BRANCH);
+  configureIdentity(linked.worktreePath);
+  writeFileSync(path.join(linked.worktreePath, "feature.txt"), content, "utf-8");
+  execSync("git add feature.txt", { cwd: linked.worktreePath, stdio: "pipe" });
+  execSync(`git commit -m "feat(${TASK_ID}): linked task worktree feature in ${repoRel}"`, { cwd: linked.worktreePath, stdio: "pipe" });
+  return { ...linked, branch: BRANCH };
 }
 
 /** Make a sub-repo's integration tip and the task branch BOTH edit README so the squash conflicts. */
@@ -235,7 +255,7 @@ function resolveConflictingRepo(fx: WorkspaceFixture, repoRel: string): void {
   fx.git(repoRel, `git worktree remove --force ${wt}`);
 }
 
-describeIfGit("workspace e2e — merge (no-push) + partial-land recovery (Phase D U2)", () => {
+describeIfGit("workspace e2e — local-only merge + partial-land recovery", () => {
   let fx: WorkspaceFixture;
   beforeEach(() => activeSessionRegistry.clear());
   afterEach(() => {
@@ -245,26 +265,20 @@ describeIfGit("workspace e2e — merge (no-push) + partial-land recovery (Phase 
     fx?.cleanup();
   });
 
-  it("e2e happy: both repos land on LOCAL refs, landedSha per repo, finalize ONCE, NO push", async () => {
+  it("e2e happy: two remote-free repos land locally and finalize once", async () => {
     fx = await createWorkspaceFixture(["repo-a", "repo-b"]);
-    const originA = addOriginRemote(fx, "repo-a");
-    const originB = addOriginRemote(fx, "repo-b");
-    addRepoBranchWithEdit(fx, "repo-a", "a feature\n");
-    addRepoBranchWithEdit(fx, "repo-b", "b feature\n");
+    const repoA = addLinkedTaskWorktreeWithEdit(fx, "repo-a", "a feature\n");
+    const repoB = addLinkedTaskWorktreeWithEdit(fx, "repo-b", "b feature\n");
 
     const tipABefore = fx.git("repo-a", "git rev-parse refs/heads/main");
     const tipBBefore = fx.git("repo-b", "git rev-parse refs/heads/main");
-
-    // NO-PUSH snapshot: bare origin refs + the working repo's refs/remotes tracking refs.
-    const originABefore = snapshotRefs(originA);
-    const originBBefore = snapshotRefs(originB);
-    const remotesABefore = fx.git("repo-a", "git for-each-ref refs/remotes");
-    const remotesBBefore = fx.git("repo-b", "git for-each-ref refs/remotes");
+    expect(fx.git("repo-a", "git remote")).toBe("");
+    expect(fx.git("repo-b", "git remote")).toBe("");
 
     const store = createStore([
       makeTask({
-        "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH },
-        "repo-b": { worktreePath: fx.repoPath("repo-b"), branch: BRANCH },
+        "repo-a": repoA,
+        "repo-b": repoB,
       }),
     ]);
     const task = store.tasks.get(TASK_ID)!;
@@ -289,16 +303,20 @@ describeIfGit("workspace e2e — merge (no-push) + partial-land recovery (Phase 
     expect(persisted["repo-b"].landedSha).toBeTruthy();
     expect(persisted["repo-a"].landedSha).toBe(fx.git("repo-a", "git rev-parse refs/heads/main"));
     expect(persisted["repo-b"].landedSha).toBe(fx.git("repo-b", "git rev-parse refs/heads/main"));
+    const finalizedTask = store.tasks.get(TASK_ID)!;
+    expect(finalizedTask.mergeDetails?.workspaceLandedShas).toEqual({
+      "repo-a": persisted["repo-a"].landedSha,
+      "repo-b": persisted["repo-b"].landedSha,
+    });
+    expect(finalizedTask.mergeDetails?.mergeConfirmed).toBe(true);
 
     // Finalize EXACTLY once.
     expect(store.moveTaskCalls).toEqual([{ id: TASK_ID, column: "done" }]);
     expect(store.emitted.filter((e) => e.event === "task:merged")).toHaveLength(1);
 
-    // NO-PUSH invariant (HARD): origin refs and remote-tracking refs are BYTE-FOR-BYTE unchanged.
-    expect(snapshotRefs(originA)).toBe(originABefore);
-    expect(snapshotRefs(originB)).toBe(originBBefore);
-    expect(fx.git("repo-a", "git for-each-ref refs/remotes")).toBe(remotesABefore);
-    expect(fx.git("repo-b", "git for-each-ref refs/remotes")).toBe(remotesBBefore);
+    // No remote was created: this proves the successful path cannot have required `origin`.
+    expect(fx.git("repo-a", "git remote")).toBe("");
+    expect(fx.git("repo-b", "git remote")).toBe("");
   });
 
   /*
@@ -328,6 +346,10 @@ describeIfGit("workspace e2e — merge (no-push) + partial-land recovery (Phase 
         modifiedFiles: ["repo-a/feature.txt"],
       }),
     ]);
+
+    // Produce the approval through the same per-repository capture landing consumes. repo-b
+    // remains a NOT_REVIEWED observation and receives no approval obligation.
+    await approveWorkspaceReview(store, store.tasks.get(TASK_ID)!, fx.rootDir);
 
     const result = await landWorkspaceTask(store, store.tasks.get(TASK_ID)!, fx.rootDir, {}, {
       mergeAgent: squashMergeAgent(BRANCH),
@@ -384,12 +406,9 @@ describeIfGit("workspace e2e — merge (no-push) + partial-land recovery (Phase 
     // the intervening Code Review that records the new merge boundary before recovery.
     const recoveringTask = store.tasks.get(TASK_ID)!;
     recoveringTask.modifiedFiles = ["repo-a/feature.txt", "repo-b/README.md", "repo-b/feature.txt"];
-    const repoB = recoveringTask.workspaceWorktrees!["repo-b"];
-    const repoBMergeBase = execSync(`git merge-base HEAD ${repoB.branch}`, { cwd: repoB.worktreePath, encoding: "utf8" }).trim();
-    recoveringTask.repositoryScope!.reviewEvidence!["repo-b"] = {
-      fingerprint: createHash("sha256").update(execSync(`git diff --binary ${repoB.baseCommitSha ?? repoBMergeBase}..HEAD`, { cwd: repoB.worktreePath, encoding: "utf8" })).digest("hex"),
-      approvedAt: new Date().toISOString(),
-    };
+    // Re-run the production review helper after resolving the conflict so its
+    // fingerprint matches the current branch rather than a hand-built stale diff.
+    await approveWorkspaceReview(store, recoveringTask, fx.rootDir);
 
     // Wire enqueueMerge to the REAL in-process route: re-run landWorkspaceTask (idempotent — A is
     // skipped via isRepoLanded). Capture the routed promise so the test can await completion.
@@ -427,5 +446,135 @@ describeIfGit("workspace e2e — merge (no-push) + partial-land recovery (Phase 
 
     // NO DOUBLE-LAND: repo A's ref did NOT advance a second time (isRepoLanded skip).
     expect(fx.git("repo-a", "git rev-parse refs/heads/main")).toBe(tipAAfterFirst);
+  });
+});
+
+/*
+FNXC:WorkspaceIntegration 2026-08-21-22:20:
+The local-only regression must cross the real PostgreSQL coordination APIs rather than the
+structural RecordingStore above. This fixture retains the non-Git workspace root, two acquired
+repositories, and one scoped modification, proving durable repository leasing persists landing
+proof without creating a remote fence or intent.
+*/
+const pgDescribeIfGit = hasGit ? pgDescribe : describe.skip;
+pgDescribeIfGit("workspace local-only PostgreSQL landing", () => {
+  const h: SharedPgTaskStoreHarness = createSharedPgTaskStoreTestHarness({
+    prefix: "fusion_workspace_local_only_e2e",
+  });
+  let fx: WorkspaceFixture;
+
+  beforeAll(h.beforeAll);
+  beforeEach(async () => {
+    await h.beforeEach();
+    fx = await createWorkspaceFixture(["repo-a", "repo-b"]);
+  });
+  afterEach(async () => {
+    fx?.cleanup();
+    await h.afterEach();
+  });
+  afterAll(h.afterAll);
+
+  it("lands one reviewed local repository through durable coordination without a remote operation", async () => {
+    const taskId = "FN-122-PG-LOCAL";
+    const repoA = addLinkedTaskWorktreeWithEdit(fx, "repo-a", "postgres local feature\n");
+    const repoB = fx.createLinkedTaskWorktree("repo-b", BRANCH);
+    const source = makeTask({ "repo-a": repoA, "repo-b": repoB }, {
+      id: taskId,
+      repositoryScope: { repositories: ["repo-a"], state: "confirmed", revision: 1 },
+      modifiedFiles: ["repo-a/feature.txt"],
+    });
+    const store = h.store();
+    await store.createTaskWithReservedId(
+      { description: "local-only PostgreSQL workspace landing", column: "in-review" },
+      { taskId, applyDefaultWorkflowSteps: false },
+    );
+    await store.updateTask(taskId, {
+      branch: BRANCH,
+      workspaceWorktrees: source.workspaceWorktrees,
+      repositoryScope: source.repositoryScope,
+      modifiedFiles: source.modifiedFiles,
+    } as Partial<Task>);
+    const recordFence = vi.spyOn(store, "recordWorkspaceLeaseFenceRef");
+    const recordIntent = vi.spyOn(store, "recordWorkspaceLandIntent");
+    const acquired = vi.spyOn(store, "acquireWorkspaceLease");
+
+    const result = await landWorkspaceTask(store, (await store.getTask(taskId))!, fx.rootDir, {}, {
+      mergeAgent: squashMergeAgent(BRANCH),
+      reviewAgent: approveReviewAgent,
+    });
+
+    const persisted = (await store.getTask(taskId))!;
+    expect(result).toMatchObject({ allLanded: true, finalized: true });
+    expect(persisted.column).toBe("done");
+    expect(persisted.workspaceWorktrees?.["repo-a"]?.landedSha).toMatch(/^[0-9a-f]{40}$/);
+    expect(persisted.workspaceWorktrees?.["repo-b"]?.landedSha).toBeUndefined();
+    expect(acquired).toHaveBeenCalledWith(expect.objectContaining({ leaseKey: "repo:repo-a" }));
+    expect(recordFence).not.toHaveBeenCalled();
+    expect(recordIntent).not.toHaveBeenCalled();
+    expect(fx.git("repo-a", "git remote")).toBe("");
+    expect(fx.git("repo-b", "git remote")).toBe("");
+  });
+
+  it("drives the local-only durable land through ProjectEngine's merge route", async () => {
+    const taskId = "FN-122-PG-ENGINE";
+    const repoA = addLinkedTaskWorktreeWithEdit(fx, "repo-a", "project engine local feature\n");
+    const repoB = fx.createLinkedTaskWorktree("repo-b", BRANCH);
+    const source = makeTask({ "repo-a": repoA, "repo-b": repoB }, {
+      id: taskId,
+      repositoryScope: { repositories: ["repo-a"], state: "confirmed", revision: 1 },
+      modifiedFiles: ["repo-a/feature.txt"],
+    });
+    const store = h.store();
+    await store.createTaskWithReservedId(
+      { description: "ProjectEngine local-only workspace landing", column: "in-review" },
+      { taskId, applyDefaultWorkflowSteps: false },
+    );
+    await store.updateTask(taskId, {
+      branch: BRANCH,
+      workspaceWorktrees: source.workspaceWorktrees,
+      repositoryScope: source.repositoryScope,
+      modifiedFiles: source.modifiedFiles,
+    } as Partial<Task>);
+    // FNXC:WorkspaceIntegration 2026-08-22-00:26:
+    // The local-only symptom must pass through the production Code Review evidence writer before
+    // ProjectEngine dispatches landing, so an in-memory pre-approved fixture cannot hide a review-to-land race.
+    await approveWorkspaceReview(store, (await store.getTask(taskId))!, fx.rootDir);
+    const recordFence = vi.spyOn(store, "recordWorkspaceLeaseFenceRef");
+    const recordIntent = vi.spyOn(store, "recordWorkspaceLandIntent");
+    const acquired = vi.spyOn(store, "acquireWorkspaceLease");
+    const moveTask = vi.spyOn(store, "moveTask");
+    const realLand = mergerAi.landWorkspaceTask;
+    const land = vi.spyOn(mergerAi, "landWorkspaceTask").mockImplementation(async (landStore, task, rootDir, options) =>
+      realLand(landStore, task, rootDir, options, {
+        mergeAgent: squashMergeAgent(BRANCH),
+        reviewAgent: approveReviewAgent,
+      }),
+    );
+    const engine = new ProjectEngine({
+      projectId: "fn-122-pg-local",
+      workingDirectory: fx.rootDir,
+      isolationMode: "in-process",
+      maxConcurrent: 1,
+      maxWorktrees: 1,
+    } as never, {} as never, { skipNotifier: true });
+    (engine as any).runtime = { getTaskStore: () => store };
+
+    try {
+      const result = await engine.onMerge(taskId);
+      const persisted = (await store.getTask(taskId))!;
+      expect(result.merged).toBe(true);
+      expect(land).toHaveBeenCalledOnce();
+      expect(persisted.column).toBe("done");
+      expect(persisted.workspaceWorktrees?.["repo-a"]?.landedSha).toMatch(/^[0-9a-f]{40}$/);
+      expect(persisted.workspaceWorktrees?.["repo-b"]?.landedSha).toBeUndefined();
+      expect(acquired).toHaveBeenCalledWith(expect.objectContaining({ leaseKey: `merge-dispatch:${taskId}` }));
+      expect(acquired).toHaveBeenCalledWith(expect.objectContaining({ leaseKey: "repo:repo-a" }));
+      expect(recordFence).not.toHaveBeenCalled();
+      expect(recordIntent).not.toHaveBeenCalled();
+      expect(moveTask).toHaveBeenCalledTimes(1);
+      expect(fx.git("repo-a", "git remote")).toBe("");
+    } finally {
+      land.mockRestore();
+    }
   });
 });

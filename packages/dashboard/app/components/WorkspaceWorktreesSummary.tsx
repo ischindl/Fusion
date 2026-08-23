@@ -25,10 +25,17 @@ export function deriveWorkspaceRepoStatus(
   entry: WorkspaceEntry,
   repoRelPath: string,
   mergeDetails?: Task["mergeDetails"],
-): { status: WorkspaceStatus; landedSha?: string; failureMessage?: string } {
+): { status: WorkspaceStatus; landedSha?: string; failureMessage?: string; failureResource?: string; failureAction?: string } {
   const landedSha = entry.landedSha ?? mergeDetails?.workspaceLandedShas?.[repoRelPath];
   if (landedSha) return { status: "landed", landedSha };
-  if (entry.landFailure) return { status: "failed", failureMessage: entry.landFailure.message };
+  if (entry.landFailure) {
+    return {
+      status: "failed",
+      failureMessage: entry.landFailure.message,
+      failureResource: entry.landFailure.resource,
+      failureAction: entry.landFailure.action,
+    };
+  }
   return { status: "pending" };
 }
 
@@ -122,7 +129,7 @@ export function WorkspaceWorktreesSummary({ task, compact = false, onScopeChange
       {task.repositoryScope.extensions.map((event, index) => <li key={`${event.repository}-${event.requestedAt}-${index}`}>{event.repository}: {event.status} — {event.reason}</li>)}
     </ul> : null}
     <ul className="workspace-worktrees-list">
-      {statuses.map(({ repoRelPath, entry, status, scopeState, modified, landedSha, failureMessage }) => <li key={repoRelPath} className="workspace-worktrees-item workspace-worktrees-item--wrapping">
+      {statuses.map(({ repoRelPath, entry, status, scopeState, modified, landedSha, failureMessage, failureResource, failureAction }) => <li key={repoRelPath} className="workspace-worktrees-item workspace-worktrees-item--wrapping">
         <span className="workspace-worktrees-repo" title={repoRelPath}>{repoRelPath}</span>
         <span className={`workspace-worktrees-status workspace-worktrees-status--${status}`} data-testid={`workspace-repo-status-${status}`} aria-label={`${repoRelPath}: ${status}`}>{status}</span>
         <span className="workspace-worktrees-scope" data-testid={`workspace-repo-scope-${scopeState}`}>{scopeState === "out-of-scope" ? t("tasks.workspaceRepoOutOfScope", "Out of scope") : modified ? t("tasks.workspaceRepoModified", "Modified") : t("tasks.workspaceRepoNotReviewed", "No changes — not reviewed")}</span>
@@ -131,7 +138,7 @@ export function WorkspaceWorktreesSummary({ task, compact = false, onScopeChange
         <span className="workspace-worktrees-branch" title={entry.branch}>{entry.branch}</span>
         {entry.baseBranch && <span className="workspace-worktrees-base" data-testid="workspace-repo-base-branch" title={t("tasks.workspaceRepoBaseBranch", "Base branch for {{repo}}", { repo: repoRelPath })}>{t("tasks.workspaceRepoBase", "Base: {{branch}}", { branch: entry.baseBranch })}</span>}
         {entry.baseBranchFallbackFrom && <span className="workspace-worktrees-base-fallback" data-testid="workspace-repo-base-fallback" title={t("tasks.workspaceRepoBaseFallbackTitle", "{{requested}} was unavailable in {{repo}}; using {{resolved}}", { requested: entry.baseBranchFallbackFrom, repo: repoRelPath, resolved: entry.baseBranch ?? entry.branch })}>{t("tasks.workspaceRepoBaseFallback", "Base fallback")}</span>}
-        {failureMessage && <span className="workspace-worktrees-failure-message">{failureMessage}</span>}
+        {failureMessage && <span className="workspace-worktrees-failure-message">{failureMessage}{failureResource ? ` ${failureResource}.` : ""}{failureAction ? ` ${failureAction}.` : ""}</span>}
       </li>)}
     </ul>
   </div>;

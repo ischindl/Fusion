@@ -51,7 +51,7 @@ function makeTask(overrides: Partial<TaskDetail> = {}): TaskDetail {
 const PLAN_REVIEW_NODE = {
   id: "plan-review-step",
   kind: "prompt",
-  config: { name: "Plan Review", prompt: "Review the plan.", toolMode: "readonly" },
+  config: { name: "Plan Review", prompt: "Review the plan.", toolMode: "readonly", reviewKind: "plan" },
 };
 const CUSTOM_READONLY_GATE = {
   id: "custom-gate",
@@ -108,16 +108,17 @@ describe("every workflow node runs in the task worktree, never the shared checko
     expect(acquireSpy).not.toHaveBeenCalled();
   });
 
-  it("uses a member worktree for workspace projects instead of the shared browse-root", async () => {
+  it("uses a declared read-only workspace root for workspace Plan Review", async () => {
     const store = createMockStore();
     const executor = new TaskExecutor(store, ROOT);
     (executor as any).workspaceConfig = { repos: ["apps/web"] };
     mockedExistsSync.mockReturnValue(true);
 
     const acquireSpy = vi.spyOn(executor as any, "ensureGraphCustomNodeWorktree");
-    const captured: { worktreePath?: string } = {};
+    const captured: { worktreePath?: string; boundary?: unknown } = {};
     vi.spyOn(executor as any, "executeWorkflowStep").mockImplementation(async (...args: any[]) => {
       captured.worktreePath = args[2];
+      captured.boundary = args[5]?.sessionBoundary;
       return { success: true, output: "APPROVE" };
     });
 
@@ -125,8 +126,8 @@ describe("every workflow node runs in the task worktree, never the shared checko
     store.getTask.mockResolvedValue(live as any);
     await (executor as any).runGraphCustomNode(PLAN_REVIEW_NODE, live, {}, undefined);
 
-    expect(captured.worktreePath).toContain(`${ROOT}/apps/web/.worktrees/`);
-    expect(captured.worktreePath).not.toBe(ROOT);
-    expect(acquireSpy).toHaveBeenCalled();
+    expect(captured.worktreePath).toBe(ROOT);
+    expect(captured.boundary).toMatchObject({ kind: "read-only-root", writableRoot: null, projectRoot: ROOT });
+    expect(acquireSpy).not.toHaveBeenCalled();
   });
 });

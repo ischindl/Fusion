@@ -62,6 +62,26 @@ describe("built-in workflows", () => {
     }
   });
 
+  /*
+  FNXC:PlanReviewNoOp 2026-08-22-03:37:
+  Every built-in that offers Plan Review must route CLOSE_NO_OP to the terminal no-op action.
+  A custom workflow without this route fails closed by holding at Plan Review; it never restarts planning.
+  */
+  it("routes Plan Review CLOSE_NO_OP verdicts to the terminal no-op action", () => {
+    for (const workflow of BUILTIN_WORKFLOWS) {
+      const planReview = workflow.ir.nodes.find((node) => node.id === "plan-review");
+      if (!planReview) continue;
+      expect(
+        workflow.ir.edges.some((edge) =>
+          edge.from === planReview.id
+          && edge.condition === "outcome:close-no-op"
+          && workflow.ir.nodes.find((node) => node.id === edge.to)?.config?.workflowAction === "plan-review-no-op",
+        ),
+        workflow.id,
+      ).toBe(true);
+    }
+  });
+
   it("all built-ins expose workflow-native review revision cap settings", () => {
     for (const workflow of BUILTIN_WORKFLOWS) {
       if (workflow.kind === "fragment") continue;
@@ -816,6 +836,7 @@ describe("built-in workflows", () => {
       "plan-replan",
       "browser-verification-remediation",
       "code-review-remediation",
+      "plan-review-no-op",
     ]);
 
     const execute = design!.ir.nodes.find((node) => node.id === "execute");
@@ -1066,6 +1087,7 @@ describe("built-in workflows", () => {
       "plan-replan",
       "browser-verification-remediation",
       "code-review-remediation",
+      "plan-review-no-op",
     ]);
     expect(ce.ir.nodes.some((node) => node.config?.seam === "review")).toBe(false);
 

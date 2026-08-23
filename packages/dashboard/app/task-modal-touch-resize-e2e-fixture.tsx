@@ -22,6 +22,7 @@ import { ConfirmDialogProvider } from "./hooks/useConfirm";
 const params = new URLSearchParams(window.location.search);
 const surface = params.get("surface") ?? "new-task";
 const titleMode = params.get("titleMode") ?? "overflow";
+const boardCardClickSurface = surface === "board-card-click-app";
 if (params.has("reset")) localStorage.clear();
 
 /*
@@ -58,7 +59,18 @@ window.fetch = async (input) => {
   const payload = url.includes("/projects/across-nodes")
     ? [{ id: "fixture", name: "Fixture", path: "/fixture", status: "active" }]
     : url.includes("/tasks/board-workflows")
-      ? { flagEnabled: true, defaultWorkflowId: "fixture-workflow", taskWorkflowIds: { [fixtureTask.id]: "fixture-workflow" }, workflows: [{ id: "fixture-workflow", name: "Fixture", columns: [{ id: "todo", name: "Todo", flags: {} }] }] }
+      ? { flagEnabled: true, defaultWorkflowId: "fixture-workflow", taskWorkflowIds: { [fixtureTask.id]: "fixture-workflow" }, workflows: [{ id: "fixture-workflow", name: "Fixture", columns: boardCardClickSurface ? [
+        /*
+        FNXC:BoardNavigation 2026-08-21-18:57:
+        FN-115's production-App Chromium fixture needs measured horizontal overflow at desktop and
+        tablet widths, so it supplies enough canonical workflow columns to exercise Board panning.
+        */
+        { id: "todo", name: "Todo", flags: {} },
+        { id: "in-progress", name: "In progress", flags: {} },
+        { id: "in-review", name: "In review", flags: {} },
+        { id: "verify", name: "Verify", flags: {} },
+        { id: "done", name: "Done", flags: {} },
+      ] : [{ id: "todo", name: "Todo", flags: {} }, { id: "in-progress", name: "In progress", flags: {} }, { id: "in-review", name: "In review", flags: {} }] }] }
       : url.includes(`/tasks/${fixtureTask.id}/prompt`)
         ? { id: fixtureTask.id, prompt: "" }
         : pathname === `/api/tasks/${fixtureTask.id}`
@@ -75,7 +87,7 @@ window.fetch = async (input) => {
                   ? { goals: [] }
         : url.includes("/models")
           ? { models: [], favoriteProviders: [], favoriteModels: [] }
-          : url.includes("/settings") ? { taskPopupsBoardListOnly: false }
+          : url.includes("/settings") ? { taskPopupsBoardListOnly: false, openMobileTasksInPopup: params.get("openMobileTasksInPopup") === "true" }
             : url.includes("/agents") || url.includes("/nodes") ? []
               : [];
   return new Response(JSON.stringify(payload), { headers: { "content-type": "application/json" } });
@@ -108,7 +120,7 @@ The App pop-out browser route hydrates the same project and task caches used aft
 session, so its board card exists on App's first render. This removes timing retries from the
 fixture while App still revalidates the stable mocked API data through its production hooks.
 */
-if (surface === "task-detail-title-app-floating") {
+if (surface === "task-detail-title-app-floating" || surface === "board-card-click-app") {
   const savedAt = Date.now();
   localStorage.setItem("kb-dashboard-projects-cache", JSON.stringify({ savedAt, data: [{ id: "fixture", name: "Fixture", path: "/fixture", status: "active" }] }));
   localStorage.setItem("kb-dashboard-current-project-cache", JSON.stringify({ savedAt, data: "fixture" }));
@@ -281,7 +293,7 @@ function GenericFloatingWindowHarness() {
 function Fixture() {
   return <I18nextProvider i18n={i18n}>
     <ConfirmDialogProvider skipConfirmations>
-      {surface === "task-detail-title-app-floating" ? <TaskDetailTitleAppFloatingHarness /> : surface === "agent-list-modal" ? <AgentListModal isOpen onClose={() => undefined} addToast={() => undefined} /> : surface === "setup-wizard-modal" ? <SetupWizardModal onProjectRegistered={() => undefined} onClose={() => undefined} /> : surface === "floating-window" ? <FloatingWindowHarness /> : surface === "floating-window-headerless" ? <HeaderlessFloatingWindowHarness /> : surface === "floating-window-generic" ? <GenericFloatingWindowHarness /> : surface === "task-detail-title-modal" ? <TaskDetailTitleModalHarness /> : surface === "task-detail-title-main-panel" ? <TaskDetailTitleMainPanelHarness /> : surface === "task-detail-title-list" ? <TaskDetailTitleListHarness /> : surface === "task-detail-title-dock" ? <TaskDetailTitleDockHarness /> : surface === "task-detail-title-floating" ? <TaskDetailTitleFloatingHarness /> : surface === "task-detail-title-embedded" ? <TaskDetailTitleEmbeddedHarness /> : surface === "task-detail" ? <TaskDetailResizeHarness /> : <NewTaskModal
+      {surface === "task-detail-title-app-floating" || surface === "board-card-click-app" ? <TaskDetailTitleAppFloatingHarness /> : surface === "agent-list-modal" ? <AgentListModal isOpen onClose={() => undefined} addToast={() => undefined} /> : surface === "setup-wizard-modal" ? <SetupWizardModal onProjectRegistered={() => undefined} onClose={() => undefined} /> : surface === "floating-window" ? <FloatingWindowHarness /> : surface === "floating-window-headerless" ? <HeaderlessFloatingWindowHarness /> : surface === "floating-window-generic" ? <GenericFloatingWindowHarness /> : surface === "task-detail-title-modal" ? <TaskDetailTitleModalHarness /> : surface === "task-detail-title-main-panel" ? <TaskDetailTitleMainPanelHarness /> : surface === "task-detail-title-list" ? <TaskDetailTitleListHarness /> : surface === "task-detail-title-dock" ? <TaskDetailTitleDockHarness /> : surface === "task-detail-title-floating" ? <TaskDetailTitleFloatingHarness /> : surface === "task-detail-title-embedded" ? <TaskDetailTitleEmbeddedHarness /> : surface === "task-detail" ? <TaskDetailResizeHarness /> : <NewTaskModal
         isOpen
         tasks={[]}
         onClose={() => undefined}

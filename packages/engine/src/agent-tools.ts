@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import * as fusionCore from "@fusion/core";
 import type { AgentState, AgentCapability, AgentUpdateInput, AgentLogEntry, Artifact, ArtifactCreateInput, ArtifactWithTask, Task, TaskDocument, TaskDocumentCreateInput, TaskStore, RunMutationContext, MessageStore, Message, SourceType, Settings, ResearchRun, ResearchRunStatus, TaskCreateInput, ReflectionStore, ApprovalRequestStore, ProjectSettings, ChatStore, WorkflowSettingDefinition, GoalStatus, WorkflowIrNode, IdeationCandidate, MissionWithHierarchy, DbTransaction } from "@fusion/core";
-import { listTraits, isBuiltinWorkflowId, AgentStore, validateColumnAgentBindings, ColumnAgentBindingError, stripApprovalBypassFlags, WorkflowSettingRejectionError, resolveEffectiveSettingsById, resolveWorkflowIrById, findOrphanedSettingValues, BUILTIN_WORKFLOW_SETTINGS, MAX_TASK_LIST_TEXT_CHARS, formatCurrentTaskLine, normalizeWorkflowIcon, parseWorkflowIr, WorkflowIrError, assertColumnTraitsValid, ColumnTraitValidationError } from "@fusion/core";
+import { listTraits, isBuiltinWorkflowId, AgentStore, validateColumnAgentBindings, ColumnAgentBindingError, stripApprovalBypassFlags, WorkflowSettingRejectionError, resolveEffectiveSettingsById, resolveWorkflowIrById, findOrphanedSettingValues, BUILTIN_WORKFLOW_SETTINGS, MAX_TASK_LIST_TEXT_CHARS, formatCurrentTaskLine, normalizeWorkflowIcon, parseWorkflowIr, WorkflowIrError, assertColumnTraitsValid, ColumnTraitValidationError, isLegacyWorkspaceWorktreeLayout, resolveWorkspaceRepoWorktreePath, resolveWorkspaceTaskWorktreeDir } from "@fusion/core";
 import { promoteHeldTask } from "./execution/hold-release.js";
 import { computeCrossParentDiagnosticClaim, computeCrossParentDiagnosticClaimId, computeParentIntentClaimId, DASHBOARD_USER_ID, dailyMemoryPath, ensureOpenClawMemoryFiles, evaluateImplementationTaskBind, extractAgentProvisioningRequest, findSameAgentDuplicates, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh } from "@fusion/core";
 import { ResearchOrchestrator } from "./research/research-orchestrator.js";
@@ -1079,7 +1079,9 @@ async function getAgentMemoryWindow(rootDir: string, agentMemory: AgentMemoryCon
 export function isAgentTaskCreateToolAvailable(
   settings: Pick<Settings, "ephemeralAgentTaskCreationPolicy" | "ephemeralAgentsCanCreateTasks"> | undefined | null,
   callerIsEphemeral: boolean | undefined,
+  lane: "task-execution" | "agent-session" = "agent-session",
 ): boolean {
+  if (lane === "task-execution") return false;
   if (!callerIsEphemeral) return true;
   return fusionCore.resolveEphemeralTaskCreationPolicy(settings ?? {}) !== "deny";
 }
@@ -1102,7 +1104,9 @@ export function isAgentTaskCreateToolAvailable(
 export function isAgentDelegateTaskToolAvailable(
   settings: Pick<Settings, "ephemeralAgentTaskCreationPolicy" | "ephemeralAgentsCanCreateTasks"> | undefined | null,
   callerIsEphemeral: boolean | undefined,
+  lane: "task-execution" | "agent-session" = "agent-session",
 ): boolean {
+  if (lane === "task-execution") return false;
   if (!callerIsEphemeral) return true;
   return fusionCore.resolveEphemeralTaskCreationPolicy(settings ?? {}) === "allow";
 }
@@ -2152,7 +2156,12 @@ function parsePlanRepositoryScope(content: string, configured: readonly string[]
   return [...new Set(repositories)].sort();
 }
 
-export function createTaskPromptWriteTool(store: TaskStore, taskId: string, runContext?: RunMutationContext): ToolDefinition {
+export function createTaskPromptWriteTool(
+  store: TaskStore,
+  taskId: string,
+  runContext?: RunMutationContext,
+  canPersist?: () => boolean,
+): ToolDefinition {
   return {
     name: "fn_task_prompt_write",
     label: "Write PROMPT.md",
@@ -2204,23 +2213,73 @@ export function createTaskPromptWriteTool(store: TaskStore, taskId: string, runC
               extensions: current?.repositoryScope?.extensions,
             }
           : undefined;
-        const persisted = await store.updateTask(taskId, {
+        /*
+        FNXC:TaskReset 2026-08-22-04:49:
+        A triage attempt captured before Reset can outlive the route's non-reentrant planning lock.
+        Check its generation immediately before the authoritative write so a stale planner cannot
+        recreate PROMPT.md after Reset publishes the description-only state.
+        */
+        if (canPersist && !canPersist()) {
+          throw new Error(`Planning for ${taskId} was reset before PROMPT.md could be persisted`);
+        }
+        const promptUpdate = {
           prompt: params.content,
           ...(repositoryScope ? { repositoryScope } : {}),
-        }, runContext);
+        };
+        if (canPersist) {
+          /*
+          FNXC:TaskReset 2026-08-22-18:07:
+          Reset serializes its publication with the non-reentrant planning lifecycle lock. A
+          generation check before `updateTask` is insufficient because that writer can queue behind
+          Reset and recreate PROMPT.md after reset commits. Check and write under the same lock,
+          using the lock-held TaskStore variants so this tool never re-enters the advisory lock.
+          */
+          await store.withPlanningLifecycleLock(taskId, async () => {
+            if (!canPersist()) {
+              throw new Error(`Planning for ${taskId} was reset before PROMPT.md could be persisted`);
+            }
+            const updated = await store.withTaskLock(taskId, () => store.updateTaskUnlocked(taskId, promptUpdate, runContext));
+            if (store.isBackendMode()) {
+              await store.reconcileSpecDriftWhilePlanningLocked(updated).catch((error: unknown) => {
+                log.warn(`[spec-lock] deferred drift reconciliation for ${updated.id}: ${error instanceof Error ? error.message : String(error)}`);
+              });
+            }
+            /* FNXC:TaskReset 2026-08-22-18:15: Reset clears agent-authored plan documents under this lifecycle lock. */
+            await mirrorPlanToProjectDb(store, taskId, params.content, {
+              author: runContext?.agentId ?? "agent",
+            });
+          });
+        } else {
+          await store.updateTask(taskId, promptUpdate, runContext);
+        }
+        /*
+        FNXC:PlanArtifactPersistence 2026-08-22-03:37:
+        FN-094 repointed this fail-closed check at updateTask's task-row return value after adding
+        workspace-scope publication. The row has no prompt column, so it can never verify PROMPT.md.
+        Re-read through getTask after the write because it hydrates the filesystem-backed artifact;
+        missing, unreadable, or changed content must still reject publication.
+        */
+        let persisted: Awaited<ReturnType<TaskStore["getTask"]>>;
+        try {
+          persisted = await store.getTask(taskId);
+        } catch {
+          throw new Error("authoritative PROMPT.md read-back did not match the requested content; persistence could not be verified");
+        }
         if (persisted?.prompt !== params.content) {
           throw new Error("authoritative PROMPT.md read-back did not match the requested content; persistence could not be verified");
         }
         /*
         FNXC:PlanArtifactPersistence 2026-07-26-03:55:
         `updateTask({ prompt })` writes the project-root PROMPT.md and task.json, but `project.tasks` has
-        no `prompt` column — the spec would live only as a file in the project checkout. Mirror it into the
-        `plan` task document so the plan is durable in the project database too. Best-effort: a mirror
-        failure must not fail a write whose authoritative persistence was just verified above.
+        no `prompt` column — the spec would live only as a file in the project checkout. Reset-fenced
+        planners mirror it inside the serialized prompt publication above, preventing Reset from clearing
+        the document and then observing a stale mirror recreated after its transaction commits.
         */
-        await mirrorPlanToProjectDb(store, taskId, params.content, {
-          author: runContext?.agentId ?? "agent",
-        });
+        if (!canPersist) {
+          await mirrorPlanToProjectDb(store, taskId, params.content, {
+            author: runContext?.agentId ?? "agent",
+          });
+        }
         return {
           content: [{ type: "text" as const, text: `Updated PROMPT.md for ${taskId}.` }],
           details: {},
@@ -6544,6 +6603,7 @@ export function createAcquireRepoWorktreeTool(opts: {
     label: "Acquire Repo Worktree",
     description:
       "Acquire an isolated git worktree for a sub-repo in this workspace. " +
+      "The returned repository-relative path is inside this task's workspace directory. " +
       "Call this before editing files in a sub-repo; work in the returned path. " +
       `Available repos: ${workspaceRepos.join(", ")}.`,
     parameters: acquireRepoWorktreeParams,
@@ -6610,6 +6670,13 @@ export function createAcquireRepoWorktreeTool(opts: {
               throw new LateWorkspaceRepoAcquireError(repo);
             }
           },
+          // FNXC:WorkspaceWorktree 2026-08-22-22:16: A mid-flight scope extension joins the task's single directory unless this task is already legacy.
+          ...(() => {
+            const taskDir = resolveWorkspaceTaskWorktreeDir(workspaceRootDir, settings, freshTask.id);
+            return isLegacyWorkspaceWorktreeLayout(freshTask, taskDir)
+              ? {}
+              : { worktreePath: resolveWorkspaceRepoWorktreePath(taskDir, repo) };
+          })(),
         });
       } catch (err) {
         if (err instanceof LateWorkspaceRepoAcquireError) {
@@ -6659,8 +6726,8 @@ export function createAcquireRepoWorktreeTool(opts: {
       await store.logEntry(
         task.id,
         result.alreadyAcquired
-          ? `fn_acquire_repo_worktree: reusing existing worktree for ${repo} at ${result.worktreePath}`
-          : `fn_acquire_repo_worktree: created worktree for ${repo} at ${result.worktreePath} (branch: ${result.branch})`,
+          ? `fn_acquire_repo_worktree: reusing existing worktree for ${repo} at repository-relative path ${repo}`
+          : `fn_acquire_repo_worktree: created worktree for ${repo} at repository-relative path ${repo} (branch: ${result.branch})`,
         undefined,
         runContext,
       );

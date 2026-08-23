@@ -1263,11 +1263,15 @@
     "cancelButton": "Cancelar",
     "clearConversationFailed": "Falha ao limpar a conversa",
     "closeQuickChat": "Fechar chat rápido",
+    "openInNewWindow": "",
     "conversationArchived": "Conversa arquivada",
     "conversationDeleted": "Conversa excluída",
     "conversationName": "Nome da conversa",
     "conversationRenamed": "Conversa renomeada",
     "contextWindowAria": "Estimativa de {{used}} de {{total}} tokens de contexto",
+    "contextWindowMeasuredAria": "",
+    "contextWindowPendingAria": "",
+    "contextWindowPendingValue": "",
     "copyFailed": "Falha ao copiar",
     "copyResponse": "Copiar resposta",
     "create": "Criar",
@@ -1384,6 +1388,13 @@
     "scopeRooms": "Salas",
     "scrollMessageToTop": "Rolar mensagem para o topo",
     "searchConversations": "Buscar conversas...",
+    "conversationSearchPlaceholder": "Localizar na conversa",
+    "conversationSearchLabel": "Localizar na conversa",
+    "conversationSearchNoMatches": "Nenhuma correspondência",
+    "conversationSearchMatchCount": "{{current}} de {{count}} correspondências",
+    "conversationSearchPrevious": "Correspondência anterior",
+    "conversationSearchNext": "Próxima correspondência",
+    "conversationSearchClose": "Fechar pesquisa",
     "selectAgentForNewChat": "Selecionar agente para novo chat",
     "selectAgentPlaceholder": "Selecione um agente para começar a conversar",
     "selectModel": "Selecione um modelo",
@@ -10188,5 +10199,13 @@
     "status": "",
     "waitConnected": "",
     "waitingQr": ""
+  },
+  "thinking": {
+    "expandAll": "",
+    "collapseAll": "",
+    "noDetail": "",
+    "untitledSection": "",
+    "sectionCount": "",
+    "sectionCountPlural": ""
   }
 }

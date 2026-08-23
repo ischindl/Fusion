@@ -13,6 +13,7 @@ import {
 import type { GithubIssueAction, Task, TaskDetail, WorkflowStep } from "@fusion/core";
 import type { PluginDashboardViewEntry } from "../api";
 import type { ToastType } from "../hooks/useToast";
+import type { ChatSessionInfo } from "../hooks/useChat";
 import { buildPluginTaskViewId } from "../plugins/pluginViewRegistry";
 import { PluginDashboardViewHost } from "../plugins/PluginDashboardViewHost";
 import type { DetailTaskTab, PluginDashboardViewContext } from "../plugins/types";
@@ -79,6 +80,7 @@ export interface OverflowViewRenderProps {
   onOpenSettings?: (section?: string) => void;
   onOpenTaskDetail?: (taskId: string) => void;
   onOpenTaskInDock?: (task: Task | TaskDetail) => void;
+  onOpenSessionInNewWindow?: (session: ChatSessionInfo) => void;
   /** Opens New Task with a reverted source task's original description. */
   onReviseTask?: (task: Task | TaskDetail) => void;
   onDeleteTask?: (id: string, options?: { removeDependencyReferences?: boolean; removeLineageReferences?: boolean; githubIssueAction?: GithubIssueAction; allowResurrection?: boolean }) => Promise<Task>;
@@ -207,6 +209,7 @@ export const STATIC_OVERFLOW_VIEW_ENTRIES: readonly OverflowViewEntry[] = [
       <ChatView
         projectId={props.projectId}
         addToast={props.addToast}
+        onOpenSessionInNewWindow={props.onOpenSessionInNewWindow}
         compactLayout={props.surface === "dock" && (props.dockWidth ?? RIGHT_DOCK_CHAT_COMPACT_MAX_WIDTH) <= RIGHT_DOCK_CHAT_COMPACT_MAX_WIDTH}
       />,
     ),

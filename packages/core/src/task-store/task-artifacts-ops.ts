@@ -24,6 +24,7 @@ import * as schema from "../postgres/schema/index.js";
 import { runCommandAsync } from "../process/run-command.js";
 import { getStepParser } from "../tasks/step-parsers.js";
 import { getTaskMergeBlocker } from "../merge/task-merge.js";
+import { resolveRequiredPreMergeStepIds } from "../merge/required-pre-merge-steps.js";
 import { deleteTaskDocument as deleteTaskDocumentAsync, getArtifact as getArtifactAsync, getArtifacts as getArtifactsAsync, getLiveTaskColumn, getTaskDocument as getTaskDocumentAsync, getTaskDocumentRevisions as getTaskDocumentRevisionsAsync, listTaskDocuments as listTaskDocumentsAsync, updateArtifactRow as updateArtifactRowAsync } from "./async/async-comments-attachments.js";
 import { emitUsageEvent as emitUsageEventAsync, recordPluginActivation as recordPluginActivationAsync } from "./async/async-events.js";
 import { enqueueMergeQueue as enqueueMergeQueueAsync, peekMergeQueue as peekMergeQueueAsync, peekMergeQueueHead as peekMergeQueueHeadAsync } from "./async/async-merge-coordination.js";
@@ -556,12 +557,16 @@ export async function moveToDoneImpl(store: TaskStore, task: Task, dir: string):
     "unscoped legacy acceptance" the glasses plugin's own review caught, and I reintroduced it here.
     */
     let reviewColumns: ReadonlySet<string> = new Set<string>(["in-review"]);
+    let mergeIr: Awaited<ReturnType<typeof resolveWorkflowIrForTask>> | undefined;
     try {
-      const ir = await resolveWorkflowIrForTask(store, task.id);
-      const resolved = ir ? resolveReviewColumns(ir) : [];
+      mergeIr = await resolveWorkflowIrForTask(store, task.id);
+      const resolved = mergeIr ? resolveReviewColumns(mergeIr) : [];
       if (resolved.length > 0) reviewColumns = new Set(resolved);
     } catch { /* degraded: the board told us nothing, so the legacy id stands */ }
-    const mergeBlocker = getTaskMergeBlocker(task, { reviewColumns });
+    const mergeBlocker = getTaskMergeBlocker(task, {
+      reviewColumns,
+      requiredPreMergeStepIds: mergeIr ? resolveRequiredPreMergeStepIds(mergeIr, task.enabledWorkflowSteps) : undefined,
+    });
     if (mergeBlocker) {
       throw new Error(`Cannot move ${task.id} to done: ${mergeBlocker}`);
     }
@@ -590,7 +595,8 @@ export async function moveToDoneImpl(store: TaskStore, task: Task, dir: string):
     lane-less left that leak reachable through this path even after the listener itself was fixed.
     */
     const movedLanes = toTaskMoveLanes(await resolveWorkflowIrForTask(store, task.id).catch(() => undefined));
-    store.laneCache.set(task.id, movedLanes);
+    /* FNXC:WorkflowEvents 2026-08-22-00:13: an unresolved payload is unknown; retain a warm real cache answer until its TTL expires. */
+      if (movedLanes) store.laneCache.set(task.id, movedLanes);
     store.emit("task:moved", { task, from: fromColumn, to: completeColumn as Column, source: "engine", lanes: movedLanes });
 }
 

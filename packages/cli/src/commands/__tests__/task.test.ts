@@ -130,6 +130,7 @@ vi.mock("@fusion/engine", () => ({
   aiMergeTask: vi.fn(),
   runAiMerge: vi.fn(),
   landWorkspaceTask: vi.fn(),
+  withWorkspaceMergeDispatchLease: vi.fn(async (_store: unknown, _taskId: string, body: (handle?: unknown) => unknown) => body(undefined)),
   clearOwnedMergeStamp: vi.fn().mockResolvedValue(false),
   reconcileUnownedStaleMergeStamp: vi.fn().mockResolvedValue(false),
   // FNXC:CliTests 2026-07-12-07:10: task.ts imports isInReviewMissingWorktreeSessionStartFailure from @fusion/engine (FN-7798 in-review stale worktree guard); the hand-written engine mock must surface it.

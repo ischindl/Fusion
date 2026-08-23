@@ -1203,6 +1203,13 @@ export interface ProjectSettings {
   executorEscalationProvider?: string;
   executorEscalationModelId?: string;
   executorEscalationNodeId?: string;
+  /** FNXC:ReviewConvergence 2026-08-22-05:42: workflow-native review-cycle recovery targets. */
+  reviewConvergenceEscalationEnabled?: boolean;
+  reviewConvergenceEscalationProvider?: string;
+  reviewConvergenceEscalationModelId?: string;
+  reviewArbitrationEnabled?: boolean;
+  reviewArbitrationProvider?: string;
+  reviewArbitrationModelId?: string;
   /**
    * FNXC:VerificationConcurrency 2026-07-15-03:35:
    * Max concurrent verification subprocesses (fn_run_verification / merge testCommand builds) across all tasks in this process. Caps stacked monorepo typecheck/build pegging CPU when many tasks are in-progress. Default 1. Raise only on high-core hosts.

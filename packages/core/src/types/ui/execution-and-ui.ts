@@ -156,6 +156,8 @@ export const COLOR_THEMES = [
   "midnight",
   // FNXC:DashboardTheming 2026-08-18-05:45: Velvet is persisted immediately after Midnight; keep this ID and order synchronized across core, selector metadata, and both first-paint validators so saved selections survive pre-hydration validation.
   "velvet",
+  // FNXC:DashboardTheming 2026-08-23-01:51: Iceberg is persisted immediately after Velvet; keep this ID and order synchronized across core, selector metadata, both first-paint validators, token blocks, and swatch CSS so saved selections survive pre-hydration validation.
+  "iceberg",
   // FNXC:DashboardTheming 2026-07-31-20:39: Factory Dark must stay order-synchronized across core, selector metadata, and both first-paint validators so saved preferences survive pre-hydration validation.
   "factory-dark",
   // FNXC:DashboardTheming 2026-07-31-23:51: Factory Light must stay order-synchronized across core, selector metadata, and both first-paint validators so saved preferences survive pre-hydration validation.

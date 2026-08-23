@@ -55,8 +55,8 @@ import {
 } from "../plan-review-feedback-history.js";
 import { executorLog } from "../logger.js";
 import type { EngineRunContext } from "../util/run-audit.js";
-import { emitBoundedRunAudit } from "./emit-bounded-run-audit.js";
 import { deriveWorkspaceReviewRemediation } from "./workspace-review-remediation.js";
+import { routeReviewConvergenceLadder } from "./review-convergence-ladder.js";
 
 function normalizeConvergenceText(value: string | undefined): string {
   return (value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
@@ -66,7 +66,14 @@ function normalizeConvergenceText(value: string | undefined): string {
 FNXC:RepositoryScope 2026-08-21-02:17:
 R10 convergence is keyed by the actual review input: review node, repository, confirmed scope generation, exact diff fingerprint, blocking verdict, and normalized findings. Reviewer prose is presentation only; it may change without a new defect or remain unchanged after the underlying diff changes.
 */
-function reviewInputSignature(result: CoreWorkflowStepResult): string | undefined {
+export function reviewInputSignature(result: CoreWorkflowStepResult): string | undefined {
+  const singularFindings = (result.findings ?? [])
+    .map((finding) => `${normalizeConvergenceText(finding.filePath)}:${finding.line ?? ""}:${normalizeConvergenceText(finding.body)}`)
+    .sort()
+    .join("|");
+  if (result.reviewInputFingerprint && result.verdict === "REVISE") {
+    return `${result.workflowStepId}\u0000${result.reviewInputFingerprint}\u0000${result.verdict}\u0000${singularFindings}`;
+  }
   const blocking = (result.repositoryReviewOutcomes ?? [])
     .filter((outcome) => outcome.status === "REVIEWED" && (outcome.verdict === "REVISE" || outcome.verdict === "RETHINK"))
     .map((outcome) => {
@@ -81,8 +88,9 @@ function reviewInputSignature(result: CoreWorkflowStepResult): string | undefine
   return `${result.workflowStepId}\u0000${result.repositoryScopeRevision}\u0000${blocking.join("\u0001")}`;
 }
 
-function hasRepeatedUnchangedCodeReview(task: Task, info: RequestPreMergeOptionalStepFixInfo): boolean {
-  if (info.nodeId !== "code-review" && info.stepName !== "Code Review") return false;
+export function hasRepeatedUnchangedReview(task: Task, info: RequestPreMergeOptionalStepFixInfo): boolean {
+  const revisionKey = info.nodeId ?? info.stepName;
+  if (!revisionKey) return false;
   const current = (task.workflowStepResults ?? []).find((result) =>
     (result.workflowStepId === info.nodeId || result.workflowStepName === info.stepName)
     && result.verdict === "REVISE",
@@ -93,6 +101,9 @@ function hasRepeatedUnchangedCodeReview(task: Task, info: RequestPreMergeOptiona
   const previous = current.priorAttempts?.[0];
   return previous?.verdict === "REVISE" && reviewInputSignature(previous) === currentSignature;
 }
+
+/** Backward-compatible code-review name retained for existing remediation callers. */
+export const hasRepeatedUnchangedCodeReview = hasRepeatedUnchangedReview;
 
 export type RequestPreMergeOptionalStepFixInfo = {
   stepName: string;
@@ -262,6 +273,11 @@ export async function requestPreMergeOptionalStepFix(
       // re-owned from the deleted triage gate), not a silent leave-in-place.
       const feedbackForPark = info.feedback?.trim()
         || "Plan Review requested another planning revision but the replan budget is exhausted.";
+      const outcome = await routeReviewConvergenceLadder(deps, taskId, {
+        kind: "plan-review-cap", workflowStepId: info.nodeId, stepName: info.stepName,
+        feedback: feedbackForPark, findings: info.findings, attempt: currentCount, max: budget.max,
+      });
+      if (outcome === "escalated" || outcome === "arbitrated") return true;
       await deps.parkPlanReviewReplanCapExhausted(taskId, String(budget.max), currentCount, feedbackForPark);
       return true;
     }
@@ -296,12 +312,12 @@ export async function requestPreMergeOptionalStepFix(
       // U3: the unbounded-default safety ceiling parks awaiting-approval with the replan-cap reason
       // (re-owned from the deleted triage gate) so non-convergence surfaces to a human instead of
       // silently sitting in place.
-      await deps.parkPlanReviewReplanCapExhausted(
-        taskId,
-        String(unboundedReplanCap),
-        currentCount,
-        feedback,
-      );
+      const outcome = await routeReviewConvergenceLadder(deps, taskId, {
+        kind: "plan-review-cap", workflowStepId: info.nodeId, stepName: info.stepName,
+        feedback, findings: info.findings, attempt: currentCount, max: unboundedReplanCap,
+      });
+      if (outcome === "escalated" || outcome === "arbitrated") return true;
+      await deps.parkPlanReviewReplanCapExhausted(taskId, String(unboundedReplanCap), currentCount, feedback);
       return true;
     }
     const totalFixCount = (liveTask.postReviewFixCount ?? 0) + 1;
@@ -329,7 +345,12 @@ export async function requestPreMergeOptionalStepFix(
     );
     deps.workflowLifecycleMovesInFlight.add(taskId);
     try {
-      await moveTaskToReplanColumn(deps.store, { id: taskId, column: liveTask.column }, replanColumn);
+      await moveTaskToReplanColumn(
+        deps.store,
+        { id: taskId, column: liveTask.column },
+        replanColumn,
+        { workflowMoveSource: "workflow-remediation" },
+      );
     } finally {
       deps.workflowLifecycleMovesInFlight.delete(taskId);
     }
@@ -397,39 +418,25 @@ export async function requestPreMergeOptionalStepFix(
     }
   }
   if (hasDurableRepeatedWorkspaceReview || ((!remediation || !updateWorkspaceReviewState) && hasRepeatedUnchangedCodeReview(liveTask, info))) {
+    const outcome = await routeReviewConvergenceLadder(deps, taskId, {
+      kind: "repeat-unchanged", workflowStepId: info.nodeId, stepName: info.stepName,
+      feedback: info.feedback, findings: info.findings, attempt: countOptionalStepRevisionAttempts(liveTask, revisionKey, info.stepName),
+      max: budget.unbounded ? undefined : budget.max,
+    });
+    if (outcome === "escalated" || outcome === "arbitrated") return true;
     const runContext = deps.getRunContextFor(taskId);
-    await deps.store.logEntry(
-      taskId,
-      "Code Review did not converge — awaiting operator action",
-      `The same Code Review revision was returned twice without a new review result. Fusion stopped automatic remediation before a third review session. Latest feedback:\n${info.feedback}`,
-      runContext,
-    );
-    await deps.store.updateTask(taskId, {
-      status: "awaiting-approval",
-      awaitingApprovalReason: "code-review-non-convergence",
-      error: null,
-      nextRecoveryAt: null,
-    }, runContext);
-    if (runContext) {
-      await emitBoundedRunAudit(deps.store, {
-        taskId,
-        agentId: runContext.agentId,
-        runId: runContext.runId,
-        domain: "database",
-        mutationType: "task:code-review-non-convergence",
-        target: taskId,
-        metadata: { nodeId: info.nodeId ?? "code-review", outcome: "parked", repeatedResults: 2 },
-      });
-    }
+    await deps.store.logEntry(taskId, "Code Review did not converge — awaiting operator action", `The same Code Review revision was returned twice without a new review result. Latest feedback:\n${info.feedback}`, runContext);
+    await deps.store.updateTask(taskId, { status: "awaiting-approval", awaitingApprovalReason: "code-review-non-convergence", error: null, nextRecoveryAt: null }, runContext);
     return false;
   }
   const currentCount = countOptionalStepRevisionAttempts(liveTask, revisionKey, info.stepName);
   if (!budget.unbounded && currentCount >= budget.max) {
-    // Budget exhaustion is a legitimate terminal outcome, but it must be visible: the card stays
-    // in place with a failed pre-merge step and only an operator bypass clears it.
-    executorLog.warn(
-      `${taskId}: pre-merge remediation budget EXHAUSTED for step "${info.stepName}" (${currentCount}/${String(budget.max)}). Card left parked for operator action.`,
-    );
+    const outcome = await routeReviewConvergenceLadder(deps, taskId, {
+      kind: "budget-exhausted", workflowStepId: info.nodeId, stepName: info.stepName,
+      feedback: info.feedback, findings: info.findings, attempt: currentCount, max: budget.max,
+    });
+    if (outcome === "escalated" || outcome === "arbitrated") return true;
+    executorLog.warn(`${taskId}: pre-merge remediation budget EXHAUSTED for step "${info.stepName}" (${currentCount}/${String(budget.max)}). Card left parked for operator action.`);
     return false;
   }
 

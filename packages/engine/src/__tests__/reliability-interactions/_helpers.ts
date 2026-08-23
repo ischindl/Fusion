@@ -11,6 +11,7 @@ import {
   drizzleEq, postgresSchema,
 } from "@fusion/core";
 import { aiMergeTask } from "../../merger.js";
+import { decoratePgProvisioningError } from "../../../../core/src/__test-utils__/pg-provisioning-diagnostics.js";
 import { SelfHealingManager } from "../../self-healing.js";
 
 export const hasGit = spawnSync("git", ["--version"], { stdio: "pipe" }).status === 0;
@@ -40,8 +41,8 @@ FNXC:SqliteRemoval 2026-07-14-00:00:
 The SQLite Database class was removed (VAL-REMOVAL-005). Reliability fixtures
 now require a PG-backed TaskStore. The engine-slow CI job and test-shards both
 provision a PG service container. Tests skip locally when PG is not reachable.
-The TCP probe is duplicated from packages/core/src/__test-utils__/pg-test-harness.ts
-because that module is not exported from @fusion/core's public API.
+The TCP probe remains duplicated because pg-test-harness is not exported from @fusion/core's
+public API, while provisioning diagnostics are shared from its test-only sibling module.
 */
 const PG_TEST_URL_BASE = process.env.FUSION_PG_TEST_URL_BASE ?? "postgresql://localhost:5432";
 
@@ -135,7 +136,8 @@ async function adminExecAsync(statement: string, timeoutMs = 15_000): Promise<vo
     ]);
   } catch (error) {
     if (timedOut) throw error;
-    throw new Error(`adminExec failed: ${error instanceof Error ? error.message : String(error)}\nstatement: ${statement}`);
+    const diagnosed = decoratePgProvisioningError(error, PG_TEST_URL_BASE);
+    throw new Error(`adminExec failed: ${diagnosed instanceof Error ? diagnosed.message : String(diagnosed)}\nstatement: ${statement}`);
   } finally {
     if (timeoutHandle) clearTimeout(timeoutHandle);
     await client?.end({ timeout: 5 }).catch(() => {});
@@ -177,8 +179,13 @@ export async function createPgLayer(): Promise<PgLayerFixture> {
     directSessionProvenance: "migration-override",
   };
   const schemaConn = await createConnectionSetFromUrl(backend, { poolMax: 1, connectTimeoutSeconds: 5 });
-  await applySchemaBaseline(schemaConn.migration);
-  await schemaConn.close();
+  try {
+    await applySchemaBaseline(schemaConn.migration);
+  } catch (error) {
+    throw decoratePgProvisioningError(error, PG_TEST_URL_BASE);
+  } finally {
+    await schemaConn.close();
+  }
   /*
   FN-8764 built-in workflow-owner provisioning during AgentStore.init() requires a bound
   asyncLayer.projectId (the project-scoped advisory lock hashes it), so the reliability layer

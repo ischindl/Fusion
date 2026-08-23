@@ -61,6 +61,7 @@ import {
   deriveFallbackTaskTitle,
   resolveTaskOutputLanguage,
   parsePlanningPlanMd,
+  loadWorkspaceConfig,
   type NearDuplicateCandidate,
 } from "@fusion/core";
 
@@ -187,6 +188,8 @@ import { AgentLogger } from "./agents/agent-logger.js";
 import { attachAgentUsageTelemetry, emitAgentSessionStart } from "./agents/agent-usage-telemetry.js";
 import { emitApprovalMail } from "./agents/approval-mail.js";
 import { acquireActiveSessionPath, activeSessionRegistry } from "./agents/active-session-registry.js";
+import { PlanningResetFence } from "./planning-reset-fence.js";
+import { registerPlanningLivenessProbe } from "./agents/planning-liveness.js";
 import {
   resolveAgentInstructions,
   resolveAgentInstructionsWithRatings,
@@ -457,6 +460,11 @@ export class TriageProcessor {
   private lastPlanThrottleSignature: string | null = null;
   /** Active agent sessions per task, used to terminate on pause. */
   private activeSessions = new Map<string, { dispose: () => void }>();
+  private readonly resetFence = new PlanningResetFence();
+  /** Captured attempt generations let a delayed finalizer reject a reset-fenced planner. */
+  private readonly activePlanningGenerations = new Map<string, number>();
+  private unregisterPlanningLiveness?: () => void;
+  private unregisterResetDisposer?: () => void;
   /**
    * Reviewer subagent sessions per task. The spec reviewer (`reviewer.ts`)
    * creates its own AgentSession that isn't part of `activeSessions`, so
@@ -615,12 +623,58 @@ export class TriageProcessor {
     };
   }
 
+  /**
+   * FNXC:TaskReset 2026-08-22-18:15:
+   * Worktree-artifact recovery and duplicate-marker recovery are planner publications, not raw
+   * filesystem cleanup. Reset holds this non-reentrant lifecycle lock while clearing its output,
+   * so each write rechecks the captured generation inside the authoritative serialized mutation;
+   * a pre-lock check alone can queue behind Reset and republish discarded planning output.
+   */
+  private async persistResetFencedPlanningArtifact(
+    task: Task,
+    planningGeneration: number,
+    content: string,
+    mirrorPlan: boolean,
+  ): Promise<boolean> {
+    let persisted = false;
+    await this.store.withPlanningLifecycleLock(task.id, async () => {
+      if (this.resetFence.isStale(task.id, planningGeneration)) return;
+      const updated = await this.store.withTaskLock(task.id, () => this.store.updateTaskUnlocked(task.id, { prompt: content }));
+      if (this.store.isBackendMode()) {
+        await this.store.reconcileSpecDriftWhilePlanningLocked(updated).catch((error: unknown) => {
+          planLog.warn(`[spec-lock] deferred drift reconciliation for ${updated.id}: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      }
+      if (mirrorPlan) {
+        await mirrorPlanToProjectDb(this.store, task.id, content, {
+          author: "triage",
+          logger: { log: (message: string) => planLog.log(message), warn: (message: string) => planLog.warn(message) },
+        });
+      }
+      persisted = true;
+    });
+    return persisted;
+  }
+
   constructor(
     private store: TaskStore,
     private rootDir: string,
     private options: TriageProcessorOptions = {},
   ) {
     this.workflowAgentCapacity = new WorkflowAgentCapacity(this.options.agentStore);
+    this.unregisterPlanningLiveness = registerPlanningLivenessProbe((taskId) => this.getPlanningTaskIds().has(taskId));
+    this.unregisterResetDisposer = fusionCore.registerTaskResetDisposer(this.store, async (task) => {
+      /*
+      FNXC:TaskReset 2026-08-22-04:32:
+      The route already holds the non-reentrant planning lock, so this disposer is synchronous/lock-free: waiting for finalize would deadlock reset against the planner being cancelled.
+      */
+      this.resetFence.cancelPlanning(task.id);
+      this.abortAndDisposePlanningSessionForTask(task.id, "task reset");
+      for (const path of activeSessionRegistry.pathsForTask(task.id)) {
+        const record = activeSessionRegistry.lookupByPath(path);
+        if (record?.ownerKey === `planning:${task.id}`) activeSessionRegistry.unregisterPath(path);
+      }
+    });
     this.unregisterAdmissionProvider = projectAdmissionCoordinator.registerProvider(`specify:${this.rootDir}`, {
       projectId: this.rootDir,
       refresh: async () => {
@@ -761,6 +815,8 @@ export class TriageProcessor {
     */
     this.taskColumnWakeHandler = (task: Task, meta?: { lanes?: TaskMoveLanes }) => {
       if (!task?.id) return;
+      // Reset publication emits this durable state after its held lock commits, so a fresh planner is not delayed by the conservative reset TTL.
+      if (task.status === "needs-replan") this.resetFence.clearHold(task.id);
       const isPlannerWakeColumn = meta?.lanes
         ? task.column === meta.lanes.hold || task.column === meta.lanes.intake
         : LEGACY_PLANNER_WAKE_COLUMNS.has(task.column);
@@ -1044,6 +1100,10 @@ export class TriageProcessor {
     // Tear down any in-flight specify sessions and reviewer subagents so they
     // don't keep streaming LLM tokens / tool calls past engine shutdown.
     this.abortAndDisposeActiveSessions("engine stop");
+    this.unregisterPlanningLiveness?.();
+    this.unregisterPlanningLiveness = undefined;
+    this.unregisterResetDisposer?.();
+    this.unregisterResetDisposer = undefined;
     planLog.log("Processor stopped");
   }
 
@@ -1056,6 +1116,35 @@ export class TriageProcessor {
    * interrupts any in-flight LLM stream / tool call; dispose() then
    * releases session resources.
    */
+  private abortAndDisposePlanningSessionForTask(taskId: string, reason: string): void {
+    try {
+      this.disposeSubagentsForTask(taskId, reason);
+    } catch (error) {
+      planLog.warn(`${taskId}: failed to dispose planning subagents: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const session = this.activeSessions.get(taskId);
+    if (!session) return;
+    this.pauseAborted.add(taskId);
+    this.options.stuckTaskDetector?.untrackTask(taskId);
+    const abortable = session as { abort?: () => Promise<void>; dispose: () => void };
+    try {
+      if (typeof abortable.abort === "function") void Promise.resolve(abortable.abort()).catch(() => undefined);
+      this.recordTriageSessionTokenUsageSoon(taskId, session as AgentSession);
+      abortable.dispose();
+    } catch (error) {
+      /*
+      FNXC:TaskReset 2026-08-22-18:10:
+      Reset must finish fencing its own registry records even when an agent session's synchronous
+      disposer is faulty. The route's cleanup remains guarded by ownership and staleness checks;
+      this catch only prevents an already-cancelled planner from turning Reset into a raw failure.
+      */
+      planLog.warn(`${taskId}: failed to dispose planning session: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      // A failed disposer cannot retain an active-session bookkeeping claim past Reset.
+      this.activeSessions.delete(taskId);
+    }
+  }
+
   private abortAndDisposeActiveSessions(reason: string): void {
     for (const taskId of [...this.activeSubagentSessions.keys()]) {
       this.disposeSubagentsForTask(taskId, reason);
@@ -2473,6 +2562,12 @@ export class TriageProcessor {
   }
 
   async specifyTask(task: Task): Promise<void> {
+    if (this.resetFence.isResetHoldActive(task.id)) {
+      if (dropPreHeldExecutorSlot(task.id)) this.options.semaphore?.release();
+      return;
+    }
+    const planningGeneration = this.resetFence.currentGeneration(task.id);
+    this.activePlanningGenerations.set(task.id, planningGeneration);
     /*
     FNXC:TriageStuckKill 2026-07-18-21:05:
     Refuse a second planner when finalize/Plan Review is still live even if
@@ -2763,7 +2858,12 @@ export class TriageProcessor {
           ...this.createTriageTools({ parentTaskId: task.id }),
           createTaskDocumentWriteTool(this.store, task.id),
           createTaskDocumentReadTool(this.store, task.id),
-          createTaskPromptWriteTool(this.store, task.id, triageRunContext),
+          createTaskPromptWriteTool(
+            this.store,
+            task.id,
+            triageRunContext,
+            () => !this.resetFence.isStale(task.id, planningGeneration),
+          ),
           createWorkflowListTool(this.store),
           createWorkflowSelectTool(this.store, task.id),
           ...(isResearchToolSurfaceEnabled(settings)
@@ -2999,6 +3099,14 @@ export class TriageProcessor {
         here is the one Plan Review and the implementation session then reuse.
         */
         let planningCwd = (await this.options.acquirePlanningWorktree?.(task.id).catch(() => null)) || this.rootDir;
+        const workspacePlanningConfig = planningCwd === this.rootDir
+          ? await loadWorkspaceConfig(this.rootDir).catch(() => null)
+          : null;
+        const planningSessionBoundary = workspacePlanningConfig?.repos.length
+          ? { kind: "read-only-root" as const, writableRoot: null, projectRoot: this.rootDir, readOnlyRoots: [this.rootDir] }
+          : planningCwd === this.rootDir
+            ? undefined
+            : { kind: "task-worktree" as const, writableRoot: planningCwd, projectRoot: this.rootDir };
         if (planningCwd !== this.rootDir) {
           /*
           FNXC:NodeWorktreeIsolation 2026-07-26-09:10:
@@ -3022,6 +3130,7 @@ export class TriageProcessor {
           bypasses it. `contended` means a genuinely live foreign holder, so planning falls back to
           the shared checkout rather than running in a worktree someone else owns.
           */
+          if (this.resetFence.isStale(task.id, planningGeneration)) return;
           const acquired = acquireActiveSessionPath(activeSessionRegistry, planningCwd, {
             taskId: task.id,
             kind: "planning",
@@ -3084,6 +3193,7 @@ export class TriageProcessor {
           runtimeHint: triageRuntimeHint,
           pluginRunner: this.options.pluginRunner,
           cwd: planningCwd,
+          sessionBoundary: planningSessionBoundary,
           systemPrompt: triageSystemPromptFinal,
           systemPromptLayers: triageLayers,
           tools: "coding",
@@ -3381,6 +3491,13 @@ export class TriageProcessor {
           authoritative into the project database (PROMPT.md has no `tasks` column and is otherwise
           filesystem-only). Both halves are best-effort — validation below still owns the verdict.
           */
+          /*
+          FNXC:TaskReset 2026-08-22-04:49:
+          Reset can commit while a planner session drains. Fence worktree artifact recovery before
+          it writes the project-root PROMPT.md, otherwise a pre-reset generic-file write recreates
+          planning output after the description-only publication.
+          */
+          if (this.resetFence.isStale(task.id, planningGeneration)) return;
           const planPersistence = await persistPlanArtifact({
             store: this.store,
             taskId: task.id,
@@ -3388,7 +3505,20 @@ export class TriageProcessor {
             planningCwd,
             author: "triage",
             logger: { log: (m: string) => planLog.log(m), warn: (m: string) => planLog.warn(m) },
+            writeAuthoritativePrompt: async (content) => await this.persistResetFencedPlanningArtifact(
+              task,
+              planningGeneration,
+              content,
+              false,
+            ),
+            mirrorAuthoritativePlan: async (content) => await this.persistResetFencedPlanningArtifact(
+              task,
+              planningGeneration,
+              content,
+              true,
+            ),
           });
+          if (planPersistence.outcome === "recovery-fenced") return;
           if (planPersistence.outcome === "recovered") {
             await this.store.logEntry(
               task.id,
@@ -3427,13 +3557,16 @@ export class TriageProcessor {
             const recoveredMarker = fusionCore.parseDuplicateMarkerFromSessionText(sessionTextTail);
             if (recoveredMarker) {
               const markerBody = `DUPLICATE: ${recoveredMarker.canonicalId}\n`;
-              const recovered = await writeFile(join(this.rootDir, promptPath), markerBody, "utf-8")
-                .then(() => true)
-                .catch((err: unknown) => {
-                  const msg = err instanceof Error ? err.message : String(err);
-                  planLog.warn(`${task.id}: failed to persist recovered duplicate marker: ${msg}`);
-                  return false;
-                });
+              const recovered = await this.persistResetFencedPlanningArtifact(
+                task,
+                planningGeneration,
+                markerBody,
+                false,
+              ).catch((err: unknown) => {
+                const msg = err instanceof Error ? err.message : String(err);
+                planLog.warn(`${task.id}: failed to persist recovered duplicate marker: ${msg}`);
+                return false;
+              });
               if (recovered) {
                 written = markerBody;
                 planLog.log(`${task.id}: recovered duplicate verdict ${recoveredMarker.canonicalId} from the planner's reply (no PROMPT.md was written)`);
@@ -3881,6 +4014,7 @@ export class TriageProcessor {
         this.options.onSpecifyError?.(task, err instanceof Error ? err : new Error(errorMessage));
       }
     } finally {
+      this.activePlanningGenerations.delete(task.id);
       // FNXC:ConcurrencyAdmission 2026-08-03-10:00: a coordinator reservation
       // can exist before planner setup reaches takePreHeldExecutorSlot(). Every
       // early setup failure must return that untransferred host slot; after a
@@ -4371,6 +4505,9 @@ export class TriageProcessor {
         after acquiring it so a dependency invalidation committed first fences this
         stale finalizer before it can restore approval or continuation handoff data.
         */
+        // Reset owns this same non-reentrant lock; only after it releases may a finalizer enter, and its captured generation must then be fenced before any durable handoff.
+        const planningGeneration = this.activePlanningGenerations.get(task.id);
+        if (planningGeneration !== undefined && this.resetFence.isStale(task.id, planningGeneration)) return report;
         const reRead = await Promise.resolve(this.store.getTask(task.id)).catch(() => null);
         // Older pure unit-test adapters expose a no-op getTask; production returns
         // a Task or rejects. Preserve that fixture seam without treating a failed

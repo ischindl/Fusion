@@ -185,6 +185,19 @@ describe("applyReopenFieldClears — graph-owned review-gate remediation crossin
     expect(ctx.task.workflowStepResults?.find((r) => r.workflowStepId === "code-review")?.status).toBe("failed");
   });
 
+  it("retains only review evidence for remediation-owned review -> planning bounce", () => {
+    const ctx = withResults({
+      fromColumn: "in-review",
+      toColumn: "todo",
+      moveSource: "engine",
+      workflowMoveSource: "workflow-remediation",
+    });
+    ctx.task.branch = "fusion/FN-1";
+    applyDefaultWorkflowMoveEffects(ctx);
+    expect(ctx.task.workflowStepResults).toHaveLength(2);
+    expect(ctx.task.branch).toBeUndefined();
+  });
+
   it("still CLEARS on an operator reopen in-review -> in-progress (no graph provenance)", () => {
     const ctx = withResults({
       fromColumn: "in-review",

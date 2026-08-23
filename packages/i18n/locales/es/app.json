@@ -1253,6 +1253,7 @@
     "cancelButton": "Cancelar",
     "clearConversationFailed": "Error al borrar la conversación",
     "closeQuickChat": "Cerrar chat rápido",
+    "openInNewWindow": "",
     "conversationArchived": "Conversación archivada",
     "conversationDeleted": "Conversación eliminada",
     "conversationName": "",
@@ -1371,6 +1372,13 @@
     "scopeRooms": "Canales",
     "scrollMessageToTop": "Desplazar mensaje al inicio",
     "searchConversations": "Buscar conversaciones...",
+    "conversationSearchPlaceholder": "Buscar en la conversación",
+    "conversationSearchLabel": "Buscar en la conversación",
+    "conversationSearchNoMatches": "Sin resultados",
+    "conversationSearchMatchCount": "{{current}} de {{count}} resultados",
+    "conversationSearchPrevious": "Resultado anterior",
+    "conversationSearchNext": "Resultado siguiente",
+    "conversationSearchClose": "Cerrar búsqueda",
     "selectAgentForNewChat": "Seleccionar agente para el nuevo chat",
     "selectAgentPlaceholder": "Selecciona un agente para empezar a chatear",
     "selectModel": "Seleccionar un modelo",
@@ -1404,6 +1412,9 @@
     "workingStatus": "Trabajando…",
     "you": "Tú",
     "contextWindowAria": "Estimated {{used}} of {{total}} context tokens",
+    "contextWindowMeasuredAria": "",
+    "contextWindowPendingAria": "",
+    "contextWindowPendingValue": "",
     "noMessage": "",
     "modelAgentSection": "Model / Agent",
     "thinkingLevelSection": "Thinking level",
@@ -9704,5 +9715,13 @@
     "status": "",
     "waitConnected": "",
     "waitingQr": ""
+  },
+  "thinking": {
+    "expandAll": "",
+    "collapseAll": "",
+    "noDetail": "",
+    "untitledSection": "",
+    "sectionCount": "",
+    "sectionCountPlural": ""
   }
 }

@@ -10,7 +10,7 @@ import {TaskStore, storeLog, type TaskDependencyMutation} from "../store.js";
 import {buildRefinementSeedPrompt} from "../mesh/mesh-task-replication.js";
 import {resolveDependencyReplanTarget, resolveLifecycleColumns, toTaskMoveLanes} from "../workflows/workflow-lifecycle-traits.js";
 import {resolveWorkflowIrForTask} from "../workflows/workflow-ir-resolver.js";
-import {SelfDefeatingDependencyError, detectSelfDefeatingDependency} from "./errors.js";
+import {SelfDefeatingDependencyError, SelfSpawnedDependencyError, detectSelfDefeatingDependency, detectSelfSpawnedDependency} from "./errors.js";
 import {resolveTaskLifecycleColumns} from "../workflows/workflow-lifecycle-traits.js";
 import {resolveWorkflowIntakeFacts} from "./task-creation.js";
 import type {WorkflowIr} from "../workflows/workflow-ir-types.js";
@@ -347,7 +347,15 @@ async function updateTaskDependenciesWithTaskLockImpl(store: TaskStore, id: stri
       );
 
       const previousDependencySet = new Set(normalizedCurrent);
-      const hasNewDependencies = nextDependencies.some((dependencyId) => !previousDependencySet.has(dependencyId));
+      const newlyAdded = nextDependencies.filter((dependencyId) => !previousDependencySet.has(dependencyId));
+      const candidates = (await Promise.all(newlyAdded.map(async (dependencyId) => {
+        try { return await store.getTask(dependencyId); } catch { return null; }
+      }))).flatMap((candidate) => candidate
+        ? [{ id: candidate.id, ...(candidate.sourceParentTaskId ? { sourceParentTaskId: candidate.sourceParentTaskId } : {}) }]
+        : []);
+      const selfSpawned = detectSelfSpawnedDependency(id, candidates);
+      if (selfSpawned) throw new SelfSpawnedDependencyError(id, selfSpawned.dependencyId);
+      const hasNewDependencies = newlyAdded.length > 0;
       const dependenciesChanged = normalizedCurrent.length !== nextDependencies.length
         || normalizedCurrent.some((dependency, index) => dependency !== nextDependencies[index]);
 
@@ -567,7 +575,8 @@ async function updateTaskDependenciesWithTaskLockImpl(store: TaskStore, id: stri
       */
       if (movedToTriage && respecifyFromColumn !== task.column) {
         const lanes = toTaskMoveLanes(await resolveWorkflowIrForTask(store, task.id).catch(() => undefined));
-        store.laneCache.set(task.id, lanes);
+        /* FNXC:WorkflowEvents 2026-08-22-00:13: an unresolved payload is unknown; retain a warm real cache answer until its TTL expires. */
+      if (lanes) store.laneCache.set(task.id, lanes);
         store.emit("task:moved", {
           task,
           from: respecifyFromColumn as Column,

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
+import * as mergerAiPrompts from "../merge/merger-ai-prompts.js";
+
 import {
+  PRIOR_FINDING_DISPOSITIONS_MARKER,
   REVIEW_VERDICT_MARKER,
   RESOLVED_PRIOR_FINDINGS_MARKER,
   buildMergeSystemPrompt,
@@ -96,6 +99,33 @@ describe("merger-ai prompt/verdict re-exports", () => {
     });
   });
 
+  it("keeps prior-finding dispositions out of reject reasons while retaining their structure", () => {
+    const result = parseReviewVerdict([
+      "The squash adds an unaccounted 30 ms async teardown delay to",
+      "`AddMarkerModal-info-service-runtime.spec.ts`.",
+      "",
+      PRIOR_FINDING_DISPOSITIONS_MARKER,
+      "finding-1-1: still-present",
+      `${REVIEW_VERDICT_MARKER} reject`,
+    ].join("\n"));
+    expect(result).toMatchObject({ verdict: "reject", severity: "blocking", priorFindingDispositions: [{ id: "finding-1-1", disposition: "still-present" }] });
+    expect(result.reasons).toEqual(["The squash adds an unaccounted 30 ms async teardown delay to `AddMarkerModal-info-service-runtime.spec.ts`."]);
+    expect(result.reasons.join("\n")).not.toMatch(/PRIOR_FINDING_DISPOSITIONS|finding-1-1: still-present/);
+  });
+
+  it("keeps every exported protocol marker out of rejection prose", () => {
+    const exportedMarkers = Object.entries(mergerAiPrompts)
+      .filter(([name, value]): value is string => name.endsWith("_MARKER") && typeof value === "string")
+      .map(([, marker]) => marker);
+
+    expect(exportedMarkers).not.toHaveLength(0);
+    for (const marker of exportedMarkers) {
+      expect(mergerAiPrompts.isAiMergeProtocolLine(`${marker} anything`)).toBe(true);
+      const result = parseReviewVerdict(`${marker} anything\n${REVIEW_VERDICT_MARKER} reject`);
+      expect(result.reasons.some((reason) => reason.includes(marker))).toBe(false);
+    }
+  });
+
   it("keeps non-negotiable clean-room and verdict-marker prompt content", () => {
     expect(buildMergeSystemPrompt()).toContain("## AI merge — clean room");
     expect(buildMergeSystemPrompt()).toContain(
@@ -141,6 +171,15 @@ describe("parseReviewVerdict — reason recovery (FN-8004)", () => {
     expect(result.reasons).not.toContain(
       "reviewer rejected the merge without a stated reason"
     );
+  });
+
+  it("groups contiguous prose into one readable finding", () => {
+    const result = parseReviewVerdict([
+      "The squash adds an unaccounted 30 ms async teardown delay to",
+      "`AddMarkerModal-info-service-runtime.spec.ts`.",
+      `${REVIEW_VERDICT_MARKER} reject`,
+    ].join("\n"));
+    expect(result.reasons).toEqual(["The squash adds an unaccounted 30 ms async teardown delay to `AddMarkerModal-info-service-runtime.spec.ts`."]);
   });
 
   it("orders recovered reasons nearest-the-verdict first (the closing argument)", () => {

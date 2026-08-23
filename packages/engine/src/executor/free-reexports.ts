@@ -157,6 +157,7 @@ export { createSpawnAgentTool as createSpawnAgentToolFree, spawnAgentParams as s
 export { createTaskUpdateTool as createTaskUpdateToolFree } from "./create-task-update-tool.js";
 export { attemptExecutorVerificationFix as attemptExecutorVerificationFixFree } from "./attempt-executor-verification-fix.js";
 export { createTaskDoneTool as createTaskDoneToolFree } from "./create-task-done-tool.js";
+export { createReviewDisputeTool as createReviewDisputeToolFree } from "./create-review-dispute-tool.js";
 export { resetLostWorkStepProgress as resetLostWorkStepProgressFree } from "./reset-lost-work-step-progress.js";
 export { resolveResumeLanes as resolveResumeLanesFree } from "./resolve-resume-lanes.js";
 export { isReentrantPausedAbortedInFlightNode as isReentrantPausedAbortedInFlightNodeFree } from "./is-reentrant-paused-aborted-in-flight-node.js";

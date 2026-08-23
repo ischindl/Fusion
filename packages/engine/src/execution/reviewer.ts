@@ -90,6 +90,8 @@ export interface ReviewResult {
   retryable?: boolean;
   /** Immutable Git-content fingerprints for workspace repositories approved in this review episode. */
   repositoryDiffFingerprints?: Record<string, string>;
+  /** Repository-qualified file snapshot measured with the fingerprints. */
+  repositoryModifiedFiles?: string[];
   /** Structured findings when the review caller parsed a machine-readable response. */
   findings?: WorkflowReviewFinding[];
   /** Structured workspace outcomes preserve clean-peer non-review and blocking review attribution. */

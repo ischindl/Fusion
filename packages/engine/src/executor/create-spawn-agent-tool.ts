@@ -308,6 +308,7 @@ export function createSpawnAgentTool(
           // Create child agent session
           const { session: childSession } = await createResolvedAgentSession({
             sessionPurpose: "executor",
+            taskExecutionSession: true,
             runtimeHint: childRuntimeHint,
             pluginRunner: deps.pluginRunner,
             cwd: childWorktreePath,

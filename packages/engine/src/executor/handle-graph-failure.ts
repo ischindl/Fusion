@@ -41,6 +41,7 @@ import {
   graphRunReportedPendingReview,
   isMergeGraphFailure,
   isSessionContentionGraphFailure,
+  isWorkspacePreparationGraphFailure,
   isWorktreeBaseRefreshGraphFailure,
 } from "./graph-failure-pure.js";
 import {
@@ -250,6 +251,31 @@ export async function handleGraphFailure(
       }
       if (isSessionContentionGraphFailure(result)) {
         await deps.holdForSessionContention(task, live, result);
+        await deps.persistTokenUsage(task.id);
+        return;
+      }
+      /*
+      FNXC:WorkspacePreparation 2026-08-21-19:39:
+      A workspace `git worktree add` or base-ref failure occurs before a model session exists.
+      Route it through the bounded environment hold before the Plan Review provider classifier so
+      Git diagnostics remain actionable and provider retry accounting is untouched.
+      */
+      if (isWorkspacePreparationGraphFailure(result)) {
+        const diagnostic = graphFailureErrorTexts(result)[0]
+          ?? "Workspace repository preparation failed before a reviewer session started";
+        /*
+        FNXC:WorkspacePreparation 2026-08-21-19:52:
+        Git preparation is an environment episode, not a graph/provider retry. Reuse the durable
+        worktree recovery family so Retry resets only its dedicated counter and the Git cause survives.
+        */
+        if (await deps.routeUnusableWorktreeGraphFailureToRecovery(task, live, result, resumeLanesMemo)) {
+          await deps.persistTokenUsage(task.id);
+          return;
+        }
+        await deps.store.updateTask(task.id, {
+          status: "failed",
+          error: `${diagnostic} — repair/create the repository base ref or configuration, then choose Retry`,
+        }, deps.getRunContextFor(task.id));
         await deps.persistTokenUsage(task.id);
         return;
       }

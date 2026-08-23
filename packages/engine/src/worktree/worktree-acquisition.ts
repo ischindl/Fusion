@@ -4,7 +4,7 @@ import { lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile 
 import { exec } from "node:child_process";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
-import { acquireWorktreePathReservation, assertWorkspaceRepoRelPath, canonicalizeWorktreePath, classifyTaskBranchOrigin, resolveEngineIncarnationId, resolveEngineNodeId, workspaceWorktreeGroupSegment, WORKSPACE_GROUP_MARKER_FILENAME, type RunMutationContext, type Settings, type Task, type TaskStore, type SecretsStore, type WorkspaceConfig, type WorkspaceLeaseHandle, type WorkspaceWorktreeContext } from "@fusion/core";
+import { acquireWorktreePathReservation, assertWorkspaceRepoRelPath, canonicalizeWorktreePath, classifyTaskBranchOrigin, isLegacyWorkspaceWorktreeLayout, resolveEngineIncarnationId, resolveEngineNodeId, resolveWorkspaceRepoWorktreePath, resolveWorkspaceTaskWorktreeDir, workspaceWorktreeGroupSegment, WORKSPACE_GROUP_MARKER_FILENAME, type RunMutationContext, type Settings, type Task, type TaskStore, type SecretsStore, type WorkspaceConfig, type WorkspaceLeaseHandle, type WorkspaceWorktreeContext } from "@fusion/core";
 import { generateWorktreeName, resolveTaskWorkingBranchWithOrigin, slugify } from "./worktree-names.js";
 import { resolveTaskWorktreePathForBackend, resolveWorktreesDir, WORKTREE_RECOVERY_DIRNAME } from "./worktree-paths.js";
 import { hydrateWorktreeDb } from "./worktree-db-hydrate.js";
@@ -129,6 +129,8 @@ export interface AcquireTaskWorktreeOptions {
   suppressSingularWorktreePersist?: boolean;
   /** Workspace-only layout context; native git operations still use rootDir (the sub-repository). */
   workspaceContext?: WorkspaceWorktreeContext;
+  /** A workspace task directory names the exact child destination and bypasses pinned-name derivation. */
+  forceWorktreePath?: boolean;
 }
 
 export interface AcquireTaskWorktreeResult {
@@ -1061,7 +1063,7 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
     }
   };
 
-  if (pinned) {
+  if (pinned && !opts.forceWorktreePath) {
     return acquirePinnedWorktree();
   }
 
@@ -1391,8 +1393,8 @@ export interface AcquireWorkspaceTaskWorktreesOptions {
   runConfiguredCommand?: AcquireTaskWorktreeOptions["runConfiguredCommand"];
   taskEnv?: NodeJS.ProcessEnv;
   addActiveWorktree?: (taskId: string, path: string) => void;
-  /** Current-scope failing review repository selected as the remediation session coordinator. */
-  remediationRepository?: string;
+  /** Limit acquisition to the confirmed repository scope; omitted retains the declared manifest. */
+  repoRelPaths?: readonly string[];
 }
 
 export interface AcquireWorkspaceRepoWorktreeOptions {
@@ -1415,6 +1417,8 @@ export interface AcquireWorkspaceRepoWorktreeOptions {
    * advisory transaction lock.
    */
   validateTaskBeforeCreate?: (freshTask: Task) => Promise<void>;
+  /** Explicit destination used by a workspace task-directory acquisition. */
+  worktreePath?: string;
 }
 
 /*
@@ -1690,12 +1694,13 @@ export async function acquireWorkspaceRepoWorktree(
     const result = await acquireTaskWorktree({
       task: {
         ...freshTask,
-        worktree: undefined,
+        worktree: opts.worktreePath,
         branch: workspaceWorkingBranch.origin === "operator-supplied" ? workspaceWorkingBranch.branch : undefined,
         executionStartBranch: resolvedBase.branch,
       },
       suppressSingularWorktreePersist: true,
       workspaceContext: { workspaceRootDir, repoRelPath },
+      forceWorktreePath: Boolean(opts.worktreePath),
       rootDir: repoAbsPath,
       store: callbackStore,
       // FNXC:Workspace 2026-07-07-08:40 (FN-7360 regression — strip shared branch overrides for per-repo start-point):
@@ -1908,7 +1913,12 @@ export async function acquireWorkspaceRepoWorktree(
         });
       });
     }
-    throw err;
+    if (err instanceof WorkspaceRepoAcquireBusyError || err instanceof WorkspacePreparationError) throw err;
+    throw new WorkspacePreparationError(
+      repoRelPath,
+      "acquire",
+      err instanceof Error ? err.message : String(err),
+    );
   } finally {
     /*
     FNXC:Workspace 2026-06-21-20:10:
@@ -1935,6 +1945,23 @@ another task's acquisition critical section (KTD4). Distinct from generic
 acquisition failures so the caller (and tests) can tell "serialized, retry later"
 apart from "this sub-repo is broken".
 */
+/*
+ * FNXC:WorkspacePreparation 2026-08-21-19:39:
+ * A Git/base-ref failure while acquiring a workspace repository is environment preparation,
+ * not a reviewer/provider failure. Preserve the repository and original Git cause so graph
+ * routing can recover without spending a model retry budget.
+ */
+export class WorkspacePreparationError extends Error {
+  constructor(
+    public readonly repoRelPath: string,
+    public readonly stage: "acquire",
+    public readonly causeMessage: string,
+  ) {
+    super(`Workspace repository preparation failed for ${repoRelPath} during ${stage}: ${causeMessage}`);
+    this.name = "WorkspacePreparationError";
+  }
+}
+
 export class WorkspaceRepoAcquireBusyError extends Error {
   constructor(
     public readonly repoRelPath: string,
@@ -1955,13 +1982,21 @@ export class WorkspaceRepoAcquireBusyError extends Error {
  */
 export async function acquireWorkspaceTaskWorktrees(
   opts: AcquireWorkspaceTaskWorktreesOptions,
-): Promise<{ task: Task; coordinatorWorktreePath: string }> {
-  const repoRelPaths = [...new Set(opts.workspaceConfig.repos)];
+): Promise<{ task: Task; taskWorktreeDir: string }> {
+  const repoRelPaths = [...new Set(opts.repoRelPaths ?? opts.workspaceConfig.repos)];
   if (repoRelPaths.length === 0) {
     throw new Error(`Workspace task ${opts.task.id} has no declared repositories`);
   }
+  if (repoRelPaths.some((repoRelPath) => !opts.workspaceConfig.repos.includes(repoRelPath))) {
+    throw new Error(`Workspace task ${opts.task.id} requested an undeclared repository`);
+  }
 
   let current = await normalizeWorkspaceTaskRouting(opts.store, opts.task.id);
+  // Validate a durable remediation target without allowing it to choose session cwd.
+  resolveWorkspaceReviewRemediationRepository(current, repoRelPaths);
+  const taskWorktreeDir = resolveWorkspaceTaskWorktreeDir(opts.workspaceRootDir, opts.settings, current.id);
+  const legacyLayout = isLegacyWorkspaceWorktreeLayout(current, taskWorktreeDir);
+  if (!legacyLayout) await mkdir(taskWorktreeDir, { recursive: true });
 
   for (const repoRelPath of repoRelPaths) {
     const acquired = await acquireWorkspaceRepoWorktree({
@@ -1977,28 +2012,20 @@ export async function acquireWorkspaceTaskWorktrees(
       registry: opts.registry,
       runConfiguredCommand: opts.runConfiguredCommand,
       taskEnv: opts.taskEnv,
+      worktreePath: legacyLayout ? undefined : resolveWorkspaceRepoWorktreePath(taskWorktreeDir, repoRelPath),
     });
     opts.addActiveWorktree?.(opts.task.id, acquired.worktreePath);
     current = await opts.store.getTask(opts.task.id);
   }
 
-  const entries = current.workspaceWorktrees ?? {};
-  /*
-  FNXC:WorkspaceFinalization 2026-08-21-09:33:
-  Re-read the durable scope after acquiring the complete repository set. A scope mutation while
-  worktrees are acquired fences the saved REVISE target; never fall back to the first repository.
-  */
-  const remediationRepository = resolveWorkspaceReviewRemediationRepository(current, repoRelPaths);
-  if (opts.remediationRepository !== remediationRepository) {
-    throw new Error(`Workspace Code Review remediation target changed during acquisition for ${opts.task.id}`);
-  }
-  const coordinatorWorktreePath = remediationRepository
-    ? entries[remediationRepository]?.worktreePath
-    : repoRelPaths
-      .map((repoRelPath) => entries[repoRelPath]?.worktreePath)
+  if (legacyLayout) {
+    // FNXC:WorkspaceWorktree 2026-08-22-22:05: In-flight legacy tasks keep their
+    // persisted positional session root so one task never straddles layouts.
+    const legacySessionRoot = opts.workspaceConfig.repos
+      .map((repoRelPath) => current.workspaceWorktrees?.[repoRelPath]?.worktreePath)
       .find((path): path is string => typeof path === "string" && path.length > 0);
-  if (!coordinatorWorktreePath) {
-    throw new Error(`Workspace task ${opts.task.id} did not acquire a declared repository worktree`);
+    if (!legacySessionRoot) throw new Error(`Legacy workspace task ${current.id} has no acquired repository worktree`);
+    return { task: current, taskWorktreeDir: legacySessionRoot };
   }
-  return { task: current, coordinatorWorktreePath };
+  return { task: current, taskWorktreeDir };
 }

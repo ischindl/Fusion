@@ -20,24 +20,13 @@
  * verdict so the caller's existing verdict→edge mapping (APPROVE done-marking, REVISE block, RETHINK reset,
  * UNAVAILABLE retry) is unchanged.
  */
-import { createHash } from "node:crypto";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { existsSync } from "node:fs";
 import { resolve, sep } from "node:path";
-import type { Task, WorkflowRepositoryReviewOutcome } from "@fusion/core";
+import type { Settings, Task, WorkflowRepositoryReviewOutcome } from "@fusion/core";
 import type { ReviewResult } from "../execution/reviewer.js";
+import { captureWorkspaceReviewEvidence } from "../worktree/workspace-review-evidence.js";
 import { classifyWorkspaceZeroAcquire, type WorkspaceZeroAcquireOptions } from "./workspace-zero-acquire.js";
 import { captureModifiedFiles } from "./worktree-capture-modified-files.js";
-
-const execFileAsync = promisify(execFile);
-
-/** FNXC:RepositoryScope 2026-08-21-01:18: path membership is insufficient after review; hash the exact Git diff that the reviewer approved. */
-async function captureReviewFingerprint(worktreePath: string, baseCommitSha: string | undefined): Promise<string> {
-  if (!baseCommitSha) throw new Error("workspace review cannot fingerprint a repository without its base commit");
-  const { stdout } = await execFileAsync("git", ["diff", "--binary", `${baseCommitSha}..HEAD`], { cwd: worktreePath, encoding: "utf8" });
-  return createHash("sha256").update(stdout).digest("hex");
-}
 
 export async function reviewWorkspacePerRepo(
   // FNXC:Workspace 2026-06-21-15:00: F7 — drop the dead `repoRel` callback param.
@@ -50,6 +39,7 @@ export async function reviewWorkspacePerRepo(
     workspaceMode?: boolean;
     workspaceRepos?: readonly string[];
     workspaceRootDir?: string;
+    settings?: Partial<Settings>;
     captureModifiedFiles?: (repoRel: string, worktreePath: string, baseCommitSha?: string) => Promise<string[]>;
   } = {},
 ): Promise<ReviewResult> {
@@ -77,19 +67,37 @@ export async function reviewWorkspacePerRepo(
   cannot be mislabeled clean and bypass its required approval. Diff capture is deliberately
   per-repository because workspace roots are not Git worktrees.
   */
-  const freshModifiedFiles: string[] = [];
   const repositoryDiffFingerprints: Record<string, string> = {};
-  for (const repoRel of Object.keys(workspaceWorktrees).sort()) {
-    const repo = workspaceWorktrees[repoRel];
-    const files = options.captureModifiedFiles
-      ? await options.captureModifiedFiles(repoRel, repo.worktreePath, repo.baseCommitSha ?? undefined)
-      : await captureModifiedFiles(repo.worktreePath, repo.baseCommitSha ?? undefined, task.id, undefined, "workspace-review-boundary");
-    freshModifiedFiles.push(...files.map((file) => `${repoRel}/${file}`));
-    if (files.length > 0 && repositoryScope.has(repoRel) && !options.captureModifiedFiles && existsSync(repo.worktreePath)) {
-      repositoryDiffFingerprints[repoRel] = await captureReviewFingerprint(repo.worktreePath, repo.baseCommitSha ?? undefined);
+  const evidence = !options.captureModifiedFiles && options.workspaceRootDir
+    && Object.values(workspaceWorktrees).every((entry) => existsSync(entry.worktreePath))
+    ? await captureWorkspaceReviewEvidence({ task, workspaceRootDir: options.workspaceRootDir, settings: options.settings ?? {} })
+    : undefined;
+  const freshModifiedFiles: string[] = evidence?.modifiedFiles ?? [];
+  if (evidence) {
+    for (const repository of evidence.repositories) {
+      if (repository.fingerprint && repositoryScope.has(repository.repository)) {
+        repositoryDiffFingerprints[repository.repository] = repository.fingerprint;
+      }
+    }
+  } else {
+    for (const repoRel of Object.keys(workspaceWorktrees).sort()) {
+      const repo = workspaceWorktrees[repoRel];
+      const files = await (options.captureModifiedFiles
+        ? options.captureModifiedFiles(repoRel, repo.worktreePath, repo.baseCommitSha ?? undefined)
+        : captureModifiedFiles(repo.worktreePath, repo.baseCommitSha ?? undefined, task.id, undefined, "workspace-review-boundary"));
+      freshModifiedFiles.push(...files.map((file) => `${repoRel}/${file}`));
     }
   }
   const modifiedFiles = freshModifiedFiles;
+  if (evidence && evidence.outOfScopeRepositories.size > 0) {
+    return {
+      verdict: "UNAVAILABLE",
+      retryable: false,
+      review: `Workspace Code Review cannot approve changes outside confirmed scope: ${[...evidence.outOfScopeRepositories].sort().join(", ")}.`,
+      summary: `Unavailable: modified repositories outside confirmed scope: ${[...evidence.outOfScopeRepositories].sort().join(", ")}`,
+      repositoryScopeRevision,
+    };
+  }
   const hasDiffEvidence = (repoRel: string) => modifiedFiles.some((file) => file === repoRel || file.startsWith(`${repoRel}/`));
   const seenPaths = new Set<string>();
   // FNXC:WorkspaceRootRouting 2026-08-19-12:15: Only declared repository entries are reviewable;
@@ -119,6 +127,7 @@ export async function reviewWorkspacePerRepo(
         retryable: false,
         review: `No changes — not reviewed: ${cleanScopedRepos.map((repo) => `\`${repo}\``).join(", ")}. No scoped repository has diff evidence; this is not a blocking reviewer verdict.`,
         summary: `Not reviewed: no changes in ${cleanScopedRepos.join(", ")}`,
+        repositoryModifiedFiles: modifiedFiles,
         repositoryReviewOutcomes: cleanScopedRepos.map((repository) => ({
           repository,
           status: "NOT_REVIEWED" as const,
@@ -211,6 +220,7 @@ export async function reviewWorkspacePerRepo(
       review: `Workspace review failed in sub-repo \`${firstFailing.repo}\` (verdict ${firstFailing.result.verdict}). Per-repo verdicts (evaluation stopped at first failure; later modified repos not reviewed):\n\n${reviewSections.join("\n\n")}`,
       summary: `${firstFailing.repo}: ${firstFailing.result.verdict} — ${summarySections.join(" | ")}`,
       repositoryDiffFingerprints,
+      repositoryModifiedFiles: modifiedFiles,
       repositoryReviewOutcomes,
       repositoryScopeRevision: repositoryScopeRevision,
     };
@@ -222,6 +232,7 @@ export async function reviewWorkspacePerRepo(
     review: `All ${repoKeys.length} modified in-scope sub-repo(s) approved. Per-repo outcomes:\n\n${reviewSections.join("\n\n")}`,
     summary: `APPROVE across ${repoKeys.length} modified in-scope sub-repo(s): ${summarySections.join(" | ")}`,
     repositoryDiffFingerprints,
+    repositoryModifiedFiles: modifiedFiles,
     repositoryReviewOutcomes,
     repositoryScopeRevision: repositoryScopeRevision,
   };

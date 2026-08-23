@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
-import { validateCustomFieldPatch, type Settings, type Task } from "@fusion/core";
+import {
+  PreMergeStepsNotRunError,
+  PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
+  validateCustomFieldPatch,
+  type Settings,
+  type Task,
+} from "@fusion/core";
 
 const testState = vi.hoisted(() => {
   class MockVerificationError extends Error {
@@ -388,6 +394,53 @@ describe("ProjectEngine merge error recovery", () => {
     const canMergeTask = (engine as unknown as { canMergeTask: (task: MockTask, retries: number) => boolean }).canMergeTask.bind(engine);
     expect(canMergeTask(makeTask({ status: "failed", updatedAt: new Date(0).toISOString() }), 3)).toBe(false);
     vi.useRealTimers();
+  });
+
+  /*
+  FNXC:RequiredPreMergeSteps 2026-08-22-22:40 (FN-9191 wedge):
+  SYMPTOM: FN-9191 sat `in-review` with `status:"failed"` and
+  `error: "Cannot merge FN-9191: task has enabled pre-merge workflow steps that never ran"`,
+  even though BOTH enabled gates (Plan Review, Code Review) later ran and APPROVED. The sweep
+  enqueued the card ~2s after `fn_task_done`, ~18s before the graph started its own Code Review
+  node; the door refused correctly, and THIS error path turned a not-yet answer into a terminal
+  park. Every later merge — including the graph's own merge node at 02:04:38 — then died on
+  `task is marked 'failed'`.
+  ASSERTION: a `PreMergeStepsNotRunError` writes no status, burns no retry, and moves nothing.
+  */
+  it("defers (does not park) when a merge door refuses only because a pre-merge gate has not run", async () => {
+    vi.useFakeTimers();
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const store = makeStore({ tasks: [makeTask({ mergeRetries: 0 }), makeTask({ mergeRetries: 0 })] });
+    vi.mocked(runAiMerge).mockRejectedValueOnce(new PreMergeStepsNotRunError(TASK_ID));
+
+    const engine = createEngine(store);
+    await runMergeCycle(engine);
+
+    expect(store.updateTask).not.toHaveBeenCalled();
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect(store.addTaskComment).not.toHaveBeenCalled();
+    expect(store.logEntry).toHaveBeenCalledWith(
+      TASK_ID,
+      expect.stringContaining(PRE_MERGE_STEPS_NOT_RUN_BLOCKER),
+      "MergeDeferredPendingPreMergeSteps",
+    );
+    expect(store.logEntry).not.toHaveBeenCalledWith(TASK_ID, expect.any(String), "MergeNonConflictFailure");
+    expect(setTimeoutSpy).not.toHaveBeenCalledWith(expect.any(Function), expect.any(Number));
+    vi.useRealTimers();
+  });
+
+  it("still parks other non-conflict merge failures as failed", async () => {
+    const store = makeStore({ tasks: [makeTask({ mergeRetries: 0 }), makeTask({ mergeRetries: 0 })] });
+    vi.mocked(runAiMerge).mockRejectedValueOnce(new Error("remote rejected the push"));
+
+    const engine = createEngine(store);
+    await runMergeCycle(engine);
+
+    expect(store.updateTask).toHaveBeenCalledWith(
+      TASK_ID,
+      expect.objectContaining({ status: "failed", error: expect.stringContaining("remote rejected the push") }),
+    );
+    expect(store.logEntry).toHaveBeenCalledWith(TASK_ID, expect.any(String), "MergeNonConflictFailure");
   });
 
   it("logs when bouncing fails after conflict retries are exhausted", async () => {

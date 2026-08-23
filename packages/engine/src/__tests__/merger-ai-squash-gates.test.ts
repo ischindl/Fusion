@@ -46,6 +46,12 @@ function makeStore(scope: string[], overrides: Record<string, unknown> = {}) {
     getSettings: vi.fn(async () => ({ merger: { mode: "ai", maxReviewPasses: 0 } })),
     parseFileScopeFromPrompt: vi.fn(async () => scope),
     updateTask: vi.fn(async (_id: string, patch: object) => Object.assign(task, patch)),
+    /* FNXC:MergerAiReview 2026-08-22-22:20: FN-159 reconciliation persists every candidate and verdict through the production atomic CAS seam, so this mutable store double must apply its callback patch to the same task returned by getTask. */
+    updateTaskAtomic: vi.fn(async (_id: string, mutate: (current: typeof task) => Partial<typeof task> | undefined) => {
+      const patch = mutate(task);
+      if (patch) Object.assign(task, patch);
+      return task;
+    }),
     moveTask: vi.fn(async (_id: string, column: string) => Object.assign(task, { column })),
     appendAgentLog: vi.fn(async () => undefined),
     logEntry: vi.fn(async () => undefined),

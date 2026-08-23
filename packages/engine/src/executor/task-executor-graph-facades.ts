@@ -1,7 +1,7 @@
 /**
  * FNXC:CodeOrganization 2026-08-04-09:20:
  * Workflow graph / merge-boundary / graph-failure routing facades peeled from TaskExecutor (U4).
- * isBackwardMoveOutOfPlanning stays on TaskExecutor for inert-sync-lane (2 guards).
+ * isBackwardMoveOutOfPlanning stays on TaskExecutor for payload/cache/legacy lane tiering; no sync lane resolver is permitted.
  */
 import type { Task, TaskDetail, Settings, Agent, ResolvedTaskOutputLanguage, WorkflowIr, WorkflowColumnAgent } from "@fusion/core";
 import * as impl from "./impl-bindings.js";

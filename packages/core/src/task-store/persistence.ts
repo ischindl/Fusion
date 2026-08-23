@@ -85,6 +85,8 @@ export interface TaskRow {
   branchConflictRecoveryCount: number | null;
   reviewerContextRetryCount: number | null;
   reviewerFallbackRetryCount: number | null;
+  reviewConvergenceStage: number | null;
+  reviewConvergenceEscalationCount: number | null;
   nextRecoveryAt: string | null;
   error: string | null;
   summary: string | null;
@@ -328,6 +330,8 @@ export const TASK_COLUMN_DESCRIPTORS: TaskColumnDescriptor[] = [
   defineTaskColumn("branchConflictRecoveryCount", (task) => task.branchConflictRecoveryCount ?? 0),
   defineTaskColumn("reviewerContextRetryCount", (task) => task.reviewerContextRetryCount ?? 0),
   defineTaskColumn("reviewerFallbackRetryCount", (task) => task.reviewerFallbackRetryCount ?? 0),
+  defineTaskColumn("reviewConvergenceStage", (task) => task.reviewConvergenceStage ?? 0),
+  defineTaskColumn("reviewConvergenceEscalationCount", (task) => task.reviewConvergenceEscalationCount ?? 0),
   defineTaskColumn("nextRecoveryAt", (task) => task.nextRecoveryAt ?? null),
   defineTaskColumn("error", (task) => task.error ?? null),
   defineTaskColumn("summary", (task) => task.summary ?? null),

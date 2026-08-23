@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
 import type { PrInfo, StepStatus } from "../types.js";
 import {
+  isPreMergeStepsNotRunBlocker,
+  PreMergeStepsNotRunError,
+  PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
   BLOCKING_TASK_STATUSES,
   collectLandedMemberReviewAdvisories,
   HARD_BLOCKING_TASK_STATUSES,
@@ -510,6 +513,33 @@ describe("getTaskMergeBlocker", () => {
     expect(getTaskMergeBlocker(baseTask)).toBeUndefined();
   });
 
+  it("blocks an enabled pre-merge group that has no result only at a merge door", () => {
+    const requiredPreMergeStepIds = new Set(["code-review"]);
+    expect(getTaskMergeBlocker(baseTask, { requiredPreMergeStepIds }))
+      .toBe("task has enabled pre-merge workflow steps that never ran");
+    // Recovery callers deliberately omit the resolved input so they can find the card.
+    expect(getTaskMergeBlocker(baseTask)).toBeUndefined();
+  });
+
+  /* FNXC:RequiredPreMergeSteps 2026-08-22-22:40: the blocker text is a shared contract — the
+     auto-merge error path classifies on the typed error built from it, so it may not drift. */
+  it("exposes the unrun-gate reason as a classifiable constant", () => {
+    expect(getTaskMergeBlocker(baseTask, { requiredPreMergeStepIds: new Set(["code-review"]) }))
+      .toBe(PRE_MERGE_STEPS_NOT_RUN_BLOCKER);
+    expect(isPreMergeStepsNotRunBlocker(PRE_MERGE_STEPS_NOT_RUN_BLOCKER)).toBe(true);
+    expect(isPreMergeStepsNotRunBlocker("task has failed pre-merge workflow steps")).toBe(false);
+    expect(isPreMergeStepsNotRunBlocker(undefined)).toBe(false);
+    expect(new PreMergeStepsNotRunError("FN-9191").message)
+      .toBe(`Cannot merge FN-9191: ${PRE_MERGE_STEPS_NOT_RUN_BLOCKER}`);
+  });
+
+  it("accepts a skipped result for a required pre-merge group", () => {
+    expect(getTaskMergeBlocker({
+      ...baseTask,
+      workflowStepResults: [{ workflowStepId: "code-review", workflowStepName: "Code Review", status: "skipped" }],
+    }, { requiredPreMergeStepIds: new Set(["code-review"]) })).toBeUndefined();
+  });
+
   it("returns reason when task is not in review", () => {
     expect(getTaskMergeBlocker({ ...baseTask, column: "todo" }))
       .toContain("must be in 'in-review'");
@@ -814,6 +844,11 @@ describe("getTaskHardMergeBlocker", () => {
     })).toBe("task has failed pre-merge workflow steps");
   });
 
+  it("blocks a resultless required pre-merge group", () => {
+    expect(getTaskHardMergeBlocker(baseTask, { requiredPreMergeStepIds: new Set(["code-review"]) }))
+      .toBe("task has enabled pre-merge workflow steps that never ran");
+  });
+
   it("still blocks when task is not in-review", () => {
     expect(getTaskHardMergeBlocker({ ...baseTask, column: "todo" }))
       .toContain("must be in 'in-review'");
@@ -835,6 +870,10 @@ describe("isTaskReadyForMerge", () => {
         status: "failed",
       }],
     })).toBe(false);
+  });
+
+  it("returns false for a required pre-merge group with no result", () => {
+    expect(isTaskReadyForMerge(baseTask, { requiredPreMergeStepIds: new Set(["code-review"]) })).toBe(false);
   });
 
   it("returns true when only post-merge step failed", () => {

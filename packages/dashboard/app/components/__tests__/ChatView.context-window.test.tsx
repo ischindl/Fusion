@@ -66,13 +66,13 @@ async function openDirectThread(sessionId = "session-001") {
   await waitFor(() => expect(screen.getByTestId("chat-back-btn")).toBeInTheDocument());
 }
 
-function setupDirectChat(options: { content?: string; streamingText?: string } = {}) {
+function setupDirectChat(options: { content?: string; streamingText?: string; messages?: Array<Record<string, unknown>> } = {}) {
   const content = options.content ?? "abcd";
   setupMockChat({
     sessions: [activeSessionFixture],
     filteredSessions: [activeSessionFixture],
     activeSession: activeSessionFixture,
-    messages: [
+    messages: options.messages ?? [
       {
         id: "msg-001",
         sessionId: activeSessionFixture.id,
@@ -95,6 +95,7 @@ describe("ChatView context-window indicator", () => {
 
     const indicator = await screen.findByTestId("chat-thread-context-window");
     expect(indicator).toHaveTextContent("1 / 200k");
+    expect(indicator).toHaveAttribute("data-context-source", "estimated");
     expect(indicator).toHaveAttribute("aria-label", "Estimated 1 of 200k context tokens");
   });
 
@@ -184,8 +185,87 @@ describe("ChatView context-window indicator", () => {
 
     const indicator = await screen.findByTestId("chat-thread-context-window");
     expect(expectedUsed).toBe("~1k");
+    expect(indicator).toHaveAttribute("data-context-source", "estimated");
     expect(indicator).toHaveTextContent(`${expectedUsed} / 200k`);
     expect(indicator).not.toHaveTextContent("999 / 200k");
+  });
+
+  it("renders pi-reported context instead of the character estimate", async () => {
+    setupDirectChat({ messages: [{
+      id: "assistant-001", sessionId: activeSessionFixture.id, role: "assistant", content: "abcd",
+      metadata: { contextUsage: { tokens: 61_234, contextWindow: 200_000, percent: 30.617 } },
+      createdAt: "2026-04-08T00:00:00.000Z",
+    }] });
+
+    await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await openDirectThread();
+
+    const indicator = await screen.findByTestId("chat-thread-context-window");
+    expect(indicator).toHaveAttribute("data-context-source", "measured");
+    expect(indicator).toHaveTextContent("61.2k / 200k");
+    expect(indicator).not.toHaveTextContent("1 / 200k");
+  });
+
+  it("falls back to the labelled estimate when persisted context metadata is malformed", async () => {
+    setupDirectChat({ messages: [{
+      id: "assistant-001", sessionId: activeSessionFixture.id, role: "assistant", content: "abcd",
+      metadata: { contextUsage: { tokens: "invalid", contextWindow: 0 } },
+      createdAt: "2026-04-08T00:00:00.000Z",
+    }] });
+
+    await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await openDirectThread();
+
+    const indicator = await screen.findByTestId("chat-thread-context-window");
+    expect(indicator).toHaveAttribute("data-context-source", "estimated");
+    expect(indicator).toHaveTextContent("1 / 200k");
+  });
+
+  it("marks measured context approximate for trailing messages and streaming text", async () => {
+    setupDirectChat({
+      streamingText: "abcdefgh",
+      messages: [
+        { id: "assistant-001", sessionId: activeSessionFixture.id, role: "assistant", content: "", metadata: { contextUsage: { tokens: 1000, contextWindow: 200_000, percent: 0.5 } }, createdAt: "2026-04-08T00:00:00.000Z" },
+        { id: "user-002", sessionId: activeSessionFixture.id, role: "user", content: "abcd", createdAt: "2026-04-08T00:00:01.000Z" },
+      ],
+    });
+
+    await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await openDirectThread();
+
+    expect(await screen.findByTestId("chat-thread-context-window")).toHaveTextContent("~1k / 200k");
+  });
+
+  it("shows pi's pending post-compaction state", async () => {
+    setupDirectChat({ messages: [{
+      id: "assistant-001", sessionId: activeSessionFixture.id, role: "assistant", content: "",
+      metadata: { contextUsage: { tokens: null, contextWindow: 200_000, percent: null } },
+      createdAt: "2026-04-08T00:00:00.000Z",
+    }] });
+
+    await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await openDirectThread();
+
+    const indicator = await screen.findByTestId("chat-thread-context-window");
+    expect(indicator).toHaveAttribute("data-context-source", "pending");
+    expect(indicator).toHaveTextContent("— / 200k");
+  });
+
+  it("uses measured pi context when the model catalogue has no window", async () => {
+    mockFetchModels.mockResolvedValue({
+      ...defaultModelsResponse,
+      models: [{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", reasoning: true, contextWindow: 0 }],
+    });
+    setupDirectChat({ messages: [{
+      id: "assistant-001", sessionId: activeSessionFixture.id, role: "assistant", content: "",
+      metadata: { contextUsage: { tokens: 100, contextWindow: 200_000, percent: 0.05 } },
+      createdAt: "2026-04-08T00:00:00.000Z",
+    }] });
+
+    await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await openDirectThread();
+
+    expect(await screen.findByTestId("chat-thread-context-window")).toHaveTextContent("100 / 200k");
   });
 
   it("does not render an indicator shell in rooms scope", async () => {

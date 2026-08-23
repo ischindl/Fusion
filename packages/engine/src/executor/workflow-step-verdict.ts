@@ -62,6 +62,8 @@ export interface WorkflowStepOutcome {
   repositoryReviewOutcomes?: WorkflowRepositoryReviewOutcome[];
   /** Confirmed scope generation used for the workspace review. */
   repositoryScopeRevision?: number;
+  /** Content-addressed review input used to detect unchanged remediation loops. */
+  reviewInputFingerprint?: string;
   /** Specific prior result containing the findings this review step claims are superseded. */
   supersededFindingSourceWorkflowStepId?: string;
   /** Explicit prior-lane finding IDs this review step claims are now superseded. */

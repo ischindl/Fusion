@@ -53,7 +53,7 @@ function storeFor(task: Task, scope: string[]): TaskStore & { updates: Array<Rec
 function reviewEvidence(workspaceWorktrees: NonNullable<Task["workspaceWorktrees"]>): NonNullable<Task["repositoryScope"]>["reviewEvidence"] {
   return Object.fromEntries(Object.entries(workspaceWorktrees).map(([repo, entry]) => {
     const mergeBase = execSync(`git merge-base HEAD ${entry.branch}`, { cwd: entry.worktreePath, encoding: "utf8" }).trim();
-    const diff = execSync(`git diff --binary ${entry.baseCommitSha ?? mergeBase}..HEAD`, { cwd: entry.worktreePath, encoding: "utf8" });
+    const diff = execSync(`git diff --binary ${entry.baseCommitSha ?? mergeBase}..${entry.branch}`, { cwd: entry.worktreePath, encoding: "utf8" });
     return [repo, { fingerprint: createHash("sha256").update(diff).digest("hex"), approvedAt: new Date().toISOString() }];
   }));
 }

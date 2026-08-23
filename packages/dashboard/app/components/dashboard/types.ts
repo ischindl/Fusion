@@ -50,6 +50,7 @@ import { SettingsView } from "../SettingsModal";
 import { AgentsView } from "../AgentsView";
 import { FleetDashboardView } from "../FleetDashboardView";
 import { ChatView } from "../ChatView";
+import type { ChatSessionInfo } from "../../hooks/useChat";
 import { CommandCenter } from "../command-center/CommandCenter";
 import { DevServerView } from "../DevServerView";
 import { DocumentsView } from "../DocumentsView";
@@ -150,6 +151,7 @@ export interface MainContentProps {
   skillsEnabled: boolean;
   experimentalFeatures: Record<string, boolean>;
   setQuickChatOpen: Dispatch<SetStateAction<boolean>>;
+  onOpenSessionInNewWindow?: (session: ChatSessionInfo) => void;
   /** Optional so existing MainContent callers preserve their unseeded Chat behavior. */
   chatComposerPrefill?: { text: string; nonce: number } | null;
   mailComposerPrefill?: (ChatReportHandoff & { nonce: number }) | null;

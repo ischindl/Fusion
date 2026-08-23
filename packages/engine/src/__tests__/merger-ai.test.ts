@@ -332,6 +332,64 @@ describe("runAiMerge", () => {
     expect(mergePrompts.slice(1).every((prompt) => prompt.includes("[finding-1-1] " + blocker))).toBe(true);
     expect(mergePrompts.slice(1).every((prompt) => !prompt.includes("reviewer reconciliation"))).toBe(true);
   });
+  it("does not clear a re-confirmed blocker through a contradictory duplicate acknowledgement", async () => {
+    const { dir } = initRepoWithBranch({ branch: "fusion/fn-1" });
+    const blocker = "server pages still bypass the live authorization guard";
+    const { store } = makeStore(dir, {}, { merger: { mode: "ai", maxReviewPasses: 1 } });
+    let reviews = 0;
+    await expect(runAiMerge(store, dir, "FN-1", { manual: true }, {
+      mergeAgent: realMergeAgent("fusion/fn-1"),
+      reviewAgent: async () => ++reviews === 1
+        ? `${blocker}\nREVIEW_VERDICT: reject`
+        : "PRIOR_FINDING_DISPOSITIONS:\nfinding-1-1: still-present\nfinding-1-1: corrected\nREVIEW_VERDICT: approve",
+    })).rejects.toMatchObject({ reasons: [blocker] } satisfies Partial<AiMergeBlockedError>);
+  });
+
+  it("converges after repeated unusable acknowledgements on the same candidate", async () => {
+    const { dir } = initRepoWithBranch({ branch: "fusion/fn-1" });
+    const { store, logs } = makeStore(dir);
+    const result = await runAiMerge(store, dir, "FN-1", { manual: true }, {
+      mergeAgent: realMergeAgent("fusion/fn-1"),
+      reviewAgent: async () => "PRIOR_FINDING_DISPOSITIONS:\nunknown: still-present\nREVIEW_VERDICT: approve",
+    });
+    expect(result.merged).toBe(true);
+    expect(logs.some((line) => /AI merge BLOCKED/.test(line))).toBe(false);
+  });
+
+  it("releases unreconfirmed blockers on approval and converges", async () => {
+    const { dir } = initRepoWithBranch({ branch: "fusion/fn-1" });
+    const { store } = makeStore(dir, {}, { merger: { mode: "ai", maxReviewPasses: 2 } });
+    let reviews = 0;
+    const result = await runAiMerge(store, dir, "FN-1", { manual: true }, {
+      mergeAgent: realMergeAgent("fusion/fn-1"),
+      reviewAgent: async () => ++reviews === 1
+        ? "actual squash fidelity defect\nREVIEW_VERDICT: reject"
+        : "REVIEW_VERDICT: approve",
+    });
+    expect(result.merged).toBe(true);
+    const persisted = await store.getTask("FN-1");
+    expect(persisted?.aiMergeReviewReconciliation).toBeNull();
+  });
+
+  it("filters disposition protocol from a blocking rejection before corrective merge", async () => {
+    const { dir } = initRepoWithBranch({ branch: "fusion/fn-1" });
+    const { store, logs } = makeStore(dir, {}, { merger: { mode: "ai", maxReviewPasses: 2 } });
+    const prompts: string[] = [];
+    let reviews = 0;
+    const result = await runAiMerge(store, dir, "FN-1", { manual: true }, {
+      mergeAgent: async (cwd, prompt) => { prompts.push(prompt); await realMergeAgent("fusion/fn-1")(cwd, prompt); },
+      reviewAgent: async () => {
+        reviews++;
+        if (reviews === 1) return ["The squash adds an unaccounted 30 ms async teardown delay to", "`AddMarkerModal-info-service-runtime.spec.ts`.", "", "PRIOR_FINDING_DISPOSITIONS:", "finding-1-1: still-present", "REVIEW_VERDICT: reject"].join("\n");
+        return "REVIEW_VERDICT: approve";
+      },
+    });
+    expect(result.merged).toBe(true);
+    expect(prompts[1]).toContain("The squash adds an unaccounted 30 ms async teardown delay to `AddMarkerModal-info-service-runtime.spec.ts`.");
+    expect(prompts[1]).not.toMatch(/PRIOR_FINDING_DISPOSITIONS|finding-1-1: still-present/);
+    expect(logs.some((line) => /AI merge BLOCKED/.test(line))).toBe(false);
+  });
+
   it("merges a clean branch, advances main, and finalizes the task", async () => {
     const { dir } = initRepoWithBranch({ branch: "fusion/fn-1" });
     const { store, emitted } = makeStore(dir);

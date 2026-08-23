@@ -633,6 +633,12 @@ export const DEFAULT_PROJECT_SETTINGS = {
   executorEscalationProvider: undefined,
   executorEscalationModelId: undefined,
   executorEscalationNodeId: undefined,
+  reviewConvergenceEscalationEnabled: true,
+  reviewConvergenceEscalationProvider: undefined,
+  reviewConvergenceEscalationModelId: undefined,
+  reviewArbitrationEnabled: true,
+  reviewArbitrationProvider: undefined,
+  reviewArbitrationModelId: undefined,
   /**
    * FNXC:Merge 2026-06-26-00:00:
    * New and unconfigured projects default AI merge to sync a dirty checked-out integration branch, restoring the legacy stash → fast-forward → restore landing behavior. Explicit persisted merger.allowDirtyLocalCheckoutSync values still win, and no existing-project migration stamps this default into storage.

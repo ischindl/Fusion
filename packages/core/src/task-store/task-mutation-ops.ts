@@ -60,7 +60,7 @@ export function getTaskSelectClauseWithActivityLogLimitImpl(store: TaskStore, li
       "modelPresetId", "modelProvider", "credentialInstanceId", "modelId",
       "validatorModelProvider", "validatorCredentialInstanceId", "validatorModelId",
       "planningModelProvider", "planningCredentialInstanceId", "planningModelId", "mergerModelProvider", "mergerCredentialInstanceId", "mergerModelId",
-      "mergeRetries", "aiMergeReviewReconciliation", "workflowStepRetries", "stuckKillCount", "resumeLimboCount", "executeRequeueLoopCount", "graphResumeRetryCount", "consecutiveToolFailureRetryCount", "executorEscalationAttempted", "toolFailureDetectorLogCursor", "toolFailureRetryExhaustedAuditEmitted", "resumeLimboTipSha", "resumeLimboStepSignature", "executeRequeueLoopSignature", "postReviewFixCount", "planReviewReplanCount", "recoveryRetryCount", "taskDoneRetryCount", "bulkCompletionRefusalAt", "worktreeSessionRetryCount", "completionHandoffLimboRecoveryCount", "verificationFailureCount", "mergeConflictBounceCount", "mergeAuditBounceCount", "mergeTransientRetryCount", "branchConflictRecoveryCount", "reviewerContextRetryCount", "reviewerFallbackRetryCount", "nextRecoveryAt",
+      "mergeRetries", "aiMergeReviewReconciliation", "workflowStepRetries", "stuckKillCount", "resumeLimboCount", "executeRequeueLoopCount", "graphResumeRetryCount", "consecutiveToolFailureRetryCount", "executorEscalationAttempted", "toolFailureDetectorLogCursor", "toolFailureRetryExhaustedAuditEmitted", "resumeLimboTipSha", "resumeLimboStepSignature", "executeRequeueLoopSignature", "postReviewFixCount", "planReviewReplanCount", "recoveryRetryCount", "taskDoneRetryCount", "bulkCompletionRefusalAt", "worktreeSessionRetryCount", "completionHandoffLimboRecoveryCount", "verificationFailureCount", "mergeConflictBounceCount", "mergeAuditBounceCount", "mergeTransientRetryCount", "branchConflictRecoveryCount", "reviewerContextRetryCount", "reviewerFallbackRetryCount", "reviewConvergenceStage", "reviewConvergenceEscalationCount", "nextRecoveryAt",
       // FNXC:WorkflowIrPin 2026-07-19-03:10 (U9b / KTD-3 + KTD-8): this projection is a SECOND
       // copy of the slim column list (see getTaskSelectClauseImpl2). The IR pin, its node entry,
       // and the adoption stamp must appear in BOTH or a task read through this path reads as
@@ -672,8 +672,8 @@ export async function updateTaskRepositoryScopeImpl(
         : mutation
           ? currentRepositories.filter((repository) => !normalizedRepositories!.includes(repository))
           : normalizedRepositories;
-      const scopeChanged = JSON.stringify([...currentRepositories].sort()) !== JSON.stringify(nextRepositories ?? []);
-      if ((pendingIntent || hasLandedRepository) && scopeChanged) {
+      const repositoriesChanged = JSON.stringify([...currentRepositories].sort()) !== JSON.stringify(nextRepositories ?? []);
+      if ((pendingIntent || hasLandedRepository) && repositoriesChanged) {
         throw new Error(`Repository scope for ${id} cannot change after workspace landing has started`);
       }
       const priorExtensions = current.repositoryScope?.extensions ?? [];
@@ -703,11 +703,23 @@ export async function updateTaskRepositoryScopeImpl(
       evidence or a remediation target into a new revision: landing may only accept fingerprints
       reviewed against the current confirmed repository set, and remediation must re-evaluate it.
       */
+      const stateChanged = (current.repositoryScope?.state ?? "proposed") !== (replacement?.state ?? "proposed");
+      const scopeChanged = repositoriesChanged || stateChanged;
+      /*
+      FNXC:RepositoryScope 2026-08-21-19:25:
+      FN-120 treats repository intent as a semantic set plus confirmation state. Republishing the
+      same normalized confirmed set must not churn its generation or erase a current approval;
+      only a real intent/state transition creates a new review episode.
+      */
       const normalized = nextRepositories && replacement && {
         ...replacement,
         repositories: nextRepositories,
-        revision: Math.max((current.repositoryScope?.revision ?? 0) + 1, replacement.revision ?? 0),
-        ...(scopeChanged ? { reviewEvidence: undefined, reviewRemediation: undefined } : {}),
+        revision: scopeChanged
+          ? Math.max((current.repositoryScope?.revision ?? 0) + 1, replacement.revision ?? 0)
+          : (current.repositoryScope?.revision ?? replacement.revision ?? 1),
+        ...(scopeChanged
+          ? { reviewEvidence: undefined, reviewRemediation: undefined }
+          : { reviewEvidence: current.repositoryScope?.reviewEvidence, reviewRemediation: current.repositoryScope?.reviewRemediation }),
       };
       const [updatedRow] = await tx
         .update(schema.project.tasks)

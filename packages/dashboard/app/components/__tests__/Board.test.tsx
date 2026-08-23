@@ -77,6 +77,8 @@ vi.mock("../Column", () => ({
     canDropTask,
     onPlanningMode,
     taskWorkflowBadges,
+    onOpenDetail,
+    onMoveTask,
   }: {
     column: string;
     tasks: Task[];
@@ -102,6 +104,8 @@ vi.mock("../Column", () => ({
     canDropTask?: unknown;
     onPlanningMode?: unknown;
     taskWorkflowBadges?: ReadonlyMap<string, { workflowId: string; workflowName: string }>;
+    onOpenDetail?: (task: Task) => void;
+    onMoveTask?: (id: string, column: string) => Promise<Task>;
   }) => {
     columnRenderCounts[column] = (columnRenderCounts[column] ?? 0) + 1;
     return (
@@ -118,8 +122,10 @@ vi.mock("../Column", () => ({
         ) : null}
         {tasks.length === 0 ? <div className="empty-column">No tasks</div> : null}
         {tasks.map((task) => (
-          <article key={task.id} data-id={task.id} data-testid={`board-task-card-${task.id}`}>
-            {task.title ?? task.description ?? task.id}
+          <article key={task.id} className="card" data-id={task.id} data-testid={`board-task-card-${task.id}`} onClick={() => onOpenDetail?.(task)}>
+            <span data-testid={`board-task-card-title-${task.id}`}>{task.title ?? task.description ?? task.id}</span>
+            <button type="button" data-testid={`board-task-card-control-${task.id}`} onClick={(event) => event.stopPropagation()}>card control</button>
+            <span data-has-move-task={String(Boolean(onMoveTask))} />
           </article>
         ))}
         {onToggleCollapse && <button onClick={onToggleCollapse}>toggle-{column}</button>}
@@ -245,6 +251,8 @@ function renderBoard(props = {}) {
 function makeBoardHorizontallyScrollable(board: HTMLElement, scrollLeft = 100) {
   Object.defineProperty(board, "clientWidth", { configurable: true, value: 200 });
   Object.defineProperty(board, "scrollWidth", { configurable: true, value: 600 });
+  // FNXC:BoardNavigation 2026-08-21-18:50: jsdom has no native pointer capture; Chromium covers its delivery semantics.
+  Object.defineProperty(board, "setPointerCapture", { configurable: true, value: vi.fn() });
   board.scrollLeft = scrollLeft;
 }
 
@@ -2040,36 +2048,95 @@ describe("Board", () => {
       expect(board.scrollLeft).toBe(scrollAfterPointerMove);
     });
 
-    it("keeps touch and task-card interactions native", async () => {
+    it("pans from task-card bodies in selected and All-workflows Boards without moving or opening tasks", async () => {
       const onQuickCreate = vi.fn().mockResolvedValue({});
-      enableFlag({ "FN-1": "builtin:coding" });
-      renderBoard({ tasks: [mkTask({ id: "FN-1" })], onQuickCreate });
+      const onOpenDetail = vi.fn();
+      const onMoveTask = vi.fn().mockResolvedValue({});
+      enableFlag({ "FN-1": "builtin:coding", "FN-2": "wf-custom" }, [DEFAULT_WORKFLOW, CUSTOM_WORKFLOW]);
+      renderBoard({ tasks: [mkTask({ id: "FN-1" }), mkTask({ id: "FN-2", column: "intake" })], onQuickCreate, onOpenDetail, onMoveTask });
 
-      const board = screen.getByRole("main") as HTMLElement;
-      makeBoardHorizontallyScrollable(board);
-      fireEvent.pointerDown(board, { button: 0, clientX: 100, clientY: 50, pointerId: 1, pointerType: "touch" });
-      fireEvent.pointerMove(board, { clientX: 40, clientY: 50, pointerId: 1, pointerType: "touch" });
-      fireEvent.pointerUp(board, { pointerId: 1, pointerType: "touch" });
-      expect(board.scrollLeft).toBe(100);
-      expect(board).toHaveClass("board", "board-workflow-columns");
-
-      const card = screen.getByTestId("board-task-card-FN-1");
+      const selectedBoard = screen.getByRole("main") as HTMLElement;
+      makeBoardHorizontallyScrollable(selectedBoard);
+      const selectedCard = screen.getByTestId("board-task-card-FN-1");
       /*
-      FNXC:TaskCardInteraction 2026-08-19-19:07:
-      Native task dragging is retired; cards remain ordinary pointer targets so board panning excludes them without preserving the drag contract.
+      FNXC:BoardNavigation 2026-08-21-18:12:
+      FN-115 requires a complete stationary pointer sequence to retain the card's native detail
+      activation. Only the horizontal drag path captures the Board and consumes its next click;
+      controls remain native and task movement stays menu-only.
       */
-      expect(card).not.toHaveAttribute("draggable");
-      fireEvent.pointerDown(card, { button: 0, clientX: 100, clientY: 50, pointerId: 2, pointerType: "mouse" });
-      fireEvent.pointerMove(card, { clientX: 40, clientY: 50, pointerId: 2, pointerType: "mouse" });
-      fireEvent.pointerUp(card, { pointerId: 2, pointerType: "mouse" });
-      expect(board.scrollLeft).toBe(100);
+      expect(selectedCard).not.toHaveAttribute("draggable");
+      const selectedCapture = vi.fn();
+      Object.defineProperty(selectedBoard, "setPointerCapture", { configurable: true, value: selectedCapture });
+      fireEvent.pointerDown(selectedCard, { button: 0, clientX: 100, clientY: 50, pointerId: 1, pointerType: "mouse" });
+      fireEvent.pointerUp(selectedCard, { pointerId: 1, pointerType: "mouse" });
+      fireEvent.click(selectedCard);
+      expect(selectedCapture).not.toHaveBeenCalled();
+      expect(onOpenDetail).toHaveBeenCalledTimes(1);
+
+      fireEvent.pointerDown(selectedCard, { button: 0, clientX: 100, clientY: 50, pointerId: 2, pointerType: "mouse" });
+      fireEvent.pointerMove(selectedCard, { clientX: 40, clientY: 50, pointerId: 2, pointerType: "mouse" });
+      expect(selectedCapture).toHaveBeenCalledWith(2);
+      expect(selectedBoard.scrollLeft).toBe(160);
+      expect(selectedBoard).toHaveClass("is-mouse-panning");
+      fireEvent.pointerUp(selectedCard, { pointerId: 2, pointerType: "mouse" });
+      expect(selectedBoard).not.toHaveClass("is-mouse-panning");
+      fireEvent.click(selectedCard);
+      expect(onOpenDetail).toHaveBeenCalledTimes(1);
+      expect(onMoveTask).not.toHaveBeenCalled();
+      expect(screen.getByTestId("column-todo")).toHaveAttribute("data-tasks", expect.stringContaining("FN-1"));
+
+      fireEvent.click(selectedCard);
+      expect(onOpenDetail).toHaveBeenCalledTimes(2);
+      const selectedControl = screen.getByTestId("board-task-card-control-FN-1");
+      selectedBoard.scrollLeft = 100;
+      fireEvent.pointerDown(selectedControl, { button: 0, clientX: 100, clientY: 50, pointerId: 2, pointerType: "mouse" });
+      fireEvent.pointerMove(selectedControl, { clientX: 40, clientY: 50, pointerId: 2, pointerType: "mouse" });
+      fireEvent.pointerUp(selectedControl, { pointerId: 2, pointerType: "mouse" });
+      fireEvent.click(selectedControl);
+      expect(selectedBoard.scrollLeft).toBe(100);
+      expect(onOpenDetail).toHaveBeenCalledTimes(2);
+
+      await selectWorkflow(ALL_WORKFLOWS_BOARD_VIEW_ID);
+      const aggregateBoard = screen.getByRole("main") as HTMLElement;
+      makeBoardHorizontallyScrollable(aggregateBoard);
+      const aggregateTitle = screen.getByTestId("board-task-card-title-FN-1");
+      fireEvent.pointerDown(aggregateTitle, { button: 0, clientX: 100, clientY: 50, pointerId: 3, pointerType: "mouse" });
+      fireEvent.pointerUp(aggregateTitle, { pointerId: 3, pointerType: "mouse" });
+      fireEvent.click(aggregateTitle);
+      expect(onOpenDetail).toHaveBeenCalledTimes(3);
+
+      fireEvent.pointerDown(aggregateTitle, { button: 0, clientX: 100, clientY: 50, pointerId: 4, pointerType: "mouse" });
+      fireEvent.pointerMove(aggregateTitle, { clientX: 40, clientY: 50, pointerId: 4, pointerType: "mouse" });
+      expect(aggregateBoard.scrollLeft).toBe(160);
+      fireEvent.pointerUp(aggregateTitle, { pointerId: 4, pointerType: "mouse" });
+      expect(aggregateBoard).not.toHaveClass("is-mouse-panning");
+      fireEvent.click(aggregateTitle);
+      expect(onOpenDetail).toHaveBeenCalledTimes(3);
+      expect(onMoveTask).not.toHaveBeenCalled();
+
+      fireEvent.click(aggregateTitle);
+      expect(onOpenDetail).toHaveBeenCalledTimes(4);
 
       const quickCreate = screen.getByTestId("mock-quick-create-triage");
-      fireEvent.pointerDown(quickCreate, { button: 0, clientX: 100, clientY: 50, pointerId: 3, pointerType: "mouse" });
-      fireEvent.pointerMove(quickCreate, { clientX: 40, clientY: 50, pointerId: 3, pointerType: "mouse" });
-      fireEvent.pointerUp(quickCreate, { pointerId: 3, pointerType: "mouse" });
+      fireEvent.pointerDown(quickCreate, { button: 0, clientX: 100, clientY: 50, pointerId: 5, pointerType: "mouse" });
+      fireEvent.pointerMove(quickCreate, { clientX: 40, clientY: 50, pointerId: 5, pointerType: "mouse" });
+      fireEvent.pointerUp(quickCreate, { pointerId: 5, pointerType: "mouse" });
       fireEvent.click(quickCreate);
       expect(onQuickCreate).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps touch input outside the desktop card-origin pan owner", () => {
+      enableFlag({ "FN-1": "builtin:coding" });
+      renderBoard({ tasks: [mkTask({ id: "FN-1" })] });
+      const board = screen.getByRole("main") as HTMLElement;
+      makeBoardHorizontallyScrollable(board);
+      const card = screen.getByTestId("board-task-card-FN-1");
+
+      fireEvent.pointerDown(card, { button: 0, clientX: 100, clientY: 50, pointerId: 1, pointerType: "touch" });
+      fireEvent.pointerMove(card, { clientX: 40, clientY: 50, pointerId: 1, pointerType: "touch" });
+      fireEvent.pointerUp(card, { pointerId: 1, pointerType: "touch" });
+      expect(board.scrollLeft).toBe(100);
+      expect(board).toHaveClass("board", "board-workflow-columns");
     });
 
     it("disables desktop mouse panning at the mobile viewport without changing touch ownership", () => {

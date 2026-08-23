@@ -30,6 +30,7 @@ import path from "node:path";
 import type { Task, TaskStore, WorkspaceLeaseHandle } from "@fusion/core";
 import { createSharedPgTaskStoreTestHarness, pgDescribe, type SharedPgTaskStoreHarness } from "../../../core/src/__test-utils__/pg-test-harness.js";
 import { landSquash, landWorkspaceTask, WorkspaceMergeDispatchSupersededError, WorkspaceMergeTechnicalError, WorkspaceRepoLandBusyError } from "../merge/merger-ai.js";
+import { WorkspaceEnvironmentError } from "../merge/workspace-integration-target.js";
 import { ensureTenancyFenceRef, mergeDispatchFenceRef, WorkspaceFenceRefError } from "../merge/workspace-fence-ref.js";
 import { activeSessionRegistry } from "../agents/active-session-registry.js";
 import { createWorkspaceFixture, hasGit, type WorkspaceFixture } from "./_workspace-fixture.js";
@@ -150,7 +151,7 @@ function makeTask(id: string, workspaceWorktrees: Task["workspaceWorktrees"]): T
       revision: 1,
       reviewEvidence: Object.fromEntries(Object.entries(workspaceWorktrees ?? {}).map(([repoRel, entry]) => {
         const mergeBase = execSync(`git merge-base HEAD ${entry.branch}`, { cwd: entry.worktreePath, encoding: "utf8" }).trim();
-        const diff = execSync(`git diff --binary ${entry.baseCommitSha ?? mergeBase}..HEAD`, { cwd: entry.worktreePath, encoding: "utf8" });
+        const diff = execSync(`git diff --binary ${entry.baseCommitSha ?? mergeBase}..${entry.branch}`, { cwd: entry.worktreePath, encoding: "utf8" });
         return [repoRel, { fingerprint: createHash("sha256").update(diff).digest("hex"), approvedAt: new Date().toISOString() }];
       })),
     },
@@ -666,6 +667,45 @@ describeIfGit("landWorkspaceTask — per-repo land lease (Phase C U3, KTD4)", ()
     });
     expect(vi.getTimerCount()).toBe(0);
     vi.useRealTimers();
+  });
+
+  /*
+  FNXC:WorkspaceIntegration 2026-08-21-22:20:
+  A repository fence publish happens immediately after its durable lease is acquired. An
+  unreachable selected remote must leave that lease safely released but classify as environment,
+  so ProjectEngine's Retry owner preserves both technical and merge retry budgets.
+  */
+  it("classifies repository fence transport failure as an environment repair", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    addRepoBranchWithEdit(fx, "repo-a", "FN-122", "unreachable remote\n");
+    const repoRel = "repo-a";
+    const repo = fx.repoPath(repoRel);
+    fx.git(repoRel, "git remote add upstream /definitely/missing/fusion-remote.git");
+    const task = makeTask("FN-122-FENCE-TRANSPORT", { [repoRel]: { worktreePath: repo, branch: BRANCH } });
+    const store = createStore(task);
+    const handle = {
+      leaseKey: `repo:${repoRel}`,
+      kind: "land" as const,
+      owner: { taskId: task.id, nodeId: "node-a", incarnationId: "inc-a" },
+      fenceToken: 1n,
+    };
+    Object.assign(store, {
+      acquireWorkspaceLease: vi.fn().mockResolvedValue({ outcome: "acquired", handle }),
+      recordWorkspaceLeaseFenceRef: vi.fn(async (input: any) => ({ ...input.handle, fenceRefName: input.fenceRefName, fenceRefSha: input.fenceRefSha })),
+      releaseWorkspaceLease: vi.fn().mockResolvedValue(true),
+    });
+
+    await expect(landWorkspaceTask(store, task, fx.rootDir, {}, {
+      mergeAgent: squashMergeAgent(BRANCH),
+      reviewAgent: approveReviewAgent,
+    })).rejects.toMatchObject({
+      name: "WorkspaceEnvironmentError",
+      repository: repoRel,
+      resource: "remote 'upstream'",
+      action: "restore access to remote 'upstream' and choose Retry",
+    } satisfies Partial<WorkspaceEnvironmentError>);
+    expect(store.releaseWorkspaceLease).toHaveBeenCalledWith(handle);
+    expect(store.task.workspaceWorktrees?.[repoRel]?.landFailure).toMatchObject({ category: "environment" });
   });
 
   it("concurrency: two tasks landing the SAME sub-repo serialize — one acquires the land lease, the other fast-fails (no interleaved update-ref)", async () => {
