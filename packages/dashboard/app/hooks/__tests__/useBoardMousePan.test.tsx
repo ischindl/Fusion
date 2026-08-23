@@ -151,7 +151,8 @@ describe("useBoardMousePan", () => {
     for (const [index, target] of [
       "button", "input", "contenteditable", "draggable", "card-button", "card-link", "card-input",
       "card-contenteditable", "card-draggable", "card-semantic-control",
-    ].map(getByTestId).entries()) {      pointerDown(target, 100, 50, index + 1);
+    ].map(getByTestId).entries()) {
+      pointerDown(target, 100, 50, index + 1);
       pointerMove(target, 40, 50, index + 1);
       pointerUp(target, index + 1);
     }

@@ -2527,7 +2527,17 @@ describe("useChat", () => {
     act(() => streamHandlers?.onText?.("Distinct direct prefix"));
     await waitFor(() => expect(result.current.streamingText).toBe("Distinct direct prefix"));
 
-    act(() => result.current.stopStreaming());
+    /*
+    FNXC:UseChatStopStreamingAct 2026-08-23-07:24:
+    FN-100 made stopStreaming return Promise<void> (durable cancel + optimistic-prefix
+    reconcile), so the stop must run inside an AWAITED async act scope. The former
+    expression-body act(() => stopStreaming()) left the promise un-awaited and its state
+    updates flushed outside act, cascading-poisoning the 79 tests that follow (80
+    deterministic failures in this file). Both stopStreaming call sites in this file (this
+    one and the "Distinct retained prefix" test below) must keep the awaited form;
+    regressing either to the expression body re-breaks the suite.
+    */
+    await act(async () => { await result.current.stopStreaming(); });
     await waitFor(() => expect(mockCancelChatResponse).toHaveBeenCalledWith("session-001", "proj-123"));
     await waitFor(() => {
       const assistants = result.current.messages.filter((message) => message.role === "assistant" && message.content === "Distinct direct prefix");
@@ -2595,7 +2605,7 @@ describe("useChat", () => {
     act(() => streamHandlers?.onText?.("Distinct retained prefix"));
     await waitFor(() => expect(result.current.streamingText).toBe("Distinct retained prefix"));
 
-    act(() => result.current.stopStreaming());
+    await act(async () => { await result.current.stopStreaming(); });
     await waitFor(() => expect(mockCancelChatResponse).toHaveBeenCalledWith("session-001", "proj-123"));
     await waitFor(() => {
       expect(result.current.messages.filter((message) => message.content === "Distinct retained prefix")).toHaveLength(1);

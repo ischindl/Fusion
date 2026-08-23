@@ -224,7 +224,8 @@ describeIfGit("FN-034 workspace root worktree routing", { timeout: 60_000 }, () 
     });
 
     expect(result.taskWorktreeDir).toBe(join(fixture.rootDir, ".fusion", "worktrees", "fn-106"));
-    expect(result.taskWorktreeDir).not.toBe(result.task.workspaceWorktrees?.["repo-b"]?.worktreePath);    expect(result.task.worktree).toBeNull();
+    expect(result.taskWorktreeDir).not.toBe(result.task.workspaceWorktrees?.["repo-b"]?.worktreePath);
+    expect(result.task.worktree).toBeNull();
   });
 
   it("rejects a stale review target instead of falling back to another repository", async () => {

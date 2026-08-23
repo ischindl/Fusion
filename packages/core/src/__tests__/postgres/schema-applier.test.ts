@@ -104,11 +104,12 @@ import {
   TASK_SOURCE_AGENT_INDEX_VERSION,
   WORKSPACE_COORDINATION_LEASES_SCHEMA_VERSION,
   ACTIVITY_LOG_TASK_ID_INDEX_VERSION,
+  CHAT_SESSION_MEMORY_FOCUS_VERSION,
   REMOVE_TASK_SUBTASK_SPLITTING_VERSION,
   AI_MERGE_REVIEW_RECONCILIATION_VERSION,
   TASK_REPOSITORY_SCOPE_VERSION,
   REVIEW_CONVERGENCE_STAGE_VERSION,
-  CHAT_SESSION_MEMORY_FOCUS_VERSION,
+  MIXED_0065_REPAIR_VERSION,
 } from "../../postgres/schema-applier.js";
 import { ProjectPartitionRekeyError, rekeyFallbackProjectPartition } from "../../postgres/migration-stamping.js";
 import type { PluginSchemaInitHook } from "../../postgres/plugin-schema-hook.js";
@@ -144,6 +145,8 @@ describe("schema-applier: immutable migration identities", () => {
     expect(TASK_SOURCE_AGENT_INDEX_VERSION).toBe("0059");
     expect(WORKSPACE_COORDINATION_LEASES_SCHEMA_VERSION).toBe("0060");
     expect(ACTIVITY_LOG_TASK_ID_INDEX_VERSION).toBe("0061");
+    /* FNXC:MemoryFocus 2026-08-23-07:07: 0065 -> 0066 renumber + 0067 collision repair in the RUFU-160 origin/main merge; 0065 stays FN-149's review-convergence migration. */
+    expect(CHAT_SESSION_MEMORY_FOCUS_VERSION).toBe("0066");
     /*
     FNXC:ReviewConvergence 2026-08-22-18:58:
     The tail of this list went stale twice in a row (it still asserted 0063 while the ceiling was
@@ -155,9 +158,7 @@ describe("schema-applier: immutable migration identities", () => {
     expect(AI_MERGE_REVIEW_RECONCILIATION_VERSION).toBe("0063");
     expect(TASK_REPOSITORY_SCOPE_VERSION).toBe("0064");
     expect(REVIEW_CONVERGENCE_STAGE_VERSION).toBe("0065");
-    /* FNXC:MemoryFocus 2026-08-23-13:05: memory-focus renumbered 0065 -> 0066 after upstream claimed 0065 for FN-149; the ceiling follows. */
-    expect(CHAT_SESSION_MEMORY_FOCUS_VERSION).toBe("0066");
-    expect(SCHEMA_BASELINE_VERSION).toBe("0066");
+    expect(SCHEMA_BASELINE_VERSION).toBe("0067");
   });
 
   it("keeps monitor and approval isolation assigned to version 0003", () => {
@@ -1782,6 +1783,8 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       AI_MERGE_REVIEW_RECONCILIATION_VERSION,
       TASK_REPOSITORY_SCOPE_VERSION,
       REVIEW_CONVERGENCE_STAGE_VERSION,
+      CHAT_SESSION_MEMORY_FOCUS_VERSION,
+      MIXED_0065_REPAIR_VERSION,
     ]);
     expect((await applySchemaBaseline(ctx.db, { pluginHooks: [] })).applied).toBe(false);
   });
@@ -1873,6 +1876,8 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       AI_MERGE_REVIEW_RECONCILIATION_VERSION,
       TASK_REPOSITORY_SCOPE_VERSION,
       REVIEW_CONVERGENCE_STAGE_VERSION,
+      CHAT_SESSION_MEMORY_FOCUS_VERSION,
+      MIXED_0065_REPAIR_VERSION,
     ]);
   });
 
@@ -2097,6 +2102,8 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       AI_MERGE_REVIEW_RECONCILIATION_VERSION,
       TASK_REPOSITORY_SCOPE_VERSION,
       REVIEW_CONVERGENCE_STAGE_VERSION,
+      CHAT_SESSION_MEMORY_FOCUS_VERSION,
+      MIXED_0065_REPAIR_VERSION,
     ]);
   });
 
@@ -2202,6 +2209,8 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       AI_MERGE_REVIEW_RECONCILIATION_VERSION,
       TASK_REPOSITORY_SCOPE_VERSION,
       REVIEW_CONVERGENCE_STAGE_VERSION,
+      CHAT_SESSION_MEMORY_FOCUS_VERSION,
+      MIXED_0065_REPAIR_VERSION,
     ]);
   });
 
@@ -2307,6 +2316,8 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       AI_MERGE_REVIEW_RECONCILIATION_VERSION,
       TASK_REPOSITORY_SCOPE_VERSION,
       REVIEW_CONVERGENCE_STAGE_VERSION,
+      CHAT_SESSION_MEMORY_FOCUS_VERSION,
+      MIXED_0065_REPAIR_VERSION,
     ]);
   });
 });
