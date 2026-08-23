@@ -317,6 +317,7 @@ jobs:
           path: |
             packages/*/dist/.tsbuildinfo
             packages/dashboard/dist/.tsbuildinfo-app
+            packages/dashboard/dist/.tsbuildinfo-test-check
             plugins/*/dist/.tsbuildinfo
           key: typecheck-tsbuildinfo-${{ runner.os }}-${{ github.sha }}
           restore-keys: |
@@ -324,3 +325,12 @@ jobs:
 
       - name: Typecheck (warms incremental buildinfo)
         run: pnpm typecheck
+
+      # FNXC:DashboardTestCheckGate 2026-08-22-03:19:
+      # RUFU-159: warm the test-check program's incremental buildinfo too.
+      # `pnpm typecheck` above never runs tsconfig.test-check.json, so without
+      # this step the main-seeded cache would lack the test-check buildinfo and
+      # every first-run PR would pay the cold ~75s test-check on the gate's
+      # critical path.
+      - name: Dashboard test-file typecheck (warms incremental buildinfo)
+        run: pnpm --filter @fusion/dashboard exec tsc --noEmit -p tsconfig.test-check.json

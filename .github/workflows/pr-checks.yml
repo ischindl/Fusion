@@ -123,6 +123,7 @@ jobs:
           path: |
             packages/*/dist/.tsbuildinfo
             packages/dashboard/dist/.tsbuildinfo-app
+            packages/dashboard/dist/.tsbuildinfo-test-check
             plugins/*/dist/.tsbuildinfo
           key: typecheck-tsbuildinfo-${{ runner.os }}-${{ github.sha }}
           restore-keys: |
@@ -130,6 +131,20 @@ jobs:
 
       - name: Typecheck
         run: pnpm typecheck
+
+      # FNXC:DashboardTestCheckGate 2026-08-22-03:19:
+      # RUFU-159 (operator budget decision per RUFU-140's plan): the dashboard
+      # test-file typecheck program is now a blocking merge-gate step. RUFU-140
+      # made it green (~2,012 pre-existing errors across ~400 test files,
+      # type-only edits) and ratchets the config against weakening via
+      # scripts/__tests__/dashboard-test-check-config.test.mjs (pnpm test:scripts).
+      # tsconfig.app.json excludes every __tests__ directory and *.test.*
+      # pattern, so this step is the ONLY compile-time typing of dashboard test
+      # code in the gate. Cold-cache duration measured ~75s locally (2026-08-22);
+      # the incremental buildinfo (packages/dashboard/dist/.tsbuildinfo-test-check,
+      # cached above) keeps warm runs a fast changed-files-only re-check.
+      - name: Dashboard test-file typecheck
+        run: pnpm --filter @fusion/dashboard exec tsc --noEmit -p tsconfig.test-check.json
 
   build:
     name: Build

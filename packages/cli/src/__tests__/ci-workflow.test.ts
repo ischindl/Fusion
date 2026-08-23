@@ -374,10 +374,11 @@ describe("Merge gate (.github/workflows/pr-checks.yml)", () => {
   FNXC:CIGateSpeed 2026-07-23-00:05:
   Typecheck caches tsc incremental buildinfo. Restored buildinfo is self-validating (tsc
   re-checks every input that changed), so restore-keys is correctness-neutral. The cache
-  only works if the dashboard's TWO typecheck programs (tsconfig.json + tsconfig.app.json)
-  keep DISTINCT tsBuildInfoFile paths — both inherit ${configDir}/dist/.tsbuildinfo from
-  tsconfig.base.json otherwise and clobber each other, silently re-checking the full
-  program every run. Pin the cache shape and the distinct app buildinfo path together.
+  only works if the dashboard's THREE typecheck programs (tsconfig.json + tsconfig.app.json
+  + tsconfig.test-check.json) keep DISTINCT tsBuildInfoFile paths — all inherit
+  ${configDir}/dist/.tsbuildinfo from tsconfig.base.json otherwise and clobber each other,
+  silently re-checking the full program every run. Pin the cache shape and the distinct
+  app buildinfo path together.
   */
   it("typecheck job caches self-validating tsc buildinfo with distinct dashboard paths", () => {
     const typecheckSteps = workflow.jobs?.typecheck?.steps ?? [];
@@ -398,6 +399,33 @@ describe("Merge gate (.github/workflows/pr-checks.yml)", () => {
 
     const appTsconfig = readFileSync(join(workspaceRoot, "packages", "dashboard", "tsconfig.app.json"), "utf-8");
     expect(appTsconfig).toContain('.tsbuildinfo-app');
+  });
+
+  /*
+  FNXC:DashboardTestCheckGate 2026-08-22-03:19:
+  RUFU-159 (operator budget decision per RUFU-140's plan) promotes the dashboard
+  test-file typecheck program to a blocking step of the Typecheck job. tsconfig.app.json
+  excludes every __tests__ directory and *.test.* pattern, so that step is the only
+  compile-time typing of dashboard test code in the gate. Pin the step's presence (after
+  the cache step, so the incremental buildinfo is restored first) and its distinct
+  buildinfo path so a future edit cannot silently drop the gate or let the test-check
+  program clobber the inherited .tsbuildinfo. The config itself is ratcheted separately
+  by scripts/__tests__/dashboard-test-check-config.test.mjs (RUFU-140).
+  */
+  it("typecheck job gates the dashboard test-file typecheck with its own buildinfo path", () => {
+    const typecheckSteps = workflow.jobs?.typecheck?.steps ?? [];
+    const testCheckStep = typecheckSteps.find(
+      (step: any) =>
+        typeof step.run === "string" &&
+        step.run.includes("tsc --noEmit -p tsconfig.test-check.json"),
+    );
+    expect(testCheckStep, "Typecheck job must run the tsconfig.test-check.json program").toBeDefined();
+
+    const cacheStep = typecheckSteps.find(
+      (step: any) => typeof step.uses === "string" && step.uses.startsWith("actions/cache"),
+    );
+    expect(typecheckSteps.indexOf(testCheckStep)).toBeGreaterThan(typecheckSteps.indexOf(cacheStep));
+    expect(cacheStep.with?.path).toContain("packages/dashboard/dist/.tsbuildinfo-test-check");
   });
 
   it("keeps contributing docs aligned with the gate contract", () => {
