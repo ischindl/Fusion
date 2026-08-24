@@ -8421,6 +8421,13 @@
       "lockState": "",
       "relockChanged": "",
       "retainedHistory": ""
+    },
+    "aiMergeReview": {
+      "title": "",
+      "approvedWithPending": "",
+      "candidate": "",
+      "dismissFinding": "",
+      "terminalGuidance": ""
     }
   },
   "taskDocuments": {
@@ -9735,5 +9742,11 @@
     "untitledSection": "Raisonnement sans titre",
     "sectionCount": "{{count}} section",
     "sectionCountPlural": "{{count}} sections"
+  },
+  "artifactImageViewer": {
+    "openTask": "",
+    "close": "",
+    "loading": "",
+    "retry": ""
   }
 }

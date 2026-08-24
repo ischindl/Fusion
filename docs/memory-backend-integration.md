@@ -1,5 +1,7 @@
 # Stash Memory Backend Integration
 
+[← Docs index](./README.md)
+
 Fusion persists AI "memory" — task-completion shots, chat-session transcripts, recall hits,
 and per-conversation read focus — to a pluggable memory backend. The only memory backend
 currently wired into Fusion is **Stash**, a session-oriented event store. This document is the
@@ -68,8 +70,10 @@ are distinguishable by the discriminator tag.
 
 ## 5. Per-conversation memory focus (read-time scoping)
 
-Fusion implements **conversation focus** so a recall hit is scoped to the conversation that
-produced it. The focus is persisted per chat session via the schema migration
+Fusion implements **conversation focus** as an opt-in feature. Enable
+`experimentalFeatures.chatFocus` in **Settings → Experimental Features** to show its composer
+control and apply its recall scope; the flag is default off, and persisted focus values are inert
+until it is enabled. The focus is persisted per chat session via the schema migration
 **`0059_chat_session_memory_focus.sql`** (`SCHEMA_BASELINE_VERSION` = `0059`), which adds a
 `memory_focus` column to the chat-session table.
 

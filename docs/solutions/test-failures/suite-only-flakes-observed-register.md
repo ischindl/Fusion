@@ -598,3 +598,104 @@ reconciler tests that fail only alongside other suites, which points at shared f
 cross-file state rather than a product defect. No timeout was widened, no retry added, and no
 assertion relaxed. A SECOND sighting is an ordinary on-sight quarantine with no further discretion,
 per the standing rule in AGENTS.md.
+
+---
+
+## Entry: `PlanningModeModal.planning-flow` under dashboard lane sharding (first sighting)
+
+- **File:** `packages/dashboard/app/components/__tests__/PlanningModeModal.planning-flow.test.tsx`
+- **Exact tests:** a DIFFERENT case failed on each of two consecutive full-lane runs —
+  `PlanningModeModal sequential flow > keeps the newer session when delayed duplicate reconciliation returns 'a durable question' on 'mobile'`, then
+  `PlanningModeModal sequential flow > can refine a stopped initial plan into the first question`.
+- **Owner:** unowned — first sighting for this file. Recorded rather than quarantined: the file carries 83 tests and quarantine is file-level.
+- **Observed tree/SHA:** `c82e420ba0`, via the package's real command `pnpm --filter @fusion/dashboard test` (the `run-quality-tests.mjs` lane runner), lane `app:backfill-3` (`--project dashboard-app-quality-backfill --shard=3/4`), concurrency 2, 6144MiB heap per lane.
+- **Observed frequency:** twice in two full-lane runs, each time a different case; passes 83/83 in isolation every time.
+
+Verbatim observed failure (second run):
+
+```
+FAIL  |dashboard-app-quality-backfill| app/components/__tests__/PlanningModeModal.planning-flow.test.tsx > PlanningModeModal sequential flow > can refine a stopped initial plan into the first question
+TestingLibraryElementError: Unable to find an element by: [data-testid="planning-plan-review"]
+```
+
+| run | result |
+|---|---|
+| lane runner, default (fail-fast), `c82e420ba0` | **failed** on the delayed-duplicate-reconciliation case |
+| lane runner, `--all --no-fail-fast`, same tree | **failed** on the refine-stopped-plan case |
+| isolated `vitest run <file>`, same tree, repeatedly | **passed** 83/83 |
+
+The moving target plus a "cannot find element" shape points at render/settle timing under a loaded
+shard, not a product defect — a wait that is adequate on an idle machine and not under four
+concurrent 6GB lanes. No timeout was widened, no retry added, no assertion relaxed. A SECOND sighting
+of the *same* case is an ordinary on-sight quarantine per the standing rule in AGENTS.md; because the
+case moves, the honest rescue is a deterministic settle signal in this file's harness rather than a
+longer wait.
+
+---
+
+## Entry: dashboard `api:backfill-*` lanes — PostgreSQL contention under lane concurrency (pattern, not a single test)
+
+- **Files:** no fixed set. Across three consecutive full-lane runs on the same tree, a DIFFERENT file failed each time:
+  - run 1: `app/components/__tests__/PlanningModeModal.planning-flow.test.tsx`
+  - run 2: `src/__tests__/routes-branch-groups.test.ts`, `src/__tests__/routes-planning.test.ts`
+  - run 3: `src/__tests__/register-signal-routes.test.ts`, `src/__tests__/server-view-preload.test.ts`
+- **Command:** `pnpm --filter @fusion/dashboard test -- --all --no-fail-fast` (the `run-quality-tests.mjs` lane runner: 15 lanes, concurrency 2, 6144MiB heap per lane).
+- **Observed tree/SHA:** `cc19584cc4`.
+- **Every one passes in isolation**, including re-running the exact multi-file command that had just failed.
+
+Failure shape in run 3 (`api:backfill-1`, `api:backfill-2`):
+
+```
+Error: Hook timed out in 15000ms.
+fnlvl=warn [dashboard-github-tracking-reconciler] … pass failed (other passes still run): Failed query: select … from "project"."tasks" …
+```
+
+The hook timeout arrives alongside PostgreSQL `Failed query` warnings. Those warnings were FIRST READ
+as proof of connection exhaustion; that reading was WRONG and is retracted here. The warnings come from
+a background github-tracking reconciler still polling an already-torn-down store, i.e. noise that
+follows the timeout rather than causing it. Measured 2026-08-23: a live `dashboard-api-quality-backfill`
+lane peaked at **14 backend connections against `max_connections=100`**. There is no connection
+shortage. Two attempts to act on the exhaustion theory were reverted — lowering the harness `poolMax`
+from 5 to 2 took core's PostgreSQL suite from 1 failure to 11, matching FN-9131, where a shared
+connection-budget primitive also made a loaded run worse.
+
+This is suite infrastructure, not a defect in any of the five files above, and chasing the file that
+happened to lose the race on a given run is whack-a-mole.
+
+Scale for context: run 3 executed roughly 15,200 tests across 15 lanes and failed 2.
+
+### Reproduction attempt 2026-08-23 — did NOT reproduce
+
+Re-run on a quiet 28-core machine at `7e59494448`, after this session's 816 cross-package test failures
+were fixed:
+
+| Run | Result |
+| --- | --- |
+| `--group api` alone (3 lanes) | **passed** — 156 files, 1,437 tests, 0 hook timeouts, 0 gate degradations |
+| full runner, all 15 lanes | **passed** — 23,584 tests, 0 hook timeouts, 0 gate degradations, 0 failed files |
+
+Two candidate mechanisms were tested and NEITHER is supported by evidence:
+
+1. **DDL admission saturation.** `pg-ddl-admission.ts` waits up to `acquireTimeoutMs` (default 10s),
+   then degrades and runs the DDL anyway, against a 15s `hookTimeout` — mechanically enough to overrun.
+   But both runs emitted **zero** `[pg-ddl-admission] degraded` warnings, so the gate never saturated.
+   Unsupported; do not cite it as the cause without a run that actually shows the warning.
+2. **CPU oversubscription.** The api group spends `import 191.63s` against `tests 45.01s`, and
+   `hookTimeout` is wall-clock, so a starved worker overruns setup without any database involvement.
+   This remains the leading candidate purely because it survives the disproofs above — the original
+   sightings occurred while several agent subprocesses ran concurrently, and the clean 2026-08-23 runs
+   had a quiet machine. It is UNPROVEN: no run has yet captured the failure with CPU pressure recorded.
+
+**Next attempt should capture, at the moment of failure:** per-worker CPU wait, the gate's
+`observe()` degradation counters, and which hook overran. Without those, any fix is a guess.
+
+**Not quarantined deliberately, and nothing deleted.** Quarantine is file-level and the failing file
+moves, so quarantining would evict healthy coverage without touching the cause. Deleting the files was
+considered and rejected: they are 112 tests pinning FN-8823 (shared-branch-group merge boundaries),
+FN-7438, FN-7611, FN-8341, and FN-8442, including an explicit guard against a hand-rolled
+`promoteBranchGroup` mock. No timeout was widened, no retry added, and no assertion relaxed anywhere in
+this investigation.
+
+One genuinely structural failure WAS found and fixed rather than recorded here: the lane runner's own
+self-tests spawned `pnpm --filter @fusion/dashboard test`, re-entering the suite from inside it. See
+`cc19584cc4`.

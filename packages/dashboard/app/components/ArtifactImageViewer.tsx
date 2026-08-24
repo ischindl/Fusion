@@ -40,6 +40,12 @@ export interface ArtifactImageViewerProps {
  * RUFU-152 moves the viewer's user-facing copy (open/close/loading/retry) to app-namespace
  * i18n keys so the hardcoded-copy lint gate passes; en users see identical strings via the
  * documented English defaults.
+ *
+ * FNXC:ArtifactImageSecurity 2026-08-24-03:15:
+ * Upstream 097fa9b403 ("route the last hardcoded dashboard copy through the catalog")
+ * localized the same copy under the `artifactImageViewer.*` keys. The v25 merge adopts the
+ * upstream namespace (PR #3493 and all future upstream edits use it); the local RUFU-152
+ * `documents.*` variants remain in the catalog only if still referenced elsewhere.
  */
 export function ArtifactImageViewer({ artifactId, title, projectId, taskId, onOpenTask, onClose }: ArtifactImageViewerProps) {
   const { t } = useTranslation("app");
@@ -86,17 +92,17 @@ export function ArtifactImageViewer({ artifactId, title, projectId, taskId, onOp
       <section className="artifact-image-viewer" aria-label={`Image artifact: ${title}`}>
         <header className="artifact-image-viewer__header">
           <h3 className="artifact-image-viewer__title">{title}</h3>
-          {taskId && onOpenTask && <button className="btn btn-sm" type="button" onClick={() => onOpenTask(taskId)}>{t("documents.openTask", "Open task")}</button>}
-          <button ref={closeRef} className="modal-close" type="button" onClick={onClose} aria-label={t("documents.closeArtifactPreview", "Close artifact preview")}>
+          {taskId && onOpenTask && <button className="btn btn-sm" type="button" onClick={() => onOpenTask(taskId)}>{t("artifactImageViewer.openTask", "Open task")}</button>}
+          <button ref={closeRef} className="modal-close" type="button" onClick={onClose} aria-label={t("artifactImageViewer.close", "Close artifact preview")}>
             <X size={20} />
           </button>
         </header>
         <div className="artifact-image-viewer__content" aria-live="polite">
-          {loading && <p>{t("documents.loadingImageArtifact", "Loading image artifact…")}</p>}
+          {loading && <p>{t("artifactImageViewer.loading", "Loading image artifact…")}</p>}
           {error && (
             <div className="artifact-image-viewer__failure" role="alert">
               <p className="artifact-image-viewer__error">{error}</p>
-              <button className="btn btn-sm" type="button" onClick={reload}>{t("documents.retry", "Retry")}</button>
+              <button className="btn btn-sm" type="button" onClick={reload}>{t("artifactImageViewer.retry", "Retry")}</button>
             </div>
           )}
           {url && <img className="artifact-image-viewer__image" src={url} alt={title} />}
