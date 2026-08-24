@@ -2402,7 +2402,9 @@
     "expandArtifactHint": "Click to expand",
     "lightboxLabel": "Artifact media preview",
     "readOnly": "",
-    "readOnlyHint": ""
+    "readOnlyHint": "",
+    "closeArtifactPreview": "",
+    "loadingImageArtifact": ""
   },
   "droidCli": {
     "active": "Activo",
@@ -7855,6 +7857,13 @@
       "unassigned": "Agente desasignado",
       "unassignFailed": "Error al desasignar el agente: {{error}}",
       "unassignTitle": "Desasignar agente"
+    },
+    "aiMergeReviewReconciliation": {
+      "title": "",
+      "approvedPending": "",
+      "candidate": "",
+      "dismissFinding": "",
+      "terminalHint": ""
     },
     "agentLink": "agente {{id}}",
     "ageStaleness": {

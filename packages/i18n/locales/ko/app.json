@@ -2402,7 +2402,9 @@
     "expandArtifactHint": "Click to expand",
     "lightboxLabel": "Artifact media preview",
     "readOnly": "",
-    "readOnlyHint": ""
+    "readOnlyHint": "",
+    "closeArtifactPreview": "",
+    "loadingImageArtifact": ""
   },
   "droidCli": {
     "active": "활성",
@@ -7855,6 +7857,13 @@
       "unassigned": "에이전트 할당이 해제되었습니다",
       "unassignFailed": "에이전트 할당 해제 실패: {{error}}",
       "unassignTitle": "에이전트 할당 해제"
+    },
+    "aiMergeReviewReconciliation": {
+      "title": "",
+      "approvedPending": "",
+      "candidate": "",
+      "dismissFinding": "",
+      "terminalHint": ""
     },
     "agentLink": "에이전트 {{id}}",
     "ageStaleness": {

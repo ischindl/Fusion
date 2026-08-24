@@ -2353,6 +2353,7 @@ export default interface Resources {
       "backToFiles": "Back to files",
       "backToFilesList": "Back to project files list",
       "clearSearch": "Clear search",
+      "closeArtifactPreview": "Close artifact preview",
       "closeLightbox": "Close artifact preview",
       "collapse": "Collapse",
       "collapseContent": "Collapse content",
@@ -2370,6 +2371,7 @@ export default interface Resources {
       "lightboxLabel": "Artifact media preview",
       "loadingArtifacts": "Loading artifacts…",
       "loadingFileContent": "Loading file content…",
+      "loadingImageArtifact": "Loading image artifact…",
       "loadingProjectFiles": "Loading project markdown files…",
       "loadingTaskDocuments": "Loading task documents…",
       "markdown": "Markdown",
@@ -8047,6 +8049,13 @@ export default interface Resources {
         "unassigned": "Agent unassigned"
       },
       "agentLink": "agent {{id}}",
+      "aiMergeReviewReconciliation": {
+        "approvedPending": "Approved — {{count}} prior finding(s) unconfirmed",
+        "candidate": "Candidate: ",
+        "dismissFinding": "Dismiss this finding",
+        "terminalHint": "Rebase or re-push the branch, dismiss a finding with justification, or land manually.",
+        "title": "AI merge review reconciliation"
+      },
       "attachments": {
         "attachBtn": "Attach Screenshot",
         "attached": "Screenshot attached",

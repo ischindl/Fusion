@@ -2412,7 +2412,9 @@
     "closeLightbox": "Close artifact preview",
     "expandArtifact": "Expand {{title}}",
     "expandArtifactHint": "Click to expand",
-    "lightboxLabel": "Artifact media preview"
+    "lightboxLabel": "Artifact media preview",
+    "closeArtifactPreview": "Close artifact preview",
+    "loadingImageArtifact": "Loading image artifact…"
   },
   "droidCli": {
     "active": "Active",
@@ -7865,6 +7867,13 @@
       "unassigned": "Agent unassigned",
       "unassignFailed": "Failed to unassign agent: {{error}}",
       "unassignTitle": "Unassign agent"
+    },
+    "aiMergeReviewReconciliation": {
+      "title": "AI merge review reconciliation",
+      "approvedPending": "Approved — {{count}} prior finding(s) unconfirmed",
+      "candidate": "Candidate: ",
+      "dismissFinding": "Dismiss this finding",
+      "terminalHint": "Rebase or re-push the branch, dismiss a finding with justification, or land manually."
     },
     "agentLink": "agent {{id}}",
     "ageStaleness": {

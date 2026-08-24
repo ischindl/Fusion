@@ -2402,7 +2402,9 @@
     "expandArtifactHint": "Click to expand",
     "lightboxLabel": "Artifact media preview",
     "readOnly": "",
-    "readOnlyHint": ""
+    "readOnlyHint": "",
+    "closeArtifactPreview": "",
+    "loadingImageArtifact": ""
   },
   "droidCli": {
     "active": "活躍",
@@ -7855,6 +7857,13 @@
       "unassigned": "代理已取消指派",
       "unassignFailed": "取消指派代理失敗：{{error}}",
       "unassignTitle": "取消指派代理"
+    },
+    "aiMergeReviewReconciliation": {
+      "title": "",
+      "approvedPending": "",
+      "candidate": "",
+      "dismissFinding": "",
+      "terminalHint": ""
     },
     "agentLink": "代理 {{id}}",
     "ageStaleness": {

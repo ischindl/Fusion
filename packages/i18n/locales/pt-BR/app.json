@@ -2412,7 +2412,9 @@
     "closeLightbox": "Fechar pré-visualização do artefato",
     "expandArtifact": "Expandir {{title}}",
     "expandArtifactHint": "Clique para expandir",
-    "lightboxLabel": "Pré-visualização de mídia do artefato"
+    "lightboxLabel": "Pré-visualização de mídia do artefato",
+    "closeArtifactPreview": "",
+    "loadingImageArtifact": ""
   },
   "droidCli": {
     "active": "Ativo",
@@ -7865,6 +7867,13 @@
       "unassigned": "Atribuição do agente removida",
       "unassignFailed": "Falha ao remover atribuição do agente: {{error}}",
       "unassignTitle": "Remover atribuição do agente"
+    },
+    "aiMergeReviewReconciliation": {
+      "title": "",
+      "approvedPending": "",
+      "candidate": "",
+      "dismissFinding": "",
+      "terminalHint": ""
     },
     "agentLink": "agente {{id}}",
     "ageStaleness": {

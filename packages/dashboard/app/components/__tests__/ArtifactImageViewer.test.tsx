@@ -45,4 +45,28 @@ describe("ArtifactImageViewer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(reload).toHaveBeenCalledOnce();
   });
+
+  /*
+  FNXC:ArtifactImageSecurity 2026-08-23-22:30:
+  RUFU-152 moved the viewer's open/close/loading/retry copy to app-namespace i18n keys; these
+  cases pin the migrated copy through the test i18n instance's English inline defaults.
+  */
+  it("renders the localized loading copy while the blob resolves", () => {
+    mockUseArtifactImageBlob.mockReturnValue({ url: null, loading: true, error: null, reload: vi.fn() });
+    render(<ArtifactImageViewer artifactId="image-1" title="Pending image" onClose={vi.fn()} />);
+
+    expect(screen.getByText("Loading image artifact…")).toBeInTheDocument();
+    expect(screen.queryByRole("img")).toBeNull();
+  });
+
+  it("exposes localized open-task and close controls", () => {
+    mockUseArtifactImageBlob.mockReturnValue({ url: "blob:secure-preview", loading: false, error: null, reload: vi.fn() });
+    const onOpenTask = vi.fn();
+    render(<ArtifactImageViewer artifactId="image-1" title="Secured image" taskId="task-42" onOpenTask={onOpenTask} onClose={vi.fn()} />);
+
+    expect(screen.getByRole("button", { name: "Close artifact preview" })).toHaveAccessibleName("Close artifact preview");
+    fireEvent.click(screen.getByRole("button", { name: "Open task" }));
+    expect(onOpenTask).toHaveBeenCalledOnce();
+    expect(onOpenTask).toHaveBeenCalledWith("task-42");
+  });
 });

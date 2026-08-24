@@ -5610,11 +5610,11 @@ export function TaskDetailContent({
                   const reconciliation = task.aiMergeReviewReconciliation;
                   const pending = reconciliation.findings.filter((finding) => finding.disposition === "pending" || finding.disposition === "still-present");
                   return (
-                    <section className={`ai-merge-review-reconciliation ${reconciliation.terminal ? "ai-merge-review-reconciliation-terminal" : ""}`} aria-label="AI merge review reconciliation">
-                      <h3>{reconciliation.consecutiveCleanApprovals > 0 ? `Approved — ${pending.length} prior finding(s) unconfirmed` : "AI merge review reconciliation"}</h3>
-                      {reconciliation.candidateSha && <p>Candidate: <code>{reconciliation.candidateSha}</code></p>}
-                      {pending.length > 0 && <ul>{pending.map((finding) => <li key={finding.id}>{finding.text}{(reconciliation.terminal || finding.disposition === "still-present") && <button type="button" className="btn btn-secondary" onClick={() => handleDismissAiMergeFinding(finding.id)}>Dismiss this finding</button>}</li>)}</ul>}
-                      {reconciliation.terminal && <p>Rebase or re-push the branch, dismiss a finding with justification, or land manually.</p>}
+                    <section className={`ai-merge-review-reconciliation ${reconciliation.terminal ? "ai-merge-review-reconciliation-terminal" : ""}`} aria-label={t("taskDetail.aiMergeReviewReconciliation.title", "AI merge review reconciliation")}>
+                      <h3>{reconciliation.consecutiveCleanApprovals > 0 ? t("taskDetail.aiMergeReviewReconciliation.approvedPending", "Approved — {{count}} prior finding(s) unconfirmed", { count: pending.length }) : t("taskDetail.aiMergeReviewReconciliation.title", "AI merge review reconciliation")}</h3>
+                      {reconciliation.candidateSha && <p>{t("taskDetail.aiMergeReviewReconciliation.candidate", "Candidate: ")}<code>{reconciliation.candidateSha}</code></p>}
+                      {pending.length > 0 && <ul>{pending.map((finding) => <li key={finding.id}>{finding.text}{(reconciliation.terminal || finding.disposition === "still-present") && <button type="button" className="btn btn-secondary" onClick={() => handleDismissAiMergeFinding(finding.id)}>{t("taskDetail.aiMergeReviewReconciliation.dismissFinding", "Dismiss this finding")}</button>}</li>)}</ul>}
+                      {reconciliation.terminal && <p>{t("taskDetail.aiMergeReviewReconciliation.terminalHint", "Rebase or re-push the branch, dismiss a finding with justification, or land manually.")}</p>}
                     </section>
                   );
                 })()}
