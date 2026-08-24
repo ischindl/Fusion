@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 /*
- * FNXC:LintHygiene 2026-08-24-01:41: the FNXC:TestHygiene header block below embeds a
- * load-bearing zero-width space before the closing star-slash sequence (a plain closing
- * delimiter there would end the comment early and make the following lines bare code), so the
- * no-irregular-whitespace rule is disabled file-wide; the ZWSP keeps the comment text safe for
- * both the JS parser and this checker's own comment scan.
+ * FNXC:LintHygiene 2026-08-24-01:41: the FNXC:TestHygiene header block below used to embed a
+ * zero-width space that tripped the no-irregular-whitespace rule, which temporarily required a
+ * file-wide eslint-disable below this comment.
+ *
+ * FNXC:LintHygiene 2026-08-24-03:30: upstream c192971053 removed the irregular character and
+ * reworded the header; the v25 merge adopts that fix and drops the now-unused disable
+ * directive (lint flagged it as unused), leaving this note as the merge record.
  */
-/* eslint-disable no-irregular-whitespace */
 /*
 FNXC:TestHygiene 2026-08-23-23:50:
 TESTS ASSERT BEHAVIOR, NEVER COMMENT TEXT. A test that pins an `FNXC:` block, a date stamp, or any
