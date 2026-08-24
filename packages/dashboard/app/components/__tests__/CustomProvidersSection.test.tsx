@@ -771,6 +771,99 @@ describe("CustomProvidersSection", () => {
     });
   });
 
+  /*
+  FNXC:CustomProviderHttpTimeout 2026-08-24-19:52:
+  RUFU-145 follow-up surface fix (bug class: the first fix covered only the onboarding
+  modal, CustomProviderForm — this section is the surface operators actually edit
+  providers on). The regression tests assert the general invariant, not just one repro:
+  the timeout input renders here, round-trips into the save payload, omits blank values
+  (300 s default applies), and preserves 0 (disabled) through both directions — 0 must
+  never collapse to blank the way the truthy window-field parse would.
+  */
+  it("sends the per-model HTTP timeout in the save payload and keeps 0 as disabled", async () => {
+    mockFetchCustomProviders.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+    render(<CustomProvidersSection embedded />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Add Custom Provider/i })).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Add Custom Provider/i }));
+    fireEvent.change(screen.getByLabelText("Provider name"), { target: { value: "Progis" } });
+    fireEvent.change(screen.getByLabelText("Base URL"), { target: { value: "http://192.168.12.40:8000/v1" } });
+    fireEvent.change(screen.getByLabelText("Model ID 1"), { target: { value: "qwen" } });
+    // Explicit 3600 for the slow local model, and 0 on a second row proves "disabled"
+    // round-trips as a number, not as an omitted key.
+    fireEvent.change(screen.getByLabelText("HTTP timeout (s) 1"), { target: { value: "3600" } });
+    fireEvent.click(screen.getByRole("button", { name: /Add model row/i }));
+    fireEvent.change(screen.getByLabelText("Model ID 2"), { target: { value: "coder" } });
+    fireEvent.change(screen.getByLabelText("HTTP timeout (s) 2"), { target: { value: "0" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save Provider" }));
+
+    await waitFor(() => {
+      expect(mockAddCustomProvider).toHaveBeenCalledWith(expect.objectContaining({
+        models: [
+          { id: "qwen", name: "qwen", timeoutSeconds: 3600 },
+          { id: "coder", name: "coder", timeoutSeconds: 0 },
+        ],
+      }));
+    });
+  });
+
+  it("omits a blank HTTP timeout from the save payload so the 300 s default applies", async () => {
+    mockFetchCustomProviders.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+    render(<CustomProvidersSection embedded />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Add Custom Provider/i })).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Add Custom Provider/i }));
+    fireEvent.change(screen.getByLabelText("Provider name"), { target: { value: "Test Provider" } });
+    fireEvent.change(screen.getByLabelText("Base URL"), { target: { value: "https://api.example.com" } });
+    fireEvent.change(screen.getByLabelText("Model ID 1"), { target: { value: "gpt-4" } });
+    // Leave the timeout input blank: the key must be absent (not 0, not undefined-in-object).
+    fireEvent.click(screen.getByRole("button", { name: "Save Provider" }));
+
+    await waitFor(() => {
+      expect(mockAddCustomProvider).toHaveBeenCalledWith(expect.objectContaining({
+        models: [expect.objectContaining({ id: "gpt-4", name: "gpt-4" })],
+      }));
+    });
+    expect(mockAddCustomProvider).toHaveBeenCalledWith(expect.objectContaining({
+      models: [{ id: "gpt-4", name: "gpt-4" }],
+    }));
+  });
+
+  it("pre-fills the HTTP timeout input, including 0, when editing a provider persisted with timeoutSeconds", async () => {
+    mockFetchCustomProviders.mockResolvedValueOnce([
+      {
+        id: "test-id",
+        name: "Timeouted Provider",
+        apiType: "openai-compatible",
+        baseUrl: "https://api.example.com",
+        models: [
+          { id: "slow-model", name: "Slow Model", timeoutSeconds: 3600 },
+          { id: "no-timeout-model", name: "No Timeout", timeoutSeconds: 0 },
+        ],
+      },
+    ]);
+
+    render(<CustomProvidersSection embedded />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Edit Timeouted Provider")).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByLabelText("Edit Timeouted Provider"));
+
+    expect(screen.getByLabelText("HTTP timeout (s) 1")).toHaveValue(3600);
+    // 0 (disabled) must pre-fill as 0, not as the blank default — the truthy parse trap.
+    expect(screen.getByLabelText("HTTP timeout (s) 2")).toHaveValue(0);
+  });
+
   it("Refresh Models re-seeds an open edit form with the merged persisted windows", async () => {
     mockFetchCustomProviders.mockResolvedValueOnce([
       {
