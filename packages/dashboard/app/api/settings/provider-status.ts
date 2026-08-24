@@ -750,6 +750,12 @@ export interface CustomProviderModelInput {
   name?: string;
   contextWindow?: number;
   maxTokens?: number;
+  /**
+   * FNXC:CustomProviderHttpTimeout 2026-08-24-13:54:
+   * Per-model HTTP idle/first-byte timeout in seconds (0 = off; omitted = default 300s).
+   * See CustomProvider.models in @fusion/core for the full contract.
+   */
+  timeoutSeconds?: number;
   /** FNXC:CustomProviderThinkingFormat 2026-08-21-05:48: RUFU-143 per-model pi-ai thinking-format literal. */
   thinkingFormat?: CustomProviderThinkingFormat;
   /** FNXC:CustomProviderThinkingFormat 2026-08-21-05:48: RUFU-143 strict boolean; false opts out of all thinking params. */

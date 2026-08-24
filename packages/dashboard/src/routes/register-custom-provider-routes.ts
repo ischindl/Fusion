@@ -118,6 +118,20 @@ function assertPositiveFiniteNumber(value: unknown, fieldName: string): number {
 }
 
 /*
+FNXC:CustomProviderHttpTimeout 2026-08-24-13:54:
+Per-model `timeoutSeconds` (HTTP idle/first-byte timeout, seconds) is a NON-NEGATIVE finite
+number — unlike the window fields, `0` is a meaningful persisted value (user-facing "off",
+disabled at both timeout seams), so the guard allows zero and rejects negative/NaN input with
+the exact field path, mirroring the window-field 400 contract.
+*/
+function assertNonNegativeFiniteNumber(value: unknown, fieldName: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw badRequest(`${fieldName} must be a non-negative finite number`);
+  }
+  return value;
+}
+
+/*
 FNXC:CustomProviderThinkingFormat 2026-08-21-05:46:
 RUFU-143: the dashboard persists the per-model thinking flags verbatim (they are additive to the
 RUFU-123 window fields). thinkingFormat must be one of the pi-ai thinkingFormat literals
@@ -142,13 +156,13 @@ function assertReasoning(value: unknown, fieldName: string): boolean {
 /**
  * Validates and normalizes a models array from a request body.
  * Returns undefined if models is omitted, or an array of
- * { id, name, contextWindow?, maxTokens?, thinkingFormat?, reasoning? } objects
- * (window and thinking-flag keys omitted when absent).
+ * { id, name, contextWindow?, maxTokens?, timeoutSeconds?, thinkingFormat?, reasoning? } objects
+ * (window, timeout, and thinking-flag keys omitted when absent).
  * @throws {ApiError} with status 400 if the structure is invalid.
  */
 function validateModels(
   value: unknown,
-): Array<{ id: string; name: string; contextWindow?: number; maxTokens?: number; thinkingFormat?: CustomProviderThinkingFormat; reasoning?: boolean }> | undefined {
+): Array<{ id: string; name: string; contextWindow?: number; maxTokens?: number; timeoutSeconds?: number; thinkingFormat?: CustomProviderThinkingFormat; reasoning?: boolean }> | undefined {
   if (value === undefined) {
     return undefined;
   }
@@ -163,7 +177,7 @@ function validateModels(
     }
 
     const row = entry as Record<string, unknown>;
-    const model: { id: string; name: string; contextWindow?: number; maxTokens?: number; thinkingFormat?: CustomProviderThinkingFormat; reasoning?: boolean } = {
+    const model: { id: string; name: string; contextWindow?: number; maxTokens?: number; timeoutSeconds?: number; thinkingFormat?: CustomProviderThinkingFormat; reasoning?: boolean } = {
       id: assertNonEmptyString(row.id, `models[${index}].id`),
       name: assertNonEmptyString(row.name, `models[${index}].name`),
     };
@@ -172,6 +186,12 @@ function validateModels(
     }
     if (row.maxTokens !== undefined) {
       model.maxTokens = assertPositiveFiniteNumber(row.maxTokens, `models[${index}].maxTokens`);
+    }
+    // FNXC:CustomProviderHttpTimeout 2026-08-24-13:54:
+    // 0 is a valid persisted value here ("off"); the registry builder converts it to the
+    // disabled sentinel for the SDK path and to a no-timer undici idle bound.
+    if (row.timeoutSeconds !== undefined) {
+      model.timeoutSeconds = assertNonNegativeFiniteNumber(row.timeoutSeconds, `models[${index}].timeoutSeconds`);
     }
     if (row.thinkingFormat !== undefined) {
       model.thinkingFormat = assertThinkingFormat(row.thinkingFormat, `models[${index}].thinkingFormat`);

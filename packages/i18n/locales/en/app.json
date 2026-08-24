@@ -5215,7 +5215,8 @@
       "modelNameLabel": "Model name",
       "models": "Models",
       "name": "Display Name",
-      "reasoning": "Reasoning"
+      "reasoning": "Reasoning",
+      "timeoutSeconds": "HTTP timeout (s)"
     },
     "llamaCpp": {
       "disable": "Disable",
