@@ -6,12 +6,15 @@
  *   - `0` is VALID (it means "timeout disabled" for that model) — unlike the positive-only
  *     window fields it may be persisted as 0;
  *   - omitted values are persisted as absent (legacy entries round-trip byte-identical);
- *   - negative, non-finite, and non-numeric values are rejected with HTTP 400.
+ *   - negative, non-finite, and non-numeric values are rejected with HTTP 400;
+ *   - model refresh (manual or the startup auto-refresh of all providers) carries a
+ *     persisted timeoutSeconds over by model id, including the 0 "disabled" sentinel
+ *     (carry-over seam: mergeRefreshedCustomProviderModels).
  */
 import { describe, expect, it, vi } from "vitest";
 import type { Router } from "express";
 import { ApiError } from "../api-error.js";
-import { registerCustomProviderRoutes } from "../routes/register-custom-provider-routes.js";
+import { mergeRefreshedCustomProviderModels, registerCustomProviderRoutes } from "../routes/register-custom-provider-routes.js";
 
 type Handler = (req: { body: unknown; params: Record<string, string> }, res: unknown) => Promise<void>;
 
@@ -122,6 +125,15 @@ describe("POST /api/custom-providers per-model timeoutSeconds", () => {
       }),
     ).rejects.toMatchObject({ statusCode: 400, message: expect.stringContaining("timeoutSeconds") });
   });
+  it("rejects maxTokens >= contextWindow pairs with 400 (inconsistent output reservation)", async () => {
+    const { post } = createRouteHarness();
+    await expect(
+      invokeCreate(post.get("/custom-providers")!, {
+        ...baseProviderBody,
+        models: [{ id: "bad", name: "Bad", contextWindow: 32768, maxTokens: 32768 }],
+      }),
+    ).rejects.toMatchObject({ statusCode: 400, message: expect.stringContaining("maxTokens") });
+  });
 });
 
 describe("PUT /api/custom-providers/:id per-model timeoutSeconds", () => {
@@ -145,5 +157,83 @@ describe("PUT /api/custom-providers/:id per-model timeoutSeconds", () => {
         models: [{ id: "bad", name: "Bad", timeoutSeconds: -1 }],
       }),
     ).rejects.toBeInstanceOf(ApiError);
+  });
+});
+
+describe("mergeRefreshedCustomProviderModels: refresh carry-over (all per-model fields)", () => {
+  // FNXC:CustomProviderHttpTimeout 2026-08-24-23:35: regression surface for the timeout
+  // feature missing the refresh carry-over — every refresh previously rebuilt the model
+  // list from probe results (windows + thinking flags only) and dropped timeoutSeconds.
+
+  it("carries a persisted positive timeoutSeconds across a refresh", () => {
+    const merged = mergeRefreshedCustomProviderModels(
+      [{ id: "qwen38", name: "Qwen 38B" }],
+      [{ id: "qwen38", name: "Qwen 38B", timeoutSeconds: 3600 }],
+    );
+    expect(merged).toEqual([{ id: "qwen38", name: "Qwen 38B", timeoutSeconds: 3600 }]);
+  });
+
+  it("carries the timeoutSeconds: 0 (disabled) sentinel across a refresh", () => {
+    const merged = mergeRefreshedCustomProviderModels(
+      [{ id: "m1", name: "M1" }],
+      [{ id: "m1", name: "M1", timeoutSeconds: 0 }],
+    );
+    expect(merged[0].timeoutSeconds).toBe(0);
+  });
+
+  it("carries the pre-existing windows/thinking invariants unchanged", () => {
+    const merged = mergeRefreshedCustomProviderModels(
+      [{ id: "m1", name: "M1" }],
+      [{ id: "m1", name: "M1", contextWindow: 32768, maxTokens: 4096, thinkingFormat: "qwen", reasoning: false }],
+    );
+    expect(merged[0]).toMatchObject({ contextWindow: 32768, maxTokens: 4096, thinkingFormat: "qwen", reasoning: false });
+  });
+
+  it("probe-reported windows win over persisted values while timeoutSeconds still carries", () => {
+    const merged = mergeRefreshedCustomProviderModels(
+      [{ id: "m1", name: "M1", contextWindow: 65536 }],
+      [{ id: "m1", name: "M1", contextWindow: 32768, timeoutSeconds: 600 }],
+    );
+    expect(merged[0].contextWindow).toBe(65536);
+    expect(merged[0].timeoutSeconds).toBe(600);
+  });
+
+  it("drops models that no longer exist (list replacement semantics)", () => {
+    const merged = mergeRefreshedCustomProviderModels(
+      [{ id: "kept", name: "Kept" }],
+      [
+        { id: "kept", name: "Kept", timeoutSeconds: 900 },
+        { id: "gone", name: "Gone", timeoutSeconds: 120 },
+      ],
+    );
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toEqual({ id: "kept", name: "Kept", timeoutSeconds: 900 });
+  });
+
+  it("never invents timeoutSeconds for a model without a persisted value", () => {
+    const merged = mergeRefreshedCustomProviderModels(
+      [{ id: "fresh", name: "Fresh" }],
+      [{ id: "fresh", name: "Fresh" }],
+    );
+    expect(merged[0]).toEqual({ id: "fresh", name: "Fresh" });
+    expect("timeoutSeconds" in merged[0]).toBe(false);
+  });
+
+  it("drops a probe-reported maxTokens at/above its own contextWindow (inconsistent pair)", () => {
+    const merged = mergeRefreshedCustomProviderModels(
+      [{ id: "m1", name: "M1", contextWindow: 32768, maxTokens: 32768 }],
+      [],
+    );
+    expect(merged[0].contextWindow).toBe(32768);
+    expect(merged[0].maxTokens).toBeUndefined();
+    expect("maxTokens" in merged[0]).toBe(false);
+  });
+
+  it("keeps a consistent carried-over window pair (drop fires only on in-entry pairs)", () => {
+    const merged = mergeRefreshedCustomProviderModels(
+      [{ id: "m1", name: "M1" }],
+      [{ id: "m1", name: "M1", contextWindow: 32768, maxTokens: 8192, timeoutSeconds: 600 }],
+    );
+    expect(merged[0]).toMatchObject({ contextWindow: 32768, maxTokens: 8192, timeoutSeconds: 600 });
   });
 });

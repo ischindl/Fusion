@@ -193,6 +193,23 @@ function validateModels(
     if (row.timeoutSeconds !== undefined) {
       model.timeoutSeconds = assertNonNegativeFiniteNumber(row.timeoutSeconds, `models[${index}].timeoutSeconds`);
     }
+    /*
+    FNXC:CustomProviderModelWindows 2026-08-20-22:27: RUFU-145 PR #3493 review invariant:
+    the output reservation must fit inside the context window. A pair where
+    maxTokens >= contextWindow makes the chat-lane compaction hard limit
+    (contextWindow - max(16384, maxTokens)) non-positive, so every chat call enters
+    compaction or fails before sending. An explicitly registered contradictory pair is
+    an operator input error — reject 400 with both field paths named.
+    */
+    if (
+      model.contextWindow !== undefined &&
+      model.maxTokens !== undefined &&
+      model.maxTokens >= model.contextWindow
+    ) {
+      throw badRequest(
+        `models[${index}].maxTokens (${model.maxTokens}) must be smaller than models[${index}].contextWindow (${model.contextWindow})`,
+      );
+    }
     if (row.thinkingFormat !== undefined) {
       model.thinkingFormat = assertThinkingFormat(row.thinkingFormat, `models[${index}].thinkingFormat`);
     }
@@ -849,6 +866,134 @@ async function discoverUsableProviderModels(provider: Pick<CustomProvider, "base
 }
 
 /**
+ * FNXC:CustomProviderModelWindows 2026-08-19-14:16:
+ * RUFU-123: probes do not always report per-model windows (Anthropic-compatible never
+ * does; OpenAI-compatible endpoints may omit the limit object), so a naive list
+ * replacement would silently drop operator-entered contextWindow/maxTokens. Build a
+ * model-id -> persisted-windows map from the pre-refresh provider record and let the
+ * probe value win when present (positive-finite), otherwise keep the prior persisted
+ * value for that id. Discovered models that no longer exist are still dropped (list
+ * replacement semantics unchanged).
+ *
+ * FNXC:CustomProviderThinkingFormat 2026-08-21-05:46:
+ * RUFU-143: the same map now also carries the per-model thinking flags. The probe never
+ * reports them, so a prior thinkingFormat is carried over when set and a prior
+ * reasoning opt-out (false) is the only prior reasoning re-emitted (true/absent means the
+ * default presumed-thinking-capable behavior and must not be re-emitted as an explicit value).
+ *
+ * FNXC:CustomProviderHttpTimeout 2026-08-24-23:35:
+ * The per-model HTTP timeout feature (timeoutSeconds next to contextWindow/maxTokens)
+ * missed this carry-over surface: refresh rebuilt the persisted model list with windows
+ * and thinking flags only, so every model refresh (startup auto-refresh for all
+ * providers, manual refresh) silently dropped the persisted timeoutSeconds — save 3600,
+ * next refresh, value gone. timeoutSeconds now carries over by id as well, including
+ * the 0 "disabled" sentinel (probes never report a timeout). Extracted as a pure
+ * exported function so the carry-over invariant across ALL per-model fields is testable
+ * without probing a live endpoint.
+ */
+export function mergeRefreshedCustomProviderModels(
+  discovered: ProbeModelResult[],
+  priorModels: Array<{
+    id: string;
+    contextWindow?: number;
+    maxTokens?: number;
+    timeoutSeconds?: number;
+    thinkingFormat?: CustomProviderThinkingFormat;
+    reasoning?: boolean;
+  }>,
+): Array<{
+  id: string;
+  name: string;
+  contextWindow?: number;
+  maxTokens?: number;
+  timeoutSeconds?: number;
+  thinkingFormat?: CustomProviderThinkingFormat;
+  reasoning?: boolean;
+}> {
+  const persistedModelFieldsById = new Map<
+    string,
+    { contextWindow?: number; maxTokens?: number; timeoutSeconds?: number; thinkingFormat?: CustomProviderThinkingFormat; reasoning?: boolean }
+  >();
+  for (const model of priorModels) {
+    if (
+      model.contextWindow !== undefined ||
+      model.maxTokens !== undefined ||
+      model.timeoutSeconds !== undefined ||
+      model.thinkingFormat !== undefined ||
+      model.reasoning === false
+    ) {
+      persistedModelFieldsById.set(model.id, {
+        contextWindow: model.contextWindow,
+        maxTokens: model.maxTokens,
+        timeoutSeconds: model.timeoutSeconds,
+        thinkingFormat: model.thinkingFormat,
+        reasoning: model.reasoning,
+      });
+    }
+  }
+  return discovered.map((model) => {
+    const prior = persistedModelFieldsById.get(model.id);
+    const entry: {
+      id: string;
+      name: string;
+      contextWindow?: number;
+      maxTokens?: number;
+      timeoutSeconds?: number;
+      thinkingFormat?: CustomProviderThinkingFormat;
+      reasoning?: boolean;
+    } = {
+      id: model.id,
+      name: model.name,
+    };
+    if (typeof model.contextWindow === "number" && model.contextWindow > 0) {
+      entry.contextWindow = model.contextWindow;
+    } else if (prior?.contextWindow !== undefined) {
+      entry.contextWindow = prior.contextWindow;
+    }
+    if (typeof model.maxTokens === "number" && model.maxTokens > 0) {
+      entry.maxTokens = model.maxTokens;
+    } else if (prior?.maxTokens !== undefined) {
+      entry.maxTokens = prior.maxTokens;
+    }
+    // FNXC:CustomProviderHttpTimeout 2026-08-24-23:35: probes never report timeoutSeconds, so
+    // the persisted value (including the 0 "disabled" sentinel) is the only source.
+    if (prior?.timeoutSeconds !== undefined) {
+      entry.timeoutSeconds = prior.timeoutSeconds;
+    }
+    /*
+    FNXC:CustomProviderThinkingFormat 2026-08-21-05:46:
+    RUFU-143: probes never report thinkingFormat and never report a *negative* reasoning (the probe
+    heuristic only guesses the positive, and the default is already "presumed thinking-capable"), so
+    a prior flag is carried over only from the persisted record — never pre-filled from probe
+    heuristics, which would silently change the wire behavior of a model that was working. A prior
+    reasoning opt-out (false) is the only meaningful explicit value, so it survives re-probing; a
+    prior true/absent is not re-emitted.
+    */
+    if (prior?.thinkingFormat !== undefined) {
+      entry.thinkingFormat = prior.thinkingFormat;
+    }
+    if (prior?.reasoning === false) {
+      entry.reasoning = false;
+    }
+    /*
+    FNXC:CustomProviderModelWindows 2026-08-20-22:27: RUFU-145 PR #3493 review
+    invariant (refresh surface): a probe that reports an output limit at/above its
+    own context window is internally inconsistent; persisting it would make the
+    compaction hard limit non-positive. Drop the limit and let the engine default +
+    safe small-window guard threshold apply.
+    */
+    if (
+      typeof entry.contextWindow === "number" &&
+      typeof entry.maxTokens === "number" &&
+      entry.maxTokens >= entry.contextWindow
+    ) {
+      delete entry.maxTokens;
+    }
+    return entry;
+  });
+}
+
+/**
  * FNXC:CustomProviders 2026-06-29-00:00:
  * Startup and Settings refreshes share this seam so persisted custom-provider model lists can be updated from the stored provider record while the browser only receives sanitized providers. The refresh must reuse probe SSRF checks, use the raw stored API key, and preserve the previous model list when probing fails or yields no chat models.
  */
@@ -866,61 +1011,7 @@ export async function refreshCustomProviderModels(
   const targetProvider = providers[targetIndex];
   const models = await discoverUsableProviderModels(targetProvider);
 
-  /*
-   * FNXC:CustomProviderModelWindows 2026-08-19-14:16:
-   * RUFU-123: probes do not always report per-model windows (Anthropic-compatible never
-   * does; OpenAI-compatible endpoints may omit the limit object), so a naive list
-   * replacement would silently drop operator-entered contextWindow/maxTokens. Build a
-   * model-id -> persisted-windows map from the pre-refresh provider record and let the
-   * probe value win when present (positive-finite), otherwise keep the prior persisted
-   * value for that id. Discovered models that no longer exist are still dropped (list
-   * replacement semantics unchanged).
-   *
-   * FNXC:CustomProviderThinkingFormat 2026-08-21-05:46:
-   * RUFU-143: the same map now also carries the per-model thinking flags. The probe never
-   * reports them, so a prior thinkingFormat is carried over when set and a prior
-   * reasoning opt-out (false) is the only prior reasoning re-emitted (true/absent means the
-   * default presumed-thinking-capable behavior and must not be re-emitted as an explicit value).
-   */
-  const persistedModelFieldsById = new Map<string, { contextWindow?: number; maxTokens?: number; thinkingFormat?: CustomProviderThinkingFormat; reasoning?: boolean }>();
-  for (const model of targetProvider.models ?? []) {
-    if (model.contextWindow !== undefined || model.maxTokens !== undefined || model.thinkingFormat !== undefined || model.reasoning === false) {
-      persistedModelFieldsById.set(model.id, { contextWindow: model.contextWindow, maxTokens: model.maxTokens, thinkingFormat: model.thinkingFormat, reasoning: model.reasoning });
-    }
-  }
-  const persistedModels = models.map((model) => {
-    const prior = persistedModelFieldsById.get(model.id);
-    const entry: { id: string; name: string; contextWindow?: number; maxTokens?: number; thinkingFormat?: CustomProviderThinkingFormat; reasoning?: boolean } = {
-      id: model.id,
-      name: model.name,
-    };
-    if (typeof model.contextWindow === "number" && model.contextWindow > 0) {
-      entry.contextWindow = model.contextWindow;
-    } else if (prior?.contextWindow !== undefined) {
-      entry.contextWindow = prior.contextWindow;
-    }
-    if (typeof model.maxTokens === "number" && model.maxTokens > 0) {
-      entry.maxTokens = model.maxTokens;
-    } else if (prior?.maxTokens !== undefined) {
-      entry.maxTokens = prior.maxTokens;
-    }
-    /*
-    FNXC:CustomProviderThinkingFormat 2026-08-21-05:46:
-    RUFU-143: probes never report thinkingFormat and never report a *negative* reasoning (the probe
-    heuristic only guesses the positive, and the default is already "presumed thinking-capable"), so
-    a prior flag is carried over only from the persisted record — never pre-filled from probe
-    heuristics, which would silently change the wire behavior of a model that was working. A prior
-    reasoning opt-out (false) is the only meaningful explicit value, so it survives re-probing; a
-    prior true/absent is not re-emitted.
-    */
-    if (prior?.thinkingFormat !== undefined) {
-      entry.thinkingFormat = prior.thinkingFormat;
-    }
-    if (prior?.reasoning === false) {
-      entry.reasoning = false;
-    }
-    return entry;
-  });
+  const persistedModels = mergeRefreshedCustomProviderModels(models, targetProvider.models ?? []);
 
   /*
    * FNXC:CustomProviders 2026-06-30-00:00:
