@@ -205,9 +205,15 @@ async function waitForSettings() {
   await act(async () => undefined);
 }
 
+/*
+FNXC:ChatNavigation 2026-08-23-16:20:
+FN-9193 docks the conversation list on tablet-or-wider hosts, so the in-thread Back control is
+deliberately absent on desktop. Detail entry is proven by the thread header identity, which renders
+only inside the detail branch, instead of by the mobile-only back button.
+*/
 async function selectDirectSession(sessionId = "sess-1") {
   fireEvent.click(screen.getByTestId(`chat-session-${sessionId}`));
-  await waitFor(() => expect(screen.getByTestId("chat-back-btn")).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByTestId("chat-thread-header-identity")).toBeInTheDocument());
 }
 
 describe("ChatView New Chat project default behavior", () => {
@@ -231,11 +237,11 @@ describe("ChatView New Chat project default behavior", () => {
     const header = document.querySelector(".view-header");
     expect(header?.querySelectorAll("[data-testid='chat-new-btn']")).toHaveLength(1);
     expect(screen.getByTestId("chat-new-btn").closest(".view-header")).toBe(header);
-    expect(screen.getByTestId("chat-back-btn").closest(".chat-thread-header")).toBeInTheDocument();
+    expect(screen.getByTestId("chat-thread-header-identity").closest(".chat-thread-header")).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("chat-new-btn"));
 
     expect(screen.getByRole("dialog")).toBeInTheDocument();
-    expect(screen.getByTestId("chat-back-btn")).toBeInTheDocument();
+    expect(document.querySelector(".chat-view")).toHaveClass("chat-view--detail");
   });
 
   it("always-default model creates directly from selected desktop detail without opening the dialog", async () => {
@@ -284,7 +290,6 @@ describe("ChatView New Chat project default behavior", () => {
     fireEvent.click(screen.getByTestId("chat-new-btn"));
 
     await waitFor(() => expect(addToast).toHaveBeenCalledWith("Failed to create chat session", "error"));
-    expect(screen.getByTestId("chat-back-btn")).toBeInTheDocument();
     expect(document.querySelector(".chat-view")).toHaveClass("chat-view--detail");
   });
 

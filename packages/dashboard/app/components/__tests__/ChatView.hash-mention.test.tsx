@@ -122,6 +122,9 @@ describe("ChatView hash mentions", () => {
     // RUFU-153: the detail pane (composer included) opens only on row click (FNXC:ChatNavigation 2026-08-19-19:36).
     await userEvent.click(screen.getByTestId("chat-session-session-1"));
 
+    /* FNXC:ChatNavigation 2026-08-23-18:40: FN-054 made Chat list-first, so the composer exists only inside an opened conversation. */
+    fireEvent.click(screen.getByTestId(`chat-session-${activeSession.id}`));
+
     const textarea = screen.getByPlaceholderText("Type a message...") as HTMLTextAreaElement;
     fireEvent.change(textarea, {
       target: { value: "#FN", selectionStart: 3, selectionEnd: 3 },

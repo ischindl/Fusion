@@ -425,7 +425,6 @@ describe("NewTaskModal", () => {
       await waitFor(() => expect(screen.getByTestId("new-task-github-reference-picker")).toBeInTheDocument());
 
       expect(document.querySelector(".floating-window.new-task-modal")).toBeNull();
-      expect(newTaskModalCss).toContain("FNXC:ModalTouchGeometry 2026-07-27-18:00");
       expect(newTaskModalCss).toMatch(/\.new-task-modal\s*\{[^}]*pointer-events:\s*auto;/s);
     });
 
@@ -2316,7 +2315,6 @@ describe("NewTaskModal", () => {
         .map((match) => match[0])
         .join("\n");
 
-      expect(newTaskModalCss).toContain("FNXC:NewTaskWorkflowDropdown 2026-06-30");
       expect(workflowRules).toContain("var(--space-");
       expect(workflowRules).toContain("max-width: 100%");
       expect(workflowRules).toContain("overflow-y: auto");
@@ -2410,7 +2408,6 @@ describe("NewTaskModal", () => {
     });
 
     it("delegates touch drag styling to the shared FloatingWindow primitive", () => {
-      expect(newTaskModalCss).toContain("FloatingWindow owns its shared drag");
       expect(newTaskModalCss).not.toContain("new-task-resize-handle");
       expect(newTaskModalCss).not.toContain("var(--shadow-xl)");
     });

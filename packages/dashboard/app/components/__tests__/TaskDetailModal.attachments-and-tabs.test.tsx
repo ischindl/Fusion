@@ -519,7 +519,6 @@ describe("TaskDetailModal", () => {
       expect(screen.queryByRole("button", { name: "Logs" })).toBeNull();
       expect(screen.getByRole("button", { name: "Chat" })).toHaveClass("detail-tab-active");
       expect(screen.getByTestId("task-planner-chat-panel")).toBeTruthy();
-      // RUFU-153: the expand toggle's aria-label now uses the "task chat" naming (TaskPlannerChatTab t("taskDetail.plannerChat.expand")).
       expect(screen.getByTestId("task-planner-chat-expand-toggle")).toHaveAttribute("aria-label", "Expand task chat");
       expect(container.querySelector(".task-detail-content")).not.toHaveClass("task-detail-content--planner-chat-expanded");
       expect(container.querySelector(".activity-segmented-control")).toBeNull();
@@ -1021,7 +1020,6 @@ describe("TaskDetailModal", () => {
       );
 
       const content = container.querySelector(".task-detail-content");
-      // RUFU-153: the expand toggle's aria-label now uses the "task chat" naming (TaskPlannerChatTab t("taskDetail.plannerChat.expand")).
       expect(screen.getByTestId("task-planner-chat-expand-toggle")).toHaveAttribute("aria-label", "Expand task chat");
       expect(screen.queryByTestId("task-chat-expand-toggle")).toBeNull();
 
@@ -1355,7 +1353,6 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      // RUFU-153: the composer's aria-label now uses the "task chat" naming (TaskPlannerChatTab t("taskDetail.plannerChat.inputLabel")).
       const composer = screen.getByLabelText("Message task chat") as HTMLTextAreaElement;
       fireEvent.change(composer, { target: { value: "unsent planner draft" } });
       expect(screen.getByTestId("planner-chat-keep-alive")).not.toHaveAttribute("aria-hidden");

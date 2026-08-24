@@ -21,10 +21,16 @@ FNXC:ChatStashBackfillIdempotency 2026-08-19-22:35:
 Stash's /events/batch is a bare INSERT (no server-side dedupe — verified against the
 backend source and live: 4 -> 8 -> 12 events across two identical backfills), so
 idempotency is client-side: the route pages the session's existing events via
-queryStashEvents and skips already-stored content. (i) asserts a pre-check hit skips
+queryStashEvents and skips already-stored events. (i) asserts a pre-check hit skips
 those messages (capture receives only the fresh ones; skipped is reported); (j)
 asserts a pre-check transport failure fails CLOSED (502, no capture) rather than
 uploading duplicates.
+FNXC:ChatStashBackfillKey 2026-08-21-13:35:
+RUFU-146 review (PRRT_kwDOSA-8Y86a7RZ8): the dedupe key is now (event type,
+canonical timestamp, NUL-stripped content) instead of content alone — identical
+text at different times (or empty content) must not collapse onto one key, and
+the wire field is created_at (the Stash field the server honors) instead of the
+ignored `timestamp` key. (l) is the three-phase regression.
 */
 const mocks = vi.hoisted(() => ({
   captureMemory: vi.fn(),
@@ -179,7 +185,7 @@ describe("POST /api/chat/sessions/:id/backfill-stash (ChatStashBackfill)", () =>
     ]);
     // Real per-message chronology — NOT the upload time (a backfill that re-stamped
     // every message with now() would destroy the transcript's after/before ordering).
-    expect(events.map((e: { timestamp: string }) => e.timestamp)).toEqual([
+    expect(events.map((e: { created_at: string }) => e.created_at)).toEqual([
       "2026-07-01T10:00:00.000Z",
       "2026-07-01T10:00:30.000Z",
       "2026-07-02T09:00:00.000Z",
@@ -259,8 +265,8 @@ describe("POST /api/chat/sessions/:id/backfill-stash (ChatStashBackfill)", () =>
     const { app } = buildApp({ settings: STASH_OK_SETTINGS });
     mocks.queryStashEvents.mockResolvedValue({
       events: [
-        { content: "hello old chat", created_at: "2026-07-01T10:00:00.000Z" },
-        { content: "old reply", created_at: "2026-07-01T10:00:30.000Z" },
+        { event_type: "user_message", content: "hello old chat", created_at: "2026-07-01T10:00:00.000Z" },
+        { event_type: "assistant_message", content: "old reply", created_at: "2026-07-01T10:00:30.000Z" },
       ],
       hasMore: false,
     });
@@ -322,10 +328,10 @@ describe("POST /api/chat/sessions/:id/backfill-stash (ChatStashBackfill)", () =>
     const { app } = buildApp({ settings: STASH_OK_SETTINGS });
     mocks.queryStashEvents.mockResolvedValue({
       events: [
-        { content: "hello old chat", created_at: "2026-07-01T10:00:00.000Z" },
-        { content: "old reply", created_at: "2026-07-01T10:00:30.000Z" },
-        { content: "follow-up", created_at: "2026-07-02T09:00:00.000Z" },
-        { content: "second reply", created_at: "2026-07-02T09:00:45.000Z" },
+        { event_type: "user_message", content: "hello old chat", created_at: "2026-07-01T10:00:00.000Z" },
+        { event_type: "assistant_message", content: "old reply", created_at: "2026-07-01T10:00:30.000Z" },
+        { event_type: "user_message", content: "follow-up", created_at: "2026-07-02T09:00:00.000Z" },
+        { event_type: "assistant_message", content: "second reply", created_at: "2026-07-02T09:00:45.000Z" },
       ],
       hasMore: false,
     });
@@ -335,5 +341,320 @@ describe("POST /api/chat/sessions/:id/backfill-stash (ChatStashBackfill)", () =>
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ ok: true, inserted: 0, skipped: 4, uploaded: 0 });
     expect(mocks.captureMemory).not.toHaveBeenCalled();
+  });
+
+  /*
+  FNXC:ChatStashBackfillKey 2026-08-21-13:35:
+  RUFU-146 review (PRRT_kwDOSA-8Y86a7RZ8): three-phase dedupe regression.
+  Phase 1: fresh backfill of a chat whose messages include IDENTICAL content
+  at different times ("done" x2) and EMPTY content at different times ("") —
+  the content-only key collapsed all of these onto one key, permanently
+  suppressing every message after the first. All four must upload.
+  Phase 2: a re-run where only the FIRST "done" is stored: the second
+  identical-content message must still upload (type+timestamp distinguish
+  them); the two empty-content messages are not yet stored so they upload.
+  Phase 3: a full re-run where all four are stored, with created_at in the
+  SERVER'S re-serialized form (6-digit fraction: .000Z read back as
+  .000000Z) — nothing may upload; capture is never called.
+  */
+  it("(l) RUFU-146: identical + empty content are distinct keys; full re-run uploads nothing", async () => {
+    const dupMessages = [
+      { id: "d1", sessionId: "chat-dup", role: "user", content: "done", thinkingOutput: null, metadata: null, createdAt: "2026-07-01T10:00:00.000Z" },
+      { id: "d2", sessionId: "chat-dup", role: "assistant", content: "done", thinkingOutput: null, metadata: null, createdAt: "2026-07-01T10:00:30.000Z" },
+      { id: "d3", sessionId: "chat-dup", role: "user", content: "", thinkingOutput: null, metadata: null, createdAt: "2026-07-01T10:01:00.000Z" },
+      { id: "d4", sessionId: "chat-dup", role: "assistant", content: "", thinkingOutput: null, metadata: null, createdAt: "2026-07-01T10:02:00.000Z" },
+    ];
+    const { app } = buildApp({ settings: STASH_OK_SETTINGS, messages: dupMessages as never });
+
+    // Phase 1 — fresh: store is empty, all four upload (identical/empty content included).
+    mocks.queryStashEvents
+      .mockResolvedValueOnce({ events: [], hasMore: false })
+      // Phase 2 — only the first "done" is stored; the second must still upload.
+      .mockResolvedValueOnce({
+        events: [{ event_type: "user_message", content: "done", created_at: "2026-07-01T10:00:00.000Z" }],
+        hasMore: false,
+      })
+      // Phase 3 — full re-run; the server re-serializes created_at with a 6-digit
+      // fraction (.000Z -> .000000Z), so matching must survive re-serialization.
+      .mockResolvedValueOnce({
+        events: [
+          { event_type: "user_message", content: "done", created_at: "2026-07-01T10:00:00.000000Z" },
+          { event_type: "assistant_message", content: "done", created_at: "2026-07-01T10:00:30.000000Z" },
+          { event_type: "user_message", content: "", created_at: "2026-07-01T10:01:00.000000Z" },
+          { event_type: "assistant_message", content: "", created_at: "2026-07-01T10:02:00.000000Z" },
+        ],
+        hasMore: false,
+      });
+
+    const res1 = await request(app, "POST", "/api/chat/sessions/chat-dup/backfill-stash");
+    expect(res1.status).toBe(200);
+    expect(res1.body).toEqual({ ok: true, inserted: 2, skipped: 0, uploaded: 4 });
+    expect(mocks.captureMemory).toHaveBeenCalledTimes(1);
+    let [, , , events] = mocks.captureMemory.mock.calls[0];
+    expect(events.map((e: { content: string }) => e.content)).toEqual(["done", "done", "", ""]);
+    expect(events.map((e: { created_at: string }) => e.created_at)).toEqual([
+      "2026-07-01T10:00:00.000Z",
+      "2026-07-01T10:00:30.000Z",
+      "2026-07-01T10:01:00.000Z",
+      "2026-07-01T10:02:00.000Z",
+    ]);
+
+    const res2 = await request(app, "POST", "/api/chat/sessions/chat-dup/backfill-stash");
+    expect(res2.status).toBe(200);
+    expect(res2.body).toEqual({ ok: true, inserted: 2, skipped: 1, uploaded: 3 });
+    expect(mocks.captureMemory).toHaveBeenCalledTimes(2);
+    [, , , events] = mocks.captureMemory.mock.calls[1];
+    expect(events.map((e: { content: string }) => e.content)).toEqual(["done", "", ""]);
+
+    const res3 = await request(app, "POST", "/api/chat/sessions/chat-dup/backfill-stash");
+    expect(res3.status).toBe(200);
+    expect(res3.body).toEqual({ ok: true, inserted: 0, skipped: 4, uploaded: 0 });
+    expect(mocks.captureMemory).toHaveBeenCalledTimes(2); // phase 3 uploads nothing
+  });
+
+  /*
+  FNXC:ChatStashBackfill 2026-08-21-14:34:
+  RUFU-146 review (PRRT_kwDOSA-8Y86bL8vN, Greptile P1): two DISTINCT local
+  messages can share one pre-check key (same role, same canonicalized
+  timestamp, identical content — the same "ok" sent twice in one second).
+  When an interrupted batch stores only ONE occurrence, a SET-based pre-check
+  sees the key as present and skips BOTH local messages on retry — the second
+  occurrence is permanently absent from Stash while the route reports success.
+  The fix is multiset arithmetic: per key, upload max(0, localCount -
+  remoteCount) occurrences. Phase 2 below stores exactly one "ok"; the retry
+  must upload exactly ONE more "ok" (not zero, not two). Phase 3 (both
+  occurrences stored) is a no-op.
+  */
+  it("(m) RUFU-146: partial store of a duplicated key re-uploads the missing occurrence only", async () => {
+    const dupKeyMessages = [
+      { id: "k1", sessionId: "chat-dupkey", role: "user", content: "ok", thinkingOutput: null, metadata: null, createdAt: "2026-07-01T10:00:00.000Z" },
+      { id: "k2", sessionId: "chat-dupkey", role: "user", content: "ok", thinkingOutput: null, metadata: null, createdAt: "2026-07-01T10:00:00.000Z" },
+      { id: "k3", sessionId: "chat-dupkey", role: "assistant", content: "reply", thinkingOutput: null, metadata: null, createdAt: "2026-07-01T10:00:10.000Z" },
+    ];
+    const { app } = buildApp({ settings: STASH_OK_SETTINGS, messages: dupKeyMessages as never });
+
+    // Phase 1 — fresh: both "ok" occurrences (identical keys) + the reply upload.
+    mocks.queryStashEvents
+      .mockResolvedValueOnce({ events: [], hasMore: false })
+      // Phase 2 — interrupted batch stored ONE "ok" (and the reply): the retry
+      // must upload exactly the second "ok" occurrence, skipping the stored one.
+      .mockResolvedValueOnce({
+        events: [
+          { event_type: "user_message", content: "ok", created_at: "2026-07-01T10:00:00.000Z" },
+          { event_type: "assistant_message", content: "reply", created_at: "2026-07-01T10:00:10.000Z" },
+        ],
+        hasMore: false,
+      })
+      // Phase 3 — fully stored (server re-serialized fractions): nothing uploads.
+      .mockResolvedValueOnce({
+        events: [
+          { event_type: "user_message", content: "ok", created_at: "2026-07-01T10:00:00.000000Z" },
+          { event_type: "user_message", content: "ok", created_at: "2026-07-01T10:00:00.000000Z" },
+          { event_type: "assistant_message", content: "reply", created_at: "2026-07-01T10:00:10.000000Z" },
+        ],
+        hasMore: false,
+      });
+
+    const res1 = await request(app, "POST", "/api/chat/sessions/chat-dupkey/backfill-stash");
+    expect(res1.status).toBe(200);
+    expect(res1.body).toEqual({ ok: true, inserted: 2, skipped: 0, uploaded: 3 });
+    let [, , , events] = mocks.captureMemory.mock.calls[0];
+    expect(events.map((e: { content: string }) => e.content)).toEqual(["ok", "ok", "reply"]);
+
+    const res2 = await request(app, "POST", "/api/chat/sessions/chat-dupkey/backfill-stash");
+    expect(res2.status).toBe(200);
+    expect(res2.body).toEqual({ ok: true, inserted: 2, skipped: 2, uploaded: 1 });
+    expect(mocks.captureMemory).toHaveBeenCalledTimes(2);
+    [, , , events] = mocks.captureMemory.mock.calls[1];
+    expect(events.map((e: { content: string }) => e.content)).toEqual(["ok"]);
+    expect(events.map((e: { event_type: string }) => e.event_type)).toEqual(["user_message"]);
+
+    const res3 = await request(app, "POST", "/api/chat/sessions/chat-dupkey/backfill-stash");
+    expect(res3.status).toBe(200);
+    expect(res3.body).toEqual({ ok: true, inserted: 0, skipped: 3, uploaded: 0 });
+    expect(mocks.captureMemory).toHaveBeenCalledTimes(2); // phase 3 uploads nothing
+  });
+
+  /*
+  FNXC:ChatStashBackfillCursorDedupe 2026-08-21-14:49:
+  RUFU-146 review (PRRT_kwDOSA-8Y86bMJxP, Greptile P1): with an inclusive
+  `after` cursor, page N+1 re-returns page N's boundary row. Before the
+  per-event UUID dedupe, that double-count inflated the boundary key in the
+  multiset pre-check: with the stored "ok" as the boundary row and TWO local
+  messages sharing its key, the inflated remote count (2 vs actual 1) made
+  localCount - remoteCount = 0, so BOTH local occurrences were skipped — the
+  second is permanently lost while the route reports success. This regression
+  simulates the inclusive server (the mock pages with created_at >= after),
+  asserts exactly the ONE missing "ok" occurrence uploads, and that the
+  stored boundary row is counted once (the fresh "reply" still uploads).
+  */
+  it("(n) RUFU-146: inclusive-cursor re-returned boundary row is not double-counted (no occurrence loss)", async () => {
+    const boundaryMessages = [
+      { id: "b1", sessionId: "chat-boundary", role: "user", content: "ok", thinkingOutput: null, metadata: null, createdAt: "2026-07-01T10:00:00.000Z" },
+      { id: "b2", sessionId: "chat-boundary", role: "user", content: "ok", thinkingOutput: null, metadata: null, createdAt: "2026-07-01T10:00:00.000Z" },
+      { id: "b3", sessionId: "chat-boundary", role: "assistant", content: "reply", thinkingOutput: null, metadata: null, createdAt: "2026-07-01T10:00:10.000Z" },
+    ];
+    const { app } = buildApp({ settings: STASH_OK_SETTINGS, messages: boundaryMessages as never });
+
+    // Store: 199 unique fillers (09:00:00 + i seconds) + the stored "ok" as
+    // the 200th row — the boundary of page 1 (max created_at).
+    const stored: Array<Record<string, unknown>> = [];
+    for (let i = 0; i < 199; i++) {
+      stored.push({
+        id: `ev${String(i + 1).padStart(3, "0")}`,
+        event_type: "assistant_message",
+        content: `filler-${i + 1}`,
+        created_at: `2026-07-01T09:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}.000000Z`,
+      });
+    }
+    stored.push({ id: "ev200", event_type: "user_message", content: "ok", created_at: "2026-07-01T10:00:00.000000Z" });
+
+    // Inclusive server: `after` re-returns the boundary row (created_at >= after).
+    mocks.queryStashEvents.mockImplementation(async (_url: string, _key: string, filters?: { after?: string }) => {
+      const after = filters?.after;
+      const page = after === undefined ? stored : stored.filter((e) => String(e.created_at) >= after);
+      return { events: page.slice(0, 200), hasMore: page.length > 200 };
+    });
+
+    const res = await request(app, "POST", "/api/chat/sessions/chat-boundary/backfill-stash");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true, inserted: 2, skipped: 1, uploaded: 2 });
+    expect(mocks.captureMemory).toHaveBeenCalledTimes(1);
+    const [, , , events] = mocks.captureMemory.mock.calls[0];
+    expect(events.map((e: { content: string }) => e.content)).toEqual(["ok", "reply"]);
+  });
+
+  /*
+  FNXC:ChatStashBackfillTieBoundary 2026-08-21-18:25:
+  RUFU-146 review (PRRT_kwDOSA-8Y86bP9Z5, Greptile P1): the Stash `after`
+  filter is EXCLUSIVE on created_at (verified source), so a tie group of 200+
+  stored events sharing one timestamp cannot be fully counted across a page
+  boundary — the exclusive cursor skips the group's tail, the multiset
+  pre-check undercounts that key, and the route would re-upload an
+  already-stored occurrence (a silent duplicate) while reporting success.
+  This regression simulates the exclusive server (the mock pages with
+  created_at > after) with 250 stored events at ONE timestamp plus one local
+  message holding the tail row's key, and asserts the pre-check fails CLOSED
+  with 409 before any upload (captureMemory never called, and the uncountable
+  tail is never even fetched).
+  */
+  it("(o) RUFU-146: exclusive-cursor tie boundary across a full page fails closed (no duplicate upload)", async () => {
+    const tieMessages = [
+      { id: "t250", sessionId: "chat-tie", role: "user", content: "tie-250", thinkingOutput: null, metadata: null, createdAt: "2026-07-01T10:00:00.000Z" },
+    ];
+    const { app } = buildApp({ settings: STASH_OK_SETTINGS, messages: tieMessages as never });
+
+    // Store: 250 events all sharing ONE timestamp (a tie group larger than a page).
+    const stored: Array<Record<string, unknown>> = [];
+    for (let i = 1; i <= 250; i++) {
+      stored.push({
+        id: `ev${String(i).padStart(3, "0")}`,
+        event_type: "user_message",
+        content: `tie-${i}`,
+        created_at: "2026-07-01T10:00:00.000000Z",
+      });
+    }
+
+    // Exclusive server (verified source semantics): `after` filters created_at > after.
+    mocks.queryStashEvents.mockImplementation(async (_url: string, _key: string, filters?: { after?: string }) => {
+      const after = filters?.after;
+      const page = after === undefined ? stored : stored.filter((e) => String(e.created_at) > after);
+      return { events: page.slice(0, 200), hasMore: page.length > 200 };
+    });
+
+    const res = await request(app, "POST", "/api/chat/sessions/chat-tie/backfill-stash");
+    expect(res.status).toBe(409);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.inserted).toBe(0);
+    expect(res.body.skipped).toBe(0);
+    expect(String(res.body.error)).toMatch(/tie group is fully counted/);
+    expect(mocks.queryStashEvents).toHaveBeenCalledTimes(1); // tie detected on page 1; the uncountable tail is never fetched
+    expect(mocks.captureMemory).not.toHaveBeenCalled(); // nothing uploaded — the stored "tie-250" is never duplicated
+  });
+
+  /*
+  FNXC:ChatStashBackfillTieBoundaryResidual 2026-08-21-18:46:
+  RUFU-146 review (PR #3494 comment 3832713940, Greptile P1 "Boundary-start
+  ties skip events"): the undecidable residual pinned in executable form.
+  A tie group STARTS at the final row of a full exclusive-cursor page:
+  page 1 = 199 unique fillers + ONE "tie-x" at T (rank 200); the other five
+  "tie-x" rows share T and sit beyond rank 200, where `created_at > T` hides
+  them forever. The in-page guard (last two rows) cannot see the tie —
+  rows 199 and 200 differ — and the route must NOT false-409 this shape:
+  a local message at the boundary millisecond is the ORDINARY case in any
+  200+ backfill (the 200th stored row is itself a backfilled message), so a
+  boundary-vs-local guard would 409 every large backfill. Pinned
+  consequence: the pre-check counts the one visible "tie-x", the multiset
+  diff uploads exactly the five invisible occurrences as DUPLICATES of the
+  stored rows, every local occurrence stays represented in Stash (no loss),
+  and the route reports the honest counts. The Stash API cannot distinguish
+  this shape from a safe one (strict inequalities, no offset, 200-row cap
+  — see the route's FNXC:ChatStashBackfillTieBoundaryResidual comment);
+  the real fix is a server-side composite (created_at, id) cursor.
+  */
+  it("(p) RUFU-146: boundary-start tie is an undecidable residual — no false 409, bounded duplicate, no loss", async () => {
+    const T_server = "2026-07-01T10:00:00.000000Z"; // server re-serialized form
+    const T_local = "2026-07-01T10:00:00.000Z"; // local form — same epoch millisecond
+
+    const straddleMessages: Array<Record<string, unknown>> = [];
+    for (let i = 0; i < 199; i++) {
+      straddleMessages.push({
+        id: `s${i + 1}`,
+        sessionId: "chat-straddle",
+        role: "assistant",
+        content: `filler-${i + 1}`,
+        thinkingOutput: null,
+        metadata: null,
+        createdAt: `2026-07-01T09:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}.000Z`,
+      });
+    }
+    for (let i = 1; i <= 6; i++) {
+      straddleMessages.push({
+        id: `t${i}`,
+        sessionId: "chat-straddle",
+        role: "user",
+        content: "tie-x",
+        thinkingOutput: null,
+        metadata: null,
+        createdAt: T_local,
+      });
+    }
+    const { app } = buildApp({ settings: STASH_OK_SETTINGS, messages: straddleMessages as never });
+
+    // Store: 199 unique fillers + SIX "tie-x" at T. Rank 200 is the FIRST of
+    // the tie group — the group starts exactly at the page boundary, so the
+    // exclusive cursor's next window (`created_at > T`) never sees the other
+    // five.
+    const stored: Array<Record<string, unknown>> = [];
+    for (let i = 0; i < 199; i++) {
+      stored.push({
+        id: `ev${String(i + 1).padStart(3, "0")}`,
+        event_type: "assistant_message",
+        content: `filler-${i + 1}`,
+        created_at: `2026-07-01T09:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}.000000Z`,
+      });
+    }
+    for (let i = 1; i <= 6; i++) {
+      stored.push({ id: `tie${i}`, event_type: "user_message", content: "tie-x", created_at: T_server });
+    }
+
+    // Exclusive server (verified source semantics): `after` filters created_at > after.
+    mocks.queryStashEvents.mockImplementation(async (_url: string, _key: string, filters?: { after?: string }) => {
+      const after = filters?.after;
+      const page = after === undefined ? stored : stored.filter((e) => String(e.created_at) > after);
+      return { events: page.slice(0, 200), hasMore: page.length > 200 };
+    });
+
+    const res = await request(app, "POST", "/api/chat/sessions/chat-straddle/backfill-stash");
+    expect(res.status).toBe(200); // no false 409: a local message at the boundary millisecond is ordinary in a 200+ backfill
+    expect(res.body.uploaded).toBe(5); // the five invisible occurrences re-upload — the bounded DUPLICATE residual
+    expect(res.body.skipped).toBe(200); // 199 fillers + the one visible "tie-x" counted; nothing over-uploaded
+    expect(mocks.captureMemory).toHaveBeenCalledTimes(1);
+    const [, , , events] = mocks.captureMemory.mock.calls[0];
+    expect(events).toHaveLength(5);
+    expect(events.map((e: { content: string }) => e.content)).toEqual(["tie-x", "tie-x", "tie-x", "tie-x", "tie-x"]);
+    // No loss: after the upload the session holds six "tie-x" rows (one pre-existing
+    // counted + five uploaded) — every local occurrence is represented in Stash.
+    expect(mocks.queryStashEvents).toHaveBeenCalledTimes(2); // page 1 (full) + the empty post-cursor page
   });
 });

@@ -318,6 +318,8 @@ describe("StandardChatSurface native structure embeds", () => {
     ["desktop user room", {}, "user"],
   ])("renders the shared preview in ChatView %s", async (_surface, layout, role) => {
     fetchPreview.mockResolvedValue(available);
+    /* FNXC:DashboardTests 2026-08-23-23:35: opening a conversation runs ChatView's memory-focus load, which afterEach resets to an undefined-returning stub. */
+    fetchSession.mockResolvedValue({ session: { ...activeSessionFixture, memoryFocus: null } as never });
     setupMockRooms();
     setupMockChat({
       sessions: [activeSessionFixture],
@@ -326,8 +328,8 @@ describe("StandardChatSurface native structure embeds", () => {
       messages: [{ id: "room-message", sessionId: activeSessionFixture.id, role, content: "fusion://mission/M-001", createdAt: "2026-07-19T00:00:00.000Z" } as never],
     });
     await renderWithAct(<ChatView projectId="project-1" addToast={vi.fn()} {...layout} />);
-    // RUFU-153: the message pane (and its embedded preview) opens via an explicit session selection.
-    fireEvent.click(screen.getByTestId("chat-session-session-001"));
+    /* FNXC:ChatNavigation 2026-08-23-18:50: FN-054 made Chat list-first, so the transcript renders only inside an explicitly opened conversation. */
+    fireEvent.click(screen.getByTestId(`chat-session-${activeSessionFixture.id}`));
     await expectPreview();
   });
 });

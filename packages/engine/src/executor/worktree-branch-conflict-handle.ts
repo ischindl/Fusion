@@ -5,7 +5,7 @@
  */
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
-import { isFusionDeletableBranch, type Settings, type Task, type TaskStore } from "@fusion/core";
+import { classifyTaskBranchOrigin, isFusionDeletableBranch, type Settings, type Task, type TaskStore } from "@fusion/core";
 import {
   assertCleanBranchAtBase,
   BranchConflictError,
@@ -55,8 +55,11 @@ export async function reclaimExistingWorktree(
 ): Promise<void> {
   const targetPath = preservedWorktreeTargetPathForTask(task.id, livePath, settings, deps.rootDir);
   const normalizedPath = await deps.normalizeReclaimableWorktreePath(livePath, targetPath, task.id, settings);
-  /* FNXC:BranchWriteOrigin 2026-08-20-14:40: FN-9161's store validation requires an explicit write origin on every branch write; reclaim re-pinning is engine-owned. */
-  await deps.store.updateTask(task.id, { worktree: normalizedPath, branch, branchWriteOrigin: "engine" as const });
+  await deps.store.updateTask(task.id, {
+    worktree: normalizedPath,
+    branch,
+    branchWriteOrigin: classifyTaskBranchOrigin(task, branch) === "operator-supplied" ? "operator" : "engine",
+  });
   const latestTask = await deps.store.getTask(task.id);
   const baseRef = await resolveDiffBaseRef(normalizedPath, latestTask.baseCommitSha);
   if (baseRef) {

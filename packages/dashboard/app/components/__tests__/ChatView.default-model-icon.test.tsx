@@ -1,11 +1,4 @@
-/*
-FNXC:RUFU153 2026-08-23-00:21:
-Default-model fallback contract (FN-5108): when the session model cannot be resolved, the header shows
-the resolveSessionProvider default-model icon/tag instead of an empty slot. The tests assert the
-fallback is visible (not absent) and click the session row first — the detail pane opens only on user
-action (FNXC:ChatNavigation, ChatView.tsx).
-*/
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { ChatView, resolveSessionProvider } from "../ChatView";
 import type { UseChatReturn, ChatMessageInfo, ChatSessionInfo } from "../../hooks/useChat";
@@ -204,9 +197,8 @@ describe("ChatView default model icon", () => {
     mockFetchModels.mockRejectedValue(new Error("boom"));
 
     renderView();
-    // RUFU-153: the thread header (and its unresolved-model Bot fallback) only renders once the
-    // detail pane is opened via an explicit session selection.
-    fireEvent.click(screen.getByTestId("chat-session-session-1"));
+    /* FNXC:ChatNavigation 2026-08-23-18:35: FN-054 made Chat list-first, and the Bot fallback icon lives in the thread header, so the conversation must be opened first. */
+    fireEvent.click(screen.getByTestId(`chat-session-${baseSession.id}`));
 
     await waitFor(() => expect(screen.getAllByTestId("icon-bot").length).toBeGreaterThan(0));
     expect(screen.queryByTestId("anthropic-icon")).not.toBeInTheDocument();

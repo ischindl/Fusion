@@ -2528,16 +2528,14 @@ describe("useChat", () => {
     await waitFor(() => expect(result.current.streamingText).toBe("Distinct direct prefix"));
 
     /*
-    FNXC:UseChatStopStreamingAct 2026-08-23-07:24:
-    FN-100 made stopStreaming return Promise<void> (durable cancel + optimistic-prefix
-    reconcile), so the stop must run inside an AWAITED async act scope. The former
-    expression-body act(() => stopStreaming()) left the promise un-awaited and its state
-    updates flushed outside act, cascading-poisoning the 79 tests that follow (80
-    deterministic failures in this file). Both stopStreaming call sites in this file (this
-    one and the "Distinct retained prefix" test below) must keep the awaited form;
-    regressing either to the expression body re-breaks the suite.
+    FNXC:ChatStreamCancel 2026-08-23-23:20:
+    stopStreaming returns the durable cancellation promise (FN-100), so a concise-arrow
+    `act(() => result.current.stopStreaming())` hands React a thenable and opens an ASYNC act scope
+    that nothing awaits: the act queue stays installed, every later setState is queued instead of
+    rendered, and the rest of this file sees a frozen hook. Keep these calls statement-bodied with an
+    explicit `void` so the act scope stays synchronous.
     */
-    await act(async () => { await result.current.stopStreaming(); });
+    act(() => { void result.current.stopStreaming(); });
     await waitFor(() => expect(mockCancelChatResponse).toHaveBeenCalledWith("session-001", "proj-123"));
     await waitFor(() => {
       const assistants = result.current.messages.filter((message) => message.role === "assistant" && message.content === "Distinct direct prefix");
@@ -2605,7 +2603,7 @@ describe("useChat", () => {
     act(() => streamHandlers?.onText?.("Distinct retained prefix"));
     await waitFor(() => expect(result.current.streamingText).toBe("Distinct retained prefix"));
 
-    await act(async () => { await result.current.stopStreaming(); });
+    act(() => { void result.current.stopStreaming(); });
     await waitFor(() => expect(mockCancelChatResponse).toHaveBeenCalledWith("session-001", "proj-123"));
     await waitFor(() => {
       expect(result.current.messages.filter((message) => message.content === "Distinct retained prefix")).toHaveLength(1);

@@ -17,6 +17,7 @@ import {
   deleteChatTag as apiDeleteChatTag,
   type ChatFailureInfo,
   type ChatSessionListResponse,
+  type ChatStashBackfillResponse,
   type ChatStreamErrorMeta,
   type ChatStashBackfillResponse,
 } from "../api";
@@ -166,6 +167,12 @@ export interface UseChatReturn {
    */
   setSessionThinkingLevel: (id: string, level: string) => Promise<void>;
   deleteSession: (id: string) => Promise<void>;
+  /**
+   * RUFU-136: "Preserve to Stash" — backfills this chat session's transcript into
+   * the project's Stash memory (POST /api/chat/sessions/:id/backfill-stash).
+   * Client-side idempotent (e2bf0cd52): re-invoking returns the existing capture.
+   */
+  backfillStashSession: (id: string) => Promise<ChatStashBackfillResponse>;
   createTag: (name: string) => Promise<ChatTag>;
   renameTag: (id: string, name: string) => Promise<void>;
   deleteTag: (id: string) => Promise<void>;

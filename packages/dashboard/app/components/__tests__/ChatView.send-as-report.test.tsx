@@ -5,7 +5,7 @@ which is closed by default and opens only on a user row click. The tests click t
 (chat-session-<id>) before asserting the send-as-report DOM.
 */
 import { describe, expect, it, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ChatView } from "../ChatView";
 import { mockViewportMode, renderWithAct, setupMockChat, installChatViewEnv } from "./ChatView.test-harness";
@@ -33,14 +33,22 @@ function setupAssistantChat(overrides: Record<string, unknown> = {}) {
   });
 }
 
+/*
+FNXC:ChatNavigation 2026-08-23-18:15:
+FN-054 made Chat list-first: the transcript and its per-message actions render only inside an
+explicitly opened conversation, so each case drills in from the list before asserting.
+*/
+function openDirectDetail(sessionId = "s-1") {
+  fireEvent.click(screen.getByTestId(`chat-session-${sessionId}`));
+}
+
 describe("ChatView send as report", () => {
   it("routes a completed assistant response as the canonical object handoff", async () => {
     const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
     setupAssistantChat();
     const onSendAsReport = vi.fn();
     await renderWithAct(<ChatView projectId="project-1" addToast={vi.fn()} onSendAsReport={onSendAsReport} />);
-    // RUFU-153: the detail pane is gated on an explicit session selection.
-    await user.click(screen.getByTestId("chat-session-s-1"));
+    openDirectDetail();
     const reportAction = await screen.findByTestId("chat-send-as-report-m-1");
     await user.click(reportAction);
     expect(onSendAsReport).toHaveBeenCalledTimes(1);
@@ -53,8 +61,7 @@ describe("ChatView send as report", () => {
     const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
     setupAssistantChat();
     const { rerender } = await renderWithAct(<ChatView projectId="project-1" addToast={vi.fn()} onSendAsReport={vi.fn()} />);
-    // RUFU-153: the detail pane is gated on an explicit session selection.
-    await user.click(screen.getByTestId("chat-session-s-1"));
+    openDirectDetail();
     expect(await screen.findByTestId("chat-send-as-report-m-1")).toBeInTheDocument();
 
     setupMockChat({
@@ -72,8 +79,7 @@ describe("ChatView send as report", () => {
     const mobile = mockViewportMode("mobile");
     setupAssistantChat();
     const { rerender } = await renderWithAct(<ChatView projectId="project-1" addToast={vi.fn()} onSendAsReport={vi.fn()} />);
-    // RUFU-153: the detail pane is gated on an explicit session selection.
-    await user.click(screen.getByTestId("chat-session-s-1"));
+    openDirectDetail();
     expect(await screen.findByTestId("chat-send-as-report-m-1")).toBeInTheDocument();
 
     mobile.mockRestore();
@@ -102,8 +108,7 @@ describe("ChatView send as report", () => {
     const activeSession = session();
     setupMockChat({ sessions: [activeSession], filteredSessions: [activeSession], activeSession, messages: [{ id: "long", sessionId: "s-1", role: "assistant", content, createdAt: "2026-01-01" }] });
     await renderWithAct(<ChatView projectId="project-1" addToast={addToast} onSendAsReport={onSendAsReport} />);
-    // RUFU-153: the detail pane is gated on an explicit session selection.
-    await user.click(screen.getByTestId("chat-session-s-1"));
+    openDirectDetail();
     await user.click(await screen.findByTestId("chat-send-as-report-long"));
     expect(onSendAsReport.mock.calls[0][0]).toEqual(expect.objectContaining({ title: "Long report" }));
     expect(onSendAsReport.mock.calls[0][0].body).toHaveLength(2000);

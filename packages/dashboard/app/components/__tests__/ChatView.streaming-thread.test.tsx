@@ -170,6 +170,23 @@ function cacheMessages(projectId: string, sessionId: string, messages: ChatMessa
   );
 }
 
+/*
+FNXC:ChatNavigation 2026-08-23-23:20:
+Chat opens list-first on every host (FN-054) and FN-9193 docks that list beside the thread, so a
+restored session — even one that is still generating — renders as a conversation row until it is
+opened. These streaming-thread invariants are about what the OPEN thread shows, so enter it first.
+*/
+async function openRestoredConversation() {
+  const row = await waitFor(() => {
+    const element = document.querySelector<HTMLElement>(".chat-session-item");
+    if (!element) throw new Error("Expected a conversation row to enter");
+    return element;
+  });
+  await act(async () => {
+    fireEvent.click(row);
+  });
+}
+
 describe("FN-6599 ChatView streaming prior thread", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -225,8 +242,7 @@ describe("FN-6599 ChatView streaming prior thread", () => {
     await act(async () => {
       render(<ChatView projectId="proj-123" addToast={vi.fn()} />);
     });
-    // RUFU-153: the detail pane is gated on an explicit session selection.
-    fireEvent.click(await screen.findByTestId("chat-session-session-restored-streaming"));
+    await openRestoredConversation();
 
     await waitFor(() => {
       expect(screen.getByText("live partial response")).toBeInTheDocument();
@@ -266,14 +282,12 @@ describe("FN-6599 ChatView streaming prior thread", () => {
     mockFetchChatMessages.mockResolvedValue({ messages: [priorMessage] });
 
     const firstView = render(<ChatView projectId="proj-123" addToast={vi.fn()} />);
-    // RUFU-153: the detail pane is gated on an explicit session selection.
-    fireEvent.click(await screen.findByTestId("chat-session-session-reentry"));
+    await openRestoredConversation();
     await screen.findByText("authoritative partial response");
     firstView.unmount();
 
     render(<ChatView projectId="proj-123" addToast={vi.fn()} />);
-    // RUFU-153: the remounted view also starts with the pane closed.
-    fireEvent.click(await screen.findByTestId("chat-session-session-reentry"));
+    await openRestoredConversation();
     await waitFor(() => {
       expect(screen.getByText("authoritative partial response")).toBeInTheDocument();
       expect(screen.getByText("Thinking")).toBeInTheDocument();
@@ -322,8 +336,7 @@ describe("FN-6599 ChatView streaming prior thread", () => {
     });
 
     const rendered = render(<ChatView projectId="proj-123" addToast={vi.fn()} />);
-    // RUFU-153: the detail pane (and its composer) is gated on an explicit session selection.
-    fireEvent.click(await screen.findByTestId("chat-session-session-stop"));
+    await openRestoredConversation();
     const input = await screen.findByTestId("chat-input");
     fireEvent.change(input, { target: { value: "Keep this" } });
     fireEvent.click(await screen.findByTestId("chat-send-btn"));
@@ -339,8 +352,7 @@ describe("FN-6599 ChatView streaming prior thread", () => {
 
     rendered.unmount();
     render(<ChatView projectId="proj-123" addToast={vi.fn()} />);
-    // RUFU-153: the remounted view also starts with the pane closed.
-    fireEvent.click(await screen.findByTestId("chat-session-session-stop"));
+    await openRestoredConversation();
     expect(await screen.findByText("Distinct direct stopped prefix")).toBeInTheDocument();
   });
 
@@ -391,8 +403,7 @@ describe("FN-6599 ChatView streaming prior thread", () => {
     await act(async () => {
       render(<ChatView projectId="proj-123" addToast={vi.fn()} />);
     });
-    // RUFU-153: the detail pane is gated on an explicit session selection.
-    fireEvent.click(await screen.findByTestId("chat-session-session-mid-turn-stable"));
+    await openRestoredConversation();
 
     await waitFor(() => {
       expect(screen.getByText("working")).toBeInTheDocument();

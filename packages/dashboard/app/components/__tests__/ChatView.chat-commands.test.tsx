@@ -20,6 +20,7 @@ import { userEvent } from "@testing-library/user-event";
 import { ChatView } from "../ChatView";
 import {
   renderWithAct,
+  renderChatDetailWithAct,
   setupMockChat,
   activeSessionFixture,
   createMockSkill,
@@ -67,7 +68,7 @@ const commandContext = { taskId: "TASK-1", projectId: "proj-123", agentRunning: 
 describe("ChatView slash-command dispatch (/steer)", () => {
   it("does not show the command menu entry when no chatCommandContext is provided", async () => {
     setupMockChat({ activeSession: activeSessionFixture, messages: [] });
-    await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await renderChatDetailWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
 
     // RUFU-153: the detail pane (composer included) opens only on row click (FNXC:ChatNavigation 2026-08-19-19:36).
     await userEvent.click(screen.getByTestId("chat-session-session-001"));
@@ -84,7 +85,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
     ]);
     setupMockChat({ activeSession: activeSessionFixture, messages: [] });
 
-    await renderWithAct(
+    await renderChatDetailWithAct(
       <ChatView projectId="proj-123" addToast={vi.fn()} chatCommandContext={commandContext} />,
     );
 
@@ -102,7 +103,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
     ]);
     setupMockChat({ activeSession: activeSessionFixture, messages: [] });
 
-    await renderWithAct(
+    await renderChatDetailWithAct(
       <ChatView projectId="proj-123" addToast={vi.fn()} chatCommandContext={commandContext} />,
     );
 
@@ -116,7 +117,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
 
   it("selecting /steer from the menu inserts the trigger as text, not a /skill: token", async () => {
     setupMockChat({ activeSession: activeSessionFixture, messages: [] });
-    await renderWithAct(
+    await renderChatDetailWithAct(
       <ChatView projectId="proj-123" addToast={vi.fn()} chatCommandContext={commandContext} />,
     );
 
@@ -136,7 +137,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
     ]);
     setupMockChat({ activeSession: activeSessionFixture, messages: [] });
 
-    await renderWithAct(
+    await renderChatDetailWithAct(
       <ChatView projectId="proj-123" addToast={vi.fn()} chatCommandContext={commandContext} />,
     );
 
@@ -154,7 +155,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
     mockAddSteeringComment.mockResolvedValueOnce({ id: "TASK-1" } as any);
     const addToast = vi.fn();
 
-    await renderWithAct(
+    await renderChatDetailWithAct(
       <ChatView projectId="proj-123" addToast={addToast} chatCommandContext={commandContext} />,
     );
 
@@ -173,7 +174,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
     setupMockChat({ activeSession: activeSessionFixture, messages: [], sendMessage });
     const addToast = vi.fn();
 
-    await renderWithAct(
+    await renderChatDetailWithAct(
       <ChatView projectId="proj-123" addToast={addToast} chatCommandContext={commandContext} />,
     );
 
@@ -201,7 +202,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
     setupMockChat({ activeSession: activeSessionFixture, messages: [], sendMessage });
     const addToast = vi.fn();
 
-    await renderWithAct(
+    await renderChatDetailWithAct(
       <ChatView projectId="proj-123" addToast={addToast} chatCommandContext={commandContext} />,
     );
 
@@ -223,7 +224,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
     setupMockChat({ activeSession: activeSessionFixture, messages: [], sendMessage });
     const addToast = vi.fn();
 
-    await renderWithAct(
+    await renderChatDetailWithAct(
       <ChatView
         projectId="proj-123"
         addToast={addToast}
@@ -244,7 +245,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
 
   it("shows a disabled hint in the menu when no running agent is bound", async () => {
     setupMockChat({ activeSession: activeSessionFixture, messages: [] });
-    await renderWithAct(
+    await renderChatDetailWithAct(
       <ChatView
         projectId="proj-123"
         addToast={vi.fn()}
@@ -272,7 +273,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
     mockAddSteeringComment.mockRejectedValueOnce(new Error("network down"));
     const addToast = vi.fn();
 
-    await renderWithAct(
+    await renderChatDetailWithAct(
       <ChatView projectId="proj-123" addToast={addToast} chatCommandContext={commandContext} />,
     );
 
@@ -295,7 +296,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
     mockAddSteeringComment.mockReturnValueOnce(runPromise as unknown as ReturnType<typeof addSteeringComment>);
     const addToast = vi.fn();
 
-    await renderWithAct(
+    await renderChatDetailWithAct(
       <ChatView projectId="proj-123" addToast={addToast} chatCommandContext={commandContext} />,
     );
 
@@ -320,7 +321,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
     setupMockChat({ activeSession: activeSessionFixture, messages: [], sendMessage });
     const addToast = vi.fn();
 
-    await renderWithAct(
+    await renderChatDetailWithAct(
       <ChatView projectId="proj-123" addToast={addToast} chatCommandContext={commandContext} />,
     );
 

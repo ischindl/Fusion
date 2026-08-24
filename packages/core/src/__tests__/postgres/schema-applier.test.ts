@@ -110,6 +110,7 @@ import {
   TASK_REPOSITORY_SCOPE_VERSION,
   REVIEW_CONVERGENCE_STAGE_VERSION,
   MIXED_0065_REPAIR_VERSION,
+  CHAT_SESSION_MEMORY_FOCUS_VERSION,
 } from "../../postgres/schema-applier.js";
 import { ProjectPartitionRekeyError, rekeyFallbackProjectPartition } from "../../postgres/migration-stamping.js";
 import type { PluginSchemaInitHook } from "../../postgres/plugin-schema-hook.js";
@@ -140,8 +141,10 @@ describe("schema-applier: immutable migration identities", () => {
     expect(PROJECT_OWNERSHIP_DECLARATION_DRIFT_VERSION).toBe("0056");
     expect(PROJECT_OWNERSHIP_DEFAULT_RECONCILIATION_VERSION).toBe("0057");
     expect(MESSAGE_ARCHIVE_SCHEMA_VERSION).toBe("0058");
-    /* FNXC:PgSchemaApplier 2026-08-15-22:10: 0059 (FN-9037 recommendation source-agent index), 0060 (FN-9059 workspace
-       coordination leases/intents), and 0061 (RUFU-068 chat_sessions.memory_focus) advance the baseline to 0061. */
+    /* FNXC:PgSchemaApplier 2026-08-15-22:10: 0059 (FN-9037 recommendation source-agent index) and 0060 (FN-9059 workspace
+       coordination leases/intents) landed first; the 2026-08-20 upstream batch owns 0061-0064 (FN-066..FN-094), FN-149
+       owns 0065, the RUFU-068 chat_sessions.memory_focus migration is renumbered to 0066 (2026-08-23), and the
+       idempotent 0065-collision repair migration (MIXED_0065_REPAIR_VERSION) advances the baseline to 0067. */
     expect(TASK_SOURCE_AGENT_INDEX_VERSION).toBe("0059");
     expect(WORKSPACE_COORDINATION_LEASES_SCHEMA_VERSION).toBe("0060");
     expect(ACTIVITY_LOG_TASK_ID_INDEX_VERSION).toBe("0061");
@@ -158,6 +161,7 @@ describe("schema-applier: immutable migration identities", () => {
     expect(AI_MERGE_REVIEW_RECONCILIATION_VERSION).toBe("0063");
     expect(TASK_REPOSITORY_SCOPE_VERSION).toBe("0064");
     expect(REVIEW_CONVERGENCE_STAGE_VERSION).toBe("0065");
+    expect(CHAT_SESSION_MEMORY_FOCUS_VERSION).toBe("0066");
     expect(SCHEMA_BASELINE_VERSION).toBe("0067");
   });
 

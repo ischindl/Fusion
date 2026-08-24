@@ -24,9 +24,8 @@ function createModelsHandler(modelRegistry: ReturnType<typeof createKimiModelCat
     get: vi.fn((path: string, handler: (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>) => {
       handlers.set(path, handler);
     }),
-    post: vi.fn((path: string, handler: (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>) => {
-      postHandlers.set(path, handler);
-    }),
+    // FNXC:ModelCatalog 2026-08-23-23:12: registerModelRoutes also registers POST /models/refresh (FN-019 operator catalog refresh), so a router fake exposing only `get` throws before any GET handler is captured.
+    post: vi.fn(),
   } as unknown as Router;
   const authStorage = {
     reload: vi.fn(),
@@ -61,10 +60,8 @@ async function getK3Rows(modelRegistry: ReturnType<typeof createKimiModelCatalog
 }
 
 /*
-FNXC:ModelCatalog 2026-08-23-02:16:
-RUFU-163: GET /models now surfaces the SDK-derived supportedThinkingLevels
-beside each registry-derived row (register-model-routes.ts:393); the k3 row's
-levels come from pi-ai's pinned catalog thinkingLevelMap.
+FNXC:ModelThinkingCapabilities 2026-08-23-23:20:
+FN-021 derives `supportedThinkingLevels` for every /api/models row from the pinned catalog's thinkingLevelMap; K3's bundled map yields low/high/max. Asserted explicitly so a regression in the derivation is visible from the K3 catalog coverage.
 */
 describe("FN-8180: Kimi K3 /api/models catalog", () => {
   it("surfaces the native K3 model once for a configured Kimi provider", async () => {

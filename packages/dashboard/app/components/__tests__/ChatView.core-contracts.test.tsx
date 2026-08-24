@@ -14,6 +14,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { userEvent } from "@testing-library/user-event";
 import { useState } from "react";
 import { ChatView } from "../ChatView";
+import { formatModelTag } from "../StandardChatSurface";
 import type { DiscoveredSkill } from "@fusion/dashboard";
 import type { UseChatReturn, ChatSessionInfo } from "../../hooks/useChat";
 import { loadAllAppCss } from "../../test/cssFixture";
@@ -200,41 +201,30 @@ describe("formatModelTag helper function", () => {
     expect(modelTag?.textContent).toContain("Gemini");
   });
 
-  it("returns null when modelId is missing", async () => {
-    setupMockChat({
-      activeSession: {
-        id: "session-001",
-        agentId: "__fn_agent__",
-        status: "active",
-        title: "Test",
-        modelProvider: "anthropic",
-        createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z",
-      },
-      messages: [
-        { id: "msg-001", sessionId: "session-001", role: "assistant", content: "Hi!", createdAt: "2026-04-08T00:00:00.000Z" },
-      ],
-    });
-    // RUFU-153: resolveSessionProvider now falls through to the project defaults tier when the
-    // session model is incomplete; serve a catalog without defaults so the resolver's null
-    // path (no model tag) remains the behavior under test.
-    mockFetchModels.mockResolvedValue({ models: [], favoriteProviders: [], favoriteModels: [] });
-
-    await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
-
-    await userEvent.click(screen.getByTestId("chat-session-session-001"));
-
-    const modelTag = document.querySelector(".chat-model-tag") as HTMLElement | null;
-    expect(modelTag).not.toBeInTheDocument();
+  /*
+  FNXC:ChatModelTag 2026-08-23-16:50:
+  FN-5108 made the thread header show the EFFECTIVE session model, so a session with no explicit
+  model resolves through the agent runtime and then the workspace default instead of rendering no
+  tag. The null contract belongs to the pure `formatModelTag` helper (exported from
+  StandardChatSurface); the UI contract is the effective-model fallback asserted below.
+  */
+  it("returns null when modelId is missing", () => {
+    expect(formatModelTag("anthropic", undefined)).toBeNull();
+    expect(formatModelTag("anthropic", "")).toBeNull();
   });
 
-  it("returns null when provider is missing", async () => {
+  it("returns null when provider is missing", () => {
+    expect(formatModelTag(undefined, "claude-sonnet-4-5")).toBeNull();
+    expect(formatModelTag("", "claude-sonnet-4-5")).toBeNull();
+  });
+
+  it("falls back to the workspace default model tag when the session carries no model", async () => {
     setupMockChat({
       activeSession: {
         id: "session-001",
         agentId: "__fn_agent__",
         status: "active",
         title: "Test",
-        modelId: "claude-sonnet-4-5",
         createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z",
       },
       messages: [
@@ -251,7 +241,7 @@ describe("formatModelTag helper function", () => {
     await userEvent.click(screen.getByTestId("chat-session-session-001"));
 
     const modelTag = document.querySelector(".chat-model-tag") as HTMLElement | null;
-    expect(modelTag).not.toBeInTheDocument();
+    expect(modelTag?.textContent).toBe("Claude Sonnet 4.5");
   });
 });
 

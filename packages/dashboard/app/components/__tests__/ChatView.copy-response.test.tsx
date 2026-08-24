@@ -116,10 +116,14 @@ function mockExecCommand(result: boolean) {
   return execCommand;
 }
 
+/*
+FNXC:ChatNavigation 2026-08-23-18:10:
+FN-054 made Chat list-first, so the transcript (and its copy affordance) exists only after drilling
+into the conversation from the list.
+*/
 async function renderAndClickCopy() {
   setupProviderResponse();
   await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
-  // RUFU-153: the detail pane (message list + composer) opens only on row click (FNXC:ChatNavigation 2026-08-19-19:36).
   await userEvent.click(screen.getByTestId("chat-session-session-001"));
   const copyButton = await screen.findByTestId("chat-copy-response-msg-copy");
   await userEvent.click(copyButton);

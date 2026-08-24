@@ -29,7 +29,13 @@ import { describe, it, expect } from "vitest";
 import type { Task } from "@fusion/core";
 import { deriveStatsFromTasks } from "../useExecutorStats";
 
-type Flags = Parameters<typeof deriveStatsFromTasks>[1] extends ReadonlyMap<string, infer F> ? F : never;
+/*
+FNXC:WorkflowLifecycleColumns 2026-08-23-19:55:
+`deriveStatsFromTasks` dropped its stuck-task timeout/last-fetch parameters (commit 2eae0b2507), so
+the column-flag map is argument 2, not argument 4. Passing it in the old slot silently discarded it
+and made every flag-driven assertion here read the unflagged fallback instead.
+*/
+type Flags = Parameters<typeof deriveStatsFromTasks>[1] extends ReadonlyMap<string, infer F> | undefined ? F : never;
 
 function card(id: string, column: string): Task {
   return { id, column, description: `card ${id}`, title: `card ${id}` } as unknown as Task;

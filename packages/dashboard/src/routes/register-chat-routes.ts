@@ -40,7 +40,12 @@ warn for failures). Follows the dashboard createLogger("dashboard-...") conventi
 */
 const chatDeleteSyncLog = createLogger("dashboard-register-chat-routes");
 
-interface ChatRouteDeps {
+/*
+FNXC:ChatRouteDepsExport 2026-08-21-13:35:
+RUFU-146 review (PRRT_kwDOSA-8Y86a7RZ3): exported because the dashboard's own
+route tests import the deps type to build typed registerChatRoutes fixtures.
+*/
+export interface ChatRouteDeps {
   parseLastEventId: (req: import("express").Request) => number | undefined;
   replayBufferedSSE: (res: import("express").Response, bufferedEvents: SessionBufferedEvent[]) => boolean;
   validateOptionalModelField: (value: unknown, fieldName: string) => string | undefined;
@@ -68,6 +73,38 @@ function resolveAttachmentPath(rootDir: string, sessionId: string, filename: str
     throw badRequest("Invalid attachment path");
   }
   return { sessionDir, filePath };
+}
+
+/*
+FNXC:ChatStashBackfillKey 2026-08-21-13:35:
+RUFU-146 review (PRRT_kwDOSA-8Y86a7RZ8): Stash's /events/batch is a bare
+INSERT with no server-side dedupe, so backfill idempotency is entirely
+client-side — and the pre-check key must identify an event exactly as a
+re-run will see it in Stash: (event type, timestamp, content). The old
+content-only key let two distinct messages with identical text (repeated
+tool output, a "done" turn) collide — the second was permanently
+suppressed by the first. The timestamp component is canonicalized through
+Date.parse to epoch milliseconds on BOTH sides because Stash honors the
+client created_at (push_events_batch: _normalize_ts(e["created_at"])) but
+re-serializes it on read (Pydantic datetime JSON, e.g.
+2026-08-19T10:00:00.123Z read back as 2026-08-19T10:00:00.123000Z) — raw
+string equality would never match. NUL bytes are stripped because the
+server scrubs \u0000 from every string field on ingest (memory_service
+_strip_nuls), so the stored content can differ from the uploaded content.
+Empty content is a VALID key component: (type, timestamp) still
+distinguishes two empty messages at different times, and an empty string
+is what makes a content-less message identifiable at all. A missing or
+unparseable timestamp falls back to the raw string (stable across runs
+for the same stored row).
+*/
+function backfillEventType(role: string): string {
+  return role === "user" ? "user_message" : role === "assistant" ? "assistant_message" : "tool_use";
+}
+
+function backfillEventKey(eventType: string, createdAt: string | undefined, content: string): string {
+  const parsed = createdAt !== undefined ? Date.parse(createdAt) : Number.NaN;
+  const t = Number.isFinite(parsed) ? String(parsed) : (createdAt ?? "");
+  return [eventType, t, content.replace(/\u0000/g, "")].join("\u0001");
 }
 
 export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): void {
@@ -972,9 +1009,11 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
   chronology.
   Contract: 200 {ok,inserted,skipped,uploaded} on success (skipped = messages already
   in Stash, omitted by the client-side dedupe); 404 unknown session; 400 for
-  memory-disabled / non-stash backend / unconfigured key / empty chat; 502 when the
-  Stash pre-check or the upload itself fails — captureMemory never throws, it degrades
-  to ok:false, and the route must surface that as a visible failure, never a success.
+  memory-disabled / non-stash backend / unconfigured key / empty chat; 409 when the
+  Stash pre-check cannot safely count the stored events (exclusive-cursor tie
+  boundary — see FNXC:ChatStashBackfillTieBoundary); 502 when the Stash pre-check
+  or the upload itself fails — captureMemory never throws, it degrades to ok:false,
+  and the route must surface that as a visible failure, never a success.
   */
   router.post("/chat/sessions/:id/backfill-stash", rateLimit(RATE_LIMITS.mutation), async (req, res) => {
     try {
@@ -1025,23 +1064,43 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
       chat 4 -> 8 -> 12 events across two identical backfills). The live backend also
       stores content untruncated (50k chars round-tripped intact, verified 2026-08-19),
       so an EXACT content match is the dedupe key. Pre-check: page the session's
-      existing events (structured query, 200/page, ascending, inclusive after-cursor)
-      and skip messages whose content is already stored. Bounded: 50 pages (10k
-      events) plus a no-progress guard — the inclusive `after` re-returns the boundary
-      row (the Set absorbs it), and a frozen cursor signature breaks the loop instead
-      of spinning. A pre-check transport failure fails CLOSED (502) rather than
-      blindly uploading duplicates.
+      existing events (structured query, 200/page, ascending, after-cursor) and
+      skip messages whose content is already stored. Bounded: 50 pages (10k
+      events) plus a no-progress guard — a frozen cursor signature breaks the loop
+      instead of spinning. A pre-check transport failure fails CLOSED (502) rather
+      than blindly uploading duplicates. (The cursor-inclusivity question is
+      settled by per-event UUID dedupe — FNXC:ChatStashBackfillCursorDedupe.)
       */
       const rawStashUrl = resolved.stashUrl;
       const stashUrl =
         typeof rawStashUrl === "string" && rawStashUrl.trim().length > 0
           ? rawStashUrl.trim()
           : DEFAULT_STASH_URL;
-      let existingContents: Set<string>;
+      // FNXC:ChatStashBackfillKey 2026-08-21-13:35: key (type, canonical
+      // timestamp, NUL-stripped content) — identical construction to the
+      // incoming-message filter below, so a re-run matches what the first
+      // run stored. Empty content is a valid key.
+      // FNXC:ChatStashBackfillMultiset 2026-08-21-14:34:
+      // RUFU-146 review (PRRT_kwDOSA-8Y86bL8vN, Greptile P1): the pre-check
+      // must be a MULTiset, not a set — Stash has no server-side dedupe and
+      // an interrupted batch can store only some occurrences of a key that
+      // several local messages share (same role, same canonicalized
+      // timestamp, identical content — e.g. the same "ok" typed twice in
+      // one second). A Set pre-check would then skip every local occurrence
+      // on retry, permanently losing the unsaved ones while the route still
+      // reports success. Count both sides and upload, per key,
+      // max(0, localCount - remoteCount) occurrences (the first N in order).
+      // A capped remote page list can only undercount the remote side,
+      // which biases toward re-upload (a duplicate), never toward loss; the one
+      // cursor case that could undercount a tie group (an exclusive-cursor
+      // boundary tie across a full page) fails CLOSED with 409 instead — see
+      // FNXC:ChatStashBackfillTieBoundary below.
+      let existingCounts: Map<string, number>;
       try {
-        existingContents = new Set<string>();
+        existingCounts = new Map<string, number>();
         let cursor: string | undefined;
         let lastSignature = "";
+        const seenEventIds = new Set<string>();
         for (let page = 0; page < 50; page++) {
           const { events } = await queryStashEvents(stashUrl, resolved.stashApiKey, {
             sessionId,
@@ -1050,12 +1109,95 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
             ...(cursor ? { after: cursor } : {}),
           });
           if (events.length === 0) break;
+          /*
+          FNXC:ChatStashBackfillCursorDedupe 2026-08-21-14:49:
+          (RUFU-146 review, PRRT_kwDOSA-8Y86bMJxP, Greptile P1) the multiset
+          pre-check must count each STORED event exactly once. The `after`
+          cursor is the previous page's boundary created_at; whether the
+          server re-returns that row depends on the deployed cursor
+          semantics (the Stash source filter is exclusive —
+          memory_service._build_event_filters `created_at > $n` — but the
+          earlier inclusive assumption was never re-verified against the
+          deployed revision). Under an inclusive cursor, or a same-second
+          tie at the boundary, page N's tail row(s) re-appear on page
+          N+1, and a plain count inflates that key by 1: with
+          localCount = remoteCount + 1 the inflated remote side then
+          suppresses the one occurrence that is NOT stored, so the route
+          reports success while silently losing a transcript event. Dedupe
+          by row UUID (HistoryEventResponse.id, always present on the
+          wire) so each stored event counts exactly once under either
+          cursor semantics. An event without a usable id is counted as-is
+          (matches the exclusive-source behavior).
+          */
           for (const event of events) {
-            const content = typeof event.content === "string" ? event.content : "";
-            if (content) existingContents.add(content);
+            const rawId = event.id;
+            const eventId =
+              typeof rawId === "string" ? rawId : typeof rawId === "number" ? String(rawId) : undefined;
+            if (eventId !== undefined) {
+              if (seenEventIds.has(eventId)) continue; // re-returned boundary row
+              seenEventIds.add(eventId);
+            }
+            const key = backfillEventKey(
+              typeof event.event_type === "string" ? event.event_type : "",
+              typeof event.created_at === "string" ? event.created_at : undefined,
+              typeof event.content === "string" ? event.content : "",
+            );
+            existingCounts.set(key, (existingCounts.get(key) ?? 0) + 1);
           }
           const last = events[events.length - 1];
+          const prev = events[events.length - 2];
           const nextCursor = typeof last?.created_at === "string" ? last.created_at : undefined;
+          const prevCursor = typeof prev?.created_at === "string" ? prev.created_at : undefined;
+          /*
+          FNXC:ChatStashBackfillTieBoundary 2026-08-21-18:25:
+          (RUFU-146 review, PRRT_kwDOSA-8Y86bP9Z5, Greptile P1) The Stash event
+          query's `after` filter is EXCLUSIVE on created_at (verified source:
+          memory_service._build_event_filters `created_at > $n`). When a full page
+          ends on a created_at that ties with the previous row, the exclusive
+          cursor skips every remaining stored row sharing that timestamp, so the
+          multiset pre-check would undercount the remote side and re-upload
+          already-stored occurrences — silent duplicate transcript events while
+          the route reports success. The tie group's tail cannot be fetched (the
+          API has no composite (created_at, id) cursor, and the Stash server is a
+          separate product), so the pre-check fails CLOSED (409) exactly like a
+          transport failure instead of counting what it cannot see. Short pages
+          (the tie group fits inside the page) and unique boundaries are safe.
+          FNXC:ChatStashBackfillTieBoundaryResidual 2026-08-21-18:46:
+          (RUFU-146 review, PR #3494 comment 3832713940, Greptile P1 "Boundary-start ties
+          skip events") RESIDUAL, documented rather than fixable client-side: the guard
+          compares only the last two rows, so a tie group that STARTS at the final row of
+          a full page (one T row in-page, the rest beyond rank 200) is invisible in the
+          forward stream — the exclusive cursor skips it and the pre-check undercounts.
+          Verified undecidable within the Stash API: GET /api/v1/me/sessions/events
+          accepts only agent_name/session_id/event_type/after/before/limit (1-200)/order
+          (routers/memory.py); after/before compile to STRICT inequalities
+          (`created_at >` / `<`, memory_service._build_event_filters) and
+          _query_events has no offset and no (created_at, id) tiebreak — no bounded
+          call sequence can observe rank 201+ of a cursor window or count the rows equal
+          to T (a backward probe excludes T itself). The obvious client-side narrowing
+          (fail closed whenever a local message shares the boundary millisecond) is
+          UNSOUND: backfill stores each message's REAL created_at, so in an ordinary
+          200+ backfill the 200th stored row is itself a local message — the condition
+          would hold at every full-page boundary and 409 every large backfill.
+          Consequence bound of the residual: DUPLICATE re-upload of the skipped
+          occurrences only (the undercount can never lose a local occurrence), under the
+          rare shape of a same-millisecond tie group crossing a 200-row boundary in a
+          200+ event session. The true fix is a server-side composite (created_at, id)
+          cursor in the Stash product (separate repo, own release — out of scope for
+          this PR). Regression (p) pins the shape: no false 409, bounded duplicate,
+          honest counts.
+          */
+          if (events.length === 200 && nextCursor !== undefined && nextCursor === prevCursor) {
+            res.status(409).json({
+              ok: false,
+              inserted: 0,
+              skipped: 0,
+              uploaded: messages.length,
+              error:
+                "Stash pre-check unsafe: a full-page boundary falls on a timestamp shared by the page's last two rows, and the exclusive cursor cannot prove the tie group is fully counted inside the 200-row window. Nothing was uploaded — safe dedupe needs a composite (created_at, id) cursor.",
+            });
+            return;
+          }
           const signature = `${nextCursor ?? ""}::${typeof last?.content === "string" ? last.content : ""}`;
           if (events.length < 200 || !nextCursor || signature === lastSignature) break;
           cursor = nextCursor;
@@ -1071,7 +1213,25 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
         });
         return;
       }
-      const freshMessages = messages.filter((message) => !existingContents.has(message.content ?? ""));
+      // Multiset difference (see FNXC:ChatStashBackfillMultiset above): for
+      // each key, the first max(0, local - remote) occurrences upload; the
+      // rest are already stored.
+      const localCounts = new Map<string, number>();
+      for (const message of messages) {
+        const key = backfillEventKey(backfillEventType(message.role), message.createdAt, message.content ?? "");
+        localCounts.set(key, (localCounts.get(key) ?? 0) + 1);
+      }
+      const remainingUploads = new Map<string, number>();
+      for (const [key, localCount] of localCounts) {
+        remainingUploads.set(key, Math.max(0, localCount - (existingCounts.get(key) ?? 0)));
+      }
+      const freshMessages = messages.filter((message) => {
+        const key = backfillEventKey(backfillEventType(message.role), message.createdAt, message.content ?? "");
+        const remaining = remainingUploads.get(key) ?? 0;
+        if (remaining <= 0) return false;
+        remainingUploads.set(key, remaining - 1);
+        return true;
+      });
       if (freshMessages.length === 0) {
         // Idempotent no-op: every message is already in Stash (re-run, or the chat
         // was live-captured) — success with nothing uploaded, never duplicates.
@@ -1092,11 +1252,21 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
           : typeof metadata.agentName === "string"
             ? metadata.agentName
             : "fusion";
-        const base: Record<string, unknown> = {
-          event_type: message.role === "user" ? "user_message" : message.role === "assistant" ? "assistant_message" : "tool_use",
+        /*
+        FNXC:ChatStashBackfillKey 2026-08-21-13:35:
+        RUFU-146 review (PRRT_kwDOSA-8Y86a7RZ8): the wire field is
+        created_at (MemoryCaptureEvent's RFC3339 field, which Stash's
+        push_events_batch honors via _normalize_ts) — the old `timestamp`
+        key was silently ignored by the server, so every backfilled event
+        carried server receive-time and the real chat chronology was lost.
+        The mapper is now properly typed (no double cast), and content is
+        NUL-stripped to match what the server stores on ingest.
+        */
+        const base: MemoryCaptureEvent = {
+          event_type: backfillEventType(message.role),
           agent_name: agentName,
-          timestamp: message.createdAt || new Date().toISOString(),
-          content: message.content ?? "",
+          created_at: message.createdAt || new Date().toISOString(),
+          content: (message.content ?? "").replace(/\u0000/g, ""),
         };
         const toolName = typeof metadata.tool_name === "string"
           ? metadata.tool_name
@@ -1104,7 +1274,7 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
             ? metadata.toolName
             : undefined;
         if (message.role === "system" && toolName) base.tool_name = toolName;
-        return base as unknown as MemoryCaptureEvent;
+        return base;
       });
 
       const skipped = messages.length - freshMessages.length;
@@ -1419,15 +1589,24 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
 
       // Resolve per-project ChatManager before opening the SSE stream so
       // failures (e.g. project DB cannot be opened) produce a proper HTTP error.
-      const engine = projectId ? options?.engineManager?.getEngine(projectId) : undefined;
-      const projectPluginRunner = engine?.getPluginRunner?.();
-      chatManager = getOrCreateScopedChatManager(
-        scopedStore,
-        chatStore,
-        projectPluginRunner ?? options?.pluginRunner,
-        Boolean(projectPluginRunner),
-        engine?.getMessageStore(),
-      );
+      /*
+      FNXC:ProjectChatRuntime 2026-08-23-23:35:
+      Send must resolve the SAME ChatManager instance as `resolveScopedChatManager` (used by stream, cancel, and session reads); generation state lives on the instance, so a split identity makes cancel a silent no-op and `isGenerating` wrong. With no selected project the host manager is authoritative — only a project-scoped request builds/reuses a scoped manager. FN-047 dropped this unscoped branch on the send path alone.
+      */
+      if (!projectId) {
+        if (!options?.chatManager) throw new ApiError(503, "Chat manager not available");
+        chatManager = options.chatManager;
+      } else {
+        const engine = options?.engineManager?.getEngine(projectId);
+        const projectPluginRunner = engine?.getPluginRunner?.();
+        chatManager = getOrCreateScopedChatManager(
+          scopedStore,
+          chatStore,
+          projectPluginRunner ?? options?.pluginRunner,
+          Boolean(projectPluginRunner),
+          engine?.getMessageStore(),
+        );
+      }
 
       // The internal limiter is shared with GET stream subscribers. Keep its rejection
       // before headers so a replacement cannot be accepted without a prepared send.
