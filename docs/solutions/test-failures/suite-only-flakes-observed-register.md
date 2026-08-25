@@ -19,7 +19,7 @@ tags:
 
 # Observed suite-only flakes register
 
-This register has **5 active observation records** (entries 1, 2, 7, 13, and 16): **4 active first sightings** and **1 escalated second sighting**. It also has **1 merge-gate eviction record** (entry 6) and **8 archived closed records**. Only the active section drives quarantine and escalation decisions; the other sections preserve historical evidence.
+This register has **5 active observation records** (entries 1, 2, 7, 13, and 16): **3 active first sightings** and **2 escalated second sightings**. It also has **1 merge-gate eviction record** (entry 6) and **8 archived closed records**. Only the active section drives quarantine and escalation decisions; the other sections preserve historical evidence.
 
 <!--
 FNXC:TestFlakeRegister 2026-08-19-11:14:
@@ -138,7 +138,7 @@ DDL microbenchmarks of the pre-fix pristine shape measured `CREATE DATABASE` 44.
 
 ### 7. Mission store PostgreSQL teardown hook
 
-- **Status:** Active first sighting — evidence owner FN-9146.
+- **Status:** QUARANTINED 2026-08-23 (second sighting; file-level quarantine in `scripts/lib/test-quarantine.json` + `packages/core/vitest.config.ts` exclude, deletion deadline 2026-09-06) — evidence owner 9838f42076.
 
 - **File:** `packages/core/src/__tests__/postgres/mission-store.pg.test.ts`
 - **Exact test:** `MissionStore (PostgreSQL backend mode)` suite `afterAll` hook (`h.afterAll`).
@@ -190,7 +190,20 @@ The 12-worker snapshots show 21 backends and concurrent template `CREATE DATABAS
 | D01 | configured pg gate / 4 forks | 3.6s | not selected | green, 2 files / 10 pass | 100/97; not sampled |
 | D02 | configured pg gate / 4 forks | 3.7s | not selected | green, 2 files / 10 pass | 100/97; not sampled |
 
-
+<!--
+FNXC:TestFlakeRegister 2026-08-25-16:19:
+Second sighting of the mission-store.pg.test.ts concurrent-claim wall-clock race
+("serializes concurrent claims on the same task (Greptile P1 race)" holds a
+transaction open, sleeps 250ms, then asserts the competing claim has not
+settled) on 2026-08-23, observed twice while three dashboard suites ran
+concurrently; passes 65/65 three times once the machine settles. The deletion
+ratchet makes a second sighting an on-sight file-level quarantine with no
+further discretion: mirrored in scripts/lib/test-quarantine.json and
+packages/core/vitest.config.ts (commit 9838f42076; register reconciliation
+RUFU-171), no timeout/retry/assertion appeasement. Rescue requires a
+deterministic lock-wait probe (pg_locks) rather than a longer sleep; deletion
+deadline 2026-09-06.
+-->
 ### 13. CLI bin no-args dashboard-launch test timeout
 
 - **Status:** QUARANTINED 2026-08-20 (second sighting; file-level quarantine in `scripts/lib/test-quarantine.json` + `packages/cli/vitest.config.ts` exclude, deletion deadline 2026-09-03) — evidence owner RUFU-128.
@@ -243,7 +256,7 @@ Quarantine was not available as an alternative. Core PostgreSQL files cannot be 
 
 ### Common shape and investigated result
 
-FN-9125 established that former entry 3 was not PostgreSQL-suite-adjacent: `plugin-runner.test.ts` used an in-memory mocked TaskStore and had no PostgreSQL/harness import. FN-9135 did not identify a root cause, but FN-9141's completed shuffled worker-reuse campaign reproduced and structurally fixed the logger mock-history fixture defect; the suite and its renamed-complete-lane dispatch coverage remain active. Entries 2 and 7 remain active, unreproduced PostgreSQL observations: FN-9146 completed the later A×4/B×3/C×3 campaign without either exact identity failing. Entry 1 reproduced under FN-9126 and again under FN-9146's A02–A04 lanes, but remains unattributed rather than structurally fixed. The golden-template/advisory-lock lifecycle and schema-applier's inline baseline path are concrete architecture facts, not a demonstrated cause of these assertions. Core policy forbids inline PG quarantine: FN-9146 owns the retained evidence for entries 1, 2, and 7; no source or fan-out change is justified before a diagnostic names a causal lifecycle seam. Entry 13 is a further unreproduced instance of that same 15s setup-hook mode, narrowed to the capped four-fork gate lane on a cold cluster. Entry 6 instead records a merge-gate eviction after a loaded-lane setup-hook timeout; `FNXC:PgTestTemplateDb 2026-07-19-17:20` and `FNXC:PgTestWorkerCap 2026-07-18-18:00` are already-landed mitigations for that mode, not new diagnoses to re-open. The Planning Mode entries are separate frontend timing observations.
+FN-9125 established that former entry 3 was not PostgreSQL-suite-adjacent: `plugin-runner.test.ts` used an in-memory mocked TaskStore and had no PostgreSQL/harness import. FN-9135 did not identify a root cause, but FN-9141's completed shuffled worker-reuse campaign reproduced and structurally fixed the logger mock-history fixture defect; the suite and its renamed-complete-lane dispatch coverage remain active. Entry 2 remains an active, unreproduced PostgreSQL observation: FN-9146 completed the later A×4/B×3/C×3 campaign without its exact identity failing. Entry 7's second sighting on 2026-08-23 escalated it to a file-level quarantine (deletion deadline 2026-09-06), so it is no longer among the unreproduced first-sighting observations. Entry 1 reproduced under FN-9126 and again under FN-9146's A02–A04 lanes, but remains unattributed rather than structurally fixed. The golden-template/advisory-lock lifecycle and schema-applier's inline baseline path are concrete architecture facts, not a demonstrated cause of these assertions. Core PostgreSQL quarantine is file-level and ledger-locked (inline core excludes now exist in lockstep with the ledger, and the gate-policy guard pins that the two `test:pg-gate` canaries stay out of core excludes): FN-9146 owns the retained evidence for entries 1 and 2; no source or fan-out change is justified before a diagnostic names a causal lifecycle seam. Entry 13 is a further unreproduced instance of that same 15s setup-hook mode, narrowed to the capped four-fork gate lane on a cold cluster. Entry 6 instead records a merge-gate eviction after a loaded-lane setup-hook timeout; `FNXC:PgTestTemplateDb 2026-07-19-17:20` and `FNXC:PgTestWorkerCap 2026-07-18-18:00` are already-landed mitigations for that mode, not new diagnoses to re-open. The Planning Mode entries are separate frontend timing observations.
 
 
 

@@ -112,7 +112,19 @@ test("observed-flake register active count, escalation state, and owners stay sy
     },
     {
       heading: "7. Mission store PostgreSQL teardown hook",
-      status: "Active first sighting — evidence owner FN-9146.",
+      /*
+      FNXC:TestFlakeRegister 2026-08-25-16:19:
+      Second sighting of the mission-store.pg.test.ts concurrent-claim
+      wall-clock race (2026-08-23, observed twice while three dashboard
+      suites ran concurrently; 65/65 clean three times once the machine
+      settles) escalated entry 7 to an on-sight file-level quarantine
+      (deletion ratchet: ledger row + core-config inline exclude, commit
+      9838f42076, no appeasement). The register status line moved with it;
+      this pinned state must name the QUARANTINED escalation, not the
+      superseded first-sighting status. Deletion deadline 2026-09-06.
+      */
+      status:
+        "QUARANTINED 2026-08-23 (second sighting; file-level quarantine in `scripts/lib/test-quarantine.json` + `packages/core/vitest.config.ts` exclude, deletion deadline 2026-09-06) — evidence owner 9838f42076.",
     },
     {
       heading: "13. CLI bin no-args dashboard-launch test timeout",
