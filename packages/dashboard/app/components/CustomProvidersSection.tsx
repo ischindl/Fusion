@@ -30,7 +30,11 @@ type LegacyProvider = {
   // per-model windows too; normalizeProviders carries them through so the edit form pre-fills.
   // FNXC:CustomProviderThinkingFormat 2026-08-21-05:59: RUFU-143 same for the per-model
   // thinking flags (thinkingFormat/reasoning) — legacy records may carry them too.
-  models?: Array<{ id: string; name?: string; contextWindow?: number; maxTokens?: number; thinkingFormat?: string; reasoning?: boolean }>;
+  // FNXC:CustomProviderHttpTimeout 2026-08-25-01:58: legacy records carry the per-model HTTP
+  // timeout too; normalizeProviders must carry it through as well. fetchCustomProviders always
+  // returns the legacy shape, so EVERY provider record flows through this conversion branch —
+  // dropping the field here silently emptied the row editor (and the next save wiped the value).
+  models?: Array<{ id: string; name?: string; contextWindow?: number; maxTokens?: number; timeoutSeconds?: number; thinkingFormat?: string; reasoning?: boolean }>;
 };
 
 function normalizeProviders(result: Awaited<ReturnType<typeof fetchCustomProviders>>): CustomProvider[] {
@@ -59,6 +63,14 @@ function normalizeProviders(result: Awaited<ReturnType<typeof fetchCustomProvide
         // FNXC:CustomProviderModelWindows 2026-08-19-16:49: RUFU-123 keep only valid positive windows.
         ...(isPositiveTokenValue(model.contextWindow) ? { contextWindow: model.contextWindow } : {}),
         ...(isPositiveTokenValue(model.maxTokens) ? { maxTokens: model.maxTokens } : {}),
+        // FNXC:CustomProviderHttpTimeout 2026-08-25-01:58: carry the per-model HTTP timeout
+        // through the legacy normalize so the edit form pre-fills it. Unlike the window fields,
+        // 0 is a valid persisted value ("timeout disabled"), so the guard is >= 0, not > 0 —
+        // a positive-only guard would collapse the disabled sentinel to blank and the next
+        // save would omit the key, wiping the stored value.
+        ...(typeof model.timeoutSeconds === "number" && Number.isFinite(model.timeoutSeconds) && model.timeoutSeconds >= 0
+          ? { timeoutSeconds: model.timeoutSeconds }
+          : {}),
         // FNXC:CustomProviderThinkingFormat 2026-08-21-05:59: RUFU-143 carry the per-model
         // thinking flags through the legacy normalize so the edit form pre-fills them. The
         // legacy record type is string-typed; the route is the authority for the literal union.
@@ -177,7 +189,10 @@ function ModelRowsEditor({ rows, onChange, onDetect, detecting, canDetect, canAd
   };
 
   const removeRow = (index: number) => {
-    // The single remaining row cannot be removed; saving a blank row stores no models.
+    // The single remaining row cannot be removed — the form always keeps one row, and
+    // blanking that last row is how the operator deletes every model (the edit save then
+    // sends an explicit empty models array; see handleSave's FNXC:CustomProviderModelWindows
+    // note). A blank row on a new provider stores no models.
     if (rows.length <= 1) return;
     onChange(rows.filter((_, i) => i !== index));
   };
@@ -185,7 +200,7 @@ function ModelRowsEditor({ rows, onChange, onDetect, detecting, canDetect, canAd
   return (
     <div className="custom-provider-model-rows">
       {rows.map((row, index) => (
-        <div key={`${row.id || "empty"}-${index}`} className="custom-provider-model-row">
+        <div key={index} className="custom-provider-model-row">
           <input
             className="input"
             aria-label={`${t("providers.modelRowModelId", "Model ID")} ${index + 1}`}
@@ -479,14 +494,19 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
           // FNXC:CustomProviderModelWindows 2026-08-19-16:49: RUFU-123 merge by id: append new
           // models with their probed windows, and only fill blank fields on existing rows —
           // manual window values typed by the operator are never clobbered by the probe.
+          // FNXC:CustomProviderModelWindows 2026-08-20-22:06: RUFU-145 PR #3493 review:
+          // the merge writes the merged object back into the rows array by index. The
+          // original code updated a parallel byId map and then returned the untouched
+          // rows, so probed windows for already-typed model ids never reached the form.
           const rows = prev.filter((row) => !isEmptyModelRow(row));
-          const byId = new Map(rows.map((row) => [row.id.trim(), row] as const));
+          const indexById = new Map(rows.map((row, i) => [row.id.trim(), i] as const));
           for (const discovered of result.models) {
             const discoveredId = discovered.id.trim();
             if (!discoveredId) continue;
-            const existing = byId.get(discoveredId);
-            if (existing) {
-              byId.set(discoveredId, {
+            const existingIndex = indexById.get(discoveredId);
+            if (existingIndex !== undefined) {
+              const existing = rows[existingIndex]!;
+              rows[existingIndex] = {
                 ...existing,
                 name: existing.name.trim() !== "" ? existing.name : (discovered.name ?? discoveredId),
                 contextWindow: existing.contextWindow.trim() !== ""
@@ -495,7 +515,7 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
                 maxTokens: existing.maxTokens.trim() !== ""
                   ? existing.maxTokens
                   : (discovered.maxTokens != null ? String(discovered.maxTokens) : ""),
-              });
+              };
             } else {
               /*
               FNXC:CustomProviderThinkingFormat 2026-08-21-06:07:
@@ -515,7 +535,7 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
                 noThinkingParams: false,
               };
               rows.push(row);
-              byId.set(discoveredId, row);
+              indexById.set(discoveredId, rows.length - 1);
             }
           }
           return rows.length > 0 ? rows : [emptyModelRow()];
@@ -572,7 +592,14 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
       apiType,
       baseUrl: baseUrl.trim(),
       ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
-      ...(parsedModels.length > 0 ? { models: parsedModels } : {}),
+      // FNXC:CustomProviderModelWindows 2026-08-21-00:06:
+      // RUFU-145 PR #3493 review (Greptile P1 "Cleared models remain persisted"): the PUT
+      // update path is a partial merge — an omitted `models` key keeps the stored list.
+      // The edit form must therefore always send the row result, including an explicit
+      // empty array, or the operator's cleared rows silently reappear after reload. The
+      // create path omits `models` when blank so a new provider simply has no registered
+      // models.
+      ...(editingProvider || parsedModels.length > 0 ? { models: parsedModels } : {}),
       // FNXC:ProviderAuth 2026-07-08-00:00: only send the caching opt-in for apiTypes where it
       // applies (openai-compatible/openai-responses); anthropic-compatible/google-generative-ai
       // never surface the checkbox so this is always false for them.
@@ -806,7 +833,8 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
                     </div>
 
                     <div className="form-group custom-provider-form-row">
-                      <label>{t("providers.modelsLabel", "Available models")}</label>
+                      <label id="custom-provider-models-label-edit">{t("providers.modelsLabel", "Available models")}</label>
+                      <div role="group" aria-labelledby="custom-provider-models-label-edit">
                       <ModelRowsEditor
                         rows={modelRows}
                         onChange={setModelRows}
@@ -816,6 +844,7 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
                         canAddRow
                         disabled={saving}
                       />
+                      </div>
                     </div>
 
                     {detectError ? <div className="custom-provider-form-error">{detectError}</div> : null}
@@ -926,7 +955,8 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
           </div>
 
           <div className="form-group custom-provider-form-row">
-            <label>{t("providers.modelsLabel", "Available models")}</label>
+            <label id="custom-provider-models-label-create">{t("providers.modelsLabel", "Available models")}</label>
+            <div role="group" aria-labelledby="custom-provider-models-label-create">
             <ModelRowsEditor
               rows={modelRows}
               onChange={setModelRows}
@@ -936,6 +966,7 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
               canAddRow
               disabled={saving}
             />
+            </div>
           </div>
 
           {detectError ? <div className="custom-provider-form-error">{detectError}</div> : null}

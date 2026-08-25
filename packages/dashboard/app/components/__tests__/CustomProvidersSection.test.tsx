@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { CustomProvidersSection } from "../CustomProvidersSection";
 
 const mockFetchCustomProviders = vi.fn();
@@ -318,8 +319,84 @@ describe("CustomProvidersSection", () => {
         name: "Updated Provider",
         apiType: "openai-compatible",
         baseUrl: "https://api.updated.example.com",
+        // FNXC:CustomProviderModelWindows 2026-08-21-00:06:
+        // RUFU-145 PR #3493 review (Greptile P1): the edit path always sends the row
+        // result — an explicit empty array so the server partial merge cannot silently
+        // keep a stored model list when the form's single row is blank.
+        models: [],
       });
       expect(screen.getByText("Updated Provider")).toBeTruthy();
+    });
+  });
+
+  it("sends an explicit empty models array when an edit clears the last remaining row", async () => {
+    mockFetchCustomProviders
+      .mockResolvedValueOnce([
+        {
+          id: "test-id",
+          name: "Windowed Provider",
+          apiType: "openai-compatible",
+          baseUrl: "https://api.example.com",
+          models: [{ id: "deepseek-v4", name: "DeepSeek V4", contextWindow: 32768, maxTokens: 4096 }],
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: "test-id",
+          name: "Windowed Provider",
+          apiType: "openai-compatible",
+          baseUrl: "https://api.example.com",
+          models: [],
+        },
+      ]);
+
+    render(<CustomProvidersSection embedded />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Edit Windowed Provider")).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByLabelText("Edit Windowed Provider"));
+
+    // The single remaining row cannot be removed; blanking its id is how the operator
+    // deletes the last model. The save must persist that deletion instead of omitting
+    // `models` and letting the server partial merge keep the stored list (Greptile P1 on
+    // PR #3493: "Cleared models remain persisted").
+    // FNXC:CustomProviderModelWindows 2026-08-21-00:06: RUFU-145 symptom verification —
+    // this assertion is gone-green: the payload carries an explicit empty array.
+    fireEvent.change(screen.getByLabelText("Model ID 1"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
+
+    await waitFor(() => {
+      expect(mockUpdateCustomProvider).toHaveBeenCalledWith("test-id", expect.objectContaining({
+        name: "Windowed Provider",
+        models: [],
+      }));
+    });
+  });
+
+  it("omits models from the create payload when the only row is blank", async () => {
+    mockFetchCustomProviders.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+    render(<CustomProvidersSection embedded />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Add Custom Provider/i })).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Add Custom Provider/i }));
+    fireEvent.change(screen.getByLabelText("Provider name"), { target: { value: "Bare Provider" } });
+    fireEvent.change(screen.getByLabelText("Base URL"), { target: { value: "https://api.example.com" } });
+    // Leave the single model row blank: a new provider simply has no registered models,
+    // so the create payload omits the key entirely (the exact-match assertion pins it).
+    fireEvent.click(screen.getByRole("button", { name: "Save Provider" }));
+
+    await waitFor(() => {
+      expect(mockAddCustomProvider).toHaveBeenCalledWith({
+        name: "Bare Provider",
+        apiType: "openai-compatible",
+        baseUrl: "https://api.example.com",
+      });
     });
   });
 
@@ -764,11 +841,126 @@ describe("CustomProvidersSection", () => {
     await waitFor(() => {
       expect(mockAddCustomProvider).toHaveBeenCalledWith(expect.objectContaining({
         models: expect.arrayContaining([
-          { id: "existing-model", name: "existing-model", contextWindow: 8192, maxTokens: 1024 },
+          // The probe's name fills the blank display-name field on the existing row
+          // (RUFU-145 review fix: the detect merge now reaches the form).
+          { id: "existing-model", name: "Existing", contextWindow: 8192, maxTokens: 1024 },
           { id: "deepseek-v4", name: "DeepSeek V4", contextWindow: 32768, maxTokens: 4096 },
         ]),
       }));
     });
+  });
+
+  // FNXC:CustomProviderModelRows 2026-08-20-22:12: RUFU-145 PR #3493 review: the row key
+  // was derived from row.id, so every keystroke changed the key and React remounted the
+  // row, dropping focus and keeping only the first typed character. Assert with real
+  // per-character input (fireEvent.change cannot catch a remount: it sets the value
+  // directly on the node).
+  it("typing a multi-character Model ID keeps focus and the full value (stable row key)", async () => {
+    mockFetchCustomProviders.mockResolvedValue([]);
+
+    render(<CustomProvidersSection embedded />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Add Custom Provider/i })).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Add Custom Provider/i }));
+    fireEvent.change(screen.getByLabelText("Provider name"), { target: { value: "Key Provider" } });
+    fireEvent.change(screen.getByLabelText("Base URL"), { target: { value: "https://api.example.com" } });
+
+    const modelId = screen.getByLabelText("Model ID 1");
+    await userEvent.type(modelId, "gpt-4o");
+
+    expect(modelId).toHaveValue("gpt-4o");
+    expect(modelId).toHaveFocus();
+  });
+
+  // FNXC:CustomProviderModelRows 2026-08-20-22:12: RUFU-145 PR #3493 review: the detect
+  // merge updated a parallel byId map but returned the untouched rows, so probed windows
+  // for an already-typed model id never filled the blank form fields. Probe reports a
+  // window for the typed id; the blank fields must be filled on the same row.
+  it("Detect Models fills blank fields on an already-typed row from the probe", async () => {
+    mockFetchCustomProviders.mockResolvedValue([]);
+    mockProbeProviderModels.mockResolvedValue({
+      models: [{ id: "existing-model", name: "Existing Name", contextWindow: 32768, maxTokens: 4096 }],
+      count: 1,
+    });
+
+    render(<CustomProvidersSection embedded />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Add Custom Provider/i })).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Add Custom Provider/i }));
+    fireEvent.change(screen.getByLabelText("Provider name"), { target: { value: "Probe Provider" } });
+    fireEvent.change(screen.getByLabelText("Base URL"), { target: { value: "https://api.example.com" } });
+    // Only the Model ID is typed; display name, window, and max tokens stay blank.
+    fireEvent.change(screen.getByLabelText("Model ID 1"), { target: { value: "existing-model" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Detect Models" }));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Context window 1")).toHaveValue(32768);
+      expect(screen.getByLabelText("Max output tokens 1")).toHaveValue(4096);
+    });
+    expect(screen.getByLabelText("Display name 1")).toHaveValue("Existing Name");
+    // The merge fills the existing row; it must not append a duplicate row.
+    expect(screen.queryByLabelText("Model ID 2")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save Provider" }));
+
+    await waitFor(() => {
+      expect(mockAddCustomProvider).toHaveBeenCalledWith(expect.objectContaining({
+        models: expect.arrayContaining([
+          { id: "existing-model", name: "Existing Name", contextWindow: 32768, maxTokens: 4096 },
+        ]),
+      }));
+    });
+  });
+
+  it("Refresh Models re-seeds an open edit form with the merged persisted windows", async () => {
+    mockFetchCustomProviders.mockResolvedValueOnce([
+      {
+        id: "test-id",
+        name: "Windowed Provider",
+        apiType: "openai-compatible",
+        baseUrl: "https://api.example.com",
+        models: [{ id: "claude-x", name: "Claude X", contextWindow: 65536, maxTokens: 8192 }],
+      },
+    ]);
+    // The server-side refresh already id-merges probed and persisted windows.
+    mockRefreshProviderModels.mockResolvedValueOnce({
+      provider: {
+        id: "test-id",
+        name: "Windowed Provider",
+        apiType: "openai-compatible",
+        baseUrl: "https://api.example.com",
+        models: [
+          { id: "claude-x", name: "Claude X", contextWindow: 65536, maxTokens: 8192 },
+          { id: "new-model", name: "New model", contextWindow: 32768 },
+        ],
+      },
+      modelsRefreshed: 2,
+    });
+
+    render(<CustomProvidersSection embedded />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Edit Windowed Provider")).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByLabelText("Edit Windowed Provider"));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh models for Windowed Provider" }));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Model ID 2")).toHaveValue("new-model");
+    });
+    expect(screen.getByLabelText("Context window 1")).toHaveValue(65536);
+    expect(screen.getByLabelText("Max output tokens 1")).toHaveValue(8192);
+    expect(screen.getByLabelText("Context window 2")).toHaveValue(32768);
+    // new-model's maxTokens was not reported/persisted, so its field stays blank.
+    expect((screen.getByLabelText("Max output tokens 2") as HTMLInputElement).value).toBe("");
   });
 
   /*
@@ -864,48 +1056,46 @@ describe("CustomProvidersSection", () => {
     expect(screen.getByLabelText("HTTP timeout (s) 2")).toHaveValue(0);
   });
 
-  it("Refresh Models re-seeds an open edit form with the merged persisted windows", async () => {
+  /*
+  FNXC:CustomProviderHttpTimeout 2026-08-25-01:58:
+  Production-path regression: fetchCustomProviders ALWAYS returns the legacy shape (api,
+  not apiType), so every provider record flows through normalizeProviders' legacy→apiType
+  conversion, which re-maps each model. That re-map carried contextWindow/maxTokens/
+  thinkingFormat/reasoning but silently dropped timeoutSeconds — the row editor rendered
+  a blank "HTTP timeout (s)" field for every provider, and the next save omitted the key
+  and wiped the stored value. The earlier prefill test mocked the apiType shape, which
+  passes through normalizeProviders untouched and could never catch this. This test asserts
+  the general invariant: every per-model field (windows AND timeout, including the 0
+  sentinel) survives the legacy normalize.
+  */
+  it("pre-fills HTTP timeout (and windows) when the fetch returns the legacy provider shape (production path)", async () => {
     mockFetchCustomProviders.mockResolvedValueOnce([
       {
-        id: "test-id",
-        name: "Windowed Provider",
-        apiType: "openai-compatible",
-        baseUrl: "https://api.example.com",
-        models: [{ id: "claude-x", name: "Claude X", contextWindow: 65536, maxTokens: 8192 }],
-      },
-    ]);
-    // The server-side refresh already id-merges probed and persisted windows.
-    mockRefreshProviderModels.mockResolvedValueOnce({
-      provider: {
-        id: "test-id",
-        name: "Windowed Provider",
-        apiType: "openai-compatible",
+        id: "legacy-id",
+        name: "Legacy Provider",
+        api: "openai-completions",
         baseUrl: "https://api.example.com",
         models: [
-          { id: "claude-x", name: "Claude X", contextWindow: 65536, maxTokens: 8192 },
-          { id: "new-model", name: "New model", contextWindow: 32768 },
+          { id: "slow-model", name: "Slow Model", contextWindow: 65536, maxTokens: 8192, timeoutSeconds: 3600 },
+          { id: "no-timeout-model", name: "No Timeout", timeoutSeconds: 0 },
         ],
       },
-      modelsRefreshed: 2,
-    });
+    ]);
 
     render(<CustomProvidersSection embedded />);
 
     await waitFor(() => {
-      expect(screen.getByLabelText("Edit Windowed Provider")).toBeTruthy();
+      expect(screen.getByLabelText("Edit Legacy Provider")).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByLabelText("Edit Windowed Provider"));
-    fireEvent.click(screen.getByRole("button", { name: "Refresh models for Windowed Provider" }));
+    fireEvent.click(screen.getByLabelText("Edit Legacy Provider"));
 
-    await waitFor(() => {
-      expect(screen.getByLabelText("Model ID 2")).toHaveValue("new-model");
-    });
+    // timeoutSeconds must survive the legacy normalize — 3600 and 0 (disabled sentinel).
+    expect(screen.getByLabelText("HTTP timeout (s) 1")).toHaveValue(3600);
+    expect(screen.getByLabelText("HTTP timeout (s) 2")).toHaveValue(0);
+    // The window fields keep surviving the same re-map — the invariant is ALL per-model fields.
     expect(screen.getByLabelText("Context window 1")).toHaveValue(65536);
     expect(screen.getByLabelText("Max output tokens 1")).toHaveValue(8192);
-    expect(screen.getByLabelText("Context window 2")).toHaveValue(32768);
-    // new-model's maxTokens was not reported/persisted, so its field stays blank.
-    expect((screen.getByLabelText("Max output tokens 2") as HTMLInputElement).value).toBe("");
   });
 
   it("no longer renders the legacy comma-separated models input in either form", async () => {
@@ -1057,10 +1247,17 @@ describe("CustomProvidersSection", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Save Provider" }));
 
+    /*
+    FNXC:CustomProviderThinkingFormat 2026-08-22-12:40 (RUFU-143 + RUFU-145 review fix):
+    The row's display name is still blank, so the by-index merge write-back (the
+    RUFU-145 review fix that made probed values actually reach already-typed rows)
+    fills it from the probe — the expected name is the probed "Qwen 3", not the id
+    fallback. The RUFU-143 invariant under test is the preserved thinkingFormat.
+    */
     await waitFor(() => {
       expect(mockAddCustomProvider).toHaveBeenCalledWith(expect.objectContaining({
         models: expect.arrayContaining([
-          { id: "qwen3", name: "qwen3", thinkingFormat: "qwen-chat-template" },
+          { id: "qwen3", name: "Qwen 3", thinkingFormat: "qwen-chat-template" },
           { id: "qwen3-vl", name: "Qwen 3 VL" },
         ]),
       }));
