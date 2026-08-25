@@ -77,6 +77,14 @@ const PRETEST_CHECKS = [
   "scripts/check-pi-versions-pinned.mjs",
   "scripts/check-workspace-package-graph.mjs",
   "scripts/check-no-test-timeout-appeasement.mjs",
+  /*
+  FNXC:TestInfrastructure 2026-08-25-12:13:
+  Commit 12c292ea6b added check-no-comment-assertions-in-tests to the canonical
+  pretest chain on 2026-08-23 but touched no pinned mirror; this scanner mirror
+  lagged. RUFU-148 restores lockstep at the live chain position so the
+  order-sensitive deepEqual drift guard stays meaningful.
+  */
+  "scripts/check-no-comment-assertions-in-tests.mjs",
   "scripts/check-changeset-format.mjs",
   /*
   FNXC:TestInfrastructure 2026-08-19-12:04:

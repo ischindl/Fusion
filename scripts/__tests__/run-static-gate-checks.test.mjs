@@ -17,6 +17,12 @@ FN-8991, FN-8994, and FN-9096 added runtime-skill-loader-drift,
 workspace-package-graph, and cli-runtime-routing validators to the production
 chains. Those chains are authoritative; retain their exact order here so this
 mirror reports future declaration drift rather than preserving a stale list.
+
+FNXC:TestInfrastructure 2026-08-25-12:13:
+Commit 12c292ea6b added the 16th validator, check-no-comment-assertions-in-tests,
+to the production gate:static chain without updating this mirror. RUFU-148
+restores lockstep at the live position (between no-test-timeout-appeasement and
+changeset-format); the chain in package.json remains the source of truth.
 */
 const EXPECTED_GATE_CHECKS = [
   check(["no-", ["no", "hup"].join("")].join("")),
@@ -30,6 +36,7 @@ const EXPECTED_GATE_CHECKS = [
   check("pi-versions-pinned"),
   check("workspace-package-graph"),
   check("no-test-timeout-appeasement"),
+  check("no-comment-assertions-in-tests"),
   check("changeset-format"),
   check("mock-completeness"),
   check("inert-sync-lane-conversions"),

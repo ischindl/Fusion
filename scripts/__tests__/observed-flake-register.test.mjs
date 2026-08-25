@@ -128,6 +128,17 @@ test("observed-flake register active count, escalation state, and owners stay sy
       status:
         "QUARANTINED 2026-08-20 (second sighting; file-level quarantine in `scripts/lib/test-quarantine.json` + `packages/cli/vitest.config.ts` exclude, deletion deadline 2026-09-03) — evidence owner RUFU-128.",
     },
+    /*
+    FNXC:TestFlakeRegister 2026-08-25-12:38:
+    RUFU-148: entry 16 joined the active section on 2026-08-23 (unattributed first
+    sighting, handoff-to-review atomicity PostgreSQL setup hook). The stated count and
+    this pin move 4 -> 5 active records / 3 -> 4 active first sightings; the entry 13
+    escalation above is unchanged.
+    */
+    {
+      heading: "16. Handoff-to-review atomicity PostgreSQL setup hook",
+      status: "Active first sighting — recorded 2026-08-23, unattributed.",
+    },
   ]);
 });
 

@@ -133,6 +133,7 @@ test("root and package gate scripts still propagate real Vitest failures", () =>
     staticCheck("pi-versions-pinned"),
     staticCheck("workspace-package-graph"),
     staticCheck("no-test-timeout-appeasement"),
+    staticCheck("no-comment-assertions-in-tests"),
     staticCheck("changeset-format"),
     staticCheck("mock-completeness"),
     staticCheck("inert-sync-lane-conversions"),
@@ -147,12 +148,19 @@ test("root and package gate scripts still propagate real Vitest failures", () =>
 
   FNXC:MergeGatePerformance 2026-08-16-10:29:
   FN-9122's controlled W33 re-measurement closes the 14.0s row as variance,
-  but the correction is only meaningful when the composition is exact: 15
+  but the correction is only meaningful when the composition is exact: 16
   concurrent static validators, 21 engine-core files, two PG canaries, and
-  four unit-gate files. Keep this cardinality alongside the ordered ledger so
+  five unit-gate files. Keep this cardinality alongside the ordered ledger so
   a future declaration edit cannot silently invalidate the timing baseline.
+
+  FNXC:TestInfrastructure 2026-08-25-12:16:
+  RUFU-148 reconciles this mirror with two legitimate declaration edits that
+  landed without a mirror sync: 12c292ea6b's 16th static validator
+  (check-no-comment-assertions-in-tests, inserted in chain order above) and
+  FN-149's (794dae3196) migration-wiring-integrity.test.ts addition to core
+  test:unit-gate (four -> five files, pinned below).
   */
-  assert.equal(gateValidators.length, 15, "the W33 timing baseline requires all 15 static validators");
+  assert.equal(gateValidators.length, 16, "the W33 timing baseline requires all 16 static validators");
   assert.equal(new Set(gateValidators).size, gateValidators.length, "the static validator composition must be duplicate-free");
   assert.match(gate, /pnpm --filter @fusion\/engine test:core/);
   assert.match(gate, /pnpm --filter @fusion\/core test:pg-gate/);
@@ -163,7 +171,7 @@ test("root and package gate scripts still propagate real Vitest failures", () =>
   assert.match(gate, /&& pnpm --filter @runfusion\/fusion test:ci-shape$/);
   assert.equal(
     core.scripts?.["test:unit-gate"],
-    "vitest run src/__tests__/task-merge.test.ts src/__tests__/legacy-adoption.test.ts src/__tests__/no-hardcoded-lifecycle-columns.test.ts src/__tests__/sync-workflow-ir-callsite-allowlist.test.ts --silent=passed-only --reporter=dot",
+    "vitest run src/__tests__/task-merge.test.ts src/__tests__/legacy-adoption.test.ts src/__tests__/no-hardcoded-lifecycle-columns.test.ts src/__tests__/sync-workflow-ir-callsite-allowlist.test.ts src/__tests__/migration-wiring-integrity.test.ts --silent=passed-only --reporter=dot",
   );
   assert.doesNotMatch(gate, /NODE_NO_WARNINGS/);
   assert.doesNotMatch(root.scripts?.["test"] ?? "", /NODE_NO_WARNINGS/);
@@ -234,7 +242,39 @@ test("pg gate canaries remain a subset of the enabled non-blocking PG suite", ()
   assert.match(core.scripts?.test ?? "", /^vitest run\b/, "the non-blocking core lane must execute Vitest");
   assert.doesNotMatch(core.scripts?.test ?? "", /\s(?:--exclude|--include)\b/, "the non-blocking core lane must not narrow discovery");
   assert.match(coreConfig, /include:\s*\["src\/\*\*\/\*.test\.ts"\]/, "the default core config must discover PG tests");
-  assert.match(coreConfig, /const quarantinedCoreTests: string\[\] = \[\]/, "no PG test may be hidden by quarantine exclusion");
+  /*
+  FNXC:PGGateCanaries 2026-08-25-12:20:
+  The previous pin asserted the deleted shape `const quarantinedCoreTests: string[] = []`.
+  Core quarantine excludes moved INLINE into the test-level `exclude:` array literal
+  (FNXC:QuarantineExcludes 2026-08-23-23:55), and the general "no quarantined test
+  without a ledger row" invariant is enforced by check-quarantine-ledger. This assert
+  preserves the canary-specific guarantee only: parse the inline `exclude:` literal
+  (the first one in the file is the test-level array; the nested coverage-level
+  exclude follows and holds glob patterns only) and require that no `test:pg-gate`
+  canary is among the concrete excluded files. It stays semantically correct when the
+  literal is later emptied by a legitimately expired quarantine — no non-emptiness pin.
+  */
+  const excludeMatch = coreConfig.match(/exclude:\s*\[/);
+  assert.ok(excludeMatch, "the core config must carry an inline test-level exclude: array literal");
+  const openBracket = coreConfig.indexOf("[", excludeMatch.index);
+  let bracketDepth = 0;
+  let closeBracket = -1;
+  for (let index = openBracket; index < coreConfig.length; index += 1) {
+    const character = coreConfig[index];
+    if (character === "[") bracketDepth += 1;
+    else if (character === "]" && --bracketDepth === 0) {
+      closeBracket = index;
+      break;
+    }
+  }
+  const concreteExcludes = [...coreConfig.slice(openBracket, closeBracket + 1).matchAll(/"([^"]+)"|'([^']+)'/g)]
+    .map((match) => match[1] ?? match[2])
+    .filter((entry) => /\.test\.tsx?$/.test(entry) && !entry.includes("*"));
+  assert.deepEqual(
+    expectedCanaries.filter((canary) => concreteExcludes.includes(canary)),
+    [],
+    "no PG test may be hidden by quarantine exclusion",
+  );
 
   for (const file of formerGateMembers) {
     assert.ok(discoveredPgFiles.has(file), `former PG gate member must remain discovered: ${file}`);

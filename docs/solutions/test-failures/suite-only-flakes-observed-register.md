@@ -19,11 +19,14 @@ tags:
 
 # Observed suite-only flakes register
 
-This register has **4 active observation records** (entries 1, 2, 7, and 13): **3 active first sightings** and **1 escalated second sighting**. It also has **1 merge-gate eviction record** (entry 6) and **8 archived closed records**. Only the active section drives quarantine and escalation decisions; the other sections preserve historical evidence.
+This register has **5 active observation records** (entries 1, 2, 7, 13, and 16): **4 active first sightings** and **1 escalated second sighting**. It also has **1 merge-gate eviction record** (entry 6) and **8 archived closed records**. Only the active section drives quarantine and escalation decisions; the other sections preserve historical evidence.
 
 <!--
 FNXC:TestFlakeRegister 2026-08-19-11:14:
 The flat register mixed closed narratives with open records, making it unusable as a quarantine-on-sight decision aid. Sections make the active decision surface explicit while entry numbers and heading text remain frozen for inbound anchors and cross-reference stability. Active status lines must distinguish first sightings from reproduced escalations and name the evidence owners retained by each record.
+
+FNXC:TestFlakeRegister 2026-08-25-12:38:
+RUFU-148: entry 16 (handoff-to-review atomicity PostgreSQL setup hook) was added to the active section on 2026-08-23 as an unattributed first sighting during RUFU-157/158 full-suite evidence collection, without updating the stated count. The introduction moves 4 -> 5 active observation records and 3 -> 4 active first sightings; the single escalated second sighting (entry 13, RUFU-128 on-sight quarantine 2026-08-20) is unchanged. Entry 7's status-line desync is tracked by RUFU-171 and intentionally untouched here.
 -->
 
 ## Active observation records
