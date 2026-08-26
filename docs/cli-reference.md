@@ -212,6 +212,16 @@ already exists (including the central-DB + registered-project case), or when the
 CLI onboarding completion marker exists even if the central DB step was skipped,
 onboarding does not auto-launch.
 
+Bundled llama.cpp extension: when the `useLlamaCpp` global setting is on and a
+`llama-server` is reachable, the bundled `@fusion/pi-llama-cpp` pi extension
+registers each local model with the real per-model context window auto-detected
+from the running server (per-model `meta.n_ctx` from the model list, then the
+`/props` defaults, then the 128000 fallback) plus the best available max-output
+default (32000 fallback). The registered `maxTokens` is capped at half the
+resolved window so the chat pre-overflow compaction gate keeps a positive
+headroom; older server builds that expose no window metadata keep today's
+128000/32000 behavior.
+
 ---
 
 ## `fn update`

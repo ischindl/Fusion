@@ -197,7 +197,11 @@ follow-ups filed with RUFU-118 (per-model window metadata for custom providers, 
 note about the `_checkCompaction` blind spot) have since landed as RUFU-123 (per-model
 `contextWindow`/`maxTokens` on custom-provider settings, registered by
 `buildCustomProviderModels` with 128000/16384 fallback) and RUFU-127 (upstream pi#8328 note),
-respectively.
+respectively. The bundled llama.cpp local-model surface received the same treatment as its
+RUFU-123 sibling: RUFU-137 registers each local model's real per-slot `contextWindow`
+(resolved from the running `llama-server`: per-model `meta.n_ctx`, then `/props`, then the
+128000 fallback) with a `maxTokens` capped at half the resolved window (32000 fallback),
+so the gate no longer reasons from a 128K window the local server never allocated.
 
 ## References
 
