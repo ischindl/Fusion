@@ -76,6 +76,23 @@ interface StashSearchResultItem {
   session_id?: string;
   created_at?: string;
   snippet?: string;
+  /**
+   * FNXC:RUFU133StashScore 2026-08-25-20:17:
+   * RUFU-133: raw FTS rank (Stash ts_rank) when the deployed image supplies
+   * it — the tier-2 relevance input. Declared `number` to document the
+   * expected JSON shape, but runtime values arrive untyped through the
+   * response cast (catch-all below), so the mapping helper guards, not
+   * trusts.
+   */
+  rank?: number;
+  /**
+   * FNXC:RUFU133StashScore 2026-08-25-20:17:
+   * RUFU-133: server-provided per-event relevance score (normalized
+   * ts_rank) shipped by the local Stash branch
+   * `fusion-rufu-133-keyword-score` (undeployed). The tier-1 relevance
+   * input, clamped to [0,1] by the mapping helper.
+   */
+  score?: number;
   [key: string]: unknown;
 }
 
@@ -286,6 +303,57 @@ export function normalizeStashSearchQuery(raw: string | null | undefined): strin
     joined = candidate;
   }
   return joined;
+}
+
+// ── Keyword relevance scoring (RUFU-133) ─────────────────────────────
+
+/**
+ * FNXC:RUFU133StashScore 2026-08-25-20:17:
+ * RUFU-133: parse a rank/score value arriving untyped (through the
+ * response cast) into a usable finite number, or null. Mirrors the RUFU-126
+ * vector path's rank-parse pattern: a finite number, OR a non-empty (after
+ * trim) string whose Number(...) is finite; null for everything else (NaN,
+ * null, undefined, objects, non-numeric strings, empty/whitespace strings).
+ */
+function parseUsableNumber(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+/**
+ * FNXC:RUFU133StashScore 2026-08-25-20:17:
+ * RUFU-133: per-event relevance score for ONE keyword hit — the three-tier
+ * comparable 0..1 mapping (contract: docs/memory-plugin-contract.md
+ * §3.3.2, D5 companion to RUFU-126):
+ * - Tier 1: `score` usable → clamped to [0,1]. Per-item precedence: a
+ *   server score beats rank when both are present.
+ * - Tier 2: else `rank` usable AND maxRank > 0 → rank / maxRank clamped to
+ *   [0,1] (top hit = exactly 1.0). ts_rank is only meaningful relative to
+ *   the result set, so `maxRank` is the max usable rank across ALL result
+ *   items (computed by the caller before the map).
+ * - Tier 3: else the pre-existing positional scores (2.0 first hit, 1.0
+ *   rest) — the undeployed-server fallback; a server supplying neither
+ *   rank nor score behaves byte-identically to the pre-RUFU-133 mapping.
+ * maxRank == 0 (all ranks zero or missing) forces tier 3 — no
+ * divide-by-zero. WHY: one 0..1 scale shared with the RUFU-126 vector
+ * cosine so the RUFU-120 client-side min-score filter can rank weak
+ * keyword hits against weak vector hits with a single threshold.
+ * Pure: same inputs → same output; no I/O.
+ */
+export function stashRelevanceScore(
+  item: { rank?: unknown; score?: unknown },
+  idx: number,
+  maxRank: number,
+): number {
+  const score = parseUsableNumber(item.score);
+  if (score !== null) return Math.min(1, Math.max(0, score));
+  const rank = parseUsableNumber(item.rank);
+  if (rank !== null && maxRank > 0) return Math.min(1, Math.max(0, rank / maxRank));
+  return 2 - Math.min(idx, 1);
 }
 
 // ── Stash Memory Backend ─────────────────────────────────────────────
@@ -518,9 +586,9 @@ export class StashMemoryBackend implements MemoryBackend {
    *   suppresses the vector attempt after definitive 404/405/501/503 —
    *   never after 422/500 or network errors.
    * - D5: vector score = response `rank` (= cosine similarity, 0..1); the
-   *   keyword path keeps positional scores (2/1). The scales differ —
-   *   consumers with client-side min-score filters must treat score scales
-   *   per-backend. Missing/non-finite rank → 1.0.
+   *   keyword path no longer keeps positional 2/1 when the server supplies
+   *   rank/score — see FNXC:RUFU133StashScore (positional is the residual
+   *   fallback for undeployed servers only). Missing/non-finite rank → 1.0.
    */
   async search(rootDir: string, options: MemorySearchOptions): Promise<MemorySearchResult[]> {
     const req = options.query || "";
@@ -568,16 +636,26 @@ export class StashMemoryBackend implements MemoryBackend {
         "GET",
       );
       const items = resp.results ?? resp.events ?? [];
-      return items
-        .filter((it) => it && typeof it === "object")
-        .map((it, idx) => ({
-          path: it.session_id ? `stash://session/${it.session_id}` : `stash://event/${it.id ?? idx}`,
-          lineStart: 1,
-          lineEnd: 1,
-          snippet: (it.snippet ?? it.content ?? "").substring(0, 500),
-          score: 2 - Math.min(idx, 1), // ordered descending relevance
-          backend: this.type,
-        }));
+      const filtered = items.filter((it) => it && typeof it === "object");
+      // FNXC:RUFU133StashScore 2026-08-25-20:17:
+      // RUFU-133: maxRank = the max usable rank across ALL surviving items
+      // (0 when none), computed BEFORE the map — ts_rank is only meaningful
+      // relative to the whole result set, and maxRank == 0 forces the
+      // positional fallback (no divide-by-zero). See stashRelevanceScore for
+      // the three-tier 0..1 mapping (D5 companion; contract in
+      // docs/memory-plugin-contract.md §3.3.2).
+      const maxRank = filtered.reduce((max, it) => {
+        const r = parseUsableNumber(it.rank);
+        return r !== null && r > max ? r : max;
+      }, 0);
+      return filtered.map((it, idx) => ({
+        path: it.session_id ? `stash://session/${it.session_id}` : `stash://event/${it.id ?? idx}`,
+        lineStart: 1,
+        lineEnd: 1,
+        snippet: (it.snippet ?? it.content ?? "").substring(0, 500),
+        score: stashRelevanceScore(it, idx, maxRank),
+        backend: this.type,
+      }));
     } catch {
       // FNXC:StashFailClosed 2026-08-05-16:06:
       // stash down -> [] -> LCM cue "" -> run proceeds. Never throws.
@@ -617,7 +695,10 @@ export class StashMemoryBackend implements MemoryBackend {
         .filter((it): it is StashSearchResultItem => Boolean(it) && typeof it === "object")
         .map((it, idx) => {
           // D5: vector rank = similarity (0..1); missing/null/non-finite → 1.0.
-          const rawRank = it.rank;
+          // FNXC:RUFU133StashScore 2026-08-25-20:17: typed `unknown` (the
+          // runtime value arrives untyped through the response cast, same as
+          // the keyword path) — behavior identical to before.
+          const rawRank: unknown = it.rank;
           const rank =
             typeof rawRank === "number"
               ? rawRank
