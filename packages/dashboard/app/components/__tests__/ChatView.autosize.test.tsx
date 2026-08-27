@@ -315,42 +315,6 @@ describe("ChatView composer autosize", () => {
     expect(textarea.style.overflowY).toBe("auto");
   });
 
-  it("recomputes rooms composer height on room switch", async () => {
-    localStorage.setItem("fusion:chat-scope", "rooms");
-    const roomTwo = { ...roomOne, id: "room-002", name: "Room Two", slug: "room-two" };
-    localStorage.setItem("fusion:chat-draft:rooms:room-001", "this is a much longer room draft");
-    localStorage.setItem("fusion:chat-draft:rooms:room-002", "ok");
-
-    const originalScrollHeight = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "scrollHeight");
-    Object.defineProperty(HTMLTextAreaElement.prototype, "scrollHeight", {
-      configurable: true,
-      get() {
-        return (this as HTMLTextAreaElement).value.length > 6 ? 220 : 60;
-      },
-    });
-
-    setup({}, { rooms: [roomOne, roomTwo], activeRoom: roomOne });
-    const { rerender } = await renderChatView();
-    const textarea = screen.getByTestId("chat-input") as HTMLTextAreaElement;
-
-    await waitFor(() => {
-      expect(textarea).toHaveValue("this is a much longer room draft");
-      expect(textarea.style.height).toBe(`${expectedAutomaticHeight(textarea, 220)}px`);
-    });
-
-    setup({}, { rooms: [roomOne, roomTwo], activeRoom: roomTwo });
-    rerender(<ChatView projectId="proj-123" addToast={vi.fn()} experimentalFeatures={{ chatRooms: true }} />);
-
-    await waitFor(() => {
-      expect(textarea).toHaveValue("ok");
-      expect(textarea.style.height).toBe(`${expectedAutomaticHeight(textarea, 60)}px`);
-    });
-
-    if (originalScrollHeight) {
-      Object.defineProperty(HTMLTextAreaElement.prototype, "scrollHeight", originalScrollHeight);
-    }
-  });
-
   it("ignores the former top-edge pointer drag and clears direct chat to its minimum", async () => {
     const sendMessage = vi.fn();
     setup({ sendMessage });

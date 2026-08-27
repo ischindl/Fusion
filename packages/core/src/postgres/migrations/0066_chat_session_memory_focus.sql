@@ -24,6 +24,6 @@
 -- and FN-9037's source-agent index).
 -- Renumbered again during the RUFU-160 merge of origin/main (2026-08-23): origin/main
 -- independently shipped 0065 as 0065_fn_149_review_convergence_stage.sql (v0.77.0-beta.7),
--- so this migration takes 0066, the next free sequence; 0067 re-runs both 0065-collision
+-- so this migration takes 0066, the next free sequence; 0068 re-runs both 0065-collision
 -- migrations idempotently to repair databases that recorded 0065 with this line's content.
 ALTER TABLE IF EXISTS project.chat_sessions ADD COLUMN IF NOT EXISTS memory_focus text;

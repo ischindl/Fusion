@@ -3,7 +3,7 @@ FNXC:RUFU153 2026-08-23-00:21:
 Fixtures follow the CURRENT component prop contracts (TaskPlannerChatTab takes taskChatModel,
 StandardChatMessageItem takes activeModelTag/activeModelProvider, SummaryView no longer accepts
 isStartingBreakdown), and the real-ChatView cases drive the list-first user path — session row click
-(chat-session-<id>), room row click (chat-room-item-<slug>), QuickChatFAB open — because per
+(chat-session-<id>), QuickChatFAB open — because per
 FNXC:ChatNavigation (ChatView.tsx) the chat detail pane opens only on user action (closed by default).
 */
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -128,21 +128,19 @@ async function renderRefinementComposer() {
 FNXC:ChatNavigation 2026-08-23-17:05:
 FN-054 made Chat list-first: a composer exists only inside an explicitly opened conversation, so
 every real ChatView surface in this inventory must drill in from the list before a mic can render.
+
+FNXC:ChatNavigation 2026-08-27-05:30 (fusion/rufu-141 squash merge):
+The deploy line removed the Direct/Rooms scope toggle and the room list from the direct chat
+surface (Rooms UI deprecation), so there is no scope to re-assert: drill straight into the
+session row. The "ChatView secondary room composer" inventory surface was dropped with the rooms
+render path; the useChatRooms mock stays because ChatView still consumes the hook.
 */
 function openDirectThread() {
-  // The Direct/Rooms scope is persisted, so re-assert Direct before drilling in.
-  fireEvent.click(screen.getByTestId("chat-sidebar-scope-direct"));
   fireEvent.click(screen.getByTestId(`chat-session-${chatSession.id}`));
-}
-
-function openRoomThread() {
-  fireEvent.click(screen.getByTestId("chat-sidebar-scope-rooms"));
-  fireEvent.click(screen.getByTestId(`chat-room-item-${activeRoom.slug}`));
 }
 
 const primarySurfaceRenders = [
   { name: "ChatView primary composer", render: () => { activeRoom = null; const result = render(<ChatView projectId="project-1" addToast={vi.fn()} />); openDirectThread(); return result; } },
-  { name: "ChatView secondary room composer", render: () => { activeRoom = { id: "room-1", slug: "room-1", name: "Room" }; const result = render(<ChatView projectId="project-1" addToast={vi.fn()} />); openRoomThread(); return result; } },
   { name: "StandardChatSurface correction composer", render: () => { const result = render(<StandardChatMessageItem message={{ id: "message-1", role: "user", content: "Populated", createdAt: "2026-07-24T00:00:00.000Z" } as any} forcePlain={false} agentName="Agent" hideAssistantIdentity={false} showAssistantModelTag={false} activeSessionId="session-1" canEdit onEditMessage={vi.fn()} />); fireEvent.click(screen.getByRole("button", { name: /edit/i })); return result; } },
   { name: "QuickChatFAB-opened shared ChatView composer", render: () => { const result = render(<QuickChatVoicePath />); fireEvent.click(screen.getByTestId("quick-chat-fab")); openDirectThread(); return result; } },
   { name: "ComposeChatPanel request composer", render: () => render(<ComposeChatPanel embeds={[]} draftBody="" onUseDraft={vi.fn()} onClose={vi.fn()} />) },
@@ -184,7 +182,7 @@ async function exerciseRealComposer(renderSurface: () => ReturnType<typeof rende
 
 describe("voice dictation composer inventory", () => {
   beforeEach(async () => {
-    /* FNXC:ChatNavigation 2026-08-23-17:20: ChatView persists its Direct/Rooms scope, so a room surface would otherwise leak the rooms scope into the next case. */
+    /* FNXC:ChatNavigation 2026-08-23-17:20: localStorage is cleared between cases so persisted chat state (drafts, pinned sessions) cannot leak into the next case. */
     localStorage.clear();
     vi.clearAllMocks(); activeRoom = null; voiceProjectIds.length = 0;
     await act(async () => { setVoice({ enabled: true, supported: true, state: "idle", partialText: "", finalText: "", error: undefined }); });

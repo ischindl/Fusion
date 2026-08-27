@@ -405,6 +405,30 @@ interface LineageRow {
 
 // ── MissionStore Class ──────────────────────────────────────────────
 
+/**
+ * Legacy synchronous SQLite mission store.
+ *
+ * @deprecated (RUFU-141) This class does not run in production:
+ * `getMissionStoreImpl` (task-store/workflow-definitions.ts) constructs only the
+ * AsyncDataLayer-backed `AsyncMissionStore` (async-stores/async-mission-store.ts)
+ * for the PostgreSQL backend, and no production path instantiates this class
+ * (`new MissionStore(` exists only in tests). The canonical mission store is
+ * `AsyncMissionStore` — e.g. `AsyncMissionStore.unlinkFeatureFromTask`, which
+ * implements the RUFU-134 unlink contract — and it is the only implementation
+ * production surfaces should call.
+ *
+ * FNXC:SyncMissionStoreDeprecated 2026-08-27-04:02:
+ * RUFU-141 dead-path verdict: the sync MissionStore is legacy SQLite residue, unreachable in the
+ * shipped PostgreSQL backend (getMissionStoreImpl always returns the async implementation; the
+ * only production `instanceof MissionStore` site is the dashboard's deliberate PG-degrade guard
+ * for MissionAutopilot). The RUFU-134 unlink contract (a not-linked feature must fail with
+ * "Feature <id> is not linked to any task" and emit nothing) lives on the async store only.
+ * The correct resolution is deprecation, NOT porting the guard into dead code — patching would
+ * bake the contract gap in as sanctioned and let the two stores' error semantics diverge
+ * silently. Do not add production constructions or call sites; the deprecation ratchet
+ * (__tests__/mission-store-sync-deprecated.test.ts) pins the no-production-construction
+ * invariant, and deletion beyond deprecation is a separate follow-up.
+ */
 export class MissionStore extends EventEmitter<MissionStoreEvents> {
   /**
    * Creates a new MissionStore instance.
@@ -2732,9 +2756,26 @@ export class MissionStore extends EventEmitter<MissionStoreEvents> {
    * Unlink a feature from its task.
    * Clears the feature's taskId.
    *
+   * Contract alignment (RUFU-134 / PR #3491, see
+   * FNXC:MissionFeatureUnlinkContract on AsyncMissionStore.unlinkFeatureFromTask):
+   * unlinking a feature that has NO task is a caller error, not an idempotent
+   * no-op — the canonical async store throws `Feature <id> is not linked to any
+   * task` after the feature row lock and before any mutation, so a failed unlink
+   * emits nothing. Every production unlink surface (CLI fn_feature_unlink_task,
+   * the dashboard unlink-task route, the engine agent tool, docs/missions.md)
+   * resolves that async store. This deprecated sync method predates that
+   * contract: for a not-linked feature it still rewrites the row (status →
+   * "defined" + persisted status event) instead of throwing. It is documented
+   * here so the sync JSDoc no longer claims a more permissive contract than the
+   * one every surface promises. Do not call it — no production path reaches it
+   * (RUFU-141 dead-path verdict).
+   *
    * @param featureId - Feature ID
    * @returns The updated feature
    * @throws Error if feature not found
+   * @deprecated (RUFU-141) Use AsyncMissionStore.unlinkFeatureFromTask instead —
+   *     it implements the RUFU-134 not-linked guard (`Feature <id> is not linked
+   *     to any task`), which this deprecated method does not.
    */
   unlinkFeatureFromTask(featureId: string): MissionFeature {
     const feature = this.getFeature(featureId);

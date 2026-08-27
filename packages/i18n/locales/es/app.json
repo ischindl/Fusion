@@ -1424,7 +1424,11 @@
     "currentModelTarget": "Current model: {{model}}",
     "currentDefaultTarget": "Using the default chat target",
     "newNotAllowedForTaskChat": "",
-    "restore": ""
+    "restore": "",
+    "quoteMessage": "Citar mensaje",
+    "agentRepliesFailed": "Algunos agentes no pudieron responder: {{agents}}",
+    "noDefaultModelConfigured": "Configura un modelo de chat predeterminado en Ajustes antes de crear una conversación.",
+    "newChatOpenInNewWindowHint": ""
   },
   "chatRooms": {
     "error": {
@@ -3450,7 +3454,9 @@
     "useProjectDefault": "Usar predeterminado del proyecto",
     "viewOptions": "Opciones de vista",
     "workflowLabel": "",
-    "statusReplan": "Replanificar"
+    "statusReplan": "Replanificar",
+    "statusWaiting": "",
+    "statusWaitingOn": ""
   },
   "mailbox": {
     "agent": "Agente",
@@ -6177,7 +6183,6 @@
     },
     "globalGeneral": {
       "andShowsUpdateNoticesInTheCLIAnd": "",
-      "autoReloadDashboardOnVersionChange": "",
       "checkForThe": "",
       "checkForUpdatesAutomatically": "",
       "cLIBinaryOnPATH": "",
@@ -6207,7 +6212,6 @@
       "updates": "",
       "weekly": "",
       "whenDisabledToolRowsAreStillLoggedBut": "",
-      "whenEnabledDefaultTheDashboardAutomaticallyReloadsWhen": "",
       "whenEnabledFusionChecksNpmForNewVersions": "",
       "whenEnabledTheDashboardProbesForAGlobally": "",
       "gitLabEnabledHint": "",
@@ -8087,7 +8091,7 @@
       "resetProgressTitle": "¿Restablecer el progreso?"
     },
     "nearDuplicate": {
-      "actions": "Elige Archivar para mover esta tarea a archivadas, o Conservar para continuar con esta tarea.",
+      "actions": "This task continues normally. Archive it if the work is already covered, or clear this flag once you have read it.",
       "archiveBtn": "Archivar",
       "archiveConfirm": "Archivar",
       "archived": "{{id}} archivado",
@@ -8095,14 +8099,14 @@
       "archiveTitle": "Archivar tarea casi duplicada",
       "copy": "Esta tarea parece ser un casi-duplicado de",
       "headline": "Posible duplicado detectado",
-      "keepBtn": "Conservar",
-      "kept": "Se conservó {{id}} y se descartó la advertencia de duplicado",
       "deleteBtn": "Eliminar",
       "deleteConfirm": "Eliminar",
       "deleted": "Eliminado {{id}}",
       "deleteMessage": "¿Eliminar {{id}} como duplicado de {{duplicateOf}}?",
       "deleteTitle": "Eliminar tarea duplicada",
-      "triageActions": "Elige Eliminar para quitar este duplicado, o Mantener para continuar de todos modos."
+      "triageActions": "This task stays paused until you clear this flag or delete it. Delete it if the work is already covered.",
+      "dismissBtn": "Mark the duplicate flag for {{id}} as read",
+      "dismissed": "Duplicate flag cleared for {{id}}"
     },
     "nextRecoveryAt": "Próxima recuperación a las {{time}}",
     "no": "No",
@@ -8702,7 +8706,7 @@
     "descriptionRefined": "Descripción refinada con IA",
     "doneNoMerge": "Listo (sin fusión)",
     "duplicateCheckFailed": "Falló la comprobación de duplicados; creando la tarea de todos modos.",
-    "duplicateDismissed": "Se conservó {{taskId}}; aviso de duplicado descartado",
+    "duplicateDismissed": "Duplicate flag cleared for {{taskId}}",
     "duplicateOf": "Duplicado de {{id}}",
     "editTask": "Editar tarea",
     "enterDescriptionFirst": "Introduce primero una descripción",
@@ -8738,10 +8742,7 @@
     "issueClosed": "cerrado",
     "issueDeleted": "eliminado",
     "issueLeft": "dejado",
-    "keep": "Conservar",
-    "keepFailed": "Error al conservar {{taskId}}: {{error}}",
     "keepProgress": "Conservar progreso",
-    "keepTaskTitle": "Conservar esta tarea y descartar la advertencia de duplicado",
     "leaveUnchanged": "Dejar sin cambios",
     "lineageConflict": "{{taskId}} tiene elementos secundarios de linaje ({{children}}) que lo referencian como padre de origen.\n\n¿Eliminar de todos modos desvinculando primero estas referencias?",
     "linkedIssueChipAriaLabel": "Issue de GitHub vinculado #{{number}}",
@@ -8765,7 +8766,7 @@
     "moved": "{{taskId}} movido a {{column}}",
     "moveFailed": "Error al mover {{taskId}}: {{error}}",
     "moveTask": "Mover tarea",
-    "nearDuplicateTitle": "Posible duplicado aproximado de {{id}}",
+    "nearDuplicateTitle": "Flagged as a possible duplicate of {{id}}. This task continues normally; clear the flag once you have read it.",
     "needsInput": "",
     "noAgentsAvailable": "No hay agentes disponibles",
     "node": "Nodo",
@@ -8870,7 +8871,10 @@
     "refinesOfTitle": "",
     "revertedTasks": "",
     "revertedResolutionActions": "",
-    "revise": ""
+    "revise": "",
+    "dismissDuplicateFlag": "Mark the duplicate flag for {{id}} as read",
+    "nearDuplicateHeldTitle": "Flagged as a duplicate of {{id}}. This task stays paused until you clear this flag or delete it.",
+    "duplicateDismissFailed": "Failed to clear the duplicate flag for {{taskId}}: {{error}}"
   },
   "terminal": {
     "arrowKeysLabel": "",
@@ -9742,12 +9746,15 @@
     "noDetail": "",
     "untitledSection": "",
     "sectionCount": "",
-    "sectionCountPlural": ""
+    "sectionCountPlural": "",
+    "showRaw": "",
+    "showSections": ""
   },
   "artifactImageViewer": {
     "openTask": "",
     "close": "",
     "loading": "",
     "retry": ""
+
   }
 }

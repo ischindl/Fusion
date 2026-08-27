@@ -3200,7 +3200,7 @@ describe("TaskDetailModal", () => {
     });
   });
 
-  it("shows near-duplicate banner and keeps warning on Keep click", async () => {
+  it("clears the duplicate flag from the near-duplicate banner", async () => {
     const { updateTask } = await import("../../api");
     const mockUpdateTask = vi.mocked(updateTask);
     mockUpdateTask.mockResolvedValueOnce(makeTask({
@@ -3223,11 +3223,32 @@ describe("TaskDetailModal", () => {
     );
 
     expect(screen.getByText("Potential duplicate detected")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Keep" }));
+    await userEvent.click(screen.getByRole("button", { name: "Mark the duplicate flag for FN-1234 as read" }));
 
     await waitFor(() => {
       expect(mockUpdateTask).toHaveBeenCalledWith("FN-099", { dismissNearDuplicate: true }, undefined);
     });
+  });
+
+  it("omits an empty near-duplicate actions row without archive support", () => {
+    const { container } = render(
+      <TaskDetailModal
+        initialTab="definition"
+        task={makeTask({ sourceMetadata: { nearDuplicateOf: "FN-1234" } })}
+        tasks={[makeTask({ id: "FN-1234" })]}
+        onClose={noop}
+        onMoveTask={noopMove}
+        onDeleteTask={noopDelete}
+        onMergeTask={noopMerge}
+        onOpenDetail={noopOpenDetail}
+        addToast={noop}
+      />,
+    );
+
+    expect(screen.getByText("Potential duplicate detected")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Mark the duplicate flag for FN-1234 as read" })).toBeInTheDocument();
+    expect(container.querySelector(".detail-near-duplicate-banner__actions")).toBeNull();
+    expect(screen.queryByRole("button", { name: /keep/i })).toBeNull();
   });
 
   it("hides near-duplicate banner once dismissed", () => {
@@ -3269,7 +3290,8 @@ describe("TaskDetailModal", () => {
 
     expect(screen.queryByText("Potential duplicate detected")).toBeNull();
     expect(screen.queryByRole("button", { name: "Archive" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Keep" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /keep/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Mark the duplicate flag for FN-1234 as read" })).toBeNull();
   });
 
   it("archives from near-duplicate banner when confirmed", async () => {
@@ -3316,7 +3338,7 @@ describe("TaskDetailModal", () => {
       />,
     );
 
-    expect(screen.getByRole("status")).toHaveTextContent("Choose Delete to remove this duplicate, or Keep to continue anyway.");
+    expect(screen.getByRole("status")).toHaveTextContent("This task stays paused until you clear this flag or delete it.");
     await userEvent.click(screen.getByRole("button", { name: "Delete" }));
 
     await waitFor(() => {

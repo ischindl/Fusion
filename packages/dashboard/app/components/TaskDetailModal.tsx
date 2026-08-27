@@ -1032,6 +1032,7 @@ export function TaskDetailContent({
     : getTaskStatusBadgeLabel(workingTask.status, t, undefined, {
       idle: true,
       overlapBlockedBy: workingTask.overlapBlockedBy ?? null,
+      sessionContentionWaitReason: workingTask.sessionContentionWaitReason ?? null,
     });
   const originalTaskPrompt = workingTask.description ?? "";
   const hasOriginalTaskPrompt = originalTaskPrompt.trim().length > 0;
@@ -1060,7 +1061,7 @@ export function TaskDetailContent({
     : undefined;
   /**
    * FNXC:NearDuplicateDetection 2026-06-14-12:00:
-   * The Archive/Keep decision banner is actionable only while the referenced canonical exists and is active.
+   * The duplicate banner is actionable only while the referenced canonical exists and is active.
    * Suppress the whole affordance for missing, archived, done, or soft-deleted canonicals so no empty banner shell or stale user-decision buttons remain.
    */
   // FNXC:DuplicateIntake 2026-07-16-13:00: Issue #2225 reuses this linked banner for triage-marker Keep/Delete decisions.
@@ -1113,6 +1114,11 @@ export function TaskDetailContent({
 
   A canonical the map does not cover yields `undefined`, which is the documented legacy fallback —
   strictly better than always-legacy, never a fabricated answer.
+  */
+  /*
+  FNXC:NearDuplicateDetection 2026-08-23-04:10:
+  FN-173 makes the duplicate flag acknowledgeable rather than an opaque decision. The actions row only
+  exists for Delete or Archive so ordinary cards without archive access do not leave an empty shell.
   */
   const showNearDuplicateWarning = Boolean(nearDuplicateOf)
     && workingTask.sourceMetadata?.nearDuplicateDismissed !== true
@@ -3486,7 +3492,7 @@ export function TaskDetailContent({
     try {
       const updatedTask = await updateTask(task.id, { dismissNearDuplicate: true }, projectId);
       onTaskUpdated?.(updatedTask);
-      addToast(t("taskDetail.nearDuplicate.kept", "Kept {{id}} and dismissed duplicate warning", { id: task.id }), "success");
+      addToast(t("taskDetail.nearDuplicate.dismissed", "Duplicate flag cleared for {{id}}", { id: task.id }), "success");
     } catch (err) {
       addToast(getErrorMessage(err), "error");
     }
@@ -3513,7 +3519,7 @@ export function TaskDetailContent({
 
   /*
    * FNXC:DuplicateIntake 2026-07-16-14:00:
-   * Issue #2225 requires triage-marker duplicates to offer a real Keep/Delete decision.
+   * Issue #2225 requires triage-marker duplicates to offer a real clear-or-delete decision.
    * Unlike the ordinary near-duplicate Archive action, Delete calls the existing soft-delete
    * API and clears incoming lineage references so the confirmed duplicate is actually removed.
    */
@@ -4571,6 +4577,25 @@ export function TaskDetailContent({
       .catch(() => undefined);
   }, [activityFeedIsEmpty, task.id, projectId, requestTaskDetail]);
 
+  /*
+  FNXC:TaskActivityFeedFreshness 2026-08-26-12:20:
+  Rescue an empty Feed whenever it is VISIBLE, not only when the operator switches to it.
+
+  The retry used to hang off `selectActivityView`, so it could not fire on a card that OPENS on Feed
+  — which is how a deep link and the board's activity affordance land (`initialTab: "logs"`). Combined
+  with the mount effect trusting `"prompt" in task` as proof of a complete detail (an SSE snapshot
+  keeps `prompt` and empties `log`), a done task with real entries displayed "(no activity)"
+  permanently. Reported from a live board.
+
+  The guard inside `refreshEmptyActivityFeed` still returns immediately when the feed is populated, so
+  a card that already holds its journal pays nothing — and a genuinely empty task asks once, because
+  the callback identity is stable while it stays empty.
+  */
+  useEffect(() => {
+    if (!active || activeTab !== "chat" || activitySegment !== "feed") return;
+    refreshEmptyActivityFeed();
+  }, [active, activeTab, activitySegment, refreshEmptyActivityFeed]);
+
   const selectActivityView = useCallback((value: ActivitySegment) => {
     activityViewMenuViewportGuardUntilRef.current = 0;
     setActiveTab("chat");
@@ -5063,6 +5088,15 @@ export function TaskDetailContent({
                   <div className="detail-near-duplicate-banner__header">
                     <AlertTriangle aria-hidden="true" />
                     <span className="detail-near-duplicate-banner__headline">{t("taskDetail.nearDuplicate.headline", "Potential duplicate detected")}</span>
+                    <button
+                      type="button"
+                      className="detail-near-duplicate-banner__dismiss"
+                      onClick={() => void handleDismissNearDuplicate()}
+                      title={t("taskDetail.nearDuplicate.dismissBtn", "Mark the duplicate flag for {{id}} as read", { id: nearDuplicateOf })}
+                      aria-label={t("taskDetail.nearDuplicate.dismissBtn", "Mark the duplicate flag for {{id}} as read", { id: nearDuplicateOf })}
+                    >
+                      <X size={14} aria-hidden="true" />
+                    </button>
                   </div>
                   <p className="detail-near-duplicate-banner__copy">
                     {t("taskDetail.nearDuplicate.copy", "This task appears to be a near-duplicate of")}{" "}
@@ -5078,23 +5112,22 @@ export function TaskDetailContent({
                       {nearDuplicateOf}
                     </button>
                     {". "}{isTriageMarkerDuplicate
-                      ? t("taskDetail.nearDuplicate.triageActions", "Choose Delete to remove this duplicate, or Keep to continue anyway.")
-                      : t("taskDetail.nearDuplicate.actions", "Choose Archive to move this task to archived, or Keep to continue with this task.")}
+                      ? t("taskDetail.nearDuplicate.triageActions", "This task stays paused until you clear this flag or delete it. Delete it if the work is already covered.")
+                      : t("taskDetail.nearDuplicate.actions", "This task continues normally. Archive it if the work is already covered, or clear this flag once you have read it.")}
                   </p>
-                  <div className="detail-near-duplicate-banner__actions">
-                    {isTriageMarkerDuplicate ? (
-                      <button type="button" className="btn btn-danger btn-sm" onClick={() => void handleDeleteTriageDuplicate()}>
-                        {t("taskDetail.nearDuplicate.deleteBtn", "Delete")}
-                      </button>
-                    ) : onArchiveTask ? (
-                      <button type="button" className="btn btn-danger btn-sm" onClick={() => void handleArchiveNearDuplicate()}>
-                        {t("taskDetail.nearDuplicate.archiveBtn", "Archive")}
-                      </button>
-                    ) : null}
-                    <button type="button" className="btn btn-sm" onClick={() => void handleDismissNearDuplicate()}>
-                      {t("taskDetail.nearDuplicate.keepBtn", "Keep")}
-                    </button>
-                  </div>
+                  {(isTriageMarkerDuplicate || onArchiveTask) && (
+                    <div className="detail-near-duplicate-banner__actions">
+                      {isTriageMarkerDuplicate ? (
+                        <button type="button" className="btn btn-danger btn-sm" onClick={() => void handleDeleteTriageDuplicate()}>
+                          {t("taskDetail.nearDuplicate.deleteBtn", "Delete")}
+                        </button>
+                      ) : onArchiveTask ? (
+                        <button type="button" className="btn btn-danger btn-sm" onClick={() => void handleArchiveNearDuplicate()}>
+                          {t("taskDetail.nearDuplicate.archiveBtn", "Archive")}
+                        </button>
+                      ) : null}
+                    </div>
+                  )}
                 </div>
               )}
               {/*

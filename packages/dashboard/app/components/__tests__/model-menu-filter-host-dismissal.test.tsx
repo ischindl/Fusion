@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ChatView } from "../ChatView";
 import { ChatThinkingLevelControl } from "../ChatThinkingLevelControl";
 import { ModelSelectionModal } from "../ModelSelectionModal";
 import * as api from "../../api";
@@ -81,28 +80,14 @@ describe("model-menu filter host dismissal", () => {
     mockFetchSettings.mockResolvedValue({ chatNewSessionMode: "prompt", chatDefaultKind: "model", chatDefaultModelProvider: "openai", chatDefaultModelId: "gpt-4o" } as Awaited<ReturnType<typeof api.fetchSettings>>);
   });
 
-  it.each([{ mobile: false }, { mobile: true }])("keeps New Chat open after a $mobile portal-origin filter gesture", async ({ mobile }) => {
-    setViewport(mobile);
-    await act(async () => { render(<ChatView projectId="project-a" addToast={vi.fn()} />); });
-    await waitFor(() => expect(mockFetchSettings).toHaveBeenCalled());
-    fireEvent.click(screen.getAllByTestId("chat-new-btn")[0]);
-    fireEvent.click(screen.getByLabelText("Model"));
-    const filter = await screen.findByPlaceholderText("Filter models…");
-    const backdrop = screen.getByRole("dialog");
-
-    if (mobile) fireEvent.touchStart(filter);
-    fireEvent.pointerDown(filter);
-    fireEvent.mouseDown(filter);
-    fireEvent.change(filter, { target: { value: "no-match" } });
-    if (mobile) fireEvent.touchEnd(backdrop);
-    fireEvent.mouseUp(backdrop);
-    fireEvent.click(backdrop);
-
-    expect(screen.getByRole("dialog")).toBeInTheDocument();
-    expect(screen.getByTestId("model-combobox-portal")).toBeInTheDocument();
-    expect(filter).toHaveValue("no-match");
-    expect(screen.getByText(/No models match/)).toBeInTheDocument();
-  });
+  /*
+  FNXC:ModelDropdown 2026-08-27-05:30 (fusion/rufu-141 squash merge):
+  The "keeps New Chat open after a portal-origin filter gesture" cases exercised the
+  NewChatDialog, which the deploy line removed from ChatView along with the Rooms surface;
+  the removed-behavior tests were deleted with the feature. The standalone ModelSelectionModal
+  and thinking-popup dismissal contracts below are the surviving coverage for portaled model
+  menus.
+  */
 
   it.each([{ mobile: false }, { mobile: true }])("keeps ModelSelectionModal open after a $mobile portal-origin filter gesture and still closes for a genuine backdrop touch", async ({ mobile }) => {
     setViewport(mobile);

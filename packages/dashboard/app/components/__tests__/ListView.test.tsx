@@ -1539,6 +1539,73 @@ describe("ListView", () => {
     vi.useRealTimers();
   });
 
+  it("keeps reverted completed rows labelled and revisable from the desktop context menu", () => {
+    const viewportSpy = mockDesktopViewport();
+    showAllColumnsByDefault();
+    const reverted = createMockTask({
+      id: "FN-REVERTED",
+      title: "Reverted desktop task",
+      column: "done",
+      status: "done",
+      sourceMetadata: { revertedAt: "2026-08-01T00:00:00.000Z" },
+    });
+    const onReviseTask = vi.fn();
+
+    renderListView({ tasks: [reverted], onReviseTask });
+
+    expect(screen.queryByTestId("list-reverted-tasks")).toBeNull();
+    expect(document.querySelector('.list-row[data-id="FN-REVERTED"]')).toHaveTextContent("Reverted");
+    fireEvent.contextMenu(document.querySelector('.list-row[data-id="FN-REVERTED"]') as HTMLElement, { clientX: 40, clientY: 50 });
+    expect(screen.getByRole("menuitem", { name: "Delete" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Revise" }));
+    expect(onReviseTask).toHaveBeenCalledWith(reverted);
+    viewportSpy.mockRestore();
+  });
+
+  it("deduplicates reverted rows in their ordinary list group", () => {
+    const viewportSpy = mockDesktopViewport();
+    showAllColumnsByDefault();
+    const reverted = createMockTask({
+      id: "FN-REVERTED-DUPLICATE",
+      title: "Reverted duplicate task",
+      column: "done",
+      status: "done",
+      sourceMetadata: { revertedAt: "2026-08-01T00:00:00.000Z" },
+    });
+
+    renderListView({ tasks: [reverted, reverted] });
+
+    expect(screen.queryByTestId("list-reverted-tasks")).toBeNull();
+    expect(document.querySelectorAll('.list-row[data-id="FN-REVERTED-DUPLICATE"]')).toHaveLength(1);
+    viewportSpy.mockRestore();
+  });
+
+  it("keeps reverted completed rows labelled and revisable from mobile long-press", () => {
+    vi.useFakeTimers();
+    const viewportSpy = mockMobileViewport();
+    const reverted = createMockTask({
+      id: "FN-REVERTED-MOBILE",
+      title: "Reverted mobile task",
+      column: "done",
+      status: "done",
+      sourceMetadata: { revertedAt: "2026-08-01T00:00:00.000Z" },
+    });
+    const onReviseTask = vi.fn();
+
+    renderListView({ tasks: [reverted], onReviseTask });
+
+    const card = document.querySelector('.list-card[data-id="FN-REVERTED-MOBILE"]') as HTMLElement;
+    expect(card).toHaveTextContent("Reverted");
+    fireEvent.pointerDown(card, { pointerType: "touch", pointerId: 1, clientX: 24, clientY: 32 });
+    act(() => {
+      vi.advanceTimersByTime(550);
+    });
+    fireEvent.pointerUp(screen.getByRole("menuitem", { name: "Revise" }), { pointerType: "touch", pointerId: 2 });
+    expect(onReviseTask).toHaveBeenCalledWith(reverted);
+    viewportSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
   it("opens refine from a mobile done-card long-press", () => {
     vi.useFakeTimers();
     const viewportSpy = mockMobileViewport();

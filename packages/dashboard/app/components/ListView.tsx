@@ -7,7 +7,7 @@ import { ArrowUpDown, ArrowUp, ArrowDown, Link, Columns3, EyeOff, Eye, ChevronRi
 import { DEFAULT_COLUMN, THINKING_LEVELS, getErrorMessage, isColumn, sortTasksForDisplayColumn, type Task, type TaskDetail, type Column, type ColumnId, type TaskCreateInput, type MergeResult, type GithubIssueAction, type PrInfo, type ThinkingLevel } from "@fusion/core";
 import { resolveEffectiveAutoMerge } from "../../../core/src/merge/task-merge";
 import { useColumnLabel } from "../i18n/labels";
-import { isArchivedColumnRole, isCompleteColumnRole, isIntakeColumnRole, isPreImplementationColumnRole, isWipColumnRole } from "../utils/columnRoles";
+import { isArchivedColumnRole, isCompleteColumnRole, isIntakeColumnRole, isPreImplementationColumnRole, isReviewColumnRole, isWipColumnRole } from "../utils/columnRoles";
 import { batchUpdateTaskModels, fetchNodes, fetchTaskDetail, rebuildTaskSpec, refreshPrStatus, updateTask } from "../api";
 import { TaskDetailContent } from "./TaskDetailModal";
 import { PrCreateModal } from "./PrCreateModal";
@@ -39,7 +39,7 @@ import { useBoardWorkflows } from "../hooks/useBoardWorkflows";
 import { useUnmappedWorkflowRefetch } from "../hooks/useUnmappedWorkflowRefetch";
 import { TaskContextMenu, buildTaskActionMenuModel, buildTaskMoveMenuItems, getTaskPrAutomationLabel, type TaskContextMenuColumnMetadata, type TaskMenuItemDescriptor } from "./TaskContextMenu";
 import type { DetailTaskOpenOptions, DetailTaskTab } from "../hooks/useModalManager";
-import { isTaskReverted, partitionRevertedTasks } from "../utils/taskRevert";
+import { isTaskReverted } from "../utils/taskRevert";
 import { getTaskTitleDisplay } from "../utils/taskTitleDisplay";
 
 const COLUMN_COLOR_MAP: Record<Column, string> = {
@@ -336,6 +336,13 @@ interface ListViewProps {
  * looked idle while an agent was working in it.
  */
 function shouldShowTaskProgress(task: Task, flags?: Parameters<typeof isWipColumnRole>[0]): boolean {
+  /*
+  FNXC:TaskCardWorkflowProgress 2026-08-25-11:40:
+  The review lane reports its stage through the running-gate BADGE, not a progress count, matching
+  TaskCard. A review-column workflow has few milestones in a fixed order, so a count adds noise
+  without answering anything the badge does not. It also avoids rendering a milestone that no longer
+  exists: the count comes from `enabledWorkflowSteps`, which is frozen on the card at planning time.
+  */
   return task.status === "executing" || isWipColumnRole(flags, task.column);
 }
 
@@ -346,8 +353,19 @@ function getTaskProgress(
   /*
   FNXC:TaskCardWorkflowProgress 2026-07-21-22:26:
   List progress for WIP matches TaskCard: only implementation steps, not Todo Plan Review or In-review Code Review gates.
+
+  FNXC:TaskCardWorkflowProgress 2026-08-24-19:30:
+  ...but that match was only half-implemented: TaskCard switches to the full pipeline once the card
+  reaches its review lane (`scope: task.column === "in-review" ? "full" : "implementation"`), while
+  this list stayed on implementation scope unconditionally. A review-column workflow such as
+  builtin:coding-ideas-v2 promotes Verification and Documentation & Delivery from hidden checklist
+  entries into first-class review-lane gates, so a list row showed `-` or a stale count for exactly
+  the stage the operator moved them there to watch. Resolve the lane by TRAIT, not by the hardcoded
+  `in-review` id, so a renamed board behaves the same.
   */
-  const progress = getUnifiedTaskProgress(task, { scope: "implementation" });
+  const progress = getUnifiedTaskProgress(task, {
+    scope: isReviewColumnRole(columnFlags, task.column) ? "full" : "implementation",
+  });
   if (progress.total === 0 || !shouldShowTaskProgress(task, columnFlags)) {
     return { label: "-", percent: 0, hasProgress: false };
   }
@@ -1191,10 +1209,19 @@ export function ListView({
     selected-workflow and aggregate groupings. Display-only: the task's stored column is untouched,
     so the move menu and any engine rebound still see the real column.
     */
+    /*
+    FNXC:TaskRevert 2026-08-27-02:34:
+    The removed reverted section previously deduplicated ids. Keep that protection while grouping
+    rows in their own columns so duplicate optimistic/refetch data cannot duplicate reverted work.
+    */
+    const seenRevertedTaskIds = new Set<string>();
     columnFiltered.forEach((task) => {
+      if (isTaskReverted(task.sourceMetadata)) {
+        if (seenRevertedTaskIds.has(task.id)) return;
+        seenRevertedTaskIds.add(task.id);
+      }
       const column = workflowMode ? task.column : (isColumn(task.column) ? task.column : DEFAULT_COLUMN);
       if (groups[column] !== undefined) {
-        if (isTaskReverted(task.sourceMetadata) && listColumns.find((candidate) => candidate.id === column)?.flags.complete) return;
         groups[column].push(task);
         return;
       }
@@ -2245,6 +2272,14 @@ export function ListView({
         onSelect: isRevertable ? () => void handleListTaskRevert(task) : undefined,
       });
     }
+    /*
+    FNXC:TaskRevert 2026-08-27-02:18:
+    The removed list reverted section exposed Delete and Revise actions. Delete remains in the
+    shared menu model; Revise belongs here so desktop right-click and mobile long-press retain it.
+    */
+    if (onReviseTask && isTaskReverted(task.sourceMetadata) && (isCompleteColumnRole(taskColumnFlags, task.column) || isArchivedColumnRole(taskColumnFlags, task.column))) {
+      actions.push({ id: "revise", label: t("tasks.revise", "Revise"), onSelect: () => onReviseTask(task) });
+    }
     actions.push(...buildTaskMoveMenuItems(
       model.moveTransitions,
       (column) => void handleListContextMove(task, column),
@@ -2254,7 +2289,7 @@ export function ListView({
       actions.push({ id: model.reviewAction.id, label: model.reviewAction.label, disabled: model.reviewAction.disabled, onSelect: model.reviewAction.onSelect });
     }
     return actions.filter((action) => "items" in action || action.tone === "note" || action.disabled === true || Boolean(action.onSelect));
-  }, [addToast, autoMerge, columnFlagsById, getTaskColumnFlags, confirm, getListColumnLabel, getTaskPlanningWorkflowId, handleListContextCheckPrStatus, handleListContextEnableGithubTracking, handleListContextMove, handleListTaskArchive, handleListTaskDelete, handleListTaskRevert, isMobile, lastFetchTimeMs, listContextMenuColumns, taskContextMenuColumnsByTaskId, mergeStrategy, onDuplicateTask, onMergeTask, onOpenDetail, onPlanningMode, onPauseTask, onResetTask, onRetryTask, onUnpauseTask, onArchiveTask, onRevertTask, onTasksUpdated, projectId, t, useSinglePaneList]);
+  }, [addToast, autoMerge, columnFlagsById, getTaskColumnFlags, confirm, getListColumnLabel, getTaskPlanningWorkflowId, handleListContextCheckPrStatus, handleListContextEnableGithubTracking, handleListContextMove, handleListTaskArchive, handleListTaskDelete, handleListTaskRevert, isMobile, lastFetchTimeMs, listContextMenuColumns, taskContextMenuColumnsByTaskId, mergeStrategy, onDuplicateTask, onMergeTask, onOpenDetail, onPlanningMode, onPauseTask, onResetTask, onRetryTask, onUnpauseTask, onArchiveTask, onRevertTask, onReviseTask, onTasksUpdated, projectId, t, useSinglePaneList]);
 
   const contextMenuActions = useMemo(
     () => (contextMenuState ? buildListContextMenuActions(contextMenuState.task) : []),
@@ -2968,18 +3003,6 @@ export function ListView({
                 }}
               />
             </div>
-        {partitionRevertedTasks(tasks).reverted.length > 0 && (
-          <section className="list-reverted-tasks" aria-label={t("tasks.revertedTasks", "Reverted Tasks")} data-testid="list-reverted-tasks">
-            <h2>{t("tasks.revertedTasks", "Reverted Tasks")}</h2>
-            {partitionRevertedTasks(tasks).reverted.map((task) => (
-              <div key={`reverted-${task.id}`} className="list-card">
-                <button type="button" className="btn" onClick={() => onOpenDetail(task)}>{task.id}: {task.title}</button>
-                <button type="button" className="btn" onClick={() => void handleListTaskDelete(task)}>{t("tasks.delete", "Delete")}</button>
-                {onReviseTask && <button type="button" className="btn" onClick={() => onReviseTask(task)}>{t("tasks.revise", "Revise")}</button>}
-              </div>
-            ))}
-          </section>
-        )}
         {filteredCount === 0 ? (
           <div className="list-empty">
             {searchQuery ? t("listView.noTasksMatch", "No tasks match your filter") : t("listView.noTasksYet", "No tasks yet")}
@@ -3088,7 +3111,7 @@ export function ListView({
                             : isLivePlanning || isTransientPlannerActive
                               ? t("tasks.statusPlanning", "Planning")
                               : wipLifecycleBadgeLabel
-                                ?? getTaskStatusLabel(visualStatus ?? "", t, showOptionalGateBadge ? undefined : getRunningWorkflowStepLabel(task), { idle: !isAgentActive, overlapBlockedBy: task.overlapBlockedBy ?? null });
+                                ?? getTaskStatusLabel(visualStatus ?? "", t, showOptionalGateBadge ? undefined : getRunningWorkflowStepLabel(task), { idle: !isAgentActive, overlapBlockedBy: task.overlapBlockedBy ?? null, sessionContentionWaitReason: task.sessionContentionWaitReason ?? null });
                           const hasDependencies = Boolean(task.dependencies && task.dependencies.length > 0);
                           const taskProgress = getTaskProgress(task, getTaskColumnFlags(task));
                           const hasProgress = taskProgress.hasProgress;
@@ -3150,6 +3173,9 @@ export function ListView({
                                     {statusBadgeLabel}
                                   </span>
                                 ) : null}
+                                {isTaskReverted(task.sourceMetadata) && (isCompleteColumnRole(getTaskColumnFlags(task), task.column) || isArchivedColumnRole(getTaskColumnFlags(task), task.column)) && (
+                                  <span className="list-status-badge list-status-badge--reverted" title={t("tasks.revertedBadgeTitle", "This task's changes were reverted")} aria-label={t("tasks.revertedBadgeTitle", "This task's changes were reverted")}>{t("tasks.revertedBadge", "Reverted")}</span>
+                                )}
                                 {showOptionalGateBadge && optionalGateBadge && (
                                   /*
                                   FNXC:TaskCardPlanReviewBadge 2026-07-11-12:10:
@@ -3367,7 +3393,7 @@ export function ListView({
                               : isLivePlanning || isTransientPlannerActive
                                 ? t("tasks.statusPlanning", "Planning")
                                 : wipLifecycleBadgeLabel
-                                  ?? getTaskStatusLabel(visualStatus ?? "", t, showOptionalGateBadge ? undefined : getRunningWorkflowStepLabel(task), { idle: !isAgentActive, overlapBlockedBy: task.overlapBlockedBy ?? null });
+                                  ?? getTaskStatusLabel(visualStatus ?? "", t, showOptionalGateBadge ? undefined : getRunningWorkflowStepLabel(task), { idle: !isAgentActive, overlapBlockedBy: task.overlapBlockedBy ?? null, sessionContentionWaitReason: task.sessionContentionWaitReason ?? null });
 
                             return (
                               <tr
@@ -3432,6 +3458,9 @@ export function ListView({
                                       </span>
                                     ) : showOptionalGateBadge ? null : (
                                       <span className="list-status-badge">-</span>
+                                    )}
+                                    {isTaskReverted(task.sourceMetadata) && (isCompleteColumnRole(getTaskColumnFlags(task), task.column) || isArchivedColumnRole(getTaskColumnFlags(task), task.column)) && (
+                                      <span className="list-status-badge list-status-badge--reverted" title={t("tasks.revertedBadgeTitle", "This task's changes were reverted")} aria-label={t("tasks.revertedBadgeTitle", "This task's changes were reverted")}>{t("tasks.revertedBadge", "Reverted")}</span>
                                     )}
                                     {showOptionalGateBadge && optionalGateBadge && (
                                       /*

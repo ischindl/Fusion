@@ -2,6 +2,67 @@
 
 User-facing release notes aggregated across all packages. This file is auto-synced from each `packages/*/CHANGELOG.md` by `scripts/release.mjs` — do not edit by hand.
 
+## 0.77.0-beta.9
+
+### Highlights
+
+- Verification gates no longer report a pass without running your tests
+- Blocking review gates stop approving merges when the reviewer returned no verdict
+- Merges no longer abort themselves mid-flight or after every repo has landed
+- New Coding (Ideas) V2 workflow runs verification and docs as visible review gates
+- New Stash memory backend captures chats, task completions and executor transcripts
+
+### New
+
+- Coding (Ideas) V2 is selectable as a built-in workflow: Code Review runs lint/test/build itself and must quote command output as evidence, then a readonly Documentation gate writes the card summary and can propose follow-ups in the Recommendations tab. Two fewer model calls per card and one blocking gate instead of four.
+- Stash memory backend (`memory.backendType=stash`) with global and per-project URL/API-key settings, per-project session folders, per-conversation memory focus, and per-task completion capture.
+- Finished or failed tasks upload their executor transcript to Stash as a task session, capped at 20,000 events by default and never blocking terminalization. New project settings control whether capture runs, the event cap, and status lines.
+- Per-chat "Preserve to Stash" action backfills a chat's full history with real per-message timestamps; re-running it inserts nothing new.
+- Opt-in semantic (vector) recall for Stash via `stashVectorSearch`, off by default, falling back to keyword search on any failure.
+- Direct-chat agent mentions and message quoting; Ctrl/Cmd-click opens a new chat in an offset in-app window, and pop-outs now open in front on the right conversation.
+- Press Shift+V in the TUI Logs panel for a chrome-free view you can select and copy with the mouse.
+- Chat memory focus is now an opt-in experimental feature, and its button stays icon-only until a topic is set.
+- Duplicate tasks show a dismissible tag instead of a Keep button, and reverted tasks stay labelled in their own workflow column.
+- Onboarding asks once whether to star Fusion on GitHub, and never again once dismissed.
+- The dashboard now always reloads when it detects a new build; the opt-out toggle is gone.
+- Dashboard notices share one banner style.
+
+### Fixed
+
+- A Verification gate could report PASS in about 46ms without executing your test or build command, supplying merge evidence for a check that never ran.
+- A blocking review gate recorded success when the reviewer returned no usable verdict, merging unreviewed work on a rejection nobody could see. Advisory gates are unchanged.
+- An in-flight merge aborted itself every 15 seconds and was re-admitted indefinitely, so merges never completed.
+- A successful multi-repository merge aborted itself after both repositories had landed, verified duplicates ended as errors, and merge checks ran without a test runner because an inherited production environment skipped devDependencies.
+- Chat failed with `column memory_focus does not exist` after a renumbered migration was skipped; the missing columns are now verified and repaired at startup.
+- A failing test, build, or code review now appends named fix steps instead of bouncing a card with nothing to do; per-step failures stay inside their step.
+- Documentation can no longer hold a merge or send a card back with nothing to do, and the step now really writes the card summary.
+- A task's Feed no longer shows "(no activity)" when opened directly on the activity view.
+- A failed merge no longer strands review-column tasks on their verification and delivery gates.
+- Multi-repository code review no longer reports delivered files as missing, and local-only workspace merges no longer fail after a repo has landed.
+- Task cards and list rows now show Verification, Documentation & Delivery and Code Review progress while a card sits in review; in-review cards show the running gate as a badge.
+- Start in the task composer no longer does nothing on a duplicated Ideas workflow.
+- A task whose workflow role pool is unroutable is no longer re-dispatched; the hold waits as intended.
+- Workspace acquisition waits are recoverable and visible via a Waiting badge.
+- A failed database query now reports the actual reason instead of printing the whole SQL statement.
+- The task journal no longer announces aborts that never happened or repeats the merge approval twice.
+- The built-in Fusion memory MCP server is no longer skipped in agent sessions.
+- Chat Stop and Force send now interrupt the active model turn before teardown; thinking traces are readable and have a raw transcript view.
+- Chat no longer opens an imported link into a hidden composer or re-anchors a thread on open; memory Focus popovers stay usable on mobile.
+- Custom review lanes are honored across merge-readiness checks and merge finalization.
+- Project registration now creates or adopts a usable local integration branch, and task branches survive worktree reclamation.
+- Automatic worktree cleanup fails closed on dirty or unverifiable content.
+- Worktree agents can read skills installed under `~/.agents/skills`.
+- Full-size mailbox Inbox icons restored on mobile; JIRA settings available in every dashboard locale.
+- CLI plugin packaging succeeds again with sharp 0.35 native binaries.
+- Archived task-planner chats soft-delete their Stash sessions, and Stash backfill no longer duplicates or drops messages when timestamps tie or mislabels the first project folder.
+
+### Internal
+
+- Database maintenance now covers 17 previously missed project tables, including plan-evidence and lifecycle tables.
+- Workflow gates are classified by what they are rather than by their name or id.
+- The Coding (review-gated) workflow is retired in favour of Coding (Ideas) V2; existing tasks that selected it keep working.
+- New pipeline drives prove a rejected code review produces named fix steps that run and merge, and the restart-recovery scenario no longer fails under load.
+
 ## 0.77.0-beta.8
 
 ### Highlights

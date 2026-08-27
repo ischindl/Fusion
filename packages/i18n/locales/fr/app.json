@@ -1301,6 +1301,7 @@
     "modeAgent": "Agent",
     "modeModel": "Modèle",
     "newChat": "Nouvelle discussion",
+    "newChatOpenInNewWindowHint": "Ctrl/Cmd + clic pour ouvrir la nouvelle conversation dans une fenêtre séparée",
     "newChatModeAgent": "Agent",
     "newChatModeModel": "Modèle",
     "newChatTitle": "Nouvelle discussion",
@@ -1424,7 +1425,10 @@
     "currentModelTarget": "Current model: {{model}}",
     "currentDefaultTarget": "Using the default chat target",
     "newNotAllowedForTaskChat": "",
-    "restore": ""
+    "restore": "",
+    "quoteMessage": "Citer le message",
+    "agentRepliesFailed": "Certains agents n’ont pas pu répondre : {{agents}}",
+    "noDefaultModelConfigured": "Configurez un modèle de chat par défaut dans les Paramètres avant de créer une conversation."
   },
   "chatRooms": {
     "error": {
@@ -3450,7 +3454,9 @@
     "useProjectDefault": "Utiliser le défaut du projet",
     "viewOptions": "Options d'affichage",
     "workflowLabel": "",
-    "statusReplan": "Replanifier"
+    "statusReplan": "Replanifier",
+    "statusWaiting": "",
+    "statusWaitingOn": ""
   },
   "mailbox": {
     "agent": "Agent",
@@ -6177,7 +6183,6 @@
     },
     "globalGeneral": {
       "andShowsUpdateNoticesInTheCLIAnd": "",
-      "autoReloadDashboardOnVersionChange": "",
       "checkForThe": "",
       "checkForUpdatesAutomatically": "",
       "cLIBinaryOnPATH": "",
@@ -6207,7 +6212,6 @@
       "updates": "",
       "weekly": "",
       "whenDisabledToolRowsAreStillLoggedBut": "",
-      "whenEnabledDefaultTheDashboardAutomaticallyReloadsWhen": "",
       "whenEnabledFusionChecksNpmForNewVersions": "",
       "whenEnabledTheDashboardProbesForAGlobally": "",
       "gitLabEnabledHint": "",
@@ -8087,7 +8091,7 @@
       "resetProgressTitle": "Réinitialiser la progression ?"
     },
     "nearDuplicate": {
-      "actions": "Choisissez Archiver pour déplacer cette tâche vers les archives, ou Conserver pour continuer avec cette tâche.",
+      "actions": "This task continues normally. Archive it if the work is already covered, or clear this flag once you have read it.",
       "archiveBtn": "Archiver",
       "archiveConfirm": "Archiver",
       "archived": "{{id}} archivé",
@@ -8095,14 +8099,14 @@
       "archiveTitle": "Archiver la tâche quasi-dupliquée",
       "copy": "Cette tâche semble être un quasi-doublon de",
       "headline": "Doublon potentiel détecté",
-      "keepBtn": "Conserver",
-      "kept": "{{id}} conservé et avertissement de doublon ignoré",
       "deleteBtn": "Supprimer",
       "deleteConfirm": "Supprimer",
       "deleted": "Supprimé {{id}}",
       "deleteMessage": "Supprimer {{id}} comme doublon de {{duplicateOf}} ?",
       "deleteTitle": "Supprimer la tâche en double",
-      "triageActions": "Choisissez Supprimer pour retirer ce doublon, ou Conserver pour continuer."
+      "triageActions": "This task stays paused until you clear this flag or delete it. Delete it if the work is already covered.",
+      "dismissBtn": "Mark the duplicate flag for {{id}} as read",
+      "dismissed": "Duplicate flag cleared for {{id}}"
     },
     "nextRecoveryAt": "Prochaine récupération à {{time}}",
     "no": "Non",
@@ -8702,7 +8706,7 @@
     "descriptionRefined": "Description affinée par l'IA",
     "doneNoMerge": "Terminé (sans fusion)",
     "duplicateCheckFailed": "Vérification des doublons échouée ; création de la tâche quand même.",
-    "duplicateDismissed": "{{taskId}} conservé ; avertissement de doublon ignoré",
+    "duplicateDismissed": "Duplicate flag cleared for {{taskId}}",
     "duplicateOf": "Doublon de {{id}}",
     "editTask": "Modifier la tâche",
     "enterDescriptionFirst": "Saisir d'abord une description",
@@ -8738,10 +8742,7 @@
     "issueClosed": "fermé",
     "issueDeleted": "supprimé",
     "issueLeft": "laissé",
-    "keep": "Conserver",
-    "keepFailed": "Impossible de conserver {{taskId}} : {{error}}",
     "keepProgress": "Conserver la progression",
-    "keepTaskTitle": "Conserver cette tâche et ignorer l'avertissement de doublon",
     "leaveUnchanged": "Laisser intact",
     "lineageConflict": "{{taskId}} a des enfants de lignée ({{children}}) qui le référencent comme parent source.\n\nSupprimer quand même en dissociant d'abord ces références ?",
     "linkedIssueChipAriaLabel": "Issue GitHub liée #{{number}}",
@@ -8765,7 +8766,7 @@
     "moved": "{{taskId}} déplacé vers {{column}}",
     "moveFailed": "Impossible de déplacer {{taskId}} : {{error}}",
     "moveTask": "Déplacer la tâche",
-    "nearDuplicateTitle": "Potentiel quasi-doublon de {{id}}",
+    "nearDuplicateTitle": "Flagged as a possible duplicate of {{id}}. This task continues normally; clear the flag once you have read it.",
     "needsInput": "",
     "noAgentsAvailable": "Aucun agent disponible",
     "node": "Nœud",
@@ -8870,7 +8871,10 @@
     "refinesOfTitle": "",
     "revertedTasks": "",
     "revertedResolutionActions": "",
-    "revise": ""
+    "revise": "",
+    "dismissDuplicateFlag": "Mark the duplicate flag for {{id}} as read",
+    "nearDuplicateHeldTitle": "Flagged as a duplicate of {{id}}. This task stays paused until you clear this flag or delete it.",
+    "duplicateDismissFailed": "Failed to clear the duplicate flag for {{taskId}}: {{error}}"
   },
   "terminal": {
     "arrowKeysLabel": "",
@@ -9742,12 +9746,15 @@
     "noDetail": "Aucun raisonnement capturé pour cette étape",
     "untitledSection": "Raisonnement sans titre",
     "sectionCount": "{{count}} section",
-    "sectionCountPlural": "{{count}} sections"
+    "sectionCountPlural": "",
+    "showRaw": "",
+    "showSections": ""
   },
   "artifactImageViewer": {
     "openTask": "",
     "close": "",
     "loading": "",
     "retry": ""
+
   }
 }

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import type { SetStateAction } from "react";
 import {
   fetchChatSessions,
@@ -143,8 +144,14 @@ export interface UseChatReturn {
 
   // Session operations
   selectSession: (id: string, sessionOverride?: ChatSessionInfo) => void;
+  /**
+   * FNXC:ChatWindows 2026-08-23-04:29:
+   * A modifier-click opens a new conversation par dessus the current host without interrupting an
+   * in-flight reply. `keepActiveSession` inserts the session but deliberately avoids selecting it.
+   */
   createSession: (
     input: { agentId: string; title?: string; modelProvider?: string; modelId?: string; thinkingLevel?: string },
+    options?: { keepActiveSession?: boolean },
   ) => Promise<ChatSessionInfo>;
   archiveSession: (id: string) => Promise<void>;
   archivedSessions: ChatSessionInfo[];
@@ -434,6 +441,7 @@ export function useChat(
   addToast?: (msg: string, type?: "success" | "error" | "warning") => void,
   options: UseChatOptions = {},
 ): UseChatReturn {
+  const { t } = useTranslation("app");
   const persistActiveSession = options.persistActiveSession !== false;
   const initialSession = options.initialSession;
   // Note: We use i18n lazy - the t function is only used for fallback messages
@@ -1233,15 +1241,18 @@ export function useChat(
 
   // Create a new session
   const createSession = useCallback(
-    async (input: { agentId: string; title?: string; modelProvider?: string; modelId?: string; thinkingLevel?: string }) => {
+    async (
+      input: { agentId: string; title?: string; modelProvider?: string; modelId?: string; thinkingLevel?: string },
+      options?: { keepActiveSession?: boolean },
+    ) => {
       const previousSessionId = activeSessionRef.current?.id;
       const data = await apiCreateChatSession(input, projectId);
 
-      if (streamRef.current) {
+      if (!options?.keepActiveSession && streamRef.current) {
         streamRef.current.close();
         streamRef.current = null;
       }
-      lastAttachedGenerationRef.current = null;
+      if (!options?.keepActiveSession) lastAttachedGenerationRef.current = null;
       const newSession: ChatSessionInfo = {
         id: data.session.id,
         title: data.session.title,
@@ -1260,9 +1271,11 @@ export function useChat(
         return sortChatSessions([newSession, ...prev]);
       });
 
-      removePersistedPendingChatMessages(previousSessionId);
-      resetTransientComposerState();
-      selectSession(newSession.id, newSession);
+      if (!options?.keepActiveSession) {
+        removePersistedPendingChatMessages(previousSessionId);
+        resetTransientComposerState();
+        selectSession(newSession.id, newSession);
+      }
 
       return newSession;
     },
@@ -1773,8 +1786,32 @@ export function useChat(
           ));
           setActiveSession((prev) => prev && prev.id === sessionId ? { ...prev, ...nextModel } : prev);
         },
-        onDone: ({ messageId, message: finalMessage, accumulated }) => {
+        onAgentMessage: ({ message }) => {
           if (!ownsStream()) return;
+          const agentMessage = mapChatMessageToInfo(message);
+          streamingMessageIdsRef.current.add(agentMessage.id);
+          setMessages((previous) => appendChatMessageChronologically(previous, agentMessage));
+          setStreamingText("");
+          setStreamingThinking("");
+          setStreamingToolCalls([]);
+          setTimeout(() => streamingMessageIdsRef.current.delete(agentMessage.id), 1000);
+        },
+        onDone: ({ messageId, message: finalMessage, dispatch, failedAgentNames, accumulated }) => {
+          if (!ownsStream()) return;
+          if (dispatch === "agents") {
+            setStreamingText("");
+            setStreamingThinking("");
+            setStreamingToolCalls([]);
+            setIsStreaming(false);
+            isStreamingRef.current = false;
+            streamRef.current = null;
+            lastAttachedGenerationRef.current = null;
+            callbacks?.onDelivered?.();
+            if (failedAgentNames?.length) addToast?.(t("chat.agentRepliesFailed", { agents: failedAgentNames.join(", ") }), "warning");
+            refreshSessions();
+            flushPendingMessage();
+            return;
+          }
           const assistantMessage: ChatMessageInfo = finalMessage
             ? {
                 ...mapChatMessageToInfo(finalMessage),

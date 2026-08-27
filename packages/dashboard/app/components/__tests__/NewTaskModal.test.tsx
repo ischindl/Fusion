@@ -1784,6 +1784,43 @@ describe("NewTaskModal", () => {
       expect(props.addToast).toHaveBeenCalledWith("Queued FN-START for planning", "success");
     });
 
+    /*
+    FNXC:QuickAddStart 2026-08-26-19:19:
+    Second Start surface for the duplicated-Ideas-workflow fix: the New Task dialog shares
+    `quickAddStart`'s resolution with the board composer, so it must also create in the duplicate's
+    own Planning lane instead of promoting into the WIP lane (a rejected transition that left the
+    card parked in Ideas).
+    */
+    it("atomically creates a duplicated Ideas workflow's Start in its own Planning lane", async () => {
+      await mockStartWorkflows("WF-014", "Coding ideas V2");
+      vi.mocked(fetchBoardWorkflows).mockResolvedValueOnce({
+        flagEnabled: true,
+        defaultWorkflowId: "builtin:coding",
+        workflows: [{
+          id: "WF-014",
+          name: "Coding ideas V2",
+          columns: [
+            { id: "ideas", name: "Ideas", flags: { intake: true, manualIntake: true } },
+            { id: "todo", name: "Planning", flags: { hold: true } },
+            { id: "in-progress", name: "In progress", flags: { countsTowardWip: true } },
+            { id: "done", name: "Done", flags: { complete: true } },
+          ],
+        }],
+        taskWorkflowIds: {},
+      } as BoardWorkflowsPayload);
+      const onCreateTask = vi.fn().mockResolvedValue({ ...makeTask("FN-CLONE"), column: "todo", workflowId: "WF-014" });
+      const onMoveTask = vi.fn();
+      renderNewTaskModal({ onCreateTask, onMoveTask });
+
+      await waitFor(() => expect(screen.getByTestId("task-workflow-dropdown-trigger")).toBeTruthy());
+      await chooseWorkflowOption("WF-014");
+      fireEvent.change(screen.getByPlaceholderText("What needs to be done?"), { target: { value: "Start this idea" } });
+      fireEvent.click(await screen.findByTestId("task-form-inline-start"));
+
+      await waitFor(() => expect(onCreateTask).toHaveBeenCalledWith(expect.objectContaining({ workflowId: "WF-014", column: "todo" })));
+      expect(onMoveTask).not.toHaveBeenCalled();
+    });
+
     it("exposes the same eligible Start action in the desktop floating host", async () => {
       mockViewportMode = "desktop";
       await mockStartWorkflows("builtin:coding-ideas", "Coding (Ideas)");

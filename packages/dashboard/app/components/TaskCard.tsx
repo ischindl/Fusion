@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { memo, useCallback, useState, useRef, useEffect, useLayoutEffect, useMemo, type CSSProperties, type ReactElement } from "react";
 import { createPortal } from "react-dom";
-import { Link, Clock, Layers, Pencil, ChevronDown, Folder, Target, Bot, Trash2, RotateCw, Zap, GitBranch, GitPullRequest, AlertTriangle, ArrowUpRight, Eye, MoreHorizontal, Sparkles } from "lucide-react";
+import { Link, Clock, Layers, Pencil, ChevronDown, Folder, Target, Bot, Trash2, RotateCw, Zap, GitBranch, GitPullRequest, AlertTriangle, ArrowUpRight, Eye, MoreHorizontal, Sparkles, X } from "lucide-react";
 import type { Task, TaskDetail, Column, ColumnId, PrInfo, IssueInfo, TaskPriority, GithubIssueAction, MergeResult, PlannerOversightLevel } from "@fusion/core";
 import {
   DEFAULT_PLANNER_OVERSIGHT_LEVEL,
@@ -1740,8 +1740,8 @@ function TaskCardComponent({
   In-progress card progress is WIP implementation only. Plan Review (Todo) and Code Review / other review-lane gates must not appear as checklist rows or inflate completed/total while the card is in In progress; badges still use full progress helpers (isPlanReviewRunning / running step labels).
   */
   const unifiedProgress = useMemo(
-    () => getUnifiedTaskProgress(task, { scope: "implementation" }),
-    [task.steps, task.enabledWorkflowSteps, task.workflowStepResults],
+    () => getUnifiedTaskProgress(task, { scope: isReviewColumn ? "full" : "implementation" }),
+    [isReviewColumn, task.column, task.steps, task.enabledWorkflowSteps, task.workflowStepResults],
   );
   /*
   FNXC:TaskCardProgress 2026-06-29-02:26:
@@ -1755,8 +1755,31 @@ function TaskCardComponent({
   FNXC:TaskCardWorkflowProgress 2026-07-08-hh:mm:
   FN-7676 — cards in the Planning/`triage` column must not surface the steps breakdown (progress bar, active badge, step-count toggle, expandable list); enumerated implementation steps are premature planning artifacts, not execution progress. The affordance now appears only after the task leaves Planning (`in-progress` / `executing`), matching `ListView.shouldShowTaskProgress`. FN-7831 adds a separate header "Reviewing" badge for a running Plan Review, but the progress breakdown itself remains hidden in Planning.
   */
+  /*
+  FNXC:TaskCardWorkflowProgress 2026-08-25-01:10:
+  The review lane shows its breakdown too. FN-7676 hid it in Planning because enumerated steps are a
+  premature planning artifact there — that reasoning does not extend to in-review, where a
+  review-column workflow such as builtin:coding-ideas-v2 runs Verification, Documentation & Delivery
+  and Code Review as real, advancing work. The card already resolves the FULL pipeline once it
+  reaches that lane; this gate then suppressed the rendering of what it had just computed, so the
+  operator saw nothing for the stage those gates were promoted into. Resolved by TRAIT, not by the
+  hardcoded `in-review` id, so a renamed board behaves the same.
+  */
+  /*
+  FNXC:TaskCardWorkflowProgress 2026-08-25-11:40:
+  The review lane shows its stage as a BADGE, not a step list. A review-column workflow has few
+  milestones in a fixed order (Code Review -> Documentation -> merge), so the running-gate badge
+  already answers "where is this card", and a list of two rows plus every finished implementation
+  step is noise on a board.
+  It also removes a whole failure mode: the list is built from `task.enabledWorkflowSteps`, which is
+  frozen on the card at planning time, so a card planned before a workflow changed rendered a
+  milestone that no longer exists as permanently `pending`. No list, no ghost.
+  Cost, stated: a non-blocking gate that failed is no longer visible from the board — open the card.
+  Blocking failures still move the card back to in-progress, which is visible.
+  */
   const showProgressSection =
-    unifiedProgress.total > 0 && (task.status === "executing" || isWipColumn);
+    unifiedProgress.total > 0
+    && (task.status === "executing" || isWipColumn);
 
   /*
   FNXC:BoardPerformance 2026-07-26-09:46:
@@ -2264,9 +2287,9 @@ function TaskCardComponent({
 
     try {
       await onUpdateTask(task.id, { dismissNearDuplicate: true });
-      addToast(t("tasks.duplicateDismissed", "Kept {{taskId}}; duplicate warning dismissed", { taskId: task.id }), "success");
+      addToast(t("tasks.duplicateDismissed", "Duplicate flag cleared for {{taskId}}", { taskId: task.id }), "success");
     } catch (err) {
-      addToast(t("tasks.keepFailed", "Failed to keep {{taskId}}: {{error}}", { taskId: task.id, error: getErrorMessage(err) }), "error");
+      addToast(t("tasks.duplicateDismissFailed", "Failed to clear the duplicate flag for {{taskId}}: {{error}}", { taskId: task.id, error: getErrorMessage(err) }), "error");
     }
   }, [addToast, onUpdateTask, task.id]);
 
@@ -3272,26 +3295,35 @@ function TaskCardComponent({
         </span>
       )}
       {showNearDuplicateChip && (
-        <>
+        /*
+        FNXC:NearDuplicateDetection 2026-08-23-04:10:
+        FN-173 removed the undiscoverable Keep decision button. The tag is an acknowledgeable notification;
+        clearing it deliberately uses dismissNearDuplicate so triage-marker holds release instead of stranding paused cards.
+        */
+        <span className="card-duplicate-chip-group">
           <span
             className="card-duplicate-chip"
-            title={t("tasks.nearDuplicateTitle", "Potential near-duplicate of {{id}}", { id: String(task.sourceMetadata?.nearDuplicateOf) })}
-            aria-label={t("tasks.nearDuplicateTitle", "Potential near-duplicate of {{id}}", { id: String(task.sourceMetadata?.nearDuplicateOf) })}
+            title={isTriageDuplicateDecision
+              ? t("tasks.nearDuplicateHeldTitle", "Flagged as a duplicate of {{id}}. This task stays paused until you clear this flag or delete it.", { id: String(task.sourceMetadata?.nearDuplicateOf) })
+              : t("tasks.nearDuplicateTitle", "Flagged as a possible duplicate of {{id}}. This task continues normally; clear the flag once you have read it.", { id: String(task.sourceMetadata?.nearDuplicateOf) })}
+            aria-label={isTriageDuplicateDecision
+              ? t("tasks.nearDuplicateHeldTitle", "Flagged as a duplicate of {{id}}. This task stays paused until you clear this flag or delete it.", { id: String(task.sourceMetadata?.nearDuplicateOf) })
+              : t("tasks.nearDuplicateTitle", "Flagged as a possible duplicate of {{id}}. This task continues normally; clear the flag once you have read it.", { id: String(task.sourceMetadata?.nearDuplicateOf) })}
           >
             <span>{t("tasks.duplicateOf", "Duplicate of {{id}}", { id: String(task.sourceMetadata?.nearDuplicateOf) })}</span>
           </span>
           {onUpdateTask && (
             <button
               type="button"
-              className="card-duplicate-keep"
+              className="card-duplicate-dismiss"
               onClick={(e) => void handleDismissNearDuplicate(e)}
-              title={t("tasks.keepTaskTitle", "Keep this task and dismiss duplicate warning")}
-              aria-label={t("tasks.keepTaskTitle", "Keep this task and dismiss duplicate warning")}
+              title={t("tasks.dismissDuplicateFlag", "Mark the duplicate flag for {{id}} as read", { id: String(task.sourceMetadata?.nearDuplicateOf) })}
+              aria-label={t("tasks.dismissDuplicateFlag", "Mark the duplicate flag for {{id}} as read", { id: String(task.sourceMetadata?.nearDuplicateOf) })}
             >
-              {t("tasks.keep", "Keep")}
+              <X size={11} aria-hidden="true" />
             </button>
           )}
-        </>
+        </span>
       )}
       {chipFarRight && (showTrackingIndicator || showLinkedIssueChipForImport) && githubTrackedIssue && (
         <a
@@ -3443,7 +3475,7 @@ function TaskCardComponent({
               : showQueuedBadge
                 ? t("tasks.statusQueued", "Queued")
                 : wipLifecycleBadgeLabel
-                  ?? getTaskStatusLabel(visualStatus ?? "", t, showOptionalGateBadge ? undefined : getRunningWorkflowStepLabel(task), { idle: !isAgentActive, overlapBlockedBy: task.overlapBlockedBy ?? null });
+                  ?? getTaskStatusLabel(visualStatus ?? "", t, showOptionalGateBadge ? undefined : getRunningWorkflowStepLabel(task), { idle: !isAgentActive, overlapBlockedBy: task.overlapBlockedBy ?? null, sessionContentionWaitReason: task.sessionContentionWaitReason ?? null });
   const hasCardMetaBadges = showPriorityBadge
     || task.executionMode === "fast"
     // FNXC:PlannerOversight 2026-07-04-00:00: the oversight badge is opt-in
@@ -4159,7 +4191,8 @@ function TaskCardComponent({
             </button>
             {showSteps && (
               <div className="card-steps-list">
-                {unifiedProgress.items.map((step) => {
+                {unifiedProgress.items.map((step, index) => {
+                  const beginsReviewGates = step.source === "workflow" && index > 0 && unifiedProgress.items[index - 1]?.source === "step";
                   /*
                   FNXC:WorkflowSteps 2026-06-25-00:00:
                   The dot color is keyed by the unified status, which now distinguishes the two
@@ -4172,7 +4205,9 @@ function TaskCardComponent({
                   Workflow-sourced rows remain visible through their step names and status dots, but task cards intentionally omit the redundant `workflow` text badge so expanded step lists stay focused on progress.
                   */
                   return (
-                    <div key={step.id} className="card-step-item">
+                    <div key={step.id}>
+                      {beginsReviewGates && <div className="card-review-gates-separator" aria-hidden="true" />}
+                    <div className="card-step-item">
                       <span
                         className={`card-step-dot card-step-dot--${step.status}`}
                         aria-hidden="true"
@@ -4185,6 +4220,7 @@ function TaskCardComponent({
                           {t("tasks.active", "active")}
                         </span>
                       )}
+                    </div>
                     </div>
                   );
                 })}

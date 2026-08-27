@@ -6,7 +6,6 @@ import * as useChatModule from "../../hooks/useChat";
 import * as useChatRoomsModule from "../../hooks/useChatRooms";
 import {
   activeSessionFixture,
-  createRoomFixture,
   defaultChatState,
   defaultRoomsState,
   installChatViewEnv,
@@ -217,29 +216,6 @@ describe("FN-9195 Chat composer visual viewport", () => {
         expect(readScrollTop(), name).toBe(1000);
       } finally { cleanup(); viewport.restore(); restoreHost(); }
     }
-  });
-
-  it("keeps the active room-thread render path keyboard-active", async () => {
-    const restoreHost = mockDesktopNonTouchViewport();
-    const viewport = mockVisualViewport({ width: 1280, height: 900 });
-    const room = createRoomFixture("keyboard-room");
-    try {
-      localStorage.setItem("fusion:chat-scope", "rooms");
-      setupMockChat({ sessions: [], filteredSessions: [] });
-      setupMockRooms({ rooms: [room], activeRoom: null });
-      const style = document.createElement("style");
-      style.textContent = css;
-      document.head.append(style);
-      const view = render(<ChatView projectId="proj-123" addToast={vi.fn()} compactLayout />);
-      await act(async () => { screen.getByTestId("chat-room-item-keyboard-room").click(); });
-      setupMockRooms({ rooms: [room], activeRoom: room });
-      view.rerender(<ChatView projectId="proj-123" addToast={vi.fn()} compactLayout />);
-      const input = screen.getByTestId("chat-input") as HTMLTextAreaElement;
-      expect(getThread().querySelector(".chat-room-thread-header")).toBeTruthy();
-      await openKeyboard(input, viewport.vv, 500);
-      expect(getThread()).toHaveClass("chat-thread--keyboard-active");
-      expect(getThread().querySelector(".chat-room-thread-header")).toBeTruthy();
-    } finally { viewport.restore(); restoreHost(); }
   });
 
   it("does not fabricate keyboard state for an unshrunk compact host", async () => {

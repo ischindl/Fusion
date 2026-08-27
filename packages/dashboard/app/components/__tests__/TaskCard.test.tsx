@@ -54,6 +54,8 @@ vi.mock("lucide-react", () => ({
   Eye: () => <svg data-testid="icon-eye" />,
   // FNXC:TaskCardMenu 2026-07-10-12:00: visible ⋯ card-actions button icon.
   MoreHorizontal: () => <svg data-testid="icon-more-horizontal" />,
+  // FNXC:NearDuplicateDetection 2026-08-23-04:53: This mock factory is closed-world; every icon imported by TaskCard must be declared here or conditional branches resolve it to undefined and React throws only when they render.
+  X: () => <svg data-testid="icon-x" />,
 }));
 
 vi.mock("../ProviderIcon", () => ({
@@ -2787,6 +2789,14 @@ describe("TaskCard", () => {
     const badge = container.querySelector(`[data-testid="${testId}"]`);
     expect(badge).toHaveTextContent(label);
     expect(badge?.className).toContain("pulsing");
+    /*
+    FNXC:TaskCardWorkflowProgress 2026-08-25-11:40:
+    The BADGE is the review lane's whole progress affordance: no bar, no counter, no step list.
+    A review-column workflow has few milestones in a fixed order, so the running gate answers "where
+    is this card" on its own. Suppressing the section also removes a real defect: the list is built
+    from `enabledWorkflowSteps`, frozen on the card at planning time, so a card planned before a
+    workflow changed rendered a milestone that no longer exists as permanently `pending`.
+    */
     expect(container.querySelector(".card-progress")).toBeNull();
     expect(container.querySelector(".card-steps-list")).toBeNull();
   });
@@ -7435,7 +7445,8 @@ describe("TaskCard near-duplicate chip", () => {
     );
 
     expect(screen.getByText("Duplicate of FN-1234")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Keep this task and dismiss duplicate warning" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Mark the duplicate flag for FN-1234 as read" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /keep/i })).toBeNull();
   });
 
   it("hides duplicate chip when nearDuplicateDismissed is true", () => {
@@ -7462,6 +7473,7 @@ describe("TaskCard near-duplicate chip", () => {
     );
 
     expect(screen.queryByText("Duplicate of FN-1234")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Mark the duplicate flag for FN-1234 as read" })).toBeNull();
   });
 
   it("renders duplicate chip when canonical activity is unknown", () => {
@@ -7502,7 +7514,7 @@ describe("TaskCard near-duplicate chip", () => {
     expect(screen.queryByText("Duplicate of FN-1234")).toBeNull();
   });
 
-  it("clicking Keep calls updateTask dismissNearDuplicate", async () => {
+  it("clearing the duplicate flag calls updateTask dismissNearDuplicate", async () => {
     const onUpdateTask = vi.fn().mockResolvedValue(makeTask());
 
     render(
@@ -7514,7 +7526,7 @@ describe("TaskCard near-duplicate chip", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Keep this task and dismiss duplicate warning" }));
+    fireEvent.click(screen.getByRole("button", { name: "Mark the duplicate flag for FN-1234 as read" }));
 
     await waitFor(() => {
       expect(onUpdateTask).toHaveBeenCalledWith("FN-001", { dismissNearDuplicate: true });
@@ -7647,6 +7659,19 @@ describe("TaskCard reverted chip", () => {
     );
 
     expect(screen.getByLabelText("This task's changes were reverted")).toBeInTheDocument();
+  });
+
+  it("renders Delete and Revise resolution actions when handlers are supplied", () => {
+    const onReviseTask = vi.fn();
+    const task = makeTask({ column: "done", sourceMetadata: { revertedAt: "2026-07-16T00:00:00.000Z" } });
+    render(
+      <TaskCard task={task} onOpenDetail={noop} onDeleteTask={vi.fn()} onReviseTask={onReviseTask} addToast={noop} />,
+    );
+
+    const actions = document.querySelector(".card-reverted-actions") as HTMLElement;
+    expect(within(actions).getByRole("button", { name: "Delete" })).toBeInTheDocument();
+    fireEvent.click(within(actions).getByRole("button", { name: "Revise" }));
+    expect(onReviseTask).toHaveBeenCalledWith(task);
   });
 
   it("does not render for missing, blank, or non-completed revert markers", () => {

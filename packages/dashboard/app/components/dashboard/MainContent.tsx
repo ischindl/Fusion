@@ -440,6 +440,7 @@ export function MainContent({
             openTaskDetail: openPluginTaskDetail,
             openFile: openFileInBrowser,
             beginNativeStructureDrag: attachNativeStructureRefToDrag,
+            /* FNXC:NearDuplicateDetection 2026-08-23-04:53: Plugin-rendered cards share the duplicate tag contract, so forward the board update seam and keep the mark-as-read control available on this host. */
             renderTaskCard: (task: Task | TaskDetail) => (
               <TaskCard
                 task={task}
@@ -449,6 +450,7 @@ export function MainContent({
                 projectId={currentProject?.id}
                 onOpenDetail={openPluginTaskDetail}
                 addToast={addToast}
+                onUpdateTask={updateTask}
                 prAuthAvailable={prAuthAvailable}
                 autoMergeEnabled={autoMerge}
                 nearDuplicateCanonicalInactive={typeof task.sourceMetadata?.nearDuplicateOf === "string"

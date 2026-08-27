@@ -110,7 +110,7 @@ Press `Escape` to close the current/topmost dashboard popup. Popped-out task win
 <!-- FNXC:ChatFindDocs 2026-08-21-16:29: FN-110 gives the active visible Chat host contextual Find ownership without adding a configurable dashboard shortcut. -->
 ### Thinking traces
 
-Thinking panes split titled reasoning traces into independently expandable sections, with **Collapse all** and **Expand all** controls. Sections start expanded, so reasoning already visible remains visible; sections with no captured body say so explicitly. Untitled traces remain a single block. The same behavior applies while Planning Mode, Mission Interview, and Milestone/Slice Interview stream a generation.
+Thinking panes split titled reasoning traces with captured bodies into independently expandable sections, with **Collapse all** and **Expand all** controls. Headings without captured reasoning stay inline in the flowing trace instead of becoming empty collapsible rows, and the defensive empty-state label appears at most once per section. **Raw trace** shows the original unsectioned capture and switches back with **Sectioned trace**; it is available for every trace that contained headings, including a titles-only trace rendered as one flowing block. The workflow live-log console remains raw and unsectioned by design. The same behavior applies while Planning Mode, Mission Interview, and Milestone/Slice Interview stream a generation.
 
 ### Chat Find
 
@@ -181,6 +181,8 @@ When task detail is open from a board card, task popup, mobile list row, right-d
 On mobile board-card detail, **Back to board** also restores the prior board/card scroll position so the same lane context remains visible.
 
 ### Board panning and mobile Kanban column snapping
+
+Reverted work remains in its own workflow column and is marked with a **Reverted** label; it is not collected into a separate board, list, or right-dock group. Its resolution actions remain available on the Board and right-dock card, in the List row context menu, and in Task Detail: use **Delete** to remove the task or **Revise** to create a follow-up revision.
 
 <!-- FNXC:BoardNavigationDocs 2026-08-21-18:21: FN-115 preserves native task-card activation until horizontal Board pan intent is proven, so stationary clicks continue to reach the configured popup, right-dock, or main-panel detail destination. -->
 On desktop and tablet, an ordinary task-card click opens the configured task-detail destination (popup, right dock, or main panel). Drag horizontally from an empty Board surface or a task card's noninteractive body or text to pan the Board viewport only after the gesture crosses horizontal intent; that pan suppresses its compatibility click and does not open detail. The gesture never moves a task: card controls, links, fields, editing, context menus, and file drops keep their normal behavior, and **Move to** in the task context menu remains the only relocation path. Fusion does not auto-scroll at Board edges. Phone touch scrolling and column snapping are unchanged.
@@ -288,7 +290,7 @@ Direct Chat and task-detail Chat share one browser-local, text-only pending queu
 
 Both model-loop surfaces expose the same queue controls: edit an entry, move it earlier or later, delete it, or **Force send** a selected entry. Duplicate text is selected by its position in the list, not by its content. A blank edit is rejected without deleting the queued entry, and queue controls remain named and touch-reachable on narrow screens.
 
-Normal completion and **Stop** release only the FIFO front after cancellation and authoritative history reconciliation. **Force send** first fences and cancels the active stream, waits for cancellation plus reconciliation, then dispatches only the selected entry; failures keep the entry in its original queue position. Attachments are never queued. Activity task chat, Chat Rooms, and CLI-backed chat intentionally keep their separate interaction and transport contracts and do not inherit these model-loop queue controls.
+Normal completion and **Stop** release only the FIFO front after cancellation and authoritative history reconciliation. **Stop** and **Force send** first ask the running model runtime to interrupt through its own interrupt before the response is torn down; runtimes without an interrupt continue through the existing teardown. A runtime that stalls or fails to answer that request cannot delay or break cancellation, history reconciliation, or the queue's failure behavior. **Force send** then dispatches only the selected entry; failures keep the entry in its original queue position. Attachments are never queued. Activity task chat, Chat Rooms, and CLI-backed chat intentionally keep their separate interaction and transport contracts and do not inherit these model-loop queue controls.
 
 ## Automations
 
@@ -359,6 +361,7 @@ Features:
 - The quick-entry GitHub icon is a per-task tracking override: leave it untouched to use the project default, turn it on to opt the next task into tracking when the default is off, or turn it off to opt the next task out when the default is on.
 - PR/issue badges with live updates
 - Planning cards and List rows/cards show the same active border and pulsing **Planning** badge when fresh planner activity reaches the live log stream, including the brief status-null transition before the authoritative task row refreshes. The transient indicator clears on that authoritative refresh, so completed planning does not remain active.
+- A workspace task waiting for another task's repository acquisition shows a **Waiting** badge with the holder reason on board cards, list rows, and task detail. The badge clears when the bounded scheduling wait yields or completes.
 <!-- FNXC:TaskActivity 2026-07-28-12:00: FN-8300 requires visual card activity to agree with fresh planner logs during status-null planning transitions; Board and List reuse their existing active affordances. -->
 - GitLab tracking badges on task cards for linked GitLab project issues, group issues, and merge requests; stale GitLab metadata uses a warning-colored badge while GitHub badges remain unchanged.
 - GitHub provenance marker on task cards imported from GitHub (`sourceType: github_import`), shown in the footer with other external-source metadata
@@ -768,7 +771,9 @@ In the full, non-floating Chat view on tablet and desktop, the Chat header can s
 
 The shared Chat header owns **New Chat** in both the list and selected detail across embedded Chat, Quick Chat, mobile, and dock hosts. Search and tag filters, archived/restore, and each row's rename, pin, archive, and delete actions remain list-only. Detail intentionally contains the saved conversation title and secondary model metadata when available. The default list contains only active sessions; use **Archived conversations** to view archived sessions, restore one to the active list, or explicitly delete it. Archive is the default removal action, while delete remains a separate destructive action.
 
-For an active Direct conversation, open the row actions with desktop right-click or the **⋯** control (including touch, keyboard, compact, and dock hosts), then choose **Open in new window**. Fusion opens an independent in-app Quick Chat window for that conversation; it is not a browser or OS window. You can keep several different conversations open, move and close each one independently, and reopening the same conversation refreshes its existing window instead of duplicating it. Rooms and archived conversations do not offer this action. Escape closes one secondary Quick Chat at a time after popped-out task windows and before the primary Quick Chat; switching projects or choosing all projects closes every secondary window.
+For an active Direct conversation, open the row actions with desktop right-click or the **⋯** control (including touch, keyboard, compact, and dock hosts), then choose **Open in new window**. Fusion opens an independent in-app Quick Chat window in front of the chat window it was launched from and directly on that conversation's thread; it is not a browser or OS window. You can keep several different conversations open, move and close each one independently, and reopening the same conversation raises and reopens its existing window instead of duplicating it, without interrupting an in-flight reply. The in-window **< BACK** action returns to that window's conversation list. Rooms and archived conversations do not offer this action. Escape closes one secondary Quick Chat at a time after popped-out task windows and before the primary Quick Chat; switching projects or choosing all projects closes every secondary window.
+
+On desktop, Ctrl-click (Windows/Linux) or Cmd-click (macOS) on **New Chat** creates the conversation in its own in-app chat window above the conversation you are reading. The host conversation, including an in-flight reply, remains uninterrupted; stacked chat windows are deliberately offset so they do not perfectly overlap. A plain **New Chat** click keeps the existing in-place behavior. Mobile and short-viewport hosts keep their full-screen sheet and plain creation behavior.
 
 ### Conversation layout
 
@@ -859,13 +864,13 @@ Mailbox Inbox, Outbox, and agent lists exclude archived correspondence and unrea
 
 ![Chat view](./screenshots/chat-view.png)
 
-### Chat Rooms
+### Direct Chat and Agent Mentions
 
-Chat Rooms are project-scoped group conversations for multiple agents. They are separate from one-on-one direct chat sessions.
+Chat View exposes Direct conversations only. The retained Rooms APIs and storage are not presented as a persistent Chat View scope.
 
-- Chat Rooms are currently gated behind the `chatRooms` experimental feature flag. Enable it in **Settings → Experimental Features → Chat Rooms**.
-- Use the **Direct / Rooms** toggle in the Chat sidebar to switch scopes. The selected scope is saved and restored the next time you open Chat.
-- In **Rooms**, click **Create room** to open the room-creation modal.
+- **New Chat** immediately creates a Direct conversation from the Settings-configured default agent or model. Use the Brain control beside the composer to retarget an existing conversation.
+- Mention one or more agents with `@Agent_Name` in a message to summon them for that turn. Each mentioned agent answers with its own configured model and thinking level; an unmentioned turn uses the conversation model as usual.
+- Every persisted message has a quote control. Quoting an agent reply seeds the composer as `"<excerpt>" - @Agent_Name , `, so the next turn explicitly cites and re-summons that agent.
 - Room names follow strict validation: a leading `#` is removed automatically, names must be lowercase, up to 80 characters, use only `a-z`, `0-9`, `-`, or `_`, cannot start or end with `-`/`_`, and must be unique in the current project.
 - The modal includes a member picker with search + multi-select from project agents. You must pick at least one member before creating the room.
 - Members are currently chosen during room creation. The shipped UI does not yet provide full post-creation member management in Chat View.
@@ -2575,7 +2580,7 @@ per-modal geometry coverage.
 
 ### Reverted task resolution
 
-When a completed task is successfully reverted, Fusion removes it from ordinary Done collections. It remains discoverable in the **Reverted Tasks** resolution section in Board, List, and the right dock. Open the task for provenance, choose **Delete** to use the existing guarded deletion flow, or choose **Revise** to open New Task with the original description prefilled.
+When a completed task is successfully reverted, it remains in its ordinary workflow column or list group with a **Reverted** label. It is not moved to a separate group. Open the task for provenance, choose **Delete** from the Board or right-dock card, List row context menu, or task detail to use the existing guarded deletion flow, or choose **Revise** from those same resolution surfaces to open New Task with the original description prefilled.
 
 ### Todo Lists plugin enablement
 
@@ -2623,11 +2628,15 @@ Task Detail's workspace repository summary distinguishes acquired repositories f
 
 ### Update restart recovery
 
-Settings separates automatic installation from automatic restart. Following an operator-requested dashboard update restart, the page waits for the replacement host to report the installed version through health before it reloads. Transitional, old, and unavailable responses do not complete recovery. If the host does not return before the bounded timeout, the update surface provides manual refresh guidance. This explicit recovery is independent from `autoReloadOnVersionChange` and does not change native Electron or standalone CLI update behavior.
+Settings separates automatic installation from automatic restart. Following an operator-requested dashboard update restart, the page waits for the replacement host to report the installed version through health before it reloads. Transitional, old, and unavailable responses do not complete recovery. If the host does not return before the bounded timeout, the update surface provides manual refresh guidance. This explicit recovery is separate from the always-on automatic reload on version change and does not change native Electron or standalone CLI update behavior.
 
 ### Review finding resolutions
 
 The Review tab renders the `dispute-upheld` badge for an adjudicated finding. It is a terminal resolution and cannot be selected for a further revision; it is distinct from the existing Superseded badge.
+
+### Review-gated task progress
+
+Cards using the review-gated workflow show implementation progress while work is in progress. In review, their progress block includes Verification, Code Review, and Documentation & Delivery after the implementation steps, separated visually; the running gate supplies the card badge.
 
 ### Docked conversation sidebar
 

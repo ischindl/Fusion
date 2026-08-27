@@ -3864,6 +3864,29 @@ Reuse the near-duplicate banner layout; replan-cap escalations use a stronger wa
   color: var(--text);
 }
 
+.detail-near-duplicate-banner__dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  padding: var(--space-xs);
+  border: var(--btn-border-width) solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-warning);
+  cursor: pointer;
+  transition: background-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.detail-near-duplicate-banner__dismiss:hover {
+  background: var(--card-hover);
+}
+
+.detail-near-duplicate-banner__dismiss:focus-visible {
+  box-shadow: var(--focus-ring-strong);
+  outline: none;
+}
+
 .detail-near-duplicate-banner__copy {
   margin: 0;
   color: var(--text);

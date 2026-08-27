@@ -94,7 +94,7 @@ Near-duplicate flagging now keeps the task in its normal flow column (`todo` / a
 - `source.sourceMetadata.nearDuplicateOf = <canonicalTaskId>`
 - `source.sourceMetadata.nearDuplicateScore = <number>`
 - `source.sourceMetadata.nearDuplicateSharedTokens = <string[]>`
-- optional `source.sourceMetadata.nearDuplicateDismissed = true` after user chooses Keep
+- optional `source.sourceMetadata.nearDuplicateDismissed = true` after the operator clears the duplicate flag
 - activity event `task:near-duplicate-flagged`
 
 A near-duplicate flag is only actionable while the canonical task is active. The triage backstop does not persist `nearDuplicateOf` for archived, soft-deleted, done, or missing canonicals; when a canonical later becomes inactive through archive, soft-delete, or move-to-done, the store clears `nearDuplicateOf`, `nearDuplicateScore`, `nearDuplicateSharedTokens`, and `nearDuplicateDismissed` from active referrers and records an informational log entry without pausing or failing those tasks.
@@ -102,7 +102,7 @@ A near-duplicate flag is only actionable while the canonical task is active. The
 Dashboard surfaces this as a yellow Duplicate chip plus modal actions only while the canonical exists and is active:
 
 - **Archive** (user-initiated archive path)
-- **Keep** (dismisses the warning by setting `nearDuplicateDismissed: true`)
+- **Clear the duplicate flag** (dismisses the warning by setting `nearDuplicateDismissed: true`)
 
 This layer complements, rather than replaces, FN-4829 similarity detection, FN-4918 deterministic deduplication, and FN-4892 same-agent intake heuristics.
 
@@ -144,7 +144,7 @@ Layer behavior:
 - **Triage planning loop** — after triage reads the generated `PROMPT.md`, an exact redirect marker short-circuits directly into `finalizeApprovedTask()`. Normal plans run deterministic spec hygiene checks in triage, then the selected workflow's optional Plan Review gate owns AI plan review before execution.
 - **Self-healing sweep** — maintenance Batch 2 runs `resolveExplicitDuplicateMarkerTasks()` across `triage`/`todo` tasks to clean up older stuck marker tasks. The sweep is best-effort, capped at 50 marker tasks per cycle, and can be disabled with the internal setting `resolveExplicitDuplicateMarkerEnabled: false` (default `true`).
 
-An operator's decision is durable for a task and its active canonical pair. **Keep** records the acknowledgement, clears the marker-only prompt and triage decision hold, and lets planning continue; triage and self-healing will not ask again if that same marker is reprocessed. A marker for a different active canonical remains a new decision. **Delete** for an explicit-marker decision soft-deletes the duplicate, while **Archive** for an ordinary near-duplicate leaves it terminal in Archived; neither outcome is reopened as a duplicate decision.
+An operator's decision is durable for a task and its active canonical pair. **Clearing the duplicate flag** records the acknowledgement, retires the marker source, clears the triage decision hold, and lets planning continue; triage and self-healing will not ask again if that same marker is reprocessed. A marker for a different active canonical remains a new decision. **Delete** for an explicit-marker decision soft-deletes the duplicate, while **Archive** for an ordinary near-duplicate leaves it terminal in Archived; neither outcome is reopened as a duplicate decision.
 
 All three layers fail open: parse errors, task lookup failures, file-read failures, activity-recording errors, or other unexpected exceptions log a warning and continue normal intake/triage/self-healing flow instead of blocking task creation or recovery.
 
@@ -162,7 +162,7 @@ Fusion applies two conservative intake heuristics that may auto-archive newly fi
 
 - **Ghost-bug preflight** (triage finalize path): for bug-fix-shaped specs that cite concrete constructs/commands, Fusion probes current `main`. If all definitive probes show the cited bug does not reproduce, the task is archived as `auto-resolved-ghost-bug`.
 - **Same-agent duplicate intake** (all task-create backends): if the same `source.sourceAgentId` (or `source.sourceParentTaskId`) filed a highly similar task within 24h (threshold `0.75`), Fusion still detects the near-duplicate — but what happens next depends on the `autoArchiveDuplicateTasksEnabled` project/global setting (default **`false`**, FN-7658/FN-8401):
-  - **Default (`false`)**: the later task is left in place and flagged via the same near-duplicate marker used elsewhere (`sourceMetadata.nearDuplicateOf` / `nearDuplicateScore`), so the dashboard's yellow "Duplicate" chip with Keep/Archive actions surfaces it for a human decision. Neither the new task nor its live siblings are moved to `archived` or deleted automatically.
+  - **Default (`false`)**: the later task is left in place and flagged via the same near-duplicate marker used elsewhere (`sourceMetadata.nearDuplicateOf` / `nearDuplicateScore`), so the dashboard's yellow "Duplicate" chip with a clear-the-flag control and Archive action surfaces it for a human decision. Neither the new task nor its live siblings are moved to `archived` or deleted automatically.
   - **`true`** (legacy behavior, opt-in): only the later/new task is archived as `auto-resolved-duplicate`; its live siblings remain intact.
 
 Ghost-bug preflight is unaffected by `autoArchiveDuplicateTasksEnabled` — it is a distinct heuristic and always auto-archives on a definitive non-repro.

@@ -160,6 +160,14 @@ describe("TaskDetailModal Activity and planner Chat tab integration", () => {
     const { prompt: _prompt, log: _log, steps: _steps, ...slimTask } = makeTask({ id: "FN-8779-loading" });
     vi.mocked(fetchTaskDetail).mockReset();
     vi.mocked(fetchTaskDetail).mockImplementationOnce(() => new Promise(() => {}));
+    /*
+    FNXC:TaskActivityFeedFreshness 2026-08-26-12:20:
+    An empty Feed now rescues itself whenever it is visible, not only when the operator switches to
+    it — a card opening straight onto Feed used to show "(no activity)" forever. The later renders in
+    this test therefore also request the detail, so the reset mock needs a default beyond its single
+    queued implementation. This test's subject is Feed layout, not request counts; nothing is relaxed.
+    */
+    vi.mocked(fetchTaskDetail).mockResolvedValue(makeTask({ id: "FN-8779-default", log: [] }) as never);
 
     const loading = renderModal({ task: slimTask as any, initialTab: "logs" });
     expect(await screen.findByRole("status")).toHaveTextContent("Loading activity…");
