@@ -2,6 +2,41 @@
 
 User-facing release notes aggregated across all packages. This file is auto-synced from each `packages/*/CHANGELOG.md` by `scripts/release.mjs` — do not edit by hand.
 
+## 0.77.0-beta.10
+
+### Highlights
+
+- Task detail splits into Plan, dependencies, attachments, details and debug tabs
+- Plan tab opens with a plain-language summary of what the task delivers
+- Manual column-move controls removed from the board and task detail
+- Docker image now ships Google Chrome, so container browser automation works
+- Skills, automations and routines now list per project instead of coming up empty
+
+### Breaking
+
+- Dashboard controls that manually moved tasks between workflow columns are gone; Replan All now rebuilds the spec instead.
+- Task detail tabs are renamed and re-homed: Plan keeps steps and PROMPT.md, while dependencies, attachments, details and debug get their own tabs. The original prompt section and the retries deep link now land on details.
+
+### New
+
+- Plan now leads with a "What This Delivers" summary so you can confirm a task's intent at a glance.
+- Task Chat merges model selection and thinking level into a single Brain popover.
+- New Flexoki theme: warm inky dark, cream paper light.
+- Task detail can explain why a task is blocked by a file-scope overlap with another task.
+
+### Fixed
+
+- The Docker image installs Google Chrome, so the agent-browser plugin and the Chrome DevTools MCP server work in a container instead of failing every call. Chrome's sandbox still needs unprivileged user namespaces, so pass `--no-sandbox` or run with `--security-opt seccomp=unconfined`.
+- Skills discovery resolves project-local roots per request, so each project shows its own installed skills and the catalog stops offering duplicate installs.
+- Automations and Routines honor project scope instead of returning an empty list.
+- Workspace tasks no longer stall on uncommitted edits sitting in a shared repo checkout; only a task-attributed commit blocks completion, and uncommitted entries are recorded as a warning.
+- Multi-repository Code Review fixes are routed back to the repository that actually failed.
+- Agents can read secret values returned by `fn_secret_get`.
+- Popped-out chats open on the thread you asked for, and stacked floating windows stay visibly separated.
+- Selecting text on the board no longer scrolls Kanban columns out from under you.
+- The New Task Start button appears whenever quick entry would allow a start.
+- Reasoning bodies show alongside titles for OpenAI Responses models.
+
 ## 0.77.0-beta.9
 
 ### Highlights

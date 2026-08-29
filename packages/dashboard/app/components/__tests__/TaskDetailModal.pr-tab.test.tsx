@@ -24,7 +24,6 @@ describe("TaskDetailModal Pull Request tab", () => {
       <TaskDetailModal
         task={makeTask({ column: "todo" })}
         onClose={noop}
-        onMoveTask={noopMove}
         onDeleteTask={noopDelete}
         onMergeTask={noopMerge}
         onOpenDetail={noopOpenDetail}
@@ -38,7 +37,6 @@ describe("TaskDetailModal Pull Request tab", () => {
       <TaskDetailModal
         task={makeTask({ column: "in-review" })}
         onClose={noop}
-        onMoveTask={noopMove}
         onDeleteTask={noopDelete}
         onMergeTask={noopMerge}
         onOpenDetail={noopOpenDetail}
@@ -67,7 +65,6 @@ describe("TaskDetailModal Pull Request tab", () => {
       <TaskDetailModal
         task={makeTask({ column: "in-review", inReviewStall })}
         onClose={noop}
-        onMoveTask={noopMove}
         onDeleteTask={noopDelete}
         onMergeTask={noopMerge}
         onOpenDetail={noopOpenDetail}

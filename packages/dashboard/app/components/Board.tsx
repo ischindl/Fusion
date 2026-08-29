@@ -235,6 +235,11 @@ export function Board({ tasks, projectId, maxConcurrent, effectiveMaxConcurrent 
   remains native until horizontal intent is proven. A real pan captures and consumes its compatibility
   click; stationary card bodies/text retain their configured detail route, while controls, editing,
   the skeleton, and mobile snap ownership remain unchanged.
+
+  FNXC:BoardTextSelection 2026-08-27-10:06:
+  FN-194 makes selection suppression CSS-owned by the shared `.board` class before this 4px-intent
+  hook can capture a drag. Keep the class name and pan wiring unchanged so the intentional pan remains
+  the sole pointer-driven horizontal scroll path while editable descendants opt back in through Board.css.
   */
   const { isPanning: isBoardMousePanning, ...boardMousePanBindings } = useBoardMousePan(boardElement, viewportMode !== "mobile");
   const boardClassName = `board board-workflow-columns${isBoardMousePanning ? " is-mouse-panning" : ""}`;
@@ -617,7 +622,7 @@ export function Board({ tasks, projectId, maxConcurrent, effectiveMaxConcurrent 
     for (const workflow of boardWorkflows?.workflows ?? []) {
       map.set(workflow.id, workflow.columns
         .filter((column) => !column.flags.hiddenFromBoard)
-        .map((column) => ({ id: column.id, label: column.name, flags: column.flags, ...(column.moveTargets ? { moveTargets: column.moveTargets } : {}) })));
+        .map((column) => ({ id: column.id, label: column.name, flags: column.flags })));
     }
     return map;
   }, [boardWorkflows]);

@@ -1173,6 +1173,12 @@ export default interface Resources {
       "requestSingular": "request",
       "requests": "Approval requests"
     },
+    "artifactImageViewer": {
+      "close": "Close artifact preview",
+      "loading": "Loading image artifact…",
+      "openTask": "Open task",
+      "retry": "Retry"
+    },
     "auth": {
       "clearAndRetry": "Clear token and retry",
       "pasteToken": "Paste token",
@@ -1517,7 +1523,6 @@ export default interface Resources {
       "autoMerge": "Auto-merge",
       "autoMergeDisabled": "Auto-merge disabled",
       "autoMergeEnabled": "Auto-merge enabled",
-      "cancelMove": "Cancel Move",
       "collapseArchivedLabel": "Collapse archived tasks",
       "collapseArchivedTitle": "Collapse archived tasks",
       "expandArchivedLabel": "Expand archived tasks",
@@ -1526,41 +1531,28 @@ export default interface Resources {
       "keepProgress": "Keep Progress",
       "loadMore_one": "Load {{count}} more ({{remaining}} remaining)",
       "loadMore_other": "Load {{count}} more ({{remaining}} remaining)",
-      "moveAllToTodo": "Move All to Todo",
-      "moveAllToTodoMessage_one": "Move all {{count}} {{columnLabel}} task{{plural}} to Todo?",
-      "moveAllToTodoMessage_other": "Move all {{count}} {{columnLabel}} task{{plural}} to Todo?",
-      "moveAllToTodoTitle": "Move All to Todo",
-      "movePartialFailure": "Moved {{moved}} of {{total}} tasks; {{failed}} failed",
-      "moveToTodoHint_one": "Move {{count}} task{{plural}} to Todo",
-      "moveToTodoHint_other": "Move {{count}} task{{plural}} to Todo",
-      "moveToTodoPartialFailure": "Moved {{moved}} of {{total}} tasks to Todo; {{failed}} failed",
-      "movedToPlanning_one": "Moved {{count}} task{{plural}} to planning for replanning",
-      "movedToPlanning_other": "Moved {{count}} task{{plural}} to planning for replanning",
-      "movedToTodo_one": "Moved {{count}} task{{plural}} to Todo",
-      "movedToTodo_other": "Moved {{count}} task{{plural}} to Todo",
       "newTask": "New Task",
       "noManuallyPausableTasks": "No manually pausable tasks",
       "noTasks": "No tasks",
       "noTasksInColumn": "No tasks in this column",
       "pauseHint_one": "Pause {{count}} active unassigned task{{plural}}",
       "pauseHint_other": "Pause {{count}} active unassigned task{{plural}}",
-      "preserveProgressMessage": "This task has completed steps. Keep progress before moving?",
-      "preserveProgressMoveTodoMessage": "Some tasks have completed steps. Keep progress before moving to Todo?",
       "preserveProgressTitle": "Preserve Progress?",
       "promoteUnplannedCancel": "Keep Waiting",
       "promoteUnplannedConfirm": "Start Anyway",
       "promoteUnplannedMessage": "{{taskId}} is still waiting on planning or plan review. Promoting now starts execution with the current plan and cancels the pending replan.",
       "promoteUnplannedTitle": "Start execution anyway?",
       "replanAll": "Replan All",
-      "replanAllHint_one": "Move {{count}} task{{plural}} to Planning",
-      "replanAllHint_other": "Move {{count}} task{{plural}} to Planning",
-      "replanAllMessage_one": "Move all {{count}} todo task{{plural}} back to planning to be replanned?",
-      "replanAllMessage_other": "Move all {{count}} todo task{{plural}} back to planning to be replanned?",
+      "replanAllHint_one": "Replan {{count}} task{{plural}} from its original description",
+      "replanAllHint_other": "Replan {{count}} task{{plural}} from its original description",
+      "replanAllMessage_one": "Replan {{count}} task{{plural}} from its original description? Its current plan will be discarded.",
+      "replanAllMessage_other": "Replan {{count}} task{{plural}} from its original description? Its current plan will be discarded.",
       "replanAllTitle": "Replan All Tasks",
+      "replanPartialFailure": "Replanned {{replanned}} of {{total}} tasks; {{failed}} failed",
+      "replannedTasks_one": "Replanned {{count}} task{{plural}}",
+      "replannedTasks_other": "Replanned {{count}} task{{plural}}",
       "resetProgress": "Reset Progress",
       "resetProgressConfirm": "Reset Progress",
-      "resetProgressMessage": "Reset all step progress before moving this task?",
-      "resetProgressMoveTodoMessage": "Reset step progress for tasks before moving to Todo?",
       "resetProgressTitle": "Reset Progress?",
       "sortArrivalDesc": "Arrival in this column — Completion date (newest first)",
       "sortArrivalDescHint": "Show the newest arrivals in this column first",
@@ -6443,6 +6435,7 @@ export default interface Resources {
         "startupModelSync": "Startup Model Sync",
         "syncOpenRouterModelListAtStartup": " Sync OpenRouter model list at startup ",
         "syncOpencodeGoModelListAtStartup": " Sync opencode-go model list at startup ",
+        "syncOrcaRouterModelListAtStartup": " Sync OrcaRouter model list at startup ",
         "text": "text",
         "thinkingEffort": "Thinking Effort",
         "throughput": "throughput",
@@ -6450,6 +6443,7 @@ export default interface Resources {
         "useDefault": "Use default",
         "usedAutomaticallyIfThePrimaryDefaultModelHits": "Used automatically if the primary default model hits a retryable provider error like rate limiting or overload. No default — unset.",
         "whenEnabledStartupFetchesTheLatestAvailableModels": " When enabled, startup fetches the latest available models from the OpenRouter API so model pickers always include the newest catalog. Default: enabled. ",
+        "whenEnabledStartupFetchesTheLatestOrcaRouterModels": " When enabled, startup fetches the latest available models from the OrcaRouter API so model pickers include the OrcaRouter catalog. Default: enabled. ",
         "whenEnabledStartupRefreshesModelsThroughTheLocal": " When enabled, startup refreshes models through the local "
       },
       "header": {
@@ -8060,6 +8054,13 @@ export default interface Resources {
         "terminalHint": "Rebase or re-push the branch, dismiss a finding with justification, or land manually.",
         "title": "AI merge review reconciliation"
       },
+      "aiMergeReview": {
+        "approvedWithPending": "Approved — {{count}} prior finding(s) unconfirmed",
+        "candidate": "Candidate:",
+        "dismissFinding": "Dismiss this finding",
+        "terminalGuidance": "Rebase or re-push the branch, dismiss a finding with justification, or land manually.",
+        "title": "AI merge review reconciliation"
+      },
       "attachments": {
         "attachBtn": "Attach Screenshot",
         "attached": "Screenshot attached",
@@ -8115,6 +8116,9 @@ export default interface Resources {
         "totalTokens": "Total tokens",
         "unknownModel": "(unknown)"
       },
+      "debug": {
+        "none": "No debug details available."
+      },
       "delete": {
         "actionClosed": "closed",
         "actionDeleted": "deleted",
@@ -8155,6 +8159,13 @@ export default interface Resources {
         "noAvailableTasks": "No available tasks",
         "none": "(no dependencies)",
         "overlapBlocker": "File scope overlap blocker:",
+        "overlapFiles": {
+          "error": "Could not load overlapping files.",
+          "loading": "Loading overlapping files…",
+          "matches": "matches {{path}}",
+          "noScope": "The blocker declares no file scope.",
+          "none": "No overlapping files found."
+        },
         "removeTitle": "Remove dependency {{id}}",
         "searchPlaceholder": "Search tasks…",
         "stale": "(stale)"
@@ -8300,19 +8311,6 @@ export default interface Resources {
         "message": "Merge {{id}} into the current branch?",
         "noBranchToMerge": "no branch to merge",
         "title": "Merge Task"
-      },
-      "move": {
-        "backTo": "Back to {{column}}",
-        "backToInProgress": "Back to In Progress",
-        "cancelMove": "Cancel Move",
-        "keepProgress": "Keep Progress",
-        "moveTo": "Move to {{column}}",
-        "movedTo": "Moved to {{column}}",
-        "preserveProgressMessage": "This task has completed steps. Keep progress before moving?",
-        "preserveProgressTitle": "Preserve Progress?",
-        "resetProgress": "Reset Progress",
-        "resetProgressMessage": "Reset all step progress before moving this task?",
-        "resetProgressTitle": "Reset Progress?"
       },
       "nearDuplicate": {
         "actions": "This task continues normally. Archive it if the work is already covered, or clear this flag once you have read it.",
@@ -8558,11 +8556,15 @@ export default interface Resources {
         "workflowResults": "Workflow results"
       },
       "tabs": {
+        "attachments": "Attachments",
         "changes": "Changes",
         "chat": "Chat",
         "comments": "Comments",
         "cost": "Cost",
+        "debug": "Debug",
         "definition": "Definition",
+        "dependencies": "Dependencies",
+        "details": "Details",
         "documents": "Artifacts",
         "logs": "Logs",
         "model": "Model",
@@ -8895,7 +8897,6 @@ export default interface Resources {
       "descriptionPlaceholder": "Task description",
       "descriptionRefined": "Description refined with AI",
       "dismissDuplicateFlag": "Mark the duplicate flag for {{id}} as read",
-      "doneNoMerge": "Done (no merge)",
       "duplicateCheckFailed": "Duplicate check failed; creating task anyway.",
       "duplicateDismissFailed": "Failed to clear the duplicate flag for {{taskId}}: {{error}}",
       "duplicateDismissed": "Duplicate flag cleared for {{taskId}}",

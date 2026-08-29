@@ -76,6 +76,10 @@ describe("ThinkingTrace", () => {
   it("keeps every populated title expanded and isolated until its own section is collapsed", () => {
     render(<ThinkingTrace text={trace} />);
     expect(sections()).toHaveLength(4);
+    const renderedBodies = sections().map((section) => section.textContent).join("\n");
+    expect(renderedBodies).toContain("The Docker image needs development dependencies for test execution.");
+    expect(renderedBodies).toContain("Deployment commits should be split by independently reviewable behavior.");
+    expect(renderedBodies).toContain("The README change belongs in its own reviewed update.");
     const deployment = sections().find((section) => section.textContent?.includes("Planning deployment commit structure"))!;
     expect(deployment.textContent).toContain("Deployment commits should be split by independently reviewable behavior.");
     fireEvent.click(within(deployment).getByText("Planning deployment commit structure"));

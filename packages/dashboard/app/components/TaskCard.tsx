@@ -74,7 +74,7 @@ import { useColumnLabel } from "../i18n/labels";
 import { formatCompactLifecycleDate, useLocaleFormat } from "../i18n/format";
 import { WorkspaceWorktreesSummary, isWorkspaceTask } from "./WorkspaceWorktreesSummary";
 import { WorkflowIcon } from "./WorkflowIcon";
-import { TaskContextMenu, buildTaskActionMenuModel, buildTaskMoveMenuItems, getTaskPrAutomationLabel, type TaskContextMenuColumnFlags, type TaskContextMenuColumnMetadata, type TaskMenuItemDescriptor } from "./TaskContextMenu";
+import { TaskContextMenu, buildTaskActionMenuModel, getTaskPrAutomationLabel, type TaskContextMenuColumnFlags, type TaskContextMenuColumnMetadata, type TaskMenuItemDescriptor } from "./TaskContextMenu";
 import { formatCost, hasTaskCost, taskTotalCost } from "../utils/taskTokenCost";
 import { getPriorityColorVar, getPriorityIcon, getPriorityLabel } from "../utils/priorityIndicator";
 import { getTaskTitleDisplay } from "../utils/taskTitleDisplay";
@@ -2673,73 +2673,6 @@ function TaskCardComponent({
     }
   }, [addToast, confirm, projectId, task.id, t]);
 
-  const handleTaskActionMove = useCallback(async (column: ColumnId) => {
-    if (!onMoveTask) return;
-    try {
-      const hasStepProgress = task.steps.some((step) => step.status !== "pending");
-      /*
-      FNXC:WorkflowResolvedColumns 2026-07-29-00:00 (U12 — R8 drift conversion):
-      The TARGET column's role, not this card's. My first conversion of this site read the
-      card's own column and was WRONG: the original `(column === "todo" || column ===
-      "triage")` tests the MOVE DESTINATION — moving a card BACK into a pre-implementation
-      lane is what risks discarding step progress. The regression test for this
-      (`confirms preserving progress before moving`) moves in-progress -> todo and caught
-      it immediately, which is the whole reason each site is converted red-green rather
-      than by pattern-matching the comparison.
-
-      Falls back to the legacy ids when the destination's flags are unavailable, matching
-      the single fallback documented at the role helpers above.
-      */
-      const targetFlags = taskMoveColumns?.find((candidate) => candidate.id === column)?.flags;
-      /*
-      FNXC:WorkflowLifecycleColumns 2026-07-29-23:40 DELIBERATE-LITERAL: the fallback arm only. Guessing "not
-      pre-implementation" here skips the preserve-progress PROMPT, and losing completed steps is
-      unrecoverable — the safe degraded answer is the legacy one. Reason in full above.
-      */
-      const targetIsPreImplementation = targetFlags
-        ? targetFlags.intake === true || targetFlags.hold === true
-        : column === "todo" || column === "triage";
-      const shouldPrompt = targetIsPreImplementation && hasStepProgress;
-      let moveOptions: { preserveProgress?: boolean } | undefined;
-
-      if (shouldPrompt) {
-        const keepProgress = await confirm({
-          title: t("taskDetail.move.preserveProgressTitle", "Preserve Progress?"),
-          message: t("taskDetail.move.preserveProgressMessage", "This task has completed steps. Keep progress before moving?"),
-          confirmLabel: t("taskDetail.move.keepProgress", "Keep Progress"),
-          cancelLabel: t("taskDetail.move.resetProgress", "Reset Progress"),
-        });
-
-        if (keepProgress) {
-          moveOptions = { preserveProgress: true };
-        } else {
-          const resetProgress = await confirm({
-            title: t("taskDetail.move.resetProgressTitle", "Reset Progress?"),
-            message: t("taskDetail.move.resetProgressMessage", "Reset all step progress before moving this task?"),
-            confirmLabel: t("taskDetail.move.resetProgress", "Reset Progress"),
-            cancelLabel: t("taskDetail.move.cancelMove", "Cancel Move"),
-            danger: true,
-          });
-          if (!resetProgress) return;
-        }
-      }
-
-      await onMoveTask(task.id, column, moveOptions);
-      addToast(t("taskDetail.move.movedTo", "Moved to {{column}}", { column: columnLabel(column) }), "success");
-    } catch (err) {
-      addToast(getErrorMessage(err), "error");
-    }
-  /*
-  FNXC:WorkflowResolvedColumns 2026-07-29-00:00 (PR #2566 review — greptile):
-  `taskMoveColumns` MUST be a dependency. The prompt now resolves the target column's
-  traits from it, so omitting it pins the callback to whatever metadata existed at first
-  render: once the board-workflows payload arrives or changes, a move into a custom
-  intake/hold lane would skip the preserve-progress confirmation entirely (silently
-  resetting work), while stale traits could prompt for a lane that is no longer
-  pre-implementation. I added the lookup and missed the dep.
-  */
-  }, [addToast, columnLabel, confirm, onMoveTask, task.id, task.steps, t, taskMoveColumns]);
-
   const handleTaskActionCheckPrStatus = useCallback(async () => {
     try {
       await refreshPrStatus(task.id, projectId);
@@ -2777,16 +2710,14 @@ function TaskCardComponent({
       addToast(t("taskDetail.updateFailed", "Failed to update {{id}}: {{error}}", { id: task.id, error: getErrorMessage(err) }), "error");
     }
   }, [addToast, onUpdateTask, task.id, t]);
-  const taskActionColumnLabel = useCallback((column: ColumnId) => {
-    return taskMoveColumns?.find((candidate) => candidate.id === column)?.label ?? columnLabel(column);
-  }, [columnLabel, taskMoveColumns]);
+  const taskColumnLabel = useCallback((column: ColumnId) => (
+    taskMoveColumns?.find((candidate) => candidate.id === column)?.label ?? columnLabel(column)
+  ), [columnLabel, taskMoveColumns]);
 
   const taskActionMenuModel = useMemo(() => buildTaskActionMenuModel({
     task,
     t,
-    columnLabel: taskActionColumnLabel,
     currentColumnFlags: taskColumnFlags,
-    workflowMoveColumns: taskMoveColumns,
     canRetryTask,
     hasDuplicateHandler: Boolean(onDuplicateTask),
     hasRetryHandler: Boolean(onRetryTask),
@@ -2810,9 +2741,7 @@ function TaskCardComponent({
   }), [
     task,
     t,
-    taskActionColumnLabel,
     taskColumnFlags,
-    taskMoveColumns,
     canRetryTask,
     onDuplicateTask,
     onRetryTask,
@@ -2846,7 +2775,7 @@ function TaskCardComponent({
     task.prInfo,
   ]);
   const contextMenuActions = useMemo<TaskMenuItemDescriptor[]>(() => {
-    if (!onDeleteTask && !onArchiveTask && !onUnarchiveTask && !onRevertTask && !onDuplicateTask && !onRetryTask && !onResetTask && !onPauseTask && !onUnpauseTask && !onMergeTask && !onMoveTask && !onPlanningMode && !onOpenRefine && !onUpdateTask) {
+    if (!onDeleteTask && !onArchiveTask && !onUnarchiveTask && !onRevertTask && !onDuplicateTask && !onRetryTask && !onResetTask && !onPauseTask && !onUnpauseTask && !onMergeTask && !onPlanningMode && !onOpenRefine && !onUpdateTask) {
       return [];
     }
     const actions: TaskMenuItemDescriptor[] = [...taskActionMenuModel.actions];
@@ -2874,45 +2803,8 @@ function TaskCardComponent({
     if (taskActionMenuModel.reviewAction) {
       actions.push({ id: taskActionMenuModel.reviewAction.id, label: taskActionMenuModel.reviewAction.label, disabled: taskActionMenuModel.reviewAction.disabled, onSelect: taskActionMenuModel.reviewAction.onSelect });
     }
-    if (onMoveTask) {
-      const moveTransitions = [...taskActionMenuModel.moveTransitions];
-      /*
-      FNXC:BoardCardActions 2026-07-16-00:00 (FN-8149):
-      The retired in-review Move dropdown offered Done (no merge) and Triage in addition to the shared menu model's Todo/In Progress defaults. Fold those targets into this TaskCard-only menu so card consolidation retains every move capability without changing ListView or TaskDetail menus.
-      */
-      /*
-      FNXC:BoardCardActions 2026-08-18-06:18 (FN-005):
-      Supplemental in-review targets are named by legacy id so card menus retain
-      Done (no merge) and legacy workflow parity. The default workflow no longer
-      declares `triage`; its `todo` column is labelled Planning. Without filtering,
-      COLUMN_LABELS.triage also reads as Planning and duplicates the declared todo
-      target. Only offer a supplemental target when loaded workflow metadata declares
-      a visible column; retain both legacy targets while metadata is unavailable.
-      */
-      if (isReviewColumn) {
-        for (const column of ["done", "triage"] as const) {
-          const workflowColumn = taskMoveColumns?.find((candidate) => candidate.id === column);
-          if (taskMoveColumns && (!workflowColumn || workflowColumn.flags?.hiddenFromBoard)) continue;
-          if (moveTransitions.some((transition) => transition.column === column)) continue;
-          moveTransitions.push({
-            column,
-            /* DELIBERATE-LITERAL — `column` is the loop variable over the literal
-               `["done", "triage"] as const` two lines up, not a board column being classified. */
-            label: column === "done"
-              ? t("tasks.doneNoMerge", "Done (no merge)")
-              : t("taskDetail.move.moveTo", "Move to {{column}}", { column: taskActionColumnLabel(column) }),
-            primaryLabel: t("taskDetail.move.moveTo", "Move to {{column}}", { column: taskActionColumnLabel(column) }),
-          });
-        }
-      }
-      actions.push(...buildTaskMoveMenuItems(
-        moveTransitions,
-        handleTaskActionMove,
-        t("taskDetail.move.moveToParent", "Move to"),
-      ));
-    }
     return actions.filter((action) => "items" in action || action.tone === "note" || action.disabled === true || Boolean(action.onSelect));
-  }, [handleTaskActionArchive, handleTaskActionMove, handleTaskActionRevert, handleTaskActionUnarchive, isRevertable, onArchiveTask, onDeleteTask, onDuplicateTask, onMergeTask, onMoveTask, onPlanningMode, onOpenRefine, onPauseTask, onResetTask, onRetryTask, onRevertTask, onUnarchiveTask, onUnpauseTask, onUpdateTask, t, task.column, taskActionColumnLabel, taskActionMenuModel.actions, taskActionMenuModel.moveTransitions, taskActionMenuModel.reviewAction, taskMoveColumns]);
+  }, [handleTaskActionArchive, handleTaskActionRevert, handleTaskActionUnarchive, isRevertable, onArchiveTask, onDeleteTask, onDuplicateTask, onMergeTask, onPlanningMode, onOpenRefine, onPauseTask, onResetTask, onRetryTask, onRevertTask, onUnarchiveTask, onUnpauseTask, onUpdateTask, t, task.column, taskActionMenuModel.actions, taskActionMenuModel.reviewAction]);
   const hasContextMenuActions = contextMenuActions.length > 0;
 
   const closeContextMenu = useCallback(() => {
@@ -3106,7 +2998,7 @@ function TaskCardComponent({
     } finally {
       setIsStarting(false);
     }
-  }, [addToast, isStarting, onMoveTask, startTargetColumn, t, task.id]);
+  }, [addToast, isStarting, startTargetColumn, t, task.id]);
 
   const handleAddressPrFeedbackClick = useCallback(async (e: React.MouseEvent<HTMLButtonElement>) => {
     e.stopPropagation();
@@ -3440,7 +3332,7 @@ function TaskCardComponent({
     && !showQueuedToPlanBadge
     ? getTaskWipLifecycleBadgeLabel(visualStatus, t, {
       isWipColumn,
-      lifecycleLabel: taskActionColumnLabel(task.column),
+      lifecycleLabel: taskColumnLabel(task.column),
     })
     : null;
   const showStatusBadge = !isPaused
@@ -3511,7 +3403,6 @@ function TaskCardComponent({
     || Boolean(isCompleteColumn && onArchiveTask)
     || Boolean(isArchivedColumn && onUnarchiveTask)
     || Boolean((isCompleteColumn || isArchivedColumn) && onRevertTask && isRevertable)
-    || Boolean(isWipColumn && onMoveTask)
     || Boolean(task.size)
     || hasContextMenuActions;
 

@@ -40,7 +40,6 @@ function renderModal(props: Partial<ComponentProps<typeof TaskDetailModal>> = {}
         ],
       })}
       onClose={noop}
-      onMoveTask={noopMove}
       onDeleteTask={noopDelete}
       onMergeTask={noopMerge}
       onOpenDetail={noopOpenDetail}
@@ -239,7 +238,6 @@ describe("TaskDetailModal Activity and planner Chat tab integration", () => {
         task={makeTask({ id: "FN-8303-embedded", column: "in-progress" as any, log: [], steeringComments: [], plannerOversightLevel: "off" })}
         embedded
         onRequestClose={noop}
-        onMoveTask={noopMove}
         onDeleteTask={noopDelete}
         onMergeTask={noopMerge}
         onOpenDetail={noopOpenDetail}
@@ -412,7 +410,6 @@ describe("TaskDetailModal Activity and planner Chat tab integration", () => {
         <TaskDetailModal
           task={makeTask({ id: "FN-7485-NEXT", column: "in-progress" as any, log: [], steeringComments: [] })}
           onClose={noop}
-          onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
           onOpenDetail={noopOpenDetail}
@@ -573,7 +570,6 @@ describe("TaskDetailModal Activity and planner Chat tab integration", () => {
             task={makeTask({ id: "FN-7536", column: "in-progress" as any, log: [], steeringComments: [] })}
             embedded
             onRequestClose={noop}
-            onMoveTask={noopMove}
             onDeleteTask={noopDelete}
             onMergeTask={noopMerge}
             onOpenDetail={noopOpenDetail}
@@ -643,7 +639,6 @@ describe("TaskDetailModal Activity and planner Chat tab integration", () => {
             task={makeTask({ id: "FN-7493", column: "in-progress" as any, log: [], steeringComments: [] })}
             embedded
             onRequestClose={noop}
-            onMoveTask={noopMove}
             onDeleteTask={noopDelete}
             onMergeTask={noopMerge}
             onOpenDetail={noopOpenDetail}
@@ -750,7 +745,6 @@ describe("TaskDetailModal Activity and planner Chat tab integration", () => {
       <TaskDetailModal
         task={makeTask({ id: "FN-7315", column: "in-progress" as any, log: [], steeringComments: [] })}
         onClose={noop}
-        onMoveTask={noopMove}
         onDeleteTask={noopDelete}
         onMergeTask={noopMerge}
         onOpenDetail={noopOpenDetail}
@@ -768,7 +762,6 @@ describe("TaskDetailModal Activity and planner Chat tab integration", () => {
       <TaskDetailModal
         task={makeTask({ id: "FN-7315", column: "in-progress" as any, log: [{ timestamp: "2026-06-30T20:01:00.000Z", action: "Posted update" }], steeringComments: [] })}
         onClose={noop}
-        onMoveTask={noopMove}
         onDeleteTask={noopDelete}
         onMergeTask={noopMerge}
         onOpenDetail={noopOpenDetail}
@@ -797,7 +790,6 @@ describe("TaskDetailModal Activity and planner Chat tab integration", () => {
           task={makeTask({ id: "FN-7315-DONE", column: "done" as any, log: [], steeringComments: [], plannerOversightLevel: "off" })}
           embedded
           onRequestClose={noop}
-          onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
           onOpenDetail={noopOpenDetail}

@@ -50,6 +50,34 @@ describe("PoppedOutChatWindows cascade", () => {
     expect(second.style.top).not.toBe(first.style.top);
   });
 
+  it("separates near-viewport chat windows without persisting their shrunken presentation geometry", () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1440 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 900 });
+    const baseGeometry = {
+      size: { width: 1408, height: 868 },
+      position: { x: 16, y: 16 },
+    };
+    localStorage.setItem("kb-dashboard-chat-floating-window", JSON.stringify(baseGeometry));
+
+    render(
+      <PoppedOutChatWindows
+        entries={[entry("first", 0), entry("second", 1)]}
+        projectId="project-a"
+        addToast={vi.fn()}
+        onClose={vi.fn()}
+        onOpenSessionInNewWindow={vi.fn()}
+      />,
+    );
+
+    const first = screen.getByTestId("floating-window-chat-window-project-a-first");
+    const second = screen.getByTestId("floating-window-chat-window-project-a-second");
+    expect(first.style.left).not.toBe(second.style.left);
+    expect(first.style.top).not.toBe(second.style.top);
+    expect(first.style.width).toBe(`${1408 - FLOATING_WINDOW_CASCADE_STEP_PX}px`);
+    expect(second.style.width).toBe(`${1408 - FLOATING_WINDOW_CASCADE_STEP_PX * 2}px`);
+    expect(JSON.parse(localStorage.getItem("kb-dashboard-chat-floating-window") ?? "{}")).toEqual(baseGeometry);
+  });
+
   it("filters another project while preserving the surviving slot offset", () => {
     localStorage.setItem("kb-dashboard-chat-floating-window", JSON.stringify({
       size: { width: 900, height: 620 }, position: { x: 120, y: 96 },

@@ -479,7 +479,7 @@ export function useChat(
   // Session state
   const [sessions, setSessions] = useState<ChatSessionInfo[]>(() => readCachedSessions(projectId));
   const [archivedSessions, setArchivedSessions] = useState<ChatSessionInfo[]>([]);
-  const [activeSession, setActiveSession] = useState<ChatSessionInfo | null>(null);
+  const [activeSession, setActiveSession] = useState<ChatSessionInfo | null>(() => initialSession ?? null);
   const [sessionsLoading, setSessionsLoading] = useState(() => readCachedSessions(projectId).length === 0);
   const [tags, setTags] = useState<ChatTag[]>([]);
   const [selectedTagId, setSelectedTagId] = useState<string | null>(null);
@@ -535,7 +535,7 @@ export function useChat(
 
   // Refs for SSE event handlers to access current state
   const sessionsRef = useRef(sessions);
-  const activeSessionRef = useRef(activeSession);
+  const activeSessionRef = useRef<ChatSessionInfo | null>(initialSession ?? null);
   const messagesRef = useRef(messages);
   const isStreamingRef = useRef(isStreaming);
   const pendingReplacementRef = useRef<{ sessionId: string; messageId: string } | null>(null);
@@ -653,6 +653,10 @@ export function useChat(
   // Restore active session from localStorage after initial load.
   // Uses refs to avoid circular dependency with selectSession and to avoid
   // re-selecting/resetting the thread on every sessions refresh.
+  /*
+  FNXC:ChatWindows 2026-08-27-09:09:
+  FN-193 gives a dedicated pop-out an authoritative initial session before the session-list request finishes. Seeded state paints that thread immediately, then this one-time restore still calls selectSession with the override so messages and the authoritative session snapshot load without waiting for the list.
+  */
   const selectSessionRef = useRef<(id: string, sessionOverride?: ChatSessionInfo) => void>(() => {
     /* noop - will be replaced after selectSession is defined */
   });
@@ -664,7 +668,7 @@ export function useChat(
   }, [projectId]);
 
   useEffect(() => {
-    if (sessionsLoading || hasRestoredActiveSessionRef.current || activeSessionRef.current) return;
+    if (hasRestoredActiveSessionRef.current) return;
 
     /*
     FNXC:ChatWindows 2026-08-21-18:24:
@@ -676,6 +680,8 @@ export function useChat(
       selectSessionRef.current(initialSession.id, initialSession);
       return;
     }
+
+    if (sessionsLoading || activeSessionRef.current) return;
 
     if (!persistActiveSession) {
       hasRestoredActiveSessionRef.current = true;

@@ -43,6 +43,25 @@ describe("ThinkingTrace production transcript surfaces", () => {
     expectTraceIsolation(disclosure);
   });
 
+  it("keeps detailed bodies in the mobile live-thinking pane", () => {
+    const previousWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 375 });
+    try {
+      const { container } = render(<StandardStreamingMessage streamingText="" streamingThinking={trace} />);
+      const disclosure = container.querySelector("details.chat-message-thinking") as HTMLDetailsElement;
+      fireEvent.click(disclosure.querySelector("summary")!);
+
+      const sections = disclosure.querySelectorAll<HTMLElement>("[data-testid='thinking-trace-section']");
+      expect(sections).toHaveLength(3);
+      expect(sections[0]).toHaveAttribute("open");
+      expect(sections[0]).toHaveTextContent("Docker tests need development dependencies.");
+      expect(sections[1]).toHaveTextContent("Deployment commits remain independently reviewable.");
+      expect(sections[2]).toHaveTextContent("README edits remain visible in their own section.");
+    } finally {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: previousWidth });
+    }
+  });
+
   it("renders the same isolated trace in agent logs in markdown and plain modes", () => {
     const entries = [{ taskId: "FN-155", timestamp: "2026-08-22T00:00:00.000Z", type: "thinking", text: trace }] as AgentLogEntry[];
     const { container, rerender } = render(<AgentLogViewer entries={entries} loading={false} renderMarkdown />);

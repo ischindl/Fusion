@@ -7,7 +7,7 @@ import {
   FLOATING_WINDOW_CASCADE_STEP_PX,
   FLOATING_WINDOW_GEOMETRY_CHANGE_EVENT,
   FloatingWindow,
-  resolveFloatingWindowCascadeOffset,
+  resolveFloatingWindowCascade,
 } from "../FloatingWindow";
 import { readAppFile } from "../../test/cssFixture";
 import { dragWithTouch, expectFloatingWindowStructure, resizeWithTouch } from "./floatingWindowMigration.test-helpers";
@@ -1075,40 +1075,113 @@ describe("FloatingWindow", () => {
     expect(JSON.parse(localStorage.getItem(key) ?? "{}")).toEqual(geometry);
   });
 
-  it("resolves cascade offsets without moving the canonical geometry", () => {
-    expect(resolveFloatingWindowCascadeOffset({ x: 100, y: 100 }, { width: 600, height: 400 }, 0)).toEqual({ x: 0, y: 0 });
-    expect(resolveFloatingWindowCascadeOffset({ x: 100, y: 100 }, { width: 600, height: 400 }, 2)).toEqual({
-      x: FLOATING_WINDOW_CASCADE_STEP_PX * 2,
-      y: FLOATING_WINDOW_CASCADE_STEP_PX * 2,
+  it("resolves cascade geometry without moving the canonical base", () => {
+    const minSize = { width: 360, height: 280 };
+    expect(resolveFloatingWindowCascade({ x: 100, y: 100 }, { width: 600, height: 400 }, minSize, 0)).toEqual({
+      offset: { x: 0, y: 0 },
+      size: { width: 600, height: 400 },
     });
-    expect(resolveFloatingWindowCascadeOffset({ x: 408, y: 192 }, { width: 600, height: 560 }, 1)).toEqual({
-      x: -FLOATING_WINDOW_CASCADE_STEP_PX,
-      y: -FLOATING_WINDOW_CASCADE_STEP_PX,
+    expect(resolveFloatingWindowCascade({ x: 100, y: 100 }, { width: 600, height: 400 }, minSize, 2)).toEqual({
+      offset: { x: FLOATING_WINDOW_CASCADE_STEP_PX * 2, y: FLOATING_WINDOW_CASCADE_STEP_PX * 2 },
+      size: { width: 600, height: 400 },
+    });
+    expect(resolveFloatingWindowCascade({ x: 408, y: 192 }, { width: 600, height: 560 }, minSize, 1)).toEqual({
+      offset: { x: -FLOATING_WINDOW_CASCADE_STEP_PX, y: -FLOATING_WINDOW_CASCADE_STEP_PX },
+      size: { width: 600, height: 560 },
     });
   });
 
-  it("cascades persisted shared geometry while retaining its canonical base", () => {
+  it("cascades near-viewport shared geometry while retaining its canonical base", () => {
+    const width = Object.getOwnPropertyDescriptor(window, "innerWidth");
+    const height = Object.getOwnPropertyDescriptor(window, "innerHeight");
     const key = "floating-window:cascade";
-    const baseGeometry = { size: { width: 600, height: 400 }, position: { x: 120, y: 96 } };
-    localStorage.setItem(key, JSON.stringify(baseGeometry));
+    const minSize = { width: 300, height: 420 };
+    const baseGeometry = { size: { width: 1408, height: 868 }, position: { x: 16, y: 16 } };
+    try {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 1440 });
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: 900 });
+      localStorage.setItem(key, JSON.stringify(baseGeometry));
 
-    const { unmount } = render(
-      <>
-        <FloatingWindow windowKey="cascade-base" title="Base" onClose={() => {}} persistGeometryKey={key}><div /></FloatingWindow>
-        <FloatingWindow windowKey="cascade-offset" title="Offset" onClose={() => {}} persistGeometryKey={key} cascadeOffsetIndex={1}><div /></FloatingWindow>
-      </>,
-    );
+      const { unmount } = render(
+        <>
+          <FloatingWindow windowKey="cascade-base" title="Base" onClose={() => {}} persistGeometryKey={key} minSize={minSize}><div /></FloatingWindow>
+          <FloatingWindow windowKey="cascade-offset" title="Offset" onClose={() => {}} persistGeometryKey={key} cascadeOffsetIndex={1} minSize={minSize}><div /></FloatingWindow>
+        </>,
+      );
 
-    expect(screen.getByTestId("floating-window-cascade-base").style.left).toBe("120px");
-    expect(screen.getByTestId("floating-window-cascade-base").style.top).toBe("96px");
-    expect(screen.getByTestId("floating-window-cascade-offset").style.left).toBe(`${120 + FLOATING_WINDOW_CASCADE_STEP_PX}px`);
-    expect(screen.getByTestId("floating-window-cascade-offset").style.top).toBe(`${96 + FLOATING_WINDOW_CASCADE_STEP_PX}px`);
-    expect(JSON.parse(localStorage.getItem(key) ?? "{}")).toEqual(baseGeometry);
-    unmount();
+      const base = screen.getByTestId("floating-window-cascade-base");
+      const offset = screen.getByTestId("floating-window-cascade-offset");
+      expect(base.style.left).toBe("16px");
+      expect(base.style.top).toBe("16px");
+      expect(base.style.width).toBe("1408px");
+      expect(base.style.height).toBe("868px");
+      expect(offset.style.left).toBe(`${16 + FLOATING_WINDOW_CASCADE_STEP_PX}px`);
+      expect(offset.style.top).toBe(`${16 + FLOATING_WINDOW_CASCADE_STEP_PX}px`);
+      expect(offset.style.width).toBe(`${1408 - FLOATING_WINDOW_CASCADE_STEP_PX}px`);
+      expect(offset.style.height).toBe(`${868 - FLOATING_WINDOW_CASCADE_STEP_PX}px`);
+      expect(JSON.parse(localStorage.getItem(key) ?? "{}")).toEqual(baseGeometry);
+      unmount();
 
-    render(<FloatingWindow windowKey="cascade-offset-remount" title="Offset" onClose={() => {}} persistGeometryKey={key} cascadeOffsetIndex={1}><div /></FloatingWindow>);
-    expect(screen.getByTestId("floating-window-cascade-offset-remount").style.left).toBe(`${120 + FLOATING_WINDOW_CASCADE_STEP_PX}px`);
-    expect(screen.getByTestId("floating-window-cascade-offset-remount").style.top).toBe(`${96 + FLOATING_WINDOW_CASCADE_STEP_PX}px`);
+      render(<FloatingWindow windowKey="cascade-offset-remount" title="Offset" onClose={() => {}} persistGeometryKey={key} cascadeOffsetIndex={1} minSize={minSize}><div /></FloatingWindow>);
+      const remount = screen.getByTestId("floating-window-cascade-offset-remount");
+      expect(remount.style.left).toBe(`${16 + FLOATING_WINDOW_CASCADE_STEP_PX}px`);
+      expect(remount.style.top).toBe(`${16 + FLOATING_WINDOW_CASCADE_STEP_PX}px`);
+      expect(remount.style.width).toBe(`${1408 - FLOATING_WINDOW_CASCADE_STEP_PX}px`);
+      expect(remount.style.height).toBe(`${868 - FLOATING_WINDOW_CASCADE_STEP_PX}px`);
+      expect(JSON.parse(localStorage.getItem(key) ?? "{}")).toEqual(baseGeometry);
+    } finally {
+      if (width) Object.defineProperty(window, "innerWidth", width);
+      if (height) Object.defineProperty(window, "innerHeight", height);
+    }
+  });
+
+  it("re-resolves a mounted window when its cascade index changes", () => {
+    const width = Object.getOwnPropertyDescriptor(window, "innerWidth");
+    const height = Object.getOwnPropertyDescriptor(window, "innerHeight");
+    const key = "floating-window:cascade-slot-change";
+    const baseGeometry = { size: { width: 1408, height: 868 }, position: { x: 16, y: 16 } };
+    const minSize = { width: 300, height: 420 };
+    try {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 1440 });
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: 900 });
+      localStorage.setItem(key, JSON.stringify(baseGeometry));
+      const { rerender } = render(<FloatingWindow windowKey="cascade-slot-change" title="Offset" onClose={() => {}} persistGeometryKey={key} cascadeOffsetIndex={1} minSize={minSize}><div /></FloatingWindow>);
+
+      const panel = screen.getByTestId("floating-window-cascade-slot-change");
+      expect(panel.style.left).toBe(`${16 + FLOATING_WINDOW_CASCADE_STEP_PX}px`);
+      expect(panel.style.width).toBe(`${1408 - FLOATING_WINDOW_CASCADE_STEP_PX}px`);
+
+      rerender(<FloatingWindow windowKey="cascade-slot-change" title="Offset" onClose={() => {}} persistGeometryKey={key} cascadeOffsetIndex={2} minSize={minSize}><div /></FloatingWindow>);
+      expect(panel.style.left).toBe(`${16 + FLOATING_WINDOW_CASCADE_STEP_PX * 2}px`);
+      expect(panel.style.width).toBe(`${1408 - FLOATING_WINDOW_CASCADE_STEP_PX * 2}px`);
+      expect(JSON.parse(localStorage.getItem(key) ?? "{}")).toEqual(baseGeometry);
+    } finally {
+      if (width) Object.defineProperty(window, "innerWidth", width);
+      if (height) Object.defineProperty(window, "innerHeight", height);
+    }
+  });
+
+  it("leaves callers without a cascade index on their exact persisted geometry", () => {
+    const width = Object.getOwnPropertyDescriptor(window, "innerWidth");
+    const height = Object.getOwnPropertyDescriptor(window, "innerHeight");
+    const key = "floating-window:no-cascade";
+    const geometry = { size: { width: 1408, height: 868 }, position: { x: 16, y: 16 } };
+    try {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 1440 });
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: 900 });
+      localStorage.setItem(key, JSON.stringify(geometry));
+      render(<FloatingWindow windowKey="no-cascade" title="No cascade" onClose={() => {}} persistGeometryKey={key} minSize={{ width: 300, height: 420 }}><div /></FloatingWindow>);
+
+      const panel = screen.getByTestId("floating-window-no-cascade");
+      expect(panel.style.left).toBe("16px");
+      expect(panel.style.top).toBe("16px");
+      expect(panel.style.width).toBe("1408px");
+      expect(panel.style.height).toBe("868px");
+      expect(JSON.parse(localStorage.getItem(key) ?? "{}")).toEqual(geometry);
+    } finally {
+      if (width) Object.defineProperty(window, "innerWidth", width);
+      if (height) Object.defineProperty(window, "innerHeight", height);
+    }
   });
 
   it("flips a cascade toward the viewport when its base is pinned at the far edge", () => {

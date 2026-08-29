@@ -250,14 +250,32 @@ describe("ChatView New Chat project default behavior", () => {
     expect(createSession).toHaveBeenCalledWith({ agentId: "__fn_agent__", modelProvider: "openai", modelId: "gpt-4o" });
   });
 
-  it.each([{ ctrlKey: true }, { metaKey: true }])("opens Ctrl/Cmd New Chat without selecting the host session", async (modifier) => {
-    const session = makeSession({ id: "new-window-session" });
-    const createSession = vi.fn().mockResolvedValue(session);
+  it.each([{ ctrlKey: true }, { metaKey: true }])("opens Ctrl/Cmd New Chat without changing the origin thread", async (modifier) => {
+    const originSession = makeSession({ id: "origin-session" });
+    const createdSession = makeSession({ id: "new-window-session" });
+    const createSession = vi.fn().mockResolvedValue(createdSession);
     const onOpenSessionInNewWindow = vi.fn();
     const selectSession = vi.fn();
-    mockUseChat.mockReturnValue(chatState({ createSession, selectSession }));
-    await renderWithAct(<ChatView projectId="project-a" addToast={vi.fn()} onOpenSessionInNewWindow={onOpenSessionInNewWindow} />);
+    mockUseChat.mockReturnValue(chatState({
+      activeSession: originSession,
+      sessions: [originSession],
+      createSession,
+      selectSession,
+    }));
+    await renderWithAct(
+      <ChatView
+        projectId="project-a"
+        addToast={vi.fn()}
+        floating
+        initialDirectSession={originSession}
+        initialDirectSessionNonce={1}
+        persistChatPreferences={false}
+        onOpenSessionInNewWindow={onOpenSessionInNewWindow}
+      />,
+    );
     await waitForSettings();
+    expect(document.querySelector(".chat-view")).toHaveClass("chat-view--detail");
+    expect(screen.getByTestId("chat-back-btn")).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("chat-new-btn"), modifier);
 
@@ -265,8 +283,17 @@ describe("ChatView New Chat project default behavior", () => {
       { agentId: "__fn_agent__", modelProvider: "openai", modelId: "gpt-4o" },
       { keepActiveSession: true },
     ));
-    expect(onOpenSessionInNewWindow).toHaveBeenCalledWith(session);
+    expect(onOpenSessionInNewWindow).toHaveBeenCalledWith(createdSession);
     expect(selectSession).not.toHaveBeenCalled();
+    expect(document.querySelector(".chat-view")).toHaveClass("chat-view--detail");
+    expect(screen.getByTestId("chat-back-btn")).toBeInTheDocument();
+
+    /* FNXC:ChatWindows 2026-08-27-09:23: Leaving the thread first makes an unintended setDetailOpen(true) observable without reaching into ChatView's private state. */
+    fireEvent.click(screen.getByTestId("chat-back-btn"));
+    expect(document.querySelector(".chat-view")).not.toHaveClass("chat-view--detail");
+    fireEvent.click(screen.getByTestId("chat-new-btn"), modifier);
+    await waitFor(() => expect(createSession).toHaveBeenCalledTimes(2));
+    expect(document.querySelector(".chat-view")).not.toHaveClass("chat-view--detail");
   });
 
   it("uses the same immediate creation path from the mobile host", async () => {

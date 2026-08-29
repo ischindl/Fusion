@@ -1025,7 +1025,7 @@ When the merge boundary cannot be proven, Fusion emits the terminal graph value 
 
 ### Workspace Code Review remediation
 
-Workspace Code Review carries repository-specific outcomes. A failed review is remediated from the failing repository's acquired worktree without persisting a singular workspace-root worktree. Repeated unchanged negative review input parks for operator approval; landing requires current approval evidence for every modified scoped repository. Scope changes clear both approval evidence and the remediation target atomically, while a current-scope APPROVE clears its matching target before graph completion.
+Workspace Code Review carries repository-specific outcomes. Structured findings are repository-qualified (including their identifiers and file paths), retained on the aggregate review result, and persisted on the workflow step result so named-remediation workflows can turn a REVISE into explicit fix work. A failed review is remediated from the failing repository's acquired worktree without persisting a singular workspace-root worktree. Repeated unchanged negative review input parks for operator approval; landing requires current approval evidence for every modified scoped repository. Scope changes clear both approval evidence and the remediation target atomically, while a current-scope APPROVE clears its matching target before graph completion.
 
 ### Workspace Code Review seal
 

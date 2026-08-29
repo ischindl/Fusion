@@ -1,5 +1,11 @@
 # @fusion/droid-cli
 
+## 0.11.62-beta.10
+
+### Patch Changes
+
+- @fusion-plugin-examples/droid-runtime@0.1.62-beta.10
+
 ## 0.11.62-beta.9
 
 ### Patch Changes

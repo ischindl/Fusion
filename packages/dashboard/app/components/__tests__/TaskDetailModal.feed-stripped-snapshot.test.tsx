@@ -42,7 +42,6 @@ function renderModal(props: Partial<ComponentProps<typeof TaskDetailModal>> = {}
     <TaskDetailModal
       task={makeTask({ id: "FN-FEED-1" })}
       onClose={noop}
-      onMoveTask={noopMove}
       onDeleteTask={noopDelete}
       onMergeTask={noopMerge}
       onOpenDetail={noopOpenDetail}

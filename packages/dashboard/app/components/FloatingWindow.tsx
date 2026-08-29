@@ -152,20 +152,76 @@ function clampPosition(position: FloatingWindowPosition, size: FloatingWindowSiz
   };
 }
 
-/** Resolve a clamped presentation offset while preserving the caller's canonical base geometry. */
-export function resolveFloatingWindowCascadeOffset(
+export interface FloatingWindowCascade {
+  offset: FloatingWindowPosition;
+  size: FloatingWindowSize;
+}
+
+interface FloatingWindowCascadeAxis {
+  offset: number;
+  size: number;
+}
+
+function resolveFloatingWindowCascadeAxis(
+  base: number,
+  size: number,
+  minSize: number,
+  viewportSize: number,
+  distance: number,
+): FloatingWindowCascadeAxis {
+  const maximumPosition = Math.max(VIEWPORT_PADDING, viewportSize - size - VIEWPORT_PADDING);
+  const forwardTravel = Math.max(0, Math.min(base + distance, maximumPosition) - base);
+  const backwardTravel = Math.max(0, base - Math.max(base - distance, VIEWPORT_PADDING));
+  const availableReduction = Math.max(0, size - minSize);
+
+  if (forwardTravel > 0) {
+    const reduction = Math.min(distance - forwardTravel, availableReduction);
+    return { offset: forwardTravel + reduction, size: size - reduction };
+  }
+
+  if (backwardTravel >= distance) {
+    return { offset: -distance, size };
+  }
+
+  const reduction = Math.min(distance, availableReduction);
+  if (reduction > 0) {
+    return { offset: reduction, size: size - reduction };
+  }
+
+  return { offset: -backwardTravel, size };
+}
+
+/*
+FNXC:FloatingWindow 2026-08-27-09:18:
+FN-193 requires stacked chat windows to remain visibly separated even when their shared base nearly fills the viewport. Preserve the existing forward-first and far-edge backward behavior, but shrink only the presented dimension when its requested forward travel is clamped; persistence restores the un-cascaded, un-shrunk base.
+*/
+export function resolveFloatingWindowCascade(
   base: FloatingWindowPosition,
   size: FloatingWindowSize,
+  minSize: FloatingWindowSize,
   cascadeIndex: number,
-): FloatingWindowPosition {
-  if (!Number.isFinite(cascadeIndex) || cascadeIndex <= 0) return { x: 0, y: 0 };
+): FloatingWindowCascade {
+  const unchanged = (): FloatingWindowCascade => ({ offset: { x: 0, y: 0 }, size });
+  if (
+    !Number.isFinite(cascadeIndex)
+    || cascadeIndex <= 0
+    || !Number.isFinite(base.x)
+    || !Number.isFinite(base.y)
+    || !Number.isFinite(size.width)
+    || !Number.isFinite(size.height)
+    || !Number.isFinite(minSize.width)
+    || !Number.isFinite(minSize.height)
+    || typeof window === "undefined"
+    || !Number.isFinite(window.innerWidth)
+    || !Number.isFinite(window.innerHeight)
+  ) return unchanged();
 
   const distance = cascadeIndex * FLOATING_WINDOW_CASCADE_STEP_PX;
-  const forward = clampPosition({ x: base.x + distance, y: base.y + distance }, size);
-  const backward = clampPosition({ x: base.x - distance, y: base.y - distance }, size);
+  const horizontal = resolveFloatingWindowCascadeAxis(base.x, size.width, minSize.width, window.innerWidth, distance);
+  const vertical = resolveFloatingWindowCascadeAxis(base.y, size.height, minSize.height, window.innerHeight, distance);
   return {
-    x: forward.x === base.x ? backward.x - base.x : forward.x - base.x,
-    y: forward.y === base.y ? backward.y - base.y : forward.y - base.y,
+    offset: { x: horizontal.offset, y: vertical.offset },
+    size: { width: horizontal.size, height: vertical.size },
   };
 }
 
@@ -268,6 +324,7 @@ export function FloatingWindow({
   const isTabletViewportMode = viewportMode === "tablet";
   const initialGeometry = useRef<{ size: FloatingWindowSize; position: FloatingWindowPosition } | null>(null);
   const cascadeOffsetRef = useRef<FloatingWindowPosition>({ x: 0, y: 0 });
+  const cascadeSizeReductionRef = useRef<FloatingWindowSize>({ width: 0, height: 0 });
   /*
   FNXC:ModalGeometryPersistence 2026-07-16-00:40:
   Opt-in sheet callers leave desktop geometry untouched at `max-width: 768px`. Most wide, short
@@ -279,13 +336,17 @@ export function FloatingWindow({
   );
 
   const applyCascadeOffset = (geometry: { size: FloatingWindowSize; position: FloatingWindowPosition }) => {
-    const offset = geometryPersistenceSuspended
-      ? { x: 0, y: 0 }
-      : resolveFloatingWindowCascadeOffset(geometry.position, geometry.size, cascadeOffsetIndex);
-    cascadeOffsetRef.current = offset;
+    const cascade = geometryPersistenceSuspended
+      ? { offset: { x: 0, y: 0 }, size: geometry.size }
+      : resolveFloatingWindowCascade(geometry.position, geometry.size, resolvedMinSize, cascadeOffsetIndex);
+    cascadeOffsetRef.current = cascade.offset;
+    cascadeSizeReductionRef.current = {
+      width: geometry.size.width - cascade.size.width,
+      height: geometry.size.height - cascade.size.height,
+    };
     return {
-      ...geometry,
-      position: { x: geometry.position.x + offset.x, y: geometry.position.y + offset.y },
+      size: cascade.size,
+      position: { x: geometry.position.x + cascade.offset.x, y: geometry.position.y + cascade.offset.y },
     };
   };
 
@@ -634,21 +695,28 @@ export function FloatingWindow({
   Persist the un-cascaded base rather than a stacked presentation position. Shared chat windows can
   then retain one stable geometry while each visible panel applies its own offset.
 
+  FNXC:FloatingWindow 2026-08-27-09:18:
+  FN-193 also re-expands a cascade-shrunk presentation size before saving. The shared desktop base must never progressively shrink just because several chat windows opened near a viewport edge.
+
   FNXC:ChatModal 2026-06-22-14:57:
   Quick Chat reopens should restore the last desktop floating-window size and position while still clamping onto the current viewport. Keep persistence generic and opt-in with persistGeometryKey so each caller controls whether geometry is shared or isolated.
   */
   useEffect(() => {
     if (hidden || !persistGeometryKey || typeof window === "undefined" || geometryPersistenceSuspended) return;
     try {
+      const canonicalSize = clampSize({
+        width: size.width + cascadeSizeReductionRef.current.width,
+        height: size.height + cascadeSizeReductionRef.current.height,
+      }, resolvedMinSize);
       const canonicalPosition = clampPosition({
         x: position.x - cascadeOffsetRef.current.x,
         y: position.y - cascadeOffsetRef.current.y,
-      }, size);
-      localStorage.setItem(persistGeometryKey, JSON.stringify({ size, position: canonicalPosition }));
+      }, canonicalSize);
+      localStorage.setItem(persistGeometryKey, JSON.stringify({ size: canonicalSize, position: canonicalPosition }));
     } catch {
       // Ignore storage failures; geometry persistence is a convenience only.
     }
-  }, [geometryPersistenceSuspended, hidden, persistGeometryKey, position, size]);
+  }, [geometryPersistenceSuspended, hidden, persistGeometryKey, position, resolvedMinSize, size]);
 
   /*
   FNXC:ModalTouchGeometry 2026-07-26-18:42:

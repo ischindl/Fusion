@@ -1525,7 +1525,6 @@
     "autoMerge": "Merge automático",
     "autoMergeDisabled": "Merge automático desativado",
     "autoMergeEnabled": "Merge automático ativado",
-    "cancelMove": "Cancelar movimentação",
     "collapseArchivedLabel": "Recolher tarefas arquivadas",
     "collapseArchivedTitle": "Recolher tarefas arquivadas",
     "expandArchivedLabel": "Expandir tarefas arquivadas",
@@ -1534,41 +1533,25 @@
     "keepProgress": "Manter progresso",
     "loadMore_one": "Carregar mais {{count}} ({{remaining}} restante)",
     "loadMore_other": "Carregar mais {{count}} ({{remaining}} restantes)",
-    "moveAllToTodo": "Mover tudo para A Fazer",
-    "moveAllToTodoMessage_one": "Mover {{count}} tarefa{{plural}} de {{columnLabel}} para A Fazer?",
-    "moveAllToTodoMessage_other": "Mover todas as {{count}} tarefa{{plural}} de {{columnLabel}} para A Fazer?",
-    "moveAllToTodoTitle": "Mover tudo para A Fazer",
-    "movedToPlanning_one": "{{count}} tarefa{{plural}} movida para Planejamento para replanejamento",
-    "movedToPlanning_other": "{{count}} tarefa{{plural}} movidas para Planejamento para replanejamento",
-    "movedToTodo_one": "{{count}} tarefa{{plural}} movida para A Fazer",
-    "movedToTodo_other": "{{count}} tarefa{{plural}} movidas para A Fazer",
-    "movePartialFailure": "Movidas {{moved}} de {{total}} tarefas; {{failed}} falharam",
-    "moveToTodoHint_one": "Mover {{count}} tarefa{{plural}} para A Fazer",
-    "moveToTodoHint_other": "Mover {{count}} tarefa{{plural}} para A Fazer",
-    "moveToTodoPartialFailure": "Movidas {{moved}} de {{total}} tarefas para A Fazer; {{failed}} falharam",
     "newTask": "Nova tarefa",
     "noManuallyPausableTasks": "Nenhuma tarefa pausável manualmente",
     "noTasks": "Nenhuma tarefa",
     "noTasksInColumn": "Nenhuma tarefa nesta coluna",
     "pauseHint_one": "Pausar {{count}} tarefa{{plural}} ativa não atribuída",
     "pauseHint_other": "Pausar {{count}} tarefa{{plural}} ativas não atribuídas",
-    "preserveProgressMessage": "Esta tarefa tem etapas concluídas. Manter o progresso antes de mover?",
-    "preserveProgressMoveTodoMessage": "Algumas tarefas têm etapas concluídas. Manter o progresso antes de mover para A Fazer?",
     "preserveProgressTitle": "Preservar progresso?",
     "promoteUnplannedCancel": "Continuar aguardando",
     "promoteUnplannedConfirm": "Iniciar mesmo assim",
     "promoteUnplannedMessage": "{{taskId}} ainda está aguardando o planejamento ou a revisão do plano. Promover agora inicia a execução com o plano atual e cancela o replanejamento pendente.",
     "promoteUnplannedTitle": "Iniciar a execução mesmo assim?",
     "replanAll": "Replanejar tudo",
-    "replanAllHint_one": "Mover {{count}} tarefa{{plural}} para Planejamento",
-    "replanAllHint_other": "Mover {{count}} tarefa{{plural}} para Planejamento",
-    "replanAllMessage_one": "Mover {{count}} tarefa{{plural}} em A Fazer de volta para Planejamento para ser replanejada?",
-    "replanAllMessage_other": "Mover todas as {{count}} tarefa{{plural}} em A Fazer de volta para Planejamento para serem replanejadas?",
+    "replanAllHint_one": "Replan {{count}} task{{plural}} from its original description",
+    "replanAllHint_other": "Replan {{count}} task{{plural}} from its original description",
+    "replanAllMessage_one": "Replan {{count}} task{{plural}} from its original description? Its current plan will be discarded.",
+    "replanAllMessage_other": "Replan {{count}} task{{plural}} from its original description? Its current plan will be discarded.",
     "replanAllTitle": "Replanejar todas as tarefas",
     "resetProgress": "Redefinir progresso",
     "resetProgressConfirm": "Redefinir progresso",
-    "resetProgressMessage": "Redefinir todo o progresso das etapas antes de mover esta tarefa?",
-    "resetProgressMoveTodoMessage": "Redefinir o progresso das etapas das tarefas antes de mover para A Fazer?",
     "resetProgressTitle": "Redefinir progresso?",
     "stopAll": "Parar tudo",
     "stopAllMessage_one": "Parar {{count}} tarefa{{plural}} de {{columnLabel}}?",
@@ -1581,7 +1564,10 @@
     "sortArrivalDesc": "",
     "sortArrivalDescHint": "",
     "sortTaskIdDesc": "",
-    "sortTaskIdDescHint": ""
+    "sortTaskIdDescHint": "",
+    "replannedTasks_one": "Replanned {{count}} task{{plural}}",
+    "replannedTasks_other": "Replanned {{count}} task{{plural}}",
+    "replanPartialFailure": "Replanned {{replanned}} of {{total}} tasks; {{failed}} failed"
   },
   "commandCenter": {
     "activity": {
@@ -7972,7 +7958,14 @@
       "overlapBlocker": "Bloqueador de sobreposição de escopo de arquivos:",
       "removeTitle": "Remover dependência {{id}}",
       "searchPlaceholder": "Buscar tarefas…",
-      "stale": "(desatualizado)"
+      "stale": "(desatualizado)",
+      "overlapFiles": {
+        "loading": "",
+        "error": "",
+        "noScope": "",
+        "none": "",
+        "matches": ""
+      }
     },
     "description": {
       "showLess": "Mostrar menos",
@@ -8115,19 +8108,6 @@
       "message": "Fazer merge de {{id}} na branch atual?",
       "noBranchToMerge": "nenhuma branch para fazer merge",
       "title": "Merge da tarefa"
-    },
-    "move": {
-      "backToInProgress": "Voltar para Em Andamento",
-      "backTo": "Voltar para {{column}}",
-      "cancelMove": "Cancelar movimentação",
-      "keepProgress": "Manter progresso",
-      "movedTo": "Movida para {{column}}",
-      "moveTo": "Mover para {{column}}",
-      "preserveProgressMessage": "Esta tarefa tem etapas concluídas. Manter o progresso antes de mover?",
-      "preserveProgressTitle": "Preservar progresso?",
-      "resetProgress": "Redefinir progresso",
-      "resetProgressMessage": "Redefinir todo o progresso das etapas antes de mover esta tarefa?",
-      "resetProgressTitle": "Redefinir progresso?"
     },
     "nearDuplicate": {
       "actions": "This task continues normally. Archive it if the work is already covered, or clear this flag once you have read it.",
@@ -8364,7 +8344,11 @@
       "worktreeTerminal": "Terminal",
       "workflow": "Fluxo de trabalho",
       "cost": "Custo",
-      "recommendations": "Recomendações"
+      "recommendations": "Recomendações",
+      "dependencies": "",
+      "attachments": "",
+      "details": "",
+      "debug": ""
     },
     "terminal": {
       "loading": "Carregando terminal…"
@@ -8443,6 +8427,9 @@
       "candidate": "",
       "dismissFinding": "",
       "terminalGuidance": ""
+    },
+    "debug": {
+      "none": ""
     }
   },
   "taskDocuments": {
@@ -8723,7 +8710,6 @@
     "depsCount_other": "{{count}} dependências",
     "descriptionPlaceholder": "Descrição da tarefa",
     "descriptionRefined": "Descrição refinada com IA",
-    "doneNoMerge": "Concluída (sem merge)",
     "duplicateCheckFailed": "Falha na verificação de duplicados; criando a tarefa mesmo assim.",
     "duplicateDismissed": "Duplicate flag cleared for {{taskId}}",
     "duplicateOf": "Duplicada de {{id}}",
@@ -9755,6 +9741,5 @@
     "close": "",
     "loading": "",
     "retry": ""
-
   }
 }

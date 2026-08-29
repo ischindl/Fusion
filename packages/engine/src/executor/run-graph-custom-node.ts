@@ -100,6 +100,39 @@ export function resolveGraphNodeSessionBoundary(input: {
   };
 }
 
+/*
+FNXC:WorkspaceReviewFindings 2026-08-27-12:05:
+FN-201 requires the workspace callback to preserve structured reviewer findings. Dropping them here
+made a workspace REVISE unremediable even though the per-repository reviewer named actionable work.
+*/
+export function toWorkspaceRepoReviewResult(repoOutcome: WorkflowStepOutcome): ReviewResult {
+  return {
+    verdict: (repoOutcome.verdict ?? (repoOutcome.success ? "APPROVE" : "UNAVAILABLE")) as ReviewResult["verdict"],
+    review: repoOutcome.output ?? repoOutcome.error ?? "",
+    summary: repoOutcome.output ?? repoOutcome.error ?? "",
+    retryable: !repoOutcome.success,
+    ...(repoOutcome.findings ? { findings: repoOutcome.findings } : {}),
+  };
+}
+
+export function buildWorkspaceReviewOutcome(aggregate: ReviewResult, options: { superseded?: boolean } = {}): WorkflowStepOutcome {
+  return {
+    success: aggregate.verdict === "APPROVE",
+    verdict: aggregate.verdict as WorkflowStepOutcome["verdict"],
+    output: aggregate.review,
+    repositoryReviewOutcomes: aggregate.repositoryReviewOutcomes,
+    repositoryScopeRevision: aggregate.repositoryScopeRevision,
+    ...(!options.superseded && aggregate.findings ? { findings: aggregate.findings } : {}),
+    ...(aggregate.verdict === "UNAVAILABLE" ? { failureValue: "workspace-review-unavailable" } : {}),
+  };
+}
+
+export function preserveOutcomeFindingsFromReviewOutput(outcome: WorkflowStepOutcome): WorkflowStepOutcome {
+  if (outcome.findings || typeof outcome.output !== "string") return outcome;
+  const parsedReviewOutput = parseWorkflowStepOutput(outcome.output, { requireVerdict: false });
+  return parsedReviewOutput.findings?.length ? { ...outcome, findings: parsedReviewOutput.findings } : outcome;
+}
+
 export async function runGraphCustomNode(
   deps: RunGraphCustomNodeDeps,
   node: WorkflowIrNode,
@@ -623,12 +656,7 @@ export async function runGraphCustomNode(
               sessionBoundary: reviewBoundary,
               ...(repoDiffBaseCommitSha ? { diffBaseCommitSha: repoDiffBaseCommitSha } : {}),
             });
-          return {
-            verdict: (repoOutcome.verdict ?? (repoOutcome.success ? "APPROVE" : "UNAVAILABLE")) as ReviewResult["verdict"],
-            review: repoOutcome.output ?? repoOutcome.error ?? "",
-            summary: repoOutcome.output ?? repoOutcome.error ?? "",
-            retryable: !repoOutcome.success,
-          };
+          return toWorkspaceRepoReviewResult(repoOutcome);
         }, { workspaceRepos: workspaceConfig.repos, workspaceRootDir: deps.rootDir, settings });
         /*
         FNXC:RepositoryScope 2026-08-21-02:35:
@@ -672,14 +700,7 @@ export async function runGraphCustomNode(
             repositoryScopeRevision: aggregate.repositoryScopeRevision,
           };
         }
-        outcome = {
-          success: aggregate.verdict === "APPROVE",
-          verdict: aggregate.verdict as WorkflowStepOutcome["verdict"],
-          output: aggregate.review,
-          repositoryReviewOutcomes: aggregate.repositoryReviewOutcomes,
-          repositoryScopeRevision: aggregate.repositoryScopeRevision,
-          ...(aggregate.verdict === "UNAVAILABLE" ? { failureValue: "workspace-review-unavailable" } : {}),
-        };
+        outcome = buildWorkspaceReviewOutcome(aggregate, { superseded: reviewSuperseded });
       }
     } else if (workspaceConfig && declaredReviewKind === "plan") {
       /*
@@ -723,8 +744,9 @@ export async function runGraphCustomNode(
      * gain review metadata merely because their output happens to contain a findings key.
      */
     if (declaredReviewKind && typeof outcome.output === "string") {
-      const parsedReviewOutput = parseWorkflowStepOutput(outcome.output, { requireVerdict: false });
-      if (parsedReviewOutput.findings?.length) outcome = { ...outcome, findings: parsedReviewOutput.findings };
+      const rawReviewOutput = outcome.output;
+      outcome = preserveOutcomeFindingsFromReviewOutput(outcome);
+      const parsedReviewOutput = parseWorkflowStepOutput(rawReviewOutput, { requireVerdict: false });
       if (parsedReviewOutput.supersededFindingIds?.length && parsedReviewOutput.supersededFindingSourceWorkflowStepId && !outcome.supersededFindingIds?.length) {
         outcome = { ...outcome, supersededFindingSourceWorkflowStepId: parsedReviewOutput.supersededFindingSourceWorkflowStepId, supersededFindingIds: parsedReviewOutput.supersededFindingIds };
       }

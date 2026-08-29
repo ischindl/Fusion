@@ -1,5 +1,57 @@
 # @runfusion/fusion
 
+## 0.77.0-beta.10
+
+### Minor Changes
+
+- c31c15a: summary: Show task delivery summaries first in the Plan tab.
+  category: feature
+  dev: Adds the `## What This Delivers` PROMPT.md section and Plan-tab disclosure.
+- 54403ff: summary: Reserve task-detail Plan for steps and PROMPT.md, moving metadata and diagnostics into dedicated tabs.
+  category: feature
+  dev: New task-detail tab ids dependencies/attachments/details/debug; the Original prompt section and initialTab="retries" now resolve to details. Adds GET /tasks/:id/overlap-blocker backed by the new engine describeFileScopeOverlapBlocker helper.
+- 5c111be: summary: Remove dashboard controls that manually move tasks between workflow columns.
+  category: feature
+  dev: Removes move menu model exports, Task Detail move props and CSS, and obsolete translations; Replan All now uses POST /tasks/:id/spec/rebuild.
+- c4e775e: summary: Unify Task Chat model and thinking controls in one Brain popover.
+  category: feature
+  dev: ChatThinkingLevelControl now supports model-only targeting, picker labels, target identity, default targets, and echo-safe dismissal.
+- 8fa9acb: summary: Add the Flexoki color theme (warm inky dark, cream paper light).
+  category: feature
+
+### Patch Changes
+
+- 5e14551: summary: The Docker image now ships Google Chrome, so browser automation works in a container.
+  category: fix
+  dev: Runner stage installs `google-chrome-stable` from Google's signed apt repository (https://dl.google.com/linux/chrome/deb/), alongside gh, tailscale and cloudflared. The image previously shipped no browser at all, which silently broke two features that launch an existing browser and download none: `plugins/fusion-plugin-agent-browser` (uses `playwright-core`, which by design does not fetch a browser at install time, and probes `/usr/bin/google-chrome` first) and the Chrome DevTools MCP server, which failed every call with "Could not find Google Chrome executable for channel 'stable'". Chrome rather than Debian's `chromium` because it is the only browser chrome-devtools-mcp officially supports, and Google publishes it for both amd64 and arm64 so the existing `arch=$(dpkg --print-architecture)` pattern resolves on either host. Chrome's own sandbox still needs unprivileged user namespaces, which the default container seccomp profile blocks, so callers pass `--no-sandbox` (chrome-devtools-mcp: `--chromeArg=--no-sandbox`) or the operator runs with `--security-opt seccomp=unconfined`. Package name and repo URL are asserted in scripts/**tests**/dockerfile-workspace-manifests.test.mjs.
+- e213b94: summary: Open popped-out chats on their requested thread and keep stacked windows visibly separated.
+  category: fix
+  dev: Seed `useChat` `initialSession` and replace `resolveFloatingWindowCascadeOffset` with `resolveFloatingWindowCascade`.
+- 1936c78: summary: Prevent board text selection from involuntarily scrolling Kanban columns.
+  category: fix
+  dev: Adds a board-wide selection suppression rule with editable-content opt-ins.
+- 1d08fcb: summary: Show the New Task Start button with quick entry parity.
+  category: fix
+  dev: Aligns NewTaskModal and TaskForm with quickAddStart eligibility parity.
+- 808f4c6: summary: Show detailed reasoning bodies alongside titles for supported Responses models.
+  category: fix
+  dev: Uses the pi Agent `onPayload` seam only for the OpenAI Responses API family.
+- 017ebd5: summary: Route multi-repository Code Review fixes to the repository that failed.
+  category: fix
+  dev: Preserves repository-qualified review findings through workspace aggregation and named remediation routing.
+- 0fd247b: summary: Let agents receive secrets read through fn_secret_get.
+  category: fix
+  dev: The value now ships in tool result content; details.value and non-delivery returns are unchanged.
+- 25f24c7: summary: Show each project's installed skills and prevent duplicate catalog installs.
+  category: fix
+  dev: Skills discovery now resolves project-local roots per dashboard request.
+- 6fd4fdd: summary: Show project-scoped Automations and Routines instead of an empty list.
+  category: fix
+  dev: GET /routines and GET /automations now let scope=project bypass legacy global-store guards and resolve the project store.
+- 286dd0a: summary: Workspace tasks no longer stall on uncommitted edits sitting in a shared repo checkout.
+  category: fix
+  dev: The main-checkout completion guard blocks only task-attributed commits; uncommitted status entries emit `worktree:workspace-main-checkout-edit` with `outcome:"warned"`, `reason:"uncommitted-only"`, and their evidence enum. Delivery stays proven by the acquired-worktree `no_commits` invariant, and the land path already stashes/restores a dirty sub-repo checkout via `merger.allowDirtyLocalCheckoutSync`.
+
 ## 0.77.0-beta.9
 
 ### Minor Changes

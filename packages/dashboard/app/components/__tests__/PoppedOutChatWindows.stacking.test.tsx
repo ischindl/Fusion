@@ -7,9 +7,10 @@ vi.mock("../ChatView", () => ({
   ChatView: ({ initialDirectSession }: any) => <div data-testid={`chat-${initialDirectSession.id}`} />,
 }));
 
-const entry = (id: string, focusNonce = 1, projectId = "project-a") => ({
+const entry = (id: string, focusNonce = 1, projectId = "project-a", cascadeSlot = 0) => ({
   projectId,
   focusNonce,
+  cascadeSlot,
   session: { id, agentId: "agent-1", title: id, status: "active" as const, createdAt: "2026-08-21T00:00:00.000Z", updatedAt: "2026-08-21T00:00:00.000Z" },
 });
 

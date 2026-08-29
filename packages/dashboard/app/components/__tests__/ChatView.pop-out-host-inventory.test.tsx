@@ -30,7 +30,19 @@ describe("ChatView pop-out host inventory", () => {
     expect(popOut).toContain("initialDirectSessionNonce={entry.focusNonce}");
     expect(popOut).toContain("raiseToFrontSignal={entry.focusNonce}");
     expect(popOut).toContain("cascadeOffsetIndex={entry.cascadeSlot + 1}");
+    const chatView = readFileSync(join(appRoot, "components/ChatView.tsx"), "utf8");
     const affordanceFiles = [...walk(appRoot)].filter((file) => readFileSync(file, "utf8").includes("chat-context-open-window"));
     expect(affordanceFiles.map((file) => relative(appRoot, file).replaceAll("\\", "/"))).toEqual(["components/ChatView.tsx"]);
+
+    /*
+    FNXC:ChatWindows 2026-08-27-09:23:
+    The empty-state New Chat button cannot coexist with a selected detail pane, so its modifier path is covered structurally here rather than with an impossible duplicate render state.
+    */
+    for (const testId of ["chat-new-btn", "chat-new-btn-empty"]) {
+      const testIdPosition = chatView.indexOf(`data-testid="${testId}"`);
+      expect(testIdPosition).toBeGreaterThanOrEqual(0);
+      const buttonStart = chatView.lastIndexOf("<button", testIdPosition);
+      expect(chatView.slice(buttonStart, testIdPosition)).toContain("onClick={handleNewChat}");
+    }
   });
 });

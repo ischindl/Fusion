@@ -8,4 +8,8 @@ describe("ChatView brain control remains on direct composer", () => {
     expect(source).toContain("ChatThinkingLevelControl");
     expect(source).not.toContain("chatNewSessionMode");
   });
+
+  it("keys the direct composer target to its active session", () => {
+    expect(source).toContain("targetKey={activeSession?.id ?? null}");
+  });
 });

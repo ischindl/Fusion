@@ -80,8 +80,13 @@ export function reviewInputSignature(result: CoreWorkflowStepResult): string | u
   const blocking = (result.repositoryReviewOutcomes ?? [])
     .filter((outcome) => outcome.status === "REVIEWED" && (outcome.verdict === "REVISE" || outcome.verdict === "RETHINK"))
     .map((outcome) => {
+      /*
+      FNXC:WorkspaceReviewConvergence 2026-08-27-12:05:
+      FN-201 makes workspace findings non-empty. Identifier-based signatures would let a model-assigned
+      ID change defeat the repeat-unchanged hold and turn bounded remediation into an unbounded loop.
+      */
       const findings = (outcome.findings ?? [])
-        .map((finding) => `${finding.id}:${normalizeConvergenceText(finding.title)}:${normalizeConvergenceText(finding.body)}`)
+        .map((finding) => `${normalizeConvergenceText(finding.filePath)}:${finding.line ?? ""}:${normalizeConvergenceText(finding.body)}`)
         .sort()
         .join("|");
       return `${outcome.repository}\u0000${outcome.fingerprint ?? ""}\u0000${outcome.verdict}\u0000${findings}`;

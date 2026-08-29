@@ -990,7 +990,6 @@ export function MainContent({
               /* FNXC:FloatingWindow 2026-06-22-21:10: Popping out from the board's full-panel detail also returns the main panel to the board, so the board (not the emptied detail) sits behind the floating window. */
               onPopOut={(task) => { popOutTaskDetail(task); closeTaskDetailMainPanel(); }}
               onOpenDetail={(value, initialTab) => openTaskDetailInMainPanel(value, initialTab ?? "chat")}
-              onMoveTask={moveTask}
               onDeleteTask={deleteTask}
               onReviseTask={(task) => modalManager.openNewTaskWithDescription(task.description)}
               onMergeTask={mergeTask}

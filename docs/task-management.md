@@ -362,13 +362,13 @@ Board ordering behavior:
 - The `done` column is recency-ordered by completion time (newest first), using `columnMovedAt` as primary and falling back to `updatedAt` then `createdAt` for legacy tasks.
 - The dashboard **list view default ordering matches these same per-column semantics** until a user clicks a sortable header (manual list sorting still overrides defaults).
 
-<!-- FNXC:TaskCardMovement 2026-08-21-16:09: FN-109 separates desktop/tablet Board viewport panning from contextual task movement so card-body drags cannot restore native relocation. -->
+<!-- FNXC:TaskCardMovement 2026-08-27-12:01: FN-198 makes workflow automation the sole owner of dashboard task placement; Board gestures and menus must not offer relocation. -->
 
-### Moving tasks on Board and List
+### Task placement on Board and List
 
-Use a task card or List row's context menu (**right-click**, **Shift+F10** / Context Menu key, the visible overflow control, or touch long-press), then choose **Move to**. When more than one legal destination is available, **Move to** opens one submenu containing each destination; a single destination remains a direct action. This changes task movement only.
+Tasks cannot be relocated manually from Board, List, or Task Detail. The workflow and its automated recovery paths decide placement. Use **Reset** or **Respecify** to replan from the original description, **Delete** to remove a task, and the remaining Actions controls for their documented purposes. A manual-intake card can still show **Start**, which admits a new idea into its workflow rather than relocating active work.
 
-On desktop and tablet Boards, dragging a task card's noninteractive body or text pans the Board viewport without moving the task. Controls and editing remain native; **Move to** remains the only task-relocation path.
+On desktop and tablet Boards, dragging a task card's noninteractive body or text pans the Board viewport without moving the task. Controls and editing remain native.
 
 ### Lifecycle commands
 

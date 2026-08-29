@@ -98,17 +98,26 @@ describe("ChatView popped-out conversation contract", () => {
     expectThreadOpen({ narrow: true });
   });
 
-  it("keeps ordinary hosts on the list and safely falls back when a seeded session cannot resolve", async () => {
+  it("keeps ordinary hosts list-first and suppresses navigation for a delayed seeded selection", async () => {
     setupMockChat({ activeSession: activeSessionFixture, sessions: [activeSessionFixture], filteredSessions: [activeSessionFixture] });
     await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} persistChatPreferences={false} />);
     expect(screen.queryByTestId("chat-back-btn")).not.toBeInTheDocument();
     expect(document.querySelector(".chat-sidebar")).not.toHaveClass("chat-sidebar--hidden");
     cleanup();
 
-    setupMockChat({ activeSession: null, sessions: [], filteredSessions: [] });
-    await renderWithAct(<ChatView {...popOutProps} />);
+    /*
+    FNXC:ChatWindows 2026-08-27-09:23:
+    FN-193's real hook now exposes initialSession on the first commit. Keep this delayed mocked selection only to guard ChatView's automatic-detail navigation suppression if a future hook or degraded bridge resolves after paint.
+    */
+    pushNav.mockClear();
+    setupMockChat({ activeSession: null, sessions: [activeSessionFixture], filteredSessions: [activeSessionFixture] });
+    const { rerender } = await renderWithAct(<ChatView {...popOutProps} initialDirectSessionNonce={1} />);
     expect(screen.queryByTestId("chat-back-btn")).not.toBeInTheDocument();
-    expect(document.querySelector(".chat-sidebar")).not.toHaveClass("chat-sidebar--hidden");
+
+    setupMockChat({ activeSession: activeSessionFixture, sessions: [activeSessionFixture], filteredSessions: [activeSessionFixture] });
+    rerender(<ChatView {...popOutProps} initialDirectSessionNonce={1} />);
+    await waitFor(() => expect(screen.getByTestId("chat-back-btn")).toBeInTheDocument());
+    expect(pushNav).not.toHaveBeenCalled();
   });
 
   it("renders an empty transcript and re-opens a different selected session on a nonce", async () => {

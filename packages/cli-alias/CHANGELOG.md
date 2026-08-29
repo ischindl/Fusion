@@ -1,5 +1,26 @@
 # runfusion.ai
 
+## 0.77.0-beta.10
+
+### Patch Changes
+
+- Updated dependencies [5e14551]
+- Updated dependencies [e213b94]
+- Updated dependencies [1936c78]
+- Updated dependencies [c31c15a]
+- Updated dependencies [1d08fcb]
+- Updated dependencies [54403ff]
+- Updated dependencies [5c111be]
+- Updated dependencies [808f4c6]
+- Updated dependencies [c4e775e]
+- Updated dependencies [017ebd5]
+- Updated dependencies [0fd247b]
+- Updated dependencies [25f24c7]
+- Updated dependencies [8fa9acb]
+- Updated dependencies [6fd4fdd]
+- Updated dependencies [286dd0a]
+  - @runfusion/fusion@0.77.0-beta.10
+
 ## 0.77.0-beta.9
 
 ### Patch Changes

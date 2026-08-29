@@ -81,6 +81,8 @@ Fusion captures changes per acquired sub-repository, not from the non-Git root. 
 
 `landWorkspaceTask` processes configured/acquired repositories in a deterministic per-repository loop. Each repository lands on **its own local integration ref**; a shared workspace integration branch is not used. This means the operation is non-atomic: an earlier repository can land before a later repository fails.
 
+Each repository uses the same `landOneRepo` / `landSquash` mechanic as a single-repository project, with that repository's main checkout as `projectRootDir`. When the integration branch is checked out with local edits, `merger.allowDirtyLocalCheckoutSync` applies identically: enabled stashes tracked and untracked edits, fast-forwards, then restores them; disabled refuses the land before the ref advances.
+
 The CLI command `fn task merge` reports each repository as `landed`, `empty`, or `failed`, and exits non-zero for a partial land. Fusion finalizes the task to `done` only after every member has either landed or has no changes to land. A partial result remains recoverable and must be treated as an operator-visible state, not as one atomic merge.
 
 ## landedSha idempotency

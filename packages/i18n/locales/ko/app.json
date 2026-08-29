@@ -1515,7 +1515,6 @@
     "autoMerge": "자동 병합",
     "autoMergeDisabled": "자동 병합 비활성화됨",
     "autoMergeEnabled": "자동 병합 활성화됨",
-    "cancelMove": "이동 취소",
     "collapseArchivedLabel": "보관된 작업 접기",
     "collapseArchivedTitle": "보관된 작업 접기",
     "expandArchivedLabel": "보관된 작업 펼치기",
@@ -1524,41 +1523,25 @@
     "keepProgress": "진행 상황 유지",
     "loadMore_one": "",
     "loadMore_other": "",
-    "moveAllToTodo": "모두 할 일로 이동",
-    "moveAllToTodoMessage_one": "",
-    "moveAllToTodoMessage_other": "",
-    "moveAllToTodoTitle": "모두 할 일로 이동",
-    "movedToPlanning_one": "",
-    "movedToPlanning_other": "",
-    "movedToTodo_one": "",
-    "movedToTodo_other": "",
-    "movePartialFailure": "{{total}}개 중 {{moved}}개 이동됨; {{failed}}개 실패",
-    "moveToTodoHint_one": "",
-    "moveToTodoHint_other": "",
-    "moveToTodoPartialFailure": "{{total}}개 중 {{moved}}개를 할 일로 이동함; {{failed}}개 실패",
     "newTask": "새 작업",
     "noManuallyPausableTasks": "수동으로 일시 중지 가능한 작업이 없습니다",
     "noTasks": "작업 없음",
     "noTasksInColumn": "이 열에 작업이 없습니다",
     "pauseHint_one": "",
     "pauseHint_other": "",
-    "preserveProgressMessage": "이 작업에는 완료된 단계가 있습니다. 이동하기 전에 진행 상황을 유지하시겠습니까?",
-    "preserveProgressMoveTodoMessage": "일부 작업에 완료된 단계가 있습니다. 할 일로 이동하기 전에 진행 상황을 유지하시겠습니까?",
     "preserveProgressTitle": "진행 상황을 유지하시겠습니까?",
     "promoteUnplannedCancel": "",
     "promoteUnplannedConfirm": "",
     "promoteUnplannedMessage": "",
     "promoteUnplannedTitle": "",
     "replanAll": "모두 재계획",
-    "replanAllHint_one": "",
-    "replanAllHint_other": "",
-    "replanAllMessage_one": "",
-    "replanAllMessage_other": "",
+    "replanAllHint_one": "Replan {{count}} task{{plural}} from its original description",
+    "replanAllHint_other": "Replan {{count}} task{{plural}} from its original description",
+    "replanAllMessage_one": "Replan {{count}} task{{plural}} from its original description? Its current plan will be discarded.",
+    "replanAllMessage_other": "Replan {{count}} task{{plural}} from its original description? Its current plan will be discarded.",
     "replanAllTitle": "모든 작업 재계획",
     "resetProgress": "진행 상황 초기화",
     "resetProgressConfirm": "진행 상황 초기화",
-    "resetProgressMessage": "이 작업을 이동하기 전에 모든 단계 진행 상황을 초기화하시겠습니까?",
-    "resetProgressMoveTodoMessage": "할 일로 이동하기 전에 작업의 단계 진행 상황을 초기화하시겠습니까?",
     "resetProgressTitle": "진행 상황을 초기화하시겠습니까?",
     "stopAll": "모두 중지",
     "stopAllMessage_one": "",
@@ -1571,7 +1554,10 @@
     "sortArrivalDesc": "",
     "sortArrivalDescHint": "",
     "sortTaskIdDesc": "",
-    "sortTaskIdDescHint": ""
+    "sortTaskIdDescHint": "",
+    "replannedTasks_one": "Replanned {{count}} task{{plural}}",
+    "replannedTasks_other": "Replanned {{count}} task{{plural}}",
+    "replanPartialFailure": "Replanned {{replanned}} of {{total}} tasks; {{failed}} failed"
   },
   "commandCenter": {
     "activity": {
@@ -7962,7 +7948,14 @@
       "overlapBlocker": "파일 범위 겹침 차단기:",
       "removeTitle": "의존성 {{id}} 제거",
       "searchPlaceholder": "작업 검색…",
-      "stale": "(오래됨)"
+      "stale": "(오래됨)",
+      "overlapFiles": {
+        "loading": "",
+        "error": "",
+        "noScope": "",
+        "none": "",
+        "matches": ""
+      }
     },
     "description": {
       "showLess": "간략히 보기",
@@ -8076,19 +8069,6 @@
       "message": "{{id}}를 현재 브랜치에 병합하시겠습니까?",
       "noBranchToMerge": "병합할 브랜치 없음",
       "title": "작업 병합"
-    },
-    "move": {
-      "backToInProgress": "진행 중으로 돌아가기",
-      "backTo": "{{column}}(으)로 돌아가기",
-      "cancelMove": "이동 취소",
-      "keepProgress": "진행 상태 유지",
-      "movedTo": "{{column}}으로 이동됨",
-      "moveTo": "{{column}}으로 이동",
-      "preserveProgressMessage": "이 작업에 완료된 단계가 있습니다. 이동 전 진행 상태를 유지하시겠습니까?",
-      "preserveProgressTitle": "진행 상태 유지?",
-      "resetProgress": "진행 상태 초기화",
-      "resetProgressMessage": "이 작업을 이동하기 전에 모든 단계 진행 상태를 초기화하시겠습니까?",
-      "resetProgressTitle": "진행 상태 초기화?"
     },
     "nearDuplicate": {
       "actions": "This task continues normally. Archive it if the work is already covered, or clear this flag once you have read it.",
@@ -8299,7 +8279,11 @@
       "workflow": "워크플로",
       "summary": "Summary",
       "cost": "",
-      "recommendations": ""
+      "recommendations": "",
+      "dependencies": "",
+      "attachments": "",
+      "details": "",
+      "debug": ""
     },
     "terminal": {
       "loading": ""
@@ -8433,6 +8417,9 @@
       "candidate": "",
       "dismissFinding": "",
       "terminalGuidance": ""
+    },
+    "debug": {
+      "none": ""
     }
   },
   "taskDocuments": {
@@ -8704,7 +8691,6 @@
     "depsCount_other": "",
     "descriptionPlaceholder": "작업 설명",
     "descriptionRefined": "AI로 설명이 다듬어졌습니다",
-    "doneNoMerge": "완료 (병합 없음)",
     "duplicateCheckFailed": "중복 확인에 실패했습니다. 작업을 그대로 생성합니다.",
     "duplicateDismissed": "Duplicate flag cleared for {{taskId}}",
     "duplicateOf": "{{id}}의 중복",
@@ -9755,6 +9741,5 @@
     "close": "",
     "loading": "",
     "retry": ""
-
   }
 }
