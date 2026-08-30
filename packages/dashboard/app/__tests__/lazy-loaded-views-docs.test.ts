@@ -43,6 +43,7 @@ const EXPECTED_DOCUMENTED_VIEWS = new Set([
   "EvalsView",
   "GoalsView",
   "PullRequestView",
+  "PatchnodeView",
   "SetupWizardModal",
   "SettingsModal",
   "WorkflowNodeEditor",
@@ -66,6 +67,7 @@ const EXPECTED_APP_LEVEL_VIEWS = new Set([
   "DevServerView",
   "GoalsView",
   "PullRequestView",
+  "PatchnodeView",
 ]);
 
 /*

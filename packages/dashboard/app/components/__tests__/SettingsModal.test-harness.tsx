@@ -111,9 +111,7 @@ export const defaultSettings: Settings = {
   pushRemote: "origin",
   verificationFixRetries: 2,
   workflowRevisionForkOnScopeMismatch: true,
-  recycleWorktrees: false,
   executorAllowSiblingBranchRename: false,
-  worktreeNaming: "random",
   worktreeCopyFiles: [],
   worktreesDir: "",
   worktrunk: {

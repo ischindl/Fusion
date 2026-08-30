@@ -19,14 +19,11 @@ tags:
 
 # Observed suite-only flakes register
 
-This register has **5 active observation records** (entries 1, 2, 7, 13, and 16): **3 active first sightings** and **2 escalated second sightings**. It also has **1 merge-gate eviction record** (entry 6) and **8 archived closed records**. Only the active section drives quarantine and escalation decisions; the other sections preserve historical evidence.
+This register has **4 active observation records** (entries 1, 2, 13, and 14): **2 active first sightings**, **1 reproduced-but-unattributed observation**, and **1 quarantined second sighting**. Entry 7 below is closed and retained for cross-reference only. It also has **1 merge-gate eviction record** (entry 6) and **8 archived closed records**. Only the active section drives quarantine and escalation decisions; the other sections preserve historical evidence.
 
 <!--
 FNXC:TestFlakeRegister 2026-08-19-11:14:
 The flat register mixed closed narratives with open records, making it unusable as a quarantine-on-sight decision aid. Sections make the active decision surface explicit while entry numbers and heading text remain frozen for inbound anchors and cross-reference stability. Active status lines must distinguish first sightings from reproduced escalations and name the evidence owners retained by each record.
-
-FNXC:TestFlakeRegister 2026-08-25-12:38:
-RUFU-148: entry 16 (handoff-to-review atomicity PostgreSQL setup hook) was added to the active section on 2026-08-23 as an unattributed first sighting during RUFU-157/158 full-suite evidence collection, without updating the stated count. The introduction moves 4 -> 5 active observation records and 3 -> 4 active first sightings; the single escalated second sighting (entry 13, RUFU-128 on-sight quarantine 2026-08-20) is unchanged. Entry 7's status-line desync is tracked by RUFU-171 and intentionally untouched here.
 -->
 
 ## Active observation records
@@ -138,7 +135,7 @@ DDL microbenchmarks of the pre-fix pristine shape measured `CREATE DATABASE` 44.
 
 ### 7. Mission store PostgreSQL teardown hook
 
-- **Status:** QUARANTINED 2026-08-23 (second sighting; file-level quarantine in `scripts/lib/test-quarantine.json` + `packages/core/vitest.config.ts` exclude, deletion deadline 2026-09-06) — evidence owner 9838f42076.
+- **Status:** Closed 2026-08-23 — file-level quarantine (second sighting of a different test in the same file).
 
 - **File:** `packages/core/src/__tests__/postgres/mission-store.pg.test.ts`
 - **Exact test:** `MissionStore (PostgreSQL backend mode)` suite `afterAll` hook (`h.afterAll`).
@@ -171,7 +168,7 @@ The timeout occurred after all test assertions and is unrelated to FN-8979's can
 
 The 12-worker snapshots show 21 backends and concurrent template `CREATE DATABASE`/`DROP DATABASE WITH (FORCE)` work, including `IPC/CheckpointDone` and `IPC/ProcSignalBarrier`; they do not implicate this mission-store suite. FN-9130 measured advisory admission as a non-remedy: uniform pooling regressed to 49 watchdogs / 5,068ms and drop-only wiring to 27 / 3,361ms against the 4–5 / 3,284ms baseline. A bounded deferred-drop reaper also failed the end-to-end criterion: watchdogs became zero by construction, but two green runs took 117.2s and 122.4s versus the 108.1s baseline maximum, and a later run timed out in unrelated loaded setup. The reaper was reverted. FN-9136 then rejected candidate C after its golden-template gate passed: the required seven-pair 12-worker campaign left pooled `fusion_pool_*` databases owned by dead fork PIDs because the experiment lacked an awaited fork-exit flush and direct imports degraded to the shared `local` identity. The isolation failure required removing all harness wiring regardless of wall time. FN-9134 supplied a pre-registered report-only lane metric and completed its required seven-pair alternating control/candidate campaign at 12 workers. The control/candidate medians were 137.81s/146.91s, candidate pairs 02–06 were red, and every sample observed 32 or 33 surviving `fusion_test_%` databases (pair 04 increased 32 to 33). The tool's `no-improvement` verdict and the automatic non-zero-leak rejection removed the prototype and all of its wiring/tests together. The full per-run JSONL/log evidence is retained in task document `FN-9134/evidence`; this remains unresolved rather than becoming a quarantine or timeout change. No teardown behavior was changed: there is no evidence-backed cause for this entry's historical 15s afterAll abort. This first-sighting record remains retained; a second sighting follows the normal escalation. Core PostgreSQL files cannot be quarantined inline because the gate-policy assertion requires `quarantinedCoreTests` to remain empty; that is an owner-escalated decision.
 
-**Campaign outcome 2026-08-19 (FN-9146):** The registered `afterAll(h.afterAll)` hook did not fail in every lane that selected this file. A02 instead timed out in `beforeAll(h.beforeAll)`, so its registered `afterAll` did not run and is recorded as not reached rather than passed; it is explicitly not entry-7 evidence. D01–D02 do not select the file. The historical afterAll mode remains unattributed. Entry 7 stays active under FN-9146; the next sighting follows normal escalation and core PostgreSQL quarantine remains policy-forbidden. Complete combined output and teardown JSONL for A01–D02 are durable FN-9146 task attachments, with parsed checkpoints in its task documents.
+**Campaign outcome 2026-08-19 (FN-9146):** The registered `afterAll(h.afterAll)` hook did not fail in every lane that selected this file. A02 instead timed out in `beforeAll(h.beforeAll)`, so its registered `afterAll` did not run and is recorded as not reached rather than passed; it is explicitly not entry-7 evidence. D01–D02 do not select the file. The historical afterAll mode remains unattributed. Entry 7 was subsequently closed on 2026-08-23 when the entire file was quarantined on a second sighting of a different test; see the note at the end of this entry. Complete combined output and teardown JSONL for A01–D02 are durable FN-9146 task attachments, with parsed checkpoints in its task documents.
 
 **Capacity-evidence remediation 2026-08-19 (FN-9146):** C01–C03's original green default-core logs had no activity snapshot, so they cannot substantiate a peak. One sampled replacement per affected shape (C01R–C03R) completed green with an external 250ms `pg_stat_activity` count sampler: 28/31/30 observed backends across 583/491/508 samples. The table labels retain the pre-registered C identities and disclose their sampled replacements; these are new measurements, not retroactive values for the original C logs. Each replacement retained full runner output, teardown JSONL, and sampler output in FN-9146's durable evidence checkpoint; after C03R, the dead-owner golden template was dropped and the leftover count returned to zero.
 
@@ -190,48 +187,10 @@ The 12-worker snapshots show 21 backends and concurrent template `CREATE DATABAS
 | D01 | configured pg gate / 4 forks | 3.6s | not selected | green, 2 files / 10 pass | 100/97; not sampled |
 | D02 | configured pg gate / 4 forks | 3.7s | not selected | green, 2 files / 10 pass | 100/97; not sampled |
 
-<!--
-FNXC:TestFlakeRegister 2026-08-25-16:19:
-Second sighting of the mission-store.pg.test.ts concurrent-claim wall-clock race
-("serializes concurrent claims on the same task (Greptile P1 race)" holds a
-transaction open, sleeps 250ms, then asserts the competing claim has not
-settled) on 2026-08-23, observed twice while three dashboard suites ran
-concurrently; passes 65/65 three times once the machine settles. The deletion
-ratchet makes a second sighting an on-sight file-level quarantine with no
-further discretion: mirrored in scripts/lib/test-quarantine.json and
-packages/core/vitest.config.ts (commit 9838f42076; register reconciliation
-RUFU-171), no timeout/retry/assertion appeasement. Rescue requires a
-deterministic lock-wait probe (pg_locks) rather than a longer sleep; deletion
-deadline 2026-09-06.
--->
-### 13. CLI bin no-args dashboard-launch test timeout
+**Closed 2026-08-23.** This observation is no longer active: the entire file was quarantined on 2026-08-23 because a different test in it (`serializes concurrent claims on the same task (Greptile P1 race)`) received a second loaded-lane sighting. Per the file-level quarantine rule the whole file is excluded from `packages/core/vitest.config.ts` with a 2026-09-06 deletion deadline. See `scripts/lib/test-quarantine.json` for the ledger reason.
 
-- **Status:** QUARANTINED 2026-08-20 (second sighting; file-level quarantine in `scripts/lib/test-quarantine.json` + `packages/cli/vitest.config.ts` exclude, deletion deadline 2026-09-03) — evidence owner RUFU-128.
 
-- **File:** `packages/cli/src/__tests__/bin.test.ts`
-- **Exact test:** `bin command routing and fallbacks > launches dashboard when no args are provided`
-- **Observed tree/SHA:** `4eaa9b620e358f21f26ea705fac81ba808bf6675` (RUFU-128 worktree `azure-breeze`); second sighting at `a744b166c` (worktree `fast-finch`).
-- **Observed frequency:** first observation in a five-file concurrent cli test batch on a loaded host; an immediate re-run of the identical batch plus isolated file/test runs all passed. Second observation 2026-08-20 (UTC, host load average 15.22) on `fusion/rufu-128` during RUFU-128 post-review verification: whole-file run failed (23.8s, 1 failed / 76 passed), a repeat whole-file run failed (34.4s), and the single test isolated failed at 15.39s (transform 10.59s, test phase 15.02s).
-
-| run | result |
-|---|---|
-| 5-file cli batch (dashboard-supervise + dashboard-default-workflow-fallback + cli-active-count-lanes + bin + dashboard-mission-store-backend-guard) | **subject timed out** at the 15000ms test timeout (`bin.test.ts:406`); 1 failed / 108 passed across the batch |
-| identical 5-file batch re-run | green (15.2s) |
-| file alone (`--reporter=dot`) ×2 | green (15.3s / 15.6s file wall) |
-| single test alone (verbose) | green |
-| file alone at load avg 15.22 (2nd sighting) | **subject timed out** at the 15000ms test timeout; 1 failed / 76 passed, 23.8s file wall |
-| file alone again + single test isolated at load avg 15.22 (2nd sighting) | **subject timed out** again; isolated single test 15.39s (transform 10.59s, test phase 15.02s) |
-
-Mechanism: the file's own wall time (~15s of `runBin` invocations) approaches the 15000ms per-test budget, so under concurrent worker fan-out on a loaded host the affected test crossed the threshold; at sustained load average 15 even the isolated single test (whose subject is fully mocked) crossed it, consistent with CPU-scheduling/transform stall rather than test logic. The subject is a fully mocked unit test — `vi.mock("../commands/dashboard.js", factory)` means the real dashboard command module (the only `packages/cli` file RUFU-128 touched) is never loaded in this suite, excluding the RUFU-128 change as a cause. The same no-args dashboard-launch timeout signature appears in the 2026-06-20 FN-6839 loaded-lane history. Second sighting on 2026-08-20 → file-level quarantine per the deletion ratchet (no further discretion), with no timeout widening, retries, or assertion changes; the 76 remaining tests are evicted until a root-cause rescue or the 2026-09-03 deletion deadline.
-
-<!--
-FNXC:TestFlakeRegister 2026-08-20-07:30:
-RUFU-128 recorded this first sighting of the loaded-host per-test timeout in bin.test.ts while verifying the cli dashboard command wiring. The dashboard command is factory-mocked in the suite, so no RUFU-128 code path executes here; the file-level quarantine would evict 108+ passing tests over one load-dependent observation, which the first-sighting register exception exists to avoid.
-
-FNXC:TestFlakeRegister 2026-08-20-15:35:
-Second sighting at sustained load average 15.22 (whole file 23.8s and 34.4s, isolated single test 15.39s with 10.59s transform) while re-verifying fusion/rufu-128 after a harness-failed code-review round. The deletion ratchet makes a second sighting an on-sight file-level quarantine with no further discretion: mirrored in scripts/lib/test-quarantine.json and packages/cli/vitest.config.ts in the same commit, no timeout/retry/assertion appeasement, deletion deadline 2026-09-03.
--->
-### 16. Handoff-to-review atomicity PostgreSQL setup hook
+### 13. Handoff-to-review atomicity PostgreSQL setup hook
 
 - **Status:** Active first sighting — recorded 2026-08-23, unattributed.
 
@@ -254,9 +213,27 @@ This is the same mode already characterized by entry 6 and by entry 7's A02 lane
 Quarantine was not available as an alternative. Core PostgreSQL files cannot be quarantined inline — the gate-policy assertion requires `quarantinedCoreTests` to remain empty — and a merge-gate eviction of a transactional-invariant file is the owner-escalated decision described in the policy section below. The file carries only 4 tests, which is thin against the usual first-sighting coverage argument, but they are the atomicity invariant for handoff-to-review and one of just two files in the blocking PG lane; recording preserves that rather than trading it away over a single unreproduced cold-start abort. A **second sighting** follows normal escalation.
 
 
+### 14. Merge-node paused-abort retry sequence
+
+- **Status:** Quarantined 2026-08-29 after a second sequence-only sighting.
+- **File:** `packages/engine/src/__tests__/reliability-interactions/merge-node-paused-abort-retryable.test.ts`
+- **Exact test:** `merge-node paused-abort retry classification (FN-6735) > re-enqueues benign paused merge graph failure at node %s without operator-action failure` (parameterized `it.each`; the observed case was `%s` = `merge`, plus 12 sibling sequence failures).
+- **Observed tree/SHA:** first sighting `f3e1e7d1f`; second sighting during FN-249 verification after `2ab621ac6`.
+- **Observed frequency:** Two file-sequence failures; the selected exact subject passed in isolation after each.
+
+| run | result |
+|---|---|
+| first file as `engine-reliability` | **13 failed / 44 passed**; paused-abort retry and implementation-incomplete sibling assertions missed their expected recovery writes |
+| first selected exact subject alone | passed (exit 0) |
+| second file as `engine-reliability` | **13 failed / 44 passed** with the same recovery-write misses |
+| second selected exact subject alone | passed (exit 0) |
+
+The failure remains sequence-only evidence, not an attribution to FN-249: its changed user-cancellation path is not enabled by this fixture, and the selected pre-existing engine-abort subject passes in isolation. Per the mandatory deletion ratchet, the second sighting is quarantined in `scripts/lib/test-quarantine.json` and the matching `engine-reliability` exclude; no timeout, retry, or assertion was changed. Rescue requires a root-cause fix that proves the file's recovery coverage is stable.
+
+
 ### Common shape and investigated result
 
-FN-9125 established that former entry 3 was not PostgreSQL-suite-adjacent: `plugin-runner.test.ts` used an in-memory mocked TaskStore and had no PostgreSQL/harness import. FN-9135 did not identify a root cause, but FN-9141's completed shuffled worker-reuse campaign reproduced and structurally fixed the logger mock-history fixture defect; the suite and its renamed-complete-lane dispatch coverage remain active. Entry 2 remains an active, unreproduced PostgreSQL observation: FN-9146 completed the later A×4/B×3/C×3 campaign without its exact identity failing. Entry 7's second sighting on 2026-08-23 escalated it to a file-level quarantine (deletion deadline 2026-09-06), so it is no longer among the unreproduced first-sighting observations. Entry 1 reproduced under FN-9126 and again under FN-9146's A02–A04 lanes, but remains unattributed rather than structurally fixed. The golden-template/advisory-lock lifecycle and schema-applier's inline baseline path are concrete architecture facts, not a demonstrated cause of these assertions. Core PostgreSQL quarantine is file-level and ledger-locked (inline core excludes now exist in lockstep with the ledger, and the gate-policy guard pins that the two `test:pg-gate` canaries stay out of core excludes): FN-9146 owns the retained evidence for entries 1 and 2; no source or fan-out change is justified before a diagnostic names a causal lifecycle seam. Entry 13 is a further unreproduced instance of that same 15s setup-hook mode, narrowed to the capped four-fork gate lane on a cold cluster. Entry 6 instead records a merge-gate eviction after a loaded-lane setup-hook timeout; `FNXC:PgTestTemplateDb 2026-07-19-17:20` and `FNXC:PgTestWorkerCap 2026-07-18-18:00` are already-landed mitigations for that mode, not new diagnoses to re-open. The Planning Mode entries are separate frontend timing observations.
+FN-9125 established that former entry 3 was not PostgreSQL-suite-adjacent: `plugin-runner.test.ts` used an in-memory mocked TaskStore and had no PostgreSQL/harness import. FN-9135 did not identify a root cause, but FN-9141's completed shuffled worker-reuse campaign reproduced and structurally fixed the logger mock-history fixture defect; the suite and its renamed-complete-lane dispatch coverage remain active. Entries 2 and 13 remain active, unreproduced PostgreSQL observations; entry 7 was closed on 2026-08-23 when the whole file was quarantined on a second sighting of a different test. FN-9146 completed the later A×4/B×3/C×3 campaign without the entry 2 or entry 13 exact identities failing. Entry 1 reproduced under FN-9126 and again under FN-9146's A02–A04 lanes, but remains unattributed rather than structurally fixed. The golden-template/advisory-lock lifecycle and schema-applier's inline baseline path are concrete architecture facts, not a demonstrated cause of these assertions. Core policy forbids inline PG quarantine: FN-9146 owns the retained evidence for entries 1, 2, and 13; entry 7 was closed on 2026-08-23 (see above). No source or fan-out change is justified before a diagnostic names a causal lifecycle seam. Entry 13 is a further unreproduced instance of that same 15s setup-hook mode, narrowed to the capped four-fork gate lane on a cold cluster. Entry 6 instead records a merge-gate eviction after a loaded-lane setup-hook timeout; `FNXC:PgTestTemplateDb 2026-07-19-17:20` and `FNXC:PgTestWorkerCap 2026-07-18-18:00` are already-landed mitigations for that mode, not new diagnoses to re-open. The Planning Mode entries are separate frontend timing observations.
 
 
 
@@ -518,53 +495,6 @@ This resolves the previously unclassified “unrelated satellite-store ordering 
 
 **Terminal negative 2026-08-17 (FN-9131):** The reproduced 27-worker PostgreSQL-directory symptom was investigated with a cluster-shared connection-budget primitive. The first harness wiring and a follow-up that queued registry over-subscription while retaining leases both made the loaded run worse (135 failed files in 174.1s, then 144 failed files in 223.3s); the subject itself was not the only failure. The harness wiring was reverted, the primitive remains characterized independently, and FN-9139 owns a setup-safe admission boundary. No quarantine, timeout change, test retry, skip, worker cap, or assertion change was made.
 
-### 14. WorkflowNodeEditor suite-only single-test flake under full-suite parallel load
-
-- **Status:** Open (first sighting) — recorded per the standing first-sighting rule instead of quarantined; a second sighting of the same test is an ordinary on-sight quarantine.
-
-- **File:** `packages/dashboard/app/components/__tests__/WorkflowNodeEditor.test.tsx`
-- **Exact test:** a single test in this file (182 tests total; the other 181 pass deterministically). The verbatim `suite > case` identity was **not captured**: the vitest output of the loaded full-suite run in which it failed was compacted before the failure block appeared, and the vitest `json` reporter is coverage-only and disabled, so no JSON report exists. Primary uncaptured-name record: RUFU-140 task document `reverify-final-4` ("the failing file/case name was NOT captured"). File-level identification as WorkflowNodeEditor.test.tsx comes from the RUFU-140 verification session record of the same observation window.
-- **Observed tree/SHA:** `71767170f13bb0a5f139af133aa455382e5eae8e` (branch `fusion/rufu-140`, 27 RUFU-140 commits on fleet base `f783e21c5e`), worktree `jade-quail`.
-- **Observed frequency:** one failed test in the `dashboard-app-quality-components-b` curated shard (50 files / 1756 tests) during the RUFU-140 verification battery (full package-quality-suite runs, 2026-08-21 23:30–2026-08-22 ~03:50 UTC). Not a campaign regression: the file passes in the pre-campaign A/B full run at base content and in every current-tree full run (backfill `--no-fail-fast` run: not among the 68 failing files).
-
-| run | result |
-|---|---|
-| full package-quality-suite, 1st run (loaded, 15 lanes) | **failed** — 1 test in the components-b shard, name not captured; components-a showed only the tracked RUFU-153 red (5 files / 30 tests) |
-| full package-quality-suite, 2nd run (same tree, minutes later) | **passed** — components-b 50/50 files, 1756/1756 tests |
-| components-b shard, isolated re-run | **passed** — 50/50 files, 1756/1756 tests (91.6s) |
-| `WorkflowNodeEditor.test.tsx`, isolated full-file run | **passed** — all 182 tests |
-| current-tree backfill `--no-fail-fast` full run | **passed** — file not in the 68 failing files |
-| pre-campaign A/B full run (242 campaign files at `f783e21c5e` content) | **passed** — file not in the pre-campaign-only failure set |
-
-No appeasement was attempted: no timeout widening, no retry added, no assertion loosened, no `.skip`, no worker-cap change. The file retains 181 passing tests, so file-level quarantine over a single uncaptured observation would evict substantial coverage; the first-sighting record preserves the evidence for an immediate second-sighting quarantine (entry in `scripts/lib/test-quarantine.json` plus the matching one-line `exclude` in the dashboard vitest config, same commit).
-
-### 15. voice-dictation-composers real-ChatView-surface cases fail (pre-existing ChatView composer drift, RUFU-153 family)
-
-- **Status:** Closed 2026-08-22 by RUFU-140 — quarantined on sight per the escalation declared above: the 2026-08-22 ~09:57 UTC RUFU-140 verification session (worktree faint-raven, HEAD `016db03e46`) produced the next standalone failure (11-file targeted batch: the same 7 cases failed / 804 passed). Ledger entry added to `scripts/lib/test-quarantine.json` (`quarantinedAt` 2026-08-22; deletion-ratchet deadline 2026-09-05) with the matching excludes in `packages/dashboard/vitest.config.ts` (the `quarantinedDashboardTests` const array plus a concrete `coverage.exclude` entry for lockstep-checker visibility) in the same commit. No appeasement. Rescue requires the RUFU-153 root-cause fix, not stabilization passes. **Rescued 2026-08-22 by RUFU-153 (branch `fusion/rufu-153`), before the 2026-09-05 deadline:** the root-cause attribution resolved in favor of (a) — the 7 cases were stale against the intentional list-first contract (the ChatView main pane opens only via the session/room row click, per FN-054/FN-068; the production `detailOpen` gate is a documented design decision, not a regression). The real-`ChatView` surfaces now drive that canonical user path (session row `chat-session-voice-session`, room row `chat-room-item-room-1` with a mutable mocked room list, QuickChatFAB open + session row), and the `useChatRooms` mock gained the paired `rooms` list seam. No appeasement: no timeout widening, retries, assertion changes, or `.skip`. The ledger row and both `packages/dashboard/vitest.config.ts` excludes were removed in the same commit (lockstep).
-- **Prior observation (task-document only, not register-recorded):** RUFU-140 verification session of 2026-08-21 ~20:24 UTC (worktree `jade-quail`, HEAD `71767170f1`, task document `docs` rev 4) observed the same 7 isolated-run failures with the same A/B signature (base content 14 ⊇ 7) and judged the full package suite green the authoritative signal. That observation is disclosed here so the escalation clock is explicit: the next standalone failure of these tests quarantines the file.
-
-- **File:** `packages/dashboard/app/components/__tests__/voice-dictation-composers.test.tsx`
-- **Exact tests (7 of 38; all real-`ChatView`-surface cases — the other 31 pass deterministically):**
-  - `voice dictation composer inventory > opens the reachable shared ChatView composer from QuickChatFAB`
-  - `voice dictation composer inventory > renders exactly a shared mic on 'ChatView primary composer' and removes its subscription on unmount`
-  - `voice dictation composer inventory > renders exactly a shared mic on 'ChatView secondary room composer' and removes its subscription on unmount`
-  - `voice dictation composer inventory > renders exactly a shared mic on 'QuickChatFAB-opened shared ChatView composer' and removes its subscription on unmount`
-  - `voice dictation composer inventory > drives anchored partial → final replacement through real 'ChatView primary composer'`
-  - `voice dictation composer inventory > drives anchored partial → final replacement through real 'ChatView secondary room composer'`
-  - `voice dictation composer inventory > drives anchored partial → final replacement through real 'QuickChatFAB-opened shared ChatView composer'`
-- **Observed tree/SHA:** `e36d9149a716357b20767e42825a4b3b12ffca24` (branch `fusion/rufu-140`, 28 commits on fleet base `f783e21c5e`), worktree `jade-quail`, 2026-08-22 ~04:45–05:00 UTC.
-- **Observed frequency:** (1) 2026-08-21 ~20:24 UTC solo isolated run at HEAD `71767170f1` — same 7 cases failed (task document `docs` rev 4; same-SHA full package suite green). (2) 2026-08-22 RUFU-140 verification session: 11-file targeted batch (7 failed, 804 passed), then solo file run ×2 (same 7 failed / 31 passed each), at HEAD `e36d9149a7`. NOT observed in the same-SHA full package suite run of 2026-08-22 04:11–04:26 UTC (that run's red set was the five tracked RUFU-153 `ChatView.*` shard files only) — the failure is context-dependent (solo/targeted runs fail; the loaded sharded suite runs passed), consistent with the real `ChatView` composer's async session/composer effect ordering under different load shapes.
-
-**A/B attribution (same product tree; only the test-file content differs):** the pre-campaign test-file content (the `f783e21c5e` version of this file) run against the current product code fails **14** tests — the same 7 real-`ChatView` cases plus 7 more (TaskPlannerChatTab-surface and whole-inventory cases) that the RUFU-140 fixture repairs (the `planningModel` → `taskChatModel` prop rename matching the current `TaskPlannerChatTab` prop, plus type-cast fixes) repaired. All 7 remaining failures fail identically under both file versions with the same symptom: the real `ChatView` composer renders no `textarea` after a single `act` flush, so `expect(textarea).not.toBeNull()` / the mic `aria-label` query throws. This is the RUFU-153 failure family (ChatView composer/streaming refactor DOM-structure/effect-ordering drift; `app/components/ChatView.tsx` is product code, out of RUFU-140's scope) surfacing in a non-`ChatView*`-named file that exercises real ChatView composer surfaces. The RUFU-140 edits strictly reduced this file's failures (14 → 7); no assertion was changed and the failing assertions are the file's pre-existing ones.
-
-| run | result |
-|---|---|
-| 11-file targeted batch, HEAD `e36d9149a7` | **7 failed** (all in this file, real-ChatView surfaces) / 804 passed |
-| solo file run ×2, HEAD `e36d9149a7` | **7 failed / 31 passed** each |
-| solo file run, **base test-file content** (`f783e21c5e` version) at current product | **14 failed / 24 passed** — strict superset; the same 7 cases fail under both versions |
-| full package suite, 2026-08-22 04:11–04:26 UTC, same SHA (prior RUFU-140 verification battery) | passed — red set was the five tracked RUFU-153 `ChatView.*` shard files only |
-
-No appeasement was attempted: no timeout widening, no retry added, no assertion loosened, no `.skip`, no worker-cap change. The file retains 31 passing tests, so file-level quarantine over this first sighting would evict substantial coverage; the first-sighting record preserves the evidence for an immediate second-sighting quarantine (entry in `scripts/lib/test-quarantine.json` plus the matching one-line `exclude` in the dashboard vitest config, same commit). Root-cause ownership: RUFU-153 (ChatView composer product drift).
 ---
 
 ## Entry: `self-healing-pending-wedge-notification` marker-selection count (first sighting)

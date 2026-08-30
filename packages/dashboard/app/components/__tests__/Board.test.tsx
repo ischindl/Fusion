@@ -1,5 +1,4 @@
 import React from "react";
-import type { BoardWorkflowDefinition, BoardWorkflowsPayload } from "../../api/projects/board-workflows";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import { Board } from "../Board";
@@ -24,13 +23,11 @@ vi.mock("../../hooks/useBatchBadgeFetch", () => ({
 }));
 
 const pendingBoardWorkflows = () => new Promise<never>(() => {});
-const fetchBoardWorkflowsMock = vi.fn<(..._args: unknown[]) => Promise<BoardWorkflowsPayload>>().mockImplementation(pendingBoardWorkflows);
-const promoteTaskMock = vi.fn().mockResolvedValue({});
+const fetchBoardWorkflowsMock = vi.fn().mockImplementation(pendingBoardWorkflows);
 
 vi.mock("../../api", () => ({
   fetchWorkflowSteps: (...args: unknown[]) => fetchWorkflowStepsMock(...args),
   fetchBoardWorkflows: (...args: unknown[]) => fetchBoardWorkflowsMock(...args),
-  promoteTask: (...args: unknown[]) => promoteTaskMock(...args),
 }));
 
 // Capture SSE event handlers registered via subscribeSse so tests can simulate
@@ -199,7 +196,6 @@ beforeEach(() => {
   fetchBatchMock.mockReset();
   fetchWorkflowStepsMock.mockReset();
   fetchWorkflowStepsMock.mockImplementation(pendingWorkflowSteps);
-  promoteTaskMock.mockClear();
   subscribeSseMock.mockClear();
   for (const key of Object.keys(sseHandlers)) delete sseHandlers[key];
   fetchBoardWorkflowsMock.mockReset();
@@ -242,7 +238,6 @@ function createBoardProps(overrides = {}) {
     planAutoApproveEnabled: false,
     onTogglePlanAutoApprove: noop,
     globalPaused: false,
-    showWorktreeGrouping: false,
     onUpdateTask: undefined,
     onArchiveTask: undefined,
     onUnarchiveTask: undefined,
@@ -307,7 +302,7 @@ function installMobileBoardStabilizationHarness() {
       if (visualViewportDescriptor) {
         Object.defineProperty(window, "visualViewport", visualViewportDescriptor);
       } else {
-        delete ((window as unknown) as { visualViewport?: VisualViewport }).visualViewport;
+        delete (window as typeof window & { visualViewport?: VisualViewport }).visualViewport;
       }
     },
   };
@@ -418,7 +413,7 @@ describe("Board", () => {
           log: [],
           createdAt: "2024-01-01T00:00:00.000Z",
           updatedAt: "2024-01-01T00:00:00.000Z",
-          prInfo: { number: 123, owner: "runfusion", repo: "fusion" } as unknown as Task["prInfo"],
+          prInfo: { number: 123, owner: "runfusion", repo: "fusion" } as Task["prInfo"],
         },
         {
           id: "FN-ISSUE-1",
@@ -431,7 +426,7 @@ describe("Board", () => {
           log: [],
           createdAt: "2024-01-01T00:00:00.000Z",
           updatedAt: "2024-01-01T00:00:00.000Z",
-          issueInfo: { number: 456, owner: "runfusion", repo: "fusion" } as unknown as Task["issueInfo"],
+          issueInfo: { number: 456, owner: "runfusion", repo: "fusion" } as Task["issueInfo"],
         },
       ];
 
@@ -520,8 +515,7 @@ describe("Board", () => {
   });
 
   describe("search functionality", () => {
-    const createTask = (overrides: Partial<Task> & { id: string; description?: string }): Task => ({
-      description: "Task",
+    const createTask = (overrides: Partial<Task> & { id: string; description: string }): Task => ({
       column: "todo",
       dependencies: [],
       steps: [],
@@ -776,7 +770,7 @@ describe("Board", () => {
 
         const taskWithCreatedAtOnly = tasks[1];
         delete taskWithCreatedAtOnly.columnMovedAt;
-        delete (taskWithCreatedAtOnly as unknown as { updatedAt?: unknown }).updatedAt;
+        delete taskWithCreatedAtOnly.updatedAt;
 
         renderBoard({ tasks });
 
@@ -1256,7 +1250,7 @@ describe("Board", () => {
       ],
     };
 
-    function enableFlag(taskWorkflowIds: Record<string, string>, workflows: BoardWorkflowDefinition[] = [DEFAULT_WORKFLOW]) {
+    function enableFlag(taskWorkflowIds: Record<string, string>, workflows = [DEFAULT_WORKFLOW]) {
       fetchBoardWorkflowsMock.mockResolvedValue({
         flagEnabled: true,
         defaultWorkflowId: "builtin:coding",
@@ -2170,7 +2164,7 @@ describe("Board", () => {
       expect(board).toHaveClass("board", "board-workflow-columns");
     });
 
-    it("disables desktop mouse panning at the mobile viewport without changing touch ownership", () => {
+    it("keeps intent-gated desktop mouse panning active at the mobile viewport without changing touch ownership", () => {
       const harness = installMobileBoardStabilizationHarness();
       try {
         enableFlag({});
@@ -2186,7 +2180,7 @@ describe("Board", () => {
         fireEvent.pointerMove(emptyText, { clientX: 40, clientY: 50, pointerId: 2, pointerType: "touch" });
         fireEvent.pointerUp(emptyText, { pointerId: 2, pointerType: "touch" });
 
-        expect(board.scrollLeft).toBe(100);
+        expect(board.scrollLeft).toBe(160);
         expect(board).not.toHaveClass("is-mouse-panning");
       } finally {
         harness.restore();

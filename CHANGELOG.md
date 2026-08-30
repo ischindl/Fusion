@@ -2,6 +2,65 @@
 
 User-facing release notes aggregated across all packages. This file is auto-synced from each `packages/*/CHANGELOG.md` by `scripts/release.mjs` — do not edit by hand.
 
+## 0.77.0-beta.11
+
+### Highlights
+
+- Task recovery is now just Retry, Reset, and Delete — Respecify and Restart stage are gone
+- Reset opens an editable description dialog and deletes the task branch so the next run starts clean
+- Every configured repo is prepped in a task-ID worktree; worktreeNaming and recycleWorktrees removed
+- New Fast lane runs quick changes with no planning and no pre-merge review
+- New History view keeps a permanent, searchable daily log of completed and reverted tasks
+
+### Breaking
+
+- Task recovery is simplified to Retry, Reset, and Delete. The restart-stage route and the Respecify and Restart stage dashboard actions are removed; Retry restarts the current stage and is now visible on intake cards.
+- Reset replaces Respecify: it opens an editable original-description dialog, and the client `resetTask` parameter order changed to options-second, projectId-last.
+- Every configured repository is prepared in a task-ID worktree before work starts. The `worktreeNaming` and `recycleWorktrees` settings, the `fn_acquire_repo_worktree` tool, and `POST /tasks/:id/repository-scope` are removed, and persisted values for the removed settings are ignored. Adds multi-ecosystem dependency bootstrap and a blocking Plan Review dependency gate.
+- Revision findings are now the only authority that can move a task backward. Blocked-exit auto-replan, several recovery and sweep paths, and executor stuck-kill terminalization are removed along with their audit events.
+- Unplanned tasks can no longer be force-started. The promote force option, `issueRelease` unplanned waiver, promote force API field, `fn_task_promote` force parameter, and the forced-promote audit event are gone.
+- The per-task manual plan-approval toggle and shield badges are removed; plan approval resolves from settings only.
+
+### New
+
+- Fast lane: create quick tasks that run one implementation pass, skipping planning and selected pre-merge review groups while keeping the normal merge path.
+- History view: a searchable, permanent daily log of completed and reverted tasks, with a read-only chat tool for reading it. Each re-delivery gets its own dated entry, and entries outlive archive cleanup.
+- Task History tab collects the planning, implementation, review, and merge reports for a task in one place.
+- Tasks that hit an external infrastructure block now preserve their work and resume exactly where they stopped, with dashboard recovery and audit events.
+- Multi-repository tasks can be reset safely back to fresh planning, including workspace coordination cleanup.
+- Planning Mode history shows the original prompt that started the session, read-only.
+- Duplicating a task lets you choose an enabled workflow, and Planning Mode create requests honor the default.
+- Plan-preserving Respecify: revise the spec without discarding the approved plan.
+- Reviewers must now supply notes with every verdict, and those notes appear in task activity summaries.
+- Task logs show complete, readable tool inputs and outputs; persisting tool output is now on by default, with clamped raw log and CLI blocks.
+- Task Detail is consolidated: Cost, Routing, Debug, Attachments, and Recommendations are folded into Stats, Details, Artifacts, and Summary. Summary now carries merge details and per-step timings.
+- New Cozy Cartoon theme with a pastel light palette and oversized rounded buttons.
+
+### Fixed
+
+- Reset and manual cancel now stop a running task cleanly, leaving no failed step and no blocked merge.
+- Merged review cards can advance to Done, and merged task worktrees are cleaned up before completion.
+- The merger no longer re-runs a full AI merge for work that already landed, short-circuiting to finalization when the landing is proven.
+- Self-healing reclaim keeps task branches and checkouts attached when it hits a non-conflict failure, and rebinds relocated worktrees from Git.
+- Automatic recovery stays in its owning lifecycle stage, with visible move attribution and workspace checkout reuse.
+- Workspace Code Review reports one complete verdict across every modified repository, persists approvals so reviewed tasks can merge, and reopens implementation with named fixes when changes are requested.
+- Workspace tasks can retry their current stage without losing per-repository landing progress, and workspace Reset no longer deletes a task directory held by an active session.
+- Review fix steps keep being created past three rounds while the evidence actually changes, and frozen review cycles no longer repeat the same model without change evidence.
+- Completed verification history is preserved, and a fresh verification pass is required after review fixes.
+- Checks that could not run are shown as not executed instead of passed.
+- No-change tasks conclude once with a visible terminal outcome, and Review shows a single completion summary with the empty Merge section removed.
+- Tasks no longer freeze when a required tool is unavailable; host capabilities are injected into planning and Plan Review.
+- Waiting planning and implementation work starts as soon as shared capacity frees up, while overlapping tasks stay queued until unfinished work lands.
+- Activity Feed entries stay current over SSE, task History moves into Activity Summaries, and duplicated review reports render once.
+- The task Plan summary survives transient prompt refresh failures.
+- Long steering messages and comments are no longer rejected.
+- Per-task human plan approval is visible and actionable from the workflow planning lane.
+- Remediation steps use concise review finding titles instead of full finding bodies.
+- Reset tasks restart in Planning with their confirmed original request.
+- Board controls stay clickable in narrow desktop windows; board tiles show the pointing hand, and panning shows the grabbing hand.
+- Optional review selections are restored after turning off Fast task creation mode.
+- Task timelines stay consistent across workspace and single-repository runs.
+
 ## 0.77.0-beta.10
 
 ### Highlights

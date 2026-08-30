@@ -702,7 +702,20 @@ export function isTaskReadyForMerge(
     mergeContent?: MergeContentDescriptor;
   } = {},
 ): boolean {
-  return getTaskMergeBlocker(task, options) === undefined;
+  /*
+  FNXC:WorkflowLifecycleColumns 2026-08-29-23:50:
+  Forward each resolved lane input by name rather than spreading `options` through.
+  #3514 wrote it this way so the lane-wiring census can prove the seam is active; a
+  later merge of origin/main resolved the conflict back to the wholesale forward, and
+  because a bare `options` pass reads as an unwired call site the ratchet went red on
+  main — failing the Lint gate on every open PR at once, none of which had touched
+  this file. Keep the arguments explicit: the census reads call sites, not types.
+  */
+  return getTaskMergeBlocker(task, {
+    reviewColumns: options.reviewColumns,
+    requiredPreMergeStepIds: options.requiredPreMergeStepIds,
+    mergeContent: options.mergeContent,
+  }) === undefined;
 }
 
 export interface TaskCompletionBlockerOptions {

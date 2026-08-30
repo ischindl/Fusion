@@ -1,5 +1,177 @@
 # @runfusion/fusion
 
+## 0.77.0-beta.11
+
+### Minor Changes
+
+- 97fcc5a: summary: Reset multi-repository tasks safely back to fresh planning.
+  category: feature
+  dev: Adds the core reset target planner, workspace-aware reset route cleanup, and publication-time workspace coordination cleanup.
+- d16c8d6: summary: Add an in-place Restart stage action for live task workflow stages.
+  category: feature
+  dev: Adds POST /tasks/:id/restart-stage and the planTaskColumnRestart lifecycle seam.
+- c0e99df: summary: Simplify task recovery to Retry, Reset, and Delete.
+  category: breaking
+  dev: Removed the restart-stage route and Respecify/Restart stage dashboard affordances; Retry now restarts the current stage and is visible on intake cards.
+- 26f2a20: summary: Keep automatic task recovery in its owning lifecycle stage.
+  category: fix
+  dev: Adds enforced lifecycle containment, visible move attribution, remediation placement, and workspace checkout reuse.
+- becaacc: summary: Add a task History tab for planning, implementation, review, and merge reports.
+  category: feature
+  dev: Adds task stepReports migration 0068, fn_task_update summaries, and a shared History workflow-results gate.
+- 38ed1d2: summary: Preserve task work and resume exactly after external infrastructure blocks.
+  category: feature
+  dev: Adds durable external-block metadata, frozen resource accounting, dashboard recovery, and audit events.
+- 1ffd202: summary: Planning Mode history now shows the original prompt that started the session, read-only.
+  category: feature
+  dev: Adds PlanningSessionPrompt to History, error, and plan-review Q&A surfaces.
+- 156919e: summary: Choose an enabled workflow when duplicating tasks and honor the Planning Mode default.
+  category: feature
+  dev: Adds `workflowId` to `POST /api/tasks/:id/duplicate` and normalizes Planning Mode create requests.
+- 532fabc: summary: Add plan-preserving Respecify.
+  category: feature
+  dev: Adds the preservePlan spec-revision flag.
+- eb29966: summary: Add the Cozy Cartoon color theme with a pastel light palette and oversized rounded buttons.
+  category: feature
+- 5e4934c: summary: Make revision findings the only authority that moves tasks backward.
+  category: breaking
+  dev: Removes blocked-exit auto-replan; execution-resume, stale-spec-replan, blocked-exit-replan, missing-required-artifact-recovery, and workflow-retry-rehome reasons; ghost-review, stale-incomplete-review, terminal-failure, in-progress-limbo, and zero-progress no-task-done sweeps; executor stuck-kill terminalization and use of maxStuckKills (retained for triage); and their terminal-failure, no-progress, and in-progress-limbo audit events.
+- 55edb7a: summary: Add a Patchnode view with a searchable, permanent daily log of completed and reverted tasks.
+  category: feature
+  dev: New project.patchnode_entries table (migration 0071) keyed per completion occurrence so re-deliveries each get their own dated entry. Completion entries are written inside the move transaction in both completion writers because columnMovedAt is overwritten by the next move. No FK to tasks and no row expiry, so entries outlive archive cleanup; reads never join tasks. Archive and cleanup capture pre-Patchnode backlog, and reconciliation re-arms on a TTL. Adds GET /api/patchnode and the read-only fn_patchnode_read chat tool.
+- e85ec40: summary: Reset now deletes the task's local branch and commits so the next run starts clean.
+  category: fix
+  dev: Adds `branchCleanupTargets`, `planTaskResetBranchCleanup`, and `deleteTaskResetBranches`; absent reset targets skip the ownership proof.
+- 7a595a2: summary: Reset now opens an editable original-description dialog and replaces Respecify.
+  category: breaking
+  dev: Removes the Respecify dialog and menu action while retaining the spec-revision route; adds reset endpoint description input and reorders resetTask client parameters to options-second/projectId-last.
+- de1a1a7: summary: Remove the per-task manual plan-approval toggle and shield badges.
+  category: breaking
+  dev: Removes Task.requirePlanApproval and create/update API acceptance; resolvePlanApprovalRequired now takes settings only. The project.tasks.require_plan_approval column and migration 0070 remain preserved and inert.
+- e4ba6b4: summary: Require reviewer notes for every verdict and show them in task activity summaries.
+  category: feature
+  dev: Derives notes from prose then findings, performs one bounded same-session repair, preserves per-repository notes, and adds taskHistory.entry.verdictNoNotes.
+- bd25845: summary: Prevent tasks from freezing when a required tool is unavailable.
+  category: fix
+  dev: Removes the third-party-service/UNCLASSIFIED freeze fallback and injects host capabilities into planning and Plan Review.
+- 7909915: summary: Consolidate Task Detail tabs so reports, changes, and spend each have one clear home.
+  category: feature
+  dev: Removed Cost, Routing, Debug, Attachments, and Recommendations tabs; content now lives in Stats, Details, Artifacts, and Summary.
+- 9aa5581: summary: Prevent unplanned tasks from being force-started into execution.
+  category: breaking
+  dev: Removes the promoteHeldTask force option, issueRelease allowUnplanned option, POST /tasks/:id/promote force body field and forceable hint, fn_task_promote force parameter, task:promote-forced-unplanned audit event, and column.promoteUnplannedTitle, column.promoteUnplannedMessage, column.promoteUnplannedConfirm, and column.promoteUnplannedCancel i18n keys.
+- 57eb789: summary: Add a Fast lane for quick task changes without planning or pre-merge review.
+  category: feature
+  dev: Fast tasks now use one original-request implementation occurrence, skip per-step review and selected pre-merge groups, and retain the existing merge path.
+- 407d11a: summary: Show complete, readable tool inputs and outputs across Fusion task logs.
+  category: feature
+  dev: Defaults persistAgentToolOutput to enabled; expands tool arguments and TaskStore.appendAgentLogBatch timing, adds visible clamped Raw Logs and CLI blocks, shares bounded fn_task_logs_read and run-log detail handling, bounds overseer deltas, and keeps archive summaries text-first.
+- 5b438d8: summary: Reorganize task Summary with merge details and per-step timings.
+  category: feature
+  dev: Removes `taskDetail.summaryTab.completedSteps` and moves `MergeDetails` from Changes to Summary.
+- 14babc4: summary: Prepare every configured repository in a task-ID worktree before work starts.
+  category: breaking
+  dev: Removes `worktreeNaming`, `recycleWorktrees`, `fn_acquire_repo_worktree`, and `POST /tasks/:id/repository-scope`; persisted removed-setting values are ignored. Adds multi-ecosystem dependency bootstrap with unrecognised-evidence detection, planning-only `fn_install_worktree_dependencies`, and a blocking Plan Review dependency gate that uses the existing bounded replan cap and `awaiting-approval` escalation.
+- e4889f8: summary: Rename Patchnote and make Start/Reset reactive, guard duplicate Start clicks, and remove Promote cards.
+  category: feature
+  dev: Removes the Promote card affordance and catalog keys; adds the optional expectedColumn move CAS, confirmed-row reconciliation, and canonical-worktree Reset ownership proof.
+- 875af8b: summary: Rename the Patchnote view to History across navigation, view copy, and chat tool labels.
+  category: feature
+  dev: Keeps the patchnode view id, nav.patchnode and patchnode._ keys, patchnode-_ test ids, project.patchnode_entries, and fn_patchnode_read unchanged.
+
+### Patch Changes
+
+- b802d4b: summary: Keep task Activity Feed entries current and accept focus resume diagnostics.
+  category: fix
+  dev: Retains journals in mergeTaskSnapshot, resyncs Feed through SSE, and shares resume triggers.
+- e24b109: summary: Keep task branches and checkouts attached when self-healing reclaim encounters a non-conflict failure.
+  category: fix
+  dev: Fixes reclaim and merger branch-write provenance, narrows conflict escalation, and rebinds relocated worktrees from Git.
+- 1e8627a: summary: Prevent workspace Reset from deleting a task directory held by an active session.
+  category: fix
+  dev: Applies admission and point-of-use session fences to workspace coordinator cleanup.
+- eaeb265: summary: Merger no longer re-runs a full AI merge for work that already landed.
+  category: fix
+  dev: runAiMerge short-circuits to finalization when mergeDetails proves a verified landing on the resolved integration branch (confirmed flag, locally present and reachable commitSha, matching mergeTargetBranch, and a pinned landedBranchTipSha equal to the live branch tip); an expected-tip ref deletion fences concurrent branch advances, and any missing or stale proof falls through to the full clean-room merge.
+- 7c46ce3: summary: Allow successfully merged review cards to advance to Done.
+  category: fix
+  dev: Updates rule F3 in workflow-lifecycle-direction.ts and lets getPostMergeFinalizeBlocker ignore failed after proof.
+- 9b4d79d: summary: Report one complete workspace Code Review verdict across every modified repository.
+  category: fix
+  dev: Updates reviewWorkspacePerRepo with severity ordering, per-repository failure isolation, provider-error abort with unchanged seam handling, and an all-blocking-repository convergence signature.
+- 421e046: summary: Prevent frozen review cycles from repeating the same model without change evidence.
+  category: fix
+  dev: Persists reviewedCommitSha and reuses execution fallback and effective-model resolution helpers.
+- 244a070: summary: Conclude no-change tasks once with a visible terminal outcome.
+  category: fix
+  dev: Adds empty-review identity, a fenced terminal park, review-lane settling, and terminal empty-merge blockers.
+- 5e12f4f: summary: Show checks that could not run as not executed instead of passed.
+  category: fix
+  dev: Adds `notRunReason`, a narrow pre-merge approval carve-out, and a Plan Review recorder exclusion.
+- 6e02d19: summary: Make per-task human plan approval visible and actionable from the workflow planning lane.
+  category: fix
+  dev: Forwards the create override, widens planning-lane UI and route acceptance, keeps reject/respecify in place, and adds badges.
+- e1ce294: summary: Show the pointing hand over board task tiles and the grabbing hand throughout active board pans.
+  category: fix
+  dev: Supersedes the unreleased FN-220 tile cursor entry with the corrected resting affordance.
+- bfae5fd: summary: Move task History into Activity Summaries and render duplicated review reports once.
+  category: fix
+  dev: Summaries renders all report stages sequentially and preserves legacy History links.
+- 42c8df4: summary: Reopen workspace implementation with named fixes when Code Review requests changes.
+  category: fix
+  dev: Resolves remediation gates structurally and routes recovery and arbitration through the failing repository checkout.
+- f68ada2: summary: Allow workspace tasks to retry their current stage without losing repository landing progress.
+  category: fix
+  dev: Removes the `workspace-task` restart refusal and uses `isMergeActiveStatus` for the active-merge fence.
+- d143d68: summary: Keep creating review fix steps beyond three rounds while actionable evidence changes.
+  category: fix
+  dev: Removes `released-wave-exhausted` and the hard-coded wave cap; adds output-derived `evidenceDigest` and `released-verification-no-progress`, workspace unchanged-input parity, and Code Review attempt-ledger writes that enforce authored `maxRevisions`.
+- c1150fb: summary: Keep the task Plan summary visible through transient prompt refresh failures.
+  category: fix
+  dev: Publishes PROMPT.md atomically and confirms degraded narrow reads with an authoritative task-detail refresh.
+- 3c330ce: summary: Preserve completed verification history and require a fresh verification pass after review fixes.
+  category: fix
+  dev: Replaces in-place verification resets with append-only remediation and replay occurrences.
+- f3fad13: summary: Restart reset tasks in Planning with their confirmed original request.
+  category: fix
+  dev: Publishes an empty fresh-planning state and resolves manual-intake resets to the Planning hold lane.
+- 2eb2539: summary: Ensure every saved reviewer verdict includes readable notes.
+  category: fix
+  dev: Adds deterministic no-notes narration and bounded `task:review-notes-repaired` telemetry.
+- 06afb99: summary: Start waiting planning and implementation work as soon as shared capacity becomes available.
+  category: fix
+  dev: Classifies automatic hold candidates without refusal logs, preserves force waivers, and wakes both lanes on slot release.
+- e7abb42: summary: Show concise review finding titles in remediation step names.
+  category: fix
+  dev: `deriveRemediationSteps` now labels Code Review fixes from finding titles while preserving finding bodies in `remediation.detail`.
+- c70fffb: summary: Reset and manual cancel now stop a running task cleanly, with no failed step or blocked merge.
+  category: fix
+  dev: Graph traversal halts on the run abort signal. Durable step-result writes now use a field-bounded TaskStore primitive that serializes with Reset's task advisory lock and checks the exact startedAt attempt before publishing.
+- 12a9579: summary: Clean merged task worktrees before marking tasks complete.
+  category: fix
+  dev: Uses `CompletionLandedCleanup`, proof-gated removal, and the shared post-landing cleanup helper.
+- 50dce61: summary: Keep overlapping tasks queued until unfinished work lands.
+  category: fix
+  dev: Adds active/dormant file-scope lease classification across scheduler, healing, repair, and executor dispatch.
+- 283dd10: summary: Keep task timelines consistent across workspace and single-repository runs.
+  category: fix
+  dev: Aligns workspace gate context, step-ledger sealing, dependency readiness, merge attribution, and lifecycle provenance.
+- 7c9ea8e: summary: Allow long task steering messages and comments without rejection.
+  category: fix
+  dev: Uses MAX_TASK_MESSAGE_LENGTH and task-message routes share the 2 MiB JSON parser envelope.
+- deb4c31: summary: Persist workspace Code Review approvals so reviewed tasks can merge.
+  category: fix
+  dev: Adds the publishWorkspaceCodeReviewEvidence TaskStore writer.
+- a4c4302: summary: Restore optional review selections after disabling Fast task creation mode.
+  category: fix
+  dev: Uses fastModeOptionalSteps in QuickEntryBox and TaskForm.
+- 138deb9: summary: Show one completion summary in Review and remove the empty Merge section.
+  category: fix
+  dev: `buildTaskHistory` recognizes completion-summary and documentation-delivery projection ids, classifies them deterministically into Review, emits verdict-free and status-free entries to suppress report badges, and prefers the cleaned `task.summary` body. The obsolete `taskHistory.stage.merge` and `taskHistory.empty.merge` localization keys are removed.
+- 6495ab7: summary: Keep Board controls clickable in narrow desktop browser windows.
+  category: fix
+  dev: Stops mouse capture in the mobile column-snap hook and keeps intent-gated Board mouse panning active.
+
 ## 0.77.0-beta.10
 
 ### Minor Changes
