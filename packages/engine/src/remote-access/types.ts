@@ -55,7 +55,10 @@ export type TunnelRestoreReasonCode =
   | "provider_not_configured"
   | "runtime_prerequisite_missing"
   | "restore_start_failed"
-  | "restore_started";
+  | "restore_started"
+  /* FNXC:RemoteAccess 2026-08-31-07:08: restore ran while the tunnel was already up — an engine
+     restart re-entering restore must leave a live tunnel untouched, not bounce it. */
+  | "already_running";
 
 export interface TunnelRestoreDiagnostics {
   outcome: TunnelRestoreOutcome;

@@ -396,6 +396,17 @@ export interface WorkflowStepResult {
   remediationArchivedAt?: string;
   remediationArchivedFromStatus?: WorkflowStepResult["status"];
   /*
+   * FNXC:LifecycleContainment 2026-08-30-12:57:
+   * FN-267 makes automatic remediation admission an owner-scoped lease on one review-input
+   * episode. A claim with no reason is in flight and reclaimable after its staleness floor; a
+   * claim with a fixed refusal reason suppresses only that exact input; owner matching prevents a
+   * displaced runner from clearing or condemning its successor's review round.
+   */
+  remediationAttemptSignature?: string;
+  remediationAttemptOwner?: string;
+  remediationAttemptClaimedAt?: string;
+  remediationRefusedReason?: "no-actionable-findings" | "upstream-out-of-scope" | "unclassified-gate-no-reopen" | "appender-declined";
+  /*
    * FNXC:WorkflowStepNotRun 2026-08-28-14:13:
    * A gate that did not execute is persisted as terminal `status: "skipped"` plus a fixed-enum
    * reason. `passed` is reserved for a check that actually ran and passed, while the closed reason

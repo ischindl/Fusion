@@ -25,6 +25,7 @@ import {
   type EngineSingletonLock,
 } from "./project/engine-singleton-lock.js";
 import { runtimeLog } from "./logger.js";
+import { shutdownAllRemoteTunnels } from "./remote-access/remote-tunnel-service.js";
 
 /**
  * Options shared across all engines created by the manager.
@@ -291,6 +292,31 @@ export class ProjectEngineManager {
     } catch (error) {
       runtimeLog.warn(`Failed to persist local node offline before engine shutdown: ${error instanceof Error ? error.message : String(error)}`);
     }
+
+    /*
+    FNXC:RemoteAccess 2026-08-31-07:08:
+    Remote tunnels are process-lifetime, not engine-lifetime (see remote-tunnel-service.ts), so THIS
+    is the only path that stops them — `engine.stop()` no longer does, which is what lets "Stop
+    engine"/"Restart engine" leave the operator's public URL alive. Run it before engine.stop() while
+    each TaskStore is still open, so the "was running on shutdown" marker persists and restore-on-start
+    can bring the tunnel back.
+    */
+    const tunnelShutdowns = Array.from(this.engines.entries()).map(
+      async ([id, engine]) => {
+        try {
+          await engine.shutdownRemoteTunnelForProcessExit();
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          runtimeLog.warn(`Engine ${id} remote tunnel shutdown error: ${message}`);
+        }
+      },
+    );
+    await Promise.all(tunnelShutdowns);
+    // Sweep any tunnel whose engine is already gone (e.g. a paused project) so no child process
+    // outlives this one publishing a port nothing serves.
+    await shutdownAllRemoteTunnels().catch((err) => {
+      runtimeLog.warn(`Remote tunnel sweep error: ${err instanceof Error ? err.message : String(err)}`);
+    });
 
     const stops = Array.from(this.engines.entries()).map(
       async ([id, engine]) => {

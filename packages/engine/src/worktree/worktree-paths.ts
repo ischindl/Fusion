@@ -2,12 +2,20 @@ import { execFile } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { promisify } from "node:util";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { resolveWorktreesDirLayout, WORKSPACE_GROUP_MARKER_FILENAME, type Settings, type WorkspaceWorktreeContext } from "@fusion/core";
+import {
+  isStrictDescendantPath,
+  resolveWorktreesDirCandidates,
+  resolveWorktreesDirLayout,
+  WORKSPACE_GROUP_MARKER_FILENAME,
+  type Settings,
+  type WorkspaceWorktreeContext,
+} from "@fusion/core";
 import type { WorktreeBackendKind } from "./worktree-backend.js";
 import { canonicalizePath } from "./worktree-pool.js";
 
 export const AI_MERGE_DIRNAME = ".ai-merge";
 export const WORKTREE_RECOVERY_DIRNAME = ".fusion-recovery";
+export const WORKTREE_LOCKS_DIRNAME = ".fusion-worktree-locks";
 
 const execFileAsync = promisify(execFile);
 
@@ -20,7 +28,7 @@ export function isAiMergeContainerDir(name: string): boolean {
  * Cross-filesystem orphan recovery stores preserved task directories under a container inside the configured worktree root. Discovery, cleanup, and capacity scans must treat both internal containers as boundaries rather than task worktrees.
  */
 export function isWorktreeContainerDir(name: string): boolean {
-  return isAiMergeContainerDir(name) || name === WORKTREE_RECOVERY_DIRNAME;
+  return isAiMergeContainerDir(name) || name === WORKTREE_RECOVERY_DIRNAME || name === WORKTREE_LOCKS_DIRNAME;
 }
 
 /**
@@ -88,6 +96,17 @@ export function resolveWorktreesDir(
   return resolveWorktreesDirLayout(rootDir, settings, workspaceContext);
 }
 
+/** Resolves every root that scans and containment checks must consider. */
+export function resolveWorktreesDirScanRoots(
+  rootDir: string,
+  settings: Pick<Settings, "worktreesDir"> | undefined,
+  workspaceContext?: WorkspaceWorktreeContext,
+): string[] {
+  return [...new Set(
+    resolveWorktreesDirCandidates(rootDir, settings, workspaceContext).map((candidate) => canonicalizePath(candidate)),
+  )];
+}
+
 export function resolveTaskWorktreePath(
   rootDir: string,
   settings: Pick<Settings, "worktreesDir"> | undefined,
@@ -134,14 +153,18 @@ export async function resolveTaskWorktreePathForBackend(
   return resolveTaskWorktreePath(rootDir, settings, worktreeName, workspaceContext);
 }
 
+/*
+FNXC:WorktreeCleanup 2026-08-30-15:06:
+The historic root remains containment-valid while the setting is unset, so a persisted
+pre-relocation task worktree is never misclassified as external and left unrecoverable.
+*/
 export function isInsideConfiguredWorktreesDir(
   rootDir: string,
   settings: Pick<Settings, "worktreesDir"> | undefined,
   candidate: string,
   workspaceContext?: WorkspaceWorktreeContext,
 ): boolean {
-  const worktreesDir = canonicalizePath(resolveWorktreesDir(rootDir, settings, workspaceContext));
   const target = canonicalizePath(candidate);
-  const rel = relative(worktreesDir, target);
-  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+  return resolveWorktreesDirScanRoots(rootDir, settings, workspaceContext)
+    .some((worktreesDir) => isStrictDescendantPath(worktreesDir, target));
 }

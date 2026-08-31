@@ -17,7 +17,9 @@ import {
   resolveExecutorEscalationTarget,
   resolveLifecycleColumns,
   resolveMaxConsecutiveToolFailureRetries,
+  hasPendingReviewRemediationWork,
   resolveReboundTarget,
+  resolveStepReopenPolicy,
   resolveWorkflowIrForTask,
   TransitionRejectionError,
 } from "@fusion/core";
@@ -32,6 +34,7 @@ import { getPromptPath } from "../execution/spec-staleness.js";
 import { executorLog } from "../logger.js";
 import { generateSyntheticRunId, type EngineRunContext } from "../util/run-audit.js";
 import { emitBoundedRunAudit } from "./emit-bounded-run-audit.js";
+import { claimRemediationAttempt, resolveRemediationAttempt } from "./claim-review-remediation-attempt.js";
 import { MERGE_BOUNDARY_UNPROVEN_VALUE } from "../workflows/workflow-merge-nodes.js";
 import { emitMergeBoundaryUnprovenParked } from "./emit-merge-boundary-unproven-audit.js";
 import { PAUSE_ABORT_PARK_ERROR_MARKER, PAUSE_ABORT_PARK_OPERATOR_MARKER } from "../self-healing.js";
@@ -118,6 +121,7 @@ export type HandleGraphFailureDeps = {
   resolveResumeLanes: AnyFn;
   routeGraphFailureToExecutionResume: AnyFn;
   routeGraphMergeFailureToRetry: AnyFn;
+  requestPreMergeOptionalStepFix: AnyFn;
   routeImplementationIncompleteMergeGraphFailure: AnyFn;
   routeResetParsePinMismatchToRetry: AnyFn;
   routeRetryableRemediationGraphFailureToPreMergeFix: AnyFn;
@@ -525,6 +529,21 @@ export async function handleGraphFailure(
       Keep the existing breadcrumb, then stop before every recovery classifier so a canceled run
       cannot retry a merge or manufacture a failed park; engine aborts have no user-cancel marker
       and retain their existing recoveries.
+
+      FNXC:WorkflowLifecycle 2026-08-31-06:41:
+      "its in-flight graph run" is enforced at the RUN BOUNDARY, not here. Every abort marker this
+      function reads (`userCanceledTaskIds`, `pausedAborted`, `pausedAbortProvenance`) is a plain
+      task-keyed in-memory collection with no run identity, and `executeWorkflowGraph` now clears
+      them as each run is born -- see the reset there. That is what makes this check honest: a marker
+      present at teardown can only have been set DURING this run.
+
+      An earlier attempt guarded HERE instead, by asking whether the run "carried abort evidence",
+      and it failed in exactly the way it was meant to prevent. It counted `pausedAborted` as
+      evidence, but `awaitAbortInFlightTaskWork` stamps that marker UNCONDITIONALLY -- even when the
+      cancel finds no live surface -- so a dashboard Retry on an idle card left it set and the NEXT
+      run read it as its own. Worse, the same stale marker also turns `genuinePauseAbort` true below,
+      so a REVISE was classified as a pause abort even once it got past this branch. Both traps have
+      one cause, and it is the missing per-run reset, not the reading of it.
       */
       if (deps.userCanceledTaskIds.has(task.id)) {
         deps.clearPausedAborted(task.id);
@@ -1090,9 +1109,85 @@ export async function handleGraphFailure(
         const failedPreMergeStep = latestFailedPreMergeWorkflowStep(live);
         if (failedPreMergeStep) {
           /*
-          FNXC:WorkflowRemediation 2026-08-28-12:16:
-          An advanced card is benign only when no failed pre-merge gate remains. If named remediation could not be scheduled, the card timeline must name the blocking gate and operator remedies rather than claim that no action is needed.
+          FNXC:LifecycleContainment 2026-08-30-12:57:
+          A graph route may end in review without traversing its remediation edge. Before parking a
+          blocking failed gate, use the same producer that live review uses; Code Review's fallback
+          guarantees a malformed REVISE still has one executable Fix step rather than a dead card.
           */
+          const workflowIr = await resolveWorkflowIrForTask(deps.store, task.id).catch(() => undefined);
+          const stepReopenPolicy = resolveStepReopenPolicy(workflowIr);
+          if (live.column === failureLanes.review
+            && !live.paused
+            && !hasPendingReviewRemediationWork(live, { stepReopenPolicy })) {
+            /*
+            FNXC:LifecycleContainment 2026-08-30-13:36:
+            This backstop is an AUTOMATIC remediation attempt, so it owes the same admission claim as
+            the self-healing sweep. Unclaimed, a graph failure racing that sweep could append a second
+            remediation wave, bounce twice, or write a second "explained once" refusal for one review
+            input. It therefore claims the exact failed round, drives the hand-off from the claimed
+            in-transaction snapshot, and releases on success or retains on a genuine decline. Losing
+            the claim — to a live owner, or to a durable refusal already recorded for this same round
+            — is SILENT: the owner narrates that round's outcome, and a second park message here would
+            be the duplicate operator noise this task exists to remove.
+            */
+            const admission = await claimRemediationAttempt(deps.store, task.id, failedPreMergeStep, "graph-failure", live);
+            /*
+            FNXC:LifecycleContainment 2026-08-30-19:52:
+            Staying silent is only correct when another writer owns this round's story: a newer
+            review (`superseded`), a live claimant (`held`), a refusal already explained once
+            (`refused`), or a step that no longer exists (`missing`). An `unavailable` claim has no
+            such owner — the marker could not be written at all — so returning quietly left the card
+            with a blocking review, no fix steps, and nothing on its timeline. Fail OPEN instead:
+            record why bookkeeping failed and produce the remediation unclaimed. A duplicated
+            remediation wave is bounded by the revision budget; a mute blocked card is not.
+            */
+            if (admission.kind === "unavailable") {
+              await deps.store.logEntry(
+                task.id,
+                "Remediation claim unavailable — producing remediation without it",
+                `Step: ${failedPreMergeStep.workflowStepName || failedPreMergeStep.workflowStepId}\nReason: ${admission.reason}\n`
+                + "The concurrency marker could not be written, so this attempt is not fenced against a"
+                + " second runner. Remediation still proceeds: a blocking review must never park a card silently.",
+                deps.getRunContextFor(task.id),
+              );
+            } else if (admission.kind !== "claimed" && admission.kind !== "unkeyable") {
+              return;
+            }
+            const claimedTask = admission.kind === "claimed" || admission.kind === "unkeyable" ? admission.task : live;
+            const claimedStep = admission.kind === "claimed" ? admission.result : failedPreMergeStep;
+            /*
+            FNXC:LifecycleContainment 2026-08-30-13:36:
+            The claim travels INTO the requester so ownership is re-asserted immediately before the
+            real appender/send-back, and a throw releases it here rather than leaving a reason-less
+            lease that suppresses this card until the staleness floor expires.
+            */
+            let scheduled: boolean;
+            try {
+              scheduled = await deps.requestPreMergeOptionalStepFix(task.id, claimedTask, {
+                nodeId: claimedStep.workflowStepId,
+                stepName: claimedStep.workflowStepName || claimedStep.workflowStepId,
+                feedback: claimedStep.output ?? "(no feedback captured)",
+                phase: claimedStep.phase ?? "pre-merge",
+                status: claimedStep.status,
+                verdict: claimedStep.verdict,
+                reviewKind: claimedStep.reviewKind,
+                findings: claimedStep.findings,
+              }, admission.kind === "claimed" ? { claim: admission.claim } : {});
+            } catch (err: unknown) {
+              if (admission.kind === "claimed") {
+                await resolveRemediationAttempt(deps.store, task.id, admission.claim, "release").catch(() => undefined);
+              }
+              throw err;
+            }
+            if (admission.kind === "claimed") {
+              const resolution = scheduled
+                ? await resolveRemediationAttempt(deps.store, task.id, admission.claim, "release")
+                : await resolveRemediationAttempt(deps.store, task.id, admission.claim, "retain", "appender-declined");
+              /* Refused resolution means a newer round replaced the claimed one: say nothing about it. */
+              if (!resolution.applied) return;
+            }
+            if (scheduled) return;
+          }
           const stepName = failedPreMergeStep.workflowStepName || failedPreMergeStep.workflowStepId || "Unknown";
           const blockedMessage = `Workflow graph run ended in '${live.column}' with failed pre-merge step '${stepName}' still blocking merge — remediation was not scheduled`;
           executorLog.warn(`${task.id}: ${blockedMessage}`);

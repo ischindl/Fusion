@@ -7289,7 +7289,7 @@ export default interface Resources {
         "closeParenPeriod": ").",
         "copyFilesHelp": "Optional. Repository-root-relative regular files are copied into fresh task worktrees before init commands run. Missing files or directories are skipped without exposing contents. Default: empty (no files copied).",
         "defaultsTo": ". Defaults to ",
-        "defaultsToWorktreesLeaveEmptyUnlessOverriding": "Defaults to .worktrees — leave empty unless overriding",
+        "defaultsToWorktreesLeaveEmptyUnlessOverriding": "Defaults to .fusion/worktrees — leave empty unless overriding",
         "disabledByDefaultOptInWhenEnabledFusion": " Disabled by default (opt-in). When enabled, Fusion shells out to ",
         "discouragedThisRestoresTheLegacyBehaviorWhereA": " Discouraged. This restores the legacy behavior where a live ",
         "enableWorktrunkAndRequestApprovalToInstallThe": "Enable worktrunk and request approval to install the pinned release.",

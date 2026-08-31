@@ -6441,7 +6441,7 @@
       "browseWorktreesDirectory": "Procurar diretório de worktrees",
       "closeParenPeriod": ").",
       "defaultsTo": ". O padrão é ",
-      "defaultsToWorktreesLeaveEmptyUnlessOverriding": "O padrão é .worktrees — deixe em branco a menos que queira sobrescrever",
+      "defaultsToWorktreesLeaveEmptyUnlessOverriding": "",
       "disabledByDefaultOptInWhenEnabledFusion": " Desativado por padrão (opcional). Quando ativado, o Fusion delega ao ",
       "discouragedThisRestoresTheLegacyBehaviorWhereA": " Não recomendado. Isso restaura o comportamento legado em que uma colisão de branch ativa do ",
       "enableWorktrunkAndRequestApprovalToInstallThe": "Ative o worktrunk e solicite aprovação para instalar o release fixado.",

@@ -534,6 +534,87 @@ describe("POST /system/engine/restart", () => {
     expect(pauseProject).toHaveBeenCalledTimes(3);
   });
 
+  /*
+  FNXC:SystemPanel 2026-08-31-07:08:
+  Original symptom (reproduced twice in production): after "Stop engine"/"Restart engine" the project
+  was left durably `status: "paused"` in Postgres, `ensureEngine` refused it ("Project <id> is
+  paused"), and the UI restart control could not bring it back — it only considered projects that
+  already had a running engine, so the one project that needed restarting was the one it skipped.
+  Recreating the container did not help; the bad state was in the database.
+
+  Invariant asserted below across every way a project becomes paused, not just the reported click:
+  an operator "Stop engine" pause, and this route's OWN compensating pause after a failed resume.
+  */
+  it("resumes a paused project that has no running engine", async () => {
+    const pauseProject = vi.fn(async () => {});
+    const resumeProject = vi.fn(async () => {});
+    const engineManager = {
+      // "Stop engine" left p1 paused with no engine attached.
+      getEngine: () => undefined,
+      pauseProject,
+      resumeProject,
+    };
+    const centralCore = { listProjects: vi.fn(async () => [{ id: "p1", status: "paused" }]) };
+    const { app } = createApp({ options: { engineManager, centralCore } });
+
+    const res = await postJson(app, "/api/system/engine/restart");
+
+    expect(res.status).toBe(200);
+    expect(res.body.restarted).toEqual(["p1"]);
+    expect(res.body.failed).toEqual([]);
+    expect(resumeProject).toHaveBeenCalledWith("p1");
+    // Nothing to tear down — pausing an already-paused, engine-less project is not attempted.
+    expect(pauseProject).not.toHaveBeenCalled();
+  });
+
+  it("recovers a project left paused by its own compensating pause on a later restart", async () => {
+    let paused = false;
+    const pauseProject = vi.fn(async () => {
+      paused = true;
+    });
+    let failResume = true;
+    const resumeProject = vi.fn(async () => {
+      if (failResume) throw new Error("resume failed");
+      paused = false;
+    });
+    const engineManager = {
+      getEngine: () => (paused ? undefined : {}),
+      pauseProject,
+      resumeProject,
+    };
+    const centralCore = {
+      listProjects: vi.fn(async () => [{ id: "p1", status: paused ? "paused" : "active" }]),
+    };
+    const { app } = createApp({ options: { engineManager, centralCore } });
+
+    // First restart fails and compensating-pauses p1 — the state the operator was stuck in.
+    const first = await postJson(app, "/api/system/engine/restart");
+    expect(first.body.failed).toEqual([{ projectId: "p1", error: "resume failed" }]);
+    expect(paused).toBe(true);
+
+    // A second click of the same control must be able to get back out of it.
+    failResume = false;
+    const second = await postJson(app, "/api/system/engine/restart");
+    expect(second.status).toBe(200);
+    expect(second.body.restarted).toEqual(["p1"]);
+    expect(paused).toBe(false);
+  });
+
+  it("leaves projects that are neither running nor paused untouched", async () => {
+    const pauseProject = vi.fn(async () => {});
+    const resumeProject = vi.fn(async () => {});
+    const engineManager = { getEngine: () => undefined, pauseProject, resumeProject };
+    const centralCore = { listProjects: vi.fn(async () => [{ id: "p1", status: "active" }]) };
+    const { app } = createApp({ options: { engineManager, centralCore } });
+
+    const res = await postJson(app, "/api/system/engine/restart");
+
+    expect(res.status).toBe(200);
+    expect(res.body.restarted).toEqual([]);
+    expect(resumeProject).not.toHaveBeenCalled();
+    expect(pauseProject).not.toHaveBeenCalled();
+  });
+
   it("still succeeds when the compensating pause of a failed project also throws", async () => {
     const resumeProject = vi.fn(async () => {
       throw new Error("resume failed");

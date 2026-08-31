@@ -91,6 +91,8 @@ Fusion captures changes per acquired sub-repository, not from the non-Git root. 
 
 Each repository uses the same `landOneRepo` / `landSquash` mechanic as a single-repository project, with that repository's main checkout as `projectRootDir`. When the integration branch is checked out with local edits, `merger.allowDirtyLocalCheckoutSync` applies identically: enabled stashes tracked and untracked edits, fast-forwards, then restores them; disabled refuses the land before the ref advances.
 
+`pushAfterMerge` also governs workspace publication. When it is off, every member lands only on its local integration ref: Fusion does not create fence refs, land intents, or remote branch writes. When it is on, each member resolves and publishes to its own selected remote under the normal workspace fence contract; `pushRemote` remains a direct-merge setting and does not select a workspace member remote.
+
 The CLI command `fn task merge` reports each repository as `landed`, `empty`, or `failed`, and exits non-zero for a partial land. Fusion finalizes the task to `done` only after every member has either landed or has no changes to land. A partial result remains recoverable and must be treated as an operator-visible state, not as one atomic merge.
 
 ## landedSha idempotency
@@ -125,6 +127,8 @@ There is an important route/helper distinction when auto-merge is off. `revertWo
 
 ## Archiving and cleanup
 
+A successful workspace merge cleans up after itself. When every acquired sub-repository lands, finalization removes each recorded member worktree under the same landing proof the single-repository lane uses, then removes the emptied workspace task directory (and emptied intermediate parents for nested repository keys), so a merged, done task leaves no orphan folder under `.fusion/worktrees/<task-id>/`. The gate is conservative in the direction that protects work: a member holding uncommitted or unverifiable content is preserved with its reason written to the task log, and a preserved member keeps the parent directory. A partial land removes nothing, because the retry still needs those checkouts. Cleanup failures are recorded and never turn a proven landing into a merge failure; the periodic sweep converges anything left behind, including tasks that completed before this behavior shipped.
+
 Archiving a workspace task synchronously removes every recorded member worktree. Fusion holds a per-repository reservation through disposal and branch cleanup. A failed removal is quarantined so a later acquisition can reconcile the orphan; successful siblings are released. `archiveTask(..., { cleanup: false })` intentionally retains worktrees, while self-healing remains a backstop. For the task lifecycle details, see [Workspace worktree cleanup on archive](./task-management.md#workspace-worktree-cleanup-on-archive).
 
 ## Task Reset
@@ -138,6 +142,7 @@ Reset retains the task ID, title, confirmed description, dependencies, workflow 
 - Landing is non-atomic. A later failure does not undo earlier local integration-ref advances; use task logs, per-repository history, and `landedSha` proof before retrying or manually recovering.
 - A requested base can resolve in some members and not others. Inspect the per-repository Task Detail base/fallback marker and task log before manually coordinating a mixed workspace.
 - Acquisition exclusivity is per sub-repository and short-lived. The durable lease covers only the `git worktree add` critical section, then releases, so tasks may work concurrently in their own member worktrees after startup.
+- With `pushAfterMerge` off, cross-node land exclusivity rests on the durable per-repository lease and local ref compare-and-swap because no shared remote write occurs.
 - Detection is intentionally shallow. A Git repository nested below a non-repository direct child is not a workspace member until you restructure or configure a valid direct-child entry.
 
 ## Troubleshooting
@@ -160,7 +165,7 @@ Check `.fusion/config.json`: explicit `workspaceMode: false` is the guard that s
 
 ## Worktree layout
 
-When `worktreesDir` is unset, workspace members use `<member>/.worktrees/<lowercased-task-id>`. When it is configured, Fusion resolves the configured root once from the workspace root and creates each native member checkout at `<configured-root>/<workspace>/<repo>/<lowercased-task-id>`. A safe workspace directory basename is preserved verbatim; unsafe names use a sanitized segment plus a deterministic eight-character hash. Nested or unsafe member paths use the same sanitized-and-hashed rule, preventing flattened-name collisions.
+When `worktreesDir` is unset, workspace tasks use `<workspace>/.fusion/worktrees/<lowercased-task-id>/<repo>` for every member checkout. A pre-existing member `.worktrees/` root remains honored by containment and cleanup sweeps while the setting stays unset, and recorded paths are never migrated. When it is configured, Fusion resolves the configured root once from the workspace root and creates each native member checkout at `<configured-root>/<workspace>/<repo>/<lowercased-task-id>`. A safe workspace directory basename is preserved verbatim; unsafe names use a sanitized segment plus a deterministic eight-character hash. Nested or unsafe member paths use the same sanitized-and-hashed rule, preventing flattened-name collisions.
 
 Fusion writes `.fusion-workspace-root` only while acquiring an external shared root. It rejects a second, different workspace root with the same safe basename rather than sharing the group; configure another root or rename one workspace. The marker never resolves paths and is only a deletion veto. Recorded worktree paths remain authoritative, so existing checkouts are not migrated. Grouped paths are forward-derived and never converted back to a project root by parent trimming. `.ai-merge` remains at the ungrouped configured root. Workspace directory sweeps do not reclaim by walking groups; archive and workspace recovery reclaim recorded member paths addressably.
 

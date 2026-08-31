@@ -1,4 +1,5 @@
 import {
+  formatRemediationStepName,
   hasOpenEquivalentRemediationStep,
   remediationDeclaredFiles,
   remediationWaveCount,
@@ -73,6 +74,30 @@ export type AppendReviewRemediationOptions = {
   attemptClaim?: ReviewRemediationAttemptClaim;
 };
 
+/*
+FNXC:CodeReviewFixSteps 2026-08-30-12:57:
+A Code Review REVISE is a repair request, never an operator-blocking state merely because a model
+omitted a file-specific finding or pointed outside the original scope. The fallback is itself a
+structural pending Fix step: it tells the executor exactly which missing review artifact to turn into
+concrete implementation work while preserving the review feedback. Verification and other gates keep
+their stricter evidence-based release behavior.
+*/
+function missingCodeReviewFixSteps(info: RequestPreMergeOptionalStepFixInfo, wave: number): TaskStep {
+  const feedback = info.feedback.replace(/\s+/g, " ").trim().slice(0, 4_000) || "No review feedback was captured.";
+  const detail = "Code Review returned REVISE without usable file-scoped Fix steps. Inspect the review feedback, identify the affected implementation, make the correction, and leave concrete file-scoped remediation for any issue that remains. Reviewer feedback: " + feedback;
+  return {
+    name: formatRemediationStepName({ title: "Turn Code Review feedback into actionable fixes", detail }),
+    status: "pending",
+    remediation: {
+      wave,
+      gate: "Code Review",
+      gateStepId: info.nodeId ?? "code-review",
+      findingId: "missing-code-review-fix-steps",
+      detail,
+    },
+  };
+}
+
 export async function appendReviewRemediationSteps(
   deps: AppendReviewRemediationStepsDeps,
   task: Task,
@@ -113,7 +138,10 @@ export async function appendReviewRemediationSteps(
       ? task.repositoryScope.repositories
       : undefined,
   });
-  if (derived.reason === "upstream-out-of-scope") {
+  const remediationSteps = gate === "Code Review" && derived.steps.length === 0
+    ? [missingCodeReviewFixSteps(info, wave)]
+    : derived.steps;
+  if (derived.reason === "upstream-out-of-scope" && gate !== "Code Review") {
     return release(
       deps.store,
       task.id,
@@ -121,7 +149,7 @@ export async function appendReviewRemediationSteps(
       "released-upstream-out-of-scope",
     );
   }
-  if (derived.steps.length === 0) {
+  if (remediationSteps.length === 0) {
     return release(
       deps.store,
       task.id,
@@ -188,7 +216,7 @@ export async function appendReviewRemediationSteps(
       }
       const existing = current.steps ?? [];
       const transactionWave = remediationWaveCount(existing) + 1;
-      appended = derived.steps
+      appended = remediationSteps
         .filter((candidate) => candidate.remediation !== undefined)
         .filter((candidate) => !hasOpenEquivalentRemediationStep([...existing, ...appended], candidate))
         .map((candidate) => ({
@@ -221,7 +249,7 @@ export async function appendReviewRemediationSteps(
     }
     if (budgetExhausted) return "budget-exhausted";
   } else {
-    const appendResult = await deps.store.appendRemediationSteps(task.id, derived.steps, { wave });
+    const appendResult = await deps.store.appendRemediationSteps(task.id, remediationSteps, { wave });
     appended = appendResult.appended;
     live = await deps.store.getTask(task.id);
     await widenPromptFileScope(deps.store, task.id, prompt, remediationDeclaredFiles(appended));

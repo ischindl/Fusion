@@ -323,6 +323,7 @@ import {
 } from "./merge/merger-integration-worktree.js";
 import { acquireTaskWorktree } from "./worktree/worktree-acquisition.js";
 import { resolveIntegrationBranch } from "./merge/integration-branch.js";
+import { isPushAfterMergeEnabled } from "./merge/push-after-merge-policy.js";
 import { evaluateBranchGroupPromotion, resolveBranchGroupMergeRouting } from "./merge/group-merge-coordinator.js";
 import { advanceIntegrationBranchRef, IntegrationBranchConcurrentAdvanceError } from "./merge/merger-ref-update-advance.js";
 import { syncWorktreeToHead, type SyncWorktreeResult } from "./worktree/worktree-ref-sync.js";
@@ -9832,7 +9833,7 @@ export async function aiMergeTask(
   }
 
   // 8b. Push to remote if configured
-  if (settings.pushAfterMerge && settings.mergeStrategy !== "pull-request") {
+  if (isPushAfterMergeEnabled(settings, { lane: "single-repo" })) {
     try {
       throwIfAborted(options.signal, taskId);
       const pushTask = await store.getTask(taskId).catch(() => null);

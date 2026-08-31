@@ -591,14 +591,32 @@ export function registerSystemRoutes(ctx: ApiRoutesContext, deps: SystemRouteDep
     }
     try {
       const projects = await centralCore.listProjects();
-      const runningIds = projects.filter((p) => engineManager.getEngine(p.id)).map((p) => p.id);
+      /*
+      FNXC:SystemPanel 2026-08-31-07:08:
+      RESTART MUST BE ABLE TO UNDO A STOP. This used to consider only projects with a live engine, so
+      a paused project was invisible to it — and "Stop engine" (ProjectCard) IS a project pause, as is
+      this route's own compensating pause when a resume fails. `ensureEngine` refuses paused projects
+      ("Project <id> is paused"), so the state the operator was left in had no UI exit at all: the one
+      control that would restart the engine skipped the only project that needed it. Reproduced twice
+      in production.
+
+      A paused project is therefore a restart candidate and is resumed directly — pausing it first
+      would be a no-op tear-down of an engine that does not exist. This mirrors the precedent in
+      POST /api/engine/start, which already resumes paused projects instead of calling ensureEngine.
+      */
+      const candidates = projects
+        .filter((p) => engineManager.getEngine(p.id) || (p.status as string) === "paused")
+        .map((p) => ({ projectId: p.id, paused: !engineManager.getEngine(p.id) }));
       const restarted: string[] = [];
       const failed: Array<{ projectId: string; error: string }> = [];
-      for (const projectId of runningIds) {
+      for (const { projectId, paused } of candidates) {
         try {
           // pause+resume is the only manager path that cleanly tears down the
           // engine (map removal + singleton lock release) before restarting.
-          await engineManager.pauseProject(projectId);
+          // An already-paused project has nothing to tear down — resume only.
+          if (!paused) {
+            await engineManager.pauseProject(projectId);
+          }
           await engineManager.resumeProject(projectId);
           restarted.push(projectId);
         } catch (err) {

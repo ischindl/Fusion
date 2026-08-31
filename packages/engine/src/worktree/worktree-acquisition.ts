@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { exec } from "node:child_process";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { acquireWorktreePathReservation, assertWorkspaceRepoRelPath, canonicalizeWorktreePath, classifyTaskBranchOrigin, isLegacyWorkspaceWorktreeLayout, resolveEngineIncarnationId, resolveEngineNodeId, resolveWorkspaceRepoWorktreePath, resolveWorkspaceTaskWorktreeDir, workspaceWorktreeGroupSegment, WORKSPACE_GROUP_MARKER_FILENAME, type RunMutationContext, type Settings, type Task, type TaskStore, type SecretsStore, type WorkspaceConfig, type WorkspaceLeaseHandle, type WorkspaceWorktreeContext } from "@fusion/core";
 import { resolveTaskWorkingBranchWithOrigin } from "./worktree-names.js";
@@ -926,16 +926,19 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
   };
 
   /*
-   * FNXC:TaskPinnedWorktrees 2026-07-16-00:00:
-   * Pinned-mode acquisition: derive → validate → reuse-or-recreate at the SAME derived path.
-   * `task.worktree` is a cache here — if it disagrees with the derived pinned path (the FN-7996 stale/foreign
-   * pointer shape), re-derive, correct the metadata, and emit `worktree:pin-rederived` before validating.
-   * The pool is never consulted (a pooled dir has the wrong name), so a task dispatched N times only ever
-   * touches `<worktreesDir>/<task-id>` and never suffixes a sibling directory name. Recreate-in-place does NOT
-   * consume any worktree-session retry budget (acquisition returns a valid fresh worktree directly).
+   * FNXC:TaskPinnedWorktrees 2026-08-30-15:06:
+   * Pinned acquisition uses the current `.fusion/worktrees` default for new tasks, but a
+   * persisted path under the legacy root remains authoritative while that root is accepted.
+   * Recreating an invalid legacy checkout in place avoids silently migrating user work; only
+   * an external or no-longer-configured pointer is re-derived to the canonical task-ID path.
    */
   const acquirePinnedWorktree = async (): Promise<AcquireTaskWorktreeResult> => {
-    const pinnedPath = pinnedWorktreePathForTask(task.id, settings, rootDir, workspaceContext);
+    const derivedPinnedPath = pinnedWorktreePathForTask(task.id, settings, rootDir, workspaceContext);
+    const persistedPathIsManaged = task.worktree
+      && basename(canonicalizePath(task.worktree)) === task.id.toLowerCase()
+      && canonicalizePath(task.worktree) !== canonicalizePath(rootDir)
+      && isInsideWorktreesDir(rootDir, task.worktree, settings, workspaceContext);
+    const pinnedPath = persistedPathIsManaged ? task.worktree! : derivedPinnedPath;
     const resumedBranch = task.branch ?? branchName;
 
     if (task.worktree && canonicalizePath(task.worktree) !== canonicalizePath(pinnedPath)) {

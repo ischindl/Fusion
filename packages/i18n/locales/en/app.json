@@ -7055,7 +7055,7 @@
       "browseWorktreesDirectory": "Browse worktrees directory",
       "closeParenPeriod": ").",
       "defaultsTo": ". Defaults to ",
-      "defaultsToWorktreesLeaveEmptyUnlessOverriding": "Defaults to .worktrees — leave empty unless overriding",
+      "defaultsToWorktreesLeaveEmptyUnlessOverriding": "Defaults to .fusion/worktrees — leave empty unless overriding",
       "disabledByDefaultOptInWhenEnabledFusion": " Disabled by default (opt-in). When enabled, Fusion shells out to ",
       "discouragedThisRestoresTheLegacyBehaviorWhereA": " Discouraged. This restores the legacy behavior where a live ",
       "enableWorktrunkAndRequestApprovalToInstallThe": "Enable worktrunk and request approval to install the pinned release.",

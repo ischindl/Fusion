@@ -41,6 +41,12 @@ The import union now also carries upstream's lifecycle-role helpers (isWipColumn
 isReviewColumnRole, isTerminalColumnRole, type WorkflowIrV2, type MoveTaskOptions) and
 classifyTaskBranchOrigin — the #3523 branchWriteOrigin fix landed on main, so reclaim/
 resume re-pins below use the classifier instead of hardcoded "engine".
+
+FNXC:SelfHealing 2026-08-31-10:17 (merge origin/main 14d3fb6ec8 → main):
+Upstream added classifyRemediationAttemptClaim (FN-267: enforce remediation before a
+review-revision move); the auto-merged body below calls it, so the union import carries
+it. Upstream's single-line import at this position is dropped — the canonical union
+import below is the sole import.
 */
 
 /*
@@ -53,7 +59,7 @@ resolveRequiredPreMergeStepIds; getMergeConfirmedFinalizationBlocker stays expor
 (ChatSession, ChatInFlightGenerationState) are still used by the in-flight
 chat-generation sweep.
 */
-import { loadWorkspaceConfig, type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, hasSharedBranchMemberAutoMergeHold, resolveEffectiveAutoMerge, countRecentIdenticalStallEntries, detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getPostMergeFinalizeBlocker, planConfirmedMergeChecklistReconciliation, getTaskMergeBlocker, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isLiveSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, resolveExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveRequiredPreMergeStepIds, resolveReboundTarget, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, isWipColumnRole, isReviewColumnRole, isTerminalColumnRole, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type MoveTaskOptions, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult, type WorkflowStepResult, type WorkflowIr, type WorkflowIrV2, resolveReboundTargetForTask, type ChatSession, type ChatInFlightGenerationState,
+import { loadWorkspaceConfig, type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, hasSharedBranchMemberAutoMergeHold, resolveEffectiveAutoMerge, countRecentIdenticalStallEntries, detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getPostMergeFinalizeBlocker, planConfirmedMergeChecklistReconciliation, getTaskMergeBlocker, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isLiveSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, resolveExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveRequiredPreMergeStepIds, resolveReboundTarget, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, isWipColumnRole, isReviewColumnRole, isTerminalColumnRole, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, classifyRemediationAttemptClaim, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type MoveTaskOptions, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult, type WorkflowStepResult, type WorkflowIr, type WorkflowIrV2, resolveReboundTargetForTask, type ChatSession, type ChatInFlightGenerationState,
   resolveNearDuplicateCanonicalFlags,
   LEGACY_COLUMN_IDS_BY_ROLE,
   TERMINAL_ROLES,
@@ -69,7 +75,7 @@ import { loadWorkspaceConfig, type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_
   isTaskExternallyBlocked,
   fileScopeLeaseBlocksCandidate,
 } from "@fusion/core";
-import { finalizePlanningSegment } from "@fusion/core";
+import { finalizePlanningSegment, isLegacyWorkspaceWorktreeLayout, resolveLegacyWorktreesDirLayout, resolveWorkspaceTaskWorktreeDir } from "@fusion/core";
 import type { WorkspaceLandIntent } from "@fusion/core";
 import type { MeshLeaseManager } from "./project/mesh-lease-manager.js";
 import { createLogger, schedulerLog } from "./logger.js";
@@ -109,7 +115,7 @@ import {
 import { classifyForeignOnlyContamination, deriveTaskIdFromFusionBranch, inspectBranchConflict, listUniqueBranchCommits } from "./execution/branch-conflicts.js";
 import { createRunAuditor, generateSyntheticRunId, type DatabaseMutationType, type RunAuditor } from "./util/run-audit.js";
 import { finalizeProvenAutoMergeTask, validateWorkflowDoneMergeProof } from "./merge/auto-merge-finalization.js";
-import { cleanupLandedTaskWorktree } from "./merge/post-landing-worktree-cleanup.js";
+import { cleanupLandedTaskWorktree, removeEmptyWorkspaceTaskDirectory } from "./merge/post-landing-worktree-cleanup.js";
 import { AutoRecoveryDispatcher } from "./healing/auto-recovery.js";
 import { activeSessionRegistry, executingTaskLock } from "./agents/active-session-registry.js";
 import { isTaskStillInPlanningStage } from "./execution/replan-target.js";
@@ -137,7 +143,7 @@ import { resolveRemediationCheckout } from "./executor/resolve-remediation-check
 import { isDefiniteEmptyCodeReviewRevise } from "./executor/review-empty-content-close.js";
 
 import { advanceIntegrationBranchRef } from "./merge/merger-ref-update-advance.js";
-import { isReclaimableWorktreeCandidate, isWorktreeContainerDir, resolveAiMergeRootPath, resolveLegacyAiMergeRootPath, resolveWorktreesDir } from "./worktree/worktree-paths.js";
+import { isInsideConfiguredWorktreesDir, isReclaimableWorktreeCandidate, isWorktreeContainerDir, resolveAiMergeRootPath, resolveLegacyAiMergeRootPath, resolveWorktreesDirScanRoots } from "./worktree/worktree-paths.js";
 import { removeDirectoryWithRetry } from "./worktree/worktree-removal-retry.js";
 import { canonicalFusionBranchName, resolveTaskWorkingBranch } from "./worktree/worktree-names.js";
 import { preservedWorktreeTargetPathForTask } from "./worktree/worktree-pinning.js";
@@ -247,6 +253,16 @@ import {
   countOptionalStepRevisionAttempts,
   optionalStepRevisionLogOutcome,
 } from "./healing/self-healing-optional-step-revision.js";
+import {
+  claimRemediationAttempt,
+  resolveRemediationAttempt,
+  retainRefusalWithNarration,
+} from "./executor/claim-review-remediation-attempt.js";
+import { reviewInputSignature } from "./executor/request-pre-merge-optional-step-fix.js";
+import type {
+  RecoverFailedPreMergeStepOutcome,
+  ReviewRemediationAttemptDescriptor,
+} from "./executor/recover-failed-pre-merge-step.js";
 
 export {
   extractTaskIdFromTempMergeDir,
@@ -492,6 +508,20 @@ export interface SelfHealingOptions {
    * Should return true if the task was successfully sent back, false otherwise.
    */
   recoverFailedPreMergeStep?: (task: Task) => Promise<boolean>;
+  /**
+   * FNXC:LifecycleContainment 2026-08-30-13:36:
+   * Claim-scoped variant of {@link SelfHealingOptions.recoverFailedPreMergeStep}. The sweep's
+   * admission claim only fences production when the recovery it authorizes runs INSIDE that claim:
+   * the descriptor lets the executor address the exact claimed review round, re-assert ownership
+   * immediately before the hand-off, and report `refused`/`superseded` distinctly from a transient
+   * skip. Without it a refusal releases its claim and is re-narrated every five minutes — the loop
+   * this task exists to close. Left optional so a runtime that has not wired it keeps the legacy
+   * boolean behavior instead of silently stranding cards.
+   */
+  recoverFailedPreMergeStepDetailed?: (
+    task: Task,
+    options: { claim: ReviewRemediationAttemptDescriptor },
+  ) => Promise<RecoverFailedPreMergeStepOutcome>;
   /**
    * Re-enqueue a task into the auto-merge queue. Used by
    * `recoverInterruptedMergingTasks` so that a stale `merging` status that was
@@ -9583,6 +9613,27 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         const failedStep = latestFailedPreMergeStep(task);
         if (!failedStep || !resolveRemediationCheckout(task, failedStep)) return false;
 
+        /*
+        FNXC:LifecycleContainment 2026-08-30-13:36:
+        Advisory refusal filter. A retained refusal is already honored by the claim CAS at admission,
+        but only AFTER the sweep has selected the card and walked its logging path; the durable
+        refusal exists precisely so an unproducible review is not re-attempted at all. Filtering here
+        keeps "explained once" literal. It is signature-aware by construction: `classify` reports
+        `signature-moved` — not `refused` — as soon as the review input changes, so a genuinely new
+        round is re-admitted while the unchanged one stays skipped. An unkeyable result cannot carry
+        a refusal, so it is admitted unchanged.
+        */
+        const advisorySignature = reviewInputSignature(failedStep);
+        if (advisorySignature) {
+          const disposition = classifyRemediationAttemptClaim(task.workflowStepResults, {
+            workflowStepId: failedStep.workflowStepId,
+            signature: advisorySignature,
+            liveSignature: advisorySignature,
+            now: Date.now(),
+          });
+          if (disposition.kind === "refused") return false;
+        }
+
         // Merge must be blocked *specifically* by the failed pre-merge step —
         // not by an unrelated condition (incomplete steps, etc.) that is
         // already handled by a dedicated scan.
@@ -9602,27 +9653,105 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
 
       let recovered = 0;
       for (const task of candidates) {
+        const target = latestFailedPreMergeStep(task);
+        if (!target) continue;
+        /*
+        FNXC:LifecycleContainment 2026-08-30-12:57:
+        Claim admission is deliberately before the durable counter, attempt narration, and recovery
+        delegation. The PostgreSQL fenced tier serializes two engine sweeps, so only its winner can
+        consume budget or tell the operator an attempt began; unkeyable legacy results retain the
+        prior visible behavior rather than being silently stranded.
+        */
+        const admission = await claimRemediationAttempt(this.store, task.id, target, "self-healing", task);
+        /*
+        FNXC:LifecycleContainment 2026-08-30-19:52:
+        Skipping silently is correct only when another writer owns this round: a newer review, a live
+        claimant, or a refusal already explained once. `unavailable` means the marker could not be
+        written at all, so nobody will speak for the card — the sweep then fails OPEN, records why,
+        and revives unclaimed rather than leaving a blocking review with no timeline entry.
+        */
+        if (admission.kind === "unavailable") {
+          await this.store.logEntry(
+            task.id,
+            "Remediation claim unavailable — reviving without it",
+            `Step: ${target.workflowStepName || target.workflowStepId}\nReason: ${admission.reason}\n`
+            + "The concurrency marker could not be written, so this revival is not fenced against a second runner.",
+          ).catch(() => undefined);
+        } else if (admission.kind !== "claimed" && admission.kind !== "unkeyable") {
+          continue;
+        }
+        const admittedTask = admission.kind === "claimed" || admission.kind === "unkeyable" ? admission.task : task;
+        const claim = admission.kind === "claimed" ? admission.claim : undefined;
         const budget = revisionBudgetFor(task.id);
         const nextCount = budget.attempts + 1;
-        const totalFixCount = (task.postReviewFixCount ?? 0) + 1;
+        const totalFixCount = (admittedTask.postReviewFixCount ?? 0) + 1;
         try {
-          // Increment the counter BEFORE delegating so that even if the
-          // executor path crashes or races, the budget is still consumed and
-          // we can't enter an infinite revival loop.
           await this.store.updateTask(task.id, { postReviewFixCount: totalFixCount });
           await this.store.logEntry(
             task.id,
             `Auto-reviving in-review task with failed pre-merge workflow step (attempt ${nextCount}/${budget.label})`,
             optionalStepRevisionLogOutcome(`Step: ${budget.stepName ?? budget.key}`, budget.key),
           );
-          const sentBack = await recoverFn(task);
-          if (sentBack) {
+          /*
+          FNXC:LifecycleContainment 2026-08-30-13:36:
+          The claim must travel WITH the work it admitted. The claim-scoped recovery addresses the
+          claimed step id (never a re-derived "latest failed"), re-asserts ownership immediately
+          before its hand-off, and reports four distinct outcomes:
+            scheduled  → release, so a genuinely new review round is admitted later;
+            refused    → RETAIN with the reason — this is what makes the refusal explained once
+                         instead of re-narrated every sweep, and it is the loop this task closes;
+            superseded → silence from here on: a newer round owns the row, so the overtaken runner
+                         clears nothing, condemns nothing, and adds nothing to the task's story;
+            skipped    → release, because a transient decline must stay retryable.
+          */
+          const detailedRecoverFn = this.options.recoverFailedPreMergeStepDetailed;
+          const outcome: RecoverFailedPreMergeStepOutcome = claim && detailedRecoverFn
+            ? await detailedRecoverFn(admittedTask, { claim })
+            : (await recoverFn(admittedTask)) ? { kind: "scheduled" } : { kind: "skipped" };
+
+          if (outcome.kind === "superseded") {
+            log.log(`Revival of ${task.id} was superseded by a newer review result — leaving the newer round untouched`);
+            continue;
+          }
+          if (outcome.kind === "refused") {
+            /*
+            FNXC:LifecycleContainment 2026-08-30-13:36:
+            The explanation is written through the FENCED store and BEFORE the retain, which is the
+            only ordering that is both safe and possible. Fenced-and-before: ownership is validated
+            atomically with the write, so an overtaken runner cannot narrate an obsolete round.
+            Fenced-and-after is not available: `retain` stamps the refusal reason, and the classifier
+            reports a refused round as `refused` rather than `owned`, so the fence would reject the
+            very narration the refusal exists to produce and the card would go dark. If supersession
+            lands between the two, the entry stands as a true record of the round it names while the
+            newer round is re-admitted on its own signature.
+            */
+            log.warn(`Revival of ${task.id} refused — no remediation could be produced for gate "${outcome.gate}" (${outcome.reason})`);
+            const refusalEntry = {
+              action: "Failed pre-merge step remediation not produced — card left in review",
+              outcome: `Step: ${budget.stepName ?? budget.key}\nGate: ${outcome.gate}\nReason: ${outcome.reason}\n`
+                + "This review is not retried until its findings change. Re-run the review after addressing it manually, "
+                + "or use the privileged review bypass when the failed review is known to be non-blocking.",
+            };
+            if (claim) {
+              /* Marker and explanation land together or not at all: no interval exists to lose the claim in. */
+              await retainRefusalWithNarration(this.store, task.id, claim, outcome.reason, refusalEntry);
+            } else {
+              await this.store.logEntry(task.id, refusalEntry.action, refusalEntry.outcome);
+            }
+            continue;
+          }
+          if (claim) {
+            const resolution = await resolveRemediationAttempt(this.store, task.id, claim, "release");
+            if (!resolution.applied) continue;
+          }
+          if (outcome.kind === "scheduled") {
             log.log(`Revived ${task.id}: sent back for fix (${nextCount}/${budget.label})`);
             recovered++;
           } else {
             log.warn(`Revival of ${task.id} was skipped by executor — budget already consumed`);
           }
         } catch (err: unknown) {
+          if (claim) await resolveRemediationAttempt(this.store, task.id, claim, "release").catch(() => undefined);
           const errorMessage = err instanceof Error ? err.message : String(err);
           log.error(`Failed to revive ${task.id}: ${errorMessage}`);
         }
@@ -11308,6 +11437,47 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           } catch { /* soft-deleted rows may reject best-effort settlement */ }
         }
         try { await createRunAuditor(this.store, { runId: generateSyntheticRunId("self-healing-orphaned-workspace-worktree", task.id), agentId: "self-healing", taskId: task.id, taskLineageId: task.lineageId, phase: "reconcile-orphaned-workspace-worktree" }).database({ type: "task:reconcile-orphaned-workspace-worktree", target: task.id, metadata: { taskId: task.id, repo: repoRel, worktreePath, success: settled, reason: failed ? "git-teardown-failed" : "settled", lane, worktreeOutcome: worktreeGone ? "gone" : "present", pruned, branch: entry.branch, branchOutcome, attempt } }); } catch { /* audit best-effort */ }
+      }
+
+      for (const { task, lane } of candidates) {
+        const taskDir = resolveWorkspaceTaskWorktreeDir(this.options.rootDir, settings, task.id);
+        let taskDirectoryOutcome: "removed" | "retained" | "not-applicable" = "not-applicable";
+        if (!isLegacyWorkspaceWorktreeLayout(task, taskDir)) {
+          const entries = Object.entries(task.workspaceWorktrees ?? {});
+          const everyEntrySettled = entries.every(([repoRel, entry]) => {
+            if (!entry.worktreePath) return true;
+            const entryKey = `${task.id}::${repoRel}::${canonicalPath(entry.worktreePath)}`;
+            return this.settledWorkspaceWorktreeTeardowns.has(entryKey);
+          });
+          if (!everyEntrySettled) {
+            taskDirectoryOutcome = "retained";
+          } else if (existsSync(taskDir)) {
+            taskDirectoryOutcome = removeEmptyWorkspaceTaskDirectory(
+              taskDir,
+              entries.map(([, entry]) => entry.worktreePath).filter(Boolean),
+            ) ? "removed" : "retained";
+          }
+        }
+        try {
+          await createRunAuditor(this.store, {
+            runId: generateSyntheticRunId("self-healing-orphaned-workspace-worktree", task.id),
+            agentId: "self-healing",
+            taskId: task.id,
+            taskLineageId: task.lineageId,
+            phase: "reconcile-orphaned-workspace-worktree",
+          }).database({
+            type: "task:reconcile-orphaned-workspace-worktree",
+            target: task.id,
+            metadata: {
+              taskId: task.id,
+              repo: "task-directory",
+              success: taskDirectoryOutcome !== "retained",
+              reason: "task-directory",
+              lane,
+              taskDirectoryOutcome,
+            },
+          });
+        } catch { /* audit best-effort */ }
       }
       return cleaned;
     } catch (err: unknown) { log.error(`reconcileOrphanedWorkspaceWorktrees sweep failed: ${err instanceof Error ? err.message : String(err)}`); return 0; }
@@ -15883,7 +16053,10 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       }
 
       const orphaned = await scanIdleWorktrees(this.options.rootDir, this.store, settings);
-      if (orphaned.length === 0) return 0;
+      if (orphaned.length === 0) {
+        if (!settings.workspaceMode) this.retireEmptyLegacyWorktreesRoot(settings);
+        return 0;
+      }
 
       let cleaned = 0;
       for (const worktreePath of orphaned) {
@@ -15918,6 +16091,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       if (cleaned > 0) {
         log.log(`Cleaned ${cleaned} orphaned worktree(s)`);
       }
+      if (!settings.workspaceMode) this.retireEmptyLegacyWorktreesRoot(settings);
       return cleaned;
     } catch (err: unknown) { const errorMessage = err instanceof Error ? err.message : String(err);
       log.error(`Orphan cleanup failed: ${errorMessage}`);
@@ -15925,8 +16099,23 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     }
   }
 
+  private retireEmptyLegacyWorktreesRoot(settings: Pick<Settings, "worktreesDir">): void {
+    if (settings.worktreesDir) return;
+    const legacyRoot = resolveWorktreesDirScanRoots(this.options.rootDir, settings)[1];
+    if (!legacyRoot) return;
+    try {
+      // Non-recursive removal leaves unknown files and active checkout residue intact.
+      rmdirSync(legacyRoot);
+    } catch (error: unknown) {
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      if (code !== "ENOENT" && code !== "ENOTEMPTY") {
+        log.debug(`[self-healing] unable to retire empty legacy worktrees root ${legacyRoot}: ${String(error)}`);
+      }
+    }
+  }
+
   /**
-   * Sweep unregistered stale directories under `<rootDir>/.worktrees/` —
+   * Sweep unregistered stale directories under every managed worktree root —
    * directories that exist on disk but are NOT registered git worktrees.
    * Registered worktrees are handled by the ordinary idle-worktree sweep.
    */
@@ -15944,19 +16133,23 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       }
       return 0;
     }
-    const worktreesDir = resolveWorktreesDir(this.options.rootDir, settings);
-    if (!existsSync(worktreesDir)) return 0;
+    const scanRoots = resolveWorktreesDirScanRoots(this.options.rootDir, settings);
 
-    let dirs: string[];
-    try {
-      dirs = readdirSync(worktreesDir, { withFileTypes: true })
-        .filter((e) => e.isDirectory() && !isWorktreeContainerDir(e.name))
-        .map((e) => join(worktreesDir, e.name));
-    } catch (err: unknown) {
-      log.warn(`Failed to read .worktrees/ for unregistered orphan reap: ${err instanceof Error ? err.message : String(err)}`);
+    const dirs: string[] = [];
+    for (const worktreesDir of scanRoots) {
+      if (!existsSync(worktreesDir)) continue;
+      try {
+        dirs.push(...readdirSync(worktreesDir, { withFileTypes: true })
+          .filter((e) => e.isDirectory() && !isWorktreeContainerDir(e.name))
+          .map((e) => join(worktreesDir, e.name)));
+      } catch (err: unknown) {
+        log.warn(`Failed to read ${worktreesDir} for unregistered orphan reap: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    if (dirs.length === 0) {
+      this.retireEmptyLegacyWorktreesRoot(settings);
       return 0;
     }
-    if (dirs.length === 0) return 0;
 
     const registered = await getRegisteredWorktreePaths(this.options.rootDir);
     const ownedDirs = (await Promise.all(dirs.map(async (dir) =>
@@ -15966,9 +16159,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
 
     let cleaned = 0;
     for (const path of unregistered) {
-      const rel = relative(worktreesDir, path);
-      if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
-        log.warn(`Refusing to remove path outside .worktrees: ${path}`);
+      if (!isInsideConfiguredWorktreesDir(this.options.rootDir, settings, path)) {
+        log.warn(`Refusing to remove path outside configured worktrees roots: ${path}`);
         continue;
       }
       // FN-4811 (restored by FN-5065): never rmSync a directory bound to a live
@@ -15997,6 +16189,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     if (cleaned > 0) {
       log.log(`Cleaned ${cleaned} unregistered worktree dir(s) (recycle mode preserves registered idle worktrees)`);
     }
+    this.retireEmptyLegacyWorktreesRoot(settings);
     return cleaned;
   }
 
@@ -16016,7 +16209,12 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         log.debug("[self-healing] temp-dir sweep: worktrunk enabled — AI merge clean-room worktrees use Fusion's dedicated clean-room root, proceeding with native sweep");
       }
 
-      const roots = Array.from(new Set([resolveRepoLocalAiMergeRoot(this.options.rootDir, settings), resolveLegacyAiMergeRootPath(this.options.rootDir), tmpdir()]));
+      const roots = Array.from(new Set([
+        resolveRepoLocalAiMergeRoot(this.options.rootDir, settings),
+        resolveLegacyAiMergeRootPath(this.options.rootDir),
+        ...(settings.worktreesDir ? [] : [join(resolveLegacyWorktreesDirLayout(this.options.rootDir), ".ai-merge")]),
+        tmpdir(),
+      ]));
       const auditor = createRunAuditor(this.store, {
         runId: generateSyntheticRunId("self-heal", "tempdir-sweep"),
         agentId: "self-healing",
@@ -16282,21 +16480,37 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         }
         return;
       }
-      const worktreesDir = resolveWorktreesDir(this.options.rootDir, settings);
-      if (!existsSync(worktreesDir)) return;
+      const scanRoots = resolveWorktreesDirScanRoots(this.options.rootDir, settings);
       const cap = (settings.maxWorktrees ?? 4) * 2;
 
-      const entries = readdirSync(worktreesDir, { withFileTypes: true });
-      const dirs = (await Promise.all(entries
-        .filter((entry) => entry.isDirectory() && !isWorktreeContainerDir(entry.name))
-        .map(async (entry) => (await isReclaimableWorktreeCandidate(join(worktreesDir, entry.name), { rootDir: this.options.rootDir })) ? entry : null),
-      )).filter((entry): entry is typeof entries[number] => entry !== null);
+      const dirs: string[] = [];
+      for (const worktreesDir of scanRoots) {
+        if (!existsSync(worktreesDir)) continue;
+        try {
+          const entries = readdirSync(worktreesDir, { withFileTypes: true });
+          const owned = await Promise.all(entries
+            .filter((entry) => entry.isDirectory() && !isWorktreeContainerDir(entry.name))
+            .map(async (entry) => {
+              const path = join(worktreesDir, entry.name);
+              return (await isReclaimableWorktreeCandidate(path, { rootDir: this.options.rootDir })) ? path : null;
+            }));
+          dirs.push(...owned.filter((path): path is string => path !== null));
+        } catch (error: unknown) {
+          log.warn(`[self-healing] failed to read ${worktreesDir} for worktree cap enforcement: ${String(error)}`);
+        }
+      }
 
-      if (dirs.length <= cap) return;
+      if (dirs.length <= cap) {
+        this.retireEmptyLegacyWorktreesRoot(settings);
+        return;
+      }
 
       // Find idle worktrees that can be safely removed
       const idle = await scanIdleWorktrees(this.options.rootDir, this.store, settings);
-      if (idle.length === 0) return;
+      if (idle.length === 0) {
+        this.retireEmptyLegacyWorktreesRoot(settings);
+        return;
+      }
 
       // Sort by mtime ascending (oldest first)
       const withMtime = idle.map((p) => {
@@ -16345,6 +16559,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       if (removed > 0) {
         log.warn(`Worktree cap: removed ${removed} idle worktree(s) (was ${dirs.length}, cap ${cap})`);
       }
+      this.retireEmptyLegacyWorktreesRoot(settings);
     } catch (err: unknown) { const errorMessage = err instanceof Error ? err.message : String(err);
       log.error(`Worktree cap enforcement failed: ${errorMessage}`);
     }
