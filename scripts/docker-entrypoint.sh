@@ -45,8 +45,26 @@ while [ "$i" -lt "$argc" ]; do
   i=$((i + 1))
 done
 
+# FNXC:DockerRun 2026-08-31-14:24:
+# Liveness is decided by an actual RUNNING PROCESS, never by the socket FILE. `docker restart` reuses
+# the container's writable layer, so /var/run/tailscale/tailscaled.sock survives a stop with no
+# daemon behind it; a `[ ! -S ... ]` guard then reads that corpse as "already running", skips startup,
+# and the box comes back with remote access silently dead — the dashboard healthy, `tailscale` itself
+# answering `connect: connection refused`. Measured on a live restart. The stale file is removed
+# before starting, because tailscaled will not bind over it.
+tailscaled_running() {
+  for proc in /proc/[0-9]*; do
+    [ -r "$proc/cmdline" ] || continue
+    case "$(tr '\0' ' ' < "$proc/cmdline" 2>/dev/null)" in
+      *tailscaled*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
 if [ "$tailscale_enabled" = "1" ] && [ -x /usr/sbin/tailscaled ]; then
-  if [ ! -S /var/run/tailscale/tailscaled.sock ]; then
+  if ! tailscaled_running; then
+    rm -f /var/run/tailscale/tailscaled.sock
     /usr/sbin/tailscaled \
       --tun=userspace-networking \
       --socks5-server=localhost:1055 \

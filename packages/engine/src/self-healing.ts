@@ -47,6 +47,12 @@ Upstream added classifyRemediationAttemptClaim (FN-267: enforce remediation befo
 review-revision move); the auto-merged body below calls it, so the union import carries
 it. Upstream's single-line import at this position is dropped — the canonical union
 import below is the sole import.
+
+FNXC:SelfHealing 2026-08-31-18:53 (merge origin/main d299a0c4a6 → main):
+Upstream's one-writer remediation refactor (4970221c52) deleted every call site of
+classifyRemediationAttemptClaim from this file, so the union import drops it again.
+Upstream re-emitted its single-line import at this position; it is dropped as before — the
+canonical union import below remains the sole import.
 */
 
 /*
@@ -59,7 +65,7 @@ resolveRequiredPreMergeStepIds; getMergeConfirmedFinalizationBlocker stays expor
 (ChatSession, ChatInFlightGenerationState) are still used by the in-flight
 chat-generation sweep.
 */
-import { loadWorkspaceConfig, type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, hasSharedBranchMemberAutoMergeHold, resolveEffectiveAutoMerge, countRecentIdenticalStallEntries, detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getPostMergeFinalizeBlocker, planConfirmedMergeChecklistReconciliation, getTaskMergeBlocker, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isLiveSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, resolveExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveRequiredPreMergeStepIds, resolveReboundTarget, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, isWipColumnRole, isReviewColumnRole, isTerminalColumnRole, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, classifyRemediationAttemptClaim, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type MoveTaskOptions, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult, type WorkflowStepResult, type WorkflowIr, type WorkflowIrV2, resolveReboundTargetForTask, type ChatSession, type ChatInFlightGenerationState,
+import { loadWorkspaceConfig, type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, hasSharedBranchMemberAutoMergeHold, resolveEffectiveAutoMerge, countRecentIdenticalStallEntries, detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getPostMergeFinalizeBlocker, planConfirmedMergeChecklistReconciliation, getTaskMergeBlocker, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isLiveSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, resolveExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveRequiredPreMergeStepIds, resolveReboundTarget, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, isWipColumnRole, isReviewColumnRole, isTerminalColumnRole, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type MoveTaskOptions, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult, type WorkflowStepResult, type WorkflowIr, type WorkflowIrV2, resolveReboundTargetForTask, type ChatSession, type ChatInFlightGenerationState,
   resolveNearDuplicateCanonicalFlags,
   LEGACY_COLUMN_IDS_BY_ROLE,
   TERMINAL_ROLES,
@@ -253,12 +259,7 @@ import {
   countOptionalStepRevisionAttempts,
   optionalStepRevisionLogOutcome,
 } from "./healing/self-healing-optional-step-revision.js";
-import {
-  claimRemediationAttempt,
-  resolveRemediationAttempt,
-  retainRefusalWithNarration,
-} from "./executor/claim-review-remediation-attempt.js";
-import { reviewInputSignature } from "./executor/request-pre-merge-optional-step-fix.js";
+
 import type {
   RecoverFailedPreMergeStepOutcome,
   ReviewRemediationAttemptDescriptor,
@@ -518,9 +519,16 @@ export interface SelfHealingOptions {
    * this task exists to close. Left optional so a runtime that has not wired it keeps the legacy
    * boolean behavior instead of silently stranding cards.
    */
+  /*
+  FNXC:ReviewRemediation 2026-08-31-09:00:
+  `claim` is OPTIONAL. The sweep no longer takes one -- it re-triggers the single producer rather
+  than acting as a second writer -- but the typed outcome is still wanted, because `refused` names
+  the gate and reason an operator needs. Passing no claim keeps that diagnosis while dropping the
+  arbitration that turned an unwritable marker into a dead card.
+  */
   recoverFailedPreMergeStepDetailed?: (
     task: Task,
-    options: { claim: ReviewRemediationAttemptDescriptor },
+    options?: { claim?: ReviewRemediationAttemptDescriptor },
   ) => Promise<RecoverFailedPreMergeStepOutcome>;
   /**
    * Re-enqueue a task into the auto-merge queue. Used by
@@ -9614,25 +9622,18 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         if (!failedStep || !resolveRemediationCheckout(task, failedStep)) return false;
 
         /*
-        FNXC:LifecycleContainment 2026-08-30-13:36:
-        Advisory refusal filter. A retained refusal is already honored by the claim CAS at admission,
-        but only AFTER the sweep has selected the card and walked its logging path; the durable
-        refusal exists precisely so an unproducible review is not re-attempted at all. Filtering here
-        keeps "explained once" literal. It is signature-aware by construction: `classify` reports
-        `signature-moved` — not `refused` — as soon as the review input changes, so a genuinely new
-        round is re-admitted while the unchanged one stays skipped. An unkeyable result cannot carry
-        a refusal, so it is admitted unchanged.
+        FNXC:ReviewRemediation 2026-08-31-09:00:
+        The advisory refusal filter is GONE with the claim it belonged to. It skipped a card whose
+        round carried a durable `remediationRefusedReason` -- a marker only the claim protocol ever
+        wrote. With no claim there is no such marker, so the filter could only ever be inert; leaving
+        it would imply a suppression that no longer exists.
+
+        What it bought was "explained once": an unproducible round narrated a single time rather than
+        every sweep. That is now traded away deliberately. Repetition is noisy; the suppression it
+        replaced could not distinguish "already explained" from "marker unwritable", and that is
+        exactly how FN-270/FN-273 went dark. A card that keeps saying why it cannot proceed is
+        strictly better than one that says it once and then looks identical to a dead engine.
         */
-        const advisorySignature = reviewInputSignature(failedStep);
-        if (advisorySignature) {
-          const disposition = classifyRemediationAttemptClaim(task.workflowStepResults, {
-            workflowStepId: failedStep.workflowStepId,
-            signature: advisorySignature,
-            liveSignature: advisorySignature,
-            now: Date.now(),
-          });
-          if (disposition.kind === "refused") return false;
-        }
 
         // Merge must be blocked *specifically* by the failed pre-merge step —
         // not by an unrelated condition (incomplete steps, etc.) that is
@@ -9662,26 +9663,29 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         consume budget or tell the operator an attempt began; unkeyable legacy results retain the
         prior visible behavior rather than being silently stranded.
         */
-        const admission = await claimRemediationAttempt(this.store, task.id, target, "self-healing", task);
         /*
-        FNXC:LifecycleContainment 2026-08-30-19:52:
-        Skipping silently is correct only when another writer owns this round: a newer review, a live
-        claimant, or a refusal already explained once. `unavailable` means the marker could not be
-        written at all, so nobody will speak for the card — the sweep then fails OPEN, records why,
-        and revives unclaimed rather than leaving a blocking review with no timeline entry.
+        FNXC:ReviewRemediation 2026-08-31-09:00:
+        NO CLAIM. This sweep is a RE-TRIGGER of the single remediation producer, not a second writer,
+        so it has nothing to arbitrate.
+
+        FN-267 introduced a fenced claim here to stop two writers producing duplicate remediation
+        waves. It bought a BOUNDED problem -- a duplicate wave is capped by the revision budget -- at
+        the price of an UNBOUNDED one: any claim that could not be taken returned silently and the
+        card died with a blocking review and an empty timeline. That is not hypothetical. The claim
+        signature used NUL as a separator, PostgreSQL rejects NUL (SQLSTATE 22P05), and from the hour
+        FN-267 landed NO remediation could be claimed at all; FN-270 and FN-273 sat blocked overnight.
+        The trade is stated plainly in the repository's own history: "a duplicated remediation wave is
+        bounded by the revision budget; a mute blocked card is not."
+
+        What FN-267 actually fixed -- a rerun bounced before its fix steps existed -- is NOT this
+        machinery. That is the ordering guard (`hasPendingReviewRemediationWork` plus the deterministic
+        Fix-step fallback), which is untouched here and keeps working. Ordering came from the code
+        path; the claim only ever added arbitration.
+
+        Consequence accepted deliberately: an unproducible round is now narrated on every sweep
+        instead of once. Repetitive, never fatal -- the opposite trade to the one that broke.
         */
-        if (admission.kind === "unavailable") {
-          await this.store.logEntry(
-            task.id,
-            "Remediation claim unavailable — reviving without it",
-            `Step: ${target.workflowStepName || target.workflowStepId}\nReason: ${admission.reason}\n`
-            + "The concurrency marker could not be written, so this revival is not fenced against a second runner.",
-          ).catch(() => undefined);
-        } else if (admission.kind !== "claimed" && admission.kind !== "unkeyable") {
-          continue;
-        }
-        const admittedTask = admission.kind === "claimed" || admission.kind === "unkeyable" ? admission.task : task;
-        const claim = admission.kind === "claimed" ? admission.claim : undefined;
+        const admittedTask = task;
         const budget = revisionBudgetFor(task.id);
         const nextCount = budget.attempts + 1;
         const totalFixCount = (admittedTask.postReviewFixCount ?? 0) + 1;
@@ -9705,8 +9709,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             skipped    → release, because a transient decline must stay retryable.
           */
           const detailedRecoverFn = this.options.recoverFailedPreMergeStepDetailed;
-          const outcome: RecoverFailedPreMergeStepOutcome = claim && detailedRecoverFn
-            ? await detailedRecoverFn(admittedTask, { claim })
+          const outcome: RecoverFailedPreMergeStepOutcome = detailedRecoverFn
+            ? await detailedRecoverFn(admittedTask, {})
             : (await recoverFn(admittedTask)) ? { kind: "scheduled" } : { kind: "skipped" };
 
           if (outcome.kind === "superseded") {
@@ -9732,17 +9736,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
                 + "This review is not retried until its findings change. Re-run the review after addressing it manually, "
                 + "or use the privileged review bypass when the failed review is known to be non-blocking.",
             };
-            if (claim) {
-              /* Marker and explanation land together or not at all: no interval exists to lose the claim in. */
-              await retainRefusalWithNarration(this.store, task.id, claim, outcome.reason, refusalEntry);
-            } else {
-              await this.store.logEntry(task.id, refusalEntry.action, refusalEntry.outcome);
-            }
+            await this.store.logEntry(task.id, refusalEntry.action, refusalEntry.outcome);
             continue;
-          }
-          if (claim) {
-            const resolution = await resolveRemediationAttempt(this.store, task.id, claim, "release");
-            if (!resolution.applied) continue;
           }
           if (outcome.kind === "scheduled") {
             log.log(`Revived ${task.id}: sent back for fix (${nextCount}/${budget.label})`);
@@ -9751,7 +9746,6 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             log.warn(`Revival of ${task.id} was skipped by executor — budget already consumed`);
           }
         } catch (err: unknown) {
-          if (claim) await resolveRemediationAttempt(this.store, task.id, claim, "release").catch(() => undefined);
           const errorMessage = err instanceof Error ? err.message : String(err);
           log.error(`Failed to revive ${task.id}: ${errorMessage}`);
         }
