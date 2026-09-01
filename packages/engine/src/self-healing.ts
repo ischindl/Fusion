@@ -64,6 +64,13 @@ Upstream FN-9234 added routeStaleSingularApprovalBackToReview, which resolves th
 pre-merge gate through resolvePreMergeGateForTask before re-seeding Code Review, so the
 union import carries it. Upstream's single-line import at this position is dropped as
 before — the canonical union import below remains the sole import.
+
+FNXC:SelfHealing 2026-09-01-21:02 (merge origin/main a728744f5c → main):
+Upstream's beta.13 batch adds no new self-healing import symbols (FN-9234's
+routeStaleSingularApprovalBackToReview auto-merged as a private class method needing no
+import; the 17:05 note above mis-called it an import symbol). Upstream's single-line
+import re-emitted at this position is dropped as before — the canonical union import
+below remains the sole import.
 */
 
 /*
@@ -93,7 +100,7 @@ import { loadWorkspaceConfig, type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_
   fileScopeLeaseBlocksCandidate,
   normalizeOverlapScopeForTask,
 } from "@fusion/core";
-import { finalizePlanningSegment, isLegacyWorkspaceWorktreeLayout, resolveLegacyWorktreesDirLayout, resolveWorkspaceTaskWorktreeDir } from "@fusion/core";
+import { finalizePlanningSegment, isLegacyWorkspaceWorktreeLayout, resolveWorkspaceTaskWorktreeDir } from "@fusion/core";
 import type { WorkspaceLandIntent } from "@fusion/core";
 import type { MeshLeaseManager } from "./project/mesh-lease-manager.js";
 import { createLogger, schedulerLog } from "./logger.js";
@@ -163,7 +170,7 @@ import { resolveRemediationCheckout } from "./executor/resolve-remediation-check
 import { isDefiniteEmptyCodeReviewRevise } from "./executor/review-empty-content-close.js";
 
 import { advanceIntegrationBranchRef } from "./merge/merger-ref-update-advance.js";
-import { isInsideConfiguredWorktreesDir, isReclaimableWorktreeCandidate, isWorktreeContainerDir, resolveAiMergeRootPath, resolveLegacyAiMergeRootPath, resolveWorktreesDirScanRoots } from "./worktree/worktree-paths.js";
+import { isInsideConfiguredWorktreesDir, isReclaimableWorktreeCandidate, isWorktreeContainerDir, resolveAiMergeSearchRoots, resolveWorktreesDirScanRoots } from "./worktree/worktree-paths.js";
 import { removeDirectoryWithRetry } from "./worktree/worktree-removal-retry.js";
 import { canonicalFusionBranchName, resolveTaskWorkingBranch } from "./worktree/worktree-names.js";
 import { preservedWorktreeTargetPathForTask } from "./worktree/worktree-pinning.js";
@@ -364,11 +371,6 @@ type WorkflowRecoveryRoute =
   | { kind: "node-requeue"; reason: "pause-abort-active-work" }
   | { kind: "work-item-resume"; reason: "pause-abort-review-progress" | "pause-abort-manual-merge-hold" }
   | { kind: "no-action"; reason: "not-pause-abort" | "unsafe-or-not-routable" };
-
-
-function resolveRepoLocalAiMergeRoot(rootDir: string, settings?: Pick<Settings, "worktreesDir">): string {
-  return resolveAiMergeRootPath(rootDir, settings);
-}
 
 
 
@@ -13031,8 +13033,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
 
   private async listAiMergeWorktreeCandidates(taskId: string, settings: Settings): Promise<string[]> {
     const roots = Array.from(new Set([
-      resolveRepoLocalAiMergeRoot(this.options.rootDir, settings),
-      resolveLegacyAiMergeRootPath(this.options.rootDir),
+      ...resolveAiMergeSearchRoots(this.options.rootDir, settings),
       tmpdir(),
     ]));
     const testWorkerRoot = process.env.FUSION_TEST_WORKER_ROOT;
@@ -16418,9 +16419,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       }
 
       const roots = Array.from(new Set([
-        resolveRepoLocalAiMergeRoot(this.options.rootDir, settings),
-        resolveLegacyAiMergeRootPath(this.options.rootDir),
-        ...(settings.worktreesDir ? [] : [join(resolveLegacyWorktreesDirLayout(this.options.rootDir), ".ai-merge")]),
+        ...resolveAiMergeSearchRoots(this.options.rootDir, settings),
         tmpdir(),
       ]));
       const auditor = createRunAuditor(this.store, {

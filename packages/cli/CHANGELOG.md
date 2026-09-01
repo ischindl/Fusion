@@ -1,5 +1,73 @@
 # @runfusion/fusion
 
+## 0.77.0-beta.13
+
+### Minor Changes
+
+- 3ce0c01: summary: Replace Command Center section tabs with a compact accessible dropdown.
+  category: feature
+  dev: Adds CommandCenterSectionNav and removes the wrapping .cc-tablist without removing any sections.
+- d0521d5: summary: Allow readonly workflow steps to use explicitly named MCP servers.
+  category: feature
+  dev: Adds the readonlyMcpServers node config key and readonlyMcpServerAllowlist session option.
+- 188f8d6: summary: Fix OpenAI Codex sign-in on remote dashboards and stop stalled logins hanging in the background.
+  category: fix
+  dev: Remote Codex origins default to device code, support an explicit browser override, abort initiation timeouts safely, and render device codes for every OAuth provider.
+
+### Patch Changes
+
+- 2d12078: summary: A landed merge no longer fails to finalize when the task row has no steps.
+  category: fix
+  dev: `planConfirmedMergeChecklistReconciliation` and the merge-confirmed fast path both assumed `task.steps` is an array. A row reaching them without it threw "Cannot read properties of undefined (reading 'map')", which the merge loop's catch absorbed — so a task whose work had already landed never finalized and never emitted `task:merged`. Both sites now tolerate an absent `steps`.
+- 54eb5f0: summary: Restore an existing terminal immediately when reopening it.
+  category: fix
+  dev: Attachable terminal sessions now initialize xterm before background session validation completes.
+- 3546460: summary: Prevent approved tasks from becoming permanently stuck when merge review proof is missing.
+  category: fix
+  dev: Raises the diff buffer, centralizes requiresContentReviewProof, enforces pre-dispatch and sink proof, broadens writer lifts, limits bypass to audited humans, excludes fast-mode, and adds bounded reconciliation audit.
+- 4690693: summary: Preserve selected agent targets when retargeting an existing Direct chat.
+  category: fix
+  dev: Restores updateChatSession's agentId persistence clause for async PostgreSQL storage.
+- 8b0465c: summary: Mailbox task cards now render with correct padding, spacing, borders, and text sizes.
+  category: fix
+  dev: Replaced undefined CSS custom properties with dashboard tokens and added a raw-CSS validity guard.
+- 0b912ee: summary: Keep the New Task priority button compact on phones.
+  category: fix
+  dev: Prevent wrapped quick-action controls from growing across an entire mobile row.
+- 943edbf: summary: Keep mobile chat footer and composer flush above the keyboard.
+  category: fix
+  dev: Aligns computeMobileBarKeyboardFlags across platforms by removing the isIOS gate.
+- 4f366d3: summary: Your selected Claude account now takes precedence over a leftover legacy Anthropic sign-in.
+  category: fix
+  dev: `resolveAnthropicRuntimeApiKey` and the shared refresh candidate preserve subscription-instance precedence; auth status exposes `legacyAnthropicOAuthPresent`.
+- ba7d55c: summary: Prevent duplicate OAuth accounts when adding a credential instance.
+  category: fix
+  dev: Instance login now uses the credential returned by the provider-auth login seam.
+- 0c21494: summary: Workflow lists now reflect workflow edits immediately without a daemon restart.
+  category: fix
+  dev: Removed TaskStore.workflowDefinitionsCache; readAllWorkflowDefinitionsImpl now reads through on every call.
+- 2122ea9: summary: Clean up finished worktrees containing regenerable build and dependency output.
+  category: fix
+  dev: Preserves non-allowlisted ignored files behind the durable landing-proof gate.
+- 10a9714: summary: Prevent inline review fixes from leaving approved tasks unable to merge.
+  category: fix
+  dev: Re-captures verified review identity, reroutes singular stale content from merge admission and self-healing, and emits bounded audit events.
+- 96a73e0: summary: Keep same-numbered tasks isolated to their selected project.
+  category: fix
+  dev: Task SSE payloads now carry projectId and useTasks owns state per project.
+- 8fe0b76: summary: Correct Direct Chat default help text in Settings.
+  category: fix
+  dev: Removed retired chatNewSessionMode localization keys and regenerated packages/i18n/src/resources.d.ts.
+- 14e2d1c: summary: Restore emphasized dashboard text and visible borders across mailbox, chat, settings, and task details.
+  category: fix
+  dev: Adds the shared --font-weight-\* scale and repoints invalid --border-width usages to --btn-border-width.
+- 2308136: summary: Restore interrupted merges from pre-upgrade worktree layouts without dirty checkout refusals.
+  category: fix
+  dev: Routes clean-room discovery through resolveAiMergeSearchRoots, including historic .worktrees/.ai-merge.
+- c8dfb47: summary: Command Center's System controls come back on their own after a failed load.
+  category: fix
+  dev: `loadInfo` had exactly two callers — the panel's mount and the Refresh button — so a single failed capability probe was permanent. Every dev-only control is gated on `info` (`showRebuildControls = info?.rebuildSupported ?? false`), so a probe that missed left the panel with no Rebuild/Full rebuild/plugin cards until the operator clicked Refresh. A Command Center tab left open across a dev-server restart hits this routinely. The probe now retries via `useVisibilityAwarePoll`, gated on `!info` so it stops the moment it succeeds, and refreshes on the visible edge.
+
 ## 0.77.0-beta.12
 
 ### Minor Changes

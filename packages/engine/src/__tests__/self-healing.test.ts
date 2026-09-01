@@ -150,6 +150,7 @@ vi.mock("../merge/post-landing-worktree-cleanup.js", () => ({
 }));
 
 import { SelfHealingManager, isBranchAheadOfBase, MAX_AUTO_MERGE_RETRIES, MAX_TASK_DONE_RETRIES } from "../self-healing.js";
+import { resolveAiMergeRootPath } from "../worktree/worktree-paths.js";
 import { cleanupLandedTaskWorktree } from "../merge/post-landing-worktree-cleanup.js";
 import { HEARTBEAT_ERROR_RECOVERY_METADATA_KEY, HEARTBEAT_ERROR_RETRY_EXHAUSTED_PAUSE_REASON, HEARTBEAT_ERROR_UNRECOVERABLE_PAUSE_REASON, readHeartbeatErrorRetryCount } from "../agent-heartbeat.js";
 import { PlanningLifecycleLockTransportError, TaskDeletedError, TaskNotFoundError, TransitionRejectionError, type TaskStore, type Settings, type Task, type AgentStore, type Agent, type NotificationProvider } from "@fusion/core";
@@ -9767,10 +9768,9 @@ describe("stranded AI merge clean-room recovery", () => {
 
     const originalReaddir = mockedReaddirSync.getMockImplementation();
     const originalExec = mockedExecSync.getMockImplementation();
+    const recoveryRoot = resolveAiMergeRootPath("/tmp/test-project", undefined);
     mockedReaddirSync.mockImplementation((path: any) => {
-      if (String(path).includes(".ai-merge") || String(path).includes("fusion-ai-merge")) {
-        return ["fusion-ai-merge-fn-5858-abcd"] as any;
-      }
+      if (String(path) === recoveryRoot) return ["fusion-ai-merge-fn-5858-abcd"] as any;
       return [] as any;
     });
     mockedExecSync.mockImplementation((command: string) => {

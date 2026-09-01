@@ -2,6 +2,41 @@
 
 User-facing release notes aggregated across all packages. This file is auto-synced from each `packages/*/CHANGELOG.md` by `scripts/release.mjs` — do not edit by hand.
 
+## 0.77.0-beta.13
+
+### Highlights
+
+- Approved tasks no longer get stuck unmergeable when review proof is missing or stale
+- A landed merge now finalizes even when the task row carries no steps
+- Your selected Claude account beats a leftover legacy Anthropic sign-in
+- Codex sign-in works on remote dashboards, with device codes for every OAuth provider
+- Command Center gets a compact section dropdown and self-recovering System controls
+
+### New
+
+- Command Center section tabs are now a compact, accessible dropdown — every section is still there, just without the wrapping tab row.
+- Readonly workflow steps can now use explicitly named MCP servers.
+
+### Fixed
+
+- Approved tasks no longer become permanently stuck when merge review proof is missing: proof is enforced before dispatch and at the sink, bypass is limited to audited humans, and reconciliation is audited.
+- Inline review fixes no longer leave an approved task unable to merge — verified review identity is re-captured and stale singular content is rerouted out of merge admission.
+- A merge that already landed now finalizes when the task row has no steps, instead of silently never emitting a merged event.
+- Interrupted merges from pre-upgrade worktree layouts now resume without dirty-checkout refusals.
+- Finished worktrees holding regenerable build and dependency output are cleaned up; anything not on the allowlist stays behind the landing-proof gate.
+- Your selected Claude account now takes precedence over a leftover legacy Anthropic sign-in.
+- Adding a credential instance no longer creates a duplicate OAuth account.
+- OpenAI Codex sign-in works on remote dashboards (device code by default, explicit browser override), and stalled logins no longer hang in the background.
+- Same-numbered tasks from different projects no longer bleed into each other on the board.
+- Workflow lists reflect workflow edits immediately, with no daemon restart.
+- Reopening a terminal restores the existing session immediately instead of waiting on validation.
+- Retargeting an existing Direct chat keeps the selected agent.
+- Command Center's System controls come back on their own after a failed capability probe — a tab left open across a dev-server restart no longer loses Rebuild and plugin cards.
+- Emphasized text and visible borders are restored across mailbox, chat, settings, and task details.
+- Mailbox task cards render with the correct padding, spacing, borders, and text sizes.
+- Mobile: the chat footer and composer sit flush above the keyboard on every platform, and the New Task priority button stays compact instead of stretching across the row.
+- Settings shows the correct Direct Chat default help text.
+
 ## 0.77.0-beta.12
 
 ### Highlights

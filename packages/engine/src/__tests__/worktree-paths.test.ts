@@ -12,6 +12,8 @@ import {
   isInsideConfiguredWorktreesDir,
   isReclaimableWorktreeCandidate,
   resolveAiMergeRootPath,
+  resolveAiMergeSearchRoots,
+  resolveLegacyAiMergeRootPath,
   resolveTaskWorktreePath,
   resolveTaskWorktreePathForBackend,
   resolveWorktreesDir,
@@ -57,6 +59,28 @@ describe("worktree-paths", () => {
 
   it("builds the AI-merge root under an absolute custom worktrees dir", () => {
     expect(resolveAiMergeRootPath(rootDir, { worktreesDir: "/tmp/ext-worktrees" } as any)).toBe(join("/tmp/ext-worktrees", AI_MERGE_DIRNAME));
+  });
+
+  it("searches current, legacy, and historic AI-merge roots without configured worktrees", () => {
+    expect(resolveAiMergeSearchRoots(rootDir, undefined)).toEqual([
+      join(rootDir, ".fusion", "worktrees", AI_MERGE_DIRNAME),
+      resolveLegacyAiMergeRootPath(rootDir),
+      join(rootDir, ".worktrees", AI_MERGE_DIRNAME),
+    ]);
+  });
+
+  it("deduplicates the historic AI-merge root when worktreesDir is configured to .worktrees", () => {
+    expect(resolveAiMergeSearchRoots(rootDir, { worktreesDir: ".worktrees" } as any)).toEqual([
+      join(rootDir, ".worktrees", AI_MERGE_DIRNAME),
+      resolveLegacyAiMergeRootPath(rootDir),
+    ]);
+  });
+
+  it("does not search the historic root for an external configured worktrees dir", () => {
+    expect(resolveAiMergeSearchRoots(rootDir, { worktreesDir: "/abs/elsewhere" } as any)).toEqual([
+      join("/abs/elsewhere", AI_MERGE_DIRNAME),
+      resolveLegacyAiMergeRootPath(rootDir),
+    ]);
   });
 
   it("builds the AI-merge root under expanded {repo} and ~ worktrees dirs", () => {

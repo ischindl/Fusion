@@ -1,5 +1,12 @@
 # @fusion-plugin-examples/claude-runtime
 
+## 0.1.11-beta.13
+
+### Patch Changes
+
+- @fusion/core@0.77.0-beta.13
+- @fusion/plugin-sdk@0.77.0-beta.13
+
 ## 0.1.11-beta.12
 
 ### Patch Changes

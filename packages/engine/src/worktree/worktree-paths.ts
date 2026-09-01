@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   isStrictDescendantPath,
+  resolveLegacyWorktreesDirLayout,
   resolveWorktreesDirCandidates,
   resolveWorktreesDirLayout,
   WORKSPACE_GROUP_MARKER_FILENAME,
@@ -86,6 +87,22 @@ export function resolveAiMergeRootPath(
 
 export function resolveLegacyAiMergeRootPath(rootDir: string): string {
   return join(rootDir, ".fusion", "ai-merge");
+}
+
+/**
+ * FNXC:AiMergeRoots 2026-09-01-14:55:
+ * FN-268 moved the default worktrees root on 2026-08-30, but pre-relocation clean rooms must remain recoverable, prunable, and git-ignored. Search the historic root only without an explicit override, which remains the configured-root-is-exclusive contract.
+ */
+export function resolveAiMergeSearchRoots(
+  rootDir: string,
+  settings: Pick<Settings, "worktreesDir"> | undefined,
+): string[] {
+  const roots = [
+    resolveAiMergeRootPath(rootDir, settings),
+    resolveLegacyAiMergeRootPath(rootDir),
+    ...(settings?.worktreesDir ? [] : [join(resolveLegacyWorktreesDirLayout(rootDir), AI_MERGE_DIRNAME)]),
+  ];
+  return [...new Set(roots)];
 }
 
 export function resolveWorktreesDir(

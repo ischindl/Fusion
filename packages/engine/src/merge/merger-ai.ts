@@ -135,7 +135,7 @@ import { isPushAfterMergeEnabled } from "./push-after-merge-policy.js";
 import { resolveWorkspaceIntegrationTarget, WorkspaceEnvironmentError, WorkspaceIntegrationTargetError, type WorkspaceIntegrationTarget } from "./workspace-integration-target.js";
 import { finalizeProvenAutoMergeTask } from "./auto-merge-finalization.js";
 import { getCommitTaskOwnership, detectAlreadyLandedOnMain } from "./already-merged-detector.js";
-import { resolveLegacyAiMergeRootPath } from "../worktree/worktree-paths.js";
+import { resolveAiMergeSearchRoots } from "../worktree/worktree-paths.js";
 import {
   cleanupAiMergeWorktree,
   pruneExistingAiMergeWorktrees,
@@ -274,7 +274,7 @@ type PreexistingAiMergeRecoveryCandidate = {
 
 function listAiMergeWorktreeCandidates(taskId: string, projectRootDir: string, settings?: Settings): string[] {
   const prefix = `fusion-ai-merge-${taskId.toLowerCase()}-`;
-  const roots = Array.from(new Set([resolveAiMergeRoot(projectRootDir, settings), resolveLegacyAiMergeRootPath(projectRootDir), tmpdir()]));
+  const roots = Array.from(new Set([resolveAiMergeRoot(projectRootDir, settings), ...resolveAiMergeSearchRoots(projectRootDir, settings), tmpdir()]));
   const testWorkerRoot = process.env.FUSION_TEST_WORKER_ROOT;
   if (testWorkerRoot) {
     try {
