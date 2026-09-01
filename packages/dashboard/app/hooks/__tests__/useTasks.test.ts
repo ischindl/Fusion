@@ -4574,6 +4574,64 @@ describe("useTasks", () => {
       expect(result.current.tasks[0]?.inReviewStall).toBeUndefined();
     });
 
+    /*
+    FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174):
+    The canonical stall/hold reason must clear under the same fresh-agent-log rule the server
+    applies (`suppressed: merge-queued OR fresh agent-log activity` at every hydration site), or
+    the client shows a reason the next refetch erases. Pinned in both directions: fresh clears,
+    stale keeps.
+    */
+    it("clears the canonical stallReason when a fresh agent log arrives", async () => {
+      const initialTask = createMockTask({
+        column: "todo",
+        stallReason: {
+          code: "dependency-blocker",
+          reason: "task is blocked by DEP-1",
+          observedAt: "2026-07-28T12:00:00.000Z",
+        },
+        updatedAt: "2026-07-28T12:00:00.000Z",
+      });
+      mockFetchTasks.mockResolvedValueOnce([initialTask]);
+      const { result } = renderHook(() => useTasks());
+
+      await waitFor(() => expect(result.current.tasks).toHaveLength(1));
+      expect(result.current.tasks[0]?.stallReason).toBeDefined();
+      act(() => {
+        MockEventSource.instances[0]._emit("agent:log", {
+          taskId: initialTask.id,
+          timestamp: "2026-07-28T12:00:01.000Z",
+          type: "text",
+          agent: "executor",
+        });
+      });
+      expect(result.current.tasks[0]?.stallReason).toBeUndefined();
+    });
+
+    it("keeps the canonical stallReason when the agent log is not fresh", async () => {
+      const initialTask = createMockTask({
+        column: "todo",
+        stallReason: {
+          code: "dependency-blocker",
+          reason: "task is blocked by DEP-1",
+          observedAt: "2026-07-28T12:00:00.000Z",
+        },
+        updatedAt: "2026-07-28T12:00:00.000Z",
+      });
+      mockFetchTasks.mockResolvedValueOnce([initialTask]);
+      const { result } = renderHook(() => useTasks());
+
+      await waitFor(() => expect(result.current.tasks).toHaveLength(1));
+      act(() => {
+        MockEventSource.instances[0]._emit("agent:log", {
+          taskId: initialTask.id,
+          timestamp: "2026-06-01T00:00:00.000Z",
+          type: "text",
+          agent: "executor",
+        });
+      });
+      expect(result.current.tasks[0]?.stallReason?.code).toBe("dependency-blocker");
+    });
+
     it("does not trigger onReconnect refetch after sseEnabled flips to false", async () => {
       vi.useFakeTimers({ shouldAdvanceTime: true });
       const { rerender } = renderHook(

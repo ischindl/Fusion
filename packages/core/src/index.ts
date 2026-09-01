@@ -1463,6 +1463,9 @@ export {
   resolveReviewArbitrationTarget,
 } from "./tasks/in-review-stall.js";
 export type { ExecutorEscalationTarget, InReviewStallSignal, InReviewStallCode, ProviderErrorClassification } from "./tasks/in-review-stall.js";
+/* FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174): canonical read-derived stall/hold reason. */
+export { deriveTaskStallReason, HELD_HUMAN_REVIEW_STALL_REASON } from "./tasks/task-stall-reason.js";
+export type { TaskStallReason, TaskStallReasonCode, StallableTask, TaskStallReasonContext } from "./tasks/task-stall-reason.js";
 export {
   getStalePausedReviewSignal,
   DEFAULT_STALE_PAUSED_REVIEW_THRESHOLD_MS,

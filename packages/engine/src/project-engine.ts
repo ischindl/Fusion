@@ -111,6 +111,7 @@ import {
 } from "./merge/merger-ai.js";
 import { promoteBranchGroup, type BranchGroupPromotionResult, type CreateGroupPrFn, type SyncGroupPrFn } from "./merge/group-merge-coordinator.js";
 import { rerouteWorkspaceReviewToCodeReview } from "./merge/workspace-review-reroute.js";
+import { rerouteSingularStaleContentToReview } from "./merge/stale-content-review-reroute.js";
 import { WorkspaceEnvironmentError } from "./merge/workspace-integration-target.js";
 import {
   formatAdmissionCapacityQueuedReason,
@@ -475,6 +476,7 @@ export interface ProjectEngineOptions {
 type MergeResolver = { resolve: (result: MergeResult) => void; reject: (err: Error) => void };
 
 export class ProjectEngine {
+  private readonly staleContentRerouteAuditKeys = new Set<string>();
   private runtime: InProcessRuntime;
   private started = false;
   private specDriftReconciler?: SpecDriftReconciler;
@@ -2881,11 +2883,44 @@ export class ProjectEngine {
       workspaceRootDir: this.config.workingDirectory,
       settings,
     });
-    return getTaskMergeBlocker(task, {
+    const blocker = getTaskMergeBlocker(task, {
       reviewColumns: mergeGate.reviewColumns.size > 0 ? mergeGate.reviewColumns : new Set(["in-review"]),
       requiredPreMergeStepIds: mergeGate.requiredPreMergeStepIds,
       mergeContent,
     });
+    if (blocker === "task has a pre-merge approval recorded against different content" && mergeContent.kind === "singular") {
+      const reroute = await rerouteSingularStaleContentToReview(store, task, {
+        requiredPreMergeStepIds: mergeGate.requiredPreMergeStepIds,
+        mergeContent,
+      }).catch(() => ({
+        rerouted: false,
+        reason: "no-progress" as const,
+        nodeId: undefined,
+        workflowStepId: undefined,
+      }));
+      if (reroute.rerouted) {
+        await store.logEntry(task.id, `[pre-merge] Code Review re-entry is owned by the workflow graph after stale content evidence was refused.`);
+      }
+      const auditKey = `${task.id}:${reroute.reason}`;
+      if (!this.staleContentRerouteAuditKeys.has(auditKey)) {
+        this.staleContentRerouteAuditKeys.add(auditKey);
+        await emitBoundedRunAudit(store, {
+          taskId: task.id,
+          agentId: "merge-gate",
+          runId: `${task.id}:merge-gate`,
+          domain: "database",
+          mutationType: "task:merge-stale-content-review-rerouted",
+          target: task.id,
+          metadata: {
+            taskId: task.id,
+            nodeId: reroute.nodeId,
+            workflowStepId: reroute.workflowStepId,
+            reason: reroute.reason,
+          },
+        });
+      }
+    }
+    return blocker;
   }
 
   /**

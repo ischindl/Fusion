@@ -292,6 +292,31 @@ These entries are rate-limited per `(task, code)` over `taskStuckTimeoutMs`, so 
 
 **Dashboard surface:** In-review, non-paused tasks with `inReviewStall` set show a `Stall` badge on `TaskCard` and a code-specific diagnostic row in `TaskDetailModal` above the PR section. The diagnostic row includes headline/description/action copy, raw reason text, observed timestamp, and a `View activity log` deep-link that switches to Logs → Activity and highlights the most recent matching `In-review stall surfaced [<code>]: <reason>` entry. This UI is diagnostic only: neither the badge nor the jump button mutates task state.
 
+#### Canonical stall reason signal
+
+Fusion derives `task.stallReason` — the canonical answer to "why is this card standing still" — for any card in any column, on task READS. Unlike the sibling badges (`inReviewStall`, `stalePausedReview`, `ageStaleness`) it is not another detector: it merges the four authorities the engine already consults — the task's resolved workflow columns (terminal/review lanes), `getTaskMergeBlocker()`, `allowsAutoMergeProcessing()`, and dependency-edge resolution — into one presentable reason, and it is absent when nothing actually holds the card.
+
+`TaskStallReasonCode` values:
+- `paused` — the task is paused (reuses the merge blocker's pause sentence).
+- `blocked-by` — the `blockedBy` target still exists in a non-terminal, non-review column.
+- `dependency-blocked` — a `dependencies` entry has not reached a terminal or review column.
+- `merge-blocker` — `getTaskMergeBlocker()` reports a blocker (pre-merge approval, finalization, etc.).
+- `held-human-review` — the card sits in a review lane waiting on a human because automatic merge processing is withheld (`allowsAutoMergeProcessing()` refuses: board auto-merge off unless the task opts back in, or a live human-authored open PR). The sibling badges suppress in that state, so this is the only visible answer.
+- `pre-merge-gate-pending` — required pre-merge steps have not run, or their approvals are stale against the current head.
+- `suppressed` — a merge is already queued (any lane) or fresh `agent:log` activity arrived after `updatedAt`: the "already moving again" signal.
+- `terminal-conflict` — a merge blocker was observed on a terminal-lane card (anomaly).
+
+Contract:
+- Shape is `{ code, reason, observedAt }`; `reason` is display-safe prose rendered verbatim.
+- `undefined` means "moving, or not derivable" — never "healthy".
+- The determination order is pinned: suppressed > terminal > review lane > dependencies. Suppression beats a merge blocker because an enqueued merge means in-flight, not stuck.
+- Determination never throws: workflow and dependency probe failures fall back to literal lanes/legacy literals with a bounded `storeLog` warning (`task-stall`). A broken workflow definition must not turn a routine list read into an error.
+- Dependency probes never call `getTask` (that would re-enter stall hydration for every dependency of every list row); they use the lock-free `readTaskRow`/`getArchivedTask`. An archived dependency counts as satisfied; a missing `blockedBy` target is treated as non-blocking; a missing `dependencies` target blocks.
+- **Read-site parity is an invariant**: `getTask`, `listTasks` (slim and full), `listTasksModifiedSince`, and `searchTasks` must report the same `code`/`reason` for the same card, pinned by `packages/core/src/__tests__/postgres/store-task-stall-reason.pg.test.ts`.
+- Diagnostic-only: it must never serve as an auto-completion signal and must never gate a merge — the merge authority keeps being asked directly.
+
+**Dashboard surface:** the client-side suppression that blanks `inReviewStall` also blanks `stallReason` while `agent:log` events stream for the card. Server-side fresh-activity suppression is review-lane gated, while the client blank is not, so a dependency-blocked card off the review lane can re-show its reason between refetches. Chip and detail-row rendering ships separately.
+
 #### Stale paused review signal
 
 Fusion now derives `task.stalePausedReview` for paused `in-review` tasks whose review-column age is at/over `stalePausedReviewThresholdMs` (age source: `columnMovedAt ?? updatedAt`) while merge is still unconfirmed (`mergeDetails.mergeConfirmed !== true`).

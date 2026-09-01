@@ -4883,6 +4883,73 @@ describe("SelfHealingManager", () => {
     });
 
     /*
+    FNXC:PreMergeApproval 2026-09-01-14:05:
+    The review recovery sweep must solve stale content-bound approvals by re-seeding review, not by
+    re-enqueueing the same merge refusal that wedged FN-9234.
+    */
+    it("routes stale singular review approvals back to Code Review instead of merge retry", async () => {
+      const enqueueMerge = vi.fn().mockReturnValue(true);
+      const managerWithRecovery = new SelfHealingManager(store, {
+        rootDir: "/tmp/test-project",
+        enqueueMerge,
+      });
+      (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+        autoMerge: true,
+        globalPause: false,
+        enginePaused: false,
+      });
+      (store as any).getTaskWorkflowSelection = vi.fn(() => null);
+      (store as any).listWorkflowWorkItemsForTask = vi.fn(async () => []);
+      (store as any).seedWorkspaceCodeReviewContinuationIfIdle = vi.fn(async () => ({ seeded: true }));
+      mockedExecSync.mockImplementation((command) => {
+        const cmd = String(command);
+        if (cmd === "git diff --binary base-sha..HEAD") return "current diff" as any;
+        return "" as any;
+      });
+
+      (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([
+        {
+          id: "FN-9234-STUCK",
+          column: "in-review",
+          paused: false,
+          status: null,
+          error: null,
+          worktree: "/tmp/test-project/.worktrees/fn-9234-stuck",
+          baseCommitSha: "base-sha",
+          steps: [{ name: "Ship it", status: "done" }],
+          workflowStepResults: [{
+            workflowStepId: "code-review",
+            workflowStepName: "Code Review",
+            status: "passed",
+            phase: "pre-merge",
+            reviewKind: "code",
+            verdict: "APPROVE",
+            reviewInputFingerprint: "old-diff",
+          }],
+          mergeDetails: undefined,
+          enabledWorkflowSteps: ["code-review"],
+          log: [],
+        },
+      ]);
+
+      const result = await managerWithRecovery.recoverMergeableReviewTasks();
+
+      expect(result).toBe(0);
+      expect(enqueueMerge).not.toHaveBeenCalled();
+      expect((store as any).seedWorkspaceCodeReviewContinuationIfIdle).toHaveBeenCalledWith(expect.objectContaining({
+        taskId: "FN-9234-STUCK",
+        nodeId: "code-review",
+        state: "runnable",
+      }));
+      expect(store.logEntry).toHaveBeenCalledWith(
+        "FN-9234-STUCK",
+        expect.stringContaining("Self-healing re-seeded Code Review"),
+      );
+
+      managerWithRecovery.stop();
+    });
+
+    /*
     FNXC:SharedBranchMemberHold 2026-08-09-09:09:
     FN-8823 supersedes the mission-policy fast path under project Off. A
     self-healing merge requester must treat project Off as withheld consent for

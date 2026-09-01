@@ -47,6 +47,7 @@ import { ReportModal } from "../../ReportModal";
 import { resolveReportContextRefs } from "../../../utils/reportContextRefs";
 import { copyTextToClipboard } from "../../../utils/copyToClipboard";
 import { capLogEntries } from "../../../hooks/useAgentLogs";
+import { useVisibilityAwarePoll } from "../../../hooks/visibilitySuspension";
 import "./SystemControlsArea.css";
 
 /*
@@ -82,6 +83,9 @@ until a backgrounded mobile tab is discarded by the OS and reloads with a white 
 The joined-string render below is O(kept lines) per frame, so the cap bounds render cost too.
 */
 export const LOG_VIEW_CAP = 500;
+
+/** How often to re-probe capabilities while the probe has not landed. Self-disables on success. */
+export const SYSTEM_INFO_RETRY_INTERVAL_MS = 10_000;
 const RESTART_POLL_MS = 1500;
 const BACK_ONLINE_RELOAD_DELAY_MS = 3000;
 // Bound the post-restart wait so a server that never comes back (crashed
@@ -236,6 +240,28 @@ export function SystemControlsArea({ projectId, addToast }: SystemControlsAreaPr
       cancelled = true;
     };
   }, [loadInfo]);
+
+  /*
+  FNXC:SystemPanel 2026-09-01-14:32:
+  RETRY THE CAPABILITY PROBE UNTIL IT LANDS. `loadInfo` had exactly two callers — this panel's mount
+  and the Refresh button — so one failed fetch was permanent. Every dev-only control is gated on
+  `info` (`showRebuildControls = info?.rebuildSupported ?? false`), so a probe that missed left the
+  panel with no Rebuild, Full rebuild, or plugin cards and no way back except clicking Refresh by
+  hand. Operator report: "why do I have to hit refresh, it should just show". The trigger is routine
+  rather than exotic — a Command Center tab left open across a `pnpm dev` restart mounts, or polls,
+  straight into the window where the server is not answering.
+
+  Gated on `!info`, so this stops the moment the probe succeeds: it is a recovery path, not a poll.
+  `refreshOnVisible` also retries on the visible edge, which is exactly when an operator returns to a
+  tab that was open through a restart.
+  */
+  useVisibilityAwarePoll(
+    () => {
+      void loadInfo();
+    },
+    SYSTEM_INFO_RETRY_INTERVAL_MS,
+    { enabled: !info, refreshOnVisible: true },
+  );
 
   useEffect(() => {
     jobRef.current = job;

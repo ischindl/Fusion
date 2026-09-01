@@ -168,17 +168,27 @@ function clearInReviewStallForFreshAgentLog(task: Task, entry: AgentLogActivityE
   instead of scheduling around it.
   */
   if (!hasFreshAgentLog(task, entry)) return task;
-  if (!task.inReviewStall && !task.inReviewStalled && !task.stalledReview) return task;
+  if (!task.inReviewStall && !task.inReviewStalled && !task.stalledReview && !task.stallReason) return task;
 
   /*
   FNXC:DashboardStallBadges 2026-07-01-23:44:
   Board cards must not show Stalled/Merge stalled while an in-review agent is actively writing logs. The task row can remain unchanged during merger/reviewer work, so fresh agent-log metadata clears only derived stall badge fields until the next authoritative task refresh.
+
+  FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174):
+  `stallReason` joins the cleared fields. The server's suppression for review-lane reasons is the
+  same rule this helper already mirrors (merge-queued OR fresh agent-log activity), and this clear
+  stays intentionally lane-agnostic (its column check was deleted above): a dependency-blocker on a
+  non-review card keeps showing server-side while an agent works, so the next authoritative refetch
+  may re-assert it. That bounded heuristic-then-truth cycle is the same asymmetry the three sibling
+  badges already accept; without the clear, RUFU-175 would render "why it is standing still" on a
+  card whose reviewer is visibly streaming — the exact false-stall display this helper exists to prevent.
   */
   return {
     ...task,
     inReviewStall: undefined,
     inReviewStalled: undefined,
     stalledReview: undefined,
+    stallReason: undefined,
   };
 }
 

@@ -503,6 +503,32 @@ describe("SystemControlsArea layout integration", () => {
     expect(card).toHaveTextContent(/supervising parent/i);
   });
 
+  /*
+  FNXC:SystemPanel 2026-09-01-14:33:
+  A failed capability probe used to be permanent: `loadInfo` ran once on mount, so a Command Center tab
+  left open across a `pnpm dev` restart lost every dev-only control until the operator clicked Refresh
+  by hand. The invariant is RECOVERY WITHOUT USER ACTION — asserting only that a retry fires would pass
+  on a retry whose result is dropped, so this asserts the controls actually come back.
+  */
+  it("recovers the rebuild controls on its own after a failed capability probe", async () => {
+    mockFetchSystemInfo.mockRejectedValueOnce(new Error("Failed to fetch"));
+    mockFetchSystemInfo.mockResolvedValue(systemInfoFixture({ rebuildSupported: true }));
+
+    render(<CommandCenter projectId="proj-1" />);
+    selectCommandCenterSection("system");
+
+    await screen.findByTestId("cc-system-controls");
+    // The probe that failed leaves the panel with no rebuild cards at all.
+    expect(screen.queryByTestId("cc-syscontrol-rebuild-app")).not.toBeInTheDocument();
+
+    // No click, no Refresh: the retry alone must restore them.
+    await waitFor(
+      () => expect(screen.getByTestId("cc-syscontrol-rebuild-app")).toBeInTheDocument(),
+      { timeout: 15_000 },
+    );
+    expect(screen.getByTestId("cc-syscontrol-rebuild-full")).toBeInTheDocument();
+  }, 20_000);
+
   it("hides build-and-link-local when the host is not a source checkout", async () => {
     mockFetchSystemInfo.mockResolvedValue(
       systemInfoFixture({

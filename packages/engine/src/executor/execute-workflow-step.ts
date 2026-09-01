@@ -106,6 +106,11 @@ import {
   probeReviewChangesSinceCommit,
   resolveContentReviewInputProof,
 } from "../worktree/review-diff-fingerprint.js";
+import {
+  classifyReviewInlineFixRecapture,
+  isFastForwardAdvance,
+  readHeadSha,
+} from "../worktree/review-inline-fix-recapture.js";
 // FNXC:PlanReviewConvergence 2026-08-15-22:15: FN-8768 convergence primer + revision-key classifier (restored post-wave-18).
 import { buildGraphPlanReviewConvergenceContext, buildReviewConvergenceContext, optionalStepRevisionKey } from "./optional-step-revision.js";
 // FNXC:CommandCenterActivity 2026-08-15-22:15: FN-8868 usage telemetry + session boundaries (restored post-wave-18).
@@ -1312,6 +1317,73 @@ CRITICAL SCOPING RULES — read before doing anything else:
             });
           }
           const revisionRequested = effectiveVerdict === "REVISE";
+
+          /*
+          FNXC:PreMergeApproval 2026-09-01-06:53:
+          FN-9234 removes the inline-fix wedge where this lane approved the pre-fix diff while the
+          merge gate probes base..HEAD. Only this reviewing lane may re-bind after a proven
+          fast-forward because no other lane inspected its new content. REVISE retains the original
+          input identity because convergence compares the input each remediation round received.
+          */
+          if (isReviewTypeWorkflowStep && !isPlanReviewStep && !revisionRequested) {
+            const priorReviewedCommitSha = reviewedCommitSha;
+            const currentHeadSha = await readHeadSha(worktreePath);
+            const fastForwardAdvance = await isFastForwardAdvance(worktreePath, priorReviewedCommitSha, currentHeadSha);
+            const baseIsAncestor = await isFastForwardAdvance(worktreePath, baseRef, currentHeadSha);
+            const decision = classifyReviewInlineFixRecapture({
+              verdict: effectiveVerdict,
+              reviewKind: workflowStepMetadata.reviewKind,
+              reviewedCommitSha: priorReviewedCommitSha,
+              currentHeadSha,
+              baseRef,
+              fastForwardAdvance,
+              baseIsAncestor,
+              fingerprintProbeAvailable: true,
+            });
+            if (decision.recapture) {
+              // A post-review fingerprint is evidence only: an unreadable probe must preserve the
+              // already-recorded approval identity rather than converting a completed review to failure.
+              try {
+                const recapturedFingerprint = workflowStepMetadata.reviewKind === "code"
+                  ? await computeCodeReviewInputFingerprint(worktreePath, baseRef)
+                  : await computeReviewDiffFingerprint(worktreePath, baseRef);
+                const finalDecision = classifyReviewInlineFixRecapture({
+                  verdict: effectiveVerdict,
+                  reviewKind: workflowStepMetadata.reviewKind,
+                  reviewedCommitSha: priorReviewedCommitSha,
+                  currentHeadSha,
+                  baseRef,
+                  fastForwardAdvance,
+                  baseIsAncestor,
+                  fingerprintProbeAvailable: recapturedFingerprint !== undefined,
+                });
+                if (finalDecision.recapture && currentHeadSha) {
+                  reviewInputFingerprint = recapturedFingerprint;
+                  reviewedCommitSha = currentHeadSha;
+                  const resolvedInReviewFindingCount = parsed.findings?.filter((finding) => finding.resolution === "resolved-in-review").length ?? 0;
+                  await deps.store.logEntry(task.id, `[pre-merge] ${workflowStep.name} re-captured its own review identity after fast-forward ${priorReviewedCommitSha?.slice(0, 7)} → ${currentHeadSha.slice(0, 7)} (${finalDecision.reason})`);
+                  const runContext = deps.getRunContextFor(task.id);
+                  if (runContext) await emitBoundedRunAudit(deps.store, {
+                    taskId: task.id,
+                    agentId: runContext.agentId,
+                    runId: runContext.runId,
+                    domain: "git",
+                    mutationType: "task:review-input-recaptured",
+                    target: task.id,
+                    metadata: {
+                      taskId: task.id,
+                      workflowStepId: workflowStep.id,
+                      verdict: effectiveVerdict,
+                      resolvedInReviewFindingCount,
+                      reason: finalDecision.reason,
+                    },
+                  });
+                }
+              } catch {
+                // Keep the original pre-dispatch identity; an unproven tree must still face the gate.
+              }
+            }
+          }
           if (workflowStep.requiresBrowser === true) {
             await logBrowserVerificationActivity(`[browser-verification] finished browser verification for task ${task.id}: verdict ${effectiveVerdict}`);
           }

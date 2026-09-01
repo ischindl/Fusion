@@ -10,7 +10,7 @@ import {TaskStore, storeLog} from "../store.js";
 import {readFile} from "node:fs/promises";
 import {join} from "node:path";
 import {existsSync, statSync} from "node:fs";
-import type {Task, TaskDetail, ColumnId, ArchivedTaskEntry, TaskVerificationRequest, TaskVerificationResultSummary, TaskVerificationStatus, TaskRecommendation, TaskRecommendationListItem, TaskRecommendationListPage} from "../types.js";
+import type {Task, TaskDetail, ColumnId, ArchivedTaskEntry, TaskVerificationRequest, TaskVerificationResultSummary, TaskVerificationStatus, TaskRecommendation, TaskRecommendationListItem, TaskRecommendationListPage, Settings} from "../types.js";
 import * as schema from "../postgres/schema/index.js";
 import { and, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import "../builtin-traits.js";
@@ -20,7 +20,7 @@ import {getAgentLogFilePath} from "../agents/agent-log-file-store.js";
 import {getInReviewStalledSignal, type InReviewStalledContext} from "../tasks/in-review-stalled.js";
 import {getStalePausedReviewSignal, type StalePausedReviewContext} from "../tasks/stale-paused-review.js";
 import {getStalePausedTodoSignal} from "../tasks/stale-paused-todo.js";
-import {resolveLifecycleColumns, resolveReviewColumns} from "../workflows/workflow-lifecycle-traits.js";
+import {resolveLifecycleColumns, resolveReviewColumns, type LifecycleColumns} from "../workflows/workflow-lifecycle-traits.js";
 import {resolveWorkflowIrForTask} from "../workflows/workflow-ir-resolver.js";
 import type {WorkflowIr} from "../workflows/workflow-ir-types.js";
 
@@ -28,6 +28,8 @@ import {getTaskAgeStalenessSignal, type TaskAgeStalenessThresholds} from "../tas
 import {resolveTaskLifecycleColumns} from "../workflows/workflow-lifecycle-traits.js";
 import {detectStalledReview} from "../tasks/stalled-review-detector.js";
 import {computeRetrySummary} from "../tasks/retry-summary.js";
+import {resolveRequiredPreMergeStepIds} from "../merge/required-pre-merge-steps.js";
+import {deriveTaskStallReason, type TaskStallReason, type TaskStallReasonContext} from "../tasks/task-stall-reason.js";
 // FNXC:TaskLookup404 2026-07-26-11:20: typed miss signal so API boundaries can
 // answer 404 instead of 500 (see TaskNotFoundError in task-store/errors.ts).
 import {TaskNotFoundError} from "../task-store/errors.js";
@@ -200,6 +202,102 @@ async function resolveReviewColumnsForTask(
   return columns;
 }
 
+/*
+FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174):
+Per-row wiring for the canonical stall/hold reason, shared by ALL FOUR hydration sites so the
+same card cannot answer differently on the board, in detail, on the incremental stream, or in
+search. The sites already own the inputs the derivation needs (per-pass IR cache, resolved
+review lanes, settings, merge-queue set); this wrapper adds only the two things the sites do
+not have: the resolved required-gate ids and a dependency-reference resolver.
+
+The resolver is deliberately LOCK-FREE. `store.getTask` takes the target's per-task advisory
+lock — reachable from `getTaskImpl`, which already holds THIS task's lock, so a lock-order
+inversion between two mutually-referencing cards could deadlock the two reads. The engine's
+completion wrapper tolerates that because it runs outside any task lock; a read-path twin does
+not. So references resolve through plain indexed reads: `readTaskRow` (live row), then
+`getArchivedTask` (cold-storage snapshot, whose `column` is the literal `"archived"`), then
+null. Cost contract: rows covered by the caller's own pass answer from `localColumnByTaskId`
+with zero reads (a board feed usually carries blockers and blocked cards together); only a
+reference outside the pass pays one indexed read; and because `deriveTaskStallReason` invokes
+the resolver ONLY from the dependency branch, cards that are suppressed, terminal, or judged
+in the review lane never trigger one.
+
+Satisfaction lanes are populated INSIDE the resolver, keyed by the dependency's own id, before
+it returns: `getTaskCompletionBlocker` awaits `resolveTask` immediately before each satisfaction
+check, so an entry written during resolution is always visible to the check for that id — the
+same lazy substitution the engine performs with a prefetch. An unresolvable workflow leaves the
+dep un-mapped, which keeps the documented legacy literals.
+*/
+async function hydrateTaskStallReason(
+  store: TaskStore,
+  task: Task,
+  options: {
+    now: number;
+    settings: Settings;
+    suppressed: boolean;
+    reviewColumns: ReadonlySet<string>;
+    lifecycle: LifecycleColumns | undefined;
+    irCache: Map<string, WorkflowIr>;
+    localColumnByTaskId: ReadonlyMap<string, string>;
+  },
+): Promise<TaskStallReason | undefined> {
+  if (options.suppressed) return undefined;
+  const layer = store.asyncLayer!;
+  const satisfactionColumnsByTaskId = new Map<string, { terminal: ReadonlySet<string>; review: ReadonlySet<string> }>();
+  const resolveSatisfactionLanes = async (depId: string): Promise<void> => {
+    try {
+      const ir = await resolveWorkflowIrForTask(store, depId, options.irCache);
+      if (!ir) return;
+      const lanes = resolveLifecycleColumns(ir);
+      const terminal = new Set([lanes?.complete, lanes?.archived].filter((c): c is string => Boolean(c)));
+      const review = new Set(resolveReviewColumns(ir));
+      // Engine-side twin skips an IR offering neither role, so the dep keeps the legacy literals.
+      if (terminal.size === 0 && review.size === 0) return;
+      satisfactionColumnsByTaskId.set(depId, { terminal, review });
+    } catch {
+      /* Unresolvable dependency workflow: omission is the legacy-literal path, not an error. */
+    }
+  };
+  const resolveDependency = async (depId: string): Promise<Pick<Task, "id" | "column"> | null> => {
+    const local = options.localColumnByTaskId.get(depId);
+    if (local !== undefined) {
+      await resolveSatisfactionLanes(depId);
+      return { id: depId, column: local };
+    }
+    try {
+      const row = await readTaskRow(layer, depId);
+      if (row) {
+        await resolveSatisfactionLanes(depId);
+        return { id: depId, column: String(row.column) };
+      }
+      const entry = await getArchivedTask(layer.db, depId, layer.projectId);
+      if (entry) return { id: depId, column: entry.column };
+      return null;
+    } catch (err) {
+      storeLog.warn(`[task-stall] dependency reference ${depId} unresolvable for ${task.id}: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  };
+  let requiredPreMergeStepIds: ReadonlySet<string> | undefined;
+  try {
+    // Cache-shared with the site's review-lane resolution, so this is a struct build, not a read.
+    const ir = await resolveWorkflowIrForTask(store, task.id, options.irCache);
+    if (ir) requiredPreMergeStepIds = resolveRequiredPreMergeStepIds(ir, task.enabledWorkflowSteps, task);
+  } catch {
+    /* No gate answer: the merge probe keeps the legacy results-only semantics. */
+  }
+  return deriveTaskStallReason(task, {
+    now: options.now,
+    reviewColumns: options.reviewColumns,
+    lifecycleColumns: options.lifecycle,
+    requiredPreMergeStepIds,
+    autoMergeAllowed: allowsAutoMergeProcessing(task, options.settings),
+    suppressed: options.suppressed,
+    resolveDependency,
+    satisfactionColumnsByTaskId,
+  } satisfies TaskStallReasonContext);
+}
+
 
 /**
  * FNXC:TaskRecommendations 2026-08-13-22:23:
@@ -264,7 +362,11 @@ export async function getTaskImpl(store: TaskStore, id: string, options?: { acti
       */
       /* FNXC:WorkflowLifecycleColumns 2026-07-31-01:20 (fleet): hoisted ABOVE the fresh-activity gate
          so that gate can resolve too — it is now the FIRST signal, and the note below is the rule. */
-      const reviewColumnsForTask: InReviewStallContext["reviewColumns"] = await resolveReviewColumnsForTask(store, task.id);
+      // FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174): one IR cache for this detail read — review
+      // lanes, the stall derivation's required-gate ids, and any dependency-satisfaction lanes all
+      // share it, so the card's workflow is read once no matter how many signals want it.
+      const detailIrCache = new Map<string, WorkflowIr>();
+      const reviewColumnsForTask: InReviewStallContext["reviewColumns"] = await resolveReviewColumnsForTask(store, task.id, detailIrCache);
       const hasFreshAgentLogActivity = hasFreshAgentLogActivitySinceTaskUpdate(store, task, now, reviewColumnsForTask);
       const executingTaskIds = hasFreshAgentLogActivity ? new Set<string>([task.id]) : undefined;
       /*
@@ -313,6 +415,24 @@ export async function getTaskImpl(store: TaskStore, id: string, options?: { acti
         } satisfies InReviewStalledContext);
       task.stalledReview = mergeQueuedTaskIds.has(task.id) || hasFreshAgentLogActivity ? undefined : detectStalledReview(task, { now, reviewColumns: reviewColumnsForTask });
       task.retrySummary = computeRetrySummary(task);
+      /*
+      FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174):
+      The canonical "why is this card standing still" answer. Like every sibling signal above it,
+      it is evaluated on the PERSISTED steps — the PROMPT.md step sync below can only ADD steps,
+      and all four hydration sites keep the same pre-sync evaluation point so the answer cannot
+      drift between the detail view and the board. Suppression mirrors `stalledReview` two lines
+      up (merge-queued OR fresh agent-log activity), NOT `inReviewStall`'s narrower merge-queue
+      gate: a card whose merger is streaming logs is not standing still, whatever its row says.
+      */
+      task.stallReason = await hydrateTaskStallReason(store, task, {
+        now,
+        settings,
+        suppressed: mergeQueuedTaskIds.has(task.id) || hasFreshAgentLogActivity,
+        reviewColumns: reviewColumnsForTask,
+        lifecycle: await resolveTaskLifecycleColumns(store, task.id, detailIrCache),
+        irCache: detailIrCache,
+        localColumnByTaskId: new Map([[task.id, task.column]]),
+      });
       /*
       FNXC:TaskDetailPromptResilience 2026-07-10-15:00 (merge port from main):
       PROMPT.md is enrichment for the task detail — NOT essential row data.
@@ -442,6 +562,18 @@ export async function listTasksImpl(store: TaskStore, options?: { limit?: number
     */
     const listPassIrCache = new Map<string, WorkflowIr>();
     /*
+    FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174): the stall derivation's dependency resolver
+    answers any reference covered by THIS page from the page's own rows — a board feed normally
+    carries a blocker and its blocked card together, so the common case stays zero-read. Built
+    from the raw rows because `pgRowToTaskRow` would parse every step/JSON column twice.
+    */
+    const localColumnByTaskId = new Map<string, string>();
+    for (const pgRow of filteredRows) {
+      if (typeof pgRow.id === "string" && typeof pgRow.column === "string") {
+        localColumnByTaskId.set(pgRow.id, pgRow.column);
+      }
+    }
+    /*
      * FNXC:SqliteFinalRemoval 2026-06-26-10:30:
      * Compute staleness thresholds once for the whole list pass, mirroring
      * the SQLite path. The ageStaleness/stalePausedReview/stalePausedTodo
@@ -468,6 +600,9 @@ export async function listTasksImpl(store: TaskStore, options?: { limit?: number
       PostgreSQL cutover's store split predated.
       */
       const reviewColumnsForRow = await resolveReviewColumnsForTask(store, task.id, listPassIrCache);
+      // FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174): resolved once per row, consumed by BOTH
+      // ageStaleness (which had it inline) and the stall derivation below — same cache, one answer.
+      const rowLifecycle = await resolveTaskLifecycleColumns(store, task.id, listPassIrCache);
       const hasFreshAgentLogActivity = hasFreshAgentLogActivitySinceTaskUpdate(store, task, now, reviewColumnsForRow);
       const executingTaskIds = hasFreshAgentLogActivity ? new Set<string>([task.id]) : undefined;
       task.inReviewStall = isMergeQueued ? undefined : getInReviewStallReason(task, {
@@ -523,7 +658,7 @@ export async function listTasksImpl(store: TaskStore, options?: { limit?: number
           thresholds: staleThresholds,
           engineActiveSinceMs: settings.engineActiveSinceMs,
           engineActivationGraceMs: settings.engineActivationGraceMs,
-          lifecycle: await resolveTaskLifecycleColumns(store, task.id, listPassIrCache),
+          lifecycle: rowLifecycle,
         });
       } catch (err) {
         if (!(err instanceof RangeError)) throw err;
@@ -531,6 +666,18 @@ export async function listTasksImpl(store: TaskStore, options?: { limit?: number
       }
       task.stalledReview = isMergeQueued || hasFreshAgentLogActivity ? undefined : detectStalledReview(task, { now, reviewColumns: reviewColumnsForRow });
       task.retrySummary = computeRetrySummary(task);
+      /* FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174): parity with getTaskImpl above — same
+         helper, same inputs, same suppression rule (merge-queued OR fresh agent-log activity),
+         so the slim board row carries the identical reason the detail read shows. */
+      task.stallReason = await hydrateTaskStallReason(store, task, {
+        now,
+        settings,
+        suppressed: isMergeQueued || hasFreshAgentLogActivity,
+        reviewColumns: reviewColumnsForRow,
+        lifecycle: rowLifecycle,
+        irCache: listPassIrCache,
+        localColumnByTaskId,
+      });
       if (slim) {
         task.timedExecutionMs = store.computeTimedExecutionMs(task.log);
         task.log = [];
@@ -686,8 +833,49 @@ export async function listTasksModifiedSinceImpl(store: TaskStore, since: string
         holdColumnByTaskId.set(row.id, await resolveHoldColumnForTask(store, row.id, irCache));
       }
     }
+    /*
+    FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174):
+    The row map below is SYNCHRONOUS, so the stall derivation resolves here — the same precompute
+    pattern `holdColumnByTaskId` established for this exact reason. This pass already resolved
+    review lanes and lifecycle lanes per row above, so the derivation adds no lane re-resolves.
+    Each row converts exactly ONCE: the sync map consumes the same task objects the prelude built.
+    Suppressed rows (merge-queued OR fresh agent-log activity — the stalledReview rule) are skipped
+    with zero resolver work, matching the helper's own suppression gate. References covered by
+    this page answer from `localColumnByTaskId` with no read; a reference outside it pays one.
+    */
+    const stallReasonByTaskId = new Map<string, TaskStallReason | undefined>();
+    const preludeTaskByTaskId = new Map<string, Task>();
+    {
+      const irCache = new Map<string, WorkflowIr>();
+      const localColumnByTaskId = new Map<string, string>();
+      for (const pgRow of pageRows) {
+        if (typeof pgRow.id === "string" && typeof pgRow.column === "string") {
+          localColumnByTaskId.set(pgRow.id, pgRow.column);
+        }
+      }
+      for (const pgRow of pageRows) {
+        const task = store.rowToTask(store.pgRowToTaskRow(pgRow));
+        preludeTaskByTaskId.set(task.id, task);
+        const reviewColumnsForRow = reviewColumnsByTaskId.get(task.id) ?? new Set<string>(["in-review"]);
+        if (mergeQueuedTaskIds.has(task.id) || hasFreshAgentLogActivitySinceTaskUpdate(store, task, now, reviewColumnsForRow)) {
+          stallReasonByTaskId.set(task.id, undefined);
+          continue;
+        }
+        stallReasonByTaskId.set(task.id, await hydrateTaskStallReason(store, task, {
+          now,
+          settings,
+          suppressed: false,
+          reviewColumns: reviewColumnsForRow,
+          lifecycle: lifecycleByTaskId.get(task.id),
+          irCache,
+          localColumnByTaskId,
+        }));
+      }
+    }
     const tasks = pageRows.map((pgRow) => {
-      const task = store.rowToTask(store.pgRowToTaskRow(pgRow));
+      // FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174): the prelude above already converted
+      // every page row; consume the same object so one page parses its JSON columns once.
+      const task = preludeTaskByTaskId.get(pgRow.id as string) ?? store.rowToTask(store.pgRowToTaskRow(pgRow));
       const isMergeQueued = mergeQueuedTaskIds.has(task.id);
       /*
       FNXC:WorkflowLifecycle 2026-07-05-15:40:
@@ -768,6 +956,9 @@ export async function listTasksModifiedSinceImpl(store: TaskStore, since: string
       task.timedExecutionMs = store.computeTimedExecutionMs(task.log);
       task.stalledReview = isMergeQueued || hasFreshAgentLogActivity ? undefined : detectStalledReview(task, { now, reviewColumns: reviewColumnsForRow });
       task.retrySummary = computeRetrySummary(task);
+      // FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174): board-feed parity — resolved in the
+      // async prelude above, attached without extra reads because this map is synchronous.
+      task.stallReason = stallReasonByTaskId.get(task.id);
       task.log = [];
       return task;
     });
@@ -831,6 +1022,15 @@ export async function searchTasksImpl(store: TaskStore, query: string, options?:
     const mergeQueuedTaskIds = await store.getMergeQueuedTaskIdsAsync();
     // Shared across the page so one workflow is read once, not once per hit.
     const searchPassIrCache = new Map<string, WorkflowIr>();
+    /* FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174): the stall resolver answers references
+       covered by this search page from its own rows (raw rows, so no JSON parse), paying at most
+       one indexed read for a reference outside the page. */
+    const searchLocalColumns = new Map<string, string>();
+    for (const pgRow of pgRows) {
+      if (typeof pgRow.id === "string" && typeof pgRow.column === "string") {
+        searchLocalColumns.set(pgRow.id, pgRow.column);
+      }
+    }
     const tasks = await Promise.all(pgRows.map(async (pgRow) => {
       const task = store.rowToTask(store.pgRowToTaskRow(pgRow));
       const isMergeQueued = mergeQueuedTaskIds.has(task.id);
@@ -846,6 +1046,9 @@ export async function searchTasksImpl(store: TaskStore, query: string, options?:
       /* FNXC:WorkflowLifecycleColumns 2026-07-31-01:20 (fleet): resolved ONCE for this row — it was
          resolved inline twice below, and the fresh-activity gate could not see it at all. */
       const reviewColumnsForRow = await resolveReviewColumnsForTask(store, task.id, searchPassIrCache);
+      // FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174): one struct build on the shared cache,
+      // consumed by the stall derivation below (search never had a lifecycle need of its own).
+      const rowLifecycle = await resolveTaskLifecycleColumns(store, task.id, searchPassIrCache);
       const hasFreshAgentLogActivity = hasFreshAgentLogActivitySinceTaskUpdate(store, task, now, reviewColumnsForRow);
       const executingTaskIds = hasFreshAgentLogActivity ? new Set<string>([task.id]) : undefined;
       task.inReviewStall = isMergeQueued ? undefined : getInReviewStallReason(task, {
@@ -867,6 +1070,18 @@ export async function searchTasksImpl(store: TaskStore, query: string, options?:
       } satisfies InReviewStalledContext);
       task.stalledReview = isMergeQueued || hasFreshAgentLogActivity ? undefined : detectStalledReview(task, { now, reviewColumns: reviewColumnsForRow });
       task.retrySummary = computeRetrySummary(task);
+      /* FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174): parity with the board/detail feeds — the
+         search hits carry the same reason the operator sees on the card. Archived matches merged
+         below are cold-storage snapshots and stay terminal-by-construction (no reason). */
+      task.stallReason = await hydrateTaskStallReason(store, task, {
+        now,
+        settings,
+        suppressed: isMergeQueued || hasFreshAgentLogActivity,
+        reviewColumns: reviewColumnsForRow,
+        lifecycle: rowLifecycle,
+        irCache: searchPassIrCache,
+        localColumnByTaskId: searchLocalColumns,
+      });
       if (slim) {
         task.timedExecutionMs = store.computeTimedExecutionMs(task.log);
         task.log = [];

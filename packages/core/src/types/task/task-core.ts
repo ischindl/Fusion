@@ -28,6 +28,7 @@ import type {
 import type { WorkflowStepResult } from "../workflow/workflow-steps.js";
 import type { InReviewStallSignal } from "../../tasks/in-review-stall.js";
 import type { InReviewStalledSignal } from "../../tasks/in-review-stalled.js";
+import type { TaskStallReason } from "../../tasks/task-stall-reason.js";
 import type { StalePausedReviewSignal } from "../../tasks/stale-paused-review.js";
 import type { StalePausedTodoSignal } from "../../tasks/stale-paused-todo.js";
 import type { TaskExternalBlock } from "../../tasks/task-external-block.js";
@@ -1024,6 +1025,19 @@ export interface Task {
   /** Server-computed in-review stall signal. Undefined when no stall rule matches.
    *  Diagnostic-only: must not be used as an auto-completion signal. */
   inReviewStall?: InReviewStallSignal;
+  /*
+   * FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174):
+   * Canonical server-derived answer to "why is this card standing still", hydrated on task READS
+   * only (list, getTask, modified-since, search) — never a persisted column, because the four
+   * underlying authorities (merge blocker, auto-merge hold, dependency edges, lifecycle lanes)
+   * move on their own and a stored copy would drift from all of them.
+   * Undefined means "moving or not derivable", NOT "healthy": a WIP card whose agent died shows
+   * no reason until a stall badge fires. The dashboard blanks it client-side while `agent:log`
+   * events stream for the card, mirroring the stall-badge suppression in useTasks.
+   * Diagnostic-only: must not be used as an auto-completion signal and must never gate a merge —
+   * the merge authority keeps being asked directly, this field is its summary for display.
+   */
+  stallReason?: TaskStallReason;
   /** Server-computed task age staleness signal. Undefined when no staleness rule matches.
    *  Diagnostic-only: must not be used as an auto-completion signal. */
   ageStaleness?: TaskAgeStalenessSignal;

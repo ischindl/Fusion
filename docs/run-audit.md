@@ -100,6 +100,8 @@ All `recordRunAuditEventWithinTransaction(tx, ...)` calls and the `recordRunAudi
 
 `task:review-empty-content-parked` records the one-time terminal close for a provably empty Code Review input. Its metadata is limited to task and workflow-step ids, the resting column, and the fixed failed outcome; reviewer prose and findings remain off audit rows. The empty-merge finalize-blocked events also include the fixed `parkedStatus: "failed"` outcome. These writes use bounded best-effort emission and are intentionally outside the curated delivery-pipeline event table.
 
+`task:review-input-recaptured` records a positive review lane that proved its own checkout fast-forwarded and re-bound its identity to the final reviewed content. `task:merge-stale-content-review-rerouted` records a singular stale-content merge refusal, from merge admission or self-healing, that attempted graph-owned review re-entry. Their metadata is task and workflow-step ids, approval verdict or fixed reroute reason, source, and a resolved-in-review finding count only; neither event records fingerprints, diffs, paths, findings, or reviewer prose. Both use the FN-9175 bounded best-effort seam.
+
 | Event | Metadata |
 | --- | --- |
 | `review-remediation-appended` | Task id, gate id, wave, and count only. |
