@@ -1075,6 +1075,40 @@ describe("ProjectEngineManager remote tunnel ownership", () => {
     expect(order).toEqual(["tunnel", "engine"]);
   });
 
+  /*
+  FNXC:RemoteAccess 2026-09-01-02:54:
+  A SUPERVISED RESTART IS NOT A SHUTDOWN. Command Center "Restart" — and "Update from source", which
+  ends in the same restart — exits with FUSION_RESTART_EXIT_CODE for a supervisor that relaunches
+  seconds later. Stopping the tunnel there killed the operator's public URL on every routine restart
+  (observed twice: container healthy, tailnet URL dead). Only a genuine process/container exit stops it.
+  */
+  it("hands the tunnel over on a supervised restart instead of stopping it", async () => {
+    const manager = makeManager();
+    await manager.ensureEngine("proj_aaa");
+    const engine = manager.getEngine("proj_aaa") as unknown as {
+      shutdownRemoteTunnelForProcessExit: ReturnType<typeof vi.fn>;
+      stop: ReturnType<typeof vi.fn>;
+    };
+
+    await manager.stopAll({ supervisedRestart: true });
+
+    expect(engine.shutdownRemoteTunnelForProcessExit).toHaveBeenCalledWith({ supervisedRestart: true });
+    // The engine itself still stops — only remote access is exempt from the restart.
+    expect(engine.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes the genuine-shutdown disposition when no restart is in flight", async () => {
+    const manager = makeManager();
+    await manager.ensureEngine("proj_aaa");
+    const engine = manager.getEngine("proj_aaa") as unknown as {
+      shutdownRemoteTunnelForProcessExit: ReturnType<typeof vi.fn>;
+    };
+
+    await manager.stopAll();
+
+    expect(engine.shutdownRemoteTunnelForProcessExit).toHaveBeenCalledWith({ supervisedRestart: false });
+  });
+
   it("survives a throwing tunnel shutdown and still stops the engine", async () => {
     const manager = makeManager();
     await manager.ensureEngine("proj_aaa");

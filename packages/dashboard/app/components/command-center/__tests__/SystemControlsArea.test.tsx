@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import { CommandCenter } from "../CommandCenter";
+import { selectCommandCenterSection } from "./sectionNavTestUtils";
 import { refreshUpdateCheck } from "../../../api/legacy";
 import { readAppFile } from "../../../test/cssFixture";
 import type { SseSubscription } from "../../../sse-bus";
@@ -29,6 +30,7 @@ const mockFetchNodeSystemStats = vi.fn();
 const mockFetchGlobalSettings = vi.fn();
 const mockFetchNodes = vi.fn();
 const subscribeSseMock = vi.fn((_url: string, _sub?: SseSubscription) => () => undefined);
+const mockStartSystemSourceUpdate = vi.fn();
 
 vi.mock("../../../api/legacy", () => ({
   fetchCodebaseMetrics: vi.fn().mockResolvedValue({ tokenEstimate: 0, sourceFileCount: 0, sourceByteCount: 0, diskBytes: 0, diskFileCount: 0, method: "local", truncated: false }),
@@ -50,6 +52,7 @@ vi.mock("../../../api/legacy", () => ({
   restartAllSystemAgents: vi.fn().mockResolvedValue({ ok: true }),
   restartSystemEngines: vi.fn().mockResolvedValue({ ok: true }),
   startSystemRebuild: vi.fn().mockResolvedValue({ id: "job-1", status: "running", kind: "rebuild", scope: "app", lines: [] }),
+  startSystemSourceUpdate: (...args: unknown[]) => mockStartSystemSourceUpdate(...args),
   startFnBinaryLinkLocal: vi.fn().mockResolvedValue({
     id: "job-fn-local",
     status: "running",
@@ -124,6 +127,7 @@ function systemInfoFixture(overrides: Record<string, unknown> = {}) {
     rebuildSupported: true,
     fnBinaryLinkLocalSupported: true,
     fnBinaryUseGlobalSupported: true,
+    sourceUpdateSupported: true,
     engineAvailable: true,
     engineRestartSupported: true,
     agentRestartSupported: true,
@@ -185,7 +189,7 @@ describe("SystemControlsArea layout integration", () => {
 
   async function renderSystemTab(addToast = vi.fn()) {
     render(<CommandCenter projectId="proj-1" addToast={addToast} />);
-    fireEvent.click(screen.getByTestId("command-center-tab-system"));
+    selectCommandCenterSection("system");
     const diagnosticsCard = await screen.findByTestId("cc-syscontrol-diagnostics");
     return { addToast, diagnosticsCard };
   }
@@ -199,6 +203,13 @@ describe("SystemControlsArea layout integration", () => {
       entries: [{ timestamp: "2026-07-12T00:00:00.000Z", level: "info", message: "ready" }],
     });
     mockFetchCurrentSystemRebuild.mockResolvedValue({ job: null });
+    mockStartSystemSourceUpdate.mockResolvedValue({
+      id: "job-source-update",
+      status: "running",
+      kind: "source-update",
+      scope: "source-update",
+      lines: [],
+    });
     mockFetchSystemStats.mockResolvedValue(systemStatsFixture());
     mockFetchNodeSystemStats.mockResolvedValue(systemStatsFixture());
     mockFetchGlobalSettings.mockResolvedValue({ vitestAutoKillEnabled: true, vitestKillThresholdPct: 90 });
@@ -220,7 +231,7 @@ describe("SystemControlsArea layout integration", () => {
   it("wraps System controls, Server logs, and Live system health in the shared gap owner", async () => {
     render(<CommandCenter projectId="proj-1" />);
 
-    fireEvent.click(screen.getByTestId("command-center-tab-system"));
+    selectCommandCenterSection("system");
 
     const systemTab = await screen.findByTestId("cc-system-tab");
     const controls = await screen.findByTestId("cc-system-controls");
@@ -241,7 +252,7 @@ describe("SystemControlsArea layout integration", () => {
   it("keeps the System controls refresh button in the scoped inline header", async () => {
     render(<CommandCenter projectId="proj-1" />);
 
-    fireEvent.click(screen.getByTestId("command-center-tab-system"));
+    selectCommandCenterSection("system");
 
     const controls = await screen.findByTestId("cc-system-controls");
     const header = controls.querySelector<HTMLElement>(".cc-system-controls-header");
@@ -334,7 +345,7 @@ describe("SystemControlsArea layout integration", () => {
     Element.prototype.scrollIntoView = scrollIntoView;
 
     render(<CommandCenter projectId="proj-1" />);
-    fireEvent.click(screen.getByTestId("command-center-tab-system"));
+    selectCommandCenterSection("system");
 
     const linkLocal = await screen.findByTestId("cc-syscontrol-fn-link-local");
     const useGlobal = screen.getByTestId("cc-syscontrol-fn-use-global");
@@ -383,7 +394,7 @@ describe("SystemControlsArea layout integration", () => {
 
   it("keeps manually scrolled rebuild output in place while SSE lines grow", async () => {
     render(<CommandCenter projectId="proj-1" />);
-    fireEvent.click(screen.getByTestId("command-center-tab-system"));
+    selectCommandCenterSection("system");
     const rebuild = await screen.findByTestId("cc-syscontrol-rebuild-app");
     fireEvent.click(within(rebuild).getByRole("button", { name: "Rebuild" }));
     const output = (await screen.findByTestId("cc-system-rebuild-output")).querySelector("pre")!;
@@ -407,7 +418,7 @@ describe("SystemControlsArea layout integration", () => {
 
   it("keeps manually scrolled live server logs in place while SSE lines grow", async () => {
     render(<CommandCenter projectId="proj-1" />);
-    fireEvent.click(screen.getByTestId("command-center-tab-system"));
+    selectCommandCenterSection("system");
     await screen.findByTestId("cc-system-controls");
     fireEvent.click(screen.getByTestId("cc-system-logs-toggle"));
     const output = await screen.findByText("No log entries yet.");
@@ -441,12 +452,55 @@ describe("SystemControlsArea layout integration", () => {
     });
 
     render(<CommandCenter projectId="proj-1" />);
-    fireEvent.click(screen.getByTestId("command-center-tab-system"));
+    selectCommandCenterSection("system");
     await screen.findByTestId("cc-system-controls");
     fireEvent.click(within(screen.getByTestId("cc-syscontrol-check-updates")).getByRole("button", { name: "Check now" }));
 
     expect(await screen.findByTestId("cc-system-update-check-result")).toHaveTextContent("Updates are managed by this deployment");
     expect(screen.queryByText("Update checks are disabled in global settings")).not.toBeInTheDocument();
+  });
+
+  /*
+  FNXC:SystemPanelSourceUpdate 2026-09-01-01:22:
+  The "Update from source" control is the remote contributor's only way to ship. It must be offered
+  when — and only when — it can actually work, and when it cannot it must say WHY, because a
+  container operator cannot inspect the process to find out. These assert the enabled/disabled
+  states from the server's advertised capabilities, not the button's mere presence.
+  */
+  it("enables update-from-source and starts the job when the host is a supervised git checkout", async () => {
+    render(<CommandCenter projectId="proj-1" />);
+    selectCommandCenterSection("system");
+    const card = await screen.findByTestId("cc-syscontrol-source-update");
+    const button = within(card).getByRole("button", { name: "Update & restart" });
+    expect(button).toBeEnabled();
+
+    fireEvent.click(button);
+    await waitFor(() => expect(mockStartSystemSourceUpdate).toHaveBeenCalledWith(true));
+  });
+
+  it("disables update-from-source with a run-from-source reason when the host is not a source checkout", async () => {
+    mockFetchSystemInfo.mockResolvedValue(systemInfoFixture({ sourceUpdateSupported: false }));
+
+    render(<CommandCenter projectId="proj-1" />);
+    selectCommandCenterSection("system");
+    const card = await screen.findByTestId("cc-syscontrol-source-update");
+
+    expect(within(card).getByRole("button", { name: "Update & restart" })).toBeDisabled();
+    expect(card).toHaveTextContent(/--from-source/);
+    expect(mockStartSystemSourceUpdate).not.toHaveBeenCalled();
+  });
+
+  it("disables update-from-source with a supervision reason when nothing would respawn the process", async () => {
+    mockFetchSystemInfo.mockResolvedValue(
+      systemInfoFixture({ sourceUpdateSupported: true, restartSupported: false }),
+    );
+
+    render(<CommandCenter projectId="proj-1" />);
+    selectCommandCenterSection("system");
+    const card = await screen.findByTestId("cc-syscontrol-source-update");
+
+    expect(within(card).getByRole("button", { name: "Update & restart" })).toBeDisabled();
+    expect(card).toHaveTextContent(/supervising parent/i);
   });
 
   it("hides build-and-link-local when the host is not a source checkout", async () => {
@@ -459,7 +513,7 @@ describe("SystemControlsArea layout integration", () => {
     );
 
     render(<CommandCenter projectId="proj-1" />);
-    fireEvent.click(screen.getByTestId("command-center-tab-system"));
+    selectCommandCenterSection("system");
 
     await screen.findByTestId("cc-system-controls");
     expect(screen.queryByTestId("cc-syscontrol-fn-link-local")).not.toBeInTheDocument();

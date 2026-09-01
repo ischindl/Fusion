@@ -48,6 +48,12 @@ Core `central` tables (names as exposed by the data layer; SQL uses snake_case):
 
 Per-project task data is keyed by `projectId` in PostgreSQL's `project` schema. Each repo keeps `.fusion/project.json` as its filesystem identity marker; `.fusion/fusion.db` is read only by the one-time legacy migrator.
 
+## Dashboard realtime task scope
+
+Task IDs are project-local. Every task lifecycle frame emitted on a scoped `/api/events` stream carries that stream's `projectId`, including envelope payloads and their nested task rows. Dashboard task state is owned by `(projectId, taskId)`: a client discards a known foreign task event before it can update rendered rows or the saved board snapshot.
+
+An absent `projectId` remains valid for legacy and unscoped streams. Clients accept those frames for compatibility, while a present identity that differs from the selected project is always rejected.
+
 ### Agent ownership predicates
 
 <!--

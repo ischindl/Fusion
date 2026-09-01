@@ -128,6 +128,20 @@ describe("FN-9195 Chat composer visual viewport", () => {
     } finally { mode.mockRestore(); viewport.restore(); }
   });
 
+  it("keeps the keyboard-active composer flush above the covered bottom inset", async () => {
+    const viewport = mockVisualViewport({ width: 375, height: 812 });
+    const mode = mockViewportMode("mobile");
+    try {
+      const input = await renderChat();
+      await openKeyboard(input, viewport.vv, 400);
+
+      expect(getThread()).toHaveClass("chat-thread--keyboard-active");
+      const inputRule = css.match(/\.chat-thread--keyboard-active \.chat-input-area\s*\{([^}]*)\}/m);
+      expect(inputRule?.[1]).toContain("var(--chat-keyboard-accessory-clearance, 0px)");
+      expect(inputRule?.[1]).not.toContain("env(safe-area-inset-bottom");
+    } finally { mode.mockRestore(); viewport.restore(); }
+  });
+
   it("applies the keyboard clamp to a landscape phone outside the narrow media query", async () => {
     const restoreHost = mockPhoneLandscapeViewport();
     const viewport = mockVisualViewport({ width: 932, height: 430 });

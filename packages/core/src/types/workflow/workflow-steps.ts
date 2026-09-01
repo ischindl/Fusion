@@ -102,6 +102,8 @@ export interface WorkflowStep {
   prompt: string;
   /** Tool set available to prompt-mode workflow agents. Defaults to readonly. */
   toolMode?: WorkflowStepToolMode;
+  /** In-memory graph-node config: named MCP servers allowed for this readonly step. */
+  readonlyMcpServers?: string[];
   /** Name of a skill to load into this step's session (e.g.
    *  "compound-engineering:ce-work"). When set, the step session loads the named
    *  skill (discovery + selection) and the engine injects the Fusion workflow-step

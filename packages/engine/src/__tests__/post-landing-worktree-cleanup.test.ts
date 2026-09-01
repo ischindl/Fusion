@@ -279,6 +279,25 @@ describe("cleanupLandedTaskWorktree", () => {
     expect(task.worktree).toBeNull();
   });
 
+  it.each([
+    new Error("preserving /repo/.worktrees/fn-251: uncommitted or ignored content present"),
+    new Error("preserving /repo/.worktrees/fn-251: status probe failed (broken registration)"),
+  ])("finalizes a durable landing when cleanup preserves content", async (error) => {
+    const { store, task, moveTask } = createFinalizationStore();
+    removeWorktreeMock.mockRejectedValueOnce(error);
+
+    const result = await finalizeProvenAutoMergeTask({
+      store: store as never,
+      taskId: task.id,
+      rootDir: "/repo",
+      source: "workflow-graph-merge-finalize",
+    });
+
+    expect(result.outcome).toBe("done");
+    expect(moveTask).toHaveBeenCalledWith(task.id, "done", expect.any(Object));
+    expect(task.worktree).toBe("/repo/.worktrees/fn-251");
+  });
+
   it("skips cleanup without a root directory but still completes", async () => {
     const { store, task, moveTask } = createFinalizationStore();
 

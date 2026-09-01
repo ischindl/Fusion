@@ -53,6 +53,11 @@ Upstream's one-writer remediation refactor (4970221c52) deleted every call site 
 classifyRemediationAttemptClaim from this file, so the union import drops it again.
 Upstream re-emitted its single-line import at this position; it is dropped as before — the
 canonical union import below remains the sole import.
+
+FNXC:SelfHealing 2026-09-01-13:56 (merge origin/main 35464605de → main):
+Upstream FN-279 (approval requires review-input proof) added resolveUnprovenReviewApproval;
+the auto-merged body calls it, so the union import carries it. Upstream's single-line
+import at this position is dropped as before.
 */
 
 /*
@@ -65,7 +70,7 @@ resolveRequiredPreMergeStepIds; getMergeConfirmedFinalizationBlocker stays expor
 (ChatSession, ChatInFlightGenerationState) are still used by the in-flight
 chat-generation sweep.
 */
-import { loadWorkspaceConfig, type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, hasSharedBranchMemberAutoMergeHold, resolveEffectiveAutoMerge, countRecentIdenticalStallEntries, detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getPostMergeFinalizeBlocker, planConfirmedMergeChecklistReconciliation, getTaskMergeBlocker, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isLiveSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, resolveExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveRequiredPreMergeStepIds, resolveReboundTarget, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, isWipColumnRole, isReviewColumnRole, isTerminalColumnRole, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type MoveTaskOptions, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult, type WorkflowStepResult, type WorkflowIr, type WorkflowIrV2, resolveReboundTargetForTask, type ChatSession, type ChatInFlightGenerationState,
+import { loadWorkspaceConfig, type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, hasSharedBranchMemberAutoMergeHold, resolveEffectiveAutoMerge, countRecentIdenticalStallEntries, detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getPostMergeFinalizeBlocker, planConfirmedMergeChecklistReconciliation, getTaskMergeBlocker, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isLiveSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, resolveExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveRequiredPreMergeStepIds, resolveReboundTarget, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, isWipColumnRole, isReviewColumnRole, isTerminalColumnRole, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, resolveUnprovenReviewApproval, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type MoveTaskOptions, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult, type WorkflowStepResult, type WorkflowIr, type WorkflowIrV2, resolveReboundTargetForTask, type ChatSession, type ChatInFlightGenerationState,
   resolveNearDuplicateCanonicalFlags,
   LEGACY_COLUMN_IDS_BY_ROLE,
   TERMINAL_ROLES,
@@ -80,6 +85,7 @@ import { loadWorkspaceConfig, type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_
   isFusionDeletableBranch,
   isTaskExternallyBlocked,
   fileScopeLeaseBlocksCandidate,
+  normalizeOverlapScopeForTask,
 } from "@fusion/core";
 import { finalizePlanningSegment, isLegacyWorkspaceWorktreeLayout, resolveLegacyWorktreesDirLayout, resolveWorkspaceTaskWorktreeDir } from "@fusion/core";
 import type { WorkspaceLandIntent } from "@fusion/core";
@@ -1931,6 +1937,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       // flight" to all of them (the merge gate included), which is the two-hour
       // stall-deadlock ride this sweep exists to prevent.
       { name: "reconcile-orphaned-pending-step-results", fn: () => this.reconcileOrphanedPendingStepResults().then(() => undefined) },
+      { name: "reconcile-unproven-review-approvals", fn: () => this.reconcileUnprovenReviewApprovals().then(() => undefined) },
       /*
       FNXC:WorkspaceContention 2026-08-23-08:00:
       `contention-hold` is owned by an in-memory retry timer. After a process restart that
@@ -3000,6 +3007,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           Keep them adjacent and in this order.
           */
           { name: "reconcile-orphaned-pending-step-results", fn: () => this.reconcileOrphanedPendingStepResults() },
+          { name: "reconcile-unproven-review-approvals", fn: () => this.reconcileUnprovenReviewApprovals() },
           { name: "recover-failed-pre-merge-steps", fn: () => this.recoverReviewTasksWithFailedPreMergeSteps() },
           { name: "recover-missing-worktree-review-failures", fn: () => this.recoverMissingWorktreeReviewFailures() },
           { name: "recover-interrupted-merging", fn: () => this.recoverInterruptedMergingTasks() },
@@ -4231,6 +4239,9 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           await this.store.updateTask(task.id, {
             worktree: inspection.livePath,
             branch: task.branch,
+            /* FNXC:BranchWriteOrigin 2026-08-20-16:10: re-pin after PR-conflict reclaim (FN-9161 store validation).
+               FNXC:BranchWriteOrigin 2026-08-28-10:12: origin derives from the classifier — the re-pinned task.branch may be
+               operator-supplied, and hardcoding "engine" exposed it to engine cleanup (#3523 Greptile P1). */
             branchWriteOrigin: classifyTaskBranchOrigin(task, task.branch) === "operator-supplied" ? "operator" : "engine",
             paused: false,
             pausedReason: undefined,
@@ -4252,6 +4263,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         await this.store.updateTask(task.id, {
           worktree: inspection.livePath,
           branch: task.branch,
+          /* FNXC:BranchWriteOrigin 2026-08-20-16:10: re-pin after PR-conflict reclaim (FN-9161 store validation).
+             FNXC:BranchWriteOrigin 2026-08-28-10:12: origin derives from the classifier (#3523 Greptile P1). */
           branchWriteOrigin: classifyTaskBranchOrigin(task, task.branch) === "operator-supplied" ? "operator" : "engine",
           paused: false,
           pausedReason: undefined,
@@ -5000,6 +5013,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           await this.store.updateTask(task.id, {
             worktree: reclaimedWorktreePath,
             branch: task.branch,
+            /* FNXC:BranchWriteOrigin 2026-08-20-16:10: resume-limbo re-pin (FN-9161 store validation).
+               FNXC:BranchWriteOrigin 2026-08-28-10:12: origin derives from the classifier (#3523 Greptile P1). */
             branchWriteOrigin: classifyTaskBranchOrigin(task, task.branch) === "operator-supplied" ? "operator" : "engine",
             paused: false,
             pausedReason: undefined,
@@ -5442,12 +5457,15 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       FNXC:OverlapSelfHealing 2026-06-25-04:34:
       Completion fan-out may preserve queued overlap blockers only when the blocker still holds the scheduler's active file-scope lease. Cache empty filtered scopes too so coordination-only tasks stay deterministic within a reconciliation pass.
       */
-      const getFilteredFileScope = async (scopeTaskId: string): Promise<string[]> => {
-        const cached = filteredScopeByTaskId.get(scopeTaskId);
+      const getFilteredFileScope = async (scopeTask: Pick<Task, "id" | "workspaceWorktrees">): Promise<string[]> => {
+        const cached = filteredScopeByTaskId.get(scopeTask.id);
         if (cached !== undefined) return cached;
-        const scope = await this.store.parseFileScopeFromPrompt(scopeTaskId);
-        const filteredScope = filterPathsByIgnoreList(scope, overlapIgnorePaths);
-        filteredScopeByTaskId.set(scopeTaskId, filteredScope);
+        const scope = await this.store.parseFileScopeFromPrompt(scopeTask.id);
+        const filteredScope = normalizeOverlapScopeForTask(
+          scopeTask,
+          filterPathsByIgnoreList(scope, overlapIgnorePaths, { ignoreHiddenOverlapPaths: settings.ignoreHiddenOverlapPaths }),
+        );
+        filteredScopeByTaskId.set(scopeTask.id, filteredScope);
         return filteredScope;
       };
       const hasActiveFileScopeOverlapBlocker = async (dependent: Task, blockerId: string | null | undefined): Promise<boolean> => {
@@ -5471,9 +5489,9 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           isTerminalColumn: roles.isTerminalColumn,
         });
         if (!fileScopeLeaseBlocksCandidate(blocker, dependent, classification)) return false;
-        const dependentScope = await getFilteredFileScope(dependent.id);
+        const dependentScope = await getFilteredFileScope(dependent);
         if (dependentScope.length === 0 || isCoordinationOnlyTask(dependent, dependentScope)) return false;
-        const blockerScope = await getFilteredFileScope(blocker.id);
+        const blockerScope = await getFilteredFileScope(blocker);
         if (blockerScope.length === 0 || isCoordinationOnlyTask(blocker, blockerScope)) return false;
         return pathsOverlap(dependentScope, blockerScope);
       };
@@ -6602,12 +6620,15 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       FNXC:OverlapSelfHealing 2026-06-25-04:34:
       Stale blockedBy cleanup must mirror scheduler lease semantics before preserving queued overlap state. Empty-scope cache hits matter here because no-write-scope advisory tasks should not repeatedly reparse specs or look active by accident.
       */
-      const getFilteredFileScope = async (taskId: string): Promise<string[]> => {
-        const cached = filteredScopeByTaskId.get(taskId);
+      const getFilteredFileScope = async (scopeTask: Pick<Task, "id" | "workspaceWorktrees">): Promise<string[]> => {
+        const cached = filteredScopeByTaskId.get(scopeTask.id);
         if (cached !== undefined) return cached;
-        const scope = await this.store.parseFileScopeFromPrompt(taskId);
-        const filteredScope = filterPathsByIgnoreList(scope, overlapIgnorePaths);
-        filteredScopeByTaskId.set(taskId, filteredScope);
+        const scope = await this.store.parseFileScopeFromPrompt(scopeTask.id);
+        const filteredScope = normalizeOverlapScopeForTask(
+          scopeTask,
+          filterPathsByIgnoreList(scope, overlapIgnorePaths, { ignoreHiddenOverlapPaths: settings.ignoreHiddenOverlapPaths }),
+        );
+        filteredScopeByTaskId.set(scopeTask.id, filteredScope);
         return filteredScope;
       };
       const hasActiveFileScopeOverlapBlocker = async (task: Task, blockerId: string | null | undefined): Promise<boolean> => {
@@ -6626,9 +6647,9 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         });
         if (!fileScopeLeaseBlocksCandidate(blocker, task, classification)) return false;
 
-        const taskScope = await getFilteredFileScope(task.id);
+        const taskScope = await getFilteredFileScope(task);
         if (taskScope.length === 0 || isCoordinationOnlyTask(task, taskScope)) return false;
-        const blockerScope = await getFilteredFileScope(blocker.id);
+        const blockerScope = await getFilteredFileScope(blocker);
         if (blockerScope.length === 0 || isCoordinationOnlyTask(blocker, blockerScope)) return false;
         return pathsOverlap(taskScope, blockerScope);
       };
@@ -7014,12 +7035,15 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       : undefined;
     const overlapIgnorePaths = settings.overlapIgnorePaths ?? [];
     const filteredScopeByTaskId = new Map<string, string[]>();
-    const getFilteredFileScope = async (taskId: string): Promise<string[]> => {
-      const cached = filteredScopeByTaskId.get(taskId);
-      if (cached) return cached;
-      const scope = await this.store.parseFileScopeFromPrompt(taskId);
-      const filteredScope = filterPathsByIgnoreList(scope, overlapIgnorePaths, { ignoreHiddenOverlapPaths: settings.ignoreHiddenOverlapPaths });
-      filteredScopeByTaskId.set(taskId, filteredScope);
+    const getFilteredFileScope = async (scopeTask: Pick<Task, "id" | "workspaceWorktrees">): Promise<string[]> => {
+      const cached = filteredScopeByTaskId.get(scopeTask.id);
+      if (cached !== undefined) return cached;
+      const scope = await this.store.parseFileScopeFromPrompt(scopeTask.id);
+      const filteredScope = normalizeOverlapScopeForTask(
+        scopeTask,
+        filterPathsByIgnoreList(scope, overlapIgnorePaths, { ignoreHiddenOverlapPaths: settings.ignoreHiddenOverlapPaths }),
+      );
+      filteredScopeByTaskId.set(scopeTask.id, filteredScope);
       return filteredScope;
     };
 
@@ -7041,7 +7065,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       const unmetDeps = getUnmetSchedulingDependencies(holder, tasks, dependencyOptions);
       if (unmetDeps.length === 0) continue;
 
-      const holderScope = await getFilteredFileScope(holder.id);
+      const holderScope = await getFilteredFileScope(holder);
       if (holderScope.length === 0 || isCoordinationOnlyTask(holder, holderScope)) continue;
 
       let deadlockingDependency: Task | undefined;
@@ -7055,7 +7079,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           break;
         }
         if (!leaseHoldColumns.has(dependency.column)) continue;
-        const dependencyScope = await getFilteredFileScope(dependency.id);
+        const dependencyScope = await getFilteredFileScope(dependency);
         if (dependencyScope.length === 0 || isCoordinationOnlyTask(dependency, dependencyScope)) continue;
         if (pathsOverlap(holderScope, dependencyScope)) {
           deadlockingDependency = dependency;
@@ -8730,6 +8754,118 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       return recovered;
     } catch (error) {
       log.error(`reconcileOrphanedPendingStepResults failed: ${error instanceof Error ? error.message : String(error)}`);
+      return 0;
+    }
+  }
+
+  /*
+  FNXC:ReviewInputProof 2026-09-01-11:28:
+  Prevention cannot release cards that already persisted a proofless `passed` content review. Repair
+  only the invalid result in place, including when auto-merge is off, so automatic recovery can re-run
+  eligible gates and a human-held card gains the failed result its audited bypass needs. The
+  `needsOperatorBypass` label is therefore truthful rather than aspirational; no lifecycle state moves.
+
+  FNXC:ReviewInputProof 2026-09-01-11:57:
+  Reconciliation must recompute from the lock-held task inside `updateTaskAtomic`; a graph writer can
+  publish a proof-bound approval or another gate after the preliminary read, and a stale array write
+  would discard that valid result. Re-check lane, user pause, workspace ownership, and session liveness
+  in the callback, then log and audit only a repair whose atomic mutation actually applied.
+  */
+  async reconcileUnprovenReviewApprovals(): Promise<number> {
+    try {
+      const reviewColumns = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
+      const candidates = new Map<string, Task>();
+      for (const column of reviewColumns) {
+        for (const task of await this.store.listTasks({ column, slim: true })) candidates.set(task.id, task);
+      }
+      const settings = await this.store.getSettings().catch(() => undefined);
+      let repairedTasks = 0;
+      const isSessionLive = (taskId: string): boolean => {
+        const livePaths = activeSessionRegistry.pathsForTask(taskId);
+        return livePaths.some((path) => activeSessionRegistry.isPathActive(path))
+          || executingTaskLock.has(taskId)
+          || this.options.isTaskActive?.(taskId) === true;
+      };
+
+      for (const candidate of candidates.values()) {
+        if (candidate.userPaused === true || candidate.workspaceWorktrees !== undefined || isSessionLive(candidate.id)) continue;
+        if (!candidate.workflowStepResults?.some((result) => resolveUnprovenReviewApproval(result, { workspace: false }))) continue;
+
+        const fresh = await this.store.getTask(candidate.id);
+        if (!fresh
+          || !reviewColumns.has(fresh.column)
+          || fresh.userPaused === true
+          || fresh.workspaceWorktrees !== undefined
+          || isSessionLive(fresh.id)) continue;
+
+        let repair: {
+          stepIds: string[];
+          reason: string;
+          column: string;
+          resultCount: number;
+          needsOperatorBypass: boolean | undefined;
+        } | undefined;
+        try {
+          await this.store.updateTaskAtomic(fresh.id, (live) => {
+            repair = undefined;
+            if (!reviewColumns.has(live.column)
+              || live.userPaused === true
+              || live.workspaceWorktrees !== undefined
+              || isSessionLive(live.id)) return null;
+
+            const repairedStepIds: string[] = [];
+            let repairReason: string | undefined;
+            const results = (live.workflowStepResults ?? []).map((result) => {
+              const resolution = resolveUnprovenReviewApproval(result, { workspace: false });
+              if (!resolution) return result;
+              repairedStepIds.push(result.workflowStepId);
+              repairReason ??= resolution.reason;
+              return resolution.downgraded;
+            });
+            if (repairedStepIds.length === 0 || !repairReason) return null;
+
+            repair = {
+              stepIds: repairedStepIds,
+              reason: repairReason,
+              column: live.column,
+              resultCount: results.length,
+              needsOperatorBypass: settings ? !allowsAutoMergeProcessing(live, settings) : undefined,
+            };
+            return { workflowStepResults: results };
+          });
+          if (!repair) continue;
+          repairedTasks += 1;
+        } catch (error) {
+          log.warn(`reconcileUnprovenReviewApprovals: failed for ${fresh.id}: ${error instanceof Error ? error.message : String(error)}`);
+          continue;
+        }
+
+        await this.store.logEntry(
+          fresh.id,
+          `[pre-merge] Invalid proofless approval repaired for ${repair.stepIds.join(", ")}: ${repair.reason}`,
+        ).catch(() => undefined);
+        await emitBoundedRunAudit(this.store, {
+          taskId: fresh.id,
+          agentId: "self-healing",
+          runId: generateSyntheticRunId("reconcile-unproven-review-approval", fresh.id),
+          domain: "database",
+          mutationType: "task:reconcile-unproven-review-approval",
+          target: fresh.id,
+          metadata: {
+            taskId: fresh.id,
+            column: repair.column,
+            workflowStepId: repair.stepIds[0],
+            repairedCount: repair.stepIds.length,
+            resultCount: repair.resultCount,
+            needsOperatorBypass: repair.needsOperatorBypass,
+          },
+        }, { log });
+      }
+
+      if (repairedTasks > 0) log.log(`Repaired unproven review approvals on ${repairedTasks} task(s)`);
+      return repairedTasks;
+    } catch (error) {
+      log.error(`reconcileUnprovenReviewApprovals failed: ${error instanceof Error ? error.message : String(error)}`);
       return 0;
     }
   }

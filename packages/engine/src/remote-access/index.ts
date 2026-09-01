@@ -12,6 +12,8 @@ export {
   remoteTunnelScopeKey,
   shutdownRemoteTunnelService,
   shutdownAllRemoteTunnels,
+  preserveRemoteTunnelForSupervisedRestart,
+  preserveAllRemoteTunnelsForSupervisedRestart,
   __resetRemoteTunnelServicesForTests,
   type RemoteLifecycleEvaluation,
 } from "./remote-tunnel-service.js";

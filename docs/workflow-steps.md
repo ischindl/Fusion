@@ -65,6 +65,14 @@ Decision-only or investigation tasks can also declare `noCommitsExpected` / `**N
 
 Every selectable built-in workflow uses a capacity-released hold column (`todo` or a workflow-specific backlog) for queued work and a WIP execution column for active work, so the hold/release sweep performs the normal `todo`/backlog → in-progress dispatch across the catalog.
 
+#### Content-binding review proof
+
+A pre-merge review binds source content when its step id is `code-review` **or** its result declares `reviewKind: "code"`. This is the same identity-or-kind rule used by merge admission. A workflow author who reuses the `code-review` node id inherits this contract even when the node does not declare `reviewKind`.
+
+Every singular content-binding approval must record a `reviewInputFingerprint`. Fusion refuses to dispatch the review when it cannot prove that input, records a recoverable failed step instead, and prevents any proofless approval from being persisted or honored. An audited human bypass—identified by a non-empty operator actor plus a recorded timestamp and reason—waives content binding for the specific skipped step. The automated `fast-mode` bypass never does; it retains the existing fail-closed merge refusal.
+
+Workspace Code Review is excluded from both the singular pre-dispatch proof requirement and the human-waiver shortcut. Workspace approval is bound through confirmed per-repository review evidence instead of one scalar fingerprint, and merge admission continues to validate that evidence repository by repository.
+
 ### Current workflow behavior inventory
 
 <!--
@@ -529,6 +537,8 @@ Prompt-mode workflow-step agents receive user-authored task comments plus legacy
 
 Readonly steps cannot hold `edit`, `write`, `bash`, or task/agent mutation tools. Attempts to use denied tools fail closed with `READONLY_VIOLATION` and are surfaced as a `[readonly-violation]` workflow-step failure outcome.
 
+A graph prompt node may declare `config.readonlyMcpServers` as an array of non-blank configured MCP server names. For example, a Plan Review inner prompt can use `{ "toolMode": "readonly", "readonlyMcpServers": ["nav"] }` to use semantic navigation without receiving coding tools. Only listed servers are connected and exposed; unlisted servers never start, and tool origin is re-checked before exposure. The key is validated recursively in optional-group templates, is graph-node configuration rather than a legacy persisted configured-step field, and an absent key preserves the normal no-MCP readonly behavior. If reviewer inline fixes promote a review step to coding mode, this readonly-only opt-in is omitted and normal coding-mode MCP policy applies.
+
 Use `toolMode: "coding"` for any prompt step that must modify files, run shell commands, or perform mutation actions.
 
 ## Gate Modes
@@ -610,7 +620,7 @@ When `defaultOn: true`, the gate is effectively enabled for execution and in-pro
 
 ## Workflow Step Revision Loop
 
-A review revision produces its remediation before any review-to-WIP move is requested. Named-remediation workflows append visible `Fix:` steps after the untouched task history and then a pending `Testing & Verification` step; trailing-reopen workflows instead use their reopened pending occurrence. Previously completed verification occurrences remain completed, while the fresh trailing occurrence makes another verification pass mandatory before the revised card can return to review. The parse node preserves live remediation steps across the post-bounce run; dedupe and scope checks still apply, while remediation waves are unbounded. A workflow's authored optional-group `maxRevisions` is the only numeric bound.
+A review revision produces its remediation before any review-to-WIP move is requested. Named-remediation workflows append visible `Fix:` steps after the untouched task history and then a pending `Testing & Verification` step; trailing-reopen workflows instead use their reopened pending occurrence. Every post-completion appender records the shared step-ledger reopen marker atomically with that new work, and starting a still-`pending` occurrence also records re-entry, so the resumed foreach skips completed history, executes the pending remediation, and can take its success edge back into review. Previously completed verification occurrences remain completed, while the fresh trailing occurrence makes another verification pass mandatory before the revised card can return to review. The parse node preserves live remediation steps across the post-bounce run; dedupe and scope checks still apply, while remediation waves are unbounded. A workflow's authored optional-group `maxRevisions` is the only numeric bound.
 
 A Code Review `REVISE` must contain structured, file-specific Fix-step records. If a reviewer nevertheless omits usable records or only reports out-of-scope files, Fusion appends one deterministic pending Fix step that directs the executor to turn that feedback into concrete implementation work and returns the card to WIP; it never leaves Code Review blocked for that omission. Verification and unrelated gates retain their evidence-based non-blocking release behavior when no actionable remediation exists. Automatic failed-review revival claims the exact keyable review-input signature before it consumes budget or narrates an attempt. The claim has an owner and every refresh or release is fenced by step id, signature, and owner, so a concurrent runner cannot duplicate the attempt and an overtaken runner cannot clear a newer round's claim.
 

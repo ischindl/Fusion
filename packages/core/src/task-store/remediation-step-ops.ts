@@ -2,7 +2,7 @@ import type { TaskStore } from "../store.js";
 import type { Task, TaskStep } from "../types.js";
 import { hasOpenEquivalentRemediationStep, remediationWaveCount } from "../tasks/remediation-steps.js";
 import { planRemediationPlacement } from "../tasks/remediation-step-placement.js";
-import { evaluateStepLedgerSeal, STEP_LEDGER_REOPEN_MARKER_PREFIX } from "./step-ledger-seal.js";
+import { buildStepLedgerReopenLog } from "./step-ledger-seal.js";
 
 export interface AppendRemediationStepsOptions {
   wave?: number;
@@ -54,9 +54,9 @@ export async function appendRemediationStepsImpl(
     so or the work it just created cannot run.
 
     `evaluateStepLedgerSeal` refuses any step transition once the log tail carries a completion
-    marker such as "Task marked done by agent", until a re-entry marker supersedes it. Its three
-    re-entry markers are a fresh executor session, a resume-after-unpause, and this reopen stamp --
-    and `updateStep` writes the stamp only for a step returned to `pending` or an operator edit.
+    marker such as "Task marked done by agent", until a re-entry marker supersedes it. Re-entry
+    comes from a fresh executor session, a resume-after-unpause, or this shared reopen stamp -- and
+    `updateStep` also stamps pending resets, operator edits, and admitted starts of pending work.
     Remediation arrives through THIS append instead, so it wrote no stamp: the seal survived, and the
     graph's very next act -- taking the new Fix step to `in-progress` -- was refused as a
     post-completion projection. The card was moved back for repair and then could not start it.
@@ -68,16 +68,10 @@ export async function appendRemediationStepsImpl(
     Stamped inside the same atomic mutation as the append, so no window exists in which the steps
     exist while the ledger still claims completion.
     */
-    const seal = evaluateStepLedgerSeal(current.log);
-    const log = seal.sealed
-      ? [
-          ...(current.log ?? []),
-          {
-            timestamp: new Date().toISOString(),
-            action: `${STEP_LEDGER_REOPEN_MARKER_PREFIX} — ${appended.length} remediation step(s) appended after completion (wave ${wave})`,
-          },
-        ]
-      : undefined;
+    const log = buildStepLedgerReopenLog(
+      current.log,
+      `${appended.length} remediation step(s) appended after completion (wave ${wave})`,
+    );
     return {
       steps: placement.steps,
       currentStep: placement.insertionIndex,

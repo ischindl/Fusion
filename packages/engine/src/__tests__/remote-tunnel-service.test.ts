@@ -5,6 +5,8 @@ import {
   getRemoteTunnelService,
   peekRemoteTunnelService,
   remoteTunnelScopeKey,
+  preserveAllRemoteTunnelsForSupervisedRestart,
+  preserveRemoteTunnelForSupervisedRestart,
   shutdownAllRemoteTunnels,
   shutdownRemoteTunnelService,
 } from "../remote-access/remote-tunnel-service.js";
@@ -197,5 +199,276 @@ describe("remote tunnel service registry", () => {
         lifecycle: expect.objectContaining({ wasRunningOnShutdown: false, lastRunningProvider: null }),
       }),
     }));
+  });
+});
+
+/*
+FNXC:RemoteAccess 2026-09-01-02:54:
+Original symptom (observed twice on the operator's container): Command Center "Restart" — and the new
+"Update from source" control, which ends in the same restart — brought the dashboard back healthy while
+the Tailscale funnel was gone and the public URL was dead, with the status route reporting
+{"state":"stopped","restore":{"reason":"no_prior_running_marker"}}.
+
+Two causes, both pinned here. (1) A supervised restart went down the process-exit teardown, so the
+tunnel was stopped on every routine restart. (2) Restore erased the running marker on transient
+failures, so once a boot outran tailscaled the marker was gone for good.
+*/
+function createTailscaleSettings(lifecycle: Record<string, unknown> = {}) {
+  return {
+    remoteAccess: {
+      activeProvider: "tailscale" as const,
+      providers: {
+        tailscale: { enabled: true, hostname: "box", targetPort: 4040, acceptRoutes: false },
+        cloudflare: { enabled: false, quickTunnel: false, tunnelName: "", tunnelToken: "", ingressUrl: "" },
+      },
+      tokenStrategy: {
+        persistent: { enabled: false, token: null },
+        shortLived: { enabled: false, ttlMs: 1000, maxTtlMs: 2000 },
+      },
+      lifecycle: {
+        rememberLastRunning: true,
+        wasRunningOnShutdown: true,
+        lastRunningProvider: "tailscale" as const,
+        ...lifecycle,
+      },
+    },
+  };
+}
+
+const RUNNING_TAILSCALE_STATUS = {
+  provider: "tailscale" as const,
+  state: "running" as const,
+  pid: 201,
+  startedAt: null,
+  stoppedAt: null,
+  url: "https://box.tail1234.ts.net/",
+  lastError: null,
+};
+
+const STOPPED_STATUS = {
+  provider: null,
+  state: "stopped" as const,
+  pid: null,
+  startedAt: null,
+  stoppedAt: null,
+  url: null,
+  lastError: null,
+};
+
+function markerWrites(store: ReturnType<typeof createStore>): Array<Record<string, unknown>> {
+  return store.updateSettings.mock.calls.map(([patch]) => (patch as {
+    remoteAccess: { lifecycle: Record<string, unknown> };
+  }).remoteAccess.lifecycle);
+}
+
+describe("supervised restart is not a shutdown", () => {
+  beforeEach(() => {
+    __resetRemoteTunnelServicesForTests();
+  });
+
+  it("hands the tunnel over instead of stopping it, and persists the running marker first", async () => {
+    const key = remoteTunnelScopeKey({ projectId: "proj-1" });
+    const service = getRemoteTunnelService(key);
+    const manager = service.getManager();
+    vi.spyOn(manager, "getStatus").mockReturnValue(RUNNING_TAILSCALE_STATUS);
+    const stopSpy = vi.spyOn(manager, "stop").mockResolvedValue(undefined);
+    const releaseSpy = vi.spyOn(manager, "releaseForSupervisedRestart").mockReturnValue(true);
+    const store = createStore(createTailscaleSettings());
+
+    await expect(preserveRemoteTunnelForSupervisedRestart(key, store)).resolves.toBe(true);
+
+    // The whole incident in one assertion: a restart must not stop the operator's remote access.
+    expect(stopSpy).not.toHaveBeenCalled();
+    expect(releaseSpy).toHaveBeenCalledTimes(1);
+    // The marker still lands, so even a child that dies anyway is restored rather than lost.
+    expect(markerWrites(store).at(-1)).toMatchObject({
+      wasRunningOnShutdown: true,
+      lastRunningProvider: "tailscale",
+    });
+  });
+
+  it("releases orphan tunnels on the sweep too, rather than killing them", async () => {
+    const orphan = getRemoteTunnelService(remoteTunnelScopeKey({ projectId: "paused-project" }));
+    const stopSpy = vi.spyOn(orphan.getManager(), "stop").mockResolvedValue(undefined);
+    const releaseSpy = vi.spyOn(orphan.getManager(), "releaseForSupervisedRestart").mockReturnValue(true);
+
+    await preserveAllRemoteTunnelsForSupervisedRestart();
+
+    expect(stopSpy).not.toHaveBeenCalled();
+    expect(releaseSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("still stops the tunnel on a genuine process shutdown", async () => {
+    const key = remoteTunnelScopeKey({ projectId: "proj-1" });
+    const service = getRemoteTunnelService(key);
+    const manager = service.getManager();
+    vi.spyOn(manager, "getStatus").mockReturnValue(RUNNING_TAILSCALE_STATUS);
+    const stopSpy = vi.spyOn(manager, "stop").mockResolvedValue(undefined);
+    const releaseSpy = vi.spyOn(manager, "releaseForSupervisedRestart");
+
+    await shutdownRemoteTunnelService(key, createStore(createTailscaleSettings()));
+
+    expect(stopSpy).toHaveBeenCalledTimes(1);
+    expect(releaseSpy).not.toHaveBeenCalled();
+  });
+
+  it("adopts the funnel that survived the restart instead of spawning a second one", async () => {
+    const service = getRemoteTunnelService(remoteTunnelScopeKey({ projectId: "proj-1" }));
+    const manager = service.getManager();
+    vi.spyOn(manager, "getStatus").mockReturnValue(STOPPED_STATUS);
+    const startSpy = vi.spyOn(manager, "start").mockResolvedValue(undefined);
+    const adoptSpy = vi.spyOn(manager, "adoptRunningTunnel").mockImplementation(() => undefined);
+    vi.spyOn(manager, "detectActiveFunnel").mockResolvedValue({
+      provider: "tailscale",
+      url: "https://box.tail1234.ts.net/",
+      proxyPort: 4040,
+    });
+    const store = createStore(createTailscaleSettings());
+
+    await service.restoreIfNeeded(store);
+
+    // A second `tailscale funnel` would exit 1 AND clear the first one's config — that is itself a way
+    // to kill remote access, so restore must never spawn over a live funnel.
+    expect(startSpy).not.toHaveBeenCalled();
+    expect(adoptSpy).toHaveBeenCalledWith("tailscale", "https://box.tail1234.ts.net/");
+    expect(service.getRestoreDiagnostics()).toMatchObject({
+      outcome: "applied",
+      reason: "adopted_running_tunnel",
+    });
+    expect(markerWrites(store).at(-1)).toMatchObject({ wasRunningOnShutdown: true });
+  });
+
+  /*
+  FNXC:RemoteAccess 2026-09-01-03:52:
+  The stuck state, reproduced: once a restart loses track of the tunnel, the service believes it is
+  stopped, so it writes no running marker — and a marker-gated adoption then skips forever with
+  `no_prior_running_marker` while the public URL keeps serving 200. Adoption must depend on what
+  tailscaled can PROVE, not on what this process remembers.
+  */
+  it("adopts a live funnel even with no running marker, which is the state a lost restart leaves behind", async () => {
+    const service = getRemoteTunnelService(remoteTunnelScopeKey({ projectId: "proj-1" }));
+    const manager = service.getManager();
+    vi.spyOn(manager, "getStatus").mockReturnValue(STOPPED_STATUS);
+    const startSpy = vi.spyOn(manager, "start").mockResolvedValue(undefined);
+    const adoptSpy = vi.spyOn(manager, "adoptRunningTunnel").mockImplementation(() => undefined);
+    vi.spyOn(manager, "detectActiveFunnel").mockResolvedValue({
+      provider: "tailscale",
+      url: "https://box.tail1234.ts.net/",
+      proxyPort: 4040,
+    });
+    const settings = createTailscaleSettings();
+    settings.remoteAccess.lifecycle.wasRunningOnShutdown = false;
+    settings.remoteAccess.lifecycle.lastRunningProvider = null;
+    const store = createStore(settings);
+
+    await service.restoreIfNeeded(store);
+
+    expect(startSpy).not.toHaveBeenCalled();
+    expect(adoptSpy).toHaveBeenCalledWith("tailscale", "https://box.tail1234.ts.net/");
+    expect(service.getRestoreDiagnostics()).toMatchObject({
+      outcome: "applied",
+      reason: "adopted_running_tunnel",
+    });
+    // The marker is re-established, so the service can recover itself from the lost state.
+    expect(markerWrites(store).at(-1)).toMatchObject({ wasRunningOnShutdown: true });
+  });
+
+  it("refuses to clobber a funnel that is serving a different port", async () => {
+    const service = getRemoteTunnelService(remoteTunnelScopeKey({ projectId: "proj-1" }));
+    const manager = service.getManager();
+    vi.spyOn(manager, "getStatus").mockReturnValue(STOPPED_STATUS);
+    const startSpy = vi.spyOn(manager, "start").mockResolvedValue(undefined);
+    const adoptSpy = vi.spyOn(manager, "adoptRunningTunnel").mockImplementation(() => undefined);
+    vi.spyOn(manager, "detectActiveFunnel").mockResolvedValue({
+      provider: "tailscale",
+      url: "https://box.tail1234.ts.net/",
+      proxyPort: 9999,
+    });
+    const store = createStore(createTailscaleSettings());
+
+    await service.restoreIfNeeded(store);
+
+    expect(startSpy).not.toHaveBeenCalled();
+    expect(adoptSpy).not.toHaveBeenCalled();
+    expect(service.getRestoreDiagnostics()).toMatchObject({
+      outcome: "skipped",
+      reason: "external_funnel_conflict",
+    });
+    // The operator's intent survives the refusal.
+    expect(markerWrites(store).some((lifecycle) => lifecycle.wasRunningOnShutdown === false)).toBe(false);
+  });
+
+  it("spawns a fresh tunnel when no surviving funnel can be proven", async () => {
+    const service = getRemoteTunnelService(remoteTunnelScopeKey({ projectId: "proj-1" }));
+    const manager = service.getManager();
+    vi.spyOn(manager, "getStatus").mockReturnValue(STOPPED_STATUS);
+    const startSpy = vi.spyOn(manager, "start").mockResolvedValue(undefined);
+    vi.spyOn(manager, "detectActiveFunnel").mockResolvedValue(null);
+    vi.spyOn(service, "evaluateRemoteLifecycle").mockResolvedValue({
+      provider: "tailscale",
+      config: { provider: "tailscale", executablePath: "tailscale", args: ["funnel", "4040"] },
+    });
+
+    await service.restoreIfNeeded(createStore(createTailscaleSettings()));
+
+    expect(startSpy).toHaveBeenCalledWith("tailscale", expect.objectContaining({ provider: "tailscale" }));
+    expect(service.getRestoreDiagnostics()).toMatchObject({ outcome: "applied", reason: "restore_started" });
+  });
+
+  it("keeps the running marker when tailscaled is not ready yet", async () => {
+    const service = getRemoteTunnelService(remoteTunnelScopeKey({ projectId: "proj-1" }));
+    const manager = service.getManager();
+    vi.spyOn(manager, "getStatus").mockReturnValue(STOPPED_STATUS);
+    vi.spyOn(manager, "detectActiveFunnel").mockResolvedValue(null);
+    vi.spyOn(service, "evaluateRemoteLifecycle").mockResolvedValue({
+      provider: "tailscale",
+      reason: "runtime_prerequisite_missing",
+      message: "tailscaled is not reachable",
+    });
+    const store = createStore(createTailscaleSettings());
+
+    await service.restoreIfNeeded(store);
+
+    // Clearing the marker here is how one unlucky boot became a permanent no_prior_running_marker.
+    expect(markerWrites(store).some((lifecycle) => lifecycle.wasRunningOnShutdown === false)).toBe(false);
+    expect(service.getRestoreDiagnostics()).toMatchObject({
+      outcome: "skipped",
+      reason: "runtime_prerequisite_missing",
+    });
+  });
+
+  it("keeps the running marker when a restore spawn fails", async () => {
+    const service = getRemoteTunnelService(remoteTunnelScopeKey({ projectId: "proj-1" }));
+    const manager = service.getManager();
+    vi.spyOn(manager, "getStatus").mockReturnValue(STOPPED_STATUS);
+    vi.spyOn(manager, "detectActiveFunnel").mockResolvedValue(null);
+    vi.spyOn(manager, "start").mockRejectedValue(new Error("process exited 1"));
+    vi.spyOn(service, "evaluateRemoteLifecycle").mockResolvedValue({
+      provider: "tailscale",
+      config: { provider: "tailscale", executablePath: "tailscale", args: ["funnel", "4040"] },
+    });
+    const store = createStore(createTailscaleSettings());
+
+    await service.restoreIfNeeded(store);
+
+    expect(markerWrites(store).some((lifecycle) => lifecycle.wasRunningOnShutdown === false)).toBe(false);
+    expect(service.getRestoreDiagnostics()).toMatchObject({ outcome: "failed", reason: "restore_start_failed" });
+  });
+
+  it("still clears the marker when remote access is genuinely turned off", async () => {
+    const service = getRemoteTunnelService(remoteTunnelScopeKey({ projectId: "proj-1" }));
+    const manager = service.getManager();
+    vi.spyOn(manager, "getStatus").mockReturnValue(STOPPED_STATUS);
+    vi.spyOn(manager, "detectActiveFunnel").mockResolvedValue(null);
+    vi.spyOn(service, "evaluateRemoteLifecycle").mockResolvedValue({
+      provider: "tailscale",
+      reason: "provider_not_enabled",
+      message: "Tailscale provider is disabled",
+    });
+    const store = createStore(createTailscaleSettings());
+
+    await service.restoreIfNeeded(store);
+
+    expect(markerWrites(store).at(-1)).toMatchObject({ wasRunningOnShutdown: false, lastRunningProvider: null });
   });
 });

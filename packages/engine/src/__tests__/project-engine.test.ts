@@ -300,12 +300,23 @@ function createMockStore(initialSettings: Record<string, unknown>) {
   const store = {
     getSettings: vi.fn(async () => structuredClone(settings)),
     listTasks: vi.fn(async (): Promise<Array<Record<string, unknown>>> => []),
+    /*
+    FNXC:EngineTests 2026-09-01-05:50:
+    A real task row always carries `steps` and `enabledWorkflowSteps`; this default omitted both, so
+    every merge-confirmed fast-path test silently exercised a shape the product never sees. The
+    finalize path reads them AFTER the first read, so a per-test `mockResolvedValueOnce` could not
+    supply them — the fast path threw "Cannot read properties of undefined (reading 'map')" into the
+    merge loop's catch and the task:merged emit never happened. Fixing the shared factory, not each
+    test, is what keeps the next author out of the same trap.
+    */
     getTask: vi.fn(async (taskId: string): Promise<Record<string, unknown>> => ({
       id: taskId,
       column: "in-review",
       paused: false,
       mergeRetries: 0,
       status: null,
+      steps: [],
+      enabledWorkflowSteps: [],
     })),
     updateTask: vi.fn(async () => undefined),
     moveTask: vi.fn(async () => undefined),
@@ -2240,6 +2251,10 @@ describe("ProjectEngine workspace merge dispatch hardening (Phase C review)", ()
     mockStore.store.getTask.mockResolvedValue(
       workspaceTask({
         status: null,
+        // A real row carries these. Without them the merge-confirmed fast path threw on `steps.map`
+        // and never reached the workspace gate-skip this test exists to prove.
+        steps: [],
+        enabledWorkflowSteps: [],
         mergeDetails: {
           mergeConfirmed: true,
           // A sub-repo squash sha — unreachable from the workspace ROOT cwd; the gate would

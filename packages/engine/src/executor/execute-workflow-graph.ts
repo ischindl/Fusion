@@ -26,6 +26,7 @@ import {
   resolveColumnAgentBinding,
   resolveMaxConsecutiveToolFailureRetries,
   resolveTaskOutputLanguage,
+  resolveUnprovenReviewApproval,
   resolveWorkflowIrForTask,
   upsertWorkflowStepResult,
   applySupersededFindingIds,
@@ -434,7 +435,14 @@ export async function persistWorkflowStepResultWithOutcome(
         scopeSuperseded = true;
         return null;
       }
-      const built = buildWorkflowStepResultPatch(current, result, isPlanReviewResult);
+      const unprovenApproval = resolveUnprovenReviewApproval(result, {
+        workspace: current.workspaceWorktrees !== undefined,
+      });
+      const built = buildWorkflowStepResultPatch(
+        current,
+        unprovenApproval?.downgraded ?? result,
+        isPlanReviewResult,
+      );
       activityResult = built.resultToPersist;
       activityResults = built.results;
       return built.patch;
@@ -481,26 +489,38 @@ export async function persistWorkflowStepResultWithOutcome(
     if (fenceRefused) return { scopeCurrent: true, persisted: false };
 
     const persistedResult = activityResults?.find((entry) => entry.workflowStepId === result.workflowStepId) ?? activityResult;
-    if (isTerminalStepResult(result)) {
-      const passed = result.status === "passed"
-        || result.status === "skipped"
-        || result.verdict === "APPROVE"
-        || result.verdict === "APPROVE_WITH_NOTES"
-        || result.verdict === "CLOSE_NO_OP";
+    const approvalDowngraded = result.status === "passed"
+      && persistedResult.status === "failed"
+      && result.reviewInputFingerprint === undefined
+      && persistedResult.verdict === undefined;
+    if (approvalDowngraded) {
+      await deps.store.logEntry(
+        taskId,
+        `[pre-merge] ${result.workflowStepName} approval invalidated: ${persistedResult.notes ?? persistedResult.output ?? "review input proof missing"}`,
+        undefined,
+        deps.getRunContextFor(taskId),
+      ).catch(() => undefined);
+    }
+    if (isTerminalStepResult(persistedResult)) {
+      const passed = persistedResult.status === "passed"
+        || persistedResult.status === "skipped"
+        || persistedResult.verdict === "APPROVE"
+        || persistedResult.verdict === "APPROVE_WITH_NOTES"
+        || persistedResult.verdict === "CLOSE_NO_OP";
       try {
         await deps.store.recordAgentActivity({
           type: passed ? "workflow:gate-passed" : "workflow:gate-failed",
           attributionClaim: resolveWorkflowGateActivityClaim(
-            deps.workflowGateActivityPrincipals?.get(`${taskId}\0${result.workflowStepId}`)
+            deps.workflowGateActivityPrincipals?.get(`${taskId}\0${persistedResult.workflowStepId}`)
               ?? deps.activeWorkflowPrincipals?.get(taskId)?.agentId,
             live?.assignedAgentId,
           ),
           taskId,
-          occurredAt: result.completedAt ?? result.startedAt ?? new Date().toISOString(),
-          discriminator: `${result.workflowStepId}:${result.startedAt ?? result.completedAt ?? result.status}`,
-          metadata: buildWorkflowGateActivityMetadata(result, persistedResult),
+          occurredAt: persistedResult.completedAt ?? persistedResult.startedAt ?? new Date().toISOString(),
+          discriminator: `${persistedResult.workflowStepId}:${persistedResult.startedAt ?? persistedResult.completedAt ?? persistedResult.status}`,
+          metadata: buildWorkflowGateActivityMetadata(persistedResult, persistedResult),
         });
-        deps.workflowGateActivityPrincipals?.delete(`${taskId}\0${result.workflowStepId}`);
+        deps.workflowGateActivityPrincipals?.delete(`${taskId}\0${persistedResult.workflowStepId}`);
       } catch (error) {
         executorLog.warn(`[agent-activity] ${taskId}: failed to record workflow gate activity: ${error instanceof Error ? error.message : String(error)}`);
       }
