@@ -142,6 +142,7 @@ import { createRunAuditor, generateSyntheticRunId, type DatabaseMutationType, ty
 import { finalizeProvenAutoMergeTask, validateWorkflowDoneMergeProof } from "./merge/auto-merge-finalization.js";
 import { captureMergeContentDescriptor } from "./merge/merge-content-capture.js";
 import { rerouteSingularStaleContentToReview } from "./merge/stale-content-review-reroute.js";
+import { rerouteUnrunPreMergeGateToReview } from "./merge/pre-merge-gate-reseed.js";
 import { cleanupLandedTaskWorktree, removeEmptyWorkspaceTaskDirectory } from "./merge/post-landing-worktree-cleanup.js";
 import { AutoRecoveryDispatcher } from "./healing/auto-recovery.js";
 import { activeSessionRegistry, executingTaskLock } from "./agents/active-session-registry.js";
@@ -946,6 +947,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   private maintenanceTickCounter = 0;
   private readonly taskLifecycleRetentionLastPrunedAt = new Map<string, number>();
   private readonly staleContentRerouteAuditKeys = new Set<string>();
+  private readonly unrunPreMergeGateRerouteAuditKeys = new Set<string>();
   private readonly githubCheckStateRetentionLastPrunedAt = new Map<string, number>();
   private readonly processBootStartedAt = Date.now();
   private lastDbCorruptionNotifiedAt: number | null = null;
@@ -9448,6 +9450,35 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     return true;
   }
 
+  private async routeUnrunPreMergeGateBackToReview(task: Task, reviewColumns: ReadonlySet<string>, settings: Settings): Promise<boolean> {
+    let mergeGate;
+    try { mergeGate = await resolvePreMergeGateForTask(this.store, task.id, task.enabledWorkflowSteps, task); } catch { return false; }
+    if (mergeGate.provenance === "default" && !mergeGate.selectionAbsent) return false;
+    const mergeContent = await captureMergeContentDescriptor(task, { workspaceRootDir: this.options.rootDir, settings });
+    if (getTaskMergeBlocker(task, { reviewColumns, requiredPreMergeStepIds: mergeGate.requiredPreMergeStepIds, mergeContent }) !== "task has enabled pre-merge workflow steps that never ran") return false;
+    const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, { requiredPreMergeStepIds: mergeGate.requiredPreMergeStepIds, mergeContent })
+      .catch(() => ({ rerouted: false, reason: "no-unrun-gate" as const, nodeId: undefined, workflowStepId: undefined }));
+    if (reroute.rerouted) {
+      await this.store.logEntry(task.id, "[pre-merge] Self-healing re-seeded the workflow graph at an enabled pre-merge gate that never ran.");
+      log.warn(`Unrun pre-merge gate for ${task.id} re-seeded at ${reroute.nodeId ?? "unknown"}`);
+    }
+    const auditKey = `${task.id}:${reroute.reason}:${reroute.nodeId ?? ""}`;
+    if (!this.unrunPreMergeGateRerouteAuditKeys.has(auditKey)) {
+      this.unrunPreMergeGateRerouteAuditKeys.add(auditKey);
+      await emitBoundedRunAudit(this.store, {
+        taskId: task.id, agentId: "self-healing", runId: generateSyntheticRunId("self-healing", task.id), domain: "database",
+        mutationType: "task:merge-unrun-pre-merge-gate-rerouted", target: task.id,
+        metadata: { taskId: task.id, nodeId: reroute.nodeId, workflowStepId: reroute.workflowStepId, reason: reroute.reason, source: "self-healing", missingGateCount: mergeGate.requiredPreMergeStepIds.size },
+      });
+    }
+    /*
+    FNXC:PreMergeApproval 2026-09-02-10:50:
+    The blocker is proven before the idle seed races. Once another run owns the continuation, this
+    sweep must still suppress its merge enqueue because that door would defer until the real gate runs.
+    */
+    return true;
+  }
+
   /**
    * Recover `in-review` tasks that are fully mergeable but never had
    * `mergeTask()` invoked.
@@ -9563,6 +9594,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         const reviewColumns = await ownReviewLanesFor(task);
         if (!reviewColumns.has(task.column)) continue;
         if (await this.routeStaleSingularApprovalBackToReview(task, reviewColumns, settings)) continue;
+        if (await this.routeUnrunPreMergeGateBackToReview(task, reviewColumns, settings)) continue;
         if (getTaskMergeBlocker(task, { reviewColumns }) !== undefined) continue;
         laneQualifiedMergeable.push(task);
       }
