@@ -1,0 +1,135 @@
+/*
+FNXC:FleetActionLog 2026-09-02-06:40 (RUFU-176):
+The Fleet tab's action-log drawer. Design tokens only (AGENTS.md): spacing/radius/weight/color come from the shared
+scale, and status colors reuse the semantic tokens so a failed gate reads the same red as a health badge. The overlay is
+transparent — the shared ModalChrome contract keeps depth on the panel's own shadow, not a dimmed backdrop. Motion is
+deliberately absent: the org chart's reduced-motion block already covers the only animated surface on this tab.
+*/
+
+.agent-action-log-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  background: transparent;
+  backdrop-filter: none;
+}
+
+.agent-action-log {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: min(30rem, 100%);
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+}
+
+.agent-action-log__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: var(--space-md) var(--space-lg);
+  border-bottom: 1px solid var(--border);
+}
+
+.agent-action-log__title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-weight: var(--font-weight-semibold);
+}
+
+.agent-action-log__list {
+  list-style: none;
+  margin: 0;
+  padding: 0 var(--space-lg);
+  overflow-y: auto;
+  flex: 1;
+}
+
+.agent-action-log__row {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: baseline;
+  column-gap: var(--space-sm);
+  row-gap: var(--space-xs);
+  padding: var(--space-sm) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.agent-action-log__time {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.agent-action-log__type {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.agent-action-log__type--workflow-gate-failed {
+  color: var(--color-error);
+}
+
+.agent-action-log__type--approval-requested {
+  color: var(--color-warning);
+}
+
+.agent-action-log__who {
+  font-weight: var(--font-weight-medium);
+}
+
+.agent-action-log__summary {
+  grid-column: 1 / -1;
+  color: var(--text-muted);
+}
+
+.agent-action-log__task {
+  grid-column: 1 / -1;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-action-log__gap {
+  color: var(--color-warning);
+}
+
+.agent-action-log__row--gap {
+  grid-template-columns: 1fr;
+}
+
+.agent-action-log__empty,
+.agent-action-log__error {
+  padding: var(--space-lg);
+  color: var(--text-muted);
+}
+
+.agent-action-log__error {
+  color: var(--color-error);
+}
+
+.agent-action-log__older {
+  margin: var(--space-sm) var(--space-lg) 0;
+  align-self: flex-start;
+}
+
+@media (max-width: 768px) {
+  /* No hover target exists on a touch viewport, so every fact is visible text and the drawer takes the full sheet width. */
+  .agent-action-log {
+    width: 100%;
+  }
+
+  .agent-action-log__row {
+    grid-template-columns: auto 1fr;
+  }
+
+  .agent-action-log__summary,
+  .agent-action-log__task {
+    grid-column: 1 / -1;
+  }
+}

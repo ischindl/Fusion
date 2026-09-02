@@ -45,6 +45,65 @@ export default defineConfig({
     // FNXC:i18n-ParityGate 2026-06-20-00:00:
     // Untranslated secondary-locale keys stay empty for runtime fallback to `en`; `status` now gates structural key parity only, while `status:report` measures real completion.
     defaultValue: "",
+    /*
+    FNXC:i18n-DynamicKeyPreservation 2026-09-02-07:17:
+    `extract` prunes keys no static `t()`/`<Trans>` call site references, but some live copy is reachable ONLY through
+    runtime-composed keys the AST scanner cannot see: template-literal calls (`t(`models.options.${level}`)`,
+    `t(`taskHistory.verdict.${token}`)`, `t(`systemStats.agent${State}`)`, `t(`settings.general.reportTargetOverride.${action}`)`)
+    and settings-search metadata that builds `helpKey: `settings.jira.${key}Help``.
+    Without patterns these keys are deleted as "unused" on the next extraction, silently reverting translated UI to inline
+    fallbacks (measured: the RUFU-176 extraction catch-up deleted 35 such keys — `models.options.*`, `systemStats.agent*`,
+    the three `taskHistory.*` families, `settings.general.reportTargetOverride.*`, and three settings rows the FN-7505
+    guard caught) before the regression was restored from the pre-catch-up catalog. Patterns cover exactly the families proven dynamic-only by that incident — keys
+    with literal call sites (sibling `settings.*` copy, `insights.category.*`, `skills.*`, `theme.mode*`) are deliberately
+    NOT listed, so ordinary extraction keeps managing them; a stale key listed here is preserved forever, so this list must
+    shrink, not grow, as call sites become static.
+
+    FNXC:i18n-DynamicKeyPreservation 2026-09-02-16:48:
+    The same RUFU-176 catch-up deleted a second, larger class of 49 live `app` keys, and the reason was NOT a
+    runtime-composed key: the call site held a string literal, but the scanner could not bind it to the `app` namespace,
+    so it wrote the key to `defaultNS` (`common`) and pruned the `app` entry the runtime actually reads. Two shapes cause
+    this: (a) a literal in a registry table consumed by a dynamic call (`labelKey: "skills.autoAvailable"` read back as
+    `t(classification.labelKey, classification.defaultLabel)`; the earlier note's claim that `skills.*` is literal-bound is
+    true only for `skills.forced`-style direct calls), and (b) a real `t("key", "default")` call whose `t` arrives as a
+    parameter typed `TFunction<"app">` in a module with no `useTranslation` (`utils/duplicateTaskAction.ts`,
+    `components/TaskContextMenu.tsx`, `components/ArtifactMedia.tsx`, and the module-level helpers inside
+    `TaskDetailModal.tsx`/`Column.tsx`). `t(...)` under any of those shapes resolves against `app` at runtime
+    (`App.tsx`, `MobileNavBar`, `AgentDetailView`, `TaskHistoryTab` all bind `useTranslation("app")` and thread that `t`
+    down), so an entry parked only in `common.json` is invisible and the string silently reverts to its inline English
+    default for every non-English operator. Patterns below pin exactly the families proven broken by that measurement;
+    prefer moving a call site to a bound `t` (or an explicit `app:` key prefix) over adding to this list.
+    */
+    preservePatterns: [
+      "app:models.options.*",
+      "app:systemStats.agent*",
+      "app:taskHistory.empty.*",
+      "app:taskHistory.stage.*",
+      "app:taskHistory.verdict.*",
+      "app:taskHistory.entry.*",
+      "app:settings.general.reportTargetOverride.*",
+      "app:settings.jira.enabledHelp",
+      "app:settings.globalGeneral.autoUpdateAndRestartHelp",
+      "app:settings.general.reportTargetByActionHelp",
+      // Registry-consumed labels: the literal lives in a table, the call is `t(row.labelKey, row.defaultLabel)`.
+      "app:nav.*",
+      "app:skills.autoAvailable*",
+      "app:skills.disabledSkill*",
+      "app:skills.notDiscovered*",
+      "app:skills.skillStatePending*",
+      // App-namespaced copy reached through a `TFunction<"app">` parameter the scanner cannot namespace-bind.
+      "app:taskDetail.duplicate.*",
+      "app:taskDetail.pr.*",
+      "app:taskDetail.pause.*",
+      "app:taskDetail.gitlabTracking.kind*",
+      "app:taskDetail.refine.btn",
+      "app:taskDetail.retry.btn",
+      "app:taskDetail.bypassReview.btn",
+      "app:board.rejection.unplannedForExecution",
+      "app:documents.noArtifactPreview",
+      "app:app.backendError.failedFetch",
+      "app:commandCenter.agentActivity.workflowGateNotRun",
+    ],
   },
   types: {
     input: ["packages/i18n/locales/en/*.json"],

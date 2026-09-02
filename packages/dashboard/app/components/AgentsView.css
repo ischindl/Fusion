@@ -1668,3 +1668,51 @@ AgentsView uses the measured SVG overlay as the single connector system so paren
 /* FNXC:AgentSkillsUI 2026-08-16-04:27: List badges preserve the shared availability classification at compact widths. */
 .agent-badges .badge-skill[data-skill-state="disabled"] { border-color: var(--color-warning); }
 .agent-badges .badge-skill[data-skill-state="unknown"] { border-color: var(--color-error); }
+
+/*
+FNXC:FleetVerdict 2026-09-02-06:50 (RUFU-176):
+The three org-node runtime-fact rows (linked task, heartbeat countdown, stall reason) render at the card's compact badge
+size, stacked under the state/health row. Colors reuse the same semantic status tokens the state badges,
+`getAgentHealthStatus`, and the overview verdict strip already emit, so "red means stalled" is one meaning across the
+whole tab. Each row is absent rather than placeholdered when its fact is unknown, so a card never renders a zero it
+cannot prove.
+*/
+.org-chart-node__task {
+  margin-top: var(--space-xs);
+  font-size: calc(var(--space-sm) + var(--space-xs) * 0.75);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.org-chart-node__heartbeat {
+  margin-top: var(--space-xs);
+  font-size: calc(var(--space-sm) + var(--space-xs) * 0.75);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.org-chart-node__heartbeat--overdue {
+  color: var(--state-error-text);
+}
+
+.org-chart-node__stall {
+  margin-top: var(--space-xs);
+  font-size: calc(var(--space-sm) + var(--space-xs) * 0.75);
+  font-weight: 600;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.org-chart-node__stall--waiting-human {
+  color: var(--state-paused-text);
+}
+
+.org-chart-node__stall--no-heartbeat {
+  color: var(--state-idle-text);
+}
+
+.org-chart-node__stall--stalled {
+  color: var(--state-error-text);
+}

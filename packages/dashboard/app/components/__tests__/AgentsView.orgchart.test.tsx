@@ -2,6 +2,9 @@ import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { createInstance } from "i18next";
+import { I18nextProvider, initReactI18next } from "react-i18next";
+import realEnApp from "../../../../i18n/locales/en/app.json";
 import { AgentsView } from "../AgentsView";
 import * as apiModule from "../../api";
 
@@ -201,5 +204,203 @@ describe("AgentsView org chart interactions", () => {
     fireEvent.click(await screen.findByLabelText("Org Chart view"));
     expect(await screen.findByTestId("agent-org-chart-controls")).toBeInTheDocument();
     expect(screen.getByLabelText("Center org chart")).toBeInTheDocument();
+  });
+});
+
+/*
+FNXC:FleetVerdict 2026-09-02-07:35 (RUFU-176):
+The org node is the only surface that answers WHY one agent is parked, so these assert the rendered facts rather than the
+classifier's arithmetic (covered in `fleetVerdict.test.ts`): the linked-task chip, the heartbeat countdown and its
+overdue state, and the localized stall line. They also pin the two absence rules that keep a card honest — a stopped
+runtime has no cadence to count down to, and a busy agent never grows a stall line — because a fabricated row is worse
+than a missing one.
+
+FNXC:FleetVerdict 2026-09-02-15:47 (RUFU-176 code review P0):
+The first version of these fixtures handed `fetchOrgTree` a record carrying `taskColumn` and `pendingApprovalCount`.
+That is not the wire: `/api/agents/org-tree` answers with raw `getOrgTree()` rows, on which neither
+`sanitizeAgentTaskLinks` (supplies `taskColumn`, deletes `taskId` for a terminal link) nor
+`withPendingApprovalCounts` (`pendingApprovalCount`) has run — only `/api/agents` runs both. The node rendered the
+invented fields, so the fixture hid the defect it should have caught: on the real wire every chip read "Unresolved
+task", a finished card kept its chip, and a node could never read "waiting for a human" while the strip above it
+counted exactly that. One spec per agent is now projected through BOTH wire shapes, so a fixture cannot hand the tree
+a field the tree endpoint never emits, and these assertions fail on a raw-record render.
+*/
+describe("AgentsView org chart node runtime facts", () => {
+  const MINUTE = 60_000;
+  const HOUR = 3_600_000;
+
+  // The rendered stall line IS catalog copy, so these assertions load the real en catalog instead of asserting the
+  // code-level fallback (`MailboxRelatedWorkLink.test.tsx` establishes this pattern).
+  async function createRealCatalogInstance() {
+    const instance = createInstance();
+    await instance.use(initReactI18next).init({
+      lng: "en",
+      fallbackLng: "en",
+      ns: ["app", "common"],
+      defaultNS: "app",
+      returnNull: false,
+      returnEmptyString: false,
+      react: { useSuspense: false },
+      interpolation: { escapeValue: false },
+      resources: { en: { app: realEnApp } },
+    });
+    return instance;
+  }
+
+  let catalog: Awaited<ReturnType<typeof createRealCatalogInstance>>;
+
+  const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * MINUTE).toISOString();
+
+  /** One agent, declared once, projected through both org-chart-relevant wire shapes (see the block comment above). */
+  interface OrgFactSpec {
+    id: string;
+    name: string;
+    state: string;
+    /** Linked card, exactly as the raw agent row holds it. */
+    taskId?: string;
+    /** Linked card's board column — `/api/agents` only. */
+    taskColumn?: string;
+    /** Approval queue depth — `/api/agents` only. */
+    pendingApprovalCount?: number;
+    /** The linked card is done/archived: `/api/agents` deletes the link, the raw row keeps pointing at it. */
+    terminalLink?: boolean;
+    pauseReason?: string;
+    /** Minutes since the last beat, aged at fixture-build time. */
+    beatMinutesAgo: number;
+    runtimeConfig: Record<string, unknown>;
+  }
+
+  const factSpecs: OrgFactSpec[] = [
+    // Mid-card and busy: the raw row links the card, only the roster names its column.
+    { id: "busy", name: "Busy", state: "active", taskId: "FN-042", taskColumn: "in-progress", beatMinutesAgo: 0, runtimeConfig: { heartbeatIntervalMs: HOUR } },
+    // Idle with a queued approval the tree endpoint cannot know about. Beat 50m into a 1h cadence, so the countdown
+    // row is only "under an hour" if it anchors on the interval (the 4x staleness anchor reads 3h 10m).
+    { id: "approvable", name: "Approvable", state: "idle", pendingApprovalCount: 2, beatMinutesAgo: 50, runtimeConfig: { heartbeatIntervalMs: HOUR } },
+    // Parked on a human-hold column: `taskColumn` is the ONLY signal, and the tree endpoint never sends it.
+    { id: "waiting-card", name: "Waiting Card", state: "idle", taskId: "FN-044", taskColumn: "awaiting-user-review", beatMinutesAgo: 0, runtimeConfig: { heartbeatIntervalMs: HOUR } },
+    // The linked card finished: `/api/agents` deleted the link, the raw row still carries it.
+    { id: "terminal", name: "Terminal Link", state: "idle", taskId: "FN-099", taskColumn: "done", terminalLink: true, beatMinutesAgo: 0, runtimeConfig: { heartbeatIntervalMs: HOUR } },
+    { id: "parked", name: "Parked", state: "paused", pauseReason: "budget-exhausted", beatMinutesAgo: 0, runtimeConfig: { heartbeatIntervalMs: HOUR } },
+    { id: "silent", name: "Silent", state: "idle", beatMinutesAgo: 0, runtimeConfig: { enabled: false } },
+    // 5h 30m without a beat on a 1h cadence: overdue by 4h 30m against the interval.
+    { id: "overdue", name: "Overdue", state: "idle", beatMinutesAgo: 330, runtimeConfig: { heartbeatIntervalMs: HOUR } },
+  ];
+
+  function agentRecord(spec: OrgFactSpec, wire: "org-tree" | "agents") {
+    const enriched = wire === "agents";
+    const linkSurvives = !spec.terminalLink || !enriched;
+    return {
+      id: spec.id,
+      name: spec.name,
+      role: "executor",
+      state: spec.state,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      metadata: {},
+      lastHeartbeatAt: minutesAgo(spec.beatMinutesAgo),
+      runtimeConfig: spec.runtimeConfig,
+      ...(spec.pauseReason ? { pauseReason: spec.pauseReason } : {}),
+      ...(spec.taskId && linkSurvives ? { taskId: spec.taskId } : {}),
+      ...(enriched && linkSurvives && spec.taskColumn ? { taskColumn: spec.taskColumn } : {}),
+      ...(enriched && typeof spec.pendingApprovalCount === "number" ? { pendingApprovalCount: spec.pendingApprovalCount } : {}),
+    };
+  }
+
+  /** `/api/agents/org-tree`: raw `getOrgTree()` rows — no `taskColumn`, no `pendingApprovalCount`, terminal link intact. */
+  function rawTree() {
+    return factSpecs.map((spec) => ({ agent: agentRecord(spec, "org-tree"), children: [] }));
+  }
+
+  /** `/api/agents`: the same rows after `sanitizeAgentTaskLinks` + `withPendingApprovalCounts`. */
+  function enrichedRoster() {
+    return factSpecs.map((spec) => agentRecord(spec, "agents"));
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockViewportMode.mockReturnValue("desktop");
+    vi.stubGlobal("ResizeObserver", class {
+      observe() {}
+      disconnect() {}
+    });
+    mockFetchAgents.mockResolvedValue(enrichedRoster());
+    mockFetchOrgTree.mockResolvedValue(rawTree());
+    catalog = await createRealCatalogInstance();
+  });
+
+  async function nodeFinder() {
+    render(<I18nextProvider i18n={catalog}><AgentsView addToast={vi.fn()} /></I18nextProvider>);
+    fireEvent.click(await screen.findByLabelText("Org Chart view"));
+    const root = await screen.findByTestId("agent-org-chart-viewport");
+    return (id: string) => root.querySelector(`[data-agent-id="${id}"]`) as HTMLElement | null;
+  }
+
+  it("shows which card a node is holding, with the column only the roster endpoint sends", async () => {
+    const nodeOf = await nodeFinder();
+    const chip = nodeOf("busy")?.querySelector(".org-chart-node__task");
+    expect(chip?.textContent).toContain("FN-042");
+    // Rendered from the roster's `taskColumn` via `useColumnLabel`; a raw tree record yields "Unresolved task".
+    expect(chip?.textContent).toContain("In Progress");
+    expect(chip?.textContent).not.toContain("Unresolved");
+  });
+
+  it("drops the chip for a link the roster endpoint already deleted", async () => {
+    const nodeOf = await nodeFinder();
+    // The raw row still points at FN-099; `/api/agents` deleted it because that card reached a terminal lane.
+    expect(nodeOf("terminal")?.querySelector(".org-chart-node__task")).toBeNull();
+  });
+
+  /*
+  FNXC:FleetVerdict 2026-09-02-15:47 (RUFU-176 code review P1):
+  "Next heartbeat in …" must count down to the next BEAT, which is the configured interval — the same anchor
+  `ActiveAgentsPanel` uses — not to the 4x staleness threshold `getAgentHealthStatus` compares against. The 50m-into-1h
+  fixture separates the two by a full 3h, so a regression to the threshold anchor cannot hide inside a loose shape match.
+  */
+  it("counts down to the next beat (interval anchor) and flips to overdue", async () => {
+    const nodeOf = await nodeFinder();
+    const due = nodeOf("approvable")?.querySelector(".org-chart-node__heartbeat");
+    expect(due?.textContent).toMatch(/^Next heartbeat in \d{1,2}m$/);
+    expect(due?.classList.contains("org-chart-node__heartbeat--overdue")).toBe(false);
+
+    const overdue = nodeOf("overdue")?.querySelector(".org-chart-node__heartbeat");
+    expect(overdue?.textContent).toMatch(/Heartbeat overdue 4h/);
+    expect(overdue?.classList.contains("org-chart-node__heartbeat--overdue")).toBe(true);
+    expect(overdue?.getAttribute("title")).toContain("Time since last heartbeat");
+  });
+
+  it("names the reason a node is parked, colored by its verdict bucket", async () => {
+    const nodeOf = await nodeFinder();
+
+    const approval = nodeOf("approvable")?.querySelector(".org-chart-node__stall");
+    expect(approval?.textContent).toBe("Waiting for approval");
+    expect(approval?.classList.contains("org-chart-node__stall--waiting-human")).toBe(true);
+
+    const held = nodeOf("waiting-card")?.querySelector(".org-chart-node__stall");
+    expect(held?.textContent).toBe("Waiting on a person");
+    expect(held?.getAttribute("title")).toContain("FN-044");
+
+    const parked = nodeOf("parked")?.querySelector(".org-chart-node__stall");
+    expect(parked?.textContent).toBe("Budget exhausted");
+    expect(parked?.classList.contains("org-chart-node__stall--stalled")).toBe(true);
+
+    const silent = nodeOf("silent")?.querySelector(".org-chart-node__stall");
+    expect(silent?.textContent).toBe("Heartbeat switched off");
+    expect(silent?.classList.contains("org-chart-node__stall--no-heartbeat")).toBe(true);
+
+    expect(nodeOf("overdue")?.querySelector(".org-chart-node__stall")?.textContent).toBe("No heartbeat");
+  });
+
+  it("renders no stall line for a busy agent and no countdown for a stopped or disabled heartbeat", async () => {
+    const nodeOf = await nodeFinder();
+    expect(nodeOf("busy")?.querySelector(".org-chart-node__stall")).toBeNull();
+    expect(nodeOf("parked")?.querySelector(".org-chart-node__heartbeat")).toBeNull();
+    expect(nodeOf("silent")?.querySelector(".org-chart-node__heartbeat")).toBeNull();
+  });
+
+  it("colors the runtime-fact rows with status tokens instead of hardcoded colors", () => {
+    const css = readFileSync(AGENTS_VIEW_CSS, "utf8");
+    expect(extractRuleBlock(css, ".org-chart-node__stall--stalled")).toMatch(/color:\s*var\(--state-error-text\)\s*;/);
+    expect(extractRuleBlock(css, ".org-chart-node__stall--waiting-human")).toMatch(/color:\s*var\(--state-paused-text\)\s*;/);
+    expect(extractRuleBlock(css, ".org-chart-node__heartbeat--overdue")).toMatch(/color:\s*var\(--state-error-text\)\s*;/);
   });
 });

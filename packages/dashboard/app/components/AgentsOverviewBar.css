@@ -54,6 +54,45 @@ Overview owns vertical scrolling when Active Agents exceeds the constrained Agen
   font-size: calc(var(--space-sm) + var(--space-xs));
 }
 
+/*
+FNXC:FleetVerdict 2026-09-02-05:52 (RUFU-176):
+The four-bucket "is the project moving?" strip reuses the bar's existing meta slot, so it inherits
+`.agents-overview-bar__meta` font sizing and the `text-secondary` color. Each bucket is a visible flex item, never
+hover-gated, because a phone user has no hover with which to discover the verdict; items wrap onto a second line
+instead of truncating, since a clipped count is a wrong count. Bucket colors reuse the same semantic status tokens the
+state badges and `getAgentHealthStatus` already emit, so red "stalled" means the same thing here as on every other
+surface. `--space-xs`/`--space-sm` separate the buckets (no hardcoded px).
+*/
+.agents-fleet-verdict {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: var(--space-xs) var(--space-sm);
+  text-align: right;
+}
+
+.agents-fleet-verdict__item {
+  white-space: nowrap;
+  cursor: help;
+}
+
+.agents-fleet-verdict__item--active {
+  color: var(--state-active-text);
+}
+
+.agents-fleet-verdict__item--waiting-human {
+  color: var(--state-paused-text);
+}
+
+.agents-fleet-verdict__item--no-heartbeat {
+  color: var(--state-idle-text);
+}
+
+.agents-fleet-verdict__item--stalled {
+  color: var(--state-error-text);
+}
+
 .agents-overview-bar__content {
   display: flex;
   flex: 1 1 auto;
@@ -79,7 +118,21 @@ Overview owns vertical scrolling when Active Agents exceeds the constrained Agen
     padding: var(--space-sm) var(--space-md);
   }
 
+  /*
+  FNXC:FleetVerdict 2026-09-02-05:53 (RUFU-176):
+  On phones the title and the four counts no longer share one line, so the header row wraps and the strip takes a full
+  line under the title, left-aligned. The counts stay visible text — the mobile contract for this surface is that the
+  verdict never hides behind hover or truncation.
+  */
   .agents-overview-bar__toggle {
     min-height: calc(var(--space-2xl) + var(--space-sm));
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .agents-fleet-verdict {
+    width: 100%;
+    justify-content: flex-start;
+    text-align: left;
   }
 }

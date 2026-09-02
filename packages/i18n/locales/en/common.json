@@ -1,8 +1,13 @@
 {
   "actions": {
+    "cancel": "Cancel",
+    "save": "Save",
     "send": "Send"
   },
   "agents": {
+    "onboarding": {
+      "dialogLabel": ""
+    },
     "ratings": {
       "trendDeclining": "↓ Declining",
       "trendImproving": "↑ Improving",
@@ -32,41 +37,85 @@
       "minutesAgo_other": "{{count}}m ago"
     }
   },
+  "app": {
+    "backendError": {
+      "failedFetch": "Failed to fetch projects"
+    }
+  },
   "board": {
+    "loadingWorkflowLanes": "Loading workflow lanes",
+    "noWorkflowLanes": "No workflow lanes available",
     "rejection": {
       "capacityExhausted": "That column is at capacity. Try again when a slot frees up.",
       "guardRejected": "This move is not allowed by the workflow.",
       "mergeBlocked": "This task is blocked from completing until its merge step finishes.",
+      "staleMovePrecondition": "This card already moved on. Refresh to see where it is now.",
       "unknownColumn": "That column doesn't exist in this task's workflow.",
       "unplannedForExecution": "This task isn't ready for execution yet — planning or plan review is still outstanding.",
       "workflowMismatch": "Drag can't move a card between workflows. Use the workflow switcher instead."
     }
   },
   "chat": {
-    "failedToGetResponse": "Failed to get response",
-    "failureReferenceId": "ID",
-    "failureReferenceKind": "Kind",
-    "failureReferenceLabel": "Reference",
-    "failureReferenceMetaLabel": "Label",
-    "openMailboxMessage": "Open mailbox message",
-    "toolCallArgsPrefix": "args",
-    "toolCallResultPrefix": "result",
-    "toolCallsCount_one": "{{count}} tool calls",
-    "toolCallsCount_other": "{{count}} tool calls",
-    "toolCallsHeader": "Tool calls",
-    "toolCallStatusCompleted": "completed",
-    "toolCallStatusError": "error",
-    "toolCallStatusErrors": "errors",
-    "toolCallStatusRunning": "running",
-    "viewFailureDetails": "View failure details"
+    "failedToGetResponse": "Failed to get response"
   },
   "commandCenter": {
+    "controls": {
+      "concurrency": {
+        "confirmChangeSummaryItem": "{{setting}} from {{oldValue}} to {{newValue}}"
+      }
+    },
     "range": {
       "allTime": "All time",
       "last24h": "Last 24h",
       "last30d": "Last 30 days",
       "last7d": "Last 7 days"
     }
+  },
+  "documents": {
+    "artifactAudioLabel": "Audio artifact: {{title}}",
+    "artifactMediaFailed": "Failed to load artifact preview.",
+    "artifactVideoLabel": "Video artifact: {{title}}",
+    "audioArtifactLabel": "Audio artifact: {{title}}",
+    "binaryArtifactFallback": "This artifact cannot be previewed inline.",
+    "expandImageArtifact": "Expand image artifact {{title}}",
+    "loadingArtifactContent": "Loading artifact content…",
+    "markdown": "Markdown",
+    "noArtifactPreview": "No preview available.",
+    "openArtifact": "Open artifact",
+    "openArtifactMedia": "Open artifact media",
+    "openInNewTab": "Open in new tab",
+    "openTask": "Open task",
+    "pdfArtifactTitle": "PDF artifact: {{title}}",
+    "plain": "Plain",
+    "switchToMarkdown": "Switch to markdown",
+    "switchToPlainText": "Switch to plain text",
+    "unknownAuthor": "unknown",
+    "untitledArtifact": "Untitled artifact",
+    "videoArtifactLabel": "Video artifact: {{title}}"
+  },
+  "dotted": {
+    "key": ""
+  },
+  "git": {
+    "commentAvatarAlt": "{{author}} avatar",
+    "commentBot": "Bot",
+    "commentFilterAll": "All",
+    "commentFilterBot": "Bot",
+    "commentFilterHuman": "Human",
+    "commentHuman": "Human",
+    "commentImported": "Comment imported as a task",
+    "commentNavAriaLabel": "Navigate comments",
+    "commentNavPosition": "{{current}} / {{total}}",
+    "commentNextAriaLabel": "Next comment",
+    "commentPrevAriaLabel": "Previous comment",
+    "commentsHeading": "Comments",
+    "failedToImportComment": "Failed to import comment",
+    "filterCommentsAriaLabel": "Filter comments by author type",
+    "importCommentAsTask": "Import as task",
+    "loadingComments": "Loading comments…",
+    "noCommentBody": "(empty comment)",
+    "noComments": "No comments",
+    "noCommentsForFilter": "No comments match the filter"
   },
   "health": {
     "anomaly": {
@@ -84,6 +133,9 @@
   },
   "labels": {
     "name": "Name"
+  },
+  "mailbox": {
+    "replyingTo": "Replying to {{preview}}"
   },
   "merge": {
     "unknown": "Unknown"
@@ -149,6 +201,9 @@
       "notConfigured": "Not configured"
     }
   },
+  "scripts": {
+    "title": "Scripts"
+  },
   "settings": {
     "nodeRouting": {
       "statusConnecting": "Connecting",
@@ -160,6 +215,7 @@
   "setup": {
     "apiKeyFormatError": "{{providerName}} keys should follow this format: {{hint}} (e.g. {{example}})",
     "apiKeyLabel": {
+      "anthropic": "Anthropic API Key",
       "fallback": "API Key",
       "kimiCoding": "Kimi API Key",
       "minimax": "MiniMax API Key",
@@ -177,6 +233,7 @@
     },
     "apiKeyRequired": "API key is required",
     "apiKeySetup": {
+      "anthropic": "Create an API key from your Anthropic Console under API keys.",
       "fallback": "Enter your API key for this provider.",
       "kimiCoding": "Create your API key in the Moonshot platform account settings.",
       "minimax": "Generate an API key from the MiniMax platform developer console.",
@@ -187,6 +244,7 @@
       "zai": "Create an API key in the Zhipu AI open platform account settings."
     },
     "apiKeyUsage": {
+      "anthropic": "Used for Claude models in task execution and planning",
       "fallback": "Used by Fusion to authenticate requests to this provider",
       "kimiCoding": "Used for Kimi/Moonshot AI models in task execution and planning",
       "minimax": "Used for MiniMax models in task execution",
@@ -198,6 +256,8 @@
     },
     "providerDesc": {
       "anthropic": "Claude models — strong at reasoning, analysis, and code",
+      "anthropicApiKey": "Claude models via raw Anthropic API key",
+      "anthropicSubscription": "Claude subscription OAuth — sign in with your Anthropic account",
       "fallback": "AI provider — connect to start using AI models",
       "gemini": "Gemini models — multimodal with strong reasoning",
       "google": "Gemini models — multimodal with strong reasoning",
@@ -213,6 +273,96 @@
       "zai": "GLM models by Zhipu AI — strong multilingual support"
     }
   },
+  "some": {
+    "key": ""
+  },
+  "taskDetail": {
+    "bypassReview": {
+      "btn": "Bypass failed review"
+    },
+    "delete": {
+      "btn": "Delete"
+    },
+    "duplicate": {
+      "btn": "Duplicate",
+      "message": "Duplicate {{id}}? This will create a new task with the same description and prompt.",
+      "success": "Duplicated {{id}} → {{newId}}",
+      "title": "Duplicate Task",
+      "workflowLabel": "Workflow for the copy"
+    },
+    "githubTracking": {
+      "enableCheckboxLabel": "Enable GitHub tracking"
+    },
+    "gitlabTracking": {
+      "kindGroupIssue": "Group issue",
+      "kindMergeRequest": "Merge request",
+      "kindProjectIssue": "Project issue"
+    },
+    "oversight": {
+      "interventions": {
+        "action": {
+          "escalate": "",
+          "injectGuidance": "",
+          "observe": "",
+          "requestConfirmation": "",
+          "requestFix": "",
+          "retry": ""
+        },
+        "ariaLabel": "Planner intervention timeline",
+        "attempts_one": "Attempt {{count}}/{{limit}}",
+        "attempts_other": "Attempt {{count}}/{{limit}}",
+        "empty": "No planner interventions yet",
+        "heading": "Intervention timeline",
+        "loadError": "Unable to load intervention timeline",
+        "loading": "Loading intervention timeline…",
+        "outcome": {
+          "awaitingConfirmation": "",
+          "failed": "",
+          "pending": "",
+          "skipped": "",
+          "succeeded": ""
+        },
+        "sourceLink": {
+          "agentLog": "",
+          "failedCheck": "",
+          "mergeError": "",
+          "prState": "",
+          "reviewComment": "",
+          "url": ""
+        },
+        "stage": {
+          "executor": "",
+          "merger": "",
+          "pullRequest": "",
+          "reviewer": "",
+          "workflowGate": ""
+        }
+      }
+    },
+    "pause": {
+      "pauseBtn": "Pause",
+      "pausedByAgent": "Paused by agent",
+      "unpauseBtn": "Unpause"
+    },
+    "plan": {
+      "openPlanningBtn": "Plan"
+    },
+    "pr": {
+      "checkPrStatus": "Check PR Status",
+      "finishAndClose": "Finish & Close",
+      "mergeAndClose": "Merge & Close",
+      "startPrReview": "Start PR Review"
+    },
+    "refine": {
+      "btn": "Refine"
+    },
+    "reset": {
+      "btn": "Reset"
+    },
+    "retry": {
+      "btn": "Retry"
+    }
+  },
   "taskForm": {
     "nodeStatusConnecting": "Connecting",
     "nodeStatusError": "Error",
@@ -220,15 +370,21 @@
     "nodeStatusOnline": "Online"
   },
   "taskReview": {
+    "checksSummary": "{{successful}}/{{total}} checks passing · {{required}} required · {{blocking}} blocking",
     "never": "Never",
+    "noChecksReported": "No checks reported",
     "refreshSourceBackground": "Background",
     "refreshSourceInitialLoad": "Initial load",
     "refreshSourceManual": "Manual"
   },
   "workflowNodes": {
+    "summaryAskUserDefault": "Waits for user input",
     "summaryAwaitInput": "Waits for user input",
     "summaryCodeDefault": "TypeScript",
     "summaryDefaultModel": "Default model",
+    "summaryExitGateContains": "Exits when contains \"{{value}}\"",
+    "summaryExitGateMatches": "Exits when matches /{{pattern}}/",
+    "summaryExitGateUnconditional": "Always exits",
     "summaryGateAdvisory": "Advisory",
     "summaryGateBlocks": "Gate (blocks)",
     "summaryHoldRelease": "Release: {{release}}",

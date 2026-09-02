@@ -1993,6 +1993,13 @@ describe("AgentsView", () => {
       expect(filterSelect).toBeTruthy();
     });
 
+    /*
+    FNXC:FleetVerdict 2026-09-02-15:47 (RUFU-176 code review P2):
+    These three asserted `fetchAgents({ state, … })`, i.e. the server-side `WHERE state = ?` that the review rejected:
+    narrowing the fetch also narrowed the fleet verdict's input, so the strip collapsed to zeros for any choice other
+    than "All States". They now assert the replacement contract — the dropdown narrows the RENDERED roster and never
+    reaches the wire — which is the same operator-visible outcome (a shorter list) over an honest population.
+    */
     it("can filter agents by state", async () => {
       renderView(<AgentsView addToast={mockAddToast} />);
       await openControlsPanel();
@@ -2000,9 +2007,15 @@ describe("AgentsView", () => {
       const filterSelect = screen.getByLabelText("Filter agents by state");
       fireEvent.change(filterSelect, { target: { value: "active" } });
 
-      await waitFor(() => {
-        expect(mockFetchAgents).toHaveBeenCalledWith({ state: "active", includeEphemeral: false }, undefined);
-      });
+      // Only the one active agent survives in the list (mockAgents: 1 active, 1 idle, 1 paused, 1 error).
+      // Names are queried with the *AllBy* variant because an active agent's name also appears in the token panel.
+      await waitFor(() => expect(screen.queryByText("Test Agent 1")).toBeNull());
+      expect(screen.getAllByText("Test Agent 2").length).toBeGreaterThan(0);
+      expect(screen.queryByText("Test Agent 3")).toBeNull();
+      expect(screen.queryByText("Test Agent 4")).toBeNull();
+
+      // …and the narrowing never reached the server, so the roster the verdict counts stayed whole.
+      expect(mockFetchAgents.mock.calls.every(([filter]) => filter?.state === undefined)).toBe(true);
     });
 
     it("clears filter when selecting 'all'", async () => {
@@ -2012,15 +2025,20 @@ describe("AgentsView", () => {
       const filterSelect = screen.getByLabelText("Filter agents by state");
       fireEvent.change(filterSelect, { target: { value: "idle" } });
 
-      await waitFor(() => {
-        expect(mockFetchAgents).toHaveBeenLastCalledWith({ state: "idle", includeEphemeral: false }, undefined);
-      });
+      await waitFor(() => expect(screen.queryByText("Test Agent 2")).toBeNull());
+      expect(screen.getAllByText("Test Agent 1").length).toBeGreaterThan(0);
+      // The roster fetch stayed unfiltered, and opening the Controls panel's separate bulk-eligibility probe never
+      // grew a `state` clause either.
+      expect(mockFetchAgents).toHaveBeenCalledWith({ includeEphemeral: false }, undefined);
+      expect(mockFetchAgents.mock.calls.every(([filter]) => filter?.state === undefined)).toBe(true);
 
       fireEvent.change(filterSelect, { target: { value: "all" } });
 
-      await waitFor(() => {
-        expect(mockFetchAgents).toHaveBeenLastCalledWith({ includeEphemeral: false }, undefined);
-      });
+      await waitFor(() => expect(screen.getAllByText("Test Agent 2").length).toBeGreaterThan(0));
+      expect(screen.getAllByText("Test Agent 1").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("Test Agent 3").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("Test Agent 4").length).toBeGreaterThan(0);
+      expect(mockFetchAgents.mock.calls.every(([filter]) => filter?.state === undefined)).toBe(true);
     });
   });
 
@@ -2059,7 +2077,7 @@ describe("AgentsView", () => {
       renderView(<AgentsView addToast={mockAddToast} projectId={projectId} />);
       await openControlsPanel();
 
-      // First enable system agents toggle
+      // First enable system agents toggle — this one IS a server-side population switch and stays one.
       const checkbox = screen.getByLabelText("Show system agents");
       fireEvent.click(checkbox);
 
@@ -2067,13 +2085,15 @@ describe("AgentsView", () => {
         expect(mockFetchAgents).toHaveBeenLastCalledWith({ includeEphemeral: true }, projectId);
       });
 
-      // Then filter by state
+      // Then filter by state: narrows the list only, never the fetched population.
       const filterSelect = screen.getByLabelText("Filter agents by state");
       fireEvent.change(filterSelect, { target: { value: "active" } });
 
-      await waitFor(() => {
-        expect(mockFetchAgents).toHaveBeenLastCalledWith({ state: "active", includeEphemeral: true }, projectId);
-      });
+      await waitFor(() => expect(screen.queryByText("Test Agent 1")).toBeNull());
+      expect(screen.getAllByText("Test Agent 2").length).toBeGreaterThan(0);
+      // The system-agent toggle is still a server-side population switch; the state choice is not.
+      expect(mockFetchAgents).toHaveBeenCalledWith({ includeEphemeral: true }, projectId);
+      expect(mockFetchAgents.mock.calls.every(([filter]) => filter?.state === undefined)).toBe(true);
     });
 
     it("hides system agents by default and reveals them when Show system agents is enabled", async () => {
@@ -3130,6 +3150,43 @@ describe("AgentsView", () => {
       await waitFor(() => {
         expect(slider).toBeDisabled();
       });
+    });
+  });
+
+  /*
+  FNXC:FleetVerdict 2026-09-02-15:47 (RUFU-176 code review P2):
+  "Is the project moving?" is a property of the roster, not of the state dropdown. The first implementation forwarded
+  `filterState` into `useAgents`, which turned it into a server-side `WHERE state = ?`, so any choice other than
+  "All States" narrowed the very population the verdict counts and collapsed waitingHuman / noHeartbeat / stalled
+  toward zero. `mockFetchAgents` below emulates that SQL filter: the shared `beforeEach` stub answers with all four
+  agents regardless of arguments, so a fixture that never withholds rows could not have caught the defect.
+  */
+  describe("fleet verdict against the state filter", () => {
+    const chipText = (container: HTMLElement, bucket: string) =>
+      container.querySelector(`.agents-fleet-verdict__item--${bucket}`)?.textContent ?? "";
+
+    it("keeps counting the whole roster while the operator narrows the list by state", async () => {
+      mockFetchAgents.mockImplementation((filter?: { state?: AgentState }) =>
+        Promise.resolve(filter?.state ? mockAgents.filter((agent) => agent.state === filter.state) : mockAgents),
+      );
+      const { container } = renderView(<AgentsView addToast={mockAddToast} />);
+
+      // idle never beat -> noHeartbeat; active -> active; paused and error -> stalled.
+      await waitFor(() => expect(chipText(container, "stalled")).toContain("2 stalled"));
+      expect(chipText(container, "active")).toContain("1 active");
+      expect(chipText(container, "no-heartbeat")).toContain("1 no heartbeat");
+
+      await openControlsPanel();
+      fireEvent.change(screen.getByLabelText("Filter agents by state"), { target: { value: "paused" } });
+
+      // The roster list narrows to the paused agent — the filter still filters.
+      await waitFor(() => expect(screen.queryByText("Test Agent 1")).toBeNull());
+      expect(screen.getByText("Test Agent 3")).toBeInTheDocument();
+
+      // And the verdict, derived from the unfiltered roster, is untouched.
+      expect(chipText(container, "stalled")).toContain("2 stalled");
+      expect(chipText(container, "active")).toContain("1 active");
+      expect(chipText(container, "no-heartbeat")).toContain("1 no heartbeat");
     });
   });
 });

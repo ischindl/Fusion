@@ -1,8 +1,13 @@
 {
   "actions": {
+    "cancel": "",
+    "save": "",
     "send": ""
   },
   "agents": {
+    "onboarding": {
+      "dialogLabel": ""
+    },
     "ratings": {
       "trendDeclining": "",
       "trendImproving": "",
@@ -32,41 +37,85 @@
       "minutesAgo_other": ""
     }
   },
+  "app": {
+    "backendError": {
+      "failedFetch": ""
+    }
+  },
   "board": {
+    "loadingWorkflowLanes": "",
+    "noWorkflowLanes": "",
     "rejection": {
       "capacityExhausted": "",
       "guardRejected": "",
       "mergeBlocked": "",
+      "staleMovePrecondition": "",
       "unknownColumn": "",
       "unplannedForExecution": "",
       "workflowMismatch": ""
     }
   },
   "chat": {
-    "failedToGetResponse": "",
-    "failureReferenceId": "",
-    "failureReferenceKind": "",
-    "failureReferenceLabel": "",
-    "failureReferenceMetaLabel": "",
-    "openMailboxMessage": "",
-    "toolCallArgsPrefix": "",
-    "toolCallResultPrefix": "",
-    "toolCallsCount_one": "",
-    "toolCallsCount_other": "",
-    "toolCallsHeader": "",
-    "toolCallStatusCompleted": "",
-    "toolCallStatusError": "",
-    "toolCallStatusErrors": "",
-    "toolCallStatusRunning": "",
-    "viewFailureDetails": ""
+    "failedToGetResponse": ""
   },
   "commandCenter": {
+    "controls": {
+      "concurrency": {
+        "confirmChangeSummaryItem": ""
+      }
+    },
     "range": {
       "allTime": "",
       "last24h": "",
       "last30d": "",
       "last7d": ""
     }
+  },
+  "documents": {
+    "artifactAudioLabel": "",
+    "artifactMediaFailed": "",
+    "artifactVideoLabel": "",
+    "audioArtifactLabel": "",
+    "binaryArtifactFallback": "",
+    "expandImageArtifact": "",
+    "loadingArtifactContent": "",
+    "markdown": "",
+    "noArtifactPreview": "",
+    "openArtifact": "",
+    "openArtifactMedia": "",
+    "openInNewTab": "",
+    "openTask": "",
+    "pdfArtifactTitle": "",
+    "plain": "",
+    "switchToMarkdown": "",
+    "switchToPlainText": "",
+    "unknownAuthor": "",
+    "untitledArtifact": "",
+    "videoArtifactLabel": ""
+  },
+  "dotted": {
+    "key": ""
+  },
+  "git": {
+    "commentAvatarAlt": "",
+    "commentBot": "",
+    "commentFilterAll": "",
+    "commentFilterBot": "",
+    "commentFilterHuman": "",
+    "commentHuman": "",
+    "commentImported": "",
+    "commentNavAriaLabel": "",
+    "commentNavPosition": "",
+    "commentNextAriaLabel": "",
+    "commentPrevAriaLabel": "",
+    "commentsHeading": "",
+    "failedToImportComment": "",
+    "filterCommentsAriaLabel": "",
+    "importCommentAsTask": "",
+    "loadingComments": "",
+    "noCommentBody": "",
+    "noComments": "",
+    "noCommentsForFilter": ""
   },
   "health": {
     "anomaly": {
@@ -84,6 +133,9 @@
   },
   "labels": {
     "name": ""
+  },
+  "mailbox": {
+    "replyingTo": ""
   },
   "merge": {
     "unknown": ""
@@ -149,6 +201,9 @@
       "notConfigured": ""
     }
   },
+  "scripts": {
+    "title": ""
+  },
   "settings": {
     "nodeRouting": {
       "statusConnecting": "",
@@ -160,6 +215,7 @@
   "setup": {
     "apiKeyFormatError": "",
     "apiKeyLabel": {
+      "anthropic": "",
       "fallback": "",
       "kimiCoding": "",
       "minimax": "",
@@ -177,6 +233,7 @@
     },
     "apiKeyRequired": "",
     "apiKeySetup": {
+      "anthropic": "",
       "fallback": "",
       "kimiCoding": "",
       "minimax": "",
@@ -187,6 +244,7 @@
       "zai": ""
     },
     "apiKeyUsage": {
+      "anthropic": "",
       "fallback": "",
       "kimiCoding": "",
       "minimax": "",
@@ -198,6 +256,8 @@
     },
     "providerDesc": {
       "anthropic": "",
+      "anthropicApiKey": "",
+      "anthropicSubscription": "",
       "fallback": "",
       "gemini": "",
       "google": "",
@@ -213,6 +273,96 @@
       "zai": ""
     }
   },
+  "some": {
+    "key": ""
+  },
+  "taskDetail": {
+    "bypassReview": {
+      "btn": ""
+    },
+    "delete": {
+      "btn": ""
+    },
+    "duplicate": {
+      "btn": "",
+      "message": "",
+      "success": "",
+      "title": "",
+      "workflowLabel": ""
+    },
+    "githubTracking": {
+      "enableCheckboxLabel": ""
+    },
+    "gitlabTracking": {
+      "kindGroupIssue": "",
+      "kindMergeRequest": "",
+      "kindProjectIssue": ""
+    },
+    "oversight": {
+      "interventions": {
+        "action": {
+          "escalate": "",
+          "injectGuidance": "",
+          "observe": "",
+          "requestConfirmation": "",
+          "requestFix": "",
+          "retry": ""
+        },
+        "ariaLabel": "",
+        "attempts_one": "",
+        "attempts_other": "",
+        "empty": "",
+        "heading": "",
+        "loadError": "",
+        "loading": "",
+        "outcome": {
+          "awaitingConfirmation": "",
+          "failed": "",
+          "pending": "",
+          "skipped": "",
+          "succeeded": ""
+        },
+        "sourceLink": {
+          "agentLog": "",
+          "failedCheck": "",
+          "mergeError": "",
+          "prState": "",
+          "reviewComment": "",
+          "url": ""
+        },
+        "stage": {
+          "executor": "",
+          "merger": "",
+          "pullRequest": "",
+          "reviewer": "",
+          "workflowGate": ""
+        }
+      }
+    },
+    "pause": {
+      "pauseBtn": "",
+      "pausedByAgent": "",
+      "unpauseBtn": ""
+    },
+    "plan": {
+      "openPlanningBtn": ""
+    },
+    "pr": {
+      "checkPrStatus": "",
+      "finishAndClose": "",
+      "mergeAndClose": "",
+      "startPrReview": ""
+    },
+    "refine": {
+      "btn": ""
+    },
+    "reset": {
+      "btn": ""
+    },
+    "retry": {
+      "btn": ""
+    }
+  },
   "taskForm": {
     "nodeStatusConnecting": "",
     "nodeStatusError": "",
@@ -220,15 +370,21 @@
     "nodeStatusOnline": ""
   },
   "taskReview": {
+    "checksSummary": "",
     "never": "",
+    "noChecksReported": "",
     "refreshSourceBackground": "",
     "refreshSourceInitialLoad": "",
     "refreshSourceManual": ""
   },
   "workflowNodes": {
+    "summaryAskUserDefault": "",
     "summaryAwaitInput": "",
     "summaryCodeDefault": "",
     "summaryDefaultModel": "",
+    "summaryExitGateContains": "",
+    "summaryExitGateMatches": "",
+    "summaryExitGateUnconditional": "",
     "summaryGateAdvisory": "",
     "summaryGateBlocks": "",
     "summaryHoldRelease": "",

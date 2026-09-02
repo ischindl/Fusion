@@ -25,6 +25,15 @@ const HEARTBEAT_GRACE_MULTIPLIER = 4;
  */
 const MIN_HEARTBEAT_STALENESS_MS = 5 * 60_000;
 
+/*
+FNXC:FleetVerdict 2026-09-02-05:18 (RUFU-176):
+`AgentHealthStatus.label` is a plain string, so the RUFU-176 fleet-verdict classifier (which buckets an agent as
+"no heartbeat" by label membership) would otherwise duplicate these literals and drift silently from the producer.
+Exported so both surfaces read the SAME strings; rendering is byte-identical — only the literals moved here.
+*/
+export const AGENT_HEALTH_LABEL_HEARTBEAT_DISABLED = "Heartbeat Disabled";
+export const AGENT_HEALTH_LABEL_UNRESPONSIVE = "Unresponsive";
+
 /** Shape of the health status returned by getAgentHealthStatus */
 export interface AgentHealthStatus {
   label: string;
@@ -59,7 +68,12 @@ type AgentHealthInput = Pick<
  * and agents that were explicitly configured both get consistent treatment,
  * differing only by their scheduled cadence.
  */
-function getStalenessThresholdMs(
+/**
+ * Exported for RUFU-176's org-node heartbeat countdown: the card must call the SAME threshold its own health label
+ * uses, so "overdue" on the countdown and "Unresponsive" on the health glyph are one fact, not two that can drift.
+ * FNXC:FleetVerdict 2026-09-02-06:25 (RUFU-176).
+ */
+export function getStalenessThresholdMs(
   runtimeConfig?: Record<string, unknown>,
   heartbeatMultiplier: number = 1,
 ): number {
@@ -78,8 +92,14 @@ function getStalenessThresholdMs(
   return Math.max(effectiveIntervalMs * HEARTBEAT_GRACE_MULTIPLIER, MIN_HEARTBEAT_STALENESS_MS);
 }
 
-/** Format milliseconds into a human-readable duration string (e.g. "5m", "1h 20m", "2h"). */
-function formatDuration(ms: number): string {
+/**
+ * Format milliseconds into a human-readable duration string (e.g. "5m", "1h 20m", "2h").
+ *
+ * Exported for RUFU-176's org-node heartbeat countdown, which sits in the same card as the `reason` string built here
+ * ("No heartbeat for 2h (threshold: 20m)"); one formatter keeps the two durations on a card reading identically.
+ * FNXC:FleetVerdict 2026-09-02-06:30 (RUFU-176).
+ */
+export function formatDuration(ms: number): string {
   const totalMinutes = Math.floor(ms / 60_000);
   if (totalMinutes < 1) return "<1m";
   const hours = Math.floor(totalMinutes / 60);
@@ -180,7 +200,7 @@ export function getAgentHealthStatus(
 
   if (!isHeartbeatEnabled) {
     return {
-      label: "Heartbeat Disabled",
+      label: AGENT_HEALTH_LABEL_HEARTBEAT_DISABLED,
       icon: <Pause size={14} />,
       color: "var(--state-paused-text)",
       stateDerived: false,
@@ -203,7 +223,7 @@ export function getAgentHealthStatus(
     const lastHeartbeatMs = Date.parse(lastHeartbeatAt);
     if (Number.isFinite(repairedMs) && Number.isFinite(lastHeartbeatMs) && lastHeartbeatMs < repairedMs) {
       return {
-        label: "Unresponsive",
+        label: AGENT_HEALTH_LABEL_UNRESPONSIVE,
         icon: <Activity size={14} />,
         color: "var(--state-error-text)",
         stateDerived: false,
@@ -228,7 +248,7 @@ export function getAgentHealthStatus(
   */
   if (!Number.isFinite(lastHeartbeat)) {
     return {
-      label: "Unresponsive",
+      label: AGENT_HEALTH_LABEL_UNRESPONSIVE,
       icon: <Activity size={14} />,
       color: "var(--state-error-text)",
       stateDerived: false,
@@ -250,7 +270,7 @@ export function getAgentHealthStatus(
   if (elapsed > stalenessThresholdMs) {
     const reason = `No heartbeat for ${formatDuration(elapsed)} (threshold: ${formatDuration(stalenessThresholdMs)})`;
     return {
-      label: "Unresponsive",
+      label: AGENT_HEALTH_LABEL_UNRESPONSIVE,
       icon: <Activity size={14} />,
       color: "var(--state-error-text)",
       stateDerived: false,
