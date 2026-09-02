@@ -10696,5 +10696,94 @@
     "installRequestTitle": "Worktrunk 安裝請求",
     "sha256": "SHA-256",
     "version": "版本"
+  },
+  "stall": {
+    "agent-approval": {
+      "badgeLabel": "",
+      "description": "",
+      "headline": "",
+      "suggestedAction": ""
+    },
+    "completion-blocker": {
+      "badgeLabel": "",
+      "headline": "",
+      "suggestedAction": ""
+    },
+    "dependency-block": {
+      "badgeLabel": "",
+      "description": "",
+      "headline": "",
+      "suggestedAction": ""
+    },
+    "duplicate-decision": {
+      "description": "",
+      "headline": "",
+      "suggestedAction": ""
+    },
+    "external-block": {
+      "badgeLabel": "",
+      "headline": "",
+      "suggestedAction": ""
+    },
+    "failed": {
+      "badgeLabel": "",
+      "description": "",
+      "headline": "",
+      "suggestedAction": ""
+    },
+    "merge-blocker": {
+      "badgeLabel": "",
+      "headline": "",
+      "suggestedAction": ""
+    },
+    "overlap-block": {
+      "badgeLabel": "",
+      "description": "",
+      "headline": "",
+      "suggestedAction": ""
+    },
+    "paused": {
+      "description": "",
+      "headline": "",
+      "suggestedAction": ""
+    },
+    "pausedReason": {
+      "awaiting-approval": {
+        "headline": ""
+      },
+      "budget-exhausted": {
+        "headline": ""
+      },
+      "error-retry-exhausted": {
+        "headline": ""
+      },
+      "error-unrecoverable": {
+        "headline": ""
+      },
+      "generic": {
+        "headline": ""
+      },
+      "heartbeat-unresponsive": {
+        "headline": ""
+      },
+      "migrated-from-terminated": {
+        "headline": ""
+      }
+    },
+    "queued": {
+      "headline": "",
+      "suggestedAction": ""
+    },
+    "stalled-review": {
+      "badgeLabel": "",
+      "headline": "",
+      "suggestedAction": ""
+    },
+    "wedge": {
+      "badgeLabel": "",
+      "description": "",
+      "headline": "",
+      "suggestedAction": ""
+    }
   }
 }

@@ -769,6 +769,45 @@ rows while preserving their existing badge geometry.
   color: var(--text-muted);
 }
 
+/*
+FNXC:StallReason 2026-09-01-17:48 (RUFU-175):
+Face-visible stall reason on list rows (grouped cards + table rows), so a dependency/overlap edge, a wedge
+hold, or a paused card's reason is named on the row instead of living only in a tooltip. Reuses TaskCard's
+.card-stall-reason vocabulary (warning accent bar + muted text). The table variant drops the accent bar and
+wraps inline inside the status cell.
+*/
+.list-card-stall {
+  align-items: flex-start;
+}
+
+.list-card-stall > .list-card-stall-reason {
+  flex: 1;
+  min-width: 0;
+}
+
+.list-card-stall-reason {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  padding-left: var(--space-xs);
+  border-left: 2px solid color-mix(in srgb, var(--color-warning) 45%, transparent);
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.list-card-stall-reason--table {
+  display: inline;
+  -webkit-line-clamp: unset;
+  line-clamp: unset;
+  margin-top: var(--space-xs);
+  padding-left: 0;
+  border-left: none;
+}
+
 .list-status-badge.failed {
   background: var(--status-error-bg);
   color: var(--color-error-dark);

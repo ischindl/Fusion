@@ -8609,3 +8609,146 @@ describe("TaskCard titleless display fallback (FN-044)", () => {
     expect(title.textContent).not.toContain("...");
   });
 });
+
+/*
+FNXC:StallReason 2026-09-01-17:48 (RUFU-175):
+TaskCard is the card FACE of the shared stall resolver. These tests pin the wiring, not the resolver
+(itself covered by stallReason.test.ts): (a) a plain queued card is NOT read as a stall, (b) a pause
+names its reason on the face, (c) a dependency/overlap edge names the blocker on the face rather than
+only a tooltip, plus the data-task-stall-reason stamp and the suppression of the generic chip wherever
+a dedicated affordance already speaks (triage duplicate, failed).
+*/
+describe("TaskCard stall-reason wiring", () => {
+  const stalledReview = {
+    reason: "review re-enqueued 6 times without progress",
+    heuristic: "reenqueue-churn" as const,
+    matchCount: 6,
+    firstMatchAt: "2026-01-01T00:00:00.000Z",
+    lastMatchAt: "2026-01-01T00:00:00.000Z",
+  };
+
+  it("names a paused card's reason on the face (symptom b)", () => {
+    render(
+      <TaskCard task={makeTask({ paused: true, pausedReason: "budget-exhausted" })} onOpenDetail={noop} addToast={noop} />,
+    );
+    // The badge stays byte-identical ("paused"); the reason is the NEW face copy.
+    expect(screen.getByText("paused")).toBeDefined();
+    const reason = screen.getByTestId("card-stall-reason-FN-001");
+    expect(reason.textContent).toContain("Output budget exhausted");
+    const card = document.querySelector(".card") as HTMLElement;
+    expect(card.getAttribute("data-task-stall-reason")).toBe("engine-paused");
+  });
+
+  it("keeps the paused-by-agent badge byte-identical while adding the reason on the face", () => {
+    render(
+      <TaskCard
+        task={makeTask({ paused: true, pausedByAgentId: "agent-1", pausedReason: "budget-exhausted" })}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
+    expect(screen.getByText("paused by agent")).toBeDefined();
+    expect(screen.getByTestId("card-stall-reason-FN-001").textContent).toContain("Output budget exhausted");
+    const card = document.querySelector(".card") as HTMLElement;
+    expect(card.getAttribute("data-task-stall-reason")).toBe("agent-paused");
+  });
+
+  it("shows the blocking dependency on the face, not only a tooltip (symptom c)", () => {
+    render(
+      <TaskCard task={makeTask({ column: "todo", blockedBy: "FN-dep" })} onOpenDetail={noop} addToast={noop} />,
+    );
+    const reason = screen.getByTestId("card-stall-reason-FN-001");
+    expect(reason.textContent).toContain("FN-dep");
+    const card = document.querySelector(".card") as HTMLElement;
+    expect(card.getAttribute("data-task-stall-reason")).toBe("dependency-block");
+  });
+
+  it("shows the file-overlap blocker on the face", () => {
+    render(
+      <TaskCard task={makeTask({ column: "todo", overlapBlockedBy: "FN-ovl" })} onOpenDetail={noop} addToast={noop} />,
+    );
+    expect(screen.getByTestId("card-stall-reason-FN-001").textContent).toContain("FN-ovl");
+    const card = document.querySelector(".card") as HTMLElement;
+    expect(card.getAttribute("data-task-stall-reason")).toBe("overlap-block");
+  });
+
+  it("surfaces an active wedge hold on the face", () => {
+    render(
+      <TaskCard
+        task={makeTask({ wedgeNotification: { reasonKey: "w", episodeId: "e", status: "active", transitionedAt: "2026-01-01T00:00:00.000Z" } })}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
+    expect(screen.getByTestId("card-stall-reason-FN-001").textContent).toBeTruthy();
+    const card = document.querySelector(".card") as HTMLElement;
+    expect(card.getAttribute("data-task-stall-reason")).toBe("wedge");
+  });
+
+  it("does NOT read a plain queued card as a stall (symptom a)", () => {
+    render(<TaskCard task={makeTask({ column: "todo" })} onOpenDetail={noop} addToast={noop} />);
+    expect(screen.queryByTestId("card-stall-reason-FN-001")).toBeNull();
+    const card = document.querySelector(".card") as HTMLElement;
+    expect(card.hasAttribute("data-task-stall-reason")).toBe(false);
+  });
+
+  it("does NOT add a stall chip for a triage duplicate (the Needs-your-decision badge already says it)", () => {
+    render(
+      <TaskCard
+        task={makeTask({
+          paused: true,
+          pausedReason: "duplicate-decision-required",
+          sourceMetadata: { duplicateSource: "triage-marker", nearDuplicateOf: "FN-9" },
+        })}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
+    expect(screen.getByText("Needs your decision")).toBeDefined();
+    expect(screen.queryByTestId("card-stall-reason-FN-001")).toBeNull();
+  });
+
+  it("suppresses the stall chip for a failed card (the card-error line already speaks)", () => {
+    render(
+      <TaskCard task={makeTask({ column: "done", status: "failed", error: "tool timeout" })} onOpenDetail={noop} addToast={noop} />,
+    );
+    // done column hides the failed badge/line, so pin the resolver stamp + suppression, not the badge.
+    const card = document.querySelector(".card") as HTMLElement;
+    expect(card.getAttribute("data-task-stall-reason")).toBe("failed");
+    expect(screen.queryByTestId("card-stall-reason-FN-001")).toBeNull();
+  });
+
+  /*
+  FNXC:StallReason 2026-09-01-19:47 (RUFU-175 review):
+  Landing proof ignores `paused` (getTaskHardMergeBlocker simulates `paused: false`), so a card can
+  reach `done` with the park, a dependency edge, or an active wedge still on the row. The complete lane
+  already hides the paused/failed/external-block badges for exactly that stale state, and it must hide
+  the generic stall chip too — a landed card may not read as stalled.
+  */
+  it.each([
+    ["a stale pause", { paused: true, pausedReason: "budget-exhausted" }],
+    ["an unresolved dependency edge", { blockedBy: "FN-dep" }],
+    ["an active wedge", { wedgeNotification: { reasonKey: "w", episodeId: "e", status: "active", transitionedAt: "2026-01-01T00:00:00.000Z" } }],
+  ] as const)("suppresses the stall chip on a landed card carrying %s", (_label, staleField) => {
+    render(
+      <TaskCard task={makeTask({ column: "done", ...staleField })} onOpenDetail={noop} addToast={noop} />,
+    );
+    expect(screen.queryByTestId("card-stall-reason-FN-001")).toBeNull();
+    expect(screen.queryByText(/Output budget exhausted|Waiting on dependency|stuck waiting/)).toBeNull();
+  });
+
+  it("routes an in-review stalledReview card's reason through the dedicated reason line, not the chip", () => {
+    render(
+      <TaskCard
+        task={makeTask({ column: "in-review", status: "in-progress", stalledReview })}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
+    const card = document.querySelector(".card") as HTMLElement;
+    expect(card.getAttribute("data-task-stall-reason")).toBe("stalled-review");
+    expect(screen.queryByTestId("card-stall-reason-FN-001")).toBeNull();
+    // The pre-existing dedicated line is still what the reviewer reads.
+    expect(screen.getByText(stalledReview.reason)).toBeDefined();
+  });
+});

@@ -18,6 +18,7 @@ import { QuickEntryBox } from "./QuickEntryBox";
 import { CustomModelDropdown } from "./CustomModelDropdown";
 import { NodeHealthDot } from "./NodeHealthDot";
 import { hasPendingAutomaticRecovery } from "../utils/taskRecovery";
+import { resolveStallReason, stallReasonVisibleOnFace } from "../utils/stallReason";
 import { resolveRetryStageCopy } from "../utils/taskRetryCopy";
 import type { ToastType } from "../hooks/useToast";
 import { useViewportMode } from "../hooks/useViewportMode";
@@ -3047,6 +3048,24 @@ export function ListView({
                           const taskProgress = getTaskProgress(task, getTaskColumnFlags(task));
                           const hasProgress = taskProgress.hasProgress;
                           const isSelectionMode = bulkEditEnabled;
+                          /*
+                          FNXC:StallReason 2026-09-01-17:48 (RUFU-175):
+                          Row-level canonical stall classifier so a list row answers "why isn't this card moving?"
+                          from the same authority as the card face. The paused-by-agent badge keeps its exact
+                          visibility gate AND, via the listView.pausedByAgent override, its exact localized key
+                          (byte-identical in every locale). The stall-reason chip below is emitted only for codes
+                          that had no prior face copy: a wedge hold, a dependency/overlap edge (symptom c), and a
+                          pause whose pausedReason the badge never named (symptom b).
+                          */
+                          const stall = resolveStallReason(task, { t, dataAsOfMs: lastFetchTimeMs, pausedBadgeKeys: { agentPaused: "listView.pausedByAgent" } });
+                          /*
+                          FNXC:StallReason 2026-09-01-19:47 (RUFU-175 review):
+                          The complete lane suppresses stale pause/failure/dependency state on every other
+                          badge here (see `isDoneColumn` above), and landing proof deliberately ignores
+                          `paused`, so a landed row can still carry the park, an unresolved dependency edge,
+                          or an unresolved wedge. The generic stall chip follows the same suppression.
+                          */
+                          const stallReasonOnFace = !isDoneColumn && stallReasonVisibleOnFace(task, stall);
 
                           return (
                             <div
@@ -3060,6 +3079,7 @@ export function ListView({
                               onPointerCancel={handleListPointerUpOrCancel}
                               onKeyDown={(event) => handleListKeyDown(event, task)}
                               data-id={task.id}
+                              data-task-stall-reason={stall?.code}
                               tabIndex={0}
                               aria-haspopup="menu"
                             >
@@ -3093,7 +3113,7 @@ export function ListView({
                                 )}
                                 <span className="list-card-spacer" />
                                 {isPaused && task.pausedByAgentId ? (
-                                  <span className="list-status-badge paused">{t("listView.pausedByAgent", "paused by agent")}</span>
+                                  <span className="list-status-badge paused">{stall?.code === "agent-paused" ? stall.badgeLabel : t("listView.pausedByAgent", "paused by agent")}</span>
                                 ) : hasStatus ? (
                                   <span
                                     className={`list-status-badge list-status-badge--${task.column}${isReviewBudgetExhausted ? " list-status-badge--review-budget-exhausted" : ""}${isFailed ? " failed" : ""}${isAgentActive ? " pulsing" : ""}`}
@@ -3138,6 +3158,19 @@ export function ListView({
 
                               <ExternalBlockNotice task={task} variant="list" onOpenChatWithPrefill={onOpenChatWithPrefill} onRetryTask={onRetryTask} addToast={addToast} />
                               <PlanApprovalNotice task={task} variant="list" projectId={projectId} addToast={addToast} isPlanningLane={isPlanningLaneForTask(task)} />
+
+                              {stallReasonOnFace && (
+                                <div className="list-card-row list-card-stall">
+                                  <span
+                                    className="list-card-stall-reason"
+                                    data-testid={`list-stall-reason-${task.id}`}
+                                    data-stall-code={stall?.code}
+                                    title={[stall?.headline, stall?.description].filter(Boolean).join(" — ")}
+                                  >
+                                    {stall?.headline}
+                                  </span>
+                                </div>
+                              )}
 
                               {(hasDependencies || hasProgress) && (
                                 <div className="list-card-row list-card-meta">
@@ -3329,6 +3362,12 @@ export function ListView({
                                 : wipLifecycleBadgeLabel
                                   ?? getTaskStatusLabel(visualStatus ?? "", t, showOptionalGateBadge ? undefined : getRunningWorkflowStepLabel(task), { idle: !isAgentActive, overlapBlockedBy: task.overlapBlockedBy ?? null, sessionContentionWaitReason: task.sessionContentionWaitReason ?? null });
 
+                            // Canonical stall classifier (see the grouped-card path above for the full rationale).
+                            const stall = resolveStallReason(task, { t, dataAsOfMs: lastFetchTimeMs, pausedBadgeKeys: { agentPaused: "listView.pausedByAgent" } });
+                            // The complete lane suppresses stale pause/dependency/wedge state on every other
+                            // badge here, so the generic stall chip follows the same `isDoneColumn` gate.
+                            const stallReasonOnFace = !isDoneColumn && stallReasonVisibleOnFace(task, stall);
+
                             return (
                               <tr
                                 key={task.id}
@@ -3337,6 +3376,7 @@ export function ListView({
                                 onContextMenu={(event) => handleListContextMenu(event, task)}
                                 onKeyDown={(event) => handleListKeyDown(event, task)}
                                 data-id={task.id}
+                                data-task-stall-reason={stall?.code}
                                 tabIndex={0}
                                 aria-haspopup="menu"
                               >
@@ -3380,7 +3420,7 @@ export function ListView({
                                     <ExternalBlockNotice task={task} variant="list" onOpenChatWithPrefill={onOpenChatWithPrefill} onRetryTask={onRetryTask} addToast={addToast} />
                                     <PlanApprovalNotice task={task} variant="list" projectId={projectId} addToast={addToast} isPlanningLane={isPlanningLaneForTask(task)} />
                                     {isPaused && task.pausedByAgentId ? (
-                                      <span className="list-status-badge paused">{t("listView.pausedByAgent", "paused by agent")}</span>
+                                      <span className="list-status-badge paused">{stall?.code === "agent-paused" ? stall.badgeLabel : t("listView.pausedByAgent", "paused by agent")}</span>
                                     ) : showStatusBadge ? (
                                       <span
                                         className={`list-status-badge list-status-badge--${task.column}${isReviewBudgetExhausted ? " list-status-badge--review-budget-exhausted" : ""}${isFailed ? " failed" : ""}${
@@ -3419,6 +3459,16 @@ export function ListView({
                                         {optionalGateBadge.workflowStepId === "plan-review" || optionalGateBadge.workflowStepId === "plan-replan"
                                           ? t("listView.planReviewBadge", "Plan Review")
                                           : optionalGateBadge.label}
+                                      </span>
+                                    )}
+                                    {stallReasonOnFace && (
+                                      <span
+                                        className="list-card-stall-reason list-card-stall-reason--table"
+                                        data-testid={`list-stall-reason-${task.id}`}
+                                        data-stall-code={stall?.code}
+                                        title={[stall?.headline, stall?.description].filter(Boolean).join(" — ")}
+                                      >
+                                        {stall?.headline}
                                       </span>
                                     )}
                                   </td>

@@ -8471,6 +8471,95 @@
     "saving": "Saving…",
     "view": "View"
   },
+  "stall": {
+    "agent-approval": {
+      "badgeLabel": "Awaiting approval",
+      "description": "The agent paused itself until a person approves the pending permission request.",
+      "headline": "A tool call is waiting for your approval",
+      "suggestedAction": "Open the approvals inbox to approve or deny."
+    },
+    "completion-blocker": {
+      "badgeLabel": "Completion blocked",
+      "headline": "Completion is blocked",
+      "suggestedAction": "Open the detail to resolve the completion blocker."
+    },
+    "dependency-block": {
+      "badgeLabel": "Blocked",
+      "description": "This card depends on another card that has not finished yet.",
+      "headline": "Waiting on dependency {{taskId}}",
+      "suggestedAction": "Finish the blocking card, or remove the dependency."
+    },
+    "duplicate-decision": {
+      "description": "A planner or another agent flagged it as a possible duplicate; it needs your decision before it can move.",
+      "headline": "This card may be a duplicate",
+      "suggestedAction": "Open the duplicate decision and keep the earliest canonical card."
+    },
+    "external-block": {
+      "badgeLabel": "Blocked",
+      "headline": "Blocked outside the worktree",
+      "suggestedAction": "Repair the external obstacle, then resume this card."
+    },
+    "failed": {
+      "badgeLabel": "Failed",
+      "description": "The last run ended in a failure without a captured error message.",
+      "headline": "This card failed",
+      "suggestedAction": "Retry the card, or open the detail to read the failure."
+    },
+    "merge-blocker": {
+      "badgeLabel": "Merge blocked",
+      "headline": "Merge is blocked",
+      "suggestedAction": "Open the Review tab to resolve the merge blocker."
+    },
+    "overlap-block": {
+      "badgeLabel": "File overlap",
+      "description": "Another active card is editing the same files, so this card is held to avoid a conflict.",
+      "headline": "Waiting on file overlap with {{taskId}}",
+      "suggestedAction": "Let the overlapping card land, or narrow this card's file scope."
+    },
+    "paused": {
+      "description": "This card is paused and will not move until it is resumed.",
+      "headline": "This card is paused",
+      "suggestedAction": "Resume the card, or open its detail to read the pause reason."
+    },
+    "pausedReason": {
+      "awaiting-approval": {
+        "headline": "Awaiting approval"
+      },
+      "budget-exhausted": {
+        "headline": "Output budget exhausted"
+      },
+      "error-retry-exhausted": {
+        "headline": "Automatic retries exhausted"
+      },
+      "error-unrecoverable": {
+        "headline": "Paused with an unrecoverable error"
+      },
+      "generic": {
+        "headline": "Paused — {{reason}}"
+      },
+      "heartbeat-unresponsive": {
+        "headline": "Heartbeat unresponsive"
+      },
+      "migrated-from-terminated": {
+        "headline": "Recovered from a terminated runtime"
+      }
+    },
+    "queued": {
+      "headline": "Waiting to be picked up",
+      "suggestedAction": "No action needed; reorder or assign the card if a different one should run first."
+    },
+    "stalled-review": {
+      "badgeLabel": "Stalled review",
+      "headline": "Review appears stalled",
+      "suggestedAction": "Re-dispatch the review or open the activity log for detail."
+    },
+    "wedge": {
+      "badgeLabel": "Stuck",
+      "description": "A durable stuck-state hold is in place on this card.",
+      "headline": "This card is stuck waiting for a decision",
+      "suggestedAction": "Review the stuck-state notice and take its suggested action, or let recovery retry."
+    }
+  },
   "stash": {
     "copyReference": "Copy stash reference"
   },

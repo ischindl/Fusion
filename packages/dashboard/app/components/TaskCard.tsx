@@ -47,6 +47,7 @@ import { resolveRetryStageCopy } from "../utils/taskRetryCopy";
 import { getRevertOfId, isTaskReverted } from "../utils/taskRevert";
 import { getStalledReviewSignal } from "../utils/taskStalledReview";
 import { getInReviewStallCopy, shouldShowInReviewStallBadge } from "../utils/inReviewStallCopy";
+import { resolveStallReason, isPausedFamilyCode, stallReasonVisibleOnFace } from "../utils/stallReason";
 import { getStalePausedReviewCopy, shouldShowStalePausedReviewBadge } from "../utils/stalePausedReviewCopy";
 import { getTaskAgeStalenessCopy, shouldShowTaskAgeStalenessBadge } from "../utils/taskAgeStalenessCopy";
 import {
@@ -1621,6 +1622,30 @@ function TaskCardComponent({
   const stalledReview = getStalledReviewSignal(task);
   const showStalledReview = Boolean(stalledReview && isReviewColumn && !isPaused);
   const hasInReviewStall = shouldShowInReviewStallBadge(task, taskColumnFlags);
+  /*
+  FNXC:StallReason 2026-09-01-17:48 (RUFU-175):
+  The canonical stall classifier. TaskCard is the card FACE of the resolver: `stall` answers "why isn't
+  this card moving?" in one place — a flowing card returns undefined and every card that already has a
+  richer dedicated affordance keeps it (external-block keeps ExternalBlockNotice; in-review-stall /
+  stale-paused-review / stalled-review / failed keep their badges and reason lines; queued keeps its
+  inline Queued badge). The face-visible `stall-reason` chip below is therefore emitted only for the
+  cases that previously had NO face copy: a wedge hold, a dependency/overlap edge (symptom c: it used to
+  be tooltip-only), and a pause whose `pausedReason` the badge never named (symptom b). It is suppressed
+  for the triage duplicate-decision pause because the `Needs your decision` badge already says it.
+  */
+  const stall = useMemo(
+    () => resolveStallReason(task, { t, dataAsOfMs: lastFetchTimeMs }),
+    [task, t, lastFetchTimeMs],
+  );
+  /*
+  FNXC:StallReason 2026-09-01-19:47 (RUFU-175 review):
+  The generic stall chip must respect the same complete-lane suppression as the pause/failed badges
+  above. Landing proof deliberately ignores `paused` (getTaskHardMergeBlocker simulates `paused: false`),
+  so a card can finalize into `done` with the park, an unresolved dependency edge, or an unresolved
+  wedge still on the row; naming a stall on a landed card would contradict `isDoneColumn` handling
+  those same stale fields.
+  */
+  const stallReasonOnFace = !isDoneColumn && stallReasonVisibleOnFace(task, stall) && !isExternalBlocked;
   /*
   FNXC:TaskCardPlanReviewBadge 2026-07-11-12:05:
   FN-7831 requires the card header to show a distinct "Reviewing" badge while the optional `plan-review` workflow step is actively running, even while the card remains in Planning/`triage`. Use the shared predicate so TaskCard stays in sync with ListView.
@@ -3546,6 +3571,7 @@ function TaskCardComponent({
       className={cardClass}
       data-id={task.id}
       data-column={task.column}
+      data-task-stall-reason={stall?.code}
       onDragOver={handleFileDragOver}
       onDragLeave={handleFileDragLeave}
       onDrop={handleFileDrop}
@@ -3634,9 +3660,20 @@ function TaskCardComponent({
               : undefined}
             data-testid={isTriageDuplicateDecision ? `card-needs-user-feedback-${task.id}` : undefined}
           >
+            {/*
+            FNXC:StallReason 2026-09-01-17:48 (RUFU-175):
+            The plain pause labels now come from the shared resolver. For the three core pause codes the
+            resolver resolves `tasks.pausedByAgent` / `tasks.paused` with the identical English default,
+            so the rendered label is byte-identical to the prior inline ternary. The triage duplicate
+            branch stays on `isTriageDuplicateDecision` because the resolver's duplicate-decision is
+            intentionally broader (any duplicate provenance) than the triage-marker gate that owns this
+            badge's testid/title; routing it here would change WHICH cards read "Needs your decision".
+            */}
             {isTriageDuplicateDecision
               ? t("tasks.needsUserFeedback", "Needs your decision")
-              : pausedByAgent ? t("tasks.pausedByAgent", "paused by agent") : t("tasks.paused", "paused")}
+              : stall && isPausedFamilyCode(stall.code) && stall.code !== "duplicate-decision"
+                ? stall.badgeLabel
+                : pausedByAgent ? t("tasks.pausedByAgent", "paused by agent") : t("tasks.paused", "paused")}
           </span>
         )}
         {(showStatusBadge || showQueuedToPlanBadge || showQueuedBadge) && (
@@ -4052,6 +4089,16 @@ function TaskCardComponent({
         </div>
         )}
       </div>
+      {stallReasonOnFace && (
+        <div
+          className="card-stall-reason"
+          data-testid={`card-stall-reason-${task.id}`}
+          data-stall-code={stall?.code}
+          title={[stall?.headline, stall?.description].filter(Boolean).join(" — ")}
+        >
+          {stall?.headline}
+        </div>
+      )}
       {showStalledReview && stalledReview && (
         <div className="card-stalled-review-reason" title={stalledReview.reason}>
           {stalledReview.reason}

@@ -393,6 +393,29 @@ Code Review / Browser Verification reuse the same reviewing token while the card
   line-clamp: 2;
 }
 
+/*
+FNXC:StallReason 2026-09-01-17:48 (RUFU-175):
+Face-visible stall reason for the cases that previously had no face copy (a wedge hold, a
+dependency/overlap edge that was tooltip-only, and a pause whose pausedReason the badge never named).
+Mirrors .card-stalled-review-reason's truncation but adds a warning left-accent so it reads as a stall
+rather than review activity. Reuses the --color-warning accent the stalled/stale badges already use.
+*/
+.card-stall-reason {
+  margin-top: var(--space-xs);
+  padding-left: var(--space-xs);
+  border-left: 2px solid color-mix(in srgb, var(--color-warning) 45%, transparent);
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  color: var(--text-muted);
+  overflow: hidden;
+  white-space: normal;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
 .card-status-badge--triage {
   background: var(--status-triage-bg);
   color: var(--triage);
@@ -2223,7 +2246,8 @@ The three-dot menu is the sole card move/action entry point. Keep this shared bu
     height: 0.5625rem;
   }
 
-  .card-stalled-review-reason {
+  .card-stalled-review-reason,
+  .card-stall-reason {
     font-size: 0.625rem;
     -webkit-line-clamp: 3;
     line-clamp: 3;

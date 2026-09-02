@@ -79,6 +79,23 @@ describe("getAgentHealthStatus", () => {
       expect(status.stateDerived).toBe(false);
     });
 
+    /*
+    FNXC:StallReason 2026-09-01-18:47 (RUFU-175):
+    The health pill must speak the same words as every other stall surface for a pause reason the
+    shared code table knows, instead of leaking the raw engine code. A code the table does NOT know
+    yet keeps the verbatim `Paused: <raw>` fallback so a future reason is never hidden.
+    */
+    it("maps a known pause reason through the shared code table instead of the raw code", () => {
+      const status = getAgentHealthStatus(makeAgent({ state: "paused", pauseReason: "error-retry-exhausted" }));
+      expect(status.label).toBe("Automatic retries exhausted");
+      expect(status.label).not.toContain("error-retry-exhausted");
+    });
+
+    it("keeps an unrecognized pause reason verbatim as the Paused:<code> fallback", () => {
+      const status = getAgentHealthStatus(makeAgent({ state: "paused", pauseReason: "future-reason-code" }));
+      expect(status.label).toBe("Paused: future-reason-code");
+    });
+
     it("ignores heartbeat data for paused agents", () => {
       const agent = makeAgent({
         state: "paused",

@@ -3,6 +3,7 @@ import { Bot, Heart, Activity, Pause } from "lucide-react";
 import type { Agent } from "../api";
 import { resolveHeartbeatIntervalMs } from "./heartbeatIntervals";
 import { elapsedSinceMs } from "./dataFreshness";
+import { PAUSE_REASON_LABELS } from "./stallReason";
 
 // Heartbeat scheduling depends on both state and `runtimeConfig.enabled`.
 // Durable agents with heartbeat disabled should render distinctly from healthy
@@ -180,7 +181,18 @@ export function getAgentHealthStatus(
   }
 
   if (state === "paused") {
-    const label = pauseReason ? `Paused: ${pauseReason}` : "Paused";
+    /*
+    FNXC:StallReason 2026-09-01-18:47 (RUFU-175):
+    A paused agent used to print its raw pauseReason CODE in the health pill ("Paused:
+    error-retry-exhausted") — the same unmapped-code leak the stall resolver fixes on cards. Route a
+    known code through the SHARED pause-reason table so the pill says the same human words every other
+    surface says ("Automatic retries exhausted"); the table phrases are complete labels, so they are
+    used whole rather than re-prefixed with "Paused:". An unrecognized code keeps the old
+    `Paused: <raw>` fallback so an engine reason the table does not list yet still shows verbatim
+    instead of silently degrading to "Paused", and a pause with no reason stays "Paused".
+    */
+    const knownLabel: string | undefined = pauseReason ? PAUSE_REASON_LABELS[pauseReason] : undefined;
+    const label = pauseReason ? (knownLabel ?? `Paused: ${pauseReason}`) : "Paused";
     return {
       label,
       icon: <Pause size={14} />,

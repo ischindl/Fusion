@@ -1127,6 +1127,38 @@ for a "skipped" outcome upstream).
   }
 }
 
+/*
+FNXC:StallReason 2026-09-01-17:48 (RUFU-175):
+The detail view's column-independent stall banner. The card face only fits a one-line chip, but the
+Detail has room for headline + explanation + next action, so it names the reason here for codes the
+dedicated affordances (ExternalBlockNotice / failure alert / review banner) do not already cover.
+Reuses the warning-accent vocabulary of .card-stall-reason and .list-card-stall-reason.
+*/
+.task-stall-reason {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  margin: var(--space-md) 0 var(--space-lg);
+  padding: var(--space-md) var(--space-md) var(--space-md) calc(var(--space-md) + 2px);
+  border-left: 2px solid color-mix(in srgb, var(--color-warning) 45%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-warning) 8%, transparent);
+}
+
+.task-stall-reason-headline {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.task-stall-reason-description,
+.task-stall-reason-action {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
 .task-pause-reason {
   margin: var(--space-md) 0 var(--space-lg);
   padding: var(--space-md);

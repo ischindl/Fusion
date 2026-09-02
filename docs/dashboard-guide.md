@@ -494,6 +494,21 @@ FNXC:TaskContextMenu 2026-07-13-00:00: List row/card menus share the Board Plan 
 
 ![List view](./screenshots/list-view.png)
 
+## Stall reason chips
+
+A card that is not moving names **why** in one canonical place, so the same stalled task reads the same way wherever it appears: the Board card face, the List rows and tablet/mobile cards, and the always-visible banner region of the task detail modal. The agent health pill uses the same pause-reason wording.
+
+<!--
+FNXC:StallReason 2026-09-01-19:47 (RUFU-175):
+One pure client-side classifier (packages/dashboard/app/utils/stallReason.ts) is the single authority for "why isn't this card moving?", replacing the per-surface inline copies that made a stalled card read differently (or say nothing at all) depending on where it was opened. Two invariants the surfaces must keep: reasons are visible text, never hover-only, because the Capacitor mobile/desktop-app shell has no hover to trigger a tooltip; and a reused badge resolves through the CALLER's own localization key, so consolidating the copy never collapses two keys that legitimately translate differently (tasks.pausedByAgent on the card vs listView.pausedByAgent in the List).
+-->
+
+- The reason is always **visible text**, never a hover tooltip: the mobile and desktop-app shells have no hover, so a hover-only explanation is invisible there.
+- Codes that already have a richer dedicated affordance keep it and suppress the generic chip — an external block keeps the blocked-outside-the-worktree notice, a review-lane stall keeps its review badge and reason line, a failure keeps the failure alert/line, and a plain queued card is not a stall and shows no chip at all.
+- The chip appears for what previously had no face copy: a durable stuck-state (wedge) hold, a dependency or file-overlap wait (which names the blocking task), and a paused card whose pause reason the badge never spelled out.
+- Each surface keeps **its own localized badge key**: the Board card resolves its pause badge through `tasks.*` and the List through `listView.pausedByAgent`, so an existing translation stays in the operator's language even though the underlying classifier is shared.
+- A paused agent's health pill shows the same human wording as every other surface for a known pause reason; a reason the shared table does not know yet still prints verbatim rather than silently degrading to a bare `Paused`.
+
 ## Import Tasks (GitHub import)
 
 **Import Tasks** is the desktop/tablet sidebar destination for importing GitHub issues and pull requests onto the board. It embeds the GitHub import surface in the main content region; the same component can still appear as a modal from compact mobile paths.

@@ -1074,6 +1074,96 @@ describe("ListView", () => {
     matchMediaSpy.mockRestore();
   });
 
+  /*
+  FNXC:StallReason 2026-09-01-17:48 (RUFU-175):
+  The list must answer "why isn't this card moving?" from the canonical resolver, face-visible (never
+  hover-only), with the same copy the card face shows. These cover the codes that previously had no face
+  copy — dependency/overlap edge (symptom c), an engine pause whose reason was never named (symptom b) —
+  and prove the row/card root carries the resolver's code, while a plain resting card stays flowing.
+  */
+  describe("stall-reason face wiring", () => {
+    it("names a dependency blocker on the table row face (symptom c)", () => {
+      const tasks = [
+        createMockTask({ id: "FN-DEP", column: "in-progress", title: "Dependent card", blockedBy: "FN-BLOCK" }),
+      ];
+      renderListView({ tasks });
+      const chip = screen.getByTestId("list-stall-reason-FN-DEP");
+      expect(chip).toHaveTextContent("Waiting on dependency FN-BLOCK");
+      expect(chip.getAttribute("data-stall-code")).toBe("dependency-block");
+      expect(document.querySelector('[data-task-stall-reason="dependency-block"]')).not.toBeNull();
+    });
+
+    it("names an overlap partner on the grouped card face", () => {
+      const matchMediaSpy = mockMobileViewport();
+      const tasks = [
+        createMockTask({ id: "FN-OVL", column: "in-progress", title: "Overlap card", overlapBlockedBy: "FN-OTHER" }),
+      ];
+      renderListView({ tasks });
+      const chip = screen.getByTestId("list-stall-reason-FN-OVL");
+      expect(chip).toHaveTextContent("Waiting on file overlap with FN-OTHER");
+      expect(chip.getAttribute("data-stall-code")).toBe("overlap-block");
+      matchMediaSpy.mockRestore();
+    });
+
+    it("names a paused card's reason on the row face (symptom b)", () => {
+      const tasks = [
+        createMockTask({ id: "FN-ENG", column: "in-progress", title: "Engine paused", paused: true, pausedReason: "heartbeat-unresponsive" }),
+      ];
+      renderListView({ tasks });
+      const chip = screen.getByTestId("list-stall-reason-FN-ENG");
+      expect(chip).toHaveTextContent("Heartbeat unresponsive");
+      expect(chip.getAttribute("data-stall-code")).toBe("engine-paused");
+    });
+
+    it("routes the agent-paused badge through the resolver without changing its label", () => {
+      const tasks = [
+        createMockTask({ id: "FN-AGP", column: "in-progress", title: "Agent paused", paused: true, pausedByAgentId: "agent-1" }),
+      ];
+      renderListView({ tasks });
+      // Label is byte-identical to the pre-resolver inline copy (listView.pausedByAgent override).
+      expect(screen.getByText("paused by agent")).toBeDefined();
+      // A bare pause carries no reason word, so no chip — but the row still names the code.
+      expect(screen.queryByTestId("list-stall-reason-FN-AGP")).toBeNull();
+      expect(document.querySelector('[data-task-stall-reason="agent-paused"]')).not.toBeNull();
+    });
+
+    it("leaves a plain resting card flowing: no stall chip and no stall code", () => {
+      const tasks = [
+        createMockTask({ id: "FN-FLOW", column: "todo", title: "Resting card", status: "pending" }),
+      ];
+      renderListView({ tasks });
+      expect(screen.queryByTestId("list-stall-reason-FN-FLOW")).toBeNull();
+      expect(document.querySelector('[data-task-stall-reason]')).toBeNull();
+    });
+
+    /*
+    FNXC:StallReason 2026-09-01-19:47 (RUFU-175 review):
+    A landed row can carry stale paused metadata (see the `keeps done status badge … when stale paused
+    metadata exists` pair above), and landing proof deliberately ignores `paused`, so the park can still
+    be set on the row. The complete lane hides the paused badge for that state and must hide the generic
+    stall chip too — a landed card may not read as stalled on the List, in either layout.
+    */
+    it("suppresses the stall chip on a landed row with stale paused metadata", () => {
+      const tasks = [
+        createMockTask({ id: "FN-SDONE", column: "done", title: "Landed card", status: "paused", paused: true, pausedReason: "budget-exhausted" }),
+      ];
+      renderListView({ tasks });
+      expect(screen.queryByTestId("list-stall-reason-FN-SDONE")).toBeNull();
+      expect(screen.queryByText(/Output budget exhausted/)).toBeNull();
+    });
+
+    it("suppresses the stall chip on a landed mobile card with stale paused metadata", () => {
+      const matchMediaSpy = mockMobileViewport();
+      const tasks = [
+        createMockTask({ id: "FN-MDONE", column: "done", title: "Landed card", status: "paused", paused: true, pausedReason: "budget-exhausted" }),
+      ];
+      renderListView({ tasks });
+      expect(screen.queryByTestId("list-stall-reason-FN-MDONE")).toBeNull();
+      expect(screen.queryByText(/Output budget exhausted/)).toBeNull();
+      matchMediaSpy.mockRestore();
+    });
+  });
+
   it("shows empty state when no tasks", () => {
     renderListView({ tasks: [] });
     expect(screen.getByText("No tasks yet")).toBeDefined();

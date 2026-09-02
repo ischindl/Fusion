@@ -92,6 +92,7 @@ import { getInReviewStallCopy, shouldShowInReviewStallBadge } from "../utils/inR
 import { getUnifiedTaskProgress } from "../utils/taskProgress";
 import { getStalePausedReviewCopy, shouldShowStalePausedReviewBadge } from "../utils/stalePausedReviewCopy";
 import { getTaskAgeStalenessCopy } from "../utils/taskAgeStalenessCopy";
+import { resolveStallReason, stallReasonVisibleOnFace } from "../utils/stallReason";
 import { splitTaskPlanSummary } from "../utils/taskPlanSummary";
 import { decideTaskPromptRefresh } from "../utils/taskPromptRefresh";
 import { getPriorityColorVar, getPriorityIcon, getPriorityLabel } from "../utils/priorityIndicator";
@@ -4326,6 +4327,28 @@ export function TaskDetailContent({
   */
   const shouldShowTaskFailureAlert = Boolean(task.status === "failed" && !isPlannerChatExpanded);
   const taskFailureReason = task.error?.trim() || t("taskDetail.error.genericFailureReason", "The task failed before it could complete.");
+  /*
+  FNXC:StallReason 2026-09-01-17:48 (RUFU-175):
+  The detail view is the one surface with room for the FULL reason (headline + explanation + next action),
+  and the only one that must name the reason for a PAUSED card independent of which column it sits in
+  (the review-lane banners are keyed to review). It classifies through the same resolver the card and list
+  use. The dedicated affordances above already cover an external block (ExternalBlockNotice), a failure
+  (the alert), and the review-lane stall (shouldShowInReviewStallBadge), so the generic banner is only
+  shown for codes the shared face predicate says the surface is responsible for.
+  */
+  const stall = useMemo(
+    () => resolveStallReason(task, { t, dataAsOfMs: undefined }),
+    [task, t],
+  );
+  /*
+  FNXC:StallReason 2026-09-02-18:21 (RUFU-175 review):
+  The complete lane must suppress the banner for the same reason TaskCard and ListView gate their face
+  chip: landing proof deliberately ignores `paused` (getTaskHardMergeBlocker simulates `paused: false`),
+  so a landed card can still be opened in the detail view carrying the park, an unresolved dependency
+  edge, or an unresolved wedge. A banner that names a stall and suggests resuming on a completed card is
+  visibly wrong, so it honors `isDoneColumn` exactly as the card and list already do.
+  */
+  const stallReasonBanner = !isDoneColumn && stallReasonVisibleOnFace(task, stall);
   const taskFailureToolDetail = useMemo(() => {
     const lastToolCompletion = agentLogEntries.findLast(
       (entry) => entry.type === "tool_result" || entry.type === "tool_error",
@@ -5935,6 +5958,21 @@ export function TaskDetailContent({
               <div className="task-pause-reason-label">{t("taskDetail.pause.worktrunkFailed", "Worktrunk operation failed")}</div>
               {task.worktrunkFailure?.stderr && (
                 <pre className="task-pause-stderr">{task.worktrunkFailure.stderr.slice(0, 2048)}</pre>
+              )}
+            </div>
+          )}
+          {stallReasonBanner && stall && (
+            <div
+              className="task-stall-reason"
+              role="status"
+              aria-live="polite"
+              data-testid={`task-detail-stall-reason-${task.id}`}
+              data-stall-code={stall.code}
+            >
+              <div className="task-stall-reason-headline">{stall.headline}</div>
+              <div className="task-stall-reason-description">{stall.description}</div>
+              {stall.suggestedAction && (
+                <div className="task-stall-reason-action">{stall.suggestedAction}</div>
               )}
             </div>
           )}
