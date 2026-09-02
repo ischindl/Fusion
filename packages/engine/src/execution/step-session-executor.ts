@@ -1458,11 +1458,24 @@ export class StepSessionExecutor {
     try {
       const stepName = taskDetail.steps?.[stepIndex]?.name ?? `Step ${stepIndex + 1}`;
       const recallTopic = `${taskDetail.title ?? taskDetail.id} — Step ${stepIndex + 1}: ${stepName}`;
+      /*
+      FNXC:RUFU172ExecutorFocusLane 2026-08-31-19:41:
+      RUFU-172 adds an optional `focus` (lane T) to the recall core; the executor passes
+      NONE — deliberately, not by omission. A focus is an operator-set per-conversation
+      value that lives on `chat_sessions.memory_focus`; a task has no focus field (nor does
+      its mission), and synthesizing one from the task title would be a second search over
+      nearly the text lane P already queries (the topic IS title + step name), i.e. cost
+      with zero added signal. Honest absence: no focus source → no lane T. Chat (chat.ts /
+      agent-instructions) and CLI (runtime handle via the linked chat session) lanes pass
+      the operator's real focus where one honestly exists.
+      */
       recallCue = await buildPerTurnMemoryRecallCue({
         rootDir: this.options.rootDir,
         topic: recallTopic,
         settings,
         sessionKey: `task:${taskDetail.id}`,
+        // Explicit rather than omitted, so the honest absence above reads as a decision.
+        focus: undefined,
       });
     } catch (error) {
       // Recall is additive: any failure leaves the step prompt unchanged.

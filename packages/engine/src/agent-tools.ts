@@ -16,7 +16,7 @@ import * as fusionCore from "@fusion/core";
 import type { AgentState, AgentCapability, AgentUpdateInput, AgentLogEntry, Artifact, ArtifactCreateInput, ArtifactWithTask, Task, TaskDocument, TaskDocumentCreateInput, TaskStore, RunMutationContext, MessageStore, Message, SourceType, Settings, ResearchRun, ResearchRunStatus, TaskCreateInput, ReflectionStore, ApprovalRequestStore, ProjectSettings, ChatStore, WorkflowSettingDefinition, GoalStatus, WorkflowIrNode, IdeationCandidate, MissionWithHierarchy, DbTransaction } from "@fusion/core";
 import { listTraits, isBuiltinWorkflowId, AgentStore, validateColumnAgentBindings, ColumnAgentBindingError, stripApprovalBypassFlags, WorkflowSettingRejectionError, resolveEffectiveSettingsById, resolveWorkflowIrById, findOrphanedSettingValues, BUILTIN_WORKFLOW_SETTINGS, MAX_TASK_LIST_TEXT_CHARS, formatCurrentTaskLine, normalizeWorkflowIcon, parseWorkflowIr, WorkflowIrError, assertColumnTraitsValid, ColumnTraitValidationError } from "@fusion/core";
 import { promoteHeldTask } from "./execution/hold-release.js";
-import { computeCrossParentDiagnosticClaim, computeCrossParentDiagnosticClaimId, computeParentIntentClaimId, DASHBOARD_USER_ID, dailyMemoryPath, ensureOpenClawMemoryFiles, evaluateImplementationTaskBind, extractAgentProvisioningRequest, findSameAgentDuplicates, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh } from "@fusion/core";
+import { computeCrossParentDiagnosticClaim, computeCrossParentDiagnosticClaimId, computeParentIntentClaimId, DASHBOARD_USER_ID, dailyMemoryPath, ensureOpenClawMemoryFiles, evaluateImplementationTaskBind, extractAgentProvisioningRequest, findSameAgentDuplicates, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveMemorySearchTopic, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh } from "@fusion/core";
 import { ResearchOrchestrator } from "./research/research-orchestrator.js";
 import { ResearchProviderRegistry } from "./research/provider-registry.js";
 import { ResearchStepRunner } from "./research/research-step-runner.js";
@@ -625,7 +625,18 @@ export const askQuestionParams = Type.Object({
 
 export const memorySearchParams = Type.Object({
   query: Type.String({ description: "Search terms for durable project memory. Use focused keywords, not a full prompt." }),
-  topic: Type.Optional(Type.String({ description: "RUFU-068: optional read-time focus/topic. When set, scopes the project recall to a working topic (a within-project read filter). 'all', empty, or '*' clears to whole-project scope. The Stash backend pushes this as a &topic= query param for SQL-enforced filtering; never post-filter in-memory." })),
+  /*
+  FNXC:MemoryFocusContract 2026-08-31-19:41:
+  RUFU-172 (fixing a promise stale since RUFU-121): the old description told every agent
+  that Stash pushes the topic as a `&topic=` param for SQL-enforced filtering. It never
+  did — Stash's search route accepts `q`+`limit` only, the param was inert, and RUFU-121
+  removed it. No backend in this repo filters by topic. What IS true: the resolved focus
+  biases the PROACTIVE per-turn recall cue via a second topic-worded search (RUFU-172
+  lane T, core `buildPerTurnMemoryRecallCue`), and topic-aware backends MAY treat the
+  tool's `topic` as a ranking hint. The description now states the real contract so
+  agents stop believing filtered results come back.
+  */
+  topic: Type.Optional(Type.String({ description: "RUFU-068: optional read-time focus/topic. 'all', empty, or '*' means whole-project scope. Honest contract: the topic reaches backends as a ranking HINT only — no backend filters results by it (Stash dropped the inert &topic= in RUFU-121), so never post-filter results in-memory either; narrow results by refining `query`. The operator's conversation focus additionally biases the proactive recall cue (RUFU-172)." })),
   limit: Type.Optional(Type.Number({ description: "Maximum snippets to return (default: 5, max: 20)" })),
 });
 
@@ -696,10 +707,18 @@ type AgentMemoryContext = {
 
 type MemoryToolOptions = {
   agentMemory?: AgentMemoryContext;
-  // FNXC:MemoryFocusEngine 2026-08-13-15:57: optional per-conversation memory
-  // focus/topic from the enclosing session (chat_sessions.memory_focus). When set,
-  // fn_memory_search scopes the project recall to this topic via
-  // resolveMemorySearchTopic → searchProjectMemory (a within-project read filter).
+  /*
+  FNXC:MemoryFocusEngine 2026-08-13-15:57: optional per-conversation memory
+  focus/topic from the enclosing session (chat_sessions.memory_focus). When set,
+  fn_memory_search carries it to searchProjectMemory as the read-time topic.
+
+  FNXC:MemoryFocusContract 2026-09-01-17:44:
+  RUFU-172 wording correction: this used to call that a "within-project read filter".
+  Nothing filters — no backend narrows its result set by topic (Stash dropped the inert
+  &topic= in RUFU-121), so the value is a read-time focus hint. The same resolved focus
+  also biases the proactive per-turn recall cue (RUFU-172 lane T). Cross-project scope
+  isolation is unaffected either way.
+  */
   focus?: string;
 };
 
@@ -4312,28 +4331,14 @@ export function createWorkflowAuthoringTools(
 }
 
 /**
- * Resolve an active memory-search topic/focus to its effective value.
- *
- * RUFU-068: a conversation's focus is a within-project read filter that scopes
- * recall to a working topic. Values that mean "no filter" collapse to `undefined`
- * so the caller searches whole-project scope (project default):
- *   - undefined / null → undefined (whole scope)
- *   - empty or whitespace-only string → undefined
- *   - "all" or "*" (operator way to clear the filter) → undefined
- * Any other non-empty trimmed string is the active topic.
+ * FNXC:RUFU172FocusResolver 2026-08-31-19:41:
+ * `resolveMemorySearchTopic` moved to `@fusion/core` (`packages/core/src/memory/project-memory.ts`)
+ * in RUFU-172 so the recall core and this engine tool share one "no focus" definition
+ * (core cannot import engine). It is re-exported here so existing import sites keep
+ * resolving. See the core JSDoc for semantics: trim; empty/`all`/`*` -> `undefined`
+ * (whole-project scope); otherwise the trimmed focus.
  */
-// FNXC:MemoryFocusEngine 2026-08-13-15:57: per-conversation memory focus (RUFU-068).
-// A conversation can carry an active topic; recall (fn_memory_search) must scope to
-// it as a WITHIN-project read filter. 'all'/'*'/empty/undefined mean no filter →
-// whole-project scope (project default). The resolved topic is pushed through
-// searchProjectMemory → backend.search (Stash REST &topic= for SQL-side filtering),
-// never a client-side post-query filter.
-export function resolveMemorySearchTopic(focus: string | null | undefined): string | undefined {
-  if (focus == null) return undefined;
-  const trimmed = focus.trim();
-  if (trimmed === "" || trimmed === "all" || trimmed === "*") return undefined;
-  return trimmed;
-}
+export { resolveMemorySearchTopic };
 
 export function createMemorySearchTool(rootDir: string, settings?: MemoryToolSettings, options?: MemoryToolOptions): ToolDefinition {
   return {
@@ -4353,10 +4358,18 @@ export function createMemorySearchTool(rootDir: string, settings?: MemoryToolSet
       // FNXC:MemoryFocusEngine 2026-08-13-15:57: scope the project recall to the
       // active topic when a focus is set — either explicitly via params.topic, or
       // from the enclosing conversation's focus (options.focus). 'all'/''/'*' clears
-      // to whole-project scope. This is a WITHIN-project read filter; it never
-      // weakens cross-project scope isolation. The topic reaches searchProjectMemory
-      // → backend.search, which (for Stash) pushes it as a &topic= query param for
-      // SQL-enforced filtering — we never post-filter results in-memory.
+      // to whole-project scope. It narrows nothing — the topic reaches searchProjectMemory
+      // → backend.search as a read-time hint — and it never weakens cross-project scope
+      // isolation.
+      /*
+      FNXC:MemoryFocusContract 2026-08-31-19:41:
+      RUFU-172 contract correction: the sentence this block used to carry (“for Stash
+      this pushes a &topic= query param for SQL-enforced filtering”) was false even when
+      written — the Stash route accepts `q`+`limit` only, and RUFU-121 deleted the inert
+      param. The topic is a HINT on backend.search options (topic-aware backends may
+      rank by it; Stash ignores it). The operator focus now also biases the proactive
+      per-turn recall cue (RUFU-172 lane T). “Never post-filter in-memory” still holds.
+      */
       const activeTopic = resolveMemorySearchTopic(params.topic ?? options?.focus);
       const projectResults = await searchProjectMemory(rootDir, {
         query: params.query,

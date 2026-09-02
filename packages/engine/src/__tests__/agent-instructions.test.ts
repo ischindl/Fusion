@@ -1062,6 +1062,8 @@ describe("buildAgentChatPrompt per-turn memory recall (RUFU-120 B.2)", () => {
   let testDir: string;
   let fakeHits: MemorySearchResult[];
   let searchCalls: Array<{ query: string; limit?: number }>;
+  // RUFU-172: per-query routing so a focus can be answered differently from the project query.
+  let fakeSearch: ((query: string, limit?: number) => MemorySearchResult[]) | null = null;
 
   beforeAll(() => {
     const baseCapabilities = {
@@ -1088,6 +1090,7 @@ describe("buildAgentChatPrompt per-turn memory recall (RUFU-120 B.2)", () => {
       write,
       search: async (_rootDir, opts) => {
         searchCalls.push(opts);
+        if (fakeSearch) return fakeSearch(opts.query, opts.limit);
         return fakeHits;
       },
     });
@@ -1112,6 +1115,7 @@ describe("buildAgentChatPrompt per-turn memory recall (RUFU-120 B.2)", () => {
       { path: ".fusion/memory/2026-08-15.md", lineStart: 20, lineEnd: 22, snippet: "Merge gate flake quarantine entry.", score: 0, backend: "perturn-chat-fake" },
     ];
     searchCalls = [];
+    fakeSearch = null;
     __resetPerTurnRecallDedupForTests();
   });
 
@@ -1239,5 +1243,55 @@ describe("buildAgentChatPrompt per-turn memory recall (RUFU-120 B.2)", () => {
     expect(prompt).toContain("You are a chat assistant.");
     expect(prompt).toContain("## Identity");
     expect(prompt).not.toContain("## Memory Recall");
+  });
+
+  /*
+  FNXC:RUFU172ChatFocusLane 2026-08-31-19:41:
+  RUFU-172 chat-lane threading: buildAgentChatPrompt forwards a focus to the core two-lane
+  recall. With a focus the core issues a SECOND (lane T) search whose query is the raw focus
+  text and leads the cue; with no focus it stays on the single whole-project search. This
+  proves the focus reaches the PROACTIVE cue, not just the fn_memory_search tool schema.
+  */
+  it("(h) forwards a focus: a second lane-T search with the raw focus text leads the cue", async () => {
+    fakeSearch = (query) =>
+      query === "merge-gate remediation ledger"
+        ? [{ path: "notes/focus-ledger.md", lineStart: 2, lineEnd: 5, snippet: "Focus ledger merge-gate remediation.", score: 9, backend: "perturn-chat-fake" }]
+        : fakeHits;
+    const prompt = await buildAgentChatPrompt({
+      agent: makeAgent({ id: "agent-recall-h", name: "Recall", role: "engineer" }),
+      rootDir: testDir,
+      basePrompt: "You are a chat assistant.",
+      topic: "merge gate flake",
+      sessionId: "s-h",
+      settings: makeRecallSettings(),
+      focus: "merge-gate remediation ledger",
+    });
+
+    // Two searches: lane P (keywords) then lane T (raw focus text, un-tokenized).
+    expect(searchCalls.length).toBe(2);
+    expect(searchCalls[0].query).toContain("merge");
+    expect(searchCalls[1].query).toBe("merge-gate remediation ledger");
+    // Focus hit leads the cue (topic-first ordering) alongside the project cue.
+    expect(prompt).toContain("## Memory Recall");
+    expect(prompt).toContain("notes/focus-ledger.md");
+  });
+
+  it("(i) no focus → exactly one whole-project search, no lane-T query is ever issued", async () => {
+    fakeSearch = (query) => (query === "some focus" ? [{ path: "t.md", lineStart: 1, lineEnd: 2, snippet: "topic", score: 9, backend: "perturn-chat-fake" }] : fakeHits);
+    const prompt = await buildAgentChatPrompt({
+      agent: makeAgent({ id: "agent-recall-i", name: "Recall", role: "engineer" }),
+      rootDir: testDir,
+      basePrompt: "You are a chat assistant.",
+      topic: "merge gate flake",
+      sessionId: "s-i",
+      settings: makeRecallSettings(),
+      // focus omitted entirely
+    });
+
+    // One search only; the cue is the whole-project form and never references the focus hit.
+    expect(searchCalls.length).toBe(1);
+    expect(prompt).toContain("## Memory Recall");
+    expect(prompt).not.toContain("notes/focus-ledger.md");
+    expect(prompt).not.toContain("t.md");
   });
 });

@@ -1171,12 +1171,10 @@ vi.mock("../worktree/worktree-names.js", async () => {
 vi.mock("node:child_process", async () => {
   const { promisify } = await import("node:util");
   const execSyncFn = vi.fn();
-   
-  const execFn: any = vi.fn((cmd: string, opts: any, cb: any) => {
-    const callback = typeof opts === "function" ? opts : cb;
-    const options = typeof opts === "function" ? {} : (opts ?? {});
+
+  const runThroughExecSync = (cmd: string, options: any, callback: any) => {
     try {
-      const out = execSyncFn(cmd, { ...options, stdio: ["pipe", "pipe", "pipe"] });
+      const out = execSyncFn(cmd, { ...(options ?? {}), stdio: ["pipe", "pipe", "pipe"] });
       const stdout = out === undefined ? "" : out.toString();
       if (typeof callback === "function") callback(null, stdout, "");
     } catch (err) {
@@ -1185,11 +1183,16 @@ vi.mock("node:child_process", async () => {
         callback(err, error?.stdout?.toString?.() ?? "", error?.stderr?.toString?.() ?? "");
       }
     }
+  };
+
+  const execFn: any = vi.fn((cmd: string, opts: any, cb: any) => {
+    const callback = typeof opts === "function" ? opts : cb;
+    const options = typeof opts === "function" ? {} : (opts ?? {});
+    runThroughExecSync(cmd, options, callback);
   });
-   
+
   execFn[promisify.custom] = (cmd: string, opts?: any) =>
     new Promise((resolve, reject) => {
-       
       execFn(cmd, opts, (err: any, stdout: string, stderr: string) => {
         if (err) {
           (err as Record<string, unknown>).stdout = stdout;
@@ -1200,7 +1203,45 @@ vi.mock("node:child_process", async () => {
         }
       });
     });
-  return { execSync: execSyncFn, exec: execFn, execFile: vi.fn() };
+
+  /*
+  FNXC:EngineTestDrift 2026-09-02-06:19:
+  FN-251's defensive-removal status probe (`assertCleanForDefensiveRemoval` in
+  worktree-backend.ts) runs `git status --porcelain` through `promisify(execFile)` on every
+  `removeWorktree({ reason: StepSessionCleanup })` — i.e. each parallel-step wave cleanup.
+  The previous `execFile: vi.fn()` never invoked its callback, so the generic promisify
+  promise never settled and all nine `parallel execution` cases hung at the test timeout
+  (identically at 120s — see docs/solutions/test-failures/parallel-step-executor-cases-never-settle.md
+  for the pre-fix evidence). Route `execFile` through the same `execSync` mock surface and
+  mirror Node's real `util.promisify(execFile)` contract: the promisified call resolves to
+  `{ stdout, stderr }` (and rejects with `stdout`/`stderr` attached), matching `exec`.
+  */
+  const execFileFn: any = vi.fn((file: string, a?: any, b?: any, c?: any) => {
+    if (Array.isArray(a)) {
+      const cmd = [file, ...a].join(" ");
+      if (typeof b === "function") runThroughExecSync(cmd, {}, b);
+      else runThroughExecSync(cmd, b ?? {}, c);
+    } else if (typeof a === "function") {
+      runThroughExecSync(file, {}, a);
+    } else {
+      runThroughExecSync(file, a ?? {}, typeof b === "function" ? b : undefined);
+    }
+  });
+
+  execFileFn[promisify.custom] = (file: string, args?: string[], opts?: any) =>
+    new Promise((resolve, reject) => {
+      execFileFn(file, Array.isArray(args) ? args : [], opts, (err: any, stdout: string, stderr: string) => {
+        if (err) {
+          (err as Record<string, unknown>).stdout = stdout;
+          (err as Record<string, unknown>).stderr = stderr;
+          reject(err);
+        } else {
+          resolve({ stdout, stderr });
+        }
+      });
+    });
+
+  return { execSync: execSyncFn, exec: execFn, execFile: execFileFn };
 });
 vi.mock("node:fs", () => ({
   existsSync: vi.fn().mockReturnValue(true),
@@ -2447,9 +2488,14 @@ describe("StepSessionExecutor", () => {
         });
         const settings = makeSettings({ maxParallelSteps: 2 });
 
-        mockedGenerateWorktreeName
-          .mockImplementationOnce(() => "wt-step-0")
-          .mockImplementationOnce(() => "wt-step-1");
+        /*
+        FNXC:EngineTestDrift 2026-09-02-06:21:
+        createStepWorktree no longer consumes generateWorktreeName — FNXC:TaskWorktreeNames
+        2026-08-29-08:51 made parallel-step paths deterministic (`<task>-step-<n>` under the
+        resolved worktrees dir). The old `wt-step-0` fixture was dead since then and stayed
+        red-invisible because FN-251's execFile probe hung this describe before the
+        assertions could run.
+        */
 
         let worktreeAddCount = 0;
         mockedExecSync.mockImplementation((cmd: string) => {
@@ -2469,7 +2515,7 @@ describe("StepSessionExecutor", () => {
         const executionEvents: string[] = [];
 
         mockedCreateFnAgent.mockImplementation(({ cwd }: any) => {
-          if (cwd === "/project/.worktrees/wt-step-0") {
+          if (cwd === "/project/.fusion/worktrees/fn-001-step-0") {
             return Promise.resolve({
               session: makeMockSession(async () => {
                 executionEvents.push("step-0-start");
@@ -2532,8 +2578,8 @@ describe("StepSessionExecutor", () => {
         });
         const settings = makeSettings({ maxParallelSteps: 3 });
 
-        let nameCounter = 0;
-        mockedGenerateWorktreeName.mockImplementation(() => `wt-fail-${nameCounter++}`);
+        // No generateWorktreeName fixture: step worktree names are deterministic since
+        // FNXC:TaskWorktreeNames 2026-08-29-08:51, and every add throws here anyway.
         mockedExecSync.mockImplementation((cmd: string) => {
           if (cmd.includes("git worktree add")) {
             throw new Error("worktree creation failed");
@@ -2591,11 +2637,7 @@ describe("StepSessionExecutor", () => {
         });
         const settings = makeSettings({ maxParallelSteps: 3 });
 
-        mockedGenerateWorktreeName
-          .mockImplementationOnce(() => "wt-mixed-0")
-          .mockImplementationOnce(() => "wt-mixed-1")
-          .mockImplementationOnce(() => "wt-mixed-2");
-
+        // Names are deterministic (fn-001-step-N) since FNXC:TaskWorktreeNames 2026-08-29-08:51.
         let worktreeAddCount = 0;
         mockedExecSync.mockImplementation((cmd: string) => {
           if (cmd.includes("git worktree add")) {
@@ -2636,7 +2678,7 @@ describe("StepSessionExecutor", () => {
             } as any);
           }
 
-          const label = cwd.endsWith("wt-mixed-0") ? "parallel-0" : "parallel-1";
+          const label = cwd.endsWith("fn-001-step-0") ? "parallel-0" : "parallel-1";
           return Promise.resolve({
             session: makeMockSession(async () => {
               events.push(`${label}-start`);
@@ -2746,11 +2788,7 @@ describe("StepSessionExecutor", () => {
         });
         const settings = makeSettings({ maxParallelSteps: 3 });
 
-        mockedGenerateWorktreeName
-          .mockImplementationOnce(() => "wt-clean-0")
-          .mockImplementationOnce(() => "wt-clean-1")
-          .mockImplementationOnce(() => "wt-clean-2");
-
+        // Names are deterministic (fn-001-step-N) since FNXC:TaskWorktreeNames 2026-08-29-08:51.
         let worktreeAddCount = 0;
         mockedExecSync.mockImplementation((cmd: string) => {
           if (cmd.includes("git worktree add")) {
@@ -2778,9 +2816,9 @@ describe("StepSessionExecutor", () => {
           .filter((cmd): cmd is string => typeof cmd === "string" && cmd.includes("git worktree remove"));
 
         expect(removeCalls).toHaveLength(2);
-        expect(removeCalls.some((cmd) => cmd.includes("wt-clean-0"))).toBe(true);
-        expect(removeCalls.some((cmd) => cmd.includes("wt-clean-1"))).toBe(true);
-        expect(removeCalls.some((cmd) => cmd.includes("wt-clean-2"))).toBe(false);
+        expect(removeCalls.some((cmd) => cmd.includes("fn-001-step-0"))).toBe(true);
+        expect(removeCalls.some((cmd) => cmd.includes("fn-001-step-1"))).toBe(true);
+        expect(removeCalls.some((cmd) => cmd.includes("fn-001-step-2"))).toBe(false);
         expect(removeCalls.some((cmd) => cmd.includes("/project/.worktrees/main"))).toBe(false);
       });
     });
@@ -2929,7 +2967,9 @@ describe("StepSessionExecutor", () => {
           rootDir: "/project",
           taskId: "FN-001",
           settings,
-          worktreePath: expect.stringContaining("/project/.worktrees/"),
+          // Deterministic step paths (FNXC:TaskWorktreeNames 2026-08-29-08:51): the resolved
+          // worktrees dir is rootDir/.fusion/worktrees absent a configured worktreesDir.
+          worktreePath: expect.stringMatching(/^\/project\/\.fusion\/worktrees\/fn-001-step-\d+$/),
         }),
       );
     });
@@ -3750,6 +3790,13 @@ fake backend via registerMemoryBackend (unique type name, no real LLM).
 */
 describe("executor step-session per-turn memory recall (RUFU-120 B.2)", () => {
   const RECALL_FAKE_TYPE = "perturn-step-fake";
+  /*
+  FNXC:RUFU172ExecutorFocusLane 2026-08-31-21:49:
+  RUFU-172 Step 5 proof seam: the fake records every search query the executor's recall
+  lane issues, so a fabricated focus would surface as a SECOND raw-text query. Cleared in
+  beforeEach alongside the per-test backend re-registration.
+  */
+  const recallSearchQueries: string[] = [];
 
   function makeRecallFakeBackend() {
     return {
@@ -3768,7 +3815,8 @@ describe("executor step-session per-turn memory recall (RUFU-120 B.2)", () => {
       async write() {
         return { success: false, backend: RECALL_FAKE_TYPE };
       },
-      async search() {
+      async search(_rootDir: string, opts: { query: string }) {
+        recallSearchQueries.push(opts.query);
         return [
           {
             path: ".fusion/memory/MEMORY.md",
@@ -3830,6 +3878,7 @@ describe("executor step-session per-turn memory recall (RUFU-120 B.2)", () => {
     vi.mocked(promptWithAutoRetry).mockImplementation(async (session: any, prompt: string, options?: unknown) =>
       vi.mocked(promptWithFallback)(session, prompt, options as any),
     );
+    recallSearchQueries.length = 0;
   });
 
   afterEach(() => {
@@ -3897,5 +3946,25 @@ describe("executor step-session per-turn memory recall (RUFU-120 B.2)", () => {
     // …and the recovery prompt stayed minimal.
     expect(promptAt(1)).not.toContain("## Memory Recall");
     expect(promptAt(1)).not.toContain(MEMORY_PRE_STEERING_MARKER);
+  });
+
+  /*
+  FNXC:RUFU172ExecutorFocusLane 2026-08-31-21:49:
+  RUFU-172 Step 5 honest-lane contract: a mission-linked task must NOT fabricate a recall
+  focus (e.g. from the mission title). The executor lane stays focus-less: exactly ONE
+  recall search (the derived step-topic keywords) and the same whole-project cue as before.
+  */
+  it("issues exactly one whole-project recall search for a mission-linked task (no fabricated focus)", async () => {
+    const { executor } = makeRecallExecutor({ taskDetail: { missionId: "M-001" } });
+
+    const results = await executor.executeAll();
+
+    expect(results).toHaveLength(1);
+    expect(results[0].success).toBe(true);
+    // One search only — a fabricated focus would appear as a second raw-text query.
+    expect(recallSearchQueries).toHaveLength(1);
+    // And the prompt carries the unchanged whole-project cue.
+    expect(promptAt(0)).toContain("## Memory Recall");
+    expect(promptAt(0)).toContain(MEMORY_PRE_STEERING_MARKER);
   });
 });

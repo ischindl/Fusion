@@ -2290,6 +2290,7 @@ export {
   searchProjectMemory,
   getProjectMemory,
   buildProactiveMemoryCueBlock,
+  resolveMemorySearchTopic,
   resolveMemoryInstructionContext,
   type MemoryInstructionContext,
 } from "./memory/project-memory.js";

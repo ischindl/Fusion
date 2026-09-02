@@ -15,13 +15,16 @@ import type { MemorySearchOptions } from "@fusion/core";
 import * as coreMemoryBackend from "../../../core/src/memory/memory-backend.js";
 
 /**
- * RUFU-068 engine recall-scoping tests: per-conversation memory FOCUS must
- * scope project recall to a topic as a WITHIN-project read filter.
+ * RUFU-068 engine recall-scoping tests: per-conversation memory FOCUS must reach
+ * project recall as a read-time topic. RUFU-172 wording note: it is not a filter —
+ * it never narrows the returned result set.
  *
  * The committed seam threads the topic through:
  *   fn_memory_search (createMemorySearchTool) -> searchProjectMemory
- *   -> backend.search (Stash pushes it as a &topic= search-route param, the
- *   SQL enforcement point, once the route supports it)
+ *   -> backend.search options (as a ranking hint). Stash does NOT filter by it:
+ *   its search route accepts `q`+`limit` only and RUFU-121 removed the inert
+ *   `&topic=` push-down, so there is no SQL enforcement point — the operator's
+ *   focus biases ranking via the two-lane proactive cue instead (RUFU-172).
  * and proactive pre-response recall (buildProactiveMemoryCueBlock) forwards
  * the topic down the same path.
  *
@@ -31,7 +34,7 @@ import * as coreMemoryBackend from "../../../core/src/memory/memory-backend.js";
  * post-query in-memory filter), (b) undefined/null/""/"all"/"*" collapse back
  * to whole-project scope (project default), (c) a whitespace-trimmed topic is
  * used, and (d) focus NEVER weakens cross-project A/B isolation — the topic is
- * a WITHIN-project read filter handed to the backend, and capture stays
+ * a read-time hint handed to the backend, and capture stays
  * write-anywhere / topic-agnostic.
  */
 
@@ -147,7 +150,7 @@ describe("fn_memory_search tool topic threading (RUFU-068)", () => {
     );
   });
 
-  it("is a within-project read filter: the topic reaches searchProjectMemory options, never a post-query filter", async () => {
+  it("is a read-time topic hint, not a result filter: the topic reaches searchProjectMemory options and is never reapplied post-query", async () => {
     // A topic-agnostic backend would receive topic in its options but return its
     // normal (possibly unfiltered) results; the ENGINE must NOT re-filter them
     // in-memory. The spy receives the topic inside search options (the seam),

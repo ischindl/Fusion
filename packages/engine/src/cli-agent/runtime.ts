@@ -25,6 +25,7 @@
  */
 
 import { CliSessionStore } from "@fusion/core";
+import { ChatStore, CHAT_FOCUS_FLAG, isExperimentalFeatureEnabled } from "@fusion/core";
 import type { AsyncDataLayer, Settings } from "@fusion/core";
 import { CliAdapterRegistry } from "./adapter.js";
 import { BUNDLED_CLI_ADAPTERS } from "./adapters/index.js";
@@ -155,6 +156,38 @@ export async function createCliAgentRuntime(
   // it; mutations remain ordered through the shared PostgreSQL data layer.
   const store = await CliSessionStore.create(asyncLayer, projectId);
 
+  /*
+  FNXC:RUFU172CliFocusLane 2026-08-31-19:41:
+  RUFU-172: a CLI chat turn's proactive recall cue can be biased by the operator's
+  per-conversation focus — but ONLY through an honest chain: this CLI session must be
+  purpose="chat" AND carry a `chatSessionId` link, and `experimentalFeatures.chatFocus`
+  must be on (the same gate every other focus surface uses; the flag check precedes any
+  chat-store read, so a flag-off deployment performs zero extra queries). A `CliSession`
+  has no focus field of its own — the focus lives on the linked ChatSession row — so task-
+  purpose sessions, unlinked sessions, flag-off deployments, and any read failure resolve
+  to `undefined`, which keeps the whole-project single-search cue byte-identical. The
+  ChatStore is lazily constructed over the runtime's ALREADY-OPEN layer (never re-opened)
+  and only when the gate is first satisfied; it is read-only here (no listeners attached).
+  */
+  let focusChatStore: ChatStore | undefined;
+  const resolveLinkedChatFocus = async (
+    cliSessionId: string,
+    settings: Partial<Settings> | null | undefined,
+  ): Promise<string | undefined> => {
+    try {
+      if (!isExperimentalFeatureEnabled(settings ?? undefined, CHAT_FOCUS_FLAG)) return undefined;
+      const record = store.getSession(cliSessionId);
+      if (!record || record.purpose !== "chat" || !record.chatSessionId) return undefined;
+      focusChatStore ??= new ChatStore(asyncLayer);
+      const chatSession = await focusChatStore.getSession(record.chatSessionId);
+      return chatSession?.memoryFocus ?? undefined;
+    } catch {
+      // Recall is additive context: a failed focus lookup degrades to "no focus"
+      // (the existing whole-project cue), never to a failed turn.
+      return undefined;
+    }
+  };
+
   // 2. A per-runtime registry with every bundled adapter (not the process-wide
   //    singleton — avoids duplicate-registration across multi-project boots).
   const registry = new CliAdapterRegistry();
@@ -255,13 +288,20 @@ export async function createCliAgentRuntime(
             validateToken: (sessionId: string, token: string | null | undefined) =>
               hub.validateToken(sessionId, token),
             hasSession: (sessionId: string) => store.getSession(sessionId) !== undefined,
-            recallForChatTurn: async (input: { topic: string; sessionId: string }) =>
-              recallForChatTurn({
+            recallForChatTurn: async (input: { topic: string; sessionId: string }) => {
+              // FRESH settings per call (a live memory/chatFocus toggle takes effect
+              // on the next prompt); the same read gates the focus lane (FNXC above).
+              const recallSettings = options.getSettings
+                ? await options.getSettings().catch(() => undefined)
+                : undefined;
+              return recallForChatTurn({
                 rootDir: recallProjectRoot,
                 topic: input.topic,
                 sessionId: input.sessionId,
-                settings: options.getSettings ? await options.getSettings().catch(() => undefined) : undefined,
-              }),
+                settings: recallSettings,
+                focus: await resolveLinkedChatFocus(input.sessionId, recallSettings),
+              });
+            },
           },
         }
       : {}),

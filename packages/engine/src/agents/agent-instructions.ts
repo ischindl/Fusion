@@ -464,6 +464,16 @@ export async function buildAgentChatPrompt(options: {
   memoryCapChars?: number;
   /** Stable per-chat session id for the session-scoped recall cue dedup. */
   sessionId?: string;
+  /**
+   * FNXC:RUFU172ChatFocusLane 2026-08-31-19:41:
+   * RUFU-172: the conversation's focus topic, when the caller has an honest one. It biases
+   * the per-turn recall cue (a second topic-worded search that leads the merged cue); it is
+   * never a corpus filter. Callers MUST gate it themselves (e.g. chat focus stays inert
+   * unless `experimentalFeatures.chatFocus` is on) and pass it only when the session really
+   * has a focus — the core resolves ""/"all"/"*"/whitespace to the whole-project path, but
+   * an un-gated value would silently activate a lane the operator turned the flag off for.
+   */
+  focus?: string;
   /** Project settings for the recall enable/topK/memoryEnabled gates. */
   settings?: Partial<Settings>;
 }): Promise<string> {
@@ -533,6 +543,9 @@ export async function buildAgentChatPrompt(options: {
         topic: options.topic,
         settings: options.settings,
         sessionKey: `chat:${options.sessionId ?? "anonymous"}`,
+        // RUFU-172: an already-gated focus biases ranking as lane T; undefined keeps today's
+        // single-search whole-project cue byte-for-byte.
+        focus: options.focus,
       });
       if (recallCue) {
         instructionParts.push(`## Memory Recall\n\n${recallCue}`);

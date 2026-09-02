@@ -297,13 +297,46 @@ export async function readProjectMemoryWithBackend(
   }
 }
 
+/*
+FNXC:RUFU172FocusResolver 2026-08-31-19:41:
+RUFU-172 moved the canonical focus/topic collapse from packages/engine/src/agent-tools.ts
+down into core so the recall core (`buildPerTurnMemoryRecallCue`) and the engine memory tool
+share ONE definition of "no focus". It lives here because `@fusion/core` cannot import
+`@fusion/engine` (AGENTS.md → "Importing across `@fusion/*` packages"; core uses DI precisely
+to avoid that cycle), and engine→core is already the direction of every other agent-tools
+import. `agent-tools.ts` re-exports this function so its existing import site
+(`packages/engine/src/__tests__/memory-focus-recalling.test.ts`) keeps resolving.
+
+Semantics are unchanged from RUFU-068: trim; empty / "all" / "*" (an operator's way of
+clearing the focus) collapse to `undefined` so callers keep whole-project scope; any other
+trimmed string is the active focus. An active focus is a RANKING input, never a filter — the
+resolved value is used as a query-side bias (RUFU-172 two-lane recall), never a corpus partition.
+*/
+
+/**
+ * Resolve an active memory-search topic/focus to its effective value, or `undefined`
+ * when the value means "no focus" (whole-project scope):
+ *   - undefined / null → undefined
+ *   - empty or whitespace-only string → undefined
+ *   - "all" or "*" → undefined
+ * Otherwise the trimmed string.
+ */
+export function resolveMemorySearchTopic(focus: string | null | undefined): string | undefined {
+  if (focus == null) return undefined;
+  const trimmed = focus.trim();
+  if (trimmed === "" || trimmed === "all" || trimmed === "*") return undefined;
+  return trimmed;
+}
+
 // FNXC:MemorySearchTopic 2026-08-13-16:35: (RUFU-035/RUFU-068) search can be
-// scoped to an optional read-time focus/topic. When a topic is supplied it is
-// pushed down to the backend (for Stash the REST search route's `topic` query
-// param enforces SQL-side filtering); topic-agnostic backends (file/qmd/readonly)
-// ignore it. Searching never throws: an availability/auth/parse failure on a
-// remote backend (e.g. Stash down) degrades to an empty result set so
-// fn_memory_search and proactive recall never block an agent task.
+// scoped to an optional read-time focus/topic. Corrected by RUFU-172: the topic is
+// honored only by topic-aware backends and is INERT for Stash — RUFU-121 removed the
+// `&topic=` push-down because the Stash search route accepts `q`+`limit` only, so no
+// SQL-side filtering ever happened. Topic-agnostic backends (file/qmd/readonly) ignore
+// it too. Proactive per-turn recall uses the focus as a ranking bias, not a filter
+// (RUFU-172). Searching never throws: an availability/auth/parse failure on a remote
+// backend (e.g. Stash down) degrades to an empty result set so fn_memory_search and
+// proactive recall never block an agent task.
 export async function searchProjectMemory(
   rootDir: string,
   options: MemorySearchOptions,
@@ -314,8 +347,10 @@ export async function searchProjectMemory(
   if (!backend.search) {
     return [];
   }
-  // RUFU-035: fold the optional focus into the search options so the Stash
-  // backend can push it as a &topic= query param for SQL-side filtering.
+  // RUFU-035: fold the optional focus into the search options so a topic-aware
+  // backend can honor it. For Stash this is inert (RUFU-121: the search route
+  // accepts q+limit only) — it is carried for the other backends and for
+  // read-side gating, never as a SQL filter.
   const searchOptions =
     topic && topic.trim().length > 0 && topic !== "all" && topic !== "*"
       ? { ...options, topic: topic.trim() }
@@ -371,8 +406,11 @@ export async function getProjectMemory(
  * @param query   - The natural-language query (typically the task description).
  * @param settings - Project settings including memoryBackendType.
  * @param opts    - Optional limit on the number of recalled cues, and a topic
- *                  (RUFU-035) to scope the recall to a working topic.
- *                  undefined/'all'/empty topic → whole-project scope.
+ *                  (RUFU-035) naming the working topic. Honored only by
+ *                  topic-aware backends; inert for Stash (RUFU-121), so it biases
+ *                  nothing there — it never filters. undefined/'all'/empty topic →
+ *                  whole-project scope. Proactive per-turn recall handles an active
+ *                  focus as a two-lane ranking bias instead (RUFU-172).
  * @returns A formatted "## Relevant Prior Context" block, or "" when disabled,
  *          not search-capable, failed, or with nothing to inject.
  */
@@ -393,9 +431,11 @@ export async function buildProactiveMemoryCueBlock(
   try {
     const limit = opts?.limit ?? 5;
     // RUFU-035 Step 3: when the enclosing conversation/task carries an active
-    // topic, scope the proactive pre-response cue to it. This is a WITHIN-project
-    // read filter (Stash pushes it as a &topic= search-route param for SQL-side
-    // filtering once supported); undefined/'all'/empty → whole-project scope.
+    // topic, carry it into the search options. RUFU-172 correction: this is NOT a
+    // within-project read filter — Stash never received it (RUFU-121 removed the
+    // &topic= push-down; the route accepts q+limit only) and no backend performs
+    // SQL-side topic filtering. Topic-aware backends may use it as a hint;
+    // undefined/'all'/empty → whole-project scope.
     const topic = opts?.topic?.trim();
     const results = await backend.search(rootDir, {
       query,

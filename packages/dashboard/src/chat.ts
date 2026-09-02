@@ -2401,6 +2401,9 @@ export class ChatManager {
           topic: input.content,
           sessionId: `room:${input.roomId}`,
           settings: await this.getSettings?.(),
+          // RUFU-172: no focus is passed — a ChatRoom has no persisted memory_focus field
+          // (only a ChatSession does), so room responders honestly carry no focus and their
+          // recall stays on the whole-project single-search cue. Not an omission.
         });
       } catch (error) {
         diagnostics.warn(`Failed to build chat prompt for room responder ${input.responder.id}: ${error instanceof Error ? error.message : String(error)}`);
@@ -2677,6 +2680,13 @@ export class ChatManager {
     await ensureEngineReady();
     let systemPrompt = CHAT_SYSTEM_PROMPT;
     if (buildAgentChatPromptFn) {
+      /*
+      FNXC:RUFU172MentionedAgentLane 2026-09-01-17:42:
+      RUFU-172 threads an operator focus into proactive per-turn recall, and this site
+      deliberately passes none — it passes no `topic` either, so recall is already inert
+      here (the core returns "" for a blank topic before searching). Deliberate, not a
+      missed surface.
+      */
       try { systemPrompt = await buildAgentChatPromptFn({ agent: input.responder, rootDir: this.rootDir, agentStore: this.agentStore, basePrompt: CHAT_SYSTEM_PROMPT, includeProjectMemory: true }); }
       catch (error) { diagnostics.warn(`Failed to build mentioned chat prompt for ${input.responder.id}: ${error instanceof Error ? error.message : String(error)}`); }
     }
@@ -3035,7 +3045,21 @@ export class ChatManager {
           chat:<session.id> dedupes identical cues within the session only. Composes with,
           never replaces, RUFU-118's between-turn compaction gate: recall is part of prompt
           assembly (before this turn's LLM call) and any recall failure leaves the prompt unchanged.
+
+          FNXC:RUFU172ChatFocusLane 2026-08-31-19:41:
+          RUFU-172: an operator-set chat focus now also biases the PROACTIVE per-turn recall
+          cue, not just the fn_memory_search tool schema (previously the focus reached only the
+          toolset at createChatFusionToolset and the automatic cue ignored it). Gate it the
+          SAME way the toolset does — the persisted topic stays inert until
+          experimentalFeatures.chatFocus is on — and reuse one settings read for both the
+          recall gates and this gate. An undefined focus keeps the whole-project single-search
+          cue byte-identical, so room/flag-off/unset sessions are unaffected.
           */
+          const chatPromptSettings = await this.getSettings?.();
+          const chatRecallFocus =
+            isExperimentalFeatureEnabled(chatPromptSettings, CHAT_FOCUS_FLAG) && session.memoryFocus?.trim()
+              ? session.memoryFocus
+              : undefined;
           systemPrompt = await buildAgentChatPromptFn({
             agent,
             rootDir: this.rootDir,
@@ -3054,7 +3078,8 @@ export class ChatManager {
             memoryCapChars: directChatBudgetOn ? CHAT_MEMORY_CAP_CHARS : undefined,
             topic: parsedSkillCommands.strippedContent || content,
             sessionId: session.id,
-            settings: await this.getSettings?.(),
+            settings: chatPromptSettings,
+            focus: chatRecallFocus,
           });
           systemPrompt = `${systemPrompt}\n\n${CHAT_AGENT_MESSAGE_ROUTING_GUIDANCE}`;
         } catch (promptBuildError) {

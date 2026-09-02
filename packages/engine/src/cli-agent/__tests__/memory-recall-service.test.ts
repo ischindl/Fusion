@@ -35,6 +35,11 @@ function makeHit(path: string, lineStart: number, lineEnd: number, snippet: stri
 }
 
 let fakeHits: MemorySearchResult[] = [];
+// RUFU-172: per-query routing + query capture, to prove a focus reaches the core's
+// lane-T search as the RAW focus text (the service forwards it verbatim; gating is
+// the caller's job — see runtime-chat-recall-wiring.test.ts).
+let fakeSearch: ((query: string) => MemorySearchResult[]) | null = null;
+let searchQueries: string[] = [];
 
 beforeAll(() => {
   const capabilities = {
@@ -58,7 +63,11 @@ beforeAll(() => {
     capabilities,
     read,
     write,
-    search: async () => fakeHits,
+    search: async (_rootDir, opts) => {
+      searchQueries.push(opts.query);
+      if (fakeSearch) return fakeSearch(opts.query);
+      return fakeHits;
+    },
   });
   registerMemoryBackend({
     type: "rufu128-svc-fake-reject",
@@ -74,15 +83,18 @@ beforeAll(() => {
 
 beforeEach(() => {
   fakeHits = [];
+  fakeSearch = null;
+  searchQueries = [];
   __resetPerTurnRecallDedupForTests();
 });
 
-const call = (overrides: { topic?: string; sessionId?: string; settings?: Partial<Settings> } = {}) =>
+const call = (overrides: { topic?: string; sessionId?: string; settings?: Partial<Settings>; focus?: string } = {}) =>
   recallForChatTurn({
     rootDir: ROOT,
     topic: overrides.topic ?? TOPIC,
     sessionId: overrides.sessionId ?? "session-1",
     settings: overrides.settings ?? makeSettings(),
+    focus: overrides.focus,
   });
 
 describe("recallForChatTurn (RUFU-128 Step 6)", () => {
@@ -129,5 +141,36 @@ describe("recallForChatTurn (RUFU-128 Step 6)", () => {
     // A different session still gets its own cue (dedup is session-scoped).
     const other = await call({ sessionId: "session-B" });
     expect(other).toBe(first);
+  });
+
+  /*
+  FNXC:RUFU172CliFocusLane 2026-08-31-19:41:
+  RUFU-172: the service forwards an already-gated focus to the core verbatim; the core's
+  canonical resolver still collapses ""/whitespace to "no focus", so the byte-identical
+  single-search path is preserved for every non-focus caller.
+  */
+  it("forwards a focus: a second search queries the RAW focus text; no focus → one search", async () => {
+    // A focus string no keyword derivation of TOPIC can equal, so the lane-T query
+    // identity assertion is unambiguous.
+    const FOCUS = "xterm-ledger focus";
+    fakeSearch = (query) =>
+      query === FOCUS
+        ? [makeHit("notes/focus.md", 1, 2, "focus lane hit", 2)]
+        : [makeHit("docs/notes.md", 10, 12, "the LCM marker was decided here", 1.5)];
+
+    const focused = await call({ sessionId: "svc-focus", focus: FOCUS });
+    expect(searchQueries.length).toBe(2);
+    expect(searchQueries[1]).toBe(FOCUS);
+    expect(focused).toContain("notes/focus.md");
+
+    // No focus (and the "all" sentinel, which the core collapses to no-focus) → one search.
+    searchQueries = [];
+    const unfocused = await call({ sessionId: "svc-nofocus" });
+    expect(searchQueries.length).toBe(1);
+    expect(unfocused).toContain("docs/notes.md");
+
+    searchQueries = [];
+    await call({ sessionId: "svc-sentinel", focus: "all" });
+    expect(searchQueries.length).toBe(1);
   });
 });

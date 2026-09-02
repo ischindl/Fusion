@@ -12,12 +12,22 @@
  * tears the dir down). Step 8 covers the spawn-level integration.
  */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CliSessionStore, type AsyncDataLayer, type CliSession } from "@fusion/core";
+import {
+  ChatStore,
+  CliSessionStore,
+  __resetPerTurnRecallDedupForTests,
+  registerMemoryBackend,
+  type AsyncDataLayer,
+  type ChatSession,
+  type CliSession,
+  type MemorySearchResult,
+  type Settings,
+} from "@fusion/core";
 import type { CliSessionManager } from "../session-manager.js";
 import { createCliAgentRuntime } from "../runtime.js";
 import { CHAT_RECALL_SCRATCH_PREFIX } from "../chat-recall-provisioner.js";
@@ -267,5 +277,176 @@ describe("createCliAgentRuntime — chat recall wiring (RUFU-128)", () => {
         recallEndpointUrl: ENDPOINT,
       }),
     ).rejects.toThrow(/projectRoot is required/);
+  });
+});
+
+/*
+FNXC:RUFU172CliFocusLane 2026-08-31-19:41:
+RUFU-172 CLI lane: an operator-set chat focus biases the CLI chat turn's PROACTIVE
+recall cue (not just the fn_memory_search tool), but only through an honest chain —
+purpose="chat" session carrying a `chatSessionId` link, AND experimentalFeatures.chatFocus
+on. These tests pin the three gate outcomes through the BUNDLE handle (the exact wiring
+production uses): a linked session with the flag on issues the second (lane-T) search and
+leads the cue; the flag-off and unlinked cases never touch the ChatStore and stay on the
+byte-identical whole-project single-search cue.
+*/
+describe("createCliAgentRuntime — CLI chat focus lane (RUFU-172)", () => {
+  let projectRoot: string;
+  let fusionDir: string;
+  let searchQueries: string[];
+
+  const FOCUS_BACKEND = "cli-focus-fake";
+  const FOCUS_TEXT = "deploy-ledger-focus";
+
+  beforeAll(() => {
+    const baseCapabilities = {
+      readable: true,
+      writable: false,
+      supportsAtomicWrite: false,
+      hasConflictResolution: false,
+      persistent: false,
+    };
+    const read: NonNullable<Parameters<typeof registerMemoryBackend>[0]["read"]> = async () => ({
+      content: "",
+      exists: false,
+      backend: FOCUS_BACKEND,
+    });
+    const write = async (): Promise<never> => {
+      throw new Error("read-only fake");
+    };
+    registerMemoryBackend({
+      type: FOCUS_BACKEND,
+      name: "CLI focus lane fake backend",
+      capabilities: baseCapabilities,
+      read,
+      write,
+      search: async (_rootDir, opts): Promise<MemorySearchResult[]> => {
+        searchQueries.push(opts.query);
+        // Lane T (the raw focus text) answers with the focus-specific hit; lane P
+        // (the whole-project keyword query) answers with the generic project hit.
+        if (opts.query === FOCUS_TEXT) {
+          return [
+            { path: "notes/deploy-ledger.md", lineStart: 3, lineEnd: 7, snippet: "The deploy-ledger focus hit.", score: 9, backend: FOCUS_BACKEND },
+          ];
+        }
+        return [
+          { path: ".fusion/memory/MEMORY.md", lineStart: 1, lineEnd: 4, snippet: "zebraflame: the deploy script is pnpm deploy:prod", score: 5, backend: FOCUS_BACKEND },
+        ];
+      },
+    });
+  });
+
+  beforeEach(() => {
+    searchQueries = [];
+    __resetPerTurnRecallDedupForTests();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (projectRoot) rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  function makeLayout(): void {
+    projectRoot = mkdtempSync(join(tmpdir(), "cli-focus-project-"));
+    fusionDir = join(projectRoot, ".fusion");
+    mkdirSync(fusionDir, { recursive: true });
+  }
+
+  function focusSettings(extras: Partial<Settings> = {}): Partial<Settings> {
+    return {
+      memoryEnabled: true,
+      memoryBackendType: FOCUS_BACKEND,
+      memoryPerTurnRecallEnabled: true,
+      memoryPerTurnRecallTopK: 3,
+      ...extras,
+    };
+  }
+
+  async function buildRecallRuntime(
+    sessions: Map<string, CliSession>,
+    getSettings: () => Promise<Partial<Settings> | null | undefined>,
+  ) {
+    makeLayout();
+    vi.spyOn(CliSessionStore, "create").mockResolvedValue(fakeStore(sessions));
+    return createCliAgentRuntime({
+      fusionDir,
+      projectRoot,
+      asyncLayer: { db: {} } as AsyncDataLayer,
+      projectId: "project-a",
+      hookEndpointUrl: "http://127.0.0.1:4545/api/cli-agent/hooks",
+      recallEndpointUrl: ENDPOINT,
+      getSettings,
+    });
+  }
+
+  it("linked chat session + chatFocus on: issues the lane-T search and leads the cue", async () => {
+    const sessions = new Map<string, CliSession>([
+      ["s-chat", makeRecord({ id: "s-chat", purpose: "chat", chatSessionId: "chat-9" })],
+    ]);
+    const getSession = vi
+      .spyOn(ChatStore.prototype, "getSession")
+      .mockResolvedValue({ memoryFocus: FOCUS_TEXT } as ChatSession);
+    const runtime = await buildRecallRuntime(sessions, async () =>
+      focusSettings({ experimentalFeatures: { chatFocus: true } }),
+    );
+
+    const cue = await runtime.bundle.memoryRecall!.recallForChatTurn({
+      topic: "zebraflame deploy",
+      sessionId: "s-chat",
+    });
+
+    // The linked chat session's focus was read and reached the second (lane T) search
+    // as the RAW focus text, and its hit leads the cue alongside the project cue.
+    expect(getSession).toHaveBeenCalledWith("chat-9");
+    expect(searchQueries).toContain(FOCUS_TEXT);
+    expect(cue).toContain("notes/deploy-ledger.md");
+    expect(cue).toContain("pnpm deploy:prod");
+  });
+
+  it("chatFocus flag off: no ChatStore read, single whole-project search (byte-identical cue)", async () => {
+    const sessions = new Map<string, CliSession>([
+      ["s-chat-off", makeRecord({ id: "s-chat-off", purpose: "chat", chatSessionId: "chat-9" })],
+    ]);
+    const getSession = vi
+      .spyOn(ChatStore.prototype, "getSession")
+      .mockResolvedValue({ memoryFocus: FOCUS_TEXT } as ChatSession);
+    const runtime = await buildRecallRuntime(sessions, async () =>
+      focusSettings({ experimentalFeatures: { chatFocus: false } }),
+    );
+
+    const cue = await runtime.bundle.memoryRecall!.recallForChatTurn({
+      topic: "zebraflame deploy",
+      sessionId: "s-chat-off",
+    });
+
+    // Gate precedes any chat-store read; only lane P runs and the focus hit never appears.
+    expect(getSession).not.toHaveBeenCalled();
+    expect(searchQueries.length).toBe(1);
+    expect(searchQueries).not.toContain(FOCUS_TEXT);
+    expect(cue).toContain("pnpm deploy:prod");
+    expect(cue).not.toContain("notes/deploy-ledger.md");
+  });
+
+  it("task-purpose CLI session (no chat link): no focus even when the flag is on", async () => {
+    const sessions = new Map<string, CliSession>([
+      ["s-task", makeRecord({ id: "s-task", purpose: "execute", chatSessionId: null })],
+    ]);
+    const getSession = vi
+      .spyOn(ChatStore.prototype, "getSession")
+      .mockResolvedValue({ memoryFocus: FOCUS_TEXT } as ChatSession);
+    const runtime = await buildRecallRuntime(sessions, async () =>
+      focusSettings({ experimentalFeatures: { chatFocus: true } }),
+    );
+
+    const cue = await runtime.bundle.memoryRecall!.recallForChatTurn({
+      topic: "zebraflame deploy",
+      sessionId: "s-task",
+    });
+
+    // A task session has no chatSessionId to resolve a focus from — the honest no-focus
+    // path, so the ChatStore is never consulted.
+    expect(getSession).not.toHaveBeenCalled();
+    expect(searchQueries.length).toBe(1);
+    expect(cue).not.toContain("notes/deploy-ledger.md");
   });
 });

@@ -33,6 +33,17 @@ export interface MemoryRecallChatTurnInput {
   sessionId: string;
   /** Fresh settings read for this call (absent → core defaults). */
   settings?: Partial<Settings> | null;
+  /**
+   * FNXC:RUFU172CliFocusLane 2026-08-31-19:41:
+   * RUFU-172: an already-gated per-conversation focus (the linked chat session's
+   * `memory_focus`, and only when `experimentalFeatures.chatFocus` is on) biases
+   * the proactive cue's second lane. The CALLER owns the gate — this seam forwards
+   * the value verbatim and the core's canonical resolver still collapses
+   * ""/whitespace/`all`/`*` to "no focus". Undefined (the overwhelmingly common
+   * case: task-purpose CLI sessions, flag off, unlinked session) keeps the
+   * whole-project single-search cue byte-identical.
+   */
+  focus?: string;
 }
 
 /**
@@ -48,6 +59,7 @@ export async function recallForChatTurn(input: MemoryRecallChatTurnInput): Promi
       // `null` settings read (a failed/cleared getter) to undefined.
       settings: input.settings ?? undefined,
       sessionKey: `cli:${input.sessionId}`,
+      focus: input.focus,
     });
   } catch {
     return "";

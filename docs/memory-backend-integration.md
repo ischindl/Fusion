@@ -68,20 +68,25 @@ Because Stash scopes by operator identity, two Fusion projects belonging to diff
 operators are naturally isolated, while a single operator's projects share the owner scope and
 are distinguishable by the discriminator tag.
 
-## 5. Per-conversation memory focus (read-time scoping)
+## 5. Per-conversation memory focus (read-time ranking bias)
 
 Fusion implements **conversation focus** as an opt-in feature. Enable
 `experimentalFeatures.chatFocus` in **Settings → Experimental Features** to show its composer
-control and apply its recall scope; the flag is default off, and persisted focus values are inert
+control and bias its proactive recall; the flag is default off, and persisted focus values are inert
 until it is enabled. The focus is persisted per chat session via the schema migration
 **`0059_chat_session_memory_focus.sql`** (`SCHEMA_BASELINE_VERSION` = `0059`), which adds a
 `memory_focus` column to the chat-session table.
 
 At read time, the memory topic / focus (the text an operator or model optimizes a conversation
-around) is applied as a scoping filter on recall, so search within a focused conversation does
-not surface unrelated project memory. The focus value is carried through the memory read path
-and used as a Stash search topic parameter. This is a **read-time scoping** behavior — it does
-not rewrite what is captured, only what a focused conversation recalls.
+around) is a **ranking bias, never a filter** (RUFU-172). The proactive per-turn recall cue runs
+two searches over the whole project: lane P (keywords derived from the current message/step) and,
+when a focus is active, lane T (the RAW focus text as the query). Lane T entries lead the cue and
+may take at most 60% of its 800-char budget, so whole-project memory always keeps its share —
+nothing is hidden. Clearing the focus (empty / `all` / `*`) restores the single-search cue byte for
+byte. The stale claim that the focus is a "Stash search topic parameter" performing read-time
+scoping is removed: RUFU-121 dropped the inert `&topic=` push-down (the Stash search route accepts
+`q` + `limit` only) and no backend filters by topic; the tool-level `topic` option remains a
+hint for topic-aware backends.
 
 > Note: `0049_chat_session_memory_focus.sql` is a clean-rebase-only artifact name and does **not**
 > exist on this target. Origin's `0049` remains `0049_fn_8864_agent_activity_events.sql`. The

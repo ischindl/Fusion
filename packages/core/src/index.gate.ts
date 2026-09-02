@@ -2025,6 +2025,7 @@ export {
   searchProjectMemory,
   getProjectMemory,
   buildProactiveMemoryCueBlock,
+  resolveMemorySearchTopic,
   resolveMemoryInstructionContext,
   type MemoryInstructionContext,
 } from "./memory/project-memory.js";
@@ -2598,6 +2599,7 @@ export {
   deriveRecallKeywords,
   __resetPerTurnRecallDedupForTests,
   PER_TURN_RECALL_CUE_MAX_CHARS,
+  PER_TURN_RECALL_LANE_T_SHARE_MAX_CHARS,
   PER_TURN_RECALL_SNIPPET_MAX_CHARS,
   PER_TURN_RECALL_TOPIC_MAX_CHARS,
   PER_TURN_RECALL_TOPK_DEFAULT,

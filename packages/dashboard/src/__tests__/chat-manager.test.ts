@@ -4819,4 +4819,51 @@ describe("ChatManager per-turn memory recall forwarding (RUFU-120 B.2)", () => {
     expect(capturedPromptOptions.sessionId).toBe("room:room-1");
     expect(capturedPromptOptions.settings).toEqual(RECALL_SETTINGS);
   });
+
+  /*
+  FNXC:RUFU172ChatFocusLane 2026-09-02-05:20:
+  RUFU-172 chat-lane production gate. The operator's persisted `chat_sessions.memory_focus`
+  must reach the PROACTIVE per-turn recall cue only while `experimentalFeatures.chatFocus`
+  is enabled — the same gate `createChatFusionToolset` applies — because a persisted focus
+  is inert by contract until the operator turns the flag on. Two regressions this seam
+  catches that the core/engine lane tests cannot: dropping the value (restores the RUFU-172
+  symptom — focus visible in the tool schema but ignored by the cue) and dropping or
+  inverting the gate (silently activates an operator-disabled experimental feature).
+  */
+  it("sendMessage forwards the session focus to the prompt builder only while chatFocus is enabled", async () => {
+    const withFlag = (chatFocus: boolean) =>
+      new ChatManager(
+        mockChatStore as any,
+        "/tmp/test",
+        mockAgentStore as any,
+        undefined,
+        async () => ({ ...RECALL_SETTINGS, experimentalFeatures: { chatFocus } }),
+      );
+
+    mockChatStore.getSession.mockReturnValue({
+      id: "chat-001",
+      agentId: "agent-001",
+      status: "active",
+      memoryFocus: "pamäťové hladiny LCM",
+    });
+
+    // Flag on: the persisted focus reaches the recall input as-is.
+    await withFlag(true).sendMessage("chat-001", "what changed in the recall cue");
+    expect(capturedPromptOptions).toBeDefined();
+    expect(capturedPromptOptions.focus).toBe("pamäťové hladiny LCM");
+
+    // Flag off: the persisted focus stays inert, so the cue keeps the whole-project path.
+    await withFlag(false).sendMessage("chat-001", "what changed in the recall cue");
+    expect(capturedPromptOptions.focus).toBeUndefined();
+
+    // Flag on but the focus is whitespace-only: no focus is forwarded (no empty lane-T query).
+    mockChatStore.getSession.mockReturnValue({
+      id: "chat-001",
+      agentId: "agent-001",
+      status: "active",
+      memoryFocus: "   ",
+    });
+    await withFlag(true).sendMessage("chat-001", "what changed in the recall cue");
+    expect(capturedPromptOptions.focus).toBeUndefined();
+  });
 });

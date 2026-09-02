@@ -6,6 +6,7 @@ import {
   PER_TURN_RECALL_CUE_MAX_CHARS,
   PER_TURN_RECALL_DEDUP_MAX_SESSIONS,
   PER_TURN_RECALL_DEDUP_MAX_SIGNATURES,
+  PER_TURN_RECALL_LANE_T_SHARE_MAX_CHARS,
   type PerTurnRecallOptions,
 } from "../memory/recall/per-turn-recall.js";
 import { MEMORY_PRE_STEERING_MARKER } from "../memory/memory-pre-steering.js";
@@ -52,6 +53,15 @@ function makeHit(path: string, lineStart: number, lineEnd: number, snippet: stri
 // Mutable per-test state for the score-filter fake.
 let fakeHits: MemorySearchResult[] = [];
 let searchCalls: Array<{ query: string; limit?: number }> = [];
+/*
+FNXC:RUFU172TwoLaneRecall 2026-08-31-19:41:
+Two-lane recall issues up to two backend searches (lane P = derived keywords, lane T = raw
+focus). The old single-array fake could not answer the two queries differently, so tests set
+`fakeSearch` to route a response by query text (or throw, to exercise lane-T failure isolation).
+Null keeps every existing single-lane test on the shared `fakeHits` path unchanged.
+*/
+type FakeSearchFn = (query: string, limit?: number) => MemorySearchResult[];
+let fakeSearch: FakeSearchFn | null = null;
 
 beforeAll(() => {
   const baseCapabilities = {
@@ -74,6 +84,7 @@ beforeAll(() => {
     write,
     search: async (_rootDir, opts) => {
       searchCalls.push(opts);
+      if (fakeSearch) return fakeSearch(opts.query, opts.limit);
       return fakeHits;
     },
   });
@@ -99,6 +110,7 @@ beforeAll(() => {
 beforeEach(() => {
   fakeHits = [];
   searchCalls = [];
+  fakeSearch = null;
   __resetPerTurnRecallDedupForTests();
 });
 
@@ -109,6 +121,7 @@ function call(topic: string, opts: Partial<PerTurnRecallOptions> = {}): Promise<
     sessionKey: opts.sessionKey ?? "chat:test-session",
     settings: opts.settings ?? makeSettings(),
     topK: opts.topK,
+    ...(opts.focus !== undefined ? { focus: opts.focus } : {}),
   });
 }
 
@@ -217,6 +230,19 @@ describe("silent skip contract", () => {
 
   it("returns '' and makes NO backend call for a stopword-only topic", async () => {
     const cue = await call("čo sme na sú ako");
+    expect(cue).toBe("");
+    expect(searchCalls).toHaveLength(0);
+  });
+
+  /*
+  FNXC:RUFU172FocusBias 2026-09-02-05:20:
+  RUFU-172 keeps the keyword gate authoritative: a focus is a RANKING input on an existing
+  recall turn, never a trigger for one. A blank/stopword-only topic must still short-circuit
+  BEFORE either lane is issued, so a focused conversation cannot start searching memory on
+  every no-content turn (which would also let lane T grow the cue past the keyword contract).
+  */
+  it("returns '' and makes NO backend call for a stopword-only topic even with an active focus", async () => {
+    const cue = await call("čo sme na sú ako", { focus: "pamäťové hladiny LCM" });
     expect(cue).toBe("");
     expect(searchCalls).toHaveLength(0);
   });
@@ -375,5 +401,232 @@ describe("dedup registry bounds", () => {
     // The newest signature (t63) is still retained → still deduped.
     fakeHits = [makeHit("m.md", 1, 2, `topic ${PER_TURN_RECALL_DEDUP_MAX_SIGNATURES - 1}`, 0.9)];
     expect(await call(`beta ${PER_TURN_RECALL_DEDUP_MAX_SIGNATURES - 1}`, { sessionKey: "one-session" })).toBe("");
+  });
+});
+
+/*
+FNXC:RUFU172TwoLaneRecall 2026-08-31-19:41:
+RUFU-172 two-lane focus-biased recall. A conversation focus biases ranking as a SECOND
+"lane T" search (raw focus text) that leads the merged cue; it is NEVER a corpus filter.
+These cases use the per-query `fakeSearch` seam (lane P = the derived keyword query
+"diskutovali lcm", lane T = the raw focus text) to assert the observable merge/ordering/
+budget contract. The no-focus path must stay byte-identical to RUFU-120.
+*/
+describe("two-lane focus-biased recall (RUFU-172)", () => {
+  const LANE_P_QUERY = "diskutovali lcm"; // deriveRecallKeywords(TOPIC).join(" ")
+
+  it("runs a single search with no focus (RUFU-120 path)", async () => {
+    fakeSearch = () => [makeHit("m.md", 1, 2, "hit", 0.9)];
+    await call(TOPIC);
+    expect(searchCalls).toHaveLength(1);
+    expect(searchCalls[0].query).toBe(LANE_P_QUERY);
+  });
+
+  it("focus='' collapses to a single search and a byte-identical no-focus cue", async () => {
+    fakeHits = [makeHit("m.md", 1, 2, "same hit", 0.9)];
+    const noFocus = await call(TOPIC, { sessionKey: "a" });
+    const emptyFocus = await call(TOPIC, { sessionKey: "b", focus: "" });
+    expect(emptyFocus).toBe(noFocus);
+    // The empty focus adds no second search.
+    expect(searchCalls.filter((c) => c.query === LANE_P_QUERY)).toHaveLength(2);
+    expect(searchCalls).toHaveLength(2); // 1 per call, no lane T on either
+  });
+
+  it("runs two searches when a focus is set, lane T querying the RAW focus text", async () => {
+    fakeSearch = (query) =>
+      query === LANE_P_QUERY ? [makeHit("p.md", 1, 2, "project hit", 0.9)] : [makeHit("t.md", 3, 4, "topic hit", 0.9)];
+    const cue = await call(TOPIC, { focus: "pamäťové hladiny" });
+    expect(searchCalls).toHaveLength(2);
+    expect(searchCalls[0].query).toBe(LANE_P_QUERY);
+    expect(searchCalls[1].query).toBe("pamäťové hladiny"); // diacritics + full phrase, not tokenized
+    // Lane T leads the merged cue.
+    const entries = entryLines(cue);
+    expect(entries[0]).toContain("t.md:3-4");
+    expect(entries[1]).toContain("p.md:1-2");
+  });
+
+  it("lane T hits lead and lane P survives (topic-first, never crowd-out)", async () => {
+    fakeSearch = (query) =>
+      query === LANE_P_QUERY
+        ? [makeHit("p1.md", 1, 2, "p one", 0.5), makeHit("p2.md", 1, 2, "p two", 0.4)]
+        : [makeHit("t1.md", 1, 2, "t one", 0.9), makeHit("t2.md", 1, 2, "t two", 0.8)];
+    const cue = await call(TOPIC, { focus: "focused" });
+    const entries = entryLines(cue);
+    // topK=3: lane T takes ≤topK-1=2 slots, lane P keeps ≥1.
+    expect(entries).toHaveLength(3);
+    expect(entries[0]).toContain("t1.md");
+    expect(entries[1]).toContain("t2.md");
+    expect(entries[2]).toContain("p1.md");
+    // topic-first ordering: both topic entries precede every project entry.
+    const firstProjectIdx = entries.findIndex((l) => l.includes("p1.md") || l.includes("p2.md"));
+    const lastTopicIdx = Math.max(...entries.map((l, i) => (l.includes("t1.md") || l.includes("t2.md") ? i : -1)));
+    expect(lastTopicIdx).toBeLessThan(firstProjectIdx);
+  });
+
+  it("de-dupes by (path, lineStart): a project hit already surfaced by lane T is dropped", async () => {
+    const shared = makeHit("shared.md", 42, 44, "shared snippet", 0.9);
+    fakeSearch = (query) =>
+      query === LANE_P_QUERY ? [shared, makeHit("p-only.md", 1, 2, "p only", 0.5)] : [shared];
+    const cue = await call(TOPIC, { focus: "focused" });
+    const occurrences = (cue.match(/shared\.md:42-44/g) ?? []).length;
+    expect(occurrences).toBe(1);
+    // lane T surfaced it, so it holds the lead slot.
+    expect(entryLines(cue)[0]).toContain("shared.md:42-44");
+  });
+
+  it("caps lane T at ≤60% of the budget, keeps ≥1 lane P line, and never truncates mid-line", async () => {
+    const big = "x".repeat(160);
+    fakeSearch = (query) =>
+      query === LANE_P_QUERY
+        ? [makeHit("p1.md", 1, 2, "short project hit", 0.5), makeHit("p2.md", 1, 2, "other project hit", 0.4)]
+        : [
+            makeHit("t1.md", 1, 2, big, 0.9),
+            makeHit("t2.md", 1, 2, big, 0.8),
+            makeHit("t3.md", 1, 2, big, 0.7),
+            makeHit("t4.md", 1, 2, big, 0.6),
+          ];
+    const cue = await call(TOPIC, { focus: "focused", topK: 4 });
+    expect(cue.length).toBeLessThanOrEqual(PER_TURN_RECALL_CUE_MAX_CHARS);
+    const entries = entryLines(cue);
+    // Lane T lines are the leading block; their combined length honors the ≤60% share.
+    const laneTEntries = entries.filter((l) => /`t\d+\.md:/.test(l));
+    const laneTChars = laneTEntries.reduce((sum, l) => sum + l.length, 0);
+    expect(laneTChars).toBeLessThanOrEqual(PER_TURN_RECALL_LANE_T_SHARE_MAX_CHARS);
+    // A lane P line survives even though lane T overshot its share.
+    expect(entries.some((l) => /`p\d+\.md:/.test(l))).toBe(true);
+    // Every snippet line is a whole numbered entry (the whole-entry budget never leaves a
+    // partial entry line behind).
+    for (const line of entries) {
+      expect(line).toMatch(/^\d+\. `[^`]+:\d+-\d+` — .+$/);
+    }
+  });
+
+  /*
+  FNXC:RUFU172LanePReservation 2026-09-01-21:56:
+  Production-shaped budget regression. The short-path fixtures above cannot catch this one:
+  with repo-length paths, snippet-capped entries, and a topic long enough to fill the header's
+  80-char topic cap, lane T fills its 60% share and the 800-char budget then drops WHOLE
+  TRAILING entries — which are lane P's. Before lane P's line was reserved inside the lane T
+  allowance, the focused cue emitted here was topic-only: the focus had silently become the
+  filter the operator asked against ("memory of the project, but aimed at the topic"). The
+  invariant is that whole-project memory keeps its reserved line whenever it fits the budget.
+  */
+  it("reserves lane P's line inside the 800-char budget when lane T fills its share (production-shaped entries)", async () => {
+    const longTopic = "Ahoj potrebujem aby si sa pozrel na tu konfiguraciu pamatovych hladin v tejto sekcii projektu";
+    const big = "x".repeat(160);
+    fakeSearch = (query) =>
+      query === "pamäťové hladiny"
+        ? [
+            makeHit("packages/core/src/memory/project-memory.ts", 12, 34, big, 0.9),
+            makeHit("packages/core/src/memory/recall/per-turn-recall.ts", 12, 34, big, 0.8),
+          ]
+        : [makeHit("packages/dashboard/src/chat.ts", 12, 34, big, 0.5)];
+
+    const cue = await call(longTopic, { focus: "pamäťové hladiny", sessionKey: "lane-p-reservation" });
+    const entries = entryLines(cue);
+    expect(cue.length).toBeLessThanOrEqual(PER_TURN_RECALL_CUE_MAX_CHARS);
+    // Topic hits still lead the cue…
+    expect(entries[0]).toContain("packages/core/src/memory/project-memory.ts:12-34");
+    // …but whole-project memory keeps its reserved line instead of being evicted by the budget.
+    expect(entries.some((line) => line.includes("packages/dashboard/src/chat.ts:12-34"))).toBe(true);
+  });
+
+  it("lane T search failure cannot suppress lane P", async () => {
+    fakeSearch = (query, limit) => {
+      if (query === LANE_P_QUERY) return [makeHit("p.md", 1, 2, "project hit survives", 0.9)];
+      throw new Error("lane T backend exploded");
+    };
+    const cue = await call(TOPIC, { focus: "unstable focus" });
+    expect(cue).not.toBe("");
+    expect(cue).toContain("p.md:1-2");
+    expect(cue).toContain("project hit survives");
+  });
+
+  /*
+  FNXC:RUFU172TwoLaneRecall 2026-08-31-21:49:
+  RUFU-172 spec case 4: lane T returning ZERO hits is the common topic-miss path and must
+  degrade to the byte-identical whole-project cue — the focus may bias ranking, never
+  remove the whole-project result set. Asserted against a live no-focus baseline call
+  (not a frozen string) so the two cue-building paths cannot drift.
+  */
+  it("lane T returning 0 hits degrades to the byte-identical no-focus cue", async () => {
+    fakeSearch = (query) => (query === LANE_P_QUERY ? [makeHit("p.md", 1, 2, "project hit", 0.9)] : []);
+    const focused = await call(TOPIC, { sessionKey: "t-empty", focus: "focused" });
+    const noFocus = await call(TOPIC, { sessionKey: "t-baseline" });
+    // Lane T did run (one extra search) but contributed nothing, so the merged cue
+    // must equal the no-focus cue byte-for-byte.
+    expect(searchCalls).toHaveLength(3); // focused: P+T, no-focus: P
+    expect(searchCalls.filter((c) => c.query !== LANE_P_QUERY)).toHaveLength(1);
+    expect(focused).toBe(noFocus);
+    expect(focused).toContain("p.md:1-2");
+  });
+
+  it("a rejected lane P search still honors the silent-skip contract even with a focus", async () => {
+    fakeSearch = (query) => {
+      if (query === LANE_P_QUERY) throw new Error("lane P exploded");
+      return [makeHit("t.md", 1, 2, "topic hit", 0.9)];
+    };
+    // Lane P rejection is today's "" contract — lane T does not substitute for a failed
+    // whole-project search.
+    const cue = await call(TOPIC, { focus: "focused" });
+    expect(cue).toBe("");
+  });
+
+  /*
+  FNXC:RUFU172LanePReservation 2026-09-01-22:29:
+  At topK=1 the crowd-out rule (lane T holds at most topK-1 slots when lane P has survivors)
+  gives lane T zero slots: the whole-project reservation outranks the topical bias. This pins
+  both halves — the cue never grows past topK, and the single line it does emit is the
+  project lane's, so a single-slot recall cannot be captured by the focus.
+  */
+  it("topK=1 with both lanes populated yields exactly one entry line (the lane P reservation holds the only slot)", async () => {
+    fakeSearch = (query) =>
+      query === LANE_P_QUERY ? [makeHit("p.md", 1, 2, "project", 0.9)] : [makeHit("t.md", 1, 2, "topic", 0.9)];
+    const cue = await call(TOPIC, { focus: "focused", topK: 1 });
+    const entries = entryLines(cue);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toContain("p.md:1-2");
+    // Both searches still ran (the focus is a query, not a switch on search count).
+    expect(searchCalls).toHaveLength(2);
+  });
+
+  it("dedup: same topic + focus twice suppresses the second cue; a changed focus re-emits", async () => {
+    fakeSearch = (query) =>
+      query === LANE_P_QUERY
+        ? [makeHit("p.md", 1, 2, "project hit", 0.9)]
+        : query === "focus one"
+          ? [makeHit("t1.md", 1, 2, "topic one", 0.9)]
+          : [makeHit("t2.md", 1, 2, "topic two", 0.9)];
+    const first = await call(TOPIC, { focus: "focus one", sessionKey: "dedup-sess" });
+    expect(first).not.toBe("");
+    // Same topic + same focus: identical cue text → deduped.
+    const repeat = await call(TOPIC, { focus: "focus one", sessionKey: "dedup-sess" });
+    expect(repeat).toBe("");
+    // Same topic + CHANGED focus: different cue text → a fresh cue (signature moved).
+    const changed = await call(TOPIC, { focus: "focus two", sessionKey: "dedup-sess" });
+    expect(changed).not.toBe("");
+    expect(changed).toContain("t2.md");
+  });
+
+  it("same topic, focus cleared, returns to the whole-project form (no lane T, P-only cue)", async () => {
+    fakeSearch = (query) =>
+      query === LANE_P_QUERY ? [makeHit("p.md", 1, 2, "project hit", 0.9)] : [makeHit("t.md", 1, 2, "topic hit", 0.9)];
+    const focused = await call(TOPIC, { focus: "some focus", sessionKey: "s" });
+    expect(focused).toContain("t.md");
+    const cleared = await call(TOPIC, { focus: "all", sessionKey: "s" });
+    // 'all' resolves to no focus → single search, project-only cue, and it differs from the
+    // focused cue so the ledger re-emits it.
+    expect(cleared).not.toBe(focused);
+    expect(cleared).not.toContain("t.md");
+    expect(cleared).toContain("p.md:1-2");
+  });
+
+  it("keeps every header/no-focus invariant when the focus is an all/* sentinel", async () => {
+    fakeSearch = () => [makeHit("m.md", 1, 2, "hit", 0.9)];
+    const noFocus = await call(TOPIC, { sessionKey: "n1" });
+    for (const sentinel of ["all", "*", "   "]) {
+      const c = await call(TOPIC, { sessionKey: `n-${sentinel}`, focus: sentinel });
+      expect(c).toBe(noFocus);
+    }
   });
 });
