@@ -14,6 +14,7 @@
 export type { PlannerOverseerState, PlannerOverseerRuntimeSnapshot } from "./planner/planner-overseer-state.js";
 export type { ExecutorEscalationTarget, InReviewStallCode, InReviewStallSignal, ProviderErrorClassification } from "./tasks/in-review-stall.js";
 export type { InReviewStalledCode, InReviewStalledSignal } from "./tasks/in-review-stalled.js";
+export type { ReviewBypassTarget, ReviewBypassTargetKind } from "./merge/review-bypass-target.js";
 export type { StalePausedReviewCode, StalePausedReviewSignal } from "./tasks/stale-paused-review.js";
 export type { StalePausedTodoCode, StalePausedTodoSignal } from "./tasks/stale-paused-todo.js";
 export type { StalledReviewSignal } from "./tasks/stalled-review-detector.js";

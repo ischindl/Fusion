@@ -99,6 +99,16 @@ export default defineConfig({
       "app:taskDetail.refine.btn",
       "app:taskDetail.retry.btn",
       "app:taskDetail.bypassReview.btn",
+      /*
+      FNXC:ReviewLaneBypass 2026-09-03-13:05 (RUFU-179):
+      `btnUnrun` is the second bypass button label and reaches the scanner through the SAME unbound
+      `TFunction<"app">` parameter as `btn` (both are composed in `TaskContextMenu.tsx`), so without its own
+      pin the next `extract` prunes `app:taskDetail.bypassReview.btnUnrun` and the unrun-gate button silently
+      reverts to its inline English default for every non-English operator — RUFU-176's measured failure mode.
+      `promptMessageUnrun`/`successUnrun` are deliberately NOT listed: their call site binds `app`, proven by
+      the `promptMessage`/`success` siblings living only in `app.json` (no `common.json` copy).
+      */
+      "app:taskDetail.bypassReview.btnUnrun",
       "app:board.rejection.unplannedForExecution",
       "app:documents.noArtifactPreview",
       "app:app.backendError.failedFetch",

@@ -3504,19 +3504,34 @@ export function TaskDetailContent({
   */
   const handleBypassReview = useCallback(() => {
     if (!onBypassReview) return;
+    /*
+    FNXC:ReviewLaneBypass 2026-09-03-13:15 (RUFU-179):
+    The prompt and toast name the target the server actually offered: kind "failed" rewrites a
+    failed gate's verdict, kind "absent" records an audited-operator approval for a required gate
+    that never ran. These are different operator decisions, so the audit-reason prompt says which
+    one is being made rather than always claiming a "failed" bypass.
+    */
+    const unrunGate = task.reviewBypass?.kind === "absent";
     const reason = window.prompt(
-      t("taskDetail.bypassReview.promptMessage", "Reason for bypassing the failed pre-merge review step (required, audit-logged):"),
+      unrunGate
+        ? t("taskDetail.bypassReview.promptMessageUnrun", "Reason for bypassing the review gate that never ran (required, audit-logged):")
+        : t("taskDetail.bypassReview.promptMessage", "Reason for bypassing the failed pre-merge review step (required, audit-logged):"),
     );
     if (!reason || !reason.trim()) return;
     onBypassReview(task.id, reason.trim())
       .then((updated) => {
         onTaskUpdated?.(updated);
-        addToast(t("taskDetail.bypassReview.success", "Bypassed failed review lane for {{id}}", { id: task.id }), "success");
+        addToast(
+          unrunGate
+            ? t("taskDetail.bypassReview.successUnrun", "Bypassed unrun review gate for {{id}}", { id: task.id })
+            : t("taskDetail.bypassReview.success", "Bypassed failed review lane for {{id}}", { id: task.id }),
+          "success",
+        );
       })
       .catch((err) => {
         addToast(getErrorMessage(err), "error");
       });
-  }, [task.id, onBypassReview, onTaskUpdated, addToast, t]);
+  }, [task.id, task.reviewBypass?.kind, onBypassReview, onTaskUpdated, addToast, t]);
 
   /*
   FNXC:AIMergeReviewReconciliation 2026-08-20-22:14:

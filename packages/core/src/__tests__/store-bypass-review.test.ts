@@ -6,6 +6,13 @@ import {
   type SharedPgTaskStoreHarness,
 } from "../__test-utils__/pg-test-harness.js";
 import { queryRunAuditEvents } from "../task-store/async/async-audit.js";
+import {
+  getTaskMergeBlocker,
+  isPreMergeStepsNotRunBlocker,
+  PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
+} from "../merge/task-merge.js";
+import { resolveRequiredPreMergeStepIds } from "../merge/required-pre-merge-steps.js";
+import { BUILTIN_CODING_WORKFLOW_IR } from "../workflows/builtin-coding-workflow-ir.js";
 
 /*
  * FNXC:ReviewLaneBypass 2026-07-09-00:00:
@@ -22,8 +29,20 @@ import { queryRunAuditEvents } from "../task-store/async/async-audit.js";
  */
 
 pgDescribe("TaskStore.bypassFailedPreMergeReviewStep", () => {
+  /*
+  FNXC:ReviewLaneBypass 2026-09-03-13:57 (RUFU-179):
+  The harness is project-BOUND now because FN-227's completion-lane Patchnode capture (2026-08-28)
+  intentionally aborts any move into `done` on a store with no project partition — "An unbound
+  writer must fail this transaction instead of manufacturing a legacy project id". The FN-BYP-007
+  autoMerge:false test performs exactly such a move (bypass must clear the merge blocker while a
+  later MANUAL move to done succeeds), so on the old project-agnostic ("") harness the fixture's
+  own move aborted and the test was deterministically red on main. Binding the partition states the
+  fixture's real intent (FN-227 behavior, unchanged assertions); every write and read here shares
+  one partition, so partition-scoped reads (run-audit, config re-seed) stay consistent.
+  */
   const h: SharedPgTaskStoreHarness = createSharedPgTaskStoreTestHarness({
     prefix: "fusion_bypass_review",
+    projectId: "proj_bypass_review",
   });
 
   beforeAll(h.beforeAll);
@@ -159,6 +178,78 @@ pgDescribe("TaskStore.bypassFailedPreMergeReviewStep", () => {
       bypassedBy: "operator-absent",
     });
     expect(result?.verdict).toBeUndefined();
+  });
+
+  /*
+  FNXC:ReviewLaneBypass 2026-09-03-12:40 (RUFU-179):
+  THE SANE-387 SYMPTOM END TO END. The case above proves the rewrite SHAPE; this one proves the
+  operator-visible CONSEQUENCE — the card's merge blocker is the not-run sentence before the bypass
+  and gone after it. That direction is the whole defect: the store accepted this bypass since
+  FN-158, but no UI surface offered it, so the sentence stayed on the card until an operator typed
+  the CLI/HTTP call by hand. `enabledWorkflowSteps: ["plan-review"]` pins the required set to a
+  single gate (the explicit list overrides the IR's default-on code-review group), so the assertion
+  proves the bypass clears THE blocker rather than merely adding one skipped row beside two others.
+  */
+  it("clears the not-run merge blocker when the only gate never ran (SANE-387 shape)", async () => {
+    await seedInReviewTask("FN-BYP-ABSENT-BLOCK", { workflowStepResults: [], workflowId: "builtin:coding" });
+    /*
+    "Blocked SOLELY by the unrun gate": the hybrid step storage re-derives plan steps from the
+    task's PROMPT.md on every read, so the fixture marks those steps done (the honest review-lane
+    shape — implementation finished, plan complete) instead of clearing the array, which would only
+    mark the plan "not parsed yet" and re-hydrate pending steps (see FNXC:HybridStepStorage in
+    task-update.ts). The explicit enabled list pins the required gate set to plan-review alone.
+    */
+    const seededTask = await store().getTask("FN-BYP-ABSENT-BLOCK");
+    await store().updateTask("FN-BYP-ABSENT-BLOCK", {
+      enabledWorkflowSteps: ["plan-review"],
+      steps: (seededTask.steps ?? []).map((step) => ({ ...step, status: "done" as const })),
+    });
+
+    const before = await store().getTask("FN-BYP-ABSENT-BLOCK");
+    // Merge doors resolve the required set exactly this way (moves.ts), so the fixture and the
+    // production question use one resolver instead of a hand-copied set that could drift.
+    const required = resolveRequiredPreMergeStepIds(BUILTIN_CODING_WORKFLOW_IR, before.enabledWorkflowSteps, before);
+    expect([...required]).toEqual(["plan-review"]);
+
+    const beforeBlocker = getTaskMergeBlocker(before, { requiredPreMergeStepIds: required });
+    expect(beforeBlocker).toBe(PRE_MERGE_STEPS_NOT_RUN_BLOCKER);
+
+    await store().bypassFailedPreMergeReviewStep("FN-BYP-ABSENT-BLOCK", {
+      reason: "gate never dispatched; operator releases the card",
+      actor: "operator-block",
+    });
+
+    const after = await store().getTask("FN-BYP-ABSENT-BLOCK");
+    const afterBlocker = getTaskMergeBlocker(after, { requiredPreMergeStepIds: required });
+    expect(afterBlocker).toBeUndefined();
+    expect(isPreMergeStepsNotRunBlocker(afterBlocker)).toBe(false);
+    // The skipped carrier records the operator decision; it must never read as a reviewer approval.
+    const skipped = after.workflowStepResults?.find((entry) => entry.workflowStepId === "plan-review");
+    expect(skipped?.verdict).toBeUndefined();
+  });
+
+  /*
+  FNXC:ReviewLaneBypass 2026-09-03-12:40 (RUFU-179):
+  A `pending` result counts as PRESENT for target selection. A gate that is running is not a gate
+  that never ran, and offering to skip it mid-flight would let an operator bypass past a review in
+  progress — the derivation classifies it as neither kind, so the store refuses with the established
+  generic sentence while the FN-8492/STAS-032 resume seam remains the route for a wedged `pending`.
+  */
+  it("rejects when the only required gate has a pending (in-flight) result", async () => {
+    await seedInReviewTask("FN-BYP-PENDING", { workflowStepResults: [], workflowId: "builtin:coding" });
+    await store().updateTask("FN-BYP-PENDING", { enabledWorkflowSteps: ["plan-review"] });
+    await store().updateTask("FN-BYP-PENDING", {
+      workflowStepResults: [{
+        workflowStepId: "plan-review",
+        workflowStepName: "Plan Review",
+        phase: "pre-merge",
+        status: "pending",
+      }],
+    });
+
+    await expect(
+      store().bypassFailedPreMergeReviewStep("FN-BYP-PENDING", { reason: "x", actor: "operator" }),
+    ).rejects.toThrow(/no failed pre-merge review step/);
   });
 
   it("rejects when there is no failed or enabled resultless pre-merge step", async () => {

@@ -8819,7 +8819,10 @@
     "bypassReview": {
       "btn": "Omitir revisión fallida",
       "promptMessage": "Motivo para omitir el paso de revisión previo a la fusión fallido (obligatorio, se registra en auditoría):",
-      "success": "Revisión fallida omitida para {{id}}"
+      "success": "Revisión fallida omitida para {{id}}",
+      "btnUnrun": "Omitir barrera de revisión no ejecutada",
+      "promptMessageUnrun": "Motivo para omitir la barrera de revisión que nunca se ejecutó (obligatorio, se registra en auditoría):",
+      "successUnrun": "Barrera de revisión no ejecutada omitida para {{id}}"
     },
     "cacheBreakdown": "(lectura {{read}} / escritura {{write}} / entrada {{input}})",
     "cacheHitRatio": "Tasa de aciertos de caché:",

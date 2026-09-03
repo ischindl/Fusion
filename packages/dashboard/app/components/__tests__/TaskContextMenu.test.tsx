@@ -368,3 +368,117 @@ describe("pre-execution hold resolves traits, not the column's name", () => {
     expect(forColumn("todo")).not.toContain("plan");
   });
 });
+
+/*
+FNXC:ReviewLaneBypass 2026-09-03-13:15 (RUFU-179):
+The bypass item renders from the server-derived `task.reviewBypass` capability — hydrated by the
+same `deriveReviewBypassTarget` the store's `bypassFailedPreMergeReviewStep` applies to itself —
+not from the deleted local failed-result predicate. This pins: both kinds label by kind; the
+capability's ABSENCE hides the item even when a failed result still sits in the payload (the store's
+paused/lane refusals now propagate to the menu); and the client lane-belt drops a stale capability
+on a card that left the review lane.
+
+The tone is asserted as actionable because `tone: "note"` is the NON-interactive style: it renders a
+`<span role="note">` and `selectAction` short-circuits, which is how FN-7720's affordance shipped
+dead. A model-level tone assertion plus the render-level click below are what keep it reachable.
+*/
+describe("bypass-review renders from the server capability, not a local predicate", () => {
+  const failedTarget = { kind: "failed", workflowStepId: "code-review", workflowStepName: "Code Review" };
+  const unrunTarget = { kind: "absent", workflowStepId: "plan-review", workflowStepName: "plan-review" };
+
+  const bypassItem = (task: Task) =>
+    buildTaskActionMenuModel({ task, t, onBypassReview: vi.fn() }).actions.find((a) => a.id === "bypass-review");
+
+  it("labels the verdict rewrite with the failed copy and stays actionable", () => {
+    expect(bypassItem(makeTask({ column: "in-review", reviewBypass: failedTarget }))).toMatchObject({
+      label: "Bypass failed review",
+      tone: "default",
+    });
+  });
+
+  it("labels the unrun-gate approval with the unrun copy and stays actionable", () => {
+    expect(bypassItem(makeTask({ column: "in-review", reviewBypass: unrunTarget }))).toMatchObject({
+      label: "Bypass unrun review gate",
+      tone: "default",
+    });
+  });
+
+  /*
+  FNXC:ReviewLaneBypass 2026-09-03-12:58 (RUFU-179):
+  Render-level activation for every host of this shared component (board card menu, list view, detail
+  Actions menu, right dock). A descriptor that carries onSelect but renders as a note span is the
+  dead-affordance shape this task exists to eliminate, so the click — not just the model — is pinned.
+  */
+  it("activates the rendered item so every host can fire the bypass", () => {
+    const onBypassReview = vi.fn();
+    const { actions } = buildTaskActionMenuModel({
+      task: makeTask({ column: "in-review", reviewBypass: unrunTarget }),
+      t,
+      onBypassReview,
+    });
+    render(<TaskContextMenu actions={actions} />);
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Bypass unrun review gate" }));
+
+    expect(onBypassReview).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("note", { name: /Bypass/ })).not.toBeInTheDocument();
+  });
+
+  it("hides the item when the server withheld the capability, even with a failed result in the payload", () => {
+    /*
+    The flipped shape: the old `some(failed)` predicate would have rendered here even for a paused
+    card the store refuses. The server answer is the only authority, so a payload with results but
+    no capability means "the store would say no".
+    */
+    const task = makeTask({
+      column: "in-review",
+      workflowStepResults: [
+        { workflowStepId: "code-review", workflowStepName: "Code Review", status: "failed", phase: "pre-merge" },
+      ] as Task["workflowStepResults"],
+    });
+    expect(bypassItem(task)).toBeUndefined();
+  });
+
+  it("drops a stale capability on a card that left the review lane (render-time lane belt)", () => {
+    expect(bypassItem(makeTask({ column: "in-progress", reviewBypass: failedTarget }))).toBeUndefined();
+  });
+
+  /*
+  FNXC:ReviewLaneBypass 2026-09-03-15:11 (RUFU-179 code-review remediation):
+  The belt must admit EVERY lane the store's `resolveReviewBypassLanes` admits —
+  `mergeOrchestration ∪ mergeBlocker ∪ humanReview` (#2718). `isReviewColumnRole` answers only the
+  latter two, so on a board whose review orchestration lives on a mergeOrchestration-only lane the
+  store accepted the bypass while the menu stayed silent: the "API accepts, menu silent" half of the
+  dead-affordance class RUFU-179 deletes. The WIP-lane sibling is the non-vacuous control — it proves
+  the widened belt still suppresses a stale capability on a card that really left review, not that the
+  gate stopped suppressing anything.
+  */
+  it("offers the capability on a mergeOrchestration-only review lane the store admits", () => {
+    const item = buildTaskActionMenuModel({
+      task: makeTask({ column: "merging", reviewBypass: unrunTarget }),
+      t,
+      currentColumnFlags: { mergeOrchestration: true },
+      onBypassReview: vi.fn(),
+    }).actions.find((a) => a.id === "bypass-review");
+    expect(item).toMatchObject({ label: "Bypass unrun review gate", tone: "default" });
+  });
+
+  it("still drops a stale capability on a flagged WIP lane (belt is widened, not disabled)", () => {
+    expect(
+      buildTaskActionMenuModel({
+        task: makeTask({ column: "building", reviewBypass: failedTarget }),
+        t,
+        currentColumnFlags: { countsTowardWip: true },
+        onBypassReview: vi.fn(),
+      }).actions.find((a) => a.id === "bypass-review"),
+    ).toBeUndefined();
+  });
+
+  it("renders nothing when the host did not wire a bypass handler", () => {
+    const { actions } = buildTaskActionMenuModel({
+      task: makeTask({ column: "in-review", reviewBypass: failedTarget }),
+      t,
+    });
+    expect(actions.map((a) => a.id)).not.toContain("bypass-review");
+  });
+});

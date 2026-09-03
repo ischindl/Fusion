@@ -2,8 +2,8 @@ import "./TaskContextMenu.css";
 import type { KeyboardEvent, PointerEvent as ReactPointerEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { TFunction } from "i18next";
-import type { ColumnId, Task, TaskDetail, WorkflowStepResult } from "@fusion/core";
-import { isReviewColumnRole } from "../utils/columnRoles";
+import type { ColumnId, Task, TaskDetail } from "@fusion/core";
+
 
 /*
 FNXC:TaskRecoveryVocabulary 2026-08-28-00:38:
@@ -12,21 +12,18 @@ in place; Reset abandons task state; Delete removes the card.
 */
 
 /*
-FNXC:ReviewLaneBypass 2026-07-09-00:00:
-Dashboard app code only imports TYPES from @fusion/core (Vite aliases
-"@fusion/core" straight to packages/core/src/types.ts to avoid bundling the
-full core runtime into the client) — see vite.config.ts. So the bypass
-affordance's failed-pre-merge-step selection predicate is duplicated here in
-miniature rather than imported from packages/core/src/task-merge.ts's
-getLatestFailedPreMergeReviewStep. Keep this in lockstep with that function
-and self-healing.ts's latestFailedPreMergeStep (FN-7720): most-recent
-phase!=="post-merge" result with status==="failed".
+FNXC:ReviewLaneBypass 2026-09-03-13:15 (RUFU-179):
+This used to hold a miniature duplicate of core's getLatestFailedPreMergeReviewStep — dashboard app
+code imports TYPES only from @fusion/core (Vite aliases it to packages/core/src/types.ts to avoid
+bundling the core runtime into the client), so the selection function was not importable here and
+"keep this in lockstep" was the only enforcement. REMOVED: the affordance now renders from the
+server-derived `task.reviewBypass` capability, hydrated on every read path by the SAME
+`deriveReviewBypassTarget` the store's `bypassFailedPreMergeReviewStep` applies to itself. The
+duplicate drifted in both directions: its `some(failed)` rule offered the item on a paused card the
+store refuses, and stayed silent for a required gate that NEVER RAN — the stranded-card shape this
+task fixes. Server answers, UI renders; a stale payload costs at most one poll cycle, which is
+cheaper than a second selection authority that can disagree with the store.
 */
-function hasFailedPreMergeReviewStep(task: Pick<Task, "workflowStepResults">): boolean {
-  return (task.workflowStepResults ?? []).some(
-    (result: WorkflowStepResult) => (result.phase || "pre-merge") === "pre-merge" && result.status === "failed",
-  );
-}
 
 export type TaskMenuActionTone = "default" | "danger" | "note";
 
@@ -63,6 +60,13 @@ export interface TaskContextMenuColumnFlags {
   manualIntake?: boolean;
   mergeBlocker?: boolean;
   humanReview?: boolean;
+  /*
+  FNXC:ReviewLaneBypass 2026-09-03-15:11 (RUFU-179 code-review remediation):
+  The third review role. The server always sent it (`resolveColumnFlags` emits every declared trait,
+  and `BoardWorkflowColumnFlags` declares it) but this client mirror never read it, which is how the
+  bypass belt drifted narrower than the store's lane rule — see `isReviewBypassLaneColumn`.
+  */
+  mergeOrchestration?: boolean;
   /* FNXC:WorkflowResolvedColumns 2026-07-27-15:30 (U10 / R8): surfaced so column-trait consumers
      can tell an implementation lane from a pre-implementation one without naming `in-progress`. */
   countsTowardWip?: boolean;
@@ -151,6 +155,35 @@ Same fix belongs here, but it is a BEHAVIOR CHANGE and out of scope for a conver
 */
 function isReviewColumn(column: string, flags?: TaskContextMenuColumnFlags): boolean {
   return column === "in-review" || flags?.mergeBlocker === true || flags?.humanReview === true;
+}
+
+/*
+FNXC:ReviewLaneBypass 2026-09-03-15:11 (RUFU-179 code-review remediation):
+THE BYPASS BELT MUST MATCH THE STORE'S LANE SET, NOT THE GENERIC REVIEW ROLE.
+
+`isReviewColumnRole` answers `mergeBlocker ∪ humanReview`; the store's acceptance gate
+(`resolveReviewBypassLanes` → `resolveReviewColumns`) admits `mergeOrchestration ∪ mergeBlocker ∪
+humanReview` — every lane where review happens (#2718: this guard only refuses or permits an
+operator action and moves nothing, so the broad set is right there). On a board hosting review
+orchestration on a `mergeOrchestration`-only lane, the store ACCEPTED a bypass while this belt HID
+the menu item — the "API accepts, menu silent" half of the exact dead-affordance class RUFU-179
+exists to delete, and the split its Surface Enumeration ordered this guard and the store to "keep
+agreeing".
+
+Why a bypass-local predicate instead of widening `isReviewColumnRole`: that helper has 13 other
+callers (stall copy, diff stats, PR feedback, worktree grouping, …) which ask the narrower "is this
+card in review?" question; redefining it for the bypass would silently change what a merge/PR chip
+or a stall banner thinks a lane is, and the remediation scope forbids unrelated behavior changes.
+The tri-role shape already exists once on this side of the wire — `useBlockerFanout`'s review
+predicate uses the same union — so this mirrors an established local convention, not a new taxonomy.
+
+Flags-first with the legacy `in-review` id ONLY as the no-metadata fallback (first paint / stranded
+card), unlike `isReviewColumn` above whose id is a flagged unconditional disjunct — #2664's shape.
+*/
+function isReviewBypassLaneColumn(flags: TaskContextMenuColumnFlags | undefined, column: string): boolean {
+  return flags
+    ? flags.mergeOrchestration === true || flags.mergeBlocker === true || flags.humanReview === true
+    : column === "in-review";
 }
 
 /*
@@ -292,25 +325,61 @@ export function buildTaskActionMenuModel(options: BuildTaskActionMenuModelOption
 
   /*
   FNXC:ReviewLaneBypass 2026-07-09-00:00:
-  Policy-gated escape hatch (FN-7720) for a card stranded in `in-review`
-  solely by a failed pre-merge review step (leading real-world cause:
-  Runfusion/Fusion#1946's no-verdict dispatch defect). Shown only when the
-  task is `in-review` and carries a failed pre-merge `WorkflowStepResult`, so
-  it never renders as an empty/dead affordance for tasks blocked by other
+  Policy-gated escape hatch (FN-7720) for a card stranded in the review lane by a pre-merge gate
+  the operator can honestly clear (leading real-world cause: Runfusion/Fusion#1946's no-verdict
+  dispatch defect), so it never renders as an empty/dead affordance for tasks blocked by other
   reasons or already recovered.
+
+  FNXC:ReviewLaneBypass 2026-09-03-13:15 (RUFU-179):
+  The gate is now the server-derived capability itself. `kind: "failed"` rewrites the latest failed
+  gate's verdict; `kind: "absent"` records an audited-operator approval for a required gate that
+  never ran. Lane membership, pause state, and gate state are decided once by the store's own
+  derivation and shipped on every read path, so the item can neither appear on a card the store
+  would refuse nor hide on the unrun-gate shape. Copy branches on kind.
+
+  FNXC:ReviewLaneBypass 2026-09-03-12:58 (RUFU-179):
+  The tone must stay actionable (`"default"`, never `"note"`). `tone: "note"` is the informational
+  style (see `paused-by-agent` above): it renders a non-interactive `<span role="note">` and
+  `selectAction` returns early for it, so the bypass item shipped by FN-7720 could never fire its own
+  `onSelect` on ANY host — the affordance rendered as dead text, which is the same operator-visible
+  failure SANE-387 reported (a merge-blocked card with no reachable escape from the GUI). Model-level
+  assertions cannot catch this; only a click on the rendered item can, which is why
+  `TaskDetailModal.bypass-review.test.tsx` and the render-level case in `TaskContextMenu.test.tsx`
+  activate it.
   */
   /*
   FNXC:WorkflowResolvedColumns 2026-07-30-23:50 (batch-dashboard-app):
   REVIEW role, resolved from `currentColumnFlags` — which this function already receives and already
   uses for the archived check ~15 lines up. Keyed on the literal, the "Bypass failed review" action
-  never appeared on a renamed board, so an operator with a genuinely failed pre-merge review step had
-  no way to clear it from the menu and the card stayed merge-blocked with no affordance.
+  never appeared on a renamed board. The server capability already encodes the lane; this client
+  lane-gate stays as the belt for a payload that predates a move between the last poll and this
+  render.
   */
-  if (hasBypassReviewHandler && isReviewColumnRole(currentColumnFlags, task.column) && hasFailedPreMergeReviewStep(task)) {
+  /*
+  FNXC:WorkflowResolvedColumns 2026-07-30-23:50 (batch-dashboard-app):
+  REVIEW role, resolved from `currentColumnFlags` — which this function already receives and already
+  uses for the archived check ~15 lines up. Keyed on the literal, the "Bypass failed review" action
+  never appeared on a renamed board. The server capability already encodes the lane; this client
+  lane-gate stays as the belt for a payload that predates a move between the last poll and this
+  render.
+
+  FNXC:ReviewLaneBypass 2026-09-03-15:11 (RUFU-179 code-review remediation):
+  The belt switched from `isReviewColumnRole` (mergeBlocker ∪ humanReview) to `isReviewBypassLaneColumn`
+  (plus mergeOrchestration) so it admits EXACTLY the lanes the store's `resolveReviewBypassLanes`
+  admits. A mergeOrchestration-only review lane previously got a server-derived capability that this
+  gate hid — the store would have accepted the bypass, so hiding it re-created the unreachable-escape
+  bug SANE-387 reported, from the other side. Why the fix is local here rather than a widening of the
+  shared role helper is recorded at the predicate.
+  */
+  const bypassTarget = task.reviewBypass;
+  if (hasBypassReviewHandler && isReviewBypassLaneColumn(currentColumnFlags, task.column) && bypassTarget) {
     actions.push({
       id: "bypass-review",
-      label: t("taskDetail.bypassReview.btn", "Bypass failed review"),
-      tone: "note",
+      label:
+        bypassTarget.kind === "absent"
+          ? t("taskDetail.bypassReview.btnUnrun", "Bypass unrun review gate")
+          : t("taskDetail.bypassReview.btn", "Bypass failed review"),
+      tone: "default",
       onSelect: options.onBypassReview,
     });
   }

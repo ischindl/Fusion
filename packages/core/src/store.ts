@@ -108,6 +108,7 @@ import { CentralCore } from "./central/central-core.js";
 import { SecretsStore } from "./secrets/secrets-store.js";
 import { getLatestFailedPreMergeReviewStep, findPendingPreMergeStep } from "./merge/task-merge.js";
 import { resolveRequiredPreMergeStepIds } from "./merge/required-pre-merge-steps.js";
+import { deriveReviewBypassTarget, resolveReviewBypassLanes } from "./merge/review-bypass-target.js";
 import { createLogger } from "./process/logger.js";
 import { type UsageEventInput } from "./tasks/usage-events.js";
 import { assertNotLinkedWorktreeOfExistingProject, assertProjectRootDir } from "./central/project-root-guard.js";
@@ -2460,9 +2461,14 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       message "must be in a review lane".
       */
       const reviewIr = await resolveWorkflowIrForTask(this, task.id).catch(() => undefined);
-      const reviewColumns = reviewIr === undefined || !declaresAnyLifecycleTrait(reviewIr)
-        ? ["in-review"]
-        : resolveReviewColumns(reviewIr);
+      /*
+      FNXC:ReviewLaneBypass 2026-09-03-10:07 (RUFU-179):
+      The lane rule itself moved into `resolveReviewBypassLanes` so the read-path hydration that feeds
+      the dashboard's affordance resolves the SAME set. The two used to diverge in the risky direction
+      by accident: `reads.ts`'s diagnostic helper always unions the legacy `"in-review"` id, and reusing
+      that here (or in the UI) would admit a renamed lane this guard then refuses — a dead affordance.
+      */
+      const reviewColumns = resolveReviewBypassLanes(reviewIr);
       if (!reviewColumns.includes(task.column)) {
         const named = reviewColumns.length > 0 ? reviewColumns.map((c: string) => `'${c}'`).join(" or ") : "a review lane";
         throw new Error(`Cannot bypass review lane for ${id}: task is in '${task.column}', must be in ${named}`);
@@ -2473,21 +2479,43 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
 
       const results = task.workflowStepResults ?? [];
       const failedTarget = getLatestFailedPreMergeReviewStep(task);
+      /*
+      The required-gate set is only consulted when NO failed result already names the target, which
+      keeps the pre-RUFU-179 laziness exactly: a failed-target bypass never pays for a second IR read
+      and an unresolvable IR still propagates (rather than degrading to the generic refusal below).
+      */
       const reviewIrForBypass = failedTarget
         ? undefined
         : await resolveWorkflowIrForTask(this, task.id);
-      const absentStepId = reviewIrForBypass
-        ? [...resolveRequiredPreMergeStepIds(reviewIrForBypass, task.enabledWorkflowSteps, task)]
-          .find((workflowStepId) => !results.some((result) => result.workflowStepId === workflowStepId))
-        : undefined;
-      if (!failedTarget && !absentStepId) {
+      const requiredStepIds = reviewIrForBypass
+        ? resolveRequiredPreMergeStepIds(reviewIrForBypass, task.enabledWorkflowSteps, task)
+        : new Set<string>();
+      /*
+      FNXC:ReviewLaneBypass 2026-09-03-10:07 (RUFU-179):
+      THE TARGET IS NOW CHOSEN BY THE SAME PURE DERIVATION THE READ PATHS HYDRATE, and that is the
+      defect this method existed in only from the other side. FN-158 widened THIS method to accept a
+      card whose enabled required pre-merge gate never ran, but the dashboard's own predicate was left
+      asking `status === "failed"`, so the operator of a card stranded by
+      "task has enabled pre-merge workflow steps that never ran" (reported downstream as SANE-387) had
+      no menu item while `POST /tasks/:id/bypass-review` succeeded for that exact card. Because the AI
+      lanes are forbidden from this tool, the closed GUI was the whole escape hatch.
+
+      Routing BOTH sides through `deriveReviewBypassTarget` is what makes "the menu offered it" and
+      "this method accepted it" one fact instead of two implementations that can drift again. The
+      `paused` and lane refusals above stay as explicit throws because their messages are operator-
+      specific and byte-frozen by `store-bypass-review.test.ts`; they are also checked earlier than
+      the derivation does, which is why its own gates are redundant no-ops here.
+      */
+      const bypassTarget = deriveReviewBypassTarget(task, requiredStepIds, new Set(reviewColumns));
+      if (!bypassTarget) {
         // Preserve the established refusal for cards with neither escape target.
         throw new Error(`Cannot bypass review lane for ${id}: no failed pre-merge review step found`);
       }
+      const absentStepId = bypassTarget.kind === "absent" ? bypassTarget.workflowStepId : undefined;
 
       const target = failedTarget ?? {
-        workflowStepId: absentStepId!,
-        workflowStepName: absentStepId!,
+        workflowStepId: bypassTarget.workflowStepId,
+        workflowStepName: bypassTarget.workflowStepName,
         phase: "pre-merge" as const,
         status: "absent" as const,
       };

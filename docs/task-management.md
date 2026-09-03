@@ -315,7 +315,22 @@ Contract:
 - **Read-site parity is an invariant**: `getTask`, `listTasks` (slim and full), `listTasksModifiedSince`, and `searchTasks` must report the same `code`/`reason` for the same card, pinned by `packages/core/src/__tests__/postgres/store-task-stall-reason.pg.test.ts`.
 - Diagnostic-only: it must never serve as an auto-completion signal and must never gate a merge — the merge authority keeps being asked directly.
 
-**Dashboard surface:** the client-side suppression that blanks `inReviewStall` also blanks `stallReason` while `agent:log` events stream for the card. Server-side fresh-activity suppression is review-lane gated, while the client blank is not, so a dependency-blocked card off the review lane can re-show its reason between refetches. Chip and detail-row rendering ships separately.
+**Dashboard surface:** the client-side suppression that blanks `inReviewStall` also blanks `stallReason` while `agent:log` events stream for the card. Server-side fresh-activity suppression is review-lane gated, while the client blank is not, so a dependency-blocked card off the review lane can re-show its reason between refetches. Chip and detail-row rendering ships separately. The capability sibling `reviewBypass` (next section) is deliberately exempt from this blank: it reports a store-accepted operation, not a diagnosis.
+
+#### Review bypass capability signal
+
+Fusion derives `task.reviewBypass` — the operator's escape hatch on a wedged review card — on all four task READ paths (`getTask`, the slim board list, the modified-since prelude, and search) as `{ kind, workflowStepId, workflowStepName }`. It is a capability, not a diagnostic: it mirrors exactly what `TaskStore.bypassFailedPreMergeReviewStep` accepts today — the same pure derivation (`deriveReviewBypassTarget`), the same resolved lane rule (`resolveReviewBypassLanes`, not the diagnostic lane union), and the same required-gate set — so "the menu offered it" and "the API accepted it" are one fact and a dead affordance is structurally impossible rather than merely tested against.
+
+`ReviewBypassTarget` kinds:
+- `failed` — the latest pre-merge step result came back failed (a code-review rejection, or a harness error before a verdict). The bypass rewrites that result to `skipped`.
+- `absent` — an enabled required pre-merge gate produced no result entry at all (a no-verdict dispatch defect, or an engine restart losing a run in flight). The same state reads `pre-merge-gate-pending` in `stallReason` and is refused by the merge gate: the diagnostic tells the operator why the card is stuck, the capability gives them the only lever that clears it. A `pending` result counts as present — a gate mid-flight is not a gate that never ran.
+- `undefined` — a bypass would be refused: a paused card, a column outside the workflow's resolved review lanes, a clean pass, or a workflow with no required pre-merge gates.
+
+Invariants:
+- **Never activity-suppressed.** Unlike every sibling stall signal — whose client blank fires while `agent:log` events stream (see above) — the capability is never cleared by agent activity or merge-queue membership: a reviewer streaming logs does not make an unrun gate run, and the escape hatch must stay reachable on exactly the wedged card it exists for.
+- **Failed wins over absent**: a card with both a failed result and an unrun gate offers one bypass for the failed step; the second gate surfaces after the first bypass lands and the board refetches.
+- **Self-invalidating**: a successful bypass rewrites the gate's step result, so the next read recomputes the field and the affordance disappears without any client-side bookkeeping. Mutation responses are raw store rows carrying no derived fields, so the menu item drops out until the next board refetch re-derives it.
+- Surface: `TaskCard`'s `⋯` menu and the `TaskDetailModal` footer render the bypass item only when the field is present, branching copy on `kind` — `absent` copy never claims a failure or a pass, because skipping an unrun gate records an operator decision, not a review approval. Tool surfaces: `fn_task_bypass_review` (operator-only) and `POST /tasks/:id/bypass-review`; gate semantics live in `docs/workflow-steps.md`.
 
 #### Stale paused review signal
 

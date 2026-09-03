@@ -8819,7 +8819,10 @@
     "bypassReview": {
       "btn": "Ignorar revisão com falha",
       "promptMessage": "Motivo para ignorar a etapa de revisão pré-merge com falha (obrigatório, registrado em auditoria):",
-      "success": "Revisão com falha ignorada para {{id}}"
+      "success": "Revisão com falha ignorada para {{id}}",
+      "btnUnrun": "Ignorar etapa de revisão não executada",
+      "promptMessageUnrun": "Motivo para ignorar a etapa de revisão que nunca foi executada (obrigatório, registrado em auditoria):",
+      "successUnrun": "Etapa de revisão não executada ignorada para {{id}}"
     },
     "cacheBreakdown": "(leitura {{read}} / escrita {{write}} / entrada {{input}})",
     "cacheHitRatio": "Taxa de acerto de cache:",

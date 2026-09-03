@@ -29,6 +29,7 @@ import type { WorkflowStepResult } from "../workflow/workflow-steps.js";
 import type { InReviewStallSignal } from "../../tasks/in-review-stall.js";
 import type { InReviewStalledSignal } from "../../tasks/in-review-stalled.js";
 import type { TaskStallReason } from "../../tasks/task-stall-reason.js";
+import type { ReviewBypassTarget } from "../../merge/review-bypass-target.js";
 import type { StalePausedReviewSignal } from "../../tasks/stale-paused-review.js";
 import type { StalePausedTodoSignal } from "../../tasks/stale-paused-todo.js";
 import type { TaskExternalBlock } from "../../tasks/task-external-block.js";
@@ -1038,6 +1039,20 @@ export interface Task {
    * the merge authority keeps being asked directly, this field is its summary for display.
    */
   stallReason?: TaskStallReason;
+  /*
+   * FNXC:ReviewLaneBypass 2026-09-03-13:15 (RUFU-179):
+   * Server-derived bypass CAPABILITY: the pre-merge review-lane gate this operator may currently
+   * skip via the bypass escape hatch, with the reason class (`failed` result vs gate that never
+   * ran) the copy must branch on. Hydrated on the same four read paths as `stallReason` and
+   * computed by the same `deriveReviewBypassTarget` the store's `bypassFailedPreMergeReviewStep`
+   * uses for its own acceptance, so "the menu offers it" and "the API accepts it" are one fact.
+   *
+   * Unlike the sibling diagnostic signals this is NOT suppressible on agent activity or
+   * merge-queue membership: an escape hatch that flickers because a reviewer session last wrote a
+   * log line strands the operator on exactly the wedged card the hatch exists for. Undefined means
+   * a bypass would be refused (wrong lane, paused, every gate approved/running, or fast lane).
+   */
+  reviewBypass?: ReviewBypassTarget;
   /** Server-computed task age staleness signal. Undefined when no staleness rule matches.
    *  Diagnostic-only: must not be used as an auto-completion signal. */
   ageStaleness?: TaskAgeStalenessSignal;

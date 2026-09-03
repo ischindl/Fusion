@@ -8819,7 +8819,10 @@
     "bypassReview": {
       "btn": "Contourner la revue échouée",
       "promptMessage": "Motif du contournement de l'étape de revue pré-fusion échouée (obligatoire, journalisé) :",
-      "success": "Revue échouée contournée pour {{id}}"
+      "success": "Revue échouée contournée pour {{id}}",
+      "btnUnrun": "Contourner l'étape de revue non exécutée",
+      "promptMessageUnrun": "Motif du contournement de l'étape de revue qui ne s'est jamais exécutée (obligatoire, journalisé) :",
+      "successUnrun": "Étape de revue non exécutée contournée pour {{id}}"
     },
     "cacheBreakdown": "(lus {{read}} / écrits {{write}} / entrée {{input}})",
     "cacheHitRatio": "Taux de hits du cache :",

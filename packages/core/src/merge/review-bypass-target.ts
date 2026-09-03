@@ -1,0 +1,121 @@
+/*
+FNXC:ReviewLaneBypass 2026-09-03-10:07 (RUFU-179):
+ONE ANSWER FOR "WHICH PRE-MERGE GATE MAY THIS OPERATOR BYPASS, AND WHY?".
+
+Before this module the answer existed twice and they disagreed. `store.ts`'s
+`bypassFailedPreMergeReviewStep` accepted a review-lane card whose only problem was an enabled
+required pre-merge gate with NO result (FN-158's `absentStepId` branch), while the dashboard's
+`TaskContextMenu` re-implemented a miniature predicate that asked only "is there a `failed`
+result?". The narrower client question silently refused the operator the escape hatch the backend
+already granted — reported downstream as SANE-387 on a card stranded by "task has enabled
+pre-merge workflow steps that never ran", with `POST /tasks/:id/bypass-review` succeeding for that
+exact card while no surface on screen offered it. The AI lanes are deliberately forbidden from
+this tool, so the GUI was the only path and it was closed.
+
+This is why the client must NOT own the predicate (the obvious fix, and the shape the duplicated
+miniature invited): deciding the unrun case needs the task's RESOLVED workflow IR
+(`resolveRequiredPreMergeStepIds`), which is server-side authority. Shipping the derived answer is
+the only version that cannot be wrong on a custom board.
+
+THE INVARIANT this module exists to hold: UI eligibility equals store acceptance. `store.ts` calls
+`deriveReviewBypassTarget` for its own target selection, so "the menu offered it" and "the store
+accepted it" are one fact computed by one function — a dead affordance (menu offers, API refuses)
+and an unreachable escape (API accepts, menu silent) are both structurally impossible here rather
+than merely tested against each other.
+
+Deliberately pure, node-free, deterministic, and I/O-free so the SAME function runs in the store's
+write path and in every read-path hydration, and is unit-testable without a store. Note this is a
+CAPABILITY, not a diagnostic: unlike the sibling `inReviewStall` signal it must never be
+activity-suppressed, because an operator's escape hatch cannot depend on whether a reviewer
+session last wrote a log line.
+*/
+
+import type { Task, WorkflowStepResult } from "../types.js";
+import type { WorkflowIr } from "../workflows/workflow-ir-types.js";
+import { declaresAnyLifecycleTrait, resolveReviewColumns } from "../workflows/workflow-lifecycle-traits.js";
+import { getLatestFailedPreMergeReviewStep } from "./task-merge.js";
+
+/**
+ * Which of the two bypassable states a card is in.
+ *
+ * - `"failed"` — a pre-merge review-lane result came back `failed` (FN-7720's original case,
+ *   leading real-world cause: Runfusion/Fusion#1946's `(no feedback captured)` no-verdict dispatch).
+ * - `"absent"` — an enabled required pre-merge gate has no result entry at all (FN-158's case, and
+ *   the one the UI never covered). Skipping it records a deliberate operator decision, NOT a
+ *   review approval, which is why the copy for this kind must not claim a failure or a pass.
+ */
+export type ReviewBypassTargetKind = "failed" | "absent";
+
+/** The step a bypass would currently act on, plus the reason class the copy must branch on. */
+export interface ReviewBypassTarget {
+  kind: ReviewBypassTargetKind;
+  workflowStepId: string;
+  workflowStepName: string;
+}
+
+/** Narrow row view the derivation needs, so it is callable from a full `Task` or a hydrated row. */
+export type ReviewBypassTaskView = Pick<Task, "column" | "paused"> &
+  Partial<Pick<Task, "workflowStepResults">>;
+
+/**
+ * The review lanes a bypass is admitted in — the STORE's rule, exported so both consumers resolve
+ * the same set and cannot disagree about which columns are bypassable.
+ *
+ * A board with no resolvable IR or no lifecycle traits falls back to the legacy `in-review` id;
+ * otherwise it is the workflow's own union of the three review roles.
+ *
+ * Do NOT "simplify" this by reusing `reads.ts`'s `resolveReviewColumnsForTask`: that one always
+ * unions the legacy `"in-review"` id in so a board mid-rename is never skipped for the diagnostic
+ * badges. Here a broader answer is a BUG, not a safety margin — it would offer the affordance on a
+ * renamed lane the store then refuses, manufacturing exactly the dead-affordance class RUFU-179
+ * deletes. The refusal guard admits and moves nothing, so the broad-but-exact store set is right.
+ */
+export function resolveReviewBypassLanes(ir: WorkflowIr | undefined): string[] {
+  return ir === undefined || !declaresAnyLifecycleTrait(ir)
+    ? ["in-review"]
+    : resolveReviewColumns(ir);
+}
+
+/**
+ * Derive the bypass target for a card, or `undefined` when a bypass would be refused.
+ *
+ * Order is the store's acceptance order and must stay that way (`paused` and the lane gate are
+ * checked even when a target exists, because the store refuses on them first):
+ * 1. `task.paused` → nothing. An operator pause is a hold on automation AND on this escape hatch.
+ * 2. `task.column` not in `reviewColumns` → nothing.
+ * 3. `getLatestFailedPreMergeReviewStep()` when present → `kind: "failed"`. Failed WINS over an
+ *    unrun gate: the store rewrites the failed result and one bypass must not silently also
+ *    consume the unrun-gate decision the operator has not made yet.
+ * 4. else the first `requiredStepIds` entry with no entry in `workflowStepResults` → `"absent"`.
+ *    A `pending` result counts as PRESENT: a gate that is running is not a gate that never ran, and
+ *    offering to skip it mid-flight would let an operator skip past a review in progress.
+ * 5. else nothing (includes the fast lane and the no-gates case, whose resolved set is empty).
+ *
+ * `requiredStepIds` is resolved by the caller because it needs the workflow IR, which only the
+ * server holds — see the module note for why that keeps this predicate server-side.
+ */
+export function deriveReviewBypassTarget(
+  task: ReviewBypassTaskView,
+  requiredStepIds: ReadonlySet<string>,
+  reviewColumns: ReadonlySet<string>,
+): ReviewBypassTarget | undefined {
+  if (task.paused === true) return undefined;
+  if (!reviewColumns.has(task.column)) return undefined;
+
+  const failedStep: WorkflowStepResult | undefined = getLatestFailedPreMergeReviewStep(task);
+  if (failedStep) {
+    return {
+      kind: "failed",
+      workflowStepId: failedStep.workflowStepId,
+      workflowStepName: failedStep.workflowStepName,
+    };
+  }
+
+  const results = task.workflowStepResults ?? [];
+  for (const workflowStepId of requiredStepIds) {
+    if (!results.some((result) => result.workflowStepId === workflowStepId)) {
+      return { kind: "absent", workflowStepId, workflowStepName: workflowStepId };
+    }
+  }
+  return undefined;
+}

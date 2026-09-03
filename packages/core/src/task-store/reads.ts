@@ -29,6 +29,7 @@ import {resolveTaskLifecycleColumns} from "../workflows/workflow-lifecycle-trait
 import {detectStalledReview} from "../tasks/stalled-review-detector.js";
 import {computeRetrySummary} from "../tasks/retry-summary.js";
 import {resolveRequiredPreMergeStepIds} from "../merge/required-pre-merge-steps.js";
+import {deriveReviewBypassTarget, resolveReviewBypassLanes, type ReviewBypassTarget} from "../merge/review-bypass-target.js";
 import {deriveTaskStallReason, type TaskStallReason, type TaskStallReasonContext} from "../tasks/task-stall-reason.js";
 // FNXC:TaskLookup404 2026-07-26-11:20: typed miss signal so API boundaries can
 // answer 404 instead of 500 (see TaskNotFoundError in task-store/errors.ts).
@@ -298,6 +299,42 @@ async function hydrateTaskStallReason(
   } satisfies TaskStallReasonContext);
 }
 
+/*
+FNXC:ReviewLaneBypass 2026-09-03-13:15 (RUFU-179):
+Per-row wiring for the bypass CAPABILITY, shared by all four hydration sites so the board, the
+detail modal, the incremental stream, and search all answer with exactly what the store's
+`bypassFailedPreMergeReviewStep` would accept today — one `deriveReviewBypassTarget` call with the
+store's own lane rule (`resolveReviewBypassLanes`, NOT the diagnostic `resolveReviewColumnsForTask`
+union that always includes the legacy `"in-review"` id) and the store's own required-gate set.
+
+Deliberate asymmetry with the sibling stall signals above: this one is NEVER suppressed on
+merge-queue membership or fresh agent-log activity. A diagnostic must stop shouting while a merger
+is streaming logs; an escape hatch must stay reachable on exactly the wedged card it exists for.
+
+Cost: the IR struct is already warm per pass — every row pays `resolveReviewColumnsForTask` for the
+stall badges — so the only new work is one pure `resolveRequiredPreMergeStepIds` pass, gated to
+non-paused rows whose column is actually in a bypass lane. Fail-soft on IR-resolution throw: the
+affordance disappears, the board never fails to render.
+*/
+async function resolveReviewBypassForTask(
+  store: TaskStore,
+  task: Task,
+  irCache: Map<string, WorkflowIr>,
+): Promise<ReviewBypassTarget | undefined> {
+  // Derivation gate 1 needs no IR and answers most of a board: a paused card is refused by the store too.
+  if (task.paused === true) return undefined;
+  try {
+    const ir = await resolveWorkflowIrForTask(store, task.id, irCache);
+    const lanes = resolveReviewBypassLanes(ir);
+    if (!lanes.includes(task.column)) return undefined;
+    const requiredStepIds = ir
+      ? resolveRequiredPreMergeStepIds(ir, task.enabledWorkflowSteps, task)
+      : new Set<string>();
+    return deriveReviewBypassTarget(task, requiredStepIds, new Set(lanes));
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * FNXC:TaskRecommendations 2026-08-13-22:23:
@@ -433,6 +470,9 @@ export async function getTaskImpl(store: TaskStore, id: string, options?: { acti
         irCache: detailIrCache,
         localColumnByTaskId: new Map([[task.id, task.column]]),
       });
+      /* FNXC:ReviewLaneBypass 2026-09-03-13:15 (RUFU-179): detail-view parity with the board feed.
+         Not suppressed on merge-queue or activity — the capability must survive the wedge it is for. */
+      task.reviewBypass = await resolveReviewBypassForTask(store, task, detailIrCache);
       /*
       FNXC:TaskDetailPromptResilience 2026-07-10-15:00 (merge port from main):
       PROMPT.md is enrichment for the task detail — NOT essential row data.
@@ -678,6 +718,11 @@ export async function listTasksImpl(store: TaskStore, options?: { limit?: number
         irCache: listPassIrCache,
         localColumnByTaskId,
       });
+      /* FNXC:ReviewLaneBypass 2026-09-03-13:15 (RUFU-179): board-feed capability hydration. Derived
+         BEFORE the slim strip below — the slim SQL projection still selects `workflow_step_results`
+         (only `log` is dropped), so the derivation sees the same real results the full read does,
+         and the capability reaches the slim board row the context menu renders from. */
+      task.reviewBypass = await resolveReviewBypassForTask(store, task, listPassIrCache);
       if (slim) {
         task.timedExecutionMs = store.computeTimedExecutionMs(task.log);
         task.log = [];
@@ -844,6 +889,9 @@ export async function listTasksModifiedSinceImpl(store: TaskStore, since: string
     this page answer from `localColumnByTaskId` with no read; a reference outside it pays one.
     */
     const stallReasonByTaskId = new Map<string, TaskStallReason | undefined>();
+    // FNXC:ReviewLaneBypass 2026-09-03-13:15 (RUFU-179): same prelude pattern — the sync row map
+    // below cannot await, so the capability resolves here, on its own suppression-free schedule.
+    const reviewBypassByTaskId = new Map<string, ReviewBypassTarget | undefined>();
     const preludeTaskByTaskId = new Map<string, Task>();
     {
       const irCache = new Map<string, WorkflowIr>();
@@ -856,6 +904,10 @@ export async function listTasksModifiedSinceImpl(store: TaskStore, since: string
       for (const pgRow of pageRows) {
         const task = store.rowToTask(store.pgRowToTaskRow(pgRow));
         preludeTaskByTaskId.set(task.id, task);
+        /* FNXC:ReviewLaneBypass 2026-09-03-13:15 (RUFU-179): computed BEFORE the stall-suppression
+           branch below and never skipped by it — merge-queued or actively-logging cards keep their
+           capability; only the store's own gates (lane, pause, gate state) decide. */
+        reviewBypassByTaskId.set(task.id, await resolveReviewBypassForTask(store, task, irCache));
         const reviewColumnsForRow = reviewColumnsByTaskId.get(task.id) ?? new Set<string>(["in-review"]);
         if (mergeQueuedTaskIds.has(task.id) || hasFreshAgentLogActivitySinceTaskUpdate(store, task, now, reviewColumnsForRow)) {
           stallReasonByTaskId.set(task.id, undefined);
@@ -959,6 +1011,9 @@ export async function listTasksModifiedSinceImpl(store: TaskStore, since: string
       // FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174): board-feed parity — resolved in the
       // async prelude above, attached without extra reads because this map is synchronous.
       task.stallReason = stallReasonByTaskId.get(task.id);
+      // FNXC:ReviewLaneBypass 2026-09-03-13:15 (RUFU-179): attached from the prelude map — parity
+      // with the stall sites above, minus any suppression.
+      task.reviewBypass = reviewBypassByTaskId.get(task.id);
       task.log = [];
       return task;
     });
@@ -1082,6 +1137,10 @@ export async function searchTasksImpl(store: TaskStore, query: string, options?:
         irCache: searchPassIrCache,
         localColumnByTaskId: searchLocalColumns,
       });
+      /* FNXC:ReviewLaneBypass 2026-09-03-13:15 (RUFU-179): search parity — a card reached through
+         search offers exactly what the board and detail views offer. Search rows are full selects,
+         and the slim strip below only zeroes `log`, so results are real here too. */
+      task.reviewBypass = await resolveReviewBypassForTask(store, task, searchPassIrCache);
       if (slim) {
         task.timedExecutionMs = store.computeTimedExecutionMs(task.log);
         task.log = [];

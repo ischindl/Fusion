@@ -8907,8 +8907,11 @@
     },
     "bypassReview": {
       "btn": "Bypass failed review",
+      "btnUnrun": "Bypass unrun review gate",
       "promptMessage": "Reason for bypassing the failed pre-merge review step (required, audit-logged):",
-      "success": "Bypassed failed review lane for {{id}}"
+      "promptMessageUnrun": "Reason for bypassing the review gate that never ran (required, audit-logged):",
+      "success": "Bypassed failed review lane for {{id}}",
+      "successUnrun": "Bypassed unrun review gate for {{id}}"
     },
     "cacheBreakdown": "(read {{read}} / write {{write}} / input {{input}})",
     "cacheHitRatio": "Cache hit ratio:",
