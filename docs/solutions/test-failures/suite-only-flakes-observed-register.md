@@ -692,3 +692,11 @@ TypeError: Cannot read properties of undefined (reading 'files')
 ```
 
 A proper fix normalizes both npm-JSON shapes test-side (upstream-owned); no assertion was relaxed locally. A SECOND sighting on npm<12 hosts, or any evidence the packlist semantics itself regressed, is an ordinary on-sight quarantine with no further discretion, per the standing rule in AGENTS.md.
+
+### 16. `prepare-graph-node-execution` FN-282 tests vs FN-288 invariant change (deterministic upstream-main failures)
+
+- **Files/tests:** `packages/engine/src/__tests__/planning-before-worktree.test.ts` > `prepareGraphNodeExecution skips read-only acquisition (workspace=false|true)`; `packages/engine/src/__tests__/workspace-file-overlap-parity.test.ts` > `workspace implementation base-refresh enablement > forwards refresh from write-capable code and skips read-only graph preparation`
+- **Owner:** upstream. FN-282 (d18d8c7b99) authored both tests and the prepare-graph-node-execution skip contract; FN-288 (8803ecff6a) then rewrote `prepare-graph-node-execution.ts` so `requiresWorktree:true` proceeds through `store.getTask` before any read-only short-circuit, and did NOT update these two tests. The tests encode the pre-FN-288 contract, so they fail deterministically at `origin/main 8803ecff6a` itself (verified by file-identity: post-merge code+tests are byte-identical to upstream, and the assertion contradicts line 46 of the merged source).
+- **Why upstream main stays green:** these files are outside the thin merge-gate allow-list; `full-suite.yml` is push-to-main non-blocking.
+- **Observed tree/SHA:** reproduced on the v0.78.0-beta.2 merge tree and by identity argument on pure `8803ecff6a`; failures: `expected "vi.fn()" to not be called at all, but actually been called 1 times` (getTask / ensureGraphCustomNodeWorktree).
+- No assertion was relaxed locally. The fix is upstream-owned: re-express the two tests against the FN-288 invariant (read-only nodes never arrive with `requiresWorktree:true`, or move the plan short-circuit above the `getTask` line in the implementation if that is the intent).
