@@ -336,6 +336,19 @@ describe("normalizeStashSearchQuery (RUFU-121 Step 2)", () => {
     expect(normalizeStashSearchQuery("Or postgres")).toBe("Or");
   });
 
+  /*
+  FNXC:MemoryFocusRecall 2026-09-03-00:21:
+  RUFU-173 — the lane T OR-joined query AS OBSERVED by this normalizer. The non-ASCII strip
+  runs BEFORE whitespace collapse and token split, so the pure-ASCII "OR" joiner is never
+  eaten: the OR-preserving branch fires and BOTH word terms survive as separate terms. The
+  diacritic term itself arrives character-stripped (`pamäťové` → `pamov`) — this literal is
+  RUFU-173's residual limitation written as a test; true diacritic keyword matching is the
+  deferred Stash-side follow-up (docs/memory-backend-integration.md §5), not core-fixable.
+  */
+  it("keeps both OR-joined word terms while stripping the diacritic term itself (RUFU-173 observed)", () => {
+    expect(normalizeStashSearchQuery("pamäťové OR hladiny")).toBe("pamov OR hladiny");
+  });
+
   it("drops pure-punctuation tokens and tokens that clean to empty", () => {
     expect(normalizeStashSearchQuery("??? OR hello ???")).toBe("OR hello");
     expect(normalizeStashSearchQuery("??? hello")).toBe("hello");

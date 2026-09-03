@@ -80,7 +80,8 @@ until it is enabled. The focus is persisted per chat session via the schema migr
 At read time, the memory topic / focus (the text an operator or model optimizes a conversation
 around) is a **ranking bias, never a filter** (RUFU-172). The proactive per-turn recall cue runs
 two searches over the whole project: lane P (keywords derived from the current message/step) and,
-when a focus is active, lane T (the RAW focus text as the query). Lane T entries lead the cue and
+when a focus is active, lane T (whose query is the focus's own content terms joined by `OR`,
+so the keyword backend's normalization preserves each of them — RUFU-173). Lane T entries lead the cue and
 may take at most 60% of its 800-char budget, so whole-project memory always keeps its share —
 nothing is hidden. Clearing the focus (empty / `all` / `*`) restores the single-search cue byte for
 byte. The stale claim that the focus is a "Stash search topic parameter" performing read-time
@@ -88,10 +89,51 @@ scoping is removed: RUFU-121 dropped the inert `&topic=` push-down (the Stash se
 `q` + `limit` only) and no backend filters by topic; the tool-level `topic` option remains a
 hint for topic-aware backends.
 
+**Lane T query shape (RUFU-173).** The focus's content terms are extracted with a Unicode-aware
+tokenizer (diacritic letters stay inside their word; a hyphen-joined word stays one term),
+stopwords and tokens under 3 characters are dropped, terms dedupe case-insensitively in the
+focus's own word order, and up to 3 terms (each ≤24 chars) are joined with a single uppercase
+`" OR "` inside a 96-character joined budget — trailing terms are dropped whole, never truncated.
+Why `OR`: with `stashVectorSearch` off (the deployed configuration) the keyword path runs
+`normalizeStashSearchQuery`, which keeps **only the first word token** of a query unless a token
+is literally `OR` — so RUFU-172's raw-phrase lane T collapsed a multi-word focus to one term in
+exactly the configuration operators run. The backend's OR-preserving branch is the sanctioned
+extension point: no Stash change and no change to RUFU-121's normalization contract. The joiner
+survives that normalization because the server's non-ASCII strip runs *before* whitespace
+collapse and token split, and `" OR "` is pure ASCII. The 96-char client budget sits inside the
+server's 100-character token-boundary cap (which silently drops trailing terms), so every
+term the client emits reaches the search. When no focus term survives (stopword-only focus),
+lane T is **skipped entirely** — one search total — rather than sending an empty query, which
+would hit the legacy broad-recall path and inject non-topical hits into lane T's lead slot. A
+focus with a single usable token keeps the exact query string RUFU-172 sent, byte-identically.
+Accepted consequence: one query string feeds both backend branches, so when `stashVectorSearch`
+is enabled the semantic endpoint receives the OR-joined text including the literal `OR` tokens
+(the ≥2-token vector gate is unregressed and diacritics still arrive intact). Residual
+limitation, recorded not hidden: the server's non-ASCII strip does not transliterate, so a
+diacritic term still arrives mangled (`pamäťové` → `pamov`); the OR join rescues the focus's
+other surviving terms instead of collapsing the whole focus onto that one mangled term. True
+diacritic keyword matching is the Stash-side deferred follow-up listed below.
+
 > Note: `0049_chat_session_memory_focus.sql` is a clean-rebase-only artifact name and does **not**
 > exist on this target. Origin's `0049` remains `0049_fn_8864_agent_activity_events.sql`. The
 > memory-focus migration here is the new `0059_*.sql`, and no `0048_*.sql`–`0058_*.sql`
 > migration was deleted or modified.
+
+**Deferred follow-ups (tracked, deliberately not built):**
+
+1. Mission-context executor focus — deriving an honest focus for the executor lane
+   (RUFU-172 passes none; inventing one would fabricate bias).
+2. Hard `metadata @> topic` filtering — index-backed corpus isolation; regresses recall today
+   because no historical events carry topics (RUFU-172 non-goal).
+3. Enabling `stashVectorSearch` — an operator config action, separate from any code change.
+4. Stash-side raw-query passthrough / unaccent-aware keyword matching (`search_events`
+   normalized-query-off or `unaccent`/`pg_trgm` matching) — the durable fix for diacritic
+   keyword matching that RUFU-173 cannot deliver from this repo: the keyword normalizer strips
+   non-ASCII characters without transliteration (`pamäťové` → `pamov`), so a diacritic focus
+   term still cannot match its Slovak lexeme on the keyword path. RUFU-173's OR-joined lane T
+   keeps every *surviving* focus lexeme as its own term instead of collapsing the focus onto
+   one, but it does not restore diacritic matching. Crosses repositories and the RUFU-121
+   normalization contract, so it stays a tracked follow-up rather than being silently dropped.
 
 ## 6. Complete-chat-session capture
 

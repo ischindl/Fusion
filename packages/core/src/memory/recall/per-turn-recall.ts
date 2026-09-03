@@ -28,6 +28,28 @@ export const RECALL_KEYWORD_MAX_TERM_LENGTH = 24;
 export const RECALL_KEYWORD_MAX_QUERY_LENGTH = 64;
 
 /**
+ * Lane T (focus) joined-query budget in characters. The Stash keyword normalizer caps the
+ * query at 100 chars on a token boundary, silently dropping trailing terms; 96 keeps the
+ * OR-joined focus query inside that cap with margin (the server's non-ASCII strip only ever
+ * shortens the string further, so the client bound is strictly conservative). Terms are
+ * dropped whole — a term is never truncated to fit.
+ *
+ * FNXC:MemoryFocusRecall 2026-09-03-00:21: RUFU-173.
+ */
+export const FOCUS_RECALL_QUERY_MAX_LENGTH = 96;
+
+/**
+ * Unicode-aware focus tokenizer boundary: everything outside letters/digits/underscore/hyphen
+ * (code-point class, `u` flag) splits a token, so hyphen-joined words stay ONE term and
+ * Slovak/diacritic letters stay inside their word. Deliberately NOT deriveRecallKeywords's
+ * ASCII-only `[a-z0-9_-]` split, which would chop `pamäťové` into ASCII fragments and hand
+ * the vector lane mangled text.
+ *
+ * FNXC:MemoryFocusRecall 2026-09-03-00:21: RUFU-173.
+ */
+const FOCUS_QUERY_TOKEN_BOUNDARY = /[^\p{L}\p{N}_-]+/u;
+
+/**
  * Small built-in stopword set: common English function words plus the Slovak function words
  * observed in the live repro sessions (sme, čo, na, sú, ako). Tokens under 3 characters are
  * dropped separately; this set removes 3+-character function words that would otherwise
@@ -88,6 +110,68 @@ export function deriveRecallKeywords(topic: string): string[] {
     kept.pop();
   }
   return kept;
+}
+
+/**
+ * Extract lane T's focus terms: Unicode-aware split, drop tokens <3 chars and stopwords
+ * (case-insensitive, which also drops a literal uppercase `OR` already present in the focus —
+ * the joiner supplies the separators), dedupe case-insensitively keeping first occurrence,
+ * preserve the focus's own word order and original casing, cap each term at
+ * RECALL_KEYWORD_MAX_TERM_LENGTH, take at most RECALL_KEYWORD_MAX_TERMS. Returns [] when no
+ * term survives. Pure, no I/O.
+ *
+ * FNXC:MemoryFocusRecall 2026-09-03-00:21 (RUFU-173):
+ * Word order is the salience signal here, deliberately NOT lane P's length-descending rank:
+ * lane P AND-narrows (longest distinctive term first survives the 64-char cap), lane T
+ * broadens via OR, so the operator's own emphasis order is what should lead.
+ */
+export function deriveFocusQueryTokens(focus: string): string[] {
+  if (typeof focus !== "string") return [];
+  const tokens = focus.split(FOCUS_QUERY_TOKEN_BOUNDARY).filter(Boolean);
+  const seen = new Set<string>();
+  const terms: string[] = [];
+  for (const token of tokens) {
+    if (token.length < 3) continue;
+    const lower = token.toLowerCase();
+    if (RECALL_STOPWORDS.has(lower)) continue;
+    if (seen.has(lower)) continue;
+    seen.add(lower);
+    terms.push(token.slice(0, RECALL_KEYWORD_MAX_TERM_LENGTH));
+    if (terms.length >= RECALL_KEYWORD_MAX_TERMS) break;
+  }
+  return terms;
+}
+
+/**
+ * Build lane T's backend query from a resolved focus: the focus's content terms joined by a
+ * single uppercase " OR ", inside the FOCUS_RECALL_QUERY_MAX_LENGTH joined budget (trailing
+ * terms dropped whole, never a truncated term). "" when no term survives — callers must then
+ * SKIP lane T entirely rather than send an empty query.
+ *
+ * FNXC:MemoryFocusRecall 2026-09-03-00:21 (RUFU-173):
+ * WHY the OR join: with `stashVectorSearch` off (the deployed config) the Stash keyword path
+ * runs normalizeStashSearchQuery, whose documented rule keeps ONLY the first word token
+ * unless a token is literally `OR` — so RUFU-172's raw-phrase lane T collapsed the operator's
+ * multi-word focus to one term (weakest topical bias in exactly the deployed config). The
+ * backend's OR-preserving branch is the sanctioned extension point: no Stash change, no
+ * change to RUFU-121's normalization contract. Why the joiner survives it: the server's
+ * non-ASCII strip runs BEFORE whitespace collapse and token split, and " OR " is pure ASCII,
+ * so the operator stays in the OR branch no matter what the focus words contain.
+ * WHY a Unicode tokenizer (never deriveRecallKeywords): keeps diacritics intact for the
+ * vector lane and keeps a hyphen-joined single word ONE term, so a single-usable-token focus
+ * yields the exact query string RUFU-172 sent (byte-identical single-token shape).
+ * RESIDUAL LIMITATION (recorded, not fixed here): the server's non-ASCII strip is not
+ * transliterating, so a diacritic term still arrives mangled (`pamäťové` → `pamov`); the OR
+ * join rescues the focus's OTHER terms instead of collapsing the whole focus onto that one
+ * term. True diacritic keyword matching needs a Stash-side unaccent-aware / raw-passthrough
+ * search (deferred follow-up, docs/memory-backend-integration.md §5).
+ */
+export function buildFocusRecallQuery(focus: string): string {
+  const kept = deriveFocusQueryTokens(focus);
+  while (kept.length > 1 && kept.join(" OR ").length > FOCUS_RECALL_QUERY_MAX_LENGTH) {
+    kept.pop();
+  }
+  return kept.join(" OR ");
 }
 
 /** Hard cap for the injected cue block in characters (~200 tokens). */
@@ -193,8 +277,9 @@ export interface PerTurnRecallOptions {
    * RUFU-172: the conversation/task focus text (e.g. a chat session's `memory_focus`).
    * Resolved with the SAME canonical collapse as the memory tool (empty/"all"/"*"/whitespace
    * → no focus). It is NOT a filter: when set it triggers a second "lane T" backend search
-   * whose query is the raw focus text, whose surviving hits LEAD the cue ahead of the
-   * project-keyword hits. Undefined → exactly today's single-search whole-project behavior.
+   * whose query is the focus's own content terms OR-joined (RUFU-173 buildFocusRecallQuery),
+   * whose surviving hits LEAD the cue ahead of the project-keyword hits. Undefined → exactly
+   * today's single-search whole-project behavior.
    */
   focus?: string;
 }
@@ -243,11 +328,13 @@ function renderRecallEntryLine(hit: MemorySearchResult, index: number): string {
  * - neither lane returns a usable hit (or nothing survives the score filter / budget).
  *
  * Two lanes (RUFU-172): when `options.focus` resolves to a real focus (not ""/"all"/"*"/
- * whitespace via `resolveMemorySearchTopic`), a second lane-T search runs with the RAW focus
- * text as its query; focus hits lead the merged cue (de-duped with lane T winning), lane T is
- * capped so lane P always keeps ≥1 slot, and lane T is bounded to ≤60% of the cue budget. A
- * lane-T search failure is isolated to "no topic hits" and cannot suppress lane P. With NO
- * focus the single project-keyword search runs exactly as before and the cue is byte-identical.
+ * whitespace via `resolveMemorySearchTopic`), a second lane-T search runs with the focus's
+ * content terms OR-joined as its query (RUFU-173 buildFocusRecallQuery; an unusable focus —
+ * no surviving term — skips lane T entirely rather than sending an empty query); focus hits
+ * lead the merged cue (de-duped with lane T winning), lane T is capped so lane P always keeps
+ * ≥1 slot, and lane T is bounded to ≤60% of the cue budget. A lane-T search failure is
+ * isolated to "no topic hits" and cannot suppress lane P. With NO focus the single
+ * project-keyword search runs exactly as before and the cue is byte-identical.
  *
  * Score handling (client-side, because Stash has no score filter): when any hit carries
  * `score > 0`, keep only positive-score hits and sort by (score desc, path asc,
@@ -290,15 +377,25 @@ export async function buildPerTurnMemoryRecallCue(options: PerTurnRecallOptions)
   RUFU-172: a conversation focus is a RANKING bias, never a corpus partition. The recall runs
   two lanes. Lane P (project keywords) is the derived-keyword query and is unchanged from
   RUFU-120 — when the focus resolves to "no focus" this is the ONLY lane, and the cue stays
-  byte-identical to the pre-RUFU-172 output (no second search, no merge). Lane T (topic) is a
-  SECOND search whose query is the RAW focus text: lane T never passes through
-  deriveRecallKeywords/stopwords/the 64-char cap, so diacritic-rich focus strings (Slovak
-  "pamäťové hladiny") reach the backend whole. Focus hits LEAD the merged cue; on a
-  (path, lineStart) collision lane T wins; lane T is capped so lane P always keeps a slot and
-  is held to ≤60% of the cue budget. Lane T failure (Stash hiccup) is isolated to "no topic
-  hits" and can never suppress lane P; a lane P failure keeps today's "" contract.
+  byte-identical to the pre-RUFU-172 output (no second search, no merge). Focus hits LEAD the
+  merged cue; on a (path, lineStart) collision lane T wins; lane T is capped so lane P always
+  keeps a slot and is held to ≤60% of the cue budget. Lane T failure (Stash hiccup) is
+  isolated to "no topic hits" and can never suppress lane P; a lane P failure keeps today's
+  "" contract.
+
+  FNXC:MemoryFocusRecall 2026-09-03-00:21:
+  RUFU-173: lane T's query is buildFocusRecallQuery(focus) — the focus's own content terms
+  OR-joined — NOT the raw phrase. The deployed keyword backend keeps only the FIRST word
+  token of a query unless a token is literally `OR`, so the raw phrase collapsed a multi-word
+  focus to a single term (weakest topical bias in the operator's own config). When no term
+  survives (stopword/short-token-only focus) lane T is SKIPPED entirely — one search total,
+  cue = lane P — because an empty query would hit Stash's legacy empty-query broad-recall URL
+  and inject non-topical hits into lane T's lead slot, strictly worse than a topic miss.
+  See buildFocusRecallQuery for the full shape rationale and the residual non-ASCII limit.
   */
   const focus = resolveMemorySearchTopic(options.focus);
+  // Lane T's query may be unbuildable even for a real focus (stopword-only text); "" = skip.
+  const laneTQuery = focus ? buildFocusRecallQuery(focus) : "";
 
   // ── Lane P: project-keyword search (today's contract) ──
   let projectHits: MemorySearchResult[];
@@ -311,11 +408,11 @@ export async function buildPerTurnMemoryRecallCue(options: PerTurnRecallOptions)
   // Client-side score filter (Stash has no server-side score filter).
   const laneP = selectByScore(projectHits, topK);
 
-  // ── Lane T: raw-focus search (only when a real focus is set) ──
+  // ── Lane T: focus-term search (only when a real focus yields a usable query) ──
   const laneT: MemorySearchResult[] = [];
-  if (focus) {
+  if (laneTQuery !== "") {
     try {
-      const topicResults = await backend.search(options.rootDir, { query: focus, limit });
+      const topicResults = await backend.search(options.rootDir, { query: laneTQuery, limit });
       laneT.push(...selectByScore(topicResults ?? [], topK));
     } catch {
       // Lane T failure must never suppress lane P — it simply contributes nothing.

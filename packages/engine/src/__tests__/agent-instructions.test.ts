@@ -1248,13 +1248,17 @@ describe("buildAgentChatPrompt per-turn memory recall (RUFU-120 B.2)", () => {
   /*
   FNXC:RUFU172ChatFocusLane 2026-08-31-19:41:
   RUFU-172 chat-lane threading: buildAgentChatPrompt forwards a focus to the core two-lane
-  recall. With a focus the core issues a SECOND (lane T) search whose query is the raw focus
-  text and leads the cue; with no focus it stays on the single whole-project search. This
-  proves the focus reaches the PROACTIVE cue, not just the fn_memory_search tool schema.
+  recall. With a focus the core issues a SECOND (lane T) search and leads the cue with it;
+  with no focus it stays on the single whole-project search. This proves the focus reaches
+  the PROACTIVE cue, not just the fn_memory_search tool schema.
+
+  FNXC:MemoryFocusRecall 2026-09-03-00:21:
+  RUFU-173 — lane T's query is the focus's content terms OR-joined (three focus words here
+  reach the backend as "merge-gate OR remediation OR ledger"), not the raw focus phrase.
   */
-  it("(h) forwards a focus: a second lane-T search with the raw focus text leads the cue", async () => {
+  it("(h) forwards a focus: a second lane-T search with the OR-joined focus terms leads the cue", async () => {
     fakeSearch = (query) =>
-      query === "merge-gate remediation ledger"
+      query === "merge-gate OR remediation OR ledger"
         ? [{ path: "notes/focus-ledger.md", lineStart: 2, lineEnd: 5, snippet: "Focus ledger merge-gate remediation.", score: 9, backend: "perturn-chat-fake" }]
         : fakeHits;
     const prompt = await buildAgentChatPrompt({
@@ -1267,10 +1271,10 @@ describe("buildAgentChatPrompt per-turn memory recall (RUFU-120 B.2)", () => {
       focus: "merge-gate remediation ledger",
     });
 
-    // Two searches: lane P (keywords) then lane T (raw focus text, un-tokenized).
+    // Two searches: lane P (keywords) then lane T (OR-joined focus terms).
     expect(searchCalls.length).toBe(2);
     expect(searchCalls[0].query).toContain("merge");
-    expect(searchCalls[1].query).toBe("merge-gate remediation ledger");
+    expect(searchCalls[1].query).toBe("merge-gate OR remediation OR ledger");
     // Focus hit leads the cue (topic-first ordering) alongside the project cue.
     expect(prompt).toContain("## Memory Recall");
     expect(prompt).toContain("notes/focus-ledger.md");

@@ -1,14 +1,20 @@
 import { describe, it, expect, beforeAll, beforeEach } from "vitest";
 import {
   buildPerTurnMemoryRecallCue,
+  buildFocusRecallQuery,
+  deriveFocusQueryTokens,
   deriveRecallKeywords,
   __resetPerTurnRecallDedupForTests,
+  FOCUS_RECALL_QUERY_MAX_LENGTH,
   PER_TURN_RECALL_CUE_MAX_CHARS,
   PER_TURN_RECALL_DEDUP_MAX_SESSIONS,
   PER_TURN_RECALL_DEDUP_MAX_SIGNATURES,
   PER_TURN_RECALL_LANE_T_SHARE_MAX_CHARS,
+  RECALL_KEYWORD_MAX_TERMS,
+  RECALL_KEYWORD_MAX_TERM_LENGTH,
   type PerTurnRecallOptions,
 } from "../memory/recall/per-turn-recall.js";
+import { normalizeStashSearchQuery } from "../memory/memory-backend-stash.js";
 import { MEMORY_PRE_STEERING_MARKER } from "../memory/memory-pre-steering.js";
 import {
   registerMemoryBackend,
@@ -55,10 +61,16 @@ let fakeHits: MemorySearchResult[] = [];
 let searchCalls: Array<{ query: string; limit?: number }> = [];
 /*
 FNXC:RUFU172TwoLaneRecall 2026-08-31-19:41:
-Two-lane recall issues up to two backend searches (lane P = derived keywords, lane T = raw
-focus). The old single-array fake could not answer the two queries differently, so tests set
-`fakeSearch` to route a response by query text (or throw, to exercise lane-T failure isolation).
-Null keeps every existing single-lane test on the shared `fakeHits` path unchanged.
+Two-lane recall issues up to two backend searches (lane P = derived keywords, lane T = the
+focus-derived query). The old single-array fake could not answer the two queries differently,
+so tests set `fakeSearch` to route a response by query text (or throw, to exercise lane-T
+failure isolation). Null keeps every existing single-lane test on the shared `fakeHits` path
+unchanged.
+
+FNXC:MemoryFocusRecall 2026-09-03-00:21:
+RUFU-173 changed lane T's query shape: it is buildFocusRecallQuery(focus) — the focus's
+content terms joined by " OR " — so query-routing fixtures key on THAT literal
+(e.g. "pamäťové OR hladiny"), not the focus phrase itself.
 */
 type FakeSearchFn = (query: string, limit?: number) => MemorySearchResult[];
 let fakeSearch: FakeSearchFn | null = null;
@@ -407,10 +419,15 @@ describe("dedup registry bounds", () => {
 /*
 FNXC:RUFU172TwoLaneRecall 2026-08-31-19:41:
 RUFU-172 two-lane focus-biased recall. A conversation focus biases ranking as a SECOND
-"lane T" search (raw focus text) that leads the merged cue; it is NEVER a corpus filter.
+"lane T" search whose hits lead the merged cue; it is NEVER a corpus filter.
 These cases use the per-query `fakeSearch` seam (lane P = the derived keyword query
-"diskutovali lcm", lane T = the raw focus text) to assert the observable merge/ordering/
+"diskutovali lcm", lane T = the focus-derived query) to assert the observable merge/ordering/
 budget contract. The no-focus path must stay byte-identical to RUFU-120.
+
+FNXC:MemoryFocusRecall 2026-09-03-00:21:
+RUFU-173: lane T's query is the focus's content terms OR-joined (buildFocusRecallQuery) —
+the deployed keyword backend keeps only the first word token of a phrase-less query, so the
+earlier raw-phrase shape collapsed multi-word foci to one term.
 */
 describe("two-lane focus-biased recall (RUFU-172)", () => {
   const LANE_P_QUERY = "diskutovali lcm"; // deriveRecallKeywords(TOPIC).join(" ")
@@ -432,13 +449,15 @@ describe("two-lane focus-biased recall (RUFU-172)", () => {
     expect(searchCalls).toHaveLength(2); // 1 per call, no lane T on either
   });
 
-  it("runs two searches when a focus is set, lane T querying the RAW focus text", async () => {
+  it("runs two searches when a focus is set, lane T querying the OR-joined focus terms", async () => {
     fakeSearch = (query) =>
       query === LANE_P_QUERY ? [makeHit("p.md", 1, 2, "project hit", 0.9)] : [makeHit("t.md", 3, 4, "topic hit", 0.9)];
     const cue = await call(TOPIC, { focus: "pamäťové hladiny" });
     expect(searchCalls).toHaveLength(2);
     expect(searchCalls[0].query).toBe(LANE_P_QUERY);
-    expect(searchCalls[1].query).toBe("pamäťové hladiny"); // diacritics + full phrase, not tokenized
+    // RUFU-173: both diacritic terms reach the backend as separate OR'd terms — the
+    // keyword path's first-word-only collapse can no longer flatten the focus to one term.
+    expect(searchCalls[1].query).toBe("pamäťové OR hladiny");
     // Lane T leads the merged cue.
     const entries = entryLines(cue);
     expect(entries[0]).toContain("t.md:3-4");
@@ -515,7 +534,8 @@ describe("two-lane focus-biased recall (RUFU-172)", () => {
     const longTopic = "Ahoj potrebujem aby si sa pozrel na tu konfiguraciu pamatovych hladin v tejto sekcii projektu";
     const big = "x".repeat(160);
     fakeSearch = (query) =>
-      query === "pamäťové hladiny"
+      // RUFU-173: lane T arrives as the OR-joined focus query, not the raw phrase.
+      query === "pamäťové OR hladiny"
         ? [
             makeHit("packages/core/src/memory/project-memory.ts", 12, 34, big, 0.9),
             makeHit("packages/core/src/memory/recall/per-turn-recall.ts", 12, 34, big, 0.8),
@@ -594,7 +614,8 @@ describe("two-lane focus-biased recall (RUFU-172)", () => {
     fakeSearch = (query) =>
       query === LANE_P_QUERY
         ? [makeHit("p.md", 1, 2, "project hit", 0.9)]
-        : query === "focus one"
+        : // RUFU-173: routing keys are the BUILT lane T queries ("focus one" → "focus OR one").
+          query === "focus OR one"
           ? [makeHit("t1.md", 1, 2, "topic one", 0.9)]
           : [makeHit("t2.md", 1, 2, "topic two", 0.9)];
     const first = await call(TOPIC, { focus: "focus one", sessionKey: "dedup-sess" });
@@ -628,5 +649,164 @@ describe("two-lane focus-biased recall (RUFU-172)", () => {
       const c = await call(TOPIC, { sessionKey: `n-${sentinel}`, focus: sentinel });
       expect(c).toBe(noFocus);
     }
+  });
+});
+
+/*
+FNXC:MemoryFocusRecall 2026-09-03-00:21:
+RUFU-173 — lane T query-shape table + round-trip against the REAL Stash keyword normalizer
+(the deployed `stashVectorSearch`-off path). The crux: the builder's output survives
+normalizeStashSearchQuery as MULTIPLE word terms while the raw focus phrase collapses to
+exactly one — the automated statement of the bug the raw-phrase lane T had in the deployed
+config. The diacritic half (the server strips non-ASCII without transliteration) is pinned
+in memory-backend-stash.test.ts as observed behavior, not hidden.
+*/
+describe("lane T focus-query builder (RUFU-173)", () => {
+  const OPERATOR_FOCUS = "memory projektu zamerala na tu temu";
+
+  /** Word terms the backend keyword path actually keeps (the "OR" operator excluded). */
+  const keptWordTerms = (normalized: string): string[] =>
+    normalized.split(/\s+/).filter((t) => t !== "" && t !== "OR");
+
+  it("maps focus text to the OR-joined query across the shape table", () => {
+    const cases: Array<[string, string]> = [
+      // Operator's real Slovak focus: stopwords (na/tu) and the 4th content term dropped
+      // by the 3-term cap; word order preserved.
+      [OPERATOR_FOCUS, "memory OR projektu OR zamerala"],
+      // Diacritics must NOT be ASCII-mangled by core (the vector lane needs them intact).
+      ["pamäťové hladiny", "pamäťové OR hladiny"],
+      // Single usable token → no OR: the exact string RUFU-172 sent (raw passthrough).
+      ["hladiny", "hladiny"],
+      // A hyphen-joined word is ONE Unicode token → stays byte-identical (this is what
+      // keeps engine fixture FOCUS_TEXT="deploy-ledger-focus" unchanged).
+      ["deploy-ledger-focus", "deploy-ledger-focus"],
+      // Duplicate tokens dedupe case-insensitively, first occurrence's casing wins.
+      ["Memory Focus memory", "Memory OR Focus"],
+      // A focus already carrying a literal uppercase OR: dropped as a separator (it is in
+      // RECALL_STOPWORDS case-insensitively) and re-supplied by the joiner — semantics
+      // unchanged for the backend.
+      ["alpha OR beta", "alpha OR beta"],
+      ["alpha or beta", "alpha OR beta"],
+      // Stopword-only / short-token-only focus → nothing usable; lane T must be SKIPPED.
+      ["na na sú", ""],
+      ["is to a", ""],
+      ["", ""],
+    ];
+    for (const [focus, expected] of cases) {
+      expect(buildFocusRecallQuery(focus), `focus: ${JSON.stringify(focus)}`).toBe(expected);
+    }
+  });
+
+  it("keeps every emitted term ≤24 chars and the joined query inside the ≤96-char budget", () => {
+    const focus = [
+      "abcdefghijklmnopqrstuvwxyz0123456789",
+      "supercalifragilisticexpialidocious",
+      "konštruktívne-programovanie",
+      "architektúra",
+    ].join(" ");
+    const terms = deriveFocusQueryTokens(focus);
+    expect(terms.length).toBeLessThanOrEqual(RECALL_KEYWORD_MAX_TERMS);
+    for (const term of terms) {
+      expect(term.length).toBeLessThanOrEqual(RECALL_KEYWORD_MAX_TERM_LENGTH);
+    }
+    const query = buildFocusRecallQuery(focus);
+    expect(query.length).toBeLessThanOrEqual(FOCUS_RECALL_QUERY_MAX_LENGTH);
+    // No server-side token-boundary drop: normalization preserves the SAME term count
+    // (terms themselves may arrive character-stripped — the residual diacritic limit).
+    expect(keptWordTerms(normalizeStashSearchQuery(query))).toHaveLength(terms.length);
+    // A pure-ASCII focus survives normalization with its terms EXACTLY.
+    const asciiQuery = buildFocusRecallQuery("alpha bravo charlie delta echo");
+    expect(keptWordTerms(normalizeStashSearchQuery(asciiQuery))).toEqual(["alpha", "bravo", "charlie"]);
+  });
+
+  it("survives the real keyword normalizer with multiple terms where the raw focus collapses to one", () => {
+    const built = buildFocusRecallQuery(OPERATOR_FOCUS);
+    // The builder's shape survives normalization as multiple word terms…
+    expect(normalizeStashSearchQuery(built)).toBe("memory OR projektu OR zamerala");
+    expect(keptWordTerms(normalizeStashSearchQuery(built)).length).toBeGreaterThanOrEqual(2);
+    // …while the RUFU-172 raw phrase is flattened to a single term — the bug, asserted.
+    expect(normalizeStashSearchQuery(OPERATOR_FOCUS)).toBe("memory");
+    expect(keptWordTerms(normalizeStashSearchQuery(OPERATOR_FOCUS))).toHaveLength(1);
+  });
+
+  it("keeps a multi-token lane T query ≥2 whitespace tokens so the vector branch gate holds", () => {
+    // RUFU-126's vector path fires only for ≥2 whitespace tokens of the trimmed raw query;
+    // the OR-joined shape must not silently regress that gate when stashVectorSearch is on.
+    const query = buildFocusRecallQuery(OPERATOR_FOCUS);
+    expect(query.trim().split(/\s+/).length).toBeGreaterThanOrEqual(2);
+    expect(buildFocusRecallQuery("pamäťové hladiny").trim().split(/\s+/).length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+/*
+FNXC:MemoryFocusRecall 2026-09-03-00:21:
+RUFU-173 Symptom Verification. The deployed config runs the Stash KEYWORD path
+(`stashVectorSearch` off), so this fake backend emulates it with the REAL
+normalizeStashSearchQuery applied to the query it receives, case-insensitive term
+containment over a fixture corpus, and a score of distinct-matched-terms (a ts_rank
+proxy) — no real server, no drift from the deployed contract. The reported symptom:
+the operator's multi-word focus matched only via a NON-FIRST term, so RUFU-172's
+raw-phrase lane T (normalized to that first term alone) retrieved nothing topical and
+the cue was lane P only. The same test pins the counterfactual so the improvement is
+asserted, not narrated.
+*/
+describe("lane T keyword-backend behavioral regression (RUFU-173 symptom)", () => {
+  const OPERATOR_FOCUS = "memory projektu zamerala na tu temu"; // no diacritics: survives the server's ASCII strip
+  const LANE_P_QUERY = deriveRecallKeywords(TOPIC).join(" "); // "diskutovali lcm"
+
+  // Corpus fixture: the topic event matches a NON-FIRST focus term ("projektu") and never
+  // the first ("memory"); the lane-P event matches only the lane-P keyword.
+  const TOPIC_EVENT = { path: "memory/topic-notes.md", lineStart: 10, lineEnd: 12, text: "Hladiny projektu a ich vrstvy" };
+  const LANE_P_EVENT = { path: "memory/lcm-log.md", lineStart: 3, lineEnd: 5, text: "Diskutovali sme o LCM B.1 a B.2" };
+
+  /** Emulate the deployed Stash keyword path: real normalizer, term-containment match,
+   *  score = distinct matched terms. The literal `OR` is the backend's operator, never a term. */
+  function emulateKeywordSearch(query: string, limit = 8): MemorySearchResult[] {
+    const terms = normalizeStashSearchQuery(query)
+      .split(/\s+/)
+      .filter((t) => t !== "" && t !== "OR")
+      .map((t) => t.toLowerCase());
+    return [TOPIC_EVENT, LANE_P_EVENT]
+      .map((e) => {
+        const haystack = e.text.toLowerCase();
+        const matched = new Set(terms.filter((t) => haystack.includes(t))).size;
+        return { e, matched };
+      })
+      .filter((s) => s.matched > 0)
+      .sort((a, b) => b.matched - a.matched || a.e.path.localeCompare(b.e.path))
+      .slice(0, limit)
+      .map((s) => makeHit(s.e.path, s.e.lineStart, s.e.lineEnd, s.e.text, s.matched));
+  }
+
+  it("topic hit matched by a non-first focus term leads the cue under the keyword backend", async () => {
+    fakeSearch = (query) => emulateKeywordSearch(query);
+    const cue = await call(TOPIC, { focus: OPERATOR_FOCUS, sessionKey: "symptom-1" });
+    // Lane T shipped the OR-joined shape, not the raw phrase.
+    expect(searchCalls).toHaveLength(2);
+    expect(searchCalls[1].query).toBe("memory OR projektu OR zamerala");
+    const entries = entryLines(cue);
+    // (b) the topic event is retrieved AND leads the cue, with a lane P line surviving.
+    expect(entries[0]).toContain("memory/topic-notes.md:10-12");
+    expect(entries.some((line) => line.includes("memory/lcm-log.md"))).toBe(true);
+    // (c) counterfactual, pinned in-test: the raw focus phrase normalizes to exactly one
+    // term, and that single-term shape matches ZERO corpus events — under RUFU-172's
+    // raw-query lane T this cue had no topical line at all.
+    const rawTerms = normalizeStashSearchQuery(OPERATOR_FOCUS)
+      .split(/\s+/)
+      .filter((t) => t !== "" && t !== "OR");
+    expect(rawTerms).toHaveLength(1);
+    expect(emulateKeywordSearch(OPERATOR_FOCUS)).toHaveLength(0);
+  });
+
+  it("skips lane T entirely for an unusable focus: one search, never an empty query, cue = no-focus cue", async () => {
+    fakeSearch = (query) => (query === LANE_P_QUERY ? [makeHit("p.md", 1, 2, "project hit", 0.9)] : []);
+    const stopwordFocus = await call(TOPIC, { focus: "na na sú", sessionKey: "unusable-1" });
+    // Exactly one search — and NEVER an empty/whitespace query, which would hit Stash's
+    // legacy broad-recall URL and inject non-topical hits into lane T's lead slot.
+    expect(searchCalls).toHaveLength(1);
+    for (const c of searchCalls) expect(c.query.trim()).not.toBe("");
+    const noFocus = await call(TOPIC, { sessionKey: "unusable-2" });
+    expect(stopwordFocus).toBe(noFocus);
+    expect(stopwordFocus).toContain("p.md:1-2");
   });
 });

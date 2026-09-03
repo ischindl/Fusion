@@ -35,9 +35,13 @@ function makeHit(path: string, lineStart: number, lineEnd: number, snippet: stri
 }
 
 let fakeHits: MemorySearchResult[] = [];
-// RUFU-172: per-query routing + query capture, to prove a focus reaches the core's
-// lane-T search as the RAW focus text (the service forwards it verbatim; gating is
-// the caller's job — see runtime-chat-recall-wiring.test.ts).
+// RUFU-172: per-query routing + query capture, to prove a focus reaches the core's lane-T
+// search (the service forwards it verbatim; gating is the caller's job — see
+// runtime-chat-recall-wiring.test.ts).
+//
+// FNXC:MemoryFocusRecall 2026-09-03-00:21: RUFU-173 — lane T's backend query is
+// buildFocusRecallQuery(focus) (content terms OR-joined), not the raw focus phrase, so
+// fixtures key on the built query string.
 let fakeSearch: ((query: string) => MemorySearchResult[]) | null = null;
 let searchQueries: string[] = [];
 
@@ -149,18 +153,20 @@ describe("recallForChatTurn (RUFU-128 Step 6)", () => {
   canonical resolver still collapses ""/whitespace to "no focus", so the byte-identical
   single-search path is preserved for every non-focus caller.
   */
-  it("forwards a focus: a second search queries the RAW focus text; no focus → one search", async () => {
+  it("forwards a focus: a second search queries the OR-joined focus terms; no focus → one search", async () => {
     // A focus string no keyword derivation of TOPIC can equal, so the lane-T query
-    // identity assertion is unambiguous.
+    // identity assertion is unambiguous. RUFU-173: the two content terms reach the
+    // backend OR-joined (hyphenated tokens stay one term).
     const FOCUS = "xterm-ledger focus";
+    const LANE_T_QUERY = "xterm-ledger OR focus";
     fakeSearch = (query) =>
-      query === FOCUS
+      query === LANE_T_QUERY
         ? [makeHit("notes/focus.md", 1, 2, "focus lane hit", 2)]
         : [makeHit("docs/notes.md", 10, 12, "the LCM marker was decided here", 1.5)];
 
     const focused = await call({ sessionId: "svc-focus", focus: FOCUS });
     expect(searchQueries.length).toBe(2);
-    expect(searchQueries[1]).toBe(FOCUS);
+    expect(searchQueries[1]).toBe(LANE_T_QUERY);
     expect(focused).toContain("notes/focus.md");
 
     // No focus (and the "all" sentinel, which the core collapses to no-focus) → one search.

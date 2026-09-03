@@ -322,8 +322,12 @@ describe("createCliAgentRuntime — CLI chat focus lane (RUFU-172)", () => {
       write,
       search: async (_rootDir, opts): Promise<MemorySearchResult[]> => {
         searchQueries.push(opts.query);
-        // Lane T (the raw focus text) answers with the focus-specific hit; lane P
-        // (the whole-project keyword query) answers with the generic project hit.
+        // Lane T answers with the focus-specific hit; lane P (the whole-project
+        // keyword query) answers with the generic project hit.
+        // RUFU-173: lane T's query is buildFocusRecallQuery(focus) — content terms
+        // OR-joined — but FOCUS_TEXT is ONE Unicode token (hyphen stays inside a
+        // token), so the single-token shape is byte-identical and this dispatch key
+        // holds verbatim. Multi-token foci arrive as "term1 OR term2 …" instead.
         if (opts.query === FOCUS_TEXT) {
           return [
             { path: "notes/deploy-ledger.md", lineStart: 3, lineEnd: 7, snippet: "The deploy-ledger focus hit.", score: 9, backend: FOCUS_BACKEND },
@@ -395,8 +399,9 @@ describe("createCliAgentRuntime — CLI chat focus lane (RUFU-172)", () => {
       sessionId: "s-chat",
     });
 
-    // The linked chat session's focus was read and reached the second (lane T) search
-    // as the RAW focus text, and its hit leads the cue alongside the project cue.
+    // The linked chat session's focus was read and reached the second (lane T) search —
+    // as a single Unicode token, FOCUS_TEXT passes the OR-join builder byte-identically —
+    // and its hit leads the cue alongside the project cue.
     expect(getSession).toHaveBeenCalledWith("chat-9");
     expect(searchQueries).toContain(FOCUS_TEXT);
     expect(cue).toContain("notes/deploy-ledger.md");
