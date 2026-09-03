@@ -50,6 +50,7 @@ import {
   mergeBuiltInZaiProviderModels,
   mergeSupplementalAnthropicModels,
   mergeSupplementalOpenAiCodexModels,
+  buildAnthropicClaudeCodeIdentityHeaders,
   toExecutionModelProviderId,
   registerBuiltInGrokProvider,
   registerBuiltInZaiProvider,
@@ -2482,6 +2483,33 @@ export function attachSessionRoutingHeaders(modelRuntime: ModelRuntime, sessionI
   }) as ModelRuntime["getAuth"];
 }
 
+/*
+FNXC:ProviderAuth 2026-09-03-05:30:
+Bundled pi-ai freezes its subscription OAuth identity at claude-cli/2.1.75. Its OAuth client merges caller options headers last, so decorating ModelRuntime.getAuth is the supported override point: Fusion can supply its maintained identity without patching a dependency.
+*/
+export function attachAnthropicClaudeCodeIdentityHeaders(modelRuntime: ModelRuntime): void {
+  const runtimeWithAuth = modelRuntime as unknown as { getAuth?: ModelRuntime["getAuth"] };
+  if (typeof runtimeWithAuth.getAuth !== "function") {
+    piLog.warn("attachAnthropicClaudeCodeIdentityHeaders: modelRuntime.getAuth missing; skipping Claude Code identity header wiring");
+    return;
+  }
+  const resolveAuth = modelRuntime.getAuth.bind(modelRuntime) as ModelRuntime["getAuth"];
+  (modelRuntime as unknown as { getAuth: ModelRuntime["getAuth"] }).getAuth = (async (providerOrModel: Parameters<ModelRuntime["getAuth"]>[0], overrides?: Parameters<ModelRuntime["getAuth"]>[1]) => {
+    const result = await resolveAuth(providerOrModel as never, overrides);
+    if (!result) return undefined;
+    const providerId = typeof providerOrModel === "string" ? providerOrModel : providerOrModel?.provider;
+    const identityHeaders = buildAnthropicClaudeCodeIdentityHeaders({
+      providerId,
+      apiKey: result.auth.apiKey,
+      onWarn: (message) => piLog.warn(message),
+    });
+    return {
+      ...result,
+      auth: { ...result.auth, headers: { ...result.auth.headers, ...identityHeaders } },
+    };
+  }) as ModelRuntime["getAuth"];
+}
+
 /**
  * Create a pi agent session configured for fn.
  * Reuses the user's existing pi auth and model configuration.
@@ -2913,6 +2941,7 @@ export async function createPiAgentSessionRaw(options: AgentOptions): Promise<Ag
   if (sessionRoutingId) {
     attachSessionRoutingHeaders(modelRuntime, sessionRoutingId);
   }
+  attachAnthropicClaudeCodeIdentityHeaders(modelRuntime);
 
   const createSessionWithModel = async (modelOverride?: typeof selectedModel) => {
     // pi-coding-agent 0.68+: `tools` is a string[] allowlist of tool names, not
@@ -3075,6 +3104,11 @@ export async function createPiAgentSessionRaw(options: AgentOptions): Promise<Ag
     FN-9007 advances the exact matched Pi runtime closure from 0.82.1 to 0.84.1.
     Keep constructing sessions through ModelRuntime so Fusion inherits the updated provider
     catalog and SDK behavior without duplicating upstream runtime policy.
+
+    FNXC:ModelCatalog 2026-09-02-22:06:
+    FN-9244 advances the exact matched Pi runtime closure from 0.84.1 to 0.84.4. Continue
+    constructing sessions through ModelRuntime with `noTools: "builtin"`; this upgrade's
+    optional PowerShell builtin remains disabled unless Fusion explicitly allowlists it.
     */
     const createSessionOptions: NonNullable<Parameters<typeof createAgentSession>[0]> = {
       cwd: options.cwd,

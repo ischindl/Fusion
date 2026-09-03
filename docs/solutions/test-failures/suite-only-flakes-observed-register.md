@@ -674,3 +674,21 @@ reached agent creation at all — reads as module-mock ownership racing across f
 `@fusion/core` agent-factory mock, not a wait that needs lengthening. No timeout was widened, no retry
 added, and no assertion relaxed. A SECOND sighting is an ordinary on-sight quarantine with no further
 discretion, per the standing rule in AGENTS.md.
+
+### 15. `packages/cli/src/__tests__/package-config.test.ts` > `shipped agent skills` > `keeps computer-use in the published skill tree`
+
+- **File:** `packages/cli/src/__tests__/package-config.test.ts`
+- **Exact test:** `shipped agent skills > keeps computer-use in the published skill tree`
+- **Owner:** unowned — first sighting, recorded rather than quarantined because the file's remaining 41 tests are substantial coverage and quarantine is file-level.
+- **Observed tree/SHA:** deterministic (not a flake-shape): reproduced on pure `origin/main 2adc171f2c` (fresh probe worktree) and on the v0.78.0-beta.1 merge tree — 1 failed / 41 passed both ways.
+- **Root cause:** host `npm` is 12.0.2, whose `npm pack --dry-run --json` emits a keyed object (`{"<name>": {...}}`) while the test parses npm 10/11 array shape (`packed[0].files`) → `TypeError: Cannot read properties of undefined (reading 'files')` at `package-config.test.ts:565`. Upstream CI (older npm) stays green.
+
+Verbatim observed failure:
+
+```
+FAIL  src/__tests__/package-config.test.ts > shipped agent skills > keeps computer-use in the published skill tree
+TypeError: Cannot read properties of undefined (reading 'files')
+ ❯ src/__tests__/package-config.test.ts:565:46
+```
+
+A proper fix normalizes both npm-JSON shapes test-side (upstream-owned); no assertion was relaxed locally. A SECOND sighting on npm<12 hosts, or any evidence the packlist semantics itself regressed, is an ordinary on-sight quarantine with no further discretion, per the standing rule in AGENTS.md.
