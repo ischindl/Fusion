@@ -10702,91 +10702,97 @@
   },
   "stall": {
     "agent-approval": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "Pendiente de aprobación",
+      "description": "El agente se pausó a sí mismo hasta que una persona apruebe la solicitud de permiso pendiente.",
+      "headline": "Una llamada a herramienta espera tu aprobación",
+      "suggestedAction": "Abre la bandeja de aprobaciones para aprobar o rechazar."
     },
     "completion-blocker": {
-      "badgeLabel": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "Finalización bloqueada",
+      "headline": "La finalización está bloqueada",
+      "suggestedAction": "Abre el detalle para resolver el bloqueador de finalización."
     },
     "dependency-block": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "Bloqueada",
+      "description": "Esta tarjeta depende de otra tarjeta que aún no ha terminado.",
+      "headline": "Esperando la dependencia {{taskId}}",
+      "suggestedAction": "Termina la tarjeta bloqueante o elimina la dependencia.",
+      "headlineUnspecified": "Esperando una dependencia"
     },
     "duplicate-decision": {
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "description": "Un planificador u otro agente la marcó como posible duplicado; necesita tu decisión antes de poder moverse.",
+      "headline": "Esta tarjeta puede ser un duplicado",
+      "suggestedAction": "Abre la decisión de duplicado y conserva la tarjeta canónica más antigua."
     },
     "external-block": {
-      "badgeLabel": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "Bloqueada",
+      "headline": "Bloqueada fuera del worktree",
+      "suggestedAction": "Repara el obstáculo externo y luego reanuda esta tarjeta."
     },
     "failed": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "Fallida",
+      "description": "La última ejecución terminó en un fallo sin mensaje de error capturado.",
+      "headline": "Esta tarjeta falló",
+      "suggestedAction": "Reintenta la tarjeta o abre el detalle para leer el fallo."
     },
     "merge-blocker": {
-      "badgeLabel": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "Fusión bloqueada",
+      "headline": "La fusión está bloqueada",
+      "suggestedAction": "Abre la pestaña Revisión para resolver el bloqueador de la fusión."
     },
     "overlap-block": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "Solapamiento de archivos",
+      "description": "Otra tarjeta activa está editando los mismos archivos, así que esta tarjeta está retenida para evitar un conflicto.",
+      "headline": "Esperando por solapamiento de archivos con {{taskId}}",
+      "suggestedAction": "Deja que la tarjeta con solapamiento aterrice, o reduce el alcance de archivos de esta tarjeta."
     },
     "paused": {
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "description": "Esta tarjeta está en pausa y no se moverá hasta que se reanude.",
+      "headline": "Esta tarjeta está en pausa",
+      "suggestedAction": "Reanuda la tarjeta o abre su detalle para leer el motivo de la pausa."
     },
     "pausedReason": {
       "awaiting-approval": {
-        "headline": ""
+        "headline": "Pendiente de aprobación"
       },
       "budget-exhausted": {
-        "headline": ""
+        "headline": "Presupuesto de salida agotado"
       },
       "error-retry-exhausted": {
-        "headline": ""
+        "headline": "Reintentos automáticos agotados"
       },
       "error-unrecoverable": {
-        "headline": ""
+        "headline": "En pausa con un error irrecuperable"
       },
       "generic": {
-        "headline": ""
+        "headline": "En pausa — {{reason}}"
       },
       "heartbeat-unresponsive": {
-        "headline": ""
+        "headline": "Latido sin respuesta"
       },
       "migrated-from-terminated": {
-        "headline": ""
+        "headline": "Recuperada de un runtime terminado"
       }
     },
     "queued": {
-      "headline": "",
-      "suggestedAction": ""
+      "headline": "Esperando a ser tomada",
+      "suggestedAction": "No se necesita acción; reordena o asigna la tarjeta si otra debe ejecutarse primero."
     },
     "stalled-review": {
-      "badgeLabel": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "Revisión estancada",
+      "headline": "La revisión parece estancada",
+      "suggestedAction": "Vuelve a enviar la revisión o abre el registro de actividad para ver el detalle."
     },
     "wedge": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "Atascada",
+      "description": "Hay una retención de estado atascado permanente sobre esta tarjeta.",
+      "headline": "Esta tarjeta está atascada esperando una decisión",
+      "suggestedAction": "Revisa el aviso de estado atascado y sigue su acción sugerida, o deja que la recuperación reintente."
+    },
+    "held-human-review": {
+      "description": "Nada está rechazando esta tarjeta: el procesamiento automático de fusiones está retenido para ella, así que finalizar la revisión no la fusionará.",
+      "headline": "Esperando a una persona",
+      "suggestedAction": "Fusiona la tarjeta tú mismo o vuelve a activar el procesamiento automático de fusiones."
     }
   }
 }

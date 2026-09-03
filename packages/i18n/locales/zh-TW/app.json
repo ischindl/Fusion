@@ -10702,91 +10702,97 @@
   },
   "stall": {
     "agent-approval": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "等待審批",
+      "description": "智能體已自行暫停，等待人員核准待處理的權限請求。",
+      "headline": "一個工具呼叫正在等待你的核准",
+      "suggestedAction": "開啟審批收件匣進行核准或拒絕。"
     },
     "completion-blocker": {
-      "badgeLabel": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "完成被阻塞",
+      "headline": "完成處理被阻塞",
+      "suggestedAction": "開啟詳情以解除完成阻塞。"
     },
     "dependency-block": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "已阻塞",
+      "description": "此卡片相依於另一張尚未完成的卡片。",
+      "headline": "等待相依性 {{taskId}}",
+      "suggestedAction": "完成阻塞方卡片，或移除該相依性。",
+      "headlineUnspecified": "等待相依項"
     },
     "duplicate-decision": {
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "description": "規劃器或其他智能體將其標記為可能的重複項；需要你的決定後才能移動。",
+      "headline": "此卡片可能是重複項",
+      "suggestedAction": "開啟重複決定，並保留最早的規範卡片。"
     },
     "external-block": {
-      "badgeLabel": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "已阻塞",
+      "headline": "在工作樹之外被阻塞",
+      "suggestedAction": "修復外部障礙後，再恢復此卡片。"
     },
     "failed": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "已失敗",
+      "description": "上次執行以失敗告終，且未擷取到錯誤訊息。",
+      "headline": "此卡片已失敗",
+      "suggestedAction": "重試該卡片，或開啟詳情檢視失敗訊息。"
     },
     "merge-blocker": {
-      "badgeLabel": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "合併被阻塞",
+      "headline": "合併已被阻塞",
+      "suggestedAction": "開啟「審查」索引標籤以解除合併阻塞。"
     },
     "overlap-block": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "檔案重疊",
+      "description": "另一張活動卡片正在編輯相同檔案，此卡片已被擱置以避免衝突。",
+      "headline": "等待與 {{taskId}} 的檔案重疊解除",
+      "suggestedAction": "讓重疊卡片先落地，或縮小此卡片的檔案範圍。"
     },
     "paused": {
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "description": "此卡片已暫停，在恢復前不會移動。",
+      "headline": "此卡片已暫停",
+      "suggestedAction": "恢復該卡片，或開啟其詳情檢視暫停原因。"
     },
     "pausedReason": {
       "awaiting-approval": {
-        "headline": ""
+        "headline": "等待審批"
       },
       "budget-exhausted": {
-        "headline": ""
+        "headline": "輸出預算已耗盡"
       },
       "error-retry-exhausted": {
-        "headline": ""
+        "headline": "自動重試已耗盡"
       },
       "error-unrecoverable": {
-        "headline": ""
+        "headline": "因不可恢復的錯誤而暫停"
       },
       "generic": {
-        "headline": ""
+        "headline": "已暫停 — {{reason}}"
       },
       "heartbeat-unresponsive": {
-        "headline": ""
+        "headline": "心跳無回應"
       },
       "migrated-from-terminated": {
-        "headline": ""
+        "headline": "已從終止的執行期環境恢復"
       }
     },
     "queued": {
-      "headline": "",
-      "suggestedAction": ""
+      "headline": "等待被領取",
+      "suggestedAction": "無需操作；如需其他卡片先執行，請重新排序或指派卡片。"
     },
     "stalled-review": {
-      "badgeLabel": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "審核停滯",
+      "headline": "審核似乎停滯了",
+      "suggestedAction": "重新派送審核，或開啟活動紀錄檢視詳情。"
     },
     "wedge": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "卡住",
+      "description": "此卡片上存在持續的卡住狀態保留。",
+      "headline": "此卡片卡住了，正在等待決定",
+      "suggestedAction": "檢視卡住狀態提示並按照其建議操作，或讓恢復機制重試。"
+    },
+    "held-human-review": {
+      "description": "沒有任何東西在拒絕此卡片：它的自動合併處理被擱置了，因此完成審核並不會合併它。",
+      "headline": "等待人工處理",
+      "suggestedAction": "自行合併該卡片，或重新開啟自動合併處理。"
     }
   }
 }

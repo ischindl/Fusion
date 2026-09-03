@@ -8489,6 +8489,7 @@ export default interface Resources {
         "badgeLabel": "Blocked",
         "description": "This card depends on another card that has not finished yet.",
         "headline": "Waiting on dependency {{taskId}}",
+        "headlineUnspecified": "Waiting on a dependency",
         "suggestedAction": "Finish the blocking card, or remove the dependency."
       },
       "duplicate-decision": {
@@ -8506,6 +8507,11 @@ export default interface Resources {
         "description": "The last run ended in a failure without a captured error message.",
         "headline": "This card failed",
         "suggestedAction": "Retry the card, or open the detail to read the failure."
+      },
+      "held-human-review": {
+        "description": "Nothing is refusing this card: automatic merge processing is withheld for it, so finishing the review does not merge it.",
+        "headline": "Waiting on a person",
+        "suggestedAction": "Merge the card yourself, or turn automatic merge processing back on."
       },
       "merge-blocker": {
         "badgeLabel": "Merge blocked",

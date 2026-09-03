@@ -10702,91 +10702,97 @@
   },
   "stall": {
     "agent-approval": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "Aguardando aprovação",
+      "description": "O agente se pausou até que uma pessoa aprove a solicitação de permissão pendente.",
+      "headline": "Uma chamada de ferramenta está aguardando sua aprovação",
+      "suggestedAction": "Abra a caixa de entrada de aprovações para aprovar ou negar."
     },
     "completion-blocker": {
-      "badgeLabel": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "Conclusão bloqueada",
+      "headline": "A conclusão está bloqueada",
+      "suggestedAction": "Abra o detalhe para resolver o bloqueio da conclusão."
     },
     "dependency-block": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "Bloqueado",
+      "description": "Este cartão depende de outro cartão que ainda não terminou.",
+      "headline": "Aguardando a dependência {{taskId}}",
+      "suggestedAction": "Conclua o cartão bloqueador ou remova a dependência.",
+      "headlineUnspecified": "Aguardando uma dependência"
     },
     "duplicate-decision": {
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "description": "Um planejador ou outro agente o sinalizou como possível duplicata; sua decisão é necessária antes que ele possa se mover.",
+      "headline": "Este cartão pode ser uma duplicata",
+      "suggestedAction": "Abra a decisão de duplicidade e mantenha o cartão canônico mais antigo."
     },
     "external-block": {
-      "badgeLabel": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "Bloqueado",
+      "headline": "Bloqueado fora do worktree",
+      "suggestedAction": "Repare o obstáculo externo e depois retome este cartão."
     },
     "failed": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "Falhou",
+      "description": "A última execução terminou em falha sem mensagem de erro capturada.",
+      "headline": "Este cartão falhou",
+      "suggestedAction": "Tente novamente o cartão ou abra o detalhe para ler a falha."
     },
     "merge-blocker": {
-      "badgeLabel": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "Merge bloqueado",
+      "headline": "O merge está bloqueado",
+      "suggestedAction": "Abra a aba Revisão para resolver o bloqueio do merge."
     },
     "overlap-block": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "Sobreposição de arquivos",
+      "description": "Outro cartão ativo está editando os mesmos arquivos, então este cartão está retido para evitar conflito.",
+      "headline": "Aguardando sobreposição de arquivos com {{taskId}}",
+      "suggestedAction": "Deixe o cartão sobreposto ser incorporado, ou reduza o escopo de arquivos deste cartão."
     },
     "paused": {
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "description": "Este cartão está pausado e não se moverá até ser retomado.",
+      "headline": "Este cartão está pausado",
+      "suggestedAction": "Retome o cartão ou abra o detalhe para ler o motivo da pausa."
     },
     "pausedReason": {
       "awaiting-approval": {
-        "headline": ""
+        "headline": "Aguardando aprovação"
       },
       "budget-exhausted": {
-        "headline": ""
+        "headline": "Orçamento de saída esgotado"
       },
       "error-retry-exhausted": {
-        "headline": ""
+        "headline": "Tentativas automáticas esgotadas"
       },
       "error-unrecoverable": {
-        "headline": ""
+        "headline": "Pausado com erro irrecuperável"
       },
       "generic": {
-        "headline": ""
+        "headline": "Pausado — {{reason}}"
       },
       "heartbeat-unresponsive": {
-        "headline": ""
+        "headline": "Heartbeat sem resposta"
       },
       "migrated-from-terminated": {
-        "headline": ""
+        "headline": "Recuperado de um runtime encerrado"
       }
     },
     "queued": {
-      "headline": "",
-      "suggestedAction": ""
+      "headline": "Aguardando para ser pego",
+      "suggestedAction": "Nenhuma ação necessária; reordene ou atribua o cartão se outro deve rodar primeiro."
     },
     "stalled-review": {
-      "badgeLabel": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "Revisão emperrada",
+      "headline": "A revisão parece emperrada",
+      "suggestedAction": "Reenvie a revisão ou abra o registro de atividade para detalhes."
     },
     "wedge": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "Atascado",
+      "description": "Há uma retenção durável de estado atascado neste cartão.",
+      "headline": "Este cartão está atascado aguardando uma decisão",
+      "suggestedAction": "Reveja o aviso de estado atascado e siga a ação sugerida, ou deixe a recuperação tentar novamente."
+    },
+    "held-human-review": {
+      "description": "Nada está recusando este cartão: o processamento automático de merge está suspenso para ele, então concluir a revisão não fará o merge.",
+      "headline": "Aguardando uma pessoa",
+      "suggestedAction": "Faça o merge do cartão manualmente ou reative o processamento automático de merge."
     }
   }
 }

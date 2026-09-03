@@ -10702,91 +10702,97 @@
   },
   "stall": {
     "agent-approval": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "等待审批",
+      "description": "智能体已自行暂停，等待人员批准待处理的权限请求。",
+      "headline": "一个工具调用正在等待你的批准",
+      "suggestedAction": "打开审批收件箱进行批准或拒绝。"
     },
     "completion-blocker": {
-      "badgeLabel": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "完成被阻塞",
+      "headline": "完成处理被阻塞",
+      "suggestedAction": "打开详情以解除完成阻塞。"
     },
     "dependency-block": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "已阻塞",
+      "description": "此卡片依赖于另一张尚未完成的卡片。",
+      "headline": "等待依赖 {{taskId}}",
+      "suggestedAction": "完成阻塞方卡片，或移除该依赖。",
+      "headlineUnspecified": "等待依赖项"
     },
     "duplicate-decision": {
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "description": "规划器或其他智能体将其标记为可能的重复项；需要你的决定后才能移动。",
+      "headline": "此卡片可能是重复项",
+      "suggestedAction": "打开重复决定，并保留最早的规范卡片。"
     },
     "external-block": {
-      "badgeLabel": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "已阻塞",
+      "headline": "在工作树之外被阻塞",
+      "suggestedAction": "修复外部障碍后，再恢复此卡片。"
     },
     "failed": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "已失败",
+      "description": "上一次运行以失败告终，且未捕获到错误消息。",
+      "headline": "此卡片已失败",
+      "suggestedAction": "重试该卡片，或打开详情查看失败信息。"
     },
     "merge-blocker": {
-      "badgeLabel": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "合并被阻塞",
+      "headline": "合并已被阻塞",
+      "suggestedAction": "打开“审查”选项卡以解除合并阻塞。"
     },
     "overlap-block": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "文件重叠",
+      "description": "另一张活动卡片正在编辑相同文件，此卡片已被搁置以避免冲突。",
+      "headline": "等待与 {{taskId}} 的文件重叠解除",
+      "suggestedAction": "让重叠卡片先落地，或缩小此卡片的文件范围。"
     },
     "paused": {
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "description": "此卡片已暂停，在恢复前不会移动。",
+      "headline": "此卡片已暂停",
+      "suggestedAction": "恢复该卡片，或打开其详情查看暂停原因。"
     },
     "pausedReason": {
       "awaiting-approval": {
-        "headline": ""
+        "headline": "等待审批"
       },
       "budget-exhausted": {
-        "headline": ""
+        "headline": "输出预算已耗尽"
       },
       "error-retry-exhausted": {
-        "headline": ""
+        "headline": "自动重试已耗尽"
       },
       "error-unrecoverable": {
-        "headline": ""
+        "headline": "因不可恢复的错误而暂停"
       },
       "generic": {
-        "headline": ""
+        "headline": "已暂停 — {{reason}}"
       },
       "heartbeat-unresponsive": {
-        "headline": ""
+        "headline": "心跳无响应"
       },
       "migrated-from-terminated": {
-        "headline": ""
+        "headline": "已从终止的运行时恢复"
       }
     },
     "queued": {
-      "headline": "",
-      "suggestedAction": ""
+      "headline": "等待被领取",
+      "suggestedAction": "无需操作；如需其他卡片先运行，请重新排序或指派卡片。"
     },
     "stalled-review": {
-      "badgeLabel": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "审查停滞",
+      "headline": "审查似乎停滞了",
+      "suggestedAction": "重新派发审查，或打开活动日志查看详情。"
     },
     "wedge": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "卡住",
+      "description": "此卡片上存在持久的卡住状态保留。",
+      "headline": "此卡片卡住了，正在等待决定",
+      "suggestedAction": "查看卡住状态提示并按照其建议操作，或让恢复机制重试。"
+    },
+    "held-human-review": {
+      "description": "并没有任何东西在拒绝此卡片：它的自动合并处理被搁置了，因此完成审查并不会合并它。",
+      "headline": "等待人工处理",
+      "suggestedAction": "自行合并该卡片，或重新开启自动合并处理。"
     }
   }
 }

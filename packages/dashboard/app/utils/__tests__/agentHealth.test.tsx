@@ -8,7 +8,17 @@ const FIXED_NOW = new Date("2026-04-10T12:00:00.000Z").getTime();
 
 type AgentHealthInput = Pick<
   Agent,
-  "state" | "lastHeartbeatAt" | "lastError" | "pauseReason" | "runtimeConfig" | "metadata" | "name" | "role" | "taskId"
+  | "state"
+  | "lastHeartbeatAt"
+  | "lastError"
+  | "pauseReason"
+  | "runtimeConfig"
+  | "metadata"
+  | "name"
+  | "role"
+  | "taskId"
+  // RUFU-177: the approval count is a pill input now (it mirrors the module's own input Pick).
+  | "pendingApprovalCount"
 >;
 
 function makeAgent(overrides: Partial<AgentHealthInput> = {}): AgentHealthInput {
@@ -22,6 +32,7 @@ function makeAgent(overrides: Partial<AgentHealthInput> = {}): AgentHealthInput 
     lastError: undefined,
     pauseReason: undefined,
     runtimeConfig: undefined,
+    pendingApprovalCount: undefined,
     ...overrides,
   };
 }
@@ -104,6 +115,77 @@ describe("getAgentHealthStatus", () => {
       const status = getAgentHealthStatus(agent);
       expect(status.label).toBe("Paused");
       expect(status.stateDerived).toBe(true);
+    });
+  });
+
+  /*
+  FNXC:AgentHealthPill 2026-09-02-22:39 (RUFU-177):
+  Pins the pill's precedence ladder for a pending approval: Error > named non-approval pause >
+  AWAITING APPROVAL > heartbeat verdicts > Running/Healthy. The approval state deliberately OUTRANKS the
+  heartbeat-unresponsive branches (spec Step 4): an agent parked at the gate stops heartbeating, so a
+  stale beat beside a pending approval is the SYMPTOM of the wait, not a competing diagnosis --
+  reporting "Unresponsive" there told operators to kill a process that was merely waiting for a click.
+  The label is the catalog's `agents.stallReason.awaiting-approval` wording ("Waiting for approval"),
+  what the Fleet/Agents stall column already says -- not the stall resolver's chip wording.
+  */
+  describe("approval-parked agent", () => {
+    const freshBeat = () => new Date(FIXED_NOW - 30_000).toISOString();
+
+    it('names the wait for an agent blocked on the gate while still reporting "running"', () => {
+      const status = getAgentHealthStatus(makeAgent({ state: "running", pendingApprovalCount: 2 }));
+      expect(status.label).toBe("Waiting for approval");
+      expect(status.stateDerived).toBe(false);
+    });
+
+    it('reads "Waiting for approval" for an engine approval PARK, byte-identically to the count branch', () => {
+      // Completion criterion: the parked and the counted paths cannot disagree on the pill.
+      const parked = getAgentHealthStatus(
+        makeAgent({ state: "paused", pauseReason: "awaiting-approval", pendingApprovalCount: 2 }),
+      );
+      const counted = getAgentHealthStatus(makeAgent({ state: "running", pendingApprovalCount: 2 }));
+      expect(parked.label).toBe("Waiting for approval");
+      expect(parked.label).toBe(counted.label);
+      expect(parked.color).toBe(counted.color);
+    });
+
+    it('names the wait instead of "Healthy" for a live agent that is simply sitting idle', () => {
+      const status = getAgentHealthStatus(
+        makeAgent({ state: "idle", lastHeartbeatAt: freshBeat(), pendingApprovalCount: 1 }),
+      );
+      expect(status.label).toBe("Waiting for approval");
+    });
+
+    it("outranks the heartbeat-unresponsive verdict -- the spec's core symptom (waiting != dead)", () => {
+      // An agent parked at the gate stops heartbeating; this used to read "Unresponsive" and send
+      // operators to restart a process that was merely waiting for a click.
+      const status = getAgentHealthStatus(
+        makeAgent({ state: "idle", lastHeartbeatAt: new Date(FIXED_NOW - 5 * 3_600_000).toISOString(), pendingApprovalCount: 2 }),
+      );
+      expect(status.label).toBe("Waiting for approval");
+    });
+
+    it("outranks heartbeat-disabled and never-beaten labels for the same reason", () => {
+      expect(
+        getAgentHealthStatus(makeAgent({ state: "active", runtimeConfig: { enabled: false }, pendingApprovalCount: 2 })).label,
+      ).toBe("Waiting for approval");
+      expect(getAgentHealthStatus(makeAgent({ state: "active", pendingApprovalCount: 2 })).label).toBe("Waiting for approval");
+    });
+
+    it('keeps "Running" when there is nothing to approve', () => {
+      expect(getAgentHealthStatus(makeAgent({ state: "running", pendingApprovalCount: 0 })).label).toBe("Running");
+      expect(getAgentHealthStatus(makeAgent({ state: "running" })).label).toBe("Running");
+    });
+
+    it("lets a real failure or a differently-named pause outrank the count", () => {
+      expect(
+        getAgentHealthStatus(makeAgent({ state: "error", lastError: "Agent crashed", pendingApprovalCount: 3 })).label,
+      ).toBe("Agent crashed");
+      // The paused branch prints its own pause reason; the count adds no better information than that.
+      expect(
+        getAgentHealthStatus(
+          makeAgent({ state: "paused", pauseReason: "budget-exhausted", pendingApprovalCount: 3 }),
+        ).label,
+      ).toBe("Output budget exhausted");
     });
   });
 

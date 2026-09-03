@@ -8751,4 +8751,173 @@ describe("TaskCard stall-reason wiring", () => {
     // The pre-existing dedicated line is still what the reviewer reads.
     expect(screen.getByText(stalledReview.reason)).toBeDefined();
   });
+
+  /*
+  FNXC:StallReason 2026-09-02-22:13 (RUFU-177):
+  RUFU-175 implemented the `agent-approval` branch (either signal: the engine's approval park, or the
+  read-path `pendingApprovalCount`) but NO surface ever passed `agent`, so the branch was unreachable from
+  the board and a card waiting on a permission decision classified as flowing. These two tests pin the
+  wiring from both sides: the classifier now learns the agent from the shared agents map (the code appears
+  on the card), and the card face still defers to the approval affordance instead of doubling the cause.
+  */
+  describe("passes the assigned agent to the classifier", () => {
+    const approvalAgent = { id: "agent-approval-1", name: "Executor", state: "running", pendingApprovalCount: 2 };
+
+    afterEach(async () => {
+      vi.mocked(fetchAgents).mockReset();
+      vi.mocked(fetchAgents).mockResolvedValue([] as never);
+    });
+
+    it("reaches the agent-approval code from the shared agents map", async () => {
+      vi.mocked(fetchAgents).mockResolvedValue([approvalAgent] as never);
+      render(
+        <TaskCard
+          task={makeTask({ column: "todo", assignedAgentId: approvalAgent.id })}
+          onOpenDetail={noop}
+          addToast={noop}
+        />,
+      );
+      const card = (await waitFor(() => {
+        const el = document.querySelector(".card") as HTMLElement;
+        expect(el.getAttribute("data-task-stall-reason")).toBe("agent-approval");
+        return el;
+      })) as HTMLElement;
+      expect(card).toBeTruthy();
+      // The approvals affordance owns this cause on the face, so no generic chip is added.
+      expect(screen.queryByTestId("card-stall-reason-FN-001")).toBeNull();
+    });
+
+    it("keeps the card flowing when the agent has nothing pending", async () => {
+      vi.mocked(fetchAgents).mockResolvedValue([{ ...approvalAgent, pendingApprovalCount: 0 }] as never);
+      render(
+        <TaskCard
+          task={makeTask({ column: "todo", assignedAgentId: approvalAgent.id })}
+          onOpenDetail={noop}
+          addToast={noop}
+        />,
+      );
+      await waitFor(() => expect(fetchAgents).toHaveBeenCalled());
+      const card = document.querySelector(".card") as HTMLElement;
+      expect(card.hasAttribute("data-task-stall-reason")).toBe(false);
+    });
+
+    /*
+    FNXC:StallReason 2026-09-03-01:01 (RUFU-177):
+    The card-side proof that wiring the agent cannot COST the card its reason. `pendingApprovalCount` is a
+    per-ACTOR aggregate, so an approval pending on another card reads as pending here too; had the
+    face-invisible `agent-approval` code kept its old higher rank, this card's "Waiting on dependency
+    FN-dep" chip would have vanished — restoring the exact silent-stall symptom this task was created to
+    cure. Control: deleting the ranking fix fails this render, not just the unit matrix.
+    */
+    it("keeps the dependency chip while its agent waits on a pending approval", async () => {
+      vi.mocked(fetchAgents).mockResolvedValue([approvalAgent] as never);
+      render(
+        <TaskCard
+          task={makeTask({ column: "todo", blockedBy: "FN-dep", assignedAgentId: approvalAgent.id })}
+          onOpenDetail={noop}
+          addToast={noop}
+        />,
+      );
+      await waitFor(() => expect(fetchAgents).toHaveBeenCalled());
+      const reason = await waitFor(() => screen.getByTestId("card-stall-reason-FN-001"));
+      expect(reason.textContent).toContain("FN-dep");
+      const card = document.querySelector(".card") as HTMLElement;
+      expect(card.getAttribute("data-task-stall-reason")).toBe("dependency-block");
+    });
+  });
+
+  /*
+  FNXC:StallReason 2026-09-02-22:53 (RUFU-177):
+  The server-derived stallReason is the classifier's first authority; these are the card-side proofs.
+  A server-backed merge-blocker names its own code with a visible chip (the operator-facing reason),
+  while ordinary review-lane waits -- held-human-review / pre-merge-gate-pending -- stamp the card's
+  code but keep no abnormal chip on the face (2026-07-26 operator ruling: pre-merge waiting is an
+  ordinary in-review resting state). Blanked, landed, and externally-blocked cards show nothing.
+  The forbidden-wording assertion pins that a human-held card never pairs "merge" with "blocked".
+  */
+  describe("server-backed stallReason codes", () => {
+    const observedAt = "2026-09-02T00:00:00.000Z";
+    const serverStall = (code: "merge-blocker" | "held-human-review" | "pre-merge-gate-pending", reason: string) => ({ code, reason, observedAt });
+
+    it("gives a server merge-blocker card a visible chip naming its headline", () => {
+      render(
+        <TaskCard
+          task={makeTask({ column: "in-review", status: "in-progress", stallReason: serverStall("merge-blocker", "verification refused: pnpm test") })}
+          onOpenDetail={noop}
+          addToast={noop}
+        />,
+      );
+      const chip = screen.getByTestId("card-stall-reason-FN-001");
+      // Visible text is the localized headline; the server sentence rides only the tooltip description.
+      expect(chip.textContent).toContain("Merge is blocked");
+      expect(chip.getAttribute("title")).toContain("verification refused: pnpm test");
+      expect(chip.getAttribute("data-stall-code")).toBe("merge-blocker");
+      const card = document.querySelector(".card") as HTMLElement;
+      expect(card.getAttribute("data-task-stall-reason")).toBe("merge-blocker");
+    });
+
+    it.each(["held-human-review", "pre-merge-gate-pending"] as const)(
+      "stamps a %s card but keeps the chip off the face (ordinary review-lane wait)",
+      (code) => {
+        render(
+          <TaskCard
+            task={makeTask({ column: "in-review", status: "in-progress", stallReason: serverStall(code, "engine work is done; a person is next") })}
+            onOpenDetail={noop}
+            addToast={noop}
+          />,
+        );
+        const card = document.querySelector(".card") as HTMLElement;
+        expect(card.getAttribute("data-task-stall-reason")).toBe(code);
+        expect(screen.queryByTestId("card-stall-reason-FN-001")).toBeNull();
+        expect(screen.queryByText(/merge (is )?blocked/i)).toBeNull();
+      },
+    );
+
+    it("shows no chip on a blanked card (no server field, nothing to say)", () => {
+      render(<TaskCard task={makeTask({ column: "in-review", status: "in-progress" })} onOpenDetail={noop} addToast={noop} />);
+      expect(screen.queryByTestId("card-stall-reason-FN-001")).toBeNull();
+      const card = document.querySelector(".card") as HTMLElement;
+      expect(card.hasAttribute("data-task-stall-reason")).toBe(false);
+    });
+
+    it("shows no chip on a landed card carrying a stale server merge-blocker", () => {
+      render(
+        <TaskCard
+          task={makeTask({ column: "done", stallReason: serverStall("merge-blocker", "verification refused") })}
+          onOpenDetail={noop}
+          addToast={noop}
+        />,
+      );
+      expect(screen.queryByTestId("card-stall-reason-FN-001")).toBeNull();
+      expect(screen.queryByText(/Merge is blocked/i)).toBeNull();
+    });
+
+    it("defers to the external-block affordance when one coexists with a server merge-blocker", () => {
+      render(
+        <TaskCard
+          task={makeTask({
+            column: "in-progress",
+            status: "blocked",
+            paused: true,
+            pausedReason: "external-block",
+            externalBlock: {
+              origin: "credentials",
+              code: "AUTH_REQUIRED",
+              message: "credentials expired",
+              source: "session-failure",
+              blockedAt: "2026-08-28T00:00:00.000Z",
+              resume: { column: "in-progress", currentStep: 0 },
+            },
+            stallReason: serverStall("merge-blocker", "verification refused"),
+          })}
+          onOpenDetail={noop}
+          addToast={noop}
+        />,
+      );
+      // The dedicated notice owns the external cause; the server's code only stamps the row.
+      expect(screen.queryByTestId("card-stall-reason-FN-001")).toBeNull();
+      const card = document.querySelector(".card") as HTMLElement;
+      expect(card.getAttribute("data-task-stall-reason")).toBe("merge-blocker");
+    });
+  });
 });

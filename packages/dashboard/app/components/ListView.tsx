@@ -19,6 +19,7 @@ import { CustomModelDropdown } from "./CustomModelDropdown";
 import { NodeHealthDot } from "./NodeHealthDot";
 import { hasPendingAutomaticRecovery } from "../utils/taskRecovery";
 import { resolveStallReason, stallReasonVisibleOnFace } from "../utils/stallReason";
+import { toStallAgent } from "../utils/stallAgent";
 import { resolveRetryStageCopy } from "../utils/taskRetryCopy";
 import type { ToastType } from "../hooks/useToast";
 import { useViewportMode } from "../hooks/useViewportMode";
@@ -40,6 +41,7 @@ import { WorkflowSwitcher } from "./WorkflowSwitcher";
 import { computeWorkflowStatusCounts } from "./workflowStatusCounts";
 import { writeBoardWorkflowsCache } from "../utils/boardWorkflowsCache";
 import { useBoardWorkflows } from "../hooks/useBoardWorkflows";
+import { useAgentsMapCache } from "../hooks/useAgentsMapCache";
 import { useUnmappedWorkflowRefetch } from "../hooks/useUnmappedWorkflowRefetch";
 import { TaskContextMenu, buildTaskActionMenuModel, getTaskPrAutomationLabel, type TaskContextMenuColumnMetadata, type TaskMenuItemDescriptor } from "./TaskContextMenu";
 import type { DetailTaskOpenOptions, DetailTaskTab } from "../hooks/useModalManager";
@@ -461,6 +463,21 @@ export function ListView({
     refreshBoardWorkflows,
     setBoardWorkflowsState,
   } = useBoardWorkflows({ projectId });
+  /*
+  FNXC:StallReason 2026-09-02-22:06 (RUFU-177):
+  The list rows now hand the owning agent to the stall classifier, so the `agent-approval` code RUFU-175
+  implemented becomes reachable from the list too (the resolver branch had no surface feeding it either
+  signal). The shared agents-map hook is per-project cached and request-deduped, so adding it here costs no
+  extra fetch when TaskCard already holds the same cache -- and it is called at the top level, not from
+  inside the row-render callbacks below.
+  */
+  const { agentsMap } = useAgentsMapCache(projectId);
+  /**
+   * FNXC:StallReason 2026-09-02-22:35 (RUFU-177): the agent whose session could be parked on this row, when
+   * the list knows it, mapped through the shared owner-guarded `toStallAgent` so a shared-map staleness or a
+   * reassignment race cannot let another agent's approval wait stall this row.
+   */
+  const stallAgentFor = (rowTask: Task) => toStallAgent(rowTask, rowTask.assignedAgentId ? agentsMap.get(rowTask.assignedAgentId) : undefined);
   const [headerWorkflowSlot, setHeaderWorkflowSlot] = useState<HTMLElement | null>(() => {
     if (typeof document === "undefined") return null;
     return document.getElementById("header-workflow-slot");
@@ -3057,7 +3074,12 @@ export function ListView({
                           that had no prior face copy: a wedge hold, a dependency/overlap edge (symptom c), and a
                           pause whose pausedReason the badge never named (symptom b).
                           */
-                          const stall = resolveStallReason(task, { t, dataAsOfMs: lastFetchTimeMs, pausedBadgeKeys: { agentPaused: "listView.pausedByAgent" } });
+                          const stall = resolveStallReason(task, {
+                            t,
+                            dataAsOfMs: lastFetchTimeMs,
+                            pausedBadgeKeys: { agentPaused: "listView.pausedByAgent" },
+                            agent: stallAgentFor(task),
+                          });
                           /*
                           FNXC:StallReason 2026-09-01-19:47 (RUFU-175 review):
                           The complete lane suppresses stale pause/failure/dependency state on every other
@@ -3363,7 +3385,12 @@ export function ListView({
                                   ?? getTaskStatusLabel(visualStatus ?? "", t, showOptionalGateBadge ? undefined : getRunningWorkflowStepLabel(task), { idle: !isAgentActive, overlapBlockedBy: task.overlapBlockedBy ?? null, sessionContentionWaitReason: task.sessionContentionWaitReason ?? null });
 
                             // Canonical stall classifier (see the grouped-card path above for the full rationale).
-                            const stall = resolveStallReason(task, { t, dataAsOfMs: lastFetchTimeMs, pausedBadgeKeys: { agentPaused: "listView.pausedByAgent" } });
+                            const stall = resolveStallReason(task, {
+                              t,
+                              dataAsOfMs: lastFetchTimeMs,
+                              pausedBadgeKeys: { agentPaused: "listView.pausedByAgent" },
+                              agent: stallAgentFor(task),
+                            });
                             // The complete lane suppresses stale pause/dependency/wedge state on every other
                             // badge here, so the generic stall chip follows the same `isDoneColumn` gate.
                             const stallReasonOnFace = !isDoneColumn && stallReasonVisibleOnFace(task, stall);

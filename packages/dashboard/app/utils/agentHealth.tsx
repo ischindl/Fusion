@@ -34,6 +34,15 @@ Exported so both surfaces read the SAME strings; rendering is byte-identical —
 */
 export const AGENT_HEALTH_LABEL_HEARTBEAT_DISABLED = "Heartbeat Disabled";
 export const AGENT_HEALTH_LABEL_UNRESPONSIVE = "Unresponsive";
+/*
+FNXC:AgentHealthPill 2026-09-02-22:35 (RUFU-177):
+The pill module has no `t`, but the approval-wait wording must MATCH the shipped catalog
+`agents.stallReason.awaiting-approval` ("Waiting for approval", rendered via t in AgentsView's stall
+column) rather than invent a new phrase, so the agent surfaces and the pill agree on the words. The
+stall RESOLVER's chip keeps its own `stall.agent-approval.badgeLabel` ("Awaiting approval") — different
+namespace, different surface; the pill mirrors the catalog label the Fleet/Agents views already say.
+*/
+export const AGENT_HEALTH_LABEL_AWAITING_APPROVAL = "Waiting for approval";
 
 /** Shape of the health status returned by getAgentHealthStatus */
 export interface AgentHealthStatus {
@@ -57,6 +66,7 @@ type AgentHealthInput = Pick<
   | "name"
   | "role"
   | "taskId"
+  | "pendingApprovalCount"
 >;
 
 /**
@@ -161,6 +171,39 @@ function getHeartbeatRepairMetadata(agent: AgentHealthInput): {
   };
 }
 
+/*
+FNXC:AgentHealthPill 2026-09-02-22:35 (RUFU-177):
+A pending permission request was the one wait the health pill could not see. The engine's approval gate
+parks an agent with `pauseReason: "awaiting-approval"`, and the approval COUNT is a separate read-path
+enrichment (`withPendingApprovalCounts` on the agent API routes). Before RUFU-177 the pill ignored the
+count entirely: an agent blocked on the gate printed "Running" while its state still said running, or
+"Unresponsive"/"Idle" once its heartbeat aged out WHILE it sat waiting, and the request itself only
+appeared in the approvals inbox. Same false-flowing defect RUFU-177 fixes on cards: the fact existed,
+the surface never looked at it.
+
+Precedence ladder (spec Step 4): `Error` > named non-approval pause > AWAITING APPROVAL > heartbeat
+verdicts > `Running`/`Healthy`. The approval state deliberately OUTRANKS the heartbeat-unresponsive
+branches: an agent parked at the gate stops heartbeating, so heartbeat staleness is the SYMPTOM of the
+wait, not a competing diagnosis — reporting "Unresponsive" for it told operators to go kill a process
+that was merely waiting for a click. The trade is recorded honestly: approval rows can outlive a dead
+session, so a stale count can mask a dead agent's "Unresponsive" until the row clears; the spec accepts
+that because the count is what the operator can act on, and the org-chart activity line reads the same
+ladder. `pauseReason: "awaiting-approval"` is translated in the paused branch to the SAME label, so a
+park and a count can never disagree on the pill.
+
+Deliberate non-effect: `resolveFleetVerdictBucket` takes `state` first, so a running agent keeps its
+`active` Fleet strip bucket whatever this label says, and every agent that CAN reach this site is
+already `waitingHuman` there by `pendingApprovalCount`/`pauseReason`. The strip's four counts cannot shift.
+*/
+function awaitingApprovalHealthStatus(): AgentHealthStatus {
+  return {
+    label: AGENT_HEALTH_LABEL_AWAITING_APPROVAL,
+    icon: <Pause size={14} />,
+    color: "var(--state-paused-text)",
+    stateDerived: false,
+  };
+}
+
 export function getAgentHealthStatus(
   agent: AgentHealthInput,
   heartbeatMultiplier: number = 1,
@@ -192,7 +235,14 @@ export function getAgentHealthStatus(
     instead of silently degrading to "Paused", and a pause with no reason stays "Paused".
     */
     const knownLabel: string | undefined = pauseReason ? PAUSE_REASON_LABELS[pauseReason] : undefined;
-    const label = pauseReason ? (knownLabel ?? `Paused: ${pauseReason}`) : "Paused";
+    let label = pauseReason ? (knownLabel ?? `Paused: ${pauseReason}`) : "Paused";
+    /*
+    FNXC:AgentHealthPill 2026-09-02-22:35 (RUFU-177): completion criterion — an approval-PARKED agent
+    (state paused, pauseReason awaiting-approval) must read "Waiting for approval" on every pill surface,
+    byte-identical to what the pendingApprovalCount branch prints below. The stall resolver's chip keeps
+    its own "Awaiting approval" wording; the pill mirrors the catalog label the Fleet/Agents views say.
+    */
+    if (pauseReason === "awaiting-approval") label = AGENT_HEALTH_LABEL_AWAITING_APPROVAL;
     return {
       label,
       icon: <Pause size={14} />,
@@ -200,6 +250,13 @@ export function getAgentHealthStatus(
       stateDerived: !pauseReason,
     };
   }
+
+  /*
+  FNXC:AgentHealthPill 2026-09-02-22:35 (RUFU-177): the count signal sits right after the explicit-state
+  branches — see the ladder above: only Error and a named non-approval pause outrank it; every heartbeat
+  verdict and Running/Healthy below it lose to a pending approval.
+  */
+  if ((agent.pendingApprovalCount ?? 0) > 0) return awaitingApprovalHealthStatus();
 
   if (state === "running" || (isTaskWorker && state === "active")) {
     return {

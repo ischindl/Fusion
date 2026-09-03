@@ -10702,91 +10702,97 @@
   },
   "stall": {
     "agent-approval": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "승인 대기 중",
+      "description": "에이전트가 대기 중인 권한 요청을 사람이 승인할 때까지 스스로 일시 정지했습니다.",
+      "headline": "도구 호출이 승인을 기다리는 중입니다",
+      "suggestedAction": "승인함에서 승인하거나 거부하세요."
     },
     "completion-blocker": {
-      "badgeLabel": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "완료 차단됨",
+      "headline": "완료 처리가 차단되었습니다",
+      "suggestedAction": "세부 정보를 열어 완료 차단 항목을 해결하세요."
     },
     "dependency-block": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "차단됨",
+      "description": "이 카드는 아직 끝나지 않은 다른 카드에 의존합니다.",
+      "headline": "의존성 {{taskId}} 대기 중",
+      "suggestedAction": "차단하는 카드를 완료하거나 의존성을 제거하세요.",
+      "headlineUnspecified": "의존성 대기 중"
     },
     "duplicate-decision": {
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "description": "플래너나 다른 에이전트가 중복 후보로 표시했습니다. 이동하려면 당신의 결정이 필요합니다.",
+      "headline": "이 카드는 중복일 수 있습니다",
+      "suggestedAction": "중복 결정을 열어 원본 카드 중 가장 오래된 것을 유지하세요."
     },
     "external-block": {
-      "badgeLabel": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "차단됨",
+      "headline": "worktree 밖에서 차단됨",
+      "suggestedAction": "외부 장애를 복구한 후 이 카드를 재개하세요."
     },
     "failed": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "실패",
+      "description": "마지막 실행이 오류 메시지 없이 실패로 종료되었습니다.",
+      "headline": "이 카드가 실패했습니다",
+      "suggestedAction": "카드를 다시 시도하거나 세부 정보를 열어 실패 내용을 읽으세요."
     },
     "merge-blocker": {
-      "badgeLabel": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "병합 차단됨",
+      "headline": "병합이 차단되었습니다",
+      "suggestedAction": "검토 탭을 열어 병합 차단 항목을 해결하세요."
     },
     "overlap-block": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "파일 중복",
+      "description": "다른 활성 카드가 같은 파일을 편집 중이므로 충돌을 방지하기 위해 이 카드가 보류되었습니다.",
+      "headline": "{{taskId}}(와)의 파일 중복 대기 중",
+      "suggestedAction": "중복된 카드가 먼저 반영되도록 하거나, 이 카드의 파일 범위를 좁히세요."
     },
     "paused": {
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "description": "이 카드는 일시 정지되어 재개할 때까지 이동하지 않습니다.",
+      "headline": "이 카드는 일시 정지됨",
+      "suggestedAction": "카드를 재개하거나 세부 정보를 열어 일시 정지 사유를 읽으세요."
     },
     "pausedReason": {
       "awaiting-approval": {
-        "headline": ""
+        "headline": "승인 대기 중"
       },
       "budget-exhausted": {
-        "headline": ""
+        "headline": "출력 예산 소진"
       },
       "error-retry-exhausted": {
-        "headline": ""
+        "headline": "자동 재시도 횟수 소진"
       },
       "error-unrecoverable": {
-        "headline": ""
+        "headline": "복구 불가능한 오류로 일시 정지됨"
       },
       "generic": {
-        "headline": ""
+        "headline": "일시 정지 — {{reason}}"
       },
       "heartbeat-unresponsive": {
-        "headline": ""
+        "headline": "하트비트 응답 없음"
       },
       "migrated-from-terminated": {
-        "headline": ""
+        "headline": "종료된 런타임에서 복구됨"
       }
     },
     "queued": {
-      "headline": "",
-      "suggestedAction": ""
+      "headline": "처리될 때까지 대기 중",
+      "suggestedAction": "조치 불필요. 다른 카드를 먼저 실행하려면 순서를 바꾸거나 배정하세요."
     },
     "stalled-review": {
-      "badgeLabel": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "검토 정체",
+      "headline": "검토가 정체된 것으로 보입니다",
+      "suggestedAction": "검토를 다시 전송하거나 활동 로그에서 세부 사항을 확인하세요."
     },
     "wedge": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "고착됨",
+      "description": "이 카드에 영속적인 고착 상태 보류가 설정되어 있습니다.",
+      "headline": "이 카드는 결정을 기다리며 고착되어 있습니다",
+      "suggestedAction": "고착 상태 알림을 검토하고 제안된 조치를 취하거나, 복구가 다시 시도하도록 두세요."
+    },
+    "held-human-review": {
+      "description": "이 카드를 거부하는 것은 없습니다: 자동 병합 처리가 보류되어 있으므로, 검토를 마쳐도 병합되지 않습니다.",
+      "headline": "사람을 기다리는 중",
+      "suggestedAction": "카드를 직접 병합하거나 자동 병합 처리를 다시 켜세요."
     }
   }
 }

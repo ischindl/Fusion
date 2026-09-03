@@ -11,7 +11,10 @@ import {
   PAUSE_REASON_LABELS,
   resolveStallReason,
   isPausedFamilyCode,
+  stallReasonVisibleOnFace,
+  type StallContext,
   type StallReason,
+  type StallReasonCode,
   type StallSubject,
 } from "../stallReason";
 import { getInReviewStallCopy } from "../inReviewStallCopy";
@@ -83,6 +86,38 @@ const stalledReview: StalledReviewSignal = {
   matchCount: 6,
   firstMatchAt: ISO_T,
   lastMatchAt: ISO_T,
+};
+
+/*
+FNXC:StallReason 2026-09-02-21:49 (RUFU-177):
+One fixture per client-side chain code, hoisted so two different invariants read from the SAME factory:
+"every emitted code asks the translator for at least one key" and "a present server field outranks every
+client code". A per-describe copy would let the second test drift from the first and quietly stop covering
+a branch that a later precedence change added.
+The two verbatim review-lane delegates (in-review-stall, stale-paused-review) intentionally reuse their
+English copy modules unchanged (a pre-existing localization debt, not new copy), so they are excluded here
+and asserted equal to their module in the delegation describe above instead.
+*/
+interface ClientFixture {
+  subject: StallSubject;
+  ctx?: Partial<StallContext>;
+}
+
+const clientChainFixtures: Record<string, () => ClientFixture> = {
+  externalBlock: () => ({ subject: subject({ status: "blocked", externalBlock: fullExternalBlock() }) }),
+  duplicateDecision: () => ({ subject: subject({ paused: true, pausedReason: "duplicate-decision-required", sourceMetadata: { duplicateSource: "a" } }) }),
+  agentPaused: () => ({ subject: subject({ paused: true, pausedByAgentId: "a" }) }),
+  userPaused: () => ({ subject: subject({ paused: true, userPaused: true }) }),
+  enginePaused: () => ({ subject: subject({ paused: true, pausedReason: "budget-exhausted" }) }),
+  agentApproval: () => ({ subject: subject({ status: "in-progress" }), ctx: { agent: { pendingApprovalCount: 1 } } }),
+  wedge: () => ({ subject: subject({ wedgeNotification: { reasonKey: "k", episodeId: "e", status: "active", transitionedAt: ISO_T } }) }),
+  dependencyBlock: () => ({ subject: subject({ blockedBy: "FN-1" }) }),
+  overlapBlock: () => ({ subject: subject({ overlapBlockedBy: "FN-2" }) }),
+  mergeBlocker: () => ({ subject: subject(), ctx: { mergeBlockerReason: "m" } }),
+  completionBlocker: () => ({ subject: subject(), ctx: { completionBlockerReason: "c" } }),
+  stalledReview: () => ({ subject: subject({ stalledReview }) }),
+  failed: () => ({ subject: subject({ status: "failed", error: "e" }) }),
+  queued: () => ({ subject: subject({ queuedReason: "q" }) }),
 };
 
 describe("resolveStallReason — flow and precedence", () => {
@@ -340,6 +375,78 @@ describe("resolveStallReason — non-pause codes reach the translator", () => {
     expect(result).toBeUndefined();
   });
 
+  /*
+  FNXC:StallReason 2026-09-03-01:01 (RUFU-177):
+  RUFU-177's consumer wiring made this branch reachable from the board, and its ranking turned out to be
+  load-bearing: `pendingApprovalCount` is a per-ACTOR aggregate (`getPendingCountsByActor`), so an approval
+  pending on card X is reported on every card that agent owns. Ranked ahead of the card-specific blockers it
+  therefore erased THEIR only visible affordance — `agent-approval` renders no face chip and no detail banner
+  — which is the silent-stall state this whole feature exists to cure (a `todo` card waiting on FN-9 went
+  blank because its agent was parked on another card's approval). These cases pin the invariant for BOTH
+  approval signals and every face-visible card cause, while keeping the two rankings that are correct: a
+  pause written on THIS card outranks the agent's wait, a review-lane code does not, and the server field
+  outranks everything.
+  */
+  describe("an agent approval wait never masks a card-specific blocker", () => {
+    const approvalSignals: Array<[string, StallContext["agent"]]> = [
+      ["the read-path pendingApprovalCount", { state: "running", pendingApprovalCount: 2 }],
+      ["the engine approval park", { state: "paused", pauseReason: "awaiting-approval" }],
+    ];
+    const cardCauses: Array<[string, () => StallSubject, StallContext, StallReasonCode]> = [
+      ["an unmet dependency edge", () => subject({ column: "todo", status: "todo", blockedBy: "FN-9" }), {}, "dependency-block"],
+      [
+        "an active wedge",
+        () => subject({ wedgeNotification: { reasonKey: "k", episodeId: "e", status: "active", transitionedAt: ISO_T } }),
+        {},
+        "wedge",
+      ],
+      ["an overlap edge", () => subject({ overlapBlockedBy: "FN-3" }), {}, "overlap-block"],
+      ["a merge blocker", () => subject({ column: "in-review" }), { mergeBlockerReason: "pre-merge check 'lint' failed" }, "merge-blocker"],
+      ["a completion blocker", () => subject({ column: "in-review" }), { completionBlockerReason: "awaiting validation" }, "completion-blocker"],
+    ];
+
+    for (const [signalName, agent] of approvalSignals) {
+      for (const [causeName, makeCauseSubject, extraCtx, expected] of cardCauses) {
+        it(`${signalName} does not mask ${causeName}`, () => {
+          const { t } = makeT();
+          const result = resolveStallReason(makeCauseSubject(), { t, agent, ...extraCtx } as StallContext);
+          expect(result?.code).toBe(expected);
+        });
+      }
+    }
+
+    it("still classifies a card that has no blocker of its own", () => {
+      const { t } = makeT();
+      const result = resolveStallReason(subject({ status: "in-progress" }), { t, agent: { pendingApprovalCount: 2 } });
+      expect(result?.code).toBe("agent-approval");
+    });
+
+    it("still ranks behind a pause written on THIS card", () => {
+      const { t } = makeT();
+      const result = resolveStallReason(
+        subject({ userPaused: true, pausedReason: "manual-intervention" }),
+        { t, agent: { pendingApprovalCount: 2 } },
+      );
+      expect(result?.code).toBe("user-paused");
+    });
+
+    it("still ranks ahead of a review-lane code, whose dedicated badge renders on its own", () => {
+      const { t } = makeT();
+      const signal: InReviewStallSignal = { code: "merge-retries-exhausted", reason: "r", observedAt: ISO_T };
+      const result = resolveStallReason(subject({ column: "in-review", inReviewStall: signal }), { t, agent: { pendingApprovalCount: 2 } });
+      expect(result?.code).toBe("agent-approval");
+    });
+
+    it("does not outrank the server's own answer", () => {
+      const { t } = makeT();
+      const result = resolveStallReason(
+        subject({ column: "in-review", stallReason: { code: "merge-blocker", reason: "pre-merge check failed", observedAt: ISO_T } }),
+        { t, agent: { pendingApprovalCount: 2 } },
+      );
+      expect(result?.code).toBe("merge-blocker");
+    });
+  });
+
   it("wedge (active) uses its supplied descriptor prose and computes ageMs; resolved wedge is skipped", () => {
     const { t, call } = makeT();
     const active = resolveStallReason(
@@ -482,27 +589,7 @@ describe("resolveStallReason — age never consults the wall clock when dataAsOf
 });
 
 describe("resolveStallReason — every emitted code asks the translator for at least one key", () => {
-  // The two verbatim review-lane delegates (in-review-stall, stale-paused-review) intentionally reuse
-  // their English copy modules unchanged (a pre-existing localization debt, not new copy), so they are
-  // excluded from the "did it call t" check and instead asserted equal to their module above.
-  const localizedCodes: Record<string, () => { subject: StallSubject; ctx?: Parameters<typeof resolveStallReason>[1] }> = {
-    externalBlock: () => ({ subject: subject({ status: "blocked", externalBlock: fullExternalBlock() }), ctx: undefined }),
-    duplicateDecision: () => ({ subject: subject({ paused: true, pausedReason: "duplicate-decision-required", sourceMetadata: { duplicateSource: "a" } }) }),
-    agentPaused: () => ({ subject: subject({ paused: true, pausedByAgentId: "a" }) }),
-    userPaused: () => ({ subject: subject({ paused: true, userPaused: true }) }),
-    enginePaused: () => ({ subject: subject({ paused: true, pausedReason: "budget-exhausted" }) }),
-    agentApproval: () => ({ subject: subject({ status: "in-progress" }), ctx: { agent: { pendingApprovalCount: 1 } } as never }),
-    wedge: () => ({ subject: subject({ wedgeNotification: { reasonKey: "k", episodeId: "e", status: "active", transitionedAt: ISO_T } }) }),
-    dependencyBlock: () => ({ subject: subject({ blockedBy: "FN-1" }) }),
-    overlapBlock: () => ({ subject: subject({ overlapBlockedBy: "FN-2" }) }),
-    mergeBlocker: () => ({ subject: subject(), ctx: { mergeBlockerReason: "m" } as never }),
-    completionBlocker: () => ({ subject: subject(), ctx: { completionBlockerReason: "c" } as never }),
-    stalledReview: () => ({ subject: subject({ stalledReview }) }),
-    failed: () => ({ subject: subject({ status: "failed", error: "e" }) }),
-    queued: () => ({ subject: subject({ queuedReason: "q" }) }),
-  };
-
-  for (const [label, make] of Object.entries(localizedCodes)) {
+  for (const [label, make] of Object.entries(clientChainFixtures)) {
     it(`${label} records at least one translated key`, () => {
       const { t, calls } = makeT();
       const fixture = make();
@@ -512,4 +599,208 @@ describe("resolveStallReason — every emitted code asks the translator for at l
       expect(calls.length, `${label} produced no translator call`).toBeGreaterThan(0);
     });
   }
+});
+
+/*
+FNXC:StallReason 2026-09-02-21:49 (RUFU-177):
+RUFU-174's read path is the authority for "why is this card standing still?", so a present
+`task.stallReason` must decide the classification ahead of every client-side branch — including the
+external block, which the client chain used to rank first. These tests pin that outranking for EVERY
+client code (one winner per cause: a card whose server answer is `dependency-blocker` must not also be
+read as a client-side dependency/overlap/merge stall), the verbatim code identity that keeps the two
+authorities distinguishable, and the two rules that protect the user from the server's internals:
+the authority's free-text `reason` never becomes headline/badge copy, and a `{{taskId}}` template can
+never reach the DOM uninterpolated.
+*/
+
+type ServerCode = "merge-blocker" | "pre-merge-gate-pending" | "dependency-blocker" | "held-human-review";
+
+function serverStall(code: ServerCode | (string & {}), reason = "canonical blocker sentence from the authority") {
+  return { code, reason, observedAt: ISO_T };
+}
+
+describe("resolveStallReason — the server field outranks the client classifier", () => {
+  for (const [label, make] of Object.entries(clientChainFixtures)) {
+    it(`${label}: a present server field wins and no client copy is requested`, () => {
+      const { t, calls } = makeT();
+      const fixture = make();
+      const ctx = (fixture.ctx ?? {}) as Parameters<typeof resolveStallReason>[1];
+      const withServer = { ...fixture.subject, stallReason: serverStall("dependency-blocker") };
+      const result = resolveStallReason(withServer, { ...ctx, t });
+      expect(result?.code).toBe("dependency-blocker");
+      // Only the server's mapped copy was requested: none of the client branch's own keys appear.
+      expect(calls.map((c) => c.key)).toContain("stall.dependency-block.badgeLabel");
+      expect(calls.every((c) => c.key.startsWith("stall.dependency-block."))).toBe(true);
+    });
+  }
+
+  it("keeps the client chain byte-identical when the server field is absent (regression pin)", () => {
+    // Same fixture, same context, twice: once with no stallReason and once with the field explicitly
+    // undefined (the shape the fresh-agent-log sanitizer produces). Both must classify identically.
+    const a = makeT();
+    const b = makeT();
+    const fixture = clientChainFixtures.mergeBlocker!();
+    const ctx = { ...(fixture.ctx ?? {}) } as Parameters<typeof resolveStallReason>[1];
+    const withoutField = resolveStallReason(fixture.subject, { ...ctx, t: a.t });
+    const withUndefined = resolveStallReason({ ...fixture.subject, stallReason: undefined }, { ...ctx, t: b.t });
+    expect(withoutField).toEqual(withUndefined);
+    expect(withoutField?.code).toBe("merge-blocker");
+    expect(a.calls).toEqual(b.calls);
+  });
+
+  it("maps merge-blocker onto the localized merge copy while keeping the authority text as detail", () => {
+    const { t, call } = makeT();
+    const result = resolveStallReason(subject({ column: "in-review", stallReason: serverStall("merge-blocker") }), { t });
+    expect(result?.code).toBe("merge-blocker");
+    expect(call("stall.merge-blocker.headline")!.fallback).toBe("Merge is blocked");
+    expect(result?.description).toBe("canonical blocker sentence from the authority");
+  });
+
+  it("maps pre-merge-gate-pending onto the merge group but keeps its own code identity", () => {
+    const { t, call } = makeT();
+    const result = resolveStallReason(
+      subject({ column: "in-review", stallReason: serverStall("pre-merge-gate-pending", "pre-merge steps not run") }),
+      { t },
+    );
+    // Same copy group as a real merge blocker (an unrun gate does block the merge) ...
+    expect(call("stall.merge-blocker.badgeLabel")!.fallback).toBe("Merge blocked");
+    // ... but a distinguishable code, so surfaces and tests can still tell the two causes apart.
+    expect(result?.code).toBe("pre-merge-gate-pending");
+    expect(result?.code).not.toBe("merge-blocker");
+  });
+
+  it("describes dependency-blocker with dependency copy, never with the merge wording", () => {
+    const { t, call, keys } = makeT();
+    const result = resolveStallReason(
+      subject({ blockedBy: "FN-42", stallReason: serverStall("dependency-blocker") }),
+      { t },
+    );
+    expect(result?.code).toBe("dependency-blocker");
+    expect(call("stall.dependency-block.headline")!.resolved).toContain("FN-42");
+    expect(keys().some((k) => k.startsWith("stall.merge-blocker."))).toBe(false);
+    // The authority's sentence is not needed to name a dependency, so localized copy wins here.
+    expect(result?.description).not.toContain("canonical blocker sentence");
+  });
+
+  it("falls back to a non-interpolating dependency headline when no single blocker is named", () => {
+    const { t, call } = makeT();
+    // The server also fires dependency-blocker for a `dependencies` edge, which carries no blockedBy id.
+    const result = resolveStallReason(subject({ stallReason: serverStall("dependency-blocker") }), { t });
+    expect(call("stall.dependency-block.headlineUnspecified")!.fallback).toBe("Waiting on a dependency");
+    // A literal template token must never reach the DOM.
+    expect(result?.headline).not.toContain("{{taskId}}");
+    expect(call("stall.dependency-block.headline")).toBeUndefined();
+  });
+
+  it("describes held-human-review as waiting on a person and never as a blocked merge", () => {
+    const { t, call, calls } = makeT();
+    const result = resolveStallReason(
+      subject({ column: "in-review", stallReason: serverStall("held-human-review", "Waiting on a human: automatic merge processing is withheld") }),
+      { t },
+    );
+    expect(result?.code).toBe("held-human-review");
+    expect(call("stall.held-human-review.headline")!.fallback).toBe("Waiting on a person");
+    // No visible string may pair "merge" with "blocked": nothing is refusing this card.
+    for (const c of calls) {
+      const text = `${c.fallback} ${c.resolved}`;
+      expect(text).not.toMatch(/blocked/i);
+      if (/merge/i.test(text)) expect(text).not.toMatch(/blocked/i);
+    }
+    // The server's fixed English sentence is translator-owned prose, so it is NOT rendered verbatim.
+    expect(result?.description).not.toContain("Waiting on a human:");
+  });
+
+  /*
+  FNXC:StallReason 2026-09-02-22:06 (RUFU-177):
+  `clearInReviewStallForFreshAgentLog` (useTasks.ts) blanks `stallReason` alongside the three sibling
+  stall badges while an agent is visibly streaming logs, so the authority's answer disappears for a poll
+  cycle. The card must then fall back to what its own row says rather than go silent — the sanitizer is a
+  freshness heuristic, not a claim that nothing is wrong. The cleared shape (`stallReason: undefined`) is
+  written here exactly as that helper returns it.
+  */
+  it("falls back to the client chain after the fresh-agent-log sanitizer blanks the server field", () => {
+    const { t } = makeT();
+    const live = subject({ column: "in-review", blockedBy: "FN-BLOCK", stallReason: serverStall("merge-blocker") });
+    expect(resolveStallReason(live, { t })?.code).toBe("merge-blocker");
+    const afterClear = { ...live, stallReason: undefined };
+    expect(resolveStallReason(afterClear, { t })?.code).toBe("dependency-block");
+  });
+
+  it("fails open to the client chain for a server code it does not know", () => {
+    const { t } = makeT();
+    const result = resolveStallReason(
+      subject({ blockedBy: "FN-7", stallReason: serverStall("some-future-code") }),
+      { t },
+    );
+    expect(result?.code).toBe("dependency-block");
+  });
+});
+
+/*
+FNXC:StallReason 2026-09-02-22:01 (RUFU-177):
+The face-visibility predicate is now the ONE arbiter behind four surfaces (card chip, desktop row, mobile
+card, detail banner), and it is what decides the two decisions this task turns on: which server-backed
+codes become a visible reason, and which ordinary review-lane waits stay off the card face but are still
+named in the detail view. The expectation table is typed as an exhaustive `Record<StallReasonCode, …>`, so
+adding a code to the union without deciding its visibility is a compile error rather than a silent
+`default: false` — the drift that left merge-blocker with no visible reason in the first place.
+*/
+
+function makeStall(code: StallReasonCode): StallReason {
+  return { code, badgeLabel: "badge", headline: "headline", description: "description", suggestedAction: "action" };
+}
+
+/** [visible with a pausedReason present, visible without one, visible to a detail surface (a card that
+ *  names its pause reason, since the detail view is a superset of the face rather than a different list)] */
+const faceExpectations: Record<StallReasonCode, readonly [boolean, boolean, boolean]> = {
+  // The ExternalBlockNotice owns this cause; the predicate also drops every code while a block is present.
+  "external-block": [false, false, false],
+  // Dedicated affordances: the Needs-your-decision badge, the review badges/reason lines, the card-error
+  // line, and the plain Queued badge already say these.
+  "duplicate-decision": [false, false, false],
+  "in-review-stall": [false, false, false],
+  "stalled-review": [false, false, false],
+  "stale-paused-review": [false, false, false],
+  failed: [false, false, false],
+  queued: [false, false, false],
+  // The card's awaiting-approval affordance owns this one.
+  "agent-approval": [false, false, false],
+  // A pause earns a visible reason only when it can name one.
+  "agent-paused": [true, false, true],
+  "user-paused": [true, false, true],
+  "engine-paused": [true, false, true],
+  // Faults and edges, client-derived or server-derived: one visible reason per cause.
+  wedge: [true, true, true],
+  "dependency-block": [true, true, true],
+  "dependency-blocker": [true, true, true],
+  "overlap-block": [true, true, true],
+  // The flipped pair: an in-review card whose merge genuinely refuses used to name nothing anywhere.
+  "merge-blocker": [true, true, true],
+  "completion-blocker": [true, true, true],
+  // Ordinary review-lane waits: named by the detail banner, never presented as a face-level fault.
+  "pre-merge-gate-pending": [false, false, true],
+  "held-human-review": [false, false, true],
+};
+
+describe("stallReasonVisibleOnFace — exhaustive per-code matrix", () => {
+  for (const [code, [withReason, withoutReason, detailVisible]] of Object.entries(faceExpectations)) {
+    it(`${code}: face ${withReason ? "shows" : "suppresses"} the chip (reason ${withoutReason ? "absent" : "irrelevant"}), detail ${detailVisible ? "shows" : "suppresses"} the banner`, () => {
+      const stalled = makeStall(code as StallReasonCode);
+      const namedPause = subject({ pausedReason: "budget-exhausted" });
+      expect(stallReasonVisibleOnFace(namedPause, stalled)).toBe(withReason);
+      expect(stallReasonVisibleOnFace(subject(), stalled)).toBe(withoutReason);
+      // The detail surface sees a superset: every face code stays visible, plus the detail-only codes.
+      expect(stallReasonVisibleOnFace(namedPause, stalled, { allowDetailOnlyCodes: true })).toBe(detailVisible);
+      // No stall, no chip, in either mode.
+      expect(stallReasonVisibleOnFace(subject(), undefined)).toBe(false);
+    });
+  }
+
+  it("drops every code while the ExternalBlockNotice owns the cause, on both surfaces", () => {
+    const blocked = subject({ status: "blocked", externalBlock: fullExternalBlock() });
+    for (const code of Object.keys(faceExpectations) as StallReasonCode[]) {
+      expect(stallReasonVisibleOnFace(blocked, makeStall(code)), code).toBe(false);
+      expect(stallReasonVisibleOnFace(blocked, makeStall(code), { allowDetailOnlyCodes: true }), code).toBe(false);
+    }
+  });
 });

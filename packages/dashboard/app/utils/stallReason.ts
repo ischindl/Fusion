@@ -1,6 +1,6 @@
 import type { TFunction } from "i18next";
 import type { Task, TaskExternalBlock } from "@fusion/core";
-import { formatTaskExternalBlockReason } from "@fusion/core";
+import { formatTaskExternalBlockReason, isTaskExternallyBlocked } from "@fusion/core";
 import { elapsedSinceMs } from "./dataFreshness";
 import { getInReviewStallCopy } from "./inReviewStallCopy";
 import { getStalePausedReviewCopy } from "./stalePausedReviewCopy";
@@ -31,9 +31,15 @@ Precedence (first match wins) is deliberately ordered by "most externally-forced
 actionable" so a card that is simultaneously, say, externally blocked AND paused reports the
 external block (the thing that actually must be fixed) rather than the incidental pause the block
 itself wrote:
-  external-block -> duplicate-decision -> agent-paused -> user-paused -> engine-paused
-  -> agent-approval -> wedge -> dependency-block -> overlap-block -> merge-blocker
-  -> completion-blocker -> in-review-stall -> stalled-review -> stale-paused-review -> failed -> queued
+  SERVER FIELD -> external-block -> duplicate-decision -> agent-paused -> user-paused -> engine-paused
+  -> wedge -> dependency-block -> overlap-block -> merge-blocker -> completion-blocker
+  -> agent-approval -> in-review-stall -> stalled-review -> stale-paused-review -> failed -> queued
+
+The agent's approval wait sits after the card-specific blockers because it is an AGGREGATE per actor
+(`getPendingCountsByActor`), not a fact about this card, and it renders no face affordance of its own —
+ranked higher it would silence a real per-card reason. See the `agent-approval` branch for the full rule.
+
+The chain below runs only when the server had nothing to say — see `serverStallReason`.
 
 NOTE: an external block WRITES paused:true + pausedReason:"external-block" onto the task
 (buildTaskExternalBlockPatch), so external-block MUST be evaluated before the paused family or the
@@ -57,7 +63,20 @@ export type StallReasonCode =
   | "stalled-review"
   | "stale-paused-review"
   | "failed"
-  | "queued";
+  | "queued"
+  /*
+  FNXC:StallReason 2026-09-02-21:49 (RUFU-177):
+  The three server-backed codes below are carried VERBATIM from RUFU-174's `TaskStallReasonCode`
+  (`packages/core/src/tasks/task-stall-reason.ts`) instead of being folded into the client codes that
+  happen to render the same copy. `dependency-blocker` (server) and `dependency-block` (client) describe
+  the same situation from two authorities, and collapsing them would make the two answers
+  indistinguishable in `data-stall-code`, in tests, and to any surface that must know whether the
+  board's authority spoke or the card guessed. `completion-blocker` has no server counterpart — the
+  server only reports merge-lane and dependency-lane answers.
+  */
+  | "dependency-blocker"
+  | "pre-merge-gate-pending"
+  | "held-human-review";
 
 export interface StallReason {
   code: StallReasonCode;
@@ -92,6 +111,8 @@ export interface StallSubject
     | "sourceMetadata"
     | "externalBlock"
     | "blockedBy"
+    // RUFU-177: the server-derived answer to this very question, hydrated on every task read.
+    | "stallReason"
     | "overlapBlockedBy"
     | "wedgeNotification"
     | "status"
@@ -161,6 +182,15 @@ export interface StallContext {
   server codes through this seam (and, per the interface-contract, lets a present `task.stallReason`
   win verbatim ahead of the client-side classifier) rather than minting a second parallel authority.
   Building that wiring here would be re-adding the dual-authority this feature exists to remove.
+
+  FNXC:StallReason 2026-09-02-21:49 (RUFU-177): the promised follow-up has landed. RUFU-174 is on this
+  lineage (`task.stallReason?: TaskStallReason`, hydrated in `packages/core/src/task-store/reads.ts`) and
+  `serverStallReason` below is the mapping this note asked for, so the seam note above is now history.
+  These two context fields are NOT the server channel and were not retired: `mergeBlockerReason` and
+  `completionBlockerReason` remain the seam for a surface that resolves a blocker itself that the read
+  path does not cover (a completion blocker computed in the detail view, for example), which is why they
+  stay plain optional strings and still sit at their original position in the client chain — behind the
+  server field, never in front of it.
   */
   /** A pre-merge blocker reason, when the surface has resolved one (see RUFU-174 seam note above). */
   mergeBlockerReason?: string;
@@ -347,11 +377,11 @@ function dependencyReason(subject: StallSubject, context: StallContext, overlap:
 
 function blockerReason(
   reason: string,
-  code: Extract<StallReasonCode, "merge-blocker" | "completion-blocker">,
+  code: Extract<StallReasonCode, "merge-blocker" | "completion-blocker" | "pre-merge-gate-pending">,
   context: StallContext,
 ): StallReason {
   const { t } = context;
-  if (code === "merge-blocker") {
+  if (code !== "completion-blocker") {
     return {
       code,
       badgeLabel: t("stall.merge-blocker.badgeLabel", "Merge blocked"),
@@ -366,6 +396,95 @@ function blockerReason(
     headline: t("stall.completion-blocker.headline", "Completion is blocked"),
     description: reason,
     suggestedAction: t("stall.completion-blocker.suggestedAction", "Open the detail to resolve the completion blocker."),
+  };
+}
+
+/*
+FNXC:StallReason 2026-09-02-21:49 (RUFU-177):
+RUFU-174's read path already answered "why is this card standing still?" by asking the real authorities
+(`getTaskMergeBlocker` for the review lane, `allowsAutoMergeProcessing` for a human hold,
+`getTaskCompletionBlocker` for live dependency edges) and shipping the verdict as `task.stallReason`. When
+that field is present the SERVER'S answer is the classification — it outranks every client-side branch
+below, which stays only as the fallback for reads that deliberately produced nothing (fresh-agent-log
+suppression, a terminal lane, or a probe that failed open). Evaluating it first is also what keeps exactly
+ONE affordance per cause: a review-lane card with an unresolved `blockedBy` would otherwise show a
+dependency chip while the board's own authority says the merge is what refuses.
+
+`code` identity is preserved verbatim (`dependency-blocker` is not rewritten to the client's
+`dependency-block`) so the two authorities stay distinguishable even though they share a copy group.
+
+Why the server's free-text `reason` never becomes rendered copy: it is the underlying authority's canonical
+sentence — engine-authored English diagnostic data, not translator-owned prose — so a headline or badge
+built from it would be untranslatable and would change wording every time the authority's text is reworded
+(the type's own doc comment says `reason` "is display copy and may be reworded; consumers that branch must
+branch on `code`"). Headline, badge and suggested action therefore always come from the mapped `stall.*`
+catalog group. `reason` is carried as `description` only for the two merge-blocker codes, where it is the
+sole text naming WHICH gate or check refuses; that is the same contract `external-block` and
+`stalled-review` already use. Where localized copy can name the cause (dependency, human hold) the
+localized copy wins and the server prose is dropped.
+*/
+function serverStallReason(subject: StallSubject, context: StallContext): StallReason | undefined {
+  const server = subject.stallReason;
+  if (!server) return undefined;
+  switch (server.code) {
+    case "merge-blocker":
+    // fallthrough: an enabled gate that has not run yet genuinely blocks the merge, so it shares the merge-blocker copy group; only its code (and therefore its test/data attribute) differs.
+    case "pre-merge-gate-pending":
+      return blockerReason(server.reason, server.code, context);
+    case "dependency-blocker":
+      return serverDependencyReason(subject, context);
+    case "held-human-review":
+      return heldHumanReviewReason(context);
+    default:
+      /*
+      An unknown or not-yet-mapped server code must not fabricate a label and must not swallow the card:
+      fail open to the client chain, matching the derivation's own fail-open contract (a missing reason is
+      acceptable, a lying one is not).
+      */
+      return undefined;
+  }
+}
+
+/**
+ * Server-named dependency wait, described by the existing localized `stall.dependency-block` group.
+ * The `{{taskId}}` headline is used only when the card carries a single named `blockedBy` marker: the
+ * server also fires this code for a `dependencies` edge with no such marker, and guessing one would name
+ * an arbitrary (possibly already-satisfied) card as the blocker — so the non-interpolating variant is
+ * the only honest headline then. A literal `{{taskId}}` may never reach the DOM.
+ */
+function serverDependencyReason(subject: StallSubject, context: StallContext): StallReason {
+  const { t } = context;
+  const blockerId = subject.blockedBy?.trim();
+  return {
+    code: "dependency-blocker",
+    badgeLabel: t("stall.dependency-block.badgeLabel", "Blocked"),
+    headline: blockerId
+      ? t("stall.dependency-block.headline", "Waiting on dependency {{taskId}}", { taskId: blockerId })
+      : t("stall.dependency-block.headlineUnspecified", "Waiting on a dependency"),
+    description: t("stall.dependency-block.description", "This card depends on another card that has not finished yet."),
+    suggestedAction: t("stall.dependency-block.suggestedAction", "Finish the blocking card, or remove the dependency."),
+  };
+}
+
+/*
+FNXC:StallReason 2026-09-02-21:49 (RUFU-177):
+`held-human-review` is the one server code that must NOT read like a fault: nothing refuses the card, the
+board is simply withholding automatic merge processing, so only a person can move it. The copy therefore
+names a person and never uses the word "blocked" alongside "merge" — the server's own fixed sentence is
+catalog copy here rather than passed through, because it is prose the translator owns (unlike a blocker
+text) and because the headline wording is shared with the Fleet surface's `agents.stallReason.held-human-review`.
+It reuses the headline as its badge label because the code is deliberately face-suppressed (see
+`stallReasonVisibleOnFace`): the badge exists only to keep the returned shape complete.
+*/
+function heldHumanReviewReason(context: StallContext): StallReason {
+  const { t } = context;
+  const headline = t("stall.held-human-review.headline", "Waiting on a person");
+  return {
+    code: "held-human-review",
+    badgeLabel: headline,
+    headline,
+    description: t("stall.held-human-review.description", "Nothing is refusing this card: automatic merge processing is withheld for it, so finishing the review does not merge it."),
+    suggestedAction: t("stall.held-human-review.suggestedAction", "Merge the card yourself, or turn automatic merge processing back on."),
   };
 }
 
@@ -390,6 +509,11 @@ function failedReason(subject: StallSubject, context: StallContext): StallReason
  */
 export function resolveStallReason(subject: StallSubject, context: StallContext): StallReason | undefined {
   const { t } = context;
+
+  // 0. server-derived authority — the read path's own answer, which outranks every client-side inference
+  //    below. The chain that follows runs ONLY when the server stayed silent (see `serverStallReason`).
+  const serverStall = serverStallReason(subject, context);
+  if (serverStall) return serverStall;
 
   // 1. external-block — an operator-recoverable freeze outside the worktree; outranks the pause it
   //    itself wrote onto the task.
@@ -426,6 +550,41 @@ export function resolveStallReason(subject: StallSubject, context: StallContext)
   }
 
   /*
+  FNXC:StallReason 2026-09-03-01:01 (RUFU-177):
+  The agent's approval wait ranks BELOW the card-specific blockers below it, and the ranking is load-
+  bearing rather than stylistic. `pendingApprovalCount` is a per-ACTOR aggregate (`getPendingCountsByActor`)
+  — approvals pending on card X are counted against every card that agent owns — while `wedge`,
+  `dependency-block`/`overlap-block` and the merge/completion blockers are ground truth about THIS card.
+  `agent-approval` is deliberately not face-visible (the approvals affordance and the agent pill speak for
+  it), so claiming the classification ahead of a card-specific cause erased that cause's only visible
+  affordance: a `todo` card with an unmet dependency assigned to an agent parked on another card's
+  approval lost its "Waiting on dependency FN-Z" reason and went back to the silent-stall state this
+  feature exists to cure. The paused family still outranks it (a pause is written on THIS card), and it
+  still outranks the review-lane codes, whose dedicated badges render independently of the resolver.
+  */
+
+  // 6. wedge — a durable stuck-state hold is active on the card.
+  if (subject.wedgeNotification && subject.wedgeNotification.status === "active") {
+    return wedgeReason(subject.wedgeNotification, context);
+  }
+
+  // 7/8. dependency-block / overlap-block — an explicit unmet edge names the blocking card.
+  if (subject.blockedBy) {
+    return dependencyReason(subject, context, false);
+  }
+  if (subject.overlapBlockedBy) {
+    return dependencyReason(subject, context, true);
+  }
+
+  // 9/10. merge-blocker / completion-blocker — resolved blockers the surface handed in via context.
+  if (context.mergeBlockerReason) {
+    return blockerReason(context.mergeBlockerReason, "merge-blocker", context);
+  }
+  if (context.completionBlockerReason) {
+    return blockerReason(context.completionBlockerReason, "completion-blocker", context);
+  }
+
+  /*
   FNXC:StallReason 2026-09-02-15:52 (RUFU-175):
   The approval park has two independent signals and a surface may carry only one of them. The engine's
   tool-approval gate (`build-action-gate-context.ts` markApprovalRequired) parks the AGENT with
@@ -435,6 +594,7 @@ export function resolveStallReason(subject: StallSubject, context: StallContext)
   actually writes, leaving a card whose agent is parked on an approval to fall through to `undefined`
   (flowing) instead of naming the wait. Either signal is sufficient.
   */
+  // 11. agent-approval — the owning agent is parked on a permission decision (see the ranking note above).
   if (
     context.agent &&
     (context.agent.pauseReason === "awaiting-approval" || (context.agent.pendingApprovalCount ?? 0) > 0)
@@ -446,27 +606,6 @@ export function resolveStallReason(subject: StallSubject, context: StallContext)
       description: t("stall.agent-approval.description", "The agent paused itself until a person approves the pending permission request."),
       suggestedAction: t("stall.agent-approval.suggestedAction", "Open the approvals inbox to approve or deny."),
     };
-  }
-
-  // 7. wedge — a durable stuck-state hold is active on the card.
-  if (subject.wedgeNotification && subject.wedgeNotification.status === "active") {
-    return wedgeReason(subject.wedgeNotification, context);
-  }
-
-  // 8/9. dependency-block / overlap-block — an explicit unmet edge names the blocking card.
-  if (subject.blockedBy) {
-    return dependencyReason(subject, context, false);
-  }
-  if (subject.overlapBlockedBy) {
-    return dependencyReason(subject, context, true);
-  }
-
-  // 10/11. merge-blocker / completion-blocker — resolved blockers the surface handed in via context.
-  if (context.mergeBlockerReason) {
-    return blockerReason(context.mergeBlockerReason, "merge-blocker", context);
-  }
-  if (context.completionBlockerReason) {
-    return blockerReason(context.completionBlockerReason, "completion-blocker", context);
   }
 
   // 12. in-review-stall — delegate to the existing copy module so the card badge, the detail review
@@ -534,27 +673,69 @@ export function isPausedFamilyCode(code: StallReasonCode): boolean {
 
 /*
 FNXC:StallReason 2026-09-01-17:48 (RUFU-175):
-Single predicate for the generic face-visible stall chip shared by TaskCard and ListView, so the two
-card surfaces agree on which codes get a visible reason (previously hover-only or absent — symptoms b/c)
-and which keep only their dedicated affordance. Codes NOT listed here are deliberately excluded because
-a richer affordance already speaks for them on those surfaces: external-block (ExternalBlockNotice),
-in-review-stall / stalled-review / stale-paused-review (dedicated review badges/lines), failed (the
-card-error line), queued (the plain Queued badge), and duplicate-decision (the Needs-your-decision /
-paused badge). A pause only earns the chip when it carries a reason word — a bare pause has nothing to
-add beyond its badge. Surfaces may still suppress further (TaskCard also drops the chip while an
-external block is present). `subject` is read for `pausedReason` only.
+Single predicate for the generic face-visible stall chip shared by TaskCard, ListView (desktop rows and
+mobile cards) and the detail banner, so every surface agrees on which codes get a visible reason
+(previously hover-only or absent — symptoms b/c) and which keep only their dedicated affordance. Codes NOT
+listed here are deliberately excluded because a richer affordance already speaks for them on those
+surfaces: in-review-stall / stalled-review / stale-paused-review (dedicated review badges/lines), failed
+(the card-error line), queued (the plain Queued badge), and duplicate-decision (the Needs-your-decision /
+paused badge). A pause only earns the chip when it carries a reason word — a bare pause has nothing to add
+beyond its badge.
+
+FNXC:StallReason 2026-09-02-22:01 (RUFU-177):
+Two changes, both forced by making `task.stallReason` the classifier's authority:
+
+1. The external-block suppression moved IN HERE from TaskCard's call site. It used to be reachable only
+   through the client chain (an external block classified itself as `external-block`, which is not listed
+   below), so one surface's call-site guard was enough. Now the server field outranks that classification,
+   so a card carrying BOTH an external block and a server answer would have rendered a second "blocked"
+   affordance next to the `ExternalBlockNotice` — on ListView and the detail banner, which never had
+   TaskCard's guard at all. Naming the cause once is this feature's whole contract, so the rule lives in
+   the one arbiter and applies to all four surfaces; TaskCard's redundant call-site term is gone.
+
+2. `merge-blocker` and `completion-blocker` become face-visible. They were the reported symptom: an
+   in-review card whose merge genuinely refuses showed no reason anywhere.
+
+FNXC:StallReason 2026-09-02-22:01 (RUFU-177) — the two detail-only codes:
+`pre-merge-gate-pending` and `held-human-review` are true statements but they are the ORDINARY resting
+states of a review lane (an enabled gate that has not run yet; auto-merge withheld for the card), and
+under a project with automatic merge off they would put a chip on every card in review. The operator
+already ruled on exactly this for the review-lane badge (see `FNXC:InReviewStallBadge 2026-07-26-18:12`,
+"a pre-merge blocker is the ordinary in-review resting state, so badging it marked routine cards
+abnormal"), so the card face keeps naming FAULTS (a real refusal, an unresolved edge, a hold, a pause
+with a reason) and these two waits are named by the detail banner instead — the surface with room to
+explain them, which is where the "no reason on any surface" symptom is actually cured for them. A surface
+opts into them through `allowDetailOnlyCodes`; only the detail view does.
 */
-export function stallReasonVisibleOnFace(subject: StallSubject, stall: StallReason | undefined): boolean {
+export interface StallFaceVisibilityOptions {
+  /** Render codes that only the detail surface has room to explain (currently the two ordinary-wait codes). */
+  allowDetailOnlyCodes?: boolean;
+}
+
+export function stallReasonVisibleOnFace(
+  subject: StallSubject,
+  stall: StallReason | undefined,
+  options?: StallFaceVisibilityOptions,
+): boolean {
   if (!stall) return false;
+  // The ExternalBlockNotice owns this cause on every surface, whatever code the classifier settled on.
+  if (isTaskExternallyBlocked(subject)) return false;
   switch (stall.code) {
     case "wedge":
     case "dependency-block":
+    // fallthrough: the server's own dependency answer is the same cause as the client's guess, so it earns the same chip.
+    case "dependency-blocker":
     case "overlap-block":
+    case "merge-blocker":
+    case "completion-blocker":
       return true;
     case "agent-paused":
     case "user-paused":
     case "engine-paused":
       return Boolean(subject.pausedReason);
+    case "pre-merge-gate-pending":
+    case "held-human-review":
+      return options?.allowDetailOnlyCodes === true;
     default:
       return false;
   }

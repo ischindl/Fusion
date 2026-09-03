@@ -32,6 +32,10 @@ vi.mock("../../api", () => ({
   refreshPrStatus: vi.fn().mockResolvedValue({}),
   updateTask: vi.fn(),
   api: vi.fn().mockResolvedValue({ sessions: [] }),
+  // `useAgentsMapCache` (added by RUFU-177 so list rows can name an agent-owned stall) calls this; without
+  // it the hook's try/catch swallowed the TypeError and every row silently resolved with NO agent, which
+  // made the agent-driven branches unobservable from this harness.
+  fetchAgents: vi.fn().mockResolvedValue([]),
 }));
 
 const listViewSseHandlers: Record<string, (event?: unknown) => void> = {};
@@ -217,8 +221,10 @@ vi.mock("../TaskDetailModal", () => ({
   ),
 }));
 
-import { fetchTaskDetail, batchUpdateTaskModels, fetchBoardWorkflows, fetchNodes, refreshPrStatus, updateTask } from "../../api";
+import { fetchTaskDetail, batchUpdateTaskModels, fetchBoardWorkflows, fetchNodes, refreshPrStatus, updateTask, fetchAgents } from "../../api";
 import { writeBoardWorkflowsCache } from "../../utils/boardWorkflowsCache";
+import { setScopedItem } from "../../utils/projectStorage";
+import { clearCache, SWR_CACHE_KEYS } from "../../utils/swrCache";
 import { readAppFile } from "../../test/cssFixture";
 
 const mockConfirm = vi.fn();
@@ -1160,6 +1166,93 @@ describe("ListView", () => {
       renderListView({ tasks });
       expect(screen.queryByTestId("list-stall-reason-FN-MDONE")).toBeNull();
       expect(screen.queryByText(/Output budget exhausted/)).toBeNull();
+      matchMediaSpy.mockRestore();
+    });
+
+    /*
+    FNXC:StallReason 2026-09-02-22:53 (RUFU-177):
+    The server-derived `dependency-blocker` code outranks every client signal and must reach the list
+    face in BOTH layout branches (desktop table row and grouped mobile card). One row is one line, so
+    the stall affordance is emitted exactly once per card -- the chip carries the blocker id, and the
+    row root stamps the server code rather than a re-derived client code.
+    */
+    it("names the server's dependency-blocker once on the desktop row face", () => {
+      const tasks = [
+        createMockTask({
+          id: "FN-SDEP",
+          column: "todo",
+          title: "Server-blocked card",
+          status: "queued",
+          blockedBy: "FN-BLOCK",
+          stallReason: { code: "dependency-blocker", reason: "waiting on FN-BLOCK to land", observedAt: "2026-09-02T00:00:00.000Z" },
+        }),
+      ];
+      renderListView({ tasks });
+      const chips = screen.getAllByTestId("list-stall-reason-FN-SDEP");
+      expect(chips).toHaveLength(1);
+      expect(chips[0]).toHaveTextContent("Waiting on dependency FN-BLOCK");
+      expect(chips[0].getAttribute("data-stall-code")).toBe("dependency-blocker");
+      expect(document.querySelector('[data-task-stall-reason="dependency-blocker"]')).not.toBeNull();
+    });
+
+    /*
+    FNXC:StallReason 2026-09-03-01:01 (RUFU-177):
+    The row surface must not LOSE a reason because the agent was wired in. `pendingApprovalCount` is a
+    per-ACTOR aggregate, so an approval pending on another card reads as pending on every card that agent
+    owns; ranked above the card's own blocker it suppressed its betters — the exact silent-stall symptom
+    this task cures. The second card is the non-vacuity control: with no blocker of its own it can only
+    classify as `agent-approval` once the agents map has actually arrived, so the dependency assertion
+    below is not merely a pre-fetch render. The grouped card branch shares the same `stallAgentFor` helper
+    asserted here, so it is not re-run at a second viewport.
+    */
+    it("keeps a dependency row's chip while its agent waits on a pending approval", async () => {
+      // The stall chip renders inside the status cell, and a project with no saved view keeps only the
+      // title column, so seed the column set this assertion needs rather than inherit another test's write.
+      setScopedItem("kb-dashboard-list-columns", JSON.stringify(["title", "status"]), TEST_PROJECT_ID);
+      vi.mocked(fetchAgents).mockResolvedValue([
+        { id: "agent-shadow-1", name: "Executor", state: "paused", pauseReason: "awaiting-approval", pendingApprovalCount: 2 },
+      ] as never);
+      const tasks = [
+        createMockTask({ id: "FN-DEPAGENT", column: "todo", title: "Dependency card", status: "queued", blockedBy: "FN-BLOCK", assignedAgentId: "agent-shadow-1" }),
+        createMockTask({ id: "FN-FREEAGENT", column: "todo", title: "Card with nothing of its own", status: "queued", assignedAgentId: "agent-shadow-1" }),
+      ];
+
+      try {
+        renderListView({ tasks });
+
+        await waitFor(() =>
+          expect(document.querySelector('[data-task-stall-reason="agent-approval"]')).not.toBeNull(),
+        );
+        const chips = screen.getAllByTestId("list-stall-reason-FN-DEPAGENT");
+        expect(chips).toHaveLength(1);
+        expect(chips[0]).toHaveTextContent("Waiting on dependency FN-BLOCK");
+        expect(document.querySelector('[data-task-stall-reason="dependency-block"]')).not.toBeNull();
+      } finally {
+        vi.mocked(fetchAgents).mockResolvedValue([] as never);
+        // The agents hook mirrors its fetch into the SWR cache; drop it so no later render in this file
+        // sees this test's agent from the cache instead of its own fetch.
+        clearCache(SWR_CACHE_KEYS.CHAT_AGENTS_MAP_PREFIX);
+      }
+    });
+
+    it("names the server's dependency-blocker once on the grouped mobile card face", () => {
+      const matchMediaSpy = mockMobileViewport();
+      const tasks = [
+        createMockTask({
+          id: "FN-SDEPM",
+          column: "todo",
+          title: "Server-blocked mobile card",
+          status: "queued",
+          blockedBy: "FN-BLOCK",
+          stallReason: { code: "dependency-blocker", reason: "waiting on FN-BLOCK to land", observedAt: "2026-09-02T00:00:00.000Z" },
+        }),
+      ];
+      renderListView({ tasks });
+      const chips = screen.getAllByTestId("list-stall-reason-FN-SDEPM");
+      expect(chips).toHaveLength(1);
+      expect(chips[0]).toHaveTextContent("Waiting on dependency FN-BLOCK");
+      expect(chips[0].getAttribute("data-stall-code")).toBe("dependency-blocker");
+      expect(document.querySelector('[data-task-stall-reason="dependency-blocker"]')).not.toBeNull();
       matchMediaSpy.mockRestore();
     });
   });

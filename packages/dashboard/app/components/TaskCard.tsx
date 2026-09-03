@@ -48,6 +48,7 @@ import { getRevertOfId, isTaskReverted } from "../utils/taskRevert";
 import { getStalledReviewSignal } from "../utils/taskStalledReview";
 import { getInReviewStallCopy, shouldShowInReviewStallBadge } from "../utils/inReviewStallCopy";
 import { resolveStallReason, isPausedFamilyCode, stallReasonVisibleOnFace } from "../utils/stallReason";
+import { toStallAgent } from "../utils/stallAgent";
 import { getStalePausedReviewCopy, shouldShowStalePausedReviewBadge } from "../utils/stalePausedReviewCopy";
 import { getTaskAgeStalenessCopy, shouldShowTaskAgeStalenessBadge } from "../utils/taskAgeStalenessCopy";
 import {
@@ -1633,9 +1634,20 @@ function TaskCardComponent({
   be tooltip-only), and a pause whose `pausedReason` the badge never named (symptom b). It is suppressed
   for the triage duplicate-decision pause because the `Needs your decision` badge already says it.
   */
+  /*
+  FNXC:StallReason 2026-09-02-22:35 (RUFU-177):
+  The card supplies the owning agent to the classifier through the shared owner-guarded `toStallAgent`
+  mapper. `Agent` is structurally wider than `StallAgent`, so the mapper normalizes it field-for-field and
+  drops a mismatched owner (shared-map staleness / reassignment race) -- agent B's approval wait must never
+  stall agent A's card. No second fetch: this component already holds the cache for the assignee name.
+  Without this argument the `agent-approval` code is unreachable from the board: the resolver branch
+  RUFU-175 added (approval park OR a non-zero `pendingApprovalCount`) had no surface feeding it either
+  signal. Lookup is by `assignedAgentId`: that is whose session would be parked on this card.
+  */
+  const stallAgent = toStallAgent(task, task.assignedAgentId ? agentsMap.get(task.assignedAgentId) : undefined);
   const stall = useMemo(
-    () => resolveStallReason(task, { t, dataAsOfMs: lastFetchTimeMs }),
-    [task, t, lastFetchTimeMs],
+    () => resolveStallReason(task, { t, dataAsOfMs: lastFetchTimeMs, agent: stallAgent }),
+    [task, t, lastFetchTimeMs, stallAgent],
   );
   /*
   FNXC:StallReason 2026-09-01-19:47 (RUFU-175 review):
@@ -1645,7 +1657,9 @@ function TaskCardComponent({
   wedge still on the row; naming a stall on a landed card would contradict `isDoneColumn` handling
   those same stale fields.
   */
-  const stallReasonOnFace = !isDoneColumn && stallReasonVisibleOnFace(task, stall) && !isExternalBlocked;
+  // RUFU-177: the external-block term that used to sit here moved into `stallReasonVisibleOnFace` so all
+  // four stall surfaces share one rule for "the ExternalBlockNotice already names this cause".
+  const stallReasonOnFace = !isDoneColumn && stallReasonVisibleOnFace(task, stall);
   /*
   FNXC:TaskCardPlanReviewBadge 2026-07-11-12:05:
   FN-7831 requires the card header to show a distinct "Reviewing" badge while the optional `plan-review` workflow step is actively running, even while the card remains in Planning/`triage`. Use the shared predicate so TaskCard stays in sync with ListView.

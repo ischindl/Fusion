@@ -93,6 +93,7 @@ import { getUnifiedTaskProgress } from "../utils/taskProgress";
 import { getStalePausedReviewCopy, shouldShowStalePausedReviewBadge } from "../utils/stalePausedReviewCopy";
 import { getTaskAgeStalenessCopy } from "../utils/taskAgeStalenessCopy";
 import { resolveStallReason, stallReasonVisibleOnFace } from "../utils/stallReason";
+import { toStallAgent } from "../utils/stallAgent";
 import { splitTaskPlanSummary } from "../utils/taskPlanSummary";
 import { decideTaskPromptRefresh } from "../utils/taskPromptRefresh";
 import { getPriorityColorVar, getPriorityIcon, getPriorityLabel } from "../utils/priorityIndicator";
@@ -4352,10 +4353,17 @@ export function TaskDetailContent({
   use. The dedicated affordances above already cover an external block (ExternalBlockNotice), a failure
   (the alert), and the review-lane stall (shouldShowInReviewStallBadge), so the generic banner is only
   shown for codes the shared face predicate says the surface is responsible for.
+
+  FNXC:StallReason 2026-09-02-22:06 (RUFU-177):
+  The detail view is the third surface that supplies the owning agent, and it already had one: `assignedAgent`
+  is fetched for this exact task at the top of the modal, so no cache or fetch is added here. Passing it is
+  what makes the `agent-approval` code reachable -- until now the resolver's approval branch (RUFU-175) had
+  no caller that could ever satisfy either of its two signals, so a card parked on a permission request
+  explained itself nowhere despite having copy in every catalog.
   */
   const stall = useMemo(
-    () => resolveStallReason(task, { t, dataAsOfMs: undefined }),
-    [task, t],
+    () => resolveStallReason(task, { t, dataAsOfMs: undefined, agent: toStallAgent(task, assignedAgent ?? undefined) }),
+    [task, t, assignedAgent],
   );
   /*
   FNXC:StallReason 2026-09-02-18:21 (RUFU-175 review):
@@ -4365,7 +4373,15 @@ export function TaskDetailContent({
   edge, or an unresolved wedge. A banner that names a stall and suggests resuming on a completed card is
   visibly wrong, so it honors `isDoneColumn` exactly as the card and list already do.
   */
-  const stallReasonBanner = !isDoneColumn && stallReasonVisibleOnFace(task, stall);
+  /*
+  FNXC:StallReason 2026-09-02-22:01 (RUFU-177):
+  The detail view is the only surface that opts into the two ordinary-wait codes (`pre-merge-gate-pending`,
+  `held-human-review`). Those states are true of the card but ordinary for a review lane, so they stay off
+  the shared card face; here there is room to say "waiting on a person" without implying a fault, and this
+  is the surface the reported symptom ("no reason on any surface") is cured on for them. The card and list
+  keep the default, which is why only this call passes the option.
+  */
+  const stallReasonBanner = !isDoneColumn && stallReasonVisibleOnFace(task, stall, { allowDetailOnlyCodes: true });
   const taskFailureToolDetail = useMemo(() => {
     const lastToolCompletion = agentLogEntries.findLast(
       (entry) => entry.type === "tool_result" || entry.type === "tool_error",

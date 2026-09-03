@@ -126,3 +126,60 @@ describe("TaskDetailModal generic stall banner", () => {
     if (text) expect(banner).toHaveTextContent(text);
   });
 });
+
+/*
+FNXC:StallReason 2026-09-02-22:53 (RUFU-177):
+The server-derived stallReason reaches the detail banner: a server merge-blocker rides its own
+sentence in the description row (badge/headline/suggestedAction stay localized catalog copy), while
+held-human-review -- an ordinary human-hold wait -- is visible only here (detail-only code) and must
+never claim "merge is blocked". pre-merge-gate-pending legitimately shares the merge-blocker copy:
+an unrun gate does block the merge.
+*/
+describe("TaskDetailModal server-backed stallReason", () => {
+  const observedAt = "2026-09-02T00:00:00.000Z";
+
+  it("names the server's merge-blocker and rides the server sentence as description", () => {
+    renderDetail(
+      makeTask({
+        id: "FN-SMRG",
+        column: "in-review",
+        status: "in-progress",
+        stallReason: { code: "merge-blocker", reason: "verification refused: pnpm test", observedAt },
+      }),
+    );
+    const banner = screen.getByTestId("task-detail-stall-reason-FN-SMRG");
+    expect(banner.getAttribute("data-stall-code")).toBe("merge-blocker");
+    expect(banner).toHaveTextContent("Merge is blocked");
+    expect(banner.querySelector(".task-stall-reason-description")?.textContent).toBe("verification refused: pnpm test");
+  });
+
+  it("names held-human-review as a person wait, never as merge blocked", () => {
+    renderDetail(
+      makeTask({
+        id: "FN-SHELD",
+        column: "awaiting-user-review",
+        status: "in-progress",
+        stallReason: { code: "held-human-review", reason: "waiting for operator approval", observedAt },
+      }),
+    );
+    const banner = screen.getByTestId("task-detail-stall-reason-FN-SHELD");
+    expect(banner.getAttribute("data-stall-code")).toBe("held-human-review");
+    expect(banner).toHaveTextContent("Waiting on a person");
+    expect(banner.textContent).not.toMatch(/merge (is )?blocked/i);
+  });
+
+  it("surfaces pre-merge-gate-pending in detail, sharing the merge-blocker copy", () => {
+    renderDetail(
+      makeTask({
+        id: "FN-SGATE",
+        column: "in-review",
+        status: "in-progress",
+        stallReason: { code: "pre-merge-gate-pending", reason: "code-review has not run", observedAt },
+      }),
+    );
+    const banner = screen.getByTestId("task-detail-stall-reason-FN-SGATE");
+    expect(banner.getAttribute("data-stall-code")).toBe("pre-merge-gate-pending");
+    expect(banner).toHaveTextContent("Merge is blocked");
+    expect(banner.querySelector(".task-stall-reason-description")?.textContent).toBe("code-review has not run");
+  });
+});

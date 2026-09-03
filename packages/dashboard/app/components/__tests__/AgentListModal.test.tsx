@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import fs from "node:fs";
 import path from "node:path";
@@ -1515,6 +1515,107 @@ describe("AgentListModal", () => {
       );
 
       expect(container.firstChild).toBeNull();
+    });
+  });
+
+  /*
+  FNXC:AgentHealthPill 2026-09-02-22:53 (RUFU-177):
+  The Agents modal is the surface the approval-wait pill was written for: an agent parked on a
+  permission approval -- or carrying a live pendingApprovalCount while still running -- must read as
+  "Waiting for approval" on BOTH view surfaces (list cards show the label as visible badge text;
+  board cards carry the same wording in the health badge title), while a healthy peer's badge stays
+  unchanged. Before RUFU-177 a counted/waiting agent could be reported under heartbeat verdicts or a
+  bare state label, so the operator had no visible link between a stalled card and its approval.
+  */
+  describe("health pill names a pending approval on both view surfaces", () => {
+    const parkedApproval: Agent = {
+      id: "agent-parked-approval",
+      name: "Parked Approver",
+      role: "executor" as AgentCapability,
+      roles: ["executor"],
+      state: "paused" as AgentState,
+      pauseReason: "awaiting-approval",
+      pendingApprovalCount: 2,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      metadata: {},
+    };
+    const runningApproval: Agent = {
+      ...parkedApproval,
+      id: "agent-running-approval",
+      name: "Counted Approver",
+      state: "running" as AgentState,
+      pauseReason: undefined,
+      pendingApprovalCount: 1,
+    };
+    const runningClean: Agent = {
+      ...parkedApproval,
+      id: "agent-running-clean",
+      name: "Busy Worker",
+      state: "running" as AgentState,
+      pauseReason: undefined,
+      pendingApprovalCount: 0,
+    };
+
+    afterEach(() => {
+      localStorage.removeItem(AGENT_VIEW_KEY);
+    });
+
+    it("list cards show the visible approval label; a counted running agent outranks its state label", async () => {
+      mockFetchAgents.mockResolvedValue([parkedApproval, runningApproval, runningClean]);
+      render(
+        <AgentListModal
+          isOpen={true}
+          onClose={mockOnClose}
+          addToast={mockAddToast}
+        />
+      );
+      await screen.findByText("Parked Approver");
+
+      const parkedBadge = screen
+        .getByText("Parked Approver")
+        .closest(".agent-card")
+        ?.querySelector(".agent-list-health-badge");
+      expect(parkedBadge?.textContent).toContain("Waiting for approval");
+      expect(parkedBadge?.getAttribute("data-health")).toBe("paused");
+
+      // Core symptom fix: a still-running agent with pending approvals reads as the approval wait,
+      // not as a bare state-derived badge.
+      const countedBadge = screen
+        .getByText("Counted Approver")
+        .closest(".agent-card")
+        ?.querySelector(".agent-list-health-badge");
+      expect(countedBadge?.textContent).toContain("Waiting for approval");
+
+      // Control: nothing pending keeps the state-derived badge (no visible label, no approval text).
+      const cleanBadge = screen
+        .getByText("Busy Worker")
+        .closest(".agent-card")
+        ?.querySelector(".agent-list-health-badge");
+      expect(cleanBadge?.textContent ?? "").not.toContain("Waiting for approval");
+    });
+
+    it("board cards expose the same wording in the health badge title", async () => {
+      mockFetchAgents.mockResolvedValue([parkedApproval, runningApproval, runningClean]);
+      render(
+        <AgentListModal
+          isOpen={true}
+          onClose={mockOnClose}
+          addToast={mockAddToast}
+        />
+      );
+      await screen.findByText("Parked Approver");
+      fireEvent.click(screen.getByTitle("Board view"));
+      await screen.findByText("Parked Approver");
+
+      const boardBadge = (title: string) =>
+        Array.from(document.querySelectorAll(".agent-board-card"))
+          .find((card) => card.textContent?.includes(title))
+          ?.querySelector(".agent-board-health");
+
+      expect(boardBadge("Parked Approver")?.getAttribute("title")).toBe("Waiting for approval");
+      expect(boardBadge("Counted Approver")?.getAttribute("title")).toBe("Waiting for approval");
+      expect(boardBadge("Busy Worker")?.getAttribute("title")).toBe("Running");
     });
   });
 });

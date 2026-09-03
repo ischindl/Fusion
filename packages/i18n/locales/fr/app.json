@@ -10702,91 +10702,97 @@
   },
   "stall": {
     "agent-approval": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "En attente d'approbation",
+      "description": "L'agent s'est mis en pause jusqu'à ce qu'une personne approuve la demande d'autorisation en attente.",
+      "headline": "Un appel d'outil attend votre approbation",
+      "suggestedAction": "Ouvrez la boîte de réception des approbations pour approuver ou refuser."
     },
     "completion-blocker": {
-      "badgeLabel": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "Finalisation bloquée",
+      "headline": "La finalisation est bloquée",
+      "suggestedAction": "Ouvrez le détail pour lever le blocage de finalisation."
     },
     "dependency-block": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "Bloquée",
+      "description": "Cette carte dépend d'une autre carte qui n'est pas encore terminée.",
+      "headline": "En attente de la dépendance {{taskId}}",
+      "suggestedAction": "Terminez la carte bloquante, ou supprimez la dépendance.",
+      "headlineUnspecified": "En attente d'une dépendance"
     },
     "duplicate-decision": {
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "description": "Un planificateur ou un autre agent l'a signalée comme doublon possible ; votre décision est nécessaire avant qu'elle puisse bouger.",
+      "headline": "Cette carte est peut-être un doublon",
+      "suggestedAction": "Ouvrez la décision de doublon et conservez la carte canonique la plus ancienne."
     },
     "external-block": {
-      "badgeLabel": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "Bloquée",
+      "headline": "Bloquée hors du worktree",
+      "suggestedAction": "Réparez l'obstacle externe, puis reprenez cette carte."
     },
     "failed": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "Échouée",
+      "description": "La dernière exécution s'est terminée en échec sans message d'erreur capturé.",
+      "headline": "Cette carte a échoué",
+      "suggestedAction": "Réessayez la carte, ou ouvrez le détail pour lire l'échec."
     },
     "merge-blocker": {
-      "badgeLabel": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "Fusion bloquée",
+      "headline": "La fusion est bloquée",
+      "suggestedAction": "Ouvrez l'onglet Révision pour lever le blocage de la fusion."
     },
     "overlap-block": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "Chevauchement de fichiers",
+      "description": "Une autre carte active édite les mêmes fichiers, cette carte est donc retenue pour éviter un conflit.",
+      "headline": "En attente d'un chevauchement de fichiers avec {{taskId}}",
+      "suggestedAction": "Laissez la carte en chevauchement se poser, ou réduisez le périmètre de fichiers de cette carte."
     },
     "paused": {
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "description": "Cette carte est en pause et ne bougera pas tant qu'elle n'est pas reprise.",
+      "headline": "Cette carte est en pause",
+      "suggestedAction": "Reprenez la carte, ou ouvrez son détail pour lire le motif de la pause."
     },
     "pausedReason": {
       "awaiting-approval": {
-        "headline": ""
+        "headline": "En attente d'approbation"
       },
       "budget-exhausted": {
-        "headline": ""
+        "headline": "Budget de sortie épuisé"
       },
       "error-retry-exhausted": {
-        "headline": ""
+        "headline": "Tentatives automatiques épuisées"
       },
       "error-unrecoverable": {
-        "headline": ""
+        "headline": "En pause avec une erreur irrécupérable"
       },
       "generic": {
-        "headline": ""
+        "headline": "En pause — {{reason}}"
       },
       "heartbeat-unresponsive": {
-        "headline": ""
+        "headline": "Battement sans réponse"
       },
       "migrated-from-terminated": {
-        "headline": ""
+        "headline": "Récupérée d'un runtime terminé"
       }
     },
     "queued": {
-      "headline": "",
-      "suggestedAction": ""
+      "headline": "En attente d'être prise",
+      "suggestedAction": "Aucune action nécessaire ; réordonnez ou assignez la carte si une autre doit s'exécuter d'abord."
     },
     "stalled-review": {
-      "badgeLabel": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "Révision ensablée",
+      "headline": "La révision semble ensablée",
+      "suggestedAction": "Renvoyez la révision ou ouvrez le journal d'activité pour plus de détail."
     },
     "wedge": {
-      "badgeLabel": "",
-      "description": "",
-      "headline": "",
-      "suggestedAction": ""
+      "badgeLabel": "Coincée",
+      "description": "Une retenue durable d'état bloqué est en place sur cette carte.",
+      "headline": "Cette carte est coincée en attente d'une décision",
+      "suggestedAction": "Examinez l'avis d'état bloqué et suivez son action suggérée, ou laissez la récupération réessayer."
+    },
+    "held-human-review": {
+      "description": "Rien ne refuse cette carte : le traitement automatique des fusions est suspendu pour elle, donc terminer la révision ne la fusionnera pas.",
+      "headline": "En attente d'une personne",
+      "suggestedAction": "Fusionnez vous-même la carte, ou réactivez le traitement automatique des fusions."
     }
   }
 }
