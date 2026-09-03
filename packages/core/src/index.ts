@@ -735,6 +735,7 @@ export {
   type ForbiddenLifecyclePath,
   type EngineBackwardMoveReason,
 } from "./workflows/workflow-lifecycle-direction.js";
+export { isReviewGateNode, clampReviewGateEntry, type ReviewGateEntryClamp } from "./workflows/workflow-review-gate-entry.js";
 export {
   type TransitionColumnFacts,
   type CapacityFacts,

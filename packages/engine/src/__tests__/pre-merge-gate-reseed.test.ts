@@ -5,7 +5,16 @@ const core = vi.hoisted(() => ({
   evaluatePreMergeApprovals: vi.fn(),
   resolveWorkflowIrForTask: vi.fn(),
 }));
-vi.mock("@fusion/core", () => core);
+/*
+FNXC:LifecycleContainment 2026-09-02-22:41:
+RUFU-178: the re-seed now clamps its targetColumn through the SHARED core helper, so the module
+mock keeps the real `clampReviewGateEntry` — a hand-cloned fake would let the seed and the column
+boundary drift while the suite stayed green, which is the whole failure mode the extraction removed.
+*/
+vi.mock("@fusion/core", async (importOriginal) => ({
+  ...((await importOriginal() as typeof import("@fusion/core"))),
+  ...core,
+}));
 
 import { rerouteUnrunPreMergeGateToReview } from "../merge/pre-merge-gate-reseed.js";
 
@@ -99,5 +108,48 @@ describe("unrun pre-merge gate reseed", () => {
     await expect(rerouteUnrunPreMergeGateToReview(fake, subject(), { requiredPreMergeStepIds: required, mergeContent: singular }))
       .resolves.toMatchObject({ rerouted: false, reason: "no-review-route" });
     expect(fake.seedWorkspaceCodeReviewContinuationIfIdle).not.toHaveBeenCalled();
+  });
+
+  /*
+  FNXC:LifecycleContainment 2026-09-02-22:41:
+  RUFU-178 (the RUFU-172 wedge): the gate the re-seed picks can be authored in a LATER lane the card
+  has already passed. The continuation must never name that column — the boundary enters backward
+  review-gate moves in place, so the seed names the card's current column instead.
+  */
+  it("clamps a planning-lane plan-review gate to the review lane the card stands in", async () => {
+    core.evaluatePreMergeApprovals.mockReturnValueOnce([{ workflowStepId: "plan-review", state: "missing" }]);
+    core.resolveWorkflowIrForTask.mockResolvedValueOnce({
+      name: "Coding",
+      columns: [
+        { id: "todo", name: "Ready", traits: [{ trait: "hold", config: { release: "capacity" } }] },
+        { id: "in-review", name: "Review", traits: [{ trait: "merge-blocker" }, { trait: "human-review" }] },
+      ],
+      nodes: [{ id: "plan-review", kind: "optional-group", column: "todo", config: {} }],
+    });
+    const fake = store();
+    await expect(rerouteUnrunPreMergeGateToReview(fake, subject(), { requiredPreMergeStepIds: new Set(["plan-review"]), mergeContent: singular }))
+      .resolves.toMatchObject({ rerouted: true, reason: "seeded", nodeId: "plan-review" });
+    expect(fake.seedWorkspaceCodeReviewContinuationIfIdle).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: "FN-9243", nodeId: "plan-review", state: "runnable", sourceColumn: "in-review", targetColumn: "in-review",
+    }));
+    expect(fake.moveTask).not.toHaveBeenCalled();
+  });
+
+  it("keeps the node column for a forward review-gate entry", async () => {
+    core.evaluatePreMergeApprovals.mockReturnValueOnce([{ workflowStepId: "code-review", state: "missing" }]);
+    core.resolveWorkflowIrForTask.mockResolvedValueOnce({
+      name: "Coding",
+      columns: [
+        { id: "in-progress", name: "WIP", traits: [{ trait: "wip", config: {} }] },
+        { id: "in-review", name: "Review", traits: [{ trait: "merge-blocker" }, { trait: "human-review" }] },
+      ],
+      nodes: [{ id: "code-review", kind: "step-review", column: "in-review", config: {} }],
+    });
+    const fake = store();
+    await expect(rerouteUnrunPreMergeGateToReview(fake, subject({ column: "in-progress" }), { requiredPreMergeStepIds: new Set(["code-review"]), mergeContent: singular }))
+      .resolves.toMatchObject({ rerouted: true, reason: "seeded", nodeId: "code-review" });
+    expect(fake.seedWorkspaceCodeReviewContinuationIfIdle).toHaveBeenCalledWith(expect.objectContaining({
+      nodeId: "code-review", sourceColumn: "in-progress", targetColumn: "in-review",
+    }));
   });
 });

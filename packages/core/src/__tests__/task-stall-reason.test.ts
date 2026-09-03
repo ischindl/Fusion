@@ -92,6 +92,39 @@ describe("deriveTaskStallReason — review lane", () => {
     });
   });
 
+  /*
+  FNXC:LifecycleContainment 2026-09-02-23:20:
+  RUFU-178 truthful-stall assertion (the RUFU-172 wedge): the row below is the exact carrier
+  `archiveTerminalWorkflowStepFailures` leaves behind — status `skipped` with `remediationArchivedAt`
+  and no bypass/arbitration metadata. Before the fix it classified `not-approved`, the stall read
+  as a plain `merge-blocker`, and the overseer called the card "progressing" for 14 hours. Now the
+  carrier means not-run, so the server derives the code FN-9243's re-seed and RUFU-177's renderer
+  can act on.
+  */
+  it("a remediation-archived gate carrier classifies as pre-merge-gate-pending, not merge-blocker", async () => {
+    const archivedCarrier: WorkflowStepResult = {
+      workflowStepId: "plan-review",
+      status: "skipped",
+      startedAt: new Date(NOW - 60_000).toISOString(),
+      completedAt: new Date(NOW - 30_000).toISOString(),
+      output: "",
+      notes: "",
+      phase: "pre-merge",
+      reviewKind: "plan",
+      remediationArchivedAt: new Date(NOW - 10_000).toISOString(),
+      remediationArchivedFromStatus: "failed",
+    };
+    const stall = await deriveTaskStallReason(
+      makeTask({ workflowStepResults: [archivedCarrier] }),
+      ctx({ requiredPreMergeStepIds: new Set(["plan-review", "code-review"]) }),
+    );
+    expect(stall).toEqual({
+      code: "pre-merge-gate-pending",
+      reason: PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
+      observedAt: isoNow,
+    });
+  });
+
   it("a paused review card reports the paused merge blocker", async () => {
     const stall = await deriveTaskStallReason(makeTask({ paused: true }), ctx());
     expect(stall?.code).toBe("merge-blocker");

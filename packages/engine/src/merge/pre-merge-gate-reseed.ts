@@ -3,8 +3,16 @@ FNXC:PreMergeApproval 2026-09-02-10:36:
 FN-9243 repairs resultless enabled pre-merge gates by seeding the earliest missing gate, never by
 inventing a verdict or moving a review-lane card backward. The idle seed lets the real gate inspect
 current content and produce its own genuine result.
+
+FNXC:LifecycleContainment 2026-09-02-22:41:
+RUFU-178: the seeded continuation's targetColumn must be a column the card will ACTUALLY stand in.
+A plan-review gate authored in the planning lane would otherwise make a review-lane card's
+continuation name `todo` — a position the boundary refuses to move it to (backward review-gate
+entries enter in place). Clamping through the shared `clampReviewGateEntry` keeps the seed honest:
+when the node-column entry would be backward, the continuation names the card's current column.
 */
 import {
+  clampReviewGateEntry,
   computeWorkflowIrPin,
   evaluatePreMergeApprovals,
   resolveWorkflowIrForTask,
@@ -50,7 +58,7 @@ export async function rerouteUnrunPreMergeGateToReview(
     stableWorkflowRunId: `${task.id}:${ir.name}`,
     continuationSequence: items.length,
     sourceColumn: task.column,
-    targetColumn: node.column ?? task.column,
+    targetColumn: clampReviewGateEntry(ir, node, task.column).toColumn ?? task.column,
     irHash: computeWorkflowIrPin(ir, node.id).irHash,
   });
   return result.seeded

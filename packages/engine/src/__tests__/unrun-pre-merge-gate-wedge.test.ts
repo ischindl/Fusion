@@ -129,6 +129,34 @@ describe("unrun pre-merge gate wedge regression", () => {
     expect(enqueueMerge).not.toHaveBeenCalled();
   });
 
+  /*
+  FNXC:LifecycleContainment 2026-09-02-22:41:
+  RUFU-178 symptom (the RUFU-172 wedge, end to end): automatic remediation archived the failed
+  Plan Review attempt into a verdict-less `skipped` carrier, so the gate had a result row but no
+  approval — the classifier must call it not-run, the FN-9243 sweep must catch that blocker, and
+  the seeded continuation must NOT name the planning-lane column the review card will never stand in.
+  */
+  it("re-seeds a remediation-archived gate carrier at its planning-lane node, clamped in place", async () => {
+    const live = resultlessReviewTask({
+      enabledWorkflowSteps: ["plan-review", "code-review"],
+      workflowStepResults: [{
+        workflowStepId: "plan-review", status: "skipped", reviewKind: "plan",
+        remediationArchivedAt: "2026-09-02T20:00:00.000Z", remediationArchivedFromStatus: "failed",
+        reviewInputFingerprint: "stale-fingerprint",
+      }],
+    });
+    const store = recoveryStore(live);
+    const enqueueMerge = vi.fn(async () => undefined);
+
+    await new SelfHealingManager(store, { rootDir: "/tmp/fn-9243-resultless", enqueueMerge } as any)
+      .recoverMergeableReviewTasks();
+
+    expect(store.seedWorkspaceCodeReviewContinuationIfIdle).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: live.id, nodeId: "plan-review", state: "runnable", sourceColumn: "in-review", targetColumn: "in-review",
+    }));
+    expect(enqueueMerge).not.toHaveBeenCalled();
+  });
+
   it("uses merge admission to schedule the producer while retaining its blocker", async () => {
     const live = resultlessReviewTask();
     const store = recoveryStore(live);

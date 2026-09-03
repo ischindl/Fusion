@@ -6,6 +6,7 @@ import {
   PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
 } from "../merge/task-merge.js";
 import { isPlanReviewSatisfied } from "../planner/plan-approval.js";
+import type { MergeContentDescriptor } from "../merge/merge-content-descriptor.js";
 import type { Task, TaskDetail, WorkflowStepResult } from "../types.js";
 
 function result(
@@ -22,12 +23,27 @@ function result(
   };
 }
 
-function approvals(results: WorkflowStepResult[], required: string[]) {
+function approvals(results: WorkflowStepResult[], required: string[], mergeContent?: MergeContentDescriptor) {
   return evaluatePreMergeApprovals(
     { workflowStepResults: results },
-    { requiredPreMergeStepIds: new Set(required) },
+    { requiredPreMergeStepIds: new Set(required), mergeContent },
   );
 }
+
+/** The archive shape `archiveTerminalWorkflowStepFailures` writes: skipped + stamp, no bypass fields. */
+function archivedCarrier(workflowStepId: string, overrides: Partial<WorkflowStepResult> = {}): WorkflowStepResult {
+  return result(workflowStepId, {
+    notRunReason: undefined,
+    remediationArchivedAt: "2026-08-28T00:00:00.000Z",
+    remediationArchivedFromStatus: "failed",
+    ...overrides,
+  });
+}
+
+const workspaceDiff: MergeContentDescriptor = {
+  kind: "workspace",
+  repositories: { state: "captured", inScopeModified: ["apps/web"], fingerprints: {} },
+};
 
 function reviewTask(workflowStepResults: WorkflowStepResult[]): Task {
   return {
@@ -98,21 +114,61 @@ describe("pre-merge approval for not-run workflow gates", () => {
     }))).toBe(false);
   });
 
-  it("preserves remediation archives and operator bypass semantics", () => {
-    const archived = result("verification", {
-      notRunReason: undefined,
-      remediationArchivedAt: "2026-08-28T00:00:00.000Z",
-    });
-    expect(approvals([archived], ["verification"])[0]?.state).toBe("not-approved");
+  /*
+  FNXC:PreMergeApproval 2026-09-02-21:57 (RUFU-178):
+  This case previously asserted that an archived carrier is `not-approved`. That was the defect: the
+  archived shape carries no verdict, and `not-approved` is the unsatisfiable answer — no automatic,
+  reviewer, or operator surface can clear it — so the card could only be landed by hand. The new truth
+  is asserted here, with the controls that keep it from over-firing: an audited operator bypass, an
+  arbitrated release, a workspace carrier, and a genuinely failed (unarchived) row all stay put.
+  */
+  it("classifies a verdict-less remediation carrier as the recoverable not-run state", () => {
+    expect(approvals([archivedCarrier("verification")], ["verification"])[0]?.state).toBe("missing");
+    // The gate stays refused: `missing` maps to the not-run DEFERRAL, never to an approval.
+    expect(getTaskMergeBlocker(
+      reviewTask([archivedCarrier("verification")]),
+      { requiredPreMergeStepIds: new Set(["verification"]) },
+    )).toBe(PRE_MERGE_STEPS_NOT_RUN_BLOCKER);
 
-    const bypassed = result("verification", {
-      notRunReason: undefined,
+    // Code Review and Plan Review archives recover the same way — the rule is not plan-domain scoped.
+    expect(approvals([archivedCarrier("code-review", { reviewKind: "code" })], ["code-review"])[0]?.state).toBe("missing");
+    expect(approvals([archivedCarrier("plan-review", { reviewKind: "plan" })], ["plan-review"])[0]?.state).toBe("missing");
+  });
+
+  it("keeps the archived shapes that carry authority out of the not-run classification", () => {
+    // An audited operator bypass on top of an archived row is still a human waiver, not a re-run request.
+    const bypassedArchived = archivedCarrier("verification", {
       bypassedBy: "operator",
       bypassedAt: "2026-08-28T00:00:00.000Z",
       bypassReason: "Reviewed manually",
       bypassedFromStatus: "failed",
     });
-    expect(approvals([bypassed], ["verification"])[0]?.state).toBe("approved");
+    expect(approvals([bypassedArchived], ["verification"])[0]?.state).toBe("approved");
+
+    // An arbitrated release stays outside scope: the arbiter's ruling is not a re-runnable gate.
+    const arbitratedArchived = archivedCarrier("verification", {
+      arbitrationDecision: "UPHOLD_IMPLEMENTER",
+      arbitratedAt: "2026-08-28T00:00:00.000Z",
+    });
+    expect(approvals([arbitratedArchived], ["verification"])[0]?.state).toBe("not-approved");
+
+    // Workspace gates keep their repositoryScope proof carrier instead of the workflowStepResult row.
+    expect(approvals([archivedCarrier("code-review", { reviewKind: "code" })], ["code-review"], workspaceDiff)[0]?.state)
+      .toBe("not-approved");
+
+    // Control: a genuine failure with no archive stamp is still an ordinary not-approved refusal.
+    expect(approvals([
+      result("verification", { status: "failed", notRunReason: undefined }),
+    ], ["verification"])[0]?.state).toBe("not-approved");
+
+    // Control: a plain operator bypass (no archive) keeps its approved behavior.
+    expect(approvals([result("verification", {
+      notRunReason: undefined,
+      bypassedBy: "operator",
+      bypassedAt: "2026-08-28T00:00:00.000Z",
+      bypassReason: "Reviewed manually",
+      bypassedFromStatus: "failed",
+    })], ["verification"])[0]?.state).toBe("approved");
   });
 
   it("answers from the latest duplicate result", () => {
@@ -125,6 +181,22 @@ describe("pre-merge approval for not-run workflow gates", () => {
       first,
       result("verification", { status: "passed", notRunReason: undefined }),
     ], ["verification"])[0]?.state).toBe("approved");
+
+    /*
+    FNXC:PreMergeApproval 2026-09-02-22:35 (RUFU-178):
+    Latest-wins must not resurrect the archive refusal: an archived carrier followed by a genuine
+    passed verdict approves — the recovery the re-seed exists to produce, asserted at the classifier.
+    */
+    expect(approvals([
+      archivedCarrier("verification"),
+      result("verification", { status: "passed", notRunReason: undefined }),
+    ], ["verification"])[0]?.state).toBe("approved");
+
+    // Control: the archive still wins when it IS the latest row.
+    expect(approvals([
+      result("verification", { status: "passed", notRunReason: undefined }),
+      archivedCarrier("verification"),
+    ], ["verification"])[0]?.state).toBe("missing");
   });
 
   it("counts not-run evaluation evidence as neither passed nor failed", () => {

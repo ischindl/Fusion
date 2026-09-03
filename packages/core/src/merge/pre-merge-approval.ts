@@ -38,6 +38,37 @@ export function isAuditedOperatorBypass(
   );
 }
 
+/*
+FNXC:PreMergeApproval 2026-09-02-21:57:
+RUFU-172: `archiveTerminalWorkflowStepFailures` turns a terminal gate failure into `skipped` stamped
+with `remediationArchivedAt`, and it deliberately strips bypass AND arbitration metadata. The refusal
+below (`!!result.remediationArchivedAt` → not-approved) is correct — that carrier must never approve —
+but `not-approved` is the *unsatisfiable* answer: FN-9243 re-seeds only gates with no result row,
+FN-7720 operator bypass selects only `status === "failed"`, and FN-245 removed every `force` path. The
+carrier therefore needed a recovery path and had none, so a fully Code-Review-approved card sat
+`in-review` for ~14h and was landed by hand.
+
+This carrier means exactly one observable thing: the gate produced no current verdict, which IS the
+existing recoverable not-run state. Classifying it `missing` routes the card to
+`PRE_MERGE_STEPS_NOT_RUN_BLOCKER` — a deferral that refuses every merge door AND feeds FN-9243's bounded
+in-place re-seed, so the gate RUNS AGAIN and reports a genuine verdict. No verdict is invented: the two
+skipped shapes that DO carry authority stay out of this rule — an audited operator bypass
+(`isAuditedOperatorBypass`) and an arbitrated release (`arbitrationDecision`) — and the workspace branch
+keeps its own `repositoryScope` proof carrier, mirroring the absent-row guard above.
+*/
+export function isReRunnableRemediationCarrier(
+  result: Pick<
+    WorkflowStepResult,
+    "status" | "remediationArchivedAt" | "bypassedBy" | "bypassedAt" | "bypassReason" | "arbitrationDecision"
+  >,
+  descriptor: MergeContentDescriptor | undefined,
+): boolean {
+  return result.remediationArchivedAt != null
+    && !isAuditedOperatorBypass(result)
+    && result.arbitrationDecision === undefined
+    && descriptor?.kind !== "workspace";
+}
+
 const UNPROVEN_REVIEW_APPROVAL_DIAGNOSTIC = "Content-binding review approval recorded without reviewInputFingerprint; approval invalidated so the gate can run again.";
 
 /*
@@ -92,6 +123,9 @@ function evaluateStep(
   // Workspace Code Review persists its positive proof in repositoryScope so it survives
   // the intentional workflow-result remediation wipe; singular tasks have no such carrier.
   if (!result && descriptor?.kind !== "workspace") return { workflowStepId, state: "missing" };
+  // RUFU-178: a remediation-archived carrier has no verdict to honour, so it is the not-run state
+  // and must reach the re-seed seam rather than the unsatisfiable `not-approved` refusal.
+  if (result && isReRunnableRemediationCarrier(result, descriptor)) return { workflowStepId, state: "missing" };
   if (result) {
     /*
     FNXC:PreMergeApproval 2026-08-23-08:51:
@@ -114,7 +148,23 @@ function evaluateStep(
     const approved = (result.status === "passed" && (requiresExplicitVerdict ? approvedVerdict : (result.verdict === undefined || approvedVerdict)))
       || (result.status === "skipped" && !!result.bypassedBy)
       || notRunApproves;
-    if (!approved || !!result.remediationArchivedAt) return { workflowStepId, state: "not-approved" };
+    /*
+    FNXC:PreMergeApproval 2026-09-02-22:35 (RUFU-178):
+    The archive refusal inside this block used to be unconditional, so even a fully audited FN-7720
+    operator bypass recorded on top of an archived carrier stayed `not-approved` — recreating the
+    unsatisfiable class this card removes (a waiver that waives nothing). The refusal now yields only
+    to `isAuditedOperatorBypass` on a singular task: the operator's audited release IS the answer, so
+    it may not route back into the re-seed either. Arbitration records keep today's refusal (they are
+    verify-and-file scope), workspace carriers keep byte-identical evidence semantics because their
+    positive proof lives in `repositoryScope`, and verdict-less archives never reach here at all —
+    they classify `missing` earlier and get the gate re-run.
+    */
+    const archivedReleasedByAuditedBypass = result.remediationArchivedAt != null
+      && descriptor?.kind !== "workspace"
+      && isAuditedOperatorBypass(result);
+    if (!approved || (!!result.remediationArchivedAt && !archivedReleasedByAuditedBypass)) {
+      return { workflowStepId, state: "not-approved" };
+    }
     // Plan fingerprints bind plan text rather than source diff and must never be cross-compared.
     if (result.reviewKind === "plan") return { workflowStepId, state: "approved" };
     if (isAuditedOperatorBypass(result) && descriptor?.kind !== "workspace") {

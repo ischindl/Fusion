@@ -418,6 +418,40 @@ describe("TaskExecutor pre-merge optional-step fix seam", () => {
     expect(store.updateTask).toHaveBeenCalledWith(liveTask.id, expect.objectContaining({ status: "needs-replan" }), undefined);
   });
 
+  /*
+  FNXC:LifecycleContainment 2026-09-02-23:05:
+  RUFU-178 Step-3 probe: after the FN-9243 re-seed re-runs Plan Review on a card that never left
+  the review lane, a REVISE verdict must still take this seam and be CONTAINED in place — the seam
+  reports "scheduled" (so the graph run does not hard-fail), while `moveTaskToReplanColumn` refuses
+  the review→planning backward move and no `needs-replan` status is written behind the refusal.
+  The archived-carrier wedge would otherwise become a replan-strand loop the moment the reviewer
+  rejected the re-run plan.
+  */
+  it("contains a Plan Review REVISE raised on a review-lane card instead of replanning backward", async () => {
+    const store = createMockStore();
+    const liveTask = task({ column: "in-review", status: null });
+    store.getTask.mockResolvedValue(liveTask);
+    const executor = new TaskExecutor(store, "/tmp/test");
+
+    await expect((executor as any).requestPreMergeOptionalStepFix(liveTask.id, liveTask, {
+      stepName: "Plan Review",
+      feedback: "Revise the task specification.",
+      phase: "pre-merge",
+      status: "failed",
+      verdict: "REVISE",
+      nodeId: "plan-review",
+    })).resolves.toBe(true);
+
+    expect(store.moveTask).not.toHaveBeenCalled();
+    for (const [, patch] of store.updateTask.mock.calls) {
+      expect((patch as Partial<Task>).status).not.toBe("needs-replan");
+    }
+    expect(store.logEntry).toHaveBeenCalledWith(
+      liveTask.id,
+      expect.stringContaining("contained in place"),
+    );
+  });
+
   it("holds only user-held tasks during project-Off Plan Review remediation", async () => {
     for (const overrides of [
       { autoMerge: false, autoMergeProvenance: "user" as const },
