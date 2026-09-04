@@ -95,6 +95,12 @@ A closed record may stay PHYSICALLY inside the active section when later evidenc
 FNXC:TestFlakeRegister 2026-09-03-23:58:
 RUFU-181 added active record 15 (the notification-service whole-file OOM first sighting), so the pinned list gains its fifth element. The list is order-sensitive and mirrors document order, so a new active record must be appended last in the same commit that adds it — the count assertion alone would not catch a heading or status-text edit, which is exactly why the deepEqual exists.
 */
+/*
+FNXC:TestFlakeRegister 2026-09-03-22:23:
+The register now records that evidence owner FN-9146 was archived on 2026-09-03 without a named
+successor, so active records 1 and 2 are unowned pending their next sighting. The pinned status
+texts below track that archived-owner annotation; do not strip it without re-homing the records.
+*/
 test("observed-flake register active count, escalation state, and owners stay synchronized", () => {
   const register = readFileSync(registerPath, "utf8");
   const statedCount = register.match(/\*\*(\d+) active observation records\*\*/);
@@ -110,11 +116,11 @@ test("observed-flake register active count, escalation state, and owners stay sy
   assert.deepEqual(activeEntries, [
     {
       heading: "1. Project identity returns no stored identity",
-      status: "Active reproduced-but-unattributed observation — evidence owner FN-9146.",
+      status: "Active reproduced-but-unattributed observation — evidence owner FN-9146 (archived 2026-09-03; record unowned pending next sighting).",
     },
     {
       heading: "2. Schema applier retains registered dependents",
-      status: "Active first sighting — evidence owner FN-9146.",
+      status: "Active first sighting — evidence owner FN-9146 (archived 2026-09-03; record unowned pending next sighting).",
     },
     {
       heading: "13. Handoff-to-review atomicity PostgreSQL setup hook",

@@ -28,6 +28,11 @@ export {
   resetLocalDashboardPortForTests,
 } from "./local-dashboard-port.js";
 export {
+  CloudLinkPresence,
+  startCloudLinkPresence,
+  stopCloudLinkPresence,
+} from "./cloud-link-presence.js";
+export {
   DEFAULT_MODEL_REGISTRY_REFRESH_TIMEOUT_MS,
   boundExistingModelRegistryRefresh,
   refreshFusionModelRegistry,
@@ -1178,6 +1183,8 @@ export {
   findStagedNativeDir,
   findInstalledNodePtyNativeDir,
   getNativePrebuildName,
+  nodePtyPlatformPackageName,
+  describePtyLoadFailure,
   resetPtyModuleCacheForTests,
 } from "./cli-runtime/pty-native.js";
 // CLI agent executor — session manager (U2), telemetry hub (U3), state machine (U3),

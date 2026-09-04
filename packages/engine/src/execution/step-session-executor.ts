@@ -30,8 +30,15 @@ FNXC:StepSessionExecutor 2026-08-30-08:40 (merge origin/main c7a5e74a6a → main
 Upstream added the fast-execution lane (isFastExecutionMode/buildFastLanePrompt,
 resolveTrailingVerificationStepIndex) beside the same body; the import union must keep
 RUFU-132's recall cue alongside the new upstream helpers.
+
+FNXC:StepSessionExecutor 2026-09-04-06:57 (merge origin/main 150755506f → main):
+Upstream FN-9248/FN-9254 added `resolveAuthoredStepHeadingOffset` (zero-based plan step
+headings) to the same import line. Union keeps RUFU-132's recall cue + upstream's new
+helper, and keeps upstream's `export { resolveAuthoredStepHeadingOffset }` re-export.
 */
-import { buildPerTurnMemoryRecallCue, isFastExecutionMode, isValidProviderInstanceId, resolvePersistAgentThinkingLog, resolveExecutorFallbackModel, resolveTrailingVerificationStepIndex } from "@fusion/core";
+import { buildPerTurnMemoryRecallCue, isFastExecutionMode, isValidProviderInstanceId, resolvePersistAgentThinkingLog, resolveExecutorFallbackModel, resolveTrailingVerificationStepIndex, resolveAuthoredStepHeadingOffset } from "@fusion/core";
+
+export { resolveAuthoredStepHeadingOffset };
 
 import {
   createResolvedAgentSession,
@@ -236,6 +243,30 @@ export function parseStepFileScopes(prompt: string): Map<number, string[]> {
   }
 
   return result;
+}
+
+/*
+FNXC:WorkflowStepControl 2026-09-04-01:38:
+PROMPT.md is model-authored and an out-of-range heading is never schedulable. Normalize the
+unambiguous 1-based legacy shape, clamp malformed keys, and retain every valid task index.
+*/
+export function normalizeAuthoredStepScopes(
+  scopes: Map<number, string[]>,
+  stepCount: number,
+): Map<number, string[]> {
+  if (stepCount === 0) return scopes;
+
+  const offset = resolveAuthoredStepHeadingOffset([...scopes.keys()]);
+  const normalized = new Map<number, string[]>();
+  for (const [heading, paths] of scopes) {
+    const index = heading - offset;
+    if (index >= 0 && index < stepCount) normalized.set(index, paths);
+  }
+  const complete = new Map<number, string[]>();
+  for (let index = 0; index < stepCount; index++) {
+    complete.set(index, normalized.get(index) ?? []);
+  }
+  return complete;
 }
 
 /**
@@ -654,7 +685,8 @@ function extractStepSection(prompt: string, stepIndex: number): string {
     splits.push({ index: match.index, stepNum: parseInt(match[1], 10) });
   }
 
-  const targetSplit = splits.find((s) => s.stepNum === stepIndex);
+  const offset = resolveAuthoredStepHeadingOffset(splits.map((split) => split.stepNum));
+  const targetSplit = splits.find((s) => s.stepNum === stepIndex + offset);
   if (!targetSplit) return "";
 
   const splitPos = splits.indexOf(targetSplit);
@@ -990,17 +1022,9 @@ export class StepSessionExecutor {
     const { taskDetail } = this.options;
     const prompt = taskDetail.prompt ?? "";
 
-    // Parse file scopes and determine execution plan
-    const stepScopes = parseStepFileScopes(prompt);
-
-    // Add all step indices that don't appear in the prompt's step sections
-    // (e.g. if steps are defined in taskDetail.steps but not in the prompt)
+    // Parse file scopes and determine execution plan.
     const stepCount = taskDetail.steps?.length ?? 0;
-    for (let i = 0; i < stepCount; i++) {
-      if (!stepScopes.has(i)) {
-        stepScopes.set(i, []);
-      }
-    }
+    const stepScopes = normalizeAuthoredStepScopes(parseStepFileScopes(prompt), stepCount);
 
     /*
      * FNXC:WorkflowStepControl 2026-06-29-10:45:

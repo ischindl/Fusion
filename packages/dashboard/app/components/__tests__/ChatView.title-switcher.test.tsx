@@ -286,6 +286,7 @@ describe("ChatView title switcher", () => {
     expect(trigger).toHaveFocus();
   });
 
+
   it("preserves title tooltip and both truncation contracts", async () => {
     const longTitle = "A deliberately long conversation title that must stay truncated";
     await renderDirect({ activeSession: session("session-001", longTitle) });
