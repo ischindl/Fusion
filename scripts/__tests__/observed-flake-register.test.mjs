@@ -91,6 +91,9 @@ FN-9146 requires the register's active statuses to name the current evidence own
 
 FNXC:TestFlakeRegister 2026-08-30-04:25:
 A closed record may stay PHYSICALLY inside the active section when later evidence still cross-references it: entry 7 was closed on 2026-08-23 after its file was quarantined, but the FN-9146 campaign-evidence assertion below reads its per-run table in place, so relocating it to the archive would destroy that coverage. The stated introduction count describes ACTIVE records only, so closed-status entries are excluded here rather than moved. Counting raw sections instead made the two disagree the moment entry 7 closed and left main red. Drift protection is unchanged: the pinned list below still fixes every active heading and its exact status text.
+
+FNXC:TestFlakeRegister 2026-09-03-23:58:
+RUFU-181 added active record 15 (the notification-service whole-file OOM first sighting), so the pinned list gains its fifth element. The list is order-sensitive and mirrors document order, so a new active record must be appended last in the same commit that adds it — the count assertion alone would not catch a heading or status-text edit, which is exactly why the deepEqual exists.
 */
 test("observed-flake register active count, escalation state, and owners stay synchronized", () => {
   const register = readFileSync(registerPath, "utf8");
@@ -120,6 +123,10 @@ test("observed-flake register active count, escalation state, and owners stay sy
     {
       heading: "14. Merge-node paused-abort retry sequence",
       status: "Quarantined 2026-08-29 after a second sequence-only sighting.",
+    },
+    {
+      heading: "15. Notification-service whole-file invocation memory exhaustion",
+      status: "Active first sighting under AGENTS.md record-authority (2026-09-03, RUFU-181) — file-level quarantine would evict the file's 31 collected cases (20 + 2 + 9 across three describes), so this is recorded, not quarantined.",
     },
   ]);
 });

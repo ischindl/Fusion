@@ -19,7 +19,7 @@ tags:
 
 # Observed suite-only flakes register
 
-This register has **4 active observation records** (entries 1, 2, 13, and 14): **2 active first sightings**, **1 reproduced-but-unattributed observation**, and **1 quarantined second sighting**. Entry 7 below is closed and retained for cross-reference only. It also has **1 merge-gate eviction record** (entry 6) and **8 archived closed records**. Only the active section drives quarantine and escalation decisions; the other sections preserve historical evidence.
+This register has **5 active observation records** (entries 1, 2, 13, 14, and 15): **3 active first sightings**, **1 reproduced-but-unattributed observation**, and **1 quarantined second sighting**. Entry 7 below is closed and retained for cross-reference only. It also has **1 merge-gate eviction record** (entry 6) and **8 archived closed records**. Only the active section drives quarantine and escalation decisions; the other sections preserve historical evidence.
 
 <!--
 FNXC:TestFlakeRegister 2026-08-19-11:14:
@@ -230,6 +230,38 @@ Quarantine was not available as an alternative. Core PostgreSQL files cannot be 
 
 The failure remains sequence-only evidence, not an attribution to FN-249: its changed user-cancellation path is not enabled by this fixture, and the selected pre-existing engine-abort subject passes in isolation. Per the mandatory deletion ratchet, the second sighting is quarantined in `scripts/lib/test-quarantine.json` and the matching `engine-reliability` exclude; no timeout, retry, or assertion was changed. Rescue requires a root-cause fix that proves the file's recovery coverage is stable.
 
+
+### 15. Notification-service whole-file invocation memory exhaustion
+
+- **Status:** Active first sighting under AGENTS.md record-authority (2026-09-03, RUFU-181) — file-level quarantine would evict the file's 31 collected cases (20 + 2 + 9 across three describes), so this is recorded, not quarantined.
+- **File:** `packages/engine/src/notification/__tests__/notification-service.test.ts`
+- **Exact identity:** a whole-file invocation pathology — `vitest run src/notification/__tests__/notification-service.test.ts` with no `-t` filter, i.e. the three describes `NotificationService deferred failure notifications`, `NotificationService manual dispatch dedupe`, and `NotificationService workflow transition notifications` in one file run. Not a single-case flake, but deterministic: every whole-file run dies at the START of describe 3's `NotificationService workflow transition notifications > does not add a manual-hold workflow notification when the failed status already represents the task update`. Count correction: the file collects **31 cases** (20 / 2 / 9); the "77 `it(` cases" figure circulating from the RUFU-180 evidence trail is a substring-grep artifact (`it(` also matches `emit(` etc.).
+- **Observed tree/SHA:** `8803ecff6a` (RUFU-181 branch tip); base repro `dfc1f5ff05` with the three production files checked out to base dies identically; RUFU-180 observations on `fusion/rufu-180`.
+- **Observed frequency:** 13 review-lane OOM-killed verification dispatches on 2026-09-03 01:33Z–19:27Z (RUFU-180), plus this card's three whole-file repros and one `-t`-filtered repro — all deterministic kills, no green whole-file run observed at any tree tried.
+
+| run | result |
+|---|---|
+| per-describe `-t` (all three commands below) | **green** — 20 / 2 / 9 passing, each in seconds |
+| whole file, unbounded | kernel journal `Out of memory: Killed process … (node-MainThread) … anon-rss:62094756kB` (RUFU-180); RUFU-181 diagnostic-run orphans killed at `anon-rss:68476596kB`, `64535016kB`, `63674596kB`, `68467460kB` |
+| whole file, bounded (`systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0` + `NODE_OPTIONS=--max-old-space-size=4096`, wall bound 600 s) | `Memory cgroup out of memory: Killed process … anon-rss:6177920kB` ~17 s in; a 1 Hz RSS probe shows a flat ~553 MB plateau through every preceding test, then the probe never ticks again after the death case STARTS — event-loop starvation with ~350 MB/s growth |
+| `-t` filtered describe 2 → describe 3 only | **reproduces** the same cgroup kill at the same case |
+| `-t` filtered describe 1 + 3, describe 1 + 2, each describe alone, describe 2 + death case alone | green |
+
+Localized, root cause NOT named. The wedge re-arm floor (`armPendingWedgeTimer`'s `Math.max(1, min(delayMs, wedgeNotificationSettleMs))` on `held`/`rearmed`) is exonerated at describe 3's default `wedgeNotificationSettleMs = 300_000`, and a small-heap-capped run GC-thrashes rather than producing a V8 heap OOM — the runaway allocation is transient garbage too fast for the event loop to service timers, not a single big object. The ordering dependency is real and currently irreducible below "describe 2 runs before describe 3": D1+D3 is green even though it contains every test D2+D3 runs inside describe 3, and D2 + the death case alone is green. A small-heap `--cpu-prof` capture showed only the launcher's module-load profile (test workers never flushed), so no allocation-site evidence exists yet.
+
+**Second-sighting escalation:** a second sighting moves this to `scripts/lib/test-quarantine.json` + the one-line `"src/notification/__tests__/notification-service.test.ts"` exclude in the `engine-default` project of `packages/engine/vitest.config.ts` in one lockstep commit (AGENTS.md, no discretion). Note quarantine also removes the `-t` workaround below (no CLI flag lifts a configured exclude), which is why recording is the first-sighting path.
+
+**Interim remedy — the review lane must use these bounded commands** while this is unfixed (each is the review-lane verification for this file's subject and produces a verdict):
+
+```
+pnpm --filter @fusion/engine exec vitest run src/notification/__tests__/notification-service.test.ts -t "NotificationService deferred failure notifications"
+pnpm --filter @fusion/engine exec vitest run src/notification/__tests__/notification-service.test.ts -t "NotificationService manual dispatch dedupe"
+pnpm --filter @fusion/engine exec vitest run src/notification/__tests__/notification-service.test.ts -t "NotificationService workflow transition notifications"
+```
+
+Never run the whole file unbounded on a shared host. The host-safe bounded repro is: `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 --quiet env NODE_OPTIONS=--max-old-space-size=4096 timeout 600 pnpm --filter @fusion/engine exec vitest run src/notification/__tests__/notification-service.test.ts`.
+
+**The `pnpm test` trap:** while unfixed, a card whose diff touches this test file with NO non-test source change in the engine module graph (docs-only, or test-comment-only) does NOT trip the wide-fan-out guard in `scripts/test-changed.mjs` — `changedSourceFilesAffectingPackage` filters every path through `isTestFilePath` — so `pnpm test` runs `vitest run --changed <base>`, collects this file whole-file, and reproduces the kill inside the bounded lane (heap-capped at `ENGINE_SCOPED_AFFECTED_HEAP_MB = 6144`, so it dies as a heap-OOM/red lane, never 62 GB RSS). Substitute: `pnpm test:gate` for cross-cutting coverage plus the three `-t` runs above for subject coverage. `pnpm test` becomes safe again only once this file is fixed or quarantined. The file is NOT in the curated `engine-core` merge-gate allow-list and stays out (gate criteria: fast/deterministic/curated).
 
 ### Common shape and investigated result
 

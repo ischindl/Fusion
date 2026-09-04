@@ -1,3 +1,16 @@
+/*
+FNXC:NotificationTestHarness 2026-09-03-23:35:
+The WHOLE-FILE invocation of this suite (no `-t` filter) carries a recorded cross-describe OOM pathology
+(register entry 15 in docs/solutions/test-failures/suite-only-flakes-observed-register.md): RSS grows at
+~350 MB/s from a ~550 MB plateau, starting at describe 3's "does not add a manual-hold workflow notification
+when the failed status already represents the task update" case, whenever describe 2 runs before describe 3.
+The process is OOM-killed (unbounded runs reach ~62 GB anon-rss in the kernel journal; bounded 6 GB cgroup
+runs are killed the same way). NEVER run this file whole-file unbounded on a shared host. Verify through the
+three bounded per-describe commands instead — each completes green in seconds:
+  pnpm --filter @fusion/engine exec vitest run src/notification/__tests__/notification-service.test.ts -t "NotificationService deferred failure notifications"
+  pnpm --filter @fusion/engine exec vitest run src/notification/__tests__/notification-service.test.ts -t "NotificationService manual dispatch dedupe"
+  pnpm --filter @fusion/engine exec vitest run src/notification/__tests__/notification-service.test.ts -t "NotificationService workflow transition notifications"
+*/
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NotificationPayload, NotificationProvider, Settings, Task } from "@fusion/core";
 import { NotificationService } from "../notification-service.js";
