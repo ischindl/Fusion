@@ -842,6 +842,28 @@ shard artifacts into `.timings/` first (the default lookup directory), or pass
 
 <!-- FNXC:CITestSharding 2026-08-10-18:12: A deleted test can leave a phantom path in the committed timing snapshot. Prune only that drift without fabricating fresh timing evidence or resetting the staleness budget. -->
 
+<!--
+FNXC:CITestSharding 2026-09-04-11:09:
+RUFU-184 found the snapshot drifting onto 11 deleted test paths while a genuine re-capture was
+impossible, so two rules are now explicit. (1) A re-capture needs the COMPLETE four-shard set:
+`--write-timings` rebuilds from the input artifacts only and never merges with the committed file,
+so writing a partial set silently demotes every package missing from the inputs to median-scaled
+file-count weighting. The guard cannot catch this — it asserts recorded-path→disk only, never
+planner coverage — so a green guard is not evidence of completeness; compare the artifact set
+against the live workspace test packages before writing.
+
+FNXC:CITestSharding 2026-09-04-11:09:
+(2) While the full-suite lane is red, a complete set is unobtainable rather than merely
+inconvenient: `runWatched()` in `scripts/ci-test-shard.mjs` calls `process.exit(code)` on the first
+failing invocation, so each shard dies before reaching the packages ordered later in its command
+list. Measured 2026-09-04: 0 successful `Full Suite (non-blocking)` runs on main across 300
+completed runs, and four post-deletion runs probed across the retention window each yielded only
+14-18 of the 35 live test packages and never `@fusion/core` or `@fusion/desktop`. Under that
+condition prune mode is the sanctioned stopgap, but only while `--check-timings-staleness` still
+exits 0, and the change must be labelled a prune rather than a refresh because the untouched stamp
+keeps expiring on the real capture time; the green-lane re-capture stays owed.
+-->
+
 When deleted test files leave phantom snapshot entries, run
 `node scripts/ci-test-shard.mjs --prune-timings`. Pruning removes only paths absent from disk,
 drops packages with no remaining paths, and **never restamps `capturedAt`**. A real refresh still
