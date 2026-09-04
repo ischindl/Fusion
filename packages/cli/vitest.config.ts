@@ -6,18 +6,22 @@ const maxWorkers = computeMaxWorkers();
 
 const quarantinedCliTests: string[] = [
   /*
-  FNXC:CliTests 2026-08-20-15:35:
-  RUFU-128 observed the SECOND sighting of the loaded-host 15000ms per-test timeout in bin.test.ts's
-  no-args dashboard-launch test: first sighting 2026-08-20 in the suite-only flake register (concurrent
-  cli batch on a loaded host), second sighting 2026-08-20 15:35 UTC at host load average 15.22 — whole
-  file 23.8s (1 failed / 76 passed) and single-test-isolated 15.39s (transform 10.59s). The suite
-  factory-mocks ../commands/dashboard.js, the only packages/cli file RUFU-128 touched, so no RUFU-128
-  code executes here; the same signature was a loaded-lane timeout in the 2026-06-20 FN-6839 history.
-  Quarantined on sight per the deletion ratchet (second sighting — no further discretion); mirrored in
-  scripts/lib/test-quarantine.json; expires 2026-09-03. No timeout widening, retries, or assertion
-  changes (anti-appeasement).
+  FNXC:CliTests 2026-09-04-13:14:
+  RUFU-185 rescued bin.test.ts before its expired 2026-09-03 deletion deadline. The loaded-host wall
+  time was suite-internal transform cost, not product flakiness: the `vi.importActual` spread on the
+  core mock dragged the real core/engine/dashboard barrels into every fresh bin.ts instance's module
+  graph, and the `runBin()` `?test=N` cache-bust query re-transformed bin.ts for each of its ~80
+  calls. The rescue replaced the spread with a minimal named core mock plus empty engine/dashboard
+  barrel mocks, and the query-id cache-bust with `vi.resetModules()` + a stable-specifier import
+  (fresh `main()` per test kept). Pre-fix → post-fix: whole file 17.5s → 2.7s (transform 12.5s →
+  0.56s); isolated cold no-args dashboard test 13.4s → 1.0s; the loaded lane that timed out at
+  15009ms (VITEST_MAX_WORKERS=8 with 3 concurrent sibling CLI files) passes at 1.1s with the
+  15000ms budgets untouched. Mutation probes (dropped `--quiet`/`-q` stripping; cloud pair-start
+  dispatch swap) turned the suite red as expected, proving regression-catching value; bin.ts was
+  reverted after each probe. Removed this exclude and the matching scripts/lib/test-quarantine.json
+  row in lockstep; do not re-quarantine this signature without a new root cause under the deletion
+  ratchet.
   */
-  "src/__tests__/bin.test.ts",
   /*
   FNXC:CliTests 2026-06-14-01:36:
   The full @runfusion/fusion package lane timed out or leaked mock state across 24 CLI integration-heavy files under changed-test load, while the same files passed in smaller direct runs.
