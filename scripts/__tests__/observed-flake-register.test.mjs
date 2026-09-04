@@ -101,6 +101,16 @@ The register now records that evidence owner FN-9146 was archived on 2026-09-03 
 successor, so active records 1 and 2 are unowned pending their next sighting. The pinned status
 texts below track that archived-owner annotation; do not strip it without re-homing the records.
 */
+/*
+FNXC:TestFlakeRegister 2026-09-04-16:36:
+RUFU-186 closed active record 15 on the fix-landed branch (AGENTS.md record-authority): the harness's
+real `fetch` to `https://ntfy.sh` was named as the trigger of Node 26.7.0's native HTTP/2 allocation
+storm, and the suite is now network-dead behind a connect-tripwire guard. A `Closed`-prefixed status
+is excluded from the active count, and entry 15 is dropped from the pinned list below in the same
+commit as the register close. Entry 15 stays PHYSICALLY in the active section as closed
+cross-reference (entry 7 precedent); no quarantine entry was created, so `scripts/lib/test-quarantine.json`
+is unchanged (lockstep count 0 → 0).
+*/
 test("observed-flake register active count, escalation state, and owners stay synchronized", () => {
   const register = readFileSync(registerPath, "utf8");
   const statedCount = register.match(/\*\*(\d+) active observation records\*\*/);
@@ -129,10 +139,6 @@ test("observed-flake register active count, escalation state, and owners stay sy
     {
       heading: "14. Merge-node paused-abort retry sequence",
       status: "Quarantined 2026-08-29 after a second sequence-only sighting.",
-    },
-    {
-      heading: "15. Notification-service whole-file invocation memory exhaustion",
-      status: "Active first sighting under AGENTS.md record-authority (2026-09-03, RUFU-181) — file-level quarantine would evict the file's 31 collected cases (20 + 2 + 9 across three describes), so this is recorded, not quarantined.",
     },
   ]);
 });
