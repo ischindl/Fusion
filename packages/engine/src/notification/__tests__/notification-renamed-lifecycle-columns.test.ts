@@ -22,12 +22,29 @@ Both pass on the DEFAULT vocabulary before and after, which is the point of runn
 import { describe, expect, it, vi } from "vitest";
 import type { NotificationProvider, Settings, Task, TaskMoveLanes, WorkflowIr } from "@fusion/core";
 import { NotificationService } from "../notification-service.js";
+import { SelfHealingManager } from "../../self-healing.js";
 import { DEFAULT_VOCAB, RENAMED_VOCAB, lifecycleIr, type Vocabulary } from "../../__tests__/_workflow-vocabulary-fixture.js";
 import { flushAsyncHandlers } from "../../__tests__/_flush-async-handlers.js";
 
-vi.mock("../../logger.js", () => ({
-  schedulerLog: { log: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}));
+/*
+FNXC:TaskWedgeNotifications 2026-09-03-03:41 (RUFU-180):
+The standing-sweep trigger hands off through `getActiveNotificationService()`; the sweep tests bind
+the fixture service to that registry the same way production self-healing discovers it.
+*/
+const { getActiveNotificationServiceMock } = vi.hoisted(() => ({ getActiveNotificationServiceMock: vi.fn() }));
+vi.mock("../../util/notifier.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../util/notifier.js")>();
+  return { ...actual, getActiveNotificationService: getActiveNotificationServiceMock };
+});
+
+vi.mock("../../logger.js", () => {
+  const double = () => ({ info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn(), log: vi.fn() });
+  return {
+    schedulerLog: { log: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    getLogger: double,
+    createLogger: double,
+  };
+});
 
 type MovedListener = (data: { task: Task; from: string; to: string }) => void;
 type UpdatedListener = (task: Task, meta?: { lanes?: TaskMoveLanes }) => void;
@@ -37,7 +54,7 @@ type UpdatedListener = (task: Task, meta?: { lanes?: TaskMoveLanes }) => void;
  * under test rather than failing soft to the legacy ids. Failing soft would make the renamed run
  * indistinguishable from the default one and the differential meaningless.
  */
-function fixture(vocab: Vocabulary) {
+function fixture(vocab: Vocabulary, serviceOptions?: { wedgeNotificationSettleMs?: number }) {
   /*
   `mergeOrchestration: true` is REQUIRED here, and finding that out was the useful part.
 
@@ -57,10 +74,23 @@ function fixture(vocab: Vocabulary) {
   const ir: WorkflowIr = lifecycleIr(vocab, "notif-lifecycle", { mergeOrchestration: true });
   const movedListeners = new Set<MovedListener>();
   const updatedListeners = new Set<UpdatedListener>();
+  let board: Task[] = [];
   const store = {
     getSettings: async () => ({ ntfyEnabled: true, ntfyTopic: "test" }) as Settings,
     getTaskWorkflowSelection: () => ({ workflowId: "notif-lifecycle", stepIds: [] }),
     getWorkflowDefinition: async (id: string) => (id === "notif-lifecycle" ? { ir } : undefined),
+    listTasks: async () => board,
+    /*
+    FNXC:TaskWedgeNotifications 2026-09-03-06:10 (RUFU-180 code-review P0):
+    `maybeNotifyTaskWedge` re-reads the live row through `store.getTask` before classifying, and
+    production hydrates the stall reason ONLY on reads (reads.ts) — never on the `task:moved`
+    payload (which comes from `readTaskForMove`, a raw row conversion). The board rows are that
+    hydrated read output; event payloads in these tests must therefore be production-shaped
+    WITHOUT `stallReason` so an arrival assertion proves the live read, not an accidental
+    payload field. Before this existed the fixture had no getTask at all and the tests injected
+    the reason into the payload, proving a path production never emits.
+    */
+    getTask: async (id: string) => board.find((candidate) => candidate.id === id),
     on: (event: string, listener: MovedListener | UpdatedListener) => {
       if (event === "task:moved") movedListeners.add(listener as MovedListener);
       if (event === "task:updated") updatedListeners.add(listener as UpdatedListener);
@@ -77,7 +107,7 @@ function fixture(vocab: Vocabulary) {
     isEventSupported: () => true,
     sendNotification,
   };
-  const service = new NotificationService(store as never);
+  const service = new NotificationService(store as never, serviceOptions);
   service.registerProvider(provider);
 
   const task = (overrides: Partial<Task> = {}): Task => ({
@@ -94,7 +124,7 @@ function fixture(vocab: Vocabulary) {
     ...overrides,
   } as Task);
 
-  return { store, service, sendNotification, task };
+  return { store, service, sendNotification, task, setBoard: (tasks: Task[]) => { board = tasks; } };
 }
 
 /** Both vocabularies, so a literal-keyed guard cannot pass by hitting the legacy ids. */
@@ -139,7 +169,60 @@ describe("notification lifecycle guards resolve columns by ROLE, not by id", () 
       );
       await service.stop();
     });
+
+    it(`announces a null-status review-lane stall wedge on a ${label} review column (${vocab.review})`, async () => {
+      /*
+      FNXC:TaskWedgeNotifications 2026-09-03-01:35 (RUFU-180):
+      A review-lane merge refusal carries `status: null` and a derived `stallReason`, so it reaches an
+      operator only through the stall authority. Under a RENAMED vocabulary it must still announce:
+      the wedge eligibility check resolves its lanes by lifecycle ROLE, and a stall alert keyed on the
+      literal `in-review` would be silent on exactly the custom boards this file exists to cover.
+
+      FNXC:TaskWedgeNotifications 2026-09-03-05:05 (RUFU-180 code-review P0):
+      Production-shaped inputs: the hydrated row lives on the board (what `getTask` returns) and the
+      emitted payload is the raw row conversion production actually emits. Delivery then provably
+      comes from the service's live re-read, the same read every production caller performs.
+      */
+      // Settle window 0: this differential store carries no pending-marker CAS, so a nonzero default
+      // settle would park the hold and return "unavailable" instead of asking the question here.
+      const { store, service, sendNotification, task, setBoard } = fixture(vocab, { wedgeNotificationSettleMs: 0 });
+      await service.start();
+
+      const stalled = task({
+        column: vocab.review,
+        status: null,
+        stallReason: {
+          code: "merge-blocker",
+          reason: "task has a pre-merge approval recorded against different content",
+          observedAt: "2026-09-03T00:00:00.000Z",
+        },
+      } as never);
+      setBoard([stalled]);
+      store.emitUpdated({ ...stalled, stallReason: undefined } as never);
+      await flushAsyncHandlers();
+
+      expect(sendNotification).toHaveBeenCalledWith(
+        "task-wedged",
+        expect.objectContaining({
+          taskId: "FN-9001",
+          metadata: expect.objectContaining({ wedgeReason: "stall:merge-blocker" }),
+        }),
+      );
+      await service.stop();
+    });
   }
+
+  it("leaves a stallReason-less review-lane card silent on a RENAMED review column", async () => {
+    // Non-vacuous control: the renamed alert above cannot be explained by "notify on any review card".
+    const { store, service, sendNotification, task } = fixture(RENAMED_VOCAB, { wedgeNotificationSettleMs: 0 });
+    await service.start();
+
+    store.emitUpdated(task({ column: RENAMED_VOCAB.review, status: null } as never));
+    await flushAsyncHandlers();
+
+    expect(sendNotification).not.toHaveBeenCalled();
+    await service.stop();
+  });
 
   it("classifies a manual merge hold from emitter-carried renamed review lanes synchronously", async () => {
     const { store, service, sendNotification, task } = fixture(RENAMED_VOCAB);
@@ -225,4 +308,80 @@ describe("notification lifecycle guards resolve columns by ROLE, not by id", () 
     expect(sendNotification).not.toHaveBeenCalled();
     await service.stop();
   });
+
+  for (const [label, vocab] of VOCABULARIES) {
+    it(`${label}: one stalled card is alerted by BOTH discovery triggers on the ${label} review lane and stays silent after the move into the ${label} complete lane`, async () => {
+      /*
+      FNXC:TaskWedgeNotifications 2026-09-03-03:41 (RUFU-180):
+      Renamed-lane differential for the Step-3 discovery pair. Neither trigger reads column
+      literals: the arrival path resolves the review role through the IR, and the standing sweep
+      routes every candidate through the NotificationService (the sole validation/dispatch
+      authority), whose lane gates resolve the renamed vocabulary the same way. The whole card
+      lifecycle — sweep alert, arrival re-observation collapse, and terminal-lane silence — must
+      hold on `shipped`/`live` exactly as on DEFAULT, which only a per-vocabulary loop can prove.
+      */
+      const { store, service, sendNotification, task, setBoard } = fixture(vocab, { wedgeNotificationSettleMs: 0 });
+      await service.start();
+      getActiveNotificationServiceMock.mockReturnValue(service);
+      const manager = new SelfHealingManager(store as never, { rootDir: "/repo" });
+      const wedges = () => (sendNotification.mock.calls as unknown as Array<[string, { metadata?: { wedgeReason?: string } }]>)
+        .filter(([event]) => event === "task-wedged");
+
+      const stalled = {
+        ...task({ column: vocab.review }),
+        status: null,
+        stallReason: { code: "merge-blocker", reason: "the review lane refuses to merge this card: contract tests are red on the branch", observedAt: "2026-09-03T11:55:00.000Z" },
+      } as unknown as Task;
+      setBoard([stalled]);
+
+      // Trigger B (standing sweep, zero events): the alert fires on the renamed review lane.
+      await manager.reconcileReviewStallWedgeNotifications();
+      await flushAsyncHandlers();
+      expect(wedges()).toHaveLength(1);
+      expect(wedges()[0]![1].metadata?.wedgeReason).toBe("stall:merge-blocker");
+
+      // Trigger A (arrival emit) re-observes the same unchanged episode and must collapse, not duplicate.
+      // Production shape: the moved payload carries no stall reason (raw readTaskForMove row); the
+      // hydrated board row above is what the service's live re-read classifies.
+      store.emitMoved({ task: { ...stalled, stallReason: undefined } as Task, from: vocab.wip, to: vocab.review });
+      await flushAsyncHandlers();
+      expect(wedges()).toHaveLength(1);
+
+      // The same card moving into the renamed COMPLETE lane ends the announcement: the terminal-lane
+      // branch resolves without dispatch, and a transitioned reason on the resolved card stays silent.
+      const merged = { ...stalled, column: vocab.complete, status: "merged", stallReason: { code: "held-human-review", reason: "the card sits behind an approval that the human operator must decide", observedAt: "2026-09-03T11:58:00.000Z" } } as Task;
+      setBoard([merged]);
+      store.emitMoved({ task: { ...merged, stallReason: undefined } as Task, from: vocab.review, to: vocab.complete });
+      store.emitUpdated(merged);
+      await flushAsyncHandlers();
+      await manager.reconcileReviewStallWedgeNotifications();
+      await flushAsyncHandlers();
+      expect(wedges()).toHaveLength(1);
+
+      getActiveNotificationServiceMock.mockReturnValue(undefined);
+      await service.stop();
+    });
+
+    it(`${label}: review-lane ARRIVAL alerts a stalled card into the ${label} review column without waiting for the next sweep`, async () => {
+      const { store, service, sendNotification, task, setBoard } = fixture(vocab, { wedgeNotificationSettleMs: 0 });
+      await service.start();
+
+      const arrived = {
+        ...task({ column: vocab.review }),
+        status: null,
+        stallReason: { code: "merge-blocker", reason: "the review lane refuses to merge this card: contract tests are red on the branch", observedAt: "2026-09-03T11:55:00.000Z" },
+      } as unknown as Task;
+      // Production shape (RUFU-180 P0): the hydrated row lives on the board (what getTask returns);
+      // the emitted payload is the raw readTaskForMove conversion, which never carries `stallReason`.
+      setBoard([arrived]);
+      store.emitMoved({ task: { ...arrived, stallReason: undefined } as unknown as Task, from: vocab.wip, to: vocab.review });
+      await flushAsyncHandlers();
+
+      expect(sendNotification).toHaveBeenCalledWith(
+        "task-wedged",
+        expect.objectContaining({ taskId: "FN-9001", metadata: expect.objectContaining({ wedgeReason: "stall:merge-blocker" }) }),
+      );
+      await service.stop();
+    });
+  }
 });

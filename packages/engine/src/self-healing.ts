@@ -2033,6 +2033,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       { name: "reconcile-stale-merger-status", fn: () => this.reconcileStaleMergerStatus().then(() => undefined) },
       { name: "reconcile-stale-duplicate-decision", fn: () => this.reconcileStaleDuplicateDecisionPause().then(() => undefined) },
       { name: "reconcile-pending-wedge-notification", fn: () => this.reconcilePendingWedgeNotifications().then(() => undefined) },
+      { name: "reconcile-review-stall-notification", fn: () => this.reconcileReviewStallWedgeNotifications().then(() => undefined) },
       { name: "recover-already-merged-review", fn: () => this.recoverAlreadyMergedReviewTasks().then(() => undefined) },
       { name: "recover-post-done-noncontinuable-wedge", fn: () => this.recoverPostDoneNonContinuableWedge().then(() => undefined) },
       { name: "recover-completion-handoff-limbo", fn: () => this.recoverCompletionHandoffLimbo().then(() => undefined) },
@@ -3056,6 +3057,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           { name: "reconcile-stale-merger-status", fn: () => this.reconcileStaleMergerStatus() },
           { name: "reconcile-stale-duplicate-decision", fn: () => this.reconcileStaleDuplicateDecisionPause() },
       { name: "reconcile-pending-wedge-notification", fn: () => this.reconcilePendingWedgeNotifications() },
+      { name: "reconcile-review-stall-notification", fn: () => this.reconcileReviewStallWedgeNotifications() },
           // FNXC:OrphanedPendingSteps 2026-07-22-16:35 (FN-8492 review follow-up): also
           // steady-state — a step session can die without an engine restart, and startup-only
           // cadence left that case riding the 3×30-min stall escalator to a deadlock park.
@@ -8009,6 +8011,77 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       return processed;
     } catch (error) {
       log.warn(`reconcilePendingWedgeNotifications failed: ${error instanceof Error ? error.message : String(error)}`);
+      return 0;
+    }
+  }
+
+  /*
+  FNXC:TaskWedgeNotifications 2026-09-03-02:39 (RUFU-180):
+  Standing discovery for review-lane stalls. A merge refusal writes no `status`, no `pausedReason` and
+  no `error`, so the row stops being written the moment it lands in review — an engine that was down
+  across the move, or a pending hold cleared before it delivered, therefore has no event left to wake
+  the notifier. This sweep is the bounded backstop for that standing condition.
+
+  Two deliberate boundaries:
+  1. **Candidate selection only.** The stall authority already resolved the workflow's review lane and
+     encoded lane membership in the code, so filtering on the three alertable codes needs no column
+     literals (renamed lanes work for free) and no per-candidate blocker probe. Every validation and
+     dispatch decision belongs to `NotificationService.notifyTaskStallWedge`.
+  2. **Storm bound.** Delivery still requires the settle window, one durable pending mark per reason
+     key, the episode claim, and the 6 h per-reason cooldown, and a stable `stall:<code>` key collapses
+     re-marks — so a `held-human-review` board announces once per card per episode, not once per tick.
+     `dependency-blocker` is excluded by design: a todo card awaiting dependencies is normal queueing,
+     and in-review unmet-dependency wedges are already announced by the reconcile-in-review-unmet-dependencies
+     descriptor, so this sweep never needs a dependency resolver.
+
+  Audit stays ids/counts/outcomes-only through the FN-9175 bounded seam — the blocker sentence lives on
+  the task row and the mailbox message, never in `runAuditEvents` metadata.
+  */
+  async reconcileReviewStallWedgeNotifications(): Promise<number> {
+    try {
+      const now = Date.now();
+      const tasks = await this.store.listTasks({ slim: true, includeArchived: false, limit: 500 });
+      const candidates = tasks.filter((candidate) => {
+        const code = candidate.stallReason?.code;
+        return code === "merge-blocker" || code === "pre-merge-gate-pending" || code === "held-human-review";
+      }).slice(0, 25);
+      /*
+      FNXC:TaskWedgeNotifications 2026-09-03-16:43 (RUFU-180 code-review re-verification):
+      The notifier is resolved only once a candidate exists. FN-5284's corruption contract test asserts
+      self-healing touches no notification surface on a healthy board; an up-front `getActiveNotificationService()`
+      (unlike FN-8953's sweep, which needs the service pre-filter for its settle window) would call it on
+      every maintenance tick even when nothing can announce, tripping that contract.
+      */
+      const service = candidates.length > 0 ? getActiveNotificationService() : undefined;
+      let processed = 0;
+      for (const task of candidates) {
+        const stallReason = task.stallReason!;
+        let outcome: "delivered" | "suppressed" | "unavailable" | "deferred" | "failed" = "deferred";
+        try {
+          outcome = service ? await service.notifyTaskStallWedge(task) : "deferred";
+        } catch {
+          outcome = "failed";
+        }
+        const observedAt = Date.parse(stallReason.observedAt ?? "");
+        await emitBoundedRunAudit(this.store, {
+          taskId: task.id,
+          agentId: "self-healing",
+          runId: generateSyntheticRunId("reconcile-review-stall-notification", task.id),
+          domain: "database",
+          mutationType: "task:reconcile-review-stall-notification" as DatabaseMutationType,
+          target: task.id,
+          metadata: {
+            taskId: task.id,
+            reasonKey: `stall:${stallReason.code}`,
+            outcome,
+            ...(Number.isFinite(observedAt) ? { stallAgeMs: Math.max(0, now - observedAt) } : {}),
+          },
+        });
+        processed += 1;
+      }
+      return processed;
+    } catch (error) {
+      log.warn(`reconcileReviewStallWedgeNotifications failed: ${error instanceof Error ? error.message : String(error)}`);
       return 0;
     }
   }

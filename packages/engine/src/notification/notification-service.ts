@@ -16,7 +16,7 @@ import { DEFAULT_NTFY_EVENTS, buildNtfyClickUrl, formatTaskIdentifier } from "..
 import { schedulerLog } from "../logger.js";
 import { NtfyNotificationProvider } from "./ntfy-provider.js";
 import { WebhookNotificationProvider } from "./webhook-provider.js";
-import { classifyTerminalFailureAutoRecoveryForTask, describeTaskRecoveryOwner, describeTaskWedge, isTaskProgressing, shouldWithholdWedgeAlertForAutoRecovery, type TaskWedgeDescriptor } from "./task-wedge-notification.js";
+import { classifyTerminalFailureAutoRecoveryForTask, describeTaskRecoveryOwner, describeTaskWedge, describeTaskWedgeWithStall, isTaskProgressing, shouldWithholdWedgeAlertForAutoRecovery, type TaskWedgeDescriptor } from "./task-wedge-notification.js";
 
 type PendingWedgeCompletionOutcome = "delivered" | "suppressed" | "cleared" | "rearmed" | "held" | "absent" | "unreadable";
 type PendingWedgeCompletionResult = { outcome: PendingWedgeCompletionOutcome; reasonKey?: string; remainingMs?: number };
@@ -374,6 +374,13 @@ export class NotificationService {
     task:moved is a production recovery path that does not enter maybeNotifyTaskWedge. A pending
     durable hold must be cleared when its subject visibly progresses, including workflow-renamed
     hold/WIP/terminal lanes, so its timer or restart sweep cannot alert after that recovery.
+
+    FNXC:TaskWedgeNotifications 2026-09-03-02:39 (RUFU-180):
+    "does not enter maybeNotifyTaskWedge" is now scoped to the CLEAR clause: this clear stays
+    clear-only, but review-lane ARRIVAL below enters the wedge auto path. A merge refusal leaves the row
+    with null status, no pausedReason and no error, so the move into review was the last write that row
+    would ever receive and nothing announced the stall. Non-review progressed lanes keep their
+    clear-only behavior unchanged — a card that visibly moved on must never alert afterwards.
     */
     const movedProgressedLanes = await resolveProjectColumnsForRoles(this.store, ["hold", "countsTowardWip", "complete", "archived"]);
     if (
@@ -386,6 +393,30 @@ export class NotificationService {
     const movedLifecycle = await this.resolveLifecycleColumnsForTask(data.task.id);
 
     if ((await this.resolveReviewColumnsForTask(data.task.id)).has(data.to)) {
+      /*
+      FNXC:TaskWedgeNotifications 2026-09-03-01:35 (RUFU-180):
+      Arrival in review is the ONLY production moment that reaches the review-lane stall population.
+      A merge refusal writes no `status`, no `pausedReason` and no `error`, so nothing ever writes the
+      row again after the move — and this branch used to end at `maybeNotify("in-review")`, leaving the
+      wedge path untouched. An operator then learned about the stall only by opening the board.
+
+      It is enqueued BEFORE the `notificationsEnabled` return on purpose: the mailbox half of the wedge
+      channel needs no push provider, exactly like the awaiting-approval mailbox in `handleTaskUpdated`
+      (whose wedge enqueue likewise precedes its own gate). A dashboard-only operator still gets told.
+
+      FNXC:TaskWedgeNotifications 2026-09-03-05:05 (RUFU-180 code-review P0):
+      The enqueue is UNCONDITIONAL, like `handleTaskUpdated`'s. An earlier revision gated it on
+      `data.task.stallReason`, which is dead in production: the `task:moved` payload's task comes from
+      `store.readTaskForMove` (moves.ts), a raw-row conversion (`rowToTask(pgRowToTaskRow(...))`) that
+      never runs stall hydration — only the `getTask`/`listTasks` reads hydrate (reads.ts). The gate
+      was therefore always false, and tests that injected the field into the payload hid it. All real
+      gating lives behind the live re-read in `maybeNotifyTaskWedge`, which classifies the HYDRATED
+      row: a clean review arrival derives no descriptor and resolves nothing (no visible lifecycle
+      advance from a review column with null status), so unconditional entry costs one serialized
+      no-op for non-stalled cards — the same cost every `task:updated` already pays.
+      */
+      void this.enqueueWedgeHandling(data.task.id, async () => { await this.maybeNotifyTaskWedge(data.task); });
+
       if (!this.notificationsEnabled) {
         await this.refreshNotificationState("task:moved");
         if (!this.notificationsEnabled) {
@@ -589,6 +620,25 @@ export class NotificationService {
     return result;
   }
 
+  /*
+  FNXC:TaskWedgeNotifications 2026-09-03-02:39 (RUFU-180):
+  Descriptor-less twin of `notifyTaskWedge` for the standing review-lane stall sweep.
+
+  The rule this encodes: **self-healing selects candidates; NotificationService is the sole
+  validation and dispatch authority.** The sweep must not re-implement the withhold gate, the recovery
+  owner lookup, the terminal-lane gate, the pending mark, or the episode claim — it hands the row to
+  this method and reports the outcome it gets back. That keeps one owner for "is this card actually an
+  actionable wedge right now", so the sweep cannot drift from the live event path.
+
+  Same `delivered | suppressed | unavailable` result and the same never-reject contract as
+  `notifyTaskWedge`; a stall-free or already-announced row simply returns "suppressed"/"unavailable".
+  */
+  async notifyTaskStallWedge(task: Task): Promise<"delivered" | "suppressed" | "unavailable"> {
+    let result: "delivered" | "suppressed" | "unavailable" = "unavailable";
+    await this.enqueueWedgeHandling(task.id, async () => { result = await this.maybeNotifyTaskWedge(task); });
+    return result;
+  }
+
   private async maybeNotifyTaskWedge(
     task: Task,
     suppliedDescriptor?: TaskWedgeDescriptor | null,
@@ -648,9 +698,17 @@ export class NotificationService {
     const liveRowCannotBeWedge = liveTask.deletedAt != null || terminalLanes.has(liveTask.column);
     const suppliedDescriptorIsHeldOrProgressing = suppliedDescriptor != null
       && (liveTask.paused === true || liveTask.userPaused === true || liveTask.autoMerge === false || isTaskProgressing(liveTask));
+    /*
+    FNXC:TaskWedgeNotifications 2026-09-03-01:35 (RUFU-180):
+    The composed authority keeps the legacy classifier as the first pass and adds the hydrated stall
+    reason for the review-lane refusals it structurally cannot see (no status, no pause, no error).
+    A stall reason never re-silences the stall class: `hasProgressed` below still resolves an episode
+    only on a visible lifecycle advance, so a sustained wedge keeps its one alert instead of
+    oscillating.
+    */
     const descriptor = liveRowCannotBeWedge || suppliedDescriptorIsHeldOrProgressing
       ? null
-      : suppliedDescriptor ?? describeTaskWedge(liveTask);
+      : suppliedDescriptor ?? describeTaskWedgeWithStall(liveTask);
     task = liveTask;
     let episode: string | undefined;
     if (!descriptor) {
@@ -913,7 +971,15 @@ export class NotificationService {
       }
 
       if (source === "auto") {
-        const fresh = describeTaskWedge(task);
+        /*
+        FNXC:TaskWedgeNotifications 2026-09-03-01:35 (RUFU-180):
+        Reclassification must ask the same composed question the delivery site asked, or a pending
+        stall marker would be re-answered with the legacy-only classifier and cleared as "nothing
+        wrong" the moment its settle timer fired — the review-lane refusal would be marked and then
+        silently dropped. A stable `stall:<code>` reasonKey keeps the sustained wedge on its single
+        hold instead of re-arming a new episode on every tick.
+        */
+        const fresh = describeTaskWedgeWithStall(task);
         if (!fresh) {
           await this.clearPendingWedgeNotification(taskId);
           return { outcome: "cleared" };

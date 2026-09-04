@@ -1,4 +1,4 @@
-import { classifyTerminalFailureAutoRecovery, type TerminalFailureAutoRecoveryDecision, type Task } from "@fusion/core";
+import { classifyTerminalFailureAutoRecovery, type TaskStallReasonCode, type TerminalFailureAutoRecoveryDecision, type Task } from "@fusion/core";
 import { hasTransientMergeRecoveryOwner } from "../errors/transient-merge-error-classifier.js";
 import { NO_PROGRESS_REQUEUE_BUDGET_EXHAUSTED_PREFIX } from "../healing/no-progress-requeue-budget.js";
 
@@ -248,4 +248,71 @@ export function describeTaskWedge(task: Task): TaskWedgeDescriptor | null {
     reason: "The task entered a terminal failed state and needs operator intervention.",
     action: "Inspect the task error, fix the underlying issue, then retry or reset to todo.",
   };
+}
+
+/**
+ * Operator next-step copy for each alertable review-lane stall code. Every sentence names a
+ * concrete action the operator can take from the card, never an internal state or enum name.
+ */
+const STALL_WEDGE_ACTIONS: Record<Exclude<TaskStallReasonCode, "dependency-blocker">, string> = {
+  "merge-blocker": "Open the card and clear the blocker: re-run the review gate, bypass a failed pre-merge review step, or reset the card to todo.",
+  "pre-merge-gate-pending": "Run the pending review gate from the card, or reset the card to todo so the pipeline runs the gate again.",
+  "held-human-review": "Merge the card by hand, or turn automatic merge processing back on.",
+};
+
+/**
+ * Classify the one population `describeTaskWedge` structurally cannot see: a review-lane refusal
+ * that writes no `status`, no `pausedReason`, and no `error`, so the legacy
+ * `task.status !== "failed"` bail classifies it as "nothing wrong".
+ *
+ * FNXC:TaskWedgeNotifications 2026-09-03-01:35 (RUFU-180):
+ * A card whose merge is refused ("pre-merge gate never ran", "approval recorded against different
+ * content", "automatic merge processing withheld") carries none of the legacy markers the sync
+ * classifier reads, so it stayed silent on the board while the operator had to patrol for it. The
+ * stall reason already hydrated server-side onto every task read is the same authority the merge
+ * door consults, so this helper maps it into the wedge descriptor shape without re-deriving anything.
+ *
+ * Guards are the population definition, not defensive decoration: the silent population is exactly
+ * review lane + null/absent status + no pause evidence + a hydrated stall reason. Any non-empty
+ * string status is owned by another world already (failed by the sync classifier above;
+ * merging/reviewing/landing by the progressing guard; awaiting-approval and awaiting-user-review by
+ * their own notification paths; queued/stuck-killed by scheduler transients), so alerting there
+ * would double-announce. `dependency-blocker` is deliberately silent: a todo card waiting on
+ * dependencies is normal queueing and the blocking card announces its own stall, while an in-review
+ * unmet-dependency wedge is already announced by the reconcile-in-review-unmet-dependencies
+ * descriptor. An unknown future code fails closed rather than inventing an alert.
+ *
+ * reasonKeys are `stall:<code>` — stable per code so the durable episode CAS can collapse a
+ * sustained wedge into one alert — and always prefixed so they can never equal the
+ * `terminal-failed`, `completion-blocked`, `merge-blocked:<gate>`, `self-healing-no-action:<stage>`,
+ * or pausedReason-keyed families.
+ */
+export function describeTaskWedgeFromStallReason(task: Task): TaskWedgeDescriptor | null {
+  const stall = task.stallReason;
+  if (!stall) return null;
+  if (typeof task.status === "string" && task.status.length > 0) return null;
+  if (task.paused === true || task.userPaused === true) return null;
+  if (isTaskProgressing(task)) return null;
+  if (stall.code === "dependency-blocker") return null;
+  const action = STALL_WEDGE_ACTIONS[stall.code as Exclude<TaskStallReasonCode, "dependency-blocker">];
+  if (!action) return null;
+  // The reason stays the canonical server sentence so the notifier and the board chip never drift.
+  return { reasonKey: `stall:${stall.code}`, reason: stall.reason, action };
+}
+
+/**
+ * The composed wedge authority: legacy classification first, stall reason only for what it misses.
+ *
+ * FNXC:TaskWedgeNotifications 2026-09-03-01:35 (RUFU-180):
+ * Review-lane refusals must announce themselves, but the legacy `describeTaskWedge` status bail
+ * stays as the FIRST pass — a failed, paused, or error-parked card keeps its existing descriptor
+ * and reasonKey byte-for-byte, and a stall reason never re-silences the stall class. The composed
+ * helper is the delivery/reclassification authority wherever the lifecycle makes a decision to
+ * alert, hold, or clear; the generic-terminal-failure and failure-suppression questioners stay on
+ * the sync classifier on purpose, because "is this a generic terminal failure" must remain
+ * failed-only. Stall reasonKeys carry the `stall:` prefix and so can never collide with
+ * `terminal-failed`.
+ */
+export function describeTaskWedgeWithStall(task: Task): TaskWedgeDescriptor | null {
+  return describeTaskWedge(task) ?? describeTaskWedgeFromStallReason(task);
 }
