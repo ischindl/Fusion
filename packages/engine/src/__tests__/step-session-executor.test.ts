@@ -3231,11 +3231,20 @@ describe("StepSessionExecutor", () => {
         // Subsequent calls (compact-and-resume) succeed
       });
 
-      // Mock compactSessionContext to succeed
+      /*
+      FNXC:ChatContextGuardEscalation 2026-09-04-10:57:
+      RUFU-182: the helper resolves a reason-preserving CompactionOutcome, so the success
+      fixture states the compacted arm explicitly (the old {summary,tokensBefore} object
+      had no discriminant and would now read as non-compacted).
+      */
       const { compactSessionContext } = await import("../pi.js");
       vi.mocked(compactSessionContext).mockResolvedValue({
+        reason: "compacted",
+        branchMutated: true,
         summary: "Compacted",
         tokensBefore: 150000,
+        estimatedTokensAfter: 40_000,
+        reduced: true,
       });
 
       const executor = new StepSessionExecutor({
@@ -3253,7 +3262,7 @@ describe("StepSessionExecutor", () => {
       expect(results[0].retries).toBe(0);
     });
 
-    it("succeeds with reduced-prompt retry when compact returns null", async () => {
+    it("succeeds with reduced-prompt retry when compaction reports nothing-to-compact", async () => {
       const task = makeTaskDetail({
         prompt: makeStepPrompt("FN-001", 1),
         steps: [{ name: "Step 0", status: "pending" }],
@@ -3277,9 +3286,19 @@ describe("StepSessionExecutor", () => {
         // Reduced-prompt succeeds
       });
 
-      // Mock compactSessionContext to return null (no history)
+      /*
+      FNXC:ChatContextGuardEscalation 2026-09-04-10:57:
+      RUFU-182: the old `mockResolvedValue(null)` encoded "compaction unavailable" by
+      laundering every refusal into null. The fixture now states its intent directly — a
+      too-small session is pi's literal nothing-to-compact refusal, which the recovery
+      paths map to the same reduced-prompt fallback branch.
+      */
       const { compactSessionContext } = await import("../pi.js");
-      vi.mocked(compactSessionContext).mockResolvedValue(null);
+      vi.mocked(compactSessionContext).mockResolvedValue({
+        reason: "nothing-to-compact",
+        branchMutated: false,
+        engineMessage: "Nothing to compact (session too small)",
+      });
 
       const executor = new StepSessionExecutor({
         store,
@@ -3314,9 +3333,13 @@ describe("StepSessionExecutor", () => {
         new Error("context window exceeds limit (2013)"),
       );
 
-      // Mock compactSessionContext to return null (no history)
+      // RUFU-182: too-small session stated as the nothing-to-compact arm (was null).
       const { compactSessionContext } = await import("../pi.js");
-      vi.mocked(compactSessionContext).mockResolvedValue(null);
+      vi.mocked(compactSessionContext).mockResolvedValue({
+        reason: "nothing-to-compact",
+        branchMutated: false,
+        engineMessage: "Nothing to compact (session too small)",
+      });
 
       const executor = new StepSessionExecutor({
         store,
@@ -3992,7 +4015,7 @@ describe("executor step-session per-turn memory recall (RUFU-120 B.2)", () => {
 
     // Force the main-prompt context-limit failure: first promptWithAutoRetry
     // call throws, the reduced-prompt recovery call succeeds (same pattern as
-    // the "succeeds with reduced-prompt retry when compact returns null" test).
+    // the "succeeds with reduced-prompt retry when compaction reports nothing-to-compact" test).
     const { promptWithFallback, compactSessionContext } = await import("../pi.js");
     let callCount = 0;
     vi.mocked(promptWithFallback).mockImplementation(async () => {
@@ -4001,7 +4024,12 @@ describe("executor step-session per-turn memory recall (RUFU-120 B.2)", () => {
         throw new Error("context window exceeds limit (2013)");
       }
     });
-    vi.mocked(compactSessionContext).mockResolvedValue(null);
+    // RUFU-182: compaction unavailable stated as an explicit arm (was mockResolvedValue(null)).
+    vi.mocked(compactSessionContext).mockResolvedValue({
+      reason: "nothing-to-compact",
+      branchMutated: false,
+      engineMessage: "Nothing to compact (session too small)",
+    });
     const results = await executor.executeAll();
 
     expect(results[0].success).toBe(true);
