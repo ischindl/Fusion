@@ -75,6 +75,7 @@ import {
   createTaskLogsReadTool,
 } from "../agent-tools.js";
 import { RemovalReason, removeWorktree } from "../worktree/worktree-backend.js";
+import { resolveWorkflowStepRunAgentId } from "./resolve-activity-run-agent-id.js";
 import { pruneWorktreeAdminEntries } from "../worktree/worktree-prune.js";
 import { activeSessionRegistry } from "../agents/active-session-registry.js";
 
@@ -190,9 +191,9 @@ export interface StepSessionExecutorOptions {
    * binds an agent that supersedes the task's `assignedAgentId` (override, or
    * defer with no own settings), the executor passes the column agent's id here so
    * the per-step run auditor attributes the session to who actually ran — not
-   * `taskDetail.assignedAgentId`. Absent → attribution falls back to
-   * `taskDetail.assignedAgentId ?? "executor"` (byte-identical legacy path). The
-   * column agent's MODEL flows separately via {@link assignedAgentRuntimeConfig}
+   * `taskDetail.assignedAgentId`. Otherwise it carries the authoritative assigned
+   * agent; absent means the run must be proven through the Executor role roster.
+   * The column agent's MODEL flows separately via {@link assignedAgentRuntimeConfig}
    * (the executor swaps it to the column agent's `runtimeConfig` at the seam).
    */
   effectiveAgentId?: string;
@@ -908,6 +909,8 @@ export class StepSessionExecutor {
   private credentialInstanceId: string | undefined;
   private reusablePrimaryRetargetPending = false;
   private reusablePrimaryAttemptActive = false;
+  private workflowStepRunAgentId: Promise<string | null> | undefined;
+  private warnedUnattributableWorkflowStepRun = false;
 
   private registerActiveStepSession(stepIndex: number, handle: SessionHandle, worktreePath: string): void {
     this.activeSessions.set(stepIndex, handle);
@@ -1342,10 +1345,27 @@ export class StepSessionExecutor {
     };
   }
 
-  private createWorkflowStepActivityRun(stepIndex: number, startedAt: string): WorkflowStepActivityRun {
+  private async createWorkflowStepActivityRun(stepIndex: number, startedAt: string): Promise<WorkflowStepActivityRun | null> {
     const { taskDetail } = this.options;
     const step = taskDetail.steps?.[stepIndex];
-    const agentId = this.options.effectiveAgentId ?? taskDetail.assignedAgentId ?? "executor";
+    if (typeof this.options.agentStore?.saveRun !== "function") return null;
+
+    /*
+     * FNXC:CommandCenterActivity 2026-09-04-14:11:
+     * `executor` remains a role slug for the resolver, never a persistable agent id. Skipping an
+     * unattributable run is correct: a rejected FK insert persists nothing but logs its payload at
+     * every boundary. The memoized bounded lookup permits only one telemetry wait per executor.
+     */
+    const agentIdCandidate = this.options.effectiveAgentId ?? taskDetail.assignedAgentId ?? "executor";
+    this.workflowStepRunAgentId ??= resolveWorkflowStepRunAgentId(this.options.agentStore, agentIdCandidate);
+    const agentId = await this.workflowStepRunAgentId;
+    if (!agentId) {
+      if (!this.warnedUnattributableWorkflowStepRun) {
+        this.warnedUnattributableWorkflowStepRun = true;
+        stepExecLog.warn(`Skipping unattributable workflow-step activity runs for task ${taskDetail.id} (candidate: ${agentIdCandidate})`);
+      }
+      return null;
+    }
 
     /*
      * FNXC:CommandCenterActivity 2026-07-01-00:00:
@@ -1370,6 +1390,7 @@ export class StepSessionExecutor {
         taskTitle: taskDetail.title,
         assignedAgentId: taskDetail.assignedAgentId,
         effectiveAgentId: this.options.effectiveAgentId,
+        agentIdCandidate,
         agentId,
         stepIndex,
         stepName: step?.name ?? `Step ${stepIndex}`,
@@ -1384,7 +1405,8 @@ export class StepSessionExecutor {
     };
   }
 
-  private async saveWorkflowStepActivityRun(run: WorkflowStepActivityRun): Promise<void> {
+  private async saveWorkflowStepActivityRun(run: WorkflowStepActivityRun | null): Promise<void> {
+    if (!run) return;
     const saveRun = this.options.agentStore?.saveRun?.bind(this.options.agentStore);
     if (!saveRun) return;
 
@@ -1399,10 +1421,11 @@ export class StepSessionExecutor {
   }
 
   private async completeWorkflowStepActivityRun(
-    run: WorkflowStepActivityRun,
+    run: WorkflowStepActivityRun | null,
     status: Extract<AgentHeartbeatRun["status"], "completed" | "failed" | "terminated">,
     result: StepResult,
   ): Promise<void> {
+    if (!run) return;
     const terminalRun: WorkflowStepActivityRun = {
       ...run,
       endedAt: new Date().toISOString(),
@@ -1521,7 +1544,7 @@ export class StepSessionExecutor {
       await semaphore.acquire();
     }
 
-    const activityRun = this.createWorkflowStepActivityRun(stepIndex, new Date().toISOString());
+    const activityRun = await this.createWorkflowStepActivityRun(stepIndex, new Date().toISOString());
     await this.saveWorkflowStepActivityRun(activityRun);
 
     const trackingKey = this.makeTrackingKey(stepIndex);
