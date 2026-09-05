@@ -8,7 +8,7 @@ import type { ToastType } from "../hooks/useToast";
 import { useComposerDictation } from "../hooks/useComposerDictation";
 import { getPersistedPendingChatMessages, setPersistedPendingChatMessages } from "../hooks/chatPendingMessageStorage";
 import { MicButton } from "./MicButton";
-import type { ChatMessageInfo, ToolCallInfo } from "../hooks/chatTypes";
+import type { ChatEnginePhase, ChatMessageInfo, ToolCallInfo } from "../hooks/chatTypes";
 import { attachChatStream, cancelChatResponse, ensureTaskPlannerChatSession, fetchChatMessages, fetchChatSession, fetchSettings, fetchTaskDetail, fetchTaskPlannerChatSession, streamChatResponse, updateChatSession, type ChatFailureInfo, type ChatStreamErrorMeta } from "../api";
 import { parseQuestionToolCall, type ParsedQuestionToolCall } from "../utils/parseQuestionToolCall";
 import { ChatQuestionResponse } from "./ChatQuestionResponse";
@@ -368,6 +368,13 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
   const [commandFilter, setCommandFilter] = useState("");
   const [highlightedCommandIndex, setHighlightedCommandIndex] = useState(0);
   const [streamingThinking, setStreamingThinking] = useState("");
+  /*
+  FNXC:ChatPhaseStatus 2026-09-05-10:23:
+  RUFU-188: the planner tab keeps its own per-stream streaming state rather than reusing `useChat`, so the
+  live engine-phase label needs its own mirror here too. Same transient shape as the main chat: "compacting"
+  while the gate runs, null otherwise. Drained in lockstep with `streamingThinking`.
+  */
+  const [streamingPhase, setStreamingPhase] = useState<ChatEnginePhase | null>(null);
   const [composerState, setComposerState] = useState<ComposerState>("idle");
   const composerStateRef = useRef<ComposerState>("idle");
   const [loading, setLoading] = useState(false);
@@ -662,6 +669,7 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
      */
     if (!inFlightSnapshot) {
       setStreamingThinking("");
+      setStreamingPhase(null);
       setMessages((current) => current.filter((message) => message.id !== "streaming-assistant"));
     }
 
@@ -685,6 +693,15 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
       },
       onText: (delta: string) => {
         if (!isCurrentStreamRequest()) return;
+        /*
+        FNXC:ChatPhaseStatus 2026-09-05-11:45:
+        RUFU-188 (Code Review remediation): mirror the shared factory's first-delta clear — the first answer
+        text replaces the waiting placeholder, so it also retires a `compacting` label whose inactive frame
+        was lost. Without this the planner tab and Chat view would disagree on stuck-label recovery.
+        */
+        if (accumulated.length === 0) {
+          setStreamingPhase(null);
+        }
         accumulated += delta;
         updateStreamSnapshot();
         applyStreamingSnapshot(resolvedSessionId, accumulated, accumulatedThinking, streamingToolCalls);
@@ -720,11 +737,22 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
         updateStreamSnapshot();
         applyStreamingSnapshot(resolvedSessionId, accumulated, accumulatedThinking, streamingToolCalls);
       },
+      onPhase: ({ phase, active }: { phase: ChatEnginePhase; active: boolean }) => {
+        /*
+        FNXC:ChatPhaseStatus 2026-09-05-10:23:
+        RUFU-188: the planner tab builds its SSE handlers inline (it does not use the shared factory), so it
+        must opt into the phase side-channel explicitly. Server pairs every `active: true` with a trailing
+        `active: false`, so this mirrors directly onto the label state.
+        */
+        if (!isCurrentStreamRequest()) return;
+        setStreamingPhase(active ? phase : null);
+      },
       onDone: (data: { messageId: string; message?: ChatMessage }) => {
         if (!isCurrentStreamRequest()) return;
         composerStateRef.current = "idle";
         setComposerState("idle");
         setStreamingThinking("");
+        setStreamingPhase(null);
         streamSnapshotRef.current = null;
         streamRef.current = null;
         if (data.message) {
@@ -744,6 +772,7 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
         composerStateRef.current = "idle";
         setComposerState("idle");
         setStreamingThinking("");
+        setStreamingPhase(null);
         streamSnapshotRef.current = null;
         streamRef.current = null;
         setMessages((current) => {
@@ -866,6 +895,7 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
     setDraft("");
     composerStateRef.current = "idle";
     setStreamingThinking("");
+    setStreamingPhase(null);
     setComposerState("idle");
     setLoading(false);
     setHistoryLoaded(false);
@@ -1037,6 +1067,7 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
       composerStateRef.current = "idle";
       setComposerState("idle");
       setStreamingThinking("");
+      setStreamingPhase(null);
     }
   }, [addToast, enqueuePendingMessage, modelPayload, projectId, replacePendingMessages, startPlannerStream, task.id, taskChatModel, t]);
 
@@ -1237,6 +1268,7 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
     composerStateRef.current = "idle";
     setComposerState("idle");
     setStreamingThinking("");
+    setStreamingPhase(null);
 
     const interruptedLocalId = `interrupted-${snapshot.requestId}`;
     const hasInterruptedOutput = Boolean(snapshot.text || snapshot.thinking || snapshot.toolCalls.length > 0);
@@ -1589,6 +1621,7 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
                     streamingText={message.content}
                     streamingThinking={message.thinkingOutput ?? streamingThinking}
                     streamingToolCalls={streamingToolCalls}
+                    streamingPhase={streamingPhase}
                     forcePlain={false}
                     agentName={t("taskDetail.plannerChat.assistant", "Task Chat")}
                     hideAssistantIdentity={false}
@@ -1637,6 +1670,7 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
                 streamingText=""
                 streamingThinking={streamingThinking}
                 streamingToolCalls={[]}
+                streamingPhase={streamingPhase}
                 forcePlain={false}
                 agentName={t("taskDetail.plannerChat.assistant", "Task Chat")}
                 hideAssistantIdentity={false}

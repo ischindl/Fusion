@@ -1555,6 +1555,7 @@
     "typeMessage": "Type a message...",
     "unreadMessages": "Unread messages",
     "untitledSession": "Untitled",
+    "workingCompactingStatus": "Working (compacting…)",
     "workingStatus": "Working…",
     "you": "You",
     "modelAgentSection": "Model / Agent",

@@ -19,6 +19,17 @@ export interface FallbackInfo {
   triggerPoint: "session-creation" | "prompt-time";
 }
 
+/*
+FNXC:ChatPhaseStatus 2026-09-05-10:23:
+RUFU-188: a live engine phase reported on the stream while a reply waits on silent engine-internal
+work, surfaced in the streaming placeholder. Exactly one value (`compacting`) exists today; it is a
+value union (not `string`) so the placeholder's copy mapping stays exhaustive and an unknown phase
+cannot silently render blank. Transient render state only — never a persisted message field. Lives
+here so `useChat`, the streaming-handler factory, and the planner tab share one type without a
+parent→sibling import cycle.
+*/
+export type ChatEnginePhase = "compacting";
+
 export interface FailureReferenceInfo {
   kind: string;
   id: string;

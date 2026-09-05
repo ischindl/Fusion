@@ -5,7 +5,7 @@ import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ArrowUpToLine, Bot, File, Pencil, Reply, Send, TriangleAlert } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import type { ChatMessageInfo, FailureInfo, ToolCallInfo } from "../hooks/chatTypes";
+import type { ChatEnginePhase, ChatMessageInfo, FailureInfo, ToolCallInfo } from "../hooks/chatTypes";
 import { linkifyFilePaths, linkifyReactChildren } from "../utils/filePathLinkify";
 import { parseQuestionToolCall } from "../utils/parseQuestionToolCall";
 import { ChatQuestionResponse } from "./ChatQuestionResponse";
@@ -77,6 +77,14 @@ export interface StandardStreamingMessageProps {
   streamingText: string;
   streamingThinking?: string;
   streamingToolCalls?: ToolCallInfo[];
+  /**
+   * FNXC:ChatPhaseStatus 2026-09-05-10:23:
+   * RUFU-188: the live engine phase while a reply is still waiting on silent engine-internal work.
+   * When it is `"compacting"` the empty-placeholder shows "Working (compacting…)" so the operator can
+   * tell an active compaction from an idle/working wait. Transient render state only — a value never
+   * persisted on a message row, mirroring the transient `phase` side-channel from the stream.
+   */
+  streamingPhase?: ChatEnginePhase | null;
   forcePlain: boolean;
   agentName: string;
   hideAssistantIdentity: boolean;
@@ -893,12 +901,28 @@ export const StandardChatMessageItem = memo(function StandardChatMessageItem({
   );
 });
 
-export function StandardStreamingMessage({ streamingText, streamingThinking = "", streamingToolCalls = [], forcePlain, agentName, hideAssistantIdentity, showAssistantModelTag, activeModelTag, activeModelProvider, copyAction, onQuestionSubmit, toolCallRenderer, isSearchMatch = false, isSearchActive = false }: StandardStreamingMessageProps) {
+export function StandardStreamingMessage({ streamingText, streamingThinking = "", streamingToolCalls = [], streamingPhase = null, forcePlain, agentName, hideAssistantIdentity, showAssistantModelTag, activeModelTag, activeModelProvider, copyAction, onQuestionSubmit, toolCallRenderer, isSearchMatch = false, isSearchActive = false }: StandardStreamingMessageProps) {
   const { t } = useTranslation("app");
   return (
     <div className={`chat-message chat-message--assistant chat-message--streaming${isSearchMatch ? " chat-message--search-match" : ""}${isSearchActive ? " chat-message--search-active" : ""}`} data-testid="chat-message-__streaming__" data-message-id="__streaming__">
       {!hideAssistantIdentity && <div className="chat-message-avatar">{activeModelProvider ? <ProviderIcon provider={activeModelProvider} size="sm" /> : <Bot size={14} />}<span>{agentName}</span>{showAssistantModelTag && activeModelTag && <span className="chat-model-tag">{activeModelTag}</span>}</div>}
-      {streamingText ? renderStandardAssistantContent(streamingText, forcePlain) : <div className="chat-message-content chat-message-content--waiting">{streamingThinking ? t("chat.thinkingStatus", "Thinking…") : t("chat.workingStatus", "Working…")}</div>}
+      {/*
+      FNXC:ChatPhaseStatus 2026-09-05-10:23:
+      RUFU-188: while the engine runs the pre-overflow compaction gate the reply streams nothing, so the empty
+      placeholder previously read a bare "Working…" and hid minutes of real engine activity. A live `compacting`
+      phase decorates the wait as "Working (compacting…)", otherwise the label stays exactly as before
+      ("Thinking…" while a chain-of-thought is streaming, otherwise "Working…"). Only the copy differs — the
+      element/class and the persisted message are untouched.
+
+      FNXC:ChatPhaseStatus 2026-09-05-11:45:
+      RUFU-188 (Code Review P2): precedence is the spec's `thinking > phase > working`, not phase first — a
+      streamed chain-of-thought is the more informative signal, and a replayed phase frame (a stale
+      `active: true` from the durable event buffer reattaching after the gate already finished) must not
+      overpaint real thinking with a phase that no longer runs. The server brackets the gate strictly before
+      the prompt, so on a live send the two are never concurrent anyway; thinking winning only ever
+      suppresses a replay residual.
+      */}
+      {streamingText ? renderStandardAssistantContent(streamingText, forcePlain) : <div className="chat-message-content chat-message-content--waiting">{streamingThinking ? t("chat.thinkingStatus", "Thinking…") : streamingPhase === "compacting" ? t("chat.workingCompactingStatus", "Working (compacting…)") : t("chat.workingStatus", "Working…")}</div>}
       {copyAction}
       {renderStandardToolCalls(streamingToolCalls, t, { isAwaitingAnswer: true, onQuestionSubmit, toolCallRenderer })}
       {streamingThinking && <StandardThinkingDisclosure thinking={streamingThinking} />}

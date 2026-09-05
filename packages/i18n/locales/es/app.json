@@ -1648,7 +1648,8 @@
     "snippetSuggestions": "Sugerencias de fragmentos",
     "contextTruncationUnproven": "",
     "contextTruncationNotice_one": "",
-    "contextTruncationNotice_other": ""
+    "contextTruncationNotice_other": "",
+    "workingCompactingStatus": ""
   },
   "chatRooms": {
     "error": {

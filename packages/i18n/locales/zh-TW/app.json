@@ -1648,7 +1648,8 @@
     "snippetSuggestions": "片段建議",
     "contextTruncationUnproven": "",
     "contextTruncationNotice_one": "",
-    "contextTruncationNotice_other": ""
+    "contextTruncationNotice_other": "",
+    "workingCompactingStatus": ""
   },
   "chatRooms": {
     "error": {

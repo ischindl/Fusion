@@ -1648,7 +1648,8 @@
     "snippetSuggestions": "스니펫 제안",
     "contextTruncationUnproven": "",
     "contextTruncationNotice_one": "",
-    "contextTruncationNotice_other": ""
+    "contextTruncationNotice_other": "",
+    "workingCompactingStatus": ""
   },
   "chatRooms": {
     "error": {

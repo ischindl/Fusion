@@ -154,4 +154,79 @@ describe("StandardChatSurface empty assistant messages", () => {
     expect(screen.getByText("Thinking about it")).toBeInTheDocument();
     expectNoPlaceholder();
   });
+
+  /*
+  FNXC:ChatPhaseStatus 2026-09-05-10:23:
+  RUFU-188: the empty waiting placeholder must expose a live `compacting` engine phase so a compaction wait
+  reads "Working (compacting…)" instead of a bare "Working…". These cover the label's precedence and prove it
+  is gated on the phase rather than merely always rendering — the phase decorates only the plain-working
+  state (a streamed chain-of-thought keeps "Thinking…") and must never mask already-streamed answer text.
+
+  FNXC:ChatPhaseStatus 2026-09-05-11:45:
+  RUFU-188 (Code Review P2): the precedence assertions follow the spec contract `thinking > phase > working`
+  restored in StandardChatSurface — the thinking disclosure is the more informative signal and a replayed
+  stale `active: true` must not overpaint real thinking.
+  */
+  it("shows the compacting status while a live compacting phase is active", () => {
+    render(
+      <StandardStreamingMessage
+        streamingText=""
+        streamingThinking=""
+        streamingToolCalls={[]}
+        streamingPhase="compacting"
+        forcePlain={false}
+        agentName="Assistant"
+        hideAssistantIdentity={false}
+        showAssistantModelTag={false}
+        activeModelTag={null}
+        activeModelProvider={null}
+      />,
+    );
+
+    expect(screen.getByText("Working (compacting…)")).toBeInTheDocument();
+    expect(screen.queryByText("Working…")).not.toBeInTheDocument();
+    expect(document.querySelector(".chat-message-content--waiting")).toBeInTheDocument();
+  });
+
+  it("keeps the thinking status ahead of a live compacting phase", () => {
+    render(
+      <StandardStreamingMessage
+        streamingText=""
+        streamingThinking="Thinking about it"
+        streamingToolCalls={[]}
+        streamingPhase="compacting"
+        forcePlain={false}
+        agentName="Assistant"
+        hideAssistantIdentity={false}
+        showAssistantModelTag={false}
+        activeModelTag={null}
+        activeModelProvider={null}
+      />,
+    );
+
+    // Non-vacuous control: the same fixture minus thinking shows the compacting status (covered by the
+    // case above), so the suppression here is the thinking disclosure, not the label being unreachable.
+    expect(screen.getByText("Thinking…")).toBeInTheDocument();
+    expect(screen.queryByText("Working (compacting…)")).not.toBeInTheDocument();
+  });
+
+  it("never masks already-streamed answer text when a compacting phase is reported", () => {
+    render(
+      <StandardStreamingMessage
+        streamingText="Real answer"
+        streamingThinking=""
+        streamingToolCalls={[]}
+        streamingPhase="compacting"
+        forcePlain={false}
+        agentName="Assistant"
+        hideAssistantIdentity={false}
+        showAssistantModelTag={false}
+        activeModelTag={null}
+        activeModelProvider={null}
+      />,
+    );
+
+    expect(screen.getByText("Real answer")).toBeInTheDocument();
+    expect(screen.queryByText("Working (compacting…)")).not.toBeInTheDocument();
+  });
 });

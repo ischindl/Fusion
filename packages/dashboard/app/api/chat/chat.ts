@@ -568,6 +568,14 @@ export interface ChatStreamHandlers {
   onToolStart?: (data: { toolName: string; args?: Record<string, unknown> }) => void;
   onToolEnd?: (data: { toolName: string; isError: boolean; result?: unknown }) => void;
   onFallback?: (data: { primaryModel: string; fallbackModel: string; triggerPoint: "session-creation" | "prompt-time" }) => void;
+  /*
+  FNXC:ChatPhaseStatus 2026-09-05-10:23:
+  RUFU-188: an engine phase transition reported on the stream while a reply is waiting on silent
+  engine-internal background work, so the streaming placeholder can name what is running (e.g.
+  "Working (compacting…)") instead of a bare "Working…". Transient render state only — never a
+  persisted message — paired true→false so a `Last-Event-ID` replay cannot leave the label stuck on.
+  */
+  onPhase?: (data: { phase: "compacting"; active: boolean }) => void;
   onAgentMessage?: (data: { message: ChatMessage; senderAgentId: string; senderAgentName: string }) => void;
   onDone?: (data: { messageId: string; message?: ChatMessage; interrupted?: boolean; dispatch?: "agents"; failedAgentNames?: string[] }) => void;
   onError?: (data: string | ChatFailureInfo, meta?: ChatStreamErrorMeta) => void;
@@ -653,6 +661,19 @@ export function streamChatResponse(
       case "fallback":
         try {
           handlers.onFallback?.(JSON.parse(rawData));
+        } catch {
+          // skip malformed event
+        }
+        break;
+      /*
+      FNXC:ChatPhaseStatus 2026-09-05-10:23:
+      RUFU-188: forward the engine phase side-channel (see ChatStreamHandlers.onPhase). It is NOT a
+      terminating event and must not touch `terminated` — only `done`/`error` end a stream, and a
+      phase arriving after the reply started must never be mistaken for one.
+      */
+      case "phase":
+        try {
+          handlers.onPhase?.(JSON.parse(rawData));
         } catch {
           // skip malformed event
         }
@@ -896,6 +917,19 @@ export function attachChatStream(
       case "fallback":
         try {
           handlers.onFallback?.(JSON.parse(rawData));
+        } catch {
+          // skip malformed event
+        }
+        break;
+      /*
+      FNXC:ChatPhaseStatus 2026-09-05-10:23:
+      RUFU-188: the reattach (buffered-replay) half of the same side channel. The manager buffers
+      every broadcast per session, so a reconnect that lands between an `active: true` and its
+      `active: false` replays the pair and the label cannot be left stuck on by replay alone.
+      */
+      case "phase":
+        try {
+          handlers.onPhase?.(JSON.parse(rawData));
         } catch {
           // skip malformed event
         }

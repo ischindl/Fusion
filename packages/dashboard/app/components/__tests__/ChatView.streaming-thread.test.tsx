@@ -149,8 +149,11 @@ function makeMessage(overrides: Partial<ChatMessage> & Pick<ChatMessage, "id" | 
 
 type StreamAppendHandlers = {
   onText?: (delta: string) => void;
+  onThinking?: (delta: string) => void;
   onToolStart?: (data: { toolName: string; args?: Record<string, unknown> }) => void;
   onToolEnd?: (data: { toolName: string; isError: boolean; result?: unknown }) => void;
+  onPhase?: (data: { phase: "compacting"; active: boolean }) => void;
+  onDone?: (data: { messageId: string }) => void;
 };
 
 function createDeferredPromise<T>() {
@@ -475,6 +478,61 @@ describe("FN-6599 ChatView streaming prior thread", () => {
 
     expectPriorThreadVisible();
     expect(screen.getByText(/working/)).toBeInTheDocument();
+  });
+
+  /*
+  FNXC:ChatPhaseStatus 2026-09-05-11:45:
+  RUFU-188 (Code Review P0): the operator-facing symptom lives in the Chat view bubble, so the phase
+  label's end-to-end arrival is asserted here — desktop and mobile — not just at the shared component
+  boundary. The inactive frame must revert to the plain waiting label and a residual active frame must be
+  gone once the turn completes (the bubble unmounts with the stream).
+  */
+  it.each([
+    ["desktop", 1280],
+    ["mobile", 390],
+  ])("shows the live compacting phase in the waiting bubble on %s", async (_label, width) => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+    window.dispatchEvent(new Event("resize"));
+    const session = makeSession({ id: "session-phase", agentId: "agent-001" });
+    mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? session.id : null);
+    mockFetchChatSessions.mockResolvedValue({ sessions: [session] });
+    mockFetchChatMessages.mockResolvedValue({ messages: [] });
+    mockFetchChatSession.mockResolvedValue({ session });
+    let streamHandlers: StreamAppendHandlers = {};
+    mockStreamChatResponse.mockImplementation((_sessionId, _content, handlers) => {
+      streamHandlers = handlers as unknown as StreamAppendHandlers;
+      return { close: vi.fn(), isConnected: () => true };
+    });
+
+    render(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await openRestoredConversation();
+    fireEvent.change(await screen.findByTestId("chat-input"), { target: { value: "long question" } });
+    fireEvent.click(screen.getByTestId("chat-send-btn"));
+
+    expect(await screen.findByText("Working…")).toBeInTheDocument();
+
+    await act(async () => {
+      streamHandlers.onPhase?.({ phase: "compacting", active: true });
+    });
+    expect(await screen.findByText("Working (compacting…)")).toBeInTheDocument();
+    expect(screen.queryByText("Working…")).not.toBeInTheDocument();
+
+    await act(async () => {
+      streamHandlers.onPhase?.({ phase: "compacting", active: false });
+    });
+    expect(await screen.findByText("Working…")).toBeInTheDocument();
+    expect(screen.queryByText("Working (compacting…)")).not.toBeInTheDocument();
+
+    // A residual active frame (lost inactive frame / replay) must not survive the turn's completion.
+    await act(async () => {
+      streamHandlers.onPhase?.({ phase: "compacting", active: true });
+    });
+    expect(screen.getByText("Working (compacting…)")).toBeInTheDocument();
+    await act(async () => {
+      streamHandlers.onDone?.({ messageId: "m-phase" });
+    });
+    expect(screen.queryByText("Working (compacting…)")).not.toBeInTheDocument();
+    expect(screen.queryByText("Working…")).not.toBeInTheDocument();
   });
 
   it.each([

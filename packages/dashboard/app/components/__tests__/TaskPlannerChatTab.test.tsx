@@ -1226,6 +1226,66 @@ describe("TaskPlannerChatTab", () => {
     expect(streamingBubble).not.toHaveTextContent("Previous completed thinking");
   });
 
+  /*
+  FNXC:ChatPhaseStatus 2026-09-05-11:45:
+  RUFU-188 (Code Review P0): the planner tab builds its SSE handlers inline, so nothing proved its
+  `onPhase` handler and its streaming bubble actually render the compacting label. Drive a real send,
+  arm/clear the phase through the captured handlers, keep the label alive across an empty-content tool
+  row (the row-side render path), and require `done` to tear the label down with the bubble.
+  */
+  it("surfaces the live compacting phase in the planner streaming bubble and clears it on done", async () => {
+    const user = userEvent.setup();
+    const streamHandlers: any[] = [];
+    mockStreamChatResponse.mockImplementation((_sessionId, _content, handlers) => {
+      streamHandlers.push(handlers);
+      return { close: vi.fn(), isConnected: () => true };
+    });
+    renderPlannerChat();
+    await screen.findByTestId("task-planner-chat-empty");
+
+    const input = screen.getByLabelText("Message task chat");
+    await user.type(input, "Plan with compaction");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+
+    const bubble = await screen.findByTestId("chat-message-__streaming__");
+    expect(bubble).toHaveTextContent("Working…");
+
+    act(() => {
+      streamHandlers[0].onPhase({ phase: "compacting", active: true });
+    });
+    expect(screen.getByTestId("chat-message-__streaming__")).toHaveTextContent("Working (compacting…)");
+
+    act(() => {
+      streamHandlers[0].onPhase({ phase: "compacting", active: false });
+    });
+    expect(screen.getByTestId("chat-message-__streaming__")).toHaveTextContent("Working…");
+
+    // Tool-row render path: an empty-content streaming row still carries the armed label.
+    act(() => {
+      streamHandlers[0].onToolStart({ toolName: "read_file" });
+      streamHandlers[0].onPhase({ phase: "compacting", active: true });
+    });
+    expect(screen.getByTestId("chat-message-__streaming__")).toHaveTextContent("Working (compacting…)");
+
+    act(() => {
+      streamHandlers[0].onDone({
+        messageId: "assistant-phase",
+        message: {
+          id: "assistant-phase",
+          sessionId: "chat-planner",
+          role: "assistant",
+          content: "Plan ready",
+          thinkingOutput: null,
+          metadata: null,
+          createdAt: "2026-09-05T00:03:00.000Z",
+        },
+      });
+    });
+    expect(await screen.findByText("Plan ready")).toBeInTheDocument();
+    expect(screen.queryByText("Working (compacting…)")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("chat-message-__streaming__")).not.toBeInTheDocument();
+  });
+
   it("sends planner Chat exactly once on the first mobile tap while the textarea is focused", async () => {
     mockFetchTaskPlannerChatSession.mockResolvedValueOnce({ session: null });
     renderPlannerChat({ projectId: "project-1" });

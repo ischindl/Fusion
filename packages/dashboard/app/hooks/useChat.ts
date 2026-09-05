@@ -103,8 +103,8 @@ export interface ChatSessionInfo {
 
 // Re-export shared chat types so existing consumers (`import { ChatMessageInfo } from "../hooks/useChat"`)
 // keep working — single source of truth lives in chatTypes.ts.
-export type { ChatMessageInfo, FailureInfo, FallbackInfo, ToolCallInfo } from "./chatTypes";
-import type { ChatMessageInfo, FailureInfo, FallbackInfo, ToolCallInfo } from "./chatTypes";
+export type { ChatMessageInfo, ChatEnginePhase, FailureInfo, FallbackInfo, ToolCallInfo } from "./chatTypes";
+import type { ChatMessageInfo, ChatEnginePhase, FailureInfo, FallbackInfo, ToolCallInfo } from "./chatTypes";
 import { createChatStreamHandlers } from "./createChatStreamHandlers";
 import {
   getPersistedPendingChatMessages,
@@ -138,6 +138,12 @@ export interface UseChatReturn {
   streamingText: string;
   streamingThinking: string;
   streamingToolCalls: ToolCallInfo[];
+  /**
+   * FNXC:ChatPhaseStatus 2026-09-05-10:23:
+   * RUFU-188: the live engine phase ("compacting" | null) the streaming placeholder reads, mirrored
+   * from the transient `phase` side-channel — never a persisted message field.
+   */
+  streamingPhase: ChatEnginePhase | null;
   pendingMessages: string[];
   /** Optional for legacy lightweight ChatView test doubles; the real hook always provides it. */
   pendingQueueAction?: boolean;
@@ -491,6 +497,9 @@ export function useChat(
   const [streamingText, setStreamingText] = useState("");
   const [streamingThinking, setStreamingThinking] = useState("");
   const [streamingToolCalls, setStreamingToolCalls] = useState<ToolCallInfo[]>([]);
+  // RUFU-188: live engine-phase label slot; mirrors the paired `phase` side-channel frames (see
+  // chatTypes.ChatEnginePhase). Defaults to null = no label.
+  const [streamingPhase, setStreamingPhase] = useState<ChatEnginePhase | null>(null);
   const [pendingMessages, setPendingMessages] = useState<string[]>([]);
   const [pendingQueueAction, setPendingQueueAction] = useState(false);
 
@@ -832,6 +841,9 @@ export function useChat(
     setStreamingText("");
     setStreamingThinking("");
     setStreamingToolCalls([]);
+    // FNXC:ChatPhaseStatus 2026-09-05-10:23: RUFU-188 — clear the live engine-phase label with the
+    // rest of the transient streaming state so a phase can never follow the card to another session.
+    setStreamingPhase(null);
     setIsStreaming(false);
   }, []);
 
@@ -963,6 +975,15 @@ export function useChat(
     const updateAttachedStreamingToolCalls = (next: SetStateAction<ToolCallInfo[]>) => {
       if (ownsAttachedSession()) updateStreamingToolCalls(next);
     };
+    /*
+    FNXC:ChatPhaseStatus 2026-09-05-11:45:
+    RUFU-188 (Code Review P1): the phase label crosses sessions exactly like text/thinking do, so the attach
+    path binds it to the same `ownsAttachedSession()` guard instead of the bare setter — a replayed `phase`
+    frame from a departed attachment can no longer paint a label onto a session the user has moved on to.
+    */
+    const updateAttachedStreamingPhase = (next: SetStateAction<ChatEnginePhase | null>) => {
+      if (ownsAttachedSession()) setStreamingPhase(next);
+    };
     const currentMessages = messagesRef.current;
     const needsPriorThreadLoad = currentMessages.length === 0 || currentMessages[0]?.sessionId !== sessionId;
     lastAttachedGenerationRef.current = {
@@ -1007,6 +1028,7 @@ export function useChat(
       setStreamingText: updateAttachedStreamingText,
       setStreamingThinking: updateAttachedStreamingThinking,
       setStreamingToolCalls: updateAttachedStreamingToolCalls,
+      setStreamingPhase: updateAttachedStreamingPhase,
       cancelStreamingFlushesRef,
       addToast: options?.silent ? undefined : addToast,
       onFallbackSession: (data, fallbackSessionId) => {
@@ -1022,6 +1044,7 @@ export function useChat(
         setStreamingText("");
         setStreamingThinking("");
         setStreamingToolCalls([]);
+        setStreamingPhase(null);
         setIsStreaming(false);
         isStreamingRef.current = false;
         streamRef.current = null;
@@ -1034,6 +1057,7 @@ export function useChat(
         setStreamingText("");
         setStreamingThinking("");
         setStreamingToolCalls([]);
+        setStreamingPhase(null);
         setIsStreaming(false);
         isStreamingRef.current = false;
         streamRef.current = null;
@@ -1591,6 +1615,9 @@ export function useChat(
     setStreamingText("");
     setStreamingThinking("");
     setStreamingToolCalls([]);
+    // FNXC:ChatPhaseStatus 2026-09-05-10:23: RUFU-188 — a user Stop aborts the stream before its
+    // terminal event, so clear the phase label here or the "(compacting…)" suffix would linger.
+    setStreamingPhase(null);
 
     const cancellation = cancelChatResponse(session.id, projectId)
       .then(async (result) => {
@@ -1697,6 +1724,10 @@ export function useChat(
         setStreamingText("");
         setStreamingThinking("");
         setStreamingToolCalls([]);
+        // FNXC:ChatPhaseStatus 2026-09-05-11:45: RUFU-188 (Code Review P1) — the silent reconnect rebaselines
+        // every streaming carrier from the durable snapshot before re-attaching; the phase label joins the
+        // sweep so a pre-reconnect `(compacting…)` can't ride into the reattached bubble's first frames.
+        setStreamingPhase(null);
         setIsStreaming(true);
         isStreamingRef.current = true;
         attachIfGenerating(sessionId, refreshedSession.session.inFlightGeneration, { silent: true });
@@ -1704,6 +1735,7 @@ export function useChat(
         setStreamingText("");
         setStreamingThinking("");
         setStreamingToolCalls([]);
+        setStreamingPhase(null);
         setIsStreaming(false);
         isStreamingRef.current = false;
         await loadMessages(sessionId);
@@ -1757,6 +1789,14 @@ export function useChat(
       const updateOwnedStreamingToolCalls = (next: SetStateAction<ToolCallInfo[]>) => {
         if (ownsStream()) updateStreamingToolCalls(next);
       };
+      /*
+      FNXC:ChatPhaseStatus 2026-09-05-11:45:
+      RUFU-188 (Code Review P1): same ownership guard as the text/thinking/tool-call mirrors — a stale
+      stream's replayed `phase` frame must not decorate a send the user already replaced.
+      */
+      const updateOwnedStreamingPhase = (next: SetStateAction<ChatEnginePhase | null>) => {
+        if (ownsStream()) setStreamingPhase(next);
+      };
 
       // Optimistically add user message
       const tempId = `temp-${Date.now()}`;
@@ -1773,6 +1813,10 @@ export function useChat(
       setStreamingText("");
       setStreamingThinking("");
       setStreamingToolCalls([]);
+      // FNXC:ChatPhaseStatus 2026-09-05-11:45: RUFU-188 (Code Review P1) — a new send starts with no phase;
+      // without this a `(compacting…)` label stranded by a lost inactive frame on the previous stream would
+      // decorate the first moments of this one.
+      setStreamingPhase(null);
       setIsStreaming(true);
       isStreamingRef.current = true;
 
@@ -1782,6 +1826,7 @@ export function useChat(
         setStreamingText: updateOwnedStreamingText,
         setStreamingThinking: updateOwnedStreamingThinking,
         setStreamingToolCalls: updateOwnedStreamingToolCalls,
+        setStreamingPhase: updateOwnedStreamingPhase,
         cancelStreamingFlushesRef,
         addToast,
         onFallbackSession: (data, sessionId) => {
@@ -1800,6 +1845,9 @@ export function useChat(
           setStreamingText("");
           setStreamingThinking("");
           setStreamingToolCalls([]);
+          // FNXC:ChatPhaseStatus 2026-09-05-11:45: RUFU-188 (Code Review P1) — the agent-message handoff ends
+          // this stream segment's live bubble, so the phase carrier resets with its siblings.
+          setStreamingPhase(null);
           setTimeout(() => streamingMessageIdsRef.current.delete(agentMessage.id), 1000);
         },
         onDone: ({ messageId, message: finalMessage, dispatch, failedAgentNames, accumulated }) => {
@@ -1808,6 +1856,7 @@ export function useChat(
             setStreamingText("");
             setStreamingThinking("");
             setStreamingToolCalls([]);
+            setStreamingPhase(null);
             setIsStreaming(false);
             isStreamingRef.current = false;
             streamRef.current = null;
@@ -1846,6 +1895,10 @@ export function useChat(
           setStreamingText("");
           setStreamingThinking("");
           setStreamingToolCalls([]);
+          // FNXC:ChatPhaseStatus 2026-09-05-11:45: RUFU-188 (Code Review P1): the factory already clears the
+          // phase on `done`, but this grouped reset is the transcript's own rebaseline — a carrier cleared
+          // by three of its siblings and missed by one is how stuck labels come back after refactors.
+          setStreamingPhase(null);
           setIsStreaming(false);
           isStreamingRef.current = false;
           streamRef.current = null;
@@ -1906,6 +1959,7 @@ export function useChat(
           setStreamingText("");
           setStreamingThinking("");
           setStreamingToolCalls([]);
+          setStreamingPhase(null);
           setIsStreaming(false);
           isStreamingRef.current = false;
           streamRef.current = null;
@@ -1918,6 +1972,7 @@ export function useChat(
               setStreamingText("");
               setStreamingThinking("");
               setStreamingToolCalls([]);
+              setStreamingPhase(null);
               setIsStreaming(true);
               isStreamingRef.current = true;
               void reconnectSessionSilently(activeSession.id);
@@ -2196,6 +2251,9 @@ export function useChat(
           setStreamingText("");
           setStreamingThinking("");
           setStreamingToolCalls([]);
+          // FNXC:ChatPhaseStatus 2026-09-05-11:45: RUFU-188 (Code Review P1) — the server says the turn is
+          // over; every live carrier the poll loop rebaselines must include the phase label.
+          setStreamingPhase(null);
           setIsStreaming(false);
           isStreamingRef.current = false;
           flushPendingMessage();
@@ -2248,6 +2306,9 @@ export function useChat(
       setStreamingText("");
       setStreamingThinking("");
       setStreamingToolCalls([]);
+      // FNXC:ChatPhaseStatus 2026-09-05-11:45: RUFU-188 (Code Review P1) — rebaseline before re-attach; see
+      // the reconnectSessionSilently note for why the phase label is part of the sweep.
+      setStreamingPhase(null);
       setIsStreaming(true);
       isStreamingRef.current = true;
       attachIfGenerating(currentSession.id, data.session.inFlightGeneration, { silent: true });
@@ -2266,6 +2327,7 @@ export function useChat(
       setStreamingText("");
       setStreamingThinking("");
       setStreamingToolCalls([]);
+      setStreamingPhase(null);
       setIsStreaming(false);
       isStreamingRef.current = false;
       flushPendingMessage();
@@ -2389,6 +2451,9 @@ export function useChat(
         setStreamingText("");
         setStreamingThinking("");
         setStreamingToolCalls([]);
+        // FNXC:ChatPhaseStatus 2026-09-05-11:45: RUFU-188 (Code Review P1) — recovery-mode finalization via
+        // the SSE echo ends the stream's claim on the bubble; the phase label resets with its siblings.
+        setStreamingPhase(null);
         setIsStreaming(false);
         isStreamingRef.current = false;
         flushPendingMessage();
@@ -2504,6 +2569,7 @@ export function useChat(
     streamingText,
     streamingThinking,
     streamingToolCalls,
+    streamingPhase,
     pendingMessages,
     pendingQueueAction,
     selectSession,

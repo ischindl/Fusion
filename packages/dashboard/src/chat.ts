@@ -1224,6 +1224,18 @@ export type ChatStreamEvent =
         projectId: string | null;
       };
     }
+  /*
+  FNXC:ChatPhaseStatus 2026-09-05-10:23:
+  RUFU-188 (operator-requested): a chat reply waiting on long engine-internal background work
+  showed a bare "Working…" with no hint of what was running. This side-channel variant — the
+  sibling of the existing `fallback`/`warning` side channels — reports an engine phase so the
+  streaming placeholder can read "Working (compacting…)" while the work is in flight.
+  Exactly one phase value (`compacting`) exists today; the `phase`/`active` shape lets later
+  phases be added without re-designing the channel. A phase is transient render state: it is
+  never persisted to a message row, and `active: false` is always emitted with `active: true`
+  as a pair so a `Last-Event-ID` buffer replay cannot leave the label stuck on its own.
+  */
+  | { type: "phase"; data: { phase: "compacting"; active: boolean } }
   | {
       type: "done";
       data: {
@@ -2576,6 +2588,16 @@ export class ChatManager {
       (tier attempted, refusal reason, before/after tokens) to the task-store run-audit
       sink, keyed to `room:<roomId>` so a room responder's overflow is answerable after
       the fact. A missing/throwing sink never changes the gate's outcome.
+
+      FNXC:ChatPhaseStatus 2026-09-05-10:23:
+      RUFU-188 deliberately does NOT emit a `phase` event around this room gate. A room responder
+      has no stream to report a phase over: this function's input carries no sessionId and no
+      generationId, it issues no `chatStreamManager` broadcast anywhere, and its only caller
+      `sendRoomMessage` likewise does not touch the stream manager — `POST /chat/rooms/:id/messages`
+      is an awaited JSON request/response (`register-chat-room-routes.ts`) with no SSE subscribe and
+      no generation begin, so a phase frame emitted here would have no subscriber to reach. Room
+      behaviour stays exactly as it is today; giving room sends a stream so engine phases can surface
+      is deferred to a separate follow-up task that must land the room stream first.
       */
       const roomGateResult = await ensureContextWithinCompactionThreshold(resolvedSession.session, {
         tokenCap: chatModelSettings.tokenCap,
@@ -3549,13 +3571,50 @@ export class ChatManager {
       (tier attempted, refusal reason, before/after tokens) to the task-store run-audit
       sink keyed to this chat session, so a refused send is answerable after the fact
       without reading provider logs. A missing/throwing sink never changes the outcome.
+
+      FNXC:ChatPhaseStatus 2026-09-05-10:23:
+      RUFU-188 (operator-requested): while this gate ran its compaction tiers the streaming bubble
+      showed a bare "Working…", so the operator could not tell a rescued reply from a stalled one.
+      The gate call is now bracketed by a `phase` side-channel pair — `active: true` immediately
+      before the await and `active: false` in a `finally` — so the clear also runs on a refusal
+      result and on any throw, including `ChatContextOverflowError` (which propagates to the
+      overflow branch of the surrounding `catch` unchanged).
+      Emission policy, as a decision rather than an accident of coalescing: when the operator opted
+      out of pre-overflow compaction the gate is a no-op, so the bracket is skipped entirely and the
+      opted-out stream stays frame-for-frame what it was before; when enabled the bracket is emitted
+      even though a below-threshold send returns from the gate within a tick — that true/false pair
+      is batched into one client render, and the client-side clearing rules bound any residual by the
+      first text delta or `done`.
+      Telemetry must never cost the user their send: each broadcast runs through a local try/catch,
+      because `ChatStreamManager.broadcast` only guards its subscriber callbacks, not its own
+      serialize/buffer path. The RUFU-182/183 `chat:pre-overflow-compaction` run-audit contract is
+      untouched — that row stays the durable forensic record while this event is only a live label.
       */
-      const gateResult = await ensureContextWithinCompactionThreshold(agentResult.session, {
-        tokenCap: chatModelSettings.tokenCap,
-        enabled: chatModelSettings.chatPreOverflowCompactionEnabled !== false,
-        audit: { sink: this.taskStore, sessionId: session.id },
-      });
-      if (gateResult.fallback) {
+      const compactionGateEnabled = chatModelSettings.chatPreOverflowCompactionEnabled !== false;
+      const broadcastCompactionPhase = (active: boolean): void => {
+        if (!compactionGateEnabled) return;
+        try {
+          chatStreamManager.broadcast(
+            sessionId,
+            { type: "phase", data: { phase: "compacting", active } },
+            broadcastOptions,
+          );
+        } catch (err) {
+          diagnostics.error(`Chat compaction phase broadcast failed for session ${sessionId}:`, err);
+        }
+      };
+      let gateResult: CompactionGateResult | undefined;
+      broadcastCompactionPhase(true);
+      try {
+        gateResult = await ensureContextWithinCompactionThreshold(agentResult.session, {
+          tokenCap: chatModelSettings.tokenCap,
+          enabled: compactionGateEnabled,
+          audit: { sink: this.taskStore, sessionId: session.id },
+        });
+      } finally {
+        broadcastCompactionPhase(false);
+      }
+      if (gateResult?.fallback) {
         contextTruncationNotice = gateResult.fallback;
       }
 

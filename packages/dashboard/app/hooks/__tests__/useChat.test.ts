@@ -116,6 +116,7 @@ type StreamAppendHandlers = {
   onThinking?: (delta: string) => void;
   onToolStart?: (data: { toolName: string; args?: Record<string, unknown> }) => void;
   onToolEnd?: (data: { toolName: string; isError: boolean; result?: unknown }) => void;
+  onPhase?: (data: { phase: "compacting"; active: boolean }) => void;
   onDone?: (data: { messageId: string; message?: ChatMessage; interrupted?: boolean; accumulated?: { text: string; thinking: string; toolCalls: unknown[]; fallbackInfo?: unknown } }) => void;
   onError?: (data: string | apiModule.ChatFailureInfo, meta?: apiModule.ChatStreamErrorMeta) => void;
 };
@@ -2845,6 +2846,92 @@ describe("useChat", () => {
 
     await waitFor(() => {
       expect(result.current.pendingMessages).toEqual(["Legacy queued follow-up"]);
+    });
+  });
+
+  /*
+  FNXC:ChatPhaseStatus 2026-09-05-11:45:
+  RUFU-188 (Code Review P0/P1): nothing below the component boundary proved that a `phase` frame
+  actually lands on the hook's single label slot or that the ownership guard keeps a departed stream's
+  replayed frames off the user's current session. These pin both: live frames arm/clear `streamingPhase`,
+  the terminal events and the first text delta flush a residual label, and a detached attachment's late
+  frames are dropped by the same guard the text/thinking carriers use.
+  */
+  describe("streaming phase side-channel", () => {
+    it("maps live phase frames onto streamingPhase and flushes residuals on text and done", async () => {
+      const session = makeSession({ id: "session-001", agentId: "agent-001" });
+      mockFetchChatSessions.mockResolvedValueOnce({ sessions: [session] });
+      let handlers: StreamAppendHandlers = {};
+      mockStreamChatResponse.mockImplementation((_sessionId, _content, h) => {
+        handlers = h as unknown as StreamAppendHandlers;
+        return { close: vi.fn(), isConnected: () => true };
+      });
+
+      const { result } = renderHook(() => useChat());
+      await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+      act(() => result.current.selectSession("session-001"));
+      await waitFor(() => expect(result.current.activeSession?.id).toBe("session-001"));
+
+      act(() => result.current.sendMessage("Hello!"));
+
+      act(() => handlers.onPhase?.({ phase: "compacting", active: true }));
+      expect(result.current.streamingPhase).toBe("compacting");
+
+      act(() => handlers.onPhase?.({ phase: "compacting", active: false }));
+      expect(result.current.streamingPhase).toBeNull();
+
+      // First answer text retires the label even when the inactive frame was lost in transit.
+      act(() => handlers.onPhase?.({ phase: "compacting", active: true }));
+      act(() => handlers.onText?.("Answer"));
+      expect(result.current.streamingPhase).toBeNull();
+
+      // A replayed residual `active: true` must not outlive the turn it belonged to.
+      act(() => handlers.onPhase?.({ phase: "compacting", active: true }));
+      act(() => handlers.onDone?.({ messageId: "m-1" }));
+      expect(result.current.streamingPhase).toBeNull();
+    });
+
+    it("drops a departed attachment's replayed phase frame after the user switches sessions", async () => {
+      const sessionA = {
+        ...makeSession({ id: "session-A", agentId: "agent-001" }),
+        isGenerating: true,
+        inFlightGeneration: {
+          status: "generating" as const,
+          streamingText: "",
+          streamingThinking: "",
+          toolCalls: [],
+          replayFromEventId: 5,
+          updatedAt: "2026-09-05T00:00:00.000Z",
+        },
+      };
+      const sessionB = makeSession({ id: "session-B", agentId: "agent-001" });
+      mockFetchChatSessions.mockResolvedValueOnce({ sessions: [sessionA, sessionB] });
+      mockFetchChatSession.mockImplementation((id) =>
+        Promise.resolve({ session: id === "session-A" ? sessionA : sessionB }),
+      );
+      mockFetchChatMessages.mockResolvedValue({ messages: [] });
+      let attachHandlers: StreamAppendHandlers = {};
+      mockAttachChatStream.mockImplementation((_id, h) => {
+        attachHandlers = h as unknown as StreamAppendHandlers;
+        return { close: vi.fn(), isConnected: () => true };
+      });
+
+      const { result } = renderHook(() => useChat());
+      await waitFor(() => expect(result.current.sessions).toHaveLength(2));
+      act(() => result.current.selectSession("session-A"));
+      await waitFor(() => expect(mockAttachChatStream).toHaveBeenCalledTimes(1));
+
+      // While attached, the replayed frame arms the label (attach path).
+      act(() => attachHandlers.onPhase?.({ phase: "compacting", active: true }));
+      expect(result.current.streamingPhase).toBe("compacting");
+
+      act(() => result.current.selectSession("session-B"));
+      await waitFor(() => expect(result.current.activeSession?.id).toBe("session-B"));
+      expect(result.current.streamingPhase).toBeNull();
+
+      // Late frames from the detached A attachment must not paint onto B — the guarded setter drops them.
+      act(() => attachHandlers.onPhase?.({ phase: "compacting", active: true }));
+      expect(result.current.streamingPhase).toBeNull();
     });
   });
 

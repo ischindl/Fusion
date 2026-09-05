@@ -455,6 +455,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
     streamingText,
     streamingThinking,
     streamingToolCalls,
+    streamingPhase,
     selectSession,
     createSession,
     archiveSession,
@@ -2840,6 +2841,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
             streamingText={streamingText}
             streamingThinking={streamingThinking}
             streamingToolCalls={streamingToolCalls}
+            streamingPhase={streamingPhase}
             forcePlain={false}
             agentName={agentName}
             hideAssistantIdentity={hideAssistantIdentity}

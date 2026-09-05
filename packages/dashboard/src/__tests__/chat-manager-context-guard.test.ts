@@ -720,6 +720,186 @@ describe("ChatManager — tier-3 truncation disclosure wiring (RUFU-183)", () =>
   });
 });
 
+/*
+FNXC:ChatPhaseStatus 2026-09-05-10:23:
+RUFU-188 Symptom Verification half A — the operator-facing bug was a bare "Working…" while the
+pre-overflow compaction gate ran silently. These cases pin the stream contract that replaces it:
+(a) the direct-send gate is bracketed by a `phase` pair (`active: true` strictly before the gate
+resolves, `active: false` strictly before `done`) carrying the send's generationId, with the clear
+also recorded when the gate refuses or throws (`ChatContextOverflowError` and a generic error);
+(b) an operator who opted out of compaction sees ZERO `type:"phase"` frames — the opted-out stream
+is frame-for-frame what it was before the bracket existed; and (c) the room deferral guard: the room
+responder seam STILL runs the gate but records zero phase broadcasts, because a room send has no
+stream to carry them (generateRoomResponderReply has no sessionId/generationId and the room route is
+request/response). (c) is what makes that deferral a decision pinned by a test rather than an
+accident a later half-wiring could silently reverse.
+*/
+describe("ChatManager — engine phase side-channel around the compaction gate (RUFU-188)", () => {
+  /** All `phase` broadcasts recorded by a broadcast spy, in stream order. */
+  function phaseEvents(broadcastSpy: { mock: { calls: unknown[] } }): Array<{ active: boolean; generationId?: number }> {
+    return broadcastSpy.mock.calls
+      .filter((call) => (call[1] as { type?: string } | undefined)?.type === "phase")
+      .map((call) => ({
+        active: (call[1] as { data: { active: boolean } }).data.active,
+        generationId: (call[2] as { generationId?: number } | undefined)?.generationId,
+      }));
+  }
+
+  /** Broadcast event types recorded so far, excluding the phase side channel itself. */
+  function nonPhaseEvents(broadcastSpy: { mock: { calls: unknown[] } }): string[] {
+    return broadcastSpy.mock.calls
+      .map((call) => (call[1] as { type?: string } | undefined)?.type ?? "")
+      .filter((type) => type !== "phase");
+  }
+
+  it("brackets the direct-send gate with active:true before it resolves and active:false before done", async () => {
+    setupSession();
+    const { session } = makeFakeSession({ contextWindow: 128_000, maxTokens: 16_384, usageTokens: 50_000 });
+    mockCreateResolvedAgentSession.mockResolvedValue({ session, model: { provider: "test-provider", modelId: "test-model" } });
+    let resolveGate: ((value: unknown) => void) | undefined;
+    mockEnsureContextWithinCompactionThreshold.mockImplementation(
+      () => new Promise((resolve) => { resolveGate = resolve; }),
+    );
+    const broadcastSpy = vi.spyOn(chatStreamManager, "broadcast").mockReturnValue(0);
+    const manager = makeManager();
+
+    const send = manager.sendMessage("chat-guard", "hello world");
+    await vi.waitFor(() => expect(mockEnsureContextWithinCompactionThreshold).toHaveBeenCalled());
+    // WHILE the gate is still suspended: the phase-active frame is already on the stream, it is
+    // the first frame of the send, and nothing else (no text/thinking) has preceded it.
+    const callsWhilePending = [...broadcastSpy.mock.calls];
+    expect(phaseEvents({ mock: { calls: callsWhilePending } })).toEqual([expect.objectContaining({ active: true })]);
+    expect(nonPhaseEvents({ mock: { calls: callsWhilePending } })).toEqual([]);
+
+    // Refusal-shaped resolve: the clear must run for a refusal exactly as for a success.
+    resolveGate?.({ compacted: false, contextTokens: 50_000, threshold: 102_400 });
+    await send;
+
+    const events = phaseEvents(broadcastSpy);
+    expect(events.map((event) => event.active)).toEqual([true, false]);
+    const firstPhaseIndex = broadcastSpy.mock.calls.findIndex((call) => (call[1] as { type?: string } | undefined)?.type === "phase");
+    expect(firstPhaseIndex).toBe(0);
+    const phaseIndices = broadcastSpy.mock.calls
+      .map((call, index) => ((call[1] as { type?: string } | undefined)?.type === "phase" ? index : -1))
+      .filter((index) => index >= 0);
+    const phaseOffIndex = phaseIndices[phaseIndices.length - 1];
+    const doneIndex = broadcastSpy.mock.calls.findIndex((call) => (call[1] as { type?: string } | undefined)?.type === "done");
+    expect(doneIndex).toBeGreaterThan(-1);
+    expect(phaseOffIndex).toBeLessThan(doneIndex);
+    // Both frames ride the send's own generation, like every other direct-send broadcast.
+    expect(events[0]?.generationId).toEqual(expect.any(Number));
+    expect(events[1]?.generationId).toBe(events[0]?.generationId);
+    // The prompt ran strictly inside the bracket — the label covered the gate, not the prompt.
+    expect(mockPromptWithFallback).toHaveBeenCalledTimes(1);
+    broadcastSpy.mockRestore();
+  });
+
+  it("records the active:false clear when the gate rejects with ChatContextOverflowError", async () => {
+    setupSession();
+    const { session } = makeFakeSession({ contextWindow: 128_000, maxTokens: 16_384, usageTokens: 50_000 });
+    mockCreateResolvedAgentSession.mockResolvedValue({ session, model: { provider: "test-provider", modelId: "test-model" } });
+    let rejectGate: ((error: unknown) => void) | undefined;
+    mockEnsureContextWithinCompactionThreshold.mockImplementation(
+      () => new Promise((_resolve, reject) => { rejectGate = reject; }),
+    );
+    const broadcastSpy = vi.spyOn(chatStreamManager, "broadcast").mockReturnValue(0);
+    const manager = makeManager();
+
+    const send = manager.sendMessage("chat-guard", "hello world");
+    await vi.waitFor(() => expect(mockEnsureContextWithinCompactionThreshold).toHaveBeenCalled());
+    const activeFrames = phaseEvents(broadcastSpy);
+    expect(activeFrames.map((event) => event.active)).toEqual([true]);
+
+    rejectGate?.(new ChatContextOverflowError("context still exceeds the limit after compaction"));
+    await send;
+
+    // finally semantics: the overflow branch of the surrounding catch persists and broadcasts the
+    // failure, the prompt never ships, and the clear precedes the error event on the stream.
+    expect(phaseEvents(broadcastSpy).map((event) => event.active)).toEqual([true, false]);
+    const rawTypes = broadcastSpy.mock.calls.map((call) => (call[1] as { type?: string } | undefined)?.type ?? "");
+    const phaseOffIndex = rawTypes.lastIndexOf("phase");
+    const errorIndex = rawTypes.indexOf("error");
+    expect(errorIndex).toBeGreaterThan(-1);
+    expect(phaseOffIndex).toBeLessThan(errorIndex);
+    expect(mockPromptWithFallback).not.toHaveBeenCalled();
+    broadcastSpy.mockRestore();
+  });
+
+  it("records the active:false clear when the gate throws an arbitrary error", async () => {
+    setupSession();
+    const { session } = makeFakeSession({ contextWindow: 128_000, maxTokens: 16_384, usageTokens: 50_000 });
+    mockCreateResolvedAgentSession.mockResolvedValue({ session, model: { provider: "test-provider", modelId: "test-model" } });
+    mockEnsureContextWithinCompactionThreshold.mockRejectedValue(new Error("gate exploded"));
+    const broadcastSpy = vi.spyOn(chatStreamManager, "broadcast").mockReturnValue(0);
+    const manager = makeManager();
+
+    await manager.sendMessage("chat-guard", "hello world");
+
+    expect(phaseEvents(broadcastSpy).map((event) => event.active)).toEqual([true, false]);
+    expect(mockPromptWithFallback).not.toHaveBeenCalled();
+    broadcastSpy.mockRestore();
+  });
+
+  it("emits no phase frame at all when the operator opted out of pre-overflow compaction", async () => {
+    setupSession();
+    const { session, compact } = makeFakeSession({
+      contextWindow: 128_000,
+      maxTokens: 16_384,
+      usageTokens: 150_000,
+      compactAfterTokens: 20_000,
+    });
+    mockCreateResolvedAgentSession.mockResolvedValue({ session, model: { provider: "test-provider", modelId: "test-model" } });
+    const broadcastSpy = vi.spyOn(chatStreamManager, "broadcast").mockReturnValue(0);
+    const manager = makeManager(async () => ({ chatPreOverflowCompactionEnabled: false }));
+
+    await manager.sendMessage("chat-guard", "hello world");
+
+    // The gate is still invoked (unchanged pass-through contract), but the disabled gate is a
+    // no-op, so the bracket is skipped ENTIRELY — an opted-out stream never carries a phase frame.
+    expect(mockEnsureContextWithinCompactionThreshold).toHaveBeenCalledTimes(1);
+    expect(mockEnsureContextWithinCompactionThreshold.mock.calls[0][1]).toMatchObject({ enabled: false });
+    expect(compact).not.toHaveBeenCalled();
+    expect(phaseEvents(broadcastSpy)).toEqual([]);
+    expect(mockPromptWithFallback).toHaveBeenCalledTimes(1);
+    broadcastSpy.mockRestore();
+  });
+
+  it("keeps the room responder seam stream-silent: the gate still runs, zero phase frames are broadcast (RUFU-188 deferral guard)", async () => {
+    mockChatStore.getRoom.mockResolvedValue({ id: "room-1", name: "test-room", projectId: "proj-1" });
+    mockChatStore.listRoomMembers.mockResolvedValue([{ agentId: "agent-1" }]);
+    mockChatStore.addRoomMessage.mockImplementation(async () => ({ id: "room-msg-1", createdAt: "2026-01-01T00:00:00.000Z" }));
+    mockChatStore.getRoomMessages.mockImplementation(async () => []);
+    __setBuildAgentChatPrompt(async ({ basePrompt }: { basePrompt: string }) => basePrompt);
+    const roomAgent = { id: "agent-1", name: "Agent One", role: "executor" } as never;
+    const fakeAgentStore = {
+      init: vi.fn(async () => undefined),
+      listAgents: vi.fn(async () => [roomAgent]),
+      getAgent: vi.fn(async () => roomAgent),
+      getRatingSummary: vi.fn(async () => null),
+    } as never;
+    const { session } = makeFakeSession({ contextWindow: 128_000, maxTokens: 16_384, usageTokens: 50_000 });
+    mockCreateResolvedAgentSession.mockResolvedValue({ session, model: { provider: "test-provider", modelId: "test-model" } });
+    mockPromptWithFallback.mockImplementation(async (sessionArg?: unknown) => {
+      const s = sessionArg as { state?: { messages?: Array<{ role: string; content?: string }> } };
+      s?.state?.messages?.push({ role: "assistant", content: "room reply" });
+      return undefined;
+    });
+    const broadcastSpy = vi.spyOn(chatStreamManager, "broadcast").mockReturnValue(0);
+    const manager = makeManager(undefined, fakeAgentStore);
+
+    const result = await manager.sendRoomMessage("room-1", "what is the status");
+
+    expect(result.responders).toEqual(["agent-1"]);
+    // The gate still compacts on the room seam — only its VISIBILITY is deferred, never its work.
+    expect(mockEnsureContextWithinCompactionThreshold).toHaveBeenCalledTimes(1);
+    // And zero phase frames: a room responder has no sessionId/generationId stream key, so a
+    // phase emitted there could never reach a subscriber. If a later change wires one up half-way
+    // (a broadcast with an invented key), this assertion is the trip-wire.
+    expect(phaseEvents(broadcastSpy)).toEqual([]);
+    broadcastSpy.mockRestore();
+  });
+});
+
 describe("ChatContextOverflowError", () => {
   it("is non-retryable with code CHAT_CONTEXT_OVERFLOW (engine barrel export)", () => {
     const err = new ChatContextOverflowError("context still exceeds the limit after compaction");

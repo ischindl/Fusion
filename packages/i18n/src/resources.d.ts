@@ -1666,6 +1666,7 @@ export default interface Resources {
       "untitledConversation": "Untitled conversation",
       "untitledSession": "Untitled",
       "viewFailureDetails": "View failure details",
+      "workingCompactingStatus": "Working (compacting…)",
       "workingStatus": "Working…",
       "you": "You"
     },

@@ -197,6 +197,44 @@ describe("streamChatResponse SSE parser", () => {
     });
   });
 
+  /*
+  FNXC:ChatPhaseStatus 2026-09-05-11:45:
+  RUFU-188 (Code Review P0): the `phase` case added to the SSE dispatch switch had no test on either
+  client entry point — a dropped `case "phase"` would keep every component test green because they stub
+  the handler layer. These pin that both `streamChatResponse` and `attachChatStream` parse
+  `{ phase, active }` frames and hand them to `onPhase` in stream order.
+  */
+  it("dispatches phase frames to onPhase in stream order", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        createChunkedStream([
+          "event: phase\n",
+          "data: {\"phase\":\"compacting\",\"active\":true}\n\n",
+          "event: phase\n",
+          "data: {\"phase\":\"compacting\",\"active\":false}\n\n",
+          "event: text\n",
+          "data: \"answer\"\n\n",
+          "event: done\n",
+          "data: {\"messageId\":\"msg-phase\"}\n\n",
+        ]),
+        { status: 200 },
+      ),
+    );
+
+    const events: string[] = [];
+
+    streamChatResponse("s-1", "hi", {
+      onPhase: (data) => events.push(`phase:${data.phase}:${data.active}`),
+      onText: () => events.push("text"),
+      onDone: () => events.push("done"),
+      onError: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(events).toEqual(["phase:compacting:true", "phase:compacting:false", "text", "done"]);
+    });
+  });
+
   it("keeps accepted streams open when no real stream events arrive before timeout", async () => {
     vi.useFakeTimers();
     const encoder = new TextEncoder();
@@ -351,6 +389,36 @@ describe("attachChatStream", () => {
 
     await vi.waitFor(() => {
       expect(textChunks).toEqual(["A", "B"]);
+    });
+  });
+
+  it("replays phase frames through the attach dispatch to onPhase", async () => {
+    // FNXC:ChatPhaseStatus 2026-09-05-11:45: RUFU-188 (Code Review P0) — reconnect replay goes through the
+    // SECOND switch block in the SSE client; both must dispatch `phase` or a resumed tab loses the label.
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        createChunkedStream([
+          "event: phase\n",
+          "data: {\"phase\":\"compacting\",\"active\":true}\n\n",
+          "event: phase\n",
+          "data: {\"phase\":\"compacting\",\"active\":false}\n\n",
+          "event: done\n",
+          "data: {\"messageId\":\"m-phase\"}\n\n",
+        ]),
+        { status: 200 },
+      ),
+    );
+
+    const events: string[] = [];
+
+    attachChatStream("s-1", {
+      onPhase: (data) => events.push(`phase:${data.phase}:${data.active}`),
+      onDone: () => events.push("done"),
+      onError: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(events).toEqual(["phase:compacting:true", "phase:compacting:false", "done"]);
     });
   });
 
