@@ -228,9 +228,12 @@ do_push() {
 
 if [ "$DETACH" = 1 ]; then
   # Detached so a git hook or heartbeat never blocks on a LAN transfer. setsid
-  # breaks the caller's process group (the hook exits immediately); nohup plus a
-  # closed stdin keeps it from surviving on a pipe or blocking on a prompt.
-  setsid nohup bash "$0" ${MODE_ARGS[@]+"${MODE_ARGS[@]}"} </dev/null >/dev/null 2>&1 &
+  # breaks the caller's process group so the hook exits immediately; hang-up
+  # immunity plus closed stdin (process-supervisor-allowlist) keeps the run from
+  # surviving on a pipe or blocking on a prompt.
+  # process-supervisor-allowlist: operator-invoked LAN backup self-detach, not a Fusion-managed
+  # child process; superviseSpawn is for engine-tracked subprocesses and cannot apply in a shell script.
+  setsid nohup bash "$0" ${MODE_ARGS[@]+"${MODE_ARGS[@]}"} </dev/null >/dev/null 2>&1 & # process-supervisor-allowlist
   log "spawned detached run pid=$! mode=${MODE_ARGS[*]:-auto}"
   exit 0
 fi
