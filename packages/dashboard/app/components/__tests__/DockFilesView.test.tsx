@@ -124,12 +124,12 @@ vi.mock("../FileEditor", () => ({
   },
 }));
 
-const capturedFileBrowserProps: Array<{ showProjectFileControls?: boolean; projectId?: string }> = [];
+const capturedFileBrowserProps: Array<{ showProjectFileControls?: boolean; projectId?: string; allowUpload?: boolean }> = [];
 
 // Render the tree's files as buttons so we can click one.
 vi.mock("../FileBrowser", () => ({
-  FileBrowser: ({ entries: e, onSelectFile, showProjectFileControls, projectId }: { entries: FileNode[]; onSelectFile: (p: string) => void; showProjectFileControls?: boolean; projectId?: string }) => {
-    capturedFileBrowserProps.push({ showProjectFileControls, projectId });
+  FileBrowser: ({ entries: e, onSelectFile, showProjectFileControls, projectId, allowUpload }: { entries: FileNode[]; onSelectFile: (p: string) => void; showProjectFileControls?: boolean; projectId?: string; allowUpload?: boolean }) => {
+    capturedFileBrowserProps.push({ showProjectFileControls, projectId, allowUpload });
     return (
       <div data-testid="mock-file-browser" data-project-controls={showProjectFileControls ? "true" : "false"}>
         {e.map((entry) => (
@@ -172,13 +172,18 @@ describe("DockFilesView shared current-file state", () => {
   });
 
   it("enables Files — Project controls in both compact and two-pane dock layouts", () => {
+    /*
+    FNXC:FileBrowserUpload 2026-09-05-16:11:
+    RUFU-189: the dock Files tab (compact "auto") and its expand pop-out ("two-pane") are both
+    first-class file surfaces, so every FileBrowser they mount must also carry allowUpload.
+    */
     const dock = render(<DockFilesView projectId={PROJECT_ID} layout="auto" />);
     expect(screen.getByTestId("mock-file-browser")).toHaveAttribute("data-project-controls", "true");
     dock.unmount();
 
     render(<DockFilesView projectId={PROJECT_ID} layout="two-pane" />);
     expect(screen.getByTestId("mock-file-browser")).toHaveAttribute("data-project-controls", "true");
-    expect(capturedFileBrowserProps.every((props) => props.showProjectFileControls === true && props.projectId === PROJECT_ID)).toBe(true);
+    expect(capturedFileBrowserProps.every((props) => props.showProjectFileControls === true && props.projectId === PROJECT_ID && props.allowUpload === true)).toBe(true);
   });
 
   it("persists the selected file to scoped storage and a fresh expand instance reads it on mount", async () => {

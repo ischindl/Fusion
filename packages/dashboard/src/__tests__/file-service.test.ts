@@ -20,7 +20,10 @@ import {
   renameWorkspaceFile,
   getWorkspaceFileForDownload,
   getWorkspaceFolderForZip,
+  writeWorkspaceFileBytes,
   MAX_FILE_SIZE,
+  MAX_UPLOAD_FILE_SIZE,
+  MAX_UPLOAD_FILES,
 } from "../file-service.js";
 import type { TaskStore } from "@fusion/core";
 
@@ -99,6 +102,18 @@ describe("MAX_FILE_SIZE", () => {
   it("is 1MB (1024 * 1024 bytes)", () => {
     expect(MAX_FILE_SIZE).toBe(1024 * 1024);
     expect(MAX_FILE_SIZE).toBe(1048576);
+  });
+});
+
+/*
+FNXC:FileBrowserUpload 2026-09-05-15:01:
+These values are the explicit operator decisions for RUFU-189 (per-file 25 MB, per-request 20
+files); a change must be a deliberate re-decision, not an accident.
+*/
+describe("upload budget constants", () => {
+  it("caps uploads at 25 MB per file and 20 files per request", () => {
+    expect(MAX_UPLOAD_FILE_SIZE).toBe(25 * 1024 * 1024);
+    expect(MAX_UPLOAD_FILES).toBe(20);
   });
 });
 
@@ -385,7 +400,9 @@ describe("path traversal protection", () => {
 
       await expect(writeWorkspaceFile(mockStore, "project", "/tmp/file.txt", "content")).resolves.toMatchObject({ success: true, size: 7 });
       await expect(createWorkspaceDirectory(mockStore, "project", "/tmp/new-dir")).resolves.toMatchObject({ success: true, path: "/tmp/new-dir" });
-      expect(mockWriteFile).toHaveBeenCalledWith("/tmp/file.txt", "content", "utf-8");
+      // RUFU-189: text saves route through the bytes-safe core; the payload is UTF-8-encoded
+      // bytes and flag "w" keeps the replace-in-place text-save contract.
+      expect(mockWriteFile).toHaveBeenCalledWith("/tmp/file.txt", Buffer.from("content", "utf-8"), { flag: "w" });
       expect(mockMkdir).toHaveBeenCalledWith("/tmp/new-dir");
     });
 
@@ -852,8 +869,8 @@ describe("workspace operations", () => {
       expect(result.success).toBe(true);
       expect(mockWriteFile).toHaveBeenCalledWith(
         "/project/notes.txt",
-        "My notes",
-        "utf-8",
+        Buffer.from("My notes", "utf-8"),
+        { flag: "w" },
       );
     });
 
@@ -874,9 +891,88 @@ describe("workspace operations", () => {
       expect(result.success).toBe(true);
       expect(mockWriteFile).toHaveBeenCalledWith(
         "/project/.fusion/tasks/FN-123/output.txt",
-        "Task output",
-        "utf-8",
+        Buffer.from("Task output", "utf-8"),
+        { flag: "w" },
       );
+    });
+  });
+
+  /*
+  FNXC:FileBrowserUpload 2026-09-05-15:01:
+  RUFU-189 upload guard matrix for the bytes-safe writer: raw bytes reach fs.writeFile untouched
+  (no utf-8 re-encode), the refusal default is the atomic "wx" flag, and the 25 MB upload cap
+  applies instead of the 1 MiB editor cap. Byte-for-byte equality against a real filesystem is
+  asserted end-to-end in the POST /api/files/upload route tests.
+  */
+  describe("writeWorkspaceFileBytes", () => {
+    it("writes raw bytes untouched and defaults to refuse-on-collision (wx flag)", async () => {
+      mockGetRootDir.mockReturnValue("/project");
+      mockStat
+        .mockRejectedValueOnce({ code: "ENOENT" })
+        .mockResolvedValueOnce({ isDirectory: () => true })
+        .mockResolvedValueOnce({ size: 4, mtime: new Date("2026-09-05T00:00:00.000Z") });
+      mockWriteFile.mockResolvedValue(undefined);
+
+      const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+      const result = await writeWorkspaceFileBytes(mockStore, "project", "assets/logo.png", bytes);
+
+      expect(result.success).toBe(true);
+      expect(mockWriteFile).toHaveBeenCalledWith("/project/assets/logo.png", bytes, { flag: "wx" });
+    });
+
+    it("refuses an existing file with EEXIST when overwrite is not requested", async () => {
+      mockGetRootDir.mockReturnValue("/project");
+      mockStat
+        .mockResolvedValueOnce({ isDirectory: () => false })
+        .mockResolvedValueOnce({ isDirectory: () => true });
+      mockWriteFile.mockRejectedValueOnce({ code: "EEXIST" });
+
+      await expect(
+        writeWorkspaceFileBytes(mockStore, "project", "notes.txt", Buffer.from("x")),
+      ).rejects.toMatchObject({ name: "FileServiceError", code: "EEXIST" });
+      expect(mockWriteFile).toHaveBeenCalledWith("/project/notes.txt", Buffer.from("x"), { flag: "wx" });
+    });
+
+    it("replaces an existing file only when overwrite is explicitly requested", async () => {
+      mockGetRootDir.mockReturnValue("/project");
+      mockStat
+        .mockResolvedValueOnce({ isDirectory: () => false })
+        .mockResolvedValueOnce({ isDirectory: () => true })
+        .mockResolvedValueOnce({ size: 1, mtime: new Date("2026-09-05T00:00:00.000Z") });
+      mockWriteFile.mockResolvedValue(undefined);
+
+      const result = await writeWorkspaceFileBytes(mockStore, "project", "notes.txt", Buffer.from("x"), true);
+
+      expect(result.success).toBe(true);
+      expect(mockWriteFile).toHaveBeenCalledWith("/project/notes.txt", Buffer.from("x"), { flag: "w" });
+    });
+
+    it("enforces the 25 MB upload cap rather than the 1 MiB editor cap", async () => {
+      mockGetRootDir.mockReturnValue("/project");
+
+      await expect(
+        writeWorkspaceFileBytes(mockStore, "project", "big.bin", Buffer.alloc(MAX_UPLOAD_FILE_SIZE + 1)),
+      ).rejects.toMatchObject({ name: "FileServiceError", code: "ETOOLARGE" });
+      expect(mockWriteFile).not.toHaveBeenCalled();
+
+      // A file above the editor cap but below the upload cap must pass (guard is upload-specific).
+      mockStat
+        .mockRejectedValueOnce({ code: "ENOENT" })
+        .mockResolvedValueOnce({ isDirectory: () => true })
+        .mockResolvedValueOnce({ size: MAX_FILE_SIZE + 10, mtime: new Date("2026-09-05T00:00:00.000Z") });
+      mockWriteFile.mockResolvedValue(undefined);
+      await expect(
+        writeWorkspaceFileBytes(mockStore, "project", "over-editor-cap.bin", Buffer.alloc(MAX_FILE_SIZE + 10)),
+      ).resolves.toMatchObject({ success: true });
+    });
+
+    it("rejects traversal before touching the filesystem", async () => {
+      mockGetRootDir.mockReturnValue("/project");
+
+      await expect(
+        writeWorkspaceFileBytes(mockStore, "project", "../outside.txt", Buffer.from("x")),
+      ).rejects.toThrow("Path traversal detected");
+      expect(mockWriteFile).not.toHaveBeenCalled();
     });
   });
 });

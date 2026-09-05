@@ -22,6 +22,8 @@ import {
   type MarkdownFileListResponse,
   writeFile,
   writeWorkspaceFile,
+  writeWorkspaceFileBytes,
+  MAX_UPLOAD_FILES,
 } from "../file-service.js";
 import type { ApiRoutesContext } from "./types.js";
 
@@ -82,7 +84,7 @@ function getInlinePreviewContentType(filePath: string): string | null {
  * as a generic filepath.
  */
 export function registerFileWorkspaceRoutes(ctx: ApiRoutesContext): void {
-  const { router, getProjectContext, rethrowAsApiError } = ctx;
+  const { router, getProjectContext, rethrowAsApiError, workspaceUpload } = ctx;
 
   // ── Task file routes ──────────────────────────────────────────────
   router.get("/tasks/:id/files", async (req, res) => {
@@ -519,7 +521,115 @@ export function registerFileWorkspaceRoutes(ctx: ApiRoutesContext): void {
     }
   });
 
-  // Must remain after copy/move/delete/rename/download/mkdir routes.
+  /*
+  FNXC:FileBrowserUpload 2026-09-05-15:01:
+  POST /api/files/upload (RUFU-189): multipart upload that lands files in the directory the Files
+  browser is currently browsing (form field `path`, "." = workspace root). Registered BEFORE the
+  generic POST /files/{*filepath} so the path is not eaten as a file named "upload", and every
+  non-multipart request is passed through to that wildcard via next("route") — a bare next() would
+  fall through only to THIS route's JSON handler, while next("route") skips the route so the
+  wildcard can match. A workspace that genuinely
+  has a root file literally named "upload" must stay savable through the JSON text route (ordering
+  guard asserted in the route tests).
+  Server-safe-by-default per the operator decision: a file is only replaced when the request
+  explicitly sends overwrite=true, which the dashboard UI emits only after the operator confirmed
+  each collision (per-file EEXIST verdict → "Replace?" prompt).
+  Per-file outcomes are reported in the body ({ uploaded, failed }) so one oversized or colliding
+  file fails alone instead of sinking the whole batch; multer transport errors (100 MB ceiling,
+  20-file bound) stay whole-request errors with explicit status codes.
+  Uploads land in the checked-out working tree the browser is viewing, so they appear in
+  `git status` as ordinary uncommitted changes — nothing on this route commits or force-adds them.
+  */
+  const requireMultipartUpload: import("express").RequestHandler = (req, res, next) => {
+    if (!req.is("multipart/form-data")) {
+      // next("route"), not next(): skip THIS route's handler so the generic wildcard can match.
+      next("route");
+      return;
+    }
+    if (!workspaceUpload) {
+      next(new ApiError(501, "File uploads are not available on this server"));
+      return;
+    }
+    workspaceUpload.array("files", MAX_UPLOAD_FILES)(req, res, (err?: unknown) => {
+      if (!err) {
+        next();
+        return;
+      }
+      const multerError = err as { code?: string };
+      if (multerError?.code === "LIMIT_FILE_SIZE") {
+        next(new ApiError(413, "File too large. Server transport maximum: 104857600 bytes (100MB)"));
+        return;
+      }
+      if (multerError?.code === "LIMIT_UNEXPECTED_FILE") {
+        next(badRequest(`Too many files or unexpected field. Maximum ${MAX_UPLOAD_FILES} files under the "files" field`));
+        return;
+      }
+      next(err as Error);
+    });
+  };
+
+  router.post("/files/upload", requireMultipartUpload, async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      const workspace = typeof req.query.workspace === "string" && req.query.workspace.length > 0
+        ? req.query.workspace
+        : "project";
+      const files = (Array.isArray(req.files) ? req.files : []) as Array<{ originalname: string; buffer: Buffer }>;
+      if (files.length === 0) {
+        throw badRequest("At least one file is required under the \"files\" field");
+      }
+      const destDirRaw = typeof req.body?.path === "string" ? req.body.path.trim() : "";
+      const destDir = destDirRaw === "." ? "" : destDirRaw.replace(/\/+$/, "");
+      const overwrite = req.body?.overwrite === "true" || req.body?.overwrite === true;
+
+      const uploaded: Array<{ name: string; path: string; size: number; mtime: string }> = [];
+      const failed: Array<{ name: string; code: string; error: string }> = [];
+
+      for (const file of files) {
+        /*
+        FNXC:FileBrowserUpload 2026-09-05-15:01:
+        originalname is client-supplied and on some platforms carries path separators
+        ("C:\\dir\\x.png", folder-upload names). Reducing it to its basename means an upload can
+        never smuggle its own destination path into the write; validatePath inside the writer stays
+        the traversal authority for the (operator-picked, already-validated) destination directory.
+        */
+        const name = (file.originalname.replace(/\\/g, "/").split("/").pop() ?? "").replace(/\0/g, "").trim();
+        if (name === "") {
+          failed.push({ name: file.originalname, code: "EINVAL", error: `Invalid file name: ${file.originalname}` });
+          continue;
+        }
+        const targetPath = destDir === "" ? name : `${destDir}/${name}`;
+        try {
+          const result = await writeWorkspaceFileBytes(scopedStore, workspace, targetPath, file.buffer, overwrite);
+          uploaded.push({ name, path: targetPath, size: result.size, mtime: result.mtime });
+        } catch (err: unknown) {
+          if (err instanceof FileServiceError) {
+            failed.push({ name, code: err.code, error: err.message });
+            continue;
+          }
+          throw err;
+        }
+      }
+
+      res.json({ uploaded, failed });
+    } catch (err: unknown) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      if (err instanceof FileServiceError) {
+        const status = err.code === "ENOTASK" ? 404
+          : err.code === "ENOENT" ? 404
+          : err.code === "EEXIST" ? 409
+          : err.code === "EACCES" ? 403
+          : err.code === "ETOOLARGE" ? 413
+          : 400;
+        throw new ApiError(status, err.message, { code: err.code });
+      }
+      rethrowAsApiError(err, "Internal server error");
+    }
+  });
+
+  // Must remain after copy/move/delete/rename/download/mkdir/upload routes.
   router.post("/files/{*filepath}", async (req, res) => {
     try {
       const { store: scopedStore } = await getProjectContext(req);

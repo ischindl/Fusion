@@ -427,6 +427,14 @@ export function FileBrowserModal({
               onRefresh={refresh}
               projectId={projectId}
               showProjectFileControls={currentWorkspace === "project"}
+              /*
+              FNXC:FileBrowserUpload 2026-09-05-16:11:
+              RUFU-189: the Files modal is a first-class file surface for BOTH workspaces. The
+              task-workspace branch keeps the compact picker chrome (no inline New controls), so
+              upload rides the orthogonal allowUpload gate and lands in the compact New menu
+              instead of the header button cluster.
+              */
+              allowUpload
             />
           </div>
 

@@ -150,6 +150,36 @@ describe("FileBrowserModal", () => {
     });
   });
 
+  it("offers uploads on both modal workspaces: inline button for project, New menu for task workspace", async () => {
+    /*
+    FNXC:FileBrowserUpload 2026-09-05-16:11:
+    RUFU-189: the Files modal is a first-class surface for BOTH workspaces. The project branch
+    shows the inline Upload button; the task-workspace branch keeps compact picker chrome, so the
+    affordance must ride the New menu instead of disappearing with the inline controls.
+    */
+    const { rerender } = render(
+      <FileBrowserModal
+        initialWorkspace="project"
+        isOpen={true}
+        onClose={mockOnClose}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Upload" })).toBeInTheDocument();
+
+    rerender(
+      <FileBrowserModal
+        initialWorkspace="FN-001"
+        isOpen={true}
+        onClose={mockOnClose}
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Create new file" })).toBeNull();
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^New$/i }));
+    expect(screen.getByRole("menuitem", { name: /Upload files/ })).toBeInTheDocument();
+  });
+
   it("keeps Files — Project controls available in the narrow mobile list pane", async () => {
     Object.defineProperty(window, "innerWidth", {
       writable: true,

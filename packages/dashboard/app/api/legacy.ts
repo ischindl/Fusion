@@ -594,6 +594,8 @@ export {
   saveFileContent,
   saveWorkspaceFileContent,
   searchFiles,
+  uploadWorkspaceFiles,
+  MAX_WORKSPACE_UPLOAD_FILE_BYTES,
 } from "./projects/workspace-files.js";
 export type {
   FileContentResponse,
@@ -605,6 +607,9 @@ export type {
   SaveFileResponse,
   WorkspaceListResponse,
   WorkspaceTaskInfo,
+  WorkspaceUploadFailure,
+  WorkspaceUploadFileResult,
+  WorkspaceUploadResponse,
 } from "./projects/workspace-files.js";
 
 /*
