@@ -1655,7 +1655,10 @@
     "slashSuggestions": "Sugestões de barra",
     "loadingSlashSuggestions": "Carregando sugestões…",
     "snippetSuggestion": "Inserir prompt salvo",
-    "snippetSuggestions": "Sugestões de snippets"
+    "snippetSuggestions": "Sugestões de snippets",
+    "contextTruncationUnproven": "",
+    "contextTruncationNotice_one": "",
+    "contextTruncationNotice_other": ""
   },
   "chatRooms": {
     "error": {

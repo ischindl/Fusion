@@ -1645,7 +1645,10 @@
     "slashSuggestions": "Suggestions de barre oblique",
     "loadingSlashSuggestions": "Chargement des suggestions…",
     "snippetSuggestion": "Insérer le prompt enregistré",
-    "snippetSuggestions": "Suggestions d’extraits"
+    "snippetSuggestions": "Suggestions d’extraits",
+    "contextTruncationUnproven": "",
+    "contextTruncationNotice_one": "",
+    "contextTruncationNotice_other": ""
   },
   "chatRooms": {
     "error": {

@@ -1645,7 +1645,10 @@
     "slashSuggestions": "Sugerencias de barra",
     "loadingSlashSuggestions": "Cargando sugerencias…",
     "snippetSuggestion": "Insertar prompt guardado",
-    "snippetSuggestions": "Sugerencias de fragmentos"
+    "snippetSuggestions": "Sugerencias de fragmentos",
+    "contextTruncationUnproven": "",
+    "contextTruncationNotice_one": "",
+    "contextTruncationNotice_other": ""
   },
   "chatRooms": {
     "error": {

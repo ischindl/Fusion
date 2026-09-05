@@ -1645,7 +1645,10 @@
     "slashSuggestions": "斜線建議",
     "loadingSlashSuggestions": "正在載入建議…",
     "snippetSuggestion": "插入已儲存的提示詞",
-    "snippetSuggestions": "片段建議"
+    "snippetSuggestions": "片段建議",
+    "contextTruncationUnproven": "",
+    "contextTruncationNotice_one": "",
+    "contextTruncationNotice_other": ""
   },
   "chatRooms": {
     "error": {

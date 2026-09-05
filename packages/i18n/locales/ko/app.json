@@ -1645,7 +1645,10 @@
     "slashSuggestions": "슬래시 제안",
     "loadingSlashSuggestions": "제안 불러오는 중…",
     "snippetSuggestion": "저장된 프롬프트 삽입",
-    "snippetSuggestions": "스니펫 제안"
+    "snippetSuggestions": "스니펫 제안",
+    "contextTruncationUnproven": "",
+    "contextTruncationNotice_one": "",
+    "contextTruncationNotice_other": ""
   },
   "chatRooms": {
     "error": {

@@ -1448,6 +1448,29 @@ error; design tokens only per the styling guide.
   background: color-mix(in srgb, var(--color-warning) 8%, transparent);
 }
 
+/*
+FNXC:ChatContextGuardTier3 2026-09-04-22:51:
+Inline notice for an assistant turn whose context history was deterministically
+truncated (overflow-guard tier 3). Muted info accent (left rule + 8% tint via
+color-mix, mirroring the budget-exhausted notice) — it explains a recovery, not an
+error; the reply and failure UI render independently of it. Wrapping text only, so
+mobile and desktop share one markup.
+*/
+.chat-context-truncation-notice {
+  color: var(--color-info);
+  font-size: var(--font-size-sm);
+  line-height: 1.4;
+  padding: var(--space-xs) var(--space-sm);
+  border-left: 2px solid var(--color-info);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-info) 8%, transparent);
+}
+
+.chat-context-truncation-notice__unproven {
+  display: block;
+  opacity: 0.85;
+}
+
 /* Input area */
 .chat-input-area {
   position: relative;
