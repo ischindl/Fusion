@@ -186,6 +186,15 @@ const STORE_METHOD_CLASSIFICATION: Record<string, Omit<SurfaceClassification, "m
   pruneOperationalLogsAsync: { kind: "writer", reason: "persists or mutates TaskStore state" },
   purgeTaskWorkflowSelectionRows: { kind: "writer", reason: "persists or mutates TaskStore state" },
   reconcileActiveTimingForEngineDowntime: { kind: "writer", reason: "persists or mutates TaskStore state" },
+  /*
+  FNXC:MergeReliability 2026-09-06-21:24:
+  FN-303 added four public TaskStore archive-history methods without classifying them here, which
+  reds this guard on every full-suite run. Classification is decided from the implementation, never
+  from the method name: reconcileArchivedTasksIntoDone drains through reconcileArchivedTasksIntoDonePass,
+  which mutates rows via store.moveTaskIf, and supplementTaskHistoryFromEvidence issues
+  tx.update(schema.project.tasks).set(...) whenever dryRun is false. Both are durable writers.
+  */
+  reconcileArchivedTasksIntoDone: { kind: "writer", reason: "persists or mutates TaskStore state" },
   reconcileDistributedTaskIdStateOnOpen: { kind: "writer", reason: "persists or mutates TaskStore state" },
   reconcileLegacyAutoMergeStamps: { kind: "writer", reason: "persists or mutates TaskStore state" },
   reconcileOrphanedTaskDirs: { kind: "writer", reason: "persists or mutates TaskStore state" },
@@ -344,6 +353,7 @@ const STORE_METHOD_CLASSIFICATION: Record<string, Omit<SurfaceClassification, "m
   renewWorkspaceLease: { kind: "writer", reason: "persists workspace coordination lease state" },
   resolveOrphanedWorkspaceLandIntent: { kind: "writer", reason: "persists workspace land write-ahead intent state" },
   resolveWorkspaceLandIntent: { kind: "writer", reason: "persists workspace land write-ahead intent state" },
+  supplementTaskHistoryFromEvidence: { kind: "writer", reason: "persists or mutates TaskStore state" },
   withValidWorkspaceLease: { kind: "writer", reason: "runs caller mutations transactionally under a validated workspace lease fence" },
 };
 const NON_WRITER_REASONS: Record<string, string> = Object.fromEntries([
@@ -579,6 +589,13 @@ const NON_WRITER_REASONS: Record<string, string> = Object.fromEntries([
   "insertTask",
   "insertTaskWithFtsRecovery",
   "insertWorkflowDefinitionSync",
+  /*
+  FNXC:MergeReliability 2026-09-06-21:24:
+  The other two FN-303 archive-history methods are read-only by implementation: inspectArchivedTaskHistory
+  only pages store.listTasks and listArchivedTaskEntriesPageTolerant, and readTaskHistoryArtifact
+  reads a retained task.json and normalizes it. Neither reaches a durable write, so they are non-writers.
+  */
+  "inspectArchivedTaskHistory",
   "inspectSymbolLockConflicts",
   "inspectWorkspaceLeases",
   "invalidateConfigCacheAfterMigration",
@@ -691,6 +708,7 @@ const NON_WRITER_REASONS: Record<string, string> = Object.fromEntries([
   "readRawProjectSettings",
   "readTaskForMove",
   "readTaskFromDb",
+  "readTaskHistoryArtifact",
   "readTaskJson",
   "readTaskRowFromDb",
   "rebuildArchiveFts5Index",
