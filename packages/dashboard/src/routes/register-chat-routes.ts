@@ -915,7 +915,14 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
    * session-list scan, so the "very old sessions may not be found" recent-window
    * residual is gone from this path; a lookup 404 keeps the not-found (absent)
    * semantics and the route's response contract is unchanged. The bulk archival
-   * path (RUFU-125) remains paged until RUFU-131.
+   * path (RUFU-125) remains paged.
+   *
+   * FNXC:RUFU131AdoptionBlocker 2026-09-06-02:51:
+   * The bulk adopter RUFU-131 is ARCHIVED, not pending: verified against Stash origin/main
+   * tip c56f81c9, POST /api/v1/me/batch/delete is page/file-only (_TRASHABLE={"page","file"}
+   * in backend/services/batch_service.py) and rejects sessions. The bulk path stays paged
+   * until upstream ships a session-capable bulk delete; RUFU-131 is historical provenance
+   * only (CEO decision msg-551729e5; re-open trigger in project memory).
    *
    * FNXC:RUFU121DeleteSyncUrl 2026-08-18-21:59:
    * RUFU-121 (code-review remediation): the stashUrl resolves exactly the way the

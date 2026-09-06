@@ -1019,8 +1019,14 @@ export interface StashChatSessionDeleteResult {
  * `id` (the row uuid, always a string) or 404 when absent. A 200 payload
  * without a usable `id` is treated as not-found WITHOUT issuing a DELETE
  * (defense in depth — mirrors the old null-row-id behavior). The per-row
- * delete contract is unchanged, and the RUFU-125 bulk path remains paged
- * until RUFU-131 adopts the upstream bulk soft-delete endpoint.
+ * delete contract is unchanged, and the RUFU-125 bulk path remains paged.
+ *
+ * FNXC:RUFU131AdoptionBlocker 2026-09-06-02:51:
+ * The bulk adoption follow-up RUFU-131 is ARCHIVED, not pending. Verified against Stash
+ * origin/main tip c56f81c9: POST /api/v1/me/batch/delete exists but is page/file-only —
+ * _TRASHABLE={"page","file"} (backend/services/batch_service.py) rejects sessions. The
+ * bulk path stays paged until upstream ships a session-capable bulk delete; RUFU-131 is
+ * historical provenance only (CEO decision msg-551729e5; re-open trigger in project memory).
  */
 export async function deleteStashChatSession(
   baseUrl: string,
@@ -1092,9 +1098,15 @@ export interface StashBulkChatSessionDeleteResult {
  * lookup (GET /api/v1/me/sessions/{session_id}); the bulk path has no such
  * per-id endpoint yet, so this one pages
  * `GET /api/v1/me/sessions?limit=200&offset=<pages*200>` (rows arrive
- * `last_event_at DESC`) until the upstream bulk soft-delete endpoint is
- * adopted (RUFU-131), then
+ * `last_event_at DESC`) until upstream ships a session-capable bulk delete, then
  * `DELETE /api/v1/me/sessions/<row.id>` (204) per matched row.
+ *
+ * FNXC:RUFU131AdoptionBlocker 2026-09-06-02:51:
+ * Formerly deferred to RUFU-131, now ARCHIVED (historical provenance only). Verified
+ * against Stash origin/main tip c56f81c9: today's POST /api/v1/me/batch/delete is
+ * page/file-only — _TRASHABLE={"page","file"} (backend/services/batch_service.py)
+ * rejects sessions — so there is no session-capable endpoint to adopt yet. Re-open
+ * trigger: upstream gains a session-capable bulk delete (CEO decision msg-551729e5).
  *
  * Contract (best-effort, mirrors RUFU-121):
  * - NEVER throws. Blank/non-string ids are dropped and duplicates collapsed
