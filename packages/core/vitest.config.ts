@@ -40,14 +40,11 @@ export default defineConfig({
     `missing-exclude` — the guard silently stops holding the ledger and the config in lockstep.
     Each entry needs a matching row in scripts/lib/test-quarantine.json (same commit, deletion ratchet).
     */
-    exclude: [
-      // FNXC:MissionStorePgFlake — wall-clock lock-race assertion that fails under parallel
-      // load; rescue needs a real block-detection probe (pg_locks / lock-wait), not a longer
-      // sleep. Deadline 2026-09-06. Re-added at the v0.78.0-beta.1 merge because upstream's
-      // rework of this exclude region silently dropped the local quarantine entry, breaking
-      // the ledger lockstep that the FNXC:QuarantineExcludes note above mandates.
-      "src/__tests__/postgres/mission-store.pg.test.ts",
-    ],
+    /*
+    FNXC:QuarantineExcludes 2026-09-06-13:10: deletion ratchet executed — mission-store.pg.test.ts
+    expired 2026-09-06 (quarantined 2026-08-23, no rescue evidence) and was deleted with its ledger
+    row. The exclude key itself is gone so vitest's default node_modules/dist exclusions apply.
+    */
     setupFiles: [
       "./src/__test-utils__/vitest-setup.ts",
     ],

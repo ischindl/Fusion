@@ -344,8 +344,7 @@ export default defineConfig({
             runs the test on an empty ledger — the quarantine was local-machine
             state only and was never carried into any PR.
             */
-            // FNXC:WedgeNotificationFlake 2026-08-23-22:35 — quarantined (2nd sighting); see scripts/lib/test-quarantine.json for the evidence and the 2026-09-06 deletion deadline.
-            "src/__tests__/self-healing-pending-wedge-notification.test.ts",
+            /* FNXC:WedgeNotificationFlake 2026-09-06-13:10: deletion ratchet executed — file deleted at its 2026-09-06 deadline (quarantined 2026-08-23, no rescue). */
             "src/__tests__/reliability-interactions/**/*.test.ts",
             // FNXC:PipelineSmoke 2026-08-23-14:52: FN-182's whole-pipeline fixture is opt-in, never a default or gate test.
             "src/__tests__/pipeline-smoke/**/*.test.ts",

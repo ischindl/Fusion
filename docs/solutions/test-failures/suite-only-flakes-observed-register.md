@@ -760,3 +760,25 @@ A proper fix normalizes both npm-JSON shapes test-side (upstream-owned); no asse
 - **Observed tree/SHA:** reproduced on the v0.78.0-beta.2 merge tree with `FUSION_PG_TEST_URL_BASE=postgresql://localhost:25432`; error: `pg_restore failed: Command failed: /usr/bin/pg_restore --format=custom ... --single-transaction .../fusion-pg-*.dump`.
 - **Production implication (this host):** production is the same embedded 15.18 server and `pg-backup.ts` resolves `pg_dump`/`pg_restore` from PATH (upstream deliberately does not bundle them), so dashboard-created backups here carry the PG17+ SET and FN-9255 restores would fail the same way until either PATH tools match the server major or upstream resolves the embedded-native `bin/` binaries first. Operator workaround: put the embedded-native client bin first on PATH (`~/.fusion/pg-test-server/native/15.18.0-beta.17-linux-x64/bin`).
 - **Action:** do NOT appease. On a version-matched host this becomes an ordinary on-sight quarantine; the durable fix is upstream-owned (pin/embedded-native tools or a client-major guard in `pg-backup.ts`).
+
+### 18. `AgentDetailView.core.test.tsx` skill-badge state under full-suite load (first sighting)
+
+- **File:** `packages/dashboard/app/components/__tests__/AgentDetailView.core.test.tsx`
+- **Exact test:** `AgentDetailView — core > renders assigned skills as readable badges with full id tooltip`
+- **Owner:** unowned — first sighting, recorded rather than quarantined because the file's remaining 53 tests are substantial coverage and quarantine is file-level.
+- **Observed tree/SHA:** v0.78.0-beta.3 merge tree (pre-merge HEAD `26e41764c0` + staged merge of `dd808ed2c6`), full `npx vitest run` in `packages/dashboard` (log `/tmp/dash-test2.log`). The identical tree passed this file in the FIRST full merged run (`/tmp/dash-test.log`) and the file passes deterministically in isolation (53/53), so the shape is suite-only load/timing nondeterminism, not a code regression. Test also exists on `origin/main` untouched.
+- **Symptom:** badge renders `data-skill-state="unknown"` instead of `"auto-available"` at `AgentDetailView.core.test.tsx:482` — reads as the async skill-catalog lookup losing the render race under suite load, not an assertion needing widening.
+
+Verbatim observed failure:
+
+```
+FAIL  |dashboard-app-quality-backfill| app/components/__tests__/AgentDetailView.core.test.tsx > AgentDetailView — core > renders assigned skills as readable badges with full id tooltip
+Error: expect(element).toHaveAttribute("data-skill-state", "auto-available") // element.getAttribute("data-skill-state") === "auto-available"
+Expected the element to have attribute:
+  data-skill-state="auto-available"
+Received:
+  data-skill-state="unknown"
+ ❯ app/components/__tests__/AgentDetailView.core.test.tsx:482:23
+```
+
+No timeout was widened, no retry added, no assertion relaxed. A SECOND sighting is an ordinary on-sight quarantine with no further discretion, per the standing rule in AGENTS.md.
