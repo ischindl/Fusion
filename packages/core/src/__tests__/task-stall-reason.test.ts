@@ -76,7 +76,7 @@ describe("deriveTaskStallReason — review lane", () => {
     );
     expect(stall?.code).toBe("merge-blocker");
     expect(stall?.reason).toBe(
-      "task has enabled pre-merge workflow steps without a current approval",
+      "task has enabled pre-merge workflow steps without a current approval (gate 'code-review')",
     );
   });
 
@@ -93,15 +93,14 @@ describe("deriveTaskStallReason — review lane", () => {
   });
 
   /*
-  FNXC:LifecycleContainment 2026-09-02-23:20:
-  RUFU-178 truthful-stall assertion (the RUFU-172 wedge): the row below is the exact carrier
-  `archiveTerminalWorkflowStepFailures` leaves behind — status `skipped` with `remediationArchivedAt`
-  and no bypass/arbitration metadata. Before the fix it classified `not-approved`, the stall read
-  as a plain `merge-blocker`, and the overseer called the card "progressing" for 14 hours. Now the
-  carrier means not-run, so the server derives the code FN-9243's re-seed and RUFU-177's renderer
-  can act on.
+  FNXC:LifecycleContainment 2026-09-02-23:20 (retargeted 2026-09-06, merge FN-295):
+  RUFU-178 truthful-stall assertion on the `archiveTerminalWorkflowStepFailures` carrier — status
+  `skipped` with `remediationArchivedAt` and no bypass/arbitration metadata. RUFU-178 classified it
+  not-run; upstream FN-295 replaced that with `not-approved` plus real recovery (collateral restore
+  → failed, audited bypass waiver, archived carrier selectable by the operator bypass). The stall now
+  names the gate so the overseer still sees an explicit merge-blocker, never a silent "progressing".
   */
-  it("a remediation-archived gate carrier classifies as pre-merge-gate-pending, not merge-blocker", async () => {
+  it("a remediation-archived gate carrier reports a gate-named merge-blocker (FN-295 recovery paths)", async () => {
     const archivedCarrier: WorkflowStepResult = {
       workflowStepId: "plan-review",
       status: "skipped",
@@ -119,8 +118,8 @@ describe("deriveTaskStallReason — review lane", () => {
       ctx({ requiredPreMergeStepIds: new Set(["plan-review", "code-review"]) }),
     );
     expect(stall).toEqual({
-      code: "pre-merge-gate-pending",
-      reason: PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
+      code: "merge-blocker",
+      reason: "task has enabled pre-merge workflow steps without a current approval (gate 'plan-review')",
       observedAt: isoNow,
     });
   });

@@ -11,7 +11,7 @@ import { evaluateSpecDrift, hasPriorLockDivergence, type DriftReport } from "./p
 import * as schema from "./postgres/schema/index.js";
 import { type FSWatcher } from "node:fs";
 import { readFile } from "node:fs/promises";
-import type { Task, TaskDetail, TaskCreateInput, TaskAttachment, AgentLogEntry, BoardConfig, Column, ColumnId, CheckoutClaimPrecondition, MergeResult, Settings, GlobalSettings, ProjectSettings, ActivityLogEntry, ActivityEventType, TaskDocument, TaskDocumentRevision, TaskDocumentCreateInput, ArchivedTaskDocumentAdditionInput, ArchivedTaskDocumentAdditionResult, TaskDocumentWithTask, Artifact, ArtifactCreateInput, ArtifactType, ArtifactWithTask, InboxTask, TaskLogEntry, RunMutationContext, RunAuditEvent, RunAuditEventInput, RunAuditEventFilter, ArchivedTaskEntry, ArchiveAgentLogMode, TaskPriority, WorkflowStepTemplate, Agent, AutostashOrphanRecord, TaskCommitAssociation, CommitAssociationDiffBackfillReport, GithubIssueAction, MergeQueueEntry, MergeQueueEnqueueOptions, MergeQueueAcquireOptions, MergeQueueReleaseOutcome, HandoffToReviewOptions, GoalCitation, GoalCitationFilter, GoalCitationInput, GoalCitationSurface, BranchGroup, BranchGroupCreateInput, BranchGroupUpdate, TaskBranchAssignmentMode, MergeRequestRecord, MergeRequestState, MergeRequestWorkflowProjectionOptions, CompletionHandoffMarker, WorkflowWorkItem, WorkflowWorkItemDueFilter, WorkflowWorkItemKind, WorkflowWorkItemState, WorkflowWorkItemTransitionPatch, WorkflowWorkItemUpsertInput, PrEntity, PrEntityCreateInput, PrEntityUpdate, PrThreadState, PrThreadOutcome, PluginActivation, PluginActivationInput, TaskStep } from "./types.js";
+import type { Task, TaskDetail, TaskCreateInput, TaskAttachment, AgentLogEntry, BoardConfig, Column, ColumnId, CheckoutClaimPrecondition, MergeResult, Settings, GlobalSettings, ProjectSettings, ActivityLogEntry, ActivityEventType, TaskDocument, TaskDocumentRevision, TaskDocumentCreateInput, TaskDocumentWithTask, Artifact, ArtifactCreateInput, ArtifactType, ArtifactWithTask, InboxTask, TaskLogEntry, RunMutationContext, RunAuditEvent, RunAuditEventInput, RunAuditEventFilter, ArchivedTaskEntry, ArchiveAgentLogMode, TaskPriority, WorkflowStepTemplate, Agent, AutostashOrphanRecord, TaskCommitAssociation, CommitAssociationDiffBackfillReport, GithubIssueAction, MergeQueueEntry, MergeQueueEnqueueOptions, MergeQueueAcquireOptions, MergeQueueReleaseOutcome, HandoffToReviewOptions, GoalCitation, GoalCitationFilter, GoalCitationInput, GoalCitationSurface, BranchGroup, BranchGroupCreateInput, BranchGroupUpdate, TaskBranchAssignmentMode, MergeRequestRecord, MergeRequestState, MergeRequestWorkflowProjectionOptions, CompletionHandoffMarker, WorkflowWorkItem, WorkflowWorkItemDueFilter, WorkflowWorkItemKind, WorkflowWorkItemState, WorkflowWorkItemTransitionPatch, WorkflowWorkItemUpsertInput, PrEntity, PrEntityCreateInput, PrEntityUpdate, PrThreadState, PrThreadOutcome, PluginActivation, PluginActivationInput, TaskStep } from "./types.js";
 import {
   fileScopeLeaseBlocksCandidate,
   normalizeOverlapScopeForTask,
@@ -84,7 +84,6 @@ import type { StoredWorkflowRow, WorkflowDefinition, WorkflowDefinitionInput, Wo
 export const WORKFLOW_COMPILED_STEP_TEMPLATE_PREFIX = "workflow:";
 import { GlobalSettingsStore } from "./config/global-settings.js";
 import { Database } from "./db/db.js";
-import { ArchiveDatabase } from "./db/archive-db.js";
 import { projectScopeFor, type AsyncDataLayer, type DbTransaction } from "./postgres/data-layer.js";
 import { appendPlanEvidenceInTransaction } from "./task-store/plan-evidence.js";
 import { planningLifecycleLockTransportAvailability, withPlanningLifecycleAdvisoryLock, withPlanningLifecycleAdvisoryLocks } from "./postgres/advisory-locks.js";
@@ -108,7 +107,12 @@ import { CentralCore } from "./central/central-core.js";
 import { SecretsStore } from "./secrets/secrets-store.js";
 import { getLatestFailedPreMergeReviewStep, findPendingPreMergeStep } from "./merge/task-merge.js";
 import { resolveRequiredPreMergeStepIds } from "./merge/required-pre-merge-steps.js";
+/*
+FNXC:ReviewLaneBypass 2026-09-06-01:20 (merge origin/main dd808ed2c6 → main):
+Import union: RUFU-179's pure derivation helpers AND upstream FN-295's approval evaluator.
+*/
 import { deriveReviewBypassTarget, resolveReviewBypassLanes } from "./merge/review-bypass-target.js";
+import { evaluatePreMergeApprovals } from "./merge/pre-merge-approval.js";
 import { createLogger } from "./process/logger.js";
 import { type UsageEventInput } from "./tasks/usage-events.js";
 import { assertNotLinkedWorktreeOfExistingProject, assertProjectRootDir } from "./central/project-root-guard.js";
@@ -125,19 +129,19 @@ import { pgRowToTaskRow as pgRowToTaskRowExternal, rowToTask as rowToTaskExterna
 import { moveTaskImpl, moveTaskIfImpl, handoffToReviewImpl, moveTaskInternalImpl, TerminalFailureApplyRejected, type MoveTaskIfResult } from "./task-store/moves.js";
 import { resetTaskPublicationImpl } from "./task-store/reset-lifecycle.js";
 import { recordGoalCitationsImpl, insertTaskWithFtsRecoveryImpl2, assertTaskIdAvailableImpl, atomicWriteTaskJsonImpl2, createTaskWithDistributedReservationImpl, toStoredWorkflowStepImpl, ensureWorkflowStepForTemplateImpl, resolveEnabledWorkflowStepsImpl, setTaskBranchGroupImpl, getTaskColumnsImpl, prepareWorkflowMovePolicyPreflightImpl, updateTaskCustomFieldsImpl, listWorkflowPromptOverridesForProjectImpl, listWorkflowWorkItemsForTaskImpl, listWorkflowWorkItemsForTasksImpl, listDueWorkflowWorkItemsImpl, rewriteBlockedByResidueDependentsForRemovalImpl, getAllDocumentsImpl, deleteWorkflowStepImpl, toWorkflowDefinitionImpl, materializeDefaultWorkflowStepsImpl, reconcileTaskCustomFieldsForSchemaImpl, getTaskMovedCountsByDayImpl, getGoalStoreImpl, upsertTaskCommitAssociationImpl } from "./task-store/workflow-task-create-ops.js";
-import { applyLegacyWorkflowStepOverridesImpl, archiveDbImpl, assertNoDependencyCycleImpl, atomicCreateTaskJsonImpl, buildActiveTaskDependencyLookupImpl, buildArchivedAgentLogFieldsImpl, buildTaskIdIntegrityFallbackReportImpl, createBranchGroupImpl, dbImpl, detectAndCacheTaskIdIntegrityReportImpl, findLiveDependentsImpl, findLiveLineageChildrenImpl, getLegacyWorkflowStepSnapshotImpl, getMalformedTaskMetadataReasonImpl, getMergeQueuedTaskIdsAsyncImpl, insertRunAuditEventRowImpl, insertTaskImpl, invokeTaskCreatedHookImpl, isTaskArchivedAsyncImpl, isTaskArchivedImpl, isTaskIdPresentInArchivedTasksTableAsyncImpl, isTaskIdPresentInArchivedTasksTableImpl, logTaskCreateConflictImpl, maybeResolveTombstonedTaskIdImpl, mergeTaskIdIntegrityReportsImpl, optionalGroupIdSetImpl, patchTaskRowInTransactionImpl, readConfigFastImpl, readConfigImpl, readPromptForArchiveImpl, readTaskFromDbImpl, reconcileDistributedTaskIdStateOnOpenImpl, recordActivityFromListenerImpl, recordDependencyCycleRejectedAuditImpl, refreshTaskIdIntegrityReportImpl, resolveLocalNodeIdForTaskAllocationImpl, runTaskFtsWriteWithRecoveryImpl, scanAndRecordCitationsImpl, taskIdExistsAnywhereImpl, throwSoftDeletedWriteBlockedImpl, toBuiltInWorkflowStepImpl, trackDeferredTaskCreatedWorkImpl, upsertTaskImpl, withConfigLockImpl, withTaskLockImpl, withWorktreeAllocationLockImpl } from "./task-store/task-id-integrity.js";
+import { applyLegacyWorkflowStepOverridesImpl, assertNoDependencyCycleImpl, atomicCreateTaskJsonImpl, buildActiveTaskDependencyLookupImpl, buildArchivedAgentLogFieldsImpl, buildTaskIdIntegrityFallbackReportImpl, createBranchGroupImpl, dbImpl, detectAndCacheTaskIdIntegrityReportImpl, findLiveDependentsImpl, findLiveLineageChildrenImpl, getLegacyWorkflowStepSnapshotImpl, getMalformedTaskMetadataReasonImpl, getMergeQueuedTaskIdsAsyncImpl, insertRunAuditEventRowImpl, insertTaskImpl, invokeTaskCreatedHookImpl, isTaskIdPresentInArchivedTasksTableAsyncImpl, isTaskIdPresentInArchivedTasksTableImpl, logTaskCreateConflictImpl, maybeResolveTombstonedTaskIdImpl, mergeTaskIdIntegrityReportsImpl, optionalGroupIdSetImpl, patchTaskRowInTransactionImpl, readConfigFastImpl, readConfigImpl, readPromptForArchiveImpl, readTaskFromDbImpl, reconcileDistributedTaskIdStateOnOpenImpl, recordActivityFromListenerImpl, recordDependencyCycleRejectedAuditImpl, refreshTaskIdIntegrityReportImpl, resolveLocalNodeIdForTaskAllocationImpl, runTaskFtsWriteWithRecoveryImpl, scanAndRecordCitationsImpl, taskIdExistsAnywhereImpl, throwSoftDeletedWriteBlockedImpl, toBuiltInWorkflowStepImpl, trackDeferredTaskCreatedWorkImpl, upsertTaskImpl, withConfigLockImpl, withTaskLockImpl, withWorktreeAllocationLockImpl } from "./task-store/task-id-integrity.js";
 import { claimNextToolFailureRetryImpl, createTaskVerificationRequestImpl, claimTaskVerificationRequestImpl, finishTaskVerificationRequestImpl, clearNearDuplicateReferencesToFailSoftImpl, clearWorkflowRunStepInstancesAsyncImpl, clearWorkflowRunStepInstancesImpl, computeMovedSettingsTargetWorkflowIdsImpl, ensureBranchGroupForSourceImpl, ensurePrEntityForSourceImpl, findRecentTasksByContentFingerprintImpl, getActiveMergingTaskImpl, getActivePrEntityBySourceImpl, getBranchGroupByBranchNameImpl, getBranchGroupBySourceImpl, getBranchGroupImpl, getBranchProgressByTaskImpl, getMutationsForRunImpl, getPrEntityByNumberImpl, getPrEntityImpl, getPrThreadStateImpl, getTasksByAssignedAgentImpl, getWorkflowPromptOverridesAsyncImpl, getWorkflowSettingValuesAsyncImpl, getWorkflowSettingValuesImpl, getWorkflowSettingsProjectIdImpl, getWorkflowWorkItemImpl, insertCompletionHandoffWorkflowWorkAuditImpl, listActivePrEntitiesImpl, listBranchGroupsImpl, listPrThreadStatesImpl, listTasksByBranchGroupImpl, listWorkflowSettingValuesForProjectImpl, loadWorkflowRunBranchesImpl, hasWorkflowRunStepInstancesForTaskImpl, loadWorkflowRunStepInstancesAsyncImpl, loadWorkflowRunStepInstancesImpl, markToolFailureRetryExhaustedAuditImpl, mergeCustomFieldPatchImpl, normalizeMergeRequestStateImpl, normalizeWorkflowWorkItemKindImpl, normalizeWorkflowWorkItemStateImpl, parseWorkflowPromptOverrideJsonImpl, recordPrThreadOutcomeImpl, resetAllStepsToPendingImpl, resetPromptCheckboxesImpl, resolveWorkflowMoveActorImpl, resolveWorkflowSettingDeclarationsImpl, saveWorkflowRunStepInstanceAsyncImpl, saveWorkflowRunStepInstanceImpl, transitionMergeRequestStateImpl, transitionWorkflowWorkItemSyncImpl, updateTaskImpl, updateWorkflowPromptOverridesImpl, upsertMergeRequestRecordImpl, workflowStateForMergeRequestStateImpl } from "./task-store/branch-and-pr-entities.js";
-import { addPrInfoImpl, addSteeringCommentImpl, archiveAllDoneImpl, cleanupStaleMergeQueueRowsImpl, clearCompletionHandoffAcceptedMarkerImpl, clearDoneTransientFieldsImpl, clearStaleExecutionStartBranchReferencesImpl, deleteTaskCommentImpl, deleteTaskDocumentImpl, emitUsageEventImpl, enqueueMergeQueueImpl, getAgentLogCountImpl, getAgentLogsImpl, getArtifactImpl, getArtifactsImpl, getAttachmentImpl, getCompletionHandoffAcceptedMarkerImpl, getTaskDocumentImpl, getTaskDocumentRevisionsImpl, getTaskDocumentsImpl, insertArtifactRowImpl, linkGithubIssueImpl, listWorkflowWorkItemsForTaskSyncImpl, moveToDoneImpl, parseDependenciesFromPromptImpl, parseFileScopeFromPromptImpl, parseStepsFromPromptImpl, peekMergeQueueHeadImpl, peekMergeQueueImpl, readPreArchiveColumnFromTaskFileImpl, recordPluginActivationImpl, recordRunAuditEventBackendImpl, removePrInfoByNumberImpl, resolvePrimaryPrInfoImpl, resolveUnarchiveTargetColumnImpl, rewriteLineageChildrenForRemovalImpl, runGitCommandImpl, stopWatchingImpl, syncAgentTaskLinkOnReassignmentImpl, updateArtifactImpl, updateGithubTrackingImpl, updatePrInfoByNumberImpl, updateTaskCommentImpl, upsertPrInfoByNumberImpl, writeArtifactDataImpl } from "./task-store/task-artifacts-ops.js";
-import { approveCliAutonomyImpl, approveWorkflowCliCommandImpl, cleanupOrphanedMaterializedStepsImpl, consumePluginGateVerdictsImpl, getAgentLogsByTimeRangeImpl, getDatabaseHealthImpl, getDistributedTaskIdAllocatorImpl, getExperimentSessionStoreImpl, getInReviewDurationEventsImpl, getMissionStoreImpl, getIdeationStoreImpl, getPluginStoreImpl, getSecretsStoreImpl, getSettingsSyncImpl, getTaskMergedTaskIdsImpl, getTaskWorkflowSelectionImpl, getImportTranslationImpl, recordImportTranslationImpl, pruneImportTranslationsImpl, type ImportTranslationCacheKey, type ImportTranslationCacheEntry, getVerificationCacheHitImpl, getWorkflowDefinitionImpl, healthCheckImpl, importLegacyAgentLogsOnceImpl, insertWorkflowDefinitionSyncImpl, isCliAutonomyApprovedImpl, isPluginInstalledImpl, isWorkflowCliCommandApprovedImpl, listWorkflowDefinitionsImpl, materializeExplicitWorkflowStepsImpl, materializeWorkflowStepsImpl, migrateActiveArchivedTasksToArchiveDbImpl, migrateLegacyArchiveEntriesToArchiveDbImpl, nextWorkflowDefinitionIdImpl, occupantsByColumnForWorkflowImpl, parseWorkflowLayoutImpl, pruneAgentLogFilesImpl, purgeTaskWorkflowSelectionRowsImpl, readAllWorkflowDefinitionsImpl, readRawProjectSettingsImpl, recordPluginGateVerdictImpl, recordVerificationCachePassImpl, removeMaterializedSelectionImpl, resolvePluginWorkflowStepImpl, resolveTaskWorkflowIrSyncImpl, revokeCliAutonomyImpl, selectTaskWorkflowAndReconcileImpl, writeTaskWorkflowSelectionImpl, getTaskWorkflowSelectionAsyncImpl, getTaskWorkflowSelectionsAsyncImpl,  } from "./task-store/workflow-definitions.js";
+import { addPrInfoImpl, addSteeringCommentImpl, cleanupStaleMergeQueueRowsImpl, clearCompletionHandoffAcceptedMarkerImpl, clearDoneTransientFieldsImpl, clearStaleExecutionStartBranchReferencesImpl, deleteTaskCommentImpl, deleteTaskDocumentImpl, emitUsageEventImpl, enqueueMergeQueueImpl, getAgentLogCountImpl, getAgentLogsImpl, getArtifactImpl, getArtifactsImpl, getAttachmentImpl, getCompletionHandoffAcceptedMarkerImpl, getTaskDocumentImpl, getTaskDocumentRevisionsImpl, getTaskDocumentsImpl, insertArtifactRowImpl, linkGithubIssueImpl, listWorkflowWorkItemsForTaskSyncImpl, moveToDoneImpl, parseDependenciesFromPromptImpl, parseFileScopeFromPromptImpl, parseStepsFromPromptImpl, peekMergeQueueHeadImpl, peekMergeQueueImpl, recordPluginActivationImpl, recordRunAuditEventBackendImpl, removePrInfoByNumberImpl, resolvePrimaryPrInfoImpl, rewriteLineageChildrenForRemovalImpl, runGitCommandImpl, stopWatchingImpl, syncAgentTaskLinkOnReassignmentImpl, updateArtifactImpl, updateGithubTrackingImpl, updatePrInfoByNumberImpl, updateTaskCommentImpl, upsertPrInfoByNumberImpl, writeArtifactDataImpl } from "./task-store/task-artifacts-ops.js";
+import { approveCliAutonomyImpl, approveWorkflowCliCommandImpl, cleanupOrphanedMaterializedStepsImpl, consumePluginGateVerdictsImpl, getAgentLogsByTimeRangeImpl, getDatabaseHealthImpl, getDistributedTaskIdAllocatorImpl, getExperimentSessionStoreImpl, getInReviewDurationEventsImpl, getMissionStoreImpl, getIdeationStoreImpl, getPluginStoreImpl, getSecretsStoreImpl, getSettingsSyncImpl, getTaskMergedTaskIdsImpl, getTaskWorkflowSelectionImpl, getImportTranslationImpl, recordImportTranslationImpl, pruneImportTranslationsImpl, type ImportTranslationCacheKey, type ImportTranslationCacheEntry, getVerificationCacheHitImpl, getWorkflowDefinitionImpl, healthCheckImpl, importLegacyAgentLogsOnceImpl, insertWorkflowDefinitionSyncImpl, isCliAutonomyApprovedImpl, isPluginInstalledImpl, isWorkflowCliCommandApprovedImpl, listWorkflowDefinitionsImpl, materializeExplicitWorkflowStepsImpl, materializeWorkflowStepsImpl, nextWorkflowDefinitionIdImpl, occupantsByColumnForWorkflowImpl, parseWorkflowLayoutImpl, pruneAgentLogFilesImpl, purgeTaskWorkflowSelectionRowsImpl, readAllWorkflowDefinitionsImpl, readRawProjectSettingsImpl, recordPluginGateVerdictImpl, recordVerificationCachePassImpl, removeMaterializedSelectionImpl, resolvePluginWorkflowStepImpl, resolveTaskWorkflowIrSyncImpl, revokeCliAutonomyImpl, selectTaskWorkflowAndReconcileImpl, writeTaskWorkflowSelectionImpl, getTaskWorkflowSelectionAsyncImpl, getTaskWorkflowSelectionsAsyncImpl,  } from "./task-store/workflow-definitions.js";
 import { getTaskCommitAssociationsByLineageIdImpl, replaceLegacyTaskCommitAssociationsImpl } from "./task-store/task-commit-associations.js";
 import { findRecentTasksBySourceParentTaskIdImpl } from "./task-store/branch-and-pr-entities.js";
 import { addTaskCommentImpl, applyBuiltInPromptOverridesAsyncImpl, applyBuiltInPromptOverridesSyncImpl, areAllDependenciesDoneImpl, artifactStoredNameImpl, assertWorkflowIrTraitsValidImpl, clearActivityLogImpl, clearTaskWorkflowSelectionImpl, deleteTaskByIdImpl, getDefaultWorkflowIdImpl, resolveOriginWorkflowOverrideIdImpl, type TaskOriginWorkflowKind, getInsightStoreImpl, getMergeQueuedTaskIdsImpl, getMergeRequestRecordImpl, getMergeRequestRecordAsyncImpl, getMergeRequestRecordsAsyncImpl, getResearchStoreImpl, getTaskIdFromDirImpl, getTodoStoreImpl, getWorkflowWorkItemByIdentityImpl, hasActiveTaskImpl, invalidateConfigCacheAfterMigrationImpl, isTaskIdConflictErrorImpl, listLegacyAutoMergeStampCandidatesImpl, readTaskRowFromDbImpl, recordBranchGroupMemberLandedImpl, refreshDatabaseHealthAsyncImpl, refreshDatabaseHealthImpl, resolveTaskCustomFieldDefsSyncImpl, resolveWorkflowBypassGuardsImpl, serializeConfigForDiskImpl, setPluginWorkflowStepTemplatesImpl, shouldSkipWorkflowMovePoliciesImpl, suppressWatcherImpl, upsertTaskWithFtsRecoveryImpl } from "./task-store/task-store-helpers.js";
 import { getTaskSelectClauseImpl2, createTaskPersistSerializationContextImpl, getTaskPersistValuesImpl, getTaskPatchDescriptorsImpl, normalizeTaskFromDiskImpl, writeTaskJsonFileImpl, rowToPrEntityImpl, generatePrEntityIdImpl, readTaskForMoveImpl, rowToMergeQueueEntryImpl, rowToMergeRequestRecordImpl, rowToCompletionHandoffMarkerImpl, rowToWorkflowWorkItemImpl, rowToRunAuditEventImpl } from "./task-store/task-row-mappers.js";
-import { getTaskSelectClauseWithActivityLogLimitImpl, getChangedTaskColumnsImpl, getSoftDeletedWriteConflictImpl, readTaskJsonImpl, writeConfigImpl, _maybeAutoArchiveSameAgentDuplicateBackendImpl, updateBranchGroupImpl, updatePrEntityImpl, listTasksForGithubTrackingReconcileImpl, listTasksForGitlabTrackingReconcileImpl, renewCheckoutLeaseImpl, updateTaskAtomicImpl, updateWorkflowStepResultsFencedImpl, updateWorkflowStepResultsWithLogFencedImpl, linkTaskRecommendationImpl, normalizeWorkspaceTaskWorktreeMetadataImpl, mergeWorkspaceWorktreeEntryImpl, updateTaskRepositoryScopeImpl, updateWorkspaceReviewStateImpl, publishWorkspaceCodeReviewEvidenceImpl, resolveTaskWedgeNotificationEpisodeImpl, getWorkflowPromptOverridesImpl, updateWorkflowSettingValuesImpl, rollbackConfigurationImpl, cancelActiveWorkflowWorkItemsForTaskImpl, setCompletionHandoffAcceptedMarkerImpl, reconcileLegacyAutoMergeStampsImpl, recoverExpiredMergeQueueLeasesImpl, rewriteDependentsForRemovalImpl, cleanupBranchForTaskImpl, addAttachmentImpl, deleteAttachmentImpl, registerArtifactImpl, updatePrInfoImpl, unlinkGithubIssueImpl, cleanupArchivedTasksImpl, generatePromptFromArchiveEntryImpl, listWorkflowOccupantTaskIdsImpl, listApprovedCliAutonomyAdaptersImpl, closeImpl, getActivityLogImpl } from "./task-store/task-mutation-ops.js";
+import { getTaskSelectClauseWithActivityLogLimitImpl, getChangedTaskColumnsImpl, getSoftDeletedWriteConflictImpl, readTaskJsonImpl, writeConfigImpl, _resolveSameAgentDuplicateIntakeBackendImpl, updateBranchGroupImpl, updatePrEntityImpl, listTasksForGithubTrackingReconcileImpl, listTasksForGitlabTrackingReconcileImpl, renewCheckoutLeaseImpl, updateTaskAtomicImpl, updateWorkflowStepResultsFencedImpl, updateWorkflowStepResultsWithLogFencedImpl, linkTaskRecommendationImpl, normalizeWorkspaceTaskWorktreeMetadataImpl, mergeWorkspaceWorktreeEntryImpl, updateTaskRepositoryScopeImpl, updateWorkspaceReviewStateImpl, publishWorkspaceCodeReviewEvidenceImpl, resolveTaskWedgeNotificationEpisodeImpl, getWorkflowPromptOverridesImpl, updateWorkflowSettingValuesImpl, rollbackConfigurationImpl, cancelActiveWorkflowWorkItemsForTaskImpl, setCompletionHandoffAcceptedMarkerImpl, reconcileLegacyAutoMergeStampsImpl, recoverExpiredMergeQueueLeasesImpl, rewriteDependentsForRemovalImpl, cleanupBranchForTaskImpl, addAttachmentImpl, deleteAttachmentImpl, registerArtifactImpl, updatePrInfoImpl, unlinkGithubIssueImpl, generatePromptFromArchiveEntryImpl, listWorkflowOccupantTaskIdsImpl, listApprovedCliAutonomyAdaptersImpl, closeImpl, getActivityLogImpl } from "./task-store/task-mutation-ops.js";
 import { getOrCreateForProjectImpl, listGoalCitationsImpl, atomicWriteTaskJsonWithAuditImpl, type PlanningDependencyInvalidation, duplicateTaskImpl, listStrandedRefinementsImpl, tryClaimCheckoutImpl, evaluateWorkflowMovePoliciesImpl, recordRunAuditEventImpl, getRunAuditEventsImpl, dequeueMergeQueueOnColumnExitImpl, updateIssueInfoImpl, listWorkflowStepsImpl, getWorkflowStepImpl, createWorkflowDefinitionImpl, countActiveInCapacitySlotSyncImpl, countActiveInCapacitySlotAsyncImpl, generateSpecifiedPromptImpl, recordActivityImpl, getEvalStoreImpl } from "./task-store/project-store-ops.js";
 import { markLegacyAutoMergeStampsOnceImpl, appendAgentLogImpl, importLegacyAgentLogsImpl, cleanupNoOpTaskMovedActivityRowsOnceImpl, backfillCommitAssociationDiffStatsImpl } from "./task-store/workflow-integrity.js";
 import { saveWorkflowRunBranchImpl, clearNearDuplicateReferencesToImpl, selectNextTaskForAgentImpl, pauseTaskImpl, clearLinkedAgentTaskIdsImpl, listArtifactsImpl, rehomeOccupantImpl, type RehomeOccupantResult } from "./task-store/branch-group-ops.js";
-import { taskToArchiveEntryImpl, deleteTaskBackendImpl, deleteTaskIfBackendImpl, archiveTaskBackendImpl, unarchiveTaskImpl, restoreFromArchiveImpl, listArchivedTasksImpl } from "./task-store/archive-lifecycle-2.js";
+import { taskToArchiveEntryImpl, deleteTaskBackendImpl, deleteTaskIfBackendImpl, restoreFromArchiveImpl } from "./task-store/archive-lifecycle-2.js";
 import { pruneOperationalLogsAsync, pruneAgentLogFilesAsync, type OperationalLogPruneResult } from "./task-store/async/async-maintenance.js";
 import { reconcilePhantomCommittedReservationsAsync } from "./task-store/async/async-phantom-reservations.js";
 import { resolveTaskSymbolsForTask, type TaskSymbolResolution } from "./tasks/task-symbol-resolution.js";
@@ -158,12 +162,15 @@ import { initImpl, setupActivityLogListenersImpl, reconcileOrphanedTaskDirsImpl,
 import { TaskDeletedOutboxConsumer } from "./task-store/task-deleted-outbox-consumer.js";
 import { updateStepImpl, startStepImpl, acquireMergeQueueLeaseImpl, mergeTaskImpl } from "./task-store/merge-queue-ops.js";
 import { appendRemediationStepsImpl, type AppendRemediationStepsOptions, type AppendRemediationStepsResult } from "./task-store/remediation-step-ops.js";
-import { addCommentImpl, publishArchivedTaskDocumentAdditionImpl, upsertTaskDocumentImpl } from "./task-store/comments-ops.js";
-import { deleteTaskImpl, archiveTaskImpl, type DeleteTaskIfResult } from "./task-store/archive-lifecycle.js";
+import { addCommentImpl, upsertTaskDocumentImpl } from "./task-store/comments-ops.js";
+import { deleteTaskImpl, type DeleteTaskIfResult } from "./task-store/archive-lifecycle.js";
 import type { TaskDeleteAuditContext } from "./task-delete-attribution.js";
 import { updateSettingsImpl, updateGlobalSettingsImpl } from "./task-store/settings-ops.js";
-import { createTaskBackendImpl, _createTaskInternalBackendImpl, createTaskImpl, createTaskWithReservedIdImpl, _createTaskInternalImpl, _maybeAutoArchiveSameAgentDuplicateImpl } from "./task-store/task-creation.js";
-import { getTaskImpl, listTasksImpl, searchTasksImpl, listTasksModifiedSinceImpl, getTaskVerificationRequestAsyncImpl, listTaskRecommendationsImpl, findTaskByProposalClaimIdImpl, listTasksBySourceLineageImpl } from "./task-store/reads.js";
+import { createTaskBackendImpl, _createTaskInternalBackendImpl, createTaskImpl, createTaskWithReservedIdImpl, _createTaskInternalImpl, _resolveSameAgentDuplicateIntakeImpl } from "./task-store/task-creation.js";
+import { getTaskImpl, listCompletedTasksImpl, listTasksImpl, searchTasksImpl, listTasksModifiedSinceImpl, getTaskVerificationRequestAsyncImpl, listTaskRecommendationsImpl, findTaskByProposalClaimIdImpl, listTasksBySourceLineageImpl, type ListTasksOptions } from "./task-store/reads.js";
+import { drainArchivedTasksIntoDone, inspectArchivedTaskHistory, type ArchivedTaskHistoryInspection, type ArchivedTaskReintegrationResult } from "./task-store/archive-reintegration.js";
+import { supplementTaskHistoryFromEvidence, type SupplementTaskHistoryResult } from "./task-store/async/async-archive-lineage.js";
+import type { TaskColumnSortMode } from "./tasks/task-priority.js";
 import { updateTaskUnlockedImpl } from "./task-store/task-update.js";
 import { __setTaskActivityLogLimitsForTesting } from "./task-store/comments.js";
 import { columnsWithFlag, declaresAnyLifecycleTrait, resolveLifecycleColumns, resolveReviewColumns, type LifecycleColumns } from "./workflows/workflow-lifecycle-traits.js";
@@ -476,7 +483,8 @@ unclassified lifecycle guard and let this repair path drift from the common role
 FNXC:OverlapScheduling 2026-08-29-07:04:
 `LifecycleColumns` intentionally chooses one destination per role and cannot classify membership.
 Overlap repair therefore receives complete role sets from the blocker's own selected workflow: a
-second WIP or review lane retains unfinished work, while every complete or archived lane releases it.
+second WIP or review lane retains unfinished work, while every Complete lane releases it; soft deletion
+is classified separately by `deletedAt`.
 */
 export function classifyRepairFileScopeLease(
   candidate: Pick<Task, "column" | "worktree" | "workspaceWorktrees" | "deletedAt">,
@@ -511,10 +519,7 @@ function repairLeaseLanesForWorkflow(
   return {
     wip: new Set(columnsWithFlag(ir, "countsTowardWip")),
     review: new Set(resolveReviewColumns(ir)),
-    terminal: new Set([
-      ...columnsWithFlag(ir, "complete"),
-      ...columnsWithFlag(ir, "archived"),
-    ]),
+    terminal: new Set(columnsWithFlag(ir, "complete")),
   };
 }
 
@@ -542,7 +547,6 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   public configPath: string;
   public _db: Database | null = null;
   public activityListenersWired = false;
-  public _archiveDb: ArchiveDatabase | null = null;
 
   /**
    * FNXC:PostgresRuntimeStorage 2026-07-14-18:47: Production TaskStores receive an AsyncDataLayer and delegate all persistence to PostgreSQL. A missing layer is a construction error; retained sync members exist only until compatibility tests and types are removed.
@@ -787,11 +791,6 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     return dbImpl(this);
   }
 
-  /** @internal In backend mode, archive DB lives in PostgreSQL; reaching this throws. */
-  /** @internal TaskStore decomposition */
-  public get archiveDb(): ArchiveDatabase {
-    return archiveDbImpl(this);
-  }
   public buildTaskIdIntegrityFallbackReport(): TaskIdIntegrityReport {
     return buildTaskIdIntegrityFallbackReportImpl(this);
   }
@@ -810,8 +809,8 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   public reconcileDistributedTaskIdStateOnOpen(): void {
     return reconcileDistributedTaskIdStateOnOpenImpl(this);
   }
-  async init(): Promise<void> {
-    return initImpl(this);
+  async init(options?: { skipArchiveReintegration?: boolean }): Promise<void> {
+    return initImpl(this, options);
   }
 
   // ── Row <-> Task Conversion ────────────────────────────────────────
@@ -959,13 +958,6 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   }
   public async maybeResolveTombstonedTaskId( id: string, input: Pick<TaskCreateInput, "forceResurrect">, operation: "createTask" | "duplicateTask" | "refineTask", ): Promise<void> {
     return maybeResolveTombstonedTaskIdImpl(this, id, input, operation);
-  }
-  public isTaskArchived(id: string): boolean {
-    return isTaskArchivedImpl(this, id);
-  }
-  /** PostgreSQL-authoritative archived check (live column + cold archive). */
-  public async isTaskArchivedAsync(id: string): Promise<boolean> {
-    return isTaskArchivedAsyncImpl(this, id);
   }
   public findLiveDependents(id: string): string[] {
     return findLiveDependentsImpl(this, id);
@@ -1392,8 +1384,8 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   /**
    * FNXC:RuntimeTaskOrchestrationAsync 2026-06-24-13:35:
    */
-  public async _maybeAutoArchiveSameAgentDuplicateBackend( task: Task, input: TaskCreateInput, ): Promise<void> {
-    return _maybeAutoArchiveSameAgentDuplicateBackendImpl(this, task, input);
+  public async _resolveSameAgentDuplicateIntakeBackend( task: Task, input: TaskCreateInput, ): Promise<void> {
+    return _resolveSameAgentDuplicateIntakeBackendImpl(this, task, input);
   }
   async createTask( input: TaskCreateInput, options?: { onSummarize?: (description: string) => Promise<string | null>; settings?: { autoSummarizeTitles?: boolean }; invokeTaskCreatedHook?: boolean; onProposalClaimConflict?: (task: Task) => void; ownershipExemption?: IntakeOwnershipExemption; } ): Promise<Task> {
     return createTaskImpl(this, input, options);
@@ -1408,8 +1400,8 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     */
     return _createTaskInternalBackendImpl(this, input, title, resolvedWorkflowSteps, id, options);
   }
-  public async _maybeAutoArchiveSameAgentDuplicate(task: Task, input: TaskCreateInput): Promise<void> {
-    return _maybeAutoArchiveSameAgentDuplicateImpl(this, task, input);
+  public async _resolveSameAgentDuplicateIntake(task: Task, input: TaskCreateInput): Promise<void> {
+    return _resolveSameAgentDuplicateIntakeImpl(this, task, input);
   }
   public async invokeTaskCreatedHook(task: Task): Promise<void> {
     return invokeTaskCreatedHookImpl(this, task);
@@ -1724,8 +1716,37 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   async listTasksBySourceLineage(input: { sourceAgentId?: string | null; sourceParentTaskId?: string | null }): Promise<Task[]> {
     return listTasksBySourceLineageImpl(this, input);
   }
-  async listTasks(options?: { limit?: number; offset?: number; /** When false, exclude tasks in the `archived` column. Default: true (backward compatible). */ includeArchived?: boolean; /** When true, omit heavy fields (log, comments, steps, workflowStepResults, steeringComments) * from each row to make list responses cheap for board-style consumers. Detail fields default * to empty arrays in the returned Task objects; use `getTask(id)` to load full data. */ slim?: boolean; /** Restrict to a single column (e.g. 'in-review' for the auto-merge sweep). * Widened to {@link ColumnId} (#1403) so custom-column filters are accepted. */ column?: ColumnId; /** Opt-in startup-only memo for repeated slim reads during boot choreography. */ startupMemo?: boolean; /** Forensic read: surface soft-deleted tasks (deletedAt IS NOT NULL). * VAL-DATA-006 — only admin/forensic surfaces should set this. */ includeDeleted?: boolean; }): Promise<Task[]> {
+  async listTasks(options?: ListTasksOptions): Promise<Task[]> {
     return listTasksImpl(this, options);
+  }
+  async listCompletedTasks(options?: { limit?: number; offset?: number; slim?: boolean; sort?: TaskColumnSortMode }): Promise<{ tasks: Task[]; total: number; hasMore: boolean }> {
+    return listCompletedTasksImpl(this, options);
+  }
+  /** Read-only archive inventory for project-scoped operational reconciliation. */
+  async inspectArchivedTaskHistory(): Promise<ArchivedTaskHistoryInspection> {
+    return inspectArchivedTaskHistory(this);
+  }
+  /** Read a retained compatibility artifact without allowing it to supersede PostgreSQL. */
+  async readTaskHistoryArtifact(id: string): Promise<Task | undefined> {
+    try {
+      const raw = await readFile(join(this.taskDir(id), "task.json"), "utf8");
+      return this.normalizeTaskFromDisk(JSON.parse(raw) as Task);
+    } catch {
+      return undefined;
+    }
+  }
+  /** Fill only absent historical columns from exact structured repair evidence. */
+  async supplementTaskHistoryFromEvidence(
+    id: string,
+    evidence: Partial<Task>,
+    options?: { dryRun?: boolean },
+  ): Promise<SupplementTaskHistoryResult> {
+    if (!this.asyncLayer?.projectId?.trim()) throw new Error("Task history repair requires an exact project identity");
+    return supplementTaskHistoryFromEvidence(this.asyncLayer, id, evidence, options);
+  }
+  /** @internal Cooperative full drain consumed by engine startup and maintenance recovery. */
+  async reconcileArchivedTasksIntoDone(options?: { limit?: number; maxFailureAttempts?: number }): Promise<ArchivedTaskReintegrationResult> {
+    return drainArchivedTasksIntoDone(this, options);
   }
 
 /** Residual B (U13/U9): per-branch progress snapshots for the given tasks, */
@@ -1746,17 +1767,20 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     FNXC:WorkflowResolvedColumns 2026-07-31-23:59:
     "Is there an OPEN undo task for this source?" is a LANE question — a finished one must not render
     as an active affordance. Against the literals a renamed board matched neither lane, so a
-    done/archived prior undo attempt kept surfacing as open. Same defect the dashboard-side twin had
+    completed prior undo attempt kept surfacing as open. Same defect the dashboard-side twin had
     (`taskRevert.ts`, #3129); this is the store-side query behind it.
 
     Additive: the resolved sets are legacy-seeded and fall back to the literals, so an unconverted
     board builds byte-identical SQL and the parity gate's encodings stay in step.
     */
-    const revertFinishedLanes = await resolveProjectColumnsForRoles(this, ["complete", "archived"])
+    const resolvedRevertFinishedLanes = await resolveProjectColumnsForRoles(this, ["complete"])
       .catch(() => undefined);
+    const revertFinishedLanes = resolvedRevertFinishedLanes
+      ? new Set(resolvedRevertFinishedLanes)
+      : undefined;
     const revertFinishedExclusions = revertFinishedLanes && revertFinishedLanes.size > 0
       ? [...revertFinishedLanes].map((lane) => ne(schema.project.tasks.column, lane))
-      : [ne(schema.project.tasks.column, "archived"), ne(schema.project.tasks.column, "done")];
+      : [ne(schema.project.tasks.column, "done")];
     const conditions = [
       isNull(schema.project.tasks.deletedAt),
       ...revertFinishedExclusions,
@@ -1884,7 +1908,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   public async clearNearDuplicateReferencesToFailSoft( canonicalId: string, inactiveState: { column?: ColumnId | null; deletedAt?: string | null; reason: string }, ): Promise<void> {
     return clearNearDuplicateReferencesToFailSoftImpl(this, canonicalId, inactiveState);
   }
-  async getTasksByAssignedAgent( agentId: string, options?: { pausedOnly?: boolean; excludeArchived?: boolean }, ): Promise<Task[]> {
+  async getTasksByAssignedAgent( agentId: string, options?: { pausedOnly?: boolean }, ): Promise<Task[]> {
     return getTasksByAssignedAgentImpl(this, agentId, options);
   }
   async tryClaimCheckout( taskId: string, claim: { agentId: string; nodeId: string; runId: string | null; leaseEpoch: number; renewedAt: string; }, precondition: CheckoutClaimPrecondition, ): Promise<{ ok: true; task: Task } | { ok: false; reason: "row_not_found" | "precondition_failed"; current: Task | null }> {
@@ -2492,9 +2516,9 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       const reviewIrForBypass = failedTarget
         ? undefined
         : await resolveWorkflowIrForTask(this, task.id);
-      const requiredStepIds = reviewIrForBypass
-        ? resolveRequiredPreMergeStepIds(reviewIrForBypass, task.enabledWorkflowSteps, task)
-        : new Set<string>();
+      const requiredForBypass = reviewIrForBypass
+        ? [...resolveRequiredPreMergeStepIds(reviewIrForBypass, task.enabledWorkflowSteps, task)]
+        : [];
       /*
       FNXC:ReviewLaneBypass 2026-09-03-10:07 (RUFU-179):
       THE TARGET IS NOW CHOSEN BY THE SAME PURE DERIVATION THE READ PATHS HYDRATE, and that is the
@@ -2510,35 +2534,62 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       `paused` and lane refusals above stay as explicit throws because their messages are operator-
       specific and byte-frozen by `store-bypass-review.test.ts`; they are also checked earlier than
       the derivation does, which is why its own gates are redundant no-ops here.
+
+      FNXC:ReviewLaneBypass 2026-09-06-01:20 (merge origin/main dd808ed2c6 → main, FN-295):
+      Upstream FN-295 widened the operator escape to EVERY row that holds the merge door shut —
+      `skipped`, `advisory_failure`, or `passed` with a non-approving verdict — not only a failed or
+      absent gate. The derivation keeps owning the failed/absent classes (failed now also covers the
+      remediation-archived carrier via the merged `getLatestFailedPreMergeReviewStep`); the residual
+      unapproved class is derived here through `evaluatePreMergeApprovals`. The dashboard affordance
+      hydrates only the derived failed/absent classes, so for the new class the store is STRICTLY
+      MORE permissive than the menu — RUFU-179's safe direction (an API-reachable escape, never a
+      dead affordance).
       */
-      const bypassTarget = deriveReviewBypassTarget(task, requiredStepIds, new Set(reviewColumns));
-      if (!bypassTarget) {
+      const bypassTarget = deriveReviewBypassTarget(task, new Set(requiredForBypass), new Set(reviewColumns));
+      const absentStepId = bypassTarget && bypassTarget.kind === "absent" ? bypassTarget.workflowStepId : undefined;
+      const unapprovedTarget = !failedTarget && !absentStepId && requiredForBypass.length > 0
+        ? (() => {
+          const blocked = evaluatePreMergeApprovals(task, { requiredPreMergeStepIds: new Set(requiredForBypass) })
+            .find((approval) => approval.state !== "approved");
+          /*
+          FNXC:ReviewLaneBypass 2026-09-06 (merge origin/main dd808ed2c6, RUFU-179 × FN-295):
+          A `pending` row is a review IN FLIGHT, not a gate the operator may overwrite: upstream's
+          evaluatePreMergeApprovals answers `not-approved` for it, so the unapproved class must exclude
+          it or the bypass would rewrite an active reviewer's result under the reviewer's feet
+          (FN-8492's orphan-pending sweep, not this method, owns stale pendings).
+          */
+          return blocked
+            ? results.find((result) => result.workflowStepId === blocked.workflowStepId && result.status !== "pending")
+            : undefined;
+        })()
+        : undefined;
+      if (!bypassTarget && !unapprovedTarget) {
         // Preserve the established refusal for cards with neither escape target.
         throw new Error(`Cannot bypass review lane for ${id}: no failed pre-merge review step found`);
       }
-      const absentStepId = bypassTarget.kind === "absent" ? bypassTarget.workflowStepId : undefined;
 
-      const target = failedTarget ?? {
-        workflowStepId: bypassTarget.workflowStepId,
-        workflowStepName: bypassTarget.workflowStepName,
+      const target = failedTarget ?? unapprovedTarget ?? {
+        workflowStepId: bypassTarget!.workflowStepId,
+        workflowStepName: bypassTarget!.workflowStepName,
         phase: "pre-merge" as const,
         status: "absent" as const,
       };
-      const targetIndex = failedTarget ? results.indexOf(failedTarget) : -1;
-      if (failedTarget && targetIndex === -1) {
+      const rowTarget = failedTarget ?? unapprovedTarget;
+      const targetIndex = rowTarget ? results.indexOf(rowTarget) : -1;
+      if (rowTarget && targetIndex === -1) {
         throw new Error(`Cannot bypass review lane for ${id}: failed step result not found`);
       }
 
       const now = new Date().toISOString();
-      const bypassed: import("./types.js").WorkflowStepResult = failedTarget
+      const bypassed: import("./types.js").WorkflowStepResult = rowTarget
         ? {
-          ...failedTarget,
+          ...rowTarget,
           status: "skipped",
           bypassedBy: actor,
           bypassedAt: now,
           bypassReason: reason,
-          bypassedFromStatus: failedTarget.status,
-          bypassedFromVerdict: failedTarget.verdict,
+          bypassedFromStatus: rowTarget.remediationArchivedFromStatus ?? rowTarget.status,
+          bypassedFromVerdict: rowTarget.verdict ?? rowTarget.priorAttempts?.[0]?.verdict,
         }
         : {
           workflowStepId: absentStepId!,
@@ -2552,6 +2603,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         };
       // A bypass never fabricates a reviewer verdict.
       delete bypassed.verdict;
+      // Preserve archive provenance: the merge gate recognizes only the audited waiver as its exception.
 
       const nextResults = [...results];
       if (targetIndex === -1) nextResults.push(bypassed);
@@ -2579,8 +2631,8 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         metadata: {
           workflowStepId: target.workflowStepId,
           workflowStepName: target.workflowStepName,
-          bypassedFromStatus: target.status,
-          bypassedFromVerdict: failedTarget?.verdict ?? null,
+          bypassedFromStatus: bypassed.bypassedFromStatus,
+          bypassedFromVerdict: bypassed.bypassedFromVerdict ?? null,
           reason,
         },
       });
@@ -2665,9 +2717,16 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         );
       }
       if (target.status !== "pending") {
-        throw new Error(
-          `Cannot resume workflow step for ${id}: only pending steps can be resumed`,
-        );
+        const archivedFailure = target.remediationArchivedAt != null
+          && (target.remediationArchivedFromStatus === "failed" || target.remediationArchivedFromStatus === "advisory_failure")
+          && !target.bypassedBy
+          && !target.supersededAt;
+        /*
+        FNXC:StepResume 2026-09-06-00:47:
+        Resume must remain pending-only, but an archived failed carrier now has a supported audited
+        bypass path. Name it so the documented recovery chain does not dead-end after a crash archive.
+        */
+        throw new Error(`Cannot resume workflow step for ${id}: only pending steps can be resumed${archivedFailure ? ` (step '${stepId}' is an archived remediation carrier — use fn_task_bypass_review / POST /tasks/:id/bypass-review to clear it)` : ""}`);
       }
 
       const now = new Date().toISOString();
@@ -3133,7 +3192,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       };
     }
 
-    const tasks = await this.listTasks({ includeArchived: true, slim: true });
+    const tasks = await this.listTasks({ includeArchived: false, slim: true });
     const taskById = new Map(tasks.map((candidate) => [candidate.id, candidate]));
     const blocker = taskById.get(previousOverlapBlockedBy);
 
@@ -3196,8 +3255,8 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       if (!dep || dep.deletedAt) return false;
       const lanes = dependencyLanesByTaskId.get(depId);
       /* DELIBERATE-LITERAL — the unresolvable-workflow default, reviewed 2026-07-31-01:10. */
-      if (!lanes) return dep.column !== "done" && dep.column !== "archived";
-      return dep.column !== lanes.complete && dep.column !== lanes.archived;
+      if (!lanes) return dep.column !== "done";
+      return dep.column !== lanes.complete;
     };
     const unresolvedDeps = (task.dependencies ?? []).filter(isUnresolvedDependency);
 
@@ -3458,36 +3517,6 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   async mergeTask(id: string): Promise<MergeResult> {
     return mergeTaskImpl(this, id);
   }
-  async archiveAllDone(options?: { removeLineageReferences?: boolean }): Promise<Task[]> {
-    return archiveAllDoneImpl(this, options);
-  }
-  async archiveTask( id: string, optionsOrCleanup: boolean | { cleanup?: boolean; removeLineageReferences?: boolean; liveExecutionGuard?: "refuse" | "off" } = true, ): Promise<Task> {
-    return archiveTaskImpl(this, id, optionsOrCleanup);
-  }
-
-  /**
-   * FNXC:RuntimeTaskOrchestrationAsync 2026-06-24-14:55:
-   */
-  public async archiveTaskBackend( id: string, optionsOrCleanup: boolean | { cleanup?: boolean; removeLineageReferences?: boolean; liveExecutionGuard?: "refuse" | "off" }, ): Promise<Task> {
-    return archiveTaskBackendImpl(this, id, optionsOrCleanup);
-  }
-
-/** Archive a task and immediately clean up its directory. */
-  async archiveTaskAndCleanup(id: string): Promise<Task> {
-    return this.archiveTask(id, true);
-  }
-  /* FNXC:WorkflowLifecycleColumns 2026-08-02-16:30 (fleet): async because the restore destination is resolved
-     from the task's workflow; `taskId` is optional so any caller that has not been updated keeps the legacy
-     answer rather than silently resolving the wrong board. */
-  public resolveUnarchiveTargetColumn(preArchiveColumn: unknown, taskId?: string): Promise<Column> {
-    return resolveUnarchiveTargetColumnImpl(this, preArchiveColumn, taskId);
-  }
-  public async readPreArchiveColumnFromTaskFile(dir: string): Promise<Column | undefined> {
-    return readPreArchiveColumnFromTaskFileImpl(this, dir);
-  }
-  async unarchiveTask(id: string): Promise<Task> {
-    return unarchiveTaskImpl(this, id);
-  }
   public async moveToDone(task: Task, dir: string): Promise<void> {
     return moveToDoneImpl(this, task, dir);
   }
@@ -3627,13 +3656,6 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   async upsertTaskDocument(taskId: string, input: TaskDocumentCreateInput): Promise<TaskDocument> {
     return upsertTaskDocumentImpl(this, taskId, input);
   }
-  async publishArchivedTaskDocumentAddition(
-    taskId: string,
-    input: ArchivedTaskDocumentAdditionInput,
-  ): Promise<ArchivedTaskDocumentAdditionResult> {
-    return publishArchivedTaskDocumentAdditionImpl(this, taskId, input);
-  }
-
 /** List archived revisions for a task document, newest first. */
   async getTaskDocumentRevisions( taskId: string, key: string, options?: { limit?: number }, ): Promise<TaskDocumentRevision[]> {
     return getTaskDocumentRevisionsImpl(this, taskId, key, options);
@@ -3717,38 +3739,14 @@ Issue #2149 requires read-only type filtering to occur in the file-store before 
     return invalidateConfigCacheAfterMigrationImpl(this);
   }
 
-  // ── Archive Cleanup Methods ─────────────────────────────────────────
-
-/** Read all archived task entries from SQLite. */
-  async readArchiveLog(): Promise<import("./types.js").ArchivedTaskEntry[]> {
-    return this.archiveDb.list();
+  /** @internal Legacy cold-storage reader used only by startup archive reintegration. */
+  public async restoreFromArchive(
+    entry: import("./types.js").ArchivedTaskEntry,
+    options?: { targetColumn?: string; now?: string; authoritativeTask?: Task },
+  ): Promise<Task> {
+    return restoreFromArchiveImpl(this, entry, options);
   }
-
-  /**
-   * FNXC:ArchivePagination 2026-07-08-00:00:
-   * Paged newest-first read for the Archived board column (FN-7659). See
-   * listArchivedTasksImpl for the ordering/bounding contract.
-   */
-  async listArchivedTasks(options?: { limit?: number; offset?: number; slim?: boolean; sort?: import("./tasks/task-priority.js").TaskColumnSortMode; sortMode?: import("./tasks/task-priority.js").TaskColumnSortMode }): Promise<{ tasks: Task[]; total: number; hasMore: boolean }> {
-    return listArchivedTasksImpl(this, options);
-  }
-
-/** Find a specific task in the archive by ID. */
-  async findInArchive(id: string): Promise<import("./types.js").ArchivedTaskEntry | undefined> {
-    return this.archiveDb.get(id);
-  }
-  public migrateLegacyArchiveEntriesToArchiveDb(): void {
-    return migrateLegacyArchiveEntriesToArchiveDbImpl(this);
-  }
-  public async migrateActiveArchivedTasksToArchiveDb(): Promise<void> {
-    return migrateActiveArchivedTasksToArchiveDbImpl(this);
-  }
-  async cleanupArchivedTasks(): Promise<string[]> {
-    return cleanupArchivedTasksImpl(this);
-  }
-  public async restoreFromArchive(entry: import("./types.js").ArchivedTaskEntry): Promise<Task> {
-    return restoreFromArchiveImpl(this, entry);
-  }
+  /** @internal Legacy prompt reconstruction used only by startup archive reintegration. */
   public generatePromptFromArchiveEntry(entry: import("./types.js").ArchivedTaskEntry): string {
     return generatePromptFromArchiveEntryImpl(this, entry);
   }
@@ -4037,29 +4035,14 @@ Issue #2149 requires read-only type filtering to occur in the file-store before 
   get fts5Available(): boolean {
     return this.db.fts5Available;
   }
-  get archiveFts5Available(): boolean {
-    return this.archiveDb.fts5Available;
-  }
   optimizeFts5(mode?: "optimize" | "merge"): boolean {
     return this.db.optimizeFts5(mode);
-  }
-  optimizeArchiveFts5(mode?: "optimize" | "merge"): boolean {
-    return this.archiveDb.optimizeFts5(mode);
   }
   getFtsIndexBytes(): number | null {
     return this.db.getFtsIndexBytes();
   }
-  getArchiveFtsIndexBytes(): number | null {
-    return this.archiveDb.getFtsIndexBytes();
-  }
   getTaskRowCount(): number {
     return this.db.getTaskRowCount();
-  }
-  getArchivedRowCount(): number {
-    return this.archiveDb.getArchivedRowCount();
-  }
-  rebuildArchiveFts5Index(): boolean {
-    return this.archiveDb.rebuildFts5Index();
   }
 
   /**

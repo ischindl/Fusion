@@ -141,10 +141,15 @@ export async function deriveTaskStallReason(
 
   const lifecycle = context.lifecycleColumns;
   const completeLane = lifecycle?.complete;
-  const archivedLane = lifecycle?.archived;
+  /*
+  FNXC:TaskArchivingRemoved 2026-09-06 (merge origin/main dd808ed2c6, FN-295):
+  The `archived` lifecycle trait no longer exists, so no live workflow can route a card to an archived
+  lane. The historical literal stays terminal: soft-delete/legacy sentinel rows still carry the literal
+  `"archived"` column and must never report a stall reason.
+  */
   const inTerminalLane =
     (completeLane ? task.column === completeLane : task.column === LEGACY_COMPLETE_COLUMN)
-    || (archivedLane ? task.column === archivedLane : task.column === LEGACY_ARCHIVED_COLUMN);
+    || task.column === LEGACY_ARCHIVED_COLUMN;
   if (inTerminalLane) return undefined;
 
   const observedAt = new Date(context.now ?? Date.now()).toISOString();

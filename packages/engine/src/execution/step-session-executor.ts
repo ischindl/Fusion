@@ -35,8 +35,12 @@ FNXC:StepSessionExecutor 2026-09-04-06:57 (merge origin/main 150755506f → main
 Upstream FN-9248/FN-9254 added `resolveAuthoredStepHeadingOffset` (zero-based plan step
 headings) to the same import line. Union keeps RUFU-132's recall cue + upstream's new
 helper, and keeps upstream's `export { resolveAuthoredStepHeadingOffset }` re-export.
+
+FNXC:StepSessionExecutor 2026-09-06-09:47 (merge origin/main dd808ed2c6 → main):
+Upstream FN-293 renamed the Patchnode heading tools to history tools and added
+`matchStepHeadings`; the union import keeps RUFU-132's recall cue beside it.
 */
-import { buildPerTurnMemoryRecallCue, isFastExecutionMode, isValidProviderInstanceId, resolvePersistAgentThinkingLog, resolveExecutorFallbackModel, resolveTrailingVerificationStepIndex, resolveAuthoredStepHeadingOffset } from "@fusion/core";
+import { buildPerTurnMemoryRecallCue, isFastExecutionMode, isValidProviderInstanceId, resolvePersistAgentThinkingLog, resolveExecutorFallbackModel, resolveTrailingVerificationStepIndex, resolveAuthoredStepHeadingOffset, matchStepHeadings } from "@fusion/core";
 
 export { resolveAuthoredStepHeadingOffset };
 
@@ -222,14 +226,8 @@ export function parseStepFileScopes(prompt: string): Map<number, string[]> {
 
   if (!prompt) return result;
 
-  // Split by step headings: ### Step 0: ..., ### Step 1: ..., etc.
-  const stepRegex = /^### Step (\d+):.*/gm;
-  const splits: { index: number; stepNum: number }[] = [];
-  let match: RegExpExecArray | null;
-
-  while ((match = stepRegex.exec(prompt)) !== null) {
-    splits.push({ index: match.index, stepNum: parseInt(match[1], 10) });
-  }
+  /* FNXC:WorkflowSteps 2026-09-05-22:06: FN-9260 requires annotated headings to share the canonical matcher. */
+  const splits = matchStepHeadings(prompt).map(({ index, headingNumber }) => ({ index, stepNum: headingNumber }));
 
   if (splits.length === 0) return result;
 
@@ -678,13 +676,8 @@ function scopePromptToWorktree(prompt: string, rootDir?: string, worktreePath?: 
  * Extract the content of a specific step from the PROMPT.md.
  */
 function extractStepSection(prompt: string, stepIndex: number): string {
-  const stepRegex = /^### Step (\d+):.*/gm;
-  const splits: { index: number; stepNum: number }[] = [];
-  let match: RegExpExecArray | null;
-
-  while ((match = stepRegex.exec(prompt)) !== null) {
-    splits.push({ index: match.index, stepNum: parseInt(match[1], 10) });
-  }
+  /* FNXC:WorkflowSteps 2026-09-05-22:06: FN-9260 requires annotated step bodies to be sliced by the canonical matcher. */
+  const splits = matchStepHeadings(prompt).map(({ index, headingNumber }) => ({ index, stepNum: headingNumber }));
 
   const offset = resolveAuthoredStepHeadingOffset(splits.map((split) => split.stepNum));
   const targetSplit = splits.find((s) => s.stepNum === stepIndex + offset);
@@ -701,9 +694,8 @@ function extractStepSection(prompt: string, stepIndex: number): string {
  * Count the number of step headings in a PROMPT.md.
  */
 function countSteps(prompt: string): number {
-  const stepRegex = /^### Step \d+:/gm;
-  const matches = prompt.match(stepRegex);
-  return matches ? matches.length : 0;
+  /* FNXC:WorkflowSteps 2026-09-05-22:06: FN-9260 counts documented dependency-annotated headings as authored steps. */
+  return matchStepHeadings(prompt).length;
 }
 
 /*

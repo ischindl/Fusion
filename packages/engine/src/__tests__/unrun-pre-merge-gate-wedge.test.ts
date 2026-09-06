@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { getBuiltinWorkflow, type Task, type TaskDetail } from "@fusion/core";
+import { getBuiltinWorkflow, getLatestFailedPreMergeReviewStep, getTaskMergeBlocker, type Task, type TaskDetail } from "@fusion/core";
 
 import "./executor-test-helpers.js";
 import { TaskExecutor } from "../executor.js";
@@ -136,7 +136,15 @@ describe("unrun pre-merge gate wedge regression", () => {
   approval — the classifier must call it not-run, the FN-9243 sweep must catch that blocker, and
   the seeded continuation must NOT name the planning-lane column the review card will never stand in.
   */
-  it("re-seeds a remediation-archived gate carrier at its planning-lane node, clamped in place", async () => {
+  /*
+  FNXC:LifecycleContainment 2026-09-06 (retargeted from RUFU-178's re-seed assertion, merge FN-295):
+  A remediation-archived carrier is NOT an unrun gate any more. FN-295 classifies it `not-approved`
+  (gate-named merge-blocker) and recovers it via collateral restore or the FN-7720 audited bypass —
+  and the merged `getLatestFailedPreMergeReviewStep` selects the carrier, so that bypass can reach
+  it. This asserts the re-seed sweep keeps its hands off: no planning-lane re-seed, no doomed merge
+  enqueue, and the carrier stays operator-recoverable.
+  */
+  it("does not re-seed a remediation-archived gate carrier (FN-295: not-approved, bypass-recoverable)", async () => {
     const live = resultlessReviewTask({
       enabledWorkflowSteps: ["plan-review", "code-review"],
       workflowStepResults: [{
@@ -151,10 +159,11 @@ describe("unrun pre-merge gate wedge regression", () => {
     await new SelfHealingManager(store, { rootDir: "/tmp/fn-9243-resultless", enqueueMerge } as any)
       .recoverMergeableReviewTasks();
 
-    expect(store.seedWorkspaceCodeReviewContinuationIfIdle).toHaveBeenCalledWith(expect.objectContaining({
-      taskId: live.id, nodeId: "plan-review", state: "runnable", sourceColumn: "in-review", targetColumn: "in-review",
-    }));
+    expect(store.seedWorkspaceCodeReviewContinuationIfIdle).not.toHaveBeenCalled();
     expect(enqueueMerge).not.toHaveBeenCalled();
+    expect(getTaskMergeBlocker(live, { requiredPreMergeStepIds: new Set(["plan-review", "code-review"]), mergeContent: { kind: "singular", diff: { state: "fingerprint", fingerprint: "current" } } as any }))
+      .toBe("task has enabled pre-merge workflow steps without a current approval (gate 'plan-review')");
+    expect(getLatestFailedPreMergeReviewStep(live)).toMatchObject({ workflowStepId: "plan-review", status: "skipped" });
   });
 
   it("uses merge admission to schedule the producer while retaining its blocker", async () => {

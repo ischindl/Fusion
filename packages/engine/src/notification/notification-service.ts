@@ -382,7 +382,7 @@ export class NotificationService {
     would ever receive and nothing announced the stall. Non-review progressed lanes keep their
     clear-only behavior unchanged — a card that visibly moved on must never alert afterwards.
     */
-    const movedProgressedLanes = await resolveProjectColumnsForRoles(this.store, ["hold", "countsTowardWip", "complete", "archived"]);
+    const movedProgressedLanes = new Set(await resolveProjectColumnsForRoles(this.store, ["hold", "countsTowardWip", "complete"]));
     if (
       movedProgressedLanes.has(data.to)
       || (typeof data.task.status === "string" && data.task.status !== "failed")
@@ -694,7 +694,7 @@ export class NotificationService {
     self-healing descriptor's live pause and auto-merge hold too; only role
     membership is stable when workflows rename lifecycle columns.
     */
-    const terminalLanes = await resolveProjectColumnsForRoles(this.store, ["complete", "archived"]);
+    const terminalLanes = new Set(await resolveProjectColumnsForRoles(this.store, ["complete"]));
     const liveRowCannotBeWedge = liveTask.deletedAt != null || terminalLanes.has(liveTask.column);
     const suppliedDescriptorIsHeldOrProgressing = suppliedDescriptor != null
       && (liveTask.paused === true || liveTask.userPaused === true || liveTask.autoMerge === false || isTaskProgressing(liveTask));
@@ -749,7 +749,7 @@ export class NotificationService {
       than one lane per role on a renamed board, and a first-match answer would silently ignore the
       others. Legacy-seeded, so an unconverted board resolves exactly the four ids it used to compare.
       */
-      const progressedLanes = await resolveProjectColumnsForRoles(this.store, ["hold", "countsTowardWip", "complete", "archived"]);
+      const progressedLanes = new Set(await resolveProjectColumnsForRoles(this.store, ["hold", "countsTowardWip", "complete"]));
       const hasProgressed = progressedLanes.has(task.column)
         || (!isActiveSelfHealingNoAction && typeof task.status === "string" && task.status !== "failed")
         || (isActiveSelfHealingNoAction && ["queued", "planning", "in-progress", "merging", "merging-pr", "merged", "done"].includes(task.status ?? ""));
@@ -958,8 +958,8 @@ export class NotificationService {
         ? { reasonKey: durablePending.reasonKey, reason: durablePending.reason, action: durablePending.action, ...(durablePending.gate ? { gate: durablePending.gate } : {}) }
         : cached!.descriptor;
 
-      const terminalLanes = await resolveProjectColumnsForRoles(this.store, ["complete", "archived"]);
-      const progressedLanes = await resolveProjectColumnsForRoles(this.store, ["hold", "countsTowardWip", "complete", "archived"]);
+      const terminalLanes = new Set(await resolveProjectColumnsForRoles(this.store, ["complete"]));
+      const progressedLanes = new Set(await resolveProjectColumnsForRoles(this.store, ["hold", "countsTowardWip", "complete"]));
       const activeSelfHealing = task.wedgeNotification?.status === "active" && task.wedgeNotification.reasonKey.startsWith("self-healing-no-action:");
       const hasProgressed = progressedLanes.has(task.column)
         || (!activeSelfHealing && typeof task.status === "string" && task.status !== "failed")

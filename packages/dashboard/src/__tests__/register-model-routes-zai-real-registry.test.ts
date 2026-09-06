@@ -59,7 +59,11 @@ function createRouterHarness(modelRegistry: ModelRegistry) {
       getHandlers.set(path, handler);
     }),
     // FNXC:ModelCatalog 2026-08-23-23:12: registerModelRoutes also registers POST /models/refresh (FN-019 operator catalog refresh), so a router fake exposing only `get` throws before any GET handler is captured.
-    post: vi.fn(),
+    // FNXC:ModelCatalog 2026-09-06 (merge FN-295 sync): the fixture captures POST handlers so
+    // refreshCatalog resolves the registered /models/refresh handler instead of undefined.
+    post: vi.fn((path: string, handler: (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>) => {
+      postHandlers.set(path, handler);
+    }),
   } as unknown as Router;
   const store = {
     getGlobalSettingsStore: () => ({ getSettings: vi.fn().mockResolvedValue({}) }),

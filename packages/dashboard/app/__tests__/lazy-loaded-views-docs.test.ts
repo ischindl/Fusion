@@ -180,7 +180,7 @@ function expectDocumentedViews(include: Iterable<string>, section: string): void
 }
 
 describe("AGENTS lazy-loaded views inventory", () => {
-  it("documents the App-level and AppModals lazy views accurately and keeps the curated 20-view list in sync", () => {
+  it("documents the App-level and AppModals lazy views accurately and keeps the curated 21-view list in sync", () => {
     const agentsDoc = readFileSync(resolve(__dirname, "../../../../AGENTS.md"), "utf-8");
     const appSource = readFileSync(resolve(__dirname, "../App.tsx"), "utf-8");
     const appModalsSource = readFileSync(resolve(__dirname, "../components/AppModals.tsx"), "utf-8");
@@ -190,11 +190,17 @@ describe("AGENTS lazy-loaded views inventory", () => {
     const section = extractLazyLoadedSection(agentsDoc);
     const countMatch = section.match(/These\s+(\d+)\s+views\s+are lazy-loaded/);
     expect(countMatch).toBeTruthy();
-    expect(Number(countMatch?.[1])).toBe(20);
+    /*
+    FNXC:LazyViewInventory 2026-09-06 (merge v0.78.0-beta.3):
+    The curated count moved 20 -> 21 when the merge unioned HEAD's and origin's lazy-import additions
+    into App.tsx; AGENTS.md prose, the bullet list, and EXPECTED_DOCUMENTED_VIEWS all carry the same
+    21-name set, so this literal only re-pins the prose count to that union.
+    */
+    expect(Number(countMatch?.[1])).toBe(21);
 
     const documentedViews = extractBacktickedNamesFromBullets(section);
     expect(new Set(documentedViews)).toEqual(EXPECTED_DOCUMENTED_VIEWS);
-    expect(documentedViews).toHaveLength(20);
+    expect(documentedViews).toHaveLength(21);
 
     expect(section).toContain("`ResearchView`");
     expect(section).toContain("`SettingsModal`");

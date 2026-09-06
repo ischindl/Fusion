@@ -21,6 +21,7 @@ import { StandardChatActionButton, StandardChatMessageItem, StandardStreamingMes
 import { filterChatCommands, getSlashTriggerMatch, matchChatCommand, selectChatCommands, type ChatCommand } from "./chat-commands";
 import { applySnippetToDraft, filterChatSnippets, matchStandaloneSnippetInvocation } from "./chat-snippets";
 import { useChatMessageLayout } from "../context/ChatMessageLayoutContext";
+import { useChatEnterSubmits } from "../context/ChatSubmitOnEnterContext";
 import {
   createChatInputAutosizeController,
   type ChatInputAutosizeController,
@@ -347,6 +348,7 @@ function buildPlannerQuestionRenderStates(messages: readonly ChatMessage[]): Map
 export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expanded = false, onExpandedChange, taskChatModel, addToast, onTaskUpdated }: TaskPlannerChatTabProps) {
   const { t } = useTranslation("app");
   const chatMessageLayout = useChatMessageLayout();
+  const enterSubmits = useChatEnterSubmits();
   const [sessionId, setSessionId] = useState<string | null>(null);
   /*
   FNXC:ChatMemoryFocus 2026-08-13:
@@ -551,8 +553,8 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
    * FNXC:TaskPlannerChatSlashCommands 2026-07-08-00:00:
    * /steer is only dispatchable when this task's bound agent is actively
    * running (task.column === "in-progress"), mirroring how TaskChatTab gates
-   * its own done-task affordance on task.column. Any other state (todo,
-   * in-review, done, archived, triage) shows the command in the menu but
+   * its own completed-task affordance on task.column. Any non-WIP state, including
+   * intake, hold, review, and Complete, shows the command in the menu but
    * disabled with a hint instead of hiding it outright, and dispatch itself
    * is refused with the same hint rather than silently sending plain chat.
    */
@@ -1423,12 +1425,22 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
       return;
     }
 
+    /*
+    FNXC:ChatComposer 2026-09-06-01:54:
+    `Shift+Enter` n'envoie jamais, y compris combiné à `Cmd/Ctrl` : `Cmd/Ctrl+Shift+Enter` n'est pas un envoi. Elle insère un saut de ligne, sauf dans le Chat lorsqu'un menu d'autocomplétion est ouvert — les trois menus du Chat (fichiers/tâches, agents, compétences) la consomment alors sans insérer de saut de ligne. Dans le Chat de tâche et le Chat du planificateur, `Shift+Enter` traverse le menu et insère bien un saut de ligne.
+    `Cmd/Ctrl+Enter` sans `Shift` envoie, indépendamment du réglage `chatSubmitOnEnter` et du type de pointeur.
+    `Entrée` sans `Cmd/Ctrl` ni `Shift` est gouvernée par `chatSubmitOnEnter` ; `Alt` n'est pas un modificateur d'envoi et ne change rien à cette règle.
+    Les règles 2 et 3 s'appliquent lorsqu'aucun menu d'autocomplétion n'est ouvert. Un menu ouvert a la priorité et consomme `Entrée` comme `Cmd/Ctrl+Enter` ; `Échap` ferme le menu et rétablit les règles.
+    Dans le Chat de tâche uniquement, une composition IME en cours (saisie CJK) court-circuite tout, `Cmd/Ctrl+Enter` compris, jusqu'à la validation du candidat.
+    Le bouton d'envoi reste rendu et actif dès que le brouillon n'est pas vide — menu ouvert et composition IME compris. Sur brouillon vide il est désactivé, comme aujourd'hui.
+    */
     if (event.key !== "Enter" || event.shiftKey) return;
+    if (!(event.metaKey || event.ctrlKey) && !enterSubmits) return;
     event.preventDefault();
     void sendMessage();
-  }, [showCommandMenu, slashMenuEntries, highlightedCommandIndex, handleCommandMenuSelect, handleSnippetMenuSelect, sendMessage]);
+  }, [enterSubmits, showCommandMenu, slashMenuEntries, highlightedCommandIndex, handleCommandMenuSelect, handleSnippetMenuSelect, sendMessage]);
 
-  const canSend = draft.trim().length > 0 && composerState !== "sending" && !queueActionPending;
+  const canSend = draft.trim().length > 0 && composerState !== "sending";
   const showEmptyState = historyLoaded && !loading && !error && messages.length === 0;
   const questionRenderStates = useMemo(() => buildPlannerQuestionRenderStates(messages), [messages]);
   const starterPrompts = useMemo(() => {
@@ -1791,6 +1803,10 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
           )}
           disabled={queueActionPending || composerState === "sending"}
         />
+        {/*
+        FNXC:TaskPlannerChatQueue 2026-09-06-00:48:
+        Cancellation owns planner dispatch, not the local text or dictation controls. sendMessageContent queues typed text behind cancellationInProgressRef; this composer has no attachment path, so adding one requires an explicit non-text queue contract.
+        */}
         <textarea
           ref={handleComposerRef}
           className="input task-planner-chat-input"
@@ -1799,10 +1815,10 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
           value={draft}
           onChange={handleDraftChange}
           onKeyDown={handleKeyDown}
-          disabled={queueActionPending}
+          enterKeyHint={enterSubmits ? "send" : "enter"}
           rows={1}
         />
-        <MicButton {...dictation.micProps} disabled={queueActionPending} />
+        <MicButton {...dictation.micProps} />
         <StandardChatActionButton
           isStreaming={composerState === "sending"}
           canSend={canSend}

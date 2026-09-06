@@ -32,8 +32,15 @@ export interface TaskMenuActionDescriptor {
   label: string;
   tone?: TaskMenuActionTone;
   disabled?: boolean;
+  testId?: string;
+  pressed?: boolean;
   onSelect?: () => void;
 }
+
+/*
+FNXC:TaskDetailFooterActions 2026-09-05-23:27:
+Task Detail contributes its relocated quick actions as one flat descriptor list. Do not turn those groups into submenus: the desktop footer menu clips horizontal overflow and the mobile menu scrolls vertically, so a lateral flyout would be clipped and difficult to use by touch.
+*/
 
 /**
  * A non-action menu parent whose children are the selectable menu items.
@@ -52,7 +59,6 @@ export type TaskMenuItemDescriptor = TaskMenuActionDescriptor | TaskMenuSubmenuD
 
 export interface TaskContextMenuColumnFlags {
   complete?: boolean;
-  archived?: boolean;
   hiddenFromBoard?: boolean;
   hold?: boolean;
   intake?: boolean;
@@ -192,21 +198,21 @@ reasoning as `isReviewColumn` above — and the same flagged inversion: `column 
 unconditional disjunct ahead of the trait read.
 */
 function isDoneOrReview(column: string, flags?: TaskContextMenuColumnFlags): boolean {
-  return column === "done" || isReviewColumn(column, flags) || (flags?.complete === true && flags?.archived !== true);
+  return column === "done" || isReviewColumn(column, flags) || flags?.complete === true;
 }
 
 /*
 FNXC:TaskContextMenu 2026-07-30-04:10 DELIBERATE-LITERAL: the no-metadata fallback only.
 Same rule as `isReviewColumn` above: reached when no resolved flags arrive, where answering
-"mutable" for a done/archived card would offer live-work actions on a terminal one.
+"mutable" for a Done card would offer live-work actions on a terminal row.
 */
 function isMutableLiveColumn(column: string, flags?: TaskContextMenuColumnFlags): boolean {
-  if (flags) return flags.complete !== true && flags.archived !== true;
-  return column !== "done" && column !== "archived";
+  if (flags) return flags.complete !== true;
+  return column !== "done";
 }
 
 export function isPreExecutionHoldColumn(column: string, flags?: TaskContextMenuColumnFlags): boolean {
-  if (flags?.complete === true || flags?.archived === true) return false;
+  if (flags?.complete === true) return false;
   /*
   FNXC:WorkflowResolvedColumns 2026-07-30-18:35 (Phase B — AUDITED, deliberately NOT consolidated):
   `isPreImplementationColumnRole` in `utils/columnRoles.ts` answers a near-identical question and I
@@ -604,6 +610,8 @@ export function TaskContextMenu({
                         className={classes.join(" ")}
                         role={role === "menu" ? "menuitem" : undefined}
                         disabled={action.disabled}
+                        data-testid={action.testId}
+                        aria-pressed={action.pressed}
                         onPointerUp={(event) => handleActionPointerUp(event, action)}
                         onClick={(event) => handleActionClick(event, action)}
                       >
@@ -621,9 +629,9 @@ export function TaskContextMenu({
         if (action.tone === "danger") classes.push(dangerItemClassName);
         if (action.tone === "note") classes.push(noteItemClassName);
         const defaultNode = action.tone === "note" ? (
-          <span key={action.id} className={classes.join(" ")} role="note">{action.label}</span>
+          <span key={action.id} className={classes.join(" ")} role="note" data-testid={action.testId}>{action.label}</span>
         ) : (
-          <button key={action.id} type="button" className={classes.join(" ")} role={role === "menu" ? "menuitem" : undefined} disabled={action.disabled} onPointerUp={(event) => handleActionPointerUp(event, action)} onClick={(event) => handleActionClick(event, action)}>{action.label}</button>
+          <button key={action.id} type="button" className={classes.join(" ")} role={role === "menu" ? "menuitem" : undefined} disabled={action.disabled} data-testid={action.testId} aria-pressed={action.pressed} onPointerUp={(event) => handleActionPointerUp(event, action)} onClick={(event) => handleActionClick(event, action)}>{action.label}</button>
         );
         return <Fragment key={action.id}>{renderAction ? renderAction(action, defaultNode) : defaultNode}</Fragment>;
       })}

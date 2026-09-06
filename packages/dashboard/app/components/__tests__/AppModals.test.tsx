@@ -247,7 +247,6 @@ function PlanningStatusConvergenceHarness({ detailTask, modalManager, settings }
         projectId="project-a"
         onMoveTask={integrationAsyncNoop}
         onDeleteTask={integrationAsyncNoop}
-        onArchiveTask={integrationAsyncNoop}
         onMergeTask={integrationAsyncNoop}
         onOpenDetail={integrationNoop}
         addToast={integrationNoop}
@@ -391,6 +390,7 @@ describe("AppModals", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     sseSubscriptions.length = 0;
+    vi.spyOn(taskApi, "fetchCompletedTasks").mockResolvedValue({ tasks: [], total: 0, hasMore: false });
     clearCache(`${SWR_CACHE_KEYS.TASKS_PREFIX}project-a`);
     mockTaskDetailModalProps.mockClear();
     mockScheduledTasksModalProps.mockClear();

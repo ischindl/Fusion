@@ -223,7 +223,7 @@ describe("MailboxModal", () => {
   it("loads inbox on mount", async () => {
     render(<MailboxModal {...defaultProps} />);
     await waitFor(() => {
-      expect(mockFetchInbox).toHaveBeenCalledWith({ limit: 50 }, undefined);
+      expect(mockFetchInbox).toHaveBeenCalledWith({ limit: 50, category: "message" }, undefined);
     });
   });
 
@@ -682,7 +682,7 @@ describe("MailboxModal", () => {
 
     fireEvent.click(markAllReadButton);
     await waitFor(() => {
-      expect(mockMarkAllMessagesRead).toHaveBeenCalledWith(undefined);
+      expect(mockMarkAllMessagesRead).toHaveBeenCalledWith(undefined, { category: "message" });
     });
   });
 
@@ -1149,7 +1149,7 @@ describe("MailboxModal", () => {
   it("passes projectId to API calls", async () => {
     render(<MailboxModal {...defaultProps} projectId="proj-1" />);
     await waitFor(() => {
-      expect(mockFetchInbox).toHaveBeenCalledWith({ limit: 50 }, "proj-1");
+      expect(mockFetchInbox).toHaveBeenCalledWith({ limit: 50, category: "message" }, "proj-1");
     });
   });
 

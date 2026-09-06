@@ -125,7 +125,6 @@ describe("stalled-card watchdog", () => {
   it("stays silent for terminal columns and for recently-touched cards", async () => {
     const store = storeFor([
       task("FN-DONE", { column: "done" }),
-      task("FN-ARCHIVED", { column: "archived" }),
       task("FN-FRESH", { updatedAt: new Date(NOW - 60_000).toISOString() }),
     ]);
     expect(await manager(store).detectStalledCards()).toBe(0);
@@ -134,7 +133,7 @@ describe("stalled-card watchdog", () => {
   /*
   FNXC:WorkflowResolvedColumns 2026-07-31-17:45:
   `sweepTerminalColumns` was UNCOVERED on the #3115 map. The case directly above asserts the terminal
-  skip using `done` and `archived` — the ids — so blinding the resolver leaves it green.
+  skip using the built-in `done` id, so blinding the resolver leaves it green.
 
   On a renamed board the skip matched nothing, so FINISHED cards were scanned as live and a card
   parked in a renamed completion lane could be reported stalled. A watchdog that cries about
@@ -144,7 +143,6 @@ describe("stalled-card watchdog", () => {
   it("stays silent for a card resting in a RENAMED terminal lane", async () => {
     const store = storeFor([
       task("FN-SHIPPED", { column: "shipped", status: "planning" }),
-      task("FN-VAULT", { column: "vault", status: "planning" }),
     ]);
     (store as unknown as { listWorkflowDefinitions: unknown }).listWorkflowDefinitions = vi.fn(async () => [{
       ir: {
@@ -155,7 +153,6 @@ describe("stalled-card watchdog", () => {
         columns: [
           { id: "building", name: "building", traits: [{ trait: "wip", config: { limitSetting: "maxConcurrent" } }] },
           { id: "shipped", name: "shipped", traits: [{ trait: "complete" }] },
-          { id: "vault", name: "vault", traits: [{ trait: "archived" }] },
         ],
       },
     }]);

@@ -11,6 +11,7 @@ import {readFile} from "node:fs/promises";
 import {join} from "node:path";
 import {existsSync, statSync} from "node:fs";
 import type {Task, TaskDetail, ColumnId, ArchivedTaskEntry, TaskVerificationRequest, TaskVerificationResultSummary, TaskVerificationStatus, TaskRecommendation, TaskRecommendationListItem, TaskRecommendationListPage, Settings} from "../types.js";
+import type { TaskColumnSortMode } from "../tasks/task-priority.js";
 import * as schema from "../postgres/schema/index.js";
 import { and, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import "../builtin-traits.js";
@@ -21,7 +22,7 @@ import {getInReviewStalledSignal, type InReviewStalledContext} from "../tasks/in
 import {getStalePausedReviewSignal, type StalePausedReviewContext} from "../tasks/stale-paused-review.js";
 import {getStalePausedTodoSignal} from "../tasks/stale-paused-todo.js";
 import {resolveLifecycleColumns, resolveReviewColumns, type LifecycleColumns} from "../workflows/workflow-lifecycle-traits.js";
-import {resolveWorkflowIrForTask} from "../workflows/workflow-ir-resolver.js";
+import {prefetchWorkflowSelections, resolveWorkflowIrForTask, type WorkflowSelectionCache, type WorkflowSelectionReadTally} from "../workflows/workflow-ir-resolver.js";
 import type {WorkflowIr} from "../workflows/workflow-ir-types.js";
 
 import {getTaskAgeStalenessSignal, type TaskAgeStalenessThresholds} from "../tasks/task-age-staleness.js";
@@ -34,7 +35,7 @@ import {deriveTaskStallReason, type TaskStallReason, type TaskStallReasonContext
 // FNXC:TaskLookup404 2026-07-26-11:20: typed miss signal so API boundaries can
 // answer 404 instead of 500 (see TaskNotFoundError in task-store/errors.ts).
 import {TaskNotFoundError} from "../task-store/errors.js";
-import { resolveProjectColumnsForRoles } from "../project-lane-vocabulary.js";
+import { ARCHIVED_SENTINEL_LANES, resolveProjectColumnsForRoles } from "../project-lane-vocabulary.js";
 import { taskProjectScope } from "../postgres/data-layer.js";
 
 /** Merge storage tiers while preserving primary-source authority and order. */
@@ -131,7 +132,7 @@ function hasFreshAgentLogActivitySinceTaskUpdate(
 }
 
 import {__setTaskActivityLogLimitsForTesting} from "../task-store/comments.js";
-import {readTaskRow, readLiveTaskRows, readTaskRowByProposalClaimId, readTaskRowsBySourceLineage} from "./async/async-persistence.js";
+import {countLiveTasks, readTaskRow, readLiveTaskRows, readTaskRowByProposalClaimId, readTaskRowsBySourceLineage} from "./async/async-persistence.js";
 import {searchTasksTsvector, searchTasksLike} from "./async/async-search.js";
 import {
   getArchivedTask,
@@ -155,9 +156,10 @@ async function resolveHoldColumnForTask(
   store: TaskStore,
   taskId: string,
   cache?: Map<string, WorkflowIr>,
+  selectionCache?: WorkflowSelectionCache,
 ): Promise<string> {
   try {
-    const lifecycle = resolveLifecycleColumns(await resolveWorkflowIrForTask(store, taskId, cache));
+    const lifecycle = resolveLifecycleColumns(await resolveWorkflowIrForTask(store, taskId, cache, selectionCache));
     return lifecycle?.hold ?? "todo";
   } catch {
     return "todo";
@@ -194,10 +196,11 @@ async function resolveReviewColumnsForTask(
   store: TaskStore,
   taskId: string,
   cache?: Map<string, WorkflowIr>,
+  selectionCache?: WorkflowSelectionCache,
 ): Promise<ReadonlySet<string>> {
   const columns = new Set<string>(["in-review"]);
   try {
-    const ir = await resolveWorkflowIrForTask(store, taskId, cache);
+    const ir = await resolveWorkflowIrForTask(store, taskId, cache, selectionCache);
     if (ir) for (const id of resolveReviewColumns(ir)) columns.add(id);
   } catch { /* degraded: the legacy id above still answers */ }
   return columns;
@@ -239,6 +242,15 @@ async function hydrateTaskStallReason(
     reviewColumns: ReadonlySet<string>;
     lifecycle: LifecycleColumns | undefined;
     irCache: Map<string, WorkflowIr>;
+    /*
+    FNXC:WorkflowScheduling 2026-09-06 (merge origin/main dd808ed2c6):
+    Upstream's selection-batch ratchet (`list-tasks-selection-batching.pg.test.ts`) tolerates ZERO
+    singular `getTaskWorkflowSelectionAsync` reads per list pass. The RUFU-174 stall derivation and
+    the RUFU-179 bypass derivation resolve the task's own IR, so each hydration pass threads its
+    prefetched selection cache here — otherwise the local hydrators reintroduce per-row singles and
+    the board pays one selection read per card again.
+    */
+    selectionCache?: WorkflowSelectionCache;
     localColumnByTaskId: ReadonlyMap<string, string>;
   },
 ): Promise<TaskStallReason | undefined> {
@@ -247,10 +259,17 @@ async function hydrateTaskStallReason(
   const satisfactionColumnsByTaskId = new Map<string, { terminal: ReadonlySet<string>; review: ReadonlySet<string> }>();
   const resolveSatisfactionLanes = async (depId: string): Promise<void> => {
     try {
-      const ir = await resolveWorkflowIrForTask(store, depId, options.irCache);
+      const ir = await resolveWorkflowIrForTask(store, depId, options.irCache, options.selectionCache);
       if (!ir) return;
       const lanes = resolveLifecycleColumns(ir);
-      const terminal = new Set([lanes?.complete, lanes?.archived].filter((c): c is string => Boolean(c)));
+      /*
+      FNXC:TaskArchivingRemoved 2026-09-06 (merge origin/main dd808ed2c6, FN-295):
+      Upstream removed the `archived` lifecycle trait, so satisfaction is judged on the complete lane
+      alone — mirroring the engine twin `resolveDependencySatisfactionColumns` (scheduler.ts) which
+      after FN-295 maps terminal to `columnsWithFlag(ir, "complete")` only. Cold-storage entries still
+      resolve to the literal "archived" column below; they are simply no longer a terminal lane.
+      */
+      const terminal = new Set([lanes?.complete].filter((c): c is string => Boolean(c)));
       const review = new Set(resolveReviewColumns(ir));
       // Engine-side twin skips an IR offering neither role, so the dep keeps the legacy literals.
       if (terminal.size === 0 && review.size === 0) return;
@@ -282,7 +301,7 @@ async function hydrateTaskStallReason(
   let requiredPreMergeStepIds: ReadonlySet<string> | undefined;
   try {
     // Cache-shared with the site's review-lane resolution, so this is a struct build, not a read.
-    const ir = await resolveWorkflowIrForTask(store, task.id, options.irCache);
+    const ir = await resolveWorkflowIrForTask(store, task.id, options.irCache, options.selectionCache);
     if (ir) requiredPreMergeStepIds = resolveRequiredPreMergeStepIds(ir, task.enabledWorkflowSteps, task);
   } catch {
     /* No gate answer: the merge probe keeps the legacy results-only semantics. */
@@ -320,11 +339,12 @@ async function resolveReviewBypassForTask(
   store: TaskStore,
   task: Task,
   irCache: Map<string, WorkflowIr>,
+  selectionCache?: WorkflowSelectionCache,
 ): Promise<ReviewBypassTarget | undefined> {
   // Derivation gate 1 needs no IR and answers most of a board: a paused card is refused by the store too.
   if (task.paused === true) return undefined;
   try {
-    const ir = await resolveWorkflowIrForTask(store, task.id, irCache);
+    const ir = await resolveWorkflowIrForTask(store, task.id, irCache, selectionCache);
     const lanes = resolveReviewBypassLanes(ir);
     if (!lanes.includes(task.column)) return undefined;
     const requiredStepIds = ir
@@ -363,26 +383,11 @@ export async function getTaskImpl(store: TaskStore, id: string, options?: { acti
       });
       if (!pgRow) {
         /*
-        FNXC:PostgresArchiveReads 2026-07-14-17:09:
-        Archive is cold storage, not deletion from the public read model. Task detail must fall back to the project-scoped archive snapshot so an archived card remains inspectable after its live row is tombstoned.
+        FNXC:TaskLookup404 2026-07-26-11:20:
+        Missing and soft-deleted tasks are absent from the live task-detail model. Historical snapshots
+        remain internal migration/forensic records and cannot resurrect a deleted card through getTask.
         */
-        const archived = await getArchivedTask(layer.db, id, layer.projectId);
-        if (!archived) {
-          /*
-          FNXC:TaskLookup404 2026-07-26-11:20:
-          Backend/Postgres miss. Throw the typed TaskNotFoundError (message kept
-          byte-identical to the legacy `Task ${id} not found` string) so route
-          catches can map it to 404. Nothing on this path sets an errno `code`,
-          so the routes' legacy ENOENT check never fired and every unknown task
-          id 500'd.
-          */
-          throw new TaskNotFoundError(id);
-        }
-        const archivedTask = store.archiveEntryToTask(archived, false);
-        return {
-          ...archivedTask,
-          prompt: archived.prompt ?? store.generatePromptFromArchiveEntry(archived),
-        };
+        throw new TaskNotFoundError(id);
       }
       const task = store.rowToTask(store.pgRowToTaskRow(pgRow));
       const now = Date.now();
@@ -402,8 +407,13 @@ export async function getTaskImpl(store: TaskStore, id: string, options?: { acti
       // FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174): one IR cache for this detail read — review
       // lanes, the stall derivation's required-gate ids, and any dependency-satisfaction lanes all
       // share it, so the card's workflow is read once no matter how many signals want it.
+      // FNXC:TaskReadsThreading 2026-09-06 (merge origin/main dd808ed2c6): the same single-pass rule
+      // now covers the workflow-SELECTION cache — upstream's resolver signature takes a 4th cache
+      // argument and `reads-selection-cache-threading.test.ts` ratchets that every >2-arg call sites
+      // threads it, so the detail path pairs detailIrCache with its own selection cache.
       const detailIrCache = new Map<string, WorkflowIr>();
-      const reviewColumnsForTask: InReviewStallContext["reviewColumns"] = await resolveReviewColumnsForTask(store, task.id, detailIrCache);
+      const detailSelectionCache = new Map<string, import("../workflows/workflow-ir-resolver.js").WorkflowSelection | undefined>();
+      const reviewColumnsForTask: InReviewStallContext["reviewColumns"] = await resolveReviewColumnsForTask(store, task.id, detailIrCache, detailSelectionCache);
       const hasFreshAgentLogActivity = hasFreshAgentLogActivitySinceTaskUpdate(store, task, now, reviewColumnsForTask);
       const executingTaskIds = hasFreshAgentLogActivity ? new Set<string>([task.id]) : undefined;
       /*
@@ -466,13 +476,14 @@ export async function getTaskImpl(store: TaskStore, id: string, options?: { acti
         settings,
         suppressed: mergeQueuedTaskIds.has(task.id) || hasFreshAgentLogActivity,
         reviewColumns: reviewColumnsForTask,
-        lifecycle: await resolveTaskLifecycleColumns(store, task.id, detailIrCache),
+        lifecycle: await resolveTaskLifecycleColumns(store, task.id, detailIrCache, detailSelectionCache),
         irCache: detailIrCache,
+        selectionCache: detailSelectionCache,
         localColumnByTaskId: new Map([[task.id, task.column]]),
       });
       /* FNXC:ReviewLaneBypass 2026-09-03-13:15 (RUFU-179): detail-view parity with the board feed.
          Not suppressed on merge-queue or activity — the capability must survive the wedge it is for. */
-      task.reviewBypass = await resolveReviewBypassForTask(store, task, detailIrCache);
+      task.reviewBypass = await resolveReviewBypassForTask(store, task, detailIrCache, detailSelectionCache);
       /*
       FNXC:TaskDetailPromptResilience 2026-07-10-15:00 (merge port from main):
       PROMPT.md is enrichment for the task detail — NOT essential row data.
@@ -502,14 +513,53 @@ export async function getTaskImpl(store: TaskStore, id: string, options?: { acti
 });
   }
 
-export async function listTasksImpl(store: TaskStore, options?: { limit?: number; offset?: number; /** When false, exclude tasks in the `archived` column. Default: true (backward compatible). */ includeArchived?: boolean; /** When true, omit heavy fields (log, comments, steps, workflowStepResults, steeringComments) * from each row to make list responses cheap for board-style consumers. Detail fields default * to empty arrays in the returned Task objects; use `getTask(id)` to load full data. */ slim?: boolean; /** Restrict to a single column (e.g. 'in-review' for the auto-merge sweep). * Widened to {@link ColumnId} (#1403) so custom-column filters are accepted. */ column?: ColumnId; /** Opt-in startup-only memo for repeated slim reads during boot choreography. */ startupMemo?: boolean; /** Forensic read: surface soft-deleted tasks (deletedAt IS NOT NULL). * VAL-DATA-006 — only admin/forensic surfaces should set this; live readers * must leave it unset so tombstoned tasks stay off the board (VAL-DATA-005). */ includeDeleted?: boolean; }): Promise<Task[]> {
-    const includeArchived = options?.includeArchived ?? true;
+export interface ListTasksOptions {
+  limit?: number;
+  offset?: number;
+  /** Historical compatibility snapshots participate only when explicitly requested. */
+  includeArchived?: boolean;
+  /** Omit heavy detail fields for board-style consumers. */
+  slim?: boolean;
+  /** Restrict to one or several custom-capable column ids. */
+  column?: ColumnId;
+  columns?: readonly ColumnId[];
+  /** Exclude one or several custom-capable column ids. */
+  excludeColumns?: readonly ColumnId[];
+  /** Select the SQL page by creation or latest completion-lane entry. */
+  sort?: "created-asc" | "completion-desc" | TaskColumnSortMode;
+  startupMemo?: boolean;
+  /** Forensic-only: include soft-deleted rows. */
+  includeDeleted?: boolean;
+  /*
+  FNXC:WorkflowScheduling 2026-09-06-09:41:
+  FN-9261 lets a caller own the per-pass workflow-selection cache and read tally so a list
+  hydration batches selection reads once instead of issuing one per row. Both stay optional:
+  an omitted cache means the pass allocates its own and the tally is simply not reported.
+  */
+  selectionCache?: WorkflowSelectionCache;
+  selectionReadTally?: WorkflowSelectionReadTally;
+}
+
+export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions): Promise<Task[]> {
+    /*
+    FNXC:TaskArchiveRemoval 2026-09-04-18:25:
+    Ordinary task reads are live-only by default. Cold archive snapshots remain available solely to
+    explicit migration and forensic callers; an omitted compatibility flag must never resurrect
+    historical rows into schedulers, APIs, or workflow scans.
+    */
+    const includeArchived = options?.includeArchived ?? false;
     const slim = options?.slim ?? false;
     const columnFilter = options?.column;
     const startupMemoEnabled = options?.startupMemo ?? (!store.isWatching && slim);
 
     if (startupMemoEnabled && slim && options?.limit === undefined && options?.offset === undefined) {
-      const memoKey = `${includeArchived ? "all" : "active"}:${columnFilter ?? "*"}`;
+      const memoKey = [
+        includeArchived ? "all" : "active",
+        columnFilter ?? "*",
+        options?.columns?.join(",") ?? "*",
+        options?.excludeColumns?.join(",") ?? "*",
+        options?.sort ?? "created-asc",
+      ].join(":");
       const now = Date.now();
       const cached = store.startupSlimListMemo.get(memoKey);
       if (cached && cached.expiresAt > now) {
@@ -556,24 +606,15 @@ export async function listTasksImpl(store: TaskStore, options?: { limit?: number
     const paginationOffset = Math.max(0, options?.offset ?? 0);
     const paginationLimit = options?.limit !== undefined ? Math.max(0, options.limit) : undefined;
     /*
-    FNXC:PostgresArchiveReads 2026-07-14-17:09:
-    Pagination belongs to the composed active-plus-archive result. When cold storage participates, fetch both sources before sorting, deduplicating, and slicing; paginating only project.tasks can make archived rows unreachable or shift them onto the wrong page.
+    FNXC:TaskArchiveRemoval 2026-09-04-18:25 DELIBERATE-LITERAL:
+    Explicit migration/forensic reads compose live rows with cold snapshots before global pagination.
+    A column filter admits cold storage only when it names the historical sentinel; no workflow
+    archive role participates.
     */
-    /*
-    FNXC:WorkflowResolvedColumns 2026-07-31-14:10 (fleet — reads.ts cluster):
-    "IS THE CALLER FILTERING TO THE ARCHIVE LANE?" — a role question about the FILTER, not a task.
-
-    Cold storage holds archived rows. Against the literal, a caller filtering to a renamed archive
-    lane took this branch as false, so cold storage was skipped and the filtered view returned only
-    whatever archived rows still sat in `project.tasks` — a short list presented as the whole archive.
-
-    `resolveProjectColumnsForRoles` seeds the legacy id before adding resolved ones, so an unconverted
-    board is byte-identical and a resolution failure keeps the previous answer.
-    */
-    const archivedFilterLanes = await resolveProjectColumnsForRoles(store, ["archived"]).catch(() => undefined);
-    const columnFilterIsArchive = columnFilter !== undefined
-      && (archivedFilterLanes && archivedFilterLanes.size > 0 ? archivedFilterLanes : LEGACY_ARCHIVE_LANES).has(columnFilter);
-    const includeColdStorage = includeArchived && (!columnFilter || columnFilterIsArchive);
+    const historicalSentinels = ARCHIVED_SENTINEL_LANES;
+    const columnFilterIsHistorical = columnFilter !== undefined
+      && (historicalSentinels && historicalSentinels.size > 0 ? historicalSentinels : LEGACY_ARCHIVE_LANES).has(columnFilter);
+    const includeColdStorage = includeArchived && (!columnFilter || columnFilterIsHistorical);
     const boundedMergedPrefix = includeColdStorage && paginationLimit !== undefined
       ? paginationOffset + paginationLimit
       : undefined;
@@ -582,7 +623,10 @@ export async function listTasksImpl(store: TaskStore, options?: { limit?: number
     const filteredRows = await readLiveTaskRows(layer, {
       includeDeleted: options?.includeDeleted,
       column: columnFilter ?? undefined,
-      excludeColumn: !columnFilter && !includeArchived ? "archived" : undefined,
+      columns: options?.columns,
+      excludeColumn: !columnFilter && !options?.columns && !options?.excludeColumns && !includeArchived ? "archived" : undefined,
+      excludeColumns: options?.excludeColumns,
+      sort: options?.sort,
       ...(boundedMergedPrefix !== undefined
         ? { limit: boundedMergedPrefix, offset: 0 }
         : sqlPaginated
@@ -601,6 +645,13 @@ export async function listTasksImpl(store: TaskStore, options?: { limit?: number
     so reads scale with the number of WORKFLOWS, not the number of cards.
     */
     const listPassIrCache = new Map<string, WorkflowIr>();
+    /* FNXC:WorkflowScheduling 2026-09-05-23:12: List hydration prefetches once per pass; getTaskImpl remains individual because one row has no N+1. The tally reports store-internal reads to callers without changing badge fallback semantics. */
+    const listPassSelectionCache = options?.selectionCache ?? new Map<string, import("../workflows/workflow-ir-resolver.js").WorkflowSelection | undefined>();
+    const listSelectionReads = await prefetchWorkflowSelections(store, filteredRows.map((row) => String(row.id)), listPassSelectionCache);
+    if (options?.selectionReadTally) {
+      options.selectionReadTally.batched += listSelectionReads.batched;
+      options.selectionReadTally.singles += listSelectionReads.singles;
+    }
     /*
     FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174): the stall derivation's dependency resolver
     answers any reference covered by THIS page from the page's own rows — a board feed normally
@@ -639,10 +690,10 @@ export async function listTasksImpl(store: TaskStore, options?: { limit?: number
       main's FNXC:WorkflowLifecycle 2026-07-01-23:27 behavior, which the
       PostgreSQL cutover's store split predated.
       */
-      const reviewColumnsForRow = await resolveReviewColumnsForTask(store, task.id, listPassIrCache);
+      const reviewColumnsForRow = await resolveReviewColumnsForTask(store, task.id, listPassIrCache, listPassSelectionCache);
       // FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174): resolved once per row, consumed by BOTH
       // ageStaleness (which had it inline) and the stall derivation below — same cache, one answer.
-      const rowLifecycle = await resolveTaskLifecycleColumns(store, task.id, listPassIrCache);
+      const rowLifecycle = await resolveTaskLifecycleColumns(store, task.id, listPassIrCache, listPassSelectionCache);
       const hasFreshAgentLogActivity = hasFreshAgentLogActivitySinceTaskUpdate(store, task, now, reviewColumnsForRow);
       const executingTaskIds = hasFreshAgentLogActivity ? new Set<string>([task.id]) : undefined;
       task.inReviewStall = isMergeQueued ? undefined : getInReviewStallReason(task, {
@@ -675,7 +726,7 @@ export async function listTasksImpl(store: TaskStore, options?: { limit?: number
         // Paused-only (the signal is a no-op otherwise), sharing the list-pass
         // IR cache so one workflow is read once per pass, not once per card.
         holdColumn:
-          task.paused === true ? await resolveHoldColumnForTask(store, task.id, listPassIrCache) : undefined,
+          task.paused === true ? await resolveHoldColumnForTask(store, task.id, listPassIrCache, listPassSelectionCache) : undefined,
         engineActiveSinceMs: settings.engineActiveSinceMs,
         engineActivationGraceMs: settings.engineActivationGraceMs,
       });
@@ -716,13 +767,14 @@ export async function listTasksImpl(store: TaskStore, options?: { limit?: number
         reviewColumns: reviewColumnsForRow,
         lifecycle: rowLifecycle,
         irCache: listPassIrCache,
+        selectionCache: listPassSelectionCache,
         localColumnByTaskId,
       });
       /* FNXC:ReviewLaneBypass 2026-09-03-13:15 (RUFU-179): board-feed capability hydration. Derived
          BEFORE the slim strip below — the slim SQL projection still selects `workflow_step_results`
          (only `log` is dropped), so the derivation sees the same real results the full read does,
          and the capability reaches the slim board row the context menu renders from. */
-      task.reviewBypass = await resolveReviewBypassForTask(store, task, listPassIrCache);
+      task.reviewBypass = await resolveReviewBypassForTask(store, task, listPassIrCache, listPassSelectionCache);
       if (slim) {
         task.timedExecutionMs = store.computeTimedExecutionMs(task.log);
         task.log = [];
@@ -746,6 +798,11 @@ export async function listTasksImpl(store: TaskStore, options?: { limit?: number
     FNXC:PostgresArchiveReadPerformance 2026-07-14-17:50:
     A global page ending at K can only contain rows from each source's first K entries. Bound both SQL reads to K, then apply live-ID authority and the exact shared comparator before slicing. Unbounded callers retain the complete-result contract.
     */
+    if (!includeColdStorage && (
+      options?.sort === "completion-desc"
+      || options?.sort === "completion-date-desc"
+      || options?.sort === "task-id-desc"
+    )) return tasks;
     const archiveEntries = includeColdStorage
       ? boundedMergedPrefix !== undefined
         ? await listArchivedTasksByCreatedOrder(layer.db, boundedMergedPrefix, layer.projectId)
@@ -766,6 +823,46 @@ export async function listTasksImpl(store: TaskStore, options?: { limit?: number
     if (!includeColdStorage) return sorted;
     if (paginationLimit === undefined) return sorted.slice(paginationOffset);
     return sorted.slice(paginationOffset, paginationOffset + paginationLimit);
+}
+
+/**
+ * Return one bounded page from every workflow column carrying the `complete`
+ * trait, along with an exact project-scoped total.
+ *
+ * FNXC:DonePagination 2026-09-04-10:36:
+ * Done is the only visible task-history lane after archive removal. Resolve all
+ * configured completion columns, select the newest 50 rows in SQL, and count
+ * all matching live rows separately so the header remains exact while the DOM
+ * and network payload stay bounded.
+ *
+ * FNXC:DonePagination 2026-09-04-19:28:
+ * Apply the requested completion-date or task-id order before LIMIT/OFFSET. Every page in one
+ * browser sort session therefore shares the same deterministic SQL order and textual id tie-break.
+ */
+export async function listCompletedTasksImpl(
+  store: TaskStore,
+  options?: { limit?: number; offset?: number; slim?: boolean; sort?: TaskColumnSortMode },
+): Promise<{ tasks: Task[]; total: number; hasMore: boolean }> {
+  const rawLimit = options?.limit ?? 50;
+  const limit = Math.min(500, Math.max(1, Math.trunc(rawLimit) || 50));
+  const offset = Math.max(0, Math.trunc(options?.offset ?? 0) || 0);
+  const completeColumns = [...await resolveProjectColumnsForRoles(store, ["complete"])] as ColumnId[];
+  const layer = store.asyncLayer;
+  if (!layer) throw new Error("Completed-task pagination requires the async task backend");
+
+  const [total, tasks] = await Promise.all([
+    countLiveTasks(layer, { columns: completeColumns }),
+    store.listTasks({
+      columns: completeColumns,
+      includeArchived: false,
+      limit,
+      offset,
+      slim: options?.slim ?? true,
+      sort: options?.sort ?? "completion-date-desc",
+      startupMemo: false,
+    }),
+  ]);
+  return { tasks, total, hasMore: offset + tasks.length < total };
 }
 
 export async function listTasksModifiedSinceImpl(store: TaskStore, since: string, limit?: number, opts?: { includeArchived?: boolean },): Promise<{ tasks: Task[]; hasMore: boolean }> {
@@ -806,24 +903,14 @@ export async function listTasksModifiedSinceImpl(store: TaskStore, since: string
     ];
     if (!includeArchived) {
       /*
-      FNXC:WorkflowResolvedColumns 2026-07-31-09:10:
-      ARCHIVED ROWS LEAKED INTO THE LIVE STREAM ON A RENAMED BOARD.
-
-      This filter backs the SSE watcher and modified-since polling — the incremental feed the
-      dashboard applies to its live task list. It excluded the literal `archived`, so on a board
-      whose archive lane is named anything else the predicate matched EVERY row and excluded
-      nothing: archived cards arrived in the live feed and reappeared on the board.
-
-      Nothing errors, and a full refetch filters archived rows by another path, so the symptom is
-      archived work that comes back until the next reload.
-
-      `resolveProjectColumnsForRoles` seeds the legacy ids before adding resolved ones, so the set is
-      never empty and an unconverted board excludes exactly `archived` as before. The fallback covers
-      a resolution failure, where excluding nothing would be worse than excluding the legacy id.
+      FNXC:TaskArchiveRemoval 2026-09-04-18:25 DELIBERATE-LITERAL:
+      This filter backs the SSE watcher and modified-since polling, so it must never publish the
+      historical `archived` sentinel into the dashboard's live task list. Archive is no longer a
+      workflow role; the fixed sentinel exclusion is migration compatibility, not trait resolution.
       */
-      const archivedColumns = await resolveProjectColumnsForRoles(store, ["archived"]).catch(() => undefined);
-      if (archivedColumns && archivedColumns.size > 0) {
-        conditions.push(notInArray(schema.project.tasks.column, [...archivedColumns]));
+      const historicalSentinels = ARCHIVED_SENTINEL_LANES;
+      if (historicalSentinels && historicalSentinels.size > 0) {
+        conditions.push(notInArray(schema.project.tasks.column, [...historicalSentinels]));
       } else {
         conditions.push(sql`${schema.project.tasks.column} != 'archived'`);
       }
@@ -868,14 +955,23 @@ export async function listTasksModifiedSinceImpl(store: TaskStore, since: string
     */
     const reviewColumnsByTaskId = new Map<string, ReadonlySet<string>>();
     const lifecycleByTaskId = new Map<string, Awaited<ReturnType<typeof resolveTaskLifecycleColumns>>>();
+    /*
+    FNXC:WorkflowScheduling 2026-09-06 (merge origin/main dd808ed2c6):
+    The selection prefetch is hoisted OUT of the lane-resolution block so the stall/bypass prelude
+    below shares the one populated cache — the modified-since batching test counts exactly ONE batch
+    read per pass, and a second prefetch or un-threaded hydrator would break the zero-singles rule.
+    */
+    const selectionCache = new Map<string, import("../workflows/workflow-ir-resolver.js").WorkflowSelection | undefined>();
+    await prefetchWorkflowSelections(store, pageRows.map((row) => row.id), selectionCache);
     {
+      /* FNXC:WorkflowScheduling 2026-09-05-23:12: Incremental hydration resolves multiple lanes per row, so selection prefetch prevents its former 2–3 reads per task while absent selections retain builtin:coding behavior. */
       const irCache = new Map<string, WorkflowIr>();
       for (const pgRow of pageRows) {
         const row = store.pgRowToTaskRow(pgRow);
-        reviewColumnsByTaskId.set(row.id, await resolveReviewColumnsForTask(store, row.id, irCache));
-        lifecycleByTaskId.set(row.id, await resolveTaskLifecycleColumns(store, row.id, irCache));
+        reviewColumnsByTaskId.set(row.id, await resolveReviewColumnsForTask(store, row.id, irCache, selectionCache));
+        lifecycleByTaskId.set(row.id, await resolveTaskLifecycleColumns(store, row.id, irCache, selectionCache));
         if (store.rowToTask(row).paused !== true) continue;
-        holdColumnByTaskId.set(row.id, await resolveHoldColumnForTask(store, row.id, irCache));
+        holdColumnByTaskId.set(row.id, await resolveHoldColumnForTask(store, row.id, irCache, selectionCache));
       }
     }
     /*
@@ -907,7 +1003,7 @@ export async function listTasksModifiedSinceImpl(store: TaskStore, since: string
         /* FNXC:ReviewLaneBypass 2026-09-03-13:15 (RUFU-179): computed BEFORE the stall-suppression
            branch below and never skipped by it — merge-queued or actively-logging cards keep their
            capability; only the store's own gates (lane, pause, gate state) decide. */
-        reviewBypassByTaskId.set(task.id, await resolveReviewBypassForTask(store, task, irCache));
+        reviewBypassByTaskId.set(task.id, await resolveReviewBypassForTask(store, task, irCache, selectionCache));
         const reviewColumnsForRow = reviewColumnsByTaskId.get(task.id) ?? new Set<string>(["in-review"]);
         if (mergeQueuedTaskIds.has(task.id) || hasFreshAgentLogActivitySinceTaskUpdate(store, task, now, reviewColumnsForRow)) {
           stallReasonByTaskId.set(task.id, undefined);
@@ -920,6 +1016,7 @@ export async function listTasksModifiedSinceImpl(store: TaskStore, since: string
           reviewColumns: reviewColumnsForRow,
           lifecycle: lifecycleByTaskId.get(task.id),
           irCache,
+          selectionCache,
           localColumnByTaskId,
         }));
       }
@@ -1032,7 +1129,7 @@ export async function searchTasksImpl(store: TaskStore, query: string, options?:
     const limit = options?.limit;
     const offset = options?.offset ?? 0;
     if (limit !== undefined && Math.max(0, limit) === 0) return [];
-    const includeArchived = options?.includeArchived ?? true;
+    const includeArchived = options?.includeArchived ?? false;
     const slim = options?.slim ?? false;
     // The tsvector path is the primary search (GIN-backed). The LIKE path is
     // a fallback if the tsvector query returns no results (e.g., if the search
@@ -1044,21 +1141,15 @@ export async function searchTasksImpl(store: TaskStore, query: string, options?:
     const sourceOffset = includeArchived ? 0 : offset;
     /*
     FNXC:WorkflowResolvedColumns 2026-07-31-23:59:
-    Search excludes the board's OWN archive lanes, not the `archived` id. Against the literal, a card
-    filed away on a renamed board still surfaced in every live search — including the CREATE-time
-    near-duplicate check, which would then reject a new task as a duplicate of one the operator had
-    already archived.
-
-    Resolved once here and threaded into both search paths. `resolveArchivedLanes` returns undefined
-    on an unreadable workflow list, and `liveSearchPredicate` falls back to the literal, so an
-    unconverted board is byte-identical.
+    Live search excludes the stable historical sentinel and soft-deleted rows. Internal forensic
+    reads may explicitly compose cold snapshots, but no workflow archive role participates.
     */
-    const searchArchivedLanes = await resolveProjectColumnsForRoles(store, ["archived"]).catch(() => undefined);
+    const searchHistoricalSentinels = ARCHIVED_SENTINEL_LANES;
     let pgRows = await searchTasksTsvector(layer.db, trimmedQuery, {
       limit: sourceLimit,
       offset: sourceOffset,
       includeArchived,
-      archivedColumns: searchArchivedLanes,
+      archivedColumns: searchHistoricalSentinels,
       // FNXC:MultiProjectIsolation 2026-07-10: scope search to the bound project
       // (load-bearing for the CREATE-time near-duplicate check via searchTasks).
       projectId: layer.projectId,
@@ -1068,7 +1159,7 @@ export async function searchTasksImpl(store: TaskStore, query: string, options?:
         limit: sourceLimit,
         offset: sourceOffset,
         includeArchived,
-        archivedColumns: searchArchivedLanes,
+        archivedColumns: searchHistoricalSentinels,
         projectId: layer.projectId,
       });
     }
@@ -1086,6 +1177,9 @@ export async function searchTasksImpl(store: TaskStore, query: string, options?:
         searchLocalColumns.set(pgRow.id, pgRow.column);
       }
     }
+    /* FNXC:WorkflowScheduling 2026-09-05-23:12: Search hydration has the same per-row selection N+1 as board lists; prefetch retains the default workflow for cached absent selections. */
+    const searchPassSelectionCache = new Map<string, import("../workflows/workflow-ir-resolver.js").WorkflowSelection | undefined>();
+    await prefetchWorkflowSelections(store, pgRows.map((row) => String(row.id)), searchPassSelectionCache);
     const tasks = await Promise.all(pgRows.map(async (pgRow) => {
       const task = store.rowToTask(store.pgRowToTaskRow(pgRow));
       const isMergeQueued = mergeQueuedTaskIds.has(task.id);
@@ -1100,10 +1194,10 @@ export async function searchTasksImpl(store: TaskStore, query: string, options?:
       */
       /* FNXC:WorkflowLifecycleColumns 2026-07-31-01:20 (fleet): resolved ONCE for this row — it was
          resolved inline twice below, and the fresh-activity gate could not see it at all. */
-      const reviewColumnsForRow = await resolveReviewColumnsForTask(store, task.id, searchPassIrCache);
+      const reviewColumnsForRow = await resolveReviewColumnsForTask(store, task.id, searchPassIrCache, searchPassSelectionCache);
       // FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174): one struct build on the shared cache,
       // consumed by the stall derivation below (search never had a lifecycle need of its own).
-      const rowLifecycle = await resolveTaskLifecycleColumns(store, task.id, searchPassIrCache);
+      const rowLifecycle = await resolveTaskLifecycleColumns(store, task.id, searchPassIrCache, searchPassSelectionCache);
       const hasFreshAgentLogActivity = hasFreshAgentLogActivitySinceTaskUpdate(store, task, now, reviewColumnsForRow);
       const executingTaskIds = hasFreshAgentLogActivity ? new Set<string>([task.id]) : undefined;
       task.inReviewStall = isMergeQueued ? undefined : getInReviewStallReason(task, {
@@ -1135,12 +1229,13 @@ export async function searchTasksImpl(store: TaskStore, query: string, options?:
         reviewColumns: reviewColumnsForRow,
         lifecycle: rowLifecycle,
         irCache: searchPassIrCache,
+        selectionCache: searchPassSelectionCache,
         localColumnByTaskId: searchLocalColumns,
       });
       /* FNXC:ReviewLaneBypass 2026-09-03-13:15 (RUFU-179): search parity — a card reached through
          search offers exactly what the board and detail views offer. Search rows are full selects,
          and the slim strip below only zeroes `log`, so results are real here too. */
-      task.reviewBypass = await resolveReviewBypassForTask(store, task, searchPassIrCache);
+      task.reviewBypass = await resolveReviewBypassForTask(store, task, searchPassIrCache, searchPassSelectionCache);
       if (slim) {
         task.timedExecutionMs = store.computeTimedExecutionMs(task.log);
         task.log = [];

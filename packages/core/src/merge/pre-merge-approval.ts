@@ -49,35 +49,19 @@ export function isAuditedOperatorBypass(
 }
 
 /*
-FNXC:PreMergeApproval 2026-09-02-21:57:
-RUFU-172: `archiveTerminalWorkflowStepFailures` turns a terminal gate failure into `skipped` stamped
-with `remediationArchivedAt`, and it deliberately strips bypass AND arbitration metadata. The refusal
-below (`!!result.remediationArchivedAt` → not-approved) is correct — that carrier must never approve —
-but `not-approved` is the *unsatisfiable* answer: FN-9243 re-seeds only gates with no result row,
-FN-7720 operator bypass selects only `status === "failed"`, and FN-245 removed every `force` path. The
-carrier therefore needed a recovery path and had none, so a fully Code-Review-approved card sat
-`in-review` for ~14h and was landed by hand.
+FNXC:PreMergeApproval 2026-09-02-21:57 (SUPERSEDED — see FNXC:PreMergeApproval 2026-09-06 below):
+RUFU-172/178 classified a verdict-less remediation carrier as `missing` so FN-9243's re-seed would run
+the gate again, replacing the unsatisfiable `not-approved` refusal that stranded FN-9243 cards.
 
-This carrier means exactly one observable thing: the gate produced no current verdict, which IS the
-existing recoverable not-run state. Classifying it `missing` routes the card to
-`PRE_MERGE_STEPS_NOT_RUN_BLOCKER` — a deferral that refuses every merge door AND feeds FN-9243's bounded
-in-place re-seed, so the gate RUNS AGAIN and reports a genuine verdict. No verdict is invented: the two
-skipped shapes that DO carry authority stay out of this rule — an audited operator bypass
-(`isAuditedOperatorBypass`) and an arbitrated release (`arbitrationDecision`) — and the workspace branch
-keeps its own `repositoryScope` proof carrier, mirroring the absent-row guard above.
+FNXC:PreMergeApproval 2026-09-06 (merge origin/main dd808ed2c6, FN-295):
+Upstream FN-295 shipped a different recovery for the same wedge and the classifier now defers to it.
+An archived carrier stays `not-approved`; recovery is (a) `auditedOperatorWaiver` — an audited FN-7720
+bypass satisfies the gate in place, and (b) `resolveCollateralArchivedReviewGate` — self-healing
+restores a carrier that was archived as COLLATERAL of another gate's remediation back to its
+recoverable `failed` state. `getLatestFailedPreMergeReviewStep` selects the carrier for the operator
+bypass directly. RUFU-178's `isReRunnableRemediationCarrier` → `missing` branch is therefore DELETED:
+keeping it would pre-empt the `not-approved` answer upstream's tests and diagnostics reason about.
 */
-export function isReRunnableRemediationCarrier(
-  result: Pick<
-    WorkflowStepResult,
-    "status" | "remediationArchivedAt" | "bypassedBy" | "bypassedAt" | "bypassReason" | "arbitrationDecision"
-  >,
-  descriptor: MergeContentDescriptor | undefined,
-): boolean {
-  return result.remediationArchivedAt != null
-    && !isAuditedOperatorBypass(result)
-    && result.arbitrationDecision === undefined
-    && descriptor?.kind !== "workspace";
-}
 
 const UNPROVEN_REVIEW_APPROVAL_DIAGNOSTIC = "Content-binding review approval recorded without reviewInputFingerprint; approval invalidated so the gate can run again.";
 
@@ -87,6 +71,54 @@ A proofless content approval is already terminal `passed`, so neither the failed
 pending-step resume surface can select it. Rewrite only that invalid singular approval to `failed`,
 never delete it, so recovery can re-run the gate and the operator retains a selectable audit carrier.
 */
+/*
+FNXC:PreMergeApproval 2026-09-05-22:11:
+FN-295: `archiveTerminalWorkflowStepFailures` archives EVERY terminal failure on the card, not only the
+gate whose remediation is running. A Plan Review row that a restart had left `pending` — rewritten to
+`failed` by the FN-8492 orphaned-step sweep, never by a reviewer — was therefore archived as collateral
+of a Code Review remediation. The archived carrier is then a permanent merge veto (`remediationArchivedAt`
+is unconditional below) that NO recovery owns: the reseed handles only `missing`, the stale-content
+reroute only `stale-content`, and the FN-7720 operator bypass selects only `status:"failed"`. Measured on
+FN-295: three review restarts each re-ran Code Review and Documentation successfully and still merged
+nothing, because the poisoned row is in neither of those lanes.
+
+This resolver restores such a collateral carrier to the terminal failure it actually was, so the card is
+recoverable again through the ordinary audited bypass. It deliberately does NOT approve anything: no
+verdict is written, and a row carrying a real operator waiver (`bypassedBy`) or belonging to the gate that
+owns the remediation wave is never touched.
+*/
+export const COLLATERAL_ARCHIVED_REVIEW_GATE_DIAGNOSTIC =
+  "Gate archived as collateral of another gate's remediation and restored to its recoverable failed state by self-healing. No reviewer verdict was fabricated; re-run or bypass this gate to clear the merge door.";
+
+export function resolveCollateralArchivedReviewGate(
+  result: WorkflowStepResult,
+  options: { remediationGateIds: ReadonlySet<string> },
+): { restored: WorkflowStepResult; reason: string } | undefined {
+  const archivedFrom = result.remediationArchivedFromStatus;
+  if ((result.phase ?? "pre-merge") !== "pre-merge"
+    || result.status !== "skipped"
+    || result.remediationArchivedAt == null
+    || result.bypassedBy !== undefined
+    || (archivedFrom !== "failed" && archivedFrom !== "advisory_failure")
+    || options.remediationGateIds.has(result.workflowStepId)) {
+    return undefined;
+  }
+  const {
+    remediationArchivedAt: _archivedAt,
+    remediationArchivedFromStatus: _archivedFrom,
+    ...rest
+  } = result;
+  return {
+    restored: {
+      ...rest,
+      status: archivedFrom,
+      output: COLLATERAL_ARCHIVED_REVIEW_GATE_DIAGNOSTIC,
+      notes: COLLATERAL_ARCHIVED_REVIEW_GATE_DIAGNOSTIC,
+    },
+    reason: COLLATERAL_ARCHIVED_REVIEW_GATE_DIAGNOSTIC,
+  };
+}
+
 export function resolveUnprovenReviewApproval(
   result: WorkflowStepResult,
   options: { workspace: boolean },
@@ -133,9 +165,6 @@ function evaluateStep(
   // Workspace Code Review persists its positive proof in repositoryScope so it survives
   // the intentional workflow-result remediation wipe; singular tasks have no such carrier.
   if (!result && descriptor?.kind !== "workspace") return { workflowStepId, state: "missing" };
-  // RUFU-178: a remediation-archived carrier has no verdict to honour, so it is the not-run state
-  // and must reach the re-seed seam rather than the unsatisfiable `not-approved` refusal.
-  if (result && isReRunnableRemediationCarrier(result, descriptor)) return { workflowStepId, state: "missing" };
   if (result) {
     /*
     FNXC:ReviewVerdictAuthority 2026-09-02-19:25:
@@ -160,25 +189,15 @@ function evaluateStep(
       || (result.status === "skipped" && !!result.bypassedBy)
       || notRunApproves;
     /*
-    FNXC:PreMergeApproval 2026-09-02-22:35 (RUFU-178):
-    The archive refusal inside this block used to be unconditional, so even a fully audited FN-7720
-    operator bypass recorded on top of an archived carrier stayed `not-approved` — recreating the
-    unsatisfiable class this card removes (a waiver that waives nothing). The refusal now yields only
-    to `isAuditedOperatorBypass` on a singular task: the operator's audited release IS the answer, so
-    it may not route back into the re-seed either. Arbitration records keep today's refusal (they are
-    verify-and-file scope), workspace carriers keep byte-identical evidence semantics because their
-    positive proof lives in `repositoryScope`, and verdict-less archives never reach here at all —
-    they classify `missing` earlier and get the gate re-run.
+    FNXC:PreMergeApproval 2026-09-06-00:47:
+    Remediation archives suppress automatic re-approval, but cannot disarm the audited FN-7720
+    operator waiver. Without this narrow exception, a crash-archived gate is permanently unmergeable.
     */
-    const archivedReleasedByAuditedBypass = result.remediationArchivedAt != null
-      && descriptor?.kind !== "workspace"
-      && isAuditedOperatorBypass(result);
-    if (!approved || (!!result.remediationArchivedAt && !archivedReleasedByAuditedBypass)) {
-      return { workflowStepId, state: "not-approved" };
-    }
+    const auditedOperatorWaiver = isAuditedOperatorBypass(result) && descriptor?.kind !== "workspace";
+    if (!approved || (result.remediationArchivedAt != null && !auditedOperatorWaiver)) return { workflowStepId, state: "not-approved" };
     // Plan fingerprints bind plan text rather than source diff and must never be cross-compared.
     if (result.reviewKind === "plan") return { workflowStepId, state: "approved" };
-    if (isAuditedOperatorBypass(result) && descriptor?.kind !== "workspace") {
+    if (auditedOperatorWaiver) {
       return { workflowStepId, state: "approved" };
     }
     /*

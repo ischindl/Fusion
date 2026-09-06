@@ -963,7 +963,6 @@ describe("TaskDetailModal", () => {
       const mobileCss = css.slice(css.indexOf("@media (max-width: 768px)"));
 
       const expandedTitleRule = getCssRuleBlock(css, ".task-detail-content--chat-expanded .detail-title-row");
-      const expandedMetaRule = getCssRuleBlock(css, ".task-detail-content--chat-expanded .detail-meta");
       const expandedTabsRule = getCssRuleBlock(css, ".task-detail-content--chat-expanded .detail-tabs");
       const expandedActionsRule = getCssRuleBlock(css, ".task-detail-content--chat-expanded .modal-actions");
       const expandedHeaderRule = getCssRuleBlock(css, ".task-detail-content--chat-expanded .modal-header");
@@ -985,7 +984,7 @@ describe("TaskDetailModal", () => {
       expect(mobileCss).not.toContain("  .detail-activity {\n    padding-inline-end:");
       expect(mobileCss).toContain("  .activity-expand-toggle--overlay {\n    top: var(--space-sm);\n    right: var(--space-sm);\n  }");
       expect(expandedTitleRule).not.toContain("display: none");
-      expect(expandedMetaRule).toContain("display: none");
+      expect(css).not.toContain(".task-detail-content--chat-expanded .detail-meta");
       expect(expandedTabsRule).toContain("display: flex");
       expect(expandedActionsRule).toContain("display: none");
       expect(expandedHeaderRule).toContain("justify-content: space-between");

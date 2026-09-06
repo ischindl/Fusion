@@ -12,12 +12,13 @@ import type {
   CapacityRiskSignal,
   ColorTheme,
   ColumnId,
+  DashboardInboxCategory,
   GithubIssueAction,
   MergeResult,
   Task,
-  TaskColumnSortMode,
   TaskCreateInput,
   TaskDetail,
+  TaskColumnSortMode,
   ThemeMode,
   WorkflowStep,
   TraitFlags,
@@ -159,6 +160,9 @@ export interface MainContentProps {
   onSendAsReport?: (handoff: ChatReportHandoff) => void;
   onOpenChatWithPrefill?: (prefillText: string) => void;
   setMailboxUnreadCount: (count: number) => void;
+  recommendationUnreadCount: number;
+  artifactUnreadCount: number;
+  onMarkCategorySeen: (category: DashboardInboxCategory) => Promise<void>;
   setMissionTargetId: Dispatch<SetStateAction<string | undefined>>;
   setMissionResumeSessionId: Dispatch<SetStateAction<string | undefined>>;
   setMilestoneSliceResumeSessionId: Dispatch<SetStateAction<string | undefined>>;
@@ -217,13 +221,6 @@ export interface MainContentProps {
     updates: { title?: string; description?: string; dependencies?: string[]; dismissNearDuplicate?: boolean },
   ) => Promise<Task>;
   retryTask: (id: string) => Promise<Task>;
-  archiveTask: (id: string, options?: { removeLineageReferences?: boolean }) => Promise<Task>;
-  unarchiveTask: (id: string) => Promise<Task>;
-  /*
-  FNXC:TaskRevert 2026-07-05-00:00 (FN-7525):
-  Threaded alongside archiveTask/unarchiveTask; never mutates the source
-  task's column as a side effect (see route + client contract comments).
-  */
   revertTask: (id: string, body?: RevertTaskOptions) => Promise<RevertTaskResult>;
   deleteTask: (
     id: string,
@@ -234,18 +231,12 @@ export interface MainContentProps {
       allowResurrection?: boolean;
     },
   ) => Promise<Task>;
-  archiveAllDone: () => Promise<Task[]>;
-  loadArchivedTasks: () => Promise<void>;
-  /** FNXC:ArchivePagination 2026-07-08-00:00: FN-7659 — fetch the next 100-item page of archived tasks (newest-first). */
-  loadMoreArchivedTasks: () => Promise<void>;
-  /** Board action callback that commits Archive order only after its first replacement page succeeds. */
-  changeArchivedSortMode: (mode: TaskColumnSortMode) => Promise<void>;
-  /** Committed server-backed Archive order. */
-  archivedSortMode: TaskColumnSortMode;
-  /** Whether another page of archived tasks is available beyond what is currently loaded. */
-  archivedHasMore: boolean;
-  /** True while a "Show more" archived page fetch is in flight. */
-  archivedLoadingMore: boolean;
+  loadMoreCompletedTasks: () => Promise<void>;
+  completedTotal: number;
+  completedHasMore: boolean;
+  completedLoadingMore: boolean;
+  completedSortMode: TaskColumnSortMode;
+  changeCompletedSortMode: (mode: TaskColumnSortMode) => Promise<void>;
   searchQuery: string;
   availableModels: ModelInfo[];
   favoriteProviders: string[];

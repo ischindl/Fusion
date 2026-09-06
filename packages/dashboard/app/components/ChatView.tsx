@@ -71,6 +71,7 @@ import { buildChatReportHandoff, type ChatReportHandoff } from "./chatReportHand
 import { matchChatCommand, filterChatCommands, getSlashTriggerMatch, selectChatCommands, type ChatCommand } from "./chat-commands";
 import { applySnippetToDraft, filterChatSnippets, matchStandaloneSnippetInvocation } from "./chat-snippets";
 import { useChatMessageLayout } from "../context/ChatMessageLayoutContext";
+import { useChatEnterSubmits } from "../context/ChatSubmitOnEnterContext";
 import {
   createChatInputAutosizeController,
   type ChatInputAutosizeController,
@@ -149,6 +150,7 @@ export interface ChatViewProps {
 
 const CHAT_CONTEXT_MENU_FALLBACK_WIDTH_PX = 200;
 const CHAT_CONTEXT_MENU_VIEWPORT_MARGIN_PX = 8;
+const CHAT_BOTTOM_FOLLOW_THRESHOLD_PX = 50;
 
 /** Returns an issue or pull-request URL as a standalone composer line. */
 export function buildIssueChatPrefill(url: string): string {
@@ -373,6 +375,7 @@ type CopyFeedbackState = "success" | "error" | null;
 export function ChatView({ projectId, addToast, floating = false, compactLayout = false, findActive = true, active = true, onPopOut, onMaximize, onClose, onOpenSessionInNewWindow, initialDirectSession, initialDirectSessionNonce, persistChatPreferences = true, chatCommandContext, initialComposerDraft, initialComposerDraftNonce, onSendAsReport }: ChatViewProps) {
   const { t } = useTranslation("app");
   const chatMessageLayout = useChatMessageLayout();
+  const enterSubmits = useChatEnterSubmits();
   useEffect(() => {
     recordResumeEvent({
       view: "ChatView",
@@ -649,11 +652,17 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
   const [copyFeedbackByMessageId, setCopyFeedbackByMessageId] = useState<Record<string, CopyFeedbackState>>({});
   const { pushNav, removeNav } = useNavigationHistoryContext();
 
-  // File mention state and hook
+  // Hash mention state and hook
   const [, setFileMentionPopupVisible] = useState(false);
   const [fileMentionPosition, setFileMentionPosition] = useState({ top: 0, left: 0 });
+  const mentionConversations = useMemo(
+    () => sessions
+      .filter((session) => session.id !== activeSession?.id)
+      .map((session) => ({ id: session.id, title: session.title ?? null })),
+    [activeSession?.id, sessions],
+  );
 
-  const fileMention = useFileMention({ projectId });
+  const fileMention = useFileMention({ projectId, conversations: mentionConversations });
 
   // Calculate popup position based on caret position in textarea
   const updateFileMentionPosition = useCallback((textarea: HTMLTextAreaElement | null) => {
@@ -963,10 +972,18 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
     });
   }, [updateTopClippedMessages]);
 
-  const captureScrollSnapshot = useCallback(() => {
+  const captureScrollSnapshot = useCallback((synchronizeOwnershipFromGeometry = false) => {
     const messagesContainer = messagesContainerRef.current;
     const threadId = getActiveThreadId();
     if (!messagesContainer || !threadId) return;
+
+    let isDetached = isUserScrollingRef.current;
+    if (synchronizeOwnershipFromGeometry) {
+      const atBottom = messagesContainer.scrollTop + messagesContainer.clientHeight >= messagesContainer.scrollHeight - CHAT_BOTTOM_FOLLOW_THRESHOLD_PX;
+      isDetached = !atBottom;
+      isUserScrollingRef.current = isDetached;
+      setIsUserScrolling(isDetached);
+    }
 
     const scrollTop = messagesContainer.scrollTop;
     const messageElements = messagesContainer.querySelectorAll<HTMLElement>(".chat-message[data-message-id]");
@@ -983,7 +1000,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
       clientHeight: messagesContainer.clientHeight,
       anchorMessageId,
       anchorOffset,
-      wasPinnedBefore: !isUserScrollingRef.current,
+      wasPinnedBefore: !isDetached,
       capturedAtMs: typeof performance !== "undefined" ? performance.now() : Date.now(),
     };
   }, [getActiveThreadId]);
@@ -992,11 +1009,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
     const messagesContainer = messagesContainerRef.current;
     if (!messagesContainer) return;
 
-    const threshold = 50;
-    const atBottom = messagesContainer.scrollTop + messagesContainer.clientHeight >= messagesContainer.scrollHeight - threshold;
-    setIsUserScrolling(!atBottom);
-    isUserScrollingRef.current = !atBottom;
-    captureScrollSnapshot();
+    captureScrollSnapshot(true);
     scheduleTopClippedMessageUpdate();
   }, [captureScrollSnapshot, scheduleTopClippedMessageUpdate]);
 
@@ -1013,7 +1026,8 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
 
     const writeBottom = () => {
       if (!container.isConnected) return;
-      if (!options?.force && isUserScrollingRef.current) {
+      // A forced thread-opening write may run once, but every settle frame must yield to a later manual scroll.
+      if (isUserScrollingRef.current && (!options?.force || frame > 0)) {
         return;
       }
 
@@ -1064,19 +1078,21 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
     };
   }, [activeThreadMessages, scheduleTopClippedMessageUpdate]);
 
-  useLayoutEffect(() => {
+  /*
+  FNXC:ChatScrollAnchor 2026-09-06-07:42:
+  L’envoi capture la propriété du viewport avant l’ajout optimiste : un lecteur au seuil bas suit chaque croissance de la réponse, tandis qu’un lecteur détaché conserve son message-ancre, y compris à scrollTop === 0. Tout défilement manuel met à jour la propriété synchroniquement et neutralise les frames et observateurs déjà programmés ; seul un retour volontaire au seuil bas ou « Latest » réactive le suivi.
+
+  FNXC:ChatScrollAnchor 2026-09-06-07:56:
+  Les changements de réflexion, de texte et d’outils sont chacun des croissances autonomes du fil. Chacun doit donc relancer le suivi conditionnel du bas, même lorsqu’aucune autre forme de delta n’accompagne une mise à jour d’outil.
+  */
+  const restoreDetachedScrollSnapshot = useCallback(() => {
     const messagesContainer = messagesContainerRef.current;
     const threadId = getActiveThreadId();
     const snapshot = scrollRestoreSnapshotRef.current;
     if (!messagesContainer || !threadId || !snapshot || snapshot.threadId !== threadId || snapshot.wasPinnedBefore) {
       return;
     }
-
-    const snapshotAgeMs = (typeof performance !== "undefined" ? performance.now() : Date.now()) - snapshot.capturedAtMs;
-    const hasScrollableOverflow = messagesContainer.scrollHeight > messagesContainer.clientHeight;
-    const isStaleSnapshot = snapshotAgeMs > 3000;
-    const isLikelyInvalidTopSample = snapshot.scrollTop <= 0 && snapshot.anchorOffset <= 0 && hasScrollableOverflow;
-    if (!isUserScrollingRef.current || isStaleSnapshot || isLikelyInvalidTopSample) {
+    if (!isUserScrollingRef.current) {
       scrollRestoreSnapshotRef.current = null;
       return;
     }
@@ -1086,18 +1102,24 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
       const anchorElement = getMessageElement(messagesContainer, snapshot.anchorMessageId);
       if (anchorElement) {
         restoredScrollTop = anchorElement.offsetTop - snapshot.anchorOffset;
-      } else {
-        restoredScrollTop = snapshot.scrollTop + (messagesContainer.scrollHeight - snapshot.scrollHeight);
       }
-    } else {
-      restoredScrollTop = snapshot.scrollTop + (messagesContainer.scrollHeight - snapshot.scrollHeight);
     }
 
     messagesContainer.scrollTop = Math.max(0, restoredScrollTop);
+    scrollRestoreSnapshotRef.current = {
+      ...snapshot,
+      scrollTop: messagesContainer.scrollTop,
+      scrollHeight: messagesContainer.scrollHeight,
+      clientHeight: messagesContainer.clientHeight,
+      capturedAtMs: typeof performance !== "undefined" ? performance.now() : Date.now(),
+    };
     isUserScrollingRef.current = true;
     setIsUserScrolling(true);
-    scrollRestoreSnapshotRef.current = null;
-  }, [activeThreadMessages, getActiveThreadId, getMessageElement]);
+  }, [getActiveThreadId, getMessageElement]);
+
+  useLayoutEffect(() => {
+    restoreDetachedScrollSnapshot();
+  }, [activeThreadMessages, restoreDetachedScrollSnapshot]);
 
   const logScrollDebug = useCallback((cause: string) => {
     if (typeof window === "undefined") {
@@ -1107,9 +1129,8 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
       return;
     }
     const container = messagesContainerRef.current;
-    const threshold = 50;
     const atBottom = container
-      ? container.scrollTop + container.clientHeight >= container.scrollHeight - threshold
+      ? container.scrollTop + container.clientHeight >= container.scrollHeight - CHAT_BOTTOM_FOLLOW_THRESHOLD_PX
       : true;
     console.debug("[chat-scroll]", {
       cause,
@@ -1211,7 +1232,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
       return;
     }
     scrollToBottom("streaming");
-  }, [isStreaming, streamingText, streamingThinking, scrollToBottom]);
+  }, [isStreaming, streamingText, streamingThinking, streamingToolCalls, scrollToBottom]);
 
   // Snap to latest on new messages only when the user was pinned before growth.
   useEffect(() => {
@@ -1456,6 +1477,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
 
     const observer = new ResizeObserver(() => {
       if (isUserScrollingRef.current) {
+        restoreDetachedScrollSnapshot();
         return;
       }
       anchorToBottom(messagesContainer);
@@ -1466,7 +1488,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
     return () => {
       observer.disconnect();
     };
-  }, [anchorToBottom, activeSession?.id]);
+  }, [anchorToBottom, activeSession?.id, restoreDetachedScrollSnapshot]);
 
   // Fetch agents on mount for name resolution (project-scoped with stale-request protection)
   useEffect(() => {
@@ -1820,16 +1842,17 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
       return;
     }
 
-    if (isStreaming && files.length > 0) {
+    if ((isStreaming || pendingQueueAction) && files.length > 0) {
       /*
-      FNXC:ChatAttachments 2026-08-10-05:53:
-      Queued direct turns carry text only, so refuse staged attachments during a live reply rather than orphaning previews for files the queue cannot send.
+      FNXC:ChatAttachments 2026-09-06-00:48:
+      Queued direct turns carry text only, so refuse staged attachments while a live reply or its durable cancellation barrier owns dispatch rather than orphaning previews for files the queue cannot send. cancelAndReconcile clears isStreaming synchronously, so pendingQueueAction closes that otherwise invisible window here, where button and Enter submissions converge.
       */
       addToast(t("chat.attachmentsNotQueued", "Attachments can't be queued while a reply is streaming — wait for it to finish"), "warning");
       return;
     }
 
     const sentFiles = new Set(files);
+    captureScrollSnapshot(true);
     snippetDraftEphemeralRef.current = false;
     setMessageInput("");
     try {
@@ -1857,10 +1880,12 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
     sendMessage,
     chatCommandContext,
     isStreaming,
+    pendingQueueAction,
     releaseSentAttachments,
     selectedChatCommands,
     chatSnippets,
     insertSnippetDraft,
+    captureScrollSnapshot,
     t,
   ]);
 
@@ -2019,6 +2044,11 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
           const item = fileMention.combinedItems[fileMention.selectedIndex];
           if (item?.kind === "task") {
             insertHashMention(fileMention.selectTask(item.task, messageInput), `#${item.task.id}`);
+          } else if (item?.kind === "conversation") {
+            insertHashMention(
+              fileMention.selectConversation(item.conversation, messageInput),
+              `#${item.conversation.id}`,
+            );
           } else if (item?.kind === "file") {
             insertHashMention(fileMention.selectFile(item.file, messageInput), `#${item.file.path}`);
           }
@@ -2098,7 +2128,17 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
         return;
       }
 
+      /*
+      FNXC:ChatComposer 2026-09-06-01:54:
+      `Shift+Enter` n'envoie jamais, y compris combiné à `Cmd/Ctrl` : `Cmd/Ctrl+Shift+Enter` n'est pas un envoi. Elle insère un saut de ligne, sauf dans le Chat lorsqu'un menu d'autocomplétion est ouvert — les trois menus du Chat (fichiers/tâches, agents, compétences) la consomment alors sans insérer de saut de ligne. Dans le Chat de tâche et le Chat du planificateur, `Shift+Enter` traverse le menu et insère bien un saut de ligne.
+      `Cmd/Ctrl+Enter` sans `Shift` envoie, indépendamment du réglage `chatSubmitOnEnter` et du type de pointeur.
+      `Entrée` sans `Cmd/Ctrl` ni `Shift` est gouvernée par `chatSubmitOnEnter` ; `Alt` n'est pas un modificateur d'envoi et ne change rien à cette règle.
+      Les règles 2 et 3 s'appliquent lorsqu'aucun menu d'autocomplétion n'est ouvert. Un menu ouvert a la priorité et consomme `Entrée` comme `Cmd/Ctrl+Enter` ; `Échap` ferme le menu et rétablit les règles.
+      Dans le Chat de tâche uniquement, une composition IME en cours (saisie CJK) court-circuite tout, `Cmd/Ctrl+Enter` compris, jusqu'à la validation du candidat.
+      Le bouton d'envoi reste rendu et actif dès que le brouillon n'est pas vide — menu ouvert et composition IME compris. Sur brouillon vide il est désactivé, comme aujourd'hui.
+      */
       if (e.key === "Enter" && !e.shiftKey) {
+        if (!(e.metaKey || e.ctrlKey) && !enterSubmits) return;
         e.preventDefault();
         void handleSendDispatch();
       }
@@ -2115,6 +2155,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
       handleSnippetSelect,
       handleCommandSelect,
       handleSendDispatch,
+      enterSubmits,
       fileMention,
       insertHashMention,
       messageInput,
@@ -2755,6 +2796,20 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
     setCopyFeedback(messageId, copied ? "success" : "error");
   }, [setCopyFeedback]);
 
+  /*
+  FNXC:ChatSidebar 2026-09-04-09:58:
+  A conversation ID is the stable entry point for cross-conversation `#id` references. Keep copying in the shared right-click and three-dot menu so desktop and compact touch layouts expose the same action without adding row chrome.
+  */
+  const handleCopySessionId = useCallback(async (sessionId: string) => {
+    const copied = await copyTextToClipboard(sessionId);
+    setContextMenu(null);
+    if (copied) {
+      addToast(t("chat.conversationIdCopied", "Conversation ID copied"));
+    } else {
+      addToast(t("chat.copyFailed", "Copy failed"), "error");
+    }
+  }, [addToast, t]);
+
   const handleQuoteMessage = useCallback((message: ChatMessageInfo) => {
     const senderId = typeof message.metadata?.senderAgentId === "string" ? message.metadata.senderAgentId : undefined;
     const sessionAgent = activeSession?.agentId && activeSession.agentId !== FN_AGENT_ID ? agentsMap.get(activeSession.agentId) : undefined;
@@ -3086,6 +3141,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
             value={messageInput}
             onChange={handleInputChange}
             onKeyDown={handleInputKeyDown}
+            enterKeyHint={enterSubmits ? "send" : "enter"}
             onKeyUp={handleInputKeyUp}
             onClick={handleInputSelectionChange}
             onBlur={handleInputBlur}
@@ -3101,7 +3157,6 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
               // the visualViewport/input-focus effects own scroll compensation.
             }}
             rows={1}
-            disabled={pendingQueueAction}
             data-testid="chat-input"
           />
           <AgentMentionPopup
@@ -3116,10 +3171,17 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
             visible={fileMention.mentionActive && !mentionPopupVisible}
             position={fileMentionPosition}
             tasks={fileMention.tasks}
+            conversations={fileMention.conversations}
             files={fileMention.files}
             selectedIndex={fileMention.selectedIndex}
             onSelectTask={(task) => {
               insertHashMention(fileMention.selectTask(task, messageInput), `#${task.id}`);
+            }}
+            onSelectConversation={(conversation) => {
+              insertHashMention(
+                fileMention.selectConversation(conversation, messageInput),
+                `#${conversation.id}`,
+              );
             }}
             onSelectFile={(file) => {
               insertHashMention(fileMention.selectFile(file, messageInput), `#${file.path}`);
@@ -3127,14 +3189,14 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
             loading={fileMention.loading}
           />
         </div>
-        <MicButton {...composerDictation.micProps} disabled={pendingQueueAction} />
+        <MicButton {...composerDictation.micProps} />
         {/*
-        FNXC:ChatPendingQueue 2026-08-19-06:25:
-        Force-send cancellation must own the Direct composer until server reconciliation completes; otherwise a new send is queued while the selected entry is being dispatched and loses its priority.
+        FNXC:ChatPendingQueue 2026-09-06-00:48:
+        Force-send cancellation owns dispatch, not local composition: the send threshold queues new text until reconciliation preserves the selected entry's priority. Keep canSend action-oriented because Enter bypasses it; attachment-bearing attempts converge in handleSend on the same explicit refusal.
         */}
         <StandardChatActionButton
           isStreaming={isStreaming}
-          canSend={!pendingQueueAction && Boolean(messageInput.trim() || pendingAttachments.length > 0)}
+          canSend={Boolean(messageInput.trim() || pendingAttachments.length > 0)}
           onSend={handleSend}
           onStop={stopStreaming}
         />
@@ -3460,6 +3522,15 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
               {t("chat.openInNewWindow", "Open in new window")}
             </button>
           ) : null}
+          <button
+            type="button"
+            role="menuitem"
+            data-testid="chat-context-copy-id"
+            onClick={() => void handleCopySessionId(contextMenu.sessionId)}
+          >
+            <Copy size={14} />
+            {t("chat.copyConversationId", "Copy conversation ID")}
+          </button>
           <button
             onClick={() => handlePin(
               contextMenu.sessionId,

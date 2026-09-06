@@ -467,7 +467,7 @@ reviewable. New test ids never fail the diff.
 the FN-175/FN-177 class: merge admission before a Code Review verdict, a failed card
 whose branch has already landed, and cleanup that removes a live executor worktree.
 It drives disposable local Git repositories, a throwaway PostgreSQL store, the real
-built-in Coding (Ideas) and Coding workflow definitions, real merger admission, and
+built-in Coding (Ideas) and Coding (Auto) workflow definitions, real merger admission, and
 deterministic mock-provider scripts under `testMode: true`.
 
 Prerequisites are Git and reachable test PostgreSQL. Start the latter with
@@ -514,6 +514,9 @@ remediation drive) plus S05 extended to `builtin:coding-ideas-v2`, one of the lo
 the matrix. Five consecutive runs measured 140.1s, 143.8s, 146.7s, 147.0s and 148.4s — green against
 the old 150s ceiling, but with under 2s of headroom, which is a flake waiting to happen rather than
 a passing lane. Third precedent for the same rule: growth must be nameable, or it is a regression.
+
+FNXC:WorkflowSuccession 2026-09-06-02:15:
+FN-297 removes the retired Ideas workflow from the 19 scenario matrices because its compatibility alias resolves the same surviving graph. The workload decreases by one duplicate workflow execution per affected scenario, while 175 seconds remains a ceiling rather than a target or a reason to conceal future regressions.
 -->
 The declared budget is **175 seconds**, rounded up from a measured 148,434ms slowest full-matrix
 run (7 files, 90 tests) after the Code Review remediation drive was added and S05 was extended to
@@ -1018,6 +1021,14 @@ Prefer `it.each` over copy-pasted `it()` blocks. When trimming, keep: first case
 - Tests linked to an FN-ticket in describe/it names — these guard real regressions.
 - Integration tests exercising real SQLite, real worker pool, or spawned processes.
 - Lean core/engine unit tests with low mock burden.
+
+## Testing short-circuit guards and output handoffs
+
+<!-- FNXC:PlanReviewOutputExclusivity 2026-09-06-01:01: FN-299 showed that a passing event-driven test can exercise only an earlier short-circuit term, and that a writer-side assertion can target data the real reader intentionally ignores. -->
+
+For a disjunctive event guard, exercise each term with the earlier terms unarmed. In particular, do not emit a setup event that inserts an ID into a set if deleting that ID is the guard's first term; the later durable predicates then become unreachable even though the test passes. Cover nominal evidence directly rather than treating an exception form (such as an operator bypass) as coverage of the ordinary producer result, and include an identical-event case for any deduplication set.
+
+For an output-chain claim such as “review approval queues execution” or “revision notes reach planning,” assert all three boundaries: the durable gate, the production trigger, and its observable consumer effect. Use the real reader for transmitted data; do not assert against an audit or activity-log copy that the reader excludes. When several routes share the same top-level outcome, route assertions must use visited nodes, durable writes, and the final queue/replan effect rather than the shared outcome value.
 
 ## Test isolation for module-singleton state
 
