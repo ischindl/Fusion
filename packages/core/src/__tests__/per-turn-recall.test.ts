@@ -1,4 +1,7 @@
-import { describe, it, expect, beforeAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   buildPerTurnMemoryRecallCue,
   buildFocusRecallQuery,
@@ -39,7 +42,15 @@ turn), the full silent-skip surface enumeration, client-side score filtering, th
 whole-entry budget, top-K clamping, and the bounded session-scoped dedup registry.
 */
 
-const ROOT = "/tmp/perturn-recall-fake-project";
+/*
+FNXC:TestHygiene 2026-09-06-16:52:
+CWE-377: the fake-project root used to be the fixed path /tmp/perturn-recall-fake-project — a
+predictable world-writable location two concurrent runs (or a planted directory) could collide
+with. rootDir is only ever forwarded to in-memory fake backends, so a per-run mkdtempSync()
+directory with afterAll rmSync() cleanup is behavior parity while removing the fixed path.
+Authored independently of PR #3493 (its commits stay on the PR; parity of behavior is the goal).
+*/
+const ROOT = mkdtempSync(join(tmpdir(), "perturn-recall-"));
 const TOPIC = "čo sme diskutovali o LCM B.1 B.2";
 
 function makeSettings(overrides: Partial<Settings> = {}): Partial<Settings> {
@@ -124,6 +135,10 @@ beforeEach(() => {
   searchCalls = [];
   fakeSearch = null;
   __resetPerTurnRecallDedupForTests();
+});
+
+afterAll(() => {
+  rmSync(ROOT, { recursive: true, force: true });
 });
 
 function call(topic: string, opts: Partial<PerTurnRecallOptions> = {}): Promise<string> {
