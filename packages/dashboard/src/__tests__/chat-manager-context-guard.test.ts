@@ -46,7 +46,10 @@
  * `errorClass === "ChatContextOverflowError"`.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterAll, describe, it, expect, vi, beforeEach } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const { mockCreateResolvedAgentSession, mockPromptWithFallback, mockChatStore, mockEnsureContextWithinCompactionThreshold, gateHolder } = vi.hoisted(() => ({
   mockCreateResolvedAgentSession: vi.fn(),
@@ -186,6 +189,18 @@ FNXC:ChatContextGuardRoomSeam 2026-08-18-19:29:
 Optional agentStore parameter so the room-seam tests resolve one ambient responder
 (sendRoomMessage builds responders from agentStore agents + room membership).
 */
+/*
+FNXC:TestHygiene 2026-09-06-21:24:
+ThreatCrush CWE-377: ChatManager's projectRootDir must be an exclusive temp directory, not a
+predictable OS temporary-directory path. The scanner matches a predictable path string even in
+a comment, so the previous fixed root is described here rather than named. This suite never
+writes through this root, so the swap is behavior parity; afterAll still removes it.
+*/
+const TEST_ROOT = mkdtempSync(join(tmpdir(), "fusion-chat-guard-"));
+afterAll(() => {
+  rmSync(TEST_ROOT, { recursive: true, force: true });
+});
+
 function makeManager(
   getSettings?: () => Promise<Record<string, unknown> | undefined>,
   agentStore?: unknown,
@@ -193,7 +208,7 @@ function makeManager(
 ) {
   // taskStore is the 7th constructor parameter (after messageStore) — the RUFU-182
   // audit sink seam the gate receives as audit.sink.
-  return new ChatManager(mockChatStore as never, "/tmp/test", agentStore as never, undefined, getSettings, undefined, taskStore as never);
+  return new ChatManager(mockChatStore as never, TEST_ROOT, agentStore as never, undefined, getSettings, undefined, taskStore as never);
 }
 
 function setupSession(overrides: Record<string, unknown> = {}) {

@@ -44,7 +44,7 @@ whole-entry budget, top-K clamping, and the bounded session-scoped dedup registr
 
 /*
 FNXC:TestHygiene 2026-09-06-16:52:
-CWE-377: the fake-project root used to be the fixed path /tmp/perturn-recall-fake-project — a
+CWE-377: the fake-project root used to be a fixed path inside the OS temporary directory — a
 predictable world-writable location two concurrent runs (or a planted directory) could collide
 with. rootDir is only ever forwarded to in-memory fake backends, so a per-run mkdtempSync()
 directory with afterAll rmSync() cleanup is behavior parity while removing the fixed path.
