@@ -236,6 +236,80 @@ function getChatDraftKey(id: string | null | undefined): string | null {
   return id ? `${CHAT_DRAFT_STORAGE_PREFIX}direct:${id}` : null;
 }
 
+/** Fallback copy for `chat.agentTargetTranscriptNotice`; kept byte-identical to the en catalog value. */
+const AGENT_TARGET_TRANSCRIPT_NOTICE_FALLBACK =
+  "The agent target keeps its own conversation context and will not recall this chat's earlier messages.";
+
+/*
+FNXC:ChatSendDurability 2026-09-07-14:30:
+RUFU-192 Step 5: an agent-target chat owns its own pi session file, so retargeting a chat from a
+model to an agent genuinely does not carry the prior transcript — the model lane builds context from
+the persisted chat_messages rows while the agent lane reads its own session file. The operator hit
+that as unexplained amnesia, so the switch now discloses it. The crossing only loses context when
+ENTERING an agent target (switching back to a model re-attaches the persisted rows), which is why
+this predicate is directional; an agent-to-agent retarget is a different brain but the same context
+source, so it is not this disclosure's subject.
+
+A chat's target is encoded in its `agentId`: the model lane stores the `FN_AGENT_ID` sentinel, so
+"is this an agent target?" must exclude that sentinel — treating the sentinel as an agent target
+inverted the crossing test and silenced the disclosure on exactly the switch that needs it.
+*/
+function isAgentChatTarget(agentId: string | null | undefined): boolean {
+  const trimmed = agentId?.trim();
+  return Boolean(trimmed) && trimmed !== FN_AGENT_ID;
+}
+
+function crossesIntoAgentTarget(previousAgentId: string | null | undefined, nextAgentId: string | null | undefined): boolean {
+  return isAgentChatTarget(nextAgentId) && !isAgentChatTarget(previousAgentId);
+}
+
+/*
+FNXC:ChatSendDurability 2026-09-07-13:51:
+RUFU-192 defect 2: with no active session the draft key was null, the persistence effect bailed on
+it, and not ONE keystroke was stored — a session-less composer lost every word on reload, which is
+how two of the operator's three prompts vanished. The orphan key keeps a session-less draft durable
+and is scoped by project so text typed in one project can never be re-offered inside another.
+Never carries transcript content: it holds only what the operator typed locally.
+*/
+function getOrphanChatDraftKey(projectId: string | null | undefined): string {
+  return `${CHAT_DRAFT_STORAGE_PREFIX}orphan:${projectId ?? "default"}`;
+}
+
+/**
+ * FNXC:ChatSendDurability 2026-09-07-13:51:
+ * RUFU-192 adoption merge: an orphan draft moving into a session key that already holds its own
+ * draft must keep BOTH texts (newline-separated) — the invariant forbids discarding either side.
+ * Identical or empty sides collapse to one copy, so an adoption is never a duplicate.
+ */
+function mergeChatDraftText(sessionDraft: string, orphanDraft: string): string {
+  if (!orphanDraft.trim()) return sessionDraft;
+  if (!sessionDraft.trim() || sessionDraft.trim() === orphanDraft.trim()) return orphanDraft;
+  return `${sessionDraft}\n${orphanDraft}`;
+}
+
+/**
+ * FNXC:ChatSendDurability 2026-09-07-14:10:
+ * RUFU-192 defect 2 adoption: once a conversation exists, its own draft key becomes the composer's
+ * home, so an orphan draft that was never adopted would become permanently invisible (durable but
+ * unreachable — the operator would still lose the text on the next session switch). This moves it:
+ * merge into the session key, then delete the orphan key, and return the merged text. The orphan key
+ * is only ever removed after the merged write succeeded, so adoption cannot be the step that drops
+ * the last copy. Returns null when there is nothing to adopt, letting callers stay inert.
+ */
+function adoptOrphanChatDraft(projectId: string | null | undefined, sessionKey: string): string | null {
+  const orphanKey = getOrphanChatDraftKey(projectId);
+  const orphanDraft = getPersistedChatDraft(orphanKey);
+  if (!orphanDraft.trim()) return null;
+  const merged = mergeChatDraftText(getPersistedChatDraft(sessionKey), orphanDraft);
+  try {
+    localStorage.setItem(sessionKey, merged);
+    localStorage.removeItem(orphanKey);
+  } catch {
+    // private mode — the text still lives in the composer, so adoption is not allowed to lose it
+  }
+  return merged;
+}
+
 function getPersistedChatDraft(key: string | null): string {
   if (!key) {
     return "";
@@ -499,7 +573,16 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
   } = useChat(projectId, addToast, { initialSession: initialDirectSession, persistActiveSession: persistChatPreferences });
 
   const { isUnread, markRead } = useChatUnread(projectId);
-  const [messageInput, setMessageInput] = useState(() => getPersistedChatDraft(getChatDraftKey(activeSession?.id)));
+  /*
+  FNXC:ChatSendDurability 2026-09-07-13:51:
+  RUFU-192 defect 2: the composer initialiser used to read only the session-scoped key, so a
+  session-less mount started blank even when the project's orphan draft held the operator's words.
+  It now falls back to the orphan key, which is what makes "reload restores the session-less draft"
+  true for the FIRST paint rather than only after an effect round-trip.
+  */
+  const [messageInput, setMessageInput] = useState(() =>
+    getPersistedChatDraft(getChatDraftKey(activeSession?.id) ?? getOrphanChatDraftKey(projectId)),
+  );
   const [contextMenu, setContextMenu] = useState<{ sessionId: string; anchorX: number; anchorY: number; anchorRight: boolean; x: number; y: number } | null>(null);
   /*
   FNXC:ChatStashBackfill 2026-08-19-16:28:
@@ -817,44 +900,236 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
 
 
   const activeDraftKey = getChatDraftKey(activeSession?.id);
-  const lastDraftKeyRef = useRef<string | null>(activeDraftKey);
+  /*
+  FNXC:ChatSendDurability 2026-09-07-13:51:
+  RUFU-192 defect 2: `draftKey` is the key actually in play — the conversation's own draft while a
+  session is open, the project-scoped orphan key while none is. The persistence effect used to bail
+  on a null session key, which is why "no session" and "nothing saved" were the same sentence; with
+  the orphan fallback every keystroke has a durable home, and the restore/persist/reconcile effects
+  below all operate on this one key so a draft can never be persisted somewhere the composer will
+  not read back.
+  */
+  const orphanDraftKey = getOrphanChatDraftKey(projectId);
+  const draftKey = activeDraftKey ?? orphanDraftKey;
+  const lastDraftKeyRef = useRef<string | null>(draftKey);
   const skipNextDraftRestoreRef = useRef(false);
   const snippetDraftEphemeralRef = useRef(false);
+  /*
+  FNXC:ChatSendDurability 2026-09-07-11:00:
+  RUFU-192: claim + commit machinery for durable-before-destructive submits (see handleSend).
+  `unackedSendClaimRef` holds the last submitted text whose durability is not yet proven; an
+  identical re-submit while a claim stands is consumed, so a second Enter can never queue a
+  duplicate of text that is still visibly waiting. The draft-persistence effect keeps that
+  visible text in localStorage every keystroke, so an unacknowledged prompt survives even reload.
+
+  FNXC:ChatSendDurability 2026-09-07-12:20:
+  The claim guards the re-submit door ONLY — failure restoration deliberately does not read it,
+  because an operator who replaces the composer mid-flight must still get the failed prompt back
+  appended (Symptom 4: both attempts survive). Claim ownership is tracked by `sendClaimSeqRef`:
+  each text submission takes a token and only the newest token's send may clear the claim, so an
+  attachment re-submit of the same text cannot have its claim released by the older send's ack.
+  */
+  const unackedSendClaimRef = useRef<string | null>(null);
+  const sendClaimSeqRef = useRef(0);
+  const activeSessionIdRef = useRef<string | null>(activeSession?.id ?? null);
 
   useEffect(() => {
-    if (activeDraftKey === lastDraftKeyRef.current) {
+    activeSessionIdRef.current = activeSession?.id ?? null;
+  }, [activeSession?.id]);
+
+  // FNXC:ChatSendDurability 2026-09-07-12:20: RUFU-192 — once the operator has removed the
+  // claimed text from the composer, the guard no longer protects a visible prompt: drop the
+  // claim so deliberately retyping the same text is a fresh submission, not a false refusal.
+  useEffect(() => {
+    const claim = unackedSendClaimRef.current;
+    if (claim && !messageInput.trim().startsWith(claim)) {
+      unackedSendClaimRef.current = null;
+    }
+  }, [messageInput]);
+
+  /**
+   * Delta-scoped composer commit: strips exactly the submitted span so text typed during the
+   * in-flight send survives (FUX-015), and never overwrites a user replacement of the draft.
+   * Draft storage follows automatically via the draft-persistence effect.
+   */
+  const commitSubmittedDraft = useCallback((submittedRaw: string, submittedTrimmed: string) => {
+    if (!submittedTrimmed) return;
+    setMessageInput((current) => {
+      if (current === submittedRaw || current.trim() === submittedTrimmed) return "";
+      if (current.startsWith(submittedRaw)) return current.slice(submittedRaw.length);
+      return current;
+    });
+  }, []);
+
+  /**
+   * FNXC:ChatSendDurability 2026-09-07-14:20:
+   * RUFU-192 failure restoration. The pre-fix idiom setMessageInput((current) => current || trimmed)
+   * silently dropped the submitted prompt whenever the operator had typed anything during the
+   * in-flight send, so a second attempt clobbered the first. The rule now: an empty composer
+   * receives the text back unconditionally; a composer holding other text receives it appended
+   * newline-separated (both attempts survive); a composer that still leads with the submitted
+   * text already holds it — no duplicate copy is inserted.
+   */
+  const restoreSubmittedDraft = useCallback((submittedTrimmed: string) => {
+    if (!submittedTrimmed) return;
+    setMessageInput((current) => {
+      if (!current.trim()) return submittedTrimmed;
+      if (current.trim().startsWith(submittedTrimmed)) return current;
+      return `${current}\n${submittedTrimmed}`;
+    });
+  }, []);
+
+  /*
+  FNXC:ChatSendDurability 2026-09-07-15:05:
+  RUFU-192 reload-race reconciliation state. `pendingDraftReconcileRef` holds a draft that a
+  restore path just pulled FROM STORAGE; the reconcile effect below compares it against the last
+  persisted user message once the transcript proves one. It is armed only by the restore paths
+  (mount and draft-key change), never by live typing, so an operator editing a draft is never
+  reconciled away.
+  */
+  const pendingDraftReconcileRef = useRef<string | null>(null);
+  const draftReconcileArmedAtMountRef = useRef(false);
+
+  /*
+  FNXC:ChatSendDurability 2026-09-07-14:10:
+  RUFU-192 defect 2: the restore now reads the EFFECTIVE key (`draftKey`) — the conversation's own
+  draft while one is open, the project-scoped orphan key while none is — so a session-less reload
+  hands the operator back what they typed instead of a blank box.
+  */
+  useEffect(() => {
+    if (draftKey === lastDraftKeyRef.current) {
       return;
     }
 
-    lastDraftKeyRef.current = activeDraftKey;
+    lastDraftKeyRef.current = draftKey;
     snippetDraftEphemeralRef.current = false;
+    // FNXC:ChatSendDurability 2026-09-07-11:00: RUFU-192 — an unacked claim belongs to the
+    // previous conversation's composer; the new draft must not swallow identical text.
+    unackedSendClaimRef.current = null;
     if (skipNextDraftRestoreRef.current) {
       skipNextDraftRestoreRef.current = false;
       return;
     }
-    setMessageInput(getPersistedChatDraft(activeDraftKey));
-  }, [activeDraftKey]);
+    const restoredDraft = getPersistedChatDraft(draftKey);
+    setMessageInput(restoredDraft);
+    if (restoredDraft.trim()) {
+      pendingDraftReconcileRef.current = restoredDraft;
+    }
+  }, [draftKey]);
 
+  /*
+  FNXC:ChatSendDurability 2026-09-07-14:10:
+  RUFU-192 defect 2 adoption, its own effect so it also runs on the FIRST paint: a reload that
+  restores an active session never changes the draft key, so key-change-only adoption would strand
+  an orphan draft permanently — durable but invisible, still lost from the operator's point of view.
+  Adoption MERGES (never replaces), so a session draft and an orphan draft both keep their text, and
+  it stays inert while a prefill owns the composer (`skipNextDraftRestoreRef`) so the two mechanisms
+  cannot fight; the orphan then waits for the next draft-key change rather than being discarded.
+  */
   useEffect(() => {
-    if (!activeDraftKey || lastDraftKeyRef.current !== activeDraftKey) {
+    if (!activeDraftKey || skipNextDraftRestoreRef.current) {
+      return;
+    }
+    const orphanDraft = getPersistedChatDraft(getOrphanChatDraftKey(projectId));
+    if (!orphanDraft.trim()) {
+      return;
+    }
+    const merged = adoptOrphanChatDraft(projectId, activeDraftKey);
+    if (merged === null) {
+      return;
+    }
+    setMessageInput((current) => {
+      if (!current.trim()) return merged;
+      if (current.trim() === orphanDraft.trim() || merged.startsWith(current.trim())) return merged;
+      return mergeChatDraftText(current, orphanDraft);
+    });
+  }, [activeDraftKey, projectId]);
+
+  /*
+  FNXC:ChatSendDurability 2026-09-07-15:05:
+  RUFU-192 "never re-offer an already-persisted prompt": a user row that WAS stored but whose
+  `user_persisted` ack frame died in transport leaves the draft key populated, and a reload would
+  restore a prompt the server already holds — pressing Enter would persist a duplicate turn. When
+  a just-restored draft trims equal to the last PERSISTED user message (optimistic bubbles are not
+  proof), the ack lost the race: discard the draft, its key, and the composer copy. The effect
+  arms once at mount from the same storage read the composer initializer used (the key-change
+  restore effect above deliberately skips the first key), then re-arms on every later restore.
+  It stays armed until the transcript proves a user message, skips ephemeral snippet drafts, and
+  only clears a composer that still equals the restored text, so an operator edit mid-race
+  survives. skipNextDraftRestoreRef suppresses the session-create restore and therefore arms
+  nothing there.
+  */
+  useEffect(() => {
+    if (!draftReconcileArmedAtMountRef.current) {
+      draftReconcileArmedAtMountRef.current = true;
+      const mountedDraft = getPersistedChatDraft(draftKey);
+      if (mountedDraft.trim() && !skipNextDraftRestoreRef.current) {
+        pendingDraftReconcileRef.current = mountedDraft;
+      }
+    }
+
+    const pending = pendingDraftReconcileRef.current;
+    if (!pending || snippetDraftEphemeralRef.current) {
+      return;
+    }
+    let lastPersistedUserContent: string | null = null;
+    for (const message of messages) {
+      /*
+      FNXC:ChatSendDurability 2026-09-07-12:40:
+      RUFU-192: only server-owned rows count as persistence proof. useChat's optimistic bubble
+      carries a `temp-` id (TaskPlannerChatTab uses `optimistic-`/`streaming-assistant`), so
+      local rows must never satisfy the comparison — an unacked bubble clearing the composer
+      here would recreate the destructive-before-durable loss this task removes.
+      */
+      if (message.role !== "user") continue;
+      if (/^(temp-|optimistic-|streaming-assistant)/.test(message.id)) continue;
+      lastPersistedUserContent = message.content;
+    }
+    if (lastPersistedUserContent === null) {
+      return;
+    }
+    pendingDraftReconcileRef.current = null;
+    if (pending.trim() !== lastPersistedUserContent.trim()) {
+      return;
+    }
+    if (getPersistedChatDraft(draftKey).trim() === pending.trim()) {
+      try {
+        localStorage.removeItem(draftKey);
+      } catch {
+        // private mode — the in-memory discard still stands
+      }
+    }
+    setMessageInput((current) => (current.trim() === pending.trim() ? "" : current));
+  }, [messages, draftKey]);
+
+  /*
+  FNXC:ChatSendDurability 2026-09-07-14:10:
+  RUFU-192 defect 2: this effect used to bail on a null session key, which is why "no conversation
+  open" and "not one keystroke saved" were the same sentence — two of the operator's prompts were
+  typed in exactly that state. It now writes the EFFECTIVE key (the conversation's own draft, or the
+  project-scoped orphan key while none exists), so every keystroke has a durable home and the
+  durable-before-destructive commit inherits that coverage for free.
+  */
+  useEffect(() => {
+    if (lastDraftKeyRef.current !== draftKey) {
       return;
     }
 
     try {
       if (snippetDraftEphemeralRef.current) {
-        localStorage.removeItem(activeDraftKey);
+        localStorage.removeItem(draftKey);
         if (!messageInput) snippetDraftEphemeralRef.current = false;
         return;
       }
       if (messageInput) {
-        localStorage.setItem(activeDraftKey, messageInput);
+        localStorage.setItem(draftKey, messageInput);
         return;
       }
-      localStorage.removeItem(activeDraftKey);
+      localStorage.removeItem(draftKey);
     } catch {
       // Ignore storage errors.
     }
-  }, [activeDraftKey, messageInput]);
+  }, [draftKey, messageInput]);
 
   /*
   FNXC:ChatComposer 2026-08-23-16:07:
@@ -1725,15 +2000,19 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
     seedComposer(false);
   }, [initialComposerDraft, initialComposerDraftNonce]);
 
+  /*
+  FNXC:ChatSendDurability 2026-09-07-14:10:
+  RUFU-192: clears the draft key actually in play, which is the orphan key while no conversation is
+  open. Clearing only the session key in that state would leave an orphan key holding text the
+  composer has already dropped, and that stale copy would be re-offered into the next mount.
+  */
   const clearComposerState = useCallback(() => {
     snippetDraftEphemeralRef.current = false;
     setMessageInput("");
-    if (activeDraftKey) {
-      try {
-        localStorage.removeItem(activeDraftKey);
-      } catch {
-        // Ignore storage errors.
-      }
+    try {
+      localStorage.removeItem(draftKey);
+    } catch {
+      // Ignore storage errors.
     }
     setShowSkillMenu(false);
     setSkillFilter("");
@@ -1748,7 +2027,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
       }
       return [];
     });
-  }, [activeDraftKey]);
+  }, [draftKey]);
 
   /*
   FNXC:ChatAttachments 2026-08-10-05:53:
@@ -1776,12 +2055,12 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
       : applySnippetToDraft(messageInput, snippet, cursorPosition);
     if (!applied) return false;
     snippetDraftEphemeralRef.current = true;
-    if (activeDraftKey) {
-      try {
-        localStorage.removeItem(activeDraftKey);
-      } catch {
-        // Ignore storage errors.
-      }
+    // FNXC:ChatSendDurability 2026-09-07-14:10: RUFU-192 — the ephemeral fence has to fence the key
+    // in play (the orphan key while session-less), or the replaced draft survives under the orphan.
+    try {
+      localStorage.removeItem(draftKey);
+    } catch {
+      // Ignore storage errors.
     }
     setMessageInput(applied.value);
     setShowSkillMenu(false);
@@ -1794,13 +2073,24 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
       inputRef.current.setSelectionRange(applied.cursorPosition, applied.cursorPosition);
     });
     return true;
-  }, [activeDraftKey, messageInput, resizeComposer]);
+  }, [draftKey, messageInput, resizeComposer]);
 
   // Handle send message including pending attachment uploads.
   const handleSend = useCallback(() => {
     const trimmed = messageInput.trim();
     const files = pendingAttachments.map((attachment) => attachment.file);
-    if ((!trimmed && files.length === 0) || !activeSession) return;
+    if (!trimmed && files.length === 0) return;
+
+    /*
+    FNXC:ChatSendDurability 2026-09-07-11:00:
+    RUFU-192: a content-bearing submit with no active session must NOT be a silent no-op — the
+    operator typed a prompt and the composer must never swallow it. The refusal is visible; the
+    draft-persistence effect keeps the text meanwhile, so nothing is lost, only delivered late.
+    */
+    if (!activeSession) {
+      addToast(t("chat.sendNoActiveSession", "Select or create a chat before sending"), "warning");
+      return;
+    }
 
     const snippetInvocation = matchStandaloneSnippetInvocation(trimmed, chatSnippets);
     if (snippetInvocation) {
@@ -1836,6 +2126,13 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
         /*
         FNXC:ChatSlashCommands 2026-07-10-11:40:
         Clear the composer immediately on submit — BEFORE the network round-trip — not inside the success callback. Clearing late wipes any text the user typed while the command was in flight (composer-wipe race, FUX-015).
+
+        FNXC:ChatSendDurability 2026-09-07-14:20:
+        RUFU-192 scopes this early clear to COMMANDS only. Commands are consumed locally (they
+        never cross the durability handshake), and the FUX-015 wipe-race proof only holds for a
+        clear that precedes the round-trip — so it stays, now with restore-on-reject. Plain
+        prompts no longer clear at submit at all: they clear at the durability hand-off
+        (user_persisted ack or FIFO queue), which cannot wipe in-flight typing either.
         */
         clearComposerState();
         void commandMatch.command
@@ -1849,6 +2146,11 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
             addToast(t("chat.commandSteerSuccess", "Sent to the running agent"), "success");
           })
           .catch((error: unknown) => {
+            // FNXC:ChatSendDurability 2026-09-07-14:20: RUFU-192 — the early clear (kept for the
+            // FUX-015 wipe-race contract) destroyed the text up-front; a failed command run hands
+            // the prompt back unconditionally — appended, never clobbering, when the operator
+            // already typed something new.
+            restoreSubmittedDraft(trimmed);
             const message = error instanceof Error && error.message.trim()
               ? error.message
               : t("chat.commandSteerFailed", "Failed to send to the running agent");
@@ -1910,22 +2212,107 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
       return;
     }
 
+    /*
+    FNXC:ChatSendDurability 2026-09-07-11:00:
+    RUFU-192: the old flow destroyed the draft BEFORE dispatch (pre-clear + trust in res.ok).
+    Every failure between click and stored user row — offline, 404 lane error, store-write
+    rejection, dead FIFO drain — silently vaporized the prompt. The composer now clears ONLY on
+    a durability hand-off: the server's `user_persisted` ack (onPersisted(true)) or the pending
+    FIFO (onQueued). Text stays visibly in the composer until then, which is the point: an
+    unproven prompt is user data, not a rendering artifact.
+
+    FNXC:ChatSendDurability 2026-09-07-14:20:
+    Duplicate-send guard: while a claim stands, a re-submit whose composer still LEADS WITH the
+    claimed text (verbatim, or extended by mid-flight typing) is refused with a visible toast —
+    no request, and crucially no sendMessage call, whose busy branch would append a second FIFO
+    row and give one prompt two persisted turns. Prose-only edits that strip the claimed text
+    clear the claim and go through a normal submit. The guard runs before any submission side
+    effect so a refusal leaves nothing behind.
+    */
+    const pendingClaim = unackedSendClaimRef.current;
+    if (trimmed && files.length === 0 && pendingClaim && trimmed.startsWith(pendingClaim)) {
+      addToast(
+        t("chat.sendAlreadyInFlight", "That prompt is still being delivered — its text stays here until the server stores it"),
+        "warning",
+      );
+      return;
+    }
+    const submittedDraft = messageInput;
+    const submittedSessionId = activeSession.id;
+    const claimToken = trimmed ? ++sendClaimSeqRef.current : 0;
+    if (trimmed) {
+      unackedSendClaimRef.current = trimmed;
+    }
+
     const sentFiles = new Set(files);
     captureScrollSnapshot(true);
     snippetDraftEphemeralRef.current = false;
-    setMessageInput("");
+    /*
+    FNXC:ChatSendDurability 2026-09-07-14:20:
+    RUFU-192 attachment timing: previews used to leave on `onAccepted` (res.ok), which is NOT
+    durability proof — an accepted-then-rejected turn lost its text AND its files. Release now
+    happens at the persisted commit; the onDelivered backstop releases only when no explicit
+    not-persisted verdict arrived, so a retry can re-send the same staged files.
+
+    FNXC:ChatSendDurability 2026-09-07-12:20:
+    Per-send outcome latch (`settled`): exactly ONE durability verdict is honoured per submit.
+    Without it, an `onPersisted(false)` followed by `onFailed` (or a late `done` after the ack)
+    would restore or commit the same text twice. Restoration is additionally gated on session
+    identity: after the operator navigated away, the text already survives in that session's
+    draft key and must not be appended into an unrelated session's composer. Restoration itself
+    is unconditional w.r.t. the claim (Symptom 4: replaced composer → append, both survive).
+    */
+    let sawUnpersistedVerdict = false;
+    let settled = false;
+    const releaseClaim = () => {
+      if (trimmed && sendClaimSeqRef.current === claimToken) {
+        unackedSendClaimRef.current = null;
+      }
+    };
+    const onSameSession = () => activeSessionIdRef.current === submittedSessionId;
+    const restoreUnpersisted = () => {
+      if (settled) return;
+      settled = true;
+      sawUnpersistedVerdict = true;
+      if (onSameSession()) restoreSubmittedDraft(trimmed);
+    };
     try {
       sendMessage(trimmed, files, {
-        onAccepted: () => releaseSentAttachments(sentFiles),
-        // Completion remains an idempotent backstop for accepted provider-error and legacy paths.
-        onDelivered: () => releaseSentAttachments(sentFiles),
+        onPersisted: (persisted) => {
+          if (persisted) {
+            if (!settled) {
+              settled = true;
+              if (onSameSession()) commitSubmittedDraft(submittedDraft, trimmed);
+            }
+            releaseSentAttachments(sentFiles);
+            releaseClaim();
+          } else {
+            restoreUnpersisted();
+          }
+        },
+        onQueued: () => {
+          // The durable FIFO row (operator-visible queue strip) now owns the text.
+          // Queued turns carry text only, so no attachment release is wired here.
+          if (!settled && onSameSession()) commitSubmittedDraft(submittedDraft, trimmed);
+          settled = true;
+          releaseClaim();
+        },
+        // Completion releases the claim but never commits text: a `done` whose ack frame was
+        // lost keeps the (visible) draft rather than gambling that the row exists — the hook
+        // never re-sends a delivered turn, so at worst the operator deletes the survivor.
+        onDelivered: () => {
+          if (!sawUnpersistedVerdict) releaseSentAttachments(sentFiles);
+          releaseClaim();
+        },
         onFailed: () => {
-          // Do not overwrite text the user entered while the failed request was in flight.
-          setMessageInput((current) => current || trimmed);
+          restoreUnpersisted();
+          releaseClaim();
         },
       });
     } catch {
-      setMessageInput(trimmed);
+      restoreUnpersisted();
+      releaseClaim();
+      addToast(t("chat.sendMessageFailed", "Failed to send message"), "error");
     }
   }, [
     messageInput,
@@ -1945,6 +2332,8 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
     chatSnippets,
     insertSnippetDraft,
     captureScrollSnapshot,
+    commitSubmittedDraft,
+    restoreSubmittedDraft,
     t,
   ]);
 
@@ -3148,9 +3537,14 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
               }
             }}
             onChangeModel={(selection) => {
-              if (activeSession) {
-                void setSessionModel(activeSession.id, selection);
+              if (!activeSession) return;
+              // RUFU-192 Step 5: the switch itself is optimistic and applies immediately, so the
+              // only moment a "the agent target will not remember this thread" disclosure can be
+              // honest is here, before the PATCH is issued. It is a notice, never a confirm dialog.
+              if (crossesIntoAgentTarget(activeSession.agentId, selection.agentId) && messages.length > 0) {
+                addToast(t("chat.agentTargetTranscriptNotice", AGENT_TARGET_TRANSCRIPT_NOTICE_FALLBACK), "warning");
               }
+              void setSessionModel(activeSession.id, selection);
             }}
             disabled={!activeSession || pendingQueueAction}
           />

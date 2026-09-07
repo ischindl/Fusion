@@ -122,6 +122,33 @@ export interface UseChatOptions {
   persistActiveSession?: boolean;
 }
 
+/*
+FNXC:ChatSendDurability 2026-09-07-11:00:
+RUFU-192: the durability contract for a chat send. A composer may destroy its text only when a
+durable owner has taken it over, and each callback below names exactly one such hand-off:
+- `onPersisted(true)`  — the server broadcast `user_persisted`: the user row is committed. This is
+  the ONLY positive persistence proof; `onAccepted` fires at `res.ok`, which precedes
+  `ChatManager.sendMessage` and therefore never proved the turn was stored.
+- `onPersisted(false)` — the turn ended with server acceptance but WITHOUT ever producing that
+  proof (e.g. store persistence failed after the response was accepted). Consumers restore text.
+- `onQueued()`        — the FIFO queue durably took the text over (queueing while busy).
+- `onDelivered()`     — the turn completed. A lost `user_persisted` frame does NOT retract
+  delivery: a full turn that ended `done` is consumed (re-sending would duplicate the prompt),
+  so `done` without `onPersisted(true)` must not restore or requeue.
+- `onFailed()`        — pre-acceptance failure; nothing was persisted; restore text.
+*/
+export interface ChatSendCallbacks {
+  onAccepted?: () => void;
+  /**
+   * Durability verdict for the sent turn. `persisted: true` carries the persisted user-row id
+   * (the `user_persisted` ack payload) so callers can capture the turn id for later reconciliation.
+   */
+  onPersisted?: (persisted: boolean, messageId?: string) => void;
+  onQueued?: () => void;
+  onDelivered?: () => void;
+  onFailed?: () => void;
+}
+
 export interface UseChatReturn {
   // Session state
   sessions: ChatSessionInfo[];
@@ -194,11 +221,12 @@ export interface UseChatReturn {
   /**
    * Send a message, optionally with file attachments to upload with the prompt. Attachment
    * callbacks distinguish a rejected upload from a server-accepted turn whose reply later fails.
+   * Durability callbacks (`onPersisted`/`onQueued`) are documented on {@link ChatSendCallbacks}.
    */
   sendMessage: (
     content: string,
     attachments?: File[],
-    callbacks?: { onAccepted?: () => void; onDelivered?: () => void; onFailed?: () => void },
+    callbacks?: ChatSendCallbacks,
   ) => void;
   /**
    * FNXC:ChatMessageEdit 2026-08-19-03:34:
@@ -908,7 +936,50 @@ export function useChat(
     pendingMessagesRef.current = remainingMessages;
     setPendingMessages(remainingMessages);
     setPersistedPendingChatMessages(sessionId, remainingMessages);
-    sendMessageRef.current(trimmedQueuedMessage);
+    /*
+    FNXC:ChatSendDurability 2026-09-07-11:00:
+    RUFU-192: the automatic FIFO drain used to dequeue with no durability contract — if the send
+    died before the user row was stored (pre-acceptance failure, or an accepted-but-unpersisted
+    error like a store write rejection), the head text was silently destroyed with it. The drain
+    now owns the same contract as a direct composer: requeue at the head UNLESS the turn reached
+    a durable outcome — persisted (server row) or delivered-done (consumed; a lost ack after a
+    full turn must not re-enter the model).
+    */
+    let flushedPersisted = false;
+    let flushRequeued = false;
+    const requeueFlushedHead = () => {
+      if (flushRequeued || flushedPersisted) return;
+      flushRequeued = true;
+      const isCurrentSession = activeSessionRef.current?.id === sessionId;
+      const current = isCurrentSession
+        ? pendingMessagesRef.current
+        : getPersistedPendingChatMessages(sessionId);
+      const restored = [trimmedQueuedMessage, ...current];
+      setPersistedPendingChatMessages(sessionId, restored);
+      if (isCurrentSession) {
+        pendingMessagesRef.current = restored;
+        setPendingMessages(restored);
+      }
+    };
+    /*
+    FNXC:ChatSendDurability 2026-09-07-11:00:
+    The requeue is deferred by one microtask on purpose: the very `onError` that produced this
+    failure ends with its own `flushPendingMessage()` auto-drain. A synchronous requeue would put
+    the text back in front of that drain, which dequeues and re-dispatches it into the same dead
+    send — an unbounded retry loop against a persistently failing server. Deferred, the in-flight
+    drain sees an empty queue, and the text returns for the next legitimate trigger (a later done,
+    a manual force-send, or a new submit's busy-queueing). Guards are re-checked at execution, so
+    an ack that lands between scheduling and running still suppresses the requeue.
+    */
+    sendMessageRef.current(trimmedQueuedMessage, undefined, {
+      onPersisted: (persisted) => {
+        if (persisted) flushedPersisted = true;
+        else queueMicrotask(requeueFlushedHead);
+      },
+      onFailed: () => {
+        queueMicrotask(requeueFlushedHead);
+      },
+    });
   }, []);
 
   const flushPendingMessageAfterAttachedError = useCallback(async (
@@ -1440,6 +1511,19 @@ export function useChat(
    * (or stale modelProvider/modelId) persisted server-side, so the next send could still resolve
    * against the PREVIOUS target — silently breaking the retarget this control exists for.
    */
+  /*
+  FNXC:ChatSendDurability 2026-09-07-14:20:
+  RUFU-192: a rejected target PATCH no longer rolls the UI back to the pre-switch LOCAL snapshot.
+  That snapshot was itself only a client guess, so the operator could end up looking at a target the
+  server never had either — the next send is then built against a target nobody agreed to, which is
+  the failure mode that hid the operator's prompt behind the wrong brain. The failure path now asks
+  the server what the session's target actually is (`fetchChatSession`) and applies that answer to
+  both collections; the snapshot rollback survives only as the fallback for a session read that also
+  fails, so the UI can never be left showing the rejected target. The rethrow is DROPPED rather than
+  swallowed at the caller: the reconcile is now authoritative — every outcome ends in a target some
+  store actually holds — so the sole call site's `void setSessionModel(...)` (ChatView) had nothing
+  to do with a rejection except raise an unhandled promise rejection.
+  */
   const setSessionModel = useCallback(
     async (id: string, selection: { agentId?: string; modelProvider?: string | null; modelId?: string | null }) => {
       const previousSessions = sessions;
@@ -1465,14 +1549,27 @@ export function useChat(
           prev.map((session) => (session.id === id ? { ...session, ...reconciledPatch } : session)),
         );
         setActiveSession((prev) => (prev?.id === id ? { ...prev, ...reconciledPatch } : prev));
-      } catch (error) {
-        setSessions(previousSessions);
-        setActiveSession(previousActiveSession);
-        addToast?.("Failed to update chat model", "error");
-        throw error;
+      } catch {
+        // Server truth beats a local guess, but only when it is actually readable.
+        const serverRead = await fetchChatSession(id, projectId).catch(() => null);
+        const serverSession = serverRead?.session;
+        if (serverSession) {
+          const serverPatch = {
+            agentId: serverSession.agentId,
+            modelProvider: serverSession.modelProvider,
+            modelId: serverSession.modelId,
+            updatedAt: serverSession.updatedAt,
+          };
+          setSessions((prev) => prev.map((session) => (session.id === id ? { ...session, ...serverPatch } : session)));
+          setActiveSession((prev) => (prev?.id === id ? { ...prev, ...serverPatch } : prev));
+        } else {
+          setSessions(previousSessions);
+          setActiveSession(previousActiveSession);
+        }
+        addToast?.(t("chat.failedToUpdateChatModel", "Failed to update chat model"), "error");
       }
     },
-    [activeSession, addToast, projectId, sessions],
+    [activeSession, addToast, projectId, sessions, t],
   );
 
   /**
@@ -1748,7 +1845,7 @@ export function useChat(
   const sendMessageRef = useRef<(
     content: string,
     attachments?: File[],
-    callbacks?: { onAccepted?: () => void; onDelivered?: () => void; onFailed?: () => void },
+    callbacks?: ChatSendCallbacks,
     options?: { replacementMessageId?: string; replacementTargetIndex?: number },
   ) => void>(() => {
     // no-op until sendMessage is defined
@@ -1801,7 +1898,7 @@ export function useChat(
     (
       content: string,
       attachments?: File[],
-      callbacks?: { onAccepted?: () => void; onDelivered?: () => void; onFailed?: () => void },
+      callbacks?: ChatSendCallbacks,
       streamOptions?: { replacementMessageId?: string; replacementTargetIndex?: number },
     ) => {
       if (!activeSession) {
@@ -1817,16 +1914,38 @@ export function useChat(
         }
         const trimmedContent = content.trim();
         if (!trimmedContent) {
+          /*
+          FNXC:ChatSendDurability 2026-09-07-11:00:
+          RUFU-192: whitespace-only sends while busy stay a silent no-op (pre-existing behavior).
+          No hand-off occurred, so no durability callback fires — callers that clear composer text
+          on hand-off signals only simply keep the (whitespace) text, which is correct.
+          */
           return;
         }
         const nextMessages = [...pendingMessagesRef.current, trimmedContent];
         pendingMessagesRef.current = nextMessages;
         setPendingMessages(nextMessages);
         setPersistedPendingChatMessages(activeSession.id, nextMessages);
+        /*
+        FNXC:ChatSendDurability 2026-09-07-11:00:
+        RUFU-192: the FIFO now holds the trimmed text durably (state + persisted storage written
+        synchronously above), so the composer's hand-off is complete — this is the second legal
+        commit point alongside onPersisted(true). Fires BEFORE the return so a queueing submit
+        can clear its text in the same tick without ever seeing isStreaming flip.
+        */
+        callbacks?.onQueued?.();
         return;
       }
 
       cancelledByUserRef.current = false;
+      /*
+      FNXC:ChatSendDurability 2026-09-07-11:00:
+      RUFU-192: per-send durability ledger. `turnPersisted` latches true the moment the server's
+      `user_persisted` ack arrives (idempotent against mid-send `Last-Event-ID` replay redelivery).
+      A terminal error with server acceptance but no latched ack is the not-persisted verdict
+      delivered to onPersisted(false) below.
+      */
+      let turnPersisted = false;
 
       // Close any existing stream
       if (streamRef.current) {
@@ -1884,6 +2003,19 @@ export function useChat(
         setStreamingThinking: updateOwnedStreamingThinking,
         setStreamingToolCalls: updateOwnedStreamingToolCalls,
         setStreamingPhase: updateOwnedStreamingPhase,
+        /*
+        FNXC:ChatSendDurability 2026-09-07-11:00:
+        RUFU-192: forward the durable-user-turn ack to the caller (see {@link ChatSendCallbacks}).
+        Duplicate deliveries from stream replay latch silently — the caller's commit (clear /
+        capture turn id) must be idempotent anyway, and a replayed ack is proof of the same row.
+        */
+        onUserPersisted: (messageId) => {
+          if (!ownsStream()) return;
+          if (!turnPersisted) {
+            turnPersisted = true;
+            callbacks?.onPersisted?.(true, messageId);
+          }
+        },
         cancelStreamingFlushesRef,
         addToast,
         onFallbackSession: (data, sessionId) => {
@@ -1985,6 +2117,17 @@ export function useChat(
           release them after an accepted turn even when the provider cannot produce a reply.
           */
           if (acceptedByServer) {
+            /*
+            FNXC:ChatSendDurability 2026-09-07-11:00:
+            RUFU-192: an accepted turn that ends in error without ever producing `user_persisted`
+            proved the user row was NOT stored — `res.ok` alone was the exact false-proof this
+            task exists to dismantle. Deliver the negative verdict first so durability-aware
+            callers (queued-dispatch requeue, composer restore) act before the attachment-level
+            onDelivered below.
+            */
+            if (!turnPersisted) {
+              callbacks?.onPersisted?.(false);
+            }
             callbacks?.onDelivered?.();
           } else {
             callbacks?.onFailed?.();
@@ -2091,19 +2234,39 @@ export function useChat(
       pendingMessagesRef.current.filter((_, messageIndex) => messageIndex !== index),
       sessionId,
     );
+    /*
+    FNXC:ChatSendDurability 2026-09-07-11:00:
+    RUFU-192: the restore-at-original-index path previously covered only onFailed (pre-acceptance
+    loss). An accepted-but-unpersisted turn (onPersisted(false)) loses the row just as surely and
+    must restore identically; once the server HAS the row (onPersisted(true)), restoring would
+    schedule a duplicate model entry, so later failures no longer requeue. Like the auto-drain
+    requeue, restoration defers one microtask so the same `onError`'s trailing auto-drain cannot
+    bounce the item straight back into a dying send.
+    */
+    let dispatchedPersisted = false;
+    let dispatchRequeued = false;
+    const requeueDispatched = () => {
+      if (dispatchRequeued || dispatchedPersisted) return;
+      dispatchRequeued = true;
+      const isCurrentSession = activeSessionRef.current?.id === sessionId;
+      const current = isCurrentSession
+        ? pendingMessagesRef.current
+        : getPersistedPendingChatMessages(sessionId);
+      const insertionIndex = Math.min(Math.max(index, 0), current.length);
+      const restored = [...current.slice(0, insertionIndex), content, ...current.slice(insertionIndex)];
+      setPersistedPendingChatMessages(sessionId, restored);
+      if (isCurrentSession) {
+        pendingMessagesRef.current = restored;
+        setPendingMessages(restored);
+      }
+    };
     sendMessageRef.current(content, undefined, {
+      onPersisted: (persisted) => {
+        if (persisted) dispatchedPersisted = true;
+        else queueMicrotask(requeueDispatched);
+      },
       onFailed: () => {
-        const isCurrentSession = activeSessionRef.current?.id === sessionId;
-        const current = isCurrentSession
-          ? pendingMessagesRef.current
-          : getPersistedPendingChatMessages(sessionId);
-        const insertionIndex = Math.min(Math.max(index, 0), current.length);
-        const restored = [...current.slice(0, insertionIndex), content, ...current.slice(insertionIndex)];
-        setPersistedPendingChatMessages(sessionId, restored);
-        if (isCurrentSession) {
-          pendingMessagesRef.current = restored;
-          setPendingMessages(restored);
-        }
+        queueMicrotask(requeueDispatched);
       },
     });
   }, [replacePendingMessages]);

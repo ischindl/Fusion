@@ -760,11 +760,20 @@ describe("ChatManager — engine phase side-channel around the compaction gate (
       }));
   }
 
-  /** Broadcast event types recorded so far, excluding the phase side channel itself. */
+  /**
+   * Broadcast event types recorded so far, excluding the phase side channel itself.
+   *
+   * FNXC:ChatSendDurability 2026-09-07-11:00:
+   * RUFU-192 added the `user_persisted` durability ack, broadcast immediately after the user row
+   * is stored — which is BEFORE the compaction gate runs. This helper's claim is "no CONTENT
+   * frame (text/thinking/etc.) preceded the phase bracket", so the content-free acknowledgement
+   * is excluded like the phase channel itself; its own ordering contract is pinned in
+   * chat-manager-user-persisted.test.ts.
+   */
   function nonPhaseEvents(broadcastSpy: { mock: { calls: unknown[] } }): string[] {
     return broadcastSpy.mock.calls
       .map((call) => (call[1] as { type?: string } | undefined)?.type ?? "")
-      .filter((type) => type !== "phase");
+      .filter((type) => type !== "phase" && type !== "user_persisted");
   }
 
   it("brackets the direct-send gate with active:true before it resolves and active:false before done", async () => {
@@ -793,7 +802,15 @@ describe("ChatManager — engine phase side-channel around the compaction gate (
     const events = phaseEvents(broadcastSpy);
     expect(events.map((event) => event.active)).toEqual([true, false]);
     const firstPhaseIndex = broadcastSpy.mock.calls.findIndex((call) => (call[1] as { type?: string } | undefined)?.type === "phase");
-    expect(firstPhaseIndex).toBe(0);
+    /*
+    FNXC:ChatSendDurability 2026-09-07-11:00:
+    RUFU-192: the only frame legally allowed before the phase bracket is the content-free
+    `user_persisted` durability ack (the user row must be stored before the gate can run).
+    The bracket is still the first CONTENT frame of the send.
+    */
+    expect(broadcastSpy.mock.calls.slice(0, firstPhaseIndex).every(
+      (call) => (call[1] as { type?: string } | undefined)?.type === "user_persisted",
+    )).toBe(true);
     const phaseIndices = broadcastSpy.mock.calls
       .map((call, index) => ((call[1] as { type?: string } | undefined)?.type === "phase" ? index : -1))
       .filter((index) => index >= 0);

@@ -577,6 +577,16 @@ export interface ChatStreamHandlers {
   persisted message — paired true→false so a `Last-Event-ID` replay cannot leave the label stuck on.
   */
   onPhase?: (data: { phase: "compacting"; active: boolean }) => void;
+  /*
+  FNXC:ChatSendDurability 2026-09-07-11:00:
+  RUFU-192: the server has stored the user turn — this is the durability signal the composer
+  commits (clears) on, because `onAccepted` fires at `res.ok`, which happens before
+  `ChatManager.sendMessage` runs and therefore never proved persistence. Advisory and
+  idempotent: a `Last-Event-ID` replay can redeliver it, and its absence (with or without a
+  later `onError`) is the non-persisted signal callers use to keep their text. Payload is the
+  persisted row id only — never prompt text.
+  */
+  onUserPersisted?: (messageId: string) => void;
   onAgentMessage?: (data: { message: ChatMessage; senderAgentId: string; senderAgentName: string }) => void;
   onDone?: (data: { messageId: string; message?: ChatMessage; interrupted?: boolean; dispatch?: "agents"; failedAgentNames?: string[] }) => void;
   onError?: (data: string | ChatFailureInfo, meta?: ChatStreamErrorMeta) => void;
@@ -675,6 +685,23 @@ export function streamChatResponse(
       case "phase":
         try {
           handlers.onPhase?.(JSON.parse(rawData));
+        } catch {
+          // skip malformed event
+        }
+        break;
+      /*
+      FNXC:ChatSendDurability 2026-09-07-11:00:
+      RUFU-192: forward the durable-user-turn acknowledgement (see ChatStreamHandlers.onUserPersisted).
+      Non-terminating and never coalesced — the composer's commit point must see it the moment the
+      stream frame arrives. Malformed payloads are skipped: a lost ack keeps the composer text (safe
+      direction), it must never be guessed.
+      */
+      case "user_persisted":
+        try {
+          const parsed = JSON.parse(rawData) as { messageId?: unknown };
+          if (typeof parsed.messageId === "string") {
+            handlers.onUserPersisted?.(parsed.messageId);
+          }
         } catch {
           // skip malformed event
         }
@@ -931,6 +958,22 @@ export function attachChatStream(
       case "phase":
         try {
           handlers.onPhase?.(JSON.parse(rawData));
+        } catch {
+          // skip malformed event
+        }
+        break;
+      /*
+      FNXC:ChatSendDurability 2026-09-07-11:00:
+      RUFU-192: the reattach (buffered-replay) half of the durability acknowledgement. Replay can
+      redeliver it, so consumers must treat onUserPersisted as idempotent — the commit it releases
+      is a no-op when already committed.
+      */
+      case "user_persisted":
+        try {
+          const parsed = JSON.parse(rawData) as { messageId?: unknown };
+          if (typeof parsed.messageId === "string") {
+            handlers.onUserPersisted?.(parsed.messageId);
+          }
         } catch {
           // skip malformed event
         }

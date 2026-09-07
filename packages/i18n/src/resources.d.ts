@@ -1394,6 +1394,7 @@ export default interface Resources {
     "chat": {
       "addTag": "Add",
       "agentRepliesFailed": "Some agents could not reply: {{agents}}",
+      "agentTargetTranscriptNotice": "The agent target keeps its own conversation context and will not recall this chat's earlier messages.",
       "allConversations": "All conversations",
       "allTags": "All tags",
       "archive": "Archive",
@@ -1478,6 +1479,7 @@ export default interface Resources {
       "failedToRenameTag": "Failed to rename tag",
       "failedToRestoreConversation": "Failed to restore conversation",
       "failedToSendRoomMessage": "Failed to send room message",
+      "failedToUpdateChatModel": "Failed to update chat model",
       "failedToUpdateTags": "Failed to update tags",
       "failureDetails": "Failure details",
       "failureReferenceId": "ID",
@@ -1625,8 +1627,10 @@ export default interface Resources {
       "selectSession": "Select a session",
       "selectSessionLabel": "Select session",
       "send": "Send",
+      "sendAlreadyInFlight": "That prompt is still being delivered — its text stays here until the server stores it",
       "sendAsReport": "Send as report",
       "sendMessageFailed": "Failed to send message",
+      "sendNoActiveSession": "Select or create a chat before sending",
       "sendRoomMessageFailed": "Failed to send room message",
       "sessionsGroupLabel": "Sessions",
       "showArchivedConversations": "Show archived conversations",
@@ -1746,16 +1750,11 @@ export default interface Resources {
     "column": {
       "actionsAriaLabel": "{{columnLabel}} column actions",
       "actionsTitle": "Column actions",
+      "archiveAllDoneHint_one": "Archive {{count}} done task{{plural}}",
+      "archiveAllDoneHint_other": "Archive {{count}} done task{{plural}}",
       "autoMerge": "Auto-merge",
       "autoMergeDisabled": "Auto-merge disabled",
       "autoMergeEnabled": "Auto-merge enabled",
-      /*
-      FNXC:TaskArchivingRemoved 2026-09-06 (merge origin/main dd808ed2c6, FN-295):
-      Upstream removed the task-archiving column affordances, so the `archiveAllDone*`,
-      `archivedTasks*`, `collapse/expandArchived*` and `failedToArchive` column keys are dropped with
-      them. `executingOfTotal` survives: it is a local RUFU addition used by `Column.tsx` that upstream
-      never had, unrelated to archiving.
-      */
       "executingOfTotal": "{{active}} executing of {{total}}",
       "keepProgress": "Keep Progress",
       "loadMoreArchived": "Show more",

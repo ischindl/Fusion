@@ -1650,7 +1650,11 @@
     "contextTruncationUnproven": "",
     "contextTruncationNotice_one": "",
     "contextTruncationNotice_other": "",
-    "workingCompactingStatus": ""
+    "workingCompactingStatus": "",
+    "sendNoActiveSession": "",
+    "agentTargetTranscriptNotice": "",
+    "failedToUpdateChatModel": "",
+    "sendAlreadyInFlight": ""
   },
   "chatRooms": {
     "error": {
@@ -6384,8 +6388,6 @@
     "failedToLoadScripts": "Échec du chargement des scripts",
     "failedToSave": "Impossible d'enregistrer le script",
     "loadingScripts": "Chargement des scripts...",
-    "nameErrorMsg": "Le nom ne doit contenir que des lettres, des chiffres, des tirets et des traits de soulignement (pas d'espaces)",
-    "nameHint": "Lettres, chiffres, tirets et traits de soulignement uniquement",
     "noScriptsDefined": "Aucun script défini",
     "noScriptsYet": "Aucun script défini pour l'instant.",
     "runScript": "Exécuter le script",

@@ -138,6 +138,19 @@ function setup(chatOverrides: Partial<UseChatReturn> = {}, roomsOverrides: Parti
   mockUseChatRooms.mockReturnValue({ ...defaultRoomsState, ...roomsOverrides });
 }
 
+/*
+FNXC:ChatSendDurability 2026-09-07-13:30:
+RUFU-192 moved composer destruction to the durability hand-off (the `user_persisted` ack), so the
+autosize reset that follows an emptied composer now happens there rather than on click. These
+assertions are about the height clamp, so their send fixture reports the turn durable — the same
+frame the server has sent since RUFU-192 Step 1.
+*/
+function durableSend() {
+  return vi.fn((_content: string, _files: File[], callbacks?: useChatModule.ChatSendCallbacks) => {
+    callbacks?.onPersisted?.(true, "msg-autosize");
+  });
+}
+
 function mockDesktopViewport() {
   if (!window.matchMedia) {
     Object.defineProperty(window, "matchMedia", { value: vi.fn(), configurable: true, writable: true });
@@ -185,7 +198,7 @@ describe("ChatView composer autosize", () => {
   });
 
   it("resets composer height after send clears messageInput", async () => {
-    const sendMessage = vi.fn();
+    const sendMessage = durableSend();
     setup({ sendMessage });
     await renderChatView();
 
@@ -316,7 +329,7 @@ describe("ChatView composer autosize", () => {
   });
 
   it("ignores the former top-edge pointer drag and clears direct chat to its minimum", async () => {
-    const sendMessage = vi.fn();
+    const sendMessage = durableSend();
     setup({ sendMessage });
     await renderChatView();
 
@@ -373,7 +386,7 @@ describe("ChatView composer autosize", () => {
   });
 
   it("uses the same clamp for direct typing and programmatic resets", async () => {
-    const sendMessage = vi.fn();
+    const sendMessage = durableSend();
     setup({ sendMessage });
     await renderChatView();
 

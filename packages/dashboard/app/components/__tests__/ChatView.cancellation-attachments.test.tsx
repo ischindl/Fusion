@@ -159,8 +159,12 @@ describe("ChatView cancellation barrier attachments", () => {
     await user.type(textarea, "Queue this text");
     await user.click(screen.getByTestId("chat-send-btn"));
 
+    // FNXC:ChatSendDurability 2026-09-07-13:32: RUFU-192 replaced the acceptance-time attachment
+    // release with a durability hand-off, so the bag now carries onPersisted/onQueued and no longer
+    // wires onAccepted (res.ok is not proof the turn was stored).
     expect(sendMessage).toHaveBeenCalledWith("Queue this text", [], expect.objectContaining({
-      onAccepted: expect.any(Function),
+      onPersisted: expect.any(Function),
+      onQueued: expect.any(Function),
       onDelivered: expect.any(Function),
       onFailed: expect.any(Function),
     }));

@@ -14,6 +14,15 @@ import type { UseChatRoomsResult } from "../../hooks/useChatRooms";
 
 Element.prototype.scrollIntoView = vi.fn();
 
+/*
+FNXC:ChatSendDurability 2026-09-07-13:25:
+RUFU-192 keeps an unacknowledged prompt visible in the composer until the server stores it, so a
+whole-document text query now also matches the textarea holding that same text. These anchors
+assert the TRANSCRIPT (that the optimistic bubble landed and was not duplicated by the persisted
+row), so they query the message surface explicitly instead of the document.
+*/
+const TRANSCRIPT_SURFACE = { selector: ".chat-message-content" };
+
 vi.mock("../../utils/projectStorage", () => ({
   getScopedItem: vi.fn(),
   setScopedItem: vi.fn(),
@@ -634,7 +643,7 @@ describe("FN-6599 ChatView streaming prior thread", () => {
     fireEvent.change(input, { target: { value: "Nouvelle question" } });
     fireEvent.click(screen.getByTestId("chat-send-btn"));
 
-    await screen.findByText("Nouvelle question");
+    await screen.findByText("Nouvelle question", TRANSCRIPT_SURFACE);
     expect(scrollTop).toBe(readingTop);
     offsetTopSpy.mockRestore();
     offsetHeightSpy.mockRestore();
@@ -707,7 +716,7 @@ describe("FN-6599 ChatView streaming prior thread", () => {
         })),
       } as MessageEvent);
     });
-    await waitFor(() => expect(screen.getAllByText("Question streamée")).toHaveLength(1));
+    await waitFor(() => expect(screen.getAllByText("Question streamée", TRANSCRIPT_SURFACE)).toHaveLength(1));
     expect(scrollTop).toBe(1300);
     flushFrames();
 
@@ -831,7 +840,7 @@ describe("FN-6599 ChatView streaming prior thread", () => {
 
     fireEvent.change(screen.getByTestId("chat-input"), { target: { value: "Premier message" } });
     fireEvent.click(screen.getByTestId("chat-send-btn"));
-    await screen.findByText("Premier message");
+    await screen.findByText("Premier message", TRANSCRIPT_SURFACE);
     expect(scrollTop).toBe(container.scrollHeight);
   });
 

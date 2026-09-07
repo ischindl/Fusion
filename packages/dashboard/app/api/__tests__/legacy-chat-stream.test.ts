@@ -235,6 +235,50 @@ describe("streamChatResponse SSE parser", () => {
     });
   });
 
+  /*
+  FNXC:ChatSendDurability 2026-09-07-11:00:
+  RUFU-192: same double-entry-point trap RUFU-188 hit with `phase` — a dropped `case "user_persisted"`
+  keeps every component/hook test green (they stub this layer), yet the composer loses its only
+  durable-acknowledgement signal and destroys text on unproven sends. These pin that both
+  `streamChatResponse` and `attachChatStream` parse `{ messageId }` acks, hand them to
+  `onUserPersisted` in stream order, and SKIP malformed or non-string-messageId frames without
+  erroring the stream (a lost ack is safer than a fabricated durability claim).
+  */
+  it("dispatches user_persisted frames to onUserPersisted in stream order and skips malformed acks", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        createChunkedStream([
+          "event: text\n",
+          "data: \"answer\"\n\n",
+          "event: user_persisted\n",
+          "data: {\"messageId\":42}\n\n",
+          "event: user_persisted\n",
+          "data: not-json\n\n",
+          "event: user_persisted\n",
+          "data: {\"messageId\":\"user-row-1\"}\n\n",
+          "event: done\n",
+          "data: {\"messageId\":\"msg-ack\"}\n\n",
+        ]),
+        { status: 200 },
+      ),
+    );
+
+    const events: string[] = [];
+    const onError = vi.fn();
+
+    streamChatResponse("s-1", "hi", {
+      onText: () => events.push("text"),
+      onUserPersisted: (messageId) => events.push(`user_persisted:${messageId}`),
+      onDone: () => events.push("done"),
+      onError,
+    });
+
+    await vi.waitFor(() => {
+      expect(events).toEqual(["text", "user_persisted:user-row-1", "done"]);
+    });
+    expect(onError).not.toHaveBeenCalled();
+  });
+
   it("keeps accepted streams open when no real stream events arrive before timeout", async () => {
     vi.useFakeTimers();
     const encoder = new TextEncoder();
@@ -419,6 +463,38 @@ describe("attachChatStream", () => {
 
     await vi.waitFor(() => {
       expect(events).toEqual(["phase:compacting:true", "phase:compacting:false", "done"]);
+    });
+  });
+
+  /*
+  FNXC:ChatSendDurability 2026-09-07-11:00:
+  RUFU-192: reconnect replay goes through the SECOND switch block in the SSE client; a resumed tab
+  must re-receive the ack (consumers treat it idempotently) or a mid-send reload silently downgrades
+  a proven-persisted turn to unproven.
+  */
+  it("replays user_persisted frames through the attach dispatch to onUserPersisted", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        createChunkedStream([
+          "event: user_persisted\n",
+          "data: {\"messageId\":\"user-row-replay\"}\n\n",
+          "event: done\n",
+          "data: {\"messageId\":\"m-ack\"}\n\n",
+        ]),
+        { status: 200 },
+      ),
+    );
+
+    const events: string[] = [];
+
+    attachChatStream("s-1", {
+      onUserPersisted: (messageId) => events.push(`user_persisted:${messageId}`),
+      onDone: () => events.push("done"),
+      onError: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(events).toEqual(["user_persisted:user-row-replay", "done"]);
     });
   });
 

@@ -485,6 +485,14 @@ svg.spinning {
   --toast-text: var(--text);
   --toast-error-text: #fff;
   --toast-info-text: #fff;
+  /*
+  FNXC:ToastTheming 2026-09-07-18:12:
+  Warning toasts (e.g. the RUFU-192 chat-send refusals) had no background token at all, so the refusal
+  rendered as unstyled floating text. The status text resolves to --bg so it stays AA-contrast against
+  --color-warning in both themes: dark themes pair a near-black --bg with #ca8a04, light themes pair a
+  near-white --bg with #9a6700. Indirect var() references resolve per active theme scope.
+  */
+  --toast-warning-text: var(--bg);
 
   /* === Agent State Colors === */
   --state-idle-bg: color-mix(in srgb, var(--state-idle-text) 15%, transparent);
@@ -2987,6 +2995,16 @@ Toast text must contrast its status background across every dashboard theme and 
 .toast-info {
   background: var(--color-info);
   color: var(--toast-info-text);
+}
+/*
+FNXC:ToastTheming 2026-09-07-18:12:
+.toast-warning existed as a ToastType and as a rendered class (`toast-${type}` in ToastContainer) but had no
+rule, so every warning-severity toast - including the visible refusals RUFU-192 added to chat send paths -
+rendered with a transparent background. Give it the semantic --color-warning background like its siblings.
+*/
+.toast-warning {
+  background: var(--color-warning);
+  color: var(--toast-warning-text);
 }
 
 [data-color-theme^="shadcn"] .toast-success,

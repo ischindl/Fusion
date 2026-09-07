@@ -1261,6 +1261,20 @@ export type ChatStreamEvent =
   as a pair so a `Last-Event-ID` buffer replay cannot leave the label stuck on its own.
   */
   | { type: "phase"; data: { phase: "compacting"; active: boolean } }
+  /*
+  FNXC:ChatSendDurability 2026-09-07-11:00:
+  RUFU-192 (operator lost prompts): the SSE route flushes its headers and the client's `onAccepted`
+  fires at `res.ok` BEFORE `ChatManager.sendMessage` runs, so acceptance has never been proof that
+  the user turn was stored — every send that died between those points (or at `addMessage` itself)
+  silently destroyed the typed prompt. This side-channel variant — the sibling of the existing
+  `fallback`/`warning`/`phase` channels — acknowledges that the user row now exists: it is broadcast
+  immediately after `chatStore.addMessage` resolves, before agent resolution and mention dispatch.
+  The payload is the persisted row id ONLY; prompt text, drafts, and any payload content must never
+  enter this event (ids and counts only). Consumers must treat it as advisory and idempotent: a
+  `Last-Event-ID` replay can redeliver it, and the absence of it (with or without a later `error`
+  broadcast) is the non-persisted signal the composer uses to keep its text.
+  */
+  | { type: "user_persisted"; data: { messageId: string } }
   | {
       type: "done";
       data: {
@@ -3025,6 +3039,18 @@ export class ChatManager {
           attachments,
         });
         persistedUserMessageId = persistedUserMessage.id;
+        /*
+        FNXC:ChatSendDurability 2026-09-07-11:00:
+        RUFU-192: acknowledge durability the instant the row exists. The client composer keeps the
+        typed text (and its draft key) until this `user_persisted` event or an equivalent durable
+        hand-off, so the acknowledgement must fire here — before mention dispatch and before any
+        agent/model work that can fail — and carries the send's generation-scoped `broadcastOptions`
+        so the route's fenced subscriber receives it. Content stays an id only.
+        */
+        chatStreamManager.broadcast(sessionId, {
+          type: "user_persisted",
+          data: { messageId: persistedUserMessageId },
+        }, broadcastOptions);
         /*
         FNXC:CommandCenterActivity 2026-08-09-10:46:
         A persisted human chat turn contributes one content-free usage event. Analytics must never enter

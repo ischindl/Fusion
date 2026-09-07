@@ -213,4 +213,51 @@ describe("createChatStreamHandlers", () => {
       expect(onError).toHaveBeenCalledTimes(1);
     });
   });
+
+  /*
+  FNXC:ChatSendDurability 2026-09-07-15:52:
+  RUFU-192: this factory is the pass-through seam between the SSE parser and the composer's durability
+  commit, so the contract the composer relies on is pinned here: every `user_persisted` frame reaches the
+  caller's handler exactly once and SYNCHRONOUSLY — unlike text deltas it is never buffered or coalesced,
+  because delaying the release of composer text by a frame widens the zero-durable-owner window this task
+  exists to close. Redelivery through `Last-Event-ID` replay is forwarded too: the idempotent commit lives
+  in the caller, not in this seam. A consumer without the handler (the planner tab, an explicit non-goal of
+  this task) must stay a safe no-op rather than throwing.
+  */
+  describe("durable user-turn acknowledgement", () => {
+    function makeAckHandlers(withAckHandler = true) {
+      const onUserPersisted = vi.fn();
+      const { handlers } = createChatStreamHandlers({
+        sessionId: "s-ack",
+        tempUserMessageId: "temp-1",
+        setStreamingText: vi.fn(),
+        setStreamingThinking: vi.fn(),
+        setStreamingToolCalls: vi.fn(),
+        cancelStreamingFlushesRef: { current: null } as { current: (() => void) | null },
+        ...(withAckHandler ? { onUserPersisted } : {}),
+        onDone: vi.fn(),
+        onError: vi.fn(),
+      });
+      return { handlers, onUserPersisted };
+    }
+
+    it("forwards each acknowledgement synchronously, exactly once per delivery", () => {
+      const { handlers, onUserPersisted } = makeAckHandlers();
+
+      handlers.onUserPersisted("user-row-1");
+      // Asserted without advancing any timer: a buffered ack would strand released text.
+      expect(onUserPersisted).toHaveBeenCalledTimes(1);
+      expect(onUserPersisted).toHaveBeenCalledWith("user-row-1");
+
+      // A replayed duplicate is forwarded verbatim; dedupe is the caller's idempotent commit.
+      handlers.onUserPersisted("user-row-1");
+      expect(onUserPersisted).toHaveBeenCalledTimes(2);
+    });
+
+    it("stays a safe no-op for a consumer without an acknowledgement handler", () => {
+      const { handlers } = makeAckHandlers(false);
+
+      expect(() => handlers.onUserPersisted("user-row-2")).not.toThrow();
+    });
+  });
 });

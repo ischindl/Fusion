@@ -266,10 +266,14 @@ describe("ChatView slash-command dispatch (/steer)", () => {
 
   // FUX-015 composer-wipe race: the composer is cleared on submit — BEFORE the
   // network round-trip — so text the user types while the command is in flight
-  // is never wiped by a late callback. This matches normal chat send (which also
-  // clears immediately and does not restore on failure), so the composer stays
-  // empty after run() rejects; the error is surfaced via a toast.
-  it("clears the composer on submit and shows an error toast when run() fails", async () => {
+  // is never wiped by a late callback.
+  //
+  // FNXC:ChatSendDurability 2026-09-07-13:35:
+  // What RUFU-192 changed is the failure half. A rejected command used to leave the submission
+  // nowhere — no transcript row, no draft, nothing to recover — which is the silent-destruction
+  // defect this task removes. The early clear stays (it is what keeps the wipe race closed, and it
+  // is what makes a duplicate re-submit detectable), and the rejection now hands the text back.
+  it("hands the prompt back and shows an error toast when run() fails", async () => {
     const sendMessage = vi.fn();
     setupMockChat({ activeSession: activeSessionFixture, messages: [], sendMessage });
     mockAddSteeringComment.mockRejectedValueOnce(new Error("network down"));
@@ -283,9 +287,11 @@ describe("ChatView slash-command dispatch (/steer)", () => {
     const textarea = screen.getByTestId("chat-input");
     fireEvent.change(textarea, { target: { value: "/steer do X" } });
     fireEvent.keyDown(textarea, { key: "Enter" });
+    // The clear is still pre-round-trip, which is what the in-flight typing race depends on.
+    expect(textarea).toHaveValue("");
 
     await waitFor(() => expect(addToast).toHaveBeenCalledWith("network down", "error"));
-    expect(textarea).toHaveValue("");
+    expect(textarea).toHaveValue("/steer do X");
   });
 
   // FUX-015 composer-wipe race: text typed AFTER submit (while the command is

@@ -325,6 +325,29 @@ Normal completion and **Stop** release only the FIFO front after cancellation an
 
 During cancellation and history reconciliation, the text composer and voice dictation remain available. Text submitted in that interval joins the visible queue and dispatches automatically after reconciliation, while queue editing and reordering, model selection, and the attachment picker remain disabled. Attachments are never queued: a send attempted with staged files during this interval is refused with the existing warning from either the Send button or Enter, preserving both the draft and its files instead of sending text without them. Activity task chat, Chat Rooms, and CLI-backed chat intentionally keep their separate interaction and transport contracts and do not inherit these model-loop queue controls.
 
+<!-- FNXC:ChatSendDurability 2026-09-07-18:02: RUFU-192 — an operator lost three typed prompts because Enter destroyed the composer before the request existed (no row, no error, nothing to recover). The durable-before-destructive contract below is the requirement those losses wrote: a clear is allowed only at a durability hand-off, every refusal is spoken aloud, and text typed during an in-flight send still survives (FUX-015). -->
+
+## Chat composer send durability
+
+A chat prompt is durable before anything destructive happens to it. Pressing **Enter** or selecting **Send** no longer clears the composer up front; the typed text and its draft stay in place until one of the two durability hand-offs actually takes ownership of it:
+
+- **The server stored your message.** The chat stream acknowledges the moment the user turn is persisted, and only that acknowledgement clears the composer and its draft. A response that merely started — headers accepted, nothing stored yet — is not proof your prompt was saved, so the text stays put until the store confirms it.
+- **The text moved into the visible queued row.** A send made while a reply is still streaming is appended to the durable pending queue, and the composer clears at that hand-off because the queued preview above the composer is now the copy you can see and manage. This is a transfer of ownership, not an early clear: at least one durable, operator-visible copy exists on both sides of it.
+
+The queued row is also the proof against a duplicate press. A prompt still sitting in the composer whose send has not been acknowledged yet cannot be re-submitted: pressing **Enter** again says so — "that prompt is still being delivered" — and issues no second request and no second queue row. Removing or editing that text yourself clears the claim and lets the next Enter send normally.
+
+Every path that cannot deliver explains itself instead of doing nothing. If there is no conversation to send into — no chat is open, or a new chat's creation failed — Enter refuses visibly ("select or create a chat before sending") and leaves your text exactly as it was; you fix the cause and press Enter again. Attachments staged while a reply streams keep their existing refusal, and a rejected **/steer** now puts its text back rather than discarding it.
+
+A send that fails after leaving the browser restores your text. If you typed something new while waiting, the failed attempt is appended above it rather than replacing it, so two attempts never overwrite each other; the same rule covers a queued entry whose dispatch fails — it returns to its original position in the queue. Attachments stay attached (and stay viewable) for any turn the server did not store.
+
+Drafts survive a reload even before a conversation exists. Normally a draft belongs to a session, but with no session open your text is kept under a project-scoped fallback key, so a session-less composer is not a disposable one. When a session does appear, that fallback draft is adopted into the session's own draft — if both already hold text, both are kept rather than the newer one silently winning — and the fallback key is removed once it has a home. A reload that races an acknowledgement can therefore never hand you back a prompt the server already stored: a stored draft identical to the last message you sent is recognized as already delivered and dropped instead of re-offered.
+
+<!-- FNXC:ChatTargetReconcile 2026-09-07-18:02: RUFU-192 — a refused target PATCH used to roll the composer's Brain popover back to whatever the browser happened to be holding and toast a hardcoded string, so the UI could keep asserting a target the server never accepted and the next send was built against the wrong target. The UI now refetches the session, and an agent target's separate pi session file must be disclosed at switch time, not discovered later as amnesia. -->
+
+Retargeting a chat from the composer's **Brain** popover reconciles to the server rather than to a local guess. If the target update is refused, Fusion re-reads the session and shows the target the server actually holds, and only falls back to its previous local value if that re-read also fails.
+
+An agent target keeps its own conversation context, so converting a chat that already has messages from a model to an agent genuinely does not carry the earlier transcript. That is stated when you make the switch — a plain-language notice beside the target control — rather than discovered afterward as amnesia. Switching between two models, or between two agents, does not claim a transcript consequence it does not have.
+
 ## Automations
 
 <!-- FNXC:AutomationTools 2026-06-26-00:00: Automation AI-prompt steps now default to the full coding tool set and expose per-step restrictions so operators can intentionally narrow tool access without breaking legacy schedules. -->

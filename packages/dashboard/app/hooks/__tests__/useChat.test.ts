@@ -1201,7 +1201,56 @@ describe("useChat", () => {
       });
     });
 
-    it("rolls back sessions/activeSession and surfaces an error toast on failure", async () => {
+    /*
+    FNXC:ChatSendDurability 2026-09-07-14:45:
+    RUFU-192 Step 5 superseded the old "rolls back to the local snapshot on failure" contract.
+    The pre-switch local snapshot was itself only a client guess, so rolling back to it could leave
+    the operator staring at a target the server never held either. These two cases pin the new
+    contract: a rejected PATCH refetches the session and applies the SERVER's target, and the local
+    snapshot survives only when that read also fails. The pre-fix condition proven gone here is an
+    error path that asserted a `.rejects` (the caller uses `void setSessionModel(...)`, so that
+    rethrow was an unhandled rejection) and restored the optimistic target's local predecessor
+    without ever asking the server what the target actually is.
+    */
+    it("reconciles to the server's real target when the PATCH is rejected", async () => {
+      const addToast = vi.fn();
+      const session = makeSession({ id: "session-001", agentId: FN_AGENT_ID, modelProvider: "anthropic", modelId: "claude-sonnet-4-5" });
+      // The server's answer is neither the optimistic target nor the local pre-switch snapshot,
+      // so the assertion below can only pass if the read result (not a local guess) was applied.
+      const serverSession = makeSession({ id: "session-001", agentId: FN_AGENT_ID, modelProvider: "google", modelId: "gemini-2.5-pro", updatedAt: "2026-04-09T00:00:00.000Z" });
+      mockFetchChatSessions.mockResolvedValueOnce({ sessions: [session] });
+      mockFetchChatMessages.mockResolvedValue({ messages: [] });
+      mockUpdateChatSession.mockRejectedValueOnce(new Error("model failed"));
+
+      const { result } = renderHook(() => useChat("proj-123", addToast));
+
+      await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+
+      act(() => {
+        result.current.selectSession("session-001", session);
+      });
+
+      await waitFor(() => expect(result.current.activeSession?.modelId).toBe("claude-sonnet-4-5"));
+
+      mockFetchChatSession.mockResolvedValueOnce({ session: serverSession } as unknown as { session: EnrichedChatSession });
+
+      await act(async () => {
+        // The reconcile is authoritative, so the promise resolves — it does not reject.
+        await result.current.setSessionModel("session-001", { agentId: "agent-specialist" });
+      });
+
+      expect(mockUpdateChatSession).toHaveBeenCalledWith(
+        "session-001",
+        { agentId: "agent-specialist", modelProvider: null, modelId: null },
+        "proj-123",
+      );
+      expect(mockFetchChatSession).toHaveBeenCalledWith("session-001", "proj-123");
+      expect(result.current.sessions[0]).toMatchObject({ agentId: FN_AGENT_ID, modelProvider: "google", modelId: "gemini-2.5-pro" });
+      expect(result.current.activeSession).toMatchObject({ agentId: FN_AGENT_ID, modelProvider: "google", modelId: "gemini-2.5-pro" });
+      expect(addToast).toHaveBeenCalledWith("Failed to update chat model", "error");
+    });
+
+    it("falls back to the pre-switch local snapshot when the PATCH and the session read both fail", async () => {
       const addToast = vi.fn();
       const session = makeSession({ id: "session-001", agentId: FN_AGENT_ID, modelProvider: "anthropic", modelId: "claude-sonnet-4-5" });
       mockFetchChatSessions.mockResolvedValueOnce({ sessions: [session] });
@@ -1218,15 +1267,13 @@ describe("useChat", () => {
 
       await waitFor(() => expect(result.current.activeSession?.modelId).toBe("claude-sonnet-4-5"));
 
+      mockFetchChatSession.mockRejectedValueOnce(new Error("offline"));
+
       await act(async () => {
-        await expect(result.current.setSessionModel("session-001", { agentId: "agent-specialist" })).rejects.toThrow("model failed");
+        await result.current.setSessionModel("session-001", { agentId: "agent-specialist" });
       });
 
-      expect(mockUpdateChatSession).toHaveBeenCalledWith(
-        "session-001",
-        { agentId: "agent-specialist", modelProvider: null, modelId: null },
-        "proj-123",
-      );
+      expect(mockFetchChatSession).toHaveBeenCalledWith("session-001", "proj-123");
       expect(result.current.sessions[0]).toMatchObject({ agentId: FN_AGENT_ID, modelProvider: "anthropic", modelId: "claude-sonnet-4-5" });
       expect(result.current.activeSession).toMatchObject({ agentId: FN_AGENT_ID, modelProvider: "anthropic", modelId: "claude-sonnet-4-5" });
       expect(addToast).toHaveBeenCalledWith("Failed to update chat model", "error");
@@ -3318,6 +3365,182 @@ describe("useChat", () => {
       // Late frames from the detached A attachment must not paint onto B — the guarded setter drops them.
       act(() => attachHandlers.onPhase?.({ phase: "compacting", active: true }));
       expect(result.current.streamingPhase).toBeNull();
+    });
+  });
+
+  /*
+  FNXC:ChatSendDurability 2026-09-07-11:00:
+  RUFU-192 pins the durability contract between the send engine and its callers: text may only be
+  destroyed after a hand-off — the server's `user_persisted` ack (onPersisted(true)), the FIFO
+  queue (onQueued), or — for queued dispatches — never silently: failure without persisted proof
+  requeues. `onAccepted` (res.ok) is NOT proof, which is why these tests drive the ack frame
+  explicitly.
+  */
+  describe("send durability callbacks", () => {
+    function setupActiveSession() {
+      const session = makeSession({ id: "session-001", agentId: "agent-001" });
+      mockFetchChatSessions.mockResolvedValueOnce({ sessions: [session] });
+      mockFetchChatMessages.mockResolvedValue({ messages: [] });
+
+      const handlers: Array<Parameters<typeof mockStreamChatResponse>[2]> = [];
+      mockStreamChatResponse.mockImplementation((_sessionId, _content, nextHandlers) => {
+        handlers.push(nextHandlers);
+        return { close: vi.fn(), isConnected: () => true };
+      });
+
+      const { result } = renderHook(() => useChat("proj-123"));
+      return { result, handlers };
+    }
+
+    async function activateSession(result: { current: ReturnType<typeof useChat> }) {
+      await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+      act(() => result.current.selectSession("session-001"));
+      await waitFor(() => expect(result.current.activeSession?.id).toBe("session-001"));
+    }
+
+    it("fires onPersisted(true) with the row id only when the user_persisted ack arrives", async () => {
+      const { result, handlers } = setupActiveSession();
+      await activateSession(result);
+      const onPersisted = vi.fn();
+      const callbacks = { onPersisted };
+
+      act(() => result.current.sendMessage("Hello", undefined, callbacks));
+      await waitFor(() => expect(result.current.isStreaming).toBe(true));
+      // res.ok alone must NOT claim persistence.
+      expect(onPersisted).not.toHaveBeenCalled();
+
+      act(() => handlers[0]?.onUserPersisted?.("user-row-1"));
+      expect(onPersisted).toHaveBeenCalledTimes(1);
+      expect(onPersisted).toHaveBeenCalledWith(true, "user-row-1");
+
+      // Idempotent against stream-replay redelivery of the same ack.
+      act(() => handlers[0]?.onUserPersisted?.("user-row-1"));
+      expect(onPersisted).toHaveBeenCalledTimes(1);
+    });
+
+    it("fires onPersisted(false) once on an accepted stream error that never received the ack", async () => {
+      const { result, handlers } = setupActiveSession();
+      await activateSession(result);
+      const onPersisted = vi.fn();
+      const onDelivered = vi.fn();
+      const onFailed = vi.fn();
+
+      act(() => result.current.sendMessage("Hello", undefined, { onPersisted, onDelivered, onFailed }));
+      await waitFor(() => expect(result.current.isStreaming).toBe(true));
+
+      act(() => handlers[0]?.onError?.("server exploded", { requestAccepted: true }));
+      expect(onPersisted).toHaveBeenCalledTimes(1);
+      expect(onPersisted.mock.calls[0]?.[0]).toBe(false);
+      // Attachment-level semantics keep their pre-existing meaning on accepted errors.
+      expect(onDelivered).toHaveBeenCalledTimes(1);
+      expect(onFailed).not.toHaveBeenCalled();
+    });
+
+    it("fires onFailed without any onPersisted verdict on a rejected send", async () => {
+      const { result, handlers } = setupActiveSession();
+      await activateSession(result);
+      const onPersisted = vi.fn();
+      const onFailed = vi.fn();
+
+      act(() => result.current.sendMessage("Hello", undefined, { onPersisted, onFailed }));
+      await waitFor(() => expect(result.current.isStreaming).toBe(true));
+
+      act(() => handlers[0]?.onError?.("offline"));
+      expect(onFailed).toHaveBeenCalledTimes(1);
+      expect(onPersisted).not.toHaveBeenCalled();
+    });
+
+    it("fires onQueued only after the FIFO and persisted storage own the text", async () => {
+      const { result, handlers } = setupActiveSession();
+      await activateSession(result);
+
+      act(() => result.current.sendMessage("First"));
+      await waitFor(() => expect(result.current.isStreaming).toBe(true));
+
+      // The callback asserts DURING the hand-off: the durable FIFO write must already be visible.
+      const onQueued = vi.fn(() => {
+        expect(localStorage.getItem(getChatPendingMessageKey("session-001")!)).toBe(
+          JSON.stringify(["Queued follow-up"]),
+        );
+      });
+      const onPersisted = vi.fn();
+      act(() => result.current.sendMessage("Queued follow-up", undefined, { onQueued, onPersisted }));
+
+      expect(onQueued).toHaveBeenCalledTimes(1);
+      expect(onPersisted).not.toHaveBeenCalled();
+      expect(result.current.pendingMessages).toEqual(["Queued follow-up"]);
+    });
+
+    it("requeues the auto-drained head at the queue front when its send dies before acceptance", async () => {
+      const { result, handlers } = setupActiveSession();
+      await activateSession(result);
+
+      act(() => result.current.sendMessage("First"));
+      await waitFor(() => expect(result.current.isStreaming).toBe(true));
+      act(() => result.current.sendMessage("Queued follow-up"));
+      await waitFor(() => expect(result.current.pendingMessages).toEqual(["Queued follow-up"]));
+
+      await act(async () => {
+        handlers[0]?.onDone?.({ messageId: "msg-001" });
+      });
+      await waitFor(() => expect(mockStreamChatResponse).toHaveBeenCalledTimes(2));
+      expect(result.current.pendingMessages).toEqual([]);
+
+      // Pre-acceptance failure of the drained head: the text returns and is NOT auto-retried.
+      await act(async () => {
+        handlers[1]?.onError?.("offline");
+      });
+      await waitFor(() => expect(result.current.pendingMessages).toEqual(["Queued follow-up"]));
+      expect(mockStreamChatResponse).toHaveBeenCalledTimes(2);
+      expect(localStorage.getItem(getChatPendingMessageKey("session-001")!)).toBe(
+        JSON.stringify(["Queued follow-up"]),
+      );
+    });
+
+    it("requeues the auto-drained head when its send is accepted but dies before persisting", async () => {
+      const { result, handlers } = setupActiveSession();
+      await activateSession(result);
+
+      act(() => result.current.sendMessage("First"));
+      await waitFor(() => expect(result.current.isStreaming).toBe(true));
+      act(() => result.current.sendMessage("Queued follow-up"));
+      await waitFor(() => expect(result.current.pendingMessages).toEqual(["Queued follow-up"]));
+
+      await act(async () => {
+        handlers[0]?.onDone?.({ messageId: "msg-001" });
+      });
+      await waitFor(() => expect(mockStreamChatResponse).toHaveBeenCalledTimes(2));
+
+      // Accepted (res.ok) then error with NO user_persisted: the row was never durable.
+      await act(async () => {
+        handlers[1]?.onError?.("store write rejected", { requestAccepted: true });
+      });
+      await waitFor(() => expect(result.current.pendingMessages).toEqual(["Queued follow-up"]));
+      expect(mockStreamChatResponse).toHaveBeenCalledTimes(2);
+    });
+
+    it("never requeues an auto-drained head whose user row was persisted", async () => {
+      const { result, handlers } = setupActiveSession();
+      await activateSession(result);
+
+      act(() => result.current.sendMessage("First"));
+      await waitFor(() => expect(result.current.isStreaming).toBe(true));
+      act(() => result.current.sendMessage("Queued follow-up"));
+      await waitFor(() => expect(result.current.pendingMessages).toEqual(["Queued follow-up"]));
+
+      await act(async () => {
+        handlers[0]?.onDone?.({ messageId: "msg-001" });
+      });
+      await waitFor(() => expect(mockStreamChatResponse).toHaveBeenCalledTimes(2));
+
+      // The ack proves the server row exists; a later error must NOT schedule a duplicate turn.
+      act(() => handlers[1]?.onUserPersisted?.("user-row-9"));
+      await act(async () => {
+        handlers[1]?.onError?.("reply generation failed", { requestAccepted: true });
+      });
+      expect(result.current.pendingMessages).toEqual([]);
+      expect([null, "[]"]).toContain(localStorage.getItem(getChatPendingMessageKey("session-001")!));
+      expect(mockStreamChatResponse).toHaveBeenCalledTimes(2);
     });
   });
 

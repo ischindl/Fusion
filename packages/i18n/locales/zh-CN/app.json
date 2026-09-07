@@ -1650,7 +1650,11 @@
     "contextTruncationUnproven": "",
     "contextTruncationNotice_one": "",
     "contextTruncationNotice_other": "",
-    "workingCompactingStatus": ""
+    "workingCompactingStatus": "",
+    "sendNoActiveSession": "",
+    "agentTargetTranscriptNotice": "",
+    "failedToUpdateChatModel": "",
+    "sendAlreadyInFlight": ""
   },
   "chatRooms": {
     "error": {
@@ -6365,8 +6369,6 @@
     "failedToLoadScripts": "加载脚本失败",
     "failedToSave": "无法保存脚本",
     "loadingScripts": "正在加载脚本...",
-    "nameErrorMsg": "名称只能包含字母、数字、连字符和下划线（不能有空格）",
-    "nameHint": "仅允许字母、数字、连字符和下划线",
     "noScriptsDefined": "未定义脚本",
     "noScriptsYet": "尚未定义脚本。",
     "runScript": "运行脚本",

@@ -1650,7 +1650,11 @@
     "contextTruncationUnproven": "",
     "contextTruncationNotice_one": "",
     "contextTruncationNotice_other": "",
-    "workingCompactingStatus": ""
+    "workingCompactingStatus": "",
+    "sendNoActiveSession": "",
+    "agentTargetTranscriptNotice": "",
+    "failedToUpdateChatModel": "",
+    "sendAlreadyInFlight": ""
   },
   "chatRooms": {
     "error": {
@@ -6365,8 +6369,6 @@
     "failedToLoadScripts": "載入腳本失敗",
     "failedToSave": "無法保存指令碼",
     "loadingScripts": "正在載入指令碼...",
-    "nameErrorMsg": "名稱只能包含字母、數字、連字符和下劃線（不能有空格）",
-    "nameHint": "僅允許字母、數字、連字符和下劃線",
     "noScriptsDefined": "未定義指令碼",
     "noScriptsYet": "尚未定義指令碼。",
     "runScript": "執行指令碼",

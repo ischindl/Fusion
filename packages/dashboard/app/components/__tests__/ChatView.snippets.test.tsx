@@ -98,7 +98,9 @@ describe("ChatView chat snippets", () => {
     await waitFor(() => expect(sendMessage).toHaveBeenCalledWith(
       prompt,
       [file],
-      expect.objectContaining({ onAccepted: expect.any(Function), onDelivered: expect.any(Function) }),
+      // FNXC:ChatSendDurability 2026-09-07-13:33: RUFU-192 dropped the acceptance-time attachment
+      // release, so the send bag reports durability (onPersisted/onQueued) instead of onAccepted.
+      expect.objectContaining({ onPersisted: expect.any(Function), onQueued: expect.any(Function), onDelivered: expect.any(Function) }),
     ));
   });
 

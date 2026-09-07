@@ -42,6 +42,15 @@ export interface CreateChatStreamHandlersOptions {
   seed — a reattach recovers a still-running phase from the buffered `Last-Event-ID` replay.
   */
   setStreamingPhase?: Dispatch<SetStateAction<ChatEnginePhase | null>>;
+  /*
+  FNXC:ChatSendDurability 2026-09-07-11:00:
+  RUFU-192: forwards the server's "user row is stored" acknowledgement (see the api
+  ChatStreamHandlers.onUserPersisted note). Forwarded verbatim with NO buffering or coalescing —
+  this event releases the caller's composer text, so delaying it by a frame would widen the
+  zero-durable-owner window the whole task exists to close. Advisory and idempotent: SSE replay
+  can redeliver it; the caller's commit must be no-op-on-repeat.
+  */
+  onUserPersisted?: (messageId: string) => void;
   /**
    * Caller-side `cancelStreamingFlushes` ref slot. The factory writes its own
    * cancel function here so `stopStreaming` (in either parent hook) can call
@@ -85,6 +94,12 @@ export interface ChatStreamHandlers {
   write: active frames set the label, the trailing inactive frame clears it.
   */
   onPhase: (data: { phase: ChatEnginePhase; active: boolean }) => void;
+  /*
+  FNXC:ChatSendDurability 2026-09-07-11:00:
+  RUFU-192: pass-through of the durable-user-turn acknowledgement; see the same tag on
+  CreateChatStreamHandlersOptions.onUserPersisted for the contract.
+  */
+  onUserPersisted: (messageId: string) => void;
   onAgentMessage?: (data: { message: ChatMessage; senderAgentId: string; senderAgentName: string }) => void;
   onDone: (data: { messageId: string; message?: ChatMessage; dispatch?: "agents"; failedAgentNames?: string[] }) => void;
   onError: (data: string | ChatFailureInfo, meta?: ChatStreamErrorMeta) => void;
@@ -123,6 +138,7 @@ export function createChatStreamHandlers(
     setStreamingThinking,
     setStreamingToolCalls,
     setStreamingPhase,
+    onUserPersisted,
     cancelStreamingFlushesRef,
     addToast,
     onDone,
@@ -242,6 +258,9 @@ export function createChatStreamHandlers(
     */
     onPhase: (data: { phase: ChatEnginePhase; active: boolean }) => {
       setStreamingPhase?.(data.active ? data.phase : null);
+    },
+    onUserPersisted: (messageId: string) => {
+      onUserPersisted?.(messageId);
     },
     onAgentMessage,
     onDone: (data: { messageId: string; message?: ChatMessage; dispatch?: "agents"; failedAgentNames?: string[] }) => {
