@@ -5,6 +5,16 @@
       "file": "packages/engine/src/__tests__/reliability-interactions/merge-node-paused-abort-retryable.test.ts",
       "reason": "SECOND sighting of the sequence-only reliability failure recorded in docs/solutions/test-failures/suite-only-flakes-observed-register.md entry 14. FN-249's selected engine-reliability file run failed 13 sibling recovery assertions after prior cases, while the exact benign merge-abort subject passed immediately in isolation. The user-cancellation path is not enabled by this fixture; no timeout, retry, or assertion was changed. Quarantined under AGENTS.md's mandatory deletion ratchet until a root-cause repair proves the file's recovery coverage can be rescued.",
       "quarantinedAt": "2026-08-29"
+    },
+    {
+      "file": "packages/dashboard/app/components/__tests__/AgentDetailView.core.test.tsx",
+      "reason": "SECOND on-sight observation of the skill-badge suite-only flake (register entry 18): fails `data-skill-state=\"unknown\"` vs `auto-available` under suite/subset load, passes isolated (53/53). No appeasement; quarantined under the deletion ratchet.",
+      "quarantinedAt": "2026-09-07"
+    },
+    {
+      "file": "packages/dashboard/app/components/__tests__/TaskPlannerChatTab.virtualization.test.tsx",
+      "reason": "First on-sight quarantine: upstream FN-304 test captured no IntersectionObserver callback under components-dir load (assertion at :164 `expected undefined to be type of 'function'`), passes isolated 5/5. Coverage is 5 load-sensitive tests, so the register's substantial-coverage exception does not apply.",
+      "quarantinedAt": "2026-09-07"
     }
   ]
 }

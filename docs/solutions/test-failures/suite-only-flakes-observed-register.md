@@ -795,3 +795,5 @@ Received:
 ```
 
 No timeout was widened, no retry added, no assertion relaxed. A SECOND sighting is an ordinary on-sight quarantine with no further discretion, per the standing rule in AGENTS.md.
+
+**Second sighting (2026-09-07) → quarantined.** Reproduced identically (`data-skill-state="unknown"` at `:482`) in a `npx vitest run app/components/__tests__/` subset run on the v0.78.0-beta.4 merge tree (this session, 2026-09-07 ~09:22 UTC; the run failed 4 files, this test among them, while a same-day 2-file run passed it). The file now carries a `quarantinedDashboardTests` exclusion and a `scripts/lib/test-quarantine.json` row (`quarantinedAt: 2026-09-07`); deletion clock runs to 2026-09-21 unless rescued with a root-cause fix.

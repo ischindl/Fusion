@@ -376,6 +376,16 @@ const quarantinedDashboardTests: string[] = [
   async-store or applicable mock/non-store contracts. Remove their ledger/exclude
   pairs so dashboard-api-quality-backfill collects the restored coverage.
   */
+  /*
+  FNXC:DashboardTestQuarantine 2026-09-07-07:55:
+  Two v0.78.0-beta.4 merge-window load flakes quarantined with matching ledger rows:
+  AgentDetailView.core is a SECOND on-sight observation of the register-entry-18 skill-badge
+  race (passes isolated 53/53); TaskPlannerChatTab.virtualization is a first on-sight quarantine
+  whose IntersectionObserver capture race failed only under shard load. File-level exclusion drops
+  the whole files for 14 days; rescue needs a root-cause fix, not a stabilization pass.
+  */
+  "app/components/__tests__/AgentDetailView.core.test.tsx", // quarantined 2026-09-07 — skill-badge suite-only flake (sighting 2)
+  "app/components/__tests__/TaskPlannerChatTab.virtualization.test.tsx", // quarantined 2026-09-07 — IntersectionObserver capture race under load (sighting 1)
 ];
 
 /*
