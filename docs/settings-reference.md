@@ -808,8 +808,9 @@ Database backups work with both external PostgreSQL and Fusion's default embedde
 | `titleSummarizerFallbackThinkingLevel` | `ThinkingLevel` | `undefined` | Optional project title-summarizer fallback thinking override. Inherits the title-summarizer/global/default thinking level when unset. |
 | `prTitlePromptInstructions` | `string` | `undefined` | Optional project guidance appended to the Create PR dialog's AI metadata system prompt for the generated PR title. Blank or whitespace-only values are treated as unset and keep the default prompt behavior. |
 | `prDescriptionPromptInstructions` | `string` | `undefined` | Optional project guidance appended to the Create PR dialog's AI metadata system prompt for generated PR body fields (`summary`, `changes`, `testing`). Blank or whitespace-only values are treated as unset and keep the default prompt behavior. |
-| `scripts` | `Record<string, string>` | `undefined` | Named script map used by script-mode workflow steps and setup hooks. |
-| `setupScript` | `string` | `undefined` | Script key from `scripts` to run before task execution. |
+| `scripts` | `Record<string, string>` | `undefined` | Named script map used by script-mode workflow steps and setup hooks. Names may contain spaces, Unicode, and punctuation; commands remain plain string values for backward compatibility. |
+| `scriptMetadata` | `Record<string, { description?: string }>` | `undefined` | Optional display metadata keyed by script name. Empty descriptions are omitted, and legacy configurations without this map remain valid. |
+| `setupScript` | `string` | `undefined` | Script key from `scripts` to run before task execution. Atomic script renames update this reference. |
 | `insightExtractionEnabled` | `boolean` | `false` | Enable scheduled memory insight extraction. |
 | `insightExtractionSchedule` | `string` | `"0 2 * * *"` | Insight extraction cron schedule. |
 | `insightExtractionMinIntervalMs` | `number` | `86400000` | Minimum interval between extractions (24h). |
@@ -939,7 +940,7 @@ Recovery entrypoints in the dashboard:
 
 ### OAuth credential refresh
 
-Fusion automatically refreshes OAuth credentials before reporting auth status when the stored credential includes a refresh token and the access token is expired or within the refresh buffer. For Anthropic, this status path is the `anthropic-subscription` surface (including legacy `anthropic` OAuth rows), not Claude CLI state. A successful refresh updates auth storage and prevents `oauth-token-expired` notifications or startup warnings for that provider, so users usually do not need manual re-login after the initial OAuth login.
+Fusion automatically refreshes OAuth credentials before reporting auth status when the stored credential includes a refresh token and the access token is expired or within the refresh buffer. Every OAuth provider delegates renewal to pi's `ModelRuntime`; Anthropic retains its `anthropic-subscription` status surface (including legacy `anthropic` OAuth rows), not Claude CLI state. A successful refresh updates auth storage and prevents `oauth-token-expired` notifications or startup warnings for that provider, so users usually do not need manual re-login after the initial OAuth login.
 
 <!-- FNXC:ClaudeOAuth 2026-07-05-00:00: FN-7574 — the proactive-refresh buffer was widened from 60s to 5 minutes (`OAUTH_REFRESH_BUFFER_MS` in packages/engine/src/auth-storage.ts) so a credential nearing expiry is treated as due-for-refresh earlier, without needlessly refreshing well-valid tokens. An engine-side background `OAuthRefreshScheduler` also polls every 5 minutes and reuses this same refresh-if-due logic against every known OAuth provider (plus the anthropic-subscription alias), so healthy subscriptions renew ahead of expiry even if nothing else happens to request a runtime API key in that window. In-flight refresh dedupe and the 30s post-failure cooldown (`OAUTH_REFRESH_FAILURE_COOLDOWN_MS`) still apply. -->
 

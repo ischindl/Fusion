@@ -1313,10 +1313,11 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
         throw notFound(`Chat session ${sessionId} not found`);
       }
 
-      const { limit: limitStr, offset: offsetStr, before, order } = req.query as {
+      const { limit: limitStr, offset: offsetStr, before, beforeId, order } = req.query as {
         limit?: string;
         offset?: string;
         before?: string;
+        beforeId?: string;
         order?: string;
       };
 
@@ -1334,6 +1335,9 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
       if (order !== undefined && order !== "asc" && order !== "desc") {
         throw badRequest('order must be "asc" or "desc"');
       }
+      if (beforeId && !before) {
+        throw badRequest("beforeId requires before");
+      }
 
       const effectiveLimit = Math.min(limit, 200);
 
@@ -1341,6 +1345,7 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
         limit: effectiveLimit,
         offset,
         ...(before && { before }),
+        ...(before && beforeId && { beforeId }),
         ...(order === "desc" || order === "asc" ? { order } : {}),
       });
 

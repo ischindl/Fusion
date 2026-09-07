@@ -1559,6 +1559,8 @@
     "loadingSlashSuggestions": "제안 불러오는 중…",
     "snippetSuggestion": "저장된 프롬프트 삽입",
     "snippetSuggestions": "스니펫 제안",
+    "conversationIdCopied": "",
+    "copyConversationId": "",
     "addTag": "",
     "allConversations": "",
     "allTags": "",
@@ -1648,9 +1650,7 @@
     "contextTruncationUnproven": "",
     "contextTruncationNotice_one": "",
     "contextTruncationNotice_other": "",
-    "workingCompactingStatus": "",
-    "conversationIdCopied": "",
-    "copyConversationId": ""
+    "workingCompactingStatus": ""
   },
   "chatRooms": {
     "error": {
@@ -3553,14 +3553,14 @@
     "viewUsage": "사용량 보기",
     "workflows": "워크플로",
     "workingBranch": "작업 브랜치",
-    "allProjects": "",
-    "favoriteProjects": "",
-    "hideRightSidebar": "",
-    "showRightSidebar": "",
     "unreadArtifacts_one": "",
     "unreadArtifacts_other": "",
     "unreadRecommendations_one": "",
-    "unreadRecommendations_other": ""
+    "unreadRecommendations_other": "",
+    "allProjects": "",
+    "favoriteProjects": "",
+    "hideRightSidebar": "",
+    "showRightSidebar": ""
   },
   "health": {
     "activeTasks": "활성 작업",
@@ -3868,12 +3868,12 @@
     "statusReplan": "재계획",
     "statusWaiting": "",
     "statusWaitingOn": "",
+    "bulkDeleteSummary": "",
     "loadingWorkflowLanes": "",
     "noWorkflowLanes": "",
     "planReviewBadge": "",
     "thinkingLevel": "",
-    "title": "",
-    "bulkDeleteSummary": ""
+    "title": ""
   },
   "mailbox": {
     "agent": "에이전트",
@@ -4744,19 +4744,19 @@
     "usage": "사용량",
     "workflows": "워크플로",
     "patchnode": "",
-    "automations": "",
-    "collapse": "",
-    "fleet": "",
-    "ideation": "",
-    "importTasks": "",
-    "newTask": "",
     "artifactsUnreadAriaLabel_one": "",
     "artifactsUnreadAriaLabel_other": "",
     "artifactsUnreadDotAriaLabel": "",
     "recommendations": "",
     "recommendationsUnreadAriaLabel_one": "",
     "recommendationsUnreadAriaLabel_other": "",
-    "recommendationsUnreadDotAriaLabel": ""
+    "recommendationsUnreadDotAriaLabel": "",
+    "automations": "",
+    "collapse": "",
+    "fleet": "",
+    "ideation": "",
+    "importTasks": "",
+    "newTask": ""
   },
   "newTaskModal": {
     "addDependencies": "의존성 추가",
@@ -6382,7 +6382,9 @@
     "scriptNamePlaceholder": "예: build, test, lint",
     "scriptNameRequired": "스크립트 이름이 필요합니다",
     "scriptUpdated": "스크립트가 업데이트되었습니다",
-    "title": "스크립트"
+    "title": "스크립트",
+    "description": "설명 (선택 사항)",
+    "descriptionPlaceholder": "이 스크립트는 어떤 작업을 하나요?"
   },
   "secrets": {
     "accessPolicyAuto": "auto",
@@ -6933,6 +6935,11 @@
       "noLimitOnAgentToolOutputHint": "",
       "quickAddSubmitOnEnter": "",
       "quickAddSubmitOnEnterHint": "",
+      "chatSubmitOnEnter": "",
+      "chatSubmitOnEnterHint": "",
+      "chatSubmitOnEnterAuto": "",
+      "chatSubmitOnEnterAlways": "",
+      "chatSubmitOnEnterNever": "",
       "dismissModalsByClickingOutside": "",
       "enableGitLabIntegration": "",
       "gitLabAccessToken": "",
@@ -6943,12 +6950,7 @@
       "gitLabInstanceUrl": "",
       "gitLabPersonalAccessToken": "",
       "gitLabProjectAccessToken": "",
-      "gitLabTokenType": "",
-      "chatSubmitOnEnter": "",
-      "chatSubmitOnEnterHint": "",
-      "chatSubmitOnEnterAuto": "",
-      "chatSubmitOnEnterAlways": "",
-      "chatSubmitOnEnterNever": ""
+      "gitLabTokenType": ""
     },
     "globalModels": {
       "modelOverrides": "",
@@ -8549,16 +8551,6 @@
     "noMatches": "No matching skills",
     "loadError": "Skills could not be loaded.",
     "hiddenUnavailable": "Hidden skills include disabled or not-discovered entries",
-    "backToList": "",
-    "backToSkillMd": "",
-    "detailTitle": "",
-    "emptyFile": "",
-    "fileNotPreviewable": "",
-    "installed": "",
-    "loadFileError": "",
-    "loadingFile": "",
-    "selectASkill": "",
-    "viewFile": "",
     "snippetsReservedName": "이 이름은 채팅 명령용으로 예약되어 있습니다.",
     "snippetsInvalidName": "문자, 숫자, 밑줄 또는 하이픈을 1~48자 사용하세요.",
     "snippetsPromptRequired": "이 스니펫의 프롬프트를 입력하세요.",
@@ -8589,7 +8581,17 @@
     "skillsDescription": "이 프로젝트에서 사용할 수 있는 스킬을 탐색하고 활성화하거나 설치하세요.",
     "snippetsEmptyHint": "여기에서 만든 다음 채팅에 /이름을 입력해 삽입하세요.",
     "refreshSkillsLabel": "스킬 새로 고침",
-    "refreshSnippetsLabel": "스니펫 새로 고침"
+    "refreshSnippetsLabel": "스니펫 새로 고침",
+    "backToList": "",
+    "backToSkillMd": "",
+    "detailTitle": "",
+    "emptyFile": "",
+    "fileNotPreviewable": "",
+    "installed": "",
+    "loadFileError": "",
+    "loadingFile": "",
+    "selectASkill": "",
+    "viewFile": ""
   },
   "specEditor": {
     "edit": "편집",
@@ -11119,6 +11121,24 @@
     "showMore_one": "Show more ({{count}} {{lineLabel}})",
     "showMore_other": "Show more ({{count}} {{lineLabel}})"
   },
+  "recommendations": {
+    "count": "",
+    "createError": "",
+    "createTask": "",
+    "created": "",
+    "creating": "",
+    "emptyDescription": "",
+    "emptyTitle": "",
+    "loadError": "",
+    "loadMore": "",
+    "loading": "",
+    "loadingMore": "",
+    "retryCreate": "",
+    "source": "",
+    "title": "",
+    "truncated": "",
+    "viewTask": ""
+  },
   "approvals": {
     "gatedActionArgs": "",
     "gatedActionCommand": "",
@@ -11343,23 +11363,5 @@
       "headline": "사람을 기다리는 중",
       "suggestedAction": "카드를 직접 병합하거나 자동 병합 처리를 다시 켜세요."
     }
-  },
-  "recommendations": {
-    "count": "",
-    "createError": "",
-    "createTask": "",
-    "created": "",
-    "creating": "",
-    "emptyDescription": "",
-    "emptyTitle": "",
-    "loadError": "",
-    "loadMore": "",
-    "loading": "",
-    "loadingMore": "",
-    "retryCreate": "",
-    "source": "",
-    "title": "",
-    "truncated": "",
-    "viewTask": ""
   }
 }

@@ -1559,6 +1559,8 @@
     "loadingSlashSuggestions": "Cargando sugerencias…",
     "snippetSuggestion": "Insertar prompt guardado",
     "snippetSuggestions": "Sugerencias de fragmentos",
+    "conversationIdCopied": "",
+    "copyConversationId": "",
     "addTag": "",
     "allConversations": "",
     "allTags": "",
@@ -1648,9 +1650,7 @@
     "contextTruncationUnproven": "",
     "contextTruncationNotice_one": "",
     "contextTruncationNotice_other": "",
-    "workingCompactingStatus": "",
-    "conversationIdCopied": "",
-    "copyConversationId": ""
+    "workingCompactingStatus": ""
   },
   "chatRooms": {
     "error": {
@@ -3553,14 +3553,14 @@
     "viewUsage": "Ver uso",
     "workflows": "Flujos de trabajo",
     "workingBranch": "Rama de trabajo",
-    "allProjects": "",
-    "favoriteProjects": "",
-    "hideRightSidebar": "",
-    "showRightSidebar": "",
     "unreadArtifacts_one": "",
     "unreadArtifacts_other": "",
     "unreadRecommendations_one": "",
-    "unreadRecommendations_other": ""
+    "unreadRecommendations_other": "",
+    "allProjects": "",
+    "favoriteProjects": "",
+    "hideRightSidebar": "",
+    "showRightSidebar": ""
   },
   "health": {
     "activeTasks": "Tareas activas",
@@ -3869,12 +3869,12 @@
     "statusReplan": "Replanificar",
     "statusWaiting": "",
     "statusWaitingOn": "",
+    "bulkDeleteSummary": "",
     "loadingWorkflowLanes": "",
     "noWorkflowLanes": "",
     "planReviewBadge": "",
     "thinkingLevel": "",
-    "title": "",
-    "bulkDeleteSummary": ""
+    "title": ""
   },
   "mailbox": {
     "agent": "Agente",
@@ -4745,19 +4745,19 @@
     "usage": "Uso",
     "workflows": "Flujos de trabajo",
     "patchnode": "",
-    "automations": "",
-    "collapse": "",
-    "fleet": "",
-    "ideation": "",
-    "importTasks": "",
-    "newTask": "",
     "artifactsUnreadAriaLabel_one": "",
     "artifactsUnreadAriaLabel_other": "",
     "artifactsUnreadDotAriaLabel": "",
     "recommendations": "",
     "recommendationsUnreadAriaLabel_one": "",
     "recommendationsUnreadAriaLabel_other": "",
-    "recommendationsUnreadDotAriaLabel": ""
+    "recommendationsUnreadDotAriaLabel": "",
+    "automations": "",
+    "collapse": "",
+    "fleet": "",
+    "ideation": "",
+    "importTasks": "",
+    "newTask": ""
   },
   "newTaskModal": {
     "addDependencies": "Añadir dependencias",
@@ -6383,7 +6383,9 @@
     "scriptNamePlaceholder": "ej., build, test, lint",
     "scriptNameRequired": "El nombre del script es obligatorio",
     "scriptUpdated": "Script actualizado",
-    "title": "Scripts"
+    "title": "Scripts",
+    "description": "Descripción (opcional)",
+    "descriptionPlaceholder": "¿Qué hace este script?"
   },
   "secrets": {
     "accessPolicyAuto": "auto",
@@ -6934,6 +6936,11 @@
       "noLimitOnAgentToolOutputHint": "",
       "quickAddSubmitOnEnter": "",
       "quickAddSubmitOnEnterHint": "",
+      "chatSubmitOnEnter": "",
+      "chatSubmitOnEnterHint": "",
+      "chatSubmitOnEnterAuto": "",
+      "chatSubmitOnEnterAlways": "",
+      "chatSubmitOnEnterNever": "",
       "dismissModalsByClickingOutside": "",
       "enableGitLabIntegration": "",
       "gitLabAccessToken": "",
@@ -6944,12 +6951,7 @@
       "gitLabInstanceUrl": "",
       "gitLabPersonalAccessToken": "",
       "gitLabProjectAccessToken": "",
-      "gitLabTokenType": "",
-      "chatSubmitOnEnter": "",
-      "chatSubmitOnEnterHint": "",
-      "chatSubmitOnEnterAuto": "",
-      "chatSubmitOnEnterAlways": "",
-      "chatSubmitOnEnterNever": ""
+      "gitLabTokenType": ""
     },
     "globalModels": {
       "modelOverrides": "",
@@ -8550,16 +8552,6 @@
     "noMatches": "No matching skills",
     "loadError": "Skills could not be loaded.",
     "hiddenUnavailable": "Hidden skills include disabled or not-discovered entries",
-    "backToList": "",
-    "backToSkillMd": "",
-    "detailTitle": "",
-    "emptyFile": "",
-    "fileNotPreviewable": "",
-    "installed": "",
-    "loadFileError": "",
-    "loadingFile": "",
-    "selectASkill": "",
-    "viewFile": "",
     "snippetsReservedName": "Este nombre está reservado para un comando de chat.",
     "snippetsInvalidName": "Usa entre 1 y 48 letras, números, guiones bajos o guiones.",
     "snippetsPromptRequired": "Introduce un prompt para este fragmento.",
@@ -8590,7 +8582,17 @@
     "skillsDescription": "Explora, activa e instala las competencias disponibles para este proyecto.",
     "snippetsEmptyHint": "Crea uno aquí y escribe /nombre en cualquier chat para insertarlo.",
     "refreshSkillsLabel": "Actualizar competencias",
-    "refreshSnippetsLabel": "Actualizar fragmentos"
+    "refreshSnippetsLabel": "Actualizar fragmentos",
+    "backToList": "",
+    "backToSkillMd": "",
+    "detailTitle": "",
+    "emptyFile": "",
+    "fileNotPreviewable": "",
+    "installed": "",
+    "loadFileError": "",
+    "loadingFile": "",
+    "selectASkill": "",
+    "viewFile": ""
   },
   "specEditor": {
     "edit": "Editar",
@@ -11120,6 +11122,24 @@
     "showMore_one": "Show more ({{count}} {{lineLabel}})",
     "showMore_other": "Show more ({{count}} {{lineLabel}})"
   },
+  "recommendations": {
+    "count": "",
+    "createError": "",
+    "createTask": "",
+    "created": "",
+    "creating": "",
+    "emptyDescription": "",
+    "emptyTitle": "",
+    "loadError": "",
+    "loadMore": "",
+    "loading": "",
+    "loadingMore": "",
+    "retryCreate": "",
+    "source": "",
+    "title": "",
+    "truncated": "",
+    "viewTask": ""
+  },
   "approvals": {
     "gatedActionArgs": "",
     "gatedActionCommand": "",
@@ -11344,23 +11364,5 @@
       "headline": "Esperando a una persona",
       "suggestedAction": "Fusiona la tarjeta tú mismo o vuelve a activar el procesamiento automático de fusiones."
     }
-  },
-  "recommendations": {
-    "count": "",
-    "createError": "",
-    "createTask": "",
-    "created": "",
-    "creating": "",
-    "emptyDescription": "",
-    "emptyTitle": "",
-    "loadError": "",
-    "loadMore": "",
-    "loading": "",
-    "loadingMore": "",
-    "retryCreate": "",
-    "source": "",
-    "title": "",
-    "truncated": "",
-    "viewTask": ""
   }
 }

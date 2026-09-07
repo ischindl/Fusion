@@ -112,6 +112,15 @@ describe("FN-8492: reconcile orphaned pending step results", () => {
     expect(recovered?.workflowStepResults?.[0]?.status).toBe("passed");
     expect(recovered?.workflowStepResults?.[1]?.status).toBe("failed");
     expect(recovered?.workflowStepResults?.[1]?.completedAt).toBeTruthy();
+    expect(recovered?.workflowStepResults?.[1]?.output).toBe("Pending step result had no live session or lease; marked failed by self-healing (FN-8492).");
+    expect(recovered?.workflowStepResults?.[1]?.output).not.toMatch(/restart|crash/i);
+    /*
+    FNXC:OrphanedPendingSteps 2026-09-07-00:40:
+    Upstream added these output-text assertions (FN-8492 user-facing copy must not claim
+    a restart/crash); they are kept and paired with the real-store-sink harness above
+    (RUFU-151) rather than upstream's module mock, whose createRunAuditor path no longer
+    matches production imports.
+    */
     const audit = auditSink(store);
     expect(audit).toHaveBeenCalledTimes(1);
     expect(audit).toHaveBeenCalledWith(expect.objectContaining({

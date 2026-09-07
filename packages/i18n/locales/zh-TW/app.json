@@ -1559,6 +1559,8 @@
     "loadingSlashSuggestions": "正在載入建議…",
     "snippetSuggestion": "插入已儲存的提示詞",
     "snippetSuggestions": "片段建議",
+    "conversationIdCopied": "",
+    "copyConversationId": "",
     "addTag": "",
     "allConversations": "",
     "allTags": "",
@@ -1648,9 +1650,7 @@
     "contextTruncationUnproven": "",
     "contextTruncationNotice_one": "",
     "contextTruncationNotice_other": "",
-    "workingCompactingStatus": "",
-    "conversationIdCopied": "",
-    "copyConversationId": ""
+    "workingCompactingStatus": ""
   },
   "chatRooms": {
     "error": {
@@ -3553,14 +3553,14 @@
     "viewUsage": "查看用量",
     "workflows": "工作流程",
     "workingBranch": "工作分支",
-    "allProjects": "",
-    "favoriteProjects": "",
-    "hideRightSidebar": "",
-    "showRightSidebar": "",
     "unreadArtifacts_one": "",
     "unreadArtifacts_other": "",
     "unreadRecommendations_one": "",
-    "unreadRecommendations_other": ""
+    "unreadRecommendations_other": "",
+    "allProjects": "",
+    "favoriteProjects": "",
+    "hideRightSidebar": "",
+    "showRightSidebar": ""
   },
   "health": {
     "activeTasks": "活躍任務",
@@ -3868,12 +3868,12 @@
     "statusReplan": "重新規劃",
     "statusWaiting": "",
     "statusWaitingOn": "",
+    "bulkDeleteSummary": "",
     "loadingWorkflowLanes": "",
     "noWorkflowLanes": "",
     "planReviewBadge": "",
     "thinkingLevel": "",
-    "title": "",
-    "bulkDeleteSummary": ""
+    "title": ""
   },
   "mailbox": {
     "agent": "代理",
@@ -4744,19 +4744,19 @@
     "usage": "用量",
     "workflows": "工作流程",
     "patchnode": "",
-    "automations": "",
-    "collapse": "",
-    "fleet": "",
-    "ideation": "",
-    "importTasks": "",
-    "newTask": "",
     "artifactsUnreadAriaLabel_one": "",
     "artifactsUnreadAriaLabel_other": "",
     "artifactsUnreadDotAriaLabel": "",
     "recommendations": "",
     "recommendationsUnreadAriaLabel_one": "",
     "recommendationsUnreadAriaLabel_other": "",
-    "recommendationsUnreadDotAriaLabel": ""
+    "recommendationsUnreadDotAriaLabel": "",
+    "automations": "",
+    "collapse": "",
+    "fleet": "",
+    "ideation": "",
+    "importTasks": "",
+    "newTask": ""
   },
   "newTaskModal": {
     "addDependencies": "新增相依性",
@@ -6382,7 +6382,9 @@
     "scriptNamePlaceholder": "例如，build、test、lint",
     "scriptNameRequired": "需要指令碼名稱",
     "scriptUpdated": "指令碼已更新",
-    "title": "指令碼"
+    "title": "指令碼",
+    "description": "描述（選填）",
+    "descriptionPlaceholder": "此指令碼用來做什麼？"
   },
   "secrets": {
     "accessPolicyAuto": "自動",
@@ -6933,6 +6935,11 @@
       "noLimitOnAgentToolOutputHint": "",
       "quickAddSubmitOnEnter": "",
       "quickAddSubmitOnEnterHint": "",
+      "chatSubmitOnEnter": "",
+      "chatSubmitOnEnterHint": "",
+      "chatSubmitOnEnterAuto": "",
+      "chatSubmitOnEnterAlways": "",
+      "chatSubmitOnEnterNever": "",
       "dismissModalsByClickingOutside": "",
       "enableGitLabIntegration": "",
       "gitLabAccessToken": "",
@@ -6943,12 +6950,7 @@
       "gitLabInstanceUrl": "",
       "gitLabPersonalAccessToken": "",
       "gitLabProjectAccessToken": "",
-      "gitLabTokenType": "",
-      "chatSubmitOnEnter": "",
-      "chatSubmitOnEnterHint": "",
-      "chatSubmitOnEnterAuto": "",
-      "chatSubmitOnEnterAlways": "",
-      "chatSubmitOnEnterNever": ""
+      "gitLabTokenType": ""
     },
     "globalModels": {
       "modelOverrides": "",
@@ -8549,16 +8551,6 @@
     "noMatches": "No matching skills",
     "loadError": "Skills could not be loaded.",
     "hiddenUnavailable": "Hidden skills include disabled or not-discovered entries",
-    "backToList": "",
-    "backToSkillMd": "",
-    "detailTitle": "",
-    "emptyFile": "",
-    "fileNotPreviewable": "",
-    "installed": "",
-    "loadFileError": "",
-    "loadingFile": "",
-    "selectASkill": "",
-    "viewFile": "",
     "snippetsReservedName": "此名稱已保留給聊天命令。",
     "snippetsInvalidName": "請使用 1–48 個字母、數字、底線或連字號。",
     "snippetsPromptRequired": "請輸入此片段的提示詞。",
@@ -8589,7 +8581,17 @@
     "skillsDescription": "瀏覽、啟用並安裝此專案可用的技能。",
     "snippetsEmptyHint": "在此建立片段，然後在任何聊天中輸入 /名稱 即可插入。",
     "refreshSkillsLabel": "重新整理技能",
-    "refreshSnippetsLabel": "重新整理片段"
+    "refreshSnippetsLabel": "重新整理片段",
+    "backToList": "",
+    "backToSkillMd": "",
+    "detailTitle": "",
+    "emptyFile": "",
+    "fileNotPreviewable": "",
+    "installed": "",
+    "loadFileError": "",
+    "loadingFile": "",
+    "selectASkill": "",
+    "viewFile": ""
   },
   "specEditor": {
     "edit": "編輯",
@@ -11119,6 +11121,24 @@
     "showMore_one": "Show more ({{count}} {{lineLabel}})",
     "showMore_other": "Show more ({{count}} {{lineLabel}})"
   },
+  "recommendations": {
+    "count": "",
+    "createError": "",
+    "createTask": "",
+    "created": "",
+    "creating": "",
+    "emptyDescription": "",
+    "emptyTitle": "",
+    "loadError": "",
+    "loadMore": "",
+    "loading": "",
+    "loadingMore": "",
+    "retryCreate": "",
+    "source": "",
+    "title": "",
+    "truncated": "",
+    "viewTask": ""
+  },
   "approvals": {
     "gatedActionArgs": "",
     "gatedActionCommand": "",
@@ -11343,23 +11363,5 @@
       "headline": "等待人工處理",
       "suggestedAction": "自行合併該卡片，或重新開啟自動合併處理。"
     }
-  },
-  "recommendations": {
-    "count": "",
-    "createError": "",
-    "createTask": "",
-    "created": "",
-    "creating": "",
-    "emptyDescription": "",
-    "emptyTitle": "",
-    "loadError": "",
-    "loadMore": "",
-    "loading": "",
-    "loadingMore": "",
-    "retryCreate": "",
-    "source": "",
-    "title": "",
-    "truncated": "",
-    "viewTask": ""
   }
 }

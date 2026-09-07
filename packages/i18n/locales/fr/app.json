@@ -1559,6 +1559,8 @@
     "loadingSlashSuggestions": "Chargement des suggestions…",
     "snippetSuggestion": "Insérer le prompt enregistré",
     "snippetSuggestions": "Suggestions d’extraits",
+    "conversationIdCopied": "ID de la conversation copié",
+    "copyConversationId": "Copier l’ID de la conversation",
     "addTag": "",
     "allConversations": "",
     "allTags": "",
@@ -1648,9 +1650,7 @@
     "contextTruncationUnproven": "",
     "contextTruncationNotice_one": "",
     "contextTruncationNotice_other": "",
-    "workingCompactingStatus": "",
-    "conversationIdCopied": "ID de la conversation copié",
-    "copyConversationId": "Copier l’ID de la conversation"
+    "workingCompactingStatus": ""
   },
   "chatRooms": {
     "error": {
@@ -3525,6 +3525,10 @@
     "projects": "Projets",
     "quickScripts": "Scripts rapides",
     "researchView": "Recherche",
+    "unreadArtifacts_one": "{{count}} nouvel artefact",
+    "unreadArtifacts_other": "{{count}} nouveaux artefacts",
+    "unreadRecommendations_one": "{{count}} nouvelle recommandation",
+    "unreadRecommendations_other": "{{count}} nouvelles recommandations",
     "resumePlanningSession": "Reprendre la session de planification",
     "resumePlanningSessionCount_one": "",
     "resumePlanningSessionCount_other": "",
@@ -3556,11 +3560,7 @@
     "allProjects": "",
     "favoriteProjects": "",
     "hideRightSidebar": "",
-    "showRightSidebar": "",
-    "unreadArtifacts_one": "{{count}} nouvel artefact",
-    "unreadArtifacts_other": "{{count}} nouveaux artefacts",
-    "unreadRecommendations_one": "{{count}} nouvelle recommandation",
-    "unreadRecommendations_other": "{{count}} nouvelles recommandations"
+    "showRightSidebar": ""
   },
   "health": {
     "activeTasks": "Tâches actives",
@@ -3869,12 +3869,12 @@
     "statusReplan": "Replanifier",
     "statusWaiting": "",
     "statusWaitingOn": "",
+    "bulkDeleteSummary": "",
     "loadingWorkflowLanes": "",
     "noWorkflowLanes": "",
     "planReviewBadge": "",
     "thinkingLevel": "",
-    "title": "",
-    "bulkDeleteSummary": ""
+    "title": ""
   },
   "mailbox": {
     "agent": "Agent",
@@ -4709,6 +4709,9 @@
     "commandCenter": "",
     "devServer": "Serveur de dev",
     "documents": "Artefacts",
+    "artifactsUnreadAriaLabel_one": "{{count}} nouvel artefact",
+    "artifactsUnreadAriaLabel_other": "{{count}} nouveaux artefacts",
+    "artifactsUnreadDotAriaLabel": "Nouveaux artefacts",
     "evals": "Évaluations",
     "expandSidebar": "",
     "files": "Fichiers",
@@ -4730,6 +4733,10 @@
     "planningNeedsInputAriaLabel": "La planification nécessite votre saisie",
     "primaryNavAriaLabel": "Navigation principale",
     "projects": "Projets",
+    "recommendations": "Recommandations",
+    "recommendationsUnreadAriaLabel_one": "{{count}} nouvelle recommandation",
+    "recommendationsUnreadAriaLabel_other": "{{count}} nouvelles recommandations",
+    "recommendationsUnreadDotAriaLabel": "Nouvelles recommandations",
     "research": "Recherche",
     "resizeSidebar": "",
     "scriptsSubmenuAriaLabel": "Sous-menu des scripts",
@@ -4750,14 +4757,7 @@
     "fleet": "",
     "ideation": "",
     "importTasks": "",
-    "newTask": "",
-    "artifactsUnreadAriaLabel_one": "{{count}} nouvel artefact",
-    "artifactsUnreadAriaLabel_other": "{{count}} nouveaux artefacts",
-    "artifactsUnreadDotAriaLabel": "Nouveaux artefacts",
-    "recommendations": "Recommandations",
-    "recommendationsUnreadAriaLabel_one": "{{count}} nouvelle recommandation",
-    "recommendationsUnreadAriaLabel_other": "{{count}} nouvelles recommandations",
-    "recommendationsUnreadDotAriaLabel": "Nouvelles recommandations"
+    "newTask": ""
   },
   "newTaskModal": {
     "addDependencies": "Ajouter des dépendances",
@@ -5937,6 +5937,24 @@
     },
     "window": "Fenêtre : {{start}} → {{end}}"
   },
+  "recommendations": {
+    "count": "Affichage de {{shown}} sur {{total}} tâches sources",
+    "createError": "Impossible de créer la tâche. Réessayez.",
+    "createTask": "Créer une tâche",
+    "created": "{{taskId}} créée",
+    "creating": "Création…",
+    "emptyDescription": "Les recommandations issues des tâches terminées apparaîtront ici.",
+    "emptyTitle": "Aucune recommandation pour le moment",
+    "loadError": "Impossible de charger les recommandations.",
+    "loadMore": "Charger plus",
+    "loading": "Chargement des recommandations…",
+    "loadingMore": "Chargement…",
+    "retryCreate": "Réessayer de créer la tâche",
+    "source": "Source : {{task}}",
+    "title": "Recommandations",
+    "truncated": "Affichage limité aux 20 premières pages. Actualisez pour voir les dernières recommandations.",
+    "viewTask": "Voir la tâche"
+  },
   "research": {
     "actionFailed": "L'action a échoué",
     "addCredentialsHint": "Ajoutez les informations d'identification du fournisseur dans les paramètres d'authentification.",
@@ -6383,7 +6401,9 @@
     "scriptNamePlaceholder": "p. ex., build, test, lint",
     "scriptNameRequired": "Le nom du script est requis",
     "scriptUpdated": "Script mis à jour",
-    "title": "Scripts"
+    "title": "Scripts",
+    "description": "Description (facultative)",
+    "descriptionPlaceholder": "À quoi sert ce script ?"
   },
   "secrets": {
     "accessPolicyAuto": "auto",
@@ -6934,6 +6954,11 @@
       "noLimitOnAgentToolOutputHint": "",
       "quickAddSubmitOnEnter": "",
       "quickAddSubmitOnEnterHint": "",
+      "chatSubmitOnEnter": "",
+      "chatSubmitOnEnterHint": "",
+      "chatSubmitOnEnterAuto": "",
+      "chatSubmitOnEnterAlways": "",
+      "chatSubmitOnEnterNever": "",
       "dismissModalsByClickingOutside": "",
       "enableGitLabIntegration": "",
       "gitLabAccessToken": "",
@@ -6944,12 +6969,7 @@
       "gitLabInstanceUrl": "",
       "gitLabPersonalAccessToken": "",
       "gitLabProjectAccessToken": "",
-      "gitLabTokenType": "",
-      "chatSubmitOnEnter": "",
-      "chatSubmitOnEnterHint": "",
-      "chatSubmitOnEnterAuto": "",
-      "chatSubmitOnEnterAlways": "",
-      "chatSubmitOnEnterNever": ""
+      "gitLabTokenType": ""
     },
     "globalModels": {
       "modelOverrides": "",
@@ -8550,16 +8570,6 @@
     "noMatches": "No matching skills",
     "loadError": "Skills could not be loaded.",
     "hiddenUnavailable": "Hidden skills include disabled or not-discovered entries",
-    "backToList": "",
-    "backToSkillMd": "",
-    "detailTitle": "",
-    "emptyFile": "",
-    "fileNotPreviewable": "",
-    "installed": "",
-    "loadFileError": "",
-    "loadingFile": "",
-    "selectASkill": "",
-    "viewFile": "",
     "snippetsReservedName": "Ce nom est réservé à une commande de chat.",
     "snippetsInvalidName": "Utilisez 1 à 48 lettres, chiffres, tirets bas ou tirets.",
     "snippetsPromptRequired": "Saisissez un prompt pour cet extrait.",
@@ -8590,7 +8600,17 @@
     "skillsDescription": "Parcourez, activez et installez les compétences disponibles pour ce projet.",
     "snippetsEmptyHint": "Créez-en un ici, puis saisissez /nom dans un chat pour l’insérer.",
     "refreshSkillsLabel": "Actualiser les compétences",
-    "refreshSnippetsLabel": "Actualiser les extraits"
+    "refreshSnippetsLabel": "Actualiser les extraits",
+    "backToList": "",
+    "backToSkillMd": "",
+    "detailTitle": "",
+    "emptyFile": "",
+    "fileNotPreviewable": "",
+    "installed": "",
+    "loadFileError": "",
+    "loadingFile": "",
+    "selectASkill": "",
+    "viewFile": ""
   },
   "specEditor": {
     "edit": "Modifier",
@@ -11344,23 +11364,5 @@
       "headline": "En attente d'une personne",
       "suggestedAction": "Fusionnez vous-même la carte, ou réactivez le traitement automatique des fusions."
     }
-  },
-  "recommendations": {
-    "count": "Affichage de {{shown}} sur {{total}} tâches sources",
-    "createError": "Impossible de créer la tâche. Réessayez.",
-    "createTask": "Créer une tâche",
-    "created": "{{taskId}} créée",
-    "creating": "Création…",
-    "emptyDescription": "Les recommandations issues des tâches terminées apparaîtront ici.",
-    "emptyTitle": "Aucune recommandation pour le moment",
-    "loadError": "Impossible de charger les recommandations.",
-    "loadMore": "Charger plus",
-    "loading": "Chargement des recommandations…",
-    "loadingMore": "Chargement…",
-    "retryCreate": "Réessayer de créer la tâche",
-    "source": "Source : {{task}}",
-    "title": "Recommandations",
-    "truncated": "Affichage limité aux 20 premières pages. Actualisez pour voir les dernières recommandations.",
-    "viewTask": "Voir la tâche"
   }
 }

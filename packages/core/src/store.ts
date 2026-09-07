@@ -6,7 +6,7 @@ import { WEDGE_RENOTIFY_COOLDOWN_MS } from "./types/task/task-core.js";
 import { clearTerminalFailureAutoRecoveryBudget } from "./tasks/terminal-failure-auto-recovery.js";
 import { join } from "node:path";
 import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
-import { createCurrentPlanEvidence, diffSpecLocks, isSpecLockActive, type CurrentPlanEvidence, type PlanEvidenceBindings, type SpecLock } from "./planner/spec-lock.js";
+import { createCurrentPlanEvidence, diffSpecLocks, isSpecLockActive, UnavailablePlanLockError, type CurrentPlanEvidence, type PlanEvidenceBindings, type SpecLock } from "./planner/spec-lock.js";
 import { evaluateSpecDrift, hasPriorLockDivergence, type DriftReport } from "./planner/drift-report.js";
 import * as schema from "./postgres/schema/index.js";
 import { type FSWatcher } from "node:fs";
@@ -166,6 +166,7 @@ import { addCommentImpl, upsertTaskDocumentImpl } from "./task-store/comments-op
 import { deleteTaskImpl, type DeleteTaskIfResult } from "./task-store/archive-lifecycle.js";
 import type { TaskDeleteAuditContext } from "./task-delete-attribution.js";
 import { updateSettingsImpl, updateGlobalSettingsImpl } from "./task-store/settings-ops.js";
+import { mutateScriptImpl, type MutateScriptInput, type ScriptCatalogEntry } from "./task-store/script-ops.js";
 import { createTaskBackendImpl, _createTaskInternalBackendImpl, createTaskImpl, createTaskWithReservedIdImpl, _createTaskInternalImpl, _resolveSameAgentDuplicateIntakeImpl } from "./task-store/task-creation.js";
 import { getTaskImpl, listCompletedTasksImpl, listTasksImpl, searchTasksImpl, listTasksModifiedSinceImpl, getTaskVerificationRequestAsyncImpl, listTaskRecommendationsImpl, findTaskByProposalClaimIdImpl, listTasksBySourceLineageImpl, type ListTasksOptions } from "./task-store/reads.js";
 import { drainArchivedTasksIntoDone, inspectArchivedTaskHistory, type ArchivedTaskHistoryInspection, type ArchivedTaskReintegrationResult } from "./task-store/archive-reintegration.js";
@@ -1294,6 +1295,9 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   async updateSettings(patch: Partial<Settings>, changedBy?: import("./types.js").ConfigChangedBy): Promise<Settings> {
     return updateSettingsImpl(this, patch, changedBy);
   }
+  async mutateScript(input: MutateScriptInput): Promise<ScriptCatalogEntry[]> {
+    return mutateScriptImpl(this, input);
+  }
   async updateGlobalSettings(patch: Partial<GlobalSettings>, changedBy?: import("./types.js").ConfigChangedBy): Promise<Settings> {
     return updateGlobalSettingsImpl(this, patch, changedBy);
   }
@@ -1514,7 +1518,10 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   async lockCurrentPlanWhilePlanningLocked(taskId: string, approvalFingerprint: string, prompt: string): Promise<SpecLock> {
     const currentPlan = await this.captureCurrentPlanEvidenceLocked(taskId, prompt, Date.now());
     if (currentPlan.plan.status !== "available" || !currentPlan.plan.contentHash) {
-      throw new Error(`Cannot lock an unavailable plan: ${currentPlan.plan.reason ?? "unknown"}`);
+      const unavailableSections = (Object.entries(currentPlan.plan.sections) as Array<[import("./planner/spec-lock.js").SpecLockSection, import("./planner/spec-lock.js").CanonicalPlanSection]>)
+        .filter(([, section]) => section.status === "unavailable")
+        .map(([key]) => key);
+      throw new UnavailablePlanLockError(currentPlan.plan.reason ?? "unknown", unavailableSections, currentPlan.sourceHash);
     }
     const prior = await this.getLatestSpecLock(taskId);
     if (prior?.approvalFingerprint === approvalFingerprint && prior.currentPlanHash === currentPlan.plan.contentHash) return prior;

@@ -185,7 +185,8 @@ describe("TaskDetailModal", () => {
       expect(mobileComposerBlock).toContain("flex-direction: row;");
       expect(mobileComposerBlock).toContain("flex-wrap: wrap;");
       expect(css).not.toContain(".task-planner-chat-target-controls");
-      expect(css).toMatch(/\.task-planner-chat-composer \.chat-thinking-popover\s*\{[^}]*left:\s*var\(--space-md\);[^}]*right:\s*var\(--space-md\);[^}]*width:\s*auto;/);
+      expect(css).not.toMatch(/\.task-planner-chat-composer \.chat-thinking-popover\s*\{/);
+      expect(css).toMatch(/\.chat-thinking-popover\s*\{[^}]*position:\s*fixed;/);
       expect(mobileComposerBlock).toContain("align-items: flex-end;");
       /*
       FNXC:ChatComposerHeight 2026-08-23-20:15:
@@ -253,7 +254,15 @@ describe("TaskDetailModal", () => {
       expect(mobileExpandedPlannerBodyBlock).toBe("");
       expect(plannerPanelBlock).toContain("gap: var(--space-md);");
       expect(plannerTranscriptBlock).toContain("padding: var(--space-md);");
-      expect(plannerTranscriptBlock).toContain("gap: var(--space-md);");
+      /*
+      FNXC:ChatTranscriptVirtualization 2026-09-07-07:35:
+      Upstream FN-304 moved Planner Chat transcript spacing from a container `gap` to per-row
+      `padding-block-end` (gap: 0 + inert spacers), because virtualized spacers must not add gap
+      contributions to scroll geometry. The owning-spacing invariant is unchanged; only the
+      mechanism moved, so the assertion now pins the row rule instead of the container gap.
+      */
+      expect(plannerTranscriptBlock).toContain("gap: 0;");
+      expect(getExactCssRuleBlock(css, ".task-planner-chat-transcript-row")).toContain("padding-block-end: var(--space-md);");
       expect(plannerComposerBlock).toContain("gap: var(--space-sm);");
       expect(css).not.toMatch(/task-detail-content--planner-chat-expanded[^{]+\.(?:task-planner-chat|task-planner-chat-transcript|task-planner-chat-composer)\s*\{[^}]*(?:padding|margin|gap)\s*:/);
       expect(css).not.toMatch(/task-detail-content--planner-chat-expanded[^{]+\.detail-body--planner-chat\s*\{[^}]*(?:padding|margin|gap)\s*:/);
