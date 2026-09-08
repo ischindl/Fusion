@@ -1,30 +1,30 @@
 /*
 FNXC:EngineTests 2026-07-08-03:00:
-FN-7667: the `engine-core` merge-gate vitest project (18 curated gate files,
-one OS-forked process each per `pool:"forks"`) previously aliased
-`@fusion/core` to the FULL package barrel (`index.ts`). Every gate fork
-independently transformed+imported the entire barrel graph even though the
-18 gate files never reach most of it — organic barrel growth (new feature
-re-exports) silently inflated `pnpm test:gate` /
-`pnpm --filter @fusion/engine test:core` wall-time for every gate file, not
-just tests that exercise the new code (FN-7666 bisected this: 10 new core
-modules re-exported here since the 2026-W27 baseline pushed the gate from
-~7.7s to ~20-31s warm).
+FN-7667: the `engine-core` merge-gate vitest project (its curated gate-file allow-list, one
+OS-forked process each per `pool:"forks"`) previously aliased `@fusion/core` to the FULL package
+barrel (`index.ts`). Every gate fork independently transformed+imported the entire barrel graph
+even though the gate files never reach most of it — organic barrel growth (new feature re-exports)
+silently inflated `pnpm test:gate` / `pnpm --filter @fusion/engine test:core` wall-time for every
+gate file, not just tests that exercise the new code (FN-7666 bisected this: 10 new core modules
+re-exported here since the 2026-W27 baseline pushed the gate from ~7.7s to ~20-31s warm).
 
-This file is a byte-for-byte copy of `index.ts` MINUS the `export ... from`
-statements for the 10 modules added to the barrel since that baseline
-(builtin-coding-ideas-workflow-ir, git-cli-status, gitlab-issue-analytics,
-gitlab-tracking, planner-confirmation, planner-intervention,
-planner-overseer-events, planner-overseer-state, planner-recovery,
-plugins/bundled-plugin-install) — none of which the 18 curated engine-core
-gate files exercise (verified by tracing the full relative-import closure of
-those 18 files; see the task's `docs` document for the trace + rationale).
+This file is a byte-for-byte copy of `index.ts` MINUS the `export ... from` statements for those 10
+modules added to the barrel since that baseline (builtin-coding-ideas-workflow-ir, git-cli-status,
+gitlab-issue-analytics, gitlab-tracking, planner-confirmation, planner-intervention,
+planner-overseer-events, planner-overseer-state, planner-recovery, plugins/bundled-plugin-install) —
+none of which the curated engine-core gate files exercise (verified by tracing the full
+relative-import closure of those files; see the task's `docs` document for the trace + rationale).
 It is wired up via a project-scoped `resolve.alias` in
 `packages/engine/vitest.config.ts`'s `engine-core` project ONLY — every other
 vitest project (`engine-default`, `engine-reliability`, `engine-slow`) keeps
 resolving `@fusion/core` to the full `index.ts` barrel, and all non-test
 consumers of `@fusion/core` are unaffected (this file is not part of the
 package's public `exports` map).
+
+FNXC:MergeGatePolicy 2026-09-08-11:52: RUFU-197 dropped the gate-file counts FN-7667 cited. They
+were measurements of one week, not a contract: the allow-list is now derived from the config
+`include` by `scripts/__tests__/engine-vitest-gate-policy.test.mjs`, so a count restated here could
+only rot.
 
 Maintenance: this file intentionally re-exports EVERYTHING index.ts does,
 except the modules above. When index.ts changes, mirror ordinary changes here

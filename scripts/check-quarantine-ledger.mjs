@@ -14,6 +14,14 @@ import { fileURLToPath } from "node:url";
 
 import { DEFAULT_QUARANTINE_PATH, DELETION_CLOCK_DAYS } from "./test-velocity-baseline.mjs";
 
+/*
+FNXC:TestQuarantine 2026-09-08-11:02 (RUFU-197):
+The string-aware Vitest-config scanners moved to `scripts/lib/vitest-config-parse.mjs` so the merge-gate
+policy guard reads exclusions through the SAME scanner this lockstep guard already trusts. Behavior here is
+unchanged; `extractConcreteExcludes` is now imported rather than defined locally.
+*/
+import { extractConcreteExcludes } from "./lib/vitest-config-parse.mjs";
+
 const MS_PER_DAY = 86_400_000;
 const DEFAULT_WARN_WITHIN_DAYS = 5;
 const REASON_MAX_LENGTH = 140;
@@ -60,141 +68,6 @@ function summarizeRows(rows) {
     },
     { total: 0, expired: 0, near: 0, healthy: 0, unknown: 0 },
   );
-}
-
-/*
-FNXC:QuarantineLockstep 2026-08-23-22:45:
-STRING-AWARE. The previous regex stripper treated the `/**` inside a glob literal such as
-"src/**\/*.slow.test.ts" or "node_modules/**" as the start of a block comment, so it deleted from
-there to the next "*\/" — swallowing whole array literals and the entries after them. A concrete
-quarantine exclude placed after any such glob was then invisible, and this guard reported
-`missing-exclude` for a file that WAS excluded (observed 2026-08-23 quarantining
-self-healing-pending-wedge-notification.test.ts). Scan character by character instead, tracking
-string literals, so comment markers inside strings are left alone.
-*/
-function stripComments(source) {
-  let out = "";
-  let quote = null;
-  let escaped = false;
-  for (let index = 0; index < source.length; index += 1) {
-    const character = source[index];
-    if (quote) {
-      out += character;
-      if (escaped) escaped = false;
-      else if (character === "\\") escaped = true;
-      else if (character === quote) quote = null;
-      continue;
-    }
-    if (character === '"' || character === "'" || character === "`") {
-      quote = character;
-      out += character;
-      continue;
-    }
-    if (character === "/" && source[index + 1] === "*") {
-      const end = source.indexOf("*/", index + 2);
-      index = end === -1 ? source.length : end + 1;
-      continue;
-    }
-    if (character === "/" && source[index + 1] === "/") {
-      const end = source.indexOf("\n", index);
-      if (end === -1) break;
-      index = end - 1;
-      continue;
-    }
-    out += character;
-  }
-  return out;
-}
-
-function extractBalancedArray(source, openingBracket) {
-  let depth = 0;
-  let quote = null;
-  let escaped = false;
-
-  for (let index = openingBracket; index < source.length; index += 1) {
-    const character = source[index];
-    if (quote) {
-      if (escaped) {
-        escaped = false;
-      } else if (character === "\\") {
-        escaped = true;
-      } else if (character === quote) {
-        quote = null;
-      }
-      continue;
-    }
-    if (character === "\"" || character === "'") {
-      quote = character;
-    } else if (character === "[") {
-      depth += 1;
-    } else if (character === "]") {
-      depth -= 1;
-      if (depth === 0) return source.slice(openingBracket, index + 1);
-    }
-  }
-  return null;
-}
-
-function extractConcreteTestFiles(arrayText) {
-  const files = [];
-  const strings = /"((?:\\.|[^"\\])*)"/g;
-  let stringMatch;
-  while ((stringMatch = strings.exec(arrayText))) {
-    const value = JSON.parse(`"${stringMatch[1]}"`);
-    if (/\.test\.tsx?$/.test(value) && !/[*?{}]/.test(value)) files.push(value);
-  }
-  return files;
-}
-
-/*
-FNXC:QuarantineLedgerConstArray 2026-08-23-00:27:
-RUFU-157: the four package vitest configs (cli, core, dashboard, desktop) quarantine flaky files through the
-documented const-array shape — `const quarantined<Package>Tests: string[] = [...]` — spread into `test.exclude`
-through a filtered identifier (e.g. the CLI's `activeQuarantinedCliTests` requested-file filter), so the concrete
-path appears in no inline `exclude:` literal and the literal-only scanner reported a false `missing-exclude`
-for the RUFU-128 bin.test.ts quarantine. The concrete-exclude scan therefore also reads `const <name>: string[] = [...]`
-declarations: a const-array entry satisfies `missing-exclude`, and a stale const-array entry surfaces as
-`dangling-exclude` through the same existsSync direction.
-Superset semantics with a documented masking trade-off: any concrete `.test.ts`/`.test.tsx` path in ANY typed
-`string[]` const array of a config counts as an exclude, including a path that actually lives only in an unrelated
-`string[]` array in that config. The trade-off is bounded by the concrete test-file filter (no `*?{}` glob
-characters, path must end in `.test.ts`/`.test.tsx`) and is pinned by fixtures. Conservative scope: only
-`const <name>: string[] = [` declarations are scanned — untyped const arrays, `let`/`var` declarations, and
-`readonly string[]`/ReadonlyArray shapes are intentionally out of scope. Concrete paths are deduplicated across
-inline `exclude:` literals and const-array declarations so a path double-covered (dashboard's `coverage.exclude`
-no-op plus its const array) verifies exactly once.
-*/
-function extractConcreteExcludes(source) {
-  const commentFree = stripComments(source);
-  const excludes = new Set();
-  const collect = (array) => {
-    for (const file of extractConcreteTestFiles(array)) excludes.add(file);
-  };
-
-  const excludePattern = /\bexclude\s*:/g;
-  let match;
-  while ((match = excludePattern.exec(commentFree))) {
-    let index = match.index + match[0].length;
-    while (/\s/.test(commentFree[index] ?? "")) index += 1;
-    if (commentFree[index] !== "[") continue;
-    const array = extractBalancedArray(commentFree, index);
-    if (array == null) continue;
-    collect(array);
-    excludePattern.lastIndex = index + array.length;
-  }
-
-  const constArrayPattern = /\bconst\s+[A-Za-z_$][\w$]*\s*:\s*string\[\]\s*=\s*\[/g;
-  while ((match = constArrayPattern.exec(commentFree))) {
-    const openingBracket = match.index + match[0].length - 1;
-    const array = extractBalancedArray(commentFree, openingBracket);
-    if (array == null) {
-      constArrayPattern.lastIndex = openingBracket + 1;
-      continue;
-    }
-    collect(array);
-    constArrayPattern.lastIndex = openingBracket + array.length;
-  }
-  return [...excludes];
 }
 
 function discoverPackageConfigs(rootDir) {

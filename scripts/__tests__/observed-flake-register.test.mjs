@@ -4,7 +4,7 @@ Issue #2862 observed suite-only PostgreSQL-adjacent flakes in files with substan
 */
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -15,13 +15,106 @@ const registerPath = resolve(rootDir, registerRelativePath);
 const agentsPath = resolve(rootDir, "AGENTS.md");
 const testingPath = resolve(rootDir, "docs/testing.md");
 
-function readRegisterEntries(register) {
-  const entries = [...register.matchAll(/- \*\*File:\*\* `([^`]+)`\n- \*\*Exact test:\*\* `([^`]+)`/g)].map(
-    ([, file, fullName]) => ({ file, fullName }),
-  );
+/*
+FNXC:TestFlakeRegister 2026-09-08-11:38:
+RUFU-197. The register is append-only history, so records accumulate in two document orders — some write
+`Status` above `File`, some below — and an earlier parser that required `File` then `Exact test` on adjacent
+lines silently skipped every record that deviated. Parsing is now per heading, so a record is read wherever its
+lines sit. `status` stays null when a record has none: an undispositioned record is treated as live.
+*/
+function readRegisterRecords(register) {
+  const records = [];
+  let heading = null;
+  let current = null;
+  let pendingStatus = null;
 
-  assert.ok(entries.length > 0, "Expected the observed-flake register to name at least one test");
-  return entries;
+  for (const line of register.split("\n")) {
+    const headingMatch = line.match(/^#{2,3} (.+)$/);
+    if (headingMatch) {
+      heading = headingMatch[1];
+      current = null;
+      pendingStatus = null;
+      continue;
+    }
+    const status = line.match(/^- \*\*Status:\*\* (.+)$/);
+    if (status) {
+      if (current && current.status === null) current.status = status[1];
+      else pendingStatus = status[1];
+      continue;
+    }
+    const file = line.match(/^- \*\*File:\*\* `([^`]+)`/);
+    if (file) {
+      current = { heading, file: file[1], status: pendingStatus, fullName: null };
+      pendingStatus = null;
+      records.push(current);
+      continue;
+    }
+    if (!current) continue;
+    const exact = line.match(/^- \*\*Exact test:\*\* `([^`]+)`/);
+    if (exact && current.fullName === null) current.fullName = exact[1];
+  }
+
+  assert.ok(records.length > 0, "Expected the observed-flake register to name at least one test");
+  return records;
+}
+
+/*
+FNXC:TestFlakeRegister 2026-09-08-11:38:
+RUFU-197. The same `^Closed` predicate the active-count assertion already used is now the single classifier for
+whether a record still owns a live file. Deletion-ratchet commit 82c635384d retired two quarantined tests and
+removed their files, ledger rows, and config excludes in one legitimate sweep, and this guard — the one AGENTS.md says must never be left red — went red for two weeks solely because it demanded that closed records'
+subjects still exist. A closed record is historical evidence: it must retain an evidence pointer, not a live file.
+*/
+const CLOSED_RECORD = /^Closed\b/;
+const isClosedRecord = (status) => CLOSED_RECORD.test(status ?? "");
+const EVIDENCE_POINTER = /(?:\b(?:FN|RUFU)-\d+\b)|(?:\bPR #\d+\b)|(?:\b[0-9a-f]{7,40}\b)/;
+
+/** Real-tree subject reader; the classifier fixtures inject an in-memory equivalent instead of touching disk. */
+const realSubjectFs = {
+  fileExists: (path) => existsSync(path),
+  readSubject: (path) => readFileSync(path, "utf8"),
+};
+
+/**
+ * Resolve every register record against `rootDir`. A live record must still name a real file whose documented
+ * suite hierarchy is still present; a closed record is exempt from both, but must still point at the decision.
+ * Subject reads go through `subjectFs` so the classifier's branches are assertable without a temp directory.
+ */
+function evaluateRegisterRecords(records, rootDir, subjectFs = realSubjectFs) {
+  const violations = [];
+  const live = [];
+  const closed = [];
+
+  for (const record of records) {
+    const subjectPath = resolve(rootDir, record.file);
+
+    if (isClosedRecord(record.status)) {
+      closed.push(record);
+      if (!EVIDENCE_POINTER.test(record.status)) {
+        violations.push({ kind: "closed-record-without-evidence-pointer", heading: record.heading, file: record.file });
+      }
+      // A closed record whose subject survived is still worth checking, so retirement does not become a
+      // blanket exemption that hides pointer drift in files that are very much still there.
+      if (!subjectFs.fileExists(subjectPath) || !record.fullName) continue;
+    } else {
+      live.push(record);
+      if (!subjectFs.fileExists(subjectPath)) {
+        violations.push({ kind: "registered-file-missing", heading: record.heading, file: record.file });
+        continue;
+      }
+      if (!record.fullName) continue;
+    }
+
+    const subject = subjectFs.readSubject(subjectPath);
+    for (const segment of record.fullName.split(">").map((part) => part.trim())) {
+      if (!segment) violations.push({ kind: "empty-hierarchy-segment", heading: record.heading, file: record.file });
+      else if (!subject.includes(segment)) {
+        violations.push({ kind: "missing-hierarchy-segment", heading: record.heading, file: record.file, segment });
+      }
+    }
+  }
+
+  return { violations, live, closed };
 }
 
 function githubSlug(heading) {
@@ -60,16 +153,60 @@ test("observed-flake register frontmatter identifies test failures", () => {
 
 test("observed-flake register paths and every documented hierarchy segment remain valid", () => {
   const register = readFileSync(registerPath, "utf8");
+  const { violations, live, closed } = evaluateRegisterRecords(readRegisterRecords(register), rootDir);
 
-  for (const { file, fullName } of readRegisterEntries(register)) {
-    const subjectPath = resolve(rootDir, file);
-    assert.ok(existsSync(subjectPath), `Registered test file no longer exists: ${file}`);
+  assert.deepEqual(violations, [], "Register records drifted from the tree they document");
+  // Non-vacuous on both sides: a parser that classified everything closed would report zero work done.
+  assert.ok(live.length >= 6, `Register resolved only ${live.length} live records; the parser is matching too little`);
+  assert.ok(closed.length > 0, "Expected the register's closed-record classifier to match the archive sections");
+});
 
-    const subject = readFileSync(subjectPath, "utf8");
-    for (const segment of fullName.split(">").map((part) => part.trim())) {
-      assert.ok(segment, `Empty suite hierarchy segment in ${fullName}`);
-      assert.ok(subject.includes(segment), `Missing hierarchy segment "${segment}" in ${file}`);
-    }
+/*
+FNXC:TestFlakeRegister 2026-09-08-12:38:
+RUFU-197. The live document proves the guard is currently green, which cannot show the two directions still
+BITE. These fixtures point the same parser and classifier at an injected in-memory tree (no temp directory, no
+disk writes): a missing file reddens a live record and must not redden the identical record once closed; a
+drifted suite title still reddens a closed record whose file survived; and a closed record with no evidence
+pointer reddens on its own. Every accepted citation format is asserted zero-violation, because an unproven
+branch of the evidence-pointer alternation can be deleted without reddening anything else.
+*/
+test("register classifier reddens a missing live subject and exempts the same record once closed", () => {
+  const fixtureRoot = "/register-fixture";
+  const survivor = "src/survivor.test.ts";
+  const survivorTitle = "keeps its documented title";
+  const tree = new Map([[resolve(fixtureRoot, survivor), `test('${survivorTitle}', () => {});\n`]]);
+  const injectedFs = {
+    fileExists: (path) => tree.has(path),
+    readSubject: (path) => tree.get(path),
+  };
+
+  const record = (statusLine, file, title) =>
+    [`### Record for ${file}`, statusLine, `- **File:** \`${file}\``, `- **Exact test:** \`${title}\``].join("\n");
+
+  const build = (records) =>
+    evaluateRegisterRecords(readRegisterRecords(records.join("\n")), fixtureRoot, injectedFs).violations;
+
+  const liveMissing = build([record("- **Status:** Active first sighting — unattributed.", "src/gone.test.ts", "a suite > a case")]);
+  assert.deepEqual(liveMissing.map((v) => v.kind), ["registered-file-missing"]);
+
+  const closedMissing = build([record("- **Status:** Closed 2026-09-06 — retired by `82c635384d`.", "src/gone.test.ts", "a suite > a case")]);
+  assert.deepEqual(closedMissing, [], "a retired record must survive the deletion of its subject");
+
+  const closedDrift = build([record("- **Status:** Closed 2026-08-17 by FN-9141 — rescued.", survivor, "renamed suite > renamed case")]);
+  assert.ok(
+    closedDrift.some((v) => v.kind === "missing-hierarchy-segment"),
+    "a closed record whose subject still exists must still be checked for pointer drift",
+  );
+
+  const closedUnpointed = build([record("- **Status:** Closed — no source recorded.", "src/gone.test.ts", "a suite > a case")]);
+  assert.deepEqual(closedUnpointed.map((v) => v.kind), ["closed-record-without-evidence-pointer"]);
+
+  const liveDrift = build([record("- **Status:** Active first sighting — unattributed.", survivor, "renamed suite > renamed case")]);
+  assert.ok(liveDrift.some((v) => v.kind === "missing-hierarchy-segment"));
+
+  for (const citation of ["`82c635384d`", "PR #3034", "FN-9141", "RUFU-197"]) {
+    const pointed = build([record(`- **Status:** Closed 2026-09-06 — retired by ${citation}.`, survivor, survivorTitle)]);
+    assert.deepEqual(pointed, [], `a closed record citing ${citation} must satisfy the evidence pointer`);
   }
 });
 

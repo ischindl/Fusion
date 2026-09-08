@@ -1,12 +1,37 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { extractTestProjectInclude, extractTestExcludeEntries } from "../lib/vitest-config-parse.mjs";
+import { evaluateEngineCoreGate, evaluatePgGate } from "../lib/engine-gate-policy.mjs";
+import { readLedger } from "../check-quarantine-ledger.mjs";
+import { readStaticGateChecks } from "../run-static-gate-checks.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "../..");
+
+/*
+FNXC:MergeGatePolicy 2026-09-08-11:27 (RUFU-197):
+These are POLICY names, not membership mirrors. A required canary is named because of the invariant it encodes
+(a transactional review handoff and the task lifecycle end-to-end), and a required unit-gate invariant is named
+because its own file justifies blocking a merge on it. Both are checked as subsets of the parsed declaration, so
+adding a member never reddens this guard; only silently dropping one of these does. That is the difference
+between a policy statement and the frozen lists RUFU-197 deleted.
+*/
+const PG_REQUIRED_CANARIES = [
+  "src/__tests__/postgres/handoff-to-review-atomicity.pg.test.ts",
+  "src/__tests__/postgres/task-lifecycle-e2e.pg.test.ts",
+];
+const UNIT_GATE_INTEGRITY_INVARIANTS = [
+  "task-merge.test.ts",
+  "legacy-adoption.test.ts",
+  "no-hardcoded-lifecycle-columns.test.ts",
+  "sync-workflow-ir-callsite-allowlist.test.ts",
+  "migration-wiring-integrity.test.ts",
+];
 
 function read(relativePath) {
   return readFileSync(path.join(repoRoot, relativePath), "utf8");
@@ -15,6 +40,22 @@ function read(relativePath) {
 function readJson(relativePath) {
   return JSON.parse(read(relativePath));
 }
+
+/*
+FNXC:MergeGatePolicy 2026-09-08-11:02 (RUFU-197):
+The old guard mirrored production membership inside this test: an ordered 21-file engine-core allow-list, a
+23-name former-PG-member list with `removedFromGate.length === 22`, a 16-entry validator list, and exact
+script-string equality for `test:core`/`test:unit-gate`. Each mirror had to be edited in lockstep with the
+declaration it mirrored, and the two lanes that drift most went red on unrelated days — a red policy test
+hides the next real drift, so the mirrors are gone. The PG-canary exclusion check additionally read the
+FIRST `exclude:` in the core config; after the 2026-09-06 deletion ratchet left only `coverage.exclude`, that
+made the canary-hidden assertion pass vacuously, which the key-aware `extractTestExcludeEntries` now fixes.
+
+What each guard checks instead: membership and lane composition are derived from the authoritative sources
+(config include, package scripts, the quarantine ledger, the filesystem) and run through the pure evaluators
+in `../lib/engine-gate-policy.mjs`, with non-empty floors standing in for frozen counts. `scripts/__tests__/
+engine-gate-policy.test.mjs` scans this file so the mirror shapes cannot creep back.
+*/
 
 test("engine-core gate keeps a Node 24/macOS-safe Vitest pool without changing broad engine lanes", () => {
   const config = read("packages/engine/vitest.config.ts");
@@ -61,231 +102,167 @@ test("engine-core gate keeps a Node 24/macOS-safe Vitest pool without changing b
     "engine-core must retain Vitest's filesystem transform cache");
   assert.match(engineCoreBlock, /fsModuleCachePath:\s*resolve\(__dirname, "node_modules\/.engine-core-fs-module-cache"\)/,
     "engine-core transform cache must stay isolated from broad engine lanes");
+
+  /*
+  FNXC:MergeGatePolicy 2026-09-08-11:27 (RUFU-197):
+  This config's own FN-8783 note instructs the guard to keep "pool, worker budgeting, file parallelism, and this
+  alias intact", but the guard only covered three of those four. The @fusion/core alias is FN-7669's pre-bundled
+  gate bundle — the measured lever for the lane's dominant import-phase cost — and repointing it at the ~430-file
+  barrel silently multiplies gate wall time and re-breaks vi.mock interception. The alias lives in the project's
+  `resolve` block above `test.name`, i.e. outside the `engineCoreBlock` slice, so it is asserted against the
+  config text, where this exact alias construct occurs once. Pinned as a structural code construct (a single
+  fixed alias target), never as a membership list.
+  */
+  assert.match(config, /alias:\s*\{\s*"@fusion\/core":\s*resolve\(__dirname, "\.\.\/core\/\.gate-bundle\/core\.mjs"\)/,
+    "engine-core must keep its @fusion/core alias pointed at the pre-bundled gate bundle");
 });
 
-test("engine-core remains an explicit allow-listed merge gate", () => {
-  const config = read("packages/engine/vitest.config.ts");
-  const engineCoreBlock = config.match(/name:\s*"engine-core"[\s\S]*?exclude:\s*\[/)?.[0] ?? "";
-  const includeEntries = [...engineCoreBlock.matchAll(/"src\/__tests__\/[^"\n]+\.test\.ts"/g)].map((match) => match[0]);
+test("engine-core is a live allow-list: every member exists and none is quarantined", () => {
+  const members = extractTestProjectInclude(read("packages/engine/vitest.config.ts"), "engine-core");
+  const enginePackageRoot = path.join(repoRoot, "packages/engine");
+  // Quarantine rows are repo-relative; the allow-list is engine-package-relative, so rebase before comparing.
+  const quarantinedEngineFiles = ledgerQuarantined("packages/engine/");
 
-  assert.equal(new Set(includeEntries).size, includeEntries.length, "engine-core allow-list must not contain duplicates");
-  /*
-  FNXC:MergeGatePerformance 2026-08-04-15:44:
-  FN-8783 measured the W32 gate after six policy files joined the former
-  16-file lane. Exact membership is the coverage contract: an efficiency change
-  may reduce scheduling overhead, never silently drop an assertion group.
+  const { violations } = evaluateEngineCoreGate({
+    members,
+    fileExists: (file) => existsSync(path.join(enginePackageRoot, file)),
+    quarantinedFiles: quarantinedEngineFiles,
+  });
+  assert.deepEqual(violations, [], "engine-core membership drifted from config + ledger + filesystem");
 
-  FNXC:TestInfrastructure 2026-08-10-09:16:
-  `project-engine.test.ts` is now intentionally excluded by its FN-8811
-  quarantine in the engine config, while `check-prerebase-inert.mjs` joined the
-  blocking static composition. Keep this ledger aligned with those authoritative
-  declarations so unrelated policy drift cannot mask PG-gate membership checks.
-  */
-  const expectedMembers = [
-    '"src/__tests__/legacy-column-literal-census.test.ts"',
-    '"src/__tests__/no-legacy-move-targets.test.ts"',
-    '"src/__tests__/merger-merge-lifecycle.test.ts"',
-    '"src/__tests__/merger-conflict-resolution.test.ts"',
-    '"src/__tests__/merger-diff-scope.test.ts"',
-    '"src/__tests__/merger-landed-files-capture.test.ts"',
-    '"src/__tests__/branch-attribution.test.ts"',
-    '"src/__tests__/merge-single-flight-invariant.test.ts"',
-    '"src/__tests__/workflow-step-verdict-parsing.test.ts"',
-    '"src/__tests__/u9-merge-region-node-config-authority.test.ts"',
-    '"src/__tests__/executor-graph-requeue-gate.test.ts"',
-    '"src/__tests__/workflow-graph-executor-parity.test.ts"',
-    '"src/__tests__/task-pipeline-smoke.test.ts"',
-    '"src/__tests__/scheduler-workflow-cutover.test.ts"',
-    '"src/__tests__/executor-base-commit-capture.test.ts"',
-    '"src/__tests__/executor-capture-modified-files-attribution.test.ts"',
-    '"src/__tests__/triage-preflight.test.ts"',
-    '"src/__tests__/mission-scheduler.test.ts"',
-    '"src/__tests__/heartbeat-monitor.test.ts"',
-    '"src/__tests__/workflow-node-handlers.test.ts"',
-    '"src/__tests__/workflow-policy-ownership-map.test.ts"',
-  ];
-  assert.deepEqual(includeEntries, expectedMembers, "engine-core must retain its complete ordered 21-file coverage map");
+  // Non-vacuous floor: a reader that silently matched nothing would let the checks above pass on zero work.
+  assert.ok(members.length >= 6, `engine-core lane collapsed to ${members.length} members`);
 });
 
 test("root and package gate scripts still propagate real Vitest failures", () => {
   const root = readJson("package.json");
   const engine = readJson("packages/engine/package.json");
   const core = readJson("packages/core/package.json");
-  const staticChecks = root.scripts?.["test:gate:static"] ?? "";
   const gate = root.scripts?.["test:gate"] ?? "";
 
-  assert.equal(
-    engine.scripts?.["test:core"],
-    "vitest run --silent=passed-only --reporter=dot --project=engine-core",
-  );
-  assert.match(gate, /^node scripts\/run-static-gate-checks\.mjs &&/);
-  const gateValidators = [...staticChecks.matchAll(/node (scripts\/check-[\w-]+\.mjs)/g)].map((match) => match[1]);
-  const staticCheck = (name) => `scripts/check-${name}.mjs`;
-  assert.deepEqual(gateValidators, [
-    staticCheck(["no-", ["no", "hup"].join("")].join("")),
-    staticCheck("no-cwd-relative-dashboard-test-reads"),
-    staticCheck(["no-", "kill-", "40" + "40"].join("")),
-    staticCheck("no-getdatabase"),
-    staticCheck("prerebase-inert"),
-    staticCheck("capacity-pool-id"),
-    staticCheck("cli-runtime-routing"),
-    staticCheck("no-node-only-core-imports-in-dashboard"),
-    staticCheck("pi-versions-pinned"),
-    staticCheck("workspace-package-graph"),
-    staticCheck("no-test-timeout-appeasement"),
-    staticCheck("no-comment-assertions-in-tests"),
-    staticCheck("changeset-format"),
-    staticCheck("mock-completeness"),
-    staticCheck("inert-sync-lane-conversions"),
-    staticCheck("runtime-skill-loader-drift"),
-  ], "every static policy validator must remain once in the blocking composition");
   /*
-  FNXC:TestInfrastructure 2026-08-16-10:52:
-  FN-8991, FN-8994, and FN-9096 added runtime-skill-loader-drift,
-  workspace-package-graph, and cli-runtime-routing validators to the
-  production chains. This ordered mirror follows those authoritative chains,
-  rather than treating its former inventory as production policy.
-
-  FNXC:MergeGatePerformance 2026-08-16-10:29:
-  FN-9122's controlled W33 re-measurement closes the 14.0s row as variance,
-  but the correction is only meaningful when the composition is exact: 16
-  concurrent static validators, 21 engine-core files, two PG canaries, and
-  five unit-gate files. Keep this cardinality alongside the ordered ledger so
-  a future declaration edit cannot silently invalidate the timing baseline.
-
-  FNXC:TestInfrastructure 2026-08-25-12:16:
-  RUFU-148 reconciles this mirror with two legitimate declaration edits that
-  landed without a mirror sync: 12c292ea6b's 16th static validator
-  (check-no-comment-assertions-in-tests, inserted in chain order above) and
-  FN-149's (794dae3196) migration-wiring-integrity.test.ts addition to core
-  test:unit-gate (four -> five files, pinned below).
+  FNXC:MergeGatePolicy 2026-09-08-11:27 (RUFU-197):
+  The engine gate lane used to be pinned by exact string equality, so any deliberate flag change (a new
+  reporter, a different worker budget) reddened this guard and got repaired by copying the new string in — the
+  mirror added no protection and cost a repair cycle every time. The lane's MEANING is what matters: it runs
+  Vitest once, pins the gate project, and stays quiet so a red gate is legible.
   */
-  assert.equal(gateValidators.length, 16, "the W33 timing baseline requires all 16 static validators");
-  assert.equal(new Set(gateValidators).size, gateValidators.length, "the static validator composition must be duplicate-free");
+  const engineTestCore = engine.scripts?.["test:core"] ?? "";
+  assert.match(engineTestCore, /^vitest run\b/, "the engine gate lane must execute Vitest");
+  assert.match(engineTestCore, /--project=engine-core\b/, "the engine lane must pin the gate project");
+  assert.match(engineTestCore, /--reporter=dot\b/, "the engine gate lane must keep the compact dot reporter");
+  assert.match(engineTestCore, /--silent\b/, "the engine gate lane must stay quiet on passing tests");
+
+  // The validator inventory is derived from its own composition, so this file never re-pins membership.
+  const validators = readStaticGateChecks();
+  assert.ok(validators.length >= 10, `static blocking composition collapsed to ${validators.length} validators`);
+  assert.equal(new Set(validators).size, validators.length, "the static validator composition must be duplicate-free");
+  for (const validator of validators) {
+    // The blocking chain is read-only policy checks; a lane script here would change what the gate executes.
+    assert.match(validator, /^scripts\/check-[\w.-]+\.mjs$/, `static validator ${validator} breaks the read-only check-script convention`);
+    assert.ok(existsSync(path.join(repoRoot, validator)), `static validator ${validator} does not exist`);
+  }
+
+  assert.match(gate, /^node scripts\/run-static-gate-checks\.mjs/);
   assert.match(gate, /pnpm --filter @fusion\/engine test:core/);
   assert.match(gate, /pnpm --filter @fusion\/core test:pg-gate/);
   assert.match(gate, /pnpm --filter @fusion\/core test:unit-gate/);
-  assert.match(gate, /wait \$engine_pid \|\| status=1/);
-  assert.match(gate, /wait \$pg_pid \|\| status=1/);
-  assert.match(gate, /wait \$unit_pid \|\| status=1/);
   assert.match(gate, /&& pnpm --filter @runfusion\/fusion test:ci-shape$/);
+
+  // The blocking lanes must run in parallel and still propagate each lane's own exit status.
+  for (const lane of ["engine_pid", "pg_pid", "unit_pid"]) {
+    assert.match(gate, new RegExp(`wait \\$${lane} \\|\\| status=1`));
+  }
+
+  // Lane composition is a pattern, not a frozen command string; lane membership is asserted from files.
+  const unitGateScript = core.scripts?.["test:unit-gate"] ?? "";
+  assert.match(unitGateScript, /^vitest run\b/);
+  assertGateFilesExist(unitGateScript, "packages/core");
   /*
-  FNXC:MergeGatePolicy 2026-08-23-18:16:
-  The core unit gate includes migration-wiring integrity alongside the lifecycle columns and
-  workflow-IR allow-list checks. Keep this exact command mirror current so a policy test detects
-  real gate drift instead of remaining red after a deliberate gate admission.
+  FNXC:MergeGatePolicy 2026-09-08-11:27 (RUFU-197):
+  RUFU-148 had to repair this guard because it pinned `test:unit-gate` as one exact string: the next deliberate
+  admission reddened it. These five files are each individually justified integrity invariants (merge semantics,
+  the legacy-adoption census, hardcoded-lifecycle-column literals, the sync-workflow-IR call-site allow-list, and
+  migration wiring), so they are required as a SUBSET: a future admission leaves this guard green, while silently
+  dropping one of these invariants from the blocking lane still fails it.
   */
-  assert.equal(
-    core.scripts?.["test:unit-gate"],
-    "vitest run src/__tests__/task-merge.test.ts src/__tests__/legacy-adoption.test.ts src/__tests__/no-hardcoded-lifecycle-columns.test.ts src/__tests__/sync-workflow-ir-callsite-allowlist.test.ts src/__tests__/migration-wiring-integrity.test.ts --silent=passed-only --reporter=dot",
-  );
+  const unitGateArguments = gateFileArguments(unitGateScript);
+  for (const integrityInvariant of UNIT_GATE_INTEGRITY_INVARIANTS) {
+    assert.ok(
+      unitGateArguments.some((file) => file.endsWith(integrityInvariant)),
+      `core unit gate must keep the individually justified ${integrityInvariant} invariant`,
+    );
+  }
+
   assert.doesNotMatch(gate, /NODE_NO_WARNINGS/);
   assert.doesNotMatch(root.scripts?.["test"] ?? "", /NODE_NO_WARNINGS/);
 });
 
 /*
 FNXC:MergeGatePerformance 2026-07-22-15:35:
-FN-8497 keeps only lifecycle and transactional-handoff PostgreSQL canaries in
-`test:pg-gate`: 23 independent PG files each create/copy a real database, so
-putting the whole integration inventory on every PR made the sequential merge
-gate take 26–45 seconds. The other PG files must remain ordinary enabled core
-tests; this structural guard prevents a future package-script/config change
-from silently converting the speed fix into lost coverage.
+FN-8497 keeps only lifecycle and transactional-handoff PostgreSQL canaries in `test:pg-gate`: each PG file
+creates or copies a real database, so putting the whole integration inventory on every PR made the sequential
+merge gate take 26–45 seconds. The two names below are required because they encode the invariants the gate
+exists to protect — a transactional review handoff and the task lifecycle end-to-end — not to mirror the
+lane. Everything else the old guard encoded as a frozen 23-file list (and a `length === 22` count pin) is now
+derived from the live postgres directory, the package script, the ledger, and the key-aware exclude reader.
 */
-test("pg gate canaries remain a subset of the enabled non-blocking PG suite", () => {
+test("pg gate stays a narrow explicit canary lane that nothing can hide", () => {
   const core = readJson("packages/core/package.json");
   const coreConfig = read("packages/core/vitest.config.ts");
   const pgDirectory = path.join(repoRoot, "packages/core/src/__tests__/postgres");
-  const discoveredPgFiles = new Set(
-    readdirSync(pgDirectory)
-      .filter((file) => file.endsWith(".pg.test.ts"))
-      .map((file) => `src/__tests__/postgres/${file}`),
+
+    const requiredCanaries = PG_REQUIRED_CANARIES;
+  const pgGateScript = core.scripts?.["test:pg-gate"] ?? "";
+  // Parse every file argument first, then require that ALL of them are postgres PG tests. Filtering the
+  // postgres-shaped ones straight out would let a non-PG file ride the PG lane unnoticed.
+  const pgGateArguments = gateFileArguments(pgGateScript);
+  const gateMembers = pgGateArguments.filter(
+    (file) => file.startsWith("src/__tests__/postgres/") && file.endsWith(".pg.test.ts"),
   );
-  const gateMembers = core.scripts?.["test:pg-gate"]?.match(/src\/__tests__\/postgres\/[^ ]+\.pg\.test\.ts/g) ?? [];
-  /*
-  FNXC:TestInfrastructure 2026-07-31-20:30:
-  FN-8928 evicted `sync-workflow-ir-is-always-default.pg.test.ts` after FN-8912 observed its
-  setup hook exceed the inherited 15s budget in the loaded PG gate lane. The AGENTS.md gate rule
-  requires eviction rather than a skip; its default-core discovery remains enabled, preserving the
-  regression proof outside the blocking canary list. Local evidence was clean in five loaded-gate,
-  three isolated, and five uncapped default-config PostgreSQL runs, which does not undo the observed
-  gate flake or the required disposition.
+  assert.equal(gateMembers.length, pgGateArguments.length, "test:pg-gate may only run src/__tests__/postgres/*.pg.test.ts files");
+  const discoveredPgFiles = existsSync(pgDirectory)
+    ? readdirSync(pgDirectory).filter((file) => file.endsWith(".pg.test.ts")).map((file) => `src/__tests__/postgres/${file}`)
+    : [];
 
-  A red policy test protects nothing: while it fails, the NEXT gate admission or eviction is invisible,
-  which is the opposite of what a narrow-canary ledger is for. The ledger must never be left red.
-  */
-  const expectedCanaries = [
-    "src/__tests__/postgres/handoff-to-review-atomicity.pg.test.ts",
-    "src/__tests__/postgres/task-lifecycle-e2e.pg.test.ts",
-  ];
-  const formerGateMembers = [
-    ...expectedCanaries,
-    "src/__tests__/postgres/sync-workflow-ir-is-always-default.pg.test.ts",
-    "src/__tests__/postgres/store-list.pg.test.ts",
-    "src/__tests__/postgres/soft-delete-resurrection-FN-5233.pg.test.ts",
-    "src/__tests__/postgres/agent-logs-and-monitor.pg.test.ts",
-    "src/__tests__/postgres/todo-store.pg.test.ts",
-    "src/__tests__/postgres/workflow-definitions.pg.test.ts",
-    "src/__tests__/postgres/message-store.pg.test.ts",
-    "src/__tests__/postgres/insight-store.pg.test.ts",
-    "src/__tests__/postgres/insight-run-execution.pg.test.ts",
-    "src/__tests__/postgres/research-store.pg.test.ts",
-    "src/__tests__/postgres/mission-store.pg.test.ts",
-    "src/__tests__/postgres/goal-store.pg.test.ts",
-    "src/__tests__/postgres/artifacts-documents-evals.pg.test.ts",
-    "src/__tests__/postgres/command-center-analytics.pg.test.ts",
-    "src/__tests__/postgres/command-center-remaining-analytics.pg.test.ts",
-    "src/__tests__/postgres/research-execution.pg.test.ts",
-    "src/__tests__/postgres/async-store-events.pg.test.ts",
-    "src/__tests__/postgres/signal-ingestion.pg.test.ts",
-    "src/__tests__/postgres/mission-autopilot.pg.test.ts",
-    "src/__tests__/postgres/workflow-create.pg.test.ts",
-    "src/__tests__/postgres/monitor-trait-storm-guard.pg.test.ts",
-    "src/__tests__/postgres/agent-wake-getagent.pg.test.ts",
-  ];
+  const { violations } = evaluatePgGate({
+    requiredCanaries,
+    gateMembers,
+    discoveredPgFiles,
+    // Key-aware on purpose: only a TEST-level exclude (or a typed const it references) can hide a canary.
+    excludedPgFiles: extractTestExcludeEntries(coreConfig).filter((entry) => entry.includes("/postgres/")),
+    quarantinedPgFiles: ledgerQuarantined("packages/core/").filter((entry) => entry.includes("/postgres/")),
+  });
+  assert.deepEqual(violations, [], "PG canary lane drifted from package script + config + ledger + filesystem");
 
-  assert.deepEqual(gateMembers, expectedCanaries, "the PG gate must stay a narrow, explicit canary list");
+  // Non-vacuous floors replacing the frozen count: the lane is real, and it stays narrower than discovery.
+  assert.ok(gateMembers.length >= 1, "test:pg-gate selected no canary");
+  assert.ok(discoveredPgFiles.length > gateMembers.length, "the PG blocking lane no longer excludes any discovered PG test");
+
   assert.match(core.scripts?.test ?? "", /^vitest run\b/, "the non-blocking core lane must execute Vitest");
   assert.doesNotMatch(core.scripts?.test ?? "", /\s(?:--exclude|--include)\b/, "the non-blocking core lane must not narrow discovery");
   assert.match(coreConfig, /include:\s*\["src\/\*\*\/\*.test\.ts"\]/, "the default core config must discover PG tests");
-  /*
-  FNXC:PGGateCanaries 2026-08-25-12:20:
-  The previous pin asserted the deleted shape `const quarantinedCoreTests: string[] = []`.
-  Core quarantine excludes moved INLINE into the test-level `exclude:` array literal
-  (FNXC:QuarantineExcludes 2026-08-23-23:55), and the general "no quarantined test
-  without a ledger row" invariant is enforced by check-quarantine-ledger. This assert
-  preserves the canary-specific guarantee only: parse the inline `exclude:` literal
-  (the first one in the file is the test-level array; the nested coverage-level
-  exclude follows and holds glob patterns only) and require that no `test:pg-gate`
-  canary is among the concrete excluded files. It stays semantically correct when the
-  literal is later emptied by a legitimately expired quarantine — no non-emptiness pin.
-  */
-  const excludeMatch = coreConfig.match(/exclude:\s*\[/);
-  assert.ok(excludeMatch, "the core config must carry an inline test-level exclude: array literal");
-  const openBracket = coreConfig.indexOf("[", excludeMatch.index);
-  let bracketDepth = 0;
-  let closeBracket = -1;
-  for (let index = openBracket; index < coreConfig.length; index += 1) {
-    const character = coreConfig[index];
-    if (character === "[") bracketDepth += 1;
-    else if (character === "]" && --bracketDepth === 0) {
-      closeBracket = index;
-      break;
-    }
-  }
-  const concreteExcludes = [...coreConfig.slice(openBracket, closeBracket + 1).matchAll(/"([^"]+)"|'([^']+)'/g)]
-    .map((match) => match[1] ?? match[2])
-    .filter((entry) => /\.test\.tsx?$/.test(entry) && !entry.includes("*"));
-  assert.deepEqual(
-    expectedCanaries.filter((canary) => concreteExcludes.includes(canary)),
-    [],
-    "no PG test may be hidden by quarantine exclusion",
-  );
-
-  for (const file of formerGateMembers) {
-    assert.ok(discoveredPgFiles.has(file), `former PG gate member must remain discovered: ${file}`);
-  }
-  const removedFromGate = formerGateMembers.filter((file) => !gateMembers.includes(file));
-  assert.equal(removedFromGate.length, 22, "all non-canary former gate members must remain in the non-blocking lane");
-  assert.ok(removedFromGate.every((file) => discoveredPgFiles.has(file)), "removed PG members must remain discoverable");
 });
+
+/** Concrete test-file arguments a vitest `run <files...>` lane script names. */
+function gateFileArguments(script) {
+  return script.match(/(?:^|\s)(src\/\S+\.test\.tsx?)(?=\s|$)/g)?.map((entry) => entry.trim()) ?? [];
+}
+
+/** Every test file a lane names must exist on disk, and the lane must name at least one. */
+function assertGateFilesExist(script, packageDir) {
+  const files = gateFileArguments(script);
+  assert.ok(files.length >= 1, `gate lane named no test file: ${script.slice(0, 60)}...`);
+  for (const file of files) {
+    assert.ok(existsSync(path.join(repoRoot, packageDir, file)), `gate lane names a missing file: ${packageDir}/${file}`);
+  }
+}
+
+/** Quarantine ledger rows for one package, rebased to that package's config-relative paths. */
+function ledgerQuarantined(packagePrefix) {
+  const ledger = readLedger(path.join(repoRoot, "scripts/lib/test-quarantine.json"));
+  return (Array.isArray(ledger?.entries) ? ledger.entries : [])
+    .map((entry) => String(entry?.file ?? ""))
+    .filter((file) => file.startsWith(packagePrefix))
+    .map((file) => file.slice(packagePrefix.length));
+}

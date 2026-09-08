@@ -145,7 +145,7 @@ DDL microbenchmarks of the pre-fix pristine shape measured `CREATE DATABASE` 44.
 
 ### 7. Mission store PostgreSQL teardown hook
 
-- **Status:** Closed 2026-08-23 — file-level quarantine (second sighting of a different test in the same file); quarantine RESCUED and lifted 2026-09-02 by `9b29c6beab` (PR #3549).
+- **Status:** Closed 2026-08-23 — file-level quarantine (second sighting of a different test in the same file); quarantine RESCUED and lifted 2026-09-02 by `9b29c6beab` (PR #3549); RETIRED 2026-09-06 by `82c635384d` (deletion ratchet — file, ledger row, and the core exclude key removed together, so vitest defaults apply). Measured conflict left for follow-up: the 2026-09-02 lift deleted the ledger row, no non-merge commit in `9b29c6beab..82c635384d^` re-added it, yet the row was present at `82c635384d^` — a merge reintroduced it, so the ratchet fired against a quarantine this record already recorded as rescued. The file is gone for good as far as this record is concerned; the retirement is not evidence that the rescue was wrong.
 
 - **File:** `packages/core/src/__tests__/postgres/mission-store.pg.test.ts`
 - **Exact test:** `MissionStore (PostgreSQL backend mode)` suite `afterAll` hook (`h.afterAll`).
@@ -315,7 +315,7 @@ FN-8928 evicted the file from the blocking gate under the AGENTS.md gate rule; d
 
 Quarantine is file-level, while the first-sighting exception preserves coverage in files retaining 6 / 75 / 80 passing tests. Under that exception, recording preserves valuable coverage. A **second sighting** of a registered test is an on-sight quarantine: add it to `scripts/lib/test-quarantine.json` and the matching Vitest `exclude` in one lockstep commit; this register entry is then evidence for the ledger `reason`.
 
-Merge-gate eviction records follow a separate branch: the gate can no longer be reddened by that file, while the non-blocking suite retains coverage. A further failure there is an ordinary on-sight quarantine. For PostgreSQL files, the gate-policy assertion forbidding a core-config quarantine exclude makes that an owner decision escalated as its own task rather than an inline edit.
+Merge-gate eviction records follow a separate branch: the gate can no longer be reddened by that file, while the non-blocking suite retains coverage. A further failure there is an ordinary on-sight quarantine. For PostgreSQL files, quarantine is legitimate only once the file is also gone from the blocking `test:pg-gate` script, because a ledger row naming a file the blocking lane still runs is itself a gate-policy violation; that lane decision is what makes it an owner decision escalated as its own task rather than an inline edit. Records dated before 2026-09-08 phrase the same rule as "`quarantinedCoreTests` remains empty" — that named core-config array was removed by the 2026-09-06 deletion ratchet (`82c635384d`), so read those passages as the rule above, not a live identifier.
 
 Capture **full runner output** before recording or quarantining a failure—for example, tee it to a file. Never pipe a dot reporter through `tail`: the summary survives while the `FAIL` identity lines needed for a quarantine entry are exactly what gets truncated.
 
@@ -553,7 +553,7 @@ This resolves the previously unclassified “unrelated satellite-store ordering 
 
 ## Entry: `self-healing-pending-wedge-notification` marker-selection count (first sighting)
 
-- **Status:** Closed 2026-08-23 — file-level quarantine (second sighting); quarantine RESCUED and lifted 2026-09-02 by `9b29c6beab` (PR #3549).
+- **Status:** Closed 2026-08-23 — file-level quarantine (second sighting); quarantine RESCUED and lifted 2026-09-02 by `9b29c6beab` (PR #3549); RETIRED 2026-09-06 by `82c635384d` (deletion ratchet — file, ledger row, and engine exclude line removed together), on the same resurrected-row basis recorded under record 7 above.
 - **File:** `packages/engine/src/__tests__/self-healing-pending-wedge-notification.test.ts`
 - **Exact test:** `reconcile pending wedge notifications > selects elapsed markers and audits the completion outcome verbatim`
 - **Owner:** unowned — first sighting, recorded rather than quarantined because the file's remaining coverage (4 tests over the pending-wedge reconciler) is substantial and quarantine is file-level.
