@@ -14,6 +14,7 @@ import {
   READONLY_BUILTIN_TOOLS,
   READONLY_FN_TOOLS,
   REVIEW_GATE_BYPASS_FN_TOOLS,
+  escalateShellCategoryForFileWrite,
   isGitWriteCommand,
 } from "../execution/gating-classifications.js";
 
@@ -197,9 +198,26 @@ export function resolvePermanentAgentToolDecision(input: {
     };
   }
 
+  /*
+  FNXC:AgentGating 2026-09-07-12:31:
+  A `bash` call could only ever land in git_write or command_execution here too, so a shell
+  redirection was invisible to file_write_delete on the permanent gate exactly as it was on the
+  action gate. Same shared, one-directional escalation, because this module and agent-action-gate
+  are required to classify bash identically (see the two-path-drift note atop
+  gating-classifications.ts).
+  */
+  const category = input.toolName === "bash"
+    ? escalateShellCategoryForFileWrite({
+      command: extractShellCommand(normalizeArgs(input.args)),
+      shellCategory: classification.category,
+      rules: input.gating.permissionPolicy.rules,
+    })
+    : classification.category;
+
   return {
     ...classification,
+    category,
     toolName: input.toolName,
-    disposition: resolvePolicyDisposition(input.toolName, classification.category, input.gating),
+    disposition: resolvePolicyDisposition(input.toolName, category, input.gating),
   };
 }

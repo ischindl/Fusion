@@ -1,5 +1,6 @@
 // FN-3548 / FN-3724 / FN-3751: keep agent-action-gate and permanent-agent-gating
 // classifications sourced from one module to prevent two-path drift (see MEMORY.md drift note).
+import type { AgentPermissionPolicyActionCategory, AgentPermissionPolicyDisposition } from "@fusion/core";
 
 export const READONLY_BUILTIN_TOOLS: ReadonlySet<string> = new Set(["read", "find", "grep", "ls"]);
 export const FILE_WRITE_BUILTIN_TOOLS: ReadonlySet<string> = new Set(["write", "edit"]);
@@ -428,4 +429,148 @@ export function classifyGitCommand(command: string): { write: boolean; operation
 
 export function isGitWriteCommand(command: string): boolean {
   return classifyGitCommand(command)?.write ?? false;
+}
+
+/*
+FNXC:AgentGating 2026-09-06-23:35:
+A `bash` call could only ever classify as git_write or command_execution, so a shell
+redirection was invisible to the file_write_delete category: with command_execution
+"allow" and file_write_delete "require-approval", an agent wrote a repository file
+with ZERO approval requests. This is a best-effort detector, NOT a sandbox. It cannot
+see through `eval`, an interpreter running a script file, or a command that writes as
+a side effect, and it never claims to. It exists so that allowing shell does not
+SILENTLY void a stricter file-write rule, and evaluateAgentActionGate applies it in one
+direction only: it can make a bash call MORE gated, never less. Real containment is the
+sandbox backend's job, not a command-string classifier's.
+*/
+
+/** Commands whose ordinary purpose is to create, modify, or remove filesystem entries. */
+const SHELL_FILE_WRITE_COMMANDS: ReadonlySet<string> = new Set([
+  "tee", "rm", "rmdir", "unlink", "shred", "mv", "cp", "install", "ln",
+  "mkdir", "touch", "truncate", "dd", "chmod", "chown", "chgrp", "rsync", "patch",
+]);
+
+/**
+ * Wrappers that run another command; unwrap them rather than classify the wrapper.
+ * The detach wrapper that this repository's process-supervision guard bans by name in engine
+ * source is deliberately absent: a suppression is not worth one more wrapper name in a detector
+ * that already documents itself as best effort.
+ */
+const SHELL_PASSTHROUGH_COMMANDS: ReadonlySet<string> = new Set([
+  "sudo", "doas", "env", "timeout", "command", "exec", "nice", "ionice", "stdbuf", "time", "xargs",
+]);
+
+/** Interpreters that run code supplied inline, which a command-string classifier cannot read. */
+const SHELL_INLINE_CODE_INTERPRETERS: ReadonlySet<string> = new Set([
+  "bash", "sh", "zsh", "dash", "ksh", "python", "python3", "perl", "ruby", "node", "deno", "php",
+]);
+
+/** Editors with an in-place flag, which rewrite their input file. */
+const SHELL_IN_PLACE_EDITORS: ReadonlySet<string> = new Set(["sed", "perl", "ruby"]);
+
+/**
+ * In-place flag: the short-flag cluster forms `-i`, `-i.bak`, `-ni`, plus long `--in-place`.
+ * Deliberately not `-{1,2}[A-Za-z]*i`, which also matched `--expression` (letters then an `i`).
+ */
+const IN_PLACE_FLAG = /^(?:--in-place|-[A-Za-z]*i)/;
+
+/** Redirect targets that discard output instead of writing a file. */
+const SHELL_DISCARD_TARGET = /^\/dev\/(?:null|stdout|stderr|tty|fd\/\d+)$/;
+
+/** Strips quoted spans so a redirect or separator inside a string literal is not read as shell syntax. */
+function stripQuotedSpans(command: string): string {
+  return command.replace(/'[^']*'/g, " ").replace(/"[^"]*"/g, " ");
+}
+
+function redirectsToFile(command: string): boolean {
+  // Drop file-descriptor duplications and closes (2>&1, >&2, 2>&-); they create no file.
+  const withoutFdDuplication = command.replace(/\d*>&\s*[\d-]+/g, " ");
+  for (const match of withoutFdDuplication.matchAll(/(?<![-=<>])>{1,2}(?![=>])\s*([^\s;&|<>]*)/g)) {
+    const target = match[1] ?? "";
+    if (target && SHELL_DISCARD_TARGET.test(target)) continue;
+    return true;
+  }
+  return false;
+}
+
+function baseName(token: string): string {
+  return token.slice(token.lastIndexOf("/") + 1);
+}
+
+export function detectsShellFileWrite(command: string): boolean {
+  if (!command.trim()) return false;
+  const stripped = stripQuotedSpans(command);
+  if (redirectsToFile(stripped)) return true;
+
+  for (const segment of stripped.split(/(?:&&|\|\||;|\||\n|&)/)) {
+    const tokens = segment.trim().split(/\s+/).filter(Boolean);
+    let cursor = 0;
+    // Skip leading environment assignments and pass-through wrappers with their own arguments.
+    while (cursor < tokens.length) {
+      const token = tokens[cursor] ?? "";
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
+        cursor += 1;
+        continue;
+      }
+      if (SHELL_PASSTHROUGH_COMMANDS.has(baseName(token))) {
+        cursor += 1;
+        while (cursor < tokens.length) {
+          const argument = tokens[cursor] ?? "";
+          if (argument.startsWith("-") || /^\d+[smhd]?$/.test(argument)) {
+            cursor += 1;
+            continue;
+          }
+          break;
+        }
+        continue;
+      }
+      break;
+    }
+
+    const head = baseName(tokens[cursor] ?? "");
+    if (!head) continue;
+    if (SHELL_FILE_WRITE_COMMANDS.has(head)) return true;
+    if (head === "eval") return true;
+
+    const flags = tokens.slice(cursor + 1);
+    if (SHELL_INLINE_CODE_INTERPRETERS.has(head) && flags.some((flag) => /^-{1,2}[ce]$/.test(flag))) return true;
+    if (SHELL_IN_PLACE_EDITORS.has(head) && flags.some((flag) => IN_PLACE_FLAG.test(flag))) return true;
+  }
+
+  return false;
+}
+
+
+/*
+FNXC:AgentGating 2026-09-07-12:31:
+ONE shared escalation for BOTH gates, required by this module's two-path-drift rule at the top of
+the file: agent-action-gate and permanent-agent-gating classify a `bash` call identically, so they
+have to apply the file_write_delete escalation identically too. Fixing only one of them would
+leave the bypass live on the other gate's path (durable-agent heartbeat and chat tool calls).
+
+The escalation is COMPARATIVE and one-directional: it fires only where the operator set
+file_write_delete STRICTER than the category the command reaches through the shell, so it can make
+a bash call more gated and never less. A policy whose file_write_delete is no stricter is
+completely unaffected, including the shipped `unrestricted` preset (every category "allow") and
+any all-require-approval preset. A legacy policy row missing either rule also escalates nothing,
+which is the previous behavior.
+*/
+const DISPOSITION_STRICTNESS: Record<AgentPermissionPolicyDisposition, number> = {
+  allow: 0,
+  "require-approval": 1,
+  block: 2,
+};
+
+export function escalateShellCategoryForFileWrite(params: {
+  command: string;
+  shellCategory: AgentPermissionPolicyActionCategory;
+  rules: Partial<Record<AgentPermissionPolicyActionCategory, AgentPermissionPolicyDisposition>> | undefined;
+}): AgentPermissionPolicyActionCategory {
+  const { command, shellCategory, rules } = params;
+  if (shellCategory === "file_write_delete") return shellCategory;
+  const fileRule = rules?.file_write_delete;
+  const shellRule = rules?.[shellCategory];
+  if (fileRule === undefined || shellRule === undefined) return shellCategory;
+  if (DISPOSITION_STRICTNESS[fileRule] <= DISPOSITION_STRICTNESS[shellRule]) return shellCategory;
+  return detectsShellFileWrite(command) ? "file_write_delete" : shellCategory;
 }

@@ -12,6 +12,7 @@ import {
   READONLY_FN_TOOLS,
   TASK_AGENT_MUTATION_TOOLS,
   classifyGitCommand,
+  detectsShellFileWrite,
   isGitWriteCommand,
 } from "../execution/gating-classifications.js";
 import { classifyPermanentAgentToolCall, resolvePermanentAgentToolDecision } from "../agents/permanent-agent-gating.js";
@@ -641,5 +642,147 @@ describe("gating-classifications parity", () => {
 
   it.each(gitCases)("isGitWriteCommand agrees with classifyGitCommand for %s", (command) => {
     expect(isGitWriteCommand(command)).toBe(classifyGitCommand(command)?.write ?? false);
+  });
+});
+
+/*
+FNXC:AgentGating 2026-09-07-12:31:
+A `bash` call could only ever classify as git_write or command_execution, so shell file writes were
+invisible to the file_write_delete category on BOTH gates. With command_execution "allow" and
+file_write_delete "require-approval" an agent rewrote repository files through a redirection with
+ZERO approval requests, silently voiding the stricter rule the operator had set.
+
+The escalation is comparative and one-directional: it fires only where file_write_delete is set
+STRICTER than the category the command reaches through the shell, so it can make a bash call more
+gated and never less, and presets where file_write_delete is not stricter (the shipped
+`unrestricted` preset, any uniform preset) behave exactly as before. The detector is best effort by
+design, not a sandbox: it deliberately over-approximates (an inline `-c` interpreter body or `eval`
+counts as a write because a command-string classifier cannot read them) because over-approximation
+only ever costs an approval, while a miss is a silent bypass.
+*/
+describe("shell file-write escalation", () => {
+  const strictFileWritePolicy: AgentPermissionPolicy = {
+    presetId: "custom",
+    rules: { ...unrestrictedPolicy.rules, file_write_delete: "require-approval" },
+  };
+
+  const shellWrites = [
+    "printf 'x' >> notes.txt",
+    "echo hello > out.txt",
+    "cat <<'EOF' > config.json\n{}\nEOF",
+    "ls | tee listing.txt",
+    "sed -i '' 's/a/b/' src/app.ts",
+    "sed --in-place 's/a/b/' src/app.ts",
+    "cp src/a.ts src/b.ts",
+    "mv old.txt new.txt",
+    "rm -f stale.txt",
+    "mkdir -p packages/new",
+    "touch CHANGELOG.md",
+    "sudo tee /etc/hosts",
+    "xargs rm",
+    "FOO=bar env touch marker",
+  ] as const;
+
+  const shellReads = [
+    "ls -la",
+    "git status",
+    "cat package.json",
+    "grep -rn needle src",
+    "pnpm test 2>&1",
+    "echo quiet > /dev/null",
+    "node --version",
+    "sed -n '1,20p' src/app.ts",
+    "sed --expression='s/a/b/' src/app.ts",
+    "",
+  ] as const;
+
+  it.each(shellWrites)("detects a shell file write in %j", (command) => {
+    expect(detectsShellFileWrite(command)).toBe(true);
+  });
+
+  it.each(shellReads)("does not call %j a shell file write", (command) => {
+    expect(detectsShellFileWrite(command)).toBe(false);
+  });
+
+  it("gates a redirection under file_write_delete when that rule is stricter than shell", () => {
+    const decision = evaluateAgentActionGate({
+      agentId: "agent-shell",
+      taskId: "FN-SHELL",
+      toolName: "bash",
+      args: { command: "printf 'x' >> notes.txt" },
+      permissionPolicy: strictFileWritePolicy,
+    });
+
+    expect(decision.category).toBe("file_write_delete");
+    expect(decision.disposition).toBe("require-approval");
+  });
+
+  /*
+  FNXC:AgentGating 2026-09-07-14:44:
+  Measured against a live run: the executor wrote the file with
+  `cd <worktree> && printf 'PROOF-RUN-TWO\n' >> notes.txt && ... && git status --porcelain`, and
+  the approval card summarised it as "bash: git status" because `operation` comes from the git
+  classifier. An operator asked to approve a file write must not be shown a read.
+  */
+  it("names an escalated shell write instead of the git read inside it", () => {
+    const decision = evaluateAgentActionGate({
+      agentId: "agent-shell",
+      toolName: "bash",
+      args: { command: "printf 'x\n' >> notes.txt && git status --porcelain" },
+      permissionPolicy: strictFileWritePolicy,
+    });
+
+    expect(decision.category).toBe("file_write_delete");
+    expect(decision.operation).toBe("shell file write");
+    expect(decision.summary).toBe("bash: shell file write");
+    expect(decision.resourceType).toBe("git");
+  });
+
+  it("gates the same redirection identically on the permanent-agent gate", () => {
+    const decision = resolvePermanentAgentToolDecision({
+      toolName: "bash",
+      args: { command: "printf 'x' >> notes.txt" },
+      gating: { permissionPolicy: strictFileWritePolicy },
+    });
+
+    expect(decision.category).toBe("file_write_delete");
+    expect(decision.disposition).toBe("require-approval");
+  });
+
+  it("leaves a shell read as command_execution under the same policy", () => {
+    const decision = evaluateAgentActionGate({
+      agentId: "agent-shell",
+      toolName: "bash",
+      args: { command: "ls -la" },
+      permissionPolicy: strictFileWritePolicy,
+    });
+
+    expect(decision.category).toBe("command_execution");
+    expect(decision.disposition).toBe("allow");
+  });
+
+  it("never escalates when file_write_delete is not stricter than the shell category", () => {
+    for (const policy of [unrestrictedPolicy, approvalRequiredPolicy, blockedPolicy]) {
+      const decision = evaluateAgentActionGate({
+        agentId: "agent-shell",
+        toolName: "bash",
+        args: { command: "printf 'x' >> notes.txt" },
+        permissionPolicy: policy,
+      });
+      expect({ preset: policy.presetId, category: decision.category })
+        .toEqual({ preset: policy.presetId, category: "command_execution" });
+    }
+  });
+
+  it("keeps a git write in git_write when file_write_delete is no stricter", () => {
+    const decision = evaluateAgentActionGate({
+      agentId: "agent-shell",
+      toolName: "bash",
+      args: { command: "git commit -am wip" },
+      permissionPolicy: strictFileWritePolicy,
+    });
+
+    expect(decision.category).toBe("git_write");
+    expect(decision.disposition).toBe("allow");
   });
 });

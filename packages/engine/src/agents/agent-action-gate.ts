@@ -18,6 +18,7 @@ import {
   READONLY_FN_TOOLS,
   REVIEW_GATE_BYPASS_FN_TOOLS,
   classifyGitCommand,
+  escalateShellCategoryForFileWrite,
 } from "../execution/gating-classifications.js";
 import { runtimeLog } from "../logger.js";
 
@@ -178,14 +179,39 @@ export function evaluateAgentActionGate(params: {
     can only consume an approval minted for that same command.
     */
     resourceId = command ? `cmd:${createHash("sha256").update(command).digest("hex").slice(0, 16)}` : undefined;
-    if (git?.write) {
-      category = "git_write";
-      operation = git.operation;
-      resourceType = "git";
-    } else {
-      category = "command_execution";
-      operation = git?.operation ?? "shell command";
-      resourceType = git ? "git" : "command";
+    const shellCategory: AgentPermissionPolicyActionCategory = git?.write ? "git_write" : "command_execution";
+    operation = git?.operation ?? "shell command";
+    resourceType = git ? "git" : "command";
+    /*
+    FNXC:AgentGating 2026-09-06-23:35:
+    A shell command that writes files is governed by file_write_delete too, not only
+    by the category it reaches through the shell. Without this, setting
+    command_execution to "allow" SILENTLY voided a stricter file_write_delete rule:
+    `printf x >> notes.txt` classified as command_execution and wrote the file with no
+    approval request at all. The escalation is one-directional and comparative, so a
+    policy whose file_write_delete is no stricter than the shell category is completely
+    unaffected (including the shipped `unrestricted` preset, where every category is
+    "allow", and any all-require-approval preset): behavior changes only where the
+    operator asked for file writes to be handled more strictly than shell.
+    */
+    category = escalateShellCategoryForFileWrite({
+      command,
+      shellCategory,
+      rules: params.permissionPolicy.rules,
+    });
+    /*
+    FNXC:AgentGating 2026-09-07-14:44:
+    Name the escalated action for the human who has to decide it. `operation` becomes the
+    approval card's summary, and it is taken from the git classifier, so a real measured case
+    `printf 'PROOF\n' >> notes.txt && ... && git status --porcelain` asked the operator to approve
+    "bash: git status" while the action being approved was an append to a tracked file. Asking
+    about a file write under the label of a read defeats the reason for asking. resourceType stays
+    `command`/`git` on purpose: the resourceId IS a command hash, and calling it a file would be a
+    second mislabel. Both mint and lookup run this same code, so the dedupe key stays consistent
+    and redemption is unaffected.
+    */
+    if (category === "file_write_delete") {
+      operation = "shell file write";
     }
   } else if (params.toolName === "write" || params.toolName === "edit") {
     category = "file_write_delete";
