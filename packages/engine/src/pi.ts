@@ -2713,7 +2713,21 @@ export function wrapToolsWithActionGate(
           approvalRequestId = created?.id;
         }
         if (approvalRequestId) {
-          await gateContext.pauseForApproval?.({ approvalRequestId, decision });
+          /*
+          FNXC:AgentGating 2026-09-06-23:35:
+          Mirror the permanent-agent path above: a failure to park must never replace
+          the gate's own rejection. pauseForApproval pauses the task, logs, mails the
+          operator and suspends the session BEFORE it touches agent state, so a throw
+          from the last step used to surface to the model as a raw tool error and lose
+          the "do not attempt alternatives" instruction the executor prompt relies on
+          (FN-7608). The action is still refused either way; only the message differs.
+          */
+          try {
+            await gateContext.pauseForApproval?.({ approvalRequestId, decision });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            piLog.warn(`[action-gate] pauseForApproval failed: ${message}`);
+          }
         }
 
         return buildGateRejection(

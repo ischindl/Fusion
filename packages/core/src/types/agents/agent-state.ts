@@ -7,9 +7,19 @@
 export const AGENT_STATES = ["idle", "active", "running", "paused", "error"] as const;
 export type AgentState = (typeof AGENT_STATES)[number];
 
+/*
+FNXC:AgentLifecycle 2026-09-06-23:35:
+`idle` used to have exactly one successor, so an approval gate could never park an
+agent that was sitting idle: updateAgentState threw
+"Invalid state transition: idle -> paused". Every gate that parks an agent
+(action gate, permanent gate, chat, triage, heartbeat) can meet an idle agent, so
+the throw was reachable from five call sites, not one. Parking an idle agent on a
+pending approval is a legitimate transition, and `paused` already reaches both
+`idle` and `active`, so allowing it cannot strand an agent.
+*/
 /** Valid state transitions for agents */
 export const AGENT_VALID_TRANSITIONS: Record<AgentState, AgentState[]> = {
-  idle: ["active"],
+  idle: ["active", "paused"],
   active: ["idle", "running", "paused", "error"],
   running: ["idle", "active", "paused", "error"],
   paused: ["idle", "active"],

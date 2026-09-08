@@ -250,7 +250,16 @@ async function resumeAfterDecision(params: {
     await agentStore.init();
     const agent = await agentStore.getAgent(request.requester.actorId);
     if (agent?.state === "paused" && agent.pauseReason === "awaiting-approval") {
-      await agentStore.updateAgentState(agent.id, "idle");
+      /*
+      FNXC:AgentGating 2026-09-06-23:35:
+      Resume to `active`, matching every other resume path in the codebase
+      (HeartbeatManager.resumeAgent, the agent runtime pause/resume routes). This was
+      the only site that resumed a paused agent to `idle`, and `idle` was the one state
+      an approval gate could not park an agent from, so the NEXT gated action in the
+      resumed session threw instead of parking. The agent is about to run again (the
+      task is unpaused directly above), so `active` is also the honest state.
+      */
+      await agentStore.updateAgentState(agent.id, "active");
       await agentStore.updateAgent(agent.id, { pauseReason: undefined });
     }
   } catch (error) {
