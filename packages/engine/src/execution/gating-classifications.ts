@@ -339,10 +339,26 @@ export const MUTATING_GIT_SUBCOMMANDS: ReadonlySet<string> = new Set([
 
 export const READONLY_GIT_SUBCOMMANDS: ReadonlySet<string> = new Set(["status", "diff", "log", "show", "rev-parse"]);
 
-export function classifyGitCommand(command: string): { write: boolean; operation: string } | null {
-  const match = command.match(/(?:^|&&|\|\||;|\||\n)\s*git\s+([^\s]+)/);
-  if (!match) return null;
-  const sub = match[1]?.trim() ?? "";
+/*
+FNXC:AgentGating 2026-09-06-23:35:
+classifyGitCommand used a NON-global `String.match`, so it inspected only the FIRST
+git invocation in a compound command and never looked at the rest. Any git write
+became a read by putting a read in front of it, e.g.
+`git status; git add . && git commit -m x` classified as `git status` and ran
+ungated under a policy that gates git_write. Every git invocation is now classified
+against its OWN slice of the command (so per-subcommand flag tests like `-b` cannot
+be satisfied by a flag belonging to a different invocation), and any write wins.
+
+The subcommand capture had to be narrowed from `[^\s]+` to `[^\s;&|]+` for that to mean
+anything on the most natural way to write a chain. Greedy `[^\s]+` swallowed an ABUTTING
+separator, so `git status; git add . && git commit -m x` captured the subcommand as
+"status;" (matching neither the read nor the write set) AND consumed the `;` that the next
+invocation needed as its own separator, hiding `git add` from the scan entirely. Excluding
+the three separator characters ends the capture at the subcommand and leaves the separator
+in place; every other capture, including global-flag forms like `git --no-pager log`, is
+byte-identical to before.
+*/
+function classifyGitInvocation(command: string, sub: string): { write: boolean; operation: string } {
   if (!sub) return { write: false, operation: "git" };
 
   if (READONLY_GIT_SUBCOMMANDS.has(sub)) {
@@ -393,6 +409,21 @@ export function classifyGitCommand(command: string): { write: boolean; operation
   }
 
   return { write: MUTATING_GIT_SUBCOMMANDS.has(sub), operation: `git ${sub}` };
+}
+
+export function classifyGitCommand(command: string): { write: boolean; operation: string } | null {
+  const invocations = [...command.matchAll(/(?:^|&&|\|\||;|\||\n)\s*git\s+([^\s;&|]+)/g)];
+  if (invocations.length === 0) return null;
+
+  let firstRead: { write: boolean; operation: string } | null = null;
+  for (const [index, match] of invocations.entries()) {
+    const start = match.index ?? 0;
+    const end = invocations[index + 1]?.index ?? command.length;
+    const classification = classifyGitInvocation(command.slice(start, end), match[1]?.trim() ?? "");
+    if (classification.write) return classification;
+    firstRead ??= classification;
+  }
+  return firstRead;
 }
 
 export function isGitWriteCommand(command: string): boolean {

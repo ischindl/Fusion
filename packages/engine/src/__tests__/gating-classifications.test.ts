@@ -100,6 +100,20 @@ const gitCases = [
   ["echo hi; git commit -m x", true, "git commit"],
   ["echo hi | git diff", false, "git diff"],
   ["echo hi\ngit checkout -b t", true, "git checkout -b"],
+  /*
+  FNXC:AgentGating 2026-09-07-12:31:
+  EVERY git invocation in a chained line is classified, not just the first. The classifier used a
+  non-global match, so any git write became a read by putting a read in front of it, and a policy
+  that gates git_write let the write through as command_execution. Any write in the line wins; when
+  no segment writes, the first read still names the operation. The last case pins the other half:
+  each invocation is classified against its OWN slice, so `-b` belonging to `git status -b` cannot
+  make the earlier plain `git checkout` look like a branch create.
+  */
+  ["git status && git checkout -b feature", true, "git checkout -b"],
+  ["git status; git add . && git commit -m x", true, "git add"],
+  ["git log --oneline && git push", true, "git push"],
+  ["git status && git diff", false, "git status"],
+  ["git checkout main && git status -b", false, "git checkout"],
 ] as const;
 
 const ACTION_MUTATION_PERMANENT_READONLY_TOOLS = new Set([
