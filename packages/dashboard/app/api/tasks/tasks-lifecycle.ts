@@ -202,6 +202,59 @@ export function duplicateTask(
   });
 }
 
+/*
+FNXC:CrossProjectHandoff 2026-09-09-05:03 (RUFU-203):
+Cross-project transfer client. A transfer is a COPY with bidirectional pointers, never a row move
+(partition-key reasoning at the server helper). `targetProjectId` must be a locally registered
+project; the server answers 409 with `details.reason:"target-unresolvable"` (ApiRequestError.details)
+for anything else — callers must show that named reason, not a generic failure toast.
+*/
+export type TaskTransferDisposition = "keep-transferred" | "keep-unchanged";
+
+export interface TaskTransferResult {
+  targetTaskId: string;
+  targetProjectId: string;
+  targetProjectName: string;
+  targetColumn: string;
+  /** True when the proposal claim already existed and the canonical target card was replayed. */
+  deduped: boolean;
+  copiedAttachmentCount: number;
+  /** Attachments skipped (unreadable/oversized) — a gap surfaced, never silently dropped. */
+  skippedAttachmentCount: number;
+}
+
+export function transferTask(
+  id: string,
+  options: { targetProjectId: string; disposition?: TaskTransferDisposition },
+  projectId?: string,
+): Promise<TaskTransferResult> {
+  return api<TaskTransferResult>(withProjectId(`/tasks/${id}/transfer`, projectId), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ targetProjectId: options.targetProjectId, disposition: options.disposition }),
+  });
+}
+
+/**
+ * Live status for one `transferredTo` pointer on a source card. Unresolvable pointers come back
+ * with `targetAvailable:false` and a named `error` — the badge explains the dark target instead
+ * of shrinking it.
+ */
+export interface HandoffTargetStatus {
+  projectId: string;
+  projectName: string;
+  taskId: string;
+  transferredAt: string;
+  targetAvailable: boolean;
+  column?: string;
+  status?: string;
+  error?: string;
+}
+
+export function fetchHandoffStatus(id: string, projectId?: string): Promise<{ handoffs: HandoffTargetStatus[] }> {
+  return api<{ handoffs: HandoffTargetStatus[] }>(withProjectId(`/tasks/${id}/handoff-status`, projectId), { method: "GET" });
+}
+
 export function pauseTask(id: string, projectId?: string): Promise<Task> {
   return api<Task>(withProjectId(`/tasks/${id}/pause`, projectId), { method: "POST" });
 }

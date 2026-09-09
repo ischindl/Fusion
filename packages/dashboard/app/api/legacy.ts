@@ -106,6 +106,8 @@ export {
   recoverBranchBinding,
   resetTask,
   duplicateTask,
+  transferTask,
+  fetchHandoffStatus,
   pauseTask,
   unpauseTask,
   nudgeOverseer,
@@ -127,6 +129,10 @@ export type {
   RevertTaskAiResult,
   RevertTaskResult,
   RevertTaskOptions,
+  /* FNXC:CrossProjectHandoff 2026-09-09-05:03 (RUFU-203): transfer client surface for the UI helper, modal, and badge. */
+  TaskTransferDisposition,
+  TaskTransferResult,
+  HandoffTargetStatus,
 } from "./tasks/tasks-lifecycle.js";
 
 export {

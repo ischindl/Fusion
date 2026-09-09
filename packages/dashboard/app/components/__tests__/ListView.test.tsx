@@ -12,6 +12,7 @@ import { loadAllAppCss } from "../../test/cssFixture";
 
 // Mock the API
 vi.mock("../../api", () => ({
+  fetchHandoffStatus: vi.fn(async () => ({ handoffs: [] })),
   fetchModels: vi.fn().mockResolvedValue({ models: [], favoriteProviders: [], favoriteModels: [] }),
   fetchSettings: vi.fn().mockResolvedValue({
     modelPresets: [],
@@ -6044,5 +6045,79 @@ describe("ListView titleless display fallback (FN-044)", () => {
     } finally {
       viewportSpy.mockRestore();
     }
+  });
+});
+
+/*
+FNXC:CrossProjectHandoff 2026-09-09-09:02:
+RUFU-203 source-side "Transferred → <project> <TARGET-ID>" chip must appear on ListView rows for
+cards carrying a `transferredTo` pointer (populated, multi-entry, and absent states), with the
+same single-fetch-per-badge contract as the standalone component test.
+*/
+describe("ListView transferred-to chip", () => {
+  const handoffPointer = (projectId: string, projectName: string, taskId: string) => ({
+    projectId,
+    projectName,
+    taskId,
+    transferredAt: "2026-09-01T10:00:00.000Z",
+  });
+
+  function transferredTask(id: string, sourceMetadata?: Record<string, unknown>): Task {
+    return {
+      id,
+      title: `Transfer ${id}`,
+      column: "todo",
+      status: "pending",
+      steps: [],
+      dependencies: [],
+      description: "",
+      sourceMetadata,
+    } as unknown as Task;
+  }
+
+  it("renders one chip per pointer (and none without one) with a single status fetch", async () => {
+    ensureMatchMedia();
+    const mmSpy = vi.spyOn(window, "matchMedia").mockImplementation((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+    const api = await import("../../api");
+    const fetchStatus = vi.mocked(api.fetchHandoffStatus);
+    fetchStatus.mockReset();
+    fetchStatus.mockResolvedValue({ handoffs: [] });
+
+    render(
+      <ListView
+        tasks={[
+          transferredTask("FN-2001", { transferredTo: [handoffPointer("proj-stash", "STASH", "STAS-042")] }),
+          transferredTask("FN-2002", { transferredTo: [handoffPointer("proj-stash", "STASH", "STAS-042"), handoffPointer("proj-keel", "KEEL", "KEE-007")] }),
+          transferredTask("FN-2003"),
+        ]}
+        projectId={TEST_PROJECT_ID}
+        onMoveTask={vi.fn()}
+        onOpenDetail={vi.fn()}
+        addToast={vi.fn()}
+      />,
+    );
+
+    await screen.findAllByTestId("transferred-badge-STAS-042");
+    expect(screen.getByTestId("transferred-badge-KEE-007")).toBeTruthy();
+    expect(screen.getAllByTestId("transferred-badge-STAS-042")).toHaveLength(2);
+    for (const chip of screen.getAllByTestId(/transferred-badge-/)) {
+      expect(chip.textContent).toContain("Transferred");
+    }
+    expect(screen.queryByTestId("transferred-badge-FN-2003")).toBeNull();
+    // One fetch per BADGE mount (FN-2002's two pointers share one request); pointerless cards fetch nothing.
+    expect(fetchStatus).toHaveBeenCalledTimes(2);
+    expect(fetchStatus).toHaveBeenCalledWith("FN-2001", TEST_PROJECT_ID);
+    expect(fetchStatus).toHaveBeenCalledWith("FN-2002", TEST_PROJECT_ID);
+    expect(fetchStatus.mock.calls.some(([id]) => id === "FN-2003")).toBe(false);
+    mmSpy.mockRestore();
   });
 });

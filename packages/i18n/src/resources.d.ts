@@ -9735,6 +9735,8 @@ export default interface Resources {
         "createdToUndo": "Created to undo",
         "createdVia": "Created via",
         "creatingAgent": "Creating agent",
+        "crossProjectFrom": "From",
+        "crossProjectHandoff": "Cross-Project Handoff",
         "importedFrom": "Imported from",
         "nearDuplicateOf": "Flagged near-duplicate of",
         "parentTask": "Parent task",
@@ -9940,6 +9942,38 @@ export default interface Resources {
       "tokenUsage": "Token Usage",
       "totalExecutionTime": "Total active time",
       "totalTokens": "Total",
+      "transfer": {
+        "attachmentsSkipped": "{{count}} attachment(s) could not be copied to the target project",
+        "changeProject": "Change",
+        "confirm": "Transfer",
+        "copied": {
+          "attachments": "Attachments (unreadable ones are skipped, never silently dropped)",
+          "dependencies": "Active dependencies recorded as an informational note",
+          "title": "Title, description, and the transferred spec"
+        },
+        "copiedAria": "What is copied",
+        "deduped": "{{id}} was already transferred to {{project}} as {{targetId}} — replayed the existing card",
+        "disposition": {
+          "keepTransferred": "Keep the original, marked as transferred",
+          "keepUnchanged": "Keep the original unchanged",
+          "legend": "After the copy lands"
+        },
+        "loadProjectsFailed": "Could not load the project list: {{error}}",
+        "loadingProjects": "Loading projects…",
+        "menuItem": "Transfer to project…",
+        "message": "Copies {{id}} into another project on this machine. The original stays put and gains a “transferred” pointer to the copy.",
+        "notCopied": "Comments, execution history, worktrees, branches, and missions are NOT copied",
+        "reason": {
+          "targetUnresolvable": "Target project is not available on this install — cross-project transfers only reach locally registered projects."
+        },
+        "remoteDisabledReason": "Lives on another machine — transfer only reaches projects on this install",
+        "selectProject": "Select target project…",
+        "selectedProject": "Target: {{name}}",
+        "success": "Transferred {{id}} to {{project}} as {{targetId}}",
+        "targetProject": "Target project",
+        "title": "Transfer to project",
+        "transferring": "Transferring…"
+      },
       "updateFailed": "Failed to update {{id}}: {{error}}",
       "updateSuccess": "Updated {{id}}",
       "wallClockSinceFirst": "Wall-clock since first execution",
@@ -10540,6 +10574,9 @@ export default interface Resources {
       "subtaskButtonTitle": "Break down into AI-generated subtasks",
       "taskActions": "Task actions",
       "toggleFastMode": "Toggle fast execution mode",
+      "transferredTo": "Transferred → {{project}} {{id}}",
+      "transferredToLiveTitle": "Copied to {{project}} as {{id}}; currently {{column}}. Click to open.",
+      "transferredToTitle": "Copied to {{project}} as {{id}}. Click to open.",
       "undoOf": "Undo of {{id}}",
       "undoOfTitle": "Created to undo {{id}}",
       "undoTask": "Undo task: {{id}}",

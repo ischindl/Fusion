@@ -174,6 +174,26 @@ Done task cards (board card inline row + context menu, the detail view, and the 
 
 The source task's column/lifecycle is never mutated as a side effect of a revert; the Revert affordance is absent when the task has no landed commit or when the hosting surface does not support it.
 
+### Cross-project transfer ("Transfer to project…")
+
+<!--
+FNXC:CrossProjectHandoff 2026-09-09-11:37:
+RUFU-203 documents transfer as a creation surface because that is exactly what it is: the target
+project's ordinary createTask path mints the card. The migration decision — pointers in the
+already-persisted sourceMetadata JSONB instead of a new `tasks` column — is deliberate: both sides
+are pure read-mostly provenance, and a schema change for a JSON-carriable pointer would cost a
+migration for zero query benefit (no index is ever taken on the pointer). Idempotency reuses the
+existing proposal-claim uniqueness machinery rather than adding a second guard.
+-->
+`POST /api/tasks/:id/transfer` (dashboard, project-scoped auth) copies title, description, and attachments into a NEW card in another locally-registered project. It is a copy with bidirectional cross-references, never a row move: `project.tasks` is partitioned by project id and the visible card id comes from the target project's own `taskPrefix`, so a card cannot leave its project and stay itself.
+
+- **Target ownership:** the card is created through the target project's ordinary `createTask` path, mints its own id under the target prefix, and enters that project's normal intake/planner admission. The source id is never forged or carried over as an id.
+- **Pointers (no new columns):** the source card's `source.sourceMetadata.transferredTo` gains a pointer `{ projectId, projectName, taskId, transferredAt }` per target project; the target card carries `handoffFrom` (one pointer) plus `sourceType: "cross_project_handoff"`. Both live in the already-persisted `sourceMetadata` JSONB — no schema migration.
+- **Idempotency:** one (source task, target project) pair yields at most one target card. The create carries a deterministic proposal claim id backed by the existing partial-unique index on `(project_id, proposal_claim_id)`; a double-click or post-failure retry returns the existing target (audit `outcome: "deduplicated"`) instead of piling up copies.
+- **Cross-node honesty:** a target project that this install cannot resolve is refused with `409` and `details.reason: "target-unresolvable"`; the picker shows such projects disabled with a named reason, and no success toast is ever claimed for work that did not happen.
+- **Disposition:** default `keep-transferred` stamps the source `transferredTo` pointer (the visible "Transferred →" chip); `keep-unchanged` copies without touching the source card.
+- **Audit:** `task:cross-project-handoff` / `task:cross-project-handoff-failed` bounded events (see [run-audit](./run-audit.md#cross-project-handoff)); ids/counts/fixed outcomes only.
+
 ### 2) Plan Mode (AI interview)
 
 On desktop/tablet, open **Planning** from the left sidebar to start or resume a planning session. You can also hand a draft from the board quick-entry row or New Task dialog to Planning with the **Plan** action.

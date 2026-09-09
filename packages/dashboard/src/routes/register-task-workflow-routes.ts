@@ -151,6 +151,18 @@ import { FUSION_CLIENT_HEADER, resolveHttpDeleteCallerKind, isValidTaskBranchNam
 import { ApiError, badRequest, conflict, notFound } from "../api-error.js";
 // FNXC:TaskLookup404 2026-07-26-11:40: shared task-miss -> 404 mapping seam.
 import { isTaskLookupMiss, rethrowTaskApiError } from "./task-lookup-error.js";
+import { resolveStoreForProjectId } from "./context.js";
+import {
+  CROSS_NODE_REFUSAL,
+  emitHandoffFailureAudit,
+  isTaskTransferDisposition,
+  parseTransferredTo,
+  resolveHandoffStatuses,
+  TARGET_UNRESOLVABLE_REASON,
+  transferTaskToProject,
+  withCentralRegistry,
+  type TaskTransferDisposition,
+} from "./task-transfer.js";
 import { restartTaskStage } from "./task-restart-stage.js";
 import { resumeExternallyBlockedTask } from "./task-external-block-resume.js";
 import type { ApiRoutesContext } from "./types.js";
@@ -1051,7 +1063,7 @@ interface TaskWorkflowRouteDeps {
 }
 
 export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWorkflowRouteDeps): void {
-  const { router, options, getProjectContext, rethrowAsApiError } = ctx;
+  const { router, store, options, getProjectContext, rethrowAsApiError } = ctx;
   const {
     runtimeLogger,
     upload,
@@ -4205,6 +4217,127 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       const errorWithCode = err as NodeJS.ErrnoException;
       const status = isTaskLookupMiss(errorWithCode) ? 404 : 500;
       throw new ApiError(status, err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  /*
+  FNXC:CrossProjectHandoff 2026-09-09-03:26 (RUFU-203):
+  Cross-project transfer — a COPY with cross-references, never a physical row move. `project.tasks`
+  is keyed (project_id, id), so the row cannot leave its partition and stay itself; the target is a
+  NEW card created through the TARGET project's own createTask (its default workflow, its intake
+  column, its taskPrefix-minted id). The privilege guard is the LOCAL project registry — a target
+  id the registry cannot resolve is refused here with the named v1 cross-node reason, so no card is
+  ever created somewhere unreachable. Idempotency (proposalClaimId + per-project pointer dedupe)
+  lives in ./task-transfer.ts.
+  */
+  router.post("/tasks/:id/transfer", async (req, res) => {
+    try {
+      const { targetProjectId, disposition } = (req.body ?? {}) as { targetProjectId?: unknown; disposition?: unknown };
+      if (typeof targetProjectId !== "string" || targetProjectId.trim().length === 0) {
+        throw badRequest("targetProjectId is required");
+      }
+      if (disposition !== undefined && disposition !== null && !isTaskTransferDisposition(disposition)) {
+        throw badRequest('disposition must be "keep-transferred" or "keep-unchanged"');
+      }
+      const resolvedDisposition: TaskTransferDisposition = isTaskTransferDisposition(disposition)
+        ? disposition
+        : "keep-transferred";
+      const trimmedTarget = targetProjectId.trim();
+      const { store: sourceStore, projectId: sourceProjectId } = await getProjectContext(req);
+      if (!sourceProjectId) {
+        throw conflict("source project is not registered — cannot name the transfer's origin project");
+      }
+      if (sourceProjectId === trimmedTarget) {
+        throw badRequest("cannot transfer a task into the project that already owns it");
+      }
+      const sourceTask = await sourceStore.getTask(req.params.id);
+
+      const { targetProject, sourceProjectName } = await withCentralRegistry(options, async (central) => {
+        const projects = await central.listProjects();
+        return {
+          targetProject: projects.find((project) => project.id === trimmedTarget),
+          sourceProjectName: projects.find((project) => project.id === sourceProjectId)?.name ?? sourceProjectId,
+        };
+      });
+      if (!targetProject) {
+        /*
+        FNXC:CrossProjectHandoff 2026-09-09-04:31 (RUFU-203):
+        Registry miss = refusal BEFORE any store resolution (getOrCreateProjectStore would boot a
+        store for ANY id), with the pinned structured reason for the UI and an ids-only failure
+        audit row so "why did the card not arrive?" is answerable after the fact.
+        */
+        emitHandoffFailureAudit(sourceStore, {
+          sourceProjectId,
+          sourceTaskId: sourceTask.id,
+          targetProjectId: trimmedTarget,
+        }, TARGET_UNRESOLVABLE_REASON);
+        throw conflict(`project "${trimmedTarget}" is not locally registered — ${CROSS_NODE_REFUSAL}`, {
+          reason: TARGET_UNRESOLVABLE_REASON,
+        });
+      }
+
+      const targetStore = await resolveStoreForProjectId(trimmedTarget, store, options);
+      const result = await transferTaskToProject(
+        {
+          sourceStore,
+          targetStore,
+          sourceProjectId,
+          sourceProjectName,
+          targetProjectId: targetProject.id,
+          targetProjectName: targetProject.name,
+          warn: (message) => severityAuditLog.warn(message),
+        },
+        sourceTask,
+        { disposition: resolvedDisposition },
+      );
+      // 200 (not 201) when the claim replayed onto the canonical target row — nothing new was created.
+      res.status(result.deduped ? 200 : 201).json(result);
+    } catch (err: unknown) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      if (isTaskLookupMiss(err)) {
+        throw notFound("Task not found");
+      }
+      rethrowAsApiError(err);
+    }
+  });
+
+  /*
+  FNXC:CrossProjectHandoff 2026-09-09-03:26 (RUFU-203):
+  Live status for a source card's `transferredTo` pointers. Read-only and identity-safe: it resolves
+  each pointer through the same local-registry privilege guard the transfer create enforces, and a
+  pointer that cannot resolve (registry removal, cross-node pointer, deleted target) is returned AT
+  HTTP 200 WITH a named error reason — the badge must explain why the target went dark, never
+  silently shrink.
+  */
+  router.get("/tasks/:id/handoff-status", async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      const task = await scopedStore.getTask(req.params.id);
+      const pointers = parseTransferredTo(task?.sourceMetadata);
+      if (pointers.length === 0) {
+        res.json({ handoffs: [] });
+        return;
+      }
+      const localProjects = await withCentralRegistry(
+        options,
+        (central) => central.listProjects(),
+        () => [],
+      );
+      const handoffs = await resolveHandoffStatuses(task, {
+        localProjects,
+        resolveStore: (projectId) => resolveStoreForProjectId(projectId, store, options),
+      });
+      res.json({ handoffs });
+    } catch (err: unknown) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      if (isTaskLookupMiss(err)) {
+        throw notFound("Task not found");
+      }
+      rethrowAsApiError(err);
     }
   });
 

@@ -9132,7 +9132,9 @@
       "parentTask": "",
       "parentTaskOf": "",
       "title": "",
-      "undoTask": ""
+      "undoTask": "",
+      "crossProjectFrom": "",
+      "crossProjectHandoff": ""
     },
     "recoveryState": "恢復狀態",
     "refine": {
@@ -9489,6 +9491,38 @@
       "label": "",
       "overrideTitle": "",
       "reset": ""
+    },
+    "transfer": {
+      "attachmentsSkipped": "",
+      "changeProject": "",
+      "confirm": "",
+      "copied": {
+        "attachments": "",
+        "dependencies": "",
+        "title": ""
+      },
+      "copiedAria": "",
+      "deduped": "",
+      "disposition": {
+        "keepTransferred": "",
+        "keepUnchanged": "",
+        "legend": ""
+      },
+      "loadProjectsFailed": "",
+      "loadingProjects": "",
+      "menuItem": "",
+      "message": "",
+      "notCopied": "",
+      "reason": {
+        "targetUnresolvable": ""
+      },
+      "remoteDisabledReason": "",
+      "selectProject": "",
+      "selectedProject": "",
+      "success": "",
+      "targetProject": "",
+      "title": "",
+      "transferring": ""
     }
   },
   "taskDocuments": {
@@ -10048,7 +10082,10 @@
     "workspaceReposAcquired_other": "",
     "workspaceReposLanded_one": "",
     "workspaceReposLanded_other": "",
-    "workspaceWorktrees": ""
+    "workspaceWorktrees": "",
+    "transferredTo": "",
+    "transferredToTitle": "",
+    "transferredToLiveTitle": ""
   },
   "terminal": {
     "arrowKeysLabel": "",

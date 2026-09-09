@@ -343,6 +343,7 @@ export type SourceType =
   | "gitlab_import"
   | "task_refine"
   | "task_duplicate"
+  | "cross_project_handoff"
   | "cli"
   | "api"
   | "recovery"
@@ -350,6 +351,39 @@ export type SourceType =
   | "unknown";
 
 export const DUPLICATE_OF_METADATA_KEY = "duplicateOfTaskIds" as const;
+
+/*
+FNXC:CrossProjectHandoff 2026-09-09-03:26: RUFU-203 cross-project transfer.
+Transfer is a COPY with cross-references, never a physical row move: `project.tasks` is keyed
+`(project_id, id)`, so the project id is the RLS partition key rather than an attribute — a row
+cannot leave its partition and stay itself, and the card's visible identity comes from the TARGET
+project's own `taskPrefix` (`STAS-042` cannot exist as an id inside the Fusion project).
+The transfer therefore creates a NEW card in the target project and stamps provenance in both
+directions through the already-persisted `sourceMetadata` JSONB carrier (no new `tasks` column —
+the pointer payloads are strictly weaker than the `duplicateOfTaskIds` structured keys already
+carried there). These exported constants lock the key spelling so the dashboard route and the
+UI readers cannot drift apart.
+
+Target card (written by POST /tasks/:id/transfer): `source.sourceType =
+"cross_project_handoff"`, `source.sourceParentTaskId` = the source card id, and
+`HANDOFF_FROM_METADATA_KEY` = `{ projectId, projectName, taskId, transferredAt }`.
+Source card: `TRANSFERRED_TO_METADATA_KEY` = an array of `{ projectId, projectName, taskId,
+transferredAt }` entries, deduped per target project on write so the badge cannot double-list.
+*/
+export const HANDOFF_FROM_METADATA_KEY = "handoffFrom" as const;
+export const TRANSFERRED_TO_METADATA_KEY = "transferredTo" as const;
+
+/** One cross-project handoff pointer record (see the FNXC block above). */
+export interface TaskHandoffPointer {
+  /** Registry id of the project the pointer references. */
+  projectId: string;
+  /** Display name captured at transfer time (survives project renames as a historical label). */
+  projectName: string;
+  /** Card id in the referenced project (minted by that project's own `taskPrefix`). */
+  taskId: string;
+  /** ISO timestamp of the transfer create. */
+  transferredAt: string;
+}
 
 /** Provenance metadata for how a task was created. */
 export interface TaskSource {
@@ -366,6 +400,10 @@ export interface TaskSource {
    * - near-duplicate markers: `nearDuplicateOf` (canonical task id),
    *   `nearDuplicateScore` (number), `nearDuplicateSharedTokens` (string[]),
    *   and optional `nearDuplicateDismissed` (boolean).
+   * - cross-project handoff (RUFU-203): `handoffFrom` (single
+   *   {@link HANDOFF_FROM_METADATA_KEY} record on the target card) and
+   *   `transferredTo` (array of {@link TRANSFERRED_TO_METADATA_KEY} records on
+   *   the source card).
    */
   sourceMetadata?: Record<string, unknown>;
 }

@@ -116,6 +116,17 @@ All `recordRunAuditEventWithinTransaction(tx, ...)` calls and the `recordRunAudi
 
 `task:merge-unrun-pre-merge-gate-rerouted` records a merge-admission or self-healing attempt to seed the earliest enabled pre-merge gate that has no result. It uses the FN-9175 bounded best-effort emitter and records only `taskId`, `nodeId`, `workflowStepId`, fixed `reason`, `source`, and `missingGateCount`; it excludes reviewer prose, findings, fingerprints, blocker text, and errors.
 
+### Cross-project handoff
+
+<!--
+FNXC:CrossProjectHandoff 2026-09-09-11:37:
+RUFU-203 transfer audit pair. The success event distinguishes `created` from `deduplicated` so a
+retried transfer that correctly reused its deterministic claim is visible as a no-op, not a second
+handoff; the failure event's fixed reason enum is the only representation of the refusal — error
+prose (which can embed project paths or store messages) never enters run-audit.
+-->
+`task:cross-project-handoff` records a completed cross-project transfer (copy-with-cross-reference) from the source project's store, and `task:cross-project-handoff-failed` records a refused or failed attempt. Metadata is ids/counts/fixed outcomes only: `sourceProjectId`, `sourceTaskId`, `targetProjectId`, `targetTaskId` (when a target card exists or was reused), `outcome` (`created` / `deduplicated` on success, `failed` on failure), `attachmentCount` and `skippedAttachmentCount` on success, and a fixed `reason` enum on failure (`target-unresolvable`, `attachment-copy-failed`, `store-write-failed`). Neither event records titles, descriptions, attachment names, or error text. Both use the FN-9175 bounded best-effort seam so a hostile telemetry sink cannot alter or delay the transfer response, and they are intentionally outside the curated delivery-pipeline event catalogue.
+
 ### Compaction honesty event
 
 `task:compaction-no-progress` records a context compaction that pi ran to completion (it returned a summary and appended the CompactionEntry) but deterministically did not shrink the context (tokens-after >= tokens-before), so the executor must not treat it as reclaimed headroom. Both executor lanes that consume `compactSessionContext` emit it — the loop-detected compact-and-resume recovery and the token-cap callback — distinguished only by their `source` (`loop-recovery` / `token-cap`). Metadata is ids/counts/fixed enums only: `source`, `tokensBefore`, `tokensAfter`, and `basis` (`pi-reported` when pi supplied the after-count, `pure-estimate` when it was recomputed with pi's per-message estimator). No summary text, prompt content, or error prose is ever recorded. Both lanes emit through the FN-9175 bounded best-effort seam so a hostile telemetry sink can neither block the refusal nor change the recovery decision, and the event is intentionally outside the curated delivery-pipeline event catalogue.

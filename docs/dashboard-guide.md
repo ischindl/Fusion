@@ -459,6 +459,16 @@ FNXC:TaskContextMenu 2026-07-01-00:00: Board/List touch context-menu item taps m
 FNXC:TaskContextMenu 2026-07-01-00:00: Board card context menus must behave like independent overlays because Board columns intentionally clip and scroll their bodies for kanban containment.
 FNXC:TaskCardMobileSelection 2026-07-01-00:00: Mobile Board long-press is a task-action gesture, not a text-selection gesture; document that the native selection/copy callout is suppressed while normal card clicks and edit textareas keep their behavior.
 FNXC:TaskContextMenu 2026-07-13-00:00: Pre-execution Planning/ideas/hold cards expose Plan only on Board/List menu hosts that wire Planning Mode, and the handoff creates a new task rather than mutating the source card. -->
+<!--
+FNXC:CrossProjectHandoff 2026-09-09-11:37:
+RUFU-203 gives operators one gesture to hand a card from one project to another locally-registered
+project (the motivating flow: an outside project's card reports a Fusion bug). Transfer is a COPY
+with bidirectional cross-references, never a row move: the project id is the storage partition key
+and the card's visible id comes from the target project's own prefix, so a row physically cannot
+leave its project and stay itself. Both cards keep pointers in their persisted sourceMetadata; the
+source badge's live status is the return channel the CLI handoff path lacked.
+-->
+- Task cards, List rows, and the task detail actions menu offer **Transfer to project…**, which copies the card — title, description (operator-verbatim block plus any spec), and attachments — into another project registered on this install. The picker excludes the current project and lists each target with its prefix; projects reachable only through another node are shown disabled with a named reason rather than offering a dead action. A disposition choice defaults to **keep, marked as transferred** (the source stays where it was and wears a **Transferred → <project> <new id>** chip carrying the target's live lane status, clickable to jump to the receiving project); **keep unchanged** copies without touching the source card. What does NOT travel: worktree/branch, workflow continuation or step results, run/session history, dependencies (rendered as plain text into the copied description), mission lineage, and agent logs — the receiving project's own planner and executor own the work. Pressing transfer twice, or retrying after a failure, never piles up duplicates: one source card yields at most one target card per target project, and a repeated transfer reports the existing target. A target that cannot be resolved by this install refuses with a visible reason and no success toast. On the receiving side the new card shows a **From <project> · <source id>** provenance line whose id deep-links back to the originating project. The transferred chip stays static (no status pill, no error toast) when the target card is later deleted or its project removed — the pointer is durable provenance even when the target goes dark.
 <!-- FNXC:WorkflowBadges 2026-06-30-09:10: Task cards and task detail need workflow-name badges wherever mixed-workflow board contexts can hide the selected lane, especially the Board-only All workflows aggregate. -->
 <!--
 FNXC:TaskColumnSorting 2026-08-18-21:24:

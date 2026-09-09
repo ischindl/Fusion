@@ -8,11 +8,12 @@ import { DEFAULT_COLUMN, THINKING_LEVELS, getErrorMessage, isColumn, sortTasksFo
 import { resolveEffectiveAutoMerge } from "../../../core/src/merge/task-merge";
 import { useColumnLabel } from "../i18n/labels";
 import { isCompleteColumnRole, isIntakeColumnRole, isPreImplementationColumnRole, isReviewColumnRole, isWipColumnRole } from "../utils/columnRoles";
-import { batchUpdateTaskModels, fetchNodes, fetchTaskDetail, refreshPrStatus, updateTask } from "../api";
+import { batchUpdateTaskModels, fetchNodes, fetchTaskDetail, refreshPrStatus, updateTask, transferTask } from "../api";
 import { TaskDetailContent } from "./TaskDetailModal";
 import { ExternalBlockNotice, PlanApprovalNotice } from "./TaskCard";
 import { PrCreateModal } from "./PrCreateModal";
 import { TaskResetDialog } from "./TaskResetDialog";
+import { useTaskTransferModal } from "../hooks/useTaskTransferModal";
 import type { BoardWorkflowColumn, BoardWorkflowsPayload, ModelInfo, NodeInfo, RevertTaskOptions, RevertTaskResult } from "../api";
 import { QuickEntryBox } from "./QuickEntryBox";
 import { CustomModelDropdown } from "./CustomModelDropdown";
@@ -46,8 +47,11 @@ import { useUnmappedWorkflowRefetch } from "../hooks/useUnmappedWorkflowRefetch"
 import { TaskContextMenu, buildTaskActionMenuModel, getTaskPrAutomationLabel, type TaskContextMenuColumnMetadata, type TaskMenuItemDescriptor } from "./TaskContextMenu";
 import type { DetailTaskOpenOptions, DetailTaskTab } from "../hooks/useModalManager";
 import { isTaskReverted } from "../utils/taskRevert";
+import { isTaskTransferred } from "../utils/taskTransfer";
+import { TransferredToBadge } from "./TransferredToBadge";
 import { getTaskTitleDisplay } from "../utils/taskTitleDisplay";
 import { runDuplicateTaskAction } from "../utils/duplicateTaskAction";
+import { runTransferTaskAction } from "../utils/transferTaskAction";
 
 const COLUMN_COLOR_MAP: Partial<Record<Column, string>> = {
   triage: "var(--triage)",
@@ -437,6 +441,13 @@ export function ListView({
   const [contextMenuState, setContextMenuState] = useState<ListContextMenuState>(null);
   const [prCreateState, setPrCreateState] = useState<ListPrCreateState>(null);
   const [resetDialogTask, setResetDialogTask] = useState<Task | null>(null);
+  /*
+  FNXC:CrossProjectHandoff 2026-09-09-09:02 (RUFU-203):
+  ONE picker is hosted for the whole list (not one per row): the list builds its menu per row from
+  `buildListContextMenuActions`, so a per-row modal would multiply the picker across every visible
+  row while only one can ever be open.
+  */
+  const transferHost = useTaskTransferModal(projectId ?? null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressStartRef = useRef<{ x: number; y: number; pointerId: number } | null>(null);
@@ -1939,6 +1950,28 @@ export function ListView({
           loadBoardWorkflows: () => boardWorkflows,
         });
       } : undefined,
+      /*
+      FNXC:CrossProjectHandoff 2026-09-09-09:02 (RUFU-203):
+      "Transfer to project…" is handler-gated by the shared menu model, so a list with no registered
+      source project (no `projectId`) simply omits the item. This one builder feeds every list menu
+      surface — desktop right-click, mobile long-press, and the row overflow — so wiring it here
+      covers all three and keeps them from drifting.
+
+      FNXC:CrossProjectHandoff 2026-09-09-12:37 (RUFU-203):
+      The list's `projectId` is forwarded into the helper so the POST is project-scoped: the server
+      resolves the source store from the request scope (else the daemon's launch project), so an
+      unscoped request from a foreign project's list would miss the source card entirely.
+      */
+      onTransferToProject: projectId ? async () => {
+        await runTransferTaskAction({
+          taskId: task.id,
+          projectId,
+          t,
+          addToast,
+          openTransferModal: () => transferHost.requestTransfer(task),
+          transferTask,
+        });
+      } : undefined,
       onOpenRefine: () => onOpenDetail(task, { origin: useSinglePaneList ? "list-mobile" : undefined, initialAction: "refine" }),
       onRetry: onRetryTask ? async () => {
         const copy = resolveRetryStageCopy(t, getTaskColumnFlags(task), task.column);
@@ -2019,7 +2052,7 @@ export function ListView({
       actions.push({ id: model.reviewAction.id, label: model.reviewAction.label, disabled: model.reviewAction.disabled, onSelect: model.reviewAction.onSelect });
     }
     return actions.filter((action) => "items" in action || action.tone === "note" || action.disabled === true || Boolean(action.onSelect));
-  }, [addToast, autoMerge, boardWorkflows, getTaskColumnFlags, confirm, confirmWithSelect, getTaskPlanningWorkflowId, handleListContextCheckPrStatus, handleListContextEnableGithubTracking, handleListTaskDelete, handleListTaskRevert, isMobile, lastFetchTimeMs, mergeStrategy, onDuplicateTask, onMergeTask, onOpenDetail, onPlanningMode, onPauseTask, onResetTask, onRetryTask, onUnpauseTask, onRevertTask, onReviseTask, onTasksUpdated, projectId, t, useSinglePaneList]);
+  }, [addToast, autoMerge, boardWorkflows, getTaskColumnFlags, confirm, confirmWithSelect, getTaskPlanningWorkflowId, handleListContextCheckPrStatus, handleListContextEnableGithubTracking, handleListTaskDelete, handleListTaskRevert, isMobile, lastFetchTimeMs, mergeStrategy, onDuplicateTask, onMergeTask, onOpenDetail, onPlanningMode, onPauseTask, onResetTask, onRetryTask, onUnpauseTask, onRevertTask, onReviseTask, onTasksUpdated, projectId, t, transferHost.requestTransfer, useSinglePaneList]);
 
   const contextMenuActions = useMemo(
     () => (contextMenuState ? buildListContextMenuActions(contextMenuState.task) : []),
@@ -2636,6 +2669,7 @@ export function ListView({
           onClose={() => setResetDialogTask(null)}
         />
       )}
+      {transferHost.transferModal}
       {prCreateState && (
         <PrCreateModal
           open={true}
@@ -2939,6 +2973,8 @@ export function ListView({
                                 {isTaskReverted(task.sourceMetadata) && (isCompleteColumnRole(getTaskColumnFlags(task), task.column)) && (
                                   <span className="list-status-badge list-status-badge--reverted" title={t("tasks.revertedBadgeTitle", "This task's changes were reverted")} aria-label={t("tasks.revertedBadgeTitle", "This task's changes were reverted")}>{t("tasks.revertedBadge", "Reverted")}</span>
                                 )}
+                                {/* FNXC:CrossProjectHandoff 2026-09-09-09:02: source-side transfer chip beside the reverted badge (grouped-card variant). */}
+                                {isTaskTransferred(task.sourceMetadata) && <TransferredToBadge task={task} projectId={projectId} />}
                                 {showOptionalGateBadge && optionalGateBadge && (
                                   /*
                                   FNXC:TaskCardPlanReviewBadge 2026-07-11-12:10:
@@ -3254,6 +3290,8 @@ export function ListView({
                                     {isTaskReverted(task.sourceMetadata) && (isCompleteColumnRole(getTaskColumnFlags(task), task.column)) && (
                                       <span className="list-status-badge list-status-badge--reverted" title={t("tasks.revertedBadgeTitle", "This task's changes were reverted")} aria-label={t("tasks.revertedBadgeTitle", "This task's changes were reverted")}>{t("tasks.revertedBadge", "Reverted")}</span>
                                     )}
+                                    {/* FNXC:CrossProjectHandoff 2026-09-09-09:02: source-side transfer chip beside the reverted badge (ungrouped-row variant — keep in parity with the grouped-card site above). */}
+                                    {isTaskTransferred(task.sourceMetadata) && <TransferredToBadge task={task} projectId={projectId} />}
                                     {showOptionalGateBadge && optionalGateBadge && (
                                       /*
                                       FNXC:TaskCardPlanReviewBadge 2026-07-11-12:11:

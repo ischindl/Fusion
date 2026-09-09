@@ -1,0 +1,111 @@
+/*
+FNXC:CrossProjectHandoff 2026-09-09-09:02 (RUFU-203):
+Scoped styles for the transfer picker. Design tokens only (--space-*, --radius-*, color/semantic
+tokens, color-mix for translucency) — no hardcoded px/hex/rgba, per the Styling Guide. The shell
+(.modal-overlay / .modal / .modal-header / .modal-actions) comes from the shared primitives; only
+the picker-specific body layout lives here.
+*/
+
+.task-transfer-modal {
+  max-width: min(100%, calc(var(--space-2xl) * 16));
+}
+
+.task-transfer-modal__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  padding: 0 var(--space-lg) var(--space-md);
+}
+
+.task-transfer-modal__copy {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+/* What-will-be-copied summary: a compact list, not prose, so the copy/no-copy contract is scannable. */
+.task-transfer-modal__copied {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  margin: 0;
+  padding-left: var(--space-lg);
+  border-left: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}
+
+/* The NOT-copied row is the honest half of the contract: same weight, distinct tint. */
+.task-transfer-modal__copied li[data-not-copied="true"] {
+  color: var(--warning);
+}
+
+.task-transfer-modal__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.task-transfer-modal__label {
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
+.task-transfer-modal__loading,
+.task-transfer-modal__error {
+  padding: var(--space-sm);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+}
+
+.task-transfer-modal__loading {
+  color: var(--text-muted);
+}
+
+/* A project-list read failure is surfaced in place — never a silent empty picker. */
+.task-transfer-modal__error {
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+}
+
+.task-transfer-modal__selected {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: var(--space-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--card-hover);
+}
+
+.task-transfer-modal__disposition {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  margin: 0;
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.task-transfer-modal__disposition legend {
+  padding: 0 var(--space-xs);
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
+.task-transfer-modal__disposition label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  cursor: pointer;
+}
+
+@media (max-width: 768px) {
+  .task-transfer-modal {
+    width: 100%;
+  }
+}

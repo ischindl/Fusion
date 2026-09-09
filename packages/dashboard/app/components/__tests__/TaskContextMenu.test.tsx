@@ -35,6 +35,34 @@ describe("TaskContextMenu shared task action model", () => {
   });
 
   /*
+  FNXC:CrossProjectHandoff 2026-09-09-09:02 (RUFU-203):
+  "Transfer to project…" is handler-gated like Plan: a host without the transfer wiring
+  (dock/plugin card embeddings) must not render a dead shell, while wired hosts get the item right
+  beside Duplicate — both mint a new card — on every lifecycle column (target eligibility is the
+  server's decision, not the client's).
+  */
+  it("gates 'Transfer to project' on the host handler and places it beside Duplicate", () => {
+    const onTransferToProject = vi.fn();
+    for (const column of ["triage", "in-progress", "in-review", "done"] as const) {
+      expect(actionIds(makeTask({ column }), { onTransferToProject })).toContain("transfer-to-project");
+    }
+    expect(actionIds(makeTask(), { onDuplicate: vi.fn() })).not.toContain("transfer-to-project");
+    expect(actionIds(makeTask())).not.toContain("transfer-to-project");
+    expect(actionIds(makeTask(), { onDuplicate: vi.fn(), onTransferToProject })).toEqual([
+      "duplicate",
+      "transfer-to-project",
+      "pause",
+      "delete",
+    ]);
+
+    const item = buildTaskActionMenuModel({ task: makeTask(), t, onTransferToProject }).actions.find(
+      (action) => action.id === "transfer-to-project",
+    );
+    item?.onSelect?.();
+    expect(onTransferToProject).toHaveBeenCalledTimes(1);
+  });
+
+  /*
   FNXC:ReviewLaneBypass 2026-09-06 (merge v0.78.0-beta.3, retargeted from origin's client-predicate block):
   Upstream FN-295 grew a client-side `hasFailedPreMergeReviewStep` here so archived remediation carriers
   stayed bypass-reachable. The merged tree instead ships RUFU-179's server-derived `task.reviewBypass`

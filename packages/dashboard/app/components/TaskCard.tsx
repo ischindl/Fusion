@@ -20,12 +20,13 @@ import { resolveEffectiveAutoMerge } from "../../../core/src/merge/task-merge";
 // resolver — like resolveEffectiveAutoMerge above — must be imported from its source module
 // directly rather than the package barrel.
 import { resolveEffectivePlannerOversightLevel } from "../../../core/src/workflows/workflow-settings-resolver";
-import { addressPrFeedback, approvePlan, fetchTaskDetail, uploadAttachment, fetchMission, fetchAgent, refreshPrStatus, fetchWorkflowSettingValues, fetchBoardWorkflows, type WorkflowFieldDefinition, type RevertTaskOptions, type RevertTaskResult } from "../api";
+import { addressPrFeedback, approvePlan, fetchTaskDetail, uploadAttachment, fetchMission, fetchAgent, refreshPrStatus, fetchWorkflowSettingValues, fetchBoardWorkflows, transferTask, type WorkflowFieldDefinition, type RevertTaskOptions, type RevertTaskResult } from "../api";
 import { GitHubBadge } from "./GitHubBadge";
 import { GitLabBadge } from "./GitLabBadge";
 import { RuntimeFallbackBadge } from "./RuntimeFallbackBadge";
 import { PrCreateModal } from "./PrCreateModal";
 import { TaskResetDialog } from "./TaskResetDialog";
+import { useTaskTransferModal } from "../hooks/useTaskTransferModal";
 import { ProviderIcon } from "./ProviderIcon";
 import { PluginSlot } from "./PluginSlot";
 import { useBadgeWebSocket } from "../hooks/useBadgeWebSocket";
@@ -44,6 +45,8 @@ import {
 import { hasPendingAutomaticRecovery } from "../utils/taskRecovery";
 import { resolveRetryStageCopy } from "../utils/taskRetryCopy";
 import { getRevertOfId, isTaskReverted } from "../utils/taskRevert";
+import { isTaskTransferred } from "../utils/taskTransfer";
+import { TransferredToBadge } from "./TransferredToBadge";
 import { getStalledReviewSignal } from "../utils/taskStalledReview";
 import { getInReviewStallCopy, shouldShowInReviewStallBadge } from "../utils/inReviewStallCopy";
 import { resolveStallReason, isPausedFamilyCode, stallReasonVisibleOnFace } from "../utils/stallReason";
@@ -69,6 +72,7 @@ import { canStartPrFeedbackAddressing, getTaskPrimaryPrInfo } from "../utils/prF
 import type { ToastType } from "../hooks/useToast";
 import { useConfirm } from "../hooks/useConfirm";
 import { runDuplicateTaskAction } from "../utils/duplicateTaskAction";
+import { runTransferTaskAction } from "../utils/transferTaskAction";
 import { extractDependencyDeleteConflict, extractLineageDeleteConflict } from "../utils/taskDelete";
 import { MAX_AUTO_MERGE_RETRIES, type BlockerFanoutEntry } from "../hooks/useBlockerFanout";
 import { useRetryWarning } from "../context/RetryWarningContext";
@@ -1158,6 +1162,12 @@ function TaskCardComponent({
   const columnLabel = useColumnLabel();
   const [fileDragOver, setFileDragOver] = useState(false);
   const [showResetDialog, setShowResetDialog] = useState(false);
+  /*
+  FNXC:CrossProjectHandoff 2026-09-09-09:02 (RUFU-203):
+  The card hosts its own transfer picker (same inline-dialog pattern as TaskResetDialog below), so a
+  transfer opened from a card never needs a board-level prop chain.
+  */
+  const transferHost = useTaskTransferModal(projectId ?? null);
   const [isEditing, setIsEditing] = useState(false);
   const [editDescription, setEditDescription] = useState(task.description || "");
   /*
@@ -1857,6 +1867,13 @@ function TaskCardComponent({
    */
   const showRevertedChip = isTaskReverted(task.sourceMetadata)
     && isCompleteColumn;
+  /*
+   * FNXC:CrossProjectHandoff 2026-09-09-09:02:
+   * RUFU-203 source-side badge. Unlike the reverted chip it is NOT done-lane gated — a copy may
+   * be handed off while the source still works through its board — and the chip is clickable
+   * (deep-link to the target project), so it renders via the shared TransferredToBadge.
+   */
+  const showTransferredChip = isTaskTransferred(task.sourceMetadata);
   const branchMetadata = useMemo(() => getVisibleTaskCardBranches(task), [task.id, task.branch, task.baseBranch]);
   const hasBranchMetadata = Boolean(branchMetadata.branch || branchMetadata.baseBranch);
   const isAgentCreated = isAgentCreatedTask(task);
@@ -2730,6 +2747,36 @@ function TaskCardComponent({
     });
   }, [addToast, confirm, confirmWithSelect, onDuplicateTask, projectId, task.id, t]);
 
+  /*
+  FNXC:CrossProjectHandoff 2026-09-09-09:02 (RUFU-203):
+  One handler feeds both card menu surfaces (right-click AND the ⋯ overflow) through the shared menu
+  model, so the two can never disagree about whether the action exists. It requires a registered
+  SOURCE project — the server refuses a transfer whose origin project is unregistered because it then
+  cannot name the origin inside the copy's pointer — so without `projectId` the model receives
+  undefined and omits the item instead of rendering a shell that can only fail.
+
+  No refetch callback is wired on purpose: the route writes through the project-scoped stores, so the
+  source card's pointer badge arrives over the existing `task:updated` SSE lane and the copy arrives
+  in the target project over `task:created`.
+
+  FNXC:CrossProjectHandoff 2026-09-09-12:37 (RUFU-203):
+  The card's `projectId` is passed INTO the helper, not just used to gate the item. The server picks
+  the source store from the request's project scope and falls back to the daemon's launch project, so
+  a transfer fired from a foreign project's board without that scope would 404 on the source id (or
+  stamp a same-id card in the launch project).
+  */
+  const handleTaskActionTransfer = useCallback(async () => {
+    if (!projectId) return;
+    await runTransferTaskAction({
+      taskId: task.id,
+      projectId,
+      t,
+      addToast,
+      openTransferModal: () => transferHost.requestTransfer(task),
+      transferTask,
+    });
+  }, [addToast, projectId, t, task, transferHost.requestTransfer]);
+
   const handleTaskActionMerge = useCallback(async () => {
     if (!onMergeTask) return;
     const shouldMerge = await confirm({
@@ -2808,6 +2855,7 @@ function TaskCardComponent({
     prAutomationLabel: getTaskPrAutomationLabel(t, task.status),
     onDelete: onDeleteTask ? handleTaskActionDelete : undefined,
     onDuplicate: onDuplicateTask ? handleTaskActionDuplicate : undefined,
+    onTransferToProject: projectId ? handleTaskActionTransfer : undefined,
     onPlan: onPlanningMode ? handleTaskActionPlan : undefined,
     onOpenRefine: onOpenRefine ? () => onOpenRefine(task) : undefined,
     onRetry: onRetryTask ? handleTaskActionRetry : undefined,
@@ -2820,6 +2868,8 @@ function TaskCardComponent({
   }), [
     task,
     t,
+    handleTaskActionTransfer,
+    projectId,
     taskColumnFlags,
     onDuplicateTask,
     onRetryTask,
@@ -3197,6 +3247,7 @@ function TaskCardComponent({
     || showUndoOfChip
     || showRefinesChip
     || showRevertedChip
+    || showTransferredChip
     || ((showTrackingIndicator || showLinkedIssueChipForImport) && githubTrackedIssue)
     || (task.retrySummary?.total ?? 0) > 0);
   /*
@@ -3244,6 +3295,7 @@ function TaskCardComponent({
           {onReviseTask && <button type="button" className="btn" onClick={(event) => { event.stopPropagation(); onReviseTask(task); }}>{t("tasks.revise", "Revise")}</button>}
         </span>
       )}
+      {showTransferredChip && <TransferredToBadge task={task} projectId={projectId} />}
       {showNearDuplicateChip && (
         /*
         FNXC:NearDuplicateDetection 2026-08-23-04:10:
@@ -4376,6 +4428,7 @@ function TaskCardComponent({
           onClose={() => setShowResetDialog(false)}
         />
       )}
+      {transferHost.transferModal}
       {(showCreatePrQuickAction || isPrCreateOpen) && (
         <PrCreateModal
           open={isPrCreateOpen}

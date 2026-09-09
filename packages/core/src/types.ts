@@ -599,6 +599,8 @@ import {
   CheckoutConflictError,
   WorkspaceTaskMergeError,
   DUPLICATE_OF_METADATA_KEY,
+  HANDOFF_FROM_METADATA_KEY,
+  TRANSFERRED_TO_METADATA_KEY,
   WEDGE_RENOTIFY_COOLDOWN_MS,
 } from "./types/task/task-core.js";
 export {
@@ -607,11 +609,14 @@ export {
   CheckoutConflictError,
   WorkspaceTaskMergeError,
   DUPLICATE_OF_METADATA_KEY,
+  HANDOFF_FROM_METADATA_KEY,
+  TRANSFERRED_TO_METADATA_KEY,
   WEDGE_RENOTIFY_COOLDOWN_MS,
 };
 
 import type {
   SourceType,
+  TaskHandoffPointer,
   TaskBranchGroupSource,
   TaskBranchAssignmentMode,
   BranchGroupPrState,
@@ -662,6 +667,7 @@ import type {
 } from "./types/task/task-core.js";
 export type {
   SourceType,
+  TaskHandoffPointer,
   TaskBranchGroupSource,
   TaskBranchAssignmentMode,
   BranchGroupPrState,

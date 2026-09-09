@@ -124,6 +124,34 @@
   background: var(--card-hover);
 }
 
+/*
+ * FNXC:CrossProjectHandoff 2026-09-09-09:02 (RUFU-203):
+ * A host-marked-disabled entry (a cross-node project for the transfer picker) stays VISIBLE with
+ * its reason, because hiding it would leave the operator thinking the target does not exist. The
+ * row is de-emphasised and cannot be clicked, so the reason text is the whole message.
+ */
+.project-selector__item--disabled,
+.project-selector__item--disabled:hover,
+.project-selector__item--disabled.highlighted {
+  background: transparent;
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.project-selector__item-disabled-reason {
+  flex-shrink: 0;
+  margin-left: auto;
+  max-width: calc(var(--space-2xl) * 6);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  padding: 1px var(--space-xs);
+}
+
 .project-selector-divider {
   height: 1px;
   margin: var(--space-xs) var(--space-sm);

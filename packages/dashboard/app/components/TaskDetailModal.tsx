@@ -30,6 +30,8 @@ import { resolveEffectivePlannerOversightLevel } from "../../../core/src/workflo
 import { resolveTaskSessionAdvisorEnabled } from "../../../core/src/agents/session-advisor";
 import { isNearDuplicateCanonicalInactive } from "../../../core/src/duplicates/near-duplicate-canonical";
 import { getRevertOfId, findOpenUndoTaskForSource, isTaskReverted } from "../utils/taskRevert";
+import { getHandoffFromPointer, isTaskTransferred, openTransferredTarget } from "../utils/taskTransfer";
+import { TransferredToBadge } from "./TransferredToBadge";
 import { isForeignTaskEvent, readTaskEventProjectId } from "../utils/taskEventProjectScope";
 import {
   isCompleteColumnRole,
@@ -40,7 +42,7 @@ import {
   isWipColumnRole,
 } from "../utils/columnRoles";
 import { resolveEffectiveAutoMerge } from "../../../core/src/merge/task-merge";
-import { uploadAttachment, deleteAttachment, updateTask, repairOverlapBlocker, fetchOverlapBlockerReport, fetchTaskDetail, fetchTaskPrompt, fetchSpecLock, fetchTaskVerificationRequest, fetchSettings, fetchTaskEffectiveSettings, fetchGlobalSettings, requestSpecRevision, rebuildTaskSpec, approvePlan, rejectPlan, refineTask, fetchWorkflowResults, assignTask, fetchAgents, fetchAgent, refreshPrStatus, fetchBoardWorkflows, updateTaskCustomFields, summarizeTitle, fetchWorkflowSettingValues, nudgeOverseer, stopOverseer, explainOverseer, fetchModels, fetchNodes, api } from "../api";
+import { uploadAttachment, deleteAttachment, updateTask, repairOverlapBlocker, fetchOverlapBlockerReport, fetchTaskDetail, fetchTaskPrompt, fetchSpecLock, fetchTaskVerificationRequest, fetchSettings, fetchTaskEffectiveSettings, fetchGlobalSettings, requestSpecRevision, rebuildTaskSpec, approvePlan, rejectPlan, refineTask, fetchWorkflowResults, assignTask, fetchAgents, fetchAgent, refreshPrStatus, fetchBoardWorkflows, updateTaskCustomFields, summarizeTitle, fetchWorkflowSettingValues, nudgeOverseer, stopOverseer, explainOverseer, fetchModels, fetchNodes, api, transferTask } from "../api";
 import type { RevertTaskOptions, RevertTaskResult, ModelInfo, NodeInfo, SpecLockResponse, TaskOverlapBlockerReport } from "../api";
 import type { BoardWorkflowsPayload, WorkflowFieldDefinition, CustomFieldRejection } from "../api";
 import { WorkflowIcon } from "./WorkflowIcon";
@@ -51,6 +53,7 @@ import type { ToastType } from "../hooks/useToast";
 import { useAgentLogs } from "../hooks/useAgentLogs";
 import { useConfirm } from "../hooks/useConfirm";
 import { runDuplicateTaskAction } from "../utils/duplicateTaskAction";
+import { runTransferTaskAction } from "../utils/transferTaskAction";
 import { AgentLogViewer } from "./AgentLogViewer";
 import { PreciseTimestamp } from "./PreciseTimestamp";
 import { ModelSelectorTab } from "./ModelSelectorTab";
@@ -107,6 +110,7 @@ import { isReviewBudgetExhaustedApproval, isTaskAwaitingPlanApproval } from "../
 import { getTaskStatusBadgeLabel, hasTaskStatusBadge, isTaskPlanningActive } from "../utils/taskStatusBadgeLabel";
 import { ACTIVE_STATUSES, resolveEffectiveExecutor, resolveEffectivePlanning, resolveEffectiveTaskChat, resolveEffectiveValidator, type ModelSelection } from "./effective-model-resolution";
 import { TaskContextMenu, buildTaskActionMenuModel, getTaskPrAutomationLabel } from "./TaskContextMenu";
+import { useTaskTransferModal } from "../hooks/useTaskTransferModal";
 import type { TaskContextMenuColumnFlags, TaskContextMenuColumnMetadata, TaskMenuItemDescriptor } from "./TaskContextMenu";
 import { FLOATING_WINDOW_GEOMETRY_CHANGE_EVENT } from "./FloatingWindow";
 import { useFileBrowser } from "../context/FileBrowserContext";
@@ -676,6 +680,14 @@ interface ProvenanceDisplay {
   contextHref?: string;
   contextInfoFull?: string;
   sourceAgentId?: string;
+  /*
+  FNXC:CrossProjectHandoff 2026-09-09-09:02:
+  Whole-clause override for RUFU-203 target cards (`sourceType === "cross_project_handoff"`):
+  the clause reads "From <projectName> · <source id>" instead of the "Created via …" shape, and
+  the id click deep-links into the SOURCE project — `handleDepClick` would fetch the id from the
+  CURRENT project's store and dead-end with a not-found toast for a cross-project pointer.
+  */
+  crossProjectFrom?: { projectId: string; projectName: string; sourceTaskId: string };
 }
 
 interface ProvenanceLabelOptions {
@@ -751,6 +763,20 @@ function getProvenanceLabel(task: Task | TaskDetail, options: ProvenanceLabelOpt
         label: tr ? tr("taskDetail.provenance.duplicate", "Duplicate") : "Duplicate",
         parentTaskId: task.sourceParentTaskId,
       };
+    case "cross_project_handoff": {
+      /*
+      FNXC:CrossProjectHandoff 2026-09-09-09:02:
+      Target card of a RUFU-203 transfer. `sourceParentTaskId` IS the source card id, but it is
+      deliberately NOT returned as `parentTaskId`: that clause renders "of <id>" wired to an
+      in-current-project fetch, which cannot resolve a foreign-project id. The pointer's own
+      `projectId` drives the deep-link instead. A target whose metadata lost the pointer (manual
+      edit, pre-feature row) still identifies itself, just without the jump.
+      */
+      const from = getHandoffFromPointer(task.sourceMetadata);
+      const label = tr ? tr("taskDetail.provenance.crossProjectHandoff", "Cross-Project Handoff") : "Cross-Project Handoff";
+      if (!from) return { label };
+      return { label, crossProjectFrom: { projectId: from.projectId, projectName: from.projectName, sourceTaskId: from.taskId } };
+    }
     case "cli":
       return { label: tr ? tr("taskDetail.provenance.cli", "CLI") : "CLI" };
     case "api":
@@ -3489,6 +3515,32 @@ export function TaskDetailContent({
     if (duplicated) requestClose();
   }, [task.id, t, onDuplicateTask, requestClose, addToast, confirm, confirmWithSelect, projectId]);
 
+  /*
+  FNXC:CrossProjectHandoff 2026-09-09-09:02 (RUFU-203):
+  Detail-modal transfer host. Unlike Duplicate (which closes the card because the operator's focus
+  moves to the new card), a transfer KEEPS this card open: the original stays in this project, and
+  the transferred pointer arrives over the `task:updated` SSE lane while the operator watches.
+  Gated on `projectId` — the server refuses an origin project it cannot name, so an unregistered
+  source omits the menu item instead of offering a guaranteed failure.
+
+  FNXC:CrossProjectHandoff 2026-09-09-12:37 (RUFU-203):
+  That same `projectId` is forwarded into the helper so the transfer POST is project-scoped. The
+  server binds the source store from the request's project scope and otherwise falls back to the
+  daemon's launch project, so an unscoped request for a foreign-project card 404s (or, on an id
+  collision, copies and badges the wrong card).
+  */
+  const transferHost = useTaskTransferModal(projectId ?? null);
+  const handleTransfer = useCallback(async () => {
+    await runTransferTaskAction({
+      taskId: task.id,
+      projectId,
+      t,
+      addToast,
+      openTransferModal: () => transferHost.requestTransfer(task),
+      transferTask,
+    });
+  }, [addToast, projectId, t, task, transferHost.requestTransfer]);
+
   const handleDismissNearDuplicate = useCallback(async () => {
     try {
       const updatedTask = await updateTask(task.id, { dismissNearDuplicate: true }, projectId);
@@ -4301,6 +4353,7 @@ export function TaskDetailContent({
     isCheckingPrStatus,
     onDelete: handleDelete,
     onDuplicate: handleDuplicate,
+    onTransferToProject: projectId ? handleTransfer : undefined,
     onOpenRefine: handleOpenRefineModal,
     onRetry: handleRetry,
     onReset: handleReset,
@@ -4323,6 +4376,8 @@ export function TaskDetailContent({
     isCheckingPrStatus,
     handleDelete,
     handleDuplicate,
+    handleTransfer,
+    projectId,
     handleOpenRefineModal,
     handleRetry,
     handleReset,
@@ -4926,7 +4981,20 @@ export function TaskDetailContent({
                   <div className="detail-provenance">
                     <GitBranch aria-hidden="true" />
                     <span>
-                      {workingTask.sourceType === "agent_heartbeat" ? (
+                      {provenanceDisplay.crossProjectFrom ? (
+                        <>
+                          {t("taskDetail.provenance.crossProjectFrom", "From")}{" "}
+                          <span>{provenanceDisplay.crossProjectFrom.projectName}</span>
+                          {" · "}
+                          <button
+                            type="button"
+                            className="detail-provenance-link"
+                            onClick={() => openTransferredTarget(provenanceDisplay.crossProjectFrom!.projectId, provenanceDisplay.crossProjectFrom!.sourceTaskId)}
+                          >
+                            {provenanceDisplay.crossProjectFrom.sourceTaskId}
+                          </button>
+                        </>
+                      ) : workingTask.sourceType === "agent_heartbeat" ? (
                         <>
                           {t("taskDetail.provenance.createdBy", "Created by")}{" "}
                           {provenanceDisplay.sourceAgentId ? (
@@ -4993,6 +5061,17 @@ export function TaskDetailContent({
                         ""
                       )}
                     </span>
+                  </div>
+                )}
+                {/*
+                FNXC:CrossProjectHandoff 2026-09-09-09:02:
+                Source-side transfer chips share the provenance row chrome; the badge owns its own
+                single status fetch (static ids until it resolves, no pill and no toast when a
+                target went dark).
+                */}
+                {isTaskTransferred(task.sourceMetadata) && (
+                  <div className="detail-provenance detail-transferred-row">
+                    <TransferredToBadge task={task} projectId={projectId} />
                   </div>
                 )}
                 {revertOfId && (
@@ -7343,6 +7422,7 @@ export function TaskDetailContent({
           onClose={() => setShowResetDialog(false)}
         />
       )}
+      {transferHost.transferModal}
       {showRefineModal && (
           <div
             className="modal-overlay open detail-refine-overlay"

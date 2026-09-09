@@ -114,6 +114,14 @@ export interface BuildTaskActionMenuModelOptions {
   onDelete?: () => void;
   onDuplicate?: () => void;
   /*
+  FNXC:CrossProjectHandoff 2026-09-09-05:03 (RUFU-203):
+  "Transfer to project…" copies the card into another LOCAL project with bidirectional pointers.
+  Omitted entirely unless the host injects `onTransferToProject` — the same rule as `plan` above:
+  dock/plugin/embedded hosts without the transfer route must not render a dead shell, and a
+  disabled item would promise an action the host cannot serve.
+  */
+  onTransferToProject?: () => void;
+  /*
   FNXC:TaskContextMenu 2026-07-13-00:00:
   Pre-execution task cards can open the same Planning Mode handoff as inline create, but only hosts that wire a planning route should expose the action so dock/plugin/detail surfaces never render a dead Plan item.
   */
@@ -305,6 +313,15 @@ export function buildTaskActionMenuModel(options: BuildTaskActionMenuModelOption
 
   if (hasDuplicateHandler) {
     actions.push({ id: "duplicate", label: t("taskDetail.duplicate.btn", "Duplicate"), onSelect: options.onDuplicate });
+  }
+
+  /*
+  FNXC:CrossProjectHandoff 2026-09-09-05:03 (RUFU-203):
+  Transfer sits beside Duplicate — both mint a new card — but it is handler-gated (see the option
+  doc): Board/List/Detail hosts wire it, dock/plugin card embeddings do not.
+  */
+  if (options.onTransferToProject) {
+    actions.push({ id: "transfer-to-project", label: t("taskDetail.transfer.menuItem", "Transfer to project…"), onSelect: options.onTransferToProject });
   }
 
   /*

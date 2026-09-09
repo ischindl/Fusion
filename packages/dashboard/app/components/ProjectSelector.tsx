@@ -21,10 +21,22 @@ export interface ProjectSelectorProps {
   projects: ProjectInfo[];
   currentProject: ProjectInfo | null;
   onSelect?: (project: ProjectInfo) => void;
-  onViewAll: () => void;
+  /** Optional in picker hosts (transfer modal) that have no project overview to navigate to. */
+  onViewAll?: () => void;
   recentProjectIds?: string[];
   allowSingleProject?: boolean;
   viewAllLabel?: string;
+  /*
+  FNXC:CrossProjectHandoff 2026-09-09-05:03 (RUFU-203):
+  Transfer-modal picker options. All optional so the existing header switcher is byte-for-byte
+  unchanged: `triggerLabel` replaces the current-project trigger text with a picker prompt, and
+  `getDisabledReason` marks entries the host cannot accept (cross-node remote projects for a
+  transfer) — they render disabled with the reason visible, never silently hidden, so the operator
+  sees the target exists but learns WHY it cannot receive a copy. Omitting `onViewAll` drops the
+  "View All Projects" footer row from a picker that has no overview to navigate to.
+  */
+  triggerLabel?: string;
+  getDisabledReason?: (project: ProjectInfo) => string | undefined;
 }
 
 /**
@@ -81,6 +93,8 @@ export function ProjectSelector({
   recentProjectIds = [],
   allowSingleProject = false,
   viewAllLabel,
+  triggerLabel,
+  getDisabledReason,
 }: ProjectSelectorProps) {
   const { t } = useTranslation("app");
   /*
@@ -144,9 +158,9 @@ export function ProjectSelector({
   const recentProjects = useMemo(() => {
     return recentProjectIds
       .map((id) => projects.find((p) => p.id === id))
-      .filter((p): p is ProjectInfo => p !== undefined && p.id !== currentProject?.id)
+      .filter((p): p is ProjectInfo => p !== undefined && p.id !== currentProject?.id && !getDisabledReason?.(p))
       .slice(0, 3);
-  }, [recentProjectIds, projects, currentProject]);
+  }, [recentProjectIds, projects, currentProject, getDisabledReason]);
 
   // Filter projects based on search
   const filteredProjects = useMemo(() => {
@@ -165,7 +179,7 @@ export function ProjectSelector({
     const query = searchQuery.toLowerCase();
     // Exclude current project — it's not shown in the dropdown
     const candidates = filteredProjects.filter(
-      (p) => p.id !== currentProject?.id
+      (p) => p.id !== currentProject?.id && !getDisabledReason?.(p)
     );
     const nameMatches = candidates.filter(
       (p) => p.name.toLowerCase() === query
@@ -180,14 +194,16 @@ export function ProjectSelector({
     const currentId = currentProject?.id;
     const hasSearch = Boolean(searchQuery.trim());
 
-    // Bookmarked projects (excluding current)
+    // Bookmarked projects (excluding current). Disabled-by-host entries are legacy/local
+    // affordances, so a host-marked-disabled project never belongs in these sections.
     const bookmarked = hasSearch
       ? []
       : filteredProjects.filter(
           (p) =>
             p.id !== currentId &&
             bookmarkedIds.has(p.id) &&
-            !recentIds.has(p.id)
+            !recentIds.has(p.id) &&
+            !getDisabledReason?.(p)
         );
 
     // Exclude current, bookmarked, and recent from "others" only when those
@@ -212,9 +228,10 @@ export function ProjectSelector({
     const bookmarkedCount = displayProjects.bookmarked.length;
     const recentCount = displayProjects.recent.length;
     const othersCount = displayProjects.others.length;
-    const viewAllCount = 1;
+    /* A picker host without onViewAll has no footer row, so no fourth keyboard slot. */
+    const viewAllCount = onViewAll ? 1 : 0;
     return bookmarkedCount + recentCount + othersCount + viewAllCount;
-  }, [displayProjects]);
+  }, [displayProjects, onViewAll]);
 
   // Handle keyboard navigation within dropdown
   const handleDropdownKeyDown = useCallback(
@@ -238,18 +255,19 @@ export function ProjectSelector({
             const bookmarkedCount = displayProjects.bookmarked.length;
             const recentCount = displayProjects.recent.length;
             const othersCount = displayProjects.others.length;
-
-            if (highlightedIndex < bookmarkedCount) {
-              // Select bookmarked project
-              onSelect?.(displayProjects.bookmarked[highlightedIndex]);
-            } else if (highlightedIndex < bookmarkedCount + recentCount) {
-              // Select recent project
-              onSelect?.(displayProjects.recent[highlightedIndex - bookmarkedCount]);
-            } else if (highlightedIndex < bookmarkedCount + recentCount + othersCount) {
-              // Select other project
-              onSelect?.(displayProjects.others[highlightedIndex - bookmarkedCount - recentCount]);
-            } else {
-              // View All
+            const highlightedProject: ProjectInfo | null =
+              highlightedIndex < bookmarkedCount
+                ? displayProjects.bookmarked[highlightedIndex]
+                : highlightedIndex < bookmarkedCount + recentCount
+                  ? displayProjects.recent[highlightedIndex - bookmarkedCount]
+                  : highlightedIndex < bookmarkedCount + recentCount + othersCount
+                    ? displayProjects.others[highlightedIndex - bookmarkedCount - recentCount]
+                    : null;
+            if (highlightedProject) {
+              /* A disabled entry (cross-node transfer target) is a no-op that keeps the dropdown open. */
+              if (getDisabledReason?.(highlightedProject)) break;
+              onSelect?.(highlightedProject);
+            } else if (onViewAll) {
               onViewAll();
             }
             setIsOpen(false);
@@ -271,7 +289,7 @@ export function ProjectSelector({
           break;
       }
     },
-    [highlightedIndex, totalItems, displayProjects, onSelect, onViewAll, exactMatch]
+    [highlightedIndex, totalItems, displayProjects, onSelect, onViewAll, exactMatch, getDisabledReason]
   );
 
   // Auto-highlight first result when filtering (type-ahead behavior)
@@ -310,16 +328,18 @@ export function ProjectSelector({
   // Handle project selection
   const handleSelectProject = useCallback(
     (project: ProjectInfo) => {
+      /* Disabled entries (e.g. cross-node transfer targets) never fire a selection. */
+      if (getDisabledReason?.(project)) return;
       onSelect?.(project);
       setIsOpen(false);
       setSearchQuery("");
     },
-    [onSelect]
+    [onSelect, getDisabledReason]
   );
 
   // Handle view all
   const handleViewAll = useCallback(() => {
-    onViewAll();
+    onViewAll?.();
     setIsOpen(false);
     setSearchQuery("");
   }, [onViewAll]);
@@ -399,7 +419,7 @@ export function ProjectSelector({
       >
         <Folder size={16} className="project-selector__trigger-icon" />
         <span className="project-selector__trigger-text">
-          {currentProject?.name || projectsLabel}
+          {triggerLabel ?? (currentProject?.name || projectsLabel)}
         </span>
         <ChevronDown
           size={14}
@@ -538,6 +558,9 @@ export function ProjectSelector({
               displayProjects.others.map((project, index) => {
                 const actualIndex = displayProjects.bookmarked.length + displayProjects.recent.length + index;
                 const isExactMatch = exactMatch?.id === project.id;
+                /* Host-marked entries (cross-node transfer targets) render disabled WITH the reason
+                   so the operator learns why the visible target cannot receive the copy. */
+                const disabledReason = getDisabledReason?.(project);
                 return (
                   <button
                     key={project.id}
@@ -547,9 +570,11 @@ export function ProjectSelector({
                     }}
                     className={`project-selector__item ${
                       highlightedIndex === actualIndex ? "highlighted" : ""
-                    } ${isExactMatch ? "exact-match" : ""}`}
+                    } ${isExactMatch ? "exact-match" : ""} ${disabledReason ? "project-selector__item--disabled" : ""}`}
                     onClick={() => handleSelectProject(project)}
                     role="option"
+                    disabled={Boolean(disabledReason)}
+                    aria-disabled={Boolean(disabledReason)}
                     aria-selected={currentProject?.id === project.id}
                     data-testid={`project-selector-item-${project.id}`}
                   >
@@ -572,6 +597,11 @@ export function ProjectSelector({
                         {t("projectSelector.exact", "Exact")}
                       </span>
                     )}
+                    {disabledReason && (
+                      <span className="project-selector__item-disabled-reason" title={disabledReason}>
+                        {disabledReason}
+                      </span>
+                    )}
                     {renderBookmarkToggle(project.id)}
                     {currentProject?.id === project.id && (
                       <Check size={14} className="project-selector__item-check" />
@@ -582,7 +612,8 @@ export function ProjectSelector({
             )}
           </div>
 
-          {/* View All option */}
+          {/* View All option — omitted in picker hosts that pass no onViewAll. */}
+          {onViewAll && (
           <div className="project-selector__footer">
             <button
               ref={(el) => {
@@ -600,6 +631,7 @@ export function ProjectSelector({
               <span>{viewAllLabel ?? t("projectSelector.viewAll", "View All Projects")}</span>
             </button>
           </div>
+          )}
         </div>
       )}
     </div>
