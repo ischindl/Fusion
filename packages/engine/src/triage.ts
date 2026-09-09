@@ -786,8 +786,18 @@ export class TriageProcessor {
         // discovery predicate as poll(). A seed is ready before specifyTask
         // stamps status:"planning"; exposing only that durable status lets newer
         // execute/merge work overtake an older planner.
+        /*
+        FNXC:ListTasksDeriveOptOut 2026-09-08-23:08 (RUFU-201 — admission-provider refresh):
+        A whole-board read whose only job is to find plannable cards, yet every tick paid nine
+        UI-only derivations per row. `derive: false` is provably safe here: the entire consumer
+        chain reads only id, column, status, paused, userPaused, nextRecoveryAt, createdAt, worktree,
+        steps, firstExecutionAt, executionStartedAt, columnMovedAt, executionMode, title, description,
+        sourceType, assignedAgentId, nodeId/effectiveNodeId and dependencies. Lifecycle lanes are NOT
+        taken off the row — `discoverReadyPlanningTasks` resolves them itself per candidate via
+        `resolveWorkflowIrForTask`, and `specifyTask` re-reads the full row before plan work.
+        */
         const tasks = await this.discoverReadyPlanningTasks(
-          await this.store.listTasks({ slim: true, includeArchived: false }),
+          await this.store.listTasks({ slim: true, includeArchived: false, derive: false }),
           now,
         );
         return tasks.filter((task) => !this.coordinatorAdmittedTaskIds.has(task.id)).map((task) => ({
@@ -1147,8 +1157,13 @@ export class TriageProcessor {
     */
     const projectPlannerColumns = await resolveProjectColumnsForRoles(this.store, ["intake", "hold"]);
     const sweepColumns = [...new Set(["triage", "todo", ...projectPlannerColumns])];
+    /*
+    FNXC:ListTasksDeriveOptOut 2026-09-08-23:08 (RUFU-201 — stale-planning sweep):
+    This sweep filters on `status`, keys by `id`, and then calls `updateTask(id, { status: null })`.
+    Two persisted fields, no board badge, so the derivation block is pure waste here.
+    */
     const swept = await Promise.all(
-      sweepColumns.map((column) => this.store.listTasks({ column, slim: true })),
+      sweepColumns.map((column) => this.store.listTasks({ column, slim: true, derive: false })),
     );
     const seen = new Set<string>();
     const stale = swept.flat().filter((t) => {
@@ -2348,8 +2363,17 @@ export class TriageProcessor {
       }
       this.wasEnginePaused = false;
 
+      /*
+      FNXC:ListTasksDeriveOptOut 2026-09-08-23:08 (RUFU-201 — poll/discovery read):
+      The engine's hottest board read. Its consumers are `sweepStalePlanningStatuses`
+      (status, id, paused, userPaused, updatedAt, columnMovedAt, column), the live-agent counters
+      (column plus `workflowStepResults`, a persisted column the slim projection keeps),
+      `pendingSpecifyCount` (status), and `discoverReadyPlanningTasks` — whose audit is on the
+      admission-provider refresh above, since it is the same predicate over the same rows. None of
+      them reads a derived badge, so `derive: false`.
+      */
       // Fetch all tasks (not just triage) to count active agents across columns.
-      const allTasks = await this.store.listTasks({ slim: true, includeArchived: false });
+      const allTasks = await this.store.listTasks({ slim: true, includeArchived: false, derive: false });
       const now = Date.now();
 
       await this.sweepStalePlanningStatuses(allTasks, now);

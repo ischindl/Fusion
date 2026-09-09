@@ -2173,7 +2173,23 @@ export class Scheduler {
     this.schedulingSince = Date.now();
 
     try {
-      let tasks = await this.store.listTasks({ slim: true, includeArchived: false, startupMemo: false });
+      /*
+      FNXC:ListTasksDeriveOptOut 2026-09-08-23:08 (RUFU-201 — schedule() tick read):
+      This board read feeds three consumers, all of which read persisted columns only:
+      `recoverIdleSemaphoreLeak` (id, column, status, paused, userPaused, workflowStepResults,
+      externalBlock), `renewActiveMissionSymbolLocks` (id, column, declaredSymbols, missionId,
+      sliceId), and `runHoldReleaseSweepPass` (id, column, status, priority, createdAt, dependencies,
+      deletedAt, overlapBlockedBy, workspaceWorktrees, worktree, branch). `workflowStepResults` is a
+      real slim-selected column and `columnCountsTowardWip` is caller-side enrichment that is
+      undefined in both modes, so neither is affected. Greps for the derived-badge fields across
+      `scheduler.ts`, `concurrency/concurrency.ts`, and `core/src/tasks/*` return no matches. The 10
+      fields the derivation block writes are all UI-only, so the derivation is provably waste here.
+
+      `startupMemo: false` pre-dates RUFU-201 and stays: this is the read that gates todo→in-progress
+      graduation, so it must not act on a snapshot an out-of-process writer already invalidated. See the
+      corrected rationale at the post-sweep re-read below.
+      */
+      let tasks = await this.store.listTasks({ slim: true, includeArchived: false, startupMemo: false, derive: false });
       let settings = await this.store.getSettings();
       this.idleSemaphoreLeakCandidateSince = recoverIdleSemaphoreLeak(
         this.options.semaphore,
@@ -2231,7 +2247,29 @@ export class Scheduler {
       */
       if (shouldRunWorkflowColumnScheduler(settings)) {
         await this.runHoldReleaseSweepPass(tasks, settings);
-        tasks = await this.store.listTasks({ slim: true, includeArchived: false, startupMemo: false });
+        /*
+        FNXC:ListTasksDeriveOptOut 2026-09-08-23:08 (RUFU-201 — post-sweep re-read):
+        This re-read feeds only `emitHighOverlapFanoutWarnings` → `computeBlockerFanoutMap`, which reads
+        id, column, dependencies, and blockedBy (`blocker-fanout.ts`); the reporters re-query the store
+        themselves. `derive: false` is therefore safe.
+
+        FNXC:StartupSlimListMemo 2026-09-09-02:04 (RUFU-201, correction — the real reason `startupMemo: false` stays):
+        An earlier draft of this note claimed a move invalidates the snapshot only "as a side effect
+        nothing guards". That was wrong on both halves and is corrected rather than left in place.
+        In-process, a move invalidates the snapshot at a deliberate seam, not an incidental one: every
+        lane-changing `moveTask` writes `task.json` through `writeTaskJsonFileImpl`, which clears the
+        memo unconditionally (`moves.ts`; the same-column backend-handoff early return touches no
+        board-visible field, so it needs no invalidation), and the complete-lane arm additionally emits
+        `task:updated` (`moves.ts`) — an event the memo listens to. The move coupling is now named by a
+        test (`list-tasks-derive-optout.pg.test.ts`), beside the existing `updateTask` event arm.
+
+        The gap that does remain is cross-process only: the subscription is in-process, so a second
+        engine, the CLI, or a mesh peer writing the shared database emits nothing here and the 15 s TTL
+        becomes the sole bound. This tick's board read gates todo→in-progress graduation, where a card
+        another process already moved means a double dispatch, so both tick reads keep a
+        guaranteed-fresh read instead of inheriting that ceiling.
+        */
+        tasks = await this.store.listTasks({ slim: true, includeArchived: false, startupMemo: false, derive: false });
         settings = await this.store.getSettings();
         await this.emitHighOverlapFanoutWarnings(tasks);
 

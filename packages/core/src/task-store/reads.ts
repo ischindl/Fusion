@@ -538,6 +538,107 @@ export interface ListTasksOptions {
   */
   selectionCache?: WorkflowSelectionCache;
   selectionReadTally?: WorkflowSelectionReadTally;
+  /*
+  FNXC:ListTasksDeriveOptOut 2026-09-08-20:58 (RUFU-201):
+  Engine timer consumers (triage poll, scheduler tick, gridlock sweep, lane-role sweep) never read a
+  UI-only derived board signal, yet every tick paid nine per-row derivations anyway. Those derivations
+  are also the ONLY producers of the `task_workflow_selection` and `workflow_prompt_overrides` reads,
+  which measured 31.8% and 41.7% of all in-flight statements on a live 22-project instance — the
+  overrides table was empty. `derive: false` skips the derivation block AND its pass-level feeders
+  (settings, merge-queue set, IR cache, selection prefetch, page-local column map), while keeping the
+  SQL fetch, row parsing, slim steps-from-PROMPT.md sync and the `log: []` output shape; derived
+  fields stay undefined. Omitted means `true`, because the dashboard board feed must keep every badge
+  it renders today — board parity is the hard constraint, so the opt-out is always caller-opt-in.
+  */
+  derive?: boolean;
+}
+
+/*
+FNXC:ListTasksDeriveOptOut 2026-09-08-20:58 (RUFU-201):
+Pass-level inputs for the derived-signal block ONLY. Each one is a per-pass cost that pays for
+itself solely through board badges, which is why `derive: false` never calls this builder. The
+profile behind the task measured 281.9 MB / 240 s of short-lived allocations in `listTasksImpl`
+and ~19% of CPU in GC, while the live server showed 73.5% of in-flight statements spent on the
+selection/override reads these feeders drive.
+
+FNXC:WorkflowLifecycleColumns 2026-07-28-18:05 (PR #2479 review, P2):
+ONE IR cache for the whole list pass. Without it, every paused row resolved
+its workflow independently, repeating workflow-definition and prompt-override
+reads for a board with many paused cards on the same workflow. Caller-owned by
+design (U1's `resolveTaskLifecycleColumns` takes the cache for exactly this),
+so reads scale with the number of WORKFLOWS, not the number of cards.
+
+FNXC:WorkflowScheduling 2026-09-05-23:12: List hydration prefetches once per pass; getTaskImpl remains individual because one row has no N+1. The tally reports store-internal reads to callers without changing badge fallback semantics.
+
+FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174): the stall derivation's dependency resolver
+answers any reference covered by THIS page from the page's own rows — a board feed normally
+carries a blocker and its blocked card together, so the common case stays zero-read. Built
+from the raw rows because `pgRowToTaskRow` would parse every step/JSON column twice.
+
+FNXC:SqliteFinalRemoval 2026-06-26-10:30:
+Compute staleness thresholds once for the whole list pass, mirroring the SQLite path. The
+ageStaleness/stalePausedReview/stalePausedTodo signals are derived at read time and must be
+hydrated in backend mode too (VAL-CROSS-001 board parity).
+*/
+type ListDeriveFeed = {
+  settings: Settings;
+  mergeQueuedTaskIds: Set<string>;
+  listPassIrCache: Map<string, WorkflowIr>;
+  listPassSelectionCache: WorkflowSelectionCache;
+  localColumnByTaskId: Map<string, string>;
+  staleThresholds: TaskAgeStalenessThresholds;
+};
+
+async function buildListDeriveFeed(
+  store: TaskStore,
+  filteredRows: Record<string, unknown>[],
+  options?: ListTasksOptions,
+): Promise<ListDeriveFeed> {
+  const settings = await store.getSettingsFast();
+  const mergeQueuedTaskIds = await store.getMergeQueuedTaskIdsAsync();
+  const listPassIrCache = new Map<string, WorkflowIr>();
+  const listPassSelectionCache = options?.selectionCache ?? new Map<string, import("../workflows/workflow-ir-resolver.js").WorkflowSelection | undefined>();
+  const listSelectionReads = await prefetchWorkflowSelections(store, filteredRows.map((row) => String(row.id)), listPassSelectionCache);
+  if (options?.selectionReadTally) {
+    options.selectionReadTally.batched += listSelectionReads.batched;
+    options.selectionReadTally.singles += listSelectionReads.singles;
+  }
+  const localColumnByTaskId = new Map<string, string>();
+  for (const pgRow of filteredRows) {
+    if (typeof pgRow.id === "string" && typeof pgRow.column === "string") {
+      localColumnByTaskId.set(pgRow.id, pgRow.column);
+    }
+  }
+  const staleThresholds: TaskAgeStalenessThresholds = {
+    inProgressWarningMs: settings.staleInProgressWarningMs,
+    inProgressCriticalMs: settings.staleInProgressCriticalMs,
+    inReviewWarningMs: settings.staleInReviewWarningMs,
+    inReviewCriticalMs: settings.staleInReviewCriticalMs,
+  };
+  return { settings, mergeQueuedTaskIds, listPassIrCache, listPassSelectionCache, localColumnByTaskId, staleThresholds };
+}
+
+/*
+FNXC:ListTasksDeriveOptOut 2026-09-08-20:58 (RUFU-201):
+The list-read tail shared by the derived and opted-out paths, so opting out cannot also change the
+`steps` contract. Kept as a plain function (not a component/nested closure) so both callers
+reconcile the same shape.
+
+FNXC:TaskDetailPromptResilience 2026-07-10-16:00 (merge port from main):
+an unreadable PROMPT.md must not reject this Promise.all and 500 the
+entire board list — degrade to the persisted (empty) steps and log.
+*/
+async function finalizeSlimListTask(store: TaskStore, task: Task, slim: boolean): Promise<Task> {
+  if (!slim || task.steps.length > 0) {
+    return task;
+  }
+  try {
+    const steps = await store.parseStepsFromPrompt(task.id);
+    return steps.length > 0 ? { ...task, steps } : task;
+  } catch (err) {
+    storeLog.warn(`[task-detail] failed to sync steps from PROMPT.md for ${task.id} during listTasks: ${err instanceof Error ? err.message : String(err)}`);
+    return task;
+  }
 }
 
 export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions): Promise<Task[]> {
@@ -550,6 +651,8 @@ export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions
     const includeArchived = options?.includeArchived ?? false;
     const slim = options?.slim ?? false;
     const columnFilter = options?.column;
+    // FNXC:ListTasksDeriveOptOut 2026-09-08-20:58 (RUFU-201): see `derive` on ListTasksOptions.
+    const deriveUiSignals = options?.derive !== false;
     const startupMemoEnabled = options?.startupMemo ?? (!store.isWatching && slim);
 
     if (startupMemoEnabled && slim && options?.limit === undefined && options?.offset === undefined) {
@@ -559,22 +662,52 @@ export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions
         options?.columns?.join(",") ?? "*",
         options?.excludeColumns?.join(",") ?? "*",
         options?.sort ?? "created-asc",
+        // FNXC:ListTasksDeriveOptOut 2026-09-08-20:58 (RUFU-201): a derived snapshot must never
+        // serve an opted-out caller, nor a raw one the board. `derive` is part of the result shape.
+        deriveUiSignals ? "derive" : "raw",
+        /*
+        FNXC:StartupSlimListMemo 2026-09-09-03:55 (RUFU-201 code-review remediation):
+        `includeDeleted` is a result-shape dimension of the memo key. Soft deletion stamps the
+        historical `archived` sentinel column, so a non-`includeArchived` read hides tombstones via
+        the column filter as well; the shapes that actually diverge are `includeArchived: true`
+        reads (admin/forensic surfaces, e.g. `?includeDeleted=true`), where only `deleted_at IS
+        NULL` separates live from forensic. Sharing one entry across that pair serves either caller
+        the other's tombstone set for up to one TTL. The collision pre-dated RUFU-201 but its TTL
+        raise (2.5 s -> 15 s) widened the wrong-payload window sixfold.
+        */
+        options?.includeDeleted ? "deleted" : "live",
       ].join(":");
       const now = Date.now();
       const cached = store.startupSlimListMemo.get(memoKey);
       if (cached && cached.expiresAt > now) {
-        const memoTasks = await cached.promise;
-        return JSON.parse(JSON.stringify(memoTasks)) as Task[];
+        /*
+        FNXC:StartupSlimListMemo 2026-09-08-21:35 (RUFU-201):
+        The hit path deep-copied the snapshot through JSON on EVERY hit — for a board that is the
+        whole payload parsed and re-stringified per call (the RunFusion board measured ~5.4 MB),
+        which is exactly the short-lived allocation churn the profile blamed for ~19% of CPU in GC.
+        A snapshot is frozen at fill time and shared as-is, so a hit costs one awaited promise.
+        Consumers therefore get a read-only view of a memoized board list: mutating one now throws
+        instead of silently handing the next consumer a mutated row.
+        */
+        return await cached.promise;
       }
 
-      const fetchPromise = store.listTasks({ ...options, startupMemo: false });
+      const fetchPromise = (async () => {
+        const memoTasks = await store.listTasks({ ...options, startupMemo: false });
+        /*
+        FNXC:StartupSlimListMemo 2026-09-08-21:35 (RUFU-201): freeze ONCE at fill, not per hit
+        (KTD-4). A board snapshot is rebuilt from the row each read — the derived badges a caller
+        might have wanted to change are recomputed, never patched onto the cache.
+        */
+        for (const memoTask of memoTasks) Object.freeze(memoTask);
+        return Object.freeze(memoTasks) as Task[];
+      })();
       store.startupSlimListMemo.set(memoKey, {
         expiresAt: now + TaskStore.STARTUP_SLIM_LIST_MEMO_TTL_MS,
         promise: fetchPromise,
       });
       try {
-        const memoTasks = await fetchPromise;
-        return JSON.parse(JSON.stringify(memoTasks)) as Task[];
+        return await fetchPromise;
       } catch (error) {
         store.startupSlimListMemo.delete(memoKey);
         throw error;
@@ -620,7 +753,17 @@ export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions
       : undefined;
     const sqlPaginated = (!includeColdStorage && (paginationLimit !== undefined || paginationOffset > 0))
       || boundedMergedPrefix !== undefined;
+    /*
+    FNXC:ListTasksDeriveOptOut 2026-09-08-20:58 (RUFU-201):
+    `log` has exactly two readers in this function — the `stalledReview` derivation and slim's
+    `timedExecutionMs` — so an opted-out slim consumer needs none of it and the projection drops it
+    (avg 11 KB/row on the live table). `rowToTask` maps a missing column to `log: []`, so the row
+    shape on the wire is unchanged. This does NOT revive `excludeLog: slim` for deriving consumers:
+    FNXC:TaskStoreReads 2026-07-05-15:30 above restored the log read precisely because dropping it
+    silently disabled both signals on the board.
+    */
     const filteredRows = await readLiveTaskRows(layer, {
+      ...(slim && !deriveUiSignals ? { excludeLog: true } : {}),
       includeDeleted: options?.includeDeleted,
       column: columnFilter ?? undefined,
       columns: options?.columns,
@@ -634,52 +777,36 @@ export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions
           : {}),
     });
     const now = Date.now();
-    const settings = await store.getSettingsFast();
-    const mergeQueuedTaskIds = await store.getMergeQueuedTaskIdsAsync();
     /*
-    FNXC:WorkflowLifecycleColumns 2026-07-28-18:05 (PR #2479 review, P2):
-    ONE IR cache for the whole list pass. Without it, every paused row resolved
-    its workflow independently, repeating workflow-definition and prompt-override
-    reads for a board with many paused cards on the same workflow. Caller-owned by
-    design (U1's `resolveTaskLifecycleColumns` takes the cache for exactly this),
-    so reads scale with the number of WORKFLOWS, not the number of cards.
+    FNXC:ListTasksDeriveOptOut 2026-09-08-20:58 (RUFU-201):
+    Every pass-level input below existed only to feed the per-row derivation block. An opted-out
+    consumer receives `null` and none of them runs: no settings read, no merge-queue set, no IR
+    cache, no selection prefetch, no page-local column map.
     */
-    const listPassIrCache = new Map<string, WorkflowIr>();
-    /* FNXC:WorkflowScheduling 2026-09-05-23:12: List hydration prefetches once per pass; getTaskImpl remains individual because one row has no N+1. The tally reports store-internal reads to callers without changing badge fallback semantics. */
-    const listPassSelectionCache = options?.selectionCache ?? new Map<string, import("../workflows/workflow-ir-resolver.js").WorkflowSelection | undefined>();
-    const listSelectionReads = await prefetchWorkflowSelections(store, filteredRows.map((row) => String(row.id)), listPassSelectionCache);
-    if (options?.selectionReadTally) {
-      options.selectionReadTally.batched += listSelectionReads.batched;
-      options.selectionReadTally.singles += listSelectionReads.singles;
-    }
-    /*
-    FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174): the stall derivation's dependency resolver
-    answers any reference covered by THIS page from the page's own rows — a board feed normally
-    carries a blocker and its blocked card together, so the common case stays zero-read. Built
-    from the raw rows because `pgRowToTaskRow` would parse every step/JSON column twice.
-    */
-    const localColumnByTaskId = new Map<string, string>();
-    for (const pgRow of filteredRows) {
-      if (typeof pgRow.id === "string" && typeof pgRow.column === "string") {
-        localColumnByTaskId.set(pgRow.id, pgRow.column);
-      }
-    }
-    /*
-     * FNXC:SqliteFinalRemoval 2026-06-26-10:30:
-     * Compute staleness thresholds once for the whole list pass, mirroring
-     * the SQLite path. The ageStaleness/stalePausedReview/stalePausedTodo
-     * signals are derived at read time and must be hydrated in backend mode
-     * too (VAL-CROSS-001 board parity).
-     */
-    const staleThresholds: TaskAgeStalenessThresholds = {
-      inProgressWarningMs: settings.staleInProgressWarningMs,
-      inProgressCriticalMs: settings.staleInProgressCriticalMs,
-      inReviewWarningMs: settings.staleInReviewWarningMs,
-      inReviewCriticalMs: settings.staleInReviewCriticalMs,
-    };
+    const deriveFeed = deriveUiSignals
+      ? await buildListDeriveFeed(store, filteredRows, options)
+      : null;
     const tasks = await Promise.all(filteredRows.map(async (pgRow) => {
       const row = store.pgRowToTaskRow(pgRow);
       const task = store.rowToTask(row);
+      if (deriveFeed === null) {
+        /*
+        FNXC:ListTasksDeriveOptOut 2026-09-08-20:58 (RUFU-201):
+        Parse-only row. No derivation runs, so every derived badge stays undefined by construction
+        rather than by being reset — the cheapest proof that an opted-out caller cannot be silently
+        served a stale signal, and the contract the zero-derivation-count regression test pins.
+        */
+        if (slim) task.log = [];
+        return finalizeSlimListTask(store, task, slim);
+      }
+      const {
+        settings,
+        mergeQueuedTaskIds,
+        listPassIrCache,
+        listPassSelectionCache,
+        localColumnByTaskId,
+        staleThresholds,
+      } = deriveFeed;
       const isMergeQueued = mergeQueuedTaskIds.has(task.id);
       /*
       FNXC:WorkflowLifecycle 2026-07-05-15:40:
@@ -779,19 +906,7 @@ export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions
         task.timedExecutionMs = store.computeTimedExecutionMs(task.log);
         task.log = [];
       }
-      if (!slim || task.steps.length > 0) {
-        return task;
-      }
-      // FNXC:TaskDetailPromptResilience 2026-07-10-16:00 (merge port from main):
-      // an unreadable PROMPT.md must not reject this Promise.all and 500 the
-      // entire board list — degrade to the persisted (empty) steps and log.
-      try {
-        const steps = await store.parseStepsFromPrompt(task.id);
-        return steps.length > 0 ? { ...task, steps } : task;
-      } catch (err) {
-        storeLog.warn(`[task-detail] failed to sync steps from PROMPT.md for ${task.id} during listTasks: ${err instanceof Error ? err.message : String(err)}`);
-        return task;
-      }
+      return finalizeSlimListTask(store, task, slim);
     }));
     // Sort by createdAt, then by numeric ID suffix for tie-breaking
     /*

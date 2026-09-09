@@ -6181,6 +6181,26 @@ export class ProjectEngine {
   always unioned so a board mid-rename still finds rows stored under the old ones. Deduped by id
   because one column can carry two roles.
   */
+  /*
+  FNXC:ListTasksDeriveOptOut 2026-09-08-23:08 (RUFU-201 — lane-role board reads):
+  Per-consumer audit of the rows this helper returns, since four engine lanes share them:
+  `emitLegacyAutoMergeStampAdvisory` reads id, autoMerge, autoMergeProvenance;
+  `pollPlannerOverseer` reads id, column, status, prInfo, reviewState, paused, pausedReason,
+  workflowTransitionNotification, updatedAt, columnMovedAt, plannerOversightLevel (its
+  `resolveTaskColumnFlags` is typed `Pick<Task, "id" | "column">` and `OverseerTaskRef` is a Pick of
+  persisted fields); `clearStaleMergingStatuses` reads id and status; the merge-enqueue feeds go
+  through `enqueueEligibleInReviewTasks`, which reads id, paused, column, status, error, steps,
+  workflowStepResults, enabledWorkflowSteps, mergeRetries, mergeDetails, updatedAt, repositoryScope,
+  branchContext, autoMerge, autoMergeProvenance and log. Review/WIP lanes are always resolved by id
+  through `resolveTaskLifecycleColumns`, never taken off a row field, and greps for the derived badge
+  fields over this file return nothing — so `derive: false` cannot lose a signal here.
+
+  Stays NON-SLIM deliberately: `enqueueEligibleInReviewTasks` → `canMergeTask` →
+  `hasAutoHealableVerificationBufferFailure` inspects `task.log` (:2783), and the slim projection sets
+  `log: []`, which would silently stop auto-healing retry-exhausted verification failures. slim also
+  re-syncs `steps` from PROMPT.md, and a card with empty persisted steps would gain parsed steps and
+  could newly trip the "task has incomplete steps" merge blocker.
+  */
   private async listTasksInLaneRoles(
     store: TaskStore,
     roles: Parameters<typeof resolveProjectColumnsForRoles>[1],
@@ -6188,7 +6208,7 @@ export class ProjectEngine {
     const columns = await resolveProjectColumnsForRoles(store, roles);
     const byId = new Map<string, Task>();
     for (const column of columns) {
-      for (const task of await store.listTasks({ column })) byId.set(task.id, task as Task);
+      for (const task of await store.listTasks({ column, derive: false })) byId.set(task.id, task as Task);
     }
     return [...byId.values()];
   }

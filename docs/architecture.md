@@ -1293,6 +1293,15 @@ Some data remains intentionally filesystem-based:
 
 Agent/message/approval metadata and history persist in PostgreSQL.
 
+### Board-list read path: `derive` opt-out and the startup memo
+`listTasks` derives ten UI-only board signals per row (`inReviewStall`, `stalePausedReview`, `inReviewStalled`, `stalePausedTodo`, `ageStaleness`, `stalledReview`, `retrySummary`, `stallReason`, `reviewBypass`, `timedExecutionMs`) and that derivation is the only producer of the `task_workflow_selection` and `workflow_prompt_overrides` reads.
+
+- **`derive: false`** skips the derivation block and its pass-level feeders while keeping the SQL fetch, row parsing, slim steps sync, and the `log: []` shape. Opted-out rows carry none of the ten fields, not even as own `undefined` properties. **Omitted means `true`** — the dashboard board feed keeps every badge, and board parity is the invariant. Engine timer callers opt in per call after auditing that no consumer reads a derived field (their `FNXC:ListTasksDeriveOptOut` comment names the fields read).
+- **Startup slim-list memo** (`STARTUP_SLIM_LIST_MEMO_TTL_MS`, 15 s) hands out one frozen shared snapshot instead of deep-cloning on every hit. Two in-process seams invalidate it — the store's own `task:created`/`task:updated`/`task:deleted` listeners, and the unconditional invalidation inside every `task.json` write, which is the arm `moveTask` depends on because a move emits `task:moved` and the memo does not listen to that event — so the TTL is the fallback bound, not the primary one. Cross-process there are no events and no shared artifact write, so another process writing the same database can leave a snapshot up to 15 s stale; callers that cannot tolerate that (the scheduler's graduation-gating tick read, for example) pass `startupMemo: false`.
+- A lifecycle-resolved lane (Hold/WIP/Review on a renamed board) is never read off a row field; resolve it by id with `resolveTaskLifecycleColumns`.
+
+Details, the field-read audit table, and the pg verification recipe: `docs/solutions/performance/list-tasks-derive-optout-and-memo.md`.
+
 ### Migration from legacy SQLite/file storage
 - Detection + migration: `packages/core/src/postgres/sqlite-migrator.ts` and startup-factory migration helpers
 - Imports legacy `fusion.db`, `archive.db`, and file records into PostgreSQL once

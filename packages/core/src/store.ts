@@ -638,7 +638,15 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   public donePauseBackfillDone = false;
   private patchnodeReconcileMemo: { promise: Promise<PatchnodeReconcileResult>; startedAt: number } | null = null;
   public startupSlimListMemo = new Map<string, { expiresAt: number; promise: Promise<Task[]> }>();
-  public static readonly STARTUP_SLIM_LIST_MEMO_TTL_MS = 2_500;
+  /*
+  FNXC:StartupSlimListMemo 2026-09-08-21:35 (RUFU-201):
+  The TTL was 2.5 s, tuned so a stale board snapshot could not outlive a real change. That made the
+  memo useless for its actual job — absorbing a burst of near-identical board reads taken seconds
+  apart at startup — because the burst spans longer than 2.5 s and every expiry re-fetched the
+  whole board. 15 s covers the burst. It is only safe because the memo is now invalidated by the
+  store's own task lifecycle events, so a mutation shortens the window instead of waiting it out.
+  */
+  public static readonly STARTUP_SLIM_LIST_MEMO_TTL_MS = 15_000;
 
   public get isWatching(): boolean {
     return this.watcher !== null;
@@ -728,6 +736,30 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       ?? (process.env.VITEST === "true" ? join(rootDir, ".fusion-global-settings") : undefined);
     this.globalSettingsDir = resolvedGlobalSettingsDir;
     this.globalSettingsStore = new GlobalSettingsStore(resolvedGlobalSettingsDir, this.asyncLayer ?? undefined);
+    /*
+    FNXC:StartupSlimListMemo 2026-09-08-21:35 (RUFU-201):
+    Before this, the snapshot was bounded by TTL on the engine's hottest mutation. The only
+    mutation-time clears were `writeTaskJsonFileImpl` (reached by `moveTask` and the artifact-writing
+    `task-mutation-ops` writers) plus `close`/`watch`; the hot `updateTask` path writes no artifact and
+    only emits `task:updated`, so an update never shortened the window. Raising the TTL to 15 s is only
+    honest if a real mutation shortens it, so the store now clears the snapshot on its own lifecycle
+    events. `emitTaskLifecycleEventSafely` invokes `listeners(event)` directly rather than going
+    through `EventEmitter.emit`, so both emission paths reach these handlers. They live for the store's
+    lifetime by design: one shared closure per store, three registrations.
+
+    FNXC:StartupSlimListMemo 2026-09-08-23:08 (RUFU-201, comment correction):
+    The original stamp claimed `writeTaskJsonFile` was "a SQLite artifact the PostgreSQL backend never
+    writes". That was wrong and is corrected rather than left in place: `moves.ts` and
+    `task-mutation-ops.ts` call it unconditionally, and `task.json` artifacts do exist under the
+    PostgreSQL backend. The gap this listener closes is narrower and real — `updateTask` (the hot
+    mutation) is the path that emits an event but writes no artifact.
+    */
+    const invalidateStartupListMemo = (): void => {
+      this.clearStartupSlimListMemo();
+    };
+    this.on("task:created", invalidateStartupListMemo);
+    this.on("task:updated", invalidateStartupListMemo);
+    this.on("task:deleted", invalidateStartupListMemo);
   }
   /*
   FNXC:WorkflowEvents 2026-08-01-06:28:

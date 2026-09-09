@@ -77,8 +77,18 @@ export class GridlockDetector {
   }
 
   async detectGridlock(): Promise<GridlockEvent | null> {
+    /*
+    FNXC:ListTasksDeriveOptOut 2026-09-08-23:08 (RUFU-201 — gridlock sweep):
+    The 5 s sweep reads persisted fields only: directly in `detectGridlock`/`isMissionBlocked` it reads
+    id, column, paused, nextRecoveryAt and sliceId; through `classifyFileScopeLease` it reads column,
+    deletedAt, worktree, workspaceWorktrees and dependencies; through `normalizeOverlapScopeForTask`
+    workspaceWorktrees; through `isCoordinationOnlyTask` noCommitsExpected and sourceMetadata; through
+    the priority/age tie-break priority, createdAt and id. None is a derived badge — grepping this file
+    for the derived fields returns nothing. Settings stay correct because this site calls
+    `store.getSettings()` itself; `derive: false` only skips the derivation block's internal fast read.
+    */
     const [tasks, settings] = await Promise.all([
-      this.store.listTasks({ slim: true, includeArchived: false }),
+      this.store.listTasks({ slim: true, includeArchived: false, derive: false }),
       this.store.getSettings(),
     ]);
 
@@ -97,12 +107,25 @@ export class GridlockDetector {
     alarm, and inventing candidates would raise false ones.
     */
     const irCache = new Map<string, WorkflowIr>();
-    const holdByTask = new Map<string, string | undefined>();
+    /*
+    FNXC:GridlockLifecycleResolution 2026-09-08-23:08 (RUFU-201):
+    One lifecycle resolution per card per pass, keyed by id and read by BOTH classification loops.
+    Resolving twice was not merely redundant: each uncached call re-issued a live workflow-selection
+    read per card and re-ran the non-memoized column resolution, so a pass of N cards cost 2N of them.
+    Building the map eagerly costs exactly what the schedulable loop cost before, because that loop ran
+    first and resolved every card anyway before the empty-set early return. Storing the full struct
+    keeps the previous truthiness contract: a struct with all-undefined roles was truthy then and is
+    truthy now, so consumers still pass explicit `false` role answers rather than legacy literals, and
+    id-keyed lookups are iteration-order independent. A side effect in the safe direction: the two
+    loops used to resolve independently, so a selection write landing between them could give one card
+    role answers from two different workflows.
+    */
+    const lifecycleByTask = new Map<string, Awaited<ReturnType<typeof resolveTaskLifecycleColumns>>>();
     for (const task of tasks) {
-      holdByTask.set(task.id, (await resolveTaskLifecycleColumns(this.store, task.id, irCache))?.hold);
+      lifecycleByTask.set(task.id, await resolveTaskLifecycleColumns(this.store, task.id, irCache));
     }
     const schedulable = tasks.filter((task) => {
-      const hold = holdByTask.get(task.id);
+      const hold = lifecycleByTask.get(task.id)?.hold;
       if (hold === undefined || task.column !== hold || task.paused) return false;
       if (task.nextRecoveryAt && new Date(task.nextRecoveryAt).getTime() > now) return false;
       if (this.isMissionBlocked(task)) return false;
@@ -124,19 +147,10 @@ export class GridlockDetector {
     Checkout-free planning cards are not overlap holders and cannot manufacture a planning gridlock;
     a retained checkout remains the durable evidence for a genuine dormant-holder cycle.
     */
-    const rolesByTask = new Map<string, { wip?: string; review?: string; complete?: string } | undefined>();
-    for (const task of tasks) {
-      const roles = await resolveTaskLifecycleColumns(this.store, task.id, irCache);
-      rolesByTask.set(task.id, roles ? {
-        wip: roles.wip,
-        review: roles.review,
-        complete: roles.complete,
-      } : undefined);
-    }
     const handoffAcceptedByTaskId = new Map<string, boolean>();
     if (settings.mergeRequestContractShadowEnabled === true) {
       for (const task of tasks) {
-        const roles = rolesByTask.get(task.id);
+        const roles = lifecycleByTask.get(task.id);
         if (roles?.review === task.column) {
           handoffAcceptedByTaskId.set(task.id, (await this.store.getCompletionHandoffAcceptedMarker(task.id)) !== null);
         }
@@ -144,7 +158,7 @@ export class GridlockDetector {
     }
     const classifications = new Map(
       tasks.map((task) => {
-        const roles = rolesByTask.get(task.id);
+        const roles = lifecycleByTask.get(task.id);
         return [task.id, classifyFileScopeLease(task, tasks, roles
           ? {
             mergeRequestContractShadowEnabled: settings.mergeRequestContractShadowEnabled,
