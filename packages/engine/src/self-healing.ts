@@ -110,6 +110,9 @@ import { loadWorkspaceConfig, type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_
   normalizeOverlapScopeForTask,
 } from "@fusion/core";
 import { finalizePlanningSegment, isLegacyWorkspaceWorktreeLayout, resolveWorkspaceTaskWorktreeDir } from "@fusion/core";
+/* RUFU-200: holder-side checkout-emptiness proof for dormant file-scope lease classification. */
+import { taskHoldsUnmergedCheckout, type CheckoutEmptinessProofMap } from "@fusion/core";
+import { proveDormantCheckoutEmptiness } from "./worktree/checkout-emptiness.js";
 import type { WorkspaceLandIntent } from "@fusion/core";
 import { classifyStaleContentPark } from "./merge/stale-content-park.js";
 import type { MeshLeaseManager } from "./project/mesh-lease-manager.js";
@@ -265,6 +268,61 @@ async function resolveFileScopeLeaseTaskRoles(
       isTerminalColumn: isTerminalColumnRole(undefined, task.column),
     };
   }
+}
+
+/*
+FNXC:OverlapScheduling 2026-09-08-21:50 (RUFU-200):
+Self-healing asks the holder question one blocker at a time (a dependent → blocker pair), where
+scheduling asks it for a whole board. Both must answer identically, so this memoizes the SAME
+prover-backed proof per blocker for the duration of one reconciliation pass: the first pair that needs
+the answer pays for it and every later pair reuses it.
+
+A blocker with no retained checkout and a deleted blocker need no proof and cost no git call; anything
+else is proven and then only ever DOWNGRADED — an `empty` verdict releases a dormant lease, while
+`occupied`, `unknown`, or an absent proof keep the blocker blocking, so a failed git read cannot widen
+self-healing's definition of "safe to release".
+
+FNXC:OverlapScheduling 2026-09-09-05:31 (RUFU-200):
+The proof is asked only when the blocker is actually on the classifier's dormant path. WIP, review and
+terminal lanes resolve without ever consulting it (`classifyFileScopeLease`), so asking there spent a git
+call whose answer could not change the verdict — and a review-lane holder that must stay blocking got a
+proof it was never allowed to use. The candidate gate is therefore the same lane test the scheduler and
+the gridlock detector use, so all three ask the question of the same set of holders.
+
+Failure is absorbed here rather than propagated: `checkoutEmptiness` is a downgrade-only input, so a
+store or git that cannot answer degrades to "no proof", which keeps the blocker blocking — exactly
+today's behavior. Letting the throw escape instead cancels the enclosing reconciliation sweep and
+withholds unrelated stale-`blockedBy` repairs, which is strictly worse than the verdict it protects.
+*/
+async function dormantCheckoutEmptinessForBlocker(
+  store: TaskStore,
+  settings: Settings,
+  blocker: Task,
+  roles: FileScopeLeaseTaskRoles,
+  memo: Map<string, CheckoutEmptinessProofMap | undefined>,
+): Promise<CheckoutEmptinessProofMap | undefined> {
+  if (memo.has(blocker.id)) return memo.get(blocker.id);
+  let proof: CheckoutEmptinessProofMap | undefined;
+  const onDormantPath = !blocker.deletedAt
+    && !roles.isWipColumn
+    && !roles.isReviewColumn
+    && !roles.isTerminalColumn
+    && taskHoldsUnmergedCheckout(blocker);
+  if (onDormantPath) {
+    try {
+      const proofs = await proveDormantCheckoutEmptiness({
+        rootDir: () => store.getRootDir(),
+        settings,
+        candidates: [blocker],
+      });
+      proof = proofs.get(blocker.id);
+    } catch {
+      /* Deliberate fail-soft: absence of proof keeps the lease, never releases it. */
+      proof = undefined;
+    }
+  }
+  memo.set(blocker.id, proof);
+  return proof;
 }
 
 export {
@@ -4479,8 +4537,33 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           continue;
         }
         if (lanesOfReclaim(task.id).hold.has(task.column) && task.blockedBy) {
-          log.debug(`[self-healing] skipping blocked todo task ${task.id} during self-owned branch reclaim (blockedBy=${task.blockedBy})`);
-          continue;
+          /*
+          FNXC:OverlapScheduling 2026-09-09-00:36 (RUFU-200):
+          This skip used to be unconditional, which made the dependency-blocked planning-lane holder the ONE
+          shape this sweep could never recover: a blocked card never dispatches, so the dispatch-time ghost-conflict
+          cleanup can never reach it either, and its retained checkout keeps a dormant file-scope lease on every
+          overlapping peer forever (RUFU-198 deadlocked RUFU-199 exactly this way). Candidacy is now widened only
+          when the Step 1 prover says the retained checkout is `empty` — clean tree AND zero commits ahead of its
+          base, per repository. The proof is the safety gate because every arm reused downstream force-removes the
+          worktree WITHOUT a dirty-tree check of its own; `occupied` or `unknown` (including a prover call that
+          failed outright) keeps today's skip verbatim. The arms below remain the release authority: falling
+          through only buys an inspection, never a reclaim.
+
+          `allowsAutoMergeProcessing` above this loop stays as-is: this sweep remains inert for auto-merge-off
+          projects, so in those projects the Step 1-2 lease-classification change is the actual deadlock relief
+          and this widening is housekeeping.
+          */
+          const emptinessByTask = await proveDormantCheckoutEmptiness({
+            rootDir: this.options.rootDir,
+            settings,
+            candidates: [task],
+          });
+          const retainedProof = emptinessByTask.get(task.id);
+          if (!retainedProof || taskHoldsUnmergedCheckout(task, retainedProof)) {
+            log.debug(`[self-healing] skipping blocked todo task ${task.id} during self-owned branch reclaim (blockedBy=${task.blockedBy})`);
+            continue;
+          }
+          log.debug(`[self-healing] widened reclaim candidacy for blocked todo task ${task.id}: retained checkout proven empty (blockedBy=${task.blockedBy})`);
         }
         if (task.pausedReason === "worktrunk_operation_failed") {
           log.debug(`[self-healing] skipping worktrunk-paused task ${task.id}`);
@@ -5372,6 +5455,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         filteredScopeByTaskId.set(scopeTask.id, filteredScope);
         return filteredScope;
       };
+      /* RUFU-200: one proof per blocker per pass — see `dormantCheckoutEmptinessForBlocker`. */
+      const dormantProofMemo = new Map<string, CheckoutEmptinessProofMap | undefined>();
       const hasActiveFileScopeOverlapBlocker = async (
         dependent: Task,
         blockerId: string | null | undefined,
@@ -5392,6 +5477,9 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           handoffAccepted: settings.mergeRequestContractShadowEnabled === true && roles.isReviewColumn
             ? (await this.store.getCompletionHandoffAcceptedMarker(blocker.id)) !== null
             : false,
+          /* FNXC:OverlapScheduling 2026-09-08-21:50 (RUFU-200): downgrade-only; fan-out must not keep a
+             dependent blocked on a holder whose checkout demonstrably holds nothing. */
+          checkoutEmptiness: await dormantCheckoutEmptinessForBlocker(this.store, settings, blocker, roles, dormantProofMemo),
           isWipColumn: roles.isWipColumn,
           isReviewColumn: roles.isReviewColumn,
           isTerminalColumn: roles.isTerminalColumn,
@@ -6595,6 +6683,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         filteredScopeByTaskId.set(scopeTask.id, filteredScope);
         return filteredScope;
       };
+      /* RUFU-200: one proof per blocker per pass — see `dormantCheckoutEmptinessForBlocker`. */
+      const dormantProofMemo = new Map<string, CheckoutEmptinessProofMap | undefined>();
       const hasActiveFileScopeOverlapBlocker = async (
         task: Task,
         blockerId: string | null | undefined,
@@ -6610,6 +6700,9 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           handoffAccepted: settings.mergeRequestContractShadowEnabled === true && roles.isReviewColumn
             ? (await this.store.getCompletionHandoffAcceptedMarker(blocker.id)) !== null
             : false,
+          /* FNXC:OverlapScheduling 2026-09-08-21:50 (RUFU-200): same downgrade-only proof as the
+             completion-fan-out lane above, so the two self-healing doors cannot disagree. */
+          checkoutEmptiness: await dormantCheckoutEmptinessForBlocker(this.store, settings, blocker, roles, dormantProofMemo),
           isWipColumn: roles.isWipColumn,
           isReviewColumn: roles.isReviewColumn,
           isTerminalColumn: roles.isTerminalColumn,

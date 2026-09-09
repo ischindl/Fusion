@@ -30,6 +30,7 @@ import {
   isCoordinationOnlyTask,
   pathsOverlap,
 } from "../scheduler.js";
+import { proveDormantCheckoutEmptiness } from "../worktree/checkout-emptiness.js";
 import type { EngineRunContext } from "../util/run-audit.js";
 
 export type FileScopeLeaseDispatchGateDeps = {
@@ -79,6 +80,14 @@ export async function blockOuterDispatchWhenFileScopeLeaseHeld(
   task: Task,
 ): Promise<boolean> {
   const settings = await deps.store.getSettings();
+  /*
+  FNXC:OverlapScheduling 2026-09-08-21:20 (RUFU-200):
+  This is the CANDIDATE side of the check and it deliberately stays unproven. If the card about to
+  dispatch still has its own retained checkout, that checkout is about to be its working tree: a dirty
+  one genuinely occupies its files, and this gate's job is only to avoid starting a second editor over
+  them. RUFU-200's downgrade applies to a HOLDER's claim over someone else's files, never to a card's
+  own live checkout, so `taskHoldsUnmergedCheckout(task)` keeps its original unproven meaning here.
+  */
   if (settings.groupOverlappingFiles !== true || taskHoldsUnmergedCheckout(task)) return false;
 
   const tasks = await deps.store.listTasks({ includeArchived: false, slim: true });
@@ -105,16 +114,44 @@ export async function blockOuterDispatchWhenFileScopeLeaseHeld(
   const irCache = new Map<string, WorkflowIr>();
   const holders: Array<{ task: Task; kind: "active" | "dormant"; scope: string[]; waivedForTaskIds: readonly string[] }> = [];
 
+  /*
+  FNXC:OverlapScheduling 2026-09-08-21:20 (RUFU-200):
+  Roles resolve before the lease question is asked, because the emptiness proof is only worth computing
+  for the holders whose classification could actually change: a non-WIP, non-review, non-terminal holder
+  with a retained checkout. Proving a live WIP or review holder would spend git on a verdict its lane
+  never reads (see `classifyFileScopeLease`), so this pass splits into resolve-roles, prove, classify.
+  */
+  const roleResolvedHolders: Array<{ holder: Task; roles: ResolvedLeaseRoles; handoffAccepted: boolean }> = [];
   for (const holder of tasks) {
     if (holder.id === liveTask.id || holder.deletedAt) continue;
     const roles = await resolveLeaseRoles(deps.store, holder, irCache);
     const handoffAccepted = mergeShadowEnabled && roles.isReviewColumn
       ? (await deps.store.getCompletionHandoffAcceptedMarker(holder.id)) !== null
       : false;
+    roleResolvedHolders.push({ holder, roles, handoffAccepted });
+  }
+
+  const dormantProofCandidates = roleResolvedHolders
+    .filter((entry) =>
+      !entry.roles.isWipColumn
+      && !entry.roles.isReviewColumn
+      && !entry.roles.isTerminalColumn
+      && taskHoldsUnmergedCheckout(entry.holder))
+    .map((entry) => entry.holder);
+  const checkoutEmptinessByTaskId = await proveDormantCheckoutEmptiness({
+    rootDir: () => deps.store.getRootDir(),
+    settings,
+    candidates: dormantProofCandidates,
+  });
+
+  for (const { holder, roles, handoffAccepted } of roleResolvedHolders) {
     const classification = classifyFileScopeLease(holder, tasks, {
       mergeRequestContractShadowEnabled: mergeShadowEnabled,
       handoffAccepted,
       schedulingDependencyOptions,
+      /* FNXC:OverlapScheduling 2026-09-08-21:20 (RUFU-200): downgrade-only holder proof. Absent (the
+         prover could not run, or the holder was not a dormant candidate) keeps the lease. */
+      checkoutEmptiness: checkoutEmptinessByTaskId.get(holder.id),
       /* FNXC:LaneWiring 2026-08-30-00:20: forwarded by name — a spread reads as unwired to the
          lane-wiring census (it reads call sites, not types) and reddens the Lint gate. */
       isWipColumn: roles.isWipColumn,

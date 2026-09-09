@@ -85,4 +85,57 @@ describe("isWorktreeCapacityHolder", () => {
       worktree: "/worktrees/FN-282",
     }))).toBe(false);
   });
+
+  /*
+  FNXC:OverlapScheduling 2026-09-09-00:40 (RUFU-200):
+  The capacity half of the phantom-holder fix: RUFU-198 sat in a planning lane with a clean,
+  zero-commits-ahead checkout and still consumed one of the operator's `maxWorktrees` slots, so the
+  capacity readout reported 3/4 for cards that protected nothing on disk. These tests pin the
+  downgrade-only contract of `checkoutProvenEmpty`: ONLY a caller-computed `true` releases the slot —
+  an absent field (every legacy caller) and an explicit `false` (occupied OR unknown proof) both keep
+  today's counting, because releasing a slot that still hides uncommitted work is the unrecoverable
+  error direction.
+  */
+  it("does not count a hold-lane card whose retained checkout is proven clean-and-behind", () => {
+    expect(isWorktreeCapacityHolder(task({
+      column: "hold",
+      columnIsIntakeOrHold: true,
+      status: "needs-replan",
+      worktree: "/worktrees/RUFU-198",
+      checkoutProvenEmpty: true,
+    }))).toBe(false);
+  });
+
+  it("still counts the same card when the proof says occupied (explicit false)", () => {
+    expect(isWorktreeCapacityHolder(task({
+      column: "hold",
+      columnIsIntakeOrHold: true,
+      status: "needs-replan",
+      worktree: "/worktrees/RUFU-198",
+      checkoutProvenEmpty: false,
+    }))).toBe(true);
+  });
+
+  it("still counts the same card when no proof was computed (legacy callers unchanged)", () => {
+    /* The pre-RUFU-200 contract, restated as intent rather than accident: a caller whose task shape
+       predates the field must NOT silently release capacity — absence means unknown means holder. */
+    expect(isWorktreeCapacityHolder(task({
+      column: "hold",
+      columnIsIntakeOrHold: true,
+      status: "needs-replan",
+      worktree: "/worktrees/RUFU-198",
+    }))).toBe(true);
+  });
+
+  it("still counts a live WIP card whose checkout is proven empty (liveness, not checkout, holds the slot)", () => {
+    /* A card mid-execution owns its slot through the running-agent clause; the checkout downgrade
+       only removes the RETENTION arm, never the live-execution arm. */
+    expect(isWorktreeCapacityHolder(task({
+      column: "working",
+      columnCountsTowardWip: true,
+      status: "running",
+      worktree: "/worktrees/FN-282",
+      checkoutProvenEmpty: true,
+    }))).toBe(true);
+  });
 });

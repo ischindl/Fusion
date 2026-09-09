@@ -486,6 +486,13 @@ FNXC:OverlapScheduling 2026-08-29-07:04:
 Overlap repair therefore receives complete role sets from the blocker's own selected workflow: a
 second WIP or review lane retains unfinished work, while every Complete lane releases it; soft deletion
 is classified separately by `deletedAt`.
+
+FNXC:OverlapScheduling 2026-09-08-22:05 (RUFU-200):
+This classifier is an INTENTIONALLY UNPROVEN boundary: it never receives a checkout-emptiness proof and
+answers from retained-path presence alone, because it runs inside store overlap-repair transactions
+where a git shellout would put host I/O in the write path. Consequence: repair can over-report a
+dormant holder whose checkout is actually empty. That errs toward preserving a card, never toward
+releasing one, and the scheduling lanes that DO consume the proof make the release decision instead.
 */
 export function classifyRepairFileScopeLease(
   candidate: Pick<Task, "column" | "worktree" | "workspaceWorktrees" | "deletedAt">,

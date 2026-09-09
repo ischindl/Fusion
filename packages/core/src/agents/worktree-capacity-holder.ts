@@ -3,7 +3,17 @@ import { taskHoldsUnmergedCheckout } from "../tasks/file-scope-lease.js";
 import { isRunningAgentTask, type RunningAgentTaskShape } from "./live-agent-count.js";
 
 export type WorktreeCapacityTaskShape = RunningAgentTaskShape
-  & Pick<Task, "worktree" | "workspaceWorktrees">;
+  & Pick<Task, "worktree" | "workspaceWorktrees"> & {
+    /**
+     * RUFU-200: `true` ONLY when the caller proved — via git, per repository — that every retained
+     * checkout of this task is a clean tree AND zero commits ahead of its base. Absent or `false`
+     * means "holder" (fail-closed): a caller that could not obtain the proof must keep today's
+     * counting, because the cost of a wrong downgrade is releasing a slot that still protects
+     * someone's uncommitted work. The engine computes this in
+     * `persistedWorktreeHolderTaskIdsFromStore` from the shared `CheckoutEmptinessProver` cache.
+     */
+    checkoutProvenEmpty?: boolean;
+  };
 
 /*
 FNXC:CapacityModel 2026-09-01-14:49:
@@ -27,7 +37,17 @@ export function isWorktreeCapacityHolder(task: WorktreeCapacityTaskShape): boole
   const terminalKind = task.columnTerminalKind
     ?? (task.column === "done" ? "complete" : "none");
   if (terminalKind !== "none" || task.paused || task.userPaused || task.status === "failed") return false;
-  if (taskHoldsUnmergedCheckout(task)) return true;
+  /*
+  FNXC:OverlapScheduling 2026-09-09-00:40 (RUFU-200):
+  A retained checkout claims a worktree slot only while it has something to preserve. The phantom
+  holder RUFU-198 sat in a planning lane behind an unmet dependency with a clean, zero-commits-ahead
+  checkout and still consumed one of the operator's `maxWorktrees` slots, which is how the readout
+  reported 3/4 while every "holder" had nothing on disk worth protecting. `checkoutProvenEmpty` is
+  downgrade-only and fail-closed (see the field doc): absent/`false` keeps today's exact counting.
+  A proven-empty checkout falls through to the liveness checks instead of returning early, so a
+  genuinely running WIP card still counts through its own clause.
+  */
+  if (taskHoldsUnmergedCheckout(task) && task.checkoutProvenEmpty !== true) return true;
   if (!isRunningAgentTask(task)) return false;
   return task.columnCountsTowardWip ?? task.column === "in-progress";
 }

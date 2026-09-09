@@ -21,9 +21,10 @@ future cleanup revisits this, the question to ask is whether dependency and over
 deadlock are still possible — not whether capacity is simpler.
 */
 import type { MissionStore, Task, TaskStore, WorkflowIr } from "@fusion/core";
-import { compareTasksByPriorityThenAgeAndId, fileScopeLeaseBlocksCandidate, normalizeOverlapScopeForTask, resolveTaskLifecycleColumns, resolveWorkflowIrForTask, columnsWithFlag } from "@fusion/core";
+import { compareTasksByPriorityThenAgeAndId, fileScopeLeaseBlocksCandidate, normalizeOverlapScopeForTask, resolveTaskLifecycleColumns, resolveWorkflowIrForTask, columnsWithFlag, taskHoldsUnmergedCheckout } from "@fusion/core";
 import { createLogger } from "../logger.js";
 import { classifyFileScopeLease, filterPathsByIgnoreList, isCoordinationOnlyTask, pathsOverlap } from "../scheduler.js";
+import { proveDormantCheckoutEmptiness } from "../worktree/checkout-emptiness.js";
 
 const gridlockLog = createLogger("gridlock-detector");
 
@@ -156,6 +157,25 @@ export class GridlockDetector {
         }
       }
     }
+    /*
+    FNXC:OverlapScheduling 2026-09-08-21:35 (RUFU-200):
+    The detector must reach the SAME lease verdict as admission for the same holder, otherwise it reports
+    a gridlock the scheduler has already resolved (or stays silent about one it cannot resolve). It
+    therefore consumes the same downgrade-only checkout-emptiness proof over the same shared prover.
+    Candidates are limited to holders whose lane could actually change; an unresolved-roles task is
+    proven rather than filtered on legacy column literals, which this file must not restate.
+    */
+    const dormantProofCandidates = tasks.filter((task) => {
+      if (task.deletedAt || !taskHoldsUnmergedCheckout(task)) return false;
+      const roles = lifecycleByTask.get(task.id);
+      if (!roles) return true;
+      return roles.wip !== task.column && roles.review !== task.column && roles.complete !== task.column;
+    });
+    const checkoutEmptinessByTaskId = await proveDormantCheckoutEmptiness({
+      rootDir: () => this.store.getRootDir(),
+      settings,
+      candidates: dormantProofCandidates,
+    });
     const classifications = new Map(
       tasks.map((task) => {
         const roles = lifecycleByTask.get(task.id);
@@ -163,6 +183,7 @@ export class GridlockDetector {
           ? {
             mergeRequestContractShadowEnabled: settings.mergeRequestContractShadowEnabled,
             handoffAccepted: handoffAcceptedByTaskId.get(task.id) ?? false,
+            checkoutEmptiness: checkoutEmptinessByTaskId.get(task.id),
             isWipColumn: roles.wip === task.column,
             isReviewColumn: roles.review === task.column,
             isTerminalColumn: roles.complete === task.column,
@@ -170,6 +191,7 @@ export class GridlockDetector {
           : {
             mergeRequestContractShadowEnabled: settings.mergeRequestContractShadowEnabled,
             handoffAccepted: handoffAcceptedByTaskId.get(task.id) ?? false,
+            checkoutEmptiness: checkoutEmptinessByTaskId.get(task.id),
           })] as const;
       }),
     );

@@ -6,10 +6,19 @@ import {
   isWorktreeCapacityHolder,
   resolveMaxConcurrentSetting,
   resolveWorkflowIrForTask,
+  taskHoldsUnmergedCheckout,
   type Task,
   type WorkflowIrResolverStore,
 } from "@fusion/core";
 import { createLogger } from "../logger.js";
+/* RUFU-200: the worktree-capacity count answers the same checkout-emptiness question the lease
+   classifier answers, through the SAME registry-shared prover, so admission and the capacity
+   readout can never disagree about the same card. */
+import {
+  proveDormantCheckoutEmptiness,
+  type CheckoutEmptinessProver,
+} from "../worktree/checkout-emptiness.js";
+import type { IntegrationBranchSettings } from "../merge/integration-branch.js";
 
 const concurrencyLog = createLogger("concurrency");
 
@@ -565,11 +574,52 @@ export async function persistedTopLevelAgentTaskIdsFromStore(store: WorkflowIrRe
 }
 
 /** Trait-aware execution-worktree holders, including WIP tasks in the acquire/persist window. */
-export async function persistedWorktreeHolderTaskIdsFromStore(store: WorkflowIrResolverStore, tasks: Task[]): Promise<string[]> {
+/*
+FNXC:OverlapScheduling 2026-09-09-00:40 (RUFU-200):
+`emptinessProof` is OPTIONAL and fail-closed: absent, the count is byte-for-byte its pre-RUFU-200
+self (retained path ⇒ holder), which is what keeps every legacy caller and fixture on today's
+behavior. When supplied, exactly one batched `proveDormantCheckoutEmptiness` fan-out runs — over the
+cards the path-based pass already called holders — so the git I/O is bounded by the holder set, never
+by the board size, and it reuses the ONE registry-shared prover (same TTL cache, same in-flight dedupe)
+as the scheduler's dormant-lease classification. The two-pass shape keeps git out of the per-row loop
+and out of cards that cannot change answer: terminal, paused, and checkout-free cards never touch git.
+Without this, the phantom holder RUFU-198 consumed one of the operator's `maxWorktrees` slots forever
+(the readout reported 3/4 for cards sitting in `todo`) while protecting nothing on disk.
+*/
+export interface WorktreeHolderEmptinessProof {
+  rootDir: string | (() => string);
+  settings: IntegrationBranchSettings;
+  /** Injectable for tests and for a caller that already holds a prover instance; defaults to the registry. */
+  prover?: CheckoutEmptinessProver;
+}
+
+export async function persistedWorktreeHolderTaskIdsFromStore(
+  store: WorkflowIrResolverStore,
+  tasks: Task[],
+  emptinessProof?: WorktreeHolderEmptinessProof,
+): Promise<string[]> {
   const enriched = await enrichedTopLevelAgentTasksFromStore(store, tasks);
+  const provenEmptyTaskIds = new Set<string>();
+  if (emptinessProof) {
+    const candidates = enriched.filter((task) => isWorktreeCapacityHolder(task));
+    if (candidates.length > 0) {
+      const emptinessByTaskId = await proveDormantCheckoutEmptiness({ ...emptinessProof, candidates });
+      for (const task of candidates) {
+        const verdicts = emptinessByTaskId.get(task.id);
+        /* Fail-closed: no verdict map for the card, or any retained entry not proven `empty`, keeps
+           the card a holder. Only a full clean-and-behind proof across every retained repository
+           releases the slot. */
+        if (verdicts && taskHoldsUnmergedCheckout(task) && !taskHoldsUnmergedCheckout(task, verdicts)) {
+          provenEmptyTaskIds.add(task.id);
+        }
+      }
+    }
+  }
   const ids: string[] = [];
   for (const task of enriched) {
-    if (isWorktreeCapacityHolder(task)) ids.push(task.id);
+    if (isWorktreeCapacityHolder(provenEmptyTaskIds.has(task.id) ? { ...task, checkoutProvenEmpty: true } : task)) {
+      ids.push(task.id);
+    }
   }
   return ids;
 }

@@ -17,6 +17,7 @@ import {
   type AgentStore,
   type Settings,
   type FileScopeLeaseClassification,
+  type CheckoutEmptinessProofMap,
 } from "@fusion/core";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -32,6 +33,7 @@ import {
   type AgentSemaphore,
 } from "./concurrency/concurrency.js";
 import { planTaskWorktreePath, resolveTaskWorkingBranch } from "./worktree/worktree-names.js";
+import { proveDormantCheckoutEmptiness } from "./worktree/checkout-emptiness.js";
 import { schedulerLog } from "./logger.js";
 import { emitBoundedRunAudit } from "./util/emit-bounded-run-audit.js";
 import { createRepeatSuppressedLog } from "./util/repeat-suppressed-log.js";
@@ -569,6 +571,12 @@ export interface FileScopeLeaseOptions {
   isWipColumn?: boolean;
   isReviewColumn?: boolean;
   isTerminalColumn?: boolean;
+  /**
+   * RUFU-200: per-repository proof that this task's retained checkouts hold nothing (`empty`),
+   * `occupied` of work, or could not be proven (`unknown`). Consumed by the DORMANT branch only.
+   * Absent ⇒ today's behavior: a retained checkout is a holder.
+   */
+  checkoutEmptiness?: CheckoutEmptinessProofMap;
 }
 
 /*
@@ -627,7 +635,22 @@ export function classifyFileScopeLease(
     return { kind: taskHoldsUnmergedCheckout(task) ? "active" : "none", waivedForTaskIds: [] };
   }
 
-  return { kind: taskHoldsUnmergedCheckout(task) ? "dormant" : "none", waivedForTaskIds: [] };
+  /*
+  FNXC:OverlapScheduling 2026-09-08-20:55 (RUFU-200):
+  This is the ONLY branch that consults the checkout-emptiness proof, and it is a downgrade-only input:
+  an `empty` proof releases the dormant lease, while `occupied`, `unknown`, or no proof at all keeps it.
+  A retained checkout in a planning/hold lane with zero commits and a clean tree is not work to preserve
+  — it is the phantom that deadlocked RUFU-198's peer RUFU-199 forever.
+
+  The review branch above deliberately does NOT consult it. A review-lane checkout is still the merge's
+  source: the merger reads it, and `autoMerge:false` leaves `in-review` terminal-until-merged by a human,
+  so releasing that lease on an `empty` verdict would free overlapping files while a human still owns
+  the merge. WIP skips the checkout question entirely by design (see the FNXC above).
+  */
+  return {
+    kind: taskHoldsUnmergedCheckout(task, options?.checkoutEmptiness) ? "dormant" : "none",
+    waivedForTaskIds: [],
+  };
 }
 
 /**
@@ -639,9 +662,12 @@ export function shouldHoldActiveFileScopeLease(
   options?: FileScopeLeaseOptions,
 ): boolean {
   /* FNXC:LaneWiring 2026-08-30-00:20: name the lane answers this wrapper forwards. A bare `options`
-     pass reads as unwired to the lane-wiring census; the spread keeps every other option intact. */
+     pass reads as unwired to the lane-wiring census; the spread keeps every other option intact.
+     RUFU-200 adds the named `checkoutEmptiness` forward for the same reason — a wrapper that silently
+     dropped the proof would make the two entry points disagree on the same holder. */
   return classifyFileScopeLease(task, tasks, {
     ...options,
+    checkoutEmptiness: options?.checkoutEmptiness,
     isWipColumn: options?.isWipColumn,
     isReviewColumn: options?.isReviewColumn,
     isTerminalColumn: options?.isTerminalColumn,
@@ -2543,7 +2569,13 @@ export class Scheduler {
           return typeof value === "function" ? value.bind(target) : value;
         },
       });
-      const activeWorktreeTaskIds = await persistedWorktreeHolderTaskIdsFromStore(selectionCachedStore, tasks);
+      /* RUFU-200: pass the emptiness proof so a retained checkout that is clean AND zero commits
+         ahead of base releases its `maxWorktrees` slot instead of phantom-holding capacity; the
+         shared prover cache makes this the same git evidence the dormant-lease pass reads below. */
+      const activeWorktreeTaskIds = await persistedWorktreeHolderTaskIdsFromStore(selectionCachedStore, tasks, {
+        rootDir: () => this.store.getRootDir(),
+        settings,
+      });
       let reservedWorktreeSlots = activeWorktreeTaskIds.length;
       let reservedConcurrentSlots = wipTaskIds.length;
       const dispatchPrepByTaskId = new Map<string, {
@@ -2614,12 +2646,37 @@ export class Scheduler {
         }
       }
 
+      /*
+      FNXC:OverlapScheduling 2026-09-08-21:05 (RUFU-200):
+      Prove emptiness ONCE per pass, for exactly the cards that would otherwise be registered as dormant
+      holders. A per-candidate proof would fan out `tasks x candidates` git calls on a scheduling hot
+      path; the shared prover bounds that to one `concurrency`-wide wave with a short TTL. Restricting to
+      the would-be-dormant set is also what keeps a live WIP or review holder from being re-proven under
+      a verdict its lane never consumes.
+      */
+      const dormantProofCandidates = settings.groupOverlappingFiles
+        ? tasks.filter((task) =>
+            !task.deletedAt
+            && !isWipColumnTask(task)
+            && !isReviewColumnTask(task)
+            && !isTerminalColumnTask(task)
+            && taskHoldsUnmergedCheckout(task))
+        : [];
+      const checkoutEmptinessByTaskId = await proveDormantCheckoutEmptiness({
+        rootDir: () => this.store.getRootDir(),
+        settings,
+        candidates: dormantProofCandidates,
+      });
+
       if (settings.groupOverlappingFiles) {
         for (const task of tasks) {
           const classification = classifyFileScopeLease(task, tasks, {
             mergeRequestContractShadowEnabled: mergeShadowEnabled,
             handoffAccepted: reviewHandoffMarkerMap.get(task.id) ?? false,
             schedulingDependencyOptions,
+            /* FNXC:OverlapScheduling 2026-09-08-21:05 (RUFU-200): the pass-level proof for THIS holder;
+               undefined when the prover did not run (feature off) or could not key it — both fail closed. */
+            checkoutEmptiness: checkoutEmptinessByTaskId.get(task.id),
             isWipColumn: isWipColumnTask(task),
             isReviewColumn: isReviewColumnTask(task),
             isTerminalColumn: isTerminalColumnTask(task),
@@ -2705,6 +2762,14 @@ export class Scheduler {
             ? (await this.store.getCompletionHandoffAcceptedMarker(blocker.id)) !== null
             : false,
           schedulingDependencyOptions,
+          /*
+          FNXC:OverlapScheduling 2026-09-08-21:05 (RUFU-200):
+          Re-use the pass-level proof so this revalidation can never disagree with the admission decision
+          that produced the wedge it is clearing: two different answers for one holder would make the
+          card oscillate between "blocked" and "free". A blocker the pass did not prove (it was not a
+          would-be-dormant holder then) has no entry, which is the fail-closed holder answer.
+          */
+          checkoutEmptiness: checkoutEmptinessByTaskId.get(blocker.id),
           isWipColumn: isWipColumnTask(blocker),
           isReviewColumn: isReviewColumnTask(blocker),
           isTerminalColumn: isTerminalColumnTask(blocker),
@@ -3247,7 +3312,12 @@ export class Scheduler {
             const liveTasks = await this.store.listTasks({ slim: false, includeArchived: false });
             const [agentIds, worktreeIds] = await Promise.all([
               persistedTopLevelAgentTaskIdsFromStore(this.store, liveTasks),
-              persistedWorktreeHolderTaskIdsFromStore(this.store, liveTasks),
+              /* RUFU-200: same proof as the reservation above, so the serialized final-claim
+                 snapshot and the capacity readout never disagree with admission. */
+              persistedWorktreeHolderTaskIdsFromStore(this.store, liveTasks, {
+                rootDir: () => this.store.getRootDir(),
+                settings,
+              }),
             ]);
             return {
               agent: { count: agentIds.length, ids: agentIds },

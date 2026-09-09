@@ -163,3 +163,184 @@ describe("heartbeat worktree cwd", () => {
     expect(taskStore.moveTask).toHaveBeenCalledWith("FN-1", "todo", expect.objectContaining({ preserveStatus: true }));
   });
 });
+
+/*
+FNXC:OverlapScheduling 2026-09-09-00:05 (RUFU-200):
+The phantom re-arm guard. RUFU-198 sat in `todo` behind a paused, unparseable dependency: it could
+never dispatch, yet every heartbeat patrol called `acquireTaskWorktree` for it, and the retained
+checkout re-armed the dormant file-scope lease that blocked its overlapping peer — the deadlock
+outlived every sweep that cleared it. These tests pin BOTH halves: the skip for the shape that
+generates the phantom, and today's acquisition for every shape that legitimately owns a checkout
+(satisfied backlog, WIP, review, and a renamed hold board).
+*/
+describe("heartbeat skips worktree acquisition for a dependency-blocked planning-lane card", () => {
+  let store: any;
+  let taskStore: any;
+  const agent: Agent = { id: "a1", name: "A", role: "executor", state: "active", taskId: "FN-1", createdAt: "", updatedAt: "", metadata: {} } as any;
+  const run: AgentHeartbeatRun = { id: "r1", agentId: "a1", status: "active", startedAt: new Date().toISOString(), endedAt: null } as any;
+
+  function boundTask(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "FN-1", title: "t", description: "d", column: "todo",
+      dependencies: ["FN-DEP"], steps: [], log: [],
+      worktree: "/tmp/existing-wt", branch: "fusion/fn-1",
+      ...overrides,
+    };
+  }
+
+  function depTask(column: string) {
+    return { id: "FN-DEP", title: "dep", description: "", column, dependencies: [], steps: [], log: [] };
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(piModule, "createFnAgent").mockResolvedValue({ session: { prompt: vi.fn(), dispose: vi.fn() } } as any);
+    vi.spyOn(worktreeAcquisition, "acquireTaskWorktree").mockResolvedValue({ worktreePath: "/tmp/wt", branch: "fusion/fn-1", source: "existing", hydrated: false, isResume: true });
+    store = {
+      startHeartbeatRun: vi.fn().mockResolvedValue(run),
+      saveRun: vi.fn(),
+      getRunDetail: vi.fn().mockResolvedValue(run),
+      getAgent: vi.fn().mockResolvedValue(agent),
+      updateAgentState: vi.fn(),
+      updateAgent: vi.fn(),
+      endHeartbeatRun: vi.fn(),
+      assignTask: vi.fn(),
+      getBudgetStatus: vi.fn().mockResolvedValue({ isOverBudget: false, isOverThreshold: false, usagePercent: 0 }),
+      getCachedAgent: vi.fn().mockReturnValue(null),
+      getLastBlockedState: vi.fn().mockResolvedValue(null),
+      setLastBlockedState: vi.fn(),
+      clearLastBlockedState: vi.fn(),
+      appendRunLog: vi.fn(),
+      getAgentsByReportsTo: vi.fn().mockResolvedValue([]),
+      recordHeartbeat: vi.fn(),
+    };
+    taskStore = {
+      getSettings: vi.fn().mockResolvedValue({}),
+      getTask: vi.fn().mockResolvedValue(boundTask()),
+      moveTask: vi.fn(),
+      updateTask: vi.fn(),
+      logEntry: vi.fn(),
+      appendAgentLog: vi.fn(),
+      // The dependency exists and is NOT satisfied, so this card genuinely cannot dispatch.
+      listTasks: vi.fn().mockResolvedValue([depTask("in-progress")]),
+      selectNextTaskForAgent: vi.fn().mockResolvedValue(null),
+    };
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("skips acquisition and runs the patrol from the project root", async () => {
+    const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: "/repo" });
+    await monitor.executeHeartbeat({ agentId: "a1", source: "on_demand" });
+
+    // RED before RUFU-200: every patrol used to re-arm the holder here.
+    expect(worktreeAcquisition.acquireTaskWorktree).not.toHaveBeenCalled();
+    expect(piModule.createFnAgent).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/repo" }));
+    // The guard is read-only: it must not pretend to have cleared the holder's metadata.
+    expect(taskStore.updateTask).not.toHaveBeenCalledWith("FN-1", expect.objectContaining({ worktree: null }));
+    expect(taskStore.moveTask).not.toHaveBeenCalled();
+  });
+
+  it("keeps acquiring once the dependency is satisfied", async () => {
+    taskStore.listTasks.mockResolvedValue([depTask("done")]);
+    const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: "/repo" });
+    await monitor.executeHeartbeat({ agentId: "a1", source: "on_demand" });
+
+    expect(worktreeAcquisition.acquireTaskWorktree).toHaveBeenCalledTimes(1);
+    expect(piModule.createFnAgent).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/tmp/wt" }));
+  });
+
+  it("keeps acquiring for a WIP-lane card even with unmet dependencies", async () => {
+    /* A card that already entered execution owns its checkout regardless of its dependency edges —
+       skipping there would strand live work, so today's answer stays today's answer. */
+    taskStore.getTask.mockResolvedValue(boundTask({ column: "in-progress" }));
+    const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: "/repo" });
+    await monitor.executeHeartbeat({ agentId: "a1", source: "on_demand" });
+
+    expect(worktreeAcquisition.acquireTaskWorktree).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps acquiring for a review-lane card even with unmet dependencies", async () => {
+    /* The merged-but-still-blocked case: a human-owned merge keeps its checkout. */
+    taskStore.getTask.mockResolvedValue(boundTask({ column: "in-review" }));
+    const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: "/repo" });
+    await monitor.executeHeartbeat({ agentId: "a1", source: "on_demand" });
+
+    expect(worktreeAcquisition.acquireTaskWorktree).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies on a renamed hold board via the resolved lifecycle lane", async () => {
+    /* The guard reads the task's OWN workflow vocabulary, so a renamed hold column is still the
+       planning lane; a literal-only reading would acquire here and re-arm the phantom. */
+    const renamedIr = {
+      version: "v2",
+      id: "custom:wf",
+      nodes: [],
+      edges: [],
+      columns: [
+        { id: "inbox", name: "inbox", traits: [{ trait: "intake" }] },
+        { id: "drafting", name: "drafting", traits: [{ trait: "hold", config: { release: "capacity" } }] },
+        { id: "building", name: "building", traits: [{ trait: "wip", config: { limitSetting: "maxConcurrent" } }] },
+        { id: "reviewing", name: "reviewing", traits: [{ trait: "review" }] },
+        { id: "shipped", name: "shipped", traits: [{ trait: "complete" }] },
+      ],
+    } as any;
+    const selection = { workflowId: "custom:wf", stepIds: [] };
+    taskStore.getTask.mockResolvedValue(boundTask({ column: "drafting" }));
+    taskStore.getTaskWorkflowSelection = vi.fn(() => selection);
+    taskStore.getTaskWorkflowSelectionAsync = vi.fn(async () => selection);
+    taskStore.getWorkflowDefinition = vi.fn(async () => ({ ir: renamedIr }));
+    const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: "/repo" });
+    await monitor.executeHeartbeat({ agentId: "a1", source: "on_demand" });
+
+    expect(worktreeAcquisition.acquireTaskWorktree).not.toHaveBeenCalled();
+    expect(piModule.createFnAgent).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/repo" }));
+  });
+
+  /*
+  FNXC:OverlapScheduling 2026-09-09-05:31 (RUFU-200, CEO ruling 2026-09-08T19:30Z):
+  The deps=[] variant of the same self-rearming shape. A planning-lane card with NO dependency
+  edges can still be the blocked party: the dispatch gate stamps `task.overlapBlockedBy` when the
+  card's own retained checkout is the dormant lease refusing an overlapping peer, and that card is
+  itself held from dispatch by the overlap episode. `getUnmetSchedulingDependencies` returns [] for
+  it — the block lives on the row, not on an edge — so only the explicit overlap signal keeps the
+  patrol from handing it a checkout and re-arming the lease the sweep just cleared.
+  Done-gate symptom surface: deps=[] + overlapBlockedBy set ⇒ no acquire.
+  */
+  it("skips acquisition for a deps-free card whose own overlap lease blocks a peer", async () => {
+    taskStore.getTask.mockResolvedValue(boundTask({ dependencies: [], overlapBlockedBy: "FN-PEER" }));
+    const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: "/repo" });
+    await monitor.executeHeartbeat({ agentId: "a1", source: "on_demand" });
+
+    // RED before the CEO ruling's OR-branch: the early `dependencies.length === 0` return let this
+    // card acquire on every patrol, re-establishing `task.worktree` and therefore the dormant lease.
+    expect(worktreeAcquisition.acquireTaskWorktree).not.toHaveBeenCalled();
+    expect(piModule.createFnAgent).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/repo" }));
+    // Read-only guard: it must not clear the overlap signal or move the card.
+    expect(taskStore.updateTask).not.toHaveBeenCalledWith("FN-1", expect.objectContaining({ overlapBlockedBy: null }));
+    expect(taskStore.moveTask).not.toHaveBeenCalled();
+  });
+
+  it("keeps acquiring for a deps-free backlog card with no overlap block", async () => {
+    /* Non-vacuity control for the new branch: with neither unmet deps nor `overlapBlockedBy`, a
+       planning-lane card may legitimately dispatch on the next pass, so today's acquisition stays. */
+    taskStore.getTask.mockResolvedValue(boundTask({ dependencies: [] }));
+    const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: "/repo" });
+    await monitor.executeHeartbeat({ agentId: "a1", source: "on_demand" });
+
+    expect(worktreeAcquisition.acquireTaskWorktree).toHaveBeenCalledTimes(1);
+    expect(piModule.createFnAgent).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/tmp/wt" }));
+  });
+
+  it("keeps acquiring for a WIP card whose overlap lease blocks a peer", async () => {
+    /* The lane check still bounds the new signal: a card that already entered execution owns its
+       checkout, so an overlap stamp must not strand live work. */
+    taskStore.getTask.mockResolvedValue(boundTask({ column: "in-progress", dependencies: [], overlapBlockedBy: "FN-PEER" }));
+    const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: "/repo" });
+    await monitor.executeHeartbeat({ agentId: "a1", source: "on_demand" });
+
+    expect(worktreeAcquisition.acquireTaskWorktree).toHaveBeenCalledTimes(1);
+  });
+});

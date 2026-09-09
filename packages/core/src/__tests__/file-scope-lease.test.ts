@@ -3,6 +3,8 @@ import {
   fileScopeLeaseBlocksCandidate,
   normalizeOverlapScopeForTask,
   taskHoldsUnmergedCheckout,
+  type CheckoutEmptinessProofMap,
+  type CheckoutEmptinessVerdict,
   type FileScopeLeaseClassification,
   type Task,
 } from "../index.js";
@@ -111,5 +113,101 @@ describe("workspace checkout and overlap-scope helpers", () => {
       "src/shared.ts",
     ]);
     expect(normalizeOverlapScopeForTask(task, scope)).toEqual(scope);
+  });
+});
+
+/*
+FNXC:OverlapScheduling 2026-09-08-19:50 (RUFU-200):
+A retained checkout is a lease holder only while it has something to preserve. These cases pin the
+one contract the scheduler's dormant branch and the dispatch-gate holder side depend on: the proof is
+DOWNGRADE-ONLY. `empty` is the single verdict that can release a lease; `occupied`, `unknown`, and a
+missing map entry must all keep the pre-RUFU-200 answer, because guessing `empty` wrongly is what
+would destroy uncommitted work.
+*/
+describe("checkout-emptiness proof input (RUFU-200)", () => {
+  const singularTask = (worktree = "/worktrees/RUFU-198") =>
+    ({ worktree, workspaceWorktrees: undefined }) as Pick<Task, "worktree" | "workspaceWorktrees">;
+  const proof = (entries: Array<[string, CheckoutEmptinessVerdict]>): CheckoutEmptinessProofMap =>
+    new Map<string, CheckoutEmptinessVerdict>(entries);
+
+  it("stays byte-for-byte on the path-presence answer when no proof is supplied", () => {
+    expect(taskHoldsUnmergedCheckout(singularTask())).toBe(true);
+    expect(taskHoldsUnmergedCheckout(singularTask("   "))).toBe(false);
+    expect(taskHoldsUnmergedCheckout(singularTask(""))).toBe(false);
+  });
+
+  it("releases the singular checkout only on a proven-empty verdict", () => {
+    expect(taskHoldsUnmergedCheckout(singularTask(), proof([["", "empty"]]))).toBe(false);
+    expect(taskHoldsUnmergedCheckout(singularTask(), proof([["", "occupied"]]))).toBe(true);
+    expect(taskHoldsUnmergedCheckout(singularTask(), proof([["", "unknown"]]))).toBe(true);
+  });
+
+  it("treats a missing proof entry as unknown rather than empty (fail-closed)", () => {
+    expect(taskHoldsUnmergedCheckout(singularTask(), proof([]))).toBe(true);
+    expect(taskHoldsUnmergedCheckout(singularTask(), proof([["other-repo", "empty"]]))).toBe(true);
+  });
+
+  it("keeps a checkout-free task lease-free even when a proof is supplied", () => {
+    expect(taskHoldsUnmergedCheckout(singularTask(""), proof([["", "occupied"]]))).toBe(false);
+  });
+
+  it("proves emptiness per repository, never all-or-nothing", () => {
+    const workspace = {
+      "packages/core": { worktreePath: "/wt/RUFU-198/packages/core", branch: "fusion/rufu-198" },
+      "packages/engine": { worktreePath: "/wt/RUFU-198/packages/engine", branch: "fusion/rufu-198" },
+    } as unknown as Task["workspaceWorktrees"];
+    const task = { worktree: undefined, workspaceWorktrees: workspace } as Pick<Task, "worktree" | "workspaceWorktrees">;
+
+    expect(taskHoldsUnmergedCheckout(task, proof([
+      ["packages/core", "empty"],
+      ["packages/engine", "empty"],
+    ]))).toBe(false);
+    expect(taskHoldsUnmergedCheckout(task, proof([
+      ["packages/core", "empty"],
+      ["packages/engine", "occupied"],
+    ]))).toBe(true);
+    expect(taskHoldsUnmergedCheckout(task, proof([["packages/core", "empty"]]))).toBe(true);
+  });
+
+  it("requires every entry of a task holding both a singular and workspace checkouts to be empty", () => {
+    const task = {
+      worktree: "/wt/RUFU-198",
+      workspaceWorktrees: { "packages/engine": { worktreePath: "/wt/RUFU-198/packages/engine" } },
+    } as unknown as Pick<Task, "worktree" | "workspaceWorktrees">;
+
+    expect(taskHoldsUnmergedCheckout(task, proof([["", "empty"], ["packages/engine", "empty"]]))).toBe(false);
+    expect(taskHoldsUnmergedCheckout(task, proof([["", "empty"], ["packages/engine", "unknown"]]))).toBe(true);
+    expect(taskHoldsUnmergedCheckout(task, proof([["", "occupied"], ["packages/engine", "empty"]]))).toBe(true);
+  });
+
+  it("ignores an empty-path workspace entry so a stale row cannot block on a proof", () => {
+    const task = {
+      worktree: undefined,
+      workspaceWorktrees: { "packages/core": { worktreePath: "" } },
+    } as unknown as Pick<Task, "worktree" | "workspaceWorktrees">;
+
+    expect(taskHoldsUnmergedCheckout(task)).toBe(false);
+    expect(taskHoldsUnmergedCheckout(task, proof([["packages/core", "occupied"]]))).toBe(false);
+  });
+
+  /*
+  FNXC:OverlapScheduling 2026-09-08-19:50 (RUFU-200):
+  The store's repair classifier deliberately does NOT take a proof. It runs inside an overlap-repair
+  store transaction (store.ts:3229/:3402), and AGENTS.md permits synchronous shellout only for short
+  git plumbing outside a write path — a transaction must never wait on git. So repair keeps the
+  path-based, fail-closed answer: it can retain a lease on a checkout that admission would release,
+  which costs one extra scheduling pass, never anybody's work. This assertion pins that asymmetry so
+  it is not later "harmonized" by moving git I/O into the store.
+  */
+  it("keeps the store repair classifier path-based so no git runs inside a repair transaction", () => {
+    const lanes = {
+      wip: new Set(["building"]),
+      review: new Set(["reviewing"]),
+      terminal: new Set(["shipped", "filed"]),
+    };
+
+    expect(classifyRepairFileScopeLease({ column: "drafting", worktree: "/wt/RUFU-198" }, lanes)).toBe("dormant");
+    expect(classifyRepairFileScopeLease({ column: "reviewing", worktree: "/wt/RUFU-198" }, lanes)).toBe("active");
+    expect(classifyRepairFileScopeLease({ column: "drafting" }, lanes)).toBe("none");
   });
 });

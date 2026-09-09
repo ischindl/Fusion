@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { fileScopeLeaseBlocksCandidate, type Task } from "@fusion/core";
-import { classifyFileScopeLease } from "../scheduler.js";
+import { fileScopeLeaseBlocksCandidate, type CheckoutEmptinessVerdict, type Task } from "@fusion/core";
+import { classifyFileScopeLease, shouldHoldActiveFileScopeLease } from "../scheduler.js";
 
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -106,5 +106,102 @@ describe("classifyFileScopeLease", () => {
       mergeRequestContractShadowEnabled: true,
       handoffAccepted: true,
     })).toMatchObject({ kind: "active" });
+  });
+});
+
+/*
+FNXC:OverlapScheduling 2026-09-08-22:25 (RUFU-200):
+The dormant lease is the one place the checkout-emptiness proof is allowed to speak, and it is a
+ downgrade-only input: it can release a lease, never create one. These cases pin both halves of that
+ contract, because each half fails alone:
+
+- A hold-lane card whose checkout is clean and zero-commits-ahead must stop holding files it
+  demonstrably does not touch. Measured on the board: this phantom is what blocked RUFU-199 forever
+  while its holder sat in planning with an untouched tree.
+- Every weaker answer (`occupied`, `unknown`, a proof with no entry for the retained path, an empty
+  proof map, or no proof argument at all) must keep the pre-RUFU-200 holder answer verbatim. Releasing
+  on an unproven checkout is how a reclaim would destroy uncommitted work.
+
+The release case is non-vacuous by construction: it asserts `kind: "none"` for a task that the
+no-proof cases in the block above classify as `dormant`, so a classifier that ignored the proof would
+fail it. The `occupied`/`unknown`/missing-entry cases are the paired guard against the opposite error —
+a classifier that released on any proof at all.
+*/
+describe("classifyFileScopeLease with a checkout-emptiness proof (RUFU-200)", () => {
+  const holdLane = { isWipColumn: false, isReviewColumn: false, isTerminalColumn: false };
+  const singularProof = (verdict: CheckoutEmptinessVerdict) => new Map<string, CheckoutEmptinessVerdict>([["", verdict]]);
+  const holder = makeTask({ id: "FN-HOLDER", column: "todo", worktree: "/wt/holder" });
+  const peer = makeTask({ id: "FN-PEER", column: "todo" });
+
+  it("releases a dormant lease once every retained checkout is proven empty", () => {
+    const classification = classifyFileScopeLease(holder, [holder, peer], {
+      ...holdLane,
+      checkoutEmptiness: singularProof("empty"),
+    });
+
+    expect(classification).toMatchObject({ kind: "none" });
+    expect(fileScopeLeaseBlocksCandidate(holder, peer, classification)).toBe(false);
+  });
+
+  it.each([["occupied"], ["unknown"]] as const)(
+    "keeps the dormant lease on an %s proof — an unproven checkout is never released",
+    (verdict) => {
+      const classification = classifyFileScopeLease(holder, [holder, peer], {
+        ...holdLane,
+        checkoutEmptiness: singularProof(verdict),
+      });
+
+      expect(classification).toMatchObject({ kind: "dormant" });
+      expect(fileScopeLeaseBlocksCandidate(holder, peer, classification)).toBe(true);
+    },
+  );
+
+  it("keeps the dormant lease when the proof has no entry for the retained path", () => {
+    expect(classifyFileScopeLease(holder, [holder, peer], {
+      ...holdLane,
+      checkoutEmptiness: new Map<string, CheckoutEmptinessVerdict>(),
+    })).toMatchObject({ kind: "dormant" });
+  });
+
+  it("confines the downgrade to the dormant branch: a proven-empty review checkout stays an active holder", () => {
+    const review = makeTask({ id: "FN-REVIEW", column: "in-review", worktree: "/wt/review" });
+
+    expect(classifyFileScopeLease(review, [review, peer], {
+      isWipColumn: false,
+      isReviewColumn: true,
+      isTerminalColumn: false,
+      checkoutEmptiness: singularProof("empty"),
+    })).toMatchObject({ kind: "active" });
+  });
+
+  it("requires EVERY workspace repository to be empty before releasing", () => {
+    const workspaceWorktrees = {
+      "repo-a": { worktreePath: "/wt/fn-1/repo-a" },
+      "repo-b": { worktreePath: "/wt/fn-1/repo-b" },
+    } as Task["workspaceWorktrees"];
+    const wsHolder = makeTask({ id: "FN-WS", column: "todo", workspaceWorktrees });
+
+    expect(classifyFileScopeLease(wsHolder, [wsHolder, peer], {
+      ...holdLane,
+      checkoutEmptiness: new Map<string, CheckoutEmptinessVerdict>([
+        ["repo-a", "empty"],
+        ["repo-b", "occupied"],
+      ]),
+    })).toMatchObject({ kind: "dormant" });
+
+    expect(classifyFileScopeLease(wsHolder, [wsHolder, peer], {
+      ...holdLane,
+      checkoutEmptiness: new Map<string, CheckoutEmptinessVerdict>([
+        ["repo-a", "empty"],
+        ["repo-b", "empty"],
+      ]),
+    })).toMatchObject({ kind: "none" });
+  });
+
+  it("shouldHoldActiveFileScopeLease forwards the proof instead of dropping it", () => {
+    const options = { ...holdLane, checkoutEmptiness: singularProof("empty") };
+
+    expect(shouldHoldActiveFileScopeLease(holder, [holder, peer], options)).toBe(false);
+    expect(shouldHoldActiveFileScopeLease(holder, [holder, peer], holdLane)).toBe(true);
   });
 });

@@ -3,6 +3,31 @@ import { compareTasksByPriorityThenAgeAndId } from "./task-priority.js";
 
 export type FileScopeLeaseKind = "none" | "active" | "dormant";
 
+/*
+FNXC:OverlapScheduling 2026-09-08-19:50 (RUFU-200):
+The lease classifier needs to distinguish "this card retained a checkout" from "this card retains a
+checkout that still has something to preserve". Path presence alone was never proof of unmerged work:
+a task branch cut from the base that never committed anything is byte-identical to the base, so the
+checkout it retains protects nothing while it serializes every overlapping peer forever (RUFU-198
+deadlocked RUFU-199 exactly this way while sitting `todo` and dependency-blocked, and no dispatch-time
+recovery could ever reach it).
+The verdict is computed OUTSIDE core (git I/O) and arrives as a downgrade-only input. `empty` means
+clean worktree AND zero commits ahead of the resolved base, per repository. `occupied` is positive
+evidence of work to preserve. `unknown` means the proof could not be obtained — a failed or timed-out
+git call, an unresolvable base ref, a missing map entry — and MUST behave exactly like `occupied`,
+because the failure mode of guessing wrong is destroying someone's uncommitted work. Absent the whole
+argument the predicate is byte-for-byte its pre-RUFU-200 self, which is what keeps every legacy
+caller and fixture on today's behavior.
+*/
+export type CheckoutEmptinessVerdict = "empty" | "occupied" | "unknown";
+
+/**
+ * Proof map keyed by repository entry: `""` is the singular {@link Task.worktree} checkout, every
+ * other key is a `task.workspaceWorktrees` repository key. A key that is simply absent from the map
+ * is classified as `unknown` — fail-closed, never as `empty`.
+ */
+export type CheckoutEmptinessProofMap = ReadonlyMap<string, CheckoutEmptinessVerdict>;
+
 export interface FileScopeLeaseClassification {
   kind: FileScopeLeaseKind;
   waivedForTaskIds: readonly string[];
@@ -22,11 +47,25 @@ and deliberately keeps its dormant lease. Checkout evidence, not a column except
 */
 export function taskHoldsUnmergedCheckout(
   task: Pick<Task, "worktree" | "workspaceWorktrees">,
+  checkoutEmptiness?: CheckoutEmptinessProofMap,
 ): boolean {
-  if (typeof task.worktree === "string" && task.worktree.trim()) return true;
-  return Object.values(task.workspaceWorktrees ?? {}).some(
-    (entry) => typeof entry?.worktreePath === "string" && entry.worktreePath.trim().length > 0,
-  );
+  const retainedKeys: string[] = [];
+  if (typeof task.worktree === "string" && task.worktree.trim()) retainedKeys.push("");
+  for (const [repoKey, entry] of Object.entries(task.workspaceWorktrees ?? {})) {
+    if (typeof entry?.worktreePath === "string" && entry.worktreePath.trim().length > 0) {
+      retainedKeys.push(repoKey);
+    }
+  }
+  if (retainedKeys.length === 0) return false;
+  if (!checkoutEmptiness) return true;
+
+  /*
+  FNXC:WorkspaceFileOverlap 2026-09-08-19:50 (RUFU-200):
+  The emptiness test is per repository, never all-or-nothing: a workspace card whose `packages/cli`
+  checkout is clean-and-behind but whose `packages/engine` checkout is one commit ahead still owns
+  unmerged work and keeps its lease. Downgrade requires EVERY retained entry to be proven `empty`.
+  */
+  return retainedKeys.some((key) => checkoutEmptiness.get(key) !== "empty");
 }
 
 function normalizeWorkspaceScopePath(value: string): string {

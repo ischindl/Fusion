@@ -94,6 +94,10 @@ FNXC:HeartbeatRecovery 2026-07-15-08:50:
 heartbeat-model-unavailable parks from assignment/on-demand runs were terminal until a human Retry, even when the next attempt succeeds with unchanged credentials (false "model unavailable" / registry / credential-probe blips). Admit those parks to the same bounded heartbeatErrorRecovery budget as error-state recovery so the engine auto-retries like operator Retry, while genuine missing credentials re-park after the budget exhausts.
 */
 import { acquireTaskWorktree, WorktreeBaseRefreshError } from "./worktree/worktree-acquisition.js";
+/* RUFU-200: the phantom re-arm guard reuses the scheduler's dependency-satisfaction verdict rather
+   than writing a second one — `getUnmetSchedulingDependencies` is the authority the scheduler, the
+   dispatch gate, and self-healing all use to answer "is this card still blocked?". */
+import { getUnmetSchedulingDependencies } from "./scheduler.js";
 import { createRunAuditor, generateSyntheticRunId, type DatabaseMutationType, type EngineRunContext } from "./util/run-audit.js";
 import { promptWithFallback } from "./pi.js";
 import { withRateLimitRetry } from "./errors/rate-limit-retry.js";
@@ -730,6 +734,77 @@ export async function isTaskInTerminalLane(
      failure bookkeeping against finished work. Strictly worse than the legacy answer. */
   if (!columns) return task.column === "done";
   return task.column === columns.complete;
+}
+
+/*
+FNXC:OverlapScheduling 2026-09-08-23:45 (RUFU-200):
+Why a heartbeat must NOT acquire a worktree for a dependency-blocked planning-lane card.
+
+The scheduler classifies a task with a retained `task.worktree` as a dormant file-scope lease holder,
+which blocks any overlapping peer's admission. RUFU-198 sat in `todo` behind a paused, unparseable
+RUFU-196: it could never dispatch, so it never reached any dispatch-time metadata recovery, and every
+~15-minute heartbeat patrol called `acquireTaskWorktree` for it (RUFU-198 logged acquisition at 16:29,
+16:44, 16:51 while parked `todo`/`queued`). Each patrol re-armed the very lease that blocked RUFU-199,
+so the phantom outlived any sweep that cleared it — the deadlock was self-rearming.
+
+RUFU-200 fixes the classification (a provably empty checkout is not a holder) and the reclaim
+ candidacy (a blocked planning-lane holder is now recoverable). This guard closes the third door:
+ a card that CANNOT dispatch must not be handed a checkout at all. A planning-lane card with unmet
+ scheduling dependencies is precisely the shape that generates the phantom, so its patrol skips the
+ acquisition and the session runs from the project root instead.
+
+FNXC:OverlapScheduling 2026-09-09-05:31 (RUFU-200, CEO ruling 2026-09-08T19:30Z):
+Unmet dependency edges are only ONE reason a planning-lane card is admitted-blocked. The dispatch
+ gate also marks a card blocked by its OWN overlap signal — `task.overlapBlockedBy` (written at
+ `executor/file-scope-lease-dispatch-gate.ts:163`) — which is the deps=[] variant of the identical
+ self-rearming shape: the card has no dependency edges, but its retained checkout is the dormant
+ lease refusing an overlapping peer's admission, and the card itself is held from dispatch by that
+ same overlap episode. Handing it a checkout re-arms the lease it is supposed to be waiting out,
+ so a planning-lane card with `overlapBlockedBy` set is admitted-blocked and MUST NOT acquire.
+ `getUnmetSchedulingDependencies` returns [] for such a card — the block lives on the row, not on
+ an edge — so the overlap signal is checked explicitly rather than through the dependency helper.
+
+Scope kept deliberately narrow, per the task's constraints:
+- WIP-lane cards keep acquiring: a card already executing owns its checkout regardless of deps.
+- Planning cards with neither unmet deps nor an overlap block keep acquiring: their next patrol may
+  legitimately dispatch.
+- `isNoTaskRun` patrols never enter this path (they had no task checkout to begin with).
+- The check is READ-ONLY. The guard clears nothing; only `reclaimSelfOwnedBranchConflicts` remains
+  the writer of `worktree`/`branch`/`baseCommitSha` for this shape.
+
+Returns the blocking ids (unmet dependency ids, or the overlap blocker id when the card has no
+unmet deps) when the acquisition must be skipped, else null. Fail-soft to NOT skipping: if the
+lane or the task list cannot be resolved, today's acquisition happens unchanged — withholding a
+checkout on an unproven reading would break a card that is legitimately ready.
+*/
+export async function heartbeatPlanningLaneAcquisitionSkip(
+  taskStore: TaskStore,
+  task: TaskDetail,
+): Promise<string[] | null> {
+  /* Two independent reasons a planning-lane card is admitted-blocked: unmet dependency edges, or
+     its own overlap lease on a peer (CEO ruling 2026-09-08T19:30Z). Neither ⇒ today's acquire. */
+  if (task.dependencies.length === 0 && !task.overlapBlockedBy) return null;
+  const columns = await resolveTaskLifecycleColumns(taskStore, task.id).catch(() => undefined);
+  const inPlanningLane = columns
+    ? task.column === columns.hold || task.column === columns.intake
+    /* DELIBERATE-LITERAL — the no-metadata fallback, the same fail-soft convention as
+       `isTaskInTerminalLane` above: an unresolvable workflow keeps the built-in answer rather than
+       silently disabling the guard (or, worse, disabling acquisition board-wide). */
+    : task.column === "todo" || task.column === "triage";
+  if (!inPlanningLane) return null;
+  /* A card with no dependency edges provably has no unmet ones — `getUnmetSchedulingDependencies`
+     filters `task.dependencies` — so the board read cannot change its verdict and this path does
+     not depend on it. The overlap signal is the whole answer, and it lives on the row. */
+  if (task.dependencies.length === 0) {
+    return task.overlapBlockedBy ? [task.overlapBlockedBy] : null;
+  }
+  const tasks = await taskStore.listTasks({ includeArchived: false, slim: true }).catch(() => null);
+  if (!tasks) return null;
+  const unmet = getUnmetSchedulingDependencies(task, tasks);
+  if (unmet.length > 0) return unmet;
+  /* Deps are all satisfied but the card's own dormant lease is blocking an overlapping peer: the
+     overlap blocker id is the skip marker. Unmet deps win the label when both are present. */
+  return task.overlapBlockedBy ? [task.overlapBlockedBy] : null;
 }
 
 export class HeartbeatMonitor {
@@ -3017,7 +3092,24 @@ export class HeartbeatMonitor {
 
         let sessionCwd = rootDir;
         if (!isNoTaskRun && taskDetail) {
-          try {
+          /*
+          FNXC:OverlapScheduling 2026-09-09-05:31 (RUFU-200):
+          A planning-lane card that cannot dispatch this patrol must not be handed a checkout: the
+          retained worktree is what re-creates the dormant file-scope lease that blocks its
+          overlapping peers. The phantom holder RUFU-198 was re-armed by exactly this call on every
+          heartbeat while it sat `todo` behind a paused dependency. Two admission blocks reach this
+          skip: unmet scheduling dependencies, and (CEO ruling 2026-09-08T19:30Z) the card's own
+          `overlapBlockedBy` signal — the deps=[] variant where this card IS the lease blocking a
+          peer. Skip either way and run the patrol from the project root; the log names which one so
+          an overlap-only hold is never misread as a dependency wait.
+          */
+          const blockedPlanningReasons = await heartbeatPlanningLaneAcquisitionSkip(taskStore, taskDetail);
+          if (blockedPlanningReasons) {
+            const skipReason = taskDetail.dependencies.length === 0
+              ? `blocked by its own file-scope lease on ${taskDetail.overlapBlockedBy}`
+              : `with unmet dependencies [${blockedPlanningReasons.join(", ")}]`;
+            heartbeatLog.debug(`Skipping heartbeat worktree acquisition for ${agentId} on ${taskDetail.id}: ${taskDetail.column} ${skipReason} (RUFU-200 phantom re-arm guard)`);
+          } else try {
             const acquisition = await acquireTaskWorktree({
               task: taskDetail,
               rootDir,
