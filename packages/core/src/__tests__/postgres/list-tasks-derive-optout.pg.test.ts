@@ -341,4 +341,109 @@ pgTest("listTasks derive opt-out (PostgreSQL)", () => {
       expect(keys).toContain("log");
     }
   });
+
+  /*
+  FNXC:ListTasksExcludeLog 2026-09-09-01:50 (RUFU-202):
+  `slim` was the only way to drop the heaviest column, and it bundles a per-task PROMPT.md parse
+  (`finalizeSlimListTask` → unmemoised `parseStepsFromPrompt`) that a board sweep has no use for.
+  These tests pin `excludeLog` as the shape that gets the byte saving WITHOUT that parse: the hold-
+  release sweep is the consumer, and it never reads `log` or `steps`.
+  */
+  it("drops the log column for a non-slim opted-out read without parsing PROMPT.md", async () => {
+    await seedInProgressCard("RUFU-9207");
+    const store = h.store();
+    const parsedRowKeys: string[][] = [];
+    const parseOriginal = store.pgRowToTaskRow.bind(store);
+    store.pgRowToTaskRow = (pgRow) => {
+      parsedRowKeys.push(Object.keys(pgRow as Record<string, unknown>));
+      return parseOriginal(pgRow);
+    };
+    let promptParses = 0;
+    const parsePromptOriginal = store.parseStepsFromPrompt.bind(store);
+    store.parseStepsFromPrompt = async (taskId) => {
+      promptParses += 1;
+      return parsePromptOriginal(taskId);
+    };
+
+    const rows = await store.listTasks({
+      column: "in-progress",
+      derive: false,
+      excludeLog: true,
+      startupMemo: false,
+    });
+
+    expect(rows).toHaveLength(1);
+    const row = rows[0] as Task;
+    // The projection, not just the wire shape: the column was never selected, so ~11 KB/row never
+    // crossed the wire. This is the saving `derive: false` alone could not buy.
+    expect(row.log).toEqual([]);
+    expect(parsedRowKeys.length).toBeGreaterThan(0);
+    for (const keys of parsedRowKeys) {
+      expect(keys).not.toContain("log");
+    }
+    // Control: the PROMPT.md is present and parseable, so a zero count below is the read shape
+    // declining to parse — not an empty or missing file.
+    expect((await parsePromptOriginal("RUFU-9207")).length).toBeGreaterThan(0);
+    // Zero-parse proof: `slim` would have parsed exactly once for this empty-`steps` card.
+    expect(promptParses).toBe(0);
+    expect(row.steps).toEqual([]);
+    // Persisted fields survive the narrow projection unchanged — the sweep's release decisions read
+    // `prompt`/`description`/`paused*` and must not see them shift as a side effect of bandwidth.
+    expect(row.description).toContain("RUFU-201 probe");
+  });
+
+  it("ignores excludeLog while derivation is on, so it cannot disable a board badge", async () => {
+    await seedInProgressCard("RUFU-9208");
+    const store = h.store();
+    const parsedRowKeys: string[][] = [];
+    const parseOriginal = store.pgRowToTaskRow.bind(store);
+    store.pgRowToTaskRow = (pgRow) => {
+      parsedRowKeys.push(Object.keys(pgRow as Record<string, unknown>));
+      return parseOriginal(pgRow);
+    };
+
+    // FNXC:TaskStoreReads 2026-07-05-15:30 — `stalledReview`/`timedExecutionMs` are derived FROM the
+    // log, so a caller cannot ask for both derivation and the drop. This is the documented no-op.
+    const rows = await store.listTasks({
+      column: "in-progress",
+      slim: true,
+      excludeLog: true,
+      startupMemo: false,
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(parsedRowKeys.length).toBeGreaterThan(0);
+    for (const keys of parsedRowKeys) {
+      expect(keys).toContain("log");
+    }
+    expect(rows[0]!.timedExecutionMs).toBeDefined();
+  });
+
+  it("keeps archived cards off the board for an excludeLog read", async () => {
+    await seedInProgressCard("RUFU-9209");
+    await seedInProgressCard("RUFU-9210");
+    const store = h.store();
+    /*
+    The shared harness exposes `adminSql` as a GETTER-FUNCTION (typed `() => Sql`), so tagging
+    `h.adminSql` directly tags the getter itself and issues no query at all. Call it first, then query.
+    */
+    const admin = h.adminSql();
+    await admin`update project.tasks set "column" = 'archived' where id = ${"RUFU-9210"}`;
+    // Make the seed observable: without this, a silently-failing archive is indistinguishable from a
+    // narrowing regression.
+    expect(await admin`select id, "column" as col from project.tasks order by id`).toEqual([
+      { id: "RUFU-9209", col: "in-progress" },
+      { id: "RUFU-9210", col: "archived" },
+    ]);
+
+    /*
+    The archived narrowing is only applied when no lane filter is supplied, which is exactly why the
+    `excludeColumns: ["log"]` variant was rejected: it is a LANE filter, and setting it re-admitted
+    archived cards to a release-decision pass. `excludeLog` must not touch lane selection at all.
+    */
+    const rows = await store.listTasks({ derive: false, excludeLog: true, startupMemo: false });
+
+    expect(rows.map((row) => row.id)).toContain("RUFU-9209");
+    expect(rows.map((row) => row.id)).not.toContain("RUFU-9210");
+  });
 });

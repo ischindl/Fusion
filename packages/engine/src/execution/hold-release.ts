@@ -733,7 +733,46 @@ export async function runHoldReleaseSweep(
     because both a successful batch and degraded individual reads populate the same cache.
     */
     const selectionReadTally: WorkflowSelectionReadTally = { batched: 0, singles: 0 };
-    const allTasks = await store.listTasks({ includeArchived: false, selectionCache, selectionReadTally });
+    /*
+    FNXC:ListTasksDeriveOptOut 2026-09-09-00:55 (RUFU-202):
+    This full-board read is the engine's single most expensive one. Live it measured avg 10.6 s /
+    max 159.8 s once per scheduler pass, with `prefetch` at ~100 % of the sweep and `evaluate` at
+    0 ms, so it starved dispatch (`[backlog-pressure] todo=11 inProgress=0`), left 489 passes
+    budget-truncated, and forced scheduler/continuation-drain/triage guard openings.
+
+    A field-read audit over all 1118 lines of this file proves no consumer reads a derived UI signal:
+    none of `inReviewStall`, `stalePausedReview`, `inReviewStalled`, `stalePausedTodo`, `ageStaleness`,
+    `stalledReview`, `retrySummary`, `stallReason`, `reviewBypass`, `timedExecutionMs` appears here,
+    while release decisions do read persisted fields (`column`, `status`, `paused`/`userPaused`/
+    `pausedReason`, `nextRecoveryAt`, `columnMovedAt`, `dependencies`, `enabledWorkflowSteps`,
+    `workflowStepResults`, `approvedPlanFingerprint`, `prompt`, `title`, `description`, timestamps).
+    UI-signal derivation is therefore pure cost at this call site.
+
+    The selection read this sweep still needs is not lost with the derivation feed: the batch fallback
+    below resolves every id through `getTaskWorkflowSelectionsAsync(missingIds)` in one round trip, so
+    `selectionReadTally` reports 0 from `listTasks` while `counters.batchSelections` counts that batch
+    and the logged read tally stays truthful. Both option objects are still passed so a future caller
+    that re-enables derivation gets the shared caches back.
+
+    FNXC:ListTasksExcludeLog 2026-09-09-01:49 (RUFU-202):
+    `excludeLog` is the second, bigger half: `log` is ~11 KB/row and this sweep never reads it, nor
+    does any of the 14 `@fusion/core` helpers it calls with a task (`resolveColumnCapacity`,
+    `isUnplannedSeedPrompt`, `isTaskBlockedOnApproval`, `isPlanReviewSatisfied`, ...) — none touches
+    `task.log`, and the log-backed merge/heal readers that do exist (`hasAutoHealableVerification
+    BufferFailure`) are reached from the merge lane, not from here.
+
+    Two cheaper-looking variants are deliberately NOT used because each costs more than it saves:
+    - `slim: true` also drops `log`, but it bundles the drop with `finalizeSlimListTask`, which
+      re-parses PROMPT.md for every task whose persisted `steps` is empty via the unmemoised
+      `parseStepsFromPromptImpl` — one `existsSync` + `readFile` per such task, per pass, on the
+      sweep's hot path. It additionally blanks `prInfo`/`review`/`attachments` and can newly populate
+      `steps`, and the sweep's own release decisions must not shift as a side effect of a bandwidth
+      change. `excludeLog` buys the same byte saving with neither.
+    - `excludeColumns: ["log"]` is not a column projection at all: it filters board LANES, and setting
+      it also switches off `listTasksImpl`'s `excludeColumn: "archived"` narrowing, which would put
+      archived cards back into a release-decision pass.
+    */
+    const allTasks = await store.listTasks({ includeArchived: false, selectionCache, selectionReadTally, derive: false, excludeLog: true });
     counters.batchSelections += selectionReadTally.batched;
     counters.selections += selectionReadTally.singles;
     if (expired()) return logPreambleTruncation(allTasks.length);

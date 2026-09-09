@@ -551,6 +551,33 @@ export interface ListTasksOptions {
   it renders today — board parity is the hard constraint, so the opt-out is always caller-opt-in.
   */
   derive?: boolean;
+  /*
+  FNXC:ListTasksExcludeLog 2026-09-09-01:48 (RUFU-202):
+  Drops the `log` jsonb column from the SQL projection for a consumer that provably never reads it.
+  On the live RunFusion board `log` is the single heaviest column (~11 KB/row) and the hold-release
+  sweep fetched it once per scheduler pass without ever reading it, so the projection was paying
+  ~14 MB per pass for a column nothing consumed.
+
+  Only effective alongside `derive: false`. With derivation on, `log` is a derivation INPUT —
+  `stalledReview` and `timedExecutionMs` are computed from log entries before any wire stripping —
+  so dropping it would silently disable two board badges (FNXC:TaskStoreReads 2026-07-05-15:30).
+  Passing `excludeLog` with derivation on is therefore a documented no-op, not a badge regression.
+
+  This is deliberately NOT `slim: true`. `slim` bundles three unrelated contracts, and the one that
+  matters here is `finalizeSlimListTask`: it re-parses PROMPT.md for EVERY task whose persisted
+  `steps` is empty. `parseStepsFromPromptImpl` is not memoised (one `existsSync` + one `readFile`
+  per such task per call), so `slim` trades a 14 MB column fetch for unbounded per-pass file I/O
+  whose size is only knowable from a live census. A board sweep that never reads `steps` has no
+  business paying it. `excludeLog` buys the column saving with zero file reads and zero other field
+  drops, so the release-decision fields (`prompt`, `description`, `paused*`, `workflowStepResults`)
+  stay byte-identical to the non-slim row. `slim` also blanks `prInfo`/`review`/`attachments` and
+  re-syncs `steps`, any of which could change a release decision on an unrelated future call site.
+
+  The startup memo needs no key extension: it is gated on `slim`, so a non-slim `excludeLog` read
+  can never enter it, and for slim-eligible shapes the effective decision depends only on `derive`,
+  which is already a key component.
+  */
+  excludeLog?: boolean;
 }
 
 /*
@@ -761,9 +788,16 @@ export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions
     shape on the wire is unchanged. This does NOT revive `excludeLog: slim` for deriving consumers:
     FNXC:TaskStoreReads 2026-07-05-15:30 above restored the log read precisely because dropping it
     silently disabled both signals on the board.
+
+    FNXC:ListTasksExcludeLog 2026-09-09-01:48 (RUFU-202):
+    The `!deriveUiSignals` half of this condition stays load-bearing, but slim is no longer the only
+    way to ask for the drop: an explicitly opted-out non-slim consumer may now request it per call
+    site. So the gate is `derivation off AND (slim || caller asked)` — derivation on always keeps
+    `log`, and derivation off only drops it when somebody declared they do not read it.
     */
+    const effectiveExcludeLog = !deriveUiSignals && (slim || options?.excludeLog === true);
     const filteredRows = await readLiveTaskRows(layer, {
-      ...(slim && !deriveUiSignals ? { excludeLog: true } : {}),
+      ...(effectiveExcludeLog ? { excludeLog: true } : {}),
       includeDeleted: options?.includeDeleted,
       column: columnFilter ?? undefined,
       columns: options?.columns,
@@ -796,7 +830,7 @@ export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions
         rather than by being reset — the cheapest proof that an opted-out caller cannot be silently
         served a stale signal, and the contract the zero-derivation-count regression test pins.
         */
-        if (slim) task.log = [];
+        if (effectiveExcludeLog) task.log = [];
         return finalizeSlimListTask(store, task, slim);
       }
       const {
