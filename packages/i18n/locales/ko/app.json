@@ -1654,7 +1654,9 @@
     "sendNoActiveSession": "",
     "agentTargetTranscriptNotice": "",
     "failedToUpdateChatModel": "",
-    "sendAlreadyInFlight": ""
+    "sendAlreadyInFlight": "",
+    "questionOptionalLabel": "",
+    "questionSelectHintWithOptional": ""
   },
   "chatRooms": {
     "error": {
@@ -1776,7 +1778,8 @@
     "noDoneTasksToArchive": "",
     "planAutoApproveLabel": "",
     "planAutoApproveOffHint": "",
-    "planAutoApproveOnHint": ""
+    "planAutoApproveOnHint": "",
+    "paginationError": "이전 작업을 불러올 수 없습니다."
   },
   "commandCenter": {
     "activity": {
@@ -2387,7 +2390,20 @@
     "runLocalButton": "로컬에서 Fusion 실행",
     "settingUpRemote": "원격 연결 설정 중…",
     "starting": "시작 중…",
-    "startingLocalRuntime": "로컬 Fusion 런타임 시작 중…"
+    "startingLocalRuntime": "로컬 Fusion 런타임 시작 중…",
+    "copyStartupDetails": "",
+    "detailsCopied": "",
+    "localStartupUnknown": "",
+    "showStartupDetails": "",
+    "startupAttempts": "",
+    "startupLog": "",
+    "startupLogUnavailable": "",
+    "startupMessage": "",
+    "startupPhase": "",
+    "startupPlatform": "",
+    "startupStack": "",
+    "copyStartupDetailsUnavailable": "",
+    "startupDetailsText": ""
   },
   "devserver": {
     "allSeverities": "모든 심각도",
@@ -10812,7 +10828,7 @@
     "widgetDefault": ""
   },
   "workflowSwitcher": {
-    "countsAria": "{{todoLabel}}: {{todo}}, {{inProgressLabel}}: {{inProgress}}, {{doneLabel}}: {{done}}{{mergingSuffix}}",
+    "countsAria": "{{planLabel}}: {{plan}}, {{progressLabel}}: {{progress}}, {{reviewLabel}}: {{review}}{{mergingSuffix}}",
     "done": "Done",
     "inProgress": "In Progress",
     "label": "Workflow",
@@ -10823,7 +10839,10 @@
     "editWorkflow": "Edit workflow",
     "newWorkflow": "New workflow",
     "mergingTitle_one": "",
-    "mergingTitle_other": ""
+    "mergingTitle_other": "",
+    "plan": "계획",
+    "progress": "진행",
+    "review": "검토"
   },
   "workspace": {
     "projectRoot": "프로젝트 루트",

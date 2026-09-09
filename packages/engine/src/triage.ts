@@ -87,13 +87,15 @@ workflows; metadata is the only authoritative renamed-lane answer in this event 
 const LEGACY_PLANNER_WAKE_COLUMNS = new Set(["todo", "triage"]);
 const LEGACY_PLANNER_COLUMNS = new Set([...LEGACY_PLANNER_WAKE_COLUMNS, "in-progress"]);
 
-const PLANNING_LIFECYCLE_LOCK_TRANSPORT_FAILURE_KEY = "planning.lifecycleLockTransportFailure";
-export const PLANNING_SPEC_LOCK_UNAVAILABLE_FAILURE_KEY = "planning.specLockUnavailableFailure";
-
-type PlanningSpecLockUnavailableFailure = { sourceHash: string; reason: string; sections: string[]; at: string; attempt: number | null };
+/*
+FNXC:TriagePlanningState 2026-09-07-19:49:
+FN-9273 stores planning retry evidence on Task.planningFailure because workflow customFields reject
+planning.* identifiers on every workflow. That fail-fast rejection previously lost the retry hold.
+*/
+type PlanningSpecLockUnavailableFailure = NonNullable<NonNullable<Task["planningFailure"]>["specLockUnavailable"]>;
 
 function getPlanningSpecLockUnavailableFailure(task: Task): PlanningSpecLockUnavailableFailure | null {
-  const candidate = task.customFields?.[PLANNING_SPEC_LOCK_UNAVAILABLE_FAILURE_KEY];
+  const candidate = task.planningFailure?.specLockUnavailable;
   if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
   const marker = candidate as Partial<PlanningSpecLockUnavailableFailure>;
   return typeof marker.sourceHash === "string" && typeof marker.reason === "string" && typeof marker.at === "string" && Array.isArray(marker.sections)
@@ -102,10 +104,10 @@ function getPlanningSpecLockUnavailableFailure(task: Task): PlanningSpecLockUnav
     : null;
 }
 
-type PlanningLifecycleLockTransportFailure = { message: string; at: string; attempt: number | null };
+type PlanningLifecycleLockTransportFailure = NonNullable<NonNullable<Task["planningFailure"]>["lifecycleLockTransport"]>;
 
 function getPlanningLifecycleLockTransportFailure(task: Task): PlanningLifecycleLockTransportFailure | null {
-  const candidate = task.customFields?.[PLANNING_LIFECYCLE_LOCK_TRANSPORT_FAILURE_KEY];
+  const candidate = task.planningFailure?.lifecycleLockTransport;
   if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
   const marker = candidate as Partial<PlanningLifecycleLockTransportFailure>;
   return typeof marker.message === "string" && typeof marker.at === "string"
@@ -309,7 +311,7 @@ async function resolvePlanningDependencyInstruction(input: {
 }
 
 
-import { exec } from "node:child_process";
+import { execFile, type ExecFileOptions } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -337,7 +339,7 @@ import {
   getResearchGuidanceForSurface,
   isResearchToolSurfaceEnabled,
 } from "./execution/tool-availability.js";
-import { runGhostBugPreflight } from "./triage-domain/triage-preflight.js";
+import { runGhostBugPreflight, type ExecResult, type ProbeExec } from "./triage-domain/triage-preflight.js";
 import { runConfiguredCommand } from "./executor/configured-command.js";
 import {
   detectUnrecognizedDependencyEvidence,
@@ -511,6 +513,39 @@ reads markers from leading comments — an inline one attaches to the wrong node
 */
 function isOrphanedLegacyTriageRow(column: string, declaresTriage: boolean): boolean {
   return column === "triage" && !declaresTriage;
+}
+
+export type GhostBugExecFile = (file: string, args: string[], options: ExecFileOptions) => Promise<{ stdout: string; stderr: string }>;
+
+/**
+ * FNXC:GhostBugPreflight 2026-09-07-17:01:
+ * The former command-string wiring ignored `timeoutMs` because child_process expects `timeout`.
+ * This bounded async adapter uses execFile without a shell, preserving plan text as argv data only.
+ */
+export function createGhostBugProbeExec(
+  runExecFile: GhostBugExecFile = async (file, args, options) => {
+    const result = await promisify(execFile)(file, args, options);
+    return { stdout: String(result.stdout), stderr: String(result.stderr) };
+  },
+): ProbeExec {
+  return async (argv, options): Promise<ExecResult> => {
+    try {
+      const result = await runExecFile(argv[0]!, argv.slice(1), {
+        cwd: options?.cwd,
+        timeout: options?.timeoutMs,
+        maxBuffer: 1024 * 1024,
+        shell: false,
+      });
+      return { stdout: result.stdout, stderr: result.stderr, exitCode: 0 };
+    } catch (error) {
+      const result = error as { code?: unknown; stdout?: unknown; stderr?: unknown };
+      return {
+        stdout: typeof result.stdout === "string" ? result.stdout : "",
+        stderr: typeof result.stderr === "string" ? result.stderr : "",
+        ...(typeof result.code === "number" ? { exitCode: result.code } : {}),
+      };
+    }
+  };
 }
 
 export class TriageProcessor {
@@ -2278,8 +2313,10 @@ export class TriageProcessor {
 
   private startAdmittedPlanning(task: Task): void {
     void this.specifyTask(task)
-      .catch((error: unknown) => {
+      .catch(async (error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
         planLog.error(`${task.id}: admitted planning promise rejected:`, error);
+        await this.parkPlanningRecoveryWriteFailure(task, message, error);
       })
       .finally(() => this.notifyPlanningSlotReleased());
   }
@@ -3847,17 +3884,13 @@ export class TriageProcessor {
             const failureMessage = `${failure} after ${MAX_RECOVERY_RETRIES} retries. Retry after adjusting the task prompt or model.`;
             planLog.error(`${task.id} clean planning attempt retry budget exhausted`);
             await this.store.logEntry(task.id, failureMessage);
-            if (await this.updatePlanningStateIfStillCurrent(task, (live) => {
-              const customFields = { ...(live.customFields ?? {}) };
-              delete customFields[PLANNING_LIFECYCLE_LOCK_TRANSPORT_FAILURE_KEY];
-              return {
-                status: "failed",
-                error: failureMessage,
-                recoveryRetryCount: null,
-                nextRecoveryAt: null,
-                customFields,
-              };
-            })) {
+            if (await this.updatePlanningStateIfStillCurrent(task, () => ({
+              status: "failed",
+              error: failureMessage,
+              recoveryRetryCount: null,
+              nextRecoveryAt: null,
+              planningFailure: null,
+            }))) {
               await this.backfillBlankTitleAfterTerminalTriageFailure(task);
             }
             return;
@@ -4096,11 +4129,13 @@ export class TriageProcessor {
           const failureMessage = `PLANNING_FAILED_SPEC_LOCK_UNAVAILABLE: ${err.reason} (${sections})`;
           if (prior?.sourceHash === err.sourceHash) {
             await this.store.logEntry(task.id, `${failureMessage}; identical prompt parse verdict repeated. Operator description headings are not the cause.`).catch(() => undefined);
-            await this.updatePlanningStateIfStillCurrent(task, (live) => {
-              const customFields = { ...(live.customFields ?? {}) };
-              delete customFields[PLANNING_SPEC_LOCK_UNAVAILABLE_FAILURE_KEY];
-              return { status: "failed", error: failureMessage, recoveryRetryCount: null, nextRecoveryAt: null, customFields };
+            const persisted = await this.updatePlanningStateIfStillCurrent(task, () => ({
+              status: "failed", error: failureMessage, recoveryRetryCount: null, nextRecoveryAt: null, planningFailure: null,
+            })).catch(async (writeError: unknown) => {
+              await this.parkPlanningRecoveryWriteFailure(task, failureMessage, writeError);
+              return false;
             });
+            if (!persisted) return;
             await this.backfillBlankTitleAfterTerminalTriageFailure(task);
             return;
           }
@@ -4110,28 +4145,32 @@ export class TriageProcessor {
           if (decision.shouldRetry) {
             const retryHoldStatus = await this.resolvePlanningRetryHoldStatus(task);
             await this.updatePlanningStateIfStillCurrent(task, (live) => ({
-              customFields: {
-                ...(live.customFields ?? {}),
-                [PLANNING_SPEC_LOCK_UNAVAILABLE_FAILURE_KEY]: {
+              planningFailure: {
+                ...(live.planningFailure ?? {}),
+                specLockUnavailable: {
                   sourceHash: err.sourceHash,
                   reason: err.reason,
                   sections: err.unavailableSections,
                   at: new Date().toISOString(),
-                  attempt: decision.nextState.recoveryRetryCount,
+                  attempt: decision.nextState.recoveryRetryCount ?? null,
                 },
               },
               status: retryHoldStatus,
               error: null,
               recoveryRetryCount: decision.nextState.recoveryRetryCount,
               nextRecoveryAt: decision.nextState.nextRecoveryAt,
-            }));
+            })).catch(async (writeError: unknown) => {
+              await this.parkPlanningRecoveryWriteFailure(task, failureMessage, writeError);
+            });
             return;
           }
-          await this.updatePlanningStateIfStillCurrent(task, (live) => {
-            const customFields = { ...(live.customFields ?? {}) };
-            delete customFields[PLANNING_SPEC_LOCK_UNAVAILABLE_FAILURE_KEY];
-            return { status: "failed", error: failureMessage, recoveryRetryCount: null, nextRecoveryAt: null, customFields };
+          const persisted = await this.updatePlanningStateIfStillCurrent(task, () => ({
+            status: "failed", error: failureMessage, recoveryRetryCount: null, nextRecoveryAt: null, planningFailure: null,
+          })).catch(async (writeError: unknown) => {
+            await this.parkPlanningRecoveryWriteFailure(task, failureMessage, writeError);
+            return false;
           });
+          if (!persisted) return;
           await this.backfillBlankTitleAfterTerminalTriageFailure(task);
           return;
         } else if (isPlanningLifecycleLockTransportError(err)) {
@@ -4147,12 +4186,12 @@ export class TriageProcessor {
             nextRecoveryAt: task.nextRecoveryAt,
           });
           const persistMarker = (live: Task) => ({
-            customFields: {
-              ...(live.customFields ?? {}),
-              [PLANNING_LIFECYCLE_LOCK_TRANSPORT_FAILURE_KEY]: {
+            planningFailure: {
+              ...(live.planningFailure ?? {}),
+              lifecycleLockTransport: {
                 message: errorMessage,
                 at: new Date().toISOString(),
-                attempt: decision.nextState.recoveryRetryCount,
+                attempt: decision.nextState.recoveryRetryCount ?? null,
               },
             },
           });
@@ -4167,15 +4206,19 @@ export class TriageProcessor {
               error: null,
               recoveryRetryCount: decision.nextState.recoveryRetryCount,
               nextRecoveryAt: decision.nextState.nextRecoveryAt,
-            }));
+            })).catch(async (writeError: unknown) => {
+              await this.parkPlanningRecoveryWriteFailure(task, failureMessage, writeError);
+            });
             return;
           }
           await this.store.logEntry(task.id, failureMessage).catch(() => undefined);
-          await this.updatePlanningStateIfStillCurrent(task, (live) => {
-            const customFields = { ...(live.customFields ?? {}) };
-            delete customFields[PLANNING_LIFECYCLE_LOCK_TRANSPORT_FAILURE_KEY];
-            return { status: "failed", error: failureMessage, recoveryRetryCount: null, nextRecoveryAt: null, customFields };
+          const persisted = await this.updatePlanningStateIfStillCurrent(task, () => ({
+            status: "failed", error: failureMessage, recoveryRetryCount: null, nextRecoveryAt: null, planningFailure: null,
+          })).catch(async (writeError: unknown) => {
+            await this.parkPlanningRecoveryWriteFailure(task, failureMessage, writeError);
+            return false;
           });
+          if (!persisted) return;
           await this.backfillBlankTitleAfterTerminalTriageFailure(task);
           return;
         } else if (isTransientError(errorMessage)) {
@@ -4606,6 +4649,23 @@ export class TriageProcessor {
       return await this.store.replaceActiveTaskWorkflowContinuation(input);
     }
     return await this.store.upsertWorkflowWorkItem(input);
+  }
+
+  /**
+   * A recovery write must not leave a card presenting as actively planning. The first write can
+   * fail for an unrelated store reason; preserve the original planning failure when parking it.
+   */
+  private async parkPlanningRecoveryWriteFailure(task: Task, failureMessage: string, writeError: unknown): Promise<void> {
+    const detail = writeError instanceof Error ? writeError.message : String(writeError);
+    planLog.warn(`${task.id}: planning recovery write failed: ${detail}`);
+    await this.updatePlanningStateIfStillCurrent(task, {
+      status: "failed",
+      error: failureMessage,
+      recoveryRetryCount: null,
+      nextRecoveryAt: null,
+    }).catch((secondaryError: unknown) => {
+      planLog.warn(`${task.id}: failed to park planning recovery write failure: ${secondaryError instanceof Error ? secondaryError.message : String(secondaryError)}`);
+    });
   }
 
   /**
@@ -5048,11 +5108,7 @@ export class TriageProcessor {
      * near-duplicate decision; keep removes the marker before the next real plan.
      */
     if (explicitDuplicateMarker) {
-      await this.updatePlanningStateIfStillCurrent(task, (live) => {
-        const customFields = { ...(live.customFields ?? {}) };
-        delete customFields[PLANNING_LIFECYCLE_LOCK_TRANSPORT_FAILURE_KEY];
-        return { customFields };
-      });
+      await this.updatePlanningStateIfStillCurrent(task, () => ({ planningFailure: null }));
       const canonicalId = explicitDuplicateMarker.canonicalId;
       const duplicateSource = duplicateResolution.source ?? "prompt";
       const canonicalTask = await this.store.getTask(canonicalId).catch(() => null);
@@ -5341,14 +5397,17 @@ export class TriageProcessor {
           written,
           {
             cwd: this.rootDir,
-            exec: promisify(exec),
+            exec: createGhostBugProbeExec(),
           },
         ),
         new Promise<null>((resolve) => setTimeout(() => resolve(null), 15_000)),
       ]);
 
       if (preflightDecision && preflightDecision.decision === "delete") {
-        await softDeleteAsGhostBug(this.store, task.id, preflightDecision);
+        await softDeleteAsGhostBug(this.store, task.id, preflightDecision, {
+          messageStore: this.options.messageStore,
+          taskTitle: task.title ?? undefined,
+        });
         planLog.log(`${task.id} auto-deleted as ghost bug`);
         return;
       }
@@ -5664,12 +5723,7 @@ export class TriageProcessor {
     in the bookkeeping that follows does not un-hand-off a card that has already moved.
     */
     report.outcome = "released";
-    await this.updatePlanningStateIfStillCurrent(task, (live) => {
-      const customFields = { ...(live.customFields ?? {}) };
-      delete customFields[PLANNING_LIFECYCLE_LOCK_TRANSPORT_FAILURE_KEY];
-      delete customFields[PLANNING_SPEC_LOCK_UNAVAILABLE_FAILURE_KEY];
-      return { customFields };
-    });
+    await this.updatePlanningStateIfStillCurrent(task, () => ({ planningFailure: null }));
 
     /*
     FNXC:TriageStuckKill 2026-07-18-21:05:

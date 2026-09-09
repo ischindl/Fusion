@@ -56,7 +56,11 @@ import { StuckTaskDetector } from "../healing/stuck-task-detector.js";
 import { UsageLimitPauser } from "../errors/usage-limit-detector.js";
 import { CredentialInstanceRotator } from "../credential-instance-rotation.js";
 import { createFusionAuthStorage } from "../auth/auth-storage.js";
-import { SelfHealingManager, VALIDATOR_RUN_STALE_MAX_AGE_MS } from "../self-healing.js";
+import {
+  SelfHealingManager,
+  VALIDATOR_RUN_STALE_MAX_AGE_MS,
+  type SelfHealingOptions,
+} from "../self-healing.js";
 import { RestartRecoveryCoordinator } from "../healing/restart-recovery-coordinator.js";
 import { MeshLeaseManager } from "../project/mesh-lease-manager.js";
 import { PluginRunner } from "../plugins/plugin-runner.js";
@@ -950,6 +954,22 @@ function formatRuntimeGitDetectionWarning(workingDirectory: string, detection: E
  * Credential rotation is runtime-owned recovery plumbing. Its optional audit adapter must use the
  * bounded seam so an unavailable telemetry sink cannot delay a production rotation candidate.
  */
+/*
+FNXC:OverlapScheduling 2026-09-07-15:03:
+Runtime composition owns the completion-to-scheduler bridge. Startup and regression tests use this
+single factory so the test cannot reconstruct SelfHealingManager with wiring that production omitted.
+*/
+export function createRuntimeSelfHealingManager(
+  store: TaskStore,
+  scheduler: Pick<Scheduler, "requestImmediateSchedule">,
+  options: Omit<SelfHealingOptions, "onOverlapBlockersReleased">,
+): SelfHealingManager {
+  return new SelfHealingManager(store, {
+    ...options,
+    onOverlapBlockersReleased: () => scheduler.requestImmediateSchedule(),
+  });
+}
+
 export function createRuntimeCredentialRotationAuditAdapter(taskStore: TaskStore) {
   return async (mutationType: string, metadata: Record<string, unknown>): Promise<void> => {
     await emitBoundedRunAudit(taskStore, {
@@ -1980,7 +2000,7 @@ export class InProcessRuntime
       }
       this.localNodeId = localNodeId;
 
-      this.selfHealingManager = new SelfHealingManager(this.taskStore, {
+      this.selfHealingManager = createRuntimeSelfHealingManager(this.taskStore, this.scheduler, {
         rootDir: this.config.workingDirectory,
         localNodeId,
         agentStore: this.agentStore,
@@ -2085,6 +2105,11 @@ export class InProcessRuntime
       FNXC:CrossProcessDeleteObservation 2026-08-01-13:03:
       Engine-owned stores do not call watch(), so runtime startup owns durable delete observation.
       Start only after its bridge is attached so the initial poll cannot lose a cross-process delete.
+
+      FNXC:TaskDeletionWorktrees 2026-09-07-12:00:
+      SelfHealingManager is already started above, so its asynchronous worktree-cleanup listener exists
+      before the first outbox poll can redeliver a remote deletion. Git cleanup remains outside both the
+      outbox acknowledgement transaction and the original delete response.
       */
       await this.taskStore.startTaskDeletedOutboxConsumer();
 

@@ -601,20 +601,26 @@ function AppInner() {
   already follows. They keep the legacy fallback.
   */
   const { boardWorkflows: footerBoardWorkflows } = useBoardWorkflows({ projectId: currentProject?.id });
-  const resolveTaskColumnFlagsForActivity = useCallback((task: Task) => {
+  const resolveTaskWorkflowId = useCallback((task: Task) => {
     if (isRemote || !footerBoardWorkflows) return undefined;
-    const workflowId = footerBoardWorkflows.taskWorkflowIds[task.id] ?? footerBoardWorkflows.defaultWorkflowId;
+    return footerBoardWorkflows.taskWorkflowIds[task.id] ?? footerBoardWorkflows.defaultWorkflowId;
+  }, [footerBoardWorkflows, isRemote]);
+
+  const resolveTaskColumnFlagsForActivity = useCallback((task: Task) => {
+    if (!footerBoardWorkflows) return undefined;
+    const workflowId = resolveTaskWorkflowId(task);
     return footerBoardWorkflows.workflows
       .find((workflow) => workflow.id === workflowId)
       ?.columns.find((column) => column.id === task.column)?.flags;
-  }, [footerBoardWorkflows, isRemote]);
+  }, [footerBoardWorkflows, resolveTaskWorkflowId]);
 
-  const { tasks, isStale, createTask, moveTask, pauseTask, unpauseTask, deleteTask, mergeTask, retryTask, bypassReview, resetTask, updateTask, duplicateTask, revertTask, loadMoreCompletedTasks, completedSortMode, changeCompletedSortMode, completedTotal, completedHasMore, completedLoadingMore, ingestCreatedTasks, lastFetchTimeMs } = useTasks(
+  const { tasks, isStale, createTask, moveTask, pauseTask, unpauseTask, deleteTask, mergeTask, retryTask, bypassReview, resetTask, updateTask, duplicateTask, revertTask, loadMoreCurrentTasks, retryCurrentTasksPagination, currentTasksTotal, currentTasksHasMore, currentTasksLoadingMore, currentTasksPaginationError, currentTasksProgressKey, loadMoreCompletedTasks, retryCompletedTasksPagination, completedSortMode, changeCompletedSortMode, completedCounts, completedHasMore, completedLoadingMore, completedPaginationError, completedProgressKey, ingestCreatedTasks, lastFetchTimeMs } = useTasks(
     {
       ...(currentProject ? { projectId: currentProject.id } : {}),
       searchQuery: searchQuery || undefined,
       sseEnabled: taskSseEnabled,
       resolveColumnFlags: resolveTaskColumnFlagsForActivity,
+      resolveWorkflowId: resolveTaskWorkflowId,
     }
   );
   const footerTasks = isRemote && remoteData.tasks.length > 0 ? remoteData.tasks : tasks;
@@ -1880,10 +1886,20 @@ function AppInner() {
     retryTask,
     revertTask,
     deleteTask,
+    loadMoreCurrentTasks,
+    currentTasksTotal,
+    currentTasksHasMore,
+    currentTasksLoadingMore,
+    currentTasksPaginationError,
+    currentTasksProgressKey,
+    retryCurrentTasksPagination,
     loadMoreCompletedTasks,
-    completedTotal,
+    completedCounts,
     completedHasMore,
     completedLoadingMore,
+    completedPaginationError,
+    completedProgressKey,
+    retryCompletedTasksPagination,
     completedSortMode,
     changeCompletedSortMode,
     searchQuery,

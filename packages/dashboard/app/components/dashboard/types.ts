@@ -231,10 +231,23 @@ export interface MainContentProps {
       allowResurrection?: boolean;
     },
   ) => Promise<Task>;
+  loadMoreCurrentTasks: () => Promise<void>;
+  currentTasksTotal: number;
+  currentTasksHasMore: boolean;
+  currentTasksLoadingMore: boolean;
+  currentTasksPaginationError?: "timeout" | "invalid-continuation" | "request-failed" | null;
+  currentTasksProgressKey?: string;
+  retryCurrentTasksPagination?: () => Promise<void>;
   loadMoreCompletedTasks: () => Promise<void>;
-  completedTotal: number;
+  completedCounts: {
+    byColumn: Record<string, number>;
+    byWorkflow: Record<string, Record<string, number>>;
+  };
   completedHasMore: boolean;
   completedLoadingMore: boolean;
+  completedPaginationError?: "timeout" | "invalid-continuation" | "request-failed" | null;
+  completedProgressKey?: string;
+  retryCompletedTasksPagination?: () => Promise<void>;
   completedSortMode: TaskColumnSortMode;
   changeCompletedSortMode: (mode: TaskColumnSortMode) => Promise<void>;
   searchQuery: string;

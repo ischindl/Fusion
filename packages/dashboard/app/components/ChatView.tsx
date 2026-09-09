@@ -30,6 +30,8 @@ import {
 import { FN_AGENT_ID, TASK_PLANNER_CHAT_AGENT_ID_PREFIX, useChat, type ChatMessageInfo, type ChatSessionInfo } from "../hooks/useChat";
 import { useChatUnread } from "../hooks/useChatUnread";
 import { useVirtualizedChatTranscript } from "../hooks/useVirtualizedChatTranscript";
+import { useVirtualizedList } from "../hooks/useVirtualizedList";
+import { useAutoPaginationSentinel } from "../hooks/useAutoPaginationSentinel";
 import { useComposerDictation } from "../hooks/useComposerDictation";
 import { useViewportMode } from "./Header";
 import { isTabletTouchViewport } from "../hooks/useViewportMode";
@@ -60,6 +62,10 @@ import { formatTokenCount } from "../utils/estimateChatTokens";
 import { resolveChatContextUsage } from "../utils/chatContextUsage";
 import { copyTextToClipboard } from "../utils/copyToClipboard";
 import { buildChatQuotePrefill } from "../utils/chatQuotePrefill";
+import {
+  clearPersistedChatOpenSession,
+  getPersistedChatOpenSession,
+} from "../utils/projectStorage";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { ViewHeader } from "./ViewHeader";
@@ -566,6 +572,10 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
     forceSendPendingMessage,
     loadMoreMessages,
     hasMoreMessages,
+    loadMoreSessions,
+    hasMoreSessions,
+    hasMoreArchivedSessions,
+    sessionsLoadingMore,
     searchQuery,
     setSearchQuery,
     filteredSessions,
@@ -695,6 +705,9 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
 
   FNXC:ChatWindows 2026-08-27-09:09:
   FN-193 makes useChat expose initialDirectSession on the first committed render. Seed detail and previous detail state from that same requested session so a dedicated pop-out paints its thread without pushing a phantom navigation-history entry.
+
+  FNXC:ChatNavigation 2026-09-07-21:35:
+  FN-313 restaure le détail ordinaire seulement après que useChat a validé la session sauvegardée dans la liste du projet. Cette ouverture automatique ne pousse aucune entrée de navigation; Back efface la préférence pour représenter explicitement la liste, tandis qu’un hôte `persistChatPreferences={false}` reste entièrement local.
   */
   const [detailOpen, setDetailOpen] = useState(() => Boolean(initialDirectSession));
   /*
@@ -788,6 +801,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
   const isUserScrollingRef = useRef(false);
   const lastAnchoredThreadStateRef = useRef<{ threadId: string; loaded: boolean; hasMessages: boolean } | null>(null);
   const directThreadDeferredAnchorTimeoutRef = useRef<number | null>(null);
+  const directThreadAnchorGenerationRef = useRef(0);
   const lastMessageCountRef = useRef(0);
   const lastThreadIdRef = useRef<string | null>(null);
   const scrollRestoreSnapshotRef = useRef<{
@@ -1314,28 +1328,36 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
     if (!messagesContainer) return;
 
     captureScrollSnapshot(true);
+    if (isUserScrollingRef.current) {
+      directThreadAnchorGenerationRef.current += 1;
+      virtualTranscript.cancelPendingScrollToBottom();
+    }
     scheduleTopClippedMessageUpdate();
-  }, [captureScrollSnapshot, scheduleTopClippedMessageUpdate]);
+  }, [captureScrollSnapshot, scheduleTopClippedMessageUpdate, virtualTranscript.cancelPendingScrollToBottom]);
 
+  /*
+  FNXC:ChatScrollAnchor 2026-09-07-23:09:
+  ChatView commande la fin uniquement par le virtualiseur afin que la fenêtre de lignes et le viewport DOM changent ensemble. La commande est répétée pendant les mesures de montage, mais sa génération clôt les callbacks d’un ancien fil et le premier scroll manuel détaché clôt immédiatement toutes les écritures restantes de l’incarnation courante.
+  */
   const anchorToBottom = useCallback((container: HTMLElement, options?: { force?: boolean }) => {
     if (!container.isConnected) return;
     if (!options?.force && isUserScrollingRef.current) {
       return;
     }
 
+    const generation = ++directThreadAnchorGenerationRef.current;
     let frame = 0;
     let stableFrames = 0;
     let lastScrollHeight = -1;
     const maxFrames = 6;
 
     const writeBottom = () => {
-      if (!container.isConnected) return;
-      // A forced thread-opening write may run once, but every settle frame must yield to a later manual scroll.
-      if (isUserScrollingRef.current && (!options?.force || frame > 0)) {
+      if (!container.isConnected || generation !== directThreadAnchorGenerationRef.current) return;
+      if (isUserScrollingRef.current && frame > 0) {
         return;
       }
 
-      container.scrollTop = container.scrollHeight;
+      virtualTranscript.scrollToBottom();
       if (container.scrollHeight === lastScrollHeight) {
         stableFrames += 1;
       } else {
@@ -1354,7 +1376,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
     };
 
     writeBottom();
-  }, []);
+  }, [virtualTranscript.scrollToBottom]);
 
   const activeThreadMessages = messages;
   const conversationSearchMatches = useMemo(() => {
@@ -1492,6 +1514,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
 
     const threadId = activeSession?.id ?? null;
     if (!threadId) {
+      directThreadAnchorGenerationRef.current += 1;
       lastAnchoredThreadStateRef.current = null;
       return;
     }
@@ -1518,7 +1541,17 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
     }
 
     logScrollDebug(isThreadChanged ? "thread-change" : finishedLoading ? "finished-loading" : firstMessagesArrived ? "first-messages" : "mount");
-    anchorToBottom(messagesContainer, { force: true });
+    /*
+    FNXC:ChatScrollAnchor 2026-09-07-22:17:
+    Une nouvelle incarnation de fil reprend la propriété du viewport avant sa première écriture afin de ne jamais hériter du désengagement du fil précédent. Les frames suivantes et l’arrivée différée des messages respectent toutefois immédiatement tout nouveau défilement manuel effectué dans ce fil.
+    */
+    const shouldTakeViewportOwnership = previousState === null || isThreadChanged;
+    if (shouldTakeViewportOwnership) {
+      scrollRestoreSnapshotRef.current = null;
+      isUserScrollingRef.current = false;
+      setIsUserScrolling(false);
+    }
+    anchorToBottom(messagesContainer, { force: shouldTakeViewportOwnership });
     {
       directThreadDeferredAnchorTimeoutRef.current = window.setTimeout(() => {
         directThreadDeferredAnchorTimeoutRef.current = null;
@@ -2938,7 +2971,10 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
     setConversationSearchOpen(false);
     setConversationSearchQuery("");
     setConversationSearchIndex(0);
-  }, []);
+    if (persistChatPreferences) {
+      clearPersistedChatOpenSession(projectId);
+    }
+  }, [persistChatPreferences, projectId]);
 
   const handleVisibleDetailBack = useCallback(() => {
     handleBack();
@@ -3029,6 +3065,20 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
 
     inputRef.current?.focus();
   }, [activeSession?.id, findActive, hasDetailSelection, initialDirectSessionNonce, suppressComposerFocus]);
+
+  useEffect(() => {
+    if (
+      initialDirectSession
+      || !persistChatPreferences
+      || !activeSession
+      || detailOpen
+      || getPersistedChatOpenSession(projectId) !== activeSession.id
+    ) {
+      return;
+    }
+    suppressAutomaticDetailNavRef.current = true;
+    setDetailOpen(true);
+  }, [activeSession, detailOpen, initialDirectSession, persistChatPreferences, projectId]);
 
   useEffect(() => {
     if (initialDirectSessionNonce === previousInitialDirectSessionNonceRef.current) return;
@@ -3644,8 +3694,31 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
   The session list is direct-chat only; the canonical ViewHeader carries New Chat and docked-list actions without a stale Rooms scope control.
   */
   const visibleSidebarSessions = showArchivedSessions ? archivedSessions : filteredSessions;
-  const pinnedFilteredSessions = visibleSidebarSessions.filter((session) => session.pinnedAt != null);
-  const unpinnedFilteredSessions = visibleSidebarSessions.filter((session) => session.pinnedAt == null);
+  const sessionListRef = useRef<HTMLDivElement | null>(null);
+  /*
+  FNXC:ChatScrollAnchor 2026-09-08-20:49:
+  La liste directe et le transcript possèdent deux politiques de défilement indépendantes : chaque collection active, archivée, recherchée ou filtrée commence en tête, tandis que seul le fil ouvert s’aligne sur son dernier message. L’ouverture ou la fermeture d’un fil ne doit donc jamais transmettre la commande terminale du transcript à la liste ni réinitialiser une position manuelle de celle-ci.
+  */
+  const virtualSessionList = useVirtualizedList({
+    collectionKey: `${projectId ?? "default"}:${showArchivedSessions ? "archived" : "active"}:${selectedTagId ?? "all"}:${searchQuery}`,
+    keys: visibleSidebarSessions.map((session) => session.id),
+    scrollRef: sessionListRef,
+    estimateHeight: 76,
+    maxRenderedRows: 40,
+    initialAlign: "start",
+    preservePrependAnchor: false,
+  });
+  const visibleSessionIds = new Set(virtualSessionList.visibleKeys);
+  const windowedSidebarSessions = visibleSidebarSessions.filter((session) => visibleSessionIds.has(session.id));
+  const pinnedFilteredSessions = windowedSidebarSessions.filter((session) => session.pinnedAt != null);
+  const unpinnedFilteredSessions = windowedSidebarSessions.filter((session) => session.pinnedAt == null);
+  const sessionPagination = useAutoPaginationSentinel({
+    rootRef: sessionListRef,
+    hasMore: showArchivedSessions ? hasMoreArchivedSessions : hasMoreSessions,
+    loading: sessionsLoadingMore,
+    onLoadMore: () => loadMoreSessions(showArchivedSessions ? "archived" : "active"),
+    direction: "end",
+  });
   const contextMenuSession = contextMenu
     ? filteredSessions.find((session) => session.id === contextMenu.sessionId) ?? (activeSession?.id === contextMenu.sessionId ? activeSession : undefined)
     : undefined;
@@ -3816,13 +3889,14 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
               </div>
             </div>
             {/* Session list section */}
-            <div className="chat-session-list chat-sidebar-list">
+            <div className="chat-session-list chat-sidebar-list" ref={sessionListRef} onScroll={virtualSessionList.onScroll}>
               {sessionsLoading ? (
                 <div className="chat-empty-state chat-empty-state--padded">{t("chat.loadingConversations", "Loading...")}</div>
               ) : ((showArchivedSessions ? archivedSessions : filteredSessions).length === 0) ? (
                 <div className="chat-empty-state chat-empty-state--padded">{t("chat.noConversationsYet", "No conversations yet")}</div>
               ) : (
                 <>
+                  {virtualSessionList.topSpacerHeight > 0 ? <div aria-hidden="true" style={{ height: virtualSessionList.topSpacerHeight }} /> : null}
                   {/*
                   FNXC:ChatPinned 2026-07-19-00:00:
                   Direct conversation pins must be two explicit sections on every session-list surface.
@@ -3914,6 +3988,12 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
                       })}
                     </section>
                   ))}
+                  {virtualSessionList.bottomSpacerHeight > 0 ? <div aria-hidden="true" style={{ height: virtualSessionList.bottomSpacerHeight }} /> : null}
+                  {(showArchivedSessions ? hasMoreArchivedSessions : hasMoreSessions) ? (
+                    <div ref={sessionPagination.sentinelRef} role="status" aria-live="polite" data-testid="chat-session-auto-pagination-sentinel">
+                      {sessionsLoadingMore ? t("chat.loadingConversations", "Loading...") : null}
+                    </div>
+                  ) : null}
                 </>
               )}
             </div>

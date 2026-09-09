@@ -113,6 +113,9 @@ import {
   TASK_STEP_REPORTS_VERSION,
   TASK_EXTERNAL_BLOCK_VERSION,
   TASK_REQUIRE_PLAN_APPROVAL_VERSION,
+  PATCHNODE_ENTRIES_VERSION,
+  TASK_PLANNING_FAILURE_VERSION,
+  CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION,
   MIXED_0065_REPAIR_VERSION,
 } from "../../postgres/schema-applier.js";
 import { ProjectPartitionRekeyError, rekeyFallbackProjectPartition } from "../../postgres/migration-stamping.js";
@@ -171,9 +174,21 @@ describe("schema-applier: immutable migration identities", () => {
     expect(TASK_STEP_REPORTS_VERSION).toBe("0068");
     expect(TASK_EXTERNAL_BLOCK_VERSION).toBe("0069");
     expect(TASK_REQUIRE_PLAN_APPROVAL_VERSION).toBe("0070");
-    expect(Number(SCHEMA_BASELINE_VERSION)).toBeGreaterThanOrEqual(Number(TASK_REQUIRE_PLAN_APPROVAL_VERSION));
-    expect(SCHEMA_BASELINE_VERSION).toBe("0072");
-    expect(MIXED_0065_REPAIR_VERSION).toBe("0072");
+    expect(PATCHNODE_ENTRIES_VERSION).toBe("0071");
+    expect(TASK_PLANNING_FAILURE_VERSION).toBe("0072");
+    expect(CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION).toBe("0073");
+    expect(Number(SCHEMA_BASELINE_VERSION)).toBeGreaterThanOrEqual(Number(CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION));
+    expect(SCHEMA_BASELINE_VERSION).toBe("0073");
+    expect(MIXED_0065_REPAIR_VERSION).toBe("local-repair-mixed-0065");
+    /*
+    FNXC:MigrationCollisionRepair 2026-09-09-15:13: the fork's repair step must never hold a numeric
+    migration identity again. fusion_schema_migrations is keyed on the bare version string, so when the
+    repair shared "0072" with upstream's FN-9273 release, `applied.includes("0072")` satisfied both gates and
+    `tasks.planning_failure` was silently skipped on every database that had recorded the repair. Released
+    migrations are always numeric, so a non-numeric identity cannot collide with any current or future one;
+    assertBinaryNotOlderThanDatabase ignores non-numeric rows, which is why this stays safe as a ceiling.
+    */
+    expect(Number.isFinite(Number(MIXED_0065_REPAIR_VERSION))).toBe(false);
   });
 
   it("keeps monitor and approval isolation assigned to version 0003", () => {
@@ -659,6 +674,12 @@ pgDescribe("schema-applier: VAL-SCHEMA-008 three-database topology", () => {
 
   it("ensures schemas before hooks when all migration markers are already recorded", async () => {
     ctx = await setupFreshDb();
+    /*
+    FNXC:MigrationCollisionRepair 2026-09-09-16:05:
+    "All migration markers recorded" must now include the fork-local repair step explicitly: its ledger
+    identity is the non-numeric `local-repair-mixed-0065`, so the numeric generate_series seed cannot
+    suppress it. Without this row the step would apply here and report `applied: true`.
+    */
     await ctx.db.execute(sql.raw(`
       CREATE TABLE public.fusion_schema_migrations (
         version text PRIMARY KEY,
@@ -667,6 +688,7 @@ pgDescribe("schema-applier: VAL-SCHEMA-008 three-database topology", () => {
       INSERT INTO public.fusion_schema_migrations (version)
       SELECT lpad(n::text, 4, '0')
       FROM generate_series(0, ${Number(SCHEMA_BASELINE_VERSION)}) AS migration(n);
+      INSERT INTO public.fusion_schema_migrations (version) VALUES ('${MIXED_0065_REPAIR_VERSION}');
     `));
 
     const observedSchemas: string[] = [];
@@ -733,7 +755,14 @@ pgDescribe("schema-applier: VAL-SCHEMA-001 final-schema parity (table counts)", 
     0060 adds workspace coordination leases and land intents (→ 115). Plugin tables are added separately
     by the schema-init hook and are excluded here.
     */
-    expect(bySchema.project).toBe(115);
+    /*
+    FNXC:PgSchemaApplier 2026-09-09-16:05:
+    FN-227's patchnode ledger migration (0071) adds project.patchnode_entries to the fresh baseline,
+    so the merged schema creates 116 project tables. Both merge parents still asserted 115 after
+    inheriting 0071, which is why this parity guard was red on each side in isolation, not only in the
+    merge. Counted tables are core baseline plus migrations; plugin schema-init tables stay excluded.
+    */
+    expect(bySchema.project).toBe(116);
     /*
     FNXC:CapacityModel 2026-07-29-08:10 (drop the cross-project cap — table half):
     17, not 18: `central.global_concurrency` is dropped by migration 0037. A fresh
@@ -933,6 +962,26 @@ pgDescribe("schema-applier: VAL-SCHEMA-001 final-schema parity (table counts)", 
     `)) as unknown as Array<{ column_name: string }>;
     expect(columns).toEqual([{ column_name: "session_advisor_enabled" }]);
     expect(await getAppliedMigrations(ctx.db)).toContain(SESSION_ADVISOR_ENABLED_SCHEMA_VERSION);
+  });
+
+  it("repairs the mixed-case chat-message recency index and stays idempotent", async () => {
+    ctx = await setupFreshDb();
+    await applySchemaBaseline(ctx.db, { pluginHooks: [] });
+    const before = await ctx.db.execute(sql`
+      SELECT indexname FROM pg_indexes
+      WHERE schemaname = 'project' AND tablename = 'chat_messages'
+        AND indexname = 'idxChatMessagesSessionCreatedAtId'
+    `);
+    expect(before).toHaveLength(1);
+    await ctx.db.execute(sql.raw('DROP INDEX project."idxChatMessagesSessionCreatedAtId"'));
+    expect((await applySchemaBaseline(ctx.db, { pluginHooks: [] })).applied).toBe(true);
+    const restored = await ctx.db.execute(sql`
+      SELECT indexname FROM pg_indexes
+      WHERE schemaname = 'project' AND tablename = 'chat_messages'
+        AND indexname = 'idxChatMessagesSessionCreatedAtId'
+    `);
+    expect(restored).toHaveLength(1);
+    expect((await applySchemaBaseline(ctx.db, { pluginHooks: [] })).applied).toBe(false);
   });
 
   it("repairs a recorded 0070 migration when require_plan_approval is missing", async () => {
@@ -1896,6 +1945,15 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       TASK_STEP_REPORTS_VERSION,
       TASK_EXTERNAL_BLOCK_VERSION,
       TASK_REQUIRE_PLAN_APPROVAL_VERSION,
+      PATCHNODE_ENTRIES_VERSION,
+      TASK_PLANNING_FAILURE_VERSION,
+      /*
+      FNXC:MigrationCollisionRepair 2026-09-09-16:05:
+      This fixture records ONLY the 0000 marker and hand-builds a pre-chat legacy table set, so
+      0000_initial.sql never runs and project.chat_messages does not exist. FN-9275's 0073 step is
+      state-gated on that table, so it is legitimately skipped here and records itself on the first
+      open after the chat tables appear. Later-marker fixtures (0001/0002/0003/0010) do apply 0073.
+      */
       MIXED_0065_REPAIR_VERSION,
     ]);
     expect((await applySchemaBaseline(ctx.db, { pluginHooks: [] })).applied).toBe(false);
@@ -1993,6 +2051,9 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       TASK_STEP_REPORTS_VERSION,
       TASK_EXTERNAL_BLOCK_VERSION,
       TASK_REQUIRE_PLAN_APPROVAL_VERSION,
+      PATCHNODE_ENTRIES_VERSION,
+      TASK_PLANNING_FAILURE_VERSION,
+      CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION,
       MIXED_0065_REPAIR_VERSION,
     ]);
   });
@@ -2223,6 +2284,9 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       TASK_STEP_REPORTS_VERSION,
       TASK_EXTERNAL_BLOCK_VERSION,
       TASK_REQUIRE_PLAN_APPROVAL_VERSION,
+      PATCHNODE_ENTRIES_VERSION,
+      TASK_PLANNING_FAILURE_VERSION,
+      CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION,
       MIXED_0065_REPAIR_VERSION,
     ]);
   });
@@ -2334,6 +2398,9 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       TASK_STEP_REPORTS_VERSION,
       TASK_EXTERNAL_BLOCK_VERSION,
       TASK_REQUIRE_PLAN_APPROVAL_VERSION,
+      PATCHNODE_ENTRIES_VERSION,
+      TASK_PLANNING_FAILURE_VERSION,
+      CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION,
       MIXED_0065_REPAIR_VERSION,
     ]);
   });
@@ -2445,6 +2512,9 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       TASK_STEP_REPORTS_VERSION,
       TASK_EXTERNAL_BLOCK_VERSION,
       TASK_REQUIRE_PLAN_APPROVAL_VERSION,
+      PATCHNODE_ENTRIES_VERSION,
+      TASK_PLANNING_FAILURE_VERSION,
+      CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION,
       MIXED_0065_REPAIR_VERSION,
     ]);
   });

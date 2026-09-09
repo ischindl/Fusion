@@ -4,6 +4,7 @@ import { canonicalizePlan, createCurrentPlanEvidence, diffSpecLocks, isSpecLockA
 import { applyOriginalDescription } from "../../tasks/original-description-policy.js";
 
 const prompt = `# Task\n\n## Mission\n\nBuild a safe widget.\n\n## File Scope\n\n- src/widget.ts\n\n## Steps\n\n1. Build widget\n\n## Completion Criteria\n\n- [ ] Widget works\n\n## Do NOT\n\n- Change API\n\n## Dependencies\n\n- FN-1\n`;
+const plannerPromptWithSummary = `# Task\n\n## What This Delivers\n\n- Deliver a safe widget.\n\n## Mission\n\nBuild a safe widget.\n\n## File Scope\n\n- src/widget.ts\n\n## Steps\n\n1. Build widget\n\n## Completion Criteria\n\n- [ ] Widget works\n\n## Do NOT\n\n- Change API\n\n## Dependencies\n\n- FN-1\n`;
 const evidence = (text = prompt, version = 1) => createCurrentPlanEvidence({ version, sourceRevision: version, capturedAt: "2026-08-09T07:06:00.000Z", prompt: text });
 const lock = (current = evidence()) => ({ version: 1, acceptedAt: "2026-08-09T07:06:00.000Z", approvalFingerprint: "approved", currentPlanVersion: current.version, currentPlanHash: current.plan.contentHash!, plan: current.plan });
 
@@ -16,6 +17,18 @@ describe("spec lock canonicalization", () => {
     expect(canonicalizePlan(embedded)).toMatchObject({ status: "available", contentHash: canonicalizePlan(control).contentHash });
   });
 
+  it.each(["Mission", "File Scope", "Steps", "Completion Criteria", "Do NOT", "Dependencies"])("ignores tracked operator heading %s when What This Delivers follows the generated region", (heading) => {
+    const control = applyOriginalDescription(plannerPromptWithSummary, "Operator context without structural collisions.");
+    const embedded = applyOriginalDescription(plannerPromptWithSummary, `Operator context.\n\n## ${heading}\n\nOperator-owned prose.`);
+    const canonical = canonicalizePlan(embedded);
+
+    expect(canonical).toMatchObject({
+      status: "available",
+      contentHash: canonicalizePlan(control).contentHash,
+      sections: { "non-goals": expect.objectContaining({ canonical: "Change API" }) },
+    });
+  });
+
   it("uses the bounded generated end marker when operator prose contains a literal marker", () => {
     const control = applyOriginalDescription(prompt, "Operator context.");
     const embedded = applyOriginalDescription(prompt, "Literal <!-- fusion-original-description:end --> remains operator prose.\n\n## Do NOT\n\nDo not alter compatibility.");
@@ -24,6 +37,21 @@ describe("spec lock canonicalization", () => {
 
   it("keeps planner-authored duplicate sections unavailable", () => {
     expect(canonicalizePlan(`${prompt}\n## Do NOT\n\nDuplicate`)).toMatchObject({ status: "unavailable", reason: "section-duplicate" });
+  });
+
+  it("combines distinct aliases for the same planner-authored section", () => {
+    const withAliases = `${prompt}\n## Non-Goals\n\n- Preserve compatibility`;
+    expect(canonicalizePlan(withAliases)).toMatchObject({
+      status: "available",
+      sections: {
+        "non-goals": expect.objectContaining({ canonical: "Change API\nPreserve compatibility" }),
+      },
+    });
+  });
+
+  it("keeps repeated exact aliases unavailable", () => {
+    const withRepeatedAlias = `${prompt}\n## Non-Goals\n\n- Preserve compatibility\n\n## Non-Goals\n\n- Duplicate`;
+    expect(canonicalizePlan(withRepeatedAlias)).toMatchObject({ status: "unavailable", reason: "section-duplicate" });
   });
 
   it("identifies unavailable locks without changing the established error message", () => {

@@ -1664,7 +1664,9 @@
     "sendNoActiveSession": "",
     "agentTargetTranscriptNotice": "",
     "failedToUpdateChatModel": "",
-    "sendAlreadyInFlight": ""
+    "sendAlreadyInFlight": "",
+    "questionOptionalLabel": "",
+    "questionSelectHintWithOptional": ""
   },
   "chatRooms": {
     "error": {
@@ -1786,7 +1788,8 @@
     "noDoneTasksToArchive": "",
     "planAutoApproveLabel": "",
     "planAutoApproveOffHint": "",
-    "planAutoApproveOnHint": ""
+    "planAutoApproveOnHint": "",
+    "paginationError": "Não foi possível carregar as tarefas mais antigas."
   },
   "commandCenter": {
     "activity": {
@@ -2397,7 +2400,20 @@
     "runLocalButton": "Executar o Fusion localmente",
     "settingUpRemote": "Configurando conexão remota…",
     "starting": "Iniciando…",
-    "startingLocalRuntime": "Iniciando o runtime local do Fusion…"
+    "startingLocalRuntime": "Iniciando o runtime local do Fusion…",
+    "copyStartupDetails": "",
+    "detailsCopied": "",
+    "localStartupUnknown": "",
+    "showStartupDetails": "",
+    "startupAttempts": "",
+    "startupLog": "",
+    "startupLogUnavailable": "",
+    "startupMessage": "",
+    "startupPhase": "",
+    "startupPlatform": "",
+    "startupStack": "",
+    "copyStartupDetailsUnavailable": "",
+    "startupDetailsText": ""
   },
   "devserver": {
     "allSeverities": "Todas as severidades",
@@ -10823,7 +10839,7 @@
     "widgetDefault": "Padrão"
   },
   "workflowSwitcher": {
-    "countsAria": "{{todoLabel}}: {{todo}}, {{inProgressLabel}}: {{inProgress}}, {{doneLabel}}: {{done}}{{mergingSuffix}}",
+    "countsAria": "{{planLabel}}: {{plan}}, {{progressLabel}}: {{progress}}, {{reviewLabel}}: {{review}}{{mergingSuffix}}",
     "done": "Concluído",
     "inProgress": "Em andamento",
     "label": "Fluxo de trabalho",
@@ -10834,7 +10850,10 @@
     "editWorkflow": "Editar fluxo de trabalho",
     "newWorkflow": "Novo fluxo de trabalho",
     "mergingTitle_one": "{{count}} tarefa{{plural}} em merge",
-    "mergingTitle_other": "{{count}} tarefa{{plural}} em merge"
+    "mergingTitle_other": "{{count}} tarefa{{plural}} em merge",
+    "plan": "Planejamento",
+    "progress": "Progresso",
+    "review": "Revisão"
   },
   "workspace": {
     "projectRoot": "Raiz do projeto",

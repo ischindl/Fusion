@@ -1654,7 +1654,9 @@
     "sendNoActiveSession": "",
     "agentTargetTranscriptNotice": "",
     "failedToUpdateChatModel": "",
-    "sendAlreadyInFlight": ""
+    "sendAlreadyInFlight": "",
+    "questionOptionalLabel": "",
+    "questionSelectHintWithOptional": ""
   },
   "chatRooms": {
     "error": {
@@ -1776,7 +1778,8 @@
     "noDoneTasksToArchive": "",
     "planAutoApproveLabel": "",
     "planAutoApproveOffHint": "",
-    "planAutoApproveOnHint": ""
+    "planAutoApproveOnHint": "",
+    "paginationError": "無法載入較早的任務。"
   },
   "commandCenter": {
     "activity": {
@@ -2387,7 +2390,20 @@
     "runLocalButton": "本機執行 Fusion",
     "settingUpRemote": "正在設定遠端連接…",
     "starting": "正在啟動…",
-    "startingLocalRuntime": "正在啟動本機 Fusion 執行時…"
+    "startingLocalRuntime": "正在啟動本機 Fusion 執行時…",
+    "copyStartupDetails": "",
+    "detailsCopied": "",
+    "localStartupUnknown": "",
+    "showStartupDetails": "",
+    "startupAttempts": "",
+    "startupLog": "",
+    "startupLogUnavailable": "",
+    "startupMessage": "",
+    "startupPhase": "",
+    "startupPlatform": "",
+    "startupStack": "",
+    "copyStartupDetailsUnavailable": "",
+    "startupDetailsText": ""
   },
   "devserver": {
     "allSeverities": "所有嚴重程度",
@@ -10812,7 +10828,7 @@
     "widgetDefault": ""
   },
   "workflowSwitcher": {
-    "countsAria": "{{todoLabel}}: {{todo}}, {{inProgressLabel}}: {{inProgress}}, {{doneLabel}}: {{done}}{{mergingSuffix}}",
+    "countsAria": "{{planLabel}}: {{plan}}, {{progressLabel}}: {{progress}}, {{reviewLabel}}: {{review}}{{mergingSuffix}}",
     "done": "Done",
     "inProgress": "In Progress",
     "label": "Workflow",
@@ -10823,7 +10839,10 @@
     "editWorkflow": "Edit workflow",
     "newWorkflow": "New workflow",
     "mergingTitle_one": "",
-    "mergingTitle_other": ""
+    "mergingTitle_other": "",
+    "plan": "規劃",
+    "progress": "進行中",
+    "review": "審查"
   },
   "workspace": {
     "projectRoot": "項目根目錄",

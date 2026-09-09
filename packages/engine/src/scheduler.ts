@@ -1008,6 +1008,7 @@ export class Scheduler {
   private running = false;
   private scheduling = false;
   private schedulingSince = 0;
+  private immediateSchedulePending = false;
   private wasWorktreeLimited = false;
   private wasGlobalPaused = false;
   private wasEnginePaused = false;
@@ -1104,7 +1105,7 @@ export class Scheduler {
           start: async () => {
             this.coordinatorReadyTasks.delete(task.id);
             this.coordinatorAdmittedTaskIds.add(task.id);
-            void this.schedule();
+            this.requestImmediateSchedule();
           },
         })),
     });
@@ -1122,7 +1123,7 @@ export class Scheduler {
       visible on the board and via task:moved logs. Keep the trigger line debug-only.
       */
       schedulerLog.debug("Task created — triggering scheduling");
-      this.schedule();
+      this.requestImmediateSchedule();
     });
 
     /**
@@ -1131,12 +1132,12 @@ export class Scheduler {
      * for the next poll interval (up to 15 s). Only reacts to true→false
      * transitions — no-ops on false→false and true→true.
      *
-     * The re-entrance guard (`this.scheduling`) inside `schedule()` safely
-     * drops the call if a poll-based pass is already in flight.
+     * The coalesced immediate-schedule primitive preserves one follow-up pass
+     * when a poll-based pass is already in flight.
      */
     this.store.on("settings:updated", ({ settings, previous }) => {
       if (previous.globalPause && !settings.globalPause && this.running) {
-        this.schedule();
+        this.requestImmediateSchedule();
       }
     });
 
@@ -1148,7 +1149,7 @@ export class Scheduler {
      */
     this.store.on("settings:updated", ({ settings, previous }) => {
       if (previous.enginePaused && !settings.enginePaused && this.running) {
-        this.schedule();
+        this.requestImmediateSchedule();
       }
     });
 
@@ -1368,7 +1369,7 @@ export class Scheduler {
         Duplicate of the column-move lifecycle line; schedule side-effect is not operator-facing.
         */
         schedulerLog.debug(`Task moved to ${to} — triggering scheduling`);
-        this.schedule();
+        this.requestImmediateSchedule();
       }
     });
 
@@ -1442,7 +1443,7 @@ export class Scheduler {
           const unpausedParked = await resolveTaskParkedColumns(this.store, task.id, updatedSelectionCache);
           if (this.running && unpausedParked.wake.has(task.column)) {
             schedulerLog.log(`Task ${task.id} unpaused — triggering scheduling`);
-            void this.schedule();
+            this.requestImmediateSchedule();
           }
         })();
       }
@@ -1460,8 +1461,8 @@ export class Scheduler {
       Same shape as the pausedTaskIds tracker above: remember ids seen mid-planning, then fire once
       on the transition back to a dispatchable state. Guarded on `!task.status` so a planning ->
       failed/awaiting-approval park does not trigger a pointless pass, and on column so a card
-      finishing planning somewhere unschedulable is ignored. schedule()'s re-entrance guard drops
-      the call harmlessly if a poll-based pass is already running.
+      finishing planning somewhere unschedulable is ignored. The immediate request coalesces one
+      follow-up when a poll-based pass is already running.
       */
       if (task.status === "planning") {
         this.planningTaskIds.add(task.id);
@@ -1480,7 +1481,7 @@ export class Scheduler {
             && planningParked.wake.has(task.column)
           ) {
             schedulerLog.log(`Task ${task.id} finished planning — triggering scheduling`);
-            void this.schedule();
+            this.requestImmediateSchedule();
           }
         })();
       }
@@ -1511,7 +1512,7 @@ export class Scheduler {
             && approvalParked.wake.has(task.column)
           ) {
             schedulerLog.log(`Task ${task.id} plan approval cleared — triggering scheduling`);
-            void this.schedule();
+            this.requestImmediateSchedule();
           }
         })();
       }
@@ -1637,7 +1638,7 @@ export class Scheduler {
             }
           }
 
-          this.schedule();
+          this.requestImmediateSchedule();
         } catch (error) {
           schedulerLog.error(`Failed event-driven soft-delete blocker reconciliation for ${task.id}`, error);
         }
@@ -1740,6 +1741,7 @@ export class Scheduler {
 
   stop(): void {
     this.running = false;
+    this.immediateSchedulePending = false;
     if (this.pollInterval) {
       clearInterval(this.pollInterval);
       this.pollInterval = null;
@@ -2178,6 +2180,23 @@ export class Scheduler {
   }
 
   /**
+   * Request an event-driven pass without losing a wake that arrives during an active pass.
+   *
+   * FNXC:OverlapScheduling 2026-09-07-14:23:
+   * A terminal move can wake the scheduler before completion fan-out commits its overlap clear.
+   * Preserve one coalesced follow-up request until the active pass finishes so the post-commit wake
+   * observes durable state, while `stop()` cancels pending work and normal pause guards remain authoritative.
+   */
+  requestImmediateSchedule(): void {
+    if (!this.running) return;
+    if (this.scheduling) {
+      this.immediateSchedulePending = true;
+      return;
+    }
+    void this.schedule();
+  }
+
+  /**
    * Run one scheduling pass.
    *
    * Uses a re-entrance guard (`this.scheduling`) to prevent overlapping
@@ -2336,6 +2355,11 @@ export class Scheduler {
       schedulerLog.error("Scheduling error:", err);
     } finally {
       this.scheduling = false;
+      this.schedulingSince = 0;
+      if (this.running && this.immediateSchedulePending) {
+        this.immediateSchedulePending = false;
+        void this.schedule();
+      }
     }
   }
 

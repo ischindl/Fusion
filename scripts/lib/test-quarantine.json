@@ -15,6 +15,11 @@
       "file": "packages/dashboard/app/components/__tests__/TaskPlannerChatTab.virtualization.test.tsx",
       "reason": "First on-sight quarantine: upstream FN-304 test captured no IntersectionObserver callback under components-dir load (assertion at :164 `expected undefined to be type of 'function'`), passes isolated 5/5. Coverage is 5 load-sensitive tests, so the register's substantial-coverage exception does not apply.",
       "quarantinedAt": "2026-09-07"
+    },
+    {
+      "file": "packages/engine/src/__tests__/spec-drift-reconciler.test.ts",
+      "reason": "SECOND sighting of the timer-driven exponential-backoff failure recorded in docs/solutions/test-failures/suite-only-flakes-observed-register.md. FN-9272's selected engine test command observed three persistence attempts after the second 1-second fake-timer advance, while the test expects two; this parser-only change does not touch the reconciler. Quarantined under AGENTS.md's mandatory deletion ratchet without weakening the timing assertion.",
+      "quarantinedAt": "2026-09-09"
     }
   ]
 }

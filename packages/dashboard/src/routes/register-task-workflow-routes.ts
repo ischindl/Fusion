@@ -1537,6 +1537,26 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
     }
   });
 
+  router.get("/tasks/page", async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      const limitValue = req.query.limit;
+      const limit = limitValue === undefined ? 100 : Number(limitValue);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw badRequest("limit must be an integer between 1 and 200");
+      const cursor = typeof req.query.cursor === "string" && req.query.cursor ? req.query.cursor : undefined;
+      const query = typeof req.query.q === "string" && req.query.q.trim() ? req.query.q.trim() : undefined;
+      try {
+        res.json(await scopedStore.listCurrentTasksPage({ limit, cursor, ...(query ? { query } : {}) }));
+      } catch (error) {
+        if (error instanceof TypeError && error.message === "Invalid task list cursor") throw badRequest(error.message);
+        throw error;
+      }
+    } catch (err: unknown) {
+      if (err instanceof ApiError) throw err;
+      rethrowAsApiError(err);
+    }
+  });
+
   // Multi-lane board metadata (U9, R16). Additive sibling to GET /tasks — the
   // task list payload stays byte-identical. Flag-OFF returns
   // { flagEnabled: false } and the client renders the legacy single-lane board.
@@ -1560,7 +1580,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         : [];
       const [currentTasks, completedPage] = await Promise.all([
         scopedStore.listTasks({ slim: true, includeArchived: false, excludeColumns: completeColumns }),
-        scopedStore.listCompletedTasks({ limit: 50, offset: 0, slim: true }),
+        scopedStore.listCompletedTasks({ limit: 50, slim: true }),
       ]);
       const taskIds = [...new Set([
         ...currentTasks.map((task) => task.id),
@@ -1585,28 +1605,28 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
   router.get("/tasks/done", async (req, res) => {
     try {
       const { store: scopedStore } = await getProjectContext(req);
-      const parsePageNumber = (value: unknown, name: "limit" | "offset"): number | undefined => {
-        if (value === undefined) return undefined;
-        if (typeof value !== "string" || value.trim() === "" || !Number.isInteger(Number(value)) || Number(value) < 0) {
-          throw badRequest(`${name} must be a non-negative integer`);
-        }
-        return Number(value);
-      };
-      const limit = parsePageNumber(req.query.limit, "limit");
-      const offset = parsePageNumber(req.query.offset, "offset");
-      if (limit === 0) throw badRequest("limit must be a positive integer");
+      const rawLimit = req.query.limit;
+      if (rawLimit !== undefined && (typeof rawLimit !== "string" || rawLimit.trim() === "" || !Number.isInteger(Number(rawLimit)) || Number(rawLimit) <= 0)) {
+        throw badRequest("limit must be a positive integer");
+      }
       const sort = req.query.sort;
       if (sort !== undefined && sort !== "completion-date-desc" && sort !== "task-id-desc") {
         throw badRequest("sort must be completion-date-desc or task-id-desc");
       }
+      if (req.query.cursor !== undefined && typeof req.query.cursor !== "string") {
+        throw badRequest("cursor must be an opaque string");
+      }
       res.json(await scopedStore.listCompletedTasks({
-        limit,
-        offset,
+        limit: rawLimit === undefined ? undefined : Number(rawLimit),
+        cursor: req.query.cursor,
         slim: true,
         sort: sort as TaskColumnSortMode | undefined,
       }));
     } catch (err: unknown) {
       if (err instanceof ApiError) throw err;
+      if (err instanceof TypeError && err.message === "Invalid completed-task cursor") {
+        throw badRequest(err.message);
+      }
       rethrowAsApiError(err);
     }
   });

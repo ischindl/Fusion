@@ -555,6 +555,13 @@ const NOT_SURFACED_ALLOWLIST: Record<string, string> = {
   taskTokenBudget: "not yet exposed as a distinct Settings field",
   tokenCap2: "not a real key (placeholder guard)",
   scripts: "not yet exposed as a distinct Settings field",
+  /*
+  FNXC:SettingsDefaults 2026-09-09-16:05:
+  FN-305's script catalog stores per-script descriptions in `scriptMetadata`, keyed by script name and
+  edited from the Scripts surface rather than a Settings field, so it belongs with its `scripts` sibling.
+  It was never allowlisted, which left this guard red on both sides of the origin/main sync.
+  */
+  scriptMetadata: "per-script description side-table edited from the Scripts surface, not a Settings field",
   setupScript: "not yet exposed as a distinct Settings field",
   agentProvisioning2: "not a real key (placeholder guard)",
   sandboxProvisioning: "configured via the Agent Permissions provisioning editor, not a plain description field",

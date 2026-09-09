@@ -1654,7 +1654,9 @@
     "sendNoActiveSession": "",
     "agentTargetTranscriptNotice": "",
     "failedToUpdateChatModel": "",
-    "sendAlreadyInFlight": ""
+    "sendAlreadyInFlight": "",
+    "questionOptionalLabel": "",
+    "questionSelectHintWithOptional": ""
   },
   "chatRooms": {
     "error": {
@@ -1776,7 +1778,8 @@
     "noDoneTasksToArchive": "",
     "planAutoApproveLabel": "",
     "planAutoApproveOffHint": "",
-    "planAutoApproveOnHint": ""
+    "planAutoApproveOnHint": "",
+    "paginationError": "No se pudieron cargar las tareas anteriores."
   },
   "commandCenter": {
     "activity": {
@@ -2387,7 +2390,20 @@
     "runLocalButton": "Ejecutar Fusion localmente",
     "settingUpRemote": "Configurando conexión remota…",
     "starting": "Iniciando…",
-    "startingLocalRuntime": "Iniciando el runtime local de Fusion…"
+    "startingLocalRuntime": "Iniciando el runtime local de Fusion…",
+    "copyStartupDetails": "",
+    "detailsCopied": "",
+    "localStartupUnknown": "",
+    "showStartupDetails": "",
+    "startupAttempts": "",
+    "startupLog": "",
+    "startupLogUnavailable": "",
+    "startupMessage": "",
+    "startupPhase": "",
+    "startupPlatform": "",
+    "startupStack": "",
+    "copyStartupDetailsUnavailable": "",
+    "startupDetailsText": ""
   },
   "devserver": {
     "allSeverities": "Todas las severidades",
@@ -10813,7 +10829,7 @@
     "widgetDefault": ""
   },
   "workflowSwitcher": {
-    "countsAria": "{{todoLabel}}: {{todo}}, {{inProgressLabel}}: {{inProgress}}, {{doneLabel}}: {{done}}{{mergingSuffix}}",
+    "countsAria": "{{planLabel}}: {{plan}}, {{progressLabel}}: {{progress}}, {{reviewLabel}}: {{review}}{{mergingSuffix}}",
     "done": "Done",
     "inProgress": "In Progress",
     "label": "Workflow",
@@ -10824,7 +10840,10 @@
     "editWorkflow": "Edit workflow",
     "newWorkflow": "New workflow",
     "mergingTitle_one": "",
-    "mergingTitle_other": ""
+    "mergingTitle_other": "",
+    "plan": "Planificación",
+    "progress": "Progreso",
+    "review": "Revisión"
   },
   "workspace": {
     "projectRoot": "Raíz del proyecto",

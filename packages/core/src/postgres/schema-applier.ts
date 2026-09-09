@@ -87,12 +87,14 @@ touches no data; it must advance in the same change that ships a new migration f
 /* FNXC:ExternalBlock 2026-08-28-03:48: advance the schema ceiling so upgraded projects materialize the external-obstacle freeze before task reads begin. */
 /* FNXC:PlanApproval 2026-08-28-06:24: advance the ceiling with the per-task approval migration so task reads never precede its column. */
 /* FNXC:PatchnodeLedger 2026-08-28-12:16: the permanent ledger table must exist before TaskStore can commit a completion move atomically with its entry. */
-export const SCHEMA_BASELINE_VERSION = "0072";
+/* FNXC:ChatSidebarPerf 2026-09-08-04:48: baseline marker includes the chat-message recency index required for index-backed sidebar previews. */
+/* FNXC:MigrationCollisionRepair 2026-09-09-15:13: the ceiling tracks upstream's highest released migration (0073). The fork's collision repair no longer occupies a numeric slot, so it stops advancing the ceiling — see MIXED_0065_REPAIR_VERSION. */
+export const SCHEMA_BASELINE_VERSION = "0073";
 /** FNXC:SymbolLock 2026-07-20-10:00: upgrades need durable task declarations before admission resolves symbols. */
 export const TASK_DECLARED_SYMBOLS_VERSION = "0028";
 const INITIAL_SCHEMA_VERSION = "0000";
-const AUTOMATION_ISOLATION_SCHEMA_VERSION = "0001";
-const ANALYTICS_ISOLATION_SCHEMA_VERSION = "0002";
+export const AUTOMATION_ISOLATION_SCHEMA_VERSION = "0001";
+export const ANALYTICS_ISOLATION_SCHEMA_VERSION = "0002";
 /**
  * FNXC:PostgresMigrationIdentity 2026-07-14-01:41:
  * Each migration keeps an immutable bookkeeping identity even as SCHEMA_BASELINE_VERSION advances to newer migrations. Upgrade checks and inserts must use this dedicated 0003 identifier so a later latest-version marker cannot make an unrecorded monitor/approval migration look applied.
@@ -266,13 +268,31 @@ export const TASK_EXTERNAL_BLOCK_VERSION = "0069";
 export const TASK_REQUIRE_PLAN_APPROVAL_VERSION = "0070";
 /** FNXC:PatchnodeLedger 2026-08-28-12:16: upgraded projects need the durable delivery ledger before any completion transaction runs. */
 export const PATCHNODE_ENTRIES_VERSION = "0071";
+/** FNXC:TriagePlanningState 2026-09-07-19:49: upgraded projects require durable validator-free planning retry evidence. */
+export const TASK_PLANNING_FAILURE_VERSION = "0072";
+/** FNXC:ChatSidebarPerf 2026-09-08-04:48: upgrades need the descending per-session recency index before sidebar lateral lookups run. */
+export const CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION = "0073";
 
 /** FNXC:MemoryFocus 2026-08-21-06:10: explicit registration prevents the per-conversation memory-focus migration from being skipped. Renumbered to 0060, then 0061, then 0065: the upstream FN-066..FN-101 batch (2026-08-21) owns 0061-0064 (activity-log index, splitting removal, AI-merge review, repository scope). */
 /* FNXC:MemoryFocus 2026-08-23-07:07: renumbered 0065 -> 0066 in the RUFU-160 origin/main merge: origin/main independently shipped 0065 as FN-149's review-convergence migration (v0.77.0-beta.7); keeping both lines' migrations requires the deploy-line file to take the next free sequence. */
 export const CHAT_SESSION_MEMORY_FOCUS_VERSION = "0066";
 /* FNXC:MigrationCollisionRepair 2026-08-23-07:07: idempotent re-run of both 0065-collision migrations; repairs databases that recorded 0065 with the other line's content. */
 /* FNXC:MigrationCollisionRepair 2026-08-27-05:06: renumbered 0067 -> 0068 in the fusion/rufu-141 merge, and 0068 -> 0072 in the beta.11 merge when upstream released its own 0068 (FN-208). */
-export const MIXED_0065_REPAIR_VERSION = "0072";
+/*
+FNXC:MigrationCollisionRepair 2026-09-09-15:13 (merge origin/main f59f9ead92 -> main):
+the repair leaves the numeric sequence for good. Upstream owns released 0072 (FN-9273 planning-failure
+evidence) and 0073 (FN-9275 chat recency index), so any numeric identity here collides again: the
+bookkeeping table is keyed on the bare version string, so `applied.includes("0072")` answers "already
+applied" for BOTH migrations and upstream's `tasks.planning_failure` column is silently skipped on every
+database that recorded this repair. A fourth renumber (0072 -> 0074) only postpones the same collision to
+the next upstream batch, so the repair now carries a permanent non-numeric identity, the kind
+LEGACY_ADOPTION_DRAINED_MARKER already uses: assertBinaryNotOlderThanDatabase ignores non-numeric rows,
+so this row can never read as a newer database than the binary. Every database holding an older numeric
+repair row re-runs the step once under this identifier (the SQL is `ADD COLUMN IF NOT EXISTS`, so the
+re-run is a no-op); only a database whose repair row collides with an upstream-released number needs the
+one-time ledger remap described on this constant before that binary first boots.
+*/
+export const MIXED_0065_REPAIR_VERSION = "local-repair-mixed-0065";
 
 /** SECURITY DEFINER helper that only inserts LEGACY_ADOPTION_DRAINED_MARKER. */
 export const LEGACY_ADOPTION_DRAINED_MARKER_FUNCTION = "fusion_mark_legacy_adoption_drained";
@@ -519,8 +539,11 @@ const TASK_STEP_REPORTS_MIGRATION_PATH = join(MIGRATIONS_DIR, "0068_fn_208_task_
 const TASK_EXTERNAL_BLOCK_MIGRATION_PATH = join(MIGRATIONS_DIR, "0069_fn_209_task_external_block.sql");
 const TASK_REQUIRE_PLAN_APPROVAL_MIGRATION_PATH = join(MIGRATIONS_DIR, "0070_fn_212_task_require_plan_approval.sql");
 const PATCHNODE_ENTRIES_MIGRATION_PATH = join(MIGRATIONS_DIR, "0071_fn_227_patchnode_entries.sql");
+const TASK_PLANNING_FAILURE_MIGRATION_PATH = join(MIGRATIONS_DIR, "0072_fn_9273_task_planning_failure.sql");
+const CHAT_MESSAGES_SESSION_RECENCY_INDEX_MIGRATION_PATH = join(MIGRATIONS_DIR, "0073_fn_9275_chat_messages_session_recency_index.sql");
 /* FNXC:MigrationCollisionRepair 2026-08-23-07:07: re-runs both idempotent 0065-collision migrations so databases that recorded 0065 with the other line's content converge on the full schema. Renumbered 0067 -> 0068 in the fusion/rufu-141 merge: the deploy line owns released 0067 (FN-179 session contention). */
-const MIXED_0065_REPAIR_MIGRATION_PATH = join(MIGRATIONS_DIR, "0072_repair_mixed_0065_migrations.sql");
+/* FNXC:MigrationCollisionRepair 2026-09-09-15:13: the file moves out of the four-digit namespace (`local_repair_...`) because it is not a released migration — it is this repository's repair step, and sharing a numeric prefix with upstream's released 0072 is exactly what made the two ledger rows indistinguishable. The wiring-integrity inventory scans only `^\d{4}_`, so this step must stay explicitly wired here. */
+const MIXED_0065_REPAIR_MIGRATION_PATH = join(MIGRATIONS_DIR, "local_repair_mixed_0065_migrations.sql");
 
 /**
  * Ensure the migration bookkeeping table exists. Lives in the public schema so
@@ -662,6 +685,8 @@ export async function applySchemaBaseline(
     const taskExternalBlockAlreadyApplied = applied.includes(TASK_EXTERNAL_BLOCK_VERSION);
     const taskRequirePlanApprovalAlreadyApplied = applied.includes(TASK_REQUIRE_PLAN_APPROVAL_VERSION);
     const patchnodeEntriesAlreadyApplied = applied.includes(PATCHNODE_ENTRIES_VERSION);
+    const taskPlanningFailureAlreadyApplied = applied.includes(TASK_PLANNING_FAILURE_VERSION);
+    const chatMessagesSessionRecencyIndexAlreadyApplied = applied.includes(CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION);
     const mixed0065RepairAlreadyApplied = applied.includes(MIXED_0065_REPAIR_VERSION);
     assertBinaryNotOlderThanDatabase(applied);
     let schemaChanged = false;
@@ -1517,6 +1542,38 @@ export async function applySchemaBaseline(
       await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${TASK_EXTERNAL_BLOCK_VERSION}) ON CONFLICT (version) DO NOTHING`);
       schemaChanged = true;
     }
+    const taskPlanningFailureColumnState = (await tx.execute(sql`
+      SELECT
+        to_regclass('project.tasks') IS NOT NULL AS tasks_exists,
+        EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema = 'project' AND table_name = 'tasks' AND column_name = 'planning_failure'
+        ) AS planning_failure_exists
+    `)) as unknown as Array<{ tasks_exists: boolean; planning_failure_exists: boolean }>;
+    const taskPlanningFailureColumnMissing = taskPlanningFailureColumnState[0]?.tasks_exists
+      && !taskPlanningFailureColumnState[0]?.planning_failure_exists;
+    if (!taskPlanningFailureAlreadyApplied || taskPlanningFailureColumnMissing) {
+      const migrationSql = await readFile(TASK_PLANNING_FAILURE_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${TASK_PLANNING_FAILURE_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    /*
+    FNXC:ChatSidebarPerf 2026-09-08-04:48:
+    This mixed-case index was created quoted. The probe must retain quotes inside the
+    regclass literal, or PostgreSQL folds the name and re-applies this migration on every open.
+    */
+    const chatMessagesSessionRecencyIndexState = ((await tx.execute(sql`
+      SELECT to_regclass('project.chat_messages') IS NOT NULL AS table_exists,
+        to_regclass('project."idxChatMessagesSessionCreatedAtId"') IS NULL AS missing
+    `)) as unknown as Array<{ table_exists: boolean; missing: boolean }>)[0];
+    if (chatMessagesSessionRecencyIndexState?.table_exists
+      && (!chatMessagesSessionRecencyIndexAlreadyApplied || chatMessagesSessionRecencyIndexState.missing)) {
+      const migrationSql = await readFile(CHAT_MESSAGES_SESSION_RECENCY_INDEX_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
     const taskRequirePlanApprovalColumnState = (await tx.execute(sql`
       SELECT
         to_regclass('project.tasks') IS NOT NULL AS tasks_exists,
@@ -1545,7 +1602,8 @@ export async function applySchemaBaseline(
       await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${PATCHNODE_ENTRIES_VERSION}) ON CONFLICT (version) DO NOTHING`);
       schemaChanged = true;
     }
-    /* FNXC:MigrationCollisionRepair 2026-08-30-09:05: register the repair migration LAST at 0072; upstream owns released 0068-0071. It is idempotent, so databases that already carry both 0065-collision migrations simply record the version; databases that recorded the repair under its earlier 0068 number re-run it harmlessly. it is idempotent, so databases that already carry both 0065-collision migrations simply record the version. Renumbered from 0067 in the fusion/rufu-141 merge: released 0067 is FN-179's session-contention wait state on the deploy line. */
+    /* FNXC:MigrationCollisionRepair 2026-09-09-15:13: identity is now the non-numeric `local-repair-mixed-0065`, so the step stays last in apply order but no longer rides the numeric ceiling; see MIXED_0065_REPAIR_VERSION for the ledger-remap caveat. */
+    /* FNXC:MigrationCollisionRepair 2026-08-30-09:05: register the repair migration LAST; upstream owns released 0068-0071. It is idempotent, so databases that already carry both 0065-collision migrations simply record the version; databases that recorded the repair under its earlier 0068 number re-run it harmlessly. it is idempotent, so databases that already carry both 0065-collision migrations simply record the version. Renumbered from 0067 in the fusion/rufu-141 merge: released 0067 is FN-179's session-contention wait state on the deploy line. */
     if (!mixed0065RepairAlreadyApplied) {
       const migrationSql = await readFile(MIXED_0065_REPAIR_MIGRATION_PATH, "utf8");
       await tx.execute(sql.raw(migrationSql));

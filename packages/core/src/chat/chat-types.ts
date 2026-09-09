@@ -126,6 +126,19 @@ export type ChatSessionSummary = ChatSession;
  * The server enriches sessions with lastMessagePreview and lastMessageAt
  * by fetching the most recent message for each session.
  */
+export interface ChatSessionCursor {
+  pinnedAt: string | null;
+  updatedAt: string;
+  id: string;
+}
+
+export interface ChatSessionPage {
+  sessions: ChatSession[];
+  total: number;
+  hasMore: boolean;
+  nextCursor: string | null;
+}
+
 export type EnrichedChatSession = ChatSession & {
   /** Preview of the last message in the session (truncated to 100 chars) */
   lastMessagePreview?: string;
@@ -164,6 +177,20 @@ export interface ChatAttachment {
 /**
  * A single message within a chat session.
  */
+/**
+ * Sidebar-safe projection of a session's newest message.
+ * Content is truncated to at most 101 characters in SQL so callers can retain
+ * the existing 100-character-plus-ellipsis boundary without loading message payloads.
+ * This is deliberately not ChatMessage: thinkingOutput, metadata, and attachments are not fetched.
+ */
+export interface ChatSessionLastMessage {
+  id: string;
+  sessionId: string;
+  role: ChatMessageRole;
+  createdAt: string;
+  content: string;
+}
+
 export interface ChatMessage {
   id: string;
   /** Parent session ID */

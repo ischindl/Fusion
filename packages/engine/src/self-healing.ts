@@ -157,6 +157,7 @@ import { captureMergeContentDescriptor } from "./merge/merge-content-capture.js"
 import { rerouteSingularStaleContentToReview } from "./merge/stale-content-review-reroute.js";
 import { rerouteUnrunPreMergeGateToReview } from "./merge/pre-merge-gate-reseed.js";
 import { cleanupLandedTaskWorktree, removeEmptyWorkspaceTaskDirectory } from "./merge/post-landing-worktree-cleanup.js";
+import { cleanupDeletedTaskWorktrees } from "./worktree/deleted-task-worktree-cleanup.js";
 import { AutoRecoveryDispatcher } from "./healing/auto-recovery.js";
 import { activeSessionRegistry, executingTaskLock } from "./agents/active-session-registry.js";
 import {
@@ -369,8 +370,11 @@ export {
 import {
   optionalStepRevisionKey,
   countOptionalStepRevisionAttempts,
-  optionalStepRevisionLogOutcome,
 } from "./healing/self-healing-optional-step-revision.js";
+import {
+  hasReviewRemediationAttemptForEpisode,
+  reviewRemediationEpisodeIdentity,
+} from "./executor/optional-step-revision.js";
 
 import type {
   RecoverFailedPreMergeStepOutcome,
@@ -543,6 +547,8 @@ export interface SelfHealingOptions {
   localNodeId?: string;
   /** Optional callback to release TaskExecutor in-memory worktree ownership for a task. */
   releaseExecutorWorktreeOwnership?: (taskId: string) => void;
+  /** Request scheduling only after completion fan-out durably clears at least one overlap lease. */
+  onOverlapBlockersReleased?: () => void | Promise<void>;
   /**
    * FN-6782: read-only snapshot of the executor's in-memory worktree holders
    * ({ taskId, worktreePath }), so the leaked-slot reaper can cross-check each
@@ -984,6 +990,10 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   /* FNXC:WorkflowResolvedColumns 2026-07-31-23:40: `lanes` is the emitter-resolved payload #3109
      added; optional, because an emit path that cannot resolve sends none. */
   private taskMovedFanoutListener: ((data: { task: Task; from: string; to: string; source: string; lanes?: TaskMoveLanes }) => void) | null = null;
+  private taskDeletedWorktreeListener: ((task: Task, meta?: { observed?: boolean; outboxEventId?: string }) => void) | null = null;
+  private readonly pendingDeletedWorktreeCleanups = new Set<string>();
+  private readonly deletedWorktreeCleanupHandles = new Set<ReturnType<typeof setImmediateCb>>();
+  private deletedWorktreeCleanupGeneration = 0;
   private lifecycleMoveLogDisposer: (() => void) | null = null;
 
   // ── Per-task deadlock recovery cooldown ─────────────────────────────
@@ -1990,6 +2000,32 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     };
     this.store.on("task:moved", this.taskMovedFanoutListener);
 
+    /*
+    FNXC:TaskDeletionWorktrees 2026-09-07-12:00:
+    Delete publishers remain bounded by their committed database work. Queue Git cleanup after every
+    local or observed event, deduplicate concurrent deliveries by task id, and re-read the tombstone so
+    the local pre-delete event snapshot and outbox snapshot converge through one recovery seam.
+    */
+    const listenerGeneration = ++this.deletedWorktreeCleanupGeneration;
+    this.taskDeletedWorktreeListener = (task) => {
+      if (this.pendingDeletedWorktreeCleanups.has(task.id)) return;
+      this.pendingDeletedWorktreeCleanups.add(task.id);
+      const handle = setImmediateCb(() => {
+        this.deletedWorktreeCleanupHandles.delete(handle);
+        if (listenerGeneration !== this.deletedWorktreeCleanupGeneration) {
+          this.pendingDeletedWorktreeCleanups.delete(task.id);
+          return;
+        }
+        void this.reconcileDeletedTaskWorktrees({ includeTaskIds: new Set([task.id]) })
+          .catch((error: unknown) => {
+            log.warn(`[self-healing] task:deleted worktree cleanup failed for ${task.id}: ${error instanceof Error ? error.message : String(error)}`);
+          })
+          .finally(() => this.pendingDeletedWorktreeCleanups.delete(task.id));
+      });
+      this.deletedWorktreeCleanupHandles.add(handle);
+    };
+    this.store.on("task:deleted", this.taskDeletedWorktreeListener);
+
     // Start periodic maintenance
     this.startMaintenance();
 
@@ -2035,6 +2071,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       removed archive role. Periodic maintenance repeats the same idempotent pass until it is empty.
       */
       { name: "reconcile-archived-tasks-into-done", fn: () => this.reconcileArchivedTasksIntoDone().then(() => undefined) },
+      { name: "reconcile-deleted-task-worktrees", fn: () => this.reconcileDeletedTaskWorktrees().then(() => undefined) },
       // FNXC:WorkflowColumns 2026-07-26-18:30: immediately after status adoption and before every
       // column-reasoning step below — a row in an undeclared column carries NO trait flags, so each
       // of those steps would silently classify it as "not my case" and leave it stranded.
@@ -2254,6 +2291,19 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         log.warn(`Failed to remove lifecycle move log listener during stop(): ${errorMessage}`);
       }
       this.lifecycleMoveLogDisposer = null;
+    }
+
+    this.deletedWorktreeCleanupGeneration++;
+    for (const handle of this.deletedWorktreeCleanupHandles) clearImmediate(handle);
+    this.deletedWorktreeCleanupHandles.clear();
+    this.pendingDeletedWorktreeCleanups.clear();
+    if (this.taskDeletedWorktreeListener) {
+      try {
+        this.store.off("task:deleted", this.taskDeletedWorktreeListener);
+      } catch (err: unknown) {
+        log.warn(`Failed to remove task:deleted worktree listener during stop(): ${err instanceof Error ? err.message : String(err)}`);
+      }
+      this.taskDeletedWorktreeListener = null;
     }
 
     if (this.taskMovedFanoutListener) {
@@ -3109,6 +3159,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         const maintenanceSurfacing = this.surfacingCycleMemo();
         const batch2Fns: Array<{ name: string; fn: () => Promise<unknown> }> = [
           { name: "reconcile-archived-tasks-into-done", fn: () => this.reconcileArchivedTasksIntoDone() },
+          { name: "reconcile-deleted-task-worktrees", fn: () => this.reconcileDeletedTaskWorktrees() },
           {
             name: "recover-active-mission-validations",
             fn: async () => {
@@ -5505,15 +5556,77 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           && await hasActiveFileScopeOverlapBlocker(dependent, blockerId, blocker);
         return { dependent, blockerId, hasActiveBlocker };
       };
+      const transitionDependencyQueueEpisode = async (
+        dependentId: string,
+        observedOverlapBlockerId: string | null,
+        resolvedOverlapBlockerId: string | null,
+        unresolvedDependencies: readonly string[],
+        action: string,
+      ): Promise<{ task: Task; overlapCleared: boolean }> => {
+        const nextDependency = unresolvedDependencies[0]!;
+        const signature = `dependency:${[...new Set(unresolvedDependencies)].sort().join(",")}`;
+        let overlapCleared = false;
+        if (typeof this.store.updateTaskAtomic === "function") {
+          const task = await this.store.updateTaskAtomic(dependentId, (live) => {
+            if (live.deletedAt != null) return null;
+            /*
+            FNXC:OverlapScheduling 2026-09-07-14:48:
+            Dependency queue publication and overlap identity arbitration must share the task's atomic
+            mutation. If a scheduler installs a different holder after the fresh read, retain that live
+            identity and queued state; a later classifier may clear it, but completion fan-out must not.
+            */
+            const overlapChanged = live.overlapBlockedBy !== observedOverlapBlockerId;
+            const overlapBlockedBy = overlapChanged ? (live.overlapBlockedBy ?? null) : resolvedOverlapBlockerId;
+            overlapCleared = Boolean(live.overlapBlockedBy && !overlapBlockedBy);
+            const appended = !(
+              live.status === "queued"
+              && (live.blockedBy ?? null) === nextDependency
+              && (live.overlapBlockedBy ?? null) === overlapBlockedBy
+              && (live.queuedLogEpisodeSignature ?? null) === signature
+            );
+            return {
+              status: "queued",
+              blockedBy: nextDependency,
+              overlapBlockedBy,
+              queuedLogEpisodeSignature: signature,
+              ...(appended
+                ? { log: [...(live.log ?? []), { timestamp: new Date().toISOString(), action }] }
+                : {}),
+            };
+          });
+          return { task, overlapCleared };
+        }
+        // Compatibility only for structural extension stores; production TaskStore always supplies atomic mutation.
+        const transition = await this.store.transitionQueuedEpisode(dependentId, {
+          signature,
+          blockedBy: nextDependency,
+          overlapBlockedBy: resolvedOverlapBlockerId,
+          action,
+        });
+        return {
+          task: transition.task,
+          overlapCleared: Boolean(observedOverlapBlockerId && !transition.task.overlapBlockedBy),
+        };
+      };
       const updateDependentWithOverlapClear = async (
         dependentId: string,
         observedBlockerId: string | null | undefined,
         basePatch: TaskUpdatePatch,
       ): Promise<boolean> => {
         let overlapCleared = false;
-        const buildPatch = (live: Task): TaskUpdatePatch => {
+        const buildPatch = (live: Task): TaskUpdatePatch | null => {
+          if (live.deletedAt != null) return null;
           const overlapPatch = overlapBlockerClearPatch(live, observedBlockerId);
           if (Object.keys(overlapPatch).length > 0) overlapCleared = true;
+          const blockerChanged = typeof observedBlockerId === "string"
+            && observedBlockerId.trim().length > 0
+            && live.overlapBlockedBy != null
+            && live.overlapBlockedBy !== observedBlockerId;
+          if (blockerChanged && Object.hasOwn(basePatch, "status")) {
+            const safeBasePatch = { ...basePatch };
+            delete safeBasePatch.status;
+            return { ...safeBasePatch, ...overlapPatch };
+          }
           return { ...basePatch, ...overlapPatch };
         };
         if (typeof this.store.updateTaskAtomic === "function") {
@@ -5523,7 +5636,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         // Compatibility only for structural test/extension stores; production TaskStore is atomic.
         const live = await this.store.getTask(dependentId).catch(() => null);
         if (!live) return false;
-        await this.store.updateTask(dependentId, buildPatch(live));
+        const patch = buildPatch(live);
+        if (patch) await this.store.updateTask(dependentId, patch);
         return overlapCleared;
       };
       /*
@@ -5575,6 +5689,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         (t) => t.blockedBy === taskId || t.overlapBlockedBy === taskId,
       );
       const todoTaskIds = new Set(todoTasks.map((t) => t.id));
+      let overlapReleaseCommitted = false;
       for (const dependent of dependents) {
         try {
           /*
@@ -5630,13 +5745,14 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             */
             if (unresolvedDeps.length > 0) {
               const nextBlocker = unresolvedDeps[0]!;
-              const normalizedUnresolvedDeps = [...new Set(unresolvedDeps)].sort();
-              await this.store.transitionQueuedEpisode(dependent.id, {
-                signature: `dependency:${normalizedUnresolvedDeps.join(",")}`,
-                blockedBy: nextBlocker,
+              const transition = await transitionDependencyQueueEpisode(
+                dependent.id,
+                freshOverlap.blockerId,
                 overlapBlockedBy,
-                action: `Auto-recovered (FN-4523): cleared stale blockedBy — blocker ${taskId} is done; now blocked by ${nextBlocker}`,
-              });
+                unresolvedDeps,
+                `Auto-recovered (FN-4523): cleared stale blockedBy — blocker ${taskId} is done; now blocked by ${nextBlocker}`,
+              );
+              overlapReleaseCommitted ||= transition.overlapCleared;
             } else if (hasActiveOverlapBlocker) {
               await this.store.transitionQueuedEpisode(dependent.id, {
                 signature: `file-scope:${overlapBlockedBy}`,
@@ -5645,22 +5761,24 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
                 action: `Auto-recovered (FN-4523): preserved queued status — still blocked by file scope overlap with ${overlapBlockedBy}`,
               });
             } else {
-              await updateDependentWithOverlapClear(
+              const overlapCleared = await updateDependentWithOverlapClear(
                 dependent.id,
                 freshOverlap.blockerId,
                 { blockedBy: null, ...clearBlockedStatusOnly(freshOverlap.dependent) },
               );
+              overlapReleaseCommitted ||= overlapCleared;
               await this.store.logEntry(
                 dependent.id,
                 `Auto-recovered (FN-4523): cleared stale blockedBy — blocker ${taskId} is done`,
               );
             }
           } else {
-            await updateDependentWithOverlapClear(
+            const overlapCleared = await updateDependentWithOverlapClear(
               dependent.id,
               hasActiveOverlapBlocker ? null : freshOverlap.blockerId,
               { blockedBy: null },
             );
+            overlapReleaseCommitted ||= overlapCleared;
             await this.store.logEntry(
               dependent.id,
               `Auto-recovered (FN-4523): cleared stale blockedBy — blocker ${taskId} is done`,
@@ -5670,6 +5788,21 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         } catch (err: unknown) {
           const errorMessage = err instanceof Error ? err.message : String(err);
           log.error(`${prefix} failed blockedBy fan-out for ${dependent.id}: ${errorMessage}`);
+        }
+      }
+
+      /*
+      FNXC:OverlapScheduling 2026-09-07-14:23:
+      Completion fan-out must publish every dependent mutation before requesting scheduler work.
+      Invoke this once, after the dependent loop and outside store mutation callbacks, so duplicate
+      fan-outs coalesce downstream and a failed/no-op CAS cannot advertise an uncommitted release.
+      */
+      if (overlapReleaseCommitted) {
+        try {
+          await this.options.onOverlapBlockersReleased?.();
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          log.warn(`${prefix} post-overlap-release scheduling wake failed: ${message}`);
         }
       }
 
@@ -10279,12 +10412,16 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
        * FNXC:WorkflowRevisionBudget 2026-06-30-23:03:
        * The in-review sweep stays slim for board-scale filtering, but slim TaskStore rows intentionally omit `log`. Hydrate the full task before counting revision markers so offline recovery enforces Code Review and Plan Review caps against production data instead of treating every task as attempt zero.
        */
-      const revisionBudgetByTask = new Map<string, { unbounded: boolean; max: number; label: string; key: string; stepName?: string; attempts: number }>();
+      const revisionBudgetByTask = new Map<string, { unbounded: boolean; max: number; label: string; key: string; stepName?: string; attempts: number; resumesCommittedRemediation: boolean }>();
+      const hydratedRevisionTaskById = new Map<string, Task>();
       const irCache = new Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>();
-      const loadRevisionAttemptSource = async (task: Task): Promise<Pick<Task, "log">> => {
+      const loadRevisionAttemptSource = async (task: Task): Promise<Pick<Task, "log" | "steps" | "workflowStepResults">> => {
         try {
           const fullTask = await this.store.getTask(task.id);
-          if (fullTask?.id === task.id && Array.isArray(fullTask.log)) return fullTask;
+          if (fullTask?.id === task.id && Array.isArray(fullTask.log)) {
+            hydratedRevisionTaskById.set(task.id, fullTask);
+            return fullTask;
+          }
         } catch {
           // Keep recovery fail-soft; older stores/tests can still provide log entries on the list row.
         }
@@ -10315,19 +10452,25 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         const budget = resolveOptionalStepRevisionBudget(maxRevisions, fallback);
         const key = optionalStepRevisionKey(target?.workflowStepId, target?.workflowStepName);
         const revisionAttemptSource = await loadRevisionAttemptSource(task);
+        const fullTarget = latestFailedPreMergeStep(revisionAttemptSource) ?? target;
         revisionBudgetByTask.set(task.id, {
           ...budget,
           key,
           stepName: target?.workflowStepName,
           attempts: countOptionalStepRevisionAttempts(revisionAttemptSource, key, target?.workflowStepName),
+          resumesCommittedRemediation: Boolean(
+            fullTarget
+            && hasReviewRemediationAttemptForEpisode(revisionAttemptSource, reviewRemediationEpisodeIdentity(fullTarget))
+            && (revisionAttemptSource.steps ?? []).some((step) => step.status === "pending"),
+          ),
           label: budget.unbounded ? "unbounded" : String(budget.max),
         });
       }
-      const revisionBudgetFor = (taskId: string): { unbounded: boolean; max: number; label: string; key: string; stepName?: string; attempts: number } => {
+      const revisionBudgetFor = (taskId: string): { unbounded: boolean; max: number; label: string; key: string; stepName?: string; attempts: number; resumesCommittedRemediation: boolean } => {
         const budget = revisionBudgetByTask.get(taskId);
         if (budget) return budget;
         const fallbackBudget = resolveOptionalStepRevisionBudget(undefined, 3);
-        return { ...fallbackBudget, key: "pre-merge-optional-step", attempts: 0, label: fallbackBudget.unbounded ? "unbounded" : String(fallbackBudget.max) };
+        return { ...fallbackBudget, key: "pre-merge-optional-step", attempts: 0, resumesCommittedRemediation: false, label: fallbackBudget.unbounded ? "unbounded" : String(fallbackBudget.max) };
       };
 
       const candidates = tasks.filter((task) => {
@@ -10360,7 +10503,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         // FNXC:ReviewConvergence 2026-08-22-06:05: exhausted failures must reach the
         // shared ladder in recoverFailedPreMergeWorkflowStep; filtering them here recreates
         // the terminal human-only park FN-149 removes.
-        if (!budget.unbounded && budget.attempts >= budget.max && (task.reviewConvergenceStage ?? 0) >= 3) return false;
+        if (!budget.resumesCommittedRemediation
+          && !budget.unbounded && budget.attempts >= budget.max && (task.reviewConvergenceStage ?? 0) >= 3) return false;
 
         // Must have a failed pre-merge result and either its singular checkout or the acquired
         // workspace repository checkout selected by structured review evidence.
@@ -10389,7 +10533,15 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         const blocker = getTaskMergeBlocker(task, {
           reviewColumns: reviewLanesByTask.get(task.id) ?? new Set(["in-review"]),
         });
-        if (!parkedRemediationFailure && blocker !== "task has failed pre-merge workflow steps") return false;
+        /*
+        FNXC:ReviewRemediationBudget 2026-09-08-01:46:
+        An atomically committed pending repair changes the ordinary blocker from failed-review to
+        incomplete-work before its post-commit handoff necessarily finishes. Its exact episode marker
+        is the durable recovery admission that lets this sweep resume scheduling without another charge.
+        */
+        if (!parkedRemediationFailure
+          && !budget.resumesCommittedRemediation
+          && blocker !== "task has failed pre-merge workflow steps") return false;
 
         return true;
       });
@@ -10431,17 +10583,16 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         Consequence accepted deliberately: an unproducible round is now narrated on every sweep
         instead of once. Repetitive, never fatal -- the opposite trade to the one that broke.
         */
-        const admittedTask = task;
+        const admittedTask = hydratedRevisionTaskById.get(task.id) ?? task;
         const budget = revisionBudgetFor(task.id);
-        const nextCount = budget.attempts + 1;
-        const totalFixCount = (admittedTask.postReviewFixCount ?? 0) + 1;
         try {
-          await this.store.updateTask(task.id, { postReviewFixCount: totalFixCount });
-          await this.store.logEntry(
-            task.id,
-            `Auto-reviving in-review task with failed pre-merge workflow step (attempt ${nextCount}/${budget.label})`,
-            optionalStepRevisionLogOutcome(`Step: ${budget.stepName ?? budget.key}`, budget.key),
-          );
+          /*
+          FNXC:ReviewRemediationBudget 2026-09-08-01:02:
+          Self-healing is only a recovery trigger. The named or trailing producer re-reads the live
+          ledger and commits executable work with its keyed attempt and aggregate increment under the
+          PostgreSQL task fence; sterile, convergence-only, exhausted, and superseded probes charge
+          nothing here and cannot refund prior append-only history.
+          */
           /*
           FNXC:LifecycleContainment 2026-08-30-13:36:
           The claim must travel WITH the work it admitted. The claim-scoped recovery addresses the
@@ -10457,7 +10608,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           const detailedRecoverFn = this.options.recoverFailedPreMergeStepDetailed;
           const outcome: RecoverFailedPreMergeStepOutcome = detailedRecoverFn
             ? await detailedRecoverFn(admittedTask, {})
-            : (await recoverFn(admittedTask)) ? { kind: "scheduled" } : { kind: "skipped" };
+            : (await recoverFn(admittedTask)) ? { kind: "scheduled", producer: "named" } : { kind: "skipped" };
 
           if (outcome.kind === "superseded") {
             log.log(`Revival of ${task.id} was superseded by a newer review result — leaving the newer round untouched`);
@@ -10486,10 +10637,12 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             continue;
           }
           if (outcome.kind === "scheduled") {
-            log.log(`Revived ${task.id}: sent back for fix (${nextCount}/${budget.label})`);
+            log.log(`Revived ${task.id}: ${outcome.producer} remediation committed within the ${budget.label} revision budget`);
             recovered++;
+          } else if (outcome.kind === "convergence") {
+            log.log(`Revival of ${task.id} advanced through review convergence without consuming remediation budget`);
           } else {
-            log.warn(`Revival of ${task.id} was skipped by executor — budget already consumed`);
+            log.warn(`Revival of ${task.id} was skipped by executor — no remediation budget was consumed`);
           }
         } catch (err: unknown) {
           const errorMessage = err instanceof Error ? err.message : String(err);
@@ -11959,6 +12112,54 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     }
   }
 
+  /**
+   * Reconcile only persisted tombstone paths. Git work stays outside the delete transaction and each
+   * target remains independently retryable on the next event, startup pass, or maintenance cycle.
+   */
+  async reconcileDeletedTaskWorktrees(options: { includeTaskIds?: ReadonlySet<string> } = {}): Promise<number> {
+    const settings = await this.store.getSettings();
+    if (settings.globalPause || settings.enginePaused) return 0;
+    /*
+    FNXC:TaskDeletionWorktrees 2026-09-07-12:44:
+    Targeted delete delivery must read past the startup slim-list memo: that memo can predate the
+    soft-delete commit. Deleted rows retain the historical sentinel column, so this forensic pass must
+    also include that storage class to recover the tombstone and its persisted worktree paths.
+    */
+    const allTasks = await this.store.listTasks({
+      slim: true,
+      includeDeleted: true,
+      includeArchived: true,
+      startupMemo: false,
+    });
+    const deletedTasks = allTasks.filter((task) => task.deletedAt && (!options.includeTaskIds || options.includeTaskIds.has(task.id)));
+    let removed = 0;
+    for (const task of deletedTasks) {
+      try {
+        const result = await cleanupDeletedTaskWorktrees({
+          task,
+          allTasks,
+          rootDir: this.options.rootDir,
+          settings,
+          isTaskActive: (taskId) => this.options.isTaskActive?.(taskId) === true
+            || this.options.hasLiveSessionSurface?.(taskId) === true,
+          isPlanningActive: (taskId) => this.options.getPlanningTaskIds?.().has(taskId) === true
+            || this.options.hasActivePlanningWorkflowSession?.(taskId) === true,
+          isMergePending: this.options.isMergePending,
+          getActiveMergeTaskId: this.options.getActiveMergeTaskId,
+        });
+        removed += result.targets.filter((target) => target.status === "removed").length;
+        for (const target of result.targets) {
+          if (target.status === "failed") {
+            log.warn(`[self-healing] deleted worktree cleanup will retry ${task.id}/${target.repoRelPath ?? "root"}: ${target.detail ?? "unknown failure"}`);
+          }
+        }
+      } catch (error) {
+        log.warn(`[self-healing] deleted worktree cleanup will retry ${task.id}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    return removed;
+  }
+
   /*
   FNXC:Workspace 2026-06-22-09:30 (Phase D U1, KTD4 — per-repo worktree cleanup from STORED paths):
   For done/dead workspace tasks, remove each recorded per-repo worktree. The paths are ADDRESSABLE
@@ -12010,7 +12211,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         const lane: Lane | null = task.deletedAt ? "soft-deleted" : task.status === "failed" ? "failed" : null;
         if (!lane) continue;
         const touched = Math.max(Date.parse(task.columnMovedAt ?? "") || 0, Date.parse(task.updatedAt ?? "") || 0, Date.parse(task.deletedAt ?? "") || 0);
-        if (!touched || now - touched < TERMINAL_WORKSPACE_WORKTREE_TEARDOWN_MIN_IDLE_MS) continue;
+        // Explicit deletion authorizes immediate discard; retryable failed rows retain the one-day floor.
+        if (lane === "failed" && (!touched || now - touched < TERMINAL_WORKSPACE_WORKTREE_TEARDOWN_MIN_IDLE_MS)) continue;
         if (this.isWorkspaceTaskLive(task).live || await this.options.isMergePending?.(task.id) === true || this.options.getActiveMergeTaskId?.() === task.id) continue;
         candidates.push({ task, lane });
       }
@@ -17267,7 +17469,16 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           removed++;
         } catch (err: unknown) {
           const errorMessage = err instanceof Error ? err.message : String(err);
-          log.warn(`Failed to remove idle worktree ${worktreePath} during cap enforcement: ${errorMessage} — non-fatal`);
+          /*
+          FNXC:WorktreeCleanup 2026-09-08-06:13:
+          A preservation refusal is a deliberate policy outcome, not a removal failure. Logging it at
+          WARN on every maintenance tick turned permanently protected worktrees into a repeating bug.
+          */
+          if (errorMessage.startsWith(`preserving ${worktreePath}:`)) {
+            log.debug(`[self-healing] cap-enforcement preserved ${worktreePath}: ${errorMessage}`);
+          } else {
+            log.warn(`Failed to remove idle worktree ${worktreePath} during cap enforcement: ${errorMessage} — non-fatal`);
+          }
           // Individual failure is non-fatal
         }
       }

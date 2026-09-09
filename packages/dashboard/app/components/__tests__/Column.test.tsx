@@ -1,8 +1,7 @@
 import React from "react";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { loadStylesCss } from "../../test/cssFixture";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Column } from "../Column";
 import type { Task, Column as ColumnType } from "@fusion/core";
@@ -146,30 +145,88 @@ describe("Column count-flash", () => {
     expect(badge.className).not.toContain("count-flash");
   });
 
-  it("shows the exact Done total while rendering a bounded page and loading more", async () => {
-    const tasks = Array.from({ length: 50 }, (_, index) => ({
-      ...makeTask(`FN-DONE-${index}`),
-      column: "done" as ColumnType,
-    }));
-    const onLoadMore = vi.fn().mockResolvedValue(undefined);
+  it.each([1_200, 600])("keeps measured Done pagination bounded and crash-free at %ipx", async (viewportWidth) => {
+    const previousWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: viewportWidth });
+    const resizeCallbacks: ResizeObserverCallback[] = [];
+    const observedRows = new Set<Element>();
+    class Observer {
+      constructor(callback: ResizeObserverCallback) { resizeCallbacks.push(callback); }
+      observe(element: Element) { observedRows.add(element); }
+      unobserve(element: Element) { observedRows.delete(element); }
+      disconnect() { observedRows.clear(); }
+    }
+    vi.stubGlobal("ResizeObserver", Observer);
+    const rowGeometry = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function measuredRow() {
+      const id = this.getAttribute("data-virtual-task-row") ?? "";
+      const index = Number(id.split("-").at(-1) ?? 0);
+      return { height: 280 + (index % 3) * 40 } as DOMRect;
+    });
+    let releasePage!: () => void;
+    const page = new Promise<void>((resolve) => { releasePage = resolve; });
+    const onLoadMore = vi.fn();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
-    render(
-      <Column
-        {...defaultProps}
-        column={"done" as ColumnType}
-        columnName="Done"
-        columnFlags={{ complete: true }}
-        tasks={tasks}
-        totalTaskCount={1_284}
-        serverHasMore
-        onLoadMoreServer={onLoadMore}
-      />,
-    );
+    function DoneHarness() {
+      const [tasks, setTasks] = React.useState(() => Array.from({ length: 50 }, (_, index) => ({
+        ...makeTask(`FN-DONE-${index}`),
+        column: "done" as ColumnType,
+      })));
+      const [loading, setLoading] = React.useState(false);
+      const [hasMore, setHasMore] = React.useState(true);
+      const loadMore = React.useCallback(async () => {
+        onLoadMore();
+        setLoading(true);
+        await page;
+        setTasks(Array.from({ length: 75 }, (_, index) => ({
+          ...makeTask(`FN-DONE-${index}`),
+          column: "done" as ColumnType,
+        })));
+        setHasMore(false);
+        setLoading(false);
+      }, []);
+      return <Column {...defaultProps} column={"done" as ColumnType} columnName="Done" columnFlags={{ complete: true }} tasks={tasks} totalTaskCount={1_284} serverHasMore={hasMore} serverLoadingMore={loading} onLoadMoreServer={loadMore} />;
+    }
 
-    expect(screen.getByLabelText("1,284 tasks")).toHaveTextContent("1,284");
-    expect(taskCardRenderSpy).toHaveBeenCalledTimes(50);
-    await userEvent.click(screen.getByRole("button", { name: "Show more" }));
-    expect(onLoadMore).toHaveBeenCalledOnce();
+    try {
+      render(<DoneHarness />);
+      const root = document.querySelector<HTMLElement>(".column-body")!;
+      Object.defineProperties(root, {
+        clientHeight: { configurable: true, value: 640 },
+        scrollHeight: { configurable: true, value: 24_000 },
+        scrollTop: { configurable: true, writable: true, value: 23_500 },
+      });
+      await act(async () => {
+        for (const callback of resizeCallbacks) callback(Array.from(observedRows, (target, index) => ({ target, borderBoxSize: [{ blockSize: 280 + (index % 3) * 40 }], contentRect: { height: 280 + (index % 3) * 40 } }) as unknown as ResizeObserverEntry), {} as ResizeObserver);
+        await Promise.resolve();
+      });
+
+      expect(screen.getByLabelText("1,284 tasks")).toHaveTextContent("1,284");
+      expect(document.querySelectorAll("[data-virtual-task-row]").length).toBeLessThanOrEqual(40);
+      expect(screen.queryByRole("button", { name: /Show more|Load .*more/i })).toBeNull();
+      fireEvent.scroll(root);
+      fireEvent.scroll(root);
+      await waitFor(() => expect(onLoadMore).toHaveBeenCalledOnce());
+
+      await act(async () => {
+        releasePage();
+        await page;
+      });
+      await waitFor(() => expect(screen.queryByTestId("column-auto-pagination-sentinel")).toBeNull());
+      act(() => {
+        root.scrollTop = 24_000;
+        fireEvent.scroll(root);
+      });
+      await waitFor(() => expect(screen.getByTestId("task-FN-DONE-74")).toBeTruthy());
+      expect(document.querySelectorAll("[data-virtual-task-row]").length).toBeLessThanOrEqual(40);
+      expect(onLoadMore).toHaveBeenCalledOnce();
+      expect(consoleError.mock.calls.flat().join(" ")).not.toMatch(/Maximum update depth|Minified React error #185|ErrorBoundary/i);
+    } finally {
+      rowGeometry.mockRestore();
+      consoleError.mockRestore();
+      vi.unstubAllGlobals();
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: previousWidth });
+    }
   });
 
   it("shows accurate executing/total for WIP (unpaused active over card total)", () => {
@@ -279,7 +336,7 @@ describe("Column Coding (Ideas) header indicator", () => {
   });
 
   it("maps the canonical Ideas dot to the shared triage token", () => {
-    const css = readFileSync(resolve(__dirname, "../../styles.css"), "utf8");
+    const css = loadStylesCss();
     expect(css).toMatch(/\.dot-ideas\s*\{\s*background:\s*var\(--triage\);\s*\}/);
   });
 });
@@ -335,7 +392,7 @@ describe("Column workflow mode (U9)", () => {
 
     const descriptionElement = document.querySelector(".column-desc");
     expect(descriptionElement?.textContent).toBe(description);
-    const css = readFileSync(resolve(__dirname, "../../styles.css"), "utf8");
+    const css = loadStylesCss();
     expect(css).toMatch(/\.column-desc\s*\{[\s\S]*white-space:\s*pre-wrap;[\s\S]*overflow-wrap:\s*anywhere;/);
   });
 
@@ -514,136 +571,44 @@ describe("Column memoization", () => {
 
 });
 
-describe("Column pagination", () => {
-  it("shows only the initial page for large non-in-progress columns", () => {
-    const tasks = Array.from({ length: 110 }, (_, index) => makeTask(`KB-${String(index + 1).padStart(3, "0")}`));
-    render(<Column {...defaultProps} column="todo" tasks={tasks} />);
-
-    expect(screen.getAllByTestId(/task-/)).toHaveLength(50);
-    expect(screen.getByRole("button", { name: /Load 25 more/i })).toBeTruthy();
+describe("Column automatic pagination and virtualization", () => {
+  it.each([false, true])("keeps a 1,000-task result bounded without manual pagination (search=%s)", (isSearchActive) => {
+    const tasks = Array.from({ length: 1_000 }, (_, index) => makeTask(`KB-${String(index + 1).padStart(4, "0")}`));
+    render(<Column {...defaultProps} column="todo" tasks={tasks} isSearchActive={isSearchActive} />);
+    expect(screen.getAllByTestId(/task-/).length).toBeLessThanOrEqual(40);
+    expect(screen.queryByRole("button", { name: /Load .*more|Show more/i })).toBeNull();
   });
 
-  it("loads more tasks on demand", async () => {
-    const tasks = Array.from({ length: 110 }, (_, index) => makeTask(`KB-${String(index + 1).padStart(3, "0")}`));
-    render(<Column {...defaultProps} column="todo" tasks={tasks} />);
-
-    await userEvent.click(screen.getByRole("button", { name: /Load 25 more/i }));
-
-    expect(screen.getAllByTestId(/task-/)).toHaveLength(75);
+  it.each([false, true])("loads the next server page automatically from the column scroller (search=%s)", async (isSearchActive) => {
+    const onLoadMoreServer = vi.fn().mockResolvedValue(undefined);
+    render(<Column {...defaultProps} column="todo" tasks={[makeTask("KB-001")]} isSearchActive={isSearchActive} serverHasMore onLoadMoreServer={onLoadMoreServer} />);
+    screen.getByTestId("column-auto-pagination-sentinel");
+    fireEvent.scroll(document.querySelector(".column-body")!);
+    await waitFor(() => expect(onLoadMoreServer).toHaveBeenCalledOnce());
+    expect(screen.queryByRole("button", { name: /Load .*more|Show more/i })).toBeNull();
   });
 
-  it("preserves pagination across task array updates", async () => {
-    const tasks = Array.from({ length: 110 }, (_, index) => makeTask(`KB-${String(index + 1).padStart(3, "0")}`));
-    const { rerender } = render(<Column {...defaultProps} column="todo" tasks={tasks} />);
-
-    await userEvent.click(screen.getByRole("button", { name: /Load 25 more/i }));
-    expect(screen.getAllByTestId(/task-/)).toHaveLength(75);
-
-    rerender(<Column {...defaultProps} column="todo" tasks={[...tasks]} />);
-
-    expect(screen.getAllByTestId(/task-/)).toHaveLength(75);
+  it("keeps a measurable sentinel for an empty filtered page that still has a continuation", async () => {
+    const onLoadMoreServer = vi.fn().mockResolvedValue(undefined);
+    render(<Column {...defaultProps} column="done" columnFlags={{ complete: true }} tasks={[]} totalTaskCount={12} serverHasMore onLoadMoreServer={onLoadMoreServer} />);
+    expect(screen.getByTestId("column-auto-pagination-sentinel")).toBeInTheDocument();
+    fireEvent.scroll(document.querySelector(".column-body")!);
+    await waitFor(() => expect(onLoadMoreServer).toHaveBeenCalledOnce());
   });
 
-  it("clamps visible tasks when a paginated list shrinks", async () => {
-    const tasks = Array.from({ length: 110 }, (_, index) => makeTask(`KB-${String(index + 1).padStart(3, "0")}`));
-    const { rerender } = render(<Column {...defaultProps} column="todo" tasks={tasks} />);
-
-    await userEvent.click(screen.getByRole("button", { name: /Load 25 more/i }));
-    expect(screen.getAllByTestId(/task-/)).toHaveLength(75);
-
-    rerender(<Column {...defaultProps} column="todo" tasks={tasks.slice(0, 60)} />);
-
-    expect(screen.getAllByTestId(/task-/)).toHaveLength(60);
+  it("keeps existing cards visible and exposes one accessible retry after a page error", async () => {
+    const onRetryServer = vi.fn().mockResolvedValue(undefined);
+    render(<Column {...defaultProps} column="done" columnFlags={{ complete: true }} tasks={[makeTask("KB-001")]} serverPaginationError="request-failed" onRetryServer={onRetryServer} />);
+    expect(screen.getByTestId("task-KB-001")).toBeInTheDocument();
+    expect(screen.getByText("Older tasks could not be loaded.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(onRetryServer).toHaveBeenCalledOnce());
   });
 
-
-
-  it("does not paginate at the threshold boundary", () => {
-    const tasks = Array.from({ length: 100 }, (_, index) => makeTask(`KB-${String(index + 1).padStart(3, "0")}`));
-    render(<Column {...defaultProps} column="todo" tasks={tasks} />);
-
-    expect(screen.queryByRole("button", { name: /Load 25 more/i })).toBeNull();
-  });
-
-  it("does not paginate grouped in-progress columns", () => {
-    const tasks = Array.from({ length: 110 }, (_, index) => ({ ...makeTask(`KB-${String(index + 1).padStart(3, "0")}`), column: "in-progress" as ColumnType }));
+  it("keeps capacity-bounded worktree groups exempt from the card virtualizer", () => {
+    const tasks = Array.from({ length: 10 }, (_, index) => ({ ...makeTask(`KB-${index}`), column: "in-progress" as ColumnType }));
     render(<Column {...defaultProps} column="in-progress" showWorktreeGrouping tasks={tasks} />);
-
-    expect(screen.queryByRole("button", { name: /Load 25 more/i })).toBeNull();
-  });
-
-  /*
-  FNXC:BoardColumnWindowing 2026-07-26-12:30:
-  These two cases previously pinned the OLD contract (search disables pagination, render every match).
-  That escape hatch was unbounded and is deliberately gone: `tasks` arrives already search-filtered, so
-  paginating search results still shows matches while keeping the mounted TaskCard count bounded — the
-  resident set is what makes mobile browsers discard the backgrounded tab.
-  */
-  it("paginates even when isSearchActive is true", () => {
-    const tasks = Array.from({ length: 110 }, (_, index) => makeTask(`KB-${String(index + 1).padStart(3, "0")}`));
-    render(<Column {...defaultProps} column="todo" tasks={tasks} isSearchActive={true} />);
-
-    expect(screen.getAllByTestId(/task-/)).toHaveLength(50);
-    expect(screen.getByRole("button", { name: /Load 25 more/i })).toBeTruthy();
-  });
-
-  it("collapses the window back to one screenful when isSearchActive changes back to false", () => {
-    const tasks = Array.from({ length: 110 }, (_, index) => makeTask(`KB-${String(index + 1).padStart(3, "0")}`));
-    const { rerender } = render(<Column {...defaultProps} column="todo" tasks={tasks} isSearchActive={true} />);
-
-    expect(screen.getAllByTestId(/task-/)).toHaveLength(50);
-
-    // Search cleared — the result set changed, so the window resets to the initial page.
-    rerender(<Column {...defaultProps} column="todo" tasks={tasks} isSearchActive={false} />);
-
-    expect(screen.getAllByTestId(/task-/)).toHaveLength(50);
-    expect(screen.getByRole("button", { name: /Load 25 more/i })).toBeTruthy();
-  });
-
-  /*
-  FNXC:BoardColumnWindowing 2026-07-26-14:24:
-  The reset used to key on the `isSearchActive` boolean, so refining one broad query into another kept
-  the boolean true and carried an expanded window (up to hundreds of mounted TaskCards) into a brand-new
-  result set. These cases pin the corrected contract: a DIFFERENT search result set collapses back to
-  one screenful, while an unchanged one keeps the operator's expanded window (nothing to bound).
-  */
-  it("collapses an expanded window when the search result set changes while search stays active", () => {
-    const tasks = Array.from({ length: 110 }, (_, index) => makeTask(`KB-${String(index + 1).padStart(3, "0")}`));
-    const { rerender } = render(<Column {...defaultProps} column="todo" tasks={tasks} isSearchActive={true} />);
-
-    fireEvent.click(screen.getByRole("button", { name: /Load 25 more/i }));
-    fireEvent.click(screen.getByRole("button", { name: /Load 25 more/i }));
-    expect(screen.getAllByTestId(/task-/)).toHaveLength(100);
-
-    // Operator edits the query from one broad term to another: isSearchActive is STILL true, but the
-    // result set is entirely different.
-    const nextTasks = Array.from({ length: 130 }, (_, index) => makeTask(`FN-${String(index + 1).padStart(3, "0")}`));
-    rerender(<Column {...defaultProps} column="todo" tasks={nextTasks} isSearchActive={true} />);
-
-    expect(screen.getAllByTestId(/task-/)).toHaveLength(50);
-  });
-
-  it("keeps the expanded window across a re-render that yields the same search result set", () => {
-    const tasks = Array.from({ length: 110 }, (_, index) => makeTask(`KB-${String(index + 1).padStart(3, "0")}`));
-    const { rerender } = render(<Column {...defaultProps} column="todo" tasks={tasks} isSearchActive={true} />);
-
-    fireEvent.click(screen.getByRole("button", { name: /Load 25 more/i }));
-    expect(screen.getAllByTestId(/task-/)).toHaveLength(75);
-
-    // A poll hands back an equal-but-not-identical array; the window must not be yanked from under the
-    // operator.
-    rerender(<Column {...defaultProps} column="todo" tasks={[...tasks]} isSearchActive={true} />);
-
-    expect(screen.getAllByTestId(/task-/)).toHaveLength(75);
-  });
-
-  it("preserves non-search pagination behavior when isSearchActive is not provided", () => {
-    const tasks = Array.from({ length: 110 }, (_, index) => makeTask(`KB-${String(index + 1).padStart(3, "0")}`));
-    render(<Column {...defaultProps} column="todo" tasks={tasks} />);
-
-    // Default (undefined isSearchActive) should still paginate
-    expect(screen.getAllByTestId(/task-/)).toHaveLength(50);
-    expect(screen.getByRole("button", { name: /Load 25 more/i })).toBeTruthy();
+    expect(screen.queryByTestId("column-auto-pagination-sentinel")).toBeNull();
   });
 });
 

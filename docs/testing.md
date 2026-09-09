@@ -135,6 +135,15 @@ Terminal acceptance tasks that require real mobile Safari should use [`docs/ios-
 
 Agents running verification through `fn_run_verification` are bounded by default: project `verificationCommandTimeoutMs` when set, otherwise 300s for package scope and 900s for workspace scope, with an 1800s hard cap. Marathon invocations such as root `pnpm test`, `pnpm test:full`, `pnpm verify:workspace`, whole-package tests without file filters, and shell repeat loops are soft-capped unless the agent explicitly passes `allowFullSuite: true`; the escape hatch still emits progress heartbeats and respects the hard cap. **Do not pass `allowFullSuite: true` unless absolutely necessary** — it is the main way verification balloons past its budget. Default to a targeted, file-scoped command such as `pnpm --filter @fusion/<pkg> exec vitest run src/path/to/test.ts --silent=passed-only --reporter=dot`; reserve `allowFullSuite` for a genuinely full run with no targetable test set (state the reason), with the thin merge gate (`pnpm test:gate`) as the cross-cutting safety net.
 
+## Dynamic-list verification
+
+<!-- FNXC:DynamicListTesting 2026-09-07-17:16: FN-311 makes automatic pagination and bounded rendering one cross-surface contract. Tests must cover the production host, not only the primitive: stable cursor continuation, stale-response fencing, intersection and scroll fallback, variable-height remeasurement, prepend anchoring, unmount cleanup, and a bounded DOM under at least 10,000 logical rows. -->
+
+When changing a dynamic dashboard list, update `listSurfaceInventory.ts` and keep a targeted production-reachability test named by that inventory entry. Manual “Load more” controls are reserved for explicit error retry actions; ordinary continuation must be driven by an edge sentinel and a single-flight loader.
+
+<!-- FNXC:DoneKeysetPagination 2026-09-08-22:25: FN-318 makes the completion history a server-keyset collection. -->
+Done-history tests must replay only the opaque `nextCursor` returned by `/api/tasks/done`, verify exact per-column and per-workflow counts independently of loaded rows, and accumulate rendered IDs while scrolling because the virtualized DOM intentionally never contains the full history at once.
+
 ## Dashboard source-read fixtures
 
 Dashboard app tests that inspect CSS or TypeScript source must use `packages/dashboard/app/test/cssFixture.ts` helpers such as `readAppFile()` and `loadComponentCss()`. Never read a bare relative path or construct a source path from `process.cwd()`; root-anchored Vitest launches otherwise fail at import time. `scripts/check-no-cwd-relative-dashboard-test-reads.mjs` enforces this convention in the full-suite pretest hook and merge gate.
@@ -1126,6 +1135,12 @@ pnpm --filter @fusion/dashboard exec vitest run app/components/__tests__/Workspa
 ```
 
 The parity invariant is that a mono-repository task and a workspace task changing one scoped repository have identical review, completion, and landing outcomes. The acquired clean peer must be displayed as **No changes — not reviewed**, must not get a blocking verdict, and must not become a partial-land target.
+
+### Forced stuck-resume race regressions
+
+Test both deterministic FIFO orderings whenever executor ownership or stuck recovery changes. In the invalidation-first ordering, suspend the old attempt after it selects cleanup but before it enters the mutation section, reserve forced invalidation, synchronously signal abort, acquire a real successor through `TaskExecutor`, then release the old unwind; no old store writer, task move, task-keyed cleanup, Git cleanup, or lifecycle event may run. In the mutation-first ordering, suspend an asynchronous writer or destructive `StepSessionExecutor.cleanup()` after section entry and prove invalidation plus real successor acquisition remain unpublished until it settles, with no overlap between attempts. Exercise both step-session and single-session production paths, and assert that the successor's active-session registration and persisted checkout identity survive the late unwind.
+
+The symptom fixture retains completed and in-progress steps plus workflow node, branch, worktree, and current column. It must assert those values survive and that logs contain neither an unattributed WIP→Hold move nor a parent-moved abort. The `check:move-target-literals` AST ratchet also records production engine `moveTask` calls lacking explicit `moveSource`; its baseline may decrease but no new omission is accepted, while operator routes and comments remain outside that engine-only population.
 
 ### Branch-writer validation regressions
 

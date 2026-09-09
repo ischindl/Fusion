@@ -63,6 +63,7 @@ import {
   type WorkflowIrColumn,
   type WorkflowSelectionCache,
   type WorkflowSelectionReadTally,
+  type WorkflowDefinitionReadTally,
   type WorkflowIrResolverStore,
 } from "@fusion/core";
 import { createHash } from "node:crypto";
@@ -733,6 +734,12 @@ export async function runHoldReleaseSweep(
     because both a successful batch and degraded individual reads populate the same cache.
     */
     const selectionReadTally: WorkflowSelectionReadTally = { batched: 0, singles: 0 };
+    const definitionReadTally: WorkflowDefinitionReadTally = { definitions: 0 };
+    /*
+    FNXC:WorkflowScheduling 2026-09-08-04:11:
+    List hydration uses the raw store and its observed-read tally; evaluation uses the counting proxy.
+    Each definition read uses exactly one accounting mechanism, since cache growth is not read evidence.
+    */
     /*
     FNXC:ListTasksDeriveOptOut 2026-09-09-00:55 (RUFU-202):
     This full-board read is the engine's single most expensive one. Live it measured avg 10.6 s /
@@ -751,8 +758,14 @@ export async function runHoldReleaseSweep(
     The selection read this sweep still needs is not lost with the derivation feed: the batch fallback
     below resolves every id through `getTaskWorkflowSelectionsAsync(missingIds)` in one round trip, so
     `selectionReadTally` reports 0 from `listTasks` while `counters.batchSelections` counts that batch
-    and the logged read tally stays truthful. Both option objects are still passed so a future caller
-    that re-enables derivation gets the shared caches back.
+    and the logged read tally stays truthful. All three accounting objects are still passed so a future
+    caller that re-enables derivation gets the shared caches back.
+
+    FNXC:WorkflowScheduling 2026-09-09-15:10 (origin/main sync):
+    Upstream concurrently added `definitionReadTally` (its own comment above) to this same call. The two
+    changes compose: upstream accounts for workflow-definition reads, while derivation and the log column
+    stay switched off here. Do not drop either half — removing `derive: false`/`excludeLog: true` restores
+    the 10.6 s avg board read; removing `definitionReadTally` loses upstream's read accounting.
 
     FNXC:ListTasksExcludeLog 2026-09-09-01:49 (RUFU-202):
     `excludeLog` is the second, bigger half: `log` is ~11 KB/row and this sweep never reads it, nor
@@ -772,9 +785,10 @@ export async function runHoldReleaseSweep(
       it also switches off `listTasksImpl`'s `excludeColumn: "archived"` narrowing, which would put
       archived cards back into a release-decision pass.
     */
-    const allTasks = await store.listTasks({ includeArchived: false, selectionCache, selectionReadTally, derive: false, excludeLog: true });
+    const allTasks = await store.listTasks({ includeArchived: false, selectionCache, selectionReadTally, irCache, definitionReadTally, derive: false, excludeLog: true });
     counters.batchSelections += selectionReadTally.batched;
     counters.selections += selectionReadTally.singles;
+    counters.definitions += definitionReadTally.definitions;
     if (expired()) return logPreambleTruncation(allTasks.length);
 
 
