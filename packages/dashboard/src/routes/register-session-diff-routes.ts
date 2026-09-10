@@ -11,7 +11,7 @@ import { ApiError, notFound, rethrowAsApiError } from "../api-error.js";
 // FNXC:TaskLookup404 2026-07-26-11:40: shared task-miss -> 404 mapping seam.
 import { isTaskLookupMiss, rethrowTaskApiError } from "./task-lookup-error.js";
 import { resolveDiffBase, runGitCommand } from "./resolve-diff-base.js";
-import { countPatchLines } from "./diff-counts.js";
+import { countPatchLines, parseNumstatOutput, type DiffLineCounts } from "./diff-counts.js";
 import { filterFilesToOwnTaskCommits } from "./attribute-done-range-files.js";
 import type { ProjectContext } from "./types.js";
 
@@ -51,6 +51,106 @@ const fileDiffsCache = new Map<
     expiresAt: number;
   }
 >();
+
+/*
+FNXC:TaskDiffStats 2026-09-10-05:23:
+The TaskCard "files changed" badge polls the diff endpoint, but computing the stats triple the way the
+Changes tab does it costs one `git diff` subprocess PER changed file. `?stats=1` answers without the
+per-file patch fan-out, and this cache absorbs the remaining poll traffic: a bounded window keyed on the
+card's identity, read BEFORE any git work so a hit costs zero subprocesses (the whole point — the badge
+must not be able to drive a git herd just by existing on a board with many cards).
+
+The key is built from stored task fields only, never from a live git query: every stronger identity
+check (branch-ownership probe, base resolution) is itself a subprocess, which would defeat the hit path.
+The accepted trade is bounded staleness — a worktree re-pointed to another branch serves at most
+TASK_DIFF_STATS_CACHE_TTL_MS of stale badge counts, and only on the stats lane. The unparameterized
+full-detail /diff response is untouched by this cache and keeps its verified behaviour.
+*/
+const TASK_DIFF_STATS_CACHE_TTL_MS = 10_000;
+const TASK_DIFF_STATS_CACHE_MAX = 500;
+
+type DiffStatsTriple = { filesChanged: number; additions: number; deletions: number };
+
+const taskDiffStatsCache = new Map<string, { stats: DiffStatsTriple; expiresAt: number }>();
+let taskDiffStatsNow: () => number = () => Date.now();
+
+function readTaskDiffStatsCache(key: string): DiffStatsTriple | undefined {
+  const hit = taskDiffStatsCache.get(key);
+  if (!hit) return undefined;
+  if (hit.expiresAt <= taskDiffStatsNow()) {
+    taskDiffStatsCache.delete(key);
+    return undefined;
+  }
+  return hit.stats;
+}
+
+function writeTaskDiffStatsCache(key: string, stats: DiffStatsTriple): void {
+  if (taskDiffStatsCache.size >= TASK_DIFF_STATS_CACHE_MAX) {
+    const oldestKey = taskDiffStatsCache.keys().next().value;
+    if (oldestKey !== undefined) taskDiffStatsCache.delete(oldestKey);
+  }
+  taskDiffStatsCache.set(key, { stats, expiresAt: taskDiffStatsNow() + TASK_DIFF_STATS_CACHE_TTL_MS });
+}
+
+/*
+Test-only seam (RUFU-206). Clears the stats cache and optionally installs a fake clock, mirroring
+__resetDoneRangeAttributionForTests so a TTL miss is assertable without a real time wait.
+*/
+export function __resetTaskDiffStatsCacheForTests(now?: () => number): void {
+  taskDiffStatsCache.clear();
+  if (now) taskDiffStatsNow = now;
+}
+
+function taskDiffStatsCacheKey(
+  task: { id: string; column: string; worktree?: string | null; mergeDetails?: { commitSha?: string | null; rebaseBaseSha?: string | null } | null },
+  rootDir: string,
+): string {
+  // Column belongs in the key because it selects the diff LANE (landed vs active vs fallback); two
+  // columns of the same card are different answers, not one answer viewed twice.
+  return [
+    task.id,
+    task.column,
+    task.worktree ?? rootDir,
+    task.mergeDetails?.commitSha ?? "",
+    task.mergeDetails?.rebaseBaseSha ?? "",
+  ].join("|");
+}
+
+/*
+FNXC:TaskDiffStats 2026-09-10-05:23:
+ONE whole-tree `git diff --numstat` replaces the per-file `git diff <spec> -- <path>` fan-out. Pass the
+SAME revision spec the full-detail lane passes to its per-file patches, so the two modes agree by
+construction instead of by approximation. `--no-renames` is mandatory rather than stylistic: git enables
+rename detection by default, and a detected pure rename reports `0 0` in numstat while the path-limited
+patch the full-detail lane counts reports the moved body as additions. Both sides must count the same
+way, and full-detail is the contract it cannot break.
+
+FNXC:TaskDiffStats 2026-09-10-12:16:
+Spawn cost tracks the parent's LIVE RESIDENT memory (measured 2026-09-09 production dashboard: 1.15 ms per
+`child_process.spawn` at 0.06 GB live RSS, 31.7 ms at its 2.02 GB live RSS) — that is why the removed per-file
+`git diff <spec> -- <path>` fan-out (one spawn per changed file) made the card badge poll burn ~0.7 core and
+0.77-3.4 s route latency. A 12-file card at 2 GB live RSS paid ~300-480 ms of main-thread CPU per request for
+one integer; a scratch-repo control measured 12 sequential path-limited diffs at 37.3 ms vs ONE whole-tree
+numstat at 2.9 ms, with the additions/deletions totals (24/12) identical between the two answers. NEVER
+re-add a per-file patch loop to answer a stats question; this call plus the cache above is the whole budget.
+*/
+async function runNumstatCounts(cwd: string, spec: string, timeoutMs: number): Promise<Map<string, DiffLineCounts>> {
+  try {
+    const raw = await runGitCommand(["diff", "--numstat", "-z", "--no-renames", spec], cwd, timeoutMs);
+    return parseNumstatOutput(raw);
+  } catch {
+    // A failing stat run degrades to 0/0 per file, exactly as an unreadable per-file patch does today.
+    return new Map();
+  }
+}
+
+function sumFileStats(files: Array<{ additions: number; deletions: number }>): DiffStatsTriple {
+  return {
+    filesChanged: files.length,
+    additions: files.reduce((sum, file) => sum + file.additions, 0),
+    deletions: files.reduce((sum, file) => sum + file.deletions, 0),
+  };
+}
 
 type DoneTaskFileStatus = "added" | "modified" | "deleted" | "renamed";
 
@@ -114,6 +214,7 @@ async function tryBranchRefFallbackDetailedDiff(
   task: BranchFallbackTask,
   rootDir: string,
   derivedBranchHint?: string,
+  statsOnly = false,
 ): Promise<{
   files: Array<{ path: string; status: "added" | "modified" | "deleted"; additions: number; deletions: number; patch: string }>;
   stats: { filesChanged: number; additions: number; deletions: number };
@@ -136,6 +237,28 @@ async function tryBranchRefFallbackDetailedDiff(
   }
 
   const files: Array<{ path: string; status: "added" | "modified" | "deleted"; additions: number; deletions: number; patch: string }> = [];
+
+  /*
+  FNXC:TaskDiffStats 2026-09-10-05:23:
+  Stats mode on this lane: the path set above already came from the same `--name-status -M` pass the
+  full-detail lane runs, so ONE whole-tree numstat over the identical `baseRef..branchRef` spec fills
+  every count. The full-detail loop below pays one patch subprocess per file instead.
+  */
+  if (statsOnly) {
+    if (fileMap.size === 0) {
+      return { files: [], stats: { filesChanged: 0, additions: 0, deletions: 0 } };
+    }
+    const statsCounts = await runNumstatCounts(rootDir, `${resolved.baseRef}..${resolved.branchRef}`, DIFF_TIMEOUT_MS);
+    const statsFiles = Array.from(fileMap.entries()).map(([filePath, statusCode]) => {
+      const counts = statsCounts.get(filePath);
+      let status: "added" | "modified" | "deleted" = "modified";
+      if (statusCode.startsWith("A")) status = "added";
+      else if (statusCode.startsWith("D")) status = "deleted";
+      return { path: filePath, status, additions: counts?.additions ?? 0, deletions: counts?.deletions ?? 0, patch: "" };
+    });
+    return { files: statsFiles, stats: sumFileStats(statsFiles) };
+  }
+
   for (const [filePath, statusCode] of fileMap.entries()) {
     let status: "added" | "modified" | "deleted" = "modified";
     if (statusCode.startsWith("A")) status = "added";
@@ -361,14 +484,23 @@ async function restrictActiveCommittedFilesToOwnTask<T>(
   }
 }
 
-async function collectDoneRangeFiles(range: string, rootDir: string): Promise<AggregatedDoneTaskFile[]> {
+async function collectDoneRangeFiles(range: string, rootDir: string, statsOnly = false): Promise<AggregatedDoneTaskFile[]> {
   const nameStatus = (await runGitCommand(["diff", "--name-status", "-M", range], rootDir, 10000)).trim();
   const files: AggregatedDoneTaskFile[] = [];
+  // FNXC:TaskDiffStats 2026-09-10-05:23: stats mode joins one whole-tree numstat onto this same
+  // name-status path set instead of paying a `git diff -M <range> -- <path>` subprocess per file.
+  const statsCounts = statsOnly ? await runNumstatCounts(rootDir, range, 10000) : undefined;
 
   for (const line of nameStatus.split("\n").filter(Boolean)) {
     const parsed = parseNameStatusLine(line);
     if (!parsed) continue;
     const { statusCode, path: filePath, oldPath } = parsed;
+
+    if (statsCounts) {
+      const counts = statsCounts.get(filePath);
+      files.push({ path: filePath, status: parseStatusCode(statusCode), additions: counts?.additions ?? 0, deletions: counts?.deletions ?? 0, patch: "" });
+      continue;
+    }
 
     let patch = "";
     try {
@@ -441,6 +573,7 @@ async function computeWorktreeDetailedFiles(
   taskLike: { id: string; baseBranch?: string; baseCommitSha?: string },
   cwd: string,
   timeoutMs: number,
+  statsOnly = false,
 ): Promise<WorktreeDetailedFile[]> {
   const diffBase = await resolveDiffBase(taskLike, cwd, "HEAD", undefined, { enableDisplayRecovery: true });
 
@@ -498,6 +631,31 @@ async function computeWorktreeDetailedFiles(
   uses the shared parseStatusCode helper (single source of truth for the A/D/R/M mapping).
   */
   const entries = Array.from(fileMap.entries()).filter(([filePath]) => Boolean(filePath));
+
+  /*
+  FNXC:TaskDiffStats 2026-09-10-05:23:
+  Stats mode on this lane: the union path set above (committed, restricted to the task's own commits,
+  plus staged and unstaged) is the same set the full-detail fan-out iterates, so ONE whole-tree numstat
+  over `diffBase` — the identical spec the per-file patch uses — supplies every count. An empty path set
+  skips the spawn entirely: there is nothing to join onto. Untracked files are absent from both modes
+  (`git diff` never lists them), which is the review-time behaviour this lane already has.
+  */
+  if (statsOnly) {
+    if (entries.length === 0) return [];
+    const statsCounts = await runNumstatCounts(cwd, diffBase ?? "HEAD", timeoutMs);
+    return entries.map(([filePath, { statusCode, oldPath }]) => {
+      const counts = statsCounts.get(filePath);
+      const file: WorktreeDetailedFile = {
+        path: filePath,
+        status: parseStatusCode(statusCode),
+        additions: counts?.additions ?? 0,
+        deletions: counts?.deletions ?? 0,
+        patch: "",
+      };
+      return oldPath ? { ...file, oldPath } : file;
+    });
+  }
+
   const results = await mapWithConcurrency(entries, 8, async ([filePath, { statusCode, oldPath }]) => {
     const status = parseStatusCode(statusCode);
 
@@ -538,6 +696,7 @@ async function computeWorkspaceTaskFiles(
   },
   rootDir: string,
   timeoutMs: number,
+  statsOnly = false,
 ): Promise<WorktreeDetailedFile[]> {
   const worktrees = task.workspaceWorktrees ?? {};
 
@@ -575,6 +734,7 @@ async function computeWorkspaceTaskFiles(
           { id: task.id, baseBranch: undefined, baseCommitSha: entry.baseCommitSha },
           entry.worktreePath,
           timeoutMs,
+          statsOnly,
         );
       } catch {
         repoFiles = [];
@@ -590,7 +750,7 @@ async function computeWorkspaceTaskFiles(
     if (repoFiles.length === 0 && entry.baseCommitSha && entry.landedSha) {
       const repoRootDir = join(rootDir, repoRel);
       try {
-        const rangeFiles = await collectDoneRangeFiles(`${entry.baseCommitSha}..${entry.landedSha}`, repoRootDir);
+        const rangeFiles = await collectDoneRangeFiles(`${entry.baseCommitSha}..${entry.landedSha}`, repoRootDir, statsOnly);
         repoFiles = rangeFiles.map((file) => ({
           path: file.path,
           status: file.status,
@@ -699,7 +859,7 @@ async function resolveDoneTaskMergeSha(
   return undefined;
 }
 
-async function collectDoneTaskFiles(task: DoneTaskAggregationTask, scopedStore: DoneTaskAggregationStore): Promise<{
+async function collectDoneTaskFiles(task: DoneTaskAggregationTask, scopedStore: DoneTaskAggregationStore, statsOnly = false): Promise<{
   files: AggregatedDoneTaskFile[];
   stats: { filesChanged: number; additions: number; deletions: number };
   usedAggregation: boolean;
@@ -758,7 +918,7 @@ async function collectDoneTaskFiles(task: DoneTaskAggregationTask, scopedStore: 
 
     let filesForSha: AggregatedDoneTaskFile[] = [];
     try {
-      filesForSha = await collectDoneRangeFiles(diffSpec.range, rootDir);
+      filesForSha = await collectDoneRangeFiles(diffSpec.range, rootDir, statsOnly);
     } catch {
       continue;
     }
@@ -981,13 +1141,36 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
         return;
       }
 
+      /*
+      FNXC:TaskDiffStats 2026-09-10-05:23:
+      `?stats=1` answers only the badge triple — it is the TaskCard poll's transport, not a second
+      contract. The cache read sits BEFORE the lane dispatch so a hit performs zero git subprocesses;
+      that is the whole purpose of the flag, and it is why the cache key is composed of stored task
+      fields only (every git-verified key candidate would itself spend subprocesses on the hit path).
+      Every success response below goes through respondDiff, so the stats lane can neither leak a
+      `files` array nor skip its cache write, and the unparameterized response stays byte-identical.
+      */
+      const statsOnly = req.query.stats === "1";
+      const statsCacheKey = statsOnly ? taskDiffStatsCacheKey(task, scopedStore.getRootDir()) : undefined;
+      if (statsCacheKey) {
+        const cachedStats = readTaskDiffStatsCache(statsCacheKey);
+        if (cachedStats) {
+          res.json({ stats: cachedStats });
+          return;
+        }
+      }
+      const respondDiff = (files: unknown[], stats: DiffStatsTriple): void => {
+        if (statsCacheKey) writeTaskDiffStatsCache(statsCacheKey, stats);
+        res.json(statsOnly ? { stats } : { files, stats });
+      };
+
       // FNXC:WorkspaceDiff 2026-06-25-09:40:
       // Workspace tasks have no singular worktree/branch; their changes live in per-sub-repo
       // worktrees. Aggregate across them (repo-prefixed paths) and short-circuit BEFORE the single-repo
       // logic, which would diff the non-git workspace root and return empty. renamed→modified is folded
       // to match the /diff contract (which has no 'renamed' status; /file-diffs keeps it).
       if (isWorkspaceTask(task)) {
-        const workspaceFiles = await computeWorkspaceTaskFiles(task, scopedStore.getRootDir(), DIFF_TIMEOUT_MS);
+        const workspaceFiles = await computeWorkspaceTaskFiles(task, scopedStore.getRootDir(), DIFF_TIMEOUT_MS, statsOnly);
         const files = workspaceFiles.map((file) => ({
           path: file.path,
           status: file.status === "renamed" ? "modified" : file.status,
@@ -995,14 +1178,7 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
           deletions: file.deletions,
           patch: file.patch,
         }));
-        res.json({
-          files,
-          stats: {
-            filesChanged: files.length,
-            additions: files.reduce((sum, file) => sum + file.additions, 0),
-            deletions: files.reduce((sum, file) => sum + file.deletions, 0),
-          },
-        });
+        respondDiff(files, sumFileStats(files));
         return;
       }
 
@@ -1015,7 +1191,7 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
           // no owned changes to display.
           const atOrBelowBase = await isAtOrBelowTaskBase(mergeShaForBaseBoundary, task.baseCommitSha, scopedStore.getRootDir());
           if (atOrBelowBase) {
-            res.json({ files: [], stats: { filesChanged: 0, additions: 0, deletions: 0 } });
+            respondDiff([], { filesChanged: 0, additions: 0, deletions: 0 });
             return;
           }
         }
@@ -1030,7 +1206,7 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
             }
           : task;
 
-        const aggregated = await collectDoneTaskFiles(doneTaskForDiff, scopedStore);
+        const aggregated = await collectDoneTaskFiles(doneTaskForDiff, scopedStore, statsOnly);
         const expectedFilesChanged = task.mergeDetails?.filesChanged ?? 0;
         const aggregationLooksComplete = expectedFilesChanged <= 0 || aggregated.stats.filesChanged >= expectedFilesChanged;
 
@@ -1038,7 +1214,7 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
         if (resolvedMergeSha && rebaseBaseShaForAggregation) {
           const rebaseDiffSpec = await resolveRebaseDiffSpec(rebaseBaseShaForAggregation, resolvedMergeSha, scopedStore.getRootDir());
           if (rebaseDiffSpec) {
-            const rebaseRangeFiles = await collectDoneRangeFiles(rebaseDiffSpec.range, scopedStore.getRootDir()).catch(() => []);
+            const rebaseRangeFiles = await collectDoneRangeFiles(rebaseDiffSpec.range, scopedStore.getRootDir(), statsOnly).catch(() => []);
             if (rebaseRangeFiles.length > 0) {
               const filtered = await restrictRebaseRangeFiles(task, rebaseRangeFiles, {
                 rootDir: scopedStore.getRootDir(),
@@ -1049,13 +1225,10 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
                 ...file,
                 status: file.status === "renamed" ? "modified" : file.status,
               }));
-              res.json({
-                files,
-                stats: {
-                  filesChanged: filtered.length,
-                  additions: filtered.reduce((sum, file) => sum + file.additions, 0),
-                  deletions: filtered.reduce((sum, file) => sum + file.deletions, 0),
-                },
+              respondDiff(files, {
+                filesChanged: filtered.length,
+                additions: filtered.reduce((sum, file) => sum + file.additions, 0),
+                deletions: filtered.reduce((sum, file) => sum + file.deletions, 0),
               });
               return;
             }
@@ -1063,38 +1236,31 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
         }
 
         if (aggregated.usedAggregation && aggregated.files.length > 0 && aggregationLooksComplete) {
-          res.json({
-            files: aggregated.files.map((file) => ({
+          respondDiff(
+            aggregated.files.map((file) => ({
               ...file,
               status: file.status === "renamed" ? "modified" : file.status,
             })),
-            stats: aggregated.stats,
-          });
+            aggregated.stats,
+          );
           return;
         }
 
         if (aggregated.usedAggregation && aggregated.files.length > 0) {
-          res.json({
-            files: aggregated.files.map((file) => ({
+          respondDiff(
+            aggregated.files.map((file) => ({
               ...file,
               status: file.status === "renamed" ? "modified" : file.status,
             })),
-            stats: aggregated.stats,
-          });
+            aggregated.stats,
+          );
           return;
         }
 
         if (!resolvedMergeSha) {
           // FN-4527: mergeDetails summary stats can be stale after post-merge
           // rebase-and-push (FN-4526). Never echo stored values from /diff.
-          res.json({
-            files: [],
-            stats: {
-              filesChanged: 0,
-              additions: 0,
-              deletions: 0,
-            },
-          });
+          respondDiff([], { filesChanged: 0, additions: 0, deletions: 0 });
           return;
         }
 
@@ -1112,7 +1278,7 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
             try {
               diffSpec = await resolveCommitDiffSpec(sha, rootDir);
             } catch {
-              res.json({ files: [], stats: { filesChanged: 0, additions: 0, deletions: 0 } });
+              respondDiff([], { filesChanged: 0, additions: 0, deletions: 0 });
               return;
             }
           }
@@ -1120,12 +1286,12 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
           try {
             diffSpec = await resolveCommitDiffSpec(sha, rootDir);
           } catch {
-            res.json({ files: [], stats: { filesChanged: 0, additions: 0, deletions: 0 } });
+            respondDiff([], { filesChanged: 0, additions: 0, deletions: 0 });
             return;
           }
         }
 
-        const doneFiles = await collectDoneRangeFiles(diffSpec.range, rootDir).catch(() => []);
+        const doneFiles = await collectDoneRangeFiles(diffSpec.range, rootDir, statsOnly).catch(() => []);
         const scopedDoneFiles = diffSpec.mode === "rebase-range"
           ? await restrictRebaseRangeFiles(task, doneFiles, {
               rootDir,
@@ -1138,20 +1304,17 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
             ...file,
             status: file.status === "renamed" ? "modified" : file.status,
           }));
-          res.json({
-            files,
-            stats: {
-              filesChanged: files.length,
-              additions: files.reduce((sum, file) => sum + file.additions, 0),
-              deletions: files.reduce((sum, file) => sum + file.deletions, 0),
-            },
+          respondDiff(files, {
+            filesChanged: files.length,
+            additions: files.reduce((sum, file) => sum + file.additions, 0),
+            deletions: files.reduce((sum, file) => sum + file.deletions, 0),
           });
           return;
         }
 
         // A failed or foreign-only rebase range has no task-owned shortstat to report.
         if (diffSpec.mode === "rebase-range") {
-          res.json({ files: [], stats: { filesChanged: 0, additions: 0, deletions: 0 } });
+          respondDiff([], { filesChanged: 0, additions: 0, deletions: 0 });
           return;
         }
 
@@ -1159,10 +1322,7 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
           .then((output) => parseGitShortstat(output))
           .catch(() => ({ filesChanged: 0, additions: 0, deletions: 0 }));
 
-        res.json({
-          files: [],
-          stats: shortstat,
-        });
+        respondDiff([], shortstat);
         return;
       }
 
@@ -1172,8 +1332,8 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
       const derivedBranchHint = task.branch?.trim() ? undefined : `fusion/${task.id.toLowerCase()}`;
 
       if (!resolvedWorktree) {
-        const fallback = await tryBranchRefFallbackDetailedDiff(task, scopedStore.getRootDir(), derivedBranchHint);
-        res.json(fallback);
+        const fallback = await tryBranchRefFallbackDetailedDiff(task, scopedStore.getRootDir(), derivedBranchHint, statsOnly);
+        respondDiff(fallback.files, fallback.stats);
         return;
       }
       let worktreeExists = false;
@@ -1184,13 +1344,13 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
         worktreeExists = false;
       }
       if (!worktreeExists) {
-        const fallback = await tryBranchRefFallbackDetailedDiff(task, scopedStore.getRootDir(), derivedBranchHint);
-        res.json(fallback);
+        const fallback = await tryBranchRefFallbackDetailedDiff(task, scopedStore.getRootDir(), derivedBranchHint, statsOnly);
+        respondDiff(fallback.files, fallback.stats);
         return;
       }
       if (!(await worktreeStillBelongsToTask(resolvedWorktree, task.branch))) {
-        const fallback = await tryBranchRefFallbackDetailedDiff(task, scopedStore.getRootDir(), derivedBranchHint);
-        res.json(fallback);
+        const fallback = await tryBranchRefFallbackDetailedDiff(task, scopedStore.getRootDir(), derivedBranchHint, statsOnly);
+        respondDiff(fallback.files, fallback.stats);
         return;
       }
       const cwd = resolvedWorktree;
@@ -1199,7 +1359,7 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
       // shared with the per-sub-repo workspace aggregation. Renames fold to
       // "modified" here (the /diff shape has no "renamed" status), matching the
       // previous inline behaviour.
-      const detailed = await computeWorktreeDetailedFiles(task, cwd, DIFF_TIMEOUT_MS);
+      const detailed = await computeWorktreeDetailedFiles(task, cwd, DIFF_TIMEOUT_MS, statsOnly);
       const files = detailed.map((file) => ({
         path: file.path,
         status: file.status === "renamed" ? ("modified" as const) : file.status,
@@ -1214,7 +1374,7 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
         deletions: files.reduce((sum, f) => sum + f.deletions, 0),
       };
 
-      res.json({ files, stats });
+      respondDiff(files, stats);
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         throw err;

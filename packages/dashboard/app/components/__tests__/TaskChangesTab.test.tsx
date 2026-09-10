@@ -131,6 +131,35 @@ describe("TaskChangesTab — worktree-backed (non-done tasks)", () => {
     expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-001", undefined, undefined);
   });
 
+  /*
+  FNXC:TaskDiffStats 2026-09-10-04:03:
+  The Changes tab renders per-file patches, so it must keep the FULL-DETAIL transport: a truthy 4th
+  (statsOnly) argument makes the server answer `{ stats }` with no `files` key at all, which would empty
+  this list. The card badge hook (`useTaskDiffStats`) owns the stats-only request instead.
+  */
+  it("requests full-detail diff (falsy stats-only flag) so patch rows keep rendering", async () => {
+    mockFetchTaskDiff.mockResolvedValue({
+      files: [
+        { path: "src/app.ts", status: "modified", additions: 1, deletions: 0, patch: "@@ -1 +1,2 @@" },
+      ],
+      stats: { filesChanged: 1, additions: 1, deletions: 0 },
+    });
+
+    render(
+      <TaskChangesTab
+        taskId="FN-001"
+        worktree="/path/to/worktree"
+        column="in-progress"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("src/app.ts")).toBeTruthy();
+    });
+    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-001", undefined, undefined);
+    expect(mockFetchTaskDiff.mock.calls.every((call: unknown[]) => !call[3])).toBe(true);
+  });
+
   it("loads diff from fetchTaskDiff for in-review task with worktree", async () => {
     mockFetchTaskDiff.mockResolvedValue({
       files: [

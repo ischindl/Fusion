@@ -178,7 +178,15 @@ export function useTaskDiffStats(
 
       setLoading(true);
       try {
-        const data = await fetchTaskDiff(taskId, activeWorktree, projectId);
+        /*
+        FNXC:TaskDiffStats 2026-09-10-04:03:
+        This consumer reads ONLY `data.stats`, so it asks the server for the stats-only shape (`?stats=1`):
+        one whole-tree `git diff --numstat` subprocess on the server instead of the per-file patch fan-out
+        that exists purely for the Changes tab's diff viewer. The client cache identity is deliberately
+        unchanged — the key stays (taskId, projectId, worktree, version, mode) — because the stats-only flag
+        is transport, not identity: the numbers under this key are the same numbers.
+        */
+        const data = await fetchTaskDiff(taskId, activeWorktree, projectId, true);
         if (!cancelled) {
           setStats(data.stats);
           // Store in cache

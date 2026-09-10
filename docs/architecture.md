@@ -2031,6 +2031,7 @@ Done-task file-count surfaces intentionally distinguish three data sources:
 1. **`/api/tasks/:id/diff` (lineage union, authoritative landed diff)**
    - This route aggregates the task's landed lineage and returns `stats.filesChanged` plus the file list used by the Changes tab.
    - Done-task cards and diff views should treat this as the canonical "files changed" source.
+   - `?stats=1` (RUFU-206) is the same aggregation answering only the stats triple, per lane: landed / rebase-range / branch-ref-fallback / active-worktree lanes join ONE whole-tree `git diff --numstat -z --no-renames` onto the `--name-status` path set that own-task attribution (`filterFilesToOwnTaskCommits`) has already restricted; the landed last-resort lane keeps its single `git show --shortstat --format=` spawn. A bare whole-tree total is never the landed, rebase-range, or active answer — it would count other tasks' files from foreign commits on shared branches — so the numstat is always a lookup table joined onto the owned path set. The stats triple is identical to the full-detail response, pinned per lane by parity tests in `routes-github.test.ts`.
 2. **`task.mergeDetails.filesChanged` / `insertions` / `deletions` (final-commit shortstat)**
    - These fields describe only the recorded final merge/squash commit shortstat.
    - On done cards, `mergeDetails.filesChanged` is only a transient loading placeholder until `/api/tasks/:id/diff` resolves.

@@ -17,6 +17,7 @@ import {
 } from "../routes/context.js";
 import { GitHubClient } from "../github.js";
 import * as resolveDiffBaseModule from "../routes/resolve-diff-base.js";
+import * as sessionDiffRoutes from "../routes/register-session-diff-routes.js";
 import { githubRateLimiter } from "../github-poll.js";
 import {
   MAX_TASK_MESSAGE_LENGTH,
@@ -347,6 +348,86 @@ const FAKE_TASK_DETAIL: TaskDetail = {
 async function GET(app: express.Express, path: string): Promise<{ status: number; body: any }> {
   const res = await performGet(app, path);
   return { status: res.status, body: res.body };
+}
+
+/*
+FNXC:TaskDiffAttribution 2026-09-09-23:05:
+RUFU-207 Step 4: route-level subprocess economy on the real HTTP surface. Attribution spawns are
+identified by their unique arg shapes (enumeration = the `%H%x00` format arg; batch = `--no-walk`
++ `--name-only`; per-sha fallback = leading `diff-tree`), so the routes' unrelated git calls
+(rev-parse, name-status -M, per-file patches) never pollute the count. mockExecFile is never
+cleared in this file, hence the call-count baselines. The fresh concurrent pair case is only
+deterministic at the module seam (its coalescing test lives in attribute-done-range-files.test.ts);
+over HTTP, cache warmth may order the two attributions, so the pair test asserts the spec's
+"reuse of primed result" branch: after one /diff primed attribution, a concurrent pair may
+re-enumerate at most twice and must NEVER re-resolve names (batch/diff-tree count 0).
+
+FNXC:TaskDiffStats 2026-09-10-04:42:
+RUFU-206 lifted these helpers from the "done tasks with commit SHA" describe to module scope (bodies
+unchanged) so the stats-mode suite reuses the same spawn accounting and real-git fixture instead of
+re-declaring them. The two added classifiers name the shapes the stats-only lane owns: a STAT spawn is
+a whole-tree `--numstat` (the stats join) or `--shortstat` (the merge-sha fallback), and a PER-FILE
+PATCH spawn is a `diff` argv path-limited past `--` — the O(files) cost stats mode exists to delete.
+"Zero patch spawns plus at most one stat spawn" is the assertion that proves the numstat join replaced
+the fan-out; a raw total-spawn count would not, because base resolution, name-status and attribution
+spawns legitimately remain in the budget.
+*/
+function gitSpawnArgsSince(baseline: number): string[][] {
+  return mockExecFile.mock.calls
+    .slice(baseline)
+    .map((c) => c as unknown[])
+    .filter((c) => c[0] === "git" && Array.isArray(c[1]))
+    .map((c) => c[1] as string[]);
+}
+
+function countAttributionSpawns(calls: string[][]): { enumerated: number; batched: number; perSha: number } {
+  return {
+    enumerated: calls.filter((a) => a.some((x) => typeof x === "string" && x.includes("%H%x00"))).length,
+    batched: calls.filter((a) => a.includes("--no-walk") && a.includes("--name-only")).length,
+    perSha: calls.filter((a) => a[0] === "diff-tree").length,
+  };
+}
+
+function countStatSpawns(calls: string[][]): number {
+  return calls.filter((a) => a.includes("--numstat") || a.includes("--shortstat")).length;
+}
+
+function countPerFilePatchSpawns(calls: string[][]): number {
+  return calls.filter((a) => a[0] === "diff" && a.indexOf("--") >= 0 && a.indexOf("--") < a.length - 1).length;
+}
+
+async function makeAttributedDoneApp(taskId: string, ownCommitCount: number): Promise<{ app: express.Express; root: string }> {
+  const root = mkdtempSync(join(tmpdir(), "kb-dashboard-attribution-economy-"));
+  const git = (...args: string[]): string => execFileSync("git", ["-C", root, ...args], { stdio: "pipe" }).toString().trim();
+  git("init", "--initial-branch=main");
+  git("config", "user.email", "kb-tests@example.com");
+  git("config", "user.name", "KB Tests");
+  writeFileSync(join(root, "base.ts"), "export const base = true;\n");
+  git("add", "base.ts");
+  git("commit", "-qm", "base");
+  const rebaseBaseSha = git("rev-parse", "HEAD");
+  writeFileSync(join(root, "foreign.ts"), "export const remote = true;\n");
+  git("add", "foreign.ts");
+  git("commit", "-qm", "remote work");
+  for (let i = 1; i <= ownCommitCount; i++) {
+    writeFileSync(join(root, `own${i}.ts`), `export const own${i} = ${i};\n`);
+    git("add", `own${i}.ts`);
+    git("commit", "-qm", `feat(${taskId}): own change ${i}`);
+  }
+  const commitSha = git("rev-parse", "HEAD");
+
+  const localStore = createMockStore({ getRootDir: vi.fn().mockReturnValue(root) });
+  (localStore.getTask as ReturnType<typeof vi.fn>).mockResolvedValue({
+    ...FAKE_TASK_DETAIL,
+    id: taskId,
+    column: "done",
+    modifiedFiles: [],
+    mergeDetails: { commitSha, rebaseBaseSha, filesChanged: 2 },
+  });
+  const app = express();
+  app.use(express.json());
+  app.use("/api", createApiRoutes(localStore));
+  return { app, root };
 }
 
 async function REQUEST(
@@ -3288,68 +3369,6 @@ describe("GET /tasks/:id/diff", () => {
       }
     });
 
-    /*
-    FNXC:TaskDiffAttribution 2026-09-09-23:05:
-    RUFU-207 Step 4: route-level subprocess economy on the real HTTP surface. Attribution spawns are
-    identified by their unique arg shapes (enumeration = the `%H%x00` format arg; batch = `--no-walk`
-    + `--name-only`; per-sha fallback = leading `diff-tree`), so the routes' unrelated git calls
-    (rev-parse, name-status -M, per-file patches) never pollute the count. mockExecFile is never
-    cleared in this file, hence the call-count baselines. The fresh concurrent pair case is only
-    deterministic at the module seam (its coalescing test lives in attribute-done-range-files.test.ts);
-    over HTTP, cache warmth may order the two attributions, so the pair test asserts the spec's
-    "reuse of primed result" branch: after one /diff primed attribution, a concurrent pair may
-    re-enumerate at most twice and must NEVER re-resolve names (batch/diff-tree count 0).
-    */
-    function gitSpawnArgsSince(baseline: number): string[][] {
-      return mockExecFile.mock.calls
-        .slice(baseline)
-        .map((c) => c as unknown[])
-        .filter((c) => c[0] === "git" && Array.isArray(c[1]))
-        .map((c) => c[1] as string[]);
-    }
-
-    function countAttributionSpawns(calls: string[][]): { enumerated: number; batched: number; perSha: number } {
-      return {
-        enumerated: calls.filter((a) => a.some((x) => typeof x === "string" && x.includes("%H%x00"))).length,
-        batched: calls.filter((a) => a.includes("--no-walk") && a.includes("--name-only")).length,
-        perSha: calls.filter((a) => a[0] === "diff-tree").length,
-      };
-    }
-
-    async function makeAttributedDoneApp(taskId: string, ownCommitCount: number): Promise<{ app: express.Express; root: string }> {
-      const root = mkdtempSync(join(tmpdir(), "kb-dashboard-attribution-economy-"));
-      const git = (...args: string[]): string => execFileSync("git", ["-C", root, ...args], { stdio: "pipe" }).toString().trim();
-      git("init", "--initial-branch=main");
-      git("config", "user.email", "kb-tests@example.com");
-      git("config", "user.name", "KB Tests");
-      writeFileSync(join(root, "base.ts"), "export const base = true;\n");
-      git("add", "base.ts");
-      git("commit", "-qm", "base");
-      const rebaseBaseSha = git("rev-parse", "HEAD");
-      writeFileSync(join(root, "foreign.ts"), "export const remote = true;\n");
-      git("add", "foreign.ts");
-      git("commit", "-qm", "remote work");
-      for (let i = 1; i <= ownCommitCount; i++) {
-        writeFileSync(join(root, `own${i}.ts`), `export const own${i} = ${i};\n`);
-        git("add", `own${i}.ts`);
-        git("commit", "-qm", `feat(${taskId}): own change ${i}`);
-      }
-      const commitSha = git("rev-parse", "HEAD");
-
-      const localStore = createMockStore({ getRootDir: vi.fn().mockReturnValue(root) });
-      (localStore.getTask as ReturnType<typeof vi.fn>).mockResolvedValue({
-        ...FAKE_TASK_DETAIL,
-        id: taskId,
-        column: "done",
-        modifiedFiles: [],
-        mergeDetails: { commitSha, rebaseBaseSha, filesChanged: 2 },
-      });
-      const app = express();
-      app.use(express.json());
-      app.use("/api", createApiRoutes(localStore));
-      return { app, root };
-    }
-
     it("attributes a 6-commit done card in exactly two attribution spawns", async () => {
       const { app, root } = await makeAttributedDoneApp("FN-2071", 6);
       try {
@@ -3537,6 +3556,377 @@ describe("GET /tasks/:id/diff", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  /*
+  FNXC:TaskDiffStats 2026-09-10-04:42:
+  RUFU-206: the TaskCard badge needs only {filesChanged, additions, deletions}, but the
+  unparameterized /diff derives those numbers by fetching a patch per changed file — one git subprocess
+  per file per card. `?stats=1` keeps the SAME path-set builders (so foreign-commit attribution, the
+  untracked exclusion, and rename-destination keying survive untouched) and replaces the patch fan-out
+  with ONE whole-tree `git diff --numstat -z --no-renames` joined onto that path set. Every test below
+  therefore asserts two halves: the triple must equal the unparameterized triple (the badge may never
+  drift from the Changes tab), and the spawn shape must show patches gone plus at most one whole-tree
+  stat spawn. The unparameterized run is measured inside the same test as a control, so a classifier
+  that stopped matching would turn a "0 patches" assertion red instead of passing vacuously.
+  */
+  describe("stats-only mode (?stats=1)", () => {
+    function makeStatsRepo(label: string): { root: string; git: (...args: string[]) => string } {
+      const root = mkdtempSync(join(tmpdir(), `kb-dashboard-stats-${label}-`));
+      const git = (...args: string[]): string => execFileSync("git", ["-C", root, ...args], { stdio: "pipe" }).toString().trim();
+      git("init", "--initial-branch=main");
+      git("config", "user.email", "kb-tests@example.com");
+      git("config", "user.name", "KB Tests");
+      writeFileSync(join(root, "base.ts"), "export const base = true;\n");
+      git("add", "base.ts");
+      git("commit", "-qm", "base");
+      /*
+      The worktree must sit on a task branch, not on `main`. The active lane resolves its base through
+      resolveDiffBase with enableDisplayRecovery, which tightens baseCommitSha to merge-base(HEAD, main):
+      for a worktree already on `main` that tightens to HEAD itself, so committed changes are
+      deliberately invisible there (existing display behaviour, FN-2840). A task branch keeps
+      merge-base(HEAD, main) equal to baseCommitSha, which is the shape a real Fusion worktree presents.
+      */
+      git("checkout", "-q", "-b", "kb-task");
+      return { root, git };
+    }
+
+    function appForTask(task: Record<string, unknown>, rootDir: string): express.Express {
+      const localStore = createMockStore({ getRootDir: vi.fn().mockReturnValue(rootDir) });
+      (localStore.getTask as ReturnType<typeof vi.fn>).mockResolvedValue({ ...FAKE_TASK_DETAIL, ...task });
+      const app = express();
+      app.use(express.json());
+      app.use("/api", createApiRoutes(localStore));
+      return app;
+    }
+
+    /*
+    Accessed through the module namespace, not a named import: on the pre-implementation tree the
+    export does not exist, and a named ESM import would fail the whole file at link time, hiding which
+    behavior is actually missing. A thrown sentence naming the unimplemented step is honest red.
+    */
+    function statsCacheReset(): (now?: () => number) => void {
+      const hook = (sessionDiffRoutes as unknown as Partial<Record<string, unknown>>).__resetTaskDiffStatsCacheForTests as
+        | ((now?: () => number) => void)
+        | undefined;
+      if (typeof hook !== "function") {
+        throw new Error("RUFU-206 Step 4 not implemented: __resetTaskDiffStatsCacheForTests is not exported");
+      }
+      return hook;
+    }
+
+    it("answers with a stats-only body and one whole-tree stat spawn on the active worktree lane", async () => {
+      const { root, git } = makeStatsRepo("active");
+      try {
+        const baseSha = git("rev-parse", "HEAD");
+        writeFileSync(join(root, "committed.ts"), "export const a = 1;\nexport const b = 2;\n");
+        git("add", "committed.ts");
+        git("commit", "-qm", "feat(FN-2100): committed change");
+        writeFileSync(join(root, "staged.ts"), "export const staged = true;\n");
+        git("add", "staged.ts");
+        writeFileSync(join(root, "base.ts"), "export const base = true;\nexport const touched = 1;\n");
+        writeFileSync(join(root, "scratch.log"), "untracked noise\n");
+        const app = appForTask({ id: "FN-2100", column: "in-progress", branch: "kb-task", worktree: root, baseCommitSha: baseSha }, root);
+
+        const fullBefore = mockExecFile.mock.calls.length;
+        const full = await GET(app, "/api/tasks/FN-2100/diff");
+        const fullPatchSpawns = countPerFilePatchSpawns(gitSpawnArgsSince(fullBefore));
+
+        const statsBefore = mockExecFile.mock.calls.length;
+        const stats = await GET(app, "/api/tasks/FN-2100/diff?stats=1");
+        const statsSpawns = gitSpawnArgsSince(statsBefore);
+
+        expect(full.status).toBe(200);
+        expect(stats.status).toBe(200);
+        // Control: the unparameterized run really pays one patch subprocess per file.
+        expect(full.body.files.map((f: { path: string }) => f.path)).toEqual(
+          expect.arrayContaining(["committed.ts", "staged.ts", "base.ts"]),
+        );
+        // The untracked scratch.log is excluded by both modes (existing review-time behaviour).
+        expect(full.body.files).toHaveLength(3);
+        expect(fullPatchSpawns).toBe(full.body.files.length);
+        // Contract: the files array is absent, not merely empty; the fan-out is replaced by one numstat.
+        expect(Object.keys(stats.body)).toEqual(["stats"]);
+        expect(countPerFilePatchSpawns(statsSpawns)).toBe(0);
+        expect(countStatSpawns(statsSpawns)).toBe(1);
+        expect(stats.body.stats).toEqual(full.body.stats);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("answers a 3-file and a 12-file card with the same number of subprocesses", async () => {
+      const few = await makeAttributedDoneApp("FN-2101", 3);
+      const many = await makeAttributedDoneApp("FN-2102", 12);
+      try {
+        // Control first: unparameterized, the patch fan-out scales with the file count.
+        const fewFullBefore = mockExecFile.mock.calls.length;
+        await GET(few.app, "/api/tasks/FN-2101/diff");
+        const manyFullBefore = mockExecFile.mock.calls.length;
+        await GET(many.app, "/api/tasks/FN-2102/diff");
+        const fewFullPatches = countPerFilePatchSpawns(gitSpawnArgsSince(fewFullBefore));
+        const manyFullPatches = countPerFilePatchSpawns(gitSpawnArgsSince(manyFullBefore));
+        // Non-vacuity: the fan-out each card pays is at least one patch per changed file.
+        expect(fewFullPatches).toBeGreaterThanOrEqual(3);
+        expect(manyFullPatches).toBeGreaterThanOrEqual(12);
+
+        const fewBefore = mockExecFile.mock.calls.length;
+        const fewRes = await GET(few.app, "/api/tasks/FN-2101/diff?stats=1");
+        const fewSpawns = gitSpawnArgsSince(fewBefore);
+        const manyBefore = mockExecFile.mock.calls.length;
+        const manyRes = await GET(many.app, "/api/tasks/FN-2102/diff?stats=1");
+        const manySpawns = gitSpawnArgsSince(manyBefore);
+
+        expect(fewRes.body.stats.filesChanged).toBe(3);
+        expect(manyRes.body.stats.filesChanged).toBe(12);
+        expect(countPerFilePatchSpawns(fewSpawns)).toBe(0);
+        expect(countPerFilePatchSpawns(manySpawns)).toBe(0);
+        // The whole point: cost is O(lane), not O(files).
+        expect(manySpawns.length).toBe(fewSpawns.length);
+      } finally {
+        rmSync(few.root, { recursive: true, force: true });
+        rmSync(many.root, { recursive: true, force: true });
+      }
+    });
+
+    it("keeps foreign-commit attribution out of the stats triple", async () => {
+      const { app, root } = await makeAttributedDoneApp("FN-2103", 4);
+      try {
+        // The stats request runs FIRST so attribution is cold here: the enumeration is what
+        // builds the attribution cache's content key (attribute-done-range-files.ts), and the
+        // batched name resolution behind it is exactly what a warm cache absorbs. Asserting a
+        // cold { enumerated: 1, batched: 1 } proves the stats lane really re-derives the path
+        // set; the full-detail request stays a pure parity control afterwards.
+        const statsBefore = mockExecFile.mock.calls.length;
+        const stats = await GET(app, "/api/tasks/FN-2103/diff?stats=1");
+        const spawns = gitSpawnArgsSince(statsBefore);
+
+        expect(Object.keys(stats.body)).toEqual(["stats"]);
+        // Attribution is what produces the path set, so its spawns must survive stats mode.
+        expect(countAttributionSpawns(spawns)).toEqual({ enumerated: 1, batched: 1, perSha: 0 });
+        expect(countPerFilePatchSpawns(spawns)).toBe(0);
+
+        const full = await GET(app, "/api/tasks/FN-2103/diff");
+        expect(full.body.files.map((f: { path: string }) => f.path)).not.toContain("foreign.ts");
+        expect(stats.body.stats).toEqual(full.body.stats);
+        expect(stats.body.stats.filesChanged).toBe(4);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("reports the same non-zero triple for a pure rename", async () => {
+      const { root, git } = makeStatsRepo("rename");
+      try {
+        writeFileSync(join(root, "old.ts"), Array.from({ length: 30 }, (_, i) => `export const line${i} = ${i};`).join("\n") + "\n");
+        git("add", "old.ts");
+        git("commit", "-qm", "add old");
+        const baseSha = git("rev-parse", "HEAD");
+        git("mv", "old.ts", "new.ts");
+        const app = appForTask({ id: "FN-2104", column: "in-progress", branch: "kb-task", worktree: root, baseCommitSha: baseSha }, root);
+
+        const full = await GET(app, "/api/tasks/FN-2104/diff");
+        const statsBefore = mockExecFile.mock.calls.length;
+        const stats = await GET(app, "/api/tasks/FN-2104/diff?stats=1");
+
+        // The trap: git's default rename detection reports a pure rename as 0/0, which would show a
+        // renamed card as touching zero lines. The stats join is rename-blind like the path-limited
+        // patch it replaces, so the numbers stay non-zero and identical.
+        expect(full.body.stats.filesChanged).toBe(1);
+        expect(full.body.stats.additions).toBeGreaterThan(0);
+        expect(Object.keys(stats.body)).toEqual(["stats"]);
+        expect(countPerFilePatchSpawns(gitSpawnArgsSince(statsBefore))).toBe(0);
+        expect(stats.body.stats).toEqual(full.body.stats);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("reports the same integer triple for a committed binary file", async () => {
+      const { root, git } = makeStatsRepo("binary");
+      try {
+        const baseSha = git("rev-parse", "HEAD");
+        writeFileSync(join(root, "asset.png"), Buffer.from([0, 1, 2, 3, 255, 246, 0, 0, 170, 204, 0, 0]));
+        git("add", "asset.png");
+        git("commit", "-qm", "feat(FN-2105): add asset");
+        const app = appForTask({ id: "FN-2105", column: "in-progress", branch: "kb-task", worktree: root, baseCommitSha: baseSha }, root);
+
+        const full = await GET(app, "/api/tasks/FN-2105/diff");
+        const statsBefore = mockExecFile.mock.calls.length;
+        const stats = await GET(app, "/api/tasks/FN-2105/diff?stats=1");
+
+        expect(full.body.stats.filesChanged).toBe(1);
+        expect(Object.keys(stats.body)).toEqual(["stats"]);
+        expect(countPerFilePatchSpawns(gitSpawnArgsSince(statsBefore))).toBe(0);
+        expect(countStatSpawns(gitSpawnArgsSince(statsBefore))).toBe(1);
+        // numstat's binary `-` must become 0, never NaN.
+        expect(Number.isInteger(stats.body.stats.additions)).toBe(true);
+        expect(Number.isInteger(stats.body.stats.deletions)).toBe(true);
+        expect(stats.body.stats).toEqual(full.body.stats);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("matches the unparameterized triple on the branch-ref fallback lane", async () => {
+      const { root, git } = makeStatsRepo("fallback");
+      try {
+        const baseSha = git("rev-parse", "HEAD");
+        writeFileSync(join(root, "landed.ts"), "export const landed = true;\nexport const more = 2;\n");
+        git("add", "landed.ts");
+        git("commit", "-qm", "feat(FN-2106): landed work");
+        // No worktree at all: the route falls back to diffing the branch ref in the project root.
+        const app = appForTask({ id: "FN-2106", column: "in-progress", branch: "kb-task", worktree: null, baseCommitSha: baseSha }, root);
+
+        const full = await GET(app, "/api/tasks/FN-2106/diff");
+        const statsBefore = mockExecFile.mock.calls.length;
+        const stats = await GET(app, "/api/tasks/FN-2106/diff?stats=1");
+        const spawns = gitSpawnArgsSince(statsBefore);
+
+        expect(full.body.stats.filesChanged).toBe(1);
+        expect(Object.keys(stats.body)).toEqual(["stats"]);
+        expect(countPerFilePatchSpawns(spawns)).toBe(0);
+        expect(countStatSpawns(spawns)).toBe(1);
+        expect(stats.body.stats).toEqual(full.body.stats);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("matches the unparameterized triple for a multi-repo workspace card", async () => {
+      const root = mkdtempSync(join(tmpdir(), "kb-dashboard-stats-workspace-"));
+      try {
+        const gitAt = (dir: string) => (...args: string[]): string => execFileSync("git", ["-C", dir, ...args], { stdio: "pipe" }).toString().trim();
+        const workspaceWorktrees: Record<string, { worktreePath: string; branch: string; baseCommitSha: string }> = {};
+        for (const [index, repo] of ["alpha", "beta"].entries()) {
+          const repoDir = join(root, repo);
+          mkdirSync(repoDir);
+          const git = gitAt(repoDir);
+          git("init", "--initial-branch=main");
+          git("config", "user.email", "kb-tests@example.com");
+          git("config", "user.name", "KB Tests");
+          writeFileSync(join(repoDir, "base.ts"), "export const base = true;\n");
+          git("add", "base.ts");
+          git("commit", "-qm", "base");
+          const baseCommitSha = git("rev-parse", "HEAD");
+          git("checkout", "-q", "-b", "kb-task");
+          writeFileSync(join(repoDir, `own${index}.ts`), `export const own${index} = ${index};\nexport const extra = 1;\n`);
+          git("add", `own${index}.ts`);
+          git("commit", "-qm", "feat(FN-2107): own work");
+          workspaceWorktrees[repo] = { worktreePath: repoDir, branch: "kb-task", baseCommitSha };
+        }
+        const app = appForTask({ id: "FN-2107", column: "in-progress", worktree: null, branch: null, workspaceWorktrees }, root);
+
+        const full = await GET(app, "/api/tasks/FN-2107/diff");
+        const statsBefore = mockExecFile.mock.calls.length;
+        const stats = await GET(app, "/api/tasks/FN-2107/diff?stats=1");
+        const spawns = gitSpawnArgsSince(statsBefore);
+
+        expect(full.body.files.map((f: { path: string }) => f.path)).toEqual(["alpha/own0.ts", "beta/own1.ts"]);
+        expect(Object.keys(stats.body)).toEqual(["stats"]);
+        expect(countPerFilePatchSpawns(spawns)).toBe(0);
+        // One whole-tree stat spawn per sub-repo, not one per file per sub-repo.
+        expect(countStatSpawns(spawns)).toBe(2);
+        expect(stats.body.stats).toEqual(full.body.stats);
+        expect(stats.body.stats.filesChanged).toBe(2);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("serves a repeat from the stats cache with zero subprocesses and an identical body", async () => {
+      const resetStatsCache = statsCacheReset();
+      let now = 1_700_000_000_000;
+      resetStatsCache(() => now);
+      const { root, git } = makeStatsRepo("cache");
+      try {
+        const baseSha = git("rev-parse", "HEAD");
+        writeFileSync(join(root, "own.ts"), "export const own = true;\n");
+        git("add", "own.ts");
+        git("commit", "-qm", "feat(FN-2108): own work");
+        const app = appForTask({ id: "FN-2108", column: "in-progress", branch: "kb-task", worktree: root, baseCommitSha: baseSha }, root);
+
+        const firstBefore = mockExecFile.mock.calls.length;
+        const first = await GET(app, "/api/tasks/FN-2108/diff?stats=1");
+        expect(gitSpawnArgsSince(firstBefore).length).toBeGreaterThan(0);
+
+        // Within the TTL the answer is served before ANY git work — even the worktree-ownership
+        // rev-parse is skipped, which is why the key must be built from task fields alone.
+        now += 1_000;
+        const secondBefore = mockExecFile.mock.calls.length;
+        const second = await GET(app, "/api/tasks/FN-2108/diff?stats=1");
+        expect(gitSpawnArgsSince(secondBefore)).toEqual([]);
+        expect(JSON.stringify(second.body)).toBe(JSON.stringify(first.body));
+
+        // Past the 10s TTL the lane recomputes rather than serving a stale answer.
+        now += 10_001;
+        const thirdBefore = mockExecFile.mock.calls.length;
+        await GET(app, "/api/tasks/FN-2108/diff?stats=1");
+        expect(gitSpawnArgsSince(thirdBefore).length).toBeGreaterThan(0);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("misses the stats cache when the card's column or merge SHA changes", async () => {
+      const resetStatsCache = statsCacheReset();
+      let now = 1_700_000_000_000;
+      resetStatsCache(() => now);
+      const { root, git } = makeStatsRepo("identity");
+      try {
+        const rebaseBaseSha = git("rev-parse", "HEAD");
+        // A foreign commit is required: the done lane only proves task ownership through commit
+        // attribution, and attribution only restricts when the range contains foreign work.
+        writeFileSync(join(root, "foreign.ts"), "export const remote = true;\n");
+        git("add", "foreign.ts");
+        git("commit", "-qm", "remote work");
+        writeFileSync(join(root, "own1.ts"), "export const own1 = 1;\n");
+        git("add", "own1.ts");
+        git("commit", "-qm", "feat(FN-2109): own one");
+        const firstSha = git("rev-parse", "HEAD");
+        writeFileSync(join(root, "own2.ts"), "export const own2 = 1;\nexport const own2b = 2;\n");
+        git("add", "own2.ts");
+        git("commit", "-qm", "feat(FN-2109): own two");
+        const secondSha = git("rev-parse", "HEAD");
+
+        const task = {
+          id: "FN-2109",
+          column: "done",
+          worktree: null,
+          modifiedFiles: [],
+          mergeDetails: { commitSha: firstSha, rebaseBaseSha, filesChanged: 1 },
+        };
+        const localStore = createMockStore({ getRootDir: vi.fn().mockReturnValue(root) });
+        const getTask = localStore.getTask as ReturnType<typeof vi.fn>;
+        getTask.mockResolvedValue({ ...FAKE_TASK_DETAIL, ...task });
+        const app = express();
+        app.use(express.json());
+        app.use("/api", createApiRoutes(localStore));
+
+        const primeBefore = mockExecFile.mock.calls.length;
+        const primed = await GET(app, "/api/tasks/FN-2109/diff?stats=1");
+        expect(gitSpawnArgsSince(primeBefore).length).toBeGreaterThan(0);
+
+        const repeatBefore = mockExecFile.mock.calls.length;
+        await GET(app, "/api/tasks/FN-2109/diff?stats=1");
+        expect(gitSpawnArgsSince(repeatBefore)).toEqual([]);
+
+        getTask.mockResolvedValue({ ...FAKE_TASK_DETAIL, ...task, column: "in-review" });
+        const columnBefore = mockExecFile.mock.calls.length;
+        await GET(app, "/api/tasks/FN-2109/diff?stats=1");
+        expect(gitSpawnArgsSince(columnBefore).length).toBeGreaterThan(0);
+
+        getTask.mockResolvedValue({ ...FAKE_TASK_DETAIL, ...task, mergeDetails: { commitSha: secondSha, rebaseBaseSha, filesChanged: 2 } });
+        const shaBefore = mockExecFile.mock.calls.length;
+        const afterShaChange = await GET(app, "/api/tasks/FN-2109/diff?stats=1");
+        expect(gitSpawnArgsSince(shaBefore).length).toBeGreaterThan(0);
+        // The new identity is not the primed answer: the later range covers both own files.
+        expect(afterShaChange.body.stats.filesChanged).toBe(2);
+        expect(primed.body.stats.filesChanged).toBe(1);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
   });
 });
 
