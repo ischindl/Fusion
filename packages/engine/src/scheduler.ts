@@ -55,7 +55,7 @@ import { resolveProjectColumnsForRoles, resolveWorkflowIrForTask, resolveWorkflo
 import type { WorkflowIr, WorkflowIrV2, WorkflowSelectionCache } from "@fusion/core";
 import type { ColumnRoleTraitFlags } from "@fusion/core";
 
-import { checkAndRecordUnplannedExecutionBlock, runHoldReleaseSweep, isUnplannedForExecution, type SlotReservation } from "./execution/hold-release.js";
+import { checkAndRecordUnplannedExecutionBlock, runHoldReleaseSweep, isUnplannedForExecution, type SlotReservation, type HoldReleasePass } from "./execution/hold-release.js";
 import { evaluateParkedAgentTaskLink } from "./agents/task-agent-sync.js";
 import { decideMissionSymbolAdmission, resolveMissionFeatureForTask } from "./missions/mission-symbol-admission.js";
 import { computeRecoveryDecision, formatDelay, MAX_RECOVERY_RETRIES } from "./healing/recovery-policy.js";
@@ -2841,7 +2841,7 @@ export class Scheduler {
       const result = await runHoldReleaseSweep(this.store, {
         now: () => Date.now(),
         selectionCache,
-        reserveSlot: async (task): Promise<SlotReservation | null> => {
+        reserveSlot: async (task, _target, pass?: HoldReleasePass): Promise<SlotReservation | null> => {
           let reservedScope = false;
           let priorActiveScope: string[] | undefined;
           let priorActiveScopeColumn: Task["column"] | undefined;
@@ -2878,8 +2878,14 @@ export class Scheduler {
           */
           try {
             const ir = await resolveWorkflowIrForTask(this.store, task.id, wipIrCache, selectionCache);
-            if (await isUnplannedForExecution(this.store, task, ir)) {
-              await checkAndRecordUnplannedExecutionBlock(this.store, task, ir);
+            // RUFU-209: this guard re-checks the SAME snapshot task the sweep just checked for readiness,
+            // so forward the sweep's pass and its PROMPT.md memo. A reservation invoked outside a sweep
+            // (pass undefined) keeps its own live read.
+            if (await isUnplannedForExecution(this.store, task, ir, pass)) {
+              // RUFU-209: the guard above just resolved this task's PROMPT.md (via the pass memo or a
+              // live read); the refusal marker re-reads the SAME fact, so forward the pass and the
+              // recorder's read becomes a memo hit instead of a second PROMPT.md round trip.
+              await checkAndRecordUnplannedExecutionBlock(this.store, task, ir, pass);
               return null;
             }
           } catch {

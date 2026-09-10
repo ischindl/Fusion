@@ -78,6 +78,8 @@ describe("hold-release bounded database work", () => {
       return tasks;
     });
 
+    // RUFU-209 (Step 6): repeat-last-value clock — the first read is the sweep baseline and every
+    // later read returns the same +3 s, so added phase-timing `now()` reads cannot move what fires.
     let clockCalls = 0;
     await runHoldReleaseSweep(store, { now: () => 1_000_000 + (clockCalls++ > 0 ? 3_000 : 0) });
 
@@ -118,6 +120,7 @@ describe("hold-release bounded database work", () => {
       return tasks;
     });
 
+    // RUFU-209 (Step 6): repeat-last-value clock (see the note above the sibling test).
     let clockCalls = 0;
     await runHoldReleaseSweep(store, { now: () => 1_000_000 + (clockCalls++ > 0 ? 3_000 : 0) });
 

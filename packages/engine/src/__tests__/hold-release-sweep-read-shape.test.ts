@@ -313,12 +313,21 @@ describe("hold-release sweep read shape (RUFU-202)", () => {
     const { store, listTasks } = await sweepBoard(BOARD, "converted");
 
     // Exact object: an extra option, a dropped opt-out, or a silently-restored `derive` all fail here.
+    //
+    // FNXC:WorkflowScheduling 2026-09-10-02:50 (RUFU-209): FN-9274's caller-owned `irCache` +
+    // `definitionReadTally` arrived on the sweep's list call through the origin/main sync without
+    // this exact-shape guard being updated, so the test went red on a truthful call (a stale
+    // assertion encoding the pre-sync 5-field shape). Both fields are now named explicitly — the
+    // guard keeps its bite: any EXTRA option still fails. `definitions: 0` is the invariant under
+    // `derive: false`: the list performs no workflow-definition reads of its own.
     expect(listTasks).toHaveBeenCalledWith({
       includeArchived: false,
       derive: false,
       excludeLog: true,
       selectionCache: expect.any(Map),
       selectionReadTally: { batched: 0, singles: 0 },
+      irCache: expect.any(Map),
+      definitionReadTally: { definitions: 0 },
     });
     // The list read performs zero selection reads of its own under `derive: false`, so the sweep's
     // own `missingIds` batch is the pass's single selection read.
@@ -360,6 +369,10 @@ describe("hold-release sweep read shape (RUFU-202)", () => {
   });
 
   it("never lets budget truncation become the reason a card releases", async () => {
+    // RUFU-209 (Step 6): this clock already repeats its last value — the first read is the sweep
+    // baseline (0) and EVERY later read returns 20 — so added instrumentation `now()` reads cannot
+    // move the truncation point. Keep that shape: a per-call-incrementing clock would let the
+    // phase-timing instrumentation silently change which card truncates.
     let clock = 0;
     const { result } = await sweepBoard(BOARD, "converted", {
       budgetMs: 10,
