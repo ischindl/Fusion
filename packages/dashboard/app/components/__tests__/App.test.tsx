@@ -107,6 +107,8 @@ const mockCreateTask = vi.fn();
 
 const mockUseTasks = vi.fn(() => ({
   tasks: [] as Task[],
+  isStale: false,
+  isBoardRefreshInFlight: false,
   createTask: mockCreateTask,
   moveTask: vi.fn(),
   pauseTask: vi.fn(),
@@ -912,6 +914,7 @@ beforeEach(() => {
     resetTask: vi.fn(),
     updateTask: vi.fn(),
     duplicateTask: vi.fn(),
+    isBoardRefreshInFlight: false,
     refreshTasks: vi.fn(),
     ingestCreatedTasks: vi.fn(),
     lastFetchTimeMs: Date.now(),
@@ -1103,15 +1106,21 @@ describe("FN-4250 FileBrowserProvider coverage", () => {
     expect(screen.queryByTestId("fb-probe-loader")).not.toBeInTheDocument();
   });
 
-  it("FN-4801: keeps top progress bar visible while tasks are stale", () => {
-    mockProjectsState.loading = false;
-    mockProjectsState.projects = [
-      { id: DEFAULT_PROJECT_ID, name: "Test Project", path: "/test", status: "active", isolationMode: "in-process", createdAt: "", updatedAt: "" },
-    ];
-    mockCurrentProjectState.loading = false;
-    mockUseTasks.mockImplementation(() => ({
+  /*
+  FNXC:BoardProgressIndicator 2026-09-10-15:24:
+  These two cases used to assert "visible while tasks are stale", which is precisely the contract that
+  produced the operator-reported never-ending progress bar: `isStale` is an open-ended data-freshness
+  flag that a failed or superseded board refresh never clears, so the indeterminate sweep had no bound.
+  The bar now means "a board load is running", so the cases are re-expressed against that rule, and the
+  SETTLE transition — not the initial paint — is the regression that matters here.
+  */
+  function boardHookState(
+    overrides: { isStale?: boolean; isBoardRefreshInFlight?: boolean } = {},
+  ) {
+    return {
       tasks: [],
-      isStale: true,
+      isStale: false,
+      isBoardRefreshInFlight: false,
       createTask: mockCreateTask,
       moveTask: vi.fn(),
       pauseTask: vi.fn(),
@@ -1125,7 +1134,17 @@ describe("FN-4250 FileBrowserProvider coverage", () => {
       refreshTasks: vi.fn(),
       ingestCreatedTasks: vi.fn(),
       lastFetchTimeMs: Date.now(),
-    }));
+      ...overrides,
+    };
+  }
+
+  it("FN-4801: sweeps the top progress bar while a stale board is actively revalidating", () => {
+    mockProjectsState.loading = false;
+    mockProjectsState.projects = [
+      { id: DEFAULT_PROJECT_ID, name: "Test Project", path: "/test", status: "active", isolationMode: "in-process", createdAt: "", updatedAt: "" },
+    ];
+    mockCurrentProjectState.loading = false;
+    mockUseTasks.mockImplementation(() => boardHookState({ isStale: true, isBoardRefreshInFlight: true }));
 
     render(<App />);
 
@@ -1134,31 +1153,15 @@ describe("FN-4250 FileBrowserProvider coverage", () => {
     expect(progressBar).toHaveAttribute("data-visible", "true");
   });
 
-  it("FN-4801: hides top progress bar on next render when tasks are fresh", () => {
+  it("FN-4801: settles the top progress bar when the refresh ends, even while the rows stay unconfirmed", () => {
     mockProjectsState.loading = false;
     mockProjectsState.projects = [
       { id: DEFAULT_PROJECT_ID, name: "Test Project", path: "/test", status: "active", isolationMode: "in-process", createdAt: "", updatedAt: "" },
     ];
     mockCurrentProjectState.loading = false;
 
-    const taskHookState = { isStale: true };
-    mockUseTasks.mockImplementation(() => ({
-      tasks: [],
-      isStale: taskHookState.isStale,
-      createTask: mockCreateTask,
-      moveTask: vi.fn(),
-      pauseTask: vi.fn(),
-      unpauseTask: vi.fn(),
-      deleteTask: vi.fn(),
-      mergeTask: vi.fn(),
-      retryTask: vi.fn(),
-      resetTask: vi.fn(),
-      updateTask: vi.fn(),
-      duplicateTask: vi.fn(),
-      refreshTasks: vi.fn(),
-      ingestCreatedTasks: vi.fn(),
-      lastFetchTimeMs: Date.now(),
-    }));
+    const boardState = { isStale: true, isBoardRefreshInFlight: true };
+    mockUseTasks.mockImplementation(() => boardHookState(boardState));
 
     const { rerender } = render(<App />);
 
@@ -1166,9 +1169,17 @@ describe("FN-4250 FileBrowserProvider coverage", () => {
     expect(progressBar).toHaveAttribute("aria-busy", "true");
     expect(progressBar).toHaveAttribute("data-visible", "true");
 
-    taskHookState.isStale = false;
+    // The refresh finished without ever confirming the rows: still stale, but nothing is loading, so an
+    // indeterminate sweep would be a lie that never expires.
+    boardState.isBoardRefreshInFlight = false;
     rerender(<App />);
+    expect(progressBar).toHaveAttribute("aria-busy", "false");
+    expect(progressBar).toHaveAttribute("data-visible", "false");
 
+    // A catch-up refresh over already-confirmed rows stays silent, so an SSE resume cannot flash the bar.
+    boardState.isStale = false;
+    boardState.isBoardRefreshInFlight = true;
+    rerender(<App />);
     expect(progressBar).toHaveAttribute("aria-busy", "false");
     expect(progressBar).toHaveAttribute("data-visible", "false");
   });

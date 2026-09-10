@@ -21,13 +21,20 @@ import type { ReviewBypassTarget, Task } from "@fusion/core";
 vi.mock("../../api", async (importOriginal) => {
   const { createDashboardApiMock } = await import("../../test/mockApi");
   return createDashboardApiMock(() => importOriginal<typeof import("../../api")>(), {
-    fetchTasks: vi.fn().mockResolvedValue([]),
+    fetchTaskPage: vi.fn().mockResolvedValue({ tasks: [], total: 0, hasMore: false, nextCursor: null }),
     fetchArchivedTasks: vi.fn().mockResolvedValue({ tasks: [], total: 0, hasMore: false }),
     bypassReview: vi.fn(),
   });
 });
 
-const mockFetchTasks = vi.mocked(api.fetchTasks);
+const mockFetchBoard = vi.mocked(api.fetchTaskPage);
+
+type BoardPage = Awaited<ReturnType<typeof api.fetchTaskPage>>;
+
+function page(tasks: Task[]): BoardPage {
+  return { tasks, total: tasks.length, hasMore: false, nextCursor: null };
+}
+
 
 class MockEventSource {
   static instances: MockEventSource[] = [];
@@ -65,7 +72,7 @@ const originalEventSource = globalThis.EventSource;
 beforeEach(() => {
   MockEventSource.instances = [];
   (globalThis as unknown as { EventSource: unknown }).EventSource = MockEventSource;
-  mockFetchTasks.mockReset().mockResolvedValue([]);
+  mockFetchBoard.mockReset().mockResolvedValue(page([]));
   vi.useRealTimers();
 });
 
@@ -107,7 +114,7 @@ const unrunTarget: ReviewBypassTarget = {
 describe("useTasks reviewBypass affordance survives the stall anti-flicker clear", () => {
   it("carries the server-derived capability through list normalization onto the board copy", async () => {
     const initialTask = createMockTask({ reviewBypass: unrunTarget, stallReason: gatePendingStall as never });
-    mockFetchTasks.mockResolvedValueOnce([initialTask]);
+    mockFetchBoard.mockResolvedValueOnce(page([initialTask]));
 
     const { result } = renderHook(() => useTasks());
     await waitFor(() => expect(result.current.tasks).toHaveLength(1));
@@ -118,7 +125,7 @@ describe("useTasks reviewBypass affordance survives the stall anti-flicker clear
 
   it("blanks the diagnostic copy on fresh agent-log activity but leaves the bypass capability present", async () => {
     const initialTask = createMockTask({ reviewBypass: unrunTarget, stallReason: gatePendingStall as never });
-    mockFetchTasks.mockResolvedValueOnce([initialTask]);
+    mockFetchBoard.mockResolvedValueOnce(page([initialTask]));
 
     const { result } = renderHook(() => useTasks());
     await waitFor(() => expect(result.current.tasks).toHaveLength(1));
@@ -140,7 +147,7 @@ describe("useTasks reviewBypass affordance survives the stall anti-flicker clear
 
   it("leaves the diagnostic and the capability untouched when the agent log is not fresh", async () => {
     const initialTask = createMockTask({ reviewBypass: unrunTarget, stallReason: gatePendingStall as never });
-    mockFetchTasks.mockResolvedValueOnce([initialTask]);
+    mockFetchBoard.mockResolvedValueOnce(page([initialTask]));
 
     const { result } = renderHook(() => useTasks());
     await waitFor(() => expect(result.current.tasks).toHaveLength(1));
@@ -164,7 +171,7 @@ describe("useTasks reviewBypass affordance survives the stall anti-flicker clear
     // case and the fresh-log case above would go red; today the helper early-returns for cards with
     // no diagnostic copy, so the capability is provably never in its clear path.
     const initialTask = createMockTask({ reviewBypass: unrunTarget });
-    mockFetchTasks.mockResolvedValueOnce([initialTask]);
+    mockFetchBoard.mockResolvedValueOnce(page([initialTask]));
 
     const { result } = renderHook(() => useTasks());
     await waitFor(() => expect(result.current.tasks).toHaveLength(1));

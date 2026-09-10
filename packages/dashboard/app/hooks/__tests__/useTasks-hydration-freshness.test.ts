@@ -62,7 +62,7 @@ function emitSse(event: string, payload: unknown): void {
 vi.mock("../../api", async (importOriginal) => {
   const { createDashboardApiMock } = await import("../../test/mockApi");
   return createDashboardApiMock(() => importOriginal<typeof import("../../api")>(), {
-    fetchTasks: vi.fn().mockResolvedValue([]),
+    fetchTaskPage: vi.fn().mockResolvedValue({ tasks: [], total: 0, hasMore: false, nextCursor: null }),
   });
 });
 
@@ -82,7 +82,14 @@ class MockEventSource {
 }
 
 const originalEventSource = globalThis.EventSource;
-const mockFetchTasks = vi.mocked(api.fetchTasks);
+const mockFetchBoard = vi.mocked(api.fetchTaskPage);
+
+type BoardPage = Awaited<ReturnType<typeof api.fetchTaskPage>>;
+
+function page(tasks: Task[]): BoardPage {
+  return { tasks, total: tasks.length, hasMore: false, nextCursor: null };
+}
+
 const PROJECT_ID = "proj-freshness";
 const CACHE_KEY = `${SWR_CACHE_KEYS.TASKS_PREFIX}${PROJECT_ID}`;
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
@@ -127,7 +134,7 @@ beforeEach(() => {
   MockEventSource.instances = [];
   (globalThis as unknown as { EventSource: unknown }).EventSource = MockEventSource;
   localStorage.clear();
-  mockFetchTasks.mockReset().mockResolvedValue([]);
+  mockFetchBoard.mockReset().mockResolvedValue(page([]));
 });
 
 afterEach(() => {
@@ -464,7 +471,7 @@ describe("useTasks hydration freshness (dataAsOfMs)", () => {
   it("reports the envelope savedAt, not now, on the first render after a 2-hour discard", () => {
     const savedAt = seedSnapshot([createInProgressTask("FN-1", Date.now() - TWO_HOURS_MS)], TWO_HOURS_MS);
     // Never resolves: everything asserted here is the pre-revalidation restore frame.
-    mockFetchTasks.mockReturnValue(new Promise<Task[]>(() => {}));
+    mockFetchBoard.mockReturnValue(new Promise<BoardPage>(() => {}));
 
     const { result } = renderHook(() => useTasks({ projectId: PROJECT_ID }));
 
@@ -480,7 +487,7 @@ describe("useTasks hydration freshness (dataAsOfMs)", () => {
       createInProgressTask(`FN-${index}`, savedAt - 60_000),
     );
     seedSnapshot(tasks, TWO_HOURS_MS);
-    mockFetchTasks.mockReturnValue(new Promise<Task[]>(() => {}));
+    mockFetchBoard.mockReturnValue(new Promise<BoardPage>(() => {}));
 
     const { result } = renderHook(() => useTasks({ projectId: PROJECT_ID }));
     const dataAsOfMs = result.current.lastFetchTimeMs;
@@ -509,7 +516,7 @@ describe("useTasks hydration freshness (dataAsOfMs)", () => {
       ],
       TWO_HOURS_MS,
     );
-    mockFetchTasks.mockReturnValue(new Promise<Task[]>(() => {}));
+    mockFetchBoard.mockReturnValue(new Promise<BoardPage>(() => {}));
 
     const { result } = renderHook(() => useTasks({ projectId: PROJECT_ID }));
     const dataAsOfMs = result.current.lastFetchTimeMs;
@@ -522,7 +529,7 @@ describe("useTasks hydration freshness (dataAsOfMs)", () => {
 
   it("advances the clock to now once the mount revalidation lands real data", async () => {
     const savedAt = seedSnapshot([createInProgressTask("FN-OLD", Date.now() - TWO_HOURS_MS)], TWO_HOURS_MS);
-    mockFetchTasks.mockResolvedValue([createInProgressTask("FN-NEW", Date.now())]);
+    mockFetchBoard.mockResolvedValue(page([createInProgressTask("FN-NEW", Date.now())]));
 
     const { result } = renderHook(() => useTasks({ projectId: PROJECT_ID }));
     expect(result.current.lastFetchTimeMs).toBe(savedAt);
@@ -533,7 +540,7 @@ describe("useTasks hydration freshness (dataAsOfMs)", () => {
   });
 
   it("leaves the clock undefined when there is no snapshot to describe", async () => {
-    mockFetchTasks.mockReturnValue(new Promise<Task[]>(() => {}));
+    mockFetchBoard.mockReturnValue(new Promise<BoardPage>(() => {}));
 
     const { result } = renderHook(() => useTasks({ projectId: PROJECT_ID }));
 
@@ -550,7 +557,7 @@ describe("useTasks hydration freshness (dataAsOfMs)", () => {
       otherKey,
       JSON.stringify({ savedAt: otherSavedAt, data: [createInProgressTask("FN-B", otherSavedAt - 60_000)] }),
     );
-    mockFetchTasks.mockReturnValue(new Promise<Task[]>(() => {}));
+    mockFetchBoard.mockReturnValue(new Promise<BoardPage>(() => {}));
 
     const { result, rerender } = renderHook(
       ({ projectId }: { projectId: string }) => useTasks({ projectId }),
@@ -653,7 +660,7 @@ describe("useTasks freshness clock vs single-row live updates", () => {
       );
       seedSnapshot(hydrated, TWO_HOURS_MS);
       // Never resolves: the mount revalidation is still in flight, exactly as on a waking radio.
-      mockFetchTasks.mockReturnValue(new Promise<Task[]>(() => {}));
+      mockFetchBoard.mockReturnValue(new Promise<BoardPage>(() => {}));
 
       const { result } = renderHook(() => useTasks({ projectId: PROJECT_ID }));
       expect(result.current.lastFetchTimeMs).toBe(savedAt);
@@ -673,7 +680,7 @@ describe("useTasks freshness clock vs single-row live updates", () => {
   it("ingestCreatedTasks does not advance the clock while the snapshot is unconfirmed", () => {
     const savedAt = Date.now() - TWO_HOURS_MS;
     seedSnapshot([createInProgressTask("FN-0", savedAt - 60_000)], TWO_HOURS_MS);
-    mockFetchTasks.mockReturnValue(new Promise<Task[]>(() => {}));
+    mockFetchBoard.mockReturnValue(new Promise<BoardPage>(() => {}));
 
     const { result } = renderHook(() => useTasks({ projectId: PROJECT_ID }));
 
@@ -687,7 +694,7 @@ describe("useTasks freshness clock vs single-row live updates", () => {
 
   it("still advances the clock on a live update once a fetch has confirmed the whole board", async () => {
     seedSnapshot([createInProgressTask("FN-0", Date.now() - TWO_HOURS_MS)], TWO_HOURS_MS);
-    mockFetchTasks.mockResolvedValue([createInProgressTask("FN-CONFIRMED", Date.now())]);
+    mockFetchBoard.mockResolvedValue(page([createInProgressTask("FN-CONFIRMED", Date.now())]));
 
     const { result } = renderHook(() => useTasks({ projectId: PROJECT_ID }));
     await flushAsyncUpdates();

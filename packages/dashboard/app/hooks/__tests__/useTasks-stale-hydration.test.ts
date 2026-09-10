@@ -6,7 +6,8 @@ board must repaint from its localStorage snapshot instead of starting from []. T
 test is the whole stale-while-revalidate contract, not just the TTL number:
   1. a snapshot older than the old 60s bound (minutes / hours) still hydrates on mount,
   2. hydration always issues exactly one immediate revalidation and reports `isStale` while it runs
-     (App renders <TopProgressBar visible={isRevalidating}> off that flag), and
+     (App renders <TopProgressBar visible={isRevalidating}> off the composed
+     `isStale && isBoardRefreshInFlight` flag, see utils/boardLoadIndicator.ts), and
   3. a failed revalidation clears the entry so the next mount cannot re-hydrate unverifiable data.
 These are asserted against real localStorage + the real swrCache module, because a mocked cache is
 exactly what let the expired-snapshot bug hide.
@@ -17,11 +18,15 @@ import type { Task } from "@fusion/core";
 import { useTasks } from "../useTasks";
 import * as api from "../../api";
 import { SWR_CACHE_KEYS, SWR_TASKS_MAX_AGE_MS } from "../../utils/swrCache";
+import { isBoardBarIndeterminate } from "../../utils/boardLoadIndicator";
 
 vi.mock("../../api", async (importOriginal) => {
   const { createDashboardApiMock } = await import("../../test/mockApi");
   return createDashboardApiMock(() => importOriginal<typeof import("../../api")>(), {
-    fetchTasks: vi.fn().mockResolvedValue([]),
+    // FNXC:BoardProgressIndicator 2026-09-10-15:24: `refreshTasks` reads the board from
+    // `fetchTaskPage` + `fetchCompletedTasks`; the retired `fetchTasks` mock left this whole file
+    // asserting against a call the hook no longer makes.
+    fetchTaskPage: vi.fn().mockResolvedValue({ tasks: [], total: 0, hasMore: false, nextCursor: null }),
   });
 });
 
@@ -41,10 +46,16 @@ class MockEventSource {
 }
 
 const originalEventSource = globalThis.EventSource;
-const mockFetchTasks = vi.mocked(api.fetchTasks);
+const mockFetchBoard = vi.mocked(api.fetchTaskPage);
 const PROJECT_ID = "proj-discard";
 const CACHE_KEY = `${SWR_CACHE_KEYS.TASKS_PREFIX}${PROJECT_ID}`;
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
+type BoardPage = Awaited<ReturnType<typeof api.fetchTaskPage>>;
+
+/** The paginated feed wraps rows in a cursor envelope; the tests only ever exercise page zero. */
+function page(tasks: Task[]): BoardPage {
+  return { tasks, total: tasks.length, hasMore: false, nextCursor: null };
+}
 
 function createTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -73,7 +84,7 @@ beforeEach(() => {
   MockEventSource.instances = [];
   (globalThis as unknown as { EventSource: unknown }).EventSource = MockEventSource;
   localStorage.clear();
-  mockFetchTasks.mockReset().mockResolvedValue([]);
+  mockFetchBoard.mockReset().mockResolvedValue(page([]));
 });
 
 afterEach(() => {
@@ -86,7 +97,7 @@ describe("useTasks stale snapshot hydration (mobile tab discard)", () => {
   it("hydrates a snapshot several minutes old on mount", async () => {
     seedSnapshot([createTask({ id: "FN-STALE" })], FIVE_MINUTES_MS);
     // Never resolve: proves the board painted from cache, not from the fetch.
-    mockFetchTasks.mockReturnValue(new Promise<Task[]>(() => {}));
+    mockFetchBoard.mockReturnValue(new Promise<BoardPage>(() => {}));
 
     const { result } = renderHook(() => useTasks({ projectId: PROJECT_ID }));
 
@@ -96,7 +107,7 @@ describe("useTasks stale snapshot hydration (mobile tab discard)", () => {
 
   it("hydrates a snapshot just under the hydration TTL and drops one past it", () => {
     seedSnapshot([createTask({ id: "FN-OLD" })], SWR_TASKS_MAX_AGE_MS - 60_000);
-    mockFetchTasks.mockReturnValue(new Promise<Task[]>(() => {}));
+    mockFetchBoard.mockReturnValue(new Promise<BoardPage>(() => {}));
 
     const { result, unmount } = renderHook(() => useTasks({ projectId: PROJECT_ID }));
     expect(result.current.tasks.map((task) => task.id)).toEqual(["FN-OLD"]);
@@ -109,24 +120,24 @@ describe("useTasks stale snapshot hydration (mobile tab discard)", () => {
 
   it("issues exactly one immediate revalidation after hydrating, then clears the stale flag", async () => {
     seedSnapshot([createTask({ id: "FN-STALE" })], FIVE_MINUTES_MS);
-    mockFetchTasks.mockResolvedValue([createTask({ id: "FN-FRESH" })]);
+    mockFetchBoard.mockResolvedValue(page([createTask({ id: "FN-FRESH" })]));
 
     const { result } = renderHook(() => useTasks({ projectId: PROJECT_ID }));
 
     expect(result.current.tasks.map((task) => task.id)).toEqual(["FN-STALE"]);
-    expect(mockFetchTasks).toHaveBeenCalledTimes(1);
+    expect(mockFetchBoard).toHaveBeenCalledTimes(1);
 
     await waitFor(() => {
       expect(result.current.tasks.map((task) => task.id)).toEqual(["FN-FRESH"]);
     });
     expect(result.current.isStale).toBe(false);
-    expect(mockFetchTasks).toHaveBeenCalledTimes(1);
+    expect(mockFetchBoard).toHaveBeenCalledTimes(1);
   });
 
   it("clears the entry when a revalidation that REACHED THE SERVER fails, so the next mount does not re-hydrate it", async () => {
     seedSnapshot([createTask({ id: "FN-STALE" })], FIVE_MINUTES_MS);
     // A non-2xx response: the server answered and the snapshot is unverifiable.
-    mockFetchTasks.mockRejectedValue(new Error("Request failed: 500"));
+    mockFetchBoard.mockRejectedValue(new Error("Request failed: 500"));
 
     const first = renderHook(() => useTasks({ projectId: PROJECT_ID }));
     expect(first.result.current.tasks.map((task) => task.id)).toEqual(["FN-STALE"]);
@@ -168,7 +179,7 @@ describe("useTasks stale snapshot hydration (mobile tab discard)", () => {
 
     it("keeps both the painted board and the snapshot so the next restore still hydrates", async () => {
       seedSnapshot([createTask({ id: "FN-STALE" })], FIVE_MINUTES_MS);
-      mockFetchTasks.mockRejectedValue(makeError());
+      mockFetchBoard.mockRejectedValue(makeError());
 
       const first = renderHook(() => useTasks({ projectId: PROJECT_ID }));
       expect(first.result.current.tasks.map((task) => task.id)).toEqual(["FN-STALE"]);
@@ -196,7 +207,7 @@ describe("useTasks stale snapshot hydration (mobile tab discard)", () => {
         log: Array.from({ length: 12 }, () => ({ timestamp: "2026-07-26T09:00:00.000Z", action: "y".repeat(100) })),
       } satisfies Partial<Task>),
     );
-    mockFetchTasks.mockResolvedValue(heavyTasks);
+    mockFetchBoard.mockResolvedValue(page(heavyTasks));
 
     const { result } = renderHook(() => useTasks({ projectId: PROJECT_ID }));
     await waitFor(() => {
@@ -212,7 +223,7 @@ describe("useTasks stale snapshot hydration (mobile tab discard)", () => {
   });
 
   it("re-hydrates the persisted snapshot on a simulated discard-and-restore", async () => {
-    mockFetchTasks.mockResolvedValue([createTask({ id: "FN-PERSISTED" })]);
+    mockFetchBoard.mockResolvedValue(page([createTask({ id: "FN-PERSISTED" })]));
     const live = renderHook(() => useTasks({ projectId: PROJECT_ID }));
     await waitFor(() => {
       expect(live.result.current.tasks.map((task) => task.id)).toEqual(["FN-PERSISTED"]);
@@ -222,7 +233,7 @@ describe("useTasks stale snapshot hydration (mobile tab discard)", () => {
     // Discard: the page is evicted and re-executed minutes later with only localStorage surviving.
     const raw = JSON.parse(localStorage.getItem(CACHE_KEY) ?? "null") as { savedAt: number; data: Task[] };
     localStorage.setItem(CACHE_KEY, JSON.stringify({ ...raw, savedAt: raw.savedAt - FIVE_MINUTES_MS }));
-    mockFetchTasks.mockReturnValue(new Promise<Task[]>(() => {}));
+    mockFetchBoard.mockReturnValue(new Promise<BoardPage>(() => {}));
 
     const restored = renderHook(() => useTasks({ projectId: PROJECT_ID }));
     expect(restored.result.current.tasks.map((task) => task.id)).toEqual(["FN-PERSISTED"]);
@@ -232,7 +243,7 @@ describe("useTasks stale snapshot hydration (mobile tab discard)", () => {
 describe("useTasks in-app view re-entry freshness", () => {
   it("still catches up after a minute away even though the hydration TTL is hours", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    mockFetchTasks.mockResolvedValue([createTask({ id: "FN-A" })]);
+    mockFetchBoard.mockResolvedValue(page([createTask({ id: "FN-A" })]));
 
     const { result, rerender } = renderHook(
       ({ sseEnabled }: { sseEnabled: boolean }) => useTasks({ projectId: PROJECT_ID, sseEnabled }),
@@ -241,19 +252,103 @@ describe("useTasks in-app view re-entry freshness", () => {
     await waitFor(() => {
       expect(result.current.tasks.map((task) => task.id)).toEqual(["FN-A"]);
     });
-    expect(mockFetchTasks).toHaveBeenCalledTimes(1);
+    expect(mockFetchBoard).toHaveBeenCalledTimes(1);
 
     vi.setSystemTime(Date.now() + 61_000);
-    mockFetchTasks.mockResolvedValue([createTask({ id: "FN-B" })]);
+    mockFetchBoard.mockResolvedValue(page([createTask({ id: "FN-B" })]));
     await act(async () => {
       rerender({ sseEnabled: true });
     });
 
     await waitFor(() => {
-      expect(mockFetchTasks).toHaveBeenCalledTimes(2);
+      expect(mockFetchBoard).toHaveBeenCalledTimes(2);
     });
     await waitFor(() => {
       expect(result.current.tasks.map((task) => task.id)).toEqual(["FN-B"]);
+    });
+  });
+});
+
+/*
+FNXC:BoardProgressIndicator 2026-09-10-15:24:
+The reported failure: the top progress bar swept forever over an idle board. It was bound to `isStale`
+alone, and only a CONFIRMED fetch clears that flag — so any refresh exit path that did not answer the
+staleness question left an unbounded animation. `isStale` is still the honest answer to "are these rows
+server-confirmed?", and it deliberately STAYS true after a failure; what must settle is the composed
+indicator App renders the bar from (`isStale && isBoardRefreshInFlight`).
+Every exit path of the refresh is enumerated here, not only the reported one.
+*/
+describe("useTasks board load indicator settling", () => {
+  function deferred() {
+    let resolve!: (page: BoardPage) => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<BoardPage>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  const settled = { projectsLoading: false, currentProjectLoading: false };
+
+  it("reports the hydration revalidation as an in-flight load and settles it once the rows land", async () => {
+    seedSnapshot([createTask({ id: "FN-STALE" })], FIVE_MINUTES_MS);
+    const pending = deferred();
+    mockFetchBoard.mockReturnValue(pending.promise);
+
+    const { result } = renderHook(() => useTasks({ projectId: PROJECT_ID }));
+    // Rows are painted from cache and unconfirmed, and a request is running: the bar may sweep.
+    expect(result.current.isStale).toBe(true);
+    expect(result.current.isBoardRefreshInFlight).toBe(true);
+    expect(isBoardBarIndeterminate({ ...settled, isStale: true, isBoardRefreshInFlight: true })).toBe(true);
+
+    await act(async () => {
+      pending.resolve(page([createTask({ id: "FN-FRESH" })]));
+    });
+    await waitFor(() => {
+      expect(result.current.tasks.map((task) => task.id)).toEqual(["FN-FRESH"]);
+    });
+    expect(result.current.isBoardRefreshInFlight).toBe(false);
+    expect(isBoardBarIndeterminate({ ...settled, isStale: false, isBoardRefreshInFlight: false })).toBe(false);
+  });
+
+  it("settles the indicator after a revalidation that REACHED THE SERVER and failed, while the rows stay unconfirmed", async () => {
+    seedSnapshot([createTask({ id: "FN-STALE" })], FIVE_MINUTES_MS);
+    mockFetchBoard.mockRejectedValue(new Error("Request failed: 500"));
+
+    const { result } = renderHook(() => useTasks({ projectId: PROJECT_ID }));
+    await waitFor(() => {
+      expect(result.current.lastRefreshErrorAt).not.toBeNull();
+    });
+
+    // The rows genuinely are unconfirmed — that part must not be laundered into "fresh"...
+    expect(result.current.isStale).toBe(true);
+    // ...but nothing is loading any more, so the indeterminate bar has nothing left to represent.
+    expect(result.current.isBoardRefreshInFlight).toBe(false);
+    expect(isBoardBarIndeterminate({ ...settled, isStale: true, isBoardRefreshInFlight: false })).toBe(false);
+  });
+
+  it("settles the indicator when a superseded refresh returns early without answering staleness", async () => {
+    const firstProject = deferred();
+    mockFetchBoard.mockReturnValueOnce(firstProject.promise);
+    const { result, rerender } = renderHook(
+      ({ projectId }: { projectId: string }) => useTasks({ projectId }),
+      { initialProps: { projectId: PROJECT_ID } },
+    );
+    expect(result.current.isBoardRefreshInFlight).toBe(true);
+
+    // A project switch supersedes the in-flight request: its response is discarded by the scope fence,
+    // which is the exit path that never reaches `setIsStale(false)`.
+    rerender({ projectId: "proj-successor" });
+    await waitFor(() => {
+      expect(mockFetchBoard).toHaveBeenCalledTimes(2);
+    });
+
+    await act(async () => {
+      firstProject.resolve(page([]));
+    });
+    await waitFor(() => {
+      expect(result.current.isBoardRefreshInFlight).toBe(false);
     });
   });
 });

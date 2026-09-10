@@ -53,6 +53,7 @@ import { useMobileKeyboard } from "./hooks/useMobileKeyboard";
 import { useKeyboardFocusPending } from "./hooks/useKeyboardFocusPending";
 import { useMobileKeyboardViewportLock, useMobileViewportRestoreReset } from "./hooks/useMobileScrollLock";
 import { computeMobileBarKeyboardFlags } from "./utils/mobileBarKeyboardFlags";
+import { isBoardBarIndeterminate } from "./utils/boardLoadIndicator";
 import { recordActivity } from "./utils/activity-trace";
 import { closeViewShortcut, retainViewNavRevert } from "./utils/dashboardShortcutToggles";
 import { useSetupReadiness } from "./hooks/useSetupReadiness";
@@ -614,7 +615,7 @@ function AppInner() {
       ?.columns.find((column) => column.id === task.column)?.flags;
   }, [footerBoardWorkflows, resolveTaskWorkflowId]);
 
-  const { tasks, isStale, createTask, moveTask, pauseTask, unpauseTask, deleteTask, mergeTask, retryTask, bypassReview, resetTask, updateTask, duplicateTask, revertTask, loadMoreCurrentTasks, retryCurrentTasksPagination, currentTasksTotal, currentTasksHasMore, currentTasksLoadingMore, currentTasksPaginationError, currentTasksProgressKey, loadMoreCompletedTasks, retryCompletedTasksPagination, completedSortMode, changeCompletedSortMode, completedCounts, completedHasMore, completedLoadingMore, completedPaginationError, completedProgressKey, ingestCreatedTasks, lastFetchTimeMs } = useTasks(
+  const { tasks, isStale, isBoardRefreshInFlight, createTask, moveTask, pauseTask, unpauseTask, deleteTask, mergeTask, retryTask, bypassReview, resetTask, updateTask, duplicateTask, revertTask, loadMoreCurrentTasks, retryCurrentTasksPagination, currentTasksTotal, currentTasksHasMore, currentTasksLoadingMore, currentTasksPaginationError, currentTasksProgressKey, loadMoreCompletedTasks, retryCompletedTasksPagination, completedSortMode, changeCompletedSortMode, completedCounts, completedHasMore, completedLoadingMore, completedPaginationError, completedProgressKey, ingestCreatedTasks, lastFetchTimeMs } = useTasks(
     {
       ...(currentProject ? { projectId: currentProject.id } : {}),
       searchQuery: searchQuery || undefined,
@@ -1956,9 +1957,18 @@ function AppInner() {
     isOnboardingCompleted() &&
     !isPostOnboardingDismissed();
 
-  // Top progress bar reflects any in-flight revalidation: projects, current-project, or tasks.
-  // Add new sources here, not inside TopProgressBar.
-  const isRevalidating = projectsLoading || currentProjectLoading || isStale;
+  /*
+  FNXC:BoardProgressIndicator 2026-09-10-15:24:
+  The bar may only sweep while something is actually loading. `isStale` alone kept it sweeping for as
+  long as the rows were unconfirmed — which, after a failed or superseded board refresh, is forever.
+  See `utils/boardLoadIndicator.ts` for the full rule; new loading sources are added THERE.
+  */
+  const isRevalidating = isBoardBarIndeterminate({
+    projectsLoading,
+    currentProjectLoading,
+    isStale,
+    isBoardRefreshInFlight,
+  });
 
   // Props for the extracted <DashboardBanners> cluster (see components/dashboard/DashboardBanners.tsx).
   // Every value is passed by its App name; the cluster renders the same banners as before.

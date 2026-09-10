@@ -612,6 +612,17 @@ export function useTasks(options?: UseTasksOptions) {
       : [];
   });
   const [isStale, setIsStale] = useState(true);
+  /*
+  FNXC:BoardProgressIndicator 2026-09-10-15:24:
+  `isStale` answers "are these rows confirmed by the server?" — an open-ended freshness fact that stays
+  true after a failed revalidation or a superseded request. An activity indicator needs the OTHER
+  question, "is a board request running right now?", so refreshes are counted here. Overlapping
+  refreshes are real (a resume re-arm aborts the in-flight one and its `finally` lands later), hence a
+  counter rather than a boolean; the state flips only on the empty transition so a re-entrant refresh
+  does not re-render the board.
+  */
+  const boardRefreshInFlightRef = useRef(0);
+  const [isBoardRefreshInFlight, setIsBoardRefreshInFlight] = useState(false);
   const [lastRefreshErrorAt, setLastRefreshErrorAt] = useState<number | null>(null);
   const tasksRef = useRef(tasks);
   // Task ids are project-local. Reconciliation may compare ids only after this owner fence holds.
@@ -841,6 +852,8 @@ export function useTasks(options?: UseTasksOptions) {
   const VISIBILITY_REFRESH_DEBOUNCE_MS = 1000;
 
   const refreshTasks = useCallback(async (options?: { clearOnError?: boolean; searchQueryOverride?: string; resetCompletedPages?: boolean }) => {
+    boardRefreshInFlightRef.current += 1;
+    setIsBoardRefreshInFlight(true);
     const requestVersion = ++fetchVersionRef.current;
     completedRequestGenerationRef.current++;
     abortPaginationOwners();
@@ -1018,7 +1031,16 @@ export function useTasks(options?: UseTasksOptions) {
         return;
       }
     } finally {
+      /*
+      FNXC:BoardProgressIndicator 2026-09-10-15:24:
+      Runs on EVERY exit, including the two early returns above: the superseded-scope return never
+      clears `isStale` (a newer request owns that answer) and the non-server-reached catch returns to
+      keep the hydrated board. Without this `finally` those paths left an indicator that no later
+      success could retract.
+      */
       window.clearTimeout(refreshTimeout);
+      boardRefreshInFlightRef.current = Math.max(0, boardRefreshInFlightRef.current - 1);
+      if (boardRefreshInFlightRef.current === 0) setIsBoardRefreshInFlight(false);
       if (refreshAbortRef.current === refreshController) refreshAbortRef.current = null;
     }
   }, [abortPaginationOwners, projectId]);
@@ -2084,7 +2106,7 @@ export function useTasks(options?: UseTasksOptions) {
   }, [completedPaginationError, loadMoreCompletedTasks, refreshTasks]);
 
   return {
-    tasks, isStale, lastRefreshErrorAt, createTask, moveTask, pauseTask, unpauseTask, deleteTask, mergeTask, retryTask, bypassReview, resetTask, duplicateTask, updateTask, revertTask,
+    tasks, isStale, isBoardRefreshInFlight, lastRefreshErrorAt, createTask, moveTask, pauseTask, unpauseTask, deleteTask, mergeTask, retryTask, bypassReview, resetTask, duplicateTask, updateTask, revertTask,
     loadMoreCurrentTasks, retryCurrentTasksPagination, currentTasksTotal, currentTasksHasMore, currentTasksLoadingMore, currentTasksPaginationError,
     currentTasksProgressKey: `${projectId ?? "default"}:${searchIncarnationRef.current}:${currentTasksProgress}`,
     loadMoreCompletedTasks, retryCompletedTasksPagination, completedSortMode, changeCompletedSortMode, completedTotal, completedCounts, completedHasMore, completedLoadingMore, completedPaginationError,
