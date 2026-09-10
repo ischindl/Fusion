@@ -1009,35 +1009,66 @@ interface TaskListCursor {
   createdAt: string;
   id: string;
   query?: string;
+  /** Canonical lane scope this page was cut for, so a cursor cannot cross columns. */
+  lanes?: string;
 }
 
 function decodeTaskListCursor(value: string): TaskListCursor {
   let parsed: unknown;
   try { parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")); }
   catch { throw new TypeError("Invalid task list cursor"); }
-  const cursor = parsed as { createdAt?: unknown; id?: unknown; query?: unknown } | null;
+  const cursor = parsed as { createdAt?: unknown; id?: unknown; query?: unknown; lanes?: unknown } | null;
   if (!cursor || typeof cursor.createdAt !== "string" || Number.isNaN(Date.parse(cursor.createdAt)) || typeof cursor.id !== "string" || !cursor.id) {
     throw new TypeError("Invalid task list cursor");
   }
   if (cursor.query !== undefined && typeof cursor.query !== "string") {
     throw new TypeError("Invalid task list cursor");
   }
+  if (cursor.lanes !== undefined && typeof cursor.lanes !== "string") {
+    throw new TypeError("Invalid task list cursor");
+  }
   return {
     createdAt: cursor.createdAt,
     id: cursor.id,
     ...(typeof cursor.query === "string" ? { query: cursor.query } : {}),
+    ...(typeof cursor.lanes === "string" && cursor.lanes ? { lanes: cursor.lanes } : {}),
   };
+}
+
+const MAX_TASK_LIST_LANES = 20;
+const TASK_LIST_LANE_SCOPE_ERROR = "Invalid task list lane scope";
+
+/**
+ * FNXC:BoardLanePagination 2026-09-10-19:26:
+ * A Board column must be able to page its own lane with a small page, so a page request can name
+ * the lane ids it wants. One canonical signature (deduped, sorted, comma-joined) is used for both
+ * the SQL scope and the cursor payload, because two spellings of the same lane set must not be
+ * able to continue each other's page. RUFU-214.
+ */
+function normalizeTaskListLaneScope(columns?: readonly string[]): string | undefined {
+  if (!columns || columns.length === 0) return undefined;
+  const lanes = [...new Set(columns.map((column) => column.trim()).filter(Boolean))].sort();
+  if (lanes.length === 0 || lanes.length > MAX_TASK_LIST_LANES) throw new TypeError(TASK_LIST_LANE_SCOPE_ERROR);
+  return lanes.join(",");
 }
 
 /*
 FNXC:TaskListPagination 2026-09-07-16:03:
 Board task pages exclude completion history before the SQL limit and continue with an exclusive createdAt/id tuple. The exact count is independent of the page, while page hydration and workflow enrichment are paid only for returned rows.
 */
-export async function listCurrentTasksPageImpl(store: TaskStore, options: { limit?: number; cursor?: string; query?: string } = {}): Promise<TaskListPage> {
+export async function listCurrentTasksPageImpl(store: TaskStore, options: { limit?: number; cursor?: string; query?: string; columns?: readonly string[] } = {}): Promise<TaskListPage> {
   const limit = Math.min(200, Math.max(1, Math.trunc(options.limit ?? 100) || 100));
   const cursor = options.cursor ? decodeTaskListCursor(options.cursor) : undefined;
   const query = options.query?.trim();
   if (cursor && (cursor.query ?? undefined) !== (query || undefined)) throw new TypeError("Invalid task list cursor");
+  /*
+  FNXC:BoardLanePagination 2026-09-10-19:26:
+  Search spans lanes, so a searched page carries no lane scope and a lane-scoped cursor is refused
+  once a query appears — continuing a 20-row column page into a search result set would skip rows
+  the search ranked differently. RUFU-214.
+  */
+  const laneScope = query ? undefined : normalizeTaskListLaneScope(options.columns);
+  if (cursor && (cursor.lanes ?? undefined) !== laneScope) throw new TypeError("Invalid task list cursor");
   const layer = store.asyncLayer;
   if (!layer) throw new Error("Task pagination requires the async task backend");
 
@@ -1084,11 +1115,20 @@ export async function listCurrentTasksPageImpl(store: TaskStore, options: { limi
     };
   }
 
-  const completeColumns = [...await resolveProjectColumnsForRoles(store, ["complete"])] as ColumnId[];
+  /*
+  FNXC:BoardLanePagination 2026-09-10-19:26:
+  With a lane scope the count and the page are both cut against exactly those columns, so a column's
+  own total and `hasMore` describe that column instead of the whole board. The complete-lane lookup
+  is skipped entirely: naming lanes makes it dead work on the hot board path. RUFU-214.
+  */
+  const laneColumns = laneScope ? laneScope.split(",") as ColumnId[] : undefined;
+  const columnScope: { columns?: ColumnId[]; excludeColumns?: ColumnId[] } = laneColumns
+    ? { columns: laneColumns }
+    : { excludeColumns: [...await resolveProjectColumnsForRoles(store, ["complete"])] as ColumnId[] };
   const [total, rows] = await Promise.all([
-    countLiveTasks(layer, { excludeColumns: completeColumns }),
+    countLiveTasks(layer, columnScope),
     store.listTasks({
-      excludeColumns: completeColumns,
+      ...columnScope,
       includeArchived: false,
       slim: true,
       limit: limit + 1,
@@ -1105,7 +1145,9 @@ export async function listCurrentTasksPageImpl(store: TaskStore, options: { limi
     tasks,
     total,
     hasMore,
-    nextCursor: hasMore && last ? Buffer.from(JSON.stringify({ createdAt: last.createdAt, id: last.id }), "utf8").toString("base64url") : null,
+    nextCursor: hasMore && last
+      ? Buffer.from(JSON.stringify({ createdAt: last.createdAt, id: last.id, ...(laneScope ? { lanes: laneScope } : {}) }), "utf8").toString("base64url")
+      : null,
   };
 }
 

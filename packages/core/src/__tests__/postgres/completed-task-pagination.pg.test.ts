@@ -204,4 +204,53 @@ pgDescribe("TaskStore completed-task pagination", () => {
     expect(seen).toHaveLength(205);
     expect(new Set(seen).size).toBe(205);
   });
+
+  /*
+  FNXC:BoardLanePagination 2026-09-10-19:26:
+  Each Board column pages its own lane with a small page (RUFU-214). The lane scope has to be real —
+  it must count only that column, keep other columns' rows (including completed ones) out of the
+  page, and bind its cursor so a cursor cut for one column can never continue another column's page
+  and silently drop rows in between.
+  */
+  it("cuts a Board page against one named lane and refuses a cursor cut for another lane", async () => {
+    const store = h.store();
+    for (let index = 0; index < 3; index += 1) {
+      await store.createTask({ description: `review ${index}`, column: "in-review" });
+    }
+    for (let index = 0; index < 3; index += 1) {
+      await store.createTask({ description: `todo ${index}`, column: "todo" });
+    }
+    await store.createTask({ description: "completed", column: "done" });
+
+    const first = await store.listCurrentTasksPage({ limit: 2, columns: ["in-review"] });
+    expect(first.total).toBe(3);
+    expect(first.hasMore).toBe(true);
+    expect(first.tasks).toHaveLength(2);
+    expect(first.tasks.every((task) => task.column === "in-review")).toBe(true);
+
+    const second = await store.listCurrentTasksPage({ limit: 2, columns: ["in-review"], cursor: first.nextCursor! });
+    expect(second.total).toBe(3);
+    expect(second.hasMore).toBe(false);
+    expect(second.tasks).toHaveLength(1);
+    expect(second.tasks[0]!.column).toBe("in-review");
+
+    await expect(store.listCurrentTasksPage({ limit: 2, columns: ["todo"], cursor: first.nextCursor! }))
+      .rejects.toThrow("Invalid task list cursor");
+    await expect(store.listCurrentTasksPage({ limit: 2, cursor: first.nextCursor! }))
+      .rejects.toThrow("Invalid task list cursor");
+  });
+
+  it("names more lanes than the board has columns only up to the bounded scope", async () => {
+    const store = h.store();
+    await store.createTask({ description: "todo", column: "todo" });
+
+    await expect(store.listCurrentTasksPage({
+      limit: 2,
+      columns: Array.from({ length: 21 }, (_, index) => `lane-${index}`),
+    })).rejects.toThrow("Invalid task list lane scope");
+
+    const page = await store.listCurrentTasksPage({ limit: 2, columns: ["todo", "todo", " "] });
+    expect(page.total).toBe(1);
+    expect(page.tasks).toHaveLength(1);
+  });
 });

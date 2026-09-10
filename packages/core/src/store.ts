@@ -1765,7 +1765,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   async listTasks(options?: ListTasksOptions): Promise<Task[]> {
     return listTasksImpl(this, options);
   }
-  async listCurrentTasksPage(options?: { limit?: number; cursor?: string; query?: string }): Promise<TaskListPage> {
+  async listCurrentTasksPage(options?: { limit?: number; cursor?: string; query?: string; columns?: readonly string[] }): Promise<TaskListPage> {
     return listCurrentTasksPageImpl(this, options);
   }
   async listCompletedTasks(options?: { limit?: number; cursor?: string; slim?: boolean; sort?: TaskColumnSortMode }): Promise<CompletedTaskPage> {

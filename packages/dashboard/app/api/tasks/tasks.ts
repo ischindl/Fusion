@@ -37,11 +37,17 @@ export interface TaskListPageResponse {
   nextCursor: string | null;
 }
 
-export function fetchTaskPage(projectId?: string, options?: { limit?: number; cursor?: string; query?: string; signal?: AbortSignal }): Promise<TaskListPageResponse> {
+export function fetchTaskPage(projectId?: string, options?: { limit?: number; cursor?: string; query?: string; columns?: readonly string[]; signal?: AbortSignal }): Promise<TaskListPageResponse> {
   const search = new URLSearchParams();
   if (options?.limit !== undefined) search.set("limit", String(options.limit));
   if (options?.cursor) search.set("cursor", options.cursor);
   if (options?.query) search.set("q", options.query);
+  /*
+  FNXC:BoardLanePagination 2026-09-10-19:26:
+  Each Board column fetches its own lane with a small page instead of pulling the whole board.
+  RUFU-214.
+  */
+  if (options?.columns && options.columns.length > 0) search.set("columns", options.columns.join(","));
   const suffix = search.size > 0 ? `?${search.toString()}` : "";
   return api<TaskListPageResponse>(withProjectId(`/tasks/page${suffix}`, projectId), { signal: options?.signal });
 }

@@ -1545,10 +1545,25 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw badRequest("limit must be an integer between 1 and 200");
       const cursor = typeof req.query.cursor === "string" && req.query.cursor ? req.query.cursor : undefined;
       const query = typeof req.query.q === "string" && req.query.q.trim() ? req.query.q.trim() : undefined;
+      /*
+      FNXC:BoardLanePagination 2026-09-10-19:26:
+      A Board column pages its own lane (`columns=todo`), so a column can ask for a small page
+      instead of the whole board. ids arrive comma-separated; the lane scope is also embedded in the
+      cursor, so a cursor cut for one column cannot continue a different column's page. RUFU-214.
+      */
+      const columns = typeof req.query.columns === "string" && req.query.columns.trim()
+        ? [...new Set(req.query.columns.split(",").map((column) => column.trim()).filter(Boolean))]
+        : undefined;
+      if (columns && (columns.length === 0 || columns.length > 20)) throw badRequest("columns must name between 1 and 20 column ids");
       try {
-        res.json(await scopedStore.listCurrentTasksPage({ limit, cursor, ...(query ? { query } : {}) }));
+        res.json(await scopedStore.listCurrentTasksPage({
+          limit,
+          cursor,
+          ...(query ? { query } : {}),
+          ...(columns && columns.length > 0 ? { columns } : {}),
+        }));
       } catch (error) {
-        if (error instanceof TypeError && error.message === "Invalid task list cursor") throw badRequest(error.message);
+        if (error instanceof TypeError && (error.message === "Invalid task list cursor" || error.message === "Invalid task list lane scope")) throw badRequest(error.message);
         throw error;
       }
     } catch (err: unknown) {
