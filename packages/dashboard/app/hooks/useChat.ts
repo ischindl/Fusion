@@ -5,6 +5,7 @@ import {
   fetchChatSessions,
   fetchChatSession,
   createChatSession as apiCreateChatSession,
+  handoffChatSession,
   fetchChatMessages,
   updateChatSession,
   deleteChatSession,
@@ -190,6 +191,13 @@ export interface UseChatReturn {
     options?: { keepActiveSession?: boolean },
   ) => Promise<ChatSessionInfo>;
   archiveSession: (id: string) => Promise<void>;
+  /**
+   * RUFU-199: hand a long Direct chat off to a fresh sibling conversation (same agent/model/
+   * thinking target, seeded with a briefing of the old one) and archive the source. Resolves with
+   * the new session and `degraded` — true when the server could not produce an LLM briefing and
+   * seeded a deterministic digest instead, which the caller must surface rather than hide.
+   */
+  handoffSession: (id: string) => Promise<{ session: ChatSessionInfo; degraded: boolean }>;
   archivedSessions: ChatSessionInfo[];
   refreshArchivedSessions: () => Promise<void>;
   unarchiveSession: (id: string) => Promise<void>;
@@ -1462,6 +1470,69 @@ export function useChat(
       }
     },
     [activeSession, projectId],
+  );
+
+  /**
+   * FNXC:ChatHandoff 2026-09-09-19:05:
+   * RUFU-199: continue a long Direct chat in a fresh conversation. The server owns the whole
+   * lifecycle (create sibling + seed the model-context primer + archive the source + dedupe
+   * retries), so this action only mirrors the local list/switch bookkeeping that `createSession`
+   * already performs: close the source stream, swap the composer transient, drop the now-archived
+   * source from the active list, prepend the child, and select it. `degraded` is returned so the
+   * click handler can tell the operator the briefing was a deterministic digest, never hide a
+   * false success.
+   */
+  const handoffSession = useCallback(
+    async (id: string): Promise<{ session: ChatSessionInfo; degraded: boolean }> => {
+      const data = await handoffChatSession(id, projectId);
+
+      if (streamRef.current) {
+        streamRef.current.close();
+        streamRef.current = null;
+      }
+      lastAttachedGenerationRef.current = null;
+
+      const newSession: ChatSessionInfo = {
+        id: data.session.id,
+        title: data.session.title,
+        agentId: data.session.agentId,
+        status: data.session.status,
+        modelProvider: data.session.modelProvider,
+        modelId: data.session.modelId,
+        thinkingLevel: data.session.thinkingLevel,
+        pinnedAt: data.session.pinnedAt,
+        createdAt: data.session.createdAt,
+        updatedAt: data.session.updatedAt,
+      };
+
+      setSessions((prev) => {
+        const withoutSource = prev.filter((s) => s.id !== id);
+        if (withoutSource.some((s) => s.id === newSession.id)) return sortChatSessions(withoutSource);
+        return sortChatSessions([newSession, ...withoutSource]);
+      });
+      removePersistedPendingChatMessages(id);
+      resetTransientComposerState();
+      selectSession(newSession.id, newSession);
+
+      /*
+      FNXC:ChatHandoff 2026-09-10-01:13:
+      RUFU-199 code review: the server has already archived the source, so an Archived panel that is open
+      across the handoff keeps showing its pre-handoff page — the just-archived source stays missing from
+      it until the panel is toggled off and on again, because the only other refresh site is the toggle's
+      own handler. `refreshArchivedSessions` re-fetches that page — `refreshSessions` covers only
+      the active status, so it cannot fix it. The await is best-effort ON PURPOSE: `refreshArchivedSessions`
+      lets a fetch failure reject, and a stale LIST must never be reported as a failed handoff — the
+      continuation already exists and the caller would toast "Handoff failed" over a committed success.
+      */
+      try {
+        await refreshArchivedSessions();
+      } catch (err) {
+        console.warn("[useChat] handoff committed but the archived session list could not be refreshed:", err);
+      }
+
+      return { session: newSession, degraded: data.degraded };
+    },
+    [projectId, refreshArchivedSessions, resetTransientComposerState, selectSession],
   );
 
   /**
@@ -2869,6 +2940,7 @@ export function useChat(
     selectSession,
     createSession,
     archiveSession,
+    handoffSession,
     archivedSessions,
     refreshArchivedSessions,
     unarchiveSession,

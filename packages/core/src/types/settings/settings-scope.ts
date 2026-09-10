@@ -2413,6 +2413,27 @@ export interface ProjectSettings {
    *  memory injection and the full registered tool set (runtime kill switch
    *  — no redeploy needed to disable the budget in production). */
   chatContextBudgetEnabled?: boolean;
+  /**
+   * FNXC:ChatHandoff 2026-09-09-17:21:
+   * RUFU-199 cross-session Direct-chat handoff kill switch. When true (default) a Direct chat that
+   * has grown past `chatHandoffThresholdPercent` context usage offers one click that creates a
+   * sibling session on the identical agent/model/thinking target, seeds the summary into the new
+   * session's FIRST prompt turn (the model's context is the per-session pi session file, so a stored
+   * message alone would never reach it), and archives — never deletes — the source conversation.
+   * Set false to hide the affordance and refuse the route for this project. Unrelated to
+   * `chatPreOverflowCompactionEnabled`, which compacts within one session.
+   * Default: true.
+   */
+  chatHandoffEnabled?: boolean;
+  /**
+   * FNXC:ChatHandoff 2026-09-09-17:21:
+   * RUFU-199: context-usage percentage (of the model window, per the same advisory estimate the
+   * read-only thread-header meter renders) at or above which the handoff affordance appears. The
+   * dashboard reader clamps to 50–95 and falls back to 75 for a non-finite or out-of-range stored
+   * value, so a bad number can neither spam the button on short chats nor hide it forever.
+   * Default: 75.
+   */
+  chatHandoffThresholdPercent?: number;
   /** Token compaction threshold — dual-lane semantics:
    *
    *  - Executor/agent tasks (TokenCapDetector): optional pre-overflow cap.

@@ -163,6 +163,35 @@ export function createChatSession(
   });
 }
 
+/**
+ * RUFU-199 handoff response. `degraded` is the honest-degradation flag: when the LLM
+ * briefing could not be produced the server seeded a deterministic digest instead and the
+ * caller must tell the operator rather than present the fresh chat as a full handoff.
+ */
+export interface ChatHandoffResponse {
+  session: EnrichedChatSession;
+  degraded: boolean;
+  summaryChars: number;
+  sourceSessionId: string;
+}
+
+/**
+ * FNXC:ChatHandoff 2026-09-09-19:05:
+ * RUFU-199: continue a long Direct chat in a fresh conversation. One POST asks the server to
+ * create a sibling session with the identical agent/model/thinking target, seed it with a
+ * briefing of the previous transcript (the model's context is a per-session file, so a stored
+ * row alone would reach the model as nothing), and archive the source. The continuation's
+ * target is copied from the source server-side, so this call carries NO body — a client can
+ * never retarget the handoff. 409s (disabled / mid-generation / room / CLI-backed /
+ * task-planner / already-inactive) and 404 surface as thrown ApiErrors; ChatManager dedupes a
+ * double-click and a failed-briefing retry per source, so a retry cannot pile up siblings.
+ */
+export function handoffChatSession(id: string, projectId?: string): Promise<ChatHandoffResponse> {
+  return api<ChatHandoffResponse>(withProjectId(`/chat/sessions/${encodeURIComponent(id)}/handoff`, projectId), {
+    method: "POST",
+  });
+}
+
 /** Fetch a single chat session */
 export function fetchChatSession(id: string, projectId?: string): Promise<ChatSessionResponse> {
   return api<ChatSessionResponse>(withProjectId(`/chat/sessions/${encodeURIComponent(id)}`, projectId));

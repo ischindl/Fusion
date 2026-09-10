@@ -200,6 +200,45 @@ export function MemorySection({ form, setForm, memory }: MemorySectionProps) {
         onChange={(v) => setForm((f) => ({ ...f, chatContextBudgetEnabled: v === true }))}
       />
 
+      {/*
+      FNXC:ChatHandoff 2026-09-09-22:00:
+      RUFU-199: cross-session Direct-chat handoff. Sits with the two compaction-adjacent
+      toggles above because operators evaluate them as one context-health group, but the
+      mechanism is deliberately different: those compact IN one session, while this offers a
+      fresh session seeded with a briefing of the old one. The enable row is the kill switch
+      (same opt-out-as-a-feature shape as the neighbors, per the LCM user requirement that
+      every behavior change be disableable without a redeploy); the threshold row gates when
+      the header button appears, measured against the same advisory percentage the read-only
+      context meter shows. Range matches the server clamp (50-95); values outside it fall
+      back to 75 rather than firing the button on every chat or never.
+      */}
+      <SettingsToggleRow
+        descriptor={{
+          key: "chatHandoffEnabled",
+          label: t("settings.memory.chatHandoff", "Chat handoff (continue in a fresh chat)"),
+          help: t("settings.memory.chatHandoffHelp", "Once a chat passes the context threshold below, its header offers one click to continue in a fresh chat with the same agent/model, briefed with a summary of the old conversation. The old chat is archived, not deleted. Unrelated to in-session compaction. Default: enabled."),
+          scope: "project",
+        }}
+        value={form.chatHandoffEnabled !== false}
+        onChange={(v) => setForm((f) => ({ ...f, chatHandoffEnabled: v === true }))}
+      />
+
+      {(form.chatHandoffEnabled !== false) && (
+        <SettingsNumberRow
+          descriptor={{
+            key: "chatHandoffThresholdPercent",
+            label: t("settings.memory.chatHandoffThreshold", "Chat handoff context threshold (%)"),
+            help: t("settings.memory.chatHandoffThresholdHelp", "Context-usage percentage past which the chat header offers the handoff button (50-95). Values outside the range fall back to the default: 75."),
+            scope: "project",
+            min: 50,
+            max: 95,
+            step: 1,
+          }}
+          value={form.chatHandoffThresholdPercent ?? 75}
+          onChange={(v) => setForm((f) => ({ ...f, chatHandoffThresholdPercent: v || 75 }))}
+        />
+      )}
+
       {backendLoading ? (<div className="form-group">
           <small className="settings-muted">{t("settings.memory.checkingMemoryWriteAccess", "Checking memory write access...")}</small>
         </div>) : backendError ? (<div className="form-group">

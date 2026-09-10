@@ -404,6 +404,24 @@ FN-096 keeps the shared-header New Chat action visible in selected detail as wel
   flex: 0 0 auto;
 }
 
+/*
+FNXC:ChatHandoff 2026-09-09-20:04:
+RUFU-199: the thread-header "Continue in a new chat" handoff control. It lives in the flex header
+row beside the truncating title, so it stays fixed-size (the title absorbs slack). On mobile the
+nowrap header keeps it reachable but icon-only — the accessible name comes from aria-label, never
+an empty shell.
+*/
+.chat-thread-header-handoff {
+  flex: 0 0 auto;
+  gap: var(--space-xs);
+}
+
+@media (max-width: 768px) {
+  .chat-thread-header-handoff > span {
+    display: none;
+  }
+}
+
 .chat-view-header-new-chat {
   flex: 0 1 auto;
   min-width: fit-content;
@@ -1459,6 +1477,46 @@ error; design tokens only per the styling guide.
   border-left: 2px solid var(--color-warning);
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--color-warning) 8%, transparent);
+}
+
+/*
+FNXC:ChatHandoff 2026-09-09-20:04:
+RUFU-199: the handoff primer notice replaces the model-facing briefing text in the transcript.
+Quiet lineage styling (muted, border-left like the budget notice); the degraded line escalates to
+the warning token because it warns that the new chat's context is a digest, not a summary.
+*/
+.chat-message-handoff-notice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  line-height: 1.4;
+  padding: var(--space-xs) var(--space-sm);
+  border-left: 2px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.chat-message-handoff-notice-line {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
+.chat-message-handoff-notice-line > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-handoff-notice-open {
+  flex: 0 0 auto;
+}
+
+.chat-message-handoff-notice-degraded {
+  color: var(--color-warning);
 }
 
 /*

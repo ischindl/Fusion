@@ -17,6 +17,7 @@ vi.mock("../../api", () => ({
   fetchChatTags: vi.fn().mockResolvedValue({ tags: [] }),
   fetchChatSession: vi.fn(),
   createChatSession: vi.fn(),
+  handoffChatSession: vi.fn(),
   fetchChatMessages: vi.fn(),
   updateChatSession: vi.fn(),
   deleteChatSession: vi.fn(),
@@ -29,11 +30,26 @@ vi.mock("../../api", () => ({
   ]),
 }));
 
-// Mock the projectStorage module
+// FNXC:Chat 2026-09-09-19:05 (RUFU-199 Step 6 test harness):
+// FN-313 routed chat's open-session preference through getPersistedChatOpenSession/
+// setPersistedChatOpenSession/clearPersistedChatOpenSession, but this file's factory mock was never
+// completed, so every mount threw "No 'getPersistedChatOpenSession' export is defined on the mock"
+// (the whole file was red on this branch). Mirror the REAL module's delegation into the
+// *ScopedItem spies: that keeps the existing tests' seeding (mockGetScopedItem) and assertions
+// (mockSetScopedItem/mockRemoveScopedItem with the "kb-chat-active-session" key) valid through the
+// new indirection. Faithful to projectStorage.ts, not a per-test patch.
+const { scopedItemSpy, setScopedItemSpy, removeScopedItemSpy } = vi.hoisted(() => ({
+  scopedItemSpy: vi.fn(),
+  setScopedItemSpy: vi.fn(),
+  removeScopedItemSpy: vi.fn(),
+}));
 vi.mock("../../utils/projectStorage", () => ({
-  getScopedItem: vi.fn(),
-  setScopedItem: vi.fn(),
-  removeScopedItem: vi.fn(),
+  getScopedItem: scopedItemSpy,
+  setScopedItem: setScopedItemSpy,
+  removeScopedItem: removeScopedItemSpy,
+  getPersistedChatOpenSession: vi.fn((projectId?: string) => scopedItemSpy("kb-chat-active-session", projectId)),
+  setPersistedChatOpenSession: vi.fn((sessionId: string, projectId?: string) => setScopedItemSpy("kb-chat-active-session", sessionId, projectId)),
+  clearPersistedChatOpenSession: vi.fn((projectId?: string) => removeScopedItemSpy("kb-chat-active-session", projectId)),
 }));
 
 // Mock the SSE bus
@@ -52,6 +68,7 @@ const mockSubscribeSse = vi.mocked(sseBusModule.subscribeSse);
 const mockFetchChatSessions = vi.mocked(apiModule.fetchChatSessions);
 const mockFetchChatSession = vi.mocked(apiModule.fetchChatSession);
 const mockCreateChatSession = vi.mocked(apiModule.createChatSession);
+const mockHandoffChatSession = vi.mocked(apiModule.handoffChatSession);
 const mockFetchChatMessages = vi.mocked(apiModule.fetchChatMessages);
 const mockUpdateChatSession = vi.mocked(apiModule.updateChatSession);
 const mockDeleteChatSession = vi.mocked(apiModule.deleteChatSession);
@@ -152,6 +169,12 @@ describe("useChat", () => {
       session: makeSession({ id: "session-001", agentId: "agent-001", title: "New Chat" }),
     });
     mockFetchChatMessages.mockResolvedValue({ messages: [] });
+    mockHandoffChatSession.mockResolvedValue({
+      session: makeSession({ id: "session-001", agentId: "agent-001" }),
+      degraded: false,
+      summaryChars: 0,
+      sourceSessionId: "",
+    });
     mockUpdateChatSession.mockResolvedValue({
       session: makeSession({ id: "session-001", agentId: "agent-001", status: "archived" }),
     });
@@ -1019,6 +1042,87 @@ describe("useChat", () => {
     await waitFor(() => {
       expect(result.current.sessions).toHaveLength(0);
     });
+  });
+
+  it("hands a long chat off to a fresh sibling, swaps to it, and drops the archived source", async () => {
+    const source = makeSession({ id: "session-source", agentId: "agent-001", title: "Long chat" });
+    /*
+    FNXC:ChatHandoff 2026-09-10-01:13:
+    RUFU-199 code review: the handoff archives the source SERVER-side, so `handoffSession` has to re-fetch
+    the archived page — an already-open Archived panel otherwise keeps showing its pre-handoff page, because
+    the only other refresh of that page is the panel's own toggle handler. The fake answers per `status`
+    rather than by call order so the assertion below names the request that carries the new truth.
+    */
+    mockFetchChatSessions.mockImplementation(async (_projectId, status) =>
+      status === "archived"
+        ? { sessions: [{ ...source, status: "archived" as const }] }
+        : { sessions: [source] },
+    );
+    mockHandoffChatSession.mockResolvedValueOnce({
+      session: makeSession({
+        id: "session-child",
+        agentId: "agent-001",
+        title: "Continue: Long chat",
+        modelProvider: "anthropic",
+        modelId: "claude-sonnet-4-5",
+        thinkingLevel: "medium",
+      }),
+      degraded: false,
+      summaryChars: 1234,
+      sourceSessionId: "session-source",
+    });
+    mockFetchChatSession.mockResolvedValue({
+      session: makeSession({ id: "session-child", agentId: "agent-001" }),
+    });
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+
+    let outcome: { session: { id: string }; degraded: boolean } | undefined;
+    await act(async () => {
+      outcome = await result.current.handoffSession("session-source");
+    });
+
+    // One POST to the handoff endpoint for the source, carrying no client target.
+    expect(mockHandoffChatSession).toHaveBeenCalledWith("session-source", undefined);
+    expect(outcome?.degraded).toBe(false);
+
+    // The child becomes active and carries the identical model/thinking target.
+    await waitFor(() => {
+      expect(result.current.activeSession?.id).toBe("session-child");
+    });
+    expect(result.current.activeSession?.modelProvider).toBe("anthropic");
+    expect(result.current.activeSession?.modelId).toBe("claude-sonnet-4-5");
+    expect(result.current.activeSession?.thinkingLevel).toBe("medium");
+
+    // The archived source leaves the active list; the child is the only session shown.
+    expect(result.current.sessions.map((s) => s.id)).toEqual(["session-child"]);
+
+    // RUFU-199 review: the archived page itself is re-fetched, so the just-archived source appears in the
+    // Archived panel immediately rather than waiting for the operator to toggle it closed and open again.
+    expect(mockFetchChatSessions).toHaveBeenCalledWith(undefined, "archived", { limit: 50 });
+    await waitFor(() => expect(result.current.archivedSessions.map((s) => s.id)).toEqual(["session-source"]));
+  });
+
+  it("surfaces a degraded handoff briefing to the caller instead of hiding it", async () => {
+    const source = makeSession({ id: "session-source", agentId: "agent-001", title: "Long chat" });
+    mockFetchChatSessions.mockResolvedValueOnce({ sessions: [source] });
+    mockHandoffChatSession.mockResolvedValueOnce({
+      session: makeSession({ id: "session-child", agentId: "agent-001", title: "Continue: Long chat" }),
+      degraded: true,
+      summaryChars: 88,
+      sourceSessionId: "session-source",
+    });
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+
+    let outcome: { degraded: boolean } | undefined;
+    await act(async () => {
+      outcome = await result.current.handoffSession("session-source");
+    });
+
+    expect(outcome?.degraded).toBe(true);
   });
 
   it("keeps archived sessions out of the default refresh and restores them from the archived list", async () => {

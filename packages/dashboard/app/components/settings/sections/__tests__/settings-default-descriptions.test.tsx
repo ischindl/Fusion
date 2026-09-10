@@ -214,6 +214,14 @@ const SETTING_DESCRIPTION_KEYS: Record<string, string> = {
   // RUFU-135 kill switch (runtime-disableable chat context budget); surfaced in
   // MemorySection next to the guard toggle.
   chatContextBudgetEnabled: "memory.chatContextBudgetHelp",
+  /*
+  FNXC:ChatHandoff 2026-09-09-22:00:
+  RUFU-199: cross-session chat handoff surfaced as a kill-switch toggle + threshold
+  number in MemorySection. Help copy states the schema defaults (enabled / 75),
+  matching DEFAULT_PROJECT_SETTINGS in settings-schema.ts.
+  */
+  chatHandoffEnabled: "memory.chatHandoffHelp",
+  chatHandoffThresholdPercent: "memory.chatHandoffThresholdHelp",
   memoryAutoSummarizeEnabled: "memory.automaticallyCompactMemoryWhenItExceedsTheThreshold",
   memoryAutoSummarizeThresholdChars: "memory.memoryWillBeCompactedWhenItExceedsThis",
   memoryAutoSummarizeSchedule: "memory.cronExpressionForAutoSummarizeScheduleDefaultDaily",

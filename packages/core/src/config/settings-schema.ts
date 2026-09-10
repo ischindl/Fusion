@@ -998,6 +998,20 @@ export const DEFAULT_PROJECT_SETTINGS = {
   // redeploy if it ever misbehaves in production (user requirement: every LCM
   // behavior change must be disableable as a feature).
   chatContextBudgetEnabled: true,
+  /*
+  FNXC:ChatHandoff 2026-09-09-17:21:
+  RUFU-199: a long live chat needs an exit ramp that keeps the model's context, which in-session
+  compaction cannot do because it compresses inside one pi session file. These two keys gate the
+  cross-session handoff affordance: `chatHandoffEnabled` is the operator kill switch (same
+  opt-out-as-a-feature shape as the two toggles above, so the affordance can be turned off without
+  a redeploy), and `chatHandoffThresholdPercent` is the context-usage percentage past which the
+  header offers it. The threshold is measured against the same advisory signal the read-only header
+  meter shows (`resolveChatContextUsage().percent`), clamped to 50–95 by the dashboard reader so an
+  out-of-range stored value falls back to 75 rather than firing the button on every chat or never.
+  Deliberately unrelated to `ensureContextWithinCompactionThreshold`: this never compacts in place.
+  */
+  chatHandoffEnabled: true,
+  chatHandoffThresholdPercent: 75,
   // FNXC:ChatContextGuard 2026-08-18-18:06:
   // RUFU-118: the chat/CLI lane's 80%-of-context-window compaction default is
   // applied in the engine guard (packages/engine/src/chat-context-guard.ts),

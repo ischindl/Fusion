@@ -860,6 +860,8 @@ Chat view provides project-scoped conversations with agents. Every host—embedd
 
 **New Chat** immediately creates a Direct conversation from the Settings-configured default agent or model. Use the **Brain** control beside the composer to retarget an existing conversation.
 
+When a conversation has grown large—the latest measured context usage crosses the threshold from Settings (**Chat handoff**, default 75%)-the composer shows a **Continue in a fresh chat** button. One click archives the current conversation and opens a sibling session with the same agent, model, and thinking level, so the next message starts with room to spare instead of fighting a nearly-full context. The archived conversation is never deleted: **View original** on the new session's *Continues from …* notice jumps back to it at any time, and un-archiving it from the session menu returns the handoff affordance. The new session receives a one-time handoff briefing generated from the earlier exchange as its first-turn context; if that briefing cannot be generated (e.g. the model is unavailable) the session still opens and the notice says the briefing was degraded, with the conversation history unharmed. Handoff is available on every Direct chat surface, desktop and mobile alike.
+
 ### Enter behavior in conversation composers
 
 Use **Settings → General → Enter key behavior in conversations** to choose `auto` (the default), `always`, or `never` for plain Enter in the Chat, task Chat, and planner Chat composers. In `auto`, plain Enter inserts a newline when the primary pointer is touch-based and an on-screen keyboard is expected, while a fine pointer such as a mouse retains desktop Enter-to-send behavior; a narrow desktop window does not count as touch.

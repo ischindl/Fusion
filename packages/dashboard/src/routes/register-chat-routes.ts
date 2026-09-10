@@ -29,7 +29,7 @@ import { getOrCreateScopedChatManager, resolveProjectChatContext } from "../chat
 import { CHAT_ALLOWED_MIME_TYPES, CHAT_MAX_VIDEO_ATTACHMENT_SIZE, getChatAttachmentMaxSize } from "./chat-attachment-config.js";
 import { rateLimit, RATE_LIMITS } from "../rate-limit.js";
 import { writeSSEEvent, type SessionBufferedEvent } from "../sse-buffer.js";
-import { ChatReplacementError, TASK_PLANNER_CHAT_AGENT_ID_PREFIX } from "../chat.js";
+import { ChatHandoffError, ChatReplacementError, TASK_PLANNER_CHAT_AGENT_ID_PREFIX } from "../chat.js";
 import type { ApiRoutesContext } from "./types.js";
 
 /*
@@ -1772,6 +1772,44 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
   });
 
   /**
+   * POST /api/chat/sessions/:id/handoff
+   *
+   * FNXC:ChatHandoff 2026-09-08-00:00:
+   * RUFU-199: continue a long Direct chat in a fresh conversation. The route is a thin
+   * translator over ChatManager.handoffSession — eligibility, summarization, seeding, and the
+   * archive-with-compensation ordering all live in the manager, which is the sole writer of the
+   * primer row and its lineage metadata. The ChatHandoffError the manager throws already carries
+   * the HTTP status (404 not-found, 409 ineligible/mid-generation, 500 archival compensation), so
+   * the route forwards it verbatim plus the fixed refusal `code` in the body; it never re-derives
+   * eligibility here and therefore cannot drift from the manager's single authority.
+   *
+   * The request body is intentionally unused: the continuation's agent/model/thinking target is
+   * copied from the SOURCE session inside the manager, so no client field can retarget the handoff.
+   * The archived source is reflected via its own status; the client refreshes the session list.
+   */
+  router.post("/chat/sessions/:id/handoff", rateLimit(RATE_LIMITS.mutation), async (req, res) => {
+    try {
+      const chatManager = await resolveScopedChatManager(req);
+      const sessionId = String(req.params.id);
+      const result = await chatManager.handoffSession(sessionId);
+      res.json({
+        session: result.session,
+        degraded: result.degraded,
+        summaryChars: result.summaryChars,
+        sourceSessionId: result.sourceSessionId,
+      });
+    } catch (err: unknown) {
+      if (err instanceof ChatHandoffError) {
+        throw new ApiError(err.status, err.message, { code: err.code });
+      }
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      rethrowAsApiError(err, "Failed to hand off chat session");
+    }
+  });
+
+  /**
    * DELETE /api/chat/sessions/:id/messages/:messageId
    * Delete a specific message from a chat session.
    */
@@ -1822,6 +1860,7 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
       "GET /chat/sessions/:id/stream",
       "POST /chat/sessions/:id/messages",
       "POST /chat/sessions/:id/cancel",
+      "POST /chat/sessions/:id/handoff",
       "DELETE /chat/sessions/:id/messages/:messageId",
     ];
     chatLogger.info("routes registered", { chatRoutes });

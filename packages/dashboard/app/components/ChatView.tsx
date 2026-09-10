@@ -60,6 +60,7 @@ import { useNavigationHistoryContext } from "../hooks/useNavigationHistory";
 import { recordResumeEvent } from "../utils/resumeInstrumentation";
 import { formatTokenCount } from "../utils/estimateChatTokens";
 import { resolveChatContextUsage } from "../utils/chatContextUsage";
+import { resolveChatHandoffUiSettings } from "../utils/chatHandoff";
 import { copyTextToClipboard } from "../utils/copyToClipboard";
 import { buildChatQuotePrefill } from "../utils/chatQuotePrefill";
 import {
@@ -544,6 +545,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
     selectSession,
     createSession,
     archiveSession,
+    handoffSession,
     archivedSessions,
     refreshArchivedSessions,
     unarchiveSession,
@@ -3034,6 +3036,67 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
   // passed through as thunks so there is no parallel message/composer UI.
   const cliAdapterId = activeSession?.cliExecutorAdapterId ?? null;
   const cliChatActive = Boolean(cliAdapterId);
+
+  /*
+  FNXC:ChatHandoff 2026-09-09-22:10:
+  RUFU-199 threshold gate for the cross-session handoff affordance. Visibility is deliberately
+  client-side: the POST route enforces real session eligibility and the enabled kill switch but never
+  the percentage, while the context number is only what this meter renders — so the button must
+  appear against exactly the same measurement the header shows. Any non-null percent gates, measured
+  OR estimated: the Surface Enumeration states the signal is advisory (`approximate === true` still
+  allows the affordance), and only a chat with no usage signal at all — pending, no session, unknown
+  model — resolves to a null percent and is therefore ungat-able, keeping the "no affordance without
+  a usage signal" acceptance intact. Room and task-planner sessions never appear in this view, and
+  CLI-backed sessions still mount this header above <CliChatSurface>, so those refusals are mirrored
+  here only to avoid ever offering a button the route would reject. The affordance never appears
+  mid-generation and never double-submits (handoffInFlight).
+  */
+  const chatHandoffUi = useMemo(() => resolveChatHandoffUiSettings(chatSettings), [chatSettings]);
+  const chatHandoffGatePercent = chatContextUsage?.percent ?? null;
+  const showChatHandoffAffordance = Boolean(
+    chatHandoffUi.enabled
+    && activeSession
+    && !cliChatActive
+    && !activeSession.cliExecutorAdapterId
+    && !activeSession.agentId.startsWith(TASK_PLANNER_CHAT_AGENT_ID_PREFIX)
+    && !isStreaming
+    && !activeSession.isGenerating
+    && chatHandoffGatePercent !== null
+    && chatHandoffGatePercent >= chatHandoffUi.thresholdPercent,
+  );
+  const [handoffInFlight, setHandoffInFlight] = useState(false);
+  const handleChatHandoff = useCallback(async () => {
+    const sourceSessionId = activeSession?.id;
+    if (!sourceSessionId || handoffInFlight) return;
+    setHandoffInFlight(true);
+    try {
+      /*
+      handoffSession (useChat) already swaps the view onto the new child and drops the archived
+      source; the toast only explains what the server managed (or failed to manage) behind it.
+      */
+      const { degraded } = await handoffSession(sourceSessionId);
+      addToast(
+        degraded
+          ? t("chat.handoffDegraded", "Started a fresh chat, but its handoff briefing was degraded to a transcript digest.")
+          : t("chat.handoffStarted", "Continued in a fresh chat. The original conversation is archived and stays available."),
+        degraded ? "warning" : "success",
+      );
+    } catch (err) {
+      addToast(
+        err instanceof Error && err.message
+          ? err.message
+          : t("chat.handoffFailed", "Failed to start the fresh chat."),
+        "error",
+      );
+    } finally {
+      setHandoffInFlight(false);
+    }
+  }, [activeSession?.id, addToast, handoffInFlight, handoffSession, t]);
+  /* The primer notice's source link deep-links back to the archived parent; archived sessions stay
+  readable, so plain selectSession is the whole navigation. */
+  const handleHandoffSourceOpen = useCallback((sessionId: string) => {
+    void selectSession(sessionId);
+  }, [selectSession]);
   // Generic adapter has no structured transcript → terminal-only; every other
   // bundled adapter exposes a transcript and gets the toggle (the authoritative
   // tier is resolved server-side; this only needs the generic vs. non-generic
@@ -3410,6 +3473,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
                 onQuestionSubmit={handleQuestionSubmit}
                 canEdit={canEditChatMessages}
                 onEditMessage={editMessageAndResend}
+                onHandoffSourceOpen={handleHandoffSourceOpen}
                 isSearchMatch={conversationSearchMatches.includes(message.id)}
                 isSearchActive={activeConversationMatchId === message.id}
               />
@@ -4252,6 +4316,28 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
                 </span>
               ) : null}
             </div>
+            {/*
+            FNXC:ChatHandoff 2026-09-09-22:10:
+            RUFU-199: one-click "Continue in a new chat" sits in the thread header beside the context
+            meter because that meter IS its trigger — the button only exists once the usage percent the
+            header shows crosses the project threshold. It lives inside `.chat-thread-header` (not the
+            desktop-only chip) so mobile keeps a reachable control even though the chip itself is hidden
+            there.
+            */}
+            {showChatHandoffAffordance && (
+              <button
+                type="button"
+                className="btn btn-sm chat-thread-header-handoff"
+                data-testid="chat-handoff-button"
+                disabled={handoffInFlight}
+                onClick={() => { void handleChatHandoff(); }}
+                title={t("chat.handoffTooltip", "This conversation has used {{percent}}% of its context window. Start a fresh chat seeded with a briefing of this one.", { percent: Math.round(chatHandoffGatePercent ?? 0) })}
+                aria-label={t("chat.handoffButton", "Continue in a new chat")}
+              >
+                <Plus size={14} aria-hidden="true" />
+                <span>{t("chat.handoffButton", "Continue in a new chat")}</span>
+              </button>
+            )}
           </div>
         )}
 

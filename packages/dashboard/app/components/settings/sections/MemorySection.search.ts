@@ -193,4 +193,31 @@ export const memorySearchEntries: SettingsSearchEntry[] = [
       "Bounds the chat static context: oversized memory becomes a bounded heading index and chat sessions use the curated chat toolset, so agent chat fits 64K-window models. Disable to restore unbounded memory injection and the full tool set (pre-RUFU-135 behavior). Default: enabled.",
     keywords: ["context", "budget", "memory", "tools", "64k", "lcm", "floor", "kill switch"],
   },
+  /*
+  FNXC:ChatHandoff 2026-09-09-22:00:
+  RUFU-199: cross-session Direct-chat handoff surfaced in the Memory section beside the
+  compaction toggles. Handoff is NOT compaction — it moves the conversation to a fresh
+  session seeded with a briefing instead of compressing in place — so its search keywords
+  deliberately include "continue"/"new chat" rather than only context words.
+  */
+  {
+    sectionId: "memory",
+    key: "chatHandoffEnabled",
+    labelKey: "settings.memory.chatHandoff",
+    labelFallback: "Chat handoff (continue in a fresh chat)",
+    helpKey: "settings.memory.chatHandoffHelp",
+    helpFallback:
+      "Once a chat passes the context threshold below, its header offers one click to continue in a fresh chat with the same agent/model, briefed with a summary of the old conversation. The old chat is archived, not deleted. Unrelated to in-session compaction. Default: enabled.",
+    keywords: ["handoff", "continue", "new chat", "fresh chat", "summary", "archive", "long chat"],
+  },
+  {
+    sectionId: "memory",
+    key: "chatHandoffThresholdPercent",
+    labelKey: "settings.memory.chatHandoffThreshold",
+    labelFallback: "Chat handoff context threshold (%)",
+    helpKey: "settings.memory.chatHandoffThresholdHelp",
+    helpFallback:
+      "Context-usage percentage past which the chat header offers the handoff button (50-95). Values outside the range fall back to the default: 75.",
+    keywords: ["handoff", "threshold", "context", "percent", "usage"],
+  },
 ];

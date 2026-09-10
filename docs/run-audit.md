@@ -130,3 +130,16 @@ prose (which can embed project paths or store messages) never enters run-audit.
 ### Compaction honesty event
 
 `task:compaction-no-progress` records a context compaction that pi ran to completion (it returned a summary and appended the CompactionEntry) but deterministically did not shrink the context (tokens-after >= tokens-before), so the executor must not treat it as reclaimed headroom. Both executor lanes that consume `compactSessionContext` emit it — the loop-detected compact-and-resume recovery and the token-cap callback — distinguished only by their `source` (`loop-recovery` / `token-cap`). Metadata is ids/counts/fixed enums only: `source`, `tokensBefore`, `tokensAfter`, and `basis` (`pi-reported` when pi supplied the after-count, `pure-estimate` when it was recomputed with pi's per-message estimator). No summary text, prompt content, or error prose is ever recorded. Both lanes emit through the FN-9175 bounded best-effort seam so a hostile telemetry sink can neither block the refusal nor change the recovery decision, and the event is intentionally outside the curated delivery-pipeline event catalogue.
+
+### Chat session handoff
+
+<!--
+FNXC:ChatHandoff 2026-09-10-01:13:
+RUFU-199 Direct-chat handoff audit pair, catalogued here because `docs/run-audit.md` is the audit
+reference a query starts from. The success event covers BOTH the briefed and the degraded primer —
+honest degradation still creates the handoff — so `degraded-created` is a success outcome, not a
+failure. The failure event fires before any rows are written (a refusal) or after the archival
+compensation (child discarded, source left active), which is why `outcome` and `refusalCode` are
+separate keys rather than one merged code.
+-->
+`chat:handoff-session-created` records a Direct-chat handoff that completed (the source was archived and a continuation session was created), and `chat:handoff-session-failed` records a refused handoff (before any rows are written) or the archival-failure compensation (the half-built child is discarded and the source stays active). A created row is filed under the continuation the operator now types into (`chat:<childSessionId>`); a failed row is filed under the source they clicked (`chat:<sourceSessionId>`), because that is the session whose action failed. Metadata is ids/counts/fixed enums only: `fromSessionId`, `toSessionId` on success, `outcome` (`created` / `degraded-created` on success, `refused` / `archival-failed` on failure; `summarizer-failed` is declared in the contract but unreachable in v1, since a briefing failure degrades rather than refuses), a fixed `refusalCode` (`not-found`, `disabled`, `room-unsupported`, `cli-backed-unsupported`, `task-planner-unsupported`, `source-not-active`, `generation-in-progress`, `unknown-model`, `archival-failed`), plus `messageCount` and `summaryChars` where measured. Neither event records the conversation transcript, the generated briefing text, or a refusal sentence — those live on the primer message row and the HTTP error respectively. Both emit through the FN-9175 bounded best-effort seam (`emitBoundedRunAudit`, `agentId: "chat-handoff"`) so telemetry can never decide whether a handoff lands, and they are intentionally outside the curated delivery-pipeline event catalogue.

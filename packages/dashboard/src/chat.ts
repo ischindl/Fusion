@@ -37,6 +37,8 @@ import {
   resolveEffectiveAgentPermissionPolicy,
   resolveTaskOutputLanguage,
   summarizeTitle,
+  summarizeChatHandoff,
+  emitBoundedRunAudit,
   FUSION_RUNTIME_SELF_AWARENESS,
   createLogger,
   resolvePermanentAgentEffectiveModel,
@@ -1012,6 +1014,17 @@ const ROOM_THREAD_MESSAGE_CONTENT_MAX_CHARS = 1_200;
 const DEFAULT_ROOM_THREAD_SUMMARY_MAX_CHARS = 3_000;
 const IN_FLIGHT_PERSIST_DEBOUNCE_MS = 200;
 
+/*
+FNXC:ChatHandoff 2026-09-09-17:21:
+RUFU-199: bounds for the handoff affordance threshold. The threshold gates on the same advisory
+context-usage estimate the read-only thread-header meter renders, so it is clamped away from both
+ends: below 50% the button would interrupt chats that are nowhere near the model wall, and above
+95% it would appear only when there is too little room left to continue productively.
+*/
+export const CHAT_HANDOFF_DEFAULT_THRESHOLD_PCT = 75;
+export const CHAT_HANDOFF_THRESHOLD_MIN_PCT = 50;
+export const CHAT_HANDOFF_THRESHOLD_MAX_PCT = 95;
+
 type RoomTranscriptMessage = Pick<ChatRoomMessage, "id" | "role" | "content" | "createdAt" | "senderAgentId">;
 
 function getRoomSenderLabel(message: Pick<RoomTranscriptMessage, "role" | "senderAgentId">): string {
@@ -1129,6 +1142,136 @@ export function buildCompactedRoomTranscript(
   }
 
   return transcript;
+}
+
+/*
+FNXC:ChatHandoff 2026-09-09-17:36:
+RUFU-199 carries a Direct conversation's substance into a fresh session. The digest below is BOTH the
+summarizer's input AND the degraded fallback primer body, so one builder serves both lanes and is
+deterministic: no clock, no locale, no LLM, no ranking heuristic. Caps reuse the room transcript
+compaction caps because the consumer in both lanes is a model context window — an unbounded digest
+would recreate the context wall the handoff exists to escape.
+*/
+const CHAT_HANDOFF_TRANSCRIPT_FETCH_LIMIT = 400;
+const CHAT_HANDOFF_MESSAGE_MAX_CHARS = ROOM_THREAD_MESSAGE_CONTENT_MAX_CHARS;
+const CHAT_HANDOFF_TRANSCRIPT_MAX_CHARS = ROOM_THREAD_CONTEXT_MAX_CHARS;
+const CHAT_HANDOFF_EMPTY_TRANSCRIPT_PRIMER = "(The source conversation had no messages to carry over.)";
+
+/*
+FNXC:ChatHandoff 2026-09-09-18:38:
+A handoff child has AT MOST ONE row written before its first send: the role:"system" primer, created
+in the same call that creates the session. So a forward page of a handful of rows can always find it
+without a role filter (ChatMessagesFilter has none) or a new store method, and an ordinary chat —
+whose first row is a real turn, not a primer — returns in one cheap read. Larger pages are pure waste.
+*/
+const CHAT_HANDOFF_PRIMER_SCAN_LIMIT = 4;
+
+function formatHandoffMessageLine(message: ChatMessage): string {
+  const body = truncateWithEllipsis(message.content ?? "", CHAT_HANDOFF_MESSAGE_MAX_CHARS).replace(/\s+/g, " ");
+  const attachments = message.attachments?.length
+    ? ` [attached: ${message.attachments.map((attachment) => attachment.originalName || attachment.filename).join(", ")}]`
+    : "";
+  return `(${message.role}) ${body}${attachments}`;
+}
+
+/**
+ * Deterministic chronological digest of a Direct transcript: role-prefixed lines, per-message
+ * truncation, and a total cap enforced by dropping the OLDEST lines (the tail is what a continued
+ * conversation needs most). Attachments appear as names only — bytes have no place in a digest.
+ */
+export function buildHandoffTranscript(messages: ChatMessage[], opts?: { earlierElided?: boolean }): string {
+  const lines = messages.map(formatHandoffMessageLine);
+  const kept: string[] = [];
+  let used = 0;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]!;
+    const cost = line.length + 1;
+    if (used + cost > CHAT_HANDOFF_TRANSCRIPT_MAX_CHARS) {
+      if (kept.length === 0) {
+        kept.push(line.slice(0, CHAT_HANDOFF_TRANSCRIPT_MAX_CHARS));
+      }
+      break;
+    }
+    kept.push(line);
+    used += cost;
+  }
+  kept.reverse();
+  const elidedCount = messages.length - kept.length;
+  const notes: string[] = [];
+  if (elidedCount > 0) {
+    notes.push(`[${elidedCount} earlier message(s) elided for length]`);
+  }
+  // The fetch is bounded, so a long conversation loses its opening before the digest ever runs.
+  // Saying so keeps the briefing from presenting a truncated record as the whole conversation.
+  if (opts?.earlierElided) {
+    notes.push(`[older messages beyond the last ${CHAT_HANDOFF_TRANSCRIPT_FETCH_LIMIT} were not read]`);
+  }
+  const header = notes.length > 0 ? `${notes.join("\n")}\n` : "";
+  return `${header}${kept.join("\n")}`;
+}
+
+export type ChatHandoffRefusalCode =
+  | "not-found"
+  | "disabled"
+  | "room-unsupported"
+  | "cli-backed-unsupported"
+  | "task-planner-unsupported"
+  | "source-not-active"
+  | "generation-in-progress"
+  | "unknown-model"
+  | "archival-failed";
+
+/**
+ * The two run-audit markers a handoff produces. Their names and metadata keys are the RUFU-199 audit
+ * contract: `created` covers both the briefed and the degraded primer, `failed` covers every refusal
+ * and the archival compensation.
+ */
+export type ChatHandoffAuditMarker = "chat:handoff-session-created" | "chat:handoff-session-failed";
+
+/**
+ * Fixed audit outcomes. `summarizer-failed` is part of the declared contract but unreachable in v1:
+ * honest degradation means a briefing failure still CREATES the handoff, so it reports
+ * `degraded-created` instead of failing the card.
+ */
+export type ChatHandoffAuditOutcome =
+  | "created"
+  | "degraded-created"
+  | "summarizer-failed"
+  | "archival-failed"
+  | "refused";
+
+/**
+ * RUFU-199 refusal carrying the HTTP status the route maps, so the manager owns eligibility and the
+ * route stays a thin translator. `code` is a fixed enum: it is what lands in run-audit, never prose.
+ */
+export class ChatHandoffError extends Error {
+  constructor(
+    readonly code: ChatHandoffRefusalCode,
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ChatHandoffError";
+  }
+}
+
+/**
+ * The primer row's `metadata.handoff` object, composed COMPLETE in the creating write and never patched
+ * afterwards: `updateChatMessageMetadata` merges one level deep, so a later partial object here would
+ * erase the fields the visible notice and the one-time injection gate both read. Delivery state lives
+ * beside it as the separate top-level `handoffDeliveredAt` scalar for the same reason.
+ */
+export interface ChatHandoffLineage {
+  fromSessionId: string;
+  fromTitle: string;
+  degraded: boolean;
+}
+
+export interface ChatHandoffResult {
+  session: ChatSession;
+  degraded: boolean;
+  summaryChars: number;
+  sourceSessionId: string;
 }
 
 function formatAttachmentSize(size: number): string {
@@ -1692,6 +1835,28 @@ export class ChatManager {
   private inFlightPersistChains = new Map<string, Promise<void>>();
   private activeGenerations = new Map<string, ActiveChatGeneration>();
   private replacementPreparations = new Map<string, ChatReplacementPreparation>();
+  /*
+  FNXC:ChatHandoff 2026-09-09-17:36:
+  RUFU-199 single-flight guard: two simultaneous handoff clicks on one source would otherwise each
+  archive-check a still-active source and create two siblings. Keyed by SOURCE id, because that is the
+  resource being consumed; it is an in-process guard only, and the durable guard is the source's
+  `archived` status re-read immediately before the archive write.
+  */
+  private handoffInFlight = new Map<string, Promise<ChatHandoffResult>>();
+
+  /*
+  FNXC:ChatHandoff 2026-09-09-18:38:
+  In-process record of primers already handed to a model this process, keyed source-agnostic by the
+  CHILD session id -> primer message id. Consulted ALONGSIDE the durable `handoffDeliveredAt` stamp so
+  a stamp write that fails mid-process cannot silently re-inject on the next turn. A brand-new process
+  is a blank slate (documented residual), and the durable stamp remains the cross-process authority;
+  at-least-once is acceptable, at-most-once-by-a-premature-stamp is not (a lost primer is a lost
+  conversation context). Cleared per (session, primer) implicitly when the primer row is archived with
+  the session — it is never re-read once the stamp is set, EXCEPT that a rewind which replaces the pi
+  session file clears both records (see `rearmHandoffPrimerAfterContextLoss`): the fresh file no longer
+  carries the briefing the stamp attests was delivered.
+  */
+  private handoffPrimersDelivered = new Map<string, string>();
 
   constructor(
     private chatStore: ChatStore,
@@ -1958,6 +2123,27 @@ export class ChatManager {
       diagnostics.warn(`Failed to load room compaction settings: ${message}`);
       return defaults;
     }
+  }
+
+  /**
+   * FNXC:ChatHandoff 2026-09-09-17:21:
+   * RUFU-199: sanitized read of the cross-session handoff knobs. Mirrors getRoomCompactionSettings()
+   * rather than trusting getChatModelSettings()'s raw passthrough, because an unusable threshold would
+   * otherwise spam the affordance on a short chat (a tiny number) or hide it forever (a huge one):
+   * the percent is clamped to CHAT_HANDOFF_THRESHOLD_MIN/MAX_PCT with fallback to the schema default
+   * for a non-finite or out-of-range value. The enable flag is strict-true coercion, so only an
+   * explicit true/false is honoured and an absent value keeps the feature on.
+   */
+  private async getChatHandoffSettings(): Promise<{ enabled: boolean; thresholdPercent: number }> {
+    const settings = await this.getChatModelSettings();
+    const raw = settings?.chatHandoffThresholdPercent;
+    const thresholdPercent = typeof raw === "number" && Number.isFinite(raw)
+      ? Math.min(CHAT_HANDOFF_THRESHOLD_MAX_PCT, Math.max(CHAT_HANDOFF_THRESHOLD_MIN_PCT, Math.round(raw)))
+      : CHAT_HANDOFF_DEFAULT_THRESHOLD_PCT;
+    return {
+      enabled: settings?.chatHandoffEnabled !== false,
+      thresholdPercent,
+    };
   }
 
   private handleFallbackModelUsed(
@@ -3317,11 +3503,27 @@ export class ChatManager {
       */
       const imagePathHints = formatChatImageAttachmentHints(imageContents);
 
+      /*
+      FNXC:ChatHandoff 2026-09-09-18:38:
+      A handoff child's model context is its file-backed pi session, NOT chat_messages rows, so the
+      LLM-generated briefing written as a role:"system" primer row would never reach the model on its
+      own — it is display-only unless injected into the FIRST prompt turn. Resolve it (gated on the
+      primer row's delivery stamp, not on cliSessionFile — see resolveHandoffPrimerForInjection) and
+      prepend it as the first part. A store hiccup here must not cost the operator the send they asked
+      for, so a read failure degrades to "no primer" rather than throwing.
+      */
+      let handoffPrimer: { primerMessageId: string; block: string } | null = null;
+      try {
+        handoffPrimer = await this.resolveHandoffPrimerForInjection(sessionId);
+      } catch {
+        handoffPrimer = null;
+      }
+
       // Send only the new user content. Prior turns are reloaded by the
       // pi/Claude CLI session via SessionManager.open() below — stuffing the
       // transcript back into the user message would balloon the on-disk
       // session every turn (and previously did, see chat-store.ts:setCliSessionFile).
-      const promptContent = [attachmentSummary, imagePathHints, attachmentContentBlock, resolvedContent]
+      const promptContent = [handoffPrimer?.block, attachmentSummary, imagePathHints, attachmentContentBlock, resolvedContent]
         .filter(Boolean)
         .join("\n\n");
 
@@ -3694,6 +3896,19 @@ export class ChatManager {
         promptContent,
         imageContents.length > 0 ? { images: imageContents } : undefined,
       );
+
+      /*
+      FNXC:ChatHandoff 2026-09-09-18:38:
+      The primer only counts as delivered once the dispatch call has RETURNED — the model has actually
+      received it. Stamping here (before the cancellation check below) is what makes a post-dispatch
+      cancellation count as delivered: the prompt already reached the model, so a re-injection on the
+      next turn would duplicate labeled context. A pre-dispatch exit (generation-fence return, abort
+      throw, `createResolvedAgentSession` failure, or a ChatContextOverflowError refusal from the gate
+      above) never reaches this line, so the primer correctly stays pending for the next send.
+      */
+      if (handoffPrimer) {
+        await this.recordHandoffPrimerDelivered(sessionId, handoffPrimer.primerMessageId);
+      }
 
       if (abortController.signal.aborted) {
         throw new Error("Generation cancelled");
@@ -4166,6 +4381,378 @@ export class ChatManager {
     return [...this.activeGenerations.keys()];
   }
 
+  /*
+  FNXC:ChatHandoff 2026-09-09-17:36:
+  RUFU-199 ids/counts/enums-only run-audit for a handoff. The transcript, the generated briefing, and
+  refusal prose never enter audit — only which session became which, how much material moved, and a
+  fixed outcome code. `emitBoundedRunAudit` absorbs an absent or hostile sink so telemetry can never
+  decide whether a handoff lands.
+  */
+  private emitHandoffAudit(
+    mutationType: ChatHandoffAuditMarker,
+    fields: {
+      fromSessionId: string;
+      toSessionId?: string;
+      outcome: ChatHandoffAuditOutcome;
+      refusalCode?: ChatHandoffRefusalCode;
+      messageCount?: number;
+      summaryChars?: number;
+    },
+  ): void {
+    void emitBoundedRunAudit(this.taskStore, {
+      agentId: "chat-handoff",
+      runId: mutationType,
+      domain: "database",
+      mutationType,
+      /*
+       * A created row is filed under the continuation the operator now types into; a failed row is filed
+       * under the source they clicked, because that is the card whose action failed.
+       */
+      target: mutationType === "chat:handoff-session-created" && fields.toSessionId
+        ? `chat:${fields.toSessionId}`
+        : `chat:${fields.fromSessionId}`,
+      metadata: {
+        fromSessionId: fields.fromSessionId,
+        ...(fields.toSessionId ? { toSessionId: fields.toSessionId } : {}),
+        outcome: fields.outcome,
+        ...(fields.refusalCode ? { refusalCode: fields.refusalCode } : {}),
+        ...(fields.messageCount !== undefined ? { messageCount: fields.messageCount } : {}),
+        ...(fields.summaryChars !== undefined ? { summaryChars: fields.summaryChars } : {}),
+      },
+    });
+  }
+
+  /**
+   * Hand an ineligible or refused handoff into a typed error carrying the HTTP status the route maps,
+   * and record the fixed refusal code in audit (never the reason sentence).
+   */
+  private refuseHandoff(sourceSessionId: string, code: ChatHandoffRefusalCode, status: number, message: string): never {
+    this.emitHandoffAudit("chat:handoff-session-failed", {
+      fromSessionId: sourceSessionId,
+      outcome: "refused",
+      refusalCode: code,
+    });
+    throw new ChatHandoffError(code, status, message);
+  }
+
+  /**
+   * FNXC:ChatHandoff 2026-09-09-17:36:
+   * RUFU-199: continue a Direct conversation in a FRESH session seeded with a briefing of the old one.
+   *
+   * Why a new session instead of compacting the current one: the pi session file IS the per-session
+   * model context, so a new `SessionManager` genuinely starts at zero tokens, while in-place compaction
+   * would have to rewrite the pi JSONL (a format we do not own) and its own audit proved compaction can
+   * refuse or measure-unknown. Why the briefing reaches the model on the NEXT turn's prompt (see the
+   * seeding gate in `sendMessage`) rather than being written into the session file: a fabricated pi
+   * entry would corrupt the session tree.
+   *
+   * Why archive rather than delete the source (decision 6): the source is conversation history the
+   * operator may still want to read or export, and deleting it would make a summarizer failure
+   * unrecoverable. Archive is reversible, so the source stays readable in the Archived list.
+   *
+   * Ineligible sources are refused with a `ChatHandoffError` whose `status` the route maps directly.
+   */
+  async handoffSession(sourceSessionId: string): Promise<ChatHandoffResult> {
+    const inFlight = this.handoffInFlight.get(sourceSessionId);
+    if (inFlight) return inFlight;
+    const attempt = this.runHandoffSession(sourceSessionId).finally(() => {
+      if (this.handoffInFlight.get(sourceSessionId) === attempt) {
+        this.handoffInFlight.delete(sourceSessionId);
+      }
+    });
+    this.handoffInFlight.set(sourceSessionId, attempt);
+    return attempt;
+  }
+
+  private async runHandoffSession(sourceSessionId: string): Promise<ChatHandoffResult> {
+    const handoffSettings = await this.getChatHandoffSettings();
+    if (!handoffSettings.enabled) {
+      return this.refuseHandoff(sourceSessionId, "disabled", 409, "Chat handoff is disabled for this project.");
+    }
+
+    const source = await this.chatStore.getSession(sourceSessionId);
+    if (!source) {
+      return this.refuseHandoff(sourceSessionId, "not-found", 404, `Chat session ${sourceSessionId} not found`);
+    }
+    if (source.kind === "room") {
+      return this.refuseHandoff(sourceSessionId, "room-unsupported", 409, "Room conversations cannot be handed off.");
+    }
+    if (source.cliExecutorAdapterId) {
+      return this.refuseHandoff(sourceSessionId, "cli-backed-unsupported", 409, "CLI-backed chats cannot be handed off.");
+    }
+    if (source.agentId.startsWith(TASK_PLANNER_CHAT_AGENT_ID_PREFIX)) {
+      return this.refuseHandoff(sourceSessionId, "task-planner-unsupported", 409, "Task-planner chats cannot be handed off.");
+    }
+    if (source.status !== "active") {
+      return this.refuseHandoff(sourceSessionId, "source-not-active", 409, "Only an active conversation can be handed off.");
+    }
+    if (this.activeGenerations.has(sourceSessionId)) {
+      return this.refuseHandoff(sourceSessionId, "generation-in-progress", 409, "A reply is still in flight in this conversation.");
+    }
+
+    /*
+     * Read one extra message: its presence is the proof that the fetch bound elided the opening of a
+     * long conversation, which the digest then states instead of silently presenting a partial
+     * record as the whole exchange.
+     */
+    const fetched = await this.chatStore.getMessages(sourceSessionId, {
+      order: "desc",
+      limit: CHAT_HANDOFF_TRANSCRIPT_FETCH_LIMIT + 1,
+    });
+    const earlierElided = fetched.length > CHAT_HANDOFF_TRANSCRIPT_FETCH_LIMIT;
+    const transcript = fetched.slice(0, CHAT_HANDOFF_TRANSCRIPT_FETCH_LIMIT).reverse();
+    const digest = buildHandoffTranscript(transcript, { earlierElided });
+    const sourceTitle = source.title?.trim() || "Untitled conversation";
+
+    /*
+     * v1 exclusion — an unknown-model source has no usage signal, so no threshold can be attributed to it.
+     * The affordance only ever renders from a MEASURED `metadata.contextUsage` record (both the pending and
+     * the estimated branches of app/utils/chatContextUsage.ts return `percent: null`), so requiring a known
+     * context window on one fetched row is exactly as strict as the gate and can never contradict a button
+     * the operator was shown. A chat long enough to push every usage record outside the read window
+     * necessarily has newer ones, so the bounded read costs no eligible source.
+     */
+    const hasUsageSignal = fetched.some((row) => {
+      const contextWindow = (row.metadata as { contextUsage?: { contextWindow?: unknown } } | null | undefined)
+        ?.contextUsage?.contextWindow;
+      return typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0;
+    });
+    if (!hasUsageSignal) {
+      return this.refuseHandoff(
+        sourceSessionId,
+        "unknown-model",
+        409,
+        "This conversation has no context-usage signal to hand off from.",
+      );
+    }
+
+    /*
+     * Honest degradation, not a refusal: a briefing failure must never cost the operator the context
+     * they can still see on screen, and a blank new chat is a false success. The deterministic digest
+     * becomes the primer body and `degraded` tells the notice to say so.
+     */
+    const laneSettings = await this.getChatModelSettings();
+    let degraded = false;
+    let primerBody: string;
+    try {
+      primerBody = await summarizeChatHandoff(
+        digest,
+        this.rootDir,
+        source.modelProvider ?? laneSettings?.defaultProvider,
+        source.modelId ?? laneSettings?.defaultModelId,
+      );
+    } catch {
+      degraded = true;
+      primerBody = digest.trim() || CHAT_HANDOFF_EMPTY_TRANSCRIPT_PRIMER;
+    }
+    if (!primerBody.trim()) {
+      degraded = true;
+      primerBody = digest.trim() || CHAT_HANDOFF_EMPTY_TRANSCRIPT_PRIMER;
+    }
+
+    /*
+     * Identity-identical continuation: the same agent and the same model lane, so a handoff is only an
+     * escape from context pressure and never silently upgrades or downgrades the model. `memoryFocus`
+     * is deliberately NOT copied — the fresh session starts a fresh recall scope by design.
+     */
+    const child = await this.chatStore.createSession({
+      agentId: source.agentId,
+      title: `Continue: ${sourceTitle}`,
+      projectId: source.projectId ?? null,
+      modelProvider: source.modelProvider ?? null,
+      modelId: source.modelId ?? null,
+      thinkingLevel: source.thinkingLevel ?? null,
+    });
+
+    // The complete lineage object is composed in THIS write and never patched afterwards:
+    // `updateChatMessageMetadata` merges one level deep, so a later partial `handoff` object would
+    // erase the fields the notice and the injection gate depend on.
+    const lineage: ChatHandoffLineage = { fromSessionId: sourceSessionId, fromTitle: sourceTitle, degraded };
+    await this.chatStore.addMessage(child.id, {
+      role: "system",
+      content: primerBody,
+      metadata: { handoff: lineage },
+    });
+
+    /*
+     * Re-read before archiving: the in-process single-flight cannot see another process, so the
+     * durable claim on the source is its status. If anyone else already consumed it, drop the sibling
+     * we just made rather than leave an active source with two continuations.
+     */
+    const freshSource = await this.chatStore.getSession(sourceSessionId);
+    if (!freshSource || freshSource.status !== "active") {
+      await this.discardHandoffChild(child.id, sourceSessionId, "source-not-active");
+      return this.refuseHandoff(sourceSessionId, "source-not-active", 409, "Only an active conversation can be handed off.");
+    }
+
+    try {
+      await this.chatStore.archiveSession(sourceSessionId);
+    } catch (error) {
+      /*
+       * Compensation: an archived source without its continuation would strand the operator with
+       * nothing to type into, so the half-built child is removed and the source stays active.
+       */
+      await this.discardHandoffChild(child.id, sourceSessionId, "archival-failed");
+      this.emitHandoffAudit("chat:handoff-session-failed", {
+        fromSessionId: sourceSessionId,
+        outcome: "archival-failed",
+        refusalCode: "archival-failed",
+        messageCount: fetched.length,
+        summaryChars: primerBody.length,
+      });
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new ChatHandoffError("archival-failed", 500, `Failed to archive the source conversation: ${detail}`);
+    }
+
+    this.emitHandoffAudit("chat:handoff-session-created", {
+      fromSessionId: sourceSessionId,
+      toSessionId: child.id,
+      outcome: degraded ? "degraded-created" : "created",
+      messageCount: fetched.length,
+      summaryChars: primerBody.length,
+    });
+
+    const refreshedChild = (await this.chatStore.getSession(child.id)) ?? child;
+    return {
+      session: refreshedChild,
+      degraded,
+      summaryChars: primerBody.length,
+      sourceSessionId,
+    };
+  }
+
+  /**
+   * Remove a handoff child created before a failure proved the handoff could not complete. Cleanup is
+   * best-effort: a failed delete must not mask the original refusal, it only leaves an orphan to be
+   * reconciled, so the error is logged with ids only.
+   */
+  private async discardHandoffChild(childSessionId: string, sourceSessionId: string, reason: ChatHandoffRefusalCode): Promise<void> {
+    try {
+      await this.chatStore.deleteSession(childSessionId);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      diagnostics.warn(`[chat-handoff] failed to discard orphaned continuation (reason=${reason}) source=${sourceSessionId} child=${childSessionId}: ${detail}`);
+    }
+  }
+
+  /**
+   * FNXC:ChatHandoff 2026-09-09-18:38:
+   * Resolve the one-time model-facing primer block for a direct-chat send, or null when nothing should
+   * be injected. The gate is the primer ROW's delivery stamp, never `session.cliSessionFile`: that
+   * pointer is persisted hundreds of lines before the prompt reaches the model (at SessionManager
+   * construction), so a turn-1 exit between the two — the generation-fence return, the pre-dispatch
+   * abort throw, `createResolvedAgentSession` throwing, or a ChatContextOverflowError refusal — would
+   * leave it set with the primer NEVER delivered, and a file-based gate would then suppress it forever
+   * (the operator keeps the button and the transcript but the model never gets the context, while the
+   * visible notice lies that it was handed off).
+   *
+   * A handoff child carries at most ONE row before its first send — the role:"system" primer — so a
+   * bounded forward page (no role filter exists on ChatMessagesFilter) can only ever find that row; on
+   * an ordinary chat it reads one non-primer row and returns. Injection is at-most-once by the
+   * combination of the durable `handoffDeliveredAt` scalar and the in-process delivered map.
+   */
+  private async resolveHandoffPrimerForInjection(sessionId: string): Promise<{ primerMessageId: string; block: string } | null> {
+    const primer = await this.findHandoffPrimerRow(sessionId);
+    if (!primer) return null;
+
+    const metadata = (primer.metadata ?? {}) as { handoff?: ChatHandoffLineage; handoffDeliveredAt?: unknown };
+    if (typeof metadata.handoffDeliveredAt === "string" && metadata.handoffDeliveredAt.length > 0) {
+      return null;
+    }
+    if (this.handoffPrimersDelivered.get(sessionId) === primer.id) {
+      return null;
+    }
+
+    const lineage = metadata.handoff!;
+    const title = typeof lineage.fromTitle === "string" && lineage.fromTitle.trim() ? lineage.fromTitle.trim() : "Untitled conversation";
+    // The label doubles as the prompt guard: it frames the carried text as a prior conversation's
+    // record, so the model continues from it instead of treating it as the user's new turn.
+    const block = `[Handoff from conversation "${title}"]\n${primer.content ?? ""}`;
+    return { primerMessageId: primer.id, block };
+  }
+
+  /**
+   * FNXC:ChatHandoff 2026-09-10-01:13:
+   * Locate a session's handoff primer row — the row whose metadata carries the complete `handoff`
+   * lineage object — through the same bounded forward page the injection gate reads (no role filter
+   * exists on `ChatMessagesFilter`, and a handoff child has at most one row before its first send).
+   * Shared by the injection gate and by the context-loss re-arm below so the two can never disagree
+   * about what counts as a primer.
+   */
+  private async findHandoffPrimerRow(sessionId: string): Promise<ChatMessage | null> {
+    const rows = await this.chatStore.getMessages(sessionId, { order: "asc", limit: CHAT_HANDOFF_PRIMER_SCAN_LIMIT });
+    return rows.find((row) => {
+      const handoff = (row.metadata as { handoff?: ChatHandoffLineage } | null | undefined)?.handoff;
+      return handoff != null && typeof handoff.fromSessionId === "string";
+    }) ?? null;
+  }
+
+  /**
+   * FNXC:ChatHandoff 2026-09-10-01:13:
+   * Re-arm a session's one-time primer after its pi context has been REPLACED by a fresh session file.
+   *
+   * Editing the FIRST user message of a handoff child takes the `parentLeafId == null` branch of
+   * `rewindSessionForEdit` (a brand-new empty `SessionManager.create`), and the legacy / failed-branch
+   * fallback rebuilds a session that replays only `user`/`assistant` rows — the `role:"system"` primer
+   * is never replayed in either. Without this re-arm the retained primer row stays stamped delivered, so
+   * `resolveHandoffPrimerForInjection` refuses to inject again: the model then continues with ZERO
+   * inherited context while the visible "Continues from <title>" notice still claims it was briefed —
+   * the same silent-empty-handoff that Required behaviour #5 forbids at creation time. A rewind that
+   * branches from a recorded parent leaf is NOT context loss (the branched file keeps the first turn,
+   * into which the primer was already embedded), so only the file-replacing branches call this.
+   *
+   * The clear is a top-level `handoffDeliveredAt: null` scalar written with `merge: true` — never a
+   * nested `handoff` patch, because the store merges one level deep and would erase the lineage fields
+   * the notice reads. Both delivery records drop: the durable scalar and the in-process entry.
+   * Best-effort: a failed clear costs at most one duplicate labeled primer on the next turn (the
+   * accepted at-least-once trade), while skipping the clear would lose the carried context.
+   */
+  private async rearmHandoffPrimerAfterContextLoss(sessionId: string, reason: string): Promise<void> {
+    try {
+      const primer = await this.findHandoffPrimerRow(sessionId);
+      if (!primer) return;
+      const stamp = (primer.metadata as { handoffDeliveredAt?: unknown } | null | undefined)?.handoffDeliveredAt;
+      if (typeof stamp !== "string" && !this.handoffPrimersDelivered.has(sessionId)) {
+        // Nothing was ever recorded as delivered, so the next send already injects — no write needed.
+        return;
+      }
+      this.handoffPrimersDelivered.delete(sessionId);
+      await this.chatStore.updateMessageMetadata(primer.id, { handoffDeliveredAt: null }, { merge: true });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      diagnostics.warn(`[chat-handoff] failed to re-arm primer after pi context loss session=${sessionId} reason=${reason}: ${detail}`);
+    }
+  }
+
+  /**
+   * FNXC:ChatHandoff 2026-09-09-18:38:
+   * Record that a handoff primer ACTUALLY reached the model. Called only AFTER the dispatch call
+   * returned, so a turn whose dispatch returned counts as delivered (including a post-dispatch
+   * cancellation — the model already received the primer). Ordering is load-bearing: at-least-once is
+   * acceptable (a duplicate labeled primer is legible to human and model) while a premature stamp is a
+   * silent loss of the entire carried context, so this must never move earlier than the dispatch.
+   *
+   * Two independent records so neither write is a single point of failure: the in-process map (set
+   * FIRST, so a store throw still prevents same-process re-injection) and the durable top-level
+   * `handoffDeliveredAt` scalar. The scalar is merged with `merge: true` and lives OUTSIDE the
+   * `handoff` object on purpose — `updateChatMessageMetadata` merges one level deep, so patching a
+   * nested `handoff` field here would ERASE fromSessionId/fromTitle/degraded that the visible notice
+   * and this very gate read. Best-effort: a stamp write failure must never fail the send.
+   */
+  private async recordHandoffPrimerDelivered(sessionId: string, primerMessageId: string): Promise<void> {
+    this.handoffPrimersDelivered.set(sessionId, primerMessageId);
+    try {
+      await this.chatStore.updateMessageMetadata(
+        primerMessageId,
+        { handoffDeliveredAt: new Date().toISOString() },
+        { merge: true },
+      );
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      diagnostics.warn(`[chat-handoff] failed to stamp primer delivery for continuation session=${sessionId} primer=${primerMessageId}: ${detail}`);
+    }
+  }
+
   /**
    * FNXC:ChatMessageEdit 2026-07-07-09:00:
    * Rewind a direct (model-loop) chat session so an edit to an earlier user message resumes
@@ -4175,6 +4762,14 @@ export class ChatManager {
    * so `buildSessionContext()` no longer includes the discarded turns, otherwise the model would
    * still "remember" content that the UI claims was forgotten. Regeneration is NOT triggered
    * here — callers resend the edited content through the existing streaming `sendMessage` path.
+   *
+   * FNXC:ChatHandoff 2026-09-10-01:13:
+   * A rewind that REPLACES the pi session file (first-turn fresh session, retained-history rebuild, or
+   * the clear-on-failure fallback) also destroys the handoff primer that turn 1 injected as prompt
+   * text, because only `user`/`assistant` rows are replayed. Those branches therefore re-arm the
+   * primer (see `rearmHandoffPrimerAfterContextLoss`). A rewind that branches from a recorded parent
+   * leaf keeps the first turn — and with it the embedded briefing — so it must NOT re-arm: doing that
+   * would only duplicate a briefing the branched file already carries.
    */
   async rewindSessionForEdit(sessionId: string, fromMessageId: string): Promise<{ retained: ChatMessage[] }> {
     const session = await this.chatStore.getSession(sessionId);
@@ -4225,6 +4820,10 @@ export class ChatManager {
           // branch from. A brand-new empty session is the correct "forget everything" state.
           const fresh = SessionManager.create(this.rootDir);
           await this.chatStore.setCliSessionFile(sessionId, fresh.getSessionFile() ?? null);
+          // RUFU-199: this fresh file holds no primer, and turn 1's injected briefing lived only inside
+          // the old file, so a stamped handoff primer must re-arm or the resend runs unbriefed while
+          // the notice still claims continuity.
+          await this.rearmHandoffPrimerAfterContextLoss(sessionId, "first-turn-edit-fresh-session");
         }
         return { retained };
       } catch (err) {
@@ -4272,6 +4871,10 @@ export class ChatManager {
       }
       const rebuiltFile = rebuilt.getSessionFile();
       await this.chatStore.setCliSessionFile(sessionId, rebuiltFile ?? null);
+      // RUFU-199: the rebuild above replays only `user`/`assistant` rows, so a handoff primer (role
+      // "system", and delivered as prompt text rather than a stored session message) cannot survive
+      // it. Re-arm so the next send re-briefs the model instead of running unbriefed.
+      await this.rearmHandoffPrimerAfterContextLoss(sessionId, "rebuilt-from-retained-history");
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       diagnostics.warn(
@@ -4279,6 +4882,9 @@ export class ChatManager {
       );
       try {
         await this.chatStore.setCliSessionFile(sessionId, null);
+        // RUFU-199: same invariant at the furthest fallback — a cleared session file cannot carry a
+        // primer, so the delivery record must not keep suppressing the briefing.
+        await this.rearmHandoffPrimerAfterContextLoss(sessionId, "session-file-cleared");
       } catch {
         // best-effort; nothing further we can do here
       }

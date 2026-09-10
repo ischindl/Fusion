@@ -1656,7 +1656,15 @@
     "failedToUpdateChatModel": "",
     "sendAlreadyInFlight": "",
     "questionOptionalLabel": "",
-    "questionSelectHintWithOptional": ""
+    "questionSelectHintWithOptional": "",
+    "handoffBriefingDegraded": "",
+    "handoffButton": "",
+    "handoffContinuesFrom": "",
+    "handoffDegraded": "",
+    "handoffFailed": "",
+    "handoffOpenSource": "",
+    "handoffStarted": "",
+    "handoffTooltip": ""
   },
   "chatRooms": {
     "error": {
@@ -7142,6 +7150,10 @@
       "02": "",
       "chatContextBudget": "",
       "chatContextBudgetHelp": "",
+      "chatHandoff": "",
+      "chatHandoffHelp": "",
+      "chatHandoffThreshold": "",
+      "chatHandoffThresholdHelp": "",
       "cronExpressionForInsightExtractionScheduleDefaultDaily": "",
       "enableInsightExtraction": "",
       "periodicallyExtractDurableInsightsFromCompletedTasks": "",

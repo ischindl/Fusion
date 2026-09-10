@@ -1899,6 +1899,12 @@ export {
   RateLimitError,
   AiServiceError,
   __resetSummarizeState,
+  summarizeChatHandoff,
+  truncateChatHandoffTranscript,
+  CHAT_HANDOFF_SUMMARIZE_SYSTEM_PROMPT,
+  MAX_CHAT_HANDOFF_INPUT_LENGTH,
+  MAX_CHAT_HANDOFF_SUMMARY_LENGTH,
+  CHAT_HANDOFF_TRUNCATION_MARKER,
 } from "./ai/ai-summarize.js";
 export {
   applyTestModeOverrides,

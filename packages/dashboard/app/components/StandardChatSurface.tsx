@@ -3,10 +3,11 @@ import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, 
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ArrowUpToLine, Bot, File, Pencil, Reply, Send, TriangleAlert } from "lucide-react";
+import { ArrowUpToLine, Archive, Bot, File, Pencil, Reply, Send, TriangleAlert } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ChatEnginePhase, ChatMessageInfo, FailureInfo, ToolCallInfo } from "../hooks/chatTypes";
 import { linkifyFilePaths, linkifyReactChildren } from "../utils/filePathLinkify";
+import { parseChatHandoffLineage, type ChatHandoffLineageView } from "../utils/chatHandoff";
 import { parseQuestionToolCall } from "../utils/parseQuestionToolCall";
 import { ChatQuestionResponse } from "./ChatQuestionResponse";
 import { ProviderIcon } from "./ProviderIcon";
@@ -62,6 +63,13 @@ export interface StandardChatMessageItemProps {
    * Only rendered for `role === "user"` messages — never for assistant/system messages.
    */
   onEditMessage?: (messageId: string, newContent: string) => void | Promise<void>;
+  /**
+   * FNXC:ChatHandoff 2026-09-09-20:04:
+   * RUFU-199: Direct-chat callers pass this so the handoff primer notice can deep-link back to the
+   * archived source conversation. Surfaces without a session switcher (planner, popped-out windows)
+   * omit it and the notice still explains the lineage without the link.
+   */
+  onHandoffSourceOpen?: (sessionId: string) => void;
   /**
    * Gate for whether editing is currently supported/allowed for this message's surface (direct
    * model-loop chat, not Rooms or CLI-agent sessions) and state (not while streaming). When
@@ -684,6 +692,41 @@ export function ChatContextTruncationNotice({ evidence }: { evidence: ChatContex
   );
 }
 
+/**
+ * FNXC:ChatHandoff 2026-09-09-20:04:
+ * RUFU-199: the operator-facing replacement for a handoff child's raw primer briefing. Module scope is
+ * mandatory (no component-in-component): it must keep reconciling across re-renders. The degraded copy is
+ * load-bearing honesty — a degraded child starts from a trimmed transcript digest, not a model summary,
+ * and the notice must say so instead of implying a full briefing was delivered.
+ */
+function StandardChatHandoffNotice({ lineage, onOpenSource }: { lineage: ChatHandoffLineageView; onOpenSource?: (sessionId: string) => void }) {
+  const { t } = useTranslation("app");
+  const fromTitle = lineage.fromTitle || t("chat.untitledConversation", "Untitled conversation");
+  return (
+    <div className="chat-message-content chat-message-handoff-notice" role="note" data-testid="chat-message-handoff">
+      <span className="chat-message-handoff-notice-line">
+        <Archive size={14} aria-hidden="true" />
+        <span>{t("chat.handoffContinuesFrom", "Continues from “{{title}}”", { title: fromTitle })}</span>
+        {onOpenSource && lineage.fromSessionId ? (
+          <button
+            type="button"
+            className="btn btn-sm chat-handoff-notice-open"
+            data-testid="chat-handoff-notice-open"
+            onClick={() => onOpenSource(lineage.fromSessionId)}
+          >
+            {t("chat.handoffOpenSource", "View original")}
+          </button>
+        ) : null}
+      </span>
+      {lineage.degraded ? (
+        <span className="chat-message-handoff-notice-degraded" data-testid="chat-handoff-notice-degraded">
+          {t("chat.handoffBriefingDegraded", "Handoff briefing degraded: this chat starts from a transcript digest instead of a model summary.")}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 export const StandardChatMessageItem = memo(function StandardChatMessageItem({
   message,
   forcePlain,
@@ -703,6 +746,7 @@ export const StandardChatMessageItem = memo(function StandardChatMessageItem({
   onQuestionSubmit,
   toolCallRenderer,
   onEditMessage,
+  onHandoffSourceOpen,
   canEdit = false,
   isTopClipped = false,
   isSearchMatch = false,
@@ -712,6 +756,14 @@ export const StandardChatMessageItem = memo(function StandardChatMessageItem({
   const { t } = useTranslation("app");
   const isAssistantMessage = message.role === "assistant";
   const isUserMessage = message.role === "user";
+  /*
+   * FNXC:ChatHandoff 2026-09-09-20:04:
+   * RUFU-199: a handoff child's role:"system" primer row carries the model-facing briefing in
+   * `content` — that text must NEVER render raw into the transcript (it reads as a wall of third-person
+   * summary). When the lineage object is present, the body slot renders a compact "Continues from …"
+   * notice instead, with a degraded warning when the server said the briefing was only a digest.
+   */
+  const handoffLineage = message.role === "system" ? parseChatHandoffLineage(message.metadata) : null;
   /*
    * FNXC:ChatMessageEdit 2026-07-07-09:00:
    * Edit affordance is scoped strictly to user messages on surfaces that opt in via both
@@ -873,7 +925,7 @@ export const StandardChatMessageItem = memo(function StandardChatMessageItem({
           projectId={projectId}
         />
       ) : (
-        isAssistantMessage ? assistantBody : <div className="chat-message-content">{renderedUserContent}</div>
+        isAssistantMessage ? assistantBody : handoffLineage ? <StandardChatHandoffNotice lineage={handoffLineage} onOpenSource={onHandoffSourceOpen} /> : <div className="chat-message-content">{renderedUserContent}</div>
       )}
       {contextTruncationEvidence && <ChatContextTruncationNotice evidence={contextTruncationEvidence} />}
       {hasAssistantFooterRow && (

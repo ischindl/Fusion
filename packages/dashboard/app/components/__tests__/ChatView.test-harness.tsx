@@ -83,6 +83,8 @@ export const defaultChatState: UseChatReturn = {
   selectSession: vi.fn(),
   createSession: vi.fn().mockResolvedValue({ id: "session-new", agentId: "__fn_agent__", status: "active", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" } satisfies ChatSessionInfo),
   archiveSession: vi.fn(),
+  // RUFU-199: handoffSession became REQUIRED on UseChatReturn; this shared fixture must carry it.
+  handoffSession: vi.fn().mockResolvedValue({ session: { id: "session-handoff", agentId: "__fn_agent__", status: "active", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" } satisfies ChatSessionInfo, degraded: false }),
   archivedSessions: [],
   refreshArchivedSessions: vi.fn().mockResolvedValue(undefined),
   unarchiveSession: vi.fn().mockResolvedValue(undefined),
