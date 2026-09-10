@@ -153,6 +153,7 @@ const qualityAppComponentTests = [
   "PluginManager.registry",
   "PrChecksList",
   "PrCreateModal",
+  "PrCreateModal.escape",
   "PrCreateModal.layout",
   "ProjectCard",
   "ProjectHealthBadge",

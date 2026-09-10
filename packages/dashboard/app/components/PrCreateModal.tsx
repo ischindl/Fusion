@@ -44,6 +44,53 @@ type PreflightCheck = {
 const PR_METADATA_TIMEOUT_MS = 15000;
 const PR_CREATE_BODY_PREVIEW_STORAGE_KEY = "fn-pr-create-body-preview";
 
+/*
+FNXC:ModalEscapeOwnership 2026-09-10-15:20:
+RUFU-205: one Escape keystroke must dismiss exactly one modal layer, and it must be the layer the
+keystroke was aimed at. Create PR used to answer Escape from a bubble-phase `document` listener with no
+ownership guard, so it reacted to keystrokes aimed at other layers too: at its own host (Task Detail is
+itself a modal FloatingWindow, and both layers are portals mounted as siblings under <body>), at an
+overlay stacked over it, and at keystrokes the app-wide popup arbiter had already claimed. Listening
+easier in the phase order is not by itself admissible either: a capture listener would equally react to
+keystrokes belonging to other layers unless it first decides whether the keystroke is its own. z-index
+is also inadmissible because CSS stacking order does not participate in DOM event propagation at all,
+and registration order is inadmissible because the host is closed through both an app-level door and
+`TaskDetailModal`'s own document listener, so which listener is "first" differs per stack. The arbiter's
+popup priority and the page/floating/modal paint bands do not match either — precedence must be decided
+from the DOM, not from who registered first or who paints on top.
+The claim rule is therefore one principle — *Create PR answers Escape unless a different overlay owns
+the keystroke* — evaluated from DOM facts, never from registration order or paint order:
+- a different overlay owns the keystroke when the event target or the current focus sits inside a
+   floating window / dialog / modal overlay outside Create PR's own portal subtree (`isInsideForeignOverlay`);
+- otherwise a target or focus inside Create PR's own subtree claims it;
+- with neither in any overlay (a blur to <body>, a focused control removed out from under focus, or a
+   keystroke aimed at the live page behind this non-blocking shell), the keystroke belongs to Create PR
+   exactly while its overlay was the most recently focused one — tracked by one capture-phase `focusin`
+   listener, the idiom already established in this codebase (`ExecutorStatusBar.tsx:211`,
+   `ChatView.tsx:1738`, `InlineCreateCard.tsx:368`). An unconditional orphan claim would steal the
+   arbiter's keystrokes from e.g. a Quick Chat the user focused and then clicked away from; deferring
+   orphans unconditionally would turn the sheet into the prohibited un-closable sheet and let the
+   arbiter close the host and destroy the draft together.
+When Create PR claims, it stops propagation so no second layer (host, arbiter, page handler) can also
+react; when it defers the keystroke is left byte-identical — no preventDefault, no stopPropagation —
+so hosts, sibling modals, and app/page Escape shortcuts keep working.
+
+Listener-leak trap: `removeEventListener` matches on the exact capture flag, so the capture keydown and
+focusin listeners must be removed with `true` and the bubble Tab trap without it — a mismatched flag
+silently leaks the listener, and a leaked capture Escape handler keeps dismissing the sheet after close.
+The leak test in `PrCreateModal.escape.test.tsx` pins the added/removed listener shapes symmetrically.
+
+Documented residual limitation: focus that blurred to <body> from another surface's non-focusable
+static chrome — without ever visiting a focusable control inside that overlay — leaves ownership with
+Create PR, because no `focusin` was ever fired to learn otherwise. Covering that would need a global
+last-interaction registry, which this task's "no parallel modal-stack registry" constraint forbids.
+
+The overlay markers below are the ones the dashboard's modal shells actually render
+(`.floating-window-overlay` + `.floating-window` from FloatingWindow, `.modal` from the legacy
+`.modal-overlay` shells). `.modal-backdrop` does not exist as a generic class in this codebase.
+*/
+const OVERLAY_BOUNDARY_SELECTOR = ".floating-window-overlay, .floating-window, .modal, .modal-overlay";
+
 function readBooleanPref(key: string, defaultValue: boolean): boolean {
   if (typeof window === "undefined") return defaultValue;
   try {
@@ -204,6 +251,13 @@ export function PrCreateModal({
   const headingId = useId();
   const modalRef = useRef<HTMLDivElement | null>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
+  /**
+   * Which overlay owned focus most recently, used only for the blur-to-body orphan case where the DOM
+   * can no longer say who was focused. Stays untouched when focus leaves for <body>, because a blur is
+   * not a handover to another layer.
+   * @see FNXC:ModalEscapeOwnership 2026-09-10-15:20 in this file
+   */
+  const lastFocusedOverlayWasSelfRef = useRef(true);
   const requestSeqRef = useRef({ metadata: 0, preflight: 0, options: 0 });
   const preflightRef = useRef<PrPreflightResponse | null>(null);
   const optionsRef = useRef<PrOptionsResponse | null>(null);
@@ -375,15 +429,72 @@ export function PrCreateModal({
     if (!open) return;
 
     restoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const focusable = modalRef.current?.querySelector<HTMLElement>("input, textarea, select, button, [tabindex]:not([tabindex='-1'])");
-    focusable?.focus();
+    /*
+    FNXC:ModalEscapeOwnership 2026-09-10-15:20:
+    Opening this layer is itself a focus handover, so the ownership flag starts as "mine". It is
+    re-derived from `focusin` from here on; a plain blur to <body> never rewrites it.
+    */
+    lastFocusedOverlayWasSelfRef.current = true;
 
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-        return;
+    /**
+     * Create PR's own overlay boundary. Its `FloatingWindow` portals to `<body>`, so the overlay root —
+     * not the panel — is the subtree the user is aiming at when they aim at this layer.
+     */
+    const ownOverlay = (): Element | null => modalRef.current?.closest(".floating-window-overlay") ?? modalRef.current;
+
+    const isInsideSelf = (node: EventTarget | null): boolean =>
+      node instanceof Node && Boolean(modalRef.current?.contains(node));
+
+    const isInsideOwnOverlay = (node: EventTarget | null): boolean => {
+      if (!(node instanceof Node)) return false;
+      const overlay = ownOverlay();
+      return overlay ? overlay.contains(node) : isInsideSelf(node);
+    };
+
+    const isInsideForeignOverlay = (node: EventTarget | null): boolean => {
+      if (!(node instanceof Element) || isInsideOwnOverlay(node)) return false;
+      return Boolean(node.closest(OVERLAY_BOUNDARY_SELECTOR));
+    };
+
+    /**
+     * @see FNXC:ModalEscapeOwnership 2026-09-10-15:20 at the top of this file for why containment plus
+     * focus ownership — not listener order or z-index — decides the claim.
+     */
+    const ownsEscapeKeystroke = (event: KeyboardEvent): boolean => {
+      if (event.defaultPrevented) return false;
+      const focused = document.activeElement;
+      if (isInsideForeignOverlay(event.target) || isInsideForeignOverlay(focused)) return false;
+      if (isInsideSelf(event.target) || isInsideSelf(focused)) return true;
+      // Neither the aim nor the focus is inside any overlay: a blur to <body>, a focused control removed
+      // out from under focus, or a keystroke aimed at the live page behind this non-blocking shell. It is
+      // Create PR's own unless a different overlay was the most recently focused one.
+      return lastFocusedOverlayWasSelfRef.current;
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || !ownsEscapeKeystroke(event)) return;
+      /*
+      FNXC:ModalEscapeOwnership 2026-09-10-15:20:
+      One claim, one layer: stopping propagation in the capture phase means the keystroke never reaches
+      the host's or the arbiter's bubble-phase `document` listeners, so a single Escape dismisses Create
+      PR alone. When the guard defers, the event is deliberately left untouched instead.
+      */
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+    };
+
+    const handleFocusIn = (event: FocusEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (isInsideOwnOverlay(target)) {
+        lastFocusedOverlayWasSelfRef.current = true;
+      } else if (target.closest(OVERLAY_BOUNDARY_SELECTOR)) {
+        lastFocusedOverlayWasSelfRef.current = false;
       }
+    };
+
+    const handleTabKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Tab" || !modalRef.current) return;
       const elements = Array.from(modalRef.current.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])"));
       if (elements.length === 0) return;
@@ -398,9 +509,19 @@ export function PrCreateModal({
       }
     };
 
-    document.addEventListener("keydown", handleKeyDown);
+    // Registered before the focus-on-open call so opening Create PR records itself as the focused layer.
+    // The Escape owner listens in the capture phase; the Tab trap keeps its original bubble-phase seam.
+    document.addEventListener("keydown", handleEscape, true);
+    document.addEventListener("keydown", handleTabKeyDown);
+    document.addEventListener("focusin", handleFocusIn, true);
+
+    const focusable = modalRef.current?.querySelector<HTMLElement>("input, textarea, select, button, [tabindex]:not([tabindex='-1'])");
+    focusable?.focus();
+
     return () => {
-      document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("keydown", handleEscape, true);
+      document.removeEventListener("keydown", handleTabKeyDown);
+      document.removeEventListener("focusin", handleFocusIn, true);
       restoreFocusRef.current?.focus();
     };
   }, [onClose, open]);
