@@ -7352,7 +7352,8 @@
       "configVersions": "구성 버전",
       "voiceInput": "Voice Input",
       "cliBinary": "",
-      "resize": ""
+      "resize": "",
+      "schedulingGlobal": ""
     },
     "nodeRouting": {
       "blockExecution": "",
@@ -7741,6 +7742,12 @@
       "maxConcurrentTasksHint": "",
       "maxConcurrentVerifications": "",
       "maxConcurrentVerificationsHint": "",
+      "verificationCpuQuotaPercent": "",
+      "verificationCpuQuotaPercentHelp": "",
+      "verificationCpuIoWeight": "",
+      "verificationCpuIoWeightHelp": "",
+      "verificationMemoryMaxMb": "",
+      "verificationMemoryMaxMbHelp": "",
       "pollIntervalMsHint": "",
       "executorToolFailureRetryCount": "",
       "executorToolFailureRetryCountHelp": "",
@@ -7763,6 +7770,15 @@
       "triageDuplicateResolutionDelete": "자동 삭제",
       "buildTimeoutMinutes": "",
       "maximumTimeInMinutesForBuildVerificationCommands": ""
+    },
+    "schedulingGlobal": {
+      "schedulingGlobal": "",
+      "verificationCpuQuotaPercent": "",
+      "verificationCpuQuotaPercentHelp": "",
+      "verificationCpuIoWeight": "",
+      "verificationCpuIoWeightHelp": "",
+      "verificationMemoryMaxMb": "",
+      "verificationMemoryMaxMbHelp": ""
     },
     "title": "설정",
     "worktrees": {

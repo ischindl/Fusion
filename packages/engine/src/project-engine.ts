@@ -127,6 +127,19 @@ import {
   registerProjectVerificationLimit,
   unregisterProjectVerificationLimit,
 } from "./concurrency/verification-concurrency.js";
+/*
+FNXC:VerificationResourceBound 2026-09-10-12:13:
+The CPU/IO/memory envelope for verification children is the resource twin of the count cap, so
+it registers/unregisters at the SAME lifecycle points (engine start, settings update, engine stop)
+and shares the same cross-project min-composition registry — both shared limits cannot drift.
+*/
+import {
+  getHostCoreCount,
+  registerProjectVerificationResourceProfile,
+  unregisterProjectVerificationResourceProfile,
+  verificationResourceProfileFromMergedSettings,
+  type VerificationResourceBoundConfig,
+} from "./execution/verification-resource-bound.js";
 import { runtimeLog } from "./logger.js";
 import { emitBoundedRunAudit, type RunAuditSinkHost } from "./util/emit-bounded-run-audit.js";
 
@@ -476,6 +489,22 @@ export interface ProjectEngineOptions {
  * bugs where a subsystem is forgotten in one code path.
  */
 type MergeResolver = { resolve: (result: MergeResult) => void; reject: (err: Error) => void };
+
+/**
+ * Map merged engine settings onto the resource-bound config keys.
+ *
+ * FNXC:VerificationResourceBound 2026-09-10-12:13:
+ * Single mapping point so the start registration and the settings:updated re-registration
+ * cannot extract the three dual-scope keys differently; `undefined` stays `undefined` (inherit),
+ * the resolver owns defaults/clamping.
+ */
+function verificationResourceBoundFromSettings(settings: Settings): VerificationResourceBoundConfig {
+  return {
+    cpuQuotaPercent: settings.verificationCpuQuotaPercent,
+    cpuIoWeight: settings.verificationCpuIoWeight,
+    memoryMaxMb: settings.verificationMemoryMaxMb,
+  };
+}
 
 export class ProjectEngine {
   private readonly staleContentRerouteAuditKeys = new Set<string>();
@@ -1412,6 +1441,17 @@ export class ProjectEngine {
     Register per-project so multi-engine hosts take the MIN of all caps (most restrictive wins).
     */
     registerProjectVerificationLimit(this.config.projectId, settings.maxConcurrentVerifications ?? 1);
+    /*
+    FNXC:VerificationResourceBound 2026-09-10-12:13:
+    Register this project's resource-bound profile beside the count cap so a shared host resolves
+    the most conservative bound across all in-process projects, and a project that DISABLES its
+    bound never unbinds a sibling project that asked for one (a bound only holds while every
+    concurrent heavy spawn is bound).
+    */
+    registerProjectVerificationResourceProfile(
+      this.config.projectId,
+      verificationResourceProfileFromMergedSettings(verificationResourceBoundFromSettings(settings), getHostCoreCount()),
+    );
 
     // 6. Wire auto-merge on task:moved and task:updated pause interruptions
     this.wireAutoMerge(store, cwd);
@@ -1633,6 +1673,8 @@ export class ProjectEngine {
 
     // FNXC:VerificationConcurrency 2026-07-15-09:05: Drop this project's cap so it no longer pins process min.
     unregisterProjectVerificationLimit(this.config.projectId);
+    // FNXC:VerificationResourceBound 2026-09-10-12:13: Drop this project's resource profile so it no longer constrains sibling projects.
+    unregisterProjectVerificationResourceProfile(this.config.projectId);
     this.unregisterMergeAdmissionProvider?.();
     this.unregisterMergeAdmissionProvider = undefined;
     // Stop merge retry timer
@@ -6553,6 +6595,35 @@ export class ProjectEngine {
     };
     store.on("settings:updated", onVerificationConcurrencyChange);
     this.settingsHandlers.push(onVerificationConcurrencyChange);
+
+    /*
+    FNXC:VerificationResourceBound 2026-09-10-12:13:
+    Resource-bound settings are dual-scope, so the merged values in `s` already reflect the
+    project-over-global resolution the resolver expects. Re-register on any of the three keys
+    changing; the same lifecycle as the count cap keeps both limits coherent.
+    */
+    const onVerificationResourceBoundChange = ({
+      settings: s,
+      previous: prev,
+    }: {
+      settings: Settings;
+      previous: Settings;
+    }) => {
+      if (
+        s.verificationCpuQuotaPercent === prev.verificationCpuQuotaPercent
+        && s.verificationCpuIoWeight === prev.verificationCpuIoWeight
+        && s.verificationMemoryMaxMb === prev.verificationMemoryMaxMb
+      ) return;
+      registerProjectVerificationResourceProfile(
+        this.config.projectId,
+        verificationResourceProfileFromMergedSettings(verificationResourceBoundFromSettings(s), getHostCoreCount()),
+      );
+      runtimeLog.log(
+        `verification resource bound updated for ${this.config.projectId} (quota=${s.verificationCpuQuotaPercent ?? "auto"}%, weight=${s.verificationCpuIoWeight ?? "auto"}, mem=${s.verificationMemoryMaxMb ?? "off"}MB)`,
+      );
+    };
+    store.on("settings:updated", onVerificationResourceBoundChange);
+    this.settingsHandlers.push(onVerificationResourceBoundChange);
 
     // 8. Memory maintenance settings change — sync automations
     const onInsightSettingsChange = async ({

@@ -241,6 +241,17 @@ export const DEFAULT_GLOBAL_SETTINGS = {
   defaultCredentialInstanceId: undefined,
   defaultModelId: undefined,
   testMode: undefined,
+  /*
+  FNXC:VerificationResourceBound 2026-09-10-03:38:
+  Machine-wide verification resource bounds stay undefined here on purpose: the built-in defaults
+  (half-core-count quota, below-neutral weight, no memory ceiling) are derived by the engine's
+  resource-bound resolver from the actual core count, and the key must read as absent (not 0, which
+  means "operator disabled the bound") for that derivation to apply. Declared present so scope-key
+  derivation covers them.
+  */
+  verificationCpuQuotaPercent: undefined,
+  verificationCpuIoWeight: undefined,
+  verificationMemoryMaxMb: undefined,
   voiceInput: undefined,
   modelPricingOverrides: undefined,
   modelPricingFetchedAt: undefined,
@@ -571,6 +582,15 @@ export const DEFAULT_PROJECT_SETTINGS = {
   Default one verification at a time process-wide so concurrent tasks cannot each run verify:fast / full builds simultaneously and peg the host. Operators with spare cores may raise this in Scheduling settings (clamped 1–8 at runtime).
   */
   maxConcurrentVerifications: 1,
+  /*
+  FNXC:VerificationResourceBound 2026-09-10-03:38:
+  Resource bounds complement the count cap; undefined means "inherit the machine-wide global value,
+  else the resolver's built-in default". 0 is reserved for "operator disabled this bound", so the
+  default cannot be 0. See the same rationale in DEFAULT_GLOBAL_SETTINGS.
+  */
+  verificationCpuQuotaPercent: undefined,
+  verificationCpuIoWeight: undefined,
+  verificationMemoryMaxMb: undefined,
   /* Execution-worktree holders only; planning runs read-only on the project root. */
   maxWorktrees: 4,
   /*

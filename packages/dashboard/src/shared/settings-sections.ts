@@ -218,6 +218,15 @@ const SETTINGS_SECTION_DEFINITIONS: readonly SettingsSectionDefinition[] = [
   cap, which is deleted — capacity is two numbers PER PROJECT. An empty section in
   the nav is a promise of settings that are not there.
   */
+  /*
+  FNXC:VerificationResourceBound 2026-09-10-13:09:
+  RUFU-212 adds the machine-wide verification resource-bound fallbacks (CPUQuota / CPU-IO weight /
+  MemoryMax) in their own global section, placed global-then-project adjacent to the `scheduling`
+  section it feeds — the same pairing doctrine as the MCP and source-control pairs above, so the
+  fallback and the override that shadows it sit one click apart. `save-split.ts` gates these keys
+  on the literal id `scheduling-global`; renaming it there and not here silently misroutes saves.
+  */
+  { id: "scheduling-global", label: "Scheduling · Global", labelKey: "settings.nav.schedulingGlobal", scope: "global", searchableText: ["verification cpu quota", "global verification limits", "machine-wide verification", "verification memory cap", "throttle tests", "verification too heavy"] },
   { id: "scheduling", label: "Scheduling", labelKey: "settings.nav.scheduling", scope: "project", searchableText: ["max concurrent", "capacity", "stuck tasks", "poll interval", "parallel steps", "scheduler"] },
   { id: "scheduled-evals", label: "Scheduled Evals", labelKey: "settings.nav.scheduledEvals", scope: "project", searchableText: ["scheduled evals", "evaluation schedule", "eval runs", "quality jobs"] },
 

@@ -7732,6 +7732,7 @@ export default interface Resources {
         "mcp": "MCP Servers · Project",
         "prompts": "Prompts",
         "resize": "Resize settings navigation",
+        "schedulingGlobal": "Scheduling · Global",
         "secrets": "Secrets",
         "tooltip": {
           "global": "Shared across all projects",
@@ -8161,9 +8162,24 @@ export default interface Resources {
         "triageDuplicateResolutionHelp": "Block triage-detected duplicates for a Keep/Delete decision with a link to the duplicate (default), keep automatically, or delete automatically.",
         "triageDuplicateResolutionKeep": "Keep automatically",
         "triageDuplicateResolutionPrompt": "Block for decision (default)",
+        "verificationCpuIoWeight": "Verification CPU/IO weight",
+        "verificationCpuIoWeightHelp": "CPU/IO weight while unthrottled (1–10000; lower keeps the desktop responsive). Empty = inherit the machine fallback; unset there means 10. 0 disables weight shaping.",
+        "verificationCpuQuotaPercent": "Verification CPU quota (%)",
+        "verificationCpuQuotaPercentHelp": "CPUQuota per verification (200 = 2 cores). Empty = inherit the machine fallback; unset there means ~half the cores, at least 100%. 0 disables bounding for this project.",
+        "verificationMemoryMaxMb": "Verification memory cap (MB)",
+        "verificationMemoryMaxMbHelp": "MemoryMax per verification, in MB. Empty = inherit the machine fallback; unset there means no memory cap. 0 disables the cap.",
         "whenEnabledTasksThatModifyTheSameFiles": "When enabled, tasks that modify the same files are queued serially to avoid merge conflicts. Default: enabled.",
         "whenEnabledTasksWithStalePlansPROMPTMd": "When enabled, tasks with stale plans (PROMPT.md older than the threshold) are automatically sent back to planning for replanning. Default: disabled.",
         "whenTheStuckDetectorKillsAndReQueues": "When the stuck detector kills and re-queues a task, keep completed step statuses so the agent can resume from where it left off. Disable to reset every step to pending on each stuck retry. Default: enabled."
+      },
+      "schedulingGlobal": {
+        "schedulingGlobal": "Scheduling · Global",
+        "verificationCpuIoWeight": "Global verification CPU/IO weight",
+        "verificationCpuIoWeightHelp": "Machine-wide CPU/IO weight while unthrottled (1–10000; lower keeps the desktop responsive). Empty = default 10. 0 disables weight shaping machine-wide.",
+        "verificationCpuQuotaPercent": "Global verification CPU quota (%)",
+        "verificationCpuQuotaPercentHelp": "Machine-wide CPUQuota per verification (200 = 2 cores) for projects that do not set their own. Empty = derived default: roughly half the machine's cores, at least 100%. 0 disables bounding machine-wide.",
+        "verificationMemoryMaxMb": "Global verification memory cap (MB)",
+        "verificationMemoryMaxMbHelp": "Machine-wide MemoryMax per verification, in MB. Empty = no memory cap. 0 disables the cap machine-wide."
       },
       "search": {
         "allSections": "Showing all settings sections",

@@ -1976,6 +1976,20 @@ export async function runImplementation(
               cwd: worktreePath,
               timeoutMs: settings.verificationCommandTimeoutMs ?? 300_000,
               onHeartbeat: () => stuckDetector?.recordActivity(task.id),
+              /*
+              FNXC:VerificationResourceBound 2026-09-10-12:13:
+              A chat-requested verification is still a heavy deterministic spawn on the task lane —
+              it carries the same merged project resource-bound values and audit host as the tool
+              lane so no verification class reaches the machine unwrapped (native rung only).
+              */
+              resourceBound: {
+                cpuQuotaPercent: settings.verificationCpuQuotaPercent,
+                cpuIoWeight: settings.verificationCpuIoWeight,
+                memoryMaxMb: settings.verificationMemoryMaxMb,
+              },
+              auditHost: deps.store,
+              taskId: task.id,
+              resourceLane: "deterministic",
             });
             await deps.store.finishTaskVerificationRequest(task.id, claimedVerification.requestId, verificationResult.success ? "passed" : "failed", {
               success: verificationResult.success, exitCode: verificationResult.exitCode,
@@ -2090,6 +2104,18 @@ export async function runImplementation(
           taskId: task.id,
           recordActivity: () => stuckDetector?.recordActivity(task.id),
           verificationCommandTimeoutMs: settings.verificationCommandTimeoutMs,
+          /*
+          FNXC:VerificationResourceBound 2026-09-10-12:13:
+          Pass the merged project resource-bound values and the store as the bounded run-audit
+          host; the tool lane applies the envelope to native-rung spawns and defers to a
+          confining backend's own caps when one is wired.
+          */
+          resourceBound: {
+            cpuQuotaPercent: settings.verificationCpuQuotaPercent,
+            cpuIoWeight: settings.verificationCpuIoWeight,
+            memoryMaxMb: settings.verificationMemoryMaxMb,
+          },
+          auditHost: deps.store,
           onVerificationStart: (timeoutMs) => stuckDetector?.beginVerification(task.id, timeoutMs),
           onVerificationEnd: () => stuckDetector?.endVerification(task.id),
           log: {

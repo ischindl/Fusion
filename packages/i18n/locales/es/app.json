@@ -7353,7 +7353,8 @@
       "configVersions": "Versiones de configuración",
       "voiceInput": "Voice Input",
       "cliBinary": "",
-      "resize": ""
+      "resize": "",
+      "schedulingGlobal": ""
     },
     "nodeRouting": {
       "blockExecution": "",
@@ -7742,6 +7743,12 @@
       "maxConcurrentTasksHint": "",
       "maxConcurrentVerifications": "",
       "maxConcurrentVerificationsHint": "",
+      "verificationCpuQuotaPercent": "",
+      "verificationCpuQuotaPercentHelp": "",
+      "verificationCpuIoWeight": "",
+      "verificationCpuIoWeightHelp": "",
+      "verificationMemoryMaxMb": "",
+      "verificationMemoryMaxMbHelp": "",
       "pollIntervalMsHint": "",
       "executorToolFailureRetryCount": "",
       "executorToolFailureRetryCountHelp": "",
@@ -7764,6 +7771,15 @@
       "triageDuplicateResolutionDelete": "Eliminar automáticamente",
       "buildTimeoutMinutes": "",
       "maximumTimeInMinutesForBuildVerificationCommands": ""
+    },
+    "schedulingGlobal": {
+      "schedulingGlobal": "",
+      "verificationCpuQuotaPercent": "",
+      "verificationCpuQuotaPercentHelp": "",
+      "verificationCpuIoWeight": "",
+      "verificationCpuIoWeightHelp": "",
+      "verificationMemoryMaxMb": "",
+      "verificationMemoryMaxMbHelp": ""
     },
     "title": "Configuración",
     "worktrees": {

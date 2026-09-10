@@ -264,6 +264,11 @@ const SETTING_DESCRIPTION_KEYS: Record<string, string> = {
   // SchedulingSection
   maxConcurrent: "scheduling.maxConcurrentTasksHint",
   maxConcurrentVerifications: "scheduling.maxConcurrentVerificationsHint",
+  // FNXC:VerificationResourceBound 2026-09-10-13:09: RUFU-212 — the resource-envelope rows state
+  // their unset/default semantics ("Empty = inherit…", "0 disables…") in these help strings.
+  verificationCpuQuotaPercent: "scheduling.verificationCpuQuotaPercentHelp",
+  verificationCpuIoWeight: "scheduling.verificationCpuIoWeightHelp",
+  verificationMemoryMaxMb: "scheduling.verificationMemoryMaxMbHelp",
   pollIntervalMs: "scheduling.pollIntervalMsHint",
   heartbeatScopeDiscipline: "scheduling.strictDefault",
   engineerBacklogAutoClaim: "scheduling.backlogNoTaskAutoClaimIsExecutorOnly",

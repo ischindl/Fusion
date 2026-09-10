@@ -26,6 +26,14 @@ import type { SandboxBackend, SandboxPolicy, SandboxStreamingResult } from "../s
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { executorLog } from "../logger.js";
 import { withVerificationSlot } from "../concurrency/verification-concurrency.js";
+import {
+  applyVerificationResourceBound,
+  describeAppliedVerificationResourceBound,
+  type AppliedVerificationResourceBound,
+  type VerificationResourceBoundConfig,
+  type VerificationResourceBoundLane,
+} from "./verification-resource-bound.js";
+import type { RunAuditSinkHost } from "../util/emit-bounded-run-audit.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -393,6 +401,13 @@ export const runVerificationParams = Type.Object({
 // ---------------------------------------------------------------------------
 
 export interface VerificationResult {
+  /**
+   * FNXC:VerificationResourceBound 2026-09-10-12:13:
+   * Operator-visible line naming the enforced rung and quota, surfaced in the tool result text
+   * so "the board is slow because verification is throttled" is answerable from the task log
+   * on desktop and mobile without a new read route.
+   */
+  resourceBoundNote?: string;
   success: boolean;
   exitCode: number | null;
   durationMs: number;
@@ -637,6 +652,19 @@ export interface RunVerificationOptions {
   /** Explicit task-lane backend; native preserves the supervisor path. */
   sandboxBackend?: SandboxBackend;
   sandboxPolicy?: SandboxPolicy;
+  /**
+   * FNXC:VerificationResourceBound 2026-09-10-12:13:
+   * Merged (project-over-global) operator values for the verification child's CPU/IO/memory
+   * envelope. Callers pass the raw settings keys; the resolver owns defaults, clamping, and
+   * the `0`-disables rule, so a missing value means "inherit", never "unbounded".
+   */
+  resourceBound?: VerificationResourceBoundConfig;
+  /** Audit lane tag for bound visibility; defaults to "tool". */
+  resourceLane?: VerificationResourceBoundLane;
+  /** Bounded best-effort run-audit sink host (the task store in production). */
+  auditHost?: RunAuditSinkHost;
+  /** Task id for bound audit metadata (ids/counts only — never command text). */
+  taskId?: string;
 }
 
 /**
@@ -668,16 +696,36 @@ async function runVerificationCommandUnlocked(
   const { command, cwd, timeoutMs, expectFailure = false, onHeartbeat, onLine, sandboxBackend, sandboxPolicy } = opts;
   if (sandboxBackend) {
     await sandboxBackend.prepare(sandboxPolicy ?? { allowNetwork: true });
-    return runSandboxedVerificationCommand({ command, cwd, timeoutMs, expectFailure, onHeartbeat, sandboxBackend, signal: opts.signal });
+    /*
+    FNXC:VerificationResourceBound 2026-09-10-12:13:
+    Only the pass-through ("native") backend needs the resource envelope — a confining backend
+    (sandbox-exec/bubblewrap/firejail/docker/podman/custom) already caps the child through its own
+    mechanism, and double-wrapping would fight that policy. The gate reads the capability `id`
+    union so a new confining backend is skipped automatically.
+    */
+    const bound = sandboxBackend.capabilities().id === "native"
+      ? await applyBoundOrDegrade(opts)
+      : undefined;
+    return runSandboxedVerificationCommand({ command, cwd, timeoutMs, expectFailure, onHeartbeat, sandboxBackend, signal: opts.signal, bound });
   }
   const startMs = Date.now();
   const warnings: string[] = [];
+  /*
+  FNXC:VerificationResourceBound 2026-09-10-12:13:
+  Wrap last, immediately before the spawn, so marathon detection, bootstrap prepending, and
+  command logging all reason about the ORIGINAL command. The wrapper starts with `exec`, so the
+  supervisor's direct child is replaced (not nested) and stays in this process group — the
+  negative-pgid SIGTERM→SIGKILL escalation and the post-close group reap still reach the whole tree.
+  */
+  const bound = await applyBoundOrDegrade(opts);
+  const spawnCommand = bound?.command ?? command;
+  const resourceBoundNote = bound ? describeAppliedVerificationResourceBound(bound) : undefined;
 
   const stdoutBuf = createBuffer();
   const stderrBuf = createBuffer();
 
   return new Promise<VerificationResult>((resolve) => {
-    const supervised = superviseSpawn(command, [], {
+    const supervised = superviseSpawn(spawnCommand, [], {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
       env: {
@@ -778,6 +826,7 @@ async function runVerificationCommandUnlocked(
 
       const exitCode = code ?? null;
       const durationMs = Date.now() - startMs;
+      bound?.reportCompletion(durationMs);
       const zeroExit = exitCode === 0;
       const success = expectFailure ? true : zeroExit;
 
@@ -806,6 +855,7 @@ async function runVerificationCommandUnlocked(
         command,
         cwd,
         warnings,
+        ...(resourceBoundNote ? { resourceBoundNote } : {}),
       });
     });
 
@@ -828,9 +878,37 @@ async function runVerificationCommandUnlocked(
         command,
         cwd,
         warnings,
+        ...(resourceBoundNote ? { resourceBoundNote } : {}),
       });
     });
   });
+}
+
+/**
+ * Resolve and apply the spawn-time resource bound without ever failing the verification.
+ *
+ * FNXC:VerificationResourceBound 2026-09-10-12:13:
+ * The bound is an optimization, never a dependency: if resolution somehow throws, emit ONE
+ * warning and run the bare command — failing a card because the throttle could not be
+ * established is the opposite of the requirement.
+ */
+async function applyBoundOrDegrade(
+  opts: RunVerificationOptions,
+): Promise<AppliedVerificationResourceBound | undefined> {
+  try {
+    return await applyVerificationResourceBound({
+      command: opts.command,
+      settings: opts.resourceBound ?? {},
+      lane: opts.resourceLane ?? "tool",
+      taskId: opts.taskId,
+      auditHost: opts.auditHost,
+    });
+  } catch (error) {
+    executorLog.warn(
+      `[fn_run_verification] resource-bound resolution failed, running unbound: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return undefined;
+  }
 }
 
 function sandboxOutcomeToResult(
@@ -857,17 +935,21 @@ function sandboxOutcomeToResult(
 }
 
 /** Keep task-tool verification on the selected backend's streaming process path. */
-async function runSandboxedVerificationCommand(opts: Pick<RunVerificationOptions, "command" | "cwd" | "timeoutMs" | "expectFailure" | "onHeartbeat" | "signal"> & { sandboxBackend: SandboxBackend }): Promise<VerificationResult> {
+async function runSandboxedVerificationCommand(opts: Pick<RunVerificationOptions, "command" | "cwd" | "timeoutMs" | "expectFailure" | "onHeartbeat" | "signal"> & { sandboxBackend: SandboxBackend, bound?: AppliedVerificationResourceBound }): Promise<VerificationResult> {
   const startedAt = Date.now();
   opts.onHeartbeat();
-  const result = await opts.sandboxBackend.runStreaming(opts.command, {
+  const result = await opts.sandboxBackend.runStreaming(opts.bound?.command ?? opts.command, {
     cwd: opts.cwd,
     timeout: opts.timeoutMs,
     maxBuffer: MAX_OUTPUT_BYTES,
     signal: opts.signal,
     env: { COREPACK_ENABLE_DOWNLOAD_PROMPT: "0" },
   });
-  return sandboxOutcomeToResult(opts.command, opts.cwd, startedAt, opts.expectFailure === true, result);
+  const verification = sandboxOutcomeToResult(opts.command, opts.cwd, startedAt, opts.expectFailure === true, result);
+  opts.bound?.reportCompletion(verification.durationMs);
+  const note = opts.bound ? describeAppliedVerificationResourceBound(opts.bound) : undefined;
+  if (note) verification.resourceBoundNote = note;
+  return verification;
 }
 
 // ---------------------------------------------------------------------------
@@ -886,6 +968,14 @@ export interface CreateRunVerificationToolOpts {
   /** Task session sandbox, prepared for each command before streaming. */
   sandboxBackend?: SandboxBackend;
   sandboxPolicy?: SandboxPolicy;
+  /**
+   * FNXC:VerificationResourceBound 2026-09-10-12:13:
+   * Merged project-over-global operator values for the verification child's resource envelope,
+   * plus the run-audit host so engaged/sustained bound events land in the same audit store the
+   * engine already uses. Resolution/clamping/defaults live in verification-resource-bound.ts.
+   */
+  resourceBound?: VerificationResourceBoundConfig;
+  auditHost?: RunAuditSinkHost;
   taskId: string;
   /** Called on every output line AND on synthetic quiet-interval heartbeats. */
   recordActivity: () => void;
@@ -929,6 +1019,8 @@ export function createRunVerificationTool(
     taskId,
     recordActivity,
     verificationCommandTimeoutMs,
+    resourceBound,
+    auditHost,
     onVerificationStart,
     onVerificationEnd,
     log,
@@ -1083,6 +1175,10 @@ export function createRunVerificationTool(
             onHeartbeat: recordActivity,
             sandboxBackend,
             sandboxPolicy,
+            resourceBound,
+            auditHost,
+            taskId,
+            resourceLane: "tool",
           });
         } finally {
           onVerificationEnd?.();
@@ -1108,6 +1204,7 @@ export function createRunVerificationTool(
       if (selectedRepo) lines.push(`Repository: ${selectedRepo.repo}`);
       lines.push(`Exit code: ${result.exitCode ?? "null (signal)"}`);
       lines.push(`Duration: ${(result.durationMs / 1000).toFixed(1)}s`);
+      if (result.resourceBoundNote) lines.push(result.resourceBoundNote);
       lines.push(`Success: ${result.success}`);
 
       const hasFailureOutput = result.exitCode !== 0 || result.timedOut;

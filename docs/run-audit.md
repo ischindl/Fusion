@@ -143,3 +143,17 @@ compensation (child discarded, source left active), which is why `outcome` and `
 separate keys rather than one merged code.
 -->
 `chat:handoff-session-created` records a Direct-chat handoff that completed (the source was archived and a continuation session was created), and `chat:handoff-session-failed` records a refused handoff (before any rows are written) or the archival-failure compensation (the half-built child is discarded and the source stays active). A created row is filed under the continuation the operator now types into (`chat:<childSessionId>`); a failed row is filed under the source they clicked (`chat:<sourceSessionId>`), because that is the session whose action failed. Metadata is ids/counts/fixed enums only: `fromSessionId`, `toSessionId` on success, `outcome` (`created` / `degraded-created` on success, `refused` / `archival-failed` on failure; `summarizer-failed` is declared in the contract but unreachable in v1, since a briefing failure degrades rather than refuses), a fixed `refusalCode` (`not-found`, `disabled`, `room-unsupported`, `cli-backed-unsupported`, `task-planner-unsupported`, `source-not-active`, `generation-in-progress`, `unknown-model`, `archival-failed`), plus `messageCount` and `summaryChars` where measured. Neither event records the conversation transcript, the generated briefing text, or a refusal sentence — those live on the primer message row and the HTTP error respectively. Both emit through the FN-9175 bounded best-effort seam (`emitBoundedRunAudit`, `agentId: "chat-handoff"`) so telemetry can never decide whether a handoff lands, and they are intentionally outside the curated delivery-pipeline event catalogue.
+
+### Verification resource bound events
+
+<!--
+FNXC:VerificationResourceBound 2026-09-10-13:09:
+RUFU-212 audit pair, catalogued here because `docs/run-audit.md` is the audit reference a query
+starts from. The engaged event fires once per verification spawn that actually ran inside the
+resource envelope (a bare fallback emits nothing — the absent row is the signal that the host
+could not be bounded); the sustained event marks a bounded verification that stayed running long
+enough to be worth operator attention (>= 120s). Both file under agentId `verification` and domain
+`sandbox`, are intentionally outside the curated delivery-pipeline event catalogue, and use the
+FN-9175 bounded best-effort seam so telemetry can never alter, delay, or fail the verification.
+-->
+`verification:resource-bound-engaged` records that a verification-class spawn (tags `tool`, `deterministic`, or `fix-repair`) ran with the resource envelope applied, and `verification:resource-bound-sustained` records the same run reporting its duration from the lane's existing exit path once that duration reaches the sustained threshold. Metadata is ids/counts/fixed buckets only: `lane`, `rung` (`scope` / `priority`), `quotaBucket` (the applied CPU quota as a share of the whole machine: `none` / `lt-25` / `25-50` / `50-75` / `gte-75`), numeric `cpuIoWeight` and `memoryMaxMb` only when those dimensions are set, and on the sustained event `durationBucket` (`lt-2m` / `2-5m` / `5-15m` / `gte-15m`) plus the raw `durationMs`. The target is the task id when the lane carries one, else `lane:<tag>`. Neither event records the verification command line, file paths, working directories, or error text.

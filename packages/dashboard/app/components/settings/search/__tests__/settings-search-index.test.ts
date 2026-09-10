@@ -77,6 +77,9 @@ const SECTION_FILE_TO_ID: Record<string, string> = {
   "ResearchGlobalSection.tsx": "research-global",
   "ResearchProjectSection.tsx": "research-project",
   "ScheduledEvalsSection.tsx": "scheduled-evals",
+  // FNXC:VerificationResourceBound 2026-09-10-13:09: RUFU-212 — paired global section for the
+  // verification resource-bound fallbacks (must match the save-split.ts section-id gate literally).
+  "SchedulingGlobalSection.tsx": "scheduling-global",
   "SchedulingSection.tsx": "scheduling",
   "SourceControlGlobalSection.tsx": "source-control-global",
   "SourceControlSection.tsx": "source-control",

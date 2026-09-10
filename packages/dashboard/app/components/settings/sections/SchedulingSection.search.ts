@@ -30,6 +30,39 @@ export const schedulingSearchEntries: SettingsSearchEntry[] = [
     helpFallback: "Caps stacked typecheck/build verification across tasks. Default: 1. Range: 1–8.",
     keywords: ["parallelism", "tests", "cpu", "load"],
   },
+  /*
+  FNXC:VerificationResourceBound 2026-09-10-13:09:
+  RUFU-212: one entry per new resource-envelope row, labels/help verbatim from
+  SchedulingSection.tsx. Keywords carry the complaint vocabulary ("machine slows to a crawl",
+  "desktop lag while tests run") an operator types before knowing the setting's name.
+  */
+  {
+    sectionId: "scheduling",
+    key: "verificationCpuQuotaPercent",
+    labelKey: "settings.scheduling.verificationCpuQuotaPercent",
+    labelFallback: "Verification CPU quota (%)",
+    helpKey: "settings.scheduling.verificationCpuQuotaPercentHelp",
+    helpFallback: "CPUQuota per verification (200 = 2 cores). Empty = inherit the machine fallback; unset there means ~half the cores, at least 100%. 0 disables bounding for this project.",
+    keywords: ["cpu", "throttle", "slow desktop", "machine crawl", "load", "verification too heavy"],
+  },
+  {
+    sectionId: "scheduling",
+    key: "verificationCpuIoWeight",
+    labelKey: "settings.scheduling.verificationCpuIoWeight",
+    labelFallback: "Verification CPU/IO weight",
+    helpKey: "settings.scheduling.verificationCpuIoWeightHelp",
+    helpFallback: "CPU/IO weight while unthrottled (1–10000; lower keeps the desktop responsive). Empty = inherit the machine fallback; unset there means 10. 0 disables weight shaping.",
+    keywords: ["nice", "priority", "io", "disk", "desktop lag", "responsiveness"],
+  },
+  {
+    sectionId: "scheduling",
+    key: "verificationMemoryMaxMb",
+    labelKey: "settings.scheduling.verificationMemoryMaxMb",
+    labelFallback: "Verification memory cap (MB)",
+    helpKey: "settings.scheduling.verificationMemoryMaxMbHelp",
+    helpFallback: "MemoryMax per verification, in MB. Empty = inherit the machine fallback; unset there means no memory cap. 0 disables the cap.",
+    keywords: ["memory", "ram", "oom", "cap", "verification memory"],
+  },
   {
     sectionId: "scheduling",
     key: "executorToolFailureRetryCount",

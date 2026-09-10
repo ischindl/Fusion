@@ -75,6 +75,24 @@ describe("settings defaults invariants", () => {
     expect("dashboardKeyboardShortcuts" in DEFAULT_PROJECT_SETTINGS).toBe(false);
   });
 
+  it("keeps the verification resource-bound keys dual-scope and schema-unset so the engine resolver owns the machine-derived default", () => {
+    /*
+    FNXC:VerificationResourceBound 2026-09-10-12:13:
+    The verification CPU/IO/memory envelope is read as merged settings; a concrete value baked
+    into either defaults object would look operator-set and defeat the resolver's per-host
+    ≈half-the-cores derivation, the clamp, and the `0`-disables rule. The keys must therefore be
+    present-but-undefined in BOTH scopes (project overrides global overrides derived default).
+    */
+    for (const key of ["verificationCpuQuotaPercent", "verificationCpuIoWeight", "verificationMemoryMaxMb"] as const) {
+      expect(GLOBAL_SETTINGS_KEYS).toContain(key);
+      expect(PROJECT_SETTINGS_KEYS).toContain(key);
+      expect(DEFAULT_GLOBAL_SETTINGS[key]).toBeUndefined();
+      expect(DEFAULT_PROJECT_SETTINGS[key]).toBeUndefined();
+      expect(Object.hasOwn(DEFAULT_GLOBAL_SETTINGS, key)).toBe(true);
+      expect(Object.hasOwn(DEFAULT_PROJECT_SETTINGS, key)).toBe(true);
+    }
+  });
+
   it("graduates workflow runtime defaults out of experimental flags", () => {
     expect(DEFAULT_GLOBAL_SETTINGS.experimentalFeatures.workflowColumns).toBeUndefined();
     expect(DEFAULT_GLOBAL_SETTINGS.experimentalFeatures.workflowGraphExecutor).toBeUndefined();

@@ -391,6 +391,33 @@ export interface GlobalSettings {
    *  of per-task or per-lane overrides. No network calls, zero token cost.
    *  Project `testMode` takes precedence over the global value. */
   testMode?: boolean;
+  /**
+   * FNXC:VerificationResourceBound 2026-09-10-03:38:
+   * Machine-wide fallback for the CPU quota granted to self-verification child processes
+   * (fn_run_verification, deterministic merge verification), as a percentage of one core
+   * (600 = six cores' worth). This exists because a verification worker pool pegged every core
+   * of a 24-core host and starved the dashboard's own event loop: opening a board took
+   * 1.4–2.8 s for minutes. The count cap cannot help the FIRST verification; this bounds its
+   * appetite instead. Unset → built-in default derived from the core count (≈half the machine,
+   * floor 100). `0` disables the quota bound. Project value, then global value, then built-in default.
+   */
+  verificationCpuQuotaPercent?: number;
+  /**
+   * FNXC:VerificationResourceBound 2026-09-10-03:38:
+   * Machine-wide fallback for the scheduler weight (1–10000, neutral 100) applied to verification
+   * children as both CPUWeight and IOWeight, so verification yields to interactive work under
+   * contention. Default is below neutral (10) — the machine stays usable during long verifications.
+   * `0` disables weight shaping. Project value, then global value, then built-in default.
+   */
+  verificationCpuIoWeight?: number;
+  /**
+   * FNXC:VerificationResourceBound 2026-09-10-03:38:
+   * Machine-wide fallback memory ceiling (MB) for verification children. Memory is the one
+   * resource no count cap bounds — one worker pool can consume all RAM. The built-in default is
+   * UNSET so no legitimate build is ever OOM-killed; only an explicit operator value applies a
+   * ceiling. `0` disables it. Project value, then global value, then built-in default.
+   */
+  verificationMemoryMaxMb?: number;
   voiceInput?: VoiceInputSettings;
   /**
    * User-edited or one-click-fetched pricing entries keyed by lowercased `provider:model`.
@@ -1804,6 +1831,33 @@ export interface ProjectSettings {
    * When set, this millisecond value overrides both fn_run_verification scope defaults (package 300s, workspace 900s); when unset, the legacy per-scope defaults still apply.
    */
   verificationCommandTimeoutMs?: number;
+  /**
+   * FNXC:VerificationResourceBound 2026-09-10-03:38:
+   * Project override for the CPU quota granted to self-verification child processes
+   * (fn_run_verification, deterministic merge verification), as a percentage of one core
+   * (600 = six cores' worth). This exists because a verification worker pool pegged every core
+   * of a 24-core host and starved the dashboard's own event loop: opening a board took
+   * 1.4–2.8 s for minutes. The count cap cannot help the FIRST verification; this bounds its
+   * appetite instead. Unset → machine-wide global value, else built-in default derived from the
+   * core count (≈half the machine, floor 100). `0` disables the quota bound.
+   */
+  verificationCpuQuotaPercent?: number;
+  /**
+   * FNXC:VerificationResourceBound 2026-09-10-03:38:
+   * Project override for the scheduler weight (1–10000, neutral 100) applied to verification
+   * children as both CPUWeight and IOWeight, so verification yields to interactive work under
+   * contention. Default is below neutral (10) — the machine stays usable during long
+   * verifications. Unset → machine-wide global value, else built-in default. `0` disables weight shaping.
+   */
+  verificationCpuIoWeight?: number;
+  /**
+   * FNXC:VerificationResourceBound 2026-09-10-03:38:
+   * Project override memory ceiling (MB) for verification children. Memory is the one resource
+   * no count cap bounds — one worker pool can consume all RAM. The built-in default is UNSET so
+   * no legitimate build is ever OOM-killed; only an explicit operator value applies a ceiling.
+   * Unset → machine-wide global value, else no ceiling. `0` disables it.
+   */
+  verificationMemoryMaxMb?: number;
   /**
    * FNXC:Verification 2026-06-25-00:00:
    * When true (default), merge/executor verification is narrowed to ONLY the

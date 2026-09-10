@@ -6,6 +6,12 @@ import type { TaskStore, AgentRole } from "@fusion/core";
 import { resolveSandboxBackend } from "../sandbox/index.js";
 import type { SandboxBackend, SandboxRunStreamingOptions, SandboxStreamingResult } from "../sandbox/types.js";
 import { withVerificationSlot } from "../concurrency/verification-concurrency.js";
+import {
+  applyVerificationResourceBound,
+  describeAppliedVerificationResourceBound,
+  type AppliedVerificationResourceBound,
+  type VerificationResourceBoundLane,
+} from "./verification-resource-bound.js";
 
 // ── Constants ──────────────────────────────────────────────────────────
 
@@ -190,9 +196,16 @@ export async function execWithProcessGroup(
    * never depend on mutable global state.
    */
   backend: SandboxBackend = getSandboxBackend(),
+  /**
+   * FNXC:VerificationResourceBound 2026-09-10-12:13:
+   * Command text used in thrown error/log messages. Defaults to the spawned command; bound
+   * callers pass the ORIGINAL (unwrapped) command so task logs and error text never leak the
+   * wrapper or drift from what the operator configured.
+   */
+  displayCommand: string = command,
 ): Promise<{ stdout: string; stderr: string; bufferOverflow: boolean; aborted?: boolean }> {
   const result = await backend.runStreaming(command, options);
-  return toLegacyExecResult(command, result);
+  return toLegacyExecResult(displayCommand, result);
 }
 
 // ── Output summarization ───────────────────────────────────────────────
@@ -375,6 +388,12 @@ export async function runVerificationCommand(
    * state (required for safe concurrent verification — see mission-verification).
    */
   backend?: SandboxBackend,
+  /**
+   * FNXC:VerificationResourceBound 2026-09-10-12:13: audit lane tag for this seam's bound
+   * events; defaults to "deterministic" (merge gate, executor gate, attempt-fix re-runs,
+   * mission behavioral verification all share this spawn path).
+   */
+  resourceLane?: VerificationResourceBoundLane,
 ): Promise<VerificationCommandResult> {
   /*
   FNXC:VerificationConcurrency 2026-07-15-03:35:
@@ -398,6 +417,7 @@ export async function runVerificationCommand(
         extraEnv,
         timeoutMsOverride,
         backend,
+        resourceLane,
       ),
     signal,
   );
@@ -420,6 +440,7 @@ async function runVerificationCommandUnlocked(
   extraEnv?: NodeJS.ProcessEnv,
   timeoutMsOverride?: number,
   backend?: SandboxBackend,
+  resourceLane?: VerificationResourceBoundLane,
 ): Promise<VerificationCommandResult> {
   const logger = log ?? { log: console.log, error: console.error, warn: console.warn };
   const label = (agentLabel ?? "merger") as AgentRole;
@@ -452,6 +473,40 @@ async function runVerificationCommandUnlocked(
 
   const verificationStartedAt = Date.now();
   /*
+   * FNXC:VerificationResourceBound 2026-09-10-12:13:
+   * Every deterministic verification spawn (merge gate, executor gate, attempt-fix re-run,
+   * mission behavioral verification) reaches the machine through this seam, so the resource
+   * envelope is applied HERE rather than in each caller — one shaper, no second copy.
+   * Operator values are read from the store's merged settings at spawn time because the callers
+   * (merger/executor/mission) do not thread settings through this signature. A non-native
+   * (confining) backend caps the child itself and is skipped, mirroring the tool lane. Any
+   * resolution failure degrades to the bare spawn with a single debug line — the bound never
+   * fails a verification.
+   */
+  const activeBackend = backend ?? getSandboxBackend();
+  let bound: AppliedVerificationResourceBound | undefined;
+  if (activeBackend.capabilities().id === "native") {
+    try {
+      const mergedSettings = await store.getSettings();
+      bound = await applyVerificationResourceBound({
+        command,
+        settings: {
+          cpuQuotaPercent: mergedSettings.verificationCpuQuotaPercent,
+          cpuIoWeight: mergedSettings.verificationCpuIoWeight,
+          memoryMaxMb: mergedSettings.verificationMemoryMaxMb,
+        },
+        lane: resourceLane ?? "deterministic",
+        taskId,
+        auditHost: store,
+      });
+      const boundNote = describeAppliedVerificationResourceBound(bound);
+      if (boundNote) debugLog(`${taskId}: ${type} command ${boundNote}`);
+    } catch {
+      bound = undefined;
+      debugLog(`${taskId}: ${type} command resource-bound resolution failed, running unbound`);
+    }
+  }
+  /*
    * FNXC:Verification 2026-06-17-14:38:
    * Configured test/build commands share the same project verification budget as fn_run_verification so merge/step verification cannot run marathon subprocesses outside the engine-level guardrail.
    * FNXC:Verification 2026-06-25-13:55:
@@ -463,7 +518,7 @@ async function runVerificationCommandUnlocked(
   const timeoutMs = Math.min(rawTimeoutMs, VERIFICATION_COMMAND_HARD_CAP_MS);
   try {
     const { stdout, stderr, bufferOverflow } = await execWithProcessGroup(
-      command,
+      bound?.command ?? command,
       {
         cwd: rootDir,
         timeout: timeoutMs,
@@ -471,7 +526,8 @@ async function runVerificationCommandUnlocked(
         signal,
         ...(extraEnv !== undefined && { env: extraEnv }),
       },
-      backend ?? getSandboxBackend(),
+      activeBackend,
+      command,
     );
 
     if (signal?.aborted) {
@@ -487,6 +543,7 @@ async function runVerificationCommandUnlocked(
     result.success = true;
 
     const verificationDurationMs = Date.now() - verificationStartedAt;
+    bound?.reportCompletion(verificationDurationMs);
     const timingDetail = `${verificationDurationMs}ms`;
     if (bufferOverflow) {
       debugLog(`${taskId}: ${type} command succeeded (exit 0, output exceeded buffer) in ${verificationDurationMs}ms`);
@@ -521,6 +578,7 @@ async function runVerificationCommandUnlocked(
       );
     }
     const verificationDurationMs = Date.now() - verificationStartedAt;
+    bound?.reportCompletion(verificationDurationMs);
     const err = error as { stdout?: string | Buffer; stderr?: string | Buffer; status?: number; code?: number | string; message?: string };
     result.stdout = err?.stdout?.toString?.() || "";
     result.stderr = err?.stderr?.toString?.() || "";

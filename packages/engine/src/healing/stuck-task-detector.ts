@@ -441,6 +441,13 @@ export class StuckTaskDetector {
   /**
    * FNXC:Reliability 2026-06-17-16:05:
    * fn_run_verification owns its subprocess timeout and emits line/synthetic heartbeats while alive. During that bounded active window, no-progress loop/churn classification is suspended because subprocess output is forward progress, not agent churn.
+   *
+   * FNXC:VerificationResourceBound 2026-09-10-12:13:
+   * Decision record: the detector spawns nothing — it only brackets already-running verification
+   * (begin/end counting against the runner's own deadline), so there is no resource bound to apply
+   * here. The verification it brackets is wrapped at its spawn seam (tool lane / shared
+   * verification-utils path), and the bracket window stays derived from the runner's timeout,
+   * unchanged by the envelope.
    */
   beginVerification(taskId: string, timeoutMs: number): void {
     const entry = this.findTrackedEntry(taskId);

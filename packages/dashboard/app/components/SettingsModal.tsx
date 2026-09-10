@@ -57,6 +57,9 @@ import { CommandsSection } from "./settings/sections/CommandsSection";
 import { MergeSection } from "./settings/sections/MergeSection";
 import { SourceControlSection } from "./settings/sections/SourceControlSection";
 import { SourceControlGlobalSection } from "./settings/sections/SourceControlGlobalSection";
+// FNXC:VerificationResourceBound 2026-09-10-13:09: RUFU-212 — paired global section for the
+// verification resource-bound fallbacks (dedicated scoped state, mirroring the GitLab pattern).
+import { SchedulingGlobalSection, type GlobalVerificationBoundSettings } from "./settings/sections/SchedulingGlobalSection";
 import { AgentPermissionsSection } from "./settings/sections/AgentPermissionsSection";
 import { MemorySection } from "./settings/sections/MemorySection";
 import { ResearchProjectSection } from "./settings/sections/ResearchProjectSection";
@@ -1081,6 +1084,14 @@ export function SettingsModal({
   // This stores the raw { global, project } structure from the API
   const [scopedSettings, setScopedSettings] = useState<{ global: GlobalSettings; project: Partial<Settings> } | null>(null);
   const [globalGitlabSettings, setGlobalGitlabSettings] = useState<GlobalSourceControlSettings | null>(null);
+  /*
+  FNXC:VerificationResourceBound 2026-09-10-13:09:
+  RUFU-212: dedicated scoped state for the "scheduling-global" section, seeded from scoped.global
+  exactly like globalGitlabSettings (FN-7453 doctrine). The merged form carries the PROJECT-EFFECTIVE
+  value for these dual keys; editing the machine-wide fallback from that would let one project's
+  override masquerade as the machine default on save.
+  */
+  const [globalVerificationBoundSettings, setGlobalVerificationBoundSettings] = useState<GlobalVerificationBoundSettings | null>(null);
   // Track initial scoped values for null-as-delete semantics on project overrides
   const [initialScopedValues, setInitialScopedValues] = useState<{ global: GlobalSettings; project: Partial<Settings> } | null>(null);
   const mcpFormForScope = useCallback((scope: McpSettingsScope): Settings => ({
@@ -1733,6 +1744,14 @@ export function SettingsModal({
           jiraAuthTokenSecretKey: scoped.global.jiraAuthTokenSecretKey,
           jiraAuthTokenSecretScope: scoped.global.jiraAuthTokenSecretScope,
           jiraBranchNameTemplate: scoped.global.jiraBranchNameTemplate,
+        });
+        // FNXC:VerificationResourceBound 2026-09-10-13:09: RUFU-212 — seed the machine-wide
+        // verification resource-bound fallbacks from the RAW global scope (same site as the GitLab
+        // scoped state; a missing key stays undefined = derived default, never zero).
+        setGlobalVerificationBoundSettings({
+          verificationCpuQuotaPercent: scoped.global.verificationCpuQuotaPercent,
+          verificationCpuIoWeight: scoped.global.verificationCpuIoWeight,
+          verificationMemoryMaxMb: scoped.global.verificationMemoryMaxMb,
         });
         setInitialScopedValues({
           ...scoped,
@@ -3510,6 +3529,9 @@ export function SettingsModal({
     const initialScopedValuesSnapshot = initialScopedValues;
     const activeSectionSnapshot = activeSection;
     const globalGitlabSettingsSnapshot = globalGitlabSettings;
+    // FNXC:VerificationResourceBound 2026-09-10-13:09: RUFU-212 — snapshot alongside the GitLab
+    // scoped state so a concurrent edit during persist is detected, not silently overwritten.
+    const globalVerificationBoundSettingsSnapshot = globalVerificationBoundSettings;
     const workflowLaneRevisionSnapshot = workflowLaneRevisionRef.current;
     const limits = formSnapshot.researchSettings?.limits;
     if (limits?.maxConcurrentRuns !== undefined && (!Number.isFinite(limits.maxConcurrentRuns) || limits.maxConcurrentRuns < 1)) {
@@ -3587,6 +3609,24 @@ export function SettingsModal({
         executorEscalationNodeId: formSnapshot.executorEscalationNodeId?.trim() || undefined,
         taskPrefix: formSnapshot.taskPrefix?.trim() || undefined,
         githubTrackingDefaultRepo: formSnapshot.githubTrackingDefaultRepo?.trim() || undefined,
+        /*
+        FNXC:VerificationResourceBound 2026-09-10-13:09:
+        RUFU-212 dual-scope routing, mirroring gitlabFormForSave above: while "scheduling-global"
+        is open the three resource-bound keys are taken from the RAW scoped global state; in every
+        other section (the paired project "scheduling" section included) the merged form value
+        stands and save-split routes it to the project patch. `splitSettingsSave` double-checks
+        this by active section — a divergence here would write the project's effective value into
+        global defaults.
+        */
+        verificationCpuQuotaPercent: activeSectionSnapshot === "scheduling-global" && globalVerificationBoundSettingsSnapshot
+          ? globalVerificationBoundSettingsSnapshot.verificationCpuQuotaPercent
+          : formSnapshot.verificationCpuQuotaPercent,
+        verificationCpuIoWeight: activeSectionSnapshot === "scheduling-global" && globalVerificationBoundSettingsSnapshot
+          ? globalVerificationBoundSettingsSnapshot.verificationCpuIoWeight
+          : formSnapshot.verificationCpuIoWeight,
+        verificationMemoryMaxMb: activeSectionSnapshot === "scheduling-global" && globalVerificationBoundSettingsSnapshot
+          ? globalVerificationBoundSettingsSnapshot.verificationMemoryMaxMb
+          : formSnapshot.verificationMemoryMaxMb,
         /*
         FNXC:DashboardShortcuts 2026-07-04-00:00:
         FN-7553 normalizes every declared shortcut action (derived from resolveDashboardKeyboardShortcuts' key set) on save, not just quickChat/terminal, so newly-added actions get the same trim/normalize-before-persist treatment.
@@ -3720,6 +3760,7 @@ export function SettingsModal({
         form: formSnapshot,
         scopedSettings: scopedSettingsSnapshot,
         globalGitlabSettings: globalGitlabSettingsSnapshot,
+        globalVerificationBoundSettings: globalVerificationBoundSettingsSnapshot,
       });
       lastPersistSucceededRef.current = true;
       return true;
@@ -3737,13 +3778,17 @@ export function SettingsModal({
         void persistSettingsRef.current?.();
       }
     }
-  }, [form, globalGitlabSettings, prefixError, presetDraft, initialValues, initialScopedValues, scopedSettings, addToast, projectId, activeSection, t]);
+  }, [form, globalGitlabSettings, globalVerificationBoundSettings, prefixError, presetDraft, initialValues, initialScopedValues, scopedSettings, addToast, projectId, activeSection, t]);
 
   persistSettingsRef.current = persistSettings;
   const settingsDirty = useMemo(() => {
     const dirtyPayload = activeSection === "source-control-global" && globalGitlabSettings
       ? { ...form, ...globalGitlabSettings }
-      : form;
+      // FNXC:VerificationResourceBound 2026-09-10-13:09: RUFU-212 — same scoped-state swap for the
+      // machine-wide verification fallbacks, or editing them there never marks the form dirty.
+      : activeSection === "scheduling-global" && globalVerificationBoundSettings
+        ? { ...form, ...globalVerificationBoundSettings }
+        : form;
     const { globalPatch, projectPatch } = splitSettingsSave({
       payload: dirtyPayload,
       initialValues,
@@ -3756,9 +3801,9 @@ export function SettingsModal({
     });
     return Object.keys(globalPatch).length > 0 || Object.keys(projectPatch).length > 0
       || workflowLanesDirty;
-  }, [form, globalGitlabSettings, initialScopedValues, initialValues, scopedSettings, activeSection, workflowLanesDirty]);
+  }, [form, globalGitlabSettings, globalVerificationBoundSettings, initialScopedValues, initialValues, scopedSettings, activeSection, workflowLanesDirty]);
 
-  const autoSaveSnapshot = useMemo(() => JSON.stringify({ form, scopedSettings, globalGitlabSettings, workflowLaneRevision: workflowLaneRevisionRef.current }), [form, globalGitlabSettings, scopedSettings, workflowLanesDirty]);
+  const autoSaveSnapshot = useMemo(() => JSON.stringify({ form, scopedSettings, globalGitlabSettings, globalVerificationBoundSettings, workflowLaneRevision: workflowLaneRevisionRef.current }), [form, globalGitlabSettings, globalVerificationBoundSettings, scopedSettings, workflowLanesDirty]);
   const hasAutoSaveChange = autoSaveActivationSnapshotRef.current !== null
     && autoSaveActivationSnapshotRef.current !== autoSaveSnapshot;
   latestAutoSaveStateRef.current = { dirty: settingsDirty, changed: hasAutoSaveChange };
@@ -3791,7 +3836,7 @@ export function SettingsModal({
     return () => {
       if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     };
-  }, [loading, autoSaveReady, hasAutoSaveChange, settingsDirty, prefixError, presetDraft, form, scopedSettings, globalGitlabSettings, workflowLanesDirty, activeSection]);
+  }, [loading, autoSaveReady, hasAutoSaveChange, settingsDirty, prefixError, presetDraft, form, scopedSettings, globalGitlabSettings, globalVerificationBoundSettings, workflowLanesDirty, activeSection]);
 
   const requestClose = useCallback(async () => {
     if (autoSaveTimerRef.current) {
@@ -4320,6 +4365,27 @@ export function SettingsModal({
             onTaskDetailChatFirstChange={onTaskDetailChatFirstChange}
             sessionBannersHidden={sessionBannersHidden}
             setSessionBannersHidden={setSessionBannersHidden}
+          />
+        );
+      /*
+      FNXC:VerificationResourceBound 2026-09-10-13:09:
+      RUFU-212: paired global home for the verification resource-bound fallbacks. Like
+      source-control-global, rows read/write the dedicated scoped state (seeded from scoped.global),
+      never the merged form. The change-patch merge keeps untouched siblings' values instead of
+      collapsing the state to the edited key.
+      */
+      case "scheduling-global":
+        return (
+          <SchedulingGlobalSection
+            form={form}
+            setForm={setForm}
+            globalSettings={globalVerificationBoundSettings}
+            onGlobalVerificationBoundSettingsChange={(patch) => setGlobalVerificationBoundSettings((current) => ({
+              verificationCpuQuotaPercent: current?.verificationCpuQuotaPercent,
+              verificationCpuIoWeight: current?.verificationCpuIoWeight,
+              verificationMemoryMaxMb: current?.verificationMemoryMaxMb,
+              ...patch,
+            }))}
           />
         );
       case "scheduling":

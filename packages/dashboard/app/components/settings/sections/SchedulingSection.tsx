@@ -26,6 +26,9 @@ This section is single-scope: every key here is project-scoped (`DEFAULT_PROJECT
 The machine-wide cap (`globalMaxConcurrent`) moved to SchedulingGlobalSection, and the `ScopeGroupHeader` chrome that used to separate the two authority levels went with it. Mixing scopes in one section meant the answer to "does this affect my other projects?" depended on which subheading you had scrolled past, and a search result landing mid-section shows no subheading at all.
 Rows keep their per-row `scope` badge even though the section is now uniformly project-scoped: search can land an operator on a single control with no section chrome in view, so the badge is the only scope signal at that moment.
 
+FNXC:VerificationResourceBound 2026-09-10-13:09:
+The single-scope claim above no longer holds for three keys: RUFU-212's verification resource-bound knobs are dual-scope. Editing them HERE still always writes the per-project override — the project editing authority is unchanged, and the `scope: "project"` badge stays honest for that — while the machine-wide fallback is edited in the paired "Scheduling · Global" section (`scheduling-global`), mirroring the source-control pair. `splitSettingsSave` routes by active section, so the row you're looking at decides the patch, never the key alone.
+
 FNXC:SettingsStyling 2026-07-15-17:35:
 The `overlapIgnorePaths` allowlist deliberately keeps its bespoke markup: it is a repeating row editor with per-row Browse/Remove buttons, so no shared row primitive fits. Its help interleaves `t()` fragments with `<code>` elements, which a single-string descriptor `help` cannot express — but SettingsHelpTip takes ReactNode, so that copy now lives behind the shared "?" affordance instead of an inline `<small>`.
 */
@@ -73,6 +76,52 @@ export function SchedulingSection({ form, setForm, concurrencyLoading = false, o
             const n = Math.min(8, Math.max(1, Math.floor(v) || 1));
             setForm((f) => ({ ...f, maxConcurrentVerifications: n } as SettingsFormState));
         }}
+      />
+      {/*
+      FNXC:VerificationResourceBound 2026-09-10-13:09:
+      RUFU-212: beside the verification COUNT cap sit the resource ENVELOPE overrides. Empty means
+      unset (undefined, never 0 — 0 is the operator-disabled sentinel), so the row falls through to
+      the machine-wide fallback rendered in "Scheduling · Global", and unset there to the
+      machine-derived default (~half the cores). The value shown is the EFFECTIVE inherited one
+      (JIRA precedent): project override → global fallback → nothing. Counting and bounding stay
+      separable: an operator can cap how many verifications stack without touching their weight.
+      */}
+      <SettingsNumberRow
+        descriptor={{
+          key: "verificationCpuQuotaPercent",
+          label: t("settings.scheduling.verificationCpuQuotaPercent", "Verification CPU quota (%)"),
+          help: t("settings.scheduling.verificationCpuQuotaPercentHelp", "CPUQuota per verification (200 = 2 cores). Empty = inherit the machine fallback; unset there means ~half the cores, at least 100%. 0 disables bounding for this project."),
+          scope: "project",
+          min: 0,
+          step: 25,
+        }}
+        value={form.verificationCpuQuotaPercent ?? null}
+        onChange={(v) => setForm((f) => ({ ...f, verificationCpuQuotaPercent: v === null ? undefined : Math.max(0, Math.floor(v)) } as SettingsFormState))}
+      />
+      <SettingsNumberRow
+        descriptor={{
+          key: "verificationCpuIoWeight",
+          label: t("settings.scheduling.verificationCpuIoWeight", "Verification CPU/IO weight"),
+          help: t("settings.scheduling.verificationCpuIoWeightHelp", "CPU/IO weight while unthrottled (1–10000; lower keeps the desktop responsive). Empty = inherit the machine fallback; unset there means 10. 0 disables weight shaping."),
+          scope: "project",
+          min: 0,
+          max: 10000,
+          step: 1,
+        }}
+        value={form.verificationCpuIoWeight ?? null}
+        onChange={(v) => setForm((f) => ({ ...f, verificationCpuIoWeight: v === null ? undefined : Math.max(0, Math.floor(v)) } as SettingsFormState))}
+      />
+      <SettingsNumberRow
+        descriptor={{
+          key: "verificationMemoryMaxMb",
+          label: t("settings.scheduling.verificationMemoryMaxMb", "Verification memory cap (MB)"),
+          help: t("settings.scheduling.verificationMemoryMaxMbHelp", "MemoryMax per verification, in MB. Empty = inherit the machine fallback; unset there means no memory cap. 0 disables the cap."),
+          scope: "project",
+          min: 0,
+          step: 256,
+        }}
+        value={form.verificationMemoryMaxMb ?? null}
+        onChange={(v) => setForm((f) => ({ ...f, verificationMemoryMaxMb: v === null ? undefined : Math.max(0, Math.floor(v)) } as SettingsFormState))}
       />
       <SettingsNumberRow
         descriptor={{

@@ -1612,6 +1612,19 @@ Command Center is the combined analytics and live-operations surface for a proje
 
 **Settings → Scheduling**, Command Center controls, and the Engine Control menu edit two independent project limits. **Max Concurrent Tasks** (range 1–50; default 2) caps every AI-active task, including planning, to protect provider load. **Max Worktrees** (default 4) caps tasks holding or entering execution checkouts to protect host CPU, RAM, and disk; it does not limit planning and can be disabled structurally. Team status displays both values separately, and the board's **Up Next** worktree grouping uses Max Worktrees.
 
+<!-- FNXC:VerificationResourceBound 2026-09-10-13:09: RUFU-212 — the sibling resource-envelope controls: the count cap bounds HOW MANY verification commands run; these bound how much of the machine each one may take. Document both sections and what a bounded verification looks like to an operator. -->
+**Verification resource bounds** answer the sibling problem: a single verification (e.g. one `vitest` run with its esbuild children) can peg several cores by itself, making the board slow or unresponsive while a card verifies. Settings → **Scheduling** (project) and Settings → **Scheduling · Global** (machine-wide fallback) each carry three numeric rows — **Verification CPU quota (%)** (percent of one core; empty means inherit, and unset machine-wide means ≈half the machine's cores, at least 100%), **CPU/IO weight** (1–10000, default 10, so verification yields to your keyboard/mouse under contention), and **MemoryMax (MB)** (no cap unless you set one). `0` disables a dimension for the tier you are editing; clearing the field restores inheritance. What "bounded" looks like: verification results on the card's log report a `resource bound: CPUQuota=… weight=… (systemd scope)` line; on hosts without a usable systemd user manager the spawn degrades to `nice`/`ionice` or today's bare command — the bound never fails a verification and never hides which rung ran.
+
+<!-- FNXC:VerificationResourceBound 2026-09-10-13:09: RUFU-212 — the manual latency reproduction that served as the spec's evidence, documented for operator re-run after merge. It is supporting evidence only: shape-based CI tests own the symptom assertion, and this series is deliberately not a CI test (burst timing makes one-shot sampling a timing lottery). -->
+**Manual latency reproduction (supporting evidence, never a CI test).** While verifications are running, sample an endpoint that does zero application work — an unauthenticated `GET /api/tasks` is rejected with 401 before any query — so its time-to-first-byte measures only how starved the serving process is:
+
+```bash
+for i in $(seq 1 12); do curl -s -o /dev/null -w "%{time_total}s\n" \
+  http://127.0.0.1:4040/api/tasks; done | sort -n | tail -4
+```
+
+Before the bound, the worst of 12 samples on the spec host measured **1.362 / 1.992 / 2.481 / 2.772 s** against a **0.086 s** best. After the bound, the worst samples should return to the best-sample band even while a verification is mid-run; bursts are short (7–14 s), so sample continuously across at least one verification dispatch rather than taking one snapshot.
+
 Navigation:
 - Desktop/tablet: primary header view toggle, immediately after **Agents**
 - Mobile: bottom nav tab, immediately after **Mailbox**

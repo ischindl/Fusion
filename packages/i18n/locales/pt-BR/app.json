@@ -6918,7 +6918,8 @@
       "configVersions": "Versões de configuração",
       "voiceInput": "Entrada de voz",
       "cliBinary": "",
-      "resize": ""
+      "resize": "",
+      "schedulingGlobal": ""
     },
     "scheduling": {
       "addIgnoredPath": " Adicionar caminho ignorado ",
@@ -6986,6 +6987,12 @@
       "maxConcurrentTasksHint": "Padrão: 2.",
       "maxConcurrentVerifications": "Máximo de verificações simultâneas",
       "maxConcurrentVerificationsHint": "Limita verificações empilhadas de typecheck/build entre tarefas. Padrão: 1. Intervalo: 1–8.",
+      "verificationCpuQuotaPercent": "",
+      "verificationCpuQuotaPercentHelp": "",
+      "verificationCpuIoWeight": "",
+      "verificationCpuIoWeightHelp": "",
+      "verificationMemoryMaxMb": "",
+      "verificationMemoryMaxMbHelp": "",
       "pollIntervalMsHint": "Padrão: 15000 (15 segundos).",
       "triageDuplicateResolution": "Resolução de duplicados em triagem",
       "triageDuplicateResolutionHelp": "Bloqueia duplicadas detectadas na triagem para uma decisão de Manter/Excluir com um link para a duplicada (padrão), mantém automaticamente ou exclui automaticamente.",
@@ -6994,6 +7001,15 @@
       "triageDuplicateResolutionDelete": "Excluir automaticamente",
       "buildTimeoutMinutes": "",
       "maximumTimeInMinutesForBuildVerificationCommands": ""
+    },
+    "schedulingGlobal": {
+      "schedulingGlobal": "",
+      "verificationCpuQuotaPercent": "",
+      "verificationCpuQuotaPercentHelp": "",
+      "verificationCpuIoWeight": "",
+      "verificationCpuIoWeightHelp": "",
+      "verificationMemoryMaxMb": "",
+      "verificationMemoryMaxMbHelp": ""
     },
     "scheduledEvals": {
       "autoCreateTasks": "Criar tarefas automaticamente",

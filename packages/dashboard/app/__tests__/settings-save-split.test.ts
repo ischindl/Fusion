@@ -461,6 +461,110 @@ describe("splitSettingsSave", () => {
     expect(globalPatch).toEqual({ gitlabEnabled: true });
   });
 
+  /*
+  FNXC:VerificationResourceBound 2026-09-10-13:09:
+  RUFU-212: the three verification resource-bound keys are dual-scope and route by ACTIVE SECTION
+  exactly like the GitLab pair above — both directions pinned. Without the global-branch gate a
+  project-section edit of the CPU quota would leak into global defaults; without the project mirror
+  a machine-wide edit would rewrite the project override. The FN-7535 shape is included: a project
+  override shadows the raw global initials, so the global diff must stay scoped-only or a genuine
+  global edit becomes a permanently dead config.
+  */
+  it("routes verification resource-bound edits to global settings only from the scheduling-global section", () => {
+    const initialScopedValues = {
+      global: { verificationCpuQuotaPercent: 150, verificationCpuIoWeight: 10, verificationMemoryMaxMb: undefined },
+      // A divergent project override exists and must remain untouched by a global-section save.
+      project: { verificationCpuQuotaPercent: 400 },
+    } as never;
+
+    const { globalPatch, projectPatch } = splitSettingsSave({
+      payload: { verificationCpuQuotaPercent: 200, verificationCpuIoWeight: 5, verificationMemoryMaxMb: undefined },
+      initialValues: null,
+      initialScopedValues,
+      activeSection: "scheduling-global",
+    });
+
+    // memoryMaxMb stayed unset (present-but-undefined both sides) → no spurious write.
+    expect(globalPatch).toEqual({ verificationCpuQuotaPercent: 200, verificationCpuIoWeight: 5 });
+    // 200 !== the project's 400 override: only the project-mirror gate keeps it out of projectPatch.
+    expect(projectPatch).toEqual({});
+  });
+
+  it("routes verification resource-bound edits to project settings outside the scheduling-global section", () => {
+    const initialScopedValues = {
+      global: { verificationCpuQuotaPercent: 150 },
+      project: { verificationCpuIoWeight: 10 },
+    } as never;
+
+    const { globalPatch, projectPatch } = splitSettingsSave({
+      payload: { verificationCpuQuotaPercent: 150, verificationCpuIoWeight: 7 },
+      // Merged effective values: quota inherited from global, weight from the project override.
+      initialValues: { verificationCpuQuotaPercent: 150, verificationCpuIoWeight: 10 } as never,
+      initialScopedValues,
+      activeSection: "scheduling",
+    });
+
+    // The weight edit must not reach global defaults even though global never held the key —
+    // a raw scoped-global diff would see `changed` here; only the section gate suppresses it.
+    expect(globalPatch).toEqual({});
+    // The untouched inherited quota must not be materialized as a project override.
+    expect(projectPatch).toEqual({ verificationCpuIoWeight: 7 });
+  });
+
+  it("persists an explicit global resource-bound edit when scoped global initials omit the key but merged initialValues matches the new value", () => {
+    const initialScopedValues = {
+      global: {}, // the operator never saved a machine-wide value; key absent, not `undefined`
+      project: { verificationCpuQuotaPercent: 200 },
+    } as never;
+
+    const { globalPatch, projectPatch } = splitSettingsSave({
+      payload: { verificationCpuQuotaPercent: 200 },
+      // The project override makes the merged effective value equal the new global edit. Diffing
+      // against initialValues would classify this genuine global edit as "unchanged" and drop it
+      // (the FN-7535 dead-config shape) — scopedOnly routing is what keeps it alive.
+      initialValues: { verificationCpuQuotaPercent: 200 } as never,
+      initialScopedValues,
+      activeSection: "scheduling-global",
+    });
+
+    expect(globalPatch).toEqual({ verificationCpuQuotaPercent: 200 });
+    expect(projectPatch).toEqual({});
+  });
+
+  it("does not materialize inherited global resource-bound values as project overrides on a no-op project save", () => {
+    const initialScopedValues = {
+      global: { verificationCpuQuotaPercent: 150, verificationCpuIoWeight: 10, verificationMemoryMaxMb: 2048 },
+      project: {},
+    } as never;
+
+    const { globalPatch, projectPatch } = splitSettingsSave({
+      payload: { verificationCpuQuotaPercent: 150, verificationCpuIoWeight: 10, verificationMemoryMaxMb: 2048 },
+      initialValues: { verificationCpuQuotaPercent: 150, verificationCpuIoWeight: 10, verificationMemoryMaxMb: 2048 } as never,
+      initialScopedValues,
+      activeSection: "scheduling",
+    });
+
+    expect(globalPatch).toEqual({});
+    expect(projectPatch).toEqual({});
+  });
+
+  it("clears a project resource-bound override with null-as-delete when the row is emptied", () => {
+    const initialScopedValues = {
+      global: { verificationCpuQuotaPercent: 150 },
+      project: { verificationCpuQuotaPercent: 400 },
+    } as never;
+
+    const { globalPatch, projectPatch } = splitSettingsSave({
+      payload: { verificationCpuQuotaPercent: undefined }, // operator emptied the row → back to inheriting
+      initialValues: { verificationCpuQuotaPercent: 150 } as never, // merged effective falls back to global
+      initialScopedValues,
+      activeSection: "scheduling",
+    });
+
+    expect(projectPatch).toEqual({ verificationCpuQuotaPercent: null });
+    expect(globalPatch).toEqual({});
+  });
+
   it("clears a project GitLab token with null-as-delete while preserving selected token type", () => {
     const initialScopedValues = {
       global: {},

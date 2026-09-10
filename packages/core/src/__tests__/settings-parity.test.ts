@@ -547,6 +547,16 @@ describe("settings key parity", () => {
     // GLOBAL_SETTINGS_KEYS order.
     expect(overlap).toEqual([
       "testMode",
+      /*
+      FNXC:VerificationResourceBound 2026-09-10-03:38:
+      Verification resource bounds are intentionally dual-scoped: the global value is the
+      machine-wide fallback (the bound is a host-capacity posture, and the dashboard/engine UI it
+      protects is machine-wide), while a project may tailor quota/weight/ceiling to its own build
+      cost. The store merge (defaults -> global -> project) supplies project-then-global precedence.
+      */
+      "verificationCpuQuotaPercent",
+      "verificationCpuIoWeight",
+      "verificationMemoryMaxMb",
       "voiceInput",
       "mergeRequestContractShadowEnabled",
       "taskTokenBudget",

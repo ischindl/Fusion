@@ -227,6 +227,14 @@ ${failureContext.output.slice(0, VERIFICATION_LOG_MAX_CHARS)}
         undefined,
         "executor",
       );
+      /*
+      FNXC:VerificationResourceBound 2026-09-10-12:13:
+      Decision record: this re-run inherits the CPU/IO/memory envelope automatically —
+      runExecutorDeterministicVerification flows through the shared verification-utils seam where
+      the bound is applied. The fix agent's own bash tool calls are deliberately NOT wrapped here:
+      agent-shell work is not a verification seam, and heavy test/build work belongs on
+      fn_run_verification, which bounds it on its own lane.
+      */
       const reRunResult = await deps.runExecutorDeterministicVerification(task, worktreePath, settings, extraEnv);
 
       return reRunResult.allPassed;

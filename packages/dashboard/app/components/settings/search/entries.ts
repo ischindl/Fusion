@@ -26,6 +26,8 @@ import { researchGlobalSearchEntries } from "../sections/ResearchGlobalSection.s
 import { researchProjectSearchEntries } from "../sections/ResearchProjectSection.search";
 import { scheduledEvalsSearchEntries } from "../sections/ScheduledEvalsSection.search";
 import { schedulingSearchEntries } from "../sections/SchedulingSection.search";
+// FNXC:VerificationResourceBound 2026-09-10-13:09: RUFU-212 — Scheduling · Global section index.
+import { schedulingGlobalSearchEntries } from "../sections/SchedulingGlobalSection.search";
 import { sourceControlGlobalSearchEntries } from "../sections/SourceControlGlobalSection.search";
 import { sourceControlSearchEntries } from "../sections/SourceControlSection.search";
 import { worktreesSearchEntries } from "../sections/WorktreesSection.search";
@@ -55,6 +57,7 @@ export const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
   ...researchProjectSearchEntries,
   ...scheduledEvalsSearchEntries,
   ...schedulingSearchEntries,
+  ...schedulingGlobalSearchEntries,
   ...sourceControlGlobalSearchEntries,
   ...sourceControlSearchEntries,
   ...worktreesSearchEntries,
