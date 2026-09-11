@@ -1124,12 +1124,6 @@ export interface ProjectSettings {
    * grounded candidates do not qualify; this setting never authorizes filler.
    */
   requireTaskRecommendations?: boolean;
-  /**
-   * FNXC:TaskRecommendations 2026-08-13-03:56:
-   * The operator requested an on/off switch for recommendation mailbox notices. This controls
-   * best-effort observability only; disabling it never changes recommendation capture or storage.
-   */
-  recommendationMailboxNoticeEnabled?: boolean;
   /** Hard stop: when true, all automated agent activity is **immediately**
    *  terminated — active triage, execution, and merge agent sessions are
    *  killed, and the scheduler stops dispatching new work. Acts as a
@@ -1950,9 +1944,10 @@ export interface ProjectSettings {
    *  time-based stuck/stalled/stale signal may fire after activation.
    *  Default: 300000 (5 minutes). Set to 0 to disable the grace period. */
   engineActivationGraceMs?: number;
-  /** Minimum number of identical consecutive in-review stall log entries (same code + reason)
+  /** Minimum number of identical consecutive in-review stall observations in one unchanged episode
    *  before the task is auto-disposed with `pausedReason='in-review-stall-deadlock'`.
-   *  Default: 3. Set to 0 to disable. */
+   *  Proven progress from a fresh failed pre-merge gate starts a new episode.
+   *  Default: 10. Set to 0 to disable. */
   inReviewStallDeadlockThreshold?: number;
   /** Threshold in milliseconds for surfacing paused in-review tasks as stale.
    *  Age is measured from columnMovedAt when present, otherwise updatedAt.

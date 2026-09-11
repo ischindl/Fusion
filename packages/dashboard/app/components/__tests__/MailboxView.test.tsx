@@ -227,8 +227,6 @@ function MailboxUnreadHarness({ projectId }: { projectId: string }) {
   return (
     <>
       <output data-testid="mailbox-harness-message-count">{unread.mailboxUnreadCount}</output>
-      <output data-testid="mailbox-harness-recommendation-count">{unread.recommendationUnreadCount}</output>
-      <output data-testid="mailbox-harness-artifact-count">{unread.artifactUnreadCount}</output>
       <MailboxView
         {...defaultProps}
         projectId={projectId}
@@ -318,9 +316,10 @@ describe("MailboxView", () => {
     });
   });
 
-  it("keeps the new project's badges when the prior MailboxView requests resolve late", async () => {
+  it("keeps the new project's Inbox rows and badges when the prior requests resolve late", async () => {
     const projectAInbox = deferred<InboxResponse>();
     const projectBInbox = deferred<InboxResponse>();
+    const projectBMessage = { ...mockMessage, id: "msg-project-b", content: "Project B completion" };
     const projectACounts = deferred<UnreadCountResponse>();
     const projectBCounts = deferred<UnreadCountResponse>();
     mockFetchInbox.mockImplementation((_options, projectId) => (
@@ -333,7 +332,7 @@ describe("MailboxView", () => {
     const rendered = render(<MailboxUnreadHarness projectId="proj-a" />);
     await waitFor(() => {
       expect(mockFetchInbox).toHaveBeenCalledWith(
-        expect.objectContaining({ category: "message" }),
+        expect.objectContaining({ limit: 50 }),
         "proj-a",
       );
     });
@@ -341,7 +340,7 @@ describe("MailboxView", () => {
     rendered.rerender(<MailboxUnreadHarness projectId="proj-b" />);
     await waitFor(() => {
       expect(mockFetchInbox).toHaveBeenCalledWith(
-        expect.objectContaining({ category: "message" }),
+        expect.objectContaining({ limit: 50 }),
         "proj-b",
       );
     });
@@ -349,15 +348,14 @@ describe("MailboxView", () => {
     await act(async () => {
       projectBCounts.resolve(categoryUnreadResponse(4, 5, 5));
       projectBInbox.resolve({
-        ...makeInboxResponse([], 5),
+        ...makeInboxResponse([projectBMessage], 5),
         categoryUnreadCounts: { message: 5, recommendation: 5, artifact: 5 },
       });
       await Promise.all([projectBCounts.promise, projectBInbox.promise]);
     });
     await waitFor(() => {
       expect(screen.getByTestId("mailbox-harness-message-count")).toHaveTextContent("5");
-      expect(screen.getByTestId("mailbox-harness-recommendation-count")).toHaveTextContent("5");
-      expect(screen.getByTestId("mailbox-harness-artifact-count")).toHaveTextContent("5");
+      expect(screen.getByText("Project B completion")).toBeInTheDocument();
     });
 
     await act(async () => {
@@ -367,8 +365,8 @@ describe("MailboxView", () => {
     });
 
     expect(screen.getByTestId("mailbox-harness-message-count")).toHaveTextContent("5");
-    expect(screen.getByTestId("mailbox-harness-recommendation-count")).toHaveTextContent("5");
-    expect(screen.getByTestId("mailbox-harness-artifact-count")).toHaveTextContent("5");
+    expect(screen.getByText("Project B completion")).toBeInTheDocument();
+    expect(screen.queryByText(mockMessage.content)).not.toBeInTheDocument();
   });
 
   it("preserves composed inbox timestamp buckets", async () => {
@@ -1638,7 +1636,7 @@ describe("MailboxView", () => {
     });
 
     await waitFor(() => {
-      expect(mockMarkAllMessagesRead).toHaveBeenCalledWith(undefined, { category: "message" });
+      expect(mockMarkAllMessagesRead).toHaveBeenCalledWith(undefined);
       expect(onUnreadCountChange).toHaveBeenCalledWith(0);
     });
   });

@@ -82,10 +82,13 @@ describe("project overview small-screen reflow", () => {
     expect(card480).toContain("var(--space-md)");
   });
 
-  it("reserves project mobile-nav padding only when the shared nav predicate is visible", () => {
-    expect(appSource).toContain('const mobileNavVisible = viewMode === "project" && !!currentProject;');
-    expect(appSource).toContain('isMobile && mobileNavVisible && !mobileKeyboardOpen ? " project-content--with-mobile-nav" : ""');
+  it("reserves mobile-nav padding only while the matching project navigation is visible", () => {
+    expect(appSource).toContain('const projectShellPresent = viewMode === "project" && !!currentProject;');
+    expect(appSource).toContain("const mobileNavVisible = projectShellPresent;");
+    expect(appSource).toContain("const executorFooterVisible = projectShellPresent && !alphaUpdatesEnabled;");
+    expect(appSource).toContain('isMobile && mobileNavVisible && !mobileKeyboardOpen && !alphaUpdatesEnabled ? " project-content--with-mobile-nav" : ""');
+    expect(appSource).toContain('isMobile && mobileNavVisible && !mobileKeyboardOpen && !modalManager.anyModalOpen && alphaUpdatesEnabled ? " project-content--with-alpha-nav" : ""');
     expect(appSource).toContain("hidden={!mobileNavVisible}");
-    expect(appSource).toContain("footerVisible={mobileNavVisible}");
+    expect(appSource).toContain("footerVisible={executorFooterVisible}");
   });
 });

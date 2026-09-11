@@ -25,7 +25,10 @@ import {
   writeBoardWorkflowSelection,
 } from "../utils/boardWorkflowSelection";
 import type { TaskContextMenuColumnMetadata } from "./TaskContextMenu";
+import { resetBoardColumnsOnArrival } from "../utils/boardScrollSnapshot";
 import { isTaskReverted } from "../utils/taskRevert";
+
+export { resetBoardColumnsOnArrival } from "../utils/boardScrollSnapshot";
 
 interface BoardProps {
   tasks: Task[];
@@ -118,6 +121,10 @@ interface BoardProps {
   but it must release shared workflow-header ownership until it is the visible main view again.
   */
   active?: boolean;
+  /** Enables Alpha-only complete-column History controls. */
+  alphaUpdatesEnabled?: boolean;
+  /** Opens the existing History destination. */
+  onOpenHistory?: () => void;
 }
 
 let boardWasPreviouslyInactive = false;
@@ -180,7 +187,7 @@ function BoardWorkflowSkeleton({ empty = false, t }: { empty?: boolean; t: TFunc
   );
 }
 
-export function Board({ tasks, projectId, maxConcurrent, maxWorktrees, showWorktreeGrouping, onMoveTask, onPauseTask, onUnpauseTask, onResetTask, onDuplicateTask, onMergeTask, onOpenDetail, onOpenRefine, onOpenGroupModal, addToast, onQuickCreate, onNewTask, autoMerge, mergeStrategy = "direct", onToggleAutoMerge, planAutoApproveEnabled, onTogglePlanAutoApprove, globalPaused, onUpdateTask, onRetryTask, onOpenChatWithPrefill, onRevertTask, onReviseTask, onDeleteTask, onLoadMoreCurrentTasks, currentTasksTotal, currentTasksHasMore, currentTasksLoadingMore, currentTasksPaginationError, currentTasksProgressKey, onRetryCurrentTasks, onLoadMoreCompletedTasks, completedCounts, completedHasMore, completedLoadingMore, completedPaginationError, completedProgressKey, onRetryCompletedTasks, completedSortMode = "completion-date-desc", onCompletedSortModeChange, searchQuery = "", availableModels, onPlanningMode, onOpenDetailWithTab, favoriteProviders, favoriteModels, onToggleFavorite, onToggleModelFavorite, onOpenMission, staleHighFanoutBlockerAgeThresholdMs, lastFetchTimeMs, prAuthAvailable, onOpenWorkflowEditor, onCreateWorkflow, workflowControlsInHeader = false, active = true }: BoardProps) {
+export function Board({ tasks, projectId, maxConcurrent, maxWorktrees, showWorktreeGrouping, onMoveTask, onPauseTask, onUnpauseTask, onResetTask, onDuplicateTask, onMergeTask, onOpenDetail, onOpenRefine, onOpenGroupModal, addToast, onQuickCreate, onNewTask, autoMerge, mergeStrategy = "direct", onToggleAutoMerge, planAutoApproveEnabled, onTogglePlanAutoApprove, globalPaused, onUpdateTask, onRetryTask, onOpenChatWithPrefill, onRevertTask, onReviseTask, onDeleteTask, onLoadMoreCurrentTasks, currentTasksTotal, currentTasksHasMore, currentTasksLoadingMore, currentTasksPaginationError, currentTasksProgressKey, onRetryCurrentTasks, onLoadMoreCompletedTasks, completedCounts, completedHasMore, completedLoadingMore, completedPaginationError, completedProgressKey, onRetryCompletedTasks, completedSortMode = "completion-date-desc", onCompletedSortModeChange, searchQuery = "", availableModels, onPlanningMode, onOpenDetailWithTab, favoriteProviders, favoriteModels, onToggleFavorite, onToggleModelFavorite, onOpenMission, staleHighFanoutBlockerAgeThresholdMs, lastFetchTimeMs, prAuthAvailable, onOpenWorkflowEditor, onCreateWorkflow, workflowControlsInHeader = false, active = true, alphaUpdatesEnabled = false, onOpenHistory }: BoardProps) {
   const { t } = useTranslation("app");
   /*
   FNXC:TaskColumnSorting 2026-08-18-21:24:
@@ -234,6 +241,10 @@ export function Board({ tasks, projectId, maxConcurrent, maxWorktrees, showWorkt
   */
   const mobileFullTaskModalHidden = viewportMode === "mobile";
   useColumnScrollSnap(boardElement, { mobileOnly: true });
+  useEffect(() => {
+    if (!active) return;
+    resetBoardColumnsOnArrival(boardElement);
+  }, [active, boardElement]);
   /*
   FNXC:BoardNavigation 2026-08-21-18:12:
   FN-115 keeps the shared non-mobile mouse-pan owner on both live Board roots, but card activation
@@ -964,6 +975,8 @@ export function Board({ tasks, projectId, maxConcurrent, maxWorktrees, showWorkt
                   columnDisplayName={columnDef.name}
                   columnDescription={columnDef.description}
                   columnFlags={columnDef.flags}
+                  alphaUpdatesEnabled={alphaUpdatesEnabled}
+                  onOpenHistory={onOpenHistory}
                   holdTaskIds={holdTaskIds}
                   taskContextMenuColumnsByTaskId={taskContextMenuColumnsByTaskId}
                   tasks={laneTasks}
@@ -1053,6 +1066,8 @@ export function Board({ tasks, projectId, maxConcurrent, maxWorktrees, showWorkt
                 columnDisplayName={columnDef.name}
                 columnDescription={columnDef.description}
                 columnFlags={columnDef.flags}
+                alphaUpdatesEnabled={alphaUpdatesEnabled}
+                onOpenHistory={onOpenHistory}
                 holdTaskIds={holdTaskIds}
                 workflowContextMenuColumns={selectedWorkflowContextMenuColumns}
                 tasks={laneTasks}

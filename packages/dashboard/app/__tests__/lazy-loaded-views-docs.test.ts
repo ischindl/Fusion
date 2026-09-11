@@ -32,11 +32,12 @@ const EXPECTED_DOCUMENTED_VIEWS = new Set([
   "AgentsView",
   "FleetDashboardView",
   "ChatView",
+  "WhiteboardView",
   "MemoryView",
   "DevServerView",
   "SecretsView",
   "InsightsView",
-  "DocumentsView",
+  "NotesView",
   "SkillsView",
   "ResearchView",
   "CommandCenter",
@@ -55,7 +56,8 @@ const EXPECTED_DOCUMENTED_VIEWS = new Set([
 const EXPECTED_APP_LEVEL_VIEWS = new Set([
   "AgentsView",
   "FleetDashboardView",
-  "DocumentsView",
+  "NotesView",
+  "WhiteboardView",
   "InsightsView",
   "ResearchView",
   "EvalsView",
@@ -195,12 +197,16 @@ describe("AGENTS lazy-loaded views inventory", () => {
     The curated count moved 20 -> 21 when the merge unioned HEAD's and origin's lazy-import additions
     into App.tsx; AGENTS.md prose, the bullet list, and EXPECTED_DOCUMENTED_VIEWS all carry the same
     21-name set, so this literal only re-pins the prose count to that union.
+
+    FNXC:LazyViewInventory 2026-09-10-23:14 (merge origin/main 2026-09-10):
+    The set moved 21 -> 22: upstream deleted DocumentsView (consolidated into Mailbox, FN-325) and added
+    NotesView plus WhiteboardView, while our FleetDashboardView remains documented.
     */
-    expect(Number(countMatch?.[1])).toBe(21);
+    expect(Number(countMatch?.[1])).toBe(22);
 
     const documentedViews = extractBacktickedNamesFromBullets(section);
     expect(new Set(documentedViews)).toEqual(EXPECTED_DOCUMENTED_VIEWS);
-    expect(documentedViews).toHaveLength(21);
+    expect(documentedViews).toHaveLength(22);
 
     expect(section).toContain("`ResearchView`");
     expect(section).toContain("`SettingsModal`");

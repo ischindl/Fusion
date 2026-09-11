@@ -88,8 +88,8 @@ touches no data; it must advance in the same change that ships a new migration f
 /* FNXC:PlanApproval 2026-08-28-06:24: advance the ceiling with the per-task approval migration so task reads never precede its column. */
 /* FNXC:PatchnodeLedger 2026-08-28-12:16: the permanent ledger table must exist before TaskStore can commit a completion move atomically with its entry. */
 /* FNXC:ChatSidebarPerf 2026-09-08-04:48: baseline marker includes the chat-message recency index required for index-backed sidebar previews. */
-/* FNXC:MigrationCollisionRepair 2026-09-09-15:13: the ceiling tracks upstream's highest released migration (0073). The fork's collision repair no longer occupies a numeric slot, so it stops advancing the ceiling — see MIXED_0065_REPAIR_VERSION. */
-export const SCHEMA_BASELINE_VERSION = "0073";
+/* FNXC:MigrationCollisionRepair 2026-09-10-23:14 (merge origin/main 2026-09-10): the ceiling tracks upstream's highest released migration (0076). The fork's collision repair no longer occupies a numeric slot, so it stops advancing the ceiling — see MIXED_0065_REPAIR_VERSION. */
+export const SCHEMA_BASELINE_VERSION = "0076";
 /** FNXC:SymbolLock 2026-07-20-10:00: upgrades need durable task declarations before admission resolves symbols. */
 export const TASK_DECLARED_SYMBOLS_VERSION = "0028";
 const INITIAL_SCHEMA_VERSION = "0000";
@@ -272,6 +272,12 @@ export const PATCHNODE_ENTRIES_VERSION = "0071";
 export const TASK_PLANNING_FAILURE_VERSION = "0072";
 /** FNXC:ChatSidebarPerf 2026-09-08-04:48: upgrades need the descending per-session recency index before sidebar lateral lookups run. */
 export const CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION = "0073";
+/** FNXC:ProjectNotes 2026-09-09-17:08: upgraded projects require revision-fenced personal notes before the API is served. */
+export const PROJECT_NOTES_VERSION = "0074";
+/** FNXC:OverlapWaitSynchronization 2026-09-09-23:53: upgraded projects need durable wait episodes before transient blocker markers may clear. */
+export const OVERLAP_WAIT_SYNC_VERSION = "0075";
+/** FNXC:WhiteboardAlpha 2026-09-10-05:42: Upgraded projects must install both Whiteboard tables before project routes resolve their lazy store. */
+export const WHITEBOARDS_SCHEMA_VERSION = "0076";
 
 /** FNXC:MemoryFocus 2026-08-21-06:10: explicit registration prevents the per-conversation memory-focus migration from being skipped. Renumbered to 0060, then 0061, then 0065: the upstream FN-066..FN-101 batch (2026-08-21) owns 0061-0064 (activity-log index, splitting removal, AI-merge review, repository scope). */
 /* FNXC:MemoryFocus 2026-08-23-07:07: renumbered 0065 -> 0066 in the RUFU-160 origin/main merge: origin/main independently shipped 0065 as FN-149's review-convergence migration (v0.77.0-beta.7); keeping both lines' migrations requires the deploy-line file to take the next free sequence. */
@@ -544,6 +550,9 @@ const CHAT_MESSAGES_SESSION_RECENCY_INDEX_MIGRATION_PATH = join(MIGRATIONS_DIR, 
 /* FNXC:MigrationCollisionRepair 2026-08-23-07:07: re-runs both idempotent 0065-collision migrations so databases that recorded 0065 with the other line's content converge on the full schema. Renumbered 0067 -> 0068 in the fusion/rufu-141 merge: the deploy line owns released 0067 (FN-179 session contention). */
 /* FNXC:MigrationCollisionRepair 2026-09-09-15:13: the file moves out of the four-digit namespace (`local_repair_...`) because it is not a released migration — it is this repository's repair step, and sharing a numeric prefix with upstream's released 0072 is exactly what made the two ledger rows indistinguishable. The wiring-integrity inventory scans only `^\d{4}_`, so this step must stay explicitly wired here. */
 const MIXED_0065_REPAIR_MIGRATION_PATH = join(MIGRATIONS_DIR, "local_repair_mixed_0065_migrations.sql");
+const PROJECT_NOTES_MIGRATION_PATH = join(MIGRATIONS_DIR, "0074_fn_323_project_notes.sql");
+const OVERLAP_WAIT_SYNC_MIGRATION_PATH = join(MIGRATIONS_DIR, "0075_fn_332_overlap_sync.sql");
+const WHITEBOARDS_MIGRATION_PATH = join(MIGRATIONS_DIR, "0076_fn_333_whiteboards.sql");
 
 /**
  * Ensure the migration bookkeeping table exists. Lives in the public schema so
@@ -688,6 +697,9 @@ export async function applySchemaBaseline(
     const taskPlanningFailureAlreadyApplied = applied.includes(TASK_PLANNING_FAILURE_VERSION);
     const chatMessagesSessionRecencyIndexAlreadyApplied = applied.includes(CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION);
     const mixed0065RepairAlreadyApplied = applied.includes(MIXED_0065_REPAIR_VERSION);
+    const projectNotesAlreadyApplied = applied.includes(PROJECT_NOTES_VERSION);
+    const overlapWaitSyncAlreadyApplied = applied.includes(OVERLAP_WAIT_SYNC_VERSION);
+    const whiteboardsAlreadyApplied = applied.includes(WHITEBOARDS_SCHEMA_VERSION);
     assertBinaryNotOlderThanDatabase(applied);
     let schemaChanged = false;
 
@@ -1574,6 +1586,15 @@ export async function applySchemaBaseline(
       await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION}) ON CONFLICT (version) DO NOTHING`);
       schemaChanged = true;
     }
+    const projectNotesMissing = ((await tx.execute(sql`
+      SELECT to_regclass('project.tasks') IS NOT NULL AND to_regclass('project.notes') IS NULL AS missing
+    `)) as unknown as Array<{ missing: boolean }>)[0]?.missing ?? true;
+    if (!projectNotesAlreadyApplied || projectNotesMissing) {
+      const migrationSql = await readFile(PROJECT_NOTES_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${PROJECT_NOTES_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
     const taskRequirePlanApprovalColumnState = (await tx.execute(sql`
       SELECT
         to_regclass('project.tasks') IS NOT NULL AS tasks_exists,
@@ -1593,8 +1614,26 @@ export async function applySchemaBaseline(
       await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${TASK_REQUIRE_PLAN_APPROVAL_VERSION}) ON CONFLICT (version) DO NOTHING`);
       schemaChanged = true;
     }
+    const overlapWaitSyncMissing = ((await tx.execute(sql`
+      SELECT to_regclass('project.tasks') IS NOT NULL AND to_regclass('project.task_overlap_waits') IS NULL AS missing
+    `)) as unknown as Array<{ missing: boolean }>)[0]?.missing ?? true;
+    if (!overlapWaitSyncAlreadyApplied || overlapWaitSyncMissing) {
+      const migrationSql = await readFile(OVERLAP_WAIT_SYNC_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${OVERLAP_WAIT_SYNC_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    const whiteboardsMissing = ((await tx.execute(sql`
+      SELECT to_regclass('project.tasks') IS NOT NULL AND (to_regclass('project.whiteboards') IS NULL OR to_regclass('project.whiteboard_revisions') IS NULL) AS missing
+    `)) as unknown as Array<{ missing: boolean }>)[0]?.missing ?? true;
+    if (!whiteboardsAlreadyApplied || whiteboardsMissing) {
+      const migrationSql = await readFile(WHITEBOARDS_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${WHITEBOARDS_SCHEMA_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
     const patchnodeEntriesMissing = ((await tx.execute(sql`
-      SELECT to_regclass('project.patchnode_entries') IS NULL AS missing
+      SELECT to_regclass('project.tasks') IS NOT NULL AND to_regclass('project.patchnode_entries') IS NULL AS missing
     `)) as unknown as Array<{ missing: boolean }>)[0]?.missing ?? true;
     if (!patchnodeEntriesAlreadyApplied || patchnodeEntriesMissing) {
       const migrationSql = await readFile(PATCHNODE_ENTRIES_MIGRATION_PATH, "utf8");

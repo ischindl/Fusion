@@ -117,6 +117,9 @@ import {
   TASK_PLANNING_FAILURE_VERSION,
   CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION,
   MIXED_0065_REPAIR_VERSION,
+  PROJECT_NOTES_VERSION,
+  OVERLAP_WAIT_SYNC_VERSION,
+  WHITEBOARDS_SCHEMA_VERSION,
 } from "../../postgres/schema-applier.js";
 import { ProjectPartitionRekeyError, rekeyFallbackProjectPartition } from "../../postgres/migration-stamping.js";
 import type { PluginSchemaInitHook } from "../../postgres/plugin-schema-hook.js";
@@ -178,7 +181,6 @@ describe("schema-applier: immutable migration identities", () => {
     expect(TASK_PLANNING_FAILURE_VERSION).toBe("0072");
     expect(CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION).toBe("0073");
     expect(Number(SCHEMA_BASELINE_VERSION)).toBeGreaterThanOrEqual(Number(CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION));
-    expect(SCHEMA_BASELINE_VERSION).toBe("0073");
     expect(MIXED_0065_REPAIR_VERSION).toBe("local-repair-mixed-0065");
     /*
     FNXC:MigrationCollisionRepair 2026-09-09-15:13: the fork's repair step must never hold a numeric
@@ -189,6 +191,10 @@ describe("schema-applier: immutable migration identities", () => {
     assertBinaryNotOlderThanDatabase ignores non-numeric rows, which is why this stays safe as a ceiling.
     */
     expect(Number.isFinite(Number(MIXED_0065_REPAIR_VERSION))).toBe(false);
+    expect(PROJECT_NOTES_VERSION).toBe("0074");
+    expect(OVERLAP_WAIT_SYNC_VERSION).toBe("0075");
+    expect(WHITEBOARDS_SCHEMA_VERSION).toBe("0076");
+    expect(SCHEMA_BASELINE_VERSION).toBe("0076");
   });
 
   it("keeps monitor and approval isolation assigned to version 0003", () => {
@@ -730,7 +736,7 @@ pgDescribe("schema-applier: VAL-SCHEMA-001 final-schema parity (table counts)", 
     ctx = null;
   });
 
-  it("creates all 113 project tables, 17 central tables, 1 archive table", async () => {
+  it("creates all 120 project tables, 17 central tables, 1 archive table", async () => {
     ctx = await setupFreshDb();
     // FNXC:PostgresCutover 2026-07-05-15:55: apply the BASELINE only.
     // applySchemaBaseline now runs the plugin schema-init hooks by default,
@@ -754,15 +760,21 @@ pgDescribe("schema-applier: VAL-SCHEMA-001 final-schema parity (table counts)", 
     0050 adds immutable lock, evidence, and report history (109 → 112); 0052 adds recall records (→ 113);
     0060 adds workspace coordination leases and land intents (→ 115). Plugin tables are added separately
     by the schema-init hook and are excluded here.
+
+    FNXC:WhiteboardAlpha 2026-09-10-05:42:
+    Subsequent core migrations add step reports, patchnode, project notes, overlap waits, and Whiteboard heads/revisions, bringing the current project total to 120.
     */
     /*
     FNXC:PgSchemaApplier 2026-09-09-16:05:
-    FN-227's patchnode ledger migration (0071) adds project.patchnode_entries to the fresh baseline,
-    so the merged schema creates 116 project tables. Both merge parents still asserted 115 after
-    inheriting 0071, which is why this parity guard was red on each side in isolation, not only in the
-    merge. Counted tables are core baseline plus migrations; plugin schema-init tables stay excluded.
+    FN-227's patchnode ledger migration (0071) adds project.patchnode_entries to the fresh baseline.
+    Both merge parents still asserted 115 after inheriting 0071, which is why this parity guard was red
+    on each side in isolation, not only in the merge. Counted tables are core baseline plus migrations;
+    plugin schema-init tables stay excluded.
+
+    FNXC:PgSchemaApplier 2026-09-10-23:14 (merge origin/main 2026-09-10):
+    The fork's collision repair adds no table, so the merged total is upstream's 120 exactly.
     */
-    expect(bySchema.project).toBe(116);
+    expect(bySchema.project).toBe(120);
     /*
     FNXC:CapacityModel 2026-07-29-08:10 (drop the cross-project cap — table half):
     17, not 18: `central.global_concurrency` is dropped by migration 0037. A fresh
@@ -1954,6 +1966,15 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       state-gated on that table, so it is legitimately skipped here and records itself on the first
       open after the chat tables appear. Later-marker fixtures (0001/0002/0003/0010) do apply 0073.
       */
+      PROJECT_NOTES_VERSION,
+      OVERLAP_WAIT_SYNC_VERSION,
+      WHITEBOARDS_SCHEMA_VERSION,
+      /*
+      FNXC:MigrationCollisionRepair 2026-09-10-23:59:
+      The repair identity is the non-numeric `local-repair-mixed-0065`, and these ledger assertions
+      read `ORDER BY version` as TEXT, so it sorts AFTER every numeric migration — including the
+      0074-0076 migrations merged in from upstream on 2026-09-11. Keep it last in these fixtures.
+      */
       MIXED_0065_REPAIR_VERSION,
     ]);
     expect((await applySchemaBaseline(ctx.db, { pluginHooks: [] })).applied).toBe(false);
@@ -2054,6 +2075,15 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       PATCHNODE_ENTRIES_VERSION,
       TASK_PLANNING_FAILURE_VERSION,
       CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION,
+      PROJECT_NOTES_VERSION,
+      OVERLAP_WAIT_SYNC_VERSION,
+      WHITEBOARDS_SCHEMA_VERSION,
+      /*
+      FNXC:MigrationCollisionRepair 2026-09-10-23:59:
+      The repair identity is the non-numeric `local-repair-mixed-0065`, and these ledger assertions
+      read `ORDER BY version` as TEXT, so it sorts AFTER every numeric migration — including the
+      0074-0076 migrations merged in from upstream on 2026-09-11. Keep it last in these fixtures.
+      */
       MIXED_0065_REPAIR_VERSION,
     ]);
   });
@@ -2287,6 +2317,15 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       PATCHNODE_ENTRIES_VERSION,
       TASK_PLANNING_FAILURE_VERSION,
       CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION,
+      PROJECT_NOTES_VERSION,
+      OVERLAP_WAIT_SYNC_VERSION,
+      WHITEBOARDS_SCHEMA_VERSION,
+      /*
+      FNXC:MigrationCollisionRepair 2026-09-10-23:59:
+      The repair identity is the non-numeric `local-repair-mixed-0065`, and these ledger assertions
+      read `ORDER BY version` as TEXT, so it sorts AFTER every numeric migration — including the
+      0074-0076 migrations merged in from upstream on 2026-09-11. Keep it last in these fixtures.
+      */
       MIXED_0065_REPAIR_VERSION,
     ]);
   });
@@ -2401,6 +2440,15 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       PATCHNODE_ENTRIES_VERSION,
       TASK_PLANNING_FAILURE_VERSION,
       CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION,
+      PROJECT_NOTES_VERSION,
+      OVERLAP_WAIT_SYNC_VERSION,
+      WHITEBOARDS_SCHEMA_VERSION,
+      /*
+      FNXC:MigrationCollisionRepair 2026-09-10-23:59:
+      The repair identity is the non-numeric `local-repair-mixed-0065`, and these ledger assertions
+      read `ORDER BY version` as TEXT, so it sorts AFTER every numeric migration — including the
+      0074-0076 migrations merged in from upstream on 2026-09-11. Keep it last in these fixtures.
+      */
       MIXED_0065_REPAIR_VERSION,
     ]);
   });
@@ -2515,6 +2563,15 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       PATCHNODE_ENTRIES_VERSION,
       TASK_PLANNING_FAILURE_VERSION,
       CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION,
+      PROJECT_NOTES_VERSION,
+      OVERLAP_WAIT_SYNC_VERSION,
+      WHITEBOARDS_SCHEMA_VERSION,
+      /*
+      FNXC:MigrationCollisionRepair 2026-09-10-23:59:
+      The repair identity is the non-numeric `local-repair-mixed-0065`, and these ledger assertions
+      read `ORDER BY version` as TEXT, so it sorts AFTER every numeric migration — including the
+      0074-0076 migrations merged in from upstream on 2026-09-11. Keep it last in these fixtures.
+      */
       MIXED_0065_REPAIR_VERSION,
     ]);
   });

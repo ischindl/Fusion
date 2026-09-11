@@ -1797,7 +1797,8 @@
     "planAutoApproveLabel": "",
     "planAutoApproveOffHint": "",
     "planAutoApproveOnHint": "",
-    "paginationError": "Não foi possível carregar as tarefas mais antigas."
+    "paginationError": "Não foi possível carregar as tarefas mais antigas.",
+    "openHistory": "Abrir histórico"
   },
   "commandCenter": {
     "activity": {
@@ -2314,7 +2315,8 @@
     "unknown": "Desconhecido",
     "unsavedChanges": "Alterações não salvas",
     "yes": "Sim",
-    "remove": ""
+    "remove": "",
+    "alpha": "Alpha"
   },
   "composer": {
     "addSection": "",
@@ -2945,7 +2947,14 @@
     "uploadSummary_one": "",
     "uploadSummary_other": "",
     "uploadTitle": "",
-    "uploadTooLarge": ""
+    "uploadTooLarge": "",
+    "sortBy": "Ordenar por",
+    "sortName": "Nome",
+    "sortModified": "Data de modificação",
+    "sortSize": "Tamanho",
+    "sortDirectionAscending": "Direção da ordenação: crescente",
+    "sortDirectionDescending": "Direção da ordenação: decrescente",
+    "sortUnavailableDuringSearch": "A ordenação se aplica às listas de pastas e fica indisponível durante a pesquisa"
   },
   "fileEditor": {
     "autoSave": "Salvamento automático",
@@ -3598,7 +3607,9 @@
     "allProjects": "",
     "favoriteProjects": "",
     "hideRightSidebar": "",
-    "showRightSidebar": ""
+    "showRightSidebar": "",
+    "clearSearch": "Limpar pesquisa",
+    "taskSuggestions": "Sugestões de tarefas"
   },
   "health": {
     "activeTasks": "Tarefas ativas",
@@ -4038,7 +4049,11 @@
     "openPlanningSessionAria": "",
     "report": "",
     "recommendationsUnavailableIdsReason": "",
-    "recommendationsUnavailableTaskReason": ""
+    "recommendationsUnavailableTaskReason": "",
+    "completions": "",
+    "taskCompletion": "Conclusão da tarefa",
+    "completionImages": "Imagens da conclusão",
+    "completionImage": "Imagem da conclusão"
   },
   "memory": {
     "auditChecksTitle": "Verificações de auditoria",
@@ -4795,7 +4810,10 @@
     "fleet": "",
     "ideation": "",
     "importTasks": "",
-    "newTask": ""
+    "newTask": "",
+    "notes": "Notas",
+    "openMenu": "Abrir menu de navegação",
+    "whiteboard": "Whiteboard"
   },
   "newTaskModal": {
     "addDependencies": "Adicionar dependências",
@@ -11450,5 +11468,65 @@
       "headline": "Aguardando uma pessoa",
       "suggestedAction": "Faça o merge do cartão manualmente ou reative o processamento automático de merge."
     }
+  },
+  "notes": {
+    "new": "New note",
+    "search": "Search notes",
+    "list": "Notes list",
+    "empty": "No notes yet",
+    "noResults": "No notes found",
+    "createFirst": "Create your first note",
+    "select": "Select a note or create a new one",
+    "title": "Note title",
+    "unsaved": "Unsaved changes",
+    "savedState": "Saved",
+    "saving": "Saving…",
+    "saved": "Note saved",
+    "deleted": "Note deleted",
+    "discardTitle": "Discard changes?",
+    "discardMessage": "Your unsaved draft will be lost.",
+    "discard": "Discard",
+    "deleteTitle": "Delete note?",
+    "deleteMessage": "This action cannot be undone.",
+    "conflict": "This note changed elsewhere. Your draft is preserved.",
+    "reload": "Reload server version",
+    "overwrite": "Overwrite with my draft"
+  },
+  "whiteboard": {
+    "tools": "Whiteboard tools",
+    "new": "New whiteboard",
+    "list": "Whiteboards",
+    "search": "Search whiteboards",
+    "noProject": "Select a project to use Whiteboard",
+    "noResults": "No whiteboards found",
+    "empty": "No whiteboards yet",
+    "select": "Select or create a whiteboard",
+    "title": "Whiteboard title",
+    "saving": "Saving…",
+    "unsaved": "Unsaved",
+    "saved": "Saved",
+    "rename": "Rename",
+    "history": "History",
+    "conflict": "This whiteboard changed elsewhere. Your draft is preserved.",
+    "reload": "Reload remote",
+    "copyDraft": "Create copy from draft",
+    "discardTitle": "Discard changes?",
+    "discardMessage": "Your unsaved Whiteboard draft will be lost.",
+    "discard": "Discard",
+    "deleteTitle": "Delete whiteboard?",
+    "deleteMessage": "This action cannot be undone.",
+    "deleted": "Whiteboard deleted",
+    "addIdea": "Idea",
+    "addScreen": "Screen",
+    "addArea": "Functional area",
+    "addStep": "Process step",
+    "align": "Align",
+    "distribute": "Distribute",
+    "layout": "Arrange",
+    "inspector": "Selection inspector",
+    "textContent": "Text",
+    "selectHint": "Select an item to edit it",
+    "exportJson": "Export JSON",
+    "exportPng": "Export PNG"
   }
 }

@@ -88,7 +88,11 @@ The FN-207 lifecycle-containment rewrite stopped calling `resolveReboundTargetFo
 in the union import, which broke workspace lint (`no-unused-vars`) for every card after it. `resolveReboundTarget` is the
 symbol this file actually calls, so only the dead token was dropped.
 */
-import { loadWorkspaceConfig, type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, hasSharedBranchMemberAutoMergeHold, resolveEffectiveAutoMerge, countRecentIdenticalStallEntries, detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getPostMergeFinalizeBlocker, planConfirmedMergeChecklistReconciliation, getTaskMergeBlocker, resolvePreMergeGateForTask,
+import { loadWorkspaceConfig, type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, hasSharedBranchMemberAutoMergeHold, resolveEffectiveAutoMerge, countRecentIdenticalStallEntries,
+  /* FNXC:SelfHealing 2026-09-10-23:14 (merge origin/main 2026-09-10): upstream's stall-deadlock
+     repetition logic calls these two in-review-stall helpers; the union import carries them. */
+  getLatestFailedPreMergeStepProgressAt, resolveInReviewStallDeadlockThreshold,
+  detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getPostMergeFinalizeBlocker, planConfirmedMergeChecklistReconciliation, getTaskMergeBlocker, resolvePreMergeGateForTask,
   /* FNXC:SelfHealing 2026-09-06-09:47 (merge origin/main dd808ed2c6): FN-295 collateral-archive restore helpers + stale-content predicate — the auto-merged sweep bodies call all three. */
   resolveCollateralArchivedReviewGate,
   COLLATERAL_ARCHIVED_REVIEW_GATE_DIAGNOSTIC,
@@ -534,6 +538,11 @@ the unattended background pass.
 */
 const PRE_EXECUTION_WORKTREE_MAX_IDLE_MS = 30 * 24 * 60 * 60 * 1000;
 
+export interface OverlapBlockerRelease {
+  taskId: string;
+  blockerId: string;
+}
+
 export interface SelfHealingOptions {
   /** Project root directory (parent of .worktrees/) */
   rootDir: string;
@@ -547,8 +556,8 @@ export interface SelfHealingOptions {
   localNodeId?: string;
   /** Optional callback to release TaskExecutor in-memory worktree ownership for a task. */
   releaseExecutorWorktreeOwnership?: (taskId: string) => void;
-  /** Request scheduling only after completion fan-out durably clears at least one overlap lease. */
-  onOverlapBlockersReleased?: () => void | Promise<void>;
+  /** Release exact dependent waits only after completion fan-out durably clears their overlap lease. */
+  onOverlapBlockersReleased?: (releases: readonly OverlapBlockerRelease[]) => void | Promise<void>;
   /**
    * FN-6782: read-only snapshot of the executor's in-memory worktree holders
    * ({ taskId, worktreePath }), so the leaked-slot reaper can cross-check each
@@ -5689,7 +5698,10 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         (t) => t.blockedBy === taskId || t.overlapBlockedBy === taskId,
       );
       const todoTaskIds = new Set(todoTasks.map((t) => t.id));
-      let overlapReleaseCommitted = false;
+      const committedOverlapReleases = new Map<string, OverlapBlockerRelease>();
+      const recordOverlapRelease = (dependentId: string, blockerId: string | null | undefined, committed: boolean): void => {
+        if (committed && blockerId) committedOverlapReleases.set(dependentId, { taskId: dependentId, blockerId });
+      };
       for (const dependent of dependents) {
         try {
           /*
@@ -5752,7 +5764,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
                 unresolvedDeps,
                 `Auto-recovered (FN-4523): cleared stale blockedBy — blocker ${taskId} is done; now blocked by ${nextBlocker}`,
               );
-              overlapReleaseCommitted ||= transition.overlapCleared;
+              recordOverlapRelease(dependent.id, freshOverlap.blockerId, transition.overlapCleared);
             } else if (hasActiveOverlapBlocker) {
               await this.store.transitionQueuedEpisode(dependent.id, {
                 signature: `file-scope:${overlapBlockedBy}`,
@@ -5766,7 +5778,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
                 freshOverlap.blockerId,
                 { blockedBy: null, ...clearBlockedStatusOnly(freshOverlap.dependent) },
               );
-              overlapReleaseCommitted ||= overlapCleared;
+              recordOverlapRelease(dependent.id, freshOverlap.blockerId, overlapCleared);
               await this.store.logEntry(
                 dependent.id,
                 `Auto-recovered (FN-4523): cleared stale blockedBy — blocker ${taskId} is done`,
@@ -5778,7 +5790,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
               hasActiveOverlapBlocker ? null : freshOverlap.blockerId,
               { blockedBy: null },
             );
-            overlapReleaseCommitted ||= overlapCleared;
+            recordOverlapRelease(dependent.id, freshOverlap.blockerId, overlapCleared);
             await this.store.logEntry(
               dependent.id,
               `Auto-recovered (FN-4523): cleared stale blockedBy — blocker ${taskId} is done`,
@@ -5792,14 +5804,14 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       }
 
       /*
-      FNXC:OverlapScheduling 2026-09-07-14:23:
-      Completion fan-out must publish every dependent mutation before requesting scheduler work.
-      Invoke this once, after the dependent loop and outside store mutation callbacks, so duplicate
-      fan-outs coalesce downstream and a failed/no-op CAS cannot advertise an uncommitted release.
+      FNXC:OverlapScheduling 2026-09-09-22:33:
+      Completion fan-out must publish every dependent mutation before releasing continuation waits.
+      Carry only exact dependent/blocker identities whose clear committed, and invoke once outside store
+      callbacks so duplicate terminal events and replacement-holder CAS losses advertise no release.
       */
-      if (overlapReleaseCommitted) {
+      if (committedOverlapReleases.size > 0) {
         try {
-          await this.options.onOverlapBlockersReleased?.();
+          await this.options.onOverlapBlockersReleased?.([...committedOverlapReleases.values()]);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           log.warn(`${prefix} post-overlap-release scheduling wake failed: ${message}`);
@@ -6905,6 +6917,11 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       };
 
       let recovered = 0;
+      const committedOverlapReleases = new Map<string, OverlapBlockerRelease>();
+      const recordOverlapRelease = (taskId: string, blockerId: string | null | undefined, committed: boolean): void => {
+        if (!committed || !blockerId) return;
+        committedOverlapReleases.set(taskId, { taskId, blockerId });
+      };
       const recoveredTaskIds = new Set<string>();
       const markRecovered = (taskId: string): void => {
         if (recoveredTaskIds.has(taskId)) return;
@@ -7006,6 +7023,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           const canClearOverlap = await canClearObservedOverlap(task, observedOverlapBlockerId);
           if (canClearOverlap) {
             const overlapCleared = await updateWithOverlapClear(task.id, observedOverlapBlockerId);
+            recordOverlapRelease(task.id, observedOverlapBlockerId, overlapCleared);
             if (overlapCleared) {
               await this.store.logEntry(
                 task.id,
@@ -7113,11 +7131,12 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
                   didRecover = transition.appended;
                 } else {
                   const canClearOverlap = await canClearObservedOverlap(task, observedOverlapBlockerId);
-                  await updateWithOverlapClear(
+                  const overlapCleared = await updateWithOverlapClear(
                     task.id,
                     canClearOverlap ? observedOverlapBlockerId : null,
                     { blockedBy: null, ...clearBlockedStatusOnly(task) },
                   );
+                  recordOverlapRelease(task.id, observedOverlapBlockerId, overlapCleared);
                   await this.store.logEntry(task.id, `Auto-recovered (FN-5488): cleared stale blockedBy — blocker=${blockerId} blockerStatus=${blocker?.status ?? "none"} reason=${reasonCode ?? "unspecified"}; ${reason}`);
                   didRecover = true;
                 }
@@ -7153,11 +7172,12 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
               } else {
                 // FN-5434: routine scheduler↔self-healing queued-status churn should stay silent; keep state cleanup only.
                 const canClearOverlap = await canClearObservedOverlap(task, observedOverlapBlockerId);
-                await updateWithOverlapClear(
+                const overlapCleared = await updateWithOverlapClear(
                   task.id,
                   canClearOverlap ? observedOverlapBlockerId : null,
                   { blockedBy: null, ...clearBlockedStatusOnly(task) },
                 );
+                recordOverlapRelease(task.id, observedOverlapBlockerId, overlapCleared);
               }
             } catch (err: unknown) {
               const errorMessage = err instanceof Error ? err.message : String(err);
@@ -7178,6 +7198,20 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         }
       }
 
+      /*
+      FNXC:OverlapWaitSynchronization 2026-09-10-04:52:
+      Startup and periodic stale-blocker reconciliation are completion catch-up publishers. After
+      their compare-and-set clear commits, they must release the exact durable continuation just like
+      live completion fan-out; clearing the display marker alone cannot strand a restart-era wait.
+      */
+      if (committedOverlapReleases.size > 0) {
+        try {
+          await this.options.onOverlapBlockersReleased?.([...committedOverlapReleases.values()]);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          log.warn(`stale blockedBy post-overlap-release scheduling wake failed: ${message}`);
+        }
+      }
       return recovered;
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err);
@@ -10763,10 +10797,10 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       let surfaced = 0;
 
       for (const task of tasks) {
-        if (task.deletedAt) continue;
-        if (!allowsAutoMergeProcessing(task, settings)) continue;
-        const signal = getInReviewStallReason(task, {
-          reviewColumns: stallLanes.get(task.id) ?? stallReviewColumns,
+        if (task.deletedAt || !allowsAutoMergeProcessing(task, settings)) continue;
+        const reviewColumns = stallLanes.get(task.id) ?? stallReviewColumns;
+        const selectedSignal = getInReviewStallReason(task, {
+          reviewColumns,
           now: cycleStartMs,
           activeMergeTaskId,
           executingTaskIds,
@@ -10775,93 +10809,98 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           engineActiveSinceMs: settings.engineActiveSinceMs,
           engineActivationGraceMs: settings.engineActivationGraceMs,
         });
-        if (!signal) continue;
-        if (await this.isMergeLaneOwned(task.id)) continue;
+        if (!selectedSignal || await this.isMergeLaneOwned(task.id)) continue;
 
-        if (Date.parse(task.updatedAt) >= cycleStartMs) {
-          continue;
-        }
+        const threshold = resolveInReviewStallDeadlockThreshold(settings);
+        let appliedSignal: typeof selectedSignal | undefined;
+        let repetitionCount = 0;
+        let disposition: "observation" | "deadlock" | "terminal-provider" | undefined;
+        const outcome = await this.store.applyInReviewStallObservationFenced(task.id, (live) => {
+          if (live.deletedAt || live.paused) return null;
+          if (!allowsAutoMergeProcessing(live, settings)) return null;
+          if (Date.parse(live.updatedAt) >= cycleStartMs) return null;
 
-        if (signal.code === "non-retryable-provider-error" && task.userPaused !== true) {
-          await this.store.logEntry(task.id, `${IN_REVIEW_STALL_TERMINAL_LOG_PREFIX}${signal.code}]: ${signal.reason}`);
-          await this.store.updateTask(task.id, {
-            paused: true,
-            pausedReason: "non-retryable-provider-error",
-            status: "failed",
-            error: `Terminal provider error (non-retryable): ${signal.reason}`,
+          const signal = getInReviewStallReason(live, {
+            reviewColumns,
+            now: cycleStartMs,
+            activeMergeTaskId,
+            executingTaskIds,
+            staleMergingMinAgeMs: this.options.staleMergingStatusMinAgeMs ?? DEFAULT_STALE_MERGING_STATUS_MIN_AGE_MS,
+            maxAutoMergeRetries,
+            engineActiveSinceMs: settings.engineActiveSinceMs,
+            engineActivationGraceMs: settings.engineActivationGraceMs,
           });
-          const auditor = createRunAuditor(this.store, {
-            runId: generateSyntheticRunId("self-healing-stall-terminal-provider-error", task.id),
-            agentId: "self-healing",
-            taskId: task.id,
-            phase: "self-healing",
-          });
-          await auditor.database({
-            type: "task:in-review-stall-terminal-provider-error",
-            target: task.id,
-            metadata: {
-              code: signal.code,
-              reason: signal.reason,
-              branch: task.branch ?? null,
-              worktree: task.worktree ?? null,
-            },
-          });
-          surfaced += 1;
-          continue;
-        }
+          if (!signal) return null;
 
-        const previous = [...(task.log ?? [])]
-          .reverse()
-          .find((entry) => entry.action.startsWith(IN_REVIEW_STALL_LOG_PREFIX));
-        if (previous) {
-          const parsed = /^In-review stall surfaced \[([^\]]+)\]/.exec(previous.action);
-          const previousCode = parsed?.[1];
-          const previousAt = Date.parse(previous.timestamp);
-          if (Number.isFinite(previousAt) && previousAt >= cycleStartMs - timeoutMs && previousCode === signal.code) {
-            continue;
+          const previous = [...(live.log ?? [])]
+            .reverse()
+            .find((entry) => entry.action.startsWith(IN_REVIEW_STALL_LOG_PREFIX));
+          if (previous) {
+            const parsed = /^In-review stall surfaced \[([^\]]+)\]/.exec(previous.action);
+            const previousCode = parsed?.[1];
+            const previousAt = Date.parse(previous.timestamp);
+            if (Number.isFinite(previousAt) && previousAt >= cycleStartMs - timeoutMs && previousCode === signal.code) return null;
           }
-        }
 
-        const threshold = settings.inReviewStallDeadlockThreshold ?? 3;
-        const identicalCount = countRecentIdenticalStallEntries(task, { code: signal.code, reason: signal.reason });
-        const nextCount = identicalCount + 1;
-        const shouldDispose = threshold > 0 && task.userPaused !== true && nextCount >= threshold;
+          appliedSignal = signal;
+          const progressAt = signal.code === "merge-blocker" && signal.reason === "task has failed pre-merge workflow steps"
+            ? getLatestFailedPreMergeStepProgressAt(live)
+            : undefined;
+          repetitionCount = countRecentIdenticalStallEntries(live, signal, progressAt) + 1;
+          const timestamp = new Date().toISOString();
 
-        if (shouldDispose) {
-          await this.store.logEntry(
-            task.id,
-            `${IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX}${signal.code}]: deadlock-prevention threshold reached after ${nextCount} identical stalls — pausing task. last reason: ${signal.reason}`,
-          );
-          await this.store.updateTask(task.id, {
-            paused: true,
-            pausedReason: "in-review-stall-deadlock",
-            status: "failed",
-            error: `In-review stall deadlock: ${signal.code} repeated ${nextCount}× without progress. ${signal.reason}`,
-          });
-          const auditor = createRunAuditor(this.store, {
-            runId: generateSyntheticRunId("self-healing-stall-deadlock", task.id),
-            agentId: "self-healing",
-            taskId: task.id,
-            phase: "self-healing",
-          });
-          await auditor.database({
-            type: "task:in-review-stall-deadlock-disposed",
-            target: task.id,
-            metadata: {
-              code: signal.code,
-              reason: signal.reason,
-              repetitionCount: nextCount,
-              threshold,
-              branch: task.branch ?? null,
-              worktree: task.worktree ?? null,
-            },
-          });
-          surfaced += 1;
-          continue;
-        }
+          if (signal.code === "non-retryable-provider-error" && live.userPaused !== true) {
+            disposition = "terminal-provider";
+            return {
+              logEntry: { timestamp, action: `${IN_REVIEW_STALL_TERMINAL_LOG_PREFIX}${signal.code}]: ${signal.reason}` },
+              paused: true,
+              pausedReason: "non-retryable-provider-error",
+              status: "failed",
+              error: `Terminal provider error (non-retryable): ${signal.reason}`,
+            };
+          }
+          if (threshold > 0 && live.userPaused !== true && repetitionCount >= threshold) {
+            disposition = "deadlock";
+            return {
+              logEntry: {
+                timestamp,
+                action: `${IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX}${signal.code}]: deadlock-prevention threshold reached after ${repetitionCount} identical stalls — pausing task. last reason: ${signal.reason}`,
+              },
+              paused: true,
+              pausedReason: "in-review-stall-deadlock",
+              status: "failed",
+              error: `In-review stall deadlock: ${signal.code} repeated ${repetitionCount}× without progress. ${signal.reason}`,
+            };
+          }
+          disposition = "observation";
+          return { logEntry: { timestamp, action: `${IN_REVIEW_STALL_LOG_PREFIX}${signal.code}]: ${signal.reason}` } };
+        });
+        if (!outcome.applied || !appliedSignal || !disposition) continue;
 
-        await this.store.logEntry(task.id, `${IN_REVIEW_STALL_LOG_PREFIX}${signal.code}]: ${signal.reason}`);
         surfaced += 1;
+        if (disposition === "observation") continue;
+        const auditor = createRunAuditor(this.store, {
+          runId: generateSyntheticRunId(
+            disposition === "deadlock" ? "self-healing-stall-deadlock" : "self-healing-stall-terminal-provider-error",
+            task.id,
+          ),
+          agentId: "self-healing",
+          taskId: task.id,
+          phase: "self-healing",
+        });
+        await auditor.database({
+          type: disposition === "deadlock"
+            ? "task:in-review-stall-deadlock-disposed"
+            : "task:in-review-stall-terminal-provider-error",
+          target: task.id,
+          metadata: {
+            code: appliedSignal.code,
+            reason: appliedSignal.reason,
+            ...(disposition === "deadlock" ? { repetitionCount, threshold } : {}),
+            branch: outcome.task.branch ?? null,
+            worktree: outcome.task.worktree ?? null,
+          },
+        });
       }
 
       return surfaced;

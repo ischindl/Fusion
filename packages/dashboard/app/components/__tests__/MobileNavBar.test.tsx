@@ -1,8 +1,11 @@
 import { readFileSync } from "fs";
 import { resolve } from "path";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MobileNavBar } from "../MobileNavBar";
+import userEvent from "@testing-library/user-event";
+import { Header } from "../Header";
+import { computePublishedMobileNavHeight, MobileNavBar } from "../MobileNavBar";
 import { MOBILE_NAV_SELECTABLE_ITEMS } from "../../../../core/src/board/mobile-nav-primary-items";
 import { MOBILE_MEDIA_QUERY } from "../../hooks/useViewportMode";
 import { readAppFile } from "../../test/cssFixture";
@@ -43,6 +46,28 @@ function extractRuleBlock(css: string, selector: string): string {
 
 function getRenderedMobileTabs(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>(".mobile-nav-bar > .mobile-nav-tab"));
+}
+
+function AlphaMobileShellHarness() {
+  const [menuOpen, setMenuOpen] = useState(false);
+  return (
+    <>
+      <Header
+        view="board"
+        mobileNavEnabled
+        alphaUpdatesEnabled
+        alphaMenuOpen={menuOpen}
+        onOpenAlphaMenu={() => setMenuOpen((open) => !open)}
+        onOpenUsage={() => undefined}
+      />
+      <MobileNavBar
+        {...createDefaultProps()}
+        alphaUpdatesEnabled
+        alphaMenuOpen={menuOpen}
+        onAlphaMenuOpenChange={setMenuOpen}
+      />
+    </>
+  );
 }
 
 function expectUniformMobileNavColumns(container: HTMLElement, expectedTabCount: number) {
@@ -114,8 +139,6 @@ const createDefaultProps = () => ({
   onOpenActivityLog: vi.fn(),
   onOpenMailbox: vi.fn(),
   mailboxUnreadCount: 0,
-  recommendationUnreadCount: 0,
-  artifactUnreadCount: 0,
   mailboxPendingApprovalCount: 0,
   onOpenGitManager: vi.fn(),
   onOpenWorkflowEditor: vi.fn(),
@@ -142,6 +165,164 @@ describe("MobileNavBar", () => {
     vi.useRealTimers();
   });
 
+  it("renders the fixed icon-only Alpha pill and opens its complementary menu from the header request", () => {
+    const { container, rerender } = render(
+      <MobileNavBar
+        {...createDefaultProps()}
+        alphaUpdatesEnabled
+        alphaMenuOpen={false}
+        mobileNavPrimaryItems={["patchnode", "tasks", "tasks"]}
+      />,
+    );
+
+    expect(getRenderedMobileTabs(container).map((tab) => tab.dataset.testid)).toEqual([
+      "mobile-nav-tab-command-center",
+      "mobile-nav-tab-planning",
+      "mobile-nav-tab-chat",
+      "mobile-nav-tab-mailbox",
+    ]);
+    expect(screen.queryByTestId("mobile-nav-tab-tasks")).toBeNull();
+    expect(container.querySelectorAll(".mobile-nav-tab-label")).toHaveLength(0);
+    expect(screen.queryByTestId("mobile-nav-tab-list")).toBeNull();
+    expect(screen.queryByTestId("mobile-nav-tab-more")).toBeNull();
+
+    rerender(
+      <MobileNavBar
+        {...createDefaultProps()}
+        alphaUpdatesEnabled
+        alphaMenuOpen
+        mobileNavPrimaryItems={["patchnode", "tasks", "tasks"]}
+      />,
+    );
+    expect(screen.getByTestId("mobile-more-item-list")).toHaveTextContent("List");
+    expect(screen.getByRole("menu", { name: "Navigate" })).toHaveClass("alpha-mobile-navigation-popover");
+    expect(container.querySelector(".mobile-more-sheet-backdrop")).toBeNull();
+    expect(container.querySelector(".mobile-more-sheet-handle")).toBeNull();
+    expect(screen.queryByTestId("mobile-more-item-patchnode")).toBeNull();
+    expect(screen.queryByTestId("mobile-more-item-tasks")).toBeNull();
+    expect(screen.getAllByTestId("mobile-more-item-agents")).toHaveLength(1);
+  });
+
+  it("remeasures the Alpha pill when mobile navigation appears after a viewport or modal transition", async () => {
+    mockViewport("desktop");
+    const offsetHeight = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function () {
+      return this.classList.contains("mobile-nav-bar") ? 54 : 0;
+    });
+    const clientRect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function () {
+      const height = this.classList.contains("mobile-nav-tab") ? 44 : 0;
+      return { x: 0, y: 0, top: 0, right: 0, bottom: height, left: 0, width: 0, height, toJSON: () => ({}) };
+    });
+    const computedStyle = vi.spyOn(window, "getComputedStyle").mockImplementation(() => ({
+      paddingBottom: "0",
+      getPropertyValue: (property: string) => property === "--mobile-nav-floating-gap" ? "8" : "",
+    }) as CSSStyleDeclaration);
+
+    const { container, rerender } = render(<MobileNavBar {...createDefaultProps()} alphaUpdatesEnabled />);
+    expect(container.querySelector(".mobile-nav-bar")).toBeNull();
+    expect(document.documentElement.style.getPropertyValue("--mobile-nav-height")).toBe("");
+
+    mockViewport("mobile");
+    fireEvent.resize(window);
+    await waitFor(() => expect(container.querySelector(".mobile-nav-bar--alpha")).not.toBeNull());
+    expect(document.documentElement.style.getPropertyValue("--mobile-nav-height")).toBe("62px");
+
+    rerender(<MobileNavBar {...createDefaultProps()} alphaUpdatesEnabled modalOpen />);
+    expect(container.querySelector(".mobile-nav-bar")).toBeNull();
+    expect(document.documentElement.style.getPropertyValue("--mobile-nav-height")).toBe("");
+
+    rerender(<MobileNavBar {...createDefaultProps()} alphaUpdatesEnabled modalOpen={false} />);
+    expect(container.querySelector(".mobile-nav-bar--alpha")).not.toBeNull();
+    expect(document.documentElement.style.getPropertyValue("--mobile-nav-height")).toBe("62px");
+
+    computedStyle.mockRestore();
+    clientRect.mockRestore();
+    offsetHeight.mockRestore();
+  });
+
+  it("keeps Alpha pill geometry independent from badges and optional plugins", () => {
+    const empty = render(<MobileNavBar {...createDefaultProps()} alphaUpdatesEnabled />);
+    const emptyNav = empty.container.querySelector(".mobile-nav-bar");
+    expect(emptyNav).toHaveClass("mobile-nav-bar--alpha");
+    expect(emptyNav).not.toHaveClass("mobile-nav-bar--with-footer");
+    expect(getRenderedMobileTabs(empty.container)).toHaveLength(4);
+    empty.unmount();
+
+    const populated = render(
+      <MobileNavBar
+        {...createDefaultProps()}
+        alphaUpdatesEnabled
+        mailboxUnreadCount={87}
+        mailboxPendingApprovalCount={3}
+        pluginDashboardViews={[{
+          pluginId: "fusion-plugin-alpha-geometry",
+          view: { viewId: "alpha-geometry", label: "Alpha Geometry", componentPath: "./AlphaGeometry", icon: "Workflow", placement: "primary", order: 1 },
+        }]}
+      />,
+    );
+    const populatedNav = populated.container.querySelector(".mobile-nav-bar");
+    expect(populatedNav).toHaveClass("mobile-nav-bar--alpha");
+    expect(populatedNav).not.toHaveClass("mobile-nav-bar--with-footer");
+    expect(getRenderedMobileTabs(populated.container)).toHaveLength(4);
+    expect(screen.getByTestId("mobile-nav-tab-mailbox").querySelector(".mobile-nav-tab-badge")).toHaveTextContent("87");
+    expect(computePublishedMobileNavHeight({ navOffsetHeight: 54, paddingBottom: 4, tabHeights: [44, 44, 44, 44, 44], floatingGap: 8 })).toBe(62);
+  });
+
+  it("toggles the shared Alpha menu through two successive real header hamburger clicks", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    render(<AlphaMobileShellHarness />);
+
+    const hamburger = screen.getByTestId("alpha-mobile-menu-trigger");
+    expect(hamburger).toHaveAttribute("aria-expanded", "false");
+    expect(hamburger).toHaveAttribute("aria-controls", "alpha-mobile-navigation-popover");
+    await user.click(hamburger);
+    expect(hamburger).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByTestId("mobile-more-item-list")).toBeInTheDocument();
+    expect(screen.getByTestId("mobile-more-item-usage")).toBeInTheDocument();
+    expect(screen.queryByTestId("mobile-header-usage-btn")).toBeNull();
+
+    await user.click(hamburger);
+    expect(hamburger).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTestId("mobile-more-item-list")).toBeNull();
+  });
+
+  it("closes the Alpha popover on Escape and outside pointer interaction", () => {
+    render(<AlphaMobileShellHarness />);
+    const hamburger = screen.getByTestId("alpha-mobile-menu-trigger");
+
+    fireEvent.click(hamburger);
+    expect(screen.getByRole("menu", { name: "Navigate" })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("menu", { name: "Navigate" })).toBeNull();
+
+    fireEvent.click(hamburger);
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole("menu", { name: "Navigate" })).toBeNull();
+  });
+
+  it.each([
+    ["agents", "mobile-more-item-agents"],
+    ["missions", "mobile-more-item-missions"],
+  ] as const)("closes the Alpha popover exactly once when navigating to %s", (view, testId) => {
+    const props = createDefaultProps();
+    const onAlphaMenuOpenChange = vi.fn();
+    render(
+      <MobileNavBar
+        {...props}
+        alphaUpdatesEnabled
+        alphaMenuOpen
+        onAlphaMenuOpenChange={onAlphaMenuOpenChange}
+      />,
+    );
+    onAlphaMenuOpenChange.mockClear();
+
+    fireEvent.click(screen.getByTestId(testId));
+
+    expect(props.onChangeView).toHaveBeenCalledTimes(1);
+    expect(props.onChangeView).toHaveBeenCalledWith(view);
+    expect(onAlphaMenuOpenChange).toHaveBeenCalledTimes(1);
+    expect(onAlphaMenuOpenChange).toHaveBeenCalledWith(false);
+  });
+
   it("renders eight top-level tab buttons including dedicated List and keeps skills in More when showSkillsTab is true", () => {
     render(<MobileNavBar {...createDefaultProps()} showSkillsTab={true} />);
 
@@ -160,29 +341,11 @@ describe("MobileNavBar", () => {
     expect(screen.getByTestId("mobile-more-item-skills")).toBeDefined();
   });
 
-  it("shows recommendation and artifact badges in primary tabs and the More sheet", () => {
-    const primary = render(
-      <MobileNavBar
-        {...createDefaultProps()}
-        recommendationUnreadCount={7}
-        artifactUnreadCount={120}
-        mobileNavPrimaryItems={["recommendations", "documents"]}
-      />,
-    );
-    expect(screen.getByTestId("mobile-nav-tab-recommendations").querySelector(".mobile-nav-tab-badge")).toHaveTextContent("7");
-    expect(screen.getByTestId("mobile-nav-tab-documents").querySelector(".mobile-nav-tab-badge")).toHaveTextContent("99+");
-    primary.unmount();
-
-    render(
-      <MobileNavBar
-        {...createDefaultProps()}
-        recommendationUnreadCount={7}
-        artifactUnreadCount={120}
-      />,
-    );
-    fireEvent.click(screen.getByTestId("mobile-nav-tab-more"));
-    expect(screen.getByTestId("mobile-more-item-recommendations").querySelector(".mobile-more-item-badge")).toHaveTextContent("7");
-    expect(screen.getByTestId("mobile-more-item-documents").querySelector(".mobile-more-item-badge")).toHaveTextContent("99+");
+  it("migrates legacy recommendation and artifact footer preferences to one Mailbox tab", () => {
+    render(<MobileNavBar {...createDefaultProps()} mobileNavPrimaryItems={["recommendations", "documents"]} />);
+    expect(screen.getAllByTestId("mobile-nav-tab-mailbox")).toHaveLength(1);
+    expect(screen.queryByTestId("mobile-nav-tab-recommendations")).toBeNull();
+    expect(screen.queryByTestId("mobile-nav-tab-documents")).toBeNull();
   });
 
   it("promotes Planning and routes demoted Missions to More without an empty tab", () => {
@@ -202,10 +365,10 @@ describe("MobileNavBar", () => {
   });
 
   it("renders every available selectable destination exactly once across tab and More", () => {
-    const gated = new Set(["skills", "insights", "memory", "research", "evals", "ideation", "goals", "todos", "dev-server"]);
+    const gated = new Set(["skills", "insights", "memory", "research", "evals", "ideation", "whiteboard", "goals", "todos", "dev-server"]);
     const moreTestIds: Record<string, string> = { automation: "schedules", "github-import": "github", workflows: "workflow" };
     for (const item of MOBILE_NAV_SELECTABLE_ITEMS) {
-      const { unmount } = render(<MobileNavBar {...createDefaultProps()} mobileNavPrimaryItems={[item]} showSkillsTab experimentalFeatures={{ insights: true, memoryView: true, researchView: true, evalsView: true, ideationView: true, goalsView: true, devServerView: true }} />);
+      const { unmount } = render(<MobileNavBar {...createDefaultProps()} mobileNavPrimaryItems={[item]} showSkillsTab experimentalFeatures={{ insights: true, memoryView: true, researchView: true, evalsView: true, ideationView: true, whiteboardView: true, goalsView: true, todoView: true, devServerView: true }} />);
       if (item === "ideation") {
         expect(screen.queryByTestId("mobile-nav-tab-ideation")).toBeNull();
         fireEvent.click(screen.getByTestId("mobile-nav-tab-more"));
@@ -217,7 +380,7 @@ describe("MobileNavBar", () => {
       }
       unmount();
     }
-    expect(gated.size).toBe(9);
+    expect(gated.size).toBe(10);
   });
 
   it("keeps enabled Ideation in More when persisted customization lists it", () => {
@@ -382,15 +545,11 @@ describe("MobileNavBar", () => {
     expect(screen.getByTestId("mobile-nav-tab-more")).toHaveClass("mobile-nav-tab--active");
   });
 
-  it("shows Artifacts in More and routes to the stable documents view", () => {
-    const props = createDefaultProps();
-    render(<MobileNavBar {...props} />);
-
+  it("does not expose standalone Artifacts or Recommendations in More", () => {
+    render(<MobileNavBar {...createDefaultProps()} />);
     fireEvent.click(screen.getByTestId("mobile-nav-tab-more"));
-    expect(screen.getByTestId("mobile-more-item-documents")).toHaveTextContent("Artifacts");
-    fireEvent.click(screen.getByTestId("mobile-more-item-documents"));
-
-    expect(props.onChangeView).toHaveBeenCalledWith("documents");
+    expect(screen.queryByTestId("mobile-more-item-documents")).toBeNull();
+    expect(screen.queryByTestId("mobile-more-item-recommendations")).toBeNull();
   });
 
   it("shows secrets in More and routes to secrets view", () => {

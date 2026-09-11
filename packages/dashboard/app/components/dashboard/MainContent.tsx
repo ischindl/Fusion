@@ -11,7 +11,6 @@ import { applyLocalTaskPatch, mergeTaskSnapshot } from "../../hooks/useTasks";
 import { ProjectOverview } from "../ProjectOverview";
 import { MissionManager } from "../MissionManager";
 import { MailboxView } from "../MailboxView";
-import { RecommendationsView } from "../RecommendationsView";
 import { IdeationPanel } from "../command-center/IdeationPanel";
 import type { NativeStructureCandidate } from "../MessageComposer";
 import { PageErrorBoundary } from "../ErrorBoundary";
@@ -19,14 +18,17 @@ import { BackendConnectionErrorPage } from "../BackendConnectionErrorPage";
 import { HeaderWorkflowSwitcherSlot } from "../HeaderWorkflowSwitcherSlot";
 import { GraphWorkflowSwitcherSlot, filterTasksByGraphWorkflowSelection } from "../GraphWorkflowSwitcherSlot";
 import { PluginDashboardViewHost } from "../../plugins/PluginDashboardViewHost";
-import { getPluginViewId, isPluginViewId } from "../../plugins/pluginViewRegistry";
+import { buildPluginTaskViewId, getPluginViewId, isPluginViewId } from "../../plugins/pluginViewRegistry";
 import { isNearDuplicateCanonicalInactive } from "../../../../core/src/duplicates/near-duplicate-canonical";
 import { fetchMission, fetchMissions, fetchInsights, fetchTaskDetail, listEvals } from "../../api";
 import { attachNativeStructureRefToDrag } from "../../utils/nativeStructureDrag";
 import type { DetailTaskTab } from "../../hooks/useModalManager";
+import type { TaskView } from "../../hooks/useViewState";
+import type { PluginDashboardViewEntry } from "../../api";
 import type { SectionId } from "../SettingsModal";
 import type { MainContentProps } from "./types";
 import { MainViewKeepAlive, isKeepAliveMainViewId, type KeepAliveMainViewId } from "./MainViewKeepAlive";
+import { AlphaMobileDrawer } from "../AlphaMobileDrawer";
 
 /*
 FNXC:CommandCenterAgentActivity 2026-08-10-01:54:
@@ -34,6 +36,39 @@ A monotonic request id makes repeated clicks for the same agent observable to Ag
 */
 let agentAnchorRequestSeq = 0;
 export function nextAgentAnchorRequestId(): number { return ++agentAnchorRequestSeq; }
+
+const ALPHA_DRAWER_TITLES: Partial<Record<string, string>> = {
+  "command-center": "Dashboard",
+  planning: "Planning",
+  chat: "Chat",
+  mailbox: "Mailbox",
+  list: "List",
+  agents: "Agents",
+  missions: "Missions",
+  notes: "Notes",
+  secrets: "Secrets",
+  skills: "Skills & Snippets",
+  insights: "Insights",
+  memory: "Memory",
+  research: "Research",
+  evals: "Evals",
+  ideation: "Ideation",
+  goalsView: "Goals",
+  "dev-server": "Dev Server",
+  settings: "Settings",
+  workflows: "Workflows",
+  schedules: "Automation",
+  "github-import": "Import from GitHub",
+  patchnode: "History",
+  "task-detail": "Task detail",
+};
+
+export function resolveAlphaMobileDrawerTitle(taskView: TaskView, pluginDashboardViews: PluginDashboardViewEntry[]): string {
+  if (isPluginViewId(taskView)) {
+    return pluginDashboardViews.find((entry) => buildPluginTaskViewId(entry.pluginId, entry.view.viewId) === taskView)?.view.label ?? "Plugin";
+  }
+  return ALPHA_DRAWER_TITLES[taskView] ?? "Workspace";
+}
 
 export function MainContent(props: MainContentProps) {
   const {
@@ -99,12 +134,10 @@ export function MainContent(props: MainContentProps) {
   taskDetailChatFirst,
   chatMessageLayout,
   skillsEnabled,
+  experimentalFeatures,
   mailComposerPrefill,
   onOpenChatWithPrefill,
   setMailboxUnreadCount,
-  recommendationUnreadCount,
-  artifactUnreadCount,
-  onMarkCategorySeen,
   setMissionTargetId,
   setMissionResumeSessionId,
   setMilestoneSliceResumeSessionId,
@@ -128,6 +161,7 @@ export function MainContent(props: MainContentProps) {
   researchReadinessVersion,
   evalsEnabled,
   ideationEnabled,
+  whiteboardEnabled,
   memoryEnabled,
   goalsEnabled,
   handleOpenMission,
@@ -171,7 +205,8 @@ export function MainContent(props: MainContentProps) {
   FleetDashboardView,
   CommandCenter,
   DevServerView,
-  DocumentsView,
+  NotesView,
+  WhiteboardView,
   EvalsView,
   GoalsView,
   PatchnodeView,
@@ -274,6 +309,7 @@ export function MainContent(props: MainContentProps) {
   }, [handleChangeTaskView, setGoalAnchorId, setMissionTargetId]);
 
   const projectKey = currentProject?.id ?? "all-projects";
+  const alphaMobileDrawerEnabled = experimentalFeatures?.alphaUpdates === true && isMobile && viewMode === "project" && currentProject !== null;
   const selectedKeepAliveId: KeepAliveMainViewId | null = isKeepAliveMainViewId(taskView)
     ? taskView
     : taskView === "task-detail" && mainPanelDetailTask === null
@@ -284,8 +320,15 @@ export function MainContent(props: MainContentProps) {
     () => ({ projectKey, ids: [] }),
   );
   const previousIds = keepAliveViews.projectKey === projectKey ? keepAliveViews.ids : [];
-  const mountedKeepAliveIds = !earlyHidden && selectedKeepAliveId && !previousIds.includes(selectedKeepAliveId)
-    ? [...previousIds, selectedKeepAliveId]
+  const requiredKeepAliveIds = [
+    ...(alphaMobileDrawerEnabled ? ["board" as const] : []),
+    ...(selectedKeepAliveId ? [selectedKeepAliveId] : []),
+  ];
+  const mountedKeepAliveIds = !earlyHidden
+    ? requiredKeepAliveIds.reduce<KeepAliveMainViewId[]>(
+        (ids, id) => ids.includes(id) ? ids : [...ids, id],
+        previousIds,
+      )
     : previousIds;
   if (keepAliveViews.projectKey !== projectKey || mountedKeepAliveIds !== keepAliveViews.ids) {
     setKeepAliveViews({ projectKey, ids: mountedKeepAliveIds });
@@ -298,12 +341,30 @@ export function MainContent(props: MainContentProps) {
   so a hidden Board cannot retain the shared header slot and hidden Chat cannot mark messages read.
   */
   const activeKeepAliveId = earlyHidden ? null : selectedKeepAliveId;
+  const closeAlphaMobileDrawer = () => {
+    if (taskView === "task-detail") {
+      closeTaskDetailMainPanel();
+      return;
+    }
+    if (taskView === "settings") {
+      modalManager.closeSettings();
+      void refreshAppSettings();
+    }
+    handleChangeTaskView("board");
+  };
+  const alphaDrawerTitle = resolveAlphaMobileDrawerTitle(taskView, pluginDashboardViews);
   const mainViewKeepAlive = (
     <MainViewKeepAlive
       activeId={activeKeepAliveId}
       mountedIds={mountedKeepAliveIds}
       projectKey={projectKey}
       mainContentProps={props}
+      alphaMobileDrawer={alphaMobileDrawerEnabled ? {
+        activeId: modalManager.detailTask ? null : taskView === "list" || taskView === "chat" ? taskView : null,
+        title: alphaDrawerTitle,
+        closeLabel: t("common.close", "Close"),
+        onClose: closeAlphaMobileDrawer,
+      } : undefined}
     />
   );
 
@@ -520,7 +581,7 @@ export function MainContent(props: MainContentProps) {
           /*
           FNXC:ArtifactRegistry 2026-07-12-00:00: Artifact-registration mail notifications open their producing task through the shared task-detail fetch path so the mailbox does not invent a separate deep-link scheme.
 
-          FNXC:ArtifactRegistry 2026-07-13-00:00: Mailbox artifact "View task" opens the producing task in the shared movable/resizable popped-out task-detail FloatingWindow (`popOutTaskDetail`), matching DocumentsView's artifact-task path instead of the docked `openDetailTask` modal, so the modal has full resize/move parity.
+          FNXC:ArtifactRegistry 2026-07-13-00:00: Mailbox artifact "View task" opens the producing task in the shared movable/resizable popped-out task-detail FloatingWindow (`popOutTaskDetail`) instead of the docked `openDetailTask` modal, so the modal has full resize/move parity.
           */
           onOpenTask={(taskId) => {
             void fetchTaskDetail(taskId, currentProject?.id)
@@ -546,24 +607,6 @@ export function MainContent(props: MainContentProps) {
     );
   }
 
-
-  if (taskView === "recommendations") {
-    return (
-      <PageErrorBoundary>
-        <RecommendationsView
-          projectId={currentProject?.id}
-          addToast={addToast}
-          unreadCount={recommendationUnreadCount}
-          onSeen={() => void onMarkCategorySeen("recommendation")}
-          onOpenTask={(taskId) => {
-            void fetchTaskDetail(taskId, currentProject?.id)
-              .then((task) => popOutTaskDetail(task))
-              .catch(() => addToast?.("Failed to open task", "error"));
-          }}
-        />
-      </PageErrorBoundary>
-    );
-  }
 
   if (taskView === "missions") {
     return (
@@ -655,20 +698,22 @@ export function MainContent(props: MainContentProps) {
     );
   }
 
-  if (taskView === "documents") {
+  if (taskView === "notes") {
     return (
       <PageErrorBoundary>
         <Suspense fallback={null}>
-          <DocumentsView
-            projectId={currentProject?.id}
-            columnFlagsByTaskId={columnFlagsByTaskId}
-            addToast={addToast}
-            onOpenDetail={openDetailTask}
-            onOpenArtifactTaskDetail={popOutTaskDetail}
-            onSendSelectionToTask={modalManager.openNewTaskWithDescription}
-            artifactUnreadCount={artifactUnreadCount}
-            onSeen={() => void onMarkCategorySeen("artifact")}
-          />
+          <NotesView projectId={currentProject?.id} addToast={addToast} />
+        </Suspense>
+      </PageErrorBoundary>
+    );
+  }
+
+  if (taskView === "whiteboard") {
+    if (!settingsLoaded || !whiteboardEnabled) return null;
+    return (
+      <PageErrorBoundary>
+        <Suspense fallback={null}>
+          <WhiteboardView projectId={currentProject?.id} addToast={addToast} />
         </Suspense>
       </PageErrorBoundary>
     );
@@ -1059,10 +1104,29 @@ export function MainContent(props: MainContentProps) {
   );
   };
 
+  const switchView = renderSwitchView();
+  const switchUsesAlphaDrawer = alphaMobileDrawerEnabled
+    && taskView !== "board"
+    && taskView !== "list"
+    && taskView !== "chat"
+    && taskView !== "planning"
+    && switchView !== null;
+
   return (
     <>
       {mainViewKeepAlive}
-      {renderSwitchView()}
+      {switchUsesAlphaDrawer ? (
+        <AlphaMobileDrawer
+          open={!modalManager.detailTask}
+          title={alphaDrawerTitle}
+          closeLabel={t("common.close", "Close")}
+          onClose={closeAlphaMobileDrawer}
+          keepMounted
+          testId="alpha-mobile-drawer-main-content"
+        >
+          {switchView}
+        </AlphaMobileDrawer>
+      ) : switchView}
     </>
   );
 }

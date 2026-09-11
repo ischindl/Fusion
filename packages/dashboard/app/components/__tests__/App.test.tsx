@@ -6,6 +6,7 @@ import type { ShellConnectionNativeResult } from "../../shell-native";
 import type { ShellHostContextValue } from "../../context/ShellHostContext";
 import type { AiSessionSummary, ProjectInfo } from "../../api";
 import { scopedKey } from "../../utils/projectStorage";
+import { ALL_WORKFLOWS_BOARD_VIEW_ID, BOARD_WORKFLOW_SELECTION_STORAGE_KEY } from "../../utils/boardWorkflowSelection";
 import { useFileBrowser } from "../../context/FileBrowserContext";
 
 // No mock needed - tests use localStorage directly
@@ -105,7 +106,7 @@ vi.mock("../../api", async (importOriginal) => {
 
 const mockCreateTask = vi.fn();
 
-const mockUseTasks = vi.fn(() => ({
+const mockUseTasks = vi.fn((_options?: { projectId?: string; searchQuery?: string; sseEnabled?: boolean }) => ({
   tasks: [] as Task[],
   isStale: false,
   isBoardRefreshInFlight: false,
@@ -129,7 +130,7 @@ const mockUseTasks = vi.fn(() => ({
 // mergeTaskSnapshot from this module, so spread importOriginal instead of replacing the barrel.
 vi.mock("../../hooks/useTasks", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../hooks/useTasks")>()),
-  useTasks: (_options?: { projectId?: string; searchQuery?: string; sseEnabled?: boolean }) => mockUseTasks(),
+  useTasks: (options?: { projectId?: string; searchQuery?: string; sseEnabled?: boolean }) => mockUseTasks(options),
 }));
 
 // Mock useRemoteNodeData
@@ -705,8 +706,108 @@ import { __test_clearDashboardViewsCache } from "../../hooks/usePluginDashboardV
 import * as pluginViewRegistry from "../../plugins/pluginViewRegistry";
 import * as apiNodeModule from "../../hooks/useRemoteNodeData";
 import { DEFAULT_BOARD_WORKFLOWS } from "./boardWorkflows.test-helpers";
+import { readAppFile } from "../../test/cssFixture";
 
+function extractProductionRule(css: string, selector: string): string {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const rule = css.match(new RegExp(`${escapedSelector}\\s*\\{([\\s\\S]*?)\\}`));
+  if (!rule) throw new Error(`Production rule is missing: ${selector}`);
+  return rule[1];
+}
 
+function extractProductionDeclaration(rule: string, property: string): string {
+  const escapedProperty = property.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const declaration = rule.match(new RegExp(`(?:^|;)\\s*${escapedProperty}\\s*:\\s*([^;]+)`));
+  if (!declaration) throw new Error(`Production declaration is missing: ${property}`);
+  return declaration[1].trim();
+}
+
+function installProductionAlphaReserveRule(): HTMLStyleElement {
+  const css = readAppFile("components/MobileNavBar.css");
+  const selector = 'html[data-viewport-mode="mobile"] .project-content--with-alpha-nav';
+  const style = document.createElement("style");
+  style.textContent = `${selector} { ${extractProductionRule(css, selector)} }`;
+  document.head.append(style);
+  return style;
+}
+
+function installProductionAlphaDrawerRules(systemOffset: number): HTMLStyleElement {
+  const drawerCss = readAppFile("components/AlphaMobileDrawer.css");
+  const navCss = readAppFile("components/MobileNavBar.css");
+  const tokenCss = readAppFile("styles.css");
+  const drawerRule = extractProductionRule(drawerCss, ".alpha-mobile-drawer");
+  const bodyRule = extractProductionRule(drawerCss, ".alpha-mobile-drawer__body");
+  const navRule = extractProductionRule(navCss, ".mobile-nav-bar");
+  const inset = extractProductionDeclaration(drawerRule, "inset");
+  const insetParts = inset.match(/^([^\s]+)\s+(var\(--icb-right-offset,\s*[^)]+\))\s+([^\s]+)\s+([^\s]+)$/);
+  if (!insetParts) throw new Error(`Unsupported production drawer inset: ${inset}`);
+
+  const drawerZToken = extractProductionDeclaration(drawerRule, "z-index").match(/^var\((--[^)]+)\)$/)?.[1];
+  if (!drawerZToken) throw new Error("Production drawer z-index must use a token");
+  const drawerZ = tokenCss.match(new RegExp(`${drawerZToken.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*:\\s*(\\d+)`))?.[1];
+  if (!drawerZ) throw new Error(`Production z-index token is missing: ${drawerZToken}`);
+
+  const bodyPadding = extractProductionDeclaration(bodyRule, "padding-block-end");
+  if (bodyPadding !== "var(--mobile-nav-alpha-system-offset)") {
+    throw new Error(`Production drawer must keep system clearance inside its body: ${bodyPadding}`);
+  }
+
+  /*
+  FNXC:AlphaMobileDrawer 2026-09-10-17:16:
+  The App regression must click the shipped pill and hamburger paths, then observe the real production declarations as a resolved cascade. Materialize only environment/custom-property values that jsdom cannot resolve so a bottom offset, layer regression, or external safe-area reserve fails at the real shell boundary.
+  */
+  const style = document.createElement("style");
+  style.textContent = `
+    .mobile-nav-bar { position: ${extractProductionDeclaration(navRule, "position")}; z-index: ${extractProductionDeclaration(navRule, "z-index")}; }
+    .alpha-mobile-drawer {
+      position: ${extractProductionDeclaration(drawerRule, "position")};
+      top: ${insetParts[1]};
+      right: 0;
+      bottom: ${insetParts[3]};
+      left: ${insetParts[4]};
+      z-index: ${drawerZ};
+      display: ${extractProductionDeclaration(drawerRule, "display")};
+      align-items: ${extractProductionDeclaration(drawerRule, "align-items")};
+      pointer-events: auto;
+    }
+    .alpha-mobile-drawer__body { padding-block-end: ${systemOffset}px; }
+  `;
+  document.head.append(style);
+  return style;
+}
+
+function expectProductionAlphaDrawerOverlay(drawer: HTMLElement, systemOffset: number): void {
+  const nav = document.querySelector<HTMLElement>(".mobile-nav-bar");
+  const panel = drawer.querySelector<HTMLElement>(".alpha-mobile-drawer__panel");
+  const body = drawer.querySelector<HTMLElement>(".alpha-mobile-drawer__body");
+  expect(nav).not.toBeNull();
+  expect(panel).not.toBeNull();
+  expect(body).not.toBeNull();
+
+  const drawerStyle = window.getComputedStyle(drawer);
+  const navStyle = window.getComputedStyle(nav!);
+  expect(drawerStyle.position).toBe("fixed");
+  expect(drawerStyle.bottom).toBe("0px");
+  expect(drawerStyle.display).toBe("flex");
+  expect(drawerStyle.alignItems).toBe("flex-end");
+  expect(drawerStyle.pointerEvents).not.toBe("none");
+  expect(Number(drawerStyle.zIndex)).toBeGreaterThan(Number(navStyle.zIndex));
+  expect(window.getComputedStyle(body!).paddingBlockEnd).toBe(`${systemOffset}px`);
+}
+
+function resolvePixelCalcFromRoot(value: string): number {
+  const substituted = value.replace(/var\((--[^),\s]+)(?:,[^)]+)?\)/g, (_match, property: string) => {
+    const resolved = document.documentElement.style.getPropertyValue(property).trim();
+    if (!resolved) throw new Error(`Missing test layout value for ${property}`);
+    return resolved;
+  });
+  const terms = substituted.replace(/^calc\(/, "").replace(/\)$/, "").split("+");
+  return terms.reduce((total, term) => {
+    const match = term.trim().match(/^(-?\d+(?:\.\d+)?)px$/);
+    if (!match) throw new Error(`Unsupported production padding term: ${term.trim()}`);
+    return total + Number(match[1]);
+  }, 0);
+}
 
 async function waitForAppShell(): Promise<void> {
   await waitFor(() => {
@@ -991,6 +1092,343 @@ beforeEach(() => {
   mockIsShortViewport.mockReturnValue(false);
   mockAgentStats.todoTaskCount = 0;
   mockAgentStats.idleNonEphemeralCount = 1;
+});
+
+describe("Alpha Updates production wiring", () => {
+  it.each(["mobile", "tablet", "desktop"] as const)("removes the footer in Alpha %s while preserving project chrome", async (mode) => {
+    mockUseViewportMode.mockReturnValue(mode);
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates: true },
+    });
+
+    render(<App />);
+
+    const shell = screen.getByTestId("dashboard-project-shell");
+    const content = shell.querySelector(".project-content");
+    if (mode === "mobile") {
+      await waitFor(() => expect(document.querySelector(".mobile-nav-bar")).toHaveClass("mobile-nav-bar--alpha"));
+      const nav = document.querySelector(".mobile-nav-bar");
+      expect(document.querySelector(".executor-status-bar")).toBeNull();
+      expect(content).not.toHaveClass("project-content--with-footer");
+      expect(nav).not.toHaveClass("mobile-nav-bar--with-footer");
+      expect(content).toHaveClass("project-content--with-alpha-nav");
+      expect(screen.queryByTestId("left-sidebar-nav")).toBeNull();
+      expect(document.querySelector(".right-dock")).toBeNull();
+    } else {
+      const sidebar = await screen.findByTestId("left-sidebar-nav");
+      await waitFor(() => expect(sidebar).not.toHaveClass("left-sidebar-nav--with-footer"));
+      expect(document.querySelector(".executor-status-bar")).toBeNull();
+      expect(content).not.toHaveClass("project-content--with-footer");
+      expect(shell).toHaveClass("dashboard-project-shell--with-sidebar", "dashboard-project-shell--with-right-dock");
+      expect(content).not.toHaveClass("project-content--with-alpha-nav");
+    }
+  });
+
+  it.each([
+    ["portrait with iOS inset", { viewportHeight: 640, contentHeight: 720, systemOffset: 46 }],
+    ["landscape with Android ICB", { viewportHeight: 360, contentHeight: 720, systemOffset: 48 }],
+    ["standalone display", { viewportHeight: 640, contentHeight: 720, systemOffset: 60 }],
+  ] as const)("scrolls a real App final control above the measured Alpha pill in %s", async (_scenario, layout) => {
+    /*
+    FNXC:AlphaUpdates 2026-09-10-04:03:
+    The regression must exercise App's real project scroller and MobileNavBar publication path. This test imports the production reserve declaration and simulates only jsdom's absent box layout, so removing the class, CSS rule, or measured custom property breaks final-control clearance instead of satisfying a duplicated arithmetic fixture.
+    */
+    mockUseViewportMode.mockReturnValue("mobile");
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates: true },
+    });
+    document.documentElement.dataset.viewportMode = "mobile";
+    document.documentElement.style.setProperty("--mobile-nav-alpha-system-offset", `${layout.systemOffset}px`);
+    const productionStyle = installProductionAlphaReserveRule();
+    const nativeGetComputedStyle = window.getComputedStyle.bind(window);
+    const offsetHeight = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function () {
+      return this.classList.contains("mobile-nav-bar") ? 54 : 0;
+    });
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function () {
+      const height = this.classList.contains("mobile-nav-tab") ? 44 : 0;
+      return { x: 0, y: 0, top: 0, right: 0, bottom: height, left: 0, width: 0, height, toJSON: () => ({}) };
+    });
+    const computedStyle = vi.spyOn(window, "getComputedStyle").mockImplementation((element) => {
+      if ((element as HTMLElement).classList?.contains("mobile-nav-bar")) {
+        return {
+          paddingBottom: "0px",
+          getPropertyValue: (property: string) => property === "--mobile-nav-floating-gap" ? "8px" : "",
+        } as CSSStyleDeclaration;
+      }
+      return nativeGetComputedStyle(element);
+    });
+
+    try {
+      render(<App />);
+
+      const pill = await waitFor(() => {
+        const candidate = document.querySelector<HTMLElement>(".mobile-nav-bar--alpha");
+        expect(candidate).not.toBeNull();
+        expect(document.documentElement.style.getPropertyValue("--mobile-nav-height")).toBe("62px");
+        return candidate!;
+      });
+      const scroller = screen.getByTestId("dashboard-project-shell").querySelector<HTMLElement>(".project-content");
+      const finalControl = await screen.findByTestId("column-history-done");
+      expect(scroller).not.toBeNull();
+      expect(scroller).toHaveClass("project-content--with-alpha-nav");
+      expect(scroller!.style.paddingBottom).toBe("");
+
+      const productionPadding = nativeGetComputedStyle(scroller!).paddingBottom;
+      expect(productionPadding).toContain("var(--mobile-nav-height)");
+      expect(productionPadding).toContain("var(--mobile-nav-alpha-system-offset)");
+      const reserve = resolvePixelCalcFromRoot(productionPadding);
+      let scrollTop = 0;
+      Object.defineProperties(scroller!, {
+        clientHeight: { configurable: true, value: layout.viewportHeight },
+        scrollHeight: { configurable: true, get: () => layout.contentHeight + reserve },
+        scrollTop: {
+          configurable: true,
+          get: () => scrollTop,
+          set: (value: number) => {
+            scrollTop = Math.max(0, Math.min(value, scroller!.scrollHeight - scroller!.clientHeight));
+          },
+        },
+      });
+      finalControl.getBoundingClientRect = () => ({
+        x: 0,
+        y: layout.contentHeight - scrollTop - 44,
+        top: layout.contentHeight - scrollTop - 44,
+        right: 200,
+        bottom: layout.contentHeight - scrollTop,
+        left: 0,
+        width: 200,
+        height: 44,
+        toJSON: () => ({}),
+      });
+      pill.getBoundingClientRect = () => ({
+        x: 0,
+        y: layout.viewportHeight - layout.systemOffset - 8 - 54,
+        top: layout.viewportHeight - layout.systemOffset - 8 - 54,
+        right: 360,
+        bottom: layout.viewportHeight - layout.systemOffset - 8,
+        left: 0,
+        width: 360,
+        height: 54,
+        toJSON: () => ({}),
+      });
+      finalControl.scrollIntoView = () => {
+        scroller!.scrollTop = scroller!.scrollHeight - scroller!.clientHeight;
+      };
+
+      finalControl.scrollIntoView({ block: "end" });
+      finalControl.focus();
+
+      expect(document.querySelector(".executor-status-bar")).toBeNull();
+      expect(scroller!.scrollTop).toBeGreaterThan(0);
+      expect(document.activeElement).toBe(finalControl);
+      expect(finalControl.getBoundingClientRect().bottom).toBeLessThanOrEqual(pill.getBoundingClientRect().top);
+    } finally {
+      productionStyle.remove();
+      offsetHeight.mockRestore();
+      rect.mockRestore();
+      computedStyle.mockRestore();
+      document.documentElement.style.removeProperty("--mobile-nav-alpha-system-offset");
+      document.documentElement.style.removeProperty("--mobile-nav-height");
+      delete document.documentElement.dataset.viewportMode;
+    }
+  });
+
+  it.each(["mobile", "tablet", "desktop"] as const)("keeps the standard footer and reservations in %s", async (mode) => {
+    mockUseViewportMode.mockReturnValue(mode);
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates: false },
+    });
+
+    render(<App />);
+
+    await waitFor(() => expect(document.querySelector(".executor-status-bar")).not.toBeNull());
+    const shell = screen.getByTestId("dashboard-project-shell");
+    const content = shell.querySelector(".project-content");
+    expect(content).toHaveClass("project-content--with-footer");
+
+    if (mode === "mobile") {
+      const nav = document.querySelector(".mobile-nav-bar");
+      expect(nav).toHaveClass("mobile-nav-bar--with-footer");
+      expect(content).toHaveClass("project-content--with-mobile-nav");
+    } else {
+      expect(await screen.findByTestId("left-sidebar-nav")).toHaveClass("left-sidebar-nav--with-footer");
+      expect(shell).toHaveClass("dashboard-project-shell--with-sidebar", "dashboard-project-shell--with-right-dock");
+    }
+  });
+
+  it("retire la réserve de contenu Alpha avec le clavier et les modales", async () => {
+    mockUseViewportMode.mockReturnValue("mobile");
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates: true },
+    });
+    mockUseMobileKeyboard.mockReturnValue({
+      keyboardOverlap: 250,
+      viewportHeight: 550,
+      viewportOffsetTop: 0,
+      keyboardOpen: true,
+    });
+
+    const keyboardRender = render(<App />);
+    await screen.findByTestId("alpha-mobile-menu-trigger");
+    expect(document.querySelector(".executor-status-bar")).toBeNull();
+    expect(document.querySelector(".mobile-nav-bar")).toHaveClass("mobile-nav-bar--keyboard-open");
+    expect(screen.getByTestId("dashboard-project-shell").querySelector(".project-content")).not.toHaveClass("project-content--with-alpha-nav");
+    keyboardRender.unmount();
+
+    mockUseMobileKeyboard.mockReturnValue({ keyboardOverlap: 0, viewportHeight: null, viewportOffsetTop: 0, keyboardOpen: false });
+    const modalRender = render(<App />);
+    await screen.findByTestId("alpha-mobile-menu-trigger");
+    fireEvent.click(screen.getByTestId("mobile-header-new-task"));
+    await screen.findByRole("heading", { name: "New Task" });
+    expect(document.querySelector(".mobile-nav-bar")).toBeNull();
+    expect(screen.getByTestId("dashboard-project-shell").querySelector(".project-content")).not.toHaveClass("project-content--with-alpha-nav");
+    expect(document.querySelector(".executor-status-bar")).toBeNull();
+    modalRender.unmount();
+  });
+
+  it.each([
+    ["portrait", { width: 390, height: 844, systemOffset: 46 }],
+    ["paysage", { width: 844, height: 390, systemOffset: 48 }],
+  ] as const)("superpose le drawer Command Center à la pill en %s, même quand le clavier la masque", async (_name, viewport) => {
+    mockUseViewportMode.mockReturnValue("mobile");
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates: true },
+    });
+    const previousViewport = { width: window.innerWidth, height: window.innerHeight };
+    Object.defineProperties(window, {
+      innerWidth: { configurable: true, value: viewport.width },
+      innerHeight: { configurable: true, value: viewport.height },
+    });
+    const productionStyle = installProductionAlphaDrawerRules(viewport.systemOffset);
+
+    try {
+      const view = render(<App />);
+      fireEvent.click(await screen.findByTestId("mobile-nav-tab-command-center"));
+      const drawer = await screen.findByTestId("alpha-mobile-drawer-main-content");
+      expect(drawer.className).toBe("alpha-mobile-drawer alpha-mobile-drawer--open");
+      expectProductionAlphaDrawerOverlay(drawer, viewport.systemOffset);
+
+      mockUseMobileKeyboard.mockReturnValue({ keyboardOverlap: 240, viewportHeight: 400, viewportOffsetTop: 0, keyboardOpen: true });
+      view.rerender(<App />);
+      await waitFor(() => expect(document.querySelector(".mobile-nav-bar")).toHaveClass("mobile-nav-bar--keyboard-open"));
+      expectProductionAlphaDrawerOverlay(drawer, viewport.systemOffset);
+    } finally {
+      productionStyle.remove();
+      Object.defineProperties(window, {
+        innerWidth: { configurable: true, value: previousViewport.width },
+        innerHeight: { configurable: true, value: previousViewport.height },
+      });
+    }
+  });
+
+  it("ouvre Usage et Projects par le hamburger au-dessus de la pill sans quitter le Kanban", async () => {
+    mockUseViewportMode.mockReturnValue("mobile");
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates: true },
+    });
+    const systemOffset = 46;
+    const productionStyle = installProductionAlphaDrawerRules(systemOffset);
+
+    try {
+      render(<App />);
+      const board = await screen.findByTestId("board-keep-alive");
+
+      fireEvent.click(await screen.findByTestId("alpha-mobile-menu-trigger"));
+      fireEvent.click(screen.getByTestId("mobile-more-item-usage"));
+      const usageDrawer = await screen.findByTestId("alpha-mobile-drawer-usage");
+      expect(usageDrawer.className).toBe("alpha-mobile-drawer alpha-mobile-drawer--open");
+      expectProductionAlphaDrawerOverlay(usageDrawer, systemOffset);
+      expect(board).toBeVisible();
+      expect(mockCurrentProjectState.clearCurrentProject).not.toHaveBeenCalled();
+      fireEvent.click(usageDrawer.querySelector<HTMLButtonElement>(".alpha-mobile-drawer__close")!);
+
+      fireEvent.click(screen.getByTestId("alpha-mobile-menu-trigger"));
+      fireEvent.click(screen.getByTestId("mobile-more-item-projects"));
+      const projectsDrawer = await screen.findByTestId("alpha-mobile-drawer-projects");
+      expectProductionAlphaDrawerOverlay(projectsDrawer, systemOffset);
+      expect(board).toBeVisible();
+      expect(mockCurrentProjectState.clearCurrentProject).not.toHaveBeenCalled();
+    } finally {
+      productionStyle.remove();
+    }
+  });
+
+  it("refreshes the mobile shell on and off without losing configured primary items", async () => {
+    mockUseViewportMode.mockReturnValue("mobile");
+    const legacySettings = {
+      ...defaultSettings,
+      mobileNavPrimaryItems: ["settings", "planning"],
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates: false },
+    };
+    const alphaSettings = {
+      ...legacySettings,
+      experimentalFeatures: { ...legacySettings.experimentalFeatures, alphaUpdates: true },
+    };
+    vi.mocked(fetchSettings).mockResolvedValue(legacySettings);
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByTestId("mobile-nav-tab-settings")).toBeInTheDocument());
+    expect(screen.getByTestId("mobile-nav-tab-planning")).toBeInTheDocument();
+    expect(screen.getByTestId("mobile-nav-tab-more")).toBeInTheDocument();
+
+    vi.mocked(fetchSettings).mockResolvedValue(alphaSettings);
+    fireEvent.click(screen.getByTestId("mobile-nav-tab-settings"));
+    fireEvent.click(await screen.findByRole("button", { name: "Close" }));
+
+    await waitFor(() => expect(screen.getByTestId("alpha-mobile-menu-trigger")).toBeInTheDocument());
+    expect(screen.getByTestId("dashboard-project-shell").querySelector(".project-content")).toHaveClass("project-content--with-alpha-nav");
+    expect(screen.getByTestId("dashboard-project-shell").querySelector(".project-content")).not.toHaveClass("project-content--with-mobile-nav");
+    expect(screen.queryByTestId("mobile-nav-tab-more")).toBeNull();
+    expect(Array.from(document.querySelectorAll<HTMLElement>(".mobile-nav-bar > .mobile-nav-tab")).map((tab) => tab.dataset.testid)).toEqual([
+      "mobile-nav-tab-command-center",
+      "mobile-nav-tab-planning",
+      "mobile-nav-tab-chat",
+      "mobile-nav-tab-mailbox",
+    ]);
+    expect(screen.queryByTestId("mobile-nav-tab-tasks")).toBeNull();
+
+    vi.mocked(fetchSettings).mockResolvedValue(legacySettings);
+    const alphaTrigger = screen.getByTestId("alpha-mobile-menu-trigger");
+    expect(alphaTrigger).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(alphaTrigger);
+    expect(alphaTrigger).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("menu", { name: "Navigate" })).toHaveClass("alpha-mobile-navigation-popover");
+    expect(document.querySelector(".mobile-more-sheet-backdrop")).toBeNull();
+    expect(document.querySelector(".mobile-more-sheet-handle")).toBeNull();
+    fireEvent.click(screen.getByTestId("mobile-more-item-settings"));
+    fireEvent.click((await screen.findAllByRole("button", { name: "Close" }))[0]);
+
+    await waitFor(() => expect(screen.getByTestId("mobile-nav-tab-more")).toBeInTheDocument());
+    expect(screen.getByTestId("mobile-nav-tab-settings")).toBeInTheDocument();
+    expect(screen.getByTestId("mobile-nav-tab-planning")).toBeInTheDocument();
+    expect(screen.queryByTestId("alpha-mobile-menu-trigger")).toBeNull();
+  });
+
+  it.each([
+    ["selected", undefined],
+    ["aggregate", ALL_WORKFLOWS_BOARD_VIEW_ID],
+  ] as const)("routes complete-column History through the %s Board production chain", async (_mode, selection) => {
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates: true },
+    });
+    if (selection) {
+      localStorage.setItem(scopedKey(BOARD_WORKFLOW_SELECTION_STORAGE_KEY, DEFAULT_PROJECT_ID), selection);
+    }
+
+    render(<App />);
+
+    const historyButton = await screen.findByTestId("column-history-done");
+    expect(screen.queryByTestId("sidebar-nav-patchnode")).toBeNull();
+    fireEvent.click(historyButton);
+    await waitFor(() => expect(localStorage.getItem(taskViewStorageKey())).toBe("patchnode"));
+  });
 });
 
 describe("FN-4250 FileBrowserProvider coverage", () => {
@@ -4569,141 +5007,86 @@ describe("FN-3290: modal keyboard isolation for mobile dashboard layout", () => 
   });
 });
 
-describe("App board branch filters", () => {
-  const WORKING_BRANCH_FILTER_STORAGE_KEY = "kb-dashboard-working-branch-filter";
-  const BASE_BRANCH_FILTER_STORAGE_KEY = "kb-dashboard-base-branch-filter";
-
-  function scopedProjectKey(baseKey: string, projectId: string) {
-    return `kb:${projectId}:${baseKey}`;
-  }
-
-  function makeTask(id: string, title: string, branch?: string, baseBranch?: string) {
+describe("App task search suggestions", () => {
+  function makeSearchTask(id: string, title: string, column = "todo") {
     return {
       id,
       title,
       description: title,
-      column: "todo",
+      column,
       dependencies: [],
       steps: [],
       currentStep: 0,
       log: [],
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",
-      ...(branch ? { branch } : {}),
-      ...(baseBranch ? { baseBranch } : {}),
     };
   }
 
-  it("filters board tasks by working and target branch in local mode", async () => {
-    mockUseTasks.mockImplementation(() => ({
-      tasks: [
-        makeTask("FN-1", "Task Alpha", "feature/a", "main"),
-        makeTask("FN-2", "Task Beta", "feature/b", "release"),
-      ],
-      createTask: mockCreateTask,
-      moveTask: vi.fn(),
-      deleteTask: vi.fn(),
-      mergeTask: vi.fn(),
-      retryTask: vi.fn(),
-      updateTask: vi.fn(),
-      duplicateTask: vi.fn(),
-      refreshTasks: vi.fn(),
-      pauseTask: vi.fn(),
-      unpauseTask: vi.fn(),
-      resetTask: vi.fn(),
-      loadArchivedTasks: vi.fn(),
-      ingestCreatedTasks: vi.fn(),
-      lastFetchTimeMs: 0,
-    }));
+  function mockLocalSearchTasks(source: ReturnType<typeof makeSearchTask>[]) {
+    mockUseTasks.mockImplementation((options) => {
+      const query = options?.searchQuery?.toLocaleLowerCase();
+      const filtered = query
+        ? source.filter((task) => /^\d+$/.test(query)
+          ? task.id.match(/(\d+)$/)?.[1].startsWith(query)
+          : task.id.toLocaleLowerCase().startsWith(query))
+        : source;
+      return {
+        tasks: filtered,
+        createTask: mockCreateTask,
+        moveTask: vi.fn(),
+        deleteTask: vi.fn(),
+        mergeTask: vi.fn(),
+        retryTask: vi.fn(),
+        updateTask: vi.fn(),
+        duplicateTask: vi.fn(),
+        refreshTasks: vi.fn(),
+      };
+    });
+  }
+
+  it("applies a selected exact ID to the shared Board and List search", async () => {
+    localStorage.setItem("kb-dashboard-view-mode", "project");
+    localStorage.setItem(taskViewStorageKey(), "board");
+    mockLocalSearchTasks([
+      makeSearchTask("FN-331", "Selected task"),
+      makeSearchTask("ERR-331", "Other prefix"),
+      makeSearchTask("FN-332", "Different task"),
+    ]);
 
     render(<App />);
     await waitForAppShell();
-
     fireEvent.click(screen.getByTestId("desktop-header-search-btn"));
-    fireEvent.change(screen.getByTestId("working-branch-filter"), { target: { value: "feature/a" } });
-    fireEvent.change(screen.getByTestId("target-branch-filter"), { target: { value: "main" } });
+    const input = screen.getByRole("combobox", { name: "Search tasks..." });
+    fireEvent.change(input, { target: { value: "331" } });
+    fireEvent.click(screen.getByRole("option", { name: "FN-331: Selected task" }));
 
+    expect(input).toHaveValue("FN-331");
     await waitFor(() => {
-      expect(screen.getByText("Task Alpha")).toBeTruthy();
-      expect(screen.queryByText("Task Beta")).toBeNull();
+      const board = screen.getByTestId("board-keep-alive");
+      expect(within(board).getByText("Selected task")).toBeInTheDocument();
+      expect(within(board).queryByText("Other prefix")).toBeNull();
+    });
+
+    fireEvent.click(screen.getByTestId("sidebar-nav-list"));
+    await waitFor(() => {
+      const list = screen.getByTestId("list-keep-alive");
+      expect(list).not.toHaveAttribute("aria-hidden");
+      expect(within(list).getByText("Selected task")).toBeInTheDocument();
+      expect(within(list).queryByText("Other prefix")).toBeNull();
     });
   });
 
-  it("supports filtering for tasks without working branch values", async () => {
-    mockUseTasks.mockImplementation(() => ({
-      tasks: [
-        makeTask("FN-1", "Unassigned Task"),
-        makeTask("FN-2", "Assigned Task", "feature/a", "main"),
-      ],
-      createTask: mockCreateTask,
-      moveTask: vi.fn(),
-      deleteTask: vi.fn(),
-      mergeTask: vi.fn(),
-      retryTask: vi.fn(),
-      updateTask: vi.fn(),
-      duplicateTask: vi.fn(),
-      refreshTasks: vi.fn(),
-      pauseTask: vi.fn(),
-      unpauseTask: vi.fn(),
-      resetTask: vi.fn(),
-      loadArchivedTasks: vi.fn(),
-      ingestCreatedTasks: vi.fn(),
-      lastFetchTimeMs: 0,
-    }));
-
-    render(<App />);
-    await waitForAppShell();
-
-    fireEvent.click(screen.getByTestId("desktop-header-search-btn"));
-    fireEvent.change(screen.getByTestId("working-branch-filter"), { target: { value: "__fusion:no-branch__" } });
-
-    await waitFor(() => {
-      expect(screen.getByText("Unassigned Task")).toBeTruthy();
-      expect(screen.queryByText("Assigned Task")).toBeNull();
-    });
-  });
-
-  it("supports filtering for tasks without base branch values", async () => {
-    mockUseTasks.mockImplementation(() => ({
-      tasks: [
-        makeTask("FN-1", "No Base Branch", "feature/a"),
-        makeTask("FN-2", "Has Base Branch", "feature/a", "main"),
-      ],
-      createTask: mockCreateTask,
-      moveTask: vi.fn(),
-      deleteTask: vi.fn(),
-      mergeTask: vi.fn(),
-      retryTask: vi.fn(),
-      updateTask: vi.fn(),
-      duplicateTask: vi.fn(),
-      refreshTasks: vi.fn(),
-      pauseTask: vi.fn(),
-      unpauseTask: vi.fn(),
-      resetTask: vi.fn(),
-      loadArchivedTasks: vi.fn(),
-      ingestCreatedTasks: vi.fn(),
-      lastFetchTimeMs: 0,
-    }));
-
-    render(<App />);
-    await waitForAppShell();
-
-    fireEvent.click(screen.getByTestId("desktop-header-search-btn"));
-    fireEvent.change(screen.getByTestId("target-branch-filter"), { target: { value: "__fusion:no-branch__" } });
-
-    await waitFor(() => {
-      expect(screen.getByText("No Base Branch")).toBeTruthy();
-      expect(screen.queryByText("Has Base Branch")).toBeNull();
-    });
-  });
-
-  it("derives branch filter options from remote task data in remote mode", async () => {
+  it("uses remote tasks exclusively and keeps completed search results eligible", async () => {
+    mockLocalSearchTasks([makeSearchTask("LOCAL-331", "Local task")]);
     mockNodeContextValue.isRemote = true;
     mockNodeContextValue.currentNodeId = "node-1";
-
     const remoteSpy = vi.spyOn(apiNodeModule, "useRemoteNodeData").mockReturnValue({
       projects: [],
-      tasks: [makeTask("FN-3", "Remote Task", "feature/remote", "develop")],
+      tasks: [
+        makeSearchTask("REMOTE-331", "Remote completed task", "done"),
+        makeSearchTask("REMOTE-332", "Remote other task"),
+      ],
       health: null,
       loading: false,
       error: null,
@@ -4712,173 +5095,91 @@ describe("App board branch filters", () => {
 
     render(<App />);
     await waitForAppShell();
-
     fireEvent.click(screen.getByTestId("desktop-header-search-btn"));
-    expect(screen.getByRole("option", { name: "feature/remote" })).toBeTruthy();
-    expect(screen.getByRole("option", { name: "develop" })).toBeTruthy();
+    fireEvent.change(screen.getByRole("combobox", { name: "Search tasks..." }), { target: { value: "331" } });
+
+    expect(screen.getByRole("option", { name: "REMOTE-331: Remote completed task" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /LOCAL-331/ })).toBeNull();
     remoteSpy.mockRestore();
   });
 
-  it("restores saved branch filter selections per project", async () => {
-    const projectId = "project-restore";
-    mockCurrentProjectState.currentProject = {
-      id: projectId,
-      name: "Restore Project",
-      path: "/restore",
-      status: "active",
-      isolationMode: "in-process",
-      createdAt: "",
-      updatedAt: "",
-    };
-    localStorage.setItem(scopedProjectKey(WORKING_BRANCH_FILTER_STORAGE_KEY, projectId), "feature/a");
-    localStorage.setItem(scopedProjectKey(BASE_BRANCH_FILTER_STORAGE_KEY, projectId), "__fusion:no-branch__");
-
-    mockUseTasks.mockImplementation(() => ({
-      tasks: [
-        makeTask("FN-1", "Restore Candidate", "feature/a"),
-        makeTask("FN-2", "Filtered Out", "feature/b", "main"),
-      ],
-      createTask: mockCreateTask,
-      moveTask: vi.fn(),
-      deleteTask: vi.fn(),
-      mergeTask: vi.fn(),
-      retryTask: vi.fn(),
-      updateTask: vi.fn(),
-      duplicateTask: vi.fn(),
-      refreshTasks: vi.fn(),
-      pauseTask: vi.fn(),
-      unpauseTask: vi.fn(),
-      resetTask: vi.fn(),
-      loadArchivedTasks: vi.fn(),
-      ingestCreatedTasks: vi.fn(),
-      lastFetchTimeMs: 0,
-    }));
+  it("keeps an empty remote result authoritative instead of suggesting local tasks", async () => {
+    mockLocalSearchTasks([makeSearchTask("LOCAL-331", "Local task")]);
+    mockNodeContextValue.isRemote = true;
+    mockNodeContextValue.currentNodeId = "node-1";
+    const remoteSpy = vi.spyOn(apiNodeModule, "useRemoteNodeData").mockReturnValue({
+      projects: [],
+      tasks: [],
+      health: null,
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
 
     render(<App />);
     await waitForAppShell();
-
     fireEvent.click(screen.getByTestId("desktop-header-search-btn"));
+    fireEvent.change(screen.getByRole("combobox", { name: "Search tasks..." }), { target: { value: "331" } });
 
-    expect((screen.getByTestId("working-branch-filter") as HTMLSelectElement).value).toBe("feature/a");
-    expect((screen.getByTestId("target-branch-filter") as HTMLSelectElement).value).toBe("__fusion:no-branch__");
+    expect(screen.queryByRole("option", { name: /LOCAL-331/ })).toBeNull();
+    expect(within(screen.getByTestId("board-keep-alive")).queryByText("Local task")).toBeNull();
 
-    await waitFor(() => {
-      expect(screen.getByText("Restore Candidate")).toBeTruthy();
-      expect(screen.queryByText("Filtered Out")).toBeNull();
-    });
+    fireEvent.click(screen.getByTestId("sidebar-nav-list"));
+    const list = screen.getByTestId("list-keep-alive");
+    expect(list).not.toHaveAttribute("aria-hidden");
+    expect(within(list).queryByText("Local task")).toBeNull();
+    remoteSpy.mockRestore();
   });
 
-  it("writes updated filter values to project-scoped storage and isolates between projects", async () => {
-    const projectOneId = "project-one";
-    const projectTwoId = "project-two";
-    mockCurrentProjectState.currentProject = {
-      id: projectOneId,
-      name: "Project One",
-      path: "/one",
-      status: "active",
-      isolationMode: "in-process",
-      createdAt: "",
-      updatedAt: "",
-    };
-
-    mockUseTasks.mockImplementation(() => ({
-      tasks: [makeTask("FN-1", "Alpha Search", "feature/a", "main")],
-      createTask: mockCreateTask,
-      moveTask: vi.fn(),
-      deleteTask: vi.fn(),
-      mergeTask: vi.fn(),
-      retryTask: vi.fn(),
-      updateTask: vi.fn(),
-      duplicateTask: vi.fn(),
-      refreshTasks: vi.fn(),
-      pauseTask: vi.fn(),
-      unpauseTask: vi.fn(),
-      resetTask: vi.fn(),
-      loadArchivedTasks: vi.fn(),
-      ingestCreatedTasks: vi.fn(),
-      lastFetchTimeMs: 0,
+  it("withholds retained remote rows until the current node request settles", async () => {
+    mockLocalSearchTasks([makeSearchTask("LOCAL-331", "Local task")]);
+    mockNodeContextValue.isRemote = true;
+    mockNodeContextValue.currentNodeId = "node-1";
+    let remoteTasks = [makeSearchTask("NODE1-331", "First node task")];
+    let remoteLoading = false;
+    let remoteError: string | null = null;
+    const remoteSpy = vi.spyOn(apiNodeModule, "useRemoteNodeData").mockImplementation(() => ({
+      projects: [],
+      tasks: remoteTasks,
+      health: null,
+      loading: remoteLoading,
+      error: remoteError,
+      refresh: vi.fn(),
     }));
 
     const { rerender } = render(<App />);
     await waitForAppShell();
-
     fireEvent.click(screen.getByTestId("desktop-header-search-btn"));
-    fireEvent.change(screen.getByTestId("working-branch-filter"), { target: { value: "feature/a" } });
-    fireEvent.change(screen.getByTestId("target-branch-filter"), { target: { value: "main" } });
-
-    expect(localStorage.getItem(scopedProjectKey(WORKING_BRANCH_FILTER_STORAGE_KEY, projectOneId))).toBe("feature/a");
-    expect(localStorage.getItem(scopedProjectKey(BASE_BRANCH_FILTER_STORAGE_KEY, projectOneId))).toBe("main");
-
-    mockCurrentProjectState.currentProject = {
-      id: projectTwoId,
-      name: "Project Two",
-      path: "/two",
-      status: "active",
-      isolationMode: "in-process",
-      createdAt: "",
-      updatedAt: "",
-    };
-
-    rerender(<App />);
-    await waitForAppShell();
-
-    /*
-     * FNXC:BoardSearch 2026-07-04-13:30: The non-mobile search panel intentionally stays open
-     * across a same-instance rerender (Header's isNonMobileSearchOpen state is not project-scoped),
-     * so the toggle button correctly unmounts once the panel is open (see canShowNonMobileSearchToggle
-     * in Header.tsx) and there is no button left to re-click here. The branch-filter selects remain
-     * rendered while the panel is open, so read them directly instead of re-clicking the toggle.
-     */
-    expect((screen.getByTestId("working-branch-filter") as HTMLSelectElement).value).toBe("");
-    expect((screen.getByTestId("target-branch-filter") as HTMLSelectElement).value).toBe("");
-    expect(localStorage.getItem(scopedProjectKey(WORKING_BRANCH_FILTER_STORAGE_KEY, projectTwoId))).toBeNull();
-    expect(localStorage.getItem(scopedProjectKey(BASE_BRANCH_FILTER_STORAGE_KEY, projectTwoId))).toBeNull();
-  });
-
-  it("composes with search and does not affect list view tasks", async () => {
-    localStorage.setItem("kb-dashboard-view-mode", "project");
-    localStorage.setItem(taskViewStorageKey(), "board");
-    vi.mocked(fetchSettings).mockResolvedValue({ ...defaultSettings });
-    mockUseTasks.mockImplementation(() => ({
-      tasks: [
-        makeTask("FN-4", "Alpha Search", "feature/a", "main"),
-        makeTask("FN-5", "Beta Search", "feature/b", "main"),
-      ],
-      createTask: mockCreateTask,
-      moveTask: vi.fn(),
-      deleteTask: vi.fn(),
-      mergeTask: vi.fn(),
-      retryTask: vi.fn(),
-      updateTask: vi.fn(),
-      duplicateTask: vi.fn(),
-      refreshTasks: vi.fn(),
-      pauseTask: vi.fn(),
-      unpauseTask: vi.fn(),
-      resetTask: vi.fn(),
-      loadArchivedTasks: vi.fn(),
-      ingestCreatedTasks: vi.fn(),
-      lastFetchTimeMs: 0,
-    }));
-
-    render(<App />);
-    await waitForAppShell();
-
-    fireEvent.click(screen.getByTestId("desktop-header-search-btn"));
-    fireEvent.change(screen.getByPlaceholderText("Search tasks..."), { target: { value: "Search" } });
-    fireEvent.change(screen.getByTestId("working-branch-filter"), { target: { value: "feature/a" } });
-
-    await waitFor(() => {
-      expect(screen.getByText("Alpha Search")).toBeTruthy();
-      expect(screen.queryByText("Beta Search")).toBeNull();
-    });
-
+    fireEvent.change(screen.getByRole("combobox", { name: "Search tasks..." }), { target: { value: "331" } });
+    expect(screen.getByRole("option", { name: "NODE1-331: First node task" })).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("sidebar-nav-list"));
-    await waitFor(() => {
-      const activeList = screen.getByTestId("list-keep-alive");
-      expect(activeList).not.toHaveAttribute("aria-hidden");
-      expect(within(activeList).getByText("Alpha Search")).toBeTruthy();
-      expect(within(activeList).getByText("Beta Search")).toBeTruthy();
-    });
+    expect(within(screen.getByTestId("list-keep-alive")).getByText("First node task")).toBeInTheDocument();
+
+    mockNodeContextValue.currentNodeId = "node-2";
+    rerender(<App />);
+    expect(screen.queryByRole("option", { name: /NODE1-331/ })).toBeNull();
+    expect(screen.queryByRole("option", { name: /LOCAL-331/ })).toBeNull();
+    const listDuringNodeChange = within(screen.getByTestId("list-keep-alive"));
+    expect(listDuringNodeChange.queryByText("First node task")).toBeNull();
+    expect(listDuringNodeChange.queryByText("Local task")).toBeNull();
+
+    remoteLoading = true;
+    rerender(<App />);
+    remoteLoading = false;
+    remoteError = "Remote node unavailable";
+    rerender(<App />);
+    expect(screen.queryByRole("option", { name: /NODE1-331/ })).toBeNull();
+
+    remoteLoading = true;
+    remoteError = null;
+    rerender(<App />);
+    remoteTasks = [makeSearchTask("NODE2-331", "Second node task")];
+    remoteLoading = false;
+    rerender(<App />);
+
+    expect(screen.getByRole("option", { name: "NODE2-331: Second node task" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /NODE1-331/ })).toBeNull();
+    remoteSpy.mockRestore();
   });
 });
 

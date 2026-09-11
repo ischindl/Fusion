@@ -1237,11 +1237,14 @@ export {
 export {
   classifyProviderError,
   countRecentIdenticalStallEntries,
+  getLatestFailedPreMergeStepProgressAt,
   getInReviewStallReason,
   IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX,
   IN_REVIEW_STALL_LOG_PREFIX,
   IN_REVIEW_STALL_TERMINAL_LOG_PREFIX,
   DEFAULT_STALE_MERGING_MIN_AGE_MS,
+  DEFAULT_IN_REVIEW_STALL_DEADLOCK_THRESHOLD,
+  resolveInReviewStallDeadlockThreshold,
   DEFAULT_MAX_AUTO_MERGE_RETRIES,
   resolveMaxAutoMergeRetries,
   DEFAULT_MAX_CONSECUTIVE_TOOL_FAILURE_RETRIES,
@@ -2253,7 +2256,7 @@ export type {
   ResearchCancellationState,
 } from "./research/research-types.js";
 
-export { isExperimentalFeatureEnabled, GRAPH_NATIVE_POST_MERGE_FLAG, CHAT_FOCUS_FLAG } from "./config/experimental-features.js";
+export { isExperimentalFeatureEnabled, GRAPH_NATIVE_POST_MERGE_FLAG, CHAT_FOCUS_FLAG, ALPHA_UPDATES_FLAG } from "./config/experimental-features.js";
 export {
   POST_MERGE_VERIFICATION_GROUP_ID,
   postMergeOptionalGroupNode,

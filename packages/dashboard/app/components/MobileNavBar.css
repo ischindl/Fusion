@@ -6,6 +6,8 @@
 /* Mobile nav height token - used by nav bar, executor status bar, and content padding */
 :root {
   --mobile-nav-height: 44px;
+  --mobile-nav-floating-gap: 0px;
+  --mobile-nav-alpha-system-offset: calc(var(--icb-bottom-offset, 0px) + max(env(safe-area-inset-bottom, 0px), var(--space-md)) + var(--standalone-bottom-gap));
 }
 
 .mobile-nav-bar {
@@ -159,6 +161,44 @@ Wrap every tab icon in the same token-sized icon slot and keep unread/pending do
   -webkit-tap-highlight-color: transparent;
 }
 
+/*
+FNXC:AlphaUpdates 2026-09-10-03:16:
+The Alpha four-destination pill stays visually overlaid but must never obscure the final content or system gesture area. Its bottom position uses one shared safe-area/standalone/ICB formula, while the scroller reserves the measured pill border box plus that placement exactly once; tablet and desktop suppress the mobile-only reserve.
+*/
+.mobile-nav-bar--alpha {
+  --mobile-nav-floating-gap: var(--space-sm);
+  left: var(--space-md);
+  right: calc(var(--icb-right-offset, 0px) + var(--space-md));
+  bottom: calc(var(--mobile-nav-alpha-system-offset) + var(--mobile-nav-floating-gap));
+  min-height: auto;
+  padding: var(--space-xs) var(--space-sm);
+  border: var(--btn-border-width) solid var(--border);
+  border-radius: var(--radius-xl);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(var(--space-md));
+}
+
+@media (max-width: 768px) {
+  .project-content--with-alpha-nav {
+    padding-bottom: calc(var(--mobile-nav-height) + var(--mobile-nav-alpha-system-offset));
+  }
+}
+
+html[data-viewport-mode="mobile"] .project-content--with-alpha-nav {
+  padding-bottom: calc(var(--mobile-nav-height) + var(--mobile-nav-alpha-system-offset));
+}
+
+html:is([data-viewport-mode="tablet"], [data-viewport-mode="desktop"]) .project-content--with-alpha-nav:not(.project-content--with-footer) {
+  padding-bottom: 0;
+}
+
+.mobile-nav-bar--alpha .mobile-nav-tab {
+  min-height: var(--touch-target-min-size);
+  padding: 0;
+  border-radius: var(--radius-xl);
+}
+
 .mobile-nav-tab:active {
   color: var(--text);
 }
@@ -216,7 +256,33 @@ Wrap every tab icon in the same token-sized icon slot and keep unread/pending do
   border-radius: var(--radius-md);
 }
 
-/* === Mobile More Sheet (Bottom Drawer) === */
+/* === Alpha header popover / standard Mobile More Sheet === */
+
+/*
+FNXC:AlphaUpdates 2026-09-09-22:14:
+Alpha renders the canonical destination registry as a compact header-anchored menu with viewport and safe-area bounds. It deliberately shares item styling with the standard drawer but owns no backdrop, grab handle, drag transform, or bottom-sheet animation.
+*/
+.alpha-mobile-navigation-popover {
+  position: fixed;
+  top: calc(var(--header-height) + env(safe-area-inset-top, 0px) + var(--space-xs));
+  right: calc(var(--icb-right-offset, 0px) + var(--space-md));
+  z-index: 91;
+  width: min(calc(var(--space-2xl) * 8), calc(100vw - (var(--space-md) * 2) - var(--icb-right-offset, 0px)));
+  max-height: calc(100dvh - var(--header-height) - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - (var(--space-md) * 2));
+  overflow-y: auto;
+  padding-block: var(--space-sm);
+  background: var(--surface);
+  border: var(--btn-border-width) solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  overscroll-behavior: contain;
+}
+
+.alpha-mobile-navigation-popover .mobile-more-item:focus-visible,
+.alpha-mobile-navigation-popover .mobile-more-split-toggle:focus-visible {
+  outline: none;
+  box-shadow: inset var(--focus-ring);
+}
 
 .mobile-more-sheet-backdrop {
   position: fixed;

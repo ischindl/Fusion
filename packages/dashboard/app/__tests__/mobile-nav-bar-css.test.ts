@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { loadAllAppCss } from "../test/cssFixture";
-import { readFileSync } from "fs";
-import { resolve } from "path";
+import { computePublishedMobileNavHeight } from "../components/MobileNavBar";
 
 function extractRuleBlock(css: string, selector: string): string {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -72,12 +71,38 @@ describe("mobile-nav-bar.css", () => {
     );
   });
 
-  it("defines bottom sheet animation", () => {
+  it("keeps bottom-sheet animation for standard mode and gives Alpha a bounded popover", () => {
     expect(cssContent).toContain("@keyframes mobile-more-sheet-in");
+    const popoverBlock = extractRuleBlock(cssContent, ".alpha-mobile-navigation-popover");
+    expect(popoverBlock).toContain("top: calc(var(--header-height)");
+    expect(popoverBlock).toContain("max-height: calc(100dvh");
+    expect(popoverBlock).toContain("overflow-y: auto");
+    expect(popoverBlock).not.toContain("animation:");
+    expect(popoverBlock).not.toContain("bottom:");
   });
 
   it("uses safe-area inset for bottom spacing", () => {
     expect(cssContent).toContain("env(safe-area-inset-bottom");
+  });
+
+  it("keeps the Alpha pill overlaid while reserving its measured mobile footprint", () => {
+    const alphaBlock = extractRuleBlock(cssContent, ".mobile-nav-bar--alpha");
+    const alphaContentBlock = extractRuleBlock(cssContent, ".project-content--with-alpha-nav");
+    const mobileAlphaContentBlock = extractRuleBlock(cssContent, 'html[data-viewport-mode="mobile"] .project-content--with-alpha-nav');
+    const tabletAlphaContentBlock = extractRuleBlock(cssContent, 'html:is([data-viewport-mode="tablet"], [data-viewport-mode="desktop"]) .project-content--with-alpha-nav:not(.project-content--with-footer)');
+    expect(alphaBlock).toContain("--mobile-nav-floating-gap: var(--space-sm)");
+    expect(alphaBlock).toContain("bottom: calc(var(--mobile-nav-alpha-system-offset) + var(--mobile-nav-floating-gap))");
+    expect(alphaContentBlock).toContain("padding-bottom: calc(var(--mobile-nav-height) + var(--mobile-nav-alpha-system-offset))");
+    expect(mobileAlphaContentBlock).toContain("padding-bottom: calc(var(--mobile-nav-height) + var(--mobile-nav-alpha-system-offset))");
+    expect(tabletAlphaContentBlock).toContain("padding-bottom: 0");
+
+    const publishedNavHeight = computePublishedMobileNavHeight({
+      navOffsetHeight: 54,
+      paddingBottom: 4,
+      tabHeights: [44, 44, 44, 44, 44],
+      floatingGap: 8,
+    });
+    expect(publishedNavHeight).toBe(62);
   });
 
   it("tab bar keeps symmetric tokenized side spacing while preserving ICB compensation", () => {

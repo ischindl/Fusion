@@ -1797,7 +1797,8 @@
     "planAutoApproveLabel": "Auto-approve plan",
     "planAutoApproveOffHint": "Off uses the workflow/default plan approval setting",
     "planAutoApproveOnHint": "On bypasses manual plan approval for this project",
-    "paginationError": "Older tasks could not be loaded."
+    "paginationError": "Older tasks could not be loaded.",
+    "openHistory": "Open History"
   },
   "commandCenter": {
     "activity": {
@@ -2314,7 +2315,8 @@
     "unknown": "Unknown",
     "unsavedChanges": "Unsaved changes",
     "yes": "Yes",
-    "remove": "Remove"
+    "remove": "Remove",
+    "alpha": "Alpha"
   },
   "composer": {
     "addSection": "Add section",
@@ -2945,7 +2947,14 @@
     "searchingFiles": "Searching files…",
     "searchNoResults": "No files found",
     "searchProjectFiles": "Search project files",
-    "searchProjectFilesPlaceholder": "Search project files…"
+    "searchProjectFilesPlaceholder": "Search project files…",
+    "sortBy": "Sort by",
+    "sortName": "Name",
+    "sortModified": "Date modified",
+    "sortSize": "Size",
+    "sortDirectionAscending": "Sort direction: ascending",
+    "sortDirectionDescending": "Sort direction: descending",
+    "sortUnavailableDuringSearch": "Sorting applies to folder listings and is unavailable during search"
   },
   "fileEditor": {
     "autoSave": "Auto-save",
@@ -3598,7 +3607,9 @@
     "unreadArtifacts_one": "{{count}} new artifact",
     "unreadArtifacts_other": "{{count}} new artifacts",
     "unreadRecommendations_one": "{{count}} new recommendation",
-    "unreadRecommendations_other": "{{count}} new recommendations"
+    "unreadRecommendations_other": "{{count}} new recommendations",
+    "clearSearch": "Clear search",
+    "taskSuggestions": "Task suggestions"
   },
   "health": {
     "activeTasks": "Active Tasks",
@@ -4036,7 +4047,11 @@
     "openPlanningSessionAria": "Open planning session: {{sessionId}}",
     "report": "Report",
     "recommendationsUnavailableIdsReason": "The source task no longer contains the recommendation IDs from this message. A later completion retry may have replaced them.",
-    "recommendationsUnavailableTaskReason": "The source task can no longer be loaded. It may have been deleted or moved out of this project."
+    "recommendationsUnavailableTaskReason": "The source task can no longer be loaded. It may have been deleted or moved out of this project.",
+    "completions": "Completions",
+    "taskCompletion": "Task completion",
+    "completionImages": "Completion images",
+    "completionImage": "Completion image"
   },
   "memory": {
     "auditChecksTitle": "Audit Checks",
@@ -4793,7 +4808,10 @@
     "recommendations": "Recommendations",
     "recommendationsUnreadAriaLabel_one": "{{count}} new recommendation",
     "recommendationsUnreadAriaLabel_other": "{{count}} new recommendations",
-    "recommendationsUnreadDotAriaLabel": "New recommendations"
+    "recommendationsUnreadDotAriaLabel": "New recommendations",
+    "notes": "Notes",
+    "openMenu": "Open navigation menu",
+    "whiteboard": "Whiteboard"
   },
   "newTaskModal": {
     "addDependencies": "Add dependencies",
@@ -11448,5 +11466,65 @@
     "title": "Recommendations",
     "truncated": "Showing the first 20 pages. Refresh to see the latest recommendations.",
     "viewTask": "View task"
+  },
+  "notes": {
+    "new": "New note",
+    "search": "Search notes",
+    "list": "Notes list",
+    "empty": "No notes yet",
+    "noResults": "No notes found",
+    "createFirst": "Create your first note",
+    "select": "Select a note or create a new one",
+    "title": "Note title",
+    "unsaved": "Unsaved changes",
+    "savedState": "Saved",
+    "saving": "Saving…",
+    "saved": "Note saved",
+    "deleted": "Note deleted",
+    "discardTitle": "Discard changes?",
+    "discardMessage": "Your unsaved draft will be lost.",
+    "discard": "Discard",
+    "deleteTitle": "Delete note?",
+    "deleteMessage": "This action cannot be undone.",
+    "conflict": "This note changed elsewhere. Your draft is preserved.",
+    "reload": "Reload server version",
+    "overwrite": "Overwrite with my draft"
+  },
+  "whiteboard": {
+    "tools": "Whiteboard tools",
+    "new": "New whiteboard",
+    "list": "Whiteboards",
+    "search": "Search whiteboards",
+    "noProject": "Select a project to use Whiteboard",
+    "noResults": "No whiteboards found",
+    "empty": "No whiteboards yet",
+    "select": "Select or create a whiteboard",
+    "title": "Whiteboard title",
+    "saving": "Saving…",
+    "unsaved": "Unsaved",
+    "saved": "Saved",
+    "rename": "Rename",
+    "history": "History",
+    "conflict": "This whiteboard changed elsewhere. Your draft is preserved.",
+    "reload": "Reload remote",
+    "copyDraft": "Create copy from draft",
+    "discardTitle": "Discard changes?",
+    "discardMessage": "Your unsaved Whiteboard draft will be lost.",
+    "discard": "Discard",
+    "deleteTitle": "Delete whiteboard?",
+    "deleteMessage": "This action cannot be undone.",
+    "deleted": "Whiteboard deleted",
+    "addIdea": "Idea",
+    "addScreen": "Screen",
+    "addArea": "Functional area",
+    "addStep": "Process step",
+    "align": "Align",
+    "distribute": "Distribute",
+    "layout": "Arrange",
+    "inspector": "Selection inspector",
+    "textContent": "Text",
+    "selectHint": "Select an item to edit it",
+    "exportJson": "Export JSON",
+    "exportPng": "Export PNG"
   }
 }

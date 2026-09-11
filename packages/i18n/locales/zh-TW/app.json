@@ -1787,7 +1787,8 @@
     "planAutoApproveLabel": "",
     "planAutoApproveOffHint": "",
     "planAutoApproveOnHint": "",
-    "paginationError": "無法載入較早的任務。"
+    "paginationError": "無法載入較早的任務。",
+    "openHistory": "開啟歷史記錄"
   },
   "commandCenter": {
     "activity": {
@@ -2304,7 +2305,8 @@
     "unknown": "未知",
     "unsavedChanges": "未儲存的變更",
     "yes": "是",
-    "remove": ""
+    "remove": "",
+    "alpha": "Alpha"
   },
   "composer": {
     "addSection": "",
@@ -2935,7 +2937,14 @@
     "uploadSummary_one": "",
     "uploadSummary_other": "",
     "uploadTitle": "",
-    "uploadTooLarge": ""
+    "uploadTooLarge": "",
+    "sortBy": "排序方式",
+    "sortName": "名稱",
+    "sortModified": "修改日期",
+    "sortSize": "大小",
+    "sortDirectionAscending": "排序方向：升冪",
+    "sortDirectionDescending": "排序方向：降冪",
+    "sortUnavailableDuringSearch": "排序僅適用於資料夾清單，搜尋期間無法使用"
   },
   "fileEditor": {
     "autoSave": "",
@@ -3588,7 +3597,9 @@
     "allProjects": "",
     "favoriteProjects": "",
     "hideRightSidebar": "",
-    "showRightSidebar": ""
+    "showRightSidebar": "",
+    "clearSearch": "清除搜尋",
+    "taskSuggestions": "任務建議"
   },
   "health": {
     "activeTasks": "活躍任務",
@@ -4027,7 +4038,11 @@
     "openPlanningSessionAria": "",
     "report": "",
     "recommendationsUnavailableIdsReason": "",
-    "recommendationsUnavailableTaskReason": ""
+    "recommendationsUnavailableTaskReason": "",
+    "completions": "",
+    "taskCompletion": "任務完成",
+    "completionImages": "任務完成圖片",
+    "completionImage": "任務完成圖片"
   },
   "memory": {
     "auditChecksTitle": "稽核檢查",
@@ -4784,7 +4799,10 @@
     "fleet": "",
     "ideation": "",
     "importTasks": "",
-    "newTask": ""
+    "newTask": "",
+    "notes": "筆記",
+    "openMenu": "開啟導覽選單",
+    "whiteboard": "Whiteboard"
   },
   "newTaskModal": {
     "addDependencies": "新增相依性",
@@ -11449,5 +11467,65 @@
       "headline": "等待人工處理",
       "suggestedAction": "自行合併該卡片，或重新開啟自動合併處理。"
     }
+  },
+  "notes": {
+    "new": "New note",
+    "search": "Search notes",
+    "list": "Notes list",
+    "empty": "No notes yet",
+    "noResults": "No notes found",
+    "createFirst": "Create your first note",
+    "select": "Select a note or create a new one",
+    "title": "Note title",
+    "unsaved": "Unsaved changes",
+    "savedState": "Saved",
+    "saving": "Saving…",
+    "saved": "Note saved",
+    "deleted": "Note deleted",
+    "discardTitle": "Discard changes?",
+    "discardMessage": "Your unsaved draft will be lost.",
+    "discard": "Discard",
+    "deleteTitle": "Delete note?",
+    "deleteMessage": "This action cannot be undone.",
+    "conflict": "This note changed elsewhere. Your draft is preserved.",
+    "reload": "Reload server version",
+    "overwrite": "Overwrite with my draft"
+  },
+  "whiteboard": {
+    "tools": "Whiteboard tools",
+    "new": "New whiteboard",
+    "list": "Whiteboards",
+    "search": "Search whiteboards",
+    "noProject": "Select a project to use Whiteboard",
+    "noResults": "No whiteboards found",
+    "empty": "No whiteboards yet",
+    "select": "Select or create a whiteboard",
+    "title": "Whiteboard title",
+    "saving": "Saving…",
+    "unsaved": "Unsaved",
+    "saved": "Saved",
+    "rename": "Rename",
+    "history": "History",
+    "conflict": "This whiteboard changed elsewhere. Your draft is preserved.",
+    "reload": "Reload remote",
+    "copyDraft": "Create copy from draft",
+    "discardTitle": "Discard changes?",
+    "discardMessage": "Your unsaved Whiteboard draft will be lost.",
+    "discard": "Discard",
+    "deleteTitle": "Delete whiteboard?",
+    "deleteMessage": "This action cannot be undone.",
+    "deleted": "Whiteboard deleted",
+    "addIdea": "Idea",
+    "addScreen": "Screen",
+    "addArea": "Functional area",
+    "addStep": "Process step",
+    "align": "Align",
+    "distribute": "Distribute",
+    "layout": "Arrange",
+    "inspector": "Selection inspector",
+    "textContent": "Text",
+    "selectHint": "Select an item to edit it",
+    "exportJson": "Export JSON",
+    "exportPng": "Export PNG"
   }
 }

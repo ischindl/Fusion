@@ -168,6 +168,9 @@ jobs:
       # regardless of cache state (ensureFullPackageCliPlanned force-plans the
       # CLI in full mode), so this job's distinctive coverage is preserved.
       # Path list must stay byte-identical to the gate job's block.
+      # FNXC:CIGateSpeed 2026-09-11-00:07: both pr-checks lists were widened with upstream
+      # FN-9295's warm-side runtime plugins. Comments must stay OUTSIDE `path: |` — inside a
+      # YAML block scalar a `#` line is literal content, i.e. a cached path.
       - name: Compute dist source hash
         id: dist-hash
         run: echo "hash=$(node scripts/ensure-test-artifacts.mjs --print-source-hash)" >> "$GITHUB_OUTPUT"
@@ -185,6 +188,12 @@ jobs:
             plugins/fusion-plugin-hermes-runtime/dist
             plugins/fusion-plugin-openclaw-runtime/dist
             plugins/fusion-plugin-paperclip-runtime/dist
+            plugins/fusion-plugin-roadmap/dist
+            plugins/fusion-plugin-claude-runtime/dist
+            plugins/fusion-plugin-cursor-runtime/dist
+            plugins/fusion-plugin-droid-runtime/dist
+            plugins/fusion-plugin-grok-runtime/dist
+            plugins/fusion-plugin-omp-runtime/dist
             .fusion/cache/plugin-build-cache.json
           key: gate-dist-${{ runner.os }}-${{ steps.dist-hash.outputs.hash }}
           restore-keys: |
@@ -251,6 +260,8 @@ jobs:
       # stale dist through. Measured before this change: every PR missed the
       # exact key and paid a full ~6-8 min build for ~45s of actual gate tests.
       # NEVER add node_modules here (breaks Windows pnpm junctions elsewhere).
+      # FNXC:CIGateSpeed 2026-09-11-00:07: widened with upstream FN-9295's runtime plugins so
+      # this list again equals the warm job's; drift voids the main-seeded cache (see ci-workflow.test.ts).
       # The warm-gate-build-cache job in full-suite.yml saves this same cache
       # (identical path list — actions/cache versions caches by path list, so
       # the two blocks must stay in sync) on every push to main so a PR's FIRST
@@ -273,6 +284,12 @@ jobs:
             plugins/fusion-plugin-hermes-runtime/dist
             plugins/fusion-plugin-openclaw-runtime/dist
             plugins/fusion-plugin-paperclip-runtime/dist
+            plugins/fusion-plugin-roadmap/dist
+            plugins/fusion-plugin-claude-runtime/dist
+            plugins/fusion-plugin-cursor-runtime/dist
+            plugins/fusion-plugin-droid-runtime/dist
+            plugins/fusion-plugin-grok-runtime/dist
+            plugins/fusion-plugin-omp-runtime/dist
             .fusion/cache/plugin-build-cache.json
           key: gate-dist-${{ runner.os }}-${{ steps.dist-hash.outputs.hash }}
           restore-keys: |

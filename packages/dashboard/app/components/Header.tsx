@@ -1,13 +1,13 @@
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Settings, LayoutGrid, List, Search, X, Activity, MoreHorizontal, Clock, Folder, History, GitBranch, Monitor, Workflow, Bot, Target, Grid3X3, Mail, MessageSquare, Check, Zap, Sparkles, FileText, Brain, Lock, Gauge, Lightbulb, ChevronDown, ChevronRight, PanelRight, Plus, Star } from "lucide-react";
+import { Settings, LayoutGrid, List, Search, Activity, MoreHorizontal, Menu, Clock, Folder, History, GitBranch, Monitor, Workflow, Bot, Target, Grid3X3, Mail, MessageSquare, Check, Zap, Sparkles, Brain, Lock, Gauge, Lightbulb, PanelsTopLeft, ChevronDown, ChevronRight, PanelRight, Plus, Star } from "lucide-react";
 import "./Header.css";
 // ProjectSelector styles used by the imported standalone component.
 import "./ProjectSelector.css";
 import { ProjectSelector as StandaloneProjectSelector } from "./ProjectSelector";
 import { useProjectBookmarks } from "../hooks/useProjectBookmarks";
 import type { ProjectInfo } from "../api";
-import type { NodeConfig, ProjectStatus } from "@fusion/core";
+import type { NodeConfig, ProjectStatus, Task } from "@fusion/core";
 import { NodeStatusIndicator } from "./NodeStatusIndicator";
 import { NodeHealthDot } from "./NodeHealthDot";
 import { PluginSlot } from "./PluginSlot";
@@ -17,12 +17,11 @@ import type { TaskView } from "../hooks/useViewState";
 import type { PluginDashboardViewEntry } from "../api";
 import { buildPluginTaskViewId, isPluginViewId } from "../plugins/pluginViewRegistry";
 import { getPluginNavIcon } from "./pluginNavIcon";
+import { TaskSearchInput } from "./TaskSearchInput";
 import type { ShellHostContext } from "../shell-host";
 export { resolveReportContextRefs } from "../utils/reportContextRefs";
 
 export { useViewportMode };
-
-const NO_BRANCH_FILTER_VALUE = "__fusion:no-branch__";
 
 // Status icon config for project selector dropdown
 const PROJECT_STATUS_CONFIG: Record<ProjectStatus, { color: string }> = {
@@ -60,10 +59,6 @@ export interface HeaderProps {
   onOpenMailbox?: () => void;
   /** Unread message count for badge display */
   mailboxUnreadCount?: number;
-  /** Unread task-recommendation notices for their dedicated destination. */
-  recommendationUnreadCount?: number;
-  /** Unread artifact-registration notices for the Artifacts destination. */
-  artifactUnreadCount?: number;
   /** Pending approval count for mailbox indicator */
   mailboxPendingApprovalCount?: number;
   /** Whether chat has an unread assistant response */
@@ -86,12 +81,7 @@ export interface HeaderProps {
   showAgentsTab?: boolean;
   searchQuery?: string;
   onSearchChange?: (query: string) => void;
-  branchFilter?: string;
-  baseBranchFilter?: string;
-  branchOptions?: string[];
-  baseBranchOptions?: string[];
-  onBranchFilterChange?: (value: string) => void;
-  onBaseBranchFilterChange?: (value: string) => void;
+  taskSearchTasks?: readonly Pick<Task, "id" | "title">[];
   /** Multi-project props */
   projects?: ProjectInfo[];
   currentProject?: ProjectInfo | null;
@@ -101,6 +91,12 @@ export interface HeaderProps {
   shellHost?: ShellHostContext;
   /** When true, the mobile bottom nav bar handles primary navigation and header nav controls are hidden. */
   mobileNavEnabled?: boolean;
+  /** Enables the Alpha shell variants without changing legacy navigation. */
+  alphaUpdatesEnabled?: boolean;
+  /** Whether the App-owned Alpha navigation popover is open. */
+  alphaMenuOpen?: boolean;
+  /** Toggles the canonical MobileNavBar popover from the Alpha hamburger. */
+  onOpenAlphaMenu?: () => void;
   /** When true on non-mobile screens, persistent left sidebar owns primary view navigation. */
   leftSidebarNavActive?: boolean;
   /*
@@ -122,7 +118,7 @@ export interface HeaderProps {
   /** Whether the current view is a remote node */
   isRemote?: boolean;
   /** Experimental feature flags controlling visibility of nav items. */
-  experimentalFeatures?: { insights?: boolean; memoryView?: boolean; devServer?: boolean; devServerView?: boolean; researchView?: boolean; evalsView?: boolean; ideationView?: boolean; goalsView?: boolean; leftSidebarNav?: boolean; rightDock?: boolean };
+  experimentalFeatures?: { insights?: boolean; memoryView?: boolean; devServer?: boolean; devServerView?: boolean; researchView?: boolean; evalsView?: boolean; ideationView?: boolean; whiteboardView?: boolean; goalsView?: boolean; leftSidebarNav?: boolean; rightDock?: boolean };
   pluginDashboardViews?: PluginDashboardViewEntry[];
   shellConnectionControl?: ReactNode;
 }
@@ -134,8 +130,6 @@ export function Header({
   onOpenActivityLog,
   onOpenMailbox,
   mailboxUnreadCount = 0,
-  recommendationUnreadCount = 0,
-  artifactUnreadCount = 0,
   mailboxPendingApprovalCount = 0,
   chatHasUnreadResponse = false,
   stashOrphanCount = 0,
@@ -150,12 +144,7 @@ export function Header({
   showAgentsTab,
   searchQuery = "",
   onSearchChange,
-  branchFilter = "",
-  baseBranchFilter = "",
-  branchOptions = [],
-  baseBranchOptions = [],
-  onBranchFilterChange,
-  onBaseBranchFilterChange,
+  taskSearchTasks,
   projects = [],
   currentProject,
   onSelectProject,
@@ -163,6 +152,9 @@ export function Header({
   projectId,
   shellHost = { kind: "browser" },
   mobileNavEnabled,
+  alphaUpdatesEnabled = false,
+  alphaMenuOpen = false,
+  onOpenAlphaMenu,
   leftSidebarNavActive = false,
   rightDockAvailable = false,
   rightDockOpen = false,
@@ -206,8 +198,6 @@ export function Header({
   const [isViewOverflowOpen, setIsViewOverflowOpen] = useState(false);
   const overflowButtonRef = useRef<HTMLButtonElement>(null);
   const overflowMenuRef = useRef<HTMLDivElement>(null);
-  const mobileSearchRef = useRef<HTMLDivElement>(null);
-  const mobileSearchInputRef = useRef<HTMLInputElement>(null);
   const nodeSelectorRef = useRef<HTMLDivElement>(null);
   const mobileProjectSwitchRef = useRef<HTMLDivElement>(null);
   const viewOverflowRef = useRef<HTMLDivElement>(null);
@@ -292,6 +282,7 @@ export function Header({
       onChangeView ||
       experimentalFeatures?.researchView ||
       experimentalFeatures?.ideationView ||
+      experimentalFeatures?.whiteboardView ||
       experimentalFeatures?.insights ||
 
       showSkillsTab ||
@@ -307,6 +298,7 @@ export function Header({
   const shouldShowMobileSearch = isMobileSearchOpen || searchQuery.length > 0;
 
   const canShowNonMobileSearch = (view === "board" || view === "list") && !isMobile && onSearchChange;
+  const showAlphaDesktopSearch = Boolean(alphaUpdatesEnabled && mode === "desktop" && canShowNonMobileSearch);
   // Non-mobile search: toggled open OR has active query, but not if explicitly closed.
   const shouldShowNonMobileSearch = (isNonMobileSearchOpen || searchQuery.length > 0) && !isNonMobileSearchExplicitlyClosed;
   /*
@@ -314,7 +306,6 @@ export function Header({
   Closing board/list search must suppress the populated floating panel until App clears searchQuery, then immediately restore the Open search affordance. Keep the explicit-close state out of the empty-query toggle gate so an open-but-empty dismissal cannot strand the header without a search trigger.
   */
   const canShowNonMobileSearchToggle = Boolean(canShowNonMobileSearch && !shouldShowNonMobileSearch && searchQuery.length === 0);
-  const showBoardBranchFilters = view === "board";
 
   // Reset explicit close flag when query becomes empty (so active-query reopen behavior is ready for the next search).
   useEffect(() => {
@@ -468,7 +459,7 @@ export function Header({
               fill="currentColor"
             />
           </svg>
-          <h1 className="logo">{t("appName", "Fusion")}</h1>
+          {!(isMobile && alphaUpdatesEnabled) && <h1 className="logo">{t("appName", "Fusion")}</h1>}
         </div>
 
         {/* Mobile Project Switch - dropdown trigger next to logo when at least one project exists (mobile only) */}
@@ -645,8 +636,8 @@ export function Header({
           </button>
         )}
 
-        {/* Usage button on mobile when mobile bottom nav is active */}
-        {isMobile && hideFullNav && onOpenUsage && (
+        {/* FNXC:AlphaUpdates 2026-09-09-19:11: Alpha gives Usage one canonical mobile home in the shared hamburger menu; the legacy shell retains its direct header shortcut. */}
+        {isMobile && hideFullNav && !alphaUpdatesEnabled && onOpenUsage && (
           <button
             className="btn-icon"
             onClick={(event) => onOpenUsage(event.currentTarget.getBoundingClientRect())}
@@ -669,7 +660,19 @@ export function Header({
          * FNXC:Header 2026-06-21-00:00:
          * Desktop and tablet header search must render after the workflow portal slot so a populated WorkflowSwitcher appears left of the search icon while preserving the mobile search trigger's existing position and behavior.
          */}
-        {canShowNonMobileSearchToggle && (
+        {showAlphaDesktopSearch && onSearchChange && (
+          <TaskSearchInput
+            query={searchQuery}
+            tasks={taskSearchTasks}
+            onSearchChange={onSearchChange}
+            onClose={searchQuery.length > 0 ? () => onSearchChange("") : undefined}
+            closeLabel={t("header.clearSearch", "Clear search")}
+            className="header-search--alpha-inline"
+            testId="alpha-desktop-header-search"
+          />
+        )}
+
+        {canShowNonMobileSearchToggle && !showAlphaDesktopSearch && (
           <button
             className="btn-icon"
             onClick={handleNonMobileSearchToggle}
@@ -750,32 +753,6 @@ export function Header({
                 <span className="status-dot status-dot--pending header-chat-unread-dot" aria-label={t("header.unreadChatResponse", "Unread chat response")} />
               )}
             </button>
-            {!isTablet && (
-              /*
-              FNXC:Navigation 2026-06-21-18:25:
-              The top-level documents destination now displays as Artifacts (FN-6890), but the documents route id remains stable for navigation and tests.
-
-              FNXC:InboxCategories 2026-09-06-03:16:
-              Artifacts keeps both mutually exclusive Header affordances: the inline button owns the unread dot outside tablet mode, while the tablet More-views item owns the numeric badge. Recommendations stays More-only so this saturated inline group does not gain another destination.
-              */
-              <button
-                className={`view-toggle-btn${view === "documents" ? " active" : ""}`}
-                onClick={() => onChangeView("documents")}
-                title={t("header.documentsView", "Artifacts view")}
-                aria-label={t("header.documentsView", "Artifacts view")}
-                aria-pressed={view === "documents"}
-                data-testid="view-toggle-documents"
-              >
-                <FileText size={16} />
-                {view !== "documents" && artifactUnreadCount > 0 ? (
-                  <span
-                    className="status-dot status-dot--online header-chat-unread-dot"
-                    aria-label={t("header.unreadArtifacts", "{{count}} new artifacts", { count: artifactUnreadCount })}
-                    data-testid="header-documents-unread-dot"
-                  />
-                ) : null}
-              </button>
-            )}
             <button
               className={`view-toggle-btn${view === "mailbox" ? " active" : ""}`}
               onClick={() => (onOpenMailbox ? onOpenMailbox() : onChangeView("mailbox"))}
@@ -817,7 +794,7 @@ export function Header({
               <>
                 <button
                   ref={viewOverflowTriggerRef}
-                  className={`view-toggle-btn${(["research", "ideation", "skills", "insights", "memory", "recommendations", "secrets", "dev-server", "devserver", "graph"].includes(view) || (isTablet && view === "documents") || (experimentalFeatures?.evalsView && view === "evals") || (experimentalFeatures?.goalsView && view === "goalsView") || isPluginViewId(view)) ? " active" : ""}`}
+                  className={`view-toggle-btn${(["research", "ideation", "whiteboard", "skills", "insights", "memory", "secrets", "dev-server", "devserver", "graph"].includes(view) || (experimentalFeatures?.evalsView && view === "evals") || (experimentalFeatures?.goalsView && view === "goalsView") || isPluginViewId(view)) ? " active" : ""}`}
                   onClick={() => {
                     setIsViewOverflowOpen((prev) => !prev);
                   }}
@@ -892,6 +869,13 @@ export function Header({
                         <span>{t("nav.ideation", "Ideation")}</span>
                       </button>
                     )}
+                    {experimentalFeatures?.whiteboardView && (
+                      <button className={`view-toggle-overflow-item${view === "whiteboard" ? " active" : ""}`} onClick={() => { onChangeView("whiteboard"); setIsViewOverflowOpen(false); }} role="menuitem" data-testid="view-overflow-whiteboard">
+                        <PanelsTopLeft size={14} />
+                        <span>{t("nav.whiteboard", "Whiteboard")}</span>
+                        <span className="btn-badge">{t("common.alpha", "Alpha")}</span>
+                      </button>
+                    )}
                     {experimentalFeatures?.insights && (
                       <button
                         className={`view-toggle-overflow-item${view === "insights" ? " active" : ""}`}
@@ -947,51 +931,7 @@ export function Header({
                       <Lock size={14} />
                       <span>{t("header.secretsView", "Secrets")}</span>
                     </button>
-                    <button
-                      className={`view-toggle-overflow-item${view === "recommendations" ? " active" : ""}`}
-                      onClick={() => {
-                        onChangeView("recommendations");
-                        setIsViewOverflowOpen(false);
-                      }}
-                      role="menuitem"
-                      data-testid="view-overflow-recommendations"
-                    >
-                      <Lightbulb size={14} />
-                      <span>{t("nav.recommendations", "Recommendations")}</span>
-                      {recommendationUnreadCount > 0 ? (
-                        <span
-                          className="header-badge"
-                          data-testid="view-overflow-recommendations-badge"
-                          aria-label={t("header.unreadRecommendations", "{{count}} new recommendations", { count: recommendationUnreadCount })}
-                        >
-                          {recommendationUnreadCount}
-                        </span>
-                      ) : null}
-                    </button>
-                    {isTablet && (
-                      <button
-                        className={`view-toggle-overflow-item${view === "documents" ? " active" : ""}`}
-                        onClick={() => {
-                          onChangeView("documents");
-                          setIsViewOverflowOpen(false);
-                        }}
-                        role="menuitem"
-                        data-testid="view-overflow-documents"
-                      >
-                        <FileText size={14} />
-                        <span>{t("header.documentsView", "Artifacts view")}</span>
-                        {artifactUnreadCount > 0 ? (
-                          <span
-                            className="header-badge"
-                            data-testid="view-overflow-documents-badge"
-                            aria-label={t("header.unreadArtifacts", "{{count}} new artifacts", { count: artifactUnreadCount })}
-                          >
-                            {artifactUnreadCount}
-                          </span>
-                        ) : null}
-                      </button>
-                    )}
-                    <button
+                    {!alphaUpdatesEnabled && <button
                       className={`view-toggle-overflow-item${view === "patchnode" ? " active" : ""}`}
                       onClick={() => {
                         onChangeView("patchnode");
@@ -1002,7 +942,7 @@ export function Header({
                     >
                       <History size={14} />
                       <span>{t("nav.patchnode", "History")}</span>
-                    </button>
+                    </button>}
                     {experimentalFeatures?.devServerView && (
                       <button
                         className={`view-toggle-overflow-item${view === "dev-server" || view === "devserver" ? " active" : ""}`}
@@ -1124,6 +1064,23 @@ export function Header({
             data-testid="header-right-dock-toggle"
           >
             <PanelRight size={16} />
+          </button>
+        )}
+
+        {/* FNXC:AlphaUpdates 2026-09-09-22:14: Mobile Alpha exposes the App-owned popover state from its sole hamburger trigger; legacy mobile retains its independent footer More drawer. */}
+        {isMobile && alphaUpdatesEnabled && mobileNavEnabled && (
+          <button
+            className="btn-icon alpha-mobile-menu-trigger"
+            type="button"
+            onClick={onOpenAlphaMenu}
+            title={t("nav.openMenu", "Open navigation menu")}
+            aria-label={t("nav.openMenu", "Open navigation menu")}
+            aria-haspopup="menu"
+            aria-expanded={alphaMenuOpen}
+            aria-controls="alpha-mobile-navigation-popover"
+            data-testid="alpha-mobile-menu-trigger"
+          >
+            <Menu size={16} />
           </button>
         )}
 
@@ -1291,130 +1248,29 @@ export function Header({
     </header>
 
     {/* Desktop/Tablet Search - floating below header, in board or list view */}
-    {canShowNonMobileSearch && shouldShowNonMobileSearch && (
+    {canShowNonMobileSearch && shouldShowNonMobileSearch && !showAlphaDesktopSearch && (
       <div className="header-floating-search">
-        <div className="header-search">
-          <Search size={14} className="header-search-icon" />
-          <input
-            autoFocus
-            type="text"
-            placeholder={t("header.searchTasks", "Search tasks...")}
-            value={searchQuery}
-            onChange={(e) => onSearchChange(e.target.value)}
-            className="header-search-input"
-          />
-          <button
-            className="header-search-clear"
-            onClick={handleNonMobileSearchClose}
-            aria-label={t("header.closeSearch", "Close search")}
-          >
-            <X size={14} />
-          </button>
-        </div>
-        {showBoardBranchFilters && (
-          <div className="header-branch-filters" data-testid="header-branch-filters-desktop">
-            <label className="header-branch-filter-label">
-              <span>{t("header.workingBranch", "Working branch")}</span>
-              <select
-                className="header-branch-filter-select"
-                value={branchFilter}
-                onChange={(event) => onBranchFilterChange?.(event.target.value)}
-                data-testid="working-branch-filter"
-              >
-                <option value="">{t("header.allWorkingBranches", "All working branches")}</option>
-                <option value={NO_BRANCH_FILTER_VALUE}>{t("header.noWorkingBranch", "No working branch")}</option>
-                {branchOptions.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="header-branch-filter-label">
-              <span>{t("header.baseBranch", "Base branch")}</span>
-              <select
-                className="header-branch-filter-select"
-                value={baseBranchFilter}
-                onChange={(event) => onBaseBranchFilterChange?.(event.target.value)}
-                data-testid="target-branch-filter"
-              >
-                <option value="">{t("header.allBaseBranches", "All base branches")}</option>
-                <option value={NO_BRANCH_FILTER_VALUE}>{t("header.noBaseBranch", "No base branch")}</option>
-                {baseBranchOptions.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-        )}
+        <TaskSearchInput
+          query={searchQuery}
+          tasks={taskSearchTasks}
+          onSearchChange={onSearchChange}
+          onClose={handleNonMobileSearchClose}
+          autoFocus
+        />
       </div>
     )}
 
     {/* Mobile Search Expanded - floating below header */}
     {onSearchChange && isMobile && shouldShowMobileSearch && (
       <div className="header-floating-search">
-        <div
-          ref={mobileSearchRef}
-          className="header-search mobile-search-expanded"
-        >
-          <Search size={14} className="header-search-icon" />
-          <input
-            ref={mobileSearchInputRef}
-            autoFocus
-            type="text"
-            placeholder={t("header.searchTasks", "Search tasks...")}
-            value={searchQuery}
-            onChange={(e) => onSearchChange(e.target.value)}
-            className="header-search-input"
-          />
-          <button
-            className="header-search-clear"
-            onClick={handleMobileSearchClose}
-            aria-label={t("header.closeSearch", "Close search")}
-          >
-            <X size={14} />
-          </button>
-        </div>
-        {showBoardBranchFilters && (
-          <div className="header-branch-filters" data-testid="header-branch-filters-mobile">
-            <label className="header-branch-filter-label">
-              <span>{t("header.workingBranch", "Working branch")}</span>
-              <select
-                className="header-branch-filter-select"
-                value={branchFilter}
-                onChange={(event) => onBranchFilterChange?.(event.target.value)}
-                data-testid="working-branch-filter-mobile"
-              >
-                <option value="">{t("header.allWorkingBranches", "All working branches")}</option>
-                <option value={NO_BRANCH_FILTER_VALUE}>{t("header.noWorkingBranch", "No working branch")}</option>
-                {branchOptions.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="header-branch-filter-label">
-              <span>{t("header.baseBranch", "Base branch")}</span>
-              <select
-                className="header-branch-filter-select"
-                value={baseBranchFilter}
-                onChange={(event) => onBaseBranchFilterChange?.(event.target.value)}
-                data-testid="target-branch-filter-mobile"
-              >
-                <option value="">{t("header.allBaseBranches", "All base branches")}</option>
-                <option value={NO_BRANCH_FILTER_VALUE}>{t("header.noBaseBranch", "No base branch")}</option>
-                {baseBranchOptions.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-        )}
+        <TaskSearchInput
+          query={searchQuery}
+          tasks={taskSearchTasks}
+          onSearchChange={onSearchChange}
+          onClose={handleMobileSearchClose}
+          autoFocus
+          className="mobile-search-expanded"
+        />
       </div>
     )}
   </div>

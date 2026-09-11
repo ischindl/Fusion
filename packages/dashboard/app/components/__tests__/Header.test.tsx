@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { Header, resolveReportContextRefs } from "../Header";
 
 // Mock fetchScripts for overflow submenu
@@ -48,7 +49,44 @@ function renderHeader(props = {}, tier: ViewportTier = "desktop") {
   );
 }
 
+function SearchHeaderHarness({ tier }: { tier: ViewportTier }) {
+  const [query, setQuery] = useState("");
+  return (
+    <Header
+      onOpenSettings={noop}
+      onOpenGitHubImport={noop}
+      view="board"
+      searchQuery={query}
+      onSearchChange={setQuery}
+      taskSearchTasks={[
+        { id: "FN-331", title: "Remove branch filters" },
+        { id: "ERR-331", title: "Repair matching task" },
+        { id: "FN-332", title: "Different number" },
+      ]}
+      alphaUpdatesEnabled={tier === "desktop"}
+    />
+  );
+}
+
+function renderSearchHeader(tier: ViewportTier) {
+  mockMatchMedia(tier);
+  return render(<SearchHeaderHarness tier={tier} />);
+}
+
 describe("Header", () => {
+  it("garde Whiteboard hors du menu tant que son flag Alpha est désactivé", () => {
+    const onChangeView = vi.fn();
+    const disabled = renderHeader({ view: "board", onChangeView, experimentalFeatures: {} });
+    fireEvent.click(screen.getByTitle("More views"));
+    expect(screen.queryByTestId("view-overflow-whiteboard")).toBeNull();
+    disabled.unmount();
+    renderHeader({ view: "board", onChangeView, experimentalFeatures: { whiteboardView: true } });
+    fireEvent.click(screen.getByTitle("More views"));
+    const item = screen.getByTestId("view-overflow-whiteboard");
+    expect(within(item).getByText("Alpha")).toBeInTheDocument();
+    fireEvent.click(item);
+    expect(onChangeView).toHaveBeenCalledWith("whiteboard");
+  });
   it("derives report context from task hash routes and legacy query parameters", () => {
     expect(resolveReportContextRefs({ hash: "#/tasks/FN-8277", search: "?agentId=agent-1" })).toEqual({ taskId: "FN-8277", agentId: "agent-1" });
     expect(resolveReportContextRefs({ hash: "", search: "?taskId=FN-8277" })).toEqual({ taskId: "FN-8277", agentId: undefined });
@@ -63,6 +101,52 @@ describe("Header", () => {
   it("renders the logo and brand", () => {
     renderHeader();
     expect(screen.getByText("Fusion")).toBeDefined();
+  });
+
+  it("hides only the Fusion wordmark in the mobile Alpha shell", () => {
+    const legacy = renderHeader({ mobileNavEnabled: true }, "mobile");
+    expect(screen.getByText("Fusion")).toBeInTheDocument();
+    legacy.unmount();
+
+    const alpha = renderHeader({ mobileNavEnabled: true, alphaUpdatesEnabled: true }, "mobile");
+    expect(screen.queryByText("Fusion")).toBeNull();
+    expect(alpha.container.querySelector(".header-logo")).toBeInTheDocument();
+    alpha.unmount();
+
+    renderHeader({ alphaUpdatesEnabled: true }, "tablet");
+    expect(screen.getByText("Fusion")).toBeInTheDocument();
+  });
+
+  it("keeps Alpha desktop Board search inline and clears without removing it", () => {
+    const onSearchChange = vi.fn();
+    const { rerender } = renderHeader({ view: "board", alphaUpdatesEnabled: true, searchQuery: "alpha", onSearchChange }, "desktop");
+    expect(screen.queryByTestId("desktop-header-search-btn")).toBeNull();
+    expect(screen.getByTestId("alpha-desktop-header-search")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Search tasks...")).toHaveValue("alpha");
+    fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+    expect(onSearchChange).toHaveBeenCalledWith("");
+
+    rerender(<Header onOpenSettings={noop} onOpenGitHubImport={noop} view="board" alphaUpdatesEnabled searchQuery="" onSearchChange={onSearchChange} />);
+    expect(screen.getByTestId("alpha-desktop-header-search")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Clear search" })).toBeNull();
+  });
+
+  it("renders the accessible Alpha hamburger only in the mobile shell", () => {
+    const onOpenAlphaMenu = vi.fn();
+    const { rerender } = renderHeader({ mobileNavEnabled: true, alphaUpdatesEnabled: true, alphaMenuOpen: false, onOpenAlphaMenu }, "mobile");
+    const trigger = screen.getByTestId("alpha-mobile-menu-trigger");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(trigger).toHaveAttribute("aria-controls", "alpha-mobile-navigation-popover");
+    fireEvent.click(trigger);
+    expect(onOpenAlphaMenu).toHaveBeenCalledOnce();
+
+    rerender(<Header onOpenSettings={noop} onOpenGitHubImport={noop} mobileNavEnabled alphaUpdatesEnabled alphaMenuOpen onOpenAlphaMenu={onOpenAlphaMenu} />);
+    expect(screen.getByTestId("alpha-mobile-menu-trigger")).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it.each(["desktop", "tablet"] as const)("does not render the Alpha hamburger on %s", (tier) => {
+    renderHeader({ mobileNavEnabled: true, alphaUpdatesEnabled: true, onOpenAlphaMenu: vi.fn() }, tier);
+    expect(screen.queryByTestId("alpha-mobile-menu-trigger")).toBeNull();
   });
 
   it.each(["desktop", "tablet", "mobile"] as const)("does not render the relocated Report affordance in the %s header", (tier) => {
@@ -445,64 +529,18 @@ describe("Header", () => {
       expect(screen.getByTestId("view-toggle-overflow-trigger")).toBeDefined();
     });
 
-    it("keeps desktop Artifacts and Command Center inline without Command Center overflow", () => {
-      renderHeader({ onChangeView: noop, showAgentsTab: true }, "desktop");
-
-      expect(screen.getByTitle("Artifacts view")).toBeInTheDocument();
-      const agentsButton = screen.getByTitle("Agents view");
-      const commandCenterButton = screen.getByTestId("view-toggle-command-center");
-      expect(commandCenterButton.previousElementSibling).toBe(agentsButton);
-
+    it("omits standalone Artifacts and Recommendations destinations on desktop and tablet", () => {
+      const desktop = renderHeader({ onChangeView: noop, showAgentsTab: true }, "desktop");
+      expect(screen.queryByTestId("view-toggle-documents")).toBeNull();
       fireEvent.click(screen.getByTestId("view-toggle-overflow-trigger"));
-      expect(screen.queryByTestId("view-overflow-command-center")).toBeNull();
       expect(screen.queryByTestId("view-overflow-documents")).toBeNull();
-    });
+      expect(screen.queryByTestId("view-overflow-recommendations")).toBeNull();
+      desktop.unmount();
 
-    it("shows the Artifacts unread dot on the inline non-tablet affordance only when inactive", () => {
-      const unread = renderHeader({ onChangeView: noop, view: "board", artifactUnreadCount: 3 }, "mobile");
-      expect(screen.getByTestId("view-toggle-documents")).toContainElement(screen.getByTestId("header-documents-unread-dot"));
-      unread.unmount();
-
-      const empty = renderHeader({ onChangeView: noop, view: "board", artifactUnreadCount: 0 }, "mobile");
-      expect(screen.getByTestId("view-toggle-documents").querySelector("[data-testid='header-documents-unread-dot']")).toBeNull();
-      empty.unmount();
-
-      renderHeader({ onChangeView: noop, view: "documents", artifactUnreadCount: 3 }, "mobile");
-      expect(screen.getByTestId("view-toggle-documents").querySelector("[data-testid='header-documents-unread-dot']")).toBeNull();
-    });
-
-    it("shows the exact Artifacts count on the tablet overflow affordance", () => {
-      const unread = renderHeader({ onChangeView: noop, artifactUnreadCount: 8 }, "tablet");
-      fireEvent.click(screen.getByTestId("view-toggle-overflow-trigger"));
-      expect(screen.getByTestId("view-overflow-documents-badge")).toHaveTextContent("8");
-      unread.unmount();
-
-      renderHeader({ onChangeView: noop, artifactUnreadCount: 0 }, "tablet");
-      fireEvent.click(screen.getByTestId("view-toggle-overflow-trigger"));
-      expect(screen.queryByTestId("view-overflow-documents-badge")).toBeNull();
-    });
-
-    it("routes the recommendations overflow destination and displays its count", () => {
-      const onChangeView = vi.fn();
-      renderHeader({ onChangeView, recommendationUnreadCount: 6 }, "mobile");
-      fireEvent.click(screen.getByTestId("view-toggle-overflow-trigger"));
-
-      expect(screen.getByTestId("view-overflow-recommendations-badge")).toHaveTextContent("6");
-      fireEvent.click(screen.getByTestId("view-overflow-recommendations"));
-      expect(onChangeView).toHaveBeenCalledWith("recommendations");
-    });
-
-    it("promotes Command Center after Agents and moves Artifacts to overflow on tablet", () => {
       renderHeader({ onChangeView: noop, showAgentsTab: true }, "tablet");
-
-      const agentsButton = screen.getByTitle("Agents view");
-      const commandCenterButton = screen.getByTestId("view-toggle-command-center");
-      expect(commandCenterButton.previousElementSibling).toBe(agentsButton);
-      expect(screen.queryByTitle("Artifacts view")).toBeNull();
-
       fireEvent.click(screen.getByTestId("view-toggle-overflow-trigger"));
-      expect(screen.getByTestId("view-overflow-documents")).toHaveTextContent("Artifacts view");
-      expect(screen.queryByTestId("view-overflow-command-center")).toBeNull();
+      expect(screen.queryByTestId("view-overflow-documents")).toBeNull();
+      expect(screen.queryByTestId("view-overflow-recommendations")).toBeNull();
     });
 
     it("renders view overflow trigger when skills tab is enabled", () => {
@@ -702,6 +740,18 @@ describe("Header", () => {
       renderHeader({ onOpenUsage: vi.fn() }, "mobile");
       fireEvent.click(screen.getByTitle("More header actions"));
       expect(screen.getByTestId("overflow-usage-btn")).toBeDefined();
+    });
+
+    it("removes the direct mobile Usage shortcut from the Alpha header", () => {
+      renderHeader({
+        mobileNavEnabled: true,
+        alphaUpdatesEnabled: true,
+        onOpenAlphaMenu: vi.fn(),
+        onOpenUsage: vi.fn(),
+      }, "mobile");
+
+      expect(screen.queryByTestId("mobile-header-usage-btn")).toBeNull();
+      expect(screen.getByTestId("alpha-mobile-menu-trigger")).toBeInTheDocument();
     });
 
     it("does not call onOpenUsage from the removed desktop toolbar button", () => {
@@ -1073,64 +1123,37 @@ describe("Header", () => {
       expect(onSearchChange).toHaveBeenCalledWith("");
     });
 
-    it("renders branch filters in desktop board search panel only", () => {
-      renderHeader({
-        onSearchChange: vi.fn(),
-        view: "board",
-        branchOptions: ["feature/a"],
-        baseBranchOptions: ["main"],
-      });
-      fireEvent.click(screen.getByTestId("desktop-header-search-btn"));
-      expect(screen.getByTestId("header-branch-filters-desktop")).toBeInTheDocument();
-      expect(screen.getByTestId("working-branch-filter")).toBeInTheDocument();
-      expect(screen.getByTestId("target-branch-filter")).toBeInTheDocument();
-      expect(screen.getByRole("option", { name: "All working branches" })).toHaveValue("");
-      expect(screen.getByRole("option", { name: "No working branch" })).toHaveValue("__fusion:no-branch__");
-      expect(screen.getByRole("option", { name: "All base branches" })).toHaveValue("");
-      expect(screen.getByRole("option", { name: "No base branch" })).toHaveValue("__fusion:no-branch__");
-    });
+    it.each(["desktop", "tablet", "mobile"] as const)("does not render removed branch filters on %s", (mode) => {
+      renderHeader({ onSearchChange: vi.fn(), view: "board", alphaUpdatesEnabled: mode === "desktop" }, mode);
+      if (mode === "mobile") fireEvent.click(screen.getByTestId("mobile-header-search-btn"));
+      else if (mode === "tablet") fireEvent.click(screen.getByTestId("desktop-header-search-btn"));
 
-    it("does not render branch filters in list view", () => {
-      renderHeader({ onSearchChange: vi.fn(), view: "list" });
-      fireEvent.click(screen.getByTestId("desktop-header-search-btn"));
+      expect(screen.queryByText("Working branch")).toBeNull();
+      expect(screen.queryByText("Base branch")).toBeNull();
       expect(screen.queryByTestId("header-branch-filters-desktop")).toBeNull();
+      expect(screen.queryByTestId("header-branch-filters-mobile")).toBeNull();
     });
 
-    it("calls branch filter callbacks with selected values, unassigned sentinel, and reset", () => {
-      const onBranchFilterChange = vi.fn();
-      const onBaseBranchFilterChange = vi.fn();
-      renderHeader({
-        onSearchChange: vi.fn(),
-        view: "board",
-        branchOptions: ["feature/a"],
-        baseBranchOptions: ["release"],
-        onBranchFilterChange,
-        onBaseBranchFilterChange,
-      });
-      fireEvent.click(screen.getByTestId("desktop-header-search-btn"));
-      fireEvent.change(screen.getByTestId("working-branch-filter"), { target: { value: "feature/a" } });
-      fireEvent.change(screen.getByTestId("working-branch-filter"), { target: { value: "__fusion:no-branch__" } });
-      fireEvent.change(screen.getByTestId("target-branch-filter"), { target: { value: "release" } });
-      fireEvent.change(screen.getByTestId("target-branch-filter"), { target: { value: "__fusion:no-branch__" } });
-      fireEvent.change(screen.getByTestId("working-branch-filter"), { target: { value: "" } });
-      expect(onBranchFilterChange).toHaveBeenCalledWith("feature/a");
-      expect(onBranchFilterChange).toHaveBeenCalledWith("__fusion:no-branch__");
-      expect(onBranchFilterChange).toHaveBeenCalledWith("");
-      expect(onBaseBranchFilterChange).toHaveBeenCalledWith("release");
-      expect(onBaseBranchFilterChange).toHaveBeenCalledWith("__fusion:no-branch__");
+    it("does not leave an empty floating panel beside the Alpha desktop inline search", () => {
+      const { container } = renderHeader({ onSearchChange: vi.fn(), view: "board", alphaUpdatesEnabled: true }, "desktop");
+      expect(screen.getByTestId("alpha-desktop-header-search")).toBeInTheDocument();
+      expect(container.querySelector(".header-floating-search")).toBeNull();
     });
 
-    it("renders branch filters in mobile expanded search for board view", () => {
-      renderHeader({
-        onSearchChange: vi.fn(),
-        view: "board",
-        branchOptions: ["feature/mobile"],
-        baseBranchOptions: ["main"],
-      }, "mobile");
-      fireEvent.click(screen.getByTestId("mobile-header-search-btn"));
-      expect(screen.getByTestId("header-branch-filters-mobile")).toBeInTheDocument();
-      expect(screen.getByTestId("working-branch-filter-mobile")).toBeInTheDocument();
-      expect(screen.getByTestId("target-branch-filter-mobile")).toBeInTheDocument();
+    it.each(["desktop", "tablet", "mobile"] as const)("suggests and applies numeric task matches on %s", (tier) => {
+      renderSearchHeader(tier);
+      if (tier === "tablet") fireEvent.click(screen.getByTestId("desktop-header-search-btn"));
+      if (tier === "mobile") fireEvent.click(screen.getByTestId("mobile-header-search-btn"));
+
+      const input = screen.getByRole("combobox");
+      fireEvent.change(input, { target: { value: "331" } });
+      expect(screen.getByRole("option", { name: "FN-331: Remove branch filters" })).toBeInTheDocument();
+      expect(screen.getByRole("option", { name: "ERR-331: Repair matching task" })).toBeInTheDocument();
+      expect(screen.queryByText("FN-332")).toBeNull();
+
+      fireEvent.click(screen.getByRole("option", { name: "FN-331: Remove branch filters" }));
+      expect(input).toHaveValue("FN-331");
+      expect(screen.queryByRole("listbox")).toBeNull();
     });
   });
 
