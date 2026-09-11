@@ -233,7 +233,7 @@ async function describeWorkflow(
  */
 export async function buildBoardWorkflowsPayload(
   store: Pick<TaskStore, "getWorkflowDefinition" | "getTaskWorkflowSelection" | "getSettings" | "listWorkflowDefinitions"> &
-    Partial<Pick<TaskStore, "getTaskWorkflowSelectionAsync">>,
+    Partial<Pick<TaskStore, "getTaskWorkflowSelectionAsync" | "getTaskWorkflowSelectionsAsync">>,
   taskIds: string[],
   settingsOverride?: Pick<Settings, "experimentalFeatures">,
 ): Promise<BoardWorkflowsPayload> {
@@ -269,15 +269,45 @@ export async function buildBoardWorkflowsPayload(
   const referenced = new Set<string>();
   const selectableWorkflowIds = new Set<string>([defaultWorkflowId]);
 
+  /*
+  FNXC:BoardLoad 2026-09-11-21:12:
+  Board metadata must resolve task workflow selections in ONE query. This loop
+  awaited one selection read per card, so a 65-card board paid N+1 round-trips
+  before rendering: measured 12-25s on the deployed 0.78.0-beta.4 dashboard for
+  GET /tasks/board-workflows while its two sibling list reads answered in <1s.
+  That serial fan-out — amplified by GC pressure under heap saturation — is what
+  made the board look unable to load at all.
+
+  `getTaskWorkflowSelectionsAsync` already resolves every id in a single
+  `inArray` query and canonicalizes retired builtin ids identically to the
+  singular reader, and `workflow-ir-resolver` uses the same batched-then-singles
+  shape, so it is reused rather than re-derived. Stores predating the batched
+  reader (and partial test stores) keep the per-task path. Ids absent from the
+  batch fall back to the effective default exactly as before, and a failed batch
+  degrades every card to the default instead of failing the board load.
+  */
+  let batchedSelections: Map<string, { workflowId: string }> | undefined;
+  if (store.getTaskWorkflowSelectionsAsync) {
+    try {
+      batchedSelections = await store.getTaskWorkflowSelectionsAsync(taskIds);
+    } catch {
+      batchedSelections = undefined;
+    }
+  }
   for (const taskId of taskIds) {
     let workflowId = defaultWorkflowId;
-    try {
-      const selection = store.getTaskWorkflowSelectionAsync
-        ? await store.getTaskWorkflowSelectionAsync(taskId)
-        : store.getTaskWorkflowSelection(taskId);
-      if (selection?.workflowId) workflowId = selection.workflowId;
-    } catch {
-      workflowId = defaultWorkflowId;
+    if (batchedSelections) {
+      const batchedWorkflowId = batchedSelections.get(taskId)?.workflowId;
+      if (batchedWorkflowId) workflowId = batchedWorkflowId;
+    } else {
+      try {
+        const selection = store.getTaskWorkflowSelectionAsync
+          ? await store.getTaskWorkflowSelectionAsync(taskId)
+          : store.getTaskWorkflowSelection(taskId);
+        if (selection?.workflowId) workflowId = selection.workflowId;
+      } catch {
+        workflowId = defaultWorkflowId;
+      }
     }
     taskWorkflowIds[taskId] = workflowId;
     referenced.add(workflowId);
