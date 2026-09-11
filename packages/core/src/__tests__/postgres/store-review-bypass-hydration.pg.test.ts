@@ -145,17 +145,116 @@ pgTest("TaskStore reviewBypass hydration parity (PostgreSQL)", () => {
     expectSitesAgree(sites, undefined);
   });
 
-  it("offers nothing for a paused card even with an unrun gate", async () => {
+  it("offers nothing for an operator hold even with an unrun gate", async () => {
+    /*
+    FNXC:ReviewLaneBypass 2026-09-10-23:19 (RUFU-218):
+    This fixture used to seed `paused: 1` ALONE and expect suppression, which asserted the defect:
+    `paused` alone is the ENGINE shape (the Move-Task contract forbids an engine rebound from setting
+    `userPaused`), so the case was pinning the confiscation of the operator's escape hatch. It now
+    seeds the REAL operator hold — the pair `pauseTask(..., { userPaused: true })` writes — which is
+    the intent the title always claimed. The engine-park counterparts below are what the bare shape
+    actually means.
+    */
     await seedTask("RBY-PAUSED", {
       column: "in-review",
-      description: "reviewbypasspausedfixture paused unrun gate",
-      set: { enabledWorkflowSteps: ["plan-review"], paused: 1 },
+      description: "reviewbypasspausedfixture operator hold unrun gate",
+      set: { enabledWorkflowSteps: ["plan-review"], paused: 1, userPaused: 1 },
     });
     const store = h.store();
 
     const sites = await readAllSites(store, "RBY-PAUSED", "reviewbypasspausedfixture");
     expectSitesAgree(sites, undefined);
   });
+
+  /*
+  FNXC:ReviewLaneBypass 2026-09-10-23:19 (RUFU-218):
+  ENGINE PARK KEEPS THE HATCH, ON EVERY SITE, FOR BOTH KINDS. The four hydration sites wire through
+  different plumbing (per-row async, the synchronous modified-since prelude Maps, search-local column
+  maps), so a narrowing that lands in only one of them is exactly the drift class this file exists to
+  catch — and the modified-since/search feeds are the ones a `paused`-keyed cache could keep serving
+  stale. Both park shapes are pinned: the BARE `paused: 1` the executor's graph-failure sink and the
+  mission autopilot write, and the reason-stamped `in-review-stall-deadlock` the stall router writes
+  (the live RUFU-204 shape). `userPaused` is left unset in the SQL, which is what the store's own
+  serialization emits for an engine rebound.
+  */
+  /*
+  One search token per fixture: `searchTasks` runs a tsvector query with a LIKE fallback, so a
+  multi-word query can match on one word and skip the fallback. A unique single token keeps the
+  search site honest.
+  */
+  const ENGINE_PARK_SHAPES = [
+    { key: "bare", id: "RBY-EPARK-BARE", set: {}, label: "bare paused:1" },
+    {
+      key: "stall",
+      id: "RBY-EPARK-STALL",
+      set: { pausedReason: "in-review-stall-deadlock" },
+      label: 'paused:1 + pausedReason "in-review-stall-deadlock"',
+    },
+  ] as const;
+
+  for (const shape of ENGINE_PARK_SHAPES) {
+    it(`hydrates the unrun-gate capability on an engine park (${shape.label}) at all four sites`, async () => {
+      await seedTask(shape.id, {
+        column: "in-review",
+        description: `reviewbypasseparkunrun${shape.key}`,
+        set: { enabledWorkflowSteps: ["plan-review"], paused: 1, ...shape.set },
+      });
+      const store = h.store();
+
+      expectSitesAgree(
+        await readAllSites(store, shape.id, `reviewbypasseparkunrun${shape.key}`),
+        { kind: "absent", workflowStepId: "plan-review", workflowStepName: "plan-review" },
+      );
+    });
+
+    it(`hydrates the failed-gate capability on an engine park (${shape.label}) at all four sites`, async () => {
+      await seedTask(`${shape.id}-FAIL`, {
+        column: "in-review",
+        description: `reviewbypasseparkfail${shape.key}`,
+        set: {
+          paused: 1,
+          workflowStepResults: [gateResult("code-review", "failed", "Code Review")],
+          ...shape.set,
+        },
+      });
+      const store = h.store();
+
+      expectSitesAgree(
+        await readAllSites(store, `${shape.id}-FAIL`, `reviewbypasseparkfail${shape.key}`),
+        { kind: "failed", workflowStepId: "code-review", workflowStepName: "Code Review" },
+      );
+    });
+
+    it(`store accepts an engine park (${shape.label}) and the card stays parked`, async () => {
+      await seedTask(`${shape.id}-XACC`, {
+        column: "in-review",
+        description: `reviewbypasseparkaccept${shape.key}`,
+        set: { enabledWorkflowSteps: ["plan-review"], paused: 1, ...shape.set },
+      });
+      const store = h.store();
+
+      expectSitesAgree(
+        await readAllSites(store, `${shape.id}-XACC`, `reviewbypasseparkaccept${shape.key}`),
+        { kind: "absent", workflowStepId: "plan-review", workflowStepName: "plan-review" },
+      );
+
+      const updated = await store.bypassFailedPreMergeReviewStep(`${shape.id}-XACC`, {
+        reason: "operator cleared the unrun gate on a parked card",
+        actor: "operator",
+      });
+      expect((updated.workflowStepResults ?? []).find((r) => r.workflowStepId === "plan-review"))
+        .toMatchObject({ status: "skipped", bypassedBy: "operator", bypassedFromStatus: "absent" });
+      /* Lifecycle containment (acceptance criterion 6): the bypass is an in-place mutation of the
+         gate row ONLY. It must not unpause, move, or merge — the operator's Retry/unpause sequence
+         is what resumes motion on a parked card. */
+      expect(updated.paused).toBe(true);
+      expect(updated.column).toBe("in-review");
+      expectSitesAgree(
+        await readAllSites(store, `${shape.id}-XACC`, `reviewbypasseparkaccept${shape.key}`),
+        undefined,
+      );
+    });
+  }
 
   it("offers nothing outside the review lane even with an unrun gate", async () => {
     await seedTask("RBY-OFFLANE", {
@@ -220,11 +319,18 @@ pgTest("TaskStore reviewBypass hydration parity (PostgreSQL)", () => {
     expectSitesAgree(await readAllSites(store, "RBY-XACCEPT", "reviewbypassxacceptfixture"), undefined);
   });
 
-  it("store refuses exactly what every read site hides (paused)", async () => {
+  it("store refuses exactly what every read site hides (operator hold)", async () => {
+    /*
+    FNXC:ReviewLaneBypass 2026-09-10-23:19 (RUFU-218):
+    The refusal half of offer==accept now runs on the OPERATOR HOLD (`paused` AND `userPaused`, the
+    pair `pauseTask` writes). A bare `paused: 1` here would have been the engine shape, which the
+    store must ACCEPT — pinned by the `${shape.id}-XACC` cases above. The byte-frozen `task is
+    paused` sentence stays the answer for a real hold.
+    */
     await seedTask("RBY-XREFUSE", {
       column: "in-review",
       description: "reviewbypassxrefusefixture cross-check refused",
-      set: { enabledWorkflowSteps: ["plan-review"], paused: 1 },
+      set: { enabledWorkflowSteps: ["plan-review"], paused: 1, userPaused: 1 },
     });
     const store = h.store();
 

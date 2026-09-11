@@ -17,7 +17,7 @@ import { BUILTIN_CODING_WORKFLOW_IR } from "../workflows/builtin-coding-workflow
 /*
  * FNXC:ReviewLaneBypass 2026-07-09-00:00:
  * Store-level coverage for FN-7720's bypassFailedPreMergeReviewStep primitive:
- * eligibility gating (in-review, not paused, has a failed pre-merge step,
+ * eligibility gating (in-review, not operator-held, has a failed pre-merge step,
  * mandatory reason), the bypass rewrite (status → skipped + audit metadata,
  * no fabricated verdict), the run-audit/log breadcrumb, and the
  * autoMerge:false human-review contract (blocker cleared, task NOT
@@ -67,7 +67,7 @@ pgDescribe("TaskStore.bypassFailedPreMergeReviewStep", () => {
     return h.store();
   }
 
-  async function seedInReviewTask(id: string, options: { workflowStepResults?: WorkflowStepResult[]; paused?: boolean; workflowId?: string } = {}) {
+  async function seedInReviewTask(id: string, options: { workflowStepResults?: WorkflowStepResult[]; paused?: boolean; operatorHold?: boolean; workflowId?: string } = {}) {
     await store().createTaskWithReservedId(
       { description: `Task ${id}`, column: "in-review", workflowId: options.workflowId },
       { taskId: id, applyDefaultWorkflowSteps: false },
@@ -76,6 +76,20 @@ pgDescribe("TaskStore.bypassFailedPreMergeReviewStep", () => {
       workflowStepResults: options.workflowStepResults ?? null,
       paused: options.paused,
     });
+    /*
+    FNXC:ReviewLaneBypass 2026-09-10-23:19 (RUFU-218):
+    Two pause shapes, because the store now refuses only the second one:
+    - `paused: true` alone = an ENGINE PARK (a graph-failure / stall / mission-autopilot sink). The
+      Move-Task contract forbids an engine rebound from setting `userPaused`, and `updateTask`
+      cannot write that column at all, which is why this plain route IS the engine shape.
+    - `operatorHold: true` = the real operator hold, seeded on the REAL write path (`pauseTask` with
+      `userPaused: true`, the dashboard's own shape). `updateTask` is unable to produce it, so a
+      test that wanted the hold had to fake it — and instead faked the engine park while claiming to
+      test the hold.
+    */
+    if (options.operatorHold) {
+      await store().pauseTask(id, true, undefined, { userPaused: true });
+    }
     return store().getTask(id);
   }
 
@@ -156,11 +170,104 @@ pgDescribe("TaskStore.bypassFailedPreMergeReviewStep", () => {
     ).rejects.toThrow(/must be in 'in-review'/);
   });
 
-  it("rejects when the task is paused", async () => {
-    await seedInReviewTask("FN-BYP-004", { workflowStepResults: [failedStep()], paused: true });
+  it("rejects when the task carries an operator hold", async () => {
+    /*
+    FNXC:ReviewLaneBypass 2026-09-10-23:19 (RUFU-218):
+    THE FIXED DEFECT, STORE SIDE. This case used to seed `paused: true` through `updateTask` and
+    expect refusal — which asserted the bug, because bare `paused` is what an engine rebound writes
+    and the Move-Task contract guarantees `userPaused` stays unset on that path. It now seeds the
+    real hold via `pauseTask(..., { userPaused: true })`, and the byte-frozen sentence is still the
+    answer. The `task is paused` regex is deliberate: the message must not change.
+    */
+    await seedInReviewTask("FN-BYP-004", { workflowStepResults: [failedStep()], operatorHold: true });
     await expect(
       store().bypassFailedPreMergeReviewStep("FN-BYP-004", { reason: "x", actor: "operator" }),
-    ).rejects.toThrow(/paused/);
+    ).rejects.toThrow(/Cannot bypass review lane for FN-BYP-004: task is paused/);
+  });
+
+  /*
+  FNXC:ReviewLaneBypass 2026-09-10-23:19 (RUFU-218):
+  AN ENGINE PARK MUST NOT CONFISCATE THE HATCH. This is the RUFU-204 card class: the stall router /
+  graph-failure sink wrote bare `paused: true`, no agent runs, no retry is due, and the operator's
+  only lever was the gate-confiscated bypass. Three properties are pinned at once, because the
+  earlier shape of this bug was a fix that "un-hid" the affordance by unpausing the card — which
+  would violate AGENTS.md's Move-Task contract by making an escape hatch resume automation:
+  - the bypass ACCEPTS a parked card whose problem is a failed gate;
+  - the rewrite carries the full audit metadata and the `task:bypass-review` row still lands;
+  - the card is STILL parked afterwards (`paused: true`, `userPaused` unset, `column` unchanged) —
+    the bypass mutates the gate row only, and Retry/unpause remains the operator's resume step.
+  */
+  it("accepts an engine-parked card with a failed gate and leaves the park intact", async () => {
+    await seedInReviewTask("FN-BYP-EPARK-FAILED", { workflowStepResults: [failedStep()], paused: true });
+
+    const updated = await store().bypassFailedPreMergeReviewStep("FN-BYP-EPARK-FAILED", {
+      reason: "stall-deadlock park; reviewer lane never produced a verdict",
+      actor: "operator-parked",
+    });
+
+    const result = updated.workflowStepResults?.[0];
+    expect(result).toMatchObject({
+      status: "skipped",
+      bypassedBy: "operator-parked",
+      bypassedFromStatus: "failed",
+    });
+    expect(result?.verdict).toBeUndefined();
+
+    /* Lifecycle containment (acceptance criterion 6): no auto-unpause, no move, no merge. */
+    expect(updated.paused).toBe(true);
+    expect(updated.userPaused).toBeUndefined();
+    expect(updated.column).toBe("in-review");
+
+    const events = await queryRunAuditEvents(h.layer().db, { taskId: "FN-BYP-EPARK-FAILED" });
+    expect(events.find((event) => event.mutationType === "task:bypass-review")?.agentId)
+      .toBe("operator-parked");
+
+    /* A second operator hold afterwards is still refused: narrowing the pause gate did not soften
+       the hold path, it only stopped it from firing on the wrong shape. */
+    await store().pauseTask("FN-BYP-EPARK-FAILED", true, undefined, { userPaused: true });
+    await expect(
+      store().bypassFailedPreMergeReviewStep("FN-BYP-EPARK-FAILED", { reason: "x", actor: "operator" }),
+    ).rejects.toThrow(/task is paused/);
+  });
+
+  /*
+  FNXC:ReviewLaneBypass 2026-09-10-23:19 (RUFU-218):
+  Same hatch, other kind: FN-158's unrun required gate on a parked card. The stalled card the board
+  actually shows is frequently this shape (the SANE-387 sentence), so the `absent` branch has to
+  reach a parked card too, not just the `failed` one.
+  */
+  it("accepts an engine-parked card whose required gate never ran", async () => {
+    await seedInReviewTask("FN-BYP-EPARK-ABSENT", { workflowStepResults: [], workflowId: "builtin:coding", paused: true });
+    await store().updateTask("FN-BYP-EPARK-ABSENT", { enabledWorkflowSteps: ["plan-review"] });
+
+    const updated = await store().bypassFailedPreMergeReviewStep("FN-BYP-EPARK-ABSENT", {
+      reason: "stall park; the plan-review gate never dispatched",
+      actor: "operator-parked-absent",
+    });
+
+    expect(updated.workflowStepResults?.find((entry) => entry.workflowStepId === "plan-review"))
+      .toMatchObject({
+        status: "skipped",
+        bypassedFromStatus: "absent",
+        bypassedBy: "operator-parked-absent",
+      });
+    expect(updated.paused).toBe(true);
+    expect(updated.column).toBe("in-review");
+  });
+
+  /*
+  FNXC:ReviewLaneBypass 2026-09-10-23:19 (RUFU-218):
+  NARROWING, NOT REMOVING. An engine park is not a ticket past the OTHER gates: a parked card with
+  nothing bypassable is still refused for its real reason (no bypassable gate), not for a pause. If
+  this ever answers "task is paused" again, the freeze has come back wearing a different message.
+  */
+  it("still refuses an engine-parked card that has no bypassable gate, for its real reason", async () => {
+    await seedInReviewTask("FN-BYP-EPARK-NOGATE", { workflowStepResults: [failedStep({ status: "passed", verdict: "APPROVE" })], paused: true });
+    await store().updateTask("FN-BYP-EPARK-NOGATE", { enabledWorkflowSteps: [] });
+
+    await expect(
+      store().bypassFailedPreMergeReviewStep("FN-BYP-EPARK-NOGATE", { reason: "x", actor: "operator" }),
+    ).rejects.toThrow(/no failed pre-merge review step/);
   });
 
   it("records a skipped result for an enabled gate that never produced a result", async () => {

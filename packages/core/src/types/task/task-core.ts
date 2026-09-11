@@ -1102,7 +1102,9 @@ export interface Task {
    * Unlike the sibling diagnostic signals this is NOT suppressible on agent activity or
    * merge-queue membership: an escape hatch that flickers because a reviewer session last wrote a
    * log line strands the operator on exactly the wedged card the hatch exists for. Undefined means
-   * a bypass would be refused (wrong lane, paused, every gate approved/running, or fast lane).
+   * a bypass would be refused (wrong lane, operator-held — `paused` AND `userPaused` —, every gate
+   * approved/running, or fast lane). An engine-originated park (`paused` with `userPaused` unset)
+   * is NOT operator-held and keeps the capability: the park freezes automation, not the operator.
    */
   reviewBypass?: ReviewBypassTarget;
   /** Server-computed task age staleness signal. Undefined when no staleness rule matches.

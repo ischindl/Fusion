@@ -333,13 +333,27 @@ Fusion derives `task.reviewBypass` — the operator's escape hatch on a wedged r
 `ReviewBypassTarget` kinds:
 - `failed` — the latest pre-merge step result came back failed (a code-review rejection, or a harness error before a verdict). The bypass rewrites that result to `skipped`.
 - `absent` — an enabled required pre-merge gate produced no result entry at all (a no-verdict dispatch defect, or an engine restart losing a run in flight). The same state reads `pre-merge-gate-pending` in `stallReason` and is refused by the merge gate: the diagnostic tells the operator why the card is stuck, the capability gives them the only lever that clears it. A `pending` result counts as present — a gate mid-flight is not a gate that never ran.
-- `undefined` — a bypass would be refused: a paused card, a column outside the workflow's resolved review lanes, a clean pass, or a workflow with no required pre-merge gates.
+- `undefined` — a bypass would be refused: an operator-held card (`paused` **and** `userPaused`), a column outside the workflow's resolved review lanes, a clean pass, or a workflow with no required pre-merge gates.
+
+<!--
+FNXC:ReviewLaneBypass 2026-09-11-00:18:
+RUFU-218: this section said "a paused card" refuses, and the surface bullet credited `TaskCard`'s `⋯`
+menu with rendering the item. Both were wrong in the same direction and RUFU-204 paid for it: an
+engine-originated park (`paused: true` with `userPaused` left unset) is the most common state of a
+wedged review card, and gating on bare `paused` hid the one lever that clears it while the card's own
+stall diagnostic told the operator to use it. The pause states are distinguished by `userPaused`, the
+field `AGENTS.md`'s Move-Task contract forbids an engine rebound from setting — the same discriminant
+`manual-retry-reset.ts` and the provider-health monitor already use. The surface claim was corrected to
+the hosts that actually wire the handler, verified by grep, because a doc that implies a board card
+offers this escape hatch sends the next reader to fix the wrong component.
+-->
 
 Invariants:
+- **An engine park keeps it; only an operator hold refuses.** `paused` alone is not a refusal. The pauses that freeze automation without the operator's hand on them — a graph-failure park, a stall-deadlock park, a mission-autopilot hold, an outside-worktree `external-block` freeze — all write `paused: true` with `userPaused` unset, and each still offers the hatch: the park stopped the engine, not the operator's lever. Refusal needs the pair only `pauseTask` writes (`paused` AND `userPaused`), and it refuses on both sides at once — no capability on any read path plus the store's `task is paused` throw. `pausedReason` is deliberately never consulted, because those sinks park without writing one. A bypass run on a parked card mutates only the gate's step-result row: the card stays parked, unmoved, and unmerged. The outside-worktree `external-block` freeze is listed here because it is the park class most likely to be mistaken for a hold: it also stamps `status: "blocked"`, but that status is not a `BLOCKING_TASK_STATUSES` member, so the freeze holds the merge door through the same `paused` condition every other engine park uses — and that condition, plus the `externalBlock` record the operator must clear, both survive a bypass.
 - **Never activity-suppressed.** Unlike every sibling stall signal — whose client blank fires while `agent:log` events stream (see above) — the capability is never cleared by agent activity or merge-queue membership: a reviewer streaming logs does not make an unrun gate run, and the escape hatch must stay reachable on exactly the wedged card it exists for.
 - **Failed wins over absent**: a card with both a failed result and an unrun gate offers one bypass for the failed step; the second gate surfaces after the first bypass lands and the board refetches.
 - **Self-invalidating**: a successful bypass rewrites the gate's step result, so the next read recomputes the field and the affordance disappears without any client-side bookkeeping. Mutation responses are raw store rows carrying no derived fields, so the menu item drops out until the next board refetch re-derives it.
-- Surface: `TaskCard`'s `⋯` menu and the `TaskDetailModal` footer render the bypass item only when the field is present, branching copy on `kind` — `absent` copy never claims a failure or a pass, because skipping an unrun gate records an operator decision, not a review approval. Tool surfaces: `fn_task_bypass_review` (operator-only) and `POST /tasks/:id/bypass-review`; gate semantics live in `docs/workflow-steps.md`.
+- Surface: the item renders in the task-detail `Actions` menu, on each of the three hosts that wire the handler — `TaskDetailModal` in the modal overlay (`AppModals`), `TaskDetailContent` inside App's popped-out floating task windows, and `TaskDetailContent` in the right dock (`useRightDockController`) — and only when the field is present, branching copy on `kind` — `absent` copy never claims a failure or a pass, because skipping an unrun gate records an operator decision, not a review approval. Board and list card `⋯` menus never offer it: those hosts deliberately omit the handler, keeping this policy-gated escape hatch on one canonical surface rather than a second one to keep honest. Tool surfaces: `fn_task_bypass_review` (operator-only) and `POST /tasks/:id/bypass-review`; gate semantics live in `docs/workflow-steps.md`.
 
 #### Stale paused review signal
 

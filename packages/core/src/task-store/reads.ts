@@ -30,7 +30,7 @@ import {resolveTaskLifecycleColumns} from "../workflows/workflow-lifecycle-trait
 import {detectStalledReview} from "../tasks/stalled-review-detector.js";
 import {computeRetrySummary} from "../tasks/retry-summary.js";
 import {resolveRequiredPreMergeStepIds} from "../merge/required-pre-merge-steps.js";
-import {deriveReviewBypassTarget, resolveReviewBypassLanes, type ReviewBypassTarget} from "../merge/review-bypass-target.js";
+import {deriveReviewBypassTarget, isOperatorPausedForReviewBypass, resolveReviewBypassLanes, type ReviewBypassTarget} from "../merge/review-bypass-target.js";
 import {deriveTaskStallReason, type TaskStallReason, type TaskStallReasonContext} from "../tasks/task-stall-reason.js";
 // FNXC:TaskLookup404 2026-07-26-11:20: typed miss signal so API boundaries can
 // answer 404 instead of 500 (see TaskNotFoundError in task-store/errors.ts).
@@ -333,8 +333,8 @@ is streaming logs; an escape hatch must stay reachable on exactly the wedged car
 
 Cost: the IR struct is already warm per pass — every row pays `resolveReviewColumnsForTask` for the
 stall badges — so the only new work is one pure `resolveRequiredPreMergeStepIds` pass, gated to
-non-paused rows whose column is actually in a bypass lane. Fail-soft on IR-resolution throw: the
-affordance disappears, the board never fails to render.
+rows that are not operator-held and whose column is actually in a bypass lane. Fail-soft on
+IR-resolution throw: the affordance disappears, the board never fails to render.
 */
 async function resolveReviewBypassForTask(
   store: TaskStore,
@@ -342,8 +342,17 @@ async function resolveReviewBypassForTask(
   irCache: Map<string, WorkflowIr>,
   selectionCache?: WorkflowSelectionCache,
 ): Promise<ReviewBypassTarget | undefined> {
-  // Derivation gate 1 needs no IR and answers most of a board: a paused card is refused by the store too.
-  if (task.paused === true) return undefined;
+  /*
+  FNXC:ReviewLaneBypass 2026-09-10-23:19 (RUFU-218):
+  The OPERATOR-HOLD early return: a hand-placed hold suppresses the capability, while an
+  engine-originated park (`paused` with `userPaused` unset) no longer does. Reading the bare `paused`
+  flag here hid the menu item on exactly the card whose stall diagnostic names this escape hatch, and
+  the store then refused it with `task is paused` — the same false answer from both sides of the
+  offer==accept invariant this helper exists to keep. The predicate is shared with the store's own
+  refusal so the two cannot drift; reasoning at `merge/review-bypass-target.ts`. Still needs no IR, so
+  it answers most of a board before the first workflow read.
+  */
+  if (isOperatorPausedForReviewBypass(task)) return undefined;
   try {
     const ir = await resolveWorkflowIrForTask(store, task.id, irCache, selectionCache);
     const lanes = resolveReviewBypassLanes(ir);

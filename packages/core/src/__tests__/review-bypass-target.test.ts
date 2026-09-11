@@ -3,6 +3,7 @@ import type { Task, WorkflowStepResult } from "../types.js";
 import type { WorkflowIr } from "../workflows/workflow-ir-types.js";
 import {
   deriveReviewBypassTarget,
+  isOperatorPausedForReviewBypass,
   resolveReviewBypassLanes,
   type ReviewBypassTaskView,
 } from "../merge/review-bypass-target.js";
@@ -127,13 +128,119 @@ describe("deriveReviewBypassTarget", () => {
     expect(target).toBeUndefined();
   });
 
-  it("answers nothing for a paused card, mirroring the store's paused refusal", () => {
-    const target = deriveReviewBypassTarget(
-      reviewTask({ paused: true, workflowStepResults: [] }),
-      new Set<string>(["plan-review"]),
-      REVIEW,
-    );
-    expect(target).toBeUndefined();
+  /*
+  FNXC:ReviewLaneBypass 2026-09-10-23:19 (RUFU-218):
+  THE PAUSE MATRIX, TABLE-DRIVEN. Only an operator hold — `paused` AND `userPaused` — removes the
+  capability; an engine-originated park keeps it. Table-driving BOTH target kinds is the point: the
+  park this task was filed for carries an unrun gate (`absent`), and an `absent`-only matrix would
+  leave a future edit free to re-add a bare-`paused` early return above the failed-target branch and
+  still pass — the exact shape the pre-fix code had.
+
+  The stale assertion this replaced read "answers nothing for a paused card, mirroring the store's
+  paused refusal" and pinned `{ paused: true }` alone to suppression. That was the defect, not the
+  contract: `pauseTask(id, true)` — the route the engine's stall-deadlock, retry-exhausted, and
+  merge-fix parks all use — writes exactly that shape, so the assertion was enforcing the very
+  confiscation of the operator's lever that made a wedged card unrecoverable from the GUI.
+  */
+  const PAUSE_SHAPES = [
+    {
+      name: "operator hold (paused + userPaused)",
+      task: { paused: true, userPaused: true },
+      withheld: true,
+    },
+    { name: "engine park (paused, userPaused unset)", task: { paused: true }, withheld: false },
+    { name: "engine park (paused, userPaused false)", task: { paused: true, userPaused: false }, withheld: false },
+    /* `userPaused` is typed `boolean | undefined`, but the predicate compares against `true` so a
+       raw-row `null` that bypassed serialization is still not a hold. Pinned, not assumed. */
+    { name: "engine park (paused, userPaused null)", task: { paused: true, userPaused: null }, withheld: false },
+    /*
+    WHY EVERY ENGINE PARK REASON IS ENUMERATED HERE. `pausedReason` is deliberately NOT consulted,
+    and an allowlist keyed on it would re-create the defect for whichever sink was left off the list:
+    the stall router's `in-review-stall-deadlock` (the live RUFU-204 card), the merge-fix park's
+    `merge-deadlock-detected`, the contamination sweep's `branch-conflict-unrecoverable`, and
+    triage's `duplicate-decision-required` all park WITHOUT `userPaused`, and the graph-failure and
+    mission-autopilot sinks park BARE with no reason at all (covered by the unset row above). A
+    reason-keyed gate would hide the hatch from exactly the cards the hatch exists for.
+
+    The honest-blocked exit's `external-block` freeze is enumerated as the second NAMED park class so it
+    is ASSERTED rather than silently defaulted by the predicate: `buildTaskExternalBlockPatch`
+    (`tasks/task-external-block.ts`) parks `paused: true` + `pausedReason: "external-block"` +
+    `status: "blocked"` with no `userPaused`, and its own FNXC note rules the freeze "operator-recoverable
+    lifecycle state rather than an operator-authored pause" — so offering the hatch there is that note's
+    answer, not an accident. Safety is not conceded: `status: "blocked"` is NOT a `BLOCKING_TASK_STATUSES`
+    member, so the freeze holds the merge door through the same `paused` condition every other engine park
+    uses, and that condition survives the bypass — the card stays parked and unmerged until the operator
+    clears the block or retries it.
+    */
+    {
+      name: "engine park with a stall-deadlock reason",
+      task: { paused: true, pausedReason: "in-review-stall-deadlock" },
+      withheld: false,
+    },
+    {
+      name: "engine park with a merge-deadlock reason",
+      task: { paused: true, pausedReason: "merge-deadlock-detected" },
+      withheld: false,
+    },
+    {
+      name: "engine park with an unrecoverable-branch-conflict reason",
+      task: { paused: true, pausedReason: "branch-conflict-unrecoverable" },
+      withheld: false,
+    },
+    {
+      name: "engine park with a duplicate-decision reason",
+      task: { paused: true, pausedReason: "duplicate-decision-required" },
+      withheld: false,
+    },
+    {
+      name: "outside-worktree external-block freeze (paused + status blocked, no userPaused)",
+      task: { paused: true, pausedReason: "external-block" },
+      withheld: false,
+    },
+  ];
+
+  /** A card whose ONLY wedge is an unrun required gate → the `absent` target. */
+  const unrunCard = (pause: Record<string, unknown>) =>
+    reviewTask({ paused: false, workflowStepResults: [], ...pause } as Partial<Task>);
+  /** A card whose wedge is a failed Code Review (no required gate needed) → the `failed` target. */
+  const failedCard = (pause: Record<string, unknown>) =>
+    reviewTask({ paused: false, workflowStepResults: [step({ status: "failed" })], ...pause } as Partial<Task>);
+  const UNRUN_REQUIRED = new Set<string>(["plan-review"]);
+
+  for (const shape of PAUSE_SHAPES) {
+    it(`${shape.withheld ? "withholds" : "offers"} BOTH bypass kinds on ${shape.name}`, () => {
+      for (const [kind, task, required] of [
+        ["absent", unrunCard(shape.task), UNRUN_REQUIRED],
+        ["failed", failedCard(shape.task), NO_REQUIRED],
+      ] as const) {
+        const target = deriveReviewBypassTarget(task, required, REVIEW);
+        if (shape.withheld) {
+          expect(target, `${kind} target on ${shape.name}`).toBeUndefined();
+        } else {
+          expect(target?.kind, `${kind} target on ${shape.name}`).toBe(kind);
+        }
+      }
+    });
+  }
+
+  /*
+  FNXC:ReviewLaneBypass 2026-09-10-23:19 (RUFU-218):
+  The predicate's own truth table, asserted directly so a caller-level green run cannot hide a
+  widened test (e.g. `paused || userPaused`, which would refuse an operator-unpaused-but-stale-flag
+  card the store would happily accept) behind four passing derivation cases.
+  */
+  it("isOperatorPausedForReviewBypass is true only for the operator hold", () => {
+    expect(isOperatorPausedForReviewBypass({ paused: true, userPaused: true })).toBe(true);
+    expect(isOperatorPausedForReviewBypass({ paused: true, userPaused: false })).toBe(false);
+    expect(isOperatorPausedForReviewBypass({ paused: true })).toBe(false);
+    expect(isOperatorPausedForReviewBypass({ paused: false, userPaused: true })).toBe(false);
+    expect(isOperatorPausedForReviewBypass({ paused: false })).toBe(false);
+    expect(isOperatorPausedForReviewBypass({})).toBe(false);
+    /* A reason never turns a park into a hold, and never turns a hold into a park. */
+    expect(isOperatorPausedForReviewBypass({ paused: true, pausedReason: "in-review-stall-deadlock" })).toBe(false);
+    expect(
+      isOperatorPausedForReviewBypass({ paused: true, userPaused: true, pausedReason: "merge-deadlock-detected" }),
+    ).toBe(true);
   });
 
   it("answers nothing for an unpaused card whose paused flag is merely absent", () => {

@@ -53,9 +53,59 @@ export interface ReviewBypassTarget {
   workflowStepName: string;
 }
 
-/** Narrow row view the derivation needs, so it is callable from a full `Task` or a hydrated row. */
+/**
+ * Narrow row view the derivation needs, so it is callable from a full `Task` or a hydrated row.
+ *
+ * `userPaused` is part of the view because the pause gate is an OPERATOR-hold test, not a bare
+ * `paused` test — see `isOperatorPausedForReviewBypass`. It stays in the `Partial` half so an
+ * existing narrow fixture or fake store that never carries the field keeps compiling and simply
+ * reads as "not an operator hold".
+ */
 export type ReviewBypassTaskView = Pick<Task, "column" | "paused"> &
-  Partial<Pick<Task, "workflowStepResults">>;
+  Partial<Pick<Task, "workflowStepResults" | "userPaused">>;
+
+/*
+FNXC:ReviewLaneBypass 2026-09-10-23:19 (RUFU-218):
+ONE PAUSE PREDICATE FOR THE ESCAPE HATCH, SHARED BY THE DERIVATION AND THE STORE'S OWN GUARD.
+
+THE REQUIREMENT: an operator who deliberately held a card by hand is holding this escape hatch too,
+so a hold refuses both the offer and the acceptance. An ENGINE-originated park is not a hold on the
+hatch — it is the engine freezing AUTOMATION. Before this predicate, three gates (this derivation,
+`task-store/reads.ts`'s hydration, and `store.ts`'s own refusal) each tested the bare `paused` flag,
+so the card whose own stall diagnostic reads "re-run or bypass this gate to clear the merge door"
+was the one card with no bypass action anywhere and an API answering `task is paused`. The operator
+recovery sequence was unpause → bypass → re-park, i.e. the park had confiscated the human's only
+lever while pointing at it (observed live on RUFU-204, 2026-09-10).
+
+THE DISCRIMINANT is the one `AGENTS.md`'s Move-Task contract guarantees: "Engine rebounds must not
+set `userPaused`", so `paused && !userPaused` is an engine park and `paused && userPaused` is an
+operator hold. `manual-retry-reset.ts` (`task.userPaused !== true`), `provider-health-monitor.ts`,
+and `branch-group-ops.ts` already read the pair this way, and `pauseTask`'s fence is the only writer
+of `userPaused` — `updateTask` cannot write it (`tasks/task-column-restart.ts`), so a park written
+outside that fence structurally cannot look like a hold.
+
+`pausedReason` is DELIBERATELY NOT consulted. The engine parks bare in several sinks —
+`engine/src/executor/handle-graph-failure.ts` and `engine/src/missions/mission-autopilot.ts` both
+write `{ paused: true }` with no reason — so a reason-keyed test (the overseer-style
+`paused && !pausedReason` heuristic) would hide the hatch again for exactly those parks, and would
+keep refusing the park classes that DO name themselves (`in-review-stall-deadlock`,
+`merge-deadlock-detected`, `branch-conflict-unrecoverable`, `provider-rate-limit:*`,
+`duplicate-decision-required`). The operator flag is the only field with a single disciplined writer.
+
+THE SECOND NAMED PARK CLASS — AN OUTSIDE-WORKTREE FREEZE — IS ALSO NOT A HOLD, BY ITS OWN NOTE.
+`buildTaskExternalBlockPatch` (`tasks/task-external-block.ts`) parks `paused: true` with
+`pausedReason: "external-block"`, `status: "blocked"`, and deliberately no `userPaused`, because its
+FNXC note rules an external block "operator-recoverable lifecycle state rather than an operator-authored
+pause". A review-lane card frozen that way therefore gains the capability and the store's acceptance
+under this predicate, which is that note's own answer rather than an accident of it: the operator is
+exactly the person who must clear the wedged gate. Nothing unsafe is conceded — `status: "blocked"` is not
+a `BLOCKING_TASK_STATUSES` member, so the freeze holds the merge door through the SAME `paused` condition
+every other engine park holds it through (plus the `externalBlock` record the operator must clear), and a
+bypass on such a card clears only the wedged gate row. It is asserted in the pause table, not defaulted.
+*/
+export function isOperatorPausedForReviewBypass(task: Pick<Task, "paused" | "userPaused">): boolean {
+  return task.paused === true && task.userPaused === true;
+}
 
 /**
  * The review lanes a bypass is admitted in — the STORE's rule, exported so both consumers resolve
@@ -79,9 +129,11 @@ export function resolveReviewBypassLanes(ir: WorkflowIr | undefined): string[] {
 /**
  * Derive the bypass target for a card, or `undefined` when a bypass would be refused.
  *
- * Order is the store's acceptance order and must stay that way (`paused` and the lane gate are
+ * Order is the store's acceptance order and must stay that way (the operator-hold and lane gates are
  * checked even when a target exists, because the store refuses on them first):
- * 1. `task.paused` → nothing. An operator pause is a hold on automation AND on this escape hatch.
+ * 1. `isOperatorPausedForReviewBypass(task)` → nothing. An OPERATOR hold is a hold on automation AND
+ *    on this escape hatch; an engine-originated park (`paused` with no `userPaused`) is not — it
+ *    freezes automation only, and the hatch exists precisely for the card the engine parked.
  * 2. `task.column` not in `reviewColumns` → nothing.
  * 3. `getLatestFailedPreMergeReviewStep()` when present → `kind: "failed"`. Failed WINS over an
  *    unrun gate: the store rewrites the failed result and one bypass must not silently also
@@ -99,7 +151,7 @@ export function deriveReviewBypassTarget(
   requiredStepIds: ReadonlySet<string>,
   reviewColumns: ReadonlySet<string>,
 ): ReviewBypassTarget | undefined {
-  if (task.paused === true) return undefined;
+  if (isOperatorPausedForReviewBypass(task)) return undefined;
   if (!reviewColumns.has(task.column)) return undefined;
 
   const failedStep: WorkflowStepResult | undefined = getLatestFailedPreMergeReviewStep(task);

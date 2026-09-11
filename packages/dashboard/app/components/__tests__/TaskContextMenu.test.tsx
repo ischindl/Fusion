@@ -483,32 +483,70 @@ describe("bypass-review renders from the server capability, not a local predicat
   });
 
   /*
-  FNXC:ReviewLaneBypass 2026-09-03-12:58 (RUFU-179):
-  Render-level activation for every host of this shared component (board card menu, list view, detail
-  Actions menu, right dock). A descriptor that carries onSelect but renders as a note span is the
-  dead-affordance shape this task exists to eliminate, so the click — not just the model — is pinned.
+  FNXC:ReviewLaneBypass 2026-09-10-23:19 (RUFU-218):
+  Render-level activation, pinned from an ENGINE-PARKED row. An earlier version of this note claimed
+  the render covered "every host of this shared component (board card menu, list view, detail Actions
+  menu, right dock)" — that claim was false as written and is the reason a reader could go looking for
+  a board-card assertion: only the detail-host family passes `onBypassReview` at all
+  (`TaskDetailModal`'s modal/floating `Actions` menu and `TaskDetailContent`'s embedded mobile/popup +
+  right-dock host), so `TaskCard`, `ListView`, and `WorktreeGroup` never render this item — see the
+  negative-surface case below. What THIS standalone render does pin is the interactive shape for
+  whatever host wires the handler: a descriptor that carries onSelect but renders as a note span is
+  the dead-affordance shape RUFU-179 exists to eliminate, so the click — not just the model — is pinned.
+
+  WHY THE ROW CARRIES A PAUSE FLAG AT ALL (RUFU-218). No existing fixture paired a pause flag with the
+  capability, so if someone re-added a client-side `task.paused` check to `buildTaskActionMenuModel`
+  — the intuitive-looking "hide it while paused" edit that mirrors the old store bug — every test in
+  this block would still pass, because no input was ever both paused and capable. These rows are the
+  pin that the CLIENT adds no pause gate of its own: the pause gate belongs to the server's operator-hold
+  predicate and its verdict arrives as the presence or absence of `task.reviewBypass`.
   */
-  it("activates the rendered item so every host can fire the bypass", () => {
-    const onBypassReview = vi.fn();
-    const { actions } = buildTaskActionMenuModel({
-      task: makeTask({ column: "in-review", reviewBypass: unrunTarget }),
-      t,
-      onBypassReview,
+  /* The shape the server actually ships for an engine park: `serializeTaskJson` drops a falsy
+     `userPaused`, so the key is simply absent on the wire. */
+  const ENGINE_PARK_ROW = { paused: true } as Partial<Task>;
+  /* The same park plus the defensive nullish spellings a raw or stale payload could carry. The
+     server authority decides; a `null` here must not be read as a hold by the menu. */
+  const PARK_ROW_SHAPES: Array<{ name: string; pause: Record<string, unknown> }> = [
+    { name: "paused with userPaused absent", pause: { paused: true } },
+    { name: "paused with userPaused false", pause: { paused: true, userPaused: false } },
+    { name: "paused with userPaused null", pause: { paused: true, userPaused: null } },
+  ];
+
+  for (const kind of [
+    { target: unrunTarget, label: "Bypass unrun review gate" },
+    { target: failedTarget, label: "Bypass failed review" },
+  ] as const) {
+    it(`activates the rendered "${kind.label}" item for an engine-parked card, at every host that wires the handler`, () => {
+      const onBypassReview = vi.fn();
+      const { actions } = buildTaskActionMenuModel({
+        task: makeTask({ column: "in-review", reviewBypass: kind.target, ...ENGINE_PARK_ROW }),
+        t,
+        onBypassReview,
+      });
+      render(<TaskContextMenu actions={actions} />);
+
+      fireEvent.click(screen.getByRole("menuitem", { name: kind.label }));
+
+      expect(onBypassReview).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("note", { name: /Bypass/ })).not.toBeInTheDocument();
     });
-    render(<TaskContextMenu actions={actions} />);
 
-    fireEvent.click(screen.getByRole("menuitem", { name: "Bypass unrun review gate" }));
-
-    expect(onBypassReview).toHaveBeenCalledTimes(1);
-    expect(screen.queryByRole("note", { name: /Bypass/ })).not.toBeInTheDocument();
-  });
+    it(`keeps "${kind.label}" actionable on every engine-park row shape (no client-side pause gate)`, () => {
+      for (const shape of PARK_ROW_SHAPES) {
+        const item = bypassItem(
+          makeTask({ column: "in-review", reviewBypass: kind.target, ...(shape.pause as Partial<Task>) }),
+        );
+        expect(item, `${kind.label} on ${shape.name}`).toMatchObject({ tone: "default" });
+      }
+    });
+  }
 
   it("hides the item when the server withheld the capability, even with a failed result in the payload", () => {
     /*
-    The flipped shape: the old `some(failed)` predicate would have rendered here even for a paused
-    card the store refuses. The server answer is the only authority, so a payload with results but
-    no capability means "the store would say no".
-    */
+    The flipped shape: the old `some(failed)` predicate would have rendered here even for a card the
+    store refuses. The server answer is the only authority, so a payload with results but no
+    capability means "the store would say no".
+     */
     const task = makeTask({
       column: "in-review",
       workflowStepResults: [
@@ -517,6 +555,50 @@ describe("bypass-review renders from the server capability, not a local predicat
     });
     expect(bypassItem(task)).toBeUndefined();
   });
+
+  /*
+  FNXC:ReviewLaneBypass 2026-09-10-23:19 (RUFU-218):
+  THE WITHHELD MIRROR of the engine-park fire above, and the other half of "no client-side pause
+  gate": an engine-parked card the server refused (operator hold, or a park whose gates are all
+  approved) must render NOTHING — no id, no menuitem, and above all no `role="note"` substitute. A
+  disabled/informational shell is how FN-7720's affordance first shipped dead, and a note explaining
+  "this card is paused" would re-introduce exactly the misleading advice RUFU-218 removes: the card
+  may be parked and STILL bypassable, which only the server's answer knows.
+  */
+  const failedResultRow = [
+    { workflowStepId: "code-review", workflowStepName: "Code Review", status: "failed", phase: "pre-merge" },
+  ] as Task["workflowStepResults"];
+  const approvedResultRow = [
+    { workflowStepId: "code-review", workflowStepName: "Code Review", status: "passed", verdict: "APPROVE", phase: "pre-merge" },
+  ] as Task["workflowStepResults"];
+
+  for (const withheld of [
+    /* A hold refuses both the offer and the acceptance, so the server ships nothing even though a
+       failed carrier is still sitting in the payload. */
+    { name: "operator hold", pause: { paused: true, userPaused: true }, results: failedResultRow },
+    /* A park whose required gates all answered has nothing bypassable — the refusal is the gate
+       rule, not the pause, and the payload shows approved results rather than a failed carrier. */
+    { name: "engine park with nothing bypassable", pause: { paused: true }, results: approvedResultRow },
+  ] as const) {
+    it(`renders no bypass affordance of any kind on a withheld capability (${withheld.name})`, () => {
+      const onBypassReview = vi.fn();
+      const { actions } = buildTaskActionMenuModel({
+        task: makeTask({
+          column: "in-review",
+          workflowStepResults: withheld.results,
+          ...(withheld.pause as Partial<Task>),
+        }),
+        t,
+        onBypassReview,
+      });
+
+      expect(actions.map((a) => a.id)).not.toContain("bypass-review");
+
+      render(<TaskContextMenu actions={actions} />);
+      expect(screen.queryByRole("menuitem", { name: /Bypass/ })).not.toBeInTheDocument();
+      expect(screen.queryByRole("note", { name: /Bypass/ })).not.toBeInTheDocument();
+    });
+  }
 
   it("drops a stale capability on a card that left the review lane (render-time lane belt)", () => {
     expect(bypassItem(makeTask({ column: "in-progress", reviewBypass: failedTarget }))).toBeUndefined();
@@ -553,11 +635,23 @@ describe("bypass-review renders from the server capability, not a local predicat
     ).toBeUndefined();
   });
 
-  it("renders nothing when the host did not wire a bypass handler", () => {
-    const { actions } = buildTaskActionMenuModel({
-      task: makeTask({ column: "in-review", reviewBypass: failedTarget }),
-      t,
-    });
-    expect(actions.map((a) => a.id)).not.toContain("bypass-review");
+  /*
+  FNXC:ReviewLaneBypass 2026-09-10-23:19 (RUFU-218):
+  NEGATIVE SURFACE, AND IT IS INTENTIONAL. `TaskCard`, `ListView`, and `WorktreeGroup` deliberately
+  omit `onBypassReview`, so the item has never rendered in a board or list card menu — for ANY pause
+  state — and a test asserting a board card's ⋯ menu carries it would assert an impossible shape. The
+  engine-parked sibling row is added here because "the parked card shows nothing on the board" is the
+  observation that tempts someone to wire a second escape-hatch surface; the canonical single host is
+  the task-detail `Actions` menu. If that omission ever stops being deliberate, this case is the one
+  that has to change on purpose.
+  */
+  it("renders nothing when the host did not wire a bypass handler, engine-parked or not", () => {
+    for (const pause of [{}, { paused: true, userPaused: null }] as Array<Partial<Task>>) {
+      const { actions } = buildTaskActionMenuModel({
+        task: makeTask({ column: "in-review", reviewBypass: failedTarget, ...pause }),
+        t,
+      });
+      expect(actions.map((a) => a.id)).not.toContain("bypass-review");
+    }
   });
 });

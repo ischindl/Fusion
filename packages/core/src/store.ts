@@ -113,7 +113,7 @@ import { resolveRequiredPreMergeStepIds } from "./merge/required-pre-merge-steps
 FNXC:ReviewLaneBypass 2026-09-06-01:20 (merge origin/main dd808ed2c6 → main):
 Import union: RUFU-179's pure derivation helpers AND upstream FN-295's approval evaluator.
 */
-import { deriveReviewBypassTarget, resolveReviewBypassLanes } from "./merge/review-bypass-target.js";
+import { deriveReviewBypassTarget, isOperatorPausedForReviewBypass, resolveReviewBypassLanes } from "./merge/review-bypass-target.js";
 import { evaluatePreMergeApprovals } from "./merge/pre-merge-approval.js";
 import { createLogger } from "./process/logger.js";
 import { type UsageEventInput } from "./tasks/usage-events.js";
@@ -2569,7 +2569,21 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         const named = reviewColumns.length > 0 ? reviewColumns.map((c: string) => `'${c}'`).join(" or ") : "a review lane";
         throw new Error(`Cannot bypass review lane for ${id}: task is in '${task.column}', must be in ${named}`);
       }
-      if (task.paused) {
+      if (isOperatorPausedForReviewBypass(task)) {
+        /*
+        FNXC:ReviewLaneBypass 2026-09-10-23:19 (RUFU-218):
+        ONLY AN OPERATOR HOLD REACHES THIS THROW. The guard used to read the bare `task.paused` flag,
+        so it also refused every engine-originated park: the in-review stall deadlock, retry-exhausted,
+        and merge-fix parks all write `paused: true` while leaving `userPaused` unset, because
+        `AGENTS.md`'s Move-Task contract forbids an engine rebound from setting it. The card whose own
+        stall diagnostic says "bypass this gate to clear the merge door" therefore got `task is paused`
+        from the API and no menu item — the same bare flag gates the read-path hydration — and the
+        operator's recovery sequence was unpause, bypass, then re-park a card the park had just
+        re-asserted. THE MESSAGE STAYS BYTE-IDENTICAL: it is frozen by `store-bypass-review.test.ts`
+        and it is still the honest sentence for a hold. The predicate and its reasoning live in
+        `merge/review-bypass-target.ts`. This method remains an in-place mutation of the step-result
+        row: it performs no unpause, no move, and no merge.
+        */
         throw new Error(`Cannot bypass review lane for ${id}: task is paused`);
       }
 
@@ -2598,9 +2612,9 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
 
       Routing BOTH sides through `deriveReviewBypassTarget` is what makes "the menu offered it" and
       "this method accepted it" one fact instead of two implementations that can drift again. The
-      `paused` and lane refusals above stay as explicit throws because their messages are operator-
-      specific and byte-frozen by `store-bypass-review.test.ts`; they are also checked earlier than
-      the derivation does, which is why its own gates are redundant no-ops here.
+      operator-hold and lane refusals above stay as explicit throws because their messages are
+      operator-specific and byte-frozen by `store-bypass-review.test.ts`; they are also checked
+      earlier than the derivation does, which is why its own gates are redundant no-ops here.
 
       FNXC:ReviewLaneBypass 2026-09-06-01:20 (merge origin/main dd808ed2c6 → main, FN-295):
       Upstream FN-295 widened the operator escape to EVERY row that holds the merge door shut —

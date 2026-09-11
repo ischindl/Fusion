@@ -207,4 +207,141 @@ describe("TaskDetailModal review-lane bypass affordance", () => {
 
     await waitFor(() => expect(onBypassReview).toHaveBeenCalledWith("FN-179", "unrun gate cleared by operator"));
   });
+
+  /*
+  FNXC:ReviewLaneBypass 2026-09-10-23:55 (RUFU-218):
+  THE PARKED-CARD FIRE, on the host the operator actually uses. An engine park is the state in which a
+  wedged review card MOST needs this escape — the engine froze automation and the card's own stall
+  diagnostic tells the operator to "bypass this gate to clear the merge door" — yet every case above
+  seeded an UNPAUSED task. That gap is exactly how RUFU-218 survived: the pause gate sat in the store
+  and in the read-path hydration, and no UI test ever paired a pause flag with a capability, so the
+  menu could have gone silent on parked cards (or stayed loud while the API refused) and nothing here
+  would have noticed.
+
+  The row carries `paused: true` with NO `userPaused` key, which is the shape the server actually ships
+  for an engine park (`serializeTaskJson` drops a falsy `userPaused`). The client adds no pause gate of
+  its own — the pause verdict arrives as the presence or absence of `reviewBypass` — so these cases also
+  pin that no future "hide it while paused" edit can slip into a host unopposed.
+  */
+  it("activates the unrun-gate bypass from an engine-parked card's Actions menu", async () => {
+    const onBypassReview = vi.fn().mockResolvedValue(makeTask({ id: "FN-179" }) as Task);
+    const addToast = vi.fn();
+    stubPrompt("  stall deadlock: gate never ran  ");
+
+    render(
+      <TaskDetailModal
+        task={makeTask({ id: "FN-179", column: "in-review", reviewBypass: unrunTarget, paused: true })}
+        initialTab="definition"
+        onClose={noop}
+        onDeleteTask={noopDelete}
+        onMergeTask={noopMerge}
+        onOpenDetail={noopOpenDetail}
+        onBypassReview={onBypassReview}
+        addToast={addToast}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Bypass unrun review gate" }));
+
+    expect(window.prompt).toHaveBeenCalledWith(
+      "Reason for bypassing the review gate that never ran (required, audit-logged):",
+    );
+    await waitFor(() => expect(onBypassReview).toHaveBeenCalledWith("FN-179", "stall deadlock: gate never ran"));
+    expect(addToast).toHaveBeenCalledWith("Bypassed unrun review gate for FN-179", "success");
+  });
+
+  it("activates the failed-gate bypass from an engine-parked card's Actions menu", async () => {
+    const onBypassReview = vi.fn().mockResolvedValue(makeTask({ id: "FN-179" }) as Task);
+    const addToast = vi.fn();
+    stubPrompt("stall deadlock: reviewer dispatched with no verdict");
+
+    render(
+      <TaskDetailModal
+        task={makeTask({ id: "FN-179", column: "in-review", reviewBypass: failedTarget, paused: true })}
+        initialTab="definition"
+        onClose={noop}
+        onDeleteTask={noopDelete}
+        onMergeTask={noopMerge}
+        onOpenDetail={noopOpenDetail}
+        onBypassReview={onBypassReview}
+        addToast={addToast}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Bypass failed review" }));
+
+    expect(window.prompt).toHaveBeenCalledWith(
+      "Reason for bypassing the failed pre-merge review step (required, audit-logged):",
+    );
+    await waitFor(() =>
+      expect(onBypassReview).toHaveBeenCalledWith("FN-179", "stall deadlock: reviewer dispatched with no verdict"),
+    );
+    expect(addToast).toHaveBeenCalledWith("Bypassed failed review lane for FN-179", "success");
+  });
+
+  it("activates the bypass on the embedded host for an engine-parked card", async () => {
+    const onBypassReview = vi.fn().mockResolvedValue(makeTask({ id: "FN-179" }) as Task);
+    stubPrompt("parked gate cleared by operator");
+
+    render(
+      <TaskDetailContent
+        task={makeTask({ id: "FN-179", column: "in-review", reviewBypass: unrunTarget, paused: true })}
+        initialTab="definition"
+        embedded
+        onRequestClose={noop}
+        onDeleteTask={noopDelete}
+        onMergeTask={noopMerge}
+        onOpenDetail={noopOpenDetail}
+        onBypassReview={onBypassReview}
+        addToast={noop}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Bypass unrun review gate" }));
+
+    await waitFor(() => expect(onBypassReview).toHaveBeenCalledWith("FN-179", "parked gate cleared by operator"));
+  });
+
+  /*
+  FNXC:ReviewLaneBypass 2026-09-10-23:55 (RUFU-218):
+  THE WITHHELD MIRROR, and it must distinguish the two pause states the fire above cannot. A hand-set
+  OPERATOR HOLD ships no capability, so the parked card that still shows the item and the held card
+  that shows nothing are decided by the server's `isOperatorPausedForReviewBypass` — the menu just
+  renders the answer. Asserting the ABSENCE of every substitute (menuitem, disabled button shell,
+  `role="note"` span, dangling `aria-label`) is mandatory: FN-7720's affordance first shipped as dead
+  informational text, and a "this card is paused" note would be actively wrong advice here — a parked
+  card may still be bypassable, which only the server knows.
+  */
+  it("renders no bypass affordance of any kind for an operator hold, even with a failed carrier in the payload", () => {
+    render(
+      <TaskDetailModal
+        task={makeTask({
+          id: "FN-179",
+          column: "in-review",
+          paused: true,
+          userPaused: true,
+          workflowStepResults: [
+            { workflowStepId: "code-review", workflowStepName: "Code Review", status: "failed", phase: "pre-merge" },
+          ] as Task["workflowStepResults"],
+        })}
+        initialTab="definition"
+        onClose={noop}
+        onDeleteTask={noopDelete}
+        onMergeTask={noopMerge}
+        onOpenDetail={noopOpenDetail}
+        onBypassReview={vi.fn()}
+        addToast={noop}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Actions" }));
+
+    expect(screen.queryByRole("menuitem", { name: /Bypass/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Bypass/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("note", { name: /Bypass/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Bypass/)).not.toBeInTheDocument();
+  });
 });
