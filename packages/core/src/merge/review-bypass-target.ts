@@ -57,7 +57,7 @@ export interface ReviewBypassTarget {
  * Narrow row view the derivation needs, so it is callable from a full `Task` or a hydrated row.
  *
  * `userPaused` is part of the view because the pause gate is an OPERATOR-hold test, not a bare
- * `paused` test — see `isOperatorPausedForReviewBypass`. It stays in the `Partial` half so an
+ * `paused` test — see `isOperatorPausedForOperatorEscapeHatch`. It stays in the `Partial` half so an
  * existing narrow fixture or fake store that never carries the field keeps compiling and simply
  * reads as "not an operator hold".
  */
@@ -90,7 +90,7 @@ write `{ paused: true }` with no reason — so a reason-keyed test (the overseer
 `paused && !pausedReason` heuristic) would hide the hatch again for exactly those parks, and would
 keep refusing the park classes that DO name themselves (`in-review-stall-deadlock`,
 `merge-deadlock-detected`, `branch-conflict-unrecoverable`, `provider-rate-limit:*`,
-`duplicate-decision-required`). The operator flag is the only field with a single disciplined writer.
+`duplicate-decision-required). The operator flag is the only field with a single disciplined writer.
 
 THE SECOND NAMED PARK CLASS — AN OUTSIDE-WORKTREE FREEZE — IS ALSO NOT A HOLD, BY ITS OWN NOTE.
 `buildTaskExternalBlockPatch` (`tasks/task-external-block.ts`) parks `paused: true` with
@@ -103,7 +103,24 @@ a `BLOCKING_TASK_STATUSES` member, so the freeze holds the merge door through th
 every other engine park holds it through (plus the `externalBlock` record the operator must clear), and a
 bypass on such a card clears only the wedged gate row. It is asserted in the pause table, not defaulted.
 */
-export function isOperatorPausedForReviewBypass(task: Pick<Task, "paused" | "userPaused">): boolean {
+/*
+FNXC:OperatorEscapeHatch 2026-09-11-13:27 (RUFU-219):
+ONE PREDICATE, TWO ESCAPE HATCHES — the name dropped its bypass-specific prefix to match.
+This predicate now gates BOTH operator recovery levers for a wedged pre-merge review gate:
+(1) `bypassFailedPreMergeReviewStep` / `fn_task_bypass_review` rewrites a FAILED or UNRUN gate to a
+skipped result (RUFU-218's consumer, FN-7720), and (2) `resumeWorkflowStep` / `fn_workflow_step_resume`
+flips a gate stuck in `pending` (dispatched prompt node that never received its verdict callback,
+Runfusion/Fusion#1946) to a terminal `failed` result so the bypass can then clear it. The levers are
+a pipeline: resume makes the wedge bypassable, bypass clears the merge door — so a bare `paused`
+refusal on EITHER hatch recreates the unpause → act → re-park dance this predicate exists to end.
+RUFU-218 narrowed the bypass gate; the still-bare `paused` check on the resume gate refused the
+operator one call earlier, and outright on a WIP-lane card where the pause check ran before the lane
+check. THE RULE, stated once: an operator hold refuses BOTH hatches; an engine-originated park
+refuses NEITHER — it freezes automation, and both hatches exist precisely for the card the engine
+parked. A third pause-gated escape hatch must reuse this predicate rather than author a divergent
+pause check; that is why the name is hatch-neutral.
+*/
+export function isOperatorPausedForOperatorEscapeHatch(task: Pick<Task, "paused" | "userPaused">): boolean {
   return task.paused === true && task.userPaused === true;
 }
 
@@ -131,7 +148,7 @@ export function resolveReviewBypassLanes(ir: WorkflowIr | undefined): string[] {
  *
  * Order is the store's acceptance order and must stay that way (the operator-hold and lane gates are
  * checked even when a target exists, because the store refuses on them first):
- * 1. `isOperatorPausedForReviewBypass(task)` → nothing. An OPERATOR hold is a hold on automation AND
+ * 1. `isOperatorPausedForOperatorEscapeHatch(task)` → nothing. An OPERATOR hold is a hold on automation AND
  *    on this escape hatch; an engine-originated park (`paused` with no `userPaused`) is not — it
  *    freezes automation only, and the hatch exists precisely for the card the engine parked.
  * 2. `task.column` not in `reviewColumns` → nothing.
@@ -151,7 +168,7 @@ export function deriveReviewBypassTarget(
   requiredStepIds: ReadonlySet<string>,
   reviewColumns: ReadonlySet<string>,
 ): ReviewBypassTarget | undefined {
-  if (isOperatorPausedForReviewBypass(task)) return undefined;
+  if (isOperatorPausedForOperatorEscapeHatch(task)) return undefined;
   if (!reviewColumns.has(task.column)) return undefined;
 
   const failedStep: WorkflowStepResult | undefined = getLatestFailedPreMergeReviewStep(task);

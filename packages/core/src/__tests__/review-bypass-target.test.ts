@@ -3,7 +3,7 @@ import type { Task, WorkflowStepResult } from "../types.js";
 import type { WorkflowIr } from "../workflows/workflow-ir-types.js";
 import {
   deriveReviewBypassTarget,
-  isOperatorPausedForReviewBypass,
+  isOperatorPausedForOperatorEscapeHatch,
   resolveReviewBypassLanes,
   type ReviewBypassTaskView,
 } from "../merge/review-bypass-target.js";
@@ -229,17 +229,17 @@ describe("deriveReviewBypassTarget", () => {
   widened test (e.g. `paused || userPaused`, which would refuse an operator-unpaused-but-stale-flag
   card the store would happily accept) behind four passing derivation cases.
   */
-  it("isOperatorPausedForReviewBypass is true only for the operator hold", () => {
-    expect(isOperatorPausedForReviewBypass({ paused: true, userPaused: true })).toBe(true);
-    expect(isOperatorPausedForReviewBypass({ paused: true, userPaused: false })).toBe(false);
-    expect(isOperatorPausedForReviewBypass({ paused: true })).toBe(false);
-    expect(isOperatorPausedForReviewBypass({ paused: false, userPaused: true })).toBe(false);
-    expect(isOperatorPausedForReviewBypass({ paused: false })).toBe(false);
-    expect(isOperatorPausedForReviewBypass({})).toBe(false);
+  it("isOperatorPausedForOperatorEscapeHatch is true only for the operator hold", () => {
+    expect(isOperatorPausedForOperatorEscapeHatch({ paused: true, userPaused: true })).toBe(true);
+    expect(isOperatorPausedForOperatorEscapeHatch({ paused: true, userPaused: false })).toBe(false);
+    expect(isOperatorPausedForOperatorEscapeHatch({ paused: true })).toBe(false);
+    expect(isOperatorPausedForOperatorEscapeHatch({ paused: false, userPaused: true })).toBe(false);
+    expect(isOperatorPausedForOperatorEscapeHatch({ paused: false })).toBe(false);
+    expect(isOperatorPausedForOperatorEscapeHatch({})).toBe(false);
     /* A reason never turns a park into a hold, and never turns a hold into a park. */
-    expect(isOperatorPausedForReviewBypass({ paused: true, pausedReason: "in-review-stall-deadlock" })).toBe(false);
+    expect(isOperatorPausedForOperatorEscapeHatch({ paused: true, pausedReason: "in-review-stall-deadlock" })).toBe(false);
     expect(
-      isOperatorPausedForReviewBypass({ paused: true, userPaused: true, pausedReason: "merge-deadlock-detected" }),
+      isOperatorPausedForOperatorEscapeHatch({ paused: true, userPaused: true, pausedReason: "merge-deadlock-detected" }),
     ).toBe(true);
   });
 

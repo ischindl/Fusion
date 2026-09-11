@@ -309,7 +309,8 @@ describe("TaskDetailModal review-lane bypass affordance", () => {
   FNXC:ReviewLaneBypass 2026-09-10-23:55 (RUFU-218):
   THE WITHHELD MIRROR, and it must distinguish the two pause states the fire above cannot. A hand-set
   OPERATOR HOLD ships no capability, so the parked card that still shows the item and the held card
-  that shows nothing are decided by the server's `isOperatorPausedForReviewBypass` — the menu just
+  that shows nothing are decided by the server's `isOperatorPausedForOperatorEscapeHatch` (RUFU-219
+  gave it this hatch-neutral name) — the menu just
   renders the answer. Asserting the ABSENCE of every substitute (menuitem, disabled button shell,
   `role="note"` span, dangling `aria-label`) is mandatory: FN-7720's affordance first shipped as dead
   informational text, and a "this card is paused" note would be actively wrong advice here — a parked

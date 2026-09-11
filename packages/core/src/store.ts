@@ -113,7 +113,7 @@ import { resolveRequiredPreMergeStepIds } from "./merge/required-pre-merge-steps
 FNXC:ReviewLaneBypass 2026-09-06-01:20 (merge origin/main dd808ed2c6 → main):
 Import union: RUFU-179's pure derivation helpers AND upstream FN-295's approval evaluator.
 */
-import { deriveReviewBypassTarget, isOperatorPausedForReviewBypass, resolveReviewBypassLanes } from "./merge/review-bypass-target.js";
+import { deriveReviewBypassTarget, isOperatorPausedForOperatorEscapeHatch, resolveReviewBypassLanes } from "./merge/review-bypass-target.js";
 import { evaluatePreMergeApprovals } from "./merge/pre-merge-approval.js";
 import { createLogger } from "./process/logger.js";
 import { type UsageEventInput } from "./tasks/usage-events.js";
@@ -2569,7 +2569,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         const named = reviewColumns.length > 0 ? reviewColumns.map((c: string) => `'${c}'`).join(" or ") : "a review lane";
         throw new Error(`Cannot bypass review lane for ${id}: task is in '${task.column}', must be in ${named}`);
       }
-      if (isOperatorPausedForReviewBypass(task)) {
+      if (isOperatorPausedForOperatorEscapeHatch(task)) {
         /*
         FNXC:ReviewLaneBypass 2026-09-10-23:19 (RUFU-218):
         ONLY AN OPERATOR HOLD REACHES THIS THROW. The guard used to read the bare `task.paused` flag,
@@ -2758,7 +2758,24 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       const dir = this.taskDir(id);
       const task = await this.readTaskJson(dir);
 
-      if (task.paused) {
+      /*
+      FNXC:OperatorEscapeHatch 2026-09-11-14:15 (RUFU-219):
+      ONLY AN OPERATOR HOLD REFUSES THIS. The gate used to test the bare `task.paused` flag, so it also
+      refused every engine-originated park — graph-failure, stall-deadlock, merge-fix, retry-exhausted,
+      or an outside-worktree `external-block` freeze (all `paused: true` with `userPaused` unset, because
+      `AGENTS.md`'s Move-Task contract forbids an engine rebound from setting it). That made the second
+      escape hatch useless exactly where it is needed: resume exists precisely to unstick a
+      pending-verdict wedge on a card the engine parked, and the bare flag forced the same
+      unpause → act → re-park dance RUFU-218 deleted on the bypass side, one call earlier — and on a
+      WIP-lane card it was an outright refusal, because this gate runs before the lane check. Reuse the
+      SAME shared predicate as the bypass gate and the read-path hydration
+      (`isOperatorPausedForOperatorEscapeHatch`, `merge/review-bypass-target.ts`); never write a second
+      `paused &&` check. The refusal message stays byte-identical: it is frozen by store tests and is
+      still the honest sentence for a hold. Gate order is preserved (pause gate before lane resolution)
+      and the accepted-park semantics are unchanged in-place resume: no auto-unpause, no column move,
+      no new audit event — `task:resume-step` already records actor and reason.
+      */
+      if (isOperatorPausedForOperatorEscapeHatch(task)) {
         throw new Error(`Cannot resume workflow step for ${id}: task is paused`);
       }
 

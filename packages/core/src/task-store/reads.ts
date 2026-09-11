@@ -30,7 +30,7 @@ import {resolveTaskLifecycleColumns} from "../workflows/workflow-lifecycle-trait
 import {detectStalledReview} from "../tasks/stalled-review-detector.js";
 import {computeRetrySummary} from "../tasks/retry-summary.js";
 import {resolveRequiredPreMergeStepIds} from "../merge/required-pre-merge-steps.js";
-import {deriveReviewBypassTarget, isOperatorPausedForReviewBypass, resolveReviewBypassLanes, type ReviewBypassTarget} from "../merge/review-bypass-target.js";
+import {deriveReviewBypassTarget, isOperatorPausedForOperatorEscapeHatch, resolveReviewBypassLanes, type ReviewBypassTarget} from "../merge/review-bypass-target.js";
 import {deriveTaskStallReason, type TaskStallReason, type TaskStallReasonContext} from "../tasks/task-stall-reason.js";
 // FNXC:TaskLookup404 2026-07-26-11:20: typed miss signal so API boundaries can
 // answer 404 instead of 500 (see TaskNotFoundError in task-store/errors.ts).
@@ -352,7 +352,7 @@ async function resolveReviewBypassForTask(
   refusal so the two cannot drift; reasoning at `merge/review-bypass-target.ts`. Still needs no IR, so
   it answers most of a board before the first workflow read.
   */
-  if (isOperatorPausedForReviewBypass(task)) return undefined;
+  if (isOperatorPausedForOperatorEscapeHatch(task)) return undefined;
   try {
     const ir = await resolveWorkflowIrForTask(store, task.id, irCache, selectionCache);
     const lanes = resolveReviewBypassLanes(ir);
