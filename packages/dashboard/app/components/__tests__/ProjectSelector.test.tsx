@@ -868,4 +868,113 @@ describe("ProjectSelector", () => {
       expect(reopenedSearchInput).toHaveValue("");
     });
   });
+
+  /*
+  FNXC:CrossProjectHandoff 2026-09-10-19:04 (RUFU-211):
+  The picker's only empty-state message used to be gated on `searchQuery`, so a host with nothing
+  selectable — the transfer modal on a one-project install — opened a blank panel that looked exactly
+  like a request that never answered. These tests pin the three ways that must stay distinguishable:
+  an explained emptiness with no query, the search no-results message once a query is typed, and the
+  bookmarked/recent groups counting as "something to show" so emptiness is never falsely claimed.
+  */
+  describe("explained empty state", () => {
+    /** Picker-host props (the transfer modal's shape): no overview to navigate to, single project allowed. */
+    const pickerHost = {
+      onSelect: noop,
+      allowSingleProject: true,
+      triggerLabel: "Select target project...",
+    };
+
+    it("explains why nothing can be picked when no query is typed", () => {
+      render(<ProjectSelector projects={[]} currentProject={null} {...pickerHost} />);
+      fireEvent.click(screen.getByTestId("project-selector-trigger"));
+
+      const empty = screen.getByTestId("project-selector-empty");
+      expect(empty.textContent).toContain("No other projects on this machine");
+      // Announced, so a screen-reader operator learns the reason without hunting the panel.
+      expect(empty.getAttribute("role")).toBe("status");
+      // The search-specific message must not double up on an unsearched panel.
+      expect(screen.queryByTestId("project-selector-no-results")).toBeNull();
+    });
+
+    it("keeps the search no-results message in charge once a query is typed", () => {
+      render(
+        <ProjectSelector
+          projects={[makeProject({ id: "proj_2", name: "Beta" })]}
+          currentProject={null}
+          {...pickerHost}
+        />
+      );
+      fireEvent.click(screen.getByTestId("project-selector-trigger"));
+      fireEvent.change(screen.getByPlaceholderText("Search projects..."), {
+        target: { value: "zzz" },
+      });
+
+      expect(screen.getByTestId("project-selector-no-results")).toBeDefined();
+      expect(screen.queryByTestId("project-selector-empty")).toBeNull();
+    });
+
+    it("does not claim emptiness while a bookmarked row is the only visible group", () => {
+      // `others` is empty here because the sole non-current project lives in the bookmarked section;
+      // an emptiness signal that only counted `others` would wrongly explain a populated panel.
+      mockBookmarkedIds = new Set(["proj_2"]);
+      render(
+        <ProjectSelector
+          projects={[
+            makeProject({ id: "proj_1", name: "Alpha" }),
+            makeProject({ id: "proj_2", name: "Beta" }),
+          ]}
+          currentProject={makeProject({ id: "proj_1", name: "Alpha" })}
+          onSelect={noop}
+          onViewAll={noop}
+        />
+      );
+      fireEvent.click(screen.getByTestId("project-selector-trigger"));
+
+      expect(screen.queryByTestId("project-selector-empty")).toBeNull();
+      expect(screen.queryByText("No other projects on this machine")).toBeNull();
+      // The bookmarked section carries the only visible row (its buttons have no test id of their own).
+      expect(screen.getByText("Bookmarked")).toBeDefined();
+      expect(screen.getByText("Beta")).toBeDefined();
+    });
+
+    it("keeps the keyboard inert on an empty panel and returns focus to the trigger on Escape", () => {
+      // The explained empty state is only honest if the panel behaves like an empty panel: the arrow
+      // keys must not conjure a highlight that points at no row, Enter must not dismiss the panel from
+      // a keystroke that selected nothing, and Escape must hand focus back to the trigger rather than
+      // stranding it on the unmounted search input.
+      const onSelect = vi.fn();
+      render(
+        <ProjectSelector
+          projects={[]}
+          currentProject={null}
+          onSelect={onSelect}
+          allowSingleProject
+          triggerLabel="Select target project..."
+        />
+      );
+      const trigger = screen.getByTestId("project-selector-trigger") as HTMLButtonElement;
+      fireEvent.click(trigger);
+      const dropdown = screen.getByTestId("project-selector-dropdown");
+
+      // ArrowDown is the branch that used to invent a highlight: with `totalItems` 0 it wrapped -1
+      // onto index 0, so the following Enter entered the "a row is highlighted" branch, matched no
+      // row, and still ran its dismissal. Without the guard this assertion is the one that fails.
+      fireEvent.keyDown(dropdown, { key: "ArrowDown" });
+      fireEvent.keyDown(dropdown, { key: "Enter" });
+      expect(onSelect).not.toHaveBeenCalled();
+      expect(screen.getByTestId("project-selector-dropdown")).toBeDefined();
+
+      for (const key of ["ArrowUp", "Home", "End"]) {
+        fireEvent.keyDown(dropdown, { key });
+        expect(screen.getByTestId("project-selector-dropdown")).toBeDefined();
+      }
+      expect(dropdown.querySelector(".highlighted")).toBeNull();
+      expect(screen.getByTestId("project-selector-empty")).toBeDefined();
+
+      fireEvent.keyDown(screen.getByTestId("project-selector-search-input"), { key: "Escape" });
+      expect(screen.queryByTestId("project-selector-dropdown")).toBeNull();
+      expect(document.activeElement).toBe(trigger);
+    });
+  });
 });

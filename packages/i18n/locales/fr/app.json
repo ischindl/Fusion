@@ -5798,7 +5798,8 @@
     "searchAriaLabel": "",
     "searchPlaceholder": "Rechercher des projets...",
     "switchProjectTitle": "",
-    "viewAll": "Voir tous les projets"
+    "viewAll": "Voir tous les projets",
+    "noProjects": ""
   },
   "providers": {
     "actions": {
@@ -9603,7 +9604,8 @@
       "success": "",
       "targetProject": "",
       "title": "",
-      "transferring": ""
+      "transferring": "",
+      "loadProjectsTimedOut": ""
     }
   },
   "taskDocuments": {

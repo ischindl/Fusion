@@ -17,6 +17,17 @@ import { getTrailingPath } from "../utils/pathDisplay";
 import { getProjectStatusConfig, isInitializingStatus } from "../utils/projectStatusConfig";
 import { useProjectBookmarks } from "../hooks/useProjectBookmarks";
 
+/*
+FNXC:CrossProjectHandoff 2026-09-10-00:05 (RUFU-211):
+Stable fallback for the optional `recentProjectIds` prop. An inline `= []` default is a BRAND-NEW
+array on every render, so it churns the `recentProjects`/`displayProjects` memos, and those feed the
+auto-highlight effect whose `[isOpen, searchQuery, displayProjects]` deps then re-run its
+`setHighlightedIndex(-1)` reset branch on a render that only meant to move the keyboard highlight
+(RUFU-211's ArrowDown-survives-Escape-claim test caught this). A hoisted frozen constant keeps the
+memo inputs referentially stable so the highlight a host's re-render must NOT touch, survives.
+*/
+const NO_RECENT_IDS = Object.freeze<string[]>([]) as string[];
+
 export interface ProjectSelectorProps {
   projects: ProjectInfo[];
   currentProject: ProjectInfo | null;
@@ -37,6 +48,16 @@ export interface ProjectSelectorProps {
   */
   triggerLabel?: string;
   getDisabledReason?: (project: ProjectInfo) => string | undefined;
+  /*
+  FNXC:CrossProjectHandoff 2026-09-10-19:19 (RUFU-211):
+  Reports dropdown open/close so a HOST can yield Escape to this innermost layer. A host cannot win
+  this keystroke by listener ordering: both it and this component claim on `document` in the capture
+  phase, and same-node/same-phase listeners run in registration order — the host registers first
+  because it must be open before its dropdown can open. The host therefore reads this signal and
+  stands down, while this component's capture claim (`stopPropagation`) keeps the keystroke from
+  reaching the overlays stacked BENEATH the host, which all listen in the bubble phase.
+  */
+  onOpenChange?: (open: boolean) => void;
 }
 
 /**
@@ -90,11 +111,12 @@ export function ProjectSelector({
   currentProject,
   onSelect,
   onViewAll,
-  recentProjectIds = [],
+  recentProjectIds = NO_RECENT_IDS,
   allowSingleProject = false,
   viewAllLabel,
   triggerLabel,
   getDisabledReason,
+  onOpenChange,
 }: ProjectSelectorProps) {
   const { t } = useTranslation("app");
   /*
@@ -131,21 +153,48 @@ export function ProjectSelector({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [isOpen]);
 
-  // Close on escape key
+  /*
+  FNXC:CrossProjectHandoff 2026-09-10-19:19 (RUFU-211):
+  While the dropdown is open, Escape is CLAIMED here so one press closes exactly one layer. The
+  listener is CAPTURE-phase on `document`: every surface that can host this picker (task detail,
+  board card, list view, the app-wide Escape arbiter) listens on `document` in the BUBBLE phase, and a
+  capture listener always runs before every bubble listener, so `stopPropagation()` means none of them
+  dismisses its own layer behind the operator's back. `preventDefault()` marks the keystroke consumed
+  for hosts that defer on `event.defaultPrevented` (the RUFU-205 idiom). Escape-only: every other key
+  still reaches the dropdown's own handlers byte-identical. This claim cannot preempt a host that also
+  claims at document capture — hence the `onOpenChange` yield protocol above; neither mechanism alone
+  is sufficient.
+  */
   useEffect(() => {
     if (!isOpen) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setIsOpen(false);
-        setSearchQuery("");
-        triggerRef.current?.focus();
-      }
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      setIsOpen(false);
+      setSearchQuery("");
+      triggerRef.current?.focus();
     };
 
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
+    document.addEventListener("keydown", handleKeyDown, true);
+    // Capture-flag symmetry: `removeEventListener` matches on the exact capture flag, so a capture
+    // listener removed without `true` is never removed and keeps dismissing layers forever.
+    return () => document.removeEventListener("keydown", handleKeyDown, true);
   }, [isOpen]);
+
+  /*
+  FNXC:CrossProjectHandoff 2026-09-10-19:19 (RUFU-211):
+  Publishes open/close to the host's yield flag. The cleanup reports `false` on every transition and
+  on unmount, because a flag stuck at `true` would leave the host unable to close with Escape at all —
+  the prohibited un-closable sheet.
+  */
+  useEffect(() => {
+    onOpenChange?.(isOpen);
+    return () => {
+      onOpenChange?.(false);
+    };
+  }, [isOpen, onOpenChange]);
 
   // Focus search input when dropdown opens (always visible for autocomplete)
   useEffect(() => {
@@ -223,6 +272,17 @@ export function ProjectSelector({
     };
   }, [filteredProjects, recentProjects, currentProject, searchQuery, bookmarkedIds]);
 
+  /*
+  FNXC:CrossProjectHandoff 2026-09-10-19:05 (RUFU-211):
+  An empty panel must never read as a broken load. The old empty branch was gated on `searchQuery`, so
+  a picker with nothing selectable — a one-project install, or a transfer host whose entire candidate
+  set is the card's own project — rendered a blank panel with a focused search box, visually identical
+  to a request that has not answered. The emptiness signal counts EVERY rendered group
+  (bookmarked/recent/others), not just `others`, because those groups can hold the only visible rows.
+  */
+  const hasSelectableRows =
+    displayProjects.bookmarked.length + displayProjects.recent.length + displayProjects.others.length > 0;
+
   // Calculate total items for keyboard navigation
   const totalItems = useMemo(() => {
     const bookmarkedCount = displayProjects.bookmarked.length;
@@ -236,6 +296,17 @@ export function ProjectSelector({
   // Handle keyboard navigation within dropdown
   const handleDropdownKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      /*
+      FNXC:CrossProjectHandoff 2026-09-11-00:40 (RUFU-211):
+      Nothing to walk means nothing to walk. With an empty candidate set (a one-project install, or the
+      transfer host whose only candidate is the card's own project) `totalItems` is 0 and every branch
+      below resolves against a slot that does not exist: ArrowDown wrapped -1 onto index 0, so a
+      following Enter entered the `highlightedIndex >= 0` branch, matched no row, and still ran its
+      `setIsOpen(false)` — closing the panel from a keystroke that selected nothing and leaving focus
+      on the just-unmounted search input. Escape stays owned by the document-capture claim above, which
+      does restore focus to the trigger; this handler is inert until a row exists.
+      */
+      if (totalItems === 0) return;
       switch (e.key) {
         case "ArrowDown":
           e.preventDefault();
@@ -547,12 +618,23 @@ export function ProjectSelector({
               </div>
             )}
 
-            {displayProjects.others.length === 0 && searchQuery ? (
+            {!hasSelectableRows && searchQuery ? (
               <div className="project-selector__no-results" data-testid="project-selector-no-results">
                 <Search size={14} className="project-selector__no-results-icon" />
                 <span>
                   {t("projectSelector.noResults", "No projects match \"{{query}}\"", { query: searchQuery })}
                 </span>
+              </div>
+            ) : !hasSelectableRows ? (
+              /*
+              FNXC:CrossProjectHandoff 2026-09-10-19:05 (RUFU-211):
+              Reuses the no-results row's class rather than forking a parallel empty-state style, so the
+              two states stay visually identical siblings. The sentence names the REASON (nothing else
+              exists on this install) instead of leaving a blank panel that looks like a failed load.
+              */
+              <div className="project-selector__no-results" role="status" data-testid="project-selector-empty">
+                <Folder size={14} className="project-selector__no-results-icon" />
+                <span>{t("projectSelector.noProjects", "No other projects on this machine")}</span>
               </div>
             ) : (
               displayProjects.others.map((project, index) => {

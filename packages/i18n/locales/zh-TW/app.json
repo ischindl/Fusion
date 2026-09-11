@@ -5797,7 +5797,8 @@
     "searchAriaLabel": "",
     "searchPlaceholder": "搜尋專案...",
     "switchProjectTitle": "",
-    "viewAll": "查看所有專案"
+    "viewAll": "查看所有專案",
+    "noProjects": ""
   },
   "providers": {
     "actions": {
@@ -9584,7 +9585,8 @@
       "success": "",
       "targetProject": "",
       "title": "",
-      "transferring": ""
+      "transferring": "",
+      "loadProjectsTimedOut": ""
     }
   },
   "taskDocuments": {

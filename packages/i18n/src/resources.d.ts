@@ -5922,6 +5922,7 @@ export default interface Resources {
       "clearSearch": "Clear search",
       "exact": "Exact",
       "exactMatch": "Exact match — press Enter to select",
+      "noProjects": "No other projects on this machine",
       "noResults": "No projects match your search",
       "projects": "Projects",
       "projectsTitle": "Projects",
@@ -10034,6 +10035,7 @@ export default interface Resources {
           "legend": "After the copy lands"
         },
         "loadProjectsFailed": "Could not load the project list: {{error}}",
+        "loadProjectsTimedOut": "Still waiting on the project list — the server has not answered. Try again.",
         "loadingProjects": "Loading projects…",
         "menuItem": "Transfer to project…",
         "message": "Copies {{id}} into another project on this machine. The original stays put and gains a “transferred” pointer to the copy.",

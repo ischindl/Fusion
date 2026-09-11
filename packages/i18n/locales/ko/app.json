@@ -5797,7 +5797,8 @@
     "searchAriaLabel": "",
     "searchPlaceholder": "프로젝트 검색...",
     "switchProjectTitle": "",
-    "viewAll": "모든 프로젝트 보기"
+    "viewAll": "모든 프로젝트 보기",
+    "noProjects": ""
   },
   "providers": {
     "actions": {
@@ -9584,7 +9585,8 @@
       "success": "",
       "targetProject": "",
       "title": "",
-      "transferring": ""
+      "transferring": "",
+      "loadProjectsTimedOut": ""
     }
   },
   "taskDocuments": {

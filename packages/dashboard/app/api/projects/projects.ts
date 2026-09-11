@@ -351,9 +351,52 @@ export interface CompleteSetupResult {
   errors: string[];
 }
 
+/*
+FNXC:CrossProjectHandoff 2026-09-10-18:05 (RUFU-211):
+Options for the two project-list reads the transfer picker depends on. A caller that can be abandoned
+mid-flight (a dialog the operator may close or re-open) must be able to cancel its request, otherwise a
+single never-settling response parks the caller's UI forever AND — because the across-nodes read is
+deduplicated — parks every later caller that joins the same in-flight entry. The signal is optional and
+omitted (never set to `undefined`) for a zero-argument call so the request shape stays byte-for-byte
+identical for existing callers.
+*/
+export interface ProjectDiscoveryOptions {
+  /** Cancel this request; aborting rejects the call with an abort error. */
+  signal?: AbortSignal;
+  /**
+   * Start a new fetch instead of joining a live in-flight request. Required by a retry whose previous
+   * attempt may still be hanging under the shared key: joining it would reproduce the original stall.
+   */
+  forceFresh?: boolean;
+}
+
+/** Build a RequestInit that stays byte-for-byte empty when no signal was supplied. */
+function discoveryInit(options?: ProjectDiscoveryOptions): RequestInit {
+  const init: RequestInit = {};
+  if (options?.signal) init.signal = options.signal;
+  return init;
+}
+
+/*
+FNXC:CrossProjectHandoff 2026-09-10-18:05 (RUFU-211):
+`dedupe` backs one shared entry with ONE inner fetch and ONE external promise, so an abort from any one
+caller rejects every joiner of that entry — the header switcher and the transfer picker share the
+`/projects/across-nodes` key. A caller that is NOT the one that cancelled must not report someone
+else's cancellation as its own failure, so an abort rejection observed while this caller's own signal is
+un-aborted re-issues the shared request exactly once. That is safe because `dedupe` marks the entry
+settled in the same handler that rejects it, and a settled entry is never joined again (the identity-
+guarded map delete is memory hygiene on top of that) — so the re-issue is a real fresh request, never a
+second join of the dead one. Bounded at one re-issue: a second abort can only be our own.
+*/
+function isAbortRejection(err: unknown): boolean {
+  return (
+    typeof err === "object" && err !== null && (err as { name?: unknown }).name === "AbortError"
+  );
+}
+
 /** Fetch all registered projects */
-export function fetchProjects(): Promise<ProjectInfo[]> {
-  return api<ProjectInfo[]>("/projects");
+export function fetchProjects(options?: ProjectDiscoveryOptions): Promise<ProjectInfo[]> {
+  return api<ProjectInfo[]>("/projects", discoveryInit(options));
 }
 
 /** Dashboard-facing mapping contract for project availability on nodes. */
@@ -382,8 +425,19 @@ export function hasNodeMappingsSupport(project: ProjectInfoWithSource): boolean 
 }
 
 /** Fetch all registered projects from all nodes (local + remote) */
-export function fetchProjectsAcrossNodes(): Promise<ProjectInfoWithSource[]> {
-  return dedupe("/projects/across-nodes", () => api<ProjectInfoWithSource[]>("/projects/across-nodes"));
+export function fetchProjectsAcrossNodes(
+  options?: ProjectDiscoveryOptions,
+): Promise<ProjectInfoWithSource[]> {
+  const run = () =>
+    dedupe(
+      "/projects/across-nodes",
+      () => api<ProjectInfoWithSource[]>("/projects/across-nodes", discoveryInit(options)),
+      options?.forceFresh ? { forceFresh: true } : undefined,
+    );
+  return run().catch((err: unknown) => {
+    if (options?.signal?.aborted || !isAbortRejection(err)) throw err;
+    return run();
+  });
 }
 
 /** Fetch all registered nodes */

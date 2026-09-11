@@ -5808,7 +5808,8 @@
     "searchAriaLabel": "Digite para buscar projetos",
     "searchPlaceholder": "Buscar projetos...",
     "switchProjectTitle": "Trocar de projeto (atual: {{name}})",
-    "viewAll": "Ver todos os projetos"
+    "viewAll": "Ver todos os projetos",
+    "noProjects": ""
   },
   "providers": {
     "actions": {
@@ -9595,7 +9596,8 @@
       "success": "",
       "targetProject": "",
       "title": "",
-      "transferring": ""
+      "transferring": "",
+      "loadProjectsTimedOut": ""
     }
   },
   "taskDocuments": {
