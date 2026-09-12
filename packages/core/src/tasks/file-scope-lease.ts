@@ -73,6 +73,58 @@ function normalizeWorkspaceScopePath(value: string): string {
 }
 
 /*
+FNXC:OverlapScheduling 2026-09-11-22:49:
+A canonical package barrel export file (`packages/<pkg>/src/index.ts` and its trimmed gate sibling
+`index.gate.ts`) is append-only shared traffic: every card that publishes a new symbol adds one export
+line there, so the path is a shared meeting point, not contested work. When such a barrel is the ONLY
+entry two file scopes share, the cards do not collide and must not serialize — measured on the live
+board, one parked review card head-blocked five unrelated cards for hours over a single shared barrel
+line (`overlapBlockedBy=RUFU-204`).
+
+The exemption is deliberately narrow and per matched pair, never whole-scope or project-wide, and
+requires no settings change: both raw entries must name the same concrete canonical barrel, and neither
+side may be a directory/glob pattern (`packages/core/*` vs a barrel still serializes). A genuine
+non-barrel collision in the same scopes keeps serializing — the exemption is evaluated per pair, so
+scope-wide waivers (`isCoordinationOnlyTask`) and project-wide `overlapIgnorePaths` stay untouched.
+Breadth is the risk here: this suppresses a safety mechanism, so a bare `src/index.ts`,
+`repo-a/src/index.ts`, `packages/core/src/routes/index.ts`, or `index.tsx`/`index.d.ts` never matches.
+A workspace repo-key prefix (`<repoKey>/packages/<pkg>/src/index.ts`) is recognized because
+`normalizeOverlapScopeForTask` qualifies scope entries before comparison.
+
+The review-lane lease lifetime is intentionally unchanged: a review-lane holder keeps its lease while
+its checkout is unmerged, and pausing must not release it; only the pairwise path comparison waives the
+barrel entry. Both matcher copies (engine `findFileScopeOverlaps` and core `repairScopesOverlap`) call
+`isSharedBarrelOnlyMatch` so scheduler admission, the dispatch gate, gridlock detection, self-healing,
+the overlap report, and store repair cannot drift.
+*/
+const SHARED_BARREL_EXPORT_PATTERN = /^(?:.*\/)?packages\/[^/]+\/src\/(?:index|index\.gate)\.ts$/;
+
+/**
+ * True only for a concrete canonical package barrel export path:
+ * `packages/<one-segment>/src/index.ts` or `packages/<one-segment>/src/index.gate.ts`, optionally
+ * workspace-prefixed with a repo key. Normalizes internally (trim, backslash→`/`, strip leading `./`)
+ * for pattern recognition only — callers keep their own scope normalization semantics.
+ */
+export function isSharedBarrelExportPath(path: string): boolean {
+  return SHARED_BARREL_EXPORT_PATTERN.test(normalizeWorkspaceScopePath(path));
+}
+
+/**
+ * Pairwise overlap-exemption test: true when two raw scope entries name the SAME concrete shared
+ * barrel export. False whenever either side is a directory/prefix pattern (`x/` or `x/*`) or the
+ * normalized entries differ — glob-vs-barrel coverage must stay serialized.
+ */
+export function isSharedBarrelOnlyMatch(rawA: string, rawB: string): boolean {
+  const asPatternCandidate = (raw: string) => {
+    const slashed = raw.trim().replaceAll("\\", "/");
+    return slashed.endsWith("/") || slashed.endsWith("/*");
+  };
+  if (asPatternCandidate(rawA) || asPatternCandidate(rawB)) return false;
+  const normalizedA = normalizeWorkspaceScopePath(rawA);
+  return normalizedA === normalizeWorkspaceScopePath(rawB) && isSharedBarrelExportPath(normalizedA);
+}
+
+/*
 FNXC:WorkspaceFileOverlap 2026-08-30-19:14:
 Workspace repository scope treats an unprefixed declaration as applying inside every configured repository,
 matching `resolveRepoDeclaredScope`'s `unprefixed-fallback` behavior. Expand overlap scope in the safe direction:

@@ -175,6 +175,50 @@ describe("SelfHealingManager stale overlap blocker reconciliation", () => {
     expect(updateTaskAtomic).not.toHaveBeenCalled();
   });
 
+  it("clears a review-lane blocker whose only shared entry with the dependent is a package barrel (RUFU-226)", async () => {
+    /*
+    FNXC:OverlapScheduling 2026-09-11-22:56:
+    Recovery half of the incident: the dependent still carries `overlapBlockedBy` for a live
+    review-lane holder, but the two scopes now share only the core barrel. The scheduler will not
+    re-stamp this pair, so the sweep — which re-runs the shared `pathsOverlap` predicate — must treat
+    the marker as stale and clear it.
+    */
+    const blocker = createTask("RUFU-204", { column: "in-review", worktree: "/wt/rufu-204", autoMerge: false });
+    const dependent = createTask("RUFU-217", { status: "queued", overlapBlockedBy: blocker.id });
+    const { store, tasks, updateTaskAtomic } = createStore([blocker, dependent]);
+    (store.parseFileScopeFromPrompt as ReturnType<typeof vi.fn>).mockImplementation(async (id: string) => (
+      id === dependent.id
+        ? ["packages/core/src/index.ts", "packages/engine/src/scheduler.ts"]
+        : ["packages/core/src/index.ts", "packages/core/src/store.ts"]
+    ));
+    const manager = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
+
+    await manager.clearStaleBlockedBy();
+
+    expect(tasks.get(dependent.id)?.overlapBlockedBy).toBeNull();
+    expect(updateTaskAtomic).toHaveBeenCalled();
+  });
+
+  it("preserves the marker when the barrel-shared pair also shares a real file (RUFU-226 guard)", async () => {
+    // Same holder/dependent shapes, but both scopes also name packages/core/src/store.ts — the
+    // exemption is per matched pair, so the live lease keeps the queued hold.
+    const blocker = createTask("RUFU-204", { column: "in-review", worktree: "/wt/rufu-204", autoMerge: false });
+    const dependent = createTask("RUFU-217", { status: "queued", overlapBlockedBy: blocker.id });
+    const { store, tasks, updateTask, updateTaskAtomic } = createStore([blocker, dependent]);
+    (store.parseFileScopeFromPrompt as ReturnType<typeof vi.fn>).mockImplementation(async (id: string) => (
+      id === dependent.id
+        ? ["packages/core/src/index.ts", "packages/core/src/store.ts"]
+        : ["packages/core/src/index.ts", "packages/core/src/store.ts", "packages/core/src/repair.ts"]
+    ));
+    const manager = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
+
+    await manager.clearStaleBlockedBy();
+
+    expect(tasks.get(dependent.id)?.overlapBlockedBy).toBe(blocker.id);
+    expect(updateTask).not.toHaveBeenCalled();
+    expect(updateTaskAtomic).not.toHaveBeenCalled();
+  });
+
   it("does no reconciliation write when overlapBlockedBy is absent", async () => {
     const dependent = createTask("FN-D-NO-OVERLAP");
     const { store, updateTask, updateTaskAtomic } = createStore([dependent]);

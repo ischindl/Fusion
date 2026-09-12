@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   fileScopeLeaseBlocksCandidate,
+  isSharedBarrelExportPath,
+  isSharedBarrelOnlyMatch,
   normalizeOverlapScopeForTask,
   taskHoldsUnmergedCheckout,
   type CheckoutEmptinessProofMap,
@@ -8,6 +10,10 @@ import {
   type FileScopeLeaseClassification,
   type Task,
 } from "../index.js";
+import {
+  isSharedBarrelExportPath as isSharedBarrelExportPathGate,
+  isSharedBarrelOnlyMatch as isSharedBarrelOnlyMatchGate,
+} from "../index.gate.js";
 import { classifyRepairFileScopeLease } from "../store.js";
 
 const active: FileScopeLeaseClassification = { kind: "active", waivedForTaskIds: [] };
@@ -209,5 +215,64 @@ describe("checkout-emptiness proof input (RUFU-200)", () => {
     expect(classifyRepairFileScopeLease({ column: "drafting", worktree: "/wt/RUFU-198" }, lanes)).toBe("dormant");
     expect(classifyRepairFileScopeLease({ column: "reviewing", worktree: "/wt/RUFU-198" }, lanes)).toBe("active");
     expect(classifyRepairFileScopeLease({ column: "drafting" }, lanes)).toBe("none");
+  });
+});
+
+/*
+FNXC:OverlapScheduling 2026-09-11-22:49:
+The shared-barrel exemption suppresses a queue-safety mechanism, so the pattern's breadth is the
+risk. This block pins the accepted shapes (canonical package barrels, optionally workspace-prefixed)
+and every rejected shape (bare/glob/nested/extension-variant paths) so a widening edit fails here
+before it can silently serialize or silently waive real collisions.
+*/
+describe("shared barrel export exemption predicate", () => {
+  it("recognizes canonical package barrel export paths only", () => {
+    for (const path of [
+      "packages/core/src/index.ts",
+      "packages/core/src/index.gate.ts",
+      "./packages/core/src/index.ts",
+      "packages/engine/src/index.ts",
+      "repo-a/packages/core/src/index.ts",
+    ]) {
+      expect(isSharedBarrelExportPath(path)).toBe(true);
+    }
+    for (const path of [
+      "src/index.ts",
+      "repo-a/src/index.ts",
+      "packages/core/src/index.tsx",
+      "packages/core/src/routes/index.ts",
+      "packages/core/src/index.d.ts",
+      "packages/core/*",
+      "packages/core/",
+      "",
+    ]) {
+      expect(isSharedBarrelExportPath(path)).toBe(false);
+    }
+  });
+
+  it("exempts only an identical concrete barrel pair, never a glob or a different path", () => {
+    expect(isSharedBarrelOnlyMatch("packages/core/src/index.ts", "packages/core/src/index.ts")).toBe(true);
+    expect(isSharedBarrelOnlyMatch("./packages/core/src/index.ts", "packages/core/src/index.ts")).toBe(true);
+    expect(isSharedBarrelOnlyMatch("packages/core/src/index.ts", "./packages/core/src/index.ts")).toBe(true);
+    expect(isSharedBarrelOnlyMatch("packages/core/*", "packages/core/src/index.ts")).toBe(false);
+    expect(isSharedBarrelOnlyMatch("packages/core/src/index.ts", "packages/core/*")).toBe(false);
+    expect(isSharedBarrelOnlyMatch("packages/core/", "packages/core/src/index.ts")).toBe(false);
+    expect(isSharedBarrelOnlyMatch("packages/core/src/index.ts", "packages/engine/src/index.ts")).toBe(false);
+    expect(isSharedBarrelOnlyMatch("packages/core/src/store.ts", "packages/core/src/store.ts")).toBe(false);
+    expect(isSharedBarrelOnlyMatch("repo-a/src/index.ts", "repo-a/src/index.ts")).toBe(false);
+    expect(isSharedBarrelOnlyMatch("src/index.ts", "src/index.ts")).toBe(false);
+  });
+
+  it("exposes the predicate from BOTH barrels (index + index.gate stay in sync)", () => {
+    // The engine-core vitest project resolves @fusion/core through index.gate.ts, so a
+    // gate-barrel omission TypeErrors in the merge gate. Both barrels must resolve the same
+    // functions and agree on the fixture verdicts.
+    expect(typeof isSharedBarrelExportPath).toBe("function");
+    expect(typeof isSharedBarrelOnlyMatch).toBe("function");
+    expect(isSharedBarrelExportPathGate).toBe(isSharedBarrelExportPath);
+    expect(isSharedBarrelOnlyMatchGate).toBe(isSharedBarrelOnlyMatch);
+    expect(isSharedBarrelExportPathGate("packages/core/src/index.ts")).toBe(true);
+    expect(isSharedBarrelOnlyMatchGate("packages/core/src/index.ts", "packages/core/src/index.ts")).toBe(true);
+    expect(isSharedBarrelOnlyMatchGate("packages/core/*", "packages/core/src/index.ts")).toBe(false);
   });
 });

@@ -3,6 +3,7 @@ import {
   computeBlockerFanoutMap,
   compareTasksByPriorityThenAgeAndId,
   fileScopeLeaseBlocksCandidate,
+  isSharedBarrelOnlyMatch,
   normalizeOverlapScopeForTask,
   taskHoldsUnmergedCheckout,
   HIGH_FANOUT_BLOCKER_TODO_THRESHOLD,
@@ -100,12 +101,24 @@ export interface FileScopeOverlapMatch {
 /*
 FNXC:OverlapScheduling 2026-08-27-11:06:
 The scheduler's boolean admission predicate and the operator-facing overlap pairs must share one matcher. Returning every sorted, deduplicated match explains an existing blocker without changing whether work is serialized.
+
+FNXC:OverlapScheduling 2026-09-11-22:51:
+A matched pair is skipped when both sides name the same canonical package barrel export
+(`isSharedBarrelOnlyMatch`): barrel lines are append-only shared traffic, so a shared barrel alone
+must never serialize two cards. The exemption is per matched pair — scopes that also share any real
+file still produce a match there, and a directory/glob entry covering a barrel (either side a
+pattern) still matches through the prefix arms below. One rule here covers every consumer
+(admission, dispatch gate, gridlock detector, self-healing reconciliation, overlap report) because
+all of them route through this function; core's repair matcher mirrors it via the same shared
+predicate since `@fusion/core` cannot import `@fusion/engine`. The review-lane lease lifetime that
+feeds these decisions is intentionally unchanged — pausing a review card does not release its lease.
 */
 export function findFileScopeOverlaps(a: string[], b: string[]): FileScopeOverlapMatch[] {
   const matches = new Map<string, FileScopeOverlapMatch>();
   for (const path of a) {
     const prefixA = path.endsWith("/*") ? path.slice(0, -1) : null;
     for (const blockerPath of b) {
+      if (isSharedBarrelOnlyMatch(path, blockerPath)) continue;
       const prefixB = blockerPath.endsWith("/*") ? blockerPath.slice(0, -1) : null;
       const cleanA = prefixA ? path.slice(0, -2) : path;
       const cleanB = prefixB ? blockerPath.slice(0, -2) : blockerPath;

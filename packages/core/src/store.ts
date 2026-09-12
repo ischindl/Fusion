@@ -14,6 +14,7 @@ import { readFile } from "node:fs/promises";
 import type { Task, TaskDetail, TaskCreateInput, TaskAttachment, AgentLogEntry, BoardConfig, Column, ColumnId, CheckoutClaimPrecondition, MergeResult, Settings, GlobalSettings, ProjectSettings, ActivityLogEntry, ActivityEventType, TaskDocument, TaskDocumentRevision, TaskDocumentCreateInput, TaskDocumentWithTask, Artifact, ArtifactCreateInput, ArtifactType, ArtifactWithTask, InboxTask, TaskLogEntry, RunMutationContext, RunAuditEvent, RunAuditEventInput, RunAuditEventFilter, ArchivedTaskEntry, ArchiveAgentLogMode, TaskPriority, WorkflowStepTemplate, Agent, AutostashOrphanRecord, TaskCommitAssociation, CommitAssociationDiffBackfillReport, GithubIssueAction, MergeQueueEntry, MergeQueueEnqueueOptions, MergeQueueAcquireOptions, MergeQueueReleaseOutcome, HandoffToReviewOptions, GoalCitation, GoalCitationFilter, GoalCitationInput, GoalCitationSurface, BranchGroup, BranchGroupCreateInput, BranchGroupUpdate, TaskBranchAssignmentMode, MergeRequestRecord, MergeRequestState, MergeRequestWorkflowProjectionOptions, CompletionHandoffMarker, WorkflowWorkItem, WorkflowWorkItemDueFilter, WorkflowWorkItemKind, WorkflowWorkItemState, WorkflowWorkItemTransitionPatch, WorkflowWorkItemUpsertInput, PrEntity, PrEntityCreateInput, PrEntityUpdate, PrThreadState, PrThreadOutcome, PluginActivation, PluginActivationInput, TaskStep } from "./types.js";
 import {
   fileScopeLeaseBlocksCandidate,
+  isSharedBarrelOnlyMatch,
   normalizeOverlapScopeForTask,
   taskHoldsUnmergedCheckout,
   type FileScopeLeaseKind,
@@ -419,6 +420,16 @@ function repairScopesOverlap(a: string[], b: string[]): boolean {
     const prefixA = repairOverlapPathPrefix(pa);
     const cleanA = prefixA ? prefixA.replace(/\/$/, "") : pa;
     for (const rawB of b) {
+      /*
+      FNXC:OverlapScheduling 2026-09-11-22:56:
+      Operator repair must agree with scheduler admission: a matched pair naming the same canonical
+      package barrel export is append-only shared traffic and never a collision, so it is skipped
+      here exactly as the engine matcher skips it via the shared `isSharedBarrelOnlyMatch` predicate
+      (@fusion/core cannot import @fusion/engine). Glob-vs-barrel coverage and every non-barrel
+      pair fall through to the equality/prefix arms below unchanged; without this line the repair
+      would keep reporting `scopes-still-overlap` for a marker the next scheduler tick clears.
+      */
+      if (isSharedBarrelOnlyMatch(rawA, rawB)) continue;
       const pb = normalizeRepairOverlapPath(rawB);
       const prefixB = repairOverlapPathPrefix(pb);
       const cleanB = prefixB ? prefixB.replace(/\/$/, "") : pb;

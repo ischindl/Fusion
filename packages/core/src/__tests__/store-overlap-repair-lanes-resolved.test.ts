@@ -271,6 +271,51 @@ describe("repairOverlapBlocker resolves the board's own lanes", () => {
     expect(updates[updates.length - 1]).toMatchObject({ overlapBlockedBy: "FN-3" });
   });
 
+  it("clears a blocker whose scope shares only a canonical package barrel (RUFU-226)", async () => {
+    /*
+    FNXC:OverlapScheduling 2026-09-11-22:56:
+    A live WIP blocker whose ONLY shared scope entry with the subject is the core barrel must not
+    hold the repair at `scopes-still-overlap` — barrel lines are append-only shared traffic, and a
+    repair that refused here would contradict the scheduler, which never stamps this pair.
+    */
+    const subject = card("FN-1", "backlog", { overlapBlockedBy: "FN-2", status: "queued" });
+    const { run, updates } = harness(
+      [subject, card("FN-2", "building")],
+      RENAMED_IR,
+      subject,
+      {
+        "FN-1": ["packages/core/src/index.ts", "packages/core/src/chat.ts"],
+        "FN-2": ["packages/core/src/index.ts", "packages/core/src/store.ts"],
+      },
+    );
+
+    const result = await run();
+
+    expect(result.reason).not.toBe("scopes-still-overlap");
+    expect(updates[updates.length - 1]).toMatchObject({ overlapBlockedBy: null });
+  });
+
+  it("keeps a blocker when the same barrel-scoped pair also shares a real file (RUFU-226 guard)", async () => {
+    // Same shapes as the clear case, but both scopes also name packages/core/src/store.ts — the
+    // exemption is per matched pair, so the genuine collision must retain the marker.
+    const subject = card("FN-1", "backlog", { overlapBlockedBy: "FN-2", status: "queued" });
+    const { run, updates } = harness(
+      [subject, card("FN-2", "building")],
+      RENAMED_IR,
+      subject,
+      {
+        "FN-1": ["packages/core/src/index.ts", "packages/core/src/store.ts"],
+        "FN-2": ["packages/core/src/index.ts", "packages/core/src/store.ts"],
+      },
+    );
+
+    const result = await run();
+
+    expect(result.reason).toBe("scopes-still-overlap");
+    expect(result.currentOverlapBlockedBy).toBe("FN-2");
+    expect(updates).toHaveLength(0);
+  });
+
   it("counts a dependency in a RENAMED complete lane as resolved", async () => {
     // Pre-fix: `shipped` is neither "done" nor "archived", so the repair re-blocked on a finished
     // dependency immediately after clearing the overlap blocker.

@@ -158,6 +158,41 @@ describe("blockOuterDispatchWhenFileScopeLeaseHeld", () => {
     expect(store.transitionQueuedEpisode).not.toHaveBeenCalled();
   });
 
+  it("does not hold a candidate whose only shared entry with an in-review holder is the core barrel (RUFU-226)", async () => {
+    /*
+    FNXC:OverlapScheduling 2026-09-11-22:56:
+    The measured incident at the dispatch door: holder parked in review with its worktree retained
+    (`autoMerge:false`) whose scope shares ONLY `packages/core/src/index.ts` with the candidate.
+    Barrel lines are append-only shared traffic — dispatch must proceed without a queue stamp or a
+    settings change; the paired test below proves a real shared file still holds.
+    */
+    const holder = makeTask({ id: "FN-HOLDER", column: "in-review", worktree: "/wt/fn-holder", autoMerge: false, createdAt: "2026-01-01T00:00:00.000Z" });
+    const candidate = makeTask({ id: "FN-CANDIDATE", createdAt: "2026-01-02T00:00:00.000Z" });
+    const store = createStore([holder, candidate], {
+      [holder.id]: ["packages/core/src/index.ts", "packages/core/src/store.ts"],
+      [candidate.id]: ["packages/core/src/index.ts", "packages/engine/src/scheduler.ts"],
+    });
+
+    await expect(blockOuterDispatchWhenFileScopeLeaseHeld({ store, getRunContextFor: () => undefined }, candidate)).resolves.toBe(false);
+    expect(store.transitionQueuedEpisode).not.toHaveBeenCalled();
+    expect(candidate.overlapBlockedBy ?? null).toBeNull();
+  });
+
+  it("holds the candidate when the barrel-shared scopes also share a real file (RUFU-226 guard)", async () => {
+    const holder = makeTask({ id: "FN-HOLDER", column: "in-review", worktree: "/wt/fn-holder", autoMerge: false, createdAt: "2026-01-01T00:00:00.000Z" });
+    const candidate = makeTask({ id: "FN-CANDIDATE", createdAt: "2026-01-02T00:00:00.000Z" });
+    const store = createStore([holder, candidate], {
+      [holder.id]: ["packages/core/src/index.ts", "packages/core/src/store.ts"],
+      [candidate.id]: ["packages/core/src/index.ts", "packages/core/src/store.ts"],
+    });
+
+    await expect(blockOuterDispatchWhenFileScopeLeaseHeld({ store, getRunContextFor: () => undefined }, candidate)).resolves.toBe(true);
+    expect(store.transitionQueuedEpisode).toHaveBeenCalledWith(candidate.id, expect.objectContaining({
+      signature: `file-scope:${holder.id}`,
+      overlapBlockedBy: holder.id,
+    }));
+  });
+
   it("leaves stale overlap bookkeeping for the scheduler when no live holder overlaps", async () => {
     const holder = makeTask({ id: "FN-HOLDER", column: "in-progress" });
     const candidate = makeTask({ overlapBlockedBy: "FN-STALE" });
