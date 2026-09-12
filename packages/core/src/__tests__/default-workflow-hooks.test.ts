@@ -226,3 +226,120 @@ describe("applyReopenFieldClears — graph-owned review-gate remediation crossin
     expect(ctx.task.workflowStepResults).toBeUndefined();
   });
 });
+
+/*
+FNXC:PlanningFailureClear 2026-09-12-13:45 (RUFU-228):
+Stale terminal planning failure (`status:"failed"` + `PLANNING_FAILED_EXHAUSTED`
+error) must clear when the card advances FORWARD from a planning lane into the WIP
+lane - the fourth member of the transient-failure clear set (reopen->planning,
+review entry, Done, forward->WIP). These cases pin the gate from the other side of
+the registry: role-resolved (renamed boards), preserveStatus-suppressed, and
+retention everywhere the failure may still be live (review entry, mid-retry
+WIP moves, non-terminal planning states, terminal->WIP re-entry).
+*/
+describe("default-workflow-hooks - stale planning-failure clear on forward planning->WIP crossing", () => {
+  const STALE_ERROR = "PLANNING_FAILED_EXHAUSTED: specification failed 3 times - last error: fence-unavailable";
+
+  beforeEach(() => {
+    __resetTraitRegistryForTests();
+    __resetDefaultWorkflowHooksForTests();
+    registerBuiltinTraits();
+    registerDefaultWorkflowHooks();
+  });
+
+  function failingCtx(overrides: Partial<DefaultWorkflowMoveContext> = {}): DefaultWorkflowMoveContext {
+    const ctx = makeCtx(overrides);
+    ctx.task.status = "failed";
+    ctx.task.error = STALE_ERROR;
+    return ctx;
+  }
+
+  it("clears status+error on forward todo -> in-progress (legacy-name basis, v1 IR)", () => {
+    const ctx = failingCtx({ fromColumn: "todo", toColumn: "in-progress" });
+    ctx.task.blockedBy = "FN-9";
+    const { warnings } = applyDefaultWorkflowMoveEffects(ctx);
+    expect(warnings).toHaveLength(0);
+    expect(ctx.task.status).toBeUndefined();
+    expect(ctx.task.error).toBeUndefined();
+    // Only the stale failure clears - blockedBy is planning-owned state this
+    // effect must not touch (reopen clears it; forward WIP entry leaves it).
+    expect(ctx.task.blockedBy).toBe("FN-9");
+  });
+
+  it("clears from the intake lane too (triage -> in-progress)", () => {
+    const ctx = failingCtx({ fromColumn: "triage", toColumn: "in-progress" });
+    applyDefaultWorkflowMoveEffects(ctx);
+    expect(ctx.task.status).toBeUndefined();
+    expect(ctx.task.error).toBeUndefined();
+  });
+
+  it("preserveStatus suppresses the clear (explicit callers keep exact semantics)", () => {
+    const ctx = failingCtx({
+      fromColumn: "todo",
+      toColumn: "in-progress",
+      options: { preserveStatus: true },
+    });
+    applyDefaultWorkflowMoveEffects(ctx);
+    expect(ctx.task.status).toBe("failed");
+    expect(ctx.task.error).toBe(STALE_ERROR);
+  });
+
+  it("retains the failure on planning -> review (review entry owns retention)", () => {
+    const ctx = failingCtx({ fromColumn: "todo", toColumn: "in-review" });
+    applyDefaultWorkflowMoveEffects(ctx);
+    expect(ctx.task.status).toBe("failed");
+    expect(ctx.task.error).toBe(STALE_ERROR);
+  });
+
+  it("retains the failure on in-progress -> in-progress (mid-retry error may be live)", () => {
+    const ctx = failingCtx({ fromColumn: "in-progress", toColumn: "in-progress" });
+    applyDefaultWorkflowMoveEffects(ctx);
+    expect(ctx.task.status).toBe("failed");
+    expect(ctx.task.error).toBe(STALE_ERROR);
+  });
+
+  it("retains non-terminal planning states across the same crossing", () => {
+    const replan = makeCtx({ fromColumn: "todo", toColumn: "in-progress" });
+    replan.task.status = "needs-replan";
+    replan.task.error = STALE_ERROR;
+    applyDefaultWorkflowMoveEffects(replan);
+    expect(replan.task.status).toBe("needs-replan");
+    expect(replan.task.error).toBe(STALE_ERROR);
+
+    const errorOnly = makeCtx({ fromColumn: "todo", toColumn: "in-progress" });
+    errorOnly.task.error = STALE_ERROR;
+    applyDefaultWorkflowMoveEffects(errorOnly);
+    expect(errorOnly.task.status).toBeUndefined();
+    expect(errorOnly.task.error).toBe(STALE_ERROR);
+  });
+
+  it("retains the failure on terminal -> WIP re-entry (from not in planning - different invariant)", () => {
+    const ctx = failingCtx({ fromColumn: "done", toColumn: "in-progress" });
+    applyDefaultWorkflowMoveEffects(ctx);
+    expect(ctx.task.status).toBe("failed");
+    expect(ctx.task.error).toBe(STALE_ERROR);
+  });
+
+  it("clears by ROLE on a renamed board (hold -> WIP, not literal column names)", () => {
+    const ctx = failingCtx({
+      fromColumn: "backlog",
+      toColumn: "doing",
+      lifecycleColumns: { intake: "queue", hold: "backlog", wip: "doing", review: "approve", complete: "shipped" },
+      lifecycleColumnSets: { wip: ["doing"], complete: ["shipped"], review: ["approve"] },
+    });
+    applyDefaultWorkflowMoveEffects(ctx);
+    expect(ctx.task.status).toBeUndefined();
+    expect(ctx.task.error).toBeUndefined();
+  });
+
+  it("an empty WIP lane set is the answer - no fallback to the legacy literal", () => {
+    const ctx = failingCtx({
+      fromColumn: "todo",
+      toColumn: "in-progress",
+      lifecycleColumnSets: { wip: [], complete: [], review: [] },
+    });
+    applyDefaultWorkflowMoveEffects(ctx);
+    expect(ctx.task.status).toBe("failed");
+    expect(ctx.task.error).toBe(STALE_ERROR);
+  });
+});

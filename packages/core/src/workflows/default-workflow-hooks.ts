@@ -416,6 +416,42 @@ export function applyReopenFieldClears(ctx: DefaultWorkflowMoveContext): void {
 }
 
 /**
+ * Clear a stale TERMINAL planning failure when a card advances forward from a planning lane
+ * into the WIP lane.
+ *
+ * FNXC:PlanningFailureClear 2026-09-12-13:36 (RUFU-228):
+ * A card that recovers from a terminal planning failure (triage's `PLANNING_FAILED_EXHAUSTED`
+ * park: `status:"failed"` + `error`) and advances into the work lane must not keep that failure.
+ * RUFU-225 proved the cost of the missing clear: an FN-8592 stranded-hold reseed passed plan-review,
+ * the graph boundary moved the card todo → in-progress, and the board rendered one live card as two
+ * stacked cards — the WIP card plus the red `.card-error` band of a failure it had already recovered
+ * from. `task:error` is last-failure-wins transient state (RUFU-225's own row was later overwritten
+ * by a branch-conflict error), so surviving a crossing is corruption, not history.
+ *
+ * THE COMPLETE SET of transient-failure clear points is four lane crossings: reopen → planning
+ * (applyResetOnEntryEffects), review entry (applyInReviewEnterEffects), Done (clearDoneTransientFieldsImpl),
+ * and this forward planning → WIP crossing. Anything outside these four crossings must not clear.
+ *
+ * BLANKET-CLEARING ON WIP ENTRY IS FORBIDDEN, and this gate is why it is safe: only a FORWARD
+ * crossing FROM a planning lane carries a stale planning verdict, and only `failed` is terminal —
+ * `needs-replan`/`planning`/null are planning-owned signals the clear must leave for triage, and an
+ * in-progress card may legitimately carry the very error its retry is about (mid-retry in-progress →
+ * in-progress moves preserve it; a same-column move never reaches hooks anyway). `preserveStatus`
+ * suppresses the clear so explicit callers (plan-approval rebound et al.) keep their exact semantics.
+ * Only `status`+`error` are touched — triage/self-healing own `recoveryRetryCount`/`nextRecoveryAt`,
+ * pause fields, steps, and worktrees.
+ */
+export function applyStalePlanningFailureClearEffects(ctx: DefaultWorkflowMoveContext): void {
+  const { task, fromColumn, toColumn, options } = ctx;
+  if (options.preserveStatus || task.status !== "failed") return;
+  const fromPlanning = planningColumnsOf(ctx.lifecycleColumns).includes(fromColumn);
+  const intoWip = inRole(toColumn, ctx.lifecycleColumnSets?.wip, ctx.lifecycleColumns?.wip, "in-progress");
+  if (!fromPlanning || !intoWip) return;
+  task.status = undefined;
+  task.error = undefined;
+}
+
+/**
  * Apply ALL default-workflow field-mutation move effects (the parallel of the
  * legacy inline block) in the legacy order. Pure in-memory mutation of
  * `ctx.task`; queue/filesystem/post-commit effects remain store-owned.
@@ -464,6 +500,10 @@ let registered = false;
  * The legacy effects map onto traits as:
  *   timing.onExit / timing.onEnter   → applyTimingEffects + completion stamp
  *   reset-on-entry.onEnter           → applyResetOnEntryEffects + reopen clears
+ *                                       + applyStalePlanningFailureClearEffects
+ *                                       (self-gated to the forward planning → WIP crossing;
+ *                                       `toRun` resolves registered trait ids on EVERY move,
+ *                                       so role self-gating — not trait declaration — bounds it)
  *   abort-on-exit.onExit             → (userPaused handled in reset-on-entry;
  *                                       session abort is an engine effect U6/U7)
  *   merge.onEnter                    → applyInReviewEnterEffects
@@ -497,6 +537,11 @@ export function registerDefaultWorkflowHooks(): void {
     cast((ctx) => {
       applyResetOnEntryEffects(ctx);
       applyReopenFieldClears(ctx);
+      // RUFU-228: the forward planning → WIP stale-failure clear lives on the same
+      // adapter because `toRun` resolves `reset-on-entry.onEnter` on every move — the
+      // effect self-gates by role crossing (planning → WIP), exactly as the reopen
+      // effects self-gate to live-work → planning.
+      applyStalePlanningFailureClearEffects(ctx);
     }),
   );
   registry.registerTraitHookImpl(

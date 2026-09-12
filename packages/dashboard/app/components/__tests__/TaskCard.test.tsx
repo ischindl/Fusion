@@ -8897,3 +8897,50 @@ describe("TaskCard stall-reason wiring", () => {
     });
   });
 });
+
+/*
+FNXC:PlanningFailureClear 2026-09-12-13:50 (RUFU-228):
+Render-shape coverage for the stale-planning-failure fix. RUFU-225 rendered one
+live in-progress card as TWO stacked cards: the card plus the red `.card-error`
+band, because the row still carried `status:"failed"` + the PLANNING_FAILED_EXHAUSTED
+error after plan-review had passed and the graph had advanced it todo -> in-progress.
+The fix is in the store (applyStalePlanningFailureClearEffects clears status+error on
+that crossing), NOT here — the `isDoneColumn && task.status === "failed"` render gate
+already exists on origin/main. These tests pin both row shapes so the band can never
+return for a cleared WIP row and the pre-fix shape stays documented.
+*/
+describe("stale planning-failure render shape (RUFU-228)", () => {
+  const STALE_ERROR = "PLANNING_FAILED_EXHAUSTED: specification failed 3 times - last error: fence-unavailable";
+
+  it("pre-fix stale row (failed + error surviving in in-progress) renders the stacked failure band", () => {
+    const { container } = render(
+      <TaskCard
+        task={makeTask({ column: "in-progress", status: "failed", error: STALE_ERROR })}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
+
+    // This is the exact persisted shape RUFU-225 showed as two stacked cards:
+    // red band + failed card chrome on a card that is actually working.
+    expect(container.querySelector(".card-error")).not.toBeNull();
+    expect(container.querySelector(".card-error-text")?.textContent).toContain("PLANNING_FAILED_EXHAUSTED");
+    expect(container.querySelector(".card.failed")).not.toBeNull();
+  });
+
+  it("post-fix cleared row renders one WIP card with no failure band or failed chrome", () => {
+    const { container } = render(
+      <TaskCard
+        task={makeTask({ column: "in-progress", status: undefined, error: undefined })}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
+
+    // The cleared row the store fix produces: still a live in-progress card,
+    // zero trace of the recovered planning failure.
+    expect(container.querySelector(".card-error")).toBeNull();
+    expect(container.querySelector(".card.failed")).toBeNull();
+    expect(container.querySelector(".card-status-badge--in-progress")).not.toBeNull();
+  });
+});
