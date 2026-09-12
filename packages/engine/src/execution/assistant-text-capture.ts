@@ -90,9 +90,23 @@ export function createAssistantStreamCapture(sinks: CaptureSinks): { handleAgent
         if (!kind) return;
         if (type === `${kind}_delta`) {
           if (typeof update.delta !== "string" || index === undefined) return;
+          const full = blockText(partial, index, kind);
+          /*
+           * FNXC:AssistantTextCapture 2026-09-12-14:14:
+           * RUFU-230 producer-mutation race. The openai-completions producer (pi-ai) pushes `text_start` on a not-yet-
+           * mutated block but mutates the SHARED `partial` synchronously (`block.text += delta`) before pushing the
+           * paired `text_delta`, and pi-agent-core re-delivers both events asynchronously against that live reference.
+           * So the async `text_start` flush may already have emitted exactly the chunk the following `text_delta`
+           * redelivers (anthropic-shaped streams push text_start on a separate SSE event and are unaffected).
+           * The per-block `emitted` offset ledger is authoritative: when the authoritative block text ends with this
+           * delta and the ledger already covers the whole block, the chunk was emitted once already — skip it
+           * entirely (no normalizer advance, no ledger write). `full &&` keeps the partialFree (mock) raw-delta
+           * fallback unchanged, and a start flush that did not cover the block, or a delta that is not the block's
+           * suffix (e.g. a hand-built populated start with an un-mutated delta), still emits.
+           */
+          if (full && full.endsWith(update.delta) && (emitted[kind].get(index) ?? 0) >= full.length) return;
           const delta = normalizer.normalize(partial as { content?: Array<{ type?: string; text?: string; thinking?: string }> } | undefined, index, update.delta, kind);
           emit(kind, delta, partial, index);
-          const full = blockText(partial, index, kind);
           emitted[kind].set(index, full ? full.length : (emitted[kind].get(index) ?? 0) + update.delta.length);
         } else if (type === `${kind}_start`) {
           flush(kind, blockText(partial, index, kind), partial, index);

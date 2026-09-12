@@ -55,4 +55,39 @@ describe("createAssistantStreamCapture", () => {
     expect(result.text).toEqual([]);
     expect(result.thinking).toEqual([]);
   });
+
+  /*
+  FNXC:AssistantTextCapture 2026-09-12-14:10:
+  RUFU-230 symptom regression. The openai-completions producer (pi-ai 0.84.4) pushes `text_start` and
+  then mutates the SHARED `partial` (`block.text += delta`) before pushing `text_delta`, and pi-agent-core
+  re-delivers both events asynchronously with that live reference. By the time this seam handles
+  `text_start`, the block text already contains the first chunk, so the start flush emits it; the following
+  `text_delta` redelivers the same chunk. Concatenating both doubles the first chunk — the operator's
+  literal "The operatorThe operator approved both actions." symptom. The joined capture text must equal
+  the real reply exactly once, with no block-boundary signal for the skipped redelivery. The thinking
+  branch follows the identical producer shape, so it is asserted as a non-vacuous control on the same
+  invariant.
+  */
+  it("emits the first streamed chunk exactly once when the producer mutates partial before async delivery", () => {
+    const result = capture();
+    const partial = { content: [{ type: "text", text: "The operator" }] };
+    result.seam.handleAgentEvent({ type: "message_start" });
+    // text_start arrives with the block ALREADY mutated to the first chunk (producer race).
+    result.seam.handleAgentEvent(update({ type: "text_start", partial, contentIndex: 0 }));
+    // text_delta redelivers the same first chunk on the same live partial.
+    result.seam.handleAgentEvent(update({ type: "text_delta", partial, contentIndex: 0, delta: "The operator" }));
+    // Second chunk grows the block text, then its delta is delivered.
+    partial.content[0].text = "The operator approved both actions.";
+    result.seam.handleAgentEvent(update({ type: "text_delta", partial, contentIndex: 0, delta: " approved both actions." }));
+    expect(result.text.join("")).toBe("The operator approved both actions.");
+    expect(result.boundaries).toEqual([]);
+
+    // Control: thinking_start/thinking_delta from the same producer shape must not double-emit either.
+    const thinkPartial = { content: [{ type: "thinking", thinking: "Let me" }] };
+    result.seam.handleAgentEvent(update({ type: "thinking_start", partial: thinkPartial, contentIndex: 0 }));
+    result.seam.handleAgentEvent(update({ type: "thinking_delta", partial: thinkPartial, contentIndex: 0, delta: "Let me" }));
+    thinkPartial.content[0].thinking = "Let me verify";
+    result.seam.handleAgentEvent(update({ type: "thinking_delta", partial: thinkPartial, contentIndex: 0, delta: " verify" }));
+    expect(result.thinking.join("")).toBe("Let me verify");
+  });
 });
