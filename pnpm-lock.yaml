@@ -1046,6 +1046,9 @@ importers:
       '@earendil-works/pi-coding-agent':
         specifier: 0.84.4
         version: 0.84.4(@modelcontextprotocol/sdk@1.28.0(zod@4.4.3))(ws@8.21.3)(zod@4.4.3)
+      '@fusion/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@fusion/plugin-sdk':
         specifier: workspace:*
         version: link:../../packages/plugin-sdk
@@ -1199,6 +1202,9 @@ importers:
 
   plugins/fusion-plugin-openclaw-runtime:
     dependencies:
+      '@fusion/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@fusion/plugin-sdk':
         specifier: workspace:*
         version: link:../../packages/plugin-sdk
@@ -1215,6 +1221,9 @@ importers:
 
   plugins/fusion-plugin-paperclip-runtime:
     dependencies:
+      '@fusion/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@fusion/plugin-sdk':
         specifier: workspace:*
         version: link:../../packages/plugin-sdk

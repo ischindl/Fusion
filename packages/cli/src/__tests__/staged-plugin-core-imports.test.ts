@@ -192,8 +192,15 @@ describe("staged plugin core import packaging", () => {
   it("treats Cursor's type-only SupervisedChild as erased while requiring superviseSpawn", () => {
     const cursorTransport = join(workspaceRoot, "plugins", "fusion-plugin-cursor-runtime", "src", "prompt-transport.ts");
     const inspection = inspectCoreImports(cursorTransport, readFileSync(cursorTransport, "utf8"));
-    expect(inspection.requiredExports).toEqual(new Set(["superviseSpawn"]));
+    /*
+     * FNXC:NonInteractiveGit 2026-09-12-12:23:
+     * RUFU-210 hardened Cursor's prompt spawn with a second core VALUE import (`applyNonInteractiveGitEnv`),
+     * so this exact set records both required exports. The assertion's subject is unchanged — a type-only
+     * import (`SupervisedChild`) must erase while every value import must be required and shim-resolvable.
+     */
+    expect(inspection.requiredExports).toEqual(new Set(["superviseSpawn", "applyNonInteractiveGitEnv"]));
     expect(coreRuntimeShim).toHaveProperty("superviseSpawn");
+    expect(coreRuntimeShim).toHaveProperty("applyNonInteractiveGitEnv");
     expect(coreRuntimeShim).not.toHaveProperty("SupervisedChild");
   });
 

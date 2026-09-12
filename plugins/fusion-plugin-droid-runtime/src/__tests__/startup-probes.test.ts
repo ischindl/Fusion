@@ -3,7 +3,11 @@ import { EventEmitter } from "node:events";
 
 const spawnMock = vi.hoisted(() => vi.fn());
 
-vi.mock("node:child_process", () => ({
+// FNXC:NonInteractiveGit 2026-09-12-12:39 (RUFU-216): `process-manager.ts` now imports `@fusion/core`, whose
+// barrel `promisify(execFile)`s at module init, so a whole-module replacement exporting only `spawn` throws
+// while the module graph loads. Partial mock: keep the real exports, replace only `spawn`.
+vi.mock("node:child_process", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:child_process")>()),
   spawn: spawnMock,
 }));
 

@@ -10,6 +10,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { applyNonInteractiveGitEnv } from "@fusion/core";
 
 function debugLog(message: string): void {
   if (process.env.PI_DROID_CLI_DEBUG !== "1") return;
@@ -95,9 +96,26 @@ export function spawnDroid(
     newSessionId: options?.newSessionId,
   });
 
+  /*
+  FNXC:NonInteractiveGit 2026-09-12-12:39 (RUFU-216):
+  This spawn carried NO env field, so the droid subprocess inherited `process.env` verbatim — including
+  whatever editor/pager/credential-prompt preferences the host happens to have. A droid turn that shells
+  out to git is then the same hang class RUFU-210 measured on the engine lanes: `git commit -e` resolves
+  an editor, the session has no TTY, and the child blocks on input forever (the recorded incident sat
+  orphaned under PID 1 for 1d13h in a worktree that had already been deleted underneath it).
+
+  Scoped per spawn, never the parent environment: the operator's own dashboard terminal keeps a real
+  editor, because nothing here mutates `process.env`. The helper applies its fixed keys LAST, after the
+  ambient env, so neither an ambient value nor a plugin-injected one can clear the floor. The child
+  process tree inherits this env, so one wrap covers the runtime's own shell/tool children too.
+
+  Deliberate exclusions: `runDroidProbe` and the `exec --help` model-discovery seam in this file, plus
+  `src/probe.ts`, stay unhardened — probe/config class runs a read-only binary check, not a task turn.
+  */
   const proc = spawn("droid", args, {
     stdio: ["pipe", "pipe", "pipe"],
     cwd: options?.cwd ?? process.cwd(),
+    env: applyNonInteractiveGitEnv(process.env),
   });
 
   debugLog(`spawnDroid: pid=${proc.pid} model=${modelId}`);
