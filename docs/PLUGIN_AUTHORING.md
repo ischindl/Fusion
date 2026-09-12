@@ -438,6 +438,8 @@ Validation and merge behavior (from engine runtime collection):
 - When multiple plugins set the same `env` key, later plugins override earlier values and the engine logs a warning.
 - `pathPrepend` entries from later plugins are placed earlier in the final prepend list.
 
+Independently of this hook, the engine applies a **non-interactive git floor** (`GIT_EDITOR`/`GIT_SEQUENCE_EDITOR=true`, `GIT_PAGER`/`PAGER=cat`, `GIT_TERMINAL_PROMPT=0`, `GIT_MERGE_AUTOEDIT=no`) **last** to every autonomous spawn lane, so neither a plugin contribution nor a task-scoped env can re-enable an interactive git prompt. If your plugin runtime spawns the agent CLI itself (outside the executor's own spawn seams), wrap the env you pass to the spawn with `applyNonInteractiveGitEnv` from `@fusion/core` so your lane honors the same floor.
+
 ### Example: prepend a generated tool directory for executor commands
 
 ```typescript

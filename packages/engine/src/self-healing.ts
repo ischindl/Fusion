@@ -124,6 +124,7 @@ import { createLogger, schedulerLog } from "./logger.js";
 import { registerLifecycleMoveLog } from "./execution/lifecycle-move-log.js";
 import { moveTaskToContainedBackwardTarget, type ContainedLifecycleMoveResult } from "./execution/lifecycle-move.js";
 import { emitBoundedRunAudit } from "./util/emit-bounded-run-audit.js";
+import { createProcfsGitChildProbe, reapOrphanedGitChildren, type GitChildProcessProbe } from "./util/orphaned-git-child-reaper.js";
 import {
   TRIAGE_MARKER_CLEARED_REPLAN_LOG_ACTION,
   buildInactiveDuplicateClearFeedback,
@@ -1061,6 +1062,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
    * run-audit.
    */
   private inFlightChatGenerationNoActionAudited = false;
+  /* FNXC:OrphanedGitChildren 2026-09-12-09:20 (RUFU-210): idle orphan-git reaps emit one no-action audit until a real reap re-arms the diagnostic (mirrors the symbol-lock memo). */
+  private orphanedGitChildReapNoActionAudited = false;
   private maintenanceTickCounter = 0;
   private readonly taskLifecycleRetentionLastPrunedAt = new Map<string, number>();
   private readonly staleContentRerouteAuditKeys = new Set<string>();
@@ -2198,6 +2201,10 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       // FNXC:ChatInFlightRecovery 2026-08-20-20:17 (RUFU-144): clear in_flight_generation flags stranded by a
       // dashboard restart before any client re-attach can reopen a dead streaming UI state.
       { name: "reconcile-stale-in-flight-chat-generations", fn: () => this.reconcileStaleInFlightChatGenerations().then(() => undefined) },
+      /* FNXC:OrphanedGitChildren 2026-09-12-09:20 (RUFU-210): an engine restart is exactly when
+         last run's reparented git children become provably orphaned; the sweep signals processes
+         only and makes no task/worktree/lifecycle mutation, so it stays safe at startup. */
+      { name: "reap-orphaned-worktree-git-children", fn: () => this.reapOrphanedWorktreeGitChildren().then(() => undefined) },
       { name: "reconcile-completed-blocked", fn: () => this.reconcileCompletedBlockedTasks().then(() => undefined) },
       { name: "reconcile-in-review-unmet-dependencies", fn: () => this.reconcileInReviewUnmetDependencies().then(() => undefined) },
       { name: "reconcile-engine-downtime-active-timing", fn: () => this.reconcileEngineDowntimeActiveTiming().then(() => undefined) },
@@ -3141,6 +3148,9 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         { name: "fts-maintenance", fn: () => this.maintainTaskFts() },
         { name: "checkpoint-wal", fn: () => Promise.resolve(this.checkpointWal()) },
         { name: "enforce-worktree-cap", fn: () => (maintenancePaused || !gitWorktreeChurnDue ? Promise.resolve(0) : this.enforceWorktreeCap()) },
+        /* FNXC:OrphanedGitChildren 2026-09-12-09:20 (RUFU-210): cadence-gated with the other
+           git/worktree churn steps; a /proc-less host returns 0 with no audit row. */
+        { name: "reap-orphaned-worktree-git-children", fn: () => (maintenancePaused || !gitWorktreeChurnDue ? Promise.resolve(0) : this.reapOrphanedWorktreeGitChildren()) },
       ];
       for (const fn of batch1Fns) {
         try {
@@ -17073,6 +17083,79 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       log.error(`Orphan cleanup failed: ${errorMessage}`);
       return 0;
     }
+  }
+
+  /*
+  FNXC:OrphanedGitChildren 2026-09-12-09:20 (RUFU-210):
+  A git child reparented by an ended session (RUFU-194 incident: `git rebase --continue` spawning
+  `git commit -e` wedged on an editor for 1d13h) can outlive its worktree, because BOTH worktree
+  removal guards — the active-session registry refusal and the content classifier — are
+  structurally blind to a process whose owning session already released its registry entry
+  (Step 5 forensics, task document "deletion-side"). The honest invariant is therefore to keep
+  those refusals intact and reap the proven orphan afterwards, which is this sweep. It signals
+  processes ONLY — never task, worktree, or lifecycle state — and on a host without /proc it
+  returns 0 with no audit row (the absent row is the signal the host could not be probed).
+  */
+  async reapOrphanedWorktreeGitChildren(options: {
+    probe?: GitChildProcessProbe;
+    graceMs?: number;
+    maxReaps?: number;
+    killGraceMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+  } = {}): Promise<number> {
+    const settings = await this.store.getSettings();
+    const scanRoots = resolveWorktreesDirScanRoots(this.options.rootDir, settings);
+    const probe = options.probe ?? createProcfsGitChildProbe();
+    if (!probe.available) return 0;
+    const result = await reapOrphanedGitChildren({
+      probe,
+      worktreesDirs: scanRoots,
+      graceMs: options.graceMs,
+      maxReaps: options.maxReaps,
+      killGraceMs: options.killGraceMs,
+      sleep: options.sleep,
+    });
+    if (result.reaps.length > 0) {
+      this.orphanedGitChildReapNoActionAudited = false;
+      // One audit row per worktree path keeps `target` honest (consistent with worktree:removal-*).
+      // Within a path the first reap's deletion-evidence reason wins — deterministic and ids-only.
+      const groups = new Map<string, { pids: number[]; maxAgeMs: number; reason: "deleted-worktree-cwd" | "deleted-cwd-suffix" }>();
+      for (const reap of result.reaps) {
+        const group = groups.get(reap.worktreePath) ?? { pids: [], maxAgeMs: 0, reason: reap.reason };
+        group.pids.push(reap.pid);
+        group.maxAgeMs = Math.max(group.maxAgeMs, reap.ageMs);
+        groups.set(reap.worktreePath, group);
+      }
+      for (const [worktreePath, group] of groups) {
+        await emitBoundedRunAudit(this.store, {
+          agentId: "self-healing",
+          runId: "orphaned-git-child-reap",
+          domain: "git",
+          mutationType: "worktree:orphaned-git-child-reaped",
+          target: worktreePath,
+          metadata: {
+            count: group.pids.length,
+            pids: group.pids.slice(0, 20),
+            ageMs: group.maxAgeMs,
+            reason: group.reason,
+            outcome: "reaped",
+          },
+        }, { log });
+      }
+      return result.reaped;
+    }
+    if (!this.orphanedGitChildReapNoActionAudited) {
+      this.orphanedGitChildReapNoActionAudited = true;
+      await emitBoundedRunAudit(this.store, {
+        agentId: "self-healing",
+        runId: "orphaned-git-child-reap",
+        domain: "git",
+        mutationType: "worktree:orphaned-git-child-reap-no-action",
+        target: "orphaned-git-children",
+        metadata: { count: 0, outcome: "no-action" },
+      }, { log });
+    }
+    return 0;
   }
 
   private retireEmptyLegacyWorktreesRoot(settings: Pick<Settings, "worktreesDir">): void {

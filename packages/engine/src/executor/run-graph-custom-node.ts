@@ -19,7 +19,7 @@ import type {
   WorkflowStep,
   WorkspaceConfig,
 } from "@fusion/core";
-import { isFastExecutionMode, isFastLaneSkippableCustomNode, isLegacyWorkspaceWorktreeLayout, requiresContentReviewProof, resolveEffectiveAgent, resolveWorkspaceTaskWorktreeDir, THINKING_LEVELS, WORKFLOW_STEP_NOT_RUN_REASONS } from "@fusion/core";
+import { applyNonInteractiveGitEnv, isFastExecutionMode, isFastLaneSkippableCustomNode, isLegacyWorkspaceWorktreeLayout, requiresContentReviewProof, resolveEffectiveAgent, resolveWorkspaceTaskWorktreeDir, THINKING_LEVELS, WORKFLOW_STEP_NOT_RUN_REASONS } from "@fusion/core";
 import { executorLog } from "../logger.js";
 import type { EngineRunContext } from "../util/run-audit.js";
 import type { WorkflowNodeResult } from "../workflows/workflow-graph-executor.js";
@@ -233,7 +233,9 @@ export async function runPlanReviewDependencyGate(
         store: input.store,
         runContext: input.getRunContextFor(input.task.id),
         runConfiguredCommand: input.runConfiguredCommand,
-        taskEnv: process.env,
+        // FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210): dependency installs run git
+        // (lockfile fetches, submodule init) on the autonomous graph-custom-node lane — hardened.
+        taskEnv: applyNonInteractiveGitEnv(process.env),
         logger: executorLog,
       });
       if (readiness.readiness === "unresolved" || readiness.readiness === "unrecognized") {
@@ -751,7 +753,9 @@ export async function runGraphCustomNode(
         if ((live.pausedReason ?? "").startsWith(approvalMarker)) {
           await deps.store.updateTask(live.id, { status: null, pausedReason: null }, deps.getRunContextFor(live.id));
         }
-        const env = prompt ? { ...process.env, FUSION_NODE_PROMPT: prompt } : undefined;
+        // FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210): raw custom-node commands are an
+        // autonomous git lane; the floor rides the same env object as FUSION_NODE_PROMPT.
+        const env = prompt ? applyNonInteractiveGitEnv({ ...process.env, FUSION_NODE_PROMPT: prompt }) : undefined;
         const out = await deps.runRawCliCommand(
           live,
           typeof cfg.name === "string" && cfg.name.trim() ? cfg.name : node.id,
@@ -830,7 +834,10 @@ export async function runGraphCustomNode(
     // silently no-op'd here. CLI executor keeps its own FUSION_NODE_PROMPT env.
     let nodeEnv: NodeJS.ProcessEnv | undefined;
     if (executorKind === "cli" && prompt) {
-      nodeEnv = { ...process.env, FUSION_NODE_PROMPT: prompt };
+      // FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210): the prompt-mode branch below gets
+      // the floor via buildInjectedRuntimeEnv; the CLI branch builds its env here and must not
+      // be the one unhardened custom-node lane.
+      nodeEnv = applyNonInteractiveGitEnv({ ...process.env, FUSION_NODE_PROMPT: prompt });
     } else if (mode === "prompt") {
       const injected = await deps.buildInjectedRuntimeEnv(live.id, worktreePath, executionTarget.branch ?? undefined);
       nodeEnv = injected.env;

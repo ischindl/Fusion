@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import readline from "node:readline";
 import path from "node:path";
-import { superviseSpawn, type SupervisedChild } from "@fusion/core";
+import { applyNonInteractiveGitEnv, superviseSpawn, type SupervisedChild } from "@fusion/core";
 import { assertCmdBoundarySafe, classifyWindowsLaunchTarget, quoteCmdArgument, resolveCursorBinaryForSpawn, resolvePowerShellExecutable } from "./cli-spawn.js";
 import { parseCursorStreamLine } from "./stream-parser.js";
 
@@ -40,7 +40,10 @@ export async function launchCursorPrompt(input: CursorPromptInput, deps: CursorP
   A Cursor turn is bounded by first output and reset-on-output inactivity, not a total duration.
   Active coding turns may legitimately stream beyond two minutes, so disable the supervisor lifetime cap while retaining parent-shutdown supervision and explicit teardown.
   */
-  const options = { shell: false as const, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"], cwd: input.cwd, maxLifetimeMs: Number.POSITIVE_INFINITY };
+  // FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210): this spawn carried NO env field (child
+  // inherited process.env verbatim); the operator-selected Cursor lane now gets the scoped
+  // non-interactive git floor instead of the ambient env.
+  const options = { shell: false as const, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"], cwd: input.cwd, env: applyNonInteractiveGitEnv(process.env), maxLifetimeMs: Number.POSITIVE_INFINITY };
   const supervise = deps.supervise ?? superviseSpawn;
   let command = target; let launchArgs = args; let launchOptions: Parameters<typeof superviseSpawn>[2] = options;
   if (platform === "win32") {

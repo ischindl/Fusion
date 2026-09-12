@@ -9,8 +9,17 @@ const { mockSpawn, mockSuperviseSpawn } = vi.hoisted(() => ({
   mockSuperviseSpawn: vi.fn(),
 }));
 
-vi.mock("node:child_process", () => ({ spawn: mockSpawn }));
-vi.mock("@fusion/core", () => ({
+// FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210): the real-@fusion/core spread below loads
+// core sources that `promisify(execFile)` at module init, so node:child_process must keep its
+// other exports; only `spawn` is replaced by the fake.
+vi.mock("node:child_process", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:child_process")>()),
+  spawn: mockSpawn,
+}));
+// FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210): spread the real module so the production
+// applyNonInteractiveGitEnv floor is exercised through the mocked spawn boundary.
+vi.mock("@fusion/core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@fusion/core")>()),
   superviseSpawn: (command: string, args: string[], options: Record<string, unknown>) => {
     mockSuperviseSpawn(command, args, options);
     const child = mockSpawn(command, args, options);
@@ -270,6 +279,26 @@ describe("invokeHermesCli", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     __resetHermesLaunchCacheForTests();
+  });
+
+  // FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210): the Hermes lane inherits process.env
+  // wholesale, so the scoped non-interactive git floor must ride its spawn options — a
+  // `git commit -e` left interactive blocks forever on a TTY that never comes.
+  it("hardens the CLI spawn env with the non-interactive git floor", async () => {
+    const turnChild = makeFakeChild();
+    mockSpawn.mockReturnValueOnce(turnChild.child);
+    const promise = invokeHermesCli("hardening prompt", defaultSettings());
+    await flushAsync();
+    const spawnOptions = mockSpawn.mock.calls.at(-1)?.[2] as { env: NodeJS.ProcessEnv };
+    turnChild.emitStdout(fakeHermesOutput("ok"));
+    turnChild.emitClose(0);
+    await promise;
+    expect(spawnOptions.env.GIT_EDITOR).toBe("true");
+    expect(spawnOptions.env.GIT_SEQUENCE_EDITOR).toBe("true");
+    expect(spawnOptions.env.GIT_PAGER).toBe("cat");
+    expect(spawnOptions.env.GIT_TERMINAL_PROMPT).toBe("0");
+    expect(spawnOptions.env.GIT_MERGE_AUTOEDIT).toBe("no");
+    expect(spawnOptions.env.PYTHONUNBUFFERED).toBe("1");
   });
 
   it("launches a Windows .cmd prompt turn through cmd.exe with escaped prompt data", async () => {

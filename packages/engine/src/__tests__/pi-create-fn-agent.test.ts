@@ -3,6 +3,21 @@ import type { PathLike } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+/*
+FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210):
+Local literal (not an `@fusion/core` import): a top-level core import would evaluate core during
+import hoisting and trip this file's hoisted `node:fs` vi.mock factory before its mock consts
+initialize. The floor's value set is pinned against the source in core's own
+non-interactive-git-env.test.ts; here we assert COMPOSITION (floor applied last over merged env).
+*/
+const GIT_FLOOR = {
+  GIT_EDITOR: "true",
+  GIT_SEQUENCE_EDITOR: "true",
+  GIT_PAGER: "cat",
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_MERGE_AUTOEDIT: "no",
+};
+
 const createAgentSessionMock = vi.fn();
 const createBashToolMock = vi.fn((cwd: string, options?: any) => ({ name: "bash", cwd, options }));
 const createCodingToolsMock = vi.fn(() => []);
@@ -1811,6 +1826,8 @@ describe("createFnAgent", () => {
       env: originalEnv,
     });
 
+    // FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210): task env still wins over the spawned
+    // base env, and the fixed non-interactive git floor rides on top of the merged result.
     expect(spawned).toEqual({
       command: "echo hi",
       cwd: "/project",
@@ -1818,13 +1835,18 @@ describe("createFnAgent", () => {
         PATH: "/task/bin",
         HOME: "/home/user",
         TASK_ONLY: "1",
+        ...GIT_FLOOR,
       },
     });
     expect(originalEnv).toEqual({ PATH: "/base/bin", HOME: "/home/user" });
     expect(process.env).toEqual(processEnvBefore);
   });
 
-  it("keeps bash tool default behavior when taskEnv is not provided", async () => {
+  it("hardens the bash spawn env with the non-interactive git floor even without taskEnv", async () => {
+    // FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210): the old contract here was
+    // `toHaveBeenCalledWith("/project", undefined)` — bashToolOptions existed only with a
+    // taskEnv/sandbox, which left durable heartbeat sessions unhardened and able to orphan a
+    // `git commit -e` editor (measured 1d13h on a production host). The floor is now unconditional.
     const { createPiAgentSessionRaw: createFnAgent } = await import("../pi.js");
 
     await createFnAgent({
@@ -1833,10 +1855,16 @@ describe("createFnAgent", () => {
       tools: "coding",
     });
 
-    expect(createBashToolMock).toHaveBeenCalledWith("/project", undefined);
+    expect(createBashToolMock).toHaveBeenCalledWith(
+      "/project",
+      expect.objectContaining({ spawnHook: expect.any(Function) }),
+    );
+    const spawnHook = createBashToolMock.mock.calls.at(-1)?.[1]?.spawnHook;
+    const spawned = spawnHook({ command: "git log", cwd: "/project", env: { PATH: "/bin" } });
+    expect(spawned.env).toEqual({ PATH: "/bin", ...GIT_FLOOR });
   });
 
-  it("keeps spawned env unchanged when taskEnv is empty", async () => {
+  it("keeps spawned env unchanged apart from the git floor when taskEnv is empty", async () => {
     const { createPiAgentSessionRaw: createFnAgent } = await import("../pi.js");
 
     await createFnAgent({
@@ -1850,7 +1878,7 @@ describe("createFnAgent", () => {
     const originalEnv = { HOME: "/home/user", PATH: "/bin" };
     const spawned = spawnHook({ command: "env", cwd: "/project", env: originalEnv });
 
-    expect(spawned.env).toEqual({ HOME: "/home/user", PATH: "/bin" });
+    expect(spawned.env).toEqual({ HOME: "/home/user", PATH: "/bin", ...GIT_FLOOR });
   });
 
   it("adds new task env keys absent from spawned env", async () => {
@@ -1866,7 +1894,7 @@ describe("createFnAgent", () => {
     const spawnHook = createBashToolMock.mock.calls.at(-1)?.[1]?.spawnHook;
     const spawned = spawnHook({ command: "env", cwd: "/project", env: { HOME: "/home/user" } });
 
-    expect(spawned.env).toEqual({ HOME: "/home/user", TASK_ONLY: "abc" });
+    expect(spawned.env).toEqual({ HOME: "/home/user", TASK_ONLY: "abc", ...GIT_FLOOR });
   });
 
   it("preserves undefined task env values explicitly in merged env", async () => {
@@ -1882,7 +1910,7 @@ describe("createFnAgent", () => {
     const spawnHook = createBashToolMock.mock.calls.at(-1)?.[1]?.spawnHook;
     const spawned = spawnHook({ command: "env", cwd: "/project", env: { HOME: "/home/user" } });
 
-    expect(spawned.env).toEqual({ HOME: "/home/user", TASK_OPTIONAL: undefined });
+    expect(spawned.env).toEqual({ HOME: "/home/user", TASK_OPTIONAL: undefined, ...GIT_FLOOR });
   });
 
   it("injects PATH from task env when spawned env has no PATH", async () => {
@@ -1898,7 +1926,7 @@ describe("createFnAgent", () => {
     const spawnHook = createBashToolMock.mock.calls.at(-1)?.[1]?.spawnHook;
     const spawned = spawnHook({ command: "env", cwd: "/project", env: { HOME: "/home/user" } });
 
-    expect(spawned.env).toEqual({ HOME: "/home/user", PATH: "/task/bin" });
+    expect(spawned.env).toEqual({ HOME: "/home/user", PATH: "/task/bin", ...GIT_FLOOR });
   });
 
   it("refuses to start a coding agent in an unregistered worktree", async () => {

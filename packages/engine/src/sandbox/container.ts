@@ -1,6 +1,7 @@
 import * as childProcess from "node:child_process";
 import { promisify } from "node:util";
 
+import { applyNonInteractiveGitEnv } from "@fusion/core";
 import { buildContainerArgv } from "./container-argv.js";
 import type {
   SandboxBackend,
@@ -163,10 +164,12 @@ export class ContainerSandboxBackend implements SandboxBackend {
       const child = childProcess.spawn(argv[0]!, argv.slice(1), {
         cwd: options.cwd,
         stdio: ["ignore", "pipe", "pipe"],
-        env: {
+        // FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210): the container CLI invocation is an
+        // autonomous lane env (buildContainerArgv may pass -e pairs through); harden the floor.
+        env: applyNonInteractiveGitEnv({
           ...process.env,
           ...(options.env ?? {}),
-        },
+        }),
       });
 
       let stdout = "";

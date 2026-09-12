@@ -14,7 +14,7 @@
 import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { superviseSpawn } from "@fusion/core";
+import { applyNonInteractiveGitEnv, superviseSpawn } from "@fusion/core";
 import { resolveHermesLaunch } from "./windows-binary-launch.js";
 
 /** ANSI escape code stripping regex. */
@@ -351,7 +351,9 @@ export async function invokeHermesCli(
   signal?: AbortSignal,
 ): Promise<HermesCliResult> {
   const args = buildHermesArgs(prompt, settings, resumeSessionId);
-  const spawnEnv: NodeJS.ProcessEnv = { ...process.env, PYTHONUNBUFFERED: "1" };
+  // FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210): the operator-selected Hermes lane can
+  // shell git from the agent session — same hang class as every autonomous lane, same floor.
+  const spawnEnv: NodeJS.ProcessEnv = applyNonInteractiveGitEnv({ ...process.env, PYTHONUNBUFFERED: "1" });
   if (settings.profile) {
     spawnEnv.HERMES_HOME = hermesProfileHome(settings.profile);
   }

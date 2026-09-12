@@ -4,8 +4,17 @@
  *
  * Build task-scoped runtime env carrying plugin-injected keys plus PATH contribution.
  * Never mutates process.env globally — scoped env is threaded through taskEnv.
+ *
+ * FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210):
+ * The non-interactive git floor is applied LAST — after the plugin-injected spread and the PATH
+ * rebuild — so a `collectExecutorRuntimeEnv` contribution (e.g. GIT_EDITOR=vim) cannot clear it.
+ * Incident evidence: a task-session `git rebase --continue` blocked on `git commit -e` → `vi`
+ * for 1 day 13 hours, surviving its session as an orphan inside an already-deleted worktree.
+ * `injectedKeyCount`/`pathEntryCount` intentionally keep counting the PLUGIN's contributions,
+ * not the fixed floor keys, so task-log injection telemetry is unchanged.
  */
 import { delimiter } from "node:path";
+import { applyNonInteractiveGitEnv } from "@fusion/core";
 
 export type BuildInjectedRuntimeEnvDeps = {
   rootDir: string;
@@ -32,11 +41,11 @@ export async function buildInjectedRuntimeEnv(
   const pathPrepend = runtimeEnvContribution?.pathPrepend ?? [];
   const injectedEnv = runtimeEnvContribution?.env ?? {};
   return {
-    env: {
+    env: applyNonInteractiveGitEnv({
       ...process.env,
       ...injectedEnv,
       PATH: [...pathPrepend, process.env.PATH ?? ""].filter(Boolean).join(delimiter),
-    },
+    }),
     injectedKeyCount: Object.keys(injectedEnv).length,
     pathEntryCount: pathPrepend.length,
   };

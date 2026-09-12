@@ -1327,6 +1327,64 @@ Ship FIVE kinds. Do NOT add roadmap-item in this task.
       );
       expect(cap.last?.taskEnv?.FUSION_HEADLESS).toBe("1");
     });
+
+    it("applies the non-interactive git floor to the step env, taskEnv-supplied or not", async () => {
+      /*
+      FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210):
+      RUFU-210 measured a `git rebase --continue` blocked in `vi` for 1d13h on a production host.
+      A workflow-step session inherits this env, so the floor (GIT_EDITOR/GIT_SEQUENCE_EDITOR/
+      GIT_PAGER/GIT_TERMINAL_PROMPT/GIT_MERGE_AUTOEDIT) must ride on the captured step env both
+      when taskEnv is absent (undefined → process.env fallback) and when a taskEnv tries to name
+      a real editor. The floor is written last, so a `vim` from taskEnv cannot survive; and
+      because it only ever writes GIT_* keys, the order-sensitive FUSION_HEADLESS strip can never
+      resurrect a stripped key through it.
+      */
+      const store = createMockStore();
+      const { executor } = makeExecutor(store);
+      const cap = captureSession();
+
+      // (a) taskEnv === undefined → floor still present via the process.env fallback branch.
+      await (executor as any).executeWorkflowStep(
+        baseStepTask(),
+        makeStep({ skillName: "compound-engineering:ce-plan" }),
+        "/tmp/wt",
+        {},
+        undefined,
+      );
+      expect(cap.last?.taskEnv?.GIT_EDITOR).toBe("true");
+      expect(cap.last?.taskEnv?.GIT_SEQUENCE_EDITOR).toBe("true");
+      expect(cap.last?.taskEnv?.GIT_PAGER).toBe("cat");
+      expect(cap.last?.taskEnv?.GIT_TERMINAL_PROMPT).toBe("0");
+      expect(cap.last?.taskEnv?.GIT_MERGE_AUTOEDIT).toBe("no");
+      expect(cap.last?.taskEnv?.FUSION_WORKFLOW_STEP).toBe("1");
+
+      // (b) a taskEnv naming a real editor/pager cannot clear the floor.
+      await (executor as any).executeWorkflowStep(
+        baseStepTask(),
+        makeStep({ skillName: "compound-engineering:ce-plan" }),
+        "/tmp/wt",
+        {},
+        { GIT_EDITOR: "vim", GIT_PAGER: "less" },
+      );
+      expect(cap.last?.taskEnv?.GIT_EDITOR).toBe("true");
+      expect(cap.last?.taskEnv?.GIT_PAGER).toBe("cat");
+      expect(cap.last?.taskEnv?.GIT_SEQUENCE_EDITOR).toBe("true");
+      expect(cap.last?.taskEnv?.GIT_TERMINAL_PROMPT).toBe("0");
+      expect(cap.last?.taskEnv?.GIT_MERGE_AUTOEDIT).toBe("no");
+
+      // (c) a board run that strips an inherited FUSION_HEADLESS keeps the floor intact.
+      await (executor as any).executeWorkflowStep(
+        baseStepTask(),
+        makeStep({ skillName: "compound-engineering:ce-plan" }),
+        "/tmp/wt",
+        {},
+        { FUSION_HEADLESS: "1" },
+        { unattended: false },
+      );
+      expect(cap.last?.taskEnv?.FUSION_HEADLESS).toBeUndefined();
+      expect(cap.last?.taskEnv?.GIT_EDITOR).toBe("true");
+      expect(cap.last?.taskEnv?.GIT_PAGER).toBe("cat");
+    });
   });
 
   // ── Item 2 (integration half): skillName → requestedSkillNames + paths ───────

@@ -1117,6 +1117,15 @@ export {
   PROJECT_IDENTITY_FILENAME,
 } from "./central/project-identity.js";
 export { ProcessSupervisor, superviseSpawn } from "./process/process-supervisor.js";
+/*
+FNXC:NonInteractiveGit 2026-09-12-10:05 (RUFU-210):
+Gate-barrel mirror of the `index.ts` export (see the maintenance rule above): engine code under
+the engine-core gate bundle imports `applyNonInteractiveGitEnv` from `@fusion/core`, which aliases
+to this entry point, so the floor must be exported here too — otherwise merger-lane gate tests
+fail with "applyNonInteractiveGitEnv is not a function". The module is pure env-object shaping,
+gate-safe by construction.
+*/
+export { NON_INTERACTIVE_GIT_ENV, applyNonInteractiveGitEnv } from "./git/non-interactive-git-env.js";
 export type {
   SuperviseSpawnOptions,
   SupervisedChild,
