@@ -812,6 +812,69 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
       await store.logEntry(task.id, `Worktree created at ${worktreePath}`, undefined, runContext);
     }
 
+    /*
+    FNXC:BranchBaseIdentity 2026-09-13-00:15:
+    RUFU-231 (Mission defect 1): a default-based card previously persisted NONE of
+    `baseBranch` / `executionStartBranch` / `baseCommitSha`, and the singular path recorded
+    no post-rebase identity at all, so after `rebaseNewWorktreeOntoRemote` moved the branch
+    onto `<remote>/<integrationBranch>` the row stayed blank while the branch tip became a
+    foreign lineage's landed commit (the RUFU-217 wedge — the intended base was un-auditable
+    and every zero-loss proof fell back to a mis-trusted local identity). Record the identity
+    the branch actually sits on at create time: the resolved fork SHA (measured with the
+    descendant-aware fork-point rule) plus the identity ref name. `executionStartBranch` is
+    taken from the LIVE row so FN-2165's clear-on-unresolvable-ref inside createWorktree is
+    never resurrected — a cleared base falls back to the integration name, which is exactly
+    what the branch then starts from on retry. Non-fatal: an identity-capture failure must
+    never fail an otherwise-successful acquisition.
+    */
+    if (!workspaceContext && !opts.suppressSingularWorktreePersist) {
+      try {
+        /*
+        FNXC:WorktreeAcquisition 2026-09-13-01:10:
+        Best-effort LIVE read (production TaskStore always provides getTask; injected
+        minimal fakes may not). `?.` short-circuits the whole chain when the method is
+        absent, so a reduced store degrades to the acquisition-snapshot fallback instead
+        of failing the identity record.
+        */
+        const live = await store.getTask?.(task.id).catch(() => undefined);
+        const liveRecordedBase = live ? live.executionStartBranch ?? null : task.executionStartBranch ?? null;
+        /*
+        FNXC:WorktreeAcquisition 2026-09-13-01:30:
+        FN-2165 resurrection guard: when a REQUESTED base was cleared as unresolvable
+        during createWorktree, the vanished ref must not be written back — the branch
+        actually sits on the integration branch, so resolve that identity now. Otherwise
+        reuse `freshStartPoint` (requested base, or the integration name already resolved
+        for the start point) to avoid re-resolving and re-warning.
+        */
+        let identityRef = liveRecordedBase;
+        if (!identityRef) {
+          identityRef = live && baseBranch
+            ? await resolveIntegrationBranch(rootDir, settings, { logger: logger ?? console })
+            : freshStartPoint;
+        }
+        // Measurement keeps the existing captureBaseCommitSha semantics: measure against
+        // the integration branch (default "main") for requested-base cards; for default-
+        // base cards the cut identity IS the integration branch name.
+        const measuredBaseSha = await resolveCapturedBaseCommitSha(created.path, {
+          warn: (msg) => logger?.warn(`${task.id}: base-identity capture: ${msg}`),
+        }, baseBranch ? undefined : freshStartPoint);
+        await persistWorktreeAssignment({
+          ...(measuredBaseSha ? { baseCommitSha: measuredBaseSha } : {}),
+          baseBranch: identityRef,
+          executionStartBranch: identityRef,
+        });
+        await store.logEntry(
+          task.id,
+          `[acquire] recorded base identity ref=${identityRef} sha=${measuredBaseSha?.slice(0, 12) ?? "unresolved"}`,
+          undefined,
+          runContext,
+        );
+      } catch (identityErr: unknown) {
+        const message = identityErr instanceof Error ? identityErr.message : String(identityErr);
+        logger?.warn(`${task.id}: base identity record failed (non-fatal): ${message}`);
+      }
+    }
+
     // FNXC:WorktreeBaseRefresh 2026-08-09-03:30: Execution can recreate an existing task branch after its
     // dependency branch was merged and deleted. Refresh fresh acquisitions too so that branch cannot resume
     // from its stale pre-dependency tip.
@@ -1812,11 +1875,18 @@ export async function acquireWorkspaceRepoWorktree(
           worktreePath: result.worktreePath,
           branch: result.branch,
           baseCommitSha,
-          ...(resolvedBase.requested
-            ? {
-                baseBranch: resolvedBase.branch,
-                ...(resolvedBase.fallbackReason ? { baseBranchFallbackFrom: resolvedBase.requested } : {}),
-              }
+          /*
+          FNXC:BranchBaseIdentity 2026-09-13-00:20:
+          RUFU-231 (Mission defect 1): the per-repository entry previously recorded
+          `baseBranch` only when a base was explicitly REQUESTED, leaving default-based
+          workspace cards without any recorded base identity — the same un-auditable wedge
+          state that made the RUFU-217 zero-own-commit card undiagnosable. Record the
+          RESOLVED per-repo base ref on every acquisition; `baseBranchFallbackFrom` keeps
+          the parity field that names the original requested ref when the resolver fell back.
+          */
+          baseBranch: resolvedBase.branch,
+          ...(resolvedBase.fallbackReason && resolvedBase.requested
+            ? { baseBranchFallbackFrom: resolvedBase.requested }
             : {}),
         };
         },

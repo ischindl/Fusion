@@ -62,7 +62,14 @@ describe("reliability interaction: branch/worktree auto-recovery", () => {
     // FNXC:BranchWriteProvenance 2026-08-23-18:30: clearing `branch` is a branch write, so recovery
     // now stamps `branchWriteOrigin: "engine"` on it; the assertion records that provenance.
     expect(taskStore.updateTask).toHaveBeenCalledWith(t.id, { branch: null, baseCommitSha: null, branchWriteOrigin: "engine" });
-    expect(taskStore.moveTask).toHaveBeenCalledWith(t.id, "todo", expect.objectContaining({ moveSource: "engine" }));
+    /*
+    FNXC:LifecycleContainment 2026-09-13-00:23 (RUFU-231 stale-seam reconciliation):
+    This twin of auto-recovery-branch-worktree.test.ts still asserted the pre-FN-217 backward
+    requeue to `todo`. Branch/worktree recovery may repair metadata but cannot rehome the card:
+    the handler requeues IN PLACE (task.column) with the containment move options, preserving
+    progress and resume state. Reconciled to the containment invariant, mirroring the unit twin.
+    */
+    expect(taskStore.moveTask).toHaveBeenCalledWith(t.id, "in-progress", expect.objectContaining({ moveSource: "engine" }));
     expect(audit.database).toHaveBeenCalledWith(expect.objectContaining({ type: "branch-worktree:auto-requeue" }));
   });
 

@@ -24,7 +24,7 @@
 
 import { execSync } from "node:child_process";
 import { setImmediate as setImmediateCb } from "node:timers";
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -155,7 +155,8 @@ import {
   resetHeartbeatErrorRecoveryMetadata,
   resolveErrorRecoveryLimit,
 } from "./agent-heartbeat.js";
-import { classifyForeignOnlyContamination, deriveTaskIdFromFusionBranch, inspectBranchConflict, listUniqueBranchCommits } from "./execution/branch-conflicts.js";
+import { classifyForeignOnlyContamination, deriveTaskIdFromFusionBranch, inspectBranchConflict, listUniqueBranchCommits, taskWorktreeCheckoutIsClean } from "./execution/branch-conflicts.js";
+import { preserveWorktreeChanges, preserveWorktreeChangesIncludingUntracked } from "./execution/worktree-change-preservation.js";
 import { createRunAuditor, generateSyntheticRunId, type DatabaseMutationType, type RunAuditor } from "./util/run-audit.js";
 import { finalizeProvenAutoMergeTask, validateWorkflowDoneMergeProof } from "./merge/auto-merge-finalization.js";
 import { captureMergeContentDescriptor } from "./merge/merge-content-capture.js";
@@ -204,6 +205,19 @@ import { resolveBranchGroupMergeRouting } from "./merge/group-merge-coordinator.
 import type { OwnedLandedClassification } from "./merger.js";
 import { regenerateBareMergeSubject } from "./merge/merger-bare-subject.js";
 import { recoverForeignOnlyContamination } from "./recovery/foreign-only-contamination.js";
+/*
+FNXC:BranchConflictRecovery 2026-09-13-01:35:
+RUFU-231: shared bounded-budget accounting for every branch-conflict refusal site (sweep
+PR catch, sweep self-owned catch, dirty-checkout hold, already-merged rejection).
+*/
+import {
+  branchConflictRecoveryCounterPatch,
+  buildBranchConflictRecoveryParkPatch,
+  branchConflictDispatchEvidenceCounts,
+  conflictAttributionBase,
+  emitBranchConflictRecoveryParkAudit,
+  planBranchConflictRecoveryPass,
+} from "./recovery/branch-conflict-recovery-accounting.js";
 import {
   buildNtfyClickUrl,
   getActiveNotificationService,
@@ -404,7 +418,6 @@ import {
   isMissingTaskLookupError,
   readLinkedTaskOrUndefined,
   buildResumeLimboStepSignature,
-  formatRecoveryTimestamp,
   matchesScope,
 } from "./healing/self-healing-path-utils.js";
 
@@ -504,27 +517,6 @@ import {
 async function classifyOwnedLandedEvidenceForSelfHealing(rootDir: string, task: Task, mergeTargetBranch: string): Promise<OwnedLandedClassification> {
   const { classifyOwnedLandedEvidence } = await import("./merger.js");
   return classifyOwnedLandedEvidence(rootDir, task, { mergeTargetBranch });
-}
-
-
-
-async function preserveWorktreeChanges(repoDir: string, worktreePath: string, taskId: string): Promise<string | null> {
-  try {
-    const status = (await execAsync("git status --porcelain", { cwd: worktreePath, encoding: "utf-8" })).stdout.trim();
-    if (!status) {
-      return null;
-    }
-
-    const diff = (await execAsync("git diff HEAD --binary", { cwd: worktreePath, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 })).stdout;
-    const recoveryDir = join(repoDir, ".fusion", "recovery");
-    mkdirSync(recoveryDir, { recursive: true });
-    const patchPath = join(recoveryDir, `${taskId.toLowerCase()}-${formatRecoveryTimestamp()}.patch`);
-    writeFileSync(patchPath, diff, "utf-8");
-    return patchPath;
-  } catch (error) {
-    log.warn(`Failed to preserve worktree changes for ${taskId}: ${error instanceof Error ? error.message : String(error)}`);
-    return null;
-  }
 }
 
 
@@ -2685,15 +2677,23 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
    */
 
   private async rejectForeignAlreadyMergedCandidate(input: {
-    task: Pick<Task, "id" | "lineageId">;
+    task: Pick<Task, "id" | "lineageId" | "recoveryRetryCount">;
     candidateSha: string;
     candidateOwner?: string;
     taskBranch?: string | null;
     baseBranch: string;
     reason: "foreign-task-tip" | "foreign-lineage-tip" | "foreign-landed-commit" | "ownership-unverifiable";
     phase: string;
+    /*
+    FNXC:BranchConflictRecovery 2026-09-13-01:58:
+    RUFU-231: only the branch-conflict sweep's rejections are recovery attempts worth bounding.
+    The already-merged/misbound review scans are opportunistic finalization paths — a healthy
+    review card rejections there every sweep while it legitimately waits for merge evidence, so
+    consuming the branch-conflict budget there would mis-park waiting cards as "exhausted".
+    */
+    countRecoveryBudget?: boolean;
   }): Promise<void> {
-    const { task, candidateSha, candidateOwner, taskBranch, baseBranch, reason, phase } = input;
+    const { task, candidateSha, candidateOwner, taskBranch, baseBranch, reason, phase, countRecoveryBudget } = input;
     /*
     FNXC:WorkflowRecovery 2026-06-28-21:32:
     FN-7143 observed an already-merged tip that appeared to belong to FN-7187. Self-healing must make that cross-task proof visible and leave the review task alone; ambiguous or foreign tips are not safe evidence for mergeConfirmed/done finalization.
@@ -2724,6 +2724,38 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       }, { log });
     } catch (err: unknown) {
       log.warn(`Failed to record already-merged rejection audit for ${task.id}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    /*
+    FNXC:BranchConflictRecovery 2026-09-13-01:36:
+    RUFU-231 bounds the FN-1406 rejection loop ("already-merged rejected ... every pass"):
+    every rejection is a recovery attempt against the card's persisted budget, so a card that
+    keeps presenting a tip recovery cannot bind parks terminal (`branch-conflict-recovery-exhausted`,
+    checkout retained for inspection) after `autoRecovery.maxRetries` bounded rejections instead
+    of re-logging the refusal pair forever. A manual retry resets the budget through
+    MANUAL_RETRY_RESET_COUNTER_KEYS.
+    */
+    const rejectSettings = await this.store.getSettings();
+    const rejectPass = planBranchConflictRecoveryPass(task, rejectSettings.autoRecovery);
+    if (countRecoveryBudget && rejectPass.counted && rejectPass.terminal) {
+      await this.store.updateTask(task.id, buildBranchConflictRecoveryParkPatch(
+        rejectPass,
+        baseBranch,
+        `Repeated "already-merged" rejection (reason=${reason}) — the card keeps presenting a tip this recovery cannot bind to it.`,
+      ));
+      await emitBranchConflictRecoveryParkAudit({
+        store: this.store,
+        agentId: "self-healing",
+        runId: generateSyntheticRunId("branch-conflict-recovery-park", task.id),
+        task,
+        pass: rejectPass,
+        source: "foreign-tip-reject",
+      });
+      await this.store.logEntry(task.id, `[recovery] already-merged rejection budget exhausted ${task.id}: parked terminal after ${rejectPass.attempt} bounded rejections (${reason})`);
+    } else {
+      const counterPatch = branchConflictRecoveryCounterPatch(rejectPass);
+      if (countRecoveryBudget && rejectPass.counted) {
+        await this.store.updateTask(task.id, counterPatch);
+      }
     }
   }
 
@@ -4329,7 +4361,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       if (patchPath) {
         await this.store.logEntry(task.id, `Preserved uncommitted worktree changes before pause: ${patchPath}`);
       }
-      const dispatcher = this.options.autoRecoveryDispatcher ?? new AutoRecoveryDispatcher({
+      const recoveryDispatcher = this.options.autoRecoveryDispatcher ?? new AutoRecoveryDispatcher({
         taskStore: this.store,
         auditEmitter: createRunAuditor(this.store, {
           runId: generateSyntheticRunId("self-heal", task.id),
@@ -4339,25 +4371,80 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           phase: "reclaim-pr-conflicts",
         }),
       });
-      const decision = await dispatcher.dispatch({
+      /*
+      FNXC:BranchConflictRecovery 2026-09-13-01:42:
+      RUFU-231 bounded budget for the PR-conflict reclaim refusal path — same semantics as the
+      self-owned sweep catch: persisted `recoveryRetryCount` advances each pass and the
+      maxRetries+1-th pass parks terminal (checkout retained) instead of re-parking the transient
+      pause; ambiguity/budget pause rationales route to the same park.
+      */
+      const recoverySettings = await this.store.getSettings();
+      const recoveryPass = planBranchConflictRecoveryPass(task, recoverySettings.autoRecovery);
+      if (recoveryPass.counted && recoveryPass.terminal) {
+        await this.store.updateTask(task.id, buildBranchConflictRecoveryParkPatch(recoveryPass, undefined, message));
+        await emitBranchConflictRecoveryParkAudit({
+          store: this.store,
+          agentId: "self-healing",
+          runId: generateSyntheticRunId("branch-conflict-recovery-park", task.id),
+          task,
+          pass: recoveryPass,
+          source: "pr-reclaim",
+        });
+        await this.store.logEntry(task.id, `[recovery] PR branch-conflict recovery exhausted ${task.id}: parked terminal after ${recoveryPass.attempt} bounded passes (checkout retained)`);
+        return withPerPr({ outcome: "paused-unrecoverable", reason: "branch-conflict-recovery-exhausted" });
+      }
+      const decision = await recoveryDispatcher.dispatch({
         class: "branch-conflict-unrecoverable",
         taskId: task.id,
         pausedReason: "branch-conflict-unrecoverable",
-        evidence: { branchName: task.branch, worktreePath: task.worktree },
+        /*
+        FNXC:BranchConflictRecovery 2026-09-13-02:10:
+        RUFU-231 destructive-ambiguity evidence — see the self-owned reclaim site for the
+        contract; this catch previously dispatched with no commit attribution at all.
+        */
+        evidence: {
+          branchName: task.branch,
+          worktreePath: task.worktree,
+          ...(await branchConflictDispatchEvidenceCounts({
+            repoDir: this.options.rootDir,
+            taskId: task.id,
+            branchRef: task.branch,
+            baseRef: conflictAttributionBase(
+              task,
+              await resolveIntegrationBranch(this.options.rootDir, undefined).catch(() => null),
+            ),
+          }) ?? {}),
+        },
       }, {
         task,
-        retryCount: task.recoveryRetryCount ?? 0,
-        settings: (await this.store.getSettings()).autoRecovery ?? { mode: "deterministic-only", maxRetries: 3 },
+        retryCount: recoveryPass.persisted,
+        settings: recoverySettings.autoRecovery ?? { mode: "deterministic-only", maxRetries: 3 },
       });
+      if (decision.rationale === "destructive-ambiguity" || decision.rationale === "retry-budget-exhausted") {
+        await this.store.updateTask(task.id, buildBranchConflictRecoveryParkPatch(recoveryPass, undefined, message));
+        await emitBranchConflictRecoveryParkAudit({
+          store: this.store,
+          agentId: "self-healing",
+          runId: generateSyntheticRunId("branch-conflict-recovery-park", task.id),
+          task,
+          pass: recoveryPass,
+          source: "pr-reclaim",
+        });
+        await this.store.logEntry(task.id, `[recovery] PR branch-conflict recovery exhausted ${task.id}: ${decision.rationale} — parked terminal (checkout retained)`);
+        return withPerPr({ outcome: "paused-unrecoverable", reason: "branch-conflict-recovery-exhausted" });
+      }
       if (decision.action === "pause") {
         await this.store.updateTask(task.id, {
           status: "failed",
           error: `Task branch conflict: ${task.branch} is not safely reclaimable (${message})`,
           paused: true,
           pausedReason: "branch-conflict-unrecoverable",
+          ...branchConflictRecoveryCounterPatch(recoveryPass),
         });
         await this.handoffTaskToReview(task.id, "branch-conflict-unrecoverable-repromote");
         await this.store.logEntry(task.id, `Auto-recovery failed: branch conflict unrecoverable — ${message}`);
+      } else if (recoveryPass.counted) {
+        await this.store.updateTask(task.id, branchConflictRecoveryCounterPatch(recoveryPass));
       }
       return withPerPr({ outcome: "paused-unrecoverable", reason: message });
     }
@@ -4700,6 +4787,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
                 baseBranch: inspection.integrationRef,
                 reason: "ownership-unverifiable",
                 phase: "tip-already-merged",
+                countRecoveryBudget: true,
               });
               return null;
             });
@@ -4733,8 +4821,75 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
                 baseBranch: inspection.integrationRef,
                 reason: foreignRejection.reason,
                 phase: "tip-already-merged",
+                countRecoveryBudget: true,
               });
               continue;
+            }
+            /*
+            FNXC:BranchBaseIdentity 2026-09-13-02:55:
+            RUFU-231 (never release an unproven checkout): when landedness was proven ONLY against
+            the remote-tracking identity (the RUFU-217 wedge shape — local integration never
+            received the tip), releasing the checkout needs its own proof. Clean → release directly.
+            Dirty → capture a recovery patch first (the same mechanism the PR-conflict pre-pause
+            preservation uses), release only once the patch exists, and name the patch path in the
+            task log. A failed capture holds the checkout for the next sweep.
+            */
+            if (inspection.landedVia === "remote-tracking" && inspection.livePath && existsSync(inspection.livePath)) {
+              if (!await taskWorktreeCheckoutIsClean(inspection.livePath)) {
+                const patchPath = await preserveWorktreeChangesIncludingUntracked(this.options.rootDir, inspection.livePath, task.id);
+                if (!patchPath) {
+                  await this.store.logEntry(
+                    task.id,
+                    `[recovery] tip-already-merged ${task.id} held: checkout dirty and unproven (landed on ${inspection.integrationRef})`,
+                  );
+                  /*
+                  FNXC:BranchConflictRecovery 2026-09-13-01:37:
+                  RUFU-231: this hold re-enters every sweep, so it consumes the bounded recovery
+                  budget. Persistent capture failure parks terminal (checkout retained, operator
+                  remedy named in the error) instead of head-of-line blocking peers forever behind
+                  the held lease.
+                  */
+                  const holdSettings = await this.store.getSettings();
+                  const holdPass = planBranchConflictRecoveryPass(task, holdSettings.autoRecovery);
+                  if (holdPass.counted && holdPass.terminal) {
+                    await this.store.updateTask(task.id, buildBranchConflictRecoveryParkPatch(
+                      holdPass,
+                      inspection.integrationRef ?? integrationBranch,
+                      "checkout stayed dirty for a branch landed only on the remote-tracking integration identity, and the pre-release change capture failed.",
+                    ));
+                    await emitBranchConflictRecoveryParkAudit({
+                      store: this.store,
+                      agentId: "self-healing",
+                      runId: generateSyntheticRunId("branch-conflict-recovery-park", task.id),
+                      task,
+                      pass: holdPass,
+                      source: "dirty-checkout-hold",
+                    });
+                    await this.store.logEntry(task.id, `[recovery] tip-already-merged ${task.id} parked terminal: branch-conflict recovery exhausted after ${holdPass.attempt} bounded passes (checkout retained)`);
+                  } else {
+                    const counterPatch = branchConflictRecoveryCounterPatch(holdPass);
+                    if (holdPass.counted) {
+                      await this.store.updateTask(task.id, counterPatch);
+                    }
+                  }
+                  continue;
+                }
+                await this.store.logEntry(
+                  task.id,
+                  `[recovery] tip-already-merged ${task.id}: uncommitted work preserved to ${patchPath} before checkout release (landed on ${inspection.integrationRef})`,
+                );
+                /*
+                The capture is now the durable copy of this checkout's delta. Discard the
+                in-worktree copy so the defensive `removeWorktree` content gate (fail-closed on
+                deliverable content) sees a clean tree — the discard is zero-loss precisely
+                because the patch above exists.
+                */
+                await execAsync("git reset --hard && git clean -fd", {
+                  cwd: inspection.livePath,
+                  timeout: 120_000,
+                  maxBuffer: 10 * 1024 * 1024,
+                }).catch(() => undefined);
+              }
             }
             let reclaimedCleanly = false;
             try {
@@ -5165,7 +5320,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           if (patchPath) {
             await this.store.logEntry(task.id, `Preserved uncommitted worktree changes before pause: ${patchPath}`);
           }
-          const dispatcher = this.options.autoRecoveryDispatcher ?? new AutoRecoveryDispatcher({
+          const recoveryDispatcher = this.options.autoRecoveryDispatcher ?? new AutoRecoveryDispatcher({
             taskStore: this.store,
             auditEmitter: createRunAuditor(this.store, {
               runId: generateSyntheticRunId("self-heal", task.id),
@@ -5175,28 +5330,82 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
               phase: "reclaim-self-owned-branch-conflicts",
             }),
           });
-          const decision = await dispatcher.dispatch({
+          /*
+          FNXC:BranchConflictRecovery 2026-09-13-01:38:
+          RUFU-231 bounded budget for the self-owned reclaim refusal path. The persisted
+          `recoveryRetryCount` advances on every pass (merged into the transient pause write, or
+          persist-only on the handler-retry path), and at attempt maxRetries+1 — the decision engine's
+          own `retryCount >= maxRetries` pause boundary — the pass short-circuits to the terminal park
+          instead of re-offering the transient pause the sweep re-admits. A `destructive-ambiguity`
+          or `retry-budget-exhausted` pause (by definition not automatically retryable) routes to the
+          same park, so no refusal shape can loop unbounded.
+          */
+          const recoverySettings = await this.store.getSettings();
+          const recoveryPass = planBranchConflictRecoveryPass(task, recoverySettings.autoRecovery);
+          if (recoveryPass.counted && recoveryPass.terminal) {
+            await this.store.updateTask(task.id, buildBranchConflictRecoveryParkPatch(recoveryPass, integrationBranch, message));
+            await emitBranchConflictRecoveryParkAudit({
+              store: this.store,
+              agentId: "self-healing",
+              runId: generateSyntheticRunId("branch-conflict-recovery-park", task.id),
+              task,
+              pass: recoveryPass,
+              source: "self-owned-reclaim",
+            });
+            await this.store.logEntry(task.id, `[recovery] branch-conflict recovery exhausted ${task.id}: parked terminal after ${recoveryPass.attempt} bounded passes (checkout retained)`);
+            continue;
+          }
+          const decision = await recoveryDispatcher.dispatch({
             class: "branch-conflict-unrecoverable",
             taskId: task.id,
             pausedReason: "branch-conflict-unrecoverable",
+            /*
+            FNXC:BranchConflictRecovery 2026-09-13-02:10:
+            RUFU-231: pass the dispatcher's destructive-ambiguity evidence (own vs foreign
+            attributed commits). `isDestructiveAmbiguity` in the dispatcher otherwise classifies
+            a mixed own+foreign branch by mode (→ retry toward a destructive handler); the counts
+            make it pause instead. Safety read only — the routing table is unchanged.
+            */
             evidence: {
               branchName: task.branch,
               worktreePath: task.worktree,
+              ...(await branchConflictDispatchEvidenceCounts({
+                repoDir: this.options.rootDir,
+                taskId: task.id,
+                branchRef: task.branch,
+                baseRef: conflictAttributionBase(task, integrationBranch),
+              }) ?? {}),
             },
           }, {
             task,
-            retryCount: task.recoveryRetryCount ?? 0,
-            settings: (await this.store.getSettings()).autoRecovery ?? { mode: "deterministic-only", maxRetries: 3 },
+            retryCount: recoveryPass.persisted,
+            settings: recoverySettings.autoRecovery ?? { mode: "deterministic-only", maxRetries: 3 },
           });
+          if (decision.rationale === "destructive-ambiguity" || decision.rationale === "retry-budget-exhausted") {
+            await this.store.updateTask(task.id, buildBranchConflictRecoveryParkPatch(recoveryPass, integrationBranch, message));
+            await emitBranchConflictRecoveryParkAudit({
+              store: this.store,
+              agentId: "self-healing",
+              runId: generateSyntheticRunId("branch-conflict-recovery-park", task.id),
+              task,
+              pass: recoveryPass,
+              source: "self-owned-reclaim",
+            });
+            await this.store.logEntry(task.id, `[recovery] branch-conflict recovery exhausted ${task.id}: ${decision.rationale} — parked terminal (checkout retained)`);
+            continue;
+          }
           if (decision.action === "pause") {
             await this.store.updateTask(task.id, {
               status: "failed",
               error: `Task branch conflict: ${task.branch} is not safely reclaimable (${message})`,
               paused: true,
               pausedReason: "branch-conflict-unrecoverable",
+              ...branchConflictRecoveryCounterPatch(recoveryPass),
             });
             await this.handoffTaskToReview(task.id, "branch-conflict-unrecoverable-repromote");
             await this.store.logEntry(task.id, `Auto-recovery failed: branch conflict unrecoverable — ${message}`);
+          } else if (recoveryPass.counted) {
+            await this.store.updateTask(task.id, branchConflictRecoveryCounterPatch(recoveryPass));
           }
         }
       }

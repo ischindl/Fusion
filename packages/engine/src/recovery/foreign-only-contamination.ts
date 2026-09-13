@@ -7,8 +7,11 @@ import { moveTaskToContainedBackwardTarget } from "../execution/lifecycle-move.j
 import {
   classifyForeignOnlyContamination,
   reanchorBranchToBase,
+  resolveTrustedIntegrationRefs,
 } from "../execution/branch-conflicts.js";
 import type { RunAuditor } from "../util/run-audit.js";
+import { generateSyntheticRunId } from "../util/run-audit.js";
+import { emitBoundedRunAudit } from "../util/emit-bounded-run-audit.js";
 import { isUsableTaskWorktree } from "../worktree/worktree-pool.js";
 
 const execAsync = promisify(exec);
@@ -32,6 +35,26 @@ export interface RecoverForeignOnlyContaminationResult {
   reason?: string;
 }
 
+/*
+FNXC:BranchConflictRecovery 2026-09-13-02:20:
+RUFU-231 Step 3 audit contract: the zero-loss PROOF gets its own bounded row (emitted the
+moment the classifier accepts the shape, before any git mutation), so a wedge is diagnosable
+from run-audit even when the release half then fails. The release/re-queue outcome rides the
+existing `task:auto-recover-foreign-only-contamination` success row (`subtype` = which self-claim
+release ran, `requeued` = fixed enum of the contained-lane move outcome). Both facets stay
+ids/counts/fixed-enums — no branch prose, no error text.
+*/
+function requeueOutcome(move: {
+  moved: boolean;
+  deferred?: string;
+  reason?: string;
+}): "moved" | "retained-in-place" | "no-contained-target" | "capacity-deferred" {
+  if (move.moved) return "moved";
+  if (move.reason === "no-contained-target") return "no-contained-target";
+  if (move.deferred === "capacity") return "capacity-deferred";
+  return "retained-in-place";
+}
+
 export async function recoverForeignOnlyContamination(
   task: Task,
   deps: RecoverForeignOnlyContaminationDeps,
@@ -48,11 +71,20 @@ export async function recoverForeignOnlyContamination(
     return { recovered: false, reason: "baseSha-unresolved" };
   }
 
+  /*
+  FNXC:BranchBaseIdentity 2026-09-13-02:40:
+  RUFU-231: the contamination classification measures landedness against EVERY trusted
+  integration identity (local integration branch + `<remote>/<integration>` refs). A card
+  rebased onto origin/main carries foreign commits that ARE landed there; without the
+  trusted set the classification saw them as unique and recovery stayed unreachable.
+  */
+  const trustedRefs = await resolveTrustedIntegrationRefs(deps.repoDir, deps.integrationBranch);
   const classification = await classifyForeignOnlyContamination({
     repoDir: deps.repoDir,
     branchName: task.branch,
     baseSha,
     taskId: task.id,
+    trustedRefs,
   });
 
   if (classification.kind !== "foreign-only-no-own-work" && classification.kind !== "foreign-only-already-upstream") {
@@ -63,6 +95,26 @@ export async function recoverForeignOnlyContamination(
     });
     return { recovered: false, reason: "ambiguous" };
   }
+
+  /*
+  FNXC:BranchConflictRecovery 2026-09-13-02:20:
+  RUFU-231: the branch is now PROVEN to own nothing a release could lose (zero own commits,
+  foreign content landed on a trusted integration identity). Record the proof at the proof
+  moment — bounded seam (AGENTS FN-9175), ids/counts/fixed enums only.
+  */
+  await emitBoundedRunAudit(deps.taskStore, {
+    agentId: "recovery",
+    runId: generateSyntheticRunId("branch-conflict-zero-loss", task.id),
+    taskId: task.id,
+    domain: "database",
+    mutationType: "task:branch-conflict-zero-loss-proven",
+    target: task.id,
+    metadata: {
+      taskId: task.id,
+      kind: classification.kind,
+      trustedRefCount: trustedRefs.length,
+    },
+  });
 
   if (await isUsableTaskWorktree(deps.repoDir, task.worktree)) {
     await reanchorBranchToBase({
@@ -78,7 +130,7 @@ export async function recoverForeignOnlyContamination(
     Foreign-only contamination recovery moves only to the adjacent backward lifecycle role. Missing
     targets and capacity refusal stay in place, preserving the repaired branch/worktree metadata.
     */
-    await moveTaskToContainedBackwardTarget(deps.taskStore, task.id, "contamination-recovery", {
+    const move = await moveTaskToContainedBackwardTarget(deps.taskStore, task.id, "contamination-recovery", {
       moveSource: "engine",
       preserveResumeState: true,
       preserveProgress: true,
@@ -94,7 +146,7 @@ export async function recoverForeignOnlyContamination(
     await deps.runAudit.database({
       type: "task:auto-recover-foreign-only-contamination",
       target: task.id,
-      metadata: { subtype: "reanchor", kind: classification.kind, baseSha },
+      metadata: { subtype: "reanchor", kind: classification.kind, baseSha, requeued: requeueOutcome(move) },
     });
     return { recovered: true, subtype: "reanchor" };
   }
@@ -118,7 +170,7 @@ export async function recoverForeignOnlyContamination(
     Foreign-only contamination recovery moves only to the adjacent backward lifecycle role. Missing
     targets and capacity refusal stay in place, preserving the repaired branch/worktree metadata.
     */
-  await moveTaskToContainedBackwardTarget(deps.taskStore, task.id, "contamination-recovery", {
+  const move = await moveTaskToContainedBackwardTarget(deps.taskStore, task.id, "contamination-recovery", {
     moveSource: "engine",
     preserveResumeState: true,
     preserveProgress: true,
@@ -142,6 +194,7 @@ export async function recoverForeignOnlyContamination(
       subtype: "branch-discard",
       kind: classification.kind,
       baseSha,
+      requeued: requeueOutcome(move),
       worktreePresent: existsSync(task.worktree),
     },
   });

@@ -201,6 +201,17 @@ import { resolveDedicatedPlannerColumnsForTask } from "../planner-lane-resolutio
 import { mergeEffectiveSettings } from "../project/effective-settings.js";
 import { buildStepFailureMessage, emitProactiveStatus, sanitizeFailureReason } from "../project/proactive-status.js";
 import { createRunAuditor, generateSyntheticRunId, type EngineRunContext } from "../util/run-audit.js";
+/*
+FNXC:BranchConflictRecovery 2026-09-13-02:45:
+RUFU-231: the in-session branch-conflict exhaustion park now shares the same accounting
+authority as the sweep/executor refusal parks — persisted `recoveryRetryCount` and an
+operator-facing named remedy instead of a raw error echo.
+*/
+import {
+  buildBranchConflictRecoveryParkPatch,
+  emitBranchConflictRecoveryParkAudit,
+  planBranchConflictRecoveryPass,
+} from "../recovery/branch-conflict-recovery-accounting.js";
 import { emitBoundedRunAudit } from "./emit-bounded-run-audit.js";
 import { acquireTaskWorktree, acquireWorkspaceTaskWorktrees, WorktreeBaseRefreshError } from "../worktree/worktree-acquisition.js";
 import { acknowledgeOverlapResumeContext, readOverlapResumeContextDelivery, type OverlapResumeContextDelivery } from "../execution/overlap-resume-context.js";
@@ -3923,11 +3934,28 @@ export async function runImplementation(
               settings: (await deps.store.getSettings()).autoRecovery ?? { mode: "deterministic-only", maxRetries: 3 },
             });
             if (decision.action === "pause") {
-              await deps.store.updateTask(task.id, {
-                status: "failed",
-                error: err.message,
-                paused: true,
-                pausedReason: "branch-conflict-recovery-exhausted",
+              /*
+              FNXC:BranchConflictRecovery 2026-09-13-02:45:
+              RUFU-231 aligned terminal park: the in-session retry loop spent its attempts and the
+              dispatcher decided pause — park with the persisted budget (the loop's individual
+              `handleBranchConflict` passes already advanced the counter on the row, so re-plan
+              from the FRESH row) and the named operator remedy instead of the raw error echo.
+              Zero git mutation, checkout fields untouched.
+              */
+              const freshTask = (await deps.store.getTask(task.id).catch(() => null)) ?? task;
+              const exhaustionPass = planBranchConflictRecoveryPass(freshTask, (await deps.store.getSettings()).autoRecovery);
+              await deps.store.updateTask(task.id, buildBranchConflictRecoveryParkPatch(
+                exhaustionPass,
+                err.startPoint,
+                `Branch ${err.branchName} stayed in conflict at ${err.conflictingWorktreePath} after ${deps.MAX_AUTO_RECOVERY_ATTEMPTS} in-session auto-recovery attempts.`,
+              ));
+              await emitBranchConflictRecoveryParkAudit({
+                store: deps.store,
+                agentId: "executor",
+                runId: deps.getRunContextFor(task.id)?.runId ?? generateSyntheticRunId("executor-branch-conflict-park", task.id),
+                task: freshTask,
+                pass: exhaustionPass,
+                source: "executor-conflict",
               });
             }
             return;

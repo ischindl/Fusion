@@ -5,18 +5,34 @@
  */
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
+import { existsSync } from "node:fs";
 import { classifyTaskBranchOrigin, isFusionDeletableBranch, type Settings, type Task, type TaskStore } from "@fusion/core";
 import {
   assertCleanBranchAtBase,
   BranchConflictError,
   inspectBranchConflict,
+  taskWorktreeCheckoutIsClean,
 } from "../execution/branch-conflicts.js";
+import { recoverForeignOnlyContamination } from "../recovery/foreign-only-contamination.js";
+/*
+FNXC:BranchConflictRecovery 2026-09-13-01:45:
+RUFU-231 bounded-budget accounting for the executor's sticky branch-conflict park path.
+*/
+import {
+  branchConflictRecoveryCounterPatch,
+  buildBranchConflictRecoveryParkPatch,
+  branchConflictDispatchEvidenceCounts,
+  conflictAttributionBase,
+  emitBranchConflictRecoveryParkAudit,
+  planBranchConflictRecoveryPass,
+} from "../recovery/branch-conflict-recovery-accounting.js";
+import { preserveWorktreeChangesIncludingUntracked } from "../execution/worktree-change-preservation.js";
 import { resolveIntegrationBranch } from "../merge/integration-branch.js";
 import { mergeEffectiveSettings } from "../project/effective-settings.js";
 import { preservedWorktreeTargetPathForTask } from "../worktree/worktree-pinning.js";
 import { executorLog } from "../logger.js";
 import type { AutoRecoveryDispatcher } from "../healing/auto-recovery.js";
-import type { EngineRunContext, RunAuditor } from "../util/run-audit.js";
+import { generateSyntheticRunId, type EngineRunContext, type RunAuditor } from "../util/run-audit.js";
 import { resolveDiffBaseRef } from "./worktree-git-refs.js";
 import { getWorktreeBranchMap } from "./worktree-registry-helpers.js";
 import {
@@ -108,32 +124,65 @@ export async function handleBranchConflict(
   }
 
   if (inspection.kind === "tip-already-merged") {
-    if (inspection.livePath) {
-      await deps.cleanupConflictingWorktree(inspection.livePath, error.branchName, task.id);
+    /*
+    FNXC:BranchBaseIdentity 2026-09-13-03:00:
+    RUFU-231 (never release an unproven checkout): a tip proven landed ONLY against the
+    remote-tracking identity (the zero-own-commit wedge shape) requires explicit checkout
+    proof before release. Clean → release. Dirty → capture a recovery patch first and
+    release only once it exists; a failed capture falls through to the dispatcher below
+    instead of destroying work. Local-identity landings keep the pre-existing behavior
+    byte-for-byte — the gate applies only to the newly reachable wedge verdict.
+    */
+    let provenReleasable = true;
+    if (inspection.landedVia === "remote-tracking" && inspection.livePath && existsSync(inspection.livePath)) {
+      if (!await taskWorktreeCheckoutIsClean(inspection.livePath)) {
+        const patchPath = await preserveWorktreeChangesIncludingUntracked(deps.rootDir, inspection.livePath, task.id);
+        if (patchPath) {
+          await deps.store.logEntry(
+            task.id,
+            `[recovery] ${task.id}: uncommitted work preserved to ${patchPath} before tip-landed checkout release`,
+            undefined,
+            deps.getRunContextFor(task.id),
+          );
+        } else {
+          provenReleasable = false;
+        }
+      }
     }
-    try {
-      await execAsync("git worktree prune", {
-        cwd: deps.rootDir,
-        timeout: 120_000,
-        maxBuffer: 10 * 1024 * 1024,
-      });
-    } catch {
-      // best-effort
+    if (provenReleasable) {
+      if (inspection.livePath) {
+        await deps.cleanupConflictingWorktree(inspection.livePath, error.branchName, task.id);
+      }
+      try {
+        await execAsync("git worktree prune", {
+          cwd: deps.rootDir,
+          timeout: 120_000,
+          maxBuffer: 10 * 1024 * 1024,
+        });
+      } catch {
+        // best-effort
+      }
+      if (isFusionDeletableBranch(task, error.branchName)) try {
+        await execAsync(`git branch -D ${JSON.stringify(error.branchName)}`, {
+          cwd: deps.rootDir,
+          timeout: 120_000,
+          maxBuffer: 10 * 1024 * 1024,
+        });
+      } catch {
+        // best-effort
+      }
+      await deps.store.updateTask(task.id, { worktree: null, branch: null, branchWriteOrigin: "engine" as const, baseCommitSha: null });
+      const message = `[recovery] ${task.id} stage-A: tip-already-merged cleanup for ${error.branchName} (${inspection.tipSha.slice(0, 12)} on ${inspection.integrationRef})`;
+      await deps.store.logEntry(task.id, message, undefined, deps.getRunContextFor(task.id));
+      await deps.store.appendAgentLog(task.id, "Branch conflict auto-recovery", "status", message, "executor");
+      return "retry";
     }
-    if (isFusionDeletableBranch(task, error.branchName)) try {
-      await execAsync(`git branch -D ${JSON.stringify(error.branchName)}`, {
-        cwd: deps.rootDir,
-        timeout: 120_000,
-        maxBuffer: 10 * 1024 * 1024,
-      });
-    } catch {
-      // best-effort
-    }
-    await deps.store.updateTask(task.id, { worktree: null, branch: null, branchWriteOrigin: "engine" as const, baseCommitSha: null });
-    const message = `[recovery] ${task.id} stage-A: tip-already-merged cleanup for ${error.branchName} (${inspection.tipSha.slice(0, 12)} on ${inspection.integrationRef})`;
-    await deps.store.logEntry(task.id, message, undefined, deps.getRunContextFor(task.id));
-    await deps.store.appendAgentLog(task.id, "Branch conflict auto-recovery", "status", message, "executor");
-    return "retry";
+    await deps.store.logEntry(
+      task.id,
+      `[recovery] ${task.id} tip-landed-on-trusted-remote held: checkout dirty and unproven (landed on ${inspection.integrationRef})`,
+      undefined,
+      deps.getRunContextFor(task.id),
+    );
   }
 
   if (inspection.kind === "reclaimable") {
@@ -147,6 +196,30 @@ export async function handleBranchConflict(
   }
 
   if (inspection.kind === "live-foreign") {
+    /*
+    FNXC:BranchBaseIdentity 2026-09-13-03:05:
+    RUFU-231 Deliverable 1: before force-cleaning a live-foreign conflict, consult the
+    classification-proven exit. When the branch provably carries zero own commits, zero
+    unattributed commits, and foreign work that has already landed on a trusted integration
+    identity, recoverForeignOnlyContamination re-anchors it to base (worktree preserved) or
+    discards it only when the checkout is already unusable — instead of force-deleting a
+    possibly-dirty tree. Non-matching classifications return recovered:false at no cost and
+    the existing cleanup path proceeds unchanged.
+    */
+    const recoveryIntegrationBranch = await resolveIntegrationBranch(deps.rootDir, undefined);
+    const liveTask = await deps.store.getTask(task.id).catch(() => null);
+    const recovered = await recoverForeignOnlyContamination(liveTask ?? task, {
+      repoDir: deps.rootDir,
+      taskStore: deps.store,
+      runAudit: deps.createRunAuditor(deps.getRunContextFor(task.id)),
+      integrationBranch: recoveryIntegrationBranch,
+    }).catch(() => null);
+    if (recovered?.recovered) {
+      const message = `[recovery] ${task.id} live-foreign conflict resolved by foreign-only recovery (subtype=${recovered.subtype}) — no force-delete needed`;
+      await deps.store.logEntry(task.id, message, undefined, deps.getRunContextFor(task.id));
+      await deps.store.appendAgentLog(task.id, "Branch conflict auto-recovery", "status", message, "executor");
+      return "reclaimed";
+    }
     const cleanupSuccess = await deps.cleanupConflictingWorktree(inspection.livePath, error.branchName, task.id);
     if (cleanupSuccess) {
       try {
@@ -170,6 +243,30 @@ export async function handleBranchConflict(
     `Resolve the local branch/worktree conflict with git tooling (inspect/reclaim or discard) before retrying.`;
   await deps.store.logEntry(task.id, formatBranchConflictLifecycleLog(task.id, error), undefined, deps.getRunContextFor(task.id));
   await deps.store.appendAgentLog(task.id, "Branch conflict recovery required", "tool_error", formatBranchConflictAgentLog(task.id, error), "executor");
+  /*
+  FNXC:BranchConflictRecovery 2026-09-13-01:46:
+  RUFU-231 bounded budget for the executor's sticky conflict path. Every recovery dispatch here
+  is an attempt on the card's persisted budget (RUFU-217's heartbeat loop ran forever because
+  the decision-engine input `recoveryRetryCount` was never written). At attempt maxRetries+1 —
+  the decision engine's own `retryCount >= maxRetries` boundary — the pass parks terminal with
+  the existing `branch-conflict-recovery-exhausted` reason and an operator remedy instead of
+  re-offering "retry"; the retained checkout stays inspectable (park is separated from lease
+  release). Successful force-cleanup returns before this point and consumes no budget.
+  */
+  const recoveryPass = planBranchConflictRecoveryPass(task, settings.autoRecovery);
+  if (recoveryPass.counted && recoveryPass.terminal) {
+    await deps.store.updateTask(task.id, buildBranchConflictRecoveryParkPatch(recoveryPass, error.startPoint, conflictMessage));
+    await emitBranchConflictRecoveryParkAudit({
+      store: deps.store,
+      agentId: "executor",
+      runId: deps.getRunContextFor(task.id)?.runId ?? generateSyntheticRunId("executor-branch-conflict-park", task.id),
+      task,
+      pass: recoveryPass,
+      source: "executor-conflict",
+    });
+    await deps.store.logEntry(task.id, `[recovery] branch-conflict recovery exhausted ${task.id}: parked terminal after ${recoveryPass.attempt} bounded passes (checkout retained)`, undefined, deps.getRunContextFor(task.id));
+    return "sticky";
+  }
   const autoRecoveryDispatcher = deps.getAutoRecoveryDispatcher(deps.createRunAuditor(deps.getRunContextFor(task.id)));
   const decision = await autoRecoveryDispatcher.dispatch({
     class: "branch-conflict-unrecoverable",
@@ -179,13 +276,40 @@ export async function handleBranchConflict(
     evidence: {
       branchName: error.branchName,
       conflictingWorktreePath: error.conflictingWorktreePath,
+      /*
+      FNXC:BranchConflictRecovery 2026-09-13-02:10:
+      RUFU-231 destructive-ambiguity evidence: `isDestructiveAmbiguity` reads
+      `ownCommits`/`foreignAttributedCommits` — without them a mixed own+foreign branch is
+      classified by mode (→ retry toward force-cleanup) instead of pausing. Safety read only;
+      the dispatcher routing table stays byte-identical.
+      */
+      ...(await branchConflictDispatchEvidenceCounts({
+        repoDir: deps.rootDir,
+        taskId: task.id,
+        branchRef: error.branchName,
+        baseRef: conflictAttributionBase(task, error.startPoint),
+      }) ?? {}),
     },
     underlyingError: error,
   }, {
     task,
-    retryCount: task.recoveryRetryCount ?? 0,
-    settings: (await deps.store.getSettings()).autoRecovery ?? { mode: "deterministic-only", maxRetries: 3 },
+    retryCount: recoveryPass.persisted,
+    settings: settings.autoRecovery ?? { mode: "deterministic-only", maxRetries: 3 },
   });
+
+  if (decision.rationale === "destructive-ambiguity" || decision.rationale === "retry-budget-exhausted") {
+    await deps.store.updateTask(task.id, buildBranchConflictRecoveryParkPatch(recoveryPass, error.startPoint, conflictMessage));
+    await emitBranchConflictRecoveryParkAudit({
+      store: deps.store,
+      agentId: "executor",
+      runId: deps.getRunContextFor(task.id)?.runId ?? generateSyntheticRunId("executor-branch-conflict-park", task.id),
+      task,
+      pass: recoveryPass,
+      source: "executor-conflict",
+    });
+    await deps.store.logEntry(task.id, `[recovery] branch-conflict recovery exhausted ${task.id}: ${decision.rationale} — parked terminal (checkout retained)`, undefined, deps.getRunContextFor(task.id));
+    return "sticky";
+  }
 
   if (decision.action === "pause") {
     await deps.store.updateTask(task.id, {
@@ -201,11 +325,16 @@ export async function handleBranchConflict(
       branchWriteOrigin: classifyTaskBranchOrigin(task, error.branchName) === "operator-supplied" ? "operator" : "engine",
       paused: true,
       pausedReason: "branch-conflict-unrecoverable",
+      ...branchConflictRecoveryCounterPatch(recoveryPass),
     });
     await deps.persistTokenUsage(task.id);
     executorLog.warn(`✗ ${task.id} branch conflict sticky failure: ${error.branchName} @ ${error.conflictingWorktreePath}`);
     deps.onError?.(task, error);
     return "sticky";
+  }
+
+  if (recoveryPass.counted) {
+    await deps.store.updateTask(task.id, branchConflictRecoveryCounterPatch(recoveryPass));
   }
 
   return "retry";

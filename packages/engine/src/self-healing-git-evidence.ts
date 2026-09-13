@@ -32,6 +32,10 @@ import { exec } from "node:child_process";
    the class body the bare identifier resolves to this import. That collision
    pre-dates the move and is preserved exactly. */
 import { findAlreadyMergedTaskCommit, getCommitTaskOwnership } from "./merge/already-merged-detector.js";
+/* RUFU-231: shared trusted-integration-identity chain (one decision with the branch-conflict
+   inspection and the checkout-emptiness prover). branch-conflicts.ts imports neither this file
+   nor self-healing.ts, so the direction stays one-way. */
+import { resolveTrustedIntegrationRefs } from "./execution/branch-conflicts.js";
 import { createLogger } from "./logger.js";
 import type { Task } from "@fusion/core";
 
@@ -361,11 +365,26 @@ export abstract class SelfHealingGitEvidence {
     const { taskId, lineageId, branchTip, baseBranch, ownership } = input;
     if (ownership.rejectionReason !== "foreign-task" && ownership.rejectionReason !== "foreign-lineage") return null;
 
-    const hasNoUniqueDiff = await this.branchHasNoUniqueDiff(branchTip, baseBranch).catch(() => false);
-    const baseAlreadyHasCurrentTask = hasNoUniqueDiff
-      ? await this.baseHasExplicitTaskOwnership(taskId, lineageId, baseBranch).catch(() => false)
-      : false;
-    if (hasNoUniqueDiff && !baseAlreadyHasCurrentTask) return null;
+    /*
+    FNXC:BranchBaseIdentity 2026-09-13-04:05:
+    RUFU-231 (defect 3, one decision not three): the diff proof must trust the SAME ordered
+    integration identities as the branch-conflict inspection and the checkout-emptiness prover
+    (local integration branch first, then its remote-tracking counterparts). A zero-own-commit
+    branch rebased onto `<remote>/<integration>` carries an inherited tip that is unique against
+    a behind local branch yet zero-loss against the identity it actually landed on; trusting only
+    the local identity made this shape read as foreign content forever (RUFU-217's
+    `foreign-task-tip` refusal loop). FN-1406 stays intact: content unique against EVERY trusted
+    identity, or a proving identity already carrying this task's own commit (real misbinding),
+    still rejects. A failed identity resolution degrades to the single baseBranch — today's
+    behavior, fail-closed.
+    */
+    const trustedRefs = await resolveTrustedIntegrationRefs(this.options.rootDir, baseBranch).catch(() => [baseBranch]);
+    for (const trustedRef of trustedRefs) {
+      const hasNoUniqueDiff = await this.branchHasNoUniqueDiff(branchTip, trustedRef).catch(() => false);
+      if (!hasNoUniqueDiff) continue;
+      const baseAlreadyHasCurrentTask = await this.baseHasExplicitTaskOwnership(taskId, lineageId, trustedRef).catch(() => false);
+      if (!baseAlreadyHasCurrentTask) return null;
+    }
 
     return ownership.rejectionReason === "foreign-task"
       ? { reason: "foreign-task-tip", owner: ownership.ownerTaskId }

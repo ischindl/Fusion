@@ -5,7 +5,8 @@ import { activeSessionRegistry } from "../agents/active-session-registry.js";
 import { ActiveSessionWorktreeRemovalError } from "../worktree/worktree-backend.js";
 import * as worktreePoolModule from "../worktree/worktree-pool.js";
 import * as branchConflictModule from "../execution/branch-conflicts.js";
-import { createMockStore, mockedGenerateWorktreeName, resetExecutorMocks } from "./executor-test-helpers.js";
+import { resolveTaskWorktreePath } from "../worktree/worktree-paths.js";
+import { createMockStore, resetExecutorMocks } from "./executor-test-helpers.js";
 
 const CONFLICT_PATH = "/tmp/test/.worktrees/stale-self-owned";
 
@@ -175,7 +176,6 @@ describe("FN-4973: executor worktree conflict cleanup", () => {
     store.listTasks.mockResolvedValue([
       { id: "FN-LIVE", worktree: CONFLICT_PATH, column: "in-progress", paused: false },
     ]);
-    mockedGenerateWorktreeName.mockReturnValueOnce("fresh-eagle");
     const executor = new TaskExecutor(store, "/tmp/test");
     const createSpy = vi.spyOn(executor as any, "tryCreateWorktree").mockResolvedValue({
       path: "/tmp/test/.worktrees/fresh-eagle",
@@ -194,9 +194,15 @@ describe("FN-4973: executor worktree conflict cleanup", () => {
     );
 
     expect(result).toEqual({ path: "/tmp/test/.worktrees/fresh-eagle", branch: "fusion/fn-4973-2" });
+    /*
+    FNXC:TaskWorktreeNames 2026-09-13 (RUFU-231 test reconciliation):
+    The fresh-sibling fallback keeps the task's ONE durable directory identity while suffixing
+    the branch (-2..-6); the old seam generated a fresh random worktree name per retry and the
+    test mocked that generator. Compute the durable path from the production resolver instead.
+    */
     expect(createSpy).toHaveBeenCalledWith(
       "fusion/fn-4973-2",
-      "/tmp/test/.worktrees/fresh-eagle",
+      resolveTaskWorktreePath("/tmp/test", await store.getSettings(), "fn-4973"),
       "FN-4973",
       "fusion/fn-4973",
       0,
@@ -232,12 +238,6 @@ describe("FN-4973: executor worktree conflict cleanup", () => {
     store.listTasks.mockResolvedValue([]);
     activeSessionRegistry.registerPath(CONFLICT_PATH, { taskId: "FN-4973", kind: "workflow-step", ownerKey: "FN-4973/workflow-step" });
     (executor as any).addActiveWorktree("FN-4973", CONFLICT_PATH);
-    mockedGenerateWorktreeName
-      .mockReturnValueOnce("fresh-2")
-      .mockReturnValueOnce("fresh-3")
-      .mockReturnValueOnce("fresh-4")
-      .mockReturnValueOnce("fresh-5")
-      .mockReturnValueOnce("fresh-6");
     vi.spyOn(worktreePoolModule, "removeWorktree").mockRejectedValue(
       new ActiveSessionWorktreeRemovalError({
         worktreePath: CONFLICT_PATH,

@@ -119,7 +119,15 @@ describe("SelfHealingManager.reclaimPrConflictForTask", () => {
       branchWriteOrigin: "engine",
       worktree: "/tmp/test/.worktrees/fn-4763",
     }));
-    expect((store.moveTask as any).mock.calls.some((c: any[]) => c[1] === "in-progress")).toBe(true);
+    /*
+    FNXC:LifecycleContainment 2026-09-13 (RUFU-231 test reconciliation):
+    FN-207/FN-217 removed backward-move authority from recovery reasons — the reclaimed
+    review-lane card is retained in its current lane (only a REVISE transition moves a card
+    backward). The pre-containment expectation of an `in-progress` moveTask asserted a move the
+    lifecycle contract now refuses; assert the retained-in-place outcome instead.
+    */
+    expect((store.moveTask as any).mock.calls.some((c: any[]) => c[1] === "in-progress")).toBe(false);
+    expect(store.logEntry).toHaveBeenCalledWith(task.id, expect.stringContaining("Lifecycle recovery retained in 'in-review'"));
   });
 
   it("preserves operator branch ownership during reclaim", async () => {

@@ -265,6 +265,16 @@ export async function rebaseNewWorktreeOntoRemote(
   try {
     await execAsync(`git rebase ${quoteShellArg(remoteRef)}`, { cwd: worktreePath });
     safeLog(`Rebased new worktree branch ${branch} onto ${remoteRef}`);
+    /*
+    FNXC:BranchBaseIdentity 2026-09-13-00:25:
+    This rebase IS the divergence source the RUFU-217 wedge traced: for a card that later
+    commits nothing, the branch tip literally becomes `<remote>/<integrationBranch>` —
+    another lineage's landed commit — while local main sits elsewhere. Acquisition's
+    finalizeCreatedWorktree therefore records the base identity AFTER this rebase, using the
+    descendant-aware fork-point rule in resolveCapturedBaseCommitSha, so the row's
+    `baseCommitSha` names the remote-tracking identity the branch actually sits on (which
+    remote was used is visible by resolving `<remote>/<integrationBranch>` against it).
+    */
   } catch (rebaseErr) {
     const msg = rebaseErr instanceof Error ? rebaseErr.message : String(rebaseErr);
     executorLog.warn(

@@ -68,7 +68,7 @@ describe("self-healing reclaim paused review", () => {
     vi.restoreAllMocks();
   });
 
-  it("reclaims paused in-review branch conflict, clears paused state, and requeues to todo with audit metadata", async () => {
+  it("reclaims paused in-review branch conflict, clears paused state, and retains the card in its review lane with audit metadata", async () => {
     (store.listTasks as any)
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
@@ -87,7 +87,16 @@ describe("self-healing reclaim paused review", () => {
 
     expect(recovered).toBe(1);
     expect(store.updateTask).toHaveBeenCalledWith("FN-4485", expect.objectContaining({ paused: false, pausedReason: undefined, status: null, error: null }));
-    expect(store.moveTask).toHaveBeenCalledWith("FN-4485", "in-progress", expect.objectContaining({ moveSource: "engine" }));
+    /*
+    FNXC:LifecycleContainment 2026-09-13 (RUFU-231 test reconciliation):
+    FN-207/FN-217 removed backward-move authority from recovery reasons: the reclaimed card is
+    retained in its CURRENT lane (only a REVISE transition moves a card backward). The pre-
+    containment `moveTask(FN-4485, "in-progress")` expectation asserted a move the lifecycle
+    contract now refuses; the re-queue signal is the cleared paused/status/error state plus the
+    retention log, and the checkout itself was destroyed by the reclaim.
+    */
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect(store.logEntry).toHaveBeenCalledWith("FN-4485", expect.stringContaining("Lifecycle recovery retained in 'in-review'"));
     expect(store.logEntry).toHaveBeenCalledWith("FN-4485", expect.stringContaining("[recovery] reclaim-paused-review"));
     expect((store as any).recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({
       mutationType: "branch:auto-reclaim",

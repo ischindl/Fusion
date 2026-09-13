@@ -76,20 +76,22 @@ describe("reliability interactions: paused scope decay", () => {
 
     const count = await manager.autoReboundPausedScopeDecay();
     expect(count).toBe(1);
-    expect(store.moveTask).toHaveBeenCalledWith("FN-1", "todo", expect.objectContaining({
-      preserveProgress: true,
-      preserveWorktree: true,
-      preserveResumeState: true,
-      moveSource: "engine",
-    }));
-    expect((store.moveTask as any).mock.calls[0][2].moveSource).toBe("engine");
-    expect((store.moveTask as any).mock.calls[0][2].moveSource).not.toBe("user");
+    /*
+    FNXC:LifecycleContainment 2026-09-13-00:24 (RUFU-231 stale-seam reconciliation):
+    Pre-FN-217 this sweep moved the stale paused holder backward to `todo`. The rebound now
+    runs through `moveTaskToContainedBackwardTarget`, and "self-healing-stranded-recovery" is
+    not a revision reason, so the move is RETAINED IN PLACE: no `moveTask` fires at all, the
+    card stays in `in-progress`, and the recovery log/audit rows still record the pass. The
+    preserved-progress invariants below are exactly what retention guarantees.
+    */
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect((store.logEntry as any).mock.calls.some((call: unknown[]) => String(call[1]).includes("retained"))).toBe(true);
     expect(byId.get("FN-1")?.currentStep).toBe(2);
     expect(byId.get("FN-1")?.worktree).toBe("/tmp/wt");
     expect(store.logEntry).toHaveBeenCalledWith("FN-1", expect.stringContaining("Auto-rebounded (FN-4890)"));
     expect(audits.some((event) => event.mutationType === "task:auto-rebound-paused-scope-decay")).toBe(true);
 
-    expect(byId.get("FN-1")?.column).toBe("todo");
+    expect(byId.get("FN-1")?.column).toBe("in-progress");
     expect(byId.get("FN-2")?.blockedBy).toBe("FN-1");
   });
 
@@ -173,11 +175,20 @@ describe("reliability interactions: paused scope decay", () => {
 
     // Only the control task is rebounded -- the approval-held task is untouched.
     expect(count).toBe(1);
-    expect(store.moveTask).toHaveBeenCalledWith("FN-CONTROL", "todo", expect.anything());
-    expect(store.moveTask).not.toHaveBeenCalledWith("FN-APPROVAL", "todo", expect.anything());
+    /*
+    FNXC:LifecycleContainment 2026-09-13-00:24 (RUFU-231 stale-seam reconciliation):
+    The control/approval distinction is the point of this symptom test, and it survives
+    FN-217 containment: the approval-held card never reaches the rebound call at all, while
+    the control card IS processed — its contained rebound retains it in place (no `moveTask`),
+    which is still a decision. Distinguish the two through the per-task recovery log, not the
+    retired lane move.
+    */
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect(store.logEntry).toHaveBeenCalledWith("FN-CONTROL", expect.stringContaining("Auto-rebounded (FN-4890)"));
+    expect(store.logEntry).not.toHaveBeenCalledWith("FN-APPROVAL", expect.stringContaining("Auto-rebounded (FN-4890)"));
     expect(byId.get("FN-APPROVAL")?.column).toBe("in-progress");
     expect(byId.get("FN-APPROVAL")?.paused).toBe(true);
     expect(byId.get("FN-APPROVAL")?.pausedReason).toBe("awaiting-approval");
-    expect(byId.get("FN-CONTROL")?.column).toBe("todo");
+    expect(byId.get("FN-CONTROL")?.column).toBe("in-progress");
   });
 });

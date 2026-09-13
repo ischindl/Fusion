@@ -46,7 +46,7 @@ describe("reliability interactions: stale cached-base branch reclaim", () => {
     vi.restoreAllMocks();
   });
 
-  it("restart recovery + reclaim sweep ends with todo and nulled cached branch metadata", async () => {
+  it("restart recovery + reclaim sweep retains the review lane with nulled cached branch metadata", async () => {
     const task: any = { id: "FN-9001", column: "in-review", checkedOutBy: null, branch: "fusion/fn-9001", worktree: "/tmp/ghost", baseCommitSha: "stale-base", paused: true, pausedReason: "branch-conflict-unrecoverable", error: "Agent exited without calling fn_task_done", status: "failed", steps: [{ status: "pending" }] };
     const statefulStore: any = createStore();
     statefulStore.listTasks = vi.fn(async ({ column }: { column?: string }) => (column ? (task.column === column ? [task] : []) : [task]));
@@ -60,7 +60,13 @@ describe("reliability interactions: stale cached-base branch reclaim", () => {
     await restart.recoverInterruptedRuns();
     await manager.reclaimSelfOwnedBranchConflicts();
 
-    expect(task.column).toBe("todo");
+    /*
+    FNXC:LifecycleContainment 2026-09-13-00:26 (RUFU-231 stale-seam reconciliation):
+    The ghost-branch reclaim's requeue used to end in `todo`; FN-217 containment retains a
+    non-revision recovery move in the card's current lane. The metadata repair (nulled
+    branch/worktree/baseCommitSha below) is what this sweep still guarantees.
+    */
+    expect(task.column).toBe("in-review");
     expect(task.branch).toBeNull();
     expect(task.worktree).toBeNull();
     expect(task.baseCommitSha).toBeNull();

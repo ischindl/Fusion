@@ -283,6 +283,28 @@ describe("BranchWorktreeAutoRecoveryHandler", () => {
     expect(f.runAudit.database).toHaveBeenCalledWith(expect.objectContaining({ type: "branch-worktree:irreducible-pause", metadata: expect.objectContaining({ reason: "ai-session-unresolved" }) }));
   });
 
+  /*
+  FNXC:BranchConflictRecovery 2026-09-13-02:25:
+  RUFU-231: the irreducible pause is itself a recovery attempt. Before the fix it persisted no
+  counter, so the dispatcher's `retryCount >= maxRetries` budget could never advance through
+  this door and RUFU-217's card re-looped forever. These pin that the pause advances the
+  shared bounded budget and that the mode-off operator opt-out keeps the write suppressed
+  (the audit row still fires — the pause itself remains observable).
+  */
+  it("irreducible pause advances the persisted recovery budget", async () => {
+    const f = createFixtures({ recoveryRetryCount: 2 }, "ai-assisted");
+    await f.handler.spawnAiRecovery(f.failure, { ...f.decision, auditMetadata: { mode: "ai-assisted" } }, f.ctx);
+    expect(f.taskStore.updateTask).toHaveBeenCalledWith("FN-4536", { recoveryRetryCount: 3 });
+  });
+
+  it("irreducible pause under mode off pauses visibly but writes no counter", async () => {
+    const f = createFixtures({ recoveryRetryCount: 2 }, "ai-assisted");
+    const offCtx = { ...f.ctx, settings: { mode: "off", maxRetries: 3 } as any };
+    await f.handler.spawnAiRecovery(f.failure, { ...f.decision, auditMetadata: { mode: "ai-assisted" } }, offCtx);
+    expect(f.runAudit.database).toHaveBeenCalledWith(expect.objectContaining({ type: "branch-worktree:irreducible-pause" }));
+    expect(f.taskStore.updateTask).not.toHaveBeenCalled();
+  });
+
   it("mode off is no-op", async () => {
     const f = createFixtures({}, "off");
     await f.handler.issueRetry(f.failure, { ...f.decision, auditMetadata: { mode: "off" } }, f.ctx);

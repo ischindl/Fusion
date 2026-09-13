@@ -192,6 +192,9 @@ describe("branch-conflicts", () => {
       livePath: "/tmp/existing-wt",
       tipSha: "abc123def456",
       integrationRef: "main",
+      // RUFU-231: the landing was proven against the local identity, so no remote-tracking
+      // release gate applies; checkout release keeps its pre-existing semantics here.
+      landedVia: "local",
     });
   });
 

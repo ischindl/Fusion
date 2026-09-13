@@ -590,6 +590,21 @@ export type DatabaseMutationType =
   | "task:auto-recover-misrouted-foreign-commit"
   | "task:auto-recover-foreign-only-contamination"
   | "task:auto-recover-foreign-only-contamination-skipped"
+  /*
+  FNXC:BranchConflictRecovery 2026-09-13-02:20:
+  RUFU-231: zero-loss proof recorded the moment the foreign-only classifier accepts a branch
+  (zero own commits, foreign content landed on a trusted integration identity), before any git
+  mutation. Metadata is ids/counts/fixed enums only (taskId, kind, trustedRefCount).
+  */
+  | "task:branch-conflict-zero-loss-proven"
+  /*
+  FNXC:BranchConflictRecovery 2026-09-13-01:20:
+  RUFU-231: terminal park emitted once when a branch-conflict refusal site's bounded
+  recovery budget (`recoveryRetryCount` vs `autoRecovery.maxRetries`) is spent. Metadata is
+  ids/counts/fixed-source only (taskId, attempt, maxRetries, source, terminal); refusal
+  prose and error text never enter run-audit.
+  */
+  | "task:branch-conflict-recovery-parked"
   | "task:auto-recover-node-unreachable"
   | "task:auto-recover-worktree-metadata-rebound"
   | "task:auto-recover-worktree-metadata-cleared"

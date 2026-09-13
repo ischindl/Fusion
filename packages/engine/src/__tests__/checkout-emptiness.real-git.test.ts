@@ -137,15 +137,30 @@ describeIfGit("checkout-emptiness proof — real git", () => {
     expect(proof.get("")).toBe("occupied");
   }, 30_000);
 
-  it("never reports empty for an unresolvable base ref (fail-closed)", async () => {
+  /*
+  FNXC:BranchBaseIdentity 2026-09-13-01:05 (RUFU-231, behavior-change ownership):
+  This test previously asserted `unknown` whenever the RECORDED base ref was unresolvable.
+  The trusted identity chain supersedes that: a dead `baseCommitSha` whose integration branch
+  (and its remote-tracking counterparts) resolve is now genuinely PROVEN zero-ahead — the exact
+  wedge shape RUFU-200's release must clear (a clean branch on the integration base owns
+  nothing). Fail-closed keeps its real subject: the verdict is `unknown` only when NO trusted
+  identity is readable at all — asserted below with both the recorded ref and the integration
+  branch unresolvable.
+  */
+  it("proves a dead recorded base empty through the integration chain, and unknown only when no identity resolves", async () => {
     const { repoDir } = await setupRepo();
     const worktreePath = path.join(repoDir, "wt", "rufu-198");
     await run("git checkout -b fusion/rufu-198 && git checkout main", repoDir);
     await run(`git worktree add ${JSON.stringify(worktreePath)} fusion/rufu-198`, repoDir);
 
-    const proof = await proverFor(repoDir).proveTask(holder("RUFU-198", worktreePath, "deadbeefdeadbeef"));
+    const deadRecordedBase = await proverFor(repoDir).proveTask(holder("RUFU-198", worktreePath, "deadbeefdeadbeef"));
+    expect(deadRecordedBase.get("")).toBe("empty");
 
-    expect(proof.get("")).toBe("unknown");
+    const unreadableEverything = await new CheckoutEmptinessProver({
+      rootDir: repoDir,
+      integrationBranch: "integration/does-not-exist",
+    }).proveTask(holder("RUFU-198", worktreePath, "deadbeefdeadbeef"));
+    expect(unreadableEverything.get("")).toBe("unknown");
   }, 30_000);
 
   it("resolves the base from the integration branch when the task records no baseCommitSha", async () => {
@@ -408,4 +423,61 @@ describe("checkoutEmptinessEntries", () => {
 
     expect(entry?.baseRef).toBe("integration");
   });
+});
+
+/*
+FNXC:BranchBaseIdentity 2026-09-13-00:45 (RUFU-231):
+The trusted-identity chain on the lease surface. The wedge shape is a branch cut from a base
+that local `main` never advanced to, then rebased onto the fetched `<remote>/main`: clean tree,
+ZERO commits ahead of the identity it actually landed on, but non-zero ahead of the recorded
+SHA base and the behind local branch. Proving only against the recorded/local identity read
+`occupied` forever — the unbounded loop's fourth voice. Fail-closed still owns: a card's OWN
+unique commit is ahead of every trusted identity and must stay `occupied`.
+*/
+async function setupDivergedOrigin(taskId: string, opts: { ownCommit?: boolean } = {}) {
+  const base = await mkdtemp(path.join(tmpdir(), `rufu-231-emptiness-${taskId.toLowerCase()}-`));
+  tempDirs.push(base);
+  const originDir = path.join(base, "origin.git");
+  const seedDir = path.join(base, "seed");
+  const repoDir = path.join(base, "repo");
+  await run(`git init --bare -b main ${JSON.stringify(originDir)}`, base);
+  await run(`git clone ${JSON.stringify(originDir)} ${JSON.stringify(seedDir)}`, base);
+  await run("git config user.email seed@example.com && git config user.name 'Seed User'", seedDir);
+  await writeFile(path.join(seedDir, "note.txt"), "base\n", "utf-8");
+  await run("git add note.txt && git commit -m 'chore: base'", seedDir);
+  await run("git push -u origin main", seedDir);
+  const baseSha = await run("git rev-parse HEAD", seedDir);
+  await run(`git clone ${JSON.stringify(originDir)} ${JSON.stringify(repoDir)}`, base);
+  await run("git config user.email card@example.com && git config user.name 'Card User'", repoDir);
+  // The foreign landing advances origin AFTER the card's clone fetched it.
+  await writeFile(path.join(seedDir, "foreign.txt"), "landed elsewhere\n", "utf-8");
+  await run("git add foreign.txt && git commit -m 'feat(FN-355): foreign landed work'", seedDir);
+  await run("git push origin main", seedDir);
+  await run("git fetch origin", repoDir);
+  const worktreePath = path.join(repoDir, "wt", taskId.toLowerCase());
+  await run(`git branch fusion/${taskId.toLowerCase()}`, repoDir);
+  await run(`git worktree add ${JSON.stringify(worktreePath)} fusion/${taskId.toLowerCase()}`, repoDir);
+  await run("git rebase origin/main", worktreePath);
+  const originMain = await run("git rev-parse origin/main", repoDir);
+  if (opts.ownCommit) {
+    await writeFile(path.join(worktreePath, "own.txt"), "the card's own work\n", "utf-8");
+    await run("git add own.txt && git commit -m 'feat(RUFU-231): own work'", worktreePath);
+  }
+  return { repoDir, baseSha, worktreePath, originMain };
+}
+
+describeIfGit("checkout-emptiness proof — RUFU-231 trusted identity chain", () => {
+  it("proves a zero-own-commit branch rebased onto origin/main empty against a recorded SHA base", async () => {
+    const { repoDir, baseSha, worktreePath } = await setupDivergedOrigin("RUFU-231A");
+    // The wedge recorded no remote identity: the entry's only anchor is the recorded SHA,
+    // which sits BEHIND origin/main. Only the name-anchored trusted chain clears it.
+    const proof = await proverFor(repoDir).proveTask(holder("RUFU-231A", worktreePath, baseSha));
+    expect(proof.get("")).toBe("empty");
+  }, 30_000);
+
+  it("keeps the card's own unique commit occupied even with the trusted chain (fail-closed)", async () => {
+    const { repoDir, baseSha, worktreePath } = await setupDivergedOrigin("RUFU-231B", { ownCommit: true });
+    const proof = await proverFor(repoDir).proveTask(holder("RUFU-231B", worktreePath, baseSha));
+    expect(proof.get("")).toBe("occupied");
+  }, 30_000);
 });

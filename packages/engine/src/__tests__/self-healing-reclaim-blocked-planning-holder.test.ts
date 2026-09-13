@@ -119,7 +119,7 @@ describeIfGit("SelfHealingManager reclaimSelfOwnedBranchConflicts — blocked pl
    * `fusion/fn-test-1` checked out AT that base (clean, zero commits ahead). Returns the base sha,
    * the worktree path, and a dependency-blocked `todo` task retaining the worktree metadata.
    */
-  function setupBlockedHolderFixture(options: { dirtyTree?: boolean; unresolvableBase?: boolean } = {}) {
+  function setupBlockedHolderFixture(options: { dirtyTree?: boolean; unresolvableBase?: boolean; ownCommit?: boolean } = {}) {
     const repo = mkdtempSync(path.join(os.tmpdir(), "rufu-200-"));
     repos.push(repo);
     git(repo, "git init -b main");
@@ -134,6 +134,11 @@ describeIfGit("SelfHealingManager reclaimSelfOwnedBranchConflicts — blocked pl
 
     if (options.dirtyTree) {
       writeFileSync(path.join(worktreePath, "untracked-note.txt"), "operator scratch\n", "utf-8");
+    }
+
+    if (options.ownCommit) {
+      writeFileSync(path.join(worktreePath, "own-work.txt"), "the card's own work\n", "utf-8");
+      git(worktreePath, "git add own-work.txt && git commit -m 'feat(FN-TEST-1): own work'");
     }
 
     const task = makeTask({
@@ -191,13 +196,39 @@ describeIfGit("SelfHealingManager reclaimSelfOwnedBranchConflicts — blocked pl
     expect(task.log.some((entry: any) => String(entry.action).includes("[recovery]"))).toBe(false);
   }, 30_000);
 
-  it("keeps the skip verbatim when the emptiness proof cannot be computed (unknown base)", async () => {
+  /*
+  FNXC:BranchBaseIdentity 2026-09-13-01:25 (RUFU-231, behavior-change ownership):
+  This test asserted the pre-trusted-chain rule: ANY unresolvable recorded `baseCommitSha`
+  yields `unknown` and the skip stays verbatim. The chain supersedes that half: when the
+  recorded SHA is dead but the integration identity (here `main`, pinned in settings) resolves
+  and the branch is clean and zero-ahead of it, the card provably owns nothing — releasing is
+  the correct new verdict (the wedge shape had no base recorded at all). The genuine
+  fail-closed half is preserved as a sibling: dead recorded base AND work ahead of every
+  trusted identity must still skip verbatim.
+  */
+  it("releases the blocked holder when the recorded base is dead but the trusted chain proves zero-ahead", async () => {
     const { worktreePath, tasks, manager } = setupBlockedHolderFixture({ unresolvableBase: true });
+
+    const recovered = await manager.reclaimSelfOwnedBranchConflicts();
+
+    expect(recovered).toBe(1);
+    const task = tasks.get("FN-TEST-1")!;
+    expect(task.worktree).toBeNull();
+    expect(task.branch).toBeNull();
+    expect(existsSync(worktreePath)).toBe(false);
+    // Dependency edges survive the metadata clear (same contract as the proven-empty test).
+    expect(task.blockedBy).toBe("FN-DEP");
+  }, 30_000);
+
+  it("keeps the skip verbatim when the recorded base is dead and the branch owns unique work", async () => {
+    const { worktreePath, tasks, manager } = setupBlockedHolderFixture({ unresolvableBase: true, ownCommit: true });
 
     const recovered = await manager.reclaimSelfOwnedBranchConflicts();
 
     expect(recovered).toBe(0);
     const task = tasks.get("FN-TEST-1")!;
+    // Fail-closed: ahead of every trusted identity (dead SHA unreadable, main behind) — the
+    // checkout and ALL retained metadata stay byte-identical.
     expect(task.worktree).toBe(worktreePath);
     expect(task.branch).toBe("fusion/fn-test-1");
     expect(existsSync(worktreePath)).toBe(true);

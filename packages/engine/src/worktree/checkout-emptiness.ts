@@ -26,6 +26,9 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import type { CheckoutEmptinessProofMap, CheckoutEmptinessVerdict } from "@fusion/core";
 import { resolveIntegrationBranch, type IntegrationBranchSettings } from "../merge/integration-branch.js";
+/* RUFU-231: shared trusted-integration-identity chain (the same ordered identities the
+   branch-conflict inspection and the sweep's foreign-tip rejection trust). */
+import { resolveTrustedIntegrationRefs } from "../execution/branch-conflicts.js";
 
 const execAsync = promisify(exec);
 
@@ -272,7 +275,25 @@ export class CheckoutEmptinessProver {
   private async proveEntry(entry: CheckoutEmptinessEntry, force: boolean): Promise<CheckoutEmptinessVerdict> {
     const baseRef = entry.baseRef ?? await this.defaultBaseRef();
     if (!baseRef) return "unknown";
-    const cacheKey = proofCacheKey(entry.path, baseRef, entry.branchRef);
+    /*
+    FNXC:BranchBaseIdentity 2026-09-13-00:40 (RUFU-231, defect 3):
+    The zero-loss proof must trust the same ordered integration identities as the branch-conflict
+    inspection and the sweep's foreign-tip rejection. Candidates: the entry's recorded base ref
+    first (`baseCommitSha` — precise anchor), then the resolved integration branch and its
+    remote-tracking counterparts (`<remote>/<integration>`). The chain anchors on the BRANCH NAME,
+    not the recorded ref: after Step 2 acquisition a recorded `baseCommitSha` is a SHA, and
+    `<remote>/<sha>` is never a valid identity — without the name anchor, a card rebased onto
+    origin/main would prove occupied forever against its recorded SHA. A zero-own-commit branch
+    rebased onto `<remote>/<integration>` is zero-ahead of the identity it actually landed on;
+    proving only against a behind local identity read occupied forever (the unbounded loop's
+    fourth voice). A failed identity resolution degrades to the recorded/branch ref: today's
+    fail-closed behavior. The candidate set is part of the cache key so a verdict is never reused
+    across a changed identity set.
+    */
+    const chainAnchor = (await this.defaultBaseRef()) ?? baseRef;
+    const trusted = await resolveTrustedIntegrationRefs(this.rootDir, chainAnchor).catch((): string[] => []);
+    const baseRefs = [...new Set([baseRef, chainAnchor, ...trusted])];
+    const cacheKey = proofCacheKey(entry.path, baseRefs.join("\u0001"), entry.branchRef);
 
     if (!force) {
       const cached = this.cache.get(cacheKey);
@@ -283,7 +304,7 @@ export class CheckoutEmptinessProver {
       this.cache.delete(cacheKey);
     }
 
-    const pending = this.runProof(entry, baseRef)
+    const pending = this.runProof(entry, baseRefs)
       .then((verdict) => {
         this.remember(cacheKey, verdict);
         return verdict;
@@ -315,26 +336,36 @@ export class CheckoutEmptinessProver {
   cleanliness is VACUOUS there because there is no tree to be dirty, so zero commits ahead really does
   mean nothing to preserve. An unreadable ref yields `unknown`, never `empty`.
   */
-  private async runProof(entry: CheckoutEmptinessEntry, baseRef: string): Promise<CheckoutEmptinessVerdict> {
+  private async runProof(entry: CheckoutEmptinessEntry, baseRefs: readonly string[]): Promise<CheckoutEmptinessVerdict> {
     const status = await this.runGit("git status --porcelain", entry.path);
     if (status.ok) {
       if (status.stdout.trim().length > 0) return "occupied";
-      const ahead = await this.runGit(`git rev-list --count ${quoteRef(baseRef)}..HEAD`, entry.path);
-      if (!ahead.ok) return "unknown";
-      const count = parseCommitCount(ahead.stdout);
-      if (count === null) return "unknown";
-      return count === 0 ? "empty" : "occupied";
+      let anyReadOk = false;
+      for (const baseRef of baseRefs) {
+        const ahead = await this.runGit(`git rev-list --count ${quoteRef(baseRef)}..HEAD`, entry.path);
+        if (!ahead.ok) continue;
+        const count = parseCommitCount(ahead.stdout);
+        if (count === null) continue;
+        anyReadOk = true;
+        if (count === 0) return "empty";
+      }
+      return anyReadOk ? "occupied" : "unknown";
     }
 
     if (!entry.branchRef) return "unknown";
-    const ahead = await this.runGit(
-      `git rev-list --count ${quoteRef(baseRef)}..${quoteRef(entry.branchRef)}`,
-      this.rootDir,
-    );
-    if (!ahead.ok) return "unknown";
-    const count = parseCommitCount(ahead.stdout);
-    if (count === null) return "unknown";
-    return count === 0 ? "empty" : "occupied";
+    let anyReadOk = false;
+    for (const baseRef of baseRefs) {
+      const ahead = await this.runGit(
+        `git rev-list --count ${quoteRef(baseRef)}..${quoteRef(entry.branchRef)}`,
+        this.rootDir,
+      );
+      if (!ahead.ok) continue;
+      const count = parseCommitCount(ahead.stdout);
+      if (count === null) continue;
+      anyReadOk = true;
+      if (count === 0) return "empty";
+    }
+    return anyReadOk ? "occupied" : "unknown";
   }
 
   private async runGit(
