@@ -1,7 +1,9 @@
 import type { ChatInFlightGenerationState, ChatMessage, ChatSnippet, ResolvedModelSelection, Settings, Task, TaskDetail } from "@fusion/core";
+import { AlphaButton, AlphaListBox, AlphaListBoxItem, AlphaTextArea } from "./alpha-ui";
 import { isWipColumnRole } from "../utils/columnRoles";
 import { getErrorMessage, isExperimentalFeatureEnabled, CHAT_FOCUS_FLAG } from "@fusion/core";
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { Loader2, Maximize2, Minimize2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ToastType } from "../hooks/useToast";
@@ -41,6 +43,15 @@ interface TaskPlannerChatTabProps {
   taskChatModel: ResolvedModelSelection & { thinkingLevel?: string };
   addToast: (msg: string, type?: ToastType) => void;
   onTaskUpdated?: (task: Task) => void;
+  footerTarget?: HTMLElement | null;
+}
+
+/*
+FNXC:TaskDetailPlannerChat 2026-09-12-02:34:
+Le propriétaire d'état du Chat reste monté dans le Content pour préserver session, brouillon et stream, mais ses contrôles sont portalisés dans le Footer direct fourni par le shell. Sans cible (tests ou hôte autonome), le rendu en place conserve la compatibilité du composant.
+*/
+function PlannerChatFooterPortal({ target, children }: { target?: HTMLElement | null; children: ReactNode }) {
+  return target ? createPortal(children, target) : children;
 }
 
 type ComposerState = "idle" | "sending";
@@ -349,7 +360,7 @@ function buildPlannerQuestionRenderStates(messages: readonly ChatMessage[]): Map
   return states;
 }
 
-export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expanded = false, onExpandedChange, taskChatModel, addToast, onTaskUpdated }: TaskPlannerChatTabProps) {
+export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expanded = false, onExpandedChange, taskChatModel, addToast, onTaskUpdated, footerTarget }: TaskPlannerChatTabProps) {
   const { t } = useTranslation("app");
   const chatMessageLayout = useChatMessageLayout();
   const enterSubmits = useChatEnterSubmits();
@@ -1649,7 +1660,7 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
   return (
     <section className={`task-planner-chat${chatMessageLayout === "full-width" ? " task-planner-chat--full-width" : ""}`} aria-label={t("taskDetail.plannerChat.label", "Task-aware chat")} data-testid="task-planner-chat-panel">
       {onExpandedChange && (
-        <button
+        <AlphaButton
           type="button"
           className="btn btn-icon btn-sm task-planner-chat-expand-toggle task-planner-chat-expand-toggle--overlay"
           onClick={() => onExpandedChange(!expanded)}
@@ -1659,7 +1670,7 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
           data-testid="task-planner-chat-expand-toggle"
         >
           {expanded ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
-        </button>
+        </AlphaButton>
       )}
       <div className="task-planner-chat-transcript" ref={transcriptRef} onScroll={handleTranscriptScroll} data-testid="task-planner-chat-transcript">
         {hasMoreHistory && <div ref={historySentinelRef} className="task-planner-chat-history-sentinel" aria-hidden="true">{loadingOlder ? t("chat.loadingOlderMessages", "Loading older messages…") : null}</div>}
@@ -1688,7 +1699,7 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
             {starterPrompts.length > 0 && (
               <div className="task-planner-chat-starters" aria-label={t("taskDetail.plannerChat.startersLabel", "Task chat starter prompts")}>
                 {starterPrompts.map((prompt) => (
-                  <button
+                  <AlphaButton
                     key={prompt.id}
                     type="button"
                     className="btn task-planner-chat-starter"
@@ -1698,7 +1709,7 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
                   >
                     <span className="task-planner-chat-starter-label">{prompt.label}</span>
                     {prompt.description && <span className="task-planner-chat-starter-description">{prompt.description}</span>}
-                  </button>
+                  </AlphaButton>
                 ))}
               </div>
             )}
@@ -1773,6 +1784,7 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
         )}
       </div>
 
+      <PlannerChatFooterPortal target={footerTarget}>
       <PendingChatMessageQueue
         messages={pendingMessages}
         disabled={queueActionPending}
@@ -1784,10 +1796,9 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
       />
 
       {showCommandMenu && (
-        <div
+        <AlphaListBox
           className="chat-skill-menu task-planner-chat-command-menu"
           data-testid="task-planner-chat-command-menu"
-          role="listbox"
           aria-label={t("chat.slashSuggestions", "Slash suggestions")}
         >
           {slashMenuEntries.length === 0 ? (
@@ -1796,10 +1807,11 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
             slashMenuEntries.map((entry, index) => {
               if (entry.kind === "snippet") {
                 return (
-                  <button
+                  <AlphaListBoxItem
                     key={`snippet-${entry.snippet.name}`}
-                    type="button"
-                    role="option"
+                    id={`snippet-${entry.snippet.name}`}
+                    textValue={entry.snippet.name}
+                    legacyAs="button"
                     aria-selected={index === highlightedCommandIndex}
                     className={`chat-skill-menu-item${index === highlightedCommandIndex ? " chat-skill-menu-item--highlighted" : ""}`}
                     onMouseDown={(event) => event.preventDefault()}
@@ -1808,7 +1820,7 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
                   >
                     <span className="chat-skill-menu-item-name">/{entry.snippet.name}</span>
                     <span className="chat-skill-menu-item-description">{t("chat.snippetSuggestion", "Insert saved prompt")}</span>
-                  </button>
+                  </AlphaListBoxItem>
                 );
               }
 
@@ -1821,10 +1833,12 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
               */
               const commandDisabled = entry.command.requiresAgent && !agentRunning;
               return (
-                <button
+                <AlphaListBoxItem
                   key={entry.command.trigger}
-                  type="button"
-                  role="option"
+                  id={entry.command.trigger}
+                  textValue={entry.command.trigger}
+                  legacyAs="button"
+                  isDisabled={commandDisabled}
                   aria-selected={index === highlightedCommandIndex}
                   aria-disabled={commandDisabled}
                   className={`chat-skill-menu-item chat-command-menu-item${index === highlightedCommandIndex ? " chat-skill-menu-item--highlighted" : ""}${commandDisabled ? " chat-command-menu-item--disabled" : ""}`}
@@ -1838,11 +1852,11 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
                       ? t("chat.commandNoRunningAgentHint", "No running agent to steer")
                       : entry.command.description}
                   </span>
-                </button>
+                </AlphaListBoxItem>
               );
             })
           )}
-        </div>
+        </AlphaListBox>
       )}
       {/*
       FNXC:ChatMemoryFocus 2026-08-24-04:21:
@@ -1887,7 +1901,7 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
         FNXC:TaskPlannerChatQueue 2026-09-06-00:48:
         Cancellation owns planner dispatch, not the local text or dictation controls. sendMessageContent queues typed text behind cancellationInProgressRef; this composer has no attachment path, so adding one requires an explicit non-text queue contract.
         */}
-        <textarea
+        <AlphaTextArea
           ref={handleComposerRef}
           className="input task-planner-chat-input"
           aria-label={t("taskDetail.plannerChat.inputLabel", "Message task chat")}
@@ -1917,6 +1931,7 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
           showStopText={false}
         />
       </div>
+      </PlannerChatFooterPortal>
     </section>
   );
 }

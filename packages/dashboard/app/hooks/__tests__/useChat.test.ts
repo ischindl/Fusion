@@ -29,27 +29,13 @@ vi.mock("../../api", () => ({
     { id: "agent-002", name: "Beta", role: "reviewer", state: "idle", icon: undefined, createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z", metadata: {}, roles: ["executor"] },
   ]),
 }));
-
-// FNXC:Chat 2026-09-09-19:05 (RUFU-199 Step 6 test harness):
-// FN-313 routed chat's open-session preference through getPersistedChatOpenSession/
-// setPersistedChatOpenSession/clearPersistedChatOpenSession, but this file's factory mock was never
-// completed, so every mount threw "No 'getPersistedChatOpenSession' export is defined on the mock"
-// (the whole file was red on this branch). Mirror the REAL module's delegation into the
-// *ScopedItem spies: that keeps the existing tests' seeding (mockGetScopedItem) and assertions
-// (mockSetScopedItem/mockRemoveScopedItem with the "kb-chat-active-session" key) valid through the
-// new indirection. Faithful to projectStorage.ts, not a per-test patch.
-const { scopedItemSpy, setScopedItemSpy, removeScopedItemSpy } = vi.hoisted(() => ({
-  scopedItemSpy: vi.fn(),
-  setScopedItemSpy: vi.fn(),
-  removeScopedItemSpy: vi.fn(),
-}));
 vi.mock("../../utils/projectStorage", () => ({
-  getScopedItem: scopedItemSpy,
-  setScopedItem: setScopedItemSpy,
-  removeScopedItem: removeScopedItemSpy,
-  getPersistedChatOpenSession: vi.fn((projectId?: string) => scopedItemSpy("kb-chat-active-session", projectId)),
-  setPersistedChatOpenSession: vi.fn((sessionId: string, projectId?: string) => setScopedItemSpy("kb-chat-active-session", sessionId, projectId)),
-  clearPersistedChatOpenSession: vi.fn((projectId?: string) => removeScopedItemSpy("kb-chat-active-session", projectId)),
+  getScopedItem: vi.fn(),
+  setScopedItem: vi.fn(),
+  removeScopedItem: vi.fn(),
+  getPersistedChatOpenSession: vi.fn(),
+  setPersistedChatOpenSession: vi.fn(),
+  clearPersistedChatOpenSession: vi.fn(),
 }));
 
 // Mock the SSE bus
@@ -63,6 +49,9 @@ import * as sseBusModule from "../../sse-bus";
 const mockGetScopedItem = vi.mocked(projectStorageModule.getScopedItem);
 const mockSetScopedItem = vi.mocked(projectStorageModule.setScopedItem);
 const mockRemoveScopedItem = vi.mocked(projectStorageModule.removeScopedItem);
+const mockGetPersistedChatOpenSession = vi.mocked(projectStorageModule.getPersistedChatOpenSession);
+const mockSetPersistedChatOpenSession = vi.mocked(projectStorageModule.setPersistedChatOpenSession);
+const mockClearPersistedChatOpenSession = vi.mocked(projectStorageModule.clearPersistedChatOpenSession);
 const mockSubscribeSse = vi.mocked(sseBusModule.subscribeSse);
 
 const mockFetchChatSessions = vi.mocked(apiModule.fetchChatSessions);
@@ -160,7 +149,10 @@ describe("useChat", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
-    mockGetScopedItem.mockReturnValue(null);
+    mockGetScopedItem.mockReturnValue(undefined);
+    mockGetPersistedChatOpenSession.mockImplementation((projectId) => projectId ? (mockGetScopedItem("kb-chat-active-session", projectId) ?? null) : null);
+    mockSetPersistedChatOpenSession.mockImplementation((sessionId, projectId) => { if (projectId && sessionId) mockSetScopedItem("kb-chat-active-session", sessionId, projectId); });
+    mockClearPersistedChatOpenSession.mockImplementation((projectId) => { if (projectId) mockRemoveScopedItem("kb-chat-active-session", projectId); });
     mockFetchChatSessions.mockResolvedValue({ sessions: [] });
     mockFetchChatSession.mockResolvedValue({
       session: makeSession({ id: "session-001", agentId: "agent-001" }),
@@ -6517,7 +6509,7 @@ describe("useChat", () => {
       // Simulate a saved session in localStorage
       mockGetScopedItem.mockReturnValue("session-001");
 
-      const { result } = renderHook(() => useChat());
+      const { result } = renderHook(() => useChat("proj-123"));
 
       await waitFor(() => {
         expect(result.current.sessions).toHaveLength(1);
@@ -6529,7 +6521,7 @@ describe("useChat", () => {
 
       // Verify messages were loaded
       await waitFor(() => {
-        expect(mockFetchChatMessages).toHaveBeenCalledWith("session-001", { limit: 50, order: "desc" }, undefined);
+        expect(mockFetchChatMessages).toHaveBeenCalledWith("session-001", { limit: 50, order: "desc" }, "proj-123");
       });
     });
 
@@ -6620,7 +6612,7 @@ describe("useChat", () => {
       });
     });
 
-    it("uses undefined projectId when not provided", async () => {
+    it("refuse de persister une session sans projectId", async () => {
       const session = makeSession({ id: "session-001", agentId: "agent-001" });
       mockFetchChatSessions.mockResolvedValueOnce({ sessions: [session] });
       mockFetchChatMessages.mockResolvedValue({ messages: [] });
@@ -6635,13 +6627,8 @@ describe("useChat", () => {
         result.current.selectSession("session-001");
       });
 
-      await waitFor(() => {
-        expect(mockSetScopedItem).toHaveBeenCalledWith(
-          "kb-chat-active-session",
-          "session-001",
-          undefined,
-        );
-      });
+      expect(mockSetPersistedChatOpenSession).toHaveBeenCalledWith("session-001", undefined);
+      expect(mockSetScopedItem).not.toHaveBeenCalled();
     });
   });
 

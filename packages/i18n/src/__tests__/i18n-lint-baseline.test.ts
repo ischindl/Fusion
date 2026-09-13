@@ -17,7 +17,8 @@ default, so the single test carries an explicit 30000ms third-arg timeout. Packa
 timeouts (testTimeout/hookTimeout in vitest.config.ts) are intentionally untouched.
 */
 describe("production i18n lint baseline", () => {
-  it("keeps the configured shipping inputs free of hardcoded copy", async () => {
+  // FN-9295: The i18n linter can take longer than the 5s default timeout on CI.
+  it("keeps the configured shipping inputs free of hardcoded copy", { timeout: 30000 }, async () => {
     // Vitest package commands run from packages/i18n; the root config's relative
     // globs must be evaluated from the repository root just like pnpm i18n:lint.
     const previousCwd = process.cwd();

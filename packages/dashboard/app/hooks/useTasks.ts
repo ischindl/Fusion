@@ -1153,6 +1153,8 @@ export function useTasks(options?: UseTasksOptions) {
     && completedSortModeRef.current === request.sort
   ), [projectId]);
 
+  /* DELIBERATE-LITERAL: the `column === "done"` below is intentional as the degraded fallback when the
+     workflow column resolver is unavailable — `done` is the built-in Complete column id. */
   const mergeCompletedPage = useCallback((page: Task[], requestLiveMutationVersion: number) => {
     const normalizedPage = page.map(normalizeNonBoardTask);
     const knownIds = new Set(completedTasksRef.current.map((task) => task.id));
@@ -1513,6 +1515,8 @@ export function useTasks(options?: UseTasksOptions) {
       tasksRef.current = nextTasks;
       setTasks(nextTasks);
     };
+    /* DELIBERATE-LITERAL: the `column === "done"` below is intentional as the degraded fallback when the
+       workflow column resolver is unavailable — `done` is the built-in Complete column id. */
     const isCompletedTask = (task: Task, column: ColumnId = task.column): boolean => (
       resolveColumnFlagsRef.current?.({ ...task, column })?.complete === true || column === "done"
     );
@@ -1896,13 +1900,13 @@ export function useTasks(options?: UseTasksOptions) {
     const deletedTask = normalizeNonBoardTask(await api.deleteTask(id, projectId, options));
     /*
     FNXC:TaskDeletion 2026-06-29-18:52:
-    Local deletes must update the shared useTasks array immediately because the Board and right-dock Tasks list both render from this state and should not wait for SSE or a refetch after the API confirms deletion.
+    Local deletes must update the shared useTasks array immediately because the Board, List, and any shared task consumers render from this state and should not wait for SSE or a refetch after the API confirms deletion.
 
     FNXC:TaskDeletionCache 2026-06-29-20:11:
     Project-scoped SWR hydration must remove the deleted task after the API confirms deletion, otherwise an immediate remount can hydrate a stale row before the next fetch. Only the active project's task cache key is touched; if the cached envelope has an unexpected shape, clear that key instead of writing possibly stale data.
 
     FNXC:TaskDeletionCache 2026-06-29-21:04:
-    Delete success must also invalidate refreshes that began before the API call completed; otherwise a late pre-delete snapshot can rehydrate the removed card in Board and the right-dock Tasks list until the next live update.
+    Delete success must also invalidate refreshes that began before the API call completed; otherwise a late pre-delete snapshot can rehydrate the removed card in Board or List until the next live update.
     */
     // Invalidate refreshes that started before the delete succeeded so an older
     // server snapshot cannot overwrite the locally removed row after this point.

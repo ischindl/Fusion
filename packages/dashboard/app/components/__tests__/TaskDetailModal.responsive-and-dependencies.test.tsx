@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { readAppFile } from "../../test/cssFixture";
 import {
   makeTask,
   noop,
@@ -209,7 +210,7 @@ describe("TaskDetailModal", () => {
 
       const detailCss = readDashboardStylesSource();
       expectBaseRule(detailCss, ".detail-body--planner-chat", "overflow-y: hidden;");
-      expectBaseRule(detailCss, ".detail-section--planner-chat", "min-height: 0;");
+      expectBaseRule(detailCss, ".task-detail-planner-keep-alive", "min-height: 0;");
       expect(detailCss).toContain(".task-detail-content--planner-chat-expanded .modal-actions");
       expect(detailCss).toContain(".task-detail-content--planner-chat-expanded .detail-tabs");
       expect(detailCss).toContain(".task-detail-content--planner-chat-expanded .detail-overseer-explain-panel");
@@ -220,28 +221,26 @@ describe("TaskDetailModal", () => {
 
     it("keeps task-detail outer padding canonical while Planner Chat owns only internal spacing", () => {
       const css = readDashboardStylesSource();
+      const plannerCss = readAppFile("components/TaskPlannerChatTab.css");
       const paddingContractStart = css.indexOf("Task-detail tabs share the `.detail-body` outer content inset");
       expect(paddingContractStart).toBeGreaterThanOrEqual(0);
       const detailBodyBlock = getExactCssRuleBlock(css, ".detail-body");
       const activityBodyBlock = getCssRuleBlock(css, ".detail-body--chat");
       const plannerBodyBlock = getCssRuleBlock(css, ".detail-body--planner-chat");
-      const plannerPanelBlock = getExactCssRuleBlock(css, ".task-planner-chat");
-      const plannerTranscriptBlock = getExactCssRuleBlock(css, ".task-planner-chat-transcript");
-      const plannerComposerBlock = getExactCssRuleBlock(css, ".task-planner-chat-composer");
+      const plannerPanelBlock = getExactCssRuleBlock(plannerCss, ".task-planner-chat");
+      const plannerTranscriptBlock = getExactCssRuleBlock(plannerCss, ".task-planner-chat-transcript");
+      const plannerComposerBlock = getExactCssRuleBlock(plannerCss, ".task-planner-chat-composer");
       const expandedPlannerBodyBlock = getExactCssRuleBlock(css, ".task-detail-content--planner-chat-expanded .detail-body--planner-chat");
-      const expandedPlannerSectionBlock = getExactCssRuleBlock(css, ".task-detail-content--planner-chat-expanded .detail-section--planner-chat");
+      const expandedPlannerSectionBlock = getExactCssRuleBlock(css, ".task-detail-content--planner-chat-expanded .task-detail-planner-keep-alive");
       const mobileBodyBlock = getCssAtRuleBlockContainingExactRule(css, "@media (max-width: 768px)", ".detail-body");
       const mobileDetailBodyBlock = getExactCssRuleBlock(mobileBodyBlock, ".detail-body");
-      const detailBodyContentBlock = getExactCssRuleBlock(css, ".detail-body-content");
-      const mobileDetailBodyContentBlock = getExactCssRuleBlock(mobileBodyBlock, ".detail-body-content");
+
       const mobilePlannerBlock = getCssAtRuleBlockContaining(css, "@media (max-width: 768px)", ".detail-body--chat");
       const mobilePlannerBodyBlock = getStandaloneCssRuleBlock(mobilePlannerBlock, ".detail-body--planner-chat");
       const mobileExpandedPlannerBodyBlock = getExactCssRuleBlock(mobilePlannerBlock, ".task-detail-content--planner-chat-expanded .detail-body--planner-chat");
 
-      expect(detailBodyBlock).toContain("padding: 0;");
-      expect(detailBodyContentBlock).toContain("padding: calc(var(--space-lg) + var(--space-xs));");
-      expect(mobileDetailBodyBlock).toContain("padding: 0;");
-      expect(mobileDetailBodyContentBlock).toContain("padding: calc(var(--space-md) + var(--space-xs) / 2);");
+      expect(detailBodyBlock).toContain("padding: calc(var(--space-lg) + var(--space-xs));");
+      expect(mobileDetailBodyBlock).toContain("padding: calc(var(--space-md) + var(--space-xs) / 2);");
       expectNoSpacingOverrides(activityBodyBlock, "desktop Activity body modifier");
       expectNoSpacingOverrides(plannerBodyBlock, "desktop planner body modifier");
       expect(expandedPlannerBodyBlock).toContain("flex: 1;");
@@ -412,11 +411,10 @@ describe("TaskDetailModal", () => {
       const feedBodyBlock = getExactCssRuleBlock(css, ".detail-body--feed,\n.detail-body--agent-log");
       const feedContentBlock = getExactCssRuleBlock(
         css,
-        ".detail-body--feed > .detail-body-content,\n.detail-body--agent-log > .detail-body-content,\n.detail-body--chat > .detail-body-content,\n.detail-body--planner-chat > .detail-body-content",
+        ".detail-body--feed > *,\n.detail-body--agent-log > *,\n.detail-body--chat > *,\n.detail-body--planner-chat > *",
       );
-      const feedSectionBlock = getExactCssRuleBlock(css, ".detail-section--feed,\n.detail-section--agent-log");
-      const feedActivityBlock = getExactCssRuleBlock(css, ".detail-section--feed > .detail-activity");
-      const feedListBlock = getExactCssRuleBlock(css, ".detail-section--feed .detail-activity-list");
+      const feedActivityBlock = getExactCssRuleBlock(css, ".detail-body--feed > .detail-activity");
+      const feedListBlock = getExactCssRuleBlock(css, ".detail-body--feed > .detail-activity .detail-activity-list");
       const footerBlock = getExactCssRuleBlock(css, ".task-detail-content > .modal-actions");
       const mobileBlock = getCssAtRuleBlockContainingExactRule(css, "@media (max-width: 768px)", ".detail-body");
       const mobileDetailBodyBlock = getExactCssRuleBlock(mobileBlock, ".detail-body");
@@ -435,8 +433,6 @@ describe("TaskDetailModal", () => {
       expect(feedBodyBlock).toContain("overflow-y: hidden;");
       expect(feedContentBlock).toContain("flex: 1;");
       expect(feedContentBlock).toContain("min-height: 0;");
-      expect(feedSectionBlock).toContain("flex: 1;");
-      expect(feedSectionBlock).toContain("min-height: 0;");
       expect(feedActivityBlock).toContain("flex: 1;");
       expect(feedActivityBlock).toContain("min-height: 0;");
       expect(feedListBlock).toContain("flex: 1;");
@@ -501,7 +497,6 @@ describe("TaskDetailModal", () => {
       This contract covers modal, pop-out, embedded, and mobile task-detail surfaces.
       */
       const mobileDetailBodyBlock = getExactCssRuleBlock(mobileBlock, ".detail-body");
-      const mobileDetailBodyContentBlock = getExactCssRuleBlock(mobileBlock, ".detail-body-content");
       const baseInterventionsBlock = getExactCssRuleBlock(css, ".detail-activity--interventions");
       const mobilePrBlock = getExactCssRuleBlock(
         getCssAtRuleBlockContainingExactRule(css, "@media (max-width: 768px)", ".detail-pr-tab"),
@@ -513,8 +508,7 @@ describe("TaskDetailModal", () => {
       );
       const allMobileCss = getCssAtRuleBlocks(css, "@media (max-width: 768px)").join("\n");
 
-      expect(mobileDetailBodyBlock).toContain("padding: 0;");
-      expect(mobileDetailBodyContentBlock).toContain("padding: calc(var(--space-md) + var(--space-xs) / 2);");
+      expect(mobileDetailBodyBlock).toContain("padding: calc(var(--space-md) + var(--space-xs) / 2);");
       expect(mobileDetailBodyBlock).toContain("overflow-x: hidden;");
       expect(baseInterventionsBlock).toContain("padding-inline-end: 0;");
       expect(mobileBlock).toContain(".detail-activity:not(.detail-activity--interventions) > h4,");
@@ -552,7 +546,6 @@ describe("TaskDetailModal", () => {
       const baseScrollbarBlock = getExactCssRuleBlock(css, ".detail-body::-webkit-scrollbar");
       const mobileBlock = getCssAtRuleBlockContainingExactRule(css, "@media (max-width: 768px)", ".detail-body");
       const mobileDetailBodyBlock = getExactCssRuleBlock(mobileBlock, ".detail-body");
-      const mobileDetailBodyContentBlock = getExactCssRuleBlock(mobileBlock, ".detail-body-content");
       const mobileScrollbarBlock = getExactCssRuleBlock(mobileBlock, ".detail-body::-webkit-scrollbar");
       const mobileActivityBlock = getExactCssRuleBlock(mobileBlock, ".detail-activity");
       const mobileInterventionsBlock = getExactCssRuleBlock(mobileBlock, ".detail-activity--interventions");
@@ -569,8 +562,7 @@ describe("TaskDetailModal", () => {
 
       expect(baseDetailBodyBlock).toContain("scrollbar-width: thin;");
       expect(baseScrollbarBlock).toContain("width: 6px;");
-      expect(mobileDetailBodyBlock).toContain("padding: 0;");
-      expect(mobileDetailBodyContentBlock).toContain("padding: calc(var(--space-md) + var(--space-xs) / 2);");
+      expect(mobileDetailBodyBlock).toContain("padding: calc(var(--space-md) + var(--space-xs) / 2);");
       expect(mobileDetailBodyBlock).toContain("overflow-x: hidden;");
       expect(mobileDetailBodyBlock).toContain("overflow-y: auto;");
       expect(mobileDetailBodyBlock).toContain("scrollbar-width: none;");
@@ -733,7 +725,7 @@ describe("TaskDetailModal", () => {
       );
       expect(container.querySelector(".modal.modal-lg")).toBeTruthy();
       expect(container.querySelector("[data-testid='floating-window-overlay-task-detail']")).toBeTruthy();
-      expect(container.querySelector(".modal-actions .modal-actions-spacer")).toBeTruthy();
+      expect(container.querySelector(".modal-actions")).toBeNull();
       expect(container.querySelector(".detail-body")).toBeTruthy();
       expect(container.querySelector(".detail-timestamps")).toBeTruthy();
       expect(container.querySelectorAll(".detail-timestamp-item").length).toBe(2);
@@ -771,7 +763,7 @@ describe("TaskDetailModal", () => {
       const buttonBlock = getExactCssRuleBlock(mobileBlock, ".task-detail-content .modal-actions .btn");
       const labelBlock = getExactCssRuleBlock(mobileBlock, ".task-detail-content .detail-footer-button-label");
       const dropdownBlock = getExactCssRuleBlock(mobileBlock, ".task-detail-content .detail-actions-dropdown");
-      const expandedChatBlock = getExactCssRuleBlock(css, ".task-detail-content--chat-expanded .modal-actions");
+      const expandedChatBlock = getExactCssRuleBlock(css, ".task-detail-content--chat-expanded .modal-actions:not(.task-detail-chat-footer),\n.task-detail-content--chat-expanded .detail-overseer-explain-panel");
 
       /*
       FNXC:TaskDetailModalResponsive 2026-07-22-00:00:
@@ -799,13 +791,13 @@ describe("TaskDetailModal", () => {
       expect(labelBlock).toContain("overflow: hidden;");
       expect(labelBlock).toContain("text-overflow: ellipsis;");
       expect(expandedChatBlock).toContain("display: none;");
-      expect(css).toMatch(/\.task-detail-content--planner-chat-expanded \.modal-actions,[\s\S]*?\{\s*display:\s*none;/);
+      expect(css).toMatch(/\.task-detail-content--planner-chat-expanded \.modal-actions:not\(\.task-detail-chat-footer\),[\s\S]*?\{\s*display:\s*none;/);
     });
 
     it("keeps dense in-review and standard task controls in their shared footer", () => {
       const { baseElement: container, unmount } = render(
         <TaskDetailModal
-          initialTab="definition"
+          initialTab="review"
           task={makeTask({ column: "in-review" as Column })}
           onClose={noop}
           onDeleteTask={noopDelete}
@@ -817,7 +809,8 @@ describe("TaskDetailModal", () => {
       const inReviewFooter = container.querySelector(".modal-actions");
 
       expect(inReviewFooter).toBeTruthy();
-      expect(inReviewFooter?.contains(screen.getByRole("button", { name: "Actions" }))).toBe(true);
+      expect(inReviewFooter?.contains(screen.getByRole("button", { name: "Actions" }))).toBe(false);
+      expect(container.querySelector(".modal-header")?.contains(screen.getByRole("button", { name: "Actions" }))).toBe(true);
       expect(inReviewFooter?.contains(screen.getByRole("button", { name: "Merge & Close" }))).toBe(true);
       expect(inReviewFooter?.querySelector(".detail-move-dropdown, .detail-move-btn, .detail-move-menu")).toBeNull();
 
@@ -836,15 +829,9 @@ describe("TaskDetailModal", () => {
       );
       const standardFooter = standard.baseElement.querySelector(".modal-actions");
 
-      expect(standardFooter).toBeTruthy();
-      expect(standardFooter?.contains(screen.getByRole("button", { name: "Actions" }))).toBe(true);
-      const footerChildren = Array.from(standardFooter?.children ?? []);
-      const actionsIndex = footerChildren.findIndex((child) => child.classList.contains("detail-actions-dropdown"));
-      const spacerIndex = footerChildren.findIndex((child) => child.classList.contains("modal-actions-spacer"));
-
-      expect(actionsIndex).toBeGreaterThanOrEqual(0);
-      expect(spacerIndex).toBeGreaterThan(actionsIndex);
-      expect(standardFooter?.querySelector(".detail-move-dropdown, .detail-move-btn, .detail-move-menu")).toBeNull();
+      expect(standardFooter).toBeNull();
+      expect(standard.baseElement.querySelector(".modal-header")?.contains(screen.getByRole("button", { name: "Actions" }))).toBe(true);
+      expect(standard.baseElement.querySelector(".detail-move-dropdown, .detail-move-btn, .detail-move-menu")).toBeNull();
     });
 
     it("keeps the triage footer recoverable through Actions", () => {
@@ -863,16 +850,15 @@ describe("TaskDetailModal", () => {
       );
       const footer = container.querySelector(".modal-actions");
 
-      expect(footer?.querySelector(".detail-actions-dropdown")).toBeTruthy();
-      expect(footer?.querySelector(".modal-actions-spacer")).toBeTruthy();
-      expect(footer?.querySelector(".detail-move-dropdown, .detail-move-btn, .detail-move-menu")).toBeNull();
-      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
-      expect(screen.getByRole("menuitem", { name: "Retry" })).toBeTruthy();
-      expect(screen.getByRole("menuitem", { name: "Reset" })).toBeTruthy();
-      expect(screen.getAllByRole("menuitem", { name: "Delete" })).toHaveLength(1);
+      expect(footer).toBeNull();
+      expect(container.querySelector(".modal-header .detail-actions-dropdown")).toBeTruthy();
+      expect(container.querySelector(".detail-move-dropdown, .detail-move-btn, .detail-move-menu")).toBeNull();
+      expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Reset" })).toBeTruthy();
+      expect(screen.getAllByRole("button", { name: "Delete" })).toHaveLength(1);
     });
 
-    it("modal-actions contains Delete and Pause buttons for non-done tasks (via Actions dropdown)", () => {
+    it("header actions contain Delete and a wired Pause control for mutable tasks", () => {
       render(
         <TaskDetailModal
           initialTab="definition"
@@ -881,12 +867,13 @@ describe("TaskDetailModal", () => {
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
           onOpenDetail={noopOpenDetail}
+          onPauseTask={async (id) => makeTask({ id, paused: true }) as Task}
           addToast={noop}
         />,
       );
 
-      // Actions are now in a dropdown - open it first.
-      // FNXC:PlannerOversight 2026-07-05-00:00: FN-7604 — the footer "Actions"
+      // Secondary actions remain in the header overflow while direct lifecycle controls are adjacent.
+      // FNXC:PlannerOversight 2026-07-05-00:00: FN-7604 — the header "Actions"
       // dropdown button name must be matched EXACTLY (not `/actions/i`) because
       // the now-universal Oversight overflow trigger's aria-label is "Oversight
       // actions", which also matches a loose /actions/i regex and made this
@@ -895,8 +882,8 @@ describe("TaskDetailModal", () => {
       fireEvent.click(actionsBtn);
 
       // Now the dropdown items should be visible
-      expect(screen.getByRole("menuitem", { name: "Delete" })).toBeTruthy();
-      expect(screen.getByRole("menuitem", { name: "Pause" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Delete" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Pause" })).toBeTruthy();
     });
 
     it("passes githubIssueAction for tracked tasks", async () => {
@@ -930,7 +917,7 @@ describe("TaskDetailModal", () => {
       );
 
       fireEvent.click(screen.getByRole("button", { name: "Actions" }));
-      fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+      fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 
       await waitFor(() => {
         expect(onDeleteTask).toHaveBeenCalledWith("FN-099", { githubIssueAction: "close", allowResurrection: false });
@@ -956,7 +943,7 @@ describe("TaskDetailModal", () => {
       );
 
       fireEvent.click(screen.getByRole("button", { name: "Actions" }));
-      fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+      fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 
       await waitFor(() => {
         expect(onDeleteTask).toHaveBeenCalledWith("FN-099", { githubIssueAction: "delete", allowResurrection: false });
@@ -982,7 +969,7 @@ describe("TaskDetailModal", () => {
       );
 
       fireEvent.click(screen.getByRole("button", { name: "Actions" }));
-      fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+      fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 
       await waitFor(() => {
         expect(onDeleteTask).toHaveBeenCalledWith("FN-099", { githubIssueAction: "leave", allowResurrection: false });
@@ -1006,7 +993,7 @@ describe("TaskDetailModal", () => {
       );
 
       fireEvent.click(screen.getByRole("button", { name: "Actions" }));
-      fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+      fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 
       await waitFor(() => {
         expect(onDeleteTask).toHaveBeenCalledWith("FN-099", { allowResurrection: false });
@@ -1044,7 +1031,7 @@ describe("TaskDetailModal", () => {
       );
 
       fireEvent.click(screen.getByRole("button", { name: "Actions" }));
-      fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+      fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 
       await waitFor(() => {
         expect(mockConfirm).toHaveBeenNthCalledWith(1, {
@@ -1105,7 +1092,7 @@ describe("TaskDetailModal", () => {
       );
 
       fireEvent.click(screen.getByRole("button", { name: "Actions" }));
-      fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+      fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 
       await waitFor(() => {
         expect(mockConfirm).toHaveBeenCalledTimes(1);
@@ -1141,7 +1128,7 @@ describe("TaskDetailModal", () => {
       );
 
       fireEvent.click(screen.getByRole("button", { name: "Actions" }));
-      fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+      fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 
       await waitFor(() => {
         expect(mockConfirm).toHaveBeenCalledTimes(2);
@@ -1177,7 +1164,7 @@ describe("TaskDetailModal", () => {
       );
 
       fireEvent.click(screen.getByRole("button", { name: "Actions" }));
-      fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+      fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 
       await waitFor(() => {
         expect(onDeleteTask).toHaveBeenNthCalledWith(2, "FN-099", {
@@ -1219,7 +1206,7 @@ describe("TaskDetailModal", () => {
       );
 
       fireEvent.click(screen.getByRole("button", { name: "Actions" }));
-      fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+      fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 
       await waitFor(() => {
         expect(onDeleteTask).toHaveBeenNthCalledWith(2, "FN-099", {
@@ -1237,7 +1224,7 @@ describe("TaskDetailModal", () => {
     it("keeps the in-review Merge & Close action in the footer without relocation controls", () => {
       render(
         <TaskDetailModal
-          initialTab="definition"
+          initialTab="review"
           task={makeTask({ column: "in-review" as Column })}
           onClose={noop}
           onDeleteTask={noopDelete}
@@ -1263,7 +1250,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
-          initialTab="definition"
+          initialTab="review"
           task={makeTask({ column: "in-review" as Column })}
           onClose={noop}
           onDeleteTask={noopDelete}
@@ -1292,7 +1279,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
-          initialTab="definition"
+          initialTab="review"
           task={makeTask({ column: "in-review" as Column })}
           onClose={noop}
           onDeleteTask={noopDelete}
@@ -1356,7 +1343,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
-          initialTab="definition"
+          initialTab="review"
           task={makeTask({
             column: "in-review" as Column,
             prInfo: {
@@ -1405,7 +1392,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
-          initialTab="definition"
+          initialTab="review"
           task={makeTask({
             column: "in-review" as Column,
             prInfo: {
@@ -1451,7 +1438,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
-          initialTab="definition"
+          initialTab="review"
           task={makeTask({
             column: "in-review" as Column,
             prInfo: {
@@ -1531,7 +1518,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
-          initialTab="definition"
+          initialTab="review"
           task={task}
           onClose={noop}
           onDeleteTask={noopDelete}
@@ -1547,7 +1534,7 @@ describe("TaskDetailModal", () => {
     it("shows PR automation waiting label instead of Merge & Close when awaiting PR checks", () => {
       render(
         <TaskDetailModal
-          initialTab="definition"
+          initialTab="review"
           task={makeTask({ column: "in-review" as Column, status: "awaiting-pr-checks", prInfo: {
             url: "https://github.com/owner/repo/pull/42",
             number: 42,
@@ -1573,7 +1560,7 @@ describe("TaskDetailModal", () => {
     it("shows Creating PR label while PR-first automation is creating a PR", () => {
       render(
         <TaskDetailModal
-          initialTab="definition"
+          initialTab="review"
           task={makeTask({ column: "in-review" as Column, status: "creating-pr" })}
           onClose={noop}
           onDeleteTask={noopDelete}

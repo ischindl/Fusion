@@ -37,6 +37,7 @@ import { buildPluginTaskViewId } from "../plugins/pluginViewRegistry";
 import { getPluginDashboardViewNavIcon } from "./pluginNavIcon";
 import { GithubIcon } from "./GithubIcon";
 import { getDashboardViewLabel } from "../../src/shared/dashboard-views";
+import { buildDashboardNavigationEntries } from "./dashboardNavigationEntries";
 
 export interface LeftSidebarExperimentalFeatures {
   insights?: boolean;
@@ -490,6 +491,18 @@ export function LeftSidebarNav({
     ...remainingPluginViews.map(mapPluginEntry),
   ];
 
+  const sharedRegistry = buildDashboardNavigationEntries({
+    view,
+    onChangeView,
+    onNewTask: onNewTask ? () => onNewTask() : undefined,
+    onOpenSettings,
+    pluginDashboardViews,
+    showAgents: showAgentsTab,
+    showSkills: showSkillsTab,
+    flags: { memory: experimentalFeatures?.memoryView, whiteboard: experimentalFeatures?.whiteboardView, goals: experimentalFeatures?.goalsView, insights: experimentalFeatures?.insights, research: experimentalFeatures?.researchView, ideation: experimentalFeatures?.ideationView, evals: experimentalFeatures?.evalsView },
+  });
+  const sharedKinds = new Map(sharedRegistry.map((entry) => [entry.view ?? entry.id, entry.kind]));
+
   const renderEntry = (entry: SidebarNavEntry) => {
     const Icon = entry.icon;
     // Active the moment it's clicked (optimistic), then the real `view` confirms it.
@@ -503,6 +516,7 @@ export function LeftSidebarNav({
         aria-current={isActive && entry.view ? "page" : undefined}
         title={entry.label}
         data-testid={entry.testId}
+        data-navigation-kind={sharedKinds.get(entry.view ?? entry.id)}
         onClick={() => {
           if (entry.view) setOptimisticView(entry.view);
           entry.onSelect();

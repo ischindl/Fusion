@@ -1,4 +1,6 @@
 import "./TaskContextMenu.css";
+import { AlphaMenu, AlphaMenuItem, AlphaMenuSubmenu } from "./alpha-ui";
+import { useAlphaSurface } from "../context/AlphaContext";
 import type { KeyboardEvent, PointerEvent as ReactPointerEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { TFunction } from "i18next";
@@ -403,6 +405,7 @@ export function buildTaskActionMenuModel(options: BuildTaskActionMenuModelOption
           ? t("taskDetail.bypassReview.btnUnrun", "Bypass unrun review gate")
           : t("taskDetail.bypassReview.btn", "Bypass failed review"),
       tone: "default",
+      // FNXC:TaskDetailAlpha 2026-09-11-04:19: Bypass is an audited operator action, not explanatory note copy; keep it keyboard- and pointer-selectable in both menu implementations.
       onSelect: options.onBypassReview,
     });
   }
@@ -423,7 +426,11 @@ export function buildTaskActionMenuModel(options: BuildTaskActionMenuModelOption
     destructiveActions.push({ id: "reset", label: t("taskDetail.reset.btn", "Reset"), tone: "danger", onSelect: options.onReset });
   }
 
-  if (isMutableLiveColumn(task.column, currentColumnFlags)) {
+  /*
+  FNXC:TaskDetailHeaderActions 2026-09-11-18:16:
+  A mutable task exposes Pause or Unpause only when its host wires the matching lifecycle operation. The shared model omits unwired actions rather than producing an interactive-looking no-op in Task Detail, Board, or List menus.
+  */
+  if (options.onTogglePause && isMutableLiveColumn(task.column, currentColumnFlags)) {
     actions.push({
       id: isTaskPaused ? "unpause" : "pause",
       label: isTaskPaused ? t("taskDetail.pause.unpauseBtn", "Unpause") : t("taskDetail.pause.pauseBtn", "Pause"),
@@ -492,6 +499,7 @@ export function TaskContextMenu({
   const touchSelectedActionRef = useRef<{ id: string; at: number } | null>(null);
   const submenuRef = useRef<HTMLDivElement | null>(null);
   const [openSubmenuId, setOpenSubmenuId] = useState<string | null>(null);
+  const alphaSurface = useAlphaSurface();
   const [submenuOpensLeft, setSubmenuOpensLeft] = useState(false);
 
   const selectAction = useCallback((action: TaskMenuActionDescriptor) => {
@@ -533,13 +541,13 @@ export function TaskContextMenu({
   */
   useEffect(() => {
     if (!autoFocusFirstItem) return;
-    const firstItem = menuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)");
+    const firstItem = menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled):not([aria-disabled="true"])');
     firstItem?.focus({ preventScroll: true });
   }, [actions, autoFocusFirstItem]);
 
   useEffect(() => {
     if (!openSubmenuId) return;
-    menuRef.current?.querySelector<HTMLButtonElement>(`[data-task-submenu="${openSubmenuId}"] button:not(:disabled)`)?.focus({ preventScroll: true });
+    menuRef.current?.querySelector<HTMLElement>(`[data-task-submenu="${openSubmenuId}"] [role="menuitem"]:not(:disabled):not([aria-disabled="true"])`)?.focus({ preventScroll: true });
   }, [openSubmenuId]);
 
   /*
@@ -572,7 +580,7 @@ export function TaskContextMenu({
       return;
     }
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Home" && event.key !== "End") return;
-    const items = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? []);
+    const items = Array.from(menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled):not([aria-disabled="true"])') ?? []);
     if (items.length === 0) return;
     event.preventDefault();
     const activeIndex = items.indexOf(document.activeElement as HTMLButtonElement);
@@ -587,14 +595,45 @@ export function TaskContextMenu({
     items[nextIndex]?.focus();
   };
 
+  if (alphaSurface) {
+    return (
+      <div ref={menuRef} className={className} data-alpha-menu-layout="task-actions">
+        {/*
+        FNXC:AlphaCollections 2026-09-10-20:30:
+        Alpha task actions share one homemade Alpha menu, and nested groups use Fusion's SubmenuTrigger. React Aria therefore owns arrow traversal, focus entry, and submenu transitions instead of the historical button-query keyboard loop.
+        */}
+        <AlphaMenu aria-label="Task actions">
+          {actions.filter((item) => !("tone" in item && item.tone === "note")).map((item) => {
+            if ("items" in item) {
+              return (
+                <AlphaMenuSubmenu key={item.id} id={item.id} label={item.label} className={`${itemClassName} task-context-menu__submenu-toggle`} menuClassName="task-context-menu__submenu">
+                  {item.items.map((action) => {
+                    const classes = [itemClassName, "task-context-menu__submenu-item"];
+                    if (action.tone === "danger") classes.push(dangerItemClassName);
+                    return <AlphaMenuItem key={action.id} id={action.id} className={classes.join(" ")} disabled={action.disabled} data-testid={action.testId} aria-pressed={action.pressed} onPointerUp={(event) => handleActionPointerUp(event, action)} onClick={(event) => handleActionClick(event, action)}>{action.label}</AlphaMenuItem>;
+                  })}
+                </AlphaMenuSubmenu>
+              );
+            }
+            const classes = [itemClassName];
+            if (item.tone === "danger") classes.push(dangerItemClassName);
+            return <AlphaMenuItem key={item.id} id={item.id} className={classes.join(" ")} disabled={item.disabled} data-testid={item.testId} aria-pressed={item.pressed} onPointerUp={(event) => handleActionPointerUp(event, item)} onClick={(event) => handleActionClick(event, item)}>{item.label}</AlphaMenuItem>;
+          })}
+        </AlphaMenu>
+        {actions.filter((item): item is TaskMenuActionDescriptor => "tone" in item && item.tone === "note").map((action) => <span key={action.id} className={`${itemClassName} ${noteItemClassName}`} role="note" data-testid={action.testId}>{action.label}</span>)}
+      </div>
+    );
+  }
+
   return (
-    <div ref={menuRef} className={className} role={role} onKeyDown={handleKeyDown}>
+    <AlphaMenu ref={menuRef} className={className} aria-label="Task actions" role={role} onKeyDown={handleKeyDown}>
       {actions.map((item) => {
         if ("items" in item) {
           const isOpen = openSubmenuId === item.id;
           return (
             <div className="task-context-menu__submenu-parent" key={item.id}>
-              <button
+              <AlphaMenuItem
+                id={`${item.id}-submenu`}
                 type="button"
                 className={`${itemClassName} task-context-menu__submenu-toggle`}
                 role={role === "menu" ? "menuitem" : undefined}
@@ -609,20 +648,21 @@ export function TaskContextMenu({
                 }}
               >
                 {item.label}
-              </button>
+              </AlphaMenuItem>
               {isOpen && (
-                <div
+                <AlphaMenu
                   ref={submenuRef}
                   className={`task-context-menu__submenu${submenuOpensLeft ? " task-context-menu__submenu--opens-left" : ""}`}
-                  role="menu"
+                  aria-label={item.label}
                   data-task-submenu={item.id}
                 >
                   {item.items.map((action) => {
                     const classes = [itemClassName, "task-context-menu__submenu-item"];
                     if (action.tone === "danger") classes.push(dangerItemClassName);
                     return (
-                      <button
+                      <AlphaMenuItem
                         key={action.id}
+                        id={action.id}
                         type="button"
                         className={classes.join(" ")}
                         role={role === "menu" ? "menuitem" : undefined}
@@ -633,10 +673,10 @@ export function TaskContextMenu({
                         onClick={(event) => handleActionClick(event, action)}
                       >
                         {action.label}
-                      </button>
+                      </AlphaMenuItem>
                     );
                   })}
-                </div>
+                </AlphaMenu>
               )}
             </div>
           );
@@ -648,10 +688,10 @@ export function TaskContextMenu({
         const defaultNode = action.tone === "note" ? (
           <span key={action.id} className={classes.join(" ")} role="note" data-testid={action.testId}>{action.label}</span>
         ) : (
-          <button key={action.id} type="button" className={classes.join(" ")} role={role === "menu" ? "menuitem" : undefined} disabled={action.disabled} data-testid={action.testId} aria-pressed={action.pressed} onPointerUp={(event) => handleActionPointerUp(event, action)} onClick={(event) => handleActionClick(event, action)}>{action.label}</button>
+          <AlphaMenuItem key={action.id} id={action.id} type="button" className={classes.join(" ")} role={role === "menu" ? "menuitem" : undefined} disabled={action.disabled} data-testid={action.testId} aria-pressed={action.pressed} onPointerUp={(event) => handleActionPointerUp(event, action)} onClick={(event) => handleActionClick(event, action)}>{action.label}</AlphaMenuItem>
         );
         return <Fragment key={action.id}>{renderAction ? renderAction(action, defaultNode) : defaultNode}</Fragment>;
       })}
-    </div>
+    </AlphaMenu>
   );
 }

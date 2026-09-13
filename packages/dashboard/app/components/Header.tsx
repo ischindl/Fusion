@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { Settings, LayoutGrid, List, Search, Activity, MoreHorizontal, Menu, Clock, Folder, History, GitBranch, Monitor, Workflow, Bot, Target, Grid3X3, Mail, MessageSquare, Check, Zap, Sparkles, Brain, Lock, Gauge, Lightbulb, PanelsTopLeft, ChevronDown, ChevronRight, PanelRight, Plus, Star } from "lucide-react";
+import { Settings, LayoutGrid, List, Search, Activity, MoreHorizontal, Clock, Folder, History, GitBranch, Monitor, Workflow, Bot, Target, Grid3X3, Mail, MessageSquare, Check, Zap, Sparkles, Brain, Lock, Gauge, Lightbulb, PanelsTopLeft, ChevronDown, ChevronRight, PanelRight, Plus, Star } from "lucide-react";
 import "./Header.css";
 // ProjectSelector styles used by the imported standalone component.
 import "./ProjectSelector.css";
@@ -82,6 +83,8 @@ export interface HeaderProps {
   searchQuery?: string;
   onSearchChange?: (query: string) => void;
   taskSearchTasks?: readonly Pick<Task, "id" | "title">[];
+  /** Alpha desktop search navigates to Task Detail without changing board filters. */
+  onSelectSearchTask?: (task: Pick<Task, "id" | "title">) => void;
   /** Multi-project props */
   projects?: ProjectInfo[];
   currentProject?: ProjectInfo | null;
@@ -93,10 +96,6 @@ export interface HeaderProps {
   mobileNavEnabled?: boolean;
   /** Enables the Alpha shell variants without changing legacy navigation. */
   alphaUpdatesEnabled?: boolean;
-  /** Whether the App-owned Alpha navigation popover is open. */
-  alphaMenuOpen?: boolean;
-  /** Toggles the canonical MobileNavBar popover from the Alpha hamburger. */
-  onOpenAlphaMenu?: () => void;
   /** When true on non-mobile screens, persistent left sidebar owns primary view navigation. */
   leftSidebarNavActive?: boolean;
   /*
@@ -113,8 +112,8 @@ export interface HeaderProps {
   availableNodes?: NodeConfig[];
   /** Currently selected node (null for local) */
   currentNode?: NodeConfig | null;
-  /** Callback when a node is selected */
-  onSelectNode?: (node: NodeConfig | null) => void;
+  /** Callback when a node is selected; false keeps the selector open when a project-scoped guard refuses the transition. */
+  onSelectNode?: (node: NodeConfig | null) => void | boolean | Promise<void | boolean>;
   /** Whether the current view is a remote node */
   isRemote?: boolean;
   /** Experimental feature flags controlling visibility of nav items. */
@@ -145,6 +144,7 @@ export function Header({
   searchQuery = "",
   onSearchChange,
   taskSearchTasks,
+  onSelectSearchTask,
   projects = [],
   currentProject,
   onSelectProject,
@@ -153,8 +153,6 @@ export function Header({
   shellHost = { kind: "browser" },
   mobileNavEnabled,
   alphaUpdatesEnabled = false,
-  alphaMenuOpen = false,
-  onOpenAlphaMenu,
   leftSidebarNavActive = false,
   rightDockAvailable = false,
   rightDockOpen = false,
@@ -189,6 +187,9 @@ export function Header({
   The right dock is persistent and owns its own collapse control, so Header must not render a duplicate right-dock toggle or repurpose the More views overflow trigger on tablet/desktop.
   */
   const [isMobileSearchOpen, setIsMobileSearchOpen] = useState(false);
+  const [isAlphaSearchOpen, setIsAlphaSearchOpen] = useState(false);
+  const [alphaSearchQuery, setAlphaSearchQuery] = useState("");
+  const alphaSearchTriggerRef = useRef<HTMLButtonElement>(null);
   const [isNonMobileSearchOpen, setIsNonMobileSearchOpen] = useState(false);
   // Track when user has explicitly closed the search (used for toggle visibility)
   const [isNonMobileSearchExplicitlyClosed, setIsNonMobileSearchExplicitlyClosed] = useState(false);
@@ -299,6 +300,20 @@ export function Header({
 
   const canShowNonMobileSearch = (view === "board" || view === "list") && !isMobile && onSearchChange;
   const showAlphaDesktopSearch = Boolean(alphaUpdatesEnabled && mode === "desktop" && canShowNonMobileSearch);
+  const closeAlphaSearch = useCallback(() => {
+    setIsAlphaSearchOpen(false);
+    setAlphaSearchQuery("");
+    window.setTimeout(() => alphaSearchTriggerRef.current?.focus(), 0);
+  }, []);
+
+  useEffect(() => {
+    if (!isAlphaSearchOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeAlphaSearch();
+    };
+    document.addEventListener("keydown", closeOnEscape, true);
+    return () => document.removeEventListener("keydown", closeOnEscape, true);
+  }, [closeAlphaSearch, isAlphaSearchOpen]);
   // Non-mobile search: toggled open OR has active query, but not if explicitly closed.
   const shouldShowNonMobileSearch = (isNonMobileSearchOpen || searchQuery.length > 0) && !isNonMobileSearchExplicitlyClosed;
   /*
@@ -582,8 +597,9 @@ export function Header({
                     <button
                       className={`node-selector-option${!isRemote ? " node-selector-option--active" : ""}`}
                       onClick={() => {
-                        onSelectNode?.(null);
-                        setIsNodeSelectorOpen(false);
+                        void Promise.resolve(onSelectNode?.(null)).then((accepted) => {
+                          if (accepted !== false) setIsNodeSelectorOpen(false);
+                        });
                       }}
                       role="option"
                       aria-selected={!isRemote}
@@ -599,8 +615,9 @@ export function Header({
                         key={node.id}
                         className={`node-selector-option${currentNode?.id === node.id ? " node-selector-option--active" : ""}`}
                         onClick={() => {
-                          onSelectNode?.(node);
-                          setIsNodeSelectorOpen(false);
+                          void Promise.resolve(onSelectNode?.(node)).then((accepted) => {
+                            if (accepted !== false) setIsNodeSelectorOpen(false);
+                          });
                         }}
                         role="option"
                         aria-selected={currentNode?.id === node.id}
@@ -661,15 +678,18 @@ export function Header({
          * Desktop and tablet header search must render after the workflow portal slot so a populated WorkflowSwitcher appears left of the search icon while preserving the mobile search trigger's existing position and behavior.
          */}
         {showAlphaDesktopSearch && onSearchChange && (
-          <TaskSearchInput
-            query={searchQuery}
-            tasks={taskSearchTasks}
-            onSearchChange={onSearchChange}
-            onClose={searchQuery.length > 0 ? () => onSearchChange("") : undefined}
-            closeLabel={t("header.clearSearch", "Clear search")}
-            className="header-search--alpha-inline"
-            testId="alpha-desktop-header-search"
-          />
+          <button
+            ref={alphaSearchTriggerRef}
+            type="button"
+            className="btn-icon"
+            onClick={() => setIsAlphaSearchOpen(true)}
+            title={t("header.openSearch", "Open search")}
+            aria-label={t("header.openSearch", "Open search")}
+            aria-expanded={isAlphaSearchOpen}
+            data-testid="alpha-desktop-header-search-btn"
+          >
+            <Search size={16} />
+          </button>
         )}
 
         {canShowNonMobileSearchToggle && !showAlphaDesktopSearch && (
@@ -1067,22 +1087,6 @@ export function Header({
           </button>
         )}
 
-        {/* FNXC:AlphaUpdates 2026-09-09-22:14: Mobile Alpha exposes the App-owned popover state from its sole hamburger trigger; legacy mobile retains its independent footer More drawer. */}
-        {isMobile && alphaUpdatesEnabled && mobileNavEnabled && (
-          <button
-            className="btn-icon alpha-mobile-menu-trigger"
-            type="button"
-            onClick={onOpenAlphaMenu}
-            title={t("nav.openMenu", "Open navigation menu")}
-            aria-label={t("nav.openMenu", "Open navigation menu")}
-            aria-haspopup="menu"
-            aria-expanded={alphaMenuOpen}
-            aria-controls="alpha-mobile-navigation-popover"
-            data-testid="alpha-mobile-menu-trigger"
-          >
-            <Menu size={16} />
-          </button>
-        )}
 
         {/* Compact overflow menu trigger (mobile only — tablet uses the right-sidebar toggle above) */}
         {isMobile && !hideFullNav && (
@@ -1230,10 +1234,10 @@ export function Header({
         FNXC:MobileTaskNavigation 2026-08-20-05:47:
         Issue #2226 moves mobile Board/List navigation to the footer so Header can expose App's single full-task modal entry point from every active project view. The Planning column keeps its separate quick-entry composer.
 
-        FNXC:MobileTaskNavigation 2026-09-03-04:56:
-        The header create-task control must remain the last child of the action cluster so it renders at the far right. Header actions deliberately have no order or row-reverse override, making DOM order the position contract.
+        FNXC:MobileTaskNavigation 2026-09-12-05:41:
+        The App-owned create-task control stays in the Header only on tablet/mobile Alpha and on legacy mobile when bottom navigation is active. Desktop creation remains available through its dedicated surfaces and shortcuts without leaving a duplicate Header button or shell; retained compact controls stay last in the action cluster.
         */}
-        {isMobile && mobileNavEnabled && projectId && onNewTask && (
+        {((alphaUpdatesEnabled && mode !== "desktop") || (isMobile && mobileNavEnabled)) && projectId && onNewTask && (
           <button
             className="btn-icon"
             onClick={onNewTask}
@@ -1246,6 +1250,28 @@ export function Header({
         )}
       </div>
     </header>
+
+    {/*
+    FNXC:AlphaTaskSearch 2026-09-12-01:35:
+    Alpha desktop replaces the filtering field with one Search icon. Its portaled, centered search selects a project-scoped task into the canonical detail route, while backdrop/Escape/selection close and clear transient input without touching Board or remote query state.
+    */}
+    {showAlphaDesktopSearch && isAlphaSearchOpen && typeof document !== "undefined" ? createPortal(
+      <div className="alpha-task-search-overlay" role="presentation" data-testid="alpha-task-search-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) closeAlphaSearch(); }}>
+        <div className="alpha-task-search-overlay__panel" role="dialog" aria-modal="true" aria-label={t("header.searchTasks", "Search tasks...")}>
+          <TaskSearchInput
+            query={alphaSearchQuery}
+            tasks={taskSearchTasks}
+            onSearchChange={setAlphaSearchQuery}
+            onSelectTask={(task) => {
+              const selected = taskSearchTasks?.find((candidate) => candidate.id.toLocaleLowerCase() === task.id.toLocaleLowerCase());
+              if (selected) onSelectSearchTask?.(selected);
+              closeAlphaSearch();
+            }}
+            autoFocus
+            className="alpha-task-search-overlay__search"
+          />
+        </div>
+      </div>, document.body) : null}
 
     {/* Desktop/Tablet Search - floating below header, in board or list view */}
     {canShowNonMobileSearch && shouldShowNonMobileSearch && !showAlphaDesktopSearch && (

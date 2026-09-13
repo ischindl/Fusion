@@ -2,6 +2,7 @@ import { readAppFile } from "../../test/cssFixture";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ChatView } from "../ChatView";
+import { fetchSettings } from "../../api";
 import {
   activeSessionFixture,
   installChatViewEnv,
@@ -68,6 +69,39 @@ describe("ChatView direct-only UI contract", () => {
 });
 
 describe("ChatView popped-out conversation contract", () => {
+  it("verrouille une fenêtre dédiée sur son transcript sans navigation concurrente", async () => {
+    setupMockChat({ activeSession: activeSessionFixture, sessions: [activeSessionFixture], filteredSessions: [activeSessionFixture] });
+    await renderWithAct(<ChatView {...popOutProps} dedicatedConversation />);
+
+    expect(document.querySelector(".chat-thread")).toBeInTheDocument();
+    expect(document.querySelector(".chat-sidebar")).toBeNull();
+    expect(screen.queryByTestId("chat-back-btn")).toBeNull();
+    expect(screen.queryByTestId("chat-thread-title-switcher")).toBeNull();
+    expect(screen.queryByTestId("chat-new-btn")).toBeNull();
+    expect(screen.getByText(activeSessionFixture.title)).toBeInTheDocument();
+  });
+
+  it("ne propose aucune navigation si la conversation dédiée disparaît", async () => {
+    setupMockChat({ activeSession: null, sessions: [], filteredSessions: [], messages: [] });
+    await renderWithAct(<ChatView {...popOutProps} dedicatedConversation />);
+
+    expect(screen.getByTestId("chat-dedicated-session-unavailable")).toHaveTextContent("Conversation deleted");
+    expect(screen.getByText(activeSessionFixture.title)).toBeInTheDocument();
+    expect(screen.queryByTestId("chat-new-btn-empty")).toBeNull();
+    expect(screen.queryByTestId("chat-new-btn")).toBeNull();
+    expect(screen.queryByTestId("chat-back-btn")).toBeNull();
+    expect(document.querySelector(".chat-sidebar")).toBeNull();
+  });
+
+  it("affiche l’état ouvert ou minimisé dans la liste Alpha", async () => {
+    setupMockChat({ activeSession: null, sessions: [activeSessionFixture], filteredSessions: [activeSessionFixture] });
+    const { rerender } = await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} listOnly openChatWindows={new Map([[activeSessionFixture.id, "open"]])} />);
+    expect(screen.getByTestId(`chat-session-window-state-${activeSessionFixture.id}`)).toHaveTextContent("Open");
+
+    rerender(<ChatView projectId="proj-123" addToast={vi.fn()} listOnly openChatWindows={new Map([[activeSessionFixture.id, "minimized"]])} />);
+    expect(screen.getByTestId(`chat-session-window-state-${activeSessionFixture.id}`)).toHaveTextContent("Minimized");
+  });
+
   it("opens the requested thread on desktop-wide, narrow floating, mobile, and compact hosts", async () => {
     const rectSpy = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
       x: 0, y: 0, width: 1200, height: 800, top: 0, right: 1200, bottom: 800, left: 0, toJSON: () => ({}),
@@ -182,6 +216,62 @@ describe("ChatView popped-out conversation contract", () => {
     fireEvent.click(screen.getByTestId("chat-back-btn"));
     fireEvent.click(screen.getByTestId(`chat-session-${activeSessionFixture.id}`));
     await waitFor(() => expect(pushNav).toHaveBeenCalledTimes(1));
+  });
+
+  it("keeps the Alpha desktop dock list-only and delegates row activation", async () => {
+    const onOpenSessionInNewWindow = vi.fn();
+    const selectSession = vi.fn();
+    setupMockChat({ activeSession: activeSessionFixture, sessions: [activeSessionFixture], filteredSessions: [activeSessionFixture], selectSession });
+    await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} compactLayout listOnly onOpenSessionInNewWindow={onOpenSessionInNewWindow} persistChatPreferences={false} />);
+
+    expect(screen.queryByTestId("chat-back-btn")).toBeNull();
+    expect(document.querySelector(".chat-view")).not.toHaveClass("chat-view--detail");
+    fireEvent.click(screen.getByTestId(`chat-session-${activeSessionFixture.id}`));
+    expect(onOpenSessionInNewWindow).toHaveBeenCalledWith(activeSessionFixture);
+    expect(selectSession).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("chat-back-btn")).toBeNull();
+  });
+
+  it("ouvre immédiatement une nouvelle conversation liste-seule absente du rafraîchissement", async () => {
+    const created = { ...activeSessionFixture, id: "session-created", title: "Nouvelle conversation" };
+    const createSession = vi.fn().mockResolvedValue(created);
+    const onOpenSessionInNewWindow = vi.fn();
+    vi.mocked(fetchSettings).mockResolvedValue({
+      chatDefaultKind: "model",
+      chatDefaultModelProvider: "mock",
+      chatDefaultModelId: "scripted",
+    } as Awaited<ReturnType<typeof fetchSettings>>);
+    setupMockChat({
+      activeSession: activeSessionFixture,
+      sessions: [activeSessionFixture],
+      filteredSessions: [activeSessionFixture],
+      createSession,
+    });
+    await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} compactLayout listOnly onOpenSessionInNewWindow={onOpenSessionInNewWindow} persistChatPreferences={false} />);
+
+    fireEvent.click(screen.getByTestId("chat-new-btn"));
+    await waitFor(() => expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ modelProvider: "mock", modelId: "scripted" }), { keepActiveSession: true }));
+    expect(onOpenSessionInNewWindow).toHaveBeenCalledWith(created);
+    expect(screen.getByTestId(`chat-session-${activeSessionFixture.id}`)).toBeInTheDocument();
+    expect(screen.queryByTestId(`chat-session-${created.id}`)).toBeNull();
+  });
+
+  it("conserve l’erreur de création dans la liste sans ouvrir de fenêtre", async () => {
+    const addToast = vi.fn();
+    const createSession = vi.fn().mockRejectedValue(new Error("creation refused"));
+    const onOpenSessionInNewWindow = vi.fn();
+    vi.mocked(fetchSettings).mockResolvedValue({
+      chatDefaultKind: "model",
+      chatDefaultModelProvider: "mock",
+      chatDefaultModelId: "scripted",
+    } as Awaited<ReturnType<typeof fetchSettings>>);
+    setupMockChat({ sessions: [activeSessionFixture], filteredSessions: [activeSessionFixture], createSession });
+    await renderWithAct(<ChatView projectId="proj-123" addToast={addToast} compactLayout listOnly onOpenSessionInNewWindow={onOpenSessionInNewWindow} persistChatPreferences={false} />);
+
+    fireEvent.click(screen.getByTestId("chat-new-btn"));
+    await waitFor(() => expect(addToast).toHaveBeenCalledWith("Failed to create chat session", "error"));
+    expect(onOpenSessionInNewWindow).not.toHaveBeenCalled();
+    expect(screen.getByTestId(`chat-session-${activeSessionFixture.id}`)).toBeInTheDocument();
   });
 
   it("retains the in-window controls and the open-in-new-window affordance", async () => {

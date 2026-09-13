@@ -1,6 +1,9 @@
 /*
 FNXC:DoneColumnGeometry 2026-09-09-00:33:
 The Done scroller owns one normal-flow virtual-content block. Spacer heights and row spacing are therefore physical scroll extent, never shrinkable flex children or unmeasured parent gaps.
+
+FNXC:AlphaDesktopNavigation 2026-09-11-19:35:
+The floating desktop action bar does not reduce Board height. Add clearance only to each column's scroll tail so its final controls can scroll above the bar without recreating a dead shell region.
 */
 .column-body {
   display: block;
@@ -40,6 +43,38 @@ The Done scroller owns one normal-flow virtual-content block. Spacer heights and
   justify-content: center;
   gap: var(--space-sm);
   color: var(--color-error);
+}
+
+/*
+FNXC:AlphaDensity 2026-09-11-00:30:
+Alpha columns use compact header/body rhythm and one subtle elevation without changing virtual rows, pagination extent, or scroll ownership. The stable Board remains untouched outside the explicit boundary.
+*/
+[data-alpha-surface="true"] .column {
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+[data-alpha-surface="true"] .column-header {
+  gap: var(--alpha-density-1);
+  padding: var(--alpha-density-3) var(--alpha-density-3) 0;
+}
+
+[data-alpha-surface="true"] .column-desc {
+  padding: var(--alpha-density-1) var(--alpha-density-3) var(--alpha-density-2);
+}
+
+[data-alpha-surface="true"] .column-body {
+  padding: var(--alpha-density-1) var(--alpha-density-2) var(--alpha-density-2);
+}
+
+[data-alpha-surface="true"] .column-pagination-footer {
+  padding-block: var(--alpha-density-1);
+}
+
+@media (max-width: 768px) {
+  [data-alpha-surface="true"] .column-header {
+    padding-inline: var(--alpha-density-2);
+  }
 }
 
 /* FNXC:AlphaUpdates 2026-09-09-18:24: The complete-lane History action shares compact header controls and must shrink without colliding with count, sort, or menu actions. */

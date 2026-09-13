@@ -1,6 +1,10 @@
+import { useState } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import type { NodeConfig, Settings, Task } from "@fusion/core";
+import type { UseChatReturn, ChatSessionInfo } from "../../hooks/useChat";
+import type { UseChatRoomsResult } from "../../hooks/useChatRooms";
+import userEvent from "@testing-library/user-event";
 import type { InsightSection } from "../../hooks/useInsights";
 import type { ShellConnectionNativeResult } from "../../shell-native";
 import type { ShellHostContextValue } from "../../context/ShellHostContext";
@@ -43,8 +47,23 @@ const mockAgentStats = {
   idleNonEphemeralCount: 1,
 };
 
-const mockSubscribeSse = vi.fn((..._args: any[]) => vi.fn());
+const { mockDashboardLoaderRender, appChatTestControl, mockAppUseChat, mockAppUseChatRooms } = vi.hoisted(() => ({
+  mockDashboardLoaderRender: vi.fn(),
+  appChatTestControl: { renderProductionView: false, renderProductionPlanningView: false },
+  mockAppUseChat: vi.fn(),
+  mockAppUseChatRooms: vi.fn(),
+}));
 
+const mockSubscribeSse = vi.fn((..._args: any[]) => vi.fn());
+const mockNotesApi = vi.hoisted(() => ({
+  fetchNotes: vi.fn(),
+  fetchNote: vi.fn(),
+  createNote: vi.fn(),
+  updateNote: vi.fn(),
+  deleteNote: vi.fn(),
+}));
+
+vi.mock("../../api/notes", () => mockNotesApi);
 vi.mock("../../sse-bus", () => ({
    
   subscribeSse: (...args: any[]) => mockSubscribeSse(...args),
@@ -54,6 +73,7 @@ vi.mock("../../api", async (importOriginal) => {
   const { createDashboardApiMock } = await import("../../test/mockApi");
   return createDashboardApiMock(() => importOriginal<typeof import("../../api")>(), {
     fetchTasks: vi.fn(() => Promise.resolve([])),
+    fetchPatchnode: vi.fn(() => Promise.resolve({ days: [], totalEntries: 0, hasMore: false })),
     fetchConfig: vi.fn(() => Promise.resolve({ maxConcurrent: 2, rootDir: "/workspace/project" })),
     fetchSettings: vi.fn(() => Promise.resolve({ ...defaultSettings })),
     updateSettings: vi.fn(() => Promise.resolve({ ...defaultSettings })),
@@ -326,20 +346,24 @@ vi.mock("../../components/GitHubImportModal", () => ({
     ) : null,
 }));
 
-vi.mock("../../components/PlanningModeModal", () => ({
-  PlanningModeModal: ({ isOpen, onClose, presentation = "modal", resumeSessionId }: { isOpen: boolean; onClose: () => void; presentation?: "modal" | "embedded"; resumeSessionId?: string }) =>
-    isOpen ? (
-      <div className={presentation === "embedded" ? "planning-view open" : "modal-overlay open"} data-testid={presentation === "embedded" ? "planning-view" : undefined} data-resume-session-id={resumeSessionId ?? ""}>
-        <button type="button" aria-label="Close" onClick={onClose}>
-          Close
-        </button>
-        <h2>Planning Mode</h2>
-        <p>Transform your idea into a detailed task</p>
-        <input placeholder="e.g., Build a user authentication system with login" />
-        <button type="button">Start Planning</button>
-      </div>
-    ) : null,
-}));
+vi.mock("../../components/PlanningModeModal", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../components/PlanningModeModal")>();
+  return {
+    PlanningModeModal: (props: Parameters<typeof actual.PlanningModeModal>[0]) => {
+      if (appChatTestControl.renderProductionPlanningView) return <actual.PlanningModeModal {...props} />;
+      const { isOpen, onClose, presentation = "modal", resumeSessionId } = props;
+      return isOpen ? (
+        <div className={presentation === "embedded" ? "planning-view open" : "modal-overlay open"} data-testid={presentation === "embedded" ? "planning-view" : undefined} data-resume-session-id={resumeSessionId ?? ""}>
+          <button type="button" aria-label="Close" onClick={onClose}>Close</button>
+          <div className={presentation === "embedded" ? "modal-header modal-header--embedded" : "modal-header"}><h2>Planning Mode</h2></div>
+          <p>Transform your idea into a detailed task</p>
+          <input placeholder="e.g., Build a user authentication system with login" />
+          <button type="button">Start Planning</button>
+        </div>
+      ) : null;
+    },
+  };
+});
 
 vi.mock("../../components/ScriptsModal", () => ({
   ScriptsModal: ({
@@ -388,7 +412,7 @@ const terminalLifecycle = {
 vi.mock("../../components/TerminalModal", async () => {
   const { useEffect } = await import("react");
   return {
-    TerminalModal: ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) => {
+    TerminalModal: ({ isOpen, onClose, footerVisible }: { isOpen: boolean; onClose: () => void; footerVisible?: boolean }) => {
       terminalLifecycle.renders.push(isOpen);
       useEffect(() => {
         terminalLifecycle.mounts += 1;
@@ -397,7 +421,7 @@ vi.mock("../../components/TerminalModal", async () => {
         };
       }, []);
       return isOpen ? (
-        <div className="modal-overlay open" data-testid="terminal-modal">
+        <div className="modal-overlay open" data-testid="terminal-modal" data-footer-visible={String(footerVisible === true)}>
           <button type="button" data-testid="terminal-close-btn" onClick={onClose}>
             Close
           </button>
@@ -447,16 +471,54 @@ vi.mock("../../components/GoalsView", () => ({
   GoalsView: () => <div data-testid="goals-view">Goals View</div>,
 }));
 
-vi.mock("../../components/ChatView", () => ({
-  ChatView: () => <FileBrowserProbe testId="fb-probe-chat" />,
+vi.mock("../../hooks/useChat", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../hooks/useChat")>()),
+  useChat: (...args: unknown[]) => mockAppUseChat(...args),
 }));
 
-vi.mock("../../components/DashboardLoader", () => ({
-  DashboardLoader: () => <FileBrowserProbe testId="fb-probe-loader" />,
+vi.mock("../../hooks/useChatRooms", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../hooks/useChatRooms")>()),
+  useChatRooms: (...args: unknown[]) => mockAppUseChatRooms(...args),
 }));
+
+vi.mock("../../hooks/useChatUnread", () => ({
+  useChatUnread: () => ({ isUnread: () => false, markRead: vi.fn() }),
+}));
+
+vi.mock("../../components/ChatView", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../components/ChatView")>();
+  return {
+    ChatView: (props: Parameters<typeof actual.ChatView>[0]) => {
+      if (appChatTestControl.renderProductionView) return <actual.ChatView {...props} />;
+      return (
+        <div className="chat-view" data-testid={props.floating ? "quick-chat-host" : "main-chat-host"} data-alpha={String(props.experimentalFeatures?.alphaUpdates === true)}>
+          <header className="view-header"><h2>Chat</h2><button type="button">New Chat</button><button type="button" aria-label="Pop out chat">Pop out</button></header>
+          <button type="button" data-testid="app-chat-session-fixture">Conversation fixture</button>
+          <textarea className="chat-input" data-testid="chat-input" aria-label="Message" />
+          <FileBrowserProbe testId="fb-probe-chat" />
+        </div>
+      );
+    },
+  };
+});
+
+vi.mock("../../components/DashboardLoader", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../components/DashboardLoader")>();
+  return {
+    DashboardLoader: (props: Parameters<typeof actual.DashboardLoader>[0]) => {
+      mockDashboardLoaderRender();
+      return (
+        <>
+          <actual.DashboardLoader {...props} />
+          <FileBrowserProbe testId="fb-probe-loader" />
+        </>
+      );
+    },
+  };
+});
 
 vi.mock("../../components/QuickChatFAB", () => ({
-  QuickChatFAB: () => null,
+  QuickChatFAB: ({ onToggle }: { onToggle: () => void }) => <button type="button" data-testid="quick-chat-fab-host" onClick={onToggle}>Quick Chat</button>,
 }));
 
 vi.mock("../../components/SetupWizardModal", () => ({
@@ -698,9 +760,9 @@ vi.mock("../../hooks/useMobileScrollLock", () => ({
   _resetLockState: vi.fn(),
 }));
 
-import { App, didEnterAwaitingApproval, didEnterDone } from "../../App";
-import { AUTH_TOKEN_RECOVERY_REQUIRED_EVENT } from "../../auth";
-import { fetchAuthStatus, fetchSettings, fetchGlobalSettings, fetchTaskDetail, fetchUnreadCount, updateSettings, runScript, fetchScripts, fetchModels, fetchPluginDashboardViews, fetchDashboardHealth, fetchBoardWorkflows } from "../../api";
+import { App, didEnterAwaitingApproval, didEnterDone, shouldShowFirstEverBootLoader } from "../../App";
+import { AUTH_TOKEN_RECOVERY_REQUIRED_EVENT, clearAuthToken, hasDaemonAuthFailure, installAuthFetch } from "../../auth";
+import { fetchAuthStatus, fetchSettings, fetchGlobalSettings, fetchTaskDetail, fetchUnreadCount, updateSettings, runScript, fetchScripts, fetchModels, fetchPluginDashboardViews, fetchDashboardHealth, fetchBoardWorkflows, fetchPatchnode } from "../../api";
 import { __resetShellHostContextForTests } from "../../shell-host";
 import { __test_clearDashboardViewsCache } from "../../hooks/usePluginDashboardViews";
 import * as pluginViewRegistry from "../../plugins/pluginViewRegistry";
@@ -725,8 +787,10 @@ function extractProductionDeclaration(rule: string, property: string): string {
 function installProductionAlphaReserveRule(): HTMLStyleElement {
   const css = readAppFile("components/MobileNavBar.css");
   const selector = 'html[data-viewport-mode="mobile"] .project-content--with-alpha-nav';
+  const boardSelector = '[data-alpha-surface="true"] .board';
+  const boardCss = readAppFile("components/Board.css");
   const style = document.createElement("style");
-  style.textContent = `${selector} { ${extractProductionRule(css, selector)} }`;
+  style.textContent = `${selector} { ${extractProductionRule(css, selector)} } ${boardSelector} { ${extractProductionRule(boardCss, boardSelector)} }`;
   document.head.append(style);
   return style;
 }
@@ -736,6 +800,7 @@ function installProductionAlphaDrawerRules(systemOffset: number): HTMLStyleEleme
   const navCss = readAppFile("components/MobileNavBar.css");
   const tokenCss = readAppFile("styles.css");
   const drawerRule = extractProductionRule(drawerCss, ".alpha-mobile-drawer");
+  const panelRule = extractProductionRule(drawerCss, ".alpha-mobile-drawer__panel");
   const bodyRule = extractProductionRule(drawerCss, ".alpha-mobile-drawer__body");
   const navRule = extractProductionRule(navCss, ".mobile-nav-bar");
   const inset = extractProductionDeclaration(drawerRule, "inset");
@@ -770,6 +835,7 @@ function installProductionAlphaDrawerRules(systemOffset: number): HTMLStyleEleme
       align-items: ${extractProductionDeclaration(drawerRule, "align-items")};
       pointer-events: auto;
     }
+    .alpha-mobile-drawer__panel { height: ${extractProductionDeclaration(panelRule, "height")}; }
     .alpha-mobile-drawer__body { padding-block-end: ${systemOffset}px; }
   `;
   document.head.append(style);
@@ -793,6 +859,22 @@ function expectProductionAlphaDrawerOverlay(drawer: HTMLElement, systemOffset: n
   expect(drawerStyle.pointerEvents).not.toBe("none");
   expect(Number(drawerStyle.zIndex)).toBeGreaterThan(Number(navStyle.zIndex));
   expect(window.getComputedStyle(body!).paddingBlockEnd).toBe(`${systemOffset}px`);
+  expect(window.getComputedStyle(panel!).height).not.toBe("auto");
+}
+
+function expectSingleDrawerHeader(dialog: HTMLElement, headerSelector: string): void {
+  expect(dialog.querySelector(".alpha-mobile-drawer__header")).toBeNull();
+  expect(dialog.querySelectorAll(headerSelector)).toHaveLength(1);
+  expect(dialog.querySelectorAll(".alpha-mobile-drawer__close")).toHaveLength(0);
+  expect(dialog.querySelectorAll(".alpha-mobile-drawer__handle-target")).toHaveLength(1);
+}
+
+function dismissAlphaDrawerByHandle(drawer: Element): void {
+  const handle = drawer.querySelector(".alpha-mobile-drawer__handle-target");
+  if (!handle) throw new Error("Alpha drawer handle is missing");
+  fireEvent.pointerDown(handle, { pointerId: 1, clientY: 0, button: 0, isPrimary: true });
+  fireEvent.pointerMove(handle, { pointerId: 1, clientY: 1000 });
+  fireEvent.pointerUp(handle, { pointerId: 1, clientY: 1000 });
 }
 
 function resolvePixelCalcFromRoot(value: string): number {
@@ -807,6 +889,68 @@ function resolvePixelCalcFromRoot(value: string): number {
     if (!match) throw new Error(`Unsupported production padding term: ${term.trim()}`);
     return total + Number(match[1]);
   }, 0);
+}
+
+const appChatSession: ChatSessionInfo = {
+  id: "fn-342-app-chat",
+  agentId: "agent-fn-342",
+  status: "active",
+  title: "Conversation Alpha",
+  createdAt: "2026-09-10T00:00:00.000Z",
+  updatedAt: "2026-09-10T00:00:00.000Z",
+};
+
+function configureProductionAppChat(): void {
+  appChatTestControl.renderProductionView = true;
+  mockAppUseChat.mockImplementation(() => {
+    const [activeSession, setActiveSession] = useState<ChatSessionInfo | null>(null);
+    return {
+      sessions: [appChatSession],
+      activeSession,
+      sessionsLoading: false,
+      messages: activeSession ? [{ id: "message-fn-342", role: "assistant", content: "Bonjour", createdAt: "2026-09-10T00:01:00.000Z" }] : [],
+      messagesLoading: false,
+      isStreaming: false,
+      streamingText: "",
+      streamingThinking: "",
+      streamingToolCalls: [],
+      selectSession: (sessionId: string) => setActiveSession(sessionId === appChatSession.id ? appChatSession : null),
+      createSession: vi.fn().mockResolvedValue(appChatSession),
+      archiveSession: vi.fn(),
+      archivedSessions: [],
+      refreshArchivedSessions: vi.fn().mockResolvedValue(undefined),
+      unarchiveSession: vi.fn().mockResolvedValue(undefined),
+      renameSession: vi.fn(),
+      setSessionThinkingLevel: vi.fn(),
+      deleteSession: vi.fn(),
+      sendMessage: vi.fn(),
+      editMessageAndResend: vi.fn(),
+      stopStreaming: vi.fn().mockResolvedValue(undefined),
+      pendingMessages: [],
+      clearPendingMessage: vi.fn(),
+      loadMoreMessages: vi.fn(),
+      hasMoreMessages: false,
+      searchQuery: "",
+      setSearchQuery: vi.fn(),
+      filteredSessions: [appChatSession],
+      refreshSessions: vi.fn(),
+      agentsMap: new Map(),
+    } satisfies UseChatReturn;
+  });
+  mockAppUseChatRooms.mockReturnValue({
+    rooms: [],
+    roomsLoading: false,
+    roomsError: null,
+    activeRoom: null,
+    activeRoomMembers: [],
+    messages: [],
+    messagesLoading: false,
+    selectRoom: vi.fn(),
+    createRoom: vi.fn(),
+    deleteRoom: vi.fn(),
+    sendRoomMessage: vi.fn(),
+    refreshRooms: vi.fn(),
+  } satisfies UseChatRoomsResult);
 }
 
 async function waitForAppShell(): Promise<void> {
@@ -929,6 +1073,10 @@ describe("FN-8698 retained Board and List task popups", () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  appChatTestControl.renderProductionView = false;
+  appChatTestControl.renderProductionPlanningView = false;
+  mockAppUseChat.mockReset();
+  mockAppUseChatRooms.mockReset();
   __test_clearDashboardViewsCache();
   /*
    * FNXC:DashboardTests 2026-06-22-03:47:
@@ -1030,6 +1178,11 @@ beforeEach(() => {
   mockCurrentProjectState.loading = false;
   mockCurrentProjectState.setCurrentProject.mockClear();
   mockCurrentProjectState.clearCurrentProject.mockClear();
+  mockNotesApi.fetchNotes.mockResolvedValue({ notes: [] });
+  mockNotesApi.fetchNote.mockReset();
+  mockNotesApi.createNote.mockReset();
+  mockNotesApi.updateNote.mockReset();
+  mockNotesApi.deleteNote.mockReset();
   // Reset node context mocks
   mockNodeContextValue.currentNode = null;
   mockNodeContextValue.currentNodeId = null;
@@ -1095,8 +1248,93 @@ beforeEach(() => {
 });
 
 describe("Alpha Updates production wiring", () => {
-  it.each(["mobile", "tablet", "desktop"] as const)("removes the footer in Alpha %s while preserving project chrome", async (mode) => {
+  it("passes the resolved Alpha flag through the real App Quick Chat host", async () => {
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates: true },
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByTestId("quick-chat-fab-host"));
+    expect(await screen.findByTestId("quick-chat-host")).toHaveAttribute("data-alpha", "true");
+  });
+
+  it.each([
+    ["tablet", "empty"],
+    ["desktop", "populated"],
+  ] as const)("keeps one reserved footer in Alpha %s with %s tasks", async (mode, taskState) => {
     mockUseViewportMode.mockReturnValue(mode);
+    if (taskState === "populated") {
+      const emptyResult = mockUseTasks();
+      mockUseTasks.mockReturnValue({
+        ...emptyResult,
+        tasks: [{ id: "FN-340", title: "Footer regression", description: "x", status: "in-progress", column: "in-progress", dependencies: [], steps: [], currentStep: 0, log: [], createdAt: "", updatedAt: "" }],
+      });
+    }
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates: true },
+    });
+    localStorage.setItem("fusion:right-dock-open", "true");
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByTestId("dashboard-project-shell")).toBeInTheDocument());
+    expect(Boolean(document.querySelector(".executor-status-bar"))).toBe(mode === "tablet");
+    const shell = screen.getByTestId("dashboard-project-shell");
+    const content = shell.querySelector(".project-content");
+    const sidebar = mode === "tablet" ? await screen.findByTestId("left-sidebar-nav") : null;
+    const rightDock = await waitFor(() => {
+      const dock = document.querySelector(".right-dock");
+      expect(dock).not.toBeNull();
+      return dock;
+    });
+    expect(content).toHaveClass("project-content--with-footer");
+    expect(content).not.toHaveClass("project-content--with-alpha-nav", "project-content--with-mobile-nav");
+    if (mode === "desktop") {
+      expect(sidebar).toBeNull();
+      expect(screen.getByTestId("alpha-desktop-action-bar")).toBeInTheDocument();
+      expect(shell).not.toHaveClass("dashboard-project-shell--with-sidebar");
+    } else {
+      expect(sidebar).toHaveClass("left-sidebar-nav--with-footer");
+      expect(shell).toHaveClass("dashboard-project-shell--with-sidebar");
+    }
+    expect(rightDock).toHaveClass("right-dock--with-footer");
+    expect(shell).toHaveClass("dashboard-project-shell--with-right-dock");
+    if (mode === "tablet") expect(screen.getByTestId("executor-terminal-launcher-segment")).toBeInTheDocument();
+    else expect(screen.queryByTestId("executor-terminal-launcher-segment")).toBeNull();
+    expect(document.querySelector(".mobile-nav-bar")).toBeNull();
+  });
+
+  it.each([
+    ["Alpha tablette", "tablet", true],
+    ["desktop non-Alpha", "desktop", false],
+  ] as const)("conserve Chat liste/détail extensible et exclut Notes sur %s", async (_label, mode, alphaUpdates) => {
+    mockUseViewportMode.mockReturnValue(mode);
+    configureProductionAppChat();
+    localStorage.setItem("fusion:right-dock-open", "true");
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates },
+    });
+
+    render(<App />);
+    fireEvent.click(await screen.findByTestId("right-dock-tab-chat"));
+    const dock = screen.getByTestId("right-dock");
+    expect(within(dock).queryByTestId("right-dock-tab-notes")).toBeNull();
+    expect(within(dock).getByTestId("right-dock-expand")).toBeInTheDocument();
+
+    fireEvent.click(await within(dock).findByTestId(`chat-session-${appChatSession.id}`));
+    expect(await within(dock).findByText("Bonjour")).toBeInTheDocument();
+    expect(dock.querySelector(".chat-thread")).not.toBeNull();
+    expect(screen.queryByTestId(`floating-window-overlay-chat-window-${DEFAULT_PROJECT_ID}-${appChatSession.id}`)).toBeNull();
+
+    fireEvent.click(within(dock).getByTestId("right-dock-expand"));
+    const expandedChat = await screen.findByTestId("right-dock-expand-modal");
+    expect(expandedChat.querySelector(".chat-view")).not.toBeNull();
+  });
+
+  it("removes the Alpha footer and all footer reservations only on mobile", async () => {
+    mockUseViewportMode.mockReturnValue("mobile");
     vi.mocked(fetchSettings).mockResolvedValue({
       ...defaultSettings,
       experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates: true },
@@ -1104,25 +1342,33 @@ describe("Alpha Updates production wiring", () => {
 
     render(<App />);
 
+    await waitFor(() => expect(document.querySelector(".mobile-nav-bar")).toHaveClass("mobile-nav-bar--alpha"));
     const shell = screen.getByTestId("dashboard-project-shell");
     const content = shell.querySelector(".project-content");
-    if (mode === "mobile") {
-      await waitFor(() => expect(document.querySelector(".mobile-nav-bar")).toHaveClass("mobile-nav-bar--alpha"));
-      const nav = document.querySelector(".mobile-nav-bar");
-      expect(document.querySelector(".executor-status-bar")).toBeNull();
-      expect(content).not.toHaveClass("project-content--with-footer");
-      expect(nav).not.toHaveClass("mobile-nav-bar--with-footer");
-      expect(content).toHaveClass("project-content--with-alpha-nav");
-      expect(screen.queryByTestId("left-sidebar-nav")).toBeNull();
-      expect(document.querySelector(".right-dock")).toBeNull();
-    } else {
-      const sidebar = await screen.findByTestId("left-sidebar-nav");
-      await waitFor(() => expect(sidebar).not.toHaveClass("left-sidebar-nav--with-footer"));
-      expect(document.querySelector(".executor-status-bar")).toBeNull();
-      expect(content).not.toHaveClass("project-content--with-footer");
-      expect(shell).toHaveClass("dashboard-project-shell--with-sidebar", "dashboard-project-shell--with-right-dock");
-      expect(content).not.toHaveClass("project-content--with-alpha-nav");
-    }
+    const nav = document.querySelector(".mobile-nav-bar");
+    expect(document.querySelector(".executor-status-bar")).toBeNull();
+    expect(screen.queryByTestId("executor-terminal-launcher-segment")).toBeNull();
+    expect(content).not.toHaveClass("project-content--with-footer", "project-content--with-mobile-nav");
+    expect(nav).not.toHaveClass("mobile-nav-bar--with-footer");
+    expect(content).toHaveClass("project-content--with-alpha-nav");
+    expect(screen.queryByTestId("left-sidebar-nav")).toBeNull();
+    expect(document.querySelector(".right-dock")).toBeNull();
+  });
+
+  it("hides the Alpha footer when no project is selected", async () => {
+    localStorage.setItem("kb-dashboard-view-mode", "overview");
+    mockCurrentProjectState.currentProject = null;
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates: true },
+    });
+
+    render(<App />);
+
+    await waitFor(() => expect(fetchSettings).toHaveBeenCalled());
+    expect(document.querySelector(".executor-status-bar")).toBeNull();
+    expect(document.querySelector(".project-content--with-footer")).toBeNull();
+    expect(screen.queryByTestId("executor-terminal-launcher-segment")).toBeNull();
   });
 
   it.each([
@@ -1141,6 +1387,8 @@ describe("Alpha Updates production wiring", () => {
     });
     document.documentElement.dataset.viewportMode = "mobile";
     document.documentElement.style.setProperty("--mobile-nav-alpha-system-offset", `${layout.systemOffset}px`);
+    document.documentElement.style.setProperty("--space-xs", "4px");
+    document.documentElement.style.setProperty("--alpha-density-3", "12px");
     const productionStyle = installProductionAlphaReserveRule();
     const nativeGetComputedStyle = window.getComputedStyle.bind(window);
     const offsetHeight = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function () {
@@ -1171,7 +1419,11 @@ describe("Alpha Updates production wiring", () => {
       });
       const scroller = screen.getByTestId("dashboard-project-shell").querySelector<HTMLElement>(".project-content");
       const finalControl = await screen.findByTestId("column-history-done");
+      const board = scroller?.querySelector<HTMLElement>(".board.board-workflow-columns");
+      const columns = Array.from(scroller?.querySelectorAll<HTMLElement>(".board.board-workflow-columns > .column") ?? []);
       expect(scroller).not.toBeNull();
+      expect(board).not.toBeNull();
+      expect(columns.length).toBeGreaterThan(0);
       expect(scroller).toHaveClass("project-content--with-alpha-nav");
       expect(scroller!.style.paddingBottom).toBe("");
 
@@ -1179,6 +1431,7 @@ describe("Alpha Updates production wiring", () => {
       expect(productionPadding).toContain("var(--mobile-nav-height)");
       expect(productionPadding).toContain("var(--mobile-nav-alpha-system-offset)");
       const reserve = resolvePixelCalcFromRoot(productionPadding);
+      expect(productionStyle.textContent).toContain("--board-padding: var(--alpha-density-3)");
       let scrollTop = 0;
       Object.defineProperties(scroller!, {
         clientHeight: { configurable: true, value: layout.viewportHeight },
@@ -1202,10 +1455,11 @@ describe("Alpha Updates production wiring", () => {
         height: 44,
         toJSON: () => ({}),
       });
+      const pillTop = layout.viewportHeight - layout.systemOffset - 8 - 54;
       pill.getBoundingClientRect = () => ({
         x: 0,
-        y: layout.viewportHeight - layout.systemOffset - 8 - 54,
-        top: layout.viewportHeight - layout.systemOffset - 8 - 54,
+        y: pillTop,
+        top: pillTop,
         right: 360,
         bottom: layout.viewportHeight - layout.systemOffset - 8,
         left: 0,
@@ -1224,6 +1478,7 @@ describe("Alpha Updates production wiring", () => {
       expect(scroller!.scrollTop).toBeGreaterThan(0);
       expect(document.activeElement).toBe(finalControl);
       expect(finalControl.getBoundingClientRect().bottom).toBeLessThanOrEqual(pill.getBoundingClientRect().top);
+      expect(columns.every((column) => nativeGetComputedStyle(column).minHeight === "0px")).toBe(true);
     } finally {
       productionStyle.remove();
       offsetHeight.mockRestore();
@@ -1231,7 +1486,110 @@ describe("Alpha Updates production wiring", () => {
       computedStyle.mockRestore();
       document.documentElement.style.removeProperty("--mobile-nav-alpha-system-offset");
       document.documentElement.style.removeProperty("--mobile-nav-height");
+      document.documentElement.style.removeProperty("--space-xs");
+      document.documentElement.style.removeProperty("--alpha-density-3");
       delete document.documentElement.dataset.viewportMode;
+    }
+  });
+
+  it.each([
+    ["skeleton", "board-workflows-skeleton", "board-workflows-skeleton"],
+    ["sans workflow", "board-workflows-skeleton", "board-workflows-empty"],
+    ["colonnes vides", "board-workflow-columns", null],
+    ["colonnes peuplées", "board-workflow-columns", null],
+  ] as const)("mesure le gap colonne/pill du Board de production avec %s", async (boardState, boardClass, expectedBoardTestId) => {
+    sessionStorage.clear();
+    mockUseViewportMode.mockReturnValue("mobile");
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates: true },
+    });
+    if (boardState === "skeleton") {
+      vi.mocked(fetchBoardWorkflows).mockImplementation(() => new Promise(() => {}));
+    } else if (boardState === "sans workflow") {
+      vi.mocked(fetchBoardWorkflows).mockResolvedValue({ ...DEFAULT_BOARD_WORKFLOWS, defaultWorkflowId: "", workflows: [] });
+    } else if (boardState === "colonnes peuplées") {
+      const emptyResult = mockUseTasks();
+      mockUseTasks.mockReturnValue({
+        ...emptyResult,
+        tasks: [{ id: "FN-345", title: "Board mobile", description: "x", status: "in-progress", column: "in-progress", dependencies: [], steps: [], currentStep: 0, log: [], createdAt: "", updatedAt: "" }],
+      });
+    }
+
+    const viewportHeight = 640;
+    const systemOffset = 46;
+    const allowedGap = 12;
+    document.documentElement.dataset.viewportMode = "mobile";
+    document.documentElement.style.setProperty("--mobile-nav-alpha-system-offset", `${systemOffset}px`);
+    document.documentElement.style.setProperty("--space-xs", "4px");
+    document.documentElement.style.setProperty("--alpha-density-3", `${allowedGap}px`);
+    const productionStyle = installProductionAlphaReserveRule();
+    const nativeGetComputedStyle = window.getComputedStyle.bind(window);
+    const offsetHeight = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function () {
+      return this.classList.contains("mobile-nav-bar") ? 54 : 0;
+    });
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function () {
+      const height = this.classList.contains("mobile-nav-tab") ? 44 : 0;
+      return { x: 0, y: 0, top: 0, right: 0, bottom: height, left: 0, width: 0, height, toJSON: () => ({}) };
+    });
+    const computedStyle = vi.spyOn(window, "getComputedStyle").mockImplementation((element) => {
+      if ((element as HTMLElement).classList?.contains("mobile-nav-bar")) {
+        return {
+          paddingBottom: "0px",
+          getPropertyValue: (property: string) => property === "--mobile-nav-floating-gap" ? "8px" : "",
+        } as CSSStyleDeclaration;
+      }
+      return nativeGetComputedStyle(element);
+    });
+
+    try {
+      render(<App />);
+      const pill = await waitFor(() => {
+        const candidate = document.querySelector<HTMLElement>(".mobile-nav-bar--alpha");
+        expect(candidate).not.toBeNull();
+        expect(document.documentElement.style.getPropertyValue("--mobile-nav-height")).toBe("62px");
+        return candidate!;
+      });
+      if (expectedBoardTestId) await screen.findByTestId(expectedBoardTestId);
+      const board = await waitFor(() => {
+        const candidate = document.querySelector<HTMLElement>(`.board.${boardClass}`);
+        expect(candidate).not.toBeNull();
+        return candidate!;
+      });
+      const columns = Array.from(board.querySelectorAll<HTMLElement>(boardClass === "board-workflows-skeleton" ? ".board-workflows-skeleton__column" : ":scope > .column"));
+      expect(columns.length).toBeGreaterThan(0);
+      if (boardState === "colonnes vides") expect(screen.queryByText("Board mobile")).toBeNull();
+      if (boardState === "colonnes peuplées") expect(screen.getByText("Board mobile")).toBeInTheDocument();
+
+      const scroller = screen.getByTestId("dashboard-project-shell").querySelector<HTMLElement>(".project-content");
+      expect(scroller).not.toBeNull();
+      expect(scroller).toHaveClass("project-content--with-alpha-nav");
+      const reserve = resolvePixelCalcFromRoot(nativeGetComputedStyle(scroller!).paddingBottom);
+      const boardSelector = '[data-alpha-surface="true"] .board';
+      const boardPadding = resolvePixelCalcFromRoot(extractProductionDeclaration(extractProductionRule(readAppFile("components/Board.css"), boardSelector), "--board-padding"));
+      const pillTop = viewportHeight - systemOffset - 8 - 54;
+      const columnBottom = viewportHeight - reserve - boardPadding;
+      pill.getBoundingClientRect = () => ({ x: 0, y: pillTop, top: pillTop, right: 360, bottom: pillTop + 54, left: 0, width: 360, height: 54, toJSON: () => ({}) });
+      for (const column of columns) {
+        column.getBoundingClientRect = () => ({ x: 0, y: 0, top: 0, right: 300, bottom: columnBottom, left: 0, width: 300, height: columnBottom, toJSON: () => ({}) });
+      }
+
+      for (const column of columns) {
+        const gap = pill.getBoundingClientRect().top - column.getBoundingClientRect().bottom;
+        expect(gap).toBeGreaterThanOrEqual(0);
+        expect(gap).toBeLessThanOrEqual(allowedGap);
+      }
+    } finally {
+      productionStyle.remove();
+      offsetHeight.mockRestore();
+      rect.mockRestore();
+      computedStyle.mockRestore();
+      document.documentElement.style.removeProperty("--mobile-nav-alpha-system-offset");
+      document.documentElement.style.removeProperty("--mobile-nav-height");
+      document.documentElement.style.removeProperty("--space-xs");
+      document.documentElement.style.removeProperty("--alpha-density-3");
+      delete document.documentElement.dataset.viewportMode;
+      sessionStorage.clear();
     }
   });
 
@@ -1257,6 +1615,60 @@ describe("Alpha Updates production wiring", () => {
       expect(await screen.findByTestId("left-sidebar-nav")).toHaveClass("left-sidebar-nav--with-footer");
       expect(shell).toHaveClass("dashboard-project-shell--with-sidebar", "dashboard-project-shell--with-right-dock");
     }
+  });
+
+  it("retire Nouvelle tâche du Header Alpha desktop sans ouvrir de modale", async () => {
+    mockUseViewportMode.mockReturnValue("desktop");
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates: true },
+    });
+
+    render(<App />);
+
+    await screen.findByTestId("dashboard-project-shell");
+    const header = document.querySelector("header.header");
+    expect(header?.querySelector('[data-testid="mobile-header-new-task"]')).toBeNull();
+    expect(header?.querySelector('[aria-label="New Task"]')).toBeNull();
+    expect(screen.queryByRole("heading", { name: "New Task" })).toBeNull();
+  });
+
+  it("garde le workflow réel du Board et la loupe Alpha desktop sur une seule rangée", async () => {
+    mockUseViewportMode.mockReturnValue("desktop");
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates: true },
+    });
+    vi.mocked(fetchBoardWorkflows).mockResolvedValue({
+      ...DEFAULT_BOARD_WORKFLOWS,
+      workflows: [{
+        ...DEFAULT_BOARD_WORKFLOWS.workflows[0],
+        name: "Workflow de livraison avec un nom volontairement très long",
+      }],
+      taskWorkflowIds: { "FN-358-A": "builtin:coding", "FN-358-B": "builtin:coding" },
+    });
+    const emptyResult = mockUseTasks();
+    mockUseTasks.mockReturnValue({
+      ...emptyResult,
+      tasks: [
+        { id: "FN-358-A", title: "À planifier", description: "x", status: null, column: "todo", dependencies: [], steps: [], currentStep: 0, log: [], createdAt: "", updatedAt: "" },
+        { id: "FN-358-B", title: "En cours", description: "x", status: "in-progress", column: "in-progress", dependencies: [], steps: [], currentStep: 0, log: [], createdAt: "", updatedAt: "" },
+      ],
+    });
+
+    render(<App />);
+
+    const switcher = await screen.findByTestId("workflow-switcher");
+    const search = screen.getByTestId("alpha-desktop-header-search-btn");
+    const actions = document.querySelector(".header-actions");
+    const slot = screen.getByTestId("header-workflow-slot");
+    await waitFor(() => expect(slot.contains(switcher)).toBe(true));
+    expect(switcher).toHaveTextContent("Workflow de livraison avec un nom volontairement très long");
+    expect(slot.parentElement).toBe(actions);
+    expect(search.parentElement).toBe(actions);
+    expect(Array.from(actions?.children ?? []).indexOf(slot)).toBeLessThan(Array.from(actions?.children ?? []).indexOf(search));
+    expect(document.querySelector(".board-workflow-view > .board-workflow-toolbar")).toBeNull();
+    expect(screen.queryByTestId("mobile-header-new-task")).toBeNull();
   });
 
   it("retire la réserve de contenu Alpha avec le clavier et les modales", async () => {
@@ -1317,6 +1729,8 @@ describe("Alpha Updates production wiring", () => {
       view.rerender(<App />);
       await waitFor(() => expect(document.querySelector(".mobile-nav-bar")).toHaveClass("mobile-nav-bar--keyboard-open"));
       expectProductionAlphaDrawerOverlay(drawer, viewport.systemOffset);
+      dismissAlphaDrawerByHandle(drawer);
+      await waitFor(() => expect(screen.queryByTestId("alpha-mobile-drawer-main-content")).toBeNull());
     } finally {
       productionStyle.remove();
       Object.defineProperties(window, {
@@ -1326,8 +1740,65 @@ describe("Alpha Updates production wiring", () => {
     }
   });
 
-  it("ouvre Usage et Projects par le hamburger au-dessus de la pill sans quitter le Kanban", async () => {
+  it.each([
+    ["portrait", { width: 390, height: 844, keyboardOverlap: 0 }],
+    ["paysage court avec clavier", { width: 844, height: 390, keyboardOverlap: 156 }],
+  ] as const)("route la pill vers le vrai Chat et garde son composeur rendu en %s", async (_name, geometry) => {
+    /*
+    FNXC:AlphaMobileDrawer 2026-09-10-23:02:
+    The symptom regression must cross App's shipped pill into the production ChatView, select a real hook-backed conversation, and measure the resulting composer against the drawer. A component stand-in can prove routing but cannot protect ChatView's own header, selection, or flex chain.
+    */
     mockUseViewportMode.mockReturnValue("mobile");
+    configureProductionAppChat();
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates: true },
+    });
+    mockUseMobileKeyboard.mockReturnValue({
+      keyboardOverlap: geometry.keyboardOverlap,
+      viewportHeight: geometry.height,
+      viewportOffsetTop: 0,
+      keyboardOpen: geometry.keyboardOverlap > 0,
+    });
+    Object.defineProperties(window, {
+      innerWidth: { configurable: true, value: geometry.width },
+      innerHeight: { configurable: true, value: geometry.height },
+    });
+
+    render(<App />);
+    fireEvent.click(await screen.findByTestId("mobile-nav-tab-chat"));
+    const dialog = await screen.findByRole("dialog", { name: "Chat" });
+    fireEvent.click(await within(dialog).findByTestId(`chat-session-${appChatSession.id}`));
+    const input = await within(dialog).findByTestId("chat-input");
+    input.focus();
+
+    expect(dialog).toContainElement(document.querySelector(".chat-view"));
+    expect(Array.from(dialog.querySelectorAll("h1,h2,h3")).filter((heading) => heading.textContent === "Chat" && !heading.classList.contains("visually-hidden"))).toHaveLength(1);
+    expect(within(dialog).getByTestId("chat-new-btn")).toBeEnabled();
+    expect(within(dialog).getByTestId("chat-pop-out")).toBeEnabled();
+    expect(within(dialog).queryByRole("button", { name: "Close" })).toBeNull();
+    expect(dialog.querySelectorAll(".alpha-mobile-drawer__handle-target")).toHaveLength(1);
+    expect(input).toHaveClass("chat-input-textarea");
+    expect(input.closest(".alpha-mobile-drawer__panel")).toBe(dialog);
+    expect(input).toHaveFocus();
+
+    const chatDrawer = screen.getByTestId("alpha-mobile-drawer-chat");
+    dismissAlphaDrawerByHandle(chatDrawer);
+    await waitFor(() => expect(chatDrawer).toHaveClass("alpha-mobile-drawer--hidden"));
+
+    fireEvent.click(screen.getByTestId("alpha-mobile-menu-trigger"));
+    fireEvent.click(screen.getByTestId("mobile-more-item-list"));
+    const listDrawer = await screen.findByTestId("alpha-mobile-drawer-list");
+    const listDialog = within(listDrawer).getByRole("dialog", { name: "List" });
+    expect(listDialog.querySelectorAll(".alpha-mobile-drawer__close")).toHaveLength(0);
+    expect(listDialog.querySelectorAll(".alpha-mobile-drawer__handle-target")).toHaveLength(1);
+    dismissAlphaDrawerByHandle(listDrawer);
+    await waitFor(() => expect(listDrawer).toHaveClass("alpha-mobile-drawer--hidden"));
+  });
+
+  it("garde Planning, Usage et Projects sur le même shell avec un seul propriétaire d’en-tête", async () => {
+    mockUseViewportMode.mockReturnValue("mobile");
+    appChatTestControl.renderProductionPlanningView = true;
     vi.mocked(fetchSettings).mockResolvedValue({
       ...defaultSettings,
       experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates: true },
@@ -1338,20 +1809,35 @@ describe("Alpha Updates production wiring", () => {
     try {
       render(<App />);
       const board = await screen.findByTestId("board-keep-alive");
+      const canonicalHeights: string[] = [];
+
+      fireEvent.click(await screen.findByTestId("mobile-nav-tab-planning"));
+      const planningDrawer = await screen.findByTestId("alpha-mobile-drawer-planning");
+      expectProductionAlphaDrawerOverlay(planningDrawer, systemOffset);
+      expectSingleDrawerHeader(within(planningDrawer).getByRole("dialog", { name: "Planning" }), ".modal-header--embedded");
+      canonicalHeights.push(window.getComputedStyle(planningDrawer.querySelector(".alpha-mobile-drawer__panel")!).height);
+      dismissAlphaDrawerByHandle(planningDrawer);
 
       fireEvent.click(await screen.findByTestId("alpha-mobile-menu-trigger"));
       fireEvent.click(screen.getByTestId("mobile-more-item-usage"));
       const usageDrawer = await screen.findByTestId("alpha-mobile-drawer-usage");
       expect(usageDrawer.className).toBe("alpha-mobile-drawer alpha-mobile-drawer--open");
       expectProductionAlphaDrawerOverlay(usageDrawer, systemOffset);
-      expect(board).toBeVisible();
-      expect(mockCurrentProjectState.clearCurrentProject).not.toHaveBeenCalled();
-      fireEvent.click(usageDrawer.querySelector<HTMLButtonElement>(".alpha-mobile-drawer__close")!);
+      expectSingleDrawerHeader(within(usageDrawer).getByRole("dialog", { name: "Usage" }), ".modal-header");
+      canonicalHeights.push(window.getComputedStyle(usageDrawer.querySelector(".alpha-mobile-drawer__panel")!).height);
+      dismissAlphaDrawerByHandle(usageDrawer);
 
       fireEvent.click(screen.getByTestId("alpha-mobile-menu-trigger"));
       fireEvent.click(screen.getByTestId("mobile-more-item-projects"));
       const projectsDrawer = await screen.findByTestId("alpha-mobile-drawer-projects");
       expectProductionAlphaDrawerOverlay(projectsDrawer, systemOffset);
+      expectSingleDrawerHeader(within(projectsDrawer).getByRole("dialog", { name: "Projects" }), ".view-header");
+      canonicalHeights.push(window.getComputedStyle(projectsDrawer.querySelector(".alpha-mobile-drawer__panel")!).height);
+      dismissAlphaDrawerByHandle(projectsDrawer);
+      await waitFor(() => expect(screen.queryByTestId("alpha-mobile-drawer-projects")).toBeNull());
+
+      expect(new Set(canonicalHeights)).toEqual(new Set([canonicalHeights[0]]));
+      expect(canonicalHeights[0]).not.toBe("");
       expect(board).toBeVisible();
       expect(mockCurrentProjectState.clearCurrentProject).not.toHaveBeenCalled();
     } finally {
@@ -1385,13 +1871,15 @@ describe("Alpha Updates production wiring", () => {
     expect(screen.getByTestId("dashboard-project-shell").querySelector(".project-content")).toHaveClass("project-content--with-alpha-nav");
     expect(screen.getByTestId("dashboard-project-shell").querySelector(".project-content")).not.toHaveClass("project-content--with-mobile-nav");
     expect(screen.queryByTestId("mobile-nav-tab-more")).toBeNull();
-    expect(Array.from(document.querySelectorAll<HTMLElement>(".mobile-nav-bar > .mobile-nav-tab")).map((tab) => tab.dataset.testid)).toEqual([
+    expect(Array.from(document.querySelectorAll<HTMLElement>(".mobile-nav-bar--alpha > .mobile-nav-tab")).map((tab) => tab.dataset.testid)).toEqual([
       "mobile-nav-tab-command-center",
       "mobile-nav-tab-planning",
       "mobile-nav-tab-chat",
       "mobile-nav-tab-mailbox",
     ]);
     expect(screen.queryByTestId("mobile-nav-tab-tasks")).toBeNull();
+    expect(document.querySelector(".mobile-nav-bar--alpha")?.lastElementChild).toBe(screen.getByTestId("alpha-mobile-menu-trigger"));
+    expect(screen.queryByTestId("alpha-mobile-menu-trigger")?.closest("header")).toBeNull();
 
     vi.mocked(fetchSettings).mockResolvedValue(legacySettings);
     const alphaTrigger = screen.getByTestId("alpha-mobile-menu-trigger");
@@ -1408,6 +1896,38 @@ describe("Alpha Updates production wiring", () => {
     expect(screen.getByTestId("mobile-nav-tab-settings")).toBeInTheDocument();
     expect(screen.getByTestId("mobile-nav-tab-planning")).toBeInTheDocument();
     expect(screen.queryByTestId("alpha-mobile-menu-trigger")).toBeNull();
+  });
+
+  it("remplace les deux barres et héberge Chat liste-seule et Notes inline", async () => {
+    configureProductionAppChat();
+    localStorage.setItem("fusion:right-dock-open", "true");
+    const note = { id: "note-alpha", title: "Note Alpha", content: "Initial", revision: 1, createdAt: "2026-09-11", updatedAt: "2026-09-11" };
+    mockNotesApi.fetchNotes.mockReset().mockResolvedValue({ notes: [note] });
+    mockNotesApi.fetchNote.mockReset().mockResolvedValue(note);
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates: true },
+    });
+
+    render(<App />);
+    expect(await screen.findByTestId("alpha-desktop-action-bar")).toBeInTheDocument();
+    expect(document.querySelector(".executor-status-bar")).toBeNull();
+    expect(screen.queryByTestId("alpha-desktop-nav-patchnode")).toBeNull();
+    expect(screen.queryByTestId("alpha-desktop-nav-chat")).toBeNull();
+    expect(screen.queryByTestId("alpha-desktop-nav-notes")).toBeNull();
+
+    fireEvent.click(await screen.findByTestId("right-dock-tab-chat"));
+    expect(screen.queryByTestId("right-dock-expand")).toBeNull();
+    fireEvent.click(await within(screen.getByTestId("right-dock")).findByTestId(`chat-session-${appChatSession.id}`));
+    const chatWindow = await screen.findByTestId(`floating-window-overlay-chat-window-${DEFAULT_PROJECT_ID}-${appChatSession.id}`);
+    fireEvent.click(within(screen.getByTestId("right-dock")).getByTestId(`chat-session-${appChatSession.id}`));
+    expect(screen.getAllByTestId(`floating-window-overlay-chat-window-${DEFAULT_PROJECT_ID}-${appChatSession.id}`)).toEqual([chatWindow]);
+
+    fireEvent.click(screen.getByTestId("right-dock-tab-notes"));
+    expect(screen.queryByTestId("right-dock-expand")).toBeNull();
+    expect(await within(screen.getByTestId("right-dock")).findByText("Note Alpha")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Notes" })).toBeNull();
+    expect(document.querySelector(".right-dock .notes-view--compact")).not.toBeNull();
   });
 
   it.each([
@@ -1427,7 +1947,9 @@ describe("Alpha Updates production wiring", () => {
     const historyButton = await screen.findByTestId("column-history-done");
     expect(screen.queryByTestId("sidebar-nav-patchnode")).toBeNull();
     fireEvent.click(historyButton);
-    await waitFor(() => expect(localStorage.getItem(taskViewStorageKey())).toBe("patchnode"));
+    expect(await screen.findByRole("dialog", { name: "History" })).toHaveAttribute("aria-modal", "false");
+    expect(localStorage.getItem(taskViewStorageKey())).toBe("board");
+    expect(document.querySelectorAll(".board")).toHaveLength(1);
   });
 });
 
@@ -3171,6 +3693,32 @@ describe("App view switching", () => {
     localStorage.removeItem("kb-dashboard-view-mode");
   });
 
+  it("héberge un plugin sans en-tête dans le drawer Alpha avec le seul titre de secours", async () => {
+    mockUseViewportMode.mockReturnValue("mobile");
+    localStorage.setItem("kb-dashboard-view-mode", "project");
+    localStorage.setItem(taskViewStorageKey(), "plugin:fusion-plugin-dependency-graph:graph");
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates: true },
+    });
+    vi.mocked(fetchPluginDashboardViews).mockResolvedValue([
+      {
+        pluginId: "fusion-plugin-dependency-graph",
+        view: { viewId: "graph", label: "Graph", componentPath: "./GraphView", placement: "more" },
+      },
+    ]);
+
+    render(<App />);
+
+    const dialog = await screen.findByRole("dialog", { name: "Graph" });
+    expect(dialog).toContainElement(await screen.findByTestId("dependency-graph"));
+    expect(dialog.querySelectorAll(".alpha-mobile-drawer__header")).toHaveLength(1);
+    expect(dialog.querySelectorAll(".alpha-mobile-drawer__title")).toHaveLength(1);
+    expect(dialog.querySelectorAll(".alpha-mobile-drawer__close")).toHaveLength(0);
+    expect(dialog.querySelectorAll(".alpha-mobile-drawer__handle-target")).toHaveLength(1);
+    expect(Array.from(dialog.querySelectorAll("h1,h2,h3")).filter((heading) => heading.textContent === "Graph" && !heading.classList.contains("visually-hidden"))).toHaveLength(1);
+  });
+
   it("renders plugin-hosted dashboard view from persisted task view id", async () => {
     localStorage.setItem("kb-dashboard-view-mode", "project");
     localStorage.setItem(taskViewStorageKey(), "plugin:fusion-plugin-dependency-graph:graph");
@@ -4309,6 +4857,251 @@ describe("App footer-safe project layout", () => {
 });
 
 describe("App node mode switching", () => {
+  // FNXC:AlphaDesktopWindows 2026-09-12-05:41: A dock selection now opens an independent dedicated note window, so it no longer transfers clean editor ownership into the later tablet page; the page-only transition remains the guard contract here.
+  it.each([
+    ["sans ouverture préalable du dock", false],
+  ] as const)("protège un brouillon devenu sale sur la page tablette %s", async (_label, openCleanDockNote) => {
+    const project2 = { ...DEFAULT_PROJECT, id: "proj_456", name: "Second Project", path: "/second" };
+    mockProjectsState.projects = [{ ...DEFAULT_PROJECT }, project2];
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates: true },
+    });
+    const note = { id: "note-transition", title: "Transition", content: "Initial", revision: 1, createdAt: "2026-09-11", updatedAt: "2026-09-11" };
+    mockNotesApi.fetchNotes.mockResolvedValue({ notes: [note] });
+    mockNotesApi.fetchNote.mockResolvedValue(note);
+    if (openCleanDockNote) localStorage.setItem("fusion:right-dock-open", "true");
+
+    const view = render(<App />);
+    if (openCleanDockNote) {
+      fireEvent.click(await screen.findByTestId("right-dock-tab-notes"));
+      fireEvent.click(await within(screen.getByTestId("right-dock")).findByRole("button", { name: /Transition/ }));
+      await waitFor(() => expect(screen.getByLabelText("Note title")).toHaveValue("Transition"));
+    }
+
+    mockUseViewportMode.mockReturnValue("tablet");
+    view.rerender(<App />);
+    fireEvent.click(await screen.findByTestId("sidebar-nav-notes"));
+    const notesPage = await waitFor(() => {
+      const candidate = document.querySelector<HTMLElement>(".notes-view:not(.notes-view--compact)");
+      expect(candidate).not.toBeNull();
+      return candidate!;
+    });
+    fireEvent.click(await within(notesPage).findByRole("button", { name: /Transition/ }));
+    const title = await within(notesPage).findByLabelText("Note title");
+    await waitFor(() => expect(title).toHaveValue("Transition"));
+    fireEvent.change(title, { target: { value: "Sale après transition" } });
+    const projectChangesBeforeGuard = mockCurrentProjectState.setCurrentProject.mock.calls.length;
+
+    fireEvent.click(screen.getByTestId("project-selector-trigger"));
+    fireEvent.click(await screen.findByTestId(`project-selector-item-${project2.id}`));
+    expect(await screen.findByRole("dialog", { name: "Discard changes?" })).toBeInTheDocument();
+    expect(mockCurrentProjectState.setCurrentProject).toHaveBeenCalledTimes(projectChangesBeforeGuard);
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Discard changes?" })).toBeNull());
+    expect(mockCurrentProjectState.setCurrentProject).toHaveBeenCalledTimes(projectChangesBeforeGuard);
+    expect(screen.getByLabelText("Note title")).toHaveValue("Sale après transition");
+
+    fireEvent.click(screen.getByTestId("project-selector-trigger"));
+    fireEvent.click(await screen.findByTestId(`project-selector-item-${project2.id}`));
+    fireEvent.click(await screen.findByRole("button", { name: "Discard" }));
+    await waitFor(() => expect(mockCurrentProjectState.setCurrentProject).toHaveBeenCalledWith(project2));
+  });
+
+  it("transfère la garde du brouillon Notes vers la page tablette avant le changement de projet", async () => {
+    const project2 = { ...DEFAULT_PROJECT, id: "proj_456", name: "Second Project", path: "/second" };
+    mockProjectsState.projects = [{ ...DEFAULT_PROJECT }, project2];
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates: true },
+    });
+    const note = { id: "note-transition", title: "Transition", content: "Initial", revision: 1, createdAt: "2026-09-11", updatedAt: "2026-09-11" };
+    mockNotesApi.fetchNotes.mockResolvedValue({ notes: [note] });
+    mockNotesApi.fetchNote.mockResolvedValue(note);
+    localStorage.setItem("fusion:right-dock-open", "true");
+
+    const view = render(<App />);
+    fireEvent.click(await screen.findByTestId("right-dock-tab-notes"));
+    fireEvent.click(await screen.findByRole("button", { name: /Transition/ }));
+    fireEvent.change(await screen.findByLabelText("Note title"), { target: { value: "Transition non sauvegardée" } });
+
+    mockUseViewportMode.mockReturnValue("tablet");
+    view.rerender(<App />);
+    await waitFor(() => expect(document.querySelector(".notes-view:not(.notes-view--compact)")).not.toBeNull());
+    expect(screen.getByLabelText("Note title")).toHaveValue("Transition non sauvegardée");
+    const projectChangesBeforeGuard = mockCurrentProjectState.setCurrentProject.mock.calls.length;
+
+    fireEvent.click(screen.getByTestId("project-selector-trigger"));
+    fireEvent.click(await screen.findByTestId(`project-selector-item-${project2.id}`));
+    expect(await screen.findByRole("dialog", { name: "Discard changes?" })).toBeInTheDocument();
+    expect(mockCurrentProjectState.setCurrentProject).toHaveBeenCalledTimes(projectChangesBeforeGuard);
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Discard changes?" })).toBeNull());
+    expect(mockCurrentProjectState.setCurrentProject).toHaveBeenCalledTimes(projectChangesBeforeGuard);
+    expect(screen.getByLabelText("Note title")).toHaveValue("Transition non sauvegardée");
+
+    fireEvent.click(screen.getByTestId("project-selector-trigger"));
+    fireEvent.click(await screen.findByTestId(`project-selector-item-${project2.id}`));
+    fireEvent.click(await screen.findByRole("button", { name: "Discard" }));
+    await waitFor(() => expect(mockCurrentProjectState.setCurrentProject).toHaveBeenCalledWith(project2));
+  });
+
+  it("n’applique pas l’ancien état sale du dock après sauvegarde sur la page tablette", async () => {
+    const project2 = { ...DEFAULT_PROJECT, id: "proj_456", name: "Second Project", path: "/second" };
+    mockProjectsState.projects = [{ ...DEFAULT_PROJECT }, project2];
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates: true },
+    });
+    const note = { id: "note-transition", title: "Transition", content: "Initial", revision: 1, createdAt: "2026-09-11", updatedAt: "2026-09-11" };
+    mockNotesApi.fetchNotes.mockResolvedValue({ notes: [note] });
+    mockNotesApi.fetchNote.mockResolvedValue(note);
+    mockNotesApi.updateNote.mockResolvedValue({ ...note, title: "Transition sauvegardée", revision: 2 });
+    localStorage.setItem("fusion:right-dock-open", "true");
+
+    const view = render(<App />);
+    fireEvent.click(await screen.findByTestId("right-dock-tab-notes"));
+    fireEvent.click(await screen.findByRole("button", { name: /Transition/ }));
+    fireEvent.change(await screen.findByLabelText("Note title"), { target: { value: "Transition sauvegardée" } });
+
+    mockUseViewportMode.mockReturnValue("tablet");
+    view.rerender(<App />);
+    await waitFor(() => expect(document.querySelector(".notes-view:not(.notes-view--compact)")).not.toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
+    await waitFor(() => expect(mockNotesApi.updateNote).toHaveBeenCalledTimes(1));
+    expect(screen.getByText("Saved")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("project-selector-trigger"));
+    fireEvent.click(await screen.findByTestId(`project-selector-item-${project2.id}`));
+    await waitFor(() => expect(mockCurrentProjectState.setCurrentProject).toHaveBeenCalledWith(project2));
+    expect(screen.queryByRole("dialog", { name: "Discard changes?" })).toBeNull();
+  });
+
+  it("attend la garde Notes avant de changer de nœud et conserve la portée sur Cancel", async () => {
+    const { useNodes } = await import("../../hooks/useNodes");
+    const remoteNode = {
+      id: "node_remote_1",
+      name: "Remote Node 1",
+      type: "remote" as const,
+      url: "http://remote:4040",
+      status: "online" as const,
+      maxConcurrent: 2,
+      createdAt: "",
+      updatedAt: "",
+    };
+    vi.mocked(useNodes).mockReturnValue({
+      nodes: [remoteNode], loading: false, error: null, refresh: vi.fn(), register: vi.fn(), update: vi.fn(), unregister: vi.fn(), healthCheck: vi.fn(),
+    });
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates: true },
+    });
+    const note = { id: "note-1", title: "Brouillon", content: "Initial", revision: 1, createdAt: "2026-09-11", updatedAt: "2026-09-11" };
+    mockNotesApi.fetchNotes.mockResolvedValue({ notes: [note] });
+    mockNotesApi.fetchNote.mockResolvedValue(note);
+    localStorage.setItem("fusion:right-dock-open", "true");
+
+    render(<App />);
+    fireEvent.click(await screen.findByTestId("right-dock-tab-notes"));
+    fireEvent.click(await screen.findByRole("button", { name: /Brouillon/ }));
+    const title = await screen.findByLabelText("Note title");
+    fireEvent.change(title, { target: { value: "Brouillon modifié" } });
+
+    fireEvent.click(screen.getByTestId("node-selector-trigger"));
+    fireEvent.click(await screen.findByTestId("node-option-node_remote_1"));
+    expect(await screen.findByRole("dialog", { name: "Discard changes?" })).toBeInTheDocument();
+    expect(mockNodeContextValue.setCurrentNode).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Discard changes?" })).toBeNull());
+    expect(mockNodeContextValue.setCurrentNode).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Note title")).toHaveValue("Brouillon modifié");
+    expect(screen.getByTestId("node-option-node_remote_1")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("node-option-node_remote_1"));
+    fireEvent.click(await screen.findByRole("button", { name: "Discard" }));
+    await waitFor(() => expect(mockNodeContextValue.setCurrentNode).toHaveBeenCalledWith(remoteNode));
+    expect(screen.queryByRole("dialog", { name: "Notes" })).toBeNull();
+    vi.mocked(useNodes).mockReturnValue({
+      nodes: [], loading: false, error: null, refresh: vi.fn(), register: vi.fn(), update: vi.fn(), unregister: vi.fn(), healthCheck: vi.fn(),
+    });
+  });
+
+  it("garde la disparition automatique du nœud courant avec Cancel puis Discard", async () => {
+    const { useNodes } = await import("../../hooks/useNodes");
+    const currentRemoteNode = {
+      id: "node_remote_current",
+      name: "Current remote",
+      type: "remote" as const,
+      url: "http://remote-current:4040",
+      status: "online" as const,
+      maxConcurrent: 2,
+      createdAt: "",
+      updatedAt: "",
+    };
+    const survivingNode = { ...currentRemoteNode, id: "node_remote_other", name: "Other remote" };
+    const nodesResult = (nodes: typeof currentRemoteNode[]) => ({
+      nodes,
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+      register: vi.fn(),
+      update: vi.fn(),
+      unregister: vi.fn(),
+      healthCheck: vi.fn(),
+    });
+    vi.mocked(useNodes).mockReturnValue(nodesResult([currentRemoteNode]));
+    mockNodeContextValue.currentNode = currentRemoteNode;
+    mockNodeContextValue.currentNodeId = currentRemoteNode.id;
+    mockNodeContextValue.isRemote = true;
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates: true },
+    });
+    const note = { id: "note-node-fallback", title: "Portée", content: "Initial", revision: 1, createdAt: "2026-09-11", updatedAt: "2026-09-11" };
+    mockNotesApi.fetchNotes.mockResolvedValue({ notes: [note] });
+    mockNotesApi.fetchNote.mockResolvedValue(note);
+    localStorage.setItem("fusion:right-dock-open", "true");
+
+    const { rerender } = render(<App />);
+    fireEvent.click(await screen.findByTestId("right-dock-tab-notes"));
+    fireEvent.click(await screen.findByRole("button", { name: /Portée/ }));
+    fireEvent.change(await screen.findByLabelText("Note title"), { target: { value: "Portée modifiée" } });
+
+    vi.mocked(useNodes).mockReturnValue(nodesResult([survivingNode]));
+    rerender(<App />);
+    expect(await screen.findByRole("dialog", { name: "Discard changes?" })).toBeInTheDocument();
+    expect(mockNodeContextValue.clearCurrentNode).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Discard changes?" })).toBeNull());
+    expect(mockNodeContextValue.clearCurrentNode).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Note title")).toHaveValue("Portée modifiée");
+
+    vi.mocked(useNodes).mockReturnValue(nodesResult([currentRemoteNode, survivingNode]));
+    rerender(<App />);
+    vi.mocked(useNodes).mockReturnValue(nodesResult([survivingNode]));
+    rerender(<App />);
+    expect(await screen.findByRole("dialog", { name: "Discard changes?" })).toBeInTheDocument();
+
+    // The authoritative node reappears while the destructive verdict is still pending.
+    vi.mocked(useNodes).mockReturnValue(nodesResult([currentRemoteNode, survivingNode]));
+    rerender(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Discard changes?" })).toBeNull());
+    expect(mockNodeContextValue.clearCurrentNode).not.toHaveBeenCalled();
+    expect(document.querySelector(".right-dock .notes-view--compact")).not.toBeNull();
+    expect(screen.getByLabelText("Note title")).toHaveValue("Portée modifiée");
+
+    vi.mocked(useNodes).mockReturnValue(nodesResult([survivingNode]));
+    rerender(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Discard" }));
+    await waitFor(() => expect(mockNodeContextValue.clearCurrentNode).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("dialog", { name: "Notes" })).toBeNull();
+    vi.mocked(useNodes).mockReturnValue(nodesResult([]));
+  });
+
   it("does not render node selector when no remote nodes are available", async () => {
     render(<App />);
 
@@ -4852,33 +5645,115 @@ describe("App onboarding reopen", () => {
   });
 });
 
-describe("App auth token recovery dialog", () => {
-  it("opens as a non-dismissable blocking dialog when daemon auth recovery is required", async () => {
+describe("App auth token recovery page", () => {
+  const originalFetch = window.fetch;
+  const originalLocation = window.location;
+  let reloadSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    clearAuthToken();
+    delete (window as any).__fnAuthFetchInstalled;
+    window.fetch = originalFetch;
+    reloadSpy = vi.fn();
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...originalLocation, reload: reloadSpy },
+    });
+  });
+
+  afterEach(() => {
+    clearAuthToken();
+    window.fetch = originalFetch;
+    delete (window as any).__fnAuthFetchInstalled;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: originalLocation,
+    });
+  });
+
+  it("replaces the mounted shell with one non-modal page and submits on Enter", async () => {
+    const user = userEvent.setup();
     render(<App />);
     await waitForAppShell();
 
-    expect(screen.queryByRole("dialog", { name: "Authentication token required" })).toBeNull();
+    expect(screen.queryByRole("main", { name: "Authentication token required" })).toBeNull();
 
     act(() => {
       window.dispatchEvent(new CustomEvent(AUTH_TOKEN_RECOVERY_REQUIRED_EVENT));
+      window.dispatchEvent(new CustomEvent(AUTH_TOKEN_RECOVERY_REQUIRED_EVENT));
     });
 
-    const dialog = await screen.findByRole("dialog", { name: "Authentication token required" });
-    expect(dialog).toBeInTheDocument();
-
+    const page = await screen.findByRole("main", { name: "Authentication token required" });
+    expect(screen.getAllByRole("main", { name: "Authentication token required" })).toHaveLength(1);
+    expect(screen.queryByTitle("Settings")).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.querySelector(".modal-overlay, .modal-md, [aria-modal]")).toBeNull();
     expect(screen.queryByRole("button", { name: /close/i })).toBeNull();
 
-    const overlay = dialog.closest(".auth-token-recovery-overlay");
-    expect(overlay).toBeTruthy();
+    fireEvent.keyDown(page, { key: "Escape" });
+    fireEvent.click(page);
+    expect(screen.getByRole("main", { name: "Authentication token required" })).toBeInTheDocument();
 
-    if (!overlay) {
-      throw new Error("Expected auth token recovery overlay to be present");
-    }
+    await user.type(screen.getByLabelText("Replacement token"), "  nouveau-jeton  {Enter}");
+    expect(localStorage.getItem("fn.authToken")).toBe("nouveau-jeton");
+    expect(reloadSpy).toHaveBeenCalledOnce();
+  });
 
-    fireEvent.keyDown(overlay, { key: "Escape" });
-    fireEvent.click(overlay);
+  it("prioritizes a real pre-mount daemon 401 latch over the active first-boot loader", async () => {
+    const user = userEvent.setup();
+    const daemon401 = new Response(JSON.stringify({
+      error: "Unauthorized",
+      message: "Valid bearer token required",
+    }), {
+      status: 401,
+      headers: { "content-type": "application/json" },
+    });
+    const rawFetch = vi.fn().mockResolvedValue(daemon401);
+    window.fetch = rawFetch;
+    installAuthFetch();
 
-    expect(screen.getByRole("dialog", { name: "Authentication token required" })).toBeInTheDocument();
+    await window.fetch("/api/health");
+    await waitFor(() => expect(hasDaemonAuthFailure()).toBe(true));
+
+    mockProjectsState.projects = [];
+    mockProjectsState.loading = true;
+    mockCurrentProjectState.currentProject = null;
+    mockCurrentProjectState.loading = true;
+    expect(shouldShowFirstEverBootLoader(mockProjectsState.loading, mockProjectsState.projects.length)).toBe(true);
+
+    render(<App />);
+
+    expect(mockDashboardLoaderRender).not.toHaveBeenCalled();
+    const page = screen.getByRole("main", { name: "Authentication token required" });
+    expect(page).toHaveClass("auth-token-recovery-page");
+    expect(screen.getAllByRole("main", { name: "Authentication token required" })).toHaveLength(1);
+    expect(screen.queryByRole("status", { name: "Loading Fusion dashboard" })).toBeNull();
+    expect(screen.queryByText("Initializing dashboard...")).toBeNull();
+    expect(screen.queryByTestId("dashboard-loader-step-projects")).toBeNull();
+    expect(screen.queryByTestId("fb-probe-loader")).toBeNull();
+    expect(screen.queryByTitle("Settings")).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    await user.type(screen.getByLabelText("Replacement token"), "  nouveau-jeton  {Enter}");
+    expect(localStorage.getItem("fn.authToken")).toBe("nouveau-jeton");
+    expect(reloadSpy).toHaveBeenCalledOnce();
+    expect(rawFetch).toHaveBeenCalledWith("/api/health", expect.anything());
+  });
+
+  it("keeps the first-boot loader when no auth failure is latched", async () => {
+    mockProjectsState.projects = [];
+    mockProjectsState.loading = true;
+    mockCurrentProjectState.currentProject = null;
+    mockCurrentProjectState.loading = true;
+    expect(shouldShowFirstEverBootLoader(mockProjectsState.loading, mockProjectsState.projects.length)).toBe(true);
+    expect(hasDaemonAuthFailure()).toBe(false);
+
+    render(<App />);
+
+    expect(await screen.findByRole("status", { name: "Loading Fusion dashboard" })).toBeInTheDocument();
+    expect(screen.getByText("Initializing dashboard...")).toBeInTheDocument();
+    expect(screen.getByTestId("fb-probe-loader")).toHaveTextContent("ok");
+    expect(screen.queryByRole("main", { name: "Authentication token required" })).toBeNull();
   });
 });
 
@@ -5044,6 +5919,116 @@ describe("App task search suggestions", () => {
       };
     });
   }
+
+  it("ouvre une tâche locale terminée depuis la recherche Alpha sans filtrer Board ou List", async () => {
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates: true },
+    });
+    const source = [
+      makeSearchTask("FN-351", "Active Alpha task"),
+      makeSearchTask("FN-353", "Completed Alpha task", "done"),
+    ];
+    const observedQueries: Array<string | undefined> = [];
+    mockUseTasks.mockImplementation((options) => {
+      observedQueries.push(options?.searchQuery);
+      return {
+        tasks: options?.searchQuery ? [] : source,
+        createTask: mockCreateTask,
+        moveTask: vi.fn(),
+        deleteTask: vi.fn(),
+        mergeTask: vi.fn(),
+        retryTask: vi.fn(),
+        updateTask: vi.fn(),
+        duplicateTask: vi.fn(),
+        refreshTasks: vi.fn(),
+      };
+    });
+
+    render(<App />);
+    await waitForAppShell();
+    const board = within(screen.getByTestId("board-keep-alive"));
+    expect(board.getByText("Active Alpha task")).toBeInTheDocument();
+    expect(board.getByText("Completed Alpha task")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("alpha-desktop-header-search-btn"));
+    fireEvent.change(screen.getByRole("combobox", { name: "Search tasks..." }), { target: { value: "353" } });
+    fireEvent.click(screen.getByRole("option", { name: "FN-353: Completed Alpha task" }));
+
+    expect(screen.queryByTestId("alpha-task-search-overlay")).toBeNull();
+    expect(screen.getAllByRole("dialog", { name: "Completed Alpha task" })).toHaveLength(1);
+    expect(board.getByText("Active Alpha task")).toBeInTheDocument();
+    expect(board.getByText("Completed Alpha task")).toBeInTheDocument();
+    expect(observedQueries.every((query) => query === undefined)).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(screen.getByTestId("alpha-desktop-nav-list"));
+    await waitFor(() => expect(screen.getByTestId("list-keep-alive")).not.toHaveAttribute("aria-hidden"));
+    const list = within(screen.getByTestId("list-keep-alive"));
+    expect(list.getByText("Active Alpha task")).toBeInTheDocument();
+    expect(list.getByText("Completed Alpha task")).toBeInTheDocument();
+  });
+
+  it("ouvre une tâche distante autoritative depuis Alpha sans propager la requête transitoire", async () => {
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates: true },
+    });
+    mockLocalSearchTasks([makeSearchTask("LOCAL-353", "Local task")]);
+    mockNodeContextValue.isRemote = true;
+    mockNodeContextValue.currentNodeId = "node-alpha";
+    const remoteQueries: Array<string | undefined> = [];
+    const remoteSpy = vi.spyOn(apiNodeModule, "useRemoteNodeData").mockImplementation((_nodeId, options) => {
+      remoteQueries.push(options?.searchQuery);
+      return {
+        projects: [],
+        tasks: [makeSearchTask("REMOTE-353", "Remote completed Alpha task", "done")],
+        health: null,
+        loading: false,
+        error: null,
+        refresh: vi.fn(),
+      };
+    });
+
+    render(<App />);
+    await waitForAppShell();
+    const board = within(screen.getByTestId("board-keep-alive"));
+    expect(board.getByText("Remote completed Alpha task")).toBeInTheDocument();
+    expect(board.queryByText("Local task")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("alpha-desktop-header-search-btn"));
+    fireEvent.change(screen.getByRole("combobox", { name: "Search tasks..." }), { target: { value: "353" } });
+    fireEvent.click(screen.getByRole("option", { name: "REMOTE-353: Remote completed Alpha task" }));
+
+    expect(screen.getAllByRole("dialog", { name: "Remote completed Alpha task" })).toHaveLength(1);
+    expect(board.getByText("Remote completed Alpha task")).toBeInTheDocument();
+    expect(remoteQueries.every((query) => query === undefined)).toBe(true);
+    remoteSpy.mockRestore();
+  });
+
+  it("ferme l’overlay Alpha par backdrop ou Escape et réinitialise sa requête", async () => {
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, alphaUpdates: true },
+    });
+    mockLocalSearchTasks([makeSearchTask("FN-353", "Alpha task")]);
+
+    render(<App />);
+    await waitForAppShell();
+    const trigger = screen.getByTestId("alpha-desktop-header-search-btn");
+    fireEvent.click(trigger);
+    fireEvent.change(screen.getByRole("combobox", { name: "Search tasks..." }), { target: { value: "353" } });
+    fireEvent.mouseDown(screen.getByTestId("alpha-task-search-overlay"));
+    expect(screen.queryByTestId("alpha-task-search-overlay")).toBeNull();
+    await waitFor(() => expect(trigger).toHaveFocus());
+
+    fireEvent.click(trigger);
+    expect(screen.getByRole("combobox", { name: "Search tasks..." })).toHaveValue("");
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByTestId("alpha-task-search-overlay")).toBeNull();
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(screen.queryByRole("dialog", { name: "Alpha task" })).toBeNull();
+  });
 
   it("applies a selected exact ID to the shared Board and List search", async () => {
     localStorage.setItem("kb-dashboard-view-mode", "project");

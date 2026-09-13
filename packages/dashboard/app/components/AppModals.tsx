@@ -9,7 +9,7 @@ import type { UseTaskHandlersResult } from "../hooks/useTaskHandlers";
 import type { ChatMessageLayout } from "../hooks/useAppSettings";
 import type { Toast, ToastType } from "../hooks/useToast";
 import { ModalErrorBoundary } from "./ErrorBoundary";
-import { TaskDetailModal } from "./TaskDetailModal";
+import { AppModalTaskDetailHost } from "./TaskDetailHostBoundaries";
 import type { BlockerFanoutColumnFlags } from "../hooks/useBlockerFanout";
 import { GitHubImportModal } from "./GitHubImportModal";
 import { ScriptsModal } from "./ScriptsModal";
@@ -29,6 +29,37 @@ import { AlphaMobileDrawer } from "./AlphaMobileDrawer";
 const SetupWizardModal = lazy(() => import("./SetupWizardModal").then((m) => ({ default: m.SetupWizardModal })));
 const SettingsModal = lazy(() => import("./SettingsModal").then((m) => ({ default: m.SettingsModal })));
 const WorkflowNodeEditor = lazy(() => import("./WorkflowNodeEditor").then((m) => ({ default: m.WorkflowNodeEditor })));
+
+interface AlphaUsageDrawerProps {
+  open: boolean;
+  title: string;
+  onClose: () => void;
+  projectId?: string;
+}
+
+/*
+FNXC:AlphaMobileDrawer 2026-09-10-23:59:
+Usage browser checks must mount AppModals' production bridge rather than duplicate its shell flags. This exported bridge remains the single Alpha usage composition while the ordinary popover path stays owned by AppModals.
+*/
+export function AlphaUsageDrawer({ open, title, onClose, projectId }: AlphaUsageDrawerProps) {
+  return (
+    <AlphaMobileDrawer
+      open={open}
+      title={title}
+      onClose={onClose}
+      testId="alpha-mobile-drawer-usage"
+      contentOwnsHeader
+      contentOwnsScroll
+    >
+      <UsageIndicator
+        isOpen={open}
+        onClose={onClose}
+        projectId={projectId}
+        presentation="embedded"
+      />
+    </AlphaMobileDrawer>
+  );
+}
 
 function prefetchSettingsModal() {
   const idle: (cb: () => void, opts?: { timeout?: number }) => number =
@@ -168,17 +199,6 @@ export function AppModals({
   FNXC:TaskDetailSwipeBack 2026-06-29-14:20:
   Mobile swipe-back (`popstate`) for modal task detail must step back through nested task-detail opens before dismissing the modal. The latest pushed callback restores the previous task/tab/origin snapshot when one exists, and explicit close falls back to the original first-open callback (`modalManager.closeDetailTask`) so programmatic closes still consume the matching history entry.
   */
-  const closeDetailFromHistory = useCallback(() => {
-    modalManager.closeDetailTask();
-    deepLink.handleDetailClose();
-    detailNavCloseRef.current = null;
-  }, [deepLink, modalManager]);
-
-  const closeDetailWithNav = useCallback(() => {
-    removeNav(detailNavCloseRef.current ?? modalManager.closeDetailTask);
-    closeDetailFromHistory();
-  }, [closeDetailFromHistory, modalManager, removeNav]);
-
   const closeGroupWithNav = useCallback(() => {
     removeNav(modalManager.closeGroupModal);
     modalManager.closeGroupModal();
@@ -319,14 +339,17 @@ export function AppModals({
     <>
       {detailTask && (
         <ModalErrorBoundary>
-          <TaskDetailModal
+          <AppModalTaskDetailHost
             task={detailTask}
             alphaMobileDrawer={alphaMobileDrawer}
             projectId={projectId}
             tasks={tasks}
             columnFlagsByTaskId={columnFlagsByTaskId}
             globalPaused={globalPaused}
-            onClose={closeDetailWithNav}
+            onRemoveNavigation={() => removeNav(detailNavCloseRef.current ?? modalManager.closeDetailTask)}
+            onCloseDetail={modalManager.closeDetailTask}
+            onCleanupDeepLink={deepLink.handleDetailClose}
+            onClosed={() => { detailNavCloseRef.current = null; }}
             onOpenDetail={openDetailTaskWithNav}
             mobileHeaderMode={modalManager.detailTaskOrigin === "list-mobile" ? "back" : "close"}
             /* FNXC:TaskRevert 2026-08-01-20:27: Modal detail must offer the same revision draft recovery as every reverted-task host. */
@@ -459,20 +482,12 @@ export function AppModals({
       Usage opened from Alpha mobile reuses its embedded content inside the shared bottom-edge drawer above the trigger pill. The modal manager remains the single open/close owner, while standard mobile and desktop preserve the existing overlay or anchored popover.
       */}
       {alphaMobileDrawer ? (
-        <AlphaMobileDrawer
+        <AlphaUsageDrawer
           open={modalManager.usageOpen}
           title={t("nav.usage", "Usage")}
-          closeLabel={t("common.close", "Close")}
           onClose={closeUsageWithNav}
-          testId="alpha-mobile-drawer-usage"
-        >
-          <UsageIndicator
-            isOpen={modalManager.usageOpen}
-            onClose={closeUsageWithNav}
-            projectId={projectId}
-            presentation="embedded"
-          />
-        </AlphaMobileDrawer>
+          projectId={projectId}
+        />
       ) : (
         <UsageIndicator
           isOpen={modalManager.usageOpen}

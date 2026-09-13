@@ -15,7 +15,6 @@ import {
 import { useTranslation } from "react-i18next";
 import { getErrorMessage } from "@fusion/core";
 import {
-  X,
   Trash2,
   Terminal as TerminalIcon,
   RefreshCw,
@@ -36,7 +35,9 @@ import { useTerminal } from "../hooks/useTerminal";
 import { useTerminalSessions } from "../hooks/useTerminalSessions";
 import { useWorkspaces } from "../hooks/useWorkspaces";
 import { getViewportMode, isMobileViewport } from "../hooks/useViewportMode";
+import { useDrawerDismissGesture } from "../hooks/useDrawerDismissGesture";
 import { FloatingWindow, FLOATING_WINDOW_GEOMETRY_CHANGE_EVENT } from "./FloatingWindow";
+import { ModalCloseButton } from "./ModalCloseButton";
 import { currentFloatingZ, nextFloatingZ } from "./floatingWindowStack";
 import { useConfirm } from "../hooks/useConfirm";
 import { getPathBasename } from "../utils/pathDisplay";
@@ -545,6 +546,15 @@ export function TerminalModal({ isOpen, onClose, initialCommand, initialCommandG
   
   const terminalRef = useRef<HTMLDivElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
+  const alphaMobileDrawer = isMobileTerminal
+    && !embedded
+    && typeof document !== "undefined"
+    && document.documentElement.dataset.alphaMobileDrawers === "true";
+  const dismissHandleProps = useDrawerDismissGesture({
+    enabled: alphaMobileDrawer,
+    panelRef: modalRef,
+    onDismiss: onClose,
+  });
   const terminalTabRegionRef = useRef<HTMLDivElement>(null);
   const terminalTabsMeasureRef = useRef<HTMLDivElement>(null);
   const terminalWorkspacePickerRef = useRef<HTMLDivElement>(null);
@@ -2711,7 +2721,13 @@ export function TerminalModal({ isOpen, onClose, initialCommand, initialCommandG
       style={modalStyle}
       role={isBelowMode ? "region" : undefined}
       aria-label={isBelowMode ? t("terminal.belowRegion", "Pinned terminal") : undefined}
+      {...(alphaMobileDrawer ? dismissHandleProps : {})}
     >
+        {alphaMobileDrawer && (
+          <div className="terminal-drawer-handle-target" data-testid="terminal-drawer-handle" aria-hidden="true">
+            <span className="terminal-drawer-handle" />
+          </div>
+        )}
         {!embedded && (isDockedMode || isBelowMode) && (
           <div
             className={isBelowMode ? "terminal-below-resize-handle" : "terminal-docked-resize-handle"}
@@ -2889,16 +2905,14 @@ export function TerminalModal({ isOpen, onClose, initialCommand, initialCommandG
           */}
           {!embedded && !isMobileTerminal && terminalDisplayModeControls}
 
-          {!embedded && (
-            <button
+          {!embedded && !alphaMobileDrawer && (
+            <ModalCloseButton
               className={`terminal-close${isMobileTerminal ? " terminal-close--corner" : ""}`}
               onClick={onClose}
               data-testid="terminal-close-btn"
               title={t("terminal.closeTerminal", "Close terminal")}
               aria-label={t("terminal.closeTerminal", "Close terminal")}
-            >
-              <X size={20} />
-            </button>
+            />
           )}
         </div>
 

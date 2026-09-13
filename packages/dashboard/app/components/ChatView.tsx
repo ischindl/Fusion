@@ -1,6 +1,8 @@
 // ChatView.css is imported eagerly from App.tsx to avoid a flash of
 // unstyled content when the lazy chunk loads. Do not re-import here.
+import { AlphaButton, AlphaDialogBackdrop, AlphaInput, AlphaListBox, AlphaListBoxItem, AlphaMenu, AlphaMenuItem, AlphaMenuSection, AlphaSelect, AlphaTextArea } from "./alpha-ui";
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { AlphaBoundary } from "../context/AlphaContext";
 import {
   MessageSquare,
   Plus,
@@ -141,6 +143,12 @@ export interface ChatViewProps {
   The right dock can host ChatView in a 360px sidebar while the browser viewport remains desktop-sized. Let dock callers force the same narrow list/detail layout used by mobile/resized floating chat without passing floating chrome callbacks.
   */
   compactLayout?: boolean;
+  /** Keeps this host on the conversation list and delegates every open/create to a chat window. */
+  listOnly?: boolean;
+  /** Project-scoped state of dedicated windows, keyed by conversation id. */
+  openChatWindows?: ReadonlyMap<string, "open" | "minimized">;
+  /** Locks this host to initialDirectSession and removes every cross-conversation navigation control. */
+  dedicatedConversation?: boolean;
   onPopOut?: () => void;
   onMaximize?: () => void;
   onClose?: () => void;
@@ -448,14 +456,14 @@ export function resolveSessionProvider(
  * the mobile keyboard and deliver its release or synthesized click to the backdrop. Only a gesture
  * that starts and ends on the backdrop may dismiss its host dialog.
  */
-function ChatDialogBackdrop({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
+function ChatDialogBackdrop({ children, onClose }: { children: React.ReactElement<React.HTMLAttributes<HTMLElement>>; onClose: () => void }) {
   const overlayDismiss = useOverlayDismiss(onClose, { enabled: true });
-  return <div className="chat-new-dialog-backdrop chat-view-dialog-backdrop" {...overlayDismiss}>{children}</div>;
+  return <AlphaDialogBackdrop overlayClassName="chat-new-dialog-backdrop chat-view-dialog-backdrop" onClose={onClose}>{React.cloneElement(children, overlayDismiss)}</AlphaDialogBackdrop>;
 }
 
 type CopyFeedbackState = "success" | "error" | null;
 
-export function ChatView({ projectId, addToast, floating = false, compactLayout = false, findActive = true, active = true, onPopOut, onMaximize, onClose, onOpenSessionInNewWindow, initialDirectSession, initialDirectSessionNonce, persistChatPreferences = true, chatCommandContext, initialComposerDraft, initialComposerDraftNonce, onSendAsReport }: ChatViewProps) {
+function ChatViewContent({ projectId, addToast, floating = false, compactLayout = false, listOnly = false, openChatWindows, dedicatedConversation = false, findActive = true, active = true, onPopOut, onMaximize, onClose, onOpenSessionInNewWindow, initialDirectSession, initialDirectSessionNonce, persistChatPreferences = true, chatCommandContext, initialComposerDraft, initialComposerDraftNonce, onSendAsReport }: ChatViewProps) {
   const { t } = useTranslation("app");
   const chatMessageLayout = useChatMessageLayout();
   const enterSubmits = useChatEnterSubmits();
@@ -892,7 +900,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
   const [dockedSidebarWidth, setDockedSidebarWidth] = useState(() => readChatDockedSidebarWidth(persistChatPreferences));
   const [dockedSidebarOpen, setDockedSidebarOpen] = useState(() => readChatDockedSidebarOpen(persistChatPreferences));
   const resizeTeardownRef = useRef<(() => void) | null>(null);
-  const dockedSidebarEligible = !floating && !isChatMobile;
+  const dockedSidebarEligible = !listOnly && !dedicatedConversation && !floating && !isChatMobile;
   const dockedSidebarVisible = dockedSidebarEligible && dockedSidebarOpen;
 
   useEffect(() => {
@@ -1946,7 +1954,11 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
   open in this host. The plain path intentionally retains the existing in-place selection behavior.
   */
   const handleNewChat = useCallback((event?: React.MouseEvent<HTMLButtonElement>) => {
-    const openInNewWindow = Boolean((event?.ctrlKey || event?.metaKey) && onOpenSessionInNewWindow);
+    /*
+    FNXC:AlphaDesktopRightDock 2026-09-11-21:48:
+    The Alpha desktop dock is a list owner, never a transcript owner. New Chat therefore preserves the host selection and opens the returned identity immediately; standard hosts keep plain-click in-place creation and modifier-click pop-out.
+    */
+    const openInNewWindow = Boolean(onOpenSessionInNewWindow && (listOnly || event?.ctrlKey || event?.metaKey));
     if (chatDefaultTarget?.kind === "agent") {
       const input = { agentId: chatDefaultTarget.agentId };
       void (openInNewWindow ? handleCreateSession(input, { openInNewWindow: true }) : handleCreateSession(input));
@@ -1963,7 +1975,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
       return;
     }
     addToast(t("chat.noDefaultModelConfigured", "Configure a default chat model in Settings before creating a conversation."), "error");
-  }, [addToast, chatDefaultTarget, defaultModel, handleCreateSession, onOpenSessionInNewWindow, t]);
+  }, [addToast, chatDefaultTarget, defaultModel, handleCreateSession, listOnly, onOpenSessionInNewWindow, t]);
 
   const resizeComposer = useCallback(() => {
     inputAutosizeRef.current?.resize();
@@ -2962,10 +2974,14 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
     (id: string) => {
       const selectedSession = filteredSessions.find((session) => session.id === id);
       markRead("direct", id, selectedSession?.lastMessageAt ?? selectedSession?.updatedAt);
+      if (listOnly) {
+        if (selectedSession) onOpenSessionInNewWindow?.(selectedSession);
+        return;
+      }
       selectSession(id);
       setDetailOpen(true);
     },
-    [filteredSessions, markRead, selectSession],
+    [filteredSessions, listOnly, markRead, onOpenSessionInNewWindow, selectSession],
   );
 
   const handleBack = useCallback(() => {
@@ -2985,11 +3001,23 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
 
   // Render empty state (no active session)
   const renderEmptyState = () => {
+    /*
+    FNXC:ChatWindows 2026-09-12-04:56:
+    Une fenêtre dédiée dont la conversation vient d’être supprimée reste bornée à cette identité et ne propose jamais de créer ou sélectionner une autre conversation. Les hôtes ordinaires conservent leur état vide avec l’action New Chat.
+    */
+    if (dedicatedConversation) {
+      return (
+        <div className="chat-empty-state" data-testid="chat-dedicated-session-unavailable">
+          <MessageSquare size={48} strokeWidth={1.5} />
+          <h2>{t("chat.conversationDeleted", "Conversation deleted")}</h2>
+        </div>
+      );
+    }
     return (
       <div className="chat-empty-state">
         <MessageSquare size={48} strokeWidth={1.5} />
         <h2>{t("chat.startNewConversation", "Start a new conversation")}</h2>
-        <button
+        <AlphaButton
           className="btn btn-primary"
           onClick={handleNewChat}
           data-testid="chat-new-btn-empty"
@@ -2997,7 +3025,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
         >
           <Plus size={16} />
           {t("chat.newChat", "New Chat")}
-        </button>
+        </AlphaButton>
       </div>
     );
   };
@@ -3027,7 +3055,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
   const activeModelTag = formatModelTag(activeResolvedModel?.provider, activeResolvedModel?.modelId);
   const activeModelProvider = activeResolvedModel?.provider ?? null;
   const hasThreadInView = Boolean(activeSession || isStreaming || messages.length > 0);
-  const hasDetailSelection = detailOpen && hasThreadInView;
+  const hasDetailSelection = !listOnly && detailOpen && (hasThreadInView || dedicatedConversation);
   // ── CLI-backed chat mount (U12) ──────────────────────────────────────────
   // When the active chat session selects a cli-agent executor, the message-pane
   // + composer region is delegated to <CliChatSurface> (transcript + raw-terminal
@@ -3237,11 +3265,11 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
       : t("chat.conversationSearchMatchCount", "{{current}} of {{count}} matches", { current: conversationSearchIndex + 1, count });
     return <div className="chat-conversation-search" data-testid="chat-conversation-search">
       <Search size={14} aria-hidden="true" />
-      <input ref={conversationSearchInputRef} className="input chat-conversation-search-input" value={conversationSearchQuery} onChange={(event) => { setConversationSearchQuery(event.target.value); setConversationSearchIndex(0); }} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); closeConversationSearch(); } else if (event.key === "Enter") { event.preventDefault(); navigateConversationSearch(event.shiftKey ? -1 : 1); } }} placeholder={t("chat.conversationSearchPlaceholder", "Find in conversation") } aria-label={t("chat.conversationSearchLabel", "Find in conversation")} data-testid="chat-conversation-search-input" />
+      <AlphaInput ref={conversationSearchInputRef} className="input chat-conversation-search-input" value={conversationSearchQuery} onChange={(event) => { setConversationSearchQuery(event.target.value); setConversationSearchIndex(0); }} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); closeConversationSearch(); } else if (event.key === "Enter") { event.preventDefault(); navigateConversationSearch(event.shiftKey ? -1 : 1); } }} placeholder={t("chat.conversationSearchPlaceholder", "Find in conversation") } aria-label={t("chat.conversationSearchLabel", "Find in conversation")} data-testid="chat-conversation-search-input" />
       <span className="chat-conversation-search-status" role="status" aria-live="polite">{status}</span>
-      <button type="button" className="btn-icon" aria-label={t("chat.conversationSearchPrevious", "Previous match")} disabled={count === 0} onClick={() => navigateConversationSearch(-1)}><ChevronUp size={14} /></button>
-      <button type="button" className="btn-icon" aria-label={t("chat.conversationSearchNext", "Next match")} disabled={count === 0} onClick={() => navigateConversationSearch(1)}><ChevronDown size={14} /></button>
-      <button type="button" className="btn-icon" aria-label={t("chat.conversationSearchClose", "Close search")} onClick={closeConversationSearch}><X size={14} /></button>
+      <AlphaButton type="button" className="btn-icon" aria-label={t("chat.conversationSearchPrevious", "Previous match")} disabled={count === 0} onClick={() => navigateConversationSearch(-1)}><ChevronUp size={14} /></AlphaButton>
+      <AlphaButton type="button" className="btn-icon" aria-label={t("chat.conversationSearchNext", "Next match")} disabled={count === 0} onClick={() => navigateConversationSearch(1)}><ChevronDown size={14} /></AlphaButton>
+      <AlphaButton type="button" className="btn-icon" aria-label={t("chat.conversationSearchClose", "Close search")} onClick={closeConversationSearch}><X size={14} /></AlphaButton>
     </div>;
   };
 
@@ -3267,7 +3295,9 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
   FNXC:ChatNavigation 2026-08-20-05:25:
   FN-068 makes the saved conversation title the direct-thread identity for every host. Model metadata remains secondary, and titleless legacy sessions use a stable label rather than promoting a model name into the title slot.
   */
-  const threadHeaderTitle = activeSession?.title?.trim() || t("chat.untitledConversation", "Untitled conversation");
+  const threadHeaderTitle = activeSession?.title?.trim()
+    || (dedicatedConversation ? initialDirectSession?.title?.trim() : "")
+    || t("chat.untitledConversation", "Untitled conversation");
 
   const showThreadHeaderModelTag = Boolean(activeModelTag);
   const showThreadHeaderContextWindow = !isChatMobile && hasThreadInView && chatContextUsage !== null;
@@ -3387,10 +3417,10 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
     const report = allowReport && role === "assistant" && onSendAsReport ? buildChatReportHandoff(content, t("chat.reportFallbackTitle", "Chat report")) : null;
     if (!canCopy && !report?.handoff) return undefined;
     return <>
-      {canCopy && <button type="button" className={`btn-icon chat-message-copy-action${copyFeedbackByMessageId[messageId] === "success" ? " chat-message-copy-action--success" : ""}${copyFeedbackByMessageId[messageId] === "error" ? " chat-message-copy-action--error" : ""}`} data-testid={testId ?? `chat-copy-response-${messageId}`} aria-label={copyFeedbackByMessageId[messageId] === "success" ? t("chat.responseCopied", "Response copied") : copyFeedbackByMessageId[messageId] === "error" ? t("chat.copyFailed", "Copy failed") : t("chat.copyResponse", "Copy response")} onClick={() => { void handleCopyResponse(messageId, content); }}>
+      {canCopy && <AlphaButton type="button" className={`btn-icon chat-message-copy-action${copyFeedbackByMessageId[messageId] === "success" ? " chat-message-copy-action--success" : ""}${copyFeedbackByMessageId[messageId] === "error" ? " chat-message-copy-action--error" : ""}`} data-testid={testId ?? `chat-copy-response-${messageId}`} aria-label={copyFeedbackByMessageId[messageId] === "success" ? t("chat.responseCopied", "Response copied") : copyFeedbackByMessageId[messageId] === "error" ? t("chat.copyFailed", "Copy failed") : t("chat.copyResponse", "Copy response")} onClick={() => { void handleCopyResponse(messageId, content); }}>
         {copyFeedbackByMessageId[messageId] === "success" ? <Check size={14} /> : <Copy size={14} />}
-      </button>}
-      {report?.handoff && <button type="button" className="btn-icon" data-testid={`chat-send-as-report-${messageId}`} aria-label={t("chat.sendAsReport", "Send as report")} onClick={() => { if (report.truncated) addToast(t("chat.reportTrimmed", "Message trimmed to 2000 characters for mail"), "warning"); onSendAsReport?.(report.handoff!); }}><FileText size={14} /></button>}
+      </AlphaButton>}
+      {report?.handoff && <AlphaButton type="button" className="btn-icon" data-testid={`chat-send-as-report-${messageId}`} aria-label={t("chat.sendAsReport", "Send as report")} onClick={() => { if (report.truncated) addToast(t("chat.reportTrimmed", "Message trimmed to 2000 characters for mail"), "warning"); onSendAsReport?.(report.handoff!); }}><FileText size={14} /></AlphaButton>}
     </>;
   }, [addToast, copyFeedbackByMessageId, handleCopyResponse, onSendAsReport, showProviderResponseCopy, t]);
 
@@ -3488,7 +3518,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
 
   const renderSessionComposerPane = () => (
     <div className="chat-input-area">
-      <input
+      <AlphaInput
         ref={fileInputRef}
         type="file"
         data-testid="chat-file-input"
@@ -3501,7 +3531,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
         }}
       />
       {showSkillMenu && (
-        <div className="chat-skill-menu" data-testid="chat-skill-menu" role="listbox" aria-label={t("chat.slashSuggestions", "Slash suggestions")}>
+        <AlphaListBox className="chat-skill-menu" data-testid="chat-skill-menu" aria-label={t("chat.slashSuggestions", "Slash suggestions")}>
           {skillsLoading && skillMenuEntries.length === 0 ? (
             <div className="chat-skill-menu-empty">{t("chat.loadingSlashSuggestions", "Loading suggestions…")}</div>
           ) : skillMenuEntries.length === 0 ? (
@@ -3511,10 +3541,12 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
           ) : (
             skillMenuEntries.map((entry, index) =>
               entry.kind === "command" ? (
-                <button
+                <AlphaListBoxItem
                   key={`command-${entry.command.trigger}`}
-                  type="button"
-                  role="option"
+                  id={`command-${entry.command.trigger}`}
+                  textValue={entry.command.trigger}
+                  legacyAs="button"
+                  isDisabled={entry.disabled}
                   aria-selected={index === highlightedSkillIndex}
                   aria-disabled={entry.disabled}
                   className={`chat-skill-menu-item chat-command-menu-item${index === highlightedSkillIndex ? " chat-skill-menu-item--highlighted" : ""}${entry.disabled ? " chat-command-menu-item--disabled" : ""}`}
@@ -3528,12 +3560,13 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
                       ? t("chat.commandNoRunningAgentHint", "No running agent to steer")
                       : entry.command.description}
                   </span>
-                </button>
+                </AlphaListBoxItem>
               ) : entry.kind === "snippet" ? (
-                <button
+                <AlphaListBoxItem
                   key={`snippet-${entry.snippet.name}`}
-                  type="button"
-                  role="option"
+                  id={`snippet-${entry.snippet.name}`}
+                  textValue={entry.snippet.name}
+                  legacyAs="button"
                   aria-selected={index === highlightedSkillIndex}
                   className={`chat-skill-menu-item${index === highlightedSkillIndex ? " chat-skill-menu-item--highlighted" : ""}`}
                   onMouseDown={(event) => event.preventDefault()}
@@ -3544,12 +3577,13 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
                   <span className="chat-skill-menu-item-description">
                     {t("chat.snippetSuggestion", "Insert saved prompt")}
                   </span>
-                </button>
+                </AlphaListBoxItem>
               ) : (
-                <button
+                <AlphaListBoxItem
                   key={entry.skill.id}
-                  type="button"
-                  role="option"
+                  id={entry.skill.id}
+                  textValue={entry.skill.name}
+                  legacyAs="button"
                   aria-selected={index === highlightedSkillIndex}
                   className={`chat-skill-menu-item${index === highlightedSkillIndex ? " chat-skill-menu-item--highlighted" : ""}`}
                   onMouseDown={(e) => e.preventDefault()}
@@ -3560,11 +3594,11 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
                   <span className="chat-skill-menu-item-description" title={entry.skill.relativePath}>
                     {entry.skill.relativePath}
                   </span>
-                </button>
+                </AlphaListBoxItem>
               ),
             )
           )}
-        </div>
+        </AlphaListBox>
       )}
       {pendingAttachments.length > 0 && (
         <div className="chat-attachment-previews" data-testid="chat-attachment-previews">
@@ -3579,7 +3613,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
               ) : (
                 <span className="chat-attachment-preview-name">{attachment.file.name}</span>
               )}
-              <button
+              <AlphaButton
                 type="button"
                 className="chat-attachment-remove"
                 onClick={() => removeAttachment(index)}
@@ -3587,7 +3621,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
                 aria-label={`Remove ${attachment.file.name}`}
               >
                 ×
-              </button>
+              </AlphaButton>
             </div>
           ))}
         </div>
@@ -3602,7 +3636,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
         testIdPrefix="chat-pending"
       />
       <div className="chat-input-row">
-        <button
+        <AlphaButton
           type="button"
           className="btn-icon chat-attach-btn"
           data-testid="chat-attach-btn"
@@ -3611,7 +3645,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
           disabled={pendingQueueAction}
         >
           <Paperclip size={16} />
-        </button>
+        </AlphaButton>
         {/*
         FNXC:ChatMemoryFocus 2026-08-24-04:21:
         Per-conversation memory focus is opt-in. Hide its direct-session chip until Settings
@@ -3676,7 +3710,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
             handleAttachmentFiles(event.dataTransfer.files);
           }}
         >
-          <textarea
+          <AlphaTextArea
             ref={handleComposerRef}
             className="chat-input-textarea"
             placeholder={t("chat.typeMessage", "Type a message...")}
@@ -3831,20 +3865,27 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
     <div ref={chatViewRef} className={`chat-view${floating ? " chat-view--floating" : ""}${isChatMobile ? " chat-view--narrow" : ""}${hasDetailSelection ? " chat-view--detail" : ""}${dockedSidebarVisible ? " chat-view--docked-list" : ""}${chatMessageLayout === "full-width" ? " chat-view--full-width" : ""}`}>
       <ViewHeader
         icon={MessageSquare}
-        title={t("chat.title", "Chat")}
+        title={dedicatedConversation ? threadHeaderTitle : t("chat.title", "Chat")}
+        onClose={floating ? onClose : undefined}
+        closeButtonProps={floating ? {
+          "aria-label": t("chat.closeChat", "Close chat"),
+          title: t("chat.closeChat", "Close chat"),
+          className: "chat-view-header-icon",
+          "data-testid": "chat-modal-close",
+        } : undefined}
         actions={
           <>
             {dockedSidebarEligible ? (
-              <button type="button" className="btn-icon chat-view-header-icon" data-testid="chat-docked-sidebar-toggle"
+              <AlphaButton type="button" className="btn-icon chat-view-header-icon" data-testid="chat-docked-sidebar-toggle"
                 aria-pressed={dockedSidebarOpen}
                 aria-label={dockedSidebarOpen ? t("chat.hideConversationList", "Hide conversation list") : t("chat.showConversationList", "Show conversation list")}
                 title={dockedSidebarOpen ? t("chat.hideConversationList", "Hide conversation list") : t("chat.showConversationList", "Show conversation list")}
                 onClick={() => { const next = !dockedSidebarOpen; setDockedSidebarOpen(next); persistChatDockedSidebarPreference(CHAT_DOCKED_SIDEBAR_OPEN_STORAGE_KEY, String(next), persistChatPreferences); }}>
                 {dockedSidebarOpen ? <PanelLeftClose /> : <PanelLeft />}
-              </button>
+              </AlphaButton>
             ) : null}
 
-            <button
+            {!dedicatedConversation ? <AlphaButton
               className="btn btn-sm btn-primary chat-view-header-new-chat"
               onClick={handleNewChat}
               data-testid="chat-new-btn"
@@ -3852,9 +3893,9 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
             >
               <Plus size={14} />
               {t("chat.newChat", "New Chat")}
-            </button>
+            </AlphaButton> : null}
             {!floating && onPopOut ? (
-              <button
+              <AlphaButton
                 type="button"
                 className="btn-icon chat-view-header-icon"
                 onClick={onPopOut}
@@ -3863,10 +3904,10 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
                 data-testid="chat-pop-out"
               >
                 <Maximize2 size={16} />
-              </button>
+              </AlphaButton>
             ) : null}
             {floating && onMaximize ? (
-              <button
+              <AlphaButton
                 type="button"
                 className="btn-icon chat-view-header-icon"
                 onClick={onMaximize}
@@ -3875,26 +3916,14 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
                 data-testid="chat-modal-maximize"
               >
                 <Maximize2 size={16} />
-              </button>
-            ) : null}
-            {floating && onClose ? (
-              <button
-                type="button"
-                className="btn-icon chat-view-header-icon"
-                onClick={onClose}
-                aria-label={t("chat.closeChat", "Close chat")}
-                title={t("chat.closeChat", "Close chat")}
-                data-testid="chat-modal-close"
-              >
-                <X size={16} />
-              </button>
+              </AlphaButton>
             ) : null}
           </>
         }
       />
       <div className="chat-view__body">
       {/* Sidebar */}
-      <div
+      {!dedicatedConversation ? <div
         className={`chat-sidebar${hasDetailSelection && !dockedSidebarVisible ? " chat-sidebar--hidden" : ""}${dockedSidebarVisible ? " chat-sidebar--docked" : ""}`}
         style={dockedSidebarVisible ? { width: dockedSidebarWidth, minWidth: dockedSidebarWidth } : undefined}
       >
@@ -3910,7 +3939,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
             <div className="chat-sidebar-search-container">
               <div className="chat-sidebar-search-wrapper">
                 <Search size={14} className="chat-sidebar-search-icon" />
-                <input
+                <AlphaInput
                   ref={listSearchInputRef}
                   type="text"
                   className="chat-sidebar-search"
@@ -3927,7 +3956,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
               <div className="chat-sidebar-filter-row">
                 <label className="chat-tag-filter" htmlFor="chat-tag-filter">
                   <Tag size={14} aria-hidden="true" />
-                  <select
+                  <AlphaSelect
                     id="chat-tag-filter"
                     value={selectedTagId ?? ""}
                     onChange={(event) => setSelectedTagId(event.target.value || null)}
@@ -3936,10 +3965,10 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
                   >
                     <option value="">{t("chat.allTags", "All tags")}</option>
                     {tags.map((tag) => <option key={tag.id} value={tag.id}>{tag.name}</option>)}
-                  </select>
-                  {selectedTagId ? <button type="button" className="btn-icon" aria-label={t("chat.clearTagFilter", "Clear tag filter")} onClick={() => setSelectedTagId(null)}><X size={14} /></button> : null}
+                  </AlphaSelect>
+                  {selectedTagId ? <AlphaButton type="button" className="btn-icon" aria-label={t("chat.clearTagFilter", "Clear tag filter")} onClick={() => setSelectedTagId(null)}><X size={14} /></AlphaButton> : null}
                 </label>
-                <button
+                <AlphaButton
                   type="button"
                   className={`btn btn-sm chat-archived-toggle${showArchivedSessions ? " chat-archived-toggle--active" : ""}`}
                   data-testid="chat-archived-toggle"
@@ -3949,7 +3978,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
                   onClick={() => { const next = !showArchivedSessions; setShowArchivedSessions(next); if (next) void refreshArchivedSessions(); }}
                 >
                   {t("chat.archived", "Archived")}
-                </button>
+                </AlphaButton>
               </div>
             </div>
             {/* Session list section */}
@@ -3983,6 +4012,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
                   );
                   const sessionModelTag = formatModelTag(sessionResolvedModel?.provider, sessionResolvedModel?.modelId) ?? "Fusion";
                   const sessionTitle = session.title || t("chat.untitledSession", "Untitled");
+                  const windowState = !showArchivedSessions ? openChatWindows?.get(session.id) : undefined;
 
                   return (
                     <div
@@ -3999,7 +4029,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
                       FNXC:ChatSidebar 2026-07-16-00:00:
                       FN-8173 consolidates Pin, Rename, and Delete into this single three-dot trigger so long conversation titles retain usable row width. It opens the existing context-menu state so click and right-click share the same labeled action list and handlers.
                       */}
-                      <button
+                      <AlphaButton
                         type="button"
                         className="btn-icon chat-session-menu-btn"
                         data-testid="chat-session-menu-btn"
@@ -4017,7 +4047,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
                         }}
                       >
                         <MoreHorizontal size={14} />
-                      </button>
+                      </AlphaButton>
                       <div className="chat-session-title">
                         {sessionTitle}
                         {session.pinnedAt ? <Pin className="chat-session-pinned-indicator" size={14} data-testid={`chat-session-pinned-indicator-${session.id}`} aria-label={t("chat.pinned", "Pinned")} /> : null}
@@ -4029,6 +4059,9 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
                           />
                         ) : null}
                       </div>
+                      {windowState ? <span className="chat-session-window-state" data-testid={`chat-session-window-state-${session.id}`}>
+                        {windowState === "minimized" ? t("chat.windowMinimized", "Minimized") : t("chat.windowOpen", "Open")}
+                      </span> : null}
                       <div className="chat-session-preview">
                         {session.lastMessagePreview || t("chat.noMessages", "No messages")}
                       </div>
@@ -4038,7 +4071,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
                           {t("chat.matchedInMessage", "Matched: \"{{preview}}\"", { preview: session.matchedMessagePreview })}
                         </div>
                       ) : null}
-                      {showArchivedSessions ? <button type="button" className="btn btn-sm btn-secondary" data-testid={`chat-archived-restore-${session.id}`} onClick={(event) => { event.stopPropagation(); void handleRestoreArchived(session.id); }}>{t("chat.restore", "Restore")}</button> : null}
+                      {showArchivedSessions ? <AlphaButton type="button" className="btn btn-sm btn-secondary" data-testid={`chat-archived-restore-${session.id}`} onClick={(event) => { event.stopPropagation(); void handleRestoreArchived(session.id); }}>{t("chat.restore", "Restore")}</AlphaButton> : null}
                       <div className="chat-session-meta">
                         <span className="chat-session-meta-model">
                           {sessionResolvedModel?.provider ? <ProviderIcon provider={sessionResolvedModel.provider} size="sm" /> : null}
@@ -4067,7 +4100,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
           aria-label={t("chat.resizeSidebar", "Resize chat sidebar")} data-testid="chat-sidebar-resize-handle"
           onPointerDown={handleDockedResizeStart} onKeyDown={handleDockedResizeKeyDown} /> : null}
 
-      </div>
+      </div> : null}
 
 
 
@@ -4076,14 +4109,20 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
         <div
           className="chat-session-context-menu"
           ref={contextMenuRef}
-          role="menu"
           style={{ top: contextMenu.y, left: contextMenu.x }}
           onClick={(e) => e.stopPropagation()}
+          data-alpha-menu-layout="conversation-actions"
         >
+          {/*
+          FNXC:AlphaCollections 2026-09-10-20:43:
+          A conversation owns one sectioned homemade Alpha menu so arrow keys cross primary actions, every tag assignment, and maintenance actions. Tag editing remains a visibly labelled sibling rail after the collection because its buttons are auxiliary controls rather than competing menu items.
+          */}
+          <AlphaMenu aria-label={t("chat.conversationActions", "Conversation actions")} className="chat-session-context-menu-section">
+          <AlphaMenuSection aria-label={t("chat.conversationPrimaryActions", "Primary conversation actions")}>
           {onOpenSessionInNewWindow && !showArchivedSessions && contextMenuSession ? (
-            <button
+            <AlphaMenuItem
+              id="open-window"
               type="button"
-              role="menuitem"
               data-testid="chat-context-open-window"
               onClick={() => {
                 onOpenSessionInNewWindow(contextMenuSession);
@@ -4092,18 +4131,19 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
             >
               <ExternalLink size={14} />
               {t("chat.openInNewWindow", "Open in new window")}
-            </button>
+            </AlphaMenuItem>
           ) : null}
-          <button
+          <AlphaMenuItem
+            id="copy-id"
             type="button"
-            role="menuitem"
             data-testid="chat-context-copy-id"
             onClick={() => void handleCopySessionId(contextMenu.sessionId)}
           >
             <Copy size={14} />
             {t("chat.copyConversationId", "Copy conversation ID")}
-          </button>
-          <button
+          </AlphaMenuItem>
+          <AlphaMenuItem
+            id="pin"
             onClick={() => handlePin(
               contextMenu.sessionId,
               !contextMenuSession?.pinnedAt,
@@ -4114,37 +4154,36 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
           >
             {contextMenuSession?.pinnedAt ? <PinOff size={14} /> : <Pin size={14} />}
             {contextMenuSession?.pinnedAt ? t("chat.unpin", "Unpin") : t("chat.pin", "Pin")}
-          </button>
-          <button
+          </AlphaMenuItem>
+          <AlphaMenuItem
+            id="rename"
             onClick={() => openRenameDialog(contextMenu.sessionId)}
             data-testid="chat-context-rename"
           >
             <Pencil size={14} />
             {t("chat.rename", "Rename")}
-          </button>
-          <div className="chat-session-tag-menu" role="group" aria-label={t("chat.conversationTags", "Conversation tags")}>
-            {tags.map((tag) => {
-              const assigned = (contextMenuSession?.tags ?? []).some((candidate) => candidate.id === tag.id);
-              return <div className="chat-tag-menu-item" key={tag.id}>
-                <button type="button" role="menuitemcheckbox" aria-checked={assigned} data-testid={`chat-context-tag-${tag.id}`} onClick={() => void setSessionTags(contextMenu.sessionId, assigned ? (contextMenuSession?.tags ?? []).filter((candidate) => candidate.id !== tag.id).map((candidate) => candidate.id) : [...(contextMenuSession?.tags ?? []).map((candidate) => candidate.id), tag.id]).catch(() => addToast(t("chat.failedToUpdateTags", "Failed to update tags"), "error"))}>{assigned ? "✓ " : ""}{tag.name}</button>
-                <button type="button" className="btn-icon" aria-label={t("chat.renameTag", "Rename tag {{name}}", { name: tag.name })} data-testid={`chat-context-rename-tag-${tag.id}`} onClick={(event) => { event.stopPropagation(); setRenameTagName(tag.name); setRenameTagDialog(tag); }}><Pencil size={14} /></button>
-                <button type="button" className="btn-icon" aria-label={t("chat.deleteTag", "Delete tag {{name}}", { name: tag.name })} data-testid={`chat-context-delete-tag-${tag.id}`} onClick={(event) => { event.stopPropagation(); setConfirmDeleteTag(tag); }}><Trash2 size={14} /></button>
-              </div>;
-            })}
-            <div className="chat-tag-create-row">
-              <input className="input" value={newTagName} placeholder={t("chat.newTag", "New tag")} aria-label={t("chat.newTag", "New tag")} onChange={(event) => setNewTagName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void handleCreateTagForSession(); } }} />
-              <button type="button" className="btn btn-sm" onClick={() => void handleCreateTagForSession()}>{t("chat.addTag", "Add")}</button>
-            </div>
-          </div>
-          <button
+          </AlphaMenuItem>
+          </AlphaMenuSection>
+          {tags.length > 0 ? (
+            <AlphaMenuSection aria-label={t("chat.conversationTags", "Conversation tags")}>
+              {tags.map((tag) => {
+                const assigned = (contextMenuSession?.tags ?? []).some((candidate) => candidate.id === tag.id);
+                return <AlphaMenuItem key={tag.id} id={`tag-${tag.id}`} role="menuitemcheckbox" aria-checked={assigned} data-testid={`chat-context-tag-${tag.id}`} onClick={() => void setSessionTags(contextMenu.sessionId, assigned ? (contextMenuSession?.tags ?? []).filter((candidate) => candidate.id !== tag.id).map((candidate) => candidate.id) : [...(contextMenuSession?.tags ?? []).map((candidate) => candidate.id), tag.id]).catch(() => addToast(t("chat.failedToUpdateTags", "Failed to update tags"), "error"))}>{assigned ? "✓ " : ""}{tag.name}</AlphaMenuItem>;
+              })}
+            </AlphaMenuSection>
+          ) : null}
+          <AlphaMenuSection aria-label={t("chat.conversationMaintenanceActions", "Conversation maintenance actions")}>
+          <AlphaMenuItem
+            id="archive"
             onClick={() => handleArchive(contextMenu.sessionId)}
             data-testid="chat-context-archive"
           >
             <Archive size={14} />
             {t("chat.archive", "Archive")}
-          </button>
+          </AlphaMenuItem>
           {chatSettings?.memoryBackendType === "stash" && chatSettings.memoryEnabled !== false ? (
-            <button
+            <AlphaMenuItem
+              id="stash-backfill"
               onClick={() => void handleBackfillStash(contextMenu.sessionId)}
               data-testid="chat-context-stash-backfill"
               disabled={stashBackfillBusyId !== null}
@@ -4154,9 +4193,10 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
               {stashBackfillBusyId === contextMenu.sessionId
                 ? t("chat.preserveToStashWorking", "Uploading to Stash…")
                 : t("chat.preserveToStash", "Preserve to Stash")}
-            </button>
+            </AlphaMenuItem>
           ) : null}
-          <button
+          <AlphaMenuItem
+            id="delete"
             onClick={() => {
               setContextMenu(null);
               setConfirmDelete(contextMenu.sessionId);
@@ -4165,7 +4205,18 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
           >
             <Trash2 size={14} />
             {t("chat.delete", "Delete")}
-          </button>
+          </AlphaMenuItem>
+          </AlphaMenuSection>
+          </AlphaMenu>
+          <div className="chat-session-tag-menu">
+            <div className="chat-tag-action-rail" aria-label={t("chat.tagActions", "Tag actions")}>
+              {tags.map((tag) => <div className="chat-tag-menu-item" key={tag.id}><span className="chat-tag-action-label">{tag.name}</span><AlphaButton type="button" className="btn-icon" aria-label={t("chat.renameTag", "Rename tag {{name}}", { name: tag.name })} data-testid={`chat-context-rename-tag-${tag.id}`} onClick={() => { setRenameTagName(tag.name); setRenameTagDialog(tag); }}><Pencil size={14} /></AlphaButton><AlphaButton type="button" className="btn-icon" aria-label={t("chat.deleteTag", "Delete tag {{name}}", { name: tag.name })} data-testid={`chat-context-delete-tag-${tag.id}`} onClick={() => setConfirmDeleteTag(tag)}><Trash2 size={14} /></AlphaButton></div>)}
+            </div>
+            <div className="chat-tag-create-row">
+              <AlphaInput className="input" value={newTagName} placeholder={t("chat.newTag", "New tag")} aria-label={t("chat.newTag", "New tag")} onChange={(event) => setNewTagName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void handleCreateTagForSession(); } }} />
+              <AlphaButton type="button" className="btn btn-sm" onClick={() => void handleCreateTagForSession()}>{t("chat.addTag", "Add")}</AlphaButton>
+            </div>
+          </div>
         </div>
       )}
       {/* Rename Dialog */}
@@ -4173,8 +4224,6 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
         <ChatDialogBackdrop onClose={() => setRenameDialog(null)}>
           <div
             className="chat-new-dialog chat-view-dialog"
-            role="dialog"
-            aria-modal="true"
             aria-labelledby="chat-rename-dialog-title"
             onClick={(e) => e.stopPropagation()}
           >
@@ -4185,7 +4234,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
             <label className="chat-rename-label" htmlFor="chat-rename-input">
               {t("chat.conversationName", "Conversation name")}
             </label>
-            <input
+            <AlphaInput
               id="chat-rename-input"
               className="input chat-rename-input"
               type="text"
@@ -4202,16 +4251,16 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
               autoFocus
             />
             <div className="chat-new-dialog-actions">
-              <button className="btn btn-sm" onClick={() => setRenameDialog(null)}>
+              <AlphaButton className="btn btn-sm" onClick={() => setRenameDialog(null)}>
                 {t("chat.cancel", "Cancel")}
-              </button>
-              <button
+              </AlphaButton>
+              <AlphaButton
                 className="btn btn-sm btn-primary"
                 onClick={() => void handleRename()}
                 data-testid="chat-rename-save"
               >
                 {t("chat.save", "Save")}
-              </button>
+              </AlphaButton>
             </div>
           </div>
         </ChatDialogBackdrop>
@@ -4219,13 +4268,13 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
 
       {renameTagDialog && (
         <ChatDialogBackdrop onClose={() => setRenameTagDialog(null)}>
-          <div className="chat-new-dialog chat-view-dialog" role="dialog" aria-modal="true" aria-labelledby="chat-rename-tag-dialog-title" onClick={(event) => event.stopPropagation()}>
+          <div className="chat-new-dialog chat-view-dialog" aria-labelledby="chat-rename-tag-dialog-title" onClick={(event) => event.stopPropagation()}>
             <h3 id="chat-rename-tag-dialog-title">{t("chat.renameTagTitle", "Rename tag")}</h3>
             <label className="chat-rename-label" htmlFor="chat-rename-tag-input">{t("chat.tagName", "Tag name")}</label>
-            <input id="chat-rename-tag-input" className="input chat-rename-input" value={renameTagName} data-testid="chat-rename-tag-input" onChange={(event) => setRenameTagName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void renameTag(renameTagDialog.id, renameTagName).then(() => setRenameTagDialog(null)).catch(() => addToast(t("chat.failedToRenameTag", "Failed to rename tag"), "error")); } }} autoFocus />
+            <AlphaInput id="chat-rename-tag-input" className="input chat-rename-input" value={renameTagName} data-testid="chat-rename-tag-input" onChange={(event) => setRenameTagName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void renameTag(renameTagDialog.id, renameTagName).then(() => setRenameTagDialog(null)).catch(() => addToast(t("chat.failedToRenameTag", "Failed to rename tag"), "error")); } }} autoFocus />
             <div className="chat-new-dialog-actions">
-              <button className="btn btn-sm" onClick={() => setRenameTagDialog(null)}>{t("chat.cancel", "Cancel")}</button>
-              <button className="btn btn-sm btn-primary" data-testid="chat-rename-tag-save" onClick={() => void renameTag(renameTagDialog.id, renameTagName).then(() => setRenameTagDialog(null)).catch(() => addToast(t("chat.failedToRenameTag", "Failed to rename tag"), "error"))}>{t("chat.save", "Save")}</button>
+              <AlphaButton className="btn btn-sm" onClick={() => setRenameTagDialog(null)}>{t("chat.cancel", "Cancel")}</AlphaButton>
+              <AlphaButton className="btn btn-sm btn-primary" data-testid="chat-rename-tag-save" onClick={() => void renameTag(renameTagDialog.id, renameTagName).then(() => setRenameTagDialog(null)).catch(() => addToast(t("chat.failedToRenameTag", "Failed to rename tag"), "error"))}>{t("chat.save", "Save")}</AlphaButton>
             </div>
           </div>
         </ChatDialogBackdrop>
@@ -4233,12 +4282,12 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
 
       {confirmDeleteTag && (
         <ChatDialogBackdrop onClose={() => setConfirmDeleteTag(null)}>
-          <div className="chat-new-dialog chat-view-dialog" role="dialog" aria-modal="true" aria-labelledby="chat-delete-tag-dialog-title" onClick={(event) => event.stopPropagation()}>
+          <div className="chat-new-dialog chat-view-dialog" aria-labelledby="chat-delete-tag-dialog-title" onClick={(event) => event.stopPropagation()}>
             <h3 id="chat-delete-tag-dialog-title">{t("chat.deleteTagTitle", "Delete tag?")}</h3>
             <p className="chat-view-delete-dialog-copy">{t("chat.deleteTagBody", "This removes the tag from all conversations, but does not delete conversations.")}</p>
             <div className="chat-new-dialog-actions">
-              <button className="btn btn-sm" onClick={() => setConfirmDeleteTag(null)}>{t("chat.cancel", "Cancel")}</button>
-              <button className="btn btn-sm btn-danger" data-testid="chat-delete-tag-confirm" onClick={() => void deleteTag(confirmDeleteTag.id).then(() => setConfirmDeleteTag(null)).catch(() => addToast(t("chat.failedToDeleteTag", "Failed to delete tag"), "error"))}>{t("chat.delete", "Delete")}</button>
+              <AlphaButton className="btn btn-sm" onClick={() => setConfirmDeleteTag(null)}>{t("chat.cancel", "Cancel")}</AlphaButton>
+              <AlphaButton className="btn btn-sm btn-danger" data-testid="chat-delete-tag-confirm" onClick={() => void deleteTag(confirmDeleteTag.id).then(() => setConfirmDeleteTag(null)).catch(() => addToast(t("chat.failedToDeleteTag", "Failed to delete tag"), "error"))}>{t("chat.delete", "Delete")}</AlphaButton>
             </div>
           </div>
         </ChatDialogBackdrop>
@@ -4253,15 +4302,15 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
               {t("chat.deleteConversationBody", "This action cannot be undone. All messages in this conversation will be permanently deleted.")}
             </p>
             <div className="chat-new-dialog-actions">
-              <button className="btn btn-sm" onClick={() => setConfirmDelete(null)}>
+              <AlphaButton className="btn btn-sm" onClick={() => setConfirmDelete(null)}>
                 {t("chat.cancel", "Cancel")}
-              </button>
-              <button
+              </AlphaButton>
+              <AlphaButton
                 className="btn btn-sm btn-danger"
                 onClick={() => void handleDelete(confirmDelete)}
               >
                 {t("chat.delete", "Delete")}
-              </button>
+              </AlphaButton>
             </div>
           </div>
         </ChatDialogBackdrop>
@@ -4275,9 +4324,13 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
             button (desktop `.chat-thread-header-render-toggle` and the mobile
             floating `--floating` variant) was removed per FN-7541. Chat now
             always renders Markdown (forcePlain is hardcoded to false). */}
-        {hasThreadInView && (
+        {/*
+        FNXC:ChatWindows 2026-09-12-04:06:
+        Une fenêtre de conversation dédiée affiche son titre non interactif dans le ViewHeader et ne monte ni Back, ni ChatThreadTitleSwitcher, ni liste, ni New Chat. Le transcript, la recherche interne et le composer restent ceux du ChatView partagé.
+        */}
+        {hasThreadInView && !dedicatedConversation && (
           <div className="chat-thread-header">
-            {!dockedSidebarVisible ? <button
+            {!dockedSidebarVisible ? <AlphaButton
               type="button"
               className="btn btn-sm chat-thread-header-back chat-back-btn"
               onClick={handleVisibleDetailBack}
@@ -4286,7 +4339,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
             >
               <ArrowLeft size={14} aria-hidden="true" />
               <span>{t("chat.back", "Back")}</span>
-            </button> : null}
+            </AlphaButton> : null}
             <div className="chat-thread-header-identity" data-testid="chat-thread-header-identity">
               {activeModelProvider ? <ProviderIcon provider={activeModelProvider} size="md" /> : <Bot size={16} />}
               {/*
@@ -4358,7 +4411,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
             {renderConversationSearch()}
             {renderSessionMessagesPane()}
             {isUserScrolling && (
-              <button
+              <AlphaButton
                 type="button"
                 className="btn btn-sm chat-jump-to-latest"
                 data-testid="chat-jump-to-latest"
@@ -4366,7 +4419,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
               >
                 <ChevronDown size={14} />
                 {t("chat.latest", "Latest")}
-              </button>
+              </AlphaButton>
             )}
             {activeSession && renderSessionComposerPane()}
           </>
@@ -4377,5 +4430,13 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
       </div>
 
     </div>
+  );
+}
+
+export function ChatView(props: ChatViewProps) {
+  return (
+    <AlphaBoundary enabled={props.experimentalFeatures?.alphaUpdates === true}>
+      <ChatViewContent {...props} />
+    </AlphaBoundary>
   );
 }

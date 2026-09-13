@@ -198,41 +198,56 @@ The selected note uses an accent tint and persistent inset marker independently 
   display: none;
 }
 
-@media (max-width: 768px), (max-height: 480px) {
-  .notes-layout {
-    display: block;
-  }
-
-  .notes-list,
-  .notes-detail {
-    inline-size: 100%;
-    block-size: 100%;
-    border: 0;
-  }
-
-  .notes-view--detail .notes-list {
-    display: none;
-  }
-
-  .notes-view:not(.notes-view--detail) .notes-detail {
-    display: none;
-  }
-
-  .notes-back {
-    display: inline-flex;
-  }
-
-  .notes-detail-toolbar,
-  .notes-conflict,
-  .notes-error {
-    flex-wrap: wrap;
-  }
-
-  .notes-title {
-    flex-basis: calc(100% - var(--space-3xl));
-  }
-
-  .notes-save-state {
-    margin-inline-start: auto;
-  }
+/*
+FNXC:AlphaDesktopRightDock 2026-09-12-04:06:
+Compact/list-only Notes garde toujours la liste dans le dock; chaque détail appartient à sa fenêtre dédiée et ne peut donc pas remplacer cette liste à une largeur quelconque.
+*/
+.notes-view--compact .notes-layout,
+.notes-view--list-only .notes-layout {
+  display: block;
 }
+
+.notes-view--compact .notes-list,
+.notes-view--list-only .notes-list {
+  inline-size: 100%;
+  block-size: 100%;
+  border: 0;
+}
+
+@media (max-width: 768px), (max-height: 480px) {
+  .notes-layout { display: block; }
+  .notes-list, .notes-detail { inline-size: 100%; block-size: 100%; border: 0; }
+  .notes-view--detail .notes-list { display: none; }
+  .notes-view:not(.notes-view--detail) .notes-detail { display: none; }
+  .notes-back { display: inline-flex; }
+  .notes-detail-toolbar, .notes-conflict, .notes-error { flex-wrap: wrap; }
+  .notes-title { flex-basis: calc(100% - var(--space-3xl)); }
+  .notes-save-state { margin-inline-start: auto; }
+}
+
+.notes-view--dedicated .notes-layout,
+.notes-view--dedicated .notes-detail {
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+  border: 0;
+}
+
+.notes-view--dedicated .notes-back {
+  display: none;
+}
+
+.notes-view--dedicated :is(.notes-detail-toolbar, .notes-conflict, .notes-error) {
+  flex-wrap: wrap;
+}
+
+.notes-view--dedicated .notes-title {
+  flex-basis: calc(100% - var(--space-3xl));
+}
+
+.notes-view--dedicated .notes-save-state {
+  margin-inline-start: auto;
+}
+
+.notes-view--floating { block-size: 100%; background: var(--surface); }
+.notes-view--floating .view-header { cursor: move; }

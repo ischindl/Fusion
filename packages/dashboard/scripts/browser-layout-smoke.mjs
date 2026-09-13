@@ -13,11 +13,27 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const dashboardRoot = path.resolve(import.meta.dirname, "..");
+const workspaceRoot = path.resolve(dashboardRoot, "..", "..");
 const appRoot = path.join(dashboardRoot, "app");
 const clientDistRoot = path.join(dashboardRoot, "dist", "client");
 const i18nLocalesRoot = path.resolve(dashboardRoot, "..", "i18n", "locales");
 const requireBrowser = process.argv.includes("--require-browser") || process.env.FUSION_BROWSER_SMOKE_REQUIRE === "1";
 const screenshotPath = process.env.FUSION_BROWSER_SMOKE_SCREENSHOT;
+
+/*
+FNXC:AlphaBoardSafeGeometry 2026-09-11-16:14:
+Every Board data state uses the same measurable contract: its border box ends at the shell-owned footer or pill boundary, and each column has equal top and bottom spacing within one pixel. Overflowing populated columns keep vertical scrolling inside the column rather than shortening the Board.
+*/
+export function boardSafeGeometryMatches(layout, tolerance = 1) {
+  const topGaps = layout.columnTops.map((top) => top - layout.boardTop);
+  const bottomGaps = layout.columnBottoms.map((bottom) => layout.lowerBoundary - bottom);
+  return layout.columnBottoms.length > 0
+    && layout.columnHeights.every((height) => height > 0)
+    && Math.abs(layout.boardBottom - layout.lowerBoundary) <= tolerance
+    && Math.abs(layout.boardPaddingTop - layout.boardPaddingBottom) <= tolerance
+    && topGaps.every((gap, index) => Math.abs(gap - bottomGaps[index]) <= tolerance)
+    && (layout.state !== "populated" || layout.columnScrollable.every(Boolean));
+}
 const agentHeartbeatMobileScreenshotPath = process.env.FUSION_AGENT_HEARTBEAT_MOBILE_SCREENSHOT;
 const agentHeartbeatDesktopScreenshotPath = process.env.FUSION_AGENT_HEARTBEAT_DESKTOP_SCREENSHOT;
 const gitManagerBeforeMobileScreenshotPath = process.env.FUSION_GIT_MANAGER_BEFORE_MOBILE_SCREENSHOT;
@@ -78,9 +94,10 @@ export const QUICK_ADD_SAVE_FIXTURE_COUNT = QUICK_ADD_COMPOSER_VARIANTS.length *
 
 export function buildQuickAddSaveFixtures(labels = shippedQuickAddSaveLabels) {
   return QUICK_ADD_COMPOSER_VARIANTS.flatMap(([surface, modifier, width, maxWidth, state]) => validateQuickAddSaveLabels(labels).map(([locale, label]) => `
-    <section class="quick-entry-smoke-fixture" data-smoke="quick-add-save-${surface}-${width}-${locale}" style="width: min(${maxWidth}, calc(100vw - 24px)); margin: 0 auto 12px;">
+    <section class="quick-entry-smoke-fixture" data-smoke="quick-add-save-${surface}-${width}-${locale}" ${surface === "board" ? 'data-alpha-surface="true"' : ""} style="width: min(${maxWidth}, calc(100vw - 24px)); margin: 0 auto 12px;">
       <div class="quick-entry-box quick-entry-box--expanded ${modifier}" data-smoke="quick-add-${surface}-composer">
         <div class="quick-entry-actions" data-smoke="quick-add-save-row">
+          ${surface === "board" ? '<div class="quick-entry-options-group" data-smoke="quick-add-options"><button class="btn btn-sm" type="button">Workflow</button><button class="btn btn-sm" type="button">Deps</button><button class="btn btn-sm" type="button">Models</button></div>' : ""}
           <div class="quick-entry-primary-group">
             <button class="btn btn-icon btn-sm" data-testid="quick-entry-attach" type="button" aria-label="Attach"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 7h8"/></svg></button>
             <button class="btn btn-icon btn-sm" data-testid="quick-entry-github-toggle" type="button" aria-label="GitHub"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 7h8"/></svg></button>
@@ -402,6 +419,32 @@ export function createSmokeHtml(options = {}) {
     </section>
     <section class="floating-window floating-window--github-import-detail" data-smoke="github-import-detail" style="width: min(760px, calc(100vw - var(--space-2xl))); height: min(680px, calc(100dvh - var(--space-2xl)));"><div class="floating-window__body" data-smoke="github-import-detail-body"><section class="github-import-detail-panel" data-smoke="github-import-detail-panel"><header class="github-import-pane-header"><h4>Issue detail</h4><button class="modal-close" data-smoke="github-import-detail-close" type="button" aria-label="Close detail">×</button></header><div class="github-import-pane-content">Detail control fixture</div></section></div><i class="floating-window__resize-handle floating-window__resize-handle--se" aria-hidden="true"></i></section>`;
 
+  /*
+  FNXC:AlphaMobileDrawer 2026-09-10-23:18:
+  The real-browser regression mounts the shipped React drawer and ViewHeader components instead of duplicating their DOM in this HTML template. That keeps Blink's geometry evidence tied to production header ownership, portal structure, and provider props while direct FloatingWindow and Terminal adaptations remain represented by their production class contracts.
+  */
+  const alphaDrawerFixtures = `
+    <section data-smoke="alpha-drawer-fixtures" hidden>
+      <div data-smoke="alpha-drawer-production-root"></div>
+      <div class="floating-window-overlay floating-window-overlay--modal floating-window-overlay--alpha-mobile-drawer" data-smoke="alpha-drawer-floating"><section class="floating-window floating-window--alpha-mobile-drawer"><header class="floating-window__header"><h2>Floating</h2></header><div class="floating-window__body"><button type="button">Floating final control</button></div></section></div>
+      <div class="terminal-modal-overlay" data-smoke="alpha-drawer-terminal"><section class="terminal-modal"><header class="terminal-header"><h2>Terminal</h2></header><div class="terminal-body">Terminal content</div><button type="button">Terminal final control</button></section></div>
+    </section>
+    <section data-smoke="alpha-board-fixture" hidden style="position:fixed;inset:0;display:flex;min-height:0;background:var(--bg);">
+      <div class="dashboard-project-shell" data-alpha-surface="true">
+        <main class="project-content project-content--with-alpha-nav">
+          <div class="board-workflow-view" data-smoke="alpha-board-production-root"></div>
+        </main>
+      </div>
+      <nav class="mobile-nav-bar mobile-nav-bar--alpha" data-smoke="alpha-pill" aria-label="Alpha primary navigation">
+        <button class="mobile-nav-tab mobile-nav-tab--active" type="button">Dashboard</button>
+        <button class="mobile-nav-tab" type="button">Planning</button>
+        <button class="mobile-nav-tab" type="button">Chat</button>
+        <button class="mobile-nav-tab" type="button">Mailbox</button>
+        <button class="alpha-mobile-menu-trigger" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="alpha-mobile-navigation-popover">Menu</button>
+      </nav>
+      <footer class="executor-status-bar" data-smoke="alpha-footer">Executor status</footer>
+    </section>`;
+
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -409,11 +452,14 @@ export function createSmokeHtml(options = {}) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Fusion dashboard browser smoke</title>
     <link rel="stylesheet" href="/app.css" />
+    <style>.alpha-browser-production-fixture { display: none !important; } html[data-alpha-drawer-fixtures-visible="true"] .alpha-browser-production-fixture { display: flex !important; }</style>
   </head>
   <body data-theme="${smokeTheme}">
     <div id="root">
       ${gitManagerFixtures}
       ${gitHubImportFixtures}
+      ${alphaDrawerFixtures}
+      <script type="module" src="/alpha-drawer-production-fixture.js"></script>
       <div class="header-wrapper">
         <header class="header" data-smoke="header">
           <div class="header-left">
@@ -856,13 +902,275 @@ export function createSmokeHtml(options = {}) {
 </html>`;
 }
 
+export function createAlphaDrawerProductionFixtureSource() {
+  const componentPath = (relativePath) => path.join(appRoot, relativePath).replaceAll("\\", "/");
+  const imports = {
+    alphaDrawer: componentPath("components/AlphaMobileDrawer.tsx"),
+    projectOverview: componentPath("components/ProjectOverview.tsx"),
+    planningKeepAlive: componentPath("components/dashboard/PlanningKeepAlive.tsx"),
+    appModals: componentPath("components/AppModals.tsx"),
+    mainContent: componentPath("components/dashboard/MainContent.tsx"),
+    mainViewKeepAlive: componentPath("components/dashboard/MainViewKeepAlive.tsx"),
+    taskDetail: componentPath("components/TaskDetailModal.tsx"),
+    chatView: componentPath("components/ChatView.tsx"),
+    pluginHost: componentPath("plugins/PluginDashboardViewHost.tsx"),
+    pluginRegistry: componentPath("plugins/pluginViewRegistry.tsx"),
+    todoPlugin: path.join(workspaceRoot, "plugins", "fusion-plugin-todos", "src", "dashboard-view.tsx").replaceAll("\\", "/"),
+    i18n: componentPath("i18n/index.ts"),
+    confirm: componentPath("hooks/useConfirm.ts"),
+    navigation: componentPath("hooks/useNavigationHistory.ts"),
+    fileBrowser: componentPath("context/FileBrowserContext.tsx"),
+  };
+  return `
+    import React, { Suspense, useEffect, useState } from "react";
+    import { createRoot } from "react-dom/client";
+    import { flushSync } from "react-dom";
+    import { I18nextProvider } from "react-i18next";
+    import { AlphaMobileDrawer, AlphaProjectsDrawer, AlphaPlanningDrawer } from ${JSON.stringify(imports.alphaDrawer)};
+    import { ProjectOverview } from ${JSON.stringify(imports.projectOverview)};
+    import { PlanningKeepAlive } from ${JSON.stringify(imports.planningKeepAlive)};
+    import { AlphaUsageDrawer } from ${JSON.stringify(imports.appModals)};
+    import { AlphaMainContentDrawer } from ${JSON.stringify(imports.mainContent)};
+    import { MainViewKeepAlive } from ${JSON.stringify(imports.mainViewKeepAlive)};
+    import { TaskDetailModal } from ${JSON.stringify(imports.taskDetail)};
+    import { ChatView } from ${JSON.stringify(imports.chatView)};
+    import { PluginDashboardViewHost } from ${JSON.stringify(imports.pluginHost)};
+    import { registerPluginView } from ${JSON.stringify(imports.pluginRegistry)};
+    import { TodoDashboardView } from ${JSON.stringify(imports.todoPlugin)};
+    import i18n from ${JSON.stringify(imports.i18n)};
+    import { ConfirmDialogProvider } from ${JSON.stringify(imports.confirm)};
+    import { NavigationHistoryProvider } from ${JSON.stringify(imports.navigation)};
+    import { FileBrowserProvider } from ${JSON.stringify(imports.fileBrowser)};
+
+    /*
+    FNXC:AlphaMobileDrawer 2026-09-10-23:59:
+    Browser geometry must exercise the exported bridges used by App, MainViewKeepAlive, MainContent, and AppModals rather than reconstructing AlphaMobileDrawer ownership flags. The fixture supplies deterministic transport data only; every provider retains its production shell, header, scroll owner, and controls.
+    */
+    const session = { id: "smoke-chat-session", title: "Drawer conversation", agentId: "agent-smoke", status: "active", createdAt: "2026-09-10T00:00:00.000Z", updatedAt: "2026-09-10T00:00:00.000Z", lastMessageAt: "2026-09-10T00:00:00.000Z", lastMessagePreview: "Visible message", tags: [] };
+    let boardTransportState = "skeleton";
+    const messages = Array.from({ length: 36 }, (_, index) => ({ id: "smoke-message-" + index, sessionId: session.id, role: index % 2 ? "assistant" : "user", content: "Production chat message " + index, createdAt: "2026-09-10T00:00:00.000Z" }));
+    const json = (value) => Promise.resolve(new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } }));
+    globalThis.fetch = (input) => {
+      const url = new URL(typeof input === "string" ? input : input.url, location.href);
+      const pathname = url.pathname;
+      if (pathname.endsWith("/tasks/board-workflows")) {
+        if (boardTransportState === "skeleton") return new Promise(() => {});
+        if (boardTransportState === "empty") return json({ flagEnabled: true, defaultWorkflowId: null, taskWorkflowIds: {}, workflows: [] });
+        return json({
+          flagEnabled: true,
+          defaultWorkflowId: "smoke-workflow",
+          taskWorkflowIds: Object.fromEntries(createBoardTasks(boardTransportState).map((task) => [task.id, "smoke-workflow"])),
+          workflows: [{ id: "smoke-workflow", name: "Production workflow", columns: [{ id: "todo", name: "Todo", flags: { hold: true } }] }],
+        });
+      }
+      if (pathname.endsWith("/chat/sessions/" + session.id + "/messages")) return json({ messages });
+      if (pathname.endsWith("/chat/sessions/" + session.id)) return json({ session });
+      if (pathname.endsWith("/chat/sessions")) return json({ sessions: [session], nextCursor: null });
+      if (pathname.endsWith("/chat/tags")) return json({ tags: [] });
+      if (pathname.endsWith("/todos")) return json([]);
+      if (pathname.includes("/usage")) return json({ providers: [] });
+      if (pathname.includes("/project-health")) return json({ status: "healthy", activeTasks: 0, completedTasks: 0 });
+      if (pathname.includes("/workflows")) return json({ workflows: [] });
+      if (pathname.includes("/models")) return json({ models: [], favoriteProviders: [], favoriteModels: [] });
+      if (pathname.includes("/agents")) return json([]);
+      if (pathname.includes("/tasks/")) return json({});
+      if (pathname.includes("/tasks")) return json([]);
+      if (pathname.includes("/settings")) return json({ experimentalFeatures: { alphaUpdates: true } });
+      return json({});
+    };
+    globalThis.EventSource = class { addEventListener() {} removeEventListener() {} close() {} };
+    registerPluginView("fusion-plugin-todos", "todos", TodoDashboardView);
+
+    const project = { id: "smoke-project", name: "Smoke Project", path: ".", status: "active", createdAt: "2026-09-10T00:00:00.000Z", updatedAt: "2026-09-10T00:00:00.000Z" };
+    const task = { id: "FN-SMOKE", title: "Drawer task", description: "A long production task detail used to prove the real scrolling surface. ".repeat(20), column: "todo", status: null, priority: "normal", dependencies: [], steps: [], logs: [], createdAt: "2026-09-10T00:00:00.000Z", updatedAt: "2026-09-10T00:00:00.000Z" };
+    const createBoardTask = (id, title, sourceMetadata) => ({ id, title, description: title, column: "todo", status: null, priority: "normal", dependencies: [], steps: [], logs: [], sourceMetadata, createdAt: "2026-09-10T00:00:00.000Z", updatedAt: "2026-09-10T00:00:00.000Z" });
+    const createBoardTasks = (state) => {
+      if (state === "populated") return Array.from({ length: 24 }, (_, index) => createBoardTask("FN-BOARD-" + index, "Production Alpha task " + index));
+      if (state === "duplicated") return [createBoardTask("FN-DUPLICATE-A", "Duplicate candidate"), createBoardTask("FN-DUPLICATE-B", "Duplicate candidate", { nearDuplicateOf: "FN-DUPLICATE-A" })];
+      if (state === "pagination-error") return [createBoardTask("FN-PAGE-ERROR", "Pagination retry remains reachable")];
+      return [];
+    };
+    const noop = () => {};
+    const asyncTask = async () => task;
+    const modalManager = { closePlanning: noop, clearPlanningInitialPlan: noop, planningInitialPlan: null, planningSourceIssue: null, planningWorkflowId: null, planningResumeSessionId: null };
+    const navigation = { pushNav: noop, replaceCurrent: noop, removeNav: noop };
+
+    const drawerProps = (title) => ({ open: true, title, onClose: noop });
+    const chatMainContentProps = {
+      ChatView,
+      currentProject: project,
+      addToast: noop,
+      experimentalFeatures: { alphaUpdates: true },
+      setQuickChatOpen: noop,
+      onOpenSessionInNewWindow: noop,
+      onSendAsReport: noop,
+    };
+
+    function ProductionProvider({ id }) {
+      if (id === "short") return React.createElement(AlphaMobileDrawer, { ...drawerProps("Short"), testId: "alpha-drawer-short" }, React.createElement("button", { type: "button", "data-smoke": "alpha-drawer-short-final" }, "Short final control"));
+      if (id === "projects") return React.createElement(AlphaProjectsDrawer, drawerProps("Projects"), React.createElement(ProjectOverview, { projects: [project], onSelectProject: noop, onAddProject: noop, onPauseProject: noop, onResumeProject: noop, onRemoveProject: noop }));
+      if (id === "planning") return React.createElement(AlphaPlanningDrawer, drawerProps("Planning"), React.createElement(PlanningKeepAlive, { active: true, projectId: project.id, tasks: [], bgPlanningSessions: [], modalManager, handleChangeTaskView: noop, handlePlanningTaskCreated: noop, handlePlanningTasksCreated: noop, openBoardTaskDetail: noop, openWorkflowEditorWithNav: noop }));
+      if (id === "usage") return React.createElement(AlphaUsageDrawer, { ...drawerProps("Usage"), projectId: project.id });
+      if (id === "task-detail" || id === "long") return React.createElement(TaskDetailModal, { task, projectId: project.id, alphaMobileDrawer: true, onClose: noop, onOpenDetail: noop, onDeleteTask: asyncTask, onMergeTask: async () => ({ success: true }), addToast: noop });
+      if (id === "plugin") return React.createElement(AlphaMainContentDrawer, { ...drawerProps("Todo"), taskView: "plugin:fusion-plugin-todos:todos" }, React.createElement(Suspense, { fallback: null }, React.createElement(PluginDashboardViewHost, { taskView: "plugin:fusion-plugin-todos:todos", context: { projectId: project.id, tasks: [], workflowSteps: [], openTaskDetail: noop } })));
+      return React.createElement(MainViewKeepAlive, { activeId: "chat", mountedIds: ["chat"], projectKey: project.id, mainContentProps: chatMainContentProps, alphaMobileDrawer: { activeId: "chat", title: "Chat", onClose: noop } });
+    }
+
+    function Fixture() {
+      const [activeProvider, setActiveProvider] = useState("short");
+      useEffect(() => { globalThis.__alphaDrawerProductionFixture = { open: setActiveProvider }; document.documentElement.dataset.alphaDrawerProductionReady = "true"; }, []);
+      return React.createElement("div", { "data-smoke-provider": activeProvider }, React.createElement(ProductionProvider, { id: activeProvider }));
+    }
+
+    function ProductionBoardFixture() {
+      const [boardState, setBoardState] = useState("skeleton");
+      useEffect(() => {
+        globalThis.__alphaBoardProductionFixture = {
+          show(nextState) {
+            boardTransportState = nextState;
+            flushSync(() => setBoardState(nextState));
+          },
+        };
+        document.documentElement.dataset.alphaBoardProductionReady = "true";
+      }, []);
+      const boardTasks = createBoardTasks(boardState);
+      const boardProject = { ...project, id: "smoke-board-" + boardState };
+      const boardProps = {
+        showBackendConnectionErrorPage: false,
+        projectsError: null,
+        t: (key, fallback) => fallback || key,
+        retryingProjects: false,
+        handleRetryProjects: async () => {},
+        shellApi: null,
+        taskView: "board",
+        modalManager: { openNewTaskWithDescription: noop },
+        handleChangeTaskView: noop,
+        refreshAppSettings: async () => {},
+        addToast: noop,
+        currentProject: boardProject,
+        ChatView,
+        viewMode: "project",
+        tasks: boardTasks,
+        filteredBoardTasks: boardTasks,
+        workflowSteps: [],
+        remoteData: { tasks: boardTasks },
+        setQuickChatOpen: noop,
+        capacityRiskBannerEnabled: false,
+        capacityRiskDismissed: false,
+        capacityRiskSignal: { level: "low", reasons: [] },
+        maxConcurrent: 2,
+        maxWorktrees: 4,
+        showWorktreeGrouping: false,
+        moveTask: async () => boardTasks[0],
+        pauseTask: async () => boardTasks[0],
+        openBoardTaskDetail: noop,
+        openTaskDetailInMainPanel: noop,
+        openGroupModalWithNav: noop,
+        handleBoardQuickCreate: async () => boardTasks[0],
+        openNewTaskWithNav: noop,
+        toggleAutoMerge: async () => {},
+        togglePlanAutoApprove: async () => {},
+        autoMerge: true,
+        planAutoApproveEnabled: false,
+        mergeStrategy: "direct",
+        globalPaused: false,
+        updateTask: async () => boardTasks[0],
+        retryTask: async () => boardTasks[0],
+        revertTask: async () => ({ task: boardTasks[0] }),
+        deleteTask: async () => boardTasks[0],
+        currentTasksTotal: boardTasks.length,
+        currentTasksHasMore: boardState === "pagination-error",
+        currentTasksPaginationError: boardState === "pagination-error" ? "request-failed" : null,
+        retryCurrentTasksPagination: async () => {},
+        searchQuery: "",
+        availableModels: [],
+        favoriteProviders: [],
+        favoriteModels: [],
+        handleOpenDetailWithTab: noop,
+        handleToggleFavorite: async () => {},
+        handleToggleModelFavorite: async () => {},
+        staleHighFanoutBlockerAgeThresholdMs: 0,
+        prAuthAvailable: false,
+        openWorkflowEditorWithNav: noop,
+        openCreateWorkflowWithNav: noop,
+        sidebarActive: true,
+        isMobile: false,
+        isRemote: false,
+        experimentalFeatures: { alphaUpdates: true },
+        ingestCreatedTasks: noop,
+        openDetailTask: noop,
+        popOutTaskDetail: noop,
+        onOpenChatWithPrefill: noop,
+        closeTaskDetailMainPanel: noop,
+        setMainPanelDetailTask: noop,
+        handleDismissCapacityRisk: noop,
+      };
+      return React.createElement(MainContent, boardProps);
+    }
+
+    const providers = (child) => React.createElement(I18nextProvider, { i18n }, React.createElement(NavigationHistoryProvider, { value: navigation }, React.createElement(ConfirmDialogProvider, { skipConfirmations: true }, React.createElement(FileBrowserProvider, { openFile: noop }, child))));
+    flushSync(() => createRoot(document.querySelector('[data-smoke="alpha-drawer-production-root"]')).render(providers(React.createElement(Fixture))));
+    flushSync(() => createRoot(document.querySelector('[data-smoke="alpha-board-production-root"]')).render(providers(React.createElement(ProductionBoardFixture))));
+  `;
+}
+async function buildAlphaDrawerProductionFixture() {
+  const { build: buildVite } = await import("vite");
+  const virtualId = "virtual:fusion-alpha-drawer-production-fixture";
+  const resolvedVirtualId = `\0${virtualId}`;
+  const output = await buildVite({
+    configFile: false,
+    root: dashboardRoot,
+    logLevel: "error",
+    define: { __BUILD_VERSION__: JSON.stringify("browser-smoke") },
+    resolve: {
+      alias: [
+        { find: "@fusion/core/detect-content-language", replacement: path.join(workspaceRoot, "packages/core/src/i18n/detect-content-language.ts") },
+        { find: "@fusion/core/task-delete-attribution", replacement: path.join(workspaceRoot, "packages/core/src/task-delete-attribution.ts") },
+        { find: "@fusion/core/column-roles", replacement: path.join(workspaceRoot, "packages/core/src/column-roles.ts") },
+        { find: "@fusion/core", replacement: path.join(workspaceRoot, "packages/core/src/types.ts") },
+        { find: "@fusion/dashboard/app/components/TaskCard", replacement: path.join(appRoot, "components/TaskCard.tsx") },
+        { find: "@fusion/dashboard/app/components/ViewHeader", replacement: path.join(appRoot, "components/ViewHeader.tsx") },
+        { find: "@fusion/dashboard/app/plugins/types", replacement: path.join(appRoot, "plugins/types.ts") },
+        { find: "@fusion/dashboard/app/utils/projectStorage", replacement: path.join(appRoot, "utils/projectStorage.ts") },
+      ],
+    },
+    plugins: [{
+      name: "fusion-alpha-drawer-production-fixture",
+      resolveId(id) {
+        if (id === virtualId) return resolvedVirtualId;
+        if (id.includes("cpufeatures.node")) return "\0virtual:fusion-empty-native-module";
+        return null;
+      },
+      load(id) {
+        if (id === resolvedVirtualId) return createAlphaDrawerProductionFixtureSource();
+        if (id === "\0virtual:fusion-empty-native-module") return "export default {};";
+        return null;
+      },
+    }],
+    build: {
+      write: false,
+      minify: true,
+      rollupOptions: { input: virtualId, output: { format: "iife", inlineDynamicImports: true } },
+    },
+  });
+  const outputs = Array.isArray(output) ? output.flatMap((result) => result.output) : output.output;
+  const chunk = outputs.find((entry) => entry.type === "chunk");
+  if (!chunk) fail("Alpha drawer production fixture did not emit a JavaScript chunk.");
+  return chunk.code;
+}
+
 async function startFixtureServer() {
-  const css = await loadDashboardCss();
+  const [css, alphaDrawerScript] = await Promise.all([loadDashboardCss(), buildAlphaDrawerProductionFixture()]);
   const html = createSmokeHtml();
   const server = createServer((req, res) => {
     if (req.url === "/app.css") {
       res.writeHead(200, { "content-type": "text/css; charset=utf-8" });
       res.end(css);
+      return;
+    }
+    if (req.url === "/alpha-drawer-production-fixture.js") {
+      res.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
+      res.end(alphaDrawerScript);
       return;
     }
 
@@ -1320,6 +1628,177 @@ async function runSmokeChecks(page, pageUrl) {
     && layout.badgeReason === "plan-review-replan-cap"
     && layout.bannerReason === "plan-review-replan-cap";
 
+  const collectAlphaDrawerLayout = () => evaluate(page, `(async () => {
+    const root = document.documentElement;
+    root.dataset.alphaMobileDrawers = 'true';
+    root.dataset.viewportMode = 'mobile';
+    root.dataset.alphaDrawerFixturesVisible = 'true';
+    const fixture = document.querySelector('[data-smoke="alpha-drawer-fixtures"]');
+    fixture.hidden = false;
+    const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const waitFor = async (read, label) => {
+      for (let attempt = 0; attempt < 120; attempt += 1) {
+        const value = read();
+        if (value) return value;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      throw new Error('Timed out waiting for production Alpha drawer ' + label);
+    };
+    await waitFor(() => globalThis.__alphaDrawerProductionFixture, 'controller');
+    const rect = (node) => {
+      const box = node.getBoundingClientRect();
+      return { top: box.top, bottom: box.bottom, left: box.left, right: box.right, width: box.width, height: box.height };
+    };
+    const isVisible = (node) => {
+      const style = getComputedStyle(node);
+      return style.visibility !== 'hidden' && style.display !== 'none' && node.getBoundingClientRect().height > 0;
+    };
+    const scrollControlIntoView = (control, panel) => {
+      let owner = control.parentElement;
+      while (owner && owner !== panel) {
+        if (owner.scrollHeight > owner.clientHeight) owner.scrollTop = owner.scrollHeight;
+        owner = owner.parentElement;
+      }
+    };
+    const providerConfig = [
+      { id: 'short', final: '[data-smoke="alpha-drawer-short-final"]' },
+      { id: 'projects', final: '.project-overview button, .project-overview [role="button"]' },
+      { id: 'planning', final: '.planning-view textarea, .planning-view button' },
+      { id: 'usage', final: '.usage-popover button' },
+      { id: 'task-detail', final: '.task-detail-content button' },
+      { id: 'plugin', final: '[data-testid="todo-view-root"] button, [data-testid="todo-view-root"] input' },
+      { id: 'long', final: '.task-detail-content button' },
+      { id: 'chat', final: '[data-testid="chat-input"]' },
+    ];
+    const providerResults = [];
+    for (const config of providerConfig) {
+      globalThis.__alphaDrawerProductionFixture.open(config.id);
+      await nextFrame();
+      const host = await waitFor(() => document.querySelector('[data-smoke-provider="' + config.id + '"]'), config.id + ' host');
+      if (config.id === 'chat') {
+        const sessionButton = await waitFor(() => host.querySelector('[data-testid="chat-session-smoke-chat-session"]'), 'Chat session');
+        sessionButton.click();
+      }
+      const panel = await waitFor(() => host.querySelector('.alpha-mobile-drawer__panel'), config.id + ' panel');
+      const finalControl = await waitFor(() => {
+        const controls = host.querySelectorAll(config.final);
+        return controls.length > 0 ? controls.item(controls.length - 1) : null;
+      }, config.id + ' final control');
+      scrollControlIntoView(finalControl, panel);
+      await nextFrame();
+      const panelRect = rect(panel);
+      const controlRect = rect(finalControl);
+      const visibleHeaderRows = [...panel.querySelectorAll(':scope > .alpha-mobile-drawer__header, .view-header, .modal-header')].filter(isVisible);
+      const visibleChatTitles = config.id === 'chat' ? [...panel.querySelectorAll('h1,h2,h3')].filter((heading) => heading.textContent.trim() === 'Chat' && !heading.classList.contains('visually-hidden') && isVisible(heading)).length : undefined;
+      providerResults.push({
+        id: config.id,
+        panel: panelRect,
+        headerCount: visibleHeaderRows.length,
+        closeCount: panel.querySelectorAll(':scope > .alpha-mobile-drawer__close').length,
+        handleCount: panel.querySelectorAll(':scope > .alpha-mobile-drawer__handle-target').length,
+        finalReachable: controlRect.top >= panelRect.top - 1 && controlRect.bottom <= panelRect.bottom + 1,
+        inputFocusable: config.id === 'chat' ? !finalControl.disabled && finalControl.tabIndex >= 0 : undefined,
+        visibleChatTitles,
+        productionMarkers: {
+          projects: Boolean(host.querySelector('.project-overview')),
+          planning: Boolean(host.querySelector('[data-testid="planning-view"]')),
+          usage: Boolean(host.querySelector('.usage-popover')),
+          taskDetail: Boolean(host.querySelector('.task-detail-content')),
+          plugin: Boolean(host.querySelector('[data-testid="todo-view-root"]')),
+          chat: Boolean(host.querySelector('.chat-view')),
+        },
+      });
+    }
+    const floatingPanel = document.querySelector('[data-smoke="alpha-drawer-floating"] .floating-window');
+    const terminalPanel = document.querySelector('[data-smoke="alpha-drawer-terminal"] .terminal-modal');
+    const panels = [...providerResults.map((result) => result.panel), rect(floatingPanel), rect(terminalPanel)];
+    const chat = providerResults.find((result) => result.id === 'chat');
+    return {
+      panels,
+      providerResults,
+      productionReady: root.dataset.alphaDrawerProductionReady === 'true',
+      productionProviderCount: providerResults.filter((result) => Object.values(result.productionMarkers).some(Boolean)).length,
+      inputVisible: chat.finalReachable,
+      inputFocusable: chat.inputFocusable,
+      visibleChatTitles: chat.visibleChatTitles,
+      horizontalOverflow: Math.max(...panels.map((panel) => panel.right - window.innerWidth), 0),
+    };
+  })()`);
+  /*
+  FNXC:AlphaBoardPillGeometry 2026-09-11-16:53:
+  Blink measures the production MainContent → Board tree for loading, no-workflow, populated, duplicate, and pagination-error states. The fixture changes only transport/props and shell reservations; it never replaces Board output with synthetic columns or cards.
+  */
+  const collectAlphaBoardLayout = (state, mode, systemOffset = 0) => evaluate(page, `(async () => {
+    const root = document.documentElement;
+    const mode = ${JSON.stringify(String(mode))};
+    const keyboardOpen = mode === 'mobile-keyboard';
+    root.dataset.viewportMode = mode.startsWith('mobile') ? 'mobile' : mode;
+    root.style.setProperty('--mobile-nav-alpha-system-offset', ${JSON.stringify(String(systemOffset))} + 'px');
+    const fixture = document.querySelector('[data-smoke="alpha-board-fixture"]');
+    fixture.hidden = false;
+    const content = fixture.querySelector('.project-content');
+    content.className = mode === 'mobile' ? 'project-content project-content--with-alpha-nav' : keyboardOpen ? 'project-content' : 'project-content project-content--with-footer';
+    const pill = fixture.querySelector('[data-smoke="alpha-pill"]');
+    const footer = fixture.querySelector('[data-smoke="alpha-footer"]');
+    pill.style.display = mode === 'mobile' ? '' : 'none';
+    footer.style.display = mode === 'desktop' || mode === 'tablet' ? '' : 'none';
+    const state = ${JSON.stringify(String(state))};
+    const waitFor = async (read, label) => {
+      for (let attempt = 0; attempt < 120; attempt += 1) {
+        const value = read();
+        if (value) return value;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      throw new Error('Timed out waiting for production Board ' + label);
+    };
+    const controller = await waitFor(() => globalThis.__alphaBoardProductionFixture, 'controller');
+    controller.show(state);
+    const board = await waitFor(() => {
+      const candidate = fixture.querySelector('#board');
+      if (!candidate) return null;
+      if (state === 'skeleton' && candidate.dataset.testid !== 'board-workflows-skeleton') return null;
+      if (state === 'empty' && candidate.dataset.testid !== 'board-workflows-empty') return null;
+      if (!['skeleton', 'empty'].includes(state) && !candidate.classList.contains('board-workflow-columns')) return null;
+      return candidate;
+    }, state);
+    const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await nextFrame();
+    if (mode === 'mobile') {
+      const floatingGap = Number.parseFloat(getComputedStyle(pill).getPropertyValue('--mobile-nav-floating-gap')) || 0;
+      root.style.setProperty('--mobile-nav-height', Math.ceil(pill.getBoundingClientRect().height + floatingGap) + 'px');
+      await nextFrame();
+    } else {
+      root.style.setProperty('--mobile-nav-height', '0px');
+    }
+    const lowerBoundary = mode === 'mobile' ? pill.getBoundingClientRect().top : keyboardOpen ? window.innerHeight : footer.getBoundingClientRect().top;
+    const boardRect = board.getBoundingClientRect();
+    const columns = [...board.querySelectorAll(':scope > .column, :scope > .board-workflows-skeleton__column')].map((column) => {
+      const box = column.getBoundingClientRect();
+      const body = column.querySelector('.column-body');
+      return { top: box.top, bottom: box.bottom, height: box.height, scrollable: body ? body.scrollHeight > body.clientHeight && ['auto', 'scroll'].includes(getComputedStyle(body).overflowY) : false };
+    });
+    return {
+      state,
+      mode,
+      lowerBoundary,
+      boardTop: boardRect.top,
+      boardBottom: boardRect.bottom,
+      columnTops: columns.map((column) => column.top),
+      columnBottoms: columns.map((column) => column.bottom),
+      columnHeights: columns.map((column) => column.height),
+      columnScrollable: columns.map((column) => column.scrollable),
+      boardPaddingTop: Number.parseFloat(getComputedStyle(board).paddingTop),
+      boardPaddingBottom: Number.parseFloat(getComputedStyle(board).paddingBottom),
+      controlOrder: [...pill.children].map((child) => child.className),
+      productionBoard: board.id === 'board' && (state === 'skeleton' || state === 'empty' || board.querySelectorAll('.card').length > 0),
+      paginationRetryVisible: state !== 'pagination-error' || Boolean(board.querySelector('.column-pagination-error button')),
+      duplicateCardCount: state !== 'duplicated' ? 0 : board.querySelectorAll('.column-body .card').length,
+      keyboardOpen,
+      documentOverflowX: document.documentElement.scrollWidth - window.innerWidth,
+      fixtureOverflowY: fixture.scrollHeight - fixture.clientHeight,
+    };
+  })()`);
+
   const collectAgentsOverviewScrollLayout = () => evaluate(page, `(() => {
     document.querySelector('[data-smoke="show-agents-overview-scroll"]').click();
     const section = document.querySelector('[data-smoke="agents-overview-scroll"]');
@@ -1369,6 +1848,66 @@ async function runSmokeChecks(page, pageUrl) {
       JSON.stringify(agentsOverviewLayout),
     );
   }
+  for (const { name, width, height } of [
+    { name: "portrait", width: 390, height: 844 },
+    { name: "short landscape", width: 844, height: 390 },
+    { name: "keyboard viewport", width: 390, height: 400 },
+  ]) {
+    await page.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 2, mobile: true });
+    const layout = await collectAlphaDrawerLayout();
+    const expectedHeight = layout.panels[0].height;
+    assertSmokeResult(
+      `Alpha drawers share one reachable geometry in ${name}`,
+      expectedHeight > 0
+        && layout.productionReady
+        && layout.panels.every((panel) => Math.abs(panel.height - expectedHeight) <= 1)
+        && layout.productionProviderCount === 7
+        && layout.providerResults.every((provider) => provider.headerCount === 1 && provider.closeCount === 0 && provider.handleCount === 1 && provider.finalReachable)
+        && layout.inputVisible
+        && layout.inputFocusable
+        && layout.visibleChatTitles === 1
+        && layout.horizontalOverflow <= 1,
+      JSON.stringify(layout),
+    );
+  }
+  await evaluate(page, `(() => {
+    document.querySelector('[data-smoke="alpha-drawer-fixtures"]').hidden = true;
+    delete document.documentElement.dataset.alphaDrawerFixturesVisible;
+    delete document.documentElement.dataset.alphaMobileDrawers;
+    return true;
+  })()`);
+  for (const { name, width, height, mode, systemOffset } of [
+    { name: "desktop footer", width: 1200, height: 844, mode: "desktop", systemOffset: 0 },
+    { name: "tablet footer", width: 768, height: 844, mode: "tablet", systemOffset: 0 },
+    { name: "mobile pill", width: 390, height: 844, mode: "mobile", systemOffset: 24 },
+    { name: "mobile landscape pill", width: 844, height: 390, mode: "mobile", systemOffset: 18 },
+    { name: "mobile keyboard viewport", width: 390, height: 400, mode: "mobile-keyboard", systemOffset: 0 },
+  ]) {
+    const mobile = mode.startsWith("mobile");
+    await page.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: mobile ? 2 : 1, mobile });
+    for (const state of ["skeleton", "empty", "populated", "duplicated", "pagination-error"]) {
+      const layout = await collectAlphaBoardLayout(state, mode, systemOffset);
+      assertSmokeResult(
+        `Alpha Board ${state} fills the safe height above the ${name}`,
+        boardSafeGeometryMatches(layout)
+          && layout.productionBoard
+          && layout.paginationRetryVisible
+          && (state !== "duplicated" || layout.duplicateCardCount === 2)
+          && (mode !== "mobile" || (layout.controlOrder.length === 5 && layout.controlOrder.at(-1) === 'alpha-mobile-menu-trigger'))
+          && (mode !== "mobile-keyboard" || layout.keyboardOpen)
+          && layout.documentOverflowX <= 1
+          && layout.fixtureOverflowY <= 1,
+        JSON.stringify(layout),
+      );
+    }
+  }
+  await evaluate(page, `(() => {
+    document.querySelector('[data-smoke="alpha-board-fixture"]').hidden = true;
+    document.documentElement.style.removeProperty('--mobile-nav-alpha-system-offset');
+    document.documentElement.style.removeProperty('--mobile-nav-height');
+    delete document.documentElement.dataset.viewportMode;
+    return true;
+  })()`);
   await page.send("Emulation.setDeviceMetricsOverride", {
     width: 390,
     height: 844,
@@ -1801,13 +2340,56 @@ async function runSmokeChecks(page, pageUrl) {
         locale: save.dataset.locale,
         label: save.textContent.trim(),
         saveWidth: rect.width,
+        saveHeight: rect.height,
         saveOverflow: save.scrollWidth - save.clientWidth,
+        optionOverflow: (() => {
+          const options = fixture.querySelector('[data-smoke="quick-add-options"]');
+          return options ? options.scrollWidth - options.clientWidth : 0;
+        })(),
         rowOverflow: row.scrollWidth - row.clientWidth,
         composerOverflow: composer.scrollWidth - composer.clientWidth,
         saveRight: rect.right,
         composerRight: composer.getBoundingClientRect().right,
       };
     });
+  })()`);
+
+  const collectAlphaPalette = () => evaluate(page, `(() => {
+    const root = document.querySelector('[data-alpha-surface="true"]');
+    const style = getComputedStyle(root);
+    return ['--alpha-neutral-background', '--alpha-neutral-foreground', '--alpha-neutral-border', '--alpha-neutral-accent']
+      .map((name) => style.getPropertyValue(name).trim());
+  })()`);
+
+  /*
+  FNXC:HomemadeAlphaFocus 2026-09-11-01:04:
+  The browser smoke focuses production Board, Chat, and portaled Quick Entry control classes and reads their resolved box shadows. This guards the complete-shadow alias contract that DOM emulators cannot validate through `:focus-visible`, including color-theme stability and light/dark palette changes.
+  */
+  const collectAlphaFocusShadows = () => evaluate(page, `(() => {
+    const boardRoot = document.querySelector('[data-smoke="board"]');
+    const boardCard = boardRoot.querySelector('.card');
+    boardRoot.setAttribute('data-alpha-surface', 'true');
+    boardCard.tabIndex = 0;
+
+    const chatRoot = document.createElement('section');
+    chatRoot.setAttribute('data-alpha-surface', 'true');
+    chatRoot.innerHTML = '<button type="button" class="chat-input-stop">Stop</button>';
+    document.body.append(chatRoot);
+
+    const portalRoot = document.createElement('section');
+    portalRoot.setAttribute('data-alpha-portal', 'true');
+    portalRoot.innerHTML = '<button type="button" class="quick-entry-toggle">Options</button>';
+    document.body.append(portalRoot);
+
+    const controls = [boardCard, chatRoot.querySelector('.chat-input-stop'), portalRoot.querySelector('.quick-entry-toggle')];
+    const shadows = controls.map((control) => {
+      control.focus();
+      return getComputedStyle(control).boxShadow;
+    });
+    boardRoot.removeAttribute('data-alpha-surface');
+    chatRoot.remove();
+    portalRoot.remove();
+    return shadows;
   })()`);
 
   const collectTaskDetailActionsMenuLayout = () => evaluate(page, `(() => {
@@ -2006,6 +2588,32 @@ async function runSmokeChecks(page, pageUrl) {
     }
   }
 
+  await evaluate(page, "document.body.dataset.theme = 'dark'; document.body.dataset.colorTheme = 'cozy-cartoon'; true");
+  const darkCozyAlphaPalette = await collectAlphaPalette();
+  const darkCozyAlphaFocusShadows = await collectAlphaFocusShadows();
+  await evaluate(page, "document.body.dataset.colorTheme = 'shadcn-purple'; true");
+  const darkPurpleAlphaPalette = await collectAlphaPalette();
+  const darkPurpleAlphaFocusShadows = await collectAlphaFocusShadows();
+  await evaluate(page, "document.body.dataset.theme = 'light'; true");
+  const lightPurpleAlphaPalette = await collectAlphaPalette();
+  const lightPurpleAlphaFocusShadows = await collectAlphaFocusShadows();
+  assertSmokeResult(
+    "homemade Alpha palette ignores Fusion colors and responds only to light/dark",
+    darkCozyAlphaPalette.every(Boolean)
+      && JSON.stringify(darkCozyAlphaPalette) === JSON.stringify(darkPurpleAlphaPalette)
+      && JSON.stringify(lightPurpleAlphaPalette) !== JSON.stringify(darkPurpleAlphaPalette),
+    JSON.stringify({ darkCozyAlphaPalette, darkPurpleAlphaPalette, lightPurpleAlphaPalette }),
+  );
+  assertSmokeResult(
+    "homemade Alpha Board, Chat, and portal focus shadows are valid and theme-neutral",
+    darkCozyAlphaFocusShadows.length === 3
+      && darkCozyAlphaFocusShadows.every((shadow) => shadow && shadow !== "none")
+      && JSON.stringify(darkCozyAlphaFocusShadows) === JSON.stringify(darkPurpleAlphaFocusShadows)
+      && JSON.stringify(lightPurpleAlphaFocusShadows) !== JSON.stringify(darkPurpleAlphaFocusShadows),
+    JSON.stringify({ darkCozyAlphaFocusShadows, darkPurpleAlphaFocusShadows, lightPurpleAlphaFocusShadows }),
+  );
+  await evaluate(page, `document.body.dataset.theme = ${JSON.stringify(smokeTheme)}; true`);
+
   await page.send("Emulation.setDeviceMetricsOverride", {
     width: 412,
     height: 915,
@@ -2024,6 +2632,8 @@ async function runSmokeChecks(page, pageUrl) {
       && frenchMobileWidth === widestMobileWidth
       && mobileQuickAddSaveLayout.length === QUICK_ADD_SAVE_FIXTURE_COUNT
       && mobileQuickAddSaveLayout.every((layout) => layout.saveOverflow <= 1
+        && layout.saveHeight <= 44
+        && layout.optionOverflow <= 1
         && layout.rowOverflow <= 1
         && layout.composerOverflow <= 1
         && layout.saveRight <= layout.composerRight + 1),
@@ -2088,6 +2698,8 @@ async function runSmokeChecks(page, pageUrl) {
       && frenchDesktopWidth === widestDesktopWidth
       && desktopQuickAddSaveLayout.length === QUICK_ADD_SAVE_FIXTURE_COUNT
       && desktopQuickAddSaveLayout.every((layout) => layout.saveOverflow <= 1
+        && layout.saveHeight <= 32
+        && layout.optionOverflow <= 1
         && layout.rowOverflow <= 1
         && layout.composerOverflow <= 1
         && layout.saveRight <= layout.composerRight + 1),

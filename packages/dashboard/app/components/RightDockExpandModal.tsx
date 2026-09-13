@@ -1,8 +1,9 @@
+import { ModalCloseButton } from "./ModalCloseButton";
 import { useCallback, useEffect, type RefObject } from "react";
-import { Maximize2, X } from "lucide-react";
+import { Maximize2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { FloatingWindow } from "./FloatingWindow";
-import { findOverflowViewEntry, type OverflowViewEntry, type OverflowViewKey, type OverflowViewRenderProps, type OverflowViewVisibilityOptions } from "./overflowViewRegistry";
+import { findOverflowViewEntry, isOverflowViewEntryExpandable, type OverflowViewEntry, type OverflowViewKey, type OverflowViewRenderProps, type OverflowViewVisibilityOptions } from "./overflowViewRegistry";
 import "./RightDock.css";
 
 const EXPAND_DEFAULT_WIDTH = 960;
@@ -39,7 +40,7 @@ export function RightDockExpandModal({
 }: RightDockExpandModalProps) {
   const { t } = useTranslation("app");
   const resolvedEntry = viewKey ? findOverflowViewEntry(viewKey, visibilityOptions) : undefined;
-  const entry: RenderableOverflowViewEntry | undefined = resolvedEntry?.render ? { ...resolvedEntry, render: resolvedEntry.render } : undefined;
+  const entry: RenderableOverflowViewEntry | undefined = isOverflowViewEntryExpandable(resolvedEntry, visibilityOptions) && resolvedEntry?.render ? { ...resolvedEntry, render: resolvedEntry.render } : undefined;
 
   const closeAndRestoreFocus = useCallback(() => {
     onClose();
@@ -90,9 +91,7 @@ export function RightDockExpandModal({
           <Icon size={16} />
           <span>{entry.label}</span>
         </div>
-        <button className="modal-close" onClick={closeAndRestoreFocus} aria-label={t("rightDock.closeExpandedView", "Close expanded right dock view")} data-testid="right-dock-expand-close">
-          <X size={20} />
-        </button>
+        <ModalCloseButton onClick={closeAndRestoreFocus} aria-label={t("rightDock.closeExpandedView", "Close expanded right dock view")} data-testid="right-dock-expand-close" />
       </div>
       <div className="right-dock-expand-modal__body" data-testid="right-dock-expand-body">
         {entry.render({ ...renderProps, surface: "expand" })}

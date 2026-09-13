@@ -948,6 +948,146 @@ shared left/right edges and compact gaps. Keep the centered cluster desktop-only
   }
 }
 
+/*
+FNXC:AlphaQuickEntry 2026-09-12-00:36:
+Alpha Quick Entry is input-first: the immediate attach/status/icon-only Save row remains visible, and routing options appear as a quiet second row only after disclosure. The Save control keeps fixed icon-button metrics while a contained token-colored fill communicates the 1,200ms Start hold without changing row width; List and legacy surfaces retain their existing shells.
+*/
+[data-alpha-surface="true"] .quick-entry-box {
+  padding: var(--alpha-density-2);
+  margin-bottom: var(--alpha-density-2);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+[data-alpha-surface="true"] .quick-entry-input {
+  min-height: calc(var(--alpha-control-height) + var(--alpha-density-2));
+  max-height: calc(var(--alpha-control-height) * 5);
+  padding: var(--alpha-density-2);
+  border: 0;
+  border-radius: var(--field-radius);
+  background: var(--alpha-neutral-background);
+}
+
+[data-alpha-surface="true"] .quick-entry-input--expanded {
+  min-height: calc(var(--alpha-control-height) * 2);
+}
+
+[data-alpha-surface="true"] .quick-entry-controls {
+  margin-top: var(--alpha-density-2);
+  gap: var(--alpha-density-2);
+}
+
+[data-alpha-surface="true"] .quick-entry-actions {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: var(--alpha-density-2);
+}
+
+[data-alpha-surface="true"] .quick-entry-primary-group {
+  order: -1;
+  width: 100%;
+  flex-wrap: nowrap;
+  justify-content: flex-start;
+  gap: var(--alpha-density-1);
+}
+
+[data-alpha-surface="true"] .quick-entry-primary-group [data-testid="quick-entry-save"] {
+  margin-inline-start: auto;
+  min-width: var(--alpha-control-height);
+  width: var(--alpha-control-height);
+  min-height: var(--alpha-control-height);
+  max-height: var(--alpha-control-height);
+  padding: 0;
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+[data-alpha-surface="true"] .quick-entry-alpha-save > svg {
+  position: relative;
+  z-index: 1;
+}
+
+[data-alpha-surface="true"] .quick-entry-alpha-save-progress {
+  position: absolute;
+  inset: 0;
+  background: var(--color-warning);
+  opacity: 0;
+  transform: scaleX(0);
+  transform-origin: left;
+  pointer-events: none;
+}
+
+[data-alpha-surface="true"] .quick-entry-alpha-save[data-hold-state="holding"] .quick-entry-alpha-save-progress {
+  opacity: 1;
+  animation: quick-entry-alpha-hold-progress 1200ms linear forwards;
+}
+
+[data-alpha-surface="true"] .quick-entry-alpha-save[data-hold-state="confirmed"] .quick-entry-alpha-save-progress {
+  opacity: 1;
+  transform: scaleX(1);
+}
+
+@keyframes quick-entry-alpha-hold-progress {
+  to { transform: scaleX(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-alpha-surface="true"] .quick-entry-alpha-save[data-hold-state="holding"] .quick-entry-alpha-save-progress {
+    animation: none;
+    opacity: 0.45;
+    transform: scaleX(1);
+  }
+}
+
+[data-alpha-surface="true"] .quick-entry-options-group {
+  width: 100%;
+  padding-top: var(--alpha-density-2);
+  border-top: var(--border-width) solid var(--alpha-neutral-border);
+  justify-content: flex-start;
+  gap: var(--alpha-density-1);
+}
+
+[data-alpha-surface="true"] .quick-entry-options-group[hidden] {
+  display: none;
+}
+
+[data-alpha-surface="true"] .quick-entry-actions :is(.btn, .wf-optional-steps-dropdown-trigger) {
+  min-height: var(--alpha-control-height);
+  max-height: var(--alpha-control-height);
+  padding-inline: var(--alpha-density-2);
+}
+
+@media (max-width: 768px) {
+  [data-alpha-surface="true"] .quick-entry-box {
+    padding: var(--alpha-density-2);
+  }
+
+  [data-alpha-surface="true"] .quick-entry-actions,
+  [data-alpha-surface="true"] .quick-entry-options-group,
+  [data-alpha-surface="true"] .quick-entry-primary-group {
+    justify-content: flex-start;
+    column-gap: var(--alpha-density-1);
+  }
+
+  [data-alpha-surface="true"] .quick-entry-primary-group {
+    flex-wrap: wrap;
+  }
+
+  [data-alpha-surface="true"] .quick-entry-actions :is(.btn, .wf-optional-steps-dropdown-trigger),
+  [data-alpha-surface="true"] .quick-entry-primary-group [data-testid="quick-entry-save"] {
+    min-height: var(--alpha-touch-height);
+    max-height: var(--alpha-touch-height);
+  }
+
+  [data-alpha-surface="true"] .quick-entry-primary-group [data-testid="quick-entry-save"] {
+    margin-inline-start: auto;
+    min-width: var(--alpha-touch-height);
+    width: var(--alpha-touch-height);
+  }
+}
+
 @media (max-width: 768px) {
   .agent-list-modal {
     width: 100%;

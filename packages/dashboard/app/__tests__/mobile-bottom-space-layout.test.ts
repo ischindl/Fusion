@@ -97,17 +97,27 @@ describe("mobile bottom-space layout invariant", () => {
     const drawerBodyRule = normalizeCss(extractRuleBlock(css, ".alpha-mobile-drawer__body"));
     const navRule = normalizeCss(extractRuleBlock(css, ".mobile-nav-bar"));
     const alphaContentRule = normalizeCss(extractRuleBlock(css, 'html[data-viewport-mode="mobile"] .project-content--with-alpha-nav'));
+    const alphaBoardRule = normalizeCss(extractRuleBlock(css, '[data-alpha-surface="true"] .board'));
+    const skeletonRule = normalizeCss(extractRuleBlock(css, ".board.board-workflows-skeleton"));
 
     expect(drawerRule).toContain("inset: 0 var(--icb-right-offset, 0px) 0 0");
     expect(drawerRule).toContain("z-index: var(--z-popover)");
     expect(drawerRule).not.toContain("padding-block-end");
-    expect(drawerPanelRule).toContain("100dvh");
+    expect(drawerPanelRule).toContain("height: var(--alpha-mobile-drawer-block-size)");
+    expect(drawerPanelRule).toContain("max-height: var(--alpha-mobile-drawer-block-size)");
     expect(drawerPanelRule).not.toContain("var(--mobile-nav-height)");
     expect(drawerPanelRule).not.toContain("var(--mobile-nav-alpha-system-offset)");
     expect(drawerBodyRule).toContain("padding-block-end: var(--mobile-nav-alpha-system-offset)");
     expect(navRule).toContain("z-index: 45");
     expect(extractRuleBlock(css, ":root")).toContain("--z-popover: 60");
     expect(alphaContentRule).toContain("var(--mobile-nav-height) + var(--mobile-nav-alpha-system-offset)");
+    expect(alphaBoardRule).toContain("--board-padding: var(--alpha-density-3)");
+    expect(skeletonRule).toContain("height: 100%");
+    expect(skeletonRule).toContain("min-height: 0");
+    expect(alphaBoardRule).not.toContain("padding-block-end");
+    expect(alphaBoardRule).not.toContain("--mobile-nav-height");
+    expect(alphaBoardRule).not.toContain("--mobile-nav-alpha-system-offset");
+    expect(alphaBoardRule).not.toContain("env(safe-area-inset-bottom");
     expect(css.match(/--mobile-nav-height:\s*44px/g)).toHaveLength(1);
   });
 
@@ -134,9 +144,13 @@ describe("mobile bottom-space layout invariant", () => {
 
     expect(floatingOverlay).toContain("inset: 0 var(--icb-right-offset, 0px) 0 0");
     expect(floatingOverlay).not.toContain("padding-block-end");
+    expect(floatingPanel).toContain("height: var(--alpha-mobile-drawer-block-size) !important");
+    expect(floatingPanel).toContain("max-height: var(--alpha-mobile-drawer-block-size) !important");
     expect(floatingPanel).not.toContain("var(--mobile-nav-alpha-system-offset)");
     expect(floatingBody).toContain("padding-block-end: var(--mobile-nav-alpha-system-offset)");
     expect(terminalOverlay).not.toContain("padding-block-end");
+    expect(terminalPanel).toContain("height: var(--alpha-mobile-drawer-block-size)");
+    expect(terminalPanel).toContain("max-height: var(--alpha-mobile-drawer-block-size)");
     expect(terminalPanel).toContain("padding-block-end: var(--mobile-nav-alpha-system-offset)");
     expect(terminalPanel).not.toContain("var(--mobile-nav-height)");
   });

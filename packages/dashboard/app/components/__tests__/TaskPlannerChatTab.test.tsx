@@ -6,6 +6,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { TaskPlannerChatTab } from "../TaskPlannerChatTab";
 import { ChatMessageLayoutProvider } from "../../context/ChatMessageLayoutContext";
+import { AlphaProvider, AlphaBoundary } from "../../context/AlphaContext";
 import { clampChatInputHeight, getChatInputAutomaticMaxHeight, getChatInputBoxMetrics } from "../../utils/chatInputAutosize";
 import { __test_resetChatSnippetsCache } from "../../hooks/useChatSnippetsCache";
 
@@ -238,6 +239,27 @@ describe("TaskPlannerChatTab", () => {
     ];
   });
 
+  it("renders the real planner composer through the shared Alpha boundary", async () => {
+    const view = render(
+      <AlphaProvider enabled>
+        <AlphaBoundary>
+          <TaskPlannerChatTab task={makeTask("FN-7310")} active taskChatModel={{ provider: "anthropic", modelId: "claude-plan" }} addToast={vi.fn()} />
+        </AlphaBoundary>
+      </AlphaProvider>,
+    );
+    expect(await screen.findByLabelText("Message task chat")).toHaveAttribute("data-alpha-ui", "textarea");
+    expect(view.container.querySelector('[data-alpha-ui="button"]')).not.toBeNull();
+
+    view.rerender(
+      <AlphaProvider enabled={false}>
+        <AlphaBoundary>
+          <TaskPlannerChatTab task={makeTask("FN-7310")} active taskChatModel={{ provider: "anthropic", modelId: "claude-plan" }} addToast={vi.fn()} />
+        </AlphaBoundary>
+      </AlphaProvider>,
+    );
+    expect(screen.getByLabelText("Message task chat")).not.toHaveAttribute("data-alpha-ui");
+  });
+
   afterEach(() => {
     restoreMetricDescriptor("scrollTop", originalScrollTopDescriptor);
     restoreMetricDescriptor("scrollHeight", originalScrollHeightDescriptor);
@@ -333,8 +355,9 @@ describe("TaskPlannerChatTab", () => {
     expect(document.querySelector(".task-planner-chat-composer")?.contains(screen.getByTestId("chat-thinking-popover"))).toBe(false);
     await user.click(screen.getByRole("button", { name: "Chat model" }));
     let portal = await screen.findByTestId("model-combobox-portal");
-    const claudeFavoriteButton = within(portal).getByText("Claude Plan").closest("[role=option]")?.querySelector<HTMLButtonElement>(".model-combobox-option-favorite");
-    expect(claudeFavoriteButton).toBeTruthy();
+    const claudeActionRow = within(portal).getByText("Claude Plan").closest(".model-combobox-option-row");
+    const claudeFavoriteButton = claudeActionRow?.querySelector<HTMLButtonElement>(".model-combobox-option-favorite");
+    expect(claudeFavoriteButton).toHaveAttribute("aria-label", "Add {{name}} to favorites");
     await user.click(claudeFavoriteButton!);
 
     await waitFor(() => expect(mockUpdateGlobalSettings).toHaveBeenCalledWith({
@@ -346,8 +369,9 @@ describe("TaskPlannerChatTab", () => {
 
     mockUpdateGlobalSettings.mockRejectedValueOnce(new Error("write failed"));
     portal = screen.getByTestId("model-combobox-portal");
-    const enterpriseFavoriteButton = within(portal).getByText("Enterprise Production Model With A Readable Long Name").closest("[role=option]")?.querySelector<HTMLButtonElement>(".model-combobox-option-favorite");
-    expect(enterpriseFavoriteButton).toBeTruthy();
+    const enterpriseActionRow = within(portal).getByText("Enterprise Production Model With A Readable Long Name").closest(".model-combobox-option-row");
+    const enterpriseFavoriteButton = enterpriseActionRow?.querySelector<HTMLButtonElement>(".model-combobox-option-favorite");
+    expect(enterpriseFavoriteButton).toHaveAttribute("aria-label", "Add {{name}} to favorites");
     await user.click(enterpriseFavoriteButton!);
     await waitFor(() => expect(addToast).toHaveBeenCalledWith("Failed to update model favorites", "error"));
     expect(enterpriseFavoriteButton).toHaveTextContent("☆");

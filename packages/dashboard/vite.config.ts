@@ -93,6 +93,10 @@ function emitVersionJson(): Plugin {
   };
 }
 
+/*
+FNXC:HomemadeAlphaStyles 2026-09-11-16:14:
+Fusion's Alpha controls compile as ordinary scoped CSS. No third-party component or utility compiler participates in the dashboard pipeline, so the emitted styles remain auditable and cannot leak an upstream reset outside Alpha boundaries.
+*/
 function ensureThemeDataStylesheetOrder(): Plugin {
   return {
     name: "fusion-theme-data-link-order",

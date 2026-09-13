@@ -33,7 +33,6 @@ export interface MainViewKeepAliveProps {
   alphaMobileDrawer?: {
     activeId: Exclude<KeepAliveMainViewId, "board"> | null;
     title: string;
-    closeLabel: string;
     onClose: () => void;
   };
 }
@@ -109,6 +108,11 @@ function renderBoardSubtree(props: MainContentProps, active: boolean) {
     experimentalFeatures,
     handleChangeTaskView,
   } = props;
+  /*
+  FNXC:WorkflowControls 2026-09-12-05:41:
+  Alpha desktop replaces the navigation sidebar with a footer but still owns the Header workflow slot. Board and List must portal their selector beside Search whenever Alpha is active, while retained inactive views continue to release that shared slot.
+  */
+  const workflowControlsInHeader = sidebarActive || isMobile || experimentalFeatures?.alphaUpdates === true;
 
   return (
     <PageErrorBoundary>
@@ -175,7 +179,7 @@ function renderBoardSubtree(props: MainContentProps, active: boolean) {
         prAuthAvailable={prAuthAvailable}
         onOpenWorkflowEditor={openWorkflowEditorWithNav}
         onCreateWorkflow={openCreateWorkflowWithNav}
-        workflowControlsInHeader={sidebarActive || isMobile}
+        workflowControlsInHeader={workflowControlsInHeader}
         alphaUpdatesEnabled={experimentalFeatures?.alphaUpdates === true}
         onOpenHistory={() => handleChangeTaskView("patchnode")}
         active={active}
@@ -231,7 +235,9 @@ function renderListSubtree(props: MainContentProps, active: boolean) {
     openCreateWorkflowWithNav,
     sidebarActive,
     isMobile,
+    experimentalFeatures,
   } = props;
+  const workflowControlsInHeader = sidebarActive || isMobile || experimentalFeatures?.alphaUpdates === true;
 
   return (
     <PageErrorBoundary>
@@ -277,7 +283,7 @@ function renderListSubtree(props: MainContentProps, active: boolean) {
         mergeStrategy={mergeStrategy}
         onOpenWorkflowEditor={openWorkflowEditorWithNav}
         onCreateWorkflow={openCreateWorkflowWithNav}
-        workflowControlsInHeader={sidebarActive || isMobile}
+        workflowControlsInHeader={workflowControlsInHeader}
         active={active}
       />
     </PageErrorBoundary>
@@ -344,10 +350,11 @@ export function MainViewKeepAlive({ activeId, mountedIds, projectKey, mainConten
             key={`${projectKey}:${id}`}
             open={alphaMobileDrawer.activeId === id}
             title={alphaMobileDrawer.title}
-            closeLabel={alphaMobileDrawer.closeLabel}
             onClose={alphaMobileDrawer.onClose}
             keepMounted
             testId={`alpha-mobile-drawer-${id}`}
+            contentOwnsHeader
+            contentOwnsScroll
           >
             {subtree}
           </AlphaMobileDrawer>

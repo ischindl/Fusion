@@ -1,6 +1,8 @@
 import type { AgentLogEntry, AgentRole, ChatSnippet, SteeringComment, Task, TaskDetail } from "@fusion/core";
+import { AlphaButton, AlphaListBox, AlphaListBoxItem, AlphaTextArea } from "./alpha-ui";
 import { isCompleteColumnRole, isWipColumnRole } from "../utils/columnRoles";
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AlertTriangle, ChevronDown, Cpu, Loader2, Maximize2, Minimize2, Send } from "lucide-react";
@@ -49,6 +51,17 @@ interface TaskChatTabProps {
   expanded?: boolean;
   onToggleExpanded?: () => void;
   effectiveModels?: Partial<Record<"triage" | "executor" | "reviewer" | "merger", TaskChatModelInfo | null>>;
+  footerTarget?: HTMLElement | null;
+  /** Keeps the state owner mounted while withholding its composer from an inactive shell footer. */
+  footerVisible?: boolean;
+}
+
+/*
+FNXC:TaskDetailActivity 2026-09-12-02:34:
+Activity Live conserve son transcript et son état dans le Content, tandis que steering/refinement et leurs menus sont portalisés dans le Footer direct du shell. Feed et Raw ne fournissent aucune cible et ne créent donc aucun footer vide.
+*/
+function TaskChatFooterPortal({ target, children }: { target?: HTMLElement | null; children: ReactNode }) {
+  return target ? createPortal(children, target) : children;
 }
 
 type AgentLogRole = AgentRole | undefined;
@@ -701,7 +714,7 @@ function TaskChatUserMessage({ message }: { message: UserChatMessage }) {
   );
 }
 
-export function TaskChatTab({ task, columnFlags, projectId, active, addToast, onTaskUpdated, onRefinementCreated, expanded = false, onToggleExpanded, effectiveModels }: TaskChatTabProps) {
+export function TaskChatTab({ task, columnFlags, projectId, active, addToast, onTaskUpdated, onRefinementCreated, expanded = false, onToggleExpanded, effectiveModels, footerTarget, footerVisible = true }: TaskChatTabProps) {
   const { t } = useTranslation("app");
   const chatMessageLayout = useChatMessageLayout();
   const enterSubmits = useChatEnterSubmits();
@@ -1159,7 +1172,7 @@ export function TaskChatTab({ task, columnFlags, projectId, active, addToast, on
   return (
     <div className={`task-chat-tab${chatMessageLayout === "full-width" ? " task-chat-tab--full-width" : ""}`} data-testid="task-chat-tab">
       {onToggleExpanded ? (
-        <button
+        <AlphaButton
           type="button"
           className="btn btn-icon btn-sm task-chat-expand-toggle task-chat-expand-toggle--overlay"
           onClick={onToggleExpanded}
@@ -1169,7 +1182,7 @@ export function TaskChatTab({ task, columnFlags, projectId, active, addToast, on
         >
           {/* FNXC:TaskDetailActivity 2026-07-01-00:00: TaskDetailModal passes Activity-expanded state into Live so this existing chat overlay remains the single Live expand affordance without adding a separate toolbar row. */}
           {expanded ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
-        </button>
+        </AlphaButton>
       ) : null}
       <div
         className="task-chat-transcript"
@@ -1186,7 +1199,7 @@ export function TaskChatTab({ task, columnFlags, projectId, active, addToast, on
                 <span>{t("taskChat.loadingEarlierMessages", "Loading earlier messages…")}</span>
               </div>
             ) : (
-              <button
+              <AlphaButton
                 type="button"
                 className="btn btn-secondary btn-sm task-chat-load-previous"
                 onClick={() => { void loadPreviousMessages(); }}
@@ -1194,7 +1207,7 @@ export function TaskChatTab({ task, columnFlags, projectId, active, addToast, on
                 data-testid="task-chat-load-previous"
               >
                 {t("taskChat.loadPreviousMessages", "Load previous messages")}
-              </button>
+              </AlphaButton>
             )}
           </div>
         ) : null}
@@ -1245,7 +1258,7 @@ export function TaskChatTab({ task, columnFlags, projectId, active, addToast, on
           })
         )}
         {transcriptItemCount > 0 && !isTranscriptAtBottom ? (
-          <button
+          <AlphaButton
             type="button"
             className="task-chat-jump-to-bottom"
             onClick={scrollTranscriptToBottom}
@@ -1254,18 +1267,20 @@ export function TaskChatTab({ task, columnFlags, projectId, active, addToast, on
           >
             <ChevronDown aria-hidden="true" />
             <span>{t("taskChat.latest", "Latest")}</span>
-          </button>
+          </AlphaButton>
         ) : null}
       </div>
 
+      {footerVisible ? <TaskChatFooterPortal target={footerTarget}>
       <form className="task-chat-composer" onSubmit={handleSubmit} aria-label={composerFormLabel}>
         {showSnippetMenu && filteredSnippets.length > 0 ? (
-          <div className="chat-skill-menu task-chat-snippet-menu" data-testid="task-chat-snippet-menu" role="listbox" aria-label={t("chat.snippetSuggestions", "Snippet suggestions")}>
+          <AlphaListBox className="chat-skill-menu task-chat-snippet-menu" data-testid="task-chat-snippet-menu" aria-label={t("chat.snippetSuggestions", "Snippet suggestions")}>
             {filteredSnippets.map((snippet, index) => (
-              <button
+              <AlphaListBoxItem
                 key={snippet.name}
-                type="button"
-                role="option"
+                id={snippet.name}
+                textValue={snippet.name}
+                legacyAs="button"
                 aria-selected={index === highlightedSnippetIndex}
                 className={`chat-skill-menu-item${index === highlightedSnippetIndex ? " chat-skill-menu-item--highlighted" : ""}`}
                 onMouseDown={(event) => event.preventDefault()}
@@ -1274,12 +1289,12 @@ export function TaskChatTab({ task, columnFlags, projectId, active, addToast, on
               >
                 <span className="chat-skill-menu-item-name">/{snippet.name}</span>
                 <span className="chat-skill-menu-item-description">{t("chat.snippetSuggestion", "Insert saved prompt")}</span>
-              </button>
+              </AlphaListBoxItem>
             ))}
-          </div>
+          </AlphaListBox>
         ) : null}
         <div className="task-chat-composer-row">
-          <textarea
+          <AlphaTextArea
             ref={handleComposerRef}
             className="input task-chat-input"
             value={draft}
@@ -1292,7 +1307,7 @@ export function TaskChatTab({ task, columnFlags, projectId, active, addToast, on
             rows={1}
           />
           <MicButton {...dictation.micProps} disabled={sending} />
-          <button
+          <AlphaButton
             type="submit"
             className="btn btn-primary btn-icon task-chat-send"
             disabled={!canSend}
@@ -1302,9 +1317,10 @@ export function TaskChatTab({ task, columnFlags, projectId, active, addToast, on
             onMouseDown={handleSendMouseDown}
           >
             {sending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Send aria-hidden="true" />}
-          </button>
+          </AlphaButton>
         </div>
       </form>
+      </TaskChatFooterPortal> : null}
     </div>
   );
 }

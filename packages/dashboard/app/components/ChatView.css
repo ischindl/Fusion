@@ -1,5 +1,9 @@
 /* ── Chat View ─────────────────────────────────────────────────────────────── */
 
+/*
+FNXC:ModalChrome 2026-09-11-23:35:
+FN-351 gives Quick Chat and detached conversations the History shell contract: one fixed shared header followed by a flex body painted with the same content-background token. Internal list, thread, streaming, and composer surfaces retain their own semantics.
+*/
 .chat-view {
   container: chat-view / inline-size;
   display: flex;
@@ -18,6 +22,68 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+}
+
+.chat-view--floating .chat-view__body {
+  background: var(--bg-primary);
+}
+
+/*
+FNXC:AlphaDensity 2026-09-11-00:30:
+All Alpha Chat hosts share one restrained density hierarchy: quiet list chrome, compact headers/actions, readable transcript measure, and a composer that stays visually primary. These boundary-only rules preserve list/detail navigation, virtualization, streaming, dock/floating geometry, and the stable non-Alpha tree.
+*/
+[data-alpha-surface="true"] .chat-sidebar-search-container {
+  padding: var(--alpha-density-2);
+  gap: var(--alpha-density-1);
+}
+
+[data-alpha-surface="true"] .chat-session-list {
+  padding: var(--alpha-density-1) var(--alpha-density-2);
+}
+
+[data-alpha-surface="true"] .chat-session-item {
+  gap: var(--alpha-density-1);
+  padding: var(--alpha-density-2) var(--alpha-density-3);
+  border-radius: var(--radius-md);
+}
+
+[data-alpha-surface="true"] .chat-thread-header {
+  gap: var(--alpha-density-2);
+  padding: var(--alpha-density-2) var(--alpha-density-3);
+  background: var(--alpha-neutral-background);
+}
+
+[data-alpha-surface="true"] .chat-messages {
+  padding: var(--alpha-density-4);
+}
+
+[data-alpha-surface="true"] .chat-transcript-row {
+  padding-block-end: var(--alpha-density-3);
+}
+
+[data-alpha-surface="true"] .chat-message {
+  padding: var(--alpha-density-2) var(--alpha-density-3);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+[data-alpha-surface="true"] :is(.view-header__actions, .chat-thread-header) .btn {
+  min-block-size: var(--alpha-control-height);
+  padding-block: var(--alpha-density-1);
+}
+
+@media (max-width: 768px) {
+  [data-alpha-surface="true"] .chat-messages {
+    padding: var(--alpha-density-2);
+  }
+
+  [data-alpha-surface="true"] .chat-thread-header {
+    padding-inline: var(--alpha-density-2);
+  }
+
+  [data-alpha-surface="true"] :is(.view-header__actions, .chat-thread-header) .btn {
+    min-block-size: var(--alpha-touch-height);
+  }
 }
 
 /* Conversation list */
@@ -183,6 +249,18 @@ html[data-viewport-mode="tablet"] .chat-view--docked-list .chat-sidebar--docked 
   padding-right: calc((var(--space-md) * 2) + var(--space-sm));
 }
 
+/* FNXC:ChatWindows 2026-09-12-04:06: L’état textuel rend une fenêtre ouverte ou minimisée perceptible sans dépendre uniquement de la couleur de la ligne. */
+.chat-session-window-state {
+  display: inline-flex;
+  inline-size: max-content;
+  margin-block: var(--space-xs);
+  padding: var(--space-2xs) var(--space-xs);
+  border: var(--btn-border-width) solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+}
+
 .chat-session-preview {
   font-size: 12px;
   color: var(--text-muted);
@@ -279,6 +357,14 @@ FN-8191 gives the conversation action menu a token-composed border-box width. Ch
   box-shadow: var(--shadow-lg);
   padding: var(--space-xs);
   z-index: 100;
+}
+
+/*
+FNXC:AlphaCollections 2026-09-10-20:43:
+Conversation actions use one sectioned homemade Alpha collection for continuous arrow navigation. The tag-action rail follows as sibling chrome, with visible tag names aligned to its rename/delete buttons.
+*/
+.chat-session-context-menu-section {
+  display: contents;
 }
 
 .chat-session-context-menu button {
@@ -1543,8 +1629,13 @@ mobile and desktop share one markup.
 }
 
 /* Input area */
+FNXC:AlphaMobileDrawer 2026-09-10-22:24:
+Chat's transcript is the shrinking scroll owner inside the canonical Alpha drawer height. The composer remains a non-shrinking flex child so short landscape and keyboard-resized layouts cannot push the real input below the panel's internal system clearance.
+*/
 .chat-input-area {
   position: relative;
+  flex: 0 0 auto;
+  min-width: 0;
   padding: var(--space-md) var(--space-lg);
   border-top: 1px solid var(--border);
   display: flex;
@@ -2334,8 +2425,10 @@ The compact Archived toggle shares the narrowed tag-filter line, with tokenized 
 .chat-session-tag { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 var(--space-xs); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text-muted); font-size: var(--font-size-xs); }
 /* FNXC:ChatTags 2026-08-05-12:15: direct-conversation tag controls keep assignment, rename, and deletion in the existing context menu so shared Chat hosts do not grow another sidebar action row. */
 .chat-session-tag-menu { display: flex; flex-direction: column; gap: var(--space-xs); padding: var(--space-xs); border-bottom: 1px solid var(--border); }
+.chat-tag-assignment-menu { min-width: 0; }
+.chat-tag-action-rail { display: flex; flex-direction: column; gap: var(--space-xs); }
 .chat-tag-menu-item { display: flex; align-items: center; gap: var(--space-xs); min-width: 0; }
-.chat-session-context-menu .chat-tag-menu-item > [role="menuitemcheckbox"] { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-tag-action-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: var(--font-size-sm); }
 .chat-session-context-menu .chat-tag-menu-item > .btn-icon { flex: 0 0 auto; width: auto; padding: var(--space-xs); }
 .chat-tag-create-row { display: flex; gap: var(--space-xs); }
 .chat-tag-create-row .input { min-width: 0; }

@@ -2,11 +2,11 @@
 FNXC:MainContent 2026-06-24-00:00:
 MainContent is the dashboard main-content router extracted from AppInner's render path. Its hook-free switch still owns every ordinary destination, while Board, List, and Chat yield to MainViewKeepAlive so visited project views preserve local state without remaining active behind another route. The lazy view chunks (and their leading-underscore inventory convention) stay declared in App.tsx per the docs guard and are threaded in as props; the eager ChatView.css import remains in App.tsx so the styles bundle into the main CSS file.
 */
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState, type ReactNode } from "react";
 import type { NativeStructurePreviewResult, NativeStructureRef, Task, TaskDetail } from "@fusion/core";
 import { TaskCard } from "../TaskCard";
 import { ListView } from "../ListView";
-import { TaskDetailContent } from "../TaskDetailModal";
+import { MainPanelTaskDetailHost, type AppMainPanelTaskDetailState } from "../TaskDetailHostBoundaries";
 import { applyLocalTaskPatch, mergeTaskSnapshot } from "../../hooks/useTasks";
 import { ProjectOverview } from "../ProjectOverview";
 import { MissionManager } from "../MissionManager";
@@ -68,6 +68,65 @@ export function resolveAlphaMobileDrawerTitle(taskView: TaskView, pluginDashboar
     return pluginDashboardViews.find((entry) => buildPluginTaskViewId(entry.pluginId, entry.view.viewId) === taskView)?.view.label ?? "Plugin";
   }
   return ALPHA_DRAWER_TITLES[taskView] ?? "Workspace";
+}
+
+interface AlphaMainContentDrawerProps {
+  taskView: TaskView;
+  open: boolean;
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+}
+
+/*
+FNXC:AlphaMobileDrawer 2026-09-10-23:59:
+Ordinary and plugin destinations share this production bridge so header ownership is derived from the routed task view in one place. Browser smoke mounts this same bridge, preventing fixture copies from silently disagreeing with MainContent.
+*/
+export function AlphaMainContentDrawer({ taskView, open, title, onClose, children }: AlphaMainContentDrawerProps) {
+  return (
+    <AlphaMobileDrawer
+      open={open}
+      title={title}
+      onClose={onClose}
+      keepMounted
+      testId="alpha-mobile-drawer-main-content"
+      contentOwnsHeader={!isPluginViewId(taskView)}
+      contentOwnsScroll={false}
+    >
+      {children}
+    </AlphaMobileDrawer>
+  );
+}
+
+type AppOwnedMainPanelBinding =
+  | "mainPanelDetailTask"
+  | "mainPanelDetailInitialTab"
+  | "setMainPanelDetailTask"
+  | "openTaskDetailInMainPanel"
+  | "closeTaskDetailMainPanel";
+
+export type AppMainPanelTaskDetailMainContentProps = Omit<MainContentProps, AppOwnedMainPanelBinding>;
+
+export interface AppMainPanelTaskDetailCompositionProps {
+  state: AppMainPanelTaskDetailState;
+  mainContentProps: AppMainPanelTaskDetailMainContentProps;
+}
+
+/*
+FNXC:TaskDetailAlpha 2026-09-11-14:13:
+The production MainContent composition owns the final projection of App's task-detail state. Tests mount this component directly so omitting or replacing the authoritative open, close, tab, snapshot, or setter binding breaks the same path App ships.
+*/
+export function AppMainPanelTaskDetailComposition({ state, mainContentProps }: AppMainPanelTaskDetailCompositionProps) {
+  return (
+    <MainContent
+      {...mainContentProps}
+      mainPanelDetailTask={state.task}
+      mainPanelDetailInitialTab={state.initialTab}
+      setMainPanelDetailTask={state.setTask}
+      openTaskDetailInMainPanel={state.open}
+      closeTaskDetailMainPanel={state.close}
+    />
+  );
 }
 
 export function MainContent(props: MainContentProps) {
@@ -191,6 +250,8 @@ export function MainContent(props: MainContentProps) {
   lastFetchTimeMs,
   openCreateWorkflowWithNav,
   sidebarActive,
+  notesController,
+  registerNotesGuard,
   isMobile,
   mainPanelDetailInitialTab,
   closeTaskDetailMainPanel,
@@ -362,7 +423,6 @@ export function MainContent(props: MainContentProps) {
       alphaMobileDrawer={alphaMobileDrawerEnabled ? {
         activeId: modalManager.detailTask ? null : taskView === "list" || taskView === "chat" ? taskView : null,
         title: alphaDrawerTitle,
-        closeLabel: t("common.close", "Close"),
         onClose: closeAlphaMobileDrawer,
       } : undefined}
     />
@@ -702,7 +762,8 @@ export function MainContent(props: MainContentProps) {
     return (
       <PageErrorBoundary>
         <Suspense fallback={null}>
-          <NotesView projectId={currentProject?.id} addToast={addToast} />
+          {/* FNXC:AlphaDesktopRightDock 2026-09-11-22:51: The standard Notes page must replace any retained compact-dock guard after a desktop-to-tablet transition. Its live dirty-state closure remains authoritative when the draft becomes dirty only after the transition. */}
+          <NotesView projectId={currentProject?.id} addToast={addToast} controller={notesController} registerGuard={registerNotesGuard} />
         </Suspense>
       </PageErrorBoundary>
     );
@@ -993,20 +1054,18 @@ export function MainContent(props: MainContentProps) {
         existing `isMobile` prop; it never defers or reorders when onRequestClose/onBackToBoard
         fire, and honors prefers-reduced-motion (see styles.css).
         */}
-        <div className={`task-detail-main-panel${isMobile ? " task-detail-main-panel--mobile-transition" : ""}`}>
-          <div className="task-detail-main-panel-body">
-            <TaskDetailContent
+        <MainPanelTaskDetailHost
               task={liveDetailTask}
               projectId={currentProject?.id}
               tasks={tasks}
               globalPaused={globalPaused}
-              embedded
               initialTab={mainPanelDetailInitialTab}
               /*
               FNXC:TaskDetail 2026-06-22-18:40:
               Board-card detail (full main panel) renders its "Back to board" affordance inside TaskDetailContent's gray header (far right, across from the task id) instead of a separate back-row above the content. The prop only renders the header back button when both embedded and onBackToBoard are present, so ListView split-pane and modal usages stay unaffected.
               */
-              onBackToBoard={closeTaskDetailMainPanel}
+              onNavigateToBoard={closeTaskDetailMainPanel}
+              mobileTransition={isMobile}
               /* FNXC:FloatingWindow 2026-06-22-21:10: Popping out from the board's full-panel detail also returns the main panel to the board, so the board (not the emptied detail) sits behind the floating window. */
               onPopOut={(task) => { popOutTaskDetail(task); closeTaskDetailMainPanel(); }}
               onOpenDetail={(value, initialTab) => openTaskDetailInMainPanel(value, initialTab ?? "chat")}
@@ -1019,11 +1078,7 @@ export function MainContent(props: MainContentProps) {
               onUnpauseTask={unpauseTask}
             onResetTask={resetTask}
               onDuplicateTask={duplicateTask}
-              /*
-              FNXC:Navigation 2026-06-22-09:00:
-              The full-panel task-detail must dismiss back to the board when a destructive/terminal action (delete/merge/retry/reset/duplicate) fires, mirroring the modal path. Without onRequestClose the panel kept showing a ghost of the just-acted-on task.
-              */
-              onRequestClose={closeTaskDetailMainPanel}
+              /* FNXC:Navigation 2026-06-22-09:00: MainPanelTaskDetailHost routes destructive and explicit exits through the same Board navigation owner. */
               onRefinementCreated={(task) => ingestCreatedTasks([task])}
               onTaskUpdated={(updatedTask) => {
                 setMainPanelDetailTask((previous) => {
@@ -1036,8 +1091,6 @@ export function MainContent(props: MainContentProps) {
               autoMergeEnabled={autoMerge}
               taskDetailChatFirst={taskDetailChatFirst}
             />
-          </div>
-        </div>
       </PageErrorBoundary>
     );
   }
@@ -1098,7 +1151,7 @@ export function MainContent(props: MainContentProps) {
         mergeStrategy={mergeStrategy}
         onOpenWorkflowEditor={openWorkflowEditorWithNav}
         onCreateWorkflow={openCreateWorkflowWithNav}
-        workflowControlsInHeader={sidebarActive || isMobile}
+        workflowControlsInHeader={sidebarActive || isMobile || experimentalFeatures?.alphaUpdates === true}
       />
     </PageErrorBoundary>
   );
@@ -1116,16 +1169,14 @@ export function MainContent(props: MainContentProps) {
     <>
       {mainViewKeepAlive}
       {switchUsesAlphaDrawer ? (
-        <AlphaMobileDrawer
+        <AlphaMainContentDrawer
+          taskView={taskView}
           open={!modalManager.detailTask}
           title={alphaDrawerTitle}
-          closeLabel={t("common.close", "Close")}
           onClose={closeAlphaMobileDrawer}
-          keepMounted
-          testId="alpha-mobile-drawer-main-content"
         >
           {switchView}
-        </AlphaMobileDrawer>
+        </AlphaMainContentDrawer>
       ) : switchView}
     </>
   );
