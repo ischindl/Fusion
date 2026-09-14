@@ -104,7 +104,6 @@ import { getStalePausedReviewCopy, shouldShowStalePausedReviewBadge } from "../u
 import { getTaskAgeStalenessCopy } from "../utils/taskAgeStalenessCopy";
 import { resolveStallReason, stallReasonVisibleOnFace } from "../utils/stallReason";
 import { toStallAgent } from "../utils/stallAgent";
-import { splitTaskPlanSummary } from "../utils/taskPlanSummary";
 import { decideTaskPromptRefresh } from "../utils/taskPromptRefresh";
 import { getPriorityLabel } from "../utils/priorityIndicator";
 import { hasPendingAutomaticRecovery } from "../utils/taskRecovery";
