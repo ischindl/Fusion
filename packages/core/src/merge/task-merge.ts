@@ -387,6 +387,111 @@ disabling stale-content recovery at every door.
 export const STALE_CONTENT_APPROVAL_BLOCKER =
   "task has a pre-merge approval recorded against different content";
 
+/*
+FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217):
+The two sentences that report "a required pre-merge gate is refused because of its row state" are
+KEYED TEXT, not freeform prose: the self-healing stall-disposal progress reset and the failed-step
+revival admission compare the generic variant verbatim, and RUFU-217's stall router parses the
+gate-named variant to identify which gate to re-seed. Building both from this single template and
+reading them back through the parser/predicate keeps a future editorial change from silently
+un-keying a dependent consumer; the exact wording is byte-stable and pinned by tests.
+The generic variant is what a caller that omits `requiredPreMergeStepIds` (recovery semantics) sees
+for any failed/not-approved pre-merge row; the gate-named variant names the first non-approved
+required gate whenever gate ids are resolved — both mean the same family of fact, so
+`isPreMergeGateFailedBlocker` accepts either. Neither sentence claims a verdict exists or was changed.
+*/
+export const PRE_MERGE_STEPS_FAILED_BLOCKER = "task has failed pre-merge workflow steps";
+const NO_CURRENT_APPROVAL_BLOCKER_PREFIX =
+  "task has enabled pre-merge workflow steps without a current approval (gate '";
+const NO_CURRENT_APPROVAL_BLOCKER_SUFFIX = "')";
+
+/** Builds the gate-named refusal. Byte-identical to the historical inline template. */
+export function buildPreMergeGateApprovalBlocker(gateId: string): string {
+  return `${NO_CURRENT_APPROVAL_BLOCKER_PREFIX}${gateId}${NO_CURRENT_APPROVAL_BLOCKER_SUFFIX}`;
+}
+
+/** Recovers the named gate id from a gate-named refusal, or undefined for any other blocker. Nullish is "no blocker". */
+export function parsePreMergeGateApprovalBlocker(blocker: string | undefined | null): string | undefined {
+  if (blocker == null) return undefined;
+  if (!blocker.startsWith(NO_CURRENT_APPROVAL_BLOCKER_PREFIX) || !blocker.endsWith(NO_CURRENT_APPROVAL_BLOCKER_SUFFIX)) {
+    return undefined;
+  }
+  const gateId = blocker.slice(
+    NO_CURRENT_APPROVAL_BLOCKER_PREFIX.length,
+    blocker.length - NO_CURRENT_APPROVAL_BLOCKER_SUFFIX.length,
+  );
+  return gateId.length > 0 && !gateId.includes("'") ? gateId : undefined;
+}
+
+/*
+FNXC:VerdictlessFailedGate 2026-09-14-14:47 (RUFU-217, Step 5):
+A terminal park re-persists the gate-named refusal INSIDE a bigger sentence: the stall-deadlock
+error embeds the unwrapped merge-blocker reason ("In-review stall deadlock: … AUTO_MERGE_RETRY_REJECTED:
+Cannot merge X: <blocker>"), so parked-card recovery must recover the named gate id from that
+container without loosening the exact-form parser above — every un-parked caller keeps its
+byte-exact contract. Scans the LAST occurrence (a container quotes the refusal once, at the end)
+and delegates the tail to the exact parser, so a container that merely starts or ends with a
+blocker-shaped fragment still has to satisfy the full exact form to resolve.
+*/
+/** Recovers the gate id from a container sentence embedding the gate-named refusal, or undefined. */
+export function parseEmbeddedPreMergeGateApprovalBlocker(text: string | undefined | null): string | undefined {
+  if (text == null || text.length === 0) return undefined;
+  const index = text.lastIndexOf(NO_CURRENT_APPROVAL_BLOCKER_PREFIX);
+  if (index === -1) return undefined;
+  return parsePreMergeGateApprovalBlocker(text.slice(index));
+}
+
+/**
+ * Whether a merge blocker reports the failed / not-approved pre-merge gate row family (generic
+ * recovery-semantics sentence or gate-named approval sentence). Content-evidence refusals
+ * (stale / unprovable) are deliberately NOT part of this family; the stale-content lane owns them.
+ * Nullish input is "no blocker", not this family — callers threading `getTaskMergeBlocker`'s
+ * optional return (e.g. the revival sweep filter) may pass it directly.
+ */
+export function isPreMergeGateFailedBlocker(blocker: string | undefined | null): boolean {
+  if (blocker == null) return false;
+  return blocker === PRE_MERGE_STEPS_FAILED_BLOCKER
+    || parsePreMergeGateApprovalBlocker(blocker) !== undefined;
+}
+
+/**
+ * Whether the card carries at least one FAILED pre-merge workflow-step row — the exact evidence the
+ * results-only scan below turns into `PRE_MERGE_STEPS_FAILED_BLOCKER`. Recovery admissions key off
+ * the gate-named refusal (which a `pending` row also produces once gate ids are forwarded) share
+ * this conjunct so a still-running gate is never admitted by blocker text alone.
+ */
+export function hasFailedPreMergeWorkflowStepRow(
+  task: Pick<Task, "workflowStepResults">,
+): boolean {
+  return task.workflowStepResults?.some((result) => {
+    const phase = result.phase || "pre-merge";
+    return phase === "pre-merge" && result.status === "failed";
+  }) ?? false;
+}
+
+/*
+FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217, AC2/AC3):
+Shared class condition for the three verdict-less re-run admission gates (self-healing re-route,
+merge-queue deferral, graph-failure sink). The gate-named refusal is ambiguous on its own — an
+authored REVISE, a live `pending` row, and a plumbing verdict-less failure all render it — so the
+condition re-resolves the named gate's approval through the SAME evaluator that produced the
+blocker (same gate ids, same merge content) and accepts only `verdictLessFailed`. The stale-content
+and unprovable sentences fail the parse and can never reach the reseed lane through this door;
+the stale lane keeps exclusive ownership of its refusals.
+*/
+/** Whether `blocker` names a gate whose latest required row is verdict-less failed. */
+export function namesVerdictLessFailedGate(
+  task: Pick<Task, "workflowStepResults" | "repositoryScope">,
+  blocker: string | undefined | null,
+  options: { requiredPreMergeStepIds?: ReadonlySet<string>; mergeContent?: MergeContentDescriptor } = {},
+): boolean {
+  const gateId = blocker == null ? undefined : parsePreMergeGateApprovalBlocker(blocker);
+  if (!gateId) return false;
+  return evaluatePreMergeApprovals(task, options).some(
+    (approval) => approval.workflowStepId === gateId && approval.verdictLessFailed === true,
+  );
+}
+
 /**
  * Thrown by merge doors when the ONLY thing standing between a card and merge is an
  * enabled pre-merge gate that has not run yet. Callers must treat it as "retry after the
@@ -432,6 +537,14 @@ export function getTaskMergeBlocker(
     unrun gate cannot be mistaken for approval. Recovery scanners deliberately
     omit this input: they must still discover resultless cards and route them
     back to their graph gate rather than hiding a recoverable wedge.
+
+    FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217, AC4) refined that boundary: the
+    DISCOVERY side (failed-step revival's row scan, FN-9243's reseed search) keeps the result-only
+    view — forwarding would answer "gate missing" and hide exactly the resultless card it hunts.
+    The DISPOSAL side (the in-review stall classifier and every store hydration site that answers
+    `inReviewStall`) now FORWARDS: RUFU-204's deadlock parked on a refusal sentence the door would
+    never have written, so a card already proven blocked must be reasoned about with the door's own
+    answer. Not-run deferrals surfacing there are suppressed in `getInReviewStallReason` itself.
     */
     requiredPreMergeStepIds?: ReadonlySet<string>;
     mergeContent?: MergeContentDescriptor;
@@ -515,7 +628,7 @@ export function getTaskMergeBlocker(
   single fact needed to act; every other approval blocker already implies its own remedy.
   */
   if (approval?.state === "not-approved") {
-    return `task has enabled pre-merge workflow steps without a current approval (gate '${approval.workflowStepId}')`;
+    return buildPreMergeGateApprovalBlocker(approval.workflowStepId);
   }
   if (approval?.state === "stale-content") return STALE_CONTENT_APPROVAL_BLOCKER;
   if (approval?.state === "unprovable-content") return "task has no provable approval for the content being merged";
@@ -539,14 +652,14 @@ export function getTaskMergeBlocker(
    * bypassed step therefore no longer matches this branch, so this function
    * stays byte-identical in logic — the bypass works upstream of the blocker,
    * not by special-casing it here (FN-7720).
+   *
+   * FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217):
+   * The scan moved into `hasFailedPreMergeWorkflowStepRow` unchanged; the recovery admissions that
+   * pair a gate-named refusal with a failed-row conjunct now read the same predicate, so the door
+   * and the sweeps can never disagree on what "has a failed pre-merge row" means.
    */
-  if (
-    task.workflowStepResults?.some((result) => {
-      const phase = result.phase || "pre-merge";
-      return phase === "pre-merge" && result.status === "failed";
-    })
-  ) {
-    return "task has failed pre-merge workflow steps";
+  if (hasFailedPreMergeWorkflowStepRow(task)) {
+    return PRE_MERGE_STEPS_FAILED_BLOCKER;
   }
 
   return undefined;

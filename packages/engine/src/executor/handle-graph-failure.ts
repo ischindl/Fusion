@@ -18,6 +18,7 @@ import {
   resolveLifecycleColumns,
   resolveMaxConsecutiveToolFailureRetries,
   hasPendingReviewRemediationWork,
+  isVerdictLessFailedGateRow,
   resolveReboundTarget,
   resolveStepReopenPolicy,
   resolveWorkflowIrForTask,
@@ -1160,8 +1161,59 @@ export async function handleGraphFailure(
           */
           const workflowIr = await resolveWorkflowIrForTask(deps.store, task.id).catch(() => undefined);
           const stepReopenPolicy = resolveStepReopenPolicy(workflowIr);
+          /*
+          FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217, AC1 — graph-failure sink, hazard-3):
+          A verdict-less failed gate row means the gate CRASHED — no reviewer opinion exists — so the
+          recovery is a fresh GATE RUN, not review remediation: `requestPreMergeOptionalStepFix` below
+          would ask the executor to fix findings that were never authored and park the card exactly
+          like RUFU-204's (its remediation feedback would be "(no feedback captured)"). The FN-9243
+          reseed lane owns admission and its budget: it only seeds gates classified verdict-less or
+          missing, refuses while a continuation is active, and stops seeding once the persisted
+          per-task per-gate rerun budget is spent. The same resolver trio as the unrun-gate block
+          below runs here — one resolution per failure, so blocker and reroute decide from identical
+          evidence. A DECLINED seed (budget spent, active continuation, or resolve failure) falls
+          through to the pre-existing "remediation was not scheduled" park with that message byte-
+          identical to the authored-REVISE answer (AC3), skipping remediation because there is no
+          authored opinion to remediate.
+          */
+          let verdictlessRerunDeclined = false;
+          if (isVerdictLessFailedGateRow(failedPreMergeStep)
+            && live.column === failureLanes.review
+            && !live.paused
+            && !hasPendingReviewRemediationWork(live, { stepReopenPolicy })) {
+            let reroute: Awaited<ReturnType<typeof rerouteUnrunPreMergeGateToReview>> | undefined;
+            let resolvedGateCount: number | undefined;
+            try {
+              const gate = await resolvePreMergeGateForTask(deps.store, live.id, live.enabledWorkflowSteps, live);
+              resolvedGateCount = gate.requiredPreMergeStepIds.size;
+              const settings = await deps.store.getSettings();
+              const mergeContent = await captureMergeContentDescriptor(live, { workspaceRootDir: deps.rootDir, settings });
+              reroute = await rerouteUnrunPreMergeGateToReview(deps.store, live, {
+                requiredPreMergeStepIds: gate.requiredPreMergeStepIds,
+                mergeContent,
+              });
+            } catch {
+              reroute = undefined;
+            }
+            if (reroute) {
+              // AC5: the park-routing decision is auditable, ids/counts/fixed outcomes only.
+              await emitBoundedRunAudit(deps.store, {
+                taskId: task.id, agentId: "graph-failure", runId: generateSyntheticRunId("graph-failure", task.id), domain: "database",
+                mutationType: "task:merge-unrun-pre-merge-gate-rerouted", target: task.id,
+                metadata: { taskId: task.id, nodeId: reroute.nodeId, workflowStepId: reroute.workflowStepId, reason: reroute.reason, source: "graph-failure", missingGateCount: resolvedGateCount },
+              });
+            }
+            if (reroute?.rerouted) {
+              const message = `Workflow graph re-seeded for a re-run of pre-merge gate '${reroute.nodeId ?? "unknown"}' whose last run died without a verdict`;
+              executorLog.warn(`${task.id}: ${message}`);
+              await deps.store.logEntry(task.id, message, undefined, deps.getRunContextFor(task.id));
+              return;
+            }
+            verdictlessRerunDeclined = true;
+          }
           if (live.column === failureLanes.review
             && !live.paused
+            && !verdictlessRerunDeclined
             && !hasPendingReviewRemediationWork(live, { stepReopenPolicy })) {
             /*
             FNXC:LifecycleContainment 2026-08-30-13:36:

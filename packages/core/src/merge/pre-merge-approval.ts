@@ -5,7 +5,17 @@ import { isWorkflowStepNotRun } from "../workflows/workflow-step-results.js";
 import type { MergeContentDescriptor } from "./merge-content-descriptor.js";
 
 export type PreMergeApprovalState = "approved" | "missing" | "not-approved" | "stale-content" | "unprovable-content";
-export type PreMergeApproval = { workflowStepId: string; state: PreMergeApprovalState; repositories?: string[] };
+/*
+FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217):
+The approval evaluator collapses two different facts into one `not-approved` state: "a reviewer looked
+and rejected" and "the gate never produced a verdict". Both answers are correct for the merge door
+(FN-180 positive-approval contract, byte-stable) and fatal for recovery, because every re-run route
+keyed off `missing` only. `verdictLessFailed` names the row SHAPE on the approval so recovery lanes
+(reseed, stall router, parked-card recovery) can admit a fresh gate run while the merge door keeps
+refusing; it is a recovery routing signal, never an approval and never a fabricated verdict.
+The field is only ever PRESENT-TRUE: absent keeps every existing approval shape byte-stable.
+*/
+export type PreMergeApproval = { workflowStepId: string; state: PreMergeApprovalState; repositories?: string[]; verdictLessFailed?: true };
 
 /** The merge gate's sole definition of a review whose approval binds source content. */
 export function requiresContentReviewProof(
@@ -26,6 +36,66 @@ export function requiresAuthoredReviewVerdict(
 }
 
 export const AUTOMATED_BYPASS_ACTORS: ReadonlySet<string> = new Set([FAST_MODE_BYPASS_ACTOR]);
+
+/*
+FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217):
+The verdict-less failed pre-merge gate row is ONE structural class with four producers: a crashed or
+orphaned review session (and the harness's no-verdict dispatch defect), an FN-8492 pending→failed
+orphan rewrite, an FN-279 invalidated approval whose verdict was stripped, and an FN-295 collateral
+restore (the restored row never carried a verdict; pre-restore archived rows stay excluded because the
+FN-295 restore lane owns them — hence `remediationArchivedAt == null`). None of them recorded an
+opinion, so the gate may run again — that is a fresh evaluation, not a reversal of reviewer
+authority: an authored non-approving verdict (`REVISE`/`RETHINK`/`UNAVAILABLE`) keeps the row out of
+this class and stays in the remediation-only lane (AC2). `status === "failed"` excludes `pending`
+rows (in-flight sessions own them; FN-8492 rewrites orphaned pending to `failed`, at which point the
+row joins this class), `advisory_failure` rows (a distinct terminal status with its own advisory-lane
+semantics, not the failed-gate shape), and `skipped`+bypassed waiver rows;
+`arbitrationDecision === undefined` excludes adjudicated rows.
+`requiresAuthoredReviewVerdict` is the owed-verdict discriminator: a script-mode non-review gate
+failing on an exit code never owed a verdict, belongs to the ordinary failed-step remediation lane,
+and would otherwise be reseeded in a loop it cannot satisfy.
+*/
+export function isVerdictLessFailedGateRow(
+  result: Pick<
+    WorkflowStepResult,
+    | "workflowStepId"
+    | "phase"
+    | "status"
+    | "verdict"
+    | "reviewKind"
+    | "verdictRequired"
+    | "bypassedBy"
+    | "remediationArchivedAt"
+    | "arbitrationDecision"
+  >,
+): boolean {
+  return (result.phase ?? "pre-merge") === "pre-merge"
+    && result.status === "failed"
+    // `verdict == null` deliberately covers both the absent field and a literal JSON `null`
+    // (RUFU-204's stored row carries `verdict: null` although the type says `undefined`).
+    && result.verdict == null
+    && result.bypassedBy === undefined
+    && result.remediationArchivedAt == null
+    && result.arbitrationDecision === undefined
+    && requiresAuthoredReviewVerdict(result.workflowStepId, result);
+}
+
+/**
+ * Required pre-merge gates whose latest row is verdict-less-failed (RUFU-217).
+ * Derived through `evaluatePreMergeApprovals` so recovery lanes and the merge door read the same
+ * latest-row-per-gate resolution; the merge door keeps refusing these gates — this finder only names
+ * which gates a bounded fresh run may be seeded for. A task with no required gate ids resolves none
+ * (there is no gate the engine could re-run).
+ */
+export function findVerdictLessFailedRequiredGates(
+  task: Pick<Task, "workflowStepResults" | "repositoryScope">,
+  options: { requiredPreMergeStepIds?: ReadonlySet<string> } = {},
+): string[] {
+  if (!options.requiredPreMergeStepIds?.size) return [];
+  return evaluatePreMergeApprovals(task, options)
+    .filter((approval) => approval.verdictLessFailed === true)
+    .map((approval) => approval.workflowStepId);
+}
 
 /*
 FNXC:PreMergeApproval 2026-09-01-11:28:
@@ -194,7 +264,19 @@ function evaluateStep(
     operator waiver. Without this narrow exception, a crash-archived gate is permanently unmergeable.
     */
     const auditedOperatorWaiver = isAuditedOperatorBypass(result) && descriptor?.kind !== "workspace";
-    if (!approved || (result.remediationArchivedAt != null && !auditedOperatorWaiver)) return { workflowStepId, state: "not-approved" };
+    if (!approved || (result.remediationArchivedAt != null && !auditedOperatorWaiver)) {
+      /*
+      FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217):
+      The refusal stays `not-approved` byte-for-byte; the conditional spread adds the recovery
+      routing signal only for the verdict-less row shape, so every other not-approved carrier
+      (authored REVISE, workspace revision churn, archived carriers) keeps its exact approval shape.
+      */
+      return {
+        workflowStepId,
+        state: "not-approved",
+        ...(isVerdictLessFailedGateRow(result) ? { verdictLessFailed: true as const } : {}),
+      };
+    }
     // Plan fingerprints bind plan text rather than source diff and must never be cross-compared.
     if (result.reviewKind === "plan") return { workflowStepId, state: "approved" };
     if (auditedOperatorWaiver) {

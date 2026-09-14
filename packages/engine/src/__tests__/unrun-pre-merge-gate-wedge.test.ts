@@ -117,6 +117,114 @@ describe("unrun pre-merge gate wedge regression", () => {
     expect(store.logEntry).toHaveBeenCalledWith(live.id, expect.stringContaining("re-seeded at unrun pre-merge gate"), undefined, undefined);
   });
 
+  /*
+  FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217, AC1 symptom (d)):
+  RUFU-204's shape through the graph-failure sink: the graph run ends in review while the latest
+  pre-merge row is Code Review `failed` with NO verdict (the reviewer session died). Scheduling
+  review remediation for that row asks the executor to fix findings nobody authored, and the
+  "remediation was not scheduled" park below it is how RUFU-204 became operator-bypass-only. The
+  sink must instead re-seed the gate for a fresh run — no verdict fabricated, no move backward —
+  and never enter the remediation branch at all.
+  */
+  it("re-runs a verdict-less failed gate through the graph-failure sink instead of scheduling remediation", async () => {
+    const live = resultlessReviewTask({
+      workflowStepResults: [
+        { workflowStepId: "plan-review", status: "passed", reviewKind: "plan", verdict: "APPROVE" },
+        { workflowStepId: "code-review", workflowStepName: "Code Review", status: "failed", reviewKind: "code" },
+      ],
+    });
+    const store = Object.assign(createMockStore(), recoveryStore(live));
+    store.getTask.mockResolvedValue(live);
+    const executor = new TaskExecutor(store, "/tmp/fn-9243-resultless");
+    vi.spyOn(executor as any, "routeRetryableRemediationGraphFailureToPreMergeFix").mockResolvedValue(false);
+    vi.spyOn(executor as any, "routeGraphFailureToExecutionResume").mockResolvedValue(false);
+    const fixSpy = vi.spyOn(executor as any, "requestPreMergeOptionalStepFix").mockResolvedValue(false);
+
+    await (executor as any).handleGraphFailure(live, {
+      disposition: "failed", outcome: "failure", reason: "gate-session-died", visitedNodeIds: ["code-review"], context: { "node:code-review:outcome": "failure", "node:code-review:value": "gate-session-died" },
+    });
+
+    expect(store.seedWorkspaceCodeReviewContinuationIfIdle).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: live.id, nodeId: "code-review", state: "runnable", sourceColumn: "in-review",
+    }));
+    expect(store.logEntry).toHaveBeenCalledWith(live.id, expect.stringContaining("whose last run died without a verdict"), undefined, undefined);
+    expect(fixSpy).not.toHaveBeenCalled();
+    expect(store.logEntry).not.toHaveBeenCalledWith(live.id, expect.stringContaining("remediation was not scheduled"), expect.anything(), expect.anything());
+    expect(store.recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({
+      mutationType: "task:merge-unrun-pre-merge-gate-rerouted",
+      metadata: expect.objectContaining({ taskId: live.id, reason: "verdictless-seeded", source: "graph-failure" }),
+    }));
+  });
+
+  /*
+  FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217, AC3):
+  Exhaustion must still park with the operator-actionable message. With the persisted rerun budget
+  already spent (three fixed-marker log entries), the sink declines to re-seed and lands on the
+  pre-existing "remediation was not scheduled" park — byte-identical to what an authored REVISE
+  whose remediation was declined sees below. The budget is the difference between the two cards;
+  the park text must not be.
+  */
+  it("parks a verdict-less gate with the pre-existing message once the re-run budget is spent", async () => {
+    const rerunMarkers = Array.from({ length: 3 }, () => ({
+      timestamp: "2026-09-14T00:00:00.000Z",
+      action: "[verdictless-gate-rerun] gate 'code-review'",
+    }));
+    const live = resultlessReviewTask({
+      log: rerunMarkers as any,
+      workflowStepResults: [
+        { workflowStepId: "plan-review", status: "passed", reviewKind: "plan", verdict: "APPROVE" },
+        { workflowStepId: "code-review", workflowStepName: "Code Review", status: "failed", reviewKind: "code" },
+      ],
+    });
+    const store = Object.assign(createMockStore(), recoveryStore(live));
+    store.getTask.mockResolvedValue(live);
+    const executor = new TaskExecutor(store, "/tmp/fn-9243-resultless");
+    vi.spyOn(executor as any, "routeRetryableRemediationGraphFailureToPreMergeFix").mockResolvedValue(false);
+    vi.spyOn(executor as any, "routeGraphFailureToExecutionResume").mockResolvedValue(false);
+    const fixSpy = vi.spyOn(executor as any, "requestPreMergeOptionalStepFix").mockResolvedValue(false);
+
+    await (executor as any).handleGraphFailure(live, {
+      disposition: "failed", outcome: "failure", reason: "gate-session-died", visitedNodeIds: ["code-review"], context: { "node:code-review:outcome": "failure", "node:code-review:value": "gate-session-died" },
+    });
+
+    expect(store.seedWorkspaceCodeReviewContinuationIfIdle).not.toHaveBeenCalled();
+    expect(fixSpy).not.toHaveBeenCalled();
+    expect(store.logEntry).toHaveBeenCalledWith(live.id, expect.stringContaining("remediation was not scheduled"), expect.any(String), undefined);
+    expect(store.recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({
+      mutationType: "task:merge-unrun-pre-merge-gate-rerouted",
+      metadata: expect.objectContaining({ taskId: live.id, reason: "rerun-budget-exhausted", source: "graph-failure" }),
+    }));
+  });
+
+  /*
+  FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217, AC3 control):
+  The authored-REVISE control for the park-text parity claim above: a real reviewer verdict keeps
+  its remediation attempt, and a declined attempt still lands on the same "remediation was not
+  scheduled" park with identical text.
+  */
+  it("keeps the authored-REVISE remediation decline on the identical park", async () => {
+    const live = resultlessReviewTask({
+      workflowStepResults: [
+        { workflowStepId: "plan-review", status: "passed", reviewKind: "plan", verdict: "APPROVE" },
+        { workflowStepId: "code-review", workflowStepName: "Code Review", status: "failed", reviewKind: "code", verdict: "REVISE", findings: [{ description: "real finding" }] },
+      ],
+    });
+    const store = Object.assign(createMockStore(), recoveryStore(live));
+    store.getTask.mockResolvedValue(live);
+    const executor = new TaskExecutor(store, "/tmp/fn-9243-resultless");
+    vi.spyOn(executor as any, "routeRetryableRemediationGraphFailureToPreMergeFix").mockResolvedValue(false);
+    vi.spyOn(executor as any, "routeGraphFailureToExecutionResume").mockResolvedValue(false);
+    const fixSpy = vi.spyOn(executor as any, "requestPreMergeOptionalStepFix").mockResolvedValue(false);
+
+    await (executor as any).handleGraphFailure(live, {
+      disposition: "failed", outcome: "failure", reason: "review-revised", visitedNodeIds: ["code-review"], context: { "node:code-review:outcome": "failure", "node:code-review:value": "review-revised" },
+    });
+
+    expect(store.seedWorkspaceCodeReviewContinuationIfIdle).not.toHaveBeenCalled();
+    expect(fixSpy).toHaveBeenCalledTimes(1);
+    expect(store.logEntry).toHaveBeenCalledWith(live.id, expect.stringContaining("remediation was not scheduled"), expect.any(String), undefined);
+  });
+
   it("uses the self-healing production sweep to seed an unrun gate and suppress merge enqueue", async () => {
     const live = resultlessReviewTask();
     const store = recoveryStore(live);

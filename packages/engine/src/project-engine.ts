@@ -38,6 +38,7 @@ import {
   PreMergeStepsNotRunError,
   PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
   isStaleContentApprovalBlocker,
+  namesVerdictLessFailedGate,
   classifyMergeSweepAdmission,
   classifyWorkflowNodeMergeRegion,
   isActiveMergeStatus,
@@ -2933,13 +2934,27 @@ export class ProjectEngine {
       requiredPreMergeStepIds: mergeGate.requiredPreMergeStepIds,
       mergeContent,
     });
-    if (blocker === PRE_MERGE_STEPS_NOT_RUN_BLOCKER && mergeContent.kind === "singular") {
+    /*
+    FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217, AC2):
+    The queue's in-place re-seed deferral widens from the literal not-run sentence to
+    `not-run ∪ namesVerdictLessFailedGate`, read from the SAME blocker/gate/content resolution the
+    queue already performed — one resolution per card, no second opinion. Without this arm a
+    verdict-less gate refusal made the queue reject the card three times before self-healing noticed;
+    now the queue itself keeps re-seeding until the rerun budget is spent. The stale-content and
+    unprovable refusals fail the gate-name parse inside `namesVerdictLessFailedGate`, so the
+    stale-lane branch below stays unreachable from this condition and keeps its exclusive routing.
+    */
+    if ((blocker === PRE_MERGE_STEPS_NOT_RUN_BLOCKER
+      || namesVerdictLessFailedGate(task, blocker, { requiredPreMergeStepIds: mergeGate.requiredPreMergeStepIds, mergeContent }))
+      && mergeContent.kind === "singular") {
       const reroute = await rerouteUnrunPreMergeGateToReview(store, task, {
         requiredPreMergeStepIds: mergeGate.requiredPreMergeStepIds,
         mergeContent,
       }).catch(() => ({ rerouted: false, reason: "no-unrun-gate" as const, nodeId: undefined, workflowStepId: undefined }));
       if (reroute.rerouted) {
-        await store.logEntry(task.id, "[pre-merge] The workflow graph was re-seeded at an enabled pre-merge gate that never ran.");
+        await store.logEntry(task.id, reroute.reason === "verdictless-seeded"
+          ? "[pre-merge] The workflow graph was re-seeded at a required pre-merge gate whose last run died without a verdict."
+          : "[pre-merge] The workflow graph was re-seeded at an enabled pre-merge gate that never ran.");
       }
       await emitBoundedRunAudit(store, {
         taskId: task.id, agentId: "merge-gate", runId: `${task.id}:merge-gate`, domain: "database",

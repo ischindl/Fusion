@@ -1,4 +1,4 @@
-import { getTaskMergeBlocker } from "../merge/task-merge.js";
+import { getTaskMergeBlocker, isPreMergeStepsNotRunBlocker } from "../merge/task-merge.js";
 import type { Task, TaskLogEntry } from "../types.js";
 
 /*
@@ -57,6 +57,27 @@ export interface InReviewStallContext {
   byte-identical.
   */
   reviewColumns?: ReadonlySet<string>;
+  /*
+  FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217, AC4 — blocker-input parity):
+  RUFU-204's stall parked on a merge-blocker reason that the merge door would never have written.
+  This classifier called `getTaskMergeBlocker(task, { reviewColumns })` — gate ids withheld — while
+  the door, the queue, and `deriveTaskStallReason` all forward `requiredPreMergeStepIds`. On the same
+  card the door answered the gate-named refusal, the chip showed it, and this deadlock classifier
+  saw only the legacy results-only scan (or nothing at all): one row, three lane answers. The
+  deadlock park then consumed log entries the door never produced, and the verdict-less class — the
+  one shape with a bounded automatic re-run — terminalized instead of re-running.
+
+  Call sites that resolve the card's gates (the self-healing sweep, the store hydration sites) MUST
+  forward them so the stall reason is byte-identical to the door's refusal under the same evidence.
+  Optional, with the results-only fallback byte-identical for callers that cannot resolve a workflow.
+
+  Forwarding is paired with a deferral carve-out below (hazard 1: do not start parking what the door
+  defers): a gate that has not run yet, or whose approval is waiting on content proof, is not a
+  deadlock — those blockers name work the reseed and content-proof lanes are scheduled to do, and
+  the door itself refuses to consume merge retries on them (`PreMergeStepsNotRunError`). Parking an
+  in-flight pipeline at the stall threshold would be a new failure this parity change introduced.
+  */
+  requiredPreMergeStepIds?: ReadonlySet<string>;
 }
 
 /** Keep aligned with engine DEFAULT_STALE_MERGING_STATUS_MIN_AGE_MS. */
@@ -335,8 +356,23 @@ export function getInReviewStallReason(
   The outer question was resolved and the inner one was not — the same half-conversion recorded at the
   helper itself for moves.ts, and fixed in #2963/#2964 for the merge paths.
   */
-  const mergeBlocker = getTaskMergeBlocker(task, { reviewColumns: context.reviewColumns });
+  const mergeBlocker = getTaskMergeBlocker(task, {
+    reviewColumns: context.reviewColumns,
+    requiredPreMergeStepIds: context.requiredPreMergeStepIds,
+  });
   if (mergeBlocker) {
+    /*
+    FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217 hazard 1 — deferral classes never park):
+    With gate ids forwarded, the approval-evaluation blockers become visible to this classifier for
+    the first time. The not-run sentence must not become a stall signal: the door raises
+    `PreMergeStepsNotRunError` (a deferral that never burns merge retries) and FN-9243's reseed lane
+    owns seeding the gate — a card whose earliest gate simply has not run yet is waiting on
+    scheduled work, not deadlocked. Without this arm, forwarding ids would have made every card
+    between "entered review" and "first gate ran" accumulate stall counts toward the deadlock park.
+    */
+    if (isPreMergeStepsNotRunBlocker(mergeBlocker)) {
+      return undefined;
+    }
     if (mergeBlocker.startsWith(FAILED_TASK_MERGE_BLOCKER_PREFIX)) {
       const error = mergeBlocker.slice(FAILED_TASK_MERGE_BLOCKER_PREFIX.length).trim();
       if (classifyProviderError(error) === "non_retryable") {

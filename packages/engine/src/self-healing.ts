@@ -96,7 +96,7 @@ import { loadWorkspaceConfig, type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_
   /* FNXC:SelfHealing 2026-09-06-09:47 (merge origin/main dd808ed2c6): FN-295 collateral-archive restore helpers + stale-content predicate — the auto-merged sweep bodies call all three. */
   resolveCollateralArchivedReviewGate,
   COLLATERAL_ARCHIVED_REVIEW_GATE_DIAGNOSTIC,
-  isStaleContentApprovalBlocker, isPreMergeStepsNotRunBlocker, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isLiveSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, resolveExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveRequiredPreMergeStepIds, resolveReboundTarget, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, isWipColumnRole, isReviewColumnRole, isTerminalColumnRole, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, resolveUnprovenReviewApproval, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type MoveTaskOptions, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult, type WorkflowStepResult, type WorkflowIr, type WorkflowIrV2, type ChatSession, type ChatInFlightGenerationState,
+  isStaleContentApprovalBlocker, isPreMergeStepsNotRunBlocker, isPreMergeGateFailedBlocker, parsePreMergeGateApprovalBlocker, parseEmbeddedPreMergeGateApprovalBlocker, findVerdictLessFailedRequiredGates, IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON, namesVerdictLessFailedGate, hasFailedPreMergeWorkflowStepRow, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isLiveSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, resolveExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveRequiredPreMergeStepIds, resolveReboundTarget, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, isWipColumnRole, isReviewColumnRole, isTerminalColumnRole, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, resolveUnprovenReviewApproval, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type MoveTaskOptions, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult, type WorkflowStepResult, type WorkflowIr, type WorkflowIrV2, type ChatSession, type ChatInFlightGenerationState,
   resolveNearDuplicateCanonicalFlags,
   LEGACY_COLUMN_IDS_BY_ROLE,
   TERMINAL_ROLES,
@@ -118,7 +118,7 @@ import { finalizePlanningSegment, isLegacyWorkspaceWorktreeLayout, resolveWorksp
 import { taskHoldsUnmergedCheckout, type CheckoutEmptinessProofMap } from "@fusion/core";
 import { proveDormantCheckoutEmptiness } from "./worktree/checkout-emptiness.js";
 import type { WorkspaceLandIntent } from "@fusion/core";
-import { classifyStaleContentPark } from "./merge/stale-content-park.js";
+import { AUTO_MERGE_RETRY_REJECTED_PREFIX, classifyStaleContentPark } from "./merge/stale-content-park.js";
 import type { MeshLeaseManager } from "./project/mesh-lease-manager.js";
 import { createLogger, schedulerLog } from "./logger.js";
 import { registerLifecycleMoveLog } from "./execution/lifecycle-move-log.js";
@@ -865,6 +865,47 @@ async function resolveNoOpFinalizeGateIds(store: TaskStore, task: Task): Promise
 export { classifyTransientMergeError } from "./errors/transient-merge-error-classifier.js";
 const MAX_STARVATION_DROPS = 3;
 /*
+FNXC:VerdictlessFailedGate 2026-09-14-14:47 (RUFU-217, Step 5 / AC1):
+Terminal parks re-persist the merge-door refusal they hit: the stall-deadlock disposition writes
+`In-review stall deadlock: <code> repeated N× without progress. <blocker>` and merge-retry
+exhaustion writes an `AUTO_MERGE_RETRY_REJECTED:` sentence embedding the raw blocker. When that
+embedded sentence names a gate whose latest required row has NO authored verdict, the park is a
+plumbing death wearing a terminal costume and recovery may seed a bounded fresh run of exactly
+that gate. The classifier is deliberately conjunction-heavy — pause marker or terminal error
+prefix AND an embedded gate-named refusal AND that gate's latest row still verdict-less — so
+authored-REVISE parks (remediation lane's), stale-content parks (stale lane's, whose sentence has
+no gate prefix), pending-row cards (FN-8492's) and parks whose embedded refusal already drifted
+never enter. A deadlock pause whose error names no gate stays operator-owned. Slim list reads
+keep `workflowStepResults` byte-identical, so the row check is valid pre-resolution, and the
+named-gate verdict is merge-content-independent (content only rebinds PASSED rows), so the same
+verdict holds inside the atomic clear transaction below.
+*/
+/** Error prefix the stall-deadlock disposition stamps; also the classifier's post-unpause arm. */
+const IN_REVIEW_STALL_DEADLOCK_ERROR_PREFIX = "In-review stall deadlock: ";
+
+/** Which terminal-park producer wrote a verdict-less gate park. */
+type VerdictlessGateParkShape = "stall-deadlock" | "retry-rejected";
+
+function classifyVerdictlessGatePark(
+  task: Pick<Task, "userPaused" | "deletedAt" | "error" | "pausedReason" | "workflowStepResults"> & { paused?: boolean },
+): { shape: VerdictlessGateParkShape; gateId: string } | undefined {
+  if (task.userPaused === true || task.deletedAt) return undefined;
+  const error = typeof task.error === "string" && task.error.length > 0 ? task.error : undefined;
+  const shape: VerdictlessGateParkShape | undefined =
+    task.pausedReason === IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON
+      || error?.startsWith(IN_REVIEW_STALL_DEADLOCK_ERROR_PREFIX)
+      ? "stall-deadlock"
+      : error?.includes(AUTO_MERGE_RETRY_REJECTED_PREFIX)
+        ? "retry-rejected"
+        : undefined;
+  if (!shape || error === undefined) return undefined;
+  const gateId = parseEmbeddedPreMergeGateApprovalBlocker(error);
+  if (!gateId) return undefined;
+  return findVerdictLessFailedRequiredGates(task, { requiredPreMergeStepIds: new Set([gateId]) }).length > 0
+    ? { shape, gateId }
+    : undefined;
+}
+/*
 FNXC:Workspace 2026-08-15-05:13:
 Failed workspace tasks are routinely retried with their progress preserved. Terminal teardown therefore
 waits a full day, unlike short lease recovery floors, so a transient park cannot discard repo worktrees.
@@ -1063,6 +1104,13 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   private readonly staleContentParkRecoveryAttempts = new Map<string, number>();
   private readonly staleContentParkRecoveryBudgetLogged = new Set<string>();
   private readonly unrunPreMergeGateRerouteAuditKeys = new Set<string>();
+  /*
+  FNXC:VerdictlessFailedGate 2026-09-14-14:47 (RUFU-217, Step 5):
+  Episode-bound recovery budget for the verdict-less gate park loop, mirroring the stale-content
+  pair above: the budget belongs to one continuous park, not to a task ID forever.
+  */
+  private readonly verdictlessGateParkRecoveryAttempts = new Map<string, number>();
+  private readonly verdictlessGateParkRecoveryBudgetLogged = new Set<string>();
   private readonly githubCheckStateRetentionLastPrunedAt = new Map<string, number>();
   private readonly processBootStartedAt = Date.now();
   private lastDbCorruptionNotifiedAt: number | null = null;
@@ -10254,12 +10302,27 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       Upstream FN-295 moved the gate/content resolution to the caller (one resolution per candidate,
       so reroute and admission decide from identical evidence) and added the collateral-archive
       restore path; the predicate comparison survives that refactor.
+
+      FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217, AC2):
+      Admission widens from not-run-only to `not-run ∪ verdict-less-failed`. The blocker is resolved
+      ONCE and both predicates read from the same gate ids and merge content, so admission and the
+      reroute below can never disagree. The class half is `namesVerdictLessFailedGate`: it accepts
+      only a gate-named refusal whose named gate's latest row is verdict-less, so an authored REVISE
+      (remediation lane's) or a live `pending` row (FN-8492's) still cannot enter this lane, and the
+      stale-content / unprovable sentences fail the gate-name parse — the stale lane stays the sole
+      owner of content-evidence refusals. At exhausted rerun budget the seed refuses but admission
+      still returns true (merge stays deferred to the gate); the stall repetition then accumulates
+      toward the deadlock disposition, which parks with an operator-actionable reason.
       */
-      if (!isPreMergeStepsNotRunBlocker(getTaskMergeBlocker(task, { reviewColumns, requiredPreMergeStepIds: mergeGate.requiredPreMergeStepIds, mergeContent }))) return false;
+      const blocker = getTaskMergeBlocker(task, { reviewColumns, requiredPreMergeStepIds: mergeGate.requiredPreMergeStepIds, mergeContent });
+      if (!isPreMergeStepsNotRunBlocker(blocker)
+        && !namesVerdictLessFailedGate(task, blocker, { requiredPreMergeStepIds: mergeGate.requiredPreMergeStepIds, mergeContent })) return false;
     const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, { requiredPreMergeStepIds: mergeGate.requiredPreMergeStepIds, mergeContent })
       .catch(() => ({ rerouted: false, reason: "no-unrun-gate" as const, nodeId: undefined, workflowStepId: undefined }));
     if (reroute.rerouted) {
-      await this.store.logEntry(task.id, "[pre-merge] Self-healing re-seeded the workflow graph at an enabled pre-merge gate that never ran.");
+      await this.store.logEntry(task.id, reroute.reason === "verdictless-seeded"
+        ? "[pre-merge] Self-healing re-seeded the workflow graph at a required pre-merge gate whose last run died without a verdict."
+        : "[pre-merge] Self-healing re-seeded the workflow graph at an enabled pre-merge gate that never ran.");
       log.warn(`Unrun pre-merge gate for ${task.id} re-seeded at ${reroute.nodeId ?? "unknown"}`);
     }
     const auditKey = `${task.id}:${reroute.reason}:${reroute.nodeId ?? ""}`;
@@ -10277,6 +10340,84 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     sweep must still suppress its merge enqueue because that door would defer until the real gate runs.
     */
     return true;
+  }
+
+  /*
+  FNXC:VerdictlessFailedGate 2026-09-14-14:47 (RUFU-217, AC1 / Step 5):
+  Revive a card terminalized over a verdict-less gate: seed a fresh run FIRST through the reseed
+  lane (the deadlock pause is admitted only via `allowDeadlockPark` — see that option's note),
+  then clear the park in an atomic follow-up that re-derives the SAME signature (shape + gate)
+  from the live row. All-or-nothing by construction: if the seed was refused (persistent rerun
+  budget, active continuation, a fresh operator hold) or the live row no longer shows the parked
+  verdict-less gate, the card keeps its `status`/`error` park untouched and the next pass decides
+  again. Unlike the stale-content precedent this park also holds the pause fields, so the clear
+  patch returns `paused:false, pausedReason:null` alongside `status:null, error:null,
+  mergeRetries:0`; an operator who unpauses first stays admitted — the classifier's error-prefix
+  arm owns that leg because `buildAutoPauseClearPatch` clears the pause but not `status`/`error`.
+  The audit event reuses FN-9243's `task:merge-unrun-pre-merge-gate-rerouted` — the seed IS that
+  event, whose registered metadata key set stays untouched — with a park-namespaced dedupe key so
+  a decline here can never swallow that lane's own row; park-clear evidence goes to the task log.
+  */
+  private async routeVerdictlessGateParkBackToReview(
+    task: Task,
+    mergeGate: ResolvedMergeRecoveryGate,
+    mergeContent: CapturedMergeRecoveryContent,
+    park: { shape: VerdictlessGateParkShape; gateId: string },
+  ): Promise<boolean> {
+    const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
+      requiredPreMergeStepIds: mergeGate.requiredPreMergeStepIds,
+      mergeContent,
+      allowDeadlockPark: true,
+    }).catch(() => ({
+      rerouted: false as const,
+      reason: "no-unrun-gate" as const,
+      nodeId: undefined,
+      workflowStepId: undefined,
+    }));
+    let parkCleared = false;
+    if (reroute.rerouted) {
+      await this.store.updateTaskAtomic(task.id, (live) => {
+        const livePark = classifyVerdictlessGatePark(live);
+        if (livePark?.shape !== park.shape || livePark.gateId !== park.gateId) return null;
+        if (live.userPaused === true || live.deletedAt) return null;
+        // An operator hold that is NOT the deadlock park this sweep is undoing blocks the clear.
+        if (live.paused === true && live.pausedReason !== IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON) return null;
+        parkCleared = true;
+        return {
+          status: null,
+          error: null,
+          paused: false,
+          pausedReason: null as unknown as Task["pausedReason"],
+          mergeRetries: 0,
+        };
+      });
+      await this.store.logEntry(task.id, `[pre-merge] Self-healing re-seeded the workflow graph at the verdict-less pre-merge gate '${park.gateId}' that had parked this card.`);
+      if (parkCleared) {
+        await this.store.logEntry(task.id, `[pre-merge] Cleared the ${park.shape} merge park after re-seeding a fresh run of gate '${park.gateId}'.`);
+      }
+      log.warn(`Verdict-less pre-merge gate park for ${task.id} re-seeded at ${reroute.nodeId ?? "unknown"}`);
+    }
+    const auditKey = `${task.id}:verdictless-park:${reroute.reason}:${reroute.nodeId ?? ""}:${park.shape}`;
+    if (!this.unrunPreMergeGateRerouteAuditKeys.has(auditKey)) {
+      this.unrunPreMergeGateRerouteAuditKeys.add(auditKey);
+      await emitBoundedRunAudit(this.store, {
+        taskId: task.id,
+        agentId: "self-healing",
+        runId: generateSyntheticRunId("self-healing", task.id),
+        domain: "database",
+        mutationType: "task:merge-unrun-pre-merge-gate-rerouted",
+        target: task.id,
+        metadata: {
+          taskId: task.id,
+          nodeId: reroute.nodeId,
+          workflowStepId: reroute.workflowStepId,
+          reason: reroute.reason,
+          source: "self-healing",
+          missingGateCount: mergeGate.requiredPreMergeStepIds.size,
+        },
+      });
+    }
+    return reroute.rerouted;
   }
 
   /**
@@ -10471,6 +10612,53 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         if (!hiddenStaleContentCandidateIds.has(taskId)) {
           this.staleContentParkRecoveryAttempts.delete(taskId);
           this.staleContentParkRecoveryBudgetLogged.delete(taskId);
+        }
+      }
+
+      /*
+      FNXC:VerdictlessFailedGate 2026-09-14-14:47 (RUFU-217, AC1 / Step 5):
+      Third hidden-park family in this sweep: a card the stall router or merge-retry exhaustion
+      terminalized over a required gate whose latest row has NO authored verdict. The merge door
+      keeps refusing it, so only a fresh run of the named gate can clear it. Admission and the
+      reroute share one gate resolution and one content capture (same rule as the stale loop
+      above); workspace and non-singular cards are refused inside the reseed lane. The starvation
+      ladder mirrors the stale-content loop: the budget belongs to the continuous park episode.
+      */
+      const hiddenVerdictlessParkCandidateIds = new Set<string>();
+      for (const task of tasks) {
+        if (mergeable.includes(task)) continue;
+        const park = classifyVerdictlessGatePark(task);
+        if (!park || mergeAdmissionByTaskId.get(task.id) !== true || executingIds.has(task.id)
+          || task.status === "merging" || task.status === "merging-pr") continue;
+        const reviewColumns = await ownReviewLanesFor(task);
+        if (!reviewColumns.has(task.column)) continue;
+        hiddenVerdictlessParkCandidateIds.add(task.id);
+        const attempts = (this.verdictlessGateParkRecoveryAttempts.get(task.id) ?? 0) + 1;
+        this.verdictlessGateParkRecoveryAttempts.set(task.id, attempts);
+        if (attempts === MAX_STARVATION_DROPS && !this.verdictlessGateParkRecoveryBudgetLogged.has(task.id)) {
+          this.verdictlessGateParkRecoveryBudgetLogged.add(task.id);
+          await this.store.logEntry(task.id, `[pre-merge] Stopped verdict-less gate park recovery after ${MAX_STARVATION_DROPS} attempts; operator attention is required.`);
+        }
+        if (attempts > MAX_STARVATION_DROPS) continue;
+        let mergeGate: ResolvedMergeRecoveryGate;
+        try {
+          mergeGate = await resolvePreMergeGateForTask(this.store, task.id, task.enabledWorkflowSteps, task);
+        } catch {
+          continue;
+        }
+        if (mergeGate.provenance === "default" && !mergeGate.selectionAbsent) continue;
+        const mergeContent = await captureMergeContentDescriptor(task, { workspaceRootDir: this.options.rootDir, settings });
+        await this.routeVerdictlessGateParkBackToReview(task, mergeGate, mergeContent, park);
+      }
+      /*
+      FNXC:VerdictlessFailedGate 2026-09-14-14:47 (RUFU-217):
+      Same episode-bound budget rule as the stale-content loop above: prune when the precise
+      candidate signature disappears so a later independent park gets its own bounded window.
+      */
+      for (const taskId of this.verdictlessGateParkRecoveryAttempts.keys()) {
+        if (!hiddenVerdictlessParkCandidateIds.has(taskId)) {
+          this.verdictlessGateParkRecoveryAttempts.delete(taskId);
+          this.verdictlessGateParkRecoveryBudgetLogged.delete(taskId);
         }
       }
 
@@ -10781,11 +10969,28 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         // Merge must be blocked *specifically* by the failed pre-merge step —
         // not by an unrelated condition (incomplete steps, etc.) that is
         // already handled by a dedicated scan.
-        /* Wired: this comparison is an EXACT STRING match, so an unwired blocker returning
-           "task is in '<lane>', must be in 'in-review'" would reject every card on a renamed board. */
+        /* Wired: this comparison is a STRING-FAMILY match (generic or gate-named refusal), so an
+           unwired blocker returning "task is in '<lane>', must be in 'in-review'" would reject
+           every card on a renamed board. */
         const blocker = getTaskMergeBlocker(task, {
           reviewColumns: reviewLanesByTask.get(task.id) ?? new Set(["in-review"]),
         });
+        /*
+        FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217, AC3 — sweep/door predicate parity):
+        The revival admission re-keys from the bare generic string to `isPreMergeGateFailedBlocker`,
+        the same family the stall router and the FN-9243 reseed lane accept. This sweep deliberately
+        computes the blocker WITHOUT `requiredPreMergeStepIds`: its admission question is "is this
+        card's refusal the failed-gate family" — answered identically by the results-only scan (the
+        gate-named refusal can only appear once ids are forwarded, which would drop mixed
+        missing+failed cards whose missing gate FN-9243's reseed owns, changing the admitted
+        population). Family-keying here is the robustness half: a future forwarder cannot silently
+        reject the gate-named half of the family.
+        The gate-named arm keeps the failed-row conjunct the generic sentence carried implicitly:
+        a `pending` gate row also renders the gate-named refusal once ids are forwarded, and
+        admitting it would double-drive work FN-8492 owns. A refusal that is NOT gate-named (the
+        generic recovery-semantics sentence) already IS the failed-row evidence, so only the
+        gate-named arm needs the conjunct.
+        */
         /*
         FNXC:ReviewRemediationBudget 2026-09-08-01:46:
         An atomically committed pending repair changes the ordinary blocker from failed-review to
@@ -10794,7 +10999,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         */
         if (!parkedRemediationFailure
           && !budget.resumesCommittedRemediation
-          && blocker !== "task has failed pre-merge workflow steps") return false;
+          && !(isPreMergeGateFailedBlocker(blocker)
+            && (parsePreMergeGateApprovalBlocker(blocker) === undefined || hasFailedPreMergeWorkflowStepRow(task)))) return false;
 
         return true;
       });
@@ -11000,6 +11206,27 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       A deleted test cannot fail. Restored together.
       */
       const stallLanes = new Map<string, ReadonlySet<string>>();
+      /*
+      FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217, AC4 — blocker-input parity):
+      The sweep's classifier must answer with the merge door's own refusal sentence. RUFU-204 parked
+      on a `merge-blocker` reason the door would never have written because this call withheld
+      `requiredPreMergeStepIds` while every real refusal path forwards them. The IR struct is
+      already fetched one line below for the lanes — extracting the gate ids is a pure struct build,
+      not an extra read. No gate answer (unresolvable workflow) keeps the results-only fallback.
+      */
+      const stallGateIds = new Map<string, ReadonlySet<string>>();
+      /*
+      FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217, AC4 — blocker-input parity):
+      The sweep's classifier must answer with the merge door's own refusal sentence. RUFU-204 parked
+      on a `merge-blocker` reason the door would never have written because this call withheld
+      `requiredPreMergeStepIds` while every real refusal path forwards them. Resolution goes through
+      `resolvePreMergeGateForTask` — the door's own classification — not a bare IR pass: a store
+      without selection readers (legacy embedders, test doubles) resolves `not-workflow-aware` and
+      MUST keep result-only semantics here, or mid-pipeline cards answer "gate missing", get
+      swallowed by the not-run suppression below, and silently vanish from the stall sweep. Same
+      for `read-failed` — display fails soft to the results-only fallback while the door itself
+      fails closed on its own unresolvable-gate path.
+      */
       for (const entry of tasks) {
         try {
           const { ir, source } = await resolveWorkflowIrForTaskWithProvenance(this.store, entry.id);
@@ -11012,14 +11239,22 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         } catch {
           stallLanes.set(entry.id, stallReviewColumns);
         }
+        try {
+          const gate = await resolvePreMergeGateForTask(this.store, entry.id, entry.enabledWorkflowSteps, entry);
+          if (gate.resolution === "selection" || gate.resolution === "no-selection") {
+            stallGateIds.set(entry.id, gate.requiredPreMergeStepIds);
+          }
+        } catch { /* no gate answer: this card keeps results-only stall semantics */ }
       }
       let surfaced = 0;
 
       for (const task of tasks) {
         if (task.deletedAt || !allowsAutoMergeProcessing(task, settings)) continue;
         const reviewColumns = stallLanes.get(task.id) ?? stallReviewColumns;
+        const requiredPreMergeStepIds = stallGateIds.get(task.id);
         const selectedSignal = getInReviewStallReason(task, {
           reviewColumns,
+          requiredPreMergeStepIds,
           now: cycleStartMs,
           activeMergeTaskId,
           executingTaskIds,
@@ -11041,6 +11276,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
 
           const signal = getInReviewStallReason(live, {
             reviewColumns,
+            requiredPreMergeStepIds,
             now: cycleStartMs,
             activeMergeTaskId,
             executingTaskIds,
@@ -11062,7 +11298,13 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           }
 
           appliedSignal = signal;
-          const progressAt = signal.code === "merge-blocker" && signal.reason === "task has failed pre-merge workflow steps"
+          /*
+          FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217, AC3): the progress-reset key re-keys
+          from the bare generic string to the failed-gate family, so the gate-named refusal the
+          parity change now surfaces (e.g. "... (gate 'code-review')") still counts remediation
+          evidence as progress instead of driving a healthy-retrying card toward the deadlock park.
+          */
+          const progressAt = signal.code === "merge-blocker" && isPreMergeGateFailedBlocker(signal.reason)
             ? getLatestFailedPreMergeStepProgressAt(live)
             : undefined;
           repetitionCount = countRecentIdenticalStallEntries(live, signal, progressAt) + 1;
@@ -11086,9 +11328,11 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
                 action: `${IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX}${signal.code}]: deadlock-prevention threshold reached after ${repetitionCount} identical stalls — pausing task. last reason: ${signal.reason}`,
               },
               paused: true,
-              pausedReason: "in-review-stall-deadlock",
+              // FNXC:VerdictlessFailedGate 2026-09-14-14:47 (RUFU-217): single-sourced with the
+              // parked-card classifier — byte-identical strings, drift would deafen recovery.
+              pausedReason: IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON,
               status: "failed",
-              error: `In-review stall deadlock: ${signal.code} repeated ${repetitionCount}× without progress. ${signal.reason}`,
+              error: `${IN_REVIEW_STALL_DEADLOCK_ERROR_PREFIX}${signal.code} repeated ${repetitionCount}× without progress. ${signal.reason}`,
             };
           }
           disposition = "observation";

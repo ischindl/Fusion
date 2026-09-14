@@ -208,6 +208,32 @@ async function resolveReviewColumnsForTask(
 }
 
 /*
+FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217, AC4 — blocker-input parity):
+Per-row gate resolution for the `inReviewStall` badge, mirroring the stall-reason wrapper above.
+Before this, every `getInReviewStallReason` site withheld `requiredPreMergeStepIds` while the merge
+door, the queue, and `deriveTaskStallReason` forwarded them — so the badge showed the legacy
+results-only blocker while the card's own refusal named the gate, the exact one-row-two-answers
+split this file's sibling notes (WorkflowLifecycleColumns 2026-07-30-20:50) treat as worse than
+legacy. Fail-soft exactly like the stall wrapper: no gate answer keeps results-only semantics.
+The IR struct is already warm per pass — every row pays `resolveReviewColumnsForTask` — so this is
+one pure `resolveRequiredPreMergeStepIds` build, not an extra read.
+*/
+async function resolveStallGateIdsForTask(
+  store: TaskStore,
+  task: Pick<Task, "id" | "enabledWorkflowSteps" | "executionMode">,
+  cache?: Map<string, WorkflowIr>,
+  selectionCache?: WorkflowSelectionCache,
+): Promise<ReadonlySet<string> | undefined> {
+  try {
+    const ir = await resolveWorkflowIrForTask(store, task.id, cache, selectionCache);
+    return ir ? resolveRequiredPreMergeStepIds(ir, task.enabledWorkflowSteps, task) : undefined;
+  } catch {
+    /* No gate answer: the stall probe keeps the legacy results-only semantics. */
+    return undefined;
+  }
+}
+
+/*
 FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174):
 Per-row wiring for the canonical stall/hold reason, shared by ALL FOUR hydration sites so the
 same card cannot answer differently on the board, in detail, on the incremental stream, or in
@@ -455,6 +481,7 @@ export async function getTaskImpl(store: TaskStore, id: string, options?: { acti
           now,
           executingTaskIds,
           reviewColumns: reviewColumnsForTask,
+          requiredPreMergeStepIds: await resolveStallGateIdsForTask(store, task, detailIrCache, detailSelectionCache),
           autoMerge: allowsAutoMergeProcessing(task, settings),
           engineActiveSinceMs: settings.engineActiveSinceMs,
           engineActivationGraceMs: settings.engineActivationGraceMs,
@@ -893,6 +920,7 @@ export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions
       task.inReviewStall = isMergeQueued ? undefined : getInReviewStallReason(task, {
         now,
         reviewColumns: reviewColumnsForRow,
+        requiredPreMergeStepIds: isMergeQueued ? undefined : await resolveStallGateIdsForTask(store, task, listPassIrCache, listPassSelectionCache),
         executingTaskIds,
         autoMerge: allowsAutoMergeProcessing(task, settings),
         engineActiveSinceMs: settings.engineActiveSinceMs,
@@ -1317,6 +1345,9 @@ export async function listTasksModifiedSinceImpl(store: TaskStore, since: string
     apply to any row, so this resolves for every row on the page.
     */
     const reviewColumnsByTaskId = new Map<string, ReadonlySet<string>>();
+    /* FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217 AC4): sync row map below cannot await,
+       so the gate ids the stall badge forwards ride the same precompute as the review lanes. */
+    const stallGateIdsByTaskId = new Map<string, ReadonlySet<string> | undefined>();
     const lifecycleByTaskId = new Map<string, Awaited<ReturnType<typeof resolveTaskLifecycleColumns>>>();
     /*
     FNXC:WorkflowScheduling 2026-09-06 (merge origin/main dd808ed2c6):
@@ -1332,6 +1363,7 @@ export async function listTasksModifiedSinceImpl(store: TaskStore, since: string
       for (const pgRow of pageRows) {
         const row = store.pgRowToTaskRow(pgRow);
         reviewColumnsByTaskId.set(row.id, await resolveReviewColumnsForTask(store, row.id, irCache, selectionCache));
+        stallGateIdsByTaskId.set(row.id, await resolveStallGateIdsForTask(store, store.rowToTask(row), irCache, selectionCache));
         lifecycleByTaskId.set(row.id, await resolveTaskLifecycleColumns(store, row.id, irCache, selectionCache));
         if (store.rowToTask(row).paused !== true) continue;
         holdColumnByTaskId.set(row.id, await resolveHoldColumnForTask(store, row.id, irCache, selectionCache));
@@ -1404,6 +1436,7 @@ export async function listTasksModifiedSinceImpl(store: TaskStore, since: string
       task.inReviewStall = isMergeQueued ? undefined : getInReviewStallReason(task, {
         now,
         reviewColumns: reviewColumnsForRow,
+        requiredPreMergeStepIds: stallGateIdsByTaskId.get(task.id),
         executingTaskIds,
         autoMerge: allowsAutoMergeProcessing(task, settings),
         engineActiveSinceMs: settings.engineActiveSinceMs,
@@ -1514,6 +1547,7 @@ await prefetchWorkflowIrs(store, pgRows.map((row) => String(row.id)), searchPass
   task.inReviewStall = isMergeQueued ? undefined : getInReviewStallReason(task, {
     now,
     reviewColumns: reviewColumnsForRow,
+    requiredPreMergeStepIds: isMergeQueued ? undefined : await resolveStallGateIdsForTask(store, task, searchPassIrCache, searchPassSelectionCache),
     executingTaskIds,
     autoMerge: allowsAutoMergeProcessing(task, settings),
     engineActiveSinceMs: settings.engineActiveSinceMs,
@@ -1642,6 +1676,7 @@ export async function searchTasksImpl(store: TaskStore, query: string, options?:
       task.inReviewStall = isMergeQueued ? undefined : getInReviewStallReason(task, {
         now,
         reviewColumns: reviewColumnsForRow,
+        requiredPreMergeStepIds: isMergeQueued ? undefined : await resolveStallGateIdsForTask(store, task, searchPassIrCache, searchPassSelectionCache),
         executingTaskIds,
         autoMerge: allowsAutoMergeProcessing(task, settings),
         engineActiveSinceMs: settings.engineActiveSinceMs,
