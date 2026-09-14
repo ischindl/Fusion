@@ -167,6 +167,25 @@ guessing by cross-block containment would re-open the adjacent-identical-block c
 just closed. The real multi-block shape (explicit indices) is pinned end-to-end — persisted row, boundary
 separator, and terminal sweep — in `packages/dashboard/src/__tests__/chat-manager-stream-fidelity.test.ts`.
 
+### Reachability limit of the partial-free face (verified boundary, not a defect)
+
+The partial-free branch delivers verbatim and grows the ledger's `delivered` span without touching
+`provisional`, because on that face a span is confirmed the instant it is handed out — there is no terminal
+event that could later validate or contradict it. The two ledger fields stay mutually consistent only while
+one face owns a ledger key for that key's whole life. A runtime that mixed partial-free and block-backed
+deltas on the *same* `(kind, index)` key would leave `provisional` stale, and two later decisions would then
+read it wrongly: a redelivery of that stale tail would be suppressed as a repeat, and the confirmed prefix
+used to detect a replaced block would be short by that span. No shipped producer does this — the partial-free
+face is exactly the mock runtime (which passes the delta itself as `partial`) and the cross-runtime CLI
+bridge (which omits `partial`), and neither ever follows with a block-backed delta on the same key.
+
+This is recorded as a boundary rather than repaired because the two candidate repairs fight each other:
+clearing `provisional` when entering the verbatim branch makes a merely-lagging block look *replaced*, so the
+replacement branch would re-hand the whole text (a duplication), while leaving it lets a redelivered stale
+tail be suppressed (a deletion). Picking between them requires knowing which face the producer is on, which
+is exactly what event data cannot say on the mixed shape. Choosing a silent tie-break is how this seam
+acquired its original character-loss bug, so the boundary is documented instead of guessed past.
+
 ### Post-mortem: the fix reintroduced the bug on the face that has no authority
 
 The first version of this fix applied its dedup lane to *every* event, including ones where no content
