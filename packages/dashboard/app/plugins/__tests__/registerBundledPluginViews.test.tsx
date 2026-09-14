@@ -7,13 +7,14 @@ import {
   registerBundledPluginViews,
 } from "../registerBundledPluginViews";
 
-const MockDependencyGraphDashboardView = (..._args: unknown[]) => createElement("div", { "data-testid": "dep-graph-view" });
-const MockCompoundEngineeringDashboardView = (..._args: unknown[]) => createElement("div", { "data-testid": "ce-view" });
-const MockCliPrintingPressWizardView = (..._args: unknown[]) => createElement("div", { "data-testid": "cli-printing-press-view" });
-const MockCliPrintingPressManageView = (..._args: unknown[]) => createElement("div", { "data-testid": "cli-printing-press-manage-view" });
-const MockLinearImportView = (..._args: unknown[]) => createElement("div", { "data-testid": "linear-import-view" });
-const MockTodoDashboardView = (..._args: unknown[]) => createElement("div", { "data-testid": "todos-view" });
-const MockRoadmapDashboardView = (..._args: unknown[]) => createElement("div", { "data-testid": "roadmaps-view" });
+const MockDependencyGraphDashboardView = () => createElement("div", { "data-testid": "dep-graph-view" });
+const MockCompoundEngineeringDashboardView = () => createElement("div", { "data-testid": "ce-view" });
+const MockCliPrintingPressWizardView = () => createElement("div", { "data-testid": "cli-printing-press-view" });
+const MockCliPrintingPressManageView = () => createElement("div", { "data-testid": "cli-printing-press-manage-view" });
+const MockLinearImportView = () => createElement("div", { "data-testid": "linear-import-view" });
+const MockTodoDashboardView = () => createElement("div", { "data-testid": "todos-view" });
+const MockRoadmapDashboardView = () => createElement("div", { "data-testid": "roadmaps-view" });
+const MockQualityDashboardView = () => createElement("div", { "data-testid": "quality-view" });
 
 vi.mock("@fusion-plugin-examples/dependency-graph/dashboard-view", () => ({
   DependencyGraphDashboardView: (...args: unknown[]) => MockDependencyGraphDashboardView(...args),
@@ -43,6 +44,10 @@ vi.mock("@fusion-plugin-examples/roadmap/dashboard-view", () => ({
   RoadmapDashboardView: (...args: unknown[]) => MockRoadmapDashboardView(...args),
 }));
 
+vi.mock("@fusion-plugin-examples/quality/dashboard-view", () => ({
+  QualityDashboardView: (...args: unknown[]) => MockQualityDashboardView(...args),
+}));
+
 // The dashboard statically registers bundled views client-side, so these views can
 // render even when engine-side PluginLoader startup failed and the persisted
 // installation row is in an error state.
@@ -66,6 +71,9 @@ describe("registerBundledPluginViews", () => {
     expect(getPluginViewComponent("fusion-plugin-cli-printing-press", "wizard")).toBeTruthy();
     expect(getPluginViewComponent("fusion-plugin-cli-printing-press", "manage")).toBeTruthy();
     expect(getPluginViewComponent("fusion-plugin-linear-import", "linear-import")).toBeTruthy();
+    expect(getPluginViewComponent("fusion-plugin-quality", "quality")).toBeTruthy();
+    // Reports ships plugin UI but remains intentionally absent from the dashboard registry until enabled by its owning rollout.
+    expect(getPluginViewComponent("fusion-plugin-reports", "reports")).toBeNull();
   });
 
   it("hosts the bundled Todo view instead of the unavailable fallback", async () => {
@@ -104,6 +112,8 @@ describe("registerBundledPluginViews", () => {
     expect(isPluginViewRegistered("fusion-plugin-cli-printing-press", "wizard")).toBe(true);
     expect(isPluginViewRegistered("fusion-plugin-cli-printing-press", "manage")).toBe(true);
     expect(isPluginViewRegistered("fusion-plugin-linear-import", "linear-import")).toBe(true);
+    expect(isPluginViewRegistered("fusion-plugin-quality", "quality")).toBe(true);
+    expect(isPluginViewRegistered("fusion-plugin-reports", "reports")).toBe(false);
     // Unknown plugin/view should not be registered
     expect(isPluginViewRegistered("unknown-plugin", "unknown")).toBe(false);
   });

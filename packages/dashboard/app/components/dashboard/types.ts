@@ -67,6 +67,7 @@ import { ResearchView } from "../ResearchView";
 import { ScheduledTasksModal } from "../ScheduledTasksModal";
 import { SecretsView } from "../SecretsView";
 import { SkillsView } from "../SkillsView";
+import { SnippetsView } from "../SnippetsView";
 import { WorkflowNodeEditor } from "../WorkflowNodeEditor";
 
 export interface MainContentProps {
@@ -293,6 +294,7 @@ export interface MainContentProps {
   ResearchView: LazyExoticComponent<typeof ResearchView>;
   SecretsView: LazyExoticComponent<typeof SecretsView>;
   SkillsView: LazyExoticComponent<typeof SkillsView>;
+  SnippetsView: LazyExoticComponent<typeof SnippetsView>;
   _AutomationsView: LazyExoticComponent<typeof ScheduledTasksModal>;
   _ImportTasksView: LazyExoticComponent<typeof GitHubImportModal>;
   _SettingsView: LazyExoticComponent<typeof SettingsView>;

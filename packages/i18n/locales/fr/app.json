@@ -3580,7 +3580,8 @@
     "selectProject": "Sélectionner un projet",
     "settings": "Paramètres",
     "showScripts": "Afficher les scripts",
-    "skillsView": "Compétences et extraits",
+    "skillsView": "Compétences",
+    "snippetsView": "Extraits",
     "startAiEngine": "Démarrer le moteur IA",
     "stashRecoveryView": "Récupération de stash",
     "stopAiEngine": "Arrêter le moteur IA",
@@ -4045,7 +4046,9 @@
     "completions": "",
     "taskCompletion": "Fin de tâche",
     "completionImages": "Images de fin de tâche",
-    "completionImage": "Image de fin de tâche"
+    "completionImage": "Image de fin de tâche",
+    "suggestedRecommendations": "Recommandations suggérées",
+    "noSuggestedRecommendations": "Aucune recommandation de suivi n’a été suggérée."
   },
   "memory": {
     "auditChecksTitle": "Vérifications d'audit",
@@ -5085,6 +5088,7 @@
     "sectionProjects": "Projets",
     "sectionSettingsSync": "Synchronisation des paramètres",
     "sectionSyncHistory": "Historique de synchronisation",
+    "selectPrompt": "Sélectionnez un nœud pour consulter son état, ses projets et sa synchronisation.",
     "startButton": "Démarrer",
     "statusConnecting": "Connexion en cours",
     "statusError": "Erreur",
@@ -8885,6 +8889,7 @@
     "unavailable": "Modifications de fichiers détaillées non disponibles."
   },
   "taskDetail": {
+    "accessibleName": "Détails de la tâche",
     "actions": {
       "menuBtn": "Actions",
       "oversightHeading": "",
@@ -9003,6 +9008,10 @@
       "removeTitle": "Supprimer la dépendance {{id}}",
       "searchPlaceholder": "Rechercher des tâches…",
       "stale": "(obsolète)"
+    },
+    "definition": {
+      "descriptionHeading": "Description",
+      "noDescription": "(aucune description)"
     },
     "description": {
       "showLess": "Afficher moins",
@@ -9202,6 +9211,18 @@
     },
     "progress": {
       "heading": "Progression",
+      "completedCount": "{{count}}/{{total}} terminées",
+      "workflowOrigin": "Étape du workflow",
+      "implementationOrigin": "Implémentation",
+      "status": {
+        "done": "Terminée",
+        "failed": "Échouée",
+        "advisory": "Terminée avec remarques",
+        "notRun": "Non exécutée",
+        "running": "En cours",
+        "skipped": "Ignorée",
+        "pending": "En attente"
+      },
       "noSteps": "(aucune étape définie)",
       "stepCount_one": "",
       "stepCount_other": ""
@@ -9307,6 +9328,7 @@
     "spec": {
       "aiReviseHeading": "Demander une révision à l'IA",
       "aiReviseHelp": "Fournissez des commentaires pour que l'IA améliore cette spécification. La tâche passera en planification.",
+      "backToDefinition": "Retour à la définition",
       "editBtn": "Modifier",
       "feedbackPlaceholder": "p. ex., « Ajoutez plus de détails sur la gestion des erreurs », « Découpez en étapes plus petites »...",
       "hintCancel": "pour annuler",
@@ -9314,6 +9336,8 @@
       "loading": "Chargement de la spécification…",
       "noPrompt": "(aucune invite)",
       "placeholder": "Saisissez la spécification de la tâche en Markdown...",
+      "promptFileName": "PROMPT.md",
+      "readPlanBtn": "Lire le plan",
       "requesting": "Demande en cours…",
       "requestRevisionBtn": "Demander une révision IA",
       "revisionColumnError": "Impossible de demander une révision : la tâche doit être dans la colonne « triage », « todo », « in-progress » ou « in-review ».",
@@ -9347,7 +9371,6 @@
       "model": "Modèle",
       "pullRequest": "Pull Request",
       "review": "Révision",
-      "reordered": "{{label}} déplacé en position {{position}} sur {{count}}",
       "routing": "Routage",
       "stats": "Statistiques",
       "terminal": "Session",
@@ -10277,8 +10300,8 @@
   },
   "todo": {
     "addItemPlaceholder": "Ajouter un élément de tâche",
-    "allDoneHidden": "",
     "addList": "Ajouter une liste",
+    "allDoneHidden": "",
     "assignAgent": "Assigner {{text}} à l'agent",
     "cancelItemEdit": "Annuler la modification de l'élément",
     "cancelList": "Annuler la liste",
@@ -10307,8 +10330,8 @@
     "failedToCreateTask": "Échec de la création de la tâche : {{error}}",
     "failedToLoadAgents": "Échec du chargement des agents : {{error}}",
     "failedUpdateItem": "Échec de la mise à jour de l'élément",
-    "hideDone": "",
     "failedUpdateItemToast": "Échec de la mise à jour de la tâche à faire",
+    "hideDone": "",
     "itemsLabel": "Éléments de la liste de tâches",
     "lists": "Listes",
     "listsLabel": "Barre latérale des listes de tâches",
@@ -10331,6 +10354,7 @@
     "startPlanning": "Commencer à planifier à partir de {{text}}",
     "taskCreatedAndAssigned": "Créé {{id}} et assigné à {{agent}}",
     "taskCreatedFromTodo": "Créé {{id}} à partir de la liste de tâches",
+    "title": "À faire",
     "todoListsLabel": "Listes de tâches",
     "todos": "À faire"
   },

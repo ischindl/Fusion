@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { AgentsOverviewBar } from "../AgentsOverviewBar";
+import { AgentsOverviewBar, AgentsOverviewToggle } from "../AgentsOverviewBar";
 import type { Agent } from "../../api";
 import type { FleetVerdict } from "../../utils/fleetVerdict";
 
@@ -41,6 +41,22 @@ function renderBar(props: Partial<React.ComponentProps<typeof AgentsOverviewBar>
     <AgentsOverviewBar
       stats={null}
       activeAgents={[]}
+      isOpen={false}
+      {...props}
+    />,
+  );
+}
+
+/*
+FNXC:FleetVerdict 2026-09-14-22:05 (upstream sync merge, FN-379):
+The FN-379 header relocation moved the collapse trigger into the Agents header (AgentsOverviewToggle).
+RUFU-176's four-bucket strip rides that trigger, so every strip assertion now renders the TOGGLE —
+the strip's contract (visible buckets, roster-wide verdict, never hover-gated) is unchanged.
+*/
+function renderToggle(props: Partial<React.ComponentProps<typeof AgentsOverviewToggle>> = {}) {
+  return render(
+    <AgentsOverviewToggle
+      activeAgents={[]}
       verdict={ZERO_VERDICT}
       isOpen={false}
       onToggle={() => {}}
@@ -57,7 +73,7 @@ describe("AgentsOverviewBar verdict strip", () => {
   hover-gated) and the `verdict` prop is the roster-wide count, NOT a count of the `activeAgents` live list.
   */
   it("renders all four operator buckets as visible text", () => {
-    renderBar({
+    renderToggle({
       verdict: { active: 3, waitingHuman: 2, noHeartbeat: 1, stalled: 4 },
     });
 
@@ -68,7 +84,7 @@ describe("AgentsOverviewBar verdict strip", () => {
   });
 
   it("renders honest zeros for an empty roster instead of hiding buckets", () => {
-    renderBar();
+    renderToggle();
 
     expect(screen.getByText("0 active")).toBeInTheDocument();
     expect(screen.getByText("0 waiting on a human")).toBeInTheDocument();
@@ -77,7 +93,7 @@ describe("AgentsOverviewBar verdict strip", () => {
   });
 
   it("labels the strip region so a screen reader announces what the counts are", () => {
-    renderBar({ verdict: { active: 1, waitingHuman: 0, noHeartbeat: 0, stalled: 0 } });
+    renderToggle({ verdict: { active: 1, waitingHuman: 0, noHeartbeat: 0, stalled: 0 } });
 
     expect(screen.getByRole("group", { name: "Project movement" })).toBeInTheDocument();
   });
@@ -85,7 +101,7 @@ describe("AgentsOverviewBar verdict strip", () => {
   it("shows the roster-wide counts even when the live active list is smaller", () => {
     // The hazard this guards: `activeAgents` is state-filtered to {active, running} for the live panel.
     // A strip derived from it could never show a waiting/stalled count.
-    renderBar({
+    renderToggle({
       activeAgents: [makeAgent("a-1", "active")],
       verdict: { active: 1, waitingHuman: 5, noHeartbeat: 2, stalled: 3 },
     });
@@ -97,18 +113,30 @@ describe("AgentsOverviewBar verdict strip", () => {
   });
 
   it("uses singular grammar for a single agent in a bucket", () => {
-    renderBar({ verdict: { active: 1, waitingHuman: 1, noHeartbeat: 1, stalled: 1 } });
+    renderToggle({ verdict: { active: 1, waitingHuman: 1, noHeartbeat: 1, stalled: 1 } });
     expect(screen.getByText("1 waiting on a human")).toBeInTheDocument();
   });
 
   it("stays inside the collapse toggle so the affordance does not move", () => {
-    renderBar({ verdict: { active: 2, waitingHuman: 0, noHeartbeat: 0, stalled: 0 } });
+    renderToggle({ verdict: { active: 2, waitingHuman: 0, noHeartbeat: 0, stalled: 0 } });
     const toggle = screen.getByRole("button", { expanded: false });
     expect(toggle).toHaveTextContent("2 active");
   });
 });
 
 describe("AgentsOverviewBar", () => {
+  /*
+  FNXC:FleetVerdict 2026-09-14-22:05 (upstream sync merge):
+  Upstream's "N active · M running" meta-count tests were superseded here: RUFU-176 deliberately
+  removed that sentence in favor of the four-bucket strip, and FN-379 relocated the trigger to the
+  header. The surviving contract is that the strip renders in the collapsed header trigger.
+  */
+  it("hosts the verdict strip in the collapsed header trigger", () => {
+    renderToggle({ isOpen: false });
+    expect(screen.getByRole("button", { expanded: false })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Project movement" })).toBeInTheDocument();
+  });
+
   it("renders metrics bar and active agents panel when open", () => {
     renderBar({ isOpen: true });
 

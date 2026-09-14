@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { FileBrowserModal } from "../FileBrowserModal";
+import { ViewLayoutProvider } from "../../context/ViewLayoutContext";
 import * as workspaceBrowserHook from "../../hooks/useWorkspaceFileBrowser";
 import * as workspaceEditorHook from "../../hooks/useWorkspaceFileEditor";
 import * as workspacesHook from "../../hooks/useWorkspaces";
@@ -365,8 +366,8 @@ describe("FileBrowserModal", () => {
     expect(onSendSelectionToTask).toHaveBeenCalledWith(expect.stringContaining("Turn preview note into work."));
   });
 
-  it("opens with an initial file selected", async () => {
-    render(
+  it("opens a direct desktop file without mounting or loading a second browser", async () => {
+    const { rerender } = render(
       <FileBrowserModal
         initialWorkspace="project"
         initialFile="packages/dashboard/app/App.tsx"
@@ -376,14 +377,31 @@ describe("FileBrowserModal", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getAllByText("packages/dashboard/app/App.tsx").length).toBeGreaterThan(0);
+      expect(screen.getByLabelText("Editor for packages/dashboard/app/App.tsx")).toBeInTheDocument();
     });
 
-    expect(mockSetPath).toHaveBeenCalledWith("packages/dashboard/app");
+    expect(mockUseWorkspaceFileBrowser).toHaveBeenLastCalledWith("project", false, undefined);
     expect(mockUseWorkspaceFileEditor).toHaveBeenLastCalledWith("project", "packages/dashboard/app/App.tsx", true, undefined, true);
+    expect(document.querySelector(".file-browser-sidebar")).not.toBeInTheDocument();
+    expect(screen.queryByRole("separator", { name: "Resize sidebar" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Back to file list")).not.toBeInTheDocument();
+    expect(mockSetPath).not.toHaveBeenCalled();
+
+    rerender(
+      <FileBrowserModal
+        initialWorkspace="project"
+        initialFile="packages/dashboard/app/App.tsx"
+        isOpen={true}
+        onClose={mockOnClose}
+      />,
+    );
+
+    expect(screen.getByLabelText("Editor for packages/dashboard/app/App.tsx")).toBeInTheDocument();
+    expect(document.querySelector(".file-browser-sidebar")).not.toBeInTheDocument();
+    expect(mockUseWorkspaceFileBrowser).toHaveBeenLastCalledWith("project", false, undefined);
   });
 
-  it("opens root-level absolute initial files at filesystem root", async () => {
+  it("opens root-level absolute initial files without navigating a hidden browser", async () => {
     render(
       <FileBrowserModal
         initialWorkspace="project"
@@ -394,10 +412,11 @@ describe("FileBrowserModal", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getAllByText("/README.md").length).toBeGreaterThan(0);
+      expect(screen.getByLabelText("Editor for /README.md")).toBeInTheDocument();
     });
 
-    expect(mockSetPath).toHaveBeenCalledWith("/");
+    expect(mockSetPath).not.toHaveBeenCalled();
+    expect(mockUseWorkspaceFileBrowser).toHaveBeenLastCalledWith("project", false, undefined);
     expect(mockUseWorkspaceFileEditor).toHaveBeenLastCalledWith("project", "/README.md", true, undefined, true);
   });
 
@@ -449,7 +468,8 @@ describe("FileBrowserModal", () => {
     expect(screen.getByLabelText(`Editor for ${nestedFile}`)).toBeInTheDocument();
     expect(screen.getByText("Could not load App.tsx")).toBeInTheDocument();
     expect(document.querySelector(".file-browser-content.mobile")).toBeNull();
-    expect(mockSetPath).toHaveBeenCalledWith("packages/dashboard/app");
+    expect(document.querySelector(".file-browser-sidebar")).toBeNull();
+    expect(mockSetPath).not.toHaveBeenCalled();
     expect(mockOnWorkspaceChange).toHaveBeenCalledWith("FN-002");
   });
 
@@ -499,7 +519,8 @@ describe("FileBrowserModal", () => {
     });
     expect(screen.queryByText("Could not load App.tsx")).not.toBeInTheDocument();
     expect(document.querySelector(".cm-content")?.textContent).toContain("console.log('loaded from task worktree');");
-    expect(mockSetPath).toHaveBeenCalledWith("packages/dashboard/app");
+    expect(document.querySelector(".file-browser-sidebar")).toBeNull();
+    expect(mockSetPath).not.toHaveBeenCalled();
   });
 
   it("keeps mobile on the errored nested selected file after switching workspaces", async () => {
@@ -526,8 +547,9 @@ describe("FileBrowserModal", () => {
     );
 
     fireEvent(window, new Event("resize"));
-    await waitFor(() => expect(screen.getByLabelText("Back to file list")).toBeInTheDocument());
-    expect(screen.getByLabelText(`Editor for ${nestedFile}`)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText(`Editor for ${nestedFile}`)).toBeInTheDocument());
+    expect(screen.queryByLabelText("Back to file list")).not.toBeInTheDocument();
+    expect(document.querySelector(".file-browser-sidebar")).not.toBeInTheDocument();
     mockSetPath.mockClear();
 
     await user.click(screen.getByRole("button", { name: /kb/i }));
@@ -536,11 +558,11 @@ describe("FileBrowserModal", () => {
     await waitFor(() => {
       expect(mockUseWorkspaceFileEditor).toHaveBeenLastCalledWith("FN-002", nestedFile, true, undefined, true);
     });
-    expect(screen.getByLabelText("Back to file list")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Back to file list")).not.toBeInTheDocument();
     expect(screen.getByLabelText(`Editor for ${nestedFile}`)).toBeInTheDocument();
     expect(document.querySelector(".file-browser-content.mobile.active")).not.toBeNull();
-    expect(document.querySelector(".file-browser-sidebar.mobile.active")).toBeNull();
-    expect(mockSetPath).toHaveBeenCalledWith("packages/dashboard/app");
+    expect(document.querySelector(".file-browser-sidebar")).toBeNull();
+    expect(mockSetPath).not.toHaveBeenCalled();
     expect(mockOnWorkspaceChange).toHaveBeenCalledWith("FN-002");
   });
 
@@ -618,9 +640,11 @@ describe("FileBrowserModal", () => {
     fireEvent(window, new Event("resize"));
 
     await waitFor(() => {
-      expect(screen.getByLabelText("Back to file list")).toBeInTheDocument();
+      expect(screen.getByLabelText("Editor for README.md")).toBeInTheDocument();
     });
 
+    expect(screen.queryByLabelText("Back to file list")).not.toBeInTheDocument();
+    expect(document.querySelector(".file-browser-sidebar")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /toggle editor options/i })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /edit mode/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /preview mode/i })).toBeInTheDocument();
@@ -693,8 +717,8 @@ describe("FileBrowserModal", () => {
         expect(modal).not.toHaveClass("file-browser-modal--narrow");
       });
       expect(document.querySelector(".file-browser-content.mobile")).toBeNull();
-      expect(document.querySelector(".file-browser-sidebar.mobile")).toBeNull();
-      expect(screen.getByRole("separator", { name: "Resize sidebar" })).toBeInTheDocument();
+      expect(document.querySelector(".file-browser-sidebar")).toBeNull();
+      expect(screen.queryByRole("separator", { name: "Resize sidebar" })).not.toBeInTheDocument();
     } finally {
       globalThis.ResizeObserver = originalResizeObserver;
       window.ResizeObserver = originalWindowResizeObserver;
@@ -908,40 +932,40 @@ describe("FileBrowserModal", () => {
   });
 
   describe("resizable sidebar split", () => {
-    it("renders desktop resize handle with separator ARIA attributes", () => {
-      render(
+    const sharedSidebarStorageKey = "kb:file-project:kb-dashboard-view-sidebar-width";
+    const renderResizableFileBrowser = () => render(
+      <ViewLayoutProvider projectId="file-project">
         <FileBrowserModal
           initialWorkspace="project"
           isOpen={true}
           onClose={mockOnClose}
-        />,
-      );
+          projectId="file-project"
+        />
+      </ViewLayoutProvider>,
+    );
+
+    it("renders desktop resize handle with separator ARIA attributes", () => {
+      renderResizableFileBrowser();
 
       const handle = screen.getByRole("separator", { name: "Resize sidebar" });
       expect(handle).toHaveAttribute("aria-orientation", "vertical");
-      expect(handle).toHaveAttribute("aria-valuemin", "180");
-      expect(handle).toHaveAttribute("aria-valuemax", "500");
-      expect(handle).toHaveAttribute("aria-valuenow", "280");
+      expect(handle).toHaveAttribute("aria-valuemin", "220");
+      expect(handle).toHaveAttribute("aria-valuemax", "560");
+      expect(handle).toHaveAttribute("aria-valuenow", "300");
       expect(handle).toHaveAttribute("tabindex", "0");
     });
 
     it("updates sidebar width while dragging the resize handle", () => {
-      render(
-        <FileBrowserModal
-          initialWorkspace="project"
-          isOpen={true}
-          onClose={mockOnClose}
-        />,
-      );
+      renderResizableFileBrowser();
 
       const handle = screen.getByRole("separator", { name: "Resize sidebar" });
       const sidebar = document.querySelector(".file-browser-sidebar");
       expect(sidebar).not.toBeNull();
 
-      fireEvent.pointerDown(handle, { pointerId: 1, clientX: 280 });
+      fireEvent.pointerDown(handle, { pointerId: 1, clientX: 300 });
       fireEvent.pointerMove(document, { pointerId: 1, clientX: 360 });
 
-      expect(sidebar).toHaveStyle({ width: "360px" });
+      expect(sidebar).toHaveStyle({ "--view-sidebar-current-width": "360px" });
       expect(handle).toHaveAttribute("aria-valuenow", "360");
     });
 
@@ -965,96 +989,52 @@ describe("FileBrowserModal", () => {
     });
 
     it("clamps sidebar width between min and max bounds", () => {
-      render(
-        <FileBrowserModal
-          initialWorkspace="project"
-          isOpen={true}
-          onClose={mockOnClose}
-        />,
-      );
+      renderResizableFileBrowser();
 
       const handle = screen.getByRole("separator", { name: "Resize sidebar" });
       const sidebar = document.querySelector(".file-browser-sidebar");
       expect(sidebar).not.toBeNull();
 
-      fireEvent.pointerDown(handle, { pointerId: 1, clientX: 280 });
+      fireEvent.pointerDown(handle, { pointerId: 1, clientX: 300 });
       fireEvent.pointerMove(document, { pointerId: 1, clientX: -1000 });
-      expect(sidebar).toHaveStyle({ width: "180px" });
+      expect(sidebar).toHaveStyle({ "--view-sidebar-current-width": "220px" });
 
       fireEvent.pointerMove(document, { pointerId: 1, clientX: 2000 });
-      expect(sidebar).toHaveStyle({ width: "500px" });
-      expect(handle).toHaveAttribute("aria-valuenow", "500");
+      expect(sidebar).toHaveStyle({ "--view-sidebar-current-width": "560px" });
+      expect(handle).toHaveAttribute("aria-valuenow", "560");
     });
 
-    it("persists final sidebar width to localStorage on pointer up", () => {
-      let onPointerMove: ((event: PointerEvent) => void) | null = null;
-      let onPointerUp: ((event: PointerEvent) => void) | null = null;
-      const addEventListenerSpy = vi.spyOn(document, "addEventListener");
-
-      addEventListenerSpy.mockImplementation((type, listener, options) => {
-        if (type === "pointermove") {
-          onPointerMove = listener as (event: PointerEvent) => void;
-        }
-        if (type === "pointerup") {
-          onPointerUp = listener as (event: PointerEvent) => void;
-        }
-        return EventTarget.prototype.addEventListener.call(document, type, listener as EventListener, options);
-      });
-
-      render(
-        <FileBrowserModal
-          initialWorkspace="project"
-          isOpen={true}
-          onClose={mockOnClose}
-        />,
-      );
+    it("persists final sidebar width to project storage on pointer up", () => {
+      renderResizableFileBrowser();
 
       const handle = screen.getByRole("separator", { name: "Resize sidebar" });
-      fireEvent.pointerDown(handle, { pointerId: 1, clientX: 280 });
+      fireEvent.pointerDown(handle, { pointerId: 1, clientX: 300 });
+      fireEvent.pointerMove(document, { pointerId: 1, clientX: 345 });
+      fireEvent.pointerUp(document, { pointerId: 1, clientX: 345 });
 
-      expect(onPointerMove).not.toBeNull();
-      expect(onPointerUp).not.toBeNull();
-
-      act(() => {
-        onPointerMove?.({ clientX: 345, pointerId: 1 } as PointerEvent);
-        onPointerUp?.({ pointerId: 1 } as PointerEvent);
-      });
-
-      expect(localStorage.getItem("fusion:file-browser-sidebar-width")).toBe("345");
+      expect(localStorage.getItem(sharedSidebarStorageKey)).toBe("345");
     });
 
     it("supports keyboard resize with arrow keys and persists updated width", () => {
-      render(
-        <FileBrowserModal
-          initialWorkspace="project"
-          isOpen={true}
-          onClose={mockOnClose}
-        />,
-      );
+      renderResizableFileBrowser();
 
       const handle = screen.getByRole("separator", { name: "Resize sidebar" });
       const sidebar = document.querySelector(".file-browser-sidebar");
       expect(sidebar).not.toBeNull();
 
       fireEvent.keyDown(handle, { key: "ArrowRight" });
-      expect(sidebar).toHaveStyle({ width: "300px" });
-      expect(handle).toHaveAttribute("aria-valuenow", "300");
-      expect(localStorage.getItem("fusion:file-browser-sidebar-width")).toBe("300");
+      expect(sidebar).toHaveStyle({ "--view-sidebar-current-width": "316px" });
+      expect(handle).toHaveAttribute("aria-valuenow", "316");
+      expect(localStorage.getItem(sharedSidebarStorageKey)).toBe("316");
 
       fireEvent.keyDown(handle, { key: "ArrowLeft" });
-      expect(sidebar).toHaveStyle({ width: "280px" });
-      expect(handle).toHaveAttribute("aria-valuenow", "280");
-      expect(localStorage.getItem("fusion:file-browser-sidebar-width")).toBe("280");
+      expect(sidebar).toHaveStyle({ "--view-sidebar-current-width": "300px" });
+      expect(handle).toHaveAttribute("aria-valuenow", "300");
+      expect(localStorage.getItem(sharedSidebarStorageKey)).toBe("300");
     });
 
     it("clamps keyboard resize within min and max bounds", () => {
-      render(
-        <FileBrowserModal
-          initialWorkspace="project"
-          isOpen={true}
-          onClose={mockOnClose}
-        />,
-      );
+      renderResizableFileBrowser();
 
       const handle = screen.getByRole("separator", { name: "Resize sidebar" });
       const sidebar = document.querySelector(".file-browser-sidebar");
@@ -1063,24 +1043,18 @@ describe("FileBrowserModal", () => {
       for (let i = 0; i < 30; i += 1) {
         fireEvent.keyDown(handle, { key: "ArrowLeft" });
       }
-      expect(sidebar).toHaveStyle({ width: "180px" });
-      expect(handle).toHaveAttribute("aria-valuenow", "180");
+      expect(sidebar).toHaveStyle({ "--view-sidebar-current-width": "220px" });
+      expect(handle).toHaveAttribute("aria-valuenow", "220");
 
       for (let i = 0; i < 30; i += 1) {
         fireEvent.keyDown(handle, { key: "ArrowRight" });
       }
-      expect(sidebar).toHaveStyle({ width: "500px" });
-      expect(handle).toHaveAttribute("aria-valuenow", "500");
+      expect(sidebar).toHaveStyle({ "--view-sidebar-current-width": "560px" });
+      expect(handle).toHaveAttribute("aria-valuenow", "560");
     });
 
     it("ignores non-arrow keys when resizing from keyboard", () => {
-      render(
-        <FileBrowserModal
-          initialWorkspace="project"
-          isOpen={true}
-          onClose={mockOnClose}
-        />,
-      );
+      renderResizableFileBrowser();
 
       const handle = screen.getByRole("separator", { name: "Resize sidebar" });
       const sidebar = document.querySelector(".file-browser-sidebar");
@@ -1088,16 +1062,16 @@ describe("FileBrowserModal", () => {
 
       fireEvent.keyDown(handle, { key: "Enter" });
 
-      expect(sidebar).toHaveStyle({ width: "280px" });
-      expect(handle).toHaveAttribute("aria-valuenow", "280");
-      expect(localStorage.getItem("fusion:file-browser-sidebar-width")).toBeNull();
+      expect(sidebar).toHaveStyle({ "--view-sidebar-current-width": "300px" });
+      expect(handle).toHaveAttribute("aria-valuenow", "300");
+      expect(localStorage.getItem(sharedSidebarStorageKey)).toBeNull();
     });
 
     it("defines focus-visible styling for the resize handle", async () => {
       const { loadAllAppCss } = await import("../../test/cssFixture");
       const css = loadAllAppCss();
 
-      expect(css).toMatch(/\.file-browser-resize-handle:focus-visible\s*\{[^}]*box-shadow:\s*var\(--focus-ring-strong\);/);
+      expect(css).toMatch(/\.view-sidebar__separator:focus-visible\s*\{[^}]*box-shadow:\s*var\(--focus-ring-strong\);/);
     });
   });
 
@@ -1220,7 +1194,10 @@ describe("FileBrowserModal", () => {
       expect(pdf).toHaveAttribute("src", expect.stringContaining(encodeURIComponent("docs/MANUAL.PDF")));
       expect(pdf).toHaveAttribute("src", expect.stringContaining("inline=1"));
       expect(pdf).toHaveAttribute("title", "Preview for docs/MANUAL.PDF");
-      expect(mockSetPath).toHaveBeenCalledWith("docs");
+      expect(mockUseWorkspaceFileBrowser).toHaveBeenLastCalledWith("project", false, undefined);
+      expect(mockSetPath).not.toHaveBeenCalled();
+      expect(document.querySelector(".file-browser-sidebar")).not.toBeInTheDocument();
+      expect(screen.queryByRole("separator", { name: "Resize sidebar" })).not.toBeInTheDocument();
       expect(mockUseWorkspaceFileEditor).toHaveBeenLastCalledWith("project", "docs/MANUAL.PDF", false, undefined, false);
     });
 

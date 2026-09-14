@@ -39,6 +39,7 @@ const EXPECTED_DOCUMENTED_VIEWS = new Set([
   "InsightsView",
   "NotesView",
   "SkillsView",
+  "SnippetsView",
   "ResearchView",
   "CommandCenter",
   "EvalsView",
@@ -63,6 +64,7 @@ const EXPECTED_APP_LEVEL_VIEWS = new Set([
   "EvalsView",
   "ChatView",
   "SkillsView",
+  "SnippetsView",
   "MemoryView",
   "SecretsView",
   "CommandCenter",
@@ -182,7 +184,7 @@ function expectDocumentedViews(include: Iterable<string>, section: string): void
 }
 
 describe("AGENTS lazy-loaded views inventory", () => {
-  it("documents the App-level and AppModals lazy views accurately and keeps the curated 21-view list in sync", () => {
+  it("documents the App-level and AppModals lazy views accurately and keeps the curated 22-view list in sync", () => {
     const agentsDoc = readFileSync(resolve(__dirname, "../../../../AGENTS.md"), "utf-8");
     const appSource = readFileSync(resolve(__dirname, "../App.tsx"), "utf-8");
     const appModalsSource = readFileSync(resolve(__dirname, "../components/AppModals.tsx"), "utf-8");

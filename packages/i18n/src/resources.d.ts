@@ -3664,7 +3664,8 @@ export default interface Resources {
       "settings": "Settings",
       "showRightSidebar": "Show right sidebar",
       "showScripts": "Show scripts",
-      "skillsView": "Skills & Snippets",
+      "skillsView": "Skills",
+      "snippetsView": "Snippets",
       "startAiEngine": "Start AI engine",
       "stashRecoveryView": "Stash Recovery",
       "stopAiEngine": "Stop AI engine",
@@ -4125,6 +4126,7 @@ export default interface Resources {
       "noSentMessages": "No sent messages",
       "noSentMessagesAgent": "No sent messages for this agent",
       "noStructuralMessages": "No reports or approvals in your inbox",
+      "noSuggestedRecommendations": "No follow-up recommendations were suggested.",
       "openArtifact": "Open artifact",
       "openArtifactAria": "Open artifact: {{label}}",
       "openPlanningSession": "Open planning session",
@@ -4148,6 +4150,7 @@ export default interface Resources {
       "restore": "Restore",
       "retryCreatingTask": "Retry creating task",
       "selectMessageToRead": "Select a message to read",
+      "suggestedRecommendations": "Suggested recommendations",
       "system": "System",
       "taskCompletion": "Task completion",
       "taskCreatedView": "Task {{id}} created — View task",
@@ -5236,6 +5239,7 @@ export default interface Resources {
       "sectionProjects": "Projects",
       "sectionSettingsSync": "Settings Sync",
       "sectionSyncHistory": "Sync History",
+      "selectPrompt": "Select a node to inspect its status, projects, and sync state.",
       "startButton": "Start",
       "statusConnecting": "Connecting",
       "statusError": "Error",
@@ -9350,6 +9354,7 @@ export default interface Resources {
       "youMessage": "You message"
     },
     "taskDetail": {
+      "accessibleName": "Task detail",
       "actions": {
         "menuBtn": "Actions",
         "oversightHeading": "Oversight: {{state}}",
@@ -9461,6 +9466,10 @@ export default interface Resources {
       },
       "debug": {
         "none": "No debug details available."
+      },
+      "definition": {
+        "descriptionHeading": "Description",
+        "noDescription": "(no description)"
       },
       "delete": {
         "actionClosed": "closed",
@@ -9813,10 +9822,22 @@ export default interface Resources {
         "updated": "Priority updated to {{priority}}"
       },
       "progress": {
+        "completedCount": "{{count}}/{{total}} completed",
         "heading": "Progress",
+        "implementationOrigin": "Implementation",
         "noSteps": "(no steps defined)",
+        "status": {
+          "advisory": "Completed with feedback",
+          "done": "Completed",
+          "failed": "Failed",
+          "notRun": "Not run",
+          "pending": "Pending",
+          "running": "In progress",
+          "skipped": "Skipped"
+        },
         "stepCount_one": "{{count}}/{{total}} step",
-        "stepCount_other": "{{count}}/{{total}} steps"
+        "stepCount_other": "{{count}}/{{total}} steps",
+        "workflowOrigin": "Workflow gate"
       },
       "provenance": {
         "createdBy": "Created by",
@@ -9942,6 +9963,7 @@ export default interface Resources {
       "spec": {
         "aiReviseHeading": "Ask AI to Revise",
         "aiReviseHelp": "Provide feedback for the AI to improve this specification. The task will move to planning for replanning.",
+        "backToDefinition": "Back to definition",
         "editBtn": "Edit",
         "feedbackPlaceholder": "e.g., 'Add more details about error handling', 'Split this into smaller steps', 'Include tests for the API endpoints'...",
         "hideDetailsBtn": "Hide details",
@@ -9953,6 +9975,8 @@ export default interface Resources {
         "openPromptBtn": "Open PROMPT.md",
         "openPromptTitle": "Open this task's PROMPT.md in the file editor",
         "placeholder": "Enter task specification in Markdown...",
+        "promptFileName": "PROMPT.md",
+        "readPlanBtn": "Read plan",
         "requestRevisionBtn": "Request AI Revision",
         "requesting": "Requesting…",
         "revisionColumnError": "Cannot request revision: Task must be in 'triage', 'todo', 'in-progress', or 'in-review' column.",
@@ -10001,7 +10025,6 @@ export default interface Resources {
         "model": "Model",
         "pullRequest": "Pull Request",
         "recommendations": "Recommendations",
-        "reordered": "{{label}} moved to position {{position}} of {{count}}",
         "review": "Review",
         "routing": "Routing",
         "stats": "Stats",
@@ -10860,6 +10883,7 @@ export default interface Resources {
       "startPlanning": "Start planning from {{text}}",
       "taskCreatedAndAssigned": "Created {{id}} and assigned to {{agent}}",
       "taskCreatedFromTodo": "Created {{id}} from todo",
+      "title": "Todos",
       "todoListsLabel": "Todo lists",
       "todos": "Todos"
     },

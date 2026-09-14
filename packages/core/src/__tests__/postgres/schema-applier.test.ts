@@ -120,6 +120,8 @@ import {
   PROJECT_NOTES_VERSION,
   OVERLAP_WAIT_SYNC_VERSION,
   WHITEBOARDS_SCHEMA_VERSION,
+  OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION,
+  OVERLAP_REVALIDATION_DRAIN_VERSION,
 } from "../../postgres/schema-applier.js";
 import { ProjectPartitionRekeyError, rekeyFallbackProjectPartition } from "../../postgres/migration-stamping.js";
 import type { PluginSchemaInitHook } from "../../postgres/plugin-schema-hook.js";
@@ -194,7 +196,9 @@ describe("schema-applier: immutable migration identities", () => {
     expect(PROJECT_NOTES_VERSION).toBe("0074");
     expect(OVERLAP_WAIT_SYNC_VERSION).toBe("0075");
     expect(WHITEBOARDS_SCHEMA_VERSION).toBe("0076");
-    expect(SCHEMA_BASELINE_VERSION).toBe("0076");
+    expect(OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION).toBe("0077");
+    expect(OVERLAP_REVALIDATION_DRAIN_VERSION).toBe("0078");
+    expect(SCHEMA_BASELINE_VERSION).toBe("0078");
   });
 
   it("keeps monitor and approval isolation assigned to version 0003", () => {
@@ -1969,11 +1973,14 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       PROJECT_NOTES_VERSION,
       OVERLAP_WAIT_SYNC_VERSION,
       WHITEBOARDS_SCHEMA_VERSION,
+      OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION,
+      OVERLAP_REVALIDATION_DRAIN_VERSION,
       /*
       FNXC:MigrationCollisionRepair 2026-09-10-23:59:
       The repair identity is the non-numeric `local-repair-mixed-0065`, and these ledger assertions
       read `ORDER BY version` as TEXT, so it sorts AFTER every numeric migration — including the
-      0074-0076 migrations merged in from upstream on 2026-09-11. Keep it last in these fixtures.
+      0074-0078 migrations merged in from upstream on 2026-09-11 and 2026-09-14. Keep it last in
+      these fixtures.
       */
       MIXED_0065_REPAIR_VERSION,
     ]);
@@ -2078,11 +2085,14 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       PROJECT_NOTES_VERSION,
       OVERLAP_WAIT_SYNC_VERSION,
       WHITEBOARDS_SCHEMA_VERSION,
+      OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION,
+      OVERLAP_REVALIDATION_DRAIN_VERSION,
       /*
       FNXC:MigrationCollisionRepair 2026-09-10-23:59:
       The repair identity is the non-numeric `local-repair-mixed-0065`, and these ledger assertions
       read `ORDER BY version` as TEXT, so it sorts AFTER every numeric migration — including the
-      0074-0076 migrations merged in from upstream on 2026-09-11. Keep it last in these fixtures.
+      0074-0078 migrations merged in from upstream on 2026-09-11 and 2026-09-14. Keep it last in
+      these fixtures.
       */
       MIXED_0065_REPAIR_VERSION,
     ]);
@@ -2320,11 +2330,14 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       PROJECT_NOTES_VERSION,
       OVERLAP_WAIT_SYNC_VERSION,
       WHITEBOARDS_SCHEMA_VERSION,
+      OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION,
+      OVERLAP_REVALIDATION_DRAIN_VERSION,
       /*
       FNXC:MigrationCollisionRepair 2026-09-10-23:59:
       The repair identity is the non-numeric `local-repair-mixed-0065`, and these ledger assertions
       read `ORDER BY version` as TEXT, so it sorts AFTER every numeric migration — including the
-      0074-0076 migrations merged in from upstream on 2026-09-11. Keep it last in these fixtures.
+      0074-0078 migrations merged in from upstream on 2026-09-11 and 2026-09-14. Keep it last in
+      these fixtures.
       */
       MIXED_0065_REPAIR_VERSION,
     ]);
@@ -2443,11 +2456,14 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       PROJECT_NOTES_VERSION,
       OVERLAP_WAIT_SYNC_VERSION,
       WHITEBOARDS_SCHEMA_VERSION,
+      OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION,
+      OVERLAP_REVALIDATION_DRAIN_VERSION,
       /*
       FNXC:MigrationCollisionRepair 2026-09-10-23:59:
       The repair identity is the non-numeric `local-repair-mixed-0065`, and these ledger assertions
       read `ORDER BY version` as TEXT, so it sorts AFTER every numeric migration — including the
-      0074-0076 migrations merged in from upstream on 2026-09-11. Keep it last in these fixtures.
+      0074-0078 migrations merged in from upstream on 2026-09-11 and 2026-09-14. Keep it last in
+      these fixtures.
       */
       MIXED_0065_REPAIR_VERSION,
     ]);
@@ -2566,11 +2582,14 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       PROJECT_NOTES_VERSION,
       OVERLAP_WAIT_SYNC_VERSION,
       WHITEBOARDS_SCHEMA_VERSION,
+      OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION,
+      OVERLAP_REVALIDATION_DRAIN_VERSION,
       /*
       FNXC:MigrationCollisionRepair 2026-09-10-23:59:
       The repair identity is the non-numeric `local-repair-mixed-0065`, and these ledger assertions
       read `ORDER BY version` as TEXT, so it sorts AFTER every numeric migration — including the
-      0074-0076 migrations merged in from upstream on 2026-09-11. Keep it last in these fixtures.
+      0074-0078 migrations merged in from upstream on 2026-09-11 and 2026-09-14. Keep it last in
+      these fixtures.
       */
       MIXED_0065_REPAIR_VERSION,
     ]);

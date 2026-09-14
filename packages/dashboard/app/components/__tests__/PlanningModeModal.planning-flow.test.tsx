@@ -777,7 +777,7 @@ describe("PlanningModeModal sequential flow", () => {
 
     expect(await screen.findByText("What should happen next?")).toBeInTheDocument();
     const sidebar = screen.getByRole("complementary", { name: "Planning sessions" });
-    expect(screen.getByRole("separator", { name: "Resize planning sidebar" })).toBeInTheDocument();
+    expect(screen.getByRole("separator", { name: "Resize sidebar" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Back to sessions" })).toBeNull();
     fireEvent.click(await screen.findByRole("button", { name: /Secure plan/ }));
     expect(screen.getByRole("complementary", { name: "Planning sessions" })).toBe(sidebar);
@@ -802,7 +802,7 @@ describe("PlanningModeModal sequential flow", () => {
     fireEvent.click(screen.getByRole("button", { name: "Back to sessions" }));
     expect(document.querySelector(".planning-modal-body")).toHaveClass("planning-modal-body--show-list");
     expect(screen.getByRole("complementary", { name: "Planning sessions" })).toBeInTheDocument();
-    expect(screen.queryByRole("separator", { name: "Resize planning sidebar" })).toBeNull();
+    expect(screen.queryByRole("separator", { name: "Resize sidebar" })).toBeNull();
   });
 
   it.each(["desktop", "tablet"] as const)("keeps the populated sidebar mounted when starting a new session on %s", async (viewport) => {
@@ -814,7 +814,7 @@ describe("PlanningModeModal sequential flow", () => {
     const sidebar = await screen.findByRole("complementary", { name: "Planning sessions" });
     fireEvent.click(screen.getByRole("button", { name: "New session" }));
     expect(screen.getByRole("complementary", { name: "Planning sessions" })).toBe(sidebar);
-    expect(screen.getByRole("separator", { name: "Resize planning sidebar" })).toBeInTheDocument();
+    expect(screen.getByRole("separator", { name: "Resize sidebar" })).toBeInTheDocument();
     expect(screen.getByText("Transform your idea into a detailed task")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Back to sessions" })).toBeNull();
   });
@@ -1272,6 +1272,7 @@ describe("PlanningModeModal sequential flow", () => {
 
     renderSession();
     fireEvent.click(await screen.findByLabelText("Secure defaults"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Next" })).toBeEnabled());
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Next" }));
       await Promise.resolve();
@@ -1345,6 +1346,7 @@ describe("PlanningModeModal sequential flow", () => {
     const props = { isOpen: true, onClose: vi.fn(), onTaskCreated: vi.fn(), onTasksCreated: vi.fn(), tasks: mockTasks, projectId: "project-1" };
     const { rerender } = render(<PlanningModeModal {...props} resumeSessionId="session-a" />);
     fireEvent.click(await screen.findByLabelText("Secure defaults"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Next" })).toBeEnabled());
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Next" }));
       await Promise.resolve();
@@ -1412,6 +1414,7 @@ describe("PlanningModeModal sequential flow", () => {
 
     renderSession();
     fireEvent.click(await screen.findByLabelText("Secure defaults"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Next" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
     await waitFor(() => expect(sessionReads).toBe(2));
     await waitFor(() => expect(mockConnectPlanningStream).toHaveBeenCalledWith("session-1", "project-1", expect.any(Object)));
@@ -1487,6 +1490,7 @@ describe("PlanningModeModal sequential flow", () => {
 
     renderSession(sessionId);
     fireEvent.click(await screen.findByLabelText("Secure defaults"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Next" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
     await waitFor(() => expect(fetchCount).toBe(2));
 
@@ -1563,6 +1567,7 @@ describe("PlanningModeModal sequential flow", () => {
     const { rerender } = render(<PlanningModeModal {...props} resumeSessionId="session-a" />);
 
     fireEvent.click(await screen.findByLabelText("Secure defaults"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Next" })).toBeEnabled());
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Next" }));
       await Promise.resolve();
@@ -1689,6 +1694,7 @@ describe("PlanningModeModal sequential flow", () => {
     mockRespondToPlanning.mockReturnValue(new Promise(() => undefined));
     renderSession();
     fireEvent.click(await screen.findByLabelText("Secure defaults"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Next" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
     const workspace = screen.getByTestId("planning-workspace");
     expect(workspace).toHaveAttribute("aria-busy", "true");
@@ -2165,7 +2171,7 @@ describe("PlanningModeModal sequential flow", () => {
   created a duplicate planning session while the first one was silently abandoned. The remount
   must instead restore the persisted active session.
   */
-  it("consumes the seeded initial plan on auto-start so a navigate-back remount restores the session instead of creating a duplicate", async () => {
+  it("consumes the seeded initial plan on auto-start so a navigate-back remount selects nothing and creates no duplicate", async () => {
     mockFetchAiSession.mockResolvedValue({
       ...base,
       id: "draft-1",
@@ -2194,12 +2200,14 @@ describe("PlanningModeModal sequential flow", () => {
     // Navigate away: the embedded Planning view unmounts entirely.
     first.unmount();
 
-    // Navigate back: the owner cleared the payload, so the remount takes the
-    // stored-active-session restore path.
+    // Navigate back: the owner cleared the payload, so the remount opens on the
+    // session list. Entering Planning never auto-selects an interview.
+    mockFetchAiSession.mockClear();
     render(<PlanningModeModal {...commonProps} />);
-    await waitFor(() => expect(mockFetchAiSession).toHaveBeenCalledWith("draft-1"));
+    await waitFor(() => expect(mockFetchAiSessions).toHaveBeenCalled());
+    expect(mockFetchAiSession).not.toHaveBeenCalledWith("draft-1");
 
-    // No second session was drafted or started by the remount.
+    // The anti-duplicate contract is unchanged: no second session is drafted or started.
     expect(mockCreatePlanningDraft).toHaveBeenCalledTimes(1);
     expect(mockStartPlanningStreaming).toHaveBeenCalledTimes(1);
   });

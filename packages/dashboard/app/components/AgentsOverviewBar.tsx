@@ -9,15 +9,8 @@ import "./AgentsOverviewBar.css";
 interface AgentsOverviewBarProps {
   stats: AgentStats | null;
   activeAgents: Agent[];
-  /**
-   * RUFU-176: aggregate verdict over the FULL system/ephemeral-filtered roster (never state-filtered).
-   * Computed in `AgentsView` via `classifyFleetVerdict(fleetRoster, ...)` — see that classifier's input invariant.
-   * `activeAgents` stays for the Active Agents panel's live list; the strip must NOT be derived from it.
-   */
-  verdict: FleetVerdict;
   projectId?: string;
   isOpen: boolean;
-  onToggle: () => void;
   onSelectAgent?: (agentId: string) => void;
   onOpenTaskLogs?: (taskId: string) => void;
 }
@@ -80,47 +73,74 @@ function FleetVerdictStrip({ verdict }: { verdict: FleetVerdict }) {
         })}
       </span>
     </span>
+
+  );
+}
+
+interface AgentsOverviewToggleProps {
+  activeAgents: Agent[];
+  verdict: FleetVerdict;
+  isOpen: boolean;
+  onToggle: () => void;
+}
+
+/*
+FNXC:StandardizedViewActions 2026-09-14-02:47:
+Overview is a view-level control, so its trigger belongs in the Agents header beside the other view actions, not in a
+permanent third block between the header and the collection. FN-379 standardized the header and the rail but left this
+bar untouched, so Agents read as three stacked zones. The trigger renders in the header; the expanded content stays a
+sibling section under it and remains the constrained touch-scroll owner on phones.
+*/
+export function AgentsOverviewToggle({ verdict, isOpen, onToggle }: AgentsOverviewToggleProps) {
+  const { t } = useTranslation("app");
+
+  return (
+    <button
+      type="button"
+      className="agents-overview-bar__toggle"
+      aria-expanded={isOpen}
+      data-testid="agents-overview-toggle"
+      onClick={onToggle}
+    >
+      <span className="agents-overview-bar__title-wrap">
+        {isOpen ? <ChevronDown size={16} aria-hidden="true" /> : <ChevronRight size={16} aria-hidden="true" />}
+        <span className="agents-overview-bar__title">{t("agents.overview", "Overview")}</span>
+      </span>
+      {/*
+      FNXC:FleetVerdict 2026-09-14-21:55 (upstream sync merge):
+      RUFU-176 replaced the "N active · M running" meta sentence with the four-bucket visible strip.
+      The FN-379 header relocation keeps that requirement — the strip rides the trigger so every
+      count stays visible without hover, and the verdict never disappears behind a tooltip.
+      */}
+      <FleetVerdictStrip verdict={verdict} />
+    </button>
   );
 }
 
 export function AgentsOverviewBar({
   stats,
   activeAgents,
-  verdict,
   projectId,
   isOpen,
-  onToggle,
   onSelectAgent,
   onOpenTaskLogs,
 }: AgentsOverviewBarProps) {
   const { t } = useTranslation("app");
 
+  if (!isOpen) return null;
+
   return (
     <section className="agents-overview-bar" aria-label={t("agents.overviewLabel", "Agents overview")}>
-      <button
-        type="button"
-        className="agents-overview-bar__toggle"
-        aria-expanded={isOpen}
-        onClick={onToggle}
-      >
-        <span className="agents-overview-bar__title-wrap">
-          {isOpen ? <ChevronDown size={16} aria-hidden="true" /> : <ChevronRight size={16} aria-hidden="true" />}
-          <span className="agents-overview-bar__title">{t("agents.overview", "Overview")}</span>
-        </span>
-        <FleetVerdictStrip verdict={verdict} />
-      </button>
-      {isOpen ? (
-        <div className="agents-overview-bar__content">
-          <AgentMetricsBar stats={stats} className="agents-overview-bar__metrics" />
-          <ActiveAgentsPanel
-            agents={activeAgents}
-            projectId={projectId}
-            onAgentSelect={onSelectAgent}
-            onOpenTaskLogs={onOpenTaskLogs}
-            className="agents-overview-bar__active-panel"
-          />
-        </div>
-      ) : null}
+      <div className="agents-overview-bar__content">
+        <AgentMetricsBar stats={stats} className="agents-overview-bar__metrics" />
+        <ActiveAgentsPanel
+          agents={activeAgents}
+          projectId={projectId}
+          onAgentSelect={onSelectAgent}
+          onOpenTaskLogs={onOpenTaskLogs}
+          className="agents-overview-bar__active-panel"
+        />
+      </div>
     </section>
   );
 }
