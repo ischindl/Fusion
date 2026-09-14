@@ -204,11 +204,11 @@ describe("AGENTS lazy-loaded views inventory", () => {
     The set moved 21 -> 22: upstream deleted DocumentsView (consolidated into Mailbox, FN-325) and added
     NotesView plus WhiteboardView, while our FleetDashboardView remains documented.
     */
-    expect(Number(countMatch?.[1])).toBe(22);
+    expect(Number(countMatch?.[1])).toBe(23);
 
     const documentedViews = extractBacktickedNamesFromBullets(section);
     expect(new Set(documentedViews)).toEqual(EXPECTED_DOCUMENTED_VIEWS);
-    expect(documentedViews).toHaveLength(22);
+    expect(documentedViews).toHaveLength(23);
 
     expect(section).toContain("`ResearchView`");
     expect(section).toContain("`SettingsModal`");
