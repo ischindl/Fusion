@@ -3465,6 +3465,38 @@ describe("executeHeartbeat", () => {
       ]);
     });
 
+    /*
+    FNXC:TaskLogsRead 2026-09-09-15:19:
+    RUFU-204: the heartbeat lane must expose the cross-task target too. Durable agents poll OTHER cards'
+    logs from a task-bound heartbeat to decide whether a sibling has stalled, and the pre-fix closure
+    discarded the requested id, handing them their own card's fresh timestamp and inverting that judgement.
+    This asserts the heartbeat-installed tool (a) exposes task_id and (b) actually reads the requested card
+    from the shared task store. It calls createHeartbeatTools directly, so it does not touch the exact
+    70-tool count/name harness above.
+    */
+    it("installs fn_task_logs_read so a task-bound heartbeat can read another card's log", async () => {
+      const getAgentLogs = vi.fn(async () => [
+        { taskId: "FN-OTHER", timestamp: "2026-09-08T00:00:00.000Z", text: "sibling log row", type: "text", agent: "executor" },
+      ]);
+      const getAgentLogCount = vi.fn(async () => 1);
+      const logsTaskStore = { ...mockTaskStore, getAgentLogs, getAgentLogCount } as unknown as TaskStore;
+      const store = createStoreWithAgentForExec();
+
+      const monitor = new HeartbeatMonitor({ store, taskStore: logsTaskStore, rootDir: "/tmp/test" });
+      const tools = monitor.createHeartbeatTools("agent-001", logsTaskStore, "FN-001");
+      const logTool = tools.find((tool) => tool.name === "fn_task_logs_read");
+      expect(logTool).toBeDefined();
+      expect((logTool!.parameters as { properties: Record<string, unknown> }).properties).toHaveProperty("task_id");
+
+      const result = await (logTool as unknown as {
+        execute: (id: string, params: unknown) => Promise<{ content: { text: string }[] }>;
+      }).execute("call", { task_id: "FN-OTHER" });
+
+      expect(getAgentLogs).toHaveBeenCalledWith("FN-OTHER", expect.any(Object));
+      expect(result.content[0].text).toContain("Agent log (FN-OTHER):");
+      expect(result.content[0].text).toContain("sibling log row");
+    });
+
     it("loads workspace memory into system prompt and identity snapshot when inline memory is empty", async () => {
       const rootDir = mkdtempSync(join(tmpdir(), "heartbeat-workspace-memory-"));
       mkdirSync(join(rootDir, ".fusion", "agent-memory", "agent-001"), { recursive: true });

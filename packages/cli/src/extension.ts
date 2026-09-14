@@ -2370,6 +2370,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       ]);
       return {
         content: [{ type: "text", text: buildTaskAgentLogReadText(entries, {
+          taskId: params.id,
           total,
           limit,
           offset,

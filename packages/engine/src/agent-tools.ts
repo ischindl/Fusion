@@ -107,7 +107,18 @@ const agentLogDetailModeParams = Type.Union([
   description: "Tool-detail mode. Preview (default) bounds each detail row; full lifts that row preview while the whole response remains bounded.",
 });
 
+/*
+FNXC:TaskLogsRead 2026-09-09-15:19:
+RUFU-204: the task-bound registration previously exposed no target field and its execute discarded caller
+intent, so a session bound to card B that asked for card A silently received B's own log and total (the
+wrong-task read resolution that produced a false log-contamination incident and inverts fleet stall
+detection). task_id is the canonical engine spelling (matching chatTaskLogsReadParams); id is accepted as
+an alias because models that hop surfaces pass the pi/CLI field name. Omitting both preserves the
+existing bound-card default.
+*/
 export const taskLogsReadParams = Type.Object({
+  task_id: Type.Optional(Type.String({ description: "Read this card's log instead of the bound card's (e.g. FN-001). Omit to read the task bound to this session." })),
+  id: Type.Optional(Type.String({ description: "Alias for task_id (the pi/CLI spelling): read this card's log instead of the bound card's." })),
   limit: Type.Optional(Type.Number({ description: "Maximum matching entries to return (default 100)." })),
   offset: Type.Optional(Type.Number({ description: "Number of matching entries to skip from the newest entry (default 0)." })),
   type: Type.Optional(agentLogTypeParams),
@@ -2069,6 +2080,8 @@ function formatAgentLogBlock(entry: AgentLogEntry, text: string, detailPreviewMa
 export type AgentLogReadDetailMode = "preview" | "full";
 
 export interface TaskAgentLogReadTextOptions {
+  /** The task whose log this payload describes; required so no payload can be read without knowing its source card. */
+  taskId: string;
   total: number;
   limit: number;
   offset: number;
@@ -2081,10 +2094,15 @@ FNXC:TaskLogsRead 2026-08-29-05:00:
 FN-253 makes tool detail default-persisted, so all three fn_task_logs_read registrations share this
 builder. Preview mode bounds each row before the existing 12,000-character response budget; full mode
 is the explicit retrieval escape hatch while the same whole-response narrowing hint remains intact.
+
+FNXC:TaskLogsRead 2026-09-09-15:19:
+RUFU-204: the header now names the served task. The prior header carried no task identity, so a poller that
+was handed its own log while asking for another card had no visible signal to catch the misdiagnosis. This
+is the single producer of the header line across all three registrations — no per-lane copy.
 */
 export function buildTaskAgentLogReadText(entries: AgentLogEntry[], options: TaskAgentLogReadTextOptions): string {
   const filter = options.type ? `, type=${options.type}` : "";
-  const header = `Agent log: ${entries.length}/${options.total} entries (limit=${options.limit}, offset=${options.offset}${filter})`;
+  const header = `Agent log (${options.taskId}): ${entries.length}/${options.total} entries (limit=${options.limit}, offset=${options.offset}${filter})`;
   const rendered = entries.length > 0
     ? `${header}\n\n${renderAgentLogEntries(entries, options.detail === "full" ? undefined : { detailPreviewMax: AGENT_LOG_READ_DETAIL_PREVIEW_MAX })}`
     : `${header}\n\n(no matching log entries)`;
@@ -2104,6 +2122,7 @@ async function readTaskAgentLogs(
     ]);
     return {
       content: [{ type: "text" as const, text: buildTaskAgentLogReadText(entries, {
+        taskId,
         total,
         limit,
         offset,
@@ -2119,16 +2138,64 @@ async function readTaskAgentLogs(
 }
 
 /**
+ * FNXC:TaskLogsRead 2026-09-09-15:19:
+ * RUFU-204 target resolution for the task-bound registration. Precedence: an explicit `task_id` wins, then
+ * the `id` alias, then the session's bound card. When both spellings are present and DISAGREE the tool
+ * refuses with a typed error naming both values and the bound card rather than silently guessing — a wrong
+ * silent pick is the exact defect this card removes.
+ */
+function resolveTaskLogsReadTarget(
+  boundTaskId: string,
+  params: { task_id?: unknown; id?: unknown },
+): { ok: true; taskId: string } | { ok: false; refusal: string } {
+  const explicitTaskId = typeof params.task_id === "string" ? params.task_id : undefined;
+  const explicitId = typeof params.id === "string" ? params.id : undefined;
+  if (explicitTaskId !== undefined && explicitId !== undefined && explicitTaskId !== explicitId) {
+    return {
+      ok: false,
+      refusal: `ERROR: fn_task_logs_read received conflicting targets (task_id="${explicitTaskId}", id="${explicitId}"); this session is bound to ${boundTaskId}. Provide one target id, or omit both to read the bound card.`,
+    };
+  }
+  return { ok: true, taskId: explicitTaskId ?? explicitId ?? boundTaskId };
+}
+
+/**
  * FNXC:TaskLogsRead 2026-07-16-00:00:
  * Issue #2149 requires task-bound agents to read the full persisted agent log to diagnose failures. Runtime paging normalization prevents accidental unbounded reads.
+ *
+ * FNXC:TaskLogsRead 2026-09-09-15:19:
+ * RUFU-204: honor an explicit cross-task target. The operator's evidence directive falsified the original
+ * "reads append into the queried card's log" premise (the queried cards' files were untouched; the totals
+ * interpolated the poller's own growing log), so there is deliberately NO write path to fix here — the
+ * defect is read-resolution: the closure-discarded taskId handed a poller its own log and inverted the
+ * fleet's log-freshness stall heuristic. Honoring an explicit id (not a blanket refusal) is required
+ * because the standing fleet convention polls OTHER cards' logs from task-bound heartbeats, and the
+ * chat/pi surfaces already allow the same cross-task read. An unknown-but-well-formed id keeps returning
+ * an empty answer (`0/0 entries` + `(no matching log entries)`), never fabricated rows or a made-up error.
  */
 export function createTaskLogsReadTool(store: TaskStore, taskId: string): ToolDefinition {
   return {
     name: "fn_task_logs_read",
     label: "Read Agent Logs",
-    description: "Read this task's persisted agent log with pagination and optional type filtering. Tool detail is previewed per row by default; detail: full lifts the row preview while the whole response stays bounded. Default page size is 100.",
+    description: "Read a task's persisted agent log with pagination and optional type filtering. Omit task_id to read the card bound to this session; supply task_id (or its id alias) to read another card's log — conflicting or path-unsafe ids are refused, never guessed. Tool detail is previewed per row by default; detail: full lifts the row preview while the whole response stays bounded. Default page size is 100.",
     parameters: taskLogsReadParams,
-    execute: async (_id: string, params: Static<typeof taskLogsReadParams>) => readTaskAgentLogs(store, taskId, params),
+    execute: async (_id: string, params: Static<typeof taskLogsReadParams>) => {
+      const resolved = resolveTaskLogsReadTarget(taskId, params);
+      if (!resolved.ok) return { content: [{ type: "text" as const, text: resolved.refusal }], details: {} };
+      /*
+      FNXC:TaskLogsRead 2026-09-09-15:19:
+      RUFU-204: validate the caller-supplied target here, before the store seam, so a task-bound agent gets
+      the refusal as payload text and the readers are never invoked. The chat/pi lanes get the identical
+      refusal one layer down (the core store op calls the same validator), so a bad id never reaches a
+      path join on any lane.
+      */
+      try {
+        fusionCore.assertAgentLogTaskId(resolved.taskId);
+      } catch (err) {
+        return { content: [{ type: "text" as const, text: `ERROR: ${err instanceof Error ? err.message : String(err)}` }], details: {} };
+      }
+      return readTaskAgentLogs(store, resolved.taskId, params);
+    },
   };
 }
 

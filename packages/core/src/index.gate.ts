@@ -691,6 +691,12 @@ export {
   __setResetPublicationFailureForTesting,
   resetTaskPublicationImpl,
 } from "./task-store/reset-lifecycle.js";
+// RUFU-204: the one shared task-id validator guarding every agent-log read against a path-shaped target.
+// Mirrored per the maintenance rule above: `task-artifacts-ops.ts` is inside this bundle's closure via the
+// TaskStore wiring (`store.ts`), and `@fusion/engine` agent-tools.ts calls the validator through the
+// `import * as fusionCore from "@fusion/core"` namespace, so a gate-barrel omission would TypeError
+// `fn_task_logs_read` for any lane that resolves @fusion/core through this file.
+export { assertAgentLogTaskId } from "./task-store/task-artifacts-ops.js";
 export {
   acquireWorktreePathReservation,
   withWorktreePathReservation,

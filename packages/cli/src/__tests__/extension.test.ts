@@ -130,6 +130,38 @@ describe("fn_task_logs_read extension payload bounds", () => {
     expect(text).toContain("Detail preview truncated:");
     expect(text).toContain("smaller limit, offset, or type filter");
   });
+
+  it("names the requested id in the payload and details when one store serves two cards", async () => {
+    // FNXC:TaskLogsRead 2026-09-09-15:19:
+    // RUFU-204: the pi surface already keys reads by params.id; this locks the header+details identity to
+    // the ASKED card so a single store cannot be mistaken for a card-identity source. Distinguishing two
+    // cards through ONE store is the check: the served id must appear in both the header and details.
+    const cwd = "/fn-204-extension-log-reader";
+    const logs: Record<string, { taskId: string; timestamp: string; text: string; type: "text"; agent: string }[]> = {
+      "FN-A": [{ taskId: "FN-A", timestamp: "2026-09-01T00:00:00.000Z", text: "row for A", type: "text", agent: "executor" }],
+      "FN-B": [{ taskId: "FN-B", timestamp: "2026-09-02T00:00:00.000Z", text: "row for B", type: "text", agent: "executor" }],
+    };
+    const getAgentLogs = vi.fn(async (id: string) => logs[id] ?? []);
+    const getAgentLogCount = vi.fn(async (id: string) => (logs[id] ?? []).length);
+    __setCachedStoreForTesting(cwd, { getAgentLogs, getAgentLogCount } as unknown as TaskStore);
+
+    const api = createMockApi();
+    registerExtension(api);
+    const tool = requireTool(api, "fn_task_logs_read");
+
+    const resultA = await tool.execute("call", { id: "FN-A" }, undefined, undefined, makeCtx(cwd));
+    expect(getAgentLogs).toHaveBeenCalledWith("FN-A", expect.any(Object));
+    expect(resultA.content[0]?.text).toContain("Agent log (FN-A):");
+    expect(resultA.content[0]?.text).toContain("row for A");
+    expect((resultA.details as { taskId?: string }).taskId).toBe("FN-A");
+
+    const resultB = await tool.execute("call", { id: "FN-B" }, undefined, undefined, makeCtx(cwd));
+    expect(getAgentLogs).toHaveBeenCalledWith("FN-B", expect.any(Object));
+    expect(resultB.content[0]?.text).toContain("Agent log (FN-B):");
+    expect(resultB.content[0]?.text).toContain("row for B");
+    expect(resultB.content[0]?.text).not.toContain("row for A");
+    expect((resultB.details as { taskId?: string }).taskId).toBe("FN-B");
+  });
 });
 
 interface ToolMeta {

@@ -868,6 +868,8 @@ export {
   resetTaskPublicationImpl,
 } from "./task-store/reset-lifecycle.js";
 export { writePromptFileAtomic } from "./task-store/prompt-file.js";
+// RUFU-204: the one shared task-id validator guarding every agent-log read against a path-shaped target.
+export { assertAgentLogTaskId } from "./task-store/task-artifacts-ops.js";
 export {
   acquireWorktreePathReservation,
   withWorktreePathReservation,

@@ -918,6 +918,38 @@ export async function linkGithubIssueImpl(store: TaskStore,
     });
 }
 
+const MAX_AGENT_LOG_TASK_ID_LENGTH = 255;
+
+/*
+FNXC:AgentLogRead 2026-09-09-15:19:
+RUFU-204: the task-bound `fn_task_logs_read` previously resolved its target server-side, but once it
+gained an explicit cross-task target the caller-supplied id reaches `store.taskDir()` — a bare
+`join(this.tasksDir, id)` — on every lane. A card's log directory name can never legitimately contain a
+separator, an absolute prefix, a control byte, or a relative-directory marker, so this refuses ONLY
+ids that cannot name a real card directory: it is one-safe-path-segment, NOT the canonical
+`TASK_ID_PATTERN` shape (test fixtures such as `FN-other`, `task-1`, and `TASK-A` must keep passing).
+It guards the sole production caller of `readAgentLogEntries`/`countAgentLogEntries`, so one seam covers
+the engine, chat, pi, dashboard-route, project-engine, evaluator, and report lanes.
+*/
+export function assertAgentLogTaskId(taskId: string): void {
+  if (typeof taskId !== "string" || taskId.trim().length === 0) {
+    throw new Error(`invalid task id: the target id is empty or whitespace-only`);
+  }
+  if (taskId.length > MAX_AGENT_LOG_TASK_ID_LENGTH) {
+    throw new Error(`invalid task id ${JSON.stringify(taskId)}: exceeds ${MAX_AGENT_LOG_TASK_ID_LENGTH} characters`);
+  }
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(taskId)) {
+    throw new Error(`invalid task id: contains a NUL or other control character`);
+  }
+  if (taskId.includes("/") || taskId.includes("\\")) {
+    throw new Error(`invalid task id ${JSON.stringify(taskId)}: must be a single path segment (no separator, not an absolute path)`);
+  }
+  if (taskId === "." || taskId === "..") {
+    throw new Error(`invalid task id ${JSON.stringify(taskId)}: must not be a relative-directory marker`);
+  }
+}
+
 /*
 FNXC:AgentLogRead 2026-07-16-00:00:
 Issue #2149 requires read-only type filtering to reach the file store before pagination so task-chat log pages and their totals are coherent.
@@ -926,6 +958,8 @@ export async function getAgentLogsImpl(store: TaskStore,
     taskId: string,
     options?: { limit?: number; offset?: number; type?: AgentLogEntry["type"] },
   ): Promise<AgentLogEntry[]> {
+    // RUFU-204: refuse an id that cannot name a card directory before any path join or buffer flush.
+    assertAgentLogTaskId(taskId);
     // Ensure buffered entries are visible before reading.
     store.flushAgentLogBuffer();
     // FNXC:RuntimeTaskOrchestrationAsync 2026-06-24-15:45:
@@ -950,6 +984,8 @@ export async function getAgentLogCountImpl(
   taskId: string,
   options?: { type?: AgentLogEntry["type"] },
 ): Promise<number> {
+    // RUFU-204: refuse an id that cannot name a card directory before any path join or buffer flush.
+    assertAgentLogTaskId(taskId);
     store.flushAgentLogBuffer();
     // FNXC:RuntimeTaskOrchestrationAsync 2026-06-24-15:45:
     // Backend mode: skip the sync readTaskFromDb check. The agent log file

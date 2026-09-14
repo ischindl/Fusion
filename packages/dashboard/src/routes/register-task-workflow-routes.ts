@@ -1,4 +1,4 @@
-import { createIngestedCheckResolver, createLogger, DuplicateWorkflowSelectionError, isCurrentSpecDriftReport, MAX_TASK_MESSAGE_LENGTH, resolveRequiredCheckNames } from "@fusion/core";
+import { assertAgentLogTaskId, createIngestedCheckResolver, createLogger, DuplicateWorkflowSelectionError, isCurrentSpecDriftReport, MAX_TASK_MESSAGE_LENGTH, resolveRequiredCheckNames } from "@fusion/core";
 import type { Request, Response } from "express";
 
 const severityAuditLog = createLogger("dashboard-register-task-workflow-routes");
@@ -4672,6 +4672,18 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
   // When limit is provided, includes X-Total-Count and X-Has-More headers for pagination.
   router.get("/tasks/:id/logs", async (req, res) => {
     try {
+      /*
+      FNXC:TaskLogsRead 2026-09-09-15:19:
+      RUFU-204: a path-shaped `:id` used to fall through to a 500 (the store readers throw, and the
+      handler's catch re-throws a non-ApiError as an internal error). Validate the raw route param at the
+      entry so a malformed id is refused as a 400 before the store is consulted; the store op enforces the
+      same rule as a backstop for callers that bypass this handler.
+      */
+      try {
+        assertAgentLogTaskId(req.params.id);
+      } catch (err) {
+        throw badRequest(err instanceof Error ? err.message : String(err));
+      }
       const { store: scopedStore } = await getProjectContext(req);
       const limit = typeof req.query.limit === "string"
         ? Number.parseInt(req.query.limit, 10)

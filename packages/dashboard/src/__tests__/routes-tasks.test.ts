@@ -727,6 +727,37 @@ describe("GET /tasks/:id", () => {
     expect(res.status).toBe(500);
     expect(res.body.error).toContain("Unexpected end of JSON input");
   });
+
+  it("refuses a path-unsafe agent-log target with 400 before consulting the store", async () => {
+    // FNXC:TaskLogsRead 2026-09-09-15:19:
+    // RUFU-204: a log-read id must name one safe path segment. The `a%5Cb` backslash id stays inside one URL
+    // segment (so the route still matches it) yet names an unsafe path. The handler validates the raw param
+    // and answers 400 BEFORE the store is consulted — the store is exactly what must never be reached.
+    (store.getAgentLogs as ReturnType<typeof vi.fn>).mockClear();
+
+    const res = await GET(buildApp(), "/api/tasks/a%5Cb/logs");
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("invalid task id");
+    expect(store.getAgentLogs).not.toHaveBeenCalled();
+  });
+
+  it("answers a well-formed but unknown task id with an empty log list, never an error", async () => {
+    // FNXC:TaskLogsRead 2026-09-09-22:26:
+    // RUFU-204 Step 4: the unknown-id contract is an honest empty answer, not a fabrication and not an error.
+    // A single well-formed segment names a legal card directory that simply has no `agent-log.jsonl`, so the
+    // store readers return `[]` and the route must pass that through as 200 + `[]`. Only a target that cannot
+    // name one safe path segment (the case above) is refused before the store is consulted.
+    (store.getAgentLogs as ReturnType<typeof vi.fn>).mockClear();
+    (store.getAgentLogs as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+
+    const res = await GET(buildApp(), "/api/tasks/FN-DOES-NOT-EXIST/logs");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+    expect(store.getAgentLogs).toHaveBeenCalledTimes(1);
+    expect(store.getAgentLogs).toHaveBeenCalledWith("FN-DOES-NOT-EXIST", undefined);
+  });
 });
 
 describe("POST /tasks", () => {
