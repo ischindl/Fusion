@@ -139,6 +139,13 @@ describe("captureBaseCommitSha", () => {
     await captureBaseCommitSha(store, makeTask(), "/tmp/test/.worktrees/fn-4383", audit);
 
     expect(store.updateTask).toHaveBeenCalledWith("FN-4383", { baseCommitSha: "head777" });
-    expect(vi.mocked(executorLog.warn)).toHaveBeenCalledWith(expect.stringContaining("falling back to HEAD"));
+    /*
+    FNXC:BranchBaseIdentity 2026-09-13-21:44:
+    Reconciled to the RUFU-231 rewrite (913d6076a4, proven failing at that base): the dual
+    local/remote-tracking merge-base measurement replaced the old single measurement whose warn said
+    "falling back to HEAD". The HEAD fallback itself is unchanged (the updateTask assertion above still
+    pins it) but is now silent; what must still be logged is the FAILED merge-base measurement itself.
+    */
+    expect(vi.mocked(executorLog.warn)).toHaveBeenCalledWith(expect.stringContaining("merge-base against"));
   });
 });

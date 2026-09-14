@@ -31,6 +31,13 @@ describe("createAssistantStreamCapture", () => {
     result.seam.handleAgentEvent(update({ type: "text_delta", partial: "mock", contentIndex: 0, delta: "6" }));
     result.seam.handleAgentEvent({ type: "message_start" });
     result.seam.handleAgentEvent(update({ type: "text_delta", partial: { content: [{ type: "text", text: "REPRO MARKER B" }] }, contentIndex: 0, delta: "REPRO MARKER B" }));
+    /*
+    FNXC:AssistantTextCapture 2026-09-13-21:15:
+    RUFU-234 states the decision this case pins: a CONTRADICTORY contentIndex (NaN/negative/non-integer) names no
+    resolvable block, so its delta is deliberately refused rather than guessed onto a block it may not belong to
+    (pi never emits one; an absent index is different and still defaults to block 0). The refusal is asserted here
+    on purpose so a later losslessness sweep has to change this case consciously, not silently re-enable the drop.
+    */
     result.seam.handleAgentEvent(update({ type: "text_delta", partial: undefined, contentIndex: Number.NaN, delta: "ignored" }));
     expect(result.text.join("")).toBe("GPT-5.6REPRO MARKER B");
   });

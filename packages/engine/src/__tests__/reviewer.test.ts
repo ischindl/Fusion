@@ -139,6 +139,35 @@ describe("reviewStep — model settings threading", () => {
     expect(result.review).toBe(terminalVerdict);
   });
 
+  /*
+  FNXC:AssistantTextCapture 2026-09-13-21:15:
+  RUFU-234 reviewer-verdict-text surface. The reviewer parses its verdict out of the captured stream, so a
+  capture seam that drops characters corrupts the verdict text the merge gate reads. Replay the
+  openai-completions producer shape (the shared block is mutated ahead of async delivery, which is how the
+  operator's inter-word space went missing on HEAD) and assert the review text is byte-faithful.
+  */
+  it("captures a mutated-ahead producer stream into the review text without dropping characters", async () => {
+    const intact = approvingReview("### Verdict: APPROVE\n### Summary\nhealthy in-review");
+    mockedCreateFnAgent.mockResolvedValue({
+      session: {
+        prompt: vi.fn().mockResolvedValue(undefined),
+        subscribe: vi.fn().mockImplementation((callback: (event: unknown) => void) => {
+          const partial = { content: [{ type: "text", text: "### Verdict: APPROVE\n### Summary\nhealthy" }] };
+          callback({ type: "message_update", assistantMessageEvent: { type: "text_start", partial, contentIndex: 0 } });
+          partial.content[0].text = intact; // producer coalesced " in-review" into the block
+          callback({ type: "message_update", assistantMessageEvent: { type: "text_delta", partial, contentIndex: 0, delta: "in-review" } });
+          callback({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: intact }] } });
+        }),
+        dispose: vi.fn(),
+      },
+    } as any);
+
+    const result = await reviewStep("/tmp/worktree", "RUFU-234", 1, "Fidelity verdict", "plan", "# prompt");
+
+    expect(result.verdict).toBe("APPROVE");
+    expect(result.review).toBe(intact);
+  });
+
   it("emits resolved durable reviewer session and tool telemetry through the live lane callbacks", async () => {
     mockedCreateFnAgent.mockImplementation(async (options) => {
       options.onToolStart?.("Read", { path: "private-review-input" });
