@@ -52,7 +52,8 @@ describe("AlphaDesktopActionBar", () => {
   });
 
   it("affiche le footer principal sans les destinations du dock ou de Done", () => {
-    render(<AlphaDesktopActionBar entries={entries()} activeId="board" tasks={[]} />);
+    const onChangeView = vi.fn();
+    render(<AlphaDesktopActionBar entries={entries(onChangeView)} activeId="board" tasks={[]} />);
     expect(screen.getByTestId("alpha-desktop-action-bar")).toBeInTheDocument();
     expect(screen.getByTestId("alpha-desktop-nav-board")).toHaveAttribute("aria-current", "page");
     expect(screen.queryByTestId("alpha-desktop-nav-new-task")).toBeNull();
@@ -61,8 +62,25 @@ describe("AlphaDesktopActionBar", () => {
     expect(screen.queryByTestId("alpha-desktop-nav-terminal")).toBeNull();
     expect(document.querySelector(".alpha-desktop-action-bar__right")).toContainElement(screen.getByTestId("alpha-desktop-nav-settings"));
     expect(screen.queryByTestId("alpha-desktop-nav-patchnode")).toBeNull();
-    expect(screen.queryByTestId("alpha-desktop-nav-chat")).toBeNull();
+    /*
+    FNXC:AlphaDesktopNavigation 2026-09-15-07:00:
+    Chat is a direct footer page again on operator request, so the bar must render it in the centered scroller and route it to the chat page rather than asserting its removal.
+    */
+    const chat = screen.getByTestId("alpha-desktop-nav-chat");
+    expect(chat).toHaveAccessibleName("Chat");
+    expect(document.querySelector(".alpha-desktop-action-bar__scroller")).toContainElement(chat);
+    fireEvent.click(chat);
+    expect(onChangeView).toHaveBeenCalledWith("chat");
     expect(screen.queryByTestId("alpha-desktop-nav-notes")).toBeNull();
+  });
+
+  it("marque Chat comme non lu hors de la route Chat", () => {
+    const unread = render(<AlphaDesktopActionBar entries={entries(vi.fn(), { chatHasUnreadResponse: true })} activeId="board" tasks={[]} />);
+    expect(unread.getByTestId("alpha-desktop-nav-chat").querySelector(".status-dot--pending")).not.toBeNull();
+    unread.unmount();
+
+    const onChatRoute = render(<AlphaDesktopActionBar entries={entries(vi.fn(), { view: "chat", chatHasUnreadResponse: true })} activeId="chat" tasks={[]} />);
+    expect(onChatRoute.getByTestId("alpha-desktop-nav-chat").querySelector(".status-dot--pending")).toBeNull();
   });
 
   it("place un unique Terminal immédiatement avant Settings et appelle son propriétaire", () => {
