@@ -89,7 +89,8 @@ touches no data; it must advance in the same change that ships a new migration f
 /* FNXC:PatchnodeLedger 2026-08-28-12:16: the permanent ledger table must exist before TaskStore can commit a completion move atomically with its entry. */
 /* FNXC:ChatSidebarPerf 2026-09-08-04:48: baseline marker includes the chat-message recency index required for index-backed sidebar previews. */
 /* FNXC:OverlapWaitSynchronization 2026-09-13-05:10: the ceiling includes the retired-phase drain, so startup completes it before overlap readers run. */
-export const SCHEMA_BASELINE_VERSION = "0078";
+/* FNXC:ReviewLaneDispatch 2026-09-15-00:24 (STAS-205 landing onto main): the ledger migration renumbered 0077 -> 0079 during this merge — main advanced past the branch and already owns released 0077 (fn_332 overlap repair phase) and 0078 (fn_375 revalidation drain). The ceiling tracks the new highest migration so upgraded projects apply the ledger before the dispatch sweep runs. */
+export const SCHEMA_BASELINE_VERSION = "0079";
 /** FNXC:SymbolLock 2026-07-20-10:00: upgrades need durable task declarations before admission resolves symbols. */
 export const TASK_DECLARED_SYMBOLS_VERSION = "0028";
 const INITIAL_SCHEMA_VERSION = "0000";
@@ -282,6 +283,9 @@ export const WHITEBOARDS_SCHEMA_VERSION = "0076";
 export const OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION = "0077";
 /** FNXC:OverlapWaitSynchronization 2026-09-13-05:10: upgrades drain model-verdict overlap phases after 0077 has made all historical states readable. */
 export const OVERLAP_REVALIDATION_DRAIN_VERSION = "0078";
+/** FNXC:ReviewLaneDispatch 2026-09-09 (STAS-205): upgraded projects need the live-reviewer-run partial unique index before the dispatch sweep can claim one attempt per card. */
+/* FNXC:ReviewLaneDispatch 2026-09-15-00:24 (STAS-205 landing onto main): renumbered 0077 -> 0079 in this merge. Bookkeeping keys on the version STRING, so a branch claiming a slot main already recorded (0077 = the overlap repair phase) would make `applied.includes(...)` report the ledger as applied, the SQL would never run, and the sweep would lose its one-live-attempt-per-card enforcement silently. The deploy line owns released 0077-0078. */
+export const REVIEW_LANE_LEDGER_VERSION = "0079";
 
 /** FNXC:MemoryFocus 2026-08-21-06:10: explicit registration prevents the per-conversation memory-focus migration from being skipped. Renumbered to 0060, then 0061, then 0065: the upstream FN-066..FN-101 batch (2026-08-21) owns 0061-0064 (activity-log index, splitting removal, AI-merge review, repository scope). */
 /* FNXC:MemoryFocus 2026-08-23-07:07: renumbered 0065 -> 0066 in the RUFU-160 origin/main merge: origin/main independently shipped 0065 as FN-149's review-convergence migration (v0.77.0-beta.7); keeping both lines' migrations requires the deploy-line file to take the next free sequence. */
@@ -559,6 +563,7 @@ const OVERLAP_WAIT_SYNC_MIGRATION_PATH = join(MIGRATIONS_DIR, "0075_fn_332_overl
 const OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_MIGRATION_PATH = join(MIGRATIONS_DIR, "0077_fn_332_overlap_wait_repair_required_phase.sql");
 const WHITEBOARDS_MIGRATION_PATH = join(MIGRATIONS_DIR, "0076_fn_333_whiteboards.sql");
 const OVERLAP_REVALIDATION_DRAIN_MIGRATION_PATH = join(MIGRATIONS_DIR, "0078_fn_375_overlap_revalidation_drain.sql");
+const REVIEW_LANE_LEDGER_MIGRATION_PATH = join(MIGRATIONS_DIR, "0079_stas_205_review_lane_ledger.sql");
 
 /**
  * Ensure the migration bookkeeping table exists. Lives in the public schema so
@@ -708,6 +713,7 @@ export async function applySchemaBaseline(
     const whiteboardsAlreadyApplied = applied.includes(WHITEBOARDS_SCHEMA_VERSION);
     const overlapWaitRepairRequiredPhaseAlreadyApplied = applied.includes(OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION);
     const overlapRevalidationDrainAlreadyApplied = applied.includes(OVERLAP_REVALIDATION_DRAIN_VERSION);
+    const reviewLaneLedgerAlreadyApplied = applied.includes(REVIEW_LANE_LEDGER_VERSION);
     assertBinaryNotOlderThanDatabase(applied);
     let schemaChanged = false;
 
@@ -1674,6 +1680,47 @@ export async function applySchemaBaseline(
       const migrationSql = await readFile(OVERLAP_REVALIDATION_DRAIN_MIGRATION_PATH, "utf8");
       await tx.execute(sql.raw(migrationSql));
       await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${OVERLAP_REVALIDATION_DRAIN_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    /*
+    FNXC:ReviewLaneDispatch 2026-09-09 (STAS-205):
+    Registered after the highest released migration so it sorts after every released schema change.
+    The probe checks the two enforceable facts the dispatch sweep depends on instead of trusting the
+    bookkeeping row alone: a database that already carries both objects records the version without
+    redundant SQL, and a database missing either object gets the migration even if an earlier
+    partial run recorded the version.
+    FNXC:ReviewLaneDispatch 2026-09-14 (clean-rebase-v2 replay):
+    The drift check only makes sense where the product tables exist, so it is gated on their
+    presence. A recorded marker in a database without `task_reviewer_runs`/`task_lifecycle_events`
+    is either a fresh/empty fixture (the baseline path owns it) or a corrupt install whose real
+    failure surfaces at first store read — re-running this SQL there would only fail on missing
+    relations. Drift (table present, index or widened CHECK lost) still forces the re-apply.
+    FNXC:ReviewLaneDispatch 2026-09-15-00:24 (STAS-205 landing onto main):
+    On the branch this block sat after the collision repair (it was the last step there). main keeps
+    the repair last in apply order — see the MigrationCollisionRepair note below — so on landing the
+    block moved to follow release 0078, which preserves both invariants: it still sorts after every
+    released migration, and the repair step stays last.
+    */
+    const reviewLaneLedgerMissing = ((await tx.execute(sql`
+      SELECT (
+        to_regclass('project.task_reviewer_runs') IS NOT NULL
+        AND to_regclass('project.task_lifecycle_events') IS NOT NULL
+        AND (
+          to_regclass('project.task_reviewer_runs_live_unique') IS NULL
+          OR NOT EXISTS (
+            SELECT 1 FROM pg_constraint c
+              JOIN pg_class t ON t.oid = c.conrelid
+             WHERE t.relname = 'task_lifecycle_events'
+               AND c.conname = 'task_lifecycle_events_type_check'
+               AND pg_get_constraintdef(c.oid) LIKE '%entered-review%'
+          )
+        )
+      ) AS missing
+    `)) as unknown as Array<{ missing: boolean }>)[0]?.missing ?? true;
+    if (!reviewLaneLedgerAlreadyApplied || reviewLaneLedgerMissing) {
+      const migrationSql = await readFile(REVIEW_LANE_LEDGER_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${REVIEW_LANE_LEDGER_VERSION}) ON CONFLICT (version) DO NOTHING`);
       schemaChanged = true;
     }
     const patchnodeEntriesMissing = ((await tx.execute(sql`

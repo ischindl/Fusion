@@ -122,6 +122,7 @@ import {
   WHITEBOARDS_SCHEMA_VERSION,
   OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION,
   OVERLAP_REVALIDATION_DRAIN_VERSION,
+  REVIEW_LANE_LEDGER_VERSION,
 } from "../../postgres/schema-applier.js";
 import { ProjectPartitionRekeyError, rekeyFallbackProjectPartition } from "../../postgres/migration-stamping.js";
 import type { PluginSchemaInitHook } from "../../postgres/plugin-schema-hook.js";
@@ -198,7 +199,10 @@ describe("schema-applier: immutable migration identities", () => {
     expect(WHITEBOARDS_SCHEMA_VERSION).toBe("0076");
     expect(OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION).toBe("0077");
     expect(OVERLAP_REVALIDATION_DRAIN_VERSION).toBe("0078");
-    expect(SCHEMA_BASELINE_VERSION).toBe("0078");
+    /* FNXC:ReviewLaneDispatch 2026-09-09 (STAS-205): the ceiling must sort after the review-lane ledger migration, or an upgraded database boots without the live-reviewer-run index the dispatch sweep depends on. */
+    /* FNXC:ReviewLaneDispatch 2026-09-15-00:24 (STAS-205 landing onto main): renumbered 0077 -> 0079 in this merge because main already recorded 0077/0078 — a version string already in the bookkeeping table marks a migration as applied without running its SQL. */
+    expect(REVIEW_LANE_LEDGER_VERSION).toBe("0079");
+    expect(SCHEMA_BASELINE_VERSION).toBe("0079");
   });
 
   it("keeps monitor and approval isolation assigned to version 0003", () => {
@@ -1982,6 +1986,7 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       0074-0078 migrations merged in from upstream on 2026-09-11 and 2026-09-14. Keep it last in
       these fixtures.
       */
+      REVIEW_LANE_LEDGER_VERSION,
       MIXED_0065_REPAIR_VERSION,
     ]);
     expect((await applySchemaBaseline(ctx.db, { pluginHooks: [] })).applied).toBe(false);
@@ -2094,6 +2099,7 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       0074-0078 migrations merged in from upstream on 2026-09-11 and 2026-09-14. Keep it last in
       these fixtures.
       */
+      REVIEW_LANE_LEDGER_VERSION,
       MIXED_0065_REPAIR_VERSION,
     ]);
   });
@@ -2339,6 +2345,7 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       0074-0078 migrations merged in from upstream on 2026-09-11 and 2026-09-14. Keep it last in
       these fixtures.
       */
+      REVIEW_LANE_LEDGER_VERSION,
       MIXED_0065_REPAIR_VERSION,
     ]);
   });
@@ -2465,6 +2472,7 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       0074-0078 migrations merged in from upstream on 2026-09-11 and 2026-09-14. Keep it last in
       these fixtures.
       */
+      REVIEW_LANE_LEDGER_VERSION,
       MIXED_0065_REPAIR_VERSION,
     ]);
   });
@@ -2591,6 +2599,7 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       0074-0078 migrations merged in from upstream on 2026-09-11 and 2026-09-14. Keep it last in
       these fixtures.
       */
+      REVIEW_LANE_LEDGER_VERSION,
       MIXED_0065_REPAIR_VERSION,
     ]);
   });
