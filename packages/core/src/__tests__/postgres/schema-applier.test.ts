@@ -386,6 +386,28 @@ async function teardownDb(ctx: TestContext | null): Promise<void> {
 }
 
 /*
+FNXC:PostgresSchema 2026-09-15-22:24:
+Plugin hook that fails loudly if the applier ever reaches its drift probes before project, central, and
+archive exist. Shared by every marker-saturated case so they all assert the same FN-8051 boot contract.
+*/
+function requiredSchemasObservingHook(observedSchemas: string[]): PluginSchemaInitHook {
+  return {
+    pluginId: "assert-required-schemas",
+    async init(db) {
+      const rows = (await db.execute(sql`
+        SELECT schema_name FROM information_schema.schemata
+        WHERE schema_name IN ('project', 'central', 'archive')
+        ORDER BY schema_name
+      `)) as unknown as Array<{ schema_name: string }>;
+      observedSchemas.push(...rows.map(({ schema_name }) => schema_name));
+      if (rows.length !== 3) {
+        throw new Error(`Required schemas missing at plugin hook time: ${rows.map(({ schema_name }) => schema_name).join(", ")}`);
+      }
+    },
+  };
+}
+
+/*
 FNXC:SymbolLock 2026-07-30-15:15:
 The baseline declares symbol_locks but cannot attach its ownership trigger before
 0006 defines fusion_assign_project_id. Both a full fresh apply and an upgraded
@@ -706,22 +728,8 @@ pgDescribe("schema-applier: VAL-SCHEMA-008 three-database topology", () => {
     `));
 
     const observedSchemas: string[] = [];
-    const assertSchemasHook: PluginSchemaInitHook = {
-      pluginId: "assert-required-schemas",
-      async init(db) {
-        const rows = (await db.execute(sql`
-          SELECT schema_name FROM information_schema.schemata
-          WHERE schema_name IN ('project', 'central', 'archive')
-          ORDER BY schema_name
-        `)) as unknown as Array<{ schema_name: string }>;
-        observedSchemas.push(...rows.map(({ schema_name }) => schema_name));
-        if (rows.length !== 3) {
-          throw new Error(`Required schemas missing at plugin hook time: ${rows.map(({ schema_name }) => schema_name).join(", ")}`);
-        }
-      },
-    };
 
-    await expect(applySchemaBaseline(ctx.db, { pluginHooks: [assertSchemasHook] })).resolves.toEqual({
+    await expect(applySchemaBaseline(ctx.db, { pluginHooks: [requiredSchemasObservingHook(observedSchemas)] })).resolves.toEqual({
       applied: false,
       pluginHooksRun: 1,
     });
@@ -733,6 +741,106 @@ pgDescribe("schema-applier: VAL-SCHEMA-008 three-database topology", () => {
       ORDER BY schema_name
     `)) as unknown as Array<{ schema_name: string }>;
     expect(schemas.map(({ schema_name }) => schema_name)).toEqual(["archive", "central", "project"]);
+  });
+
+  /*
+  FNXC:PostgresSchema 2026-09-15-22:24:
+  The general invariant behind the RUFU-239 boot crash: a drift probe must never fail PostgreSQL's analysis
+  phase on a database that legitimately lacks its target relation, because a throw inside applySchemaBaseline
+  is a project that cannot boot at all. A database whose bookkeeping records every version while carrying no
+  product relation is the worst case — every probe in the applier runs and every one must answer "nothing to
+  do", so a future probe that names an absent relation as a range table entry is proven red HERE, not only on
+  the one table it happens to target. The second marker variant drops the overlap-revalidation drain version
+  so the run also reaches the deliberate defer-the-migration path, and asserts the skipped version stays
+  UNRECORDED — recording it would be the forbidden way to make this case pass, because it would silently
+  cancel the drain on the real database that still needs it.
+  */
+  it.each([
+    { variant: "every version through the baseline ceiling", omitDrainVersion: false },
+    { variant: "every version except the overlap-revalidation drain", omitDrainVersion: true },
+  ])(
+    "runs every drift probe against an absent-relation database: $variant",
+    async ({ omitDrainVersion }) => {
+      ctx = await setupFreshDb();
+      await ctx.db.execute(sql.raw(`
+        CREATE TABLE public.fusion_schema_migrations (
+          version text PRIMARY KEY,
+          applied_at timestamptz NOT NULL DEFAULT now()
+        );
+        INSERT INTO public.fusion_schema_migrations (version)
+        SELECT lpad(n::text, 4, '0')
+        FROM generate_series(0, ${Number(SCHEMA_BASELINE_VERSION)}) AS migration(n)
+        WHERE lpad(n::text, 4, '0') <> '${omitDrainVersion ? OVERLAP_REVALIDATION_DRAIN_VERSION : "__none__"}';
+        INSERT INTO public.fusion_schema_migrations (version) VALUES ('${MIXED_0065_REPAIR_VERSION}');
+      `));
+      const relationsBefore = (await ctx.db.execute(sql`
+        SELECT count(*)::int AS n
+        FROM pg_class c
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname IN ('project', 'central', 'archive')
+           AND c.relkind IN ('r', 'p')
+      `)) as unknown as Array<{ n: number }>;
+      expect(relationsBefore[0]?.n).toBe(0);
+
+      const observedSchemas: string[] = [];
+      await expect(
+        applySchemaBaseline(ctx.db, { pluginHooks: [requiredSchemasObservingHook(observedSchemas)] }),
+      ).resolves.toEqual({ applied: false, pluginHooksRun: 1 });
+      expect(observedSchemas).toEqual(["archive", "central", "project"]);
+
+      const versions = await getAppliedMigrations(ctx.db);
+      expect(versions).toContain(MIXED_0065_REPAIR_VERSION);
+      expect(versions.includes(OVERLAP_REVALIDATION_DRAIN_VERSION)).toBe(!omitDrainVersion);
+    },
+  );
+});
+
+/*
+FNXC:OverlapWaitSynchronization 2026-09-15-22:24:
+Counterweight to the absent-relation invariant: making the overlap-revalidation probe tolerate a missing table
+must not mute the drift it exists to catch. These cases hold the two detection halves separately, on a fully
+baselined database where every other probe is already satisfied, so a regression in either direction fails
+one specific assertion instead of quietly returning `applied: false` forever.
+*/
+pgDescribe("schema-applier: overlap-revalidation drain detects live drift", () => {
+  let ctx: TestContext | null = null;
+
+  afterEach(async () => {
+    await teardownDb(ctx);
+    ctx = null;
+  });
+
+  /*
+  Restores the 8-phase definition that migration 0077 shipped — the exact stale shape observed on upgraded
+  projects — and asserts the rebuilt constraint rather than its mere absence, because a probe that always
+  answered `false` would also make the constraint look correct by never re-applying anything.
+  */
+  it("re-applies the drain when the phase CHECK still permits a retired phase, then stays quiet", async () => {
+    ctx = await setupBaselinedDb();
+    await ctx.db.execute(sql`ALTER TABLE project.task_overlap_waits DROP CONSTRAINT ck_task_overlap_wait_phase`);
+    await ctx.db.execute(sql`
+      ALTER TABLE project.task_overlap_waits
+        ADD CONSTRAINT ck_task_overlap_wait_phase
+        CHECK (phase IN ('observed','analyzing','freshness-pending','revalidation-pending','repair-required','ready','delivered','cancelled'))
+    `);
+
+    await expect(applySchemaBaseline(ctx.db, { pluginHooks: [] })).resolves.toEqual({ applied: true, pluginHooksRun: 0 });
+
+    const definition = ((await ctx.db.execute(sql`
+      SELECT pg_get_constraintdef(c.oid) AS def
+      FROM pg_constraint c
+        JOIN pg_class t ON t.oid = c.conrelid
+        JOIN pg_namespace n ON n.oid = t.relnamespace
+       WHERE n.nspname = 'project'
+         AND t.relname = 'task_overlap_waits'
+         AND c.conname = 'ck_task_overlap_wait_phase'
+    `)) as unknown as Array<{ def: string }>)[0]?.def ?? "";
+    expect(definition).toMatch(/CHECK/);
+    expect(definition).not.toMatch(/revalidation-pending|repair-required/);
+    expect(await getAppliedMigrations(ctx.db)).toContain(OVERLAP_REVALIDATION_DRAIN_VERSION);
+
+    // The fixed probe must not re-fire on a database that is already drained.
+    await expect(applySchemaBaseline(ctx.db, { pluginHooks: [] })).resolves.toEqual({ applied: false, pluginHooksRun: 0 });
   });
 });
 

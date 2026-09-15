@@ -1666,17 +1666,54 @@ export async function applySchemaBaseline(
       await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${WHITEBOARDS_SCHEMA_VERSION}) ON CONFLICT (version) DO NOTHING`);
       schemaChanged = true;
     }
-    const overlapRevalidationDrainNeeded = ((await tx.execute(sql`
-      SELECT CASE WHEN to_regclass('project.task_overlap_waits') IS NULL THEN false ELSE
-        EXISTS (SELECT 1 FROM project.task_overlap_waits WHERE phase IN ('revalidation-pending', 'repair-required'))
-        OR EXISTS (
-          SELECT 1 FROM pg_constraint
-          WHERE conname = 'ck_task_overlap_wait_phase'
-            AND pg_get_constraintdef(oid) LIKE '%revalidation-pending%'
-        )
-      END AS needed
-    `)) as unknown as Array<{ needed: boolean }>)[0]?.needed ?? true;
-    if (!overlapRevalidationDrainAlreadyApplied || overlapRevalidationDrainNeeded) {
+    /*
+    FNXC:OverlapWaitSynchronization 2026-09-15-22:18:
+    PostgreSQL resolves every relation name in a statement at ANALYSIS time, before any branch is evaluated,
+    so an in-statement existence guard cannot protect a relation that the same statement names as a range
+    table entry. The previous one-statement probe wrapped the phase-row `EXISTS` in
+    `CASE WHEN to_regclass(...) IS NULL THEN false ELSE … END` and still raised 42P01 on a database whose
+    bookkeeping recorded 0075+ without the table, so such a project failed to boot instead of self-healing.
+    The invariant is a catalog-only predicate: presence is decided by its own statement, and the phase rows
+    are read by a second statement the applier runs only when that probe reported the relation present. The
+    CHECK-shape half now reads pg_constraint joined to pg_class and pg_namespace through
+    pg_get_constraintdef, matching the review-lane-ledger probe and namespace-qualifying what used to be a
+    cluster-wide conname lookup.
+    */
+    const overlapRevalidationDrainTablePresent = ((await tx.execute(sql`
+      SELECT to_regclass('project.task_overlap_waits') IS NOT NULL AS present
+    `)) as unknown as Array<{ present: boolean }>)[0]?.present ?? false;
+    const overlapRevalidationDrainRowDrift = overlapRevalidationDrainTablePresent
+      ? ((await tx.execute(sql`
+          SELECT EXISTS (
+            SELECT 1 FROM project.task_overlap_waits WHERE phase IN ('revalidation-pending', 'repair-required')
+          ) AS needed
+        `)) as unknown as Array<{ needed: boolean }>)[0]?.needed ?? true
+      : false;
+    const overlapRevalidationDrainConstraintDrift = overlapRevalidationDrainTablePresent
+      ? ((await tx.execute(sql`
+          SELECT EXISTS (
+            SELECT 1 FROM pg_constraint c
+              JOIN pg_class t ON t.oid = c.conrelid
+              JOIN pg_namespace n ON n.oid = t.relnamespace
+             WHERE n.nspname = 'project'
+               AND t.relname = 'task_overlap_waits'
+               AND c.conname = 'ck_task_overlap_wait_phase'
+               AND pg_get_constraintdef(c.oid) LIKE '%revalidation-pending%'
+          ) AS needed
+        `)) as unknown as Array<{ needed: boolean }>)[0]?.needed ?? true
+      : false;
+    const overlapRevalidationDrainNeeded = overlapRevalidationDrainRowDrift || overlapRevalidationDrainConstraintDrift;
+    /*
+    FNXC:OverlapWaitSynchronization 2026-09-15-22:18:
+    The application is gated on the same presence result, not only the probe. Migration 0078 is a run of
+    ALTER TABLE / UPDATE statements against that one table and carries no in-SQL guard of its own, unlike
+    0077's DO block, so applying it where the table is absent would only move the 42P01 from the probe into
+    the migration. Deferring instead leaves the marker unrecorded, so the drain still applies on a later
+    boot once the table exists — through this baseline path or 0075's repair — which is the drift-probe
+    design intent: a database missing the object is repaired later rather than crashing the boot now. The
+    marker-saturated database with zero product relations is the regression fixture for this decision.
+    */
+    if (overlapRevalidationDrainTablePresent && (!overlapRevalidationDrainAlreadyApplied || overlapRevalidationDrainNeeded)) {
       const migrationSql = await readFile(OVERLAP_REVALIDATION_DRAIN_MIGRATION_PATH, "utf8");
       await tx.execute(sql.raw(migrationSql));
       await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${OVERLAP_REVALIDATION_DRAIN_VERSION}) ON CONFLICT (version) DO NOTHING`);

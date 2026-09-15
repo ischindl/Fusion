@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
 import { createSharedPgTaskStoreTestHarness, pgDescribe, type SharedPgTaskStoreHarness } from "../../__test-utils__/pg-test-harness.js";
+import { applySchemaBaseline } from "../../postgres/schema-applier.js";
 
 const h: SharedPgTaskStoreHarness = createSharedPgTaskStoreTestHarness({ prefix: "fusion_overlap_wait" });
 const overlap = (id: string) => ({
@@ -271,5 +272,70 @@ pgDescribe("overlap wait persistence", () => {
       receipt: { decision: "resume", freshness: "proven", commonFiles: [], deliveryProofs: [], decisionFingerprint: "stale", decidedAt: new Date().toISOString() },
     })).resolves.toBeNull();
     expect((await h.store().listTaskOverlapWaits(waiting.id))[0]?.phase).toBe("cancelled");
+  });
+
+  /*
+  FNXC:OverlapWaitSynchronization 2026-09-15-22:24:
+  The row half of the drift probe asserted on its own. The existing drain test applies the migration SQL
+  directly, so it never exercises the probe that decides whether an upgraded database still needs the drain.
+  A database can already carry the rebuilt 6-phase constraint and still hold the retired rows the drain exists
+  to migrate, and that is exactly where the probe must keep reporting work: if only the constraint half were
+  wired these rows would stay stranded forever while the migration read as permanently applied. The fixture
+  first proves this harness is steady-state, so nothing else can explain the later apply, then re-creates the
+  constraint NOT VALID over the current 6-phase definition. NOT VALID states that separation honestly: it lets
+  the fixture keep a retired row PostgreSQL would otherwise reject, so no row is deleted to set the case up,
+  while pg_get_constraintdef reports none of the retired phases — the constraint half answering `false`.
+  */
+  it("applies the drain through the probe when only the retired-phase rows drifted", async () => {
+    const blocker = await h.store().createTask({ description: "row-half holder" });
+    const waiting = await h.store().createTask({ description: "row-half waiter" });
+    await h.store().transitionQueuedEpisode(waiting.id, overlap(blocker.id));
+    const episode = (await h.store().listTaskOverlapWaits(waiting.id))[0]!;
+    const db = h.layer().db;
+
+    const phaseConstraint = async () => ((await db.execute(sql`
+      SELECT pg_get_constraintdef(c.oid) AS def, c.convalidated AS validated
+      FROM pg_constraint c
+        JOIN pg_class t ON t.oid = c.conrelid
+        JOIN pg_namespace n ON n.oid = t.relnamespace
+       WHERE n.nspname = 'project'
+         AND t.relname = 'task_overlap_waits'
+         AND c.conname = 'ck_task_overlap_wait_phase'
+    `)) as unknown as Array<{ def: string; validated: boolean }>)[0]!;
+
+    // Control: the steady-state harness must report no drift, or the later apply proves nothing.
+    await expect(applySchemaBaseline(db, { pluginHooks: [] })).resolves.toEqual({ applied: false, pluginHooksRun: 0 });
+
+    // Retire the row under the widened 8-phase definition, then restore the 6-phase CHECK as NOT VALID so the
+    // row survives while the constraint half of the probe reads clean.
+    await db.execute(sql`ALTER TABLE project.task_overlap_waits DROP CONSTRAINT ck_task_overlap_wait_phase`);
+    await db.execute(sql`
+      ALTER TABLE project.task_overlap_waits
+        ADD CONSTRAINT ck_task_overlap_wait_phase
+        CHECK (phase IN ('observed','analyzing','freshness-pending','revalidation-pending','repair-required','ready','delivered','cancelled'))
+    `);
+    await db.execute(sql`UPDATE project.task_overlap_waits SET phase = 'revalidation-pending' WHERE episode_id = ${episode.episodeId}`);
+    await db.execute(sql`ALTER TABLE project.task_overlap_waits DROP CONSTRAINT ck_task_overlap_wait_phase`);
+    await db.execute(sql`
+      ALTER TABLE project.task_overlap_waits
+        ADD CONSTRAINT ck_task_overlap_wait_phase
+        CHECK (phase IN ('observed','analyzing','freshness-pending','ready','delivered','cancelled')) NOT VALID
+    `);
+
+    const retiredRowOnly = await phaseConstraint();
+    expect(retiredRowOnly.def).toMatch(/CHECK/);
+    expect(retiredRowOnly.def).not.toMatch(/revalidation-pending|repair-required/);
+
+    // Only the row half can explain this apply.
+    await expect(applySchemaBaseline(db, { pluginHooks: [] })).resolves.toEqual({ applied: true, pluginHooksRun: 0 });
+
+    const drained = (await h.store().listTaskOverlapWaits(waiting.id))[0]!;
+    expect(drained.phase).toBe("ready");
+    const drainedConstraint = await phaseConstraint();
+    expect(drainedConstraint.validated).toBe(true);
+    expect(drainedConstraint.def).not.toMatch(/revalidation-pending|repair-required/);
+
+    // The probe must not re-fire on a database that is now genuinely drained.
+    await expect(applySchemaBaseline(db, { pluginHooks: [] })).resolves.toEqual({ applied: false, pluginHooksRun: 0 });
   });
 });
