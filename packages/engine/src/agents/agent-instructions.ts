@@ -5,6 +5,7 @@ import {
   readProjectMemory,
   buildMemoryPreSteeringNudge,
   buildPerTurnMemoryRecallCue,
+  buildOperatorLanguageDirective,
   type Agent,
   type AgentMemoryInclusionMode,
   type AgentRatingSummary,
@@ -483,6 +484,20 @@ export async function buildAgentChatPrompt(options: {
   const identitySection = `## Identity\n\nYou are ${agent.name}${titleSuffix} (agent ID: ${agent.id}, role: ${agent.role}).`;
 
   const instructionParts = [identitySection];
+
+  /*
+  FNXC:OperatorLanguage 2026-09-15-07:18:
+  The dashboard chat manager rebuilds this prompt before every turn, so the operator-language
+  directive rides the same live settings the chat budget uses: an operator who sets
+  Settings → General → "Operator language" gets every agent-bound chat reply in that language
+  from the next turn, with no restart. Placed before the agent's own (English) instructions so
+  the identity block is followed by the prose rule the rest of the prompt must not contradict.
+  Unset/"auto" injects nothing — the pre-feature prompt is byte-identical.
+  */
+  const operatorLanguageDirective = buildOperatorLanguageDirective(options.settings);
+  if (operatorLanguageDirective) {
+    instructionParts.push(operatorLanguageDirective);
+  }
 
   const resolvedInstructions = await resolveAgentInstructionsWithRatings(agent, rootDir, agentStore, inclusionMode, options.memoryCapChars);
   if (resolvedInstructions.trim()) {
