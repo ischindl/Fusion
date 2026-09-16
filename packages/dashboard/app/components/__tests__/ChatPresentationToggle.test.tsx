@@ -39,6 +39,15 @@ describe("ChatPresentationToggle", () => {
 });
 
 describe("chatLaunchMode storage", () => {
+  it("persists under the exact ASCII key (operator-visible, greppable)", () => {
+    window.localStorage.clear();
+    writeStoredChatLaunchMode("view");
+    expect(window.localStorage.getItem("fusion:chat-launch-mode")).toBe("view");
+    /* The historical defect: a U+2026 slipped into the key, so the mode lived outside every probe. */
+    expect(window.localStorage.getItem("fusion:cha…-mode")).toBeNull();
+    expect(window.localStorage.getItem("fusion:chat…mode")).toBeNull();
+  });
+
   it("defaults to popup and round-trips view", () => {
     window.localStorage.clear();
     expect(readStoredChatLaunchMode()).toBe("popup");

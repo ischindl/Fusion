@@ -8,7 +8,7 @@ path (private mode, quota, missing API) falls back to "popup", which is the pre-
 
 export type ChatLaunchMode = "popup" | "view";
 
-const STORAGE_KEY = "fusion:cha…-mode";
+const STORAGE_KEY = "fusion:chat-launch-mode";
 
 export function readStoredChatLaunchMode(): ChatLaunchMode {
   try {

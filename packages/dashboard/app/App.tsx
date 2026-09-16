@@ -2243,6 +2243,14 @@ function AppInner() {
     }
     openToolPanel("chat", anchorRect);
   }, [chatLaunchMode, closeToolPanel, handleChangeTaskView, openToolPanel, taskView]);
+  /*
+  FNXC:ChatPresentationToggle 2026-09-16-23:35:
+  `onOpenChatPanel` keeps the DIRECT `openChatFromLaunchMode` reference. Production diagnosis also
+  proved the storage key must stay exact ASCII `fusion:chat-launch-mode`: an accidentally authored
+  non-ASCII key (U+2026 inside the string) persisted a mode the operator's probes could not see, so
+  the Chat button kept taking the view branch while localStorage looked unset. The util test pins
+  the literal key to keep that class of bug out.
+  */
   const chatPresentationValue = useMemo<ChatPresentationController | null>(() => (
     isMobile || !currentProject ? null : { mode: chatLaunchMode, setMode: switchChatPresentation }
   ), [chatLaunchMode, currentProject, isMobile, switchChatPresentation]);
