@@ -2222,8 +2222,19 @@ function AppInner() {
   resolved Chat host (dock list / mobile page / main-page route via chatWindowRouteRef), while
   "popup" closes the dock Chat selection and re-opens the popover anchored to the footer Chat button.
   openToolPanel toggles, so closeToolPanel must run first in both branches.
+
+  FNXC:ChatPresentationToggle 2026-09-16-22:55:
+  Operator report: "chat view je cierna obrazovka" — a persisted "view" mode in a project whose Chat
+  host resolves to "none" (right sidebar disabled + footer placement; the mode is per-browser, so it
+  leaks across projects) navigated to a Chat page that renders nothing. A hostless View is now
+  refused: the toggle keeps the popup with a toast naming the missing host, and the launch fallback
+  opens the popover (clearing any stranded Chat page) instead of leaving the main area blank.
   */
   const switchChatPresentation = useCallback((mode: ChatLaunchMode) => {
+    if (mode === "view" && chatPageHostKind === "none") {
+      addToast(t("chat.viewModeNoHostToast", "Chat view needs the right sidebar or a sidebar placement (Settings \u2192 Appearance). Keeping the popup."), "info");
+      return;
+    }
     setChatLaunchModePersisted(mode);
     if (mode === "view") {
       closeToolPanel();
@@ -2234,15 +2245,22 @@ function AppInner() {
     closeToolPanel();
     if (taskView === "chat") handleChangeTaskView("board");
     openToolPanel("chat", readShortcutAnchorRect("desktop-nav-chat-panel"));
-  }, [chatDockHostOpen, closeToolPanel, handleChangeTaskView, openToolPanel, rightDock, setChatLaunchModePersisted, taskView]);
+  }, [addToast, chatDockHostOpen, chatPageHostKind, closeToolPanel, handleChangeTaskView, openToolPanel, rightDock, setChatLaunchModePersisted, t, taskView]);
   const openChatFromLaunchMode = useCallback((anchorRect: DOMRect | null) => {
     if (chatLaunchMode === "view") {
       closeToolPanel();
-      if (!chatWindowRouteRef.current("chat") && taskView !== "chat") handleChangeTaskView("chat");
+      if (chatWindowRouteRef.current("chat")) return;
+      if (chatPageHostKind === "none") {
+        addToast(t("chat.viewModeNoHostToast", "Chat view needs the right sidebar or a sidebar placement (Settings \u2192 Appearance). Keeping the popup."), "info");
+        if (taskView === "chat") handleChangeTaskView("board");
+        openToolPanel("chat", anchorRect);
+        return;
+      }
+      if (taskView !== "chat") handleChangeTaskView("chat");
       return;
     }
     openToolPanel("chat", anchorRect);
-  }, [chatLaunchMode, closeToolPanel, handleChangeTaskView, openToolPanel, taskView]);
+  }, [addToast, chatLaunchMode, chatPageHostKind, closeToolPanel, handleChangeTaskView, openToolPanel, t, taskView]);
   /*
   FNXC:ChatPresentationToggle 2026-09-16-23:35:
   `onOpenChatPanel` keeps the DIRECT `openChatFromLaunchMode` reference. Production diagnosis also
@@ -2282,6 +2300,15 @@ function AppInner() {
     }
     if (chatPageHostKind === "dock" && taskView === "chat") {
       selectChatInDock();
+      handleChangeTaskView("board");
+    }
+    /*
+    FNXC:ChatPresentationToggle 2026-09-16-22:55:
+    A hostless Chat page renders nothing (the "black screen" the operator saw). A persisted or
+    deep-linked Chat route with no resolved host snaps back to the board; mobile is never hostless
+    because resolveChatHost answers "mobile-page" before placement or dock state is consulted.
+    */
+    if (chatPageHostKind === "none" && taskView === "chat") {
       handleChangeTaskView("board");
     }
   }, [mobileDrawerActive, chatDockHostOpen, chatPageHostKind, handleChangeTaskView, rightDock, selectChatInDock, taskView]);
