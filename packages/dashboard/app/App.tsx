@@ -109,6 +109,8 @@ import { RetryWarningProvider } from "./context/RetryWarningContext";
 import { CostBadgeProvider } from "./context/CostBadgeContext";
 import { ChatMessageLayoutProvider } from "./context/ChatMessageLayoutContext";
 import { ChatSubmitOnEnterProvider } from "./context/ChatSubmitOnEnterContext";
+import { ChatPresentationContext, type ChatPresentationController } from "./components/ChatPresentationContext";
+import { readStoredChatLaunchMode, writeStoredChatLaunchMode, type ChatLaunchMode } from "./utils/chatLaunchMode";
 import { ShellHostProvider, useShellHostContext } from "./context/ShellHostContext";
 import { useShellConnection } from "./hooks/useShellConnection";
 import { useStashOrphanCount } from "./hooks/useStashOrphanCount";
@@ -1118,6 +1120,15 @@ function AppInner() {
   */
   const [toolPanel, setToolPanel] = useState<{ kind: "activity" | "notes" | "chat"; anchorRect: DOMRect | null } | null>(null);
   const closeToolPanel = useCallback(() => setToolPanel(null), []);
+  /*
+  FNXC:ChatPresentationToggle 2026-09-16-21:57: per-browser Chat launch mode (popup|view); see
+  utils/chatLaunchMode for why this is localStorage-backed and defaults to "popup".
+  */
+  const [chatLaunchMode, setChatLaunchMode] = useState<ChatLaunchMode>(() => readStoredChatLaunchMode());
+  const setChatLaunchModePersisted = useCallback((mode: ChatLaunchMode) => {
+    setChatLaunchMode(mode);
+    writeStoredChatLaunchMode(mode);
+  }, []);
   const openToolPanel = useCallback((kind: "activity" | "notes" | "chat", anchorRect: DOMRect | null) => {
     setToolPanel((current) => (current?.kind === kind ? null : { kind, anchorRect }));
   }, []);
@@ -2204,6 +2215,39 @@ function AppInner() {
   };
 
   /*
+  FNXC:ChatPresentationToggle 2026-09-16-21:57:
+  Operator requirement: the Chat entry is switchable per browser between the anchored footer popover
+  ("popup") and the persistent side surface ("view"). setMode persists the launch preference AND
+  re-presents the current surface immediately: "view" closes the popover and routes through the
+  resolved Chat host (dock list / mobile page / main-page route via chatWindowRouteRef), while
+  "popup" closes the dock Chat selection and re-opens the popover anchored to the footer Chat button.
+  openToolPanel toggles, so closeToolPanel must run first in both branches.
+  */
+  const switchChatPresentation = useCallback((mode: ChatLaunchMode) => {
+    setChatLaunchModePersisted(mode);
+    if (mode === "view") {
+      closeToolPanel();
+      if (!chatWindowRouteRef.current("chat") && taskView !== "chat") handleChangeTaskView("chat");
+      return;
+    }
+    if (chatDockHostOpen) rightDock.toggle();
+    closeToolPanel();
+    if (taskView === "chat") handleChangeTaskView("board");
+    openToolPanel("chat", readShortcutAnchorRect("desktop-nav-chat-panel"));
+  }, [chatDockHostOpen, closeToolPanel, handleChangeTaskView, openToolPanel, rightDock, setChatLaunchModePersisted, taskView]);
+  const openChatFromLaunchMode = useCallback((anchorRect: DOMRect | null) => {
+    if (chatLaunchMode === "view") {
+      closeToolPanel();
+      if (!chatWindowRouteRef.current("chat") && taskView !== "chat") handleChangeTaskView("chat");
+      return;
+    }
+    openToolPanel("chat", anchorRect);
+  }, [chatLaunchMode, closeToolPanel, handleChangeTaskView, openToolPanel, taskView]);
+  const chatPresentationValue = useMemo<ChatPresentationController | null>(() => (
+    isMobile || !currentProject ? null : { mode: chatLaunchMode, setMode: switchChatPresentation }
+  ), [chatLaunchMode, currentProject, isMobile, switchChatPresentation]);
+
+  /*
   FNXC:ChatSurfaceUnification 2026-09-15-14:41:
   Responsive handoff preserves the user's primary Chat intent while enforcing one host. A wide Chat route becomes the
   dock list ONLY while the dock is the resolved host; a wide dock Chat selection becomes the mobile route. FN-419 adds
@@ -2587,6 +2631,7 @@ function AppInner() {
     <ConfirmDialogProvider skipConfirmations={skipConfirmationDialogs}>
       <ChatMessageLayoutProvider value={chatMessageLayout}>
       <ChatSubmitOnEnterProvider value={chatSubmitOnEnter}>
+      <ChatPresentationContext.Provider value={chatPresentationValue}>
       <ModalDismissPreferenceProvider enabled={dismissModalsOnOutsideClick}>
         <QuickAddSubmitOnEnterProvider enabled={quickAddSubmitOnEnter}>
       <NavigationHistoryProvider value={navigationHistory}>
@@ -2801,7 +2846,7 @@ function AppInner() {
         </div>
         {rightDock.dock}
       </div>
-      {wideFooterActive ? <DesktopActionBar entries={desktopNavigationEntries} activeId={desktopActiveNavigationId} tasks={footerTasks} projectId={currentProject?.id} columnFlagsByTaskId={footerColumnFlagsByTaskId} onToggleTerminal={toggleTerminalWithNav} onOpenChatPanel={currentProject ? (anchorRect) => openToolPanel("chat", anchorRect) : undefined} chatPanelOpen={toolPanel?.kind === "chat"} chatPanelId={CHAT_TOOL_PANEL_ID} chatHasUnreadResponse={chatHasUnreadResponse} /> : null}
+      {wideFooterActive ? <DesktopActionBar entries={desktopNavigationEntries} activeId={desktopActiveNavigationId} tasks={footerTasks} projectId={currentProject?.id} columnFlagsByTaskId={footerColumnFlagsByTaskId} onToggleTerminal={toggleTerminalWithNav} onOpenChatPanel={currentProject ? openChatFromLaunchMode : undefined} chatPanelOpen={toolPanel?.kind === "chat"} chatPanelId={CHAT_TOOL_PANEL_ID} chatHasUnreadResponse={chatHasUnreadResponse} /> : null}
       {/*
       FNXC:ToolSurfaces 2026-09-15-16:04:
       FN-426: the three navigation panels that replace right-dock-only hosting. Each mounts its body only while open,
@@ -3128,6 +3173,7 @@ function AppInner() {
       </NavigationHistoryProvider>
         </QuickAddSubmitOnEnterProvider>
       </ModalDismissPreferenceProvider>
+      </ChatPresentationContext.Provider>
       </ChatSubmitOnEnterProvider>
       </ChatMessageLayoutProvider>
     </ConfirmDialogProvider>

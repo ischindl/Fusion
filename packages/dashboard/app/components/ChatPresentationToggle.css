@@ -1,0 +1,15 @@
+/*
+FNXC:ChatPresentationToggle 2026-09-16-21:57:
+Segmented pair in the Chat header switching the launch surface (popup vs view). It reuses the shared
+`btn-icon` primitive and only adds the segmented grouping + active token tint; no parallel button variant.
+*/
+
+.chat-presentation-toggle {
+  display: inline-flex;
+  align-items: center;
+}
+
+.chat-presentation-toggle__btn--active {
+  color: var(--accent-text);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}

@@ -42,6 +42,8 @@ import { ChatThinkingLevelControl } from "./ChatThinkingLevelControl";
 import { ChatThreadTitleSwitcher } from "./ChatThreadTitleSwitcher";
 import { PendingChatMessageQueue } from "./PendingChatMessageQueue";
 import { ChatFocusSelector } from "./ChatFocusSelector";
+import { ChatPresentationToggle } from "./ChatPresentationToggle";
+import { useChatPresentation } from "./ChatPresentationContext";
 import { AgentMentionPopup } from "./AgentMentionPopup";
 import { ProviderIcon } from "./ProviderIcon";
 import { FileMentionPopup } from "./FileMentionPopup";
@@ -452,6 +454,7 @@ type CopyFeedbackState = "success" | "error" | null;
 
 function ChatViewContent({ projectId, addToast, floating = false, compactLayout = false, listOnly = false, openChatWindows, dedicatedConversation = false, findActive: hostFindActive = true, active: hostActive = true, onPopOut, onMaximize, onClose, onOpenSessionInNewWindow, initialDirectSession, initialDirectSessionNonce, persistChatPreferences = true, chatCommandContext, initialComposerDraft, initialComposerDraftNonce, onSendAsReport, onActiveSessionChange }: ChatViewProps) {
   const { t } = useTranslation("app");
+  const chatPresentation = useChatPresentation();
   const managedSurfaceActive = useDashboardWindowSurfaceActivity();
   const active = hostActive && managedSurfaceActive;
   const findActive = hostFindActive && managedSurfaceActive;
@@ -3913,6 +3916,16 @@ function ChatViewContent({ projectId, addToast, floating = false, compactLayout 
               data-testid="chat-new-btn"
               title={onOpenSessionInNewWindow ? t("chat.newChatOpenInNewWindowHint", "Ctrl/Cmd + click to open the new conversation in a separate window") : undefined}
             /> : null}
+            {/*
+            FNXC:ChatPresentationToggle 2026-09-16-21:57:
+            Operator requirement: the Chat entry must be switchable between the anchored footer popover and the
+            persistent side surface. The segment control lives in the shared header so EVERY wide host (footer
+            popover, dock list, page) exposes the same switch; dedicated thread-bound windows and hosts without a
+            presentation controller (mobile) render nothing.
+            */}
+            {chatPresentation && !dedicatedConversation ? (
+              <ChatPresentationToggle mode={chatPresentation.mode} onModeChange={chatPresentation.setMode} />
+            ) : null}
             {!floating && onPopOut ? (
               <UiButton
                 type="button"
