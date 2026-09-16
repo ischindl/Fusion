@@ -1409,7 +1409,7 @@ describe("useTasks", () => {
         firstExecutionAt: "2026-01-01T23:50:00Z",
         cumulativeActiveMs: 240_000,
         worktree: "/tmp/fn-001",
-        modifiedFiles: ["packages/dashboard/app/components/QuickChatFAB.tsx"],
+        modifiedFiles: ["packages/dashboard/app/components/ChatView.tsx"],
         timedExecutionMs: 120_000,
         workflowStepResults: [
           {
@@ -1470,7 +1470,7 @@ describe("useTasks", () => {
       expect(result.current.tasks[0].cumulativeActiveMs).toBe(240_000);
       expect(result.current.tasks[0].worktree).toBe("/tmp/fn-001");
       expect(result.current.tasks[0].modifiedFiles).toEqual([
-        "packages/dashboard/app/components/QuickChatFAB.tsx",
+        "packages/dashboard/app/components/ChatView.tsx",
       ]);
       expect(result.current.tasks[0].timedExecutionMs).toBe(120_000);
       expect(result.current.tasks[0].workflowStepResults).toHaveLength(1);
@@ -4404,6 +4404,35 @@ describe("useTasks", () => {
           agent: "triage",
         });
       });
+      expect(result.current.tasks[0]?.recentAgentActivityAt).toBe("2026-07-28T12:00:01.000Z");
+    });
+
+    it("uses workflow metadata that arrives after the stable SSE subscription starts", async () => {
+      const initialTask = createMockTask({
+        column: "drafting",
+        status: undefined,
+        updatedAt: "2026-07-28T12:00:00.000Z",
+      });
+      mockFetchTasks.mockResolvedValueOnce([initialTask]);
+      const { result, rerender } = renderHook(
+        ({ resolveColumnFlags }: { resolveColumnFlags?: (task: Task) => { intake?: boolean; hold?: boolean } }) => (
+          useTasks({ resolveColumnFlags })
+        ),
+        { initialProps: { resolveColumnFlags: undefined as ((task: Task) => { intake?: boolean; hold?: boolean }) | undefined } },
+      );
+
+      await waitFor(() => expect(result.current.tasks).toHaveLength(1));
+      rerender({ resolveColumnFlags: () => ({ intake: true, hold: true }) });
+
+      act(() => {
+        MockEventSource.instances[0]._emit("agent:log", {
+          taskId: initialTask.id,
+          timestamp: "2026-07-28T12:00:01.000Z",
+          type: "tool",
+          agent: "triage",
+        });
+      });
+
       expect(result.current.tasks[0]?.recentAgentActivityAt).toBe("2026-07-28T12:00:01.000Z");
     });
 

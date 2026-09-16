@@ -88,7 +88,17 @@ describe("useTasks cross-project isolation", () => {
   it("drops foreign agent logs before they clear local stall state or add planner activity", async () => {
     const localTask = {
       ...task("Project A task", "2026-01-01T00:00:00Z"),
-      inReviewStalled: true,
+      /* Merged Task.inReviewStalled is the structured InReviewStalledSignal, not a boolean. */
+      inReviewStalled: {
+        code: "in-review-stalled" as const,
+        reason: "review quiet past threshold",
+        observedAt: "2026-01-02T00:00:00Z",
+        ageMs: 3_600_000,
+        quietMs: 3_600_000,
+        thresholdMs: 1_800_000,
+        lastActivityAt: "2026-01-01T23:00:00Z",
+        lastActivitySource: "column-moved" as const,
+      },
       recentAgentActivityAt: undefined,
     };
     fetchTasks.mockResolvedValueOnce([localTask]);
@@ -103,7 +113,16 @@ describe("useTasks cross-project isolation", () => {
       agent: "triage",
     }));
 
-    expect(result.current.tasks[0]).toMatchObject({ inReviewStalled: true, recentAgentActivityAt: undefined });
+    /*
+    FNXC:CrossProjectIsolation 2026-09-16-19:35 (merge origin/main):
+    Post-merge `Task.inReviewStalled` is the structured `InReviewStalledSignal`, not the boolean
+    this test predated. Assert the stall survives (partial signal match) instead of the removed
+    boolean shape.
+    */
+    expect(result.current.tasks[0]).toMatchObject({
+      inReviewStalled: { code: "in-review-stalled" },
+      recentAgentActivityAt: undefined,
+    });
     expect(getTraces()).toContainEqual(expect.objectContaining({
       source: "useTasks",
       event: "dropped-foreign-project-event",

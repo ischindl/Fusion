@@ -89,8 +89,11 @@ touches no data; it must advance in the same change that ships a new migration f
 /* FNXC:PatchnodeLedger 2026-08-28-12:16: the permanent ledger table must exist before TaskStore can commit a completion move atomically with its entry. */
 /* FNXC:ChatSidebarPerf 2026-09-08-04:48: baseline marker includes the chat-message recency index required for index-backed sidebar previews. */
 /* FNXC:OverlapWaitSynchronization 2026-09-13-05:10: the ceiling includes the retired-phase drain, so startup completes it before overlap readers run. */
-/* FNXC:ReviewLaneDispatch 2026-09-15-00:24 (STAS-205 landing onto main): the ledger migration renumbered 0077 -> 0079 during this merge — main advanced past the branch and already owns released 0077 (fn_332 overlap repair phase) and 0078 (fn_375 revalidation drain). The ceiling tracks the new highest migration so upgraded projects apply the ledger before the dispatch sweep runs. */
-export const SCHEMA_BASELINE_VERSION = "0079";
+/* FNXC:WorkflowIdentity 2026-09-14-19:06: the ceiling includes the transactional Coding (Ideas) identity convergence and its recovery archives. */
+/* FNXC:HumanPlanApproval 2026-09-15-06:24: the ceiling includes FN-408's per-card decision column, so no release gate reads tasks before it exists. */
+/* FNXC:TaskPauseAccounting 2026-09-16-06:16: the ceiling includes FN-457's paused-time columns, so timing readers never query a tasks table that lacks them. */
+/* FNXC:ReviewLaneDispatch 2026-09-16-18:30 (merge origin/main): the ceiling includes the renumbered ledger 0082. The stale-binary guard compares the DB's highest marker against Number(SCHEMA_BASELINE_VERSION), so a bundled migration ABOVE the ceiling would make the ledger's self-marked 0082 look like a newer Fusion's write and every boot after it would raise StaleBinarySchemaError. */
+export const SCHEMA_BASELINE_VERSION = "0082";
 /** FNXC:SymbolLock 2026-07-20-10:00: upgrades need durable task declarations before admission resolves symbols. */
 export const TASK_DECLARED_SYMBOLS_VERSION = "0028";
 const INITIAL_SCHEMA_VERSION = "0000";
@@ -284,8 +287,14 @@ export const OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION = "0077";
 /** FNXC:OverlapWaitSynchronization 2026-09-13-05:10: upgrades drain model-verdict overlap phases after 0077 has made all historical states readable. */
 export const OVERLAP_REVALIDATION_DRAIN_VERSION = "0078";
 /** FNXC:ReviewLaneDispatch 2026-09-09 (STAS-205): upgraded projects need the live-reviewer-run partial unique index before the dispatch sweep can claim one attempt per card. */
-/* FNXC:ReviewLaneDispatch 2026-09-15-00:24 (STAS-205 landing onto main): renumbered 0077 -> 0079 in this merge. Bookkeeping keys on the version STRING, so a branch claiming a slot main already recorded (0077 = the overlap repair phase) would make `applied.includes(...)` report the ledger as applied, the SQL would never run, and the sweep would lose its one-live-attempt-per-card enforcement silently. The deploy line owns released 0077-0078. */
-export const REVIEW_LANE_LEDGER_VERSION = "0079";
+/* FNXC:ReviewLaneDispatch 2026-09-15-00:24 (STAS-205 landing onto main): renumbered 0077 -> 0079 -> 0082: upstream released its own 0079/0080/0081 in the 2026-09-16 merge, so the ledger takes the next free slot; the bookkeeping-string rationale below still holds. Bookkeeping keys on the version STRING, so a branch claiming a slot main already recorded (0077 = the overlap repair phase) would make `applied.includes(...)` report the ledger as applied, the SQL would never run, and the sweep would lose its one-live-attempt-per-card enforcement silently. The deploy line owns released 0077-0078. */
+export const REVIEW_LANE_LEDGER_VERSION = "0082";
+/** FNXC:WorkflowIdentity 2026-09-14-19:06: upgraded projects converge the temporary Coding (Ideas) v2 identity without losing conflicting settings or prompts. */
+export const WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION = "0079";
+/** FNXC:HumanPlanApproval 2026-09-15-06:24: upgraded projects need the per-card human plan decision column before any release gate evaluates it. */
+export const TASK_HUMAN_PLAN_APPROVAL_VERSION = "0080";
+/** FNXC:TaskPauseAccounting 2026-09-16-06:16: upgraded projects need the durable paused-time columns before the card chip subtracts pause from worked time. */
+export const TASK_PAUSE_ACCOUNTING_VERSION = "0081";
 
 /** FNXC:MemoryFocus 2026-08-21-06:10: explicit registration prevents the per-conversation memory-focus migration from being skipped. Renumbered to 0060, then 0061, then 0065: the upstream FN-066..FN-101 batch (2026-08-21) owns 0061-0064 (activity-log index, splitting removal, AI-merge review, repository scope). */
 /* FNXC:MemoryFocus 2026-08-23-07:07: renumbered 0065 -> 0066 in the RUFU-160 origin/main merge: origin/main independently shipped 0065 as FN-149's review-convergence migration (v0.77.0-beta.7); keeping both lines' migrations requires the deploy-line file to take the next free sequence. */
@@ -563,7 +572,10 @@ const OVERLAP_WAIT_SYNC_MIGRATION_PATH = join(MIGRATIONS_DIR, "0075_fn_332_overl
 const OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_MIGRATION_PATH = join(MIGRATIONS_DIR, "0077_fn_332_overlap_wait_repair_required_phase.sql");
 const WHITEBOARDS_MIGRATION_PATH = join(MIGRATIONS_DIR, "0076_fn_333_whiteboards.sql");
 const OVERLAP_REVALIDATION_DRAIN_MIGRATION_PATH = join(MIGRATIONS_DIR, "0078_fn_375_overlap_revalidation_drain.sql");
-const REVIEW_LANE_LEDGER_MIGRATION_PATH = join(MIGRATIONS_DIR, "0079_stas_205_review_lane_ledger.sql");
+const REVIEW_LANE_LEDGER_MIGRATION_PATH = join(MIGRATIONS_DIR, "0082_stas_205_review_lane_ledger.sql");
+const WORKFLOW_IDENTITY_AND_MODEL_LANES_MIGRATION_PATH = join(MIGRATIONS_DIR, "0079_fn_393_workflow_identity_and_project_model_lanes.sql");
+const TASK_HUMAN_PLAN_APPROVAL_MIGRATION_PATH = join(MIGRATIONS_DIR, "0080_fn_408_task_human_plan_approval.sql");
+const TASK_PAUSE_ACCOUNTING_MIGRATION_PATH = join(MIGRATIONS_DIR, "0081_fn_457_task_pause_accounting.sql");
 
 /**
  * Ensure the migration bookkeeping table exists. Lives in the public schema so
@@ -714,6 +726,9 @@ export async function applySchemaBaseline(
     const overlapWaitRepairRequiredPhaseAlreadyApplied = applied.includes(OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION);
     const overlapRevalidationDrainAlreadyApplied = applied.includes(OVERLAP_REVALIDATION_DRAIN_VERSION);
     const reviewLaneLedgerAlreadyApplied = applied.includes(REVIEW_LANE_LEDGER_VERSION);
+    const builtinWorkflowIdentityAlreadyApplied = applied.includes(WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION);
+    const taskHumanPlanApprovalAlreadyApplied = applied.includes(TASK_HUMAN_PLAN_APPROVAL_VERSION);
+    const taskPauseAccountingAlreadyApplied = applied.includes(TASK_PAUSE_ACCOUNTING_VERSION);
     assertBinaryNotOlderThanDatabase(applied);
     let schemaChanged = false;
 
@@ -1758,6 +1773,55 @@ export async function applySchemaBaseline(
       const migrationSql = await readFile(REVIEW_LANE_LEDGER_MIGRATION_PATH, "utf8");
       await tx.execute(sql.raw(migrationSql));
       await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${REVIEW_LANE_LEDGER_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    if (!builtinWorkflowIdentityAlreadyApplied) {
+      const migrationSql = await readFile(WORKFLOW_IDENTITY_AND_MODEL_LANES_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    /*
+    FNXC:HumanPlanApproval 2026-09-15-06:24:
+    Probe the column as well as the bookkeeping row so a restored database that rewound the tasks
+    table re-applies the additive column instead of trusting a stale applied-version marker.
+    */
+    const taskHumanPlanApprovalColumnState = (await tx.execute(sql`
+      SELECT
+        to_regclass('project.tasks') IS NOT NULL AS tasks_exists,
+        EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema = 'project' AND table_name = 'tasks' AND column_name = 'human_plan_approval'
+        ) AS human_plan_approval_exists
+    `)) as unknown as Array<{ tasks_exists: boolean; human_plan_approval_exists: boolean }>;
+    const taskHumanPlanApprovalColumnMissing = taskHumanPlanApprovalColumnState[0]?.tasks_exists
+      && !taskHumanPlanApprovalColumnState[0]?.human_plan_approval_exists;
+    if (!taskHumanPlanApprovalAlreadyApplied || taskHumanPlanApprovalColumnMissing) {
+      const migrationSql = await readFile(TASK_HUMAN_PLAN_APPROVAL_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${TASK_HUMAN_PLAN_APPROVAL_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    /*
+    FNXC:TaskPauseAccounting 2026-09-16-06:16:
+    Probe the column as well as the bookkeeping row, exactly like FN-408 above, so a restored
+    database that rewound the tasks table re-applies the additive columns instead of trusting a
+    stale applied-version marker.
+    */
+    const taskPauseAccountingColumnState = (await tx.execute(sql`
+      SELECT
+        to_regclass('project.tasks') IS NOT NULL AS tasks_exists,
+        EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema = 'project' AND table_name = 'tasks' AND column_name = 'cumulative_paused_ms'
+        ) AS cumulative_paused_ms_exists
+    `)) as unknown as Array<{ tasks_exists: boolean; cumulative_paused_ms_exists: boolean }>;
+    const taskPauseAccountingColumnMissing = taskPauseAccountingColumnState[0]?.tasks_exists
+      && !taskPauseAccountingColumnState[0]?.cumulative_paused_ms_exists;
+    if (!taskPauseAccountingAlreadyApplied || taskPauseAccountingColumnMissing) {
+      const migrationSql = await readFile(TASK_PAUSE_ACCOUNTING_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${TASK_PAUSE_ACCOUNTING_VERSION}) ON CONFLICT (version) DO NOTHING`);
       schemaChanged = true;
     }
     const patchnodeEntriesMissing = ((await tx.execute(sql`

@@ -120,7 +120,6 @@ async function renderList(props: Partial<React.ComponentProps<typeof ListView>> 
   const result = render(
     <ListView
       tasks={TASKS}
-      onMoveTask={vi.fn(async () => TASKS[0])}
       onDeleteTask={vi.fn(async () => TASKS[0])}
       onMergeTask={vi.fn(async () => ({ merged: false }) as unknown as MergeResult)}
       onOpenDetail={vi.fn()}
@@ -150,7 +149,7 @@ function installVariableRowMeasurements() {
     disconnect() { observed.clear(); }
   }
   vi.stubGlobal("ResizeObserver", Observer);
-  const geometry = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function variableTaskHeight() {
+  const geometry = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function variableTaskHeight(this: HTMLElement) {
     const id = this.getAttribute("data-id") ?? "";
     const index = Number(id.split("-").at(-1) ?? 0);
     return { height: 84 + (index % 4) * 28 } as DOMRect;
@@ -174,7 +173,6 @@ function PaginatedSearchList({ onPage }: { onPage: () => void }) {
   return (
     <ListView
       tasks={TASKS.slice(0, loadedCount)}
-      onMoveTask={vi.fn(async () => TASKS[0])}
       onDeleteTask={vi.fn(async () => TASKS[0])}
       onMergeTask={vi.fn(async () => ({ merged: false }) as unknown as MergeResult)}
       onOpenDetail={vi.fn()}

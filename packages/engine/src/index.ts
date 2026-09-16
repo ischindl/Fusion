@@ -1334,3 +1334,7 @@ export {
   type ResolvedCliExecutorConfig,
   type LaunchCliTaskSessionOptions,
 } from "./cli-agent/task-session.js";
+
+export { // FN-416 restore-the-revert surface.
+  resolveTaskRevertRestoreCommits, performTaskRevertRestore, createAiRestoreTask, buildAiRestoreTaskDescription, RESTORE_OF_METADATA_KEY, type TaskRevertRestoreCommitSource, type ResolvedTaskRevertRestoreCommits, type ResolveTaskRevertRestoreCommitsOptions, type TaskRevertRestoreResult, type PerformTaskRevertRestoreOptions, type AiRestoreTaskResult, type CreateAiRestoreTaskDeps } from "./execution/task-revert.js";  // [upstream-merge addition]
+export { type LandedReviewReconcileResult } from "./self-healing.js";  // [upstream-merge addition]

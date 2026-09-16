@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { render, screen, fireEvent, waitFor, within, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ListView, LIST_MINIMUM_SPLIT_LAYOUT_WIDTH } from "../ListView";
-import type { Task, TaskDetail } from "@fusion/core";
+import type { Task, TaskDetail, MergeResult } from "@fusion/core";
 import { scopedKey } from "../../utils/projectStorage";
 import { ALL_WORKFLOWS_BOARD_VIEW_ID, BOARD_WORKFLOW_SELECTION_STORAGE_KEY } from "../../utils/boardWorkflowSelection";
 import { loadAllAppCss } from "../../test/cssFixture";
@@ -97,8 +97,8 @@ vi.mock("../QuickEntryBox", () => ({
     };
 
     const selectedWorkflow = workflowOptions?.find((option) => option.id === selectedWorkflowId);
-    const showStart = selectedWorkflowId === "builtin:coding-ideas-v2"
-      || defaultWorkflowId === "builtin:coding-ideas-v2"
+    const showStart = selectedWorkflowId === "builtin:coding-ideas"
+      || defaultWorkflowId === "builtin:coding-ideas"
       || selectedWorkflow?.columns?.[0]?.flags?.manualIntake === true;
 
     const handoff = (callback?: (description: string, workflowId?: string | null) => void) => {
@@ -155,7 +155,7 @@ vi.mock("../QuickEntryBox", () => ({
             Save
           </button>
           {showStart && (
-            <button type="button" data-testid="quick-entry-start" onClick={() => void onCreate?.({ description: "Started task", workflowId: "builtin:coding-ideas-v2", column: "todo" })}>
+            <button type="button" data-testid="quick-entry-start" onClick={() => void onCreate?.({ description: "Started task", workflowId: "builtin:coding-ideas", column: "todo" })}>
               Start
             </button>
           )}
@@ -277,6 +277,20 @@ const createMockTask = (overrides: Partial<Task> = {}): Task => ({
   ...overrides,
 });
 
+/*
+FNXC:ListViewMergeContract 2026-09-16-19:20 (merge origin/main):
+Merged ListViewProps makes onMergeTask/onDeleteTask required and onMergeTask resolves the full
+MergeResult. Raw renders that never exercise merging share this no-op fixture (same shape as
+ResettableListViewHarness) instead of per-render literals.
+*/
+const listViewNoopMergeResult = (): MergeResult => ({
+  merged: false,
+  task: createMockTask({ id: "FN-merge-noop" }),
+  branch: "main",
+  worktreeRemoved: false,
+  branchDeleted: false,
+});
+
 function ResettableListViewHarness({
   initialTask,
   requestReset,
@@ -288,10 +302,9 @@ function ResettableListViewHarness({
   return (
     <ListView
       tasks={tasks}
-      onMoveTask={async () => initialTask}
       onRetryTask={async () => initialTask}
       onDeleteTask={async () => initialTask}
-      onMergeTask={async () => ({ merged: false })}
+      onMergeTask={async () => ({ merged: false, task: initialTask, branch: "main", worktreeRemoved: false, branchDeleted: false })}
       onResetTask={async () => {
         const confirmed = await requestReset();
         setTasks([confirmed]);
@@ -312,10 +325,9 @@ const renderListView = (
 ) => {
   const defaultProps = {
     tasks: [],
-    onMoveTask: vi.fn(async () => createMockTask()),
     onRetryTask: vi.fn(async () => createMockTask()),
     onDeleteTask: vi.fn(async () => createMockTask()),
-    onMergeTask: vi.fn(async () => ({ merged: false })),
+    onMergeTask: vi.fn(async () => ({ merged: false, task: createMockTask(), branch: "main", worktreeRemoved: false, branchDeleted: false })),
     onResetTask: vi.fn(async () => createMockTask()),
     onDuplicateTask: vi.fn(async () => createMockTask()),
     onOpenDetail: vi.fn(),
@@ -684,7 +696,7 @@ describe("ListView unmapped-workflow self-heal", () => {
     await waitFor(() => expect(forcedProjects).toEqual(["project-a"]));
 
     // Switch projects while the repair is still in flight, then let it settle.
-    view.rerender(<ListView tasks={tasks} projectId="project-b" onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} />);
+    view.rerender(<ListView tasks={tasks} projectId="project-b" onOpenDetail={vi.fn()} addToast={mockAddToast} onDeleteTask={vi.fn()} onMergeTask={vi.fn(async () => listViewNoopMergeResult())} />);
     await act(async () => { releaseFirstForced?.(); await Promise.resolve(); });
     // FNXC:WorkflowBoard 2026-08-01-17:20: deterministic fake-timer advance past RETRY_DELAY_MS replaces a real 400ms wall wait. The settled continuation abandons on the project-id mismatch and arms no follow-up timer; a regression that dropped the projectIdRef guard would arm one and this advance would fire it, keeping the REVERT CHECK intact.
     await act(async () => {
@@ -750,9 +762,10 @@ describe("ListView unmapped-workflow self-heal", () => {
     render(
       <React.StrictMode>
         <ListView
+          onDeleteTask={vi.fn()}
+          onMergeTask={vi.fn(async () => listViewNoopMergeResult())}
           tasks={[createMockTask({ id: "FN-908", column: "todo", title: "Strict card" })]}
           projectId={TEST_PROJECT_ID}
-          onMoveTask={vi.fn()}
           onOpenDetail={vi.fn()}
           addToast={mockAddToast}
         />
@@ -943,7 +956,10 @@ describe("ListView", () => {
     });
 
     expect(screen.getByTestId("list-review-budget-exhausted-FN-BUDGET")).toHaveTextContent("Review budget exhausted");
-    expect(screen.getAllByText("Awaiting Approval")).toHaveLength(2);
+    /* FNXC:TaskStatusBadge 2026-09-16-05:01: FN-448 renamed the generic hold badge to "Needs you". */
+    expect(screen.getAllByText("Needs you")).toHaveLength(2);
+    expect(screen.queryAllByText("Awaiting Approval")).toHaveLength(0);
+    expect(document.querySelectorAll(".list-status-badge--needs-you")).toHaveLength(2);
     viewportSpy.mockRestore();
   });
 
@@ -958,7 +974,9 @@ describe("ListView", () => {
     });
 
     expect(screen.getByTestId("list-review-budget-exhausted-FN-BUDGET")).toHaveTextContent("Review budget exhausted");
-    expect(screen.getAllByText("Awaiting Approval")).toHaveLength(2);
+    expect(screen.getAllByText("Needs you")).toHaveLength(2);
+    expect(screen.queryAllByText("Awaiting Approval")).toHaveLength(0);
+    expect(document.querySelectorAll(".list-status-badge--needs-you")).toHaveLength(2);
     viewportSpy.mockRestore();
   });
 
@@ -1361,7 +1379,7 @@ describe("ListView", () => {
     expect(screen.queryByText("FN-002")).toBeNull();
 
     // Re-render with empty searchQuery
-    rerender(<ListView tasks={tasks} searchQuery="" onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} />);
+    rerender(<ListView tasks={tasks} searchQuery="" onOpenDetail={vi.fn()} addToast={mockAddToast} onDeleteTask={vi.fn()} onMergeTask={vi.fn(async () => listViewNoopMergeResult())} />);
 
     // Both tasks should be visible again
     expect(screen.getByText("FN-001")).toBeDefined();
@@ -1369,13 +1387,19 @@ describe("ListView", () => {
   });
 
 
-  it("routes desktop List row clicks and keyboard opens to the task popup when enabled", () => {
+  /*
+  FNXC:ListView 2026-09-16-02:53 (FN-442):
+  The `openMobileTasksInPopup` opt-in is gone: an ordinary List open routes to the shared pop-out seam whenever the host
+  provides one. The host seam (`openTaskDetailInWindow`) owns the mobile-drawer fallback, so ListView itself has no
+  viewport branch left to assert.
+  */
+  it("routes desktop List row clicks and keyboard opens to the task popup", () => {
     const viewportSpy = mockDesktopViewport();
     const tasks = [createMockTask({ id: "FN-001", title: "Test Task" })];
     const onOpenDetail = vi.fn();
     const onPopOut = vi.fn();
 
-    renderListView({ tasks, onOpenDetail, onPopOut, openMobileTasksInPopup: true });
+    renderListView({ tasks, onOpenDetail, onPopOut });
 
     const row = screen.getByText("FN-001").closest("tr") as HTMLElement;
     fireEvent.click(row);
@@ -1395,35 +1419,44 @@ describe("ListView", () => {
   });
 
 
-  it("calls onOpenDetail on mobile row click", () => {
+  /*
+  FNXC:ListView 2026-09-16-02:53 (FN-442):
+  Without a pop-out seam a mobile card still hands the task to the host's detail owner with its mobile origin, which is
+  the path the mobile drawer uses.
+  */
+  it("calls onOpenDetail on mobile row click when no pop-out seam is provided", () => {
     const viewportSpy = mockMobileViewport();
     const tasks = [createMockTask({ id: "FN-001", title: "Test Task" })];
     const mockOnOpenDetail = vi.fn();
-    const onPopOut = vi.fn();
 
-    renderListView({ tasks, onOpenDetail: mockOnOpenDetail, onPopOut });
+    renderListView({ tasks, onOpenDetail: mockOnOpenDetail });
 
     const card = document.querySelector('.list-card[data-id="FN-001"]');
     fireEvent.click(card!);
 
     expect(mockOnOpenDetail).toHaveBeenCalledWith(tasks[0], { origin: "list-mobile" });
     expect(mockOnOpenDetail).toHaveBeenCalledTimes(1);
-    expect(onPopOut).not.toHaveBeenCalled();
     expect(fetchTaskDetail).not.toHaveBeenCalled();
     viewportSpy.mockRestore();
   });
 
-  it("routes mobile and tablet List cards to the task popup when enabled", () => {
+  /*
+  FNXC:ListView 2026-09-16-02:53 (FN-442):
+  Tablet is a popup viewport with no setting to enable. The phone stays the single-detail-owner exception: its card open
+  keeps the `list-mobile` origin even when a pop-out seam is available, because that owner carries the back header and the
+  dismissible history entry (see `TaskDetail.swipe-back.test.tsx`).
+  */
+  it("routes tablet List cards to the task popup and keeps phones on their single detail owner", () => {
     const mobileViewportSpy = mockMobileViewport();
     const mobileTasks = [createMockTask({ id: "FN-001", title: "Mobile popup" })];
     const mobileOnOpenDetail = vi.fn();
     const mobileOnPopOut = vi.fn();
 
-    const mobileRender = renderListView({ tasks: mobileTasks, onOpenDetail: mobileOnOpenDetail, onPopOut: mobileOnPopOut, openMobileTasksInPopup: true });
+    const mobileRender = renderListView({ tasks: mobileTasks, onOpenDetail: mobileOnOpenDetail, onPopOut: mobileOnPopOut });
     fireEvent.click(document.querySelector('.list-card[data-id="FN-001"]') as HTMLElement);
 
-    expect(mobileOnPopOut).toHaveBeenCalledWith(mobileTasks[0]);
-    expect(mobileOnOpenDetail).not.toHaveBeenCalled();
+    expect(mobileOnOpenDetail).toHaveBeenCalledWith(mobileTasks[0], { origin: "list-mobile" });
+    expect(mobileOnPopOut).not.toHaveBeenCalled();
     expect(screen.queryByTestId("list-split-detail-content")).toBeNull();
     mobileRender.unmount();
     mobileViewportSpy.mockRestore();
@@ -1433,7 +1466,7 @@ describe("ListView", () => {
     const tabletOnOpenDetail = vi.fn();
     const tabletOnPopOut = vi.fn();
 
-    renderListView({ tasks: tabletTasks, onOpenDetail: tabletOnOpenDetail, onPopOut: tabletOnPopOut, openMobileTasksInPopup: true });
+    renderListView({ tasks: tabletTasks, onOpenDetail: tabletOnOpenDetail, onPopOut: tabletOnPopOut });
     fireEvent.click(document.querySelector('.list-card[data-id="FN-002"]') as HTMLElement);
 
     expect(tabletOnPopOut).toHaveBeenCalledWith(tabletTasks[0]);
@@ -1448,7 +1481,6 @@ describe("ListView", () => {
     const onPauseTask = vi.fn(async () => createMockTask());
     const onUnpauseTask = vi.fn(async () => createMockTask());
     const onRetryTask = vi.fn(async () => createMockTask());
-    const onMoveTask = vi.fn(async () => createMockTask());
     const tasks = [
       createMockTask({ id: "FN-001", title: "Failed retryable", column: "todo", status: "failed" }),
       createMockTask({ id: "FN-002", title: "Paused task", column: "todo", paused: true }),
@@ -1458,7 +1490,7 @@ describe("ListView", () => {
       createMockTask({ id: "FN-007", title: "Progress move", column: "in-progress", steps: [{ id: "s1", title: "done", status: "done" } as any] }),
     ];
 
-    renderListView({ tasks, onOpenDetail, onPauseTask, onUnpauseTask, onRetryTask, onMoveTask });
+    renderListView({ tasks, onOpenDetail, onPauseTask, onUnpauseTask, onRetryTask });
 
     const failedRow = document.querySelector('.list-row[data-id="FN-001"]') as HTMLElement;
     fireEvent.contextMenu(failedRow, { clientX: 40, clientY: 50 });
@@ -1473,18 +1505,31 @@ describe("ListView", () => {
     fireEvent.contextMenu(document.querySelector('.list-row[data-id="FN-002"]') as HTMLElement, { clientX: 40, clientY: 50 });
     expect(screen.getByRole("menuitem", { name: "Unpause" })).toBeInTheDocument();
 
+    /*
+    FNXC:ListContextMenu 2026-09-15-10:40:
+    FN-417: an in-review row no longer offers merge completion — the engine merges automatically and
+    the only manual command is Task Detail's review footer button. Refine still proves the menu is
+    genuinely built for a review row rather than empty.
+    */
     fireEvent.contextMenu(document.querySelector('.list-row[data-id="FN-003"]') as HTMLElement, { clientX: 40, clientY: 50 });
-    expect(screen.getByRole("menuitem", { name: "Merge & Close" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Merge & Close" })).not.toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Refine" })).toBeInTheDocument();
     fireEvent.contextMenu(document.querySelector('.list-row[data-id="FN-006"]') as HTMLElement, { clientX: 40, clientY: 50 });
-    expect(screen.getByRole("menuitem", { name: "Merge & Close" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Merge & Close" })).not.toBeInTheDocument();
 
     fireEvent.contextMenu(document.querySelector('.list-row[data-id="FN-004"]') as HTMLElement, { clientX: 40, clientY: 50 });
     expect(screen.getByRole("menuitem", { name: "Refine" })).toBeInTheDocument();
     expect(onOpenDetail).not.toHaveBeenCalled();
 
+    /*
+    FNXC:TaskRefine 2026-09-14-22:23:
+    FN-400: Refine opens the row's own standalone composer. It must NOT open the task record, which is the symptom
+    being fixed — the record used to mount first and stack the composer on top of it behind a painted veil.
+    */
     fireEvent.click(screen.getByRole("menuitem", { name: "Refine" }));
-    expect(onOpenDetail).toHaveBeenCalledWith(expect.objectContaining({ id: "FN-004" }), { origin: undefined, initialAction: "refine" });
+    expect(screen.getByTestId("task-refine-dialog")).toBeInTheDocument();
+    expect(onOpenDetail).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("task-refine-cancel"));
 
     fireEvent.contextMenu(document.querySelector('.list-row[data-id="FN-004"]') as HTMLElement, { clientX: 40, clientY: 50 });
     expect(screen.queryByRole("menuitem", { name: "Archive" })).not.toBeInTheDocument();
@@ -1495,7 +1540,7 @@ describe("ListView", () => {
     const reviewRow = document.querySelector('.list-row[data-id="FN-003"]') as HTMLElement;
     reviewRow.focus();
     fireEvent.keyDown(reviewRow, { key: "ContextMenu" });
-    expect(screen.getByRole("menuitem", { name: "Merge & Close" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Merge & Close" })).not.toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Refine" })).toBeInTheDocument();
 
     expect(onPauseTask).not.toHaveBeenCalled();
@@ -1510,8 +1555,8 @@ describe("ListView", () => {
       description: "Original list request",
       status: "executing",
       error: "old list failure",
-      steps: [{ id: "old-step", title: "Old work", status: "done" } as Task["steps"][number]],
-      workflowStepResults: [{ stepId: "code-review", status: "failed" } as Task["workflowStepResults"][number]],
+      steps: [{ name: "Old work", status: "done" }],
+      workflowStepResults: [{ workflowStepId: "code-review", workflowStepName: "Code review", status: "failed" }],
     });
     const { status: _status, error: _error, ...confirmedJson } = createMockTask({
       id: "FN-901",
@@ -1548,7 +1593,7 @@ describe("ListView", () => {
       description: "Mobile reset request",
       status: "executing",
       error: "old mobile failure",
-      steps: [{ id: "old-step", title: "Old mobile work", status: "done" } as Task["steps"][number]],
+      steps: [{ name: "Old mobile work", status: "done" }],
     });
     const { status: _status, error: _error, ...confirmedJson } = createMockTask({
       id: "FN-902",
@@ -1627,33 +1672,14 @@ describe("ListView", () => {
     }));
   });
 
-  it("opens Planning Mode from eligible list row menus and omits it for executing rows", async () => {
-    const viewportSpy = mockDesktopViewport();
-    const onPlanningMode = vi.fn();
-    const onOpenDetail = vi.fn();
-    const tasks = [
-      createMockTask({ id: "FN-030", title: "Planning row", description: "Seed from list", column: "triage" }),
-      createMockTask({ id: "FN-031", title: "Executing row", description: "Do not plan", column: "in-progress", status: "executing" }),
-    ];
-
-    renderListView({ tasks, onOpenDetail, onPlanningMode });
-
-    fireEvent.contextMenu(document.querySelector('.list-row[data-id="FN-030"]') as HTMLElement, { clientX: 40, clientY: 50 });
-    fireEvent.click(screen.getByRole("menuitem", { name: "Plan" }));
-    /*
-    FNXC:WorkflowColumns 2026-07-28-00:00 (U12 — R9):
-    Was `null`. That was the LEGACY value: `getTaskPlanningWorkflowId` only returns
-    null when `workflowMode` is false, which production never was. With lanes
-    resolved it returns the task's workflow (here the default), so Planning Mode is
-    seeded with the right workflow — the behaviour operators have always had.
-    */
-    expect(onPlanningMode).toHaveBeenCalledWith("Seed from list", "builtin:coding");
-    expect(onOpenDetail).not.toHaveBeenCalled();
-
-    fireEvent.contextMenu(document.querySelector('.list-row[data-id="FN-031"]') as HTMLElement, { clientX: 40, clientY: 50 });
-    expect(screen.queryByRole("menuitem", { name: "Plan" })).not.toBeInTheDocument();
-    viewportSpy.mockRestore();
-  });
+  /*
+  FNXC:ListContextMenu 2026-09-15-10:40:
+  FN-417 deleted "opens Planning Mode from eligible list row menus and omits it for executing rows".
+  Its subject — the row menu's Plan entry, `ListView`'s `onPlanningMode` prop, and the
+  `getTaskPlanningWorkflowId` helper it exercised — was removed because the engine plans
+  automatically. Absence on list rows at both breakpoints is proven by
+  `task-menu-merge-plan-removed.test.tsx`.
+  */
 
   it("offers Revert on a renamed complete lane", async () => {
     const RENAMED_LANE_PAYLOAD = {
@@ -1772,7 +1798,8 @@ describe("ListView", () => {
     fireEvent.contextMenu(row, { clientX: 40, clientY: 50 });
     fireEvent.click(screen.getByRole("menuitem", { name: "Refine" }));
 
-    expect(onOpenDetail).toHaveBeenCalledWith(expect.objectContaining({ id: "FN-012" }), { origin: undefined, initialAction: "refine" });
+    expect(screen.getByTestId("task-refine-dialog")).toBeInTheDocument();
+    expect(onOpenDetail).not.toHaveBeenCalled();
     viewportSpy.mockRestore();
   });
 
@@ -1872,16 +1899,18 @@ describe("ListView", () => {
       status: "done",
       sourceMetadata: { revertedAt: "2026-08-01T00:00:00.000Z" },
     });
-    const onReviseTask = vi.fn();
+    /* FN-416 case (b): the reverted row's Revise entry is replaced by Restore revert. */
+    const onRestoreRevertTask = vi.fn().mockResolvedValue({ mode: "git", clean: true, restoreCommitSha: "restore-sha" });
 
-    renderListView({ tasks: [reverted], onReviseTask });
+    renderListView({ tasks: [reverted], onRestoreRevertTask });
 
     expect(screen.queryByTestId("list-reverted-tasks")).toBeNull();
     expect(document.querySelector('.list-row[data-id="FN-REVERTED"]')).toHaveTextContent("Reverted");
     fireEvent.contextMenu(document.querySelector('.list-row[data-id="FN-REVERTED"]') as HTMLElement, { clientX: 40, clientY: 50 });
     expect(screen.getByRole("menuitem", { name: "Delete" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("menuitem", { name: "Revise" }));
-    expect(onReviseTask).toHaveBeenCalledWith(reverted);
+    expect(screen.queryByRole("menuitem", { name: "Revise" })).toBeNull();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Restore revert" }));
+    expect(onRestoreRevertTask).toHaveBeenCalledWith("FN-REVERTED", { mode: "auto" });
     viewportSpy.mockRestore();
   });
 
@@ -1903,7 +1932,7 @@ describe("ListView", () => {
     viewportSpy.mockRestore();
   });
 
-  it("keeps reverted completed rows labelled and revisable from mobile long-press", () => {
+  it("keeps reverted completed rows labelled and restorable from mobile long-press", () => {
     vi.useFakeTimers();
     const viewportSpy = mockMobileViewport();
     const reverted = createMockTask({
@@ -1913,9 +1942,10 @@ describe("ListView", () => {
       status: "done",
       sourceMetadata: { revertedAt: "2026-08-01T00:00:00.000Z" },
     });
-    const onReviseTask = vi.fn();
+    /* FN-416 case (h): mobile long-press exposes the same single restore affordance as desktop right-click. */
+    const onRestoreRevertTask = vi.fn().mockResolvedValue({ mode: "git", clean: true, restoreCommitSha: "restore-sha" });
 
-    renderListView({ tasks: [reverted], onReviseTask });
+    renderListView({ tasks: [reverted], onRestoreRevertTask });
 
     const card = document.querySelector('.list-card[data-id="FN-REVERTED-MOBILE"]') as HTMLElement;
     expect(card).toHaveTextContent("Reverted");
@@ -1923,8 +1953,9 @@ describe("ListView", () => {
     act(() => {
       vi.advanceTimersByTime(550);
     });
-    fireEvent.pointerUp(screen.getByRole("menuitem", { name: "Revise" }), { pointerType: "touch", pointerId: 2 });
-    expect(onReviseTask).toHaveBeenCalledWith(reverted);
+    expect(screen.queryByRole("menuitem", { name: "Revise" })).toBeNull();
+    fireEvent.pointerUp(screen.getByRole("menuitem", { name: "Restore revert" }), { pointerType: "touch", pointerId: 2 });
+    expect(onRestoreRevertTask).toHaveBeenCalledWith("FN-REVERTED-MOBILE", { mode: "auto" });
     viewportSpy.mockRestore();
     vi.useRealTimers();
   });
@@ -1944,8 +1975,8 @@ describe("ListView", () => {
     });
     fireEvent.pointerUp(screen.getByRole("menuitem", { name: "Refine" }), { pointerType: "touch", pointerId: 2 });
 
-    expect(onOpenDetail).toHaveBeenCalledWith(expect.objectContaining({ id: "FN-011" }), { origin: "list-mobile", initialAction: "refine" });
-    expect(onOpenDetail).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("task-refine-dialog")).toBeInTheDocument();
+    expect(onOpenDetail).not.toHaveBeenCalled();
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     viewportSpy.mockRestore();
     vi.useRealTimers();
@@ -2128,10 +2159,9 @@ describe("ListView", () => {
 
     const listProps: React.ComponentProps<typeof ListView> = {
       tasks: [createMockTask({ id: "FN-001", column: "backlog", title: "Custom workflow task" })],
-      onMoveTask: vi.fn(async () => createMockTask()),
       onRetryTask: vi.fn(async () => createMockTask()),
       onDeleteTask: vi.fn(async () => createMockTask()),
-      onMergeTask: vi.fn(async () => ({ merged: false })),
+      onMergeTask: vi.fn(async () => ({ merged: false, task: createMockTask(), branch: "main", worktreeRemoved: false, branchDeleted: false })),
       onResetTask: vi.fn(async () => createMockTask()),
       onDuplicateTask: vi.fn(async () => createMockTask()),
       onOpenDetail: vi.fn(),
@@ -2344,7 +2374,6 @@ describe("ListView", () => {
   });
 
   it("shows all workflows in ListView without submitting the aggregate sentinel", async () => {
-    const mockOnQuickCreate = vi.fn().mockResolvedValue({ id: "FN-new" });
     const mockOnNewTask = vi.fn();
     vi.mocked(fetchBoardWorkflows).mockResolvedValue({
       flagEnabled: true,
@@ -2362,7 +2391,6 @@ describe("ListView", () => {
         createMockTask({ id: "FN-002", column: "backlog", title: "Custom task" }),
         createMockTask({ id: "FN-003", column: "triage", title: "Stale workflow task" }),
       ],
-      onQuickCreate: mockOnQuickCreate,
       onNewTask: mockOnNewTask,
     });
 
@@ -2372,7 +2400,8 @@ describe("ListView", () => {
     expect(screen.getByText("Custom task")).toBeInTheDocument();
     expect(screen.getByText("Stale workflow task")).toBeInTheDocument();
     expect(screen.getByTestId("workflow-switcher")).toHaveTextContent("All workflows");
-    expect(screen.queryByTestId(`workflow-switcher-edit-${ALL_WORKFLOWS_BOARD_VIEW_ID}`)).toBeNull();
+    // FN-407: no row carries an edit affordance any more, aggregate or real.
+    expect(screen.queryAllByTestId(/^workflow-switcher-edit-/)).toHaveLength(0);
 
     fireEvent.click(screen.getByRole("button", { name: "New Task" }));
     expect(mockOnNewTask).toHaveBeenCalledWith(undefined);
@@ -2380,9 +2409,12 @@ describe("ListView", () => {
     // Creation from the list runs through the header New Task action; the list owns no composer of its own.
   });
 
-  it("keeps workflow editing contextual in the dropdown and creation in the header", async () => {
-    const onCreateWorkflow = vi.fn();
-    const onOpenWorkflowEditor = vi.fn();
+  /*
+  FN-407: this case proved the dropdown owned workflow editing and creation. Both affordances were removed
+  from the quick switcher, so it now proves the inverse invariant: the List host renders a selection-only
+  switcher and no workflow-lifecycle control anywhere in its action row.
+  */
+  it("keeps the list workflow dropdown selection-only with no lifecycle affordance", async () => {
     vi.mocked(fetchBoardWorkflows).mockResolvedValue({
       flagEnabled: true,
       defaultWorkflowId: "builtin:coding",
@@ -2409,26 +2441,20 @@ describe("ListView", () => {
 
     renderListView({
       tasks: [createMockTask({ id: "FN-001", column: "triage", title: "Workflow task" })],
-      onCreateWorkflow,
-      onOpenWorkflowEditor,
     });
 
     const selector = await screen.findByTestId("workflow-switcher");
     expect(document.querySelector(".list-workflow-create-btn")).toBeNull();
     fireEvent.click(selector);
-    fireEvent.click(screen.getByTestId("workflow-switcher-edit-wf-custom"));
-    expect(onOpenWorkflowEditor).toHaveBeenCalledWith("wf-custom");
-    expect(onCreateWorkflow).not.toHaveBeenCalled();
+    expect(screen.queryAllByTestId(/^workflow-switcher-edit-/)).toHaveLength(0);
+    expect(screen.queryByTestId("workflow-switcher-create")).toBeNull();
 
-    // Workflow creation belongs to the selector that owns workflow lifecycle, never to the list action row.
+    // Workflow lifecycle lives in the Workflows view, never in the list dropdown or its action row.
     expect(screen.queryByRole("button", { name: "New workflow" })).toBeNull();
     expect(within(screen.getByTestId("list-primary-action-cluster")).queryByRole("button", { name: "New workflow" })).toBeNull();
-    expect(onCreateWorkflow).not.toHaveBeenCalled();
   });
 
   it("relocates the list workflow selector and its actions into the header slot", async () => {
-    const onCreateWorkflow = vi.fn();
-    const onOpenWorkflowEditor = vi.fn();
     const headerSlot = document.createElement("div");
     headerSlot.id = "header-workflow-slot";
     headerSlot.className = "header-workflow-slot";
@@ -2462,8 +2488,6 @@ describe("ListView", () => {
           createMockTask({ id: "FN-001", column: "triage", title: "Coding task" }),
           createMockTask({ id: "FN-002", column: "backlog", title: "Custom task" }),
         ],
-        onCreateWorkflow,
-        onOpenWorkflowEditor,
         workflowControlsInHeader: true,
       });
 
@@ -2475,17 +2499,92 @@ describe("ListView", () => {
       expect(document.querySelector(".list-view > .list-workflow-control")).toBeNull();
 
       fireEvent.click(selector);
-      // Creation lives in the selector popover footer; the list action row offers none.
-      expect(screen.getByTestId("workflow-switcher-create")).toBeInTheDocument();
-      expect(screen.getAllByRole("button", { name: "New workflow" })).toHaveLength(1);
+      // FN-407: the relocated popover is selection-only — no creation footer, no per-row edit rail.
+      expect(screen.queryByTestId("workflow-switcher-create")).toBeNull();
+      expect(screen.queryAllByTestId(/^workflow-switcher-edit-/)).toHaveLength(0);
+      expect(screen.queryByRole("button", { name: "New workflow" })).toBeNull();
       fireEvent.click(screen.getByTestId("workflow-switcher-option-wf-custom"));
       await waitFor(() => expect(screen.getByText("Custom task")).toBeInTheDocument());
       expect(screen.queryByText("Coding task")).not.toBeInTheDocument();
-      fireEvent.click(selector);
-      fireEvent.click(screen.getByTestId("workflow-switcher-edit-wf-custom"));
-      expect(onOpenWorkflowEditor).toHaveBeenCalledWith("wf-custom");
     } finally {
       headerSlot.remove();
+    }
+  });
+
+  /*
+  FNXC:WorkflowControls 2026-09-15-01:44:
+  FN-405 symptom regression: List resolved `#header-workflow-slot` once and never retried, so a header
+  slot mounted after the view (or replaced on a breakpoint swap) pinned the control to its inline
+  fallback under the header. The shared resolver must relocate it once the slot exists, exactly once.
+  */
+  it("relocates the list workflow selector when the header slot mounts after the first render", async () => {
+    const headerSlot = document.createElement("div");
+    headerSlot.id = "header-workflow-slot";
+    headerSlot.className = "header-workflow-slot";
+    vi.mocked(fetchBoardWorkflows).mockResolvedValue({
+      flagEnabled: true,
+      defaultWorkflowId: "builtin:coding",
+      workflows: [
+        { id: "builtin:coding", name: "Coding", columns: [{ id: "triage", name: "Triage", flags: { intake: true } }] },
+        { id: "wf-custom", name: "Custom", columns: [{ id: "backlog", name: "Backlog", flags: { intake: true } }] },
+      ],
+      taskWorkflowIds: { "FN-001": "builtin:coding" },
+    });
+    try {
+      renderListView({
+        tasks: [createMockTask({ id: "FN-001", column: "triage", title: "Coding task" })],
+        workflowControlsInHeader: true,
+      });
+
+      await screen.findByTestId("workflow-switcher");
+      await waitFor(() => expect(document.querySelector(".list-view .list-workflow-control")).not.toBeNull());
+
+      document.body.appendChild(headerSlot);
+
+      await waitFor(() => expect(headerSlot.querySelector(".list-workflow-control")).not.toBeNull());
+      expect(headerSlot.contains(screen.getByTestId("workflow-switcher"))).toBe(true);
+      expect(document.querySelector(".list-view .list-workflow-control")).toBeNull();
+      expect(document.querySelectorAll(".list-workflow-control")).toHaveLength(1);
+    } finally {
+      headerSlot.remove();
+    }
+  });
+
+  it("migrates the list workflow selector when the header slot node is replaced", async () => {
+    const mobileSlot = document.createElement("div");
+    mobileSlot.id = "header-workflow-slot";
+    mobileSlot.className = "header-workflow-slot header-workflow-slot--mobile";
+    document.body.appendChild(mobileSlot);
+    const desktopSlot = document.createElement("div");
+    desktopSlot.id = "header-workflow-slot";
+    desktopSlot.className = "header-workflow-slot";
+    vi.mocked(fetchBoardWorkflows).mockResolvedValue({
+      flagEnabled: true,
+      defaultWorkflowId: "builtin:coding",
+      workflows: [
+        { id: "builtin:coding", name: "Coding", columns: [{ id: "triage", name: "Triage", flags: { intake: true } }] },
+        { id: "wf-custom", name: "Custom", columns: [{ id: "backlog", name: "Backlog", flags: { intake: true } }] },
+      ],
+      taskWorkflowIds: { "FN-001": "builtin:coding" },
+    });
+    try {
+      renderListView({
+        tasks: [createMockTask({ id: "FN-001", column: "triage", title: "Coding task" })],
+        workflowControlsInHeader: true,
+      });
+
+      await waitFor(() => expect(mobileSlot.querySelector(".list-workflow-control")).not.toBeNull());
+
+      mobileSlot.remove();
+      document.body.appendChild(desktopSlot);
+
+      await waitFor(() => expect(desktopSlot.querySelector(".list-workflow-control")).not.toBeNull());
+      expect(mobileSlot.querySelector(".list-workflow-control")).toBeNull();
+      expect(document.querySelector(".list-view .list-workflow-control")).toBeNull();
+      expect(document.querySelectorAll(".list-workflow-control")).toHaveLength(1);
+    } finally {
+      mobileSlot.remove();
+      desktopSlot.remove();
     }
   });
 
@@ -2505,7 +2604,6 @@ describe("ListView", () => {
     try {
       renderListView({
         tasks: [createMockTask({ id: "FN-001", column: "triage", title: "Coding task" })],
-        onCreateWorkflow: vi.fn(),
       });
 
       await screen.findByTestId("workflow-switcher");
@@ -2635,7 +2733,7 @@ describe("ListView", () => {
     }
   });
 
-  it("keeps the explicit popup preference above measured tablet split routing", async () => {
+  it("keeps the popup route above measured tablet split routing", async () => {
     const viewportSpy = mockTabletViewport();
     const resizeObserver = installControlledResizeObserver();
     const task = createMockTask({ id: "FN-8754-popup", title: "Popup wins" });
@@ -2643,7 +2741,7 @@ describe("ListView", () => {
     const onPopOut = vi.fn();
 
     try {
-      renderListView({ tasks: [task], onOpenDetail, onPopOut, openMobileTasksInPopup: true });
+      renderListView({ tasks: [task], onOpenDetail, onPopOut });
       await act(async () => resizeObserver.resize(LIST_MINIMUM_SPLIT_LAYOUT_WIDTH + 1));
       fireEvent.click(document.querySelector('tr[data-id="FN-8754-popup"]') as HTMLElement);
 
@@ -4523,7 +4621,7 @@ describe("ListView - Bulk Selection", () => {
 
   it("shows selection checkbox in header", () => {
     const tasks = [createMockTask({ id: "FN-001" })];
-    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} />);
+    render(<ListView tasks={tasks} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} onDeleteTask={vi.fn()} onMergeTask={vi.fn(async () => listViewNoopMergeResult())} />);
     enterBulkEditMode();
 
     const headerCheckbox = screen.getByLabelText("Select all visible tasks");
@@ -4535,7 +4633,7 @@ describe("ListView - Bulk Selection", () => {
       createMockTask({ id: "FN-001" }),
       createMockTask({ id: "FN-002" }),
     ];
-    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} />);
+    render(<ListView tasks={tasks} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} onDeleteTask={vi.fn()} onMergeTask={vi.fn(async () => listViewNoopMergeResult())} />);
     enterBulkEditMode();
 
     const checkboxes = screen.getAllByLabelText(/Select FN-/);
@@ -4549,7 +4647,7 @@ describe("ListView - Bulk Selection", () => {
       createMockTask({ id: "FN-001" }),
       createMockTask({ id: "FN-002" }),
     ];
-    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} />);
+    render(<ListView tasks={tasks} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} onDeleteTask={vi.fn()} onMergeTask={vi.fn(async () => listViewNoopMergeResult())} />);
     enterBulkEditMode();
 
     const checkbox = screen.getByLabelText("Select FN-001");
@@ -4562,7 +4660,7 @@ describe("ListView - Bulk Selection", () => {
     const tasks = [
       createMockTask({ id: "FN-001" }),
     ];
-    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} />);
+    render(<ListView tasks={tasks} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} onDeleteTask={vi.fn()} onMergeTask={vi.fn(async () => listViewNoopMergeResult())} />);
     enterBulkEditMode();
 
     const checkbox = screen.getByLabelText("Select FN-001");
@@ -4580,7 +4678,7 @@ describe("ListView - Bulk Selection", () => {
       createMockTask({ id: "FN-001" }),
       createMockTask({ id: "FN-002" }),
     ];
-    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} />);
+    render(<ListView tasks={tasks} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} onDeleteTask={vi.fn()} onMergeTask={vi.fn(async () => listViewNoopMergeResult())} />);
     enterBulkEditMode();
 
     const selectAllCheckbox = screen.getByLabelText("Select all visible tasks");
@@ -4599,8 +4697,9 @@ describe("ListView - Bulk Selection", () => {
 
     render(
       <ListView
+        onDeleteTask={vi.fn()}
+        onMergeTask={vi.fn(async () => listViewNoopMergeResult())}
         tasks={tasks}
-        onMoveTask={vi.fn()}
         onOpenDetail={vi.fn()}
         addToast={mockAddToast} projectId={TEST_PROJECT_ID}
         availableModels={availableModels}
@@ -4627,8 +4726,9 @@ describe("ListView - Bulk Selection", () => {
 
     render(
       <ListView
+        onDeleteTask={vi.fn()}
+        onMergeTask={vi.fn(async () => listViewNoopMergeResult())}
         tasks={tasks}
-        onMoveTask={vi.fn()}
         onOpenDetail={vi.fn()}
         addToast={mockAddToast} projectId={TEST_PROJECT_ID}
         availableModels={availableModels}
@@ -4650,8 +4750,9 @@ describe("ListView - Bulk Selection", () => {
 
     render(
       <ListView
+        onDeleteTask={vi.fn()}
+        onMergeTask={vi.fn(async () => listViewNoopMergeResult())}
         tasks={tasks}
-        onMoveTask={vi.fn()}
         onOpenDetail={vi.fn()}
         addToast={mockAddToast} projectId={TEST_PROJECT_ID}
         availableModels={availableModels}
@@ -4926,7 +5027,7 @@ describe("ListView - Bulk Selection", () => {
 
   it("persists selection to localStorage", () => {
     const tasks = [createMockTask({ id: "FN-001" })];
-    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} />);
+    render(<ListView tasks={tasks} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} onDeleteTask={vi.fn()} onMergeTask={vi.fn(async () => listViewNoopMergeResult())} />);
     enterBulkEditMode();
 
     const checkbox = screen.getByLabelText("Select FN-001");
@@ -4940,7 +5041,7 @@ describe("ListView - Bulk Selection", () => {
       createMockTask({ id: "FN-001" }),
       createMockTask({ id: "FN-002" }),
     ];
-    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} />);
+    render(<ListView tasks={tasks} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} onDeleteTask={vi.fn()} onMergeTask={vi.fn(async () => listViewNoopMergeResult())} />);
     enterBulkEditMode();
 
     const checkboxes = screen.getAllByLabelText(/Select FN-/);
@@ -4974,8 +5075,9 @@ describe("ListView - Bulk Selection", () => {
 
     render(
       <ListView
+        onDeleteTask={vi.fn()}
+        onMergeTask={vi.fn(async () => listViewNoopMergeResult())}
         tasks={tasks}
-        onMoveTask={vi.fn()}
         onOpenDetail={vi.fn()}
         addToast={mockAddToast} projectId={TEST_PROJECT_ID}
         availableModels={availableModels}
@@ -5052,7 +5154,7 @@ describe("ListView - Bulk Selection", () => {
     const mockedBatchUpdateTaskModels = vi.mocked(batchUpdateTaskModels);
     mockedBatchUpdateTaskModels.mockResolvedValue({ updated: [{ ...tasks[0], thinkingLevel: "high" }], count: 1 });
 
-    render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} />);
+    render(<ListView tasks={tasks} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} onDeleteTask={vi.fn()} onMergeTask={vi.fn(async () => listViewNoopMergeResult())} />);
     enterBulkEditMode();
     await user.click(screen.getByLabelText("Select FN-001"));
 
@@ -5087,7 +5189,7 @@ describe("ListView - Bulk Selection", () => {
       const tasks = [createMockTask({ id: "FN-001" })];
       vi.mocked(fetchNodes).mockResolvedValue([{ id: "node-1", name: "Node One", status: "online" } as never]);
 
-      render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} />);
+      render(<ListView tasks={tasks} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} onDeleteTask={vi.fn()} onMergeTask={vi.fn(async () => listViewNoopMergeResult())} />);
       enterBulkEditMode();
       clickInAct(screen.getByLabelText("Select FN-001"));
 
@@ -5099,7 +5201,7 @@ describe("ListView - Bulk Selection", () => {
       const tasks = [createMockTask({ id: "FN-001" })];
       vi.mocked(fetchNodes).mockResolvedValue([{ id: "node-2", name: "Node Two", status: "offline" } as never]);
 
-      render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} />);
+      render(<ListView tasks={tasks} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} onDeleteTask={vi.fn()} onMergeTask={vi.fn(async () => listViewNoopMergeResult())} />);
       enterBulkEditMode();
       clickInAct(screen.getByLabelText("Select FN-001"));
 
@@ -5111,7 +5213,7 @@ describe("ListView - Bulk Selection", () => {
       const tasks = [createMockTask({ id: "FN-001" })];
       vi.mocked(fetchNodes).mockResolvedValue([{ id: "node-abc", name: "Node ABC", status: "online" } as never]);
 
-      render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} />);
+      render(<ListView tasks={tasks} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} onDeleteTask={vi.fn()} onMergeTask={vi.fn(async () => listViewNoopMergeResult())} />);
       enterBulkEditMode();
       await user.click(screen.getByLabelText("Select FN-001"));
 
@@ -5128,7 +5230,7 @@ describe("ListView - Bulk Selection", () => {
       vi.mocked(fetchNodes).mockResolvedValue([{ id: "node-abc", name: "Node ABC", status: "online" } as never]);
       vi.mocked(batchUpdateTaskModels).mockResolvedValue({ updated: tasks, count: 1 });
 
-      render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} />);
+      render(<ListView tasks={tasks} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} onDeleteTask={vi.fn()} onMergeTask={vi.fn(async () => listViewNoopMergeResult())} />);
       enterBulkEditMode();
       await user.click(screen.getByLabelText("Select FN-001"));
 
@@ -5148,7 +5250,7 @@ describe("ListView - Bulk Selection", () => {
       vi.mocked(fetchNodes).mockResolvedValue([{ id: "node-abc", name: "Node ABC", status: "online" } as never]);
       vi.mocked(batchUpdateTaskModels).mockResolvedValue({ updated: tasks, count: 1 });
 
-      render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} />);
+      render(<ListView tasks={tasks} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} onDeleteTask={vi.fn()} onMergeTask={vi.fn(async () => listViewNoopMergeResult())} />);
       enterBulkEditMode();
       await user.click(screen.getByLabelText("Select FN-001"));
       await user.selectOptions(await screen.findByLabelText("Node Override"), "");
@@ -5164,7 +5266,7 @@ describe("ListView - Bulk Selection", () => {
       const tasks = [createMockTask({ id: "FN-001" })];
       vi.mocked(fetchNodes).mockResolvedValue([{ id: "node-abc", name: "Node ABC", status: "online" } as never]);
 
-      render(<ListView tasks={tasks} onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} />);
+      render(<ListView tasks={tasks} onOpenDetail={vi.fn()} addToast={mockAddToast} projectId={TEST_PROJECT_ID} availableModels={availableModels} onDeleteTask={vi.fn()} onMergeTask={vi.fn(async () => listViewNoopMergeResult())} />);
       enterBulkEditMode();
       clickInAct(screen.getByLabelText("Select FN-001"));
 
@@ -5447,24 +5549,29 @@ describe("ListView - Bulk Selection", () => {
   });
 });
 
-describe("ListView titleless display fallback (FN-044)", () => {
-  const description200 = "d".repeat(200);
-  const description201 = "e".repeat(201);
-  const expectedBoundedDescription = description201.slice(0, 197) + "...";
+/*
+FNXC:TaskTitleDisplay 2026-09-14-17:35:
+FN-391: the desktop table and mobile card render the EXACT 220-character description prefix, with no
+ellipsis. Inverted from the FN-044 197+"..." contract rather than relaxed.
+*/
+describe("ListView titleless display fallback (FN-391)", () => {
+  const description220 = "d".repeat(220);
+  const description221 = "e".repeat(221);
+  const expectedBoundedDescription = description221.slice(0, 220);
 
-  it("uses the shared literal-dot fallback in the desktop table and preserves explicit titles", () => {
+  it("uses the exact 220-character fallback in the desktop table and preserves explicit titles", () => {
     const viewportSpy = mockDesktopViewport();
     try {
       const { container, rerender } = renderListView({
-        tasks: [createMockTask({ id: "FN-044-desktop", title: undefined, description: description201 })],
+        tasks: [createMockTask({ id: "FN-044-desktop", title: undefined, description: description221 })],
       });
-      expect(container.querySelector(".list-title-text")).toHaveTextContent(expectedBoundedDescription);
-      expect(container.querySelector(".list-title-text")?.textContent).toHaveLength(200);
+      expect(container.querySelector(".list-title-text")?.textContent).toBe(expectedBoundedDescription);
+      expect(container.querySelector(".list-title-text")?.textContent).toHaveLength(220);
+      expect(container.querySelector(".list-title-text")?.textContent).not.toContain("...");
 
       const explicitTitle = "t".repeat(201);
       rerender(<ListView
-        tasks={[createMockTask({ id: "FN-044-explicit", title: explicitTitle, description: description201 })]}
-        onMoveTask={vi.fn(async () => createMockTask())}
+        tasks={[createMockTask({ id: "FN-044-explicit", title: explicitTitle, description: description221 })]}
         onRetryTask={vi.fn(async () => createMockTask())}
         onDeleteTask={vi.fn(async () => createMockTask())}
         onMergeTask={vi.fn(async () => ({ merged: false }))}
@@ -5482,17 +5589,16 @@ describe("ListView titleless display fallback (FN-044)", () => {
     }
   });
 
-  it("uses the same fallback in mobile cards, including 200-character and whitespace-title controls", () => {
+  it("uses the same fallback in mobile cards, including 220-character and whitespace-title controls", () => {
     const viewportSpy = mockMobileViewport();
     try {
       const { container, rerender } = renderListView({
-        tasks: [createMockTask({ id: "FN-044-mobile", title: "   ", description: description201 })],
+        tasks: [createMockTask({ id: "FN-044-mobile", title: "   ", description: description221 })],
       });
-      expect(container.querySelector(".list-card-title")).toHaveTextContent(expectedBoundedDescription);
+      expect(container.querySelector(".list-card-title")?.textContent).toBe(expectedBoundedDescription);
 
       rerender(<ListView
-        tasks={[createMockTask({ id: "FN-044-200", title: undefined, description: description200 })]}
-        onMoveTask={vi.fn(async () => createMockTask())}
+        tasks={[createMockTask({ id: "FN-044-220", title: undefined, description: description220 })]}
         onRetryTask={vi.fn(async () => createMockTask())}
         onDeleteTask={vi.fn(async () => createMockTask())}
         onMergeTask={vi.fn(async () => ({ merged: false }))}
@@ -5504,7 +5610,7 @@ describe("ListView titleless display fallback (FN-044)", () => {
         onNewTask={vi.fn()}
         projectId={TEST_PROJECT_ID}
       />);
-      expect(container.querySelector(".list-card-title")).toHaveTextContent(description200);
+      expect(container.querySelector(".list-card-title")?.textContent).toBe(description220);
     } finally {
       viewportSpy.mockRestore();
     }
@@ -5557,13 +5663,14 @@ describe("ListView transferred-to chip", () => {
 
     render(
       <ListView
+        onDeleteTask={vi.fn()}
+        onMergeTask={vi.fn(async () => listViewNoopMergeResult())}
         tasks={[
           transferredTask("FN-2001", { transferredTo: [handoffPointer("proj-stash", "STASH", "STAS-042")] }),
           transferredTask("FN-2002", { transferredTo: [handoffPointer("proj-stash", "STASH", "STAS-042"), handoffPointer("proj-keel", "KEEL", "KEE-007")] }),
           transferredTask("FN-2003"),
         ]}
         projectId={TEST_PROJECT_ID}
-        onMoveTask={vi.fn()}
         onOpenDetail={vi.fn()}
         addToast={vi.fn()}
       />,

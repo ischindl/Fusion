@@ -4,7 +4,6 @@ import { loadStylesCss } from "../../test/cssFixture";
 import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Column } from "../Column";
-import { AlphaBoundary, AlphaProvider } from "../../context/AlphaContext";
 import type { Task, Column as ColumnType } from "@fusion/core";
 
 const { rebuildTaskSpecMock } = vi.hoisted(() => ({ rebuildTaskSpecMock: vi.fn() }));
@@ -34,7 +33,7 @@ vi.mock("../WorktreeGroup", () => ({
 vi.mock("../QuickEntryBox", () => ({
   QuickEntryBox: ({ favoriteProviders, favoriteModels, onToggleFavorite, onToggleModelFavorite, autoExpand, onCreate, onMoveTask, workflowId, workflowOptions }: { favoriteProviders?: string[]; favoriteModels?: string[]; onToggleFavorite?: (provider: string) => void; onToggleModelFavorite?: (modelId: string) => void; autoExpand?: boolean; onCreate?: (input: { description: string; workflowId?: string; column?: string }) => void; onMoveTask?: (id: string, column: string) => Promise<unknown>; workflowId?: string; workflowOptions?: { id: string; columns?: { flags?: { manualIntake?: boolean } }[] }[] }) => {
     const selectedWorkflow = workflowOptions?.find((option) => option.id === workflowId);
-    const showStart = workflowId === "builtin:coding-ideas-v2" || selectedWorkflow?.columns?.[0]?.flags?.manualIntake === true;
+    const showStart = workflowId === "builtin:coding-ideas" || selectedWorkflow?.columns?.[0]?.flags?.manualIntake === true;
     return (
     <div
       data-testid="quick-entry-box"
@@ -45,7 +44,7 @@ vi.mock("../QuickEntryBox", () => ({
       data-auto-expand={autoExpand === false ? "false" : "true"}
     >
       <button type="button" onClick={() => onCreate?.({ description: "Quick task" })}>create</button>
-      {showStart && <button type="button" data-testid="quick-entry-start" onClick={() => onCreate?.({ description: "Started task", workflowId: "builtin:coding-ideas-v2", column: "todo" })}>start</button>}
+      {showStart && <button type="button" data-testid="quick-entry-start" onClick={() => onCreate?.({ description: "Started task", workflowId: "builtin:coding-ideas", column: "todo" })}>start</button>}
       <button type="button" data-testid="quick-entry-move" onClick={() => void onMoveTask?.("FN-created", "todo")}>move</button>
     </div>
     );
@@ -106,6 +105,7 @@ beforeEach(() => {
 const defaultProps = {
   column: "triage" as ColumnType,
   maxConcurrent: 2,
+  maxWorktrees: 2,
   showWorktreeGrouping: false,
   onMoveTask: vi.fn().mockResolvedValue({} as Task),
   onOpenDetail: vi.fn(),
@@ -209,7 +209,7 @@ describe("Column count-flash", () => {
         setHasMore(false);
         setLoading(false);
       }, []);
-      return <Column {...defaultProps} column={"done" as ColumnType} columnName="Done" columnFlags={{ complete: true }} tasks={tasks} totalTaskCount={1_284} serverHasMore={hasMore} serverLoadingMore={loading} onLoadMoreServer={loadMore} />;
+      return <Column {...defaultProps} column={"done" as ColumnType} columnDisplayName="Done" columnFlags={{ complete: true }} tasks={tasks} totalTaskCount={1_284} serverHasMore={hasMore} serverLoadingMore={loading} onLoadMoreServer={loadMore} />;
     }
 
     try {
@@ -677,7 +677,7 @@ describe("Column QuickEntryBox", () => {
 
     await waitFor(() => expect(onQuickCreate).toHaveBeenCalledWith({
       description: "Started task",
-      workflowId: "builtin:coding-ideas-v2",
+      workflowId: "builtin:coding-ideas",
       column: "todo",
     }));
   });
@@ -815,8 +815,8 @@ describe("Column Alpha menu keyboard access", () => {
     const onTogglePlanAutoApprove = vi.fn();
 
     render(
-      <AlphaProvider enabled>
-        <AlphaBoundary>
+      <>
+        <>
           <Column
             {...defaultProps}
             column="triage"
@@ -824,8 +824,8 @@ describe("Column Alpha menu keyboard access", () => {
             planAutoApproveEnabled={false}
             onTogglePlanAutoApprove={onTogglePlanAutoApprove}
           />
-        </AlphaBoundary>
-      </AlphaProvider>,
+        </>
+      </>,
     );
 
     const trigger = screen.getByRole("button", { name: "Planning column actions" });

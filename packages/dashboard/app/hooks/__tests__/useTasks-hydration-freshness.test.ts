@@ -168,8 +168,8 @@ describe("task snapshot lifecycle freshness", () => {
     const populated = {
       ...todo,
       error: "old failure",
-      steps: [{ title: "Old work", description: "stale", status: "done" }],
-      workflowStepResults: [{ stepId: "code-review", status: "failed" }],
+      steps: [{ name: "Old work", status: "done" }],
+      workflowStepResults: [{ workflowStepId: "code-review", workflowStepName: "Code review", status: "failed" }],
       mergeRetries: 3,
     } as Task;
     const confirmed = {
@@ -201,7 +201,7 @@ describe("task snapshot lifecycle freshness", () => {
     const before = {
       ...todo,
       error: "old failure",
-      steps: [{ title: "Old work", description: "stale", status: "done" }],
+      steps: [{ name: "Old work", status: "done" }],
     } as Task;
     const confirmed = {
       id: todo.id,

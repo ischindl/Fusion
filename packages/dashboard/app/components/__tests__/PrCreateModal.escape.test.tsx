@@ -167,12 +167,13 @@ function mountArbiter() {
   const closeTopmostPopup = vi.fn(() => true);
   const toggleNewTask = vi.fn();
   renderHook(() => useDashboardKeyboardShortcuts({
-    toggleQuickChat: vi.fn(),
     toggleTerminal: vi.fn(),
     toggleFiles: vi.fn(),
     toggleSettings: vi.fn(),
     toggleCommandCenter: vi.fn(),
     toggleNewTask,
+    toggleModalVisibility: vi.fn(),
+    toggleChatList: vi.fn(),
     closeTopmostPopup,
   }));
   return { closeTopmostPopup, toggleNewTask };

@@ -590,12 +590,11 @@ export {
   stepToFragmentIr,
   layoutForIr,
 } from "./workflows/workflow-steps-to-ir.js";
-export { DEPRECATED_BUILTIN_WORKFLOW_IDS, RETIRED_BUILTIN_WORKFLOW_SUCCESSORS } from "./types.js";
+export { DEPRECATED_BUILTIN_WORKFLOW_IDS } from "./types.js";
 export {
   BUILTIN_WORKFLOWS,
   BUILTIN_WORKFLOW_ID_PREFIX,
   getBuiltinWorkflow,
-  resolveRetiredBuiltinWorkflowId,
   getRequiredPluginIdForBuiltinWorkflow,
   isBuiltinWorkflowId,
   isBuiltinWorkflowPluginGated,
@@ -624,7 +623,6 @@ export {
   resolveEffectiveSettings,
   resolveEffectiveSettingsDetailed,
   resolveEffectiveSettingsDetailedById,
-  resolveProjectWorkflowModelLaneBaseline,
   resolveEffectiveSettingsById,
   resolveOptionalReviewRevisionBudget,
   resolveEffectivePlannerOversightLevel,
@@ -2652,3 +2650,10 @@ export {
   RECALL_KEYWORD_MAX_TERMS,
 } from "./memory/recall/per-turn-recall.js";
 export type { PerTurnRecallOptions } from "./memory/recall/per-turn-recall.js";
+
+export { HUMAN_PLAN_APPROVAL_MESSAGE_MAX_LENGTH, HUMAN_PLAN_APPROVAL_REASON, HumanPlanApprovalMessageError, HumanPlanApprovalWorkflowError, HUMAN_PLAN_APPROVAL_NOTE_HEADING, formatApprovedHumanPlanNoteSection, resolveHumanPlanApprovalWorkflowSteps, /* FNXC:HumanPlanApproval 2026-09-15-07:30: FN-408 remediation — arming the requirement neutralizes Fast so the card can actually be planned, reviewed and decided. */
+  resolveHumanPlanApprovalExecutionMode, buildHumanPlanApprovalCreationState, clearHumanPlanApprovalDecision, hasCurrentHumanPlanApproval, isHumanPlanApprovalDecidable, isHumanPlanApprovalEnabled, isHumanPlanApprovalPending, /* FNXC:HumanPlanApproval 2026-09-15-06:24: FN-408 execution-entry fence, deliberately separate from the planning-dispatch approval hold. */
+  isTaskBlockedOnHumanPlanApproval, resolveApprovedHumanPlanNote, resolveCurrentHumanPlanApprovalDecision, resolvePlanReviewEpisodeId, sanitizeHumanPlanApprovalMessage } from "./planner/human-plan-approval.js";  // [upstream-merge addition]
+export { TASK_LOG_READ_ONLY_SUFFIX, buildTaskLogReadOnlyMessage, buildTaskNotFoundMessage, isTaskLogWriteRefusal } from "./task-store/task-log-write-refusal.js";  // [upstream-merge addition]
+export { UI_STYLES, DEFAULT_UI_STYLE, isUiStyle } from "./types.js";  // [upstream-merge addition]
+export type { UiStyle } from "./types.js";  // [upstream-merge addition]

@@ -101,7 +101,6 @@ function renderSection(initialForm: SettingsFormState = { defaultThinkingLevel: 
         setForm={setForm}
         models={models}
         projectId="project-1"
-        addToast={vi.fn()}
       />
     );
   }
@@ -203,7 +202,7 @@ describe("ProjectModelsSection Chat default settings", () => {
     function Host() {
       const [form, setForm] = useState(latestForm);
       latestForm = form;
-      return <ProjectModelsSection form={form} setForm={setForm} models={laneModels} projectId="project-1" addToast={vi.fn()} />;
+      return <ProjectModelsSection form={form} setForm={setForm} models={laneModels} projectId="project-1" />;
     }
     render(<Host />);
 

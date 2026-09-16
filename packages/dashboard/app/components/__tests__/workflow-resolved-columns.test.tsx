@@ -119,6 +119,7 @@ function renderBoard(tasks: Task[]) {
       tasks={tasks}
       projectId={PROJECT_ID}
       maxConcurrent={2}
+      maxWorktrees={2}
       showWorktreeGrouping={false}
       onMoveTask={vi.fn(async () => tasks[0]!)}
       onOpenDetail={vi.fn()}
@@ -137,7 +138,6 @@ function renderList(tasks: Task[]) {
     <ListView
       tasks={tasks}
       projectId={PROJECT_ID}
-      onMoveTask={vi.fn(async () => tasks[0]!)}
       onRetryTask={vi.fn(async () => tasks[0]!)}
       onDeleteTask={vi.fn(async () => tasks[0]!)}
       onMergeTask={vi.fn()}

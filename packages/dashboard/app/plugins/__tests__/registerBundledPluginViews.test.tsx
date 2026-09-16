@@ -7,45 +7,45 @@ import {
   registerBundledPluginViews,
 } from "../registerBundledPluginViews";
 
-const MockDependencyGraphDashboardView = () => createElement("div", { "data-testid": "dep-graph-view" });
-const MockCompoundEngineeringDashboardView = () => createElement("div", { "data-testid": "ce-view" });
-const MockCliPrintingPressWizardView = () => createElement("div", { "data-testid": "cli-printing-press-view" });
-const MockCliPrintingPressManageView = () => createElement("div", { "data-testid": "cli-printing-press-manage-view" });
-const MockLinearImportView = () => createElement("div", { "data-testid": "linear-import-view" });
-const MockTodoDashboardView = () => createElement("div", { "data-testid": "todos-view" });
-const MockRoadmapDashboardView = () => createElement("div", { "data-testid": "roadmaps-view" });
-const MockQualityDashboardView = () => createElement("div", { "data-testid": "quality-view" });
+const MockDependencyGraphDashboardView = (_props?: unknown) => createElement("div", { "data-testid": "dep-graph-view" });
+const MockCompoundEngineeringDashboardView = (_props?: unknown) => createElement("div", { "data-testid": "ce-view" });
+const MockCliPrintingPressWizardView = (_props?: unknown) => createElement("div", { "data-testid": "cli-printing-press-view" });
+const MockCliPrintingPressManageView = (_props?: unknown) => createElement("div", { "data-testid": "cli-printing-press-manage-view" });
+const MockLinearImportView = (_props?: unknown) => createElement("div", { "data-testid": "linear-import-view" });
+const MockTodoDashboardView = (_props?: unknown) => createElement("div", { "data-testid": "todos-view" });
+const MockRoadmapDashboardView = (_props?: unknown) => createElement("div", { "data-testid": "roadmaps-view" });
+const MockQualityDashboardView = (_props?: unknown) => createElement("div", { "data-testid": "quality-view" });
 
 vi.mock("@fusion-plugin-examples/dependency-graph/dashboard-view", () => ({
-  DependencyGraphDashboardView: (...args: unknown[]) => MockDependencyGraphDashboardView(...args),
+  DependencyGraphDashboardView: (_props: unknown) => MockDependencyGraphDashboardView(_props),
 }));
 
 vi.mock("@fusion-plugin-examples/compound-engineering/dashboard-view", () => ({
-  CompoundEngineeringDashboardView: (...args: unknown[]) => MockCompoundEngineeringDashboardView(...args),
+  CompoundEngineeringDashboardView: (_props: unknown) => MockCompoundEngineeringDashboardView(_props),
 }));
 
 vi.mock("@fusion-plugin-examples/cli-printing-press/dashboard-view", () => ({
-  CliPrintingPressWizardView: (...args: unknown[]) => MockCliPrintingPressWizardView(...args),
+  CliPrintingPressWizardView: (_props: unknown) => MockCliPrintingPressWizardView(_props),
 }));
 
 vi.mock("@fusion-plugin-examples/cli-printing-press/manage-view", () => ({
-  CliPrintingPressManageView: (...args: unknown[]) => MockCliPrintingPressManageView(...args),
+  CliPrintingPressManageView: (_props: unknown) => MockCliPrintingPressManageView(_props),
 }));
 
 vi.mock("@fusion-plugin-examples/linear-import/dashboard-view", () => ({
-  LinearImportDashboardView: (...args: unknown[]) => MockLinearImportView(...args),
+  LinearImportDashboardView: (_props: unknown) => MockLinearImportView(_props),
 }));
 
 vi.mock("@fusion-plugin-examples/todos/dashboard-view", () => ({
-  TodoDashboardView: (...args: unknown[]) => MockTodoDashboardView(...args),
+  TodoDashboardView: (_props: unknown) => MockTodoDashboardView(_props),
 }));
 
 vi.mock("@fusion-plugin-examples/roadmap/dashboard-view", () => ({
-  RoadmapDashboardView: (...args: unknown[]) => MockRoadmapDashboardView(...args),
+  RoadmapDashboardView: (_props: unknown) => MockRoadmapDashboardView(_props),
 }));
 
 vi.mock("@fusion-plugin-examples/quality/dashboard-view", () => ({
-  QualityDashboardView: (...args: unknown[]) => MockQualityDashboardView(...args),
+  QualityDashboardView: (_props: unknown) => MockQualityDashboardView(_props),
 }));
 
 // The dashboard statically registers bundled views client-side, so these views can

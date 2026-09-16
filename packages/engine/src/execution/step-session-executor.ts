@@ -40,8 +40,8 @@ FNXC:StepSessionExecutor 2026-09-06-09:47 (merge origin/main dd808ed2c6 → main
 Upstream FN-293 renamed the Patchnode heading tools to history tools and added
 `matchStepHeadings`; the union import keeps RUFU-132's recall cue beside it.
 */
-import { buildPerTurnMemoryRecallCue, isFastExecutionMode, isValidProviderInstanceId, resolvePersistAgentThinkingLog, resolveExecutorFallbackModel, resolveTrailingVerificationStepIndex, resolveAuthoredStepHeadingOffset, matchStepHeadings } from "@fusion/core";
-
+/* FNXC:HumanPlanApproval 2026-09-15-06:24: FN-408 shares one note formatter across the standard, Fast, per-step, and reduced-step prompts. */
+import { buildPerTurnMemoryRecallCue, formatApprovedHumanPlanNoteSection, isFastExecutionMode, isValidProviderInstanceId, resolvePersistAgentThinkingLog, resolveExecutorFallbackModel, resolveTrailingVerificationStepIndex, resolveAuthoredStepHeadingOffset, matchStepHeadings } from "@fusion/core";
 export { resolveAuthoredStepHeadingOffset };
 
 import {
@@ -567,6 +567,12 @@ export function buildStepPrompt(
     parts.push(steeringSection, "");
   }
 
+  /* FNXC:HumanPlanApproval 2026-09-15-06:24: FN-408 — every per-step session carries the note the operator attached when approving this plan. */
+  const stepApprovalNote = formatApprovedHumanPlanNoteSection(taskDetail);
+  if (stepApprovalNote) {
+    parts.push(stepApprovalNote, "");
+  }
+
   if (isLastStep && completionSection) {
     parts.push(completionSection, "");
   }
@@ -639,6 +645,9 @@ export function buildFastLanePrompt(
   if (overlapResumeContext) parts.push("", "## Overlap wait synchronization", "", overlapResumeContext);
   const steering = buildStepSteeringCommentsSection(taskDetail.steeringComments);
   if (steering) parts.push("", steering);
+  /* FNXC:HumanPlanApproval 2026-09-15-07:30: FN-408 — the Fast-lane prompt carries the approved operator note too. An armed card is never fast (arming neutralizes Fast), so this only ever fires for a legacy row, but the note formatter stays shared so no session shape can silently drop it. */
+  const fastLaneApprovalNote = formatApprovedHumanPlanNoteSection(taskDetail);
+  if (fastLaneApprovalNote) parts.push("", fastLaneApprovalNote);
 
   parts.push(
     "",
@@ -798,9 +807,17 @@ export function buildReducedStepPrompt(taskDetail: TaskDetail, stepIndex: number
   const hasAttachments = Boolean(attachments && attachments.length > 0);
   const attachmentDir = rootDir ? `${rootDir}/.fusion/tasks/${id}/attachments/` : `.fusion/tasks/${id}/attachments/`;
   const steeringSection = buildStepSteeringCommentsSection(taskDetail.steeringComments);
+  /*
+  FNXC:HumanPlanApproval 2026-09-15-06:24:
+  FN-408 — the reduced prompt exists because the previous attempt hit the context limit, but the
+  operator's approval note is a deliberate human instruction about this exact implementation, so it
+  is preserved here exactly like the overlap-resume context.
+  */
+  const approvalNoteSection = formatApprovedHumanPlanNoteSection(taskDetail);
 
   // Build a minimal prompt that focuses on the step without excessive context
   const parts: string[] = [
+    ...(approvalNoteSection ? [approvalNoteSection, ""] : []),
     `You are executing step ${stepIndex} of task ${id}.`,
     title ? `Task: ${title}` : "",
     "",

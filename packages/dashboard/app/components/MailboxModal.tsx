@@ -1,4 +1,5 @@
 import { ModalCloseButton } from "./ModalCloseButton";
+import { HideInDrawer } from "./ViewDrawer";
 import { ViewHeader } from "./ViewHeader";
 import { ViewActionButton } from "./ViewActionButton";
 import { ViewLayout } from "./ViewLayout";
@@ -42,6 +43,7 @@ import {
   type AllAgentsMailboxResponse,
 } from "../api";
 import { MessageComposer, type NativeStructureCandidate } from "./MessageComposer";
+import { resolveMailboxMessageSubject } from "./mailboxSubject";
 import { MailboxMessageContent } from "./MailboxMessageContent";
 import { MailboxArtifactAttachment } from "./MailboxArtifactAttachment";
 import { MailboxRelatedWorkLink, hasRelatedTaskLink } from "./MailboxRelatedWorkLink";
@@ -864,8 +866,24 @@ export function MailboxModal({
 
   // ── Render ────────────────────────────────────────────────────────────
 
+  /*
+  FNXC:MailboxSubject 2026-09-15-04:40:
+  Operator requirement: a mailbox row shows an AUTHOR and a SUBJECT, never the raw head of the body.
+  Shared with MailboxView through resolveMailboxMessageSubject so the floating mailbox cannot drift;
+  the preview element is skipped entirely when nothing remains after the subject line.
+  */
+  const renderSubjectAndPreview = (msg: Message) => {
+    const { subject, bodyPreview } = resolveMailboxMessageSubject(msg, t);
+    return (
+      <>
+        <div className="mailbox-item-subject" data-testid={`mailbox-item-subject-${msg.id}`}>{subject}</div>
+        {bodyPreview ? <div className="mailbox-item-preview">{bodyPreview}</div> : null}
+      </>
+    );
+  };
+
   return (
-    <FloatingWindow windowKey="mailbox" title={t("mailbox.title", "Mailbox")} ariaLabel={t("mailbox.title", "Mailbox")} onClose={onClose} hideHeader dragHandleSelector=".mailbox-modal .modal-header" className="floating-window--mailbox" defaultSize={{ width: 860, height: 680 }} minSize={{ width: 480, height: 360 }} persistGeometryKey="floating-window:mailbox" suspendGeometryPersistenceOnMobile suspendGeometryPersistenceOnShortViewport closeOnOutsidePointerDown modal testId="mailbox-modal-overlay">
+    <FloatingWindow windowKey="mailbox" title={t("mailbox.title", "Mailbox")} ariaLabel={t("mailbox.title", "Mailbox")} onClose={onClose} hideHeader dragHandleSelector=".mailbox-modal .modal-header" className="floating-window--mailbox" defaultSize={{ width: 860, height: 680 }} minSize={{ width: 480, height: 360 }} suspendGeometryPersistenceOnMobile suspendGeometryPersistenceOnShortViewport closeOnOutsidePointerDown modal testId="mailbox-modal-overlay">
       {/* FNXC:ModalTouchGeometry 2026-07-26-16:22: Mailbox is a long-lived workspace; preserve outside dismissal and keep keyboard positioning inside the hosted panel. */}
       <ViewLayout className="modal modal-lg mailbox-modal" style={containerKeyboardStyle} data-testid="mailbox-modal" contentOwnsScroll header={<>
         {/* FNXC:StandardizedMailboxLayout 2026-09-13-16:55: The floating mailbox shares the same header action and detail-return primitives as the full destination; its long-lived controller and compose draft remain mounted in this host. */}
@@ -981,12 +999,19 @@ export function MailboxModal({
             >
               {isLoading ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
             </button>
-            <ModalCloseButton
-              onClick={onClose}
-              aria-label={t("mailbox.closeAriaLabel", "Close")}
-              title={t("mailbox.closeTitle", "Close")}
-              data-testid="mailbox-close"
-             />
+            {/*
+            FNXC:StandardizedDrawers 2026-09-15-04:56:
+            FN-406: a phone drawer dismisses through its shared handle, scrim, or Escape, so the canonical close is
+            removed from the accessibility tree there. HideInDrawer is false on every other surface.
+            */}
+            <HideInDrawer>
+              <ModalCloseButton
+                onClick={onClose}
+                aria-label={t("mailbox.closeAriaLabel", "Close")}
+                title={t("mailbox.closeTitle", "Close")}
+                data-testid="mailbox-close"
+              />
+            </HideInDrawer>
           </div>}
         />
       </>}
@@ -1063,6 +1088,10 @@ export function MailboxModal({
                   )}
                 </div>
               </div>
+              {/* FNXC:MailboxSubject 2026-09-15-04:40: The detail view states the subject above the participants so an opened mail always shows author AND subject. */}
+              <h3 className="mailbox-message-subject" data-testid="mailbox-message-detail-subject">
+                {resolveMailboxMessageSubject(selectedMessage, t).subject}
+              </h3>
               <div className="mailbox-message-participants">
                 <div className="mailbox-participant">
                   <span className="mailbox-participant-label">{t("mailbox.fromLabel", "From:")}
@@ -1211,12 +1240,34 @@ export function MailboxModal({
               {isMailboxArchivedTab(activeTab) && (
                 <div className="mailbox-list" data-testid="mailbox-archived-list">
                   {archivedInbox?.messages.length === 0 && <div className="mailbox-empty" data-testid="mailbox-archived-empty">{t("mailbox.noArchivedMessages", "No archived messages")}</div>}
-                  {archivedInbox?.messages.map((message) => <button type="button" className="mailbox-item" key={message.id} onClick={() => void handleOpenMessage(message)} data-testid={`mailbox-item-${message.id}`}>{message.content}</button>)}
+                  {archivedInbox?.messages.map((message) => (
+                    <button type="button" className="mailbox-item" key={message.id} onClick={() => void handleOpenMessage(message)} data-testid={`mailbox-item-${message.id}`}>
+                      <div className="mailbox-item-avatar">{message.fromType === "agent" ? <Bot size={16} /> : <User size={16} />}</div>
+                      <div className="mailbox-item-content">
+                        <div className="mailbox-item-header">
+                          <span className="mailbox-item-from">{participantLabel(message.fromId, message.fromType, agentNamesById, t)}</span>
+                          <span className="mailbox-item-time">{formatTimestamp(message.createdAt, t)}</span>
+                        </div>
+                        {renderSubjectAndPreview(message)}
+                      </div>
+                    </button>
+                  ))}
                 </div>
               )}
               {activeTab === "completions" && (
                 <div className="mailbox-list" data-testid="mailbox-completions-list">
-                  {inbox?.messages.filter((message) => message.metadata?.kind === "task-completion-notice").map((message) => <button type="button" className={`mailbox-item ${!message.read ? "unread" : ""}`} key={message.id} onClick={() => void handleOpenMessage(message)} data-testid={`mailbox-item-${message.id}`}>{message.content}</button>)}
+                  {inbox?.messages.filter((message) => message.metadata?.kind === "task-completion-notice").map((message) => (
+                    <button type="button" className={`mailbox-item ${!message.read ? "unread" : ""}`} key={message.id} onClick={() => void handleOpenMessage(message)} data-testid={`mailbox-item-${message.id}`}>
+                      <div className="mailbox-item-avatar">{message.fromType === "agent" ? <Bot size={16} /> : <User size={16} />}</div>
+                      <div className="mailbox-item-content">
+                        <div className="mailbox-item-header">
+                          <span className="mailbox-item-from">{participantLabel(message.fromId, message.fromType, agentNamesById, t)}</span>
+                          <span className="mailbox-item-time">{formatTimestamp(message.createdAt, t)}</span>
+                        </div>
+                        {renderSubjectAndPreview(message)}
+                      </div>
+                    </button>
+                  ))}
                   {inbox && !inbox.messages.some((message) => message.metadata?.kind === "task-completion-notice") && <div className="mailbox-empty" data-testid="mailbox-completions-empty">{t("mailbox.noCompletions", "No task completions yet")}</div>}
                 </div>
               )}
@@ -1254,7 +1305,7 @@ export function MailboxModal({
                           <MailboxKindBadge metadata={msg.metadata} />
                           <span className="mailbox-item-time">{formatTimestamp(msg.createdAt, t)}</span>
                         </div>
-                        <div className="mailbox-item-preview">{msg.content.slice(0, 80)}{msg.content.length > 80 ? "…" : ""}</div>
+                        {renderSubjectAndPreview(msg)}
                       </div>
                       {!msg.read && <div className="mailbox-item-unread-dot" data-testid={`mailbox-unread-dot-${msg.id}`} />}
                     </div>
@@ -1290,7 +1341,7 @@ export function MailboxModal({
                           </span>
                           <span className="mailbox-item-time">{formatTimestamp(msg.createdAt, t)}</span>
                         </div>
-                        <div className="mailbox-item-preview">{msg.content.slice(0, 80)}{msg.content.length > 80 ? "…" : ""}</div>
+                        {renderSubjectAndPreview(msg)}
                       </div>
                     </div>
                   ))}
@@ -1342,7 +1393,7 @@ export function MailboxModal({
                                 <span>{t("mailbox.fromPrefix", "From: {{participant}}", { participant: participantLabel(msg.fromId, msg.fromType, agentNamesById, t) })}</span>
                                 <span>{t("mailbox.toPrefix", "To: {{recipient}}", { recipient: participantLabel(msg.toId, msg.toType, agentNamesById, t) })}</span>
                               </div>
-                              <div className="mailbox-item-preview">{msg.content.slice(0, 80)}{msg.content.length > 80 ? "…" : ""}</div>
+                              {renderSubjectAndPreview(msg)}
                             </div>
                             {!msg.read && <div className="mailbox-item-unread-dot" data-testid={`mailbox-unread-dot-${msg.id}`} />}
                           </div>
@@ -1378,7 +1429,7 @@ export function MailboxModal({
                                 </span>
                                 <span className="mailbox-item-time">{formatTimestamp(msg.createdAt, t)}</span>
                               </div>
-                              <div className="mailbox-item-preview">{msg.content.slice(0, 80)}{msg.content.length > 80 ? "…" : ""}</div>
+                              {renderSubjectAndPreview(msg)}
                             </div>
                           </div>
                         ))}
@@ -1400,7 +1451,7 @@ export function MailboxModal({
                                 </span>
                                 <span className="mailbox-item-time">{formatTimestamp(msg.createdAt, t)}</span>
                               </div>
-                              <div className="mailbox-item-preview">{msg.content.slice(0, 80)}{msg.content.length > 80 ? "…" : ""}</div>
+                              {renderSubjectAndPreview(msg)}
                             </div>
                           </div>
                         ))}

@@ -764,6 +764,16 @@ discretion, per the standing rule in AGENTS.md.
 - **Observed tree/SHA:** deterministic (not a flake-shape): reproduced on pure `origin/main 2adc171f2c` (fresh probe worktree) and on the v0.78.0-beta.1 merge tree — 1 failed / 41 passed both ways.
 - **Root cause:** host `npm` is 12.0.2, whose `npm pack --dry-run --json` emits a keyed object (`{"<name>": {...}}`) while the test parses npm 10/11 array shape (`packed[0].files`) → `TypeError: Cannot read properties of undefined (reading 'files')` at `package-config.test.ts:565`. Upstream CI (older npm) stays green.
 
+---
+
+## Entry: `MissionManager.reconcile` pre-commit switch window (first sighting)
+
+- **File:** `packages/dashboard/app/components/__tests__/MissionManager.reconcile.test.tsx`
+- **Exact tests:** `MissionManager reconcile control > silently discards preview resolution and rejection in the pre-commit switch window` and `MissionManager reconcile control > refuses a same-batch retained-panel apply click so no write reaches the abandoned mission`
+- **Owner:** unowned — first sighting, recorded rather than quarantined because the file's remaining 20 tests are substantial coverage and quarantine is file-level.
+- **Observed tree/SHA:** `0dc3ef5eb` (FN-402). Both cases sit at file lines 179 and 190, i.e. BEFORE the single FN-402 edit in this file at line 263, so the change cannot have run ahead of them.
+- **Observed frequency:** once, and only when the file ran in the same vitest command as 31 other `MissionManager.*` / `MissionInterviewModal.*` / `PlanningModeModal.*` files. Passes deterministically alone and on an immediate rerun of the identical multi-file command.
+
 Verbatim observed failure:
 
 ```
@@ -813,3 +823,19 @@ Received:
 No timeout was widened, no retry added, no assertion relaxed. A SECOND sighting is an ordinary on-sight quarantine with no further discretion, per the standing rule in AGENTS.md.
 
 **Second sighting (2026-09-07) → quarantined.** Reproduced identically (`data-skill-state="unknown"` at `:482`) in a `npx vitest run app/components/__tests__/` subset run on the v0.78.0-beta.4 merge tree (this session, 2026-09-07 ~09:22 UTC; the run failed 4 files, this test among them, while a same-day 2-file run passed it). The file now carries a `quarantinedDashboardTests` exclusion and a `scripts/lib/test-quarantine.json` row (`quarantinedAt: 2026-09-07`); deletion clock runs to 2026-09-21 unless rescued with a root-cause fix.
+
+FAIL dashboard-app-quality-backfill app/components/__tests__/MissionManager.reconcile.test.tsx > MissionManager reconcile control > silently discards preview resolution and rejection in the pre-commit switch window
+AssertionError: expected "vi.fn()" to be called 2 times, but got 1 times
+ ❯ app/components/__tests__/MissionManager.reconcile.test.tsx:179:112
+```
+
+| run | result |
+|---|---|
+| 32 files in one command (all `MissionManager.*`, `MissionInterviewModal.*`, `PlanningModeModal.*`) | **failed** — 2 failed / 317 passed |
+| `MissionManager.reconcile.test.tsx` alone, same tree | **passed** (22/22) |
+| the same 32-file command rerun, same tree | **passed** (319/319) |
+
+Both assertions depend on real-timer `waitFor` windows around deferred preview/apply promises, so a
+loaded worker reads as scheduling pressure rather than a product race. No timeout was widened, no retry
+added, and no assertion relaxed. A SECOND sighting is an ordinary on-sight quarantine with no further
+discretion, per the standing rule in AGENTS.md.

@@ -80,12 +80,22 @@ const defaultChatState: UseChatReturn = {
   streamingText: "",
   streamingThinking: "",
   streamingToolCalls: [],
+  /* Merged UseChatReturn (origin/main merge): engine phase, RUFU-199 handoff, FN-459 edit-draft rescue, and session-pagination defaults. */
+  streamingPhase: null,
+  handoffSession: vi.fn().mockResolvedValue({ session: { id: "session-handoff", agentId: "agent-001", status: "active", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" }, degraded: false }),
+  loadMoreSessions: vi.fn().mockResolvedValue(undefined),
+  hasMoreSessions: false,
+  hasMoreArchivedSessions: false,
+  sessionsLoadingMore: false,
   selectSession: vi.fn(),
   createSession: vi.fn().mockResolvedValue(sessionTwo),
   archiveSession: vi.fn(),
   deleteSession: vi.fn(),
   sendMessage: vi.fn(),
   editMessageAndResend: vi.fn(),
+  // FNXC:ChatMessageEdit 2026-09-16-05:58: FN-459 edit-draft rescue surface; nothing to restore here.
+  editDraftRestore: null,
+  clearEditDraftRestore: vi.fn(),
   stopStreaming: vi.fn(),
   pendingMessages: [],
   clearPendingMessage: vi.fn(),
@@ -146,7 +156,7 @@ assertions are about the height clamp, so their send fixture reports the turn du
 frame the server has sent since RUFU-192 Step 1.
 */
 function durableSend() {
-  return vi.fn((_content: string, _files: File[], callbacks?: useChatModule.ChatSendCallbacks) => {
+  return vi.fn((_content: string, _files?: File[], callbacks?: useChatModule.ChatSendCallbacks) => {
     callbacks?.onPersisted?.(true, "msg-autosize");
   });
 }

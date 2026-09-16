@@ -74,7 +74,7 @@ function appModals(manager: ModalManager) {
       modalManager={manager}
       projectActions={{ handleAddProject: noop, handleSetupComplete: noop, handleModelOnboardingComplete: noop }}
       taskHandlers={{ handleModalCreate: asyncNoop as never, handlePlanningTaskCreated: noop, handlePlanningTasksCreated: noop, handleGitHubImport: noop }}
-      taskOperations={{ moveTask: asyncNoop as never, deleteTask: asyncNoop as never, mergeTask: asyncNoop as never, retryTask: asyncNoop as never, duplicateTask: asyncNoop as never }}
+      taskOperations={{ moveTask: asyncNoop as never, deleteTask: asyncNoop as never, mergeTask: asyncNoop as never, pauseTask: asyncNoop as never, unpauseTask: asyncNoop as never, resetTask: asyncNoop as never, retryTask: asyncNoop as never, duplicateTask: asyncNoop as never }}
       deepLink={{ handleDetailClose: noop }}
       settings={{} as never}
     />

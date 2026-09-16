@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Task, TraitFlags } from "@fusion/core";
+import type { Task, TaskDetail, TraitFlags } from "@fusion/core";
 import { GraphTaskNode } from "./GraphTaskNode.js";
 import { GraphToolbar } from "./GraphToolbar.js";
 import { GraphEdges } from "./edges.js";
@@ -28,7 +28,7 @@ export interface DependencyGraphProps {
   onUpdateTask?: (id: string, updates: { title?: string; description?: string; dependencies?: string[] }) => Promise<Task>;
   onDeleteTask?: (id: string, options?: { removeDependencyReferences?: boolean }) => Promise<Task>;
   onRetryTask?: (id: string) => Promise<Task>;
-  onOpenDetailWithTab?: (task: Task, initialTab: "changes") => void;
+  onOpenDetailWithTab?: (task: Task | TaskDetail, initialTab: "workflow" | "retries" | "changes") => void;
   onOpenMission?: (missionId: string) => void;
   onMoveTask?: (id: string, column: Task["column"], optionsOrPosition?: { preserveProgress?: boolean } | number) => Promise<Task>;
   lastFetchTimeMs?: number;

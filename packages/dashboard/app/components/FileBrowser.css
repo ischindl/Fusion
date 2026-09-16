@@ -708,24 +708,17 @@ Narrow Files windows use the same single-pane list/editor behavior as mobile eve
     align-items: flex-start;
     gap: var(--space-sm);
     min-height: 56px;
-    padding-block: calc(var(--space-md) + var(--space-xs)) var(--space-md);
+    /* FNXC:StandardizedDrawers 2026-09-15-04:56: FN-406 removed the header's own grab bar, so the top block no longer reserves room for it. */
+    padding-block: var(--space-md);
   }
 
   /*
-  FNXC:FileBrowser 2026-06-23-23:25:
-  On phones the full-screen Files modal still uses the header as its drag handle, but the title row can wrap and the action controls consume much of the top bar. Preserve a large touch-safe grab area with touch-action:none and add a subtle handle marker so dragging is discoverable without adding a second toolbar.
+  FNXC:StandardizedDrawers 2026-09-15-04:56:
+  FN-406: this header used to paint its OWN grab bar (a `::before` pseudo-element added 2026-06-23, before the shared
+  ViewDrawerHandle existed). The drawer shell already renders that handle, so the phone sheet showed two stacked bars.
+  The bar is deleted and the handle is owned solely by ViewDrawerHandle; the header keeps its touch-safe grab area
+  (`touch-action: none` plus min-height) because it remains the `dragHandleSelector` for the movable desktop window.
   */
-  .file-browser-modal-header::before {
-    content: "";
-    position: absolute;
-    top: var(--space-xs);
-    left: 50%;
-    width: calc(var(--space-xl) + var(--space-sm));
-    height: calc(var(--space-xs) * 0.75);
-    transform: translateX(-50%);
-    border-radius: var(--radius-pill);
-    background: color-mix(in srgb, var(--text-muted) 44%, transparent);
-  }
 
   .file-browser-modal-header .view-header__title-content {
     overflow: hidden;
@@ -1243,4 +1236,69 @@ tokens as the dialog error block.
   background: none;
   color: inherit;
   cursor: pointer;
+}
+
+/*
+FNXC:FileBrowser 2026-09-15-16:33:
+FN-427 drawer geometry. The phone block above sizes the Files surface on the VIEWPORT (100dvh), which stays correct for
+a phone WITHOUT the `data-mobile-drawers` opt-in because the window is then a full-screen sheet. In drawer presentation
+the real panel is shorter — FloatingWindow.css pins the drawer to `var(--mobile-drawer-block-size)` — so a 100dvh
+surface overflowed its host, pushed the end of `.file-browser-list` under the visible area, and turned the drawer body
+(`overflow: auto`) into a second competing scroller. These rules carry BOTH `--file-browser` and `--mobile-drawer` so
+they beat the generic drawer rules on specificity rather than on stylesheet concatenation order: the surface is bounded
+to its panel (100%), the drawer body stops scrolling, and every box between panel and list keeps `min-height: 0` so
+`.file-browser-list` remains the single bounded scroll owner and its last entry is reachable.
+*/
+html[data-mobile-drawers="true"][data-viewport-mode="mobile"] .floating-window--file-browser.floating-window--mobile-drawer .floating-window__body {
+  min-height: 0;
+  min-block-size: 0;
+  overflow: hidden;
+}
+
+html[data-mobile-drawers="true"][data-viewport-mode="mobile"] .floating-window--file-browser.floating-window--mobile-drawer .modal.file-browser-modal {
+  width: 100%;
+  max-width: 100%;
+  height: 100%;
+  min-height: 0;
+  max-height: 100%;
+}
+
+html[data-mobile-drawers="true"][data-viewport-mode="mobile"] .floating-window--file-browser.floating-window--mobile-drawer .file-browser-body,
+html[data-mobile-drawers="true"][data-viewport-mode="mobile"] .floating-window--file-browser.floating-window--mobile-drawer .file-browser-sidebar,
+html[data-mobile-drawers="true"][data-viewport-mode="mobile"] .floating-window--file-browser.floating-window--mobile-drawer .view-sidebar__panel,
+html[data-mobile-drawers="true"][data-viewport-mode="mobile"] .floating-window--file-browser.floating-window--mobile-drawer .file-browser-sidebar__panel,
+html[data-mobile-drawers="true"][data-viewport-mode="mobile"] .floating-window--file-browser.floating-window--mobile-drawer .file-browser-content,
+html[data-mobile-drawers="true"][data-viewport-mode="mobile"] .floating-window--file-browser.floating-window--mobile-drawer .file-browser {
+  min-height: 0;
+  min-block-size: 0;
+}
+
+html[data-mobile-drawers="true"][data-viewport-mode="mobile"] .floating-window--file-browser.floating-window--mobile-drawer .file-browser-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/*
+FNXC:FileBrowser 2026-09-16-02:23:
+FN-445 completes FN-427. The invariant is the same on BOTH phone hosts: between the drawer panel and the file list
+there is exactly ONE vertical scroll owner, `.file-browser-list`, and no intermediate box is left at `min-height: auto`.
+FN-427 established that only for the standalone `FileBrowserModal` window
+(`.floating-window--file-browser.floating-window--mobile-drawer`), so the Files DESTINATION — hosted by
+`MainContentDrawer` inside `.mobile-drawer__body` — still had the drawer body scrolling against the list and its last
+entries were unreachable. The fill chain for that host lives in FilesView.css; the browser's own chrome/list split is
+declared here, next to the base rules it refines. `overscroll-behavior: contain` keeps a list fling from escalating
+into a drawer-dismissal gesture.
+*/
+html[data-mobile-drawers="true"][data-viewport-mode="mobile"] .mobile-drawer__body .files-view .file-browser-header {
+  flex: 0 0 auto;
+}
+
+html[data-mobile-drawers="true"][data-viewport-mode="mobile"] .mobile-drawer__body .files-view .file-browser-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-block-size: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }

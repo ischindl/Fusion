@@ -31,6 +31,8 @@ import {
   applySchemaBaseline,
   getAppliedMigrations,
   SCHEMA_BASELINE_VERSION,
+  TASK_PAUSE_ACCOUNTING_VERSION,
+  TASK_HUMAN_PLAN_APPROVAL_VERSION,
   WORKFLOW_IR_PIN_AND_LEGACY_ADOPTION_VERSION,
   assertBinaryNotOlderThanDatabase,
   StaleBinarySchemaError,
@@ -123,6 +125,7 @@ import {
   OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION,
   OVERLAP_REVALIDATION_DRAIN_VERSION,
   REVIEW_LANE_LEDGER_VERSION,
+  WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION,
 } from "../../postgres/schema-applier.js";
 import { ProjectPartitionRekeyError, rekeyFallbackProjectPartition } from "../../postgres/migration-stamping.js";
 import type { PluginSchemaInitHook } from "../../postgres/plugin-schema-hook.js";
@@ -199,11 +202,15 @@ describe("schema-applier: immutable migration identities", () => {
     expect(WHITEBOARDS_SCHEMA_VERSION).toBe("0076");
     expect(OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION).toBe("0077");
     expect(OVERLAP_REVALIDATION_DRAIN_VERSION).toBe("0078");
-    /* FNXC:ReviewLaneDispatch 2026-09-09 (STAS-205): the ceiling must sort after the review-lane ledger migration, or an upgraded database boots without the live-reviewer-run index the dispatch sweep depends on. */
-    /* FNXC:ReviewLaneDispatch 2026-09-15-00:24 (STAS-205 landing onto main): renumbered 0077 -> 0079 in this merge because main already recorded 0077/0078 — a version string already in the bookkeeping table marks a migration as applied without running its SQL. */
-    expect(REVIEW_LANE_LEDGER_VERSION).toBe("0079");
-    expect(SCHEMA_BASELINE_VERSION).toBe("0079");
-  });
+    /* FNXC:ReviewLaneDispatch 2026-09-09 (STAS-205): the ledger must sort after every migration that predates it, or an upgraded database boots without the live-reviewer-run index the dispatch sweep depends on. */
+    /* FNXC:ReviewLaneDispatch 2026-09-16-14:10 (merge origin/main): renumbered 0077 -> 0079 -> 0082 — upstream released its own 0079/0080/0081 in this merge, so the ledger takes the next free slot. A version string already in the bookkeeping table marks a migration applied without running its SQL. */
+    expect(WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION).toBe("0079");
+    // FNXC:HumanPlanApproval 2026-09-15-06:24: FN-408's per-card decision column is migration 0080.
+    expect(TASK_HUMAN_PLAN_APPROVAL_VERSION).toBe("0080");
+    // FNXC:TaskPauseAccounting 2026-09-16-06:16: FN-457's durable paused-time columns are migration 0081; the ceiling sits one higher at 0082 so the ledger's self-marked version never trips the stale-binary guard.
+    expect(TASK_PAUSE_ACCOUNTING_VERSION).toBe("0081");
+    expect(SCHEMA_BASELINE_VERSION).toBe("0082");
+    expect(REVIEW_LANE_LEDGER_VERSION).toBe("0082");  });
 
   it("keeps monitor and approval isolation assigned to version 0003", () => {
     expect(MONITOR_APPROVAL_ISOLATION_SCHEMA_VERSION).toBe("0003");
@@ -879,6 +886,9 @@ pgDescribe("schema-applier: VAL-SCHEMA-001 final-schema parity (table counts)", 
 
     FNXC:WhiteboardAlpha 2026-09-10-05:42:
     Subsequent core migrations add step reports, patchnode, project notes, overlap waits, and Whiteboard heads/revisions, bringing the current project total to 120.
+
+    FNXC:WorkflowIdentity 2026-09-14-19:06:
+    Migration 0079 adds separate recovery archives for displaced workflow settings and prompt overrides, bringing the project total to 122.
     */
     /*
     FNXC:PgSchemaApplier 2026-09-09-16:05:
@@ -889,9 +899,12 @@ pgDescribe("schema-applier: VAL-SCHEMA-001 final-schema parity (table counts)", 
 
     FNXC:PgSchemaApplier 2026-09-10-23:14 (merge origin/main 2026-09-10):
     The fork's collision repair adds no table, so the merged total is upstream's 120 exactly.
+
+    FNXC:PgSchemaApplier 2026-09-16-14:10 (merge origin/main):
+    Upstream's workflow-identity/approval/pause migrations add two tables over the 120 that already
+    counted the review-lane ledger table; the merged fresh-baseline total is 122.
     */
-    expect(bySchema.project).toBe(120);
-    /*
+    expect(bySchema.project).toBe(122);    /*
     FNXC:CapacityModel 2026-07-29-08:10 (drop the cross-project cap — table half):
     17, not 18: `central.global_concurrency` is dropped by migration 0037. A fresh
     database still CREATEs it from the historical 0000 baseline and then drops it,
@@ -2094,7 +2107,11 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       0074-0078 migrations merged in from upstream on 2026-09-11 and 2026-09-14. Keep it last in
       these fixtures.
       */
+      WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION,
+      TASK_HUMAN_PLAN_APPROVAL_VERSION,
+      TASK_PAUSE_ACCOUNTING_VERSION,
       REVIEW_LANE_LEDGER_VERSION,
+      /* keep the non-numeric repair identity last: ORDER BY version is TEXT */
       MIXED_0065_REPAIR_VERSION,
     ]);
     expect((await applySchemaBaseline(ctx.db, { pluginHooks: [] })).applied).toBe(false);
@@ -2207,7 +2224,11 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       0074-0078 migrations merged in from upstream on 2026-09-11 and 2026-09-14. Keep it last in
       these fixtures.
       */
+      WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION,
+      TASK_HUMAN_PLAN_APPROVAL_VERSION,
+      TASK_PAUSE_ACCOUNTING_VERSION,
       REVIEW_LANE_LEDGER_VERSION,
+      /* keep the non-numeric repair identity last: ORDER BY version is TEXT */
       MIXED_0065_REPAIR_VERSION,
     ]);
   });
@@ -2453,7 +2474,11 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       0074-0078 migrations merged in from upstream on 2026-09-11 and 2026-09-14. Keep it last in
       these fixtures.
       */
+      WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION,
+      TASK_HUMAN_PLAN_APPROVAL_VERSION,
+      TASK_PAUSE_ACCOUNTING_VERSION,
       REVIEW_LANE_LEDGER_VERSION,
+      /* keep the non-numeric repair identity last: ORDER BY version is TEXT */
       MIXED_0065_REPAIR_VERSION,
     ]);
   });
@@ -2580,7 +2605,11 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       0074-0078 migrations merged in from upstream on 2026-09-11 and 2026-09-14. Keep it last in
       these fixtures.
       */
+      WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION,
+      TASK_HUMAN_PLAN_APPROVAL_VERSION,
+      TASK_PAUSE_ACCOUNTING_VERSION,
       REVIEW_LANE_LEDGER_VERSION,
+      /* keep the non-numeric repair identity last: ORDER BY version is TEXT */
       MIXED_0065_REPAIR_VERSION,
     ]);
   });
@@ -2707,7 +2736,11 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       0074-0078 migrations merged in from upstream on 2026-09-11 and 2026-09-14. Keep it last in
       these fixtures.
       */
+      WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION,
+      TASK_HUMAN_PLAN_APPROVAL_VERSION,
+      TASK_PAUSE_ACCOUNTING_VERSION,
       REVIEW_LANE_LEDGER_VERSION,
+      /* keep the non-numeric repair identity last: ORDER BY version is TEXT */
       MIXED_0065_REPAIR_VERSION,
     ]);
   });
@@ -3052,7 +3085,17 @@ pgDescribe("schema-applier: VAL-SCHEMA-007 plugin-owned tables materialize via s
 
   it("roadmap plugin tables exist after the schema-init hook runs", async () => {
     ctx = await setupFreshDb();
-    await applySchemaBaseline(ctx.db, { pluginHooks: [roadmapPluginInitHook] });
+    /*
+    FNXC:PluginSchemaPerformance 2026-09-14-00:04:
+    This test exercises the Roadmap hook contract, not the full baseline applier; seed only the namespaces
+    the hook requires so the slow schema-applier file does not spend a full migration pass on hook-only coverage.
+    */
+    await ctx.db.execute(sql.raw(`
+      CREATE SCHEMA project;
+      CREATE SCHEMA central;
+      CREATE TABLE central.projects (id text PRIMARY KEY);
+    `));
+    await roadmapPluginInitHook.init(ctx.db);
     const rows = (await ctx.db.execute(sql`
       SELECT table_name FROM information_schema.tables
       WHERE table_schema = 'project'
@@ -3180,7 +3223,12 @@ pgDescribe("schema-applier: VAL-SCHEMA-007 plugin-owned tables materialize via s
 
   it("roadmap FK cascade: deleting a roadmap removes its milestones and features", async () => {
     ctx = await setupFreshDb();
-    await applySchemaBaseline(ctx.db, { pluginHooks: [roadmapPluginInitHook] });
+    await ctx.db.execute(sql.raw(`
+      CREATE SCHEMA project;
+      CREATE SCHEMA central;
+      CREATE TABLE central.projects (id text PRIMARY KEY);
+    `));
+    await roadmapPluginInitHook.init(ctx.db);
     await ctx.db.execute(sql`
       INSERT INTO project.roadmaps (id, project_id, title, created_at, updated_at)
       VALUES ('rm1', 'schema-test', 'R', '2026-01-01', '2026-01-01')

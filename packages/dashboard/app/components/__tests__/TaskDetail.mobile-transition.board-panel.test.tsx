@@ -186,7 +186,6 @@ vi.mock("../../components/PlanningModeModal", () => ({ PlanningModeModal: () => 
 vi.mock("../../components/AgentsView", () => ({ AgentsView: () => <div data-testid="agents-view">Agents</div> }));
 vi.mock("../../components/ResearchView", () => ({ ResearchView: () => <div data-testid="research-view">Research</div> }));
 vi.mock("../../components/EvalsView", () => ({ EvalsView: () => <div data-testid="evals-view">Evals</div> }));
-vi.mock("../../components/QuickChatFAB", () => ({ QuickChatFAB: () => null }));
 vi.mock("../../components/ScriptsModal", () => ({ ScriptsModal: () => null }));
 vi.mock("../../components/TerminalModal", () => ({ TerminalModal: () => null }));
 vi.mock("../../components/FileBrowser", () => ({ FileBrowserModal: () => null }));
@@ -381,7 +380,7 @@ describe("Board main-panel task-detail — mobile transition class gating (MainC
     });
     expect(document.documentElement).toHaveAttribute("data-viewport-mode", "mobile");
     expect(document.querySelector(".task-detail-main-panel--mobile-transition")).toBeInTheDocument();
-    expect(readAppFile("styles.css")).toMatch(/html\[data-viewport-mode="mobile"\] \.task-detail-main-panel--mobile-transition\s*\{[^}]*animation: alpha-mobile-drawer-rise-in/);
+    expect(readAppFile("styles.css")).toMatch(/html\[data-viewport-mode="mobile"\] \.task-detail-main-panel--mobile-transition\s*\{[^}]*animation: mobile-drawer-rise-in/);
   });
 
   it("does NOT apply the mobile transition class to the board main-panel surface on desktop", async () => {

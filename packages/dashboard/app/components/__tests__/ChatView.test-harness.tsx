@@ -80,6 +80,12 @@ export const defaultChatState: UseChatReturn = {
   streamingText: "",
   streamingThinking: "",
   streamingToolCalls: [],
+  /*
+  FNXC:ChatPhaseStatus 2026-09-16 (origin/main merge):
+  streamingPhase (RUFU-188) became REQUIRED on UseChatReturn — the transient engine
+  phase the streaming placeholder reads. The shared default is "no phase".
+  */
+  streamingPhase: null,
   selectSession: vi.fn(),
   createSession: vi.fn().mockResolvedValue({ id: "session-new", agentId: "__fn_agent__", status: "active", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" } satisfies ChatSessionInfo),
   archiveSession: vi.fn(),
@@ -94,6 +100,13 @@ export const defaultChatState: UseChatReturn = {
   sendMessage: vi.fn(),
   editMessageAndResend: vi.fn(),
   /*
+  FNXC:ChatMessageEdit 2026-09-16-05:58:
+  FN-459. A rejected edit rescues the typed correction through these two fields instead of losing it
+  when the reload remounts the target row. The shared default is "nothing to restore".
+  */
+  editDraftRestore: null,
+  clearEditDraftRestore: vi.fn(),
+  /*
   FNXC:ChatStreamCancel 2026-08-23-23:20:
   stopStreaming resolves a durable cancellation promise, and ChatView's `/new` and `/clear` handlers
   chain `.then(...)` on it. A bare vi.fn() returns undefined and throws inside the handler, so the
@@ -104,6 +117,15 @@ export const defaultChatState: UseChatReturn = {
   clearPendingMessage: vi.fn(),
   loadMoreMessages: vi.fn(),
   hasMoreMessages: false,
+  /*
+  FNXC:ChatSessionPagination 2026-09-16 (origin/main merge):
+  Session-list pagination (loadMoreSessions/hasMore*) and sessionsLoadingMore became
+  REQUIRED on UseChatReturn; the shared double carries the exhausted-list defaults.
+  */
+  loadMoreSessions: vi.fn().mockResolvedValue(undefined),
+  hasMoreSessions: false,
+  hasMoreArchivedSessions: false,
+  sessionsLoadingMore: false,
   searchQuery: "",
   setSearchQuery: vi.fn(),
   filteredSessions: [],

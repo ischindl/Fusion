@@ -118,6 +118,8 @@ export {
   explainOverseer,
   fetchPlannerInterventionTimeline,
   revertTask,
+  // FN-416: restore a reverted task's revert.
+  restoreTaskRevert,
   approvePlan,
   rejectPlan,
 } from "./tasks/tasks-lifecycle.js";
@@ -136,6 +138,10 @@ export type {
   TaskTransferDisposition,
   TaskTransferResult,
   HandoffTargetStatus,
+  RestoreTaskRevertGitResult,
+  RestoreTaskRevertAiResult,
+  RestoreTaskRevertResult,
+  RestoreTaskRevertOptions,
 } from "./tasks/tasks-lifecycle.js";
 
 export {

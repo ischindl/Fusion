@@ -100,22 +100,32 @@ function blockPresent(partial: unknown, index: number | undefined, kind: Kind): 
 export function createAssistantStreamCapture(sinks: CaptureSinks): { handleAgentEvent(event: unknown): void } {
   const normalizer = createStreamingDeltaNormalizer();
   /** Per (kind, block index): the raw text handed to the sink, and how much of it is still unvalidated. */
-  const ledger = new Map<Kind, Map<number, { delivered: string; provisional: string }>>();
-  let lastPartial: object | undefined;
-  let lastTextPartial: unknown;
+  const ledger = new Map<Kind, Map<number, { delivered: string; provisional: string; consumed: number }>>();
   let lastTextIndex: number | undefined;
   let sawText = false;
+  let pendingBoundary = false;
+  /*
+  FNXC:AssistantTextCapture 2026-09-16-15:05 (#3620 merge port of upstream FN-431):
+  A cross-message boundary is decided by message lifecycle (reset arms `pendingBoundary`) and by
+  block restart (advance's replaced-block branch reports `restarted`), NOT by the identity of the
+  `partial` object. Providers that hand a COPY of the shared block per event (copied snapshots)
+  changed identity on every delta: the old identity test cleared the ledger each event and the
+  already-delivered prefix was handed out again — the duplicated-stream-prefix shape FN-431 fixes.
+  Reused-partial-across-messages needs no identity test either: that shape is exactly what
+  advance's confirmed-prefix comparison detects, content-based and length-independent.
+  */
   const reset = () => {
     ledger.clear();
     normalizer.noteBoundary("text"); normalizer.noteBoundary("thinking");
-    lastPartial = undefined;
+    if (sawText) pendingBoundary = true;
   };
-  const handOff = (kind: Kind, text: string, partial: unknown, index: number) => {
+  const handOff = (kind: Kind, text: string, partial: unknown, index: number, restarted = false) => {
     if (!text) return;
     if (kind === "text") {
-      if (sawText && (partial !== lastTextPartial || index !== lastTextIndex)) sinks.onTextBlockBoundary?.();
+      if (sawText && (index !== lastTextIndex || pendingBoundary || restarted)) sinks.onTextBlockBoundary?.();
+      pendingBoundary = false;
       sinks.onText?.(text);
-      sawText = true; lastTextPartial = partial; lastTextIndex = index;
+      sawText = true; lastTextIndex = index;
     } else sinks.onThinking?.(text);
   };
   /**
@@ -127,13 +137,58 @@ export function createAssistantStreamCapture(sinks: CaptureSinks): { handleAgent
    */
   const advance = (kind: Kind, partial: unknown, index: number | undefined, authoritative: string, delta?: string, hasBlock = true) => {
     if (index === undefined) return;
-    const state = ledger.get(kind)?.get(index) ?? { delivered: "", provisional: "" };
+    const state = ledger.get(kind)?.get(index) ?? { delivered: "", provisional: "", consumed: 0 };
     const save = () => {
       let byIndex = ledger.get(kind);
       if (!byIndex) { byIndex = new Map(); ledger.set(kind, byIndex); }
       byIndex.set(index, state);
     };
     const blockScoped = partial as PartialShape;
+
+    /*
+    FNXC:AssistantTextCapture 2026-09-16-15:05 (#3620 merge port of upstream FN-431):
+    Delta accounting is POSITIONAL, mirroring upstream's raw cursors. `consumed` counts only raw
+    delta bytes; the snapshot's growth never advances it. A delta whose bytes sit at
+    [consumed, consumed + delta.length) inside the block is the delta stream advancing — counted
+    once here, wherever it later lands (a growth span that already carries it, or a redelivery
+    suppressed below). A delta OUTSIDE that window names text the block never received after
+    everything consumed: a new message reusing the block index with IDENTICAL text (upstream's
+    "two consecutive Claude responses" shape) lives there, and a content-only `includes` test
+    would silently drop it. No `partial` object identity is consulted anywhere — copied-snapshot
+    providers change identity every event and must keep one ledger.
+    */
+    /*
+    FNXC:AssistantTextCapture 2026-09-16-15:05 (#3620 merge port of upstream FN-431):
+    Delta accounting is POSITIONAL like upstream's raw cursors: `consumed` is the DELTA STREAM's
+    declared position — it advances for every delta that matches the window [consumed,
+    consumed + delta.length) inside the block, whether or not the bytes are emitted (growth spans
+    already carried them). Suppression then compares the window against what was actually handed
+    out (`delivered`), not against text content: content `includes` cannot distinguish
+    "redelivered chunk" from "a second identical message reusing the block index" — upstream's
+    two-consecutive-Claude-responses shape proved those apart only positionally. A delta OUTSIDE
+    the window is new text, full stop. No `partial` object identity is consulted anywhere:
+    copied-snapshot providers change identity every event and must keep one ledger.
+    */
+    let outsideWindow = false;
+    if (delta !== undefined && hasBlock) {
+      const windowMatches = authoritative.length >= state.consumed + delta.length
+        && authoritative.slice(state.consumed, state.consumed + delta.length) === delta;
+      if (windowMatches) {
+        const windowStart = state.consumed;
+        state.consumed += delta.length;
+        const overlap = Math.min(delta.length, Math.max(0, state.delivered.length - windowStart));
+        if (overlap >= delta.length) { save(); return; }
+        if (overlap > 0) {
+          const tail = delta.slice(overlap);
+          state.delivered += tail; state.provisional += tail;
+          save();
+          handOff(kind, tail, partial, index);
+          return;
+        }
+      } else {
+        outsideWindow = true;
+      }
+    }
 
     // 1. No authority exists for this block at all — the partialFree face: a mock runtime that passes the
     // delta ITSELF as `partial`, and the plugin/cross-runtime CLI bridge that omits `partial` entirely. There
@@ -176,9 +231,9 @@ export function createAssistantStreamCapture(sinks: CaptureSinks): { handleAgent
     // re-hand the whole text and duplicate it.
     const confirmed = state.delivered.slice(0, state.delivered.length - state.provisional.length);
     if (authoritative && !authoritative.startsWith(confirmed)) {
-      state.delivered = authoritative; state.provisional = "";
+      state.delivered = authoritative; state.provisional = ""; state.consumed = 0;
       save();
-      handOff(kind, normalizer.normalize(blockScoped, index, authoritative, kind), partial, index);
+      handOff(kind, normalizer.normalize(blockScoped, index, authoritative, kind), partial, index, true);
       return;
     }
 
@@ -188,8 +243,16 @@ export function createAssistantStreamCapture(sinks: CaptureSinks): { handleAgent
     // redelivery; once delivered text is fully block-confirmed, a delta contained in it was necessarily
     // delivered already. Any span wrongly held here is recovered by the terminal block text.
     if (!delta) return;
-    if (state.provisional ? state.delivered.endsWith(delta) : state.delivered.includes(delta)) return;
-    const span = normalizeStreamingDelta(state.delivered, delta);
+    /*
+    An outside-window delta names text the block never received after everything consumed — a
+    replaced block or a new message reusing the index. `normalizeStreamingDelta` content-dedups
+    against the delivered text, which would strip such a delta to nothing when the new message is
+    IDENTICAL to the previous one (upstream's two-Claude-responses shape). It takes the same
+    presentation-repair path growth spans use; the string dedup is reserved for in-stream deltas.
+    */
+    const span = outsideWindow
+      ? normalizer.normalize(blockScoped, index, delta, kind)
+      : normalizeStreamingDelta(state.delivered, delta);
     state.delivered += delta; state.provisional += delta;
     save();
     normalizer.noteEmitted(kind, span, partial, index);
@@ -221,9 +284,6 @@ export function createAssistantStreamCapture(sinks: CaptureSinks): { handleAgent
         const update = record(outer.assistantMessageEvent);
         if (!update) return;
         const partial = update.partial;
-        const partialObject = partial !== null && typeof partial === "object" ? partial as object : undefined;
-        if (partialObject && lastPartial && partialObject !== lastPartial) reset();
-        if (partialObject) lastPartial = partialObject;
         const index = indexOf(update.contentIndex);
         const type = update.type;
         const kind: Kind | undefined = typeof type === "string" && type.startsWith("text_") ? "text" : typeof type === "string" && type.startsWith("thinking_") ? "thinking" : undefined;
