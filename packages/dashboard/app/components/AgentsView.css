@@ -248,12 +248,22 @@ the detail pane landed in the token-thin middle track and rendered crushed while
   min-height: 0;
 }
 
+/*
+FNXC:AgentsView 2026-09-16-21:40:
+The base rule used to force `display: flex; flex-direction: column` with its own
+`border-right` — leftover from the pre-ViewSidebar era when this class styled a bespoke
+sidebar element. `.agents-split-sidebar` is now the ViewSidebar ROOT element (the host
+className lands on it), and ViewSidebar owns the row layout: panel + accessible resize
+separator, with the separator's ::after supplying the boundary line like every other
+consumer. A column root made `.view-sidebar__panel` a content-sized column item inside
+the clipped rail (operator report: the 2378px-tall agent list in a 745px rail was
+unscrollable — overflow hidden left no scroll container). The host rule keeps only the
+host-side constraints; the boundary line comes from the separator, not a doubled border.
+Enforced by agent-css-classes.test.ts (`never re-declares flex-direction`).
+*/
 .agents-split-sidebar {
   min-height: 0;
   overflow: hidden;
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
 }
 
 /*
@@ -1594,7 +1604,6 @@ AgentsView uses the measured SVG overlay as the single connector system so paren
   }
 
   .agents-split-sidebar {
-    border-right: 0;
     width: 100%;
     flex: 1;
     min-height: 0;

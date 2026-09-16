@@ -53,6 +53,22 @@ describe("Agent CSS classes", () => {
     expect(viewContent).toContain("min-height: 0");
   });
 
+  /*
+  FNXC:AgentsView 2026-09-16-21:40:
+  Regression guard for the unscrollable agent list: `.agents-split-sidebar` is the
+  ViewSidebar ROOT element, and a host `flex-direction: column` override turns
+  `.view-sidebar__panel` into a content-sized column item inside the clipped rail —
+  the 2378px list in a 745px rail had no scroll container at all. The row layout
+  (panel + separator) is ViewSidebar's contract; this ratchet is a code-construct
+  guard on the rule block, not on prose.
+  */
+  it("keeps the agents rail on ViewSidebar's row layout so the agent list can scroll", () => {
+    const rail = extractRuleBlock(".agents-split-sidebar");
+    expect(rail).not.toBe("");
+    expect(rail).not.toContain("flex-direction");
+    expect(rail).not.toContain("border-right");
+  });
+
   it("removes legacy standalone mobile back-row classes from AgentsView", () => {
     expect(hasClass(".agents-mobile-back-row")).toBe(false);
     expect(hasClass(".agents-mobile-back-btn")).toBe(false);
