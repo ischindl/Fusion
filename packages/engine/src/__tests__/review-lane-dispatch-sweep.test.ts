@@ -7,6 +7,7 @@ import {
   DEFAULT_REVIEW_MAX_ATTEMPTS,
   DEFAULT_REVIEW_START_LATENCY_MS,
   DEFAULT_REVIEW_TICK_MS,
+  ReviewDispatchSweep,
 } from "../scheduling/review-dispatch-sweep.js";
 
 const TASK_ID = "FN-SWEEP";
@@ -35,6 +36,7 @@ function attempt(overrides: Partial<ReviewerRunRow> = {}): ReviewerRunRow {
     reworkRound: 1,
     startedAt: ENTERED_AT,
     completedAt: null,
+    invalidatedAt: null,
     ...overrides,
   };
 }
@@ -61,8 +63,14 @@ function reviewResult(status: WorkflowStepResult["status"], supersededAt: string
   };
 }
 
-function decide(rows: ReviewerRunRow[], overrides: Partial<Task> = {}, activeRun: AgentHeartbeatRun | null = null) {
+function decide(
+  rows: ReviewerRunRow[],
+  overrides: Partial<Task> = {},
+  activeRun: AgentHeartbeatRun | null = null,
+  extra: { reviewEnteredAt?: number | null } = {},
+) {
   return classifyReviewCard({
+    reviewEnteredAt: extra.reviewEnteredAt ?? null,
     task: reviewTask(overrides),
     reviewerFound: true,
     rows,
@@ -95,6 +103,34 @@ describe("review-lane dispatch sweep classification", () => {
     });
     expect(decision.bucket).toBe("awaiting-handoff");
     expect(decision.dispatch).toBe(false);
+  });
+
+  /*
+  FNXC:ReviewLaneDispatch 2026-09-16-16:20 (#3619 review E):
+  The handoff grace keys on the committed `task:entered-review` event, not `task.updatedAt`: an
+  unrelated edit (a comment) advances updatedAt, so a `updatedAt`-keyed grace could defer reviewer
+  work indefinitely on a card that keeps receiving edits. Pre-0082 cards have no event and still
+  fall back to updatedAt.
+  */
+  it("grace keys on the entry event, not on a comment bumping updatedAt", () => {
+    const bumpedRow = reviewTask({ updatedAt: new Date(NOW - 5_000).toISOString() });
+    expect(decide([], bumpedRow, null, { reviewEnteredAt: NOW - 60_000 }).dispatch).toBe(true);
+    const staleRow = reviewTask({ updatedAt: new Date(NOW - 60_000).toISOString() });
+    expect(decide([], staleRow, null, { reviewEnteredAt: NOW - 5_000 }).bucket).toBe("awaiting-handoff");
+    expect(decide([], staleRow, null, { reviewEnteredAt: null }).dispatch).toBe(true);
+  });
+
+  /*
+  FNXC:ReviewLaneDispatch 2026-09-16-16:20 (#3619 review D):
+  Supersession marks history without completing it — an invalidated row keeps `completedAt = null`.
+  The live-row predicate excludes it explicitly: with a corroborating session present the old
+  predicate classified the card `review-in-flight` forever, pointing at an attempt that had
+  already been replaced.
+  */
+  it("does not treat an invalidated attempt as live work", () => {
+    const decision = decide([attempt({ invalidatedAt: ENTERED_AT })], {}, heartbeatRun(TASK_ID));
+    expect(decision.bucket).toBe("stalled-attempt");
+    expect(decision.dispatch).toBe(true);
   });
 
   it("leaves a corroborated live review alone however old its ledger row looks", () => {
@@ -181,6 +217,104 @@ describe("review-lane dispatch sweep classification", () => {
   it("still reviews a card whose enabled step list was never set", () => {
     expect(decide([], { enabledWorkflowSteps: undefined }).dispatch).toBe(true);
     expect(decide([], { enabledWorkflowSteps: [CODE_REVIEW_GROUP_ID] }).dispatch).toBe(true);
+  });
+
+  /*
+  FNXC:ReviewLaneDispatch 2026-09-16-13:22 (#3619 review G2):
+  A `skipped` code-review step result is an authored decision only when a named authority skipped
+  it (`bypassedBy`, FN-7720). A plain skipped result — the `notRunReason` shape — is the MISSING
+  review the sweep exists to rescue, and the merge gate refuses to approve on it for the same
+  reason. The earlier predicate counted every non-pending status as a verdict, hiding exactly these
+  cards from both authorities at once.
+  */
+  it("dispatches the review a notRunReason skip left undone", () => {
+    const notRun: WorkflowStepResult = {
+      ...reviewResult("skipped"),
+      notRunReason: "recovery-re-home" as WorkflowStepResult["notRunReason"],
+    };
+    const decision = decide([], { workflowStepResults: [notRun] });
+    expect(decision.bucket).toBe("never-dispatched");
+    expect(decision.dispatch).toBe(true);
+  });
+
+  it("treats an operator-bypassed skipped review as a recorded decision", () => {
+    const bypassed: WorkflowStepResult = { ...reviewResult("skipped"), bypassedBy: "operator-a" };
+    expect(decide([], { workflowStepResults: [bypassed] }).bucket).toBe("verdict-recorded");
+  });
+
+  it("counts an authored failed review as recorded — remediation, not a second dispatch, owns it", () => {
+    expect(decide([], { workflowStepResults: [reviewResult("failed")] }).bucket).toBe("verdict-recorded");
+    expect(
+      decide([], { workflowStepResults: [reviewResult("advisory_failure")] }).bucket,
+    ).toBe("verdict-recorded");
+  });
+
+  /*
+  FNXC:ReviewLaneDispatch 2026-09-16-13:22 (#3619 review C6):
+  Both pause authorities land in E2 before any dispatch logic — the engine's `paused` and the
+  human's `userPaused` both mean "do not start reviewer work".
+  */
+  it("reports a user pause as a pause too, not just the engine pause", () => {
+    const decision = classifyReviewCard({
+      task: reviewTask({ userPaused: true }),
+      reviewerFound: true,
+      rows: [],
+      activeRun: null,
+      now: NOW,
+      graceMs: DEFAULT_REVIEW_GRACE_MS,
+      startLatencyMs: DEFAULT_REVIEW_START_LATENCY_MS,
+      maxAttempts: DEFAULT_REVIEW_MAX_ATTEMPTS,
+    });
+    expect(decision.bucket).toBe("excluded-paused");
+    expect(decision.dispatch).toBe(false);
+  });
+
+  /*
+  FNXC:ReviewLaneDispatch 2026-09-16-13:22 (#3619 review C6):
+  Global/engine pause suppresses the whole pass — reviewer sessions are engine work. The fake
+  store makes any candidate scan a test failure (it throws), so a gate regression surfaces as a
+  rejected tick rather than a silent dispatch.
+  */
+  for (const pauseKey of ["globalPause", "enginePaused"] as const) {
+    it(`${pauseKey} suppresses the entire sweep pass`, async () => {
+      const store = {
+        getSettings: async () => ({ [pauseKey]: true }),
+        listTasks: async () => {
+          throw new Error(`${pauseKey} tick must not scan candidates`);
+        },
+      };
+      const sweep = new ReviewDispatchSweep({
+        store: store as never,
+        agentStore: { listAgents: async () => [] } as never,
+        heartbeatMonitor: { executeHeartbeat: async () => {} } as never,
+      });
+      const result = await sweep.tick(new Date(NOW));
+      expect(result.dispatched).toEqual([]);
+    });
+  }
+
+  /*
+  FNXC:ReviewLaneDispatch 2026-09-16-16:20 (#3619 review A / greptile P1):
+  An unreadable settings row ABORTS the pass: the heartbeat source this sweep dispatches through
+  does not re-check `enginePaused` downstream, so dispatching while pause state is unknown could
+  start reviewer work against an operator pause. The old fail-open catch made a transient DB
+  failure silently dispatch; the tick must now reject instead.
+  */
+  it("aborts the pass when the pause state cannot be read", async () => {
+    const store = {
+      getSettings: async () => {
+        throw new Error("settings row unreachable");
+      },
+      listTasks: async () => {
+        throw new Error("unverified pause state must not scan candidates");
+      },
+    };
+    const sweep = new ReviewDispatchSweep({
+      store: store as never,
+      agentStore: { listAgents: async () => [] } as never,
+      heartbeatMonitor: { executeHeartbeat: async () => {} } as never,
+    });
+    await expect(sweep.tick(new Date(NOW))).rejects.toThrow("settings row unreachable");
   });
 
   it("reports a pause as a pause even when no reviewer exists", () => {

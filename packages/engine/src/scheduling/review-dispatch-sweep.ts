@@ -4,6 +4,7 @@ import {
   invalidateReviewerRunsForTask,
   isEphemeralAgent,
   listReviewerRunsForTask,
+  latestTaskEnteredReviewAt,
   openReviewerRunForTask,
   resolveLifecycleColumns,
   resolveWorkflowIrForTaskWithProvenance,
@@ -40,6 +41,10 @@ export const DEFAULT_REVIEW_TICK_MS = 15_000;
  * A card can be mid-handoff when a tick observes it (the completion handoff moves it into
  * review in its own transaction). Two ticks is enough to settle and is 2,880x below the
  * 86,400,000 ms observation threshold this sweep replaces.
+ * FNXC:ReviewLaneDispatch 2026-09-16-13:22 (#3619 review C5): the dispatch bound this
+ * grace window feeds is grace + at most one tick — a card that enters right after a tick
+ * waits up to 30 s + 15 s = 45 s, not one interval. The grace settles handoffs; the tick
+ * cadence bounds discovery.
  */
 export const DEFAULT_REVIEW_GRACE_MS = 30_000;
 
@@ -104,6 +109,8 @@ export interface ReviewDispatchTickResult {
 interface ReviewDispatchCandidate {
   task: Task;
   boardId: string;
+  /** Committed `task:entered-review` time, or null for pre-0082 entries (updatedAt is the fallback then). */
+  enteredReviewAt: string | null;
 }
 
 export interface ReviewDispatchSweepOptions {
@@ -147,6 +154,8 @@ export function classifyReviewCard(input: {
   graceMs: number;
   startLatencyMs: number;
   maxAttempts: number;
+  /** Committed review-entry time (epoch ms); null falls back to `task.updatedAt` for pre-0082 entries. */
+  reviewEnteredAt?: number | null;
 }): ReviewDispatchDecision {
   const skip = (bucket: ReviewDispatchClass): ReviewDispatchDecision => ({
     bucket,
@@ -155,12 +164,19 @@ export function classifyReviewCard(input: {
     nextRound: 1,
   });
 
-  if (input.task.paused === true) return skip("excluded-paused");
+  /*
+  FNXC:ReviewLaneDispatch 2026-09-16-13:22 (#3619 review C6):
+  Every pause authority lands in the same bucket before any dispatch logic: `paused` (engine/
+  automation pause) and `userPaused` (the human's own hold) are both "do not start reviewer work".
+  */
+  if (input.task.paused === true || input.task.userPaused === true) return skip("excluded-paused");
   if (!input.reviewerFound) return skip("no-reviewer");
   if (isCodeReviewExcluded(input.task)) return skip("excluded-review-level");
 
   const rows = input.rows;
-  const live = rows.find((row) => row.completedAt === null) ?? null;
+  // An invalidated attempt is history, not work in flight: supersession clears `invalidated_at`
+  // but never completes the row, so the live predicate must exclude it explicitly (#3619 review D).
+  const live = rows.find((row) => row.completedAt === null && row.invalidatedAt === null) ?? null;
   const nextRound = rows.length + 1;
 
   /*
@@ -190,7 +206,15 @@ export function classifyReviewCard(input: {
     return { bucket: "stalled-attempt", dispatch: true, supersedeFirst: false, nextRound };
   }
 
-  if (input.now - Date.parse(input.task.updatedAt) < input.graceMs) return skip("awaiting-handoff");
+  /*
+  FNXC:ReviewLaneDispatch 2026-09-16-16:20 (#3619 review E):
+  The handoff grace keys on the committed `task:entered-review` event, NOT `task.updatedAt`:
+  any unrelated edit (a comment, a description bump) advances updatedAt, so a card that keeps
+  receiving edits could sit in the grace window forever and never dispatch. updatedAt remains
+  the fallback only for cards that entered review before migration 0082 wrote no event.
+  */
+  const enteredMs = input.reviewEnteredAt ?? Date.parse(input.task.updatedAt);
+  if (input.now - enteredMs < input.graceMs) return skip("awaiting-handoff");
   return { bucket: "never-dispatched", dispatch: true, supersedeFirst: false, nextRound: 1 };
 }
 
@@ -207,16 +231,27 @@ function isCodeReviewExcluded(task: Task): boolean {
 
 /**
  * The lane's own authority on "review happened": a non-superseded code-review step result that
- * carries an outcome. Superseded results (a newer commit invalidated them) and `pending` results
- * (dispatched, verdict never delivered) must not count, or the sweep would call an unanswered
- * review a completed one.
+ * carries an authored outcome.
+ * FNXC:ReviewLaneDispatch 2026-09-16-13:22 (#3619 review G2):
+ * `skipped` counts only when a named authority skipped the step (`bypassedBy`, FN-7720) — that is
+ * a recorded human decision. A `skipped` with a `notRunReason` and no bypass is the MISSING-review
+ * shape this sweep exists to rescue: the merge gate refuses to approve on it for exactly the same
+ * reason, so treating it as a verdict would hide the card from both authorities at once.
+ * `failed`/`advisory_failure` are authored review outcomes: their re-run belongs to the bounded
+ * remediation authority (failed-pre-merge-step recovery, FN-7720 bypass), and dispatching a second
+ * review here would race it. Superseded results (a newer commit invalidated them) and `pending`
+ * results (dispatched, verdict never delivered) must not count, or the sweep would call an
+ * unanswered review a completed one.
  */
 function hasRecordedCodeReviewVerdict(task: Task): boolean {
   return (task.workflowStepResults ?? []).some(
     (result) =>
       result.workflowStepId === CODE_REVIEW_GROUP_ID &&
       result.supersededAt == null &&
-      result.status !== "pending",
+      (result.status === "passed" ||
+        result.status === "failed" ||
+        result.status === "advisory_failure" ||
+        (result.status === "skipped" && result.bypassedBy != null)),
   );
 }
 
@@ -259,6 +294,23 @@ export class ReviewDispatchSweep {
   private async runPass(now: Date): Promise<ReviewDispatchTickResult> {
     const classes = emptyClasses();
     const dispatched: string[] = [];
+    /*
+    FNXC:ReviewLaneDispatch 2026-09-16-13:22 (#3619 review C6):
+    Global/engine pause suppresses the whole pass — starting a reviewer session is engine work,
+    and dispatching reviewer sessions while the operator has paused the engine would violate the
+    pause the same way executing a task would. Unpause needs no event: the next tick re-reads
+    settings and proceeds.
+
+    FNXC:ReviewLaneDispatch 2026-09-16-16:20 (#3619 review A / greptile P1):
+    An unreadable settings row ABORTS the pass — dispatching while unable to prove the engine is
+    not paused would start reviewer sessions against an operator pause, and the heartbeat source
+    this sweep uses does not re-check `enginePaused` downstream. A transient DB failure costs at
+    most one skipped tick; a stray session during a pause costs the operator's guarantee.
+    */
+    const settings = await this.options.store.getSettings();
+    if (settings?.globalPause || settings?.enginePaused) {
+      return { dispatched, classes };
+    }
     const candidates = await this.findReviewLaneCandidates();
     if (candidates.length === 0) return { dispatched, classes };
 
@@ -275,6 +327,7 @@ export class ReviewDispatchSweep {
         activeRun: activeRun && activeRun.agentId === reviewer?.id ? activeRun : null,
         reviewerFound: reviewer !== null,
         now: now.getTime(),
+        reviewEnteredAt: candidate.enteredReviewAt === null ? null : Date.parse(candidate.enteredReviewAt),
         graceMs: this.options.graceMs ?? DEFAULT_REVIEW_GRACE_MS,
         startLatencyMs: this.options.startLatencyMs ?? DEFAULT_REVIEW_START_LATENCY_MS,
         maxAttempts: this.options.maxAttempts ?? DEFAULT_REVIEW_MAX_ATTEMPTS,
@@ -290,8 +343,10 @@ export class ReviewDispatchSweep {
   }
 
   /**
-   * Oldest activity first: the sweep dispatches one card per tick, so the card that has waited
-   * longest for review must be the one it acts on.
+   * Oldest review ENTRY first: the sweep dispatches one card per tick, so the card that has
+   * waited longest for review must be the one it acts on. Entry time is the committed
+   * `task:entered-review` event, not `task.updatedAt` — unrelated edits must not reshuffle the
+   * queue (#3619 review E). Pre-0082 cards have no event and fall back to updatedAt.
    *
    * Each candidate carries the board id its resolution named, because the dispatch has to record
    * it and cannot recover it later: `WorkflowIr` has no id field (an id present on an IR is the
@@ -303,7 +358,9 @@ export class ReviewDispatchSweep {
     const tasks = await this.options.store.listTasks({ slim: true, includeArchived: false });
     const candidates: ReviewDispatchCandidate[] = [];
     for (const task of tasks) {
-      if (task.paused === true) continue;
+      // Paused cards stay candidates: the classifier buckets them as excluded-paused (E2), so a
+      // paused card remains VISIBLE in the sweep's accounting instead of silently vanishing from
+      // it (#3619 review G4 — pre-filtering here made the E2 bucket unreachable from a real tick).
       const provenance = await resolveWorkflowIrForTaskWithProvenance(this.options.store, task.id, undefined, selectionCache);
       const lanes = resolveLifecycleColumns(provenance.ir);
       // An unresolvable review lane is not a licence to assume the historical column name.
@@ -313,9 +370,13 @@ export class ReviewDispatchSweep {
         task,
         // A default-fallback card has no selected board; "" is the ledger column's own no-board value.
         boardId: provenance.workflowId ?? "",
+        enteredReviewAt: await latestTaskEnteredReviewAt(this.options.store, task.id),
       });
     }
-    return candidates.sort((a, b) => Date.parse(a.task.updatedAt) - Date.parse(b.task.updatedAt));
+    return candidates.sort(
+      (a, b) =>
+        Date.parse(a.enteredReviewAt ?? a.task.updatedAt) - Date.parse(b.enteredReviewAt ?? b.task.updatedAt),
+    );
   }
 
   /**
@@ -369,12 +430,25 @@ export class ReviewDispatchSweep {
         triggerDetail: "review-lane dispatch sweep",
       })
       .catch((error: unknown) => {
-        void this.closeUnfinishedRun(
+        this.closeUnfinishedRun(
           task.id,
           opened.id!,
           reviewer.id,
           `dispatch-failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        ).catch((closeError: unknown) => {
+          /*
+          FNXC:ReviewLaneDispatch 2026-09-16-13:22 (#3619 review C7):
+          The close is best-effort AND its own failure must not escape as an unhandled rejection
+          (this catch handler sits on a promise with no upstream handler). If the close itself
+          failed, the row stays live and the stalled-attempt path supersedes it on a later tick —
+          bookkeeping never crashes the engine.
+          */
+          log.error(
+            `Review run ${opened.id} for ${task.id} could not be closed after a dispatch failure: ${
+              closeError instanceof Error ? closeError.message : String(closeError)
+            }`,
+          );
+        });
       });
     return true;
   }
@@ -386,13 +460,19 @@ export class ReviewDispatchSweep {
    * Closing it as a failed attempt keeps the attempt attributable AND lets a later tick re-dispatch.
    */
   private async closeUnfinishedRun(taskId: string, runId: string, reviewerAgentId: string, reason: string): Promise<void> {
-    await completeReviewerRunForTask(this.options.store, {
+    const transitioned = await completeReviewerRunForTask(this.options.store, {
       id: runId,
       taskId,
       status: "failed",
       at: new Date().toISOString(),
       failureReasons: [reason],
     });
+    if (!transitioned) {
+      // The attempt settled between the dispatch rejection and this close (e.g. the sweep already
+      // superseded it). One-way completion keeps the earlier record; nothing to repair.
+      log.debug(`Review run ${runId} for ${taskId} had already settled — late close skipped (${reason})`);
+      return;
+    }
     log.warn(`Closed review run ${runId} for ${taskId} as failed (${reason}, reviewer ${reviewerAgentId})`);
   }
 

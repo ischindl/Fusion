@@ -24,6 +24,12 @@ export interface ReviewerRunRow {
   reworkRound: number;
   startedAt: string;
   completedAt: string | null;
+  /**
+   * Set by supersession. Invalidation marks history without completing it, so the live-row
+   * predicate needs this column explicitly: an invalidated row keeps `completedAt = null` and
+   * must not be mistaken for the live attempt (#3619 review round 3).
+   */
+  invalidatedAt: string | null;
 }
 
 export interface OpenReviewerRunInput {
@@ -45,9 +51,11 @@ export interface OpenReviewerRunInput {
 }
 
 /**
- * One live row per (project, task, reviewer agent): the partial unique index
- * `task_reviewer_runs_live_unique` rejects a second open attempt instead of letting a
- * second sweep tick double-dispatch. A conflict returns `created: false`, which the
+ * One live row per (project, task): the partial unique index `task_reviewer_runs_live_unique`
+ * rejects a second unfinished attempt instead of letting a second sweep tick double-dispatch.
+ * "Live" means neither completed nor invalidated — an attempt that can still become a verdict —
+ * which is the same definition the sweep classifier uses, so an index conflict and a classifier
+ * "already dispatched" verdict can never disagree. A conflict returns `created: false`, which the
  * caller reads as "already dispatched" rather than as an error.
  */
 export async function openReviewerRunInTransaction(
@@ -61,7 +69,7 @@ export async function openReviewerRunInTransaction(
     VALUES
       (${input.projectId}, ${id}, ${input.taskId}, ${input.boardId}, 'running', ${input.reworkRound},
        ${input.reviewerAgentId}, ${input.at}, ${input.at}, ${input.at})
-    ON CONFLICT (project_id, task_id, reviewer_agent_id) WHERE invalidated_at IS NULL DO NOTHING
+    ON CONFLICT (project_id, task_id) WHERE invalidated_at IS NULL AND completed_at IS NULL DO NOTHING
     RETURNING id
   `) as unknown as Array<{ id: string }>;
   return { created: rows.length > 0, id: rows[0]?.id ?? null };
@@ -73,13 +81,24 @@ export async function completeReviewerRunInTransaction(
   input: {
     projectId: string;
     id: string;
+    /** The completion is additionally bound to this task: a caller that pairs a card with another card's run id completes nothing (#3619 review round 3). */
+    taskId: string;
     status: Exclude<ReviewerRunStatus, "running">;
     at: string;
     summary?: string | null;
     failureReasons?: string[] | null;
   },
-): Promise<void> {
-  await tx.execute(sql`
+): Promise<boolean> {
+  /*
+  FNXC:ReviewLaneDispatch 2026-09-16-13:22 (#3619 review C4):
+  Completion is a ONE-WAY transition, guarded in the UPDATE itself: only a still-running, still-
+  live row may take a terminal status. Without the guard, a late or duplicate completion (a stalled
+  reviewer session whose callback finally lands after the sweep already superseded the attempt and
+  dispatched a replacement) could overwrite a recorded approve/revise verdict or resurrect an
+  invalidated attempt — rewriting review history from a straggling callback. `false` means the row
+  had already left the running state; callers treat it as an already-settled attempt, not an error.
+  */
+  const rows = await tx.execute(sql`
     UPDATE project.task_reviewer_runs
        SET status = ${input.status},
            completed_at = ${input.at},
@@ -87,7 +106,13 @@ export async function completeReviewerRunInTransaction(
            summary = COALESCE(${input.summary ?? null}, summary),
            failure_reasons = COALESCE(${input.failureReasons ? JSON.stringify(input.failureReasons) : null}, failure_reasons)
      WHERE project_id = ${input.projectId} AND id = ${input.id}
-  `);
+       AND task_id = ${input.taskId}
+       AND status = 'running'
+       AND invalidated_at IS NULL
+       AND completed_at IS NULL
+    RETURNING id
+  `) as unknown as Array<{ id: string }>;
+  return rows.length > 0;
 }
 
 /**
@@ -105,7 +130,10 @@ export async function openReviewerRunForTask(
   );
 }
 
-/** Store-level counterpart of `completeReviewerRunInTransaction` for engine callers. */
+/**
+ * Store-level counterpart of `completeReviewerRunInTransaction` for engine callers.
+ * Returns whether this call performed the transition (`false` = the attempt had already settled).
+ */
 export async function completeReviewerRunForTask(
   store: TaskStore,
   input: {
@@ -116,9 +144,9 @@ export async function completeReviewerRunForTask(
     summary?: string | null;
     failureReasons?: string[] | null;
   },
-): Promise<void> {
+): Promise<boolean> {
   const { layer, projectId } = requireProjectId(store, "completeReviewerRunForTask", input.taskId);
-  await layer.transactionImmediate((tx: DbTransaction) => completeReviewerRunInTransaction(tx, { ...input, projectId }));
+  return layer.transactionImmediate((tx: DbTransaction) => completeReviewerRunInTransaction(tx, { ...input, projectId }));
 }
 
 /**
@@ -194,9 +222,10 @@ export async function findLiveReviewerRun(
   input: { projectId: string; taskId: string },
 ): Promise<ReviewerRunRow | null> {
   const rows = await tx.execute(sql`
-    SELECT id, task_id, reviewer_agent_id, status, rework_round, started_at, completed_at
+    SELECT id, task_id, reviewer_agent_id, status, rework_round, started_at, completed_at, invalidated_at
       FROM project.task_reviewer_runs
-     WHERE project_id = ${input.projectId} AND task_id = ${input.taskId} AND invalidated_at IS NULL
+     WHERE project_id = ${input.projectId} AND task_id = ${input.taskId}
+       AND invalidated_at IS NULL AND completed_at IS NULL
      ORDER BY started_at DESC
      LIMIT 1
   `) as unknown as Array<Record<string, unknown>>;
@@ -213,7 +242,7 @@ export async function listReviewerRuns(
   input: { projectId: string; taskId: string },
 ): Promise<ReviewerRunRow[]> {
   const rows = await tx.execute(sql`
-    SELECT id, task_id, reviewer_agent_id, status, rework_round, started_at, completed_at
+    SELECT id, task_id, reviewer_agent_id, status, rework_round, started_at, completed_at, invalidated_at
       FROM project.task_reviewer_runs
      WHERE project_id = ${input.projectId} AND task_id = ${input.taskId}
      ORDER BY started_at, id
@@ -231,5 +260,6 @@ function reviewerRunRow(row: Record<string, unknown> | undefined): ReviewerRunRo
     reworkRound: Number(row.rework_round ?? 0),
     startedAt: String(row.started_at),
     completedAt: row.completed_at == null ? null : String(row.completed_at),
+    invalidatedAt: row.invalidated_at == null ? null : String(row.invalidated_at),
   };
 }

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { sql } from "drizzle-orm";
 import type { DbTransaction } from "../postgres/data-layer.js";
+import type { TaskStore } from "../store.js";
 
 export type TaskDeletedLifecyclePayload = {
   taskId: string;
@@ -62,4 +63,31 @@ export async function appendTaskLifecycleEventInTransaction(
     VALUES (${input.projectId}, ${seq}, ${eventId}, ${input.eventType}, ${input.taskId}, ${input.occurredAt}, ${input.occurredAt}, ${JSON.stringify(input.payload)}::jsonb)
   `);
   return { seq, eventId };
+}
+
+/*
+FNXC:ReviewLaneDispatch 2026-09-16-16:20 (#3619 review E):
+The dispatch sweep must not key grace/ordering on `task.updatedAt` — an unrelated edit (a comment,
+a description bump) advances that timestamp, so a card awaiting dispatch could be held in the grace
+window indefinitely or shuffled backwards in the queue. The committed `task:entered-review` event is
+the durable entry timestamp both checks key on. Returns null for cards that entered the review lane
+before migration 0082 introduced the event; callers fall back to `updatedAt` for those.
+*/
+export async function latestTaskEnteredReviewAt(store: TaskStore, taskId: string): Promise<string | null> {
+  const layer = store.asyncLayer;
+  if (!layer) throw new Error(`latestTaskEnteredReviewAt requires the async data layer (task ${taskId})`);
+  const projectId = layer.projectId;
+  if (!projectId) throw new Error(`latestTaskEnteredReviewAt requires a project-bound data layer (task ${taskId})`);
+  const rows = await layer.transactionImmediate(async (tx: DbTransaction) => {
+    return await tx.execute(sql`
+      SELECT occurred_at
+        FROM project.task_lifecycle_events
+       WHERE project_id = ${projectId}
+         AND task_id = ${taskId}
+         AND event_type = 'task:entered-review'
+       ORDER BY seq DESC
+       LIMIT 1
+    `) as unknown as Array<{ occurred_at: string }>;
+  });
+  return rows[0]?.occurred_at ?? null;
 }

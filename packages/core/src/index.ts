@@ -3236,3 +3236,9 @@ export { UI_STYLES, DEFAULT_UI_STYLE, isUiStyle } from "./types.js";  // [upstre
 export { BUILTIN_WORKFLOW_MODEL_LANE_SETTINGS } from "./workflows/builtin-workflow-settings.js";  // [upstream-merge addition]
 export type { PauseAccountingTask } from "./tasks/task-pause-accounting.js";  // [upstream-merge addition]
 export type { HumanPlanApprovalState, HumanPlanApprovalDecision, HumanPlanApprovalDecisionKind, UiStyle } from "./types.js";  // [upstream-merge addition]
+
+export {
+  appendTaskLifecycleEventInTransaction,
+  latestTaskEnteredReviewAt,
+} from "./task-store/lifecycle-outbox.js";
+export type { TaskLifecycleEventInput, TaskEnteredReviewLifecyclePayload } from "./task-store/lifecycle-outbox.js";

@@ -2657,3 +2657,9 @@ export { HUMAN_PLAN_APPROVAL_MESSAGE_MAX_LENGTH, HUMAN_PLAN_APPROVAL_REASON, Hum
 export { TASK_LOG_READ_ONLY_SUFFIX, buildTaskLogReadOnlyMessage, buildTaskNotFoundMessage, isTaskLogWriteRefusal } from "./task-store/task-log-write-refusal.js";  // [upstream-merge addition]
 export { UI_STYLES, DEFAULT_UI_STYLE, isUiStyle } from "./types.js";  // [upstream-merge addition]
 export type { UiStyle } from "./types.js";  // [upstream-merge addition]
+
+export {
+  appendTaskLifecycleEventInTransaction,
+  latestTaskEnteredReviewAt,
+} from "./task-store/lifecycle-outbox.js";
+export type { TaskLifecycleEventInput, TaskEnteredReviewLifecyclePayload } from "./task-store/lifecycle-outbox.js";

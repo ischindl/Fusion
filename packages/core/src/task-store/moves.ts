@@ -1269,7 +1269,15 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
       CLI bundle all funnel through this function, which is why the guarantee lives here
       rather than at any call site; `moveSource` makes the path attributable from data.
       */
-      if (toColumn === (moveLifecycle?.review ?? "in-review") && fromColumn !== toColumn) {
+      /*
+      FNXC:ReviewLaneDispatch 2026-09-16-13:22 (#3619 review C3):
+      Entry detection is set membership over the board's REVIEW-family lanes (`resolveReviewColumns`
+      = merge-orchestration ∪ mergeBlocker ∪ human-review columns), the same broad set the handoff
+      guard above uses — with the same legacy fallback when no IR resolves. Comparing only against
+      `moveLifecycle.review`'s single lane missed boards whose review responsibility splits across
+      columns: a card entering a merge-blocker review lane left no entered-review evidence at all.
+      */
+      if ((moveReviewColumns ?? LEGACY_REVIEW_LANES).has(toColumn) && fromColumn !== toColumn) {
         await appendTaskLifecycleEventInTransaction(tx, {
           projectId: layer.projectId ?? "",
           eventType: "task:entered-review",

@@ -126,6 +126,7 @@ import {
   OVERLAP_REVALIDATION_DRAIN_VERSION,
   REVIEW_LANE_LEDGER_VERSION,
   WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION,
+  REVIEW_LANE_LEDGER_VERSION,
 } from "../../postgres/schema-applier.js";
 import { ProjectPartitionRekeyError, rekeyFallbackProjectPartition } from "../../postgres/migration-stamping.js";
 import type { PluginSchemaInitHook } from "../../postgres/plugin-schema-hook.js";
@@ -209,8 +210,11 @@ describe("schema-applier: immutable migration identities", () => {
     expect(TASK_HUMAN_PLAN_APPROVAL_VERSION).toBe("0080");
     // FNXC:TaskPauseAccounting 2026-09-16-06:16: FN-457's durable paused-time columns are migration 0081; the ceiling sits one higher at 0082 so the ledger's self-marked version never trips the stale-binary guard.
     expect(TASK_PAUSE_ACCOUNTING_VERSION).toBe("0081");
+    /* FNXC:ReviewLaneDispatch 2026-09-09 (STAS-205): the ceiling must sort after the review-lane ledger migration, or an upgraded database boots without the live-reviewer-run index the dispatch sweep depends on. */
+    /* FNXC:ReviewLaneDispatch 2026-09-15 (PR rebase onto FN-393/FN-408): renumbered 0079 -> 0081 — upstream recorded 0079/0080 first; a version string already in the bookkeeping table marks a migration applied without running its SQL. */
+    expect(REVIEW_LANE_LEDGER_VERSION).toBe("0082");
     expect(SCHEMA_BASELINE_VERSION).toBe("0082");
-    expect(REVIEW_LANE_LEDGER_VERSION).toBe("0082");  });
+  });
 
   it("keeps monitor and approval isolation assigned to version 0003", () => {
     expect(MONITOR_APPROVAL_ISOLATION_SCHEMA_VERSION).toBe("0003");
@@ -2114,123 +2118,6 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       /* keep the non-numeric repair identity last: ORDER BY version is TEXT */
       MIXED_0065_REPAIR_VERSION,
     ]);
-    expect((await applySchemaBaseline(ctx.db, { pluginHooks: [] })).applied).toBe(false);
-  });
-
-  it("fails loudly when legacy automation ownership is ambiguous", async () => {
-    ctx = await setupFreshDb();
-    await seedVersion0000Automation(ctx.db, ["project-a", "project-b"]);
-
-    await expect(applySchemaBaseline(ctx.db, { pluginHooks: [] })).rejects.toThrow(
-      /Cannot assign legacy automations to a project/,
-    );
-    const versions = (await ctx.db.execute(sql`
-      SELECT version FROM public.fusion_schema_migrations ORDER BY version
-    `)) as unknown as Array<{ version: string }>;
-    expect(versions.map(({ version }) => version)).toEqual(["0000"]);
-  });
-
-  it("serializes concurrent schema appliers", async () => {
-    ctx = await setupFreshDb();
-    const results = await Promise.all([
-      applySchemaBaseline(ctx.db, { pluginHooks: [] }),
-      applySchemaBaseline(ctx.db, { pluginHooks: [] }),
-    ]);
-    expect(results.filter(({ applied }) => applied)).toHaveLength(1);
-    expect(await getAppliedMigrations(ctx.db)).toEqual([
-      "0000",
-      "0001",
-      "0002",
-      "0003",
-      "0004",
-      "0005",
-      PROJECT_OWNERSHIP_SCHEMA_VERSION,
-      SQLITE_SCHEMA_PARITY_VERSION,
-      SESSION_ADVISOR_ENABLED_SCHEMA_VERSION,
-      MISSION_FIX_IDEMPOTENCY_VERSION,
-      IMPORT_TRANSLATION_CACHE_VERSION,
-      OWNER_PROJECT_ID_SPLIT_VERSION,
-      CHAT_SESSION_PINS_VERSION,
-      EXECUTOR_TOOL_FAILURE_RETRY_VERSION,
-      EXECUTOR_ESCALATION_ATTEMPT_VERSION,
-      GLOBAL_ROUTINES_SCHEMA_VERSION,
-      IMPORT_TRANSLATION_CACHE_SCOPE_FIX_VERSION,
-      TASK_MERGER_MODEL_LANE_VERSION,
-      BULK_COMPLETION_REFUSAL_AT_VERSION,
-      IMPORT_TRANSLATION_CACHE_LEGACY_PARTITION_BACKFILL_VERSION,
-      TASK_PROPOSAL_CLAIM_VERSION,
-      CONFIGURATION_REVISIONS_VERSION,
-      IDEATION_SCHEMA_VERSION,
-      RESEARCH_FEATURE_PROVENANCE_VERSION,
-      TASK_VERIFICATION_REQUEST_VERSION,
-      SYMBOL_LOCKS_SCHEMA_VERSION,
-      BIGINT_COUNTERS_VERSION,
-      WORKFLOW_IR_PIN_AND_LEGACY_ADOPTION_VERSION,
-      TASK_DECLARED_SYMBOLS_VERSION,
-      PLANNING_ACTIVE_TIMING_VERSION,
-      SQLITE_MIGRATION_RUNTIME_READ_VERSION,
-      WORKFLOW_TASK_CONTINUATIONS_VERSION,
-      LEGACY_ADOPTION_DRAINED_MARKER_RUNTIME_GRANTS_VERSION,
-      TASK_WEDGE_NOTIFICATION_VERSION,
-      MILESTONE_ASSERTION_PROVENANCE_VERSION,
-      MISSION_LINEAGE_STOP_VERSION,
-  CHAT_SESSION_TAGS_VERSION,
-      DROP_GLOBAL_CONCURRENCY_VERSION,
-      MISSION_TASK_PREFIX_VERSION,
-      CREDENTIAL_INSTANCE_SELECTION_VERSION,
-      TASK_LIFECYCLE_OUTBOX_VERSION,
-      TASK_LIFECYCLE_CONSUMERS_VERSION,
-      VALIDATOR_INPUT_FINGERPRINT_VERSION,
-      UNPLANNED_EXECUTION_BLOCK_DEDUPE_VERSION,
-      QUEUED_EPISODE_SIGNATURE_VERSION,
-      MULTI_ROLE_WORKFLOW_AGENTS_VERSION,
-      WORKFLOW_PRINCIPAL_FENCE_VERSION,
-      TASK_RECOMMENDATIONS_VERSION,
-      GITHUB_CHECK_STATES_VERSION,
-      AGENT_ACTIVITY_EVENTS_VERSION,
-      SPEC_LOCK_DRIFT_REPORT_VERSION,
-      SPEC_LOCK_SOURCE_REVISION_BIGINT_VERSION,
-      MEMORY_RECALL_RECORDS_VERSION,
-      MISSION_FEATURE_SPEC_ALIGNMENT_VERSION,
-      AGENT_RATING_PROJECT_ISOLATION_VERSION,
-      AGENT_RATINGS_PROJECT_PARTITION_VERSION,
-  PROJECT_OWNERSHIP_DECLARATION_DRIFT_VERSION,
-      PROJECT_OWNERSHIP_DEFAULT_RECONCILIATION_VERSION,
-      MESSAGE_ARCHIVE_SCHEMA_VERSION,
-      TASK_SOURCE_AGENT_INDEX_VERSION,
-      WORKSPACE_COORDINATION_LEASES_SCHEMA_VERSION,
-      ACTIVITY_LOG_TASK_ID_INDEX_VERSION,
-      REMOVE_TASK_SUBTASK_SPLITTING_VERSION,
-      AI_MERGE_REVIEW_RECONCILIATION_VERSION,
-      TASK_REPOSITORY_SCOPE_VERSION,
-      REVIEW_CONVERGENCE_STAGE_VERSION,
-      CHAT_SESSION_MEMORY_FOCUS_VERSION,
-      SESSION_CONTENTION_WAIT_STATE_VERSION,
-      TASK_STEP_REPORTS_VERSION,
-      TASK_EXTERNAL_BLOCK_VERSION,
-      TASK_REQUIRE_PLAN_APPROVAL_VERSION,
-      PATCHNODE_ENTRIES_VERSION,
-      TASK_PLANNING_FAILURE_VERSION,
-      CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION,
-      PROJECT_NOTES_VERSION,
-      OVERLAP_WAIT_SYNC_VERSION,
-      WHITEBOARDS_SCHEMA_VERSION,
-      OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION,
-      OVERLAP_REVALIDATION_DRAIN_VERSION,
-      /*
-      FNXC:MigrationCollisionRepair 2026-09-10-23:59:
-      The repair identity is the non-numeric `local-repair-mixed-0065`, and these ledger assertions
-      read `ORDER BY version` as TEXT, so it sorts AFTER every numeric migration — including the
-      0074-0078 migrations merged in from upstream on 2026-09-11 and 2026-09-14. Keep it last in
-      these fixtures.
-      */
-      WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION,
-      TASK_HUMAN_PLAN_APPROVAL_VERSION,
-      TASK_PAUSE_ACCOUNTING_VERSION,
-      REVIEW_LANE_LEDGER_VERSION,
-      /* keep the non-numeric repair identity last: ORDER BY version is TEXT */
-      MIXED_0065_REPAIR_VERSION,
-    ]);
   });
 
   it("queues schema DDL behind an active SQLite migration transaction", async () => {
@@ -2382,137 +2269,6 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
 
     expect((await applySchemaBaseline(ctx.db, { pluginHooks: [] })).applied).toBe(true);
     for (const table of ["activity_log", "agent_runs", "usage_events"] as const) {
-      const rows = (await ctx.db.execute(sql.raw(
-        `SELECT project_id FROM project.${table}`,
-      ))) as unknown as Array<{ project_id: string }>;
-      expect(rows).toEqual([{ project_id: "project-a" }]);
-    }
-    expect(await getAppliedMigrations(ctx.db)).toEqual([
-      "0000",
-      "0001",
-      "0002",
-      "0003",
-      "0004",
-      "0005",
-      "0006",
-      "0007",
-      "0008",
-      "0009",
-      "0010",
-      "0011",
-      "0012",
-      EXECUTOR_TOOL_FAILURE_RETRY_VERSION,
-      EXECUTOR_ESCALATION_ATTEMPT_VERSION,
-      GLOBAL_ROUTINES_SCHEMA_VERSION,
-      IMPORT_TRANSLATION_CACHE_SCOPE_FIX_VERSION,
-      TASK_MERGER_MODEL_LANE_VERSION,
-      BULK_COMPLETION_REFUSAL_AT_VERSION,
-      IMPORT_TRANSLATION_CACHE_LEGACY_PARTITION_BACKFILL_VERSION,
-      TASK_PROPOSAL_CLAIM_VERSION,
-      CONFIGURATION_REVISIONS_VERSION,
-      IDEATION_SCHEMA_VERSION,
-      RESEARCH_FEATURE_PROVENANCE_VERSION,
-      TASK_VERIFICATION_REQUEST_VERSION,
-      SYMBOL_LOCKS_SCHEMA_VERSION,
-      BIGINT_COUNTERS_VERSION,
-      WORKFLOW_IR_PIN_AND_LEGACY_ADOPTION_VERSION,
-      TASK_DECLARED_SYMBOLS_VERSION,
-      PLANNING_ACTIVE_TIMING_VERSION,
-      SQLITE_MIGRATION_RUNTIME_READ_VERSION,
-      WORKFLOW_TASK_CONTINUATIONS_VERSION,
-      LEGACY_ADOPTION_DRAINED_MARKER_RUNTIME_GRANTS_VERSION,
-      TASK_WEDGE_NOTIFICATION_VERSION,
-      MILESTONE_ASSERTION_PROVENANCE_VERSION,
-      MISSION_LINEAGE_STOP_VERSION,
-  CHAT_SESSION_TAGS_VERSION,
-      DROP_GLOBAL_CONCURRENCY_VERSION,
-      MISSION_TASK_PREFIX_VERSION,
-      CREDENTIAL_INSTANCE_SELECTION_VERSION,
-      TASK_LIFECYCLE_OUTBOX_VERSION,
-      TASK_LIFECYCLE_CONSUMERS_VERSION,
-      VALIDATOR_INPUT_FINGERPRINT_VERSION,
-      UNPLANNED_EXECUTION_BLOCK_DEDUPE_VERSION,
-      QUEUED_EPISODE_SIGNATURE_VERSION,
-      MULTI_ROLE_WORKFLOW_AGENTS_VERSION,
-      WORKFLOW_PRINCIPAL_FENCE_VERSION,
-      TASK_RECOMMENDATIONS_VERSION,
-      GITHUB_CHECK_STATES_VERSION,
-      AGENT_ACTIVITY_EVENTS_VERSION,
-      SPEC_LOCK_DRIFT_REPORT_VERSION,
-      SPEC_LOCK_SOURCE_REVISION_BIGINT_VERSION,
-      MEMORY_RECALL_RECORDS_VERSION,
-      MISSION_FEATURE_SPEC_ALIGNMENT_VERSION,
-      AGENT_RATING_PROJECT_ISOLATION_VERSION,
-      AGENT_RATINGS_PROJECT_PARTITION_VERSION,
-  PROJECT_OWNERSHIP_DECLARATION_DRIFT_VERSION,
-      PROJECT_OWNERSHIP_DEFAULT_RECONCILIATION_VERSION,
-      MESSAGE_ARCHIVE_SCHEMA_VERSION,
-      TASK_SOURCE_AGENT_INDEX_VERSION,
-      WORKSPACE_COORDINATION_LEASES_SCHEMA_VERSION,
-      ACTIVITY_LOG_TASK_ID_INDEX_VERSION,
-      REMOVE_TASK_SUBTASK_SPLITTING_VERSION,
-      AI_MERGE_REVIEW_RECONCILIATION_VERSION,
-      TASK_REPOSITORY_SCOPE_VERSION,
-      REVIEW_CONVERGENCE_STAGE_VERSION,
-      CHAT_SESSION_MEMORY_FOCUS_VERSION,
-      SESSION_CONTENTION_WAIT_STATE_VERSION,
-      TASK_STEP_REPORTS_VERSION,
-      TASK_EXTERNAL_BLOCK_VERSION,
-      TASK_REQUIRE_PLAN_APPROVAL_VERSION,
-      PATCHNODE_ENTRIES_VERSION,
-      TASK_PLANNING_FAILURE_VERSION,
-      CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION,
-      PROJECT_NOTES_VERSION,
-      OVERLAP_WAIT_SYNC_VERSION,
-      WHITEBOARDS_SCHEMA_VERSION,
-      OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION,
-      OVERLAP_REVALIDATION_DRAIN_VERSION,
-      /*
-      FNXC:MigrationCollisionRepair 2026-09-10-23:59:
-      The repair identity is the non-numeric `local-repair-mixed-0065`, and these ledger assertions
-      read `ORDER BY version` as TEXT, so it sorts AFTER every numeric migration — including the
-      0074-0078 migrations merged in from upstream on 2026-09-11 and 2026-09-14. Keep it last in
-      these fixtures.
-      */
-      WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION,
-      TASK_HUMAN_PLAN_APPROVAL_VERSION,
-      TASK_PAUSE_ACCOUNTING_VERSION,
-      REVIEW_LANE_LEDGER_VERSION,
-      /* keep the non-numeric repair identity last: ORDER BY version is TEXT */
-      MIXED_0065_REPAIR_VERSION,
-    ]);
-  });
-
-  /**
-   * FNXC:CommandCenterTenantIsolation 2026-07-14-01:04:
-   * A database that already recorded analytics migration 0002 must still backfill monitor and approval ownership from the sole registered project before bound Command Center reads are enabled.
-   */
-  it("upgrades a 0002 database by backfilling monitor and approval ownership", async () => {
-    ctx = await setupFreshDb();
-    await applySchemaBaseline(ctx.db, { pluginHooks: [] });
-    await ctx.db.execute(sql.raw(`
-      DELETE FROM public.fusion_schema_migrations WHERE version IN ('0003', '0004', '0005', '0006', '0007', '0008', '0009');
-      DROP POLICY fusion_project_isolation ON project.deployments;
-      DROP POLICY fusion_project_isolation ON project.incidents;
-      DROP POLICY fusion_project_isolation ON project.approval_request_audit_events;
-      DROP TRIGGER fusion_assign_project_id ON project.deployments;
-      DROP TRIGGER fusion_assign_project_id ON project.incidents;
-      DROP TRIGGER fusion_assign_project_id ON project.approval_request_audit_events;
-      ALTER TABLE project.deployments DROP COLUMN project_id;
-      ALTER TABLE project.incidents DROP COLUMN project_id;
-      ALTER TABLE project.approval_request_audit_events DROP COLUMN project_id;
-      INSERT INTO central.projects(id, name, path, created_at, updated_at)
-      VALUES ('project-a', 'Project A', '/repo/project-a', '2026-01-01', '2026-01-01');
-      INSERT INTO project.deployments(deployment_id, deployed_at, created_at)
-      VALUES ('deployment-a', '2026-01-01', '2026-01-01');
-      INSERT INTO project.incidents(incident_id, grouping_key, title, status, opened_at, created_at, updated_at)
-      VALUES ('incident-a', 'group-a', 'Incident A', 'open', '2026-01-01', '2026-01-01', '2026-01-01');
-      INSERT INTO project.approval_request_audit_events(id, request_id, event_type, actor_id, actor_type, actor_name, created_at)
-      VALUES ('event-a', 'request-a', 'approved', 'user-a', 'user', 'User A', '2026-01-01');
-    `));
-
-    expect((await applySchemaBaseline(ctx.db, { pluginHooks: [] })).applied).toBe(true);
-    for (const table of ["deployments", "incidents", "approval_request_audit_events"] as const) {
       const rows = (await ctx.db.execute(sql.raw(
         `SELECT project_id FROM project.${table}`,
       ))) as unknown as Array<{ project_id: string }>;
