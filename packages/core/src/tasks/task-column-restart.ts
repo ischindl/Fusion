@@ -3,7 +3,7 @@ import type { WorkflowIr, WorkflowIrV2 } from "../workflows/workflow-ir-types.js
 import { resolveColumnFlags } from "../workflows/trait-registry.js";
 import { resolveRequiredPreMergeStepIds } from "../merge/required-pre-merge-steps.js";
 import { workflowDeclaresColumnModel } from "../workflows/workflow-transitions.js";
-import { buildManualRetryResetPatch } from "./manual-retry-reset.js";
+import { buildManualRetryResetPatch, type ManualRetryResetPatch } from "./manual-retry-reset.js";
 
 export const RESTART_STAGE_FENCE_REASON = "restart-stage-publishing";
 
@@ -23,7 +23,7 @@ export interface TaskColumnRestartPlan {
   discardedWorkflowStepIds: string[];
   deletePrompt: boolean;
   releaseSymbolLocks: boolean;
-  patch: Partial<Task>;
+  patch: ManualRetryResetPatch;
 }
 
 export interface TaskColumnRestartRefusal {
@@ -116,7 +116,7 @@ export function planTaskColumnRestart(input: {
   // Keep the discard predicate separate so duplicate workflow-step attempts stay observable.
   const discarded = (task.workflowStepResults ?? []).filter(shouldDiscard);
   const now = input.now ?? new Date().toISOString();
-  const patch: Partial<Task> = {
+  const patch: ManualRetryResetPatch = {
     ...buildManualRetryResetPatch({ resetMergeRetries: true }),
     status: null as unknown as Task["status"],
     error: null as unknown as Task["error"],

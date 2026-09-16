@@ -6,7 +6,7 @@ Workflow steps are reusable quality gates that run around task completion.
 
 ## Plan premises and overlap briefing
 
-Every planned implementation declares a short `## Plan Premises` section of atomic file/text facts. Plan Review rejects absent, malformed, or non-verifiable facts. Before a planning/hold card first enters WIP, the release gate evaluates those facts against the current main checkout; a false or invalid fact requests the existing planning loop, while an unavailable read stays retryable and fail-closed.
+Every planned implementation declares a short `## Plan Premises` section of atomic file/text facts. Plan Review rejects absent, malformed, or non-verifiable facts. Before a planning/hold card first enters WIP — fast-mode cards included — the release gate evaluates those facts against the current main checkout. Refusals escalate: the first identical refusal holds the card with no status change, the second requests the existing planning loop with the exact refusal detail fed into the replan prompt, and the third parks the card `failed` for operator review; only a manual Retry or Reset (or a genuinely revised premise set, which starts a new episode) releases that park. An unavailable read stays retryable and fail-closed.
 
 File-scope overlap serialization remains independent. After a predecessor lands, Fusion still proves checkout freshness and injects a factual overlap briefing into the resumed execution context, but it does not dispatch a synthetic reviewer or targeted plan-repair model. The plan-premise release gate is the only stale-plan admission authority.
 

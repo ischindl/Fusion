@@ -87,4 +87,17 @@ describe("buildManualRetryResetPatch", () => {
   it("clears the FN-8141 skip-bypass taint marker (bulkCompletionRefusalAt)", () => {
     expect(buildManualRetryResetPatch()).toMatchObject({ bulkCompletionRefusalAt: null });
   });
+
+  /*
+  FNXC:PlanPremises 2026-09-16-04:08:
+  RUFU-246 — Retry is the sanctioned un-park for a plan-premise terminal park: the patch carries a
+  KEY-level sourceMetadataPatch clearing exactly `planPremiseRejection` (pinned literal so a
+  constant rename that would orphan persisted episodes is caught here), never a whole-field wipe —
+  unrelated sourceMetadata provenance keys must survive a Retry.
+  */
+  it("clears the plan-premise refusal episode at the key level, never the whole field", () => {
+    expect(buildManualRetryResetPatch().sourceMetadataPatch).toEqual({ planPremiseRejection: null });
+    expect(buildManualRetryResetPatch({ resetMergeRetries: true }).sourceMetadataPatch).toEqual({ planPremiseRejection: null });
+    expect(buildManualRetryResetPatch()).not.toHaveProperty("sourceMetadata");
+  });
 });

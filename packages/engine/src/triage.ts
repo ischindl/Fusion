@@ -362,6 +362,7 @@ import {
 import { createRunAuditor, generateSyntheticRunId } from "./util/run-audit.js";
 import { resolveAndEmitGoalContext } from "./goals/goal-injection-diagnostics.js";
 import { accumulateSessionTokenUsage } from "./execution/session-token-usage.js";
+import { readPlanPremiseRejectionEpisode } from "./execution/plan-premise-ladder.js";
 import { DEFAULT_PLANNING_TIMEOUT_MS, finalizePlanningSegment, startPlanningSegment } from "@fusion/core";
 import { collectPlanReviewFeedbackHistory, isPlanReviewRevisionLog } from "./plan-review-feedback-history.js";
 import type { AgentActionGateContext } from "./agents/agent-action-gate.js";
@@ -3574,6 +3575,35 @@ export class TriageProcessor {
             existingPrompt = planningDraft?.content;
             if (feedbackLogEntry?.action === TRIAGE_STUCK_RESUME_LOG_ACTION && !existingPrompt) {
               feedback = undefined;
+            }
+
+            /*
+            FNXC:PlanPremises 2026-09-16-03:36:
+            RUFU-246: when the release gate's premise-refusal ladder drove this card into
+            needs-replan, the durable episode's `lastDetail` is the precise "what to fix" the
+            planner must see (violated premise JSON, reason, evaluated root). It outranks stale
+            comments and Plan Review verdicts because the refusal is the direct cause of this
+            replan; an explicit comment-triggered re-specification (feedbackLogEntry) still wins.
+            Freshness tie-break: a REVISE verdict recorded AFTER the last refusal is the fresher
+            cause, so the episode only wins when its lastAt is at least as new — otherwise the
+            REVISE fallback below owns the feedback and the planner never gets a stale premise
+            complaint for someone else's replan. The `escalation === "replan"` gate additionally
+            keeps hold-only and parked episodes (and post-drift resets, which rewrite the
+            escalation to "hold") out of the replan feedback path entirely.
+            */
+            if (!feedback) {
+              const premiseEpisode = readPlanPremiseRejectionEpisode(currentTask);
+              if (premiseEpisode?.escalation === "replan") {
+                const latestReviseAt = (currentTask.workflowStepResults || [])
+                  .filter((result) =>
+                    (result.workflowStepId === PLAN_REVIEW_GROUP_ID || result.workflowStepName === "Plan Review")
+                    && result.verdict === "REVISE")
+                  .map((result) => Date.parse(result.completedAt ?? result.startedAt ?? "") || 0)
+                  .reduce((max, ts) => (ts > max ? ts : max), 0);
+                if (Date.parse(premiseEpisode.lastAt) >= latestReviseAt) {
+                  feedback = premiseEpisode.lastDetail;
+                }
+              }
             }
 
             // Ensure the latest user feedback is always actionable for re-plans.

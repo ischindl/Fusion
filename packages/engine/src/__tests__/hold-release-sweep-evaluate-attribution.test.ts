@@ -349,9 +349,17 @@ describe("hold-release sweep evaluate attribution (RUFU-209)", () => {
     // The residual reconciles `evaluate` instead of vanishing.
     expect(line).toMatch(/unattributed=\d+ms/);
 
-    // File-system truth matches both the bucket and the counter — the fs tally is what would climb
-    // the moment a consumer bypasses the memo.
-    expect(board.fsPromptReads()).toBe(12);
+    /*
+    FNXC:PlanPremises 2026-09-16-05:35:
+    The plan-premise gate (RUFU-145/RUFU-246) is a deliberate second consumer of PROMPT.md: each of
+    the 4 released cards adds TWO live unattributed fs reads (pre-move check + live under-lock
+    recheck — the release check must never consume the pass memo, because its verdict must reflect
+    the filesystem at transaction time). File-system truth is therefore the 12 memo-attributed reads
+    PLUS these 8 gate reads; the `prompts=12` bucket still counts only the attributed read phase.
+    */
+    // File-system truth matches the attributed bucket plus the premise gate's live release-door
+    // reads — the fs tally is what would climb the moment a read-phase consumer bypasses the memo.
+    expect(board.fsPromptReads()).toBe(20);
     expect(board.store.listWorkflowWorkItemsForTask).toHaveBeenCalledTimes(8);
     expect(board.store.getCompletionHandoffAcceptedMarker).toHaveBeenCalledTimes(1);
     expect(board.store.getSettings).toHaveBeenCalledTimes(1);
@@ -397,8 +405,10 @@ describe("hold-release sweep evaluate attribution (RUFU-209)", () => {
     expect(printed[1]!).toContain("released=0");
     expect(second.released).toHaveLength(0);
 
-    // Cumulative file-system / store tallies double per pass — nothing carried across.
-    expect(board.fsPromptReads()).toBe(20);
+    // Cumulative file-system / store tallies double per pass — nothing carried across. FS truth =
+    // pass 1 (12 attributed + 8 premise-gate live reads over 4 releases) + pass 2 (8 re-reads, 0
+    // releases, so zero gate reads).
+    expect(board.fsPromptReads()).toBe(28);
     expect(board.store.listWorkflowWorkItemsForTask).toHaveBeenCalledTimes(16);
     expect(board.store.getCompletionHandoffAcceptedMarker).toHaveBeenCalledTimes(2);
     expect(board.store.getSettings).toHaveBeenCalledTimes(2);

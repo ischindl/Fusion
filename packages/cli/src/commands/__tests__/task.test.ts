@@ -3135,6 +3135,13 @@ describe("runTaskRetry", () => {
       mergeAuditBounceCount: 0,
       mergeRetries: 0,
       resumeLimboCount: 0,
+      /*
+      FNXC:PlanPremises 2026-09-16-04:08:
+      RUFU-246: manual Retry is the sanctioned un-park for a plan-premise terminal park, so the
+      reset patch clears the refusal episode at the key level (never the whole sourceMetadata
+      field). Keep both retry-status assertions aligned with buildManualRetryResetPatch.
+      */
+      sourceMetadataPatch: { planPremiseRejection: null },
     });
     expect(mockMoveTask).toHaveBeenCalledWith("FN-001", "todo");
     expect(mockLogEntry).toHaveBeenCalledWith("FN-001", "Retry requested from CLI", "Task reset to todo for retry");
@@ -3230,6 +3237,13 @@ describe("runTaskRetry", () => {
       mergeAuditBounceCount: 0,
       mergeRetries: 0,
       resumeLimboCount: 0,
+      /*
+      FNXC:PlanPremises 2026-09-16-04:08:
+      RUFU-246: manual Retry is the sanctioned un-park for a plan-premise terminal park, so the
+      reset patch clears the refusal episode at the key level (never the whole sourceMetadata
+      field). Keep both retry-status assertions aligned with buildManualRetryResetPatch.
+      */
+      sourceMetadataPatch: { planPremiseRejection: null },
     });
     expect(mockMoveTask).toHaveBeenCalledWith("FN-001", "todo");
     expect(mockLogEntry).toHaveBeenCalledWith("FN-001", "Retry requested from CLI", "Task reset to todo for retry");

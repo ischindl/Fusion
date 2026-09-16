@@ -381,6 +381,39 @@ transferredAt }` entries, deduped per target project on write so the badge canno
 export const HANDOFF_FROM_METADATA_KEY = "handoffFrom" as const;
 export const TRANSFERRED_TO_METADATA_KEY = "transferredTo" as const;
 
+/*
+FNXC:PlanPremises 2026-09-16-03:20:
+RUFU-246 premise-refusal escalation. A release-gate premise refusal must survive replanning, so the
+refusal episode lives on the already-persisted `sourceMetadata` JSONB carrier (no new `tasks`
+column) under the key below, written only through `updateTaskAtomic`'s key-preserving
+`sourceMetadataPatch` channel. The episode is never cleared by a successful release; it resets
+implicitly when the rejection identity changes (plan-review node, prompt revision, dependencies, or
+violated premise set all feed `signature`), and an operator Retry/Reset clears it explicitly.
+One card carries at most one episode; a signature mismatch starts a fresh count.
+*/
+export const PLAN_PREMISE_REJECTION_METADATA_KEY = "planPremiseRejection" as const;
+
+/**
+ * Durable escalation state for repeated identical plan-premise release refusals (RUFU-246).
+ * Escalation ladder per identical `signature`: refusal 1 stays held, refusal 2 re-enters
+ * planning (`needs-replan`), refusal 3 parks the card `failed` with a
+ * `PLAN PREMISE CONTRACT EXHAUSTED:` sentinel error and short-circuits later releases.
+ */
+export interface PlanPremiseRejectionEpisode {
+  /** sha256 over planReviewNodeId, prompt fingerprint, sorted dependencies, and sorted premise violations. */
+  signature: string;
+  /** Consecutive identical-signature refusals (1-based; resets to 1 on signature drift). */
+  refusalCount: number;
+  /** Operator-facing refusal detail from the premise checker, shown to the planner on replan. */
+  lastDetail: string;
+  /** ISO timestamp of the most recent refusal. */
+  lastAt: string;
+  /** Where this refusal escalated the card: stay held, re-plan, or terminal park. */
+  escalation: "hold" | "replan" | "park";
+  /** sha256 of `lastDetail`, kept so log/notification dedupe can compare details without re-hashing prose. */
+  detailHash: string;
+}
+
 /** One cross-project handoff pointer record (see the FNXC block above). */
 export interface TaskHandoffPointer {
   /** Registry id of the project the pointer references. */
@@ -412,6 +445,8 @@ export interface TaskSource {
    *   {@link HANDOFF_FROM_METADATA_KEY} record on the target card) and
    *   `transferredTo` (array of {@link TRANSFERRED_TO_METADATA_KEY} records on
    *   the source card).
+   * - plan-premise refusal episode (RUFU-246): `planPremiseRejection`
+   *   ({@link PlanPremiseRejectionEpisode}) tracks the release-gate escalation ladder.
    */
   sourceMetadata?: Record<string, unknown>;
 }

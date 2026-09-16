@@ -1,5 +1,5 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
-import type { ColumnId, Task } from "../types.js";
+import { PLAN_PREMISE_REJECTION_METADATA_KEY, type ColumnId, type Task } from "../types.js";
 import * as schema from "../postgres/schema/index.js";
 import { projectScopeFor } from "../postgres/data-layer.js";
 import { acquireTaskAdvisoryXactLock } from "./task-advisory-lock.js";
@@ -80,6 +80,15 @@ export function buildResetTask(
     pausedReason: undefined,
     externalBlock: undefined,
     planningFailure: undefined,
+    /*
+    FNXC:PlanPremises 2026-09-16-04:08:
+    RUFU-246 — Reset is a fresh planning request and must NOT carry a plan-premise refusal episode
+    through this builder's `...task` spread: Reset's own premise is "no plan state carries over",
+    and a sticky-park episode surviving into fresh planning would re-park the card at its first
+    release attempt against the new spec. Clear only the premise key — unrelated sourceMetadata
+    provenance keys (duplicate-of, handoff-from) keep surviving Reset exactly as before.
+    */
+    sourceMetadata: task.sourceMetadata === undefined ? undefined : { ...task.sourceMetadata, [PLAN_PREMISE_REJECTION_METADATA_KEY]: null },
     pausedByAgentId: undefined,
     checkedOutBy: undefined,
     checkedOutAt: undefined,

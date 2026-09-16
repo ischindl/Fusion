@@ -50,10 +50,12 @@ import {
   isUnplannedSeedPrompt,
   isDuplicateRedirectOnlyPrompt,
   isFastExecutionMode,
+  PLAN_PREMISE_REJECTION_METADATA_KEY,
   isWorkflowOptionalGroupEnabled,
   resolveEffectiveAutoMerge,
   isTaskBlockedOnApproval,
   isPlanReviewSatisfied,
+  type PlanPremiseRejectionEpisode,
   type TaskStore,
   type Task,
   type TaskReleaseGateVerdict,
@@ -74,6 +76,14 @@ import { getPromptPath } from "./spec-staleness.js";
 import { isTaskPlanningOrExecutionLive } from "../agents/planning-execution-liveness.js";
 import { evaluateStrandedHoldContinuation } from "../plan-review-continuation.js";
 import { checkPlanPremises, type PlanPremiseCheckResult } from "./plan-premise-check.js";
+import {
+  advancePlanPremiseRejectionEpisode,
+  buildPlanPremiseExhaustedError,
+  isPlanPremiseParkTerminal,
+  PLAN_PREMISE_REFUSAL_LOG_WINDOW_MS,
+  TRIAGE_PLAN_PREMISE_REJECTED_REPLAN_LOG_ACTION,
+  type PlanPremiseEscalation,
+} from "./plan-premise-ladder.js";
 
 // FNXC:StrandedHoldContinuation 2026-07-26-14:15:
 // A genuine stranded-plan fault is warned once per held location; ordinary
@@ -261,6 +271,14 @@ export type WipAdmissionRejection =
   | "plan-premise-stale"
   | "plan-premise-invalid"
   | "plan-premise-unavailable"
+  /*
+  FNXC:PlanPremises 2026-09-16-04:08:
+  RUFU-246 — the terminal refusal. The card was refused for the identical premise violation three
+  times and parked (`failed` + PLAN PREMISE CONTRACT EXHAUSTED sentinel); every release entry point
+  short-circuits to this code without re-evaluating anything until an operator Retry/Reset clears
+  the refusal episode. Non-retryable by policy (the dashboard classifies it so).
+  */
+  | "plan-premise-exhausted"
   | "capacity-exhausted-or-no-slot"
   | "source-changed";
 
@@ -1055,6 +1073,14 @@ export async function runHoldReleaseSweep(
       if (expired()) { breakIndex = index; break; }
       const task = tasksForReleaseEvaluation[index]!;
       if (task.paused || task.userPaused || (task.nextRecoveryAt && Date.parse(task.nextRecoveryAt) > deps.now())) continue;
+      /*
+      FNXC:PlanPremises 2026-09-16-04:08:
+      RUFU-246 — a premise-exhausted park is skipped here, at the top of the candidate loop and
+      before the per-task IR resolve: a parked card draws no PROMPT.md read (`reads(prompts=…)`
+      stays flat), no premise evaluation, no reservation, no refusal log, and no audit row on later
+      passes. Like the paused-skip above it is deliberately NOT marked evaluated — it was not.
+      */
+      if (isPlanPremiseParkTerminal(task)) continue;
       if (expired()) { breakIndex = index; break; }
       const irStartedMs = deps.now();
       const ir = await resolveWorkflowIrForTask(resolverStore, task.id, irCache, selectionCache);
@@ -1169,25 +1195,109 @@ export function isFirstPlanningToWipAdmission(ir: WorkflowIr, sourceColumn: stri
   return flags.hold === true || flags.intake === true || sourceColumn === "todo";
 }
 
+/*
+FNXC:PlanPremises 2026-09-16-03:20:
+RUFU-246 turned this single-shot replan into the escalation ladder's single choke point. Every
+stale/invalid-contract premise refusal from any release door funnels through here under the task
+lock: the re-check runs against the LIVE row, the durable episode (sourceMetadata.planPremiseRejection)
+is advanced, and the patch follows the ladder — refusal 1 records the episode and stays held, refusal
+2 sets needs-replan, refusal 3 parks failed with the exhaustion sentinel. An outcome race (re-check
+came back satisfied/unavailable/other) still writes nothing and reports the race to the door.
+*/
 async function publishPremiseReplan(
   store: TaskStore,
   taskId: string,
   expectedColumn: string,
   expected: "stale" | "invalid-contract",
-): Promise<PlanPremiseCheckResult> {
-  let final: PlanPremiseCheckResult = { outcome: "unavailable", detail: "Plan premise check lost its source-column race" };
+  door: { planReviewNodeId: string },
+): Promise<{ check: PlanPremiseCheckResult; escalation: PlanPremiseEscalation | null }> {
+  let final: { check: PlanPremiseCheckResult; escalation: PlanPremiseEscalation | null } = {
+    check: { outcome: "unavailable", detail: "Plan premise check lost its source-column race", promptFingerprint: "", premiseViolations: [] },
+    escalation: null,
+  };
+  let episode: PlanPremiseRejectionEpisode | null = null;
+  let parkedNow = false;
   await store.updateTaskAtomic(taskId, async (live) => {
     if (live.column !== expectedColumn || live.paused === true || live.userPaused === true) return null;
-    const checked = isFastExecutionMode(live) ? ({ outcome: "satisfied" } as const) : await checkPlanPremises(store, live);
-    final = checked;
+    /*
+    FNXC:PlanPremises 2026-09-16-04:08:
+    RUFU-246 refuse-to-touch: once the live row carries a terminal premise park, this publisher
+    writes NOTHING at all — the episode, sentinel error, and failed status stay exactly as parked.
+    Release doors short-circuit parked cards before reaching here; this guard closes the race where
+    the park lands between a door's candidate read and this lock.
+    */
+    if (isPlanPremiseParkTerminal(live)) return null;
+    /*
+    FNXC:PlanPremises 2026-09-16-04:08:
+    RUFU-246 removes the synthetic fast-lane "satisfied" verdict: Fast cards evaluate their premises
+    for real, so the door and this under-lock re-check can no longer disagree on a fast card — a
+    disagreement there reported a permanent source-changed race and stalled escalation forever.
+    */
+    const checked: PlanPremiseCheckResult = await checkPlanPremises(store, live);
+    final = { check: checked, escalation: null };
     if (checked.outcome !== expected) return null;
-    return { status: "needs-replan", error: null };
+    const step = advancePlanPremiseRejectionEpisode(live, { planReviewNodeId: door.planReviewNodeId, check: checked });
+    final = { check: checked, escalation: step.escalation };
+    episode = step.episode;
+    const sourceMetadataPatch = { [PLAN_PREMISE_REJECTION_METADATA_KEY]: step.episode };
+    if (step.escalation === "park") {
+      parkedNow = true;
+      return { status: "failed", error: buildPlanPremiseExhaustedError(checked.detail), recoveryRetryCount: null, nextRecoveryAt: null, sourceMetadataPatch };
+    }
+    if (step.escalation === "replan") {
+      return { status: "needs-replan", error: null, sourceMetadataPatch };
+    }
+    return { sourceMetadataPatch };
   });
-  const checked = final as PlanPremiseCheckResult;
-  if ((checked.outcome === "stale" || checked.outcome === "invalid-contract") && checked.outcome === expected) {
-    await store.logEntry(taskId, `Plan premise release gate refused execution: ${checked.detail}`);
+  const { check } = final;
+  // Re-widen past control-flow analysis: `episode` is assigned inside the transaction closure.
+  const refusalEpisode = episode as PlanPremiseRejectionEpisode | null;
+  /*
+  FNXC:PlanPremises 2026-09-16-03:36:
+  RUFU-246 — one action-keyed History entry per action+detail: `logEntryOnce` dedupes on the
+  refusal detail's hash over a wide window, so the whole hold→replan→park walk over one unchanged
+  rejection (and every sticky-park re-refusal) writes a single entry instead of one line per gate
+  poll. The planner-facing detail rides the durable episode, never this log. Stores without the
+  once-seam keep the historical single-message shape.
+  */
+  if (refusalEpisode && (check.outcome === "stale" || check.outcome === "invalid-contract")) {
+    const logOnce = (store as Partial<TaskStore>).logEntryOnce;
+    if (typeof logOnce === "function") {
+      await logOnce.call(store, taskId, {
+        action: TRIAGE_PLAN_PREMISE_REJECTED_REPLAN_LOG_ACTION,
+        outcome: check.detail,
+        dedupeKey: `plan-premise-refusal:${refusalEpisode.detailHash}`,
+        windowMs: PLAN_PREMISE_REFUSAL_LOG_WINDOW_MS,
+      }).catch(() => undefined);
+    } else {
+      await store.logEntry(taskId, `${TRIAGE_PLAN_PREMISE_REJECTED_REPLAN_LOG_ACTION}: ${check.detail}`).catch(() => undefined);
+    }
   }
-  return checked;
+  /*
+  FNXC:PlanPremises 2026-09-16-04:08:
+  RUFU-246 — the FRESH park transition is the one audit-worthy moment of an episode: refusals 1/2
+  stay quiet (History and the durable episode carry them), but a card that now sits failed until an
+  operator acts records exactly one `task:plan-premise-parked` row with ids/counts/fixed enums only.
+  Bounded best-effort so a hostile audit sink can never gate or delay the park itself.
+  */
+  if (parkedNow) {
+    void emitBoundedRunAudit(store, {
+      taskId,
+      agentId: "scheduler",
+      runId: `hold-release:${taskId}`,
+      domain: "database",
+      mutationType: "task:plan-premise-parked",
+      target: taskId,
+      metadata: {
+        taskId,
+        refusalCount: refusalEpisode?.refusalCount ?? 0,
+        escalation: "park",
+        reason: "plan-premise-exhausted",
+        source: "hold-release.premise",
+      },
+    }, { log: schedulerLog });
+  }
+  return final;
 }
 
 /*
@@ -1232,8 +1342,24 @@ async function issueRelease(
     readinessAlreadyVerified?: boolean;
   } = {},
 ): Promise<IssueReleaseResult> {
+  /*
+  FNXC:PlanPremises 2026-09-16-04:08:
+  RUFU-246 — the terminal premise park is honored at this single choke point: the scheduler sweep,
+  the automatic admission in admitTaskToWip, operator promoteHeldTask, and event release all funnel
+  through here. A parked card is refused BEFORE any PROMPT.md read, premise evaluation, capacity
+  reservation, status write, log append, or audit row. The park is durable by design — only an
+  operator Retry/Reset, which clears the refusal episode, lifts it.
+  */
+  if (isPlanPremiseParkTerminal(task)) {
+    return { released: false, rejection: "plan-premise-exhausted", detail: task.error ?? undefined };
+  }
   const targetColumn = findColumn(ir, target);
   const targetIsProcessing = targetColumn ? resolveColumnFlags(targetColumn).countsTowardWip === true : false;
+  /*
+  FNXC:PlanPremises 2026-09-16-03:20: RUFU-246 — the pre-release plan-review node identity is part
+  of the refusal-episode signature, resolved once per release from the same IR the door acts on.
+  */
+  const planReviewNodeId = resolvePreReleasePlanReviewNode(ir)?.id ?? "";
 
   /*
   FNXC:WorkflowScheduling 2026-08-29-00:24:
@@ -1253,22 +1379,28 @@ async function issueRelease(
   this pre-move check (and its FN-7648 refusal recording) exactly as before.
   */
   if (targetIsProcessing) {
-    if (!isFastExecutionMode(task)) {
-      const premiseCheck = await checkPlanPremises(store, task);
-      if (premiseCheck.outcome === "stale" || premiseCheck.outcome === "invalid-contract") {
-        const recorded = await publishPremiseReplan(store, task.id, options.expectedColumn ?? task.column, premiseCheck.outcome);
-        if (recorded.outcome === "unavailable" || recorded.outcome === "satisfied") {
-          return { released: false, rejection: "source-changed", detail: "detail" in recorded ? recorded.detail : "Plan premise changed during release" };
-        }
-        return {
-          released: false,
-          rejection: recorded.outcome === "stale" ? "plan-premise-stale" : "plan-premise-invalid",
-          detail: "detail" in recorded ? recorded.detail : premiseCheck.detail,
-        };
+    /*
+    FNXC:PlanPremises 2026-09-16-04:08:
+    RUFU-246 removes the fast-lane premise bypass here: whether the plan's stated facts still match
+    the repository is a plain evaluation, not a planning-requiredness rule, so Fast/FN-8304 cards
+    verify premises too. What stays UNTOUCHED is what this bypass was conflating with — FN-8304's
+    Fast exemptions from planning-requiredness readiness (evaluateCapacityHoldReadiness /
+    evaluateExecutionReadiness): fast cards remain exempt there and are never made plan-required.
+    */
+    const premiseCheck = await checkPlanPremises(store, task);
+    if (premiseCheck.outcome === "stale" || premiseCheck.outcome === "invalid-contract") {
+      const recorded = await publishPremiseReplan(store, task.id, options.expectedColumn ?? task.column, premiseCheck.outcome, { planReviewNodeId });
+      if (recorded.check.outcome === "unavailable" || recorded.check.outcome === "satisfied") {
+        return { released: false, rejection: "source-changed", detail: "detail" in recorded.check ? recorded.check.detail : "Plan premise changed during release" };
       }
-      if (premiseCheck.outcome === "unavailable") {
-        return { released: false, rejection: "plan-premise-unavailable", detail: premiseCheck.detail };
-      }
+      return {
+        released: false,
+        rejection: recorded.check.outcome === "stale" ? "plan-premise-stale" : "plan-premise-invalid",
+        detail: "detail" in recorded.check ? recorded.check.detail : premiseCheck.detail,
+      };
+    }
+    if (premiseCheck.outcome === "unavailable") {
+      return { released: false, rejection: "plan-premise-unavailable", detail: premiseCheck.detail };
     }
     /*
     FNXC:HoldReleaseReadinessDedup 2026-09-14-21:42 (upstream sync merge):
@@ -1315,6 +1447,8 @@ async function issueRelease(
     const originalColumn = options.expectedColumn ?? task.column;
     let liveUnplanned: Task | undefined;
     let livePremiseFailure: Extract<PlanPremiseCheckResult, { outcome: "stale" | "invalid-contract" | "unavailable" }> | undefined;
+    // RUFU-246: set when the locked live row already carries a terminal premise park (see predicate).
+    let livePremiseExhausted = false;
     /*
     FNXC:UserPausedDispatch 2026-07-21-21:45:
     Hold release must test the source column and both pause flags under the same task lock as the move. This makes an operator pause win atomically against scheduler dispatch and also replaces event-identity inference for concurrent release attempts.
@@ -1347,7 +1481,20 @@ async function issueRelease(
           liveUnplanned = live;
           return false;
         }
-        if (targetIsProcessing && !isFastExecutionMode(live)) {
+        /*
+        FNXC:PlanPremises 2026-09-16-04:08:
+        RUFU-246 — under-lock park preservation: a concurrent release surface may have terminally
+        parked this card since the pre-move check. The live park wins — refuse the move WITHOUT
+        evaluating premises or recording a new refusal (no episode, History, or audit write), and
+        report the terminal code after the lock releases.
+        */
+        if (isPlanPremiseParkTerminal(live)) {
+          livePremiseExhausted = true;
+          return false;
+        }
+        // RUFU-246: the fast-lane premise bypass is removed here too (see the pre-move door note);
+        // premises are repository facts, not planning-requiredness rules.
+        if (targetIsProcessing) {
           const checked = await checkPlanPremises(store, live);
           if (checked.outcome !== "satisfied") {
             livePremiseFailure = checked;
@@ -1380,15 +1527,18 @@ async function issueRelease(
         schedulerLog.debug(`Hold release for ${task.id} blocked — card became unplanned before entering processing column ${target}`);
         return { released: false, rejection: "unplanned-for-execution" };
       }
+      if (livePremiseExhausted) {
+        return { released: false, rejection: "plan-premise-exhausted", detail: "Plan premise contract exhausted; operator Retry/Reset required to clear the refusal episode" };
+      }
       if (livePremiseFailure) {
         if (livePremiseFailure.outcome === "unavailable") {
           return { released: false, rejection: "plan-premise-unavailable", detail: livePremiseFailure.detail };
         }
-        const recorded = await publishPremiseReplan(store, task.id, originalColumn, livePremiseFailure.outcome);
+        const recorded = await publishPremiseReplan(store, task.id, originalColumn, livePremiseFailure.outcome, { planReviewNodeId });
         return {
           released: false,
-          rejection: recorded.outcome === "stale" ? "plan-premise-stale" : recorded.outcome === "invalid-contract" ? "plan-premise-invalid" : "source-changed",
-          detail: "detail" in recorded ? recorded.detail : livePremiseFailure.detail,
+          rejection: recorded.check.outcome === "stale" ? "plan-premise-stale" : recorded.check.outcome === "invalid-contract" ? "plan-premise-invalid" : "source-changed",
+          detail: "detail" in recorded.check ? recorded.check.detail : livePremiseFailure.detail,
         };
       }
       schedulerLog.log(`Hold release for ${task.id} skipped — task became paused or left ${originalColumn}`);
