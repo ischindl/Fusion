@@ -778,6 +778,27 @@ describe("buildAgentChatPrompt", () => {
     expect(prompt).not.toContain("SECRET-AGENT-BODY-CONTENT");
   });
 
+  /*
+  FNXC:ChatContextBudget 2026-09-16-12:40:
+  Review finding: the inline-memory demote branch compared bytes but sliced code units. A
+  multibyte inline memory must be clamped BY BYTES (shared clampUtf8) — the old slice kept 3x
+  the intended bytes for CJK content.
+  */
+  it("clamps multibyte inline agent memory by bytes in the demote branch", async () => {
+    const prompt = await buildAgentChatPrompt({
+      agent: makeAgent({ name: "Avery", memory: "記".repeat(4000) }), // 12000 bytes, 4000 chars
+      rootDir: testDir,
+      basePrompt: "You are a chat assistant.",
+      memoryCapChars: 1000,
+    });
+    expect(prompt).toContain("…");
+    expect(prompt).not.toContain("記".repeat(2000));
+    const match = prompt.match(/記+/);
+    const clamped = match ? match[0] : "";
+    expect(clamped.length).toBeGreaterThan(0);
+    expect(Buffer.byteLength(clamped, "utf8")).toBeLessThanOrEqual(1000);
+    expect(clamped).not.toContain("\uFFFD"); // no split multi-byte characters
+  });
   it("keeps agent memory fully inlined when the combined size fits the cap", async () => {
     await mkdir(join(testDir, ".fusion", "agent-memory", "agent-test"), { recursive: true });
     await writeFile(

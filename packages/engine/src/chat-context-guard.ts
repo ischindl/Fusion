@@ -298,7 +298,14 @@ export function freshLoadedContextEstimate(session: CompactionGateSession): numb
   if (!systemPrompt) {
     return null;
   }
-  let chars = systemPrompt.length;
+  /*
+  FNXC:ChatContextGuardEstimateParity 2026-09-16-12:40:
+  Review finding (RUFU-118 PR): this estimator measured the prompt in UTF-16 code units while
+  {@link staticContextFloorEstimate} measured it in bytes, so a non-ASCII prompt diverged up to 3x
+  between the two paths that the doc comment requires to agree. Bytes are the conservative unit
+  (bytes >= code units), so both estimators now price the static prompt identically in bytes.
+  */
+  let chars = Buffer.byteLength(systemPrompt, "utf8");
   try {
     const activeNames = new Set(session.getActiveToolNames?.() ?? []);
     for (const tool of session.getAllTools?.() ?? []) {
@@ -481,16 +488,40 @@ export function buildAggressiveCompactionDirective(threshold: number): string {
  * Otherwise sums pi's per-message `estimateTokens` (chars/4) over the loaded messages.
  * Returns `null` when neither source yields a measurement.
  */
-export function estimateLoadedContextTokens(session: CompactionGateSession): number | null {
-  if (typeof session.getContextUsage === "function") {
-    try {
-      const usage = session.getContextUsage();
-      if (usage && typeof usage.tokens === "number" && Number.isFinite(usage.tokens) && usage.tokens > 0) {
-        return usage.tokens;
-      }
-    } catch {
-      // A throwing usage reader must not break the send; fall through to the estimate.
+/**
+ * Provider-reported context usage for the session, or null when the provider reports none
+ * (zero-usage providers per earendil-works/pi#8328) or the reader throws.
+ */
+function providerUsageTokens(session: CompactionGateSession): number | null {
+  if (typeof session.getContextUsage !== "function") return null;
+  try {
+    const usage = session.getContextUsage();
+    if (usage && typeof usage.tokens === "number" && Number.isFinite(usage.tokens) && usage.tokens > 0) {
+      return usage.tokens;
     }
+  } catch {
+    // A throwing usage reader must not break the send.
+  }
+  return null;
+}
+
+/**
+ * Token estimate for a pending outbound prompt, for {@link CompactionGateOptions.pendingRequestTokens}.
+ * Uses pi's own message estimator so the gate prices the new turn the same way it prices history.
+ */
+export function estimatePendingRequestTokens(prompt: string): number {
+  try {
+    return estimateTokens({ role: "user", content: prompt, timestamp: Date.now() });
+  } catch {
+    // An unestimable prompt counts as 0; the static floor still guards the send.
+    return 0;
+  }
+}
+
+export function estimateLoadedContextTokens(session: CompactionGateSession): number | null {
+  const usage = providerUsageTokens(session);
+  if (usage !== null) {
+    return usage;
   }
 
   const messages = session.state?.messages;
@@ -534,6 +565,14 @@ export interface CompactionGateOptions {
    * prefers the raw pi-only behavior can turn it off.
    */
   enabled?: boolean;
+  /**
+   * FNXC:ChatContextGuard 2026-09-16-12:40:
+   * Tokens the caller intends to append after this gate returns (the pending user prompt).
+   * A zero-usage provider reports only what is already loaded, so without this the guard could
+   * clear a context for a request that still crosses the hard limit once the prompt is added.
+   * Callers pass {@link estimatePendingRequestTokens} of the prompt they are about to send.
+   */
+  pendingRequestTokens?: number | null;
 }
 
 /** Result of a gate evaluation. */
@@ -629,7 +668,24 @@ export async function ensureContextWithinCompactionThreshold(
     return { compacted: false, contextTokens: null, threshold: null };
   }
 
-  const contextTokens = estimateLoadedContextTokens(session);
+  /*
+  FNXC:ChatContextGuard 2026-09-16-12:40:
+  The gate prices the WHOLE outbound request, not just what the session already holds. Provider
+  usage (when the provider reports any) already covers prompt, tool schemas and history, so it is
+  used as-is plus the pending prompt. Without usage the measurement would otherwise count only
+  loaded messages and omit the static floor (system prompt + active tool schemas), letting a 64K
+  model send a request past its hard limit. The static floor is added exactly when usage is absent
+  because a reported usage number already includes the static context.
+  */
+  const pendingRequestTokens = Math.max(0, options.pendingRequestTokens ?? 0);
+  const providerUsage = providerUsageTokens(session);
+  const loadedTokens = estimateLoadedContextTokens(session);
+  const contextTokens =
+    loadedTokens === null
+      ? null
+      : providerUsage === null
+        ? loadedTokens + (staticContextFloorEstimate(session) ?? 0) + pendingRequestTokens
+        : loadedTokens + pendingRequestTokens;
   if (contextTokens === null) {
     piLog.warn("chat-context-guard: loaded context tokens unknown — skipping pre-overflow gate");
     return { compacted: false, contextTokens: null, threshold };
@@ -884,25 +940,40 @@ export async function ensureContextWithinCompactionThreshold(
       }
       session.state.messages = rebuilt.messages;
       // Floor-aware proof, measured through the existing estimator (never a new token math).
-      const afterTokens = freshLoadedContextEstimate(session) ?? estimateLoadedContextTokens(session);
+      /*
+      FNXC:ChatContextGuard 2026-09-16-15:45 (#3620 review — greptile P1 / coderabbit):
+      The tier-3 proof must price the WHOLE next request. `freshLoadedContextEstimate` already
+      covers the static prompt/tool floor; the messages-only fallback does not, so its floor is
+      added when usage is absent — the same composition rule as the entry check. The pending
+      prompt is always charged: a rescue that proved "under target" without it could still send
+      an over-limit request — the deadlock this tier exists to end, re-opened by its own proof.
+      */
+      const t3Fresh = freshLoadedContextEstimate(session);
+      const afterTokens = t3Fresh ?? estimateLoadedContextTokens(session);
+      const afterRequestTokens = afterTokens === null
+        ? null
+        : afterTokens + pendingRequestTokens
+          + (t3Fresh === null && providerUsageTokens(session) === null
+            ? (staticContextFloorEstimate(session) ?? 0)
+            : 0);
       const evidence: Tier3TruncationEvidence = {
         droppedMessageCount: plan.droppedEntryCount,
         // Unattributable (0) when the post-rebuild measurement failed; a fabricated guess would
-        // overstate what the operator lost.
-        droppedTokens: afterTokens === null ? 0 : Math.max(0, contextTokens - afterTokens),
+        // overstate what the operator lost. Like-for-like: both sides price the whole request.
+        droppedTokens: afterRequestTokens === null ? 0 : Math.max(0, contextTokens - afterRequestTokens),
         floorTokens: staticFloor,
-        contextTokensAfter: afterTokens,
+        contextTokensAfter: afterRequestTokens,
       };
-      if (afterTokens === null || afterTokens >= compactionTarget) {
+      if (afterRequestTokens === null || afterRequestTokens >= compactionTarget) {
         // The proof rejected the reduction, but the truncation stands on disk — the refusal
         // must describe the shortened state actually left behind, not the pre-truncation numbers.
         return settle({ status: "truncated-unproven", evidence });
       }
-      if (afterTokens >= threshold) {
+      if (afterRequestTokens >= threshold) {
         // Unreachable while target <= threshold; the guard's estimator is not the proof's
         // contract, so fail loud rather than send. The truncation still happened.
         piLog.warn(
-          `chat-context-guard: deterministic fallback truncated to ${afterTokens} tokens but the floor-aware re-measurement still exceeds the ${threshold}-token threshold; refusing to send`,
+          `chat-context-guard: deterministic fallback truncated to ${afterRequestTokens} tokens but the floor-aware re-measurement still exceeds the ${threshold}-token threshold; refusing to send`,
         );
         return settle({ status: "truncated-unproven", evidence });
       }
@@ -1047,19 +1118,29 @@ export async function ensureContextWithinCompactionThreshold(
     claim — and the gate keeps its fail-loud behavior.
     */
     const freshTokens = freshLoadedContextEstimate(session);
-    if (freshTokens !== null && freshTokens < threshold) {
+    /*
+    FNXC:ChatContextGuard 2026-09-16-15:45 (#3620 review — greptile P1 / coderabbit):
+    "Proceeding because the current context fits" must price the WHOLE next request — the
+    pending prompt included — or a stale-usage "recovery" sends an over-limit request. The
+    measurement label follows the composition so the operator sees what was priced.
+    */
+    const freshRequestTokens = freshTokens === null ? null : freshTokens + pendingRequestTokens;
+    const freshLabel = pendingRequestTokens > 0
+      ? "the whole next request (prompt + tools + messages + pending prompt)"
+      : "fresh measurement of the current prompt + tools + messages";
+    if (freshRequestTokens !== null && freshRequestTokens < threshold) {
       piLog.log(
-        `chat-context-guard: recorded context ${contextTokens} tokens is stale — fresh measurement of the current prompt + tools + messages is ${freshTokens} tokens (< threshold ${threshold}); the session's static context changed since the usage was recorded. Proceeding with the current context.`,
+        `chat-context-guard: recorded context ${contextTokens} tokens is stale — ${freshLabel} is ${freshRequestTokens} tokens (< threshold ${threshold}); the session's static context changed since the usage was recorded. Proceeding with the current context.`,
       );
       await emitAudit({
         tier,
         tiersAttempted,
         reason: outcome.reason,
         outcome: "proceeded-without-reduction",
-        afterTokens: freshTokens,
+        afterTokens: freshRequestTokens,
         retrySkippedReason: "pi-refuses-second-compaction",
       });
-      return { compacted: false, contextTokens: freshTokens, threshold };
+      return { compacted: false, contextTokens: freshRequestTokens, threshold };
     }
     /*
     FNXC:ChatOverflowCompaction 2026-09-04-19:20:
@@ -1073,7 +1154,7 @@ export async function ensureContextWithinCompactionThreshold(
     if (attempt.status === "rescued") return finishFallback(attempt.evidence);
     const refusal = tier3RefusalOverlay(attempt);
     const refusalReason: ChatContextOverflowReason = refusal.reason ?? outcome.reason;
-    const reportedFreshTokens = reportedTokens(refusal, freshTokens);
+    const reportedFreshTokens = reportedTokens(refusal, freshRequestTokens);
     await emitAudit({
       tier,
       tiersAttempted,
@@ -1084,7 +1165,7 @@ export async function ensureContextWithinCompactionThreshold(
       ...refusal.auditExtras,
     });
     throw new ChatContextOverflowError(
-      `Pre-overflow compaction was refused by the session engine (reason=${refusalReason}, tiers attempted: ${tiersAttempted.join(", ")}): pi: "${outcome.engineMessage ?? outcome.reason}" — this refusal is absolute, a larger compaction directive cannot unlock it; measured ${contextTokens} tokens >= threshold ${threshold}${hardLimit !== null ? `, hard limit ${hardLimit}` : ""}${reportedFreshTokens !== null ? `, fresh measurement of the current prompt + tools + messages is ${reportedFreshTokens} tokens${reportedFreshTokens >= threshold ? " — reduce the agent's tools/memory or use a larger-window model" : ""}` : "; the fresh measurement is unavailable"}${refusal.suffix}; the prompt was not sent`,
+      `Pre-overflow compaction was refused by the session engine (reason=${refusalReason}, tiers attempted: ${tiersAttempted.join(", ")}): pi: "${outcome.engineMessage ?? outcome.reason}" — this refusal is absolute, a larger compaction directive cannot unlock it; measured ${contextTokens} tokens >= threshold ${threshold}${hardLimit !== null ? `, hard limit ${hardLimit}` : ""}${reportedFreshTokens !== null ? `, ${freshLabel} is ${reportedFreshTokens} tokens${reportedFreshTokens >= threshold ? " — reduce the agent's tools/memory or use a larger-window model" : ""}` : "; the fresh measurement is unavailable"}${refusal.suffix}; the prompt was not sent`,
       refusalDetails(refusalReason, {
         freshTokens: reportedFreshTokens,
         engineMessage: outcome.engineMessage,
@@ -1160,7 +1241,20 @@ export async function ensureContextWithinCompactionThreshold(
   }
 
   const afterTokens = estimateLoadedContextTokens(session);
-  const overLimit = afterTokens !== null && afterTokens >= bounds.hardLimit;
+  /*
+  FNXC:ChatContextGuard 2026-09-16-15:45 (#3620 review — greptile P1 / coderabbit):
+  The post-compaction acceptance check must price the WHOLE outbound request, not just the
+  compacted messages. Provider usage is stale after compaction (it describes the pre-compaction
+  request), so when usage was absent at entry the static floor is added exactly like at entry;
+  the pending prompt is added unconditionally. Without this, a compacted session below the hard
+  limit on messages alone could still send a request over the limit — the overflow the gate
+  exists to prevent, arriving one statement later.
+  */
+  const afterUsage = providerUsageTokens(session);
+  const afterRequestTokens = afterTokens === null
+    ? null
+    : afterTokens + (afterUsage === null ? (staticContextFloorEstimate(session) ?? 0) : 0) + pendingRequestTokens;
+  const overLimit = afterRequestTokens !== null && afterRequestTokens >= bounds.hardLimit;
 
   /*
   FNXC:CompactionNoProgress 2026-09-04-16:35:
@@ -1183,7 +1277,7 @@ export async function ensureContextWithinCompactionThreshold(
       if (attempt.status === "rescued") return finishFallback(attempt.evidence);
       const refusal = tier3RefusalOverlay(attempt);
       const refusalReason: ChatContextOverflowReason = refusal.reason ?? "non-reducing-summary";
-      const reportedAfterTokens = reportedTokens(refusal, afterTokens);
+      const reportedAfterTokens = reportedTokens(refusal, afterRequestTokens);
       await emitAudit({
         tier,
         tiersAttempted,
@@ -1194,7 +1288,7 @@ export async function ensureContextWithinCompactionThreshold(
         ...refusal.auditExtras,
       });
       throw new ChatContextOverflowError(
-        `Pre-overflow compaction produced a summary that did not reduce the context (reason=${refusalReason}, tiers attempted: ${tiersAttempted.join(", ")}): ${reportedAfterTokens} tokens remain vs the ${bounds.hardLimit} hard limit (threshold ${threshold}, contextWindow ${contextWindow ?? "unknown"})${refusal.suffix}; the prompt was not sent`,
+        `Pre-overflow compaction produced a summary that did not reduce the context (reason=${refusalReason}, tiers attempted: ${tiersAttempted.join(", ")}): ${reportedAfterTokens} tokens priced for the next request vs the ${bounds.hardLimit} hard limit (threshold ${threshold}, contextWindow ${contextWindow ?? "unknown"})${refusal.suffix}; the prompt was not sent`,
         refusalDetails(refusalReason, {
           afterTokens: reportedAfterTokens,
           tokensBefore: outcome.tokensBefore,
@@ -1234,7 +1328,7 @@ export async function ensureContextWithinCompactionThreshold(
       // The outcome enum stays measurement-unknown even on a throw (RUFU-182): the honest
       // statement is "we could not observe what compaction did", whichever boundary hit.
       const refusalReason: ChatContextOverflowReason = refusal.reason ?? "post-compaction-over-limit";
-      const reportedAfterTokens = reportedTokens(refusal, afterTokens);
+      const reportedAfterTokens = reportedTokens(refusal, afterRequestTokens);
       await emitAudit({
         tier,
         tiersAttempted,
@@ -1273,7 +1367,7 @@ export async function ensureContextWithinCompactionThreshold(
     if (attempt.status === "rescued") return finishFallback(attempt.evidence);
     const refusal = tier3RefusalOverlay(attempt);
     const refusalReason: ChatContextOverflowReason = refusal.reason ?? "post-compaction-over-limit";
-    const reportedAfterTokens = reportedTokens(refusal, afterTokens);
+    const reportedAfterTokens = reportedTokens(refusal, afterRequestTokens);
     await emitAudit({
       tier,
       tiersAttempted,

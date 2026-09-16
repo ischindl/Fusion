@@ -487,6 +487,19 @@ export {
   type PrepareWorkspaceRevertPrBranchesResult,
   type PrepareWorkspaceRevertPrBranchesOptions,
   type WorkspaceRepoRevertPrBranch,
+  // FN-416 restore-the-revert surface.
+  resolveTaskRevertRestoreCommits,
+  performTaskRevertRestore,
+  createAiRestoreTask,
+  buildAiRestoreTaskDescription,
+  RESTORE_OF_METADATA_KEY,
+  type TaskRevertRestoreCommitSource,
+  type ResolvedTaskRevertRestoreCommits,
+  type ResolveTaskRevertRestoreCommitsOptions,
+  type TaskRevertRestoreResult,
+  type PerformTaskRevertRestoreOptions,
+  type AiRestoreTaskResult,
+  type CreateAiRestoreTaskDeps,
 } from "./execution/task-revert.js";
 export {
   resolveBranchGroupMergeRouting,
@@ -1006,6 +1019,7 @@ export {
   computeCompactionThreshold,
   ensureContextWithinCompactionThreshold,
   estimateLoadedContextTokens,
+  estimatePendingRequestTokens,
   type ChatContextOverflowReason,
   type CompactionAuditContext,
   type CompactionEscalationTier,
@@ -1013,7 +1027,7 @@ export {
   type CompactionGateResult,
   type CompactionGateSession,
 } from "./chat-context-guard.js";
-export { SelfHealingManager, type SelfHealingOptions, type RebindResult } from "./self-healing.js";
+export { SelfHealingManager, type SelfHealingOptions, type RebindResult, type LandedReviewReconcileResult } from "./self-healing.js";
 /*
 FNXC:MergeReliability 2026-07-15-21:45 (FN-8004 follow-up):
 Exported for the dashboard's manual Retry gate, which must share ONE definition of "orphaned
@@ -1290,11 +1304,6 @@ export {
   type CliAdapterCapabilities,
   type CliAdapterElevationMarkers,
 } from "./cli-agent/adapter.js";
-// CLI Agent Executor — per-turn memory recall service (RUFU-128).
-export {
-  recallForChatTurn,
-  type MemoryRecallChatTurnInput,
-} from "./cli-agent/memory-recall-service.js";
 // CLI Agent Executor — autonomy posture resolution + approval gate (U15).
 export {
   resolveEffectivePosture,
@@ -1334,7 +1343,3 @@ export {
   type ResolvedCliExecutorConfig,
   type LaunchCliTaskSessionOptions,
 } from "./cli-agent/task-session.js";
-
-export { // FN-416 restore-the-revert surface.
-  resolveTaskRevertRestoreCommits, performTaskRevertRestore, createAiRestoreTask, buildAiRestoreTaskDescription, RESTORE_OF_METADATA_KEY, type TaskRevertRestoreCommitSource, type ResolvedTaskRevertRestoreCommits, type ResolveTaskRevertRestoreCommitsOptions, type TaskRevertRestoreResult, type PerformTaskRevertRestoreOptions, type AiRestoreTaskResult, type CreateAiRestoreTaskDeps } from "./execution/task-revert.js";  // [upstream-merge addition]
-export { type LandedReviewReconcileResult } from "./self-healing.js";  // [upstream-merge addition]

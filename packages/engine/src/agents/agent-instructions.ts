@@ -16,7 +16,7 @@ import {
 import type { PluginRunner } from "../plugins/plugin-runner.js";
 import { createLogger } from "../logger.js";
 import { readAgentMemoryWorkspaceLongTerm } from "../agent-tools.js";
-import { buildMemoryIndex, buildMemoryHeadingIndex } from "./agent-memory-index.js";
+import { buildMemoryIndex, buildMemoryHeadingIndex, clampUtf8 } from "./agent-memory-index.js";
 
 const log = createLogger("agent-instructions");
 
@@ -247,11 +247,18 @@ async function formatMemorySection(
         "",
       ];
       if (workspaceTrimmed) {
+        /*
+        FNXC:ChatContextBudget 2026-09-16-15:45 (#3620 review — coderabbit):
+        The index parses its input in full before the output byte clamp, so feeding the raw
+        workspace file let an 800K-char MEMORY.md grow heading parsing and allocation with the
+        whole file on every bounded-context prompt. `workspaceTrimmed` bounds the parse to the
+        same budget the prompt respects; the full file stays reachable through the memory tools.
+        */
         lines.push(
           buildMemoryHeadingIndex({
             sectionHeader: "## Agent Memory Index (use fn_memory_search / fn_memory_get to read)",
             displayPath: memoryWorkspaceDisplayPath(agentId),
-            content: workspaceMemory,
+            content: workspaceTrimmed,
             // When inline memory also needs a slice, split the budget 3:1; otherwise
             // the index may take the full budget.
             maxBytes: Math.max(256, Math.floor(memoryCapChars * (inlineTrimmed ? 0.75 : 1))),
@@ -259,10 +266,16 @@ async function formatMemorySection(
         );
       }
       if (inlineTrimmed) {
-        // Budget slice without trimAndClamp's per-turn log warning: this clamp is the
-        // intended steady state for chat, not an anomaly.
-        const inlineBudget = Math.max(256, Math.floor(memoryCapChars * 0.25));
-        lines.push(Buffer.byteLength(inlineTrimmed, "utf8") > inlineBudget ? `${inlineTrimmed.slice(0, inlineBudget)}…` : inlineTrimmed);
+        /*
+        FNXC:ChatContextBudget 2026-09-16-12:40:
+        Review finding: the inline slice compared Buffer.byteLength (bytes) against the budget but
+        cut with .slice(0, budget) (code units) — for multi-byte text the check and the cut
+        disagreed, and the fixed 25% share starved the inline memory when no heading index used
+        the remaining 75%. The clamp now enforces the budget in bytes via the shared clampUtf8,
+        and the index/inline split only reserves the 3:1 ratio when both parts actually render.
+        */
+        const inlineBudget = Math.max(256, Math.floor(memoryCapChars * (workspaceTrimmed ? 0.25 : 1)));
+        lines.push(Buffer.byteLength(inlineTrimmed, "utf8") > inlineBudget ? `${clampUtf8(inlineTrimmed, inlineBudget)}…` : inlineTrimmed);
       }
       return lines.join("\n");
     }

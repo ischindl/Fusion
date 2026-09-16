@@ -35,7 +35,7 @@ applies_when:
 
 # Chat context overflow: pi threshold compaction is blind to zero-usage providers
 
-RUFU-118 (B.1 LCM phase 1, "Nikdy nepretečie" — deterministic pre-overflow compaction on the
+RUFU-118 (B.1 LCM phase 1, "never overflow" — deterministic pre-overflow compaction on the
 chat/CLI path). Root-cause diagnosis confirmed against pi 0.84.1 sources
 (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`) on 2026-08-18; the fix is a
 Fusion-owned gate, not a pi patch (requirement: do not depend on pi internals).

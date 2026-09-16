@@ -14,6 +14,8 @@
  */
 import { describe, it, expect, vi } from "vitest";
 import {
+  estimatePendingRequestTokens,
+  staticContextFloorEstimate,
   buildAggressiveCompactionDirective,
   ChatContextOverflowError,
   computeCompactionThreshold,
@@ -975,5 +977,71 @@ describe("ensureContextWithinCompactionThreshold", () => {
     const err = await captureGateError(session, { tokenCap: undefined, audit: { sink } });
     expect(err).toBeInstanceOf(ChatContextOverflowError);
     expect(err?.message).toContain("reason=nothing-to-compact");
+  });
+});
+
+/*
+FNXC:ChatContextGuard 2026-09-16-12:40:
+RUFU-118 PR review: the gate prices the WHOLE outbound request. A zero-usage provider must not
+wave through a send whose loaded messages + static floor + pending prompt cross the hard limit,
+and both estimators must price the system prompt in the same unit (bytes) so non-ASCII prompts
+cannot drift the trigger and the tier-3 proof apart.
+*/
+describe("pre-overflow gate request pricing (2026-09-16 review)", () => {
+  it("trips the gate on a pending prompt that pushes a below-threshold zero-usage context over it", async () => {
+    const { session, compact } = makeFakePiSession({
+      usage: { tokens: null, contextWindow: 128000, percent: null },
+      messages: [userMessageOf(4000)], // 1000 loaded tokens
+    });
+    const control = await ensureContextWithinCompactionThreshold(session, { tokenCap: undefined });
+    expect(control.compacted).toBe(false);
+
+    const { session: armed, compact: armedCompact } = makeFakePiSession({
+      usage: { tokens: null, contextWindow: 128000, percent: null },
+      messages: [userMessageOf(4000)],
+    });
+    const result = await ensureContextWithinCompactionThreshold(armed, {
+      tokenCap: undefined,
+      pendingRequestTokens: 102000,
+    });
+    expect(result.compacted).toBe(true);
+    expect(armedCompact).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts the static floor into the measurement when the provider reports no usage", async () => {
+    const { session } = makeFakePiSession({
+      usage: { tokens: null, contextWindow: 128000, percent: null },
+      messages: [userMessageOf(4000)], // 1000 tokens
+      systemPrompt: "x".repeat(3500), // 3500 bytes → 1000 floor tokens
+    });
+    const result = await ensureContextWithinCompactionThreshold(session, { tokenCap: undefined });
+    expect(result.compacted).toBe(false);
+    expect(result.contextTokens).toBe(2000);
+  });
+
+  it("does not double-count the static floor when provider usage is present, but still adds the pending prompt", async () => {
+    const { session } = makeFakePiSession({
+      usage: { tokens: 30000, contextWindow: 128000, percent: 23.4 },
+      systemPrompt: "x".repeat(3500),
+    });
+    const result = await ensureContextWithinCompactionThreshold(session, {
+      tokenCap: undefined,
+      pendingRequestTokens: 5000,
+    });
+    expect(result.compacted).toBe(false);
+    expect(result.contextTokens).toBe(35000);
+  });
+
+  it("prices a non-ASCII system prompt in bytes identically in both estimators", () => {
+    const prompt = "記".repeat(100); // 300 UTF-8 bytes, 100 code units
+    const { session } = makeFakePiSession({ usage: "undefined", systemPrompt: prompt });
+    expect(staticContextFloorEstimate(session)).toBe(Math.ceil(300 / 3.5));
+    expect(freshLoadedContextEstimate(session)).toBe(Math.round(300 / 3.5));
+  });
+
+  it("estimatePendingRequestTokens approximates pi's message estimator for plain text", () => {
+    const tokens = estimatePendingRequestTokens("a".repeat(4000));
+    expect(tokens).toBeGreaterThanOrEqual(900);
+    expect(tokens).toBeLessThanOrEqual(1100);
   });
 });

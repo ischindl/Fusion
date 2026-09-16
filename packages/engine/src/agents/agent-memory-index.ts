@@ -15,7 +15,14 @@ type HeadingEntry = {
 
 const MAX_INDEX_BYTES = 800;
 
-function clampUtf8(input: string, maxBytes: number): string {
+/**
+ * UTF-8-safe byte clamp: never splits a multi-byte character.
+ *
+ * FNXC:ChatContextBudget 2026-09-16-12:40: Exported for the inline-memory slice in
+ * agent-instructions.ts, which compared byteLength against a budget but sliced by code units —
+ * the same clamp must serve both sites so byte budgets are enforced in bytes.
+ */
+export function clampUtf8(input: string, maxBytes: number): string {
   if (Buffer.byteLength(input, "utf8") <= maxBytes) return input;
   let out = "";
   for (const char of input) {

@@ -1410,6 +1410,16 @@ export interface AgentOptions {
    */
   allowMcpToolsInReadonly?: boolean;
   /**
+   * Let THIS session's connected MCP tools pass the toolsAllowlist without naming them in it.
+   * Chat surfaces set this: the allowlist exists to hide the host-executor toolset from chat,
+   * and chat's own configured integrations (e.g. the built-in fusion-memory server) connect
+   * after the allowlist is built, so their names cannot be in it. Callers WITHOUT it — notably
+   * automation steps, which pass both `allowedTools` and resolved MCP servers — keep the
+   * allowlist absolute: an automation step must not receive MCP tools its allowlist excludes
+   * (#3620 review, coderabbit).
+   */
+  allowMcpToolsThroughAllowlist?: boolean;
+  /**
    * Configured MCP server names a read-only session may use. This only narrows an explicit
    * `allowMcpToolsInReadonly` opt-in; omit it to preserve the reviewed planning-lane behavior.
    */
@@ -3323,7 +3333,25 @@ export async function createPiAgentSessionRaw(options: AgentOptions): Promise<Ag
       : { allowed: candidateCustomTools, denied: [] };
     const allowlistFilteredCustomTools = {
       ...readonlyFilteredCustomTools,
-      allowed: readonlyFilteredCustomTools.allowed.filter((tool) => isAllowedByToolAllowlist(tool.name)),
+      /*
+      FNXC:ChatContextBudget 2026-09-16-12:40:
+      MCP tools the operator configured for THIS session connect after the allowlist is built, so
+      their names cannot be in it — filtering them against the list silently dropped every MCP tool
+      from allowlisted chat surfaces, including the built-in `fusion-memory` server, while its
+      server was still booted. The allowlist exists to hide the host-extension executor toolset
+      from chat, not to veto the session's own configured integrations, so session MCP tools pass
+      and everything else stays name-gated.
+
+      FNXC:ChatContextBudget 2026-09-16-15:45 (#3620 review, coderabbit):
+      The pass-through is opt-in per caller via `allowMcpToolsThroughAllowlist`. Automation steps
+      pass both `allowedTools` and store-resolved MCP servers, so an unconditional pass would
+      hand them MCP tools their own allowlist excludes; only chat surfaces opt in.
+      */
+      allowed: readonlyFilteredCustomTools.allowed.filter(
+        (tool) =>
+          isAllowedByToolAllowlist(tool.name)
+          || (options.allowMcpToolsThroughAllowlist === true && mcpToolset?.tools.includes(tool) === true),
+      ),
     };
     if (isReadonly && readonlyFilteredCustomTools.denied.length > 0) {
       piLog.warn(

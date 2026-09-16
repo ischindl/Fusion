@@ -71,6 +71,13 @@ vi.mock("@fusion/engine", () => ({
   */
   ChatContextOverflowError: class ChatContextOverflowError extends Error {},
   ensureContextWithinCompactionThreshold: vi.fn(async () => ({ compacted: false, contextTokens: null, threshold: null })),
+  /*
+  FNXC:DashboardChatTests 2026-09-16-14:20 (#3620 review round 2):
+  The whole-request pricing path named-imports `estimatePendingRequestTokens` from the engine
+  barrel, so the static factory must resolve it. Mock returns 0: these cases pin message
+  behavior, not token math, and a zero pending term keeps their existing prompt expectations.
+  */
+  estimatePendingRequestTokens: vi.fn(() => 0),
   extractRuntimeHint: vi.fn(() => undefined),
   extractRuntimeModel: vi.fn(() => undefined),
   buildSessionSkillContextSync: vi.fn(() => ({ skillSelectionContext: undefined, resolvedSkillNames: [], skillSource: "none" as const })),

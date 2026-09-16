@@ -200,7 +200,6 @@ const TEST_ROOT = mkdtempSync(join(tmpdir(), "fusion-chat-guard-"));
 afterAll(() => {
   rmSync(TEST_ROOT, { recursive: true, force: true });
 });
-
 function makeManager(
   getSettings?: () => Promise<Record<string, unknown> | undefined>,
   agentStore?: unknown,
@@ -769,11 +768,16 @@ describe("ChatManager — engine phase side-channel around the compaction gate (
    * frame (text/thinking/etc.) preceded the phase bracket", so the content-free acknowledgement
    * is excluded like the phase channel itself; its own ordering contract is pinned in
    * chat-manager-user-persisted.test.ts.
+   *
+   * FNXC:ChatMessageEdit 2026-09-16 (merge origin/main, FN-459):
+   * FN-459 adds a content-free `user_message` identity echo on the same pre-gate path (server id
+   * for the client's optimistic temp bubble). Like the RUFU-192 ack it carries no reply content,
+   * so it is excluded under the same rationale; its ordering contract is FN-459's own.
    */
   function nonPhaseEvents(broadcastSpy: { mock: { calls: unknown[] } }): string[] {
     return broadcastSpy.mock.calls
       .map((call) => (call[1] as { type?: string } | undefined)?.type ?? "")
-      .filter((type) => type !== "phase" && type !== "user_persisted");
+      .filter((type) => type !== "phase" && type !== "user_persisted" && type !== "user_message");
   }
 
   it("brackets the direct-send gate with active:true before it resolves and active:false before done", async () => {
@@ -807,9 +811,14 @@ describe("ChatManager — engine phase side-channel around the compaction gate (
     RUFU-192: the only frame legally allowed before the phase bracket is the content-free
     `user_persisted` durability ack (the user row must be stored before the gate can run).
     The bracket is still the first CONTENT frame of the send.
+
+    FNXC:ChatMessageEdit 2026-09-16 (merge origin/main, FN-459):
+    FN-459 adds a second content-free pre-bracket frame, the `user_message` identity echo the
+    client needs to reconcile its optimistic temp bubble. The bracket's claim is unchanged — it
+    is the first frame carrying REPLY content — so the pre-bracket allowlist grows by that echo.
     */
     expect(broadcastSpy.mock.calls.slice(0, firstPhaseIndex).every(
-      (call) => (call[1] as { type?: string } | undefined)?.type === "user_persisted",
+      (call) => ["user_persisted", "user_message"].includes((call[1] as { type?: string } | undefined)?.type ?? ""),
     )).toBe(true);
     const phaseIndices = broadcastSpy.mock.calls
       .map((call, index) => ((call[1] as { type?: string } | undefined)?.type === "phase" ? index : -1))
@@ -931,7 +940,6 @@ describe("ChatManager — engine phase side-channel around the compaction gate (
     broadcastSpy.mockRestore();
   });
 });
-
 describe("ChatContextOverflowError", () => {
   it("is non-retryable with code CHAT_CONTEXT_OVERFLOW (engine barrel export)", () => {
     const err = new ChatContextOverflowError("context still exceeds the limit after compaction");

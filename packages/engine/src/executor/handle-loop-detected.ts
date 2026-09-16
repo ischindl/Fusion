@@ -144,7 +144,9 @@ export async function handleLoopDetected(
     return false;
   }
 
-  executorLog.log(`${taskId} compaction succeeded (freed ${compactOutcome.tokensBefore} tokens) — setting recovery-pending`);
+  // `tokensBefore` is the pre-compaction context size, not the freed amount — a 100k→80k
+  // compaction must not log "freed 100k" (2026-09-16 review).
+  executorLog.log(`${taskId} compaction succeeded (context was ${compactOutcome.tokensBefore} tokens before compaction) — setting recovery-pending`);
   await deps.store.logEntry(taskId, `Context compacted successfully — will resume with fresh context`);
 
   // FN-5168: once loop recovery has fired in this execute() lifecycle,

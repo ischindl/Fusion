@@ -71,6 +71,7 @@ import {
   promptWithFallback as enginePromptWithFallback,
   ChatContextOverflowError,
   ensureContextWithinCompactionThreshold,
+  estimatePendingRequestTokens,
   type CompactionGateResult,
   extractRuntimeHint,
   extractRuntimeModel,
@@ -2814,6 +2815,8 @@ export class ChatManager {
       only the builtin coding tools would remain.
       */
       toolsAllowlist: roomChatBudgetOn ? chatToolAllowlist(roomCustomTools.map((tool) => tool.name)) : undefined,
+      // Room responders are a chat surface — same scoped MCP pass-through as direct chat.
+      allowMcpToolsThroughAllowlist: true,
       ...(roomCustomTools.length > 0 ? { customTools: roomCustomTools } : {}),
       ...(effectiveModelProvider && effectiveModelId
         ? {
@@ -2866,6 +2869,8 @@ export class ChatManager {
       const roomGateResult = await ensureContextWithinCompactionThreshold(resolvedSession.session, {
         tokenCap: chatModelSettings.tokenCap,
         enabled: chatModelSettings.chatPreOverflowCompactionEnabled !== false,
+        // See the direct-chat gate: room responders price their composed roomPrompt too.
+        pendingRequestTokens: estimatePendingRequestTokens(roomPrompt),
         audit: { sink: this.taskStore, sessionId: `room:${input.roomId}` },
       });
       if (roomGateResult.fallback) {
@@ -3797,6 +3802,9 @@ export class ChatManager {
         is dropped from the session (observed: chat shrank to the 7 builtin tools).
         */
         toolsAllowlist: directChatBudgetOn ? chatToolAllowlist(customTools.map((tool) => tool.name)) : undefined,
+        // Chat's own MCP integrations (fusion-memory) connect after the allowlist is built;
+        // only chat opts into letting them pass it (#3620 review — automation lanes stay strict).
+        allowMcpToolsThroughAllowlist: true,
         ...(customTools.length > 0 ? { customTools } : {}),
         sessionManager,
         ...(effectiveModelProvider && effectiveModelId
@@ -3961,6 +3969,11 @@ export class ChatManager {
       serialize/buffer path. The RUFU-182/183 `chat:pre-overflow-compaction` run-audit contract is
       untouched — that row stays the durable forensic record while this event is only a live label.
       */
+      /*
+      FNXC:ChatContextBudget 2026-09-16-20:10 (merge origin/main):
+      The gate keeps main's RUFU-188 phase-broadcast bracket AND the PR's pendingRequestTokens
+      review fix, so the streaming label and the priced request both survive.
+      */
       const compactionGateEnabled = chatModelSettings.chatPreOverflowCompactionEnabled !== false;
       const broadcastCompactionPhase = (active: boolean): void => {
         if (!compactionGateEnabled) return;
@@ -3980,6 +3993,10 @@ export class ChatManager {
         gateResult = await ensureContextWithinCompactionThreshold(agentResult.session, {
           tokenCap: chatModelSettings.tokenCap,
           enabled: compactionGateEnabled,
+          // The gate must price the prompt it is about to receive, not only what is
+          // loaded (2026-09-16 review): a zero-usage provider prices the composed
+          // outbound request via estimatePendingRequestTokens.
+          pendingRequestTokens: estimatePendingRequestTokens(promptContent),
           audit: { sink: this.taskStore, sessionId: session.id },
         });
       } finally {
@@ -4278,7 +4295,10 @@ export class ChatManager {
           diagnostics.error(`Failed to persist context-overflow failure for session ${sessionId}:`, persistErr);
         }
 
-        this.flushInFlightGenerationPersist(sessionId, null);
+        // Overflow ends this generation; scope the checkpoint clear to it so a newer send's
+        // checkpoint cannot be wiped by this stale branch (2026-09-16 review), matching every
+        // other clear site in sendMessage.
+        await this.flushInFlightGenerationPersist(sessionId, null, generationId);
 
         chatStreamManager.broadcast(sessionId, {
           type: "error",
