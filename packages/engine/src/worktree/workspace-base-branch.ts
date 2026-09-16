@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import type { RunMutationContext, Settings, Task, TaskStore } from "@fusion/core";
 import type { RunAuditor } from "../util/run-audit.js";
 import { resolveIntegrationBranch } from "../merge/integration-branch.js";
+import type { TaskBaseAuditFallbackReason, TaskBaseOutcome } from "./task-base-resolution.js";
 
 const defaultExecAsync = promisify(exec);
 type ExecAsyncImpl = typeof defaultExecAsync;
@@ -133,6 +134,50 @@ export async function resolveWorkspaceRepoBaseBranch(
     source: "repo-integration",
     fallbackReason: "unresolvable-in-repo",
   };
+}
+
+/*
+FNXC:TaskBaseResolution 2026-09-16-02:35 (RUFU-245):
+Fresh-creation base resolution reuses this event rather than minting a new type: an operator
+querying "which ref did this card get cut from, and why?" must find the answer in ONE event
+stream per card. `source: "local-integration"` separates these rows from the requested-base rows
+above, and `repoRelPath` is omitted for single-repo projects. Ref names and SHAs stay out of both
+`metadata` and `target` — the operator-readable sentence lives in the task log, never here.
+*/
+export type TaskBaseResolutionAuditSource = "local-integration";
+
+/**
+ * Record which base verdict a fresh task-branch acquisition reached.
+ *
+ * Observability only: the bounded auditor swallows an absent or hostile sink, so a stalled
+ * telemetry write can never become an acquisition lifecycle dependency (FN-9175).
+ */
+export async function recordTaskBaseResolution(opts: {
+  audit?: Pick<RunAuditor, "git">;
+  task: Pick<Task, "id">;
+  /** Repository the verdict was proven in; doubles as the audit target (path, not ref). */
+  rootDir: string;
+  /** Set only for a workspace sub-repository. */
+  repoRelPath?: string;
+  outcome: TaskBaseOutcome;
+  fallbackReason?: TaskBaseAuditFallbackReason;
+}): Promise<void> {
+  try {
+    await opts.audit?.git({
+      type: "worktree:workspace-repo-base-branch",
+      target: opts.rootDir,
+      metadata: {
+        taskId: opts.task.id,
+        ...(opts.repoRelPath ? { repoRelPath: opts.repoRelPath } : {}),
+        stage: "acquire",
+        source: "local-integration" satisfies TaskBaseResolutionAuditSource,
+        outcome: opts.outcome,
+        ...(opts.fallbackReason ? { fallbackReason: opts.fallbackReason } : {}),
+      },
+    });
+  } catch {
+    // Audit is never a base-resolution gate; the operator-visible refusal rides the task log.
+  }
 }
 
 export async function recordWorkspaceBaseBranchDecision(opts: {

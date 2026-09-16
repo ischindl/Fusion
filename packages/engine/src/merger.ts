@@ -7305,6 +7305,14 @@ export async function aiMergeTask(
     FNXC:WorktreeBaseRefresh 2026-08-01-16:04:
     Merge deliberately leaves refreshStaleBase off. The merge lane owns its rebase policy through
     decideAutoPrerebase/runAutoPrerebase; refreshing here would double-rebase a branch after review.
+
+    FNXC:TaskBaseResolution 2026-09-16-03:12 (RUFU-245):
+    No local catch is needed for the `TASK_BASE_DIVERGED:` refusal this acquisition can now throw: the
+    central gate in `createWorktreeImpl` covers this fourth acquisition entry point, and this pipeline is
+    soft-deprecated — `runAiMerge` is the sole live merge path (master-plan U0), and the merge chokepoint
+    plus `store.mergeTask` throw before `aiMergeTask` is ever entered, so the refusal propagates to
+    whichever caller still invokes it rather than being silently retried. `classifyTransientMergeError`
+    does not match the refusal sentence either, so no self-healing merge sweep re-queues it.
     */
     const acquisition = await acquireTaskWorktree({
       task,

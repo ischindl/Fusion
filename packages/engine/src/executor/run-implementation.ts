@@ -214,6 +214,7 @@ import {
 } from "../recovery/branch-conflict-recovery-accounting.js";
 import { emitBoundedRunAudit } from "./emit-bounded-run-audit.js";
 import { acquireTaskWorktree, acquireWorkspaceTaskWorktrees, WorktreeBaseRefreshError } from "../worktree/worktree-acquisition.js";
+import { isTaskBranchBaseDivergedError } from "../worktree/task-base-resolution.js";
 import { acknowledgeOverlapResumeContext, readOverlapResumeContextDelivery, type OverlapResumeContextDelivery } from "../execution/overlap-resume-context.js";
 import { synchronizeOverlapWaitBeforeExecution } from "./overlap-resume-gate.js";
 
@@ -3356,6 +3357,30 @@ export async function runImplementation(
           err.refresh.detail,
           deps.getRunContextFor(task.id),
         ).catch(() => undefined);
+        await deps.persistTokenUsage(task.id);
+        return;
+      } else if (isTaskBranchBaseDivergedError(err)) {
+        /*
+        FNXC:TaskBaseResolution 2026-09-16-02:57 (RUFU-245):
+        Acquisition proved local `main` and its remote-tracking counterpart diverged, so neither is a
+        safe base for a fresh task branch. This is the terminal opposite of the refresh branch above:
+        re-dispatch cannot repair it (only an operator push/pull can), so the row parks `failed` with
+        the refusal sentence — its `TASK_BASE_DIVERGED:` prefix and remedy already live in
+        `err.message`, which is what makes it the single operator-visible reason.
+
+        Deliberately NOT in the RUFU-231 branch-conflict family: no `recoveryRetryCount`, no
+        `pausedReason`, no `worktree`/`branch` write (nothing was created to clear), and no
+        `planBranchConflictRecoveryPass`. Consuming that budget would park the card behind an automatic
+        recovery ladder for a decision the ladder cannot make, which is the re-dispatch wedge RUFU-231
+        removed. The single `refused-diverged` audit row is emitted where the verdict is proven
+        (`recordTaskBaseResolution` in acquisition), so this branch must not emit a second one.
+        */
+        executorLog.warn(`${task.id}: ${err.message}`);
+        await deps.store.updateTask(
+          task.id,
+          { status: "failed", error: err.message },
+          deps.getRunContextFor(task.id),
+        );
         await deps.persistTokenUsage(task.id);
         return;
       } else if (isInvalidAssistantContinuationErrorMessage(errorMessage)) {

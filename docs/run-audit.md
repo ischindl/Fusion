@@ -128,6 +128,20 @@ All `recordRunAuditEventWithinTransaction(tx, ...)` calls and the `recordRunAudi
 
 `task:graph-failure-after-handoff-honored` records the graph-failure sink honoring a completed handoff instead of terminalizing it: an execute-family node (execute / step-execute) failed for a row that was already in the workflow's resolved review lane with all plan steps done, `status`/`error` null, and not user-paused, so the card is left exactly as found (under `autoMerge: false`, `in-review` is terminal-until-human). Emitted through the bounded best-effort seam with IDs and a fixed reason only: `taskId`, `nodeId` (the failing execute-family node, `"unknown"` when the graph recorded none), `column` (the resolved review lane the card is honored in), and fixed `reason: "work-complete-handoff"`; the benign log sentence, failure text, and token totals never enter run-audit. It is intentionally outside the curated delivery-pipeline event catalogue.
 
+### Task branch base resolution
+
+<!--
+FNXC:TaskBaseResolution 2026-09-16-03:55:
+RUFU-245 anchors every fresh task branch to the LOCAL integration ref (the local default branch)
+and records the acquisition decision on the existing FN-9164 event. Divergence is proven from
+already-available refs only — the resolver never fetches/pulls/merges, because reconciling a
+diverged local default is an operator decision. The refusal sentence carries the branch names for
+the operator, so the run-audit row must stay ids/outcomes-only and never echo them.
+-->
+`worktree:workspace-repo-base-branch` is the single base-resolution event (FN-9164). RUFU-245 added the acquisition-decision row: the worktree-acquisition gate emits exactly one row per fresh create with `stage: "acquire"` and `source: "local-integration"`, before any branch creation. `repoRelPath` is optional and present only for workspace per-repo resolutions; single-repo resolutions omit it. The `outcome` enum is `resolved-local-base` (branch anchored to the local integration SHA), `refused-diverged` (local and remote-tracking integration refs are proven to have diverged, acquisition refused), `skipped-remote-unresolvable` (the remote side could not be read, so acquisition proceeds fail-open), and `skipped-remote-rebase-disabled` (`worktreeRebaseBeforeMerge === false`, no remote participates). Metadata stays ids/counts/fixed enums only — `taskId`, optional `repoRelPath`, `stage`, `source`, `outcome`, optional `fallbackReason` — and branch/ref names and SHAs never enter metadata or `target`. The emit uses the existing bounded best-effort seam and is intentionally outside the curated delivery-pipeline event catalogue.
+
+`TASK_BASE_DIVERGED:` is the operator-visible refusal sentence for proven divergence, not a new event type. It means the local integration ref (e.g. `main`) and its remote-tracking counterpart (e.g. `origin/main`) each carry commits the other lacks — proven with `git merge-base --is-ancestor` against already-fetched refs, never a fresh fetch. Remedy: the operator pulls (or pushes) the local default branch to reconcile it with the remote, then retries the card. All four acquisition entry points — the executor (`run-implementation`), the durable-agent heartbeat, the merger, and the workflow graph-node custom-node entry — surface the identical refusal and park the task `failed` with it; none of them consumes the branch-conflict `recoveryRetryCount` budget, emits the acquisition-exhaustion message, or calls `onTaskAcquisitionExhausted`, because divergence is a human reconciliation decision, not a retryable branch conflict. Ahead-only, behind-only, and aligned repos are never refused: a strictly-behind linear remote still receives the FN-8839 post-create linear rebase; only a rebase target proven to have diverged is skipped (the fresh branch keeps its local base).
+
 ### Cross-project handoff
 
 <!--

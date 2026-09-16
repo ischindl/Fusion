@@ -7,12 +7,44 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import type { Settings } from "@fusion/core";
 import { quoteShellArg } from "./shell-quote.js";
+import { resolveLocalIntegrationBase, type TaskBaseExecImpl } from "../worktree/task-base-resolution.js";
 
 const execAsync = promisify(exec);
 
 export type SquashImportPlanStore = {
   getSettings: () => Promise<Settings | Partial<Settings>>;
 };
+
+/*
+FNXC:TaskBaseResolution 2026-09-16-02:35 (RUFU-245):
+The main base is now the LOCAL integration branch's SHA. It used to prefer
+`<remote>/<defaultBranch>` (probing `<remote>/HEAD` and best-effort `git fetch`-ing the branch first)
+whenever worktreeRebaseBeforeMerge was enabled. That made a card's base — and therefore every later
+classifier that measures the branch against "main" — a moving remote pointer the operator had no
+hand in moving, so a local main that had not been fast-forwarded produced a base whose commits were
+absent from local main. RUFU-237 discarded the mismatched claim-time identity and the card merged
+against a base with zero own commits (RUFU-245 reproduced the wedge at main aa3f4a2a8b).
+
+The HEAD fallback stays LAST on purpose: ambient HEAD is whatever the primary checkout happens to sit
+on, which is the contamination shape FNXC:WorktreeIsolation exists to prevent. It is used only when
+the integration ref itself cannot be resolved, i.e. no better local answer exists.
+*/
+async function resolveMainBase(
+  rootDir: string,
+  settings: Settings | Partial<Settings>,
+  execImpl: TaskBaseExecImpl,
+): Promise<string | null> {
+  const { localSha } = await resolveLocalIntegrationBase({ rootDir, settings, execImpl });
+  if (localSha) return localSha;
+
+  // Integration ref unresolvable — last-resort ambient HEAD, still never a remote ref.
+  try {
+    const { stdout } = await execImpl("git rev-parse HEAD", { cwd: rootDir, encoding: "utf-8" });
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Decide whether a task's declared dep base should be squash-imported
@@ -24,6 +56,8 @@ export type SquashImportPlanStore = {
  * `originalStartPoint` is the user-facing label (typically the branch name
  * like `fusion/fn-2729`) used purely for log messages. `depTip` is the
  * resolved SHA of the dep's tip — that's what gets squash-merged.
+ *
+ * `execImpl` is an optional git seam for tests; production callers omit it.
  */
 export async function planSquashImportFromDep(
   rootDir: string,
@@ -31,6 +65,7 @@ export async function planSquashImportFromDep(
   _taskId: string,
   depTip: string,
   originalStartPoint: string | undefined,
+  execImpl?: TaskBaseExecImpl,
 ): Promise<{ depTip: string; mainBase: string; label: string } | null> {
   let settings;
   try {
@@ -39,73 +74,14 @@ export async function planSquashImportFromDep(
     return null;
   }
 
-  // Resolve the main base. Preference order:
-  //   1. <remote>/<defaultBranch> when worktreeRebaseBeforeMerge is enabled
-  //      and a remote is resolvable (settings.worktreeRebaseRemote wins;
-  //      otherwise fall back to "origin" or the lone remote).
-  //   2. rootDir's HEAD (i.e., whatever local main is currently checked out
-  //      to). Used when remote rebase is disabled or no remote exists.
-  let mainBase = "";
-
-  if (settings.worktreeRebaseBeforeMerge !== false) {
-    let remote = settings.worktreeRebaseRemote?.trim() || "";
-    if (!remote) {
-      try {
-        const { stdout } = await execAsync("git remote", { cwd: rootDir });
-        const remotes = stdout.split("\n").map((s) => s.trim()).filter(Boolean);
-        if (remotes.includes("origin")) remote = "origin";
-        else if (remotes.length === 1) remote = remotes[0];
-      } catch {
-        // No remote resolvable.
-      }
-    }
-    if (remote) {
-      let defaultBranch = "";
-      try {
-        const { stdout } = await execAsync(
-          `git rev-parse --abbrev-ref ${quoteShellArg(remote)}/HEAD`,
-          { cwd: rootDir },
-        );
-        defaultBranch = stdout.trim().replace(new RegExp(`^${remote}/`), "");
-      } catch {
-        // origin/HEAD not set; will fall through to local HEAD below.
-      }
-      if (defaultBranch && defaultBranch !== "HEAD") {
-        // Fetch best-effort so the remote ref reflects upstream tip.
-        await execAsync(
-          `git fetch ${quoteShellArg(remote)} ${quoteShellArg(defaultBranch)}`,
-          { cwd: rootDir },
-        ).catch(() => undefined);
-        try {
-          const { stdout } = await execAsync(
-            `git rev-parse --verify "${remote}/${defaultBranch}^{commit}"`,
-            { cwd: rootDir, encoding: "utf-8" },
-          );
-          mainBase = stdout.trim();
-        } catch {
-          // Couldn't resolve remote ref — fall through.
-        }
-      }
-    }
-  }
-
-  if (!mainBase) {
-    try {
-      const { stdout } = await execAsync("git rev-parse HEAD", {
-        cwd: rootDir,
-        encoding: "utf-8",
-      });
-      mainBase = stdout.trim();
-    } catch {
-      return null;
-    }
-  }
+  const exec = execImpl ?? (execAsync as unknown as TaskBaseExecImpl);
+  const mainBase = await resolveMainBase(rootDir, settings, exec);
   if (!mainBase) return null;
 
   // If the dep tip is already an ancestor of main, no squash import is
   // needed — the dep's content is already represented in main.
   try {
-    await execAsync(
+    await exec(
       `git merge-base --is-ancestor ${quoteShellArg(depTip)} ${quoteShellArg(mainBase)}`,
       { cwd: rootDir },
     );

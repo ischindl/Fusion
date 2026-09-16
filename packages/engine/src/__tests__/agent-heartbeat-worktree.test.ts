@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Agent, AgentHeartbeatRun } from "@fusion/core";
 import { HeartbeatMonitor } from "../agent-heartbeat.js";
 import * as worktreeAcquisition from "../worktree/worktree-acquisition.js";
+import { TaskBranchBaseDivergedError } from "../worktree/task-base-resolution.js";
 import * as piModule from "../pi.js";
 
 describe("heartbeat worktree cwd", () => {
@@ -147,6 +148,47 @@ describe("heartbeat worktree cwd", () => {
       expect.any(String),
     );
     expect(taskStore.moveTask).toHaveBeenCalledWith("FN-1", "todo", { preserveProgress: true });
+  });
+
+  /*
+  FNXC:TaskBaseResolution 2026-09-16-03:20 (RUFU-245):
+  A proven divergence between local `main` and its remote-tracking counterpart is an operator
+  decision (push vs. pull), so unlike a stale checkout it must NOT wait for a later heartbeat, and
+  unlike an ordinary acquisition failure it must not spend the three-strike budget or reach
+  `onTaskAcquisitionExhausted` — filing a base-policy refusal as a broken-checkout flake is the
+  re-dispatch wedge RUFU-231 removed. These assertions are the mirror image of the two tests around
+  this one: terminal like the retry-cap case, budget-free like the refresh case.
+  */
+  it("parks a proven task-base divergence terminally without consuming acquisition retries", async () => {
+    const diverged = new TaskBranchBaseDivergedError({
+      localRef: "main",
+      remoteRef: "origin/main",
+      aheadCount: 2,
+      behindCount: 3,
+    });
+    vi.spyOn(worktreeAcquisition, "acquireTaskWorktree").mockRejectedValueOnce(diverged);
+    const onTaskAcquisitionExhausted = vi.fn();
+    const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: "/repo", onTaskAcquisitionExhausted });
+
+    await monitor.executeHeartbeat({ agentId: "a1", source: "on_demand" });
+
+    expect(piModule.createFnAgent).not.toHaveBeenCalled();
+    // The refusal sentence itself is the operator-visible reason, prefix included.
+    expect(taskStore.updateTask).toHaveBeenCalledWith("FN-1", expect.objectContaining({
+      status: "failed",
+      error: expect.stringContaining("TASK_BASE_DIVERGED:"),
+    }));
+    // No retry budget: neither the increment nor the cap-exhaustion clear may appear.
+    expect(taskStore.updateTask).not.toHaveBeenCalledWith("FN-1", expect.objectContaining({ recoveryRetryCount: expect.anything() }));
+    expect(onTaskAcquisitionExhausted).not.toHaveBeenCalled();
+    // Terminal park survives the rebound move (FN-7721 preserveStatus semantics).
+    expect(taskStore.moveTask).toHaveBeenCalledWith("FN-1", "todo", { preserveProgress: true, preserveStatus: true });
+    // The run record carries its own fixed reason, so the heartbeat lane is distinguishable from an
+    // ordinary `worktree_acquisition_failed` (or the refresh hold) in run history.
+    expect(store.saveRun).toHaveBeenCalledWith(expect.objectContaining({
+      status: "completed",
+      resultJson: expect.objectContaining({ reason: "task_base_diverged" }),
+    }));
   });
 
   // FN-7721 regression: reproduces the reported "worktree-setup loop" symptom

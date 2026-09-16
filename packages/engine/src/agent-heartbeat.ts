@@ -95,6 +95,7 @@ FNXC:HeartbeatRecovery 2026-07-15-08:50:
 heartbeat-model-unavailable parks from assignment/on-demand runs were terminal until a human Retry, even when the next attempt succeeds with unchanged credentials (false "model unavailable" / registry / credential-probe blips). Admit those parks to the same bounded heartbeatErrorRecovery budget as error-state recovery so the engine auto-retries like operator Retry, while genuine missing credentials re-park after the budget exhausts.
 */
 import { acquireTaskWorktree, WorktreeBaseRefreshError } from "./worktree/worktree-acquisition.js";
+import { isTaskBranchBaseDivergedError } from "./worktree/task-base-resolution.js";
 /* RUFU-200: the phantom re-arm guard reuses the scheduler's dependency-satisfaction verdict rather
    than writing a second one — `getUnmetSchedulingDependencies` is the authority the scheduler, the
    dispatch gate, and self-healing all use to answer "is this card still blocked?". */
@@ -3181,6 +3182,42 @@ export class HeartbeatMonitor {
               await this.completeRun(agentId, run.id, {
                 status: "completed",
                 resultJson: { reason: "worktree_base_refresh_blocked", refreshKind, detail },
+                stderrExcerpt: detail,
+                skipStateTransition: true,
+              });
+              return (await this.store.getRunDetail(agentId, run.id))!;
+            }
+
+            /*
+             * FNXC:TaskBaseResolution 2026-09-16-02:57 (RUFU-245):
+             * Proven divergence between local `main` and its remote-tracking counterpart is an operator
+             * decision (push vs. pull), so no later heartbeat can repair it. Park `failed` with the
+             * refusal sentence itself — the `TASK_BASE_DIVERGED:` prefix and remedy already live in
+             * `detail`, which is the single operator-visible reason (the gate in acquisition already
+             * wrote the task-log entry and the single `refused-diverged` audit row).
+             *
+             * Deliberately ahead of the generic three-strike budget below and OUTSIDE it: incrementing
+             * `recoveryRetryCount` and calling `onTaskAcquisitionExhausted` would file a deterministic
+             * base-policy refusal as an ordinary broken-checkout flake, and the requeue-to-rebound
+             * re-dispatch it enables is the RUFU-231 wedge. The cap-exhausted `preserveStatus` move
+             * IS reused, because without it moveTask's reopen semantics wipe the `failed` status just
+             * written (see the FN-7721 note below).
+             */
+            if (isTaskBranchBaseDivergedError(worktreeErr)) {
+              if (!(await isTaskInTerminalLane(taskStore, taskDetail))) {
+                await taskStore.updateTask(taskDetail.id, {
+                  status: "failed",
+                  error: detail,
+                });
+                await taskStore.moveTask(
+                  taskDetail.id,
+                  await resolveHeartbeatReboundColumn(taskStore, taskDetail.id),
+                  { preserveProgress: true, preserveStatus: true },
+                );
+              }
+              await this.completeRun(agentId, run.id, {
+                status: "completed",
+                resultJson: { reason: "task_base_diverged", detail },
                 stderrExcerpt: detail,
                 skipStateTransition: true,
               });

@@ -47,7 +47,17 @@ import { installTaskWorktreeIdentityGuard } from "./worktree-hooks.js";
 import { copyConfiguredWorktreeFiles, type WorktreeCopyFileResult } from "./worktree-copy-files.js";
 import { resolveCapturedBaseCommitSha } from "../execution/base-commit-capture.js";
 import { resolveIntegrationBranch } from "../merge/integration-branch.js";
-import { recordWorkspaceBaseBranchDecision, resolveWorkspaceRepoBaseBranch } from "./workspace-base-branch.js";
+import {
+  recordWorkspaceBaseBranchDecision,
+  recordTaskBaseResolution,
+  resolveWorkspaceRepoBaseBranch,
+} from "./workspace-base-branch.js";
+import {
+  isTaskBranchBaseDivergedError,
+  resolveTaskBranchBase,
+  TaskBranchBaseDivergedError,
+  type TaskBranchBaseResolution,
+} from "./task-base-resolution.js";
 import { acquireActiveSessionPath, activeSessionRegistry, executingTaskLock, type ActiveSessionRegistry } from "../agents/active-session-registry.js";
 import { refreshReusedWorktreeBase, type WorktreeBaseRefreshResult } from "../worktree-base-refresh.js";
 import { refreshWorkspaceRepoWorktreeBases } from "./workspace-base-refresh.js";
@@ -527,6 +537,50 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
    */
   const freshStartPoint = baseBranch ?? await resolveIntegrationBranch(rootDir, settings, { logger: logger ?? console });
 
+  /*
+   * FNXC:TaskBaseResolution 2026-09-16-02:35 (RUFU-245):
+   * A fresh task branch is cut from the LOCAL integration ref. When that ref and its remote-tracking
+   * counterpart have proven-diverged neither is a safe base — choosing push vs. pull is an operator
+   * decision the engine must not guess — so every fresh-create choke point refuses BEFORE a branch,
+   * worktree, or path reservation exists. The check lives in `assertFreshBaseNotDiverged`, called at
+   * the top of `createWorktreeImpl`, which is the single funnel for all fresh creates (the injected
+   * delegate, the native path, and the reservation path; every `createWorktreeImpl` call site is a
+   * fresh create, including the workspace per-repo re-entry below). The verdict is cached per
+   * acquisition so a retry inside one acquisition does not re-probe, and the workspace per-repo call
+   * re-enters this function with `rootDir` = that sub-repository, so each repo proves its OWN
+   * divergence and the refusal names the offending `repoRelPath`. Reuse of an already-created
+   * worktree never reaches this gate, and the resolver itself never fetches.
+   */
+  let freshBaseResolution: TaskBranchBaseResolution | undefined;
+  const assertFreshBaseNotDiverged = async (): Promise<void> => {
+    const repoRelPath = workspaceContext?.repoRelPath;
+    freshBaseResolution ??= await resolveTaskBranchBase({ rootDir, settings, taskId: task.id, logger });
+    const resolution = freshBaseResolution;
+    if (!resolution.refusal) {
+      await recordTaskBaseResolution({
+        audit,
+        task,
+        rootDir,
+        repoRelPath,
+        outcome: resolution.outcome,
+        fallbackReason: resolution.fallbackReason,
+      });
+      return;
+    }
+    const refusal = new TaskBranchBaseDivergedError({
+      localRef: resolution.integrationBranch,
+      remoteRef: resolution.remoteRef ?? "",
+      aheadCount: resolution.aheadCount ?? 0,
+      behindCount: resolution.behindCount ?? 0,
+      repoRelPath,
+    });
+    await recordTaskBaseResolution({ audit, task, rootDir, repoRelPath, outcome: "refused-diverged" });
+    // The operator-visible record: refs, both counts, and the remedy ride the task log (run-audit is ids/outcomes only).
+    await store.logEntry(task.id, refusal.message, undefined, runContext);
+    logger?.log(`${task.id}: ${refusal.message}`);
+    throw refusal;
+  };
+
   let worktreePath: string = task.worktree || await resolveTaskWorktreePathForBackend(
     rootDir,
     task.id.toLowerCase(),
@@ -649,6 +703,14 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
     reservationHeld = false,
     branchOrigin?: "engine-canonical" | "group-derived" | "operator-supplied",
   ): Promise<{ path: string; branch: string; backendKind: WorktreeBackend["kind"] }> => {
+    /*
+     * FNXC:TaskBaseResolution 2026-09-16-02:35 (RUFU-245):
+     * Divergence refusal is checked here, before the injected delegate or the native create can make
+     * a branch, a worktree, or a path reservation. `createWorktreeImpl` is the only funnel to fresh
+     * creation, so this one call site gates the injected-delegate path, the native path, the
+     * return-guard fresh create, the pinned-path create, and the workspace per-repo create alike.
+     */
+    await assertFreshBaseNotDiverged();
     if (createWorktree) {
       const created = await createWorktree(createBranch, createPath, createTaskId, startPoint, allowRename);
       return { ...created, backendKind: opts.createWorktreeBackendKind ?? backend.kind };
@@ -1984,6 +2046,15 @@ export async function acquireWorkspaceRepoWorktree(
       });
     }
     if (err instanceof WorkspaceRepoAcquireBusyError || err instanceof WorkspacePreparationError) throw err;
+    /*
+    FNXC:TaskBaseResolution 2026-09-16-02:35 (RUFU-245):
+    A diverged-base refusal is an operator decision, not a broken sub-repo. It must reach the
+    executor/heartbeat classifiers as its own type (they key the no-budget-refusal branch on it), so it
+    passes through unwrapped; the generic `WorkspacePreparationError` wrap below would leave only its
+    message text for callers to pattern-match. The repo is already named in the message, the log entry
+    above, and the audit row's `repoRelPath`.
+    */
+    if (isTaskBranchBaseDivergedError(err)) throw err;
     throw new WorkspacePreparationError(
       repoRelPath,
       "acquire",

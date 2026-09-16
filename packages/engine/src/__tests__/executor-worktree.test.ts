@@ -15,6 +15,8 @@ import { routeWorkflowPrincipal } from "../agents/workflow-agent-router.js";
 import * as branchConflictModule from "../execution/branch-conflicts.js";
 import { activeSessionRegistry } from "../agents/active-session-registry.js";
 import { ActiveSessionWorktreeRemovalError } from "../worktree/worktree-backend.js";
+import * as worktreeAcquisitionModule from "../worktree/worktree-acquisition.js";
+import { TaskBranchBaseDivergedError } from "../worktree/task-base-resolution.js";
 import type { Task, TaskDetail } from "@fusion/core";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { StepSessionExecutor } from "../execution/step-session-executor.js";
@@ -2419,6 +2421,83 @@ describe("fresh worktree integration rebase", () => {
     expect(mockedExec).not.toHaveBeenCalled();
     expect(disabledStore.logEntry).not.toHaveBeenCalled();
   });
+
+  /*
+  FNXC:TaskBaseResolution 2026-09-16-03:26 (RUFU-245):
+  The post-create rebase must never graft a proven-diverged remote lineage onto a fresh branch
+  (that rebuilds the zero-own-commit foreign-base branch acquisition now refuses), while a
+  strictly-behind linear remote still rebases exactly as today (FN-8839). Divergence is proven only
+  when both SHAs resolve and BOTH ancestry checks fail with git's definitive exit code 1; every
+  other shape (unreadable stdout, ambiguous failure) fails open to today's rebase — which is also
+  why the existing cases above, whose mocked `rev-parse` replies are empty stdout, still rebase.
+  */
+  it("skips the rebase without touching the local base when local and remote integration have proven-diverged", async () => {
+    const store = createMockStore();
+    store.getSettings.mockResolvedValue({
+      worktreeRebaseBeforeMerge: true,
+      worktreeRebaseRemote: "origin",
+      integrationBranch: "develop",
+    });
+    mockedExec.mockImplementation(((command: string, _options: unknown, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+      if (command.includes("merge-base --is-ancestor")) {
+        // git's definitive "not an ancestor" answer is exit code 1.
+        callback(Object.assign(new Error("not ancestor"), { code: 1 }), "", "");
+      } else if (command.includes("rev-parse --verify")) {
+        callback(null, command.includes("origin/develop") ? "bbb222\n" : "aaa111\n", "");
+      } else {
+        callback(null, "", "");
+      }
+      return {} as any;
+    }) as any);
+    const executor = createWorktreeExecutor(store, "/repo");
+
+    await (executor as any).rebaseNewWorktreeOntoRemote("/worktree", "fusion/fn-8839", "FN-8839");
+
+    const commands = mockedExec.mock.calls.map(([command]) => String(command));
+    expect(commands).toContain("git fetch 'origin' 'develop'");
+    // Proven divergence: no rebase is attempted at all — the local base is left intact.
+    expect(commands).not.toContain("git rebase 'origin/develop'");
+    expect(commands).not.toContain("git rebase --abort");
+    expect(store.logEntry).toHaveBeenCalledWith(
+      "FN-8839",
+      "Skipped new worktree rebase refresh — local develop and origin/develop have diverged; kept local base.",
+      undefined,
+      undefined,
+    );
+  });
+
+  it("still rebases onto a strictly-behind linear remote (FN-8839 preserved)", async () => {
+    const store = createMockStore();
+    store.getSettings.mockResolvedValue({
+      worktreeRebaseBeforeMerge: true,
+      worktreeRebaseRemote: "origin",
+      integrationBranch: "develop",
+    });
+    mockedExec.mockImplementation(((command: string, _options: unknown, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+      if (command.includes("rev-parse --verify")) {
+        callback(null, command.includes("origin/develop") ? "bbb222\n" : "aaa111\n", "");
+      } else if (command.includes("merge-base --is-ancestor")) {
+        // Linear-behind: local IS an ancestor of remote (succeeds); remote is NOT an ancestor of local.
+        if (command.includes("'aaa111' 'bbb222'")) callback(null, "", "");
+        else callback(Object.assign(new Error("not ancestor"), { code: 1 }), "", "");
+      } else {
+        callback(null, "", "");
+      }
+      return {} as any;
+    }) as any);
+    const executor = createWorktreeExecutor(store, "/repo");
+
+    await (executor as any).rebaseNewWorktreeOntoRemote("/worktree", "fusion/fn-8839", "FN-8839");
+
+    const commands = mockedExec.mock.calls.map(([command]) => String(command));
+    expect(commands).toContain("git rebase 'origin/develop'");
+    expect(store.logEntry).toHaveBeenCalledWith(
+      "FN-8839",
+      "Rebased new worktree branch fusion/fn-8839 onto origin/develop",
+      undefined,
+      undefined,
+    );
+  });
 });
 
 function createMockTaskDetail(overrides: Partial<TaskDetail> = {}): TaskDetail {
@@ -2533,5 +2612,91 @@ describe("worktree DB hydration", () => {
     const executor = createWorktreeExecutor(store, "/tmp/test");
     await executor.execute(makeTask());
     expect(mockedCreateFnAgent).toHaveBeenCalled();
+  });
+});
+
+/*
+FNXC:TaskBaseResolution 2026-09-16-03:35 (RUFU-245):
+A proven divergence between local `main` and its remote-tracking counterpart means no safe base
+exists for a fresh task branch, and only an operator push/pull can make one again. The executor
+leg of that refusal must park the card `failed` with the refusal sentence as the durable reason —
+NOT consume the RUFU-231 recovery ladder (the ladder cannot make the operator's push-vs-pull
+decision, and routing a base-policy refusal through it is exactly the re-dispatch wedge RUFU-231
+removed), NOT start a session, and NOT emit a second audit row (the single `refused-diverged`
+record is written at the acquisition gate that produced the verdict). These assertions pin the
+executor-side classification; the gate-side emit/message shape is pinned by the resolver and
+real-git acquisition suites.
+*/
+describe("task base divergence park (run-implementation acquisition refusal)", () => {
+  const makeDivergedTask = (): Task => ({
+    id: "FN-DIVG",
+    title: "Diverged base",
+    description: "Acquisition must refuse on a proven diverged base",
+    column: "in-progress",
+    dependencies: [],
+    steps: [{ name: "Implement", status: "pending" }],
+    currentStep: 0,
+    log: [],
+    branch: "fusion/fn-divg",
+    status: null,
+    error: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  } as Task);
+
+  beforeEach(() => {
+    resetExecutorMocks();
+    mockedExistsSync.mockReturnValue(false);
+  });
+
+  it("parks the task failed with the refusal sentence and spends no recovery budget", async () => {
+    const store = createMockStore();
+    store.getSettings.mockResolvedValue({
+      autoMerge: false,
+      maxConcurrent: 2,
+      maxWorktrees: 4,
+      pollIntervalMs: 15_000,
+    });
+    const subject = makeDivergedTask();
+    const diverged = new TaskBranchBaseDivergedError({
+      localRef: "main",
+      remoteRef: "origin/main",
+      aheadCount: 2,
+      behindCount: 3,
+    });
+    const acquire = vi.spyOn(worktreeAcquisitionModule, "acquireTaskWorktree").mockRejectedValue(diverged);
+    const warn = vi.spyOn(executorLog, "warn").mockImplementation(() => undefined);
+    const graphCompletion = vi.fn();
+    const reportExit = vi.fn();
+    const executor = createWorktreeExecutor(store, "/tmp/test");
+
+    // All assertions run INSIDE the try: `mockRestore` clears recorded call history, so asserting
+    // after the finally would inspect an emptied spy.
+    try {
+      await (executor as any).runImplementation(subject, graphCompletion, reportExit);
+
+      // No session ran and completion was never claimed — the refusal is pre-session.
+      expect(mockedCreateFnAgent).not.toHaveBeenCalled();
+      expect(graphCompletion).not.toHaveBeenCalled();
+      expect(reportExit).not.toHaveBeenCalled();
+
+      // The park patch carries the refusal sentence verbatim (prefix + remedy included).
+      const failedPatch = store.updateTask.mock.calls
+        .map((call: unknown[]) => call[1] as Record<string, unknown> | undefined)
+        .find((patch) => patch && (patch as Record<string, unknown>).status === "failed");
+      expect(failedPatch).toBeDefined();
+      expect(String(failedPatch!.error)).toContain("TASK_BASE_DIVERGED:");
+      // Not the RUFU-231 family: no budget, no pause, no checkout mutation in the park patch.
+      for (const forbidden of ["recoveryRetryCount", "pausedReason", "paused", "worktree", "branch"]) {
+        expect(failedPatch![forbidden]).toBeUndefined();
+      }
+      // The card parks in place; nothing rebounds it toward retry.
+      expect(store.moveTask).not.toHaveBeenCalled();
+      // The same sentence reaches the warn log for live diagnosis.
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("TASK_BASE_DIVERGED:"));
+    } finally {
+      acquire.mockRestore();
+      warn.mockRestore();
+    }
   });
 });
