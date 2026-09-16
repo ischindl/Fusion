@@ -2678,7 +2678,8 @@ export class ChatManager {
           memoryCapChars: roomChatBudgetOn ? CHAT_MEMORY_CAP_CHARS : undefined,
           topic: input.content,
           sessionId: `room:${input.roomId}`,
-          settings: await this.getSettings?.(),
+          // FNXC:OperatorLanguage 2026-09-16-13:05: room responders honor the operator language setting (PR review).
+          settings: await this.getChatModelSettings(),
           // RUFU-172: no focus is passed — a ChatRoom has no persisted memory_focus field
           // (only a ChatSession does), so room responders honestly carry no focus and their
           // recall stays on the whole-project single-search cue. Not an omission.
@@ -2995,7 +2996,8 @@ export class ChatManager {
       here (the core returns "" for a blank topic before searching). Deliberate, not a
       missed surface.
       */
-      try { systemPrompt = await buildAgentChatPromptFn({ agent: input.responder, rootDir: this.rootDir, agentStore: this.agentStore, basePrompt: CHAT_SYSTEM_PROMPT, includeProjectMemory: true }); }
+      // FNXC:OperatorLanguage 2026-09-16-13:05: mentioned room responders honor the operator language setting (PR review).
+      try { systemPrompt = await buildAgentChatPromptFn({ agent: input.responder, rootDir: this.rootDir, agentStore: this.agentStore, basePrompt: CHAT_SYSTEM_PROMPT, includeProjectMemory: true, settings: await this.getChatModelSettings() }); }
       catch (error) { diagnostics.warn(`Failed to build mentioned chat prompt for ${input.responder.id}: ${error instanceof Error ? error.message : String(error)}`); }
     }
     const mentionContext = await this.buildMentionContext(input.mentions);
@@ -3496,7 +3498,8 @@ export class ChatManager {
             memoryCapChars: directChatBudgetOn ? CHAT_MEMORY_CAP_CHARS : undefined,
             topic: parsedSkillCommands.strippedContent || content,
             sessionId: session.id,
-            settings: chatPromptSettings,
+            // FNXC:OperatorLanguage 2026-09-16-13:05: direct agent chat honors the operator language setting (PR review).
+            settings: await this.getChatModelSettings(),
             focus: chatRecallFocus,
           });
           systemPrompt = `${systemPrompt}\n\n${CHAT_AGENT_MESSAGE_ROUTING_GUIDANCE}`;

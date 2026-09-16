@@ -3382,6 +3382,7 @@ export class TriageProcessor {
         const triageLayers = buildPromptLayers({
           basePrompt: renderedBasePrompt,
           goalContext: triageGoalResolution.goalContext,
+          operatorLanguageDirective: fusionCore.buildOperatorLanguageDirective(settings),
           agentInstructions: [
             triageIdentitySection,
             duplicatePolicyInstruction,
