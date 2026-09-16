@@ -1926,6 +1926,45 @@ Thinking-section text uses the defined muted text token across all themes. The m
   width: 100%;
 }
 
+/*
+FNXC:ChatAgentTargetSwitch 2026-09-16-22:12:
+Selectable durable-agent list in the composer target popover. It mirrors the model section's
+muted-token language; the active agent gets the accent tint, never a new button variant.
+*/
+.chat-thinking-agent-section {
+  padding: var(--space-sm);
+  border-bottom: 1px solid var(--border);
+}
+
+.chat-thinking-agent-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  max-height: calc(var(--space-xl) * 6);
+  overflow-y: auto;
+}
+
+.chat-thinking-agent-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  width: 100%;
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-thinking-agent-option--active {
+  color: var(--accent-text);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+}
+
 .chat-thinking-current-target,
 .chat-thinking-empty {
   color: var(--text-muted);

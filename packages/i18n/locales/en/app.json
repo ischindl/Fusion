@@ -1668,7 +1668,11 @@
     "failedToRenameTag": "Failed to rename tag",
     "openMailboxMessage": "Open mailbox message",
     "hideConversationList": "Hide conversation list",
-    "focusTitleDialog": "Memory focus topic"
+    "focusTitleDialog": "Memory focus topic",
+    "chatAsModel": "Chat as model (no agent)",
+    "presentationModeGroup": "Chat display mode",
+    "presentationModePopup": "Open chat as popup",
+    "presentationModeView": "Open chat as view"
   },
   "chatRooms": {
     "error": {

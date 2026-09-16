@@ -728,6 +728,18 @@ function ChatViewContent({ projectId, addToast, floating = false, compactLayout 
   const [conversationSearchIndex, setConversationSearchIndex] = useState(0);
   const { agentsMap: cachedAgentsMap } = useAgentsMapCache(projectId);
   const agentsMap = useMemo(() => (chatAgentsMap.size > 0 ? chatAgentsMap : cachedAgentsMap), [cachedAgentsMap, chatAgentsMap]);
+  /*
+  FNXC:ChatAgentTargetSwitch 2026-09-16-22:12:
+  The composer target selector lists durable agents from the shared per-project agent map; the model
+  lane sentinel is defensive-excluded because /api/agents never returns it.
+  */
+  const chatAgentOptions = useMemo(
+    () => Array.from(agentsMap.values())
+      .filter((agent) => Boolean(agent?.id) && agent.id !== FN_AGENT_ID)
+      .map((agent) => ({ id: agent.id, name: agent.name }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    [agentsMap],
+  );
   const { defaultProvider, defaultModelId } = useModelsCache();
   const {
     availableModels: models,
@@ -3698,6 +3710,7 @@ function ChatViewContent({ projectId, addToast, floating = false, compactLayout 
             level={activeSession?.thinkingLevel}
             defaultThinkingLevel={resolvedDefaultThinkingLevel}
             models={models}
+            agents={chatAgentOptions}
             favoriteProviders={favoriteProviders}
             onToggleFavorite={handleToggleFavoriteProvider}
             favoriteModels={favoriteModels}

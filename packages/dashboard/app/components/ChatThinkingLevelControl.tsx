@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { THINKING_LEVELS } from "@fusion/core";
 import { Brain } from "lucide-react";
 import { CustomModelDropdown } from "./CustomModelDropdown";
+import { Bot } from "lucide-react";
 import type { ModelInfo } from "../api";
 import { FN_AGENT_ID } from "../hooks/useChat";
 import { computeFixedMenuPosition, getLayoutViewportSize, type FixedMenuPosition } from "../utils/fixedMenuPosition";
@@ -36,6 +37,13 @@ FNXC:Chat-ThinkingLevel 2026-07-16-00:34:
 FN-8030 lets room composers reuse this control with showTargetSection={false}. A room's thinking effort is the default reasoning effort for every responder, and rooms have no per-composer model or agent target to switch.
 */
 
+export interface ChatAgentOption {
+  id: string;
+  name: string;
+}
+
+const EMPTY_AGENTS: ChatAgentOption[] = [];
+
 export interface ChatThinkingLevelControlProps {
   /** Session's current thinkingLevel; null/undefined/empty means "inherit default". */
   level: string | null | undefined;
@@ -54,6 +62,14 @@ export interface ChatThinkingLevelControlProps {
   /** Concrete target that this host applies when the picker chooses its default entry. */
   defaultModelValue?: string;
   models?: ModelInfo[];
+  /*
+  FNXC:ChatAgentTargetSwitch 2026-09-16-22:12:
+  Operator requirement: the chat target selector must offer agents, not only models — the retired
+  create-time picker left no in-chat way to choose (or leave) an agent even with Chat default target
+  set to Agent/CEO. Every host that allows model retargeting passes the durable-agent list here; the
+  `onChangeModel` agent branch + RUFU-192 crossing disclosure in useChat/host stay the sole writers.
+  */
+  agents?: ChatAgentOption[];
   favoriteProviders?: string[];
   onToggleFavorite?: (provider: string) => void;
   favoriteModels?: string[];
@@ -89,6 +105,7 @@ export function ChatThinkingLevelControl({
   targetKey,
   defaultModelValue,
   models = [],
+  agents = EMPTY_AGENTS,
   favoriteProviders = [],
   onToggleFavorite,
   favoriteModels = [],
@@ -279,6 +296,23 @@ export function ChatThinkingLevelControl({
       : { modelProvider: value.slice(0, slashIdx), modelId: value.slice(slashIdx + 1) });
   };
 
+  /*
+  FNXC:ChatAgentTargetSwitch 2026-09-16-22:12:
+  Targeting an agent clears the model pair (the agent owns its model); choosing "Model" returns to
+  the model lane with the project/global default. Only `agentId !== undefined` marks an agent switch
+  for `useChat.setSessionModel`, so the model return MUST omit `agentId`.
+  */
+  const chooseAgent = (nextAgentId: string) => {
+    if (!onChangeModel) return;
+    armTargetExpectation({ agent: nextAgentId, model: "" });
+    if (nextAgentId) {
+      void onChangeModel({ agentId: nextAgentId, modelProvider: null, modelId: null });
+    } else {
+      void onChangeModel({ modelProvider: null, modelId: null });
+    }
+    setOpen(false);
+  };
+
   const handleTriggerKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (event.key === "Escape") {
       pendingTargetRef.current = null;
@@ -383,6 +417,42 @@ export function ChatThinkingLevelControl({
               </div>
             )}
           </section>
+          ) : null}
+
+          {/*
+          FNXC:ChatAgentTargetSwitch 2026-09-16-22:12:
+          Operator requirement: "I set Chat default = Agent (CEO) but the selector still only offers
+          model changes." The durable-agent list is selectable right here — including returning to the
+          model lane — while rooms (no showTargetSection) and CLI-backed sessions keep the old surface.
+          */}
+          {showTargetSection && agents.length > 0 && onChangeModel ? (
+            <section className="chat-thinking-agent-section" role="group" aria-label={t("chat.selectAgentForNewChat", "Select agent for new chat")}>
+              <div className="chat-thinking-section-title">{t("chat.modeAgent", "Agent")}</div>
+              <div className="chat-thinking-agent-list" data-testid="chat-thinking-agent-list">
+                <button
+                  type="button"
+                  className={`chat-thinking-agent-option${!selectedAgentId ? " chat-thinking-agent-option--active" : ""}`}
+                  aria-pressed={!selectedAgentId}
+                  onClick={() => chooseAgent("")}
+                  data-testid="chat-thinking-agent-model"
+                >
+                  <span className="chat-thinking-agent-option-name">{t("chat.chatAsModel", "Chat as model (no agent)")}</span>
+                </button>
+                {agents.map((agent) => (
+                  <button
+                    key={agent.id}
+                    type="button"
+                    className={`chat-thinking-agent-option${agent.id === selectedAgentId ? " chat-thinking-agent-option--active" : ""}`}
+                    aria-pressed={agent.id === selectedAgentId}
+                    onClick={() => chooseAgent(agent.id)}
+                    data-testid={`chat-thinking-agent-${agent.id}`}
+                  >
+                    <Bot size={14} aria-hidden="true" />
+                    <span className="chat-thinking-agent-option-name">{agent.name}</span>
+                  </button>
+                ))}
+              </div>
+            </section>
           ) : null}
 
           <section className="chat-thinking-level-section" aria-label={t("chat.thinkingLevelButton", "Thinking level")}>
