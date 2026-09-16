@@ -70,6 +70,7 @@ import {
 import {
   isAwaitingGraphFailureValue,
   isTerminalMergeGraphFailureValue,
+  isHandedOffAndWorkComplete,
 } from "./task-predicates.js";
 import type { PausedAbortProvenance } from "./paused-abort-provenance.js";
 
@@ -142,6 +143,7 @@ async function retryTerminalFailurePersistence(
   message: string,
   runContext: EngineRunContext | undefined,
   capturedColumnMovedAt: string | undefined,
+  declineIfHandedOff?: (current: Task) => boolean,
 ): Promise<boolean> {
   /*
   FNXC:MergeRetryReliability 2026-09-04-02:24:
@@ -162,6 +164,16 @@ async function retryTerminalFailurePersistence(
           || (typeof capturedColumnMovedAt === "string"
             && typeof current.columnMovedAt === "string"
             && current.columnMovedAt !== capturedColumnMovedAt)
+          // FNXC:WorkflowExecutor 2026-09-15-23:31: RUFU-237 Step 5 — the
+          // callback answers "may the terminal write still proceed?" (it is
+          // built as `!isHandedOffAndWorkComplete(...)` at the execute-family
+          // sink); false means the row became a completed handoff mid-flight.
+          // Covers the handoff whose columnMovedAt stamp is NOT comparable
+          // (absent or non-string on either side) — the stamp fence above is
+          // skipped in exactly that shape. This is defense in depth: the sink's
+          // honor guard is the primary fix (RUFU-217's row was already in
+          // review when the sink read it); the old stamp fence is not broken.
+          || (declineIfHandedOff !== undefined && !declineIfHandedOff(current))
         ) return null;
         return { error: message, status: "failed" };
       }, runContext);
@@ -176,6 +188,46 @@ async function retryTerminalFailurePersistence(
   }
   return false;
 }
+
+/*
+FNXC:WorkflowExecutionOwnership 2026-09-16-00:35 (RUFU-237):
+Record that the graph-failure sink honored a completed handoff instead of terminalizing it.
+
+Sighting (RUFU-217 card, 2026-09-14): `fn_task_done` succeeded and the row moved to review at
+16:28:44Z; ~90 s later the SAME dispatch's session tail resolved a `failed` disposition (the execute
+seam collapses out-of-band exits to `taskDone:false`) and the generic sink rewrote the delivered row
+with "Workflow graph terminated with failure at node 'steps#0:step-execute'".
+
+The card is left exactly as found — no store write, no clearPausedAborted, no `activeWorktrees`
+delete: the generic sink never released those and neither do the benign neighbours, because slot
+release is owned by the caller's `finally`. Only a warn + task log + audit row are recorded; the
+benign sentence never enters run-audit, and token totals are persisted by the caller.
+
+Why a free function instead of inline: `handleGraphFailure` is the U4-peeled junction box whose body
+the U8 ownership ledger range-checks (`extracts both junction-box method bodies at their real size`
+in executor-lifecycle-ownership-ledger.test.ts); inlining this record pushed that body past its
+ceiling, so the emit lives here and the ledger guard stays honest instead of being widened.
+*/
+async function recordHandoffHonored(
+  deps: HandleGraphFailureDeps,
+  taskId: string,
+  reviewLane: string,
+  failedNode: string | undefined,
+): Promise<void> {
+  const benignMessage = `Workflow graph ended at execute-family node '${failedNode ?? "unknown"}' after the task already completed and handed off to '${reviewLane}' — honoring the handoff, card left in place`;
+  executorLog.warn(`${taskId}: ${benignMessage}`);
+  await deps.store.logEntry(taskId, benignMessage, undefined, deps.getRunContextFor(taskId));
+  await emitBoundedRunAudit(deps.store, {
+    taskId,
+    agentId: "executor",
+    runId: generateSyntheticRunId("graph-failure-after-handoff-honored", taskId),
+    domain: "database",
+    mutationType: "task:graph-failure-after-handoff-honored",
+    target: taskId,
+    metadata: { taskId, nodeId: failedNode ?? "unknown", column: reviewLane, reason: "work-complete-handoff" },
+  });
+}
+
 export async function handleGraphFailure(
   deps: HandleGraphFailureDeps,
   task: Task,
@@ -1407,6 +1459,28 @@ export async function handleGraphFailure(
           return;
         }
       }
+      /*
+      FNXC:WorkflowExecutionOwnership 2026-09-15-22:51 (RUFU-237):
+      Honor a completed handoff that already landed in the review lane (see `recordHandoffHonored`
+      for the RUFU-217 sighting and the audit record). This is the LAST classifier before the
+      terminal write, deliberately: FN-9243's unrun-gate reroute, RUFU-217's verdict-less re-run, and
+      the remediation producers own the review lane ahead of it — and their whole block is skipped
+      when the workflow yields no `wip` column (see `wipColumn`, whose `"in-progress"` fallback only
+      covers the unresolvable-IR shape, not a valid IR that simply declares no wip trait). A
+      completed+clean row in the RESOLVED review lane has no producer left to consult: the execution
+      is over, so terminalizing it launders a delivered card into a spurious Task Failed.
+      `autoMerge: false` makes the consequence sharper — in-review is terminal-until-human there, so
+      it must never be rewritten by a stale signal.
+
+      Placement is load-bearing in the other direction too: `isTaskWorkComplete` reads steps only and
+      cannot see unrun workflow gates, so running this earlier would preempt FN-9243 — pinned by the
+      executor-graph-failure-after-handoff test ("E"), which fails on any earlier placement.
+      */
+      if (isExecuteFamilyNode && isHandedOffAndWorkComplete(live, failureLanes.review)) {
+        await recordHandoffHonored(deps, task.id, live.column, failedNode);
+        await deps.persistTokenUsage(task.id);
+        return;
+      }
       const message = formatGraphFailureDiagnostic(failedNode, failureValue, nodeError);
       const settings = await deps.store.getSettings();
       const maxToolFailureRetries = resolveMaxConsecutiveToolFailureRetries(settings);
@@ -1556,12 +1630,25 @@ export async function handleGraphFailure(
         if (!escalationTerminalParked) return;
         await emitBoundedRunAudit(deps.store, { taskId: task.id, agentId: "executor", runId: generateSyntheticRunId("escalation-exhausted", task.id), domain: "database", mutationType: "task:execution-escalation-exhausted", target: task.id, metadata: { taskId: task.id, nodeId: failedNode ?? "unknown", hadModelTarget: escalationHadModelTarget, hadNodeTarget: escalationHadNodeTarget } });
       } else {
+        /*
+        FNXC:WorkflowExecutor 2026-09-15-23:31: RUFU-237 Step 5 — execute-family
+        terminal writes re-check the handoff contract AT THE WRITE. The honor
+        guard above ran many awaits earlier (settings read, tool-failure claim,
+        backoff ladder, and the deferred chain fires up to 120 s later); between
+        then and the fenced write the row can complete and move into the review
+        lane. The callback is execute-family only: merge-boundary and other
+        non-execute parks keep their existing behavior byte-identical.
+        */
+        const declineIfHandedOff = isExecuteFamilyNode
+          ? (current: Task): boolean => !isHandedOffAndWorkComplete(current, failureLanes.review)
+          : undefined;
         const parked = await retryTerminalFailurePersistence(
           deps.store,
           task.id,
           message,
           deps.getRunContextFor(task.id),
           live.columnMovedAt,
+          declineIfHandedOff,
         );
         if (!parked) {
           /*
@@ -1675,6 +1762,12 @@ export async function handleGraphFailure(
                       || (typeof capturedColumnMovedAt === "string"
                         && typeof current.columnMovedAt === "string"
                         && current.columnMovedAt !== capturedColumnMovedAt)
+                      // FNXC:WorkflowExecutor 2026-09-15-23:31: RUFU-237 Step 5 —
+                      // same handoff fence as retryTerminalFailurePersistence:
+                      // this chain can fire ~120 s after exhaustion, long after
+                      // a benign completion handoff moved the row to review with
+                      // a columnMovedAt stamp that may not be comparable.
+                      || (declineIfHandedOff !== undefined && !declineIfHandedOff(current))
                     ) return null;
                     fencedParked = true;
                     return { error: message, status: "failed" };
