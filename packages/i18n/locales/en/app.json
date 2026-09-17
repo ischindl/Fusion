@@ -1613,6 +1613,7 @@
     "outputBudgetExhausted": "The model used its entire output budget on thinking — raise maxTokens for this model.",
     "responseInterrupted": "Response interrupted — whatever was produced before the stop is shown above and in Thinking.",
     "noReplyGenerated": "The model ended this turn without writing a reply. Expand Thinking below to see what it reached.",
+    "retryTurn": "Retry",
     "sendAsReport": "Send as report",
     "failedToUpdateTags": "Failed to update tags",
     "contextTruncationNotice_one": "To fit the context window, {{count}} older message ({{tokens}} tokens) was dropped from this conversation's history.",

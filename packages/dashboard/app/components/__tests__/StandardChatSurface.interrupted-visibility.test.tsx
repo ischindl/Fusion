@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { StandardChatMessageItem } from "../StandardChatSurface";
 import type { ChatMessageInfo } from "../../hooks/chatTypes";
@@ -70,5 +70,43 @@ describe("interrupted and no-reply assistant rows", () => {
     expect(screen.queryByTestId("chat-message-no-reply")).not.toBeInTheDocument();
     const disclosure = document.querySelector("details.chat-message-thinking");
     expect((disclosure as HTMLDetailsElement).open).toBe(false);
+  });
+});
+
+/*
+FNXC:ChatTurnRetry 2026-09-17-16:30:
+The honest notices carry a Retry action only when the caller can resend the prompt; surfaces
+without a resend path must not render a dead button (empty-shell rule).
+*/
+describe("Retry action on reply-less and interrupted turns", () => {
+  it("renders Retry on both notices and hands the assistant message to the caller", () => {
+    const onRetryTurn = vi.fn();
+    const { unmount } = render(
+      <StandardChatMessageItem
+        message={message({ content: "", thinkingOutput: "cosi", metadata: { interrupted: true } })}
+        {...shared}
+        projectId="project-1"
+        onRetryTurn={onRetryTurn}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("chat-retry-turn-message-1"));
+    expect(onRetryTurn).toHaveBeenCalledWith(expect.objectContaining({ id: "message-1" }));
+    unmount();
+
+    render(
+      <StandardChatMessageItem
+        message={message({ content: "\n\n", thinkingOutput: "cosi" })}
+        {...shared}
+        projectId="project-1"
+        onRetryTurn={onRetryTurn}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("chat-retry-turn-message-1"));
+    expect(onRetryTurn).toHaveBeenCalledTimes(2);
+  });
+
+  it("omits Retry when the surface has no resend path", () => {
+    renderItem({ content: "", thinkingOutput: "cosi", metadata: { interrupted: true } });
+    expect(screen.queryByTestId("chat-retry-turn-message-1")).not.toBeInTheDocument();
   });
 });

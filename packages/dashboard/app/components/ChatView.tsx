@@ -2436,6 +2436,34 @@ function ChatViewContent({ projectId, addToast, floating = false, compactLayout 
     sendMessage(answerText);
   }, [activeSession, sendMessage]);
 
+  /*
+  FNXC:ChatTurnRetry 2026-09-17-16:30:
+  A turn that ended without a reply (or was interrupted by a model-runtime restart) left the
+  operator with copy-paste as the only rerun path. Retry re-sends the nearest preceding user
+  row through the normal send path; the live ref keeps this callback identity-stable for the
+  memoized row while reading the current transcript at click time. No prompt to resend, or an
+  in-flight generation, means no resend.
+  */
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  const handleRetryTurn = useCallback((assistantMessage: { id: string }) => {
+    if (!activeSession || isStreaming) {
+      return;
+    }
+    const list = messagesRef.current;
+    const index = list.findIndex((candidate) => candidate.id === assistantMessage.id);
+    if (index <= 0) {
+      return;
+    }
+    for (let i = index - 1; i >= 0; i -= 1) {
+      const candidate = list[i];
+      if (candidate.role === "user" && candidate.content.trim().length > 0) {
+        sendMessage(candidate.content);
+        return;
+      }
+    }
+  }, [activeSession, isStreaming, sendMessage]);
+
   const handleSkillSelect = useCallback(
     (skill: DiscoveredSkill) => {
       setMessageInput((currentInput) => {
@@ -3522,6 +3550,7 @@ function ChatViewContent({ projectId, addToast, floating = false, compactLayout 
                 isAwaitingQuestionAnswer={message.role === "assistant" && index === messages.length - 1 && !isStreaming}
                 submittedQuestionAnswer={findSubmittedQuestionAnswer(messages, index)}
                 onQuestionSubmit={handleQuestionSubmit}
+                onRetryTurn={handleRetryTurn}
                 loadToolCallFull={loadFullToolCall}
                 canEdit={canEditChatMessages && isPersistedChatMessageId(message.id)}
                 onEditMessage={editMessageAndResend}

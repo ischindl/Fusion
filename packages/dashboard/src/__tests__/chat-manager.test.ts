@@ -2058,7 +2058,14 @@ describe("ChatManager.sendMessage", () => {
     unsubscribe();
 
     const assistantCalls = mockChatStore.addMessage.mock.calls.filter((call) => call[1].role === "assistant");
-    expect(assistantCalls).toHaveLength(2);
+    /*
+    FNXC:ChatAutoRetry 2026-09-17-16:30:
+    Work-in-progress interruption now auto-retries exactly once, so the failing fake produces
+    its partial+failure pair twice - the first pair is the honest record, the second pair is the
+    bounded retry attempt, and `autoRetry` never chains to a third.
+    */
+    expect(assistantCalls).toHaveLength(4);
+    expect(mockChatStore.addMessage.mock.calls.filter((call) => call[1].role === "user" && call[1].metadata?.autoRetry === true)).toHaveLength(1);
     expect(assistantCalls[0]).toEqual([
       "chat-001",
       expect.objectContaining({
@@ -3140,7 +3147,13 @@ describe("ChatManager.sendMessage", () => {
     await chatManager.sendMessage("chat-001", "Hello");
 
     const assistantCalls = mockChatStore.addMessage.mock.calls.filter((call) => call[1].role === "assistant");
-    expect(assistantCalls).toHaveLength(2);
+    /*
+    FNXC:ChatAutoRetry 2026-09-17-16:30:
+    Thinking-only work that dies mid-turn now also earns the single bounded auto-retry:
+    interrupted+failure persisted, retried once, and the retry never chains further.
+    */
+    expect(assistantCalls).toHaveLength(4);
+    expect(mockChatStore.addMessage.mock.calls.filter((call) => call[1].role === "user" && call[1].metadata?.autoRetry === true)).toHaveLength(1);
     expect(assistantCalls[0]).toEqual([
       "chat-001",
       expect.objectContaining({

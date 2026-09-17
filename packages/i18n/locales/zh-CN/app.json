@@ -1603,6 +1603,7 @@
     "outputBudgetExhausted": "模型的全部输出预算都消耗在了思考上——请为该模型调高 maxTokens。",
     "responseInterrupted": "",
     "noReplyGenerated": "",
+    "retryTurn": "",
     "sendAsReport": "",
     "failedToUpdateTags": "",
     "contextTruncationNotice_one": "",

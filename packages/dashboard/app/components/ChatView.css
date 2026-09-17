@@ -1596,6 +1596,18 @@ assistant turn never renders as an unexplained blank/abrupt bubble:
 }
 
 /*
+FNXC:ChatTurnRetry 2026-09-17-16:30: the honest notices carry an inline Retry action when the
+surface can resend the prompt; lay them out as a note row so the button hugs the right edge.
+*/
+.chat-message-content--interrupted,
+.chat-message-content--no-reply {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+/*
 FNXC:ChatHandoff 2026-09-09-20:04:
 RUFU-199: the handoff primer notice replaces the model-facing briefing text in the transcript.
 Quiet lineage styling (muted, border-left like the budget notice); the degraded line escalates to

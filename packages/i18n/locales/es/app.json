@@ -1603,6 +1603,7 @@
     "outputBudgetExhausted": "El modelo usó todo su presupuesto de salida en pensar; aumenta maxTokens para este modelo.",
     "responseInterrupted": "",
     "noReplyGenerated": "",
+    "retryTurn": "",
     "sendAsReport": "",
     "failedToUpdateTags": "",
     "contextTruncationNotice_one": "",

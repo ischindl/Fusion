@@ -47,6 +47,7 @@ import {
   CHAT_FOCUS_FLAG,
 } from "@fusion/core";
 import { EventEmitter } from "node:events";
+import { isQuestionToolName } from "./shared/chat-toolcall-compact.js";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join, resolve, relative } from "node:path";
@@ -3154,7 +3155,7 @@ export class ChatManager {
     modelProvider?: string,
     modelId?: string,
     attachments?: ChatAttachment[],
-    options?: { generationId?: number },
+    options?: { generationId?: number; autoRetry?: boolean; userMessageMetadata?: Record<string, unknown> },
   ): Promise<void> {
     // The SSE route allocates a generation via `beginGeneration` so it can subscribe
     // with a matching filter before this method runs. Direct callers (tests, internal
@@ -3241,6 +3242,17 @@ export class ChatManager {
     }
 
     let agentResult: AgentResult | undefined;
+    /*
+    FNXC:ChatAutoRetry 2026-09-17-16:30:
+    A turn that ends without a visible reply (model stopped right after tools, or an error
+    interrupted it mid-work) previously left the operator to copy-paste their own prompt.
+    The manager now re-prompts ONCE per operator turn - never for an explicit user Stop,
+    never for a budget-exhausted turn (a retry would hit the same wall), never while a
+    question tool is legitimately waiting for the user's answer, and never as a chain
+    (auto-retries themselves cannot trigger another). Set in the completion branches, fired
+    after the finally clears this generation's slot.
+    */
+    let autoRetryReason: "empty" | "provider-error" | undefined;
     let accumulatedThinking = "";
     let accumulatedText = "";
     let lastStreamEventId = 0;
@@ -3341,7 +3353,9 @@ export class ChatManager {
         const persistedUserMessage = await this.chatStore.addMessage(sessionId, {
           role: "user",
           content,
-          metadata: mentions.length > 0 ? { mentions } : undefined,
+          metadata: (mentions.length > 0 || options?.userMessageMetadata)
+            ? { ...(mentions.length > 0 ? { mentions } : {}), ...(options?.userMessageMetadata ?? {}) }
+            : undefined,
           attachments,
         });
         persistedUserMessageId = persistedUserMessage.id;
@@ -4182,6 +4196,25 @@ export class ChatManager {
 
       await this.flushInFlightGenerationPersist(sessionId, null, generationId);
 
+      /*
+      FNXC:ChatAutoRetry 2026-09-17-16:30:
+      Successful completion with whitespace-only text is the "thinking ended, no reply" shape
+      the operator complained about; one bounded auto-continuation gives the model a chance to
+      finish its answer. The turn must carry evidence of work (thinking or tool calls) - a
+      runtime's silent nothing (no text, no thinking, no tools) has no interrupted work to
+      resume, and auto-prompting it would double every plugin-CLI turn for nothing.
+      */
+      const lastToolBeforeCompletion = toolCallsAccum[toolCallsAccum.length - 1];
+      if (
+        finalResponseText.trim().length === 0
+        && (accumulatedThinking.length > 0 || toolCallsAccum.length > 0)
+        && !assistantMetadata.budgetExhausted
+        && !options?.autoRetry
+        && !(lastToolBeforeCompletion && isQuestionToolName(lastToolBeforeCompletion.toolName))
+      ) {
+        autoRetryReason = "empty";
+      }
+
       // Broadcast done event with persisted assistant snapshot so clients can
       // render completion even when incremental text deltas were absent.
       chatStreamManager.broadcast(sessionId, {
@@ -4345,6 +4378,24 @@ export class ChatManager {
 
       await this.flushInFlightGenerationPersist(sessionId, null, generationId);
 
+      /*
+      FNXC:ChatAutoRetry 2026-09-17-16:30:
+      A provider error that interrupted WORK IN PROGRESS (partial text, thinking, or tool calls
+      already streamed - e.g. the model container restarted under the agent) persisted its partial
+      + failure rows; retry ONCE so a transient death recovers on its own. An error that failed
+      BEFORE any output is not retried: the failure bubble already explains it and the row carries
+      the manual Retry action. Either way the retry never chains, and a turn parked on a question
+      tool is not retried.
+      */
+      const lastToolBeforeError = toolCallsAccum[toolCallsAccum.length - 1];
+      if (
+        !options?.autoRetry
+        && Boolean(accumulatedText || accumulatedThinking || toolCallsAccum.length > 0)
+        && !(lastToolBeforeError && isQuestionToolName(lastToolBeforeError.toolName))
+      ) {
+        autoRetryReason = "provider-error";
+      }
+
       chatStreamManager.broadcast(sessionId, {
         type: "error",
         data: failureInfo,
@@ -4378,6 +4429,35 @@ export class ChatManager {
           agentResult.session.dispose?.();
         } catch (err) {
           diagnostics.error(`Error disposing agent session:`, err);
+        }
+      }
+    }
+
+    /*
+    FNXC:ChatAutoRetry 2026-09-17-16:30:
+    Fire the single bounded auto-retry only after this generation's slot is released, and only
+    while no newer send has claimed the session - an operator prompt always wins over the
+    synthetic continuation. The continuation rides the normal send path as a visible, metadata-
+    marked user row so the transcript never hides why a second attempt exists. It is awaited
+    (no timer) so the retry cannot leak across lifetimes into a newer send.
+    */
+    if (autoRetryReason) {
+      const activeAfterSettle = this.activeGenerations.get(sessionId);
+      if (!activeAfterSettle || activeAfterSettle.generationId === generationId) {
+        const reason = autoRetryReason;
+        try {
+          await this.sendMessage(
+            sessionId,
+            reason === "empty"
+              ? "System auto-retry: your previous turn ended without a visible reply. Resume the work requested by the last user message and finish with a reply the user can read."
+              : "System auto-retry: your previous turn was interrupted by an error before finishing. Resume the work requested by the last user message and finish with a reply the user can read.",
+            undefined,
+            undefined,
+            undefined,
+            { autoRetry: true, userMessageMetadata: { autoRetry: true, reason } },
+          );
+        } catch (err) {
+          diagnostics.error(`Auto-retry send failed for session ${sessionId}:`, err);
         }
       }
     }

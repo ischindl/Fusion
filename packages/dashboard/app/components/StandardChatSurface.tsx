@@ -4,7 +4,7 @@ import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, 
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ArrowUpToLine, Archive, Bot, File, Pencil, Reply, Send, TriangleAlert } from "lucide-react";
+import { ArrowUpToLine, Archive, Bot, File, Pencil, Reply, RotateCcw, Send, TriangleAlert } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ChatEnginePhase, ChatMessageInfo, FailureInfo, ToolCallInfo } from "../hooks/chatTypes";
 import { linkifyFilePaths, linkifyReactChildren } from "../utils/filePathLinkify";
@@ -46,6 +46,14 @@ export interface StandardChatMessageItemProps {
   /** Direct-chat callers opt in; task planner intentionally leaves quotes unavailable. */
   onQuoteMessage?: (message: ChatMessageInfo) => void;
   onScrollToTop?: (messageId: string) => void;
+  /**
+   * FNXC:ChatTurnRetry 2026-09-17-16:30:
+   * When a turn ends without a reply (or is interrupted), the operator had to copy-paste their
+   * own prompt to rerun it. Callers that can resend the prompt (session chat, planner chat) wire
+   * this up and the honest notices render a Retry action; surfaces without a resend path omit it
+   * so no dead control is rendered.
+   */
+  onRetryTurn?: (message: ChatMessageInfo) => void;
   /**
    * FNXC:ChatMessageScrollToTop 2026-07-12-23:09:
    * ChatView owns scroll-container measurement and sets this when the message top is clipped above the visible container top. StandardChatSurface keeps eligible go-to-top controls mounted for tests/accessibility wiring but hides them until this state is true, and renders the control inline with the Thinking row instead of a standalone action line.
@@ -789,6 +797,7 @@ export const StandardChatMessageItem = memo(function StandardChatMessageItem({
   copyAction,
   onQuoteMessage,
   onScrollToTop,
+  onRetryTurn,
   isAwaitingQuestionAnswer = false,
   submittedQuestionAnswer,
   onQuestionSubmit,
@@ -975,7 +984,12 @@ export const StandardChatMessageItem = memo(function StandardChatMessageItem({
     rows get their own notice instead.
     */
     if (message.content.trim().length === 0 && message.metadata?.interrupted !== true) {
-      return <div className="chat-message-content chat-message-content--no-reply" role="note" data-testid="chat-message-no-reply">{t("chat.noReplyGenerated", "The model ended this turn without writing a reply. Expand Thinking below to see what it reached.")}</div>;
+      return (
+        <div className="chat-message-content chat-message-content--no-reply" role="note" data-testid="chat-message-no-reply">
+          <span>{t("chat.noReplyGenerated", "The model ended this turn without writing a reply. Expand Thinking below to see what it reached.")}</span>
+          {onRetryTurn && <UiButton type="button" className="btn btn-sm" data-testid={`chat-retry-turn-${message.id}`} onClick={() => onRetryTurn(message)}><RotateCcw size={14} aria-hidden="true" />{t("chat.retryTurn", "Retry")}</UiButton>}
+        </div>
+      );
     }
     return renderStandardAssistantContent(message.content, forcePlain);
   }, [failureInfo, forcePlain, isAssistantMessage, isEmptyAssistantMessage, message.content, message.metadata, t]);
@@ -1004,7 +1018,10 @@ export const StandardChatMessageItem = memo(function StandardChatMessageItem({
       {contextTruncationEvidence && <ChatContextTruncationNotice evidence={contextTruncationEvidence} />}
       {/* FNXC:ChatInterruptedVisibility 2026-09-17-16:16: an interrupted assistant row must announce itself; nothing else on the row distinguishes "stopped early" from "finished". */}
       {isAssistantMessage && message.metadata?.interrupted === true && (
-        <div className="chat-message-content chat-message-content--interrupted" role="note" data-testid="chat-message-interrupted">{t("chat.responseInterrupted", "Response interrupted — whatever was produced before the stop is shown above and in Thinking.")}</div>
+        <div className="chat-message-content chat-message-content--interrupted" role="note" data-testid="chat-message-interrupted">
+          <span>{t("chat.responseInterrupted", "Response interrupted — whatever was produced before the stop is shown above and in Thinking.")}</span>
+          {onRetryTurn && <UiButton type="button" className="btn btn-sm" data-testid={`chat-retry-turn-${message.id}`} onClick={() => onRetryTurn(message)}><RotateCcw size={14} aria-hidden="true" />{t("chat.retryTurn", "Retry")}</UiButton>}
+        </div>
       )}
       {hasAssistantFooterRow && (
         <div className={`chat-message-thinking-row${hasVisibleAssistantFooterContent ? "" : " chat-message-thinking-row--collapsed"}`}>

@@ -1402,6 +1402,30 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
     });
   }, [draft]);
 
+  /*
+  FNXC:ChatTurnRetry 2026-09-17-16:30:
+  Planner Chat shares the honest no-reply/interrupted notices; the operator reruns a dead turn by
+  resending the nearest preceding user prompt through the planner's own send path (never while
+  composerState is sending). The existing messagesRef keeps the callback stable for the memoized row.
+  */
+  const handleRetryTurn = useCallback((assistantMessage: { id: string }) => {
+    if (composerState === "sending") {
+      return;
+    }
+    const list = messagesRef.current;
+    const index = list.findIndex((candidate) => candidate.id === assistantMessage.id);
+    if (index <= 0) {
+      return;
+    }
+    for (let i = index - 1; i >= 0; i -= 1) {
+      const candidate = list[i];
+      if (candidate.role === "user" && candidate.content.trim().length > 0) {
+        void sendMessageContent(candidate.content);
+        return;
+      }
+    }
+  }, [composerState, sendMessageContent]);
+
   const sendMessage = useCallback(() => {
     const trimmed = draft.trim();
     const snippetInvocation = matchStandaloneSnippetInvocation(trimmed, chatSnippets);
@@ -1858,6 +1882,7 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
                   projectId={projectId}
                   isAwaitingQuestionAnswer={message.role === "assistant"}
                   onQuestionSubmit={(answerText) => void sendMessageContent(answerText)}
+                  onRetryTurn={handleRetryTurn}
                   loadToolCallFull={loadFullToolCall}
                   toolCallRenderer={(toolCall, index) => renderPlannerToolCall(message, toolCall, index)}
                   onEditMessage={editMessageAndResend}
