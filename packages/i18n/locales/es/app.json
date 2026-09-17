@@ -1662,8 +1662,7 @@
     "chatAsModel": "Chat as model (no agent)",
     "presentationModeGroup": "Chat display mode",
     "presentationModePopup": "Open chat as popup",
-    "presentationModeView": "Open chat as view",
-    "viewModeNoHostToast": "Chat view needs the right sidebar or a sidebar placement (Settings → Appearance). Keeping the popup."
+    "presentationModeView": "Open chat as view"
   },
   "chatRooms": {
     "error": {
