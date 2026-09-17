@@ -55,6 +55,7 @@ function chatStoreFor(sessions: ChatSession[]): ChatStore {
       const current = byId.get(id);
       if (current) current.inFlightGeneration = snapshot;
     }),
+    addMessage: vi.fn(async () => ({ id: "msg-recovered" })),
   } as unknown as ChatStore;
 }
 
@@ -99,6 +100,74 @@ describe("RUFU-144: reconcile stale in-flight chat generations", () => {
       target: "chat-sessions",
       metadata: { count: 1, sessionIds: ["chat-stale"], outcome: "cleared" },
     });
+  });
+
+  /*
+  FNXC:ChatInterruptedRecovery 2026-09-17-16:48:
+  A deploy restart mid-generation previously left the transcript silent (test_banks
+  chat-c4fdfc64: 72 pi-runtime rows, zero persisted). The stale checkpoint must now
+  materialize an `interrupted` assistant row - the same shape an explicit Stop persists - so
+  the shared notice + Retry appears. Only COMPLETED tool calls carry over; running ones have
+  no result and would render as fake completions.
+  */
+  it("materializes an interrupted assistant row from a stale checkpoint that shows work", async () => {
+    const stale = session("chat-restart", inFlight({
+      startedAt: minutesAgo(120),
+      streamingText: "Rozdělaná práce",
+      streamingThinking: "Plánoval jsem dalši krok",
+      toolCalls: [
+        { toolName: "bash", args: { cmd: "ls" }, isError: false, result: "files", status: "completed" },
+        { toolName: "bash", args: { cmd: "make" }, isError: false, status: "running" },
+      ],
+    }));
+    const recordRunAuditEvent = vi.fn().mockResolvedValue(undefined);
+    const { manager, chatStore } = managerFor([stale], recordRunAuditEvent);
+
+    expect(await manager.reconcileStaleInFlightChatGenerations()).toBe(1);
+    const addMessage = chatStore.addMessage as unknown as ReturnType<typeof vi.fn>;
+    expect(addMessage).toHaveBeenCalledTimes(1);
+    expect(addMessage.mock.calls[0]?.[1]).toMatchObject({
+      role: "assistant",
+      content: "Rozdělaná práce",
+      thinkingOutput: "Plánoval jsem dalši krok",
+      metadata: {
+        interrupted: true,
+        recoveredFromStaleGeneration: true,
+        toolCalls: [{ toolName: "bash", args: { cmd: "ls" }, isError: false, result: "files" }],
+      },
+    });
+    expect(recordRunAuditEvent.mock.calls[0]?.[0]).toMatchObject({
+      mutationType: "chat:stale-in-flight-generation-cleared",
+      metadata: { materializedCount: 1 },
+    });
+  });
+
+  it("clears a stale checkpoint without work evidence as a plain clear (nothing to resume)", async () => {
+    const stale = session("chat-quiet", inFlight({
+      startedAt: minutesAgo(120),
+      streamingText: "   ",
+      streamingThinking: "",
+      toolCalls: [],
+    }));
+    const recordRunAuditEvent = vi.fn().mockResolvedValue(undefined);
+    const { manager, chatStore } = managerFor([stale], recordRunAuditEvent);
+
+    expect(await manager.reconcileStaleInFlightChatGenerations()).toBe(1);
+    expect(chatStore.setInFlightGeneration).toHaveBeenCalledWith("chat-quiet", null);
+    expect(chatStore.addMessage).not.toHaveBeenCalled();
+    expect(recordRunAuditEvent.mock.calls[0]?.[0]).toMatchObject({
+      metadata: { materializedCount: 0 },
+    });
+  });
+
+  it("still clears the stale flag when the interrupted row cannot be persisted", async () => {
+    const stale = session("chat-persist-fail", inFlight({ startedAt: minutesAgo(120), streamingText: "rozdelano" }));
+    const recordRunAuditEvent = vi.fn().mockResolvedValue(undefined);
+    const { manager, chatStore } = managerFor([stale], recordRunAuditEvent);
+    (chatStore.addMessage as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("simulated write failure"));
+
+    expect(await manager.reconcileStaleInFlightChatGenerations()).toBe(1);
+    expect(chatStore.setInFlightGeneration).toHaveBeenCalledWith("chat-persist-fail", null);
   });
 
   it("leaves a fresh flag (startedAt within the floor) untouched and emits no audit row", async () => {

@@ -7615,6 +7615,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
 
     const now = Date.now();
     const clearedSessionIds: string[] = [];
+    const materializedSessionIds: string[] = [];
     let candidateCount = 0;
 
     for (const session of sessions) {
@@ -7625,9 +7626,54 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       // Unknown age (no parseable startedAt AND no parseable updated_at): never clear.
       if (referenceMs === null) continue;
       if (now - referenceMs <= CHAT_IN_FLIGHT_GENERATION_STALE_MS) continue;
+      /*
+      FNXC:ChatInterruptedRecovery 2026-09-17-16:48:
+      A dashboard restart mid-generation (a deploy, an OOM) orphans the generation: the pi
+      runtime kept streaming into its own JSONL while the DB persisted nothing, so clearing the
+      stale flag left the transcript SILENT - no assistant row, no interrupted notice, no Retry
+      (test_banks chat-c4fdfc64: 72 runtime rows, zero persisted; killed by a deploy restart).
+      The streamed checkpoint payload is already durable in `in_flight_generation`, so a stale
+      row with evidence of work materializes the same `interrupted` assistant row an explicit
+      Stop persists - the shared notice + auto-expanded Thinking + Retry then appear and the
+      operator resumes with one click. Evidence = any streamed text, thinking, or completed
+      tool call; a payload with none stays a plain clear (nothing to resume).
+      */
+      const completedToolCalls = (Array.isArray(inFlight.toolCalls) ? inFlight.toolCalls : [])
+        .filter((call) => call?.status === "completed")
+        .map((call) => ({ toolName: call.toolName, args: call.args, isError: call.isError, result: call.result }));
+      const streamedText = typeof inFlight.streamingText === "string" ? inFlight.streamingText : "";
+      const streamedThinking = typeof inFlight.streamingThinking === "string" ? inFlight.streamingThinking : "";
+      const hasWorkEvidence = streamedText.trim().length > 0
+        || streamedThinking.trim().length > 0
+        || completedToolCalls.length > 0;
       try {
+        // Clear first, materialize second: a crash between the two must not duplicate the
+        // recovered row on the next sweep - the honest degraded case is today's silence, not a
+        // double "interrupted" message.
         await chatStore.setInFlightGeneration(session.id, null);
         clearedSessionIds.push(session.id);
+        if (hasWorkEvidence) {
+          try {
+            await chatStore.addMessage(session.id, {
+              role: "assistant",
+              content: streamedText,
+              thinkingOutput: streamedThinking || undefined,
+              metadata: {
+                interrupted: true,
+                recoveredFromStaleGeneration: true,
+                ...(completedToolCalls.length > 0 ? { toolCalls: completedToolCalls } : {}),
+              },
+            });
+            materializedSessionIds.push(session.id);
+            log.debug(
+              `reconcileStaleInFlightChatGenerations: materialized interrupted row for chat session ${session.id} ` +
+              `(text ${streamedText.length} chars, thinking ${streamedThinking.length} chars, ${completedToolCalls.length} completed tool calls)`,
+            );
+          } catch (err: unknown) {
+            const errorMessage = err instanceof Error ? err.message : String(err);
+            log.warn(`reconcileStaleInFlightChatGenerations: stale flag cleared but interrupted row could not be persisted for session ${session.id}: ${errorMessage}`);
+          }
+        }
         log.debug(
           `reconcileStaleInFlightChatGenerations: cleared stale in-flight generation for chat session ${session.id} ` +
           `(reference ${new Date(referenceMs).toISOString()}, age ${Math.round((now - referenceMs) / 60000)} min)`,
@@ -7643,7 +7689,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       await emitBoundedRunAudit(this.store, {
         agentId: "self-healing", runId: "chat-in-flight-generation-reconcile", domain: "database",
         mutationType: "chat:stale-in-flight-generation-cleared", target: "chat-sessions",
-        metadata: { count: clearedSessionIds.length, sessionIds: clearedSessionIds.slice(0, 20), outcome: "cleared" },
+        /* FNXC:ChatInterruptedRecovery 2026-09-17-16:48: `materializedCount` counts rows recovered as interrupted assistant messages (count-only metadata). */
+        metadata: { count: clearedSessionIds.length, sessionIds: clearedSessionIds.slice(0, 20), outcome: "cleared", materializedCount: materializedSessionIds.length },
       }, { log });
       return clearedSessionIds.length;
     }
