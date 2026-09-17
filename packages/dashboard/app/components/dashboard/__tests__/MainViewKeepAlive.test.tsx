@@ -328,9 +328,13 @@ describe("MainViewKeepAlive", () => {
      * FN-419: the keep-alive Chat gate is no longer mobile-drawer-only — the `sidebar` navigation placement is a
      * second page host. The structural guard follows the new gate: Chat enters the tree exactly when this shell is
      * the resolved page host, and a non-page shell still evicts a retained Chat entry.
+     *
+     * FN-468 (upstream 59732fb13c, merged 2026-09-17) reformed the gate to three multi-line host checks: the
+     * tablet band now also resolves "mobile-page", so the census asserts the canonical multi-line form. The
+     * drawer wrapper stays strictly phone-only.
      */
     const mainContent = readAppFile("components/dashboard/MainContent.tsx");
-    expect(mainContent).toContain('const chatPageHostEnabled = mobileDrawerEnabled || chatPageHost === "sidebar-page"');
+    expect(mainContent).toContain('const chatPageHostEnabled = mobileDrawerEnabled\n    || chatPageHost === "sidebar-page"\n    || chatPageHost === "mobile-page";');
     expect(mainContent).toContain('taskView === "chat" && !chatPageHostEnabled ? null : taskView');
     expect(mainContent).toContain('!chatPageHostEnabled && storedKeepAliveIds.includes("chat")');
     expect(mainContent).toContain('storedKeepAliveIds.filter((id) => id !== "chat")');

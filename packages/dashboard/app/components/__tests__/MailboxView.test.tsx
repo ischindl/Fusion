@@ -86,6 +86,9 @@ vi.mock("lucide-react", () => ({
     <span data-testid="icon-loader" className={className}>Loader</span>
   ),
   RefreshCw: () => <span data-testid="icon-refresh">Refresh</span>,
+  Filter: ({ className }: { className?: string }) => <svg data-testid="icon-filter" className={className} />,
+  ChevronDown: () => <svg data-testid="icon-chevron-down" />,
+  Pin: () => <svg data-testid="icon-pin" />,
   MessageSquare: () => <span data-testid="icon-message">Message</span>,
   User: () => <span data-testid="icon-user">User</span>,
   AlertCircle: () => <span data-testid="icon-alert">Alert</span>,
@@ -138,6 +141,25 @@ const mockAgents: Agent[] = [
     metadata: {},
   },
 ];
+
+/*
+FNXC:MailboxTwoTabs 2026-09-16-16:53:
+Archived, Agents and Approvals are inbox SCOPES now, reached from the single header filter button
+instead of their own tabs. Every former tab gesture in this suite goes through this one helper.
+*/
+async function selectInboxScope(scope: "all" | "structural" | "archived" | "approvals" | "agents", user?: { click: (element: Element) => Promise<void> }) {
+  if (user) {
+    await user.click(await screen.findByTestId("mailbox-inbox-filter"));
+    await user.click(await screen.findByTestId(`mailbox-inbox-filter-option-${scope}`));
+    return;
+  }
+  await act(async () => {
+    fireEvent.click(screen.getByTestId("mailbox-inbox-filter"));
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByTestId(`mailbox-inbox-filter-option-${scope}`));
+  });
+}
 
 const mockMessage: Message = {
   id: "msg-001",
@@ -399,7 +421,7 @@ describe("MailboxView", () => {
     });
   });
 
-  it("renders all four tabs", async () => {
+  it("renders exactly the inbox and outbox tabs", async () => {
     mockFetchInbox.mockResolvedValue({
       messages: [],
       unreadCount: 0,
@@ -410,11 +432,95 @@ describe("MailboxView", () => {
 
     expect(screen.getByTestId("mailbox-tab-inbox")).toBeDefined();
     expect(screen.getByTestId("mailbox-tab-outbox")).toBeDefined();
-    expect(screen.getByTestId("mailbox-tab-agents")).toBeDefined();
-    expect(screen.getByTestId("mailbox-tab-approvals")).toBeDefined();
+    expect(within(screen.getByTestId("mailbox-tabs")).getAllByRole("button")).toHaveLength(2);
+    expect(screen.queryByTestId("mailbox-tab-agents")).toBeNull();
+    expect(screen.queryByTestId("mailbox-tab-approvals")).toBeNull();
+    expect(screen.queryByTestId("mailbox-tab-archived")).toBeNull();
+    expect(screen.queryByTestId("mailbox-refresh")).toBeNull();
   });
 
-  it("shows approvals pending badge on mount without opening Approvals tab", async () => {
+  it("reaches every retired collection from the header filter menu", async () => {
+    mockFetchInbox.mockResolvedValue({ messages: [], unreadCount: 0, total: 0 });
+
+    render(<MailboxView {...defaultProps} />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("mailbox-inbox-filter"));
+    });
+
+    const menu = screen.getByTestId("mailbox-inbox-filter-menu");
+    for (const scope of ["all", "structural", "archived", "approvals", "agents"]) {
+      expect(within(menu).getByTestId(`mailbox-inbox-filter-option-${scope}`)).toBeDefined();
+    }
+    expect(screen.getByTestId("mailbox-inbox-filter-option-all")).toHaveAttribute("aria-checked", "true");
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("mailbox-inbox-filter-option-archived"));
+    });
+
+    expect(screen.queryByTestId("mailbox-inbox-filter-menu")).toBeNull();
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-archived-list")).toBeDefined();
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("mailbox-inbox-filter"));
+    });
+    expect(screen.getByTestId("mailbox-inbox-filter-option-archived")).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("shows the inbox filter and mark-all-read on the inbox tab, and compose only on the outbox tab", async () => {
+    mockFetchInbox.mockResolvedValue({ messages: [], unreadCount: 0, total: 0 });
+    mockFetchOutbox.mockResolvedValue({ messages: [], total: 0 });
+
+    render(<MailboxView {...defaultProps} />);
+
+    expect(screen.getByTestId("mailbox-inbox-filter")).toBeDefined();
+    expect(screen.getByTestId("mailbox-mark-all-read")).toBeDisabled();
+    expect(screen.queryByTestId("mailbox-header-compose")).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("mailbox-tab-outbox"));
+    });
+
+    expect(screen.getByTestId("mailbox-header-compose")).toBeDefined();
+    expect(screen.queryByTestId("mailbox-inbox-filter")).toBeNull();
+    expect(screen.queryByTestId("mailbox-mark-all-read")).toBeNull();
+  });
+
+  it("repeats the pending approvals count inside the filter menu option", async () => {
+    mockFetchInbox.mockResolvedValue({ messages: [], unreadCount: 0, total: 0 });
+    mockFetchUnreadCount.mockResolvedValue({ unreadCount: 0, pendingApprovalCount: 4 });
+
+    render(<MailboxView {...defaultProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-approvals-pending-badge")).toHaveTextContent("4");
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("mailbox-inbox-filter"));
+    });
+
+    expect(screen.getByTestId("mailbox-inbox-filter-option-approvals-count")).toHaveTextContent("4");
+    expect(screen.getAllByTestId("mailbox-approvals-pending-badge")).toHaveLength(1);
+  });
+
+  it("renders no approvals badge when nothing is pending", async () => {
+    mockFetchInbox.mockResolvedValue({ messages: [], unreadCount: 0, total: 0 });
+    mockFetchUnreadCount.mockResolvedValue({ unreadCount: 0, pendingApprovalCount: 0 });
+
+    render(<MailboxView {...defaultProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-inbox-filter")).toBeDefined();
+    });
+
+    expect(screen.queryByTestId("mailbox-approvals-pending-badge")).toBeNull();
+    expect(screen.queryByTestId("mailbox-inbox-filter-option-approvals-count")).toBeNull();
+  });
+
+  it("shows approvals pending badge on mount without opening the filter menu", async () => {
     mockFetchInbox.mockResolvedValue({ messages: [], unreadCount: 0, total: 0 });
     mockFetchUnreadCount.mockResolvedValue({ unreadCount: 0, pendingApprovalCount: 3 });
 
@@ -425,10 +531,12 @@ describe("MailboxView", () => {
       expect(screen.getByTestId("mailbox-approvals-pending-badge")).toHaveTextContent("3");
     });
 
+    expect(screen.getByTestId("mailbox-inbox-filter")).toContainElement(screen.getByTestId("mailbox-approvals-pending-badge"));
+    expect(screen.queryByTestId("mailbox-inbox-filter-menu")).toBeNull();
     expect(mockFetchApprovals).not.toHaveBeenCalled();
   });
 
-  it("shows approvals pending badge and loads approvals tab", async () => {
+  it("shows approvals pending badge and loads the approvals scope", async () => {
     mockFetchInbox.mockResolvedValue({ messages: [], unreadCount: 0, total: 0 });
     mockFetchApprovals.mockResolvedValue({
       requests: [{
@@ -446,9 +554,7 @@ describe("MailboxView", () => {
 
     render(<MailboxView {...defaultProps} />);
 
-    await act(async () => {
-      fireEvent.click(screen.getByTestId("mailbox-tab-approvals"));
-    });
+    await selectInboxScope("approvals");
 
     await waitFor(() => {
       expect(screen.getByTestId("mailbox-approvals-pending-badge")).toHaveTextContent("2");
@@ -472,7 +578,7 @@ describe("MailboxView", () => {
     });
 
     render(<MailboxView {...defaultProps} />);
-    await act(async () => { fireEvent.click(screen.getByTestId("mailbox-tab-approvals")); });
+    await selectInboxScope("approvals");
     await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-item-apr-1")); });
 
     await waitFor(() => {
@@ -515,7 +621,7 @@ describe("MailboxView", () => {
     });
 
     render(<MailboxView {...defaultProps} />);
-    await act(async () => { fireEvent.click(screen.getByTestId("mailbox-tab-approvals")); });
+    await selectInboxScope("approvals");
     await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-item-apr-1")); });
 
     await waitFor(() => {
@@ -555,7 +661,7 @@ describe("MailboxView", () => {
     });
 
     render(<MailboxView {...defaultProps} />);
-    await act(async () => { fireEvent.click(screen.getByTestId("mailbox-tab-approvals")); });
+    await selectInboxScope("approvals");
     await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-item-apr-1")); });
 
     await waitFor(() => {
@@ -601,7 +707,7 @@ describe("MailboxView", () => {
     });
 
     render(<MailboxView {...defaultProps} />);
-    await act(async () => { fireEvent.click(screen.getByTestId("mailbox-tab-approvals")); });
+    await selectInboxScope("approvals");
     await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-item-apr-1")); });
     await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-approve")); });
 
@@ -618,7 +724,7 @@ describe("MailboxView", () => {
     mockDecideApproval.mockResolvedValue({ id: "apr-1", status: "denied", actionCategory: "command_execution", actionSummary: "Run npm test", agentId: "agent-001", createdAt: now, updatedAt: now, requester: { actorId: "agent-001", actorType: "agent", actorName: "Agent 1" }, requestedAt: now, targetAction: { category: "command_execution", action: "bash", summary: "Run npm test", resourceType: "command", resourceId: "cmd" }, history: [] });
 
     render(<MailboxView {...defaultProps} />);
-    await act(async () => { fireEvent.click(screen.getByTestId("mailbox-tab-approvals")); });
+    await selectInboxScope("approvals");
     await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-item-apr-1")); });
     await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-deny")); });
 
@@ -636,7 +742,7 @@ describe("MailboxView", () => {
     const addToast = vi.fn();
 
     render(<MailboxView {...defaultProps} addToast={addToast} />);
-    await act(async () => { fireEvent.click(screen.getByTestId("mailbox-tab-approvals")); });
+    await selectInboxScope("approvals");
     await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-item-apr-1")); });
     await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-approve")); });
 
@@ -653,7 +759,7 @@ describe("MailboxView", () => {
     const addToast = vi.fn();
 
     render(<MailboxView {...defaultProps} addToast={addToast} />);
-    await act(async () => { fireEvent.click(screen.getByTestId("mailbox-tab-approvals")); });
+    await selectInboxScope("approvals");
     await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-item-apr-1")); });
     await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-deny")); });
 
@@ -669,7 +775,7 @@ describe("MailboxView", () => {
     const addToast = vi.fn();
 
     render(<MailboxView {...defaultProps} addToast={addToast} />);
-    await act(async () => { fireEvent.click(screen.getByTestId("mailbox-tab-approvals")); });
+    await selectInboxScope("approvals");
     await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-item-apr-1")); });
     await act(async () => { fireEvent.click(await screen.getByTestId("mailbox-approval-deny")); });
 
@@ -685,7 +791,7 @@ describe("MailboxView", () => {
     mockDecideApproval.mockImplementation(() => new Promise((resolve) => { resolveDecision = () => resolve({} as any); }));
 
     render(<MailboxView {...defaultProps} />);
-    await act(async () => { fireEvent.click(screen.getByTestId("mailbox-tab-approvals")); });
+    await selectInboxScope("approvals");
     await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-item-apr-1")); });
     await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-approve")); });
 
@@ -703,7 +809,7 @@ describe("MailboxView", () => {
     mockFetchApprovalDetail.mockResolvedValue({ id: "apr-1", status: "pending", actionCategory: "command_execution", actionSummary: "Run npm test", agentId: "agent-001", createdAt: now, updatedAt: now, requester: { actorId: "agent-001", actorType: "agent", actorName: "Agent 1" }, requestedAt: now, targetAction: { category: "command_execution", action: "bash", summary: "Run npm test", resourceType: "command", resourceId: "cmd" }, history: [] });
 
     render(<MailboxView {...defaultProps} />);
-    await act(async () => { fireEvent.click(screen.getByTestId("mailbox-tab-approvals")); });
+    await selectInboxScope("approvals");
     await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-item-apr-1")); });
 
     await waitFor(() => {
@@ -716,6 +822,78 @@ describe("MailboxView", () => {
     await waitFor(() => {
       expect(screen.getByTestId("mailbox-approval-list")).toBeDefined();
     });
+  });
+
+  /*
+  FNXC:MailboxTwoTabs 2026-09-16-16:53:
+  Symptom regression: with the archived (or agents) scope on screen an incoming message used to change
+  nothing until the operator pressed the now-deleted refresh button. Every scope must resync from SSE.
+  */
+  it("reloads the archived scope in real time when a message arrives", async () => {
+    mockFetchInbox.mockResolvedValue({ messages: [], unreadCount: 0, total: 0 });
+    mockFetchOutbox.mockResolvedValue({ messages: [], total: 0 });
+    mockFetchAllAgentMailbox.mockResolvedValue({ messages: [], total: 0 });
+
+    render(<MailboxView {...defaultProps} />);
+    await selectInboxScope("archived");
+    await screen.findByTestId("mailbox-archived-list");
+
+    const archivedMessage: Message = { ...mockMessage, id: "msg-archived-live", content: "Archived arrival", archived: true };
+    mockFetchInbox.mockResolvedValue({ messages: [archivedMessage], unreadCount: 0, total: 1 });
+    const archivedCallsBefore = mockFetchInbox.mock.calls.length;
+
+    const latest = sseSubscriptions.at(-1);
+    await act(async () => {
+      latest?.["message:received"]?.();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-item-msg-archived-live")).toBeDefined();
+    });
+    expect(mockFetchInbox.mock.calls.length).toBeGreaterThan(archivedCallsBefore);
+    expect(screen.queryByTestId("mailbox-refresh")).toBeNull();
+  });
+
+  it("reloads the agents scope in real time when a message arrives", async () => {
+    mockFetchInbox.mockResolvedValue({ messages: [], unreadCount: 0, total: 0 });
+    mockFetchAllAgentMailbox.mockResolvedValue({ messages: [], total: 0 });
+
+    render(<MailboxView {...defaultProps} />);
+    await selectInboxScope("agents");
+    await screen.findByTestId("mailbox-agents");
+
+    const callsBefore = mockFetchAllAgentMailbox.mock.calls.length;
+    const latest = sseSubscriptions.at(-1);
+    await act(async () => {
+      latest?.["message:received"]?.();
+    });
+
+    await waitFor(() => {
+      expect(mockFetchAllAgentMailbox.mock.calls.length).toBeGreaterThan(callsBefore);
+    });
+    expect(screen.queryByTestId("mailbox-refresh")).toBeNull();
+  });
+
+  it("reloads the outbox in real time when a message is sent", async () => {
+    mockFetchInbox.mockResolvedValue({ messages: [], unreadCount: 0, total: 0 });
+    mockFetchOutbox.mockResolvedValue({ messages: [], total: 0 });
+
+    render(<MailboxView {...defaultProps} />);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("mailbox-tab-outbox"));
+    });
+    await screen.findByTestId("mailbox-outbox-list");
+
+    mockFetchOutbox.mockResolvedValue({ messages: [{ ...mockOutboxMessage, id: "msg-sent-live" }], total: 1 });
+    const latest = sseSubscriptions.at(-1);
+    await act(async () => {
+      latest?.["message:sent"]?.();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-item-msg-sent-live")).toBeDefined();
+    });
+    expect(screen.queryByTestId("mailbox-refresh")).toBeNull();
   });
 
   it("updates approvals pending badge on approval:requested SSE without opening Approvals tab", async () => {
@@ -749,7 +927,7 @@ describe("MailboxView", () => {
     mockFetchApprovals.mockResolvedValue({ requests: [{ id: "apr-1", status: "pending", actionCategory: "command_execution", actionSummary: "Run npm test", agentId: "agent-001", createdAt: now, updatedAt: now }], total: 1, pendingCount: 1 });
 
     render(<MailboxView {...defaultProps} />);
-    await act(async () => { fireEvent.click(screen.getByTestId("mailbox-tab-approvals")); });
+    await selectInboxScope("approvals");
 
     const latest = sseSubscriptions.at(-1);
     expect(latest).toBeDefined();
@@ -777,7 +955,7 @@ describe("MailboxView", () => {
     mockDecideApproval.mockResolvedValue({ id: "apr-1", status: "approved", actionCategory: "command_execution", actionSummary: "Run npm test", agentId: "agent-001", createdAt: now, updatedAt: now, requester: { actorId: "agent-001", actorType: "agent", actorName: "Agent 1" }, requestedAt: now, targetAction: { category: "command_execution", action: "bash", summary: "Run npm test", resourceType: "command", resourceId: "cmd" }, history: [] });
 
     render(<MailboxView {...defaultProps} />);
-    await act(async () => { fireEvent.click(screen.getByTestId("mailbox-tab-approvals")); });
+    await selectInboxScope("approvals");
     await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-item-apr-1")); });
     await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-approve")); });
     await act(async () => { fireEvent.click(screen.getByTestId("mailbox-approval-filter-history")); });
@@ -969,10 +1147,7 @@ describe("MailboxView", () => {
 
     render(<MailboxView {...defaultProps} />);
 
-    const agentsTab = screen.getByTestId("mailbox-tab-agents");
-    await act(async () => {
-      fireEvent.click(agentsTab);
-    });
+    await selectInboxScope("agents");
 
     await waitFor(() => {
       expect(mockFetchAgents).toHaveBeenCalled();
@@ -1079,7 +1254,7 @@ describe("MailboxView", () => {
 
     render(<MailboxView {...defaultProps} projectId="project-a" />);
 
-    fireEvent.click(await screen.findByTestId("mailbox-tab-archived"));
+    await selectInboxScope("archived");
     await waitFor(() => {
       expect(screen.getByTestId("mailbox-item-msg-001")).toBeDefined();
     });
@@ -1113,7 +1288,7 @@ describe("MailboxView", () => {
 
     render(<MailboxView {...defaultProps} onOpenTask={vi.fn()} />);
 
-    fireEvent.click(await screen.findByTestId("mailbox-tab-archived"));
+    await selectInboxScope("archived");
     await waitFor(() => {
       expect(screen.getByTestId("mailbox-item-msg-001")).toBeDefined();
     });
@@ -1856,40 +2031,35 @@ describe("MailboxView", () => {
     });
   });
 
-  it("shows compose button in header on inbox tab", async () => {
+  // FNXC:MailboxTwoTabs 2026-09-16-16:53: Compose is the Outbox tab's single header action.
+  it("shows compose button in header on the outbox tab", async () => {
     mockFetchInbox.mockResolvedValue({
       messages: [],
       unreadCount: 0,
       total: 0,
     });
+    mockFetchOutbox.mockResolvedValue({ messages: [], total: 0 });
 
     render(<MailboxView {...defaultProps} />);
+
+    expect(screen.queryByTestId("mailbox-header-compose")).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("mailbox-tab-outbox"));
+    });
 
     await waitFor(() => {
       expect(screen.getByTestId("mailbox-header-compose")).toBeDefined();
     });
 
     const headerComposeButton = screen.getByTestId("mailbox-header-compose");
-    expect(headerComposeButton).toHaveClass("btn", "btn-sm", "btn-primary");
-  });
-
-  it("shows compose button in header on agents tab", async () => {
-    mockFetchInbox.mockResolvedValue({
-      messages: [],
-      unreadCount: 0,
-      total: 0,
-    });
-
-    render(<MailboxView {...defaultProps} />);
-
-    const agentsTab = screen.getByTestId("mailbox-tab-agents");
-    await act(async () => {
-      fireEvent.click(agentsTab);
-    });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("mailbox-header-compose")).toBeDefined();
-    });
+    /*
+    FNXC:IconOnlyButtonCanon 2026-09-16-19:05:
+    FN-471 : la création partagée ne porte plus `btn-primary`. Son emphase CTA vit sur
+    `view-action-button--create`, que la présentation icône seule du téléphone ramène à la variante encadrée.
+    */
+    expect(headerComposeButton).toHaveClass("btn", "btn-sm", "view-action-button--create");
+    expect(headerComposeButton).not.toHaveClass("btn-primary");
   });
 
   it("renders mailbox tabs and agent subtabs with shared button classes", async () => {
@@ -1911,11 +2081,8 @@ describe("MailboxView", () => {
 
     expect(screen.getByTestId("mailbox-tab-inbox")).toHaveClass("btn", "btn-sm", "btn-secondary", "mailbox-tab");
     expect(screen.getByTestId("mailbox-tab-outbox")).toHaveClass("btn", "btn-sm", "btn-secondary", "mailbox-tab");
-    expect(screen.getByTestId("mailbox-tab-agents")).toHaveClass("btn", "btn-sm", "btn-secondary", "mailbox-tab");
 
-    await act(async () => {
-      fireEvent.click(screen.getByTestId("mailbox-tab-agents"));
-    });
+    await selectInboxScope("agents");
 
     fireEvent.change(screen.getByTestId("mailbox-agent-select"), { target: { value: "agent-001" } });
 
@@ -1979,10 +2146,7 @@ describe("MailboxView", () => {
     render(<MailboxView {...defaultProps} projectId="test-project" />);
 
     // Switch to agents tab
-    const agentsTab = screen.getByTestId("mailbox-tab-agents");
-    await act(async () => {
-      fireEvent.click(agentsTab);
-    });
+    await selectInboxScope("agents");
 
     await waitFor(() => {
       expect(mockFetchAgents).toHaveBeenCalledWith(undefined, "test-project");
@@ -2010,8 +2174,13 @@ describe("MailboxView", () => {
       unreadCount: 0,
       total: 0,
     });
+    mockFetchOutbox.mockResolvedValue({ messages: [], total: 0 });
 
     render(<MailboxView {...defaultProps} />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("mailbox-tab-outbox"));
+    });
 
     // Verify compose button is visible in header
     await waitFor(() => {
@@ -2046,9 +2215,7 @@ describe("MailboxView", () => {
 
       render(<MailboxView {...defaultProps} />);
 
-      await act(async () => {
-        fireEvent.click(screen.getByTestId("mailbox-tab-agents"));
-      });
+      await selectInboxScope("agents");
 
       await waitFor(() => {
         expect(mockFetchAllAgentMailbox).toHaveBeenCalledWith(undefined);
@@ -2083,9 +2250,7 @@ describe("MailboxView", () => {
 
       render(<MailboxView {...defaultProps} />);
 
-      await act(async () => {
-        fireEvent.click(screen.getByTestId("mailbox-tab-agents"));
-      });
+      await selectInboxScope("agents");
 
       await waitFor(() => {
         expect(mockFetchAllAgentMailbox).toHaveBeenCalledWith(undefined);
@@ -2097,16 +2262,18 @@ describe("MailboxView", () => {
 
     it("does not preselect a recipient when composing from All agents", async () => {
       mockFetchInbox.mockResolvedValue({ messages: [], unreadCount: 0, total: 0 });
+      mockFetchOutbox.mockResolvedValue({ messages: [], total: 0 });
       mockFetchAllAgentMailbox.mockResolvedValue({ messages: [], total: 0, unreadCount: 0 });
 
       render(<MailboxView {...defaultProps} />);
 
-      await act(async () => {
-        fireEvent.click(screen.getByTestId("mailbox-tab-agents"));
-      });
+      await selectInboxScope("agents");
 
-      // Compose exists once, in the owning header; the Agents tab no longer paints its own copy.
+      // Compose exists once, on the Outbox tab; no collection paints its own copy.
       expect(screen.queryByTestId("mailbox-compose-btn")).toBeNull();
+      await act(async () => {
+        fireEvent.click(screen.getByTestId("mailbox-tab-outbox"));
+      });
       await act(async () => {
         fireEvent.click(screen.getByTestId("mailbox-header-compose"));
       });
@@ -2123,9 +2290,7 @@ describe("MailboxView", () => {
 
       render(<MailboxView {...defaultProps} />);
 
-      await act(async () => {
-        fireEvent.click(screen.getByTestId("mailbox-tab-agents"));
-      });
+      await selectInboxScope("agents");
 
       const latest = sseSubscriptions.at(-1);
       await act(async () => {
@@ -2154,10 +2319,7 @@ describe("MailboxView", () => {
       render(<MailboxView {...defaultProps} />);
 
       // Switch to agents tab
-      const agentsTab = screen.getByTestId("mailbox-tab-agents");
-      await act(async () => {
-        fireEvent.click(agentsTab);
-      });
+      await selectInboxScope("agents");
 
       await waitFor(() => {
         expect(mockFetchAgents).toHaveBeenCalled();
@@ -2180,9 +2342,9 @@ describe("MailboxView", () => {
       const header = document.querySelector(".view-header");
       expect(header?.contains(screen.getByTestId("mailbox-agent-subtabs"))).toBe(true);
       expect(header?.contains(screen.getByTestId("mailbox-agent-select"))).toBe(true);
-      // One compose control only, and it is the shared header action.
+      // Compose moved to the Outbox tab, so no agent-scope compose control remains here.
       expect(screen.queryByTestId("mailbox-compose-btn")).toBeNull();
-      expect(header?.contains(screen.getByTestId("mailbox-header-compose"))).toBe(true);
+      expect(screen.queryByTestId("mailbox-header-compose")).toBeNull();
     });
 
     it("shows agent sender names in agent inbox rows", async () => {
@@ -2216,10 +2378,7 @@ describe("MailboxView", () => {
 
       render(<MailboxView {...defaultProps} />);
 
-      const agentsTab = screen.getByTestId("mailbox-tab-agents");
-      await act(async () => {
-        fireEvent.click(agentsTab);
-      });
+      await selectInboxScope("agents");
 
       fireEvent.change(screen.getByTestId("mailbox-agent-select"), { target: { value: "agent-001" } });
 
@@ -2256,10 +2415,7 @@ describe("MailboxView", () => {
 
       render(<MailboxView {...defaultProps} />);
 
-      const agentsTab = screen.getByTestId("mailbox-tab-agents");
-      await act(async () => {
-        fireEvent.click(agentsTab);
-      });
+      await selectInboxScope("agents");
 
       fireEvent.change(screen.getByTestId("mailbox-agent-select"), { target: { value: "agent-001" } });
 
@@ -2299,10 +2455,7 @@ describe("MailboxView", () => {
       render(<MailboxView {...defaultProps} />);
 
       // Switch to agents tab and select agent
-      const agentsTab = screen.getByTestId("mailbox-tab-agents");
-      await act(async () => {
-        fireEvent.click(agentsTab);
-      });
+      await selectInboxScope("agents");
 
       fireEvent.change(screen.getByTestId("mailbox-agent-select"), { target: { value: "agent-001" } });
 
@@ -2340,10 +2493,7 @@ describe("MailboxView", () => {
       render(<MailboxView {...defaultProps} />);
 
       // Switch to agents tab and select agent
-      const agentsTab = screen.getByTestId("mailbox-tab-agents");
-      await act(async () => {
-        fireEvent.click(agentsTab);
-      });
+      await selectInboxScope("agents");
 
       fireEvent.change(screen.getByTestId("mailbox-agent-select"), { target: { value: "agent-001" } });
 
@@ -2391,10 +2541,7 @@ describe("MailboxView", () => {
       render(<MailboxView {...defaultProps} />);
 
       // Switch to agents tab
-      const agentsTab = screen.getByTestId("mailbox-tab-agents");
-      await act(async () => {
-        fireEvent.click(agentsTab);
-      });
+      await selectInboxScope("agents");
 
       // Select first agent
       fireEvent.change(screen.getByTestId("mailbox-agent-select"), { target: { value: "agent-001" } });
@@ -2449,10 +2596,7 @@ describe("MailboxView", () => {
       render(<MailboxView {...defaultProps} />);
 
       // Switch to agents tab and select agent
-      const agentsTab = screen.getByTestId("mailbox-tab-agents");
-      await act(async () => {
-        fireEvent.click(agentsTab);
-      });
+      await selectInboxScope("agents");
 
       fireEvent.change(screen.getByTestId("mailbox-agent-select"), { target: { value: "agent-001" } });
 
@@ -2563,6 +2707,7 @@ describe("MailboxView", () => {
     it("keeps mailbox tab icons and badges from shrinking in the mobile flex track", async () => {
       mockUseViewportMode.mockReturnValue("mobile");
       mockFetchInbox.mockResolvedValue(makeInboxResponse([], 16));
+      mockFetchUnreadCount.mockResolvedValue({ unreadCount: 16, pendingApprovalCount: 16 });
       mockFetchApprovals.mockResolvedValue({ requests: [], total: 0, pendingCount: 16 });
 
       const style = document.createElement("style");
@@ -2570,13 +2715,14 @@ describe("MailboxView", () => {
       document.head.append(style);
       try {
         render(<MailboxView {...defaultProps} />);
-        fireEvent.click(screen.getByTestId("mailbox-tab-approvals"));
+        // The pending-approvals badge now rides the header filter trigger, so it renders with no gesture at all.
         await screen.findByTestId("mailbox-approvals-pending-badge");
 
-        for (const tab of ["inbox", "outbox", "agents", "approvals"]) {
+        for (const tab of ["inbox", "outbox"]) {
           expect(getComputedStyle(screen.getByTestId(`mailbox-tab-${tab}`).querySelector("svg")!).flexShrink).toBe("0");
         }
         expect(getComputedStyle(screen.getByTestId("mailbox-approvals-pending-badge")).flexShrink).toBe("0");
+        expect(getComputedStyle(screen.getByTestId("mailbox-inbox-filter").querySelector("svg")!).flexShrink).toBe("0");
       } finally {
         style.remove();
       }
@@ -2619,9 +2765,30 @@ describe("MailboxView", () => {
       render(<MailboxView {...defaultProps} />);
 
       expect(await screen.findByTestId("mailbox-unread-badge")).toBeInTheDocument();
-      expect(screen.getByTestId("mailbox-header-compose")).toBeInTheDocument();
-      expect(screen.getByTestId("mailbox-mark-all-read")).toBeInTheDocument();
-      expect(screen.getByTestId("mailbox-refresh")).toBeInTheDocument();
+      // Compose belongs to the Outbox tab now; the Inbox header carries the filter and Mark all read.
+      expect(screen.queryByTestId("mailbox-header-compose")).toBeNull();
+      expect(screen.getByTestId("mailbox-inbox-filter")).toBeInTheDocument();
+      expect(screen.getByTestId("mailbox-mark-all-read")).toBeEnabled();
+      expect(screen.queryByTestId("mailbox-refresh")).toBeNull();
+    });
+
+    /*
+    FNXC:MailboxTwoTabs 2026-09-16-16:53:
+    Mobile carries the same contextual header: two tabs, the scope filter with its badge, and no empty
+    shell where the manual refresh button used to sit.
+    */
+    it("keeps the contextual mailbox header on mobile without a refresh shell", async () => {
+      mockUseViewportMode.mockReturnValue("mobile");
+      mockFetchInbox.mockResolvedValue(makeInboxResponse([mockMessage], 1));
+      mockFetchUnreadCount.mockResolvedValue({ unreadCount: 1, pendingApprovalCount: 2 });
+
+      render(<MailboxView {...defaultProps} />);
+
+      expect(await screen.findByTestId("mailbox-approvals-pending-badge")).toHaveTextContent("2");
+      expect(screen.getByTestId("mailbox-inbox-filter")).toContainElement(screen.getByTestId("mailbox-approvals-pending-badge"));
+      expect(within(screen.getByTestId("mailbox-tabs")).getAllByRole("button")).toHaveLength(2);
+      expect(screen.queryByTestId("mailbox-refresh")).toBeNull();
+      expect(document.querySelectorAll(".view-header__actions button.btn-icon")).toHaveLength(0);
     });
 
     it("defines .mailbox-view base flex layout with min-height: 0", async () => {
@@ -2719,8 +2886,8 @@ describe("MailboxView", () => {
       // Verify .mailbox-view selectors are in mobile section
       expect(mailboxMobileSection).toContain(".mailbox-view .mailbox-header");
       expect(mailboxMobileSection).toMatch(/\.mailbox-modal \.mailbox-header-actions,\s*\.mailbox-view \.mailbox-header-actions\s*\{[^}]*gap:\s*var\(--space-sm\);[^}]*\}/);
-      expect(mailboxMobileSection).toMatch(/\.mailbox-modal \.mailbox-header-actions \.btn,[^}]*\.mailbox-view \.mailbox-header-actions \.btn-icon\s*\{[^}]*min-height:\s*2\.25rem;[^}]*\}/);
-      expect(mailboxMobileSection).toMatch(/\.mailbox-modal \.mailbox-header-actions \.btn-icon,[^}]*\.mailbox-view \.mailbox-header-actions \.btn-icon\s*\{[^}]*min-width:\s*2\.25rem;[^}]*display:\s*inline-flex;[^}]*\}/);
+      expect(mailboxMobileSection).toMatch(/\.mailbox-modal \.mailbox-header-actions \.btn,[^}]*\.mailbox-view \.mailbox-header-actions \.btn-icon\s*\{[^}]*min-height:\s*var\(--icon-button-size-mobile\);[^}]*\}/);
+      expect(mailboxMobileSection).toMatch(/\.mailbox-modal \.mailbox-header-actions \.btn-icon,[^}]*\.mailbox-view \.mailbox-header-actions \.btn-icon\s*\{[^}]*min-width:\s*var\(--icon-button-size-mobile\);[^}]*display:\s*inline-flex;[^}]*\}/);
       expect(mailboxMobileSection).toContain(".mailbox-view .mailbox-tabs");
       expect(mailboxMobileSection).toContain(".mailbox-view .mailbox-content");
       expect(mailboxMobileSection).toContain(".mailbox-view .mailbox-split-layout");

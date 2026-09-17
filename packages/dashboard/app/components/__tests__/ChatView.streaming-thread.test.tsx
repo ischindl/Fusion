@@ -27,6 +27,13 @@ vi.mock("../../utils/projectStorage", () => ({
   getScopedItem: vi.fn(),
   setScopedItem: vi.fn(),
   removeScopedItem: vi.fn(),
+  /*
+   * FN-468 (upstream 59732fb13c) made useChat persist the open-session id through these exports; the
+   * mock must carry them or the hook throws before any viewport assertion can run.
+   */
+  getPersistedChatOpenSession: vi.fn(() => null),
+  setPersistedChatOpenSession: vi.fn(),
+  clearPersistedChatOpenSession: vi.fn(),
 }));
 
 vi.mock("../../sse-bus", () => ({
