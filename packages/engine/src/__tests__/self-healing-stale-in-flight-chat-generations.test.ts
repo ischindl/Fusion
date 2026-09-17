@@ -365,3 +365,55 @@ describe("RUFU-144: staleness floor constant", () => {
     expect(CHAT_IN_FLIGHT_GENERATION_STALE_MS).toBe(30 * 60_000);
   });
 });
+
+/*
+FNXC:ChatRestartAutoContinue 2026-09-17-21:05:
+The sweep reports each materialized session to the dashboard-injected continuation handler;
+handler absence, rejection, or an evidence-free clear must never change the recovery itself.
+*/
+describe("ChatRestartAutoContinue: stale-generation continuation hook", () => {
+  function managerWithHook(sessions: ChatSession[], options: { handler?: (id: string) => void | Promise<void> }, chatStoreOverride?: ChatStore) {
+    const chatStore = chatStoreOverride ?? chatStoreFor(sessions);
+    const manager = new SelfHealingManager(
+      { recordRunAuditEvent: vi.fn() } as unknown as TaskStore,
+      { rootDir: TEST_ROOT, chatStore, onChatGenerationRecoveredFromStaleInFlight: options.handler },
+    );
+    return { manager, chatStore };
+  }
+
+  it("fires once per materialized session and never for an evidence-free clear", async () => {
+    const withEvidence = session("chat-evidence", inFlight({ startedAt: minutesAgo(120), updatedAt: minutesAgo(40) }));
+    const silent = session("chat-silent", inFlight({ streamingText: "  ", startedAt: minutesAgo(120), streamingThinking: "", toolCalls: [], updatedAt: minutesAgo(40) }));
+    const handler = vi.fn(async () => {});
+    const { manager } = managerWithHook([withEvidence, silent], { handler });
+    await manager.reconcileStaleInFlightChatGenerations();
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledWith("chat-evidence");
+  });
+
+  it("a rejecting handler does not alter the recovery", async () => {
+    const boom = session("chat-boom", inFlight({ startedAt: minutesAgo(120), updatedAt: minutesAgo(40) }));
+    const { manager, chatStore } = managerWithHook([boom], {}, undefined);
+    const late = new SelfHealingManager(
+      { recordRunAuditEvent: vi.fn() } as unknown as TaskStore,
+      { rootDir: TEST_ROOT, chatStore, onChatGenerationRecoveredFromStaleInFlight: vi.fn(async () => { throw new Error("manager down"); }) },
+    );
+    await late.reconcileStaleInFlightChatGenerations();
+    expect(chatStore.addMessage).toHaveBeenCalledTimes(1);
+    expect(boom.inFlightGeneration).toBeNull();
+    void manager;
+  });
+
+  it("the late-binding setter delivers the handler to a running manager", async () => {
+    const late = session("chat-late", inFlight({ startedAt: minutesAgo(120), updatedAt: minutesAgo(40) }));
+    const chatStore = chatStoreFor([late]);
+    const manager = new SelfHealingManager(
+      { recordRunAuditEvent: vi.fn() } as unknown as TaskStore,
+      { rootDir: TEST_ROOT, chatStore },
+    );
+    const handler = vi.fn();
+    manager.setChatGenerationRecoveredFromStaleInFlightHandler(handler);
+    await manager.reconcileStaleInFlightChatGenerations();
+    expect(handler).toHaveBeenCalledWith("chat-late");
+  });
+});

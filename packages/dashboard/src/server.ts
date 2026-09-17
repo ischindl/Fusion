@@ -41,7 +41,7 @@ import {
   evictAllProjectStores,
   setOnProjectFirstCreated,
 } from "./project-store-resolver.js";
-import { getOrCreateScopedChatStore, listLiveScopedChatStores } from "./chat-project-services.js";
+import { getOrCreateScopedChatManager, getOrCreateScopedChatStore, listLiveScopedChatStores } from "./chat-project-services.js";
 import { MAX_FILE_SIZE } from "./file-service.js";
 import { TerminalViewportRegistry } from "./terminal-viewport.js";
 import { getTerminalService, STALE_SESSION_THRESHOLD_MS } from "./terminal-service.js";
@@ -866,6 +866,34 @@ GROK_API_KEY threw "getRuntimeById is not a function" and surfaced the misleadin
 engine.getPluginRunner()); fall back to `options.pluginRunner` only in UI-only
 mode where no engine exists.
 */
+/*
+FNXC:ChatRestartAutoContinue 2026-09-17-21:05:
+Operator decision: when the engine sweep recovers a restart-orphaned generation as an
+interrupted row, Chat must not just record it - it continues the turn ONCE automatically.
+The guard re-reads the transcript at fire time so an operator who already continued
+manually, or a session that started generating in the meantime, is never double-continued.
+The synthetic continuation is the same visible autoRetry user row the live auto-retry uses
+(reason `restart-recovery`), so the operator can always see why a new turn began.
+*/
+export const CHAT_RESTART_CONTINUATION_TEXT =
+  "System auto-retry: your previous turn was ended by a server restart before it finished. Resume the work requested by the last user message and finish with a reply the user can read.";
+
+export async function maybeContinueRecoveredChatGeneration(deps: {
+  sessionId: string;
+  chatStore: { getMessages(sessionId: string, filter?: { limit?: number; order?: "asc" | "desc" }): Promise<Array<{ role: string; metadata?: Record<string, unknown> | null }>> };
+  isGenerating: (sessionId: string) => boolean;
+  sendContinuation: (sessionId: string) => Promise<void>;
+}): Promise<"continued" | "skipped-generating" | "skipped-state"> {
+  if (deps.isGenerating(deps.sessionId)) return "skipped-generating";
+  const latest = await deps.chatStore.getMessages(deps.sessionId, { limit: 1, order: "desc" });
+  const last = latest[0];
+  if (!last || last.role !== "assistant" || last.metadata?.recoveredFromStaleGeneration !== true) {
+    return "skipped-state";
+  }
+  await deps.sendContinuation(deps.sessionId);
+  return "continued";
+}
+
 export function resolveChatManagerPluginRunner(
   options?: Pick<ServerOptions, "engine" | "pluginRunner">,
 ): ServerOptions["pluginRunner"] {
@@ -1655,6 +1683,53 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
     options?.engine?.getMessageStore(),
     store,
   );
+
+  /*
+  FNXC:ChatRestartAutoContinue 2026-09-17-21:05:
+  Attach the restart-continuation handler to every engine the dashboard can reach: the default
+  engine now, engines created later through the manager's started-hook. The engine only reports
+  the recovered session id; the manager, guards, and the visible synthetic user row all live here.
+  */
+  const wireChatRestartContinuation = (engineLike: unknown): void => {
+    const engine = engineLike as {
+      getSelfHealingManager?: () => { setChatGenerationRecoveredFromStaleInFlightHandler?: (h?: (id: string) => void | Promise<void>) => void } | undefined;
+      getTaskStore?: () => TaskStore | undefined;
+      getChatStore?: () => ChatStore | undefined;
+    } | undefined;
+    const selfHealing = engine?.getSelfHealingManager?.();
+    if (!selfHealing?.setChatGenerationRecoveredFromStaleInFlightHandler) return;
+    selfHealing.setChatGenerationRecoveredFromStaleInFlightHandler(async (sessionId) => {
+      const scopedStore = engine?.getTaskStore?.();
+      const scopedChatStore = engine?.getChatStore?.();
+      if (!scopedStore || !scopedChatStore) return;
+      const manager = getOrCreateScopedChatManager(scopedStore, scopedChatStore, resolveChatManagerPluginRunner(options));
+      const outcome = await maybeContinueRecoveredChatGeneration({
+        sessionId,
+        chatStore: scopedChatStore,
+        isGenerating: (id) => Boolean((manager as unknown as { isGenerating?: (id: string) => boolean }).isGenerating?.(id)),
+        sendContinuation: (id) => manager.sendMessage(id, CHAT_RESTART_CONTINUATION_TEXT, undefined, undefined, undefined, {
+          autoRetry: true,
+          userMessageMetadata: { autoRetry: true, reason: "restart-recovery" },
+        }),
+      });
+      if (outcome !== "continued") {
+        options?.runtimeLogger?.info?.("chat restart auto-continue skipped", { sessionId, outcome });
+      }
+    });
+  };
+  try {
+    if (options?.engineManager) {
+      options.engineManager.setEngineStartedHook(wireChatRestartContinuation);
+      for (const started of options.engineManager.getAllEngines().values()) {
+        wireChatRestartContinuation(started);
+      }
+    }
+    wireChatRestartContinuation(options?.engine);
+  } catch (wireErr: unknown) {
+    options?.runtimeLogger?.warn?.("chat restart auto-continue wiring failed", {
+      message: wireErr instanceof Error ? wireErr.message : String(wireErr),
+    });
+  }
 
   // CLI Agent Executor — chat surface wiring. When the cli-session transport is
   // supplied (the runtime is live), broker cli-backed chat sends to the PTY and

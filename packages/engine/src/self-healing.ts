@@ -716,6 +716,15 @@ export interface SelfHealingOptions {
   autoRecoveryDispatcher?: AutoRecoveryDispatcher;
   /** Optional ChatStore for maintenance chat-retention cleanup. */
   chatStore?: ChatStore;
+  /*
+  FNXC:ChatRestartAutoContinue 2026-09-17-21:05:
+  Operator decision: a generation orphaned by a restart and recovered as an interrupted row is
+  not just recorded - Chat must continue it automatically, once. The sweep lives in the engine
+  (which has no ChatManager), so continuation is injected by the dashboard: it receives each
+  session id immediately after its interrupted row materializes and owns the send.
+  */
+  onChatGenerationRecoveredFromStaleInFlight?: (sessionId: string) => void | Promise<void>;
+  /* FNXC:ChatRestartAutoContinue 2026-09-17-21:05: late-binding setter - the dashboard constructs ChatManagers after the engine constructs its sweep, so the handler is attached post-construction. */
   /** Optional MessageStore for maintenance mail-retention cleanup. */
   messageStore?: MessageStore;
   /** Optional notifier for board-stall unrecovered alerts. */
@@ -1024,6 +1033,16 @@ export type LandedReviewReconcileResult =
   | { outcome: "ineligible"; reason: "workspace" | "not-in-review" | "paused" | "user-paused" | "executing" | "live-session" | "checkout-leased" | "auto-merge-off" | "no-branch-recorded" | "branch-present" | "engine-paused" };
 
 export class SelfHealingManager extends SelfHealingGitEvidence {
+  /*
+  FNXC:ChatRestartAutoContinue 2026-09-17-21:05:
+  The dashboard attaches the restart-continuation handler after engine construction (its
+  ChatManagers do not exist yet when the engine builds this sweep). Late binding keeps the
+  dependency direction: the engine never learns what a ChatManager is.
+  */
+  setChatGenerationRecoveredFromStaleInFlightHandler(handler?: (sessionId: string) => void | Promise<void>): void {
+    this.options.onChatGenerationRecoveredFromStaleInFlight = handler;
+  }
+
   // ── Auto-unpause state ──────────────────────────────────────────────
   private unpauseTimer: ReturnType<typeof setTimeout> | null = null;
   private unpauseAttempt = 0;
@@ -7665,6 +7684,18 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
               },
             });
             materializedSessionIds.push(session.id);
+            /*
+            FNXC:ChatRestartAutoContinue 2026-09-17-21:05:
+            Fire the dashboard-injected continuation after the row is durable. A failing or
+            absent handler must never alter the recovery sweep: the recovered row already stands
+            on its own, with or without the auto-continue.
+            */
+            try {
+              await this.options.onChatGenerationRecoveredFromStaleInFlight?.(session.id);
+            } catch (handlerErr: unknown) {
+              const handlerMessage = handlerErr instanceof Error ? handlerErr.message : String(handlerErr);
+              log.warn(`reconcileStaleInFlightChatGenerations: auto-continue handler failed for session ${session.id}: ${handlerMessage}`);
+            }
             log.debug(
               `reconcileStaleInFlightChatGenerations: materialized interrupted row for chat session ${session.id} ` +
               `(text ${streamedText.length} chars, thinking ${streamedThinking.length} chars, ${completedToolCalls.length} completed tool calls)`,
