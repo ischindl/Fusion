@@ -95,10 +95,27 @@ vi.mock("../../sse-bus", () => ({
   subscribeSse: (...args: any[]) => mockSubscribeSse(...args),
 }));
 
+/*
+FNXC:TaskSearch 2026-09-17-09:41:
+FN-477 header-search HTTP seams. Only the transport is doubled: `Header`, `TaskSearchInput`,
+`useTaskSearch`, `TaskSearchResultsPopover`, and the result `TaskCard`s are all production code in
+these scenarios, which is what makes the Symptom Verification case meaningful.
+*/
+const mockFetchTaskPage = vi.hoisted(() => vi.fn(async () => ({ tasks: [], total: 0, hasMore: false, nextCursor: null })));
+const mockAiSearchTasks = vi.hoisted(() => vi.fn(async () => ({ query: "", tasks: [] })));
+vi.mock("../../api/tasks/tasks-search", () => ({ aiSearchTasks: mockAiSearchTasks }));
+
 vi.mock("../../api", async (importOriginal) => {
   const { createDashboardApiMock } = await import("../../test/mockApi");
   return createDashboardApiMock(() => importOriginal<typeof import("../../api")>(), {
     fetchTasks: vi.fn(() => Promise.resolve([])),
+    /*
+    FNXC:TaskSearch 2026-09-17-09:41:
+    FN-477: the header search reads its own paginated collection instead of filtering whatever the
+    board had already loaded, so this is the seam the search scenarios drive. The default empty page
+    keeps every unrelated App test issuing no search work.
+    */
+    fetchTaskPage: mockFetchTaskPage,
     fetchPatchnode: vi.fn(() => Promise.resolve({ days: [], totalEntries: 0, hasMore: false })),
     fetchConfig: vi.fn(() => Promise.resolve({ maxConcurrent: 2, rootDir: "/workspace/project" })),
     fetchSettings: vi.fn(() => Promise.resolve({ ...defaultSettings })),
@@ -811,6 +828,16 @@ vi.mock("../../hooks/useViewportMode", () => ({
   only spelling that can distinguish the two.
   */
   isShortViewport: () => mockIsShortViewport(),
+  /*
+  FNXC:TestViewportMock 2026-09-16-23:24:
+  Mock périmé réparé ici : FN-468 a introduit `isMobileShellMode`, consommé par `AppInner`, et ce double ne
+  l'exposait pas — tout rendu de `<App />` de ce fichier levait donc avant la première assertion. Le prédicat
+  garde sa sémantique de production (téléphone ET tablette), pilotée par le mode simulé.
+  */
+  isMobileShellMode: (mode?: string) => {
+    const resolved = mode ?? mockUseViewportMode();
+    return resolved === "mobile" || resolved === "tablet";
+  },
 }));
 
 // Mock isIOS so FN-3290 keyboard-open behavior is testable in jsdom
@@ -2427,8 +2454,8 @@ describe("official dashboard design production wiring", () => {
     dismissAlphaDrawerByHandle(chatDrawer);
     await waitFor(() => expect(chatDrawer).toHaveClass("mobile-drawer--hidden"));
 
-    fireEvent.click(screen.getByTestId("mobile-menu-trigger"));
-    fireEvent.click(screen.getByTestId("mobile-more-item-list"));
+    /* FN-480 : sur mobile, le slot d'accès rapide `tasks` rend et route List ; le bouton codé en dur du menu est supprimé. */
+    fireEvent.click(screen.getByTestId("mobile-nav-tab-tasks"));
     const listDrawer = await screen.findByTestId("mobile-drawer-list");
     const listDialog = within(listDrawer).getByRole("dialog", { name: "List" });
     expect(listDialog.querySelectorAll(".mobile-drawer__close")).toHaveLength(0);
@@ -2437,7 +2464,14 @@ describe("official dashboard design production wiring", () => {
     await waitFor(() => expect(listDrawer).toHaveClass("mobile-drawer--hidden"));
   });
 
-  it("garde Planning, Usage et Projects sur le même shell avec un seul propriétaire d’en-tête", async () => {
+  /*
+  FNXC:HeaderNavigationOwnership 2026-09-17-02:14:
+  FN-481 : ce cas prouvait la géométrie canonique des drawers en passant par des entrées basses Usage et Projects qui
+  n'existent plus sur téléphone — le Header y offre déjà les deux. Il conserve la preuve de géométrie pour les
+  drawers encore ouvrables par l'opérateur (Planning, puis Usage via le raccourci d'en-tête) ; le chemin Projets du
+  Header est prouvé séparément ci-dessous, avec sa sémantique d'aperçu existante et sans reccâblage vers le drawer.
+  */
+  it("garde Planning et Usage sur le même shell avec un seul propriétaire d’en-tête", async () => {
     mockUseViewportMode.mockReturnValue("mobile");
     appChatTestControl.renderProductionPlanningView = true;
     vi.mocked(fetchSettings).mockResolvedValue({
@@ -2459,8 +2493,12 @@ describe("official dashboard design production wiring", () => {
       canonicalHeights.push(window.getComputedStyle(planningDrawer.querySelector(".mobile-drawer__panel")!).height);
       dismissAlphaDrawerByHandle(planningDrawer);
 
+      /* Usage n'est plus une entrée basse sur téléphone : le Header en est l'unique propriétaire. */
       fireEvent.click(await screen.findByTestId("mobile-menu-trigger"));
-      fireEvent.click(screen.getByTestId("mobile-more-item-usage"));
+      expect(screen.queryByTestId("mobile-more-item-usage")).toBeNull();
+      expect(screen.queryByTestId("mobile-nav-tab-usage")).toBeNull();
+      fireEvent.click(screen.getByTestId("mobile-menu-trigger"));
+      fireEvent.click(await screen.findByTestId("mobile-header-usage-btn"));
       const usageDrawer = await screen.findByTestId("mobile-drawer-usage");
       expect(usageDrawer.className).toBe("mobile-drawer mobile-drawer--open");
       expectProductionAlphaDrawerOverlay(usageDrawer, systemOffset);
@@ -2468,21 +2506,331 @@ describe("official dashboard design production wiring", () => {
       canonicalHeights.push(window.getComputedStyle(usageDrawer.querySelector(".mobile-drawer__panel")!).height);
       dismissAlphaDrawerByHandle(usageDrawer);
 
-      fireEvent.click(screen.getByTestId("mobile-menu-trigger"));
-      fireEvent.click(screen.getByTestId("mobile-more-item-projects"));
-      const projectsDrawer = await screen.findByTestId("mobile-drawer-projects");
-      expectProductionAlphaDrawerOverlay(projectsDrawer, systemOffset);
-      expectSingleDrawerHeader(within(projectsDrawer).getByRole("dialog", { name: "Projects" }), ".view-header");
-      canonicalHeights.push(window.getComputedStyle(projectsDrawer.querySelector(".mobile-drawer__panel")!).height);
-      dismissAlphaDrawerByHandle(projectsDrawer);
-      await waitFor(() => expect(screen.queryByTestId("mobile-drawer-projects")).toBeNull());
-
       expect(new Set(canonicalHeights)).toEqual(new Set([canonicalHeights[0]]));
       expect(canonicalHeights[0]).not.toBe("");
       expect(board).toBeVisible();
+      /* Aucun de ces deux chemins n'a quitté le projet courant. */
       expect(mockCurrentProjectState.clearCurrentProject).not.toHaveBeenCalled();
     } finally {
       productionStyle.remove();
+    }
+  });
+
+  /*
+   * FN-483 — reproduction symptomatique. Sur téléphone, ouvrir un drawer retirait le slot du Header : le Board, qui
+   * reste actif derrière, repliait son sélecteur en ligne SOUS l'en-tête. Ouvrir List ajoutait de surcroît un second
+   * `workflow-switcher` dans le même slot. Le contrat vérifié ici : même nœud de slot et même déclencheur avant,
+   * pendant et après chaque ouverture, exactement un sélecteur contextuel, aucun toolbar sous le Header.
+   */
+  it("garde le même sélecteur de workflow dans l'en-tête à l'ouverture des drawers téléphone", async () => {
+    mockUseViewportMode.mockReturnValue("mobile");
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures },
+    });
+    vi.mocked(fetchBoardWorkflows).mockResolvedValue({
+      ...DEFAULT_BOARD_WORKFLOWS,
+      workflows: [
+        DEFAULT_BOARD_WORKFLOWS.workflows[0],
+        {
+          id: "wf-custom",
+          name: "Livraison",
+          columns: [
+            { id: "todo", name: "Todo", flags: { hold: true, intake: true } },
+            { id: "done", name: "Done", flags: { complete: true } },
+          ],
+        },
+      ],
+      taskWorkflowIds: { "FN-483-A": "builtin:coding", "FN-483-B": "wf-custom" },
+    });
+    const emptyResult = mockUseTasks();
+    mockUseTasks.mockReturnValue({
+      ...emptyResult,
+      tasks: [
+        { id: "FN-483-A", title: "Tâche Coding", description: "x", status: null, column: "todo", dependencies: [], steps: [], currentStep: 0, log: [], createdAt: "", updatedAt: "" },
+        { id: "FN-483-B", title: "Tâche Livraison", description: "x", status: null, column: "todo", dependencies: [], steps: [], currentStep: 0, log: [], createdAt: "", updatedAt: "" },
+      ],
+    });
+
+    render(<App />);
+
+    const slot = await screen.findByTestId("header-workflow-slot");
+    const switcher = await screen.findByTestId("workflow-switcher");
+    await waitFor(() => expect(slot.contains(switcher)).toBe(true));
+
+    const expectSingleStableSelector = () => {
+      expect(screen.getByTestId("header-workflow-slot")).toBe(slot);
+      expect(screen.getAllByTestId("header-workflow-slot")).toHaveLength(1);
+      expect(screen.getAllByTestId("workflow-switcher")).toHaveLength(1);
+      expect(screen.getByTestId("workflow-switcher")).toBe(switcher);
+      expect(slot.contains(switcher)).toBe(true);
+      expect(document.querySelector(".board-workflow-view > .board-workflow-toolbar")).toBeNull();
+      expect(document.querySelectorAll(".list-workflow-control")).toHaveLength(0);
+    };
+
+    /* Destination ordinaire : le changement de `taskView` ne doit plus déplacer le sélecteur. */
+    fireEvent.click(await screen.findByTestId("mobile-nav-tab-command-center"));
+    const commandCenterDrawer = await screen.findByTestId("mobile-drawer-main-content");
+    expectSingleStableSelector();
+    dismissAlphaDrawerByHandle(commandCenterDrawer);
+    await waitFor(() => expect(screen.queryByTestId("mobile-drawer-main-content")).toBeNull());
+    expectSingleStableSelector();
+
+    /* List : deux vues actives ne doivent plus publier deux sélecteurs dans le même slot. */
+    /* FN-480 : sur mobile, le slot d'accès rapide `tasks` rend et route List ; le bouton codé en dur du menu est supprimé. */
+    fireEvent.click(await screen.findByTestId("mobile-nav-tab-tasks"));
+    const listDrawer = await screen.findByTestId("mobile-drawer-list");
+    expect(await within(listDrawer).findByText("Tâche Coding")).toBeInTheDocument();
+    expectSingleStableSelector();
+    expect(within(listDrawer).queryByTestId("workflow-switcher")).toBeNull();
+
+    dismissAlphaDrawerByHandle(listDrawer);
+    await waitFor(() => expect(listDrawer).toHaveClass("mobile-drawer--hidden"));
+    expectSingleStableSelector();
+
+    /* Planning : même contrat pour un drawer possédant son propre relais de slot. */
+    fireEvent.click(await screen.findByTestId("mobile-nav-tab-planning"));
+    await screen.findByTestId("mobile-drawer-planning");
+    expectSingleStableSelector();
+  });
+
+  /*
+   * FN-483 : une List déjà visitée n'a plus de sélecteur à elle ; elle doit donc suivre le choix ensuite effectué sur
+   * l'unique sélecteur du Board, y compris « All workflows », et afficher les tâches correspondantes.
+   */
+  it("fait suivre à la List conservée le workflow choisi ensuite sur le Board", async () => {
+    mockUseViewportMode.mockReturnValue("mobile");
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures },
+    });
+    vi.mocked(fetchBoardWorkflows).mockResolvedValue({
+      ...DEFAULT_BOARD_WORKFLOWS,
+      workflows: [
+        DEFAULT_BOARD_WORKFLOWS.workflows[0],
+        {
+          id: "wf-custom",
+          name: "Livraison",
+          columns: [
+            { id: "todo", name: "Todo", flags: { hold: true, intake: true } },
+            { id: "done", name: "Done", flags: { complete: true } },
+          ],
+        },
+      ],
+      taskWorkflowIds: { "FN-483-A": "builtin:coding", "FN-483-B": "wf-custom" },
+    });
+    const emptyResult = mockUseTasks();
+    mockUseTasks.mockReturnValue({
+      ...emptyResult,
+      tasks: [
+        { id: "FN-483-A", title: "Tâche Coding", description: "x", status: null, column: "todo", dependencies: [], steps: [], currentStep: 0, log: [], createdAt: "", updatedAt: "" },
+        { id: "FN-483-B", title: "Tâche Livraison", description: "x", status: null, column: "todo", dependencies: [], steps: [], currentStep: 0, log: [], createdAt: "", updatedAt: "" },
+      ],
+    });
+
+    render(<App />);
+    await screen.findByTestId("header-workflow-slot");
+
+    /* Première visite de List : elle hérite du workflow déjà sélectionné sur le Board. */
+    /* FN-480 : sur mobile, le slot d'accès rapide `tasks` rend et route List ; le bouton codé en dur du menu est supprimé. */
+    fireEvent.click(await screen.findByTestId("mobile-nav-tab-tasks"));
+    const listDrawer = await screen.findByTestId("mobile-drawer-list");
+    expect(await within(listDrawer).findByText("Tâche Coding")).toBeInTheDocument();
+    expect(within(listDrawer).queryByText("Tâche Livraison")).toBeNull();
+
+    dismissAlphaDrawerByHandle(listDrawer);
+    await waitFor(() => expect(listDrawer).toHaveClass("mobile-drawer--hidden"));
+
+    /* Choix effectué sur l'unique sélecteur de l'en-tête (le Board de fond). */
+    fireEvent.click(screen.getByTestId("workflow-switcher"));
+    fireEvent.click(await screen.findByTestId("workflow-switcher-option-wf-custom"));
+
+    /* FN-480 : sur mobile, le slot d'accès rapide `tasks` rend et route List ; le bouton codé en dur du menu est supprimé. */
+    fireEvent.click(await screen.findByTestId("mobile-nav-tab-tasks"));
+    const reopenedList = await screen.findByTestId("mobile-drawer-list");
+    expect(await within(reopenedList).findByText("Tâche Livraison")).toBeInTheDocument();
+    await waitFor(() => expect(within(reopenedList).queryByText("Tâche Coding")).toBeNull());
+
+    /* Et la vue agrégée se propage de la même façon. */
+    fireEvent.click(screen.getByTestId("workflow-switcher"));
+    fireEvent.click(await screen.findByTestId(`workflow-switcher-option-${ALL_WORKFLOWS_BOARD_VIEW_ID}`));
+    expect(await within(reopenedList).findByText("Tâche Coding")).toBeInTheDocument();
+    expect(within(reopenedList).getByText("Tâche Livraison")).toBeInTheDocument();
+    expect(screen.getAllByTestId("workflow-switcher")).toHaveLength(1);
+  });
+
+  /*
+   * FN-483 : le reste de la matrice des propriétaires. Projects, Usage et le détail de tâche routé sont hébergés par
+   * d'autres surfaces qu'un drawer de contenu principal ; ils ne doivent pas non plus déplacer ni dupliquer le
+   * sélecteur du Board de fond.
+   */
+  it("garde un seul sélecteur pour Projects, Usage et le détail de tâche téléphone", async () => {
+    mockUseViewportMode.mockReturnValue("mobile");
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures },
+    });
+    vi.mocked(fetchBoardWorkflows).mockResolvedValue({
+      ...DEFAULT_BOARD_WORKFLOWS,
+      workflows: [
+        DEFAULT_BOARD_WORKFLOWS.workflows[0],
+        { id: "wf-custom", name: "Livraison", columns: [{ id: "todo", name: "Todo", flags: { hold: true, intake: true } }] },
+      ],
+      taskWorkflowIds: { "FN-483-A": "builtin:coding" },
+    });
+    const emptyResult = mockUseTasks();
+    mockUseTasks.mockReturnValue({
+      ...emptyResult,
+      tasks: [
+        { id: "FN-483-A", title: "Tâche Coding", description: "x", status: null, column: "todo", dependencies: [], steps: [], currentStep: 0, log: [], createdAt: "", updatedAt: "" },
+      ],
+    });
+
+    render(<App />);
+    const slot = await screen.findByTestId("header-workflow-slot");
+    const switcher = await screen.findByTestId("workflow-switcher");
+
+    const expectSingleStableSelector = () => {
+      expect(screen.getByTestId("header-workflow-slot")).toBe(slot);
+      expect(screen.getAllByTestId("workflow-switcher")).toHaveLength(1);
+      expect(screen.getByTestId("workflow-switcher")).toBe(switcher);
+      expect(document.querySelector(".board-workflow-view > .board-workflow-toolbar")).toBeNull();
+      expect(document.querySelectorAll(".list-workflow-control")).toHaveLength(0);
+    };
+
+    /*
+    FNXC:HeaderNavigationOwnership 2026-09-17-02:14:
+    FN-481 : le menu bas n'offre plus Projets ni Usage sur téléphone — le Header les porte déjà. Le contrat FN-483
+    reste prouvé avec les ouvertures encore disponibles à l'opérateur : le menu ouvert (qui ne doit rien casser),
+    le raccourci Usage de l'en-tête, puis le détail de tâche.
+    */
+    fireEvent.click(await screen.findByTestId("mobile-menu-trigger"));
+    expect(screen.queryByTestId("mobile-more-item-projects")).toBeNull();
+    expect(screen.queryByTestId("mobile-more-item-usage")).toBeNull();
+    expectSingleStableSelector();
+    fireEvent.click(screen.getByTestId("mobile-menu-trigger"));
+
+    fireEvent.click(await screen.findByTestId("mobile-header-usage-btn"));
+    const usageDrawer = await screen.findByTestId("mobile-drawer-usage");
+    expectSingleStableSelector();
+    dismissAlphaDrawerByHandle(usageDrawer);
+    await waitFor(() => expect(screen.queryByTestId("mobile-drawer-usage")).toBeNull());
+
+    /* Détail de tâche routé dans le panneau principal téléphone. */
+    fireEvent.click(await screen.findByText("Tâche Coding"));
+    await screen.findByTestId("mobile-drawer-main-content");
+    expectSingleStableSelector();
+  });
+
+  /*
+   * FN-483 : bascule réelle de point de rupture avec List déjà visitée. Le nœud de slot peut légitimement être
+   * remplacé, mais il ne doit jamais exister deux contrôles, et la propriété doit revenir au bon hôte.
+   */
+  it("transfère la propriété du sélecteur au bon hôte des deux côtés d'un changement de point de rupture", async () => {
+    mockUseViewportMode.mockReturnValue("mobile");
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures },
+    });
+    vi.mocked(fetchBoardWorkflows).mockResolvedValue({
+      ...DEFAULT_BOARD_WORKFLOWS,
+      workflows: [
+        DEFAULT_BOARD_WORKFLOWS.workflows[0],
+        { id: "wf-custom", name: "Livraison", columns: [{ id: "todo", name: "Todo", flags: { hold: true, intake: true } }] },
+      ],
+      taskWorkflowIds: { "FN-483-A": "builtin:coding" },
+    });
+    const emptyResult = mockUseTasks();
+    mockUseTasks.mockReturnValue({
+      ...emptyResult,
+      tasks: [
+        { id: "FN-483-A", title: "Tâche Coding", description: "x", status: null, column: "todo", dependencies: [], steps: [], currentStep: 0, log: [], createdAt: "", updatedAt: "" },
+      ],
+    });
+
+    const view = render(<App />);
+    await screen.findByTestId("workflow-switcher");
+
+    /* FN-480 : sur mobile, le slot d'accès rapide `tasks` rend et route List ; le bouton codé en dur du menu est supprimé. */
+    fireEvent.click(await screen.findByTestId("mobile-nav-tab-tasks"));
+    await screen.findByTestId("mobile-drawer-list");
+    await waitFor(() => expect(screen.getAllByTestId("workflow-switcher")).toHaveLength(1));
+    expect(document.querySelectorAll(".list-workflow-control")).toHaveLength(0);
+
+    /*
+     * Téléphone -> ordinateur : List devient une vraie page et reprend la propriété du slot. Le Board désactivé garde
+     * son repli en ligne DANS son enveloppe cachée — comportement antérieur préservé —, donc on compte les contrôles
+     * du slot, pas ceux d'un sous-arbre masqué.
+     */
+    mockUseViewportMode.mockReturnValue("desktop");
+    view.rerender(<App />);
+    await waitFor(() => expect(document.querySelectorAll(".list-workflow-control")).toHaveLength(1));
+    const desktopSlot = screen.getByTestId("header-workflow-slot");
+    await waitFor(() => expect(desktopSlot.querySelectorAll('[data-testid="workflow-switcher"]')).toHaveLength(1));
+    expect(desktopSlot.querySelector(".list-workflow-control")).not.toBeNull();
+    expect(desktopSlot.querySelector(".board-workflow-toolbar")).toBeNull();
+
+    /* Et retour : le Board de fond redevient l'unique propriétaire, sans contrôle résiduel de List. */
+    mockUseViewportMode.mockReturnValue("mobile");
+    view.rerender(<App />);
+    await waitFor(() => expect(document.querySelectorAll(".list-workflow-control")).toHaveLength(0));
+    const mobileSlot = screen.getByTestId("header-workflow-slot");
+    await waitFor(() => expect(mobileSlot.querySelectorAll('[data-testid="workflow-switcher"]')).toHaveLength(1));
+    expect(mobileSlot.querySelector(".board-workflow-toolbar")).not.toBeNull();
+    expect(screen.getAllByTestId("workflow-switcher")).toHaveLength(1);
+  });
+
+  /*
+   * FN-483 : transitions de données pendant qu'un drawer est ouvert. Un chargement différé doit aboutir DANS le slot,
+   * jamais dans un repli en ligne sous l'en-tête ; un projet mono-workflow ne laisse aucune coquille.
+   */
+  it("place un chargement différé de workflows dans le slot même drawer ouvert, et ne laisse aucune coquille à un seul workflow", async () => {
+    mockUseViewportMode.mockReturnValue("mobile");
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures },
+    });
+    const twoWorkflows = {
+      ...DEFAULT_BOARD_WORKFLOWS,
+      workflows: [
+        DEFAULT_BOARD_WORKFLOWS.workflows[0],
+        { id: "wf-custom", name: "Livraison", columns: [{ id: "todo", name: "Todo", flags: { hold: true, intake: true } }] },
+      ],
+      taskWorkflowIds: {},
+    };
+    /* Une SEULE promesse contrôlée, partagée par tous les consommateurs montés, sinon seul le dernier se résoudrait. */
+    let resolveWorkflows: ((payload: typeof twoWorkflows) => void) | undefined;
+    const deferredWorkflows = new Promise<typeof twoWorkflows>((resolve) => { resolveWorkflows = resolve; });
+    vi.mocked(fetchBoardWorkflows).mockImplementation(() => deferredWorkflows);
+
+    const view = render(<App />);
+    await screen.findByTestId("dashboard-project-shell");
+
+    fireEvent.click(await screen.findByTestId("mobile-nav-tab-command-center"));
+    await screen.findByTestId("mobile-drawer-main-content");
+    /* Aucun repli en ligne sous l'en-tête pendant que la métadonnée est encore en vol. */
+    expect(document.querySelector(".board-workflow-view > .board-workflow-toolbar")).toBeNull();
+
+    await act(async () => {
+      resolveWorkflows?.(twoWorkflows);
+      await Promise.resolve();
+    });
+
+    const slot = await screen.findByTestId("header-workflow-slot");
+    const switcher = await screen.findByTestId("workflow-switcher");
+    expect(slot.contains(switcher)).toBe(true);
+    expect(document.querySelector(".board-workflow-view > .board-workflow-toolbar")).toBeNull();
+
+    /* Projet sans aucun workflow : aucun sélecteur, aucune coquille, aucun bouton vide dans l'en-tête. */
+    vi.mocked(fetchBoardWorkflows).mockResolvedValue({ ...DEFAULT_BOARD_WORKFLOWS, defaultWorkflowId: "", workflows: [], taskWorkflowIds: {} });
+    fireEvent.focus(window);
+    view.rerender(<App />);
+
+    await waitFor(() => expect(screen.queryByTestId("workflow-switcher")).toBeNull());
+    expect(document.querySelectorAll(".board-workflow-toolbar")).toHaveLength(0);
+    expect(document.querySelectorAll(".list-workflow-control")).toHaveLength(0);
+    for (const button of document.querySelectorAll("header.header button")) {
+      expect(button.querySelector("svg") !== null || (button.textContent ?? "").trim().length > 0).toBe(true);
     }
   });
 
@@ -6533,7 +6881,24 @@ describe("FN-3290: modal keyboard isolation for mobile dashboard layout", () => 
 });
 
 describe("App task search suggestions", () => {
-  beforeEach(() => mockUseViewportMode.mockReturnValue("desktop"));
+  beforeEach(() => {
+    mockUseViewportMode.mockReturnValue("desktop");
+    mockFetchTaskPage.mockReset();
+    mockFetchTaskPage.mockResolvedValue({ tasks: [], total: 0, hasMore: false, nextCursor: null });
+    mockAiSearchTasks.mockReset();
+    mockAiSearchTasks.mockResolvedValue({ query: "", tasks: [] });
+  });
+
+  /** One server page of search results for the header's own paginated collection. */
+  function searchServerPage(tasks: ReturnType<typeof makeSearchTask>[], nextCursor: string | null = null) {
+    return { tasks, total: tasks.length, hasMore: Boolean(nextCursor), nextCursor };
+  }
+
+  /** Settle the field's 200ms text debounce and the resulting request. */
+  async function settleSearch() {
+    await waitFor(() => expect(mockFetchTaskPage).toHaveBeenCalled());
+  }
+
   function makeSearchTask(id: string, title: string, column = "todo") {
     return {
       id,
@@ -6571,15 +6936,87 @@ describe("App task search suggestions", () => {
     });
   }
 
-  it("ouvre une tâche locale terminée depuis la recherche Alpha sans filtrer Board ou List", async () => {
+  /*
+  FNXC:TaskSearch 2026-09-17-09:41:
+  SYMPTOM VERIFICATION for FN-477, driven through the real Header, field, controller hook, panel, and
+  cards — only the HTTP/session boundaries are doubled.
+
+  Original symptom: an operator could not find a task by a word in its title, got a list capped at
+  eight truncated rows, and Enter ran no intelligent search.
+
+  On the pre-FN-477 code every assertion below fails: the target task is absent from the board's
+  loaded collection so it was never suggested, the ninth result did not exist, and no AI request was
+  ever issued.
+  */
+  it("retrouve par titre une tâche absente des pages chargées, au-delà de huit, puis lance l'IA sur Entrée", async () => {
     vi.mocked(fetchSettings).mockResolvedValue({
       ...defaultSettings,
       experimentalFeatures: { ...defaultSettings.experimentalFeatures },
     });
-    const source = [
-      makeSearchTask("FN-351", "Active Alpha task"),
-      makeSearchTask("FN-353", "Completed Alpha task", "done"),
+
+    // The board holds ONE unrelated task. The searched task was never paged in.
+    mockUseTasks.mockImplementation(() => ({
+      tasks: [makeSearchTask("FN-001", "Une autre tâche")],
+      createTask: mockCreateTask,
+      moveTask: vi.fn(),
+      deleteTask: vi.fn(),
+      mergeTask: vi.fn(),
+      retryTask: vi.fn(),
+      updateTask: vi.fn(),
+      duplicateTask: vi.fn(),
+      refreshTasks: vi.fn(),
+    }));
+
+    const exactTitle = "le bouton collapse du leftsidebar doit être au header de la sidebar et être du meme design que le bouton qui collapse la rightsidebar.";
+    const firstPage = [
+      makeSearchTask("FN-331", exactTitle),
+      ...Array.from({ length: 7 }, (_unused, index) => makeSearchTask(`FN-40${index}`, `collapse ${index}`)),
     ];
+    const secondPage = Array.from({ length: 4 }, (_unused, index) => makeSearchTask(`FN-5${index}`, `collapse suite ${index}`));
+    mockFetchTaskPage
+      .mockResolvedValueOnce(searchServerPage(firstPage, "cursor-1") as never)
+      .mockResolvedValueOnce(searchServerPage(secondPage) as never);
+
+    render(<App />);
+    await waitForAppShell();
+    const board = within(screen.getByTestId("board-keep-alive"));
+    expect(board.queryByText(exactTitle)).toBeNull();
+
+    fireEvent.click(screen.getByTestId("desktop-inline-header-search-btn"));
+    fireEvent.change(screen.getByRole("combobox", { name: "Search tasks..." }), { target: { value: "collapse" } });
+
+    // The exact requested title is reachable without the board ever loading its page …
+    await settleSearch();
+    await waitFor(() => expect(screen.getByText(exactTitle)).toBeInTheDocument());
+    // … as a real card, not a truncated suggestion row.
+    expect(document.querySelectorAll(".task-search-result .card").length).toBeGreaterThan(0);
+    expect(document.querySelector(".task-search-suggestion")).toBeNull();
+    // … and the collection is not capped at the former eight.
+    expect(mockFetchTaskPage.mock.calls[0][1]).toMatchObject({ query: "collapse" });
+    expect(document.querySelectorAll(".task-search-result")).toHaveLength(8);
+    expect(screen.getByTestId("task-search-results-sentinel")).toBeInTheDocument();
+
+    // A paraphrase with no literal match still reaches the AI lane on Enter.
+    mockAiSearchTasks.mockResolvedValue({
+      query: "replier le panneau lateral",
+      tasks: [makeSearchTask("FN-331", exactTitle)],
+    } as never);
+    fireEvent.change(screen.getByRole("combobox", { name: "Search tasks..." }), { target: { value: "replier le panneau lateral" } });
+    await act(async () => {
+      fireEvent.keyDown(screen.getByRole("combobox", { name: "Search tasks..." }), { key: "Enter" });
+    });
+
+    expect(mockAiSearchTasks).toHaveBeenCalledTimes(1);
+    expect(mockAiSearchTasks.mock.calls[0][0]).toBe("replier le panneau lateral");
+    await waitFor(() => expect(screen.getByTestId("task-search-results")).toHaveAttribute("data-lane", "ai"));
+  });
+
+  it("ouvre une tâche terminée absente du tableau sans filtrer Board ou List", async () => {
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures },
+    });
+    const source = [makeSearchTask("FN-351", "Active Alpha task")];
     const observedQueries: Array<string | undefined> = [];
     mockUseTasks.mockImplementation((options) => {
       observedQueries.push(options?.searchQuery);
@@ -6595,32 +7032,35 @@ describe("App task search suggestions", () => {
         refreshTasks: vi.fn(),
       };
     });
+    // The completed task exists on the server only; the board never loaded it.
+    mockFetchTaskPage.mockResolvedValue(searchServerPage([
+      makeSearchTask("FN-353", "Completed Alpha task", "done"),
+    ]) as never);
 
     render(<App />);
     await waitForAppShell();
     const board = within(screen.getByTestId("board-keep-alive"));
     expect(board.getByText("Active Alpha task")).toBeInTheDocument();
-    expect(board.getByText("Completed Alpha task")).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("desktop-inline-header-search-btn"));
     const inlineSearch = screen.getByTestId("desktop-header-search-input");
     expect(inlineSearch.parentElement).toBe(document.querySelector(".header-actions"));
     fireEvent.change(screen.getByRole("combobox", { name: "Search tasks..." }), { target: { value: "353" } });
-    expect(screen.queryByRole("dialog", { name: "Search tasks..." })).toBeNull();
-    fireEvent.click(screen.getByRole("option", { name: "FN-353: Completed Alpha task" }));
+    await settleSearch();
 
-    expect(screen.queryByTestId("alpha-task-search-overlay")).toBeNull();
+    await waitFor(() => expect(screen.getByText("Completed Alpha task")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("FN-353"));
+
+    // The result opens even though `boardSourceTasks` never contained it.
     expect(screen.getAllByRole("dialog", { name: "Completed Alpha task" })).toHaveLength(1);
     expect(board.getByText("Active Alpha task")).toBeInTheDocument();
-    expect(board.getByText("Completed Alpha task")).toBeInTheDocument();
+    // The desktop host's transient query never reaches the Board/List filter.
     expect(observedQueries.every((query) => query === undefined)).toBe(true);
 
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     fireEvent.click(screen.getByTestId("sidebar-nav-list"));
     await waitFor(() => expect(screen.getByTestId("list-keep-alive")).not.toHaveAttribute("aria-hidden"));
-    const list = within(screen.getByTestId("list-keep-alive"));
-    expect(list.getByText("Active Alpha task")).toBeInTheDocument();
-    expect(list.getByText("Completed Alpha task")).toBeInTheDocument();
+    expect(within(screen.getByTestId("list-keep-alive")).getByText("Active Alpha task")).toBeInTheDocument();
   });
 
   it("ouvre une tâche distante autoritative depuis Alpha sans propager la requête transitoire", async () => {
@@ -6644,6 +7084,11 @@ describe("App task search suggestions", () => {
       };
     });
 
+    // The remote node's OWN search endpoint answers; nothing local may substitute for it.
+    mockFetchTaskPage.mockResolvedValue(searchServerPage([
+      makeSearchTask("REMOTE-353", "Remote completed Alpha task", "done"),
+    ]) as never);
+
     render(<App />);
     await waitForAppShell();
     const board = within(screen.getByTestId("board-keep-alive"));
@@ -6653,7 +7098,16 @@ describe("App task search suggestions", () => {
     fireEvent.click(screen.getByTestId("desktop-inline-header-search-btn"));
     expect(screen.getByTestId("desktop-header-search-input").parentElement).toBe(document.querySelector(".header-actions"));
     fireEvent.change(screen.getByRole("combobox", { name: "Search tasks..." }), { target: { value: "353" } });
-    fireEvent.click(screen.getByRole("option", { name: "REMOTE-353: Remote completed Alpha task" }));
+    await settleSearch();
+
+    // The request is routed to the selected node, never answered from the local store.
+    expect(mockFetchTaskPage.mock.calls[0][1]).toMatchObject({ nodeId: "node-alpha", query: "353" });
+    // Scope to the panel: the board legitimately renders the same remote task behind it.
+    const panel = await screen.findByTestId("task-search-results");
+    await waitFor(() => expect(within(panel).getByText("REMOTE-353")).toBeInTheDocument());
+    expect(within(panel).queryByText("LOCAL-353")).toBeNull();
+
+    fireEvent.click(within(panel).getByText("REMOTE-353"));
 
     expect(screen.queryByTestId("alpha-task-search-overlay")).toBeNull();
     expect(screen.getAllByRole("dialog", { name: "Remote completed Alpha task" })).toHaveLength(1);
@@ -6702,11 +7156,16 @@ describe("App task search suggestions", () => {
 
     render(<App />);
     await waitForAppShell();
+    mockFetchTaskPage.mockResolvedValue(searchServerPage([
+      makeSearchTask("REMOTE-331", "Remote completed task", "done"),
+    ]) as never);
     fireEvent.click(screen.getByTestId("desktop-inline-header-search-btn"));
     fireEvent.change(screen.getByRole("combobox", { name: "Search tasks..." }), { target: { value: "331" } });
+    await settleSearch();
 
-    expect(screen.getByRole("option", { name: "REMOTE-331: Remote completed task" })).toBeInTheDocument();
-    expect(screen.queryByRole("option", { name: /LOCAL-331/ })).toBeNull();
+    const panel = await screen.findByTestId("task-search-results");
+    await waitFor(() => expect(within(panel).getByText("REMOTE-331")).toBeInTheDocument());
+    expect(within(panel).queryByText("LOCAL-331")).toBeNull();
     remoteSpy.mockRestore();
   });
 
@@ -6722,13 +7181,17 @@ describe("App task search suggestions", () => {
       error: null,
       refresh: vi.fn(),
     });
+    // The remote node genuinely has no match. A local fallback here would show another store's rows.
+    mockFetchTaskPage.mockResolvedValue(searchServerPage([]) as never);
 
     render(<App />);
     await waitForAppShell();
     fireEvent.click(screen.getByTestId("desktop-inline-header-search-btn"));
     fireEvent.change(screen.getByRole("combobox", { name: "Search tasks..." }), { target: { value: "331" } });
+    await settleSearch();
 
-    expect(screen.queryByRole("option", { name: /LOCAL-331/ })).toBeNull();
+    await waitFor(() => expect(mockFetchTaskPage).toHaveBeenCalled());
+    expect(screen.queryByText("LOCAL-331")).toBeNull();
     expect(within(screen.getByTestId("board-keep-alive")).queryByText("Local task")).toBeNull();
 
     remoteSpy.mockRestore();
@@ -6750,35 +7213,56 @@ describe("App task search suggestions", () => {
       refresh: vi.fn(),
     }));
 
+    /*
+    FNXC:TaskSearch 2026-09-17-09:41:
+    Two nodes legitimately reuse a task id, so the load-bearing property is that switching node clears
+    the previous node's rows BEFORE any new response can arrive — otherwise node 1's card is shown
+    under node 2's identity for as long as the new request takes.
+    */
+    mockFetchTaskPage.mockResolvedValue(searchServerPage([
+      makeSearchTask("NODE1-331", "First node task"),
+    ]) as never);
+
     const { rerender } = render(<App />);
     await waitForAppShell();
     fireEvent.click(screen.getByTestId("desktop-inline-header-search-btn"));
     fireEvent.change(screen.getByRole("combobox", { name: "Search tasks..." }), { target: { value: "331" } });
-    expect(screen.getByRole("option", { name: "NODE1-331: First node task" })).toBeInTheDocument();
+    await settleSearch();
+    const firstNodePanel = await screen.findByTestId("task-search-results");
+    await waitFor(() => expect(within(firstNodePanel).getByText("NODE1-331")).toBeInTheDocument());
+
+    // Node switch: the previous node's rows must be gone immediately, with no local substitute.
+    let resolveSecondNode: ((value: unknown) => void) | undefined;
+    mockFetchTaskPage.mockReturnValue(new Promise((resolve) => { resolveSecondNode = resolve; }) as never);
     mockNodeContextValue.currentNodeId = "node-2";
+    remoteTasks = [];
     rerender(<App />);
-    expect(screen.queryByRole("option", { name: /NODE1-331/ })).toBeNull();
-    expect(screen.queryByRole("option", { name: /LOCAL-331/ })).toBeNull();
+
+    expect(screen.queryByTestId("task-search-results")?.textContent ?? "").not.toContain("NODE1-331");
+    expect(screen.queryByTestId("task-search-results")?.textContent ?? "").not.toContain("LOCAL-331");
     const boardDuringNodeChange = within(screen.getByTestId("board-keep-alive"));
     expect(boardDuringNodeChange.queryByText("First node task")).toBeNull();
     expect(boardDuringNodeChange.queryByText("Local task")).toBeNull();
 
-    remoteLoading = true;
-    rerender(<App />);
+    // A remote failure never falls back to local rows either.
     remoteLoading = false;
     remoteError = "Remote node unavailable";
     rerender(<App />);
-    expect(screen.queryByRole("option", { name: /NODE1-331/ })).toBeNull();
+    expect(screen.queryByTestId("task-search-results")?.textContent ?? "").not.toContain("NODE1-331");
+    expect(screen.queryByTestId("task-search-results")?.textContent ?? "").not.toContain("LOCAL-331");
 
-    remoteLoading = true;
+    // The second node's own answer finally lands and is the only thing shown.
     remoteError = null;
-    rerender(<App />);
     remoteTasks = [makeSearchTask("NODE2-331", "Second node task")];
-    remoteLoading = false;
     rerender(<App />);
+    await act(async () => {
+      resolveSecondNode?.(searchServerPage([makeSearchTask("NODE2-331", "Second node task")]));
+      await Promise.resolve();
+    });
 
-    expect(screen.getByRole("option", { name: "NODE2-331: Second node task" })).toBeInTheDocument();
-    expect(screen.queryByRole("option", { name: /NODE1-331/ })).toBeNull();
+    const settledPanel = await screen.findByTestId("task-search-results");
+    await waitFor(() => expect(within(settledPanel).getByText("NODE2-331")).toBeInTheDocument());
+    expect(within(settledPanel).queryByText("NODE1-331")).toBeNull();
     remoteSpy.mockRestore();
   });
 });
@@ -7490,5 +7974,137 @@ describe("FN-435/FN-437 hôtes d'outils par point de rupture", () => {
     view.rerender(<App />);
     await waitFor(() => expect(screen.queryByTestId("notes-tool-popover")).toBeNull());
     expect(screen.queryByTestId("mobile-drawer-notes")).toBeNull();
+  });
+});
+
+/*
+FN-481 — LE HEADER EST PRIORITAIRE SUR LA NAVIGATION BASSE.
+
+État initial : sur téléphone, Usage et Projets étaient offerts à la fois en haut et dans le menu bas ; sur tablette,
+Notes et Activity Log l'étaient aussi. Chaque cas monte le VRAI `<App />` — son Header ET sa pill — parce qu'un test
+de composant recomposé prouverait la règle sans voir le câblage, qui est la seule chose capable de laisser une
+destination inatteignable ou dupliquée.
+*/
+describe("FN-481 priorité du Header sur la navigation basse", () => {
+  const shellSettings = (overrides: Record<string, unknown> = {}) => ({
+    ...defaultSettings,
+    navigationPlacement: "footer" as const,
+    rightSidebarEnabled: false,
+    ...overrides,
+  });
+
+  beforeEach(() => {
+    mockProjectsState.projects = [{ ...DEFAULT_PROJECT }, { id: "proj_456", name: "Autre projet", path: "/autre", status: "active", isolationMode: "in-process", createdAt: "", updatedAt: "" }];
+    mockNotesApi.fetchNotes.mockResolvedValue({ notes: [] });
+  });
+
+  it("retire Usage et Projets du menu bas sur téléphone tout en gardant Notes et Activity", async () => {
+    mockUseViewportMode.mockReturnValue("mobile");
+    vi.mocked(fetchSettings).mockResolvedValue(shellSettings());
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByTestId("mobile-menu-trigger"));
+    for (const testId of ["mobile-more-item-usage", "mobile-more-item-projects", "mobile-nav-tab-usage", "mobile-nav-tab-projects"]) {
+      expect(screen.queryByTestId(testId), testId).toBeNull();
+    }
+    /* Notes et Activity restent en bas : le Header téléphone ne rend aucun de leurs déclencheurs. */
+    expect(screen.getByTestId("mobile-more-item-notes")).toBeInTheDocument();
+    expect(screen.getByTestId("mobile-more-item-activity")).toBeInTheDocument();
+  });
+
+  it("ouvre Usage depuis l'en-tête téléphone et atteint la gestion des projets par son sélecteur", async () => {
+    mockUseViewportMode.mockReturnValue("mobile");
+    vi.mocked(fetchSettings).mockResolvedValue(shellSettings());
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByTestId("mobile-header-usage-btn"));
+    expect(await screen.findByTestId("mobile-drawer-usage")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("mobile-project-switch-trigger"));
+    fireEvent.click(await screen.findByTestId("mobile-project-switch-view-all"));
+    /* Sémantique existante du chemin Header : l'aperçu des projets, après la garde de fermeture. */
+    await waitFor(() => expect(mockCurrentProjectState.clearCurrentProject).toHaveBeenCalled());
+  });
+
+  it("retire les quatre destinations du menu bas sur tablette en gardant la pill et les accès d'en-tête", async () => {
+    mockUseViewportMode.mockReturnValue("tablet");
+    vi.mocked(fetchSettings).mockResolvedValue(shellSettings());
+
+    render(<App />);
+
+    /* Les quatre accès existent en haut. */
+    expect(await screen.findByTestId("header-usage-btn")).toBeInTheDocument();
+    expect(screen.getByTestId("header-notes-panel-btn")).toBeInTheDocument();
+    expect(screen.getByTestId("header-activity-panel-btn")).toBeInTheDocument();
+    expect(screen.getByTestId("project-selector-trigger")).toBeInTheDocument();
+
+    /* La pill reste montée sur tablette, mais sans ces quatre destinations. */
+    fireEvent.click(screen.getByTestId("mobile-menu-trigger"));
+    for (const testId of [
+      "mobile-more-item-usage",
+      "mobile-more-item-projects",
+      "mobile-more-item-notes",
+      "mobile-more-item-activity",
+      "mobile-nav-tab-usage",
+      "mobile-nav-tab-projects",
+      "mobile-nav-tab-notes",
+      "mobile-nav-tab-activity",
+    ]) {
+      expect(screen.queryByTestId(testId), testId).toBeNull();
+    }
+    fireEvent.click(screen.getByTestId("mobile-menu-trigger"));
+
+    /* Les deux panneaux d'en-tête s'ouvrent toujours. */
+    fireEvent.click(screen.getByTestId("header-activity-panel-btn"));
+    expect(await screen.findByTestId("activity-tool-popover")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("header-notes-panel-btn"));
+    expect(await screen.findByTestId("notes-tool-popover")).toBeInTheDocument();
+  });
+
+  it("garde la navigation large de l'ordinateur sans ces quatre doublons", async () => {
+    mockUseViewportMode.mockReturnValue("desktop");
+    vi.mocked(fetchSettings).mockResolvedValue(shellSettings());
+
+    render(<App />);
+
+    expect(await screen.findByTestId("header-usage-btn")).toBeInTheDocument();
+    expect(screen.queryByTestId("mobile-menu-trigger")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("desktop-nav-more"));
+    for (const testId of ["desktop-nav-usage", "desktop-nav-projects", "desktop-nav-notes", "desktop-nav-activity"]) {
+      expect(screen.queryByTestId(testId), testId).toBeNull();
+    }
+  });
+
+  it("conserve les accès d'en-tête en placement sidebar, sans barre basse", async () => {
+    mockUseViewportMode.mockReturnValue("desktop");
+    vi.mocked(fetchSettings).mockResolvedValue(shellSettings({ navigationPlacement: "sidebar" }));
+
+    render(<App />);
+
+    expect(await screen.findByTestId("header-usage-btn")).toBeInTheDocument();
+    expect(screen.getByTestId("header-notes-panel-btn")).toBeInTheDocument();
+    expect(screen.queryByTestId("desktop-action-bar")).toBeNull();
+    expect(screen.queryByTestId("mobile-menu-trigger")).toBeNull();
+  });
+
+  it("restitue les entrées basses quand la liste de projets arrive plus tard ou disparaît", async () => {
+    mockProjectsState.projects = [];
+    mockUseViewportMode.mockReturnValue("mobile");
+    vi.mocked(fetchSettings).mockResolvedValue(shellSettings());
+
+    const view = render(<App />);
+
+    fireEvent.click(await screen.findByTestId("mobile-menu-trigger"));
+    /* Sans projet proposable, le Header ne possède pas Projets : l'entrée basse reste le chemin restant. */
+    expect(screen.getByTestId("mobile-more-item-projects")).toBeInTheDocument();
+
+    mockProjectsState.projects = [{ ...DEFAULT_PROJECT }];
+    view.rerender(<App />);
+    await waitFor(() => expect(screen.queryByTestId("mobile-more-item-projects")).toBeNull());
+    /* Le menu reste ouvert et utilisable après le changement de propriétaire. */
+    expect(screen.getByRole("menu", { name: "Navigate" })).toBeInTheDocument();
   });
 });

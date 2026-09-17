@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef, lazy, Suspense } from "react";
+import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef, lazy, Suspense, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import {
   type Task,
@@ -13,6 +13,7 @@ import { ViewLayoutProvider } from "./context/ViewLayoutContext";
 import {
   DashboardWindowManagerProvider,
   DashboardWindowManagerScope,
+  useDashboardWindowBottomDockReservation,
   useDashboardWindowGroupVisible,
   useDashboardWindowVisibility,
 } from "./context/DashboardWindowManagerContext";
@@ -75,6 +76,8 @@ import { isBoardBarIndeterminate } from "./utils/boardLoadIndicator";
 import { recordActivity } from "./utils/activity-trace";
 import { closeViewShortcut, readShortcutAnchorRect, resolveChatListShortcutTarget, retainViewNavRevert } from "./utils/dashboardShortcutToggles";
 import { normalizeNavigationPlacement, resolveChatHost, resolveNavigationSurfaces } from "./utils/navigationPlacement";
+/* FNXC:HeaderNavigationOwnership 2026-09-17-02:14: FN-481 — table de décision partagée entre le Header et la pill. */
+import { resolveHeaderNavigationOwnership } from "./utils/headerNavigationOwnership";
 /* FNXC:ToolSurfaces 2026-09-15-16:04: FN-426 — one decider for retired standalone tool destinations. */
 import { isRedirectedToolSurface, resolveToolSurfaceRoute } from "./utils/toolSurfaceRouting";
 import { DashboardToolPopover } from "./components/DashboardToolPopover";
@@ -1356,15 +1359,47 @@ function AppInner() {
   between the application content and the terminal. While the terminal reports itself pinned, the shell consumers
   (`.project-content--with-footer`, `.left-sidebar-nav--with-footer`, `.right-dock--with-footer`) stop reserving and
   `.terminal-below-host--with-footer` remains the single legitimate consumer of `--executor-footer-height` in the stack.
-  `TerminalModal` still receives the raw `shellFooterVisible`, and `MobileNavBar` keeps `executorFooterVisible`.
+  `MobileNavBar` keeps `executorFooterVisible`.
   The terminal is the source of truth for its EFFECTIVE presentation, so the shell never reads `localStorage` here.
+
+  FNXC:TerminalLayout 2026-09-17-04:51:
+  FN-487 adds the SECOND producer of a bottom reservation: any window docked along the bottom
+  (`snapMode: "bottom"`) publishes its band through the window manager, and this stack reserves it exactly like the
+  pinned terminal's host does. While such a band is active it already covers the fixed bottom bar, so the shell
+  consumers stop reserving that bar a second time and `TerminalModal` receives a disabled `footerVisible` — otherwise
+  FN-409's empty 36px band returns, this time above the docked window.
   */
   const [terminalPinnedBelow, setTerminalPinnedBelow] = useState(false);
   const handleTerminalPinnedLayoutChange = useCallback((pinned: boolean) => {
     setTerminalPinnedBelow(pinned);
   }, []);
-  const shellFooterReservationVisible = shellFooterVisible && !terminalPinnedBelow;
+  const bottomDockReservationPx = useDashboardWindowBottomDockReservation();
+  const bottomDockReservationActive = bottomDockReservationPx > 0;
+  const shellFooterReservationVisible = shellFooterVisible && !terminalPinnedBelow && !bottomDockReservationActive;
+  const terminalFooterVisible = shellFooterVisible && !bottomDockReservationActive;
   const mobileNavVisible = projectShellPresent;
+  /*
+  FNXC:HeaderNavigationOwnership 2026-09-17-02:14:
+  FN-481 : App est l'unique composition du Header et de la pill, donc c'est ici que la navigation basse apprend ce que
+  le Header offre DÉJÀ. Les capacités passées au résolveur sont EXACTEMENT celles transmises au Header plus bas
+  (`onOpenUsage` toujours fourni, panneaux Notes/Activity liés à `currentProject`, projets effectifs, sélection et
+  gestion de projet), pour qu'aucune seconde table indépendante ne puisse dériver. Sur téléphone cela retire Projets
+  et Usage du bas ; sur tablette cela retire en plus Notes et Activity, sans jamais retirer une destination dont le
+  Header n'offre pas réellement l'accès.
+  */
+  const headerOwnedNavigationItems = useMemo(
+    () => resolveHeaderNavigationOwnership({
+      mode: viewportMode,
+      mobileNavEnabled: mobileShellActive,
+      hasOpenUsage: true,
+      hasOpenNotesPanel: Boolean(currentProject),
+      hasOpenActivityPanel: Boolean(currentProject),
+      projectCount: effectiveProjects.length,
+      hasSelectProject: true,
+      hasViewAllProjects: true,
+    }),
+    [currentProject, effectiveProjects.length, mobileShellActive, viewportMode],
+  );
   /*
   FNXC:MobileDrawer 2026-09-10-17:16:
   A shared drawer is the foreground layer, not a replacement for its navigation trigger. Keep the pill mounted behind Usage and modal-owned Task Detail while ordinary blocking modals continue to suppress mobile navigation.
@@ -2118,6 +2153,16 @@ function AppInner() {
     Boolean(projectsError) &&
     !isSuppressedProjectResumeError;
 
+  /*
+  FNXC:WorkflowControls 2026-09-16-23:24:
+  FN-483 : contexte visuel du Board de fond, distinct de `taskView`. Sur téléphone avec un projet, `MainViewKeepAlive`
+  garde le Board monté ET actif sous chaque drawer, donc le Header doit continuer d'exposer `#header-workflow-slot`
+  pendant toute la navigation entre drawers ; sinon le Board replie son sélecteur en ligne sous le header. La vue
+  globale et la page d'erreur backend désactivent ce fond (même condition qu'`earlyHidden` dans MainContent), donc
+  elles reviennent au contrat Board/List de la route active.
+  */
+  const boardBackgroundActive = mobileDrawerActive && !showBackendConnectionErrorPage;
+
   // Props for the extracted <MainContent> switch (see components/dashboard/MainContent.tsx).
   // Every value is passed by its App name; the switch renders the same subtrees as before.
   const notesDirtyRef = useRef(notesController.dirty);
@@ -2733,17 +2778,27 @@ function AppInner() {
         showAgentsTab={agentsEnabled}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
-        taskSearchTasks={boardSourceTasks}
-        onSelectSearchTask={(task) => {
-          const selected = boardSourceTasks.find((candidate) => candidate.id.toLocaleLowerCase() === task.id.toLocaleLowerCase());
-          if (selected) openDetailTask(selected);
-        }}
+        /*
+        FNXC:TaskSearch 2026-09-17-09:41:
+        FN-477: the header search no longer receives `boardSourceTasks` as its catalogue, and the
+        selected result is no longer re-looked-up inside it. That lookup was the second reason a task
+        outside the loaded board pages could not be opened even once the server had returned it — the
+        row was found, then discarded because the board had never paged it in.
+        The search collection is separate from `useTasks` and `useRemoteNodeData`, so neither a
+        result nor a search error can overwrite the board's own data.
+        */
+        onSelectSearchTask={(task) => { openDetailTask(task); }}
+        addToast={addToast}
+        /* The selected node id is authoritative from the switch, before the node object resolves. */
+        {...(currentNodeId ? { searchNodeId: currentNodeId } : {})}
         projects={effectiveProjects}
         currentProject={currentProject}
         onSelectProject={handleSelectProject}
         onViewAllProjects={handleViewAllProjects}
         projectId={currentProject?.id}
         mobileNavEnabled={mobileShellActive}
+        /* FNXC:WorkflowControls 2026-09-16-23:24: FN-483 — le Board de fond garde la propriété du slot pendant les drawers téléphone. */
+        boardBackgroundActive={boardBackgroundActive}
         /* FNXC:Navigation 2026-09-15-14:41: Any wide primary surface (footer OR sidebar) owns routing, so Header must not re-render its view shortcuts and create a third navigation. */
         leftSidebarNavActive={navigationSurfaces.headerPrimaryNavSuppressed}
         rightDockAvailable={rightDockActive}
@@ -2789,7 +2844,11 @@ function AppInner() {
         }
       />
       <DashboardBanners {...dashboardBannersProps} />
-      <div className="dashboard-project-stack" data-testid="dashboard-project-stack">
+      <div
+        className={`dashboard-project-stack${bottomDockReservationActive ? " dashboard-project-stack--bottom-dock" : ""}`}
+        data-testid="dashboard-project-stack"
+        style={bottomDockReservationActive ? ({ "--bottom-dock-reservation": `${bottomDockReservationPx}px` } as CSSProperties) : undefined}
+      >
       <div className={`dashboard-project-shell${sidebarActive ? " dashboard-project-shell--with-sidebar" : ""}${rightDockActive ? " dashboard-project-shell--with-right-dock" : ""}`} data-testid="dashboard-project-shell">
         {sidebarActive && (
           <LeftSidebarNav
@@ -2872,6 +2931,8 @@ function AppInner() {
                 <PlanningKeepAlive
                   key={`${currentProject.id}:${modalManager.planningEntryGeneration}`}
                   active={planningViewActive}
+                  /* FNXC:WorkflowControls 2026-09-16-23:24: FN-483 — le drawer Planning téléphone est hébergé au-dessus du Board de fond, qui possède déjà le slot. */
+                  showWorkflowControls={!boardBackgroundActive}
                   projectId={currentProject.id}
                   tasks={tasks}
                   bgPlanningSessions={bgPlanningSessions}
@@ -3036,7 +3097,7 @@ function AppInner() {
           initialCommand={modalManager.terminalInitialCommand}
           initialCommandGeneration={modalManager.terminalInitialCommandGeneration}
           projectId={currentProject.id}
-          footerVisible={shellFooterVisible}
+          footerVisible={terminalFooterVisible}
           onPinnedLayoutChange={handleTerminalPinnedLayoutChange}
           focusNonce={modalManager.terminalInitialCommandGeneration}
         />
@@ -3075,6 +3136,8 @@ function AppInner() {
         keyboardOpen={mobileNavKeyboardOpen}
         keyboardMetrics={{ keyboardOverlap, viewportHeight, viewportOffsetTop }}
         quickAccessItems={mobileNavPrimaryItems}
+        /* FNXC:HeaderNavigationOwnership 2026-09-17-02:14: FN-481 — un accès déjà présent dans le Header ne revient ni dans la rangée ni dans « More ». */
+        headerOwnedItems={headerOwnedNavigationItems}
         navigationMenuOpen={navigationMenuOpen}
         onUiMenuOpenChange={setUiMenuOpen}
         onOpenSettings={openSettingsWithNav}

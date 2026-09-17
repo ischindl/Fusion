@@ -108,19 +108,12 @@ The embedded planning header must be a visual SIBLING of MissionManager's inline
 */
 /* FNXC:ViewHeader 2026-06-23-04:15: Pin canonical --view-header-min-height (≈61px border-box) + box-sizing + vertical centering so embedded Planning's header matches the shared ViewHeader/Missions height exactly. */
 /*
-FNXC:StandardizedViewLayout 2026-09-14-05:58:
-Planning's header is a full-width bar over BOTH the session rail and the interview, exactly like Mailbox and Agents.
-It kept `border-bottom: none` from its modal past, so the title row bled into the panes below and the destination did
-not read as header-over-content the way every other collection does.
-
-The separator is declared on the LAYOUT, not on the modal wrapper: the embedded destination renders
-`.planning-modal-body > .view-header` and a rule scoped to the modal ancestor alone left the standalone/host cases
-without a bar.
+FNXC:UniversalViewChrome 2026-09-16-21:44:
+FN-476 removes the local `.planning-modal-body > .view-header` divider rule. Planning was the reference for the
+separation every other destination lacked, so the rule moved onto `.view-header` itself in `ViewHeader.css` and is now
+universal. Re-adding it here would be a per-view copy of shared chrome; the surface background is already the shared
+default. The embedded modal header below is a DIFFERENT element (`.modal-header--embedded`) and keeps its own bar.
 */
-.planning-modal-body > .view-header {
-  border-bottom: var(--btn-border-width) solid var(--border);
-  background: var(--surface);
-}
 
 .planning-modal--embedded .modal-header--embedded {
   box-sizing: border-box;
@@ -482,57 +475,13 @@ Planning intentionally retains this bottom-pinned New session button at its curr
 .planning-sidebar-status-complete { color: var(--color-success); }
 .planning-sidebar-status-error { color: var(--color-error); }
 
-.planning-sidebar-item-actions {
-  display: flex;
-  align-items: stretch;
-}
-
 /*
-FNXC:PlanningSessionRename 2026-09-15-03:29:
-FN-402 puts rename on the session row beside delete, so the pencil shares the delete control geometry,
-reveal-on-hover behaviour and focus ring rather than forking a one-off button style.
-FNXC:PlanningMode 2026-09-16-15:50: FN-465 removed the row archive control, so only delete and rename remain.
+FNXC:PlanningSessionRowActions 2026-09-17-03:18:
+FN-486 : les commandes permanentes de ligne (leur conteneur d'actions, le crayon et la corbeille) sont
+SUPPRIMÉES avec leurs règles, et non simplement masquées : Renommer et Supprimer passent par le menu
+contextuel partagé. Aucune coquille de bouton ni conteneur réservant leur place ne subsiste, ni sur bureau
+(où elles apparaissaient au survol) ni sur téléphone (où elles étaient toujours visibles).
 */
-.planning-sidebar-item-delete,
-.planning-sidebar-item-rename {
-  flex-shrink: 0;
-  width: calc(var(--space-lg) + var(--space-xl));
-  min-width: calc(var(--space-lg) + var(--space-xl));
-  height: calc(var(--space-lg) + var(--space-xl));
-  min-height: calc(var(--space-lg) + var(--space-xl));
-  display: none;
-  align-items: center;
-  justify-content: center;
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  border-radius: var(--radius-sm);
-  transition: color var(--transition-fast), background var(--transition-fast), box-shadow var(--transition-fast);
-}
-
-.planning-sidebar-item:hover .planning-sidebar-item-delete,
-.planning-sidebar-item:focus-within .planning-sidebar-item-delete,
-.planning-sidebar-item:hover .planning-sidebar-item-rename,
-.planning-sidebar-item:focus-within .planning-sidebar-item-rename {
-  display: flex;
-}
-
-.planning-sidebar-item-delete:hover {
-  color: var(--color-error);
-  background: color-mix(in srgb, var(--color-error) 15%, transparent);
-}
-
-.planning-sidebar-item-rename:hover {
-  color: var(--todo);
-  background: color-mix(in srgb, var(--todo) 15%, transparent);
-}
-
-.planning-sidebar-item-delete:focus-visible,
-.planning-sidebar-item-rename:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring-strong);
-}
 
 /* Inline row rename editor: shares the row's typography and the shared `.input` primitive. */
 .planning-sidebar-item-title-input {
@@ -551,30 +500,13 @@ FNXC:PlanningMode 2026-09-16-15:50: FN-465 removed the row archive control, so o
   padding: 0 8px;
 }
 
-.planning-session-back {
-  display: inline-flex;
-  min-width: calc(var(--space-md) * 2.25);
-  min-height: calc(var(--space-md) * 2.25);
-  align-items: center;
-  justify-content: center;
-  background: none;
-  border: none;
-  color: var(--text);
-  cursor: pointer;
-  padding: var(--space-xs);
-  border-radius: var(--radius-sm);
-  flex-shrink: 0;
-  transition: background var(--transition-fast), box-shadow var(--transition-fast);
-}
-
-.planning-session-back:hover {
-  background: var(--card-hover);
-}
-
-.planning-session-back:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring-strong);
-}
+/*
+FNXC:ViewBackIconParity 2026-09-17-03:18:
+FN-486 : Planning ne redeclare plus de boîte, de padding ni de fond pour son retour. Cette géométrie locale
+contredisait la boîte canonique partagée — son plancher était plus petit que celui de l'action de création —
+et faisait donc diverger deux boutons censés être identiques. Le primitif `ViewBackButton` est désormais la
+seule autorité ; seul le comportement de survol/focus propre à `btn-icon` subsiste, hérité du primitif.
+*/
 
 /* Mobile: stack — only one pane visible at a time.
    FNXC:PlanningMode 2026-06-22-15:30 covers both the landscape phone case
@@ -672,11 +604,6 @@ FNXC:PlanningMode 2026-09-16-15:50: FN-465 removed the row archive control, so o
   */
   .planning-modal-body--show-list .planning-detail {
     display: none;
-  }
-  /* Always keep action buttons visible on mobile (no hover) */
-  .planning-sidebar-item-delete,
-  .planning-sidebar-item-rename {
-    display: flex;
   }
 }
 

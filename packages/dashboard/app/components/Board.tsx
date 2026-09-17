@@ -20,12 +20,7 @@ import { writeBoardWorkflowsCache } from "../utils/boardWorkflowsCache";
 import { useBoardWorkflows } from "../hooks/useBoardWorkflows";
 import { useHeaderWorkflowSlot } from "../hooks/useHeaderWorkflowSlot";
 import { useUnmappedWorkflowRefetch } from "../hooks/useUnmappedWorkflowRefetch";
-import {
-  ALL_WORKFLOWS_BOARD_VIEW_ID,
-  readBoardWorkflowViewSelection,
-  removeBoardWorkflowSelection,
-  writeBoardWorkflowSelection,
-} from "../utils/boardWorkflowSelection";
+import { ALL_WORKFLOWS_BOARD_VIEW_ID } from "../utils/boardWorkflowSelection";
 import type { TaskContextMenuColumnMetadata } from "./TaskContextMenu";
 import { resetBoardColumnsOnArrival } from "../utils/boardScrollSnapshot";
 import { isTaskReverted } from "../utils/taskRevert";
@@ -74,6 +69,7 @@ interface BoardProps {
     githubIssueAction?: GithubIssueAction;
   }) => Promise<Task>;
   onLoadMoreCurrentTasks?: () => Promise<void>;
+  /** FNXC:BoardColumnCount 2026-09-16-21:24: FN-475 — board-wide pagination total for the current (non-complete) collection. It is NOT a column header count; header badges are resolved per column by `resolveColumnBadgeTotal`. */
   currentTasksTotal?: number;
   currentTasksHasMore?: boolean;
   currentTasksLoadingMore?: boolean;
@@ -170,6 +166,22 @@ function completeLaneHasMore(globalHasMore: boolean | undefined, exactTotal: num
   return Boolean(globalHasMore && exactTotal !== undefined && exactTotal > loadedCount);
 }
 
+/*
+FNXC:BoardColumnCount 2026-09-16-21:24:
+FN-475: a column header badge shows the task count of THAT column, never a board-wide total.
+`currentTasksTotal` is the server pagination total for the whole "current" (non-complete) collection,
+so feeding it to every non-complete lane made Todo, In Progress, and In Review all display the same
+number. A complete lane outside search keeps its exact per-column server total because its cards are
+server-paginated and the loaded slice under-reports. No per-column server total exists for the current
+lanes, so their header reflects the column's loaded cards. In search mode every lane, complete included,
+shows its own filtered card count: the server totals describe the unfiltered collection.
+*/
+export function resolveColumnBadgeTotal(input: { isSearchActive: boolean; isCompleteColumn: boolean; completeLaneTotal: number | undefined; loadedCount: number }): number {
+  if (input.isSearchActive) return input.loadedCount;
+  if (input.isCompleteColumn) return input.completeLaneTotal ?? input.loadedCount;
+  return input.loadedCount;
+}
+
 function BoardWorkflowSkeleton({ empty = false, t }: { empty?: boolean; t: TFunction<"app"> }) {
   return (
     <main className="board board-workflows-skeleton" id="board" aria-busy={!empty} aria-label={empty ? t("board.noWorkflowLanes", "No workflow lanes available") : t("board.loadingWorkflowLanes", "Loading workflow lanes")} data-testid={empty ? "board-workflows-empty" : "board-workflows-skeleton"}>
@@ -184,7 +196,7 @@ function BoardWorkflowSkeleton({ empty = false, t }: { empty?: boolean; t: TFunc
   );
 }
 
-function BoardContent({ tasks, projectId, maxConcurrent, maxWorktrees, showWorktreeGrouping, onMoveTask, onPauseTask, onUnpauseTask, onResetTask, onDuplicateTask, onMergeTask, onOpenDetail, onRefinementCreated, onOpenGroupModal, addToast, onQuickCreate, onNewTask: _onNewTask, autoMerge, mergeStrategy = "direct", onToggleAutoMerge, planAutoApproveEnabled, onTogglePlanAutoApprove, globalPaused, onUpdateTask, onRetryTask, onOpenChatWithPrefill, onRevertTask, onRestoreRevertTask, onDeleteTask, onLoadMoreCurrentTasks, currentTasksTotal, currentTasksHasMore, currentTasksLoadingMore, currentTasksPaginationError, currentTasksProgressKey, onRetryCurrentTasks, onLoadMoreCompletedTasks, completedCounts, completedHasMore, completedLoadingMore, completedPaginationError, completedProgressKey, onRetryCompletedTasks, completedSortMode = "completion-date-desc", onCompletedSortModeChange, searchQuery = "", availableModels, onPlanningMode, onOpenDetailWithTab, favoriteProviders, favoriteModels, onToggleFavorite, onToggleModelFavorite, onOpenMission, staleHighFanoutBlockerAgeThresholdMs, lastFetchTimeMs, prAuthAvailable, workflowControlsInHeader = false, active = true, onOpenHistory }: BoardProps) {
+function BoardContent({ tasks, projectId, maxConcurrent, maxWorktrees, showWorktreeGrouping, onMoveTask, onPauseTask, onUnpauseTask, onResetTask, onDuplicateTask, onMergeTask, onOpenDetail, onRefinementCreated, onOpenGroupModal, addToast, onQuickCreate, onNewTask: _onNewTask, autoMerge, mergeStrategy = "direct", onToggleAutoMerge, planAutoApproveEnabled, onTogglePlanAutoApprove, globalPaused, onUpdateTask, onRetryTask, onOpenChatWithPrefill, onRevertTask, onRestoreRevertTask, onDeleteTask, onLoadMoreCurrentTasks, currentTasksTotal: _currentTasksTotal, currentTasksHasMore, currentTasksLoadingMore, currentTasksPaginationError, currentTasksProgressKey, onRetryCurrentTasks, onLoadMoreCompletedTasks, completedCounts, completedHasMore, completedLoadingMore, completedPaginationError, completedProgressKey, onRetryCompletedTasks, completedSortMode = "completion-date-desc", onCompletedSortModeChange, searchQuery = "", availableModels, onPlanningMode, onOpenDetailWithTab, favoriteProviders, favoriteModels, onToggleFavorite, onToggleModelFavorite, onOpenMission, staleHighFanoutBlockerAgeThresholdMs, lastFetchTimeMs, prAuthAvailable, workflowControlsInHeader = false, active = true, onOpenHistory }: BoardProps) {
   const { t } = useTranslation("app");
   /*
   FNXC:TaskColumnSorting 2026-08-18-21:24:
@@ -216,9 +228,11 @@ function BoardContent({ tasks, projectId, maxConcurrent, maxWorktrees, showWorkt
       return binding;
     };
   }, [changeColumnSortMode]);
-  const [isAllWorkflowsViewSelected, setIsAllWorkflowsViewSelected] = useState(
-    () => readBoardWorkflowViewSelection(projectId) === ALL_WORKFLOWS_BOARD_VIEW_ID,
-  );
+  /*
+  FNXC:WorkflowAggregation 2026-09-16-23:24:
+  FN-483 : plus d'état agrégé local. La vue « All workflows » est désormais lue depuis `useBoardWorkflows`
+  (`isAllWorkflowsSelected`, plus bas), unique propriétaire de la sélection de vue et de sa persistance.
+  */
   const boardRef = useRef<HTMLElement | null>(null);
   const [boardElement, setBoardElement] = useState<HTMLElement | null>(null);
   /*
@@ -421,6 +435,7 @@ function BoardContent({ tasks, projectId, maxConcurrent, maxWorktrees, showWorkt
     workflowOptions,
     selectedWorkflow,
     selectedWorkflowId,
+    isAllWorkflowsSelected: isAllWorkflowsViewSelected,
     setSelectedWorkflowId,
     refreshBoardWorkflows,
     setBoardWorkflowsState,
@@ -465,32 +480,19 @@ function BoardContent({ tasks, projectId, maxConcurrent, maxWorktrees, showWorkt
     return computeWorkflowStatusCounts(tasks, boardWorkflows);
   }, [boardWorkflows, tasks]);
 
-  useEffect(() => {
-    setIsAllWorkflowsViewSelected(readBoardWorkflowViewSelection(projectId) === ALL_WORKFLOWS_BOARD_VIEW_ID);
-  }, [projectId]);
-
   const handleWorkflowSwitcherChange = useCallback((workflowId: string) => {
     /*
     FNXC:WorkflowBoard 2026-06-30-00:00:
     "All workflows" is a Board-only aggregate filter sentinel. It is now persisted in the same project-scoped Board view preference as real workflow ids so refresh/remount restores whichever Board view the operator last selected, while `useBoardWorkflows` filters the sentinel away from shared real-workflow consumers and backend-bound APIs.
-    */
-    if (workflowId === ALL_WORKFLOWS_BOARD_VIEW_ID) {
-      setIsAllWorkflowsViewSelected(true);
-      writeBoardWorkflowSelection(projectId, ALL_WORKFLOWS_BOARD_VIEW_ID);
-      return;
-    }
-    setIsAllWorkflowsViewSelected(false);
-    setSelectedWorkflowId(workflowId);
-  }, [projectId, setSelectedWorkflowId]);
 
-  useEffect(() => {
-    if (boardWorkflows && !workflowMode) {
-      setIsAllWorkflowsViewSelected(false);
-      if (readBoardWorkflowViewSelection(projectId) === ALL_WORKFLOWS_BOARD_VIEW_ID) {
-        removeBoardWorkflowSelection(projectId);
-      }
-    }
-  }, [boardWorkflows, projectId, workflowMode]);
+    FNXC:WorkflowAggregation 2026-09-16-23:24:
+    FN-483 : le sentinel agrégé emprunte désormais LE MÊME setter partagé que les workflows réels. Board écrivait
+    auparavant le stockage directement en gardant un état local parallèle : deux états pouvaient diverger, et surtout
+    une List conservée ne pouvait pas suivre un passage à « All workflows ». `useBoardWorkflows` continue de ne jamais
+    envoyer le sentinel au miroir serveur (il y devient `null`) ni aux chemins de création de tâches.
+    */
+    setSelectedWorkflowId(workflowId);
+  }, [setSelectedWorkflowId]);
 
   const knownWorkflowIds = useMemo(() => new Set(boardWorkflows?.workflows.map((workflow) => workflow.id) ?? []), [boardWorkflows]);
 
@@ -953,6 +955,7 @@ function BoardContent({ tasks, projectId, maxConcurrent, maxWorktrees, showWorkt
                 : columnSortModeChangeBinder(laneKey);
               const laneTasks = aggregateTasksByColumn[columnDef.id] ?? [];
               const completeLaneTotal = completedCounts?.byColumn[columnDef.id];
+              const laneBadgeTotal = resolveColumnBadgeTotal({ isSearchActive, isCompleteColumn: Boolean(columnDef.flags.complete), completeLaneTotal, loadedCount: laneTasks.length });
               return (
                 <Column
                   key={columnDef.id}
@@ -1011,10 +1014,11 @@ function BoardContent({ tasks, projectId, maxConcurrent, maxWorktrees, showWorkt
                   paginationActive={active}
                   paginationCollectionKey={`${projectId ?? "default"}:aggregate:${columnDef.id}:${laneSortMode}:${searchQuery}`}
                   {...(isSearchActive
-                    ? { totalTaskCount: currentTasksTotal, serverHasMore: currentTasksHasMore, serverLoadingMore: currentTasksLoadingMore, serverPaginationError: currentTasksPaginationError, serverProgressKey: currentTasksProgressKey, onLoadMoreServer: onLoadMoreCurrentTasks, onRetryServer: onRetryCurrentTasks }
+                    ? { serverHasMore: currentTasksHasMore, serverLoadingMore: currentTasksLoadingMore, serverPaginationError: currentTasksPaginationError, serverProgressKey: currentTasksProgressKey, onLoadMoreServer: onLoadMoreCurrentTasks, onRetryServer: onRetryCurrentTasks }
                     : columnDef.flags.complete
-                      ? { totalTaskCount: completeLaneTotal ?? laneTasks.length, serverHasMore: completeLaneHasMore(completedHasMore, completeLaneTotal, laneTasks.length), serverLoadingMore: completedLoadingMore, serverPaginationError: completedPaginationError, serverProgressKey: completedProgressKey, onLoadMoreServer: onLoadMoreCompletedTasks, onRetryServer: onRetryCompletedTasks }
-                      : { totalTaskCount: currentTasksTotal, serverHasMore: currentTasksHasMore, serverLoadingMore: currentTasksLoadingMore, serverPaginationError: currentTasksPaginationError, serverProgressKey: currentTasksProgressKey, onLoadMoreServer: onLoadMoreCurrentTasks, onRetryServer: onRetryCurrentTasks })}
+                      ? { serverHasMore: completeLaneHasMore(completedHasMore, completeLaneTotal, laneTasks.length), serverLoadingMore: completedLoadingMore, serverPaginationError: completedPaginationError, serverProgressKey: completedProgressKey, onLoadMoreServer: onLoadMoreCompletedTasks, onRetryServer: onRetryCompletedTasks }
+                      : { serverHasMore: currentTasksHasMore, serverLoadingMore: currentTasksLoadingMore, serverPaginationError: currentTasksPaginationError, serverProgressKey: currentTasksProgressKey, onLoadMoreServer: onLoadMoreCurrentTasks, onRetryServer: onRetryCurrentTasks })}
+                  totalTaskCount={laneBadgeTotal}
                 />
               );
             })}
@@ -1042,6 +1046,7 @@ function BoardContent({ tasks, projectId, maxConcurrent, maxWorktrees, showWorkt
               : columnSortModeChangeBinder(laneKey);
             const laneTasks = selectedWorkflowTasksByColumn[columnDef.id] ?? [];
             const completeLaneTotal = completedCounts?.byWorkflow[selectedWorkflow.id]?.[columnDef.id];
+            const laneBadgeTotal = resolveColumnBadgeTotal({ isSearchActive, isCompleteColumn: Boolean(columnDef.flags.complete), completeLaneTotal, loadedCount: laneTasks.length });
             return (
               <Column
                 key={columnDef.id}
@@ -1100,10 +1105,11 @@ function BoardContent({ tasks, projectId, maxConcurrent, maxWorktrees, showWorkt
                 paginationActive={active}
                 paginationCollectionKey={`${projectId ?? "default"}:${selectedWorkflow.id}:${columnDef.id}:${laneSortMode}:${searchQuery}`}
                 {...(isSearchActive
-                  ? { totalTaskCount: currentTasksTotal, serverHasMore: currentTasksHasMore, serverLoadingMore: currentTasksLoadingMore, serverPaginationError: currentTasksPaginationError, serverProgressKey: currentTasksProgressKey, onLoadMoreServer: onLoadMoreCurrentTasks, onRetryServer: onRetryCurrentTasks }
+                  ? { serverHasMore: currentTasksHasMore, serverLoadingMore: currentTasksLoadingMore, serverPaginationError: currentTasksPaginationError, serverProgressKey: currentTasksProgressKey, onLoadMoreServer: onLoadMoreCurrentTasks, onRetryServer: onRetryCurrentTasks }
                   : columnDef.flags.complete
-                    ? { totalTaskCount: completeLaneTotal ?? laneTasks.length, serverHasMore: completeLaneHasMore(completedHasMore, completeLaneTotal, laneTasks.length), serverLoadingMore: completedLoadingMore, serverPaginationError: completedPaginationError, serverProgressKey: completedProgressKey, onLoadMoreServer: onLoadMoreCompletedTasks, onRetryServer: onRetryCompletedTasks }
-                    : { totalTaskCount: currentTasksTotal, serverHasMore: currentTasksHasMore, serverLoadingMore: currentTasksLoadingMore, serverPaginationError: currentTasksPaginationError, serverProgressKey: currentTasksProgressKey, onLoadMoreServer: onLoadMoreCurrentTasks, onRetryServer: onRetryCurrentTasks })}
+                    ? { serverHasMore: completeLaneHasMore(completedHasMore, completeLaneTotal, laneTasks.length), serverLoadingMore: completedLoadingMore, serverPaginationError: completedPaginationError, serverProgressKey: completedProgressKey, onLoadMoreServer: onLoadMoreCompletedTasks, onRetryServer: onRetryCompletedTasks }
+                    : { serverHasMore: currentTasksHasMore, serverLoadingMore: currentTasksLoadingMore, serverPaginationError: currentTasksPaginationError, serverProgressKey: currentTasksProgressKey, onLoadMoreServer: onLoadMoreCurrentTasks, onRetryServer: onRetryCurrentTasks })}
+                totalTaskCount={laneBadgeTotal}
               />
             );
           })}

@@ -23,6 +23,7 @@ import { DrawerPresentationProvider, ViewDrawerHandle, resolveDrawerPresentation
 import { ViewLayoutContent, ViewLayoutHeader } from "./ViewLayout";
 import {
   DashboardWindowSurfaceActivityProvider,
+  useDashboardWindowBottomDockReservationControl,
   useDashboardWindowBounds,
   useDashboardWindowCascade,
   useDashboardWindowFocusRestoring,
@@ -215,6 +216,7 @@ export interface FloatingWindowDragGestureEnd {
 
 const DEFAULT_MIN_WIDTH = 360;
 const DEFAULT_MIN_HEIGHT = 280;
+const TABLET_TOUCH_GEOMETRY_INSET = 16;
 
 /*
 FNXC:FloatingWindow 2026-06-22-21:30:
@@ -280,7 +282,7 @@ export function FloatingWindow({
   dragHandoff,
 }: FloatingWindowProps) {
   const { t } = useTranslation("app");
-  const availableBounds = useDashboardWindowBounds();
+  const dashboardBounds = useDashboardWindowBounds();
   /*
   FNXC:FloatingWindow 2026-09-13-22:40:
   Callers pass `minSize` as an inline object literal, so rebuilding this per render gave every
@@ -301,6 +303,22 @@ export function FloatingWindow({
   mouse geometry; a known touch tablet at 768px is the one surface that receives enlarged targets.
   */
   const hasTabletTouchGeometry = isTabletTouchViewport(viewportMode);
+  /*
+  FNXC:ModalTouchGeometry 2026-09-17-00:49:
+  Tablet corner handles overhang the painted panel by their 44px target. Reserve one shared
+  16px geometry inset on every tablet-touch edge so a clamped southeast target remains inside
+  the visual viewport instead of becoming unreachable past its right or bottom edge.
+  */
+  const availableBounds = useMemo(() => {
+    if (!hasTabletTouchGeometry) return dashboardBounds;
+    const inlineInset = Math.min(TABLET_TOUCH_GEOMETRY_INSET, dashboardBounds.width / 2);
+    const blockInset = Math.min(TABLET_TOUCH_GEOMETRY_INSET, dashboardBounds.height / 2);
+    const left = dashboardBounds.left + inlineInset;
+    const top = dashboardBounds.top + blockInset;
+    const right = Math.max(left, dashboardBounds.right - inlineInset);
+    const bottom = Math.max(top, dashboardBounds.bottom - blockInset);
+    return { left, top, right, bottom, width: right - left, height: bottom - top };
+  }, [dashboardBounds, hasTabletTouchGeometry]);
   /*
   FNXC:ModalTouchGeometry 2026-08-01-04:23:
   NAMING CONTRACT — FloatingWindow has two distinct tablet markers; do not conflate them:
@@ -501,6 +519,33 @@ export function FloatingWindow({
   const globallyHiddenRef = useRef(windowSurface.globallyHidden);
   globallyHiddenRef.current = windowSurface.globallyHidden;
   const effectiveHidden = hidden || windowSurface.globallyHidden;
+  /*
+  FNXC:FloatingWindowSnap 2026-09-17-04:51:
+  FN-487 : « peu importe la modale que j'ancre tout en bas, ça doit faire exactement comme quand c'est le terminal ».
+  Une bande ancrée en bas est `position: fixed` : sans réservation elle RECOUVRE la moitié basse du board. La fenêtre
+  publie donc ici la hauteur à réserver et le shell recompose le contenu au-dessus, exactement comme
+  `.terminal-below-host` le fait pour le terminal épinglé.
+  La hauteur publiée va du BORD HAUT de la bande jusqu'au bas du viewport (et non la seule hauteur du panneau), pour
+  couvrir aussi la barre du bas fixe que la bande recouvre déjà — parité avec `.terminal-below-host--with-footer`.
+  Une présentation en feuille (téléphone) n'expose aucun ancrage, et une fenêtre masquée globalement ou localement ne
+  réserve rien : dans les deux cas la bande n'est pas peinte, donc réserver serait une bande vide.
+  */
+  const publishBottomDockReservation = useDashboardWindowBottomDockReservationControl();
+  const bottomDockToken = windowSurface.token;
+  useEffect(() => {
+    const docked = snapMode === "bottom" && !sheetPresentation && !effectiveHidden;
+    if (!docked) {
+      publishBottomDockReservation(bottomDockToken, null);
+      return;
+    }
+    const viewportBottom = typeof window !== "undefined" && Number.isFinite(window.innerHeight)
+      ? window.innerHeight
+      : availableBounds.bottom;
+    const reserved = Math.max(0, viewportBottom - position.y);
+    publishBottomDockReservation(bottomDockToken, reserved > 0 ? reserved : null);
+    return () => publishBottomDockReservation(bottomDockToken, null);
+  }, [availableBounds, bottomDockToken, effectiveHidden, position.y, publishBottomDockReservation, sheetPresentation, size.height, snapMode]);
+
   const dismissHandleProps = useDrawerDismissGesture({
     enabled: mobileDrawer && !effectiveHidden,
     open: !effectiveHidden,

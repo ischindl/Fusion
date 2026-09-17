@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import fs from "fs";
 import path from "path";
 import { ExecutorStatusBar } from "../ExecutorStatusBar";
+import { readAppFile } from "../../test/cssFixture";
 
 const viewportModeMock = vi.hoisted(() => ({ value: "desktop" as "desktop" | "tablet" | "mobile" }));
 const mockFetchScripts = vi.hoisted(() => vi.fn());
@@ -186,6 +187,19 @@ describe("ExecutorStatusBar", () => {
       expect(statusBar.firstElementChild).not.toHaveClass("executor-status-bar__divider");
       expect(statusBar.lastElementChild).toHaveClass("dashboard-window-visibility-toggle__placeholder");
       expect(statusBar.lastElementChild?.previousElementSibling).toHaveClass("executor-status-bar__segment--engine-controls");
+    });
+
+    /*
+     * FN-484 : la feuille partagée du contrôle de visibilité ne peint plus de trait séparateur, donc aucune coquille
+     * bordée ne subsiste dans CE hôte non plus; sa géométrie partagée (`align-self: stretch`) reste inchangée, seule la
+     * règle hôte de DesktopActionBar dévie.
+     */
+    it("ne laisse aucun trait séparateur sur l'emplacement du contrôle de visibilité", () => {
+      const toggleCss = readAppFile("components/DashboardWindowVisibilityToggle.css").replace(/\/\*[\s\S]*?\*\//g, "");
+      const placeholderRule = toggleCss.match(/(?:^|\n)\.dashboard-window-visibility-toggle__placeholder\s*\{([^}]*)\}/)?.[1] ?? "";
+      expect(placeholderRule).toBeTruthy();
+      expect(placeholderRule).not.toMatch(/border/);
+      expect(placeholderRule).toMatch(/align-self:\s*stretch/);
     });
 
     it("shows overlap bottleneck summary with stable tie-break ordering", () => {
@@ -433,7 +447,13 @@ describe("ExecutorStatusBar", () => {
       expect(statusBar.contains(tooltip)).toBe(false);
       const tooltipRule = getCssRuleBlock(executorStatusBarCss, ".executor-status-bar__stat-tooltip");
       expect(tooltipRule).toContain("position: fixed");
-      expect(tooltipRule).toContain("z-index: var(--z-popover, 60)");
+      /*
+      FNXC:ExecutorFooter 2026-09-17-05:36:
+      FN-488 moved this tooltip off the static `--z-popover` layer: the pinned bottom terminal now claims the shared
+      10100+ window band in the very strip the footer tooltip is painted into, so a layer of 60 hid it. It follows the
+      live `--fusion-max-z` ceiling instead, exactly like the DesktopActionBar open menu and the usage popover.
+      */
+      expect(tooltipRule).toContain("z-index: calc(var(--fusion-max-z, 11001) + 2)");
       expectNoHardcodedColors(tooltipRule);
     });
 

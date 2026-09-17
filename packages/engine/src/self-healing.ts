@@ -166,6 +166,7 @@ import { rerouteUnrunPreMergeGateToReview } from "./merge/pre-merge-gate-reseed.
 import { cleanupLandedTaskWorktree, removeEmptyWorkspaceTaskDirectory } from "./merge/post-landing-worktree-cleanup.js";
 import { cleanupDeletedTaskWorktrees } from "./worktree/deleted-task-worktree-cleanup.js";
 import { AutoRecoveryDispatcher } from "./healing/auto-recovery.js";
+import { reconcileReleasedOverlapWaits } from "./self-healing/released-overlap-waits.js";
 import { activeSessionRegistry, executingTaskLock } from "./agents/active-session-registry.js";
 import {
   getTaskPlanningOrExecutionLivenessSignal,
@@ -2249,6 +2250,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       { name: "recover-drifted-agent-task-links", fn: () => this.recoverDriftedAgentTaskLinks().then(() => undefined) },
       { name: "reconcile-soft-delete-column-drift", fn: () => this.reconcileSoftDeletedColumnDrift().then(() => undefined) },
       { name: "clear-stale-blocked-by", fn: () => this.clearStaleBlockedBy().then(() => undefined) },
+      { name: "reconcile-released-overlap-waits", fn: () => this.reconcileReleasedOverlapWaits().then(() => undefined) },
       { name: "reconcile-self-defeating-deps", fn: () => this.reconcileSelfDefeatingDependencies().then(() => undefined) },
       { name: "reconcile-missing-dependencies", fn: () => this.reconcileMissingDependencies().then(() => undefined) },
       { name: "reconcile-dependency-blocking-leases", fn: () => this.reconcileDependencyBlockingLeases().then(() => undefined) },
@@ -3381,6 +3383,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           { name: "recover-drifted-agent-task-links", fn: () => this.recoverDriftedAgentTaskLinks() },
           { name: "reconcile-soft-delete-column-drift", fn: () => this.reconcileSoftDeletedColumnDrift() },
           { name: "clear-stale-blocked-by", fn: () => this.clearStaleBlockedBy() },
+          { name: "reconcile-released-overlap-waits", fn: () => this.reconcileReleasedOverlapWaits() },
           { name: "auto-rebound-paused-scope-decay", fn: () => this.autoReboundPausedScopeDecay() },
           /*
            * FNXC:SelfHealing 2026-07-26-16:40:
@@ -7014,6 +7017,12 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       log.warn(`reconcileSoftDeletedColumnDrift: failed: ${message}`);
       return { reconciled: 0 };
     }
+  }
+
+  async reconcileReleasedOverlapWaits(): Promise<number> {
+    return reconcileReleasedOverlapWaits(this.store, (task) => this.isWorkspaceTaskLive(task).live
+      || this.options.hasLiveSessionSurface?.(task.id) === true
+      || this.options.getExecutingTaskIds?.().has(task.id) === true, this.options.onOverlapBlockersReleased);
   }
 
   async clearStaleBlockedBy(): Promise<number> {

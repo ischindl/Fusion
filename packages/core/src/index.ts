@@ -3242,3 +3242,5 @@ export {
   latestTaskEnteredReviewAt,
 } from "./task-store/lifecycle-outbox.js";
 export type { TaskLifecycleEventInput, TaskEnteredReviewLifecyclePayload } from "./task-store/lifecycle-outbox.js";
+
+export { OVERLAP_DELIVERY_UNAVAILABLE_ERROR, isRecoverableOverlapWaitFailure } from "./tasks/overlap-wait-release.js";

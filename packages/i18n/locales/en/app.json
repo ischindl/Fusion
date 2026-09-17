@@ -3611,7 +3611,19 @@
     "workingBranch": "Working branch",
     "showRightSidebar": "Show right sidebar",
     "baseBranch": "Base branch",
-    "noBaseBranch": "No base branch"
+    "noBaseBranch": "No base branch",
+    "taskSearchAiLoading": "AI search running…",
+    "taskSearchEmpty": "No task matches.",
+    "taskSearchEnterHint": "Press Enter for an AI search (Fast & Cheap)",
+    "taskSearchErrorAi": "AI search failed. Press Enter to try again.",
+    "taskSearchErrorModel": "Unusable model response. Press Enter to try again.",
+    "taskSearchErrorQuota": "Too many AI searches right now. Try again in a moment.",
+    "taskSearchErrorText": "Search failed. Change your input to try again.",
+    "taskSearchErrorTimeout": "The AI search timed out. Press Enter to try again.",
+    "taskSearchErrorUnavailable": "AI search is unavailable. Check the Fast & Cheap model.",
+    "taskSearchLaneAi": "AI search results",
+    "taskSearchLaneText": "Search results",
+    "taskSearchLoading": "Searching…"
   },
   "health": {
     "activeTasks": "Active Tasks",
@@ -4067,7 +4079,12 @@
     "openPlanningSessionAria": "Open planning session: {{sessionId}}",
     "approval": "Approval",
     "report": "Report",
-    "openPlanningSession": "Open planning session"
+    "openPlanningSession": "Open planning session",
+    "archiveFailed": "Failed to archive message",
+    "deleteBody": "This action cannot be undone.",
+    "deleteTitle": "Delete message?",
+    "messageActionsAria": "Message actions",
+    "restoreFailed": "Failed to restore message"
   },
   "memory": {
     "auditChecksTitle": "Audit Checks",
@@ -4660,7 +4677,8 @@
     "clearBlockedFailed": "Failed to clear blocked status",
     "sessionEncounteredError": "The session encountered an error.",
     "sharedBranchMembers_other": "{{count}} member",
-    "resumeBlocked": "Mission cannot resume until its recorded blockers are resolved: {{blockers}}"
+    "resumeBlocked": "Mission cannot resume until its recorded blockers are resolved: {{blockers}}",
+    "rowActionsAria": "Actions for {{title}}"
   },
   "modalManager": {
     "createdFromPlanning": "Created {{id}} from planning mode",
@@ -5526,7 +5544,8 @@
     "noHistoryYet": "No history yet",
     "generatingPlan": "Generating plan…",
     "currentQuestion": "Current question",
-    "questionsTab": "Questions"
+    "questionsTab": "Questions",
+    "sessionActionsAria": "Actions for {{title}}"
   },
   "plugins": {
     "addItem": "Add Item",
@@ -8682,8 +8701,8 @@
     "snippetsPromptTooLong": "Prompts can contain at most {{count}} characters.",
     "snippetsDuplicateName": "A snippet with this name already exists.",
     "snippetsLimitReached": "You can save up to {{count}} snippets.",
-    "snippetsSaveError": "The snippet could not be saved. Refresh and try again.",
-    "snippetsDeleteError": "The snippet could not be deleted. Refresh and try again.",
+    "snippetsSaveError": "The snippet could not be saved. Try again.",
+    "snippetsDeleteError": "The snippet could not be deleted. Try again.",
     "snippetsTitle": "Chat Snippets",
     "snippetsCount": "{{count}} saved",
     "snippetsDescription": "Save reusable prompts, then type /name in any chat to insert one without sending it.",

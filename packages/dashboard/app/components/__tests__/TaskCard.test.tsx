@@ -5100,7 +5100,16 @@ describe("TaskCard", () => {
     const css = loadAllAppCssBaseOnly();
 
     expect(css).toMatch(/\.card-time-indicator\s*,\s*\.card-cost-indicator\s*,\s*\.card-github-tracking-chip\s*,\s*\.card-retry-badge\s*,\s*\.card-create-pr-action\s*\{[^}]*display:\s*inline-flex;[^}]*font-family:\s*var\(--font-mono\);[^}]*\}/);
-    expect(css).toContain(".card-github-tracking-chip:hover");
+    /*
+    FNXC:TaskCardTouchHover 2026-09-16-22:27 (FN-482):
+    Le survol du chip existe toujours, mais il est désormais gardé par capacité pour qu'un pan
+    tactile du board ne l'allume pas. Il n'apparaît donc plus dans le CSS privé d'at-rules :
+    l'assertion se déplace sur le CSS complet et exige explicitement la garde `hover: hover`.
+    */
+    expect(css).not.toContain(".card-github-tracking-chip:hover");
+    expect(loadAllAppCss()).toMatch(
+      /@media\s*\(hover:\s*hover\)\s*\{[\s\S]*?\.card-github-tracking-chip:hover\s*\{[^}]*background:\s*var\(--card-hover\);[^}]*\}/,
+    );
     expect(css).toMatch(/\.card-github-tracking-chip:focus-visible\s*\{[^}]*--focus-ring-strong/);
     expect(css).toMatch(/\.card-time-indicator\s*,\s*\.card-cost-indicator\s*,\s*\.card-github-tracking-chip\s*,\s*\.card-retry-badge\s*,\s*\.card-create-pr-action\s*\{[^}]*padding:\s*var\(--space-xs\)\s+var\(--space-sm\);[^}]*height:\s*var\(--card-chip-height\);[^}]*border-radius:\s*var\(--radius-pill\);[^}]*font-size:\s*0\.6875rem;[^}]*line-height:\s*1;[^}]*\}/);
     expect(css).toMatch(/\.card-github-tracking-chip\s+\.provider-icon\s+svg\s*\{[^}]*width:\s*12px;[^}]*height:\s*12px;[^}]*\}/);
@@ -8318,6 +8327,23 @@ describe("TaskCard trailing-row layout (FN-8631)", () => {
   afterEach(() => {
     Object.defineProperty(window, "innerWidth", { configurable: true, value: originalInnerWidth });
     window.matchMedia = originalMatchMedia;
+  });
+
+  /*
+  FNXC:OverlapWaitRelease 2026-09-17-06:38:
+  Reconciled task:updated snapshots remove stale waiting indicators on the shared desktop/mobile card.
+  The removed metadata must leave neither a scope chip, queued-reason icon nor an empty row behind.
+  */
+  it.each([1280, 390])("removes recovered dependency indicators without empty shells at %ipx", (width) => {
+    setCardBreakpoint(width);
+    const waiting = makeTask({ column: "todo", status: "queued", blockedBy: "FN-PREV", overlapBlockedBy: "FN-PREV" });
+    const { container, rerender } = render(<TaskCard task={waiting} onOpenDetail={noop} addToast={noop} />);
+    expect(container.querySelector(".card-scope-badge")).not.toBeNull();
+    rerender(<TaskCard task={{ ...waiting, status: undefined, blockedBy: undefined, overlapBlockedBy: undefined }} onOpenDetail={noop} addToast={noop} />);
+    expect(container.querySelector(".card-scope-badge")).toBeNull();
+    expect(container.querySelector(".card-meta")).toBeNull();
+    expect(container.querySelector('[data-testid^="card-queued-overlap-icon"], [data-testid^="card-queued-dependency-icon"]')).toBeNull();
+    expectContentBackedTrailingRows(container);
   });
 
   it.each([1280, 390])("keeps every trailing-card variant content-backed at %ipx", (width) => {

@@ -3611,7 +3611,19 @@
     "workingBranch": "Branch de trabalho",
     "showRightSidebar": "",
     "baseBranch": "Branch base",
-    "noBaseBranch": "Nenhum branch base"
+    "noBaseBranch": "Nenhum branch base",
+    "taskSearchAiLoading": "Busca com IA em andamento…",
+    "taskSearchEmpty": "Nenhuma tarefa corresponde.",
+    "taskSearchEnterHint": "Pressione Enter para uma busca com IA (Fast & Cheap)",
+    "taskSearchErrorAi": "A busca com IA falhou. Pressione Enter para tentar de novo.",
+    "taskSearchErrorModel": "Resposta do modelo inutilizável. Pressione Enter para tentar de novo.",
+    "taskSearchErrorQuota": "Buscas com IA demais no momento. Tente novamente em instantes.",
+    "taskSearchErrorText": "A busca falhou. Altere o texto para tentar de novo.",
+    "taskSearchErrorTimeout": "A busca com IA excedeu o tempo limite. Pressione Enter para tentar de novo.",
+    "taskSearchErrorUnavailable": "A busca com IA está indisponível. Verifique o modelo Fast & Cheap.",
+    "taskSearchLaneAi": "Resultados da busca com IA",
+    "taskSearchLaneText": "Resultados da busca",
+    "taskSearchLoading": "Buscando…"
   },
   "health": {
     "activeTasks": "Tarefas ativas",
@@ -4069,7 +4081,12 @@
     "openPlanningSessionAria": "",
     "approval": "",
     "report": "",
-    "openPlanningSession": ""
+    "openPlanningSession": "",
+    "archiveFailed": "Falha ao arquivar a mensagem",
+    "deleteBody": "Esta ação não pode ser desfeita.",
+    "deleteTitle": "Excluir mensagem?",
+    "messageActionsAria": "Ações da mensagem",
+    "restoreFailed": "Falha ao restaurar a mensagem"
   },
   "memory": {
     "auditChecksTitle": "Verificações de auditoria",
@@ -4662,7 +4679,8 @@
     "clearBlockedFailed": "",
     "sessionEncounteredError": "",
     "sharedBranchMembers_other": "",
-    "resumeBlocked": ""
+    "resumeBlocked": "",
+    "rowActionsAria": "Ações para {{title}}"
   },
   "modalManager": {
     "createdFromPlanning": "{{id}} criado a partir do modo de planejamento",
@@ -5510,7 +5528,8 @@
     "noHistoryYet": "",
     "generatingPlan": "",
     "currentQuestion": "",
-    "questionsTab": ""
+    "questionsTab": "",
+    "sessionActionsAria": "Ações para {{title}}"
   },
   "plugins": {
     "addItem": "Adicionar item",
@@ -8648,8 +8667,8 @@
     "snippetsPromptTooLong": "Os prompts podem ter no máximo {{count}} caracteres.",
     "snippetsDuplicateName": "Já existe um snippet com este nome.",
     "snippetsLimitReached": "Você pode salvar até {{count}} snippets.",
-    "snippetsSaveError": "Não foi possível salvar o snippet. Atualize e tente novamente.",
-    "snippetsDeleteError": "Não foi possível excluir o snippet. Atualize e tente novamente.",
+    "snippetsSaveError": "Não foi possível salvar o snippet. Tente novamente.",
+    "snippetsDeleteError": "Não foi possível excluir o snippet. Tente novamente.",
     "snippetsTitle": "Snippets de chat",
     "snippetsCount": "{{count}} salvos",
     "snippetsDescription": "Salve prompts reutilizáveis e digite /nome em qualquer chat para inserir um sem enviá-lo.",

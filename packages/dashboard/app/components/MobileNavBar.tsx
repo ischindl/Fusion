@@ -12,7 +12,6 @@ import {
   GitBranch,
   Grid3X3,
   History,
-  LayoutGrid,
   List,
   Lightbulb,
   Loader2,
@@ -89,6 +88,10 @@ largeur mesurée le permet, promeut des destinations supplémentaires dans CET o
 sont celles citées par l'opérateur (Board, Fichiers, Gestionnaire git, Réglages) ; les suivantes complètent de
 manière déterministe pour qu'une largeur donnée produise toujours la même rangée. `patchnode` est exclu : History
 est une surface modale, pas une destination de navigation.
+
+FNXC:MobileNavDynamicQuickAccess 2026-09-17-01:43:
+FN-480 : le premier candidat promu reste le slot persisté `tasks`, mais il apparaît désormais comme **List** sur
+mobile, le Board étant la surface de fond permanente. L'ordre de promotion lui-même est inchangé.
 */
 export const MOBILE_NAV_DYNAMIC_PROMOTION_ORDER: MobileNavSelectableItem[] = [
   "tasks",
@@ -258,6 +261,14 @@ export interface MobileNavBarProps {
   default (Dashboard, Board, Planning, Missions, Mailbox).
   */
   quickAccessItems?: readonly string[];
+  /*
+  FNXC:HeaderNavigationOwnership 2026-09-17-02:14:
+  FN-481 : destinations que le Header de CET hôte rend déjà (résolues par `resolveHeaderNavigationOwnership`). Elles
+  sont retirées AVANT la répartition — rangée directe, promotion dynamique et menu — donc un accès disponible en haut
+  n'apparaît jamais une seconde fois en bas. L'omission de la prop vaut collection vide : une pill montée sans Header
+  n'a pas le droit de supposer qu'un accès existe ailleurs et conserve toutes ses destinations.
+  */
+  headerOwnedItems?: readonly string[];
   /** App-owned open state for the mobile navigation popover. */
   navigationMenuOpen?: boolean;
   /** Updates the App-owned mobile popover state. */
@@ -316,6 +327,7 @@ export function MobileNavBar({
   pluginDashboardViews = [],
   shellConnectionControl,
   quickAccessItems,
+  headerOwnedItems,
   navigationMenuOpen = false,
   onUiMenuOpenChange,
 }: MobileNavBarProps) {
@@ -364,6 +376,32 @@ export function MobileNavBar({
     setIsScriptsSubmenuOpen(false);
     onUiMenuOpenChange?.(false);
   }, [mode, onUiMenuOpenChange, projectId]);
+
+  /*
+  FNXC:HeaderNavigationOwnership 2026-09-17-02:14:
+  FN-481 : quand la propriété du Header change alors que le menu est ouvert (rotation téléphone ↔ tablette, projets
+  chargés tardivement), les entrées concernées sont retirées immédiatement du DOM. Si c'est précisément le contrôle
+  focalisé qui disparaît, le focus retombe sur `document.body` et le clavier perd le menu : on le replace alors sur la
+  surface encore ouverte, sinon sur son déclencheur. Cet effet ne s'exécute QUE sur un changement de propriétaire et
+  seulement si le focus a été réellement perdu, donc un simple rafraîchissement ne vole jamais le focus.
+  */
+  const headerOwnedSignature = [...(headerOwnedItems ?? [])].sort().join(",");
+  const previousHeaderOwnedSignatureRef = useRef(headerOwnedSignature);
+  useEffect(() => {
+    const previous = previousHeaderOwnedSignatureRef.current;
+    previousHeaderOwnedSignatureRef.current = headerOwnedSignature;
+    if (previous === headerOwnedSignature) return;
+    if (!navigationMenuOpen) return;
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    const surface = menuSurfaceRef.current;
+    if (surface) {
+      const firstControl = surface.querySelector<HTMLElement>("button");
+      (firstControl ?? surface).focus?.();
+      return;
+    }
+    menuTriggerRef.current?.focus?.();
+  }, [headerOwnedSignature, navigationMenuOpen]);
 
   const scriptEntries = useMemo(
     () => [...scripts].sort((a, b) => a.name.localeCompare(b.name)),
@@ -702,10 +740,15 @@ export function MobileNavBar({
   }> = {
     "command-center": { icon: <Gauge />, labelKey: "nav.commandCenter", fallback: "Dashboard", moreTestId: "mobile-more-item-command-center", isActive: view === "command-center", isAvailable: true, navigate: (surface) => surface === "primary" ? onChangeView("command-center") : handleMoreAction(() => onChangeView("command-center")) },
     /*
-    FNXC:MobileTaskNavigation 2026-08-20-05:47:
-    Issue #2226 requires independent mobile footer destinations: Tasks always returns to Board and List remains directly reachable without restoring Header's retired segmented switcher.
+    FNXC:MobileTaskNavigation 2026-09-17-01:43:
+    FN-480 : sur le shell mobile, le Board est la surface projet permanente sous les drawers, donc un raccourci
+    « Board » n'y produit aucun changement perceptible. Le slot persisté `tasks` rend et route donc **List** sur cet
+    hôte : icône List, libellé `nav.list`, actif sur `view === "list"`, navigation `onChangeView("list")` pour les
+    deux surfaces (onglet direct et entrée du menu). C'est une décision de rendu de l'hôte mobile, pas une migration :
+    l'identifiant persisté `tasks`, le résolveur de `@fusion/core`, les libellés des Réglages et les hôtes
+    tablette/ordinateur restent inchangés. Cette entrée est désormais l'unique producteur de List sur téléphone.
     */
-    tasks: { icon: <LayoutGrid />, labelKey: "nav.tasks", fallback: "Tasks", moreTestId: "mobile-more-item-tasks", isActive: view === "board", isAvailable: true, navigate: (surface) => surface === "primary" ? onChangeView("board") : handleMoreAction(() => onChangeView("board")) },
+    tasks: { icon: <List />, labelKey: "nav.list", fallback: "List", moreTestId: "mobile-more-item-tasks", isActive: view === "list", isAvailable: true, navigate: (surface) => surface === "primary" ? onChangeView("list") : handleMoreAction(() => onChangeView("list")) },
     agents: { icon: <Bot />, labelKey: "nav.agents", fallback: "Agents", moreTestId: "mobile-more-item-agents", isActive: view === "agents", isAvailable: true, navigate: (surface) => surface === "primary" ? onChangeView("agents") : handleMoreAction(() => onChangeView("agents")) },
     /*
     FNXC:FleetObservation 2026-08-16-01:22:
@@ -726,14 +769,14 @@ export function MobileNavBar({
     /* FNXC:HistoryModalSurface 2026-09-15-04:29: FN-403: History is a modal surface, so it is never the active destination; invoking this entry opens the History modal over the current view. */
     patchnode: { icon: <History />, labelKey: "nav.patchnode", fallback: "History", moreTestId: "mobile-more-item-patchnode", isActive: false, isAvailable: true, navigate: (surface) => surface === "primary" ? onChangeView("patchnode") : handleMoreAction(() => onChangeView("patchnode")) },
     planning: { icon: <Lightbulb />, labelKey: "nav.planning", fallback: "Planning", moreTestId: "mobile-more-item-planning", isActive: view === "planning", isAvailable: true, navigate: (surface) => surface === "primary" ? planningHandler?.() : handleMoreAction(planningHandler), indicator: planningNeedsInput && view !== "planning", indicatorLabel: t("nav.planningNeedsInputAriaLabel", "Planning needs your input"), badge: activePlanningSessionCount },
-    activity: { icon: <Activity />, labelKey: "nav.activityLog", fallback: "Activity Log", moreTestId: "mobile-more-item-activity", isActive: false, isAvailable: true, navigate: (surface) => surface === "primary" ? onOpenActivityLog?.() : handleMoreAction(onOpenActivityLog) },
+    activity: { icon: <Activity />, labelKey: "nav.activityLog", fallback: "Activity Log", moreTestId: "mobile-more-item-activity", isActive: false, isAvailable: Boolean(onOpenActivityLog), navigate: (surface) => surface === "primary" ? onOpenActivityLog?.() : handleMoreAction(onOpenActivityLog) },
     git: { icon: <GitBranch />, labelKey: "nav.gitManager", fallback: "Git Manager", moreTestId: "mobile-more-item-git", isActive: false, isAvailable: true, navigate: (surface) => surface === "primary" ? onOpenGitManager?.() : handleMoreAction(onOpenGitManager), badge: stashOrphanCount },
     files: { icon: <Folder />, labelKey: "nav.files", fallback: "Files", moreTestId: "mobile-more-item-files", isActive: false, isAvailable: true, navigate: (surface) => surface === "primary" ? onOpenFiles?.() : handleMoreAction(onOpenFiles) },
     workflows: { icon: <Workflow />, labelKey: "nav.workflows", fallback: "Workflows", moreTestId: "mobile-more-item-workflow", isActive: false, isAvailable: true, navigate: (surface) => surface === "primary" ? onOpenWorkflowEditor?.() : handleMoreAction(onOpenWorkflowEditor) },
     automation: { icon: <Clock />, labelKey: "nav.automation", fallback: "Automation", moreTestId: "mobile-more-item-schedules", isActive: false, isAvailable: true, navigate: (surface) => surface === "primary" ? onOpenSchedules?.() : handleMoreAction(onOpenSchedules) },
     "github-import": { icon: <GitHubLogo />, labelKey: "nav.importFromGitHub", fallback: "Import from GitHub", moreTestId: "mobile-more-item-github", isActive: false, isAvailable: true, navigate: (surface) => surface === "primary" ? onOpenGitHubImport?.() : handleMoreAction(onOpenGitHubImport) },
-    usage: { icon: <Activity />, labelKey: "nav.usage", fallback: "Usage", moreTestId: "mobile-more-item-usage", isActive: false, isAvailable: true, navigate: (surface) => surface === "primary" ? onOpenUsage?.() : handleMoreAction(onOpenUsage) },
-    projects: { icon: <Grid3X3 />, labelKey: "nav.projects", fallback: "Projects", moreTestId: "mobile-more-item-projects", isActive: false, isAvailable: true, navigate: (surface) => surface === "primary" ? onViewAllProjects?.() : handleMoreAction(onViewAllProjects) },
+    usage: { icon: <Activity />, labelKey: "nav.usage", fallback: "Usage", moreTestId: "mobile-more-item-usage", isActive: false, isAvailable: Boolean(onOpenUsage), navigate: (surface) => surface === "primary" ? onOpenUsage?.() : handleMoreAction(onOpenUsage) },
+    projects: { icon: <Grid3X3 />, labelKey: "nav.projects", fallback: "Projects", moreTestId: "mobile-more-item-projects", isActive: false, isAvailable: Boolean(onViewAllProjects), navigate: (surface) => surface === "primary" ? onViewAllProjects?.() : handleMoreAction(onViewAllProjects) },
     notes: { icon: <StickyNote />, labelKey: "nav.notes", fallback: "Notes", moreTestId: "mobile-more-item-notes", isActive: view === "notes", isAvailable: true, navigate: (surface) => surface === "primary" ? onChangeView("notes") : handleMoreAction(() => onChangeView("notes")) },
     whiteboard: { icon: <PanelsTopLeft />, labelKey: "nav.whiteboard", fallback: "Whiteboard", moreTestId: "mobile-more-item-whiteboard", isActive: view === "whiteboard", isAvailable: Boolean(experimentalFeatures?.whiteboardView), alpha: true, navigate: (surface) => surface === "primary" ? onChangeView("whiteboard") : handleMoreAction(() => onChangeView("whiteboard")) },
     secrets: { icon: <Lock />, labelKey: "nav.secrets", fallback: "Secrets", moreTestId: "mobile-more-item-secrets", isActive: view === "secrets", isAvailable: true, navigate: (surface) => surface === "primary" ? onChangeView("secrets") : handleMoreAction(() => onChangeView("secrets")) },
@@ -760,7 +803,19 @@ export function MobileNavBar({
   const primaryDestinationItems: MobileNavSelectableItem[] = resolveMobileNavPrimaryItems({
     mobileNavPrimaryItems: quickAccessItems ? [...quickAccessItems] : undefined,
   }).primaryItems;
-  const baseDirectItems = primaryDestinationItems.filter((item) => destinationRegistry[item].isAvailable);
+  /*
+  FNXC:HeaderNavigationOwnership 2026-09-17-02:14:
+  FN-481 : prédicat d'éligibilité UNIQUE. Une destination n'est offerte par la pill que si elle est disponible ET si
+  le Header de cet hôte ne la propose pas déjà. Il s'applique AVANT le comptage et la troncature, donc un accès
+  possédé par le Header ne consomme jamais un créneau ni ne réapparaît dans le menu ; il DISPARAÎT du DOM au lieu
+  d'être masqué. Le filtre est générique : il vaut pour n'importe quel identifiant du registre, pas seulement pour les
+  quatre lignes actuellement rendues en double. Il ne touche ni la normalisation core, ni l'ordre persisté, ni le
+  plafond, et n'écrit jamais le réglage d'accès rapide.
+  */
+  const headerOwnedItemSet = new Set(headerOwnedItems ?? []);
+  const isEligibleDestination = (item: MobileNavSelectableItem): boolean =>
+    destinationRegistry[item].isAvailable && !headerOwnedItemSet.has(item);
+  const baseDirectItems = primaryDestinationItems.filter(isEligibleDestination);
   /*
   FNXC:MobileNavDynamicQuickAccess 2026-09-16-19:44:
   FN-468 : la rangée directe est la rangée de base (ordre persisté, inchangée au plus étroit) SUIVIE des candidats
@@ -776,11 +831,11 @@ export function MobileNavBar({
     maxCount: MAX_MOBILE_NAV_DIRECT_DESTINATIONS,
   });
   const promotedItems = MOBILE_NAV_DYNAMIC_PROMOTION_ORDER
-    .filter((item) => !baseDirectItems.includes(item) && destinationRegistry[item].isAvailable);
+    .filter((item) => !baseDirectItems.includes(item) && isEligibleDestination(item));
   const effectivePrimaryItems = [...baseDirectItems, ...promotedItems].slice(0, directDestinationCount);
   const effectiveOmittedItems = MOBILE_NAV_SELECTABLE_ITEMS
     .filter((item) => !effectivePrimaryItems.includes(item) && item !== "patchnode")
-    .filter((item) => destinationRegistry[item].isAvailable);
+    .filter(isEligibleDestination);
   const isMoreActive = effectiveOmittedItems.some((item) => destinationRegistry[item].isActive)
     || view === "graph"
     || (isPluginViewId(view) && !topLevelPrimaryPluginViews.some((entry) => buildPluginTaskViewId(entry.pluginId, entry.view.viewId) === view));
@@ -821,8 +876,11 @@ export function MobileNavBar({
         {/*
         FNXC:ToolSurfaces 2026-09-15-16:04:
         FN-426 removes this legacy-layout List tab. The header Board/List toggle now exists on every breakpoint,
-        including phones, so keeping a second bottom-bar producer would give one destination two primary owners. The
-        `tasks` customizable item (Board) and the More sheet are unchanged.
+        including phones, so keeping a second bottom-bar producer would give one destination two primary owners.
+
+        FNXC:ToolSurfaces 2026-09-17-01:43:
+        FN-480 makes the customizable `tasks` item itself the phone's single List producer (Board is the permanent
+        background surface), so this legacy tab must stay deleted: restoring it would recreate the duplicate owner.
         */}
 
         {!officialDesignEnabled && topLevelPrimaryPluginViews.map((entry) => {
@@ -1027,14 +1085,6 @@ export function MobileNavBar({
             )}
 
 
-
-            {officialDesignEnabled && (
-              <button type="button" className="mobile-more-item" data-testid="mobile-more-item-list" onClick={() => handleMoreAction(() => onChangeView("list"))}>
-                <List />
-                <span>{t("nav.list", "List")}</span>
-              </button>
-            )}
-
             {effectiveOmittedItems
               .filter((item) => item !== "settings")
               .map((item) => renderSelectableItem(item, "more"))}
@@ -1056,14 +1106,23 @@ export function MobileNavBar({
                 );
               })}
 
-            <div className="mobile-more-separator" />
             {/*
             FNXC:Navigation 2026-07-17-15:43:
             Mobile More-sheet pins Settings below the `mobile-more-separator` divider so it stays at the bottom of
             the list (FN-8250), not inline in the middle. The omitted-items guard prevents a duplicate when Settings
             is promoted to a primary footer tab.
+
+            FNXC:HeaderNavigationOwnership 2026-09-17-02:14:
+            FN-481 : le séparateur ne dépend plus du hasard — il n'est rendu QUE si son groupe existe. Sans cette
+            garde, promouvoir Settings dans la rangée ou l'attribuer au Header laissait un trait final isolé,
+            exactement la coquille résiduelle que le retrait d'un accès doit éviter.
             */}
-            {effectiveOmittedItems.includes("settings") && renderSelectableItem("settings", "more")}
+            {effectiveOmittedItems.includes("settings") && (
+              <>
+                <div className="mobile-more-separator" />
+                {renderSelectableItem("settings", "more")}
+              </>
+            )}
 
           </div>
         </>

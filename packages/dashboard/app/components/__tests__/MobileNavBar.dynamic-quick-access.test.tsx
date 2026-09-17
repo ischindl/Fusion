@@ -279,11 +279,69 @@ describe("MobileNavBar dynamic quick access", () => {
     expect(document.documentElement.style.getPropertyValue("--mobile-nav-pill-height")).not.toBe("");
   });
 
+  /*
+   * FN-480 cas (c) : le premier candidat de l'ordre de promotion reste `tasks`, mais sur mobile ce slot rend et route
+   * **List** (le Board étant la surface de fond permanente). La promotion doit donc produire un onglet qui ouvre la
+   * liste, jamais le Board.
+   */
+  it("promotes the quick-access `tasks` slot as a List shortcut", () => {
+    const props = createDefaultProps();
+    render(<PillShell {...props} quickAccessItems={["mailbox", "planning"]} />);
+    setPillWidth(1000);
+
+    expect(MOBILE_NAV_DYNAMIC_PROMOTION_ORDER[0]).toBe("tasks");
+    const promoted = screen.getByTestId("mobile-nav-tab-tasks");
+    expect(directItems()).toContain("tasks");
+    expect(promoted).toHaveAttribute("aria-label", "List");
+
+    fireEvent.click(promoted);
+    expect(props.onChangeView).toHaveBeenCalledWith("list");
+    expect(props.onChangeView).not.toHaveBeenCalledWith("board");
+  });
+
   it("expands the row on tablet widths too", () => {
     mockViewport("tablet");
     render(<PillShell />);
     setPillWidth(1000);
     expect(directItems().length).toBeGreaterThan(BASE_ROW.length);
+  });
+
+  /*
+  FNXC:HeaderNavigationOwnership 2026-09-17-02:14:
+  FN-481 : le filtre de propriété du Header précède le comptage et la troncature, donc une destination possédée en
+  haut ne consomme aucun créneau à aucune largeur mesurée — y compris aux largeurs où elle serait normalement
+  promue. jsdom ne calcule aucune géométrie : ces cas pilotent explicitement la largeur de la pill.
+  */
+  it.each([0, 375, 1000, 1400])("n'offre jamais une destination possédée par le Header à la largeur %i", (width) => {
+    mockViewport("tablet");
+    const owned = ["usage", "projects", "notes", "activity"];
+    render(<PillShell headerOwnedItems={owned} />);
+    if (width > 0) setPillWidth(width);
+
+    fireEvent.click(screen.getByTestId("mobile-menu-trigger"));
+    const direct = directItems();
+    const menu = menuItems();
+    for (const item of owned) {
+      expect(direct, `rangée@${width}`).not.toContain(item);
+      expect(menu, `menu@${width}`).not.toContain(item);
+    }
+    /* Toutes les autres destinations restent atteignables exactement une fois. */
+    for (const item of [...BASE_ROW, ...MOBILE_NAV_DYNAMIC_PROMOTION_ORDER].filter((item) => !owned.includes(item))) {
+      expect(direct.includes(item) || menu.includes(item), `${item}@${width}`).toBe(true);
+    }
+    expect(direct.filter((item) => menu.includes(item))).toEqual([]);
+  });
+
+  it("promeut une destination supplémentaire à la place d'un accès retiré, sans dépasser le plafond", () => {
+    render(<PillShell headerOwnedItems={["usage", "projects", "notes", "activity"]} />);
+    setPillWidth(1400);
+
+    const direct = directItems();
+    expect(direct.length).toBeLessThanOrEqual(MAX_MOBILE_NAV_DIRECT_DESTINATIONS);
+    expect(direct.slice(0, BASE_ROW.length)).toEqual(BASE_ROW);
+    for (const item of ["usage", "projects", "notes", "activity"]) {
+      expect(direct).not.toContain(item);
+    }
   });
 });
 

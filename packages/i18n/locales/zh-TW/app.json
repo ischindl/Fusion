@@ -3601,7 +3601,19 @@
     "workingBranch": "工作分支",
     "showRightSidebar": "",
     "baseBranch": "基礎分支",
-    "noBaseBranch": "無基礎分支"
+    "noBaseBranch": "無基礎分支",
+    "taskSearchAiLoading": "智慧搜尋進行中…",
+    "taskSearchEmpty": "沒有符合的任務。",
+    "taskSearchEnterHint": "按 Enter 進行智慧搜尋（Fast & Cheap）",
+    "taskSearchErrorAi": "智慧搜尋失敗。按 Enter 重試。",
+    "taskSearchErrorModel": "模型回應無法使用。按 Enter 重試。",
+    "taskSearchErrorQuota": "目前智慧搜尋次數過多。請稍後再試。",
+    "taskSearchErrorText": "搜尋失敗。請修改輸入後重試。",
+    "taskSearchErrorTimeout": "智慧搜尋逾時。按 Enter 重試。",
+    "taskSearchErrorUnavailable": "智慧搜尋無法使用。請檢查 Fast & Cheap 模型。",
+    "taskSearchLaneAi": "智慧搜尋結果",
+    "taskSearchLaneText": "搜尋結果",
+    "taskSearchLoading": "搜尋中…"
   },
   "health": {
     "activeTasks": "活躍任務",
@@ -4058,7 +4070,12 @@
     "openPlanningSessionAria": "",
     "approval": "",
     "report": "",
-    "openPlanningSession": ""
+    "openPlanningSession": "",
+    "archiveFailed": "封存訊息失敗",
+    "deleteBody": "此操作無法復原。",
+    "deleteTitle": "刪除此訊息？",
+    "messageActionsAria": "訊息操作",
+    "restoreFailed": "還原訊息失敗"
   },
   "memory": {
     "auditChecksTitle": "稽核檢查",
@@ -4651,7 +4668,8 @@
     "clearBlockedFailed": "",
     "sessionEncounteredError": "",
     "sharedBranchMembers_other": "",
-    "resumeBlocked": ""
+    "resumeBlocked": "",
+    "rowActionsAria": "{{title}} 的操作"
   },
   "modalManager": {
     "createdFromPlanning": "在規劃模式中創建了 {{id}}",
@@ -5499,7 +5517,8 @@
     "noHistoryYet": "",
     "generatingPlan": "",
     "currentQuestion": "",
-    "questionsTab": ""
+    "questionsTab": "",
+    "sessionActionsAria": "{{title}} 的操作"
   },
   "plugins": {
     "addItem": "新增項目",
@@ -8637,8 +8656,8 @@
     "snippetsPromptTooLong": "提示詞最多可包含 {{count}} 個字元。",
     "snippetsDuplicateName": "已存在同名片段。",
     "snippetsLimitReached": "最多可儲存 {{count}} 個片段。",
-    "snippetsSaveError": "無法儲存片段。請重新整理後再試一次。",
-    "snippetsDeleteError": "無法刪除片段。請重新整理後再試一次。",
+    "snippetsSaveError": "無法儲存片段。請再試一次。",
+    "snippetsDeleteError": "無法刪除片段。請再試一次。",
     "snippetsTitle": "聊天片段",
     "snippetsCount": "已儲存 {{count}} 個",
     "snippetsDescription": "儲存可重複使用的提示詞，然後在任何聊天中輸入 /名稱，即可插入而不會傳送。",

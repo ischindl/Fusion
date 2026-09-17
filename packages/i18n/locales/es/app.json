@@ -3601,7 +3601,19 @@
     "workingBranch": "Rama de trabajo",
     "showRightSidebar": "",
     "baseBranch": "Rama base",
-    "noBaseBranch": "Sin rama base"
+    "noBaseBranch": "Sin rama base",
+    "taskSearchAiLoading": "Búsqueda con IA en curso…",
+    "taskSearchEmpty": "Ninguna tarea coincide.",
+    "taskSearchEnterHint": "Pulsa Intro para una búsqueda con IA (Fast & Cheap)",
+    "taskSearchErrorAi": "La búsqueda con IA falló. Pulsa Intro para reintentar.",
+    "taskSearchErrorModel": "Respuesta del modelo inutilizable. Pulsa Intro para reintentar.",
+    "taskSearchErrorQuota": "Demasiadas búsquedas con IA por ahora. Inténtalo en un momento.",
+    "taskSearchErrorText": "La búsqueda falló. Cambia lo que escribiste para reintentar.",
+    "taskSearchErrorTimeout": "La búsqueda con IA superó el tiempo límite. Pulsa Intro para reintentar.",
+    "taskSearchErrorUnavailable": "La búsqueda con IA no está disponible. Revisa el modelo Fast & Cheap.",
+    "taskSearchLaneAi": "Resultados de la búsqueda con IA",
+    "taskSearchLaneText": "Resultados de la búsqueda",
+    "taskSearchLoading": "Buscando…"
   },
   "health": {
     "activeTasks": "Tareas activas",
@@ -4059,7 +4071,12 @@
     "openPlanningSessionAria": "",
     "approval": "",
     "report": "",
-    "openPlanningSession": ""
+    "openPlanningSession": "",
+    "archiveFailed": "No se pudo archivar el mensaje",
+    "deleteBody": "Esta acción no se puede deshacer.",
+    "deleteTitle": "¿Eliminar el mensaje?",
+    "messageActionsAria": "Acciones del mensaje",
+    "restoreFailed": "No se pudo restaurar el mensaje"
   },
   "memory": {
     "auditChecksTitle": "Comprobaciones de auditoría",
@@ -4652,7 +4669,8 @@
     "clearBlockedFailed": "",
     "sessionEncounteredError": "",
     "sharedBranchMembers_other": "",
-    "resumeBlocked": ""
+    "resumeBlocked": "",
+    "rowActionsAria": "Acciones para {{title}}"
   },
   "modalManager": {
     "createdFromPlanning": "Creado {{id}} desde el modo planificación",
@@ -5500,7 +5518,8 @@
     "noHistoryYet": "",
     "generatingPlan": "",
     "currentQuestion": "",
-    "questionsTab": ""
+    "questionsTab": "",
+    "sessionActionsAria": "Acciones para {{title}}"
   },
   "plugins": {
     "addItem": "Agregar elemento",
@@ -8638,8 +8657,8 @@
     "snippetsPromptTooLong": "Los prompts pueden contener como máximo {{count}} caracteres.",
     "snippetsDuplicateName": "Ya existe un fragmento con este nombre.",
     "snippetsLimitReached": "Puedes guardar hasta {{count}} fragmentos.",
-    "snippetsSaveError": "No se pudo guardar el fragmento. Actualiza e inténtalo de nuevo.",
-    "snippetsDeleteError": "No se pudo eliminar el fragmento. Actualiza e inténtalo de nuevo.",
+    "snippetsSaveError": "No se pudo guardar el fragmento. Inténtalo de nuevo.",
+    "snippetsDeleteError": "No se pudo eliminar el fragmento. Inténtalo de nuevo.",
     "snippetsTitle": "Fragmentos de chat",
     "snippetsCount": "{{count}} guardados",
     "snippetsDescription": "Guarda prompts reutilizables y escribe /nombre en cualquier chat para insertar uno sin enviarlo.",

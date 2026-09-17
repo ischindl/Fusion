@@ -37,7 +37,29 @@ export interface TaskListPageResponse {
   nextCursor: string | null;
 }
 
-export function fetchTaskPage(projectId?: string, options?: { limit?: number; cursor?: string; query?: string; columns?: readonly string[]; signal?: AbortSignal }): Promise<TaskListPageResponse> {
+/*
+FNXC:TaskSearch 2026-09-17-09:41:
+FN-477 gave the header search its OWN paginated collection, which must be able to read a remote
+node's tasks. `nodeId`/`localNodeId` are therefore optional: when they are absent — which is the case
+for both pre-existing `useTasks` callers — this resolves to the byte-identical local request it always
+made. Only a caller that explicitly names a remote node is routed through `/proxy/:nodeId/tasks/page`.
+
+FNXC:BoardLanePagination 2026-09-10-19:26:
+`columns` is our lane-scoped fetch (RUFU-214): each Board column pages its own lane instead of
+pulling the whole board.
+*/
+export function fetchTaskPage(
+  projectId?: string,
+  options?: {
+    limit?: number;
+    cursor?: string;
+    query?: string;
+    columns?: readonly string[];
+    signal?: AbortSignal;
+    nodeId?: string;
+    localNodeId?: string;
+  },
+): Promise<TaskListPageResponse> {
   const search = new URLSearchParams();
   if (options?.limit !== undefined) search.set("limit", String(options.limit));
   if (options?.cursor) search.set("cursor", options.cursor);
@@ -49,7 +71,15 @@ export function fetchTaskPage(projectId?: string, options?: { limit?: number; cu
   */
   if (options?.columns && options.columns.length > 0) search.set("columns", options.columns.join(","));
   const suffix = search.size > 0 ? `?${search.toString()}` : "";
-  return api<TaskListPageResponse>(withProjectId(`/tasks/page${suffix}`, projectId), { signal: options?.signal });
+  const path = withProjectId(`/tasks/page${suffix}`, projectId);
+  if (options?.nodeId && options.nodeId !== options.localNodeId) {
+    return proxyApi<TaskListPageResponse>(path, {
+      signal: options.signal,
+      nodeId: options.nodeId,
+      ...(options.localNodeId ? { localNodeId: options.localNodeId } : {}),
+    });
+  }
+  return api<TaskListPageResponse>(path, { signal: options?.signal });
 }
 
 export function fetchTasks(

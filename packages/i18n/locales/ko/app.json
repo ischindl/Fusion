@@ -3601,7 +3601,19 @@
     "workingBranch": "작업 브랜치",
     "showRightSidebar": "",
     "baseBranch": "베이스 브랜치",
-    "noBaseBranch": "베이스 브랜치 없음"
+    "noBaseBranch": "베이스 브랜치 없음",
+    "taskSearchAiLoading": "AI 검색 진행 중…",
+    "taskSearchEmpty": "일치하는 작업이 없습니다.",
+    "taskSearchEnterHint": "Enter 키를 누르면 AI 검색을 실행합니다 (Fast & Cheap)",
+    "taskSearchErrorAi": "AI 검색에 실패했습니다. Enter 키를 눌러 다시 시도하세요.",
+    "taskSearchErrorModel": "모델 응답을 사용할 수 없습니다. Enter 키를 눌러 다시 시도하세요.",
+    "taskSearchErrorQuota": "지금은 AI 검색이 너무 많습니다. 잠시 후 다시 시도하세요.",
+    "taskSearchErrorText": "검색에 실패했습니다. 입력을 변경해 다시 시도하세요.",
+    "taskSearchErrorTimeout": "AI 검색 시간이 초과되었습니다. Enter 키를 눌러 다시 시도하세요.",
+    "taskSearchErrorUnavailable": "AI 검색을 사용할 수 없습니다. Fast & Cheap 모델을 확인하세요.",
+    "taskSearchLaneAi": "AI 검색 결과",
+    "taskSearchLaneText": "검색 결과",
+    "taskSearchLoading": "검색 중…"
   },
   "health": {
     "activeTasks": "활성 작업",
@@ -4058,7 +4070,12 @@
     "openPlanningSessionAria": "",
     "approval": "",
     "report": "",
-    "openPlanningSession": ""
+    "openPlanningSession": "",
+    "archiveFailed": "메시지를 보관하지 못했습니다",
+    "deleteBody": "이 작업은 되돌릴 수 없습니다.",
+    "deleteTitle": "메시지를 삭제할까요?",
+    "messageActionsAria": "메시지 작업",
+    "restoreFailed": "메시지를 복원하지 못했습니다"
   },
   "memory": {
     "auditChecksTitle": "감사 검사",
@@ -4651,7 +4668,8 @@
     "clearBlockedFailed": "",
     "sessionEncounteredError": "",
     "sharedBranchMembers_other": "",
-    "resumeBlocked": ""
+    "resumeBlocked": "",
+    "rowActionsAria": "{{title}} 작업"
   },
   "modalManager": {
     "createdFromPlanning": "계획 모드에서 {{id}}를 생성했습니다",
@@ -5499,7 +5517,8 @@
     "noHistoryYet": "",
     "generatingPlan": "",
     "currentQuestion": "",
-    "questionsTab": ""
+    "questionsTab": "",
+    "sessionActionsAria": "{{title}} 작업"
   },
   "plugins": {
     "addItem": "항목 추가",
@@ -8637,8 +8656,8 @@
     "snippetsPromptTooLong": "프롬프트는 최대 {{count}}자까지 입력할 수 있습니다.",
     "snippetsDuplicateName": "이 이름의 스니펫이 이미 있습니다.",
     "snippetsLimitReached": "스니펫은 최대 {{count}}개까지 저장할 수 있습니다.",
-    "snippetsSaveError": "스니펫을 저장할 수 없습니다. 새로 고친 후 다시 시도하세요.",
-    "snippetsDeleteError": "스니펫을 삭제할 수 없습니다. 새로 고친 후 다시 시도하세요.",
+    "snippetsSaveError": "스니펫을 저장할 수 없습니다. 다시 시도하세요.",
+    "snippetsDeleteError": "스니펫을 삭제할 수 없습니다. 다시 시도하세요.",
     "snippetsTitle": "채팅 스니펫",
     "snippetsCount": "{{count}}개 저장됨",
     "snippetsDescription": "재사용 가능한 프롬프트를 저장한 다음 채팅에서 /이름을 입력해 전송하지 않고 삽입하세요.",

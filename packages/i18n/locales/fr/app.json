@@ -3601,7 +3601,19 @@
     "workingBranch": "Branche de travail",
     "showRightSidebar": "",
     "baseBranch": "Branche de base",
-    "noBaseBranch": "Aucune branche de base"
+    "noBaseBranch": "Aucune branche de base",
+    "taskSearchAiLoading": "Recherche intelligente en cours…",
+    "taskSearchEmpty": "Aucune tâche ne correspond.",
+    "taskSearchEnterHint": "Appuyez sur Entrée pour une recherche intelligente (Fast & Cheap)",
+    "taskSearchErrorAi": "La recherche intelligente a échoué. Appuyez sur Entrée pour réessayer.",
+    "taskSearchErrorModel": "Réponse inexploitable du modèle. Appuyez sur Entrée pour réessayer.",
+    "taskSearchErrorQuota": "Trop de recherches intelligentes pour l'instant. Réessayez dans un moment.",
+    "taskSearchErrorText": "La recherche a échoué. Modifiez votre saisie pour réessayer.",
+    "taskSearchErrorTimeout": "La recherche intelligente a dépassé le délai. Appuyez sur Entrée pour réessayer.",
+    "taskSearchErrorUnavailable": "La recherche intelligente est indisponible. Vérifiez le modèle Fast & Cheap.",
+    "taskSearchLaneAi": "Résultats de la recherche intelligente",
+    "taskSearchLaneText": "Résultats de la recherche",
+    "taskSearchLoading": "Recherche…"
   },
   "health": {
     "activeTasks": "Tâches actives",
@@ -4059,7 +4071,12 @@
     "openPlanningSessionAria": "",
     "approval": "",
     "report": "",
-    "openPlanningSession": ""
+    "openPlanningSession": "",
+    "archiveFailed": "Échec de l’archivage du message",
+    "deleteBody": "Cette action est irréversible.",
+    "deleteTitle": "Supprimer le message ?",
+    "messageActionsAria": "Actions du message",
+    "restoreFailed": "Échec de la restauration du message"
   },
   "memory": {
     "auditChecksTitle": "Vérifications d'audit",
@@ -4652,7 +4669,8 @@
     "clearBlockedFailed": "",
     "sessionEncounteredError": "",
     "sharedBranchMembers_other": "",
-    "resumeBlocked": ""
+    "resumeBlocked": "",
+    "rowActionsAria": "Actions pour {{title}}"
   },
   "modalManager": {
     "createdFromPlanning": "Créé {{id}} à partir du mode planification",
@@ -5500,7 +5518,8 @@
     "noHistoryYet": "",
     "generatingPlan": "",
     "currentQuestion": "",
-    "questionsTab": ""
+    "questionsTab": "",
+    "sessionActionsAria": "Actions pour {{title}}"
   },
   "plugins": {
     "addItem": "Ajouter un élément",
@@ -8656,8 +8675,8 @@
     "snippetsPromptTooLong": "Les prompts peuvent contenir au maximum {{count}} caractères.",
     "snippetsDuplicateName": "Un extrait portant ce nom existe déjà.",
     "snippetsLimitReached": "Vous pouvez enregistrer jusqu’à {{count}} extraits.",
-    "snippetsSaveError": "L’extrait n’a pas pu être enregistré. Actualisez puis réessayez.",
-    "snippetsDeleteError": "L’extrait n’a pas pu être supprimé. Actualisez puis réessayez.",
+    "snippetsSaveError": "L’extrait n’a pas pu être enregistré. Réessayez.",
+    "snippetsDeleteError": "L’extrait n’a pas pu être supprimé. Réessayez.",
     "snippetsTitle": "Extraits de chat",
     "snippetsCount": "{{count}} enregistrés",
     "snippetsDescription": "Enregistrez des prompts réutilisables, puis saisissez /nom dans un chat pour en insérer un sans l’envoyer.",

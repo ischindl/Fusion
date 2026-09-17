@@ -12,6 +12,7 @@ import { NodeStatusIndicator } from "./NodeStatusIndicator";
 import { NodeHealthDot } from "./NodeHealthDot";
 import { PluginSlot } from "./PluginSlot";
 import { useViewportMode, type ViewportMode } from "../hooks/useViewportMode";
+import { resolveHeaderNavigationOwnership } from "../utils/headerNavigationOwnership";
 import { getTrailingPath } from "../utils/pathDisplay";
 import type { TaskView } from "../hooks/useViewState";
 import type { PluginDashboardViewEntry } from "../api";
@@ -98,9 +99,24 @@ export interface HeaderProps {
   showAgentsTab?: boolean;
   searchQuery?: string;
   onSearchChange?: (query: string) => void;
-  taskSearchTasks?: readonly Pick<Task, "id" | "title">[];
+  /*
+  FNXC:TaskSearch 2026-09-17-09:41:
+  FN-477 removed `taskSearchTasks`. The header no longer receives a catalogue to filter: the field
+  owns a paginated, project-scoped collection of its own, so a task whose board page has not loaded is
+  still findable. Availability of search must not depend on what the board happens to have loaded.
+  */
   /** Desktop inline search navigates to Task Detail without changing board filters. */
-  onSelectSearchTask?: (task: Pick<Task, "id" | "title">) => void;
+  onSelectSearchTask?: (task: Task) => void;
+  /** Toast sink handed to the result cards; they are read-only and never raise mutation toasts. */
+  addToast?: (message: string, type?: "success" | "error" | "info" | "warning") => void;
+  /*
+  FNXC:TaskSearch 2026-09-17-09:41:
+  The node the search must query. This is the SELECTED node id, not `currentNode?.id`: the selection
+  is authoritative from the moment the operator switches, while the resolved node object only appears
+  once the node list has loaded. Using the object would send the first search of a freshly selected
+  remote node to the LOCAL endpoint.
+  */
+  searchNodeId?: string;
   /** Multi-project props */
   projects?: ProjectInfo[];
   currentProject?: ProjectInfo | null;
@@ -110,6 +126,16 @@ export interface HeaderProps {
   shellHost?: ShellHostContext;
   /** When true, the mobile bottom nav bar handles primary navigation and header nav controls are hidden. */
   mobileNavEnabled?: boolean;
+  /*
+  FNXC:WorkflowControls 2026-09-16-23:24:
+  FN-483 : sur téléphone, le Board reste MONTÉ ET ACTIF derrière chaque drawer (`MainViewKeepAlive` garde
+  `backgroundActive`). Le Header doit donc distinguer la destination réellement ouverte (`view`, qui continue
+  d'alimenter la navigation) du CONTEXTE visuel de fond. Sans cette distinction, ouvrir Command Center retirait le
+  slot et le Board repliait son sélecteur en ligne SOUS le header — exactement le symptôme signalé. Cette prop ne
+  décide que de la visibilité du slot ; elle est fausse en vue globale et en page d'erreur backend, et n'a d'effet que
+  sur téléphone — les vraies pages tablette/ordinateur gardent la restriction Board/List de FN-439.
+  */
+  boardBackgroundActive?: boolean;
   /** When true on non-mobile screens, persistent left sidebar owns primary view navigation. */
   leftSidebarNavActive?: boolean;
   /*
@@ -163,8 +189,9 @@ export function Header({
   showAgentsTab,
   searchQuery = "",
   onSearchChange,
-  taskSearchTasks,
   onSelectSearchTask,
+  addToast,
+  searchNodeId,
   projects = [],
   currentProject,
   onSelectProject,
@@ -172,6 +199,7 @@ export function Header({
   projectId,
   shellHost = { kind: "browser" },
   mobileNavEnabled,
+  boardBackgroundActive = false,
   leftSidebarNavActive = false,
   rightDockAvailable = false,
   rightDockOpen = false,
@@ -200,6 +228,27 @@ export function Header({
   */
   const hideFullNav = isCompact && mobileNavEnabled;
   /*
+  FNXC:HeaderNavigationOwnership 2026-09-17-02:14:
+  FN-481 : le Header dérive ses propres accès avec la MÊME table que celle transmise à la navigation basse par App,
+  de sorte qu'aucune surface ne puisse supposer un accès que l'autre ne rend pas. Il s'en sert pour ne pas se
+  dupliquer lui-même : le menu de débordement du Header historique n'offre plus Projets quand son sélecteur compact
+  porte déjà l'action de gestion. Le repli existe encore quand ce sélecteur n'est pas montable.
+  */
+  const headerOwnedNavigationItems = useMemo(
+    () => resolveHeaderNavigationOwnership({
+      mode,
+      mobileNavEnabled: Boolean(mobileNavEnabled),
+      hasOpenUsage: Boolean(onOpenUsage),
+      hasOpenNotesPanel: Boolean(onOpenNotesPanel),
+      hasOpenActivityPanel: Boolean(onOpenActivityPanel),
+      projectCount: projects.length,
+      hasSelectProject: Boolean(onSelectProject),
+      hasViewAllProjects: Boolean(onViewAllProjects),
+    }),
+    [mobileNavEnabled, mode, onOpenActivityPanel, onOpenNotesPanel, onOpenUsage, onSelectProject, onViewAllProjects, projects.length],
+  );
+  const headerOwnsProjects = headerOwnedNavigationItems.includes("projects");
+  /*
   FNXC:Navigation 2026-06-19-00:00:
   When experimental left sidebar navigation is active on tablet/desktop, Header must suppress its view-toggle and More-views trigger so there is one canonical non-mobile navigation surface and no orphaned chevron remains.
 
@@ -218,8 +267,27 @@ export function Header({
   guarantee is preserved because the node stays single-sourced; the view condition only narrows where it exists.
   */
   const hideHeaderViewNav = leftSidebarNavActive && !isMobile;
-  /* FN-439: single explicit derivation shared by both producers of `#header-workflow-slot`. */
-  const workflowSlotVisible = view === "board" || view === "list";
+  /*
+  FN-439: single explicit derivation shared by both producers of `#header-workflow-slot`.
+
+  FNXC:WorkflowControls 2026-09-16-23:24:
+  FN-483 ajoute le contexte de Board de fond : quand un drawer téléphone est ouvert au-dessus d'un Board actif, le
+  slot survit à l'ouverture/fermeture et garde le MÊME nœud DOM. Les vraies pages tablette/ordinateur conservent la
+  restriction Board/List de FN-439.
+  */
+  const workflowSlotVisible = (boardBackgroundActive && isMobile) || view === "board" || view === "list";
+  /*
+  FNXC:WorkflowControls 2026-09-17-02:14:
+  FN-481 : la suppression de la navigation primaire (`hideFullNav`, vraie sur TOUTE la bande compacte tant que la pill
+  est montée) et le PLACEMENT du slot workflow sont deux décisions distinctes. La disposition compacte — slot dans
+  `header-left`, juste après le sélecteur compact de projet — appartient au seul mode téléphone. La tablette garde la
+  navigation basse mobile mais organise son Header comme l'ordinateur : le sélecteur de projet complet reste dans
+  `header-left` et le slot vit dans `header-actions`, donc l'ordre reste projet, puis workflow, puis recherche — dans
+  le DOM comme au clavier, sans `order` CSS. Les deux branches sont mutuellement exclusives (`isMobile` contre non‑
+  téléphone), si bien qu'un seul `#header-workflow-slot` est rendu.
+  */
+  const workflowSlotInHeaderLeft = isMobile && Boolean(hideFullNav);
+  const workflowSlotInHeaderActions = hideHeaderViewNav || (isTablet && Boolean(mobileNavEnabled));
   /*
   FNXC:Navigation 2026-06-21-23:40:
   The right dock is persistent and owns its own collapse control, so Header must not render a duplicate right-dock toggle or repurpose the More views overflow trigger on tablet/desktop.
@@ -579,7 +647,7 @@ export function Header({
           </div>
         )}
 
-        {hideFullNav && workflowSlotVisible && (
+        {workflowSlotInHeaderLeft && workflowSlotVisible && (
           <div
             id="header-workflow-slot"
             className="header-workflow-slot header-workflow-slot--mobile"
@@ -708,7 +776,7 @@ export function Header({
           </button>
         )}
 
-        {hideHeaderViewNav && workflowSlotVisible && (
+        {workflowSlotInHeaderActions && workflowSlotVisible && (
           <div
             id="header-workflow-slot"
             className="header-workflow-slot"
@@ -727,17 +795,24 @@ export function Header({
           isInlineSearchOpen ? (
             <TaskSearchInput
               query={inlineSearchQuery}
-              tasks={taskSearchTasks}
               onSearchChange={setInlineSearchQuery}
+              /*
+              FNXC:TaskSearch 2026-09-17-09:41:
+              The result is handed straight to the host. It used to be re-looked-up in the board's
+              loaded collection first, which silently dropped exactly the results this feature
+              exists to surface: anything outside the loaded pages.
+              */
               onSelectTask={(task) => {
-                const selected = taskSearchTasks?.find((candidate) => candidate.id.toLocaleLowerCase() === task.id.toLocaleLowerCase());
-                if (selected) onSelectSearchTask?.(selected);
+                onSelectSearchTask?.(task);
                 closeInlineSearch();
               }}
               onClose={closeInlineSearch}
               autoFocus
               className="header-search--inline"
               testId="desktop-header-search-input"
+              {...(projectId ? { projectId } : {})}
+              {...(searchNodeId ? { nodeId: searchNodeId } : {})}
+              {...(addToast ? { addToast } : {})}
             />
           ) : (
             <button
@@ -783,10 +858,16 @@ export function Header({
             FNXC:ToolSurfaces 2026-09-16-23:06:
             FN-426 restored List beside Board in the legacy view-toggle group because FN-382 had made List a right-dock
             tool, which was the last reason the dock was structurally required to browse tasks as a list. FN-437 keeps
-            that guarantee on tablet/desktop only: on phone the footer navigation menu owns List
-            (`mobile-more-item-list`, rendered unconditionally), so this producer — and the standalone one in
-            `header-actions` below — are both suppressed when `isMobile`, leaving exactly one owner per host and no
-            duplicate between header and footer.
+            that guarantee on tablet/desktop only: on phone the footer navigation pill owns List, so this producer —
+            and the standalone one in `header-actions` below — are both suppressed when `isMobile`, leaving exactly one
+            owner per host and no duplicate between header and footer.
+
+            FNXC:ToolSurfaces 2026-09-17-01:43:
+            FN-480 moves that phone ownership from the hard-coded `mobile-more-item-list` menu button — now deleted —
+            to the persisted quick-access slot `tasks`, which renders and routes List on mobile because Board is the
+            permanent background surface there. Depending on the operator's quick-access selection that single owner is
+            either the direct tab `mobile-nav-tab-tasks` or the menu entry `mobile-more-item-tasks`. The contract is
+            unchanged: exactly one List producer per host.
             */}
             {!isMobile && <button
               className={`view-toggle-btn${view === "list" ? " active" : ""}`}
@@ -1116,8 +1197,10 @@ export function Header({
         itself — the footer **More** menu (`desktop-nav-list`) under the footer placement and `sidebar-nav-list` under
         the sidebar placement — so this header producer is deleted rather than narrowed: keeping it would give
         tablet/desktop two owners for the same destination. FN-437 had already removed the phone producer, where the
-        bottom-bar menu (`mobile-more-item-list`) is the single owner. Net contract: exactly one List producer per host,
-        and no host relies on the optional right dock.
+        bottom-bar pill is the single owner. FN-480 (2026-09-17-01:43) relocated that phone owner from the deleted
+        hard-coded `mobile-more-item-list` button to the persisted quick-access slot `tasks`, which renders List on
+        mobile (direct tab `mobile-nav-tab-tasks`, or menu entry `mobile-more-item-tasks` when it is not selected).
+        Net contract: exactly one List producer per host, and no host relies on the optional right dock.
         */}
 
         {/*
@@ -1216,8 +1299,17 @@ export function Header({
             role="menu"
             aria-label={t("header.additionalHeaderActions", "Additional header actions")}
           >
-            {/* Projects - in overflow on mobile */}
-            {isMobile && projects.length >= 1 && onViewAllProjects && (
+            {/*
+            Projects — repli du menu de débordement.
+
+            FNXC:HeaderNavigationOwnership 2026-09-17-02:14:
+            FN-481 : quand le sélecteur compact `mobile-project-switch-trigger` est monté ET porte son action
+            `mobile-project-switch-view-all`, le Header possède déjà Projets et ne doit pas l'offrir une seconde fois
+            ici. Sans sélecteur montable (par exemple `onSelectProject` absent) mais avec l'action de gestion
+            disponible, cette entrée reste le seul chemin et est conservée : dédupliquer ne doit jamais rendre une
+            destination inatteignable.
+            */}
+            {isMobile && !headerOwnsProjects && projects.length >= 1 && onViewAllProjects && (
               <button
                 className="mobile-overflow-item"
                 onClick={() => handleOverflowAction(onViewAllProjects)}
@@ -1366,10 +1458,12 @@ export function Header({
       <div className="header-floating-search">
         <TaskSearchInput
           query={searchQuery}
-          tasks={taskSearchTasks}
           onSearchChange={onSearchChange}
           onClose={handleNonMobileSearchClose}
           autoFocus
+          {...(projectId ? { projectId } : {})}
+          {...(searchNodeId ? { nodeId: searchNodeId } : {})}
+          {...(addToast ? { addToast } : {})}
         />
       </div>
     )}
@@ -1379,11 +1473,13 @@ export function Header({
       <div className="header-floating-search">
         <TaskSearchInput
           query={searchQuery}
-          tasks={taskSearchTasks}
           onSearchChange={onSearchChange}
           onClose={handleMobileSearchClose}
           autoFocus
           className="mobile-search-expanded"
+          {...(projectId ? { projectId } : {})}
+          {...(searchNodeId ? { nodeId: searchNodeId } : {})}
+          {...(addToast ? { addToast } : {})}
         />
       </div>
     )}

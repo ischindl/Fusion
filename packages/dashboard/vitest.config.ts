@@ -91,7 +91,7 @@ const qualityAppHooksAndUtilsTests = [
   // Hooks and utilities are fast, user-visible state/formatting behavior.
   "app/context/**/*.test.tsx",
   /* FNXC:DashboardTests 2026-09-12-17:32: Shared and Board-specific horizontal mouse-pan contracts belong in the fast hooks/utils shard so delayed capture and consumer exclusions are always collected together. */
-  "app/hooks/__tests__/{useAgents,useAgentLogs,useAgentLogs.resume-instrumentation,useAppSettings,useAuthOnboarding,useConfirm,useCurrentProject,useNavigationHistory,useNodes,useNodes.resume-instrumentation,useNodeSettingsSync,useProjects,useProjects.resume-instrumentation,useMeshState.resume-instrumentation,useManagedDockerNodes.resume-instrumentation,usePrChecksStream.resume-instrumentation,useDevServerLogs.resume-instrumentation,useResearch.resume-instrumentation,useBackgroundSessions.resume-instrumentation,useQuickChat,useTasks,useTasks.resume-instrumentation,useChatRooms,usePoppedOutNotes,useTerminalSessions,useTheme,useToast,useUsageData,useViewportMode,useViewState,useMergeAdvanceNotice,useVirtualizedChatTranscript,useVirtualizedList,useAutoPaginationSentinel,useBoardMousePan,useHorizontalMousePan,listSurfaceInventory}.test.{ts,tsx}",
+  "app/hooks/__tests__/{useAgents,useAgentLogs,useAgentLogs.resume-instrumentation,useAppSettings,useAuthOnboarding,useConfirm,useCurrentProject,useNavigationHistory,useNodes,useNodes.resume-instrumentation,useNodeSettingsSync,useProjects,useProjects.resume-instrumentation,useMeshState.resume-instrumentation,useManagedDockerNodes.resume-instrumentation,usePrChecksStream.resume-instrumentation,useDevServerLogs.resume-instrumentation,useResearch.resume-instrumentation,useBackgroundSessions.resume-instrumentation,useQuickChat,useTasks,useTasks.resume-instrumentation,useChatRooms,usePoppedOutNotes,useTerminalSessions,useTheme,useToast,useUsageData,useViewportMode,useViewState,useMergeAdvanceNotice,useVirtualizedChatTranscript,useVirtualizedList,useAutoPaginationSentinel,useBoardMousePan,useHorizontalMousePan,useOutsidePointerDismiss,listSurfaceInventory}.test.{ts,tsx}",
   "app/utils/**/*.test.{ts,tsx}",
 ];
 
@@ -402,6 +402,26 @@ const browserTouchTests = [
   "src/__tests__/view-layout-browser.test.ts",
   /* FNXC:UiStyleAxis 2026-09-15-00:20: FN-399's appearance axes need a real engine to compose theme colour against style geometry. */
   "src/__tests__/ui-style-browser.test.ts",
+  /*
+  FNXC:FileBrowserScroll 2026-09-16-22:33:
+  FN-479 : la propriété de défilement du navigateur de fichiers (hauteur calculée, conteneur défilant effectif,
+  pan tactile natif) ne peut être prouvée que par un moteur réel ; jsdom en calcule aucune des trois.
+  */
+  "src/__tests__/file-browser-scroll-browser.test.ts",
+  /*
+  FNXC:MobileDrawerGesture 2026-09-17-03:18:
+  FN-486 : la fermeture d'un tiroir depuis une ligne de liste, le placement du menu d'appui long et la parité
+  de géométrie entre le chevron Retour et le « + » sont des résultats RENDUS ; ils exigent un moteur réel et
+  s'auto-désactivent lorsqu'aucun navigateur n'est disponible.
+  */
+  "src/__tests__/drawer-list-interactions-browser.test.ts",
+  /*
+  FNXC:TaskSearch 2026-09-17-09:41:
+  FN-477 : la largeur égale à une carte du tableau et la réserve de 1,5 carte sont des géométries
+  rendues ; jsdom retourne des rectangles nuls et ne fait aucune mise en page flex/overflow. Collecté
+  une seule fois dans cette lane, avec auto-clôture sur la présence d'un Chromium local.
+  */
+  "src/__tests__/task-search-browser.test.ts",
 ];
 
 const qualityApiTests = [

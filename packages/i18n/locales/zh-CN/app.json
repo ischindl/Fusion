@@ -3601,7 +3601,19 @@
     "workingBranch": "工作分支",
     "showRightSidebar": "",
     "baseBranch": "基础分支",
-    "noBaseBranch": "无基础分支"
+    "noBaseBranch": "无基础分支",
+    "taskSearchAiLoading": "智能搜索进行中…",
+    "taskSearchEmpty": "没有匹配的任务。",
+    "taskSearchEnterHint": "按 Enter 进行智能搜索（Fast & Cheap）",
+    "taskSearchErrorAi": "智能搜索失败。按 Enter 重试。",
+    "taskSearchErrorModel": "模型返回的内容无法使用。按 Enter 重试。",
+    "taskSearchErrorQuota": "目前智能搜索次数过多。请稍后再试。",
+    "taskSearchErrorText": "搜索失败。请修改输入后重试。",
+    "taskSearchErrorTimeout": "智能搜索超时。按 Enter 重试。",
+    "taskSearchErrorUnavailable": "智能搜索不可用。请检查 Fast & Cheap 模型。",
+    "taskSearchLaneAi": "智能搜索结果",
+    "taskSearchLaneText": "搜索结果",
+    "taskSearchLoading": "搜索中…"
   },
   "health": {
     "activeTasks": "活动任务",
@@ -4058,7 +4070,12 @@
     "openPlanningSessionAria": "",
     "approval": "",
     "report": "",
-    "openPlanningSession": ""
+    "openPlanningSession": "",
+    "archiveFailed": "归档消息失败",
+    "deleteBody": "此操作无法撤销。",
+    "deleteTitle": "删除此消息？",
+    "messageActionsAria": "消息操作",
+    "restoreFailed": "恢复消息失败"
   },
   "memory": {
     "auditChecksTitle": "审计检查",
@@ -4651,7 +4668,8 @@
     "clearBlockedFailed": "",
     "sessionEncounteredError": "",
     "sharedBranchMembers_other": "",
-    "resumeBlocked": ""
+    "resumeBlocked": "",
+    "rowActionsAria": "{{title}} 的操作"
   },
   "modalManager": {
     "createdFromPlanning": "在规划模式中创建了 {{id}}",
@@ -5499,7 +5517,8 @@
     "noHistoryYet": "",
     "generatingPlan": "",
     "currentQuestion": "",
-    "questionsTab": ""
+    "questionsTab": "",
+    "sessionActionsAria": "{{title}} 的操作"
   },
   "plugins": {
     "addItem": "添加项目",
@@ -8637,8 +8656,8 @@
     "snippetsPromptTooLong": "提示词最多可包含 {{count}} 个字符。",
     "snippetsDuplicateName": "已存在同名片段。",
     "snippetsLimitReached": "最多可保存 {{count}} 个片段。",
-    "snippetsSaveError": "无法保存片段。请刷新后重试。",
-    "snippetsDeleteError": "无法删除片段。请刷新后重试。",
+    "snippetsSaveError": "无法保存片段。请重试。",
+    "snippetsDeleteError": "无法删除片段。请重试。",
     "snippetsTitle": "聊天片段",
     "snippetsCount": "已保存 {{count}} 个",
     "snippetsDescription": "保存可复用提示词，然后在任意聊天中输入 /名称，即可插入而不会发送。",

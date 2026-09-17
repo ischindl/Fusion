@@ -383,6 +383,22 @@ describe("Column count-flash", () => {
     expect(badge.textContent).not.toContain("/");
   });
 
+  /*
+  FNXC:BoardColumnCount 2026-09-16-21:24:
+  FN-475 — with no exact per-column server total, the badge follows THIS column's loaded cards, so two
+  lanes holding different card lists can never display the same number.
+  */
+  it("follows this column's own card list when no exact total is supplied", () => {
+    const { unmount } = render(<Column {...defaultProps} tasks={[makeTask("FN-001"), makeTask("FN-002"), makeTask("FN-003")]} />);
+    expect(screen.getByLabelText("3 tasks")).toHaveTextContent("3");
+    expect(screen.queryByLabelText("1 tasks")).toBeNull();
+    unmount();
+
+    render(<Column {...defaultProps} tasks={[makeTask("FN-004")]} />);
+    expect(screen.getByLabelText("1 tasks")).toHaveTextContent("1");
+    expect(screen.queryByLabelText("3 tasks")).toBeNull();
+  });
+
   it("renders the same single count at the mobile breakpoint", () => {
     const previousWidth = window.innerWidth;
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 375 });
@@ -1119,5 +1135,48 @@ describe("Column PluginSlot integration", () => {
     );
     const slot = container.querySelector('[data-slot-id="board-column-footer"]');
     expect(slot).toBeNull();
+  });
+});
+
+/*
+FNXC:IconOnlyButtonCanon 2026-09-17-05:05:
+FN-496 : le « … » d'actions et le bouton d'historique sont les DEUX seuls boutons icône de l'en-tête de
+colonne, et ce sont exactement ceux que l'opérateur a signalés comme minuscules sur téléphone. Leur
+proportion est désormais portée entièrement par le contrat partagé `.btn-icon` : ces cas verrouillent le fait
+qu'ils restent dans les classes canoniques, à l'intérieur de `.column-header`, sans aucune dimension en style
+inline qui rouvrirait une géométrie bespoke.
+*/
+describe("Column header icon buttons stay on the canonical contract", () => {
+  const CANONICAL_CLASSES = ["btn", "btn-icon", "btn-sm"];
+
+  function expectCanonicalHeaderIconButton(button: HTMLElement) {
+    expect(button.className.split(" ")).toEqual(expect.arrayContaining(CANONICAL_CLASSES));
+    expect(button.closest(".column-header")).not.toBeNull();
+    expect((button.getAttribute("aria-label") ?? "").length).toBeGreaterThan(0);
+    for (const property of ["width", "height", "minWidth", "minHeight"] as const) {
+      expect(button.style[property], `${property} ne doit pas être fixé en style inline`).toBe("");
+    }
+  }
+
+  it("rend l'historique d'une lane complete vide dans la variante canonique", () => {
+    render(<Column {...defaultProps} column={"shipped" as ColumnType} workflowMode columnDisplayName="Shipped" columnFlags={{ complete: true }} tasks={[]} onOpenHistory={vi.fn()} />);
+    expectCanonicalHeaderIconButton(screen.getByTestId("column-history-shipped"));
+  });
+
+  it("rend l'historique d'une lane complete peuplée dans la variante canonique", () => {
+    render(<Column {...defaultProps} column={"shipped" as ColumnType} workflowMode columnDisplayName="Shipped" columnFlags={{ complete: true }} tasks={[makeTask("FN-501"), makeTask("FN-502")]} onOpenHistory={vi.fn()} />);
+    expectCanonicalHeaderIconButton(screen.getByTestId("column-history-shipped"));
+  });
+
+  it("rend le menu d'actions dans la variante canonique aux côtés de la bascule auto-merge d'une lane review", () => {
+    render(<Column {...defaultProps} column={"in-review" as ColumnType} workflowMode columnDisplayName="Review" columnFlags={{ humanReview: true }} tasks={[makeTask("FN-503")]} autoMerge onToggleAutoMerge={vi.fn()} />);
+    // La bascule auto-merge est présente et n'a pas remplacé le menu.
+    expect(screen.getByRole("checkbox", { name: "Auto-merge" })).toBeTruthy();
+    expectCanonicalHeaderIconButton(screen.getByRole("button", { name: /column actions$/i }));
+  });
+
+  it("rend le menu d'actions d'une lane vide dotée de l'auto-approbation de plan", () => {
+    render(<Column {...defaultProps} tasks={[]} onTogglePlanAutoApprove={vi.fn()} />);
+    expectCanonicalHeaderIconButton(screen.getByRole("button", { name: /column actions$/i }));
   });
 });
