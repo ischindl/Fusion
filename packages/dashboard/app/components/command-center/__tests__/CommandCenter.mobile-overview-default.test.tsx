@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom";
 import { CommandCenter } from "../CommandCenter";
@@ -12,6 +12,12 @@ consultée, cette rubrique mémorisée — jamais Overview. Ce fichier rejoue ex
 par `matchMedia` + état persisté `activeTab: "tokens"`) et prouve l'invariant sur toutes les surfaces recensées :
 téléphone portrait et paysage court, tablette, ordinateur, états persistés absents/illisibles/inconnus, retour vers la
 liste des rubriques, remontage et changement de projet.
+
+FNXC:CommandCenter 2026-09-17-11:22:
+FN-508 : le parcours téléphone vers une autre rubrique ne passe plus par une flèche de retour ni par un panneau liste,
+mais par la drop list pleine largeur posée sous l'en-tête (`selectCommandCenterSection`). Les invariants FN-492 couverts
+ici — atterrissage Overview au montage, au remontage et au changement de projet, états persistés absents, illisibles ou
+inconnus, restauration de la plage de dates, non-réinitialisation au changement de palier — restent inchangés.
 */
 
 const apiMock = vi.fn();
@@ -172,11 +178,10 @@ describe("CommandCenter phone opens on Overview (FN-492)", () => {
     expect(readMobilePane()).toBe("detail");
   });
 
-  it("keeps the section list reachable through the header back action", () => {
+  it("keeps every section reachable through the full-width section drop list", () => {
     render(<CommandCenter />);
 
-    fireEvent.click(screen.getByLabelText("Back to dashboard sections"));
-    expect(readMobilePane()).toBe("list");
+    expect(screen.queryByLabelText("Back to dashboard sections")).toBeNull();
 
     selectCommandCenterSection("tokens");
     expect(screen.getByTestId("command-center-panel-tokens")).toBeTruthy();
@@ -185,7 +190,6 @@ describe("CommandCenter phone opens on Overview (FN-492)", () => {
 
   it("returns to Overview on remount after another section was selected", () => {
     const first = render(<CommandCenter />);
-    fireEvent.click(screen.getByLabelText("Back to dashboard sections"));
     selectCommandCenterSection("tokens");
     expect(screen.getByTestId("command-center-panel-tokens")).toBeTruthy();
     first.unmount();
@@ -197,7 +201,6 @@ describe("CommandCenter phone opens on Overview (FN-492)", () => {
 
   it("returns to Overview when the mounted view switches project", () => {
     const { rerender } = render(<CommandCenter projectId="alpha" />);
-    fireEvent.click(screen.getByLabelText("Back to dashboard sections"));
     selectCommandCenterSection("tokens");
     expect(readMobilePane()).toBe("detail");
 

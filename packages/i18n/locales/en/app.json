@@ -6871,7 +6871,7 @@
       "learnMore": "Learn more",
       "loweringThisWindowMeansReliabilityMetricsChartsAnd": " Lowering this window means Reliability metrics/charts and the Activity feed will not show history older than the selected range. Per-task task detail history is unaffected. Default: 30 days. ",
       "mobileNavPrimaryItems": "Navigation quick access",
-      "mobileNavPrimaryItemsHint": "Default: Dashboard, Board, Planning, Missions, Mailbox. Choose up to 5 destinations and their order; every other destination remains in More.",
+      "mobileNavPrimaryItemsHint": "Default: Dashboard, Board, Planning, Missions. Choose up to 4 destinations and their order; every other destination — including Chat — remains in More. On mobile, swipe the bottom bar upwards to open Chat.",
       "addNavItem": "Add quick action",
       "selectNavItem": "Choose a destination",
       "removeNavItem": "Remove {{item}}",
@@ -9396,6 +9396,9 @@
       "genericConfirmMessage": "Repeat the current stage and keep this card in its current column.",
       "planSuccess": "Planning will restart in this column.",
       "implementationSuccess": "Work will restart in this column.",
+      "implementationPreservedSuccess": "The current step will run again and the work already produced is kept.",
+      "preserveWorkLabel": "Keep the work already produced",
+      "preserveWorkDescription": "Keep the worktree, branch, and finished steps, and replay only the step that was running.",
       "reviewSuccess": "Review will run again in this column.",
       "genericSuccess": "This stage will restart in its current column.",
       "pendingAutomaticRecovery": "Automatic recovery is pending. You can Retry now to restart this stage."

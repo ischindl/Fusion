@@ -545,7 +545,8 @@ export interface TaskDetailModalProps {
   /* FNXC:TaskRevert 2026-09-15-10:00 (FN-416): restore-the-revert replaces the reverted task's Revise action. */
   onRestoreRevertTask?: (id: string, body?: RestoreTaskRevertOptions) => Promise<RestoreTaskRevertResult>;
   onMergeTask: (id: string) => Promise<MergeResult>;
-  onRetryTask?: (id: string) => Promise<Task>;
+  /* FNXC:ColumnRestart 2026-09-17-09:16 (FN-499): optional preserve-work choice for the WIP Retry confirmation. */
+  onRetryTask?: (id: string, options?: { preserveWork?: boolean }) => Promise<Task>;
   onOpenChatWithPrefill?: (prefillText: string) => void;
   /** Shared lifecycle operations reconcile confirmed rows before detail hosts render their next frame. */
   onPauseTask?: (id: string) => Promise<Task>;
@@ -3466,8 +3467,25 @@ export function TaskDetailContent({
       });
   }, [task.id, onMergeTask, requestClose, addToast, confirm]);
 
+  /*
+  FNXC:ColumnRestart 2026-09-17-09:16:
+  FN-499: the shared stage confirmation additionally resolves the operator's preserve-work choice for
+  the WIP stage. The checkbox defaults to unchecked and `alwaysAsk` is deliberately NOT set, so an
+  operator who disabled confirmations keeps today's destructive restart; other stages are unchanged.
+  */
   const confirmRetryStage = useCallback(async () => {
     const copy = resolveRetryStageCopy(t, detailColumnFlags, task.column);
+    if (copy.preserveWorkAvailable) {
+      const result = await confirmWithCheckbox({
+        title: copy.confirmTitle,
+        message: copy.confirmMessage,
+        confirmLabel: copy.confirmLabel,
+        cancelLabel: t("common.cancel", "Cancel"),
+        danger: true,
+        checkbox: { label: copy.preserveWorkLabel, description: copy.preserveWorkDescription, defaultChecked: false },
+      });
+      return result.choice === "primary" ? { copy, preserveWork: result.checkboxValue } : null;
+    }
     const confirmed = await confirm({
       title: copy.confirmTitle,
       message: copy.confirmMessage,
@@ -3475,17 +3493,17 @@ export function TaskDetailContent({
       cancelLabel: t("common.cancel", "Cancel"),
       danger: true,
     });
-    return confirmed ? copy : null;
-  }, [confirm, detailColumnFlags, t, task.column]);
+    return confirmed ? { copy, preserveWork: false } : null;
+  }, [confirm, confirmWithCheckbox, detailColumnFlags, t, task.column]);
 
   const handleRetry = useCallback(async () => {
     if (!onRetryTask) return;
-    const copy = await confirmRetryStage();
-    if (!copy) return;
+    const decision = await confirmRetryStage();
+    if (!decision) return;
     requestClose();
     try {
-      await onRetryTask(task.id);
-      addToast(copy.successMessage, "success");
+      await onRetryTask(task.id, { preserveWork: decision.preserveWork });
+      addToast(decision.preserveWork ? decision.copy.preservedSuccessMessage : decision.copy.successMessage, "success");
     } catch (err) {
       addToast(getErrorMessage(err), "error");
     }
@@ -3520,8 +3538,8 @@ export function TaskDetailContent({
     const hasNodeChange = failureRetryNodeId !== (task.nodeId ?? "");
     if (!hasModelChange && !hasNodeChange) return;
 
-    const copy = await confirmRetryStage();
-    if (!copy) return;
+    const decision = await confirmRetryStage();
+    if (!decision) return;
     setIsFailureRetrySaving(true);
     try {
       const updatedTask = await updateTask(task.id, {
@@ -3529,8 +3547,8 @@ export function TaskDetailContent({
         ...(hasNodeChange ? { nodeId: failureRetryNodeId || null } : {}),
       }, projectId);
       onTaskUpdated?.(updatedTask);
-      await onRetryTask(task.id);
-      addToast(copy.successMessage, "success");
+      await onRetryTask(task.id, { preserveWork: decision.preserveWork });
+      addToast(decision.preserveWork ? decision.copy.preservedSuccessMessage : decision.copy.successMessage, "success");
       requestClose();
     } catch (err) {
       addToast(getErrorMessage(err), "error");
@@ -5865,18 +5883,6 @@ export function TaskDetailContent({
                   accept="image/*"
                   onChange={handleUpload}
                 />
-                {activeTab === "definition" && task.aiMergeReviewReconciliation && (() => {
-                  const reconciliation = task.aiMergeReviewReconciliation;
-                  const pending = reconciliation.findings.filter((finding) => finding.disposition === "pending" || finding.disposition === "still-present");
-                  return (
-                    <section className={`ai-merge-review-reconciliation ${reconciliation.terminal ? "ai-merge-review-reconciliation-terminal" : ""}`} aria-label={t("taskDetail.aiMergeReview.title", "AI merge review reconciliation")}>
-                      <h3>{reconciliation.consecutiveCleanApprovals > 0 ? t("taskDetail.aiMergeReview.approvedWithPending", "Approved — {{count}} prior finding(s) unconfirmed", { count: pending.length }) : t("taskDetail.aiMergeReview.title", "AI merge review reconciliation")}</h3>
-                      {reconciliation.candidateSha && <p>{t("taskDetail.aiMergeReview.candidate", "Candidate:")} <code>{reconciliation.candidateSha}</code></p>}
-                      {pending.length > 0 && <ul>{pending.map((finding) => <li key={finding.id}>{finding.text}{(reconciliation.terminal || finding.disposition === "still-present") && <UiButton type="button" className="btn btn-secondary" onClick={() => handleDismissAiMergeFinding(finding.id)}>{t("taskDetail.aiMergeReview.dismissFinding", "Dismiss this finding")}</UiButton>}</li>)}</ul>}
-                      {reconciliation.terminal && <p>{t("taskDetail.aiMergeReview.terminalGuidance", "Rebase or re-push the branch, dismiss a finding with justification, or land manually.")}</p>}
-                    </section>
-                  );
-                })()}
               {/* FNXC:TaskVerificationStatus 2026-07-19-12:00: Verification status moved below metadata controls per UX feedback — empty state "No chat verification requested" was appearing too prominently near the top of the card. */}
               {activeTab === "definition" && <TaskVerificationStatus request={verificationRequest} />}
               {activeTab === "definition" && shouldShowBranchGroupCard && task.branchContext?.groupId && (
@@ -6586,6 +6592,27 @@ export function TaskDetailContent({
             </>
           ) : activeTab === "details" ? (
             <>
+          {/*
+          FNXC:TaskDetailTabRelocation 2026-09-17-11:48:
+          FN-510: the Definition tab stays reserved for the plan and its progress. AI merge review
+          reconciliation is merge mechanics (candidate SHA, unconfirmed prior findings, dismissal),
+          so it belongs with the other technical task facts in Details. Markup, aria-label, i18n keys,
+          and the dismissal handler are unchanged — only the owning tab moved. It renders before
+          renderTaskMetadata() so the metadata section keeps .detail-section--original-prompt as its
+          next sibling.
+          */}
+          {task.aiMergeReviewReconciliation && (() => {
+            const reconciliation = task.aiMergeReviewReconciliation;
+            const pending = reconciliation.findings.filter((finding) => finding.disposition === "pending" || finding.disposition === "still-present");
+            return (
+              <section className={`ai-merge-review-reconciliation ${reconciliation.terminal ? "ai-merge-review-reconciliation-terminal" : ""}`} aria-label={t("taskDetail.aiMergeReview.title", "AI merge review reconciliation")}>
+                <h3>{reconciliation.consecutiveCleanApprovals > 0 ? t("taskDetail.aiMergeReview.approvedWithPending", "Approved — {{count}} prior finding(s) unconfirmed", { count: pending.length }) : t("taskDetail.aiMergeReview.title", "AI merge review reconciliation")}</h3>
+                {reconciliation.candidateSha && <p>{t("taskDetail.aiMergeReview.candidate", "Candidate:")} <code>{reconciliation.candidateSha}</code></p>}
+                {pending.length > 0 && <ul>{pending.map((finding) => <li key={finding.id}>{finding.text}{(reconciliation.terminal || finding.disposition === "still-present") && <UiButton type="button" className="btn btn-secondary" onClick={() => handleDismissAiMergeFinding(finding.id)}>{t("taskDetail.aiMergeReview.dismissFinding", "Dismiss this finding")}</UiButton>}</li>)}</ul>}
+                {reconciliation.terminal && <p>{t("taskDetail.aiMergeReview.terminalGuidance", "Rebase or re-push the branch, dismiss a finding with justification, or land manually.")}</p>}
+              </section>
+            );
+          })()}
           {renderTaskMetadata()}
           <div className="detail-section detail-section--original-prompt">
             {/**

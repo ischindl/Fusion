@@ -6863,7 +6863,7 @@
       "restartUnavailable": "",
       "restarting": "",
       "mobileNavPrimaryItems": "Accesos rápidos de navegación",
-      "mobileNavPrimaryItemsHint": "Predeterminado: Panel, Tablero, Planificación, Misiones, Buzón. Elige hasta 5 destinos y su orden; los demás destinos permanecen en Más.",
+      "mobileNavPrimaryItemsHint": "Predeterminado: Panel, Tablero, Planificación, Misiones. Elige hasta 4 destinos y su orden; los demás destinos —incluido el Chat— permanecen en Más. En móvil, desliza la barra inferior hacia arriba para abrir el Chat.",
       "addNavItem": "Añadir acción rápida",
       "selectNavItem": "Elegir un destino",
       "removeNavItem": "Quitar {{item}}",
@@ -9323,6 +9323,9 @@
       "genericConfirmMessage": "Repeat the current stage and keep this card in its current column.",
       "planSuccess": "Planning will restart in this column.",
       "implementationSuccess": "Work will restart in this column.",
+      "implementationPreservedSuccess": "The current step will run again and the work already produced is kept.",
+      "preserveWorkLabel": "Keep the work already produced",
+      "preserveWorkDescription": "Keep the worktree, branch, and finished steps, and replay only the step that was running.",
       "reviewSuccess": "Review will run again in this column.",
       "genericSuccess": "This stage will restart in its current column.",
       "pendingAutomaticRecovery": "Automatic recovery is pending. You can Retry now to restart this stage."

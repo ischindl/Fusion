@@ -47,7 +47,7 @@ import {
   type AgentMailboxResponse,
   type AllAgentsMailboxResponse,
 } from "../api";
-import { UiButton, UiMenu, UiMenuItem } from "./ui";
+import { UiMenu, UiMenuItem } from "./ui";
 import { MessageComposer, type NativeStructureCandidate } from "./MessageComposer";
 import { resolveMailboxMessageSubject } from "./mailboxSubject";
 import { MailboxMessageContent } from "./MailboxMessageContent";
@@ -1066,7 +1066,13 @@ export function MailboxModal({
             <span>{showComposer
               ? (composeReplyContext ? t("composer.replyTitle", "Reply") : t("composer.newMessageTitle", "New Message"))
               : t("mailbox.title", "Mailbox")}</span>
-            {unreadCount > 0 && (
+            {/*
+            FNXC:Navigation 2026-09-17-10:37:
+            FN-506: the floating mailbox is a second full implementation of the same destination, so it carries the same
+            badge scope rule as MailboxView — the unread count is inbox information and renders only while the Inbox tab
+            is active and the composer does not own the header. It must never appear on the Outbox tab.
+            */}
+            {!showComposer && activeTab === "inbox" && unreadCount > 0 && (
               <span className="mailbox-unread-badge" data-testid="mailbox-unread-badge">
                 {unreadCount}
               </span>
@@ -1087,20 +1093,24 @@ export function MailboxModal({
             */}
             {!showComposer && activeTab === "inbox" && (
               <div className="mailbox-inbox-filter-host" ref={inboxFilterRootRef}>
-                <UiButton
+                {/*
+                FNXC:StandardizedViewActions 2026-09-17-09:26:
+                FN-502 : même canon icône-seule téléphone que la destination plein écran. Cet hôte ne rend aucun badge
+                d'approbations (il n'a pas de collection Approbations), donc le déclencheur porte le menu seul.
+                */}
+                <ViewActionButton
                   ref={inboxFilterTriggerRef}
-                  type="button"
-                  className="btn btn-sm btn-secondary mailbox-inbox-filter"
+                  icon={Filter}
+                  iconClassName="mailbox-inbox-filter-icon"
+                  label={t("mailbox.filter", "Filter")}
+                  className="mailbox-inbox-filter"
                   aria-haspopup="menu"
                   aria-expanded={inboxFilterOpen}
                   aria-label={t("mailbox.filterTitle", "Filter inbox")}
                   title={t("mailbox.filterTitle", "Filter inbox")}
                   data-testid="mailbox-inbox-filter"
                   onClick={() => setInboxFilterOpen((open) => !open)}
-                >
-                  <Filter size={14} className="mailbox-inbox-filter-icon" aria-hidden="true" />
-                  <span>{t("mailbox.filter", "Filter")}</span>
-                </UiButton>
+                />
                 {inboxFilterOpen && (
                   <UiMenu
                     className="mailbox-inbox-filter-menu"
@@ -1187,16 +1197,14 @@ export function MailboxModal({
               />
             )}
             {!showComposer && activeTab === "inbox" && (
-              <button
-                className="btn btn-sm btn-secondary"
+              <ViewActionButton
+                icon={CheckCheck}
+                label={t("mailbox.markAllReadButton", "Mark all read")}
                 onClick={handleMarkAllRead}
                 disabled={unreadCount === 0}
                 title={t("mailbox.markAllReadTitle", "Mark all as read")}
                 data-testid="mailbox-mark-all-read"
-              >
-                <CheckCheck size={14} />
-                <span>{t("mailbox.markAllReadButton", "Mark all read")}</span>
-              </button>
+              />
             )}
             {/*
             FNXC:StandardizedDrawers 2026-09-15-04:56:

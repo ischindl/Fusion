@@ -6862,7 +6862,7 @@
       "restartUnavailable": "",
       "restarting": "",
       "mobileNavPrimaryItems": "내비게이션 빠른 접근",
-      "mobileNavPrimaryItemsHint": "기본값: 대시보드, 보드, 플래닝, 미션, 메일함. 최대 5개의 대상과 순서를 선택하세요. 나머지 대상은 모두 더보기에 유지됩니다.",
+      "mobileNavPrimaryItemsHint": "기본값: 대시보드, 보드, 플래닝, 미션. 최대 4개의 대상과 순서를 선택하세요. 채팅을 포함한 나머지 대상은 모두 더보기에 유지됩니다. 모바일에서는 하단 바를 위로 밀면 채팅이 열립니다.",
       "addNavItem": "빠른 작업 추가",
       "selectNavItem": "대상 선택",
       "removeNavItem": "{{item}} 제거",
@@ -9322,6 +9322,9 @@
       "genericConfirmMessage": "Repeat the current stage and keep this card in its current column.",
       "planSuccess": "Planning will restart in this column.",
       "implementationSuccess": "Work will restart in this column.",
+      "implementationPreservedSuccess": "The current step will run again and the work already produced is kept.",
+      "preserveWorkLabel": "Keep the work already produced",
+      "preserveWorkDescription": "Keep the worktree, branch, and finished steps, and replay only the step that was running.",
       "reviewSuccess": "Review will run again in this column.",
       "genericSuccess": "This stage will restart in its current column.",
       "pendingAutomaticRecovery": "Automatic recovery is pending. You can Retry now to restart this stage."
