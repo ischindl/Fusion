@@ -1601,6 +1601,8 @@
     "attachmentsNotQueued": "",
     "unread": "",
     "outputBudgetExhausted": "모델이 전체 출력 예산을 모두 추론에 사용했습니다. 이 모델의 maxTokens를 높이세요.",
+    "responseInterrupted": "",
+    "noReplyGenerated": "",
     "sendAsReport": "",
     "failedToUpdateTags": "",
     "contextTruncationNotice_one": "",

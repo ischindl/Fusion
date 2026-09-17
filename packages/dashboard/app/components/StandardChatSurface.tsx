@@ -204,9 +204,17 @@ function formatToolResultSummary(result: unknown): string | null {
 FNXC:ChatDisclosure 2026-08-19-02:42:
 Streaming status is presentation-only: disclosure state belongs to the user and must not be taken over by a running tool or thinking delta. The nested ThinkingTrace owns per-section body interaction while this host disclosure retains its existing default.
 */
-function StandardThinkingDisclosure({ thinking }: { thinking: string }) {
+/*
+FNXC:ChatInterruptedVisibility 2026-09-17-16:16:
+An interrupted turn's ONLY surviving output is its thinking and partial text, yet the
+disclosure defaulted to collapsed, so the operator read a dead agent where a recoverable
+transcript existed (ai_workstation chat-ed81f6e8 msg-7b71d32b: container restart killed
+the model mid-application and the chat looked empty). Interrupted rows must auto-expand
+the thinking; every other row keeps the user-owned collapsed default.
+*/
+function StandardThinkingDisclosure({ thinking, defaultOpen = false }: { thinking: string; defaultOpen?: boolean }) {
   const { t } = useTranslation("app");
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const handleBodyClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     if (isInteractiveDisclosureTarget(event.target)) return;
     // FNXC:ThinkingTrace 2026-08-22-16:56: Per-title bodies own collapse clicks; the shared interactive-target guard also keeps the folded-title Raw trace button inside this disclosure.
@@ -958,6 +966,17 @@ export const StandardChatMessageItem = memo(function StandardChatMessageItem({
     if (isEmptyAssistantMessage) {
       return <div className="chat-message-content chat-message-content--empty" data-testid="chat-message-empty">{t("chat.noMessage", "No message")}</div>;
     }
+    /*
+    FNXC:ChatInterruptedVisibility 2026-09-17-16:16:
+    A whitespace-only assistant body WITH thinking or tool calls (the model ended the turn
+    straight after tools, or an abort landed between thinking and output) rendered a blank
+    bubble — the user could not tell "no reply was generated" from a broken UI. Say so
+    inline, the same honest-notice shape as the budget-exhausted case above; interrupted
+    rows get their own notice instead.
+    */
+    if (message.content.trim().length === 0 && message.metadata?.interrupted !== true) {
+      return <div className="chat-message-content chat-message-content--no-reply" role="note" data-testid="chat-message-no-reply">{t("chat.noReplyGenerated", "The model ended this turn without writing a reply. Expand Thinking below to see what it reached.")}</div>;
+    }
     return renderStandardAssistantContent(message.content, forcePlain);
   }, [failureInfo, forcePlain, isAssistantMessage, isEmptyAssistantMessage, message.content, message.metadata, t]);
   /* FNXC:ChatQuoteReply 2026-08-23-02:31: A quote action is rendered only for persisted non-empty messages, allowing direct chat to re-mention an agent author without adding controls to streaming or planner surfaces. */
@@ -983,9 +1002,13 @@ export const StandardChatMessageItem = memo(function StandardChatMessageItem({
         isAssistantMessage ? assistantBody : handoffLineage ? <StandardChatHandoffNotice lineage={handoffLineage} onOpenSource={onHandoffSourceOpen} /> : <div className="chat-message-content">{renderedUserContent}</div>
       )}
       {contextTruncationEvidence && <ChatContextTruncationNotice evidence={contextTruncationEvidence} />}
+      {/* FNXC:ChatInterruptedVisibility 2026-09-17-16:16: an interrupted assistant row must announce itself; nothing else on the row distinguishes "stopped early" from "finished". */}
+      {isAssistantMessage && message.metadata?.interrupted === true && (
+        <div className="chat-message-content chat-message-content--interrupted" role="note" data-testid="chat-message-interrupted">{t("chat.responseInterrupted", "Response interrupted — whatever was produced before the stop is shown above and in Thinking.")}</div>
+      )}
       {hasAssistantFooterRow && (
         <div className={`chat-message-thinking-row${hasVisibleAssistantFooterContent ? "" : " chat-message-thinking-row--collapsed"}`}>
-          {message.thinkingOutput && <StandardThinkingDisclosure thinking={message.thinkingOutput} />}
+          {message.thinkingOutput && <StandardThinkingDisclosure thinking={message.thinkingOutput} defaultOpen={message.metadata?.interrupted === true} />}
           {(copyAction || onScrollToTop || showQuoteAction) && (
             <div className="chat-message-actions">
               {copyAction}

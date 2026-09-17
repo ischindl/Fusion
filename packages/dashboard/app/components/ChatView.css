@@ -1567,6 +1567,35 @@ error; design tokens only per the styling guide.
 }
 
 /*
+FNXC:ChatInterruptedVisibility 2026-09-17-16:16:
+Two honest end-state notices mirroring the budget-exhausted primitive above, so an
+assistant turn never renders as an unexplained blank/abrupt bubble:
+- `--interrupted`: the turn was stopped mid-generation (metadata.interrupted); the partial
+  text and auto-expanded Thinking above it are all that survived.
+- `--no-reply`: the turn ended with whitespace-only text but thinking/tool calls exist
+  (model stopped straight after tools, or abort landed before output). Muted, not warning:
+  nothing failed, there simply is no reply.
+*/
+.chat-message-content--interrupted {
+  color: var(--color-warning);
+  font-size: var(--font-size-sm);
+  line-height: 1.4;
+  padding: var(--space-xs) var(--space-sm);
+  border-left: 2px solid var(--color-warning);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-warning) 8%, transparent);
+}
+
+.chat-message-content--no-reply {
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  line-height: 1.4;
+  padding: var(--space-xs) var(--space-sm);
+  border-left: 2px solid var(--text-dim);
+  border-radius: var(--radius-md);
+}
+
+/*
 FNXC:ChatHandoff 2026-09-09-20:04:
 RUFU-199: the handoff primer notice replaces the model-facing briefing text in the transcript.
 Quiet lineage styling (muted, border-left like the budget notice); the degraded line escalates to

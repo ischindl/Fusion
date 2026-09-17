@@ -187,9 +187,10 @@ export function LazyToolCallDetails({
   const { t } = useTranslation("app");
   const [body, setBody] = useState<FullToolCallBody | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "loaded" | "failed">("idle");
-  const handleSummaryClick = (event: MouseEvent<HTMLSummaryElement>) => {
+  const handleSummaryClick = (event: MouseEvent<HTMLElement>) => {
     // Summary activation while open means collapsing; only fetch on the first expansion.
-    if (event.currentTarget.parentElement?.open === true || status !== "idle") return;
+    const host = event.currentTarget.closest("details") as HTMLDetailsElement | null;
+    if (host?.open === true || status !== "idle") return;
     setStatus("loading");
     loadFull(messageId, index).then((loaded) => {
       if (loaded) {

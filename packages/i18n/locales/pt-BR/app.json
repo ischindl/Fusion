@@ -1611,6 +1611,8 @@
     "attachmentsNotQueued": "",
     "unread": "",
     "outputBudgetExhausted": "O modelo usou todo o seu orçamento de saída para raciocínio — aumente o maxTokens para este modelo.",
+    "responseInterrupted": "",
+    "noReplyGenerated": "",
     "sendAsReport": "",
     "failedToUpdateTags": "",
     "contextTruncationNotice_one": "",
