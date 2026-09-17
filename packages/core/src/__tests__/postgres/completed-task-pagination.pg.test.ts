@@ -181,6 +181,59 @@ pgDescribe("TaskStore completed-task pagination", () => {
       .rejects.toThrow("Invalid task list cursor");
   });
 
+  it("ships board lanes without step bodies or summary while full store reads keep them", async () => {
+    /*
+    FNXC:BoardFeedCompaction 2026-09-17-14:49:
+    The Board/search feed renders step identity/status only; reviewer bodies (output/notes/
+    findings/priorAttempts) and the never-rendered summary were 61 % of the live Done-lane bytes.
+    Pin all three feed guarantees in one pass: lanes and search drop the bodies, identity/timing
+    survive for badges and the memo comparator, and engine-facing store reads stay byte-full.
+    */
+    const store = h.store();
+    const task = await store.createTaskWithReservedId(
+      { title: "Compaction probe", description: "compaction probe lane", column: "todo" },
+      { taskId: "FN-51500", applyDefaultWorkflowSteps: false },
+    );
+    await h.layer().db.update(schema.project.tasks).set({
+      summary: "board-invisible completion summary",
+      workflowStepResults: [{
+        workflowStepId: "code-review",
+        workflowStepName: "Code Review",
+        phase: "review",
+        status: "failed",
+        verdict: "REVISE",
+        output: "reviewer body that the board never renders",
+        notes: "reviewer notes body",
+        findings: [{ severity: "high", detail: "body" }],
+        priorAttempts: [{ workflowStepId: "code-review", workflowStepName: "Code Review", phase: "review", status: "failed", verdict: "REVISE", output: "older body" }],
+        startedAt: "2026-09-17T00:00:00.000Z",
+        completedAt: "2026-09-17T00:05:00.000Z",
+      }],
+    } as never).where(eq(schema.project.tasks.id, task.id));
+
+    const lanePage = await store.listCurrentTasksPage({ limit: 10, columns: ["todo"] });
+    const laneRow = lanePage.tasks.find((candidate) => candidate.id === task.id)!;
+    const carried = laneRow.workflowStepResults?.[0] as Record<string, unknown> | undefined;
+    expect(carried?.workflowStepId).toBe("code-review");
+    expect(carried?.status).toBe("failed");
+    expect(carried?.verdict).toBe("REVISE");
+    expect(carried?.startedAt).toBe("2026-09-17T00:00:00.000Z");
+    expect("output" in (carried ?? {})).toBe(false);
+    expect("notes" in (carried ?? {})).toBe(false);
+    expect("findings" in (carried ?? {})).toBe(false);
+    expect("priorAttempts" in (carried ?? {})).toBe(false);
+    expect(laneRow.summary).toBeUndefined();
+
+    const searched = await store.listCurrentTasksPage({ limit: 10, query: "compaction probe" });
+    const searchRow = searched.tasks.find((candidate) => candidate.id === task.id)!;
+    expect(searchRow.workflowStepResults?.[0]?.output).toBeUndefined();
+    expect(searchRow.summary).toBeUndefined();
+
+    const [fullRow] = await store.listTasks({ slim: true, columns: ["todo"] });
+    expect(fullRow.workflowStepResults?.[0]?.output).toContain("reviewer body");
+    expect(fullRow.summary).toBe("board-invisible completion summary");
+  });
+
   it("keeps literal suffix and punctuation membership exact across search pages", async () => {
     const store = h.store();
     const suffixRows = Array.from({ length: 12 }, (_, index) => {

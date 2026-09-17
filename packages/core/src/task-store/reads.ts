@@ -583,6 +583,17 @@ export interface ListTasksOptions {
   selectionCache?: WorkflowSelectionCache;
   selectionReadTally?: WorkflowSelectionReadTally;
   /*
+  FNXC:BoardFeedCompaction 2026-09-17-14:49:
+  Board/search feed only renders step identity/status (workflow badges, progress bar, memo diff)
+  and never a step body, yet every lane row carried reviewer `output`, `notes`, `findings` and
+  `priorAttempts` snapshots plus the per-column `summary`: together 61 % of the live Done-lane
+  payload (380 KB results + 159 KB summary out of 912 KB). `compactBoardFeed` strips those four
+  bodies and `summary` AFTER the row-level derivations — `computeRetrySummary` counts
+  `priorAttempts`, so stripping earlier would change derived badges. Omitted means full shape:
+  engine `listTasks` consumers (WIP lane tool, dispatch gates) keep reading real bodies.
+  */
+  compactBoardFeed?: boolean;
+  /*
   FNXC:ListTasksDeriveOptOut 2026-09-08-20:58 (RUFU-201):
   Engine timer consumers (triage poll, scheduler tick, gridlock sweep, lane-role sweep) never read a
   UI-only derived board signal, yet every tick paid nine per-row derivations anyway. Those derivations
@@ -1001,6 +1012,7 @@ export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions
         task.timedExecutionMs = store.computeTimedExecutionMs(task.log);
         task.log = [];
       }
+      if (options?.compactBoardFeed) compactBoardFeedRow(task);
       return finalizeSlimListTask(store, task, slim);
     }));
     // Sort by createdAt, then by numeric ID suffix for tie-breaking
@@ -1093,6 +1105,34 @@ function normalizeTaskListLaneScope(columns?: readonly string[]): string | undef
 FNXC:TaskListPagination 2026-09-07-16:03:
 Board task pages exclude completion history before the SQL limit and continue with an exclusive createdAt/id tuple. The exact count is independent of the page, while page hydration and workflow enrichment are paid only for returned rows.
 */
+/*
+FNXC:BoardFeedCompaction 2026-09-17-14:49:
+GET /tasks/page is the Board and search feed. Board rows render step identity/status only —
+workflow badges, progress bars, and the TaskCard memo comparator — never reviewer bodies. The
+measured Done lane was 912 KB for 50 cards: `workflowStepResults` bodies (`output` 51 % of the
+field, `priorAttempts` 23 %, `notes` 17 %, `findings` 6 %) plus the never-rendered `summary`
+column carried ~61 % of those bytes. The full bodies remain one cheap hop away — the detail
+modal fetches them per-open via GET /tasks/:id and GET /tasks/:id/workflow-results — so the
+lane payload stops re-shipping them on every board poll. Call this AFTER row-level derivations
+(stalledReview, retrySummary, reviewBypass): `computeRetrySummary` reads `priorAttempts`, so
+the derived badge must see the history before the feed drops it. Identity/timing/status fields
+stay so the client memo comparator and badges reconcile exactly as before.
+*/
+type BoardStepResult = NonNullable<Task["workflowStepResults"]>[number];
+
+function compactBoardStepResult(result: BoardStepResult): BoardStepResult {
+  if (result.output === undefined && result.notes === undefined && result.findings === undefined && result.priorAttempts === undefined) {
+    return result;
+  }
+  const { output: _output, notes: _notes, findings: _findings, priorAttempts: _priorAttempts, ...carried } = result;
+  return carried;
+}
+
+function compactBoardFeedRow(task: Task): void {
+  task.workflowStepResults = (task.workflowStepResults ?? []).map(compactBoardStepResult);
+  task.summary = undefined;
+}
+
 export async function listCurrentTasksPageImpl(store: TaskStore, options: { limit?: number; cursor?: string; query?: string; columns?: readonly string[] } = {}): Promise<TaskListPage> {
   const limit = Math.min(200, Math.max(1, Math.trunc(options.limit ?? 100) || 100));
   const cursor = options.cursor ? decodeTaskListCursor(options.cursor) : undefined;
@@ -1140,7 +1180,7 @@ export async function listCurrentTasksPageImpl(store: TaskStore, options: { limi
     ]);
     const hasMore = pageRows.length > limit;
     const selectedRows = pageRows.slice(0, limit);
-    const tasks = await hydrateSearchTaskRows(store, selectedRows, true);
+    const tasks = await hydrateSearchTaskRows(store, selectedRows, true, true);
     const last = tasks.at(-1);
     return {
       tasks,
@@ -1168,6 +1208,7 @@ export async function listCurrentTasksPageImpl(store: TaskStore, options: { limi
       ...columnScope,
       includeArchived: false,
       slim: true,
+      compactBoardFeed: true,
       limit: limit + 1,
       sort: "created-asc",
       startupMemo: false,
@@ -1517,6 +1558,7 @@ async function hydrateSearchTaskRows(
   store: TaskStore,
   pgRows: Record<string, unknown>[],
   slim: boolean,
+  compactBoardFeed: boolean,
 ): Promise<Task[]> {
 const now = Date.now();
 const settings = await store.getSettingsFast();
@@ -1568,6 +1610,8 @@ await prefetchWorkflowIrs(store, pgRows.map((row) => String(row.id)), searchPass
     task.timedExecutionMs = store.computeTimedExecutionMs(task.log);
     task.log = [];
   }
+  // FNXC:BoardFeedCompaction 2026-09-17-14:49: same post-derivation drop as the board lane path.
+  if (compactBoardFeed) compactBoardFeedRow(task);
   if (task.steps.length > 0) {
     return task;
   }

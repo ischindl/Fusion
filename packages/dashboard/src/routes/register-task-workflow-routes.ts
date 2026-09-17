@@ -1566,6 +1566,8 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         ? [...new Set(req.query.columns.split(",").map((column) => column.trim()).filter(Boolean))]
         : undefined;
       if (columns && (columns.length === 0 || columns.length > 20)) throw badRequest("columns must name between 1 and 20 column ids");
+      /* FNXC:BoardFeedCompaction 2026-09-17-14:49: this feed ships step identity/status, not step
+         bodies — the drop lives in listCurrentTasksPageImpl, after row derivations. */
       try {
         res.json(await scopedStore.listCurrentTasksPage({
           limit,
