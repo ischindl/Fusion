@@ -11,6 +11,17 @@ export interface ToolCallInfo {
   isError: boolean;
   result?: unknown;
   status: "running" | "completed";
+  /*
+  FNXC:ChatFeedCompaction 2026-09-17-15:38:
+  Persisted history rows arrive from GET /chat/sessions/:id/messages with tool-call bodies
+  stripped server-side: `compacted` marks such an entry, `previewKind`/`previewText` carry the
+  one-line summary the row shows, and `hasFullDetails` says the server still holds a body worth
+  expanding. The disclosure lazy-loads the full entry through a surface-provided loader.
+  */
+  compacted?: boolean;
+  previewKind?: "args" | "result";
+  previewText?: string;
+  hasFullDetails?: boolean;
 }
 
 export interface FallbackInfo {

@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { registerChatRoutes } from "../register-chat-routes.js";
 import { request } from "../../test-request.js";
 
-function makeApp(overrides?: { settings?: Record<string, unknown>; sessions?: unknown[] }) {
+function makeApp(overrides?: { settings?: Record<string, unknown>; sessions?: unknown[]; messages?: unknown[] }) {
   const sessions = overrides?.sessions ?? [{
     id: "chat-1", agentId: "agent-1", tags: [], title: "First", status: "active", projectId: "project-a",
     modelProvider: null, modelId: null, thinkingLevel: null, memoryFocus: null, createdAt: "2026-09-07T00:00:00.000Z",
@@ -19,6 +19,9 @@ function makeApp(overrides?: { settings?: Record<string, unknown>; sessions?: un
     findLatestActiveSessionForTarget,
     getLastMessageForSessions: vi.fn(async () => new Map()),
     searchSessionsByMessageContent: vi.fn(async () => new Map()),
+    getSession: vi.fn(async (id: string) => sessions.find((session) => (session as { id?: string }).id === id) ?? null),
+    getMessages: vi.fn(async () => overrides?.messages ?? []),
+    getMessage: vi.fn(async (id: string) => (overrides?.messages ?? []).find((message) => (message as { id?: string }).id === id) ?? undefined),
   };
   const store = {
     getSettings: vi.fn(async () => overrides?.settings ?? { showTaskChatsInCommonFeed: false }),
@@ -98,5 +101,63 @@ describe("GET /api/chat/sessions pagination", () => {
     const response = await request(app, "GET", `/api/chat/sessions?${query}`);
     expect(response.status).toBe(400);
     expect(listSessionsPage).not.toHaveBeenCalled();
+  });
+});
+
+/*
+FNXC:ChatFeedCompaction 2026-09-17-15:38:
+The list feed ships compacted tool calls (identity/status/preview, no bodies) so a 50-row thread
+stays small; question tool calls stay whole and the sibling single-message route returns full
+bodies for lazy disclosures, enforcing message→session ownership.
+*/
+describe("chat message feed compaction + single-message companion", () => {
+  const assistantMessage = (overrides: Record<string, unknown> = {}) => ({
+    id: "msg-1",
+    sessionId: "chat-1",
+    role: "assistant",
+    content: "done",
+    createdAt: "2026-09-17T00:00:00.000Z",
+    metadata: {
+      interrupted: false,
+      toolCalls: [
+        { toolName: "bash", args: { command: "ls" }, result: "y".repeat(400), isError: false, status: "completed" },
+        { toolName: "ask_user", args: { questions: [{ id: "q1", type: "text", question: "Which branch?" }] }, isError: false, status: "completed" },
+      ],
+    },
+    ...overrides,
+  });
+
+  it("compacts the list feed but keeps question tool calls and other metadata intact", async () => {
+    const { app } = makeApp({ messages: [assistantMessage()] });
+    const response = await request(app, "GET", "/api/chat/sessions/chat-1/messages?projectId=project-a");
+    expect(response.status).toBe(200);
+    const [message] = response.body.messages;
+    expect(message.metadata.interrupted).toBe(false);
+    const [bash, question] = message.metadata.toolCalls;
+    expect(bash).toMatchObject({ toolName: "bash", compacted: true, status: "completed", previewKind: "result" });
+    expect(bash).not.toHaveProperty("result");
+    expect(bash).not.toHaveProperty("args");
+    expect(question.toolName).toBe("ask_user");
+    expect(question.args).toEqual({ questions: [{ id: "q1", type: "text", question: "Which branch?" }] });
+    expect(question).not.toHaveProperty("compacted");
+  });
+
+  it("returns full bodies when the feed is requested with full=1", async () => {
+    const { app } = makeApp({ messages: [assistantMessage()] });
+    const response = await request(app, "GET", "/api/chat/sessions/chat-1/messages?projectId=project-a&full=1");
+    const [message] = response.body.messages;
+    expect(message.metadata.toolCalls[0].result).toBe("y".repeat(400));
+  });
+
+  it("returns one full message for a lazy disclosure and enforces session ownership", async () => {
+    const { app } = makeApp({ messages: [assistantMessage()] });
+    const found = await request(app, "GET", "/api/chat/sessions/chat-1/messages/msg-1?projectId=project-a");
+    expect(found.status).toBe(200);
+    expect(found.body.message.metadata.toolCalls[0].result).toBe("y".repeat(400));
+
+    const foreign = await request(app, "GET", "/api/chat/sessions/chat-9/messages/msg-1?projectId=project-a");
+    expect(foreign.status).toBe(404);
+    const missing = await request(app, "GET", "/api/chat/sessions/chat-1/messages/msg-404?projectId=project-a");
+    expect(missing.status).toBe(404);
   });
 });

@@ -337,6 +337,41 @@ export function fetchChatMessages(
   );
 }
 
+/**
+ * FNXC:ChatFeedCompaction 2026-09-17-15:38:
+ * Fetch one message with its full persisted bodies. The list feed compacts `metadata.toolCalls`
+ * to identity/status/preview; a `<details>` disclosure in the transcript uses this (via
+ * `fetchChatToolCallBody`) to lazy-load the complete args/result for exactly one message.
+ */
+export function fetchChatMessage(
+  sessionId: string,
+  messageId: string,
+  projectId?: string,
+): Promise<{ message: ChatMessage }> {
+  return api<{ message: ChatMessage }>(
+    withProjectId(`/chat/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}`, projectId),
+  );
+}
+
+/** Full body of one compacted tool call, addressed by its index in the message's toolCalls list. */
+export async function fetchChatToolCallBody(
+  sessionId: string,
+  messageId: string,
+  index: number,
+  projectId?: string,
+): Promise<{ args: unknown; result: unknown } | null> {
+  try {
+    const { message } = await fetchChatMessage(sessionId, messageId, projectId);
+    const toolCalls = message?.metadata?.toolCalls;
+    if (!Array.isArray(toolCalls)) return null;
+    const entry = toolCalls[index] as Record<string, unknown> | undefined;
+    if (!entry || typeof entry !== "object") return null;
+    return { args: entry.args, result: entry.result };
+  } catch {
+    return null;
+  }
+}
+
 /** Delete a specific message from a chat session */
 export function deleteChatMessage(
   sessionId: string,

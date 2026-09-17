@@ -326,6 +326,23 @@ function extractCompletedToolCalls(metadata: Record<string, unknown> | null | un
         return null;
       }
 
+      /*
+      FNXC:ChatFeedCompaction 2026-09-17-15:38:
+      A compacted feed entry has no bodies to rebuild — pass the markers through untouched so the
+      surface can render the preview and offer the lazy full-body disclosure.
+      */
+      if (record.compacted === true) {
+        return {
+          toolName,
+          isError: Boolean(record.isError),
+          status: record.status === "running" ? "running" : "completed",
+          compacted: true,
+          ...(record.previewKind === "args" || record.previewKind === "result" ? { previewKind: record.previewKind } : {}),
+          ...(typeof record.previewText === "string" ? { previewText: record.previewText } : {}),
+          ...(record.hasFullDetails === true ? { hasFullDetails: true } : {}),
+        };
+      }
+
       const args = record.args;
 
       return {

@@ -1590,6 +1590,8 @@
     "toolCallStatusRunning": "",
     "pinned": "",
     "toolCallResultPrefix": "",
+    "toolCallLoadingDetails": "",
+    "toolCallDetailsLoadFailed": "",
     "reportTrimmed": "",
     "failedToCreateTag": "",
     "handoffStarted": "",

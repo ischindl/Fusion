@@ -1600,6 +1600,8 @@
     "toolCallStatusRunning": "running",
     "pinned": "Pinned",
     "toolCallResultPrefix": "result",
+    "toolCallLoadingDetails": "Loading details…",
+    "toolCallDetailsLoadFailed": "Could not load the full details for this tool call.",
     "reportTrimmed": "Message trimmed to 2000 characters for mail",
     "failedToCreateTag": "Failed to create tag",
     "handoffStarted": "Continued in a fresh chat. The original conversation is archived and stays available.",

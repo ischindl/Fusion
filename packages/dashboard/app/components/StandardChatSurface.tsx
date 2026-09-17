@@ -17,7 +17,7 @@ import { openNativeStructure } from "./nativeStructureNavigation";
 import { nativeStructureChatRefMatcher, parseNativeStructureChatRef, splitNativeStructureChatRefMatch } from "./nativeStructureChatRef";
 import { MicButton } from "./MicButton";
 import { useComposerDictation } from "../hooks/useComposerDictation";
-import { ToolCallDetails, formatToolArgsPreview, formatToolPreview, hasToolCallDetails } from "./ToolCallDetails";
+import { LazyToolCallDetails, ToolCallDetails, formatToolArgsPreview, formatToolPreview, hasToolCallDetails, type FullToolCallLoader } from "./ToolCallDetails";
 import { isInteractiveDisclosureTarget, ThinkingTrace } from "./ThinkingTrace";
 import {
   createChatInputAutosizeController,
@@ -55,6 +55,12 @@ export interface StandardChatMessageItemProps {
   submittedQuestionAnswer?: string;
   onQuestionSubmit?: (answerText: string, structured: Record<string, unknown>) => void;
   toolCallRenderer?: (toolCall: ToolCallInfo, index: number) => ReactNode | undefined;
+  /**
+   * FNXC:ChatFeedCompaction 2026-09-17-15:38:
+   * Loads the full args/result of a compacted tool-call entry (the session feed ships previews).
+   * Surfaces that omit it still show the compact row — they just cannot expand it.
+   */
+  loadToolCallFull?: FullToolCallLoader;
   /**
    * FNXC:ChatMessageEdit 2026-07-07-09:00:
    * When set together with `canEdit`, a user message renders an edit affordance that swaps its
@@ -260,6 +266,9 @@ export function renderStandardToolCalls(
     submittedAnswer?: string;
     onQuestionSubmit?: (answerText: string, structured: Record<string, unknown>) => void;
     toolCallRenderer?: (toolCall: ToolCallInfo, index: number) => ReactNode | undefined;
+    /** FNXC:ChatFeedCompaction 2026-09-17-15:38: message identity + lazy full-body loader for compacted entries. */
+    messageId?: string;
+    loadToolCallFull?: FullToolCallLoader;
   },
 ): ReactNode {
   if (!toolCalls || toolCalls.length === 0) return null;
@@ -288,7 +297,11 @@ export function renderStandardToolCalls(
     const isError = toolCall.status === "completed" && toolCall.isError;
     const argsSummary = formatToolArgsPreview(toolCall.args);
     const resultSummary = formatToolResultSummary(toolCall.result);
-    const summaryPreview = isRunning ? argsSummary : resultSummary ? `${t("chat.toolCallResultPrefix", "result")}: ${resultSummary}` : argsSummary ? `${t("chat.toolCallArgsPrefix", "args")}: ${argsSummary}` : null;
+    // FNXC:ChatFeedCompaction 2026-09-17-15:38: compacted entries carry the server-built preview instead of bodies.
+    const compactedPreview = toolCall.compacted && toolCall.previewText
+      ? `${t(toolCall.previewKind === "result" ? "chat.toolCallResultPrefix" : "chat.toolCallArgsPrefix", toolCall.previewKind === "result" ? "result" : "args")}: ${toolCall.previewText}`
+      : null;
+    const summaryPreview = toolCall.compacted ? compactedPreview : isRunning ? argsSummary : resultSummary ? `${t("chat.toolCallResultPrefix", "result")}: ${resultSummary}` : argsSummary ? `${t("chat.toolCallArgsPrefix", "args")}: ${argsSummary}` : null;
     const statusLabel = isRunning ? t("chat.toolCallStatusRunning", "running") : isError ? t("chat.toolCallStatusError", "error") : t("chat.toolCallStatusCompleted", "completed");
     const className = `chat-tool-call${isRunning ? " chat-tool-call--running" : ""}${isError ? " chat-tool-call--error" : ""}`;
     const summary = (
@@ -299,6 +312,22 @@ export function renderStandardToolCalls(
         <span className="chat-tool-call-status-text">{statusLabel}</span>
       </>
     );
+    // FNXC:ChatFeedCompaction 2026-09-17-15:38: a compacted entry with server-held bodies expands through a lazy disclosure.
+    if (toolCall.compacted && toolCall.hasFullDetails && options?.messageId && options?.loadToolCallFull) {
+      return (
+        <LazyToolCallDetails
+          key={`${toolCall.toolName}-${index}`}
+          className={className}
+          summary={summary}
+          messageId={options.messageId}
+          index={index}
+          loadFull={options.loadToolCallFull}
+          argumentsLabel={t("chat.toolCallArgsPrefix", "args")}
+          resultLabel={t("chat.toolCallResultPrefix", "result")}
+          resultIsError={isError}
+        />
+      );
+    }
     if (!hasToolCallDetails(toolCall.args, toolCall.result)) {
       return <div key={`${toolCall.toolName}-${index}`} className={className}><div className="chat-tool-call-summary">{summary}</div></div>;
     }
@@ -756,6 +785,7 @@ export const StandardChatMessageItem = memo(function StandardChatMessageItem({
   submittedQuestionAnswer,
   onQuestionSubmit,
   toolCallRenderer,
+  loadToolCallFull,
   onEditMessage,
   onHandoffSourceOpen,
   canEdit = false,
@@ -965,7 +995,7 @@ export const StandardChatMessageItem = memo(function StandardChatMessageItem({
           )}
         </div>
       )}
-      {renderStandardToolCalls(message.toolCalls, t, { isAwaitingAnswer: isAwaitingQuestionAnswer, submittedAnswer: submittedQuestionAnswer, onQuestionSubmit, toolCallRenderer })}
+      {renderStandardToolCalls(message.toolCalls, t, { isAwaitingAnswer: isAwaitingQuestionAnswer, submittedAnswer: submittedQuestionAnswer, onQuestionSubmit, toolCallRenderer, messageId: message.id, loadToolCallFull })}
       {renderedAttachments}
       {isUserMessage ? (
         <div className="chat-message-time-row">

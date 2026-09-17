@@ -1,4 +1,4 @@
-import { useId, useState, type ReactNode } from "react";
+import { useId, useState, type MouseEvent, type ReactNode } from "react";
 import { UiButton } from "./ui";
 import { useTranslation } from "react-i18next";
 import "./ToolCallDetails.css";
@@ -145,5 +145,80 @@ export function ToolCallDetails({
       {argumentsText ? <ToolCallDetailsRow label={argumentsLabel} text={argumentsText} clampLongValues={clampLongValues} renderValue={renderValue} /> : null}
       {resultText ? <ToolCallDetailsRow label={resultLabel} text={resultText} isError={resultIsError} clampLongValues={clampLongValues} renderValue={renderValue} /> : null}
     </div>
+  );
+}
+
+/*
+FNXC:ChatFeedCompaction 2026-09-17-15:38:
+A compacted tool-call row (see GET /chat/sessions/:id/messages) shows identity/status/preview in
+the transcript and carries no bodies. Expanding its disclosure must NOT 404 or show an empty
+shell, so this disclosure fetches the full args/result from the single-message endpoint the first
+time the summary is activated, renders them through the same ToolCallDetails rows as live rows,
+and keeps a plain status line while loading or when the fetch failed — never a dead control.
+*/
+export interface FullToolCallBody {
+  args: unknown;
+  result: unknown;
+}
+
+export type FullToolCallLoader = (messageId: string, index: number) => Promise<FullToolCallBody | null>;
+
+interface LazyToolCallDetailsProps {
+  className: string;
+  summary: ReactNode;
+  messageId: string;
+  index: number;
+  loadFull: FullToolCallLoader;
+  argumentsLabel: string;
+  resultLabel: string;
+  resultIsError?: boolean;
+}
+
+export function LazyToolCallDetails({
+  className,
+  summary,
+  messageId,
+  index,
+  loadFull,
+  argumentsLabel,
+  resultLabel,
+  resultIsError = false,
+}: LazyToolCallDetailsProps): ReactNode {
+  const { t } = useTranslation("app");
+  const [body, setBody] = useState<FullToolCallBody | null>(null);
+  const [status, setStatus] = useState<"idle" | "loading" | "loaded" | "failed">("idle");
+  const handleSummaryClick = (event: MouseEvent<HTMLSummaryElement>) => {
+    // Summary activation while open means collapsing; only fetch on the first expansion.
+    if (event.currentTarget.parentElement?.open === true || status !== "idle") return;
+    setStatus("loading");
+    loadFull(messageId, index).then((loaded) => {
+      if (loaded) {
+        setBody(loaded);
+        setStatus("loaded");
+      } else {
+        setStatus("failed");
+      }
+    }, () => setStatus("failed"));
+  };
+  return (
+    <details className={className}>
+      <summary data-testid={`chat-tool-call-lazy-summary-${messageId}-${index}`} onClick={handleSummaryClick}>{summary}</summary>
+      {status === "loaded" && body ? (
+        <ToolCallDetails
+          className="chat-tool-call-content"
+          argumentsValue={body.args}
+          resultValue={body.result}
+          argumentsLabel={argumentsLabel}
+          resultLabel={resultLabel}
+          resultIsError={resultIsError}
+        />
+      ) : (
+        <div className="chat-tool-call-content" data-testid={`chat-tool-call-lazy-status-${messageId}-${index}`}>
+          {status === "failed"
+            ? t("chat.toolCallDetailsLoadFailed", "Could not load the full details for this tool call.")
+            : t("chat.toolCallLoadingDetails", "Loading details…")}
+        </div>
+      )}
+    </details>
   );
 }

@@ -13,7 +13,7 @@ import { getPersistedPendingChatMessages, setPersistedPendingChatMessages } from
 import { MicButton } from "./MicButton";
 import type { ChatEnginePhase, ChatMessageInfo, ToolCallInfo } from "../hooks/chatTypes";
 import { isPersistedChatMessageId } from "../hooks/chatTypes";
-import { attachChatStream, cancelChatResponse, ensureTaskPlannerChatSession, fetchChatMessages, fetchChatSession, fetchSettings, fetchTaskDetail, fetchTaskPlannerChatSession, streamChatResponse, updateChatSession, type ChatFailureInfo, type ChatStreamErrorMeta } from "../api";
+import { attachChatStream, cancelChatResponse, ensureTaskPlannerChatSession, fetchChatMessages, fetchChatSession, fetchChatToolCallBody, fetchSettings, fetchTaskDetail, fetchTaskPlannerChatSession, streamChatResponse, updateChatSession, type ChatFailureInfo, type ChatStreamErrorMeta } from "../api";
 import { parseQuestionToolCall, type ParsedQuestionToolCall } from "../utils/parseQuestionToolCall";
 import { ChatQuestionResponse } from "./ChatQuestionResponse";
 import { PendingChatMessageQueue } from "./PendingChatMessageQueue";
@@ -274,6 +274,18 @@ function extractToolCalls(message: Pick<ChatMessage, "metadata">): ToolCallInfo[
       const record = toolCall as Record<string, unknown>;
       const toolName = typeof record.toolName === "string" ? record.toolName : "";
       if (!toolName) return null;
+      // FNXC:ChatFeedCompaction 2026-09-17-15:38: pass compacted feed markers through untouched.
+      if (record.compacted === true) {
+        return {
+          toolName,
+          isError: Boolean(record.isError),
+          status: record.status === "running" ? "running" : "completed",
+          compacted: true,
+          ...(record.previewKind === "args" || record.previewKind === "result" ? { previewKind: record.previewKind } : {}),
+          ...(typeof record.previewText === "string" ? { previewText: record.previewText } : {}),
+          ...(record.hasFullDetails === true ? { hasFullDetails: true } : {}),
+        };
+      }
       const args = record.args;
       return {
         toolName,
@@ -400,6 +412,15 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
   const streamRef = useRef<{ close: () => void } | null>(null);
   const pendingMessagesRef = useRef<string[]>([]);
   const sessionIdRef = useRef<string | null>(null);
+  /*
+  FNXC:ChatFeedCompaction 2026-09-17-15:38:
+  Planner history rows arrive compacted from the session feed; an expanded tool-call disclosure
+  fetches that one message's full bodies through the ref-resolved session id. Memoized because
+  StandardChatMessageItem is memoized.
+  */
+  const loadFullToolCall = useCallback((messageId: string, index: number) => (
+    sessionIdRef.current ? fetchChatToolCallBody(sessionIdRef.current, messageId, index, projectId) : Promise.resolve(null)
+  ), [projectId]);
   const queueDispatchRef = useRef<((sessionId: string, selectedIndex?: number) => void) | null>(null);
   const streamSnapshotRef = useRef<{
     requestId: number;
@@ -1837,6 +1858,7 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
                   projectId={projectId}
                   isAwaitingQuestionAnswer={message.role === "assistant"}
                   onQuestionSubmit={(answerText) => void sendMessageContent(answerText)}
+                  loadToolCallFull={loadFullToolCall}
                   toolCallRenderer={(toolCall, index) => renderPlannerToolCall(message, toolCall, index)}
                   onEditMessage={editMessageAndResend}
                   canEdit={message.role === "user" && isPersistedChatMessageId(message.id) && composerState !== "sending"}

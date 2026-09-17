@@ -30,6 +30,7 @@ import { CHAT_ALLOWED_MIME_TYPES, CHAT_MAX_VIDEO_ATTACHMENT_SIZE, getChatAttachm
 import { rateLimit, RATE_LIMITS } from "../rate-limit.js";
 import { writeSSEEvent, type SessionBufferedEvent } from "../sse-buffer.js";
 import { ChatHandoffError, ChatReplacementError, TASK_PLANNER_CHAT_AGENT_ID_PREFIX } from "../chat.js";
+import { compactChatMessagesForFeed } from "../shared/chat-toolcall-compact.js";
 import type { ApiRoutesContext } from "./types.js";
 
 /*
@@ -1396,7 +1397,14 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
         ...(order === "desc" || order === "asc" ? { order } : {}),
       });
 
-      res.json({ messages });
+      /*
+      FNXC:ChatFeedCompaction 2026-09-17-15:38:
+      The thread feed ships tool-call identity/status/preview, not bodies; the disclosure
+      lazy-loads full args/result from GET /chat/sessions/:id/messages/:messageId. A caller that
+      genuinely needs the whole feed (tests, exports) opts out with `full=1`.
+      */
+      const fullFeed = req.query.full === "1";
+      res.json({ messages: fullFeed ? messages : compactChatMessagesForFeed(messages) });
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         throw err;
@@ -1827,6 +1835,34 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
    * DELETE /api/chat/sessions/:id/messages/:messageId
    * Delete a specific message from a chat session.
    */
+  /*
+  FNXC:ChatFeedCompaction 2026-09-17-15:38:
+  The full-body companion of the compacted list feed: a lazy `<details>` disclosure in ChatView
+  fetches one message's complete `metadata.toolCalls` through this route, so the list can stay
+  small without losing history detail. Ownership is enforced on both sides — the message must
+  belong to the addressed session.
+  */
+  router.get("/chat/sessions/:id/messages/:messageId", async (req, res) => {
+    try {
+      const { chatStore } = await resolveScopedChatStore(req);
+
+      const sessionId = String(req.params.id);
+      const messageId = String(req.params.messageId);
+
+      const message = await chatStore.getMessage(messageId);
+      if (!message || message.sessionId !== sessionId) {
+        throw notFound(`Message ${messageId} not found`);
+      }
+
+      res.json({ message });
+    } catch (err: unknown) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      rethrowAsApiError(err, "Failed to get chat message");
+    }
+  });
+
   router.delete("/chat/sessions/:id/messages/:messageId", rateLimit(RATE_LIMITS.mutation), async (req, res) => {
     try {
       const { chatStore } = await resolveScopedChatStore(req);
@@ -1875,6 +1911,7 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
       "POST /chat/sessions/:id/messages",
       "POST /chat/sessions/:id/cancel",
       "POST /chat/sessions/:id/handoff",
+      "GET /chat/sessions/:id/messages/:messageId",
       "DELETE /chat/sessions/:id/messages/:messageId",
     ];
     chatLogger.info("routes registered", { chatRoutes });

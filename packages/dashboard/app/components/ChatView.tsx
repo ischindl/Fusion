@@ -34,7 +34,7 @@ import { useAutoPaginationSentinel } from "../hooks/useAutoPaginationSentinel";
 import { useComposerDictation } from "../hooks/useComposerDictation";
 import { useViewportMode } from "./Header";
 import { isTabletTouchViewport } from "../hooks/useViewportMode";
-import { fetchSettings, fetchChatSession, type DiscoveredSkill } from "../api";
+import { fetchSettings, fetchChatSession, fetchChatToolCallBody, type DiscoveredSkill } from "../api";
 import { isExperimentalFeatureEnabled, CHAT_FOCUS_FLAG, type Agent, type ChatSnippet, type ChatTag, type Settings } from "@fusion/core";
 import { MicButton } from "./MicButton";
 import { ChatThinkingLevelControl } from "./ChatThinkingLevelControl";
@@ -3100,6 +3100,15 @@ function ChatViewContent({ projectId, addToast, floating = false, compactLayout 
   const handleHandoffSourceOpen = useCallback((sessionId: string) => {
     void selectSession(sessionId);
   }, [selectSession]);
+  /*
+  FNXC:ChatFeedCompaction 2026-09-17-15:38:
+  The persisted thread feed ships compacted tool calls (identity/status/preview only), so an
+  expanded disclosure fetches the full args/result for exactly that one message. Memoized because
+  StandardChatMessageItem is memoized — an unstable loader would re-render every transcript row.
+  */
+  const loadFullToolCall = useCallback((messageId: string, index: number) => (
+    activeSession ? fetchChatToolCallBody(activeSession.id, messageId, index, projectId) : Promise.resolve(null)
+  ), [activeSession?.id, projectId]);
   // Generic adapter has no structured transcript → terminal-only; every other
   // bundled adapter exposes a transcript and gets the toggle (the authoritative
   // tier is resolved server-side; this only needs the generic vs. non-generic
@@ -3513,6 +3522,7 @@ function ChatViewContent({ projectId, addToast, floating = false, compactLayout 
                 isAwaitingQuestionAnswer={message.role === "assistant" && index === messages.length - 1 && !isStreaming}
                 submittedQuestionAnswer={findSubmittedQuestionAnswer(messages, index)}
                 onQuestionSubmit={handleQuestionSubmit}
+                loadToolCallFull={loadFullToolCall}
                 canEdit={canEditChatMessages && isPersistedChatMessageId(message.id)}
                 onEditMessage={editMessageAndResend}
                 onHandoffSourceOpen={handleHandoffSourceOpen}
