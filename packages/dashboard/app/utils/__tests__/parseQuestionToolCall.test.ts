@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ToolCallInfo } from "../../hooks/chatTypes";
-import { formatQuestionAnswer, isQuestionToolName, parseQuestionToolCall } from "../parseQuestionToolCall";
+import { findSubmittedQuestionAnswer, formatQuestionAnswer, isPlannerQuestionAwaitingAnswer, isLiveQuestionAwaitingAnswer, isQuestionToolName, parseQuestionToolCall } from "../parseQuestionToolCall";
 
 function toolCall(toolName: string, args?: Record<string, unknown>): ToolCallInfo {
   return { toolName, args, isError: false, status: "completed" };
@@ -139,5 +139,46 @@ describe("parseQuestionToolCall", () => {
     expect(formatQuestionAnswer(parsed!.questions, { one: "a", many: ["x", "y"], text: "Because", ok: false })).toBe(
       "> Q: Pick one\nAlpha\n\n> Q: Pick many\nX, Y\n\n> Q: Explain\nBecause\n\n> Q: Proceed?\nNo",
     );
+  });
+});
+
+/*
+FNXC:ChatQuestionLiveness 2026-09-17-19:30:
+Question cards may only look actionable while the asking turn is provably still waiting;
+a dead or interrupted last row must render as a disabled record on both surfaces.
+*/
+describe("isLiveQuestionAwaitingAnswer", () => {
+  const live = { role: "assistant", isLastMessage: true, isStreaming: false, isSessionGenerating: true };
+
+  it("opens only for a live, generating, non-interrupted last assistant row", () => {
+    expect(isLiveQuestionAwaitingAnswer(live)).toBe(true);
+    expect(isLiveQuestionAwaitingAnswer({ ...live, isSessionGenerating: false })).toBe(false);
+    expect(isLiveQuestionAwaitingAnswer({ ...live, interrupted: true })).toBe(false);
+    expect(isLiveQuestionAwaitingAnswer({ ...live, isStreaming: true })).toBe(false);
+    expect(isLiveQuestionAwaitingAnswer({ ...live, isLastMessage: false })).toBe(false);
+    expect(isLiveQuestionAwaitingAnswer({ ...live, role: "user" })).toBe(false);
+  });
+});
+
+describe("isPlannerQuestionAwaitingAnswer", () => {
+  const live = { role: "assistant", isLastMessage: true, isSending: true };
+
+  it("opens only for a sending, non-interrupted last assistant row", () => {
+    expect(isPlannerQuestionAwaitingAnswer(live)).toBe(true);
+    expect(isPlannerQuestionAwaitingAnswer({ ...live, isSending: false })).toBe(false);
+    expect(isPlannerQuestionAwaitingAnswer({ ...live, interrupted: true })).toBe(false);
+    expect(isPlannerQuestionAwaitingAnswer({ ...live, isLastMessage: false })).toBe(false);
+  });
+});
+
+describe("findSubmittedQuestionAnswer", () => {
+  it("returns the first following user message content", () => {
+    const messages = [
+      { role: "assistant", content: "question" },
+      { role: "assistant", content: "noise" },
+      { role: "user", content: "answer" },
+    ];
+    expect(findSubmittedQuestionAnswer(messages, 0)).toBe("answer");
+    expect(findSubmittedQuestionAnswer(messages, 2)).toBeUndefined();
   });
 });

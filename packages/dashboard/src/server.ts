@@ -41,7 +41,7 @@ import {
   evictAllProjectStores,
   setOnProjectFirstCreated,
 } from "./project-store-resolver.js";
-import { getOrCreateScopedChatStore } from "./chat-project-services.js";
+import { getOrCreateScopedChatStore, listLiveScopedChatStores } from "./chat-project-services.js";
 import { MAX_FILE_SIZE } from "./file-service.js";
 import { TerminalViewportRegistry } from "./terminal-viewport.js";
 import { getTerminalService, STALE_SESSION_THRESHOLD_MS } from "./terminal-service.js";
@@ -1281,6 +1281,12 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
       });
       await defaultAgentStore.init();
       const defaultMessageStore = options?.engine?.getMessageStore();
+      /*
+      FNXC:ChatRemoteGenerationMirror 2026-09-17-19:25:
+      A connection without a projectId previously bridged only the default ChatStore, leaving an
+      open global chat view deaf to every scoped project's generations. Bridge the default store
+      plus every live scoped store; createSSE dedupes by identity so a shared instance fires once.
+      */
       createSSE(
         store,
         safeGetMissionStore(store),
@@ -1289,7 +1295,7 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
         undefined,
         defaultAgentStore,
         defaultMessageStore,
-        chatStore,
+        [chatStore, ...listLiveScopedChatStores()],
         options?.automationStore,
       )(req, res);
       return;

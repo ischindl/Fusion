@@ -64,6 +64,8 @@ import { resolveChatContextUsage } from "../utils/chatContextUsage";
 import { resolveChatHandoffUiSettings } from "../utils/chatHandoff";
 import { copyTextToClipboard } from "../utils/copyToClipboard";
 import { buildChatQuotePrefill } from "../utils/chatQuotePrefill";
+/* FNXC:ChatQuestionLiveness 2026-09-17-19:30: shared liveness predicate + answer-echo lookup for question cards. */
+import { findSubmittedQuestionAnswer, isLiveQuestionAwaitingAnswer } from "../utils/parseQuestionToolCall";
 import {
   clearPersistedChatOpenSession,
   getPersistedChatOpenSession,
@@ -230,10 +232,6 @@ function formatRelativeTime(dateStr: string, t: TFunction<"app">): string {
 }
 
 const CHAT_DRAFT_STORAGE_PREFIX = "fusion:chat-draft:";
-
-function findSubmittedQuestionAnswer(messages: ChatMessageInfo[], messageIndex: number): string | undefined {
-  return messages.slice(messageIndex + 1).find((message) => message.role === "user")?.content;
-}
 
 function getChatDraftKey(id: string | null | undefined): string | null {
   return id ? `${CHAT_DRAFT_STORAGE_PREFIX}direct:${id}` : null;
@@ -3547,7 +3545,13 @@ function ChatViewContent({ projectId, addToast, floating = false, compactLayout 
                 onQuoteMessage={handleQuoteMessage}
                 onScrollToTop={handleScrollMessageToTop}
                 isTopClipped={topClippedMessageIds.has(message.id)}
-                isAwaitingQuestionAnswer={message.role === "assistant" && index === messages.length - 1 && !isStreaming}
+                isAwaitingQuestionAnswer={isLiveQuestionAwaitingAnswer({
+                  role: message.role,
+                  isLastMessage: index === messages.length - 1,
+                  isStreaming,
+                  isSessionGenerating: activeSession?.isGenerating === true,
+                  interrupted: message.metadata?.interrupted === true,
+                })}
                 submittedQuestionAnswer={findSubmittedQuestionAnswer(messages, index)}
                 onQuestionSubmit={handleQuestionSubmit}
                 onRetryTurn={handleRetryTurn}

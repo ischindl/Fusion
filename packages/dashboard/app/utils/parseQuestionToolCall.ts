@@ -268,3 +268,56 @@ function isChatQuestion(value: ChatQuestion | null): value is ChatQuestion {
 function isChatQuestionOption(value: ChatQuestionOption | null): value is ChatQuestionOption {
   return value !== null;
 }
+
+/*
+FNXC:ChatQuestionLiveness 2026-09-17-19:30:
+A question card must look actionable only while the turn that asked it is actually still
+waiting. The sentinel keeps the session's in-flight generation alive for the whole wait, so
+"is last row + session generating" is the liveness proof; a restart, a Stop, or an
+interrupted turn clears it and the card must fall back to a disabled record instead of an
+input that posts into a dead turn (previously every last assistant row claimed awaiting, and
+the planner claimed it for ALL assistant rows).
+*/
+export function isLiveQuestionAwaitingAnswer(options: {
+  role: string;
+  isLastMessage: boolean;
+  isStreaming: boolean;
+  isSessionGenerating: boolean;
+  interrupted?: boolean;
+}): boolean {
+  return (
+    options.role === "assistant"
+    && options.isLastMessage
+    && !options.isStreaming
+    && options.interrupted !== true
+    && options.isSessionGenerating
+  );
+}
+
+/**
+FNXC:ChatQuestionLiveness 2026-09-17-19:30:
+Planner parity. The planner keeps `composerState === "sending"` for the whole in-flight turn
+(the sentinel holds the response), so a persisted last row with no live send is a dead or
+already-resolved question and renders as a record; the composer stays a usable answer path.
+*/
+export function isPlannerQuestionAwaitingAnswer(options: {
+  role: string;
+  isLastMessage: boolean;
+  isSending: boolean;
+  interrupted?: boolean;
+}): boolean {
+  return (
+    options.role === "assistant"
+    && options.isLastMessage
+    && options.interrupted !== true
+    && options.isSending
+  );
+}
+
+/** The first user message after `index` is the answer echo a submitted question renders with. */
+export function findSubmittedQuestionAnswer<T extends { role: string; content?: string | null }>(
+  messages: T[],
+  index: number,
+): string | undefined {
+  return messages.slice(index + 1).find((message) => message.role === "user")?.content ?? undefined;
+}

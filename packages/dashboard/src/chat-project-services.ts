@@ -26,6 +26,16 @@ export function getOrCreateScopedChatStore(store: TaskStore, fallbackChatStore?:
   return chatStore;
 }
 
+/*
+FNXC:ChatRemoteGenerationMirror 2026-09-17-19:25:
+A bus connection that is not filtered to one project must still bridge chat events. The live
+scoped-store registry is the authoritative set of EventEmitters that chat mutations fire on;
+newly-created stores join on the next connection because stores are long-lived per project.
+*/
+export function listLiveScopedChatStores(): ChatStore[] {
+  return [...scopedChatStoreCache.values()];
+}
+
 export async function resolveProjectChatContext(options: {
   projectId?: string | null;
   defaultStore: TaskStore;

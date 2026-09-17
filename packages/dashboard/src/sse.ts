@@ -307,7 +307,7 @@ export function stripTaskEventHeavyFields<T>(payload: T): T {
   return stripTaskListHeavyFields(payload);
 }
 
-async function enrichChatMessageSsePayload<T>(message: T, store: TaskStore, chatStore?: ChatStore): Promise<T> {
+async function enrichChatMessageSsePayload<T>(message: T, store: TaskStore, chatStore?: ChatStore | ChatStore[]): Promise<T> {
   if (!message || typeof message !== "object" || Array.isArray(message) || !chatStore) {
     return message;
   }
@@ -316,7 +316,17 @@ async function enrichChatMessageSsePayload<T>(message: T, store: TaskStore, chat
   const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : undefined;
   if (!sessionId) return message;
 
-  const session = await chatStore.getSession(sessionId);
+  /* FNXC:ChatRemoteGenerationMirror 2026-09-17-19:25: with a fan-out set, resolve the owning store by first session hit. */
+  const stores = Array.isArray(chatStore) ? chatStore : [chatStore];
+  let session: Awaited<ReturnType<ChatStore["getSession"]>> = undefined;
+  for (const candidate of stores) {
+    try {
+      session = await candidate.getSession(sessionId);
+    } catch {
+      session = undefined;
+    }
+    if (session) break;
+  }
   if (!session) return message;
 
   const agentId = typeof payload.agentId === "string" ? payload.agentId : session.agentId;
@@ -619,10 +629,22 @@ export function createSSE(
   options?: CreateSSEOptions,
   agentStore?: AgentStore,
   messageStore?: MessageStore,
-  chatStore?: ChatStore,
+  chatStore?: ChatStore | ChatStore[],
   automationStore?: AutomationStore,
 ) {
   const { projectId } = options ?? {};
+  /*
+  FNXC:ChatRemoteGenerationMirror 2026-09-17-19:25:
+  Chat mutations run on per-project scoped ChatStore instances; a bus connection without a
+  projectId previously bridged ONLY the default store, so an open global chat view received no
+  chat events at all for scoped projects. A connection may therefore be given the full set of
+  live chat stores; duplicate identities (default === scoped) are bridged exactly once.
+  */
+  const chatStores: ChatStore[] = chatStore
+    ? Array.isArray(chatStore)
+      ? [...new Set(chatStore.filter(Boolean) as ChatStore[])]
+      : [chatStore]
+    : [];
 
   return (_req: Request, res: Response) => {
     const connectionId = nextConnectionId++;
@@ -1250,20 +1272,20 @@ export function createSSE(
       chatSnippetsSseListeners.delete(onChatSnippetsEvent);
       pluginCustomSseListeners.delete(onPluginCustomEvent);
       cliSessionStateSseListeners.delete(onCliSessionStateEvent);
-      if (chatStore) {
-        chatStore.off("chat:session:created", onChatSessionCreated);
-        chatStore.off("chat:session:updated", onChatSessionUpdated);
-        chatStore.off("chat:session:deleted", onChatSessionDeleted);
-        chatStore.off("chat:message:added", onChatMessageAdded);
-        chatStore.off("chat:message:deleted", onChatMessageDeleted);
-        chatStore.off("chat:room:created", onChatRoomCreated);
-        chatStore.off("chat:room:updated", onChatRoomUpdated);
-        chatStore.off("chat:room:deleted", onChatRoomDeleted);
-        chatStore.off("chat:room:member:added", onChatRoomMemberAdded);
-        chatStore.off("chat:room:member:removed", onChatRoomMemberRemoved);
-        chatStore.off("chat:room:message:added", onChatRoomMessageAdded);
-        chatStore.off("chat:room:message:updated", onChatRoomMessageUpdated);
-        chatStore.off("chat:room:message:deleted", onChatRoomMessageDeleted);
+      for (const chatEventStore of chatStores) {
+        chatEventStore.off("chat:session:created", onChatSessionCreated);
+        chatEventStore.off("chat:session:updated", onChatSessionUpdated);
+        chatEventStore.off("chat:session:deleted", onChatSessionDeleted);
+        chatEventStore.off("chat:message:added", onChatMessageAdded);
+        chatEventStore.off("chat:message:deleted", onChatMessageDeleted);
+        chatEventStore.off("chat:room:created", onChatRoomCreated);
+        chatEventStore.off("chat:room:updated", onChatRoomUpdated);
+        chatEventStore.off("chat:room:deleted", onChatRoomDeleted);
+        chatEventStore.off("chat:room:member:added", onChatRoomMemberAdded);
+        chatEventStore.off("chat:room:member:removed", onChatRoomMemberRemoved);
+        chatEventStore.off("chat:room:message:added", onChatRoomMessageAdded);
+        chatEventStore.off("chat:room:message:updated", onChatRoomMessageUpdated);
+        chatEventStore.off("chat:room:message:deleted", onChatRoomMessageDeleted);
       }
       if (automationStore) {
         automationStore.off("schedule:created", onScheduleCreated);
@@ -1374,20 +1396,20 @@ export function createSSE(
       messageStore.on("message:deleted", onMessageDeleted);
     }
 
-    if (chatStore) {
-      chatStore.on("chat:session:created", onChatSessionCreated);
-      chatStore.on("chat:session:updated", onChatSessionUpdated);
-      chatStore.on("chat:session:deleted", onChatSessionDeleted);
-      chatStore.on("chat:message:added", onChatMessageAdded);
-      chatStore.on("chat:message:deleted", onChatMessageDeleted);
-      chatStore.on("chat:room:created", onChatRoomCreated);
-      chatStore.on("chat:room:updated", onChatRoomUpdated);
-      chatStore.on("chat:room:deleted", onChatRoomDeleted);
-      chatStore.on("chat:room:member:added", onChatRoomMemberAdded);
-      chatStore.on("chat:room:member:removed", onChatRoomMemberRemoved);
-      chatStore.on("chat:room:message:added", onChatRoomMessageAdded);
-      chatStore.on("chat:room:message:updated", onChatRoomMessageUpdated);
-      chatStore.on("chat:room:message:deleted", onChatRoomMessageDeleted);
+    for (const chatEventStore of chatStores) {
+      chatEventStore.on("chat:session:created", onChatSessionCreated);
+      chatEventStore.on("chat:session:updated", onChatSessionUpdated);
+      chatEventStore.on("chat:session:deleted", onChatSessionDeleted);
+      chatEventStore.on("chat:message:added", onChatMessageAdded);
+      chatEventStore.on("chat:message:deleted", onChatMessageDeleted);
+      chatEventStore.on("chat:room:created", onChatRoomCreated);
+      chatEventStore.on("chat:room:updated", onChatRoomUpdated);
+      chatEventStore.on("chat:room:deleted", onChatRoomDeleted);
+      chatEventStore.on("chat:room:member:added", onChatRoomMemberAdded);
+      chatEventStore.on("chat:room:member:removed", onChatRoomMemberRemoved);
+      chatEventStore.on("chat:room:message:added", onChatRoomMessageAdded);
+      chatEventStore.on("chat:room:message:updated", onChatRoomMessageUpdated);
+      chatEventStore.on("chat:room:message:deleted", onChatRoomMessageDeleted);
     }
 
     if (automationStore) {

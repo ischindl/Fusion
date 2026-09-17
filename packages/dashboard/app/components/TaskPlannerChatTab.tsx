@@ -14,7 +14,7 @@ import { MicButton } from "./MicButton";
 import type { ChatEnginePhase, ChatMessageInfo, ToolCallInfo } from "../hooks/chatTypes";
 import { isPersistedChatMessageId } from "../hooks/chatTypes";
 import { attachChatStream, cancelChatResponse, ensureTaskPlannerChatSession, fetchChatMessages, fetchChatSession, fetchChatToolCallBody, fetchSettings, fetchTaskDetail, fetchTaskPlannerChatSession, streamChatResponse, updateChatSession, type ChatFailureInfo, type ChatStreamErrorMeta } from "../api";
-import { parseQuestionToolCall, type ParsedQuestionToolCall } from "../utils/parseQuestionToolCall";
+import { parseQuestionToolCall, isPlannerQuestionAwaitingAnswer, findSubmittedQuestionAnswer, type ParsedQuestionToolCall } from "../utils/parseQuestionToolCall";
 import { ChatQuestionResponse } from "./ChatQuestionResponse";
 import { PendingChatMessageQueue } from "./PendingChatMessageQueue";
 import { ProviderIcon } from "./ProviderIcon";
@@ -1880,7 +1880,17 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
                   activeModelProvider={displayedModelProvider ?? null}
                   activeSessionId={sessionId}
                   projectId={projectId}
-                  isAwaitingQuestionAnswer={message.role === "assistant"}
+                  /* FNXC:ChatQuestionLiveness 2026-09-17-19:30: liveness parity with ChatView — only a last, live, non-interrupted row is awaiting. */
+                  isAwaitingQuestionAnswer={isPlannerQuestionAwaitingAnswer({
+                    role: message.role,
+                    isLastMessage: messages[messages.length - 1]?.id === message.id,
+                    isSending: composerState === "sending",
+                    interrupted: message.metadata?.interrupted === true,
+                  })}
+                  submittedQuestionAnswer={(() => {
+                    const selfIndex = messages.findIndex((m) => m.id === message.id);
+                    return selfIndex >= 0 ? findSubmittedQuestionAnswer(messages, selfIndex) : undefined;
+                  })()}
                   onQuestionSubmit={(answerText) => void sendMessageContent(answerText)}
                   onRetryTurn={handleRetryTurn}
                   loadToolCallFull={loadFullToolCall}
