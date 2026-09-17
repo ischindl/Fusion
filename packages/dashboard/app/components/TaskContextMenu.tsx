@@ -172,6 +172,9 @@ NOTE, flagged not fixed: the id is currently an UNCONDITIONAL disjunct, so expli
 review. #2664 fixed exactly that shape elsewhere by INVERTING the read — traits first, id only as the
 degraded answer when no flags arrive. The same inversion belongs here, but it is a BEHAVIOR CHANGE
 and out of scope for a conversion batch.
+
+DELIBERATE-LITERAL: restated adjacent to the disjunct below so the census marker window covers this
+site — the debt itself is the NOTE above, not an unreviewed literal.
 */
 function isReviewColumn(column: string, flags?: TaskContextMenuColumnFlags): boolean {
   return column === "in-review" || flags?.mergeBlocker === true || flags?.humanReview === true;
@@ -197,8 +200,9 @@ or a stall banner thinks a lane is, and the remediation scope forbids unrelated 
 The tri-role shape already exists once on this side of the wire — `useBlockerFanout`'s review
 predicate uses the same union — so this mirrors an established local convention, not a new taxonomy.
 
-Flags-first with the legacy `in-review` id ONLY as the no-metadata fallback (first paint / stranded
-card), unlike `isReviewColumn` above whose id is a flagged unconditional disjunct — #2664's shape.
+DELIBERATE-LITERAL: flags-first with the legacy `in-review` id ONLY as the no-metadata fallback
+(first paint / stranded card), unlike `isReviewColumn` above whose id is a flagged unconditional
+disjunct — #2664's shape.
 */
 function isReviewBypassLaneColumn(flags: TaskContextMenuColumnFlags | undefined, column: string): boolean {
   return flags

@@ -3176,7 +3176,14 @@ export class HeartbeatMonitor {
                 await taskStore.moveTask(
                   taskDetail.id,
                   await resolveHeartbeatReboundColumn(taskStore, taskDetail.id),
-                  { preserveProgress: true },
+                  /*
+                  FNXC:MoveSource 2026-09-17-06:35: this recovery rebound declares its provenance
+                  explicitly instead of inheriting the implicit default — behavior-identical to
+                  `moveSource ?? "engine"`, but it keeps the move-target ratchet's unattributed
+                  heartbeat-call baseline at three, and the `Worktree base refresh blocked`
+                  task-log line above is the audit attribution for this rehome.
+                  */
+                  { preserveProgress: true, moveSource: "engine" },
                 );
               }
               await this.completeRun(agentId, run.id, {
