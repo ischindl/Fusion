@@ -147,7 +147,9 @@ describe("heartbeat worktree cwd", () => {
       "Worktree base refresh blocked heartbeat execution (base-reconciliation-required)",
       expect.any(String),
     );
-    expect(taskStore.moveTask).toHaveBeenCalledWith("FN-1", "todo", { preserveProgress: true });
+    // FNXC:MoveSource 2026-09-17-07:05: the rebound now declares moveSource explicitly (identical value
+    // to the implicit default) — the ratchet keeps unattributed heartbeat moves at three.
+    expect(taskStore.moveTask).toHaveBeenCalledWith("FN-1", "todo", { preserveProgress: true, moveSource: "engine" });
   });
 
   /*

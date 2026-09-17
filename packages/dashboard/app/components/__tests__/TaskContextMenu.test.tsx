@@ -51,7 +51,14 @@ describe("TaskContextMenu shared task action model", () => {
     }
     expect(actionIds(makeTask(), { onDuplicate: vi.fn() })).not.toContain("transfer-to-project");
     expect(actionIds(makeTask())).not.toContain("transfer-to-project");
-    expect(actionIds(makeTask(), { onDuplicate: vi.fn(), onTransferToProject })).toEqual([
+    /*
+    FNXC:TaskDetailHeaderActions 2026-09-17-07:05 (merge sync):
+    FNXC:TaskDetailHeaderActions 2026-09-11-18:16 added the `options.onTogglePause &&` wire gate to the
+    pause item — this assertion predates it and still expected "pause" without the handler. Pass the
+    handler so the placement contract (transfer-to-project beside Duplicate) is asserted against the
+    current menu shape instead of the removed unwired-pause behavior.
+    */
+    expect(actionIds(makeTask(), { onDuplicate: vi.fn(), onTransferToProject, onTogglePause: vi.fn() })).toEqual([
       "duplicate",
       "transfer-to-project",
       "pause",
