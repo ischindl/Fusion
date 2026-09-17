@@ -2942,7 +2942,15 @@ export function useChat(
 
     const handleChatSessionUpdated = (e: MessageEvent) => {
       if (isStale()) return;
-      const updatedSession: ChatSessionInfo = JSON.parse(e.data);
+      const rawSession = JSON.parse(e.data) as ChatSessionInfo;
+      /*
+      FNXC:ChatRemoteGenerationMirror 2026-09-17-18:57:
+      An older server (or any emit path that bypasses the SSE enrichment) delivers the raw store
+      row: `inFlightGeneration` present, `isGenerating` absent. Deriving the flag here keeps the
+      remote-generation attach and the list spinner working across the wire upgrade boundary.
+      */
+      const derivedGenerating = rawSession.isGenerating ?? rawSession.inFlightGeneration?.status === "generating";
+      const updatedSession: ChatSessionInfo = { ...rawSession, isGenerating: derivedGenerating };
       setSessions((prev) => {
         const updated = prev.map((s) => (s.id === updatedSession.id ? updatedSession : s));
         return sortChatSessions(updated);
@@ -2955,7 +2963,7 @@ export function useChat(
         && pendingRefresh.version === activeSessionSelectionRef.current;
       if (activeSessionRef.current?.id === updatedSession.id && !awaitingAuthoritativeSnapshot) {
         setActiveSession(updatedSession);
-        if (updatedSession.isGenerating && !streamRef.current) {
+        if (derivedGenerating && !streamRef.current) {
           attachIfGenerating(updatedSession.id, updatedSession.inFlightGeneration);
         }
       } else if (awaitingAuthoritativeSnapshot) {

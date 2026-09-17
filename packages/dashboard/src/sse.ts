@@ -37,6 +37,27 @@ let nextConnectionId = 1;
 FNXC:EngineDiagnostics 2026-07-26-08:15:
 SSE open/close fires on every dashboard tab, reconnect, and focus flip. Logging each +/- connection at info filled the TUI log pane with steady-state transport chatter. Gate behind FUSION_DEBUG=sse (or FUSION_DEBUG=1/all/*). Keep backpressure and real failures on warn/error.
 */
+/*
+FNXC:ChatRemoteGenerationMirror 2026-09-17-18:57:
+Chat store emits carry the RAW store row: it has `inFlightGeneration` but not `isGenerating`,
+which GET routes derive. A client that only checks `isGenerating` therefore never learned that
+an externally-started generation (another tab, an API call, an engine auto-retry) began - it
+rendered the foreign user row instantly yet showed no working state until reload. The bus
+payload now carries the derived flag so both the transcript attach and the session-list
+spinner react on the same event the routes would return.
+*/
+export function enrichChatSessionEventPayload(session: unknown): unknown {
+  if (!session || typeof session !== "object" || Array.isArray(session)) {
+    return session;
+  }
+  const record = session as Record<string, unknown>;
+  if ("isGenerating" in record) {
+    return session;
+  }
+  const inFlight = record.inFlightGeneration as { status?: unknown } | null | undefined;
+  return { ...record, isGenerating: inFlight?.status === "generating" };
+}
+
 function isSseDebugEnabled(): boolean {
   const raw = process.env.FUSION_DEBUG?.trim();
   if (!raw) return false;
@@ -1066,7 +1087,7 @@ export function createSSE(
     };
 
     const onChatSessionUpdated = (session: unknown) => {
-      send(`event: chat:session:updated\ndata: ${JSON.stringify(session)}\n\n`);
+      send(`event: chat:session:updated\ndata: ${JSON.stringify(enrichChatSessionEventPayload(session))}\n\n`);
     };
 
     const onChatSessionDeleted = (sessionId: string) => {
