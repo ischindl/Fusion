@@ -1815,7 +1815,6 @@ export function ListView({
           transferTask,
         });
       } : undefined,
-      onOpenRefine: () => setRefineDialogTask(task),
       onOpenRefine: () => setRefineDialogTask({ task, mode: "refine" }),
       /* FNXC:TaskFollowUp 2026-09-17-18:10: opens the same composer from the row, with no detail-open deep link. */
       onOpenFollowUp: () => setRefineDialogTask({ task, mode: "follow-up" }),
