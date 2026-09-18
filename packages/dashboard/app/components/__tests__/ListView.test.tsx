@@ -226,7 +226,7 @@ vi.mock("../TaskDetailModal", () => ({
   ),
 }));
 
-import { fetchTaskDetail, batchUpdateTaskModels, fetchBoardWorkflows, fetchNodes, followUpTask, refineTask, refreshPrStatus, updateTask } from "../../api";
+import { fetchAgents, fetchTaskDetail, batchUpdateTaskModels, fetchBoardWorkflows, fetchNodes, followUpTask, refineTask, refreshPrStatus, updateTask } from "../../api";
 import { writeBoardWorkflowsCache } from "../../utils/boardWorkflowsCache";
 import { setScopedItem } from "../../utils/projectStorage";
 import { clearCache, SWR_CACHE_KEYS } from "../../utils/swrCache";
