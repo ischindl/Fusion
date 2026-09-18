@@ -3996,9 +3996,11 @@ describe("ChatManager.sendMessage", () => {
         "Merge queue triage",
       ]));
       // The summarizer always sees the raw first message, never the provisional title.
+      // Sync-merge note (FN-505 vs our unique-tmp harness): the assertion must follow the
+      // manager's actual rootDir (TEST_ROOT), which the parallel-safe harness mkdtemps per run.
       expect(mockSummarizeTitle).toHaveBeenCalledWith(
         "Please triage the merge queue for me",
-        "/tmp/test",
+        TEST_ROOT,
         undefined,
         undefined,
         expect.objectContaining({ mode: "english", locale: "en" }),
