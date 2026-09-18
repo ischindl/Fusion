@@ -140,7 +140,12 @@
     "usingDefault": "Usando predeterminado",
     "missingToolDetailHint": "Some tool details are unavailable. They may have been recorded while detail saving was disabled; check Settings → Global General to save future tool details.",
     "showLessDetail": "Show less {{detailLabel}}",
-    "showMoreDetail": "Show more {{detailLabel}}{{lineCount}}"
+    "showMoreDetail": "Show more {{detailLabel}}{{lineCount}}",
+    "output": "Output",
+    "duration": "Duration {{duration}}",
+    "timeToFirstToken": "TTFT {{duration}}",
+    "error": "Error",
+    "arguments": "Arguments"
   },
   "agentMention": {
     "membersOf": "Miembros de #{{roomName}}",
@@ -180,6 +185,10 @@
       "fileScope": {
         "description": "",
         "label": ""
+      },
+      "reviewGateBypass": {
+        "label": "Review gate bypass",
+        "description": "Bypassing a failed pre-merge review step to force a card past the review lane."
       }
     },
     "categoryExamples": "Ejemplos de {{label}}",
@@ -1156,14 +1165,118 @@
     "bulkFailures": "fallaron {{count}}",
     "detailLabel": "",
     "lastCompletedStep": "",
-    "mailSubject": "Asunto"
+    "mailSubject": "Asunto",
+    "actionLog": {
+      "lane": "engine lane {{lane}}",
+      "loadOlder": "Load older",
+      "empty": "No actions recorded yet.",
+      "type": {
+        "taskCompleted": "Task completed",
+        "approvalRequested": "Approval requested",
+        "gatePassed": "Gate passed",
+        "gateFailed": "Gate failed",
+        "taskHandedOff": "Task handed off",
+        "agentStateChanged": "Agent state changed",
+        "taskStarted": "Task started"
+      },
+      "title": "Action log",
+      "laneUnknown": "an engine lane",
+      "gaps": "Some older actions are missing from this window.",
+      "timeUnknown": "unknown time",
+      "unresolved": "an unrecognized agent",
+      "loadFailed": "Could not load older actions.",
+      "taskRef": "task {{taskId}}",
+      "loading": "Loading…",
+      "actor": "an actor",
+      "trigger": "Action log",
+      "close": "Close action log"
+    },
+    "stallReason": {
+      "testing": "Paused for testing",
+      "budget-exhausted": "Budget exhausted",
+      "heartbeat-unresponsive": "No heartbeat",
+      "migrated-from-terminated": "Migrated from a dead agent",
+      "manual": "Paused by a person",
+      "error-retry-exhausted": "Error retries exhausted",
+      "state-error": "Last run failed",
+      "held-human-review": "Waiting on a person",
+      "user-requested": "Paused on request",
+      "error-unrecoverable": "Needs a person to fix",
+      "awaiting-approval": "Waiting for approval",
+      "heartbeat-disabled": "Heartbeat switched off",
+      "heartbeat-model-unavailable": "Model unavailable",
+      "never-beat": "No heartbeat yet",
+      "paused": "Paused"
+    },
+    "consolidationFailed": "Failed",
+    "assignmentPolicyAuto": "Auto (default) — eligible for automatic assignment",
+    "disableAllHeartbeatsConfirm_one": "Disable heartbeats for {{count}} project agents?",
+    "fleet": {
+      "active_other": "{{count}} active",
+      "active_one": "{{count}} active",
+      "activeTooltip": "Running or active right now",
+      "noHeartbeat_other": "{{count}} no heartbeat",
+      "stalledTooltip": "Paused or errored; see the node's reason line",
+      "noHeartbeatTooltip": "Heartbeat disabled, overdue, or never recorded",
+      "waitingHuman_one": "{{count}} waiting on a human",
+      "stalled_other": "{{count}} stalled",
+      "stalled_one": "{{count}} stalled",
+      "waitingHuman_other": "{{count}} waiting on a human",
+      "noHeartbeat_one": "{{count}} no heartbeat",
+      "waitingHumanTooltip": "Waiting for a person to approve, review, or answer",
+      "verdictLabel": "Project movement"
+    },
+    "disableHeartbeatsCountHint_other": "Disable {{count}} enabled project heartbeats",
+    "inlineMemoryPreviewMode": "Inline memory preview mode",
+    "disableAllHeartbeatsConfirm_other": "Disable heartbeats for {{count}} project agents?",
+    "heartbeatDisabled": "Heartbeat disabled for {{name}}",
+    "idCopyFailed": "Failed to copy agent ID",
+    "consolidationHistoryEmpty": "No consolidation activity yet.",
+    "consolidationCompleted": "Completed",
+    "disableHeartbeatsCountHint_one": "Disable {{count}} enabled project heartbeats",
+    "loadOlderLogs_other": "Load {{count}} older ({{remaining}} remaining)",
+    "consolidationHistoryError": "Unable to load consolidation history: {{error}}",
+    "assignmentPolicyNone": "None — can never receive implementation tasks",
+    "enableHeartbeatsCountHint_other": "Enable {{count}} disabled project heartbeats",
+    "enableHeartbeatsCountHint_one": "Enable {{count}} disabled project heartbeats",
+    "additionalRoles": "Additional workflow roles",
+    "enableHeartbeatsSummary_one": "Enabled {{count}} heartbeats; skipped {{skipped}}",
+    "heartbeatDisabledOption": "Disabled",
+    "consolidationSkipped": "Skipped",
+    "assignmentPolicy": "Assignment Policy",
+    "enableAllHeartbeatsConfirm_one": "Enable heartbeats for {{count}} project agents?",
+    "bulkFailures_one": "failed {{count}}",
+    "insertInstructionsTemplate": "Insert template",
+    "assignmentPolicyHint": "Controls whether task routing may bind work to this agent. Use \"None\" for liaison/observer agents that must never execute product tasks — no override can bypass it.",
+    "inheritProjectRoleDefault": "Inherit project/role default",
+    "bulkFailures_other": "failed {{count}}",
+    "disableHeartbeatsSummary_one": "Disabled {{count}} heartbeats; skipped {{skipped}}",
+    "enableAllHeartbeatsConfirm_other": "Enable heartbeats for {{count}} project agents?",
+    "assignmentPolicyExplicitOnly": "Explicit only — never auto-assigned; accepts direct assignment/delegation",
+    "taskColumnUnresolved": "Unresolved task",
+    "noVisibleTasks": "No assigned or active workflow tasks for this agent",
+    "enableHeartbeatsSummary_other": "Enabled {{count}} heartbeats; skipped {{skipped}}",
+    "inlineMemoryEditMode": "Inline memory edit mode",
+    "disableHeartbeatsSummary_other": "Disabled {{count}} heartbeats; skipped {{skipped}}",
+    "loadOlderLogs_one": "Load {{count}} older ({{remaining}} remaining)",
+    "consolidationHistory": "Consolidation history"
   },
   "app": {
     "backendError": {
       "failedFetch": "Error al obtener proyectos"
     },
     "testMode": "Modo de prueba — sin llamadas reales de IA",
-    "migrationInProgress": "Migración de base de datos en curso — el panel se reconectará cuando termine."
+    "migrationInProgress": "Migración de base de datos en curso — el panel se reconectará cuando termine.",
+    "taskDetail": {
+      "backToBoard": "Back to board"
+    },
+    "sqliteMigration": {
+      "dismiss": "Dismiss",
+      "title": "Your data was migrated to PostgreSQL",
+      "completedAt": "Completed at:",
+      "needHelp": "Get help on Discord",
+      "detail": "{{rows}} row(s) across {{tables}} table(s) were imported from your previous SQLite database. Your original database files were kept as backups:"
+    }
   },
   "appName": "",
   "approval": {
@@ -1226,7 +1339,18 @@
     "loading": "Cargando grupo de ramas…",
     "mergeIntoMain": "Fusionar grupo con main",
     "openPr": "Abrir PR",
-    "unavailable": "Grupo de ramas no disponible"
+    "unavailable": "Grupo de ramas no disponible",
+    "staleTitle": "Stale branch group reference",
+    "confirmPromotion": "Confirm group promotion",
+    "resetUnavailable": "Open the task detail view to reset this stale branch group reference.",
+    "confirmOpenPr": "Review landed member advisories before opening the group pull request.",
+    "staleDescription": "This task references branch group {{groupId}}, but that group is no longer available. Reset only this task's branch group to continue without raw SQLite edits.",
+    "advisoryList": "Landed-member review advisories",
+    "confirmMerge": "Review landed member advisories before merging this group.",
+    "resetTask": "Reset branch group for this task",
+    "reviewAdvisory": "Review",
+    "reviewLoadFailed": "Failed to open review for {{id}}",
+    "noAdvisories": "No landed-member review advisories were recorded."
   },
   "branchGroups": {
     "prNumber": ""
@@ -1433,7 +1557,117 @@
     "conversationIdCopied": "",
     "copyConversationId": "",
     "questionOptionalLabel": "",
-    "questionSelectHintWithOptional": ""
+    "questionSelectHintWithOptional": "",
+    "archived": "Archived",
+    "noOtherConversations": "No other conversations",
+    "commandNoAttachments": "Attachments aren't supported with commands — remove them before sending",
+    "contextTruncationUnproven": "The reduced context size could not be verified.",
+    "focusClearedToast": "Memory focus cleared",
+    "conversationTags": "Conversation tags",
+    "showConversationList": "Show conversation list",
+    "conversationPinned": "Conversation pinned",
+    "noCommandsFound": "No commands found",
+    "sendNoActiveSession": "Select or create a chat before sending",
+    "failedToRestoreConversation": "Failed to restore conversation",
+    "toolCallStatusErrors": "errors",
+    "pinLimit": "You can pin up to 3 conversations",
+    "handoffFailed": "Failed to start the fresh chat.",
+    "deleteTag": "Delete tag {{name}}",
+    "focusTitleTopic": "Memory focus: {{topic}}",
+    "conversationUnpinned": "Conversation unpinned",
+    "handoffTooltip": "This conversation has used {{percent}}% of its context window. Start a fresh chat seeded with a briefing of this one.",
+    "reportFallbackTitle": "Chat report",
+    "allTags": "All tags",
+    "handoffOpenSource": "View original",
+    "filterByTag": "Filter conversations by tag",
+    "editMessageSave": "Save",
+    "conversationRestored": "Conversation restored",
+    "clearNoAttachments": "Remove the attachments before running /clear or /new — they would be discarded unsent",
+    "switchConversation": "Switch conversation",
+    "toolCallStatusError": "error",
+    "commandNoRunningAgentHint": "No running agent to steer",
+    "focusTitleNone": "Set memory focus topic (whole-project scope)",
+    "focusSetToast": "Memory focus set to {{topic}}",
+    "toolCallStatusRunning": "running",
+    "pinned": "Pinned",
+    "toolCallResultPrefix": "result",
+    "toolCallLoadingDetails": "Loading details…",
+    "toolCallDetailsLoadFailed": "Could not load the full details for this tool call.",
+    "reportTrimmed": "Message trimmed to 2000 characters for mail",
+    "failedToCreateTag": "Failed to create tag",
+    "handoffStarted": "Continued in a fresh chat. The original conversation is archived and stays available.",
+    "contextTruncationNotice_other": "To fit the context window, {{count}} older messages ({{tokens}} tokens) were dropped from this conversation's history.",
+    "popOut": "Pop out chat",
+    "commandSteerFailed": "Failed to send to the running agent",
+    "attachmentsNotQueued": "Attachments can't be queued while a reply is streaming — wait for it to finish",
+    "unread": "Unread",
+    "outputBudgetExhausted": "The model used its entire output budget on thinking — raise maxTokens for this model.",
+    "responseInterrupted": "Response interrupted — whatever was produced before the stop is shown above and in Thinking.",
+    "noReplyGenerated": "The model ended this turn without writing a reply. Expand Thinking below to see what it reached.",
+    "retryTurn": "Retry",
+    "sendAsReport": "Send as report",
+    "failedToUpdateTags": "Failed to update tags",
+    "contextTruncationNotice_one": "To fit the context window, {{count}} older message ({{tokens}} tokens) was dropped from this conversation's history.",
+    "showArchivedConversations": "Show archived conversations",
+    "conversationSearchMatchCount_one": "{{current}} of {{count}} matches",
+    "addTag": "Add",
+    "handoffButton": "Continue in a new chat",
+    "pin": "Pin",
+    "focusPlaceholder": "topic (or 'all' to clear)",
+    "commandNoRunningAgent": "No running agent to steer",
+    "failureReferenceKind": "Kind",
+    "toolCallArgsPrefix": "args",
+    "handoffBriefingDegraded": "Handoff briefing degraded: this chat starts from a transcript digest instead of a model summary.",
+    "failureReferenceLabel": "Reference",
+    "focusInputLabel": "A memory focus topic",
+    "commandSteerSuccess": "Sent to the running agent",
+    "editMessage": "Edit message",
+    "conversationActionsAria": "Conversation actions for {{title}}",
+    "renameTagTitle": "Rename tag",
+    "focusClear": "Clear to whole-project",
+    "allConversations": "All conversations",
+    "agentTargetTranscriptNotice": "The agent target keeps its own conversation context and will not recall this chat's earlier messages.",
+    "clearTagFilter": "Clear tag filter",
+    "workingCompactingStatus": "Working (compacting…)",
+    "failureReferenceId": "ID",
+    "closeChat": "Close chat",
+    "send": "Send",
+    "handoffContinuesFrom": "Continues from “{{title}}”",
+    "untitledConversation": "Untitled conversation",
+    "unpin": "Unpin",
+    "failureReferenceMetaLabel": "Label",
+    "focusSave": "Set focus",
+    "viewFailureDetails": "View failure details",
+    "toolCallsHeader": "Tool calls",
+    "renameTag": "Rename tag {{name}}",
+    "back": "Back",
+    "tagName": "Tag name",
+    "newTag": "New tag",
+    "failedToDeleteTag": "Failed to delete tag",
+    "conversationSearchMatchCount_other": "{{current}} of {{count}} matches",
+    "focusFailedToast": "Failed to update memory focus",
+    "maximizeToChatView": "Open in Chat view",
+    "sendAlreadyInFlight": "That prompt is still being delivered — its text stays here until the server stores it",
+    "focusHelp": "Scopes this conversation's memory recall to a topic. Leave empty or use 'all' for whole-project scope.",
+    "deleteTagTitle": "Delete tag?",
+    "editMessageCancel": "Cancel",
+    "quickChat": "Quick Chat",
+    "commandSuggestions": "Command suggestions",
+    "focusButton": "Memory focus topic",
+    "deleteTagBody": "This removes the tag from all conversations, but does not delete conversations.",
+    "focusSaving": "Saving…",
+    "toolCallStatusCompleted": "completed",
+    "handoffDegraded": "Started a fresh chat, but its handoff briefing was degraded to a transcript digest.",
+    "failedToUpdateChatModel": "Failed to update chat model",
+    "title": "Chat",
+    "failedToRenameTag": "Failed to rename tag",
+    "openMailboxMessage": "Open mailbox message",
+    "hideConversationList": "Hide conversation list",
+    "focusTitleDialog": "Memory focus topic",
+    "chatAsModel": "Chat as model (no agent)",
+    "presentationModeGroup": "Chat display mode",
+    "presentationModePopup": "Open chat as popup",
+    "presentationModeView": "Open chat as view"
   },
   "chatRooms": {
     "error": {
@@ -1548,7 +1782,16 @@
     "replannedTasks_other": "Replanned {{count}} task{{plural}}",
     "replanPartialFailure": "Replanned {{replanned}} of {{total}} tasks; {{failed}} failed",
     "paginationError": "No se pudieron cargar las tareas anteriores.",
-    "openHistory": "Abrir historial"
+    "openHistory": "Abrir historial",
+    "planAutoApproveOnHint": "On bypasses manual plan approval for this project",
+    "archiveAllDoneHint_other": "Archive {{count}} done task{{plural}}",
+    "planAutoApproveLabel": "Auto-approve plan",
+    "noDoneTasksToArchive": "No done tasks to archive",
+    "archiveAllDoneHint_one": "Archive {{count}} done task{{plural}}",
+    "planAutoApproveOffHint": "Off uses the workflow/default plan approval setting",
+    "executingOfTotal": "{{active}} executing of {{total}}",
+    "loadMoreArchivedLoading": "Loading…",
+    "loadMoreArchived": "Show more"
   },
   "commandCenter": {
     "activity": {
@@ -1585,11 +1828,24 @@
         "maxWorktrees": "",
         "title": "",
         "runningGlobal": "",
-        "runningProject": ""
+        "runningProject": "",
+        "runningProject_one": "{{count}} running (this project)",
+        "confirmMultipleMessage": "Change these concurrency settings: {{settings}}?",
+        "confirmTitle": "Confirm concurrency change",
+        "confirmChangeSummaryItem": "{{setting}} from {{oldValue}} to {{newValue}}",
+        "runningGlobal_other": "{{count}} running (all projects)",
+        "confirmSave": "Save change",
+        "worktreeLimitDisabled": "Enable the worktree limit in Settings to edit this capacity.",
+        "confirmCancel": "Cancel",
+        "runningGlobal_one": "{{count}} running (all projects)",
+        "confirmMessage": "Change {{setting}}?",
+        "runningProject_other": "{{count}} running (this project)"
       },
       "engine": {
         "description": "",
-        "title": ""
+        "title": "",
+        "viewBoard": "View Board",
+        "viewAgents": "View Agents"
       },
       "heartbeat": {
         "description": "",
@@ -1703,7 +1959,14 @@
       "issueFlowShare": "",
       "net": "",
       "repoValue": "",
-      "totalsTitle": ""
+      "totalsTitle": "",
+      "resolvedApprox": "approx",
+      "resolvedTitle": "Resolved issues",
+      "resolvedTask": "Resolving task",
+      "resolvedAtUnknown": "Unknown",
+      "resolvedAt": "Resolved at",
+      "resolvedIssue": "Issue",
+      "openResolvedIssue": "Open GitHub issue {{issue}}"
     },
     "heading": "",
     "loading": "",
@@ -1747,7 +2010,12 @@
       "tokensCost": "",
       "toolCategories": "",
       "toolCategoriesHint": "",
-      "uniqueModels": ""
+      "uniqueModels": "",
+      "codebaseTokensHint": "Local estimate calibrated to cl100k_base",
+      "metricsPartial": "Approx. (partial)",
+      "codebaseTokens": "Codebase tokens",
+      "diskSizeHint": "Apparent local size",
+      "diskSize": "Disk size"
     },
     "productivity": {
       "averageDuration": "",
@@ -1784,7 +2052,8 @@
       "pullRequests": "",
       "totalDuration": "",
       "volumeHint": "",
-      "volumeTitle": ""
+      "volumeTitle": "",
+      "durationTrendTitle": "Task duration over time"
     },
     "range": {
       "custom": "",
@@ -1804,7 +2073,10 @@
       "resolved": "",
       "statusShare": "",
       "summaryTitle": "",
-      "total": ""
+      "total": "",
+      "providersUnknown": "unknown",
+      "emptyNoConnectorConfigured": "No signal connector configured. Connect GitLab, Sentry, Datadog, PagerDuty, or a generic webhook to see incident metrics here.",
+      "emptyAwaitingSignals": "Connector configured, awaiting signals in this range. Configured providers: {{providers}}."
     },
     "system": {
       "cpuGauge": "",
@@ -1840,7 +2112,9 @@
       "tokens": "",
       "tools": "",
       "reviewArtifacts": "Artefactos de revisión",
-      "agentActivity": "Agent Activity"
+      "agentActivity": "Agent Activity",
+      "plugins": "Plugins",
+      "gitlab": "GitLab"
     },
     "team": {
       "agent": "",
@@ -1905,7 +2179,8 @@
       "total": "",
       "totalsTitle": "",
       "totalTokens": "",
-      "unknownModel": ""
+      "unknownModel": "",
+      "chatMessages": "Chat turns"
     },
     "tools": {
       "autonomyHint": "",
@@ -1952,7 +2227,25 @@
       }
     },
     "taskVerification": "",
-    "verificationRequests": ""
+    "verificationRequests": "",
+    "gitlab": {
+      "dailyTitle": "Daily GitLab flow",
+      "filedTrend": "Filed",
+      "noResolved": "No resolved GitLab source items in range.",
+      "approximate": "(approx.)",
+      "totalsTitle": "GitLab issue and MR flow",
+      "net": "Net",
+      "filed": "Filed by Fusion",
+      "fixedTrend": "Fixed",
+      "fixedApproximation": "Uses persisted GitLab close times when available",
+      "projectValue": "{{filed}} filed / {{fixed}} fixed",
+      "noDaily": "No daily GitLab trend data yet.",
+      "noProjects": "No GitLab project activity yet.",
+      "fixed": "Fixed by Fusion",
+      "projectsTitle": "Projects and groups",
+      "resolvedTitle": "Resolved GitLab source items",
+      "empty": "No GitLab issue or merge request activity in the selected range."
+    }
   },
   "comments": {
     "addButton": "Añadir comentario",
@@ -2015,7 +2308,8 @@
     "unknown": "Desconocido",
     "unsavedChanges": "Cambios sin guardar",
     "yes": "Sí",
-    "alpha": "Alpha"
+    "alpha": "Alpha",
+    "remove": "Remove"
   },
   "composer": {
     "loadingAgents": "Cargando agentes…",
@@ -2208,7 +2502,16 @@
       "started": "Servidor de desarrollo iniciado.",
       "stopped": "Servidor de desarrollo detenido."
     },
-    "warn": "Advertencia"
+    "warn": "Advertencia",
+    "executingTask": "Executing Task",
+    "projectRootNoTask": "Project root (no task)",
+    "previewModalLauncherUnavailable": "Start the dev server or set a preview URL to open the preview modal.",
+    "previewModalLauncherDescription": "Open the live preview in a modal so logs and configuration stay usable in this narrow dock.",
+    "restartToApplyTask": "Restart the dev server to apply the selected task's worktree.",
+    "noExecutingTasks": "No executing tasks with a worktree available. Start a task to target its worktree.",
+    "targetWorktree": "Target worktree",
+    "openPreview": "Open preview",
+    "closePreviewModal": "Close preview modal"
   },
   "dirPicker": {
     "ariaLabel": "Explorador de directorios",
@@ -2401,7 +2704,64 @@
     "expandArtifactHint": "Click to expand",
     "lightboxLabel": "Artifact media preview",
     "readOnly": "",
-    "readOnlyHint": ""
+    "readOnlyHint": "",
+    "artifactCategoryImages": "Images",
+    "openTaskDocument": "Open {{taskId}} {{key}}",
+    "artifactCategoryImage": "Image",
+    "artifactSaved": "Artifact saved",
+    "editTaskDocument": "Edit task document",
+    "unknownAuthor": "unknown",
+    "taskDocumentContentEditor": "Task document content editor",
+    "artifactCategoryDoc": "Document",
+    "taskStatusAria": "Task status: {{status}}",
+    "switchToSource": "Switch to source view",
+    "artifactCategoryOther": "Other",
+    "taskDocumentStale": "This document changed since you opened it. Your draft is preserved; review the latest revision, then choose Rebase draft before saving.",
+    "artifactTypeFilterLabel": "Filter artifacts by category",
+    "artifactCategoryAudioSingle": "Audio",
+    "edit": "Edit",
+    "taskDocumentPreviewLabel": "Task document content preview",
+    "projectFileContentEditor": "Project file content editor",
+    "pdfViewerLabel": "PDF artifact viewer",
+    "cancelEdit": "Cancel",
+    "taskDocumentsListLabel": "Task documents",
+    "taskDocumentSaved": "Document saved",
+    "projectFileSaved": "File saved",
+    "loadingArtifact": "Loading artifact…",
+    "docViewerLabel": "Document artifact viewer",
+    "saveProjectFile": "Save",
+    "expandImageArtifact": "Expand image artifact {{title}}",
+    "artifactCategoryVideo": "Video",
+    "saveTaskDocument": "Save",
+    "backToTaskDocuments": "Back to documents",
+    "editProjectFile": "Edit project file",
+    "downloadArtifact": "Download",
+    "htmlPreview": "Preview",
+    "artifactCategoryPdfs": "PDFs",
+    "taskArtifactsLabel": "Artifacts",
+    "rebaseTaskDocument": "Rebase draft",
+    "taskArtifactsSubsection": "Task artifacts",
+    "artifactCategoryPdf": "PDF",
+    "selectTaskDocument": "Select a task document or artifact to view its content.",
+    "openInNewTab": "Open in new tab",
+    "saving": "Saving…",
+    "artifactCategoryOtherSingle": "Other",
+    "switchToPreview": "Switch to live preview",
+    "backToTaskDocumentsList": "Back to task documents list",
+    "editArtifact": "Edit document",
+    "artifactContentEditor": "Artifact content editor",
+    "artifactCategoryVideos": "Videos",
+    "revisionShort": "v{{revision}}",
+    "downloadArtifactAria": "Download {{title}}",
+    "openArtifactViewer": "Open {{title}}",
+    "artifactFilterAll": "All",
+    "saveArtifact": "Save",
+    "openTaskArtifact": "Open {{taskId}} artifact {{title}}",
+    "artifactCategoryDocs": "Docs",
+    "artifactCategoryAudio": "Audio",
+    "taskOutputCount": "{{docCount}} doc{{docPlural}} · {{artifactCount}} artifact{{artifactPlural}}",
+    "htmlSource": "Source",
+    "binaryDocArtifact": "This document is stored as a file."
   },
   "droidCli": {
     "active": "Activo",
@@ -2472,7 +2832,8 @@
     "refreshAria": "Actualizar evaluaciones",
     "searchPlaceholder": "Buscar tarea o justificación",
     "selectPrompt": "Seleccione una evaluación para inspeccionar puntuaciones, justificación y evidencia.",
-    "suggestedFollowupsHeading": "Tareas de seguimiento sugeridas"
+    "suggestedFollowupsHeading": "Tareas de seguimiento sugeridas",
+    "title": "Evals"
   },
   "executor": {
     "blocked": "Bloqueado",
@@ -2511,7 +2872,8 @@
     "engineControls": "Engine controls",
     "engineControlsClose": "Close engine controls",
     "openEngineControlsForState": "Open engine controls for {{state}} state",
-    "triageDisabledWhileStopped": "Start the AI engine before changing triage scheduling"
+    "triageDisabledWhileStopped": "Start the AI engine before changing triage scheduling",
+    "waiting": "Waiting"
   },
   "fileBrowser": {
     "back": "Volver a la lista de archivos",
@@ -2568,7 +2930,33 @@
     "sortSize": "Tamaño",
     "sortDirectionAscending": "Dirección de orden: ascendente",
     "sortDirectionDescending": "Dirección de orden: descendente",
-    "sortUnavailableDuringSearch": "El orden se aplica a las listas de carpetas y no está disponible durante la búsqueda"
+    "sortUnavailableDuringSearch": "El orden se aplica a las listas de carpetas y no está disponible durante la búsqueda",
+    "uploadKeptOld_one": "Kept {{count}} existing file",
+    "searchProjectFilesPlaceholder": "Search project files…",
+    "createNewFolder": "Create new folder",
+    "searchNoResults": "No files found",
+    "upload": "Upload",
+    "uploadTitle": "Upload files to this folder",
+    "uploadCollisionMore_one": " (+{{count}} more)",
+    "uploadTooLarge": "Exceeds the {{max}} upload limit",
+    "uploadStatusDismiss": "Dismiss upload status",
+    "uploadCollisionTitle": "Replace existing files?",
+    "searchingFiles": "Searching files…",
+    "uploadSummary_other": "{{count}} files uploaded",
+    "createNewFile": "Create new file",
+    "uploadFilesInput": "Upload files",
+    "uploadCollisionMore_other": " (+{{count}} more)",
+    "uploadFiles": "Upload files…",
+    "searchProjectFiles": "Search project files",
+    "uploadSummary_one": "{{count}} file uploaded",
+    "new": "New",
+    "uploadFailed": "Upload failed",
+    "uploadReplacing": "Replacing…",
+    "uploadReplace": "Replace",
+    "searchFailed": "Search failed",
+    "uploadKeptOld_other": "Kept {{count}} existing files",
+    "uploadCollisionMessage": "These files already exist in this folder. Replace them with the uploaded versions?",
+    "uploading": "Uploading…"
   },
   "fileEditor": {
     "autoSave": "",
@@ -3001,7 +3389,76 @@
     "translateShowOriginal": "",
     "translateShowTranslated": "",
     "translateUnknownLanguage": "",
-    "translateWorking": ""
+    "translateWorking": "",
+    "filter": "Filter",
+    "closeIssue": "Close issue",
+    "commitTarget": "History target",
+    "detached": "Detached",
+    "worktreeTargetMain": "Main",
+    "viewOnGitHub": "View on GitHub",
+    "currentCheckout": "Current checkout",
+    "providerAriaLabel": "Import provider",
+    "issueClosedToast": "Issue #{{number}} closed",
+    "issuesCount_one": "{{count}} issues",
+    "closeIssueConfirmTitle": "Close issue #{{number}}?",
+    "gitlabGroupIssues": "Group issues",
+    "importTasksHeading": "Import Tasks",
+    "prevPage": "Previous",
+    "gitlabNoResources": "No GitLab resources loaded",
+    "gitlabGroupPlaceholder": "group/subgroup or numeric ID",
+    "commitAndPush": "Commit and Push",
+    "failedToImportGitlab": "Failed to import GitLab resource",
+    "resolveFeedback": "Resolve feedback",
+    "gitlabError": "GitLab import unavailable",
+    "allImportedHidden": "All loaded items are already imported",
+    "viewWorktreeCommitsLabel": "View commits for {{branch}} {{task}} {{path}}",
+    "failedToFetchGitlab": "Failed to fetch GitLab resources",
+    "checkFixTaskCreated": "Fix task created",
+    "noWorktreesFound": "No worktrees found",
+    "gitlabDisabledHeading": "GitLab integration disabled",
+    "gitlabProjectPlaceholder": "group/subgroup/project or numeric ID",
+    "gitlabMergeRequests": "Merge requests",
+    "planIssue": "Plan",
+    "gitlabGroupRequired": "GitLab group path or ID is required",
+    "nextPage": "Next",
+    "sectionRecovery": "Recovery",
+    "commitAndPushTitle": "Commit staged changes, then push the current branch",
+    "filterGitLabByLabels": "Filter GitLab resources by labels",
+    "gitlabResourceAriaLabel": "GitLab resource type",
+    "previewAuthor": "by {{author}}",
+    "gitlabDisabledHint": "Enable GitLab integration in Settings to fetch or import GitLab resources. Saved GitLab URLs and tokens remain configured.",
+    "chatAboutIssue": "Chat",
+    "closeIssueConfirmMessage": "This closes {{repo}}#{{number}} on GitHub. This cannot be undone from here.",
+    "pageStatus": "Page {{page}} of {{total}}",
+    "selectCommitHistoryTarget": "Select commit history target",
+    "gitlabToolbarAriaLabel": "GitLab import controls",
+    "noChecks": "No checks",
+    "gitlabProjectLabel": "GitLab project path or ID",
+    "loadingChecks": "Loading checks…",
+    "refreshChecksAria": "Refresh checks",
+    "gitlabProjectRequired": "GitLab project path or ID is required",
+    "alreadyImported": "Imported",
+    "openSource": "Open source",
+    "gitlabDisabled": "GitLab integration is disabled in Settings. Enable it to fetch or import GitLab resources; saved configuration is preserved.",
+    "createCheckFixTaskAria": "Create fix task for {{checkName}}",
+    "gitlabGroupLabel": "GitLab group path or ID",
+    "issuesCount_other": "{{count}} issues",
+    "issuesPaginationAria": "Issues pages",
+    "viewWorktreeCommitsTitle": "View commits for {{path}}",
+    "closeIssueTitle": "Close issue #{{number}}",
+    "failedToCreateCheckFixTask": "Failed to create fix task",
+    "importAsTask": "Import as task",
+    "hideImported": "Hide imported",
+    "checksHeading": "Checks",
+    "gitlabProjectIssues": "Project issues",
+    "refreshChecks": "Refresh checks",
+    "createCheckFixTask": "Create fix task",
+    "selectRepo": "Select repository",
+    "gitlabLoadHint": "Enter a project or group and load resources from the configured GitLab instance.",
+    "commitSucceededPushFailed": "Committed locally ({{hash}}), but push failed: {{message}}",
+    "viewCommits": "View commits",
+    "issuesTruncated": "Showing the first {{cap}} open issues. Refine with a label filter to narrow the list.",
+    "viewPrNumberOnGithub": "View PR #{{number}} on GitHub"
   },
   "githubStarPrompt": {
     "body": "",
@@ -3156,7 +3613,19 @@
     "viewActivityLog": "Ver registro de actividad",
     "viewProjects": "Ver proyectos",
     "viewUsage": "Ver uso",
-    "workflows": "Flujos de trabajo"
+    "workflows": "Flujos de trabajo",
+    "closeSearch": "Close search",
+    "taskSuggestions": "Task suggestions",
+    "noWorkingBranch": "No working branch",
+    "allBaseBranches": "All base branches",
+    "hideRightSidebar": "Hide right sidebar",
+    "allProjects": "All projects",
+    "favoriteProjects": "Favorites",
+    "allWorkingBranches": "All working branches",
+    "workingBranch": "Working branch",
+    "showRightSidebar": "Show right sidebar",
+    "baseBranch": "Base branch",
+    "noBaseBranch": "No base branch"
   },
   "health": {
     "activeTasks": "Tareas activas",
@@ -3357,7 +3826,9 @@
     "updated": "{{label}} actualizado",
     "useMissionContext": "Usar contexto de misión",
     "verificationCriteria": "Criterios de verificación",
-    "yes": "Sí"
+    "yes": "Sí",
+    "otherOptionPlaceholder": "Write your own answer...",
+    "otherOptionLabel": "Other (write your own)"
   },
   "issues": {
     "noIssuesFound": ""
@@ -3463,7 +3934,12 @@
     "statusReplan": "Replanificar",
     "statusWaiting": "",
     "statusWaitingOn": "",
-    "bulkDeleteSummary": ""
+    "bulkDeleteSummary": "",
+    "loadingWorkflowLanes": "Loading workflow lanes",
+    "thinkingLevel": "Thinking Level",
+    "planReviewBadge": "Plan Review",
+    "noWorkflowLanes": "No workflow lanes available",
+    "title": "List View"
   },
   "mailbox": {
     "agent": "Agente",
@@ -3606,7 +4082,13 @@
     "viewTask": "",
     "viewTaskAria": "",
     "viewTaskLabel": "",
-    "you": "Tú"
+    "you": "Tú",
+    "noStructuralMessages": "No reports or approvals in your inbox",
+    "confirmDelete": "Confirm delete",
+    "openPlanningSessionAria": "Open planning session: {{sessionId}}",
+    "approval": "Approval",
+    "report": "Report",
+    "openPlanningSession": "Open planning session"
   },
   "memory": {
     "auditChecksTitle": "Comprobaciones de auditoría",
@@ -3789,7 +4271,17 @@
     "noNodes": "No hay nodos para mostrar",
     "noPeers": "Datos de descubrimiento de igual a igual no disponibles.",
     "offline": "Sin conexión",
-    "online": "En línea"
+    "online": "En línea",
+    "inFlightTasks_other": "{{count}} in-flight",
+    "taskCount_one": "{{count}} tasks",
+    "enginesAriaLabel": "Active engine connections",
+    "enginesConnected_other": "{{count}} engine(s) connected to shared PG",
+    "enginesConnected_one": "{{count}} engine(s) connected to shared PG",
+    "inFlightTasks_one": "{{count}} in-flight",
+    "failedToFetchEngines": "Failed to fetch engine status",
+    "taskCount_other": "{{count}} tasks",
+    "activeAgents_other": "{{count}} agents",
+    "activeAgents_one": "{{count}} agents"
   },
   "missions": {
     "acceptance": "Criterios de aceptación:",
@@ -4135,7 +4627,62 @@
     "verification": "Verificación:",
     "verificationCriteria": "Criterios de verificación",
     "viewMissionFailures": "Ver fallos de la misión",
-    "whatToBuild": "¿Qué quieres construir?"
+    "whatToBuild": "¿Qué quieres construir?",
+    "reconcilePreviewFailed": "Failed to preview reconcile",
+    "reconcileArchived": "Mission is archived — nothing reconciled",
+    "sharedBranchMembers_one": "{{count}} member",
+    "taskPrefixAriaLabel": "Mission task prefix",
+    "autoMergeOn": "Auto-merge",
+    "reconcileApplied": "Reconciled: {{status}} status, {{badge}} badge, {{terminal}} terminal repairs",
+    "reconcileUpToDate": "Already up to date",
+    "whyBlocked": "Why blocked",
+    "nextAction": "Next action",
+    "blockedClearedStillGated": "Blocked status cleared; automation remains gated until Resume.",
+    "reconcileTerminalRepairs_other": "Terminal repairs: {{count}}",
+    "clearValidationBadge": "Clear validation badge",
+    "rerunValidation": "Re-run validation",
+    "taskPrefixPlaceholder": "e.g. ERR (defaults to project prefix)",
+    "reconcileNow": "Reconcile now",
+    "truncated": "truncated",
+    "validatorRun": "Validator run",
+    "otherOptionPlaceholder": "Write your own answer...",
+    "noRecordedBlockers": "No recorded blockers.",
+    "autoMergeInherited": "Use project default",
+    "specAlignment": "Spec alignment: {{alignment}}",
+    "validationBadgeCleared": "Validation badge cleared",
+    "evidence": "Evidence",
+    "validationStateChanged": "Feature state changed — refreshed",
+    "recorded": "recorded",
+    "reconcileBadgeRepairs_one": "Badge repairs: {{count}}",
+    "validationAlreadyRunning": "Validation is already running for this feature",
+    "validationDiagnostics": "Validation diagnostics",
+    "singlePullRequest": "Single pull request",
+    "blockedDiagnosticsUnknown": "Blocker diagnostics are unavailable.",
+    "reconcileStatusUpdates_other": "Status updates: {{count}}",
+    "reconcileApplyFailed": "Failed to apply reconcile",
+    "autoMergeOverrideAriaLabel": "Mission auto-merge override",
+    "clearBlockedStatus": "Clear blocked status",
+    "otherOptionLabel": "Other (write your own)",
+    "applyReconcile": "Apply reconcile",
+    "reconcileTerminalRepairs_one": "Terminal repairs: {{count}}",
+    "reconcileStatusUpdates_one": "Status updates: {{count}}",
+    "validationRepairFailed": "Failed to repair validation state",
+    "validationRerun": "Validation re-run started",
+    "blockedCleared": "Blocked status cleared",
+    "sharedBranch": "Shared branch",
+    "observed": "Observed",
+    "reconcileBadgeRepairs_other": "Badge repairs: {{count}}",
+    "taskPrefix": "Task prefix",
+    "autoMergeOverride": "Merge behavior",
+    "clearBlockedReason": "Optional repair reason",
+    "evidenceOmitted": "Additional evidence omitted",
+    "noPullRequest": "No PR",
+    "assertionDeleted": "Assertion deleted",
+    "reconcilePreview": "Reconcile preview",
+    "clearBlockedFailed": "Failed to clear blocked status",
+    "sessionEncounteredError": "The session encountered an error.",
+    "sharedBranchMembers_other": "{{count}} member",
+    "resumeBlocked": "Mission cannot resume until its recorded blockers are resolved: {{blockers}}"
   },
   "modalManager": {
     "createdFromPlanning": "Creado {{id}} desde el modo planificación",
@@ -4158,7 +4705,8 @@
       "override": "Anule los modelos de IA utilizados para esta tarea. Si no se especifica, se utilizan los valores predeterminados del proyecto o globales.",
       "planning": "El modelo de IA utilizado para la especificación de tareas (fase de triage).",
       "reviewer": "El modelo de IA utilizado para revisar código y planes para esta tarea.",
-      "thinkingLevel": "Controla el esfuerzo de razonamiento del agente IA. Los niveles más altos utilizan más tokens."
+      "thinkingLevel": "Controla el esfuerzo de razonamiento del agente IA. Los niveles más altos utilizan más tokens.",
+      "merger": "The AI model used to merge this task."
     },
     "emptyStates": {
       "noModels": "No hay modelos disponibles. Configure la autenticación en Configuración para habilitar la selección de modelo."
@@ -4174,7 +4722,8 @@
       "executorModel": "Modelo de ejecución",
       "planningModel": "Modelo de planificación",
       "reviewerModel": "Modelo de revisor",
-      "thinkingLevel": "Nivel de reflexión"
+      "thinkingLevel": "Nivel de reflexión",
+      "credentialInstance": "Credential instance"
     },
     "messages": {
       "thinkingLevelSet": "Nivel de reflexión establecido en {{level}}",
@@ -4192,7 +4741,8 @@
       "off": "Desactivado",
       "xhigh": "Muy alto",
       "max": "Máximo",
-      "defaultWithLevel": "Default ({{level}})"
+      "defaultWithLevel": "Default ({{level}})",
+      "unavailable": "Unavailable: {{level}}"
     },
     "placeholders": {
       "selectExecutor": "Seleccione modelo de ejecución…",
@@ -4214,7 +4764,10 @@
     "titles": {
       "configuration": "Configuración del modelo"
     },
-    "useDefault": "Usar predeterminado"
+    "useDefault": "Usar predeterminado",
+    "credentialInstanceDefault": "Default",
+    "expandProvider": "Expand {{provider}}",
+    "collapseProvider": "Collapse {{provider}}"
   },
   "modelSelection": {
     "choose": "Elige modelos para esta tarea. Si no se selecciona, se usarán los modelos predeterminados.",
@@ -4291,7 +4844,17 @@
     "todos": "Pendientes",
     "usage": "Uso",
     "whiteboard": "Whiteboard",
-    "workflows": "Flujos de trabajo"
+    "workflows": "Flujos de trabajo",
+    "recommendationsUnreadAriaLabel_one": "{{count}} new recommendation",
+    "newTask": "New Task",
+    "collapse": "Collapse",
+    "recommendationsUnreadDotAriaLabel": "New recommendations",
+    "ideation": "Ideation",
+    "automations": "",
+    "recommendationsUnreadAriaLabel_other": "{{count}} new recommendations",
+    "importTasks": "",
+    "recommendations": "Recommendations",
+    "fleet": "Fleet"
   },
   "newTaskModal": {
     "addDependencies": "Añadir dependencias",
@@ -4314,7 +4877,28 @@
     "selectedCount_other": "",
     "taskCreated": "{{taskId}} creado",
     "title": "Nueva tarea",
-    "unsavedChanges": "Tiene cambios sin guardar. ¿Descartar?"
+    "unsavedChanges": "Tiene cambios sin guardar. ¿Descartar?",
+    "githubNoRemotes": "No GitHub remotes were detected for this project.",
+    "starting": "Starting...",
+    "githubPullGroup": "Pull requests",
+    "githubRemoteLabel": "GitHub remote",
+    "githubNoReferences": "No open issues or pull requests were found for the selected remote.",
+    "githubReferenceHelp": "Select an open issue or pull request to seed the task prompt.",
+    "githubRemoteError": "Unable to load GitHub remotes.",
+    "taskQueued": "Queued {{taskId}} for planning",
+    "githubLoadingRemotes": "Loading GitHub remotes…",
+    "githubSelectReference": "Select issue or PR…",
+    "githubIssueGroup": "Issues",
+    "githubOverwriteTitle": "Replace description?",
+    "githubLoadingReferences": "Loading open issues and pull requests…",
+    "branchInvalid": "Enter a valid Git branch name (no spaces or ref punctuation).",
+    "startTask": "Start",
+    "githubReferenceLabel": "GitHub issue or PR",
+    "githubChooseRemote": "Choose a GitHub remote before selecting an issue or pull request.",
+    "taskCreatedNotStarted": "Created {{taskId}}, but could not start it",
+    "githubOverwriteMessage": "Selecting a GitHub issue or PR will replace the current task description. Continue?",
+    "githubSelectRemote": "Select remote…",
+    "githubReferenceError": "Unable to load GitHub issues and pull requests."
   },
   "nodes": {
     "actions": {
@@ -4899,7 +5483,55 @@
     "untitledSession": "Sesión sin título",
     "usingDefault": "Usar predeterminado",
     "whatToBuild": "¿Qué quieres construir?",
-    "whatToBuildPlaceholder": "p. ej., Crear un sistema de autenticación con inicio de sesión, registro y restablecimiento de contraseña..."
+    "whatToBuildPlaceholder": "p. ej., Crear un sistema de autenticación con inicio de sesión, registro y restablecimiento de contraseña...",
+    "refinePlanAndNextQuestions": "Refine the plan and next questions",
+    "otherOptionPlaceholder": "Write your own answer...",
+    "noHistoryHint": "Answered questions and plan-update reasoning will appear here.",
+    "resizeSidebar": "Resize planning sidebar",
+    "workspaceViews": "Planning views",
+    "history": "History",
+    "taskCreatedHint": "Your approved plan is ready to work on.",
+    "generatingInitialPlan": "Generating initial plan…",
+    "creatingTask": "Creating task…",
+    "submitComments": "Submit comments",
+    "addPlanComment": "Add plan comment",
+    "commentSuggestion": "Suggestion",
+    "refinementInstructions": "Refinement instructions",
+    "viewTask": "View task",
+    "autoRetrying": "Retrying… (attempt {{attempt}} of {{max}})",
+    "returnToSessions": "Return to sessions",
+    "removeComment": "Remove comment",
+    "addComment": "Add comment",
+    "backToPlan": "Back to plan",
+    "loadingSession": "Loading session…",
+    "reviewPlan": "Review plan",
+    "refineInstructionsHint": "Describe what should change. The plan will update and the next questions will follow your direction.",
+    "expandDescription": "Expand description",
+    "nextQuestionAction": "Next question",
+    "historyHint": "Questions, answers, and AI reasoning for each plan update.",
+    "loadingSessions": "Loading planning sessions",
+    "refinePlanAndQuestions": "Refine plan and questions",
+    "sessionUnrecoverableState": "This session could not be restored. Retry to continue the interview.",
+    "continuePlanning": "Continue planning",
+    "noKeyDeliverables": "No key deliverables were provided.",
+    "collapseDescription": "Collapse description",
+    "initialPromptLabel": "Prompt that started this session",
+    "retryCreate": "Retry create",
+    "linkedTaskNote": "Task {{taskId}} was created from this plan. Proceed again to create another.",
+    "otherOptionLabel": "Other (write your own)",
+    "closeHistory": "Close history",
+    "applyRefinement": "Apply refinement",
+    "currentPlan": "Current plan",
+    "questionAnswerHistory": "Question and answer history",
+    "refinePromptPlaceholder": "For example: add a staged rollout, cover failure recovery, and ask about migration risks.",
+    "proceedWithPlan": "Proceed with plan",
+    "planPreviewTab": "Plan preview",
+    "taskCreated": "Task created",
+    "refine": "Refine",
+    "noHistoryYet": "No history yet",
+    "generatingPlan": "Generating plan…",
+    "currentQuestion": "Current question",
+    "questionsTab": "Questions"
   },
   "plugins": {
     "addItem": "Agregar elemento",
@@ -5102,8 +5734,15 @@
       "listError": "",
       "listItemLabel": "",
       "listLoading": "",
-      "listTitle": ""
-    }
+      "listTitle": "",
+      "title": "Pull Requests",
+      "empty": "No pull request to show."
+    },
+    "editBody": "Edit",
+    "previewBody": "Preview",
+    "bodyPreviewLabel": "Body markdown preview",
+    "showFormattedMarkdown": "Show formatted markdown",
+    "editRawMarkdown": "Edit raw markdown"
   },
   "preview": {
     "blockedDescription": "Puede ver la vista previa en una pestaña del navegador separada.",
@@ -5139,7 +5778,8 @@
     "pauseProject": "",
     "removeProject": "Eliminar proyecto",
     "resume": "",
-    "resumeProject": ""
+    "resumeProject": "",
+    "healthLoading": "Loading health metrics"
   },
   "projectDetection": {
     "editName": "Editar nombre",
@@ -5211,7 +5851,8 @@
     "searchAriaLabel": "",
     "searchPlaceholder": "Buscar proyectos...",
     "switchProjectTitle": "",
-    "viewAll": "Ver todos los proyectos"
+    "viewAll": "Ver todos los proyectos",
+    "noProjects": "No other projects on this machine"
   },
   "providers": {
     "actions": {
@@ -5262,7 +5903,10 @@
       "modelNameLabel": "",
       "models": "Modelos",
       "name": "Nombre para mostrar",
-      "reasoning": "Razonamiento"
+      "reasoning": "Razonamiento",
+      "contextWindowPlaceholder": "e.g. 200000 (default)",
+      "timeoutSeconds": "HTTP timeout (s)",
+      "maxTokensPlaceholder": "e.g. 4096 (default)"
     },
     "llamaCpp": {
       "disable": "Desactivar",
@@ -5301,7 +5945,24 @@
       "urlProtocol": "La URL base debe usar http o https.",
       "urlRequired": "Se requiere una URL base.",
       "urlValid": "La URL base debe ser una URL válida."
-    }
+    },
+    "anthropicPromptCachingHint": "Enable if this gateway proxies an Anthropic model (e.g. Claude via a custom router). Reduces re-billing the full context every turn.",
+    "refreshModelsSuccess_one": "Refreshed {{count}} model(s).",
+    "modelRow": {
+      "noThinkingParams": "No thinking params",
+      "thinkingFormat": "Thinking format",
+      "thinkingFormatDefault": "Default"
+    },
+    "refreshModelsSuccess_other": "Refreshed {{count}} model(s).",
+    "addModelRow": "Add model row",
+    "anthropicPromptCaching": "Enable Anthropic-style prompt caching",
+    "modelRowName": "Display name",
+    "refreshModelsLabel": "Refresh models for {{name}}",
+    "removeModelRowLabel": "Remove model {{index}}",
+    "refreshModels": "Refresh Models",
+    "refreshModelsFailed": "Failed to refresh models.",
+    "modelRowModelId": "Model ID",
+    "refreshingModels": "Refreshing…"
   },
   "reliability": {
     "bouncedEntered": "{{bounced}} rechazados / {{entered}} ingresados (últimos {{days}} días)",
@@ -5428,7 +6089,10 @@
     "title": "Investigación",
     "titleLabel": "Título",
     "unavailable": "La investigación no está disponible para este proyecto.",
-    "viewLabel": "Vista de investigación"
+    "viewLabel": "Vista de investigación",
+    "findingPromoted": "Finding promoted to roadmap",
+    "promoteFinding": "Promote to roadmap",
+    "destinationSlice": "Destination slice ID"
   },
   "rightDock": {
     "closeExpandedView": "",
@@ -5445,7 +6109,11 @@
     "hideDone": "",
     "noActiveTasks": "",
     "noTasksYet": "",
-    "showDone": ""
+    "showDone": "",
+    "taskDetailTitle": "Task detail",
+    "pin": "Pin sidebar (push content)",
+    "unpin": "Unpin sidebar (overlay content)",
+    "closeTaskDetail": "Back to right dock views"
   },
   "routine": {
     "andMore_one": "",
@@ -5762,7 +6430,16 @@
     "liveRunComplete": "Run complete",
     "liveRunError": "Run failed",
     "liveRunStarting": "Starting run…",
-    "selectAllTools": "Select all"
+    "selectAllTools": "Select all",
+    "disabled": "Disabled",
+    "selectAutomation": "Select an automation",
+    "planningColumn": "Planning",
+    "columnPlanning": "Planning",
+    "selectAutomationHint": "Choose an automation from the list to view its details.",
+    "taskColumnPlanning": "Planning",
+    "taskColumnAuto": "Automatic (workflow intake)",
+    "autoColumn": "Automatic (workflow intake)",
+    "columnAuto": "Automatic (workflow intake)"
   },
   "scripts": {
     "title": ""
@@ -5855,7 +6532,8 @@
     "syncPassphraseSet": "Frase de contraseña de sincronización establecida",
     "syncPassphraseTitle": "Frase de contraseña de sincronización entre nodos",
     "title": "Secretos",
-    "valueLabel": "Valor"
+    "valueLabel": "Valor",
+    "copyFailed": "Failed to copy secret"
   },
   "selectionComment": {
     "addComment": "",
@@ -5891,12 +6569,19 @@
     "headerGeneratingSingular": "",
     "headerGeneratingPlural": "",
     "headerMixed": "",
-    "inProgress": ""
+    "inProgress": "",
+    "headerGeneratingSingular_one": "{{count}} AI session in progress",
+    "headerGeneratingSingular_other": "{{count}} AI session in progress",
+    "headerGeneratingPlural_one": "{{count}} AI sessions in progress",
+    "headerGeneratingPlural_other": "{{count}} AI sessions in progress"
   },
   "settings": {
     "actions": {
       "cancel": "Cancelar",
-      "save": "Guardar"
+      "save": "Guardar",
+      "rename": "Rename",
+      "remove": "Remove",
+      "close": "Close"
     },
     "agentPermissions": {
       "agentPermissions": "",
@@ -5923,7 +6608,10 @@
       "navigationPlacementHelp": "",
       "rightSidebarEnabled": "Mostrar la barra lateral de herramientas derecha",
       "rightSidebarEnabledHelp": "Cuando se activa, las tabletas y los ordenadores muestran una barra lateral derecha opcional con accesos a Archivos, Chat, Lista y Notas. Todas las herramientas siguen siendo accesibles sin ella. Ámbito de proyecto; por defecto: desactivada.",
-      "taskDetailDefaultTabHelp": ""
+      "taskDetailDefaultTabHelp": "",
+      "openMobileTasksInPopup": "Open tasks as popups",
+      "openTasksInRightSidebar": "Open tasks in the right sidebar",
+      "taskDetailChatFirst": "Open task details with Chat first"
     },
     "auth": {
       "apiKeyCleared": "Clave API borrada",
@@ -5975,7 +6663,13 @@
       "anthropicPreferenceApiKey": "API key",
       "anthropicPreferenceSubscription": "Claude subscription",
       "credentialInUse": "In use",
-      "credentialOverridden": "Overridden below"
+      "credentialOverridden": "Overridden below",
+      "pasteRedirectUrl": "Paste the final redirect URL or authorization code",
+      "renameAccount": "Account name",
+      "makeDefault": "Make default",
+      "addAnotherAccount": "Add another account",
+      "accountLabel": "Account name",
+      "default": "Default"
     },
     "authentication": {
       "enterAPIKey": "",
@@ -6034,7 +6728,11 @@
       "lastOutput": "",
       "runCount": "",
       "scheduleNotRegistered": "",
-      "noBackupsYet": ""
+      "noBackupsYet": "",
+      "projectValue": "Project value",
+      "migrationConflictHelp": "Existing projects used different backup settings. Choose the value to use globally.",
+      "existingGlobalValue": "Existing global value",
+      "migrationConflict": "Choose database backup settings"
     },
     "clearToDefault": "",
     "cliAgents": {
@@ -6222,7 +6920,53 @@
       "maxRecommendationsPerTask": "",
       "maxRecommendationsPerTaskHelp": "",
       "requireTaskRecommendations": "",
-      "requireTaskRecommendationsHelp": ""
+      "requireTaskRecommendationsHelp": "",
+      "reportMode": "In-app report mode",
+      "userFacing": "User-facing work",
+      "quickChatLauncher": "Quick Chat launcher",
+      "clearLocalDataHint": "Remove cached board snapshots, chat threads, and UI preferences stored in this browser. Frees space when the dashboard runs low on browser storage. Your tasks and project settings are stored server-side and are not affected.",
+      "saveFailed": "Could not save",
+      "workspaceReposError": "Could not add repository.",
+      "workspaceRepos": "Workspace repositories",
+      "reportModeDraftReview": "Review draft before filing",
+      "browserData": "Browser Data",
+      "backOnline": "Fusion v{{version}} is back online — reloading…",
+      "quickChatCloseOnOutsideClick": "Close Quick Chat on outside click",
+      "updateUnknown": "Update did not complete — see the Fusion logs",
+      "gitLabConfiguration": "GitLab Configuration",
+      "gitLabDisabledHint": "GitLab API imports, comments, close/reopen, and refresh operations are disabled. Saved URLs and tokens remain stored for re-enable.",
+      "quickChatLauncherFloating": "Floating button",
+      "restartTimedOut": "Fusion did not return in time. Refresh when it is back online.",
+      "gitLabInstanceUrlHint": "Blank uses GitLab.com or the global default. Set an absolute http:// or https:// URL for self-managed GitLab, such as https://gitlab.example.com/gitlab.",
+      "clearLocalDataButton": "Clear local data",
+      "gitLabApiBaseUrlOptional": "GitLab API base URL (optional / advanced)",
+      "reportHelp": "Report a bug, send feedback, share an idea, or get help from Fusion.",
+      "report": "Report",
+      "defaultSessionAdvisorForNewTasks": "Default for new tasks",
+      "workspaceReposPlaceholder": "Repository directory",
+      "on": "On",
+      "recommendationMailboxNoticeEnabled": "Recommendation mailbox notices",
+      "enableGitLabIntegration": "Enable GitLab integration",
+      "saved": "Saved",
+      "gitLabInstanceUrl": "GitLab instance URL",
+      "alwaysLinkImportedGitHubIssuesToTracking": " Always link imported GitHub issues to GitHub tracking ",
+      "reportModeAutoFile": "File automatically",
+      "saving": "Saving…",
+      "sessionAdvisor": "Session advisor (overseer agent)",
+      "workspaceReposAdd": "Add",
+      "recommendationMailboxNoticeEnabledHelp": "Default: enabled. When a completed task captures recommendations, send a summary to your mailbox. Turning this off does not change whether recommendations are captured.",
+      "allowAbsoluteFileBrowserPaths": " Allow absolute file-browser paths ",
+      "clearLocalDataConfirm": "Clear all cached data and UI preferences stored in this browser? This frees space used by stale chat, task, and board caches. Your tasks and project settings are safe (stored server-side). The dashboard will reload.",
+      "retryRestart": "Retry readiness check",
+      "showTaskChatsInCommonFeed": "Show task chats in common Chat feed",
+      "quickChatLauncherFooter": "Footer button",
+      "prefixMustBe15UppercaseLetters": "Prefix must be 1–5 uppercase letters",
+      "fusionWorkflows": "Fusion workflows",
+      "workspaceMode": " Workspace mode (multi-repo) ",
+      "gitLabApiBaseUrlHint": "Blank derives <instance>/api/v4. Override only when a self-managed GitLab API is served from a different absolute http:// or https:// URL.",
+      "clearLocalData": "Clear local data",
+      "reportModeUseProjectDefault": "Use project default",
+      "sessionAdvisorHelp": "Controls whether newly created tasks enable the session advisor (live LLM overseer of the executor). Individual tasks can override this from Quick Add or task detail. Also set Session advisor model provider and model id under workflow settings before the advisor can run."
     },
     "globalGeneral": {
       "andShowsUpdateNoticesInTheCLIAnd": "",
@@ -6287,7 +7031,21 @@
       "chatSubmitOnEnterHint": "",
       "chatSubmitOnEnterAuto": "",
       "chatSubmitOnEnterAlways": "",
-      "chatSubmitOnEnterNever": ""
+      "chatSubmitOnEnterNever": "",
+      "gitLabGroupAccessToken": "Group access token",
+      "dismissModalsByClickingOutside": " Dismiss modals by clicking outside ",
+      "gitLabAccessToken": "Global GitLab access token",
+      "gitLabConfiguration": "GitLab Configuration",
+      "gitLabDisabledHint": "GitLab API operations are disabled by global default. Saved URL and token fallbacks remain stored for re-enable.",
+      "gitLabApiBaseUrlOptional": "Global GitLab API base URL (optional / advanced)",
+      "enableGitLabIntegration": "Enable GitLab integration",
+      "gitLabInstanceUrl": "Global GitLab instance URL",
+      "operatorLanguageAuto": " Automatic (reply in each message's language) ",
+      "gitLabProjectAccessToken": "Project access token",
+      "operatorLanguage": " Operator language for agent text ",
+      "gitLabTokenType": "Global GitLab token type",
+      "operatorLanguageHint": " Language agents use for operator-facing text: mailbox messages, reports, task logs, completion summaries, and chat replies. Code, commands, identifiers, and quoted log output always stay in their original language. Default: Automatic — reply in the language of each message, which leaves autonomous lanes on English. ",
+      "gitLabPersonalAccessToken": "Personal access token"
     },
     "globalModels": {
       "modelOverrides": "",
@@ -6456,7 +7214,23 @@
       "qmdInstallFailed": "",
       "qmdInstallUnavailable": "",
       "saveBeforeCompacting": "",
-      "saveBeforeSwitching": ""
+      "saveBeforeSwitching": "",
+      "chatHandoffThresholdHelp": "Context-usage percentage past which the chat header offers the handoff button (50-95). Values outside the range fall back to the default: 75.",
+      "preOverflowCompactionHelp": "Compacts the chat context at ~80% of the model window before a turn would overflow it, preventing single-token replies at the context wall. Default: enabled.",
+      "perTurnRecallTopK": " Max snippets per turn ",
+      "preOverflowCompaction": "Pre-overflow compaction guard",
+      "cronExpressionForInsightExtractionScheduleDefaultDaily": "Cron expression for insight extraction schedule (default: daily at 2 AM)",
+      "chatHandoff": "Chat handoff (continue in a fresh chat)",
+      "periodicallyExtractDurableInsightsFromCompletedTasks": "Periodically extract durable insights/learnings from completed tasks into memory",
+      "perTurnRecallTopKHelp": "Maximum number of memory snippets injected per turn. Default: 3.",
+      "chatHandoffThreshold": "Chat handoff context threshold (%)",
+      "perTurnRecallHelp": "Recalls the most relevant memory snippets for the current topic before each chat or task step turn and injects a short, deduped cue into the prompt. Default: enabled.",
+      "perTurnRecall": " Per-turn memory recall ",
+      "02": "0 2 * * *",
+      "enableInsightExtraction": " Enable Insight Extraction ",
+      "chatHandoffHelp": "Once a chat passes the context threshold below, its header offers one click to continue in a fresh chat with the same agent/model, briefed with a summary of the old conversation. The old chat is archived, not deleted. Unrelated to in-session compaction. Default: enabled.",
+      "chatContextBudgetHelp": "Bounds the chat static context: oversized memory becomes a bounded heading index and chat sessions use the curated chat toolset, so agent chat fits 64K-window models. Disable to restore unbounded memory injection and the full tool set (pre-RUFU-135 behavior). Default: enabled.",
+      "chatContextBudget": "Chat context budget (64K window fit)"
     },
     "merge": {
       "abort": "",
@@ -6604,7 +7378,13 @@
       "requiredChecks": "",
       "requiredChecksHelp": "",
       "githubNativeAutoMerge": "Usar la fusión automática nativa de GitHub",
-      "githubNativeAutoMergeHelp": "GitHub espera a que se cumpla todo su conjunto de reglas antes de fusionar. El repositorio debe permitir la fusión automática; Fusion falla de forma segura si no está disponible. Predeterminado: desactivado."
+      "githubNativeAutoMergeHelp": "GitHub espera a que se cumpla todo su conjunto de reglas antes de fusionar. El repositorio debe permitir la fusión automática; Fusion falla de forma segura si no está disponible. Predeterminado: desactivado.",
+      "gitLabAuthentication": "GitLab Authentication",
+      "gitLabGroupAccessToken": "Group access token",
+      "gitLabAccessToken": "GitLab access token",
+      "gitLabDisabledHint": "GitLab comments, close/reopen, import fetches, and refresh operations are disabled. Saved tokens remain stored for re-enable.",
+      "gitLabProjectAccessToken": "Project access token",
+      "gitLabTokenType": "GitLab token type"
     },
     "mergeManually": "Fusionar manualmente",
     "mobileNav": {
@@ -6640,7 +7420,10 @@
       "globalMcp": "MCP Servers · Global",
       "mcp": "MCP Servers · Project",
       "configVersions": "Versiones de configuración",
-      "voiceInput": "Voice Input"
+      "voiceInput": "Voice Input",
+      "resize": "Resize settings navigation",
+      "schedulingGlobal": "Scheduling · Global",
+      "cliBinary": "CLI Binary"
     },
     "nodeRouting": {
       "blockExecution": "",
@@ -6803,7 +7586,15 @@
       "executorEscalationModel": "",
       "executorEscalationModelHelp": "",
       "selectExecutorEscalationModel": "",
-      "noExecutorEscalationModel": ""
+      "noExecutorEscalationModel": "",
+      "prDescriptionPromptInstructions": "PR description prompt guidance",
+      "titleSummarizerFallbackHelp": "Fallback provider and model used when the primary Title Summarizer model cannot be used. Falls back to the global summarization lane and then the default model chain.",
+      "useGlobal": "Use global",
+      "mergerFallbackHelp": "Fallback provider and model used when a merger session retries. Leave unset to use the shared global fallback model pair.",
+      "prTitlePromptInstructionsPlaceholder": "Example: Use conventional-commit style and keep titles under 72 characters.",
+      "titleSummarizerFallbackModel": "Title Summarizer Fallback Model",
+      "prDescriptionPromptInstructionsPlaceholder": "Example: Emphasize operator-facing behavior and list verification commands exactly.",
+      "prTitlePromptInstructions": "PR title prompt guidance"
     },
     "remote": {
       "acceptRoutes": "",
@@ -7038,7 +7829,15 @@
       "triageDuplicateResolutionHelp": "Bloquear duplicados detectados en triage para una decisión Mantener/Eliminar (predeterminado), o mantener/eliminar automáticamente sin bloquear.",
       "triageDuplicateResolutionPrompt": "Bloquear para decidir (predeterminado)",
       "triageDuplicateResolutionKeep": "Mantener automáticamente",
-      "triageDuplicateResolutionDelete": "Eliminar automáticamente"
+      "triageDuplicateResolutionDelete": "Eliminar automáticamente",
+      "verificationMemoryMaxMbHelp": "MemoryMax per verification, in MB. Empty = inherit the machine fallback; unset there means no memory cap. 0 disables the cap.",
+      "maximumTimeInMinutesForBuildVerificationCommands": "Maximum time in minutes for build/verification commands before they are killed. Raise for large monorepo or Docker builds. Default: 5.",
+      "buildTimeoutMinutes": "Build/Verification Timeout (minutes)",
+      "verificationCpuIoWeight": "Verification CPU/IO weight",
+      "verificationCpuIoWeightHelp": "CPU/IO weight while unthrottled (1–10000; lower keeps the desktop responsive). Empty = inherit the machine fallback; unset there means 10. 0 disables weight shaping.",
+      "verificationMemoryMaxMb": "Verification memory cap (MB)",
+      "verificationCpuQuotaPercentHelp": "CPUQuota per verification (200 = 2 cores). Empty = inherit the machine fallback; unset there means ~half the cores, at least 100%. 0 disables bounding for this project.",
+      "verificationCpuQuotaPercent": "Verification CPU quota (%)"
     },
     "title": "Configuración",
     "worktrees": {
@@ -7093,7 +7892,17 @@
       "worktrunkIntegration": "",
       "worktreesPickerNote": "",
       "showWorktreeGroupingHelp": "",
-      "copyFilesHelp": ""
+      "copyFilesHelp": "",
+      "remove": "Remove",
+      "showWorktreeGrouping": " Show worktree grouping on the board ",
+      "removeCopyFile": "Remove copied worktree file",
+      "copyFilePlaceholder": ".env",
+      "filesToCopyIntoNewWorktrees": "Files to copy into new worktrees",
+      "browseCopyFile": "Browse file to copy into new worktrees",
+      "copyFilePickerNote": "Choose a repository file to copy into each newly assigned task worktree. Directories are not selected from this picker.",
+      "addCopyFile": "Add file",
+      "selectCopyFile": "Select file to copy",
+      "copyFilePathLabel": "File to copy into new worktrees"
     },
     "fileBrowser": {
       "currentDirectory": "",
@@ -7108,7 +7917,64 @@
       "transport": "",
       "transportHttp": "",
       "transportSse": "",
-      "transportStdio": ""
+      "transportStdio": "",
+      "export": "Export",
+      "importPlaceholder": "Paste Claude Desktop mcpServers JSON",
+      "chooseSecret": "Choose a secret…",
+      "newSecretValue": "New secret value (not stored in settings)",
+      "secretCreated": "Secret created",
+      "secretReference": "Secret reference",
+      "import": "Import",
+      "env": "Environment secret refs",
+      "noSensitiveRows": "No secret references configured.",
+      "addDiscovered": "Add",
+      "effectiveCount_other": "Effective enabled servers: {{count}}",
+      "enableBuiltin": "Enable",
+      "imported": "MCP servers imported",
+      "discoveryTitle": "Discovered on this machine",
+      "discoveredAdded": "Discovered MCP server added",
+      "discoverySecrets": "Requires Fusion secret references before saving.",
+      "discoveryEmpty": "No MCP servers found in supported tool configs yet.",
+      "args": "Arguments",
+      "builtinUnavailable": "Built-in entry is unavailable in this installation.",
+      "sensitiveKey": "Sensitive field name",
+      "discoverySecretsRequired": "Bind or create Fusion secret references before saving this discovered server.",
+      "removeSensitive": "Remove secret reference",
+      "exportCopied": "MCP JSON copied",
+      "createSecretPlaceholder": "Create secret value",
+      "secretCreateRequired": "Secret key and value are required.",
+      "exportedJson": "Exported MCP JSON",
+      "scanning": "Scanning…",
+      "headers": "Header secret refs",
+      "scanAgain": "Scan again",
+      "configured": "Configured",
+      "requiredSecret": "Required",
+      "copyExport": "Copy Fusion MCP JSON",
+      "test": "Test",
+      "removeServer": "Remove {{name}}",
+      "testing": "Testing…",
+      "duplicateName": "Duplicate MCP server name",
+      "downloadExport": "Download JSON",
+      "override": "Override",
+      "configuredBadge": "Configured",
+      "createSecret": "Create secret",
+      "command": "Command",
+      "name": "Name",
+      "effectiveCount_one": "Effective enabled servers: {{count}}",
+      "addSecretRef": "Add secret reference",
+      "exportReady": "MCP JSON ready to copy",
+      "uploadJson": "Upload JSON",
+      "disableBuiltin": "Disable",
+      "notTested": "Not tested",
+      "discoveryDescription": "Read-only scan of Claude, Cursor, Windsurf, and VS Code MCP config files. Add a server to enable it in Fusion.",
+      "importDuplicate": "Duplicate MCP server name: {{name}}",
+      "enabled": "Enable MCP servers for this scope",
+      "addServer": "Add server",
+      "newSecretKey": "New secret key",
+      "url": "URL",
+      "disableInherited": "Disable",
+      "empty": "No MCP servers configured.",
+      "serverEnabled": "Server enabled"
     },
     "search": {
       "allSections": "",
@@ -7122,13 +7988,49 @@
       "resultCount_one": "",
       "resultCount_other": "",
       "settingResultCount_one": "",
-      "settingResultCount_other": ""
+      "settingResultCount_other": "",
+      "moreResults_one": "{{count}} more — keep typing to narrow",
+      "toggleShow": "Show search",
+      "moreResults_other": "{{count}} more — keep typing to narrow",
+      "toggleHide": "Hide search"
     },
     "prompts": {
-      "surfaceExplanation": ""
+      "surfaceExplanation": "",
+      "workflowPromptsRedirect": "Per-workflow step prompts for prompt and gate nodes live in the Workflow Editor."
     },
     "modelPricing": {
-      "description": ""
+      "description": "",
+      "newKey": "New provider:model key",
+      "cacheWrite": "Cache write / 1M",
+      "overrideCount_one": "",
+      "output": "Output / 1M",
+      "noFetchYet": "No fetched pricing snapshot yet.",
+      "invalidKey": "Use a provider:model key before adding a pricing row.",
+      "fetchLatest": "Fetch latest prices",
+      "source": "Source",
+      "input": "Input / 1M",
+      "addRow": "Add row",
+      "delete": "Delete",
+      "pricesAsOf": "Prices as of {{date}}",
+      "overrides": "Model pricing overrides",
+      "newCacheWrite": "New cache write rate",
+      "tableTitle": "Model pricing table",
+      "newInput": "New input rate",
+      "overrideCount_other": "",
+      "fetchFailed": "Failed to fetch latest model prices.",
+      "actions": "Actions",
+      "fetching": "Fetching…",
+      "saveHint": "Manual edits are saved with the rest of Global settings.",
+      "title": "Model pricing overrides",
+      "newSource": "New source",
+      "fetchSuccess_one": "Fetched {{count}} model prices.",
+      "empty": "No model pricing overrides yet. Add one manually or fetch the latest LiteLLM prices.",
+      "fetchSuccess_other": "Fetched {{count}} model prices.",
+      "viewTable": "View pricing table",
+      "newCacheRead": "New cache read rate",
+      "cacheRead": "Cache read / 1M",
+      "modelKey": "provider:model",
+      "newOutput": "New output rate"
     },
     "reset": {
       "button": "",
@@ -7211,6 +8113,33 @@
       "template": "",
       "globalTemplate": "",
       "templateHelp": ""
+    },
+    "schedulingGlobal": {
+      "schedulingGlobal": "Scheduling · Global",
+      "verificationCpuIoWeight": "Global verification CPU/IO weight",
+      "verificationCpuIoWeightHelp": "Machine-wide CPU/IO weight while unthrottled (1–10000; lower keeps the desktop responsive). Empty = default 10. 0 disables weight shaping machine-wide.",
+      "verificationMemoryMaxMb": "Global verification memory cap (MB)",
+      "verificationCpuQuotaPercentHelp": "Machine-wide CPUQuota per verification (200 = 2 cores) for projects that do not set their own. Empty = derived default: roughly half the machine's cores, at least 100%. 0 disables bounding machine-wide.",
+      "verificationCpuQuotaPercent": "Global verification CPU quota (%)",
+      "verificationMemoryMaxMbHelp": "Machine-wide MemoryMax per verification, in MB. Empty = no memory cap. 0 disables the cap machine-wide."
+    },
+    "keyboardShortcuts": {
+      "recordingLabel": "Recording…",
+      "recording": "Press keys… (Esc to cancel)",
+      "title": "Keyboard Shortcuts",
+      "recordTitle": "Record a new shortcut",
+      "hint": "Configure global dashboard shortcuts. Click Record and press a combination, or type one manually. Shortcuts are ignored while typing in inputs, editors, chat composers, and terminal fields. Leave blank to disable an action.",
+      "rowHint": "Default: {{default}}. Leave blank to disable.",
+      "recordingTitle": "Recording… press Escape to cancel",
+      "recordLabel": "Record",
+      "clearTitle": "Disable this shortcut",
+      "clearLabel": "Clear"
+    },
+    "help": {
+      "show": "Show help"
+    },
+    "advanced": {
+      "toggle": "Advanced settings"
     }
   },
   "setup": {
@@ -7316,7 +8245,14 @@
       "probing": "Sondeo de CLI local…",
       "providerName": "",
       "test": "Probar",
-      "testing": "Probando…"
+      "testing": "Probando…",
+      "pathCleared": "Binary path cleared; PATH auto-detection is active.",
+      "binaryPathPlaceholder": "/usr/local/bin/cursor-agent",
+      "binaryPathHelp": "Leave blank to use PATH auto-detection (`cursor-agent`, then `cursor`).",
+      "pathSaved": "Binary path saved and tested.",
+      "saveAndTestPath": "Save & Test",
+      "savingPath": "Saving…",
+      "binaryPathLabel": "Cursor CLI binary path"
     },
     "defaultModelDescription": "Elige un modelo predeterminado para tareas de IA, o déjalo en blanco para elegir más tarde. Los modelos varían en velocidad, capacidad y costo.",
     "defaultModelLabel": "Modelo predeterminado",
@@ -7575,7 +8511,71 @@
     "gitPrerequisiteMissingBody": "Fusion could not find `git` on the server host running Fusion. Install Git there before cloning repositories, initializing projects, or registering Git-backed workspaces.",
     "gitPrerequisiteMissingTitle": "Install Git before project setup",
     "gitPrerequisiteReadyTitle": "Git prerequisite ready",
-    "gitPrerequisiteWindows": "Windows: install Git for Windows and restart the Fusion host shell or service."
+    "gitPrerequisiteWindows": "Windows: install Git for Windows and restart the Fusion host shell or service.",
+    "ompCli": {
+      "binaryPathLabel": "OMP CLI binary path",
+      "disable": "Disable",
+      "notConnected": "✗ Not connected",
+      "binaryPathPlaceholder": "/usr/local/bin/omp",
+      "toggleFailed": "Failed to update OMP CLI enable state.",
+      "connected": "Connected{{version}}",
+      "providerName": "Oh My Pi — via omp ACP",
+      "detectedPrompt": "Detected. Click Enable to route through omp ACP.",
+      "binaryPathHelp": "Leave blank to use PATH auto-detection (`omp`).",
+      "enabling": "Enabling…",
+      "enable": "Enable",
+      "active": "✓ Active",
+      "probing": "Probing local CLI…",
+      "test": "Test",
+      "binaryNotFound": "`omp` not found on PATH",
+      "testing": "Testing…",
+      "pathSaved": "Binary path saved and tested.",
+      "disabling": "Disabling…",
+      "saveAndTestPath": "Save & Test",
+      "authHint": "Credentials live under ~/.omp (agent auth). Fusion does not store omp API keys.",
+      "savingPath": "Saving…",
+      "description": "Drive sessions through your local omp ACP server (`omp acp`).",
+      "pathCleared": "Binary path cleared; PATH auto-detection is active.",
+      "probeFailed": "Failed to probe local omp CLI."
+    },
+    "grokCli": {
+      "description": "Route AI calls through your local Grok CLI runtime.",
+      "pathCleared": "Binary path cleared; PATH auto-detection is active.",
+      "binaryPathLabel": "Grok CLI binary path",
+      "disable": "Disable",
+      "notConnected": "✗ Not connected",
+      "binaryPathPlaceholder": "/usr/local/bin/grok",
+      "connected": "Connected{{version}}",
+      "providerName": "Grok — via Grok CLI",
+      "detectedPrompt": "Detected. Click Enable to route calls through Grok CLI.",
+      "binaryPathHelp": "Leave blank to use PATH auto-detection (`grok`).",
+      "enabling": "Enabling…",
+      "enable": "Enable",
+      "active": "✓ Active",
+      "probing": "Probing local CLI…",
+      "test": "Test",
+      "binaryNotFound": "`grok` not found on PATH",
+      "testing": "Testing…",
+      "pathSaved": "Binary path saved and tested.",
+      "disabling": "Disabling…",
+      "saveAndTestPath": "Save & Test",
+      "noApiKeyHint": "No Grok API key detected by Fusion; the CLI will use its own credentials. The direct xAI streaming path uses GROK_API_KEY when present.",
+      "savingPath": "Saving…"
+    },
+    "gitMissingMessage": "Git was not found on the Fusion host. Install Git, then try again — Fusion projects need Git so agents can create task worktrees.",
+    "cancel": "Cancel",
+    "workspaceMode": "Workspace mode (multi-repo)",
+    "taskPrefix": "Task Prefix",
+    "taskPrefixHint": "Used for task IDs (e.g. \"{{prefix}}-1\"). Derived from project name.",
+    "detectedRepos_one": "Found {{count}} repositories:",
+    "gitMissingTitle": "Git is not installed",
+    "detectedRepos_other": "Found {{count}} repositories:",
+    "defaultModelChooseNow": "Choose your default model",
+    "connectGithub": "Connect GitHub",
+    "pasteRedirectUrl": "Paste the final redirect URL or authorization code",
+    "gitMissingOpenDownloads": "Open Git downloads",
+    "detectingWorkspace": "Detecting sub-repositories...",
+    "noSubReposDetected": "No sub-repositories detected. Enable if this is a multi-repo workspace."
   },
   "shell": {
     "activePill": "Activo",
@@ -7695,7 +8695,17 @@
     "skillsDescription": "Explora, activa e instala las competencias disponibles para este proyecto.",
     "snippetsEmptyHint": "Crea uno aquí y escribe /nombre en cualquier chat para insertarlo.",
     "refreshSkillsLabel": "Actualizar competencias",
-    "refreshSnippetsLabel": "Actualizar fragmentos"
+    "refreshSnippetsLabel": "Actualizar fragmentos",
+    "emptyFile": "(Empty file)",
+    "loadingFile": "Loading file...",
+    "backToSkillMd": "Back to SKILL.md",
+    "selectASkill": "Select a skill to view its details",
+    "detailTitle": "Skill",
+    "backToList": "Back to skills",
+    "viewFile": "View {{name}}",
+    "loadFileError": "Failed to load file",
+    "installed": "Installed",
+    "fileNotPreviewable": "This file cannot be previewed."
   },
   "specEditor": {
     "edit": "Editar",
@@ -7939,7 +8949,8 @@
       "deleteTitle": "Eliminar adjunto",
       "heading": "Adjuntos",
       "none": "(sin adjuntos)",
-      "uploading": "Subiendo…"
+      "uploading": "Subiendo…",
+      "attachInline": "Attach file"
     },
     "blockedByLink": "bloqueado por {{id}}",
     "blocking": {
@@ -7964,7 +8975,10 @@
     "bypassReview": {
       "btn": "Omitir revisión fallida",
       "promptMessage": "Motivo para omitir el paso de revisión previo a la fusión fallido (obligatorio, se registra en auditoría):",
-      "success": "Revisión fallida omitida para {{id}}"
+      "success": "Revisión fallida omitida para {{id}}",
+      "btnUnrun": "Bypass unrun review gate",
+      "successUnrun": "Bypassed unrun review gate for {{id}}",
+      "promptMessageUnrun": "Reason for bypassing the review gate that never ran (required, audit-logged):"
     },
     "cacheBreakdown": "(lectura {{read}} / escritura {{write}} / entrada {{input}})",
     "cacheHitRatio": "Tasa de aciertos de caché:",
@@ -8054,7 +9068,17 @@
       "sourceUrlPlaceholder": "URL del issue"
     },
     "error": {
-      "taskFailed": "Tarea fallida"
+      "taskFailed": "Tarea fallida",
+      "confirmRetry": "Apply and retry",
+      "retryModelDefault": "Use project default",
+      "retryHint": "Consider retrying with a different model or node.",
+      "retryNodeDefault": "Use project default",
+      "genericFailureReason": "The task failed before it could complete.",
+      "retryModelLabel": "Executor model",
+      "retryNodeLabel": "Execution node",
+      "retryWithModel": "Retry with a different model/node",
+      "retryOptionsFailed": "Failed to load retry options",
+      "retry": "Retry"
     },
     "executionAndTokenStats": "Estadísticas de ejecución y tokens",
     "executionDetails": "Detalles de ejecución",
@@ -8105,7 +9129,8 @@
       "unlinkBtn": "Desvincular issue de GitHub",
       "unlinkConfirm": "Desvincular",
       "unlinkMessage": "Esto detiene la sincronización de Fusion con la issue de GitHub vinculada. La issue en sí no se modificará.",
-      "unlinkTitle": "¿Desvincular issue de GitHub?"
+      "unlinkTitle": "¿Desvincular issue de GitHub?",
+      "toggleInline": "Toggle GitHub tracking"
     },
     "hasSession": "tiene sesión",
     "header": {
@@ -8208,7 +9233,8 @@
     "priority": {
       "ariaLabel": "Prioridad de la tarea",
       "label": "Prioridad:",
-      "updated": "Prioridad actualizada a {{priority}}"
+      "updated": "Prioridad actualizada a {{priority}}",
+      "triggerLabel": "Priority: {{priority}}"
     },
     "progress": {
       "completedCount": "{{count}}/{{total}} completadas",
@@ -8240,7 +9266,9 @@
       "importedFrom": "",
       "nearDuplicateOf": "",
       "parentTask": "",
-      "title": ""
+      "title": "",
+      "crossProjectHandoff": "Cross-Project Handoff",
+      "crossProjectFrom": "From"
     },
     "recoveryState": "Estado de recuperación",
     "refine": {
@@ -8334,7 +9362,11 @@
       "loading": "Cargando especificación…",
       "noPrompt": "(sin indicación)",
       "promptFileName": "PROMPT.md",
-      "readPlanBtn": "Leer el plan"
+      "readPlanBtn": "Leer el plan",
+      "moreDetailsBtn": "See more details",
+      "openPromptTitle": "Open this task's PROMPT.md in the file editor",
+      "openPromptBtn": "Open PROMPT.md",
+      "hideDetailsBtn": "Hide details"
     },
     "stall": {
       "noLogEntry": "Aún no hay entrada en el registro",
@@ -8367,10 +9399,12 @@
       "recommendations": "",
       "dependencies": "",
       "details": "",
-      "debug": ""
+      "debug": "",
+      "activity": "Activity"
     },
     "terminal": {
-      "loading": ""
+      "loading": "",
+      "loadingInteractive": "Loading interactive terminal…"
     },
     "timedDuration": "Duración medida",
     "timestamps": {
@@ -8472,7 +9506,11 @@
       "approvedWithPending": "",
       "candidate": "",
       "dismissFinding": "",
-      "terminalGuidance": ""
+      "terminalGuidance": "",
+      "approvedWithPending_one": "Approved — {{count}} prior finding(s) unconfirmed",
+      "dismissed": "Dismissed AI merge finding for {{id}}",
+      "approvedWithPending_other": "Approved — {{count}} prior finding(s) unconfirmed",
+      "dismissPrompt": "Reason for dismissing this AI merge finding (required, audit-logged):"
     },
     "debug": {
       "none": ""
@@ -8490,6 +9528,135 @@
       "modalTitle": "",
       "placeholder": "",
       "taskCreated": ""
+    },
+    "plannerChat": {
+      "sendFailed": "Task chat failed to respond",
+      "commandSteerFailed": "Failed to send to the running agent",
+      "refinementFailed": "Refinement task was not created",
+      "loadFailed": "Failed to load task chat",
+      "editFailed": "Failed to edit task chat message",
+      "loading": "Loading task chat…",
+      "emptyBody": "Ask questions about this task's current status, recent activity, blockers, next steps, or definition. Starter prompts send as normal chat messages.",
+      "placeholder": "Ask about this task… Type / for commands",
+      "commandNoRunningAgent": "No running agent to steer",
+      "modelLabel": "Chat model",
+      "focusSetToast": "Memory focus updated",
+      "steeringAdded": "Added as steering comment",
+      "refinementCreated": "Created refinement task",
+      "send": "Send",
+      "refinementCreating": "Creating refinement task…",
+      "thinkingChangeFailed": "Failed to change task chat thinking level",
+      "startersLabel": "Task chat starter prompts",
+      "assistant": "Task Chat",
+      "cancelFailed": "Failed to save the interrupted planner response",
+      "refreshTaskFailed": "Steering was added, but task details could not refresh",
+      "steeringAdding": "Adding steering comment…",
+      "emptyTitle": "Start a task-aware chat",
+      "collapse": "Collapse task chat",
+      "inputLabel": "Message task chat",
+      "steeringFailed": "Steering comment was not added",
+      "steeringAddedToast": "Added as steering comment",
+      "modelChangeFailed": "Failed to change task chat model",
+      "expand": "Expand task chat",
+      "editDiscardedSideEffectsToast": "Earlier steering comments or refinement tasks from the discarded messages were not undone",
+      "label": "Task-aware chat"
+    },
+    "transfer": {
+      "loadProjectsFailed": "Could not load the project list: {{error}}",
+      "disposition": {
+        "keepUnchanged": "Keep the original unchanged",
+        "keepTransferred": "Keep the original, marked as transferred",
+        "legend": "After the copy lands"
+      },
+      "targetProject": "Target project",
+      "success": "Transferred {{id}} to {{project}} as {{targetId}}",
+      "loadingProjects": "Loading projects…",
+      "attachmentsSkipped": "{{count}} attachment(s) could not be copied to the target project",
+      "changeProject": "Change",
+      "notCopied": "Comments, execution history, worktrees, branches, and missions are NOT copied",
+      "selectProject": "Select target project…",
+      "transferring": "Transferring…",
+      "confirm": "Transfer",
+      "deduped": "{{id}} was already transferred to {{project}} as {{targetId}} — replayed the existing card",
+      "copied": {
+        "title": "Title, description, and the transferred spec",
+        "attachments": "Attachments (unreadable ones are skipped, never silently dropped)",
+        "dependencies": "Active dependencies recorded as an informational note"
+      },
+      "message": "Copies {{id}} into another project on this machine. The original stays put and gains a “transferred” pointer to the copy.",
+      "loadProjectsTimedOut": "Still waiting on the project list — the server has not answered. Try again.",
+      "copiedAria": "What is copied",
+      "title": "Transfer to project",
+      "remoteDisabledReason": "Lives on another machine — transfer only reaches projects on this install",
+      "selectedProject": "Target: {{name}}",
+      "menuItem": "Transfer to project…",
+      "reason": {
+        "targetUnresolvable": "Target project is not available on this install — cross-project transfers only reach locally registered projects."
+      }
+    },
+    "sessionAdvisor": {
+      "reset": "Session advisor follows inherited defaults ({{default}})",
+      "disabled": "Session advisor disabled for this task",
+      "enabled": "Session advisor enabled for this task",
+      "ariaLabel": "Toggle session advisor for this task",
+      "label": "Session advisor: {{state}}",
+      "inheritSuffix": " (inherited)",
+      "inheritTitle": "Session advisor {{state}} (follows inherited defaults)",
+      "overrideTitle": "Session advisor {{state}} (task override; project default {{default}})"
+    },
+    "oversight": {
+      "explainNone": "None yet",
+      "stopTitle": "Stop planner oversight?",
+      "nudgeNotApplicable": "Nudge not applicable ({{reason}})",
+      "nudged": "Manual nudge sent to the overseer",
+      "menuAriaLabel": "Oversight actions",
+      "nudgeTitle": "Inject steering guidance into the current stage now",
+      "nudgeDisabledTitle": "Nudge becomes available once the overseer is observing this task's current stage — it checks periodically.",
+      "ariaLabel": "Planner oversight level",
+      "nudgeAriaLabel": "Manual nudge",
+      "explainTitle": "Explain the overseer's current action",
+      "explainAriaLabel": "Explain current action",
+      "explainUnknown": "Unknown",
+      "label": "Oversight:",
+      "nudgeSuppressedTitle": "Nudge is paused while this task is under manual control.",
+      "controlsLabel": "Overseer controls",
+      "stopMessage": "This disables planner oversight and the session advisor for this task.",
+      "stopAriaLabel": "Stop oversight",
+      "explainInactiveTitle": "Overseer is not currently watching this task — Explain shows its last known state",
+      "inherit": "Inherit ({{level}})",
+      "explainEmpty": "The overseer is not currently watching this task.",
+      "explainReason": "Reason",
+      "explainStage": "Watched stage",
+      "nudge": "Nudge",
+      "explainLoading": "Loading overseer state…",
+      "explain": "Explain",
+      "reset": "Oversight level reset to workflow default",
+      "stop": "Stop",
+      "explainLastAction": "Last action",
+      "explainAttempts": "Attempts",
+      "stopped": "Planner oversight and session advisor stopped for this task",
+      "updated": "Oversight level set to {{level}}"
+    },
+    "activity": {
+      "current": "Live",
+      "collapse": "Collapse activity",
+      "expand": "Expand activity to full modal",
+      "feed": "Feed",
+      "interventions": "Interventions",
+      "raw": "Raw",
+      "menuLabel": "Activity views",
+      "feedHeading": "Feed",
+      "tabDropdownLabel": "Activity view: {{view}}"
+    },
+    "originalPrompt": {
+      "empty": "No original prompt recorded.",
+      "heading": "Original prompt",
+      "collapse": "Collapse original prompt",
+      "expand": "Expand original prompt"
+    },
+    "title": {
+      "expand": "Expand task title",
+      "collapse": "Collapse task title"
     }
   },
   "taskDocuments": {
@@ -8538,7 +9705,14 @@
     "documentCount": "{{count}} document{{plural}}",
     "documentsSubheading": "Task documents",
     "failedToLoadArtifacts": "Failed to load artifacts",
-    "noTaskDocuments": "No task documents yet."
+    "noTaskDocuments": "No task documents yet.",
+    "staleCopy": "This document changed since you opened it. Your draft is preserved; review the latest revision, then choose Rebase draft before saving.",
+    "artifactCount_one": "{{count}} artifact{{plural}}",
+    "documentCount_one": "{{count}} document{{plural}}",
+    "artifactCount_other": "{{count}} artifact{{plural}}",
+    "documentCount_other": "{{count}} document{{plural}}",
+    "keyAlreadyCreated": "A document with this key was created elsewhere. Your draft is preserved; choose a new key or rebase onto the current document.",
+    "rebaseDraft": "Rebase draft"
   },
   "taskFields": {
     "moreFields": "Campos adicionales",
@@ -8647,7 +9821,35 @@
     "workflowNone": "Sin flujo de trabajo",
     "workflowsCta": "Configurar flujos de trabajo en el editor",
     "workflowsLoading": "Cargando flujos de trabajo…",
-    "workingBranchLabel": "Rama de trabajo"
+    "workingBranchLabel": "Rama de trabajo",
+    "plannerOversightLabel": "Planner oversight",
+    "jiraDeriving": "Deriving…",
+    "startTask": "Start",
+    "priorityInlineAria": "Priority: {{priority}}",
+    "attachCount_one": "Attach ({{count}})",
+    "nodeInlineAria": "Choose execution node: {{node}}",
+    "modelsInlineAria": "Choose models: {{models}}",
+    "jiraDerive": "Derive",
+    "plannerOversightObserve": "Observe",
+    "toggleFastMode": "Toggle fast execution mode",
+    "modelsDefault": "Models",
+    "workflowInlineDefault": "Normal",
+    "plannerOversightOff": "Off",
+    "plannerOversightAutonomous": "Autonomous recovery",
+    "workflowStepsLabel": "Workflow Steps",
+    "plannerOversightInherit": "Inherit from workflow",
+    "plannerOversightSteer": "Steer",
+    "createTask": "Create",
+    "githubInline": "GitHub",
+    "nodeInlineDefault": "Node",
+    "attachCount_other": "Attach ({{count}})",
+    "attach": "Attach",
+    "branchNameInvalid": "Enter a valid Git branch name (no spaces or ref punctuation).",
+    "workflowInlineAria": "Choose workflow: {{workflow}}",
+    "advancedOptions": "Advanced",
+    "jiraIssueKey": "JIRA issue key",
+    "modelsCustom": "Models",
+    "optionalStepsLoading": "Loading optional steps…"
   },
   "taskHandlers": {
     "githubImported": "Importado {{id}} desde GitHub"
@@ -8695,7 +9897,25 @@
     "addressPrFeedbackStarted": "",
     "addressingPrFeedback": "",
     "fixedInReview": "Corregido durante la revisión",
-    "superseded": "Reemplazado"
+    "superseded": "Reemplazado",
+    "reviewers": "Reviewers",
+    "filterAll": "All",
+    "viewOnGitHub": "View on GitHub",
+    "human": "Human",
+    "itemAuthor": "Author: {{author}}",
+    "reviewArtifacts": "Review artifacts",
+    "prSummaryAria": "Pull request review summary",
+    "bot": "Bot",
+    "noItemsForFilter": "No review items match the filter.",
+    "prItemMeta": "Pull request review item metadata",
+    "blockingReasons": "Blocking reasons",
+    "noReviewers": "No reviewers reported",
+    "filterHuman": "Human",
+    "avatarAlt": "{{author}} avatar",
+    "filterCommentsAriaLabel": "Filter review comments by author type",
+    "filterBot": "Bot",
+    "checks": "Checks",
+    "disputeUpheld": "Dispute upheld"
   },
   "tasks": {
     "addTaskPlaceholder": "Añadir una tarea...",
@@ -8994,7 +10214,72 @@
         "content": "The delivered changes could not be read.",
         "decided": "This delivery was already decided."
       }
-    }
+    },
+    "queuedToPlanPlanReviewTitle": "Plan Review has not finished yet — implementation starts once the plan passes review.",
+    "lineageArchiveMessage": "{{taskId}} has lineage children ({{children}}) that reference it as a source parent.\n\nArchive anyway by unlinking these references first?",
+    "workspaceRepoBaseBranch": "Base branch for {{repo}}",
+    "workspaceReposLanded_one": "{{landed}} of {{count}} repos landed",
+    "planReviewBadge": "Plan Review",
+    "delete": "Delete",
+    "statusWaitingOn": "Waiting on {{reason}}",
+    "workspaceReposLanded_other": "{{landed}} of {{count}} repos landed",
+    "quickEntryPriorityLabel": "Priority: {{priority}}",
+    "optionalGateRunningTitle": "{{name}} in progress",
+    "statusQueued": "Queued",
+    "starting": "Starting…",
+    "attachFiles": "Attach photos or files",
+    "quickEntryWorkflowTitle": "Workflow for the next task",
+    "queuedFileOverlapTitle": "Queued due to file overlap with {{taskId}}",
+    "draftTooLargeToSave": "Draft is too large to save in this browser — it will not be restored after a reload.",
+    "needsUserFeedback": "Needs your decision",
+    "workflowBadgeTitle": "Workflow: {{name}}",
+    "sessionAdvisorOn": "Session advisor ON for next task (project default: {{default}})",
+    "queuedDependencyTitle": "Queued on dependency {{taskId}}",
+    "workspaceRepoBase": "Base: {{branch}}",
+    "queuedToPlan": "Queued to plan",
+    "statusQueuedBehind": "Queued behind {{taskId}}",
+    "activeStepCount_other": "{{count}} active",
+    "modelMerger": "Merger",
+    "oversightBadgeTitle": "Oversight: {{level}}",
+    "activeStepCount_one": "{{count}} active",
+    "quickEntryWorkflowDuplicateLabel": "{{name}} ({{id}})",
+    "queuedForPlanning": "Queued {{taskId}} for planning",
+    "transferredTo": "Transferred → {{project}} {{id}}",
+    "readyTitle": "Planning is done — implementation starts as soon as an implementation slot frees up.",
+    "needsReplanQueuedTitle": "Waiting to revise the plan — the revision starts when a planning slot frees up.",
+    "mergerModel": "Merger Model",
+    "ready": "Ready",
+    "queuedToPlanTitle": "Waiting for a planning slot — planning starts when an agent slot frees up",
+    "workspaceReposAcquired_one": "",
+    "dropFilesToAttach": "Drop photos or files to attach",
+    "statusReplanQueued": "Queued to revise",
+    "sessionAdvisorOff": "Session advisor OFF for next task (project default: {{default}})",
+    "startTaskTitle": "Create and start the task",
+    "workspaceRepoBaseFallbackTitle": "{{requested}} was unavailable in {{repo}}; using {{resolved}}",
+    "taskActions": "Task actions",
+    "workspaceWorktrees": "Workspace repos",
+    "workspaceRepoBaseFallback": "Base fallback",
+    "createdByAgentShort": "by {{name}}",
+    "start": "Start",
+    "startTask": "Start — plan this task",
+    "attachFilesCount_one": "Attach photos or files ({{count}} pending)",
+    "statusWaiting": "Waiting",
+    "removeAttachment": "Remove image",
+    "statusInProgress": "In progress",
+    "statusPlanning": "Planning",
+    "sessionAdvisorDefaultOn": "on",
+    "transferredToLiveTitle": "Copied to {{project}} as {{id}}; currently {{column}}. Click to open.",
+    "active": "active",
+    "workflowBadgeAriaLabel": "Workflow {{name}}",
+    "transferredToTitle": "Copied to {{project}} as {{id}}. Click to open.",
+    "attachFilesCount_other": "Attach photos or files ({{count}} pending)",
+    "sessionAdvisorDefaultOff": "off",
+    "workspace": "Workspace",
+    "workspaceReposAcquired_other": "",
+    "statusMerging": "Merging…",
+    "planReviewingTitle": "Plan Review in progress",
+    "duplicateDecisionRequiredTitle": "This task is a duplicate candidate and needs your decision.",
+    "quickEntryWorkflowHeader": "Create in workflow"
   },
   "terminal": {
     "arrowKeysLabel": "",
@@ -9034,7 +10319,41 @@
     "statusConnected": "Conectado",
     "statusConnecting": "Conectando...",
     "statusDisconnected": "Desconectado",
-    "statusReconnecting": "Reconectando..."
+    "statusReconnecting": "Reconectando...",
+    "belowRegion": "Pinned terminal",
+    "selectTab": "Terminal tab",
+    "popOutTerminal": "Pop out terminal",
+    "projectRoot": "Project Root",
+    "taskWorktrees": "Task Worktrees",
+    "closeTabMessage": "The session keeps running on the server unless you end it. Anyone else viewing it stays connected, and you can reopen it from the terminal footer.",
+    "customShortcutsList": "Custom terminal shortcuts",
+    "pinTerminal": "Pin terminal (push content)",
+    "reopenSessionHeading": "Running on the server",
+    "noWorktree": "No worktree",
+    "workspaceMissingWorktree": "This task has no worktree path yet",
+    "closeCurrentTab": "Close current tab",
+    "noTabs": "No terminal tabs",
+    "customShortcutsTitle": "Custom shortcuts",
+    "resizeBelowPanel": "Resize pinned terminal panel",
+    "reopenSession": "Reopen",
+    "closeTabTitle": "Close this terminal?",
+    "selectWorkspace": "Select terminal workspace",
+    "openWorkspaceTerminal": "Open terminal in selected workspace",
+    "customShortcutValue": "Injected value",
+    "customShortcutSave": "Save shortcut",
+    "resizeDockedPanel": "Resize terminal panel",
+    "selectWorkspaceWithCurrent": "Select terminal workspace: {{workspace}}",
+    "customShortcutAdd": "Add shortcut",
+    "customShortcutsHelp": "Use \\n for Enter, \\t for Tab, \\e or \\x1b for Esc, \\r for Return, and \\\\ for a literal backslash.",
+    "reopenSessionTitle": "Reopen a session still running on the server",
+    "title": "Terminal",
+    "closeTabHere": "Close in this browser",
+    "customShortcutsEmpty": "No custom shortcuts yet.",
+    "dockTerminal": "Dock terminal",
+    "customShortcutLabel": "Button label",
+    "closeTabEndSession": "End session",
+    "loadingWorkspaces": "Task worktrees (refreshing…)",
+    "unpinTerminal": "Unpin terminal (overlay content)"
   },
   "theme": {
     "colorTheme": "",
@@ -9044,7 +10363,20 @@
     "fontSizeLabel": "Tamaño de fuente del panel",
     "modeLabel": "Modo de tema",
     "resetButton": "Restablecer a los predeterminados",
-    "resetLabel": "Restablecer al tema predeterminado"
+    "resetLabel": "Restablecer al tema predeterminado",
+    "filterColorThemes": "Filter color themes",
+    "system": "System",
+    "filterColorThemesPlaceholder": "Filter color themes",
+    "shadcnCustom": {
+      "reset": "Reset custom colors",
+      "show": "Show custom colors",
+      "description": "Override shadcn design tokens with hex colors. Blank tokens use the theme defaults.",
+      "title": "Custom shadcn colors",
+      "hexInput": "{{label}} hex color",
+      "collapse": "Collapse custom colors",
+      "colorInput": "Pick {{label}} color"
+    },
+    "noColorThemes": "No color themes found"
   },
   "todo": {
     "addItemPlaceholder": "Agregar elemento de tarea",
@@ -9123,7 +10455,11 @@
     "restartFailed": "",
     "restartNow": "",
     "restartUnavailable": "",
-    "restarting": ""
+    "restarting": "",
+    "backOnline": "Fusion v{{version}} is back online — reloading…",
+    "updateUnknown": "Update did not complete — see the Fusion logs",
+    "restartTimedOut": "Fusion did not return in time. Refresh when it is back online.",
+    "retryRestart": "Retry readiness check"
   },
   "usage": {
     "configureAuthHint": "Configure la autenticación en Configuración para ver datos de uso.",
@@ -9284,7 +10620,10 @@
     "traits": "",
     "traitsLoadFailed": "",
     "unplacedCount_one": "",
-    "unplacedCount_other": ""
+    "unplacedCount_other": "",
+    "description": "Description",
+    "descriptionLabel": "Column description",
+    "descriptionPlaceholder": "Optional explanation for this column"
   },
   "workflowEditor": {
     "cliAgent": {
@@ -9334,7 +10673,9 @@
     "promptOverridesLoadFailed": "Failed to load prompt overrides",
     "promptOverridden": "Overridden",
     "promptSaving": "Saving…",
-    "resetPromptDefault": "Reset to default"
+    "resetPromptDefault": "Reset to default",
+    "reviewerPool": "Role pool / task owner",
+    "reviewerOverride": "Reviewer override"
   },
   "workflowFields": {
     "add": "Agregar campo",
@@ -9485,7 +10826,39 @@
     "templatesPluginSteps": "Pasos de plugin",
     "templatesSection": "Plantillas",
     "timeoutMs": "",
-    "trivialGraphHint": "Este flujo de trabajo solo ejecuta inicio → fin. Añade pasos desde la paleta superior para construirlo."
+    "trivialGraphHint": "Este flujo de trabajo solo ejecuta inicio → fin. Añade pasos desde la paleta superior para construirlo.",
+    "insertTemplateAsOptionalGroup": "Insert {{name}} as optional group",
+    "optionalGroupDefaultOff": "default off",
+    "askUserQuestion": "Question",
+    "helpConfigure": "Configure",
+    "askUserQuestionPlaceholder": "This workflow is waiting for your input.",
+    "optionalGroupMaxRevisionsPlaceholder": "Use global setting",
+    "notAReview": "Not a review",
+    "optionalGroupMaxRevisionsUnbounded": "Unbounded",
+    "optionalGroupStepLabel": "Optional step",
+    "hideMiniMap": "Hide mini map",
+    "codeReview": "Code review",
+    "helpEngineManaged": "Engine-managed",
+    "exitGateNodeIdPlaceholder": "e.g. ask",
+    "planReview": "Plan review",
+    "exitGateConditional": "Exit conditionally",
+    "helpOutputs": "Outputs",
+    "exitGateNote": "Routes early to End (outcome:exit) when the condition matches, or unconditionally when none is set. Falls through (outcome:continue) otherwise.",
+    "exitGateNodeId": "Watch node id",
+    "asOptionalGroup": "as optional group",
+    "insertAsOptionalGroup": "Insert as optional group",
+    "helpInputs": "Inputs",
+    "reservedHandleBlocked": "Optional-block boundary guides cannot be connected manually",
+    "optionalGroupMaxRevisions": "Max revisions",
+    "showMiniMap": "Show mini map",
+    "exitGateConditionType": "Exit when",
+    "reviewKind": "Review kind",
+    "askUserNote": "Parks the task and surfaces this question in the task chat/detail. Resumes once the user replies and unpauses.",
+    "optionalGroupDefaultOn": "default on",
+    "helpEdges": "Edges",
+    "optionalGroupNote": "Runs the steps inside this group once when the task enables it (seeded from this default), and skips them when disabled. Drop the optional steps into the region.",
+    "helpTitle": "What does this node do?",
+    "optionalGroupEmptyHint": "Drag optional steps here"
   },
   "workflows": {
     "aiEdit": "Diseñar con IA",
@@ -9561,7 +10934,11 @@
     "viewModeAdvanced": "",
     "viewModeLabel": "",
     "viewModeList": "",
-    "viewModeSimple": ""
+    "viewModeSimple": "",
+    "iconPlaceholder": "e.g. 🚀",
+    "iconLabel": "Icon (optional)",
+    "showSidebar": "Show workflow sidebar",
+    "collapseSidebar": "Collapse workflow sidebar"
   },
   "workflowSelector": {
     "switchActiveMessage": "",
@@ -9637,7 +11014,12 @@
     "merging": "",
     "mergingTitle": "",
     "review": "Revisión",
-    "triggerAria": "Select workflow. Current workflow: {{name}}"
+    "triggerAria": "Select workflow. Current workflow: {{name}}",
+    "inProgress": "In Progress",
+    "done": "Done",
+    "mergingTitle_one": "{{count}} merging",
+    "mergingTitle_other": "{{count}} merging",
+    "todo": "Todo"
   },
   "workspace": {
     "projectRoot": "Raíz del proyecto",
@@ -9713,7 +11095,19 @@
     "missingOutputTimestamp": "",
     "statusUpdate": "",
     "statusUpdateTimestamp": "",
-    "toolDetailsMissing": "Some tool details are unavailable. They may have been recorded while detail saving was disabled; check Settings → Global General to save future tool details."
+    "toolDetailsMissing": "Some tool details are unavailable. They may have been recorded while detail saving was disabled; check Settings → Global General to save future tool details.",
+    "errorInline": "error",
+    "activityComposerFormLabel": "Task activity composer",
+    "collapseActivity": "Collapse activity",
+    "entryCountPlural_one": "{{count}} entries",
+    "toolCallCountPlural_other": "{{count}} tool calls",
+    "toolCallCountPlural_one": "{{count}} tool calls",
+    "errorCountPlural_one": "{{count}} errors",
+    "entryCountPlural_other": "{{count}} entries",
+    "errorCountPlural_other": "{{count}} errors",
+    "expandActivity": "Expand activity to full modal",
+    "resultInline": "result",
+    "refinementComposerFormLabel": "Task refinement composer"
   },
   "engineBanner": {
     "body": "The engine for this project is not running, so task automation and live updates may be paused. Start it now to reconnect the dashboard.",
@@ -9824,7 +11218,9 @@
     "shortestPath": "",
     "showingOf": "",
     "useSelectedFrom": "",
-    "useSelectedTo": ""
+    "useSelectedTo": "",
+    "hops_one": "{{count}} hops",
+    "hops_other": "{{count}} hops"
   },
   "mermaid": {
     "diagram": ""
@@ -9886,7 +11282,9 @@
     "sectionCount": "",
     "sectionCountPlural": "",
     "showRaw": "",
-    "showSections": ""
+    "showSections": "",
+    "sectionCount_one": "{{count}} section",
+    "sectionCount_other": "{{count}} section"
   },
   "artifactImageViewer": {
     "openTask": "",
@@ -9964,7 +11362,9 @@
     "line": "line",
     "lines": "lines",
     "showLess": "Show less",
-    "showMore": "Show more ({{count}} {{lineLabel}})"
+    "showMore": "Show more ({{count}} {{lineLabel}})",
+    "showMore_other": "Show more ({{count}} {{lineLabel}})",
+    "showMore_one": "Show more ({{count}} {{lineLabel}})"
   },
   "recommendations": {
     "count": "",
@@ -10058,5 +11458,230 @@
     "classicDescription": "La gramática habitual de Fusion, sin cambios.",
     "clean": "Depurado",
     "cleanDescription": "Densidad más ajustada, esquinas suaves, cromo discreto."
+  },
+  "stall": {
+    "dependency-block": {
+      "badgeLabel": "Blocked",
+      "headline": "Waiting on dependency {{taskId}}",
+      "headlineUnspecified": "Waiting on a dependency",
+      "suggestedAction": "Finish the blocking card, or remove the dependency.",
+      "description": "This card depends on another card that has not finished yet."
+    },
+    "external-block": {
+      "badgeLabel": "Blocked",
+      "headline": "Blocked outside the worktree",
+      "suggestedAction": "Repair the external obstacle, then resume this card."
+    },
+    "held-human-review": {
+      "description": "Nothing is refusing this card: automatic merge processing is withheld for it, so finishing the review does not merge it.",
+      "headline": "Waiting on a person",
+      "suggestedAction": "Merge the card yourself, or turn automatic merge processing back on."
+    },
+    "duplicate-decision": {
+      "suggestedAction": "Open the duplicate decision and keep the earliest canonical card.",
+      "description": "A planner or another agent flagged it as a possible duplicate; it needs your decision before it can move.",
+      "headline": "This card may be a duplicate"
+    },
+    "paused": {
+      "description": "This card is paused and will not move until it is resumed.",
+      "headline": "This card is paused",
+      "suggestedAction": "Resume the card, or open its detail to read the pause reason."
+    },
+    "merge-blocker": {
+      "suggestedAction": "Open the Review tab to resolve the merge blocker.",
+      "badgeLabel": "Merge blocked",
+      "headline": "Merge is blocked"
+    },
+    "agent-approval": {
+      "suggestedAction": "Open the approvals inbox to approve or deny.",
+      "badgeLabel": "Awaiting approval",
+      "description": "The agent paused itself until a person approves the pending permission request.",
+      "headline": "A tool call is waiting for your approval"
+    },
+    "pausedReason": {
+      "error-retry-exhausted": {
+        "headline": "Automatic retries exhausted"
+      },
+      "error-unrecoverable": {
+        "headline": "Paused with an unrecoverable error"
+      },
+      "migrated-from-terminated": {
+        "headline": "Recovered from a terminated runtime"
+      },
+      "budget-exhausted": {
+        "headline": "Output budget exhausted"
+      },
+      "generic": {
+        "headline": "Paused — {{reason}}"
+      },
+      "heartbeat-unresponsive": {
+        "headline": "Heartbeat unresponsive"
+      },
+      "awaiting-approval": {
+        "headline": "Awaiting approval"
+      }
+    },
+    "wedge": {
+      "description": "A durable stuck-state hold is in place on this card.",
+      "badgeLabel": "Stuck",
+      "headline": "This card is stuck waiting for a decision",
+      "suggestedAction": "Review the stuck-state notice and take its suggested action, or let recovery retry."
+    },
+    "stalled-review": {
+      "badgeLabel": "Stalled review",
+      "headline": "Review appears stalled",
+      "suggestedAction": "Re-dispatch the review or open the activity log for detail."
+    },
+    "failed": {
+      "suggestedAction": "Retry the card, or open the detail to read the failure.",
+      "description": "The last run ended in a failure without a captured error message.",
+      "badgeLabel": "Failed",
+      "headline": "This card failed"
+    },
+    "overlap-block": {
+      "suggestedAction": "Let the overlapping card land, or narrow this card's file scope.",
+      "description": "Another active card is editing the same files, so this card is held to avoid a conflict.",
+      "badgeLabel": "File overlap",
+      "headline": "Waiting on file overlap with {{taskId}}"
+    },
+    "completion-blocker": {
+      "badgeLabel": "Completion blocked",
+      "headline": "Completion is blocked",
+      "suggestedAction": "Open the detail to resolve the completion blocker."
+    },
+    "queued": {
+      "headline": "Waiting to be picked up",
+      "suggestedAction": "No action needed; reorder or assign the card if a different one should run first."
+    }
+  },
+  "systemControls": {
+    "engineRestarted_one": "Restarted {{count}} engine(s){{failed}}",
+    "logsUnavailable": "Host-process logs are not available in this mode.",
+    "copyDiagnosticsCta": "Copy",
+    "rebuildPluginsDesc": "Rebuild changed plugin bundles and hot-reload them without a server restart.",
+    "sourceUpdate": "Update from source",
+    "fnUseGlobalDesc": "Remove the local-build shims and reinstall the published runfusion.ai package globally.",
+    "sourceUpdateNotFromSource": "Not running from a source checkout — start the container with --from-source (FUSION_SOURCE_ROOT) to enable this.",
+    "backupDbCta": "Backup now",
+    "fnUseGlobalOutput": "Global npm install output",
+    "fnLinkLocalCta": "Build & link",
+    "fnLinkLocalOutput": "Local fn build output",
+    "title": "System controls",
+    "jobSucceeded": "Succeeded",
+    "jobRunning": "Running…",
+    "copyDiagnosticsDesc": "Copy a JSON bundle with health, runtime info and recent logs.",
+    "restartAgentsCta": "Restart agents",
+    "restartWaiting": "Restarting server — waiting for it to come back…",
+    "restartBack": "Server is back online — reloading…",
+    "fnUseGlobal": "Use global npm fn",
+    "updatesDisabled": "Update checks are disabled in global settings",
+    "rebuildOutput": "Rebuild output",
+    "fullRebuildDesc": "Rebuild the entire workspace (slower), then restart.",
+    "restartServerDesc": "Gracefully restart the dashboard and engine process.",
+    "fnUseGlobalCta": "Install global",
+    "pluginsReloaded_other": "Reloaded {{count}} plugin(s){{failed}}",
+    "reloadPlugins": "Reload plugins",
+    "agentsRestarted_one": "Restarted {{count}} active agent(s){{failed}}",
+    "restartUnavailable": "Needs a supervising parent — restart the dashboard without --no-supervise.",
+    "reportBugDesc": "Report a bug, send feedback, share an idea, or get help through a guided prompt.",
+    "infoError": "Failed to load system info: {{error}}",
+    "fnUseGlobalSucceeded": "Switched default fn to global npm install",
+    "engineRestarted_other": "Restarted {{count}} engine(s){{failed}}",
+    "sourceUpdateDesc": "Pull the latest source (fast-forward only), rebuild it, and restart into the new code. A failed build never restarts the server.",
+    "restartServer": "Restart server",
+    "reportBug": "Report",
+    "fullRebuild": "Full rebuild & restart",
+    "jobOutcomeUnknown": "Lost the job stream before a result arrived — the outcome is unknown",
+    "jobLostToRestart": "The server restarted while the job was streaming — its output is gone",
+    "backupDbDesc": "Create an integrity-checked backup of the database now.",
+    "rebuildRestartDesc": "Rebuild core, engine, dashboard and changed plugins, then restart the server.",
+    "hideLogs": "Hide logs",
+    "upToDate": "You're up to date (v{{version}})",
+    "refresh": "Refresh capabilities",
+    "sourceUpdateCta": "Update & restart",
+    "backupDb": "Backup database",
+    "jobOutputTruncated_one": "Showing the most recent {{count}} lines — earlier output trimmed",
+    "jobFailed": "Failed",
+    "updatesExternallyManaged": "Updates are managed by this deployment",
+    "checkUpdatesDesc": "Query the registry for a newer published Fusion version.",
+    "checkUpdates": "Check for updates",
+    "restartTimeout": "The server did not come back within the expected time. It may still be restarting, or the restart may have stopped it.",
+    "fullRebuildCta": "Full rebuild",
+    "fnLinkLocalDesc": "Build the standalone fn binary from this source checkout and install it as your default PATH binary (~/.local).",
+    "restartEngine": "Restart engine",
+    "restartEngineDesc": "Stop and restart all running project engines in place.",
+    "backupCreated": "Database backup created",
+    "rebuildPlugins": "Rebuild & reload plugins",
+    "rebuildRestart": "Rebuild & restart",
+    "restartEngineCta": "Restart engine",
+    "viewLogs": "View logs",
+    "copyDiagnostics": "Copy diagnostics",
+    "pluginReloadUnavailable": "Plugin runner is unavailable in this mode.",
+    "reloadPluginsCta": "Reload",
+    "restartAgentsDesc": "Stop active runs and bounce every active agent. Paused agents stay paused.",
+    "diagnosticsCopied": "Diagnostics copied to clipboard",
+    "rebuildSucceeded": "Rebuild finished successfully",
+    "pluginsReloaded_one": "Reloaded {{count}} plugin(s){{failed}}",
+    "fnLinkLocalSucceeded": "Local fn binary built and linked",
+    "restartAgents": "Restart all agents",
+    "rebuildRestartCta": "Rebuild",
+    "jobOutputTruncated_other": "Showing the most recent {{count}} lines — earlier output trimmed",
+    "working": "Working…",
+    "checkUpdatesCta": "Check now",
+    "engineUnavailable": "Engine is not running in this process.",
+    "rebuildPluginsCta": "Rebuild plugins",
+    "diagnosticsCopyFailed": "Could not copy diagnostics to clipboard",
+    "restartServerCta": "Restart",
+    "rebuildFailed": "Job failed — see output for details",
+    "updateAvailable": "Update available: v{{version}} (current: v{{current}})",
+    "serverLogs": "Server logs",
+    "reloadNow": "Reload now",
+    "fnLinkLocal": "Build & link local fn",
+    "sourceUpdateUnsupervised": "Needs a supervising parent to restart into the new build — restart the dashboard without --no-supervise.",
+    "noLogs": "No log entries yet.",
+    "agentsRestarted_other": "Restarted {{count}} active agent(s){{failed}}",
+    "reloadPluginsDesc": "Hot-reload every started plugin from its current build."
+  },
+  "engineUnavailable": {
+    "title": "AI engine is not running",
+    "body": "This dashboard can display project data, but task automation will not run until you restart Fusion with the engine. Stop this server and run <sourceCmd>pnpm local</sourceCmd> from a source checkout, or <cliCmd>fn dashboard</cliCmd> from an installed CLI."
+  },
+  "fileViewer": {
+    "back": "Back to files",
+    "selectAFile": "Select a file",
+    "popOut": "Open in resizable window"
+  },
+  "key": "English",
+  "fleet": {
+    "backToRoster": "Back to fleet roster",
+    "state": "State",
+    "emptyTitle": "No agents in the fleet",
+    "openAgent": "Open {{name}}",
+    "currentTask": "Current task",
+    "backToFleet": "Fleet",
+    "showSystemAgents": "Show system agents",
+    "summaryLabel": "Fleet summary",
+    "refresh": "Refresh roster",
+    "emptyDescription": "Durable agents will appear here once they are provisioned.",
+    "loadingDetail": "Loading agent…",
+    "unresponsive": "Unresponsive",
+    "role": "Role",
+    "active": "Active",
+    "lastHeartbeat": "Last heartbeat",
+    "loading": "Loading fleet…",
+    "total": "Agents"
+  },
+  "workflowOptionalSteps": {
+    "triggerCount_other": "Steps: {{count}} selected",
+    "triggerCount_one": "Steps: {{count}} selected",
+    "triggerNone": "Steps: none",
+    "title": "Optional steps"
+  },
+  "approvals": {
+    "gatedActionCwd": "Working directory",
+    "gatedActionArgs": "Arguments",
+    "gatedActionTitle": "Gated action payload",
+    "gatedActionCommand": "Command",
+    "gatedActionTool": "Tool"
   }
 }
