@@ -6,9 +6,9 @@
 import type {
   Column,
   ColumnId,
-  TaskPriority,
   ThinkingLevel,
 } from "../board/board.js";
+import type { TaskQueueBoost } from "../../tasks/task-queue-order.js";
 import type {
   ExecutionMode,
   PlannerOversightLevel,
@@ -79,6 +79,24 @@ export interface HumanPlanApprovalState {
   enabled: boolean;
   decision?: HumanPlanApprovalDecision;
 }
+
+/*
+FNXC:HumanMergeApproval 2026-09-17-18:09:
+FN-514 adds the per-card DELIVERY lock, deliberately separate from `humanPlanApproval` (which gates
+entry into execution) and from `autoMerge` (a project/task policy, not an operator decision). The
+contracts and every predicate live in `merge/human-merge-approval.ts`; only the persisted shape is
+declared here so the task row stays the single structural source of truth.
+*/
+export type {
+  HumanMergeApprovalDecision,
+  HumanMergeApprovalState,
+  HumanMergeCandidateIdentity,
+  HumanMergeDecisionAction,
+  HumanMergeDecisionReceipt,
+  HumanMergeDeliveryAction,
+  HumanMergeRejection,
+  HumanMergeRejectionState,
+} from "../../merge/human-merge-approval.js";
 
 /** Engine-owned planning retry evidence. */
 export type TaskPlanningFailureState = {
@@ -481,6 +499,13 @@ export interface TaskSource {
    *   the source card).
    * - plan-premise refusal episode (RUFU-246): `planPremiseRejection`
    *   ({@link PlanPremiseRejectionEpisode}) tracks the release-gate escalation ladder.
+   * - `followUp: { version: number }` (FNXC:TaskFollowUp 2026-09-17-15:55) marks FN-513's
+   *   FOLLOW-UP sub-type of `task_refine`: a child prepared from a still-running parent's plan and
+   *   in-flight implementation. It is a versioned marker rather than a new `SourceType` because a
+   *   follow-up IS a refinement for every lineage reader, delete guard, stranded-refinement
+   *   recovery lane, and provenance surface; forking the source type would require a migration and
+   *   a second copy of all of them. An absent or malformed marker degrades to an ordinary
+   *   refinement. Read it only through `isFollowUpTask` in `tasks/task-follow-up.ts`.
    */
   sourceMetadata?: Record<string, unknown>;
 }
@@ -931,11 +956,14 @@ export interface Task {
   proposalClaimId?: string;
   title?: string;
   description: string;
-  /**
-   * Task importance level. Missing legacy values normalize to `normal` when
-   * tasks are hydrated from persistence.
-   */
-  priority?: TaskPriority;
+  /*
+  FNXC:TaskQueueOrder 2026-09-17-12:07:
+  FN-509: durable queue rank. Present ONLY while an operator Boost is in force for this card's
+  current stay in its current column; absent means ordinary arrival order. It is never written by
+  a create, clone, refinement, import, revert, or self-healing sweep — only by the explicit
+  `boostTask` mutation — and it is never derived from the retired `priority` column.
+  */
+  queueBoost?: TaskQueueBoost | null;
   /** The task's current column id. Widened to {@link ColumnId} so workflow-defined
    *  custom columns are representable; flag-OFF paths only ever store legacy ids. */
   column: ColumnId;
@@ -1012,6 +1040,14 @@ export interface Task {
    * `require_plan_approval` column: a historical true value must not silently arm this feature.
    */
   humanPlanApproval?: HumanPlanApprovalState;
+  /**
+   * FNXC:HumanMergeApproval 2026-09-17-18:09:
+   * FN-514 per-card human DELIVERY validation. Absent means "no per-card requirement" and preserves
+   * every existing merge policy exactly. Never derived from `autoMerge`: a historically disabled
+   * auto-merge must not silently arm this feature, and arming this feature never re-enables
+   * auto-merge for the automatic lanes.
+   */
+  humanMergeApproval?: import("../../merge/human-merge-approval.js").HumanMergeApprovalState;
   /**
    * FNXC:TaskActivity 2026-07-28-12:00:
    * Dashboard-only signal from a fresh planner agent-log SSE entry. It is never
@@ -1829,10 +1865,6 @@ export interface TaskCreateInput {
   tokenUsage?: TaskTokenUsage;
   /** Provenance metadata for task creation. */
   source?: TaskSource;
-  /**
-   * Optional task importance level. Omitted values default to `normal`.
-   */
-  priority?: TaskPriority;
   /** Initial column id. Widened to {@link ColumnId} (#1403) so a custom-column
    *  task can be replicated/created; flag-OFF creation only ever uses legacy ids. */
   column?: ColumnId;
@@ -1945,6 +1977,13 @@ export interface TaskCreateInput {
    * never accepted from a caller, so task creation cannot forge operator release proof.
    */
   humanPlanApproval?: boolean;
+  /**
+   * FNXC:HumanMergeApproval 2026-09-17-18:09:
+   * FN-514 — creation arms the per-card DELIVERY lock with a BOOLEAN only. The decision, candidate
+   * and receipt objects are never accepted from a caller, so task creation cannot forge delivery
+   * proof any more than it can forge plan-release proof.
+   */
+  humanMergeApproval?: boolean;
   /** Per-task override of the workflow-native planner oversight level (FNXC:PlannerOversight).
    *  When set, wins over the workflow's effective `plannerOversightLevel`. Unset means
    *  "inherit workflow default". */

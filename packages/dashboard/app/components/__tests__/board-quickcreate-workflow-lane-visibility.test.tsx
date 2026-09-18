@@ -169,7 +169,6 @@ function BoardHarness({ createdTaskId = "FN-new", createReturnsTask = true, onCr
       onQuickCreate={onQuickCreate}
       onNewTask={vi.fn()}
       autoMerge
-      onToggleAutoMerge={vi.fn()}
       showWorktreeGrouping={false}
       planAutoApproveEnabled={false}
       onTogglePlanAutoApprove={vi.fn()}
@@ -339,7 +338,6 @@ function boardProps(tasks: Task[]) {
     onQuickCreate: vi.fn(),
     onNewTask: vi.fn(),
     autoMerge: true,
-    onToggleAutoMerge: vi.fn(),
     showWorktreeGrouping: false,
     planAutoApproveEnabled: false,
     onTogglePlanAutoApprove: vi.fn(),

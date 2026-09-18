@@ -263,6 +263,70 @@ From the standalone **Research** view, each finding supports two task actions:
 
 Research actions persist detailed output in task documents (and optional attachments), not in long task descriptions.
 
+## Per-task delivery lock (human merge approval)
+
+A task can carry an explicit **delivery lock**: the card plans, executes, verifies and passes every
+configured review exactly as usual, then **stops before the final delivery** and waits for one
+operator command. It is armed with a single boolean at creation (`humanMergeApproval: true` on the
+create payload, the lock button in the New Task dialog, Quick Entry and the inline card) and can be
+added or removed later from the task's context menu.
+
+The lock is deliberately **not** `autoMerge: false`, not a pause, and not a fabricated review
+verdict. Those remain independent protections with their own meaning:
+
+| Control | Scope | What it stops |
+| --- | --- | --- |
+| Project/task `autoMerge` | Automatic lanes | Automatic merge admission (`requestInterpreterMerge`) |
+| Delivery lock | One card | The final delivery, until a human commands it |
+| Pause | One card | All automation on the card |
+
+A card with no lock behaves exactly as it always did. Arming a lock never re-enables auto-merge for
+the automatic lanes, and disarming it never merges anything by itself.
+
+### The three operator commands
+
+When the work and every configured pre-merge gate are genuinely satisfied, the task's Review banner
+offers one shared text field and exactly three direct buttons, in this order:
+
+1. **Créer PR / Create PR** — opens (or reuses) a pull request for the candidate's repository, head
+   and base, keeps the task in review, and publishes the link through the existing manual-PR
+   handoff. It performs **no merge**, no `pr-merge`, and never arms GitHub's native auto-merge. A
+   later merge still requires a fresh explicit command on the current candidate.
+2. **Merger / Merge** — commands the already-authorized human merge door with the effective policy
+   (direct or via PR). It is a human command, not a settings change.
+3. **Refuser / Reject** — requires instructions and starts a correction cycle on the same task.
+
+The two positive commands accept an **optional** note; the rejection **requires** a non-empty
+instruction after trimming. Notes are kept in the task history; a note never requests changes — that
+must go through Reject.
+
+### What an approval authorizes
+
+A positive decision authorizes exactly one presented candidate and one destination. The candidate
+identity binds the lock generation, the effective workflow selection, the review episode, the merge
+content (a singular diff fingerprint, a proven-empty diff, or per-repository workspace
+fingerprints), the workspace repository-scope revision, and the server-resolved delivery target.
+
+Changing any of those — new commits, a fresh review, a reset, a different base branch, a new
+workflow selection — invalidates the accord and asks again. Adding a note or updating a dispatch
+receipt does not. A `create-pr` authorization is never accepted by a merge door.
+
+### Rejections, reset and duplication
+
+An accepted rejection is a correction obligation. Removing the lock while its analysis or correction
+is running removes the *next* approval requirement but never erases the instruction or the
+corrections already accepted, and re-arming never revives an old accord.
+
+- **Reset** keeps the lock intent, bumps its generation (invalidating every prior accord, pending
+  destination and stale candidate) and cancels stale processing.
+- **Duplication** keeps the lock intent only: the copy inherits no accord, no pending destination
+  and no correction request.
+- A new independent task or a follow-up never inherits a decision.
+
+The durable state lives in the task row's `human_merge_approval` JSONB column (migration `0083`),
+separate from `human_plan_approval` and from `auto_merge` so no historical value can arm or disarm
+it. Rows that predate the column read as "no per-card requirement".
+
 ## Task Lifecycle
 
 Fusion task columns:
@@ -422,8 +486,23 @@ Auto-completion/finalization remains owned by existing recovery passes:
 5. **done** — merged/finalized. Done retains task history and is loaded in deterministic server-paginated pages of 50 while the board shows the exact total independently of the currently loaded cards.
 
 Board ordering behavior:
-- `todo` mirrors scheduler dispatch order: priority first (`urgent` → `low`), then oldest `createdAt` within a priority tier, then task ID as deterministic tie-break.
-- `triage`, `in-progress`, and `in-review` remain priority-first with task-ID tie-breaks (`in-review` still pins merge-active statuses above non-merging tasks).
+FN-509 removed task priority levels and the per-column sort menu. Every column now uses one shared, non-configurable order:
+
+- **Manual-intake lanes** (an `intake` column with `autoTriage: false`, such as Coding (Ideas)'s "Ideas") show the newest card at the top, so the list reads top-down as "what did I just think of".
+- **Processing lanes** (planning holds, WIP, review/merge) show genuinely ACTIVE cards first, then everything still waiting in the shared queue order: an effective **Boost** first, then oldest `createdAt` first, then the task-id tie-break. This is exactly the order the engine will try candidates in. Active cards are ordered among themselves by arrival and a Boost never moves a waiting card ahead of one already in flight.
+- **Complete lanes** keep arrival order, newest first (`columnMovedAt`, then `updatedAt`, then `createdAt`). Done is deliberately not re-sorted by creation date.
+
+### Boost
+
+**Boost** moves one waiting card to the head of its queue. It is the only way to change the order, and it is deliberately narrow:
+
+- **It is a move-to-head, not a level.** There are no tiers, no visible counter, no persistent "boosted mode" to select, and no un-boost button. Clicking Boost on another card takes the head; clicking the first card again reclaims it.
+- **It never starts anything.** Boost performs no column move, retries no error, lifts no pause, and clears no gate. A boosted card that is blocked by capacity, an overlapping file scope, an unmet dependency, a pending approval, a pause, or a retry cooldown keeps its place in the queue while admission moves on to the next admissible candidate. The visible order is the order of ATTEMPT, not permission to start.
+- **It never preempts.** A selection or reservation that has already been accepted is never taken back to serve a Boost that arrived afterwards.
+- **It lasts for one stay in one column.** A Boost belongs to the card's current stay in its current column of its current workflow, so it survives the different phases of that stay (planning, then waiting for capacity, in the same Planning column). It expires when the card moves, when the workflow changes, and on Reset; it does not become a standing priority in the next column. A successful reservation keeps its winner through the hold → WIP handoff. Duplicates, refinements, reverts, and restored snapshots never inherit a Boost.
+- **It is durable and shared.** The rank lives on the task, not in one browser, so every client and a restarted engine see the same order.
+
+The **Boost** button appears on a live, non-active card in a lane whose remaining processing is automatic. It is absent on manual intake, on Complete lanes, on history, on deleted cards, on work already in flight, in a column with no automatic processing, and on a review lane that is a purely human wait after auto-merge is disabled — unless an automatic review still has to run there, in which case the queue is real and Boost remains available.
 - The `done` column is recency-ordered by completion time (newest first), using `columnMovedAt` as primary and falling back to `updatedAt` then `createdAt` for legacy tasks.
 - The dashboard **list view default ordering matches these same per-column semantics** until a user clicks a sortable header (manual list sorting still overrides defaults).
 

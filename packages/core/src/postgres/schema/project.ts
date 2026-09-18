@@ -251,6 +251,13 @@ export const tasks = projectSchema.table("tasks", {
   externalBlock: jsonb("external_block"),
   /* FNXC:HumanPlanApproval 2026-09-15-06:24: FN-408 per-card human plan decision state. */
   humanPlanApproval: jsonb("human_plan_approval"),
+  /* FNXC:HumanMergeApproval 2026-09-17-18:09: FN-514 per-card human DELIVERY lock, decision, resolved
+     destination and rejection remediation state. A separate column from `human_plan_approval` and from
+     `auto_merge` so neither historical value can arm or disarm it. */
+  humanMergeApproval: jsonb("human_merge_approval"),
+  /* FNXC:TaskQueueOrder 2026-09-17-12:07: FN-509 durable per-stay Boost rank. The neighbouring
+     `priority` column is retired: it is retained as inert historical data and is never read. */
+  queueBoost: jsonb("queue_boost"),
   planningFailure: jsonb("planning_failure"),
   noCommitsExpected: integer("no_commits_expected").default(0),
   enabledWorkflowSteps: jsonb("enabled_workflow_steps").default([]),
@@ -572,7 +579,7 @@ export const legacyTaskReviewerRuns = projectSchema.table("task_reviewer_runs", 
   both invalidated_at IS NULL AND completed_at IS NULL, mirroring the sweep classifier's own live
   definition. The earlier draft keyed on the reviewer agent and dropped completed_at, so a completed
   (e.g. dispatch-failed) attempt held the slot forever and the sweep's retry could never open a new
-  row. `migrations/0082_stas_205_review_lane_ledger.sql` is the source of truth; the drift probe in
+  row. `migrations/0084_stas_205_review_lane_ledger.sql` is the source of truth; the drift probe in
   schema-applier.ts is definition-aware so installs with the old definition re-converge.
   */
   uniqueIndex("task_reviewer_runs_live_unique")

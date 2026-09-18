@@ -18,7 +18,7 @@ import {
 } from "./FloatingWindow";
 import { currentFloatingZ } from "./floatingWindowStack";
 import { ExternalBlockNotice } from "./TaskCard";
-import { TaskRefineDialog } from "./TaskRefineDialog";
+import { TaskRefineDialog, type TaskRefineDialogMode } from "./TaskRefineDialog";
 import { TaskResetDialog } from "./TaskResetDialog";
 import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
 import { useModalDismissPreference } from "../hooks/useOverlayDismiss";
@@ -29,13 +29,13 @@ import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { sharedRehypePlugins, createMermaidCodeComponent } from "./markdownPipeline";
-import type { Task, TaskDetail, TaskAttachment, ColumnId, MergeResult, Settings, GlobalSettings, Agent, TaskPriority, TaskSourceIssue, WorkflowStepResult, GithubIssueAction, TaskGitLabTrackedItem, PlannerOversightLevel, PlannerOverseerRuntimeSnapshot, TaskVerificationRequest, ThinkingLevel } from "@fusion/core";
+import type { Task, TaskDetail, TaskAttachment, ColumnId, MergeResult, Settings, GlobalSettings, Agent, TaskSourceIssue, WorkflowStepResult, GithubIssueAction, TaskGitLabTrackedItem, PlannerOversightLevel, PlannerOverseerRuntimeSnapshot, TaskVerificationRequest, ThinkingLevel } from "@fusion/core";
 import {
-  DEFAULT_TASK_PRIORITY,
   REPO_OVERRIDE_RE,
-  TASK_PRIORITIES,
   PLANNER_OVERSIGHT_LEVELS,
   getErrorMessage,
+  /* FNXC:TaskFollowUp 2026-09-17-18:10: FN-513's shared sub-type test for the provenance label. */
+  isFollowUpTask,
 } from "@fusion/core";
 import { resolveEffectivePlannerOversightLevel } from "../../../core/src/workflows/workflow-settings-resolver";
 import { resolveTaskSessionAdvisorEnabled } from "../../../core/src/agents/session-advisor";
@@ -112,7 +112,6 @@ import { getTaskAgeStalenessCopy } from "../utils/taskAgeStalenessCopy";
 import { resolveStallReason, stallReasonVisibleOnFace } from "../utils/stallReason";
 import { toStallAgent } from "../utils/stallAgent";
 import { decideTaskPromptRefresh } from "../utils/taskPromptRefresh";
-import { getPriorityLabel } from "../utils/priorityIndicator";
 import { hasPendingAutomaticRecovery } from "../utils/taskRecovery";
 import { resolveRetryStageCopy } from "../utils/taskRetryCopy";
 import { findInReviewStallLogEntry, IN_REVIEW_STALL_LOG_REGEX } from "../utils/findInReviewStallLogEntry";
@@ -123,6 +122,9 @@ import { recordResumeEvent } from "../utils/resumeInstrumentation";
 /* FNXC:HumanPlanApproval 2026-09-15-06:24: FN-408 per-card decision routing and plan/episode identity. */
 import { HUMAN_PLAN_APPROVAL_MESSAGE_MAX_LENGTH_CLIENT, isHumanPlanApprovalArmedClient, isReviewBudgetExhaustedApproval, isTaskAwaitingPlanApproval, resolvePlanReviewEpisodeIdClient } from "../utils/reviewBudgetApproval";
 import { HumanPlanApprovalControls } from "./HumanPlanApprovalControls";
+/* FNXC:HumanMergeApproval 2026-09-17-18:09: FN-514 — the SINGLE delivery decision surface: one field, three direct commands. */
+import { HumanMergeApprovalControls } from "./HumanMergeApprovalControls";
+import { useTaskMergeApproval } from "../hooks/useTaskMergeApproval";
 import { getTaskStatusBadgeLabel, hasTaskStatusBadge, isTaskPlanningActive } from "../utils/taskStatusBadgeLabel";
 import { ACTIVE_STATUSES, resolveEffectiveExecutor, resolveEffectivePlanning, resolveEffectiveTaskChat, resolveEffectiveThinkingLevel, resolveEffectiveValidator, type ModelSelection } from "./effective-model-resolution";
 import { TaskContextMenu, buildTaskActionMenuModel, getTaskPrAutomationLabel } from "./TaskContextMenu";
@@ -690,11 +692,9 @@ const OVERSIGHT_LEVEL_LABEL: Record<PlannerOversightLevel, string> = {
   autonomous: "Autonomous recovery",
 };
 
-function normalizeTaskPriorityValue(priority: Task["priority"]): TaskPriority {
-  return isStringValue(priority) && (TASK_PRIORITIES as readonly string[]).includes(priority)
-    ? (priority as TaskPriority)
-    : DEFAULT_TASK_PRIORITY;
-}
+/* FNXC:TaskQueueOrder 2026-09-17-12:07: FN-509 removed the task priority field and every Task
+     Detail control that read or wrote it — the Actions-overflow priority group and the edit-mode
+     select. Tasks run in arrival order; an operator raises one with Boost on the card. */
 
 interface TaskWorkflowMetadata {
   id: string;
@@ -842,9 +842,17 @@ function getProvenanceLabel(task: Task | TaskDetail, options: ProvenanceLabelOpt
         contextInfoFull: contextInfo,
       };
     }
+    /*
+    FNXC:TaskFollowUp 2026-09-17-18:10:
+    FN-513's follow-up shares the `task_refine` source type, so it keeps the parent link and every
+    lineage behavior. Only the LABEL distinguishes it, because calling a successor of a running task
+    a "Refinement" misstates what it is.
+    */
     case "task_refine":
       return {
-        label: tr ? tr("taskDetail.provenance.refinement", "Refinement") : "Refinement",
+        label: isFollowUpTask(task)
+          ? (tr ? tr("taskDetail.provenance.followUp", "Follow-up") : "Follow-up")
+          : (tr ? tr("taskDetail.provenance.refinement", "Refinement") : "Refinement"),
         parentTaskId: task.sourceParentTaskId,
       };
     case "task_duplicate":
@@ -1540,7 +1548,12 @@ export function TaskDetailContent({
   FN-424 removed the inline specification editor with the Edit action that opened it, so its saving,
   revision-request, draft and feedback state is deleted rather than left as unreachable machinery.
   */
-  const [showRefineModal, setShowRefineModal] = useState(false);
+  /*
+  FNXC:TaskFollowUp 2026-09-17-18:10:
+  FN-513 — the Actions menu opens the SAME composer in a second mode. The mode is captured at open
+  time so a lane change while the operator types cannot change what the submit button does.
+  */
+  const [refineModalMode, setRefineModalMode] = useState<TaskRefineDialogMode | null>(null);
   const [showResetDialog, setShowResetDialog] = useState(false);
 
   /*
@@ -1837,7 +1850,6 @@ export function TaskDetailContent({
   const [editPlannerOversightLevel, setEditPlannerOversightLevel] = useState("");
   const [editPresetMode, setEditPresetMode] = useState<"default" | "preset" | "custom">("default");
   const [editReviewLevel, setEditReviewLevel] = useState<number | undefined>(undefined);
-  const [editPriority, setEditPriority] = useState<TaskPriority>(DEFAULT_TASK_PRIORITY);
   const [editNodeId, setEditNodeId] = useState<string | undefined>(task.nodeId);
   const [editExecutionMode, setEditExecutionMode] = useState<"standard" | "fast">(normalizeExecutionModeValue(task.executionMode));
   const [editSelectedPresetId, setEditSelectedPresetId] = useState("");
@@ -1852,8 +1864,6 @@ export function TaskDetailContent({
   const [editPendingImages, setEditPendingImages] = useState<PendingImage[]>([]);
   const [isSaving, setIsSaving] = useState(false);
 
-  const [inlinePriority, setInlinePriority] = useState<TaskPriority>(normalizeTaskPriorityValue(task.priority));
-  const [isSavingInlinePriority, setIsSavingInlinePriority] = useState(false);
   const [inlineExecutionMode, setInlineExecutionMode] = useState<"standard" | "fast">(normalizeExecutionModeValue(task.executionMode));
   const [isSavingInlineExecutionMode, setIsSavingInlineExecutionMode] = useState(false);
   const [inlineNoCommitsExpected, setInlineNoCommitsExpected] = useState<boolean>(task.noCommitsExpected === true);
@@ -2054,8 +2064,7 @@ export function TaskDetailContent({
   }, [task.id, task.enabledWorkflowSteps]);
 
   useEffect(() => {
-    setInlinePriority(normalizeTaskPriorityValue(task.priority));
-  }, [task.id, task.priority]);
+  }, [task.id]);
 
   useEffect(() => {
     setInlineExecutionMode(normalizeExecutionModeValue(task.executionMode));
@@ -2629,7 +2638,6 @@ export function TaskDetailContent({
     setEditSourceIssueUrl(task.sourceIssue?.url ?? "");
     setEditPendingImages([]);
     setEditReviewLevel(task.reviewLevel);
-    setEditPriority(normalizeTaskPriorityValue(task.priority));
   }, [canEdit, task]);
 
   const exitEditMode = useCallback(() => {
@@ -2643,11 +2651,10 @@ export function TaskDetailContent({
     setEditSourceIssueRepository(task.sourceIssue?.repository ?? "");
     setEditSourceIssueExternalId(task.sourceIssue?.externalIssueId ?? "");
     setEditSourceIssueUrl(task.sourceIssue?.url ?? "");
-    setEditPriority(normalizeTaskPriorityValue(task.priority));
     setEditExecutionMode(normalizeExecutionModeValue(task.executionMode));
     editPendingImages.forEach((img) => URL.revokeObjectURL(img.previewUrl));
     setEditPendingImages([]);
-  }, [task.title, task.description, task.dependencies, task.nodeId, task.priority, task.executionMode, editPendingImages]);
+  }, [task.title, task.description, task.dependencies, task.nodeId, task.executionMode, editPendingImages]);
 
   const [editAutoSaveStatus, setEditAutoSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const editAutoSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2716,7 +2723,6 @@ export function TaskDetailContent({
     if (editPlannerOversightLevel !== currentPlannerOversightLevel) updates.plannerOversightLevel = editPlannerOversightLevel !== "" ? (editPlannerOversightLevel as "off" | "observe" | "steer" | "autonomous") : null;
     if ((task.nodeId ?? undefined) !== editNodeId) updates.nodeId = editNodeId ?? null;
     if (editReviewLevel !== task.reviewLevel) updates.reviewLevel = editReviewLevel;
-    if (editPriority !== normalizeTaskPriorityValue(task.priority)) updates.priority = editPriority;
     if (editExecutionMode !== normalizeExecutionModeValue(task.executionMode)) updates.executionMode = editExecutionMode === "fast" ? "fast" : null;
 
     const normalizedProvider = normalizeSourceIssueText(editSourceIssueProvider);
@@ -2754,7 +2760,7 @@ export function TaskDetailContent({
     }
 
     return { updates, error: null as string | null };
-  }, [editBaseBranch, editBranch, editDependencies, editDescription, editExecutionMode, editCredentialInstanceId, editExecutorModel, editNodeId, editPlanningCredentialInstanceId, editPlanningModel, editPriority, editReviewLevel, editSelectedWorkflowSteps, editSourceIssueExternalId, editSourceIssueProvider, editSourceIssueRepository, editSourceIssueUrl, editThinkingLevel, editPlannerOversightLevel, editValidatorCredentialInstanceId, editValidatorModel, task]);
+  }, [editBaseBranch, editBranch, editDependencies, editDescription, editExecutionMode, editCredentialInstanceId, editExecutorModel, editNodeId, editPlanningCredentialInstanceId, editPlanningModel, editReviewLevel, editSelectedWorkflowSteps, editSourceIssueExternalId, editSourceIssueProvider, editSourceIssueRepository, editSourceIssueUrl, editThinkingLevel, editPlannerOversightLevel, editValidatorCredentialInstanceId, editValidatorModel, task]);
 
   const requestBlankDescriptionDeletion = useCallback(async (descriptionAtRequest: string, force: boolean): Promise<boolean> => {
     if (blankDescriptionDeletePendingRef.current || (!force && lastBlankDescriptionDeleteAttemptRef.current === descriptionAtRequest)) return false;
@@ -2893,7 +2899,6 @@ export function TaskDetailContent({
     editPlannerOversightLevel,
     editNodeId,
     editReviewLevel,
-    editPriority,
     editExecutionMode,
     editSelectedWorkflowSteps,
     editSourceIssueProvider,
@@ -2902,34 +2907,6 @@ export function TaskDetailContent({
     editSourceIssueUrl,
     persistEditChanges,
   ]);
-
-  const handleInlinePriorityChange = useCallback(async (nextValue: string) => {
-    const normalizedNextPriority = normalizeTaskPriorityValue(nextValue as Task["priority"]);
-    const currentPriority = normalizeTaskPriorityValue(task.priority);
-
-    if (normalizedNextPriority === currentPriority) {
-      setInlinePriority(currentPriority);
-      return;
-    }
-
-    const previousPriority = inlinePriority;
-    setInlinePriority(normalizedNextPriority);
-    setIsSavingInlinePriority(true);
-
-    try {
-      const updatedTask = await updateTask(task.id, { priority: normalizedNextPriority }, projectId);
-      setInlinePriority(normalizeTaskPriorityValue(updatedTask.priority));
-      onTaskUpdated?.(updatedTask);
-      addToast(t("taskDetail.priority.updated", "Priority updated to {{priority}}", { priority: normalizeTaskPriorityValue(updatedTask.priority) }), "success");
-    } catch (err) {
-      setInlinePriority(previousPriority);
-      addToast(t("taskDetail.updateFailed", "Failed to update {{id}}: {{error}}", { id: task.id, error: getErrorMessage(err) }), "error");
-    } finally {
-      if (mountedRef.current) {
-        setIsSavingInlinePriority(false);
-      }
-    }
-  }, [task.id, task.priority, projectId, inlinePriority, onTaskUpdated, addToast]);
 
   const handleInlineExecutionModeToggle = useCallback(async () => {
     const currentMode = normalizeExecutionModeValue(task.executionMode);
@@ -3890,6 +3867,22 @@ export function TaskDetailContent({
   }), [task]);
   const humanPlanDecisionEpisodeKey = `${task.id}:${humanPlanDecisionIdentity.expectedPlanFingerprint ?? ""}:${humanPlanDecisionIdentity.expectedEpisodeId ?? ""}`;
   const [humanPlanDecisionMessage, setHumanPlanDecisionMessage] = useState("");
+  /*
+  FNXC:HumanMergeApproval 2026-09-17-18:09:
+  FN-514 — the delivery decision draft lives in the HOST so it survives a refresh of the same card
+  and a failed command, and is cleared when the operator moves to a different card.
+  */
+  const [humanMergeDecisionMessage, setHumanMergeDecisionMessage] = useState("");
+  const mergeApproval = useTaskMergeApproval(task?.id, projectId);
+  useEffect(() => {
+    /* A different card never inherits the previous card's draft. */
+    setHumanMergeDecisionMessage("");
+  }, [task?.id, projectId]);
+  const handleHumanMergeDecision = useCallback(async (action: "create-pr" | "merge" | "reject") => {
+    const succeeded = await mergeApproval.submit(action, humanMergeDecisionMessage);
+    /* The draft is preserved on failure so nothing an operator typed is ever retyped. */
+    if (succeeded) setHumanMergeDecisionMessage("");
+  }, [mergeApproval, humanMergeDecisionMessage]);
   const [humanPlanDecisionError, setHumanPlanDecisionError] = useState<string | null>(null);
   const humanPlanDecisionEpisodeRef = useRef(humanPlanDecisionEpisodeKey);
   useEffect(() => {
@@ -3938,7 +3931,12 @@ export function TaskDetailContent({
   that existed solely to carry that hand-off is deleted.
   */
   const handleOpenRefineModal = useCallback(() => {
-    setShowRefineModal(true);
+    setRefineModalMode("refine");
+  }, []);
+
+  /* FNXC:TaskFollowUp 2026-09-17-18:10: FN-513's follow-up composer, from the Actions menu in every Task Detail presentation. */
+  const handleOpenFollowUpModal = useCallback(() => {
+    setRefineModalMode("follow-up");
   }, []);
 
   // Helper to close the retained header Actions overflow after an action.
@@ -3976,7 +3974,7 @@ export function TaskDetailContent({
   }, [addToast, closeMenus, isCheckingPrStatus, onTaskUpdated, projectId, task]);
 
   const handleCloseRefineModal = useCallback(() => {
-    setShowRefineModal(false);
+    setRefineModalMode(null);
   }, []);
 
   const uploadFile = useCallback(async (file: File) => {
@@ -4484,6 +4482,7 @@ export function TaskDetailContent({
     onDuplicate: handleDuplicate,
     onTransferToProject: projectId ? handleTransfer : undefined,
     onOpenRefine: handleOpenRefineModal,
+    onOpenFollowUp: handleOpenFollowUpModal,
     onRetry: handleRetry,
     onReset: handleReset,
     /*
@@ -4648,22 +4647,6 @@ export function TaskDetailContent({
     }
 
     items.push({
-      id: "detail-actions-priority-heading",
-      testId: "detail-actions-priority-heading",
-      label: t("taskDetail.actions.priorityHeading", "Priority"),
-      tone: "note",
-    });
-    for (const priority of TASK_PRIORITIES) {
-      items.push({
-        id: `detail-priority-option-${priority}`,
-        testId: `detail-priority-option-${priority}`,
-        label: getPriorityLabel(priority),
-        pressed: inlinePriority === priority,
-        disabled: isSavingInlinePriority,
-        onSelect: () => void handleInlinePriorityChange(priority),
-      });
-    }
-    items.push({
       id: "detail-execution-mode-toggle",
       testId: "detail-execution-mode-toggle",
       label: t("taskDetail.executionMode.ariaLabel", "Execution mode: {{mode}}", { mode: inlineExecutionMode }),
@@ -4702,9 +4685,6 @@ export function TaskDetailContent({
     handleStopOverseer,
     overseerExplainOpen,
     handleExplainOverseer,
-    inlinePriority,
-    isSavingInlinePriority,
-    handleInlinePriorityChange,
     inlineExecutionMode,
     isSavingInlineExecutionMode,
     handleInlineExecutionModeToggle,
@@ -5698,8 +5678,6 @@ export function TaskDetailContent({
                 onAutoSaveDescription={handleAutoSaveDescription}
                 reviewLevel={editReviewLevel}
                 onReviewLevelChange={setEditReviewLevel}
-                priority={editPriority}
-                onPriorityChange={setEditPriority}
                 nodeId={editNodeId}
                 onNodeIdChange={setEditNodeId}
                 nodeOptions={nodes}
@@ -5883,6 +5861,37 @@ export function TaskDetailContent({
                   accept="image/*"
                   onChange={handleUpload}
                 />
+              {/*
+              FNXC:HumanMergeApproval 2026-09-17-18:09:
+              FN-514 — THE single delivery decision surface for this card. It mounts only from the
+              SERVER's availability answer, never from a status guess in React, so the operator is
+              asked exactly when the work and every configured pre-merge gate are genuinely satisfied.
+              There is no second placement: a duplicate field in the footer is what FN-448 removed for
+              the plan decision, and the same mistake must not be repeated here.
+              */}
+              {mergeApproval.point?.enabled && (mergeApproval.point.available || mergeApproval.point.unavailableReason === "rejection-in-progress") && (
+                <div className="detail-plan-approval-banner" data-testid="detail-merge-approval-banner">
+                  <HumanMergeApprovalControls
+                    taskId={task.id}
+                    message={humanMergeDecisionMessage}
+                    onMessageChange={setHumanMergeDecisionMessage}
+                    onSubmit={(action) => { void handleHumanMergeDecision(action); }}
+                    capabilities={mergeApproval.point.capabilities}
+                    pendingAction={mergeApproval.pendingAction}
+                    error={mergeApproval.error}
+                    pullRequestUrl={(task as Task).humanMergeApproval?.decision?.receipt?.prUrl ?? null}
+                    correctionState={(task as Task).humanMergeApproval?.rejection?.state === "analyzing"
+                      ? "analyzing"
+                      : (task as Task).humanMergeApproval?.rejection?.lastError
+                        ? "failed"
+                        : (task as Task).humanMergeApproval?.rejection?.state === "pending"
+                          ? "pending"
+                          : null}
+                    correctionError={(task as Task).humanMergeApproval?.rejection?.lastError ?? null}
+                    maxLength={10_000}
+                  />
+                </div>
+              )}
               {/* FNXC:TaskVerificationStatus 2026-07-19-12:00: Verification status moved below metadata controls per UX feedback — empty state "No chat verification requested" was appearing too prominently near the top of the card. */}
               {activeTab === "definition" && <TaskVerificationStatus request={verificationRequest} />}
               {activeTab === "definition" && shouldShowBranchGroupCard && task.branchContext?.groupId && (
@@ -7505,10 +7514,11 @@ export function TaskDetailContent({
         />
       )}
       {transferHost.transferModal}
-      {showRefineModal && (
+      {refineModalMode !== null && (
         <TaskRefineDialog
           taskId={task.id}
           projectId={projectId}
+          mode={refineModalMode}
           addToast={addToast}
           onRefinementCreated={onRefinementCreated}
           onClose={handleCloseRefineModal}

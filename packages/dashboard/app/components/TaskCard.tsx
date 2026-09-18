@@ -4,15 +4,15 @@ import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { memo, useCallback, useState, useRef, useEffect, useLayoutEffect, useMemo, type CSSProperties, type ReactElement } from "react";
 import { createPortal } from "react-dom";
-import { Link, Clock, Layers, Pencil, ChevronDown, Folder, Target, Bot, Trash2, RotateCw, Zap, UserCheck, GitBranch, GitPullRequest, AlertTriangle, Eye, MoreHorizontal, Sparkles, X } from "lucide-react";
-import { isTaskExternallyBlocked } from "@fusion/core";
-import type { Task, TaskDetail, Column, ColumnId, PrInfo, IssueInfo, TaskPriority, GithubIssueAction, MergeResult, PlannerOversightLevel } from "@fusion/core";
+import { Link, Clock, Layers, Pencil, ChevronDown, Folder, Target, Bot, Trash2, RotateCw, Zap, UserCheck, Lock, GitBranch, GitPullRequest, AlertTriangle, Eye, MoreHorizontal, Sparkles, X } from "lucide-react";
+/* FNXC:TaskFollowUp 2026-09-17-18:10: FN-513's shared sub-type test, reachable through the browser-safe core leaf. */
+import { isFollowUpTask, isTaskExternallyBlocked } from "@fusion/core";
+import type { Task, TaskDetail, Column, ColumnId, PrInfo, IssueInfo, GithubIssueAction, MergeResult, PlannerOversightLevel } from "@fusion/core";
+import { resolveQueuePresence, resolveTaskColumnEntryAt } from "@fusion/core";
 import {
   DEFAULT_PLANNER_OVERSIGHT_LEVEL,
-  DEFAULT_TASK_PRIORITY,
   HIGH_FANOUT_BLOCKER_TODO_THRESHOLD,
   PLANNER_OVERSIGHT_LEVELS,
-  TASK_PRIORITIES,
   getErrorMessage,
 } from "@fusion/core";
 import { resolveEffectiveAutoMerge } from "../../../core/src/merge/task-merge";
@@ -26,7 +26,7 @@ import { GitHubBadge } from "./GitHubBadge";
 import { GitLabBadge } from "./GitLabBadge";
 import { RuntimeFallbackBadge } from "./RuntimeFallbackBadge";
 import { PrCreateModal } from "./PrCreateModal";
-import { TaskRefineDialog } from "./TaskRefineDialog";
+import { TaskRefineDialog, type TaskRefineDialogMode } from "./TaskRefineDialog";
 import { TaskResetDialog } from "./TaskResetDialog";
 import { useTaskTransferModal } from "../hooks/useTaskTransferModal";
 import { ProviderIcon } from "./ProviderIcon";
@@ -88,7 +88,6 @@ import { WorkspaceWorktreesSummary, isWorkspaceTask } from "./WorkspaceWorktrees
 import { WorkflowIcon } from "./WorkflowIcon";
 import { TaskContextMenu, buildTaskActionMenuModel, getTaskPrAutomationLabel, type TaskContextMenuColumnFlags, type TaskContextMenuColumnMetadata, type TaskMenuItemDescriptor } from "./TaskContextMenu";
 import { formatCost, hasTaskCost, taskTotalCost } from "../utils/taskTokenCost";
-import { getPriorityColorVar, getPriorityIcon, getPriorityLabel } from "../utils/priorityIndicator";
 import { getTaskTitleDisplay } from "../utils/taskTitleDisplay";
 import {
   WORKFLOW_SETTING_VALUES_UPDATED_EVENT,
@@ -259,12 +258,6 @@ async function loadWorkflowOversightEffectiveLevel(workflowId: string, projectId
     workflowOversightInflight.set(inflightKey, inflight);
   }
   return inflight;
-}
-
-function normalizeTaskPriorityValue(priority: Task["priority"]): TaskPriority {
-  return typeof priority === "string" && (TASK_PRIORITIES as readonly string[]).includes(priority)
-    ? (priority as TaskPriority)
-    : DEFAULT_TASK_PRIORITY;
 }
 
 function abbreviateBadge(text: string, max: number): string {
@@ -741,6 +734,49 @@ export function HumanPlanApprovalBadge({ task, variant }: { task: Task; variant:
   );
 }
 
+/*
+FNXC:HumanMergeApproval 2026-09-17-18:09:
+FN-514 — the per-card DELIVERY lock badge, shared by the board card and BOTH ListView renders so the
+three surfaces cannot drift. Module scope, never nested in a host render. Returns null for every card
+without the lock, so no empty badge shell is produced on the vast majority of cards.
+
+Three states, because "a decision is owed" and "a decision was given" are different situations an
+operator must be able to tell apart at a glance on the board.
+*/
+export function resolveHumanMergeApprovalBadgeState(
+  task: Pick<Task, "humanMergeApproval">,
+): "armed" | "decided" | "rejected" | null {
+  const state = task.humanMergeApproval;
+  const rejection = state?.rejection;
+  if (rejection && rejection.state !== "published") return "rejected";
+  if (state?.enabled !== true) return null;
+  const decision = state.decision;
+  return decision && decision.candidate?.lockGeneration === state.generation ? "decided" : "armed";
+}
+
+export function HumanMergeApprovalBadge({ task, variant }: { task: Task; variant: "card" | "list" }) {
+  const { t } = useTranslation("app");
+  const state = resolveHumanMergeApprovalBadgeState(task);
+  if (!state) return null;
+  const label = state === "rejected"
+    ? t("tasks.humanMergeApproval.badgeRejected", "You refused this delivery; corrections are owed")
+    : state === "decided"
+      ? t("tasks.humanMergeApproval.badgeDecided", "Delivery decision recorded")
+      : t("tasks.humanMergeApproval.badgeArmed", "Your approval is required before delivery");
+  return (
+    <span
+      className={`${variant === "list" ? "list-execution-mode-badge" : "card-execution-mode-badge"} ${variant}-human-merge-approval-badge`}
+      data-testid={`${variant}-human-merge-approval-badge`}
+      data-state={state}
+      title={label}
+      aria-label={label}
+    >
+      <Lock aria-hidden="true" />
+      <span className="visually-hidden">{label}</span>
+    </span>
+  );
+}
+
 interface PlanApprovalNoticeProps {
   task: Task;
   /*
@@ -928,6 +964,13 @@ interface TaskCardProps {
   lastFetchTimeMs?: number;
   /** Downstream fan-out entry for this task, computed at board-level. */
   fanout?: BlockerFanoutEntry;
+  /*
+  FNXC:TaskQueueOrder 2026-09-17-12:07:
+  FN-509's Boost callback. Supplied by every host that renders a LIVE card; omitting it withholds
+  the affordance, which is what a history snapshot wants. The host resolves the request against the
+  server and hands back the canonical row — the card never reorders anything itself.
+  */
+  onBoostTask?: (id: string, scope: { expectedColumn: string; expectedColumnEntryAt: string }) => Promise<Task>;
   /** Whether GitHub CLI auth is available for creating PRs from task cards. */
   prAuthAvailable?: boolean;
   /** Project default auto-merge setting; per-task overrides are applied via resolveEffectiveAutoMerge. */
@@ -1105,8 +1148,19 @@ function areTaskCardPropsEqual(previous: TaskCardProps, next: TaskCardProps): bo
     */
     previous.interactionMode === next.interactionMode &&
     previous.globalPaused === next.globalPaused &&
+    /*
+    FNXC:HumanMergeApproval 2026-09-17-18:09:
+    FN-514 — the delivery-lock badge is derived from `humanMergeApproval`, so its resolved STATE must
+    be identity-bearing here. Without it a memoized card keeps showing "approval required" after the
+    operator decided, or keeps a stale badge after the lock is removed, because nothing else in this
+    comparator changes when only that field does.
+    */
+    resolveHumanMergeApprovalBadgeState(previousTask) === resolveHumanMergeApprovalBadgeState(nextTask) &&
     previous.prAuthAvailable === next.prAuthAvailable &&
     previous.autoMergeEnabled === next.autoMergeEnabled &&
+    /* FNXC:TaskQueueOrder 2026-09-17-12:07: a host that starts or stops supplying Boost must
+       re-render the card, or the affordance would appear/disappear a tick late. */
+    previous.onBoostTask === next.onBoostTask &&
     previous.mergeStrategy === next.mergeStrategy &&
     previous.onOpenPullRequest === next.onOpenPullRequest &&
     previous.prNode?.id === next.prNode?.id &&
@@ -1163,7 +1217,16 @@ function areTaskCardPropsEqual(previous: TaskCardProps, next: TaskCardProps): bo
     previousTask.archivedAt === nextTask.archivedAt &&
     previousTask.status === nextTask.status &&
     previousTask.recentAgentActivityAt === nextTask.recentAgentActivityAt &&
-    previousTask.priority === nextTask.priority &&
+    /*
+    FNXC:TaskQueueOrder 2026-09-17-12:07:
+    FN-509: the durable queue rank participates in the memo comparison. Without it a Boost that
+    changes ONLY `queueBoost` leaves every visual field identical, the memo bails out, and the card
+    keeps rendering its stale Boost affordance while the column around it has already reordered.
+    The scope fields matter for the same reason: they decide whether the rank is still effective.
+    */
+    previousTask.queueBoost?.sequence === nextTask.queueBoost?.sequence &&
+    previousTask.queueBoost?.column === nextTask.queueBoost?.column &&
+    previousTask.queueBoost?.columnEntryAt === nextTask.queueBoost?.columnEntryAt &&
     previousTask.executionMode === nextTask.executionMode &&
     previousTask.paused === nextTask.paused &&
     previousTask.userPaused === nextTask.userPaused &&
@@ -1286,6 +1349,7 @@ function TaskCardComponent({
   onOpenDetailWithTab,
   onOpenMission,
   onMoveTask,
+  onBoostTask,
   taskColumnFlags,
   taskMoveColumns,
   lastFetchTimeMs,
@@ -1318,8 +1382,12 @@ function TaskCardComponent({
   transfer opened from a card never needs a board-level prop chain.
   */
   const transferHost = useTaskTransferModal(projectId ?? null);
-
-  const [showRefineDialog, setShowRefineDialog] = useState(false);
+  FNXC:TaskFollowUp 2026-09-17-18:10:
+  FN-513 — one composer, two questions. The MODE is captured when the dialog opens, so a source that
+  finishes while the operator is typing cannot silently change what the submit button does; the
+  server revalidates and answers 409 instead.
+  */
+  const [refineDialogMode, setRefineDialogMode] = useState<TaskRefineDialogMode | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [editDescription, setEditDescription] = useState(task.description || "");
   /*
@@ -1852,9 +1920,6 @@ function TaskCardComponent({
     && task.sourceMetadata?.duplicateSource === "triage-marker"
     && typeof task.sourceMetadata?.nearDuplicateOf === "string";
   const pausedByAgent = Boolean(!isDoneColumn && task.paused && task.pausedByAgentId);
-  const normalizedPriority = normalizeTaskPriorityValue(task.priority);
-  const showPriorityBadge = normalizedPriority !== DEFAULT_TASK_PRIORITY;
-  const PriorityBadgeIcon = getPriorityIcon(normalizedPriority);
   const stalledReview = getStalledReviewSignal(task);
   const showStalledReview = Boolean(stalledReview && isReviewColumn && !isPaused);
   const hasInReviewStall = shouldShowInReviewStallBadge(task, taskColumnFlags);
@@ -1955,6 +2020,75 @@ function TaskCardComponent({
   ListView alone left this path — the board cards — still broken.
   */
   const isAgentActive = isTaskAgentActive(task, { globalPaused, queued, columnFlags: taskColumnFlags });
+  /*
+  FNXC:TaskQueueOrder 2026-09-17-12:07:
+  FN-509 removed the card's priority BADGE and replaced it with the Boost ACTION. The badge named a
+  level that no longer exists; Boost acts on the queue this card is actually waiting in.
+
+  Availability comes from the shared core verdict, so the card, the server and the admission paths
+  answer "does this lane have a queue" identically rather than from a local list of column ids.
+  Deliberately unaffected by WHY the card cannot start right now: capacity, overlap, a dependency,
+  an approval, a pause and a retry cooldown all leave it queued, and Boost clears none of them.
+  Unresolved column metadata withholds the button rather than offering an action the server would
+  refuse anyway.
+  */
+  /*
+  FNXC:TaskQueueOrder 2026-09-17-13:51:
+  A review lane with auto-merge OFF is only a HUMAN wait once every automatic gate has produced a
+  terminal result. While an enabled pre-merge gate is still missing or pending, the automatic queue
+  is real, so the card keeps its Boost affordance. Frozen-at-planning gate ids that a workflow later
+  dropped stay absent from results forever, so an absent result counts as remaining only when the
+  card genuinely still carries the gate in `enabledWorkflowSteps`.
+  */
+  const hasRemainingAutomaticReview = useMemo(() => {
+    const enabled = task.enabledWorkflowSteps;
+    if (!Array.isArray(enabled) || enabled.length === 0) return false;
+    const resultsById = new Map((task.workflowStepResults ?? []).map((result) => [result.workflowStepId, result] as const));
+    return enabled.some((workflowStepId) => {
+      const result = resultsById.get(workflowStepId);
+      return result === undefined || result.status === "pending";
+    });
+  }, [task.enabledWorkflowSteps, task.workflowStepResults]);
+  const queuePresence = resolveQueuePresence({
+    column: task.column,
+    ...(taskColumnFlags ? { columnFlags: taskColumnFlags } : {}),
+    isActive: isAgentActive,
+    isDeleted: Boolean(task.deletedAt),
+    hasRemainingAutomaticReview,
+    /*
+    FNXC:TaskQueueOrder 2026-09-17-13:51:
+    `isHistorical` means a READ-ONLY history snapshot, which has no queue at all. A header search
+    result is a live row in a compact presentation, so it must NOT claim that reason — saying so
+    would attribute the missing affordance to the card instead of to its host. The search popover
+    simply passes no `onBoostTask` today, and `showBoostAction` already requires that callback, so
+    the action stays absent there without lying about why.
+    */
+    isHistorical: false,
+    autoMergeEnabled: resolveEffectiveAutoMerge({ autoMerge: task.autoMerge }, { autoMerge: autoMergeEnabled ?? false }),
+  });
+  const showBoostAction = Boolean(onBoostTask) && queuePresence.boostAvailable;
+  const [boostPending, setBoostPending] = useState(false);
+  const handleBoost = useCallback(async (event: React.MouseEvent<HTMLButtonElement>) => {
+    // Boost must never open the detail, start a drag, or move the column.
+    event.stopPropagation();
+    event.preventDefault();
+    if (!onBoostTask || boostPending) return;
+    setBoostPending(true);
+    try {
+      await onBoostTask(task.id, {
+        expectedColumn: task.column,
+        expectedColumnEntryAt: resolveTaskColumnEntryAt(task),
+      });
+    } catch (error) {
+      addToast?.(
+        t("tasks.boostFailed", "Could not boost {{taskId}} — it may have started or moved. Refresh to see its current place.", { taskId: task.id }),
+        "error",
+      );
+      void error;
+    } finally {
+      setBoostPending(false);
+    }
+  }, [addToast, boostPending, onBoostTask, t, task]);
   /*
   FNXC:TaskCardOptionalGateBadge 2026-07-21-22:30:
   Match FN-8055: optional-gate badges pulse only while the card is agent-active (queue/pause gates suppress the badge).
@@ -2106,6 +2240,13 @@ function TaskCardComponent({
   */
   const refinesParentId = task.sourceType === "task_refine" ? task.sourceParentTaskId : undefined;
   const showRefinesChip = Boolean(refinesParentId);
+  /*
+  FNXC:TaskFollowUp 2026-09-17-18:10:
+  FN-513 — a follow-up is a refinement for every lineage reader, so it keeps this chip, its link and
+  its parent gate. Only the WORDING differs, because "Refines FN-1" is wrong for a card that was
+  prepared from a task that had not finished. The sub-type test is the shared core helper.
+  */
+  const isFollowUpCard = isFollowUpTask(task);
   /*
    * FNXC:TaskRevert 2026-07-16-00:00:
    * FN-8066 makes the source-task revert marker visible only in its completed
@@ -3081,7 +3222,12 @@ function TaskCardComponent({
   }, [onResetTask]);
 
   const handleTaskActionRefine = useCallback(() => {
-    setShowRefineDialog(true);
+    setRefineDialogMode("refine");
+  }, []);
+
+  /* FNXC:TaskFollowUp 2026-09-17-18:10: opens the SAME composer from the card, with no Task Detail mount and no deep link. */
+  const handleTaskActionFollowUp = useCallback(() => {
+    setRefineDialogMode("follow-up");
   }, []);
 
   const handleTaskActionDuplicate = useCallback(async () => {
@@ -3201,6 +3347,7 @@ function TaskCardComponent({
     onDuplicate: onDuplicateTask ? handleTaskActionDuplicate : undefined,
     onTransferToProject: projectId ? handleTaskActionTransfer : undefined,
     onOpenRefine: handleTaskActionRefine,
+    onOpenFollowUp: handleTaskActionFollowUp,
     onRetry: onRetryTask ? handleTaskActionRetry : undefined,
     onReset: onResetTask ? handleTaskActionReset : undefined,
     onTogglePause: (isPaused ? onUnpauseTask : onPauseTask) ? handleTaskActionTogglePause : undefined,
@@ -3579,12 +3726,18 @@ function TaskCardComponent({
       {showRefinesChip && (
         <span
           className="card-refine-chip"
-          title={t("tasks.refinesOfTitle", "Refinement of {{id}}", { id: String(refinesParentId) })}
-          aria-label={t("tasks.refinesOfTitle", "Refinement of {{id}}", { id: String(refinesParentId) })}
+          title={isFollowUpCard
+            ? t("tasks.followUpOfTitle", "Follow-up of {{id}}", { id: String(refinesParentId) })
+            : t("tasks.refinesOfTitle", "Refinement of {{id}}", { id: String(refinesParentId) })}
+          aria-label={isFollowUpCard
+            ? t("tasks.followUpOfTitle", "Follow-up of {{id}}", { id: String(refinesParentId) })
+            : t("tasks.refinesOfTitle", "Refinement of {{id}}", { id: String(refinesParentId) })}
         >
           {/* Decorative: the accessible name is already on the chip via aria-label. */}
           <Sparkles size={11} aria-hidden="true" />
-          <span>{t("tasks.refinesOf", "Refines {{id}}", { id: String(refinesParentId) })}</span>
+          <span>{isFollowUpCard
+            ? t("tasks.followUpOf", "Follows up {{id}}", { id: String(refinesParentId) })
+            : t("tasks.refinesOf", "Refines {{id}}", { id: String(refinesParentId) })}</span>
         </span>
       )}
       {showRevertedChip && (
@@ -3798,9 +3951,11 @@ function TaskCardComponent({
   `.card-meta-badges` is never rendered empty.
   */
   const humanPlanApprovalBadgeState = resolveHumanPlanApprovalBadgeState(task);
-  const hasCardMetaBadges = showPriorityBadge
-    || task.executionMode === "fast"
+  /* FNXC:HumanMergeApproval 2026-09-17-18:09: FN-514 — declared in the wrapper guard, or the badge never mounts on a card whose only metadata is the lock. */
+  const humanMergeApprovalBadgeState = resolveHumanMergeApprovalBadgeState(task);
+  const hasCardMetaBadges = task.executionMode === "fast"
     || humanPlanApprovalBadgeState !== null
+    || humanMergeApprovalBadgeState !== null
     // FNXC:PlannerOversight 2026-07-04-00:00: the oversight badge is opt-in
     // metadata (absent for the common "off" default) — include it in the wrapper
     // guard so `.card-meta-badges` only renders when it has a real child.
@@ -4274,17 +4429,6 @@ function TaskCardComponent({
         )}
         {hasCardMetaBadges && (
           <div className="card-meta-badges" data-testid="card-meta-badges">
-            {showPriorityBadge && (
-              <span
-                className={`card-priority-badge card-priority-badge--${normalizedPriority}`}
-                title={getPriorityLabel(normalizedPriority)}
-                aria-label={getPriorityLabel(normalizedPriority)}
-              >
-                {/* FNXC:PriorityIconOnlyBadge 2026-07-12-00:00: FN-7867 makes task-card priority badges icon-only so priority text cannot widen .card-meta-badges and force wrapping; preserve the label through title, aria-label, and visually-hidden text while keeping the shared urgency color. */}
-                <PriorityBadgeIcon size={10} aria-hidden="true" style={{ color: getPriorityColorVar(normalizedPriority) }} />
-                <span className="visually-hidden">{getPriorityLabel(normalizedPriority)}</span>
-              </span>
-            )}
             {task.executionMode === "fast" && (
               <span
                 className="card-execution-mode-badge card-execution-mode-badge--fast"
@@ -4303,6 +4447,8 @@ function TaskCardComponent({
             approved", so a card still being planned never claims it is already waiting.
             */}
             <HumanPlanApprovalBadge task={task} variant="card" />
+            {/* FNXC:HumanMergeApproval 2026-09-17-18:09: FN-514 delivery lock, beside the plan-validation badge. */}
+            <HumanMergeApprovalBadge task={task} variant="card" />
             {showOversightBadge && (
               <span
                 className={`card-oversight-badge card-oversight-badge--${OVERSIGHT_BADGE_MODIFIER[effectiveOversightLevel as Exclude<PlannerOversightLevel, "off">]}`}
@@ -4605,6 +4751,32 @@ function TaskCardComponent({
           )}
         </div>
       )}
+      {/*
+      FNXC:TaskQueueOrder 2026-09-17-12:07:
+      FN-509's Boost affordance. A plain TEXT button using the shared `.btn` primitive rather than a
+      bespoke chip, and deliberately NOT hover-only: on a touch device a hover-revealed control is
+      unreachable, and this is the operator's only way to change the queue.
+
+      It stops propagation and prevents default so a tap, click, or keyboard activation cannot open
+      the detail, start a card drag, or move the column. The pending state is local and purely
+      presentational — the server is the authority for the rank, and the confirmed row arrives
+      through the host's cache reconciliation rather than an optimistic reorder here.
+      */}
+      {showBoostAction && (
+        <div className="card-boost-row">
+          <UiButton
+            type="button"
+            className="btn btn-sm card-boost-button"
+            data-testid={`card-boost-${task.id}`}
+            disabled={boostPending}
+            aria-label={t("tasks.boostAriaLabel", "Boost {{taskId}} to the front of the queue", { taskId: task.id })}
+            title={t("tasks.boostTitle", "Try this task first when the queue next admits work. It does not start it or clear any blocker.")}
+            onClick={(event) => { void handleBoost(event); }}
+          >
+            {boostPending ? t("tasks.boosting", "Boosting…") : t("tasks.boost", "Boost")}
+          </UiButton>
+        </div>
+      )}
       {(footerHasLeadingContent || (footerRightHasContent && !placeFooterRightInMeta)) && (
         <div className={`card-footer-row${chipFarRight ? " card-footer-row--chip-far-right" : ""}`}>
           {filesChangedButton}
@@ -4786,12 +4958,15 @@ function TaskCardComponent({
       {transferHost.transferModal}
 
       {showRefineDialog && (
+
+      {refineDialogMode !== null && (
         <TaskRefineDialog
           taskId={task.id}
           projectId={projectId}
+          mode={refineDialogMode}
           addToast={addToast}
           onRefinementCreated={onRefinementCreated}
-          onClose={() => setShowRefineDialog(false)}
+          onClose={() => setRefineDialogMode(null)}
         />
       )}
       {(showCreatePrQuickAction || isPrCreateOpen) && (

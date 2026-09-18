@@ -210,10 +210,17 @@ describe("schema-applier: immutable migration identities", () => {
     expect(TASK_HUMAN_PLAN_APPROVAL_VERSION).toBe("0080");
     // FNXC:TaskPauseAccounting 2026-09-16-06:16: FN-457's durable paused-time columns are migration 0081; the ceiling sits one higher at 0082 so the ledger's self-marked version never trips the stale-binary guard.
     expect(TASK_PAUSE_ACCOUNTING_VERSION).toBe("0081");
-    /* FNXC:ReviewLaneDispatch 2026-09-09 (STAS-205): the ceiling must sort after the review-lane ledger migration, or an upgraded database boots without the live-reviewer-run index the dispatch sweep depends on. */
-    /* FNXC:ReviewLaneDispatch 2026-09-15 (PR rebase onto FN-393/FN-408): renumbered 0079 -> 0081 — upstream recorded 0079/0080 first; a version string already in the bookkeeping table marks a migration applied without running its SQL. */
-    expect(REVIEW_LANE_LEDGER_VERSION).toBe("0082");
-    expect(SCHEMA_BASELINE_VERSION).toBe("0082");
+    // FNXC:TaskQueueOrder 2026-09-17-12:07: FN-509's durable Boost column is migration 0082.
+    expect(SCHEMA_BASELINE_VERSION >= "0082").toBe(true);
+    /*
+    FNXC:HumanMergeApproval 2026-09-17-18:09:
+    FN-514's per-card delivery-lock column is migration 0083. Every already-published identity stays
+    pinned so a renumbering fails here rather than silently skipping a migration on upgrade.
+    FNXC:ReviewLaneDispatch 2026-09-18-13:40 (sync wave): the main-local ledger renumbered 0082 -> 0084
+    (upstream took 0082/0083) and is now the ceiling.
+    */
+    expect(REVIEW_LANE_LEDGER_VERSION).toBe("0084");
+    expect(SCHEMA_BASELINE_VERSION).toBe("0084");
   });
 
   it("keeps monitor and approval isolation assigned to version 0003", () => {
@@ -2114,6 +2121,8 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION,
       TASK_HUMAN_PLAN_APPROVAL_VERSION,
       TASK_PAUSE_ACCOUNTING_VERSION,
+      "0082",
+      "0083",
       REVIEW_LANE_LEDGER_VERSION,
       /* keep the non-numeric repair identity last: ORDER BY version is TEXT */
       MIXED_0065_REPAIR_VERSION,
@@ -2364,6 +2373,8 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION,
       TASK_HUMAN_PLAN_APPROVAL_VERSION,
       TASK_PAUSE_ACCOUNTING_VERSION,
+      "0082",
+      "0083",
       REVIEW_LANE_LEDGER_VERSION,
       /* keep the non-numeric repair identity last: ORDER BY version is TEXT */
       MIXED_0065_REPAIR_VERSION,
@@ -2495,6 +2506,8 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION,
       TASK_HUMAN_PLAN_APPROVAL_VERSION,
       TASK_PAUSE_ACCOUNTING_VERSION,
+      "0082",
+      "0083",
       REVIEW_LANE_LEDGER_VERSION,
       /* keep the non-numeric repair identity last: ORDER BY version is TEXT */
       MIXED_0065_REPAIR_VERSION,

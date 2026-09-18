@@ -1,6 +1,9 @@
 import { EventEmitter } from "node:events";
 import type { TaskMoveLanes } from "./workflows/workflow-lifecycle-traits.js";
 import { TaskLaneCache } from "./task-lane-cache.js";
+// FNXC:EventDrivenDispatch 2026-09-18-00:40: FN-519 advisory dispatch-wake classification.
+import { classifyDispatchWakeReason, resolveDispatchWakeTaskId } from "./task-store/dispatch-wake.js";
+import { resolveDispatchWakeProjectKey } from "./dispatch-wake.js";
 import { randomUUID } from "node:crypto";
 import { WEDGE_RENOTIFY_COOLDOWN_MS } from "./types/task/task-core.js";
 import { clearTerminalFailureAutoRecoveryBudget } from "./tasks/terminal-failure-auto-recovery.js";
@@ -11,7 +14,7 @@ import { evaluateSpecDrift, hasPriorLockDivergence, type DriftReport } from "./p
 import * as schema from "./postgres/schema/index.js";
 import { type FSWatcher } from "node:fs";
 import { readFile } from "node:fs/promises";
-import type { Task, TaskDetail, TaskCreateInput, TaskAttachment, AgentLogEntry, BoardConfig, Column, ColumnId, CheckoutClaimPrecondition, MergeResult, Settings, GlobalSettings, ProjectSettings, ActivityLogEntry, ActivityEventType, TaskDocument, TaskDocumentRevision, TaskDocumentCreateInput, TaskDocumentWithTask, Artifact, ArtifactCreateInput, ArtifactType, ArtifactWithTask, InboxTask, TaskLogEntry, RunMutationContext, RunAuditEvent, RunAuditEventInput, RunAuditEventFilter, ArchivedTaskEntry, ArchiveAgentLogMode, TaskPriority, WorkflowStepTemplate, Agent, AutostashOrphanRecord, TaskCommitAssociation, CommitAssociationDiffBackfillReport, GithubIssueAction, MergeQueueEntry, MergeQueueEnqueueOptions, MergeQueueAcquireOptions, MergeQueueReleaseOutcome, HandoffToReviewOptions, GoalCitation, GoalCitationFilter, GoalCitationInput, GoalCitationSurface, BranchGroup, BranchGroupCreateInput, BranchGroupUpdate, TaskBranchAssignmentMode, MergeRequestRecord, MergeRequestState, MergeRequestWorkflowProjectionOptions, CompletionHandoffMarker, WorkflowWorkItem, WorkflowWorkItemDueFilter, WorkflowWorkItemKind, WorkflowWorkItemState, WorkflowWorkItemTransitionPatch, WorkflowWorkItemUpsertInput, PrEntity, PrEntityCreateInput, PrEntityUpdate, PrThreadState, PrThreadOutcome, PluginActivation, PluginActivationInput, TaskStep } from "./types.js";
+import type { Task, TaskDetail, TaskCreateInput, TaskAttachment, AgentLogEntry, BoardConfig, Column, ColumnId, CheckoutClaimPrecondition, MergeResult, Settings, GlobalSettings, ProjectSettings, ActivityLogEntry, ActivityEventType, TaskDocument, TaskDocumentRevision, TaskDocumentCreateInput, TaskDocumentWithTask, Artifact, ArtifactCreateInput, ArtifactType, ArtifactWithTask, InboxTask, TaskLogEntry, RunMutationContext, RunAuditEvent, RunAuditEventInput, RunAuditEventFilter, ArchivedTaskEntry, ArchiveAgentLogMode, WorkflowStepTemplate, Agent, AutostashOrphanRecord, TaskCommitAssociation, CommitAssociationDiffBackfillReport, GithubIssueAction, MergeQueueEntry, MergeQueueEnqueueOptions, MergeQueueAcquireOptions, MergeQueueReleaseOutcome, HandoffToReviewOptions, GoalCitation, GoalCitationFilter, GoalCitationInput, GoalCitationSurface, BranchGroup, BranchGroupCreateInput, BranchGroupUpdate, TaskBranchAssignmentMode, MergeRequestRecord, MergeRequestState, MergeRequestWorkflowProjectionOptions, CompletionHandoffMarker, WorkflowWorkItem, WorkflowWorkItemDueFilter, WorkflowWorkItemKind, WorkflowWorkItemState, WorkflowWorkItemTransitionPatch, WorkflowWorkItemUpsertInput, PrEntity, PrEntityCreateInput, PrEntityUpdate, PrThreadState, PrThreadOutcome, PluginActivation, PluginActivationInput, TaskStep } from "./types.js";
 import {
   fileScopeLeaseBlocksCandidate,
   isSharedBarrelOnlyMatch,
@@ -19,7 +22,8 @@ import {
   taskHoldsUnmergedCheckout,
   type FileScopeLeaseKind,
 } from "./tasks/file-scope-lease.js";
-import { compareTasksByPriorityThenAgeAndId } from "./tasks/task-priority.js";
+import { compareTasksByQueueOrder } from "./tasks/task-queue-order.js";
+import { boostTaskImpl } from "./task-store/task-queue-order-ops.js";
 
 /*
 FNXC:SpecLock 2026-08-09-21:01:
@@ -140,6 +144,8 @@ import { getTaskCommitAssociationsByLineageIdImpl, replaceLegacyTaskCommitAssoci
 import { findRecentTasksBySourceParentTaskIdImpl } from "./task-store/branch-and-pr-entities.js";
 import { addTaskCommentImpl, applyBuiltInPromptOverridesAsyncImpl, applyBuiltInPromptOverridesSyncImpl, areAllDependenciesDoneImpl, artifactStoredNameImpl, assertWorkflowIrTraitsValidImpl, clearActivityLogImpl, clearTaskWorkflowSelectionImpl, deleteTaskByIdImpl, getDefaultWorkflowIdImpl, resolveOriginWorkflowOverrideIdImpl, type TaskOriginWorkflowKind, getInsightStoreImpl, getMergeQueuedTaskIdsImpl, getMergeRequestRecordImpl, getMergeRequestRecordAsyncImpl, getMergeRequestRecordsAsyncImpl, getResearchStoreImpl, getTaskIdFromDirImpl, getTodoStoreImpl, getWorkflowWorkItemByIdentityImpl, hasActiveTaskImpl, invalidateConfigCacheAfterMigrationImpl, isTaskIdConflictErrorImpl, listLegacyAutoMergeStampCandidatesImpl, readTaskRowFromDbImpl, recordBranchGroupMemberLandedImpl, refreshDatabaseHealthAsyncImpl, refreshDatabaseHealthImpl, resolveTaskCustomFieldDefsSyncImpl, resolveWorkflowBypassGuardsImpl, serializeConfigForDiskImpl, setPluginWorkflowStepTemplatesImpl, shouldSkipWorkflowMovePoliciesImpl, suppressWatcherImpl, upsertTaskWithFtsRecoveryImpl } from "./task-store/task-store-helpers.js";
 import { getTaskSelectClauseImpl2, createTaskPersistSerializationContextImpl, getTaskPersistValuesImpl, getTaskPatchDescriptorsImpl, normalizeTaskFromDiskImpl, writeTaskJsonFileImpl, rowToPrEntityImpl, generatePrEntityIdImpl, readTaskForMoveImpl, rowToMergeQueueEntryImpl, rowToMergeRequestRecordImpl, rowToCompletionHandoffMarkerImpl, rowToWorkflowWorkItemImpl, rowToRunAuditEventImpl } from "./task-store/task-row-mappers.js";
+/* FNXC:HumanMergeApproval 2026-09-17-18:09: FN-514 delivery-lock mutations live in their own advisory-locked module. */
+import { recordHumanMergeDecisionImpl, setHumanMergeApprovalLockImpl, updateHumanMergeDecisionReceiptImpl, updateHumanMergeRejectionStateImpl } from "./task-store/human-merge-approval-ops.js";
 import { getTaskSelectClauseWithActivityLogLimitImpl, getChangedTaskColumnsImpl, getSoftDeletedWriteConflictImpl, readTaskJsonImpl, writeConfigImpl, _resolveSameAgentDuplicateIntakeBackendImpl, updateBranchGroupImpl, updatePrEntityImpl, listTasksForGithubTrackingReconcileImpl, listTasksForGitlabTrackingReconcileImpl, renewCheckoutLeaseImpl, updateTaskAtomicImpl, applyInReviewStallObservationFencedImpl, updateWorkflowStepResultsFencedImpl, updateWorkflowStepResultsWithLogFencedImpl, publishReviewRemediationFencedImpl, linkTaskRecommendationImpl, normalizeWorkspaceTaskWorktreeMetadataImpl, mergeWorkspaceWorktreeEntryImpl, updateTaskRepositoryScopeImpl, updateWorkspaceReviewStateImpl, publishWorkspaceCodeReviewEvidenceImpl, resolveTaskWedgeNotificationEpisodeImpl, getWorkflowPromptOverridesImpl, updateWorkflowSettingValuesImpl, rollbackConfigurationImpl, cancelActiveWorkflowWorkItemsForTaskImpl, setCompletionHandoffAcceptedMarkerImpl, reconcileLegacyAutoMergeStampsImpl, recoverExpiredMergeQueueLeasesImpl, rewriteDependentsForRemovalImpl, cleanupBranchForTaskImpl, addAttachmentImpl, deleteAttachmentImpl, registerArtifactImpl, updatePrInfoImpl, unlinkGithubIssueImpl, generatePromptFromArchiveEntryImpl, listWorkflowOccupantTaskIdsImpl, listApprovedCliAutonomyAdaptersImpl, closeImpl, getActivityLogImpl } from "./task-store/task-mutation-ops.js";
 import { getOrCreateForProjectImpl, listGoalCitationsImpl, atomicWriteTaskJsonWithAuditImpl, type PlanningDependencyInvalidation, duplicateTaskImpl, listStrandedRefinementsImpl, tryClaimCheckoutImpl, evaluateWorkflowMovePoliciesImpl, recordRunAuditEventImpl, getRunAuditEventsImpl, dequeueMergeQueueOnColumnExitImpl, updateIssueInfoImpl, listWorkflowStepsImpl, getWorkflowStepImpl, createWorkflowDefinitionImpl, countActiveInCapacitySlotSyncImpl, countActiveInCapacitySlotAsyncImpl, generateSpecifiedPromptImpl, recordActivityImpl, getEvalStoreImpl } from "./task-store/project-store-ops.js";
 import { markLegacyAutoMergeStampsOnceImpl, appendAgentLogImpl, importLegacyAgentLogsImpl, cleanupNoOpTaskMovedActivityRowsOnceImpl, backfillCommitAssociationDiffStatsImpl } from "./task-store/workflow-integrity.js";
@@ -163,6 +169,7 @@ import type { OverlapWaitClaim, OverlapWaitDeliverySnapshot, OverlapWaitExecutio
 import { clearWorkflowRunBranchesImpl, projectMergeRequestToWorkflowWorkItemImpl, createCompletionHandoffWorkflowWorkImpl } from "./task-store/workflow-workitems-ops.js";
 import { flushAgentLogBufferImpl, appendAgentLogBatchImpl } from "./task-store/agent-logs.js";
 import { refineTaskImpl, updateTaskDependenciesImpl } from "./task-store/update-task-deps.js";
+import { createFollowUpTaskImpl, type CreateFollowUpTaskOptions } from "./task-store/follow-up-ops.js";
 import { createWorkflowStepImpl, updateWorkflowStepImpl, updateWorkflowDefinitionImpl, deleteWorkflowDefinitionImpl, setDefaultWorkflowIdImpl, selectTaskWorkflowImpl } from "./task-store/workflow-ops.js";
 import { initImpl, setupActivityLogListenersImpl, reconcileOrphanedTaskDirsImpl, watchImpl, migrateAgentLogEntriesImpl, migrateMovedSettingsImpl, recoverStaleTransitionPendingImpl, migrateLegacyWorkflowStepsImpl, emitTaskLifecycleEventSafelyImpl } from "./task-store/lifecycle-ops.js";
 import { TaskDeletedOutboxConsumer } from "./task-store/task-deleted-outbox-consumer.js";
@@ -174,10 +181,9 @@ import type { TaskDeleteAuditContext } from "./task-delete-attribution.js";
 import { updateSettingsImpl, updateGlobalSettingsImpl } from "./task-store/settings-ops.js";
 import { mutateScriptImpl, type MutateScriptInput, type ScriptCatalogEntry } from "./task-store/script-ops.js";
 import { createTaskBackendImpl, _createTaskInternalBackendImpl, createTaskImpl, createTaskWithReservedIdImpl, _createTaskInternalImpl, _resolveSameAgentDuplicateIntakeImpl } from "./task-store/task-creation.js";
-import { getTaskImpl, listCompletedTasksImpl, listCurrentTasksPageImpl, listTasksImpl, searchTasksImpl, listTasksModifiedSinceImpl, getTaskVerificationRequestAsyncImpl, listTaskRecommendationsImpl, findTaskByProposalClaimIdImpl, listTasksBySourceLineageImpl, type CompletedTaskPage, type ListTasksOptions, type TaskListPage } from "./task-store/reads.js";
+import { getTaskImpl, listCompletedTasksImpl, listCurrentTasksPageImpl, listTaskQueuePageImpl, listTasksImpl, searchTasksImpl, listTasksModifiedSinceImpl, getTaskVerificationRequestAsyncImpl, listTaskRecommendationsImpl, findTaskByProposalClaimIdImpl, listTasksBySourceLineageImpl, type CompletedTaskPage, type ListTasksOptions, type TaskListPage, type TaskQueuePageOptions } from "./task-store/reads.js";
 import { drainArchivedTasksIntoDone, inspectArchivedTaskHistory, type ArchivedTaskHistoryInspection, type ArchivedTaskReintegrationResult } from "./task-store/archive-reintegration.js";
 import { supplementTaskHistoryFromEvidence, type SupplementTaskHistoryResult } from "./task-store/async/async-archive-lineage.js";
-import type { TaskColumnSortMode } from "./tasks/task-priority.js";
 import { updateTaskUnlockedImpl } from "./task-store/task-update.js";
 import { __setTaskActivityLogLimitsForTesting } from "./task-store/comments.js";
 import { columnsWithFlag, declaresAnyLifecycleTrait, resolveLifecycleColumns, resolveReviewColumns, type LifecycleColumns } from "./workflows/workflow-lifecycle-traits.js";
@@ -193,6 +199,7 @@ import {
   type PatchnodeReconcileResult,
 } from "./task-store/async/async-patchnode.js";
 import { buildPatchnodeEntryId, buildPatchnodeEntryInput } from "./board/patchnode.js";
+import { readTaskPlanPrompt } from "./task-store/patchnode-plan-source.js";
 import type { PatchnodeEntry, PatchnodeQuery } from "./types/task/patchnode.js";
 import { resolveWorkflowIrForTask } from "./workflows/workflow-ir-resolver.js";
 // FNXC:RuntimeBackendAsync 2026-06-24-10:15:
@@ -484,7 +491,7 @@ FNXC:OverlapScheduling 2026-08-29-06:04:
 Operator overlap repair must use the same lease lifetime as scheduler admission: terminal or deleted
 cards release immediately; WIP stays active before checkout acquisition; review stays active only
 while a singular or per-repository checkout exists; other retained checkouts are dormant and resolve contention
-by priority, age, then task id. The explicit archive/delete/checkout-clear escape hatch remains the only way to
+by the shared FN-509 queue order (Boost, then arrival, then id). The explicit archive/delete/checkout-clear escape hatch remains the only way to
 release unfinished work early.
 
 FNXC:OverlapScheduling 2026-09-01-14:49:
@@ -614,6 +621,69 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   public taskCache: Map<string, Task> = new Map();
   /** Per-store, bounded answer cache used only to decorate synchronous task:updated events. */
   public readonly laneCache = new TaskLaneCache();
+
+  /*
+  FNXC:EventDrivenDispatch 2026-09-18-00:40:
+  FN-519 — the advisory dispatch-wake signal for this store, when a consumer installed one.
+
+  Opt-in (null by default) on purpose: a store with no engine attached — the CLI, a dashboard
+  process, a test harness — must not pay for a signal nobody consumes, and installing one must be
+  an explicit act by the runtime that owns the consumers and their cleanup. The signal is advisory
+  and is NEVER consulted to decide whether work may run.
+  */
+  private dispatchWakeSignal: import("./dispatch-wake.js").DispatchWakeSignal | null = null;
+
+  /**
+   * Install (or clear, with `null`) the advisory dispatch-wake signal this store publishes to.
+   * Returns a disposer that clears only THIS installation, so a stopped runtime cannot detach a
+   * successor's signal.
+   */
+  public setDispatchWakeSignal(
+    signal: import("./dispatch-wake.js").DispatchWakeSignal | null,
+  ): () => void {
+    this.dispatchWakeSignal = signal;
+    return () => {
+      if (this.dispatchWakeSignal === signal) this.dispatchWakeSignal = null;
+    };
+  }
+
+  public getDispatchWakeSignal(): import("./dispatch-wake.js").DispatchWakeSignal | null {
+    return this.dispatchWakeSignal;
+  }
+
+  /**
+   * Publish one advisory wake for a canonical publication.
+   *
+   * Called from BOTH emission paths (`emit` and `emitTaskLifecycleEventSafely`); a duplicate for
+   * one logical change is harmless because the signal coalesces on (project, reason, taskId).
+   * Absorbs every failure: a wake is telemetry-grade, so it must never be able to fail, delay, or
+   * alter the mutation that published it.
+   */
+  private publishDispatchWake(event: string, args: readonly unknown[]): void {
+    const signal = this.dispatchWakeSignal;
+    if (!signal) return;
+    try {
+      const reason = classifyDispatchWakeReason(event);
+      if (!reason) return;
+      const taskId = resolveDispatchWakeTaskId(args);
+      signal.publish({
+        /*
+        FNXC:EventDrivenDispatch 2026-09-18-14:27:
+        FN-519 — the SAME routing key the cross-process publisher and the runtime subscription use.
+        Publishing under `rootDir` here while the transport published the partition identity is what
+        made remote wakes unroutable; see `resolveDispatchWakeProjectKey`.
+        */
+        projectId: resolveDispatchWakeProjectKey({
+          projectId: this.getProjectId(),
+          rootDir: this.rootDir,
+        }),
+        reason,
+        ...(taskId ? { taskId } : {}),
+      });
+    } catch {
+      /* an advisory wake must never break a mutation */
+    }
+  }
   /*
   FNXC:IncompletePgPorts 2026-07-26-20:35:
   Sync getDatabaseHealth/healthCheck cannot await PostgreSQL. Cache the last
@@ -796,6 +866,16 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   existing resolved lanes decoration and cold-cache updates must preserve absent metadata.
   */
   public emitTaskLifecycleEventSafely( event: "task:created" | "task:updated" | "task:deleted", args: TaskStoreEvents["task:created"] | TaskStoreEvents["task:updated"] | TaskStoreEvents["task:deleted"], ): boolean {
+    /*
+    FNXC:EventDrivenDispatch 2026-09-18-00:40:
+    FN-519 — publish the advisory dispatch wake here too, BEFORE the early return below.
+    `emitTaskLifecycleEventSafelyImpl` returns `false` without calling anything when there is no
+    local subscriber, so decorating only `TaskStore.emit` would leave a store with no local
+    listener (a CLI process, a second store) publishing no wake at all — which is precisely the
+    cross-process case the wake exists for. The publish never changes this method's return value
+    and never blocks: listener isolation and deferral live in the signal.
+    */
+    this.publishDispatchWake(event, args as readonly unknown[]);
     if (event === "task:updated") {
       const task = args[0] as Task;
       const metadata = args[1] as TaskStoreEvents["task:updated"][1] | undefined;
@@ -1210,9 +1290,16 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     return atomicWriteTaskJsonImpl2(this, dir, task, options);
   }
 
+  /*
+  FNXC:PatchnodeLedger 2026-09-18-02:48:
+  FN-526: every capture site supplies the task plan so `buildPatchnodeEntryInput` can derive the
+  product summary. `task.prompt` is already populated on a detail-loaded task; otherwise the plan is
+  read tolerantly from the task directory and a missing plan simply yields an empty description.
+  */
   async recordPatchnodeCompletion(task: Task, occurredAt: string): Promise<PatchnodeEntry | null> {
     if (!this.asyncLayer) throw new Error("Patchnode requires an async data layer");
-    return appendPatchnodeEntry(this.asyncLayer, buildPatchnodeEntryInput(task, "completed", occurredAt));
+    const prompt = task.prompt ?? (await readTaskPlanPrompt(this.taskDir(task.id))) ?? undefined;
+    return appendPatchnodeEntry(this.asyncLayer, buildPatchnodeEntryInput({ ...task, prompt }, "completed", occurredAt));
   }
 
   /*
@@ -1226,6 +1313,8 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     if (!this.asyncLayer?.projectId) throw new Error("Patchnode requires a project-scoped async data layer");
     const layer = this.asyncLayer;
     const task = await this.getTask(taskId);
+    // FNXC:PatchnodeLedger 2026-09-18-02:48: FN-526 — the cancellation entry carries the same plan-sourced product summary as the delivery it cancels.
+    const patchnodePrompt = task.prompt ?? (await readTaskPlanPrompt(this.taskDir(taskId))) ?? undefined;
     return layer.transactionImmediate(async (tx) => {
       const completion = await findLatestPatchnodeCompletionInTransaction(
         tx,
@@ -1234,7 +1323,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         input.pairWithDeliveryAtOrBefore ? { noLaterThan: input.occurredAt } : {},
       );
       const occurrenceKey = completion?.occurrenceKey ?? "none";
-      const base = buildPatchnodeEntryInput(task, "reverted", input.occurredAt);
+      const base = buildPatchnodeEntryInput({ ...task, prompt: patchnodePrompt }, "reverted", input.occurredAt);
       const reverted = await appendPatchnodeEntryInTransaction(tx, layer.projectId!, {
         ...base,
         entryId: buildPatchnodeEntryId("reverted", taskId, occurrenceKey),
@@ -1260,7 +1349,10 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     }
     const promise = (async () => {
       const completeColumns = await resolveProjectColumnsForRoles(this, ["complete"]);
-      return reconcilePatchnodeFromLiveTasks(this.asyncLayer!, completeColumns ?? new Set<string>());
+      // FNXC:PatchnodeLedger 2026-09-18-02:48: FN-526 — reconciliation reads each task's plan through the store's task directory so inserted and repaired entries carry the product summary.
+      return reconcilePatchnodeFromLiveTasks(this.asyncLayer!, completeColumns ?? new Set<string>(), {
+        readTaskPrompt: (id) => readTaskPlanPrompt(this.taskDir(id)),
+      });
     })();
     this.patchnodeReconcileMemo = { promise, startedAt: now };
     try {
@@ -1470,7 +1562,22 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   async duplicateTask(id: string, options?: { workflowId?: string | null }): Promise<Task> {
     return duplicateTaskImpl(this, id, options);
   }
-  async refineTask(id: string, feedback: string): Promise<Task> {
+  /*
+  FNXC:TaskFollowUp 2026-09-17-16:20:
+  FN-513 adds an ADDITIVE `mode` option. The default is byte-identical to the historical Refine call
+  — every existing caller (chat refinement, comments-ops, the CLI extension, the `/refine` route)
+  passes no options and keeps its exact behavior. Only `mode: "follow-up"` reaches the new path,
+  which creates a successor of a task that is still planning, running, or in review without touching
+  it. The rules live in `tasks/task-follow-up.ts`; the creation lives in `task-store/follow-up-ops.ts`.
+  */
+  async refineTask(
+    id: string,
+    feedback: string,
+    options?: { mode?: "refine" | "follow-up" } & CreateFollowUpTaskOptions,
+  ): Promise<Task> {
+    if (options?.mode === "follow-up") {
+      return createFollowUpTaskImpl(this, id, feedback, options);
+    }
     return refineTaskImpl(this, id, feedback);
   }
   /**
@@ -1786,7 +1893,18 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   async listCurrentTasksPage(options?: { limit?: number; cursor?: string; query?: string; columns?: readonly string[] }): Promise<TaskListPage> {
     return listCurrentTasksPageImpl(this, options);
   }
-  async listCompletedTasks(options?: { limit?: number; cursor?: string; slim?: boolean; sort?: TaskColumnSortMode }): Promise<CompletedTaskPage> {
+
+  /*
+  FNXC:TaskQueueOrder 2026-09-17-13:51:
+  One board lane, paged in the order that lane renders in, so a boosted or newly captured card
+  beyond the generic board page still reaches the head of its column after a reload.
+  */
+  async listTaskQueuePage(options: TaskQueuePageOptions): Promise<TaskListPage> {
+    return listTaskQueuePageImpl(this, options);
+  }
+  /* FNXC:TaskQueueOrder 2026-09-17-12:07: FN-509 removed the selectable Complete sort mode with the
+     column "..." menu. Done is always most-recent-arrival first. */
+  async listCompletedTasks(options?: { limit?: number; cursor?: string; slim?: boolean }): Promise<CompletedTaskPage> {
     return listCompletedTasksImpl(this, options);
   }
   /** Read-only archive inventory for project-scoped operational reconciliation. */
@@ -2070,7 +2188,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   }
   async updateTask(
     id: string,
-    updates: { title?: string; description?: string; priority?: TaskPriority | null; prompt?: string; worktree?: string | null; workspaceWorktrees?: import("./types.js").Task["workspaceWorktrees"]; externalBlock?: import("./types.js").Task["externalBlock"] | null; planningFailure?: import("./types.js").Task["planningFailure"] | null; humanPlanApproval?: import("./types.js").Task["humanPlanApproval"] | null; status?: string | null; awaitingApprovalReason?: import("./types.js").Task["awaitingApprovalReason"] | null; dependencies?: string[]; steps?: import("./types.js").TaskStep[]; customFields?: Record<string, unknown>; currentStep?: number; blockedBy?: string | null; overlapBlockedBy?: string | null; assignedAgentId?: string | null; pausedByAgentId?: string | null; pausedReason?: string | null; wedgeNotification?: import("./types.js").TaskWedgeNotificationState | null; tokenBudgetSoftAlertedAt?: string | null; worktrunkFallbackAlertedAt?: string | null; worktrunkFailure?: import("./types.js").Task["worktrunkFailure"] | null; tokenBudgetHardAlertedAt?: string | null; tokenBudgetOverride?: import("./types.js").TaskTokenBudgetOverride | null; dispatchStormCount?: number | null; lastDispatchAt?: string | null; assigneeUserId?: string | null; scopeOverride?: boolean | null; scopeOverrideReason?: string | null; scopeAutoWiden?: string[] | null; nodeId?: string | null; effectiveNodeId?: string | null; effectiveNodeSource?: string | null; checkedOutBy?: string | null; checkedOutAt?: string | null; checkoutNodeId?: string | null; checkoutRunId?: string | null; checkoutLeaseRenewedAt?: string | null; checkoutLeaseEpoch?: number | null; paused?: boolean; baseBranch?: string | null; autoMerge?: boolean | null; branch?: string | null; branchWriteOrigin?: "operator" | "engine"; branchContext?: import("./types.js").TaskBranchContext | null; executionStartBranch?: string | null; baseCommitSha?: string | null; size?: "S" | "M" | "L"; reviewLevel?: number; executionMode?: import("./types.js").ExecutionMode | null; mergeRetries?: number; aiMergeReviewReconciliation?: import("./types.js").Task["aiMergeReviewReconciliation"] | null; log?: import("./types.js").TaskLogEntry[]; workflowStepRetries?: number; stuckKillCount?: number | null; resumeLimboCount?: number | null; executeRequeueLoopCount?: number | null; graphResumeRetryCount?: number | null; consecutiveToolFailureRetryCount?: number | null; executorEscalationAttempted?: boolean | null; toolFailureDetectorLogCursor?: number | null; toolFailureRetryExhaustedAuditEmitted?: boolean | null; resumeLimboTipSha?: string | null; resumeLimboStepSignature?: string | null; executeRequeueLoopSignature?: string | null; postReviewFixCount?: number | null; planReviewReplanCount?: number | null; recoveryRetryCount?: number | null; sessionContentionHoldCount?: number | null; sessionContentionWaitReason?: string | null; taskDoneRetryCount?: number | null; bulkCompletionRefusalAt?: string | null; workflowIrPin?: string | null; workflowIrPinNodeId?: string | null; workflowIrPinColumnId?: string | null; legacyAdoptedAt?: string | null; worktreeSessionRetryCount?: number | null; completionHandoffLimboRecoveryCount?: number | null; verificationFailureCount?: number | null; mergeConflictBounceCount?: number | null; mergeAuditBounceCount?: number | null; mergeTransientRetryCount?: number | null; branchConflictRecoveryCount?: number | null; reviewerContextRetryCount?: number | null; reviewerFallbackRetryCount?: number | null; reviewConvergenceStage?: number | null; reviewConvergenceEscalationCount?: number | null; nextRecoveryAt?: string | null; enabledWorkflowSteps?: string[]; noCommitsExpected?: boolean | null; modelProvider?: string | null; credentialInstanceId?: string | null; modelId?: string | null; validatorModelProvider?: string | null; validatorCredentialInstanceId?: string | null; validatorModelId?: string | null; planningModelProvider?: string | null; planningCredentialInstanceId?: string | null; planningModelId?: string | null; mergerModelProvider?: string | null; mergerCredentialInstanceId?: string | null; mergerModelId?: string | null; thinkingLevel?: string | null; validatorThinkingLevel?: string | null; planningThinkingLevel?: string | null; mergerThinkingLevel?: string | null; error?: string | null; summary?: string | null; recommendations?: import("./types.js").TaskRecommendation[]; sessionFile?: string | null; firstExecutionAt?: string | null; cumulativeActiveMs?: number | null; cumulativePlanningMs?: number | null; planningStartedAt?: string | null; executionStartedAt?: string | null; executionCompletedAt?: string | null; review?: import("./types.js").TaskReview | null; reviewState?: import("./types.js").TaskReviewState | null; workflowStepResults?: import("./types.js").WorkflowStepResult[] | null; mergeDetails?: import("./types.js").MergeDetails | null; sourceIssue?: import("./types.js").TaskSourceIssue | null; sourceMetadataPatch?: Record<string, unknown> | null; githubTracking?: import("./types.js").TaskGithubTracking | null; tokenUsage?: import("./types.js").TaskTokenUsage | null; modifiedFiles?: string[] | null; declaredSymbols?: string[] | null | undefined; missionId?: string | null; sliceId?: string | null; workflowTransitionNotification?: import("./types.js").WorkflowTransitionNotificationMarker | undefined; plannerOversightLevel?: string | null; sessionAdvisorEnabled?: boolean | null; approvedPlanFingerprint?: string | null },    runContext?: RunMutationContext,
+    updates: { title?: string; description?: string; prompt?: string; worktree?: string | null; workspaceWorktrees?: import("./types.js").Task["workspaceWorktrees"]; externalBlock?: import("./types.js").Task["externalBlock"] | null; planningFailure?: import("./types.js").Task["planningFailure"] | null; humanPlanApproval?: import("./types.js").Task["humanPlanApproval"] | null; humanMergeApproval?: import("./types.js").Task["humanMergeApproval"] | null; status?: string | null; awaitingApprovalReason?: import("./types.js").Task["awaitingApprovalReason"] | null; dependencies?: string[]; steps?: import("./types.js").TaskStep[]; customFields?: Record<string, unknown>; currentStep?: number; blockedBy?: string | null; overlapBlockedBy?: string | null; assignedAgentId?: string | null; pausedByAgentId?: string | null; pausedReason?: string | null; wedgeNotification?: import("./types.js").TaskWedgeNotificationState | null; tokenBudgetSoftAlertedAt?: string | null; worktrunkFallbackAlertedAt?: string | null; worktrunkFailure?: import("./types.js").Task["worktrunkFailure"] | null; tokenBudgetHardAlertedAt?: string | null; tokenBudgetOverride?: import("./types.js").TaskTokenBudgetOverride | null; dispatchStormCount?: number | null; lastDispatchAt?: string | null; assigneeUserId?: string | null; scopeOverride?: boolean | null; scopeOverrideReason?: string | null; scopeAutoWiden?: string[] | null; nodeId?: string | null; effectiveNodeId?: string | null; effectiveNodeSource?: string | null; checkedOutBy?: string | null; checkedOutAt?: string | null; checkoutNodeId?: string | null; checkoutRunId?: string | null; checkoutLeaseRenewedAt?: string | null; checkoutLeaseEpoch?: number | null; paused?: boolean; baseBranch?: string | null; autoMerge?: boolean | null; branch?: string | null; branchWriteOrigin?: "operator" | "engine"; branchContext?: import("./types.js").TaskBranchContext | null; executionStartBranch?: string | null; baseCommitSha?: string | null; size?: "S" | "M" | "L"; reviewLevel?: number; executionMode?: import("./types.js").ExecutionMode | null; mergeRetries?: number; aiMergeReviewReconciliation?: import("./types.js").Task["aiMergeReviewReconciliation"] | null; log?: import("./types.js").TaskLogEntry[]; workflowStepRetries?: number; stuckKillCount?: number | null; resumeLimboCount?: number | null; executeRequeueLoopCount?: number | null; graphResumeRetryCount?: number | null; consecutiveToolFailureRetryCount?: number | null; executorEscalationAttempted?: boolean | null; toolFailureDetectorLogCursor?: number | null; toolFailureRetryExhaustedAuditEmitted?: boolean | null; resumeLimboTipSha?: string | null; resumeLimboStepSignature?: string | null; executeRequeueLoopSignature?: string | null; postReviewFixCount?: number | null; planReviewReplanCount?: number | null; recoveryRetryCount?: number | null; sessionContentionHoldCount?: number | null; sessionContentionWaitReason?: string | null; taskDoneRetryCount?: number | null; bulkCompletionRefusalAt?: string | null; workflowIrPin?: string | null; workflowIrPinNodeId?: string | null; workflowIrPinColumnId?: string | null; legacyAdoptedAt?: string | null; worktreeSessionRetryCount?: number | null; completionHandoffLimboRecoveryCount?: number | null; verificationFailureCount?: number | null; mergeConflictBounceCount?: number | null; mergeAuditBounceCount?: number | null; mergeTransientRetryCount?: number | null; branchConflictRecoveryCount?: number | null; reviewerContextRetryCount?: number | null; reviewerFallbackRetryCount?: number | null; reviewConvergenceStage?: number | null; reviewConvergenceEscalationCount?: number | null; nextRecoveryAt?: string | null; enabledWorkflowSteps?: string[]; noCommitsExpected?: boolean | null; modelProvider?: string | null; credentialInstanceId?: string | null; modelId?: string | null; validatorModelProvider?: string | null; validatorCredentialInstanceId?: string | null; validatorModelId?: string | null; planningModelProvider?: string | null; planningCredentialInstanceId?: string | null; planningModelId?: string | null; mergerModelProvider?: string | null; mergerCredentialInstanceId?: string | null; mergerModelId?: string | null; thinkingLevel?: string | null; validatorThinkingLevel?: string | null; planningThinkingLevel?: string | null; mergerThinkingLevel?: string | null; error?: string | null; summary?: string | null; recommendations?: import("./types.js").TaskRecommendation[]; sessionFile?: string | null; firstExecutionAt?: string | null; cumulativeActiveMs?: number | null; cumulativePlanningMs?: number | null; planningStartedAt?: string | null; executionStartedAt?: string | null; executionCompletedAt?: string | null; review?: import("./types.js").TaskReview | null; reviewState?: import("./types.js").TaskReviewState | null; workflowStepResults?: import("./types.js").WorkflowStepResult[] | null; mergeDetails?: import("./types.js").MergeDetails | null; sourceIssue?: import("./types.js").TaskSourceIssue | null; sourceMetadataPatch?: Record<string, unknown> | null; githubTracking?: import("./types.js").TaskGithubTracking | null; tokenUsage?: import("./types.js").TaskTokenUsage | null; modifiedFiles?: string[] | null; declaredSymbols?: string[] | null | undefined; missionId?: string | null; sliceId?: string | null; workflowTransitionNotification?: import("./types.js").WorkflowTransitionNotificationMarker | undefined; plannerOversightLevel?: string | null; sessionAdvisorEnabled?: boolean | null; approvedPlanFingerprint?: string | null },    runContext?: RunMutationContext,
   ): Promise<Task> {
     /*
     FNXC:SpecLock 2026-08-09-20:34:
@@ -2348,6 +2466,37 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   ): Promise<import("./task-store/task-mutation-ops.js").InReviewStallObservationResult> {
     return applyInReviewStallObservationFencedImpl(this, id, compute);
   }
+  /*
+  FNXC:HumanMergeApproval 2026-09-17-18:09:
+  FN-514 — the four delivery-lock mutations. Each runs read-validate-write inside ONE transaction
+  holding the project-scoped task advisory lock, which is the same primitive the delivery doors
+  re-take before advancing a ref. That shared primitive is what makes both lock/merge orderings
+  total instead of leaving a pre-read window.
+  */
+  async setHumanMergeApprovalLock(
+    id: string,
+    input: import("./task-store/human-merge-approval-ops.js").SetHumanMergeApprovalLockInput,
+  ): Promise<import("./task-store/human-merge-approval-ops.js").HumanMergeMutationResult> {
+    return setHumanMergeApprovalLockImpl(this, id, input);
+  }
+  async recordHumanMergeDecision(
+    id: string,
+    input: import("./task-store/human-merge-approval-ops.js").RecordHumanMergeDecisionInput,
+  ): Promise<import("./task-store/human-merge-approval-ops.js").HumanMergeMutationResult> {
+    return recordHumanMergeDecisionImpl(this, id, input);
+  }
+  async updateHumanMergeDecisionReceipt(
+    id: string,
+    input: import("./task-store/human-merge-approval-ops.js").UpdateHumanMergeReceiptInput,
+  ): Promise<import("./task-store/human-merge-approval-ops.js").HumanMergeMutationResult> {
+    return updateHumanMergeDecisionReceiptImpl(this, id, input);
+  }
+  async updateHumanMergeRejectionState(
+    id: string,
+    input: import("./task-store/human-merge-approval-ops.js").UpdateHumanMergeRejectionInput,
+  ): Promise<import("./task-store/human-merge-approval-ops.js").HumanMergeMutationResult> {
+    return updateHumanMergeRejectionStateImpl(this, id, input);
+  }
   async updateWorkflowStepResultsFenced(
     id: string,
     compute: import("./task-store/task-mutation-ops.js").WorkflowStepResultsFencedCompute,
@@ -2429,6 +2578,18 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     repositoryScope: import("./types.js").TaskRepositoryScope | undefined,
   ): Promise<Task> {
     return updateTaskRepositoryScopeImpl(this, id, repositoryScope);
+  }
+  /*
+  FNXC:TaskQueueOrder 2026-09-17-12:07:
+  FN-509's ONLY writer of the durable queue rank. Boost is a move-to-head within the card's current
+  stay: it starts nothing, moves no column, lifts no pause, clears no blocker, and never preempts a
+  selection that has already been accepted.
+  */
+  async boostTask(
+    id: string,
+    options: import("./task-store/task-queue-order-ops.js").BoostTaskOptions,
+  ): Promise<import("./task-store/task-queue-order-ops.js").BoostTaskResult> {
+    return boostTaskImpl(this, id, options);
   }
   async updateWorkspaceReviewState(
     id: string,
@@ -2914,6 +3075,8 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     // event: unknown keeps the decorator assignable to EventEmitter<TaskStoreEvents>'s
     // generic `emit<E extends string|symbol>(name: K|E, ...)` signature while still
     // forwarding arbitrary non-typed keys (agent:log, settings:updated, …).
+    // FNXC:EventDrivenDispatch 2026-09-18-00:40: FN-519 — the second of the two emission paths.
+    if (typeof event === "string") this.publishDispatchWake(event, args as readonly unknown[]);
     if (event === "task:updated" && args.length === 1) {
       const task = args[0] as Task;
       const lanes = this.laneCache.get(task.id);
@@ -3032,7 +3195,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   async projectMergeRequestToWorkflowWorkItem( taskId: string, opts: MergeRequestWorkflowProjectionOptions = {}, ): Promise<WorkflowWorkItem | null> {
     return projectMergeRequestToWorkflowWorkItemImpl(this, taskId, opts);
   }
-  async createCompletionHandoffWorkflowWork( task: Pick<Task, "id" | "autoMerge" | "priority">, opts: { runId?: string; now?: string; source?: string } = {}, tx?: import("./postgres/data-layer.js").DbTransaction, ): Promise<WorkflowWorkItem> {
+  async createCompletionHandoffWorkflowWork( task: Pick<Task, "id" | "autoMerge">, opts: { runId?: string; now?: string; source?: string } = {}, tx?: import("./postgres/data-layer.js").DbTransaction, ): Promise<WorkflowWorkItem> {
     return createCompletionHandoffWorkflowWorkImpl(this, task, opts, tx);
   }
   public getWorkflowWorkItemByIdentity( runId: string, taskId: string, nodeId: string, kind: WorkflowWorkItemKind, ): WorkflowWorkItem | null {
@@ -3525,7 +3688,9 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     FNXC:OverlapScheduling 2026-08-29-06:04:
     Reroute only to a holder that the shared lifetime classification says blocks this task. Paused and
     failed rows with retained worktrees still own unfinished files; dormant holders use the same
-    priority → age → id ordering as scheduler admission before repair records a fresh blocker edge.
+    shared FN-509 queue order (Boost, then arrival, then id) as scheduler admission before repair
+    records a fresh blocker edge. Repair and admission must agree, or the two can pick opposite
+    blockers and bounce a pair forever.
     */
     const candidatePool = tasks.filter(
       (candidate) => candidate.id !== task.id && candidate.id !== previousOverlapBlockedBy,
@@ -3550,16 +3715,13 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         kind: "dormant",
         waivedForTaskIds: [],
       }))
-      .sort(compareTasksByPriorityThenAgeAndId);
+      .sort(compareTasksByQueueOrder);
 
     for (const candidate of [...activeCandidates, ...dormantCandidates]) {
       const candidateScope = await getScope(candidate.id);
       if (repairScopesOverlap(taskScope, candidateScope)) return candidate.id;
     }
 
-    const priorityRank: Record<TaskPriority, number> = { urgent: 0, high: 1, normal: 2, low: 3 };
-    const taskRank = priorityRank[task.priority ?? "normal"] ?? 2;
-    const taskCreatedAt = Date.parse(task.createdAt);
     const queuedCandidates = candidatePool
       .filter((candidate) => {
         const lanes = candidateLanesByTaskId.get(candidate.id);
@@ -3567,23 +3729,10 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         if (!lanes) return candidate.column === "todo";
         return lanes.hold !== undefined && candidate.column === lanes.hold;
       })
-      .filter((candidate) => {
-        const candidateRank = priorityRank[candidate.priority ?? "normal"] ?? 2;
-        if (candidateRank < taskRank) return true;
-        if (candidateRank > taskRank) return false;
-        const candidateCreatedAt = Date.parse(candidate.createdAt);
-        if (Number.isFinite(candidateCreatedAt) && Number.isFinite(taskCreatedAt) && candidateCreatedAt !== taskCreatedAt) {
-          return candidateCreatedAt < taskCreatedAt;
-        }
-        return candidate.id.localeCompare(task.id) < 0;
-      })
-      .sort((a, b) => {
-        const priorityDiff = (priorityRank[a.priority ?? "normal"] ?? 2) - (priorityRank[b.priority ?? "normal"] ?? 2);
-        if (priorityDiff !== 0) return priorityDiff;
-        const ageDiff = Date.parse(a.createdAt) - Date.parse(b.createdAt);
-        if (Number.isFinite(ageDiff) && ageDiff !== 0) return ageDiff;
-        return a.id.localeCompare(b.id);
-      });
+      /* Only a candidate the shared queue order ranks AHEAD of this task can legitimately hold
+         it back; comparing with the same comparator admission uses keeps the two consistent. */
+      .filter((candidate) => compareTasksByQueueOrder(candidate, task) < 0)
+      .sort(compareTasksByQueueOrder);
 
     for (const candidate of queuedCandidates) {
       const candidateScope = await getScope(candidate.id);

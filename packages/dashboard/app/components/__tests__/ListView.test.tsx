@@ -33,6 +33,9 @@ vi.mock("../../api", () => ({
   rebuildTaskSpec: vi.fn().mockResolvedValue({}),
   refreshPrStatus: vi.fn().mockResolvedValue({}),
   updateTask: vi.fn(),
+  /* FNXC:TaskFollowUp 2026-09-17-18:10: the row hosts both composer modes, so both endpoints must be mockable here. */
+  refineTask: vi.fn(),
+  followUpTask: vi.fn(),
   api: vi.fn().mockResolvedValue({ sessions: [] }),
   // `useAgentsMapCache` (added by RUFU-177 so list rows can name an agent-owned stall) calls this; without
   // it the hook's try/catch swallowed the TypeError and every row silently resolved with NO agent, which
@@ -223,7 +226,7 @@ vi.mock("../TaskDetailModal", () => ({
   ),
 }));
 
-import { fetchTaskDetail, batchUpdateTaskModels, fetchBoardWorkflows, fetchNodes, refreshPrStatus, updateTask, fetchAgents } from "../../api";
+import { fetchTaskDetail, batchUpdateTaskModels, fetchBoardWorkflows, fetchNodes, followUpTask, refineTask, refreshPrStatus, updateTask } from "../../api";
 import { writeBoardWorkflowsCache } from "../../utils/boardWorkflowsCache";
 import { setScopedItem } from "../../utils/projectStorage";
 import { clearCache, SWR_CACHE_KEYS } from "../../utils/swrCache";
@@ -1510,17 +1513,25 @@ describe("ListView", () => {
     /*
     FNXC:ListContextMenu 2026-09-15-10:40:
     FN-417: an in-review row no longer offers merge completion — the engine merges automatically and
-    the only manual command is Task Detail's review footer button. Refine still proves the menu is
-    genuinely built for a review row rather than empty.
+    the only manual command is Task Detail's review footer button.
+
+    FNXC:TaskFollowUp 2026-09-17-18:10:
+    FN-513: a review row now offers **Follow-up** IN PLACE OF Refine, never both. Follow-up asks for a
+    successor task derived from work that is still going; Refine asks for more work on a card that is
+    finished, and offering both on the same row is the ambiguity FN-513 removes. The entry still
+    proves the menu is genuinely built for a review row rather than empty.
     */
     fireEvent.contextMenu(document.querySelector('.list-row[data-id="FN-003"]') as HTMLElement, { clientX: 40, clientY: 50 });
     expect(screen.queryByRole("menuitem", { name: "Merge & Close" })).not.toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: "Refine" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Follow-up" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Refine" })).not.toBeInTheDocument();
     fireEvent.contextMenu(document.querySelector('.list-row[data-id="FN-006"]') as HTMLElement, { clientX: 40, clientY: 50 });
     expect(screen.queryByRole("menuitem", { name: "Merge & Close" })).not.toBeInTheDocument();
 
+    // A COMPLETED row keeps Refine and is never offered Follow-up: there is no in-flight work to extend.
     fireEvent.contextMenu(document.querySelector('.list-row[data-id="FN-004"]') as HTMLElement, { clientX: 40, clientY: 50 });
     expect(screen.getByRole("menuitem", { name: "Refine" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Follow-up" })).not.toBeInTheDocument();
     expect(onOpenDetail).not.toHaveBeenCalled();
 
     /*
@@ -1543,10 +1554,49 @@ describe("ListView", () => {
     reviewRow.focus();
     fireEvent.keyDown(reviewRow, { key: "ContextMenu" });
     expect(screen.queryByRole("menuitem", { name: "Merge & Close" })).not.toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: "Refine" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Follow-up" })).toBeInTheDocument();
 
     expect(onPauseTask).not.toHaveBeenCalled();
     expect(onRetryTask).not.toHaveBeenCalled();
+    viewportSpy.mockRestore();
+  });
+
+  /*
+  FNXC:TaskFollowUp 2026-09-17-18:10:
+  FN-513 — the LIST host's own submit path. Opening the entry is proved above; this proves the row
+  reaches the follow-up endpoint with its own project scope, publishes the whole server task upward
+  without opening the record, and never falls back to the Refine endpoint.
+  */
+  it("creates a follow-up from a list row without opening the task record", async () => {
+    const viewportSpy = mockDesktopViewport();
+    vi.mocked(followUpTask).mockReset();
+    vi.mocked(refineTask).mockReset();
+    const created = { id: "FN-900", column: "todo", dependencies: ["FN-010"] };
+    vi.mocked(followUpTask).mockResolvedValue(created as never);
+    const onOpenDetail = vi.fn();
+    const onRefinementCreated = vi.fn();
+
+    renderListView({
+      tasks: [createMockTask({ id: "FN-010", title: "Running work", column: "in-progress" })],
+      onOpenDetail,
+      onRefinementCreated,
+    } as never);
+
+    fireEvent.contextMenu(document.querySelector('.list-row[data-id="FN-010"]') as HTMLElement, { clientX: 40, clientY: 50 });
+    fireEvent.click(screen.getByRole("menuitem", { name: "Follow-up" }));
+
+    expect(screen.getByTestId("task-refine-dialog")).toBeInTheDocument();
+    expect(onOpenDetail).not.toHaveBeenCalled();
+    expect(fetchTaskDetail).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByPlaceholderText("Describe the follow-up work here..."), { target: { value: "add the CSV export" } });
+    fireEvent.click(screen.getByTestId("task-refine-submit"));
+
+    await waitFor(() => expect(followUpTask).toHaveBeenCalledWith("FN-010", "add the CSV export", TEST_PROJECT_ID));
+    expect(refineTask).not.toHaveBeenCalled();
+    expect(onRefinementCreated).toHaveBeenCalledWith(created);
+    await waitFor(() => expect(screen.queryByTestId("task-refine-dialog")).not.toBeInTheDocument());
+    expect(onOpenDetail).not.toHaveBeenCalled();
     viewportSpy.mockRestore();
   });
 
@@ -3772,7 +3822,7 @@ describe("ListView", () => {
     expect(screen.queryByText("FN-002")).toBeNull();
   });
 
-  it("defaults todo section to board-consistent priority then oldest ordering", () => {
+  it("defaults todo section to board-consistent oldest-first ordering", () => {
     const tasks = [
       createMockTask({ id: "FN-100", column: "todo", priority: "low", createdAt: "2024-01-01T08:00:00.000Z" }),
       createMockTask({ id: "FN-101", column: "todo", priority: "urgent", createdAt: "2024-01-01T10:00:00.000Z" }),
@@ -3781,7 +3831,7 @@ describe("ListView", () => {
 
     renderListView({ tasks });
 
-    expect(getSectionTaskIds("Todo")).toEqual(["FN-101", "FN-102", "FN-100"]);
+    expect(getSectionTaskIds("Todo")).toEqual(["FN-102", "FN-100", "FN-101"]);
   });
 
   it("defaults done section to board-consistent completion recency", () => {

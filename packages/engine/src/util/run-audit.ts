@@ -503,6 +503,24 @@ export type DatabaseMutationType =
   | "task:steering-comment:add"
   | "task:assign"
   | "task:checkout"
+  /*
+  FNXC:EventDrivenDispatch 2026-09-18-00:40:
+  FN-519. Metadata: { taskId?, nodeId?, wakeOrigin, phase, outcome, observedMs?, reasonCode? } — ids,
+  bounded enums, and one duration only. `wakeOrigin` names WHAT woke the lane (local publication,
+  remote notification, capacity release, owner cleanup, catch-up read, periodic backstop) and
+  `outcome` says whether the pass reached a claim or was refused, with `reasonCode` naming a refusal
+  from a fixed set. Purpose: before this event, "why did this card sit queued?" was unanswerable
+  after the fact — the binding gate lived only in a log line persisted nowhere — and the answer must
+  distinguish an added wait from a real gate, necessary I/O, and provider latency.
+
+  Deliberately EXCLUDED: prompts, titles, task content, reviewer prose, error text, blocker prose,
+  connection URLs, and secrets. `observedMs` is a wall-clock observation within ONE process; it is
+  never a duration computed between two unsynchronized clocks.
+
+  Emitted through `emitBoundedRunAudit` and never awaited before a claim or a handoff: a stalled
+  telemetry sink must not be able to delay the dispatch it describes.
+  */
+  | "task:dispatch-latency-observed"
   /* FNXC:ExternalBlock 2026-08-28-04:08: external-block telemetry contains ids and fixed classifications only; raw obstacle prose stays on the task. */
   | "task:external-block-parked"
   | "task:external-block-cleared"
@@ -760,6 +778,9 @@ export type DatabaseMutationType =
   | "task:completed-blocked-parked"
   /** Metadata: { taskId, priorColumn, priorStatus, source } */
   | "task:completed-blocked-advanced"
+  /* FNXC:TaskQueueOrder 2026-09-17-12:07: historical compatibility only. FN-509 retired the starved
+     refinement priority nudge with the priority system, so no live engine path emits this event;
+     the union member is kept so persisted rows remain readable. */
   | "task:auto-recover-starved-refinement"
   /** Metadata: { rawDiffFileCount: number; attributedFileCount: number; foreignCommitCount: number; foreignCommitShas: string[]; source: string } */
   | "task:worktree-contamination-detected"

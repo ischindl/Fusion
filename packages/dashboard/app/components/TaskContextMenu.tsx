@@ -3,8 +3,10 @@ import { UiMenu, UiMenuItem } from "./ui";
 import type { KeyboardEvent, PointerEvent as ReactPointerEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { TFunction } from "i18next";
-import type { ColumnId, Task, TaskDetail } from "@fusion/core";
-
+import type { ColumnId, Task, TaskDetail, WorkflowStepResult } from "@fusion/core";
+/* FNXC:TaskFollowUp 2026-09-17-18:10: FN-513's eligibility rule is a PURE core helper reachable through the browser-safe leaf the app aliases `@fusion/core` to, so the menu cannot fork it. */
+import { isFollowUpEligible } from "@fusion/core";
+import { isReviewColumnRole } from "../utils/columnRoles";
 
 /*
 FNXC:TaskRecoveryVocabulary 2026-08-28-00:38:
@@ -122,6 +124,13 @@ export interface BuildTaskActionMenuModelOptions {
   disabled item would promise an action the host cannot serve.
   */
   onTransferToProject?: () => void;
+  FNXC:HumanMergeApproval 2026-09-17-18:09:
+  FN-514 — ONE action that arms or removes the per-card delivery lock, on every shared menu host.
+  It is a single toggle rather than two entries because the card is either locked or it is not, and
+  the final authorization is the SERVER's: the entry is hidden once delivery has provably started or
+  the card is complete, and the server refuses anything the client still offers.
+  */
+  onToggleMergeApproval?: (enabled: boolean) => void;
   /*
   FNXC:TaskContextMenu 2026-09-15-10:40:
   FN-417 removes the `merge` review action from every TASK CONTEXT MENU because the engine drives
@@ -132,6 +141,13 @@ export interface BuildTaskActionMenuModelOptions {
   */
   includeMergeCompletionAction?: boolean;
   onOpenRefine?: () => void;
+  /*
+  FNXC:TaskFollowUp 2026-09-17-18:10:
+  FN-513 — prepare a SUCCESSOR of a task that is still planning, running, or in review, from its plan
+  and its in-flight implementation. Every host wires this the same way and the eligibility rule is
+  the shared core one, so Board, List and Task Detail cannot disagree about where it appears.
+  */
+  onOpenFollowUp?: () => void;
   onRetry?: () => void;
   onReset?: () => void;
   onTogglePause?: () => void;
@@ -314,6 +330,29 @@ export function buildTaskActionMenuModel(options: BuildTaskActionMenuModelOption
   */
   if (options.onTransferToProject) {
     actions.push({ id: "transfer-to-project", label: t("taskDetail.transfer.menuItem", "Transfer to project…"), onSelect: options.onTransferToProject });
+  FNXC:HumanMergeApproval 2026-09-17-18:09:
+  FN-514 — the delivery lock may be changed on any LIVE card before delivery actually starts, which
+  includes Ideas, Planning, WIP, review, paused and failed cards. It is hidden only where the answer
+  cannot change anything: a terminal card, or one whose delivery has provably begun (a merge status,
+  a confirmed merge). Sitting in a merge queue is NOT a started delivery, so those cards keep it.
+
+  This is a presentation filter, not the authorization: the server re-checks under the task advisory
+  lock and refuses a change that races a merge owner.
+  */
+  if (options.onToggleMergeApproval) {
+    const deliveryStarted = task.mergeDetails?.mergeConfirmed === true
+      || (typeof task.status === "string" && ["merging", "merging-pr", "merging-fix"].includes(task.status));
+    const isTerminal = currentColumnFlags?.complete === true || (currentColumnFlags === undefined && task.column === "done");
+    if (!deliveryStarted && !isTerminal) {
+      const locked = task.humanMergeApproval?.enabled === true;
+      actions.push({
+        id: "toggle-merge-approval",
+        label: locked
+          ? t("tasks.humanMergeApproval.menuUnlock", "Remove delivery approval")
+          : t("tasks.humanMergeApproval.menuLock", "Require my approval to deliver"),
+        onSelect: () => options.onToggleMergeApproval?.(!locked),
+      });
+    }
   }
 
   /*
@@ -323,7 +362,39 @@ export function buildTaskActionMenuModel(options: BuildTaskActionMenuModelOption
   Mode entry points (inline create, quick entry, task form, GitHub import) are untouched.
   */
 
-  if (isDoneOrReview(task.column, currentColumnFlags) && options.onOpenRefine) {
+  /*
+  FNXC:TaskFollowUp 2026-09-17-18:10:
+  FOLLOW-UP AND REFINE ARE COMPLEMENTARY, NEVER BOTH.
+
+  Refine asks for MORE WORK ON THIS CARD once it is finished. Follow-up asks for a SEPARATE successor
+  card derived from a card that is still going. A review-lane card qualifies for both questions, and
+  showing two near-identical entries there is exactly the ambiguity the operator asked to avoid — so
+  the eligible follow-up wins that lane and Refine keeps the terminal one.
+
+  The predicate is `isFollowUpEligible` from core, shared with the store mode and the HTTP route. No
+  local column reasoning: a renamed board, an explicit trait set, and the strict Planning exception
+  (a CURRENT approving plan review) all resolve there, once.
+
+  An unauthorized state renders NOTHING here — no disabled shell, no separator, no empty click
+  target. A stale menu is still possible (the source can finish while the menu is open), and that is
+  the server's 409 to answer, not a reason to leave a dead control on screen.
+  */
+  const followUpEligible = Boolean(options.onOpenFollowUp) && isFollowUpEligible({
+    column: task.column,
+    ...(currentColumnFlags ? { columnFlags: currentColumnFlags } : {}),
+    status: task.status ?? null,
+    deletedAt: task.deletedAt ?? null,
+    workflowStepResults: task.workflowStepResults ?? [],
+  });
+
+  if (followUpEligible) {
+    actions.push({
+      id: "follow-up",
+      label: t("taskDetail.followUp.btn", "Follow-up"),
+      testId: "task-action-follow-up",
+      onSelect: options.onOpenFollowUp,
+    });
+  } else if (isDoneOrReview(task.column, currentColumnFlags) && options.onOpenRefine) {
     actions.push({ id: "refine", label: t("taskDetail.refine.btn", "Refine"), onSelect: options.onOpenRefine });
   }
 

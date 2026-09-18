@@ -6,6 +6,7 @@ FNXC:TaskDetailFooterActions 2026-09-05-23:27:
 FN-300 keeps one header Actions trigger and moves Quick Add controls into its labeled list. Match the trigger by its exact accessible name so action items with descriptive labels cannot make menu-opening queries ambiguous.
 */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { useState } from "react";
 import { render, screen, fireEvent, act, waitFor, cleanup, within } from "@testing-library/react";
 
 // FNXC:Markdown 2026-06-23-03:30: Mock the heavy `mermaid` library so the shared
@@ -38,6 +39,8 @@ import {
 import { TaskDetailModal, TaskDetailContent } from "../TaskDetailModal";
 import * as dashboardApi from "../../api";
 import { FileBrowserProvider } from "../../context/FileBrowserContext";
+import { DashboardWindowManagerProvider } from "../../context/DashboardWindowManagerContext";
+import { RootErrorBoundary } from "../ErrorBoundary";
 import type { Task } from "@fusion/core";
 
 setupTaskDetailModalHooks();
@@ -540,14 +543,22 @@ describe("TaskDetailModal", () => {
 
     // FNXC:TaskDetailModal 2026-08-15-00:00 (slow-test trim): refinement and API-created
     // parent-link cases shared one body; converted to it.each with both cases kept.
+    /*
+    FNXC:TaskFollowUp 2026-09-17-18:10:
+    FN-513 adds the follow-up sub-type row. It shares `task_refine` provenance, so it must keep the
+    SAME parent link and the same click-through — only the label differs. An unknown marker version
+    degrades to the historical Refinement label rather than claiming a sub-type the row does not have.
+    */
     it.each([
-      ["refinement provenance", "task_refine", "FN-001", /Created via Refinement/],
-      ["API-created planning tasks", "api", "FN-PLANNER", /Created via API/],
-    ] as const)("renders parent task link for %s", async (_label, sourceType, parentId, expectedText) => {
+      ["refinement provenance", "task_refine", "FN-001", /Created via Refinement/, undefined],
+      ["follow-up provenance", "task_refine", "FN-001", /Created via Follow-up/, { followUp: { version: 1 } }],
+      ["an unknown follow-up marker version", "task_refine", "FN-001", /Created via Refinement/, { followUp: { version: 99 } }],
+      ["API-created planning tasks", "api", "FN-PLANNER", /Created via API/, undefined],
+    ] as const)("renders parent task link for %s", async (_label, sourceType, parentId, expectedText, sourceMetadata) => {
       render(
         <TaskDetailModal
           initialTab="details"
-          task={makeTask({ sourceType, sourceParentTaskId: parentId })}
+          task={makeTask({ sourceType, sourceParentTaskId: parentId, ...(sourceMetadata ? { sourceMetadata } : {}) })}
           onClose={noop}
 
           onDeleteTask={noopDelete}
@@ -2887,4 +2898,73 @@ describe("TaskDetailModal", () => {
   });
 
 
+});
+
+/*
+FNXC:DashboardWindowSurfaceRefIdentity 2026-09-17-19:34:
+FN-515: the real Task Detail host is the product-scope proof that the shared window primitives no
+longer loop on open. Both presentations mount under the REAL DashboardWindowManagerProvider and a
+REAL RootErrorBoundary, and neither FloatingWindow nor MobileDrawer is stubbed: an update-depth loop
+would surface here as the boundary fallback instead of the card.
+*/
+describe("TaskDetailModal opens under the real window manager", () => {
+  function expectNoBoundaryFallback() {
+    expect(screen.queryByText("Something went wrong")).toBeNull();
+    const logged = (console.error as unknown as { mock?: { calls: unknown[][] } }).mock?.calls ?? [];
+    const text = logged
+      .map((call) => call.map((part) => (part instanceof Error ? part.message : String(part))).join(" "))
+      .join("\n");
+    expect(text).not.toMatch(/Maximum update depth exceeded|error #185/i);
+  }
+
+  function Host({ mobileDrawer }: { mobileDrawer?: boolean }) {
+    const [open, setOpen] = useState(false);
+    return (
+      <RootErrorBoundary>
+        <DashboardWindowManagerProvider>
+          <button type="button" onClick={() => setOpen(true)}>Open detail</button>
+          {open && (
+            <TaskDetailModal
+              initialTab="definition"
+              mobileDrawer={mobileDrawer}
+              task={makeTask({ id: "FN-WINDOW", column: "todo" })}
+              onClose={() => setOpen(false)}
+              onDeleteTask={noopDelete}
+              onMergeTask={noopMerge}
+              onOpenDetail={noopOpenDetail}
+              addToast={noop}
+            />
+          )}
+        </DashboardWindowManagerProvider>
+      </RootErrorBoundary>
+    );
+  }
+
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    errorSpy.mockRestore();
+  });
+
+  it.each([
+    ["desktop floating presentation", false],
+    ["phone drawer presentation", true],
+  ] as const)("%s opens, updates and reopens without a loop", async (_label, mobileDrawer) => {
+    const view = render(<Host mobileDrawer={mobileDrawer} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open detail" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("FN-WINDOW")).toBeInTheDocument();
+    });
+    expectNoBoundaryFallback();
+
+    // A parent re-render with fresh prop identities must not churn the managed root ref.
+    view.rerender(<Host mobileDrawer={mobileDrawer} />);
+    expectNoBoundaryFallback();
+  });
 });

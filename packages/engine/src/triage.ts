@@ -20,6 +20,8 @@ import {
   TaskDeletedError,
   buildTriageMemoryInstructions,
   isUnplannedSeedPrompt,
+  // FNXC:TaskFollowUp 2026-09-17-16:10: FN-513's shared sub-type test; never re-derived here.
+  isFollowUpTask,
   isTaskAwaitingPlanning,
   isFastExecutionMode,
   getTaskDuplicateLineage,
@@ -206,6 +208,13 @@ import {
   recoverIdleSemaphoreLeakCandidate,
   type AgentSemaphore,
 } from "./concurrency/concurrency.js";
+/* FNXC:TaskFollowUp 2026-09-17-16:10: FN-513 — the bounded source-task context a follow-up's planning session receives. */
+import {
+  formatFollowUpContextUnavailableSection,
+  formatFollowUpParentContextSection,
+  loadFollowUpParentContext,
+  type FollowUpContextStore,
+} from "./triage-domain/follow-up-context.js";
 import { AgentLogger } from "./agents/agent-logger.js";
 import { attachAgentUsageTelemetry, emitAgentSessionStart } from "./agents/agent-usage-telemetry.js";
 import { emitApprovalMail } from "./agents/approval-mail.js";
@@ -400,8 +409,17 @@ export interface TriageProcessorOptions {
   */
   onSpecifyComplete?: (task: Task, report: PlanningHandoffReport) => void;
   onSpecifyError?: (task: Task, error: Error) => void;
-  /** Advisory execution-lane nudge after an admitted planning promise returns its slot. */
-  onPlanningSlotReleased?: () => void;
+  /**
+   * Advisory execution-lane nudge after an admitted planning promise returns its slot.
+   *
+   * FNXC:EventDrivenDispatch 2026-09-18-00:40:
+   * FN-519 — the finished card's id is carried because the subscriber's real job is to release
+   * THAT card's `planner-live` continuation deferral: the Plan Review row is legitimately seeded
+   * while the planner still owns the task, so the drain defers it by
+   * PLANNER_LIVE_CONTINUATION_DEFER_MS (15 s) and a bare wake cannot help — the row is no longer
+   * due. The id is optional so an existing zero-argument subscriber keeps compiling.
+   */
+  onPlanningSlotReleased?: (taskId?: string) => void;
   onAgentText?: (taskId: string, delta: string) => void;
   /** AgentStore for resolving per-agent custom instructions. */
   agentStore?: import("@fusion/core").AgentStore;
@@ -567,11 +585,21 @@ export class TriageProcessor {
   Event-wake state for requestImmediatePoll(). Planning discovery is timer-driven, so pressing
   Start on an Ideas card (which only writes a column change) used to wait out the remainder of the
   poll interval — up to pollIntervalMs, 15s by default — before anything even looked at the card.
-  `nudgeTimer` debounces a burst of moves into one poll; `nudgeDuringPoll` remembers a nudge that
-  arrived while a poll was already in flight, since that poll may have snapshotted the task list
-  before the move landed and would otherwise drop the wake entirely.
+  `nudgeDuringPoll` remembers a nudge that arrived while a poll was already in flight, since that
+  poll may have snapshotted the task list before the move landed and would otherwise drop the wake
+  entirely.
+
+  FNXC:EventDrivenDispatch 2026-09-18-00:40:
+  FN-519 — the burst coalescer is now a PENDING FLAG drained in a microtask, not a 150 ms time
+  window. Coalescing only needs "at most one pass is pending", which a flag expresses exactly; the
+  former `setTimeout(..., NUDGE_DEBOUNCE_MS)` additionally charged every single-card Start the full
+  window, and that added wait is the latency operators actually see ("la carte reste en queue").
+  The N-moves-to-one-pass property is preserved: every wake published before the microtask runs
+  collapses into the same pending pass. `nudgeGeneration` fences a queued microtask against
+  stop()/start(), so a wake published before shutdown can never open a pass afterwards.
   */
-  private nudgeTimer: ReturnType<typeof setTimeout> | null = null;
+  private nudgePending = false;
+  private nudgeGeneration = 0;
   private nudgeDuringPoll = false;
   private processing = new Set<string>();
   /** Synchronous ownership fence shared with advanced-triage self-healing. */
@@ -843,6 +871,8 @@ export class TriageProcessor {
         );
         return tasks.filter((task) => !this.coordinatorAdmittedTaskIds.has(task.id)).map((task) => ({
           taskId: task.id, projectId: this.rootDir, lane: "planning", consumesWorktree: false, createdAt: task.createdAt,
+          // FNXC:TaskQueueOrder 2026-09-17-12:07: Boost scope travels with the candidate.
+          column: task.column, ...(task.columnMovedAt ? { columnMovedAt: task.columnMovedAt } : {}), ...(task.queueBoost ? { queueBoost: task.queueBoost } : {}),
           reserve: () => registerPreHeldExecutorSlot(task.id, this.options.semaphore !== undefined),
           start: async () => {
             this.coordinatorAdmittedTaskIds.add(task.id);
@@ -868,8 +898,15 @@ export class TriageProcessor {
      * the call if a poll-based pass is already in flight.
      */
     store.on("settings:updated", ({ settings, previous }) => {
+      /*
+      FNXC:EventDrivenDispatch 2026-09-18-00:40:
+      FN-519 — route the resume through the coalescing pump instead of calling `poll()` directly.
+      A direct call is DROPPED by `poll()`'s re-entrance guard when a pass is already in flight,
+      and only `requestImmediatePoll()` records `nudgeDuringPoll`, so an unpause landing mid-pass
+      previously had no effect until the next tick (up to pollIntervalMs).
+      */
       if (previous.globalPause && !settings.globalPause && this.running) {
-        this.poll();
+        this.requestImmediatePoll();
       }
     });
 
@@ -880,8 +917,9 @@ export class TriageProcessor {
      * unpause handler above.
      */
     store.on("settings:updated", ({ settings, previous }) => {
+      // FNXC:EventDrivenDispatch 2026-09-18-00:40: same lossless pump as the globalPause resume above.
       if (previous.enginePaused && !settings.enginePaused && this.running) {
-        this.poll();
+        this.requestImmediatePoll();
       }
     });
 
@@ -1231,11 +1269,13 @@ export class TriageProcessor {
       this.pollInterval = null;
       this.activePollMs = null;
     }
-    // FNXC:CodingIdeasWorkflow 2026-07-25-11:20: a debounced wake must not fire past shutdown.
-    if (this.nudgeTimer) {
-      clearTimeout(this.nudgeTimer);
-      this.nudgeTimer = null;
-    }
+    /*
+    FNXC:CodingIdeasWorkflow 2026-07-25-11:20: a pending wake must not fire past shutdown.
+    FNXC:EventDrivenDispatch 2026-09-18-00:40: bumping the generation fences an ALREADY QUEUED
+    microtask, which (unlike the former timer handle) cannot be cleared.
+    */
+    this.nudgePending = false;
+    this.nudgeGeneration += 1;
     this.nudgeDuringPoll = false;
     if (this.taskDeletedHandler && typeof this.store.off === "function") {
       this.store.off("task:deleted", this.taskDeletedHandler);
@@ -1487,7 +1527,7 @@ export class TriageProcessor {
 
       /*
       FNXC:Triage 2026-07-16-18:29:
-      Stale-processing eviction must retain a task with a live, non-aborted triage session (`activeSessions.has(id) && !stuckAborted.has(id)`). Removing it would drop genuinely active planning from `getProcessingTaskIds()` and let self-healing prematurely finalize it to todo/awaiting-approval, clear planning status, or nudge priority. Hung promises without a session and stuck-aborted/disposed sessions remain evictable.
+      Stale-processing eviction must retain a task with a live, non-aborted triage session (`activeSessions.has(id) && !stuckAborted.has(id)`). Removing it would drop genuinely active planning from `getProcessingTaskIds()` and let self-healing prematurely finalize it to todo/awaiting-approval or clear planning status. Hung promises without a session and stuck-aborted/disposed sessions remain evictable.
 
       FNXC:TriageStuckKill 2026-07-18-21:05:
       Also retain Plan Review subagents and finalize handoffs after the main session is
@@ -2282,6 +2322,13 @@ export class TriageProcessor {
    * existing poll runs — every pause, seed-prompt, dependency, and concurrency gate still applies,
    * so a nudge on a capacity-blocked card is a no-op rather than an admission bypass. Returns false
    * when the processor is not running.
+   *
+   * FNXC:EventDrivenDispatch 2026-09-18-00:40:
+   * FN-519 — no time window. The pass is opened in a microtask so a burst of moves published in the
+   * same turn still produces ONE pass, while a single Start is no longer charged a deliberate
+   * 150 ms before anything looks at the card. The microtask (rather than a synchronous call) also
+   * preserves the existing ordering contract: a caller inside a store emit or a release `finally`
+   * finishes returning capacity before dispatch begins.
    */
   requestImmediatePoll(): boolean {
     if (!this.running) return false;
@@ -2290,12 +2337,15 @@ export class TriageProcessor {
       this.nudgeDuringPoll = true;
       return true;
     }
-    if (this.nudgeTimer) return true; // Already coalescing a burst of moves.
-    this.nudgeTimer = setTimeout(() => {
-      this.nudgeTimer = null;
+    if (this.nudgePending) return true; // Already coalescing a burst of moves into one pass.
+    this.nudgePending = true;
+    const generation = this.nudgeGeneration;
+    queueMicrotask(() => {
+      // A stop() (or a restart) between publication and drain invalidates this wake outright.
+      if (generation !== this.nudgeGeneration || !this.running) return;
+      this.nudgePending = false;
       void this.poll();
-    }, TriageProcessor.NUDGE_DEBOUNCE_MS);
-    this.nudgeTimer.unref?.();
+    });
     return true;
   }
 
@@ -2324,25 +2374,32 @@ export class TriageProcessor {
         planLog.error(`${task.id}: admitted planning promise rejected:`, error);
         await this.parkPlanningRecoveryWriteFailure(task, message, error);
       })
-      .finally(() => this.notifyPlanningSlotReleased());
+      /*
+      FNXC:EventDrivenDispatch 2026-09-18-00:40:
+      FN-519 — this `finally` runs after `specifyTask` has fully settled, INCLUDING its own
+      finally block: the planning work item is terminal, capacity is returned, and the task is out
+      of `processing`/`coordinatorAdmittedTaskIds`. That ordering is what makes the release signal
+      safe to act on — a subscriber that clears the `planner-live` deferral here cannot have the
+      re-dispatched review meet the same live planner again. Rejections release too (a parked
+      planner still returned its slot).
+      */
+      .finally(() => this.notifyPlanningSlotReleased(task.id));
   }
 
   /*
   FNXC:ConcurrencyAdmission 2026-08-28-21:24:
   A settled planning promise returns shared project capacity. Pull the next queued planning card immediately and nudge execution at that event rather than waiting for a timer; this is advisory only, so the next poll still applies pause, seed-prompt, dependency, worktree, and admission-coordinator gates.
   */
-  private notifyPlanningSlotReleased(): void {
+  private notifyPlanningSlotReleased(taskId?: string): void {
     if (!this.running) return;
     this.requestImmediatePoll();
     try {
-      this.options.onPlanningSlotReleased?.();
+      this.options.onPlanningSlotReleased?.(taskId);
     } catch (error) {
       planLog.warn(`Planning-slot release listener failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
-  /** Coalescing window for requestImmediatePoll, so a multi-card drag causes one poll, not N. */
-  private static readonly NUDGE_DEBOUNCE_MS = 150;
   /** FNXC:TriagePollWatchdog 2026-08-01-01:25: a poll marked in-flight past this long is treated as hung. */
   private static readonly POLL_WATCHDOG_MS = 120_000;
 
@@ -2646,9 +2703,13 @@ export class TriageProcessor {
               lane: "planning",
               consumesWorktree: false,
               createdAt: task.createdAt,
+              // FNXC:TaskQueueOrder 2026-09-17-12:07: Boost scope travels with the candidate.
+              column: task.column,
+              ...(task.columnMovedAt ? { columnMovedAt: task.columnMovedAt } : {}),
+              ...(task.queueBoost ? { queueBoost: task.queueBoost } : {}),
               // FNXC:ConcurrencyAdmission 2026-08-05-10:00: the planner must
               // own the coordinator's real host reservation before it starts;
-              // deferring to semaphore.run would reintroduce priority overtaking.
+              // deferring to semaphore.run would reintroduce lane overtaking.
               reserve: () => registerPreHeldExecutorSlot(task.id, this.options.semaphore !== undefined),
               start: async () => {
                 admittedThisPoll.add(task.id);
@@ -3656,6 +3717,32 @@ export class TriageProcessor {
               ...extractCommandBinaries(settings?.buildCommand),
             ],
           }).catch((): EnvironmentCapabilityProbe => ({ capabilities: [], degraded: true }));
+          /*
+          FNXC:TaskFollowUp 2026-09-17-16:10:
+          FN-513 — a follow-up's planner must see what its SOURCE plans to deliver and what it has
+          delivered so far, or B is designed from a one-line request and duplicates A.
+
+          Loaded HERE, on the real planning entry, and re-read on EVERY attempt (including a replan):
+          A is concurrently moving, so a cached parent snapshot is exactly the staleness this exists
+          to prevent. A genuinely absent parent renders an explicit "unavailable" block; a transport
+          FAILURE is deliberately not flattened into that — it is rethrown into triage's existing
+          failure handling rather than planning B against silence.
+          */
+          let followUpParentContext: string | undefined;
+          const followUpOutcome = await loadFollowUpParentContext(
+            this.store as unknown as FollowUpContextStore,
+            currentTask ?? task,
+          );
+          if (followUpOutcome.kind === "failed") throw followUpOutcome.error;
+          if (followUpOutcome.kind === "loaded") {
+            followUpParentContext = formatFollowUpParentContextSection(followUpOutcome.context);
+          } else if (followUpOutcome.kind === "unavailable") {
+            followUpParentContext = formatFollowUpContextUnavailableSection(
+              (currentTask ?? task).sourceParentTaskId ?? "",
+              followUpOutcome.reason,
+            );
+          }
+
           const agentPrompt = buildSpecificationPrompt(
             detail,
             promptPath,
@@ -3668,6 +3755,7 @@ export class TriageProcessor {
               originalDescription: typeof originalDescriptionDocument?.content === "string" ? originalDescriptionDocument.content : undefined,
               planReviewFeedbackHistory,
               environmentCapabilities,
+              ...(followUpParentContext ? { followUpParentContext } : {}),
             },
             assignedAgent,
           );
@@ -4029,7 +4117,7 @@ export class TriageProcessor {
       const heldHostSlot = takePreHeldExecutorSlot(task.id, true);
       if (this.options.semaphore && heldHostSlot) {
         // Coordinator already owns this top-level slot; run directly so it
-        // cannot join the priority queue after age-based admission.
+        // cannot jump the arrival-ordered queue after age-based admission.
         try {
           await retryableWork();
         } finally {
@@ -4404,7 +4492,6 @@ export class TriageProcessor {
     const taskGetParams = Type.Object({
       id: Type.String({ description: "Task ID (e.g. KB-001)" }),
     });
-    const taskCreatePriorityValues = ["low", "normal", "high", "urgent"] as const;
     const taskSearchParams = Type.Object({
       query: Type.String({ minLength: 1, description: "Search query" }),
       limit: Type.Optional(Type.Number({ minimum: 1, maximum: 50, description: "Max results (default 20, max 50)" })),
@@ -4416,11 +4503,7 @@ export class TriageProcessor {
       dependencies: Type.Optional(
         Type.Array(Type.String({ description: "Task ID dependency (e.g. KB-001)" })),
       ),
-      priority: Type.Optional(
-        Type.Union(taskCreatePriorityValues.map((priority) => Type.Literal(priority)), {
-          description: "Task priority (low, normal, high, urgent)",
-        }),
-      ),
+      /* FNXC:TaskQueueOrder 2026-09-17-12:07: FN-509 removed the `priority` parameter. */
       workflow_id: Type.Optional(
         Type.String({
           description: "Workflow ID to assign (e.g. 'builtin:coding', 'builtin:quick-fix'). Use fn_workflow_list to discover valid IDs.",
@@ -4584,7 +4667,6 @@ export class TriageProcessor {
             title: params.title,
             description: params.description,
             dependencies: requestedDeps,
-            priority: params.priority,
             workflowId: params.workflow_id,
             noCommitsExpected: params.noCommitsExpected,
             source: { sourceType: "agent_heartbeat", sourceParentTaskId: options.parentTaskId },
@@ -5228,8 +5310,24 @@ export class TriageProcessor {
     const taskUpdates: Record<string, any> = { error: null };
 
     if (parsedDeps.length > 0) {
-      taskUpdates.dependencies = parsedDeps;
-      planLog.log(`${task.id} dependencies: ${parsedDeps.join(", ")}`);
+      /*
+      FNXC:TaskFollowUp 2026-09-17-16:10:
+      FN-513 — a follow-up's edge on its SOURCE is the whole point of the relationship, and this
+      write REPLACES the dependency list with whatever the planner happened to spell in PROMPT.md.
+      A planner that documents the relationship in prose instead of the dependency list would
+      therefore silently delete the edge, and B would dispatch against a parent that has not landed.
+
+      The repair is a deduplicated UNION with the parent id, and only while that id is still present
+      on the LIVE row: an operator (or an explicit unlink) who removed the edge on purpose must not
+      have it restored here. Ordinary tasks and ordinary refinements are untouched.
+      */
+      const followUpParentId = isFollowUpTask(task) ? task.sourceParentTaskId : undefined;
+      const parentEdgeStillLive = Boolean(followUpParentId)
+        && (task.dependencies ?? []).some((dependencyId) => dependencyId === followUpParentId);
+      taskUpdates.dependencies = parentEdgeStillLive && !parsedDeps.includes(followUpParentId!)
+        ? [...new Set([followUpParentId!, ...parsedDeps])]
+        : [...new Set(parsedDeps)];
+      planLog.log(`${task.id} dependencies: ${(taskUpdates.dependencies as string[]).join(", ")}`);
     }
 
     const parsedSteps = await this.store.parseStepsFromPrompt(task.id);
@@ -5953,6 +6051,13 @@ export function buildSpecificationPrompt(
     originalDescription?: string;
     planReviewFeedbackHistory?: string[];
     environmentCapabilities?: EnvironmentCapabilityProbe;
+    /*
+    FNXC:TaskFollowUp 2026-09-17-16:10:
+    FN-513's rendered SOURCE-TASK block. Passed as its own field — never merged into `plan` or
+    `originalDescription` — so the parent's plan can never be mistaken for this task's own
+    specification input or for the operator's verbatim Original Description.
+    */
+    followUpParentContext?: string;
   },
   memoryAgent?: Agent | null,
 ): string {
@@ -6139,7 +6244,7 @@ ${planInput ? `\n## Planning Mode plan.md\n\nTreat this validated lean plan as t
 \`\`\`text
 ${originalDescription}
 \`\`\`
-${task.dependencies.length > 0 ? `- **Dependencies:** ${task.dependencies.join(", ")}` : ""}${revisionSection}${subtaskSection}
+${task.dependencies.length > 0 ? `- **Dependencies:** ${task.dependencies.join(", ")}` : ""}${planningContext?.followUpParentContext ? `\n\n${planningContext.followUpParentContext}\n` : ""}${revisionSection}${subtaskSection}
 
 ## Instructions
 ${isRevision ? "1. Read the existing specification and revision feedback carefully\n2. Apply surgical PROMPT.md edits that fully resolve every blocking feedback item — do not rewrite from title/description alone\n3. Keep structure stable unless feedback requires rethink; preserve uncriticized content\n4. Keep `## Original Description` at the top (after title/metadata) with the operator description **verbatim**\n5. Ensure the revised specification is still detailed enough for an AI agent to execute" : isFreshRespecification ? "1. Read the project structure to understand context (package.json, source files, etc.)\n2. Treat the current task title and description as mandatory primary inputs for a new spec\n3. Produce a fresh complete PROMPT.md specification following the format in your system prompt\n4. Include `## Original Description` near the top with the exact Original Request text above (verbatim, never plan.md)\n5. Address the revision feedback without inventing extra scope\n6. Name actual files, functions, and patterns from the codebase — be specific" : "1. Read the project structure to understand context (package.json, source files, etc.)\n2. Produce a complete PROMPT.md specification following the format in your system prompt\n3. Include `## Original Description` immediately after title/`Created`/`Size` with the exact Original Request text above (verbatim — do not paraphrase; never use plan.md)\n4. The specification must be detailed enough for an autonomous AI agent to implement without asking questions\n5. Name actual files, functions, and patterns from the codebase — be specific"}

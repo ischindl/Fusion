@@ -1,5 +1,5 @@
 import {
-  compareTaskIdNumeric,
+  compareTasksByQueueOrder,
   countRunningAgentTasks,
   enrichRunningAgentTaskShape,
   isRunningAgentTask,
@@ -51,24 +51,36 @@ export function formatAdmissionCapacityQueuedReason(params: {
   return `queued — ${params.gate} capacity exhausted: used=${params.claimed}/${params.limit}; gate=${params.gate}; holders=${holders.join(",") || "none"}`;
 }
 
-/** Lifecycle lanes ordered by the project admission coordinator. */
+/*
+FNXC:TaskQueueOrder 2026-09-17-12:07:
+FN-509 DELETED `admissionLanePriority`. The lane is still recorded — capacity reporting and the
+per-lane reservation handoff both read it — but it no longer ORDERS anything: a review candidate no
+longer overtakes an execute or planning candidate that has been waiting longer. Ranking across
+lanes was a hidden priority: the operator asked for one chronological queue plus an explicit Boost,
+and a lane rank silently reintroduced "some cards jump the line" under a different name.
+*/
+/** Lifecycle lanes recorded by the project admission coordinator. */
 export type AdmissionLane = "review" | "execute" | "planning";
-
-const admissionLanePriority: Record<AdmissionLane, number> = {
-  review: 0,
-  execute: 1,
-  planning: 2,
-};
 
 /** A task waiting to enter one of the top-level agent lanes. */
 export interface AdmissionCandidate {
   taskId: string;
   projectId: string;
-  /** Explicit lifecycle ownership; priority never depends on provider or column names. */
+  /** Explicit lifecycle ownership. Reporting and reservation handoff only — never an order. */
   lane: AdmissionLane;
   /** Starting this candidate will occupy a new execution-worktree slot. */
   consumesWorktree: boolean;
   createdAt?: string;
+  /*
+  FNXC:TaskQueueOrder 2026-09-17-12:07:
+  The card's Boost scope, carried so the coordinator ranks candidates with exactly the comparator
+  the board displays. Omitting these three fields does not fail loudly — it silently makes a Boost
+  ineffective in admission while it still shows at the head of the column — so every provider must
+  pass them through.
+  */
+  column?: string;
+  columnMovedAt?: string;
+  queueBoost?: Task["queueBoost"];
   /** Records ownership of the host reservation before the lane starts. */
   reserve?: () => void;
   /**
@@ -86,28 +98,24 @@ export interface AdmissionProvider {
 }
 
 /*
-FNXC:ConcurrencyAdmission 2026-08-01-15:42:
-FN-8705 requires every newly available project slot to finish review/merge work
-before ready execution and planning. The lane is explicit on each candidate so
-custom workflow column names and provider IDs cannot change lifecycle priority;
-age and task ID only preserve fairness within the same lane.
+FNXC:ConcurrencyAdmission 2026-08-01-15:42 / FNXC:TaskQueueOrder 2026-09-17-12:07:
+FN-8705's lane rank ("review before execute before planning") is REPLACED by FN-509's single
+chronological order across every lane: an effective Boost first, then creation oldest-first, then
+the deterministic id tiebreak. Custom workflow column names and provider IDs still cannot influence
+it, which was the original point; the difference is that the lifecycle lane cannot either.
+
+This is the order candidates are TRIED in, not permission to start. A card whose capacity, overlap,
+dependency, approval or pause gate still refuses keeps its place while the coordinator moves on to
+the next admissible candidate.
 */
-/**
- * Deterministic lifecycle-lane ordering for project admission. Invalid/missing
- * timestamps sort after valid timestamps only within one lane; numeric task ids
- * then lexical ids make malformed data deterministic.
- */
-export function compareAdmissionCandidates(a: Pick<AdmissionCandidate, "taskId" | "createdAt" | "lane">, b: Pick<AdmissionCandidate, "taskId" | "createdAt" | "lane">): number {
-  const laneOrder = admissionLanePriority[a.lane] - admissionLanePriority[b.lane];
-  if (laneOrder !== 0) return laneOrder;
-  const aTime = a.createdAt ? Date.parse(a.createdAt) : Number.NaN;
-  const bTime = b.createdAt ? Date.parse(b.createdAt) : Number.NaN;
-  const aValid = Number.isFinite(aTime);
-  const bValid = Number.isFinite(bTime);
-  if (aValid !== bValid) return aValid ? -1 : 1;
-  if (aValid && aTime !== bTime) return aTime - bTime;
-  const numeric = compareTaskIdNumeric(a.taskId, b.taskId);
-  return numeric !== 0 ? numeric : a.taskId.localeCompare(b.taskId);
+export function compareAdmissionCandidates(
+  a: Pick<AdmissionCandidate, "taskId" | "createdAt" | "column" | "columnMovedAt" | "queueBoost">,
+  b: Pick<AdmissionCandidate, "taskId" | "createdAt" | "column" | "columnMovedAt" | "queueBoost">,
+): number {
+  return compareTasksByQueueOrder(
+    { id: a.taskId, createdAt: a.createdAt ?? "", ...(a.column !== undefined ? { column: a.column } : {}), ...(a.columnMovedAt !== undefined ? { columnMovedAt: a.columnMovedAt } : {}), ...(a.queueBoost ? { queueBoost: a.queueBoost } : {}) },
+    { id: b.taskId, createdAt: b.createdAt ?? "", ...(b.column !== undefined ? { column: b.column } : {}), ...(b.columnMovedAt !== undefined ? { columnMovedAt: b.columnMovedAt } : {}), ...(b.queueBoost ? { queueBoost: b.queueBoost } : {}) },
+  );
 }
 
 /*
@@ -133,11 +141,52 @@ export class ProjectAdmissionCoordinator {
     this.reservations.set(projectId, tasks);
   }
 
+  /*
+  FNXC:EventDrivenDispatch 2026-09-18-00:40:
+  FN-519 — project-scoped subscribers woken when a shared reservation is actually returned.
+
+  Returning the last slot is the moment ANOTHER card becomes admissible, and that card has no
+  other owner: the departing lane only ran a pass of its own lane, and the continuation dispatcher
+  kicks after settlement only when ITS OWN item became runnable again. So a waiting peer used to
+  sit until a periodic tick. Subscribers are advisory (they trigger an existing admission pass,
+  which re-applies every pause/dependency/capacity gate), project-scoped so no foreign project is
+  woken, and isolated — a throwing subscriber must never be able to break the release itself,
+  because a retained reservation is a permanent capacity leak.
+  */
+  private releaseListeners = new Map<string, Set<(taskId: string) => void>>();
+
+  /** Subscribe to reservation releases for one project. Returns a disposer. */
+  onReservationReleased(projectId: string, listener: (taskId: string) => void): () => void {
+    const set = this.releaseListeners.get(projectId) ?? new Set<(taskId: string) => void>();
+    set.add(listener);
+    this.releaseListeners.set(projectId, set);
+    return () => {
+      const live = this.releaseListeners.get(projectId);
+      if (!live) return;
+      live.delete(listener);
+      if (live.size === 0) this.releaseListeners.delete(projectId);
+    };
+  }
+
   releaseReservation(taskId: string): void {
     for (const [projectId, tasks] of this.reservations) {
       if (!tasks.delete(taskId)) continue;
       if (tasks.size === 0) this.reservations.delete(projectId);
+      // Notified once per real release: a duplicate call finds nothing to delete and returns above.
+      this.notifyReservationReleased(projectId, taskId);
       return;
+    }
+  }
+
+  private notifyReservationReleased(projectId: string, taskId: string): void {
+    for (const listener of [...(this.releaseListeners.get(projectId) ?? [])]) {
+      try {
+        listener(taskId);
+      } catch (error) {
+        concurrencyLog.warn(
+          `Reservation-release listener failed for ${projectId}/${taskId}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
   }
 
@@ -152,6 +201,7 @@ export class ProjectAdmissionCoordinator {
     this.reservations.clear();
     this.draining.clear();
     this.providers.clear();
+    this.releaseListeners.clear();
   }
 
   inspectProjectStateForTests(projectId: string): {

@@ -7496,7 +7496,7 @@ export async function aiMergeTask(
   if (integrationRoot.mode === "reuse-task-worktree") {
     // FN-5353: ensure the target task is in mergeQueue before attempting strict
     // targetTaskId lease acquisition for reuse handoff.
-    await store.enqueueMergeQueue(task.id, { priority: task.priority });
+    await store.enqueueMergeQueue(task.id);
     try {
       reuseHandoff = await acquireReuseHandoff({
         task,

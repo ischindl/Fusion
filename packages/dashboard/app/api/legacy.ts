@@ -35,6 +35,7 @@ export type {
 export {
   fetchTasks,
   fetchTaskPage,
+  fetchTaskQueuePage,
   fetchCompletedTasks,
   fetchTaskRecommendations,
   fetchTaskDetail,
@@ -111,6 +112,7 @@ export {
   duplicateTask,
   transferTask,
   fetchHandoffStatus,
+  boostTask,
   pauseTask,
   unpauseTask,
   nudgeOverseer,
@@ -332,6 +334,8 @@ export {
   requestSpecRevision,
   rebuildTaskSpec,
   refineTask,
+  // FNXC:TaskFollowUp 2026-09-17-17:30: FN-513's follow-up composer reaches the client through the same barrel.
+  followUpTask,
 } from "./tasks/task-steer.js";
 
 /*

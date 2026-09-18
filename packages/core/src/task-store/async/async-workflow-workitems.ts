@@ -28,6 +28,9 @@ import { randomUUID } from "node:crypto";
 import * as schema from "../../postgres/schema/index.js";
 import type { AsyncDataLayer, DbTransaction } from "../../postgres/data-layer.js";
 import { projectScopeFor, recordRunAuditEventWithinTransaction } from "../../postgres/data-layer.js";
+// FNXC:EventDrivenDispatch 2026-09-18-00:40: FN-519 commit-correct advisory wake for continuations.
+import { notifyDispatchWakeWithinTransaction } from "../../postgres/dispatch-wake.js";
+import { taskQueueOrderBy } from "../task-queue-order-ops.js";
 import { ACTIVE_WORKFLOW_WORK_ITEM_STATES } from "../../types.js";
 import type {
   WorkflowWorkItem,
@@ -262,6 +265,24 @@ export async function upsertWorkflowWorkItem(
 
     const row = await getWorkflowWorkItem(tx, id, layer.projectId);
     if (!row) throw new Error(`Failed to upsert workflow work item ${id}`);
+
+    /*
+    FNXC:EventDrivenDispatch 2026-09-18-00:40:
+    FN-519 — a continuation that a consumer can actually claim must wake that consumer, otherwise
+    the row waits for the runtime's periodic relève (2 s). Published on THIS handle so the
+    server's own NOTIFY semantics supply commit-correctness: nothing is delivered before an
+    external caller's transaction commits, and nothing at all after a rollback.
+
+    Restricted to claimable states: a row written `held`, `running`, or terminal gives its consumer
+    nothing to do, and waking for it would be a wake per lease renewal.
+    */
+    if (row.state === "runnable" || row.state === "retrying") {
+      await notifyDispatchWakeWithinTransaction(tx, {
+        projectId: layer.projectId ?? "",
+        reason: "continuation",
+        taskId: row.taskId,
+      });
+    }
 
     // Run-audit event inside the same transaction (commits/rolls back together).
     await recordRunAuditEventWithinTransaction(tx, {
@@ -567,6 +588,20 @@ export async function transitionWorkflowWorkItem(
       return rowToWorkflowWorkItem(updated);
     }
 
+    /*
+    FNXC:EventDrivenDispatch 2026-09-18-00:40:
+    FN-519 — same commit-correct wake as the upsert above. Reached only past the compare-and-set:
+    the lost-CAS path returns from the re-read branch before this point, so a wake can never
+    advertise a claim this transition did not actually win.
+    */
+    if (state === "runnable" || state === "retrying") {
+      await notifyDispatchWakeWithinTransaction(tx, {
+        projectId: layer.projectId ?? "",
+        reason: "continuation",
+        taskId: updated.taskId,
+      });
+    }
+
     // Run-audit event inside the same transaction.
     await recordRunAuditEventWithinTransaction(tx, {
       taskId: updated.taskId,
@@ -607,8 +642,14 @@ export async function transitionWorkflowWorkItem(
  * FNXC:TaskStoreWorkflowWorkItems 2026-06-24-08:50:
  * List due workflow work items: items whose retryAfter has passed (or is null)
  * and whose lease has expired (or is null), optionally filtered by kinds and
- * states. This is the scheduler's due-poll query. Ordered by createdAt ASC
- * (FIFO within the due set).
+ * states. This is the scheduler's due-poll query.
+ *
+ * FNXC:TaskQueueOrder 2026-09-17-12:07:
+ * FN-509 orders the due set by the owning TASK's queue rank before the LIMIT, so a boosted card's
+ * continuation is found even when it starts beyond the bound. Within one task the work items keep
+ * their own `created_at` order, because a task's continuations are CAUSAL: reordering them would
+ * run a later graph step before the one it depends on. The task rank only decides which task's
+ * work is reached first.
  */
 export async function listDueWorkflowWorkItems(
   db: AsyncDataLayer["db"] | DbTransaction,
@@ -637,15 +678,22 @@ export async function listDueWorkflowWorkItems(
   }
 
   const query = db
-    .select()
+    .select({ item: schema.project.workflowWorkItems })
     .from(schema.project.workflowWorkItems)
+    .leftJoin(
+      schema.project.tasks,
+      and(
+        eq(schema.project.tasks.id, schema.project.workflowWorkItems.taskId),
+        eq(schema.project.tasks.projectId, schema.project.workflowWorkItems.projectId),
+      ),
+    )
     .where(and(...conditions))
-    .orderBy(asc(schema.project.workflowWorkItems.createdAt));
+    .orderBy(...taskQueueOrderBy(), asc(schema.project.workflowWorkItems.createdAt));
 
   const rows = filter.limit
     ? await query.limit(filter.limit)
     : await query;
-  return (rows as WorkflowWorkItemRow[]).map((row) => rowToWorkflowWorkItem(row));
+  return (rows as Array<{ item: WorkflowWorkItemRow }>).map((row) => rowToWorkflowWorkItem(row.item));
 }
 
 // ── Completion handoff markers ───────────────────────────────────────

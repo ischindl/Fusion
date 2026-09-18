@@ -9,9 +9,9 @@ import { resolveEffectiveAutoMerge } from "../../../core/src/merge/task-merge";
 import { useColumnLabel } from "../i18n/labels";
 import { isCompleteColumnRole, isIntakeColumnRole, isPreImplementationColumnRole, isReviewColumnRole, isWipColumnRole } from "../utils/columnRoles";
 import { batchUpdateTaskModels, fetchNodes, refreshPrStatus, transferTask, updateTask } from "../api";
-import { ExternalBlockNotice, HumanPlanApprovalBadge, PlanApprovalNotice } from "./TaskCard";
+import { ExternalBlockNotice, HumanMergeApprovalBadge, HumanPlanApprovalBadge, PlanApprovalNotice } from "./TaskCard";
 import { PrCreateModal } from "./PrCreateModal";
-import { TaskRefineDialog } from "./TaskRefineDialog";
+import { TaskRefineDialog, type TaskRefineDialogMode } from "./TaskRefineDialog";
 import { TaskResetDialog } from "./TaskResetDialog";
 import { useTaskTransferModal } from "../hooks/useTaskTransferModal";
 import type { BoardWorkflowColumn, BoardWorkflowsPayload, ModelInfo, NodeInfo, RestoreTaskRevertOptions, RestoreTaskRevertResult, RevertTaskOptions, RevertTaskResult } from "../api";
@@ -435,7 +435,12 @@ export function ListView({
   FN-400: the row hosts the Refine composer itself, like the Reset dialog beside it. Refine used to reopen the whole
   task record through the detail-open deep link, which is exactly the behaviour being removed.
   */
-  const [refineDialogTask, setRefineDialogTask] = useState<Task | null>(null);
+  /*
+  FNXC:TaskFollowUp 2026-09-17-18:10:
+  FN-513 — the row also hosts the FOLLOW-UP composer, which is the same dialog in a second mode. The
+  mode travels with the opened task so it is fixed at open time and cannot drift while typing.
+  */
+  const [refineDialogTask, setRefineDialogTask] = useState<{ task: Task; mode: TaskRefineDialogMode } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressStartRef = useRef<{ x: number; y: number; pointerId: number } | null>(null);
@@ -1808,6 +1813,9 @@ export function ListView({
         });
       } : undefined,
       onOpenRefine: () => setRefineDialogTask(task),
+      onOpenRefine: () => setRefineDialogTask({ task, mode: "refine" }),
+      /* FNXC:TaskFollowUp 2026-09-17-18:10: opens the same composer from the row, with no detail-open deep link. */
+      onOpenFollowUp: () => setRefineDialogTask({ task, mode: "follow-up" }),
       /*
       FNXC:ColumnRestart 2026-09-17-09:16:
       FN-499: a WIP Retry offers the preserve-work checkbox, unchecked by default and without
@@ -2390,8 +2398,9 @@ export function ListView({
       )}
       {refineDialogTask && (
         <TaskRefineDialog
-          taskId={refineDialogTask.id}
+          taskId={refineDialogTask.task.id}
           projectId={projectId}
+          mode={refineDialogTask.mode}
           addToast={addToast}
           onRefinementCreated={onRefinementCreated}
           onClose={() => setRefineDialogTask(null)}
@@ -2658,6 +2667,8 @@ export function ListView({
                                 )}
                                 {/* FNXC:HumanPlanApproval 2026-09-15-06:24: FN-408 badge on the mobile card render, beside Fast; both may show at once. */}
                                 <HumanPlanApprovalBadge task={task} variant="list" />
+                                {/* FNXC:HumanMergeApproval 2026-09-17-18:09: FN-514 delivery-lock badge, same compact render. */}
+                                <HumanMergeApprovalBadge task={task} variant="list" />
                                 <span className="list-card-spacer" />
                                 {isPaused && task.pausedByAgentId ? (
                                   <span className="list-status-badge paused">{stall?.code === "agent-paused" ? stall.badgeLabel : t("listView.pausedByAgent", "paused by agent")}</span>
@@ -2956,6 +2967,8 @@ export function ListView({
                                         )}
                                         {/* FNXC:HumanPlanApproval 2026-09-15-06:24: FN-408 badge on the desktop table render, beside Fast. */}
                                         <HumanPlanApprovalBadge task={task} variant="list" />
+                                        {/* FNXC:HumanMergeApproval 2026-09-17-18:09: FN-514 delivery-lock badge, same compact render. */}
+                                        <HumanMergeApprovalBadge task={task} variant="list" />
                                         <span className="list-title-text">{getTaskTitleDisplay(task).text}</span>
                                       </div>
                                     </div>

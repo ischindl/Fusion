@@ -71,7 +71,7 @@ The dispatch sweep must not key grace/ordering on `task.updatedAt` — an unrela
 a description bump) advances that timestamp, so a card awaiting dispatch could be held in the grace
 window indefinitely or shuffled backwards in the queue. The committed `task:entered-review` event is
 the durable entry timestamp both checks key on. Returns null for cards that entered the review lane
-before migration 0082 introduced the event; callers fall back to `updatedAt` for those.
+before migration 0084 introduced the event; callers fall back to `updatedAt` for those.
 */
 export async function latestTaskEnteredReviewAt(store: TaskStore, taskId: string): Promise<string | null> {
   const layer = store.asyncLayer;

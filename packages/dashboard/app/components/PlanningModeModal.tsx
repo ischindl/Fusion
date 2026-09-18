@@ -8,10 +8,8 @@ import type { TFunction } from "i18next";
 import { useState, useCallback, useEffect, useRef, useMemo, type CSSProperties, type ReactNode, type PointerEvent as ReactPointerEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { Task, PlanningQuestion, PlanningSummary, TaskPriority, ThinkingLevel } from "@fusion/core";
+import type { Task, PlanningQuestion, PlanningSummary, ThinkingLevel } from "@fusion/core";
 import {
-  DEFAULT_TASK_PRIORITY,
-  TASK_PRIORITIES,
   THINKING_LEVELS,
   formatPlanningPlanMd,
   getErrorMessage,
@@ -66,6 +64,7 @@ import { MailboxMessageContent } from "./MailboxMessageContent";
 import { OnboardingDisclosure } from "./OnboardingDisclosure";
 import { isShortViewport, useViewportMode } from "../hooks/useViewportMode";
 import { useMobileKeyboard } from "../hooks/useMobileKeyboard";
+import { subscribeKeyboardViewport } from "../utils/mobileKeyboardViewport";
 import { useNavigationHistoryContext } from "../hooks/useNavigationHistory";
 import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
 import { useAutosizeTextarea } from "../hooks/useAutosizeTextarea";
@@ -296,12 +295,8 @@ function getExamplePlans(t: TFunction<"app">): string[] {
   ];
 }
 
-function normalizeTaskPriority(priority?: TaskPriority): TaskPriority {
-  if (priority && (TASK_PRIORITIES as readonly string[]).includes(priority)) {
-    return priority;
-  }
-  return DEFAULT_TASK_PRIORITY;
-}
+/* FNXC:TaskQueueOrder 2026-09-17-12:07: FN-509 removed the task priority field and every control
+   that set it. Tasks run in arrival order; an operator raises one explicitly with Boost. */
 
 function normalizeStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) {
@@ -347,7 +342,6 @@ function normalizePlanningSummary(summary: PlanningSummary): PlanningSummary {
     proposedChanges: normalizeStringArray(raw.proposedChanges),
     acceptanceCriteria: normalizeStringArray(raw.acceptanceCriteria),
     suggestedSize: raw.suggestedSize === "S" || raw.suggestedSize === "M" || raw.suggestedSize === "L" ? raw.suggestedSize : "M",
-    priority: normalizeTaskPriority(summary.priority),
     suggestedDependencies: normalizeStringArray(raw.suggestedDependencies),
     keyDeliverables: normalizeStringArray(raw.keyDeliverables),
     suggestedRefinements: normalizeStringArray(raw.suggestedRefinements),
@@ -944,33 +938,30 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
   keyboard (or outside the visible visual viewport) and looks "dismissed". Re-measure on
   vv resize/scroll so we can pin with `top` inside the visual viewport instead.
   */
+  /*
+  FNXC:MobileKeyboardViewport 2026-09-17-14:23:
+  FN-512 replaced this component's private viewport reader with the shared frame. It used to install
+  its own `resize`/`scroll` listeners and compute `layoutHeight` from `window.innerHeight` first — the
+  metric Android Chrome can report stale — so the selection comment could disagree with every other
+  surface about where the visible area ended.
+
+  The comment panel is `position: fixed` and portalled out of the modal box, so it is genuinely its
+  own containing block and legitimately keeps a bound of its own; what changes is that the bound now
+  comes from the same instant as everyone else's.
+  */
   const [mobileVvFrame, setMobileVvFrame] = useState<{ offsetTop: number; height: number; layoutHeight: number } | null>(null);
   useEffect(() => {
     if (!isCommentEditorOpen || viewportMode !== "mobile") {
       setMobileVvFrame(null);
       return;
     }
-    const vv = window.visualViewport;
-    if (!vv) {
-      setMobileVvFrame(null);
-      return;
-    }
-    const update = () => {
+    return subscribeKeyboardViewport((frame) => {
       setMobileVvFrame({
-        offsetTop: vv.offsetTop,
-        height: vv.height,
-        layoutHeight: window.innerHeight || document.documentElement.clientHeight || 0,
+        offsetTop: frame.offsetTop,
+        height: frame.visualHeight,
+        layoutHeight: frame.layoutHeight,
       });
-    };
-    update();
-    vv.addEventListener("resize", update);
-    vv.addEventListener("scroll", update);
-    window.addEventListener("resize", update);
-    return () => {
-      vv.removeEventListener("resize", update);
-      vv.removeEventListener("scroll", update);
-      window.removeEventListener("resize", update);
-    };
+    });
   }, [isCommentEditorOpen, viewportMode]);
 
   const commentEditorStyle = useMemo((): CSSProperties | undefined => {
@@ -4615,7 +4606,6 @@ export function SummaryView({
     onChange: (description) => onSummaryChange({ ...summary, description }),
     projectId,
   });
-  const selectedPriority = normalizeTaskPriority(summary.priority);
   const isBranchNameRequired = branchMode === "existing" || branchMode === "custom-new";
   const hasInvalidBranchSelection = isBranchNameRequired && !branchName.trim();
   const isLoading = isCreatingTask || isRefiningSummary;
@@ -4761,27 +4751,6 @@ export function SummaryView({
               </select>
             </div>
 
-            <div className="form-group">
-              <label htmlFor="planning-summary-priority">{t("planning.priority", "Priority")}</label>
-              <select
-                id="planning-summary-priority"
-                className="planning-size-select"
-                value={selectedPriority}
-                onChange={(event) =>
-                  onSummaryChange({
-                    ...summary,
-                    priority: event.target.value as TaskPriority,
-                  })
-                }
-                disabled={isLoading}
-              >
-                {TASK_PRIORITIES.map((priorityOption) => (
-                  <option key={priorityOption} value={priorityOption}>
-                    {priorityOption[0].toUpperCase() + priorityOption.slice(1)}
-                  </option>
-                ))}
-              </select>
-            </div>
           </div>
 
           {tasks.length > 0 && (

@@ -1,6 +1,10 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useDrawerDismissGesture } from "../hooks/useDrawerDismissGesture";
+import {
+  KeyboardViewportOwnerProvider,
+  useKeyboardViewportSurface,
+} from "../hooks/useKeyboardViewportSurface";
 import { DrawerPresentationProvider, ViewDrawerHandle } from "./ViewDrawer";
 import { ViewLayoutContent, ViewLayoutHeader } from "./ViewLayout";
 import "./MobileDrawer.css";
@@ -94,8 +98,25 @@ export function MobileDrawer({
   contentOwnsScroll = false,
 }: MobileDrawerProps) {
   const panelRef = useRef<HTMLElement | null>(null);
+  const overlayRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+
+  /*
+  FNXC:MobileKeyboardViewport 2026-09-17-14:23:
+  FN-512: the drawer panel is sized from `--mobile-drawer-block-size`, which is derived from
+  `100dvh`. On WebKit `100dvh` does NOT shrink when the soft keyboard opens, so the panel kept
+  reaching below the visible bottom edge and the composer it hosts ended up UNDER the keyboard — the
+  first symptom reported. The panel now measures its own rectangle against the visible bound and
+  publishes a usable block size.
+
+  It also becomes the declared OWNER for its subtree: hosted content (Chat, forms, terminals) sees
+  `ownedByAncestor` and must not clamp, translate, or reserve a second keyboard band. That is what
+  removes the competing adjustments that made the outcome depend on event order.
+
+  The provider is published only while the drawer is actually visible and active, so a retained but
+  globally hidden drawer never claims ownership of a subtree the user is not looking at.
+  */
   const windowSurface = useDashboardWindowSurface({
     logicalId: testId,
     group: surfaceGroup ?? "drawer",
@@ -103,6 +124,38 @@ export function MobileDrawer({
   });
   const surfaceActiveRef = useRef(windowSurface.surfaceActive);
   surfaceActiveRef.current = windowSurface.surfaceActive;
+  /*
+  FNXC:DashboardWindowSurfaceRefIdentity 2026-09-17-19:34:
+  FN-515: this composed root ref MUST keep a stable identity across renders. `windowSurface.rootRef`
+  publishes into the window manager, and the manager treats a `root` change as a real change, so an
+  inline callback made React detach (publish null) then re-attach (publish the node) on every render.
+  Each pair bumped `surfaceRevision` twice, the provider re-rendered this consumer, and the next
+  render produced yet another callback — the runaway loop that surfaced as React #185 on modal open.
+
+  Depend ONLY on `windowSurface.rootRef` (already stable), never on the whole `windowSurface` binding,
+  which is a fresh object each render. `null` is still forwarded on a genuine detach so the registry
+  can release the surface.
+  */
+  const setOverlayRef = useCallback((node: HTMLDivElement | null) => {
+    overlayRef.current = node;
+    windowSurface.rootRef(node);
+  }, [windowSurface.rootRef]);
+  const keyboardSurface = useKeyboardViewportSurface(overlayRef, {
+    enabled: open && windowSurface.surfaceActive && !windowSurface.globallyHidden,
+    // A drawer is portalled to document.body and is its own containing block.
+    standalone: true,
+    /*
+    FNXC:MobileKeyboardViewport 2026-09-17-14:23:
+    The overlay is `position: fixed; inset: 0` and its panel is bottom-aligned inside it, so this is a
+    LAYOUT-BOTTOM surface: shortening it moves its own top edge and any height derived from that top
+    feeds back into itself. Adapt the overlay's bottom inset from the frame instead — no measurement,
+    no feedback — and let the panel fill the reduced overlay through ordinary percentage sizing.
+    */
+    anchor: "layout-bottom",
+    bottomInsetProperty: "--mobile-drawer-keyboard-inset",
+  });
+  const keyboardOwned = keyboardSurface.bottomInset > 0;
+  const keyboardOwnership = useMemo(() => ({ owned: keyboardOwned }), [keyboardOwned]);
   const dismissHandleProps = useDrawerDismissGesture({
     enabled: open && windowSurface.surfaceActive,
     open,
@@ -158,8 +211,10 @@ export function MobileDrawer({
 
   return createPortal(
     <div
-      ref={windowSurface.rootRef}
-      className={`mobile-drawer${open ? " mobile-drawer--open" : " mobile-drawer--hidden"}${className ? ` ${className}` : ""}`}
+      ref={setOverlayRef}
+      className={`mobile-drawer${open ? " mobile-drawer--open" : " mobile-drawer--hidden"}${keyboardOwned ? " mobile-drawer--keyboard-bounded" : ""}${className ? ` ${className}` : ""}`}
+      style={keyboardSurface.style}
+      data-keyboard-bounded={keyboardOwned || undefined}
       data-testid={testId}
       aria-hidden={!open || windowSurface.globallyHidden || undefined}
       inert={!open || windowSurface.globallyHidden || undefined}
@@ -171,7 +226,7 @@ export function MobileDrawer({
     >
       <section
         ref={panelRef}
-        className={`mobile-drawer__panel${contentOwnsHeader ? " mobile-drawer__panel--content-header" : ""}${contentOwnsScroll ? " mobile-drawer__panel--content-scroll" : ""}`}
+        className={`mobile-drawer__panel${contentOwnsHeader ? " mobile-drawer__panel--content-header" : ""}${contentOwnsScroll ? " mobile-drawer__panel--content-scroll" : ""}${keyboardOwned ? " mobile-drawer__panel--keyboard-bounded" : ""}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby={`${testId}-title`}
@@ -193,7 +248,9 @@ export function MobileDrawer({
         */}
         <ViewLayoutContent className="mobile-drawer__body">
           <DashboardWindowSurfaceActivityProvider active={windowSurface.surfaceActive}>
-            <DrawerPresentationProvider value>{children}</DrawerPresentationProvider>
+            <KeyboardViewportOwnerProvider value={keyboardOwnership}>
+              <DrawerPresentationProvider value>{children}</DrawerPresentationProvider>
+            </KeyboardViewportOwnerProvider>
           </DashboardWindowSurfaceActivityProvider>
         </ViewLayoutContent>
       </section>
