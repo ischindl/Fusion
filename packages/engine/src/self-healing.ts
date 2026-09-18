@@ -36,35 +36,41 @@ type imports (ChatSession, ChatInFlightGenerationState) that the post-merge body
 uses. parseExplicitDuplicateMarker survives only in an FNXC history comment — every
 call site uses the renamed resolver.
 
+/*
 FNXC:SelfHealing 2026-08-30-08:55 (merge origin/main c7a5e74a6a → main):
 The import union now also carries upstream's lifecycle-role helpers (isWipColumnRole,
 isReviewColumnRole, isTerminalColumnRole, type WorkflowIrV2, type MoveTaskOptions) and
 classifyTaskBranchOrigin — the #3523 branchWriteOrigin fix landed on main, so reclaim/
 resume re-pins below use the classifier instead of hardcoded "engine".
 
+/*
 FNXC:SelfHealing 2026-08-31-10:17 (merge origin/main 14d3fb6ec8 → main):
 Upstream added classifyRemediationAttemptClaim (FN-267: enforce remediation before a
 review-revision move); the auto-merged body below calls it, so the union import carries
 it. Upstream's single-line import at this position is dropped — the canonical union
 import below is the sole import.
 
+/*
 FNXC:SelfHealing 2026-08-31-18:53 (merge origin/main d299a0c4a6 → main):
 Upstream's one-writer remediation refactor (4970221c52) deleted every call site of
 classifyRemediationAttemptClaim from this file, so the union import drops it again.
 Upstream re-emitted its single-line import at this position; it is dropped as before — the
 canonical union import below remains the sole import.
 
+/*
 FNXC:SelfHealing 2026-09-01-13:56 (merge origin/main 35464605de → main):
 Upstream FN-279 (approval requires review-input proof) added resolveUnprovenReviewApproval;
 the auto-merged body calls it, so the union import carries it. Upstream's single-line
 import at this position is dropped as before.
 
+/*
 FNXC:SelfHealing 2026-09-01-17:05 (fusion/rufu-174 squash merge):
 Upstream FN-9234 added routeStaleSingularApprovalBackToReview, which resolves the per-task
 pre-merge gate through resolvePreMergeGateForTask before re-seeding Code Review, so the
 union import carries it. Upstream's single-line import at this position is dropped as
 before — the canonical union import below remains the sole import.
 
+/*
 FNXC:SelfHealing 2026-09-01-21:02 (merge origin/main a728744f5c → main):
 Upstream's beta.13 batch adds no new self-healing import symbols (FN-9234's
 routeStaleSingularApprovalBackToReview auto-merged as a private class method needing no
@@ -83,6 +89,7 @@ resolveRequiredPreMergeStepIds; getMergeConfirmedFinalizationBlocker stays expor
 (ChatSession, ChatInFlightGenerationState) are still used by the in-flight
 chat-generation sweep.
 
+/*
 FNXC:SelfHealing 2026-09-02-06:04 (fusion/rufu-176):
 The FN-207 lifecycle-containment rewrite stopped calling `resolveReboundTargetForTask` from this file but left the symbol
 in the union import, which broke workspace lint (`no-unused-vars`) for every card after it. `resolveReboundTarget` is the
@@ -96,7 +103,7 @@ import { loadWorkspaceConfig, type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_
   /* FNXC:SelfHealing 2026-09-06-09:47 (merge origin/main dd808ed2c6): FN-295 collateral-archive restore helpers + stale-content predicate — the auto-merged sweep bodies call all three. */
   resolveCollateralArchivedReviewGate,
   COLLATERAL_ARCHIVED_REVIEW_GATE_DIAGNOSTIC,
-  isStaleContentApprovalBlocker, isPreMergeStepsNotRunBlocker, isPreMergeGateFailedBlocker, parsePreMergeGateApprovalBlocker, parseEmbeddedPreMergeGateApprovalBlocker, findVerdictLessFailedRequiredGates, IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON, namesVerdictLessFailedGate, hasFailedPreMergeWorkflowStepRow, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isLiveSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, resolveExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveRequiredPreMergeStepIds, resolveReboundTarget, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, isWipColumnRole, isReviewColumnRole, isTerminalColumnRole, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, resolveUnprovenReviewApproval, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type MoveTaskOptions, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult, type WorkflowStepResult, type WorkflowIr, type WorkflowIrV2, type ChatSession, type ChatInFlightGenerationState,
+  isStaleContentApprovalBlocker, isPreMergeStepsNotRunBlocker, isPreMergeGateFailedBlocker, parsePreMergeGateApprovalBlocker, parseEmbeddedPreMergeGateApprovalBlocker, findVerdictLessFailedRequiredGates, IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON, namesVerdictLessFailedGate, hasFailedPreMergeWorkflowStepRow, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isLiveSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, resolveExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveRequiredPreMergeStepIds, resolveReboundTarget, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, isWipColumnRole, isReviewColumnRole, isTerminalColumnRole, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, resolveUnprovenReviewApproval, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type MoveTaskOptions, type Settings, type Task, type MergeDetails, type MergeResult, type WorkflowStepResult, type WorkflowIr, type WorkflowIrV2, type ChatSession, type ChatInFlightGenerationState,
   resolveNearDuplicateCanonicalFlags,
   LEGACY_COLUMN_IDS_BY_ROLE,
   TERMINAL_ROLES,
@@ -304,6 +311,7 @@ else is proven and then only ever DOWNGRADED — an `empty` verdict releases a d
 `occupied`, `unknown`, or an absent proof keep the blocker blocking, so a failed git read cannot widen
 self-healing's definition of "safe to release".
 
+/*
 FNXC:OverlapScheduling 2026-09-09-05:31 (RUFU-200):
 The proof is asked only when the blocker is actually on the classifier's dormant path. WIP, review and
 terminal lanes resolve without ever consulting it (`classifyFileScopeLease`), so asking there spent a git
@@ -1267,6 +1275,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     progress routes to a work-item/review resume in-place. Unsafe rows stay
     untouched so invariant repair and human holds remain separate decisions.
 
+/*
     FNXC:WorkflowRecoveryRouter 2026-07-09-14:59:
     FN-7749 / FN-5147: an auto-merge-off manual merge hold is a human terminal `in-review` state. A stale pause-abort park in that state is recoverable only by clearing status/error in place; never move it backward, pause it, or re-enqueue it.
     */
@@ -2766,6 +2775,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     FNXC:WorkflowRecovery 2026-06-28-21:32:
     FN-7143 observed an already-merged tip that appeared to belong to FN-7187. Self-healing must make that cross-task proof visible and leave the review task alone; ambiguous or foreign tips are not safe evidence for mergeConfirmed/done finalization.
 
+/*
     FNXC:WorkflowRecovery 2026-06-29-00:15:
     Ownership lookup failures are also unsafe evidence. Record them through the same rejection audit path with `ownership-unverifiable` so transient git-show/rev-parse failures cannot proceed into reclaim or auto-finalize as if the tip were verified non-foreign.
     */
@@ -4017,6 +4027,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           re-enqueues workspace work. The partial-land reconciler / recover-interrupted-merging
           owns workspace re-land, avoiding a double enqueue while preserving the safe clear.
 
+/*
           FNXC:MergeReliability 2026-08-09-22:35:
           Issue #3395 showed that clear-only recovery leaves an annotated but stuck card until an
           operator presses Retry. Eligible non-workspace, non-confirmed tasks re-enter the merge
@@ -6015,6 +6026,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       reconciled twice from the same stale snapshot — the second pass deciding against `blockedBy` state
       the first pass had already cleared, and `updateTask`/`logEntry` firing twice for one card.
 
+/*
       FNXC:WorkflowResolvedColumns 2026-07-30-21:40 (precedence correction):
       Written first as `new Map(entries)` with a comment claiming first-bucket precedence. That
       constructor keeps first insertion ORDER but the LAST value for a repeated key, so it did the
@@ -6175,6 +6187,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             not the ordering gate. Only durable landing proof permits ignored-only content removal;
             preserved outcomes retain the pointer and are retried on later terminal transitions.
 
+/*
             FNXC:WorktreeCleanup 2026-08-29-01:50:
             A removed directory can retain a stale task pointer when its initial persistence write
             fails. Pass that absent path to the shared helper so convergence retries only the durable
@@ -6666,6 +6679,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           FNXC:MissingWorktreeRecovery 2026-07-10-18:23:
           Upstream #1992 reproduced with scopeOverride=1: a main-checkout-only task retained a stale sub-repo worktree pointer, so every session start refused the missing path before scope override could help. When no live fusion/<id> worktree exists, clear only the phantom metadata; scopeOverride remains a file-scope no-op.
 
+/*
           FNXC:MissingWorktreeRecovery 2026-07-10 (code review): the FN-5256 guard immediately below exists precisely because column==="in-progress"/"in-review" tasks can be live even when this heuristic's existsSync/registered-path check calls them stale (that's the guard's own stated rationale). Restrict this scopeOverride bypass to the narrow #1992 bug shape reproduced in the task report — in-review AND a merge-active sub-status (merging/merging-pr/merging-fix) — so a scopeOverride task that is genuinely in-progress, or in-review mid-step (status: null) with a live but momentarily undetected session, still falls through to the FN-5256 protection instead of having its worktree/branch/sessionFile yanked out from under it.
           */
           await this.store.updateTask(task.id, { worktree: null, branch: null, branchWriteOrigin: "engine" as const, sessionFile: null });
@@ -7352,6 +7366,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         `transitionQueuedEpisode` can unconditionally stamp a fresh scheduler or executor hold between
         the batch read and this write.
 
+/*
         FNXC:OverlapSelfHealing 2026-09-02-05:11:
         The dependent scope is part of blocker liveness, so the reconciliation verdict must bypass the
         batch scope cache after re-reading the dependent. An unchanged blocker id cannot authorize a
@@ -8672,6 +8687,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           disagree, or when either points to a different canonical than the stale metadata. Never
           erase either operator redirect or release its decision hold without an unambiguous match.
 
+/*
           FNXC:DuplicateIntake 2026-08-23-19:55:
           Restored after 1cf86baa1c ("package code organization wave 18", declared behavior-
           preserving) replaced this resolver with the prompt-only `parseExplicitDuplicateMarker`,
@@ -8745,6 +8761,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
 
   User pauses are never disturbed — an operator park outranks adoption.
 
+/*
   FNXC:LegacyAdoption 2026-07-19-09:00 (PR #2335 review):
   Paginates until the active census is drained instead of scanning only the newest 500
   rows. `listTasks` orders by (created_at, id), so a capped single fetch would re-read the
@@ -9334,6 +9351,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   stall every 30 minutes, and after 3 stalls the deadlock disposer parked the task `failed`
   (FN-8492: Code Review died in the 21:29 restart, task parked two hours later).
 
+/*
   FNXC:OrphanedPendingSteps 2026-07-22-16:35 (review follow-up, same day):
   Orphans are REWRITTEN to status:"failed" (never deleted) — deleting a pending review
   entry silently satisfied the merge gate and FN-8492 merged with Code Review skipped; the
@@ -9620,6 +9638,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   eligible gates and a human-held card gains the failed result its audited bypass needs. The
   `needsOperatorBypass` label is therefore truthful rather than aspirational; no lifecycle state moves.
 
+/*
   FNXC:ReviewInputProof 2026-09-01-11:57:
   Reconciliation must recompute from the lock-held task inside `updateTaskAtomic`; a graph writer can
   publish a proof-bound approval or another gate after the preliminary read, and a stale array write
@@ -10125,6 +10144,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       Same three-line shape as `stale-task-reporter` and `backlog-pressure-reporter`: resolve the roles,
       iterate the set, dedupe by id.
 
+/*
       FNXC:WorkflowResolvedColumns 2026-07-30-17:20 (#2838 review — greptile P1):
       THE PROJECT UNION IS FOR THE QUERY, NEVER FOR THE PER-CARD TEST. My first version re-asserted
       `completeColumns.has(task.column)`, which is the flat-set mistake `project-lane-vocabulary.ts`
@@ -10458,11 +10478,13 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       RUFU-178 extends that class: a remediation-ARCHIVED gate carrier now classifies as not-run too,
       so the sweep must catch every emission of the canonical blocker, not one spelling.
 
+/*
       FNXC:PreMergeApproval 2026-09-06-09:47 (merge origin/main dd808ed2c6 → main):
       Upstream FN-295 moved the gate/content resolution to the caller (one resolution per candidate,
       so reroute and admission decide from identical evidence) and added the collateral-archive
       restore path; the predicate comparison survives that refactor.
 
+/*
       FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217, AC2):
       Admission widens from not-run-only to `not-run ∪ verdict-less-failed`. The blocker is resolved
       ONCE and both predicates read from the same gate ids and merge content, so admission and the
@@ -16230,12 +16252,15 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   pausedByAgentId, or pausedReason fields; task safety parks remain separately
   owned by their reason-specific writers.
 
+/*
   FNXC:AgentHeartbeat 2026-07-12-17:26:
   FN-7884: Engine restart is an explicit operator retry boundary for durable heartbeat agents. Startup recovery must immediately clear recoverable `error` and `error-retry-exhausted` parks, reset shared heartbeatErrorRecovery/durableErrorRecovery budget state, and re-arm heartbeats without steady-state staleness/cooldown/exhaustion gates; operator-actionable, stale-module, user-paused, error-unrecoverable, disabled, ephemeral, and actively executing agents remain suppressed.
 
+/*
   FNXC:AgentHeartbeat 2026-07-14-16:13:
   Startup must also recover a `heartbeat-model-unavailable` park when its recorded failing provider differs from the agent's complete assigned runtime model. This repairs agents falsely parked by the former shared-project-model precedence while preserving genuine assigned-provider authentication failures for operator action.
 
+/*
   FNXC:AgentHeartbeat 2026-07-15-08:50:
   Startup now recovers every `heartbeat-model-unavailable` park (not only misattributed providers). Engine restart is treated like operator Retry: false model-unavailable/credential-probe parks clear immediately, and genuine missing credentials re-park on the next failing heartbeat.
   */
@@ -16341,6 +16366,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       FNXC:AgentHeartbeat 2026-07-12-20:10:
       An agent parked paused/"error-unrecoverable" whose lastError NOW classifies as recoverable (e.g. transient OAuth token-rotation 401s that were misclassified operator-actionable before isTransientAuthCredentialError existed) must not stay parked forever waiting for a human. Re-admit exactly those parked agents to the error-recovery sweep; user pauses and every other pauseReason are untouched. The shared retry budget, cooldown, and staleness gates below still apply.
 
+/*
       FNXC:AgentHeartbeat 2026-07-15-08:50:
       Also re-admit stale paused/heartbeat-model-unavailable parks when shared retry budget remains. Manual Retry already proves many of these are false positives; the timer path is the fast recovery, and this sweep is the backstop when timers were cleared on park.
       */
@@ -17260,6 +17286,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           or archived canonical. Such a decision has no detail-banner action, so cleanup restores
           eligible work to planning while preserving explicit, implicit, and unrelated system pauses.
 
+/*
           FNXC:NearDuplicateDetection 2026-08-01-18:47:
           Mirror triage: marker clear leaves needs-replan + feedback + dismissal, never
           status:null (FN-8704 replan storm when the scheduler wakes on planning→null without PROMPT).

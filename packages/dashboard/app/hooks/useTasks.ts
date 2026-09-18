@@ -174,6 +174,7 @@ function clearInReviewStallForFreshAgentLog(task: Task, entry: AgentLogActivityE
   FNXC:DashboardStallBadges 2026-07-01-23:44:
   Board cards must not show Stalled/Merge stalled while an in-review agent is actively writing logs. The task row can remain unchanged during merger/reviewer work, so fresh agent-log metadata clears only derived stall badge fields until the next authoritative task refresh.
 
+/*
   FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174):
   `stallReason` joins the cleared fields. The server's suppression for review-lane reasons is the
   same rule this helper already mirrors (merge-queued OR fresh agent-log activity), and this clear
@@ -326,11 +327,13 @@ newer than the row and resolves an equal legacy move clock; sparse SSE patches n
 
 This helper intentionally merges only defined sparse fields. A slim or sparse payload's absent, empty, or whitespace-only prompt is not evidence that a loaded plan was cleared, and an empty log is not evidence that a populated journal was cleared; marked full snapshots remain authoritative for both fields. Every open-detail host and useTasks ingestion uses this one boundary so one provider cannot regress a modal, main panel, split detail, dock, or popup independently.
 
+/*
 FNXC:TaskDetailStateStability 2026-08-09-07:13:
 `mergeTaskSnapshot` arbitrates server snapshots only. Locally-authored detail patches must use
 `applyLocalTaskPatch`: FN-5148 requires mismatched ids to be ignored while accepting an absent id, and
 FN-8796 showed that an absent or equal local clock is not evidence of staleness.
 
+/*
 FNXC:TaskDetailStateStability 2026-08-28-16:07:
 A sparse blank prompt must not add a `prompt` key to a slim task row. Task detail uses key presence to
 distinguish a complete detail from a board snapshot, so synthesizing that key would make a transient
@@ -607,6 +610,7 @@ export function useTasks(options?: UseTasksOptions) {
   always paired with revalidation: `isStale` starts true (App renders <TopProgressBar visible> off it)
   and the mount effect below unconditionally issues one `refreshTasks({ clearOnError: true })`.
 
+/*
   FNXC:MobileTabDiscard 2026-07-26-16:40:
   CORRECTION to the sentence this note used to end with ("whose failure branch CLEARS this cache entry
   so a wrong snapshot cannot survive into the next restore"): that is true only of a failure that
@@ -670,9 +674,11 @@ export function useTasks(options?: UseTasksOptions) {
   FNXC:DonePagination 2026-09-04-10:36:
   Done-page requests have a project-generation fence and a dedicated accumulator. Generic board refreshes replace the current lanes plus the newest Done page while preserving pages the operator explicitly loaded.
 
+/*
   FNXC:DonePagination 2026-09-08-23:00:
   A continuation belongs to the complete project, sort, search, and refresh incarnation. Every authoritative refresh invalidates an in-flight Done continuation before starting page zero, so an older page cannot append cards or replace the new session cursor after search or refresh changes.
 
+/*
   FNXC:DonePagination 2026-09-08-23:00:
   SSE membership changes must update the aggregate physical-column count and the selected-workflow count together, including moves between two Complete columns. The workflow resolver applies the same explicit-selection/default fallback as Board; display counters never alter the captured server cursor.
   */
@@ -1040,6 +1046,7 @@ export function useTasks(options?: UseTasksOptions) {
       because a failed revalidation deletes it here. Without this, an unverifiable board could be
       re-hydrated on every subsequent restore for the whole TTL window. Do not weaken.
 
+/*
       FNXC:MobileTabDiscard 2026-07-26-16:40:
       CORRECTION — the 10:52 note above claimed "a failed revalidation deletes it", and the code did
       exactly that for EVERY failure. That was wrong, and it broke the case the cache exists for: the
@@ -1183,6 +1190,7 @@ export function useTasks(options?: UseTasksOptions) {
   FNXC:TaskListPagination 2026-09-09-00:33:
   A page request owns its lock independently from response freshness. Invalidations abort the owner, and only that exact owner may release itself, so an obsolete finally can neither strand the collection nor unlock a successor.
 
+/*
   FNXC:TaskListPagination 2026-09-09-00:33:
   Progress follows the server's opaque continuation even when every returned ID is already mounted. Terminal hasMore is authoritative; missing, repeated, or cyclic continuations stop automatic loading and require an explicit fresh retry.
   */
@@ -1927,9 +1935,11 @@ export function useTasks(options?: UseTasksOptions) {
     FNXC:TaskDeletion 2026-06-29-18:52:
     Local deletes must update the shared useTasks array immediately because the Board, List, and any shared task consumers render from this state and should not wait for SSE or a refetch after the API confirms deletion.
 
+/*
     FNXC:TaskDeletionCache 2026-06-29-20:11:
     Project-scoped SWR hydration must remove the deleted task after the API confirms deletion, otherwise an immediate remount can hydrate a stale row before the next fetch. Only the active project's task cache key is touched; if the cached envelope has an unexpected shape, clear that key instead of writing possibly stale data.
 
+/*
     FNXC:TaskDeletionCache 2026-06-29-21:04:
     Delete success must also invalidate refreshes that began before the API call completed; otherwise a late pre-delete snapshot can rehydrate the removed card in Board or List until the next live update.
     */
@@ -1973,6 +1983,7 @@ export function useTasks(options?: UseTasksOptions) {
     FNXC:DashboardTaskRetry 2026-06-30-12:57:
     Manual retry success is a user-visible state boundary. Replace matching rows in shared hook state and the project SWR cache as soon as the retry API returns so Board/List/detail/right-dock retry affordances do not depend on later SSE, polling, remount, or route re-entry to clear stale failed/stuck state.
 
+/*
     FNXC:DashboardTaskRetry 2026-06-30-12:58:
     Retry success also invalidates refreshes that began before the API returned; a late pre-retry fetch snapshot must not rehydrate the failed card after the operator has already received server confirmation for the retry.
     */

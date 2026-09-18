@@ -1515,6 +1515,7 @@ describe("ListView", () => {
     FN-417: an in-review row no longer offers merge completion — the engine merges automatically and
     the only manual command is Task Detail's review footer button.
 
+/*
     FNXC:TaskFollowUp 2026-09-17-18:10:
     FN-513: a review row now offers **Follow-up** IN PLACE OF Refine, never both. Follow-up asks for a
     successor task derived from work that is still going; Refine asks for more work on a card that is

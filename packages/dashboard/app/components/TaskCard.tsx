@@ -468,6 +468,7 @@ resolved flags through a pure duration helper or resolving a workflow inside it 
 at `project-engine.ts:2555` and `github-tracking-comments.ts:165`. Left counted so the census keeps
 pointing at the class rather than at me having decided it away.
 
+/*
 FNXC:WorkflowResolvedColumns 2026-07-31-23:59 — THAT BLOCKER HAS SINCE EXPIRED, and the evidence is in
 this file.
 
@@ -1382,6 +1383,9 @@ function TaskCardComponent({
   transfer opened from a card never needs a board-level prop chain.
   */
   const transferHost = useTaskTransferModal(projectId ?? null);
+
+  /*
+  /*
   FNXC:TaskFollowUp 2026-09-17-18:10:
   FN-513 — one composer, two questions. The MODE is captured when the dialog opens, so a source that
   finishes while the operator is typing cannot silently change what the submit button does; the
@@ -1414,6 +1418,7 @@ function TaskCardComponent({
   loaded board whose column its workflow declares — the traits decide and the U11 merge
   is a non-event. The fallback retires with the load window, not with this change.
 
+/*
   FNXC:WorkflowLifecycleColumns 2026-07-29-23:40 DELIBERATE-LITERAL: the fallback arm only.
   The trait path above is the live answer; this arm runs ONLY when the board has no resolved flags,
   and in that state there is nothing to resolve FROM. Deleting it does not remove a guard, it picks a
@@ -1964,6 +1969,7 @@ function TaskCardComponent({
   FNXC:TaskCardPlanReviewBadge 2026-07-11-12:05:
   FN-7831 requires the card header to show a distinct "Reviewing" badge while the optional `plan-review` workflow step is actively running, even while the card remains in Planning/`triage`. Use the shared predicate so TaskCard stays in sync with ListView.
 
+/*
   FNXC:TaskCardOptionalGateBadge 2026-07-21-22:30:
   Extend the same additive header-badge pattern to Code Review / Browser Verification while the card is in In-review. Lane-owned optional gates never appear in the WIP bullet list; they surface only as this badge while running.
   */
@@ -2132,6 +2138,7 @@ function TaskCardComponent({
   unplanned and waiting for a planning slot (this badge), planned and waiting for a WIP slot
   (Ready).
 
+/*
   FNXC:CodingIdeasWorkflow 2026-07-26-15:30:
   Both badges now derive from the single `awaitingPlanning` value above, so "exact complement" is
   structural rather than a property of the step count that two independent conditions had to agree on.
@@ -2516,6 +2523,7 @@ function TaskCardComponent({
      card that renders before they load and re-renders after would otherwise keep the pre-flag answer
      — the memo's inputs would be unchanged. This repo has no `react-hooks/exhaustive-deps` rule, so
      nothing would have flagged the omission.
+/*
      FNXC:TaskCardRuntimeChip 2026-09-16-06:16: FN-457 adds the pause fields the breakdown reads. */
   }, [task.column, task.status, task.columnMovedAt, task.timedExecutionMs, task.updatedAt, task.workflowStepResults, task.log, task.firstExecutionAt, task.cumulativeActiveMs, task.cumulativePlanningMs, task.planningStartedAt, task.executionStartedAt, task.executionCompletedAt, task.cumulativePausedMs, task.pausedStartedAt, task.paused, task.userPaused, timeIndicatorNowMs, taskColumnFlags, isWipColumn, t]);
 
@@ -3255,6 +3263,7 @@ function TaskCardComponent({
   source card's pointer badge arrives over the existing `task:updated` SSE lane and the copy arrives
   in the target project over `task:created`.
 
+/*
   FNXC:CrossProjectHandoff 2026-09-09-12:37 (RUFU-203):
   The card's `projectId` is passed INTO the helper, not just used to gate the item. The server picks
   the source store from the request's project scope and falls back to the daemon's launch project, so
@@ -3304,18 +3313,23 @@ function TaskCardComponent({
   FNXC:BoardCardActions 2026-06-29-00:00:
   Board cards expose the same lifecycle actions as Task Detail from right-click, keyboard context menu, and touch long-press so operators can act without opening detail. Dock/plugin TaskCard users stay unchanged because the menu only mounts when Board/List owners pass action handlers.
 
+/*
   FNXC:BoardCardActions 2026-06-30-00:30:
   Context-menu moves reuse the Task Detail preserve/reset progress confirmation path before moving back to Todo or Triage, because those transitions can reset completed steps. Refine opens the existing Task Detail feedback modal from card right-click/long-press when the board host supplies that route, while manual PR entries open the existing PR flows instead of silently dropping unavailable actions.
 
+/*
   FNXC:BoardCardActions 2026-06-30-00:42:
   Board context menus must receive the project merge strategy, not infer pull-request mode from existing PR data, so manual PR projects show Start PR Review before the PR entity is created.
 
+/*
   FNXC:BoardCardActions 2026-06-30-12:42:
   Workflow-column card menus must use the task's workflow column flags and ordered column list instead of legacy column literals. Custom complete lanes are terminal for Reset/Pause, while custom active lanes still expose neighbor move targets.
 
+/*
   FNXC:BoardCardActions 2026-06-30-13:02:
   Manual pull-request projects need a distinct Start PR Review callback from direct Merge & Close so context menus open PrCreateModal instead of calling the merge endpoint.
 
+/*
   FNXC:GitHubTracking 2026-07-01-00:00:
   Board card context menus may enable GitHub tracking only when the board host supplies onUpdateTask, because that callback owns the existing PATCH flow plus optimistic/local task refresh. This keeps right-click, keyboard context menu, and touch long-press actions from becoming dead menu items in dock/plugin card embeddings.
   */
@@ -4217,9 +4231,11 @@ function TaskCardComponent({
           FNXC:TaskCardPlanReviewBadge 2026-07-11-12:06:
           The Reviewing badge is additive to the normal header status badge so operators can distinguish "planning" from active Plan Review without hiding paused/status affordances.
 
+/*
           FNXC:TaskCardOptionalGateBadge 2026-07-21-22:30:
           Same additive pattern for Code Review / Browser Verification in In-review. Label is the gate's own name. These gates stay out of the WIP bullet list.
 
+/*
           FNXC:TaskCardOptionalGateBadge 2026-07-26-14:05:
           Plan Review (and its replan loop) now badges as "Plan Review" instead of the ambiguous "Reviewing", and the gate itself runs in the planning column, so the badge is visible on the Planning card rather than being lane-suppressed while the card sat in In progress.
           */
@@ -4242,6 +4258,7 @@ function TaskCardComponent({
         FNXC:CodingIdeasWorkflow 2026-07-04-11:10:
         In the merged planner/capacity "todo" column (Coding (Ideas)), a planned task with no active status is ready and waiting for an in-progress slot. Show a "Ready" badge so operators can distinguish planned cards from freshly promoted unplanned ones. Tasks still being planned surface the "planning" status badge above instead.
 
+/*
         FNXC:CodingIdeasWorkflow 2026-07-21-22:18:
         Suppress Ready while Plan Review (or other agent-active work) is live — finalize often clears status before plan-review, which previously stacked Ready + Reviewing on the same Todo card.
         */}
@@ -4262,6 +4279,7 @@ function TaskCardComponent({
         Started-but-not-yet-planned. Reuses the Ready badge's primitives with the queued modifier
         rather than forking a new badge variant.
 
+/*
         FNXC:CapacityModel 2026-07-30-18:10 (capacity simplification — user-visible residue):
         The title used to name "maxConcurrent / globalMaxConcurrent". The cross-project cap is DELETED
         (capacity is two numbers per project), so that tooltip told the operator their planning was
@@ -4338,6 +4356,7 @@ function TaskCardComponent({
           badge/design and surface-by-surface rendering. This is a minimal, type-safe,
           guarded read only — nothing renders for an absent field or the "idle" state.
 
+/*
           FNXC:PlannerOversight 2026-07-05-00:00:
           FN-7592 replaces the uppercase text label with a small state-colored `Eye` icon so
           the badge reads as a compact glyph. The readable label and composed tooltip stay
@@ -4347,6 +4366,7 @@ function TaskCardComponent({
           logic here; `plannerOverseerStateLabel`/`plannerOverseerBadgeTooltip` remain the
           single source of truth.
 
+/*
           FNXC:PlannerOversight 2026-07-17-00:00:
           FN-8221 defensively hides a stale non-idle snapshot when its oversight level is off.
           The engine clears this runtime at the source, but a client payload must never leak
@@ -4709,6 +4729,7 @@ function TaskCardComponent({
                   No `card-step-dot--workflow-failed` override is needed — the status class carries the
                   distinction directly.
 
+/*
                   FNXC:WorkflowSteps 2026-06-30-12:00:
                   Workflow-sourced rows remain visible through their step names and status dots, but task cards intentionally omit the redundant `workflow` text badge so expanded step lists stay focused on progress.
                   */
@@ -4956,8 +4977,6 @@ function TaskCardComponent({
         />
       )}
       {transferHost.transferModal}
-
-      {showRefineDialog && (
 
       {refineDialogMode !== null && (
         <TaskRefineDialog

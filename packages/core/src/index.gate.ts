@@ -1875,8 +1875,8 @@ export type {
   FollowUpSourceMarker,
 } from "./tasks/task-follow-up.js";
 
-export { fileScopeLeaseBlocksCandidate, normalizeOverlapScopeForTask, taskHoldsUnmergedCheckout } from "./tasks/file-scope-lease.js";
-export type { FileScopeLeaseClassification, FileScopeLeaseKind } from "./tasks/file-scope-lease.js";
+export { fileScopeLeaseBlocksCandidate, isSharedBarrelExportPath, isSharedBarrelOnlyMatch, normalizeOverlapScopeForTask, taskHoldsUnmergedCheckout } from "./tasks/file-scope-lease.js";
+export type { CheckoutEmptinessProofMap, CheckoutEmptinessVerdict, FileScopeLeaseClassification, FileScopeLeaseKind } from "./tasks/file-scope-lease.js";
 
 // ── Mission Hierarchy Types ────────────────────────────────────────────
 
@@ -2759,12 +2759,12 @@ export {
 } from "./memory/recall/per-turn-recall.js";
 export type { PerTurnRecallOptions } from "./memory/recall/per-turn-recall.js";
 
-export { HUMAN_PLAN_APPROVAL_MESSAGE_MAX_LENGTH, HUMAN_PLAN_APPROVAL_REASON, HumanPlanApprovalMessageError, HumanPlanApprovalWorkflowError, HUMAN_PLAN_APPROVAL_NOTE_HEADING, formatApprovedHumanPlanNoteSection, resolveHumanPlanApprovalWorkflowSteps, /* FNXC:HumanPlanApproval 2026-09-15-07:30: FN-408 remediation — arming the requirement neutralizes Fast so the card can actually be planned, reviewed and decided. */
-  resolveHumanPlanApprovalExecutionMode, buildHumanPlanApprovalCreationState, clearHumanPlanApprovalDecision, hasCurrentHumanPlanApproval, isHumanPlanApprovalDecidable, isHumanPlanApprovalEnabled, isHumanPlanApprovalPending, /* FNXC:HumanPlanApproval 2026-09-15-06:24: FN-408 execution-entry fence, deliberately separate from the planning-dispatch approval hold. */
-  isTaskBlockedOnHumanPlanApproval, resolveApprovedHumanPlanNote, resolveCurrentHumanPlanApprovalDecision, resolvePlanReviewEpisodeId, sanitizeHumanPlanApprovalMessage } from "./planner/human-plan-approval.js";  // [upstream-merge addition]
+/* FNXC:HumanPlanApproval 2026-09-15-07:30: FN-408 remediation — arming the requirement neutralizes Fast so the card can actually be planned, reviewed and decided. */
+/* FNXC:HumanPlanApproval 2026-09-15-06:24: FN-408 execution-entry fence, deliberately separate from the planning-dispatch approval hold. */
+  // [upstream-merge addition]
 export { TASK_LOG_READ_ONLY_SUFFIX, buildTaskLogReadOnlyMessage, buildTaskNotFoundMessage, isTaskLogWriteRefusal } from "./task-store/task-log-write-refusal.js";  // [upstream-merge addition]
-export { UI_STYLES, DEFAULT_UI_STYLE, isUiStyle } from "./types.js";  // [upstream-merge addition]
-export type { UiStyle } from "./types.js";  // [upstream-merge addition]
+  // [upstream-merge addition]
+  // [upstream-merge addition]
 
 export {
   appendTaskLifecycleEventInTransaction,

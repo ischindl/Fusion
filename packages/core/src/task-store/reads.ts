@@ -11,7 +11,6 @@ import {readFile} from "node:fs/promises";
 import {join} from "node:path";
 import {existsSync, statSync} from "node:fs";
 import type {Task, TaskDetail, ColumnId, ArchivedTaskEntry, TaskVerificationRequest, TaskVerificationResultSummary, TaskVerificationStatus, TaskRecommendation, TaskRecommendationListItem, TaskRecommendationListPage, Settings} from "../types.js";
-import type { TaskColumnSortMode } from "../tasks/task-priority.js";
 import * as schema from "../postgres/schema/index.js";
 import { and, desc, eq, getTableColumns, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import "../builtin-traits.js";
@@ -647,6 +646,7 @@ profile behind the task measured 281.9 MB / 240 s of short-lived allocations in 
 and ~19% of CPU in GC, while the live server showed 73.5% of in-flight statements spent on the
 selection/override reads these feeders drive.
 
+/*
 FNXC:WorkflowLifecycleColumns 2026-07-28-18:05 (PR #2479 review, P2):
 ONE IR cache for the whole list pass. Without it, every paused row resolved
 its workflow independently, repeating workflow-definition and prompt-override
@@ -654,13 +654,16 @@ reads for a board with many paused cards on the same workflow. Caller-owned by
 design (U1's `resolveTaskLifecycleColumns` takes the cache for exactly this),
 so reads scale with the number of WORKFLOWS, not the number of cards.
 
+/*
 FNXC:WorkflowScheduling 2026-09-05-23:12: List hydration prefetches once per pass; getTaskImpl remains individual because one row has no N+1. The tally reports store-internal reads to callers without changing badge fallback semantics.
 
+/*
 FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174): the stall derivation's dependency resolver
 answers any reference covered by THIS page from the page's own rows — a board feed normally
 carries a blocker and its blocked card together, so the common case stays zero-read. Built
 from the raw rows because `pgRowToTaskRow` would parse every step/JSON column twice.
 
+/*
 FNXC:SqliteFinalRemoval 2026-06-26-10:30:
 Compute staleness thresholds once for the whole list pass, mirroring the SQLite path. The
 ageStaleness/stalePausedReview/stalePausedTodo signals are derived at read time and must be
@@ -716,6 +719,7 @@ The list-read tail shared by the derived and opted-out paths, so opting out cann
 `steps` contract. Kept as a plain function (not a component/nested closure) so both callers
 reconcile the same shape.
 
+/*
 FNXC:TaskDetailPromptResilience 2026-07-10-16:00 (merge port from main):
 an unreadable PROMPT.md must not reject this Promise.all and 500 the
 entire board list — degrade to the persisted (empty) steps and log.
@@ -820,6 +824,7 @@ export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions
     optimization silently disabled both signals on board listings.
     Pass `includeDeleted` through for forensic reads (VAL-DATA-006).
 
+/*
     FNXC:TaskStoreReadsPerf 2026-07-11 (PR #1793 review):
     The column filter and pagination are pushed into SQL (readLiveTaskRows
     WHERE + ORDER BY + LIMIT/OFFSET) instead of fetching the whole table and
@@ -851,9 +856,11 @@ export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions
     `timedExecutionMs` — so an opted-out slim consumer needs none of it and the projection drops it
     (avg 11 KB/row on the live table). `rowToTask` maps a missing column to `log: []`, so the row
     shape on the wire is unchanged. This does NOT revive `excludeLog: slim` for deriving consumers:
+/*
     FNXC:TaskStoreReads 2026-07-05-15:30 above restored the log read precisely because dropping it
     silently disabled both signals on the board.
 
+/*
     FNXC:ListTasksExcludeLog 2026-09-09-01:48 (RUFU-202):
     The `!deriveUiSignals` half of this condition stays load-bearing, but slim is no longer the only
     way to ask for the drop: an explicitly opted-out non-slim consumer may now request it per call

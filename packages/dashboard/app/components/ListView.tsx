@@ -351,6 +351,7 @@ function getTaskProgress(
   FNXC:TaskCardWorkflowProgress 2026-07-21-22:26:
   List progress for WIP matches TaskCard: only implementation steps, not Todo Plan Review or In-review Code Review gates.
 
+/*
   FNXC:TaskCardWorkflowProgress 2026-08-24-19:30:
   ...but that match was only half-implemented: TaskCard switches to the full pipeline once the card
   reaches its review lane (`scope: task.column === "in-review" ? "full" : "implementation"`), while
@@ -449,6 +450,7 @@ export function ListView({
   FNXC:BoardWorkflowSelection 2026-06-29-12:35:
   ListView must use the same project-scoped durable workflow selection invariant as Board/Header/Graph so task refreshes, respecification route returns, and remounts do not reset operators from a custom workflow back to the default workflow. Keep this separate from list task-selection storage keys.
 
+/*
   FNXC:WorkflowColumns 2026-07-28-00:00 (U12 — R9):
   The `shouldHydrateCache` gate is DELETED alongside Board's. It read `workflowColumnsEnabled === true || settingsLoaded === false`, and MainContent passed `workflowColumnsEnabled` as a literal `true`, so it was unconditionally true — the hook's own default.
   */
@@ -1797,6 +1799,7 @@ export function ListView({
       surface — desktop right-click, mobile long-press, and the row overflow — so wiring it here
       covers all three and keeps them from drifting.
 
+/*
       FNXC:CrossProjectHandoff 2026-09-09-12:37 (RUFU-203):
       The list's `projectId` is forwarded into the helper so the POST is project-scoped: the server
       resolves the source store from the request scope (else the daemon's launch project), so an
@@ -1971,6 +1974,7 @@ export function ListView({
   FNXC:ListContextMenu 2026-06-30-00:15:
   List menus are portaled out of table/card flow and then measured so desktop rows, mobile cards, and keyboard invocations stay inside the visible viewport without selecting the row.
 
+/*
   FNXC:ListContextMenu 2026-06-30-13:02:
   Manual PR context actions must open the PR creation dialog from list rows, while Merge & Close remains wired to the direct merge handler.
   */
@@ -2116,14 +2120,17 @@ export function ListView({
     FNXC:WorkflowControls 2026-06-20-00:00:
     ListView keeps its own workflow selection state and only portals its workflow controls into Header when the sidebar header slot exists.
 
+/*
     FNXC:WorkflowControls 2026-09-15-05:29:
     FN-407: ListView renders the selector alone and never a standalone edit/create icon, preventing empty button shells across desktop and mobile header placements.
 
+/*
     FNXC:MainViewKeepAlive 2026-08-31-14:54:
     A cached header slot survives the render where a retained List becomes inactive, before its
     active-gate effect clears state. Restrict the portal at render time so that commit leaves the
     shared slot empty and keeps the hidden toolbar inline.
 
+/*
     FNXC:WorkflowControls 2026-09-15-01:44:
     FN-405: `headerWorkflowSlot` comes from the shared resolver, which survives a late-mounted or
     replaced slot. A null value therefore proves the header renders no slot, so the inline fallback
@@ -2692,6 +2699,7 @@ export function ListView({
                                   FNXC:TaskCardPlanReviewBadge 2026-07-11-12:10:
                                   Grouped ListView cards must show the same active Plan Review "Reviewing" badge as TaskCard so board and list surfaces remain visually equivalent while the `plan-review` workflow step is running.
 
+/*
                                   FNXC:TaskCardOptionalGateBadge 2026-07-21-22:30:
                                   Same badge contract for Code Review / Browser Verification in In-review.
                                   */
@@ -3005,6 +3013,7 @@ export function ListView({
                                       FNXC:TaskCardPlanReviewBadge 2026-07-11-12:11:
                                       Ungrouped ListView table rows must render the same Reviewing badge from the shared predicate; this second status render path is easy to miss and must stay in parity with grouped rows.
 
+/*
                                       FNXC:TaskCardOptionalGateBadge 2026-07-21-22:30:
                                       Same badge contract for Code Review / Browser Verification in In-review.
                                       */

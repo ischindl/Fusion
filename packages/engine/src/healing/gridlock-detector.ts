@@ -144,6 +144,7 @@ export class GridlockDetector {
     worktree outside WIP or review remains a dormant holder, and priority → age → id picks the one
     holder that genuinely blocks a waiting card instead of reporting its files as free.
 
+/*
     FNXC:OverlapScheduling 2026-09-01-14:49:
     Checkout-free planning cards are not overlap holders and cannot manufacture a planning gridlock;
     a retained checkout remains the durable evidence for a genuine dormant-holder cycle.

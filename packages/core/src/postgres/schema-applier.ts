@@ -33,23 +33,28 @@ import { acquireSchemaMutationLocks } from "./advisory-locks.js";
 FNXC:GitHubImportTranslate 2026-07-17-23:48:
 Advances to 0019 for the import-translation legacy-partition backfill. Per-migration identities above stay fixed; only this latest-version marker moves.
 
+/*
 FNXC:PostgresBigintCounters 2026-07-19-12:00:
 SCHEMA_BASELINE_VERSION advances to 0026 for the bigint counters migration.
 Per-migration identities above stay fixed; only this latest-version marker moves.
 
+/*
 FNXC:WorkflowTaskContinuations 2026-07-21:
 SCHEMA_BASELINE_VERSION advances to 0031 for durable, single-owner task
 continuations at workflow column boundaries.
 
+/*
 FNXC:LegacyAdoption 2026-07-21-17:30:
 SCHEMA_BASELINE_VERSION advances to 0037 for dropping the cross-project concurrency table; it previously advanced to 0036 for normalized Direct conversation tags; it previously advanced to 0032 for fusion_runtime SELECT +
 SECURITY DEFINER write access to the legacy-adoption drained marker.
 
+/*
 FNXC:TaskWedgeNotifications 2026-07-23-00:00:
 Advance the PostgreSQL schema ceiling for the durable wedge episode column. The
 forward migration must run before TaskStore writes the new field on fresh and
 upgraded databases.
 
+/*
 FNXC:MissionTaskPrefix 2026-07-30-21:10 (rebase onto migrated main):
 SCHEMA_BASELINE_VERSION advances to 0038 for optional per-mission task_prefix — 0037 is the
 capacity-model table drop that landed while this PR was open.
@@ -352,6 +357,7 @@ the old binary proceed writes rows using the previous schema's assumptions (the 
 stale-Homebrew-binary failure mode). Compared numerically, not lexically; unparseable
 identifiers are ignored so a plugin marker cannot brick every open.
 
+/*
 FNXC:LegacyAdoption 2026-07-19-14:30 (PR #2341 review):
 The ignore-unparseable rule is a load-bearing coupling, not just plugin defense:
 LEGACY_ADOPTION_DRAINED_MARKER (below) is a deliberately NON-NUMERIC bookkeeping row that
@@ -829,6 +835,7 @@ export async function applySchemaBaseline(
     FNXC:ProjectDataIsolation 2026-07-14-12:10:
     Run universal ownership once, after plugin hooks, so first application covers core and plugin tables without duplicate DDL. Later boots validate that every newly introduced plugin table declared the same ownership contract instead of rebuilding primary keys, foreign keys, and policies on every startup.
 
+/*
     FNXC:ProjectArchiveIsolation 2026-07-14-14:31:
     The steady-state audit includes archive.archived_tasks because archived task IDs are project-local and must retain the same forced-RLS boundary as live task rows.
     */
@@ -950,6 +957,7 @@ export async function applySchemaBaseline(
     FNXC:MissionFixIdempotency 2026-07-14-18:55:
     Existing PostgreSQL databases receive the validator-run lineage uniqueness invariant independently of earlier schema versions. Duplicate historical rows fail the migration visibly instead of being silently discarded.
 
+/*
     FNXC:PostgresConflictResolution 2026-07-14-20:52:
     Main assigned migration 0008 to session-advisor state before the cutover landed, so mission lineage uniqueness advances to 0009. Both migrations must run in order; sharing a bookkeeping version would silently skip one invariant.
     */
@@ -1750,12 +1758,14 @@ export async function applySchemaBaseline(
     bookkeeping row alone: a database that already carries both objects records the version without
     redundant SQL, and a database missing either object gets the migration even if an earlier
     partial run recorded the version.
+/*
     FNXC:ReviewLaneDispatch 2026-09-14 (clean-rebase-v2 replay):
     The drift check only makes sense where the product tables exist, so it is gated on their
     presence. A recorded marker in a database without `task_reviewer_runs`/`task_lifecycle_events`
     is either a fresh/empty fixture (the baseline path owns it) or a corrupt install whose real
     failure surfaces at first store read — re-running this SQL there would only fail on missing
     relations. Drift (table present, index or widened CHECK lost) still forces the re-apply.
+/*
     FNXC:ReviewLaneDispatch 2026-09-15-00:24 (STAS-205 landing onto main):
     On the branch this block sat after the collision repair (it was the last step there). main keeps
     the repair last in apply order — see the MigrationCollisionRepair note below — so on landing the

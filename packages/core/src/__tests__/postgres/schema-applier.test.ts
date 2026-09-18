@@ -216,6 +216,7 @@ describe("schema-applier: immutable migration identities", () => {
     FNXC:HumanMergeApproval 2026-09-17-18:09:
     FN-514's per-card delivery-lock column is migration 0083. Every already-published identity stays
     pinned so a renumbering fails here rather than silently skipping a migration on upgrade.
+/*
     FNXC:ReviewLaneDispatch 2026-09-18-13:40 (sync wave): the main-local ledger renumbered 0082 -> 0084
     (upstream took 0082/0083) and is now the ceiling.
     */
@@ -334,6 +335,7 @@ describe("schema-applier: immutable migration identities", () => {
   FNXC:PostgresBigintCounters 2026-07-19-12:00:
   0026 widens overflow-prone counters to bigint. Keep identity fixed and at-or-before SCHEMA_BASELINE_VERSION.
 
+/*
   FNXC:PostgresBigintCounters 2026-07-19-08:40:
   Also assert the authoritative applier registry wires 0026_bigint_counters.sql —
   constant identity alone does not prove applySchemaBaseline will run the migration.
@@ -895,9 +897,11 @@ pgDescribe("schema-applier: VAL-SCHEMA-001 final-schema parity (table counts)", 
     0060 adds workspace coordination leases and land intents (→ 115). Plugin tables are added separately
     by the schema-init hook and are excluded here.
 
+/*
     FNXC:WhiteboardAlpha 2026-09-10-05:42:
     Subsequent core migrations add step reports, patchnode, project notes, overlap waits, and Whiteboard heads/revisions, bringing the current project total to 120.
 
+/*
     FNXC:WorkflowIdentity 2026-09-14-19:06:
     Migration 0079 adds separate recovery archives for displaced workflow settings and prompt overrides, bringing the project total to 122.
     */
@@ -908,9 +912,11 @@ pgDescribe("schema-applier: VAL-SCHEMA-001 final-schema parity (table counts)", 
     on each side in isolation, not only in the merge. Counted tables are core baseline plus migrations;
     plugin schema-init tables stay excluded.
 
+/*
     FNXC:PgSchemaApplier 2026-09-10-23:14 (merge origin/main 2026-09-10):
     The fork's collision repair adds no table, so the merged total is upstream's 120 exactly.
 
+/*
     FNXC:PgSchemaApplier 2026-09-16-14:10 (merge origin/main):
     Upstream's workflow-identity/approval/pause migrations add two tables over the 120 that already
     counted the review-lane ledger table; the merged fresh-baseline total is 122.

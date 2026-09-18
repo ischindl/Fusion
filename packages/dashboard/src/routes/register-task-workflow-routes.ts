@@ -214,6 +214,7 @@ async function clearRebuiltSpecWorkflowPins(store: TaskStore, taskId: string): P
   FNXC:WorkflowReplan 2026-06-29-00:33:
   Spec rebuild intentionally invalidates the planned step source, so persisted graph foreach pins from the previous PROMPT.md must be cleared before the next parse-steps node runs. Keeping the stale pins makes rebuilt tasks fail closed with pin-mismatch at parse instead of executing the fresh plan.
 
+/*
   FNXC:WorkflowReset 2026-06-29-10:02:
   User reset/retry is also a hard graph-run boundary. Clear all persisted foreach step-instance rows for the task, not only rows outside a keep-run id, because stale rows can be written by an old aborting graph after the first cleanup and then make the next parse fail immediately.
   */
@@ -2083,6 +2084,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
           guard; reuse that immutable same-recommendation winner and repair the parent link rather
           than surfacing the ordinary duplicate conflict reserved for distinct recommendations.
 
+/*
           FNXC:TaskRecommendations 2026-08-12-00:58:
           Reuse is reserved for a named proposal claim on both the trusted request and canonical.
           Comparing absent ids made every ordinary deterministic duplicate return 200 and skipped
@@ -2559,6 +2561,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       before. Workflow resolution itself is fail-closed because without the task's traits this
       route cannot distinguish a harmless board move from a first admission into execution.
 
+/*
       FNXC:PlanPremises 2026-09-13-05:28:
       A transient workflow-resolution failure must never downgrade a public move to the legacy raw
       move path. Refuse retryably before allocation or mutation until the admission can be classified.
@@ -3742,6 +3745,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
           live execution or review state that was never in question. A v1 IR yields no roles, so the
           legacy pre-implementation ids are the only pre-WIP signal available.
 
+/*
           FNXC:WorkflowLifecycleColumns 2026-07-29-23:40 DELIBERATE-LITERAL: the v1-IR arm only.
           A v1 workflow declares no roles, so there is no trait to read — this is not an unconverted
           guard, it is the answer for IRs that cannot express the question. The v2 branch below
@@ -3823,6 +3827,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       worktree. The legacy branches remain a fallback only for task shapes that cannot declare an
       in-place restart, such as v1 workflows or columns without an entry node.
 
+/*
       FNXC:WorkspaceRetry 2026-08-28-15:15:
       Workspace cards use the same in-place column restart as single-repository cards, including
       review cards with no legacy retry status. Their per-repository worktree and landing records
@@ -3948,6 +3953,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         authoritative pending-owner probe says no local or remote owner exists; probe failures stay
         fail-closed so this route never duplicates an active land attempt or handles leases itself.
 
+/*
         FNXC:WorkspaceRetry 2026-08-28-15:15:
         A v2 workspace review card now exits through the in-place restart above, so this FN-087
         prompt merge re-dispatch is deliberately limited to restart-refused legacy shapes.
@@ -4460,6 +4466,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
           `this.asyncLayer`. Invoke it through the scoped store so the atomic publisher retains its
           project-scoped receiver after cleanup and runtime finalization.
 
+/*
           FNXC:TaskReset 2026-08-28-16:31:
           An edited description is validated before the lifecycle lock and is applied only by the atomic reset publisher. Cleanup conflicts or failures therefore leave stored intent untouched, while successful substitution logs only its character count and never the operator's prose.
           */
@@ -7958,6 +7965,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       FNXC:TaskReview 2026-06-28-00:00:
       The manual Address PR feedback route must seed only Fusion-authored instructions plus PR identity. PR review text is untrusted and stays data fetched by ce-resolve-pr-feedback, so this lifecycle trigger cannot execute reviewer-provided directives while waking the assigned agent.
 
+/*
       FNXC:TaskReview 2026-06-28-16:39:
       The route response and dashboard toasts say an AI session started. Reject unsupported columns before writing steering/log entries so non-execution lanes cannot report success while no session is scheduled.
       */

@@ -274,6 +274,8 @@ export interface HandoffTargetStatus {
 export function fetchHandoffStatus(id: string, projectId?: string): Promise<{ handoffs: HandoffTargetStatus[] }> {
   return api<{ handoffs: HandoffTargetStatus[] }>(withProjectId(`/tasks/${id}/handoff-status`, projectId), { method: "GET" });
 }
+
+/*
 FNXC:TaskQueueOrder 2026-09-17-12:07:
 FN-509's Boost client. The SERVER is the authority for the rank: this returns the canonical task row
 and the caller writes THAT into its cache, rather than optimistically reordering and hoping.

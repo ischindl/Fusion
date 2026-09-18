@@ -138,6 +138,7 @@ Task-detail refinement composers retain their counters and browser maxLength att
 their ceiling from the same server constant so operator text is never refused locally below the
 task-message route contract.
 
+/*
 FNXC:TaskDetailPresentation 2026-09-15-16:02:
 FN-424 removed the inline spec-revision composer and the plan sub-view's `Open PROMPT.md` action, so
 this file no longer needs the message-length constant nor the file-browser context.
@@ -396,9 +397,11 @@ type WorkflowResultsLoadState = "idle" | "loading" | "succeeded" | "failed";
 FNXC:TaskDetailActivityTab 2026-06-30-00:00:
 The existing task activity/steering surface keeps the stable internal `chat` tab id for deep-link/plugin compatibility, but its top-level user-facing label is Activity.
 
+/*
 FNXC:TaskDetailPlannerChat 2026-06-30-22:30:
 Task detail separates Activity from planner-model Chat. `chat` remains the legacy Activity id for old links and Activity → Live (internal `current`)/Feed/Raw Logs/steering, while `planner-chat` is the top-level Chat tab for task-aware planning conversation.
 
+/*
 FNXC:TaskDetailDefaultTab 2026-09-16-02:53:
 FN-442 replaced the boolean Chat-first opt-in with the three-value project setting `taskDetailDefaultTab`. One value carries
 BOTH the landing tab of an open with no explicit tab AND the head order of the tab bar: `definition` → the `definition` tab,
@@ -406,18 +409,23 @@ BOTH the landing tab of an open with no explicit tab AND the head order of the t
 remaining two of the Activity / Chat / Definition trio follow in that canonical order. `activity` is the historical default;
 explicit `initialTab` deep links and the terminal-column `summary` landing always win.
 
+/*
 FNXC:TaskDetailActivity 2026-06-30-15:50:
 Only an omitted initial tab is the implicit default. Preserve explicit `initialTab="chat"` requests from plugins and task-detail entrypoints so existing links continue to open Activity → Live (internal `current`). Legacy `initialTab="logs"` routes to Activity → Feed, and Raw Logs remains an Activity segment.
 
+/*
 FNXC:TaskDetailActivity 2026-06-30-21:55:
 The first Activity segment keeps the stable internal `current` id for legacy segment tests and links, but its embedded composer labels the operational steering-comment affordance explicitly. Do not reuse this segment as planner-model Chat conversation; that belongs to the `planner-chat` top-level tab.
 
+/*
 FNXC:TaskDetailActivity 2026-06-30-23:55:
 The first Activity segment is user-facing Live while legacy internals remain `current` and explicit `initialTab="chat"` continues landing there for compatibility.
 
+/*
 FNXC:TaskDetailActivity 2026-08-28-23:05:
 Activity exposes only Live, Feed, Raw, and an oversight-gated Interventions view. Legacy `logs` still routes to Activity → Feed, while detailed stage reports moved to the always-available Summary tab.
 
+/*
 FNXC:TaskHistory 2026-08-28-23:05:
 The compatibility router preserves every retired tab id without preserving duplicate content: `history` and `recommendations` route to Summary; `cost` routes to Stats; `attachments` routes to Artifacts; and `retries`, `routing`, and `debug` route to Details. `logs` remains Activity → Feed.
 */
@@ -737,6 +745,7 @@ function requiresExecutionModeReplan(column: Task["column"], flags?: TaskContext
    place, even from a hold or WIP lane; only returning a Fast task to Standard retains the
    confirmation and replan needed to restore its ordinary plan.
 
+/*
    FNXC:WorkflowResolvedColumns 2026-07-29-00:00 (U12 — R8 drift conversion):
    The rule is "this card may already hold a plan or a live execution context", which the
    traits state directly: a HOLD lane (planned, waiting for capacity) or a WIP lane
@@ -928,6 +937,7 @@ const CODING_IDEAS_WORKFLOW_ID = "builtin:coding-ideas";
 FNXC:GitHubTracking 2026-07-22-00:46:
 Ideas tasks must be able to opt into or out of GitHub tracking before planning, whether they remain in the Ideas intake column or have advanced in Coding (Ideas). Use the resolved workflow ID rather than its display name so localized names and arbitrary custom workflows cannot gain this editing capability.
 
+/*
 FNXC:WorkflowIdentity 2026-09-14-19:06:
 A built-in revision retains its original identity. Migration 0079 converges persisted references before catalog reads, so selection, configuration and capacity use the same raw workflow id without redirects.
 */
@@ -1074,6 +1084,7 @@ export function TaskDetailContent({
   FNXC:TaskDetailPlan 2026-08-05-04:26:
   A narrow Definition response may beat a slim task's in-flight full detail response. Overlay it only when its evidence sequence is newer than the sequence captured when that detail read was issued; a prompt observed before a later authoritative read must never overwrite that read on arrival.
 
+/*
   FNXC:TaskDetailPlan 2026-08-28-15:31:
   The Plan view must not blank on a degradable narrow read and must recover without a close/reopen. Retain the last usable narrow prompt, sequence every adoption, and use a follow-up full detail read as prompt authority when degraded evidence needs confirmation.
   */
@@ -1159,6 +1170,7 @@ export function TaskDetailContent({
     FNXC:TaskDetailPlan 2026-08-03-02:06:
     Hidden kept-alive hosts defer their initial detail request until reveal.
 
+/*
     FNXC:TaskDetailPlan 2026-08-28-15:31:
     A reveal refetch may fail transiently, so keep a loaded same-task detail and its plan visible while the request runs and after rejection. A task-id switch still clears the preceding task immediately so no plan crosses task identities.
     */
@@ -1332,6 +1344,7 @@ export function TaskDetailContent({
   and the cost of the legacy answer is bounded: a renamed terminal column shows the banner one state
   too long, versus hiding it wrongly on every open.
 
+/*
   FNXC:WorkflowResolvedColumns 2026-07-30-20:10 (PR #2772 review — I TRIED THIS AND WAS WRONG):
   The sizing above stands, and I am recording the failed attempt so it is not retried a third time.
 
@@ -1345,6 +1358,7 @@ export function TaskDetailContent({
   change in a 5000-line component, which is what the original note meant by not attempting it under
   batch pressure. Left counted.
 
+/*
   FNXC:WorkflowResolvedColumns 2026-07-30-23:30 (the hoist would have been WRONG, not just costly):
   Correcting the paragraph above before someone acts on it. Hoisting applies to the two terminal
   checks on `task.column`, where `detailColumnFlags` is the right flags. It does NOT extend to the
@@ -1357,6 +1371,7 @@ export function TaskDetailContent({
   vs union confusion that `column-role-degraded-flags.test.ts` exists to catch, and it would type-check
   and read as a conversion.
 
+/*
   FNXC:WorkflowResolvedColumns 2026-07-31-03:10 (the "needs a fetch" blocker was never tested):
   The paragraph above rejected passing `detailColumnFlags` — correctly, that would answer about the
   wrong task — and then concluded the seam needs a data change. It does not. `columnFlagsByTaskId` is
@@ -1632,6 +1647,7 @@ export function TaskDetailContent({
   FNXC:WorkflowBadges 2026-06-29-00:00:
   Task details need a stable workflow-name badge because aggregate Board cards can mix tasks from multiple workflows. Resolve the badge name and custom field definitions from the same board-workflows payload so detail headers do not issue duplicate workflow-metadata fetches.
 
+/*
   FNXC:CodingIdeasWorkflow 2026-07-21-00:00:
   Coding (Ideas) intake cards need selected-workflow columns to derive their truthful
   move target through TaskContextMenu. Callers may supply field definitions, but fields
@@ -3120,6 +3136,7 @@ export function TaskDetailContent({
   (per-task override -> "off") — a lightweight `confirm(...)` guards it since
   it's a disabling action, matching the PROMPT's guidance for this control.
 
+/*
   FNXC:PlannerOversight 2026-07-18-12:00:
   FN-8247 extends Stop to disable the independently-enabled session advisor,
   so confirmation and success copy must tell operators it stops both systems.
@@ -3504,6 +3521,7 @@ export function TaskDetailContent({
   only when the operator confirms Retry. RoutingTab saves on selection, which would
   leave an abandoned override when the operator closes this recovery picker.
 
+/*
   FNXC:TaskRecoveryVocabulary 2026-08-28-01:20:
   Model and node overrides do not change Retry semantics. The shared stage confirmation must finish before either the override or the destructive stage restart is published.
   */
@@ -3635,6 +3653,7 @@ export function TaskDetailContent({
   Gated on `projectId` — the server refuses an origin project it cannot name, so an unregistered
   source omits the menu item instead of offering a guaranteed failure.
 
+/*
   FNXC:CrossProjectHandoff 2026-09-09-12:37 (RUFU-203):
   That same `projectId` is forwarded into the helper so the transfer POST is project-scoped. The
   server binds the source store from the request's project scope and otherwise falls back to the
@@ -4317,6 +4336,7 @@ export function TaskDetailContent({
   real enforcement; this is a client-side disable heuristic only). Stop is
   hidden once oversight is already off — there is nothing left to stop.
 
+/*
   FNXC:PlannerOversight 2026-07-05-00:00:
   FN-7582: the original disabled-Nudge copy ("overseer is not actively
   watching this task") read as a fault report — operators seeing it on a
@@ -4394,9 +4414,11 @@ export function TaskDetailContent({
   independently of the Raw Logs segment because FN-7995 persists bounded `tool_error`
   detail there; the Raw-Logs-gated display list is not a diagnostic data source.
 
+/*
   FNXC:TaskFailedBanner 2026-08-07-23:36:
   Only the latest tool completion can supply failure detail. A later `tool_result` or a blank latest `tool_error` prevents an older recovered error from being attributed to the current failure.
 
+/*
   FNXC:TaskRecoveryVocabulary 2026-08-28-01:20:
   A scheduled automatic recovery must not hide the failed-task alert. Operators still need the pending-recovery explanation and an immediate, stage-aware Retry choice.
   */
@@ -4411,6 +4433,7 @@ export function TaskDetailContent({
   (the alert), and the review-lane stall (shouldShowInReviewStallBadge), so the generic banner is only
   shown for codes the shared face predicate says the surface is responsible for.
 
+/*
   FNXC:StallReason 2026-09-02-22:06 (RUFU-177):
   The detail view is the third surface that supplies the owning agent, and it already had one: `assignedAgent`
   is fetched for this exact task at the top of the modal, so no cache or fetch is added here. Passing it is
@@ -4775,6 +4798,7 @@ export function TaskDetailContent({
     The Activity view menu is `position: fixed` and portaled to <body>, so it is anchored to the LAYOUT viewport, and `getBoundingClientRect()` returns layout-viewport-relative coordinates that a fixed element consumes directly.
     Position it purely from the layout viewport (`document.documentElement.clientWidth/clientHeight`) and never mix in `window.visualViewport` width/height/offset: under pinch-zoom or an open mobile keyboard the visual viewport diverges from the layout viewport (smaller width, nonzero offsetLeft/Top), and combining a shrunken visual-viewport width with a layout-viewport `getBoundingClientRect()` clamped `left` far off the trigger, so the popup rendered detached to the left of the modal instead of under the "Activity" tab.
 
+/*
     FNXC:TaskDetailActivity 2026-07-04-18:37:
     The menu is root-portaled so it can escape `.detail-tabs` and `.floating-window__body` clipping, but that means it must actively follow a dragged/resized task-detail popup. Recompute from the live Activity trigger rect after FloatingWindow geometry commits and pointer movement, keeping the menu above and attached to its owning modal instead of behind or detached on a stale fixed coordinate.
   */
@@ -4851,6 +4875,7 @@ export function TaskDetailContent({
   A Feed resync shares an initial slim-task detail request without invalidating its loading settlement.
   Later reads are deduplicated by requestTaskDetail and still fence against the current task generation.
 
+/*
   FNXC:TaskActivityFeedFreshness 2026-08-28-00:42:
   FN-205 must not lose an activity append that arrives while the shared initial detail request is in
   flight. Mark that request dirty and issue one follow-up authoritative read after it settles; asking
@@ -5005,6 +5030,7 @@ export function TaskDetailContent({
       FNXC:TaskDetailActivity 2026-07-03-18:00:
       Mobile iOS can emit visualViewport scroll/resize as part of the same tap sequence that opens the root-portaled Activity menu. Ignore only that short opening echo and keep the layout-viewport position fresh; later viewport, orientation, outside, Escape, task-change, and selection closes still clean up the menu.
 
+/*
       FNXC:TaskDetailActivity 2026-07-04-19:10:
       FN-7536: this recurred on Android/mobile Chrome because the window `resize`/`orientationchange`/`scroll` (capture) close path below had NO opening-guard, unlike visualViewport's. Tapping the Activity tab can itself trigger a same-gesture window `scroll` or `resize` echo (browser auto-scrolling the tapped element into view, URL-bar collapse, or IME/keyboard show), which closed the menu the instant it opened. Route ALL of resize/orientationchange/scroll through the SAME opening-viewport-guard as visualViewport so a same-gesture echo only repositions, while a later, real, viewport change still closes it.
     */
@@ -5136,6 +5162,7 @@ export function TaskDetailContent({
         FNXC:TaskDetailActivity 2026-06-30-23:59:
         The top-level Activity tab is the only Activity view dropdown trigger. Keep the stable internal `chat` tab id and `current`/`feed`/`raw-logs` segment ids, but remove the in-panel Activity view select so desktop, embedded, and mobile tab strips have one canonical view switcher.
 
+/*
         FNXC:TaskDetailActivity 2026-07-01-00:00:
         Mobile task-detail tabs intentionally overflow-scroll horizontally, so the Activity view menu must be root-portaled and viewport-positioned instead of rendered inside `.detail-tabs` where overflow clipping can blank adjacent tabs and content.
       */}
@@ -5816,6 +5843,7 @@ export function TaskDetailContent({
                   Approval actions sit beside the top approval message so an operator can act without
                   scrolling through a long task body.
 
+/*
                   FNXC:HumanPlanApproval 2026-09-16-05:01:
                   FN-448 — for a MESSAGED (human) decision this banner is the ONLY surface: the footer's
                   second HumanPlanApprovalControls duplicated the message field and the Reject/Approve
@@ -6082,12 +6110,15 @@ export function TaskDetailContent({
                 FNXC:TaskDetailPlannerChat 2026-08-28-23:05:
                 Activity owns steering/current view, Feed, raw agent logs, and Interventions inside one compact selector. The stable Activity tab id remains `chat`, legacy `logs` callers land on Feed, and Raw is the only selector option that enables raw agent-log fetching. Detailed stage reports belong only to Summary; planner-model conversation belongs to the separate `planner-chat` tab and must not route into steering comments.
 
+/*
                 FNXC:TaskDetailActivity 2026-06-30-23:55:
                 The first Activity segment is user-facing Live but keeps the legacy `current` segment id. Activity expansion is segment-wide, so the same reachable toggle must remain present on Live, Feed, and Raw without fetching Raw outside the Raw segment.
 
+/*
                 FNXC:TaskDetailActivity 2026-06-30-23:59:
                 The Activity tab in the top-level tab strip is now the view dropdown for Live, Feed, and Raw. The in-panel Activity view select was removed so Activity expansion remains the only Activity-level affordance inside the panel while legacy routing and Raw-only fetching keep their stable ids (`chat`, `current`, `feed`, `raw-logs`).
 
+/*
                 FNXC:TaskDetailActivity 2026-07-01-00:00:
                 Activity expansion must not reserve a standalone toolbar row. Live uses TaskChatTab's anchored overlay button, Feed renders the same Activity toggle over its feed panel, and Raw keeps AgentLogViewer's fullscreen control so only one Raw expand affordance is reachable.
               */}
@@ -7168,6 +7199,7 @@ export function TaskDetailContent({
                   get the same affordance, and expanding recomputes nothing: `unifiedProgress` is
                   already resolved above.
 
+/*
                   FNXC:TaskDetailDefinition 2026-09-15-16:02:
                   FN-424 replaces the chunky `Show steps` text button with the DISCREET chevron
                   already used by every other collapsible section here (`detail-source-toggle` +
@@ -7264,6 +7296,7 @@ export function TaskDetailContent({
           - Worktree terminal keeps the embedded TerminalModal shell session alive across tab flips.
           Task switch or modal close resets the latches, so terminals dispose exactly as before keep-alive (R10).
 
+/*
           FNXC:TaskDetailActivity 2026-09-12-03:19:
           Activity Live reste monté par identité de tâche après sa première ouverture. Feed, Raw et les autres onglets masquent cette surface via KeepAliveView et retirent sa cible de footer, sans réinitialiser le brouillon ni les messages optimistes.
           */}

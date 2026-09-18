@@ -96,7 +96,6 @@ export const MOBILE_NAV_PRIMARY_ITEM_NAVIGATION_ENTRY_IDS = {
   */
   chat: "chat",
   tasks: "board",
-  chat: "chat",
   agents: "agents",
   missions: "missions",
   mailbox: "mailbox",
@@ -157,6 +156,7 @@ Mobile footer customization includes every navigable sidebar and More-sheet dest
 scripts, shell controls, plugin views, separators, and `more` remain overflow-only. The resolver is gate-agnostic:
 the render layer suppresses disabled experimental destinations, and More remains the separate trailing tab.
 
+/*
 FNXC:MailboxNavigation 2026-09-09-20:02:
 Standalone Artifacts and Recommendations navigation is retired in favor of Mailbox categories. Normalize either legacy persisted mobile preference to Mailbox and deduplicate it so upgrades preserve a reachable footer choice.
 */

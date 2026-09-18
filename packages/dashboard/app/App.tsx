@@ -452,6 +452,7 @@ export function useAppDesktopRightDockComposition({
 FNXC:DashboardShortcuts 2026-07-04-12:02:
 The App-level Escape close order is factored into a pure helper so regression tests can prove the real dashboard shell ordering without rendering every lazy dashboard surface. The helper must close exactly one surface and return false when no popup is open so component-local Escape handlers remain authoritative.
 
+/*
 FNXC:DashboardShortcuts 2026-09-02-05:24:
 Escape must never dismiss a chat window the operator cannot see, mirroring the existing visible-only rule for task pop-outs while preserving the surrounding close order.
 */
@@ -896,6 +897,7 @@ const { tasks, isStale, isBoardRefreshInFlight, createTask, moveTask, boostTask,
   FNXC:Navigation 2026-06-22-00:00:
   Snapshot of the task whose detail is shown in the main panel (Board card click → full-panel detail). Kept as a snapshot so the view survives a tasks revalidation; renderMainContent prefers the live row from `tasks` by id and falls back to this snapshot.
 
+/*
   FNXC:TaskDetail 2026-06-23-00:41:
   Board task-card secondary actions can deep-link into the inline main-panel task detail. Files-changed must land on the embedded Changes tab instead of reopening the task in the modal path.
   */
@@ -1312,9 +1314,11 @@ const { tasks, isStale, isBoardRefreshInFlight, createTask, moveTask, boostTask,
   FNXC:Navigation 2026-06-19-00:00:
   Experimental left sidebar navigation replaces the Header view shortcuts with a persistent sidebar on non-mobile project screens, while mobile continues to use the bottom navigation bar as the only primary navigation surface.
 
+/*
   FNXC:Navigation 2026-06-21-00:00:
   Left sidebar navigation is now the default primary navigation on non-mobile project screens. Keep `leftSidebarNav: false` as the explicit opt-out and keep mobile on the bottom navigation bar.
 
+/*
   FNXC:Navigation 2026-09-15-14:41:
   FN-419 supersedes the flag as a PLACEMENT gate: the project setting `navigationPlacement` is now the single decider,
   resolved by `resolveNavigationSurfaces`. `leftSidebarNavEnabled` survives only as part of the `experimentalFeatures`
@@ -1365,6 +1369,7 @@ const { tasks, isStale, isBoardRefreshInFlight, createTask, moveTask, boostTask,
   `MobileNavBar` keeps `executorFooterVisible`.
   The terminal is the source of truth for its EFFECTIVE presentation, so the shell never reads `localStorage` here.
 
+/*
   FNXC:TerminalLayout 2026-09-17-04:51:
   FN-487 adds the SECOND producer of a bottom reservation: any window docked along the bottom
   (`snapMode: "bottom"`) publishes its band through the window manager, and this stack reserves it exactly like the
@@ -1412,6 +1417,7 @@ const { tasks, isStale, isBoardRefreshInFlight, createTask, moveTask, boostTask,
   FNXC:NativeShell 2026-09-11-15:01:
   App remains the sole owner of the mobile popover's accessible open state while MobileNavBar owns both its trailing pill trigger and canonical menu surface. Any shell boundary that removes the pill closes this transient menu; the legacy More drawer remains MobileNavBar-owned.
 
+/*
   FNXC:MobilePillKeyboard 2026-09-13-10:32:
   Keyboard transitions are no longer shell boundaries because the official pill remains mounted throughout them. Moving focus from a field into the opened menu closes the keyboard, so that metric change must update geometry without immediately dismissing the App-owned popover.
   */
@@ -1921,6 +1927,7 @@ const { tasks, isStale, isBoardRefreshInFlight, createTask, moveTask, boostTask,
   FNXC:DashboardShortcuts 2026-09-16-02:27:
   FN-441 : le clavier doit choisir le MÊME hôte et la MÊME ancre que le pointeur.
 
+/*
   FNXC:DashboardShortcuts 2026-09-16-19:44:
   FN-468 déplace la frontière : sur tout le shell mobile (téléphone ET tablette, sous 1024 px) la liste des chats
   est la destination `chat` (tiroir plein écran de MainViewKeepAlive), parce que la popover du pied de page n'a
@@ -2293,6 +2300,7 @@ const { tasks, isStale, isBoardRefreshInFlight, createTask, moveTask, boostTask,
   "popup" closes the dock Chat selection and re-opens the popover anchored to the footer Chat button.
   openToolPanel toggles, so closeToolPanel must run first in both branches.
 
+/*
   FNXC:ChatPresentationToggle 2026-09-17-01:10:
   Operator correction: "nechcem view s right barom, chcem klasicke view s lavym zoznamom chatov" —
   View means the CLASSIC full-page Chat (conversation list left, conversation right), not the right
@@ -2339,6 +2347,7 @@ const { tasks, isStale, isBoardRefreshInFlight, createTask, moveTask, boostTask,
   the inverse transition: when the main page is the resolved Chat host, a dock whose selected tool is Chat is RE-POINTED
   to the default dock tool instead of being closed.
 
+/*
   FNXC:ChatSurfaceUnification 2026-09-15-15:40:
   Closing the dock here made it unopenable: the dock's selected view is persisted (`fusion:right-dock-view`), so an
   operator who last used the dock's Chat tab in `footer` placement kept `selectedView === "chat"` forever. Every
@@ -3099,6 +3108,7 @@ const { tasks, isStale, isBoardRefreshInFlight, createTask, moveTask, boostTask,
       Mount the terminal ONLY while it is open. It used to be mounted for the whole session (visibility driven purely by `isOpen`), so a closed terminal still ran `useTerminalSessions` + `useTerminal`: a live PTY WebSocket, its heartbeat interval, and — because xterm is torn down on close, leaving no `onData` subscriber — an UNBOUNDED client-side buffer of every byte the shell emitted while the user was elsewhere. Background timers/sockets are a primary tab-discard signal on iOS Safari and Chrome Android, and the growing buffer is the memory pressure that triggers the discard; together they are why returning to the dashboard after a few minutes costs a full white-splash reload.
       This does NOT regress the "persist across tab switches" requirement: `terminalOpen` survives view switches, so switching views keeps the modal mounted and its buffer intact. Only an explicit close unmounts. Terminal tabs are server-side PTY sessions restored on reopen, with scrollback replayed by the server on reconnect.
 
+/*
       FNXC:Terminal 2026-07-26-14:10 (CORRECTION — the paragraph above originally ended "close already disposed xterm and its scrollback, so nothing is lost that closing did not already discard"; that was FALSE and must not be reasserted):
       Closing DID dispose xterm, but the WebSocket stayed open with zero `onData` subscribers, so `useTerminal`'s `initialBufferRef.current.data` accumulated EVERY byte emitted while closed and `onData()` replayed the whole array verbatim when xterm re-initialized on reopen. Reopen was therefore lossless for arbitrarily long closed-terminal output. It no longer is: unmounting closes the socket, and reopen now starts from the server's replay — `MAX_SCROLLBACK_SIZE = 50000` CHARACTERS in `packages/dashboard/src/terminal-service.ts` (~600-800 typical lines), not lines and not unbounded.
       Keeping the component mounted is nonetheless the WRONG repair, because the property it preserved was itself the defect: that buffer has no cap and is never drained while closed, so a long-running command (a watch build, `tail -f`) left in a closed terminal grows the heap without bound for as long as the app is open — strictly worse than losing scrollback, and precisely the memory pressure that gets the tab discarded. There is no in-component way to keep both properties: the buffer lives inside `useTerminal`, which cannot outlive the mount.
@@ -3205,15 +3215,19 @@ const { tasks, isStale, isBoardRefreshInFlight, createTask, moveTask, boostTask,
       FNXC:FloatingWindow 2026-06-22-20:45:
       One movable, resizable, non-blocking FloatingWindow per popped-out task. Each hosts the same embedded TaskDetailContent List/Board use, wired to the same App task handlers. Live row preferred by id; falls back to the snapshot. Terminal/destructive actions and the window close button both remove the entry. Multiple entries → multiple coexisting windows; FloatingWindow's per-window z-counter handles focus-to-front so the clicked one comes on top.
 
+/*
       FNXC:TaskDetail 2026-06-22-12:20:
       Task pop-outs use TaskDetailContent's own gray header as the only visible header, matching the one-header fixed task modal while keeping FloatingWindow drag/resize. The generic Maximize title chrome is hidden; close now lives beside edit inside the task header.
 
+/*
       FNXC:TaskPopupGeometry 2026-09-14-22:36:
       Every task-detail FloatingWindow keeps its per-task windowKey for DOM identity, dedupe, and z-index independence. FN-394 deleted durable window geometry: a task popup is NOT restored from a stored rectangle and no longer shares one with the other task popups. Each opening is its own — standard size, centred in the live work area — with separation supplied only by the shared manager-owned cascade of untouched windows.
 
+/*
       FNXC:TaskPopupLayer 2026-09-14-22:36:
       Task-detail, Chat, and utility windows share ONE stack since FN-394, so a newly opened window of any type comes in front and pointer/focus raises whichever surface the operator engages.
 
+/*
       FNXC:TaskWindowIdentity 2026-09-14-17:46:
       FN-392: every entry renders one window keyed by task id, and a view change mutates nothing here. The embedded task
       detail — including an open terminal WebSocket and any child dialog — stays mounted and visible as the operator
