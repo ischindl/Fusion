@@ -1,0 +1,13 @@
+packages/engine/src/__tests__/workflow-admission-hold.test.ts
+packages/engine/src/__tests__/assistant-text-capture.test.ts
+packages/engine/src/__tests__/continuation-drain-guard-release-invariant.test.ts
+packages/engine/src/__tests__/executor-graph-requeue-gate.test.ts
+packages/engine/src/__tests__/executor-tool-failure-retry.test.ts
+packages/engine/src/__tests__/hold-release-sweep-bounded-db-work.test.ts
+packages/engine/src/__tests__/pre-merge-gate-reseed.test.ts
+packages/engine/src/__tests__/self-healing-orphaned-pending-step-results.test.ts
+packages/engine/src/__tests__/unrun-pre-merge-gate-wedge.test.ts
+packages/engine/src/__tests__/planning-execution-liveness.test.ts
+packages/engine/src/__tests__/triage-preflight.test.ts
+packages/engine/src/__tests__/workflow-graph-optional-step-fix.test.ts
+packages/engine/src/__tests__/reviewer.test.ts

@@ -8,6 +8,17 @@ import { acquireTaskAdvisoryXactLock } from "./task-advisory-lock.js";
 import { getTaskActivityLogEntryLimit, truncateTaskLogOutcome } from "./comments.js";
 import { overlapDeliverySnapshots, observedOverlapDeliveries, mergeOverlapDeliverySnapshots } from "../tasks/overlap-wait-release.js";
 
+/*
+FNXC:OverlapWaitSynchronization 2026-09-17-00:05:
+Persistence for FN-332 "overlap wait synchronization": a file-scope wait must stay durable after
+the transient `task.overlapBlockedBy` marker clears. Every observed predecessor edge is recorded
+into `project.task_overlap_waits` in the SAME transaction that would otherwise replace/clear the
+marker (see observeOverlapWaitTransitionInTransaction, called from audit-ops.ts
+transitionQueuedEpisodeImpl and reset-lifecycle.ts). The executor later claims a pending episode,
+proves delivery freshness, and publishes exactly one of resume/briefing/revalidate before the
+continuation may resume — see packages/engine/src/workflows/overlap-plan-revalidation.ts.
+*/
+
 function mapRow(row: typeof schema.project.taskOverlapWaits.$inferSelect): TaskOverlapWait {
   return {
     projectId: row.projectId,
@@ -271,7 +282,15 @@ export async function claimTaskOverlapWaitImpl(store: TaskStore, claim: OverlapW
 
 export async function completeTaskOverlapWaitImpl(
   store: TaskStore,
-  input: { taskId: string; episodeId: string; expectedRevision: number; owner: string; phase?: "ready" | "delivered" | "freshness-pending"; receipt: OverlapWaitReceipt; executionIdentity?: OverlapWaitExecutionIdentity },
+  /*
+  FNXC:MergeRebuild0919 2026-09-19-21:45:
+  The phase union keeps canonical's `revalidation-pending` / `repair-required` values: canonical's
+  `overlap-plan-revalidation.ts` publishes `phase: "revalidation-pending"` for a `revalidate` decision,
+  and `project.task_overlap_waits`' phase CHECK constraint admits both. Everything else in this
+  implementation stays on our line, which supersedes canonical here — see the `durablePlanFingerprint`
+  note below (canonical still compares `sha256(task.prompt)`, a value no task row column can produce).
+  */
+  input: { taskId: string; episodeId: string; expectedRevision: number; owner: string; phase?: "ready" | "delivered" | "freshness-pending" | "revalidation-pending" | "repair-required"; receipt: OverlapWaitReceipt; executionIdentity?: OverlapWaitExecutionIdentity },
 ): Promise<TaskOverlapWait | null> {
   const layer = store.asyncLayer;
   if (!layer) throw new Error("Overlap wait completion requires a PostgreSQL store");

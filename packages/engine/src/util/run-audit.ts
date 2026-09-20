@@ -646,6 +646,11 @@ export type DatabaseMutationType =
   // FNXC:GhostBugPreflight 2026-09-07-17:01: Auto-delete visibility records IDs, counts, and fixed outcomes only: { taskId, reason, constructCount, definitiveCount, missingCount, controlOutcome }.
   | "task:auto-deleted-ghost-bug"
   | "task:auto-archived-ghost-bug"
+  // FNXC:GhostBugPreflight 2026-09-17-00:00: detached, best-effort visibility emitted alongside the
+  // task:auto-archived-ghost-bug activity row. Metadata is ids/counts/fixed-outcomes only:
+  // { taskId, reason, constructCount, definitiveCount, missingCount, controlOutcome }. Never raw
+  // finding prose (that lives only in the task's logEntry, not run-audit).
+  | "task:auto-archived-ghost-bug-visibility"
   | "task:auto-archived-duplicate"
   /** Metadata: { taskId, source: "live-column" | "cold-storage", movedCount, restoredCount, outcome } */
   | "task:reconcile-archived-into-done"

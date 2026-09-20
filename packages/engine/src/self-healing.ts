@@ -559,7 +559,16 @@ export interface SelfHealingOptions {
   localNodeId?: string;
   /** Optional callback to release TaskExecutor in-memory worktree ownership for a task. */
   releaseExecutorWorktreeOwnership?: (taskId: string) => void;
-  /** Release exact dependent waits only after completion fan-out durably clears their overlap lease. */
+  /**
+   * Release exact dependent waits only after a sweep durably clears their overlap lease.
+   *
+   * FNXC:OverlapWaitSynchronization 2026-09-18-01:00:
+   * Best-effort wake for a task's file-scope-blocked workflow continuation after a self-healing sweep
+   * has itself cleared `overlapBlockedBy` (the holder died, went terminal, or was soft-deleted before
+   * it could publish a normal overlap-wait release) — see releaseFileScopeWaitingContinuations
+   * in runtimes/in-process-runtime.ts, which is what the runtime wires in here. A missing/throwing/
+   * rejecting callback must never affect the sweep's own recovery count or outcome.
+   */
   onOverlapBlockersReleased?: (releases: readonly OverlapBlockerRelease[]) => void | Promise<void>;
   /**
    * FN-6782: read-only snapshot of the executor's in-memory worktree holders
@@ -1017,6 +1026,12 @@ function isPrincipalHeldPlanningStatusOwned(status: Task["status"] | undefined):
   return status === null || status === undefined;
 }
 
+/*
+FNXC:WorkflowRecovery 2026-09-17-06:00 (FN-9304):
+Result of `reconcileLandedReviewTask`. `not-landed`/`raced`/`ineligible` are all REFUSALS — the
+caller (CLI or sweep) must never treat them as success. `ineligible` reasons name exactly which
+liveness/eligibility fence blocked reconciliation so an operator retry has a concrete next step.
+*/
 export type LandedReviewReconcileResult =
   | { outcome: "reconciled"; sha: string; strategy: string; baseBranch: string }
   | { outcome: "already-complete" }
@@ -7881,6 +7896,19 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       });
       if (deadlockingDependency.overlapBlockedBy === holder.id) {
         await this.store.updateTask(deadlockingDependency.id, { overlapBlockedBy: null, status: null });
+        /*
+        FNXC:OverlapWaitSynchronization 2026-09-18-01:15:
+        The deadlock-breaking rebound above is itself the release: `deadlockingDependency` can never
+        publish a normal overlap-wait release while `holder` still lives, because it is the thing
+        keeping the dependency queued. Wake its continuation immediately per-iteration rather than
+        batching, since this sweep processes at most one deadlock pair per holder per pass.
+        */
+        try {
+          await this.options.onOverlapBlockersReleased?.([{ taskId: deadlockingDependency.id, blockerId: holder.id }]);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          log.warn(`reconcileDependencyBlockingLeases: overlap-wait release wake failed for ${deadlockingDependency.id}: ${message}`);
+        }
       }
       await this.store.logEntry(
         holder.id,
@@ -14768,10 +14796,22 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   /**
    * Reconciles an absent post-merge branch only after ownership proof and liveness fences agree.
    *
-   * FNXC:WorkflowRecovery 2026-09-15-15:27 (FN-9304):
-   * The engine registry is authoritative only for this process, while a CLI has an intentionally
-   * empty registry. Pair that local fence with durable pause, status, and checkout-lease evidence;
-   * neither tier alone can safely finalize a card owned by another process.
+   * FNXC:WorkflowRecovery 2026-09-17-06:00 (FN-9304):
+   * `fn task reconcile <id>` restores a review card whose branch was already cleaned up after
+   * landing — the engine's own sweep can miss this window (a git prune raced the merge-confirm
+   * write, or the branch was removed by an operator/CI job). A CLI invocation is a SEPARATE
+   * process with an intentionally empty in-memory registry (no `activeSessionRegistry`,
+   * `executingTaskLock` entries from a live engine), so it cannot itself prove idleness. This
+   * method is the single durable fence BOTH the CLI and the self-healing sweep call through: it
+   * layers the in-process liveness signals with durable pause/status/lease evidence so neither a
+   * CLI process nor a maintenance tick can finalize a card another process still owns.
+   *
+   * Ownership proof is git evidence, never an assumption: `isBranchTipMisboundToTask` reports
+   * `branchMissing` only when the branch ref itself cannot be resolved, and `landed` is populated
+   * only when `findAlreadyMergedTaskCommit` finds an ownership-trailer-anchored commit on the base
+   * branch. No branch + no landed commit => `not-landed`, and the review approval already recorded
+   * on the card is never fabricated or bypassed — reconciliation only finalizes a card whose review
+   * gate already passed before its branch disappeared.
    */
   async reconcileLandedReviewTask(
     taskId: string,
@@ -14792,8 +14832,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     const livePaths = activeSessionRegistry.pathsForTask(task.id).filter((path) => activeSessionRegistry.isPathActive(path));
     if (livePaths.length > 0) return { outcome: "ineligible", reason: "live-session" };
     if (executingTaskLock.has(task.id) || this.options.isTaskActive?.(task.id) === true) return { outcome: "ineligible", reason: "executing" };
-    // FNXC:WorkflowRecovery 2026-09-15-16:05 (FN-9304): Every canonical merge-active
-    // status, including clean-room review and landing, proves a merger may still own this card.
+    // FNXC:WorkflowRecovery 2026-09-17-06:00 (FN-9304): every canonical merge-active status
+    // (reviewing/landing/etc.) proves a merger may still own this card, not only "executing".
     if (task.status === "executing" || task.status === "in-progress" || isMergeActiveStatus(task.status)) return { outcome: "ineligible", reason: "executing" };
     const graceMs = (settings.taskStuckTimeoutMs ?? STALE_ACTIVE_BRANCH_EXECUTION_GRACE_MS) * PHANTOM_EXECUTOR_BINDING_AGE_MULTIPLIER;
     const leaseAge = task.checkoutLeaseRenewedAt ? Date.now() - Date.parse(task.checkoutLeaseRenewedAt) : Number.POSITIVE_INFINITY;
@@ -14805,6 +14845,13 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     const check = await this.isBranchTipMisboundToTask({ branch, taskId: task.id, lineageId: task.lineageId, baseBranch: mergeTarget.branch });
     if (!check.branchMissing) return { outcome: "ineligible", reason: "branch-present" };
     if (!check.landed) return { outcome: "not-landed", baseBranch: mergeTarget.branch };
+    /*
+    FNXC:WorkflowRecovery 2026-09-17-06:00 (FN-9304):
+    Compare-and-set fence: re-read the exact fields the eligibility checks above examined and
+    commit the mutation only if none changed between the check and the write. A concurrent write
+    (operator unpause, another reconcile attempt, engine picking the card back up) fails the CAS
+    and reports `raced` rather than silently overwriting whatever changed.
+    */
     const fingerprint = JSON.stringify({ column: task.column, status: task.status ?? null, paused: !!task.paused, userPaused: !!task.userPaused, branch, mergeConfirmed: !!task.mergeDetails?.mergeConfirmed, checkoutRunId: task.checkoutRunId ?? null, checkoutLeaseRenewedAt: task.checkoutLeaseRenewedAt ?? null });
     const mergeDetails: MergeDetails = { commitSha: check.landed.sha, mergedAt: new Date().toISOString(), mergeConfirmed: true, prNumber: getPrimaryPrInfo(task)?.number, mergeTargetBranch: mergeTarget.branch, mergeTargetSource: mergeTarget.source };
     let committed = false;
@@ -14830,8 +14877,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     await this.store.logEntry(task.id, `Auto-reconciled: absent branch with landed content on ${mergeTarget.branch} at ${check.landed.sha.slice(0, 8)} via ${check.landed.strategy}`);
     await this.reconcileCompletedTask(task.id, { worktreeHint: task.worktree ?? undefined });
     /*
-    FNXC:RunAudit 2026-09-15-15:27 (FN-9304):
-    Reconciliation telemetry uses the FN-9175 bounded seam after the CAS mutation. An absent,
+    FNXC:RunAudit 2026-09-17-06:00 (FN-9304):
+    Reconciliation telemetry uses the FN-9175 bounded seam after the CAS mutation lands. An absent,
     throwing, rejecting, hanging, or late audit sink must never alter or wedge card finalization.
     */
     await emitBoundedRunAudit(this.store, { taskId: task.id, agentId: "self-healing", runId: generateSyntheticRunId("reconcile-absent-branch", task.id), domain: "database", mutationType: "task:reconcile-absent-branch-landed", target: task.id, metadata: { taskId: task.id, source: options.source, branch, baseBranch: mergeTarget.branch, mergeSha: check.landed.sha, mergeStrategy: check.landed.strategy, ownershipProof: "trailer" } }, { log });

@@ -1,13 +1,13 @@
 {
   "classic-cozy-cartoon-light-desktop": {
     "colour": {
-      "bodyBackground": "rgba(255, 255, 255, 0.875)",
+      "bodyBackground": "rgb(255, 255, 255)",
       "surfaceBackground": "rgb(255, 255, 255)",
-      "surfaceColor": "rgb(13, 14, 16)",
+      "surfaceColor": "rgb(31, 35, 40)",
       "surfaceBorder": "rgb(208, 215, 222)",
       "buttonBackground": "rgb(255, 255, 255)",
-      "buttonColor": "rgb(13, 14, 16)",
-      "optionColor": "rgb(3, 4, 4)",
+      "buttonColor": "rgb(31, 35, 40)",
+      "optionColor": "rgb(31, 35, 40)",
       "tabColor": "rgb(31, 35, 40)"
     },
     "shape": {
@@ -22,13 +22,13 @@
   },
   "classic-cozy-cartoon-light-mobile": {
     "colour": {
-      "bodyBackground": "rgba(255, 255, 255, 0.706)",
+      "bodyBackground": "rgb(255, 255, 255)",
       "surfaceBackground": "rgb(255, 255, 255)",
-      "surfaceColor": "rgb(7, 8, 9)",
+      "surfaceColor": "rgb(31, 35, 40)",
       "surfaceBorder": "rgb(208, 215, 222)",
       "buttonBackground": "rgb(255, 255, 255)",
-      "buttonColor": "rgb(7, 8, 9)",
-      "optionColor": "rgb(0, 0, 0)",
+      "buttonColor": "rgb(31, 35, 40)",
+      "optionColor": "rgb(31, 35, 40)",
       "tabColor": "rgb(31, 35, 40)"
     },
     "shape": {
@@ -43,13 +43,13 @@
   },
   "classic-cozy-cartoon-dark-desktop": {
     "colour": {
-      "bodyBackground": "rgba(13, 17, 23, 0.875)",
+      "bodyBackground": "rgb(13, 17, 23)",
       "surfaceBackground": "rgb(33, 38, 45)",
-      "surfaceColor": "rgb(51, 52, 54)",
+      "surfaceColor": "rgb(230, 237, 243)",
       "surfaceBorder": "rgb(48, 54, 61)",
       "buttonBackground": "rgb(33, 38, 45)",
-      "buttonColor": "rgb(51, 52, 54)",
-      "optionColor": "rgb(0, 0, 0)",
+      "buttonColor": "rgb(230, 237, 243)",
+      "optionColor": "rgb(230, 237, 243)",
       "tabColor": "rgb(230, 237, 243)"
     },
     "shape": {
@@ -64,13 +64,13 @@
   },
   "classic-cozy-cartoon-dark-mobile": {
     "colour": {
-      "bodyBackground": "rgba(13, 17, 23, 0.706)",
+      "bodyBackground": "rgb(13, 17, 23)",
       "surfaceBackground": "rgb(33, 38, 45)",
-      "surfaceColor": "rgb(94, 97, 99)",
+      "surfaceColor": "rgb(230, 237, 243)",
       "surfaceBorder": "rgb(48, 54, 61)",
       "buttonBackground": "rgb(33, 38, 45)",
-      "buttonColor": "rgb(94, 97, 99)",
-      "optionColor": "rgb(26, 27, 27)",
+      "buttonColor": "rgb(230, 237, 243)",
+      "optionColor": "rgb(230, 237, 243)",
       "tabColor": "rgb(230, 237, 243)"
     },
     "shape": {
@@ -85,13 +85,13 @@
   },
   "classic-shadcn-purple-light-desktop": {
     "colour": {
-      "bodyBackground": "rgba(255, 255, 255, 0.706)",
+      "bodyBackground": "rgb(255, 255, 255)",
       "surfaceBackground": "rgb(255, 255, 255)",
-      "surfaceColor": "rgb(13, 14, 16)",
+      "surfaceColor": "rgb(31, 35, 40)",
       "surfaceBorder": "rgb(208, 215, 222)",
       "buttonBackground": "rgb(255, 255, 255)",
-      "buttonColor": "rgb(13, 14, 16)",
-      "optionColor": "rgb(3, 4, 4)",
+      "buttonColor": "rgb(31, 35, 40)",
+      "optionColor": "rgb(31, 35, 40)",
       "tabColor": "rgb(31, 35, 40)"
     },
     "shape": {
@@ -106,13 +106,13 @@
   },
   "classic-shadcn-purple-light-mobile": {
     "colour": {
-      "bodyBackground": "rgba(255, 255, 255, 0.706)",
+      "bodyBackground": "rgb(255, 255, 255)",
       "surfaceBackground": "rgb(255, 255, 255)",
-      "surfaceColor": "rgb(13, 14, 16)",
+      "surfaceColor": "rgb(31, 35, 40)",
       "surfaceBorder": "rgb(208, 215, 222)",
       "buttonBackground": "rgb(255, 255, 255)",
-      "buttonColor": "rgb(13, 14, 16)",
-      "optionColor": "rgb(3, 4, 4)",
+      "buttonColor": "rgb(31, 35, 40)",
+      "optionColor": "rgb(31, 35, 40)",
       "tabColor": "rgb(31, 35, 40)"
     },
     "shape": {
@@ -127,13 +127,13 @@
   },
   "classic-shadcn-purple-dark-desktop": {
     "colour": {
-      "bodyBackground": "rgba(13, 17, 23, 0.706)",
+      "bodyBackground": "rgb(13, 17, 23)",
       "surfaceBackground": "rgb(33, 38, 45)",
-      "surfaceColor": "rgb(94, 97, 99)",
+      "surfaceColor": "rgb(230, 237, 243)",
       "surfaceBorder": "rgb(48, 54, 61)",
       "buttonBackground": "rgb(33, 38, 45)",
-      "buttonColor": "rgb(94, 97, 99)",
-      "optionColor": "rgb(26, 27, 27)",
+      "buttonColor": "rgb(230, 237, 243)",
+      "optionColor": "rgb(230, 237, 243)",
       "tabColor": "rgb(230, 237, 243)"
     },
     "shape": {
@@ -148,13 +148,13 @@
   },
   "classic-shadcn-purple-dark-mobile": {
     "colour": {
-      "bodyBackground": "rgba(13, 17, 23, 0.875)",
+      "bodyBackground": "rgb(13, 17, 23)",
       "surfaceBackground": "rgb(33, 38, 45)",
-      "surfaceColor": "rgb(51, 52, 54)",
+      "surfaceColor": "rgb(221, 228, 233)",
       "surfaceBorder": "rgb(48, 54, 61)",
       "buttonBackground": "rgb(33, 38, 45)",
-      "buttonColor": "rgb(51, 52, 54)",
-      "optionColor": "rgb(0, 0, 0)",
+      "buttonColor": "rgb(221, 228, 233)",
+      "optionColor": "rgb(213, 219, 225)",
       "tabColor": "rgb(230, 237, 243)"
     },
     "shape": {
@@ -169,13 +169,13 @@
   },
   "clean-cozy-cartoon-light-desktop": {
     "colour": {
-      "bodyBackground": "rgba(255, 255, 255, 0.85)",
+      "bodyBackground": "rgb(255, 255, 255)",
       "surfaceBackground": "rgb(255, 255, 255)",
-      "surfaceColor": "rgb(18, 20, 23)",
+      "surfaceColor": "rgb(31, 35, 40)",
       "surfaceBorder": "rgb(208, 215, 222)",
       "buttonBackground": "rgb(255, 255, 255)",
-      "buttonColor": "rgb(18, 20, 23)",
-      "optionColor": "rgb(5, 6, 7)",
+      "buttonColor": "rgb(31, 35, 40)",
+      "optionColor": "rgb(31, 35, 40)",
       "tabColor": "rgb(31, 35, 40)"
     },
     "shape": {
@@ -190,13 +190,13 @@
   },
   "clean-cozy-cartoon-light-mobile": {
     "colour": {
-      "bodyBackground": "rgba(255, 255, 255, 0.85)",
+      "bodyBackground": "rgb(255, 255, 255)",
       "surfaceBackground": "rgb(255, 255, 255)",
-      "surfaceColor": "rgb(18, 20, 23)",
+      "surfaceColor": "rgb(31, 35, 40)",
       "surfaceBorder": "rgb(208, 215, 222)",
       "buttonBackground": "rgb(255, 255, 255)",
-      "buttonColor": "rgb(18, 20, 23)",
-      "optionColor": "rgb(5, 6, 7)",
+      "buttonColor": "rgb(31, 35, 40)",
+      "optionColor": "rgb(31, 35, 40)",
       "tabColor": "rgb(31, 35, 40)"
     },
     "shape": {
@@ -211,13 +211,13 @@
   },
   "clean-cozy-cartoon-dark-desktop": {
     "colour": {
-      "bodyBackground": "rgba(13, 17, 23, 0.85)",
+      "bodyBackground": "rgb(13, 17, 23)",
       "surfaceBackground": "rgb(33, 38, 45)",
-      "surfaceColor": "rgb(80, 82, 84)",
+      "surfaceColor": "rgb(230, 237, 243)",
       "surfaceBorder": "rgb(48, 54, 61)",
       "buttonBackground": "rgb(33, 38, 45)",
-      "buttonColor": "rgb(80, 82, 84)",
-      "optionColor": "rgb(0, 0, 0)",
+      "buttonColor": "rgb(230, 237, 243)",
+      "optionColor": "rgb(230, 237, 243)",
       "tabColor": "rgb(230, 237, 243)"
     },
     "shape": {
@@ -232,13 +232,13 @@
   },
   "clean-cozy-cartoon-dark-mobile": {
     "colour": {
-      "bodyBackground": "rgba(13, 17, 23, 0.85)",
+      "bodyBackground": "rgb(13, 17, 23)",
       "surfaceBackground": "rgb(33, 38, 45)",
-      "surfaceColor": "rgb(132, 136, 140)",
+      "surfaceColor": "rgb(230, 237, 243)",
       "surfaceBorder": "rgb(48, 54, 61)",
       "buttonBackground": "rgb(33, 38, 45)",
-      "buttonColor": "rgb(132, 136, 140)",
-      "optionColor": "rgb(37, 39, 40)",
+      "buttonColor": "rgb(230, 237, 243)",
+      "optionColor": "rgb(230, 237, 243)",
       "tabColor": "rgb(230, 237, 243)"
     },
     "shape": {
@@ -253,13 +253,13 @@
   },
   "clean-shadcn-purple-light-desktop": {
     "colour": {
-      "bodyBackground": "rgba(255, 255, 255, 0.74)",
+      "bodyBackground": "rgb(255, 255, 255)",
       "surfaceBackground": "rgb(255, 255, 255)",
-      "surfaceColor": "rgb(11, 12, 14)",
+      "surfaceColor": "rgb(31, 35, 40)",
       "surfaceBorder": "rgb(208, 215, 222)",
       "buttonBackground": "rgb(255, 255, 255)",
-      "buttonColor": "rgb(11, 12, 14)",
-      "optionColor": "rgb(0, 0, 0)",
+      "buttonColor": "rgb(31, 35, 40)",
+      "optionColor": "rgb(31, 35, 40)",
       "tabColor": "rgb(31, 35, 40)"
     },
     "shape": {
@@ -274,13 +274,13 @@
   },
   "clean-shadcn-purple-light-mobile": {
     "colour": {
-      "bodyBackground": "rgba(255, 255, 255, 0.97)",
+      "bodyBackground": "rgb(255, 255, 255)",
       "surfaceBackground": "rgb(255, 255, 255)",
-      "surfaceColor": "rgb(23, 26, 30)",
+      "surfaceColor": "rgb(31, 35, 40)",
       "surfaceBorder": "rgb(208, 215, 222)",
       "buttonBackground": "rgb(255, 255, 255)",
-      "buttonColor": "rgb(23, 26, 30)",
-      "optionColor": "rgb(15, 16, 19)",
+      "buttonColor": "rgb(31, 35, 40)",
+      "optionColor": "rgb(31, 35, 40)",
       "tabColor": "rgb(31, 35, 40)"
     },
     "shape": {
@@ -295,13 +295,13 @@
   },
   "clean-shadcn-purple-dark-desktop": {
     "colour": {
-      "bodyBackground": "rgba(13, 17, 23, 0.85)",
+      "bodyBackground": "rgb(13, 17, 23)",
       "surfaceBackground": "rgb(33, 38, 45)",
-      "surfaceColor": "rgb(80, 82, 84)",
+      "surfaceColor": "rgb(230, 237, 243)",
       "surfaceBorder": "rgb(48, 54, 61)",
       "buttonBackground": "rgb(33, 38, 45)",
-      "buttonColor": "rgb(80, 82, 84)",
-      "optionColor": "rgb(38, 39, 40)",
+      "buttonColor": "rgb(230, 237, 243)",
+      "optionColor": "rgb(230, 237, 243)",
       "tabColor": "rgb(230, 237, 243)"
     },
     "shape": {
@@ -316,13 +316,13 @@
   },
   "clean-shadcn-purple-dark-mobile": {
     "colour": {
-      "bodyBackground": "rgba(13, 17, 23, 0.97)",
+      "bodyBackground": "rgb(13, 17, 23)",
       "surfaceBackground": "rgb(33, 38, 45)",
-      "surfaceColor": "rgb(80, 82, 84)",
+      "surfaceColor": "rgb(230, 237, 243)",
       "surfaceBorder": "rgb(48, 54, 61)",
       "buttonBackground": "rgb(33, 38, 45)",
-      "buttonColor": "rgb(80, 82, 84)",
-      "optionColor": "rgb(0, 0, 0)",
+      "buttonColor": "rgb(230, 237, 243)",
+      "optionColor": "rgb(230, 237, 243)",
       "tabColor": "rgb(230, 237, 243)"
     },
     "shape": {

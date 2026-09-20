@@ -273,6 +273,16 @@ export async function resetTaskPublicationImpl(
       await tx.delete(schema.project.taskVerificationRequests).where(and(projectScopeFor(schema.project.taskVerificationRequests.projectId, projectId), eq(schema.project.taskVerificationRequests.taskId, taskId)));
       await tx.delete(schema.project.unplannedExecutionBlocks).where(and(projectScopeFor(schema.project.unplannedExecutionBlocks.projectId, projectId), eq(schema.project.unplannedExecutionBlocks.taskId, taskId)));
       await tx.delete(schema.project.completionHandoffMarkers).where(and(projectScopeFor(schema.project.completionHandoffMarkers.projectId, projectId), eq(schema.project.completionHandoffMarkers.taskId, taskId)));
+      /*
+      FNXC:OverlapWaitSynchronization 2026-09-17-00:12:
+      Reset invalidates any in-flight generation: cancel rather than delete so a stale owner's
+      completeTaskOverlapWait races against the phase check and loses, without erasing history.
+
+      FNXC:OverlapWaitRelease 2026-09-17-06:29:
+      Stamp the blocker's own waits BEFORE the merge evidence is discarded, so an already landed
+      delivery survives and an unlanded execution is explicitly abandoned. `projectId` is already
+      normalised at the top of this transaction, so it needs no `?? "__legacy_unscoped__"` here.
+      */
       await recordOverlapBlockerResetInTransaction(tx, projectId, current);
       await cancelTaskOverlapWaitsInTransaction(tx, projectId, taskId);
       await tx.delete(schema.project.mergeQueue).where(and(projectScopeFor(schema.project.mergeQueue.projectId, projectId), eq(schema.project.mergeQueue.taskId, taskId)));

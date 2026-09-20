@@ -4,4 +4,4 @@
 
 summary: Keep tablet task windows responsive to touch resize gestures.
 category: fix
-dev: Restores reachable shared FloatingWindow touch targets for Task Detail, Agent List, and Setup Wizard.
+dev: Reserves a shared geometry inset for tablet touch viewports so FloatingWindow's corner/edge resize handles stay inside the visible viewport at tablet touch widths, and memoizes the resolved minimum window size so callers passing an inline `minSize` object no longer invalidate geometry-dependent effects on every render.

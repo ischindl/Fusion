@@ -137,7 +137,7 @@ import {
   isFusionDeletableBranch,
   classifyTaskBranchOrigin,
   type WorkflowIr,
-  type OverlapWaitLandedPath
+  type OverlapWaitLandedPath,
 } from "@fusion/core";
 import { evaluateAutoMergeFactProviders } from "./merge/auto-merge-fact-providers.js";
 import { resolveMergePolicy } from "./merge/merge-trait.js";
@@ -5128,6 +5128,15 @@ export interface MergerOptions {
 }
 
 
+/*
+FNXC:OverlapWaitSynchronization 2026-09-18-01:30:
+Per-path status (added/modified/deleted/renamed), not just the flat name list
+`captureSingleCommitLandedMetadata` returns. An overlap-wait release receipt needs to say what
+KIND of change landed on each shared file (a rename with a `previousPath` is a materially
+different fact than a plain modification) so a resuming task's briefing/revalidate decision can
+be precise about it. `git show --name-status -z` NUL-delimits fields so paths containing
+whitespace or unusual characters parse safely regardless of `core.quotepath`.
+*/
 export async function captureSingleCommitLandedPaths(
   rootDir: string,
   sha: string,
@@ -9629,20 +9638,32 @@ export async function aiMergeTask(
       mergeDetails,
       modifiedFiles: noOpVerifiedShortCircuit ? undefined : landedFiles && landedFiles.length > 0 ? landedFiles : undefined,
     });
+    /*
+    FNXC:OverlapWaitSynchronization 2026-09-18-01:35:
+    Publish this landing as an overlap-wait delivery snapshot for every task currently waiting on
+    `taskId` — best-effort and optional-method-gated so a store that predates the overlap-wait
+    persistence layer (older test doubles, a store built before this reimplementation) is unaffected.
+    A resuming waiter's overlap-plan-revalidation pass reads this snapshot to decide
+    resume/briefing/revalidate without needing to re-derive it from Git itself.
+    */
     if (typeof (store as Partial<TaskStore>).publishTaskOverlapDeliveries === "function") {
-      const currentTask = await store.getTask(taskId);
-      const paths = recordedSha ? await captureSingleCommitLandedPaths(rootDir, recordedSha) : [];
-      await store.publishTaskOverlapDeliveries(taskId, [{
-        blockerTaskId: taskId,
-        blockerLineageId: currentTask?.lineageId,
-        repository: ".",
-        target: mergeTarget.branch,
-        landedSha: recordedSha,
-        paths,
-        noOp: noOpVerifiedShortCircuit === true || mergeWasEmpty,
-        evidence: landedFilesCaptureFallback === "attribution-failed" ? "unavailable" : "merge-details",
-        summary: currentTask?.summary,
-      }]);
+      try {
+        const currentTask = await store.getTask(taskId);
+        const paths = recordedSha ? await captureSingleCommitLandedPaths(rootDir, recordedSha) : [];
+        await store.publishTaskOverlapDeliveries(taskId, [{
+          blockerTaskId: taskId,
+          blockerLineageId: currentTask?.lineageId,
+          repository: ".",
+          target: mergeTarget.branch,
+          landedSha: recordedSha,
+          paths,
+          noOp: noOpVerifiedShortCircuit === true || mergeWasEmpty,
+          evidence: landedFilesCaptureFallback === "attribution-failed" ? "unavailable" : "merge-details",
+          summary: currentTask?.summary,
+        }]);
+      } catch (error) {
+        mergerLog.warn(`${taskId}: overlap-wait delivery publication failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
     if (recordedSha) {
       const currentTask = await store.getTask(taskId);

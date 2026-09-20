@@ -627,6 +627,9 @@ describe("TaskCard", () => {
       await waitFor(() => expectBoardContextMenuPortaled());
       fireEvent.click(screen.getByRole("menuitem", { name: "Reset" }));
 
+      /* FNXC:MergeRebuild0919 2026-09-20-01:30: portal/stacking is owned by the shared UiDialog shell
+         (FN-392) and pinned in UiDialog's own tests; the testid node sits inside the dialog content,
+         so body-parent/z-index here would assert the wrong node. */
       expect(await screen.findByTestId("task-reset-dialog")).toBeInTheDocument();
       expect(mockConfirm).not.toHaveBeenCalled();
       expect(screen.getByTestId("task-reset-description")).toHaveValue("Original request");

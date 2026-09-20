@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { ChatView } from "../ChatView";
 import { loadAllAppCss } from "../../test/cssFixture";
 import * as useChatModule from "../../hooks/useChat";
+import type { UseChatReturn } from "../../hooks/useChat";
 import * as useChatRoomsModule from "../../hooks/useChatRooms";
 import {
   activeSessionFixture,
@@ -49,17 +50,20 @@ afterEach(() => {
   document.head.innerHTML = "";
 });
 
-async function renderChat(props: Partial<React.ComponentProps<typeof ChatView>> = {}) {
+async function renderChat(
+  props: Partial<React.ComponentProps<typeof ChatView>> = {},
+  chatOverrides: Partial<UseChatReturn> = {},
+) {
   const style = document.createElement("style");
   style.textContent = css;
   document.head.append(style);
   // Start without a selected session so selecting this row changes activeSession, matching the
   // production transition that re-runs the viewport writer after the thread ref has mounted.
-  setupMockChat({ ...defaultChatState, sessions: [activeSessionFixture], filteredSessions: [activeSessionFixture], activeSession: undefined });
+  setupMockChat({ ...defaultChatState, ...chatOverrides, sessions: [activeSessionFixture], filteredSessions: [activeSessionFixture], activeSession: undefined });
   setupMockRooms(defaultRoomsState);
   const view = render(<ChatView projectId="proj-123" addToast={vi.fn()} {...props} />);
   await act(async () => { screen.getByTestId(`chat-session-${activeSessionFixture.id}`).click(); });
-  setupMockChat({ ...defaultChatState, sessions: [activeSessionFixture], filteredSessions: [activeSessionFixture], activeSession: activeSessionFixture });
+  setupMockChat({ ...defaultChatState, ...chatOverrides, sessions: [activeSessionFixture], filteredSessions: [activeSessionFixture], activeSession: activeSessionFixture });
   view.rerender(<ChatView projectId="proj-123" addToast={vi.fn()} {...props} />);
   return screen.getByTestId("chat-input") as HTMLTextAreaElement;
 }
@@ -177,14 +181,28 @@ describe("FN-9195 Chat composer visual viewport", () => {
     } finally { mode.mockRestore(); viewport.restore(); }
   });
 
-  it("adds no constant accessory band above the composer", async () => {
+  /*
+  FNXC:MergeRebuild0919 2026-09-19-21:45:
+  Upstream's empty/populated/streaming sweep is folded into this line's accessory-band test instead
+  of kept as a parallel case: both assert the same post-FN-512 invariant. The merged implementation
+  publishes `--chat-thread-visible-block-size`; upstream's `--vv-height` writer was deleted by
+  FN-512, so the bound assertion moved to the surface that exists and the sweep is re-asserted here.
+  */
+  it.each([
+    ["empty", {}],
+    ["populated", { messages: [{ id: "message-001", sessionId: activeSessionFixture.id, role: "assistant" as const, content: "Hello", createdAt: "2026-09-19T00:00:00.000Z" }] }],
+    ["streaming", { isStreaming: true, streamingText: "Replying" }],
+  ] satisfies [string, Partial<UseChatReturn>][])("adds no constant accessory band above the %s Direct composer", async (_state, chatOverrides) => {
     const viewport = mockVisualViewport({ width: 375, height: 812 });
     const mode = mockViewportMode("mobile");
     try {
-      const input = await renderChat();
+      const input = await renderChat({}, chatOverrides);
       await openKeyboard(input, viewport.vv, 400, { top: 0, height: 812 });
 
-      expect(getThread()).toHaveClass("chat-thread--keyboard-active");
+      const thread = getThread();
+      expect(thread).toHaveClass("chat-thread--keyboard-active");
+      expect(readBound()).toBe("400px");
+      expect(thread.style.getPropertyValue("--chat-keyboard-accessory-clearance")).toBe("");
       const inputRule = css.match(/\.chat-thread--keyboard-active \.chat-input-area\s*\{([^}]*)\}/m);
       expect(inputRule?.[1]).toContain("padding-bottom: var(--space-md)");
       // The removed compensations must not come back under any name.
@@ -193,6 +211,9 @@ describe("FN-9195 Chat composer visual viewport", () => {
       // No stylesheet consumes the removed custom property any more, and nothing writes it.
       expect(css).not.toMatch(/var\(\s*--chat-keyboard-accessory-clearance/);
       expect(getThread().style.getPropertyValue("--chat-keyboard-accessory-clearance")).toBe("");
+
+      await act(async () => setVisualViewportHeight(viewport.vv, 390));
+      expect(thread.style.getPropertyValue("--chat-keyboard-accessory-clearance")).toBe("");
     } finally { mode.mockRestore(); viewport.restore(); }
   });
 

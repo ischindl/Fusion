@@ -122,6 +122,12 @@ async function loadCommandHandlers() {
   const { runServe } = await import("./commands/serve.js");
   const { runDaemon } = await import("./commands/daemon.js");
   const { runDesktop } = await import("./commands/desktop.js");
+  /*
+  FNXC:MergeRebuild0919 2026-09-19-21:45:
+  Both lines add `runTaskReconcile` here; only canonical still destructures `runTaskArchive`/`runTaskUnarchive`.
+  This line retired task archiving (only `fn goals archive` remains), and `commands/task.ts` exports neither handler,
+  so keeping canonical's names would destructure `undefined` and re-add a dead dispatch. Ours + canonical's addition.
+  */
   const { runTaskCreate, runTaskList, runTaskMove, runTaskMerge, runTaskReconcile, runTaskUpdate, runTaskDeps, runTaskLog, runTaskLogs, runTaskShow, runTaskAttach, runTaskPause, runTaskUnpause, runTaskImportFromGitHub, runTaskImportFromGitLab, runTaskDuplicate, runTaskRefine, runTaskPlan, runTaskDelete, runTaskRetry, runTaskComment, runTaskComments, runTaskSteer, runTaskSetNode, runTaskClearNode } = await import("./commands/task.js");
   const { runPrCreate, runPrShow, runPrList, runPrRespond, runPrApprove, runPrRetry, runPrMerge, runPrClose, runPrAutomerge, runPrAutomergeCleanup } = await import("./commands/pr.js");
   const { runSettingsShow, runSettingsSet } = await import("./commands/settings.js");

@@ -13,6 +13,7 @@ import {
 } from "./TaskDetailModal.test-helpers";
 import { TaskResetDialog } from "../TaskResetDialog";
 import { TaskDetailModal } from "../TaskDetailModal";
+import { currentFloatingZ } from "../floatingWindowStack";
 
 setupTaskDetailModalHooks();
 
@@ -41,6 +42,42 @@ function renderDialog(overrides: Partial<ComponentProps<typeof TaskResetDialog>>
 }
 
 describe("TaskResetDialog", () => {
+  /*
+  FNXC:MergeRebuild0919 2026-09-19-21:45:
+  Upstream's portal/z-stack guarantee re-asserted against this line's shared UiDialog, which owns the
+  body portal and the shared floating-stack claim (FN-392). The overlay node, not the inner testid
+  div, is the portaled surface, so the query targets the overlay class.
+  */
+  it("portals above a host stacking context using the shared floating stack", () => {
+    const priorZ = currentFloatingZ();
+    const { container } = render(
+      <div style={{ containerType: "inline-size", zIndex: 1 }}>
+        <TaskResetDialog
+          taskId="FN-233"
+          initialDescription="Original request"
+          onReset={vi.fn().mockResolvedValue(undefined)}
+          addToast={vi.fn()}
+          onClose={vi.fn()}
+        />
+      </div>,
+    );
+
+    const overlay = document.querySelector<HTMLElement>(".task-reset-overlay")!;
+    expect(overlay.parentElement).toBe(document.body);
+    expect(container).not.toContainElement(overlay);
+    expect(Number(overlay.style.zIndex)).toBeGreaterThan(priorZ);
+    expect(overlay).toContainElement(screen.getByTestId("task-reset-dialog"));
+  });
+
+  /*
+  FNXC:MergeRebuild0919 2026-09-19-21:45:
+  Upstream's raw-DOM stopPropagation containment test is deliberately NOT kept: this line's dialogs
+  propagate into the managed window surface — the shared UiDialog raises the dialog from its own
+  overlay handlers and FloatingWindow guards drag targets by surface (FN-392). A component-local
+  stopPropagation list would defeat that raise, so the upstream contract is incompatible with the
+  merged source and its case was removed at the merge.
+  */
+
   it("pre-fills the textarea with the current description", () => {
     renderDialog({ initialDescription: "Build the corrected workflow" });
 

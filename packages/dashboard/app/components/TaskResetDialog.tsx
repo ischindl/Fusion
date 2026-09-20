@@ -23,6 +23,11 @@ Reset uses a dedicated dialog because it collects corrected task intent rather t
 
 FNXC:TaskReset 2026-09-09-14:48:
 The first valid click claims submission synchronously before React can render the disabled controls. This prevents two same-frame clicks from issuing duplicate destructive requests while the visible pending state blocks edits, dismissal, and later clicks until publication succeeds or a failure makes the dialog retryable.
+
+FNXC:MergeRebuild0919 2026-09-19-21:45:
+Upstream's newer dismiss-immediately submit (toast-on-completion, no retry affordance) was NOT taken:
+this line's contract keeps the dialog open with pending feedback and a retryable failure path, and its
+portal/stacking concern is already owned by the shared UiDialog (FN-392), not a local overlay here.
 */
 export function TaskResetDialog({
   taskId,

@@ -213,6 +213,18 @@ export async function transitionQueuedEpisodeImpl(
       && (current.overlapBlockedBy ?? null) === transition.overlapBlockedBy
       && (current.queuedLogEpisodeSignature ?? null) === transition.signature
     );
+    /*
+    FNXC:OverlapWaitSynchronization 2026-09-17-00:10:
+    A queued-episode transition is exactly where `task.overlapBlockedBy` changes (set/replaced/
+    cleared). Persist both the outgoing and incoming blocker edges into the durable wait table in
+    this same transaction so a marker overwrite can never silently drop synchronization evidence.
+
+    FNXC:MergeRebuild0919 2026-09-19-21:45:
+    Kept on our line's shape: this call passes `newLeaseObservation: true`, which canonical lacks.
+    That flag is what re-arms an episode Reset already stamped (see
+    `FNXC:OverlapWaitRelease 2026-09-17-06:38` in overlap-wait-ops.ts), so a restarted predecessor
+    behind an unconsumed Reset stamp is treated as a new wait instead of a no-op.
+    */
     const currentTask = store.rowToTask(store.pgRowToTaskRow(current as unknown as Record<string, unknown>));
     await observeOverlapWaitTransitionInTransaction(tx, {
       projectId,

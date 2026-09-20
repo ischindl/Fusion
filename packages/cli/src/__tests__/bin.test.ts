@@ -410,6 +410,15 @@ function fixtureSecret(label: string): string {
   return ["fixture", label, "value"].join("-");
 }
 
+/*
+ * FNXC:CloudLink 2026-09-04-03:44:
+ * Synthesize fixture credentials so code scanning does not treat test data as a
+ * hardcoded credential and a real value cannot be pasted in as a fixture.
+ */
+function fixtureSecret(label: string): string {
+  return ["fixture", label, "value"].join("-");
+}
+
 describe("bin command routing and fallbacks", () => {
   it("keeps an absent quiet flag undefined while stripping either quiet spelling", async () => {
     const previous = process.env.FUSION_CLI_SKIP_MAIN;

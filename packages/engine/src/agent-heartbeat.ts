@@ -3851,6 +3851,17 @@ export class HeartbeatMonitor {
           let rotationEvent: import("./credential-instance-rotation.js").RotationEvent | undefined;
           let rotationDeclined = false;
           let activeInstanceId = heartbeatSessionModels.credentialInstanceId ?? DEFAULT_PROVIDER_INSTANCE_ID;
+          /*
+          FNXC:MergeRebuild0919 2026-09-19-21:45:
+          Two vintages of the overlap-wait briefing reached this line: upstream resolved pending
+          overlap waits inline here (`resolvePendingOverlapWaits` + a local `overlapResumeContext`),
+          while this line carries the delivery out of `acquireTaskWorktree` and only acknowledges the
+          episodes AFTER the prompt is actually sent (`dispatchHeartbeatTransportWithOverlapAck`).
+          The acquisition-owned delivery wins: it is the newer seam, it keeps an unacked episode
+          retryable when the send fails, and running both resolvers would append the briefing twice
+          and claim the same episodes from two owners. Upstream's inline block is therefore dropped,
+          not merged.
+          */
           if (overlapResumeDelivery?.context) {
             executionPrompt = [executionPrompt, "", "## Overlap wait synchronization", overlapResumeDelivery.context].join("\n");
           }

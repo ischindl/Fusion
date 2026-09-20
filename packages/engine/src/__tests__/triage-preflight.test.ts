@@ -12,6 +12,7 @@ import {
 const task = { title: "fix: typecheck error", description: "desc" };
 const options = (exec: ReturnType<typeof vi.fn>) => ({ cwd: process.cwd(), exec });
 
+/** A fake `git` responder that answers `ls-files` / `show` / `grep` for the positive control with a hit. */
 function controlMatched(argv: string[]): { stdout: string; stderr: string; exitCode: number } {
   if (argv[1] === "ls-files") return { stdout: "src/App.ts\n", stderr: "", exitCode: 0 };
   if (argv[1] === "show") return { stdout: "export const knownControl = true;\n", stderr: "", exitCode: 0 };
@@ -112,6 +113,13 @@ describe("triage-preflight", () => {
     expect(finding.output?.endsWith("…[truncated]")).toBe(true);
   });
 
+  /*
+  FNXC:MergeRebuild0919 2026-09-19-21:45:
+  Canonical still returns `decision: "archive"` here; this line retired task archiving, so the
+  ghost-bug verdict is `delete` and triage hands the card to `softDeleteAsGhostBug`. The case set is
+  otherwise canonical's — canonical's archive-worded twin of every case here was dropped rather than
+  kept as a dead duplicate.
+  */
   it("deletes only when all probes are missing and the positive control matches", async () => {
     const exec = vi.fn((argv: string[]) => argv[1] === "grep" && argv[4] !== "export const knownControl = true;"
       ? Promise.resolve({ stdout: "", stderr: "", exitCode: 1 })

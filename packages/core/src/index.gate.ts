@@ -995,6 +995,7 @@ export {
   type DeterministicGuardOutcome,
 } from "./duplicates/duplicate-guard.js";
 export type { TaskDependencyMutation } from "./store.js";
+export type { ListTasksOptions } from "./task-store/reads.js";
 export {
   findSameAgentDuplicates,
   computeParentIntentClaimId,

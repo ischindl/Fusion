@@ -1499,8 +1499,8 @@ function DashboardTab({
       discoveredSkillsLoading || discoveredSkillsError ? null : discoveredSkills,
       { forced: true },
     );
-    if (classification.state !== "unknown") {
-      void loadSkillContent(skillId);
+    if (classification.resolvedSkillId) {
+      void loadSkillContent(classification.resolvedSkillId);
     }
   }, [discoveredSkills, discoveredSkillsError, discoveredSkillsLoading, loadSkillContent, selectedSkillId]);
 

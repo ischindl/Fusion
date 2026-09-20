@@ -21,6 +21,14 @@ RUFU-197. The register is append-only history, so records accumulate in two docu
 `Status` above `File`, some below — and an earlier parser that required `File` then `Exact test` on adjacent
 lines silently skipped every record that deviated. Parsing is now per heading, so a record is read wherever its
 lines sit. `status` stays null when a record has none: an undispositioned record is treated as live.
+
+FNXC:MergeRebuild0919 2026-09-19-21:45:
+Canonical rewrote the sibling reader to scope the `File`/`Exact test` scan to the `## Active observation records`
+sections, so an archived record may keep citing a deleted ratchet file. This line solves the same problem per record
+instead of per section: `evaluateRegisterRecords` below exempts `Closed`-status records from the exists/drift check and
+requires an evidence pointer, while still drift-checking a closed record whose file survived. Two readers cannot
+share one name with different return shapes, and the merged body has no call site for canonical's variant, so this
+parser is the single entry reader; canonical's archived-path concern stays covered by the closed-record branch.
 */
 function readRegisterRecords(register) {
   const records = [];
@@ -274,6 +282,7 @@ commit as the register close. Entry 15 stays PHYSICALLY in the active section as
 cross-reference (entry 7 precedent); no quarantine entry was created, so `scripts/lib/test-quarantine.json`
 is unchanged (lockstep count 0 → 0).
 */
+
 test("observed-flake register active count, escalation state, and owners stay synchronized", () => {
   const register = readFileSync(registerPath, "utf8");
   const statedCount = register.match(/\*\*(\d+) active observation records\*\*/);

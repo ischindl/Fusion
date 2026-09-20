@@ -1,3 +1,12 @@
+/*
+FNXC:MergeRebuild0919 2026-09-19-21:45:
+Import union for this line: ours adds `isFollowUpTask`, `resolveWorkflowIrForTaskWithProvenance` and
+`workflowHasColumn` (all three are called below), and ours drops the archive-liveness trio
+(`evaluateArchiveTaskLiveness`/`describeArchiveLiveness`/`TaskIsLiveError`) plus
+`installBaselineArchiveWorktreeDisposer`, whose archive call sites this line retired — canonical still imported them
+but the merged body has no call site, so keeping them would be dead references. Engine side keeps ours
+(`admitTaskToWip`/`isFirstPlanningToWipAdmission`/`planTaskWorktreePath`) and `SelfHealingManager`, which both lines need.
+*/
 import { TaskStore, COLUMNS, COLUMN_LABELS, isFollowUpTask, MAX_TASK_MESSAGE_LENGTH, resolveProjectColumnsForRoles, TERMINAL_ROLES, resolveReviewColumns, resolveTaskLifecycleColumns, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, workflowHasColumn, CentralCore, buildAutoPauseClearPatch, buildManualRetryResetPatch, extractIntentSignature, findNearDuplicates, getTaskDuplicateLineage, isValidRepoSlug, isWorkspaceTask, reconcileDeterministicDuplicate, resolveTaskGithubTracking, runDeterministicDuplicateGuard, type Settings, type Column, type ColumnId, type StepStatus, type AgentLogType, type AgentLogEntry, type IntentSignature, type NearDuplicateCandidate, type NearDuplicateMatch, type TaskDependencyMutation } from "@fusion/core";
 import { admitTaskToWip, isFirstPlanningToWipAdmission, isInReviewMissingWorktreeSessionStartFailure, planTaskWorktreePath, runAiMerge, landWorkspaceTask, withWorkspaceMergeDispatchLease, clearOwnedMergeStamp, reconcileUnownedStaleMergeStamp, SelfHealingManager } from "@fusion/engine";
 import { createInterface } from "node:readline/promises";
@@ -1265,9 +1274,15 @@ export async function runTaskReconcile(id: string, projectName?: string) {
   const context = await resolveBoardContext(projectName, id, "resolve project");
   try {
     /*
-    FNXC:WorkflowRecovery 2026-09-15-15:27 (FN-9304):
-    This CLI is a separate process, so its registries are structurally empty and cannot prove
-    idleness. Leave every liveness and CAS decision to SelfHealingManager's durable fence.
+    FNXC:WorkflowRecovery 2026-09-17-06:00 (FN-9304):
+    This CLI is a separate process, so its in-memory session/executor registries are structurally
+    empty and cannot themselves prove idleness. Leave every liveness and compare-and-set decision to
+    `SelfHealingManager.reconcileLandedReviewTask`, the single durable fence shared with the
+    self-healing sweep, so the CLI and the engine can never disagree about what "landed" means.
+
+    FNXC:MergeRebuild0919 2026-09-19-21:45:
+    Both lines added this function independently; the bodies are identical apart from comment vintage and the
+    three-way `live` test, so canonical's newer (2026-09-17) wording wins here and ours contributed nothing beyond it.
     */
     const manager = new SelfHealingManager(context.store, { rootDir: context.projectPath });
     const result = await manager.reconcileLandedReviewTask(id, { source: "manual", requireAutoMergeEligible: false });
@@ -1284,7 +1299,7 @@ export async function runTaskReconcile(id: string, projectName?: string) {
     } else if (result.outcome === "raced") {
       console.error(`Cannot reconcile ${id}: the card changed while reconciling (${result.reason}); retry.`);
     } else {
-      const live = ["live-session", "executing", "checkout-leased"].includes(result.reason);
+      const live = result.reason === "live-session" || result.reason === "executing" || result.reason === "checkout-leased";
       console.error(`Cannot reconcile ${id}: ${result.reason}${live ? "; something is still working on this task" : ""}.`);
     }
     await closeBoardContextAndExit(context, 1);

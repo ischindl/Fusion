@@ -422,12 +422,9 @@ WebKit has no reason to blur it and collapse the keyboard.
 }
 
 /*
-FNXC:MobileKeyboardViewport 2026-09-17-14:23:
-FN-512 removed `--chat-keyboard-accessory-clearance`. It added a fixed ~48px band under the composer
-whenever an iOS keyboard was believed to be up — a constant, not a measurement — and it is the direct
-cause of the "gros espace entre le clavier et l'input" half of the report. Nothing replaces it: no
-other magic number and no user-agent test. The composer keeps its ordinary `--space-md` padding, and
-the bottom safe-area reserve is still dropped while the keyboard genuinely covers that region.
+FNXC:ChatComposer 2026-09-19-20:19:
+Keyboard-open Direct Chat uses its normal composer spacing at the visible keyboard boundary.
+The active viewport clamp supplies visibility; an extra accessory reservation creates a blank band.
 */
 .chat-thread--keyboard-active .chat-input-area {
   padding-bottom: var(--space-md);

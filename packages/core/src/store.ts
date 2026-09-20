@@ -3115,7 +3115,14 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     return publishTaskOverlapDeliveriesImpl(this, blockerTaskId, deliveries);
   }
 
-  async completeTaskOverlapWait(input: { taskId: string; episodeId: string; expectedRevision: number; owner: string; phase?: "ready" | "delivered" | "freshness-pending"; receipt: OverlapWaitReceipt; executionIdentity?: OverlapWaitExecutionIdentity }) {
+  /*
+  FNXC:MergeRebuild0919 2026-09-19-21:45:
+  The phase union carries canonical's `revalidation-pending` / `repair-required` values because
+  `packages/engine/src/workflows/overlap-plan-revalidation.ts` publishes `phase: "revalidation-pending"`
+  for a `revalidate` decision; `completeTaskOverlapWaitImpl` and the `task_overlap_waits` phase CHECK
+  accept the same five values. `reconcileTaskOverlapWaits` below stays — it is this line's own seam.
+  */
+  async completeTaskOverlapWait(input: { taskId: string; episodeId: string; expectedRevision: number; owner: string; phase?: "ready" | "delivered" | "freshness-pending" | "revalidation-pending" | "repair-required"; receipt: OverlapWaitReceipt; executionIdentity?: OverlapWaitExecutionIdentity }) {
     return completeTaskOverlapWaitImpl(this, input);
   }
   async logEntry(id: string, action: string, outcome?: string, runContext?: RunMutationContext): Promise<Task> {
