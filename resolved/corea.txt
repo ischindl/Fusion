@@ -1,7 +1,0 @@
-packages/core/src/__tests__/plugin-task-store-gate.test.ts
-packages/core/src/__tests__/postgres/overlap-wait-persistence.pg.test.ts
-packages/core/src/__tests__/postgres/schema-applier.test.ts
-packages/core/src/__tests__/store-bypass-review.test.ts
-packages/core/src/__tests__/store-resume-step.test.ts
-packages/core/src/postgres/restore-migration-reconcile.ts
-packages/core/src/postgres/schema/project.ts

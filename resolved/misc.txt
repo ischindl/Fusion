@@ -1,5 +1,0 @@
-packages/cli/src/bin.ts
-packages/cli/src/commands/__tests__/task-reconcile.test.ts
-packages/cli/src/commands/task.ts
-packages/i18n/src/resources.d.ts
-scripts/__tests__/observed-flake-register.test.mjs
