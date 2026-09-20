@@ -1015,6 +1015,30 @@ export async function admitPlanningContinuation(input: {
   return false;
 }
 
+/*
+FNXC:MergeRebuild0919 2026-09-19-21:45:
+Upstream's FN-332/FN-329 re-implementation of the file-scope continuation helpers (a second
+`FILE_SCOPE_CONTINUATION_WAIT_PREFIX` / `fileScopeContinuationWaitReason` /
+`dispatchPlanningContinuationIfCurrent` / `settlePlanningContinuationDispatch` /
+`releaseFileScopeWaitingContinuations` cluster) landed here next to this line's older-in-name-only
+but newer-in-fact cluster above, so the merge carried duplicate top-level declarations. This line's
+cluster wins: its settlement CAS is fenced on the exact dispatch `leaseOwner`
+(FNXC:PlanningContinuationDispatch 2026-09-09-22:33) and its release additionally refuses tasks with
+an unmet `blockedBy` and items holding a lease (`expectedLeaseOwner: null`). Upstream's copies were
+unreferenced by anything that survived the merge, so they are dropped rather than merged.
+*/
+/*
+FNXC:PlanningContinuationDispatch 2026-09-17-01:05:
+`workflow-continuation-capacity.test.ts` (pre-existing, not part of this reimplementation's scope)
+pins `execute()` being invoked SYNCHRONOUSLY within the same microtask as this dispatcher's
+`dispatch` closure — `admitPlanningContinuation` resolves "admitted" without awaiting the inner
+run, so any additional `await` inserted before the `execute()` call (e.g. re-validating currency
+via `dispatchPlanningContinuationIfCurrent`, which does its own async store reads) pushes the real
+call past that tick and breaks the pinned ordering. Keep this dispatcher exactly as before;
+`dispatchPlanningContinuationIfCurrent` / `settlePlanningContinuationDispatch` /
+`releaseFileScopeWaitingContinuations` are exported standalone utilities instead, wired from
+workflows/overlap-plan-revalidation.ts where no such same-tick contract exists.
+*/
 export function createPlanningContinuationDispatcher(input: {
   store: TaskStore;
   projectId: string;

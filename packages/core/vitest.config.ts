@@ -41,10 +41,16 @@ export default defineConfig({
     Each entry needs a matching row in scripts/lib/test-quarantine.json (same commit, deletion ratchet).
     */
     /*
-    FNXC:QuarantineExcludes 2026-09-06-13:10: deletion ratchet executed — mission-store.pg.test.ts
-    expired 2026-09-06 (quarantined 2026-08-23, no rescue evidence) and was deleted with its ledger
-    row. The exclude key itself is gone so vitest's default node_modules/dist exclusions apply.
+    FNXC:MergeRebuild0919 2026-09-19-21:45:
+    mission-store.pg.test.ts was quarantined 2026-08-23 and reached our deletion ratchet, but canonical
+    rescued it at the root cause: a `pg_blocking_pids` blocking-graph probe replaces the 250 ms wall-clock
+    sleep our ledger row named as the only acceptable rescue. The rescued file is therefore back in the
+    suite and is not excluded. Keep the list an explicit inline empty array — `include` is scoped to
+    `src` and matches only `.test.ts` files, so an empty exclude cannot pull node_modules or dist output
+    into the core suite. (Never write the include glob literally inside this comment: its `*` slash `*`
+    sequence closes a block comment.)
     */
+    exclude: [],
     setupFiles: [
       "./src/__test-utils__/vitest-setup.ts",
     ],

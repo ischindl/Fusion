@@ -177,6 +177,12 @@ describe("TaskContextMenu shared task action model", () => {
     // stays silent even when raw failed results are present — asserted in the server-capability block.
   });
 
+/* FNXC:MergeRebuild0919 2026-09-20-01:05: canonical's raw-workflowStepResults bypass predicate
+       block was auto-merged back in; this line derives the affordance from the server-hydrated
+       `task.reviewBypass` carrier (RUFU-179), and the archived-carrier eligibility rule is pinned
+       in core's task-merge-bypass/store-bypass-review suites. Duplicate removed — see the
+       carrier-contract block above. */
+
   it("offers exactly the supported recovery actions", () => {
     const supported = buildTaskActionMenuModel({
       task: makeTask({ column: "in-progress" }),

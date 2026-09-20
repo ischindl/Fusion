@@ -1527,7 +1527,7 @@ export async function listTasksModifiedSinceImpl(store: TaskStore, since: string
     const selectionCache = new Map<string, import("../workflows/workflow-ir-resolver.js").WorkflowSelection | undefined>();
     await prefetchWorkflowSelections(store, pageRows.map((row) => row.id), selectionCache);
     {
-      /* FNXC:WorkflowScheduling 2026-09-05-23:12: Incremental hydration resolves multiple lanes per row, so selection prefetch prevents its former 2–3 reads per task while absent selections retain builtin:coding behavior. */
+      /* FNXC:WorkflowScheduling 2026-09-05-23:12: Incremental hydration resolves multiple lanes per row, so selection prefetch prevents its former 2–3 reads per task while absent selections retain builtin:coding behavior. The one populated cache is the hoisted `selectionCache` above — a second prefetch here would re-read the batch and break the zero-singles rule that `prefetchWorkflowSelections` is asserted against. */
       const irCache = new Map<string, WorkflowIr>();
       for (const pgRow of pageRows) {
         const row = store.pgRowToTaskRow(pgRow);

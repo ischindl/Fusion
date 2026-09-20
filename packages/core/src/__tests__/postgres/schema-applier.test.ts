@@ -124,8 +124,9 @@ import {
   WHITEBOARDS_SCHEMA_VERSION,
   OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION,
   OVERLAP_REVALIDATION_DRAIN_VERSION,
-  REVIEW_LANE_LEDGER_VERSION,
+  TASK_HUMAN_MERGE_APPROVAL_VERSION,
   WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION,
+  // FNXC:MergeRebuild0919 2026-09-19-21:45: both sides added this binding; the clean merge duplicated it.
   REVIEW_LANE_LEDGER_VERSION,
 } from "../../postgres/schema-applier.js";
 import { ProjectPartitionRekeyError, rekeyFallbackProjectPartition } from "../../postgres/migration-stamping.js";
@@ -216,12 +217,18 @@ describe("schema-applier: immutable migration identities", () => {
     FNXC:HumanMergeApproval 2026-09-17-18:09:
     FN-514's per-card delivery-lock column is migration 0083. Every already-published identity stays
     pinned so a renumbering fails here rather than silently skipping a migration on upgrade.
-/*
+    */
+    expect(TASK_HUMAN_MERGE_APPROVAL_VERSION).toBe("0083");
+    /*
     FNXC:ReviewLaneDispatch 2026-09-18-13:40 (sync wave): the main-local ledger renumbered 0082 -> 0084
     (upstream took 0082/0083) and is now the ceiling.
+
+    FNXC:MergeRebuild0919 2026-09-19-21:45: canonical owns 0084 (its overlap renumber) and 0085 (its
+    drop-excluded-feature schema), and this line does NOT apply either, so the ledger renumbered again to
+    0086 — the released 0074-0083 identities above stay pinned exactly as they are.
     */
-    expect(REVIEW_LANE_LEDGER_VERSION).toBe("0084");
-    expect(SCHEMA_BASELINE_VERSION).toBe("0084");
+    expect(REVIEW_LANE_LEDGER_VERSION).toBe("0086");
+    expect(SCHEMA_BASELINE_VERSION).toBe("0086");
   });
 
   it("keeps monitor and approval isolation assigned to version 0003", () => {

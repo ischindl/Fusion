@@ -27,16 +27,36 @@ export interface ExecResult {
 }
 
 /**
- * FNXC:GhostBugPreflight 2026-09-07-17:01:
- * Probe matched-ness is an exit-code fact, not a printed-bytes heuristic. Cited text originates in
- * plan prose, so it is passed only as an argv datum to fixed git commands and never shell-interpreted.
+ * FNXC:GhostBugPreflight 2026-09-17-00:00:
+ * Probe "matched" is an exit-code fact, not a printed-bytes heuristic. Plan text that names the
+ * allegedly-missing construct originates in agent-authored prose, so it is only ever handed to a
+ * fixed `git` argv array — never interpolated into a shell string — and the caller classifies the
+ * result from `exitCode`/`stderr`, not from whether stdout happened to be non-empty.
  */
 export type ProbeExec = (argv: string[], options?: { cwd?: string; timeoutMs?: number }) => Promise<ExecResult>;
 
 const BUG_FIX_REGEX = /typecheck error|compile error|broken|regression|lint error/i;
+
+/**
+ * FNXC:GhostBugPreflight 2026-09-17-00:00:
+ * Bounds on what an untrusted construct raw value may look like before it is allowed anywhere near
+ * `exec`. 200 chars keeps a single argv entry sane; a newline/NUL would otherwise let a multi-line
+ * "identifier" smuggle a second logical argument past argv-based (not shell-based) execution.
+ */
 const MAX_CONSTRUCT_LENGTH = 200;
 const MAX_OUTPUT_LENGTH = 500;
-const TEXTISH_EXTENSIONS = new Set(["ts", "tsx", "js", "mjs", "cjs", "md", "json", "yml", "yaml", "toml", "cs", "csproj", "go", "py", "java", "rb", "rs", "php", "swift", "kt", "kts", "c", "cc", "cpp", "h", "hpp", "html", "css", "scss", "vue", "svelte", "sh"]);
+
+/**
+ * FNXC:GhostBugPreflight 2026-09-17-00:00:
+ * The positive control samples a line of TRACKED, TEXTUAL repository content and re-greps for it.
+ * Restricting the sample to obviously-textual extensions avoids picking a binary/lockfile line whose
+ * bytes can't round-trip through `git grep -F` as a stable single-line needle.
+ */
+const TEXTISH_EXTENSIONS = new Set([
+  "ts", "tsx", "js", "mjs", "cjs", "md", "json", "yml", "yaml", "toml", "cs", "csproj", "go", "py",
+  "java", "rb", "rs", "php", "swift", "kt", "kts", "c", "cc", "cpp", "h", "hpp", "html", "css", "scss",
+  "vue", "svelte", "sh",
+]);
 
 export function isBugFixShape(task: { title: string | null; description: string }): boolean {
   const title = task.title?.trim() ?? "";
@@ -93,15 +113,18 @@ export function extractCitedConstructs(prompt: string): CitedConstruct[] {
 
 function truncateOutput(stdout: string): string {
   const trimmed = stdout.trim();
-  return trimmed.length <= MAX_OUTPUT_LENGTH
-    ? trimmed
-    : `${trimmed.slice(0, MAX_OUTPUT_LENGTH)}…[truncated]`;
+  return trimmed.length <= MAX_OUTPUT_LENGTH ? trimmed : `${trimmed.slice(0, MAX_OUTPUT_LENGTH)}…[truncated]`;
 }
 
+/** A raw value is safe to pass as a single argv entry: bounded length, no embedded line breaks/NUL. */
 function isSafeRaw(raw: string): boolean {
   return raw.length <= MAX_CONSTRUCT_LENGTH && !/[\0\n\r]/.test(raw);
 }
 
+/**
+ * A cited file path is safe to interpolate into `HEAD:<path>`: repo-relative (no leading `/`), not an
+ * option-injection attempt (no leading `-`), no traversal segments, and no embedded line breaks/NUL.
+ */
 function isSafeFilePath(filePath: string): boolean {
   return !filePath.startsWith("/")
     && !filePath.startsWith("-")
@@ -109,6 +132,12 @@ function isSafeFilePath(filePath: string): boolean {
     && !filePath.split("/").includes("..");
 }
 
+/**
+ * FNXC:GhostBugPreflight 2026-09-17-00:00:
+ * `git grep` exits 0 on a hit and 1 on a clean "no match" — both are definitive. Any other exit code
+ * (128 = not a repo / bad pathspec, etc.) is a probe failure, not evidence of absence, and a non-empty
+ * stderr alongside exit 1 means the command errored rather than genuinely finding nothing.
+ */
 function classifyProbe(construct: CitedConstruct, result: ExecResult): GhostBugProbeResult {
   const output = truncateOutput(result.stdout);
   if (result.exitCode === 0) return { construct, matched: true, output };
@@ -131,9 +160,10 @@ export async function probeCitedConstructs(
   for (const construct of constructs) {
     if (construct.kind === "command") {
       /*
-      FNXC:GhostBugPreflight 2026-09-07-17:01:
-      Command citations are non-definitive. Executing a shell line lifted from plan prose is an
-      execution surface with no evidential value, so command probes are intentionally not run.
+      FNXC:GhostBugPreflight 2026-09-17-00:00:
+      A command citation is plan prose that merely LOOKS like a shell line (e.g. "pnpm test"). Running
+      it would be an execution surface with no evidential value about whether the cited code exists,
+      so command probes are never executed — they are always treated as non-definitive.
       */
       findings.push({ construct, matched: false, probeError: "command_probes_not_executed" });
       continue;
@@ -143,6 +173,12 @@ export async function probeCitedConstructs(
       continue;
     }
 
+    /*
+    FNXC:GhostBugPreflight 2026-09-17-00:00:
+    Repository-wide (`:/`), not `packages/`-scoped: the original scope assumed every construct lives
+    under `packages/`, which false-negatived (and thus falsely archived) tasks citing code elsewhere
+    in the tree (docs, scripts, non-`packages/` workspaces).
+    */
     const argv = construct.kind === "identifier" && construct.filePath
       ? ["git", "cat-file", "-e", `HEAD:${construct.filePath}`]
       : ["git", "grep", "-nF", "-e", construct.raw, "--", ":/"];
@@ -163,9 +199,12 @@ export async function probeCitedConstructs(
 export type ProbeControlOutcome = "matched" | "unmatched" | "unavailable";
 
 /**
- * FNXC:GhostBugPreflight 2026-09-07-17:01:
- * Deleting work the engine just planned demands positive evidence that the probe apparatus works.
- * A successful sample from tracked repository content detects systematically empty probe environments.
+ * FNXC:GhostBugPreflight 2026-09-17-00:00:
+ * Deleting work the engine just planned demands positive proof the probe apparatus itself works —
+ * a worktree with a detached HEAD, a missing `.git`, or a `git` binary that silently no-ops would
+ * otherwise make every construct look "missing" and delete perfectly valid tasks. Sample one line of
+ * genuinely-tracked content and confirm the SAME probe path can re-find it before trusting an
+ * all-missing verdict.
  */
 export async function runProbePositiveControl(
   opts: { cwd: string; timeoutMs?: number; exec: ProbeExec },
@@ -195,6 +234,21 @@ export async function runProbePositiveControl(
   }
 }
 
+/**
+ * FNXC:GhostBugPreflight 2026-09-17-00:00:
+ * A bug-fix task whose PROMPT.md cites a specific construct that no longer exists on `main` is almost
+ * certainly stale bookkeeping (the construct was already fixed/removed by other work) rather than a
+ * real outstanding bug. Delete it instead of dispatching an executor at a target that isn't there —
+ * but only when EVERY definitive probe came back missing AND the positive control proves the probe
+ * pipeline is actually working; otherwise fail open and let the task through to normal execution.
+ *
+ * FNXC:MergeRebuild0919 2026-09-19-21:45:
+ * Upstream's canonical ghost-bug probe hardening landed on top of this line's earlier argv/probe-control
+ * port, so upstream wins everywhere except the terminal outcome: this line retired the archive lane
+ * (FNXC:TaskArchiveRemoval 2026-09-04-10:36), so `GhostBugDecision.decision` is `"delete" | "pass"`
+ * and the consumer is `softDeleteAsGhostBug`, not an archive move. Upstream's `"archive"` literal is
+ * therefore not representable here and the wording above names deletion.
+ */
 export async function runGhostBugPreflight(
   task: Pick<Task, "title" | "description">,
   prompt: string,

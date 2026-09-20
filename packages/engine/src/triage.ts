@@ -542,9 +542,11 @@ function isOrphanedLegacyTriageRow(column: string, declaresTriage: boolean): boo
 export type GhostBugExecFile = (file: string, args: string[], options: ExecFileOptions) => Promise<{ stdout: string; stderr: string }>;
 
 /**
- * FNXC:GhostBugPreflight 2026-09-07-17:01:
- * The former command-string wiring ignored `timeoutMs` because child_process expects `timeout`.
- * This bounded async adapter uses execFile without a shell, preserving plan text as argv data only.
+ * FNXC:GhostBugPreflight 2026-09-17-00:00:
+ * `promisify(exec)`'s command-STRING form silently required every cited construct to survive shell
+ * interpolation (quoting, `||`, globbing) and could not report an exit code, so probe results were a
+ * "did stdout come back non-empty" guess. This adapter runs `execFile` with `shell: false`, so plan
+ * text reaches `git` only as argv data, and surfaces the real exit code for classifyProbe to use.
  */
 export function createGhostBugProbeExec(
   runExecFile: GhostBugExecFile = async (file, args, options) => {

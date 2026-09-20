@@ -5,6 +5,16 @@ import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
 import { createSharedPgTaskStoreTestHarness, pgDescribe, type SharedPgTaskStoreHarness } from "../../__test-utils__/pg-test-harness.js";
 import { applySchemaBaseline } from "../../postgres/schema-applier.js";
 
+/*
+FNXC:MergeRebuild0919 2026-09-19-21:45:
+Upstream (origin/main) re-authored a reduced copy of this Fusion pg test against its overlap-wait
+reimplementation. This line's version is a strict superset — it keeps every upstream case and adds the
+identity-fence cases (unchanged-identity release, durable plan-fingerprint preservation, recaptured
+HEAD/target/repository/node-incarnation/epoch races, the runtime OverlapWaitPhase matrix, the FN-429
+reconciled rewrite round-trip, and the retired-phase drain + drift-probe coverage). Kept whole; upstream's
+only distinct change was a shorter title on the merger-delivery case, whose body is byte-identical here.
+*/
+
 const h: SharedPgTaskStoreHarness = createSharedPgTaskStoreTestHarness({ prefix: "fusion_overlap_wait" });
 const overlap = (id: string) => ({
   signature: `file-scope:${id}`,

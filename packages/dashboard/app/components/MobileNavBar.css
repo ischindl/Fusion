@@ -39,14 +39,11 @@
   The mobile bottom nav must use symmetric outer side spacing while keeping its fixed right edge compensated by --icb-right-offset, equal-width tab columns, and safe-area bottom padding intact.
   */
   padding-inline: var(--space-sm);
-  /* Extend the bar's surface into the iOS home-indicator area so icons sit above
-     the indicator (PWA standalone) and the bar meets the executor status bar
-     flush — its `bottom` already adds these same terms. */
-  /* Floor the inset to ~12px so the bar clears Android Chrome's gesture pill
-     even when the browser under-reports safe-area-inset-bottom (happens while
-     the address bar is visible / during URL-bar collapse). Devices that
-     correctly report a larger inset are unaffected. */
-  padding-bottom: calc(max(env(safe-area-inset-bottom, 0px), 12px) + var(--standalone-bottom-gap));
+  /*
+  FNXC:MobileNav 2026-09-19-21:02:
+  The fixed navigation surface uses only required device clearance below its tabs. Keep the safe-area floor for iOS cutouts and Android gesture pills, but never add the standalone PWA breathing token here because it creates a visible blank band.
+  */
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), 12px);
   box-shadow: var(--shadow-md);
 }
 
@@ -82,6 +79,11 @@ nouvelle frontière. Les autres règles `(max-width: 768px)` du produit restent 
   mobile-nav class, whose single reservation lives further down this file and composes the shared
   `--mobile-nav-system-offset`. Keeping both sets after the rename would let the two-class footer variant
   win on specificity and silently change the reserved space.
+
+  FNXC:MergeRebuild0919 2026-09-19-21:45:
+  Upstream re-derived these same pre-native rules with the standalone gap stripped; this line keeps the
+  NativeShell deletion instead — the single native reservation below (via --mobile-nav-system-offset)
+  already carries the clearance, so the two-class variants must not come back.
   */
 }
 

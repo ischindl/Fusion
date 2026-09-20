@@ -569,10 +569,11 @@ export abstract class SelfHealingGitEvidence {
       const missingRevision = /unknown revision|ambiguous argument|Needed a single revision/i.test(message);
       if (classifyBranchProbeError(error) !== "absent" && !missingRevision) throw error;
       /*
-      FNXC:WorkflowRecovery 2026-09-15-15:27 (FN-9304):
-      A branch removed after its merge is an expected steady state, not a git failure. Keep the
-      absence classified and still inspect base-branch trailers, which are ownership proof even
-      when ancestry fallbacks cannot inspect the deleted tip.
+      FNXC:WorkflowRecovery 2026-09-17-06:00 (FN-9304):
+      A branch removed after its merge is an expected steady state, not a git failure. Classify it
+      as `branchMissing` and still inspect base-branch trailers for ownership-anchored landed
+      content — a deleted tip has no ref to read ancestry from, but the base branch's own commit
+      trailers are proof regardless of what happened to the source branch.
       */
       const landed = await this.findAlreadyMergedTaskCommit({
         taskId,

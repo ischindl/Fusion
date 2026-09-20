@@ -390,6 +390,13 @@ FNXC:OverlapWaitSynchronization 2026-09-09-23:53:
 The display blocker is transient, but each observed predecessor edge remains project-scoped until
 freshness, deterministic delta briefing, and context delivery have all been acknowledged.
 Only the waiting task is foreign-keyed; predecessor identity survives its archival or deletion.
+
+FNXC:MergeRebuild0919 2026-09-19-21:45:
+This line owns exactly one `task_overlap_waits` declaration. Canonical's reimplementation carries a twin
+with the pre-drain 8-phase CHECK (its `0084_fn_332_overlap_sync.sql` still permits revalidation-pending and
+repair-required); this line retired that state machine through 0075 -> 0077 -> 0078, so the rebuilt 6-phase
+CHECK below is the steady state the applier's drift probe expects. Canonical's duplicate was dropped: two
+declarations of the same export also collide as a duplicate binding.
 */
 export const taskOverlapWaits = projectSchema.table("task_overlap_waits", {
   projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
@@ -579,7 +586,7 @@ export const legacyTaskReviewerRuns = projectSchema.table("task_reviewer_runs", 
   both invalidated_at IS NULL AND completed_at IS NULL, mirroring the sweep classifier's own live
   definition. The earlier draft keyed on the reviewer agent and dropped completed_at, so a completed
   (e.g. dispatch-failed) attempt held the slot forever and the sweep's retry could never open a new
-  row. `migrations/0084_stas_205_review_lane_ledger.sql` is the source of truth; the drift probe in
+  row. `migrations/0086_stas_205_review_lane_ledger.sql` is the source of truth; the drift probe in
   schema-applier.ts is definition-aware so installs with the old definition re-converge.
   */
   uniqueIndex("task_reviewer_runs_live_unique")

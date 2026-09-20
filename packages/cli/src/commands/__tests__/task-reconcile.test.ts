@@ -1,3 +1,11 @@
+/*
+FNXC:MergeRebuild0919 2026-09-19-21:45:
+Both lines added this file with the same three cases; only the mock surface differs, so the merge is a union keyed to
+what the MERGED `../task.js` actually imports. Ours owns the `@fusion/engine` list (canonical still names
+`installBaselineArchiveWorktreeDisposer`, whose call site this line's archive retirement removed), and canonical's
+extra module stubs (`createLocalStore` on project-context, `../../output.js`, `../node.js`) stay so module load can
+never reach real output formatting or node-lookup code.
+*/
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const reconcile = vi.hoisted(() => vi.fn());
@@ -23,9 +31,12 @@ vi.mock("@fusion/engine", () => ({
 }));
 vi.mock("../../project-context.js", () => ({
   resolveProject: vi.fn(async () => ({ store: {}, projectPath: "/project" })),
+  createLocalStore: vi.fn(),
   closeProjectStore: close,
 }));
 vi.mock("../../lock-retry.js", () => ({ retryOnLock: async (body: () => unknown) => body(), LockRetryExhaustedError: class extends Error {} }));
+vi.mock("../../output.js", () => ({ promptOutputStream: vi.fn(), result: vi.fn() }));
+vi.mock("../node.js", () => ({ findNodeByNameOrId: vi.fn() }));
 vi.mock("@fusion/dashboard", () => ({}));
 vi.mock("@fusion/dashboard/planning", () => ({}));
 vi.mock("@fusion/core/gh-cli", () => ({}));
@@ -64,7 +75,7 @@ describe("runTaskReconcile", () => {
   ])("refuses unsafe result %# without mutating", async (result, message) => {
     reconcile.mockResolvedValue(result);
     await expect(runTaskReconcile("FN-9304", "project")).rejects.toThrow("exit:1");
-    expect(error).toHaveBeenCalledWith(expect.stringContaining(message));
+    expect(error).toHaveBeenCalledWith(expect.stringContaining(message as string));
     expect(close).toHaveBeenCalled();
   });
 });

@@ -230,6 +230,13 @@ const OWNER_PROJECT_ID_SPLIT_TABLES = [
  * Early numbered migrations that add project objects must appear here in
  * version order. Skipping 0011 (or 0001/0002/0003/0005/0006) lets a later
  * present sentinel become the floor and leaves the omitted version stamped.
+ *
+ * FNXC:MergeRebuild0919 2026-09-19-21:45:
+ * Canonical's reimplementation of this registry is the same list minus this line's feature sentinels
+ * (FN-408 `tasks.human_plan_approval`, FN-509 `tasks.queue_boost`, FN-333 `project.whiteboards*`). A
+ * restored dump taken from this line's production database is missing exactly those objects when it
+ * predates them, so its sentinels stay: without them the rewind floor sits too high and those versions
+ * stay stamped while their objects are gone.
  */
 export const RESTORED_SCHEMA_RELATION_SENTINELS: readonly RestoredSchemaRelationSentinel[] = [
   {

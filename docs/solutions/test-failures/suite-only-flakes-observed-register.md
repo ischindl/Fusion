@@ -20,6 +20,7 @@ tags:
 # Observed suite-only flakes register
 
 This register has **2 active observation records** (entries 2 and 13), both **active first sightings**. Entry 1 closed on 2026-09-12: FN-9131's structural harness connection-budget fix (merged 2026-08-16 as `ae507afc37`) resolved its reproduced timeout, and no sighting has occurred since the fix landed; the record stays in place below for its campaign evidence. Entry 14 was closed 2026-09-09 by FN-9283 (diagnosed and deleted under the deletion ratchet). Entries 7 and 15 are closed and retained for cross-reference only. It also has **1 merge-gate eviction record** (entry 6) and **9 archived closed records**. Only the active section drives quarantine and escalation decisions; the other sections preserve historical evidence.
+This register has **2 active observation records** (entries 2 and 13), both **active first sightings**. Entry 1 closed on 2026-09-12: FN-9131's structural harness connection-budget fix (merged 2026-08-16 as `ae507afc37`) resolved its reproduced timeout, and no sighting has occurred since the fix landed; the record stays in place below for its campaign evidence. Entries 7 and 14 below are closed and retained for cross-reference only. It also has **1 merge-gate eviction record** (entry 6) and **9 archived closed records**. Only the active section drives quarantine and escalation decisions; the other sections preserve historical evidence.
 
 <!--
 FNXC:TestFlakeRegister 2026-08-19-11:14:
@@ -159,6 +160,7 @@ DDL microbenchmarks of the pre-fix pristine shape measured `CREATE DATABASE` 44.
 ### 7. Mission store PostgreSQL teardown hook
 
 - **Status:** Closed 2026-08-23 — file-level quarantine (second sighting of a different test in the same file); quarantine RESCUED and lifted 2026-09-02 by `9b29c6beab` (PR #3549); RETIRED 2026-09-06 by `82c635384d` (deletion ratchet — file, ledger row, and the core exclude key removed together, so vitest defaults apply). Measured conflict left for follow-up: the 2026-09-02 lift deleted the ledger row, no non-merge commit in `9b29c6beab..82c635384d^` re-added it, yet the row was present at `82c635384d^` — a merge reintroduced it, so the ratchet fired against a quarantine this record already recorded as rescued. The file is gone for good as far as this record is concerned; the retirement is not evidence that the rescue was wrong.
+- **Status:** Closed 2026-08-23 — file-level quarantine (second sighting of a different test in the same file); quarantine RESCUED and lifted 2026-09-02 by `9b29c6beab` (PR #3549).
 
 - **File:** `packages/core/src/__tests__/postgres/mission-store.pg.test.ts`
 - **Exact test:** `MissionStore (PostgreSQL backend mode)` suite `afterAll` hook (`h.afterAll`).
@@ -579,6 +581,7 @@ This resolves the previously unclassified “unrelated satellite-store ordering 
 ## Entry: `self-healing-pending-wedge-notification` marker-selection count (first sighting)
 
 - **Status:** Closed 2026-08-23 — file-level quarantine (second sighting); quarantine RESCUED and lifted 2026-09-02 by `9b29c6beab` (PR #3549); RETIRED 2026-09-06 by `82c635384d` (deletion ratchet — file, ledger row, and engine exclude line removed together), on the same resurrected-row basis recorded under record 7 above.
+- **Status:** Closed 2026-08-23 — file-level quarantine (second sighting); quarantine RESCUED and lifted 2026-09-02 by `9b29c6beab` (PR #3549).
 - **File:** `packages/engine/src/__tests__/self-healing-pending-wedge-notification.test.ts`
 - **Exact test:** `reconcile pending wedge notifications > selects elapsed markers and audits the completion outcome verbatim`
 - **Owner:** unowned — first sighting, recorded rather than quarantined because the file's remaining coverage (4 tests over the pending-wedge reconciler) is substantial and quarantine is file-level.

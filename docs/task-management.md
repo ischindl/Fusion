@@ -797,6 +797,32 @@ Behavior:
 - Refinement tasks inherit the source task's GitHub tracking state (unlinked sources opt out; linked sources inherit `enabled` and optional `repoOverride`, but never copy the source issue link).
 
 ## Historical archive reintegration
+## Archive and Restore
+
+### Archive behavior
+
+- `fn task archive <id>` moves eligible live-board tasks to `archived`; tasks already in `archived` are rejected. It refuses WIP-lane or active-merge tasks unless a human operator explicitly supplies `--force`.
+- Archive records the task's `preArchiveColumn` so restore can return to the original live column instead of always assuming `done`.
+- Dashboard delete confirmations for live tasks include an **Archive Instead** action so users can preserve history without soft-deleting the task.
+- Archived tasks can also be deleted from the dashboard/API/CLI. Deleting an archived task removes the archived snapshot from lists and search, but first materializes the normal soft-delete tombstone so the task ID remains reserved unless the operator explicitly chooses allow-resurrection behavior.
+- Cleanup mode can persist compact metadata and remove the task directory
+- Archived tasks remain read-only for ordinary task log/document writes:
+  - `logEntry()` throws `Task <id> is archived — logging is read-only`
+  - `upsertTaskDocument()` and `deleteTaskDocument()` reject archived parents
+  - `fn_task_log` returns `ERROR: Cannot log to archived task — this task is read-only`
+  - task-bound and chat/planning `fn_task_document_write` continue to use ordinary upsert and cannot publish archived corrections
+- Direct reads of a retained named document and its revisions remain available for historical evidence, while list/global document registries stay live-only.
+- The sole immutability exception is authenticated operator HTTP `POST /api/tasks/:id/documents/:key/archived-publications`. It can only append `"\n\n" + appendContent` after matching mandatory revision/hash CAS against a consistent PostgreSQL tombstone plus archive snapshot. It cannot replace content or metadata, restore/move/update the task, change archive/mission/link state, emit citations/task events, or wake execution. Fusion launched with `--no-auth` rejects this capability.
+
+### Bulk archive behavior
+
+The Done-lane **Archive all done tasks** action processes refinement lineage leaves before their parents. This allows a completed refinement chain to archive in one sweep without a still-live child blocking its parent.
+
+The API returns `{ archived, skipped }` and treats per-task skips as a successful request. A skip includes the task ID, a reason, and blocking IDs: `open-lineage-children` means a child is still outside the completed batch, `blocked-by-unarchived-batch-member` means another completed batch member could not be archived, and `archive-failed` records an individual archive error. Other eligible tasks continue even when one item is skipped.
+
+The default action preserves lineage references. The opt-in `removeLineageReferences: true` mode instead treats lineage as an ordering hint only: it archives the entire batch, including cyclic lineage or parents with open children, unless an individual archive operation itself fails.
+
+### Cleanup behavior
 
 Task archiving is no longer an operator lifecycle. Fusion has no Archived board column, archive/unarchive task routes, tools, CLI commands, or automatic archival settings. Completed history stays in the workflow column carrying the `complete` trait (with `done` as the degraded fallback).
 
@@ -1117,3 +1143,7 @@ In **Settings → Models → Project**, choose whether AI-authored task plans, t
 
 Use the robot action to open Chat with that exact error prefilled. After repairing the external obstacle, use **Retry**. Retry resumes the recorded interrupted workflow node; it does not reset steps, delete `PROMPT.md`, replan, or replace the task worktree and branch. Repeated Retry requests are refused while the resume continuation is already pending.
 - `absent-branch-landed-reconciliation` — an in-review task whose branch was cleaned up can be completed only when an ownership-anchored commit exists on its base branch and the task is not paused, executing, or holding a fresh checkout lease. `fn task reconcile <id>` uses the same liveness and compare-and-set fence; it never fabricates review approval.
+
+## Reconciling review tasks with a cleaned-up branch
+
+`absent-branch-landed-reconciliation` — an in-review task whose branch was cleaned up can be completed only when an ownership-anchored commit exists on its base branch and the task is not paused, executing, or holding a fresh checkout lease. `fn task reconcile <id>` uses the same liveness and compare-and-set fence as the automatic self-healing sweep; it never fabricates review approval.

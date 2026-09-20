@@ -401,6 +401,13 @@ export function revertTask(id: string, projectId?: string, body?: RevertTaskOpti
 }
 
 /*
+FNXC:MergeRebuild0919 2026-09-19-21:45:
+Upstream's extended `archiveAllDone` client (archived+skipped result) is intentionally NOT kept:
+this line retired task archiving — the `/tasks/archive-all-done` route 404s here and no dashboard
+caller exists. Do not re-add the client without also restoring the archive feature.
+*/
+
+/*
 FNXC:TaskRevert 2026-09-15-10:00 (FN-416):
 Client contract for `POST /tasks/:id/revert/restore` — the context-menu "Restore revert" action
 that replaced the reverted card's Delete/Revise buttons. Like `revertTask` this is a discriminated

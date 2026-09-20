@@ -1117,6 +1117,13 @@ export {
   TransitionRejectionError,
   type LegacyAutoMergeStampReconcileResult,
   type MoveTaskOptions,
+  /*
+  FNXC:TaskArchiveRemoval 2026-09-19-21:45 (merge rebuild 0919):
+  `ArchiveAllDoneResult` / `ArchiveAllDoneSkip` / `ArchiveAllDoneSkipReason` are deliberately absent.
+  Canonical bulk-archives done cards and re-exported these from `store.js`; this line retired task
+  archiving (FN-9187) — `archiveTaskImpl`/`archiveAllDoneImpl` exist nowhere on it, so the three types
+  have no declaration to re-export and a future port of canonical's archive block must not re-add them.
+  */
 } from "./store.js";
 export {
   STOPWORDS,
@@ -1193,6 +1200,7 @@ export {
   type DeterministicGuardOutcome,
 } from "./duplicates/duplicate-guard.js";
 export type { TaskDependencyMutation } from "./store.js";
+export type { ListTasksOptions } from "./task-store/reads.js";
 export {
   findSameAgentDuplicates,
   computeParentIntentClaimId,

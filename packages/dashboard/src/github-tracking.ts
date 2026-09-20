@@ -272,6 +272,11 @@ FNXC:TerminalTaskWrites 2026-09-15-21:55:
 A terminal-move helper re-reads the task but can still race archival before its audit breadcrumb.
 Use safeLogTaskEntry for every completion outcome so terminal records never receive a raw maintenance write.
 */
+/*
+FNXC:TerminalTaskWrites 2026-09-15-21:55:
+A terminal-move helper re-reads the task but can still race archival before its audit breadcrumb.
+Use safeLogTaskEntry for every completion outcome so terminal records never receive a raw maintenance write.
+*/
 async function closeTrackingIssueIfTaskAlreadyTerminal(
   task: Task,
   store: TaskStore,
