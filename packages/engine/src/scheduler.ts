@@ -3041,8 +3041,44 @@ export class Scheduler {
             });
             if (staleness.isStale) {
               schedulerLog.warn(`Task ${task.id} specification is stale — ${staleness.reason}`);
-              await this.store.updateTask(task.id, { status: "needs-replan" });
-              await this.store.logEntry(task.id, staleness.reason);
+              /*
+              FNXC:PlanReplanSessionBudget 2026-09-21-10:45 (RUFU-251):
+              The staleness rebound used to be a bare `needs-replan` write with no counter and no
+              backoff. Staleness is measured by PROMPT.md's mtime, so a planner session that returns
+              the specification unchanged — which is exactly what a Plan Review `REVISE` episode asks
+              for when the planner considers the spec already correct — leaves the card stale forever
+              and the scheduler rebounded it on every pass. Share the planning recovery budget like the
+              filesystem-validation rebound above: backoff while attempts remain, then park `failed`
+              with a greppable prefix so a spec that cannot be rewritten stops looping. A genuine
+              rewrite refreshes the mtime and successful planning clears the counter.
+              */
+              const stalenessDecision = computeRecoveryDecision({
+                recoveryRetryCount: task.recoveryRetryCount,
+                nextRecoveryAt: task.nextRecoveryAt,
+              });
+              if (!stalenessDecision.shouldRetry) {
+                const error = `SPEC_STALENESS_RECOVERY_EXHAUSTED: specification stayed stale (${staleness.reason}) after ${MAX_RECOVERY_RETRIES} automatic replans.`;
+                await this.store.updateTask(task.id, {
+                  status: "failed",
+                  error,
+                  recoveryRetryCount: null,
+                  nextRecoveryAt: null,
+                });
+                await this.store.logEntry(task.id, error, staleness.reason);
+                return null;
+              }
+              const stalenessAttempt = stalenessDecision.nextState.recoveryRetryCount ?? MAX_RECOVERY_RETRIES;
+              await this.store.updateTask(task.id, {
+                status: "needs-replan",
+                error: null,
+                recoveryRetryCount: stalenessDecision.nextState.recoveryRetryCount,
+                nextRecoveryAt: stalenessDecision.nextState.nextRecoveryAt,
+              });
+              await this.store.logEntry(
+                task.id,
+                `Task retained in ${task.column} for in-place specification repair — specification is stale (attempt ${stalenessAttempt}/${MAX_RECOVERY_RETRIES} in ${formatDelay(stalenessDecision.delayMs)})`,
+                staleness.reason,
+              );
               return null;
             }
           }

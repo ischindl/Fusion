@@ -159,6 +159,16 @@ All `recordRunAuditEventWithinTransaction(tx, ...)` calls and the `recordRunAudi
 
 `task:graph-failure-after-handoff-honored` records the graph-failure sink honoring a completed handoff instead of terminalizing it: an execute-family node (execute / step-execute) failed for a row that was already in the workflow's resolved review lane with all plan steps done, `status`/`error` null, and not user-paused, so the card is left exactly as found (under `autoMerge: false`, `in-review` is terminal-until-human). Emitted through the bounded best-effort seam with IDs and a fixed reason only: `taskId`, `nodeId` (the failing execute-family node, `"unknown"` when the graph recorded none), `column` (the resolved review lane the card is honored in), and fixed `reason: "work-complete-handoff"`; the benign log sentence, failure text, and token totals never enter run-audit. It is intentionally outside the curated delivery-pipeline event catalogue.
 
+### Plan Review replan session budget
+
+`task:plan-replan-session-failure-budget` records one accounting decision inside a live Plan Review `REVISE` episode — the window where the graph has already granted a spec-revision replan and the planner session is expected to rewrite `PROMPT.md`. RUFU-251 added it because a planner session that ended without producing a specification update consumed none of the Plan Review replan budget: it rebound through the filesystem-twin recovery counter only, and a card could loop plan → Plan Review → replan indefinitely while each turn consumed zero budget. Metadata is IDs, counts, and fixed outcomes only: `taskId`, `revisionKey` (the Plan Review revision key, `plan-review`), `attempt` (the turn this decision lands on, including the turn being decided), `cap` (the same ceiling the graph's remediation seam enforces, derived from the Plan Review workflow/node budget, `planReviewReplanCap`, and the shared absolute revision cap — never a second ledger), `remaining`, and fixed `outcome`:
+
+- `consumed` — the session failure was charged to the shared revision-keyed ledger, so the card stays inside the bounded replan loop.
+- `exhausted` — the turn was refused; the card is parked through the existing `plan-review-replan-cap` operator surface and no further planner session is dispatched.
+- `spec-complete-recycled` — the planner session ended with the specification already complete and valid, so the card is released back to the Plan Review gate instead of consuming a turn. No marker is written for this shape, because the marker grammar is also the counter grammar.
+
+The emitted row never contains prompt text, reviewer feedback, validation diagnostics, error text, or paths. A charged turn is additionally recorded as a `Workflow revision key: plan-review` task-log marker — the same ledger shape the graph's remediation seam appends — which is what makes the two accounting paths agree without a second persisted field. `SPEC_STALENESS_RECOVERY_EXHAUSTED:` is the operator-visible park sentence for the sibling bound RUFU-251 added (the scheduler's spec-staleness rebound now shares the planning recovery budget instead of writing unbounded `needs-replan` states); it is a task error prefix, not an event type. Both events are intentionally outside the curated delivery-pipeline event catalogue.
+
 ### Task branch base resolution
 
 <!--

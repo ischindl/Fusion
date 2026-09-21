@@ -356,6 +356,15 @@ import {
 import { runGhostBugPreflight, type ExecResult, type ProbeExec } from "./triage-domain/triage-preflight.js";
 import { runConfiguredCommand } from "./executor/configured-command.js";
 import {
+  chargePlanReviewSessionFailureAttempt,
+  emitPlanReviewSessionFailureBudgetAudit,
+  isPlanReviewRevisionEpisode,
+  resolvePlanReviewSessionFailureBudget,
+} from "./executor/plan-review-session-failure-budget.js";
+import { optionalStepRevisionLogOutcome } from "./executor/optional-step-revision.js";
+import { parkPlanReviewReplanCapExhausted } from "./executor/park-plan-review-replan-cap.js";
+import type { EngineRunContext } from "./util/run-audit.js";
+import {
   detectUnrecognizedDependencyEvidence,
   detectWorktreeDependencyPlan,
   resolveWorktreeDependencyReadiness,
@@ -3972,7 +3981,61 @@ export class TriageProcessor {
             await Promise.all(pendingSettlements);
           }
           const artifactChangedByAttempt = planningAttempt.baseline !== written;
-          if (fallbackDispatchBoundaryMissing || planningAttempt.fallbackEngaged || !artifactChangedByAttempt) {
+          /*
+          FNXC:PlanReplanSessionBudget 2026-09-21-10:45 (RUFU-251):
+          "The planner left PROMPT.md alone" has two opposite meanings, and both used to be charged
+          only to the filesystem-twin recovery budget (MAX_RECOVERY_RETRIES with backoff, cleared at
+          exhaustion), so neither shape ever terminated while a Plan Review REVISE request was live:
+
+          1. live REVISE episode + an unchanged spec that still passes deterministic validation → the
+             planner was asked to revise a specification it considers already correct. Releasing the
+             unchanged content through the normal handoff lets the Plan Review gate re-decide with a
+             real verdict (never a fabricated one); the episode's replan budget bounds the loop.
+          2. fallback-dispatch/transport failures, or an unchanged spec that fails deterministic
+             validation → a planner-session failure, charged to the SAME revision-keyed Plan Review
+             replan budget the graph consumes, so the shared ceiling stops the loop with the existing
+             `plan-review-replan-cap` operator park.
+
+          Outside a live REVISE episode nothing changes: a first-pass plan with no Plan Review verdict
+          yet (or a superseded projection) keeps the unchanged-spec rebound exactly as before.
+          */
+          let generatedPromptValidation: { value: string | null } | undefined;
+          const validateGeneratedPromptOnce = async (): Promise<string | null> => {
+            generatedPromptValidation ??= { value: await this.validateGeneratedPrompt(task.id, written) };
+            return generatedPromptValidation.value;
+          };
+          const inPlanReviewRevisionEpisode = isPlanReviewRevisionEpisode(task);
+          // A fallback dispatch that never reported its settlement boundary, or a fallback that was
+          // engaged at all, is a session failure whatever the artifact looks like, so it can never
+          // qualify as "the planner finished the revision and found nothing to change".
+          const sessionFailureByDispatchShape = fallbackDispatchBoundaryMissing || planningAttempt.fallbackEngaged;
+          const specCompleteRevision = !sessionFailureByDispatchShape
+            && !artifactChangedByAttempt
+            && inPlanReviewRevisionEpisode
+            && written.trim().length > 0
+            && !(await validateGeneratedPromptOnce());
+          if (specCompleteRevision) {
+            const budget = await resolvePlanReviewSessionFailureBudget({ store: this.store }, task, settings);
+            await this.store.logEntry(
+              task.id,
+              "Plan Review revision request found nothing to change — releasing the unchanged specification back to the gate",
+              optionalStepRevisionLogOutcome(
+                `PROMPT.md is identical to its pre-session content and still passes deterministic validation, `
+                + `so the Plan Review gate re-decides instead of this being a session failure. `
+                // Wording says "turn", not "attempt N/", so the budget ledger never mistakes this
+                // informational marker for a consumed turn.
+                + `Plan Review replan budget: turn ${budget.attempt}/${budget.cap}, ${budget.remaining} remaining.`,
+                budget.revisionKey,
+              ),
+            );
+            await emitPlanReviewSessionFailureBudgetAudit(this.store, {
+              taskId: task.id,
+              runContext: triageRunContext,
+              budget,
+              outcome: "spec-complete-recycled",
+            });
+          }
+          if (sessionFailureByDispatchShape || (!artifactChangedByAttempt && !specCompleteRevision)) {
             const liveTask = await Promise.resolve(this.store.getTask(task.id)).catch(() => task) ?? task;
             const transportFailure = getPlanningLifecycleLockTransportFailure(liveTask);
             const failure = transportFailure
@@ -3982,6 +4045,16 @@ export class TriageProcessor {
                 : planningAttempt.fallbackEngaged
                   ? `Planner fallback engaged during attempt ${planningAttempt.id}`
                   : `Planner did not update the authoritative PROMPT.md during attempt ${planningAttempt.id}`;
+            /*
+            FNXC:PlanReplanSessionBudget 2026-09-21-10:45 (RUFU-251):
+            Inside a live Plan Review REVISE episode this is a planner-session failure, so it consumes
+            a turn of the Plan Review replan budget in addition to the filesystem-twin retry budget.
+            Once the shared ceiling is reached the card parks for the operator instead of rebounding.
+            */
+            if (inPlanReviewRevisionEpisode
+              && await this.parkIfPlanReviewSessionBudgetExhausted(task, settings, failure, triageRunContext)) {
+              return;
+            }
             const decision = computeRecoveryDecision({
               recoveryRetryCount: task.recoveryRetryCount,
               nextRecoveryAt: task.nextRecoveryAt,
@@ -4013,8 +4086,18 @@ export class TriageProcessor {
             return;
           }
 
-          const deterministicSpecFailure = await this.validateGeneratedPrompt(task.id, written);
+          const deterministicSpecFailure = await validateGeneratedPromptOnce();
           if (deterministicSpecFailure) {
+            /*
+            FNXC:PlanReplanSessionBudget 2026-09-21-10:45 (RUFU-251):
+            A generated spec that fails deterministic validation is a failed planner session, not a
+            malformed file: inside a live REVISE episode it charges the same Plan Review replan budget
+            and parks on exhaustion rather than rebounding without a bound.
+            */
+            if (inPlanReviewRevisionEpisode
+              && await this.parkIfPlanReviewSessionBudgetExhausted(task, settings, deterministicSpecFailure, triageRunContext)) {
+              return;
+            }
             const decision = computeRecoveryDecision({
               recoveryRetryCount: task.recoveryRetryCount,
               nextRecoveryAt: task.nextRecoveryAt,
@@ -4869,6 +4952,41 @@ export class TriageProcessor {
     if (restored) return restored;
     const content = knownPromptContent ?? await this.readNonEmptyPromptDraft(task.id, "planning retry hold");
     return content && !isTaskAwaitingPlanning(task, content) ? "needs-replan" : null;
+  }
+
+  /*
+  FNXC:PlanReplanSessionBudget 2026-09-21-10:45 (RUFU-251):
+  Charge one failed planner session to the Plan Review replan budget while a Plan Review `REVISE`
+  episode is live, and park through the existing cap-exhaustion seam once the shared ceiling the
+  graph enforces is reached. Returns true only when the card is now parked, i.e. the caller must
+  stop rebounding it into planning. Outside a live REVISE episode this is a no-op, so a first-pass
+  plan failure keeps the filesystem-twin recovery behavior it had before; the write is additionally
+  suppressed for a card that already advanced out of the planning stage.
+  */
+  private async parkIfPlanReviewSessionBudgetExhausted(
+    task: Task,
+    settings: Settings,
+    failure: string,
+    runContext: EngineRunContext | undefined,
+  ): Promise<boolean> {
+    const liveTask = await Promise.resolve(this.store.getTask(task.id)).catch(() => task) ?? task;
+    if (!isTaskStillInPlanningStage(liveTask)) return false;
+    const { budget } = await chargePlanReviewSessionFailureAttempt(
+      { store: this.store },
+      liveTask,
+      settings,
+      { runContext },
+    );
+    if (!budget.inRevisionEpisode || !budget.exhausted) return false;
+    await parkPlanReviewReplanCapExhausted(
+      { store: this.store, getRunContextFor: () => runContext },
+      task.id,
+      String(budget.cap),
+      budget.attemptsConsumed,
+      `The planner session for this Plan Review revision request never produced a specification update: ${failure}`,
+    );
+    planLog.warn(`${task.id} Plan Review replan budget exhausted by failed planner sessions (cap ${budget.cap}) — parked for operator`);
+    return true;
   }
 
   private async validateGeneratedPrompt(taskId: string, promptContent: string): Promise<string | null> {

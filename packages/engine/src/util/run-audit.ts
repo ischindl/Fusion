@@ -560,6 +560,15 @@ export type DatabaseMutationType =
    * Deduped on the gate signature, so a sustained stall emits one row, not one per poll.
    */
   | "task:plan-admission-throttled"
+  /*
+  * FNXC:PlanReplanSessionBudget 2026-09-21-10:45 (RUFU-251):
+  * One planner session was charged to, or refused by, the Plan Review replan budget.
+  * Metadata: { taskId, revisionKey, attempt, cap, remaining, outcome } where outcome is the fixed
+  * enum `consumed` | `exhausted` | `spec-complete-recycled`. Revision key, attempt, cap and
+  * remaining are the shared budget ledger's own values; reviewer feedback, PROMPT.md content and
+  * error prose are never recorded here.
+  */
+  | "task:plan-replan-session-failure-budget"
   | "agent:auto-recover-error-state"
   | "agent:reset-error-state-on-startup"
   | "agent:error-retry-exhausted"
