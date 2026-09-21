@@ -441,8 +441,14 @@ vi.mock("node:child_process", async () => {
 vi.mock("node:fs", () => ({
   existsSync: vi.fn().mockReturnValue(true),
   realpathSync: vi.fn((path: string) => path),
-  lstatSync: vi.fn(() => ({ isSymbolicLink: () => false, isDirectory: () => true })),
-  statSync: vi.fn(() => ({ isDirectory: () => true })),
+  lstatSync: vi.fn(() => ({ isSymbolicLink: () => false, isDirectory: () => true, isFile: () => true })),
+  statSync: vi.fn(() => ({ isDirectory: () => true, isFile: () => true })),
+  mkdirSync: vi.fn(),
+  readdirSync: vi.fn(() => []),
+  readFileSync: vi.fn(() => "{}"),
+  renameSync: vi.fn(),
+  rmSync: vi.fn(),
+  writeFileSync: vi.fn(),
 }));
 
 export const mockExecuteAll: Mock<() => Promise<unknown[]>> = vi.fn().mockResolvedValue([]);
@@ -1085,6 +1091,18 @@ export function selectImplementationSessionCall<T extends { customTools?: Array<
 
 export function resetExecutorMocks() {
   vi.clearAllMocks();
+  /*
+  FNXC:EngineTests 2026-09-19-20:57:
+  vi.clearAllMocks() preserves mock IMPLEMENTATIONS, so a prior test's existsSync override leaks into the
+  next test's beforeEach. Re-establish a deterministic default here. FN-258 made native worktrees
+  unconditionally task-id-pinned, so acquisition now always enters acquirePinnedWorktree; a truthy
+  existsSync for the pinned path routes into warm-reuse, whose real getRegisteredWorktreeBranches probe
+  (an internal describeRegisteredWorktrees call the export mock cannot intercept) returns [] on the
+  non-git test rootDir and throws "refusing to prove mismatch". Default the pinned worktree path to absent
+  so the standard fresh-creation path (mocked createWorktree) runs, matching pre-FN-258 behavior; tests
+  that need an existing worktree still override existsSync explicitly.
+  */
+  mockedExistsSync.mockImplementation((path) => !/[\\/]worktrees[\\/]/.test(String(path)));
   mockedExec.mockReset();
   mockedExecSync.mockReset();
   mockedStatSync.mockReset();

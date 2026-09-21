@@ -21,7 +21,9 @@ import { ExternalBlockNotice } from "./TaskCard";
 import { TaskRefineDialog, type TaskRefineDialogMode } from "./TaskRefineDialog";
 import { TaskResetDialog } from "./TaskResetDialog";
 import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
-import { useModalDismissPreference } from "../hooks/useOverlayDismiss";
+
+import { useMobileKeyboard } from "../hooks/useMobileKeyboard";
+import { useModalDismissPreference, useOverlayDismiss } from "../hooks/useOverlayDismiss";
 import { useColumnLabel } from "../i18n/labels";
 import type { DetailTaskTab } from "../hooks/useModalManager";
 import type { TaskDetailDefaultTab } from "../hooks/useAppSettings";
@@ -568,6 +570,8 @@ export interface TaskDetailModalProps {
   affordance surface for this policy-gated escape hatch.
   */
   onBypassReview?: (id: string, reason: string) => Promise<Task>;
+  /* FNXC:WorkflowStepResume 2026-09-20-05:01: explicit dashboard-operator recovery for a pending pre-merge result; WorkflowResultsTab remains the only renderer. */
+  onResumeWorkflowStep?: (id: string, stepId: string, reason: string) => Promise<Task>;
   onResetTask?: (id: string, options?: { description?: string }) => Promise<Task>;
   onDuplicateTask?: (id: string, options?: { workflowId?: string }) => Promise<Task>;
   onTaskUpdated?: (task: Task) => void;
@@ -999,6 +1003,7 @@ export function TaskDetailContent({
   onPauseTask,
   onUnpauseTask,
   onBypassReview,
+  onResumeWorkflowStep,
   onResetTask,
   onDuplicateTask,
   onTaskUpdated,
@@ -1542,7 +1547,10 @@ export function TaskDetailContent({
   const taskOwnedRecommendations = detailSnapshotIsForThisTask
     ? workingTask.recommendations
     : task.recommendations;
-  const hasRecommendations = isDoneColumn && (taskOwnedRecommendations?.length ?? 0) > 0;
+  /* FNXC:Merge0921 2026-09-21-10:10: upstream's archived-snapshot recommendation source is retired
+     on this line (FN-9187) — completed lane only, matching the API gate. */
+  const hasRecommendations = isDoneColumn
+    && (taskOwnedRecommendations?.length ?? 0) > 0;
   // Reset planner-chat focus when the operator opens a different task.
   useEffect(() => {
     setPlannerChatExpanded(false);
@@ -6063,6 +6071,9 @@ export function TaskDetailContent({
                 agentLogEntries={agentLogEntries}
                 assignedAgent={assignedAgent}
                 onEditWorkflow={onOpenWorkflowEditor}
+                onResumeWorkflowStep={onResumeWorkflowStep}
+                onTaskUpdated={onTaskUpdated}
+                addToast={addToast}
               />
             </div>
           ) : activeTab === "model" ? (
@@ -6270,6 +6281,7 @@ export function TaskDetailContent({
                 <>
                   {shouldShowInReviewStallBadge(workingTask, detailColumnFlags) && workingTask.inReviewStall && (() => {
                     const copy = getInReviewStallCopy(workingTask.inReviewStall, {
+                      ...workingTask,
                       mergeRetries: workingTask.mergeRetries,
                       maxAutoMergeRetries: MAX_AUTO_MERGE_RETRIES,
                     });
@@ -7588,6 +7600,16 @@ export function TaskDetailModal({ onClose, mobileDrawer = false, ...props }: Tas
     onClose();
   }, [onClose]);
   useMobileScrollLock(true);
+  const { keyboardOverlap, viewportHeight, viewportOffsetTop, keyboardOpen } = useMobileKeyboard({
+    enabled: viewportMode === "mobile",
+  });
+  const keyboardStyle: React.CSSProperties = keyboardOpen
+    ? ({
+        "--keyboard-overlap": `${keyboardOverlap}px`,
+        "--vv-offset-top": `${viewportOffsetTop}px`,
+        ...(viewportHeight !== null ? { "--vv-height": `${viewportHeight}px` } : {}),
+      } as React.CSSProperties)
+    : {};
   const dismissOnOutsidePointerDown = useModalDismissPreference();
   /*
   FNXC:TaskDetailSwipeBack 2026-07-25-00:00:
@@ -7635,7 +7657,18 @@ export function TaskDetailModal({ onClose, mobileDrawer = false, ...props }: Tas
       /* FNXC:ModalTouchGeometry 2026-07-26-19:05: Keep outside dismissal preference-gated; unconditional pointer-down would regress the default-off contract. */
       closeOnOutsidePointerDown={dismissOnOutsidePointerDown}
     >
-      <div className={`modal modal-lg task-detail-modal${isMobileTransition ? " task-detail-modal--mobile-transition" : ""}`}>
+
+      {/*
+      FNXC:TaskDetailChat 2026-09-20-05:42:
+      A focused phone composer can shrink and pan the visual viewport while the layout viewport
+      remains full height. Apply that authoritative visible geometry only to this runtime mobile
+      sheet so Live keeps its flex transcript and composer reachable; the existing modal scroll lock
+      remains the sole iOS lock, and desktop, tablet, and embedded detail hosts stay unchanged.
+      */}
+      <div
+        className={`modal modal-lg task-detail-modal${isMobileTransition ? " task-detail-modal--mobile-transition" : ""}${keyboardOpen ? " task-detail-modal--keyboard-open" : ""}`}
+        {...(keyboardOpen ? { style: keyboardStyle } : {})}
+      >
         <TaskDetailContent {...props} onRequestClose={requestClose} />
       </div>
     </FloatingWindow>

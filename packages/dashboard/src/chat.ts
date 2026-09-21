@@ -588,6 +588,10 @@ export interface ChatFusionToolsetOptions {
   chatStore?: ChatStore;
   currentChatSessionId?: string;
   currentProjectId?: string | null;
+/** ProjectEngine queue/active-merge probe for mutating task recovery tools. */
+  isMergePending?: (taskId: string) => boolean | Promise<boolean>;
+  /** ProjectEngine-owned fence that serializes a retry reset with merge admission. */
+  resetInReviewMergeRetry?: (task: import("@fusion/core").Task) => Promise<"reset" | "pending" | "changed" | "unavailable">;
 }
 
 const CHAT_MISSION_READ_TOOL_NAMES = new Set(["fn_mission_list", "fn_mission_show"]);
@@ -755,6 +759,8 @@ export async function createChatFusionToolset(options: ChatFusionToolsetOptions)
     chatStore,
     currentChatSessionId,
     currentProjectId,
+    isMergePending,
+    resetInReviewMergeRetry,
   } = options;
   const tools: ChatCustomTool[] = [];
 
@@ -795,7 +801,7 @@ export async function createChatFusionToolset(options: ChatFusionToolsetOptions)
     if (actionGateContext) {
       tools.push(
         createTaskDeleteTool(taskStore),
-        createTaskRetryTool(taskStore),
+        createTaskRetryTool(taskStore, { isMergePending, resetInReviewMergeRetry }),
         createTaskPauseTool(taskStore),
         createTaskUnpauseTool(taskStore),
         createTaskDuplicateTool(taskStore),
@@ -1912,6 +1918,8 @@ export class ChatManager {
     // tools (fn_workflow_*) and explicit-task document tools. Optional so
     // existing test/construction sites that don't author workflows keep working.
     private taskStore?: TaskStore,
+    private isMergePending?: (taskId: string) => boolean | Promise<boolean>,
+    private resetInReviewMergeRetry?: (task: import("@fusion/core").Task) => Promise<"reset" | "pending" | "changed" | "unavailable">,
   ) {}
 
   /**
@@ -1928,6 +1936,19 @@ export class ChatManager {
    */
   setMessageStore(messageStore: MessageStore | undefined): void {
     this.messageStore = messageStore;
+  }
+
+  /**
+   * FNXC:ChatMergeRecovery 2026-09-20-02:52:
+   * Project chat managers can outlive engine boot. Refreshing the ownership probe lets retry
+   * reject a merge queued after a status-none snapshot instead of clearing its live handoff.
+   */
+  setMergePendingProvider(isMergePending: ((taskId: string) => boolean | Promise<boolean>) | undefined): void {
+    this.isMergePending = isMergePending;
+  }
+
+  setMergeRetryResetProvider(resetInReviewMergeRetry: ChatManager["resetInReviewMergeRetry"]): void {
+    this.resetInReviewMergeRetry = resetInReviewMergeRetry;
   }
 
   private getPluginRunnerForSkillSelection(): Parameters<typeof buildSessionSkillContextSync>[3] {
@@ -2787,6 +2808,8 @@ export class ChatManager {
       agentId: input.responder.id,
       missionMutationGated: missionGateContexts.missionMutationGated,
       actionGateContext: missionGateContexts.actionGateContext,
+      isMergePending: this.isMergePending,
+      resetInReviewMergeRetry: this.resetInReviewMergeRetry,
     });
 
     const roomCustomTools = dedupeChatTools([...workflowTools, ...chatFusionTools]);
@@ -3018,7 +3041,7 @@ export class ChatManager {
     const skillSelection = mergeTypedSkillCommands(skillContext.skillSelectionContext, skills.requestedSkillNames, this.rootDir, "heartbeat");
     const workflowTools = createChatWorkflowAuthoringTools(this.taskStore, input.session.projectId ?? null);
     const gates = await createChatMissionGateContexts(this.taskStore, this.agentStore, input.responder);
-    const fusionTools = await createChatFusionToolset({ taskStore: this.taskStore, agentStore: this.agentStore, rootDir: this.rootDir, agentId: input.responder.id, missionMutationGated: gates.missionMutationGated, actionGateContext: gates.actionGateContext });
+    const fusionTools = await createChatFusionToolset({ taskStore: this.taskStore, agentStore: this.agentStore, rootDir: this.rootDir, agentId: input.responder.id, missionMutationGated: gates.missionMutationGated, actionGateContext: gates.actionGateContext, isMergePending: this.isMergePending });
     let fallback: { primaryModel: string; fallbackModel: string; triggerPoint: "session-creation" | "prompt-time" } | undefined;
     const resolved = await createResolvedAgentSession({
       sessionPurpose: "heartbeat", pluginRunner: this.pluginRunner, runtimeHint: extractRuntimeHint(input.responder.runtimeConfig), cwd: this.rootDir, systemPrompt, tools: CHAT_CODING_TOOLS,
@@ -3863,6 +3886,8 @@ export class ChatManager {
         chatStore: this.chatStore,
         currentChatSessionId: sessionId,
         currentProjectId: session?.projectId ?? null,
+        isMergePending: this.isMergePending,
+        resetInReviewMergeRetry: this.resetInReviewMergeRetry,
       });
       const customTools = dedupeChatTools([
         createAskQuestionTool(),

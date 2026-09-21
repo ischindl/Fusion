@@ -22,17 +22,66 @@ import { request as REQUEST } from "../../test-request.js";
 function makeHarness() {
   const bypassSpy = vi.fn(async (id: string, _input: { reason: string; actor: string }) => ({ id, column: "in-review" }));
 
+  const resumeSpy = vi.fn(async (id: string, _input: { stepId: string; reason: string; actor: string }) => ({ id, column: "in-review" }));
+
   const store = {
     getRootDir: vi.fn(() => process.cwd()),
     bypassFailedPreMergeReviewStep: bypassSpy,
+
+    resumeWorkflowStep: resumeSpy,
     getProjectScopedPluginMcpServers: vi.fn(async () => []),
   } as unknown as TaskStore;
 
   const app = express();
   app.use(express.json());
   app.use("/api", createApiRoutes(store));
-  return { app, bypassSpy };
+  /* FNXC:Merge0921 2026-09-21-10:30: auto-merge left an early `return { app, bypassSpy }` above this line,
+     which silently undefined-ed resumeSpy for every FN-9319 case. */
+  return { app, bypassSpy, resumeSpy };
 }
+
+describe("POST /tasks/:id/steps/:stepId/resume — server-derived actor", () => {
+  it("uses the path step ID, trims the reason, and ignores a spoofed body actor", async () => {
+    const { app, resumeSpy } = makeHarness();
+    const res = await REQUEST(app, "POST", "/api/tasks/FN-1/steps/code-review/resume", JSON.stringify({
+      stepId: "spoofed-step",
+      reason: " callback never returned ",
+      actor: "EvilAgent",
+    }), { "content-type": "application/json" });
+
+    expect(res.status).toBe(200);
+    expect(resumeSpy).toHaveBeenCalledWith("FN-1", {
+      stepId: "code-review",
+      reason: "callback never returned",
+      actor: "dashboard-operator",
+    });
+  });
+
+  it("requires a non-empty reason before calling the store", async () => {
+    const { app, resumeSpy } = makeHarness();
+    const res = await REQUEST(app, "POST", "/api/tasks/FN-1/steps/code-review/resume", JSON.stringify({ reason: "   " }), {
+      "content-type": "application/json",
+    });
+
+    expect(res.status).toBe(400);
+    expect(resumeSpy).not.toHaveBeenCalled();
+  });
+
+  it("maps missing tasks to 404 and eligibility rejections to conflict", async () => {
+    const { app, resumeSpy } = makeHarness();
+    resumeSpy.mockRejectedValueOnce(new Error("Task FN-missing not found"));
+    const missing = await REQUEST(app, "POST", "/api/tasks/FN-missing/steps/code-review/resume", JSON.stringify({ reason: "stuck" }), {
+      "content-type": "application/json",
+    });
+    resumeSpy.mockRejectedValueOnce(new Error("Cannot resume workflow step for FN-1: only pending steps can be resumed"));
+    const rejected = await REQUEST(app, "POST", "/api/tasks/FN-1/steps/code-review/resume", JSON.stringify({ reason: "stuck" }), {
+      "content-type": "application/json",
+    });
+
+    expect(missing.status).toBe(404);
+    expect(rejected.status).toBe(409);
+  });
+});
 
 describe("POST /tasks/:id/bypass-review — server-derived actor", () => {
   it("records dashboard-operator when the body carries no actor", async () => {

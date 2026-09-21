@@ -172,8 +172,10 @@ Les thèmes ne définissent plus leurs propres `@keyframes` : ils surchargent so
   }
 }
 
-/* Respect an operating-system request for reduced motion: keep a steady halo, drop the pulse. */
-@media (prefers-reduced-motion: reduce) {
+/* Respect an operating-system request for reduced motion: keep a steady halo, drop the pulse.
+   FNXC:MergeRebuild0921 2026-09-21: upstream's touch-device offscreen-paint guard re-applied to the
+   halo system — coarse pointers keep the same highlight without per-frame animation work. */
+@media (prefers-reduced-motion: reduce), ((hover: none) and (pointer: coarse)) {
   .card.agent-active::before {
     animation: none;
     opacity: 0.4;

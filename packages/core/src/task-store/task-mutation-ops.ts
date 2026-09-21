@@ -728,8 +728,10 @@ export async function linkTaskRecommendationImpl(
       await acquireTaskAdvisoryXactLock(tx, layer.projectId, id);
       const row = await readTaskRowInTransaction(tx, id, { includeDeleted: true }, layer.projectId);
       if (!row) throw new TaskNotFoundError(id);
-      if (row.deletedAt) throw new TaskDeletedError(id, row.deletedAt as string);
 
+      /* FNXC:Merge0921 2026-09-21-10:05: upstream FN-9325 links recommendation children into cold
+         archive snapshots; task archiving is retired on this line (FN-9187) — tombstones stay
+         unactionable via TaskDeletedError and linking targets only retained rows. */
       const current = store.rowToTask(store.pgRowToTaskRow(row));
       if (completeColumns && !completeColumns.has(current.column)) {
         throw new Error("Recommendations are available only on completed tasks");
@@ -746,18 +748,13 @@ export async function linkTaskRecommendationImpl(
         item.id === recommendationId ? { ...item, createdTaskId } : item,
       );
       const updatedAt = new Date().toISOString();
-      /*
-      FNXC:TaskRecommendations 2026-08-08-07:15:
-      Lifecycle moves do not share this recommendation advisory lock. Keep the completed-lane
-      predicate in the UPDATE itself so PostgreSQL's row-level CAS rejects a parent reopened after
-      our read but before this JSONB link write.
-      */
       const [updatedRow] = await tx
         .update(schema.project.tasks)
         .set({ recommendations, updatedAt })
         .where(and(
           eq(schema.project.tasks.id, id),
           taskProjectScope(layer),
+          isNull(schema.project.tasks.deletedAt),
           ...(completeColumns ? [inArray(schema.project.tasks.column, [...completeColumns])] : []),
         ))
         .returning();

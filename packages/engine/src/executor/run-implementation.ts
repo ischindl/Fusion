@@ -161,6 +161,7 @@ import { isResearchToolSurfaceEnabled } from "../execution/tool-availability.js"
 import { summarizeVerificationOutput } from "../execution/verification-utils.js";
 import { buildAgentPersona } from "./agent-binding-pure.js";
 import { releaseExternalExecutionActiveWorktree } from "./active-worktrees.js";
+import { closeFusionBrowserSession } from "../agent-browser-lifecycle.js";
 import { evaluateImplicitCompletionRefusal } from "./completion-predicates.js";
 import {
   configuredCommandErrorMessage,
@@ -3377,15 +3378,21 @@ export async function runImplementation(
         that once git state changes, so it stays a wait: leave the row cleanly dispatchable and let ordinary
         scheduling retry it rather than terminalizing recoverable work.
         */
-        executorLog.warn(`${task.id}: worktree base refresh blocked execution (${err.refresh.kind}) — leaving the task queued for re-dispatch (not a failure)`);
+        executorLog.warn(`${task.id}: worktree base refresh blocked execution (${err.refresh.kind}) — deferring to graph recovery`);
         await deps.store.logEntry(
           task.id,
-          `Worktree base refresh blocked execution (${err.refresh.kind}) — task left queued for a later clean acquisition`,
+          `Worktree base refresh blocked execution (${err.refresh.kind}) — awaiting bounded graph recovery`,
           err.refresh.detail,
           deps.getRunContextFor(task.id),
         ).catch(() => undefined);
         await deps.persistTokenUsage(task.id);
-        return;
+        /*
+        FNXC:WorktreeBaseRefresh 2026-09-19-20:13:
+        Returning here erased the refusal and made the step adapter report step-failed for an
+        incomplete Preflight. Preserve the typed error through cleanup to the graph's bounded
+        preparation-recovery owner; never let a non-executed pass look like an implementation failure.
+        */
+        throw err;
       } else if (isTaskBranchBaseDivergedError(err)) {
         /*
         FNXC:TaskBaseResolution 2026-09-16-02:57 (RUFU-245):
@@ -3952,7 +3959,7 @@ export async function runImplementation(
             return;
           }
 
-          let outcome: "retry" | "reclaimed" | "sticky" = "sticky";
+          let outcome: "retry" | "reclaimed" | "recovered" | "sticky" = "sticky";
           for (let attempt = 1; attempt <= deps.MAX_AUTO_RECOVERY_ATTEMPTS; attempt += 1) {
             outcome = await deps.handleBranchConflict(task, err);
             if (outcome !== "retry") break;
@@ -4102,6 +4109,14 @@ export async function runImplementation(
       }
     } finally {
       const unwindCleanupResult = await executingTaskLock.runIfOwner(executionLease, async () => {
+      /*
+      FNXC:AgentBrowserOwnership 2026-09-20-00:56:
+      Session teardown closes only the opaque browser session carried in this run's
+      environment. Retiring its lease after the bounded close prevents an older retry
+      from selecting a newer task session, while crash survivors remain reaper-owned.
+      */
+      if (taskEnv) await closeFusionBrowserSession(taskEnv);
+
       /*
       FNXC:ExternalExecutionCheckout 2026-08-10-03:13:
       External checkouts remain operator-owned and are never removed by Fusion, but every run exit must clear their in-memory active-worktree ownership before any awaited teardown or executor-lock release. This prevents teardown errors from retaining a phantom holder and prevents an old run from deleting a successor run's binding.

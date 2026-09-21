@@ -202,6 +202,7 @@ import { getTaskCompletionBlockerForStore } from "./execution/task-completion.js
 import { shouldReclaimWedgedMerge } from "./merge/merge-reclaim-policy.js";
 import { resolveRemediationCheckout } from "./executor/resolve-remediation-checkout.js";
 import { isDefiniteEmptyCodeReviewRevise } from "./executor/review-empty-content-close.js";
+import { reapExpiredFusionBrowserLeasesInProduction } from "./agent-browser-lifecycle.js";
 
 import { advanceIntegrationBranchRef } from "./merge/merger-ref-update-advance.js";
 import { isInsideConfiguredWorktreesDir, isReclaimableWorktreeCandidate, isWorktreeContainerDir, resolveAiMergeSearchRoots, resolveWorktreesDirScanRoots } from "./worktree/worktree-paths.js";
@@ -549,6 +550,8 @@ export interface OverlapBlockerRelease {
 export interface SelfHealingOptions {
   /** Project root directory (parent of .worktrees/) */
   rootDir: string;
+  /** Injected only by tests; production uses exact profile + daemon-ancestry discovery. */
+  reapExpiredFusionBrowserLeases?: () => Promise<number>;
   /*
    * FNXC:PlanReviewLease 2026-07-26-20:30:
    * This engine's cluster node id, matching what the graph stamps into
@@ -1037,7 +1040,7 @@ export type LandedReviewReconcileResult =
   | { outcome: "already-complete" }
   | { outcome: "not-landed"; baseBranch: string }
   | { outcome: "raced"; reason: string }
-  | { outcome: "ineligible"; reason: "workspace" | "not-in-review" | "paused" | "user-paused" | "executing" | "live-session" | "checkout-leased" | "auto-merge-off" | "no-branch-recorded" | "branch-present" | "engine-paused" };
+  | { outcome: "ineligible"; reason: "workspace" | "not-in-review" | "paused" | "user-paused" | "executing" | "live-session" | "checkout-leased" | "auto-merge-off" | "no-branch-recorded" | "branch-present" | "branch-has-unlanded-content" | "foreign-ownership" | "workflow-approval-blocked" | "engine-paused" };
 
 export class SelfHealingManager extends SelfHealingGitEvidence {
   /*
@@ -2153,6 +2156,10 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     // Each recovery step is isolated — one failure doesn't prevent subsequent steps.
     const startupSurfacing = this.surfacingCycleMemo();
     const steps: Array<{ name: string; fn: () => Promise<unknown> }> = [
+      {
+        name: "reap-expired-agent-browser-leases",
+        fn: () => this.reapExpiredAgentBrowserLeases(),
+      },
       // FNXC:LegacyAdoption 2026-07-19-04:20 (U9b / KTD-8): adoption runs FIRST. Every step
       // below reasons about `task.status` and column, so a pre-cutover row must be adopted
       // into the post-cutover vocabulary before any of them classify it — otherwise a
@@ -3081,6 +3088,17 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   FNXC:EngineDiagnostics 2026-07-26-07:26:
   Periodic maintenance walks 50+ batch steps each cycle. Per-step "succeeded"/disabled-skip lines are steady-state chatter that filled the TUI log pane and drowned real recovery events. Route routine start/complete/success/skip to debug() (opt-in via FUSION_DEBUG=self-healing). Keep log()/warn()/error() only for state changes (recovered/deleted/cleaned counts > 0), pause-policy skips operators may need, and step failures.
   */
+  /**
+   * FNXC:AgentBrowserReaping 2026-09-20-13:20:
+   * Browser cleanup is independent of task rows and is safe while paused: it reads only Fusion's
+   * bounded lease directory and signals a process tree only after exact profile/daemon proof.
+   */
+  private async reapExpiredAgentBrowserLeases(): Promise<number> {
+    const reaped = await (this.options.reapExpiredFusionBrowserLeases ?? reapExpiredFusionBrowserLeasesInProduction)();
+    if (reaped > 0) log.log(`Reaped ${reaped} expired Fusion agent-browser session(s)`);
+    return reaped;
+  }
+
   private async runMaintenance(): Promise<void> {
     if (this.maintenanceRunning) {
       log.debug("Maintenance cycle skipped — previous cycle still running");
@@ -3116,6 +3134,10 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
 
       // Batch 1 — housekeeping (safe under pause: filesystem/db cleanup only)
       const batch1Fns: Array<{ name: string; fn: () => Promise<unknown> }> = [
+        {
+          name: "reap-expired-agent-browser-leases",
+          fn: () => this.reapExpiredAgentBrowserLeases(),
+        },
         {
           name: "prune-worktrees",
           fn: () => (maintenancePaused || !gitWorktreeChurnDue ? Promise.resolve(0) : this.pruneWorktrees()),
@@ -14827,6 +14849,18 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       return task.mergeDetails?.mergeConfirmed ? { outcome: "already-complete" } : { outcome: "ineligible", reason: "not-in-review" };
     }
     if (task.mergeDetails?.mergeConfirmed) return { outcome: "already-complete" };
+    /*
+    FNXC:LandedReviewReconciliation 2026-09-20-03:09:
+    External landing proves content reachability, not workflow approval. Reconciliation must retain
+    the normal required pre-merge gate so an operator cannot use a landed branch to bypass a pending,
+    failed, or missing review verdict.
+    */
+    const requiredPreMergeStepIds = await resolveNoOpFinalizeGateIds(this.store, task);
+    const approvalBlocker = getTaskHardMergeBlocker(task, {
+      reviewColumns,
+      requiredPreMergeStepIds,
+    });
+    if (approvalBlocker) return { outcome: "ineligible", reason: "workflow-approval-blocked" };
     if (task.paused) return { outcome: "ineligible", reason: "paused" };
     if (task.userPaused) return { outcome: "ineligible", reason: "user-paused" };
     const livePaths = activeSessionRegistry.pathsForTask(task.id).filter((path) => activeSessionRegistry.isPathActive(path));
@@ -14843,8 +14877,23 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     if (!branch) return { outcome: "ineligible", reason: "no-branch-recorded" };
     const mergeTarget = await this.resolveSelfHealingMergeTarget(task, settings, "reconcile-absent-branch");
     const check = await this.isBranchTipMisboundToTask({ branch, taskId: task.id, lineageId: task.lineageId, baseBranch: mergeTarget.branch });
-    if (!check.branchMissing) return { outcome: "ineligible", reason: "branch-present" };
+    if (check.rejection) return { outcome: "ineligible", reason: "foreign-ownership" };
     if (!check.landed) return { outcome: "not-landed", baseBranch: mergeTarget.branch };
+    if (!check.branchMissing) {
+      /*
+      FNXC:LandedReviewReconciliation 2026-09-20-02:17:
+      A source branch remaining after an external direct/squash merge is not itself
+      a refusal. Reconcile only when its task-owned range is empty; this prevents a
+      landed prefix from finalizing newer unmerged task work.
+      */
+      const hasUnlandedContent = await this.hasUnlandedTaskOwnedContent({
+        branch,
+        baseBranch: mergeTarget.branch,
+        taskId: task.id,
+        lineageId: task.lineageId,
+      }).catch(() => true);
+      if (hasUnlandedContent) return { outcome: "ineligible", reason: "branch-has-unlanded-content" };
+    }
     /*
     FNXC:WorkflowRecovery 2026-09-17-06:00 (FN-9304):
     Compare-and-set fence: re-read the exact fields the eligibility checks above examined and
@@ -14852,12 +14901,13 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     (operator unpause, another reconcile attempt, engine picking the card back up) fails the CAS
     and reports `raced` rather than silently overwriting whatever changed.
     */
-    const fingerprint = JSON.stringify({ column: task.column, status: task.status ?? null, paused: !!task.paused, userPaused: !!task.userPaused, branch, mergeConfirmed: !!task.mergeDetails?.mergeConfirmed, checkoutRunId: task.checkoutRunId ?? null, checkoutLeaseRenewedAt: task.checkoutLeaseRenewedAt ?? null });
+    const fingerprint = JSON.stringify({ column: task.column, status: task.status ?? null, paused: !!task.paused, userPaused: !!task.userPaused, branch, mergeConfirmed: !!task.mergeDetails?.mergeConfirmed, checkoutRunId: task.checkoutRunId ?? null, checkoutLeaseRenewedAt: task.checkoutLeaseRenewedAt ?? null, enabledWorkflowSteps: task.enabledWorkflowSteps ?? [], steps: task.steps ?? [], workflowStepResults: task.workflowStepResults ?? [] });
     const mergeDetails: MergeDetails = { commitSha: check.landed.sha, mergedAt: new Date().toISOString(), mergeConfirmed: true, prNumber: getPrimaryPrInfo(task)?.number, mergeTargetBranch: mergeTarget.branch, mergeTargetSource: mergeTarget.source };
     let committed = false;
     const commitIfCurrent = (current: Task) => {
-      const currentFingerprint = JSON.stringify({ column: current.column, status: current.status ?? null, paused: !!current.paused, userPaused: !!current.userPaused, branch: current.branch ?? null, mergeConfirmed: !!current.mergeDetails?.mergeConfirmed, checkoutRunId: current.checkoutRunId ?? null, checkoutLeaseRenewedAt: current.checkoutLeaseRenewedAt ?? null });
+      const currentFingerprint = JSON.stringify({ column: current.column, status: current.status ?? null, paused: !!current.paused, userPaused: !!current.userPaused, branch: current.branch ?? null, mergeConfirmed: !!current.mergeDetails?.mergeConfirmed, checkoutRunId: current.checkoutRunId ?? null, checkoutLeaseRenewedAt: current.checkoutLeaseRenewedAt ?? null, enabledWorkflowSteps: current.enabledWorkflowSteps ?? [], steps: current.steps ?? [], workflowStepResults: current.workflowStepResults ?? [] });
       if (currentFingerprint !== fingerprint) return null;
+      if (getTaskHardMergeBlocker(current, { reviewColumns, requiredPreMergeStepIds })) return null;
       committed = true;
       return { mergeDetails, branch: null, branchWriteOrigin: "engine" as const, status: null, error: null, paused: false };
     };

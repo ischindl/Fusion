@@ -142,6 +142,53 @@ describe("WorkflowResultsTab", () => {
     },
   } as unknown as WorkflowDefinition;
 
+  type TaskWorkflowSelection = Awaited<ReturnType<typeof api.fetchTaskWorkflow>>;
+  type WorkflowSelectionResult = Awaited<ReturnType<typeof api.selectTaskWorkflow>>;
+
+  const workflowRequestKey = (...parts: Array<string | null | undefined>) => parts.map((part) => part ?? "<default>").join("::");
+
+  /*
+  FNXC:WorkflowResultsTabMocks 2026-09-20-09:55:
+  FN-9336 requires selector API fixtures to identify their task, workflow, and project requests.
+  WorkflowResultsTab and its nested WorkflowSelector fetch independently on mount, so one-shot
+  responses can otherwise be consumed by a harmless extra definition fetch before a switch.
+  */
+  const mockTaskWorkflowByRequest = (
+    responses: Record<string, TaskWorkflowSelection | Error>,
+    fallback: TaskWorkflowSelection = { workflowId: "WF-001" },
+  ) => {
+    mockedFetchTaskWorkflow.mockImplementation((taskId, projectId) => {
+      const response = responses[workflowRequestKey(taskId, projectId)] ?? fallback;
+      return response instanceof Error ? Promise.reject(response) : Promise.resolve(response);
+    });
+  };
+
+  const mockWorkflowsByProject = (
+    responses: Record<string, WorkflowDefinition[]>,
+    fallback: WorkflowDefinition[] = [defaultWorkflow, selectedWorkflow],
+  ) => {
+    mockedFetchWorkflows.mockImplementation((projectId) => Promise.resolve(responses[workflowRequestKey(projectId)] ?? fallback));
+  };
+
+  const mockWorkflowById = (
+    responses: Record<string, WorkflowDefinition | Error>,
+    fallback: WorkflowDefinition = selectedWorkflow,
+  ) => {
+    mockedFetchWorkflow.mockImplementation((workflowId) => {
+      const response = responses[workflowId] ?? (workflowId === "builtin:coding" ? defaultWorkflow : fallback);
+      return response instanceof Error ? Promise.reject(response) : Promise.resolve(response);
+    });
+  };
+
+  const mockWorkflowSelectionByRequest = (
+    responses: Record<string, WorkflowSelectionResult>,
+    fallback: WorkflowSelectionResult = { workflowId: "WF-001", enabledWorkflowSteps: [] },
+  ) => {
+    mockedSelectTaskWorkflow.mockImplementation((taskId, workflowId, projectId) => (
+      Promise.resolve(responses[workflowRequestKey(taskId, workflowId, projectId)] ?? fallback)
+    ));
+  };
+
   const baseTask: Task = {
     id: "FN-001",
     title: "Task",
@@ -186,11 +233,11 @@ describe("WorkflowResultsTab", () => {
     mockedFetchWorkflowSteps.mockReset();
     mockedFetchWorkflowSteps.mockResolvedValue(mockWorkflowSteps);
     mockedFetchTaskWorkflow.mockReset();
-    mockedFetchTaskWorkflow.mockResolvedValue({ workflowId: "WF-001" });
+    mockTaskWorkflowByRequest({});
     mockedFetchWorkflow.mockReset();
-    mockedFetchWorkflow.mockImplementation((workflowId) => Promise.resolve(workflowId === "builtin:coding" ? defaultWorkflow : selectedWorkflow));
+    mockWorkflowById({});
     mockedFetchWorkflows.mockReset();
-    mockedFetchWorkflows.mockResolvedValue([defaultWorkflow, selectedWorkflow]);
+    mockWorkflowsByProject({});
     mockedFetchBoardWorkflows.mockReset();
     mockedFetchBoardWorkflows.mockResolvedValue({
       flagEnabled: true,
@@ -213,7 +260,7 @@ describe("WorkflowResultsTab", () => {
       },
     ]);
     mockedSelectTaskWorkflow.mockReset();
-    mockedSelectTaskWorkflow.mockResolvedValue({ workflowId: "WF-001", enabledWorkflowSteps: [] });
+    mockWorkflowSelectionByRequest({});
     mockedSubmitTaskWorkflowInput.mockReset();
     mockedSubmitTaskWorkflowInput.mockResolvedValue({ ok: true });
     mockedApproveTaskWorkflowCli.mockReset();
@@ -268,6 +315,107 @@ describe("WorkflowResultsTab", () => {
       completedAt: undefined,
     },
   ];
+
+  /*
+  FNXC:WorkflowStepResume 2026-09-20-05:01:
+  Reproduce the pending review-callback wedge through the rendered Task Detail tab: an operator supplies
+  a reason, the exact result ID reaches the callback, and only its server-returned failed task is published.
+  */
+  it("recovers an eligible pending pre-merge result through the explicit operator action", async () => {
+    const pendingTask = { ...baseTask, column: "in-review", status: null } as Task;
+    const pendingResult: WorkflowStepResult = { workflowStepId: "code-review", workflowStepName: "Code review", phase: "pre-merge", status: "pending" };
+    const updated = { ...pendingTask, workflowStepResults: [{ ...pendingResult, status: "failed" }] } as Task;
+    const onResumeWorkflowStep = vi.fn().mockResolvedValue(updated);
+    const onTaskUpdated = vi.fn();
+    const addToast = vi.fn();
+    vi.spyOn(window, "prompt").mockReturnValue(" callback did not return ");
+
+    render(
+      <WorkflowResultsTab
+        taskId="FN-001"
+        task={pendingTask}
+        settings={mockSettings}
+        results={[pendingResult]}
+        onResumeWorkflowStep={onResumeWorkflowStep}
+        onTaskUpdated={onTaskUpdated}
+        addToast={addToast}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("workflow-result-resume-code-review"));
+
+    await waitFor(() => expect(onResumeWorkflowStep).toHaveBeenCalledWith("FN-001", "code-review", "callback did not return"));
+    expect(onTaskUpdated).toHaveBeenCalledWith(updated);
+    expect(addToast).toHaveBeenCalledWith(expect.stringContaining("Code review"), "success");
+  });
+
+  it.each([
+    { name: "resolved renamed WIP lane", column: "building", columnFlags: { countsTowardWip: true }, renders: true },
+    { name: "resolved renamed review lane", column: "signoff", columnFlags: { mergeBlocker: true }, renders: true },
+    { name: "resolved hold lane", column: "staging", columnFlags: { hold: true }, renders: false },
+    { name: "missing flags legacy WIP lane", column: "in-progress", columnFlags: undefined, renders: true },
+    { name: "missing flags legacy review lane", column: "in-review", columnFlags: undefined, renders: true },
+    { name: "missing flags legacy hold lane", column: "todo", columnFlags: undefined, renders: false },
+  ])("renders pending pre-merge recovery only for $name", ({ column, columnFlags, renders }) => {
+    const pendingResult: WorkflowStepResult = {
+      workflowStepId: "resume-eligibility",
+      workflowStepName: "Resume eligibility",
+      phase: "pre-merge",
+      status: "pending",
+    };
+
+    render(
+      <WorkflowResultsTab
+        taskId="FN-001"
+        task={{ ...baseTask, column, status: null } as Task}
+        columnFlags={columnFlags}
+        settings={mockSettings}
+        results={[pendingResult]}
+        onResumeWorkflowStep={vi.fn()}
+      />,
+    );
+
+    const recovery = screen.queryByTestId("workflow-result-resume-resume-eligibility");
+    if (renders) expect(recovery).toBeInTheDocument();
+    else expect(recovery).not.toBeInTheDocument();
+  });
+
+  it("keeps the pending result visible and reports a rejected recovery", async () => {
+    const pendingTask = { ...baseTask, column: "in-review", status: null } as Task;
+    const pendingResult: WorkflowStepResult = { workflowStepId: "code-review", workflowStepName: "Code review", phase: "pre-merge", status: "pending" };
+    const onResumeWorkflowStep = vi.fn().mockRejectedValue(new Error("step is no longer pending"));
+    const addToast = vi.fn();
+    vi.spyOn(window, "prompt").mockReturnValue("callback stalled");
+
+    render(<WorkflowResultsTab taskId="FN-001" task={pendingTask} settings={mockSettings} results={[pendingResult]} onResumeWorkflowStep={onResumeWorkflowStep} addToast={addToast} />);
+    fireEvent.click(screen.getByTestId("workflow-result-resume-code-review"));
+
+    await waitFor(() => expect(addToast).toHaveBeenCalledWith("step is no longer pending", "error"));
+    expect(screen.getByTestId("workflow-result-badge-code-review")).toHaveTextContent("Running");
+  });
+
+  it("does not dispatch when the operator cancels or leaves the recovery reason blank", () => {
+    const pendingTask = { ...baseTask, column: "in-review", status: null } as Task;
+    const pendingResult: WorkflowStepResult = { workflowStepId: "code-review", workflowStepName: "Code review", phase: "pre-merge", status: "pending" };
+    const onResumeWorkflowStep = vi.fn();
+    vi.spyOn(window, "prompt").mockReturnValueOnce(null).mockReturnValueOnce("   ");
+
+    render(<WorkflowResultsTab taskId="FN-001" task={pendingTask} settings={mockSettings} results={[pendingResult]} onResumeWorkflowStep={onResumeWorkflowStep} />);
+    fireEvent.click(screen.getByTestId("workflow-result-resume-code-review"));
+    fireEvent.click(screen.getByTestId("workflow-result-resume-code-review"));
+
+    expect(onResumeWorkflowStep).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: "post-merge",  task: { ...baseTask, column: "in-review", status: null } as Task, result: { workflowStepId: "post", workflowStepName: "Post", phase: "post-merge", status: "pending" } as WorkflowStepResult },
+    { name: "terminal", task: { ...baseTask, column: "in-review", status: null } as Task, result: { workflowStepId: "failed", workflowStepName: "Failed", phase: "pre-merge", status: "failed" } as WorkflowStepResult },
+    { name: "paused", task: { ...baseTask, column: "in-review", status: "paused", paused: true } as Task, result: { workflowStepId: "paused", workflowStepName: "Paused", phase: "pre-merge", status: "pending" } as WorkflowStepResult },
+    { name: "outside lifecycle lane", task: { ...baseTask, column: "todo", status: null } as Task, result: { workflowStepId: "todo", workflowStepName: "Todo", phase: "pre-merge", status: "pending" } as WorkflowStepResult },
+  ])("does not render a recovery action for $name results", ({ task, result }) => {
+    render(<WorkflowResultsTab taskId="FN-001" task={task} settings={mockSettings} results={[result]} onResumeWorkflowStep={vi.fn()} />);
+    expect(screen.queryByTestId(`workflow-result-resume-${result.workflowStepId}`)).not.toBeInTheDocument();
+  });
 
   it("renders list of workflow step results", () => {
     render(<WorkflowResultsTab taskId="FN-001" results={mockResults} task={baseTask} settings={mockSettings} />);
@@ -401,7 +549,9 @@ describe("WorkflowResultsTab", () => {
   });
 
   it("resolves a null task workflow selection through the board default and loads its graph", async () => {
-    mockedFetchTaskWorkflow.mockResolvedValueOnce({ workflowId: null });
+    mockTaskWorkflowByRequest({
+      [workflowRequestKey("FN-001", "project-default")]: { workflowId: null },
+    });
 
     render(<WorkflowResultsTab taskId="FN-001" task={baseTask} settings={mockSettings} results={mockResults} projectId="project-default" />);
 
@@ -416,7 +566,9 @@ describe("WorkflowResultsTab", () => {
   });
 
   it("keeps an explicit custom workflow ahead of the board default", async () => {
-    mockedFetchTaskWorkflow.mockResolvedValueOnce({ workflowId: "WF-001" });
+    mockTaskWorkflowByRequest({
+      [workflowRequestKey("FN-001", "project-custom")]: { workflowId: "WF-001" },
+    });
 
     render(<WorkflowResultsTab taskId="FN-001" task={baseTask} settings={mockSettings} results={mockResults} projectId="project-custom" />);
 
@@ -430,9 +582,10 @@ describe("WorkflowResultsTab", () => {
   });
 
   it("recomputes inherited workflow details after switching from an explicit task while selection fetch fails", async () => {
-    mockedFetchTaskWorkflow
-      .mockResolvedValueOnce({ workflowId: "WF-001" })
-      .mockRejectedValueOnce(new Error("task workflow unavailable"));
+    mockTaskWorkflowByRequest({
+      [workflowRequestKey("FN-001", "project-switch")]: { workflowId: "WF-001" },
+      [workflowRequestKey("FN-002", "project-switch")]: new Error("task workflow unavailable"),
+    });
 
     const { rerender } = render(
       <WorkflowResultsTab
@@ -471,7 +624,9 @@ describe("WorkflowResultsTab", () => {
   });
 
   it("returns to the effective default workflow when an explicit selection is cleared", async () => {
-    mockedSelectTaskWorkflow.mockResolvedValueOnce({ workflowId: null, enabledWorkflowSteps: [] });
+    mockWorkflowSelectionByRequest({
+      [workflowRequestKey("FN-001", null, "project-cleared")]: { workflowId: null, enabledWorkflowSteps: [] },
+    });
 
     render(
       <WorkflowResultsTab
@@ -497,12 +652,13 @@ describe("WorkflowResultsTab", () => {
   });
 
   it("shows graph unavailable without crashing for an unknown stale workflow id", async () => {
-    mockedFetchTaskWorkflow.mockResolvedValueOnce({ workflowId: "WF-STALE" });
-    mockedFetchWorkflows.mockResolvedValueOnce([defaultWorkflow, selectedWorkflow]);
-    mockedFetchWorkflow.mockImplementation((workflowId) => {
-      if (workflowId === "WF-STALE") return Promise.reject(new Error("missing workflow"));
-      return Promise.resolve(workflowId === "builtin:coding" ? defaultWorkflow : selectedWorkflow);
+    mockTaskWorkflowByRequest({
+      [workflowRequestKey("FN-001", "project-stale")]: { workflowId: "WF-STALE" },
     });
+    mockWorkflowsByProject({
+      [workflowRequestKey("project-stale")]: [defaultWorkflow, selectedWorkflow],
+    });
+    mockWorkflowById({ "WF-STALE": new Error("missing workflow") });
 
     render(<WorkflowResultsTab taskId="FN-001" task={baseTask} settings={mockSettings} results={mockResults} projectId="project-stale" />);
 
@@ -515,9 +671,13 @@ describe("WorkflowResultsTab", () => {
   });
 
   it("shows graph unavailable when a fetched workflow has no mappable nodes", async () => {
-    mockedFetchTaskWorkflow.mockResolvedValueOnce({ workflowId: "WF-EMPTY" });
-    mockedFetchWorkflows.mockResolvedValue([{ id: "WF-EMPTY", name: "Empty Workflow", ir: { version: 1, nodes: [], edges: [] } } as unknown as WorkflowDefinition]);
-    mockedFetchWorkflow.mockResolvedValueOnce({ id: "WF-EMPTY", name: "Empty Workflow", ir: { version: 1, nodes: [], edges: [] } } as unknown as unknown as WorkflowDefinition);
+
+    const emptyWorkflow = { id: "WF-EMPTY", name: "Empty Workflow", ir: { version: 1, nodes: [], edges: [] } } as WorkflowDefinition;
+    mockTaskWorkflowByRequest({
+      [workflowRequestKey("FN-001", "project-empty")]: { workflowId: "WF-EMPTY" },
+    });
+    mockWorkflowsByProject({ [workflowRequestKey("project-empty")]: [emptyWorkflow] });
+    mockWorkflowById({ "WF-EMPTY": emptyWorkflow });
 
     render(<WorkflowResultsTab taskId="FN-001" task={baseTask} settings={mockSettings} results={mockResults} projectId="project-empty" />);
 
@@ -546,14 +706,14 @@ describe("WorkflowResultsTab", () => {
   });
 
   it("shows no workflow assigned and avoids graph fetch when board workflows provide no usable effective id", async () => {
-    mockedFetchWorkflows.mockResolvedValueOnce([]);
-    mockedFetchBoardWorkflows.mockResolvedValueOnce({
+    mockWorkflowsByProject({ [workflowRequestKey(undefined)]: [] });
+    mockedFetchBoardWorkflows.mockImplementation(() => Promise.resolve({
       flagEnabled: false,
       defaultWorkflowId: "",
       workflows: [],
       taskWorkflowIds: {},
-    });
-    mockedFetchTaskWorkflow.mockResolvedValueOnce({ workflowId: null });
+    }));
+    mockTaskWorkflowByRequest({ [workflowRequestKey("FN-001", undefined)]: { workflowId: null } });
 
     render(<WorkflowResultsTab taskId="FN-001" task={baseTask} settings={mockSettings} results={mockResults} />);
     fireEvent.click(screen.getByTestId("workflow-graph-toggle"));
@@ -599,11 +759,15 @@ describe("WorkflowResultsTab", () => {
     const onWorkflowReconciled = vi.fn();
     const onWorkflowStepsChange = vi.fn();
     const destinationWorkflow = { ...selectedWorkflow, id: "WF-002", name: "Preserved Column Workflow" };
-    mockedFetchWorkflows.mockResolvedValueOnce([selectedWorkflow, destinationWorkflow]);
-    mockedSelectTaskWorkflow.mockResolvedValueOnce({
-      workflowId: "WF-002",
-      enabledWorkflowSteps: ["WS-101"],
-      reconciliation: { preserved: true, fromColumn: "todo", toColumn: "todo" },
+    mockWorkflowsByProject({
+      [workflowRequestKey(undefined)]: [selectedWorkflow, destinationWorkflow],
+    });
+    mockWorkflowSelectionByRequest({
+      [workflowRequestKey("FN-001", "WF-002", undefined)]: {
+        workflowId: "WF-002",
+        enabledWorkflowSteps: ["WS-101"],
+        reconciliation: { preserved: true, fromColumn: "todo", toColumn: "todo" },
+      },
     });
 
     render(
@@ -1190,7 +1354,9 @@ describe("WorkflowResultsTab", () => {
   });
 
   it("does not show default-on optional steps when workflow selection explicitly has no enabled steps", async () => {
-    mockedFetchTaskWorkflow.mockResolvedValueOnce({ workflowId: "builtin:coding", enabledWorkflowSteps: [] });
+    mockTaskWorkflowByRequest({
+      [workflowRequestKey("FN-001", undefined)]: { workflowId: "builtin:coding", enabledWorkflowSteps: [] },
+    });
     mockedFetchWorkflowOptionalSteps.mockResolvedValueOnce([
       {
         templateId: "plan-review",

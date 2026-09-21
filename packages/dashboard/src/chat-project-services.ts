@@ -98,6 +98,8 @@ export async function createProjectScopedChatManager(options: {
   chatStore: ChatStore;
   pluginRunner?: ConstructorParameters<typeof ChatManager>[3];
   messageStore?: MessageStore;
+  isMergePending?: (taskId: string) => boolean | Promise<boolean>;
+  resetInReviewMergeRetry?: (task: import("@fusion/core").Task) => Promise<"reset" | "pending" | "changed" | "unavailable">;
 }): Promise<ChatManager> {
   const agentStore = new AgentStore({ rootDir: options.store.getFusionDir(), asyncLayer: options.store.getAsyncLayer() ?? undefined });
   return new ChatManager(
@@ -108,6 +110,8 @@ export async function createProjectScopedChatManager(options: {
     () => options.store.getSettings(),
     options.messageStore,
     options.store,
+    options.isMergePending,
+    options.resetInReviewMergeRetry,
   );
 }
 
@@ -123,6 +127,8 @@ export function getOrCreateScopedChatManager(
   pluginRunner?: ConstructorParameters<typeof ChatManager>[3],
   refreshPluginRunner = false,
   messageStore?: MessageStore,
+  isMergePending?: (taskId: string) => boolean | Promise<boolean>,
+  resetInReviewMergeRetry?: (task: import("@fusion/core").Task) => Promise<"reset" | "pending" | "changed" | "unavailable">,
 ): ChatManager {
   const key = store.getFusionDir();
   const cached = scopedChatManagerCache.get(key);
@@ -132,6 +138,12 @@ export function getOrCreateScopedChatManager(
     }
     if (messageStore) {
       cached.setMessageStore(messageStore);
+    }
+    if (isMergePending) {
+      cached.setMergePendingProvider(isMergePending);
+    }
+    if (resetInReviewMergeRetry) {
+      cached.setMergeRetryResetProvider(resetInReviewMergeRetry);
     }
     return cached;
   }
@@ -150,6 +162,8 @@ export function getOrCreateScopedChatManager(
     () => store.getSettings(),
     messageStore,
     store,
+    isMergePending,
+    resetInReviewMergeRetry,
   );
   scopedChatManagerCache.set(key, manager);
   return manager;

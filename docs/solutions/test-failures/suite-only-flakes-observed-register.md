@@ -19,8 +19,11 @@ tags:
 
 # Observed suite-only flakes register
 
+
+This register has **2 active observation records** (entries 2 and 13), both **active first sightings**. Entries 1 and 15 closed after structural fixes with recorded verification, and stay in place below for campaign and first-sighting evidence. Entries 7 and 14 below are closed and retained for cross-reference only. It also has **1 merge-gate eviction record** (entry 6) and **9 archived closed records**. Only the active section drives quarantine and escalation decisions; the other sections preserve historical evidence.
 This register has **2 active observation records** (entries 2 and 13), both **active first sightings**. Entry 1 closed on 2026-09-12: FN-9131's structural harness connection-budget fix (merged 2026-08-16 as `ae507afc37`) resolved its reproduced timeout, and no sighting has occurred since the fix landed; the record stays in place below for its campaign evidence. Entry 14 was closed 2026-09-09 by FN-9283 (diagnosed and deleted under the deletion ratchet). Entries 7 and 15 are closed and retained for cross-reference only. It also has **1 merge-gate eviction record** (entry 6) and **9 archived closed records**. Only the active section drives quarantine and escalation decisions; the other sections preserve historical evidence.
 This register has **2 active observation records** (entries 2 and 13), both **active first sightings**. Entry 1 closed on 2026-09-12: FN-9131's structural harness connection-budget fix (merged 2026-08-16 as `ae507afc37`) resolved its reproduced timeout, and no sighting has occurred since the fix landed; the record stays in place below for its campaign evidence. Entries 7 and 14 below are closed and retained for cross-reference only. It also has **1 merge-gate eviction record** (entry 6) and **9 archived closed records**. Only the active section drives quarantine and escalation decisions; the other sections preserve historical evidence.
+igin/main
 
 <!--
 FNXC:TestFlakeRegister 2026-08-19-11:14:
@@ -240,6 +243,34 @@ This is the same mode already characterized by entry 6 and by entry 7's A02 lane
 Quarantine was not available as an alternative. Core PostgreSQL files cannot be quarantined inline — the gate-policy assertion requires `quarantinedCoreTests` to remain empty — and a merge-gate eviction of a transactional-invariant file is the owner-escalated decision described in the policy section below. The file carries only 4 tests, which is thin against the usual first-sighting coverage argument, but they are the atomicity invariant for handoff-to-review and one of just two files in the blocking PG lane; recording preserves that rather than trading it away over a single unreproduced cold-start abort. A **second sighting** follows normal escalation.
 
 
+
+### 15. Workflow-results preserved-column selector mock ordering
+
+- **Status:** Closed 2026-09-20 — FN-9336 structurally resolved the request-ordering mock drift. A new sighting re-opens normal escalation.
+- **File:** `packages/dashboard/app/components/__tests__/WorkflowResultsTab.test.tsx`
+- **Exact test:** `WorkflowResultsTab > calls onWorkflowReconciled for preserved-column workflow switches`
+- **Owner:** FN-9336 — retained rather than quarantined because the file retains 126 passing tests and file-level quarantine would discard substantial coverage.
+- **Observed tree/SHA:** `5977d630dbca4981342d6c5fb6dffbc5642b9f45`.
+- **Observed frequency:** once, suite-only. Passed in isolation before the fix.
+
+| run | result |
+|---|---|
+| target file at first sighting | **failed**: expected `selectTaskWorkflow("FN-001", "WF-002", undefined)` but received a null workflow selection |
+| exact test in isolation at first sighting | **passed** |
+| `pnpm --filter @fusion/dashboard exec vitest run app/components/__tests__/WorkflowResultsTab.test.tsx --silent=passed-only --reporter=dot` | **passed** after FN-9336 |
+| `pnpm --filter @fusion/dashboard exec vitest run app/components/__tests__/WorkflowResultsTab.test.tsx -t "calls onWorkflowReconciled for preserved-column workflow switches" --silent=passed-only --reporter=dot` | **passed** after FN-9336 |
+
+<!--
+FNXC:WorkflowResultsTabMocks 2026-09-20-09:58:
+FN-9336 closes this record with request-aware selector fixtures. The parent tab and nested selector
+both fetch workflow definitions during mount, so fixtures now key task selection, definitions, graph
+reads, and selection writes by their task, workflow, and project request instead of consuming a queue.
+-->
+
+**Closed 2026-09-20 (FN-9336):** `WorkflowResultsTab` and its nested `WorkflowSelector` independently fetch workflow definitions during mount, so shared `mockResolvedValueOnce` queues could give the preserved-column selection test a null/default response intended for another request. FN-9336 replaced selector API queues with request-aware task, workflow, and project fixtures for null/default inheritance, explicit custom selection, task-change failure, clear selection, stale and empty graphs, no usable board id, and the `WF-002` preserved-column response. Both the complete file and the exact registered test passed with its original request, enabled-step, and reconciliation assertions unchanged; no quarantine, retry, timeout, skip, or product-source change was made.
+
+The failure occurred while validating FN-9334's unrelated resume-eligibility cases. The test's per-case resolved mock was consumed out of order only in the file run, while the isolated test passed; no timeout, retry, assertion, or product behavior was changed. A second sighting requires normal quarantine escalation.
+
 ### 15. Notification-service whole-file invocation memory exhaustion
 
 - **Status:** Closed 2026-09-04 by the RUFU-186 fix-landed close (AGENTS.md record-authority; see Closure below). The whole-file invocation is safe — the suite is network-dead with a permanent connect-tripwire guard; no quarantine was ever created and none is owed.
@@ -283,6 +314,7 @@ Never run the whole file unbounded on a shared host. The host-safe bounded repro
 **Symptom-gate evidence (host-bounded: `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0` + `NODE_OPTIONS=--max-old-space-size=4096` + `timeout`).** Bounded whole-file runs 32/32 green ×3 consecutively, cgroup peaks 548/557/549 MB (the pre-fix shape climbs ~350 MB/s from the same ~550 MB plateau to a kill at ~15 s; A/B on the identical pair command: unfixed 5,503 MB/6 MB-heap kill vs fixed flat ≤300 MB green in 5.8 s). The three `-t` per-describe commands stay green (20 / 3 / 9); the scoped `src/notification/__tests__` suite is 113/113 green; the file now collects **32** cases (the new guard case joined describe 2). **Lockstep:** register intro 5→4 active, `scripts/__tests__/observed-flake-register.test.mjs` drops entry 15 from its pinned `deepEqual` list in this same commit, `scripts/lib/test-quarantine.json` is untouched (lockstep count 0 → 0) — the fix-landed branch retires the record without the quarantine that a second sighting would otherwise have forced. Profiling method and the safe bounded-run recipe are durable in [`vitest-worker-allocation-storm-profiling.md`](vitest-worker-allocation-storm-profiling.md).
 
 
+igin/main
 ### Common shape and investigated result
 
 FN-9125 established that former entry 3 was not PostgreSQL-suite-adjacent: `plugin-runner.test.ts` used an in-memory mocked TaskStore and had no PostgreSQL/harness import. FN-9135 did not identify a root cause, but FN-9141's completed shuffled worker-reuse campaign reproduced and structurally fixed the logger mock-history fixture defect; the suite and its renamed-complete-lane dispatch coverage remain active. Entries 2 and 13 remain active, unreproduced PostgreSQL observations; entry 7 was closed on 2026-08-23 when the whole file was quarantined on a second sighting of a different test; entry 14 was closed on 2026-09-09 after deterministic diagnosis showed its assertions encoded FN-217-removed lifecycle behavior (see the archived record below). FN-9146 completed the later A×4/B×3/C×3 campaign without the entry 2 or entry 13 exact identities failing. Entry 1 reproduced under FN-9126 and again under FN-9146's A02–A04 lanes, then FN-9131 attributed the mechanism (harness demand scales with fan-out against a fixed cluster supply; the first test in a file eats the 15s budget) and shipped the structural queueing-admission fix, closing the record on 2026-09-12. The golden-template/advisory-lock lifecycle and schema-applier's inline baseline path are concrete architecture facts, not a demonstrated cause of these assertions. Core policy forbids inline PG quarantine: FN-9146's retained evidence for entries 2 and 13 is durable, but FN-9146 was archived on 2026-09-03 without a named successor, so those records are presently unowned; the next sighting follows normal escalation from an unowned state. entry 7 was closed on 2026-08-23 (see above). No source or fan-out change is justified before a diagnostic names a causal lifecycle seam. Entry 13 is a further unreproduced instance of that same 15s setup-hook mode, narrowed to the capped four-fork gate lane on a cold cluster. Entry 6 instead records a merge-gate eviction after a loaded-lane setup-hook timeout; `FNXC:PgTestTemplateDb 2026-07-19-17:20` and `FNXC:PgTestWorkerCap 2026-07-18-18:00` are already-landed mitigations for that mode, not new diagnoses to re-open. The Planning Mode entries are separate frontend timing observations.

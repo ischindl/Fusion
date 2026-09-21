@@ -332,7 +332,7 @@ export interface CreateTaskFromRecommendationResponse {
   parent: Task;
 }
 
-/** Create one guarded, idempotent task from a completed task recommendation. */
+/** Create one guarded, idempotent task from a completed or archived task recommendation. */
 export function createTaskFromRecommendation(
   taskId: string,
   recommendationId: string,

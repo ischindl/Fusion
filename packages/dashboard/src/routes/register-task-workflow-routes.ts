@@ -151,11 +151,12 @@ import {
   type PrepareRevertPrBranchResult,
   type PrepareWorkspaceRevertPrBranchesResult,
   type WorkspaceRepoRevertPrBranch,
+  type LandedReviewReconcileResult,
 } from "@fusion/engine";
 import { buildBoardWorkflowsPayload, resolveBoardColumnFlags } from "./board-workflows.js";
 import { resolveNativeStructurePreview } from "../native-structure-preview.js";
 import { isBackwardMoveBlockedByOpenPr, PR_OPEN_BLOCKS_MOVE_BACK_MESSAGE } from "./register-pull-requests-routes.js";
-import { allowsAutoMergeProcessing, computePlanApprovalFingerprint, isTaskAwaitingPlanning, isWorkspaceTask, type RunAuditEventInput } from "@fusion/core";
+import { allowsAutoMergeProcessing, computePlanApprovalFingerprint, isTaskAwaitingPlanning, isWorkspaceTask, resolveEffectiveAutoMerge, type RunAuditEventInput } from "@fusion/core";
 import { FUSION_CLIENT_HEADER, resolveHttpDeleteCallerKind, isValidTaskBranchName } from "@fusion/core";
 import { ApiError, badRequest, conflict, notFound } from "../api-error.js";
 /* FNXC:HumanMergeApproval 2026-09-17-18:09: FN-514's operator surface for the per-card delivery lock. */
@@ -1070,6 +1071,7 @@ interface TaskWorkflowRouteDeps {
   resolveSelfHealingManager: (scopedStore: TaskStore) => {
     rootDir: string;
     reconcileInReviewBranchRebind: (opts?: { includeTaskIds?: Set<string> }) => Promise<import("@fusion/engine").RebindResult>;
+    reconcileLandedReviewTask: (taskId: string, options: { source: "self-healing" | "manual"; requireAutoMergeEligible?: boolean }) => Promise<LandedReviewReconcileResult>;
     getActiveMergeTaskId: () => string | null;
     getStaleMergingStatusMinAgeMs: () => number;
   } | undefined;
@@ -2463,6 +2465,8 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
           return new Set(["done"]);
         }
       })();
+      /* FNXC:Merge0921 2026-09-21-10:05: upstream FN-9325 admits cold ARCHIVE snapshots as recommendation
+         sources; task archiving is retired on this line (FN-9187), so the gate stays completed-lane only. */
       if (!completeColumns.has(parent.column)) {
         throw conflict("recommendations are available only on completed tasks");
       }
@@ -2485,6 +2489,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
             message === "Recommendation no longer exists"
             || message === "Recommendation is already linked to another task"
             || message === "Recommendations are available only on completed tasks"
+            || message === "Recommendations are available only on completed or archived tasks"
           ) {
             throw conflict(message);
           }
@@ -3766,6 +3771,12 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       const retryReviewColumns = await resolveReviewColumnsForTask(scopedStore, task.id);
       const isInReviewStatusNone =
         retryReviewColumns.has(task.column) && (task.status === null || task.status === undefined);
+      /*
+      FNXC:MergeRetryAdmission 2026-09-20-02:52:
+      Retry must distinguish a lost merge handoff from an intentional manual-review hold.
+      Both persist as completed status-none cards, but only effective auto-merge may restart merge recovery.
+      */
+      const effectiveAutoMergeDisabled = resolveEffectiveAutoMerge(task, await scopedStore.getSettings()) === false;
       const hasIncompleteSteps = task.steps.some(
         (s: { status: string }) => s.status === "pending" || s.status === "in-progress",
       );
@@ -3774,7 +3785,12 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       const isExecutionFailureInReview =
         hasIncompleteSteps || (task.steps.length === 0 && (task.mergeRetries ?? 0) === 0);
       const isInReviewExecutionStall = isInReviewStatusNone && isExecutionFailureInReview;
-      const isInReviewMergeRetryStall = isInReviewStatusNone && (task.mergeRetries ?? 0) > 0;
+      /* FNXC:MergeRetryAdmission 2026-09-20-02:17: a completed review card can lose its
+         retry handoff before mergeRetries increments; retain it in review and restart merge. */
+      const isInReviewMergeRetryStall = !effectiveAutoMergeDisabled && isInReviewStatusNone && (
+        (task.mergeRetries ?? 0) > 0
+        || (task.steps.length > 0 && task.steps.every((step) => step.status === "done" || step.status === "skipped"))
+      );
       /*
       FNXC:MergeReliability 2026-07-15-21:45 (FN-8004 follow-up):
       An orphaned merge-active stamp used to be un-retryable BY HAND: this gate rejected every
@@ -4071,6 +4087,37 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
    * (FN-7720). This route is intentionally NOT part of the executor/reviewer
    * agent tool surface — dashboard/operator only.
    */
+  /*
+  FNXC:WorkflowStepResume 2026-09-20-05:01:
+  A pending pre-merge prompt callback can wedge indefinitely, but the recovery remains an explicit
+  dashboard-operator action. This bridge supplies a server-derived actor and delegates every
+  eligibility and mutation decision to TaskStore; it must never trust a client identity or duplicate
+  the pending/lane/paused checks enforced by resumeWorkflowStep.
+  */
+  router.post("/tasks/:id/steps/:stepId/resume", async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      const { reason } = (req.body ?? {}) as { reason?: unknown };
+      if (typeof reason !== "string" || reason.trim().length === 0) {
+        throw badRequest("reason is required to resume a pending pre-merge workflow step");
+      }
+      const updated = await scopedStore.resumeWorkflowStep(req.params.id, {
+        stepId: req.params.stepId,
+        reason: reason.trim(),
+        actor: "dashboard-operator",
+      });
+      res.json(updated);
+    } catch (err: unknown) {
+      if (err instanceof ApiError) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      if (isTaskLookupMiss(err) || /^Task .* not found$/.test(message)) throw notFound(message);
+      if (message.startsWith("Cannot resume workflow step") || message.startsWith("resumeWorkflowStep requires")) {
+        throw conflict(message);
+      }
+      rethrowAsApiError(err);
+    }
+  });
+
   router.post("/tasks/:id/bypass-review", async (req, res) => {
     try {
       const { store: scopedStore } = await getProjectContext(req);
@@ -5515,6 +5562,35 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       if (err instanceof ApiError) {
         throw err;
       }
+      rethrowTaskApiError(err, req.params.id);
+    }
+  });
+
+  /*
+  FNXC:LandedReviewReconciliation 2026-09-20-02:40:
+  The dashboard recovery endpoint delegates every eligibility and Git-proof decision
+  to SelfHealingManager. Request data never supplies a branch, SHA, approval, or
+  ownership claim, so the operator API cannot turn reconciliation into a merge bypass.
+  */
+  router.post("/tasks/:id/reconcile-landed-review", async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      const task = await scopedStore.getTask(req.params.id);
+      if (!task) throw notFound(`Task ${req.params.id} not found`);
+      const selfHealingManager = _resolveSelfHealingManager(scopedStore);
+      if (!selfHealingManager) {
+        return res.status(503).json({ outcome: "unavailable", reason: "self-healing-manager-unavailable" });
+      }
+      const result = await selfHealingManager.reconcileLandedReviewTask(task.id, {
+        source: "manual",
+        requireAutoMergeEligible: false,
+      });
+      if (result.outcome === "reconciled" || result.outcome === "already-complete") {
+        return res.json(result);
+      }
+      return res.status(409).json(result);
+    } catch (err: unknown) {
+      if (err instanceof ApiError) throw err;
       rethrowTaskApiError(err, req.params.id);
     }
   });

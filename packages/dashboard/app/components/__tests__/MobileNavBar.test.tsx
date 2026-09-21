@@ -561,6 +561,41 @@ describe("MobileNavBar official mobile shell", () => {
     expect(screen.getByTestId("mobile-more-item-whiteboard")).toHaveTextContent("Alpha");
   });
 
+  it("demotes primary plugin tabs on mobile and renders them in More", () => {
+    render(
+      <OfficialMobileShell
+        pluginDashboardViews={[
+          {
+            pluginId: "fusion-plugin-dependency-graph",
+            view: { viewId: "graph", label: "Graph", componentPath: "./GraphView", icon: "Map", placement: "primary", order: 1 },
+          },
+          {
+            pluginId: "fusion-plugin-dependency-graph",
+            view: { viewId: "queue", label: "Queue", componentPath: "./QueueView", icon: "Workflow", placement: "primary", order: 2 },
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.queryByTestId("mobile-nav-tab-plugin-fusion-plugin-dependency-graph-graph")).toBeNull();
+    expect(screen.queryByTestId("mobile-nav-tab-plugin-fusion-plugin-dependency-graph-queue")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("mobile-menu-trigger"));
+    expect(screen.getByTestId("mobile-more-item-plugin-fusion-plugin-dependency-graph-graph")).toBeDefined();
+    expect(screen.getByTestId("mobile-more-item-plugin-fusion-plugin-dependency-graph-queue")).toBeDefined();
+  });
+
+  it("keeps skills in the More sheet and honors the showSkillsTab flag", () => {
+    const on = render(<OfficialMobileShell showSkillsTab={true} />);
+    fireEvent.click(screen.getByTestId("mobile-menu-trigger"));
+    expect(screen.getByTestId("mobile-more-item-skills")).toBeDefined();
+    on.unmount();
+
+    render(<OfficialMobileShell showSkillsTab={false} />);
+    fireEvent.click(screen.getByTestId("mobile-menu-trigger"));
+    expect(screen.queryByTestId("mobile-more-item-skills")).toBeNull();
+  });
+
   /*
    * (i) FN-467 : Chat n'est plus un onglet par défaut (il n'est pas promouvable en réglages), donc sa pastille vit
    * désormais dans le menu. Un indicateur suit la SURFACE de sa destination : onglet quand elle est en accès direct,
@@ -825,6 +860,13 @@ describe("MobileNavBar navigation popover keeps its scroll position", () => {
     fireEvent.click(screen.getByTestId("mobile-more-item-tasks"));
     expect(navProps.onChangeView).toHaveBeenCalledWith("list");
   });
+
+
+  /* FNXC:MergeRebuild0921 2026-09-21: upstream's MobileNavBar.test rewrite targeted a legacy file
+     shape (fixed tab row, no FN-467 registry, unreachable `mobile-nav-tab-more` tab under this
+     line's native shell). Plugin demotion and the showSkillsTab gate were re-ported into the
+     official-shell describe via OfficialMobileShell; the upstream roadmaps cases are vacuous here
+     and the More-active case asserts the unreachable legacy tab. */
 
   it("mounts no popover and emits no focus on desktop", () => {
     mockViewport("desktop");

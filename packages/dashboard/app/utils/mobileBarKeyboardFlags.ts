@@ -31,7 +31,7 @@ While the soft keyboard is up on mobile, the dashboard must NOT show the executo
 
 This applies to BOTH iOS and Android. Previously `footerHidden` was iOS-only (FN-5707): on Android `interactive-widget=resizes-content` shrinks the layout viewport, so the footer's stacked bottom position was technically "correct" while its reserved stack still rendered as an empty gap. Matching iOS removes both the footer and the gap on Android without hiding the official navigation pill.
 
-FN-5707's original Android concern (stripping nav padding mid-focus could make Android Chrome treat the focused input as moving and dismiss the keyboard) is mitigated because the strip is keyed off `keyboardOpen`, which only flips true AFTER the visualViewport has settled into its keyboard-open size — not during the focus transition.
+Footer and nav reservations now follow the same focus signal so an unsettled keyboard sample cannot leave invisible navigation space under the composer.
 
 FNXC:MobileChatKeyboardLayout 2026-09-01-05:36:
 The footer bottom reservation is only correct while the nav bar is on screen. Use the nav bar's unsettled-tolerant trigger for the footer collapse on both platforms; otherwise a rendered footer rises with an empty mobile-nav-height and safe-area band beneath it.
@@ -53,6 +53,11 @@ export function computeMobileBarKeyboardFlags({
   FNXC:MobilePillKeyboard 2026-09-13-11:20:
   Menu focus ends the input-owned keyboard interaction before iOS finishes restoring its visual viewport. Keep only navigation in keyboard-placement mode for that closing interval; footer visibility and reservation remain tied to the immediate focus-owned signals.
   */
+
+  /* FNXC:MobileChatKeyboardLayout 2026-09-01-05:36 (superseded 2026-09-13-09:10): upstream later tied
+  footerHidden to the unsettled nav trigger so both bars release space together; this line keeps the
+  footer on the immediate focus signal because a rendered footer must not inherit the visual-viewport
+  dismissal tail (see formulas below). */
   const boardLayoutSuppressed = anyModalOpen || overlayOpen;
   const footerHidden = isMobile && keyboardOpen && !boardLayoutSuppressed;
   const navKeyboardOpen = isMobile && (keyboardOpen || keyboardFocusPending || navigationViewportActive);

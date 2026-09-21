@@ -67,6 +67,11 @@ function renderTaskDetailPopup(taskId: string) {
 }
 
 describe("task-detail FloatingWindow geometry", () => {
+/* FNXC:MergeRebuild0921 2026-09-21: upstream's geometry-key/persistence/Close cases assert the durable
+   task-window rectangle FN-394 deleted on this line; cases dropped with their subject. */
+
+  /* FNXC:MergeRebuild0921 2026-09-21: upstream seeds the board-workflows cache because its cases mount
+     the real App; this line's cases render the FloatingWindow shell directly, so no cache seed applies. */
   beforeEach(() => {
     localStorage.clear();
   });

@@ -51,6 +51,7 @@ import { resolveContentReviewInputProof } from "../worktree/review-diff-fingerpr
 import { parkDependencyConfigurationBlock } from "../worktree/dependency-configuration-block.js";
 import { WORKFLOW_DEPENDENCY_CONFIGURATION_BLOCK_VALUE } from "../workflows/workflow-graph-executor.js";
 import { acknowledgeOverlapResumeContext, readOverlapResumeContextDelivery } from "../execution/overlap-resume-context.js";
+import { closeFusionBrowserSession } from "../agent-browser-lifecycle.js";
 
 const WORKFLOW_THINKING_LEVEL_SET: ReadonlySet<string> = new Set(THINKING_LEVELS);
 const WORKFLOW_STEP_NOT_RUN_REASON_SET: ReadonlySet<string> = new Set(WORKFLOW_STEP_NOT_RUN_REASONS);
@@ -879,7 +880,7 @@ export async function runGraphCustomNode(
       // the floor via buildInjectedRuntimeEnv; the CLI branch builds its env here and must not
       // be the one unhardened custom-node lane.
       nodeEnv = applyNonInteractiveGitEnv({ ...process.env, FUSION_NODE_PROMPT: prompt });
-    } else if (mode === "prompt") {
+    } else if (mode === "prompt" && !(workspaceConfig && declaredReviewKind === "code")) {
       const injected = await deps.buildInjectedRuntimeEnv(live.id, worktreePath, executionTarget.branch ?? undefined);
       nodeEnv = injected.env;
       // FNXC:EngineDiagnostics 2026-08-03-05:54: per-node PATH/key injection is plumbing, not a lifecycle event.
@@ -982,27 +983,32 @@ export async function runGraphCustomNode(
           duplicate work; it is a second inspection of a different repository, so preserve both
           dispatches and label each one with the repository rather than suppressing either line.
           */
-          const repoOutcome = mode === "script"
-            ? await deps.executeScriptWorkflowStep(workspaceReviewTarget, step, repoWorktreePath, settings, repoEnv)
-            : await deps.executeWorkflowStep(workspaceReviewTarget, step, repoWorktreePath, settings, repoEnv, {
-              unattended,
-              principalAgentId,
-              outputLanguage,
-              signal: graphSignal,
-              sessionBoundary: reviewBoundary,
-              ...(repoRelPath ? { dispatchLabel: repoRelPath } : {}),
-              ...(repoDiffBaseCommitSha ? { diffBaseCommitSha: repoDiffBaseCommitSha } : {}),
-            });
-          if (graphSignal?.aborted) {
-            return {
-              verdict: "UNAVAILABLE",
-              retryable: false,
-              review: "Workflow graph execution was cancelled during this repository review.",
-              summary: "Unavailable: workflow graph execution was cancelled",
-            };
+          try {
+            const repoOutcome = mode === "script"
+              ? await deps.executeScriptWorkflowStep(workspaceReviewTarget, step, repoWorktreePath, settings, repoEnv)
+              : await deps.executeWorkflowStep(workspaceReviewTarget, step, repoWorktreePath, settings, repoEnv, {
+                unattended,
+                principalAgentId,
+                outputLanguage,
+                signal: graphSignal,
+                sessionBoundary: reviewBoundary,
+                ...(repoRelPath ? { dispatchLabel: repoRelPath } : {}),
+                ...(repoDiffBaseCommitSha ? { diffBaseCommitSha: repoDiffBaseCommitSha } : {}),
+              });
+            if (graphSignal?.aborted) {
+              return {
+                verdict: "UNAVAILABLE",
+                retryable: false,
+                review: "Workflow graph execution was cancelled during this repository review.",
+                summary: "Unavailable: workflow graph execution was cancelled",
+              };
+            }
+            await acknowledgeCustomContext();
+            return toWorkspaceRepoReviewResult(repoOutcome);
+          } finally {
+            // Each workspace repository receives an independently fenced session lease.
+            if (repoEnv?.FUSION_AGENT_BROWSER_SESSION_ID) await closeFusionBrowserSession(repoEnv);
           }
-          await acknowledgeCustomContext();
-          return toWorkspaceRepoReviewResult(repoOutcome);
         }, { workspaceRepos: workspaceConfig.repos, workspaceRootDir: deps.rootDir, settings });
         if (graphSignal?.aborted) return { outcome: "failure", value: "aborted" };
         /*
@@ -1065,28 +1071,33 @@ export async function runGraphCustomNode(
         if (graphSignal?.aborted) {
           return { success: false, error: "workflow graph execution cancelled", failureValue: "aborted" };
         }
-        if (mode === "script") {
-          if (overlapResumeContext) {
-            await deps.store.logEntry(live.id, `Workflow script '${node.id}' received overlap synchronization context`, overlapResumeContext, deps.getRunContextFor(live.id));
+        try {
+          if (mode === "script") {
+            if (overlapResumeContext) {
+              await deps.store.logEntry(live.id, `Workflow script '${node.id}' received overlap synchronization context`, overlapResumeContext, deps.getRunContextFor(live.id));
+            }
+            const scriptOutcome = await deps.executeScriptWorkflowStep(live, step, worktreePath, settings, nodeEnv);
+            if (graphSignal?.aborted) return { success: false, error: "workflow graph execution cancelled", failureValue: "aborted" };
+            await acknowledgeCustomContext();
+            return reviewInputFingerprint === undefined
+              ? scriptOutcome
+              : { ...scriptOutcome, reviewInputFingerprint };
           }
-          const scriptOutcome = await deps.executeScriptWorkflowStep(live, step, worktreePath, settings, nodeEnv);
+          const workflowOutcome = await deps.executeWorkflowStep(live, step, worktreePath, settings, nodeEnv, {
+            unattended,
+            principalAgentId,
+            outputLanguage,
+            signal: graphSignal,
+            ...(nodeSessionBoundary ? { sessionBoundary: nodeSessionBoundary } : {}),
+            ...(reviewInputFingerprint !== undefined ? { reviewInputFingerprint } : {}),
+          });
           if (graphSignal?.aborted) return { success: false, error: "workflow graph execution cancelled", failureValue: "aborted" };
           await acknowledgeCustomContext();
-          return reviewInputFingerprint === undefined
-            ? scriptOutcome
-            : { ...scriptOutcome, reviewInputFingerprint };
+          return workflowOutcome;
+        } finally {
+          // The graph owns this per-node environment, so it must retire its exact lease on every exit.
+          if (nodeEnv) await closeFusionBrowserSession(nodeEnv);
         }
-        const workflowOutcome = await deps.executeWorkflowStep(live, step, worktreePath, settings, nodeEnv, {
-          unattended,
-          principalAgentId,
-          outputLanguage,
-          signal: graphSignal,
-          ...(nodeSessionBoundary ? { sessionBoundary: nodeSessionBoundary } : {}),
-          ...(reviewInputFingerprint !== undefined ? { reviewInputFingerprint } : {}),
-        });
-        if (graphSignal?.aborted) return { success: false, error: "workflow graph execution cancelled", failureValue: "aborted" };
-        await acknowledgeCustomContext();
-        return workflowOutcome;
       };
       /*
       FNXC:ReviewInputProof 2026-09-01-11:18:
@@ -1105,6 +1116,8 @@ export async function runGraphCustomNode(
             undefined,
             deps.getRunContextFor(live.id),
           );
+          // This refusal happens after environment construction but before session dispatch.
+          if (nodeEnv) await closeFusionBrowserSession(nodeEnv);
           outcome = { success: false, error: diagnostic, failureValue: "review-input-unprovable" };
         } else {
           outcome = await dispatchSingularStep(proof.fingerprint);

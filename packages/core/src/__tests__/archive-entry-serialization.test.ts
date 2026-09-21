@@ -146,5 +146,6 @@ describe("archive history serialization", () => {
   it("keeps legacy and active-compatible payloads readable without archivedAt", () => {
     const legacy = archiveEntryToTask({ ...populatedEntry(), archivedAt: undefined } as unknown as ArchivedTaskEntry);
     expect(legacy.archivedAt).toBeUndefined();
+    expect(legacy.recommendations).toBeUndefined();
   });
 });

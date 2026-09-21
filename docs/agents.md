@@ -97,7 +97,7 @@ printf "deploy report" | fn chat agent-abc123 --once --non-interactive
 
 ## Mission lineage and task creation
 
-`fn_task_create` and `fn_delegate_task` use two distinct controls. A session executing a board task, including the durable Workflow Executor, implementation/retry, both workflow-step lanes, verification-fix, and spawned-child sessions, cannot create or delegate tasks. It records optional out-of-scope findings as `fn_task_done` completion recommendations, implements in-scope needs directly, and uses the honest blocked exit only for real external blockers. In an autonomous no-task heartbeat, the caller must provide approved `mission_lineage` (mission, slice, and feature); a rejection states that approved mission lineage is required, and no permission grant overrides it. In interactive/user-supervised non-execution sessions, lineage is optional and `task_agent_mutation` category rules and exact-tool overrides decide whether creation is allowed, requires approval, or is blocked.
+`fn_task_create` and `fn_delegate_task` are available only in eligible non-execution sessions. A session executing a board task, including the durable Workflow Executor, implementation/retry, both workflow-step lanes, verification-fix, and spawned-child sessions, cannot create or delegate tasks. It records optional out-of-scope findings as `fn_task_done` completion recommendations, implements in-scope needs directly, and uses the honest blocked exit only for real external blockers. In autonomous no-task heartbeats and interactive/user-supervised non-execution sessions alike, `mission_lineage` is optional; `task_agent_mutation` category rules and exact-tool overrides decide whether creation is allowed, requires approval, or is blocked. Any supplied lineage must resolve to an approved mission, slice, and feature before persistence.
 
 A valid active lineage can bootstrap the first task for a hand-authored `defined` feature. The feature is linked to that exact task and promoted to `triaged`; later autonomous scheduler work still requires a `triaged` or `in-progress` feature.
 
@@ -1766,3 +1766,9 @@ Workflow routing never changes `assignedAgentId`. An explicit task owner runs cl
 ### Memory-first steering and consolidation history
 
 Agent instruction assembly uses the resolved `agentMemoryInclusionMode` across triage, execution, review, heartbeat, and chat lanes. `full` asks agents to query memory before re-reading raw sources, `index` keeps that direction terse, and `off` omits it. Operators can inspect the built-in Memory Keeper's compact consolidation audit history in **Agent Detail → Agent Memory**; it shows only completion outcomes and existing audit counts/reasons, never memory content.
+
+## Managed agent-browser sessions
+
+Fusion executor sessions supply an opaque `AGENT_BROWSER_SESSION` identity and a lease-bound browser profile to the packaged `agent-browser` launcher. Managed sessions always use a finite idle deadline: invalid, zero, or negative values fall back to ten minutes; positive overrides are capped at one hour. Normal executor teardown requests that exact scoped session to close, while an expired lease is the conservative recovery signal for a crashed owner.
+
+The launcher preserves upstream behavior for direct, unmanaged `agent-browser` use. Operators should not kill browsers by port or broad process-name matching: recovery is limited to a Fusion lease-bound profile after its owner deadline expires.

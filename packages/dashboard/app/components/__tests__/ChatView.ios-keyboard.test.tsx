@@ -158,6 +158,9 @@ describe("FN-9195 Chat composer visual viewport", () => {
   });
 
   it("bounds the portrait phone thread to the visible area so the composer is not under the keyboard", async () => {
+    /* FNXC:MergeRebuild0921 2026-09-21: upstream's collapsed-layout case asserted the --vv-height /
+    --keyboard-overlap writer this line deleted (shared useKeyboardViewportSurface owns placement via
+    --chat-thread-visible-block-size); case dropped, coverage lives in the bounded-thread tests. */
     const viewport = mockVisualViewport({ width: 375, height: 812 });
     const mode = mockViewportMode("mobile");
     try {

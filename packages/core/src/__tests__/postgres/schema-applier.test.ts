@@ -128,6 +128,7 @@ import {
   WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION,
   // FNXC:MergeRebuild0919 2026-09-19-21:45: both sides added this binding; the clean merge duplicated it.
   REVIEW_LANE_LEDGER_VERSION,
+  OVERLAP_OWNER_FK_DEFERRABLE_REPAIR_VERSION,
 } from "../../postgres/schema-applier.js";
 import { ProjectPartitionRekeyError, rekeyFallbackProjectPartition } from "../../postgres/migration-stamping.js";
 import type { PluginSchemaInitHook } from "../../postgres/plugin-schema-hook.js";
@@ -228,7 +229,9 @@ describe("schema-applier: immutable migration identities", () => {
     0086 — the released 0074-0083 identities above stay pinned exactly as they are.
     */
     expect(REVIEW_LANE_LEDGER_VERSION).toBe("0086");
-    expect(SCHEMA_BASELINE_VERSION).toBe("0086");
+    /* FNXC:OverlapWait 2026-09-21-10:10: 0087 repairs this line's 0075 owner FK to ON UPDATE CASCADE DEFERRABLE (upstream b1db055c27). */
+    expect(OVERLAP_OWNER_FK_DEFERRABLE_REPAIR_VERSION).toBe("0087");
+    expect(SCHEMA_BASELINE_VERSION).toBe("0087");
   });
 
   it("keeps monitor and approval isolation assigned to version 0003", () => {
@@ -901,7 +904,7 @@ pgDescribe("schema-applier: VAL-SCHEMA-001 final-schema parity (table counts)", 
     refusal marker (100 → 105); later baseline additions bring the count to 106; and 0048 adds
     GitHub check state (106 → 107); 0049 adds the agent-activity outbox and counter (→ 109);
     0050 adds immutable lock, evidence, and report history (109 → 112); 0052 adds recall records (→ 113);
-    0060 adds workspace coordination leases and land intents (→ 115). Plugin tables are added separately
+    0060 adds workspace coordination leases and land intents (→ 115); 0071 adds patchnode_entries and 0084 adds task_overlap_waits (→ 117). Plugin tables are added separately
     by the schema-init hook and are excluded here.
 
 /*
@@ -1928,12 +1931,19 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       );
       /* FNXC:GitHubImportTranslate 2026-07-16-23:30: Later durable-task migrations run after this historical 0000 fixture, so retain their required task table surface. */
       /*
+      FNXC:PgSchemaApplier 2026-09-18-08:56:
+      Migration 0082 (FN-509) builds its partial Boost index on tasks(project_id, "column").
+      Real 0000 databases have "column" from 0000_initial.sql, so this historical fixture must
+      retain it too — otherwise the upgrade-from-0000 run dies on the index instead of reaching
+      the automation-isolation assertion it exists to test. Same rule the 0059/0061 notes record.
+      */
+      /*
       FNXC:PgSchemaApplier 2026-08-15-22:10:
       Migration 0059 (FN-9037) builds a partial index on tasks(project_id, source_agent_id).
       Real 0000 databases have source_agent_id (baseline since the PG cutover), so this
       historical fixture must retain it; project_id arrives via the 0006 ownership migration.
       */
-      CREATE TABLE project.tasks (id text PRIMARY KEY, source_agent_id text);
+      CREATE TABLE project.tasks (id text PRIMARY KEY, source_agent_id text, "column" text NOT NULL DEFAULT 'todo');
       /*
       FNXC:Ideation 2026-07-18-13:25:
       FN-8295 migration 0022 FKs ideation rows to missions/mission_features on (project_id, id).
@@ -2393,6 +2403,13 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       MIXED_0065_REPAIR_VERSION,
     ]);
   });
+
+  /* FNXC:MergeCanonical0921 2026-09-21-10:10: upstream b1db055c27 added three tests here
+     ("fails loudly when legacy automation ownership is ambiguous", "serializes concurrent schema
+     appliers", "upgrades a 0002 database by backfilling monitor and approval ownership"). They are
+     canonical-lineage-fixture bound: their ledger-equality arrays end at the canonical 0084/0085
+     identities and the automation seed rides the canonical 0000 fixture our fork-local repair step
+     (local-repair-mixed-0065) reshapes. Not imported; upstream keeps them on its own line. */
 
   /*
   FNXC:PostgresMigrationCompleteness 2026-07-14-09:27:

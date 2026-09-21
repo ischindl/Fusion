@@ -29,6 +29,7 @@ import { CustomModelDropdown } from "./CustomModelDropdown";
 import { ProviderIcon } from "./ProviderIcon";
 import { ClaudeCliProviderCard } from "./ClaudeCliProviderCard";
 import { CursorCliProviderCard } from "./CursorCliProviderCard";
+import { AntigravityCliProviderCard } from "./AntigravityCliProviderCard";
 import { LlamaCppProviderCard } from "./LlamaCppProviderCard";
 import { LoginInstructions } from "./LoginInstructions";
 import { ProviderLoginDialog, type ProviderLoginPhase } from "./ProviderLoginDialog";
@@ -306,6 +307,7 @@ const ONBOARDING_CURATED_PROVIDER_FAMILY_ORDER = [
   "claude-cli",
   "droid-cli",
   "cursor-cli",
+  "antigravity-cli",
   "llama-cpp",
   "openai-codex",
   "openrouter",
@@ -2396,6 +2398,18 @@ export function ModelOnboardingModal({
     if (provider.id === "claude-cli" && provider.type === "cli") {
       return (
         <ClaudeCliProviderCard
+          key={provider.id}
+          authenticated={provider.authenticated}
+          onToggled={() => {
+            void loadAuthStatus();
+          }}
+        />
+      );
+    }
+
+    if (provider.id === "antigravity-cli" && provider.type === "cli") {
+      return (
+        <AntigravityCliProviderCard
           key={provider.id}
           authenticated={provider.authenticated}
           onToggled={() => {

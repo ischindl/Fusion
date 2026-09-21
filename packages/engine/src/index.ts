@@ -1038,6 +1038,7 @@ export {
   type CompactionGateSession,
 } from "./chat-context-guard.js";
 export { SelfHealingManager, type SelfHealingOptions, type RebindResult, type LandedReviewReconcileResult } from "./self-healing.js";
+
 /*
 FNXC:MergeReliability 2026-07-15-21:45 (FN-8004 follow-up):
 Exported for the dashboard's manual Retry gate, which must share ONE definition of "orphaned

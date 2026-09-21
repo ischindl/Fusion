@@ -99,7 +99,7 @@ touches no data; it must advance in the same change that ships a new migration f
 /* FNXC:TaskPauseAccounting 2026-09-16-06:16: the ceiling includes FN-457's paused-time columns, so timing readers never query a tasks table that lacks them. */
 /* FNXC:ReviewLaneDispatch 2026-09-16-18:30 (merge origin/main): the ceiling includes the renumbered ledger migration. The stale-binary guard compares the DB's highest marker against Number(SCHEMA_BASELINE_VERSION), so a bundled migration ABOVE the ceiling would make the ledger's self-marked version look like a newer Fusion's write and every boot after it would raise StaleBinarySchemaError.
 FNXC:ReviewLaneDispatch 2026-09-18-13:40 (sync the FN-511..526 wave): upstream released FN-509 queue order as 0082 and human merge approval as 0083 while the main-local ledger held 0082 — the ledger renumbered to 0084 (same renumbering as open PR #3619's branch) and the ceiling follows. */
-export const SCHEMA_BASELINE_VERSION = "0086";
+export const SCHEMA_BASELINE_VERSION = "0087";
 /** FNXC:SymbolLock 2026-07-20-10:00: upgrades need durable task declarations before admission resolves symbols. */
 export const TASK_DECLARED_SYMBOLS_VERSION = "0028";
 const INITIAL_SCHEMA_VERSION = "0000";
@@ -294,6 +294,10 @@ export const OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION = "0077";
 export const OVERLAP_REVALIDATION_DRAIN_VERSION = "0078";
 /** FNXC:ReviewLaneDispatch 2026-09-09 (STAS-205): upgraded projects need the live-reviewer-run partial unique index before the dispatch sweep can claim one attempt per card. */
 /* FNXC:ReviewLaneDispatch 2026-09-15-00:24 (STAS-205 landing onto main): renumbered 0077 -> 0079 -> 0082: upstream released its own 0079/0080/0081 in the 2026-09-16 merge, so the ledger takes the next free slot; the bookkeeping-string rationale below still holds. Bookkeeping keys on the version STRING, so a branch claiming a slot main already recorded (0077 = the overlap repair phase) would make `applied.includes(...)` report the ledger as applied, the SQL would never run, and the sweep would lose its one-live-attempt-per-card enforcement silently. The deploy line owns released 0077-0078. */
+/* FNXC:OverlapWait 2026-09-21-09:55: this line's original 0075 owner FK is not ON UPDATE CASCADE /
+DEFERRABLE; project-partition promotion refuses it, so applied databases get upstream b1db055c27's
+repair as an additive migration. Fresh databases get the hardened FK inline in 0075. */
+export const OVERLAP_OWNER_FK_DEFERRABLE_REPAIR_VERSION = "0087";
 export const REVIEW_LANE_LEDGER_VERSION = "0086";
 /** FNXC:WorkflowIdentity 2026-09-14-19:06: upgraded projects converge the temporary Coding (Ideas) v2 identity without losing conflicting settings or prompts. */
 export const WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION = "0079";
@@ -584,6 +588,7 @@ const OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_MIGRATION_PATH = join(MIGRATIONS_DIR, "
 const WHITEBOARDS_MIGRATION_PATH = join(MIGRATIONS_DIR, "0076_fn_333_whiteboards.sql");
 const OVERLAP_REVALIDATION_DRAIN_MIGRATION_PATH = join(MIGRATIONS_DIR, "0078_fn_375_overlap_revalidation_drain.sql");
 const REVIEW_LANE_LEDGER_MIGRATION_PATH = join(MIGRATIONS_DIR, "0086_stas_205_review_lane_ledger.sql");
+const OVERLAP_OWNER_FK_REPAIR_MIGRATION_PATH = join(MIGRATIONS_DIR, "0087_fn_332_overlap_owner_fk_repair.sql");
 const WORKFLOW_IDENTITY_AND_MODEL_LANES_MIGRATION_PATH = join(MIGRATIONS_DIR, "0079_fn_393_workflow_identity_and_project_model_lanes.sql");
 const TASK_HUMAN_PLAN_APPROVAL_MIGRATION_PATH = join(MIGRATIONS_DIR, "0080_fn_408_task_human_plan_approval.sql");
 const TASK_PAUSE_ACCOUNTING_MIGRATION_PATH = join(MIGRATIONS_DIR, "0081_fn_457_task_pause_accounting.sql");
@@ -739,6 +744,7 @@ export async function applySchemaBaseline(
     const overlapWaitRepairRequiredPhaseAlreadyApplied = applied.includes(OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION);
     const overlapRevalidationDrainAlreadyApplied = applied.includes(OVERLAP_REVALIDATION_DRAIN_VERSION);
     const reviewLaneLedgerAlreadyApplied = applied.includes(REVIEW_LANE_LEDGER_VERSION);
+    const overlapOwnerFkRepairAlreadyApplied = applied.includes(OVERLAP_OWNER_FK_DEFERRABLE_REPAIR_VERSION);
     const builtinWorkflowIdentityAlreadyApplied = applied.includes(WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION);
     const taskHumanPlanApprovalAlreadyApplied = applied.includes(TASK_HUMAN_PLAN_APPROVAL_VERSION);
     const taskPauseAccountingAlreadyApplied = applied.includes(TASK_PAUSE_ACCOUNTING_VERSION);
@@ -1788,6 +1794,12 @@ export async function applySchemaBaseline(
         )
       ) AS missing
     `)) as unknown as Array<{ missing: boolean }>)[0]?.missing ?? true;
+    if (!overlapOwnerFkRepairAlreadyApplied) {
+      const migrationSql = await readFile(OVERLAP_OWNER_FK_REPAIR_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${OVERLAP_OWNER_FK_DEFERRABLE_REPAIR_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
     if (!reviewLaneLedgerAlreadyApplied || reviewLaneLedgerMissing) {
       const migrationSql = await readFile(REVIEW_LANE_LEDGER_MIGRATION_PATH, "utf8");
       await tx.execute(sql.raw(migrationSql));

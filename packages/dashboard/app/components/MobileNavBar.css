@@ -27,6 +27,7 @@
   z-index: 45;
   display: none;
   align-items: stretch;
+  column-gap: var(--space-sm);
   background: var(--surface);
   /*
   FNXC:FooterChrome 2026-06-22-18:00:
@@ -36,7 +37,7 @@
   min-height: var(--mobile-nav-height);
   /*
   FNXC:MobileNav 2026-06-24-22:27:
-  The mobile bottom nav must use symmetric outer side spacing while keeping its fixed right edge compensated by --icb-right-offset, equal-width tab columns, and safe-area bottom padding intact.
+  The mobile bottom nav keeps symmetric outer side spacing, its compensated right edge, and safe-area bottom padding.
   */
   padding-inline: var(--space-sm);
   /*
@@ -125,17 +126,18 @@ html[data-viewport-mode="desktop"] .project-content--with-footer.project-content
 /* Individual tab button */
 /*
 FNXC:MobileNav 2026-06-20-02:04:
-Every mobile nav tab must be an equal-width column with a centered icon so inter-icon spacing stays uniform across tab counts, long labels, active state, badges, and status dots.
-Use a zero flex basis plus min-width:0 so intrinsic label width cannot bias flex distribution; badges and status dots stay absolutely positioned and out of flow.
+Size each tab from its icon and label, then distribute spare width evenly so gaps between
+the complete groups match. Long labels may truncate when the viewport is crowded.
+Badges and status dots stay absolutely positioned and out of flow.
 
 FNXC:MobileNav 2026-06-20-16:11:
-Real-browser geometry showed the SVG centers were uniform after FN-6766, but status dots protruded past Chat/Mailbox icon boxes and made those icon clusters optically right-heavy.
-Wrap every tab icon in the same token-sized icon slot and keep unread/pending dots inside that slot so icon centering and perceived inter-icon spacing stay identical across tab count, label length, badge, status-dot, and active variants.
+Keep each icon centered above its label and unread/pending dots inside the token-sized
+icon slot so indicators cannot change the group's width.
 */
 .mobile-nav-tab {
   --mobile-nav-icon-size: calc(var(--space-lg) + var(--space-sm) - (var(--space-xs) / 2));
-  flex: 1 1 0;
-  min-width: 0;
+  flex: 1 1 auto;
+  min-width: var(--mobile-nav-icon-size);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -143,6 +145,9 @@ Wrap every tab icon in the same token-sized icon slot and keep unread/pending do
   gap: calc(var(--space-xs) / 2);
   min-height: calc(var(--space-xl) + var(--space-md));
   padding: calc(var(--space-sm) - (var(--space-xs) / 2)) 0;
+  /* Balance the bar's bottom clearance inside each measured tab so the
+     footer and content offsets include the same breathing room. */
+  padding-top: calc(var(--space-md) + var(--space-sm) - (var(--space-xs) / 2));
   background: none;
   border: none;
   color: var(--text-muted);
@@ -262,7 +267,7 @@ html[data-viewport-mode="desktop"] .project-content--with-mobile-nav:not(.projec
 }
 
 .mobile-nav-tab-label {
-  width: 100%;
+  width: max-content;
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
@@ -275,7 +280,7 @@ html[data-viewport-mode="desktop"] .project-content--with-mobile-nav:not(.projec
 
 .mobile-nav-tab-badge {
   position: absolute;
-  top: calc(var(--space-xs) / 2);
+  top: calc(var(--space-md) + (var(--space-xs) / 2));
   right: calc(50% - var(--space-md));
   min-width: var(--space-lg);
   height: var(--space-lg);

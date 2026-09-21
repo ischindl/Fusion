@@ -367,6 +367,7 @@ export interface ServerOptions {
   selfHealingManager?: {
     rootDir: string;
     reconcileInReviewBranchRebind: (opts?: { includeTaskIds?: Set<string> }) => Promise<import("@fusion/engine").RebindResult>;
+    reconcileLandedReviewTask: (taskId: string, options: { source: "self-healing" | "manual"; requireAutoMergeEligible?: boolean }) => Promise<import("@fusion/engine").LandedReviewReconcileResult>;
     getActiveMergeTaskId: () => string | null;
     getStaleMergingStatusMinAgeMs: () => number;
   };
@@ -966,6 +967,7 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
           selfHealingManager: {
             rootDir: engine.getWorkingDirectory(),
             reconcileInReviewBranchRebind: selfHealing.reconcileInReviewBranchRebind.bind(selfHealing),
+            reconcileLandedReviewTask: selfHealing.reconcileLandedReviewTask.bind(selfHealing),
             getActiveMergeTaskId: selfHealing.getActiveMergeTaskId.bind(selfHealing),
             getStaleMergingStatusMinAgeMs: selfHealing.getStaleMergingStatusMinAgeMs.bind(selfHealing),
           },
@@ -1689,6 +1691,8 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
     () => store.getSettings(),
     options?.engine?.getMessageStore(),
     store,
+    options?.engine?.isMergePending?.bind(options.engine),
+    options?.engine?.resetInReviewMergeRetry?.bind(options.engine),
   );
 
   /*

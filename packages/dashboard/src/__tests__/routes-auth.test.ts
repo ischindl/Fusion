@@ -1119,20 +1119,20 @@ describe("GET /auth/status", () => {
     expect(res.status).toBe(200);
     // Filter out synthetic CLI providers — they have dedicated route tests.
     // Structural assertions here are about OAuth + API-key paths only.
-    const providers = res.body.providers.filter((p: any) => p.id !== "claude-cli" && p.id !== "droid-cli" && p.id !== "cursor-cli" && p.id !== "grok-cli" && p.id !== "omp-cli" && p.id !== "llama-cpp");
+    const providers = res.body.providers.filter((p: any) => p.id !== "claude-cli" && p.id !== "droid-cli" && p.id !== "cursor-cli" && p.id !== "antigravity-cli" && p.id !== "grok-cli" && p.id !== "omp-cli" && p.id !== "llama-cpp");
     /*
-    FN-7625: the static catalog (anthropic-subscription/github-copilot/openai-codex
-    OAuth + the full API-key catalog) is always present, unioned with whatever the
-    mocked storage additionally reports — even when storage only reports a narrow
-    subset (github-copilot + openrouter + kimi-coding here).
+    FN-7625: the static catalog includes every OAuth and API-key card, unioned with
+    whatever mocked storage additionally reports — even when it is narrowed.
     */
     expect(providers.map((p: any) => p.id)).toEqual([
       "anthropic-subscription",
       "github-copilot",
+      "meta-subscription",
       "openai-codex",
       "anthropic-api-key",
       "brave",
       "kimi-coding",
+      "meta",
       "minimax",
       "openrouter",
       // FNXC:ProviderAuth 2026-08-23-23:50: OrcaRouter joined the static API-key catalog (feat 41c23adf15); these pins enumerate that catalog exactly, so a new entry belongs here rather than being filtered out.
@@ -1222,6 +1222,43 @@ describe("GET /auth/status", () => {
     }));
   });
 
+  it("separates Meta OAuth and API-key cards while login keeps Pi's canonical provider id", async () => {
+    (authStorage.getOAuthProviders as ReturnType<typeof vi.fn>).mockReturnValue([
+      { id: "meta", name: "Meta (Muse subscription)" },
+    ]);
+    (authStorage.getApiKeyProviders as ReturnType<typeof vi.fn>).mockReturnValue([
+      { id: "meta", name: "Meta (Muse)" },
+    ]);
+
+    const status = await GET(app, "/api/auth/status");
+
+    expect(status.status).toBe(200);
+    expect(status.body.providers.filter((provider: { id: string }) => provider.id === "meta-subscription")).toHaveLength(1);
+    expect(status.body.providers.filter((provider: { id: string }) => provider.id === "meta")).toHaveLength(1);
+    expect(status.body.providers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "meta-subscription", name: "Meta (Muse subscription)", type: "oauth", authenticated: false }),
+      expect.objectContaining({ id: "meta", name: "Meta (Muse)", type: "api_key", authenticated: false }),
+    ]));
+
+    (authStorage.login as ReturnType<typeof vi.fn>).mockImplementation(async (_provider: string, callbacks: { onAuth: (info: { url: string }) => void }) => {
+      callbacks.onAuth({ url: "https://auth.example.test/meta" });
+    });
+    const login = await REQUEST(app, "POST", "/api/auth/login", Buffer.from(JSON.stringify({ provider: "meta-subscription" })), { "content-type": "application/json" });
+    expect(login.status).toBe(200);
+    expect(authStorage.login).toHaveBeenCalledWith("meta", expect.any(Object));
+
+    (authStorage.hasAuth as ReturnType<typeof vi.fn>).mockImplementation((provider: string) => provider === "meta-subscription");
+    (authStorage.get as ReturnType<typeof vi.fn>).mockImplementation((provider: string) =>
+      provider === "meta-subscription" ? { type: "oauth", expires: Date.now() + 60_000 } : undefined,
+    );
+    (authStorage.hasApiKey as ReturnType<typeof vi.fn>).mockImplementation((provider: string) => provider === "meta");
+    const completedStatus = await GET(app, "/api/auth/status");
+    expect(completedStatus.body.providers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "meta-subscription", type: "oauth", authenticated: true }),
+      expect.objectContaining({ id: "meta", type: "api_key", authenticated: true }),
+    ]));
+  });
+
   it("includes oauth and model-registry-derived API key providers in one response", async () => {
     (authStorage.getOAuthProviders as ReturnType<typeof vi.fn>).mockReturnValue([
       { id: "github-copilot", name: "GitHub Copilot" },
@@ -1238,7 +1275,7 @@ describe("GET /auth/status", () => {
     const res = await GET(app, "/api/auth/status");
 
     expect(res.status).toBe(200);
-    const providers = res.body.providers.filter((p: any) => p.id !== "claude-cli" && p.id !== "droid-cli" && p.id !== "cursor-cli" && p.id !== "grok-cli" && p.id !== "omp-cli" && p.id !== "llama-cpp");
+    const providers = res.body.providers.filter((p: any) => p.id !== "claude-cli" && p.id !== "droid-cli" && p.id !== "cursor-cli" && p.id !== "antigravity-cli" && p.id !== "grok-cli" && p.id !== "omp-cli" && p.id !== "llama-cpp");
     /*
     FN-7625: catalog ids remain present even though storage only reported a
     narrow subset, and a storage-reported id NOT in the catalog ("acme-extension")
@@ -1247,10 +1284,12 @@ describe("GET /auth/status", () => {
     expect(providers.map((p: any) => p.id)).toEqual([
       "anthropic-subscription",
       "github-copilot",
+      "meta-subscription",
       "openai-codex",
       "anthropic-api-key",
       "brave",
       "kimi-coding",
+      "meta",
       "minimax",
       "openrouter",
       // FNXC:ProviderAuth 2026-08-23-23:50: OrcaRouter joined the static API-key catalog (feat 41c23adf15); these pins enumerate that catalog exactly, so a new entry belongs here rather than being filtered out.
@@ -1805,11 +1844,12 @@ describe("GET /auth/status", () => {
   (union, never intersection). Only per-provider `authenticated`/`expired` may vary.
   */
   describe("FN-7625: provider list is a static catalog independent of runtime/plugin connection state", () => {
-    const FULL_OAUTH_CATALOG_IDS = ["anthropic-subscription", "github-copilot", "openai-codex"];
+    const FULL_OAUTH_CATALOG_IDS = ["anthropic-subscription", "github-copilot", "meta-subscription", "openai-codex"];
     const FULL_API_KEY_CATALOG_IDS = [
       "anthropic-api-key",
       "brave",
       "kimi-coding",
+      "meta",
       "minimax",
       "openrouter",
       // FNXC:ProviderAuth 2026-08-23-23:50: OrcaRouter joined the static API-key catalog (feat 41c23adf15); these pins enumerate that catalog exactly, so a new entry belongs here rather than being filtered out.
@@ -1822,7 +1862,7 @@ describe("GET /auth/status", () => {
 
     function nonCliProviderIds(res: any): string[] {
       return res.body.providers
-        .filter((p: any) => p.id !== "claude-cli" && p.id !== "droid-cli" && p.id !== "cursor-cli" && p.id !== "grok-cli" && p.id !== "omp-cli" && p.id !== "llama-cpp")
+        .filter((p: any) => p.id !== "claude-cli" && p.id !== "droid-cli" && p.id !== "cursor-cli" && p.id !== "antigravity-cli" && p.id !== "grok-cli" && p.id !== "omp-cli" && p.id !== "llama-cpp")
         .map((p: any) => p.id);
     }
 
@@ -2534,6 +2574,51 @@ describe("Droid CLI auth routes", () => {
     const res = await GET(buildApp(), "/api/providers/cursor-cli/status");
     expect(res.status).toBe(200);
     expect(res.body.ready).toBe(false);
+  });
+
+  it("POST /auth/antigravity-cli validates and persists the effective agy binary", async () => {
+    vi.spyOn(runtimeProviderProbesModule, "probeAntigravityCliProvider").mockResolvedValue({
+      available: true,
+      authenticated: true,
+      version: "agy 1.2.7",
+      binaryPath: "/opt/agy",
+      configuredBinaryPath: "/opt/agy",
+      usingConfiguredBinaryPath: true,
+      probeDurationMs: 8,
+    });
+    store.getGlobalSettingsStore = vi.fn().mockReturnValue({
+      ...createMockGlobalSettingsStore(),
+      getSettings: vi.fn().mockResolvedValue({ useAntigravityCli: false }),
+    });
+    store.updateGlobalSettings = vi.fn().mockResolvedValue({ useAntigravityCli: true, antigravityCliBinaryPath: "/opt/agy" });
+
+    const res = await REQUEST(buildApp(), "POST", "/api/auth/antigravity-cli", JSON.stringify({ enabled: true, binaryPath: " /opt/agy " }), {
+      "Content-Type": "application/json",
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ enabled: true, binaryPath: "/opt/agy", restartRequired: false });
+    expect(runtimeProviderProbesModule.probeAntigravityCliProvider).toHaveBeenCalledWith({ binaryPath: "/opt/agy" });
+    expect(store.updateGlobalSettings).toHaveBeenCalledWith({ useAntigravityCli: true, antigravityCliBinaryPath: "/opt/agy" });
+  });
+
+  it("GET /providers/antigravity-cli/status keeps the provider unavailable when its binary is missing", async () => {
+    vi.spyOn(runtimeProviderProbesModule, "probeAntigravityCliProvider").mockResolvedValue({
+      available: false,
+      authenticated: false,
+      usingConfiguredBinaryPath: false,
+      reason: "agy was not found on PATH.",
+      probeDurationMs: 8,
+    });
+    store.getGlobalSettingsStore = vi.fn().mockReturnValue({
+      ...createMockGlobalSettingsStore(),
+      getSettings: vi.fn().mockResolvedValue({ useAntigravityCli: true }),
+    });
+
+    const res = await GET(buildApp(), "/api/providers/antigravity-cli/status");
+    expect(res.status).toBe(200);
+    expect(res.body.ready).toBe(false);
+    expect(res.body.enabled).toBe(true);
   });
 
   it("POST /auth/grok-cli enables when grok binary is available", async () => {

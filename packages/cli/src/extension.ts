@@ -2565,6 +2565,12 @@ export default function kbExtension(pi: ExtensionAPI) {
       );
       const isInReviewStatusNone =
         retryReviewColumns.has(task.column) && (task.status === null || task.status === undefined);
+      /*
+      FNXC:MergeRetryAdmission 2026-09-20-02:52:
+      A status-none completed card is a retryable lost handoff only when effective auto-merge is on.
+      Manual review holds share its durable shape and must remain untouched on this tool surface.
+      */
+      const effectiveAutoMergeDisabled = fusionCore.resolveEffectiveAutoMerge(task, await store.getSettings()) === false;
       const hasIncompleteSteps = task.steps.some(
         (s: { status: string }) => s.status === "pending" || s.status === "in-progress",
       );
@@ -2573,7 +2579,12 @@ export default function kbExtension(pi: ExtensionAPI) {
       const isExecutionFailureInReview =
         hasIncompleteSteps || (task.steps.length === 0 && (task.mergeRetries ?? 0) === 0);
       const isInReviewExecutionStall = isInReviewStatusNone && isExecutionFailureInReview;
-      const isInReviewMergeRetryStall = isInReviewStatusNone && (task.mergeRetries ?? 0) > 0;
+      /* FNXC:MergeRetryAdmission 2026-09-20-02:17: a completed review card can lose its
+         retry handoff before mergeRetries increments; retain it in review and restart merge. */
+      const isInReviewMergeRetryStall = !effectiveAutoMergeDisabled && isInReviewStatusNone && (
+        (task.mergeRetries ?? 0) > 0
+        || (task.steps.length > 0 && task.steps.every((step: { status: string }) => step.status === "done" || step.status === "skipped"))
+      );
       const isInReviewRetry =
         retryReviewColumns.has(task.column) &&
         (task.status === "failed" ||
@@ -3627,8 +3638,8 @@ export default function kbExtension(pi: ExtensionAPI) {
   });
 
   /*
-  FNXC:MergeQueue 2026-07-15-11:28:
-  Do not register fn_research_* on the host pi extension. These tools dual-boot a second TaskStore via getStore and can wedge agent turns with wait_for_completion polling (same hang class as FN-7956 fn_task_show). Bounded research remains available only when the engine injects createResearchTools into triage/executor/heartbeat sessions with experimentalFeatures.researchView enabled. Operators use `fn research` CLI / dashboard Research view.
+  FNXC:ResearchAccessBoundary 2026-09-20-05:02:
+  Do not register fn_research_* on the host pi extension. These tools dual-boot a second TaskStore via getStore and can wedge agent turns with wait_for_completion polling (same hang class as FN-7956 fn_task_show). Bounded research remains available through the dashboard Research view and when the engine injects createResearchTools into triage/executor/heartbeat sessions with experimentalFeatures.researchView enabled.
   */
 
   pi.registerTool({

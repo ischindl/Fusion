@@ -53,6 +53,20 @@ const MAX_TASK_RESULTS = 8;
 const MAX_FILE_RESULTS = 8;
 export const MAX_CONVERSATION_RESULTS = 5;
 
+/*
+FNXC:ChatTaskMentionPriority 2026-09-20-18:11:
+Hash-mention results keep work already being executed or reviewed at the top so operators can quickly attach the task that is currently active. Other matching tasks retain the API result order within their group.
+*/
+const ACTIVE_TASK_COLUMNS = new Set(["in-progress", "in-review"]);
+
+function prioritizeActiveTasks(tasks: TaskSearchItem[]): TaskSearchItem[] {
+  return tasks.toSorted((left, right) => {
+    const leftIsActive = ACTIVE_TASK_COLUMNS.has(left.column);
+    const rightIsActive = ACTIVE_TASK_COLUMNS.has(right.column);
+    return Number(rightIsActive) - Number(leftIsActive);
+  });
+}
+
 function createAbortError(): DOMException {
   return new DOMException("The operation was aborted.", "AbortError");
 }
@@ -221,11 +235,12 @@ export function useFileMention(options: UseFileMentionOptions = {}): UseFileMent
           FN-391: an untitled task used to mention as an empty label. Resolve it through the shared
           projection so a mention row carries the same text the board card shows.
           */
-          ? taskResult.value.slice(0, MAX_TASK_RESULTS).map((task) => ({
+          
+          ? prioritizeActiveTasks(taskResult.value.map((task) => ({
               id: task.id,
               title: getTaskTitleDisplayText(task),
               column: task.column as Column,
-            }))
+            }))).slice(0, MAX_TASK_RESULTS)
           : [];
         const nextFiles = fileResult.status === "fulfilled" ? fileResult.value.files.slice(0, MAX_FILE_RESULTS) : [];
 
