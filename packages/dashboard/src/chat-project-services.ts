@@ -5,6 +5,35 @@ import { requireAsyncLayer } from "./require-async-layer.js";
 
 const scopedChatStoreCache = new Map<string, ChatStore>();
 
+/*
+FNXC:ChatRemoteGenerationMirror 2026-09-21-10:45:
+RUFU-252 gap B. `listLiveScopedChatStores()` is a snapshot, and an SSE connection reads it exactly
+once when the browser opens `/api/events`. A project's ChatStore is created lazily — the first time
+that project's chat is touched — so opening a second project AFTER a tab connected produced events
+on an emitter nobody was listening to: the remote-generation mirror had nothing to mirror and the
+open tab stayed silent until it remounted. The registry therefore also PUBLISHES creation, letting
+an already-open connection adopt the new store. Creation is published only (no replay): a store that
+already existed when the connection opened arrives through the snapshot.
+*/
+export type ScopedChatStoreListener = (chatStore: ChatStore) => void;
+
+const scopedChatStoreListeners = new Set<ScopedChatStoreListener>();
+
+/** Subscribe to chat stores created after this call. Returned function unsubscribes. */
+export function onScopedChatStoreCreated(listener: ScopedChatStoreListener): () => void {
+  scopedChatStoreListeners.add(listener);
+  return () => {
+    scopedChatStoreListeners.delete(listener);
+  };
+}
+
+function publishScopedChatStore(chatStore: ChatStore): void {
+  // Copy first: a listener may unsubscribe itself (or another) while being notified.
+  for (const listener of [...scopedChatStoreListeners]) {
+    listener(chatStore);
+  }
+}
+
 function cacheKeyForStore(store: TaskStore): string {
   return store.getFusionDir();
 }
@@ -12,7 +41,11 @@ function cacheKeyForStore(store: TaskStore): string {
 export function getOrCreateScopedChatStore(store: TaskStore, fallbackChatStore?: ChatStore): ChatStore {
   const key = cacheKeyForStore(store);
   if (fallbackChatStore) {
+    const replaced = scopedChatStoreCache.get(key);
     scopedChatStoreCache.set(key, fallbackChatStore);
+    // An engine that boots after first resolution swaps in its own store; connections must learn
+    // about the REPLACEMENT too, while a repeat of the same instance stays silent.
+    if (replaced !== fallbackChatStore) publishScopedChatStore(fallbackChatStore);
     return fallbackChatStore;
   }
 
@@ -23,14 +56,19 @@ export function getOrCreateScopedChatStore(store: TaskStore, fallbackChatStore?:
   const layer = requireAsyncLayer(store, "Scoped ChatStore");
   const chatStore = new ChatStore(layer);
   scopedChatStoreCache.set(key, chatStore);
+  publishScopedChatStore(chatStore);
   return chatStore;
 }
 
 /*
 FNXC:ChatRemoteGenerationMirror 2026-09-17-19:25:
 A bus connection that is not filtered to one project must still bridge chat events. The live
-scoped-store registry is the authoritative set of EventEmitters that chat mutations fire on;
-newly-created stores join on the next connection because stores are long-lived per project.
+scoped-store registry is the authoritative set of EventEmitters that chat mutations fire on.
+
+FNXC:ChatRemoteGenerationMirror 2026-09-21-10:45:
+RUFU-252 corrects the tail of the note above: newly-created stores no longer wait for the NEXT
+connection. This snapshot covers stores that predate the connection and `onScopedChatStoreCreated`
+covers every store created after it, so an open tab mirrors a project opened later in another tab.
 */
 export function listLiveScopedChatStores(): ChatStore[] {
   return [...scopedChatStoreCache.values()];
@@ -117,6 +155,13 @@ export async function createProjectScopedChatManager(options: {
 
 export function __resetScopedChatStoreCache(): void {
   scopedChatStoreCache.clear();
+  /*
+  FNXC:ChatRemoteGenerationMirror 2026-09-21-10:45:
+  The test reset drops bridge subscriptions too. A suite that closed its connection leaves a
+  listener bound to that test's mock response; without this, a later test's store creation would
+  write frames into a finished test and cross-contaminate assertions.
+  */
+  scopedChatStoreListeners.clear();
 }
 
 const scopedChatManagerCache = new Map<string, ChatManager>();

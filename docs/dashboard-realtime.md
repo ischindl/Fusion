@@ -158,7 +158,18 @@ For `projectId` streams, server prefers engine-owned stores to keep EventEmitter
 
 `createSSE(...)` in `packages/dashboard/src/sse.ts` subscribes to task/mission/AI-session/plugin/agent/message/chat/automation events with `on(...)` and removes every one with `off(...)` in cleanup.
 
-**Invariant:** any new forwarded event must preserve strict `on(...)`/`off(...)` symmetry.
+**Invariant:** any new forwarded event must preserve strict `on(...)`/`off(...)` symmetry. The chat bridge added in RUFU-252 is the one place listeners are attached *after* the connection opened, and it obeys the same rule: each dynamically attached store gets a teardown closure that is removed on connection close and on supersede/replace of that same store.
+
+### Chat event contract: payload enrichment, store fan-out, and de-duplication (`sse.ts`, `chat-project-services.ts`)
+
+What an open browser tab may rely on from `chat:*` frames on `/api/events`:
+
+- **`chat:session:updated` is enriched at the bus boundary.** The forwarded payload is the store row plus a derived `isGenerating` boolean. Store rows only carry `inFlightGeneration`, so a client that read `isGenerating` alone would see `undefined` on an older server; every consumer keeps `row.isGenerating ?? row.inFlightGeneration?.status === "generating"` as a wire-compat fallback. `chat:session:created` is forwarded raw on purpose: a session is created with `inFlightGeneration: null`, so there is nothing to derive.
+- **An unscoped connection mirrors the default store *and* every live project-scoped store.** A scoped `ChatStore` is a different EventEmitter than the default one, so a global connection would otherwise never see generations from a project opened later. The bridge is deliberately one-directional: a connection that already carries `?projectId=` stays pinned to that store and never gains another project's traffic.
+- **Scoped stores created after the connection opened are bridged too.** `listLiveScopedChatStores()` is a snapshot and was read exactly once per connection, which left a chat store created minutes later (the first Direct Chat open in a project, after a dashboard restart) permanently invisible on an already-open bus connection. `onScopedChatStoreCreated(...)` now feeds a per-connection bridge; identity-guarded, so a store that was in the initial snapshot is never attached twice.
+- **There is no generation identifier on the wire.** The in-flight payload is `ChatInFlightGenerationState` (`status`, `streamingText`, `streamingThinking`, `toolCalls`, `replayFromEventId`, `startedAt`, `updatedAt`) plus the session `id`. Duplicate-attach suppression is therefore carried by the client's own live-stream state plus the `(sessionId, replayFromEventId)` cursor marker — never by a payload id. Both mirror consumers (`useChat.ts` for chat surfaces, `TaskPlannerChatTab.tsx` for the planner tab) follow that rule; the live-stream guard is what absorbs an identical replayed frame *and* an advanced cursor of the generation already being mirrored.
+- **The cursor marker must die with the stream it recorded.** `beginGeneration` seeds `replayFromEventId: 0` on the row that *opens* every generation, and intermediate checkpoints go through a 200 ms debounced queue that the completion flush cancels — so a short generation publishes only its cursor-0 frame plus its terminal frame. A marker that outlived its transport would therefore match the opening frame of every *later* generation and suppress all of them in that tab. Both consumers clear the marker wherever the attached stream ends: `useChat` in its attached stream's `onDone`/`onError`/`onMessage`; the planner tab in a single `clearPlannerMirrorAttachment()` seam reached from stream `onDone`/`onError`, mirror detach, Stop/cancel, and task/project change.
+- **A frame-path close may only retire a stream the mirror itself opened.** The server persists the cleared in-flight row — which emits `chat:session:updated` — *before* it broadcasts `done`, so the terminal frame routinely arrives while a locally-started send is still finishing. Closing that send from the frame path supersedes its request id, so its own `onDone` bails and its queued-message dispatch never runs. The planner tab records which session its mirror attached (`mirrorOwnedStreamSessionRef`) and leaves any other live stream to its own handlers; only the authoritative reconnect/visibility reconcile, which has fetched the row and proven the server idle, closes unconditionally.
 
 ### Connection safety controls (`sse.ts`)
 
@@ -222,6 +233,16 @@ Run these whenever changing SSE/event-stream behavior:
   - `/api/events` wiring integration
 - `packages/dashboard/src/__tests__/proxy-routes.test.ts`
   - remote SSE proxy forwarding, timeout/transport failure handling, disconnect cleanup
+- `packages/dashboard/src/__tests__/sse-chat-store-fanout.test.ts`
+  - chat events reach a connection that is attached to more than one store, and the owning store resolves per session
+- `packages/dashboard/src/__tests__/sse-chat-session-enrich.test.ts`
+  - `chat:session:updated` enrichment adds `isGenerating` without rewriting the in-flight snapshot
+- `packages/dashboard/src/__tests__/sse-chat-scoped-store-live-bridge.test.ts`
+  - scoped stores created *after* the connection opened are bridged, initial-snapshot stores are not double-attached, and every dynamic listener (plus the registry subscription) is detached at teardown
+- `packages/dashboard/app/hooks/__tests__/useChat.remote-generation-mirror.test.ts`
+  - chat surfaces attach a foreign generation from a bus frame without a second streaming client
+- `packages/dashboard/app/components/__tests__/TaskPlannerChatTab.remote-generation-mirror.test.tsx`
+  - planner tab mirrors the same frames: one attach per generation while its stream is live, every successive generation attaches again once the previous attach ended (including one that opens at the same cursor 0), a terminal frame retires a mirror-owned stream but never a locally-started send, the authoritative reconcile still closes a locally-owned stream once the row proves the server idle, deactivated tab unsubscribes
 
 ---
 

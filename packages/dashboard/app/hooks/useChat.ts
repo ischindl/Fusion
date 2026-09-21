@@ -2971,7 +2971,10 @@ export function useChat(
       FNXC:ChatRemoteGenerationMirror 2026-09-17-18:57:
       An older server (or any emit path that bypasses the SSE enrichment) delivers the raw store
       row: `inFlightGeneration` present, `isGenerating` absent. Deriving the flag here keeps the
-      remote-generation attach and the list spinner working across the wire upgrade boundary.
+      remote-generation transcript attach working across the wire upgrade boundary. The flag's
+      only consumer here is the attach below: no chat sidebar row renders a generating indicator
+      (`chat-session-item` shows pin / unread / window / preview only), so nothing in this handler
+      feeds a session-list spinner — that indicator is a deliberate follow-up, not this contract.
       */
       const derivedGenerating = rawSession.isGenerating ?? rawSession.inFlightGeneration?.status === "generating";
       const updatedSession: ChatSessionInfo = { ...rawSession, isGenerating: derivedGenerating };

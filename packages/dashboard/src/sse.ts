@@ -43,8 +43,14 @@ Chat store emits carry the RAW store row: it has `inFlightGeneration` but not `i
 which GET routes derive. A client that only checks `isGenerating` therefore never learned that
 an externally-started generation (another tab, an API call, an engine auto-retry) began - it
 rendered the foreign user row instantly yet showed no working state until reload. The bus
-payload now carries the derived flag so both the transcript attach and the session-list
-spinner react on the same event the routes would return.
+payload now carries the derived flag so the transcript attach reacts on the same event the
+routes would return.
+
+FNXC:ChatRemoteGenerationMirror 2026-09-21-11:52:
+The derived flag drives the transcript attach and nothing else. No chat sidebar row renders a
+generating indicator (a `chat-session-item` shows pin / unread / window / preview only), so this
+enrichment must not be described as feeding a session-list spinner; a sidebar indicator is a
+deliberate follow-up outside this contract.
 */
 export function enrichChatSessionEventPayload(session: unknown): unknown {
   if (!session || typeof session !== "object" || Array.isArray(session)) {
@@ -616,9 +622,67 @@ function createPluginLifecyclePayload(
   };
 }
 
+/*
+FNXC:ChatRemoteGenerationMirror 2026-09-21-10:45:
+The chat bridge names its events from one table so attach and detach cannot drift apart. ChatStore
+extends the generic EventEmitter, whose overloads demand a LITERAL event name, so the table-driven
+wiring goes through this narrow structural view instead of a cast at each call site.
+
+FNXC:ChatRemoteGenerationMirror 2026-09-21-10:45:
+`ChatBridgeListener` uses `never` rest params rather than `any`: `@typescript-eslint/no-explicit-any`
+is an error in production source, and contravariance still admits every concrete handler (a `never`
+argument is assignable to the `string`/`ChatSession` parameter each handler declares).
+*/
+type ChatBridgeEvent =
+  | "chat:session:created"
+  | "chat:session:updated"
+  | "chat:session:deleted"
+  | "chat:message:added"
+  | "chat:message:deleted"
+  | "chat:room:created"
+  | "chat:room:updated"
+  | "chat:room:deleted"
+  | "chat:room:member:added"
+  | "chat:room:member:removed"
+  | "chat:room:message:added"
+  | "chat:room:message:updated"
+  | "chat:room:message:deleted";
+
+type ChatBridgeListener = (...args: never[]) => void;
+
+type ChatBridgeEmitter = {
+  on(event: ChatBridgeEvent, listener: ChatBridgeListener): unknown;
+  off(event: ChatBridgeEvent, listener: ChatBridgeListener): unknown;
+};
+
+function bridgeChatEmitter(chatEventStore: ChatStore): ChatBridgeEmitter {
+  return chatEventStore as unknown as ChatBridgeEmitter;
+}
+
+/*
+FNXC:ChatRemoteGenerationMirror 2026-09-21-10:45:
+RUFU-252 gap B. Chat stores are created lazily, per project, the first time that project's chat is
+touched; a bus connection built from `listLiveScopedChatStores()` snapshots that set exactly once,
+so a project opened in another tab AFTER this connection was established never reached an
+already-open tab — the foreign generation produced no frame at all, so there was nothing for the
+mirror to react to. A connection that wants to keep following the registry as it grows declares a
+live bridge; the registry hands it every store created later, and the connection detaches them at
+cleanup exactly like the initial set.
+*/
+export interface ChatStoreLiveBridge {
+  /** Receive every chat store created after this call. Returns the unsubscribe function. */
+  onCreated(listener: (chatStore: ChatStore) => void): () => void;
+}
+
 export interface CreateSSEOptions {
   /** Project ID for project-scoped streams (enables scope attribution) */
   projectId?: string;
+  /**
+   * Live chat-store registry bridge. Only meaningful for an UNSCOPED connection: a project-scoped
+   * stream is deliberately bound to its one project's store, and adopting another project's store
+   * would leak its events into that stream.
+   */
+  liveChatStores?: ChatStoreLiveBridge;
 }
 
 export function createSSE(
@@ -632,7 +696,7 @@ export function createSSE(
   chatStore?: ChatStore | ChatStore[],
   automationStore?: AutomationStore,
 ) {
-  const { projectId } = options ?? {};
+  const { projectId, liveChatStores } = options ?? {};
   /*
   FNXC:ChatRemoteGenerationMirror 2026-09-17-19:25:
   Chat mutations run on per-project scoped ChatStore instances; a bus connection without a
@@ -1180,6 +1244,15 @@ export function createSSE(
       send(`event: schedule:run\ndata: ${JSON.stringify(data)}\n\n`);
     };
 
+    /*
+    FNXC:ChatRemoteGenerationMirror 2026-09-21-10:45:
+    Per-connection chat-bridge bookkeeping. Declared BEFORE `cleanup` on purpose: the close path is
+    reachable synchronously during setup (`send` backpressure calls `closeConnection`), so cleanup
+    must never dereference a binding that is still in its temporal dead zone.
+    */
+    const chatBridges = new Map<ChatStore, () => void>();
+    let offLiveChatStoreCreated: (() => void) | undefined;
+
     // --- Cleanup (all handlers are defined above, safe to reference) ---
 
     let cleaned = false;
@@ -1272,21 +1345,21 @@ export function createSSE(
       chatSnippetsSseListeners.delete(onChatSnippetsEvent);
       pluginCustomSseListeners.delete(onPluginCustomEvent);
       cliSessionStateSseListeners.delete(onCliSessionStateEvent);
-      for (const chatEventStore of chatStores) {
-        chatEventStore.off("chat:session:created", onChatSessionCreated);
-        chatEventStore.off("chat:session:updated", onChatSessionUpdated);
-        chatEventStore.off("chat:session:deleted", onChatSessionDeleted);
-        chatEventStore.off("chat:message:added", onChatMessageAdded);
-        chatEventStore.off("chat:message:deleted", onChatMessageDeleted);
-        chatEventStore.off("chat:room:created", onChatRoomCreated);
-        chatEventStore.off("chat:room:updated", onChatRoomUpdated);
-        chatEventStore.off("chat:room:deleted", onChatRoomDeleted);
-        chatEventStore.off("chat:room:member:added", onChatRoomMemberAdded);
-        chatEventStore.off("chat:room:member:removed", onChatRoomMemberRemoved);
-        chatEventStore.off("chat:room:message:added", onChatRoomMessageAdded);
-        chatEventStore.off("chat:room:message:updated", onChatRoomMessageUpdated);
-        chatEventStore.off("chat:room:message:deleted", onChatRoomMessageDeleted);
+      /*
+      FNXC:ChatRemoteGenerationMirror 2026-09-21-10:45:
+      Teardown runs the detach closure recorded for every store this connection ACTUALLY bridged —
+      the initial set plus any the live registry published afterwards — and releases its registry
+      subscription, so a closed tab cannot keep an ever-growing set of chat stores subscribed (the
+      default listener cap would turn later connections into MaxListenersExceededWarnings and hide
+      real leaks). Storing the teardown here, rather than a detach helper next to the binding table,
+      is what keeps this path free of temporal-dead-zone references.
+      */
+      for (const detachChatBridge of chatBridges.values()) {
+        detachChatBridge();
       }
+      chatBridges.clear();
+      offLiveChatStoreCreated?.();
+      offLiveChatStoreCreated = undefined;
       if (automationStore) {
         automationStore.off("schedule:created", onScheduleCreated);
         automationStore.off("schedule:updated", onScheduleUpdated);
@@ -1396,20 +1469,47 @@ export function createSSE(
       messageStore.on("message:deleted", onMessageDeleted);
     }
 
+    /*
+    FNXC:ChatRemoteGenerationMirror 2026-09-21-10:45:
+    The chat bridge is now attach/detach symmetric because a store can join mid-connection. The
+    binding table is the single source of both directions: a 14th chat event added here is bridged
+    AND detached, which the previous two hand-written 13-line loops could not guarantee.
+    */
+    const chatBridgeBindings: ReadonlyArray<readonly [ChatBridgeEvent, ChatBridgeListener]> = [
+      ["chat:session:created", onChatSessionCreated],
+      ["chat:session:updated", onChatSessionUpdated],
+      ["chat:session:deleted", onChatSessionDeleted],
+      ["chat:message:added", onChatMessageAdded],
+      ["chat:message:deleted", onChatMessageDeleted],
+      ["chat:room:created", onChatRoomCreated],
+      ["chat:room:updated", onChatRoomUpdated],
+      ["chat:room:deleted", onChatRoomDeleted],
+      ["chat:room:member:added", onChatRoomMemberAdded],
+      ["chat:room:member:removed", onChatRoomMemberRemoved],
+      ["chat:room:message:added", onChatRoomMessageAdded],
+      ["chat:room:message:updated", onChatRoomMessageUpdated],
+      ["chat:room:message:deleted", onChatRoomMessageDeleted],
+    ];
+
+    const attachChatBridge = (chatEventStore: ChatStore): void => {
+      // Identity guard: the default store is also cached as its own project's scoped store, and the
+      // live registry can publish an instance the initial set already bridged.
+      if (chatBridges.has(chatEventStore)) return;
+      const emitter = bridgeChatEmitter(chatEventStore);
+      for (const [event, handler] of chatBridgeBindings) emitter.on(event, handler);
+      chatBridges.set(chatEventStore, () => {
+        for (const [event, handler] of chatBridgeBindings) emitter.off(event, handler);
+      });
+    };
+
     for (const chatEventStore of chatStores) {
-      chatEventStore.on("chat:session:created", onChatSessionCreated);
-      chatEventStore.on("chat:session:updated", onChatSessionUpdated);
-      chatEventStore.on("chat:session:deleted", onChatSessionDeleted);
-      chatEventStore.on("chat:message:added", onChatMessageAdded);
-      chatEventStore.on("chat:message:deleted", onChatMessageDeleted);
-      chatEventStore.on("chat:room:created", onChatRoomCreated);
-      chatEventStore.on("chat:room:updated", onChatRoomUpdated);
-      chatEventStore.on("chat:room:deleted", onChatRoomDeleted);
-      chatEventStore.on("chat:room:member:added", onChatRoomMemberAdded);
-      chatEventStore.on("chat:room:member:removed", onChatRoomMemberRemoved);
-      chatEventStore.on("chat:room:message:added", onChatRoomMessageAdded);
-      chatEventStore.on("chat:room:message:updated", onChatRoomMessageUpdated);
-      chatEventStore.on("chat:room:message:deleted", onChatRoomMessageDeleted);
+      attachChatBridge(chatEventStore);
+    }
+
+    if (liveChatStores) {
+      offLiveChatStoreCreated = liveChatStores.onCreated((chatEventStore) => {
+        attachChatBridge(chatEventStore);
+      });
     }
 
     if (automationStore) {

@@ -41,7 +41,7 @@ import {
   evictAllProjectStores,
   setOnProjectFirstCreated,
 } from "./project-store-resolver.js";
-import { getOrCreateScopedChatManager, getOrCreateScopedChatStore, listLiveScopedChatStores } from "./chat-project-services.js";
+import { getOrCreateScopedChatManager, getOrCreateScopedChatStore, listLiveScopedChatStores, onScopedChatStoreCreated } from "./chat-project-services.js";
 import { MAX_FILE_SIZE } from "./file-service.js";
 import { TerminalViewportRegistry } from "./terminal-viewport.js";
 import { getTerminalService, STALE_SESSION_THRESHOLD_MS } from "./terminal-service.js";
@@ -1323,13 +1323,19 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
       A connection without a projectId previously bridged only the default ChatStore, leaving an
       open global chat view deaf to every scoped project's generations. Bridge the default store
       plus every live scoped store; createSSE dedupes by identity so a shared instance fires once.
+
+      FNXC:ChatRemoteGenerationMirror 2026-09-21-10:45:
+      RUFU-252: the set above is a snapshot taken when the browser opened the stream, so it is
+      paired with the registry's creation publisher. Without it a project whose chat had not been
+      touched yet produced an emitter no open tab was subscribed to, and its generations stayed
+      invisible in already-open tabs until a remount.
       */
       createSSE(
         store,
         safeGetMissionStore(store),
         aiSessionStore!,
         store.getPluginStore(),
-        undefined,
+        { liveChatStores: { onCreated: onScopedChatStoreCreated } },
         defaultAgentStore,
         defaultMessageStore,
         [chatStore, ...listLiveScopedChatStores()],
