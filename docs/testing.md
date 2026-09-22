@@ -108,7 +108,9 @@ pnpm verify:workspace  # deep opt-in verification: lint -> test:full -> build (N
 - `check-no-node-only-core-imports-in-dashboard`
 - `check-pi-versions-pinned`
 - `check-workspace-package-graph`
+- `check-lockfile-importers`
 - `check-no-test-timeout-appeasement`
+- `check-no-comment-assertions-in-tests`
 - `check-changeset-format`
 - `check-pre-json-anchor`
 - `check-routes-modular`
@@ -118,6 +120,9 @@ pnpm verify:workspace  # deep opt-in verification: lint -> test:full -> build (N
 `check-runtime-skill-loader-drift` enforces the Claude/Grok runtime skill loaders' clean rename-diff. It then bootstraps missing/stale workspace dist artifacts, runs **typecheck + build scoped to the changed packages** (reusing the same git-diff / changed-package resolution as `pnpm test`), always builds the `@runfusion/fusion` CLI package required by the source-checkout boot smoke, and runs the existing **boot smoke** once. The static phase invokes each existing validator entry point without update flags, is bounded and fail-fast, and runs **no Vitest or test lane**. It gives deterministic, flake-free signal in seconds, so it is a sound project `testCommand`/verification command when you want non-test verification. With no affected package (root/docs-only diff) it runs static checks, artifact bootstrap, the CLI prerequisite build, and boot smoke. Each step is bounded by the shared `runWithWatchdog` (class `changed`) so a hang fails fast, and it exits nonzero on the first failing step. This is purely additive: it does not change `pnpm test`, the merge gate, or CI, and the full suite stays available (`pnpm test:full`, non-blocking on push to main).
 
 `pnpm check:workspace-package-graph` verifies that every `workspace:` dependency or override in the root importer or a glob-matched workspace manifest resolves to a glob-covered workspace package, and that no package directory under `packages/` or `plugins/` falls outside `pnpm-workspace.yaml` package globs.
+
+<!-- FNXC:LockfileDriftGate 2026-09-22-20:08: RUFU-266 documented the importer-parity validator. A committed manifest declaration with no matching pnpm-lock.yaml record leaves a fresh worktree's plain `pnpm install` nothing to do but rewrite the tracked lockfile, so the card inherits a dirty `pnpm-lock.yaml` outside its File Scope, `pnpm install --frozen-lockfile` refuses main, and the squash-merge lane blocks on the File Scope guard. Workspace membership (the graph validator above) and lockfile parity are separate invariants, so the guard is a separate validator. -->
+`pnpm check:lockfile-importers` (`scripts/check-lockfile-importers.mjs`) verifies the importer half of lockfile integrity: every dependency a workspace manifest declares — root, `packages/*`, `plugins/**`, and `plugins/examples/**` — must already have a matching record in that importer's `pnpm-lock.yaml` `importers:` entry, and the lockfile must not retain an importer for a manifest that no longer exists. Workspace *membership* is checked by `check-workspace-package-graph` above; this validator checks that each member's declared ranges are actually recorded, which is the invariant `pnpm install --frozen-lockfile` enforces at install time. It runs in `pretest` (so `verify:fast` and every test entrypoint) and in the blocking `test:gate:static` chain, and a range that a `pnpm-workspace.yaml` `overrides:` entry deliberately rewrites counts as in sync when the lockfile records the override value.
 
 ### Quality file-scoped preset
 

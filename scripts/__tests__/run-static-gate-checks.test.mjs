@@ -30,6 +30,15 @@ chain so the contiguous validator prefix is preserved. It is the enforcement
 point for the generated skill catalog: builds no longer regenerate those tracked
 docs, so drift in the committed file must fail the blocking gate instead of
 being silently rewritten by CI's earlier build step.
+
+FNXC:LockfileDriftGate 2026-09-22-19:20:
+RUFU-266 adds the 18th validator, check-lockfile-importers, beside
+check-workspace-package-graph — both answer "does the workspace's declared
+dependency graph actually match what is committed?", one against the workspace
+globs and one against pnpm-lock.yaml. It belongs in the blocking chain because a
+drifted committed lockfile is not discoverable from a task worktree: the dependency
+auto-heal silently repairs it locally, and the resulting out-of-scope diff fails
+unrelated cards' squash merges.
 */
 const EXPECTED_GATE_CHECKS = [
   check(["no-", ["no", "hup"].join("")].join("")),
@@ -42,6 +51,7 @@ const EXPECTED_GATE_CHECKS = [
   check("no-node-only-core-imports-in-dashboard"),
   check("pi-versions-pinned"),
   check("workspace-package-graph"),
+  check("lockfile-importers"),
   check("no-test-timeout-appeasement"),
   check("no-comment-assertions-in-tests"),
   check("changeset-format"),
@@ -90,6 +100,19 @@ test("blocking gate chain enforces the generated skill catalog drift check", () 
   assert.ok(
     checks.includes(check("fusion-skill-sync")),
     "scripts/check-fusion-skill-sync.mjs must stay in the contiguous blocking validator prefix of test:gate:static",
+  );
+});
+
+/*
+FNXC:LockfileDriftGate 2026-09-22-19:20:
+RUFU-266: mirror membership alone does not prove the validator is required, so pin
+its blocking-chain membership explicitly the way RUFU-265 pinned fusion-skill-sync.
+*/
+test("blocking gate chain enforces lockfile/importer parity", () => {
+  const checks = readStaticGateChecks();
+  assert.ok(
+    checks.includes(check("lockfile-importers")),
+    "scripts/check-lockfile-importers.mjs must stay in the contiguous blocking validator prefix of test:gate:static",
   );
 });
 

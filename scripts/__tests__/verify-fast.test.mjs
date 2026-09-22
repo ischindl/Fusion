@@ -76,6 +76,15 @@ const PRETEST_CHECKS = [
   "scripts/check-no-node-only-core-imports-in-dashboard.mjs",
   "scripts/check-pi-versions-pinned.mjs",
   "scripts/check-workspace-package-graph.mjs",
+  /*
+  FNXC:LockfileDriftGate 2026-09-22-19:20:
+  RUFU-266 added check-lockfile-importers to the canonical pretest chain beside
+  check-workspace-package-graph. Merge 2c09516986 had shipped manifests whose
+  declared dependencies were absent from pnpm-lock.yaml, and nothing in any
+  blocking chain could see it — the dependency auto-heal hides that drift by
+  repairing the lockfile locally, so only a static validator catches it.
+  */
+  "scripts/check-lockfile-importers.mjs",
   "scripts/check-no-test-timeout-appeasement.mjs",
   /*
   FNXC:TestInfrastructure 2026-08-25-12:13:
