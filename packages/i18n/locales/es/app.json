@@ -149,7 +149,37 @@
     "closeView": "Cerrar vista de habilidades y fragmentos",
     "notDiscovered": "Not discovered",
     "install": "Instalar",
-    "snippetsTitle": "Fragmentos de chat"
+    "snippetsTitle": "Fragmentos de chat",
+    "snippetsSaveChanges": "Guardar cambios",
+    "snippetsDuplicateName": "Ya existe un fragmento con este nombre.",
+    "snippetsPromptRequired": "Introduce un prompt para este fragmento.",
+    "snippetsReservedName": "Este nombre está reservado para un comando de chat.",
+    "tabSkills": "Competencias",
+    "snippetsEdit": "Editar /{{name}}",
+    "refreshSnippetsLabel": "Actualizar fragmentos",
+    "snippetsFormLabel": "Editor de fragmentos de chat",
+    "snippetsPromptLabel": "Prompt",
+    "snippetsLoading": "Cargando fragmentos...",
+    "snippetsDeleteError": "No se pudo eliminar el fragmento. Actualiza e inténtalo de nuevo.",
+    "tabsLabel": "Secciones de competencias y fragmentos",
+    "snippetsEmptyHint": "Crea uno aquí y escribe /nombre en cualquier chat para insertarlo.",
+    "snippetsDelete": "Eliminar /{{name}}",
+    "snippetsNameHelp": "Letras, números, guiones bajos o guiones; hasta 48 caracteres.",
+    "refreshSkillsLabel": "Actualizar competencias",
+    "snippetsAdd": "Añadir fragmento",
+    "snippetsSaveError": "No se pudo guardar el fragmento. Actualiza e inténtalo de nuevo.",
+    "snippetsNameLabel": "Nombre",
+    "snippetsInvalidName": "Usa entre 1 y 48 letras, números, guiones bajos o guiones.",
+    "snippetsSaving": "Guardando...",
+    "snippetsPromptTooLong": "Los prompts pueden contener como máximo {{count}} caracteres.",
+    "snippetsPromptHelp": "{{count}} / {{max}} caracteres",
+    "snippetsCount": "{{count}} guardados",
+    "snippetsDescription": "Guarda prompts reutilizables y escribe /nombre en cualquier chat para insertar uno sin enviarlo.",
+    "skillsDescription": "Explora, activa e instala las competencias disponibles para este proyecto.",
+    "snippetsLoadError": "No se pudieron actualizar los fragmentos. Se sigue mostrando la última lista cargada.",
+    "snippetsEmpty": "Aún no hay fragmentos guardados.",
+    "tabSnippets": "Fragmentos",
+    "snippetsLimitReached": "Puedes guardar hasta {{count}} fragmentos."
   },
   "nodeStatus": {
     "local": "Local"
@@ -575,7 +605,10 @@
     "workflowTimedSteps": "Pasos cronometrados del flujo de trabajo",
     "title": {
       "collapse": "Collapse task title",
-      "expand": "Expand task title"
+      "expand": "Expand task title",
+      "summarize": "",
+      "summarizeFailed": "",
+      "summarizeSuccess": ""
     },
     "executionTimingMetricsAria": "Métricas de tiempo de ejecución",
     "provenance": {
@@ -727,7 +760,9 @@
     "notSet": "No configurado",
     "updateFailed": "Error al actualizar {{id}}: {{error}}",
     "actions": {
-      "menuBtn": "Acciones"
+      "menuBtn": "Acciones",
+      "oversightHeading": "",
+      "priorityHeading": ""
     },
     "reset": {
       "submitting": "",
@@ -772,7 +807,20 @@
       "openPromptTitle": "Open this task's PROMPT.md in the file editor",
       "loading": "Cargando especificación…",
       "readPlanBtn": "Leer el plan",
-      "backToDefinition": "Volver a la definición"
+      "backToDefinition": "Volver a la definición",
+      "aiReviseHeading": "Pedir revisión a la IA",
+      "aiReviseHelp": "Proporciona comentarios para que la IA mejore esta especificación. La tarea pasará a planificación.",
+      "editBtn": "Editar",
+      "feedbackPlaceholder": "p. ej., 'Añade más detalles sobre el manejo de errores', 'Divídelo en pasos más pequeños', 'Incluye pruebas para los endpoints de la API'...",
+      "hintCancel": "para cancelar",
+      "hintSave": "para guardar",
+      "placeholder": "Ingresa la especificación de la tarea en Markdown...",
+      "requesting": "Solicitando…",
+      "requestRevisionBtn": "Solicitar revisión de IA",
+      "revisionColumnError": "No se puede solicitar revisión: la tarea debe estar en la columna 'triage', 'todo', 'in-progress' o 'in-review'.",
+      "revisionRequested": "Revisión de IA solicitada. La tarea se movió a planificación.",
+      "saving": "Guardando…",
+      "updated": "Especificación actualizada"
     },
     "tokenTotalsAria": "Totales de tokens de la tarea",
     "debug": {
@@ -1512,7 +1560,8 @@
     "imported": "Flujo de trabajo «{{name}}» importado",
     "aiReplaceConfirmLabel": "Reemplazar",
     "createDescription": "Descripción (opcional)",
-    "duplicatedEditable": ""
+    "duplicatedEditable": "",
+    "closeEditor": ""
   },
   "taskFields": {
     "unset": "—",
@@ -1621,7 +1670,10 @@
     "fileHeader": "Archivos",
     "taskHeader": "Tareas",
     "taskMatches": "Tareas coincidentes",
-    "empty": "No se encontraron tareas ni archivos"
+    "empty": "No se encontraron tareas ni archivos",
+    "untitledConversation": "",
+    "conversationMatches": "",
+    "conversationHeader": ""
   },
   "models": {
     "targetLabels": {
@@ -1828,7 +1880,9 @@
     "noModelsAvailable": "No hay modelos disponibles. Configura la autenticación en Ajustes.",
     "presetUseDefault": "Usar predeterminado",
     "attachCount_one": "Attach ({{count}})",
-    "workflowStepsLabel": "Workflow Steps"
+    "workflowStepsLabel": "Workflow Steps",
+    "titleLabel": "Título",
+    "titlePlaceholder": "Título de la tarea"
   },
   "errorBoundary": {
     "retry": "",
@@ -3102,7 +3156,10 @@
     "collapseArchivedTitle": "Contraer tareas archivadas",
     "expandArchivedLabel": "Expandir tareas archivadas",
     "expandArchivedTitle": "Expandir tareas archivadas",
-    "failedToArchive": "No se pudieron archivar las tareas"
+    "failedToArchive": "No se pudieron archivar las tareas",
+    "archivedTasksWithSkips_one": "",
+    "archivedTasks_one": "",
+    "archiveAllMessage_one": ""
   },
   "windows": {
     "hide": "Ocultar todas las ventanas",
@@ -3566,7 +3623,14 @@
     "sidebarAriaLabel": "",
     "planningNeedsInputAriaLabel": "Planificación necesita tu entrada",
     "todos": "Pendientes",
-    "settings": "Configuración"
+    "settings": "Configuración",
+    "recommendationsUnreadAriaLabel_one": "",
+    "recommendationsUnreadDotAriaLabel": "",
+    "recommendations": "",
+    "artifactsUnreadAriaLabel_other": "",
+    "artifactsUnreadAriaLabel_one": "",
+    "artifactsUnreadDotAriaLabel": "",
+    "recommendationsUnreadAriaLabel_other": ""
   },
   "syncLog": {
     "noHistory": "Ningún historial de sincronización disponible",
@@ -3888,7 +3952,9 @@
     "scriptAlreadyExists": "Ya existe un script con este nombre",
     "scriptCount_one": "",
     "nameErrorMsg": "El nombre solo puede contener letras, números, guiones y guiones bajos (sin espacios)",
-    "nameHint": "Solo letras, números, guiones y guiones bajos"
+    "nameHint": "Solo letras, números, guiones y guiones bajos",
+    "descriptionPlaceholder": "¿Qué hace este script?",
+    "description": "Descripción (opcional)"
   },
   "approval": {
     "openMailbox": "Abrir buzón",
@@ -5220,7 +5286,9 @@
     "bulkDeleteArchiveSummary": "{{archived}} archivadas, {{deleted}} eliminadas, {{failed}} fallidas",
     "bulkDeleteNoTasks": "No se puede eliminar ninguna tarea seleccionada (se excluyen las archivadas)",
     "bulkDeleteWithDoneMessage": "¿Eliminar {{deletable}} tarea(s), o archivar las {{done}} tarea(s) completadas y eliminar el resto?",
-    "lineageArchiveMessage": "{{taskId}} tiene hijos de linaje ({{children}}) que lo referencian como padre de origen.\n\n¿Archivar de todos modos desvinculando primero estas referencias?"
+    "lineageArchiveMessage": "{{taskId}} tiene hijos de linaje ({{children}}) que lo referencian como padre de origen.\n\n¿Archivar de todos modos desvinculando primero estas referencias?",
+    "bulkArchiveDone_one": "",
+    "bulkArchiveMessage_one": ""
   },
   "goals": {
     "updateError": "No se puede actualizar el estado del objetivo ahora. Por favor, intenta de nuevo.",
@@ -5484,7 +5552,11 @@
     "hideRightSidebar": "Hide right sidebar",
     "taskSearchLoading": "Buscando…",
     "researchView": "Investigación",
-    "settings": "Configuración"
+    "settings": "Configuración",
+    "unreadRecommendations_other": "",
+    "unreadArtifacts_other": "",
+    "unreadArtifacts_one": "",
+    "unreadRecommendations_one": ""
   },
   "specEditor": {
     "view": "Ver",
@@ -5503,7 +5575,11 @@
     "close": "",
     "retry": "",
     "openTask": "",
-    "loading": ""
+    "loading": "",
+    "zoomOut": "",
+    "resetZoom": "",
+    "zoomLevel": "",
+    "zoomIn": ""
   },
   "chat": {
     "messageRoomPlaceholder": "Mensaje a #{{name}}",
@@ -5793,7 +5869,19 @@
     "failureReferenceKind": "Kind",
     "conversationRestored": "Conversation restored",
     "resizePanelTopLeft": "Redimensionar panel desde la esquina superior izquierda",
-    "toolCallStatusCompleted": "completed"
+    "toolCallStatusCompleted": "completed",
+    "closeQuickChat": "Cerrar chat rápido",
+    "newChatModeAgent": "Agente",
+    "noAgentsAvailable": "No hay agentes disponibles",
+    "openQuickChat": "Abrir chat rápido",
+    "quickChatTitle": "Chat rápido",
+    "modelAgentSection": "Model / Agent",
+    "snippetSuggestions": "Sugerencias de fragmentos",
+    "loadingSlashSuggestions": "Cargando sugerencias…",
+    "copyConversationId": "",
+    "snippetSuggestion": "Insertar prompt guardado",
+    "conversationIdCopied": "",
+    "slashSuggestions": "Sugerencias de barra"
   },
   "comments": {
     "editedSuffix": "(editado)",
@@ -6771,7 +6859,8 @@
     "unarchive": "Desarchivar",
     "unarchived": "Tarea {{taskId}} desarchivada",
     "unarchiveFailed": "No se pudo desarchivar la tarea {{taskId}}: {{error}}",
-    "unarchiveTask": "Desarchivar tarea"
+    "unarchiveTask": "Desarchivar tarea",
+    "revertedResolutionActions": ""
   },
   "cli": {
     "versionMismatchPrefix": "Tu",
@@ -7194,7 +7283,8 @@
     "inboxFilter": "",
     "to": "Para",
     "typeSystem": "Sistema",
-    "approvalRequester": "Solicitante"
+    "approvalRequester": "Solicitante",
+    "refreshTitle": "Actualizar"
   },
   "thinking": {
     "collapseAll": "",
@@ -10524,7 +10614,16 @@
       "chatDescription": "Choose the default target for new Direct chats. New Chat always creates the conversation immediately from this default.",
       "advancedWorkflowPolicy": "",
       "useGlobal": "Use global",
-      "validatorModel": "Reviewer Model"
+      "validatorModel": "Reviewer Model",
+      "workflowLanesSubheading": "",
+      "defaultWorkflowModelLaneActions": "",
+      "defaultWorkflowModelLanes": "",
+      "loadingWorkflowModelLanes": "",
+      "noModelsAvailableConfigureAuthenticationBeforeSelectingWorkflow": "",
+      "openAProjectToEditWorkflowModelLanes": "",
+      "resetToInheritFromWorkflow": "",
+      "theseProjectOverridesApplyToTheActiveDefault": "",
+      "useWorkflowDefault": ""
     },
     "voiceInput": {
       "modelStatusHelp": "The speech model is installed and managed locally on this device.",
@@ -10797,7 +10896,10 @@
       "whenEnabledImportedGitHubIssuesUseTheirSource": "",
       "aiUndoTaskWorkflow": "",
       "mobileNavPrimaryItemsHint": "Cinco accesos rápidos compartidos entre escritorio y móvil; el quinto ocupa el extremo derecho de la barra inferior. Cualquier hueco que dejes sin definir se completa con el orden predeterminado (Panel, Tablero, Planificación, Misiones, Chat), así que define cinco destinos para sacar el Chat de la barra inferior. Todo destino que no elijas permanece en Más.",
-      "disabledBuiltInWorkflowsAreHiddenFromWorkflow": ""
+      "disabledBuiltInWorkflowsAreHiddenFromWorkflow": "",
+      "showQuickChatButton": "",
+      "quickChatLauncherHint": "",
+      "quickChatCloseOnOutsideClickHint": ""
     },
     "commands": {
       "eGPnpmBuild": "",
@@ -10818,7 +10920,8 @@
       "summarizerModelInline": "",
       "openWorkflowSettings": "",
       "reviewVerification": "",
-      "stepExecution": ""
+      "stepExecution": "",
+      "modelLanes": ""
     },
     "nav": {
       "tooltip": {
@@ -11064,7 +11167,12 @@
       "dismissModalsByClickingOutsideHint": "",
       "gitLabEnabledHint": "",
       "noLimitOnAgentToolOutputHint": "",
-      "rowsAndDoesNotAffectAssistantTextOr": ""
+      "rowsAndDoesNotAffectAssistantTextOr": "",
+      "chatSubmitOnEnter": "",
+      "chatSubmitOnEnterAuto": "",
+      "chatSubmitOnEnterHint": "",
+      "chatSubmitOnEnterAlways": "",
+      "chatSubmitOnEnterNever": ""
     },
     "jira": {
       "emailHelp": "",
@@ -11625,7 +11733,12 @@
       "chatMessageLayoutBubbles": "",
       "openTasksInRightSidebar": "Open tasks in the right sidebar",
       "languageAuto": "Automático",
-      "taskDetailDefaultTabHelp": ""
+      "taskDetailDefaultTabHelp": "",
+      "openTasksInRightSidebarHelp": "",
+      "openMobileTasksInPopupHelp": "",
+      "taskPopupsBoardListOnly": "",
+      "taskPopupsBoardListOnlyHelp": "",
+      "taskDetailChatFirstHelp": ""
     },
     "actions": {
       "close": "Close",
@@ -11673,6 +11786,36 @@
     "merging": "",
     "done": "Hecho",
     "inProgress": "En curso",
-    "todo": "Por hacer"
+    "todo": "Por hacer",
+    "editWorkflow": "Edit workflow",
+    "newWorkflow": "New workflow",
+    "review": "Revisión",
+    "progress": "Progreso"
+  },
+  "quickChat": {
+    "errorAttachmentsBeforeSession": "No se pueden enviar archivos adjuntos antes de que la sesión de chat esté lista",
+    "errorAttachmentsWhileStreaming": "No se pueden enviar archivos adjuntos mientras se transmite una respuesta",
+    "errorGettingResponse": "Error al obtener respuesta",
+    "errorInitializingChat": "Error al inicializar el chat",
+    "errorRefreshingSessions": "Error al actualizar sesiones de chat",
+    "errorStartingNewChat": "Error al iniciar un nuevo chat"
+  },
+  "recommendations": {
+    "count": "",
+    "createError": "",
+    "createTask": "",
+    "created": "",
+    "creating": "",
+    "emptyDescription": "",
+    "emptyTitle": "",
+    "loadError": "",
+    "loadMore": "",
+    "loading": "",
+    "loadingMore": "",
+    "retryCreate": "",
+    "source": "",
+    "title": "",
+    "truncated": "",
+    "viewTask": ""
   }
 }

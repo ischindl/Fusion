@@ -946,7 +946,18 @@
     "refineSimplify": "Simplify",
     "forceDeleteTitle": "Force Delete Task",
     "createdAtTitle": "Created {{date}}",
-    "linkedIssueChipAriaLabel": "Linked GitHub issue #{{number}}"
+    "linkedIssueChipAriaLabel": "Linked GitHub issue #{{number}}",
+    "archive": "Archive",
+    "archived": "Archived {{taskId}}",
+    "archivedUnlinked": "Archived {{taskId}} after unlinking lineage references",
+    "archiveFailed": "Failed to archive {{taskId}}: {{error}}",
+    "archiveLineageConflict": "{{taskId}} has lineage children ({{children}}) that reference it as a source parent.\n\nArchive anyway by unlinking these references first?",
+    "archiveTask": "Archive task",
+    "revertedResolutionActions": "Reverted task resolution actions",
+    "unarchive": "Unarchive",
+    "unarchived": "Unarchived {{taskId}}",
+    "unarchiveFailed": "Failed to unarchive {{taskId}}: {{error}}",
+    "unarchiveTask": "Unarchive task"
   },
   "goals": {
     "saveError": "Unable to save goal right now. Please try again.",
@@ -1253,7 +1264,8 @@
     "todo": "To Do",
     "triage": "Planning",
     "inReview": "In Review",
-    "done": "Done"
+    "done": "Done",
+    "archived": "Archived"
   },
   "research": {
     "priorityLabel": "Priority",
@@ -1544,7 +1556,8 @@
     "aiSubmit": "Design with AI",
     "deleted": "Workflow deleted",
     "created": "Created workflow \"{{name}}\"",
-    "title": "Workflows"
+    "title": "Workflows",
+    "closeEditor": "Close workflow editor"
   },
   "engineBanner": {
     "body": "The engine for this project is not running, so task automation and live updates may be paused. Start it now to reconnect the dashboard.",
@@ -2347,7 +2360,8 @@
       "reviewVerification": "Review, verification auto-fix, and scope-enforcement settings now live on the workflow.",
       "summarizerModelInline": "These project summarization controls govern title summaries, merge commit summaries, GitHub tracking titles, and PR metadata generation.",
       "stepExecution": "Step execution settings (run steps in new sessions, max parallel steps) now live on the workflow.",
-      "openWorkflowSettings": "Open workflow settings"
+      "openWorkflowSettings": "Open workflow settings",
+      "modelLanes": "Per-phase model lanes (execution, planning, reviewer, their fallbacks, and the title summarizer) now live on the workflow."
     },
     "resolveAllRemote": "Resolve All: Keep Remote",
     "resolving": "Resolving...",
@@ -2536,7 +2550,10 @@
       "mobileNavPrimaryItemsHint": "Default: Dashboard, Board, Planning, Missions. Choose up to 4 destinations and their order; every other destination — including Chat — remains in More. On mobile, swipe the bottom bar upwards to open Chat.",
       "enableGitLabIntegration": "Enable GitLab integration",
       "recommendationMailboxNoticeEnabledHelp": "Default: enabled. When a completed task captures recommendations, send a summary to your mailbox. Turning this off does not change whether recommendations are captured.",
-      "whenEnabledImportedGitHubIssuesUseTheirSource": "When enabled, GitHub issue imports become tracked tasks that adopt the source issue. This does not turn GitHub tracking on for ordinary new tasks. Default: disabled."
+      "whenEnabledImportedGitHubIssuesUseTheirSource": "When enabled, GitHub issue imports become tracked tasks that adopt the source issue. This does not turn GitHub tracking on for ordinary new tasks. Default: disabled.",
+      "showQuickChatButton": " Show quick chat button ",
+      "quickChatLauncherHint": "Choose whether Quick Chat opens from the draggable floating button, a footer button beside Terminal, or stays hidden. Default: off (hidden).",
+      "quickChatCloseOnOutsideClickHint": "When enabled, clicking outside the Quick Chat window closes it. Disable to keep it open until you close it explicitly. Default: enabled."
     },
     "importExport": {
       "confirmImport": "Confirm Import",
@@ -2832,7 +2849,12 @@
       "openTasksInRightSidebar": "Open tasks in the right sidebar",
       "chatMessageLayoutHelp": "Choose Bubbles or Full width for Chat windows, task Activity, and Planner Chat. Project-scoped; default: Bubbles.",
       "taskDetailChatFirst": "Open task details with Chat first",
-      "title": "Appearance"
+      "title": "Appearance",
+      "openTasksInRightSidebarHelp": "When enabled, board task cards open detail in the right sidebar when it is available; mobile and hidden-sidebar states keep the full task panel. Default: disabled.",
+      "openMobileTasksInPopupHelp": "When enabled, ordinary board task-card and right-dock Tasks-list clicks open the existing task popup so the board or list remains visible. Deep-tab and other task opens keep their current behavior. Default: disabled.",
+      "taskPopupsBoardListOnly": "Keep task popups on the view where they were opened",
+      "taskPopupsBoardListOnlyHelp": "When enabled, each open task-detail popup appears only on the view where it was opened. Switching views hides it without closing; returning restores it in the same position. Default: enabled.",
+      "taskDetailChatFirstHelp": "Off by default: task details list Activity first and omitted non-done opens land on Activity. Turn on to restore Chat-first order/default; explicit Chat links still work either way."
     },
     "projectModels": {
       "prTitlePromptInstructionsPlaceholder": "Example: Use conventional-commit style and keep titles under 72 characters.",
@@ -2911,7 +2933,16 @@
       "reset": " Reset ",
       "mergerModel": "Merger Model",
       "taskOutputLanguageInput": "User input language",
-      "loadingAvailableModels": "Loading available models…"
+      "loadingAvailableModels": "Loading available models…",
+      "defaultWorkflowModelLaneActions": "Default workflow model lane actions",
+      "defaultWorkflowModelLanes": "Default workflow model lanes",
+      "loadingWorkflowModelLanes": "Loading workflow model lanes…",
+      "workflowLanesSubheading": "Workflow lanes",
+      "noModelsAvailableConfigureAuthenticationBeforeSelectingWorkflow": " No models available. Configure authentication before selecting workflow model lanes. ",
+      "openAProjectToEditWorkflowModelLanes": "Open a project to edit workflow model lanes.",
+      "resetToInheritFromWorkflow": "Reset to inherit from workflow",
+      "theseProjectOverridesApplyToTheActiveDefault": " These project overrides apply to the active default workflow. ",
+      "useWorkflowDefault": "Use workflow default"
     },
     "actions": {
       "save": "Save",
@@ -3155,7 +3186,12 @@
       "ignoredOverlapPaths": "Ignored overlap paths",
       "selectIgnoredOverlapPath": "Select ignored overlap path",
       "executorModelEscalationEnabledHelp": "After same-model retries are exhausted, try one configured alternate model or node. Default: disabled.",
-      "remove": " Remove "
+      "remove": " Remove ",
+      "archiveAgentLog": "Archive Agent Log",
+      "archiveCompletedTasksAfterDays": "Archive Completed Tasks After (days)",
+      "autoArchiveDuplicateTasks": " Automatically archive duplicate tasks ",
+      "autoArchiveDuplicateTasksHelp": "Automatically archive tasks detected as same-agent duplicates on creation (off by default). When disabled, duplicates are flagged in place with the yellow Duplicate chip and Keep/Archive actions instead of being archived automatically.",
+      "doNotArchiveAgentLogs": "Do not archive agent logs"
     },
     "commands": {
       "commandUsedToBuildTheProjectInjectedInto": "Command used to build the project — injected into generated task specs. No default — unset.",
@@ -3408,7 +3444,9 @@
     "scriptDeleted": "Script deleted",
     "title": "Scripts",
     "runScript": "Run script",
-    "scriptName": "Script Name"
+    "scriptName": "Script Name",
+    "nameErrorMsg": "Name must contain only letters, numbers, hyphens, and underscores (no spaces)",
+    "nameHint": "Letters, numbers, hyphens, and underscores only"
   },
   "issues": {
     "noIssuesFound": "No issues found"
@@ -4184,7 +4222,13 @@
     "handoffButton": "Continue in a new chat",
     "focusSetToast": "Memory focus set to {{topic}}",
     "noMessage": "No message",
-    "toolCallArgsPrefix": "args"
+    "toolCallArgsPrefix": "args",
+    "closeQuickChat": "Close quick chat",
+    "newChatModeAgent": "Agent",
+    "noAgentsAvailable": "No agents available",
+    "openQuickChat": "Open quick chat",
+    "quickChatTitle": "Quick Chat",
+    "modelAgentSection": "Model / Agent"
   },
   "specEditor": {
     "edit": "Edit",
@@ -4923,7 +4967,8 @@
     "openPlanningSessionAria": "Open planning session: {{sessionId}}",
     "system": "System",
     "from": "From",
-    "title": "Mailbox"
+    "title": "Mailbox",
+    "refreshTitle": "Refresh"
   },
   "taskReview": {
     "addressingPrFeedback": "Addressing…",
@@ -5307,7 +5352,20 @@
       "backToDefinition": "Back to definition",
       "readPlanBtn": "Read plan",
       "openPromptBtn": "Open PROMPT.md",
-      "hideDetailsBtn": "Hide details"
+      "hideDetailsBtn": "Hide details",
+      "aiReviseHeading": "Ask AI to Revise",
+      "aiReviseHelp": "Provide feedback for the AI to improve this specification. The task will move to planning for replanning.",
+      "editBtn": "Edit",
+      "feedbackPlaceholder": "e.g., 'Add more details about error handling', 'Split this into smaller steps', 'Include tests for the API endpoints'...",
+      "hintCancel": "to cancel",
+      "hintSave": "to save",
+      "placeholder": "Enter task specification in Markdown...",
+      "requesting": "Requesting…",
+      "requestRevisionBtn": "Request AI Revision",
+      "revisionColumnError": "Cannot request revision: Task must be in 'triage', 'todo', 'in-progress', or 'in-review' column.",
+      "revisionRequested": "AI revision requested. Task moved to planning.",
+      "saving": "Saving…",
+      "updated": "Spec updated"
     },
     "executionDetails": "Execution Details",
     "aiMergeReview": {
@@ -5498,7 +5556,10 @@
       "deleteIssue": "Delete Issue",
       "linkedIssueTitle": "Linked GitHub Issue",
       "forceDeleteTitle": "Force Delete Task",
-      "leaveUnchanged": "Leave Unchanged"
+      "leaveUnchanged": "Leave Unchanged",
+      "archivedAfterUnlink": "Archived {{id}} after unlinking lineage references",
+      "archiveInstead": "Archive Instead",
+      "archiveUnlinkPrompt": "Archive anyway by unlinking these references first?"
     },
     "selfHealCounters": "Self-heal counters",
     "timedDuration": "Timed duration",
@@ -5631,7 +5692,12 @@
       "actions": "Keep it to clear this flag, or delete it if the work is already covered.",
       "headline": "Potential duplicate detected",
       "deleted": "Deleted {{id}}",
-      "deleteConfirm": "Delete"
+      "deleteConfirm": "Delete",
+      "archiveBtn": "Archive",
+      "archiveConfirm": "Archive",
+      "archived": "Archived {{id}}",
+      "archiveMessage": "Archive {{id}} as a duplicate of {{duplicateOf}}?",
+      "archiveTitle": "Archive near-duplicate task"
     },
     "executionModeFast": "Fast",
     "executionTimingMetricsAria": "Execution timing metrics",
@@ -5778,7 +5844,10 @@
     },
     "title": {
       "collapse": "Collapse task title",
-      "expand": "Expand task title"
+      "expand": "Expand task title",
+      "summarize": "Summarize",
+      "summarizeFailed": "Failed to summarize title: {{error}}",
+      "summarizeSuccess": "Title updated from description"
     },
     "bypassReview": {
       "promptMessage": "Reason for bypassing the failed pre-merge review step (required, audit-logged):",
@@ -7592,7 +7661,9 @@
     "merging": "Merging",
     "review": "Review",
     "mergingTitle": "{{count}} merging task{{plural}}",
-    "done": "Done"
+    "done": "Done",
+    "editWorkflow": "Edit workflow",
+    "newWorkflow": "New workflow"
   },
   "taskHandlers": {
     "githubImported": "Imported {{id}} from GitHub"
@@ -8501,7 +8572,7 @@
     "backToList": "Back to skills",
     "tabSkills": "Skills",
     "emptyFile": "(Empty file)",
-    "snippetsTitle": "Chat snippets",
+    "snippetsTitle": "Chat Snippets",
     "snippetsLoading": "Loading snippets...",
     "skillStatePendingTitle": "Skill discovery is loading or could not be refreshed.",
     "tabSnippets": "Snippets",
@@ -9425,7 +9496,9 @@
     "sharedBranchPlaceholder": "e.g. clionboarding",
     "removeImage": "Remove image",
     "thinkingDefault": "Default ({{level}})",
-    "plannerOversightInherit": "Inherit from workflow"
+    "plannerOversightInherit": "Inherit from workflow",
+    "titleLabel": "Title",
+    "titlePlaceholder": "Task title"
   },
   "fileMention": {
     "untitledConversation": "Untitled conversation",
@@ -9543,7 +9616,24 @@
     "applying": "Applying...",
     "forceDeleteTitle": "Force Delete Task",
     "apply": "Apply",
-    "title": "List View"
+    "title": "List View",
+    "archiveSelected": "Archive selected",
+    "archiveSelectedTitle": "Archive selected tasks that are in Done",
+    "archiveUnavailable": "Archive action is unavailable",
+    "archiveViaButton": "Tasks can only be archived via the archive button",
+    "bulkArchiveDone_one": "Archive {{count}} Done",
+    "bulkArchiveDone_other": "Archive {{count}} Done",
+    "bulkArchiveMessage_one": "Archive {{count}} selected task(s)?",
+    "bulkArchiveMessage_other": "Archive {{count}} selected task(s)?",
+    "bulkArchiveNoTasks": "No selected tasks can be archived (only done tasks)",
+    "bulkArchiveSummary": "Archived {{archived}} · {{skipped}} skipped · {{failed}} failed",
+    "bulkArchiveTitle": "Archive Selected Tasks",
+    "bulkDeleteArchiveSummary": "Archived {{archived}}, deleted {{deleted}}, failed {{failed}}",
+    "bulkDeleteNoTasks": "No selected tasks can be deleted (archived tasks are excluded)",
+    "bulkDeleteSummary_one": "Deleted {{count}} task · {{skipped}} archived skipped · {{failed}} failed",
+    "bulkDeleteSummary_other": "Deleted {{count}} tasks · {{skipped}} archived skipped · {{failed}} failed",
+    "bulkDeleteWithDoneMessage": "Delete {{deletable}} task(s), or archive the {{done}} done task(s) and delete the rest?",
+    "lineageArchiveMessage": "{{taskId}} has lineage children ({{children}}) that reference it as a source parent.\n\nArchive anyway by unlinking these references first?"
   },
   "stepType": {
     "createTask": "Create Task",
@@ -10107,7 +10197,8 @@
     "pin": "Pin sidebar (push content)",
     "expand": "Expand right dock",
     "noTasksYet": "No tasks yet",
-    "closeExpandedView": "Close expanded right dock view"
+    "closeExpandedView": "Close expanded right dock view",
+    "archivedCopy": "Archived tasks stay out of this compact sidebar. Active tasks will appear here when work is available."
   },
   "patchnode": {
     "cancelled": "Cancelled",
@@ -11451,7 +11542,19 @@
     "actionsTitle": "Column actions",
     "sortControlLabel": "Sort tasks in this column",
     "noTasksInColumn": "No tasks in this column",
-    "resetProgressTitle": "Reset Progress?"
+    "resetProgressTitle": "Reset Progress?",
+    "archiveAllDoneAriaLabel": "Archive all done tasks",
+    "archiveAllDoneTitle": "Archive all done tasks",
+    "archiveAllMessage_one": "Archive all {{count}} done tasks?",
+    "archiveAllMessage_other": "Archive all {{count}} done tasks?",
+    "archiveAllTitle": "Archive All Done",
+    "archivedTasks_one": "Archived {{count}} tasks",
+    "archivedTasks_other": "Archived {{count}} tasks",
+    "collapseArchivedLabel": "Collapse archived tasks",
+    "collapseArchivedTitle": "Collapse archived tasks",
+    "expandArchivedLabel": "Expand archived tasks",
+    "expandArchivedTitle": "Expand archived tasks",
+    "failedToArchive": "Failed to archive tasks"
   },
   "paperclip": {
     "statusConnected": "Connected",
@@ -11706,5 +11809,13 @@
     "upNext": "Up Next",
     "workspaceRepos_other": "{{label}} · {{count}} repos",
     "unassigned": "Unassigned"
+  },
+  "quickChat": {
+    "errorAttachmentsBeforeSession": "Cannot send attachments before chat session is ready",
+    "errorAttachmentsWhileStreaming": "Cannot send attachments while a response is streaming",
+    "errorGettingResponse": "Failed to get response",
+    "errorInitializingChat": "Failed to initialize chat",
+    "errorRefreshingSessions": "Failed to refresh chat sessions",
+    "errorStartingNewChat": "Failed to start a new chat"
   }
 }

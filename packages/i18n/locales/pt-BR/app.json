@@ -149,7 +149,37 @@
     "closeView": "Fechar visualização de habilidades e snippets",
     "notDiscovered": "Not discovered",
     "install": "Instalar",
-    "snippetsTitle": "Trechos de chat"
+    "snippetsTitle": "Snippets de chat",
+    "snippetsSaveChanges": "Salvar alterações",
+    "snippetsDuplicateName": "Já existe um snippet com este nome.",
+    "snippetsPromptRequired": "Digite um prompt para este snippet.",
+    "snippetsReservedName": "Este nome é reservado para um comando de chat.",
+    "tabSkills": "Habilidades",
+    "snippetsEdit": "Editar /{{name}}",
+    "refreshSnippetsLabel": "Atualizar snippets",
+    "snippetsFormLabel": "Editor de snippets de chat",
+    "snippetsPromptLabel": "Prompt",
+    "snippetsLoading": "Carregando snippets...",
+    "snippetsDeleteError": "Não foi possível excluir o snippet. Atualize e tente novamente.",
+    "tabsLabel": "Seções de habilidades e snippets",
+    "snippetsEmptyHint": "Crie um aqui e digite /nome em qualquer chat para inseri-lo.",
+    "snippetsDelete": "Excluir /{{name}}",
+    "snippetsNameHelp": "Letras, números, sublinhados ou hífens; até 48 caracteres.",
+    "refreshSkillsLabel": "Atualizar habilidades",
+    "snippetsAdd": "Adicionar snippet",
+    "snippetsSaveError": "Não foi possível salvar o snippet. Atualize e tente novamente.",
+    "snippetsNameLabel": "Nome",
+    "snippetsInvalidName": "Use de 1 a 48 letras, números, sublinhados ou hífens.",
+    "snippetsSaving": "Salvando...",
+    "snippetsPromptTooLong": "Os prompts podem ter no máximo {{count}} caracteres.",
+    "snippetsPromptHelp": "{{count}} / {{max}} caracteres",
+    "snippetsCount": "{{count}} salvos",
+    "snippetsDescription": "Salve prompts reutilizáveis e digite /nome em qualquer chat para inserir um sem enviá-lo.",
+    "skillsDescription": "Explore, ative e instale as habilidades disponíveis para este projeto.",
+    "snippetsLoadError": "Não foi possível atualizar os snippets. A última lista carregada continua visível.",
+    "snippetsEmpty": "Nenhum snippet salvo.",
+    "tabSnippets": "Snippets",
+    "snippetsLimitReached": "Você pode salvar até {{count}} snippets."
   },
   "nodeStatus": {
     "local": "Local"
@@ -575,7 +605,10 @@
     "workflowTimedSteps": "Etapas cronometradas do fluxo de trabalho",
     "title": {
       "collapse": "Collapse task title",
-      "expand": "Expand task title"
+      "expand": "Expand task title",
+      "summarize": "Resumir",
+      "summarizeFailed": "Falha ao resumir o título: {{error}}",
+      "summarizeSuccess": "Título atualizado a partir da descrição"
     },
     "executionTimingMetricsAria": "Métricas de tempo de execução",
     "provenance": {
@@ -727,7 +760,9 @@
     "notSet": "Não definido",
     "updateFailed": "Falha ao atualizar {{id}}: {{error}}",
     "actions": {
-      "menuBtn": "Ações"
+      "menuBtn": "Ações",
+      "oversightHeading": "",
+      "priorityHeading": ""
     },
     "reset": {
       "submitting": "",
@@ -772,7 +807,20 @@
       "openPromptTitle": "Open this task's PROMPT.md in the file editor",
       "loading": "Carregando especificação…",
       "readPlanBtn": "Ler o plano",
-      "backToDefinition": "Voltar à definição"
+      "backToDefinition": "Voltar à definição",
+      "aiReviseHeading": "Pedir à IA para revisar",
+      "aiReviseHelp": "Forneça feedback para a IA melhorar esta especificação. A tarefa passará para planejamento para ser replanejada.",
+      "editBtn": "Editar",
+      "feedbackPlaceholder": "ex.: 'Adicione mais detalhes sobre o tratamento de erros', 'Divida isso em etapas menores', 'Inclua testes para os endpoints da API'...",
+      "hintCancel": "para cancelar",
+      "hintSave": "para salvar",
+      "placeholder": "Insira a especificação da tarefa em Markdown...",
+      "requesting": "Solicitando…",
+      "requestRevisionBtn": "Solicitar revisão da IA",
+      "revisionColumnError": "Não é possível solicitar revisão: a tarefa deve estar na coluna 'triage', 'todo', 'in-progress' ou 'in-review'.",
+      "revisionRequested": "Revisão da IA solicitada. Tarefa movida para planejamento.",
+      "saving": "Salvando…",
+      "updated": "Especificação atualizada"
     },
     "tokenTotalsAria": "Totais de tokens da tarefa",
     "debug": {
@@ -1512,7 +1560,8 @@
     "imported": "Fluxo de trabalho \"{{name}}\" importado",
     "aiReplaceConfirmLabel": "Substituir",
     "createDescription": "Descrição (opcional)",
-    "duplicatedEditable": "Duplicado para \"{{name}}\" — editável"
+    "duplicatedEditable": "Duplicado para \"{{name}}\" — editável",
+    "closeEditor": "Fechar editor de fluxo de trabalho"
   },
   "taskFields": {
     "unset": "—",
@@ -1621,7 +1670,10 @@
     "fileHeader": "Arquivos",
     "taskHeader": "Tarefas",
     "taskMatches": "Correspondências de tarefa",
-    "empty": "Nenhuma tarefa ou arquivo encontrado"
+    "empty": "Nenhuma tarefa ou arquivo encontrado",
+    "untitledConversation": "",
+    "conversationMatches": "",
+    "conversationHeader": ""
   },
   "models": {
     "targetLabels": {
@@ -1828,7 +1880,9 @@
     "noModelsAvailable": "Nenhum modelo disponível. Configure a autenticação em Configurações.",
     "presetUseDefault": "Usar padrão",
     "attachCount_one": "Attach ({{count}})",
-    "workflowStepsLabel": "Workflow Steps"
+    "workflowStepsLabel": "Workflow Steps",
+    "titleLabel": "Título",
+    "titlePlaceholder": "Título da tarefa"
   },
   "errorBoundary": {
     "retry": "Tentar novamente",
@@ -3102,7 +3156,10 @@
     "collapseArchivedTitle": "Recolher tarefas arquivadas",
     "expandArchivedLabel": "Expandir tarefas arquivadas",
     "expandArchivedTitle": "Expandir tarefas arquivadas",
-    "failedToArchive": "Falha ao arquivar tarefas"
+    "failedToArchive": "Falha ao arquivar tarefas",
+    "archivedTasksWithSkips_one": "",
+    "archivedTasks_one": "",
+    "archiveAllMessage_one": ""
   },
   "windows": {
     "hide": "Ocultar todas as janelas",
@@ -3566,7 +3623,14 @@
     "sidebarAriaLabel": "Navegação da barra lateral",
     "planningNeedsInputAriaLabel": "Planejamento precisa da sua contribuição",
     "todos": "Pendências",
-    "settings": "Configurações"
+    "settings": "Configurações",
+    "recommendationsUnreadAriaLabel_one": "",
+    "recommendationsUnreadDotAriaLabel": "",
+    "recommendations": "",
+    "artifactsUnreadAriaLabel_other": "",
+    "artifactsUnreadAriaLabel_one": "",
+    "artifactsUnreadDotAriaLabel": "",
+    "recommendationsUnreadAriaLabel_other": ""
   },
   "syncLog": {
     "noHistory": "Nenhum histórico de sincronização disponível",
@@ -3888,7 +3952,9 @@
     "scriptAlreadyExists": "Já existe um script com esse nome",
     "scriptCount_one": "{{count}} script",
     "nameErrorMsg": "O nome deve conter apenas letras, números, hifens e sublinhados (sem espaços)",
-    "nameHint": "Apenas letras, números, hifens e sublinhados"
+    "nameHint": "Apenas letras, números, hifens e sublinhados",
+    "descriptionPlaceholder": "O que este script faz?",
+    "description": "Descrição (opcional)"
   },
   "approval": {
     "openMailbox": "Abrir caixa de mensagens",
@@ -5220,7 +5286,9 @@
     "bulkDeleteArchiveSummary": "{{archived}} arquivadas, {{deleted}} excluídas, {{failed}} com falha",
     "bulkDeleteNoTasks": "Nenhuma tarefa selecionada pode ser excluída (tarefas arquivadas são excluídas)",
     "bulkDeleteWithDoneMessage": "Excluir {{deletable}} tarefa(s), ou arquivar as {{done}} tarefa(s) concluídas e excluir o restante?",
-    "lineageArchiveMessage": "{{taskId}} tem filhos de linhagem ({{children}}) que a referenciam como origem.\n\nArquivar mesmo assim desvinculando essas referências primeiro?"
+    "lineageArchiveMessage": "{{taskId}} tem filhos de linhagem ({{children}}) que a referenciam como origem.\n\nArquivar mesmo assim desvinculando essas referências primeiro?",
+    "bulkArchiveDone_one": "",
+    "bulkArchiveMessage_one": ""
   },
   "goals": {
     "updateError": "Não foi possível atualizar o status da meta agora. Tente novamente.",
@@ -5484,7 +5552,11 @@
     "hideRightSidebar": "Hide right sidebar",
     "taskSearchLoading": "Buscando…",
     "researchView": "Pesquisa",
-    "settings": "Configurações"
+    "settings": "Configurações",
+    "unreadRecommendations_other": "",
+    "unreadArtifacts_other": "",
+    "unreadArtifacts_one": "",
+    "unreadRecommendations_one": ""
   },
   "specEditor": {
     "view": "Ver",
@@ -5503,7 +5575,11 @@
     "close": "",
     "retry": "",
     "openTask": "",
-    "loading": ""
+    "loading": "",
+    "zoomOut": "",
+    "resetZoom": "",
+    "zoomLevel": "",
+    "zoomIn": ""
   },
   "chat": {
     "messageRoomPlaceholder": "Mensagem para #{{name}}",
@@ -5793,7 +5869,19 @@
     "failureReferenceKind": "Kind",
     "conversationRestored": "Conversation restored",
     "resizePanelTopLeft": "Redimensionar painel a partir do canto superior esquerdo",
-    "toolCallStatusCompleted": "completed"
+    "toolCallStatusCompleted": "completed",
+    "closeQuickChat": "Fechar chat rápido",
+    "newChatModeAgent": "Agente",
+    "noAgentsAvailable": "Nenhum agente disponível",
+    "openQuickChat": "Abrir chat rápido",
+    "quickChatTitle": "Chat rápido",
+    "modelAgentSection": "Modelo / Agente",
+    "snippetSuggestions": "Sugestões de snippets",
+    "loadingSlashSuggestions": "Carregando sugestões…",
+    "copyConversationId": "",
+    "snippetSuggestion": "Inserir prompt salvo",
+    "conversationIdCopied": "",
+    "slashSuggestions": "Sugestões de barra"
   },
   "comments": {
     "editedSuffix": "(editado)",
@@ -6771,7 +6859,8 @@
     "unarchive": "Desarquivar",
     "unarchived": "Tarefa {{taskId}} desarquivada",
     "unarchiveFailed": "Falha ao desarquivar a tarefa {{taskId}}: {{error}}",
-    "unarchiveTask": "Desarquivar tarefa"
+    "unarchiveTask": "Desarquivar tarefa",
+    "revertedResolutionActions": "Ações de resolução de tarefas revertidas"
   },
   "cli": {
     "versionMismatchPrefix": "Sua versão instalada",
@@ -7194,7 +7283,8 @@
     "inboxFilter": "",
     "to": "Para",
     "typeSystem": "Sistema",
-    "approvalRequester": "Solicitante"
+    "approvalRequester": "Solicitante",
+    "refreshTitle": "Atualizar"
   },
   "thinking": {
     "collapseAll": "",
@@ -10524,7 +10614,16 @@
       "chatDescription": "Escolha o destino padrão para novos chats diretos. O Novo Chat sempre cria a conversa imediatamente a partir desse padrão.",
       "advancedWorkflowPolicy": " Política avançada de fluxo de trabalho ",
       "useGlobal": "Use global",
-      "validatorModel": "Reviewer Model"
+      "validatorModel": "Reviewer Model",
+      "defaultWorkflowModelLaneActions": "Ações padrão das faixas de modelo do fluxo de trabalho",
+      "defaultWorkflowModelLanes": "Faixas de modelo padrão do fluxo de trabalho",
+      "loadingWorkflowModelLanes": "Carregando faixas de modelo do fluxo de trabalho…",
+      "noModelsAvailableConfigureAuthenticationBeforeSelectingWorkflow": " Nenhum modelo disponível. Configure a autenticação antes de selecionar as faixas de modelo do fluxo de trabalho. ",
+      "openAProjectToEditWorkflowModelLanes": "Abra um projeto para editar as faixas de modelo do fluxo de trabalho.",
+      "resetToInheritFromWorkflow": "Redefinir para herdar do fluxo de trabalho",
+      "theseProjectOverridesApplyToTheActiveDefault": " Essas substituições do projeto se aplicam ao fluxo de trabalho padrão ativo. ",
+      "useWorkflowDefault": "Usar padrão do fluxo de trabalho",
+      "workflowLanesSubheading": ""
     },
     "voiceInput": {
       "modelStatusHelp": "O modelo de fala é instalado e gerenciado localmente neste dispositivo.",
@@ -10738,7 +10837,10 @@
       "whenEnabledImportedGitHubIssuesUseTheirSource": "Quando ativado, issues importadas do GitHub tornam-se tarefas rastreadas que adotam a issue de origem. Isso não ativa o rastreamento do GitHub para novas tarefas comuns. Padrão: desativado.",
       "aiUndoTaskWorkflow": "Fluxo de trabalho de tarefas de reversão por IA",
       "mobileNavPrimaryItemsHint": "Cinco acessos rápidos compartilhados entre desktop e celular; o quinto ocupa a extremidade direita da barra inferior. Qualquer posição que você deixar indefinida é preenchida pela ordem padrão (Painel, Quadro, Planejamento, Missões, Chat), então defina cinco destinos para tirar o Chat da barra inferior. Todo destino que você não escolher permanece em Mais.",
-      "disabledBuiltInWorkflowsAreHiddenFromWorkflow": "Fluxos de trabalho integrados desativados ficam ocultos nos seletores de fluxo de trabalho. Tarefas existentes que já usam um deles continuam sendo processadas normalmente."
+      "disabledBuiltInWorkflowsAreHiddenFromWorkflow": "Fluxos de trabalho integrados desativados ficam ocultos nos seletores de fluxo de trabalho. Tarefas existentes que já usam um deles continuam sendo processadas normalmente.",
+      "showQuickChatButton": " Mostrar botão de chat rápido ",
+      "quickChatLauncherHint": "Escolha se o Chat Rápido abre pelo botão flutuante arrastável, por um botão no rodapé ao lado de Terminal, ou permanece oculto. Padrão: desativado (oculto).",
+      "quickChatCloseOnOutsideClickHint": "Quando ativado, clicar fora da janela do Chat Rápido a fecha. Desative para mantê-la aberta até que você a feche explicitamente. Padrão: ativado."
     },
     "backups": {
       "existingGlobalValue": "Existing global value",
@@ -10837,7 +10939,8 @@
       "summarizerModelInline": "O modelo usado para resumir agora fica no fluxo de trabalho (faixa do resumidor de título). Abra as configurações do fluxo de trabalho para escolhê-lo.",
       "openWorkflowSettings": "Abrir configurações do fluxo de trabalho",
       "reviewVerification": "As configurações de revisão, correção automática de verificação e aplicação de escopo agora ficam no fluxo de trabalho.",
-      "stepExecution": "As configurações de execução de etapas (executar etapas em novas sessões, máximo de etapas paralelas) agora ficam no fluxo de trabalho."
+      "stepExecution": "As configurações de execução de etapas (executar etapas em novas sessões, máximo de etapas paralelas) agora ficam no fluxo de trabalho.",
+      "modelLanes": "As faixas de modelo por fase (execução, planejamento, revisor, seus fallbacks e o resumidor de título) agora ficam no fluxo de trabalho."
     },
     "prompts": {
       "surfaceExplanation": "Use esta seção para modelos de prompt de sistema de papéis de agente, atribuições de papéis e substituições globais de segmento PromptKey. Os prompts de etapa por fluxo de trabalho para nós de prompt e gate são editados no Editor de Fluxo de Trabalho. Sem padrão — não definido (os prompts de papel integrados se aplicam até serem substituídos).",
@@ -11064,7 +11167,12 @@
       "dismissModalsByClickingOutsideHint": " Quando ativado, clicar ou tocar no fundo de um modal fecha o modal. Padrão: desativado, para evitar fechamentos acidentais. ",
       "gitLabEnabledHint": "Os valores globais de URL e token do GitLab servem de reserva para projetos que não definem os próprios valores. Sem padrão — não definido (o estado não definido se comporta como ativado até ser explicitamente desativado).",
       "noLimitOnAgentToolOutputHint": " Desativa o limitador compartilhado de saída das ferramentas. Um único resultado de ferramenta pode consumir toda a janela de contexto do agente. Padrão: desativado; quando não definido, o orçamento herda o padrão do motor de 16.000 caracteres. ",
-      "rowsAndDoesNotAffectAssistantTextOr": " linhas persistidas e não afeta o texto do assistente nem as linhas de ferramentas. Padrão: desativado tanto para agentes permanentes quanto efêmeros. "
+      "rowsAndDoesNotAffectAssistantTextOr": " linhas persistidas e não afeta o texto do assistente nem as linhas de ferramentas. Padrão: desativado tanto para agentes permanentes quanto efêmeros. ",
+      "chatSubmitOnEnter": "",
+      "chatSubmitOnEnterAuto": "",
+      "chatSubmitOnEnterHint": "",
+      "chatSubmitOnEnterAlways": "",
+      "chatSubmitOnEnterNever": ""
     },
     "jira": {
       "emailHelp": "",
@@ -11625,7 +11733,12 @@
       "chatMessageLayoutBubbles": "",
       "openTasksInRightSidebar": "Open tasks in the right sidebar",
       "languageAuto": "Automático",
-      "taskDetailDefaultTabHelp": ""
+      "taskDetailDefaultTabHelp": "",
+      "openTasksInRightSidebarHelp": "Quando ativado, os cartões de tarefa do quadro abrem os detalhes na barra lateral direita quando ela estiver disponível; os estados mobile e de barra lateral oculta mantêm o painel de tarefa completo. Padrão: desativado.",
+      "openMobileTasksInPopupHelp": "Quando ativado, cliques comuns em cartões de tarefa do quadro e na lista de Tarefas do dock direito abrem o popup de tarefa existente, mantendo o quadro ou a lista visível. Aberturas via deep-tab e outras formas de abertura de tarefa mantêm o comportamento atual. Padrão: desativado.",
+      "taskPopupsBoardListOnly": "Manter os popups de tarefa na visualização em que foram abertos",
+      "taskPopupsBoardListOnlyHelp": "Quando ativado, cada popup de detalhes de tarefa aberto aparece somente na visualização em que foi aberto. Trocar de visualização o oculta sem fechá-lo; voltar o restaura na mesma posição. Padrão: ativado.",
+      "taskDetailChatFirstHelp": "Desativado por padrão: os detalhes da tarefa listam Atividade primeiro, e aberturas de tarefas não concluídas sem aba especificada caem em Atividade. Ative para restaurar a ordem/padrão com Chat primeiro; links diretos para o Chat continuam funcionando de qualquer forma."
     },
     "actions": {
       "close": "Close",
@@ -11668,11 +11781,41 @@
     "label": "Fluxo de trabalho",
     "countsAria": "{{planLabel}}: {{plan}}, {{progressLabel}}: {{progress}}, {{reviewLabel}}: {{review}}{{mergingSuffix}}",
     "mergingTitle_other": "{{count}} merging",
-    "plan": "Plano",
+    "plan": "Planejamento",
     "mergingTitle_one": "{{count}} merging",
     "merging": "Em merge",
     "done": "Concluído",
     "inProgress": "Em andamento",
-    "todo": "A fazer"
+    "todo": "A fazer",
+    "editWorkflow": "Editar fluxo de trabalho",
+    "newWorkflow": "Novo fluxo de trabalho",
+    "review": "Revisão",
+    "progress": "Progresso"
+  },
+  "quickChat": {
+    "errorAttachmentsBeforeSession": "Não é possível enviar anexos antes que a sessão de chat esteja pronta",
+    "errorAttachmentsWhileStreaming": "Não é possível enviar anexos enquanto uma resposta está sendo transmitida",
+    "errorGettingResponse": "Falha ao obter resposta",
+    "errorInitializingChat": "Falha ao inicializar o chat",
+    "errorRefreshingSessions": "Falha ao atualizar sessões de chat",
+    "errorStartingNewChat": "Falha ao iniciar um novo chat"
+  },
+  "recommendations": {
+    "count": "",
+    "createError": "",
+    "createTask": "",
+    "created": "",
+    "creating": "",
+    "emptyDescription": "",
+    "emptyTitle": "",
+    "loadError": "",
+    "loadMore": "",
+    "loading": "",
+    "loadingMore": "",
+    "retryCreate": "",
+    "source": "",
+    "title": "",
+    "truncated": "",
+    "viewTask": ""
   }
 }

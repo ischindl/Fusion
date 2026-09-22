@@ -149,7 +149,37 @@
     "closeView": "Fermer la vue des compétences et extraits",
     "notDiscovered": "Not discovered",
     "install": "Installer",
-    "snippetsTitle": "Extraits de discussion"
+    "snippetsTitle": "Extraits de chat",
+    "snippetsSaveChanges": "Enregistrer les modifications",
+    "snippetsDuplicateName": "Un extrait portant ce nom existe déjà.",
+    "snippetsPromptRequired": "Saisissez un prompt pour cet extrait.",
+    "snippetsReservedName": "Ce nom est réservé à une commande de chat.",
+    "tabSkills": "Compétences",
+    "snippetsEdit": "Modifier /{{name}}",
+    "refreshSnippetsLabel": "Actualiser les extraits",
+    "snippetsFormLabel": "Éditeur d’extraits de chat",
+    "snippetsPromptLabel": "Prompt",
+    "snippetsLoading": "Chargement des extraits...",
+    "snippetsDeleteError": "L’extrait n’a pas pu être supprimé. Actualisez puis réessayez.",
+    "tabsLabel": "Sections des compétences et des extraits",
+    "snippetsEmptyHint": "Créez-en un ici, puis saisissez /nom dans un chat pour l’insérer.",
+    "snippetsDelete": "Supprimer /{{name}}",
+    "snippetsNameHelp": "Lettres, chiffres, tirets bas ou tirets ; 48 caractères maximum.",
+    "refreshSkillsLabel": "Actualiser les compétences",
+    "snippetsAdd": "Ajouter un extrait",
+    "snippetsSaveError": "L’extrait n’a pas pu être enregistré. Actualisez puis réessayez.",
+    "snippetsNameLabel": "Nom",
+    "snippetsInvalidName": "Utilisez 1 à 48 lettres, chiffres, tirets bas ou tirets.",
+    "snippetsSaving": "Enregistrement...",
+    "snippetsPromptTooLong": "Les prompts peuvent contenir au maximum {{count}} caractères.",
+    "snippetsPromptHelp": "{{count}} / {{max}} caractères",
+    "snippetsCount": "{{count}} enregistrés",
+    "snippetsDescription": "Enregistrez des prompts réutilisables, puis saisissez /nom dans un chat pour en insérer un sans l’envoyer.",
+    "skillsDescription": "Parcourez, activez et installez les compétences disponibles pour ce projet.",
+    "snippetsLoadError": "Les extraits n’ont pas pu être actualisés. La dernière liste chargée reste affichée.",
+    "snippetsEmpty": "Aucun extrait enregistré.",
+    "tabSnippets": "Extraits",
+    "snippetsLimitReached": "Vous pouvez enregistrer jusqu’à {{count}} extraits."
   },
   "nodeStatus": {
     "local": "Local"
@@ -575,7 +605,10 @@
     "workflowTimedSteps": "Étapes chronométrées du workflow",
     "title": {
       "collapse": "Collapse task title",
-      "expand": "Expand task title"
+      "expand": "Expand task title",
+      "summarize": "",
+      "summarizeFailed": "",
+      "summarizeSuccess": ""
     },
     "executionTimingMetricsAria": "Métriques de durée d'exécution",
     "provenance": {
@@ -727,7 +760,9 @@
     "notSet": "Non défini",
     "updateFailed": "Échec de la mise à jour de {{id}} : {{error}}",
     "actions": {
-      "menuBtn": "Actions"
+      "menuBtn": "Actions",
+      "oversightHeading": "",
+      "priorityHeading": ""
     },
     "reset": {
       "submitting": "",
@@ -772,7 +807,20 @@
       "openPromptTitle": "Open this task's PROMPT.md in the file editor",
       "loading": "Chargement de la spécification…",
       "readPlanBtn": "Lire le plan",
-      "backToDefinition": "Retour à la définition"
+      "backToDefinition": "Retour à la définition",
+      "aiReviseHeading": "Demander une révision à l'IA",
+      "aiReviseHelp": "Fournissez des commentaires pour que l'IA améliore cette spécification. La tâche passera en planification.",
+      "editBtn": "Modifier",
+      "feedbackPlaceholder": "p. ex., « Ajoutez plus de détails sur la gestion des erreurs », « Découpez en étapes plus petites »...",
+      "hintCancel": "pour annuler",
+      "hintSave": "pour enregistrer",
+      "placeholder": "Saisissez la spécification de la tâche en Markdown...",
+      "requesting": "Demande en cours…",
+      "requestRevisionBtn": "Demander une révision IA",
+      "revisionColumnError": "Impossible de demander une révision : la tâche doit être dans la colonne « triage », « todo », « in-progress » ou « in-review ».",
+      "revisionRequested": "Révision IA demandée. La tâche a été déplacée en planification.",
+      "saving": "Enregistrement…",
+      "updated": "Spécification mise à jour"
     },
     "tokenTotalsAria": "Totaux de tokens de la tâche",
     "debug": {
@@ -1512,7 +1560,8 @@
     "imported": "Workflow « {{name}} » importé",
     "aiReplaceConfirmLabel": "Remplacer",
     "createDescription": "Description (facultatif)",
-    "duplicatedEditable": ""
+    "duplicatedEditable": "",
+    "closeEditor": ""
   },
   "taskFields": {
     "unset": "—",
@@ -1621,7 +1670,10 @@
     "fileHeader": "Fichiers",
     "taskHeader": "Tâches",
     "taskMatches": "Tâches correspondantes",
-    "empty": "Aucune tâche, conversation ou fichier trouvé"
+    "empty": "Aucune tâche, conversation ou fichier trouvé",
+    "untitledConversation": "Conversation sans titre",
+    "conversationMatches": "Conversations correspondantes",
+    "conversationHeader": "Conversations"
   },
   "models": {
     "targetLabels": {
@@ -1828,7 +1880,9 @@
     "noModelsAvailable": "Aucun modèle disponible. Configurez l'authentification dans les paramètres.",
     "presetUseDefault": "Utiliser le défaut",
     "attachCount_one": "Attach ({{count}})",
-    "workflowStepsLabel": "Workflow Steps"
+    "workflowStepsLabel": "Workflow Steps",
+    "titleLabel": "Titre",
+    "titlePlaceholder": "Titre de la tâche"
   },
   "errorBoundary": {
     "retry": "",
@@ -3102,7 +3156,10 @@
     "collapseArchivedTitle": "Réduire les tâches archivées",
     "expandArchivedLabel": "Développer les tâches archivées",
     "expandArchivedTitle": "Développer les tâches archivées",
-    "failedToArchive": "Échec de l’archivage des tâches"
+    "failedToArchive": "Échec de l’archivage des tâches",
+    "archivedTasksWithSkips_one": "",
+    "archivedTasks_one": "",
+    "archiveAllMessage_one": ""
   },
   "windows": {
     "hide": "Masquer toutes les fenêtres",
@@ -3566,7 +3623,14 @@
     "sidebarAriaLabel": "",
     "planningNeedsInputAriaLabel": "La planification nécessite votre saisie",
     "todos": "Tâches à faire",
-    "settings": "Paramètres"
+    "settings": "Paramètres",
+    "recommendationsUnreadAriaLabel_one": "{{count}} nouvelle recommandation",
+    "recommendationsUnreadDotAriaLabel": "Nouvelles recommandations",
+    "recommendations": "Recommandations",
+    "artifactsUnreadAriaLabel_other": "{{count}} nouveaux artefacts",
+    "artifactsUnreadAriaLabel_one": "{{count}} nouvel artefact",
+    "artifactsUnreadDotAriaLabel": "Nouveaux artefacts",
+    "recommendationsUnreadAriaLabel_other": "{{count}} nouvelles recommandations"
   },
   "syncLog": {
     "noHistory": "Aucun historique de synchronisation",
@@ -3888,7 +3952,9 @@
     "scriptAlreadyExists": "Un script portant ce nom existe déjà",
     "scriptCount_one": "",
     "nameErrorMsg": "Le nom ne doit contenir que des lettres, des chiffres, des traits d’union et des traits de soulignement (sans espaces)",
-    "nameHint": "Lettres, chiffres, traits d’union et traits de soulignement uniquement"
+    "nameHint": "Lettres, chiffres, traits d’union et traits de soulignement uniquement",
+    "descriptionPlaceholder": "À quoi sert ce script ?",
+    "description": "Description (facultative)"
   },
   "approval": {
     "openMailbox": "Ouvrir la boîte aux lettres",
@@ -5220,7 +5286,9 @@
     "bulkDeleteArchiveSummary": "{{archived}} archivées, {{deleted}} supprimées, {{failed}} en échec",
     "bulkDeleteNoTasks": "Aucune tâche sélectionnée ne peut être supprimée (les tâches archivées sont exclues)",
     "bulkDeleteWithDoneMessage": "Supprimer {{deletable}} tâche(s), ou archiver les {{done}} tâche(s) terminées et supprimer le reste ?",
-    "lineageArchiveMessage": "{{taskId}} a des enfants de lignage ({{children}}) qui le référencent comme parent source.\n\nArchiver quand même en dissociant d’abord ces références ?"
+    "lineageArchiveMessage": "{{taskId}} a des enfants de lignage ({{children}}) qui le référencent comme parent source.\n\nArchiver quand même en dissociant d’abord ces références ?",
+    "bulkArchiveDone_one": "",
+    "bulkArchiveMessage_one": ""
   },
   "goals": {
     "updateError": "Impossible de mettre à jour le statut de l'objectif pour le moment. Veuillez réessayer.",
@@ -5484,7 +5552,11 @@
     "hideRightSidebar": "Hide right sidebar",
     "taskSearchLoading": "Recherche…",
     "researchView": "Recherche",
-    "settings": "Paramètres"
+    "settings": "Paramètres",
+    "unreadRecommendations_other": "{{count}} nouvelles recommandations",
+    "unreadArtifacts_other": "{{count}} nouveaux artefacts",
+    "unreadArtifacts_one": "{{count}} nouvel artefact",
+    "unreadRecommendations_one": "{{count}} nouvelle recommandation"
   },
   "specEditor": {
     "view": "Afficher",
@@ -5503,7 +5575,11 @@
     "close": "",
     "retry": "",
     "openTask": "",
-    "loading": ""
+    "loading": "",
+    "zoomOut": "",
+    "resetZoom": "",
+    "zoomLevel": "",
+    "zoomIn": ""
   },
   "chat": {
     "messageRoomPlaceholder": "Message #{{name}}",
@@ -5793,7 +5869,19 @@
     "failureReferenceKind": "Kind",
     "conversationRestored": "Conversation restored",
     "resizePanelTopLeft": "Redimensionner le panneau depuis le coin supérieur gauche",
-    "toolCallStatusCompleted": "completed"
+    "toolCallStatusCompleted": "completed",
+    "closeQuickChat": "Fermer le chat rapide",
+    "newChatModeAgent": "Agent",
+    "noAgentsAvailable": "Aucun agent disponible",
+    "openQuickChat": "Ouvrir le chat rapide",
+    "quickChatTitle": "Chat rapide",
+    "modelAgentSection": "Model / Agent",
+    "snippetSuggestions": "Suggestions d’extraits",
+    "loadingSlashSuggestions": "Chargement des suggestions…",
+    "copyConversationId": "Copier l’ID de la conversation",
+    "snippetSuggestion": "Insérer le prompt enregistré",
+    "conversationIdCopied": "ID de la conversation copié",
+    "slashSuggestions": "Suggestions de barre oblique"
   },
   "comments": {
     "editedSuffix": "(modifié)",
@@ -6771,7 +6859,8 @@
     "unarchive": "Désarchiver",
     "unarchived": "Tâche {{taskId}} désarchivée",
     "unarchiveFailed": "Échec du désarchivage de la tâche {{taskId}} : {{error}}",
-    "unarchiveTask": "Désarchiver la tâche"
+    "unarchiveTask": "Désarchiver la tâche",
+    "revertedResolutionActions": ""
   },
   "cli": {
     "versionMismatchPrefix": "Votre",
@@ -7194,7 +7283,8 @@
     "inboxFilter": "",
     "to": "À",
     "typeSystem": "Système",
-    "approvalRequester": "Demandeur"
+    "approvalRequester": "Demandeur",
+    "refreshTitle": "Actualiser"
   },
   "thinking": {
     "collapseAll": "Tout réduire",
@@ -10524,7 +10614,16 @@
       "chatDescription": "Choose the default target for new Direct chats. New Chat always creates the conversation immediately from this default.",
       "advancedWorkflowPolicy": "",
       "useGlobal": "Use global",
-      "validatorModel": "Reviewer Model"
+      "validatorModel": "Reviewer Model",
+      "workflowLanesSubheading": "",
+      "defaultWorkflowModelLaneActions": "",
+      "defaultWorkflowModelLanes": "",
+      "loadingWorkflowModelLanes": "",
+      "noModelsAvailableConfigureAuthenticationBeforeSelectingWorkflow": "",
+      "openAProjectToEditWorkflowModelLanes": "",
+      "resetToInheritFromWorkflow": "",
+      "theseProjectOverridesApplyToTheActiveDefault": "",
+      "useWorkflowDefault": ""
     },
     "voiceInput": {
       "modelStatusHelp": "The speech model is installed and managed locally on this device.",
@@ -10797,7 +10896,10 @@
       "whenEnabledImportedGitHubIssuesUseTheirSource": "",
       "aiUndoTaskWorkflow": "",
       "mobileNavPrimaryItemsHint": "Cinq emplacements rapides partagés par l’ordinateur et le mobile ; le cinquième occupe la place tout à droite de la barre du bas. Tout emplacement non défini est complété par l’ordre par défaut (Tableau de bord, Board, Planning, Missions, Chat) : définissez donc cinq destinations pour retirer le Chat de la barre du bas. Toute destination non retenue reste dans Plus.",
-      "disabledBuiltInWorkflowsAreHiddenFromWorkflow": ""
+      "disabledBuiltInWorkflowsAreHiddenFromWorkflow": "",
+      "showQuickChatButton": "",
+      "quickChatLauncherHint": "",
+      "quickChatCloseOnOutsideClickHint": ""
     },
     "commands": {
       "eGPnpmBuild": "",
@@ -10818,7 +10920,8 @@
       "summarizerModelInline": "",
       "openWorkflowSettings": "",
       "reviewVerification": "",
-      "stepExecution": ""
+      "stepExecution": "",
+      "modelLanes": ""
     },
     "nav": {
       "tooltip": {
@@ -11064,7 +11167,12 @@
       "dismissModalsByClickingOutsideHint": "",
       "gitLabEnabledHint": "",
       "noLimitOnAgentToolOutputHint": "",
-      "rowsAndDoesNotAffectAssistantTextOr": ""
+      "rowsAndDoesNotAffectAssistantTextOr": "",
+      "chatSubmitOnEnter": "",
+      "chatSubmitOnEnterAuto": "",
+      "chatSubmitOnEnterHint": "",
+      "chatSubmitOnEnterAlways": "",
+      "chatSubmitOnEnterNever": ""
     },
     "jira": {
       "emailHelp": "",
@@ -11625,7 +11733,12 @@
       "chatMessageLayoutBubbles": "",
       "openTasksInRightSidebar": "Open tasks in the right sidebar",
       "languageAuto": "Auto",
-      "taskDetailDefaultTabHelp": ""
+      "taskDetailDefaultTabHelp": "",
+      "openTasksInRightSidebarHelp": "",
+      "openMobileTasksInPopupHelp": "",
+      "taskPopupsBoardListOnly": "",
+      "taskPopupsBoardListOnlyHelp": "",
+      "taskDetailChatFirstHelp": ""
     },
     "actions": {
       "close": "Close",
@@ -11668,11 +11781,41 @@
     "label": "Workflow",
     "countsAria": "{{planLabel}} : {{plan}}, {{progressLabel}} : {{progress}}, {{reviewLabel}} : {{review}}{{mergingSuffix}}",
     "mergingTitle_other": "{{count}} merging",
-    "plan": "Plan",
+    "plan": "Planification",
     "mergingTitle_one": "{{count}} merging",
     "merging": "",
     "done": "Terminé",
     "inProgress": "En cours",
-    "todo": "À faire"
+    "todo": "À faire",
+    "editWorkflow": "Edit workflow",
+    "newWorkflow": "New workflow",
+    "review": "Revue",
+    "progress": "Progression"
+  },
+  "quickChat": {
+    "errorAttachmentsBeforeSession": "Impossible d'envoyer des pièces jointes avant que la session de chat soit prête",
+    "errorAttachmentsWhileStreaming": "Impossible d'envoyer des pièces jointes pendant qu'une réponse est en cours de diffusion",
+    "errorGettingResponse": "Impossible d'obtenir une réponse",
+    "errorInitializingChat": "Impossible d'initialiser le chat",
+    "errorRefreshingSessions": "Impossible de rafraîchir les sessions de chat",
+    "errorStartingNewChat": "Impossible de démarrer un nouveau chat"
+  },
+  "recommendations": {
+    "count": "Affichage de {{shown}} sur {{total}} tâches sources",
+    "createError": "Impossible de créer la tâche. Réessayez.",
+    "createTask": "Créer une tâche",
+    "created": "{{taskId}} créée",
+    "creating": "Création…",
+    "emptyDescription": "Les recommandations issues des tâches terminées apparaîtront ici.",
+    "emptyTitle": "Aucune recommandation pour le moment",
+    "loadError": "Impossible de charger les recommandations.",
+    "loadMore": "Charger plus",
+    "loading": "Chargement des recommandations…",
+    "loadingMore": "Chargement…",
+    "retryCreate": "Réessayer de créer la tâche",
+    "source": "Source : {{task}}",
+    "title": "Recommandations",
+    "truncated": "Affichage limité aux 20 premières pages. Actualisez pour voir les dernières recommandations.",
+    "viewTask": "Voir la tâche"
   }
 }

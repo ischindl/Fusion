@@ -149,7 +149,37 @@
     "closeView": "스킬 및 스니펫 보기 닫기",
     "notDiscovered": "Not discovered",
     "install": "설치",
-    "snippetsTitle": "채팅 스니펫"
+    "snippetsTitle": "채팅 스니펫",
+    "snippetsSaveChanges": "변경 사항 저장",
+    "snippetsDuplicateName": "이 이름의 스니펫이 이미 있습니다.",
+    "snippetsPromptRequired": "이 스니펫의 프롬프트를 입력하세요.",
+    "snippetsReservedName": "이 이름은 채팅 명령용으로 예약되어 있습니다.",
+    "tabSkills": "스킬",
+    "snippetsEdit": "/{{name}} 편집",
+    "refreshSnippetsLabel": "스니펫 새로 고침",
+    "snippetsFormLabel": "채팅 스니펫 편집기",
+    "snippetsPromptLabel": "프롬프트",
+    "snippetsLoading": "스니펫 불러오는 중...",
+    "snippetsDeleteError": "스니펫을 삭제할 수 없습니다. 새로 고친 후 다시 시도하세요.",
+    "tabsLabel": "스킬 및 스니펫 섹션",
+    "snippetsEmptyHint": "여기에서 만든 다음 채팅에 /이름을 입력해 삽입하세요.",
+    "snippetsDelete": "/{{name}} 삭제",
+    "snippetsNameHelp": "문자, 숫자, 밑줄 또는 하이픈을 최대 48자까지 사용할 수 있습니다.",
+    "refreshSkillsLabel": "스킬 새로 고침",
+    "snippetsAdd": "스니펫 추가",
+    "snippetsSaveError": "스니펫을 저장할 수 없습니다. 새로 고친 후 다시 시도하세요.",
+    "snippetsNameLabel": "이름",
+    "snippetsInvalidName": "문자, 숫자, 밑줄 또는 하이픈을 1~48자 사용하세요.",
+    "snippetsSaving": "저장 중...",
+    "snippetsPromptTooLong": "프롬프트는 최대 {{count}}자까지 입력할 수 있습니다.",
+    "snippetsPromptHelp": "{{count}} / {{max}}자",
+    "snippetsCount": "{{count}}개 저장됨",
+    "snippetsDescription": "재사용 가능한 프롬프트를 저장한 다음 채팅에서 /이름을 입력해 전송하지 않고 삽입하세요.",
+    "skillsDescription": "이 프로젝트에서 사용할 수 있는 스킬을 탐색하고 활성화하거나 설치하세요.",
+    "snippetsLoadError": "스니펫을 새로 고칠 수 없습니다. 마지막으로 불러온 목록이 계속 표시됩니다.",
+    "snippetsEmpty": "저장된 스니펫이 없습니다.",
+    "tabSnippets": "스니펫",
+    "snippetsLimitReached": "스니펫은 최대 {{count}}개까지 저장할 수 있습니다."
   },
   "nodeStatus": {
     "local": "로컬"
@@ -575,7 +605,10 @@
     "workflowTimedSteps": "워크플로 시간 측정 단계",
     "title": {
       "collapse": "Collapse task title",
-      "expand": "Expand task title"
+      "expand": "Expand task title",
+      "summarize": "",
+      "summarizeFailed": "",
+      "summarizeSuccess": ""
     },
     "executionTimingMetricsAria": "실행 타이밍 지표",
     "provenance": {
@@ -727,7 +760,9 @@
     "notSet": "설정되지 않음",
     "updateFailed": "{{id}} 업데이트 실패: {{error}}",
     "actions": {
-      "menuBtn": "작업"
+      "menuBtn": "작업",
+      "oversightHeading": "",
+      "priorityHeading": ""
     },
     "reset": {
       "submitting": "",
@@ -772,7 +807,20 @@
       "openPromptTitle": "Open this task's PROMPT.md in the file editor",
       "loading": "명세 로드 중…",
       "readPlanBtn": "계획 읽기",
-      "backToDefinition": "정의로 돌아가기"
+      "backToDefinition": "정의로 돌아가기",
+      "aiReviseHeading": "AI에 수정 요청",
+      "aiReviseHelp": "AI가 이 명세를 개선할 수 있도록 피드백을 제공하세요. 작업이 재계획을 위해 계획 단계로 이동합니다.",
+      "editBtn": "편집",
+      "feedbackPlaceholder": "예: '오류 처리에 대한 세부 정보 추가', '더 작은 단계로 분할', 'API 엔드포인트 테스트 포함'...",
+      "hintCancel": "취소",
+      "hintSave": "저장",
+      "placeholder": "Markdown으로 작업 명세를 입력하세요...",
+      "requesting": "요청 중…",
+      "requestRevisionBtn": "AI 수정 요청",
+      "revisionColumnError": "수정 요청 불가: 작업이 'triage', 'todo', 'in-progress' 또는 'in-review' 컬럼에 있어야 합니다.",
+      "revisionRequested": "AI 수정 요청됨. 작업이 계획 단계로 이동되었습니다.",
+      "saving": "저장 중…",
+      "updated": "명세 업데이트됨"
     },
     "tokenTotalsAria": "작업 토큰 합계",
     "debug": {
@@ -1512,7 +1560,8 @@
     "imported": "워크플로 \"{{name}}\"을(를) 가져왔습니다",
     "aiReplaceConfirmLabel": "교체",
     "createDescription": "설명 (선택 사항)",
-    "duplicatedEditable": ""
+    "duplicatedEditable": "",
+    "closeEditor": ""
   },
   "taskFields": {
     "unset": "—",
@@ -1621,7 +1670,10 @@
     "fileHeader": "파일",
     "taskHeader": "작업",
     "taskMatches": "작업 검색 결과",
-    "empty": "작업 또는 파일을 찾을 수 없습니다"
+    "empty": "작업 또는 파일을 찾을 수 없습니다",
+    "untitledConversation": "",
+    "conversationMatches": "",
+    "conversationHeader": ""
   },
   "models": {
     "targetLabels": {
@@ -1828,7 +1880,9 @@
     "noModelsAvailable": "사용 가능한 모델이 없습니다. 설정에서 인증을 구성해 주세요.",
     "presetUseDefault": "기본값 사용",
     "attachCount_one": "Attach ({{count}})",
-    "workflowStepsLabel": "Workflow Steps"
+    "workflowStepsLabel": "Workflow Steps",
+    "titleLabel": "제목",
+    "titlePlaceholder": "작업 제목"
   },
   "errorBoundary": {
     "retry": "",
@@ -3102,7 +3156,10 @@
     "collapseArchivedTitle": "보관된 작업 접기",
     "expandArchivedLabel": "보관된 작업 펼치기",
     "expandArchivedTitle": "보관된 작업 펼치기",
-    "failedToArchive": "작업 보관에 실패했습니다"
+    "failedToArchive": "작업 보관에 실패했습니다",
+    "archivedTasksWithSkips_one": "",
+    "archivedTasks_one": "",
+    "archiveAllMessage_one": ""
   },
   "windows": {
     "hide": "모든 창 숨기기",
@@ -3566,7 +3623,14 @@
     "sidebarAriaLabel": "",
     "planningNeedsInputAriaLabel": "계획에 입력이 필요합니다",
     "todos": "할 일",
-    "settings": "설정"
+    "settings": "설정",
+    "recommendationsUnreadAriaLabel_one": "",
+    "recommendationsUnreadDotAriaLabel": "",
+    "recommendations": "",
+    "artifactsUnreadAriaLabel_other": "",
+    "artifactsUnreadAriaLabel_one": "",
+    "artifactsUnreadDotAriaLabel": "",
+    "recommendationsUnreadAriaLabel_other": ""
   },
   "syncLog": {
     "noHistory": "사용 가능한 동기화 기록이 없습니다",
@@ -3888,7 +3952,9 @@
     "scriptAlreadyExists": "같은 이름의 스크립트가 이미 존재합니다",
     "scriptCount_one": "",
     "nameErrorMsg": "이름에는 문자, 숫자, 하이픈, 밑줄만 사용할 수 있습니다(공백 불가)",
-    "nameHint": "문자, 숫자, 하이픈, 밑줄만 사용"
+    "nameHint": "문자, 숫자, 하이픈, 밑줄만 사용",
+    "descriptionPlaceholder": "이 스크립트는 어떤 작업을 하나요?",
+    "description": "설명 (선택 사항)"
   },
   "approval": {
     "openMailbox": "메일함 열기",
@@ -5219,7 +5285,10 @@
     "bulkDeleteArchiveSummary": "{{archived}}개 보관, {{deleted}}개 삭제, {{failed}}개 실패",
     "bulkDeleteNoTasks": "선택한 작업 중 삭제할 수 있는 작업이 없습니다(보관된 작업 제외)",
     "bulkDeleteWithDoneMessage": "작업 {{deletable}}개를 삭제하거나, 완료된 작업 {{done}}개를 보관하고 나머지를 삭제하시겠습니까?",
-    "lineageArchiveMessage": "{{taskId}}에는 원본 부모로 참조하는 계보 하위 작업이 {{children}}개 있습니다.\n\n먼저 이 참조를 해제하고 보관하시겠습니까?"
+    "lineageArchiveMessage": "{{taskId}}에는 원본 부모로 참조하는 계보 하위 작업이 {{children}}개 있습니다.\n\n먼저 이 참조를 해제하고 보관하시겠습니까?",
+    "bulkDeleteSummary_one": "",
+    "bulkArchiveDone_one": "",
+    "bulkArchiveMessage_one": ""
   },
   "goals": {
     "updateError": "현재 목표 상태를 업데이트할 수 없습니다. 다시 시도해 주세요.",
@@ -5483,7 +5552,11 @@
     "hideRightSidebar": "Hide right sidebar",
     "taskSearchLoading": "검색 중…",
     "researchView": "리서치",
-    "settings": "설정"
+    "settings": "설정",
+    "unreadRecommendations_other": "",
+    "unreadArtifacts_other": "",
+    "unreadArtifacts_one": "",
+    "unreadRecommendations_one": ""
   },
   "specEditor": {
     "view": "보기",
@@ -5502,7 +5575,11 @@
     "close": "",
     "retry": "",
     "openTask": "",
-    "loading": ""
+    "loading": "",
+    "zoomOut": "",
+    "resetZoom": "",
+    "zoomLevel": "",
+    "zoomIn": ""
   },
   "chat": {
     "messageRoomPlaceholder": "#{{name}}에 메시지",
@@ -5792,7 +5869,19 @@
     "failureReferenceKind": "Kind",
     "conversationRestored": "Conversation restored",
     "resizePanelTopLeft": "왼쪽 위 모서리에서 패널 크기 조정",
-    "toolCallStatusCompleted": "completed"
+    "toolCallStatusCompleted": "completed",
+    "closeQuickChat": "빠른 채팅 닫기",
+    "newChatModeAgent": "에이전트",
+    "noAgentsAvailable": "사용 가능한 에이전트 없음",
+    "openQuickChat": "빠른 채팅 열기",
+    "quickChatTitle": "빠른 채팅",
+    "modelAgentSection": "Model / Agent",
+    "snippetSuggestions": "스니펫 제안",
+    "loadingSlashSuggestions": "제안 불러오는 중…",
+    "copyConversationId": "",
+    "snippetSuggestion": "저장된 프롬프트 삽입",
+    "conversationIdCopied": "",
+    "slashSuggestions": "슬래시 제안"
   },
   "comments": {
     "editedSuffix": "(수정됨)",
@@ -6770,7 +6859,8 @@
     "unarchive": "보관 해제",
     "unarchived": "작업 {{taskId}} 보관 해제됨",
     "unarchiveFailed": "작업 {{taskId}} 보관 해제에 실패했습니다: {{error}}",
-    "unarchiveTask": "작업 보관 해제"
+    "unarchiveTask": "작업 보관 해제",
+    "revertedResolutionActions": ""
   },
   "cli": {
     "versionMismatchPrefix": "설치된",
@@ -7193,7 +7283,8 @@
     "inboxFilter": "",
     "to": "받는 사람",
     "typeSystem": "시스템",
-    "approvalRequester": "요청자"
+    "approvalRequester": "요청자",
+    "refreshTitle": "새로고침"
   },
   "thinking": {
     "collapseAll": "",
@@ -10523,7 +10614,16 @@
       "chatDescription": "Choose the default target for new Direct chats. New Chat always creates the conversation immediately from this default.",
       "advancedWorkflowPolicy": "",
       "useGlobal": "Use global",
-      "validatorModel": "Reviewer Model"
+      "validatorModel": "Reviewer Model",
+      "workflowLanesSubheading": "",
+      "defaultWorkflowModelLaneActions": "",
+      "defaultWorkflowModelLanes": "",
+      "loadingWorkflowModelLanes": "",
+      "noModelsAvailableConfigureAuthenticationBeforeSelectingWorkflow": "",
+      "openAProjectToEditWorkflowModelLanes": "",
+      "resetToInheritFromWorkflow": "",
+      "theseProjectOverridesApplyToTheActiveDefault": "",
+      "useWorkflowDefault": ""
     },
     "voiceInput": {
       "modelStatusHelp": "The speech model is installed and managed locally on this device.",
@@ -10796,7 +10896,10 @@
       "whenEnabledImportedGitHubIssuesUseTheirSource": "",
       "aiUndoTaskWorkflow": "",
       "mobileNavPrimaryItemsHint": "데스크톱과 모바일이 공유하는 5개의 바로가기 자리이며, 다섯번째는 하단 바의 맨 오른쪽에 표시됩니다. 지정하지 않은 자리는 기본 순서(대시보드, 보드, 플래닝, 미션, 채팅)로 자동 채워지므로, 하단 바에서 채팅을 제외하려면 다섯 개의 대상을 모두 지정하세요. 선택하지 않은 대상은 모두 더보기에 유지됩니다.",
-      "disabledBuiltInWorkflowsAreHiddenFromWorkflow": ""
+      "disabledBuiltInWorkflowsAreHiddenFromWorkflow": "",
+      "showQuickChatButton": "",
+      "quickChatLauncherHint": "",
+      "quickChatCloseOnOutsideClickHint": ""
     },
     "commands": {
       "eGPnpmBuild": "",
@@ -10817,7 +10920,8 @@
       "summarizerModelInline": "",
       "openWorkflowSettings": "",
       "reviewVerification": "",
-      "stepExecution": ""
+      "stepExecution": "",
+      "modelLanes": ""
     },
     "nav": {
       "tooltip": {
@@ -11063,7 +11167,12 @@
       "dismissModalsByClickingOutsideHint": "",
       "gitLabEnabledHint": "",
       "noLimitOnAgentToolOutputHint": "",
-      "rowsAndDoesNotAffectAssistantTextOr": ""
+      "rowsAndDoesNotAffectAssistantTextOr": "",
+      "chatSubmitOnEnter": "",
+      "chatSubmitOnEnterAuto": "",
+      "chatSubmitOnEnterHint": "",
+      "chatSubmitOnEnterAlways": "",
+      "chatSubmitOnEnterNever": ""
     },
     "jira": {
       "emailHelp": "",
@@ -11624,7 +11733,12 @@
       "chatMessageLayoutBubbles": "",
       "openTasksInRightSidebar": "Open tasks in the right sidebar",
       "languageAuto": "자동",
-      "taskDetailDefaultTabHelp": ""
+      "taskDetailDefaultTabHelp": "",
+      "openTasksInRightSidebarHelp": "",
+      "openMobileTasksInPopupHelp": "",
+      "taskPopupsBoardListOnly": "",
+      "taskPopupsBoardListOnlyHelp": "",
+      "taskDetailChatFirstHelp": ""
     },
     "actions": {
       "close": "Close",
@@ -11672,6 +11786,36 @@
     "merging": "",
     "done": "완료",
     "inProgress": "진행 중",
-    "todo": "할 일"
+    "todo": "할 일",
+    "editWorkflow": "Edit workflow",
+    "newWorkflow": "New workflow",
+    "review": "검토",
+    "progress": "진행"
+  },
+  "quickChat": {
+    "errorAttachmentsBeforeSession": "채팅 세션이 준비되기 전에 첨부 파일을 보낼 수 없습니다",
+    "errorAttachmentsWhileStreaming": "응답이 스트리밍 중인 동안 첨부 파일을 보낼 수 없습니다",
+    "errorGettingResponse": "응답 가져오기 실패",
+    "errorInitializingChat": "채팅 초기화 실패",
+    "errorRefreshingSessions": "채팅 세션 새로 고침 실패",
+    "errorStartingNewChat": "새 채팅 시작 실패"
+  },
+  "recommendations": {
+    "count": "",
+    "createError": "",
+    "createTask": "",
+    "created": "",
+    "creating": "",
+    "emptyDescription": "",
+    "emptyTitle": "",
+    "loadError": "",
+    "loadMore": "",
+    "loading": "",
+    "loadingMore": "",
+    "retryCreate": "",
+    "source": "",
+    "title": "",
+    "truncated": "",
+    "viewTask": ""
   }
 }
