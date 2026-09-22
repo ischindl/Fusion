@@ -1342,15 +1342,17 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
   saturated?") while PostgreSQL itself answered in <100ms. A liveness probe
   must not compete with scheduler work: run connectivity, task-ID integrity,
   and migration-marker queries on ONE dedicated max:1 connection built from
-  the same backend with the same (bypassed) isolation semantics. If the
-  dedicated connection cannot open, fall back to the store pool — degraded
-  behavior is no worse than before.
+  the same backend. It must mirror the store's partition binding
+  (dashboardLayer.projectId, no isolation bypass): task IDs are only unique
+  per project, so an unbound probe reports every cross-project `FN-001 ×2`
+  as a duplicate (measured within minutes on the bypassed first cut).
+  If the dedicated connection cannot open, fall back to the store pool.
   */
   let postgresHealthLayerForServer: import("@fusion/core").AsyncDataLayer | undefined;
   try {
     const healthProbeConnections = await createConnectionSetFromUrl(dashboardLayer.backend!, {
       poolMax: 1,
-      bypassProjectIsolation: true,
+      projectId: dashboardLayer.projectId,
     });
     postgresHealthLayerForServer = createAsyncDataLayer(healthProbeConnections);
     disposeCallbacks.push(() => healthProbeConnections.close());
