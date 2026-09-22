@@ -23,6 +23,13 @@ Commit 12c292ea6b added the 16th validator, check-no-comment-assertions-in-tests
 to the production gate:static chain without updating this mirror. RUFU-148
 restores lockstep at the live position (between no-test-timeout-appeasement and
 changeset-format); the chain in package.json remains the source of truth.
+
+FNXC:SkillCatalogGenerationOwnership 2026-09-22-14:51:
+RUFU-265 appends the 17th validator, check-fusion-skill-sync, at the end of the
+chain so the contiguous validator prefix is preserved. It is the enforcement
+point for the generated skill catalog: builds no longer regenerate those tracked
+docs, so drift in the committed file must fail the blocking gate instead of
+being silently rewritten by CI's earlier build step.
 */
 const EXPECTED_GATE_CHECKS = [
   check(["no-", ["no", "hup"].join("")].join("")),
@@ -41,6 +48,7 @@ const EXPECTED_GATE_CHECKS = [
   check("mock-completeness"),
   check("inert-sync-lane-conversions"),
   check("runtime-skill-loader-drift"),
+  check("fusion-skill-sync"),
 ];
 
 function createFixture() {
@@ -68,6 +76,21 @@ test("production gate inventory contains each canonical validator exactly once",
   const checks = readStaticGateChecks();
   assert.deepEqual(checks, EXPECTED_GATE_CHECKS);
   assert.equal(new Set(checks).size, checks.length);
+});
+
+/*
+FNXC:SkillCatalogGenerationOwnership 2026-09-22-14:51:
+RUFU-265: the generated skill catalog has no build-time writer anymore, so the
+drift check is the only thing standing between a stale committed catalog and
+shipping it. Pin its membership in the blocking chain explicitly — the deep-equal
+mirror above would also pass if someone dropped the entry and this list with it.
+*/
+test("blocking gate chain enforces the generated skill catalog drift check", () => {
+  const checks = readStaticGateChecks();
+  assert.ok(
+    checks.includes(check("fusion-skill-sync")),
+    "scripts/check-fusion-skill-sync.mjs must stay in the contiguous blocking validator prefix of test:gate:static",
+  );
 });
 
 test("runStaticGateChecks runs clean fixture validators and waits for all", async () => {

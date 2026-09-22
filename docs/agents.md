@@ -1690,6 +1690,9 @@ The pi extension ships as part of `@runfusion/fusion` and provides tools + a `/f
 
 The extension has no skills — tool descriptions give the LLM everything it needs.
 
+<!-- FNXC:SkillCatalogDrift 2026-09-22-15:34: RUFU-265 — the shipped `fusion` operator skill's tool catalog is GENERATED from these registrations, so authors must regenerate after editing them; `packages/cli` no longer has a doc-writing `prebuild`, so a build will not do it for you. -->
+**After changing tool registrations, run `pnpm sync:fusion-skill`.** The published package also ships the `fusion` operator skill, whose tool catalog (`packages/cli/skill/fusion/SKILL.md`, `references/extension-tools.md`, and the `references/fusion-capabilities.md` tool table) is generated from these registrations — never hand-edit inside those files' `BEGIN`/`END` marker blocks. Drift is measured by `pnpm sync:fusion-skill:check` and enforced by the blocking `check-fusion-skill-sync` gate validator; `pnpm build` no longer rewrites these tracked docs.
+
 Published SDK surface: `@runfusion/fusion/plugin-sdk` now ships as a public subpath export from the CLI package, exposing `definePlugin`, `validatePluginManifest`, and the plugin type surface for external plugin authors without depending on private `@fusion/*` workspace packages.
 
 ### `fn_web_fetch`
