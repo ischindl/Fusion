@@ -4230,10 +4230,12 @@ export class ChatManager {
         .filter((text, index) => !assistantSliceTexts.slice(index + 1).some((later) => later !== text && later.startsWith(text)))
         .join("\n\n");
       /*
-       FNXC:AssistantTextCapture 2026-09-08-14:13:
-       FN-9277 reconciles a complete turn because the former last-assistant fallback silently saved only a final trailer when earlier blocks had no deltas.
+       FNXC:AssistantTextCapture 2026-09-22-02:30:
+       FN-9356 makes the completed provider turn authoritative whenever it disagrees with live
+       capture. A queued mutable partial can make a temporary stream longer while still corrupt,
+       so both persistence and the terminal done snapshot must use the provider's finished text.
        */
-      const finalResponseText = authoritativeText.trim().length > accumulatedText.trim().length
+      const finalResponseText = authoritativeText.trim().length > 0
         ? authoritativeText
         : accumulatedText || responseText;
 

@@ -504,4 +504,40 @@ describe("NotificationService review-lane stall wedges", () => {
     );
     await service.stop();
   });
+}  /*
+  FNXC:Notification 2026-09-22-11:05:
+  Upstream FN-9346 shipped this assertion in task-wedge-notification.test.ts, a file the RUFU-156
+  eviction deleted (running it OOMs the host). The assertion is preserved here — same production
+  path through the merged task-wedge classifier — so restoring the deleted file is never needed.
+  Do not "bring back" the 886-line original.
+  */
+  it("delivers the safe four-part external-block report exactly once", async () => {
+    const { store, service, sendMessageOnce } = await stallSetup();
+    const blocked = task({
+      id: "FN-8501",
+      status: "blocked", paused: true, pausedReason: "external-block", error: "BLOCKED: host-environment/ENOSPC: raw stack trace",
+      externalBlock: {
+        origin: "host-environment", code: "ENOSPC", message: "raw stack trace", source: "agent-declaration", blockedAt: "2026-09-22T02:24:00.000Z",
+        resume: { column: "in-review", currentStep: 0 },
+        report: {
+          verifiedCondition: "Session-isolated MCP support was verified unavailable.",
+          stopReason: "Persistent configuration was not changed.",
+          unimplementedWork: "Remaining implementation was not performed.",
+          unblockCondition: "Provide a supported session-scoped interface.",
+        },
+      },
+    } as Task);
+    store.setTask(blocked);
+    store.emit("task:updated", blocked);
+    store.emit("task:updated", blocked);
+    await vi.waitFor(() => expect(sendMessageOnce).toHaveBeenCalledTimes(1));
+    const payload = sendMessageOnce.mock.calls[0]?.[0] as { content: string; metadata: Record<string, unknown> };
+    expect(payload.content).toContain("**Verified:** Session-isolated MCP support was verified unavailable.");
+    expect(payload.content).toContain("**Why work stopped:** Persistent configuration was not changed.");
+    expect(payload.content).toContain("**Not implemented:** Remaining implementation was not performed.");
+    expect(payload.content).toContain("**Unblock:** Provide a supported session-scoped interface.");
+    expect(payload.content).not.toContain("raw stack trace");
+    expect(payload.metadata).toEqual(expect.objectContaining({ taskId: "FN-8501", wedgeReason: "external-block:host-environment:ENOSPC" }));
+    await service.stop();
+  });
 });

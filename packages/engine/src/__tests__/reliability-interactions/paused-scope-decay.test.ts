@@ -58,7 +58,7 @@ function makeStore(tasks: Task[], settings: Partial<Settings> = {}) {
 }
 
 describe("reliability interactions: paused scope decay", () => {
-  it("rebounds stale paused in-progress holder with followers and emits audit", async () => {
+  it("records stale paused in-progress holder recovery in place and emits audit", async () => {
     const now = Date.now();
     const holder = makeTask("FN-1", {
       column: "in-progress",
@@ -86,12 +86,20 @@ describe("reliability interactions: paused scope decay", () => {
     */
     expect(store.moveTask).not.toHaveBeenCalled();
     expect((store.logEntry as any).mock.calls.some((call: unknown[]) => String(call[1]).includes("retained"))).toBe(true);
+/*
+    FNXC:LifecycleContainment 2026-09-22-03:57:
+    Automatic scope-decay recovery has no revision authority, so it records its audit and keeps
+    the paused holder in its live lane rather than moving work backward to `todo`. The fixture
+    must assert this production containment rule instead of the retired rebound expectation.
+    */
+    expect(store.moveTask).not.toHaveBeenCalled();
     expect(byId.get("FN-1")?.currentStep).toBe(2);
     expect(byId.get("FN-1")?.worktree).toBe("/tmp/wt");
     expect(store.logEntry).toHaveBeenCalledWith("FN-1", expect.stringContaining("Auto-rebounded (FN-4890)"));
     expect(audits.some((event) => event.mutationType === "task:auto-rebound-paused-scope-decay")).toBe(true);
 
     expect(byId.get("FN-1")?.column).toBe("in-progress");
+    expect(byId.get("FN-1")?.paused).toBe(true);
     expect(byId.get("FN-2")?.blockedBy).toBe("FN-1");
   });
 
@@ -150,7 +158,7 @@ describe("reliability interactions: paused scope decay", () => {
    * assertion actually exercises the exclusion mechanism rather than a
    * vacuously-true "nothing ever reboundeds" check.
    */
-  it("symptom verification: leaves an approval-held task in place while still rebounding a control paused task", async () => {
+  it("symptom verification: leaves approval-held and automatic recovery control tasks in place", async () => {
     const now = Date.now();
     const approvalHeld = makeTask("FN-APPROVAL", {
       column: "in-progress",
@@ -173,7 +181,7 @@ describe("reliability interactions: paused scope decay", () => {
 
     const count = await manager.autoReboundPausedScopeDecay();
 
-    // Only the control task is rebounded -- the approval-held task is untouched.
+    // Approval holds are excluded; the control reaches recovery but remains in place without revision authority.
     expect(count).toBe(1);
     /*
     FNXC:LifecycleContainment 2026-09-13-00:24 (RUFU-231 stale-seam reconciliation):
@@ -186,6 +194,7 @@ describe("reliability interactions: paused scope decay", () => {
     expect(store.moveTask).not.toHaveBeenCalled();
     expect(store.logEntry).toHaveBeenCalledWith("FN-CONTROL", expect.stringContaining("Auto-rebounded (FN-4890)"));
     expect(store.logEntry).not.toHaveBeenCalledWith("FN-APPROVAL", expect.stringContaining("Auto-rebounded (FN-4890)"));
+expect(store.moveTask).not.toHaveBeenCalled();
     expect(byId.get("FN-APPROVAL")?.column).toBe("in-progress");
     expect(byId.get("FN-APPROVAL")?.paused).toBe(true);
     expect(byId.get("FN-APPROVAL")?.pausedReason).toBe("awaiting-approval");

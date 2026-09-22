@@ -291,8 +291,30 @@ export function createAssistantStreamCapture(sinks: CaptureSinks): { handleAgent
         const hasBlock = blockPresent(partial, index, kind);
         if (type === `${kind}_delta`) {
           if (typeof update.delta !== "string" || index === undefined) return;
+          /*
+           * FNXC:AssistantTextCapture 2026-09-22-02:30:
+           * Provider queues can retain a mutable partial long after a delta was produced. Advance
+           * source cursors only from queued deltas so a later-mutated block cannot replay its prefix.
+           *
+           * FNXC:AssistantTextCapture 2026-09-22-10:10 (#sync-0922 resolution):
+           * The ledger's `consumed` cursor in `advance` IS that source cursor: it advances only by a
+           * queued delta's length, never by snapshot growth, and suppression compares that window
+           * against `delivered` rather than block content. The FN-9356 queued-consumer shape is
+           * therefore suppressed positionally without needing a second cursor map.
+           */
           advance(kind, partial, index, blockText(partial, index, kind), update.delta, hasBlock);
         } else if (type === `${kind}_start`) {
+          /*
+           * FNXC:AssistantTextCapture 2026-09-22-02:30 (upstream FN-9356):
+           * A mutable partial is not an event-time snapshot: a queued consumer can handle
+           * `text_start` after the block already grew past it.
+           *
+           * FNXC:AssistantTextCapture 2026-09-22-10:10 (#sync-0922 resolution):
+           * The start flush stays, because `advance` hands out only the span its ledger has not
+           * covered, so an ahead block text cannot replay a delivered prefix, and it is what restores
+           * FN-9277's populated-start shape that carries no delta. Terminal events still recover
+           * anything the block had not absorbed.
+           */
           advance(kind, partial, index, blockText(partial, index, kind), undefined, hasBlock);
         } else if (type === `${kind}_end`) {
           /*

@@ -393,6 +393,13 @@ shell stretches to the window the operator snapped or resized, and its content k
   included. Geometry suspension in React must also change the panel, rather than leaving
   a fixed desktop-sized dialog on a short or true-phone viewport.
   */
+  /*
+  FNXC:MobilePwaSheetSafeArea 2026-09-21-09:45:
+  Full-screen FloatingWindow sheets share one header/body shell, so installed-PWA system chrome can
+  obscure their existing Close control regardless of the feature that opened the sheet. Reserve both
+  safe-area block edges inside the 100dvh border box at the phone and short-viewport boundary; zero
+  insets preserve browser geometry, while desktop and tablet floating geometry remain untouched.
+  */
   .floating-window.new-task-modal,
   .floating-window.right-dock-expand-modal--floating,
   .floating-window.terminal-modal--floating,
@@ -427,6 +434,9 @@ shell stretches to the window the operator snapped or resized, and its content k
   .floating-window--dialog,
   .floating-window--chat {
     inset: 0 !important;
+    box-sizing: border-box;
+    overflow: hidden !important;
+    padding-block: env(safe-area-inset-top, 0px) env(safe-area-inset-bottom, 0px);
     width: 100vw !important;
     height: 100dvh !important;
     min-width: 0 !important;
@@ -479,6 +489,9 @@ shell stretches to the window the operator snapped or resized, and its content k
   */
   .floating-window--image-preview {
     inset: 0 !important;
+    box-sizing: border-box;
+    overflow: hidden !important;
+    padding-block: env(safe-area-inset-top, 0px) env(safe-area-inset-bottom, 0px);
     width: 100vw !important;
     height: 100dvh !important;
     min-width: 0 !important;
@@ -499,14 +512,23 @@ shell stretches to the window the operator snapped or resized, and its content k
   Import details use FloatingWindow for desktop drag and resize; on mobile this scoped variant becomes a full-screen sheet
   and hides desktop resize affordances.
   */
+  /*
+  FNXC:GitHubImportMobileClose 2026-09-21-09:34:
+  Installed-PWA system chrome can cover the GitHub import detail sheet header, making its only
+  Close control unreachable. Reserve safe-area block edges inside the viewport-sized sheet so the
+  shared FloatingWindow header remains visible while the detail body keeps its bounded scroll area.
+  */
   .floating-window--github-import-detail {
     inset: 0 !important;
+    box-sizing: border-box;
+    overflow: hidden !important;
     width: 100vw !important;
     height: 100dvh !important;
     min-width: 0 !important;
     min-height: 0 !important;
     max-width: 100vw !important;
     max-height: 100dvh !important;
+    padding-block: env(safe-area-inset-top, 0px) env(safe-area-inset-bottom, 0px);
     border: none;
     border-radius: 0;
     box-shadow: none;

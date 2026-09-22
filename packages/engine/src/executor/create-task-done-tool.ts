@@ -17,6 +17,7 @@ import { Type } from "@earendil-works/pi-ai";
 import type { Settings, Task, TaskDetail, TaskRecommendation, TaskStore } from "@fusion/core";
 import {
   buildTaskExternalBlockPatch,
+  buildTaskExternalBlockReport,
   isTaskNotFoundError,
   parseNoOpCompletionMarker,
   resolveWipTargetForTask,
@@ -143,8 +144,14 @@ export function createTaskDoneTool(
         reason: Type.Optional(Type.String({
           description: "Required when outcome=\"blocked\": concrete explanation of what is blocking the work and what is needed to unblock it.",
         })),
+        blockedReport: Type.Optional(Type.Object({
+          verifiedCondition: Type.Optional(Type.String()),
+          stopReason: Type.Optional(Type.String()),
+          unimplementedWork: Type.Optional(Type.String()),
+          unblockCondition: Type.Optional(Type.String()),
+        }, { description: "Optional safe operator report for an accepted outside-worktree block. State what was verified, why work stopped, what remains undone, and the precise unblock condition. Never include prompts, logs, stack traces, or credentials." })),
       }),
-      execute: async (_id: string, params: { summary?: string; recommendations?: TaskRecommendation[]; outcome?: "completed" | "blocked"; blockedBy?: string[]; obstacle?: "outside-worktree" | "inside-worktree"; reason?: string }) => {
+      execute: async (_id: string, params: { summary?: string; recommendations?: TaskRecommendation[]; outcome?: "completed" | "blocked"; blockedBy?: string[]; obstacle?: "outside-worktree" | "inside-worktree"; reason?: string; blockedReport?: { verifiedCondition?: string; stopReason?: string; unimplementedWork?: string; unblockCondition?: string } }) => {
         /*
         FNXC:Lifecycle 2026-07-16-10:20:
         FN-8141 — the blocked exit runs BEFORE every completion gate (completion blocker, verdict providers, worktree
@@ -235,6 +242,7 @@ export function createTaskDoneTool(
             const externalBlock = {
               ...classifiedObstacle,
               message: reason,
+              report: buildTaskExternalBlockReport(classifiedObstacle, params.blockedReport),
               source: "agent-declaration" as const,
               blockedAt: new Date().toISOString(),
               resume: {
@@ -469,8 +477,6 @@ export function createTaskDoneTool(
               ...taintUpdate,
               paused: false,
               pausedByAgentId: null,
-              worktree: null,
-              branch: null, branchWriteOrigin: "engine" as const,
               sessionFile: null,
             });
             await store.logEntry(
@@ -488,8 +494,6 @@ export function createTaskDoneTool(
               ...taintUpdate,
               paused: false,
               pausedByAgentId: null,
-              worktree: null,
-              branch: null, branchWriteOrigin: "engine" as const,
               sessionFile: null,
             });
             await store.logEntry(taskId, `${refusalMessage} — fn_task_done refusal retry budget exhausted`, undefined, deps.getRunContextFor(task.id));

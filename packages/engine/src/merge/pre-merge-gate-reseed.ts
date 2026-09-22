@@ -26,6 +26,7 @@ unbudgeted exactly as FN-9243 shipped it, so that lane's behavior is byte-stable
 import {
   clampReviewGateEntry,
   computeWorkflowIrPin,
+  PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
   evaluatePreMergeApprovals,
   IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON,
   resolveWorkflowIrForTask,
@@ -43,7 +44,19 @@ export type UnrunPreMergeGateRerouteReason =
   | "no-unrun-gate"
   | "no-review-route"
   | "not-singular"
-  | "operator-held";
+  | "operator-held"
+  | "workflow-selection-changed";
+
+/** Only the engine-owned unrun-gate park may be automatically released. */
+export function isRecoverableUnrunGatePark(task: Task): boolean {
+  return task.status === "failed"
+    && !task.userPaused && !task.deletedAt && task.autoMerge !== false
+    && (!task.paused || task.pausedReason === IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON)
+    && typeof task.error === "string"
+    && (task.error.endsWith(PRE_MERGE_STEPS_NOT_RUN_BLOCKER)
+      || (!task.workflowIrPin && task.error.startsWith("Workflow drift park:")
+        && task.error.includes("Stale IR pin cleared")));
+}
 
 /*
 FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217, AC3):
@@ -87,9 +100,14 @@ refusals, so every existing caller's behavior is byte-identical.
 export async function rerouteUnrunPreMergeGateToReview(
   store: TaskStore,
   task: Task,
-  options: { requiredPreMergeStepIds: ReadonlySet<string>; mergeContent: MergeContentDescriptor; allowDeadlockPark?: boolean },
+  options: {
+    requiredPreMergeStepIds: ReadonlySet<string>;
+    mergeContent: MergeContentDescriptor;
+    allowDeadlockPark?: boolean;
+    expectedWorkflowSelection?: { workflowId: string; stepIds: string[] } | null;
+  },
 ): Promise<{ rerouted: boolean; reason: UnrunPreMergeGateRerouteReason; nodeId?: string; workflowStepId?: string }> {
-  const { mergeContent, requiredPreMergeStepIds } = options;
+  const { mergeContent, requiredPreMergeStepIds, expectedWorkflowSelection } = options;
   if (mergeContent.kind !== "singular" || task.workspaceWorktrees !== undefined) return { rerouted: false, reason: "not-singular" };
   const deadlockParkAdmissible =
     options.allowDeadlockPark === true
@@ -138,8 +156,23 @@ export async function rerouteUnrunPreMergeGateToReview(
     sourceColumn: task.column,
     targetColumn: clampReviewGateEntry(ir, node, task.column).toColumn ?? task.column,
     irHash: computeWorkflowIrPin(ir, node.id).irHash,
+    expectedWorkflowSelection,
   });
-  if (!result.seeded) return { rerouted: false, reason: "active-continuation", nodeId: node.id, workflowStepId: node.id };
+  /*
+  FNXC:PreMergeGateRecovery 2026-09-22-10:10 (#sync-0922 merge resolution, upstream FN-9353):
+  Upstream fences this seed to the workflow selection that named the missing gate; a changed
+  selection leaves the existing park in place for reclassification instead of seeding a node from an
+  unrelated workflow. The fence is additive to FN-9243: the missing/verdict-less seedable set, the
+  RUFU-217 rerun budget, and the deadlock-park admission flag all keep their own semantics.
+  */
+  if (!result.seeded) {
+    return {
+      rerouted: false,
+      reason: result.reason === "workflow-selection-changed" ? "workflow-selection-changed" : "active-continuation",
+      nodeId: node.id,
+      workflowStepId: node.id,
+    };
+  }
   if (targetClass === "verdictless") {
     // The marker is the durable budget counter; write it only AFTER the seed actually landed.
     await store.logEntry(

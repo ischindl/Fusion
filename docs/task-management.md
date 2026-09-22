@@ -1141,9 +1141,9 @@ In **Settings → Models → Project**, choose whether AI-authored task plans, t
 
 ## Blocked tasks
 
-**Blocked** means infrastructure outside the task worktree requires operator action, such as exhausted disk, unavailable credentials, a provider outage, or a terminal network failure. The card preserves completed steps and committed work while displaying the raw code and message.
+**Blocked** means infrastructure outside the task worktree requires operator action, such as exhausted disk, unavailable credentials, a provider outage, or a terminal network failure. The card preserves completed steps and committed work. Fusion sends one dashboard mailbox explanation for each unresolved external-block episode with what was verified, why work stopped, what was not implemented, and the precise unblock condition; it does not expose raw prompts, logs, stack traces, or credentials.
 
-Use the robot action to open Chat with that exact error prefilled. After repairing the external obstacle, use **Retry**. Retry resumes the recorded interrupted workflow node; it does not reset steps, delete `PROMPT.md`, replan, or replace the task worktree and branch. Repeated Retry requests are refused while the resume continuation is already pending.
+Read that mailbox explanation before acting. Use the robot action to open Chat with that exact error prefilled. After repairing the external obstacle and meeting the stated unblock condition, use **Retry**. Retry resumes the recorded interrupted workflow node; it does not reset steps, delete `PROMPT.md`, replan, or replace the task worktree and branch. Repeated Retry requests are refused while the resume continuation is already pending.
 - `absent-branch-landed-reconciliation` — an in-review task whose branch was cleaned up can be completed only when an ownership-anchored commit exists on its base branch and the task is not paused, executing, or holding a fresh checkout lease. `fn task reconcile <id>` uses the same liveness and compare-and-set fence; it never fabricates review approval.
 
 ## Reconciling review tasks with a cleaned-up branch

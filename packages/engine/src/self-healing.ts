@@ -36,6 +36,7 @@ type imports (ChatSession, ChatInFlightGenerationState) that the post-merge body
 uses. parseExplicitDuplicateMarker survives only in an FNXC history comment — every
 call site uses the renamed resolver.
 
+
 /*
 FNXC:SelfHealing 2026-08-30-08:55 (merge origin/main c7a5e74a6a → main):
 The import union now also carries upstream's lifecycle-role helpers (isWipColumnRole,
@@ -95,7 +96,7 @@ The FN-207 lifecycle-containment rewrite stopped calling `resolveReboundTargetFo
 in the union import, which broke workspace lint (`no-unused-vars`) for every card after it. `resolveReboundTarget` is the
 symbol this file actually calls, so only the dead token was dropped.
 */
-import { loadWorkspaceConfig, type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, hasSharedBranchMemberAutoMergeHold, resolveEffectiveAutoMerge, countRecentIdenticalStallEntries,
+import { PRE_MERGE_STEPS_NOT_RUN_BLOCKER, loadWorkspaceConfig, type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, hasSharedBranchMemberAutoMergeHold, resolveEffectiveAutoMerge, countRecentIdenticalStallEntries,
   /* FNXC:SelfHealing 2026-09-10-23:14 (merge origin/main 2026-09-10): upstream's stall-deadlock
      repetition logic calls these two in-review-stall helpers; the union import carries them. */
   getLatestFailedPreMergeStepProgressAt, resolveInReviewStallDeadlockThreshold,
@@ -118,6 +119,7 @@ import { loadWorkspaceConfig, type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_
   isFusionDeletableBranch,
   isTaskExternallyBlocked,
   isTaskLogWriteRefusal,
+  hasNonTerminalSteps,
   fileScopeLeaseBlocksCandidate,
   normalizeOverlapScopeForTask,
 } from "@fusion/core";
@@ -169,7 +171,7 @@ import { createRunAuditor, generateSyntheticRunId, type DatabaseMutationType, ty
 import { finalizeProvenAutoMergeTask, validateWorkflowDoneMergeProof } from "./merge/auto-merge-finalization.js";
 import { captureMergeContentDescriptor } from "./merge/merge-content-capture.js";
 import { rerouteSingularStaleContentToReview } from "./merge/stale-content-review-reroute.js";
-import { rerouteUnrunPreMergeGateToReview } from "./merge/pre-merge-gate-reseed.js";
+import { isRecoverableUnrunGatePark, rerouteUnrunPreMergeGateToReview } from "./merge/pre-merge-gate-reseed.js";
 import { cleanupLandedTaskWorktree, removeEmptyWorkspaceTaskDirectory } from "./merge/post-landing-worktree-cleanup.js";
 import { cleanupDeletedTaskWorktrees } from "./worktree/deleted-task-worktree-cleanup.js";
 import { AutoRecoveryDispatcher } from "./healing/auto-recovery.js";
@@ -202,6 +204,9 @@ import { getTaskCompletionBlockerForStore } from "./execution/task-completion.js
 import { shouldReclaimWedgedMerge } from "./merge/merge-reclaim-policy.js";
 import { resolveRemediationCheckout } from "./executor/resolve-remediation-checkout.js";
 import { isDefiniteEmptyCodeReviewRevise } from "./executor/review-empty-content-close.js";
+import { evaluateWorkflowMergeBoundary } from "./executor/evaluate-workflow-merge-boundary.js";
+import { loadMergeBoundaryInstances } from "./executor/workflow-merge-boundary-helpers.js";
+import { recoverMergeBoundaryEvidenceGap } from "./executor/route-graph-failure-to-execution-resume.js";
 import { reapExpiredFusionBrowserLeasesInProduction } from "./agent-browser-lifecycle.js";
 
 import { advanceIntegrationBranchRef } from "./merge/merger-ref-update-advance.js";
@@ -2185,6 +2190,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       // stall-deadlock ride this sweep exists to prevent.
       { name: "reconcile-orphaned-pending-step-results", fn: () => this.reconcileOrphanedPendingStepResults().then(() => undefined) },
       { name: "reconcile-unproven-review-approvals", fn: () => this.reconcileUnprovenReviewApprovals().then(() => undefined) },
+      { name: "reconcile-merge-boundary-evidence-gaps", fn: () => this.reconcileMergeBoundaryEvidenceGaps().then(() => undefined) },
       /*
       FNXC:PreMergeApproval 2026-09-05-22:11:
       Runs AFTER the orphaned-step sweep, because that sweep is what produces the `failed` row this
@@ -2214,6 +2220,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       { name: "completed-tasks", fn: () => this.recoverCompletedTasks().then(() => undefined) },
       { name: "recover-stranded-completed-todo", fn: () => this.recoverStrandedCompletedTodoTasks().then(() => undefined) },
       { name: "recover-advanced-triage", fn: () => this.recoverAdvancedTriageTasks().then(() => undefined) },
+      { name: "recover-mergeable-review", fn: () => this.recoverMergeableReviewTasks().then(() => undefined) },
       { name: "failed-pre-merge-steps", fn: () => this.recoverReviewTasksWithFailedPreMergeSteps().then(() => undefined) },
       { name: "missing-worktree-review-failures", fn: () => this.recoverMissingWorktreeReviewFailures().then(() => undefined) },
       /*
@@ -3371,6 +3378,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           { name: "reconcile-orphaned-pending-step-results", fn: () => this.reconcileOrphanedPendingStepResults() },
           { name: "reconcile-unproven-review-approvals", fn: () => this.reconcileUnprovenReviewApprovals() },
           { name: "reconcile-collateral-archived-review-gates", fn: () => this.reconcileCollateralArchivedReviewGates() },
+          { name: "reconcile-merge-boundary-evidence-gaps", fn: () => this.reconcileMergeBoundaryEvidenceGaps() },
           { name: "recover-failed-pre-merge-steps", fn: () => this.recoverReviewTasksWithFailedPreMergeSteps() },
           { name: "recover-missing-worktree-review-failures", fn: () => this.recoverMissingWorktreeReviewFailures() },
           { name: "recover-interrupted-merging", fn: () => this.recoverInterruptedMergingTasks() },
@@ -9695,6 +9703,75 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   would discard that valid result. Re-check lane, user pause, workspace ownership, and session liveness
   in the callback, then log and audit only a repair whose atomic mutation actually applied.
   */
+  /*
+  FNXC:WorkflowMergeRecovery 2026-09-20-19:38:
+  A historic merge-boundary-unproven park can outlive the executor process that
+  created it. Recover only durable failed evidence with unfinished checklist
+  work, then use the ordinary named merge-fix remediation transition; no sweep
+  may invent node proof, clear an external blocker, or disturb a live session.
+  */
+  async reconcileMergeBoundaryEvidenceGaps(): Promise<number> {
+    const settings = await this.store.getSettings().catch(() => undefined);
+    if (!settings || settings.globalPause || settings.enginePaused) return 0;
+    const reviewColumns = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
+    const candidates = new Map<string, Task>();
+    for (const column of reviewColumns) {
+      for (const task of await this.store.listTasks({ column, slim: true })) candidates.set(task.id, task);
+    }
+    const isSessionLive = (taskId: string): boolean => activeSessionRegistry.pathsForTask(taskId)
+      .some((path) => activeSessionRegistry.isPathActive(path))
+      || executingTaskLock.has(taskId)
+      || this.options.isTaskActive?.(taskId) === true;
+    let recovered = 0;
+    for (const candidate of candidates.values()) {
+      if (!candidate.error?.includes("merge-boundary-unproven")) continue;
+      const fresh = await this.store.getTask(candidate.id);
+      if (!fresh || fresh.deletedAt || fresh.userPaused || fresh.paused || fresh.workspaceWorktrees !== undefined
+        || isTaskExternallyBlocked(fresh) || isSessionLive(fresh.id)
+        || !allowsAutoMergeProcessing(fresh, settings)) continue;
+      const ir = await resolveWorkflowIrForTask(this.store, fresh.id).catch(() => undefined);
+      const column = (ir as WorkflowIrV2 | undefined)?.columns.find((entry) => entry.id === fresh.column);
+      const wipColumn = (ir as WorkflowIrV2 | undefined)?.columns
+        .find((entry) => resolveColumnFlags(entry).countsTowardWip === true)?.id;
+      if (!column || !wipColumn || !isReviewColumnRole(resolveColumnFlags(column), fresh.column)) continue;
+
+      const proof = await evaluateWorkflowMergeBoundary(
+        { store: this.store, loadMergeBoundaryInstances: (taskId, runId) => loadMergeBoundaryInstances({ store: this.store }, taskId, runId) },
+        fresh,
+      ).catch(() => undefined);
+      if (!proof?.hasForeachStepExecute || proof.complete || (fresh.noCommitsExpected === true && !hasNonTerminalSteps(fresh))) continue;
+      const evidence = !proof.hasRelevantNodeResult
+        ? { code: "no-node-result" as const, missingInstanceIds: [] }
+        : !proof.allResultsTerminal
+          ? { code: "non-terminal-node-result" as const, nonTerminalNodeId: proof.nonTerminalResult?.workflowStepId, missingInstanceIds: [] }
+          : { code: "missing-foreach-instances" as const, missingInstanceIds: proof.missingInstanceIds };
+      const outcome = await recoverMergeBoundaryEvidenceGap(
+        { store: this.store, getRunContextFor: () => undefined },
+        fresh,
+        "merge-boundary",
+        evidence,
+        wipColumn,
+        settings,
+      );
+      if (outcome !== "recovered") continue;
+      recovered += 1;
+      await this.store.logEntry(
+        fresh.id,
+        "Workflow merge evidence recovery resumed the proven implementation owner; merge proof will be checked after durable progress",
+      ).catch(() => undefined);
+      await emitBoundedRunAudit(this.store, {
+        taskId: fresh.id,
+        agentId: "self-healing",
+        runId: generateSyntheticRunId("reconcile-merge-boundary-evidence-gap", fresh.id),
+        domain: "database",
+        mutationType: "task:merge-boundary-evidence-recovered",
+        target: fresh.id,
+        metadata: { taskId: fresh.id, outcome: "resumed" },
+      }, { log });
+    }
+    return recovered;
+  }
+
   async reconcileUnprovenReviewApprovals(): Promise<number> {
     try {
       const reviewColumns = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
@@ -10520,6 +10597,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     reviewColumns: ReadonlySet<string>,
     mergeGate: ResolvedMergeRecoveryGate,
     mergeContent: CapturedMergeRecoveryContent,
+    expectedWorkflowSelection?: { workflowId: string; stepIds: string[] } | null,
+    failedPark?: Pick<Task, "status" | "error" | "paused" | "pausedReason" | "mergeRetries" | "workflowIrPin" | "workflowIrPinNodeId" | "workflowIrPinColumnId">,
   ): Promise<boolean> {
     /*
       FNXC:PreMergeApproval 2026-09-02-22:41:
@@ -10549,8 +10628,31 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       const blocker = getTaskMergeBlocker(task, { reviewColumns, requiredPreMergeStepIds: mergeGate.requiredPreMergeStepIds, mergeContent });
       if (!isPreMergeStepsNotRunBlocker(blocker)
         && !namesVerdictLessFailedGate(task, blocker, { requiredPreMergeStepIds: mergeGate.requiredPreMergeStepIds, mergeContent })) return false;
-    const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, { requiredPreMergeStepIds: mergeGate.requiredPreMergeStepIds, mergeContent })
-      .catch(() => ({ rerouted: false, reason: "no-unrun-gate" as const, nodeId: undefined, workflowStepId: undefined }));
+const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
+      requiredPreMergeStepIds: mergeGate.requiredPreMergeStepIds,
+      mergeContent,
+      expectedWorkflowSelection,
+    }).catch(() => ({ rerouted: false, reason: "no-unrun-gate" as const, nodeId: undefined, workflowStepId: undefined }));
+    if (reroute.reason === "workflow-selection-changed" && failedPark) {
+      /*
+      FNXC:PreMergeGateRecovery 2026-09-22-02:03:
+      Selection mismatch means this sweep's just-cleared failed park no longer describes the selected
+      workflow. Restore only the exact clear shape while the row remains untouched, so the next pass
+      reclassifies the new selection rather than leaving a falsely mergeable card with no seeded gate.
+      */
+      await this.store.updateTaskAtomic(task.id, (live) => live.status === null && live.error === null
+        ? {
+          status: failedPark.status,
+          error: failedPark.error,
+          paused: failedPark.paused,
+          pausedReason: failedPark.pausedReason,
+          mergeRetries: failedPark.mergeRetries,
+          workflowIrPin: failedPark.workflowIrPin,
+          workflowIrPinNodeId: failedPark.workflowIrPinNodeId,
+          workflowIrPinColumnId: failedPark.workflowIrPinColumnId,
+        }
+        : null);
+    }
     if (reroute.rerouted) {
       await this.store.logEntry(task.id, reroute.reason === "verdictless-seeded"
         ? "[pre-merge] Self-healing re-seeded the workflow graph at a required pre-merge gate whose last run died without a verdict."
@@ -10725,7 +10827,82 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         await this.canRecoverMergeRequest(task, settings),
       ] as const));
       const mergeAdmissionByTaskId = new Map(mergeAdmission);
+      // Failed/engine-paused unrun gates are excluded from merge admission below.
+      // Re-prove their real blocker before releasing only that stale failure. A
+      // crash after the clear is safe: ordinary recovery will seed the idle gate.
+      const recoveredUnrunGateIds = new Set<string>();
+      for (const task of tasks) {
+        if (!isRecoverableUnrunGatePark(task) || !mergeAdmissionByTaskId.get(task.id)
+          || executingIds.has(task.id)) continue;
+        try {
+          const reviewColumns = await ownReviewLanesFor(task);
+          if (!reviewColumns.has(task.column)) continue;
+          const gate = await resolvePreMergeGateForTask(this.store, task.id, task.enabledWorkflowSteps, task);
+          if (gate.provenance === "default" && !gate.selectionAbsent) continue;
+          const content = await captureMergeContentDescriptor(task, { workspaceRootDir: this.options.rootDir, settings });
+          if (content.kind !== "singular" || task.workspaceWorktrees !== undefined) continue;
+          const recoverable = { ...task, status: undefined, paused: false };
+          if (getTaskMergeBlocker(recoverable, { reviewColumns, requiredPreMergeStepIds: gate.requiredPreMergeStepIds, mergeContent: content })
+            !== PRE_MERGE_STEPS_NOT_RUN_BLOCKER) continue;
+          const items = await this.store.listWorkflowWorkItemsForTask(task.id);
+          if (items.some((item) => ACTIVE_WORKFLOW_WORK_ITEM_STATES.includes(item.state))) continue;
+          const snapshot = { updatedAt: task.updatedAt, error: task.error, column: task.column };
+          /*
+          FNXC:PreMergeGateRecovery 2026-09-22-02:03:
+          Preserve failed fields independently because updateTaskAtomic can mutate the same list
+          snapshot object. A selection-fenced seed refusal must restore that original park exactly.
+          */
+          const failedPark = { ...task };
+          let released = false;
+          await this.store.updateTaskAtomic(task.id, (live) => {
+            if (!isRecoverableUnrunGatePark(live) || live.updatedAt !== snapshot.updatedAt
+              || live.error !== snapshot.error || live.column !== snapshot.column
+              || !allowsAutoMergeProcessing(live, settings)) return null;
+            released = true;
+            return { status: null, error: null, paused: false, pausedReason: null, mergeRetries: 0,
+              workflowIrPin: null, workflowIrPinNodeId: null, workflowIrPinColumnId: null };
+          });
+          if (!released) continue;
+          const live = await this.store.getTask(task.id);
+          if (!live) continue;
+          /*
+          FNXC:PreMergeApproval 2026-09-22-01:50:
+          A task row claim cannot lock the separately stored workflow selection. Re-resolve the
+          selection, review lanes, required gates, and content after the claim so reseeding never
+          applies a gate classification captured before an operator selected another workflow.
+          */
+          const selection = this.store.getTaskWorkflowSelectionAsync
+            ? await this.store.getTaskWorkflowSelectionAsync(live.id)
+            : this.store.getTaskWorkflowSelection(live.id);
+          const expectedWorkflowSelection = selection
+            ? { workflowId: selection.workflowId, stepIds: [...selection.stepIds] }
+            : null;
+          const currentGate = await resolvePreMergeGateForTask(this.store, live.id, live.enabledWorkflowSteps, live);
+          if (currentGate.provenance === "default" && !currentGate.selectionAbsent) continue;
+          const currentContent = await captureMergeContentDescriptor(live, { workspaceRootDir: this.options.rootDir, settings });
+          if (currentContent.kind !== "singular" || live.workspaceWorktrees !== undefined) continue;
+          const currentRecoverable = { ...live, status: undefined, paused: false };
+          if (getTaskMergeBlocker(currentRecoverable, {
+            reviewColumns: currentGate.reviewColumns,
+            requiredPreMergeStepIds: currentGate.requiredPreMergeStepIds,
+            mergeContent: currentContent,
+          }) !== PRE_MERGE_STEPS_NOT_RUN_BLOCKER) continue;
+          if (await this.routeUnrunPreMergeGateBackToReview(
+            live,
+            currentGate.reviewColumns,
+            currentGate,
+            currentContent,
+            expectedWorkflowSelection,
+            failedPark,
+          )) {
+            recoveredUnrunGateIds.add(task.id);
+          }
+        } catch (error) {
+          log.warn(`Unrun pre-merge gate recovery deferred for ${task.id}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
       const mergeable = tasks.filter((t) =>
+        !recoveredUnrunGateIds.has(t.id) &&
         mergeAdmissionByTaskId.get(t.id) === true &&
         !t.paused &&
         !executingIds.has(t.id) &&
