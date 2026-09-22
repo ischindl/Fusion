@@ -1460,7 +1460,8 @@ describe("project-aware task command behavior", () => {
 
     expect(getTask).toHaveBeenCalledWith("FN-123");
     expect(updateTask).toHaveBeenCalled();
-    expect(moveTask).toHaveBeenCalledWith("FN-123", "todo");
+    // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): the project-aware pin must carry the release option too.
+    expect(moveTask).toHaveBeenCalledWith("FN-123", "todo", { parkOnHold: false });
     expect(logEntry).toHaveBeenCalled();
   });
 
@@ -3163,7 +3164,8 @@ describe("runTaskRetry", () => {
       */
       sourceMetadataPatch: { planPremiseRejection: null },
     });
-    expect(mockMoveTask).toHaveBeenCalledWith("FN-001", "todo");
+    // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): the CLI retry re-queue must state release intent — without parkOnHold:false the rebound parks the card it was asked to run.
+    expect(mockMoveTask).toHaveBeenCalledWith("FN-001", "todo", { parkOnHold: false });
     expect(mockLogEntry).toHaveBeenCalledWith("FN-001", "Retry requested from CLI", "Task reset to todo for retry");
 
     const successLine = logSpy.mock.calls.find(
@@ -3265,7 +3267,8 @@ describe("runTaskRetry", () => {
       */
       sourceMetadataPatch: { planPremiseRejection: null },
     });
-    expect(mockMoveTask).toHaveBeenCalledWith("FN-001", "todo");
+    // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): release intent pinned on the retry move args.
+    expect(mockMoveTask).toHaveBeenCalledWith("FN-001", "todo", { parkOnHold: false });
     expect(mockLogEntry).toHaveBeenCalledWith("FN-001", "Retry requested from CLI", "Task reset to todo for retry");
 
     const successLine = logSpy.mock.calls.find(
@@ -3299,7 +3302,8 @@ describe("runTaskRetry", () => {
       error: null,
     }));
     expect(mockUpdateTask.mock.calls[0][1]).not.toHaveProperty("mergeRetries");
-    expect(mockMoveTask).toHaveBeenCalledWith("FN-001", "todo", { preserveProgress: true });
+    // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): release intent pinned on the retry move args.
+    expect(mockMoveTask).toHaveBeenCalledWith("FN-001", "todo", { preserveProgress: true, parkOnHold: false });
     expect(mockLogEntry).toHaveBeenCalledWith(
       "FN-001",
       "Retry requested from CLI (stranded in-review execution retry → todo, preserving progress)",
@@ -3320,7 +3324,8 @@ describe("runTaskRetry", () => {
 
     await runTaskRetry("FN-001");
 
-    expect(mockMoveTask).toHaveBeenCalledWith("FN-001", "todo", { preserveProgress: true });
+    // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): release intent pinned on the retry move args.
+    expect(mockMoveTask).toHaveBeenCalledWith("FN-001", "todo", { preserveProgress: true, parkOnHold: false });
     expect(mockLogEntry).toHaveBeenCalledWith(
       "FN-001",
       "Retry requested from CLI (stranded in-review execution retry → todo, preserving progress)",

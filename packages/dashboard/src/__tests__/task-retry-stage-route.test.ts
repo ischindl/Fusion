@@ -601,6 +601,40 @@ describe("POST /tasks/:id/retry", () => {
     });
   });
 
+  /*
+  FNXC:TaskRetrySurfaceSeparation 2026-09-22-10:14 (RUFU-261):
+  A card parked by an EARLIER Retry is still retryable — the card's own Retry is what releases it.
+  This route never calls `moveTask`, so the hold-lane park predicate in `applyResetOnEntryEffects`
+  (the only move-path writer of `userPaused = true`) cannot run; the release is the publication-fence
+  LOWER, `pauseTask(taskId, false)`, one of the two production writers of `userPaused`. The fixture's
+  `pauseTask` mirrors that store behavior, so the assertion below lands on real row state: a WIP card
+  that arrives with the durable operator stop set leaves its Retry dispatchable again. Without the
+  lower the card would keep `userPaused`, the scheduler would skip it forever, and the second Retry
+  would be as self-defeating as the first.
+  */
+  it("releases a WIP-lane operator park (userPaused + paused) on retry", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fusion-retry-stage-park-release-"));
+    const row = taskFixture({
+      column: "building",
+      steps: [{ name: "Implement", status: "in-progress" }],
+      currentStep: 0,
+      workflowStepResults: [{ workflowStepId: "implement", status: "failed" }],
+      paused: true,
+      userPaused: true,
+    });
+    const { store } = createRestartStore(root, row);
+
+    const response = await postRetry(createApp(store));
+
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    // The fence lower is the release, and it is the LAST pause write of the route.
+    expect(store.pauseTask).toHaveBeenLastCalledWith("FN-204", false);
+    // Scheduler candidacy triple: no durable stop, no pause, no parked status.
+    expect(row.userPaused).toBeUndefined();
+    expect(row.paused).toBeFalsy();
+    expect(row.status).not.toBe("paused");
+  });
+
   it("does not route the removed restart-stage endpoint", async () => {
     const root = await mkdtemp(join(tmpdir(), "fusion-retry-route-removed-"));
     const { store } = createRestartStore(root, taskFixture());

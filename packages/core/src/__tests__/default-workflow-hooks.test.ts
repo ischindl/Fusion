@@ -139,6 +139,136 @@ describe("default-workflow-hooks registry wiring", () => {
     expect(defaultCtx.task.pausedByAgentId).toBeUndefined();
     expect(defaultCtx.task.pausedReason).toBeUndefined();
   });
+
+  /*
+  FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261):
+  An operator Retry re-queues the card with `moveSource: "user"` (audit attribution is required —
+  FNXC:ToolPermissionGates), so the hold-lane park predicate previously could not tell a Retry from
+  a drag and parked the card the operator had just asked to RUN — a durable scheduler refusal no
+  recovery path ever cleared (11 real cards, 2–14 days). `parkOnHold: false` is the release intent
+  every Retry surface carries; the drag gesture sends nothing and must keep parking (pinned by the
+  "applies userPaused only for user-source reopen to todo" case above — both gestures live in this
+  one file so they can never collapse again).
+  */
+  it("parkOnHold:false releases the hold-lane park and still runs pause accounting (Retry intent)", () => {
+    registerDefaultWorkflowHooks();
+    const ctx = makeCtx({
+      fromColumn: "in-progress",
+      toColumn: "todo",
+      moveSource: "user",
+      options: { preserveProgress: true, parkOnHold: false },
+    });
+    // An open pause segment must be BANKED by the release move (FN-457), not silently dropped.
+    ctx.task.paused = true;
+    ctx.task.pausedReason = "in-review-stall-deadlock";
+    ctx.task.pausedStartedAt = new Date(Date.parse(ctx.movedAt) - 5_000).toISOString();
+    applyDefaultWorkflowMoveEffects(ctx);
+    expect(ctx.task.userPaused).toBeUndefined();
+    expect(ctx.task.paused).toBeUndefined();
+    expect(ctx.task.pausedReason).toBeUndefined();
+    expect(ctx.task.pausedStartedAt).toBeUndefined();
+    expect(ctx.task.cumulativePausedMs).toBeGreaterThanOrEqual(5_000);
+  });
+
+  it("parkOnHold:false clears a STALE userPaused park on the release move (re-retry of an already-parked card)", () => {
+    registerDefaultWorkflowHooks();
+    const ctx = makeCtx({
+      fromColumn: "in-progress",
+      toColumn: "todo",
+      moveSource: "user",
+      options: { preserveProgress: true, parkOnHold: false },
+    });
+    ctx.task.userPaused = true; // parked by a pre-fix retry or an earlier drag
+    applyDefaultWorkflowMoveEffects(ctx);
+    expect(ctx.task.userPaused).toBeUndefined();
+  });
+
+  it("parkOnHold:false never overrides preservePause — the park survives (FN-7851 precedence locked)", () => {
+    registerDefaultWorkflowHooks();
+    // Contradictory by contract (callers must not send this pair); the branch order must still
+    // keep the park rather than let the release intent clear it.
+    const ctx = makeCtx({
+      fromColumn: "in-progress",
+      toColumn: "todo",
+      moveSource: "user",
+      options: { preservePause: true, parkOnHold: false },
+    });
+    ctx.task.userPaused = true;
+    ctx.task.paused = true;
+    applyDefaultWorkflowMoveEffects(ctx);
+    expect(ctx.task.userPaused).toBe(true);
+    expect(ctx.task.paused).toBe(true);
+  });
+
+  it("parkOnHold reads the HOLD ROLE, not the id: a renamed hold lane parks without the flag and releases with it", () => {
+    registerDefaultWorkflowHooks();
+    const lifecycle: DefaultWorkflowMoveContext["lifecycleColumns"] = {
+      intake: "planning",
+      hold: "queue",
+      wip: "doing",
+      review: "reviewing",
+      complete: "shipped",
+    };
+    const drag = makeCtx({
+      fromColumn: "doing",
+      toColumn: "queue",
+      moveSource: "user",
+      lifecycleColumns: lifecycle,
+    });
+    applyDefaultWorkflowMoveEffects(drag);
+    expect(drag.task.userPaused).toBe(true);
+
+    const release = makeCtx({
+      fromColumn: "doing",
+      toColumn: "queue",
+      moveSource: "user",
+      lifecycleColumns: lifecycle,
+      options: { parkOnHold: false },
+    });
+    applyDefaultWorkflowMoveEffects(release);
+    expect(release.task.userPaused).toBeUndefined();
+  });
+
+  it("parkOnHold reads the intake-fallback lane shape (hold undefined): intake parks without the flag and releases with it", () => {
+    registerDefaultWorkflowHooks();
+    const lifecycle: DefaultWorkflowMoveContext["lifecycleColumns"] = {
+      intake: "planning",
+      hold: undefined,
+      wip: "doing",
+      review: "reviewing",
+      complete: "shipped",
+    };
+    const drag = makeCtx({
+      fromColumn: "doing",
+      toColumn: "planning",
+      moveSource: "user",
+      lifecycleColumns: lifecycle,
+    });
+    applyDefaultWorkflowMoveEffects(drag);
+    expect(drag.task.userPaused).toBe(true);
+
+    const release = makeCtx({
+      fromColumn: "doing",
+      toColumn: "planning",
+      moveSource: "user",
+      lifecycleColumns: lifecycle,
+      options: { parkOnHold: false },
+    });
+    applyDefaultWorkflowMoveEffects(release);
+    expect(release.task.userPaused).toBeUndefined();
+  });
+
+  it("parkOnHold:false on an ENGINE-sourced reopen changes nothing (engine never parks, present-but-unused)", () => {
+    registerDefaultWorkflowHooks();
+    const ctx = makeCtx({
+      fromColumn: "in-progress",
+      toColumn: "todo",
+      moveSource: "engine",
+      options: { parkOnHold: false },
+    });
+    applyDefaultWorkflowMoveEffects(ctx);
+    expect(ctx.task.userPaused).toBeUndefined();
+  });
 });
 
 /*

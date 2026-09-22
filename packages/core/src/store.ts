@@ -361,6 +361,20 @@ export interface MoveTaskOptions {
    * Never SETS a pause — only prevents the reopen block from clearing one.
    */
   preservePause?: boolean;
+  /**
+   * FNXC:TaskRetryReleaseIntent 2026-09-22-07:39:
+   * RUFU-261 — distinguish PARK intent from RELEASE intent on an operator-attributed move
+   * into the hold lane. Default (undefined) keeps the contract: a user-sourced reopen to the
+   * hold lane parks the card (`userPaused = true`) — an operator dragging a card back to the
+   * queue is stopping it. `false` states a RELEASE rebound: an explicit operator Retry
+   * (`fn_task_retry` / `fn task retry`) re-queues the card to be RUN, so the hold-lane park is
+   * suppressed and the reopen's existing clear (`userPaused = undefined`, guarded by
+   * `!preservePause`) also lifts any stale park from a previous retry or drag. Like
+   * `preservePause` this NEVER SETS a pause — it only suppresses/prevents one. `preservePause`
+   * keeps precedence through the hook's branch order: `parkOnHold: false` does not clear a park
+   * when `preservePause === true` (a contradictory combination callers must not send).
+   */
+  parkOnHold?: boolean;
   allocateWorktree?: (reservedNames: Set<string>) => string | null;
   moveSource?: "user" | "engine" | "scheduler";
   /** Registered reason from ENGINE_BACKWARD_MOVE_REASONS for a backward engine move. */

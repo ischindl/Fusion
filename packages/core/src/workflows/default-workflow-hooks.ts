@@ -75,6 +75,15 @@ export interface DefaultWorkflowMoveContext {
     preserveProgress?: boolean;
     preserveWorktree?: boolean;
     preservePause?: boolean;
+    /**
+     * FNXC:TaskRetryReleaseIntent 2026-09-22-07:39:
+     * RUFU-261 release-intent mirror of `MoveTaskOptions.parkOnHold` (see the doc there).
+     * Threaded through the single `DefaultWorkflowMoveContext` construction in
+     * `task-store/moves.ts`; read ONLY by the hold-lane park predicate below. Consumed as
+     * `options.parkOnHold !== false`, so an absent value (every non-retry caller) preserves the
+     * existing park behavior bit-for-bit.
+     */
+    parkOnHold?: boolean;
   };
   /**
    * FNXC:WorkflowLifecycleColumns 2026-07-30-08:05 (Phase C convergence):
@@ -295,11 +304,26 @@ export function applyResetOnEntryEffects(ctx: DefaultWorkflowMoveContext): void 
   operator dragging a card back to the queue is parking it, and on a renamed board that
   park silently stopped happening — the scheduler then re-dispatched the card the
   operator had just pulled back.
+
+  FNXC:TaskRetryReleaseIntent 2026-09-22-07:39:
+  RUFU-261 — this predicate is the ONLY move-path writer of `userPaused = true`, and it keyed on
+  requester (`moveSource === "user"`) when the durable question is intent. An operator Retry is
+  also operator-attributed (FNXC:ToolPermissionGates keeps the `"user"` source on `fn_task_retry`
+  for the audit trail), so the retry rebound walked into the hold lane and parked the card it was
+  asked to run: the scheduler treats `userPaused` as a durable operator stop, nothing ever clears
+  it, and 11 real cards sat dispatch-refused 2–14 days (AGENTS.md Move-Task contract: "Engine
+  rebounds must not set `userPaused`"). The predicate now reads intent, not just requester:
+  `options.parkOnHold === false` is the explicit RELEASE statement every Retry surface carries,
+  and the move falls through to the existing clear below — which also lifts a stale park from a
+  pre-fix retry or an earlier drag, making a re-Retry self-healing. Drag-to-queue (no option),
+  intake creation, and engine rebounds are untouched. `preservePause` keeps precedence: the clear
+  branch stays guarded by `!options.preservePause` (FN-7851), and this option — like
+  `preservePause` — never SETS a pause, only suppresses or clears one.
   */
   const holdLane = ctx.lifecycleColumns
     ? ctx.lifecycleColumns.hold ?? ctx.lifecycleColumns.intake
     : "todo";
-  if (moveSource === "user" && toColumn === holdLane) {
+  if (moveSource === "user" && toColumn === holdLane && options.parkOnHold !== false) {
     task.userPaused = true;
   } else if (!options.preservePause) {
     task.userPaused = undefined;

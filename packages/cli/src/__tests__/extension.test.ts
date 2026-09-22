@@ -3914,6 +3914,10 @@ pgTest("fn pi extension (runnable structured-output regression slice)", () => {
       expect(updated?.worktree).toBeFalsy();
       expect(updated?.branch).toBeFalsy();
       expect(updated?.sessionFile).toBeFalsy();
+      // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): the retried card must be DISPATCHABLE.
+      // On HEAD this user-sourced reopen to the hold lane set userPaused=true (durable scheduler refusal);
+      // without parkOnHold:false the park returns and this assertion fails.
+      expect(updated?.userPaused).toBeUndefined();
       expect(updated?.steps[0].status).toBe("done");
       expectRetryCountersReset(updated);
       expect(updated?.mergeRetries).toBe(0);
@@ -3975,6 +3979,8 @@ pgTest("fn pi extension (runnable structured-output regression slice)", () => {
       expect(updated?.error).toBeFalsy();
       expect(updated?.paused).toBeUndefined();
       expect(updated?.pausedReason).toBeUndefined();
+      // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): release intent must survive the retry — no self-inflicted park.
+      expect(updated?.userPaused).toBeUndefined();
       expect(updated?.steps[1].status).toBe("in-progress");
       expectRetryCountersReset(updated);
       expect(updated?.mergeRetries).toBe(0);
@@ -4015,6 +4021,8 @@ pgTest("fn pi extension (runnable structured-output regression slice)", () => {
       expect(updated?.column).toBe("todo");
       expect(updated?.status).toBeFalsy();
       expect(updated?.error).toBeFalsy();
+      // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): release intent must survive the retry — no self-inflicted park.
+      expect(updated?.userPaused).toBeUndefined();
       expect(updated?.steps[1].status).toBe("in-progress");
       expectRetryCountersReset(updated);
       expect(updated?.mergeRetries).toBe(9);
@@ -4044,6 +4052,8 @@ pgTest("fn pi extension (runnable structured-output regression slice)", () => {
       expect(updated?.column).toBe("todo");
       expect(updated?.status).toBeFalsy();
       expect(updated?.error).toBeFalsy();
+      // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): release intent must survive the retry — no self-inflicted park.
+      expect(updated?.userPaused).toBeUndefined();
       expect(updated?.steps).toEqual([]);
       expect(updated?.mergeRetries).toBe(0);
     });
@@ -4230,6 +4240,8 @@ pgTest("fn pi extension (runnable structured-output regression slice)", () => {
       expect(updated?.column).toBe("todo");
       expect(updated?.status).toBeFalsy();
       expect(updated?.error).toBeFalsy();
+      // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): release intent must survive the retry — no self-inflicted park.
+      expect(updated?.userPaused).toBeUndefined();
       expect(updated?.steps[1].status).toBe("in-progress");
       expect(updated?.mergeRetries).toBe(5);
     });
@@ -4258,6 +4270,8 @@ pgTest("fn pi extension (runnable structured-output regression slice)", () => {
       expect(updated?.column).toBe("todo");
       expect(updated?.status).toBeFalsy();
       expect(updated?.error).toBeFalsy();
+      // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): release intent must survive the retry — no self-inflicted park.
+      expect(updated?.userPaused).toBeUndefined();
       expect(updated?.steps).toEqual([]);
       expect(updated?.mergeRetries).toBe(0);
     });
@@ -4402,6 +4416,9 @@ pgTest("fn pi extension (runnable structured-output regression slice)", () => {
       expect(updated?.column).toBe("todo");
       expect(updated?.status).toBeFalsy();
       expect(updated?.error).toBeFalsy();
+      // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): the GENERIC fallthrough carried
+      // { moveSource: "user" } with no preserveProgress — the RUFU-195-class self-park. Release intent pinned on the row.
+      expect(updated?.userPaused).toBeUndefined();
       expectRetryCountersReset(updated);
       expect(updated?.mergeRetries).toBe(0);
     });

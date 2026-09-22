@@ -2626,7 +2626,8 @@ export default function kbExtension(pi: ExtensionAPI) {
         /* FNXC:WorkflowResolvedColumns 2026-07-30-22:20: census-invisible moveTask DESTINATION — a call argument, not a comparison. This is an OPERATOR-triggered Retry: on a board that does not declare `todo` the move is REJECTED and the retry fails in the operator's face. The reply text below uses the SAME resolved value so it cannot name a lane the card did not go to. */
         const retryTarget = await fusionCore.resolveReboundTargetForTask(store, params.id);
         /* FNXC:ToolPermissionGates 2026-07-30-13:55: fn_task_retry is a user-facing lever — carry the user move source (target resolves by role). */
-        await store.moveTask(params.id, retryTarget, { preserveProgress: true, moveSource: "user" });
+        /* FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): the user source is the AUDIT trail; `parkOnHold: false` states RELEASE intent so the hold-lane park (reserved for a drag-back-to-stop) does not park the card the operator just asked to run — the collision with the AGENTS.md Move-Task contract ("Engine rebounds must not set userPaused") is gone. */
+        await store.moveTask(params.id, retryTarget, { preserveProgress: true, moveSource: "user", parkOnHold: false });
         return {
           content: [{ type: "text", text: `Retried ${params.id} → ${retryTarget} (unusable worktree session metadata cleared)` }],
           details: { taskId: params.id, newColumn: 'todo' },
@@ -2650,8 +2651,8 @@ export default function kbExtension(pi: ExtensionAPI) {
           );
           /* FNXC:WorkflowResolvedColumns 2026-07-30-22:20: census-invisible moveTask DESTINATION — same operator Retry path as above. */
           const executionRetryTarget = await fusionCore.resolveReboundTargetForTask(store, params.id);
-          /* FNXC:ToolPermissionGates 2026-07-30-13:55: fn_task_retry is a user-facing lever — carry the user move source (target resolves by role). */
-          await store.moveTask(params.id, executionRetryTarget, { preserveProgress: true, moveSource: "user" });
+          /* FNXC:ToolPermissionGates 2026-07-30-13:55: fn_task_retry is a user-facing lever — carry the user move source (target resolves by role). FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): parkOnHold:false = release intent, the user source stays as audit attribution. */
+          await store.moveTask(params.id, executionRetryTarget, { preserveProgress: true, moveSource: "user", parkOnHold: false });
           return {
             content: [{ type: "text", text: `Retried ${params.id} → ${executionRetryTarget} (execution failure, preserving step progress)` }],
             details: { taskId: params.id, newColumn: 'todo' },
@@ -2689,8 +2690,10 @@ export default function kbExtension(pi: ExtensionAPI) {
       Resolve once, then use that value everywhere the operator or a downstream tool reads it.
       */
       // FNXC:ToolPermissionGates 2026-07-26-13:55: user-facing retry move carries the user/hard-cancel source (Move-Task contract).
+      // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): parkOnHold:false states release intent —
+      // without it this generic branch self-inflicted the hold-lane park (RUFU-195 et al.) on a user-sourced move.
       const retryTarget = await fusionCore.resolveReboundTargetForTask(store, params.id);
-      await store.moveTask(params.id, retryTarget, { moveSource: "user" });
+      await store.moveTask(params.id, retryTarget, { moveSource: "user", parkOnHold: false });
 
       // Log the retry action
       await store.logEntry(params.id, "Retry requested via Fusion extension", `Task reset to ${retryTarget} for retry`);

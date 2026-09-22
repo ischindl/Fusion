@@ -991,6 +991,15 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
           preserveProgress: options?.preserveProgress,
           preserveWorktree: options?.preserveWorktree,
           preservePause: options?.preservePause,
+          /*
+          FNXC:TaskRetryReleaseIntent 2026-09-22-07:39:
+          RUFU-261 — `parkOnHold` must ride this single pass-through or the option is silently
+          dropped between `moveTask` and the only park writer (`applyResetOnEntryEffects`). This
+          construction is the sole production route from `MoveTaskOptions` to the hook, so one
+          threaded field covers every present and future retry caller — the per-caller post-move
+          clear alternative was rejected precisely because each new caller would re-invent the fix.
+          */
+          parkOnHold: options?.parkOnHold,
         },
         resetSteps: () => store.resetAllStepsToPending(task),
         /*

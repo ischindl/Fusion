@@ -1763,8 +1763,18 @@ export async function runTaskRetry(id: string, projectName?: string) {
     // FNXC:TaskWedgeNotifications 2026-08-10-20:15: a human Retry proves intervention and mints a fresh bounded terminal-failure budget.
     await context.store.resetTerminalFailureAutoRecoveryBudget(id);
 
+    /*
+    FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261):
+    All three `fn task retry` re-queues below carry `parkOnHold: false` — the explicit RELEASE
+    statement at the hold-lane park seam. On HEAD these moves derive `moveSource: "engine"`
+    (moves.ts default) and therefore already do not park, but the published CLI surface reproduced
+    the retry-parked-card failure on-board (RUFU-196); stating release intent here makes the
+    guarantee explicit and regression-proof should the source attribution ever mirror the
+    extension tool's `moveSource: "user"` (FNXC:ToolPermissionGates symmetry). `fn task move`
+    (a genuine manual gesture) deliberately keeps parking.
+    */
     if (isMissingWorktreeSessionRetry) {
-      await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, retryHoldColumn as never, { preserveProgress: true }));
+      await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, retryHoldColumn as never, { preserveProgress: true, parkOnHold: false }));
       await retryBoardCall(context, id, "update task", () => context.store.updateTask(id, {
         status: null,
         error: null,
@@ -1786,7 +1796,7 @@ export async function runTaskRetry(id: string, projectName?: string) {
     // and merge failures (all steps done).
     if (isInReviewRetry) {
       if (isExecutionFailureInReview) {
-        await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, retryHoldColumn as never, { preserveProgress: true }));
+        await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, retryHoldColumn as never, { preserveProgress: true, parkOnHold: false }));
         await retryBoardCall(context, id, "update task", () => context.store.updateTask(id, {
           status: null,
           error: null,
@@ -1833,7 +1843,7 @@ export async function runTaskRetry(id: string, projectName?: string) {
     crashing. Found by review, not by me, and not by any tool: the census counts comparisons and sees
     none of these, and a same-file grep for the double-quoted form reports clean.
     */
-    await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, retryHoldColumn as never));
+    await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, retryHoldColumn as never, { parkOnHold: false }));
 
     // Clear failure state and stale branch refs so retry can choose a fresh base.
     await retryBoardCall(context, id, "update task", () => context.store.updateTask(id, {
