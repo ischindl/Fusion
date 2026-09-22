@@ -187,7 +187,7 @@ import {
 } from "./planning-handoff-recovery.js";
 import { getPromptPath } from "./execution/spec-staleness.js";
 import { evaluateStrandedHoldContinuation, seedPreReleasePlanReviewContinuation } from "./plan-review-continuation.js";
-import { evaluateStrandedContinuationReclaim, RECLAIM_RETIRED_STATE } from "./workflows/stranded-continuation-reclaim.js";
+import { evaluateStrandedContinuationReclaim, strandedHoldConditionKey, RECLAIM_RETIRED_STATE } from "./workflows/stranded-continuation-reclaim.js";
 /*
 FNXC:Workspace 2026-06-22-14:10 (Phase D review G — cycle dissolved):
 `isRepoLanded` is the CANONICAL per-repo landed predicate (Phase C, exported A6). It now lives in
@@ -1124,6 +1124,22 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
    */
   private strandedHoldContinuationNoActionAudited = new Set<string>();
   private principalHeldPlanningNoActionAudited = new Set<string>();
+  /*
+  FNXC:StrandedContinuationReclaim 2026-09-22-14:21 (RUFU-263):
+  Two memos bound the stranded-reclaim noise per (taskId, nodeId, state, blockedReason) CONDITION, keyed
+  through `strandedHoldConditionKey`, instead of per maintenance pass:
+
+  - `strandedContinuationAnnounced` remembers that the card already got its `[recovery]` task-log line and
+    re-queue event row for this exact condition, so an unchanged condition is announced once. It is set
+    only after the log write lands, matching the house convention below.
+  - `strandedContinuationNoActionAudited` records the sustained condition once in the event store.
+
+  Restart costs one extra announcement per condition, which is what the house convention accepts; the
+  DURABLE bound is the `retryAfter` deferral the classifier stamps on the row itself, which survives a
+  restart because it is the same due-gate every reader honours.
+  */
+  private strandedContinuationAnnounced = new Set<string>();
+  private strandedContinuationNoActionAudited = new Set<string>();
   /* FNXC:SymbolLock 2026-07-30-14:20: idle symbol-lock sweeps emit one no-action audit until a stale lock re-arms the diagnostic. */
   private symbolLockNoActionAudited = false;
   /*
@@ -9306,6 +9322,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         states: [...ACTIVE_WORKFLOW_WORK_ITEM_STATES],
       });
       let repaired = 0;
+      /* FNXC:StrandedContinuationReclaim 2026-09-22-14:21 (RUFU-263): holds whose wait is real are deferred on a ladder, counted separately from reclaims. */
+      let deferredCount = 0;
       for (const item of due) {
         try {
           /*
@@ -9317,6 +9335,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           const terminalColumns = await resolveTaskLifecycleColumns(this.store, item.taskId).catch(() => undefined);
           const doneColumn = terminalColumns?.complete ?? "done";
           const livenessSignal = liveness(item.taskId);
+          /* One signature per (taskId, nodeId, state, blockedReason) condition, shared by the two noise memos. */
+          const conditionKey = strandedHoldConditionKey(item, item.blockedReason);
           const verdict = evaluateStrandedContinuationReclaim({
             item,
             taskMissing: !task,
@@ -9333,8 +9353,65 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             stalenessMs: Math.max(0, now - new Date(item.updatedAt).getTime()),
             graceMs,
             now,
+            /*
+            FNXC:StrandedContinuationReclaim 2026-09-22-14:21 (RUFU-263):
+            The task-level evidence that says whether a hold's stated blocker is still real. Both fields are
+            already hydrated on the `Task` row (the FN-178 overlap re-check and the scheduler's dependency
+            release read the same two), so validation costs no extra query.
+            */
+            taskBlockedBy: task?.blockedBy ?? null,
+            taskOverlapBlockedBy: task?.overlapBlockedBy ?? null,
+            alreadyAnnounced: this.strandedContinuationAnnounced.has(conditionKey),
           });
+          /* A wait an owning seam can re-take or release: the caller writes NOTHING at all. */
           if (verdict.action === "none") continue;
+          const audit = async (
+            type: "workflowWorkItem:reconcile-stranded-requeued" | "workflowWorkItem:reconcile-stranded-retired" | "workflowWorkItem:reconcile-stranded-no-action",
+            metadata: Record<string, unknown>,
+          ): Promise<void> => {
+            // House convention: a no-action finding is deduped per condition and marked only after the write lands.
+            if (type.endsWith("no-action") && this.strandedContinuationNoActionAudited.has(conditionKey)) return;
+            await createRunAuditor(this.store, {
+              runId: generateSyntheticRunId("reconcile-stranded-continuation", item.taskId),
+              agentId: "self-healing",
+              taskId: item.taskId,
+              taskLineageId: task?.lineageId,
+              phase: "reconcile-stranded-continuation",
+            }).database({ type: type as DatabaseMutationType, target: item.id, metadata });
+            // FNXC:StrandedContinuationReclaim 2026-09-22-14:21: a failed audit write stays unmarked so the next pass can still record it.
+            if (type.endsWith("no-action")) this.strandedContinuationNoActionAudited.add(conditionKey);
+          };
+          const rowMetadata = {
+            /* Ids/counts/outcomes only — never `lastError` prose or node config. */
+            taskId: item.taskId,
+            workItemId: item.id,
+            nodeId: item.nodeId,
+            kind: item.kind,
+            priorState: item.state,
+            reason: verdict.reason,
+            stalenessMs: Math.max(0, now - new Date(item.updatedAt).getTime()),
+          };
+          /*
+          FNXC:StrandedContinuationReclaim 2026-09-22-14:21 (RUFU-263):
+          A sustained hold is DEFERRED, not re-queued: the row keeps its state and its `blockedReason` (the
+          reason is the evidence the next pass re-reads) and gains a durable `retryAfter`, so the due-gate
+          hides it from this sweep until the ladder says it is worth another look. The same gate is what
+          makes the bound survive a restart. No task-log line and no re-queue event row are written here;
+          the condition is recorded once, deduped, as the no-action row below.
+          */
+          if (verdict.action === "defer") {
+            const deferred = await this.store.transitionWorkflowWorkItem(item.id, item.state, {
+              expectedState: item.state,
+              retryAfter: new Date(verdict.retryAfterMs).toISOString(),
+            });
+            if (deferred.state !== item.state) continue;
+            deferredCount += 1;
+            await audit("workflowWorkItem:reconcile-stranded-no-action", {
+              ...rowMetadata,
+              nextCheckAt: new Date(verdict.retryAfterMs).toISOString(),
+            });
+            continue;
+          }
           const target = verdict.action === "retire" ? RECLAIM_RETIRED_STATE : "runnable";
           const written = await this.store.transitionWorkflowWorkItem(item.id, target, {
             /*
@@ -9347,44 +9424,51 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             leaseOwner: null,
             leaseExpiresAt: null,
             blockedReason: null,
+            /*
+            FNXC:StrandedContinuationReclaim 2026-09-22-14:21 (RUFU-263): a reclaim also clears any deferral
+            this sweep stamped earlier — otherwise a row whose wait has just genuinely cleared would stay
+            invisible to the dispatcher until its old `retryAfter` expired, turning the bound into a freeze.
+            */
+            retryAfter: null,
             expectedState: item.state,
           });
           // CAS lost: another writer moved the row between the scan and this write. Leave it to them.
           if (written.state !== target) continue;
           repaired += 1;
           if (verdict.action === "requeue") {
-            await this.store.logEntry(
-              item.taskId,
-              `[recovery] workflow continuation re-queued — ${item.nodeId} was stranded in '${item.state}' (${verdict.reason})`,
-            ).catch(() => undefined);
+            /*
+            One card-history note per condition, not per pass: an unchanged condition that this sweep already
+            announced stays out of the log, because the RUFU-220 card carried 782 identical `[recovery]`
+            lines while the card itself never moved. The marker is set after the log write lands, so a failed
+            write re-announces on the next pass instead of silently dropping the operator's only evidence.
+            */
+            if (verdict.announceRecovery && !this.strandedContinuationAnnounced.has(conditionKey)) {
+              const announced = await this.store.logEntry(
+                item.taskId,
+                `[recovery] workflow continuation re-queued — ${item.nodeId} was stranded in '${item.state}' (${verdict.reason})`,
+              ).then(() => true).catch(() => false);
+              // FNXC:StrandedContinuationReclaim 2026-09-22-14:21: marked only when the write landed (FN-8600 convention).
+              if (announced) this.strandedContinuationAnnounced.add(conditionKey);
+            }
           }
-          await createRunAuditor(this.store, {
-            runId: generateSyntheticRunId("reconcile-stranded-continuation", item.taskId),
-            agentId: "self-healing",
-            taskId: item.taskId,
-            taskLineageId: task?.lineageId,
-            phase: "reconcile-stranded-continuation",
-          }).database({
-            type: (verdict.action === "retire"
+          await audit(
+            verdict.action === "retire"
               ? "workflowWorkItem:reconcile-stranded-retired"
-              : "workflowWorkItem:reconcile-stranded-requeued") as DatabaseMutationType,
-            target: item.id,
-            /* Ids/counts/outcomes only — never `lastError` prose or node config. */
-            metadata: {
-              taskId: item.taskId,
-              workItemId: item.id,
-              nodeId: item.nodeId,
-              kind: item.kind,
-              priorState: item.state,
-              reason: verdict.reason,
-              stalenessMs: Math.max(0, now - new Date(item.updatedAt).getTime()),
-            },
-          });
+              : "workflowWorkItem:reconcile-stranded-requeued",
+            rowMetadata,
+          );
         } catch (error) {
           log.warn(`reconcileStrandedWorkflowContinuations: failed for ${item.id}: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
-      if (repaired > 0) log.log(`Reclaimed ${repaired} stranded workflow continuation(s)`);
+      if (repaired > 0 || deferredCount > 0) {
+        // Two numbers, because they are two different promises: a reclaim makes the row runnable now, a
+        // deferral leaves a real wait in place and schedules the next look.
+        log.log(
+          `Reclaimed ${repaired} stranded workflow continuation(s)`
+          + (deferredCount > 0 ? `; left ${deferredCount} hold(s) in place on the re-check ladder` : ""),
+        );
+      }
       return repaired;
     } catch (error) {
       log.warn(`reconcileStrandedWorkflowContinuations failed: ${error instanceof Error ? error.message : String(error)}`);

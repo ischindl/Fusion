@@ -1094,6 +1094,26 @@ export type DatabaseMutationType =
    * Emitted at most once per taskId while the blocking provenance persists (deduped in-memory).
    * Metadata: { taskId, reason: "failure-provenance", sweep: "stuck-in-progress" | "stranded-todo", marker?: string }
    */
+  /**
+   * FNXC:StrandedContinuationReclaim 2026-09-22-14:21 (RUFU-263):
+   * The stranded-continuation reclaim sweep (FN-8901/FN-8902) — all three members, declared together
+   * because a caller that routes on a verdict emits whichever of the three its disposition names, and an
+   * undeclared literal only surfaces at runtime as an event row that no schema lists. `-requeued` and
+   * `-retired` shipped cast rather than declared; the no-action sibling is where that gap was noticed.
+   *
+   * `-requeued`: a stranded continuation was forced back to a claimable state. `-retired`: its task can no
+   * longer run it (missing/terminal), so the row was cancelled instead.
+   *
+   * `-no-action`: the sweep found a `held` continuation whose wait is REAL and therefore DEFERRED it on a
+   * durable `retryAfter` ladder instead of re-queueing it every maintenance pass. The row keeps its state
+   * and its `blockedReason`; this row is the only record that the sweep saw the condition and deliberately
+   * withheld recovery. Emitted at most once per (taskId, nodeId, state, blockedReason) condition while it
+   * persists (deduped in-memory; the durable bound is the deferral itself).
+   * Metadata: { taskId, workItemId, nodeId, kind, priorState, reason, stalenessMs, nextCheckAt }
+   */
+  | "workflowWorkItem:reconcile-stranded-requeued"
+  | "workflowWorkItem:reconcile-stranded-retired"
+  | "workflowWorkItem:reconcile-stranded-no-action"
   | "task:reconcile-stranded-completed-no-action"
   /**
    * FNXC:Lifecycle 2026-07-16-09:40:
