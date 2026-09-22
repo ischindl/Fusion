@@ -322,8 +322,8 @@ export async function routeGraphFailureToExecutionResume(
   failedNode: string,
   failureValue: string | undefined,
   resumeLanesMemo?: { lanes?: ResumeLanes },
-  nodeError?: string,
   boundaryEvidence?: MergeBoundaryRecoveryEvidence,
+  nodeError?: string,
 ): Promise<boolean> {
     /*
      * FNXC:WorkflowLifecycle 2026-06-29-11:08:

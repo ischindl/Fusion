@@ -114,7 +114,7 @@ describe("reviewStep — model settings threading", () => {
   });
 
   it("captures a terminal-only reviewer verdict through the production subscriber", async () => {
-    const terminalVerdict = "### Verdict: APPROVE\n### Summary\nTerminal text is complete.";
+    const terminalVerdict = approvingReview("### Verdict: APPROVE\n### Summary\nTerminal text is complete.");
     mockedCreateFnAgent.mockResolvedValue({
       session: {
         prompt: vi.fn().mockResolvedValue(undefined),
@@ -167,9 +167,16 @@ describe("reviewStep — model settings threading", () => {
     expect(result.verdict).toBe("APPROVE");
     expect(result.review).toBe(intact);
   });
-it("parses an exact-once verdict from a lagging mutable partial through the production subscriber", async () => {
-    const verdict = "### Verdict: APPROVE\n### Summary\nInput/Output is correct.";
-    const deltas = ["### Verdict: APPROVE\n", "### Summary\n", "Input/", "Output is correct."];
+  /*
+  FNXC:AssistantTextCapture 2026-09-22-12:40 (#sync-0922 resolution):
+  Upstream's FN-9356 exact-once case asserted via a bare "### Verdict: APPROVE". On this line
+  ReviewLeniency withholds prose-approval authority (a bare APPROVE parses to UNAVAILABLE by
+  design, FN-279), so the case is re-anchored on REVISE, which retains prose authority — the
+  capture shape under test is byte-identical and the dedupe assertion is unchanged.
+  */
+  it("parses an exact-once verdict from a lagging mutable partial through the production subscriber", async () => {
+    const verdict = "### Verdict: REVISE\n### Summary\nInput/Output is correct.";
+    const deltas = ["### Verdict: REVISE\n", "### Summary\n", "Input/", "Output is correct."];
     const output = { role: "assistant", content: [] as Array<{ type: string; text: string }> };
     const block = { type: "text", text: "" };
     output.content.push(block);
@@ -193,7 +200,7 @@ it("parses an exact-once verdict from a lagging mutable partial through the prod
 
     const result = await reviewStep("/tmp/worktree", "FN-9356", 1, "Mutable verdict", "plan", "# prompt");
 
-    expect(result.verdict).toBe("APPROVE");
+    expect(result.verdict).toBe("REVISE");
     expect(result.review).toBe(verdict);
   });
 

@@ -504,7 +504,8 @@ describe("NotificationService review-lane stall wedges", () => {
     );
     await service.stop();
   });
-}  /*
+
+  /*
   FNXC:Notification 2026-09-22-11:05:
   Upstream FN-9346 shipped this assertion in task-wedge-notification.test.ts, a file the RUFU-156
   eviction deleted (running it OOMs the host). The assertion is preserved here — same production
@@ -531,7 +532,7 @@ describe("NotificationService review-lane stall wedges", () => {
     store.emit("task:updated", blocked);
     store.emit("task:updated", blocked);
     await vi.waitFor(() => expect(sendMessageOnce).toHaveBeenCalledTimes(1));
-    const payload = sendMessageOnce.mock.calls[0]?.[0] as { content: string; metadata: Record<string, unknown> };
+    const payload = (sendMessageOnce.mock.calls as unknown as Array<[{ content: string; metadata: Record<string, unknown> }]>)[0][0];
     expect(payload.content).toContain("**Verified:** Session-isolated MCP support was verified unavailable.");
     expect(payload.content).toContain("**Why work stopped:** Persistent configuration was not changed.");
     expect(payload.content).toContain("**Not implemented:** Remaining implementation was not performed.");

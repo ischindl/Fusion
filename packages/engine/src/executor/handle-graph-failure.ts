@@ -1235,7 +1235,7 @@ export async function handleGraphFailure(
       if (await deps.routeRetryableRemediationGraphFailureToPreMergeFix(live, failedNode, failureValue)) {
         return;
       }
-      if (await deps.routeGraphFailureToExecutionResume(live, failedNode ?? "unknown", failureValue, resumeLanesMemo, nodeError)) {
+      if (await deps.routeGraphFailureToExecutionResume(live, failedNode ?? "unknown", failureValue, resumeLanesMemo, undefined, nodeError)) {
         return;
       }
       /*
