@@ -42,6 +42,7 @@ import {
   resolveWorktreeCapacityLimit,
   type WorkflowIr,
 } from "@fusion/core";
+import { createAsyncDataLayer, createConnectionSetFromUrl } from "@fusion/core";
 
 export function mapTuiConcurrencySettings(settings: Record<string, unknown> | null | undefined): { maxConcurrent: number; maxWorktrees: number } {
   const capacity = resolveEffectiveConcurrency(settings);
@@ -1046,6 +1047,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
   setHostTaskStore(cwd, store);
   const dashboardLayer = store.getAsyncLayer();
   if (!dashboardLayer) throw new Error("Dashboard runtime requires the project PostgreSQL AsyncDataLayer");
+
   // FNXC:PhysicalDeleteSqliteClass 2026-06-26-14:05:
   // Propagate the backend mode (asyncLayer) from the resolved TaskStore so
   // AutomationStore does not construct a SQLite file under PostgreSQL. The
@@ -1330,6 +1332,31 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     handler: (...args: any[]) => void;
   }> = [];
   const disposeCallbacks: Array<() => Promise<void> | void> = [];
+  /*
+  FNXC:PostgresHealth 2026-09-22-18:05:
+  /api/health probed through the store's shared runtime pool with a 5s
+  deadline. Measured in production: scheduler fan-out (hold-release sweep
+  prefetch over ~250 tasks, chat fanout, board feeds) queues more work than
+  even a 12-connection pool drains within the deadline, so the probe waited
+  in the pool queue and /api/health flapped ok→degraded→ok ("connection pool
+  saturated?") while PostgreSQL itself answered in <100ms. A liveness probe
+  must not compete with scheduler work: run connectivity, task-ID integrity,
+  and migration-marker queries on ONE dedicated max:1 connection built from
+  the same backend with the same (bypassed) isolation semantics. If the
+  dedicated connection cannot open, fall back to the store pool — degraded
+  behavior is no worse than before.
+  */
+  let postgresHealthLayerForServer: import("@fusion/core").AsyncDataLayer | undefined;
+  try {
+    const healthProbeConnections = await createConnectionSetFromUrl(dashboardLayer.backend!, {
+      poolMax: 1,
+      bypassProjectIsolation: true,
+    });
+    postgresHealthLayerForServer = createAsyncDataLayer(healthProbeConnections);
+    disposeCallbacks.push(() => healthProbeConnections.close());
+  } catch {
+    // Store-pool probe remains the fallback; health keeps its old semantics.
+  }
   let disposed = false;
   let shutdownInProgress = false;
 
@@ -2501,6 +2528,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     Pass the real engine PluginRunner (getRuntimeById) into createServer — never the bare PluginLoader. Chat, plugin setup/reload, workflow templates, and PR conflict resolution all read options.pluginRunner; the loader lacks getRuntimeById and historically produced the misleading "bundled Grok CLI runtime" error. Omit onMerge so server.ts derives engine.onMerge (semaphore + this.getPluginRunner()).
     */
     app = createServer(store, {
+      postgresHealthLayer: postgresHealthLayerForServer,
       engine: cwdEngine,
       engineManager,
       cliAgentHubResolver,
@@ -2848,6 +2876,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     createPluginRouter still mounts plugin-defined HTTP routes from pluginLoader when pluginRunner is undefined. Do not pass pluginLoader as pluginRunner here — that reintroduces the Grok getRuntimeById TypeError — and do not skip pluginLoadingPromise; CE /sessions and /artifacts depend on the loaded plugin route table.
     */
     app = createServer(store, {
+      postgresHealthLayer: postgresHealthLayerForServer,
       onMerge: uiOnlyOnMerge,
       centralCore: centralCoreForMesh ?? undefined,
       authStorage: dashboardAuthStorage,

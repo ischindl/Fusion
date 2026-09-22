@@ -2,6 +2,6 @@
 "@runfusion/fusion": minor
 ---
 
-summary: Add FUSION_PG_POOL_MAX so operators can raise the per-store PostgreSQL pool cap and stop health-banner flapping.
+summary: Health probes now run on a dedicated PostgreSQL connection; add FUSION_PG_POOL_MAX to raise the per-store pool cap.
 category: feature
-dev: Precedence is per-call `poolMax` option > `FUSION_PG_POOL_MAX` (integer 1..500, invalid values warn and fall back) > default 3. The dashboard health probe shares each store's runtime pool; under scheduler fan-out a cap of 3 can starve the 5s probe deadline.
+dev: /api/health connectivity, task-ID integrity, and migration-marker queries use a dedicated max:1 connection instead of the store's runtime pool, so scheduler fan-out can no longer flap ok/degraded. Precedence for pool size is per-call `poolMax` option > `FUSION_PG_POOL_MAX` (integer 1..500, invalid values warn and fall back) > default 3.
