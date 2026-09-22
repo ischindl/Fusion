@@ -43,7 +43,7 @@ describe("evaluateDashboardPostgresHealth", () => {
     const result = await evaluateDashboardPostgresHealth(store);
 
     expect(healthMocks.checkPostgresHealth).toHaveBeenCalledWith(layer);
-    expect(healthMocks.detectTaskIdIntegrityAnomaliesAsync).toHaveBeenCalledWith(layer.db);
+    expect(healthMocks.detectTaskIdIntegrityAnomaliesAsync).toHaveBeenCalledWith(layer.db, { projectId: undefined });
     expect(result.database.healthy).toBe(true);
     expect(result.taskIdIntegrity.status).toBe("ok");
   });

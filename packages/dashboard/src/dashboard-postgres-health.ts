@@ -99,7 +99,19 @@ export async function evaluateDashboardPostgresHealth(
 
   let taskIdIntegrity: DashboardTaskIdIntegrityHealth;
   try {
-    taskIdIntegrity = await withDeadline(() => detectTaskIdIntegrityAnomaliesAsync(layer.db), remaining(), "PostgreSQL task-ID integrity probe");
+    /*
+    FNXC:TaskIdIntegrity 2026-09-22-19:40:
+    Scope the detector to the project health actually represents (engine-bound
+    project, else the layer's own partition). Task IDs are unique per project
+    on PostgreSQL, so the unscoped global scan flags every cross-project ID
+    reuse as corruption — measured 31 false anomalies on a healthy 16-project
+    board.
+    */
+    taskIdIntegrity = await withDeadline(
+      () => detectTaskIdIntegrityAnomaliesAsync(layer.db, { projectId: context?.projectId ?? layer.projectId }),
+      remaining(),
+      "PostgreSQL task-ID integrity probe",
+    );
   } catch (error) {
     return failedHealth(
       checkedAt,

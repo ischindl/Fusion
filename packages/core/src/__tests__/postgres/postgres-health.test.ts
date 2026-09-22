@@ -147,6 +147,39 @@ pgDescribe("Task-ID integrity detector (U8) — VAL-HEALTH-003", () => {
     expect(report.status).toBe("ok");
   });
 
+  /*
+  FNXC:TaskIdIntegrity 2026-09-22-19:40:
+  `tasks` is keyed (project_id, id), so the SAME id legally exists in every
+  project — FN-001 in two projects is normal, not corruption. Production proved
+  the unscoped detector is partition-blind: 53 allocator rows across 16
+  projects produced 31 false anomalies ("2 rows for FN-001", "next_sequence=1
+  below FN-064") and a corruption banner on a verified-healthy allocator. With
+  a projectId the detector must see only that project's rows; without it the
+  legacy global scan is preserved for single-project/SQLite-parity callers.
+  */
+  it("scopes detection to one project and ignores cross-project ID reuse", async () => {
+    ctx = await setupCtx();
+    const db = ctx.layer.db;
+    const now = new Date().toISOString();
+    await db.execute(sql.raw(
+      `INSERT INTO ${PROJECT_SCHEMA}.tasks (project_id, id, description, "column", created_at, updated_at) VALUES
+       ('proj_a', 'FN-1', 'a', 'todo', '${now}', '${now}'),
+       ('proj_b', 'FN-1', 'b', 'todo', '${now}', '${now}')`,
+    ));
+    await db.execute(sql.raw(
+      `INSERT INTO ${PROJECT_SCHEMA}.distributed_task_id_state (project_id, prefix, next_sequence, committed_cluster_task_count, last_committed_task_id, updated_at) VALUES
+       ('proj_a', 'FN', 2, 0, NULL, '${now}'),
+       ('proj_b', 'FN', 2, 0, NULL, '${now}')`,
+    ));
+
+    const global = await detectTaskIdIntegrityAnomaliesAsync(db);
+    expect(global.anomalies.some((a) => a.kind === "duplicate_active_id" && a.affectedIds.includes("FN-1"))).toBe(true);
+
+    const scoped = await detectTaskIdIntegrityAnomaliesAsync(db, { projectId: "proj_a" });
+    expect(scoped.status).toBe("ok");
+    expect(scoped.anomalies).toEqual([]);
+  });
+
   it("detects sequence drift (next_sequence at or below used suffix)", async () => {
     ctx = await setupCtx();
     const db = ctx.layer.db;
