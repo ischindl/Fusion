@@ -195,6 +195,38 @@ Resolution order without `--project`:
 2. default project
 3. current-directory auto-detection
 
+### Routing visibility
+
+<!--
+FNXC:ProjectRoutingVisibility 2026-09-23-00:20:
+RUFU-269. The order above is the contract and is deliberately unchanged — cwd-over-default would break
+agent lanes that rely on a configured default. What changed is the silence around it: a default project
+pointing at another repo used to file cards there with no output naming the target, and the printed
+`Path:` looked cwd-relative. An operator standing in Fusion created two cards that landed physically in
+another project's checkout and only found out by listing that disk. Resolution provenance is now recorded
+on the project context, printed by every card-minting command, and confirmed interactively when the
+central default disagrees with the project the shell sits in.
+-->
+
+The order itself is unchanged; what changed is that the CLI now tells you which branch of it fired. `ProjectContext` carries the resolution source (`flag` / `default` / `cwd` / `cwd-fallback`) plus the project detected from the current directory, and every command that mints a card (`fn task create`, `duplicate`, `refine`) prints the target before it writes:
+
+```
+  Project: gedapp  /home/me/code/gedapp  (resolved via the central default project)
+  ✓ Created GEDA-1057: Fix checkout button
+    Column: triage
+    Path:   /home/me/code/gedapp/.fusion/tasks/GEDA-1057/
+```
+
+When the **default project** wins but the current directory belongs to a **different registered project**, the CLI writes a warning naming both projects to **stderr** before any board write. On `fn task create` at a real terminal it then asks `Create this card in project "<name>" anyway? [y/N]:`; declining exits 0 having written nothing — no task row and no `.fusion/tasks/<id>/` directory. `duplicate` and `refine` warn but never block, since they already name an existing card.
+
+The prompt never fires — the warning is still shown — when an answer cannot be typed:
+
+- `--yes` on `fn task create` (also stops `--yes` from leaking into the card title).
+- `--quiet` or `FUSION_QUIET=1`.
+- Piped or non-TTY stdin/stdout, so scripted pipelines cannot hang.
+
+An explicit `--project`, a cwd-detected target, and the unregistered-cwd local-store fallback are what the operator already asked for or already see announced elsewhere, so they are never second-guessed. An invalid `--project` value errors out during resolution and creates nothing. See [CLI reference — Project routing visibility](./cli-reference.md#project-routing-visibility).
+
 ## Project Health Tracking
 
 Central health tracking keeps mutable project metrics, including:

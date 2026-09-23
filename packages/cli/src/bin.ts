@@ -339,7 +339,7 @@ Usage:
   fn update [--check] [--global] [--json] [--channel <stable|beta>] [--force]
                                        Update Fusion on the selected release channel
   fn upgrade                           Alias for fn update
-  fn task create [desc] [opts]         Create a new task (goes to triage; supports --node <name>, --no-dedup)
+  fn task create [desc] [opts]         Create a new task (goes to triage; supports --node <name>, --no-dedup, --yes)
   fn task plan [description] [opts]    Create task via AI-guided planning (--resume <sessionId> continues a plan to create another task)
   fn task list                        List all tasks
   fn task show <id>                   Show task details, steps, log
@@ -528,7 +528,7 @@ Options:
   --no-github                Disable GitHub issue tracking (overrides project default)
   --github-repo <owner/repo> Repository override for the task's tracking issue
   --feedback <text>          Refinement feedback (non-interactive mode)
-  --yes                      Skip confirmation prompts (planning mode)
+  --yes                      Skip confirmation prompts (planning mode; task create cross-project routing)
   --limit, -l <n>            Max issues to import (default: 30, max: 100)
   --labels, -L <labels>      Comma-separated label filter for import
   --interactive, -i          Interactive mode for issue selection
@@ -626,6 +626,88 @@ function getFlagValueNumber(args: string[], flag: string): number | undefined {
 
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/**
+ * Parsed `fn task create [opts] <description>` arguments (everything after `task create`).
+ */
+export interface TaskCreateArgs {
+  /** Positional description text joined with spaces; empty when only flags were given. */
+  title: string;
+  /** `--attach` values. */
+  attachFiles: string[];
+  /** `--depends` values. */
+  depends: string[];
+  /** `--node` value. */
+  nodeName?: string;
+  /** `--no-dedup` was passed. */
+  noDedup: boolean;
+  /** `--github` / `--no-github`. */
+  github?: boolean;
+  /** `--github-repo` value. */
+  githubRepo?: string;
+  /** `--yes` was passed: answer the cross-project routing confirmation affirmatively. */
+  yes: boolean;
+}
+
+/**
+ * FNXC:ProjectRoutingVisibility 2026-09-22-17:05 (RUFU-269): the create argument loop had no `--yes`
+ * branch, so the flag — advertised in help as "Skip confirmation prompts (planning mode)" and already
+ * honoured by `fn task plan` — fell through into the positional description. `fn task create "…" --yes`
+ * therefore minted a card titled with the literal flag, and that polluted text became the fingerprint
+ * every later create with the same real description was compared against. The loop is extracted as a
+ * pure function so the flag is recognised, forwarded, and unit-testable, and `--yes` gains its second
+ * meaning: answer the cross-project routing confirmation affirmatively (RUFU-242 — 10 cards lost silently).
+ *
+ * @param {string[]} createArgs - argv after `task create`
+ * @returns {TaskCreateArgs}
+ */
+export function parseTaskCreateArgs(createArgs: string[]): TaskCreateArgs {
+  const attachFiles: string[] = [];
+  const dependsIds: string[] = [];
+  const descParts: string[] = [];
+  let nodeName: string | undefined;
+  let noDedup = false;
+  let github: boolean | undefined;
+  let githubRepo: string | undefined;
+  let yes = false;
+
+  for (let i = 0; i < createArgs.length; i++) {
+    if (createArgs[i] === "--attach" && i + 1 < createArgs.length) {
+      attachFiles.push(createArgs[i + 1]);
+      i++; // skip the value
+    } else if (createArgs[i] === "--depends" && i + 1 < createArgs.length) {
+      dependsIds.push(createArgs[i + 1]);
+      i++; // skip the value
+    } else if (createArgs[i] === "--node" && i + 1 < createArgs.length) {
+      nodeName = createArgs[i + 1];
+      i++; // skip the value
+    } else if (createArgs[i] === "--no-dedup") {
+      noDedup = true;
+    } else if (createArgs[i] === "--github") {
+      github = true;
+    } else if (createArgs[i] === "--no-github") {
+      github = false;
+    } else if (createArgs[i] === "--github-repo" && i + 1 < createArgs.length) {
+      githubRepo = createArgs[i + 1];
+      i++; // skip the value
+    } else if (createArgs[i] === "--yes") {
+      yes = true;
+    } else {
+      descParts.push(createArgs[i]);
+    }
+  }
+
+  return {
+    title: descParts.join(" "),
+    attachFiles,
+    depends: dependsIds,
+    nodeName,
+    noDedup,
+    github,
+    githubRepo,
+    yes,
+  };
 }
 
 function parsePrCreateOptions(args: string[]) {
@@ -1252,39 +1334,19 @@ async function main() {
         const subcommand = args[1];
         switch (subcommand) {
           case "create": {
-            const createArgs = args.slice(2);
-            const attachFiles: string[] = [];
-            const dependsIds: string[] = [];
-            let nodeName: string | undefined;
-            let noDedup = false;
-            let github: boolean | undefined;
-            let githubRepo: string | undefined;
-            const descParts: string[] = [];
-            for (let i = 0; i < createArgs.length; i++) {
-              if (createArgs[i] === "--attach" && i + 1 < createArgs.length) {
-                attachFiles.push(createArgs[i + 1]);
-                i++; // skip the value
-              } else if (createArgs[i] === "--depends" && i + 1 < createArgs.length) {
-                dependsIds.push(createArgs[i + 1]);
-                i++; // skip the value
-              } else if (createArgs[i] === "--node" && i + 1 < createArgs.length) {
-                nodeName = createArgs[i + 1];
-                i++; // skip the value
-              } else if (createArgs[i] === "--no-dedup") {
-                noDedup = true;
-              } else if (createArgs[i] === "--github") {
-                github = true;
-              } else if (createArgs[i] === "--no-github") {
-                github = false;
-              } else if (createArgs[i] === "--github-repo" && i + 1 < createArgs.length) {
-                githubRepo = createArgs[i + 1];
-                i++; // skip the value
-              } else {
-                descParts.push(createArgs[i]);
-              }
-            }
-            const title = descParts.join(" ");
-            await runTaskCreate(title || undefined, attachFiles.length > 0 ? attachFiles : undefined, dependsIds.length > 0 ? dependsIds : undefined, projectName, nodeName, noDedup, github !== undefined || githubRepo !== undefined ? { github, githubRepo } : undefined);
+            const create = parseTaskCreateArgs(args.slice(2));
+            await runTaskCreate(
+              create.title || undefined,
+              create.attachFiles.length > 0 ? create.attachFiles : undefined,
+              create.depends.length > 0 ? create.depends : undefined,
+              projectName,
+              create.nodeName,
+              create.noDedup,
+              create.github !== undefined || create.githubRepo !== undefined
+                ? { github: create.github, githubRepo: create.githubRepo }
+                : undefined,
+              create.yes,
+            );
             break;
           }
           case "plan": {

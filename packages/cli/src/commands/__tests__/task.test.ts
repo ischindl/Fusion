@@ -273,7 +273,7 @@ import {
 } from "@fusion/core/gh-cli";
 import { GitHubClient, generatePrMetadata, isGitHubIssueAlreadyImported } from "@fusion/dashboard";
 import { createSession, submitResponse } from "@fusion/dashboard/planning";
-import { resolveProject, createLocalStore } from "../../project-context.js";
+import { resolveProject, createLocalStore, closeProjectStore } from "../../project-context.js";
 import { admitTaskToWip, aiMergeTask, isFirstPlanningToWipAdmission, planTaskWorktreePath, runAiMerge, landWorkspaceTask, reconcileUnownedStaleMergeStamp, clearOwnedMergeStamp } from "@fusion/engine";
 
 const mockedExec = vi.mocked(exec);
@@ -1850,6 +1850,326 @@ describe("project-aware task command behavior", () => {
     await expect(runTaskList("demo-project")).rejects.toThrow(
       "Project 'demo-project' not found. Run 'fn project list' to see registered projects."
     );
+  });
+});
+
+/*
+FNXC:ProjectRoutingVisibility 2026-09-22-23:26 (RUFU-269): the routing acceptance matrix at the CLI seam.
+RUFU-242 filed 10 cards into the wrong project from one mistyped `--project`, and the printed card path was
+relative to the shell's cwd, so it pointed at a directory that did not contain the card. These cases pin the
+contract that fixes it: the target and its absolute path are reported, a default-project target that is not
+the cwd project is announced (and confirmed on a terminal), a decline writes NOTHING, `--yes` answers the
+confirm without asking, and quiet/off-TTY runs never block on an answer. The pure decision matrix lives in
+`src/__tests__/project-routing.test.ts`; these cases prove the seams that print, prompt and write.
+*/
+describe("runTaskCreate project routing", () => {
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+  let cwdSpy: ReturnType<typeof vi.spyOn>;
+
+  const FUSION_CWD = "/home/user/Fusion";
+  const GEDA_PATH = "/home/user/other/geda";
+  const CARD_PATH = `${GEDA_PATH}/.fusion/tasks/FN-002/`;
+
+  const printed = () => logSpy.mock.calls.map((call: unknown[]) => call.join(" ")).join("\n");
+  const warned = () => errorSpy.mock.calls.map((call: unknown[]) => call.join(" ")).join("\n");
+
+  /**
+   * A resolved `geda` context while the shell stands in the registered `Fusion` project. Returns its own
+   * `createTask` spy because the assertion that matters is always "was the card written or not".
+   */
+  function routingContext(over: Record<string, unknown> = {}) {
+    const createTask = vi.fn().mockResolvedValue(makeTask({ id: "FN-002", description: "routing card" }));
+    const context = {
+      projectId: "proj-geda",
+      projectPath: GEDA_PATH,
+      projectName: "geda",
+      isRegistered: true,
+      resolvedFrom: "default",
+      cwdProject: { id: "fusion", name: "Fusion", path: FUSION_CWD },
+      store: {
+        getRootDir: vi.fn().mockReturnValue(GEDA_PATH),
+        listTasks: vi.fn().mockResolvedValue([]),
+        createTask,
+        resolveOriginWorkflowOverrideId: vi.fn().mockResolvedValue(undefined),
+        addAttachment: vi.fn(),
+      },
+      ...over,
+    };
+    return { context, createTask };
+  }
+
+  /** Make this process look like (or stop looking like) an interactive terminal. */
+  const setTty = (isTty: boolean) => {
+    Object.defineProperty(process.stdin, "isTTY", { value: isTty, configurable: true });
+    Object.defineProperty(process.stdout, "isTTY", { value: isTty, configurable: true });
+  };
+
+  const answerPrompt = (answer: string) => {
+    vi.mocked(createInterface).mockReturnValue({
+      question: vi.fn().mockResolvedValue(answer),
+      close: vi.fn(),
+    } as never);
+  };
+
+  beforeEach(() => {
+    logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(FUSION_CWD);
+    vi.mocked(runDeterministicDuplicateGuard).mockResolvedValue({
+      action: "proceed",
+      fingerprint: null,
+      releaseLock: vi.fn(),
+    });
+    setTty(false);
+  });
+
+  afterEach(() => {
+    /*
+    FNXC:ProjectRoutingVisibility 2026-09-22-23:26 (RUFU-269): `setTty` replaces `isTTY` with
+    `Object.defineProperty`, which `vi.restoreAllMocks()` does not undo. Left alone, a TTY asserted here
+    would leak into every later suite in this file and silently change their prompt behaviour.
+    */
+    setTty(false);
+    vi.restoreAllMocks();
+  });
+
+  it("warns on stderr when the default project is not the cwd project, and still creates off a terminal", async () => {
+    const { context, createTask } = routingContext();
+    vi.mocked(resolveProject).mockResolvedValueOnce(context as never);
+
+    await runTaskCreate("cross-project default card", undefined, undefined, undefined, undefined, true);
+
+    expect(warned()).toContain("Project routing");
+    expect(warned()).toContain("--project Fusion");
+    expect(warned()).toContain("fn project set-default");
+    // Off a terminal the warning must not become a question the process hangs on.
+    expect(createInterface).not.toHaveBeenCalled();
+    expect(createTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports the target's absolute path and resolution source instead of a cwd-relative card path", async () => {
+    const { context, createTask } = routingContext({ resolvedFrom: "flag" });
+    vi.mocked(resolveProject).mockResolvedValueOnce(context as never);
+
+    await runTaskCreate("exact flag target", undefined, undefined, "geda", undefined, true);
+
+    const output = printed();
+    // An explicitly chosen target needs no warning: only the source and the real path.
+    expect(warned()).not.toContain("Project routing");
+    expect(output).toContain("Project: geda");
+    expect(output).toContain("(resolved via the --project flag)");
+    expect(output).toContain(CARD_PATH);
+    expect(output).not.toMatch(/Path:\s+\.fusion\/tasks\//);
+    expect(createTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("prompts on a terminal before filing into a different project and writes nothing when declined", async () => {
+    setTty(true);
+    answerPrompt("");
+    const { context, createTask } = routingContext();
+    vi.mocked(resolveProject).mockResolvedValueOnce(context as never);
+
+    await runTaskCreate("mistaken default target", undefined, undefined, undefined, undefined, true);
+
+    expect(createInterface).toHaveBeenCalledTimes(1);
+    expect(createTask).not.toHaveBeenCalled();
+    expect(warned()).toContain("Not created");
+    expect(warned()).toContain("no card was written");
+    // The resolved store is still closed: a declined confirm must not leak an open store.
+    expect(closeProjectStore).toHaveBeenCalledWith(context);
+  });
+
+  it("creates the card when the terminal prompt is accepted", async () => {
+    setTty(true);
+    answerPrompt("y");
+    const { context, createTask } = routingContext();
+    vi.mocked(resolveProject).mockResolvedValueOnce(context as never);
+
+    await runTaskCreate("confirmed default target", undefined, undefined, undefined, undefined, true);
+
+    expect(createInterface).toHaveBeenCalledTimes(1);
+    expect(createTask).toHaveBeenCalledTimes(1);
+    expect(warned()).not.toContain("Not created");
+  });
+
+  it("answers the confirmation affirmatively without asking when --yes is set", async () => {
+    setTty(true);
+    const { context, createTask } = routingContext();
+    vi.mocked(resolveProject).mockResolvedValueOnce(context as never);
+
+    await runTaskCreate(
+      "scripted default target",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true,
+      undefined,
+      true,
+    );
+
+    expect(createInterface).not.toHaveBeenCalled();
+    expect(warned()).toContain("Project routing");
+    expect(createTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("says nothing and asks nothing when the default target IS the cwd project", async () => {
+    setTty(true);
+    const { context, createTask } = routingContext({ projectName: "fusion", projectPath: FUSION_CWD });
+    vi.mocked(resolveProject).mockResolvedValueOnce(context as never);
+
+    await runTaskCreate("same-project default", undefined, undefined, undefined, undefined, true);
+
+    expect(warned()).toBe("");
+    expect(createInterface).not.toHaveBeenCalled();
+    expect(createTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces a failed --project resolution and creates nothing", async () => {
+    const { createTask } = routingContext();
+    vi.mocked(resolveProject).mockRejectedValueOnce(
+      new Error("Project 'bogus' not found. Run 'fn project list' to see registered projects."),
+    );
+
+    await expect(
+      runTaskCreate("bad flag", undefined, undefined, "bogus", undefined, true),
+    ).rejects.toThrow("Project 'bogus' not found");
+
+    expect(createTask).not.toHaveBeenCalled();
+    expect(warned()).not.toContain("Not created");
+  });
+});
+
+/*
+FNXC:ProjectRoutingVisibility 2026-09-23-00:04 (RUFU-269): the other two card-minting commands and the
+unregistered-cwd fallback. `duplicate`/`refine` take a card id the operator typed, so they announce a
+cross-project target but must NEVER wait on an answer — these cases run with a TTY present specifically to
+prove that. The fallback case proves the opposite half: an unregistered cwd is now loud, and still works.
+*/
+describe("card-minting routing on duplicate/refine and the unregistered-cwd fallback", () => {
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+  let cwdSpy: ReturnType<typeof vi.spyOn>;
+
+  const FUSION_CWD = "/home/user/Fusion";
+  const GEDA_PATH = "/home/user/other/geda";
+
+  const printed = () => logSpy.mock.calls.map((call: unknown[]) => call.join(" ")).join("\n");
+  const warned = () => errorSpy.mock.calls.map((call: unknown[]) => call.join(" ")).join("\n");
+
+  const setTty = (isTty: boolean) => {
+    Object.defineProperty(process.stdin, "isTTY", { value: isTty, configurable: true });
+    Object.defineProperty(process.stdout, "isTTY", { value: isTty, configurable: true });
+  };
+
+  /** A resolved `geda` context while the shell stands in the registered `Fusion` project. */
+  function mismatchContext(store: Record<string, unknown>) {
+    return {
+      projectId: "proj-geda",
+      projectPath: GEDA_PATH,
+      projectName: "geda",
+      isRegistered: true,
+      resolvedFrom: "default",
+      cwdProject: { id: "fusion", name: "Fusion", path: FUSION_CWD },
+      store: { getRootDir: vi.fn().mockReturnValue(GEDA_PATH), ...store },
+    };
+  }
+
+  beforeEach(() => {
+    logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(FUSION_CWD);
+    // A terminal IS present: the warn-only surfaces must not turn that into a question.
+    setTty(true);
+  });
+
+  afterEach(() => {
+    // `setTty` uses defineProperty, which restoreAllMocks does not undo (see the routing suite above).
+    setTty(false);
+    vi.restoreAllMocks();
+  });
+
+  it("duplicate warns about a cross-project target, never prompts, and still duplicates the card", async () => {
+    const duplicateTask = vi.fn().mockResolvedValue(makeTask({ id: "FN-002" }));
+    vi.mocked(resolveProject).mockResolvedValueOnce(
+      mismatchContext({ duplicateTask }) as never,
+    );
+
+    await runTaskDuplicate("FN-001", "geda");
+
+    expect(warned()).toContain("Project routing");
+    expect(warned()).toContain("--project Fusion");
+    expect(createInterface).not.toHaveBeenCalled();
+    expect(duplicateTask).toHaveBeenCalledWith("FN-001");
+    const output = printed();
+    expect(output).toContain("Project: geda");
+    expect(output).toContain("(resolved via the central default project)");
+    expect(output).toContain(`${GEDA_PATH}/.fusion/tasks/FN-002/`);
+    expect(output).not.toMatch(/Path:\s+\.fusion\/tasks\//);
+  });
+
+  it("says nothing extra when duplicate targets the project the shell is standing in", async () => {
+    const duplicateTask = vi.fn().mockResolvedValue(makeTask({ id: "FN-002" }));
+    vi.mocked(resolveProject).mockResolvedValueOnce(
+      {
+        ...mismatchContext({ duplicateTask }),
+        projectName: "fusion",
+        projectPath: FUSION_CWD,
+      } as never,
+    );
+
+    await runTaskDuplicate("FN-001", "fusion");
+
+    expect(warned()).toBe("");
+    expect(createInterface).not.toHaveBeenCalled();
+    expect(duplicateTask).toHaveBeenCalledWith("FN-001");
+  });
+
+  it("refine warns about a cross-project target and still creates the refinement card", async () => {
+    const refineTask = vi.fn().mockResolvedValue(makeTask({ id: "FN-003", column: "triage" }));
+    vi.mocked(resolveProject).mockResolvedValueOnce(
+      mismatchContext({ refineTask }) as never,
+    );
+
+    await runTaskRefine("FN-001", "needs a regression test", "geda");
+
+    expect(warned()).toContain("Project routing");
+    expect(createInterface).not.toHaveBeenCalled();
+    expect(refineTask).toHaveBeenCalledWith("FN-001", "needs a regression test");
+    const output = printed();
+    expect(output).toContain("Project: geda");
+    expect(output).toContain(`${GEDA_PATH}/.fusion/tasks/FN-003/`);
+    expect(output).not.toMatch(/Path:\s+\.fusion\/tasks\//);
+  });
+
+  it("announces that an unregistered cwd writes an UNREGISTERED local project, and still creates", async () => {
+    const createTask = vi.fn().mockResolvedValue(makeTask({ id: "FN-004", description: "local card" }));
+    vi.mocked(runDeterministicDuplicateGuard).mockResolvedValue({
+      action: "proceed",
+      fingerprint: null,
+      releaseLock: vi.fn(),
+    });
+    vi.mocked(resolveProject).mockRejectedValueOnce(
+      new Error("No fusion project found in current directory. Use --project or run from a project directory."),
+    );
+    vi.mocked(createLocalStore).mockResolvedValueOnce({
+      ...requiredTaskStoreCapabilities(),
+      resolveOriginWorkflowOverrideId: vi.fn().mockResolvedValue(undefined),
+      createTask,
+      addAttachment: vi.fn(),
+      getRootDir: vi.fn().mockReturnValue(FUSION_CWD),
+    } as never);
+
+    await runTaskCreate("card in an unregistered folder");
+
+    expect(warned()).toContain("no registered Fusion project was found");
+    expect(warned()).toContain("UNREGISTERED");
+    expect(warned()).toContain("fn project add");
+    // The fallback IS the cwd, so the cross-project sentence must not double up on it.
+    expect(warned()).not.toContain("but this card would be created in project");
+    expect(createLocalStore).toHaveBeenCalledWith(FUSION_CWD);
+    expect(createTask).toHaveBeenCalledTimes(1);
   });
 });
 
