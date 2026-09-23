@@ -290,12 +290,20 @@ export function createTaskUpdateTool(
         }
         const stepInfo = task.steps[stepIndex];
         if (!stepInfo) {
+          /*
+          FNXC:StepClosureTruthful 2026-09-23-06:00:
+          STAS-251. The negative-index guard above refuses before any write; this branch is
+          reached AFTER `updateStep` ran and came back with no such step, so nothing persisted
+          and the result must say so at the protocol boundary like every other uncommitted write
+          on this card. The agent-tools copy reports the same code.
+          */
           return {
             content: [{
               type: "text" as const,
-              text: `Invalid step number: ${step}. This task has ${task.steps.length} step(s) (0-indexed; valid range 0-${Math.max(0, task.steps.length - 1)}).`,
+              text: `Invalid step number: ${step}. This task has ${task.steps.length} step(s) (0-indexed; valid range 0-${Math.max(0, task.steps.length - 1)}). Nothing was persisted.`,
             }],
-            details: {},
+            details: { stepIndex: step, code: "STEP_OUT_OF_RANGE" },
+            isError: true,
           };
         }
         const persistedStatus = stepInfo.status;

@@ -257,6 +257,20 @@ describe("step closure cannot report success for a transition that did not commi
     expect(text).not.toContain(`Updated ${TASK_ID}: step 1 → done`);
   });
 
+  it("both copies fail when the store returns a task with no such step", async () => {
+    /* `updateStep` tolerates an out-of-range index by answering with the untouched task, so the
+       only signal is that the reply has no step at that index — and the write already ran. */
+    const outOfRange = { step: 9, status: "done", summary: "Closed a step the plan does not have." };
+
+    const executorResult = await run(executorUpdateTool(failingStore({ updateStep: vi.fn(async () => taskWithStep("done")) })), outOfRange);
+    const agentResult = await run(createAgentTaskUpdateTool(failingStore({ updateStep: vi.fn(async () => taskWithStep("done")) }), TASK_ID), outOfRange);
+
+    expect(executorResult.isError).toBe(true);
+    expect(executorResult.details).toMatchObject({ code: "STEP_OUT_OF_RANGE" });
+    expect(agentResult.isError).toBe(true);
+    expect(agentResult.details).toMatchObject({ code: "STEP_OUT_OF_RANGE" });
+  });
+
   it("the agent-tools tool reports the committed step when the store accepts the transition", async () => {
     const store = failingStore({ updateStep: vi.fn(async () => taskWithStep("done")) });
 
