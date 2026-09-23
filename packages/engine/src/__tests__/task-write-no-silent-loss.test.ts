@@ -6,6 +6,7 @@ import {
   createTaskDocumentWriteTool,
   createTaskFileScopeAddTool,
   createTaskPromptWriteTool,
+  createTaskCreateTool,
   createTaskShowTool,
   createTaskUpdateTool as createAgentTaskUpdateTool,
 } from "../agent-tools.js";
@@ -279,5 +280,21 @@ describe("step closure cannot report success for a transition that did not commi
     expect(result.isError).not.toBe(true);
     expect(JSON.stringify(result.content)).toContain("→ done");
     expect(result.details).toMatchObject({ status: "done" });
+  });
+});
+
+describe("fn_task_create never fabricates a card the store refused (STAS-251)", () => {
+  it("a rejected create stays loud and never returns a Created line", async () => {
+    /*
+    The STAS-250 incident was a full `fn_task_create` that silently never persisted. The tool's
+    contract today is to rethrow anything it does not recognise, which the harness files as a tool
+    error; either way the load-bearing assertion is that no `Created <id>` text is produced for a
+    card the store never wrote.
+    */
+    const store = failingStore({ createTask: vi.fn().mockRejectedValue(new Error(PERSISTENCE_FAILURE)) });
+
+    await expect(
+      run(createTaskCreateTool(store), { description: "Instrument the boot path" }),
+    ).rejects.toThrow(PERSISTENCE_FAILURE);
   });
 });
