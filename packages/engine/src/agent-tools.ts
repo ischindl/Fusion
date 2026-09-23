@@ -2105,6 +2105,15 @@ export function buildTaskAgentLogReadText(entries: AgentLogEntry[], options: Tas
   return trimSemanticToolRead(rendered, "use a smaller limit, offset, or type filter for more");
 }
 
+/*
+FNXC:ReadFailureSurfacing 2026-09-23-17:10:
+STAS-256 is the read half of FNXC:WriteFailureSurfacing (see `taskDocumentWriteError` in this file).
+`AgentLogger.onToolEnd` records `tool_error` only when the result carries `isError`, so a read that
+asked the store and got no answer must fail at the protocol boundary too — otherwise the task log,
+the automated review, and replay all record a successful read that never produced data. Every read
+helper below therefore composes its failure through the one shared `storeErrorResult` shape, while a
+genuine typed miss or an empty result stays an informative success text.
+*/
 async function readTaskAgentLogs(
   store: TaskStore,
   taskId: string,

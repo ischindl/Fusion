@@ -16,6 +16,8 @@ import {
   createTaskUpdateTool as createAgentTaskUpdateTool,
 } from "../agent-tools.js";
 import { createTaskUpdateTool as createExecutorTaskUpdateTool } from "../executor/create-task-update-tool.js";
+import { STORE_RETRY_GUIDANCE } from "../tool-store-errors.js";
+import { TriageProcessor } from "../triage.js";
 
 /*
 FNXC:WriteFailureSurfacing 2026-09-23-06:10:
@@ -174,6 +176,7 @@ describe("write tools fail the tool boundary when the write does not commit (STA
     const text = JSON.stringify(result.content);
     expect(result.isError).toBe(true);
     expect(text).toContain(PERSISTENCE_FAILURE);
+    expect(text).toContain(STORE_RETRY_GUIDANCE);
     expect(text).not.toContain("not found");
   });
 
@@ -312,7 +315,9 @@ isError, so AgentLogger.onToolEnd recorded a `tool_result` for a read that never
 store, and a reader could not tell "this board is unreachable" from "this card has no log."
 Each case rejects the real store read and asserts the shared loud shape (isError + the reason
 + the retry guidance); the typed-miss controls prove that a genuine absence is still a success.
-The outage pins fail until Step 3 routes these helpers through storeErrorResult.
+The guidance is asserted through the imported constant, never a copied literal, so a second failure
+format cannot quietly reappear beside the shared one. The canonical fn_task_show split is pinned in
+this file's STAS-251 block above — those two cases are this card's GREEN PINS on the untouched tree.
 */
 const ARTIFACT_ID = "ART-2560";
 const DOC_KEY = "plan";
@@ -327,7 +332,8 @@ describe("reads fail the tool boundary when the store could not answer (STAS-256
     const text = JSON.stringify(result.content);
     expect(result.isError).toBe(true);
     expect(text).toContain(PERSISTENCE_FAILURE);
-    expect(text).toContain("Retry");
+    expect(text).toContain(STORE_RETRY_GUIDANCE);
+    expect(text).not.toContain("(no matching log entries)");
   });
 
   it("fn_artifact_list reports the store failure and stays loud", async () => {
@@ -336,7 +342,8 @@ describe("reads fail the tool boundary when the store could not answer (STAS-256
     const text = JSON.stringify(result.content);
     expect(result.isError).toBe(true);
     expect(text).toContain(PERSISTENCE_FAILURE);
-    expect(text).toContain("Retry");
+    expect(text).toContain(STORE_RETRY_GUIDANCE);
+    expect(text).not.toContain("No artifacts found.");
   });
 
   it("fn_artifact_view reports the store failure rather than a clean read", async () => {
@@ -345,6 +352,7 @@ describe("reads fail the tool boundary when the store could not answer (STAS-256
     const text = JSON.stringify(result.content);
     expect(result.isError).toBe(true);
     expect(text).toContain(PERSISTENCE_FAILURE);
+    expect(text).toContain(STORE_RETRY_GUIDANCE);
     expect(text).not.toContain("not found");
   });
 
@@ -354,7 +362,8 @@ describe("reads fail the tool boundary when the store could not answer (STAS-256
     const text = JSON.stringify(result.content);
     expect(result.isError).toBe(true);
     expect(text).toContain(PERSISTENCE_FAILURE);
-    expect(text).toContain("Retry");
+    expect(text).toContain(STORE_RETRY_GUIDANCE);
+    expect(text).not.toContain("Task documents for");
   });
 
   it("the chat log-read lane shares the same loud seam (STAS-256)", async () => {
@@ -365,7 +374,7 @@ describe("reads fail the tool boundary when the store could not answer (STAS-256
     const tool = createChatTaskLogsReadTool(store);
     const result = await run(tool, { task_id: TASK_ID });
     expect(result.isError).toBe(true);
-    expect(JSON.stringify(result.content)).toContain(PERSISTENCE_FAILURE);
+    expect(JSON.stringify(result.content)).toContain(STORE_RETRY_GUIDANCE);
   });
 
   it("a genuinely absent artifact is still a clean not-found, not a failure (control)", async () => {
@@ -380,5 +389,69 @@ describe("reads fail the tool boundary when the store could not answer (STAS-256
     const result = await run(createTaskDocumentReadTool(store, TASK_ID), { key: DOC_KEY });
     expect(result.isError).not.toBe(true);
     expect(result.content[0].text).toContain(`Document "${DOC_KEY}" not found.`);
+  });
+});
+
+/*
+The triage lane registers its OWN fn_task_show/fn_task_create copies, so a fix limited to the
+agent-tools factories would silently leave the planner swallowing the same outage. These cases pin
+the copies against the same rule: an outage is a failed tool result, a typed miss is informative text.
+*/
+function triageTools(readFailures: Record<string, unknown>): TaskStore {
+  return { on: () => undefined, off: () => undefined, ...readFailures } as unknown as TaskStore;
+}
+
+function triageLanes(store: TaskStore) {
+  const processor = new TriageProcessor(store, "/tmp/stas-256");
+  return (processor as unknown as {
+    createTriageTools(options: { parentTaskId: string }): Array<{ name: string; execute: (...args: any[]) => Promise<any> }>;
+  }).createTriageTools({ parentTaskId: TASK_ID });
+}
+
+describe("the triage lane's own copies follow the same rule (STAS-256)", () => {
+  it("fn_task_show reports a store outage instead of claiming the card is missing", async () => {
+    const tools = triageLanes(triageTools({
+      getTask: vi.fn().mockRejectedValue(new Error(PERSISTENCE_FAILURE)),
+    }));
+    const show = tools.find((tool) => tool.name === "fn_task_show")!;
+
+    const result = await run(show, { id: "FN-2561" });
+
+    const text = JSON.stringify(result.content);
+    expect(result.isError).toBe(true);
+    expect(text).toContain(PERSISTENCE_FAILURE);
+    expect(text).toContain(STORE_RETRY_GUIDANCE);
+    expect(text).not.toContain("not found");
+  });
+
+  it("fn_task_show still says a genuinely absent card is not found", async () => {
+    const tools = triageLanes(triageTools({
+      getTask: vi.fn().mockRejectedValue(new TaskNotFoundError("FN-2562")),
+    }));
+    const show = tools.find((tool) => tool.name === "fn_task_show")!;
+
+    const result = await run(show, { id: "FN-2562" });
+
+    expect(result.isError).not.toBe(true);
+    expect(result.content[0].text).toBe("Task FN-2562 not found.");
+  });
+
+  it("fn_task_create reports a store failure loudly and never claims a card was created", async () => {
+    const tools = triageLanes(triageTools({
+      getRootDir: () => "/tmp/stas-256",
+      searchTasks: vi.fn().mockResolvedValue([]),
+      findRecentTasksBySourceParentTaskId: vi.fn().mockResolvedValue([]),
+      findRecentTasksByContentFingerprint: vi.fn().mockResolvedValue([]),
+      createTask: vi.fn().mockRejectedValue(new Error(PERSISTENCE_FAILURE)),
+    }));
+    const create = tools.find((tool) => tool.name === "fn_task_create")!;
+
+    const result = await run(create, { description: "Follow-up work that the store refused" });
+
+    const text = JSON.stringify(result.content);
+    expect(result.isError).toBe(true);
+    expect(text).toContain(PERSISTENCE_FAILURE);
+    expect(text).toContain(STORE_RETRY_GUIDANCE);
+    expect(text).not.toContain("Created independent task");
   });
 });
