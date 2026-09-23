@@ -88,9 +88,29 @@ describe("assigned-task ranking under a renamed column vocabulary", () => {
     const paused = rankAssignedTasksForWakeDelta([task({ paused: true })], { agentId: "a1", roles: RENAMED });
     expect(paused.ranked).toEqual([]);
     expect(paused.notActionableCount).toBe(1);
+    expect(paused.enginePausedCount).toBe(1);
 
     const unknown = rankAssignedTasksForWakeDelta([task({ column: "reviewing" })], { agentId: "a1", roles: RENAMED });
     expect(tiersOf(unknown)).toEqual(["other"]);
+  });
+
+  /*
+  FNXC:WakeDeltaMultiAssign 2026-09-23-21:35 (RUFU-264):
+  The userPaused-parked symptom on the RENAMED surface. The park guard runs
+  BEFORE any column→tier mapping, so it holds for the renamed hold column too —
+  a `drafting` card the operator hard-cancelled (`userPaused: true,
+  paused: false`) must never resurface as `[ready_todo]` work the scheduler
+  will not dispatch, and must land in the operator bucket of the count.
+  */
+  it("ranks a userPaused card in the RENAMED hold column as not_actionable, operator bucket", () => {
+    const result = rankAssignedTasksForWakeDelta(
+      [task({ userPaused: true, paused: false })],
+      { agentId: "a1", roles: RENAMED },
+    );
+    expect(result.ranked).toEqual([]);
+    expect(result.notActionableCount).toBe(1);
+    expect(result.operatorPausedCount).toBe(1);
+    expect(result.enginePausedCount).toBe(0);
   });
 
   it("defaults to the legacy ids when no roles are supplied", () => {

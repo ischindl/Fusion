@@ -207,6 +207,57 @@ pgTest("task→agent routing policy (issue #2015)", () => {
       expect(explicitClaim.ok).toBe(true);
     });
 
+    /*
+    FNXC:AgentRouting 2026-09-23-21:35 (RUFU-264):
+    A Move-Task hard cancel (`userPaused: true`, legacy `paused` unset) is a
+    durable operator stop — `FNXC:TaskDispatch 2026-07-19-14:40` (scheduler.ts).
+    The claim gate refused only the legacy flag, so a direct claim (or a claim
+    from a snapshot taken before the park) silently overrulled the cancel.
+    */
+    it("refuses a claim on a userPaused card with a distinct user_paused reason", async () => {
+      const executor = await agentStore.createAgent({ name: "Park Checker", role: "executor" });
+      const parked = await h.store().createTask({ description: "operator hard-cancelled work" });
+      await h.store().updateTask(parked.id, { assignedAgentId: executor.id });
+      // Real Move-Task sequence: hold -> WIP -> hard-cancel back to hold.
+      await h.store().moveTask(parked.id, "todo");
+      await h.store().moveTask(parked.id, "in-progress");
+      await h.store().moveTask(parked.id, "todo", { moveSource: "user" });
+      const row = await h.store().getTask(parked.id);
+      expect(row).toMatchObject({ userPaused: true });
+      expect(row?.paused).not.toBe(true);
+
+      const claim = await agentStore.claimTaskForAgent(executor.id, parked.id);
+      expect(claim.ok).toBe(false);
+      if (!claim.ok) {
+        expect(claim.reason).toBe("user_paused");
+      }
+    });
+
+    it("refuses both-flag and engine-parked claims; engine park keeps reason 'paused'", async () => {
+      const executor = await agentStore.createAgent({ name: "Bucket Checker", role: "executor" });
+
+      // pauseTask(..., { userPaused: true }) sets BOTH flags (RUFU-196/198 shape).
+      const both = await h.store().createTask({ description: "operator pause via pauseTask" });
+      await h.store().updateTask(both.id, { assignedAgentId: executor.id });
+      await h.store().pauseTask(both.id, true, undefined, { userPaused: true });
+      const bothClaim = await agentStore.claimTaskForAgent(executor.id, both.id);
+      expect(bothClaim.ok).toBe(false);
+      // Legacy-flag rows keep the pre-existing first-refusal order ('paused'),
+      // so every legacy call site sees byte-identical reasons.
+      if (!bothClaim.ok) {
+        expect(bothClaim.reason).toBe("paused");
+      }
+
+      const engine = await h.store().createTask({ description: "engine park" });
+      await h.store().updateTask(engine.id, { assignedAgentId: executor.id });
+      await h.store().pauseTask(engine.id, true);
+      const engineClaim = await agentStore.claimTaskForAgent(executor.id, engine.id);
+      expect(engineClaim.ok).toBe(false);
+      if (!engineClaim.ok) {
+        expect(engineClaim.reason).toBe("paused");
+      }
+    });
+
     it("refuses explicit claim for policy 'none' even with executorRoleOverride", async () => {
       const liaison = await agentStore.createAgent({
         name: "Liaison",

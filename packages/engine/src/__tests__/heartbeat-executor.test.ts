@@ -1216,6 +1216,9 @@ describe("executeHeartbeat", () => {
         createdAt: overrides.createdAt ?? "2026-01-01T00:00:00.000Z",
         updatedAt: overrides.updatedAt ?? "2026-01-01T00:00:00.000Z",
         paused: overrides.paused,
+        // RUFU-264: explicit field-list fixture — without forwarding userPaused,
+        // operator-park coverage through the auto-claim path would be vacuous.
+        userPaused: overrides.userPaused,
         assignedAgentId: overrides.assignedAgentId,
         checkedOutBy: overrides.checkedOutBy,
         deletedAt: overrides.deletedAt,
@@ -1596,6 +1599,55 @@ describe("executeHeartbeat", () => {
       expect(executionPrompt).not.toContain("Re-ratchet line-count baseline completed cached title");
       expect(executionPrompt).not.toContain("Re-ratchet line-count baseline completed canonical title");
       expect(executionPrompt).toContain("- FN-TODO: Canonical neutral queue title");
+    });
+
+    /*
+    FNXC:AutoClaim 2026-09-23-21:35 (RUFU-264):
+    An operator Move-Task hard cancel (`userPaused: true, paused: undefined`) is
+    a durable operator stop (`FNXC:TaskDispatch 2026-07-19-14:40`, scheduler.ts).
+    The auto-claim selector only honored `paused`, so the heartbeat BOTH offered
+    the cancelled card in "Open Task Candidates" and attempted to claim it.
+    This drives the full no-task pipeline (snapshot → fresh re-resolve → prompt
+    → claim attempt) through the real fixture.
+    */
+    it("excludes an operator-parked (userPaused) card from the auto-claim prompt and claim path", async () => {
+      const parkedTask = makeAutoClaimTask({
+        id: "FN-user-paused",
+        title: "Operator hard-cancelled work",
+        description: "Move-Task cancelled; scheduler must never dispatch it",
+        userPaused: true,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      const runnableTask = makeAutoClaimTask({
+        id: "FN-claimable",
+        title: "Canonical runnable work",
+        description: "genuinely claimable",
+        createdAt: "2026-01-02T00:00:00.000Z",
+      });
+      const listTasks = vi.fn().mockResolvedValue([parkedTask, runnableTask]);
+      const store = createStoreWithAgentForExec({
+        taskId: undefined,
+        role: "executor",
+        soul: "Re-ratchet line-count baseline specialist",
+      });
+      const mockSession = createMockAgentSession();
+      mockedCreateFnAgent.mockResolvedValue({ session: mockSession as any });
+      mockTaskStore = createMockTaskStore({
+        listTasks,
+        getTask: vi.fn().mockResolvedValue(runnableTask),
+      });
+
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+      await monitor.executeHeartbeat({ agentId: "agent-001", source: "timer" });
+
+      const allPrompts = mockSession.prompt.mock.calls.map((call) => String(call[0])).join("\n");
+      expect(allPrompts).toContain("Open Task Candidates (auto-claim scan):");
+      expect(allPrompts).toContain("FN-claimable");
+      // Not a titled line, not a bare count, not anywhere in any prompt.
+      expect(allPrompts).not.toContain("FN-user-paused");
+      expect(store.claimTaskForAgent).not.toHaveBeenCalledWith("agent-001", "FN-user-paused", expect.anything());
+      // The runnable sibling still rides the normal claim path (test is not vacuous).
+      expect(store.claimTaskForAgent).toHaveBeenCalledWith("agent-001", "FN-claimable", expect.anything());
     });
 
     it("reuses one snapshot rebuild across concurrent no-task heartbeats", async () => {
@@ -2034,6 +2086,51 @@ describe("executeHeartbeat", () => {
       expect(executionPrompt).toContain("FN-220");
       expect(executionPrompt).toContain("(bound)");
       expect(getTasksByAssignedAgent).toHaveBeenCalledWith("agent-001");
+    });
+
+    /*
+    FNXC:WakeDeltaMultiAssign 2026-09-23-21:35 (RUFU-264):
+    The reported tick, end to end: a Move-Task hard-cancelled sibling
+    (`userPaused: true, paused: false` — the exact serialization) arrived via
+    `getTasksByAssignedAgent` and the pre-fix ranker titled it `[ready_todo]`
+    actionable work the scheduler would never dispatch, while the count line
+    "(paused)" underreported the true parked set. The parked card must be
+    invisible as a titled line and visible only in the operator bucket.
+    */
+    it("Wake Delta keeps an operator-parked sibling out of titled lines and counts it as operator-paused", async () => {
+      const now = new Date().toISOString();
+      const getTasksByAssignedAgent = vi.fn().mockResolvedValue([
+        { id: "FN-001", column: "in-progress", title: "Bound task", dependencies: [], createdAt: now, updatedAt: now },
+        { id: "FN-220", column: "todo", title: "Sibling todo", dependencies: [], createdAt: now, updatedAt: now },
+        {
+          id: "FN-PARKED",
+          column: "todo",
+          title: "Operator hard-cancelled",
+          description: "moved back by the operator; must not be re-chased",
+          dependencies: [],
+          userPaused: true,
+          paused: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ]);
+      mockTaskStore = createMockTaskStore({ getTasksByAssignedAgent });
+      const store = createStoreWithAgentForExec({ taskId: "FN-001" });
+      const mockSession = createMockAgentSession();
+      mockedCreateFnAgent.mockResolvedValue({ session: mockSession as any });
+
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+      await monitor.executeHeartbeat({ agentId: "agent-001", source: "timer" });
+
+      const allPrompts = mockSession.prompt.mock.calls.map((call) => String(call[0])).join("\n");
+      expect(allPrompts).toContain("coordination inventory");
+      // Live siblings still render as titled lines.
+      expect(allPrompts).toContain("FN-220");
+      // The parked sibling appears nowhere as a titled line or id...
+      expect(allPrompts).not.toContain("FN-PARKED");
+      // ...and the count line splits it into the operator bucket, not the merged (paused) lie.
+      expect(allPrompts).toContain("also assigned not actionable now: 1 (operator-paused: 1, engine-paused: 0)");
+      expect(allPrompts).not.toContain("(paused)");
     });
 
     it("exits checkout_conflict without starting a session when lease is held by another agent", async () => {

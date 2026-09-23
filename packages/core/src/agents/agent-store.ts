@@ -1648,6 +1648,21 @@ export class AgentStore extends EventEmitter {
     }
 
     /*
+    FNXC:AgentRouting 2026-09-23-21:35 (RUFU-264):
+    Symmetric refusal for the operator park. The dispatch invariant
+    (`FNXC:TaskDispatch 2026-07-19-14:40`, scheduler.ts) makes `userPaused` a
+    durable operator stop that no candidacy path may dispatch, and the
+    auto-claim candidate selector refuses it — but a claim issued from a
+    snapshot taken before an operator parked the card (or a direct tool claim on
+    a `userPaused` card) used to succeed here, silently overruling the Move-Task
+    hard cancel. The distinct `user_paused` reason keeps "operator said stop"
+    separable from an engine park in the engine's claim-skip log.
+    */
+    if (task.userPaused === true) {
+      return { ok: false, reason: "user_paused", task };
+    }
+
+    /*
     FNXC:AgentRouting 2026-07-12-11:50:
     FN-7851 / issue #2015: route the claim through the shared bind evaluator so role AND per-agent
     assignmentPolicy are enforced identically to every other binding surface. executorRoleOverride is honored

@@ -37,6 +37,15 @@ Auto-claim runnability must have one source of truth so the snapshot rebuild and
 
 FNXC:AutoClaim 2026-06-21-16:09:
 FN-6873 pins `column === "todo"` as the candidate gate after FN-6872 appeared in a heartbeat prompt while archived from a stale cache. Archived, done, triage, in-progress, in-review, soft-deleted, paused, assigned, checked-out, and dependency-blocked rows can satisfy dependencies where allowed, but must never be surfaced or claimed as auto-claim candidates.
+
+FNXC:AutoClaim 2026-09-23-21:35 (RUFU-264):
+`userPaused` joins `paused` in the exclusion conjunction. The dispatch authority
+(`FNXC:TaskDispatch 2026-07-19-14:40`, scheduler.ts) treats either flag as a
+parked row; this selector consulted only the legacy one, so an UNASSIGNED
+operator-parked card (Move-Task hard cancel serializes `userPaused: true,
+paused: undefined`) was auto-claimable. The 2026-09-22T00:55Z tick only LOOKED
+safe here because the parked cards were assigned — the empty candidate list came
+from the assigned/terminal filters, not from any userPaused gate.
 */
 /**
  * FNXC:AutoClaimResolvedColumns 2026-07-29-14:40 (U7 / R3):
@@ -88,6 +97,7 @@ export function isRunnableAutoClaimCandidate(
 ): boolean {
   return task.column === rolesFor(task.id, rolesByTask).hold
     && task.paused !== true
+    && task.userPaused !== true
     && !task.assignedAgentId
     && !task.checkedOutBy
     && !task.deletedAt

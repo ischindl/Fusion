@@ -3502,6 +3502,14 @@ export class HeartbeatMonitor {
               `rankAssignedTasksForWakeDelta` uses `flagsByColumnId` to keep workflow Complete rows out
               of open assignment inventory. `getTasksByAssignedAgent` already reads the live task set,
               so soft-deleted and historical-sentinel rows never enter this ranking.
+
+              FNXC:WakeDeltaMultiAssign 2026-09-23-21:35 (RUFU-264):
+              `assignedOpen` is passed VERBATIM, which is the threading contract for park flags:
+              both `paused` and `userPaused` ride on the store rows, and the core ranker now
+              treats either flag as parked per `FNXC:TaskDispatch 2026-07-19-14:40`.
+              If this call site ever reshapes rows field-by-field, it must forward BOTH flags —
+              dropping `userPaused` re-creates the tick where 7 operator-parked Move-Task cards
+              were offered to the agent as actionable `[ready_todo]` work (measured 2026-09-22T00:55Z).
               */
               const wakeLaneFlags = new Map<string, { complete?: boolean }>();
               const wakeIrCache = new Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>();

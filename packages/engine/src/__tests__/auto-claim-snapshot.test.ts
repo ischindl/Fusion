@@ -19,6 +19,9 @@ function makeTask(overrides: Partial<Task> & Pick<Task, "id">): Task {
     assignedAgentId: overrides.assignedAgentId,
     checkedOutBy: overrides.checkedOutBy,
     paused: overrides.paused,
+    // RUFU-264: this fixture builds an explicit field list — a field it does not
+    // forward is silently dropped, making userPaused coverage vacuous.
+    userPaused: overrides.userPaused,
     deletedAt: overrides.deletedAt,
     columnMovedAt: overrides.columnMovedAt,
   } as unknown as Task;
@@ -31,6 +34,9 @@ describe("AutoClaimSnapshotManager", () => {
     const tasks = [
       firstRunnable,
       makeTask({ id: "FN-paused", paused: true }),
+      // RUFU-264: Move-Task hard-cancel shape — unassigned + operator-parked.
+      // Pre-fix this row was candidate-eligible (only legacy paused was checked).
+      makeTask({ id: "FN-user-paused", userPaused: true }),
       makeTask({ id: "FN-assigned", assignedAgentId: "agent-1" }),
       makeTask({ id: "FN-checked", checkedOutBy: "agent-2" }),
       makeTask({ id: "FN-deleted", deletedAt: "2026-01-02T00:00:00.000Z" } as Partial<Task> & Pick<Task, "id">),
@@ -82,6 +88,7 @@ describe("AutoClaimSnapshotManager", () => {
     const tasks = [
       makeTask({ id: "FN-1", dependencies: ["FN-done"] }),
       makeTask({ id: "FN-paused", paused: true }),
+      makeTask({ id: "FN-user-paused", userPaused: true }),
       makeTask({ id: "FN-assigned", assignedAgentId: "agent-1" }),
       makeTask({ id: "FN-checked", checkedOutBy: "agent-2" }),
       makeTask({ id: "FN-blocked", dependencies: ["FN-open"] }),
