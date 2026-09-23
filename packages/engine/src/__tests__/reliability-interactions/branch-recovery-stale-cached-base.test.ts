@@ -29,12 +29,6 @@ function createStore(): TaskStore & EventEmitter {
   (emitter as any).logEntry = vi.fn().mockResolvedValue(undefined);
   (emitter as any).recordRunAuditEvent = vi.fn().mockResolvedValue(undefined);
   (emitter as any).clearStaleExecutionStartBranchReferences = vi.fn().mockReturnValue([]);
-  /*
-  FNXC:SelfHealingReclaim 2026-09-15-19:20:
-  FN-429. Declared intent: these stale-cached-base cards carry NO pending overlap delivery evidence, so the
-  reclaim is expected to proceed rather than withhold.
-  */
-  (emitter as any).listTaskOverlapWaits = vi.fn().mockResolvedValue([]);
   return emitter;
 }
 
@@ -52,10 +46,11 @@ describe("reliability interactions: stale cached-base branch reclaim", () => {
     vi.restoreAllMocks();
   });
 
-  it("restart recovery + reclaim sweep retains the review lane with nulled cached branch metadata", async () => {
+  it("restart recovery clears stale metadata but keeps an unproven review card in place", async () => {
     const task: any = { id: "FN-9001", column: "in-review", checkedOutBy: null, branch: "fusion/fn-9001", worktree: "/tmp/ghost", baseCommitSha: "stale-base", paused: true, pausedReason: "branch-conflict-unrecoverable", error: "Agent exited without calling fn_task_done", status: "failed", steps: [{ status: "pending" }] };
     const statefulStore: any = createStore();
     statefulStore.listTasks = vi.fn(async ({ column }: { column?: string }) => (column ? (task.column === column ? [task] : []) : [task]));
+    statefulStore.getTask = vi.fn(async () => task);
     statefulStore.updateTask = vi.fn(async (_id: string, updates: Record<string, unknown>) => Object.assign(task, updates));
     statefulStore.moveTask = vi.fn(async (_id: string, col: string) => { task.column = col; });
 
@@ -67,12 +62,13 @@ describe("reliability interactions: stale cached-base branch reclaim", () => {
     await manager.reclaimSelfOwnedBranchConflicts();
 
     /*
-    FNXC:LifecycleContainment 2026-09-13-00:26 (RUFU-231 stale-seam reconciliation):
-    The ghost-branch reclaim's requeue used to end in `todo`; FN-217 containment retains a
-    non-revision recovery move in the card's current lane. The metadata repair (nulled
-    branch/worktree/baseCommitSha below) is what this sweep still guarantees.
+    FNXC:LifecycleContainment 2026-09-22-12:47:
+    Cleanup does not prove a review card is safe to move backward. Supply the
+    store's live-row reader and assert the production triple-proof outcome:
+    stale checkout metadata clears in place while the review lane is retained.
     */
     expect(task.column).toBe("in-review");
+    expect(statefulStore.moveTask).not.toHaveBeenCalled();
     expect(task.branch).toBeNull();
     expect(task.worktree).toBeNull();
     expect(task.baseCommitSha).toBeNull();

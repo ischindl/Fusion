@@ -42,48 +42,14 @@ const log = createLogger("postgres-connection");
  * connection since Fusion's workload is primarily short transactional queries.
  * The embedded mode may use an even smaller pool. These can be tuned via
  * environment variables if needed.
- *
- * FNXC:PostgresConnection 2026-09-22-16:12:
- * The env tuning promised above did not exist, so every store ran at the
- * default cap of 3. Measured: on a 250-task project the hold-release sweep's
- * prefetch fan-out occupies all 3 pooled connections for multi-second bursts,
- * and the dashboard health probe — which shares the store's runtime pool —
- * then exceeds its 5s deadline and flips /api/health to `degraded`
- * ("connection pool saturated?") every other poll, making the DB banner flap
- * for the operator. `FUSION_PG_POOL_MAX` now honors the documented knob: host
- * owners raise the cap where their server capacity allows (prod uses 12),
- * while the default stays 3 so small external-DB quotas (pooler/Supabase
- * plans) are not overrun by 16 projects x cap. Deadlock safety is unaffected:
- * the FN-8764 invariant is "lock and its work share ONE connection", not a
- * small pool (see agent-store-builtin-role-provisioning-pool.test.ts).
  */
 // External databases frequently impose a low connection quota. Each Fusion
 // store owns a runtime pool plus a migration session, so keep the default
-// deliberately small; callers with a known capacity can still override it
-// per-call or via FUSION_PG_POOL_MAX (integer, 1..500; invalid values warn
-// and fall back to the default).
-const DEFAULT_POOL_MAX = 3;
-const MAX_POOL_CEILING = 500;
-
-/**
- * Resolve the runtime pool cap: explicit option > FUSION_PG_POOL_MAX > default.
- * Pure so the precedence is testable without a database.
- */
-export function resolvePoolMax(
-  explicit: number | undefined,
-  env: Record<string, string | undefined> | undefined,
-  warn: (message: string) => void,
-): number {
-  if (explicit !== undefined) return explicit;
-  const raw = (env ?? process.env)["FUSION_PG_POOL_MAX"];
-  if (raw === undefined || raw.trim() === "") return DEFAULT_POOL_MAX;
-  const parsed = Number(raw);
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_POOL_CEILING) {
-    warn(`FUSION_PG_POOL_MAX="${raw}" is not an integer in 1..${MAX_POOL_CEILING}; using default pool cap ${DEFAULT_POOL_MAX}.`);
-    return DEFAULT_POOL_MAX;
-  }
-  return parsed;
-}
+// deliberately small; callers with a known capacity can still override it.
+export const DEFAULT_POOL_MAX = 3;
+export const FUSION_PG_POOL_MAX_ENV = "FUSION_PG_POOL_MAX";
+const MIN_POOL_MAX = 1;
+const MAX_POOL_MAX = 500;
 const DEFAULT_CONNECT_TIMEOUT_SECONDS = 10;
 const DEFAULT_IDLE_TIMEOUT_SECONDS = 20;
 
@@ -97,11 +63,11 @@ type AnySchema = Record<string, never>;
 export interface CreateConnectionOptions {
   readonly backend?: ResolvedBackend;
   readonly poolMax?: number;
+  /** Injected process environment for deterministic runtime-pool configuration. */
+  readonly env?: NodeJS.ProcessEnv;
   readonly connectTimeoutSeconds?: number;
   readonly idleTimeoutSeconds?: number;
   readonly onWarning?: (message: string) => void;
-  /** FNXC:PostgresConnection 2026-09-22-16:12: Env source for FUSION_PG_POOL_MAX resolution; tests inject, production uses process.env. */
-  readonly env?: Record<string, string | undefined>;
   /** FNXC:ProjectDataIsolation 2026-07-14-14:25: Bind runtime queries to one project partition. */
   readonly projectId?: string;
   /** FNXC:ProjectDataIsolation 2026-07-14-14:25: Permit intentional schema/migration/cross-project administration. */
@@ -120,11 +86,13 @@ export interface PostgresConnections {
    * is configured.
    */
   readonly migration: PostgresJsDatabase<AnySchema>;
+  /** Dedicated max-one Drizzle instance for readiness and integrity reads. */
+  readonly health: PostgresJsDatabase<AnySchema>;
   /** The resolved backend descriptor. */
   readonly backend: ResolvedBackend;
   /** Close all underlying connections. */
   close(): Promise<void>;
-  /** Run a health-check query against the runtime connection. */
+  /** Run a health-check query against the dedicated health connection. */
   ping(): Promise<void>;
 }
 
@@ -188,7 +156,7 @@ export async function createConnectionSet(
     );
   }
 
-  return createConnectionSetFromUrl(backend, options);
+  return createConnectionSetFromUrl(backend, { ...options, env });
 }
 
 /**
@@ -199,7 +167,7 @@ export async function createConnectionSetFromUrl(
   backend: ResolvedBackend,
   options: CreateConnectionOptions = {},
 ): Promise<PostgresConnections> {
-  const poolMax = resolvePoolMax(options.poolMax, options.env, options.onWarning ?? ((msg) => log.warn(msg)));
+  const poolMax = resolvePoolMax(options);
   const connectTimeout = options.connectTimeoutSeconds ?? DEFAULT_CONNECT_TIMEOUT_SECONDS;
   const idleTimeout = options.idleTimeoutSeconds ?? DEFAULT_IDLE_TIMEOUT_SECONDS;
   const onWarning = options.onWarning ?? ((msg: string) => log.warn(msg));
@@ -259,6 +227,23 @@ export async function createConnectionSetFromUrl(
   });
   const runtimeDb = drizzle(runtimeSql);
 
+  /*
+  FNXC:PostgresHealthTransport 2026-09-23-02:09:
+  Readiness and task-ID integrity must remain observable while scheduler work
+  exhausts the runtime pool. This separately owned, max-one session retains
+  the runtime target, pooler policy, and project/RLS binding without becoming
+  a general query surface or a per-request connection.
+  */
+  const healthSql = postgres(runtimeUrl, {
+    max: 1,
+    connect_timeout: connectTimeout,
+    idle_timeout: idleTimeout,
+    prepare: runtimePrepare,
+    connection: runtimeConnectionParameters,
+    onnotice: () => {},
+  });
+  const healthDb: PostgresJsDatabase<AnySchema> = drizzle(healthSql);
+
   // Migration connection: use DATABASE_MIGRATION_URL if set, else runtime URL.
   // Always prepare: false for migration work (DDL under a pooler must not use
   // prepared statements).
@@ -277,24 +262,42 @@ export async function createConnectionSetFromUrl(
   });
   const migrationDb: PostgresJsDatabase<AnySchema> = drizzle(migrationSql);
 
+  let closePromise: Promise<void> | undefined;
   const connections: PostgresConnections = {
     runtime: runtimeDb,
     migration: migrationDb,
+    health: healthDb,
     backend,
-    async close() {
-      const closePromises: Promise<unknown>[] = [
-        migrationSql.end({ timeout: 5 }),
-        runtimeSql.end({ timeout: 5 }),
-      ];
-      await Promise.allSettled(closePromises);
+    close() {
+      closePromise ??= (async () => {
+        await Promise.allSettled([
+          migrationSql.end({ timeout: 5 }),
+          healthSql.end({ timeout: 5 }),
+          runtimeSql.end({ timeout: 5 }),
+        ]);
+      })();
+      return closePromise;
     },
     async ping() {
-      // Simple connectivity probe.
-      await runtimeSql`SELECT 1`;
+      await healthSql`SELECT 1`;
     },
   };
 
   return connections;
+}
+
+/** Resolve the normal runtime capacity without coercing invalid operator input. */
+export function resolvePoolMax(options: CreateConnectionOptions = {}): number {
+  if (options.poolMax !== undefined) return options.poolMax;
+  const raw = options.env?.[FUSION_PG_POOL_MAX_ENV] ?? process.env[FUSION_PG_POOL_MAX_ENV];
+  if (raw === undefined) return DEFAULT_POOL_MAX;
+  const trimmed = raw.trim();
+  const value = Number(trimmed);
+  if (trimmed !== "" && Number.isInteger(value) && value >= MIN_POOL_MAX && value <= MAX_POOL_MAX) return value;
+  (options.onWarning ?? ((msg: string) => log.warn(msg)))(
+    `${FUSION_PG_POOL_MAX_ENV} must be an integer from ${MIN_POOL_MAX} through ${MAX_POOL_MAX}; using default ${DEFAULT_POOL_MAX}`,
+  );
+  return DEFAULT_POOL_MAX;
 }
 
 /**

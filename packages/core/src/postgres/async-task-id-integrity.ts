@@ -60,17 +60,8 @@ function buildReport(checkedAt: string, anomalies: TaskIdIntegrityAnomaly[]): Ta
  * The detector intentionally does NOT filter on `deletedAt` for the `tasks`
  * table — soft-deleted IDs must remain visible to integrity checks (FN-5105).
  *
- * FNXC:TaskIdIntegrity 2026-09-22-19:40:
- * PostgreSQL keys `tasks` by `(project_id, id)` and the allocator state by
- * `(project_id, prefix)`: task IDs are unique PER PROJECT, so the same ID
- * legally exists in every project. Pass `{ projectId }` to check one
- * partition; the unscoped form keeps SQLite-parity global semantics for
- * single-project callers, but on a multi-project database it reports ordinary
- * cross-project ID reuse as `duplicate_active_id` (measured: 31 false
- * anomalies from 16 projects on one health probe).
- *
  * @param db The runtime Drizzle instance.
- * @param options Optional project partition to scope every query to.
+ * @param options Optional project partition; omitted or blank retains global diagnostics.
  * @returns The integrity report with the same shape as the SQLite version.
  */
 export async function detectTaskIdIntegrityAnomaliesAsync(
@@ -78,8 +69,14 @@ export async function detectTaskIdIntegrityAnomaliesAsync(
   options?: { projectId?: string },
 ): Promise<TaskIdIntegrityReport> {
   const checkedAt = new Date().toISOString();
-  const projectId = options?.projectId;
-  const where = projectId ? sql`WHERE project_id = ${projectId}` : sql.raw("");
+  const projectId = options?.projectId?.trim() || undefined;
+  /*
+  FNXC:TaskIdIntegrity 2026-09-23-01:47:
+  Task IDs and allocator prefixes are project-partitioned, so all detector reads
+  must use the same optional partition. An absent or blank scope intentionally
+  remains a global diagnostic for single-project and administrative callers.
+  */
+  const projectFilter = projectId ? sql` WHERE project_id = ${projectId}` : sql``;
 
   try {
     const anomalies: TaskIdIntegrityAnomaly[] = [];
@@ -88,10 +85,10 @@ export async function detectTaskIdIntegrityAnomaliesAsync(
     // deletedAt on tasks (FN-5105). Use raw SQL for direct column access
     // without needing full Drizzle row-type mapping.
     const activeRows = (await db.execute(
-      sql`SELECT id FROM ${sql.raw(PROJECT_SCHEMA)}.tasks ${where}`,
+      sql`SELECT id FROM ${sql.raw(`${PROJECT_SCHEMA}.tasks`)}${projectFilter}`,
     )) as unknown as Array<{ id: string }>;
     const archivedRows = (await db.execute(
-      sql`SELECT id FROM ${sql.raw(PROJECT_SCHEMA)}.archived_tasks ${where}`,
+      sql`SELECT id FROM ${sql.raw(`${PROJECT_SCHEMA}.archived_tasks`)}${projectFilter}`,
     )) as unknown as Array<{ id: string }>;
 
     const activeIds = activeRows.map((r) => String(r.id ?? ""));
@@ -151,7 +148,7 @@ export async function detectTaskIdIntegrityAnomaliesAsync(
 
     // Read allocator state rows.
     const stateRows = (await db.execute(
-      sql`SELECT prefix, next_sequence FROM ${sql.raw(PROJECT_SCHEMA)}.distributed_task_id_state ${where}`,
+      sql`SELECT prefix, next_sequence FROM ${sql.raw(`${PROJECT_SCHEMA}.distributed_task_id_state`)}${projectFilter}`,
     )) as unknown as Array<{ prefix: string; next_sequence: string | number }>;
 
     // 4. Sequence drift: next_sequence at or below a used suffix.

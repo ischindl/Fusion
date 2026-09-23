@@ -5,7 +5,6 @@ import { activeSessionRegistry } from "../agents/active-session-registry.js";
 import { ActiveSessionWorktreeRemovalError } from "../worktree/worktree-backend.js";
 import * as worktreePoolModule from "../worktree/worktree-pool.js";
 import * as branchConflictModule from "../execution/branch-conflicts.js";
-import { resolveTaskWorktreePath } from "../worktree/worktree-paths.js";
 import { createMockStore, resetExecutorMocks } from "./executor-test-helpers.js";
 
 const CONFLICT_PATH = "/tmp/test/.worktrees/stale-self-owned";
@@ -177,8 +176,14 @@ describe("FN-4973: executor worktree conflict cleanup", () => {
       { id: "FN-LIVE", worktree: CONFLICT_PATH, column: "in-progress", paused: false },
     ]);
     const executor = new TaskExecutor(store, "/tmp/test");
+    /*
+    FNXC:ExecutorWorktreeConflict 2026-09-22-13:26:
+    A live-owner conflict must create its sibling branch at the task's canonical Fusion
+    worktree path. FN-258 removed random worktree names, so this production facade
+    regression must assert the durable task-id directory instead of a retired helper.
+    */
     const createSpy = vi.spyOn(executor as any, "tryCreateWorktree").mockResolvedValue({
-      path: "/tmp/test/.worktrees/fresh-eagle",
+      path: "/tmp/test/.fusion/worktrees/fn-4973",
       branch: "fusion/fn-4973-2",
     });
 
@@ -193,16 +198,10 @@ describe("FN-4973: executor worktree conflict cleanup", () => {
       await store.getSettings(),
     );
 
-    expect(result).toEqual({ path: "/tmp/test/.worktrees/fresh-eagle", branch: "fusion/fn-4973-2" });
-    /*
-    FNXC:TaskWorktreeNames 2026-09-13 (RUFU-231 test reconciliation):
-    The fresh-sibling fallback keeps the task's ONE durable directory identity while suffixing
-    the branch (-2..-6); the old seam generated a fresh random worktree name per retry and the
-    test mocked that generator. Compute the durable path from the production resolver instead.
-    */
+    expect(result).toEqual({ path: "/tmp/test/.fusion/worktrees/fn-4973", branch: "fusion/fn-4973-2" });
     expect(createSpy).toHaveBeenCalledWith(
       "fusion/fn-4973-2",
-      resolveTaskWorktreePath("/tmp/test", await store.getSettings(), "fn-4973"),
+      "/tmp/test/.fusion/worktrees/fn-4973",
       "FN-4973",
       "fusion/fn-4973",
       0,
@@ -238,6 +237,7 @@ describe("FN-4973: executor worktree conflict cleanup", () => {
     store.listTasks.mockResolvedValue([]);
     activeSessionRegistry.registerPath(CONFLICT_PATH, { taskId: "FN-4973", kind: "workflow-step", ownerKey: "FN-4973/workflow-step" });
     (executor as any).addActiveWorktree("FN-4973", CONFLICT_PATH);
+    // FNXC:ExecutorWorktreeConflict 2026-09-22-13:26: sibling attempts retain one canonical task directory while branch suffixes remain bounded.
     vi.spyOn(worktreePoolModule, "removeWorktree").mockRejectedValue(
       new ActiveSessionWorktreeRemovalError({
         worktreePath: CONFLICT_PATH,
