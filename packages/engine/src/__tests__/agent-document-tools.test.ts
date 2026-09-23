@@ -444,7 +444,8 @@ describe("task_document_read tool", () => {
     const tool = createTaskDocumentReadTool(store, TASK_ID);
     const result = await runTool(tool, "call-9", {});
 
-    expect(getText(result)).toContain("ERROR: Failed to read task documents");
+    expect(result.isError).toBe(true);
+    expect(getText(result)).toContain("did not reach the task store");
     expect(getText(result)).toContain("read timeout");
   });
 });
@@ -578,7 +579,8 @@ describe("chat task document tools", () => {
     const tool = findChatTool("fn_task_document_read", store);
     const result = await runTool(tool, "call-chat-read-error", { task_id: "FN-405" });
 
-    expect(getText(result)).toContain("ERROR: Failed to read task documents for task FN-405");
+    expect(result.isError).toBe(true);
+    expect(getText(result)).toContain("the task documents for task FN-405 did not reach the task store");
     expect(getText(result)).toContain("Task FN-405 not found");
   });
 });

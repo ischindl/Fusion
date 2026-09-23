@@ -675,7 +675,8 @@ describe("artifact list tool", () => {
     const result = await runTool(tool, "call-list-error", { search: "offline" });
 
     expect(listArtifacts).toHaveBeenCalledWith(expect.objectContaining({ search: "offline" }));
-    expect(getText(result)).toContain("ERROR: Failed to list artifacts");
+    expect(result.isError).toBe(true);
+    expect(getText(result)).toContain("the artifact list did not reach the task store");
     expect(getText(result)).toContain("artifact index offline");
   });
 });
@@ -745,7 +746,8 @@ describe("artifact view tool", () => {
     const result = await runTool(tool, "call-view-error", { id: "art-failing" });
 
     expect(getArtifact).toHaveBeenCalledWith("art-failing");
-    expect(getText(result)).toContain('ERROR: Failed to view artifact "art-failing"');
+    expect(result.isError).toBe(true);
+    expect(getText(result)).toContain('the artifact "art-failing" did not reach the task store');
     expect(getText(result)).toContain("DB read timeout");
   });
 });
@@ -882,7 +884,8 @@ describe("chat artifact tools", () => {
     const tool = findChatTool("fn_artifact_list", store);
     const result = await runTool(tool, "call-chat-list-error", { task_id: "FN-405" });
 
-    expect(getText(result)).toContain("ERROR: Failed to list artifacts");
+    expect(result.isError).toBe(true);
+    expect(getText(result)).toContain("the artifact list did not reach the task store");
     expect(getText(result)).toContain("Task FN-405 not found");
   });
 });
