@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import * as fusionCore from "@fusion/core";
+import { storeErrorResult } from "./tool-store-errors.js";
 import type {
   TaskStore,
   Task,
@@ -4654,6 +4655,10 @@ export class TriageProcessor {
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           planLog.warn(`${options.parentTaskId}: fn_task_show lookup failed for ${params.id}: ${msg}`);
+          // A store outage is not a missing card: only the store's own not-found may say so.
+          if (!fusionCore.isTaskNotFoundError(err)) {
+            return storeErrorResult(`Task ${params.id} could not be read`, err);
+          }
           return {
             content: [
               { type: "text" as const, text: `Task ${params.id} not found.` },
@@ -4683,8 +4688,7 @@ export class TriageProcessor {
           }, { rootDir: this.rootDir });
           return { content: [{ type: "text" as const, text: `${wasDuplicate ? "Linked existing task" : "Created independent task"} ${newTask.id}: ${params.title || params.description.slice(0, 60)}` }], details: { taskId: newTask.id } };
         } catch (err: unknown) {
-          const errorMessage = err instanceof Error ? err.message : String(err);
-          return { content: [{ type: "text" as const, text: `ERROR: Failed to create task: ${errorMessage}` }], details: {} };
+          return storeErrorResult("task creation", err);
         }
       },
     };

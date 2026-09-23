@@ -319,7 +319,10 @@ const DOC_KEY = "plan";
 
 describe("reads fail the tool boundary when the store could not answer (STAS-256)", () => {
   it("fn_task_logs_read reports the store failure and stays loud", async () => {
-    const store = failingStore({ getAgentLogs: vi.fn().mockRejectedValue(new Error(PERSISTENCE_FAILURE)) });
+    const store = failingStore({
+      getAgentLogs: vi.fn().mockRejectedValue(new Error(PERSISTENCE_FAILURE)),
+      getAgentLogCount: vi.fn().mockRejectedValue(new Error(PERSISTENCE_FAILURE)),
+    });
     const result = await run(createTaskLogsReadTool(store, TASK_ID), {});
     const text = JSON.stringify(result.content);
     expect(result.isError).toBe(true);
@@ -355,7 +358,10 @@ describe("reads fail the tool boundary when the store could not answer (STAS-256
   });
 
   it("the chat log-read lane shares the same loud seam (STAS-256)", async () => {
-    const store = failingStore({ getAgentLogs: vi.fn().mockRejectedValue(new Error(PERSISTENCE_FAILURE)) });
+    const store = failingStore({
+      getAgentLogs: vi.fn().mockRejectedValue(new Error(PERSISTENCE_FAILURE)),
+      getAgentLogCount: vi.fn().mockRejectedValue(new Error(PERSISTENCE_FAILURE)),
+    });
     const tool = createChatTaskLogsReadTool(store);
     const result = await run(tool, { task_id: TASK_ID });
     expect(result.isError).toBe(true);

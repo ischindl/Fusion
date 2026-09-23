@@ -2129,7 +2129,7 @@ async function readTaskAgentLogs(
     };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } catch (err: any) {
-    return { content: [{ type: "text" as const, text: `ERROR: Failed to read agent log for task ${taskId}: ${err.message}` }], details: {} };
+    return storeErrorResult(`the agent log for task ${taskId}`, err);
   }
 }
 
@@ -3120,13 +3120,7 @@ async function listArtifactsForAgent(store: TaskStore, params: Static<typeof art
     };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } catch (err: any) {
-    return {
-      content: [{
-        type: "text" as const,
-        text: `ERROR: Failed to list artifacts: ${err.message}`,
-      }],
-      details: {},
-    };
+    return storeErrorResult("the artifact list", err);
   }
 }
 
@@ -3164,13 +3158,7 @@ async function viewArtifactForAgent(store: TaskStore, id: string) {
     };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } catch (err: any) {
-    return {
-      content: [{
-        type: "text" as const,
-        text: `ERROR: Failed to view artifact "${id}": ${err.message}`,
-      }],
-      details: {},
-    };
+    return storeErrorResult(`the artifact "${id}"`, err);
   }
 }
 
@@ -3218,13 +3206,7 @@ async function readTaskDocuments(store: TaskStore, taskId: string, key?: string)
     };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } catch (err: any) {
-    return {
-      content: [{
-        type: "text" as const,
-        text: `ERROR: Failed to read task documents for task ${taskId}: ${err.message}`,
-      }],
-      details: {},
-    };
+    return storeErrorResult(`the task documents for task ${taskId}`, err);
   }
 }
 
