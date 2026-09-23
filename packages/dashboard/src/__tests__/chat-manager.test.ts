@@ -3998,6 +3998,14 @@ describe("ChatManager.sendMessage", () => {
       // The summarizer always sees the raw first message, never the provisional title.
       // Sync-merge note (FN-505 vs our unique-tmp harness): the assertion must follow the
       // manager's actual rootDir (TEST_ROOT), which the parallel-safe harness mkdtemps per run.
+      /*
+      FNXC:ChatTitleGeneration 2026-09-17-23:50 (RUFU-255 stale-seam repair):
+      FN-505's original expectation hardcoded "/tmp/test" as the rootDir argument, but the
+      suite's manager root is the mkdtemp TEST_ROOT (line 41, a375f402d46), so the assertion
+      was unsatisfiable on any host. The sibling assertion in this file already passes
+      TEST_ROOT; this one now states the same truth — the summarizer receives the manager's
+      rootDir. Deterministic failure proven on base 7f052a59 and on origin/main.
+      */
       expect(mockSummarizeTitle).toHaveBeenCalledWith(
         "Please triage the merge queue for me",
         TEST_ROOT,
