@@ -20,6 +20,7 @@ import {
 } from "../../__test-utils__/pg-test-harness.js";
 import * as schema from "../../postgres/schema/index.js";
 import { HELD_HUMAN_REVIEW_STALL_REASON, type TaskStallReason } from "../../tasks/task-stall-reason.js";
+import { PRE_MERGE_STEPS_NOT_RUN_BLOCKER } from "../../merge/task-merge.js";
 import type { TaskStore } from "../../store.js";
 
 const pgTest = pgDescribe;
@@ -116,6 +117,34 @@ pgTest("TaskStore stallReason hydration parity (PostgreSQL)", () => {
     expect(sites.detail?.code).toBe("merge-blocker");
     expect(sites.detail?.reason).toBe("task has failed pre-merge workflow steps");
     expect(sites.detail?.observedAt).toBeTruthy();
+  });
+
+  /*
+  FNXC:TaskStallReason 2026-09-22-23:36 (RUFU-276, Step 5):
+  Board-list proof for the failed-park not-run wedge: a card terminalized by the pre-RUFU-276 retry
+  seam (`status:'failed'` + `AUTO_MERGE_RETRY_REJECTED: Cannot merge <id>: <canonical sentence>`) must
+  surface the NAMED `pre-merge-gate-pending` code with the canonical gate sentence — not the generic
+  `merge-blocker` and never the composed park prose — identically on all four hydrated read sites.
+  The derivation is pure on the blocker string, so the fixture needs no workflow IR: the blocking-status
+  arm composes the persisted error before any gate evaluation runs.
+  */
+  it("names the failed not-run retry-rejection park on all four read sites", async () => {
+    await seedTask("STLR-NOTRUN", {
+      column: "in-review",
+      description: "stallreasonnotrunfixture wedged approved card",
+      set: {
+        status: "failed",
+        error: `AUTO_MERGE_RETRY_REJECTED: Cannot merge STLR-NOTRUN: ${PRE_MERGE_STEPS_NOT_RUN_BLOCKER}`,
+      },
+    });
+    const store = h.store();
+
+    const sites = await readAllSites(store, "STLR-NOTRUN", "stallreasonnotrunfixture");
+    expectSitesAgree(sites);
+    expect(sites.detail?.code).toBe("pre-merge-gate-pending");
+    expect(sites.detail?.reason).toBe(PRE_MERGE_STEPS_NOT_RUN_BLOCKER);
+    // The slim board row — the actual board-list assertion — carries the named code too.
+    expect(sites.slim?.code).toBe("pre-merge-gate-pending");
   });
 
   it("reports the identical dependency-blocker on all four read sites for an unmet dependency", async () => {

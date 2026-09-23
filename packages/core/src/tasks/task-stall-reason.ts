@@ -4,6 +4,8 @@ import {
   getTaskCompletionBlocker,
   getTaskMergeBlocker,
   isPreMergeStepsNotRunBlocker,
+  isPreMergeStepsNotRunRefusal,
+  PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
 } from "../merge/task-merge.js";
 
 /*
@@ -174,9 +176,22 @@ export async function deriveTaskStallReason(
       return undefined;
     }
     if (blocker) {
+      /*
+      FNXC:TaskStallReason 2026-09-22-23:05 (RUFU-276, AC3):
+      A never-ran-gate refusal can reach this arm in two spellings. The canonical one is the exact
+      sentence, which `isPreMergeStepsNotRunBlocker` names. The second is the failed-status wrapper —
+      `task is marked 'failed': AUTO_MERGE_RETRY_REJECTED: Cannot merge <id>: <canonical sentence>` —
+      because the blocking-status arm of `getTaskMergeBlocker` composes the persisted error ahead of
+      the not-run arm. Exact equality cannot see through that composition, so the wedge projected the
+      generic `merge-blocker` and the operator lost both the gate-pending name and the RUFU-180 alert
+      for the one class the engine can actually repair. The wrap-aware classifier recognises the
+      embedded sentence; the reason stays the canonical gate sentence so the board chip and the
+      notifier never show the composed park prose.
+      */
+      const unrunGate = isPreMergeStepsNotRunBlocker(blocker) || isPreMergeStepsNotRunRefusal(blocker);
       return {
-        code: isPreMergeStepsNotRunBlocker(blocker) ? "pre-merge-gate-pending" : "merge-blocker",
-        reason: blocker,
+        code: unrunGate ? "pre-merge-gate-pending" : "merge-blocker",
+        reason: unrunGate && !isPreMergeStepsNotRunBlocker(blocker) ? PRE_MERGE_STEPS_NOT_RUN_BLOCKER : blocker,
         observedAt,
       };
     }

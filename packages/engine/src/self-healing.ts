@@ -169,7 +169,11 @@ import { createRunAuditor, generateSyntheticRunId, type DatabaseMutationType, ty
 import { finalizeProvenAutoMergeTask, validateWorkflowDoneMergeProof } from "./merge/auto-merge-finalization.js";
 import { captureMergeContentDescriptor } from "./merge/merge-content-capture.js";
 import { rerouteSingularStaleContentToReview } from "./merge/stale-content-review-reroute.js";
-import { rerouteUnrunPreMergeGateToReview } from "./merge/pre-merge-gate-reseed.js";
+import {
+  classifyUnrunGatePark,
+  rerouteUnrunPreMergeGateToReview,
+  type UnrunGateParkShape,
+} from "./merge/pre-merge-gate-reseed.js";
 import { cleanupLandedTaskWorktree, removeEmptyWorkspaceTaskDirectory } from "./merge/post-landing-worktree-cleanup.js";
 import { cleanupDeletedTaskWorktrees } from "./worktree/deleted-task-worktree-cleanup.js";
 import { AutoRecoveryDispatcher } from "./healing/auto-recovery.js";
@@ -1166,6 +1170,16 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   */
   private readonly verdictlessGateParkRecoveryAttempts = new Map<string, number>();
   private readonly verdictlessGateParkRecoveryBudgetLogged = new Set<string>();
+  /*
+  FNXC:PreMergeApproval 2026-09-22-22:40 (RUFU-276, AC2):
+  Episode-bound recovery budget for the never-ran-gate terminal park loop, mirroring the
+  stale-content and verdict-less pairs above: the budget belongs to one continuous park, and it is
+  SEPARATE from those two because a card can legitimately carry each of those parks at different
+  times and must get a fresh bounded window for the third class.
+  */
+  private readonly unrunGateParkRecoveryAttempts = new Map<string, number>();
+  private readonly unrunGateParkRecoveryBudgetLogged = new Set<string>();
+  private readonly unrunGateParkAuditKeys = new Set<string>();
   /*
   FNXC:SelfHealingReclaim 2026-09-15-19:20:
   FN-429. Dedup keys for the pending-overlap-evidence withholding diagnostic below, so a wait that survives
@@ -10736,6 +10750,99 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     return reroute.rerouted;
   }
 
+  /*
+  FNXC:PreMergeApproval 2026-09-22-22:40 (RUFU-276, AC2 / Step 4):
+  Fourth hidden-park family in this sweep: a review-lane card already terminalized over a required
+  gate that has NO result row at all. Repair order follows the RUFU-217 precedent exactly — seed
+  FIRST through the SAME `rerouteUnrunPreMergeGateToReview` call the visible FN-9243 lane uses (one
+  gate resolution and one content capture per candidate, so seed and admission never disagree), then
+  clear `status`/`error`/`mergeRetries` only under `updateTaskAtomic` re-deriving the identical live
+  signature from the classifier. All-or-nothing by construction: a refused seed (operator hold,
+  non-singular content, an active continuation) or a live row that no longer shows the same park
+  leaves the terminal state byte-identical and the next pass decides again. Nothing here fabricates a
+  verdict or deletes a `pending` row (FN-7720 / FN-8492), and the card never leaves its review lane —
+  the seed enters the gate in place (FN-207/FN-217 lifecycle containment).
+
+  Telemetry: the seed keeps FN-9243's `task:merge-unrun-pre-merge-gate-rerouted` event with its
+  registered key set untouched — a seed attempt IS that event — under a park-namespaced dedupe key so
+  a decline here cannot swallow that lane's own row. The park outcome itself gets the new
+  `task:merge-unrun-gate-park-repaired` event with ids/counts/fixed enums only; blocker prose, review
+  findings and errors never enter run-audit. Idempotence: after a successful repair the row is no
+  longer `status:"failed"`, so the classifier stops admitting it and the budget prunes itself.
+  */
+  private async routeUnrunGateParkBackToReview(
+    task: Task,
+    mergeGate: ResolvedMergeRecoveryGate,
+    mergeContent: CapturedMergeRecoveryContent,
+    park: { shape: UnrunGateParkShape; missingGateIds: string[] },
+  ): Promise<void> {
+    const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
+      requiredPreMergeStepIds: mergeGate.requiredPreMergeStepIds,
+      mergeContent,
+    }).catch(() => ({
+      rerouted: false as const,
+      reason: "no-unrun-gate" as const,
+      nodeId: undefined,
+      workflowStepId: undefined,
+    }));
+    let parkCleared = false;
+    if (reroute.rerouted) {
+      await this.store.updateTaskAtomic(task.id, (live) => {
+        if (classifyUnrunGatePark(live, mergeGate.requiredPreMergeStepIds)?.shape !== park.shape) return null;
+        parkCleared = true;
+        return { status: null, error: null, mergeRetries: 0 };
+      });
+      const gateId = reroute.workflowStepId ?? park.missingGateIds[0] ?? "unknown";
+      await this.store.logEntry(task.id, `[pre-merge] Self-healing re-seeded the workflow graph at the never-ran pre-merge gate '${gateId}' that had parked this card.`);
+      if (parkCleared) {
+        await this.store.logEntry(task.id, `[pre-merge] Cleared the ${park.shape} merge park after re-seeding a fresh run of the never-ran gate '${gateId}'.`);
+      }
+      log.warn(`Never-ran pre-merge gate park for ${task.id} re-seeded at ${reroute.nodeId ?? "unknown"} (park cleared: ${parkCleared})`);
+    }
+
+    const seedAuditKey = `${task.id}:unrun-gate-park:${reroute.reason}:${reroute.nodeId ?? ""}:${park.shape}`;
+    if (!this.unrunPreMergeGateRerouteAuditKeys.has(seedAuditKey)) {
+      this.unrunPreMergeGateRerouteAuditKeys.add(seedAuditKey);
+      await emitBoundedRunAudit(this.store, {
+        taskId: task.id,
+        agentId: "self-healing",
+        runId: generateSyntheticRunId("self-healing", task.id),
+        domain: "database",
+        mutationType: "task:merge-unrun-pre-merge-gate-rerouted",
+        target: task.id,
+        metadata: {
+          taskId: task.id,
+          nodeId: reroute.nodeId,
+          workflowStepId: reroute.workflowStepId,
+          reason: reroute.reason,
+          source: "self-healing",
+          missingGateCount: mergeGate.requiredPreMergeStepIds.size,
+        },
+      });
+    }
+
+    const outcome = !reroute.rerouted ? "seed-refused" as const : parkCleared ? "repaired" as const : "signature-drift" as const;
+    const repairAuditKey = `${task.id}:unrun-gate-park:${outcome}:${reroute.workflowStepId ?? park.missingGateIds[0] ?? ""}`;
+    if (!this.unrunGateParkAuditKeys.has(repairAuditKey)) {
+      this.unrunGateParkAuditKeys.add(repairAuditKey);
+      await emitBoundedRunAudit(this.store, {
+        taskId: task.id,
+        agentId: "self-healing",
+        runId: generateSyntheticRunId("self-healing", task.id),
+        domain: "database",
+        mutationType: "task:merge-unrun-gate-park-repaired",
+        target: task.id,
+        metadata: {
+          taskId: task.id,
+          workflowStepId: reroute.workflowStepId ?? park.missingGateIds[0] ?? null,
+          missingGateCount: park.missingGateIds.length,
+          source: "self-healing",
+          outcome,
+        },
+      });
+    }
+  }
+
   /**
    * Recover `in-review` tasks that are fully mergeable but never had
    * `mergeTask()` invoked.
@@ -10975,6 +11082,62 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         if (!hiddenVerdictlessParkCandidateIds.has(taskId)) {
           this.verdictlessGateParkRecoveryAttempts.delete(taskId);
           this.verdictlessGateParkRecoveryBudgetLogged.delete(taskId);
+        }
+      }
+
+      /*
+      FNXC:PreMergeApproval 2026-09-22-22:40 (RUFU-276, AC2 / Step 4):
+      Third hidden arm for a never-ran gate, the shape the two above structurally cannot see: a
+      `status:"failed"` card whose error embeds the canonical never-ran sentence while the named gate
+      has ZERO result rows. It is invisible to the visible candidate filter (`status !== "failed"` and
+      a retry budget below the cap, both of which the retry-exhaustion park fails), to the stale-content
+      arm (different sentence) and to the verdict-less arm (a missing row is not verdict-less). RUFU-225
+      proved a card can live in it indefinitely with no producer and no notification.
+
+      This loop needs the gate ids to classify, so it resolves the workflow gate BEFORE classifying;
+      an unresolvable or default-provenance gate skips without spending a starvation attempt, so the
+      budget counts only real episodes (same rule as the loops above). `mergeAdmissionByTaskId` carries
+      the `autoMerge:false` / PR-based refusal (and deliberately NOT the merge-retry budget: spending
+      merge retries is what terminalized the card, so a spent budget cannot also disqualify the one
+      repair that does not retry the merge), and executing cards are skipped so a live run's own
+      transition always wins.
+      */
+      const hiddenUnrunGateParkCandidateIds = new Set<string>();
+      for (const task of tasks) {
+        if (mergeable.includes(task)) continue;
+        if (mergeAdmissionByTaskId.get(task.id) !== true || executingIds.has(task.id)
+          || task.status === "merging" || task.status === "merging-pr") continue;
+        const reviewColumns = await ownReviewLanesFor(task);
+        if (!reviewColumns.has(task.column)) continue;
+        let mergeGate: ResolvedMergeRecoveryGate;
+        try {
+          mergeGate = await resolvePreMergeGateForTask(this.store, task.id, task.enabledWorkflowSteps, task);
+        } catch {
+          continue;
+        }
+        if (mergeGate.provenance === "default" && !mergeGate.selectionAbsent) continue;
+        const park = classifyUnrunGatePark(task, mergeGate.requiredPreMergeStepIds);
+        if (!park) continue;
+        hiddenUnrunGateParkCandidateIds.add(task.id);
+        const attempts = (this.unrunGateParkRecoveryAttempts.get(task.id) ?? 0) + 1;
+        this.unrunGateParkRecoveryAttempts.set(task.id, attempts);
+        if (attempts === MAX_STARVATION_DROPS && !this.unrunGateParkRecoveryBudgetLogged.has(task.id)) {
+          this.unrunGateParkRecoveryBudgetLogged.add(task.id);
+          await this.store.logEntry(task.id, `[pre-merge] Stopped never-ran gate park recovery after ${MAX_STARVATION_DROPS} attempts; operator attention is required.`);
+        }
+        if (attempts > MAX_STARVATION_DROPS) continue;
+        const mergeContent = await captureMergeContentDescriptor(task, { workspaceRootDir: this.options.rootDir, settings });
+        await this.routeUnrunGateParkBackToReview(task, mergeGate, mergeContent, park);
+      }
+      /*
+      FNXC:PreMergeApproval 2026-09-22-22:40 (RUFU-276):
+      Same episode-bound budget rule as the two loops above: prune when the precise candidate
+      signature disappears so a later independent park gets its own bounded window.
+      */
+      for (const taskId of this.unrunGateParkRecoveryAttempts.keys()) {
+        if (!hiddenUnrunGateParkCandidateIds.has(taskId)) {
+          this.unrunGateParkRecoveryAttempts.delete(taskId);
+          this.unrunGateParkRecoveryBudgetLogged.delete(taskId);
         }
       }
 
