@@ -1,0 +1,9 @@
+---
+"@runfusion/fusion": patch
+"@fusion/core": patch
+"@fusion/engine": patch
+---
+
+summary: TaskStore boot is now shared, bounded, and logged; a write that did not commit is reported as an error.
+category: breaking
+dev: Removed the silent 30s settle. `getStore` previously raced a boot it could neither cancel, record, nor repay, so every caller in a stalled window burned another 30 seconds and nothing was written down anywhere; the timeout also sat below the 120s embedded-PG start budget it bounds, so a merely cold boot looked like a failure. Boot is now one shared attempt per project root that records exactly one `[taskstore-boot]` line per terminal outcome (`ok`, `failed`, `deadline`, `late-success`, `late-failure`, `aborted`) with duration and project root; the caller that runs out gets the reason plus elapsed budget, a 5s cooldown makes later callers fail immediately instead of each waiting, and a late result still populates the cache (checked before the cooldown) so a slow boot recovers rather than poisoning the process. Boot-critical advisory locks (`fusion:sqlite-migration-state`, `fusion:schema-applier`, SQLite-migration state) now set a transaction-local `lock_timeout` before waiting and raise `SchemaMutationLockTimeoutError` naming the key instead of queueing unbounded against `lock_timeout=0`. Mutating agent tools that returned their failure as plain text — document write, prompt write, file-scope add, artifact register, agent delete, task assign, message send — now return `isError: true` with retry guidance, because `AgentLogger` records a tool call as `tool_error` only when `isError` is set and therefore read every lost write back as a success. **Callers that previously saw false success on a lost write will now see an error**, and guard/validation refusals stay informative text results because no write was ever attempted there. No compatibility flag, fallback default, or permanent memoization of a failed boot was added.
