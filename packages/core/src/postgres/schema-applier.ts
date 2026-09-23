@@ -638,7 +638,7 @@ export async function getAppliedMigrations(
  */
 export async function applySchemaBaseline(
   db: PostgresJsDatabase<Record<string, never>>,
-  options: { pluginHooks?: readonly PluginSchemaInitHook[] } = {},
+  options: { pluginHooks?: readonly PluginSchemaInitHook[]; schemaMutationLockTimeoutMs?: number } = {},
 ): Promise<{ applied: boolean; pluginHooksRun: number }> {
   /*
    * FNXC:PostgresSchema 2026-07-14-00:05:
@@ -647,7 +647,7 @@ export async function applySchemaBaseline(
    * cannot both apply a version or race its primary-key marker.
   */
   return db.transaction(async (tx) => {
-    await acquireSchemaMutationLocks(tx);
+    await acquireSchemaMutationLocks(tx, options.schemaMutationLockTimeoutMs);
     await ensureBookkeepingTable(tx);
     /*
     FNXC:PostgresSchema 2026-07-16-00:55:

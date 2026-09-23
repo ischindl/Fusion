@@ -298,9 +298,24 @@ interface CachedStoreEntry {
 FNXC:ExtensionStoreRegistry 2026-07-16-15:20:
 Agent-read tools loaded through Pi's additionalExtensionPaths can be evaluated as a different ESM module instance from the CLI host that called setHostTaskStore. Keep cache, inflight, and cooldown state in one process registry so fn_list_agents and fn_agent_show reuse the host pool instead of opening a second backend that can wedge on schema/pool contention for 30 seconds.
 */
+/*
+FNXC:TaskStoreBootDeadline 2026-09-23-06:45:
+STAS-251. One boot attempt per project root, carrying when it started and whether a waiter
+already gave up on it, so the terminal outcome can be labelled and measured whichever order
+the two finish in. Node cannot cancel a store boot, so the deadline's job is to be honest:
+report the elapsed time, name the reason, and stop every later caller from re-paying the
+same budget against the same stalled attempt.
+*/
+interface StoreBootAttempt {
+  readonly promise: Promise<TaskStore>;
+  readonly startedAtMs: number;
+  /** Records the abandoned deadline, arms the shared backoff, and relabels the orphan's own outcome as late-*. */
+  reportDeadline(budgetMs: number): void;
+}
+
 interface ExtensionStoreState {
   readonly cache: Map<string, CachedStoreEntry>;
-  readonly bootInflight: Map<string, Promise<TaskStore>>;
+  readonly bootInflight: Map<string, StoreBootAttempt>;
   readonly bootFailureCooldown: Map<string, { untilMs: number; error: string }>;
   readonly knownProjectRoots: Set<string>;
 }
@@ -309,7 +324,7 @@ const extensionStoreStateKey = Symbol.for("@runfusion/fusion/extension-store-sta
 const extensionStoreGlobal = globalThis as typeof globalThis & { [key: symbol]: ExtensionStoreState | undefined };
 const extensionStoreState = extensionStoreGlobal[extensionStoreStateKey] ?? {
   cache: new Map<string, CachedStoreEntry>(),
-  bootInflight: new Map<string, Promise<TaskStore>>(),
+  bootInflight: new Map<string, StoreBootAttempt>(),
   bootFailureCooldown: new Map<string, { untilMs: number; error: string }>(),
   knownProjectRoots: new Set<string>(),
 };
@@ -327,7 +342,12 @@ const storeBootInflight = extensionStoreState.bootInflight;
 /*
 FNXC:MergeQueue 2026-07-15-11:20:
 After a hard boot failure, brief cooldown prevents stampede re-boots against a broken backend.
-Timeout alone does not set cooldown — the orphan inflight may still succeed and populate storeCache.
+
+FNXC:TaskStoreBootDeadline 2026-09-23-06:45:
+STAS-251: a reported deadline now arms this same backoff, which is what turns the boot
+ceiling into an actual deadline — later callers fail at once with the recorded reason instead
+of each re-paying the full budget against the same stalled attempt. The orphan is still not
+wasted: storeCache is read before the backoff, so a boot that lands late serves everyone.
 */
 const storeBootFailureCooldown = extensionStoreState.bootFailureCooldown;
 const BOOT_FAILURE_COOLDOWN_MS = 5_000;
@@ -530,6 +550,81 @@ When dashboard/serve/daemon injects the live engine TaskStore via setHostTaskSto
 */
 let extensionStoreBootFactory: typeof createTaskStoreForBackend = createTaskStoreForBackend;
 
+/**
+ * Emit one machine-readable line per boot outcome. Every boot used to end as either silence
+ * or a bare "timed out after 30000ms" with no elapsed time, no phase, and no reason, so a
+ * repeated stall left nothing to attribute. These lines land in the engine log and are the
+ * record a future stall is diagnosed from.
+ */
+function reportStoreBoot(
+  projectRoot: string,
+  outcome: "ok" | "failed" | "deadline" | "late-success" | "late-failure" | "aborted",
+  durationMs: number,
+  detail?: string,
+): void {
+  console.warn(
+    `[taskstore-boot] ${JSON.stringify({ projectRoot, outcome, durationMs, ...(detail ? { detail } : {}) })}`,
+  );
+}
+
+/**
+ * Start the single boot attempt for a project root and keep it observable.
+ *
+ * Node has no structured cancel for a store boot, so the attempt outlives a reported deadline
+ * by design. What it must never do is end unrecorded: whichever of the two finishes first,
+ * the outcome and its duration are written down.
+ */
+function startStoreBoot(projectRoot: string): StoreBootAttempt {
+  const startedAtMs = Date.now();
+  /* Set when a waiter reports the deadline; the orphan then labels itself late-* instead of ok. */
+  let deadlineReported = false;
+
+  const promise = (async () => {
+    try {
+      const boot = await extensionStoreBootFactory({ rootDir: projectRoot });
+      storeBootFailureCooldown.delete(projectRoot);
+      // Do not overwrite a host-injected external store that landed while we were booting.
+      const raced = storeCache.get(projectRoot);
+      if (raced?.external) {
+        await boot.shutdown().catch(() => undefined);
+        reportStoreBoot(projectRoot, deadlineReported ? "late-success" : "ok", Date.now() - startedAtMs, "host-injected store served instead");
+        return raced.store;
+      }
+      /* FNXC:TaskLifecycleTools 2026-08-15-06:35: Agent tools intentionally install the protective baseline with no force path; only a human CLI invocation can override live removal. */
+      storeCache.set(projectRoot, { store: boot.taskStore, shutdown: boot.shutdown });
+      reportStoreBoot(projectRoot, deadlineReported ? "late-success" : "ok", Date.now() - startedAtMs);
+      return boot.taskStore;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      storeBootFailureCooldown.set(projectRoot, {
+        untilMs: Date.now() + BOOT_FAILURE_COOLDOWN_MS,
+        error: message,
+      });
+      reportStoreBoot(projectRoot, deadlineReported ? "late-failure" : "failed", Date.now() - startedAtMs, message);
+      throw error;
+    } finally {
+      storeBootInflight.delete(projectRoot);
+    }
+  })();
+  // Keep a handler attached so timed-out waiters cannot leave an unhandledRejection when boot fails late.
+  void promise.catch(() => undefined);
+
+  return {
+    promise,
+    startedAtMs,
+    reportDeadline(budgetMs: number): void {
+      deadlineReported = true;
+      const elapsedMs = Date.now() - startedAtMs;
+      const detail = `abandoned after ${elapsedMs}ms (budget ${budgetMs}ms); orphan boot continues and may still populate the cache`;
+      storeBootFailureCooldown.set(projectRoot, {
+        untilMs: Date.now() + BOOT_FAILURE_COOLDOWN_MS,
+        error: detail,
+      });
+      reportStoreBoot(projectRoot, "deadline", elapsedMs, detail);
+    },
+  };
+}
+
 async function getStore(
   cwd: string,
   signal?: AbortSignal,
@@ -548,66 +643,31 @@ async function getStore(
 
   const effectiveSignal = signal ?? extensionToolSignal.getStore();
 
-  let inflight = storeBootInflight.get(projectRoot);
-  if (!inflight) {
-    /*
-    FNXC:PostgresFinalCutover 2026-07-14-17:20: Agent tools cache only the
-    PostgreSQL factory result; the removed SQLite opt-out is an explicit error.
+  /*
+  FNXC:PostgresFinalCutover 2026-07-14-17:20: Agent tools cache only the
+  PostgreSQL factory result; the removed SQLite opt-out is an explicit error.
 
-    FNXC:MergeQueue 2026-07-15-11:08:
-    First extension tool call without a host-injected store boots a TaskStore (CLI path).
-    Bound that boot and coalesce concurrent callers so a wedged boot cannot park every fn_* tool forever.
-
-    FNXC:MergeQueue 2026-07-15-11:20:
-    Boot failure sets a short cooldown to avoid stampede re-boots. Tool timeout does not cancel the orphan boot; on success it still populates storeCache for later calls.
-    */
-    inflight = (async () => {
-      try {
-        const boot = await extensionStoreBootFactory({ rootDir: projectRoot });
-        storeBootFailureCooldown.delete(projectRoot);
-        // Do not overwrite a host-injected external store that landed while we were booting.
-        const raced = storeCache.get(projectRoot);
-        if (raced?.external) {
-          await boot.shutdown().catch(() => undefined);
-          return raced.store;
-        }
-        /* FNXC:TaskLifecycleTools 2026-08-15-06:35: Agent tools intentionally install the protective baseline with no force path; only a human CLI invocation can override live removal. */
-        storeCache.set(projectRoot, { store: boot.taskStore, shutdown: boot.shutdown });
-        return boot.taskStore;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        storeBootFailureCooldown.set(projectRoot, {
-          untilMs: Date.now() + BOOT_FAILURE_COOLDOWN_MS,
-          error: message,
-        });
-        throw error;
-      } finally {
-        storeBootInflight.delete(projectRoot);
-      }
-    })();
-    // Keep a handler attached so timed-out waiters cannot leave an unhandledRejection when boot fails late.
-    void inflight.catch(() => undefined);
-    storeBootInflight.set(projectRoot, inflight);
-  }
+  FNXC:MergeQueue 2026-07-15-11:08:
+  First extension tool call without a host-injected store boots a TaskStore (CLI path).
+  Coalesce concurrent callers so a wedged boot cannot park every fn_* tool forever.
+  */
+  const attempt = storeBootInflight.get(projectRoot) ?? startStoreBoot(projectRoot);
+  storeBootInflight.set(projectRoot, attempt);
 
   try {
     return await raceWithTimeoutAndAbort(
-      inflight,
+      attempt.promise,
       bootTimeoutMs,
       effectiveSignal,
       "fn extension TaskStore boot",
     );
   } catch (error) {
+    /* Only an expired budget abandons the attempt; a rejected boot already recorded itself. */
     const message = error instanceof Error ? error.message : String(error);
-    if (/timed out after \d+ms/.test(message)) {
-      /*
-      FNXC:MergeQueue 2026-07-15-11:20:
-      Timeout unblocks the tool turn only — the orphan createTaskStoreForBackend continues. Log so operators do not assume the dual-store boot stopped.
-      */
-      console.warn(
-        `[fusion-extension] TaskStore boot still running after ${EXTENSION_STORE_BOOT_TIMEOUT_MS}ms ` +
-          `(projectRoot=${projectRoot}); orphan boot continues and may populate the cache later`,
-      );
+    if (isAbortError(error)) {
+      reportStoreBoot(projectRoot, "aborted", Date.now() - attempt.startedAtMs);
+    } else if (/timed out after \d+ms/.test(message)) {
+      attempt.reportDeadline(bootTimeoutMs);
     }
     throw error;
   }

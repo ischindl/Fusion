@@ -108,7 +108,12 @@ describe("PostgreSQL plugin schema registry", () => {
       postgresSchema: definition,
     }]);
 
-    expect(execute).toHaveBeenCalledTimes(5);
+    /*
+    FNXC:SchemaLockDeadline 2026-09-23-07:30:
+    Counts 2 statements for the contract's DDL + isolation envelope and 2 for the transaction-local
+    `lock_timeout` that bounds each of the two advisory locks (STAS-251).
+    */
+    expect(execute).toHaveBeenCalledTimes(7);
   });
 
   it("rejects unscoped or privileged third-party DDL", () => {
@@ -160,8 +165,8 @@ describe("PostgreSQL plugin schema registry", () => {
       },
     }]);
 
-    expect(execute).toHaveBeenCalledTimes(4);
-    const envelope = (execute.mock.calls[3]?.[0] as { queryChunks: Array<{ value: string[] }> })
+    expect(execute).toHaveBeenCalledTimes(6); /* +2 bounded-wait preambles, see FNXC above */
+    const envelope = (execute.mock.calls.at(-1)?.[0] as { queryChunks: Array<{ value: string[] }> })
       .queryChunks.flatMap((chunk) => chunk.value).join("");
     expect(envelope).toContain('FORCE ROW LEVEL SECURITY');
     expect(envelope).toContain('project."external_fixture_rows"');
@@ -222,7 +227,17 @@ describe("PostgreSQL plugin schema registry", () => {
             execute: async (query: unknown) => {
               const text = (query as { queryChunks: Array<{ value: string[] }> }).queryChunks
                 .flatMap((chunk) => chunk.value).join("");
-              if (text.includes("fusion:sqlite-migration-state")) {
+              /*
+              FNXC:SchemaLockDeadline 2026-09-23-07:25:
+              STAS-251 bounds every boot-critical advisory-lock wait with a transaction-local
+              `set_config('lock_timeout', …)` immediately before the lock. This fake records the
+              serialization order of the locks and DDL, so the lock-setting statement is not an
+              event; the bound itself is proven in schema-mutation-lock-timeout.test.ts and against
+              a live held lock in schema-applier.test.ts.
+              */
+              if (text.includes("set_config('lock_timeout'")) {
+                return [];
+              } else if (text.includes("fusion:sqlite-migration-state")) {
                 await acquire();
                 ownsLock = true;
                 events.push("migration-lock");

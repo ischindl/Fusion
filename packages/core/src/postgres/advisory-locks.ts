@@ -3,6 +3,69 @@ import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 
 type AdvisoryLockTransaction = Pick<PostgresJsDatabase<Record<string, never>>, "execute">;
 
+/*
+FNXC:SchemaLockDeadline 2026-09-23-06:40:
+STAS-251. Both boot locks are cluster-wide and PostgreSQL waits for them forever by
+default, so one session that dies holding either one parks every later boot in a queue that
+reports nothing: the caller-facing boot ceiling expired first and never said which phase or
+lock cost the time. The wait is now bounded and its failure names the lock, so a stalled
+holder is an actionable error instead of an indefinitely repeated stall.
+*/
+
+/** Upper bound on waiting for a boot-critical advisory lock before failing loudly. */
+export const SCHEMA_MUTATION_LOCK_TIMEOUT_MS = 20_000;
+
+const SQLITE_MIGRATION_STATE_LOCK_KEY = "fusion:sqlite-migration-state";
+const SCHEMA_APPLIER_LOCK_KEY = "fusion:schema-applier";
+
+/**
+ * PostgreSQL `lock_not_available` — raised when `lock_timeout` cancels the wait. Drizzle wraps
+ * the driver error, so the code has to be read from the chain, not just the outer error.
+ */
+function isLockTimeoutError(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 3 && typeof current === "object" && current !== null; depth += 1) {
+    if ((current as { code?: string }).code === "55P03") return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+export class SchemaMutationLockTimeoutError extends Error {
+  readonly lockKey: string;
+
+  constructor(lockKey: string, timeoutMs: number, cause: unknown) {
+    super(
+      `Timed out after ${timeoutMs}ms waiting for the ${lockKey} advisory lock — another session is holding it`,
+      { cause },
+    );
+    this.name = "SchemaMutationLockTimeoutError";
+    this.lockKey = lockKey;
+  }
+}
+
+async function acquireBoundedAdvisoryXactLock(
+  tx: AdvisoryLockTransaction,
+  lockKey: typeof SQLITE_MIGRATION_STATE_LOCK_KEY | typeof SCHEMA_APPLIER_LOCK_KEY,
+  timeoutMs: number,
+): Promise<void> {
+  /* The bound is transaction-local so a pooled connection never carries it afterwards. */
+  await tx.execute(sql`SELECT set_config('lock_timeout', ${`${timeoutMs}ms`}, true)`);
+  try {
+    /*
+    The key is inlined rather than bound as a parameter: both values are module constants, and
+    keeping the name in the statement text is what lets lock-order tests and `pg_stat_activity`
+    readers see which lock a waiting session is queueing for.
+    */
+    await tx.execute(sql.raw(`SELECT pg_advisory_xact_lock(hashtext('${lockKey}'))`));
+  } catch (error) {
+    if (isLockTimeoutError(error)) {
+      throw new SchemaMutationLockTimeoutError(lockKey, timeoutMs, error);
+    }
+    throw error;
+  }
+}
+
 /**
  * Serialize schema DDL behind any active SQLite cutover transaction.
  *
@@ -11,13 +74,19 @@ type AdvisoryLockTransaction = Pick<PostgresJsDatabase<Record<string, never>>, "
  * lock first, then their narrower schema lock, so PostgreSQL never sees the
  * inverse DDL/read lock order that can deadlock concurrent project startup.
  */
-export async function acquireSqliteMigrationStateLock(tx: AdvisoryLockTransaction): Promise<void> {
-  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('fusion:sqlite-migration-state'))`);
+export async function acquireSqliteMigrationStateLock(
+  tx: AdvisoryLockTransaction,
+  timeoutMs: number = SCHEMA_MUTATION_LOCK_TIMEOUT_MS,
+): Promise<void> {
+  await acquireBoundedAdvisoryXactLock(tx, SQLITE_MIGRATION_STATE_LOCK_KEY, timeoutMs);
 }
 
-export async function acquireSchemaMutationLocks(tx: AdvisoryLockTransaction): Promise<void> {
-  await acquireSqliteMigrationStateLock(tx);
-  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('fusion:schema-applier'))`);
+export async function acquireSchemaMutationLocks(
+  tx: AdvisoryLockTransaction,
+  timeoutMs: number = SCHEMA_MUTATION_LOCK_TIMEOUT_MS,
+): Promise<void> {
+  await acquireSqliteMigrationStateLock(tx, timeoutMs);
+  await acquireBoundedAdvisoryXactLock(tx, SCHEMA_APPLIER_LOCK_KEY, timeoutMs);
 }
 
 import postgres from "postgres";
