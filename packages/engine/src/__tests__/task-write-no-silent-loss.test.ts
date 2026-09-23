@@ -2,9 +2,14 @@ import { describe, expect, it, vi } from "vitest";
 import { TaskNotFoundError, type Task, type TaskStore } from "@fusion/core";
 import {
   createArtifactRegisterTool,
+  createArtifactListTool,
+  createArtifactViewTool,
+  createChatTaskLogsReadTool,
   createTaskAssignTool,
   createTaskDocumentWriteTool,
+  createTaskDocumentReadTool,
   createTaskFileScopeAddTool,
+  createTaskLogsReadTool,
   createTaskPromptWriteTool,
   createTaskCreateTool,
   createTaskShowTool,
@@ -296,5 +301,78 @@ describe("fn_task_create never fabricates a card the store refused (STAS-251)", 
     await expect(
       run(createTaskCreateTool(store), { description: "Instrument the boot path" }),
     ).rejects.toThrow(PERSISTENCE_FAILURE);
+  });
+});
+
+/*
+FNXC:ReadFailureSurfacing 2026-09-23-00:00:
+STAS-256. STAS-251 made the WRITES and the fn_task_show/fn_task_assign read loud; the READ
+helpers stayed swallowing — a store outage was returned as `ERROR: Failed to ...` with no
+isError, so AgentLogger.onToolEnd recorded a `tool_result` for a read that never reached the
+store, and a reader could not tell "this board is unreachable" from "this card has no log."
+Each case rejects the real store read and asserts the shared loud shape (isError + the reason
++ the retry guidance); the typed-miss controls prove that a genuine absence is still a success.
+The outage pins fail until Step 3 routes these helpers through storeErrorResult.
+*/
+const ARTIFACT_ID = "ART-2560";
+const DOC_KEY = "plan";
+
+describe("reads fail the tool boundary when the store could not answer (STAS-256)", () => {
+  it("fn_task_logs_read reports the store failure and stays loud", async () => {
+    const store = failingStore({ getAgentLogs: vi.fn().mockRejectedValue(new Error(PERSISTENCE_FAILURE)) });
+    const result = await run(createTaskLogsReadTool(store, TASK_ID), {});
+    const text = JSON.stringify(result.content);
+    expect(result.isError).toBe(true);
+    expect(text).toContain(PERSISTENCE_FAILURE);
+    expect(text).toContain("Retry");
+  });
+
+  it("fn_artifact_list reports the store failure and stays loud", async () => {
+    const store = failingStore({ listArtifacts: vi.fn().mockRejectedValue(new Error(PERSISTENCE_FAILURE)) });
+    const result = await run(createArtifactListTool(store), {});
+    const text = JSON.stringify(result.content);
+    expect(result.isError).toBe(true);
+    expect(text).toContain(PERSISTENCE_FAILURE);
+    expect(text).toContain("Retry");
+  });
+
+  it("fn_artifact_view reports the store failure rather than a clean read", async () => {
+    const store = failingStore({ getArtifact: vi.fn().mockRejectedValue(new Error(PERSISTENCE_FAILURE)) });
+    const result = await run(createArtifactViewTool(store), { id: ARTIFACT_ID });
+    const text = JSON.stringify(result.content);
+    expect(result.isError).toBe(true);
+    expect(text).toContain(PERSISTENCE_FAILURE);
+    expect(text).not.toContain("not found");
+  });
+
+  it("fn_task_document_read reports the store failure and stays loud", async () => {
+    const store = failingStore({ getTaskDocuments: vi.fn().mockRejectedValue(new Error(PERSISTENCE_FAILURE)) });
+    const result = await run(createTaskDocumentReadTool(store, TASK_ID), {});
+    const text = JSON.stringify(result.content);
+    expect(result.isError).toBe(true);
+    expect(text).toContain(PERSISTENCE_FAILURE);
+    expect(text).toContain("Retry");
+  });
+
+  it("the chat log-read lane shares the same loud seam (STAS-256)", async () => {
+    const store = failingStore({ getAgentLogs: vi.fn().mockRejectedValue(new Error(PERSISTENCE_FAILURE)) });
+    const tool = createChatTaskLogsReadTool(store);
+    const result = await run(tool, { task_id: TASK_ID });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain(PERSISTENCE_FAILURE);
+  });
+
+  it("a genuinely absent artifact is still a clean not-found, not a failure (control)", async () => {
+    const store = failingStore({ getArtifact: vi.fn().mockResolvedValue(null) });
+    const result = await run(createArtifactViewTool(store), { id: ARTIFACT_ID });
+    expect(result.isError).not.toBe(true);
+    expect(result.content[0].text).toContain(`Artifact "${ARTIFACT_ID}" not found.`);
+  });
+
+  it("a genuinely absent document is still a clean not-found, not a failure (control)", async () => {
+    const store = failingStore({ getTaskDocument: vi.fn().mockResolvedValue(null) });
+    const result = await run(createTaskDocumentReadTool(store, TASK_ID), { key: DOC_KEY });
+    expect(result.isError).not.toBe(true);
+    expect(result.content[0].text).toContain(`Document "${DOC_KEY}" not found.`);
   });
 });
