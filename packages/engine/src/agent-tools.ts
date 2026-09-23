@@ -2207,6 +2207,15 @@ function taskDocumentWriteResult(document: TaskDocument) {
   };
 }
 
+/*
+FNXC:WriteFailureSurfacing 2026-09-23-06:50:
+STAS-251. AgentLogger.onToolEnd records a call as `tool_error` only when the result carries
+isError; without it the task log — and every automated reader of it, including review and
+replay — records a row that was never written. A mutating tool whose write did not commit
+therefore has to fail at the protocol boundary, not merely in prose. The same rule applies to
+every other failed-write branch in these tools (prompt write, file-scope add, artifact
+register, agent delete, task assign, message send).
+*/
 function taskDocumentWriteError(error: unknown, key: string, taskId?: string) {
   if (error instanceof fusionCore.TaskDocumentPreconditionFailedError) {
     return {
@@ -2219,6 +2228,7 @@ function taskDocumentWriteError(error: unknown, key: string, taskId?: string) {
   return {
     content: [{ type: "text" as const, text: `ERROR: Failed to save document "${key}"${taskId ? ` for task ${taskId}` : ""}: ${message}` }],
     details: {},
+    isError: true,
   };
 }
 
@@ -2507,6 +2517,7 @@ export function createTaskPromptWriteTool(
             text: `ERROR: Failed to update PROMPT.md for ${taskId}: ${err.message}`,
           }],
           details: {},
+          isError: true,
         };
       }
     },
@@ -2528,7 +2539,12 @@ export function createTaskFileScopeAddTool(store: TaskStore, taskId: string, run
       "Paths are repo-relative (no leading slash, no `..`).",
     parameters: taskFileScopeAddParams,
     execute: async (_id: string, params: Static<typeof taskFileScopeAddParams>) => {
-      const errorContent = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
+      /* Every use of this helper refuses or fails the scope write, so all of them are tool errors. */
+      const errorContent = (text: string) => ({
+        content: [{ type: "text" as const, text }],
+        details: {},
+        isError: true as const,
+      });
       try {
         const requested = params.files.map((f) => f.trim()).filter((f) => f.length > 0);
         const rejected = requested.filter((f) => !fusionCore.isValidFileScopeEntry(f));
@@ -2797,6 +2813,7 @@ async function registerArtifactForAgent(
         text: `ERROR: Failed to register artifact "${params.title}": ${err.message}`,
       }],
       details: {},
+      isError: true,
     };
   }
 }
@@ -5778,7 +5795,7 @@ export function createAgentDeleteTool(
         await agentStore.deleteAgent(params.agent_id, { force: params.force === true, reassignTo: params.reassign_to });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return { content: [{ type: "text" as const, text: `ERROR: ${message}` }], details: {} };
+        return { content: [{ type: "text" as const, text: `ERROR: ${message}` }], details: {}, isError: true };
       }
 
       await options?.runAuditor?.database({ type: "agent:delete:approved", target: target.id, metadata: { policy, autoApproved: true } });
@@ -5997,7 +6014,8 @@ export function createTaskAssignTool(
       try {
         task = await taskStore.getTask(params.task_id);
       } catch {
-        return { content: [{ type: "text" as const, text: `ERROR: Task ${params.task_id} not found` }], details: {} };
+        /* The task is unknown, so the assignment cannot happen — a failed write, not advice. */
+        return { content: [{ type: "text" as const, text: `ERROR: Task ${params.task_id} not found` }], details: {}, isError: true };
       }
 
       const verdict = evaluateImplementationTaskBind(agent, task, {
@@ -6198,12 +6216,14 @@ export function createSendMessageTool(
             return {
               content: [{ type: "text" as const, text: `ERROR: Recipient agent '${recipient.id}' could not be validated — message not sent` }],
               details: {},
+              isError: true,
             };
           }
           if (resolvedRecipient == null) {
             return {
               content: [{ type: "text" as const, text: `ERROR: Recipient agent '${recipient.id}' does not exist — message not sent` }],
               details: {},
+              isError: true,
             };
           }
         }
@@ -6256,6 +6276,7 @@ export function createSendMessageTool(
         return {
           content: [{ type: "text" as const, text: `ERROR: Failed to send message: ${errorMessage}` }],
           details: {},
+          isError: true,
         };
       }
     },
