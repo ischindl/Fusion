@@ -1,12 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Task, TaskStore } from "@fusion/core";
+import { TaskNotFoundError, type Task, type TaskStore } from "@fusion/core";
 import {
   createArtifactRegisterTool,
   createTaskAssignTool,
   createTaskDocumentWriteTool,
   createTaskFileScopeAddTool,
   createTaskPromptWriteTool,
+  createTaskShowTool,
+  createTaskUpdateTool as createAgentTaskUpdateTool,
 } from "../agent-tools.js";
+import { createTaskUpdateTool as createExecutorTaskUpdateTool } from "../executor/create-task-update-tool.js";
 
 /*
 FNXC:WriteFailureSurfacing 2026-09-23-06:10:
@@ -29,6 +32,30 @@ function failingStore(overrides: Record<string, unknown>) {
     isBackendMode: () => false,
     ...overrides,
   } as unknown as TaskStore;
+}
+
+/** A two-step card whose only unfinished step is the one the tests close. */
+function taskWithStep(stepStatus: Task["steps"][number]["status"]): Task {
+  return {
+    id: TASK_ID,
+    title: "Instrument TaskStore boot",
+    column: "in-progress",
+    steps: [
+      { name: "Preflight", status: "done" },
+      { name: "Instrument boot", status: stepStatus },
+    ],
+    dependencies: [],
+    log: [],
+  } as unknown as Task;
+}
+
+function executorUpdateTool(store: TaskStore) {
+  return createExecutorTaskUpdateTool(
+    { store, resolveTaskCustomFieldDefs: async () => undefined, loopRecoveryState: new Map() },
+    TASK_ID,
+    new Map(),
+    { current: null },
+  );
 }
 
 function taskWithFileScope(overrides: Partial<Task> = {}): Task {
@@ -93,7 +120,7 @@ describe("write tools fail the tool boundary when the write does not commit (STA
     expect(JSON.stringify(result.content)).toContain(PERSISTENCE_FAILURE);
   });
 
-  it("fn_task_assign reports an error result when the task lookup behind the write fails", async () => {
+  it("fn_task_assign names the store failure instead of calling an unreachable card missing", async () => {
     const durableAgent = {
       id: "agent-executor",
       name: "Executor",
@@ -112,7 +139,131 @@ describe("write tools fail the tool boundary when the write does not commit (STA
       agent_id: "agent-executor",
     });
 
+    const text = JSON.stringify(result.content);
+    expect(result.isError).toBe(true);
+    expect(text).toContain(PERSISTENCE_FAILURE);
+    /*
+    The old shape pinned "not found" for a rejected lookup, which taught agents the card had
+    vanished and the repair is to re-create it. Only the store's own not-found may say that.
+    */
+    expect(text).not.toContain("not found");
+    expect(text).toContain("Retry");
+  });
+
+  it("fn_task_assign still says a genuinely absent card is not found", async () => {
+    const agentStore = { getAgent: vi.fn().mockResolvedValue({ id: "agent-executor", name: "Executor", role: "executor", state: "idle" }) } as never;
+    const store = failingStore({ getTask: vi.fn().mockRejectedValue(new TaskNotFoundError(TASK_ID)) });
+
+    const result = await run(createTaskAssignTool(agentStore, store), { task_id: TASK_ID, agent_id: "agent-executor" });
+
     expect(result.isError).toBe(true);
     expect(JSON.stringify(result.content)).toContain("not found");
+  });
+
+  it("fn_task_show reports a store failure rather than asserting the card is absent", async () => {
+    const store = failingStore({ getTask: vi.fn().mockRejectedValue(new Error(PERSISTENCE_FAILURE)) });
+
+    const result = await run(createTaskShowTool(store), { id: TASK_ID });
+
+    const text = JSON.stringify(result.content);
+    expect(result.isError).toBe(true);
+    expect(text).toContain(PERSISTENCE_FAILURE);
+    expect(text).not.toContain("not found");
+  });
+
+  it("fn_task_show reports a genuinely absent card as not found without failing the call", async () => {
+    const store = failingStore({ getTask: vi.fn().mockRejectedValue(new TaskNotFoundError(TASK_ID)) });
+
+    const result = await run(createTaskShowTool(store), { id: TASK_ID });
+
+    expect(result.isError).not.toBe(true);
+    expect(JSON.stringify(result.content)).toContain(`Task ${TASK_ID} not found.`);
+  });
+});
+
+describe("step closure cannot report success for a transition that did not commit (STAS-251)", () => {
+  const DONE_CALL = { step: 1, status: "done", summary: "Instrumented the boot path and logged its duration." };
+
+  it("the executor tool fails when the store keeps the step on its old status", async () => {
+    /* `updateStep` refuses an out-of-order transition by returning the task unchanged — the
+       board holds `pending` while the agent asked for `done`. STAS-246 step 7 is this case. */
+    const store = failingStore({ updateStep: vi.fn(async () => taskWithStep("pending")) });
+
+    const result = await run(executorUpdateTool(store), DONE_CALL);
+
+    const text = JSON.stringify(result.content);
+    expect(result.isError).toBe(true);
+    expect(text).toContain("remains pending");
+    /* The closure sentence the tool used to emit for a write that never landed. */
+    expect(text).not.toContain(") → done");
+    expect(result.details).toMatchObject({ requestedStatus: "done", persistedStatus: "pending" });
+  });
+
+  it("the executor tool fails when the step write rejects", async () => {
+    const store = failingStore({ updateStep: vi.fn().mockRejectedValue(new Error(PERSISTENCE_FAILURE)) });
+
+    const result = await run(executorUpdateTool(store), DONE_CALL);
+
+    const text = JSON.stringify(result.content);
+    expect(result.isError).toBe(true);
+    expect(text).toContain(PERSISTENCE_FAILURE);
+    expect(text).not.toContain(") → done");
+  });
+
+  it("the agent-tools tool fails when the store keeps the step on its old status", async () => {
+    const store = failingStore({ updateStep: vi.fn(async () => taskWithStep("pending")) });
+
+    const result = await run(createAgentTaskUpdateTool(store, TASK_ID), DONE_CALL);
+
+    const text = JSON.stringify(result.content);
+    expect(result.isError).toBe(true);
+    expect(text).toContain("remains pending");
+    expect(text).not.toContain(`Updated ${TASK_ID}: step 1 → done`);
+  });
+
+  it("the agent-tools tool fails when the step write rejects", async () => {
+    const store = failingStore({ updateStep: vi.fn().mockRejectedValue(new Error(PERSISTENCE_FAILURE)) });
+
+    const result = await run(createAgentTaskUpdateTool(store, TASK_ID), DONE_CALL);
+
+    const text = JSON.stringify(result.content);
+    expect(result.isError).toBe(true);
+    expect(text).toContain(PERSISTENCE_FAILURE);
+    expect(text).not.toContain(`Updated ${TASK_ID}: step 1 → done`);
+  });
+
+  it("the agent-tools tool reports the status the store committed, after the write resolves", async () => {
+    /* The success text is only evidence if it can only be produced from the awaited write, so
+       the store here commits asynchronously and reports a status the caller never requested. */
+    let commitOrder = 0;
+    let resolvedOrder = 0;
+    const store = failingStore({
+      updateStep: vi.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        commitOrder = 1;
+        return taskWithStep("in-progress");
+      }),
+    });
+
+    const result = await run(createAgentTaskUpdateTool(store, TASK_ID), { step: 1, status: "done" });
+    resolvedOrder = 2;
+
+    expect(commitOrder).toBe(1);
+    expect(resolvedOrder).toBe(2);
+    expect(result.isError).toBe(true);
+    /* params.status said "done"; the board said "in-progress", and only the board may be quoted. */
+    const text = JSON.stringify(result.content);
+    expect(text).toContain("remains in-progress");
+    expect(text).not.toContain(`Updated ${TASK_ID}: step 1 → done`);
+  });
+
+  it("the agent-tools tool reports the committed step when the store accepts the transition", async () => {
+    const store = failingStore({ updateStep: vi.fn(async () => taskWithStep("done")) });
+
+    const result = await run(createAgentTaskUpdateTool(store, TASK_ID), DONE_CALL);
+
+    expect(result.isError).not.toBe(true);
+    expect(JSON.stringify(result.content)).toContain("→ done");
+    expect(result.details).toMatchObject({ status: "done" });
   });
 });

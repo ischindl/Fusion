@@ -17,6 +17,7 @@ import type { ToolDefinition, AgentSession } from "@earendil-works/pi-coding-age
 import type { ReviewVerdict } from "../execution/reviewer.js";
 import type { StuckTaskDetector } from "../healing/stuck-task-detector.js";
 import { executorLog } from "../logger.js";
+import { stepLifecycleNoopResult, storeErrorResult } from "../tool-store-errors.js";
 
 const STEP_STATUSES: StepStatus[] = ["pending", "in-progress", "done", "skipped"];
 
@@ -272,9 +273,21 @@ export function createTaskUpdateTool(
           await store.updateTask(taskId, { dependencies });
         }
 
-        const task = summary === undefined
-          ? await store.updateStep(taskId, stepIndex, status as StepStatus)
-          : await store.updateStep(taskId, stepIndex, status as StepStatus, { summary });
+        /*
+        FNXC:StepClosureTruthful 2026-09-23-05:40:
+        STAS-251. A rejected step write used to escape as an exception from here, which the
+        AgentLogger renders as an ordinary tool line — the 2026-09-23 stall therefore reached the
+        executor as "something went wrong" with no statement about the write. The store call is
+        now the boundary that reports itself: nothing committed reads as a failure with a reason.
+        */
+        let task: Awaited<ReturnType<TaskStore["updateStep"]>>;
+        try {
+          task = summary === undefined
+            ? await store.updateStep(taskId, stepIndex, status as StepStatus)
+            : await store.updateStep(taskId, stepIndex, status as StepStatus, { summary });
+        } catch (error) {
+          return storeErrorResult(`step ${step} → ${status}`, error);
+        }
         const stepInfo = task.steps[stepIndex];
         if (!stepInfo) {
           return {
@@ -312,13 +325,21 @@ export function createTaskUpdateTool(
             );
           }
 
-          return {
-            content: [{
-              type: "text" as const,
-              text: `Step ${step} (${stepInfo.name}) remains ${persistedStatus} — ${status} request ignored to preserve step lifecycle invariants. Progress: ${progress}/${task.steps.length} done.`,
-            }],
-            details: {},
-          };
+          /*
+          FNXC:StepClosureTruthful 2026-09-23-05:40:
+          STAS-251. This branch used to return the refusal as a successful tool result, so
+          AgentLogger wrote a plain `tool_result` row and the board evidence trail, the review,
+          and a replay of the run all kept a step closure that never committed (STAS-246 step 7:
+          the agent reported done, the board stayed `pending`). The refusal is a protocol failure,
+          so it now fails at the tool-result boundary while the churn accounting above stands.
+          */
+          return stepLifecycleNoopResult({
+            stepIndex: step,
+            stepName: stepInfo.name,
+            requested: status,
+            persisted: persistedStatus,
+            progress: { done: progress, total: task.steps.length },
+          });
         }
 
         return {

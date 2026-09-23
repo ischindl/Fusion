@@ -14,8 +14,9 @@ import { tmpdir } from "node:os";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import * as fusionCore from "@fusion/core";
 import type { AgentState, AgentCapability, AgentUpdateInput, AgentLogEntry, Artifact, ArtifactCreateInput, ArtifactWithTask, Task, TaskDocument, TaskDocumentCreateInput, TaskStore, RunMutationContext, MessageStore, Message, SourceType, Settings, ResearchRun, ResearchRunStatus, TaskCreateInput, ReflectionStore, ApprovalRequestStore, ProjectSettings, ChatStore, WorkflowSettingDefinition, GoalStatus, WorkflowIrNode, IdeationCandidate, MissionWithHierarchy, DbTransaction } from "@fusion/core";
-import { listTraits, isBuiltinWorkflowId, AgentStore, validateColumnAgentBindings, ColumnAgentBindingError, stripApprovalBypassFlags, WorkflowSettingRejectionError, resolveEffectiveSettingsById, resolveWorkflowIrById, findOrphanedSettingValues, BUILTIN_WORKFLOW_SETTINGS, MAX_TASK_LIST_TEXT_CHARS, formatCurrentTaskLine, normalizeWorkflowIcon, parseWorkflowIr, WorkflowIrError, assertColumnTraitsValid, ColumnTraitValidationError } from "@fusion/core";
+import { listTraits, isBuiltinWorkflowId, isTaskNotFoundError, AgentStore, validateColumnAgentBindings, ColumnAgentBindingError, stripApprovalBypassFlags, WorkflowSettingRejectionError, resolveEffectiveSettingsById, resolveWorkflowIrById, findOrphanedSettingValues, BUILTIN_WORKFLOW_SETTINGS, MAX_TASK_LIST_TEXT_CHARS, formatCurrentTaskLine, normalizeWorkflowIcon, parseWorkflowIr, WorkflowIrError, assertColumnTraitsValid, ColumnTraitValidationError } from "@fusion/core";
 import { promoteHeldTask } from "./execution/hold-release.js";
+import { stepLifecycleNoopResult, storeErrorResult } from "./tool-store-errors.js";
 import { computeCrossParentDiagnosticClaim, computeCrossParentDiagnosticClaimId, computeParentIntentClaimId, DASHBOARD_USER_ID, dailyMemoryPath, ensureOpenClawMemoryFiles, evaluateImplementationTaskBind, extractAgentProvisioningRequest, findSameAgentDuplicates, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveMemorySearchTopic, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh } from "@fusion/core";
 import { ResearchOrchestrator } from "./research/research-orchestrator.js";
 import { ResearchProviderRegistry } from "./research/provider-registry.js";
@@ -1918,38 +1919,50 @@ export function createTaskShowTool(store: TaskStore): ToolDefinition {
     description: "Show full details for a task including its PROMPT.md content.",
     parameters: taskShowParams,
     execute: async (_id: string, params: Static<typeof taskShowParams>) => {
+      /*
+      FNXC:StoreErrorShape 2026-09-23-06:00:
+      STAS-251. The lookup used to share one catch with the whole render block, so during the
+      2026-09-23 boot stall a slow pool answered as `Task STAS-250 not found.` — and the agent
+      rebuilt a card that was alive the whole time. Only the store's typed not-found may name a
+      missing card; anything else the board could not answer is reported as the board being
+      unavailable, because "absent" and "unreachable" send an agent in opposite directions.
+      */
+      let task: Task;
       try {
-        const task = await store.getTask(params.id);
-        const parts = [
-          `ID: ${task.id}`,
-          task.title ? `Title: ${task.title}` : null,
-          `Column: ${task.column}`,
-          `Status: ${task.status ?? task.column}`,
-          `Description: ${task.description || "(no description)"}`,
-          task.dependencies.length ? `Dependencies: ${task.dependencies.join(", ")}` : null,
-          Array.isArray(task.steps) && task.steps.length
-            ? `Steps:\n${task.steps.map((step, index) => `  ${index}. ${step.name} — ${step.status}`).join("\n")}`
-            : null,
-          "",
-          "PROMPT.md:",
-          task.prompt || "(not yet specified)",
-        ].filter((part): part is string => typeof part === "string");
-        return {
-          content: [{
-            type: "text" as const,
-            text: trimSemanticToolRead(
-              parts.join("\n") || `Task ${params.id} has no details.`,
-              "use fn_task_document_read or a focused task query for more",
-            ),
-          }],
-          details: { taskId: task.id },
-        };
-      } catch {
+        task = await store.getTask(params.id);
+      } catch (error) {
+        if (!isTaskNotFoundError(error)) {
+          return storeErrorResult(`Task ${params.id} could not be read`, error);
+        }
         return {
           content: [{ type: "text" as const, text: `Task ${params.id} not found.` }],
           details: {},
         };
       }
+      const parts = [
+        `ID: ${task.id}`,
+        task.title ? `Title: ${task.title}` : null,
+        `Column: ${task.column}`,
+        `Status: ${task.status ?? task.column}`,
+        `Description: ${task.description || "(no description)"}`,
+        task.dependencies.length ? `Dependencies: ${task.dependencies.join(", ")}` : null,
+        Array.isArray(task.steps) && task.steps.length
+          ? `Steps:\n${task.steps.map((step, index) => `  ${index}. ${step.name} — ${step.status}`).join("\n")}`
+          : null,
+        "",
+        "PROMPT.md:",
+        task.prompt || "(not yet specified)",
+      ].filter((part): part is string => typeof part === "string");
+      return {
+        content: [{
+          type: "text" as const,
+          text: trimSemanticToolRead(
+            parts.join("\n") || `Task ${params.id} has no details.`,
+            "use fn_task_document_read or a focused task query for more",
+          ),
+        }],
+        details: { taskId: task.id },
+      };
     },
   };
 }
@@ -3706,13 +3719,49 @@ export function createTaskUpdateTool(store: TaskStore, taskId: string): ToolDefi
           await store.updateTask(taskId, { dependencies: params.dependencies });
         }
         if (params.step !== undefined && params.status !== undefined) {
-          const task = params.summary === undefined
-            ? await store.updateStep(taskId, params.step, params.status)
-            : await store.updateStep(taskId, params.step, params.status, { summary: params.summary });
+          let stepWrite: Task;
+          try {
+            stepWrite = params.summary === undefined
+              ? await store.updateStep(taskId, params.step, params.status)
+              : await store.updateStep(taskId, params.step, params.status, { summary: params.summary });
+          } catch (error) {
+            return storeErrorResult(`step ${params.step} → ${params.status} on ${taskId}`, error);
+          }
+          /*
+          FNXC:StepClosureTruthful 2026-09-23-05:40:
+          STAS-251. `updateStep` refuses a transition its lifecycle disallows by returning the task
+          unchanged, and this copy read only `task.id`, so it announced "step 7 → done" from the
+          REQUESTED value while the board still held `pending` — the same divergence the executor
+          copy already guards against, on the surface a permanent agent reports its own progress
+          from. The status the store returned is the only thing this tool may say.
+          */
+          const persistedStep = stepWrite.steps?.[params.step];
+          if (!persistedStep) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `Step ${params.step} does not exist on ${taskId} — it has ${stepWrite.steps?.length ?? 0} step(s), 0-indexed. Nothing was persisted.`,
+              }],
+              details: { taskId, step: params.step, code: "STEP_OUT_OF_RANGE" },
+              isError: true,
+            };
+          }
+          if (persistedStep.status !== params.status) {
+            return stepLifecycleNoopResult({
+              stepIndex: params.step,
+              stepName: persistedStep.name,
+              requested: params.status,
+              persisted: persistedStep.status,
+              progress: { done: stepWrite.steps.filter((s) => s.status === "done").length, total: stepWrite.steps.length },
+            });
+          }
           const reminder = params.status === "done" && !params.summary?.trim()
             ? " No step summary recorded — call fn_task_update again for this step with `summary` to record what it delivered."
             : "";
-          return { content: [{ type: "text" as const, text: `Updated ${taskId}: step ${params.step} → ${params.status}.${reminder}` }], details: { taskId: task.id, step: params.step, status: params.status } };
+          return {
+            content: [{ type: "text" as const, text: `Updated ${taskId}: step ${params.step} → ${persistedStep.status}.${reminder}` }],
+            details: { taskId: stepWrite.id, step: params.step, status: persistedStep.status },
+          };
         }
         if (params.custom_fields !== undefined || params.dependencies !== undefined) {
           return { content: [{ type: "text" as const, text: "Updated." }], details: {} };
@@ -6013,7 +6062,17 @@ export function createTaskAssignTool(
       let task: Task;
       try {
         task = await taskStore.getTask(params.task_id);
-      } catch {
+      } catch (error) {
+        /*
+        FNXC:StoreErrorShape 2026-09-23-06:00:
+        STAS-251. This catch used to name every lookup failure "not found", so a board the agent
+        simply could not reach read as a card that had vanished, and the fix agents reach for is
+        to re-create it. A failed assignment against an unreachable board is an outage with a
+        retry, not a missing card.
+        */
+        if (!isTaskNotFoundError(error)) {
+          return storeErrorResult(`task ${params.task_id} could not be read before assignment`, error);
+        }
         /* The task is unknown, so the assignment cannot happen — a failed write, not advice. */
         return { content: [{ type: "text" as const, text: `ERROR: Task ${params.task_id} not found` }], details: {}, isError: true };
       }
