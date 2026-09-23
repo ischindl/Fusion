@@ -9,6 +9,7 @@ import { FN_AGENT_ID, useChat } from "../useChat";
 import * as apiModule from "../../api";
 import { getChatPendingMessageKey } from "../chatPendingMessageStorage";
 import * as swrCacheModule from "../../utils/swrCache";
+import { readQuestionAnswerLink } from "../../utils/parseQuestionToolCall";
 import type { ChatSession, ChatMessage, EnrichedChatSession } from "@fusion/core";
 
 // Mock the API module
@@ -3101,6 +3102,54 @@ describe("useChat", () => {
 
     cancellation.resolve({ success: true, interrupted: false });
     await waitFor(() => expect(result.current.pendingQueueAction).toBe(false));
+  });
+
+  /*
+  FNXC:ChatQuestionAnswerLink 2026-09-23-14:21:
+  RUFU-258: the durable question-answer link must survive the READ chain, not only the write. This covers the
+  loadMessages → `mapChatMessageToInfo` leg: a persisted user row stamped with `metadata.questionAnswer` reaches
+  the hook's `ChatMessageInfo` with the link intact (the mapping forwards the whole metadata object), which is what
+  lets a question card resolve answered state and its exact answer text after a reload.
+  */
+  it("forwards a persisted question-answer link through the loaded message mapping", async () => {
+    const session = makeSession({ id: "session-001", agentId: "agent-001" });
+    const questionRow = makeMessage({
+      id: "assistant-question",
+      sessionId: "session-001",
+      role: "assistant",
+      content: "Which branch?",
+      metadata: {
+        toolCalls: [{
+          toolName: "fn_ask_question",
+          args: { questions: [{ id: "q1", type: "text", question: "Which branch?" }] },
+          isError: false,
+          status: "completed",
+        }],
+      },
+      createdAt: "2026-09-23T10:00:00.000Z",
+    });
+    const answerRow = makeMessage({
+      id: "user-answer",
+      sessionId: "session-001",
+      role: "user",
+      content: "the feature branch",
+      metadata: { questionAnswer: { questionMessageId: "assistant-question" } },
+      createdAt: "2026-09-23T10:00:05.000Z",
+    });
+    mockFetchChatSessions.mockResolvedValueOnce({ sessions: [session] });
+    mockFetchChatMessages.mockResolvedValue({ messages: [questionRow, answerRow] });
+
+    const { result } = renderHook(() => useChat("proj-123"));
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    act(() => result.current.selectSession("session-001"));
+    await waitFor(() => expect(result.current.messages).toHaveLength(2));
+
+    const loadedAnswer = result.current.messages.find((message) => message.id === "user-answer");
+    expect(readQuestionAnswerLink(loadedAnswer?.metadata)).toBe("assistant-question");
+    // The question row keeps its tool-call metadata; the link lives on the answer row only.
+    expect(readQuestionAnswerLink(
+      result.current.messages.find((message) => message.id === "assistant-question")?.metadata,
+    )).toBeNull();
   });
 
   it("keeps and reconciles a visible interrupted prefix after Stop", async () => {

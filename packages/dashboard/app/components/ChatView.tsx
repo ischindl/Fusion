@@ -66,7 +66,7 @@ import { resolveChatHandoffUiSettings } from "../utils/chatHandoff";
 import { copyTextToClipboard } from "../utils/copyToClipboard";
 import { buildChatQuotePrefill } from "../utils/chatQuotePrefill";
 /* FNXC:ChatQuestionLiveness 2026-09-17-19:30: shared liveness predicate + answer-echo lookup for question cards. */
-import { findSubmittedQuestionAnswer, isLiveQuestionAwaitingAnswer } from "../utils/parseQuestionToolCall";
+import { findSubmittedQuestionAnswer, indexDurableQuestionAnswers, isLiveQuestionAwaitingAnswer } from "../utils/parseQuestionToolCall";
 import {
   clearPersistedChatOpenSession,
   getPersistedChatOpenSession,
@@ -838,6 +838,14 @@ function ChatViewContent({ projectId, addToast, floating = false, compactLayout 
     () => [...messages.map((message) => message.id), ...(isStreaming ? ["__streaming__"] : [])],
     [isStreaming, messages],
   );
+  /*
+  FNXC:ChatQuestionAnswerLink 2026-09-23-14:21:
+  RUFU-258: the durable question-answer link (stamped server-side on the answer row) is the
+  authoritative answered-state source, so the transcript is indexed by question row id ONCE per
+  messages change — never per rendered row — and against the FULL loaded `messages`, never the
+  virtualizer's visible window, so a question row scrolled out of view keeps its answered state.
+  */
+  const durableQuestionAnswers = useMemo(() => indexDurableQuestionAnswers(messages), [messages]);
   const virtualTranscript = useVirtualizedChatTranscript({
     transcriptKey: activeSession?.id ?? null,
     keys: transcriptKeys,
@@ -3499,6 +3507,7 @@ function ChatViewContent({ projectId, addToast, floating = false, compactLayout 
             const index = messages.findIndex((message) => message.id === key);
             const message = messages[index];
             if (!message) return null;
+            const durableQuestionAnswer = durableQuestionAnswers.get(message.id);
             const identity = resolveMessageAssistantIdentity(message);
             return <div key={key} ref={virtualTranscript.measureRow(key)} className="chat-transcript-row">
               <StandardChatMessageItem
@@ -3517,14 +3526,24 @@ function ChatViewContent({ projectId, addToast, floating = false, compactLayout 
                 onQuoteMessage={handleQuoteMessage}
                 onScrollToTop={handleScrollMessageToTop}
                 isTopClipped={topClippedMessageIds.has(message.id)}
-                isAwaitingQuestionAnswer={isLiveQuestionAwaitingAnswer({
-                  role: message.role,
-                  isLastMessage: index === messages.length - 1,
-                  isStreaming,
-                  isSessionGenerating: activeSession?.isGenerating === true,
-                  interrupted: message.metadata?.interrupted === true,
-                })}
-                submittedQuestionAnswer={findSubmittedQuestionAnswer(messages, index)}
+                /*
+                FNXC:ChatQuestionAnswerLink 2026-09-23-14:21:
+                RUFU-258 render precedence: durable link first, then the live-turn await, then the legacy
+                positional echo. A linked card is answered with the linked row's content and is not
+                actionable even while the session is generating; an UNLINKED card keeps exactly the old
+                inputs, so pre-feature rows and a send still in flight (whose answer row has not reached
+                this client yet) are unaffected.
+                */
+                isAwaitingQuestionAnswer={durableQuestionAnswer
+                  ? false
+                  : isLiveQuestionAwaitingAnswer({
+                    role: message.role,
+                    isLastMessage: index === messages.length - 1,
+                    isStreaming,
+                    isSessionGenerating: activeSession?.isGenerating === true,
+                    interrupted: message.metadata?.interrupted === true,
+                  })}
+                submittedQuestionAnswer={durableQuestionAnswer?.content ?? findSubmittedQuestionAnswer(messages, index)}
                 onQuestionSubmit={handleQuestionSubmit}
                 onRetryTurn={handleRetryTurn}
                 loadToolCallFull={loadFullToolCall}

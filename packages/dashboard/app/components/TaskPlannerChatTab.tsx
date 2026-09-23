@@ -14,7 +14,7 @@ import { MicButton } from "./MicButton";
 import type { ChatEnginePhase, ChatMessageInfo, ToolCallInfo } from "../hooks/chatTypes";
 import { isPersistedChatMessageId } from "../hooks/chatTypes";
 import { attachChatStream, cancelChatResponse, ensureTaskPlannerChatSession, fetchChatMessages, fetchChatSession, fetchChatToolCallBody, fetchSettings, fetchTaskDetail, fetchTaskPlannerChatSession, streamChatResponse, updateChatSession, type ChatFailureInfo, type ChatStreamErrorMeta } from "../api";
-import { parseQuestionToolCall, isPlannerQuestionAwaitingAnswer, findSubmittedQuestionAnswer, type ParsedQuestionToolCall } from "../utils/parseQuestionToolCall";
+import { parseQuestionToolCall, isPlannerQuestionAwaitingAnswer, findSubmittedQuestionAnswer, indexDurableQuestionAnswers, type ParsedQuestionToolCall } from "../utils/parseQuestionToolCall";
 import { ChatQuestionResponse } from "./ChatQuestionResponse";
 import { PendingChatMessageQueue } from "./PendingChatMessageQueue";
 import { ProviderIcon } from "./ProviderIcon";
@@ -368,17 +368,33 @@ function toStandardChatMessage(message: ChatMessage): ChatMessageInfo {
   };
 }
 
+/*
+FNXC:ChatQuestionAnswerLink 2026-09-23-14:21:
+RUFU-258: a durably linked answer (`metadata.questionAnswer.questionMessageId`, written by
+ChatManager.sendMessage) is authoritative here and beats both legacy planner heuristics — the
+`> Q:` echo containment and the pending-duplicate pairing. A linked answer is often PLAIN text (the
+operator just types "yes, the feature branch"), which the containment scan could never match, and a
+linked card must never be flipped back to pending by a later pending card of the same question.
+Unlinked rows keep the legacy pair exactly as before.
+*/
 function buildPlannerQuestionRenderStates(messages: readonly ChatMessage[]): Map<string, PlannerQuestionRenderState> {
   const states = new Map<string, PlannerQuestionRenderState>();
   const latestUnansweredByQuestion = new Map<string, string>();
+  const durableAnswers = indexDurableQuestionAnswers(messages);
 
   messages.forEach((message, messageIndex) => {
     if (message.role !== "assistant") return;
+    const durableAnswer = durableAnswers.get(message.id);
     extractToolCalls(message).forEach((toolCall, toolCallIndex) => {
       const parsed = parseQuestionToolCall(toolCall);
       if (!parsed) return;
       const stateKey = `${message.id}:${toolCallIndex}`;
       const questionKey = getPlannerQuestionKey(parsed);
+      if (durableAnswer) {
+        // Every question call on a linked row resolves to the same answer, and a linked card is never pending.
+        states.set(stateKey, { parsed, answered: true, submittedAnswer: durableAnswer.content, hiddenDuplicate: false });
+        return;
+      }
       const nextUserAnswer = messages.slice(messageIndex + 1).find((candidate) => isQuestionAnswerFor(candidate, parsed));
       const answered = Boolean(nextUserAnswer);
       if (!answered) {
@@ -1888,6 +1904,13 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
   const canSend = draft.trim().length > 0 && composerState !== "sending";
   const showEmptyState = historyLoaded && !loading && !error && messages.length === 0;
   const questionRenderStates = useMemo(() => buildPlannerQuestionRenderStates(messages), [messages]);
+  /*
+  FNXC:ChatQuestionAnswerLink 2026-09-23-14:21:
+  RUFU-258: durable question-answer index for the transcript rows, built once per `messages` change
+  (the row renderer must not re-scan the transcript per row). Shared by the card renderer and the
+  message-item liveness props so both surfaces agree on which questions are already answered.
+  */
+  const durableQuestionAnswers = useMemo(() => indexDurableQuestionAnswers(messages), [messages]);
   const starterPrompts = useMemo(() => {
     const seenLabels = new Set<string>();
     return TASK_PLANNER_CHAT_STARTER_PROMPTS.flatMap((prompt) => {
@@ -2120,14 +2143,23 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
                   activeModelProvider={displayedModelProvider ?? null}
                   activeSessionId={sessionId}
                   projectId={projectId}
-                  /* FNXC:ChatQuestionLiveness 2026-09-17-19:30: liveness parity with ChatView — only a last, live, non-interrupted row is awaiting. */
-                  isAwaitingQuestionAnswer={isPlannerQuestionAwaitingAnswer({
-                    role: message.role,
-                    isLastMessage: messages[messages.length - 1]?.id === message.id,
-                    isSending: composerState === "sending",
-                    interrupted: message.metadata?.interrupted === true,
-                  })}
-                  submittedQuestionAnswer={(() => {
+                  /*
+                  FNXC:ChatQuestionLiveness 2026-09-17-19:30: liveness parity with ChatView — only a last, live, non-interrupted row is awaiting.
+
+                  FNXC:ChatQuestionAnswerLink 2026-09-23-14:21:
+                  RUFU-258 render precedence: a durably linked answer wins and is shown verbatim; the liveness
+                  await only applies to unlinked rows, so an answered card cannot flip back to pending while a
+                  generation is in flight. Pre-feature rows keep the legacy positional echo untouched.
+                  */
+                  isAwaitingQuestionAnswer={durableQuestionAnswers.has(message.id)
+                    ? false
+                    : isPlannerQuestionAwaitingAnswer({
+                      role: message.role,
+                      isLastMessage: messages[messages.length - 1]?.id === message.id,
+                      isSending: composerState === "sending",
+                      interrupted: message.metadata?.interrupted === true,
+                    })}
+                  submittedQuestionAnswer={durableQuestionAnswers.get(message.id)?.content ?? (() => {
                     const selfIndex = messages.findIndex((m) => m.id === message.id);
                     return selfIndex >= 0 ? findSubmittedQuestionAnswer(messages, selfIndex) : undefined;
                   })()}

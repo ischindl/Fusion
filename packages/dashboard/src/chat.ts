@@ -48,6 +48,11 @@ import {
 } from "@fusion/core";
 import { EventEmitter } from "node:events";
 import { isQuestionToolName } from "./shared/chat-toolcall-compact.js";
+import {
+  findAwaitingQuestionMessageId,
+  QUESTION_ANSWER_TAIL_LIMIT,
+  withQuestionAnswerLink,
+} from "./shared/chat-question-link.js";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join, resolve, relative } from "node:path";
@@ -3213,6 +3218,36 @@ export class ChatManager {
     return title === null || title === undefined || title.trim() === "";
   }
 
+  /*
+  FNXC:ChatQuestionAnswerLink 2026-09-23-13:59:
+  RUFU-258: the single writer for the durable question→answer link. Returns the id of the assistant
+  row whose `fn_ask_question` is awaiting input, so the caller stamps the user row it is about to
+  persist. System sends are excluded before any read: an auto-retry or restart-recovery message is
+  machine text, never an operator answer, and stamping it would make a question card quote a
+  "System auto-retry…" paragraph as its submitted answer.
+
+  The read is bounded (DESC, QUESTION_ANSWER_TAIL_LIMIT) — this sits on every chat send, so a
+  whole-history read would be a latency regression — and its failure is swallowed to `null`: a
+  telemetry-quality derivation must never reject the send that carries the operator's message.
+  */
+  private async resolveOutgoingQuestionAnswerLink(
+    sessionId: string,
+    options?: { autoRetry?: boolean; userMessageMetadata?: Record<string, unknown> },
+  ): Promise<string | null> {
+    if (options?.autoRetry === true) return null;
+    const systemReason = options?.userMessageMetadata?.reason;
+    if (typeof systemReason === "string" && systemReason.trim().length > 0) return null;
+    try {
+      const newestFirst = await this.chatStore.getMessages(sessionId, {
+        order: "desc",
+        limit: QUESTION_ANSWER_TAIL_LIMIT,
+      });
+      return findAwaitingQuestionMessageId([...newestFirst].reverse());
+    } catch {
+      return null;
+    }
+  }
+
   async sendMessage(
     sessionId: string,
     content: string,
@@ -3417,15 +3452,29 @@ export class ChatManager {
       const mentionAgents = hasMentionCandidates ? await this.listAgentsForMentions() : [];
       const mentions = hasMentionCandidates ? await this.parseMentions(content, mentionAgents) : [];
 
+      /*
+      FNXC:ChatQuestionAnswerLink 2026-09-23-13:59:
+      RUFU-258: resolve the link BEFORE the insert, while the transcript still ends at the question
+      row the operator is answering. The stamped key is merged into the same object the mention and
+      caller-metadata spread already build, so `mentions` and any caller metadata survive — the merge
+      never replaces the object. An edit-and-resend needs no branch here: `prepareReplacement` has
+      already rewound the transcript, so this read sees the post-rewind tail and re-stamps correctly.
+      */
+      const baseUserMetadata: Record<string, unknown> = {
+        ...(mentions.length > 0 ? { mentions } : {}),
+        ...(options?.userMessageMetadata ?? {}),
+      };
+      const questionAnswerMessageId = await this.resolveOutgoingQuestionAnswerLink(sessionId, options);
+
       // Persist user message
       let persistedUserMessageId: string | undefined;
       try {
         const persistedUserMessage = await this.chatStore.addMessage(sessionId, {
           role: "user",
           content,
-          metadata: (mentions.length > 0 || options?.userMessageMetadata)
-            ? { ...(mentions.length > 0 ? { mentions } : {}), ...(options?.userMessageMetadata ?? {}) }
-            : undefined,
+          metadata: questionAnswerMessageId
+            ? withQuestionAnswerLink(baseUserMetadata, questionAnswerMessageId)
+            : (Object.keys(baseUserMetadata).length > 0 ? baseUserMetadata : undefined),
           attachments,
         });
         persistedUserMessageId = persistedUserMessage.id;
