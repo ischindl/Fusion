@@ -37,6 +37,7 @@ import { resolveTaskWorktreePath } from "../worktree/worktree-paths.js";
 import { createRunAuditor, type EngineRunContext } from "../util/run-audit.js";
 import { executorLog } from "../logger.js";
 import type { PluginRunner } from "../plugins/plugin-runner.js";
+import { storeErrorResult } from "../tool-store-errors.js";
 
 export const spawnAgentParams = Type.Object({
   name: Type.String({ description: "Name for the child agent" }),
@@ -377,11 +378,7 @@ export function createSpawnAgentTool(
           // it reserved, or a project permanently loses capacity to a spawn that
           // never happened.
           releaseSpawnReservation();
-          const errorMessage = err instanceof Error ? err.message : String(err);
-          return {
-            content: [{ type: "text" as const, text: `Failed to spawn agent: ${errorMessage}` }],
-            details: { agentId: "", state: "error", message: errorMessage },
-          };
+          return storeErrorResult("agent spawn", err);
         }
       },
     };

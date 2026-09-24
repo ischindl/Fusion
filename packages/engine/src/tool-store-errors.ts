@@ -40,6 +40,27 @@ export function storeErrorResult(what: string, error: unknown) {
 }
 
 /**
+ * A write failure. Usually the store was unreachable — say so and name the retry. But a store call can also
+ * answer with a fact about the board: the row the write targeted is absent, or the write is refused there on
+ * its merits. STAS-251 keeps those cases out of the retry shape on purpose — telling an agent to retry a
+ * refusal teaches them to retry it, and an outage must never look like their work disappeared.
+ */
+export function storeWriteFailure(what: string, error: unknown) {
+  const detail = reason(error);
+  if (DOMAIN_PHRASE.test(detail)) {
+    return {
+      content: [{ type: "text" as const, text: `ERROR: ${what} refused by the task store: ${detail}` }],
+      details: { code: "STORE_REFUSAL" },
+      isError: true,
+    };
+  }
+  return storeErrorResult(what, error);
+}
+
+/** How this repo's stores phrase a refusal on the merits: the row is absent, or the write is not allowed there. */
+const DOMAIN_PHRASE = / (not found|does not exist|read-only)$/i;
+
+/**
  * The store answered but kept the step on its old status — it refuses an out-of-order or
  * regressing transition by returning the task unchanged rather than throwing, so the returned
  * status is the only honest answer about what the board now holds.

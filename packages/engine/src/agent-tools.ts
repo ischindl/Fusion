@@ -16,7 +16,7 @@ import * as fusionCore from "@fusion/core";
 import type { AgentState, AgentCapability, AgentUpdateInput, AgentLogEntry, Artifact, ArtifactCreateInput, ArtifactWithTask, Task, TaskDocument, TaskDocumentCreateInput, TaskStore, RunMutationContext, MessageStore, Message, SourceType, Settings, ResearchRun, ResearchRunStatus, TaskCreateInput, ReflectionStore, ApprovalRequestStore, ProjectSettings, ChatStore, WorkflowSettingDefinition, GoalStatus, WorkflowIrNode, IdeationCandidate, MissionWithHierarchy, DbTransaction } from "@fusion/core";
 import { listTraits, isBuiltinWorkflowId, isTaskNotFoundError, AgentStore, validateColumnAgentBindings, ColumnAgentBindingError, stripApprovalBypassFlags, WorkflowSettingRejectionError, resolveEffectiveSettingsById, resolveWorkflowIrById, findOrphanedSettingValues, BUILTIN_WORKFLOW_SETTINGS, MAX_TASK_LIST_TEXT_CHARS, formatCurrentTaskLine, normalizeWorkflowIcon, parseWorkflowIr, WorkflowIrError, assertColumnTraitsValid, ColumnTraitValidationError } from "@fusion/core";
 import { promoteHeldTask } from "./execution/hold-release.js";
-import { stepLifecycleNoopResult, storeErrorResult } from "./tool-store-errors.js";
+import { stepLifecycleNoopResult, storeErrorResult, storeWriteFailure } from "./tool-store-errors.js";
 import { computeCrossParentDiagnosticClaim, computeCrossParentDiagnosticClaimId, computeParentIntentClaimId, DASHBOARD_USER_ID, dailyMemoryPath, ensureOpenClawMemoryFiles, evaluateImplementationTaskBind, extractAgentProvisioningRequest, findSameAgentDuplicates, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveMemorySearchTopic, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh } from "@fusion/core";
 import { ResearchOrchestrator } from "./research/research-orchestrator.js";
 import { ResearchProviderRegistry } from "./research/provider-registry.js";
@@ -2246,12 +2246,7 @@ function taskDocumentWriteError(error: unknown, key: string, taskId?: string) {
       isError: true,
     };
   }
-  const message = error instanceof Error ? error.message : String(error);
-  return {
-    content: [{ type: "text" as const, text: `ERROR: Failed to save document "${key}"${taskId ? ` for task ${taskId}` : ""}: ${message}` }],
-    details: {},
-    isError: true,
-  };
+  return storeWriteFailure(`the document "${key}"${taskId ? ` for task ${taskId}` : ""}`, error);
 }
 
 /**
@@ -2533,14 +2528,7 @@ export function createTaskPromptWriteTool(
         };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (err: any) {
-        return {
-          content: [{
-            type: "text" as const,
-            text: `ERROR: Failed to update PROMPT.md for ${taskId}: ${err.message}`,
-          }],
-          details: {},
-          isError: true,
-        };
+        return storeErrorResult(`PROMPT.md plan mirror for ${taskId}`, err);
       }
     },
   };
@@ -2618,7 +2606,7 @@ export function createTaskFileScopeAddTool(store: TaskStore, taskId: string, run
         return { content: [{ type: "text" as const, text: parts.join(" ") }], details: { added: toAdd } };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (err: any) {
-        return errorContent(`ERROR: Failed to update File Scope for ${taskId}: ${err.message}`);
+        return storeErrorResult(`File Scope update for ${taskId}`, err);
       }
     },
   };
@@ -2788,6 +2776,7 @@ async function registerArtifactForAgent(
   messageStore?: MessageStore,
   options?: ArtifactRegisterToolOptions,
 ) {
+  let storeWriteAttempted = false;
   try {
     /*
     FNXC:ArtifactRegistry 2026-07-11-09:40:
@@ -2819,6 +2808,7 @@ async function registerArtifactForAgent(
       taskId: params.taskId ?? options?.defaultTaskId,
     };
 
+    storeWriteAttempted = true;
     const artifact: Artifact = await store.registerArtifact(input);
     return {
       content: [{
@@ -2829,14 +2819,15 @@ async function registerArtifactForAgent(
     };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } catch (err: any) {
-    return {
-      content: [{
-        type: "text" as const,
-        text: `ERROR: Failed to register artifact "${params.title}": ${err.message}`,
-      }],
-      details: {},
-      isError: true,
-    };
+    /* A payload or eligibility refusal happens before the write, so it is a fact about the request, not an outage. */
+    if (!storeWriteAttempted) {
+      return {
+        content: [{ type: "text" as const, text: `ERROR: ${err?.message ?? err} — artifact not registered` }],
+        details: {},
+        isError: true,
+      };
+    }
+    return storeWriteFailure(`the artifact "${params.title}"`, err);
   }
 }
 
@@ -3385,11 +3376,7 @@ export function createWorkflowSelectTool(store: TaskStore, currentTaskId: string
             isError: true,
           };
         }
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Failed to select workflow: ${err?.message ?? err}` }],
-          details: {},
-          isError: true,
-        };
+        return storeErrorResult("workflow selection", err);
       }
     },
   };
@@ -3445,11 +3432,7 @@ export function createTaskPromoteTool(store: TaskStore, currentTaskId: string): 
         };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (err: any) {
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Failed to promote task: ${err?.message ?? err}` }],
-          details: {},
-          isError: true,
-        };
+        return storeErrorResult("task promotion", err);
       }
     },
   };
@@ -3482,7 +3465,7 @@ export function createTaskDeleteTool(store: TaskStore): ToolDefinition {
         });
         return { content: [{ type: "text" as const, text: `Deleted ${task.id}` }], details: { taskId: task.id } };
       } catch (err: unknown) {
-        return { content: [{ type: "text" as const, text: `ERROR: Failed to delete task: ${toolErrorMessage(err)}` }], details: {}, isError: true };
+        return storeErrorResult("task deletion", err);
       }
     },
   };
@@ -3592,7 +3575,7 @@ export function createTaskRetryTool(store: TaskStore, options: TaskRetryToolOpti
         await store.logEntry(params.id, "Retry requested via chat tool", `Task reset to ${retryTarget} for retry`);
         return { content: [{ type: "text" as const, text: `Retried ${params.id} → ${retryTarget}` }], details: { taskId: params.id, newColumn: retryTarget } };
       } catch (err: unknown) {
-        return { content: [{ type: "text" as const, text: `ERROR: Failed to retry task: ${toolErrorMessage(err)}` }], details: {}, isError: true };
+        return storeErrorResult("task retry", err);
       }
     },
   };
@@ -3609,7 +3592,7 @@ export function createTaskPauseTool(store: TaskStore): ToolDefinition {
         const task = await store.pauseTask(params.id, true);
         return { content: [{ type: "text" as const, text: `Paused ${task.id}` }], details: { taskId: task.id, column: task.column } };
       } catch (err: unknown) {
-        return { content: [{ type: "text" as const, text: `ERROR: Failed to pause task: ${toolErrorMessage(err)}` }], details: {}, isError: true };
+        return storeErrorResult("task pause", err);
       }
     },
   };
@@ -3626,7 +3609,7 @@ export function createTaskUnpauseTool(store: TaskStore): ToolDefinition {
         const task = await store.pauseTask(params.id, false);
         return { content: [{ type: "text" as const, text: `Unpaused ${task.id}` }], details: { taskId: task.id, column: task.column } };
       } catch (err: unknown) {
-        return { content: [{ type: "text" as const, text: `ERROR: Failed to unpause task: ${toolErrorMessage(err)}` }], details: {}, isError: true };
+        return storeErrorResult("task unpause", err);
       }
     },
   };
@@ -3643,7 +3626,7 @@ export function createTaskDuplicateTool(store: TaskStore): ToolDefinition {
         const task = await store.duplicateTask(params.id);
         return { content: [{ type: "text" as const, text: `Duplicated to ${task.id}` }], details: { taskId: task.id } };
       } catch (err: unknown) {
-        return { content: [{ type: "text" as const, text: `ERROR: Failed to duplicate task: ${toolErrorMessage(err)}` }], details: {}, isError: true };
+        return storeErrorResult("task duplication", err);
       }
     },
   };
@@ -3669,7 +3652,7 @@ export function createTaskMergeTool(store: TaskStore, _currentTaskId: string): T
         const mergedInto = result?.task?.id ?? targetId;
         return { content: [{ type: "text" as const, text: `Merged ${targetId} into ${mergedInto}` }], details: { targetId, mergedInto } };
       } catch (err: unknown) {
-        return { content: [{ type: "text" as const, text: `ERROR: Failed to merge task: ${toolErrorMessage(err)}` }], details: {}, isError: true };
+        return storeErrorResult("task merge", err);
       }
     },
   };
@@ -3759,7 +3742,7 @@ export function createTaskUpdateTool(store: TaskStore, taskId: string): ToolDefi
         }
         return { content: [{ type: "text" as const, text: "No-op: provide step+status, dependencies, or custom_fields." }], details: {} };
       } catch (err: unknown) {
-        return { content: [{ type: "text" as const, text: `ERROR: ${toolErrorMessage(err)}` }], details: {}, isError: true };
+        return storeErrorResult("task update", err);
       }
     },
   };
@@ -3805,7 +3788,7 @@ export function createTaskAddDepTool(store: TaskStore, taskId: string): ToolDefi
         await store.updateTask(taskId, { dependencies: [...(task.dependencies || []), depId] });
         return { content: [{ type: "text" as const, text: `Added dependency ${depId} to ${taskId}` }], details: { taskId, dependency: depId } };
       } catch (err: unknown) {
-        return { content: [{ type: "text" as const, text: `ERROR: Failed to add dependency: ${toolErrorMessage(err)}` }], details: {}, isError: true };
+        return storeErrorResult("dependency declaration", err);
       }
     },
   };
@@ -4035,11 +4018,7 @@ export function createWorkflowCreateTool(
         if (err instanceof ColumnAgentBindingError) {
           return columnAgentBindingErrorResult(err);
         }
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Failed to create workflow: ${err?.message ?? err}` }],
-          details: {},
-          isError: true,
-        };
+        return storeErrorResult("workflow creation", err);
       }
     },
   };
@@ -4120,11 +4099,7 @@ export function createWorkflowUpdateTool(
             isError: true,
           };
         }
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Failed to update workflow: ${err?.message ?? err}` }],
-          details: {},
-          isError: true,
-        };
+        return storeErrorResult("workflow update", err);
       }
     },
   };
@@ -4166,11 +4141,7 @@ export function createWorkflowDeleteTool(store: TaskStore): ToolDefinition {
             isError: true,
           };
         }
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Failed to delete workflow: ${err?.message ?? err}` }],
-          details: {},
-          isError: true,
-        };
+        return storeErrorResult("workflow deletion", err);
       }
     },
   };
@@ -4313,11 +4284,7 @@ export function createWorkflowSettingsTool(store: TaskStore): ToolDefinition {
             isError: true,
           };
         }
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Failed to write workflow settings: ${err?.message ?? err}` }],
-          details: {},
-          isError: true,
-        };
+        return storeErrorResult("workflow settings write", err);
       }
     },
   };
@@ -5834,8 +5801,7 @@ export function createAgentDeleteTool(
       try {
         await agentStore.deleteAgent(params.agent_id, { force: params.force === true, reassignTo: params.reassign_to });
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return { content: [{ type: "text" as const, text: `ERROR: ${message}` }], details: {}, isError: true };
+          return storeErrorResult("agent deletion", error);
       }
 
       await options?.runAuditor?.database({ type: "agent:delete:approved", target: target.id, metadata: { policy, autoApproved: true } });
@@ -6308,10 +6274,7 @@ export function createSendMessageTool(
         });
 
         if (result.outcome === "parked") {
-          return {
-            content: [{ type: "text" as const, text: `ERROR: Failed to send message: ${result.error.message}` }],
-            details: {},
-          };
+          return storeWriteFailure("message delivery", result.error.message);
         }
 
         return {
@@ -6322,12 +6285,7 @@ export function createSendMessageTool(
           details: { messageId: result.value.id },
         };
       } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Failed to send message: ${errorMessage}` }],
-          details: {},
-          isError: true,
-        };
+        return storeWriteFailure("message delivery", err);
       }
     },
   };
@@ -6673,11 +6631,7 @@ export function createPostRoomMessageTool(
         });
 
         if (result.outcome === "parked") {
-          return {
-            content: [{ type: "text" as const, text: `ERROR: Failed to post room message: ${result.error.message}` }],
-            details: {},
-            isError: true,
-          };
+          return storeWriteFailure("room message delivery", result.error.message);
         }
 
         return {
@@ -6685,12 +6639,7 @@ export function createPostRoomMessageTool(
           details: { messageId: result.value.id },
         };
       } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Failed to post room message: ${errorMessage}` }],
-          details: {},
-          isError: true,
-        };
+        return storeWriteFailure("room message delivery", err);
       }
     },
   };

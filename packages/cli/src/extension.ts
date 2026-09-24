@@ -88,6 +88,7 @@ import {
   resolveGateOutcome,
   resolveFeatureRepairTargets,
   reconcileMissionState,
+  storeErrorResult,
 } from "@fusion/engine";
 import * as dashboard from "@fusion/dashboard";
 import { resolve, relative, isAbsolute, sep, basename, extname, join } from "node:path";
@@ -2179,11 +2180,7 @@ export default function kbExtension(pi: ExtensionAPI) {
                   },
                 };
               }
-              return {
-                content: [{ type: "text", text: `ERROR: ${message}` }],
-                isError: true,
-                details: { error: message },
-              };
+              return storeErrorResult("workflow selection", error);
             }
             updatedFields.push("workflowId");
           }
@@ -2819,11 +2816,7 @@ export default function kbExtension(pi: ExtensionAPI) {
         };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (err: any) {
-        return {
-          content: [{ type: "text", text: `ERROR: Failed to bypass review lane for ${params.id}: ${err?.message ?? err}` }],
-          isError: true,
-          details: { taskId: params.id, error: String(err?.message ?? err) },
-        };
+        return storeErrorResult(`review-lane bypass for ${params.id}`, err);
       }
     },
   });
@@ -2880,11 +2873,7 @@ export default function kbExtension(pi: ExtensionAPI) {
         };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (err: any) {
-        return {
-          content: [{ type: "text", text: `ERROR: Failed to resume step '${params.stepId}' for ${params.id}: ${err?.message ?? err}` }],
-          isError: true,
-          details: { taskId: params.id, stepId: params.stepId, error: String(err?.message ?? err) },
-        };
+        return storeErrorResult(`step resume for ${params.id} step ${params.stepId}`, err);
       }
     },
   });
