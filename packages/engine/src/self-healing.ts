@@ -121,7 +121,16 @@ import { loadWorkspaceConfig, type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_
   fileScopeLeaseBlocksCandidate,
   normalizeOverlapScopeForTask,
 } from "@fusion/core";
-import { finalizePlanningSegment, isLegacyWorkspaceWorktreeLayout, resolveWorkspaceTaskWorktreeDir } from "@fusion/core";
+/*
+FNXC:ChatSidebarLiveness 2026-09-24-05:55 (RUFU-220):
+`chatInFlightReferenceMs` is the same reference resolver that now drives the dashboard sidebar's
+liveness tag, so the label an operator reads and the clear this sweep performs cannot disagree about
+the age of a claim. It arrives through the root barrel (as every other core symbol here does): the
+`@fusion/core/chat-liveness` SUBPATH exists for the dashboard, whose root alias points at a
+browser-safe types-only leaf. The engine would resolve that subpath only after a new vitest alias,
+because Vite's string aliases match by prefix and `@fusion/core` already names a FILE here.
+*/
+import { finalizePlanningSegment, isLegacyWorkspaceWorktreeLayout, resolveWorkspaceTaskWorktreeDir, chatInFlightReferenceMs } from "@fusion/core";
 /* RUFU-200: holder-side checkout-emptiness proof for dormant file-scope lease classification. */
 import { taskHoldsUnmergedCheckout, type CheckoutEmptinessProofMap } from "@fusion/core";
 import { proveDormantCheckoutEmptiness } from "./worktree/checkout-emptiness.js";
@@ -7840,16 +7849,17 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
    * snapshot's `startedAt` when it parses as a finite ISO time, otherwise the
    * session's `updated_at` (pre-fix legacy rows lack `startedAt`), otherwise null
    * (unknown age — the caller must skip the row rather than clear it).
+   *
+   * FNXC:ChatSidebarLiveness 2026-09-24-05:55 (RUFU-220):
+   * The body moved to core's `chatInFlightReferenceMs` and this method now delegates, so the
+   * sidebar tag and this sweep provably share ONE reference resolver instead of two bodies that
+   * could drift. Behaviour is unchanged: the unknown-age → skip-the-row rule stays here.
    */
   private chatInFlightGenerationReferenceMs(
     inFlight: ChatInFlightGenerationState,
     sessionUpdatedAt: string,
   ): number | null {
-    const startedMs = Date.parse(inFlight.startedAt ?? "");
-    if (Number.isFinite(startedMs)) return startedMs;
-    const updatedAtMs = Date.parse(sessionUpdatedAt);
-    if (Number.isFinite(updatedAtMs)) return updatedAtMs;
-    return null;
+    return chatInFlightReferenceMs(inFlight, sessionUpdatedAt);
   }
 
   async reconcileDependencyBlockingLeases(): Promise<number> {

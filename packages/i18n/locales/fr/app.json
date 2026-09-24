@@ -3117,7 +3117,9 @@
     "replanAllTitle": "Replanifier toutes les tâches",
     "stopAllTitle": "Arrêter toutes les tâches",
     "noManuallyPausableTasks": "Aucune tâche pouvant être mise en pause manuellement",
-    "replanAllMessage_one": "Replan {{count}} task{{plural}} from its original description? Its current plan will be discarded."
+    "replanAllMessage_one": "Replan {{count}} task{{plural}} from its original description? Its current plan will be discarded.",
+    "archivedTasksWithSkips_other": "",
+    "archivedTasksWithSkips_one": ""
   },
   "windows": {
     "hide": "Masquer toutes les fenêtres",
@@ -5562,6 +5564,9 @@
     "focusClear": "Clear to whole-project",
     "resizePanelTopRight": "Redimensionner le panneau depuis le coin supérieur droit",
     "windowOpen": "Ouvert",
+    "generating": "Génération en cours",
+    "generationStale": "Obsolète — en attente de récupération",
+    "generationLivenessTitle": "{{label}} — récupéré après {{minutes}} minutes sans progression",
     "questionResponseLabel": "",
     "showArchivedConversations": "Show archived conversations",
     "selectModelPlaceholder2": "Sélectionner un modèle",
@@ -5690,7 +5695,6 @@
     "showConversationList": "Show conversation list",
     "failureDetails": "Détails de l'échec",
     "focusFailedToast": "Failed to update memory focus",
-    "minimizeAllChats": "Réduire tous les chats",
     "noModelsAvailable": "No models available",
     "deleteTagTitle": "Delete tag?",
     "noReplyGenerated": "The model ended this turn without writing a reply. Expand Thinking below to see what it reached.",
@@ -5765,7 +5769,6 @@
     "thinkingStatus": "Réflexion en cours…",
     "questionSelectHintWithOptional": "",
     "toolCallStatusError": "error",
-    "restoreAllChats": "Restaurer tous les chats",
     "quoteMessage": "Citer le message",
     "resizePanelRight": "Redimensionner le panneau depuis la droite",
     "backToConversations": "",
@@ -9732,7 +9735,30 @@
     "removingKey": "Suppression…",
     "taskCreatedHint": "Votre tâche a été créée et apparaîtra sur le tableau.",
     "githubCliAuthBody": "GitHub CLI is installed but not authenticated on the Fusion host. Run this command in the environment where Fusion is running, then return here and continue.",
-    "clonePathPlaceholder": "/chemin/pour/nouveau-clone"
+    "clonePathPlaceholder": "/chemin/pour/nouveau-clone",
+    "antigravityCli": {
+      "active": "",
+      "binaryNotFound": "",
+      "binaryPathHelp": "",
+      "binaryPathLabel": "",
+      "binaryPathPlaceholder": "",
+      "connected": "",
+      "description": "",
+      "detectedPrompt": "",
+      "disable": "",
+      "disabling": "",
+      "enable": "",
+      "enabling": "",
+      "notConnected": "",
+      "pathCleared": "",
+      "pathSaved": "",
+      "probing": "",
+      "providerName": "",
+      "saveAndTestPath": "",
+      "savingPath": "",
+      "test": "",
+      "testing": ""
+    }
   },
   "nodes": {
     "closeButton": "Fermer",
@@ -10622,6 +10648,9 @@
       "memoryBackupDirectory": ""
     },
     "general": {
+      "25": "",
+      "200": "",
+      "3000": "",
       "newTasksInheritThisCustomWorkflowsStepsOverridable": "",
       "requireChangesetChangesetMd": "",
       "30Days": "",
@@ -10702,8 +10731,6 @@
       "reportRoadmapDedupeEnabled": "Deduplicate reports against public roadmap",
       "reportModeHelp": "Comment les rapports in-app (bug, feedback, idée, aide) sont déposés. Par défaut : draft-review (l'opérateur revoit un brouillon avant dépôt).",
       "searchTheTrackingRepoForLikelyDuplicatesBefore": "",
-      "200": "",
-      "3000": "",
       "upperBoundOnMessagesFetchedFromTheRoom": "",
       "reportTarget": "Cible de rapport par défaut",
       "operationalLogRetention": "",
@@ -10723,7 +10750,6 @@
       "retryRestart": "Retry readiness check",
       "settingsSaved": "Paramètres enregistrés",
       "14Days": "",
-      "25": "",
       "capacityRiskBanner": "",
       "showTaskChatsInCommonFeedHint": "",
       "taskPrefix": "",
@@ -11681,6 +11707,9 @@
     "review": "Revue",
     "progress": "Progression",
     "mergingTitle_one": "{{count}} merging",
-    "merging": ""
+    "merging": "",
+    "inProgress": "",
+    "todo": "",
+    "done": ""
   }
 }

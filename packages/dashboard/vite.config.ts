@@ -147,6 +147,13 @@ export default defineConfig({
       */
       "@fusion/core/task-delete-attribution": resolve(__dirname, "../core/src/task-delete-attribution.ts"),
       "@fusion/core/column-roles": resolve(__dirname, "../core/src/column-roles.ts"),
+      /*
+      FNXC:ChatSidebarLiveness 2026-09-24-05:55 (RUFU-220):
+      The sidebar liveness tag needs the shared generation classifier as a VALUE, and the root `@fusion/core` alias below points at the types-only leaf, so a root-barrel value import would compile and even pass Vitest (whose alias points at the real index) yet resolve to `undefined` in the production browser bundle with no build error.
+      `chat/chat-liveness.ts` imports only an erased type from `chat-types.ts`, so it is a safe browser leaf; alias its subpath rather than widening the `@fusion/core` alias.
+      Ordered before the `@fusion/core` entry because Vite matches aliases in order and the broader key would otherwise swallow this subpath.
+      */
+      "@fusion/core/chat-liveness": resolve(__dirname, "../core/src/chat/chat-liveness.ts"),
       "@fusion/core": resolve(__dirname, "../core/src/types.ts"),
       "@fusion/dashboard/app/components/TaskCard": resolve(__dirname, "app/components/TaskCard.tsx"),
       // FNXC:PluginBuild 2026-09-13-16:50: Bundled plugin source can import shared header primitives and the cooperative full-page header through package exports; Vite needs matching source aliases so one-header composition cannot fail only in CI merge builds.

@@ -3117,7 +3117,9 @@
     "replanAllTitle": "重新規劃所有工作",
     "stopAllTitle": "停止所有工作",
     "noManuallyPausableTasks": "沒有可手動暫停的工作",
-    "replanAllMessage_one": "Replan {{count}} task{{plural}} from its original description? Its current plan will be discarded."
+    "replanAllMessage_one": "Replan {{count}} task{{plural}} from its original description? Its current plan will be discarded.",
+    "archivedTasksWithSkips_other": "",
+    "archivedTasksWithSkips_one": ""
   },
   "windows": {
     "hide": "隱藏所有視窗",
@@ -5561,6 +5563,9 @@
     "focusClear": "Clear to whole-project",
     "resizePanelTopRight": "從右上角調整面板大小",
     "windowOpen": "已開啟",
+    "generating": "產生中",
+    "generationStale": "已過期 — 等待回收",
+    "generationLivenessTitle": "{{label}} — 無進展 {{minutes}} 分鐘後自動回收",
     "questionResponseLabel": "",
     "showArchivedConversations": "Show archived conversations",
     "selectModelPlaceholder2": "選擇模型",
@@ -5689,7 +5694,6 @@
     "showConversationList": "Show conversation list",
     "failureDetails": "失敗詳情",
     "focusFailedToast": "Failed to update memory focus",
-    "minimizeAllChats": "最小化所有聊天",
     "noModelsAvailable": "No models available",
     "deleteTagTitle": "Delete tag?",
     "noReplyGenerated": "The model ended this turn without writing a reply. Expand Thinking below to see what it reached.",
@@ -5764,7 +5768,6 @@
     "thinkingStatus": "思考中……",
     "questionSelectHintWithOptional": "",
     "toolCallStatusError": "error",
-    "restoreAllChats": "還原所有聊天",
     "quoteMessage": "引用訊息",
     "resizePanelRight": "從右側調整面板大小",
     "backToConversations": "",
@@ -9731,7 +9734,30 @@
     "removingKey": "正在移除…",
     "taskCreatedHint": "您的任務已建立，將顯示在看板上。",
     "githubCliAuthBody": "GitHub CLI is installed but not authenticated on the Fusion host. Run this command in the environment where Fusion is running, then return here and continue.",
-    "clonePathPlaceholder": "/path/for/new-clone"
+    "clonePathPlaceholder": "/path/for/new-clone",
+    "antigravityCli": {
+      "active": "",
+      "binaryNotFound": "",
+      "binaryPathHelp": "",
+      "binaryPathLabel": "",
+      "binaryPathPlaceholder": "",
+      "connected": "",
+      "description": "",
+      "detectedPrompt": "",
+      "disable": "",
+      "disabling": "",
+      "enable": "",
+      "enabling": "",
+      "notConnected": "",
+      "pathCleared": "",
+      "pathSaved": "",
+      "probing": "",
+      "providerName": "",
+      "saveAndTestPath": "",
+      "savingPath": "",
+      "test": "",
+      "testing": ""
+    }
   },
   "nodes": {
     "closeButton": "關閉",
@@ -10621,6 +10647,9 @@
       "memoryBackupDirectory": ""
     },
     "general": {
+      "25": "",
+      "200": "",
+      "3000": "",
       "newTasksInheritThisCustomWorkflowsStepsOverridable": "",
       "requireChangesetChangesetMd": "",
       "30Days": "",
@@ -10701,8 +10730,6 @@
       "reportRoadmapDedupeEnabled": "Deduplicate reports against public roadmap",
       "reportModeHelp": "應用內缺陷/回饋/想法/說明報告的提交方式。預設：draft-review（提交前由操作者審閱草稿）。",
       "searchTheTrackingRepoForLikelyDuplicatesBefore": "",
-      "200": "",
-      "3000": "",
       "upperBoundOnMessagesFetchedFromTheRoom": "",
       "reportTarget": "預設報告目標",
       "operationalLogRetention": "",
@@ -10722,7 +10749,6 @@
       "retryRestart": "Retry readiness check",
       "settingsSaved": "設定已儲存",
       "14Days": "",
-      "25": "",
       "capacityRiskBanner": "",
       "showTaskChatsInCommonFeedHint": "",
       "taskPrefix": "",
@@ -11680,6 +11706,9 @@
     "review": "審查",
     "progress": "進行中",
     "mergingTitle_one": "{{count}} merging",
-    "merging": ""
+    "merging": "",
+    "inProgress": "",
+    "todo": "",
+    "done": ""
   }
 }

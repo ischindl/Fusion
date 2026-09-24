@@ -3117,7 +3117,9 @@
     "replanAllTitle": "모든 작업 재계획",
     "stopAllTitle": "모든 작업 중지",
     "noManuallyPausableTasks": "수동으로 일시 중지 가능한 작업이 없습니다",
-    "replanAllMessage_one": "Replan {{count}} task{{plural}} from its original description? Its current plan will be discarded."
+    "replanAllMessage_one": "Replan {{count}} task{{plural}} from its original description? Its current plan will be discarded.",
+    "archivedTasksWithSkips_other": "",
+    "archivedTasksWithSkips_one": ""
   },
   "windows": {
     "hide": "모든 창 숨기기",
@@ -5561,6 +5563,9 @@
     "focusClear": "Clear to whole-project",
     "resizePanelTopRight": "오른쪽 위 모서리에서 패널 크기 조정",
     "windowOpen": "열림",
+    "generating": "생성 중",
+    "generationStale": "만료 — 회수 대기 중",
+    "generationLivenessTitle": "{{label}} — {{minutes}}분간 진행이 없으면 회수됩니다",
     "questionResponseLabel": "",
     "showArchivedConversations": "Show archived conversations",
     "selectModelPlaceholder2": "모델 선택",
@@ -5689,7 +5694,6 @@
     "showConversationList": "Show conversation list",
     "failureDetails": "실패 세부 정보",
     "focusFailedToast": "Failed to update memory focus",
-    "minimizeAllChats": "모든 채팅 최소화",
     "noModelsAvailable": "No models available",
     "deleteTagTitle": "Delete tag?",
     "noReplyGenerated": "The model ended this turn without writing a reply. Expand Thinking below to see what it reached.",
@@ -5764,7 +5768,6 @@
     "thinkingStatus": "생각 중…",
     "questionSelectHintWithOptional": "",
     "toolCallStatusError": "error",
-    "restoreAllChats": "모든 채팅 복원",
     "quoteMessage": "메시지 인용",
     "resizePanelRight": "오른쪽에서 패널 크기 조정",
     "backToConversations": "",
@@ -9731,7 +9734,30 @@
     "removingKey": "제거 중…",
     "taskCreatedHint": "작업이 생성되어 보드에 표시됩니다.",
     "githubCliAuthBody": "GitHub CLI is installed but not authenticated on the Fusion host. Run this command in the environment where Fusion is running, then return here and continue.",
-    "clonePathPlaceholder": "/path/for/new-clone"
+    "clonePathPlaceholder": "/path/for/new-clone",
+    "antigravityCli": {
+      "active": "",
+      "binaryNotFound": "",
+      "binaryPathHelp": "",
+      "binaryPathLabel": "",
+      "binaryPathPlaceholder": "",
+      "connected": "",
+      "description": "",
+      "detectedPrompt": "",
+      "disable": "",
+      "disabling": "",
+      "enable": "",
+      "enabling": "",
+      "notConnected": "",
+      "pathCleared": "",
+      "pathSaved": "",
+      "probing": "",
+      "providerName": "",
+      "saveAndTestPath": "",
+      "savingPath": "",
+      "test": "",
+      "testing": ""
+    }
   },
   "nodes": {
     "closeButton": "닫기",
@@ -10621,6 +10647,9 @@
       "memoryBackupDirectory": ""
     },
     "general": {
+      "25": "",
+      "200": "",
+      "3000": "",
       "newTasksInheritThisCustomWorkflowsStepsOverridable": "",
       "requireChangesetChangesetMd": "",
       "30Days": "",
@@ -10701,8 +10730,6 @@
       "reportRoadmapDedupeEnabled": "Deduplicate reports against public roadmap",
       "reportModeHelp": "인앱 버그/피드백/아이디어/도움말 리포트 제출 방식. 기본값: draft-review(제출 전 운영자가 초안 검토).",
       "searchTheTrackingRepoForLikelyDuplicatesBefore": "",
-      "200": "",
-      "3000": "",
       "upperBoundOnMessagesFetchedFromTheRoom": "",
       "reportTarget": "기본 보고 대상",
       "operationalLogRetention": "",
@@ -10722,7 +10749,6 @@
       "retryRestart": "Retry readiness check",
       "settingsSaved": "설정이 저장되었습니다",
       "14Days": "",
-      "25": "",
       "capacityRiskBanner": "",
       "showTaskChatsInCommonFeedHint": "",
       "taskPrefix": "",
@@ -11680,6 +11706,9 @@
     "review": "검토",
     "progress": "진행",
     "mergingTitle_one": "{{count}} merging",
-    "merging": ""
+    "merging": "",
+    "inProgress": "",
+    "todo": "",
+    "done": ""
   }
 }

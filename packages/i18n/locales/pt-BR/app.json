@@ -3117,7 +3117,9 @@
     "replanAllTitle": "Replanejar todas as tarefas",
     "stopAllTitle": "Parar todas as tarefas",
     "noManuallyPausableTasks": "Nenhuma tarefa pausável manualmente",
-    "replanAllMessage_one": "Replan {{count}} task{{plural}} from its original description? Its current plan will be discarded."
+    "replanAllMessage_one": "Replan {{count}} task{{plural}} from its original description? Its current plan will be discarded.",
+    "archivedTasksWithSkips_other": "",
+    "archivedTasksWithSkips_one": ""
   },
   "windows": {
     "hide": "Ocultar todas as janelas",
@@ -5562,6 +5564,9 @@
     "focusClear": "Clear to whole-project",
     "resizePanelTopRight": "Redimensionar painel a partir do canto superior direito",
     "windowOpen": "Aberto",
+    "generating": "Gerando",
+    "generationStale": "Obsoleto — aguardando recuperação",
+    "generationLivenessTitle": "{{label}} — recuperado após {{minutes}} minutos sem progresso",
     "questionResponseLabel": "Pergunta do assistente",
     "showArchivedConversations": "Show archived conversations",
     "selectModelPlaceholder2": "Selecione um modelo",
@@ -5690,7 +5695,6 @@
     "showConversationList": "Show conversation list",
     "failureDetails": "Detalhes da falha",
     "focusFailedToast": "Failed to update memory focus",
-    "minimizeAllChats": "Minimizar todos os chats",
     "noModelsAvailable": "Nenhum modelo disponível",
     "deleteTagTitle": "Delete tag?",
     "noReplyGenerated": "The model ended this turn without writing a reply. Expand Thinking below to see what it reached.",
@@ -5765,7 +5769,6 @@
     "thinkingStatus": "Pensando…",
     "questionSelectHintWithOptional": "",
     "toolCallStatusError": "error",
-    "restoreAllChats": "Restaurar todos os chats",
     "quoteMessage": "Citar mensagem",
     "resizePanelRight": "Redimensionar painel a partir da direita",
     "backToConversations": "",
@@ -9732,7 +9735,30 @@
     "removingKey": "Removendo…",
     "taskCreatedHint": "Sua tarefa foi criada e aparecerá no quadro.",
     "githubCliAuthBody": "O GitHub CLI está instalado, mas não autenticado no host do Fusion. Execute este comando no ambiente onde o Fusion está em execução e depois volte aqui para continuar.",
-    "clonePathPlaceholder": "/path/for/new-clone"
+    "clonePathPlaceholder": "/path/for/new-clone",
+    "antigravityCli": {
+      "active": "",
+      "binaryNotFound": "",
+      "binaryPathHelp": "",
+      "binaryPathLabel": "",
+      "binaryPathPlaceholder": "",
+      "connected": "",
+      "description": "",
+      "detectedPrompt": "",
+      "disable": "",
+      "disabling": "",
+      "enable": "",
+      "enabling": "",
+      "notConnected": "",
+      "pathCleared": "",
+      "pathSaved": "",
+      "probing": "",
+      "providerName": "",
+      "saveAndTestPath": "",
+      "savingPath": "",
+      "test": "",
+      "testing": ""
+    }
   },
   "nodes": {
     "closeButton": "Fechar",
@@ -10563,6 +10589,9 @@
       "modelActions": "Gerenciamento do modelo"
     },
     "general": {
+      "25": "25",
+      "200": "200",
+      "3000": "3000",
       "newTasksInheritThisCustomWorkflowsStepsOverridable": "Novas tarefas herdam as etapas deste fluxo de trabalho personalizado (substituível por tarefa). Sem padrão — não definido (fluxo de trabalho padrão integrado).",
       "requireChangesetChangesetMd": "Exigir changeset (.changeset/*.md)",
       "30Days": "30 dias",
@@ -10643,8 +10672,6 @@
       "reportRoadmapDedupeEnabled": "Deduplicar relatórios em relação ao roadmap público",
       "reportModeHelp": "Como são enviados os relatórios de bug/feedback/ideia/ajuda no aplicativo. Padrão: draft-review (o operador revisa um rascunho antes do envio).",
       "searchTheTrackingRepoForLikelyDuplicatesBefore": " Buscar no repositório de rastreamento por possíveis duplicatas antes de abrir uma nova issue ",
-      "200": "200",
-      "3000": "3000",
       "upperBoundOnMessagesFetchedFromTheRoom": "Limite superior de mensagens buscadas do armazenamento da sala para consideração de compactação. Padrão: 200.",
       "reportTarget": "Destino padrão do relatório",
       "moveNavItemLater": "Mover {{item}} para baixo",
@@ -10664,7 +10691,6 @@
       "retryRestart": "Retry readiness check",
       "settingsSaved": "Configurações salvas",
       "14Days": "14 dias",
-      "25": "25",
       "capacityRiskBanner": "Banner de risco de capacidade",
       "showTaskChatsInCommonFeedHint": "Quando ativado, conversas de chat com conteúdo nos detalhes da tarefa aparecem no feed comum Direto. Chats de tarefa vazios permanecem ocultos. Padrão: desativado.",
       "taskPrefix": "Prefixo da tarefa",
@@ -11681,6 +11707,9 @@
     "review": "Revisão",
     "progress": "Progresso",
     "mergingTitle_one": "{{count}} merging",
-    "merging": "Em merge"
+    "merging": "Em merge",
+    "inProgress": "",
+    "todo": "",
+    "done": ""
   }
 }

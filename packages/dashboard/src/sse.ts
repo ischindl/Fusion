@@ -51,6 +51,15 @@ The derived flag drives the transcript attach and nothing else. No chat sidebar 
 generating indicator (a `chat-session-item` shows pin / unread / window / preview only), so this
 enrichment must not be described as feeding a session-list spinner; a sidebar indicator is a
 deliberate follow-up outside this contract.
+
+FNXC:ChatSidebarLiveness 2026-09-24-07:07 (RUFU-220):
+That follow-up has now shipped, so the sentence above is history, not a current constraint: a
+sidebar row DOES render a liveness chip. It is not this derived flag, though, and the distinction
+is the reason this enrichment stays exactly as narrow as it was. The chip classifies the raw
+`inFlightGeneration` claim through core's `classifyChatInFlightLiveness` — the same classifier the
+engine's reclaim sweep delegates to — because a chip driven by `isGenerating` could only ever say
+"generating", never "this claim is old enough to be reclaimed", and would disagree with the sweep
+that clears it. So the flag still feeds only the transcript attach, while the list reads the claim.
 */
 export function enrichChatSessionEventPayload(session: unknown): unknown {
   if (!session || typeof session !== "object" || Array.isArray(session)) {

@@ -32,5 +32,14 @@ export const MAX_TRANSIENT_MERGE_RECOVERIES = 5;
  * dead. The floor is far longer than any single LLM turn (a live generation is never
  * cleared) and far shorter than how long a human notices a zombie "generating" box
  * (recovery stays timely). Dashboard restarts are the known stranding source.
+ *
+ * FNXC:ChatSidebarLiveness 2026-09-24-05:55 (RUFU-220):
+ * DECLARATION MOVED to `packages/core/src/chat/chat-liveness.ts` and re-exported here, because
+ * RUFU-220 put the same age rule in front of the operator in the dashboard sidebar. A second
+ * literal would let the UI accuse a claim the engine is still holding, and core cannot import
+ * engine, so core owns the number. The stable import path and the value are unchanged.
+ * It arrives through the root barrel rather than the `@fusion/core/chat-liveness` subpath: that
+ * subpath exists for the dashboard's browser-safe alias, and adding it here would mean a new
+ * vitest alias per consuming package for no engine-side benefit.
  */
-export const CHAT_IN_FLIGHT_GENERATION_STALE_MS = 30 * 60_000;
+export { CHAT_IN_FLIGHT_GENERATION_STALE_MS } from "@fusion/core";

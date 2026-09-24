@@ -2965,6 +2965,19 @@ export type {
 } from "./chat/chat-types.js";
 export { ChatStore } from "./chat/chat-store.js";
 export type { ChatStoreEvents } from "./chat/chat-store.js";
+/*
+FNXC:ChatSidebarLiveness 2026-09-24-05:55 (RUFU-220):
+The shared generation-liveness classifier (floor constant + reference resolver + derivation).
+Re-exported from the barrel so every Node-side consumer (engine sweep, dashboard server) reads the
+same floor the dashboard sidebar renders; the browser reaches it through the `@fusion/core/chat-liveness`
+subpath because the dashboard's root-barrel alias resolves to the types-only leaf.
+*/
+export {
+  CHAT_IN_FLIGHT_GENERATION_STALE_MS,
+  chatInFlightReferenceMs,
+  classifyChatInFlightLiveness,
+} from "./chat/chat-liveness.js";
+export type { ChatInFlightLiveness, ChatLivenessInput, ChatLivenessResult } from "./chat/chat-liveness.js";
 export {
   CLI_AGENT_STATES,
   CLI_TERMINATION_REASONS,

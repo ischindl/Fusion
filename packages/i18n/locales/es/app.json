@@ -3117,7 +3117,9 @@
     "replanAllTitle": "Replanificar todas las tareas",
     "stopAllTitle": "Detener todas las tareas",
     "noManuallyPausableTasks": "Sin tareas pausables manualmente",
-    "replanAllMessage_one": "Replan {{count}} task{{plural}} from its original description? Its current plan will be discarded."
+    "replanAllMessage_one": "Replan {{count}} task{{plural}} from its original description? Its current plan will be discarded.",
+    "archivedTasksWithSkips_other": "",
+    "archivedTasksWithSkips_one": ""
   },
   "windows": {
     "hide": "Ocultar todas las ventanas",
@@ -5562,6 +5564,9 @@
     "focusClear": "Clear to whole-project",
     "resizePanelTopRight": "Redimensionar panel desde la esquina superior derecha",
     "windowOpen": "Abierto",
+    "generating": "Generando",
+    "generationStale": "Obsoleto — a la espera de recuperación",
+    "generationLivenessTitle": "{{label}} — se recupera tras {{minutes}} minutos sin progreso",
     "questionResponseLabel": "",
     "showArchivedConversations": "Show archived conversations",
     "selectModelPlaceholder2": "Selecciona un modelo",
@@ -5690,7 +5695,6 @@
     "showConversationList": "Show conversation list",
     "failureDetails": "Detalles del error",
     "focusFailedToast": "Failed to update memory focus",
-    "minimizeAllChats": "Minimizar todos los chats",
     "noModelsAvailable": "No models available",
     "deleteTagTitle": "Delete tag?",
     "noReplyGenerated": "The model ended this turn without writing a reply. Expand Thinking below to see what it reached.",
@@ -5765,7 +5769,6 @@
     "thinkingStatus": "Pensando…",
     "questionSelectHintWithOptional": "",
     "toolCallStatusError": "error",
-    "restoreAllChats": "Restaurar todos los chats",
     "quoteMessage": "Citar mensaje",
     "resizePanelRight": "Redimensionar panel desde la derecha",
     "backToConversations": "",
@@ -9732,7 +9735,30 @@
     "removingKey": "Eliminando…",
     "taskCreatedHint": "Tu tarea ha sido creada y aparecerá en el tablero.",
     "githubCliAuthBody": "GitHub CLI is installed but not authenticated on the Fusion host. Run this command in the environment where Fusion is running, then return here and continue.",
-    "clonePathPlaceholder": "/ruta/para/nuevo-clon"
+    "clonePathPlaceholder": "/ruta/para/nuevo-clon",
+    "antigravityCli": {
+      "active": "",
+      "binaryNotFound": "",
+      "binaryPathHelp": "",
+      "binaryPathLabel": "",
+      "binaryPathPlaceholder": "",
+      "connected": "",
+      "description": "",
+      "detectedPrompt": "",
+      "disable": "",
+      "disabling": "",
+      "enable": "",
+      "enabling": "",
+      "notConnected": "",
+      "pathCleared": "",
+      "pathSaved": "",
+      "probing": "",
+      "providerName": "",
+      "saveAndTestPath": "",
+      "savingPath": "",
+      "test": "",
+      "testing": ""
+    }
   },
   "nodes": {
     "closeButton": "Cerrar",
@@ -10622,6 +10648,9 @@
       "memoryBackupDirectory": ""
     },
     "general": {
+      "25": "",
+      "200": "",
+      "3000": "",
       "newTasksInheritThisCustomWorkflowsStepsOverridable": "",
       "requireChangesetChangesetMd": "",
       "30Days": "",
@@ -10702,8 +10731,6 @@
       "reportRoadmapDedupeEnabled": "Deduplicate reports against public roadmap",
       "reportModeHelp": "Cómo se archivan los informes in-app (error, feedback, idea, ayuda). Predeterminado: draft-review (el operador revisa un borrador antes de archivar).",
       "searchTheTrackingRepoForLikelyDuplicatesBefore": "",
-      "200": "",
-      "3000": "",
       "upperBoundOnMessagesFetchedFromTheRoom": "",
       "reportTarget": "Destino predeterminado del informe",
       "operationalLogRetention": "",
@@ -10723,7 +10750,6 @@
       "retryRestart": "Retry readiness check",
       "settingsSaved": "Configuración guardada",
       "14Days": "",
-      "25": "",
       "capacityRiskBanner": "",
       "showTaskChatsInCommonFeedHint": "",
       "taskPrefix": "",
@@ -11681,6 +11707,9 @@
     "review": "Revisión",
     "progress": "Progreso",
     "mergingTitle_one": "{{count}} merging",
-    "merging": ""
+    "merging": "",
+    "inProgress": "",
+    "todo": "",
+    "done": ""
   }
 }

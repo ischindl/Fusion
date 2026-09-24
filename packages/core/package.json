@@ -34,6 +34,11 @@
       "source": "./src/column-roles.ts",
       "import": "./dist/column-roles.js"
     },
+    "./chat-liveness": {
+      "types": "./src/chat/chat-liveness.ts",
+      "source": "./src/chat/chat-liveness.ts",
+      "import": "./dist/chat/chat-liveness.js"
+    },
     "./detect-content-language": {
       "types": "./src/i18n/detect-content-language.ts",
       "source": "./src/i18n/detect-content-language.ts",
