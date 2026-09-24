@@ -184,7 +184,13 @@ async function driveRegisteredHandlers(): Promise<Driven[]> {
   const driven: Driven[] = [];
   for (const surface of REGISTRATION_MODULES) {
     for (const [exportName, exported] of Object.entries(surface)) {
-      if (!/^create[A-Za-z]*Tools?$/.test(exportName) || typeof exported !== "function") continue;
+      /*
+      FNXC:WriteFailureSurfacing 2026-09-24:
+      The digit class is load-bearing: a factory named e.g. `createV2Tools` is a real registration, and the
+      letters-only class skipped it — a probe proved a digit-named tool was constructed by nobody and asserted by
+      nothing. Enumeration has to be as wide as the naming convention it claims to cover.
+      */
+      if (!/^create[A-Za-z0-9]*Tools?$/.test(exportName) || typeof exported !== "function") continue;
       for (const readAnswersWithRow of [false, true]) {
         const refusals: Refusal[] = [];
         const driveStore = endpoint(readAnswersWithRow, refusals);
