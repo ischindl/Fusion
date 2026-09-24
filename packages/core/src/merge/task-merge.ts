@@ -531,6 +531,29 @@ export function isPreMergeStepsNotRunBlocker(blocker: string | undefined): boole
   return blocker === PRE_MERGE_STEPS_NOT_RUN_BLOCKER;
 }
 
+/*
+FNXC:PreMergeApproval 2026-09-22-21:42 (RUFU-276):
+The deferral contract only reaches the lanes that receive the ALREADY-canonical sentence. Three
+producers instead publish a refusal carrying that sentence inside a larger string:
+ - `PreMergeStepsNotRunError` (this file) → `Cannot merge <id>: <sentence>`;
+ - the bounded-merge-retry seam → `AUTO_MERGE_RETRY_REJECTED: <that error message>`;
+ - `getTaskMergeBlocker`'s blocking-status arm → `task is marked 'failed': <that park>`.
+Verbatim comparison fails on all three, so RUFU-225's park named the deferral in prose while every
+classifier downstream read it as a generic terminal failure. This predicate is the single
+wrap-aware answer to "does this refusal report a required pre-merge gate that has not run?", and
+it is deliberately substring-based: the sentence is a constant, never user- or diff-derived text.
+
+It must NOT replace `isPreMergeStepsNotRunBlocker` at the four merge doors: those are fed the
+bare sentence by `getTaskMergeBlocker`'s approval arm and the wrapped form would make a genuinely
+terminal failed card look deferrable. Consumers here are the deferral/recovery lanes that read an
+already-composed refusal: the retry seam, the self-healing repair arm, and the stall projection.
+*/
+
+/** True when a composed refusal (typed-error message, retry park, or failed-status blocker) embeds the unrun-gate sentence. */
+export function isPreMergeStepsNotRunRefusal(refusal: string | null | undefined): boolean {
+  return typeof refusal === "string" && refusal.includes(PRE_MERGE_STEPS_NOT_RUN_BLOCKER);
+}
+
 /** True when a merge door or terminal park reports an approval against superseded content. */
 export function isStaleContentApprovalBlocker(blocker: string | undefined | null): boolean {
   return typeof blocker === "string" && blocker.trim().endsWith(STALE_CONTENT_APPROVAL_BLOCKER);

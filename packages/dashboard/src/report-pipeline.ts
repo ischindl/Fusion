@@ -6,6 +6,7 @@ import { EXT_BY_MIME } from "./issue-image-attachments.js";
 import { resolveGithubTrackingAuth } from "./github-auth.js";
 import { buildIssueSearchQueries, DEDUP_MATCH_THRESHOLD, scoreCandidateIssue } from "./github-tracking-dedup.js";
 import { scrubReportPayload, scrubReportText, type ReportScrubContext } from "./report-scrub.js";
+import { registerBoundedRegistryMap } from "./lib/retention/bounded-window-map.js";
 
 export type { ReportActionType, ReportMode, ReportTarget };
 
@@ -65,6 +66,27 @@ project policy. Activity trace is default-on client context because it is bounde
 and scrubbed; no persisted settings are needed for either behavior.
 */
 const endorsedSessions = new Map<string, { url: string; issueNumber: number }>();
+
+/*
+FNXC:RetentionCensus 2026-09-23-09:45 (RUFU-257):
+`endorsedSessions` is keyed by a per-report session token and nothing ever deleted an entry, so every
+report a server ever endorsed stayed resident for the process's whole life. The registration gives the
+census its footprint and gives the ceiling an owner: past `MAX_ENDORSED_REPORT_SESSIONS` the oldest
+endorsement is dropped. The honest trade is recorded rather than hidden — a report would have to be
+re-endorsed after 256 later endorsements before its de-dupe record was gone, and at that distance a
+possible second +1 comment is the lesser fault compared with an unbounded map in a process meant to
+stay up for weeks.
+*/
+const MAX_ENDORSED_REPORT_SESSIONS = 256;
+
+registerBoundedRegistryMap({
+  map: endorsedSessions,
+  id: "report_endorsed_sessions",
+  ceiling: MAX_ENDORSED_REPORT_SESSIONS,
+  ceilingConstant: "MAX_ENDORSED_REPORT_SESSIONS",
+  keys: "load",
+  valueBytes: (endorsement) => endorsement.url.length + 24,
+});
 
 export function resolveReportMode(actionType: ReportActionType, settings: ReportPipelineDeps["projectSettings"]): ReportMode {
   return settings.reportModeByAction?.[actionType] ?? settings.reportMode ?? "draft-review";

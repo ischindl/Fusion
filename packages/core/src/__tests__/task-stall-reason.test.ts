@@ -12,7 +12,7 @@ import {
   HELD_HUMAN_REVIEW_STALL_REASON,
   type TaskStallReasonContext,
 } from "../tasks/task-stall-reason.js";
-import { PRE_MERGE_STEPS_NOT_RUN_BLOCKER } from "../merge/task-merge.js";
+import { PRE_MERGE_STEPS_NOT_RUN_BLOCKER, STALE_CONTENT_APPROVAL_BLOCKER } from "../merge/task-merge.js";
 import type { Task, WorkflowStepResult } from "../types.js";
 
 const NOW = Date.parse("2026-09-01T12:00:00.000Z");
@@ -90,6 +90,57 @@ describe("deriveTaskStallReason — review lane", () => {
       reason: PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
       observedAt: isoNow,
     });
+  });
+
+  /*
+  FNXC:TaskStallReason 2026-09-22-23:36 (RUFU-276, AC3):
+  The RUFU-225 wedge reaches the review-lane arm as the blocking-status composition
+  `task is marked 'failed': AUTO_MERGE_RETRY_REJECTED: Cannot merge <id>: <canonical sentence>`,
+  because the failed status outranks the not-run arm inside `getTaskMergeBlocker`. The wrap-aware
+  classifier must name that spelling `pre-merge-gate-pending` — the class the engine can repair —
+  while the composed park prose never becomes the display reason, and every OTHER embedded refusal
+  (stale-content, generic) must keep the generic `merge-blocker` code so their existing owners
+  (`classifyStaleContentPark`, operator inspection) stay intact.
+  */
+  it("names the failed-status retry-rejection wrapper of the not-run refusal", async () => {
+    const stall = await deriveTaskStallReason(
+      makeTask({
+        status: "failed",
+        error: `AUTO_MERGE_RETRY_REJECTED: Cannot merge RUFU-174: ${PRE_MERGE_STEPS_NOT_RUN_BLOCKER}`,
+      }),
+      ctx({ requiredPreMergeStepIds: new Set(["plan-review", "code-review"]) }),
+    );
+    expect(stall).toEqual({
+      code: "pre-merge-gate-pending",
+      reason: PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
+      observedAt: isoNow,
+    });
+  });
+
+  it("a failed park wrapping a stale-content refusal keeps the generic merge-blocker code", async () => {
+    const stall = await deriveTaskStallReason(
+      makeTask({
+        status: "failed",
+        error: `AUTO_MERGE_RETRY_REJECTED: Cannot merge RUFU-174: ${STALE_CONTENT_APPROVAL_BLOCKER}`,
+      }),
+      ctx({ requiredPreMergeStepIds: new Set(["code-review"]) }),
+    );
+    expect(stall?.code).toBe("merge-blocker");
+    expect(stall?.reason).toBe(
+      `task is marked 'failed': AUTO_MERGE_RETRY_REJECTED: Cannot merge RUFU-174: ${STALE_CONTENT_APPROVAL_BLOCKER}`,
+    );
+  });
+
+  it("a failed park wrapping a generic refusal keeps the composed merge-blocker reason verbatim", async () => {
+    const stall = await deriveTaskStallReason(
+      makeTask({
+        status: "failed",
+        error: "AUTO_MERGE_RETRY_REJECTED: merge worktree disappeared",
+      }),
+      ctx({ requiredPreMergeStepIds: new Set(["code-review"]) }),
+    );
+    expect(stall?.code).toBe("merge-blocker");
+    expect(stall?.reason).toBe("task is marked 'failed': AUTO_MERGE_RETRY_REJECTED: merge worktree disappeared");
   });
 
   /*

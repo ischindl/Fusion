@@ -8,6 +8,28 @@
 import { buildConsumerId, createTaskStoreForBackend, type AsyncDataLayer, type RegisteredProject, type TaskStore, CentralCore, GlobalSettingsStore, hasProjectIdentity, isValidSqliteDatabaseFile } from "@fusion/core";
 import { resolve, dirname, basename } from "node:path";
 
+/*
+FNXC:ProjectRoutingVisibility 2026-09-22-16:37:
+The card-minting CLI commands filed work into the central DEFAULT project while the operator stood in a
+different project's checkout (GEDA-1057/1058 landed in the gedapp project from cwd=git/Fusion) and no
+output said so. Resolution PRECEDENCE is the documented contract in docs/multi-project.md — explicit
+`--project` > `defaultProjectId` > cwd discovery — and stays exactly as it was; what the context must
+additionally carry is the PROVENANCE of the choice so the caller can report it and warn when the
+operator's folder disagreed. Both fields are optional so hand-built test/plugin contexts and the
+plugin-context clone keep today's behavior instead of crashing on a missing field.
+*/
+
+/** How a target project was chosen: CLI flag, central default, cwd discovery, or local-store fallback. */
+export type ProjectResolutionSource = "flag" | "default" | "cwd" | "cwd-fallback";
+
+/** Identity of the project seen in the invocation's working directory (id "" = unregistered directory). */
+export interface CwdProjectSnapshot {
+  /** Registry id; empty string for an unregistered project directory. */
+  id: string;
+  name: string;
+  path: string;
+}
+
 /** Project context for CLI operations */
 export interface ProjectContext {
   /** Project ID */
@@ -20,6 +42,13 @@ export interface ProjectContext {
   isRegistered: boolean;
   /** TaskStore instance for this project */
   store: TaskStore;
+  /** How this target was resolved; undefined means the context was hand-built, not resolved. */
+  resolvedFrom?: ProjectResolutionSource;
+  /**
+   * Project detected from the invocation cwd, recorded whatever resolution finally chose.
+   * Equal to `projectPath` when the operator is standing inside the target project.
+   */
+  cwdProject?: CwdProjectSnapshot;
 }
 
 /** Cache of TaskStore instances by project ID to avoid re-initialization */
@@ -97,6 +126,15 @@ export async function resolveProject(
   try {
     let project: RegisteredProject | undefined;
 
+    /*
+    FNXC:ProjectRoutingVisibility 2026-09-22-16:37:
+    cwd discovery is hoisted so it runs exactly ONCE per invocation and is attached to every returned
+    context. It used to live only in branch 3, so the flag and central-default branches never looked at
+    the operator's folder and a cross-project target left no trace anywhere. Provenance is advisory:
+    a detection failure collapses to `undefined` and must never fail resolution.
+    */
+    const cwdProject = await detectCwdProjectSnapshot(cwd, central);
+
     // 1. Explicit --project flag
     if (projectNameFlag) {
       project = await findProjectByNameOrId(central, projectNameFlag);
@@ -121,7 +159,7 @@ export async function resolveProject(
 
     // 3. Auto-detect from CWD
     if (!project) {
-      const detected = await detectProjectFromCwd(cwd, central);
+      const detected = cwdProject;
       if (!detected) {
         throw new Error(
           `No fusion project found in current directory. Use --project or run from a project directory.`
@@ -148,6 +186,8 @@ export async function resolveProject(
         projectName: detected.name,
         isRegistered,
         store,
+        resolvedFrom: "cwd",
+        cwdProject,
       };
     }
 
@@ -164,9 +204,36 @@ export async function resolveProject(
       projectName: project.name,
       isRegistered: true,
       store,
+      /*
+      FNXC:ProjectRoutingVisibility 2026-09-22-16:37: the flag and central-default branches share this
+      return, so provenance is taken from whether an explicit flag actually resolved the target — the
+      precedence order is unchanged, only its reporting is added.
+      */
+      resolvedFrom: projectNameFlag ? "flag" : "default",
+      cwdProject,
     };
   } finally {
     if (!centralRetained) await central.close();
+  }
+}
+
+/**
+ * Detect the project owning `cwd` and reduce it to the routing-evidence shape.
+ *
+ * FNXC:ProjectRoutingVisibility 2026-09-22-16:37: routing provenance must never be the reason a
+ * command fails, so any detection error is swallowed into `undefined` (no evidence) rather than
+ * replacing the resolution error the caller would already have produced.
+ */
+async function detectCwdProjectSnapshot(
+  cwd: string,
+  central: CentralCore,
+): Promise<CwdProjectSnapshot | undefined> {
+  try {
+    const detected = await detectProjectFromCwd(cwd, central);
+    if (!detected) return undefined;
+    return { id: detected.id ?? "", name: detected.name, path: detected.path };
+  } catch {
+    return undefined;
   }
 }
 
@@ -477,11 +544,21 @@ export async function resolveProjectPathOnly(
  */
 export function asLocalProjectContext(store: TaskStore): ProjectContext {
   const cwd = process.cwd();
+  const projectName = basename(cwd) || "current-project";
+  /*
+  FNXC:ProjectRoutingVisibility 2026-09-22-16:37: a store-backed context built from the invocation cwd
+  is the local-store fallback — an UNREGISTERED project — and stamps itself as such so card-minting
+  commands report the fallback instead of presenting it as an ordinary resolved project. The cwd
+  evidence is the cwd itself, so the cross-project mismatch warning stays silent and the
+  `cwd-fallback` message owns the announcement.
+  */
   return {
     projectId: cwd,
     projectPath: cwd,
-    projectName: basename(cwd) || "current-project",
+    projectName,
     isRegistered: false,
     store,
+    resolvedFrom: "cwd-fallback",
+    cwdProject: { id: "", name: projectName, path: cwd },
   };
 }

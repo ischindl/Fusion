@@ -23,6 +23,17 @@ import type { AiSessionStore, AiSessionRow, AiSessionStatus, AiSessionSummary } 
 import { SessionEventBuffer, type SessionBufferedEvent } from "./sse-buffer.js";
 import { registerBeforeExitCleanup } from "./process-lifecycle.js";
 import {
+  HISTORY_ENTRY_BYTES,
+  RATE_LIMIT_ENTRY_BYTES,
+  SESSION_RECORD_BYTES,
+  STRING_BYTES_PER_CHAR,
+} from "./lib/retention-census.js";
+import {
+  clampEntryCeilingWithCleanup,
+  enforceEntryCeiling,
+  registerBoundedWindowMap,
+} from "./lib/retention/bounded-window-map.js";
+import {
   createSessionDiagnostics,
   resetDiagnosticsSink,
   nonfatal,
@@ -100,6 +111,22 @@ const MAX_SESSIONS_PER_IP_PER_HOUR = 5;
 
 /** Rate limiting window in milliseconds (1 hour) */
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * Ceiling on interview sessions retained in memory.
+ *
+ * FNXC:RetentionCensus 2026-09-21-21:40 (RUFU-257): the session TTL here is seven days, so expiry
+ * reclamation alone cannot bound the map on a long-lived dashboard — a session that stays touched
+ * survives a week, and every distinct interview ever started accumulates. The ceiling is enforced
+ * inside the existing five-minute sweep through `cleanupInMemoryMissionSession`, which is also what
+ * releases the stream manager's per-session buffer; clamping by raw `Map.delete` would convert this
+ * leak into a worse one. Oldest insertion goes first, so the ceiling only costs the stalest
+ * conversation once more distinct sessions exist than any real deployment starts.
+ */
+export const MISSION_INTERVIEW_SESSION_MAX = 2_000;
+
+/** Ceiling on distinct client addresses holding an interview-creation window. */
+export const MISSION_INTERVIEW_RATE_LIMIT_IP_MAX = 10_000;
 
 /** Max number of retry attempts when AI returns unparseable output */
 const MAX_PARSE_RETRIES = 1;
@@ -306,6 +333,31 @@ interface RateLimitEntry {
 const sessions = new Map<string, MissionInterviewSession>();
 const rateLimits = new Map<string, RateLimitEntry>();
 
+// Accounting rows: `cleanupExpiredSessions` remains the sole deleter for both maps.
+registerBoundedWindowMap<string, MissionInterviewSession>({
+  id: "mission_interview_sessions",
+  map: sessions,
+  ceiling: MISSION_INTERVIEW_SESSION_MAX,
+  ceilingConstant: "MISSION_INTERVIEW_SESSION_MAX",
+  kind: "session",
+  expiryOf: (session) => session.updatedAt.getTime() + SESSION_TTL_MS,
+  sweptElsewhere: true,
+  valueBytes: (session) =>
+    SESSION_RECORD_BYTES
+    + (session.thinkingOutput.length + session.lastGeneratedThinking.length + session.missionTitle.length) * STRING_BYTES_PER_CHAR
+    + session.history.length * HISTORY_ENTRY_BYTES,
+});
+
+registerBoundedWindowMap<string, RateLimitEntry>({
+  id: "mission_interview_rate_limits",
+  map: rateLimits,
+  ceiling: MISSION_INTERVIEW_RATE_LIMIT_IP_MAX,
+  ceilingConstant: "MISSION_INTERVIEW_RATE_LIMIT_IP_MAX",
+  expiryOf: (entry) => entry.firstRequestAt.getTime() + RATE_LIMIT_WINDOW_MS,
+  sweptElsewhere: true,
+  valueBytes: () => RATE_LIMIT_ENTRY_BYTES,
+});
+
 // ── AI Session Persistence ────────────────────────────────────────────────
 
 let _aiSessionStore: AiSessionStore | undefined;
@@ -485,11 +537,29 @@ function cleanupExpiredSessions(): void {
       cleanupInMemoryMissionSession(id);
     }
   }
+  // Count ceiling, enforced through the same owner so stream buffers and persisted rows are
+  // released for an evicted session exactly as they are for an expired one.
+  clampEntryCeilingWithCleanup(
+    sessions,
+    MISSION_INTERVIEW_SESSION_MAX,
+    (id) => { cleanupInMemoryMissionSession(id); },
+  );
   for (const [ip, entry] of rateLimits) {
     if (now - entry.firstRequestAt.getTime() > RATE_LIMIT_WINDOW_MS) {
       rateLimits.delete(ip);
     }
   }
+}
+
+/*
+FNXC:RetentionCensus 2026-09-21-22:50 (RUFU-257):
+Synchronous seam over the timer-driven reclamation owner so a faked-clock test can prove the session
+TTL and IP-window deletions run (the interval is armed with real timers at import). Mirrors
+`__runAgentGenerationCleanupForTests`.
+*/
+/** @internal Run the periodic session/rate-window reclamation immediately; test-only seam. */
+export function __runMissionInterviewCleanupForTests(): void {
+  cleanupExpiredSessions();
 }
 
 const cleanupInterval = setInterval(cleanupExpiredSessions, CLEANUP_INTERVAL_MS);
@@ -582,11 +652,13 @@ export function checkRateLimit(ip: string): boolean {
 
   if (!entry) {
     rateLimits.set(ip, { count: 1, firstRequestAt: new Date() });
+    enforceEntryCeiling(rateLimits, MISSION_INTERVIEW_RATE_LIMIT_IP_MAX);
     return true;
   }
 
   if (now - entry.firstRequestAt.getTime() > RATE_LIMIT_WINDOW_MS) {
     rateLimits.set(ip, { count: 1, firstRequestAt: new Date() });
+    enforceEntryCeiling(rateLimits, MISSION_INTERVIEW_RATE_LIMIT_IP_MAX);
     return true;
   }
 

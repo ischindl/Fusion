@@ -125,7 +125,16 @@ import { PRE_MERGE_STEPS_NOT_RUN_BLOCKER, loadWorkspaceConfig, type TaskMoveLane
   resolveWorktreePathReservationDirectory,
   resolveLegacyWorktreesDirLayout,
 } from "@fusion/core";
-import { finalizePlanningSegment, isLegacyWorkspaceWorktreeLayout, resolveWorkspaceTaskWorktreeDir } from "@fusion/core";
+/*
+FNXC:ChatSidebarLiveness 2026-09-24-05:55 (RUFU-220):
+`chatInFlightReferenceMs` is the same reference resolver that now drives the dashboard sidebar's
+liveness tag, so the label an operator reads and the clear this sweep performs cannot disagree about
+the age of a claim. It arrives through the root barrel (as every other core symbol here does): the
+`@fusion/core/chat-liveness` SUBPATH exists for the dashboard, whose root alias points at a
+browser-safe types-only leaf. The engine would resolve that subpath only after a new vitest alias,
+because Vite's string aliases match by prefix and `@fusion/core` already names a FILE here.
+*/
+import { finalizePlanningSegment, isLegacyWorkspaceWorktreeLayout, resolveWorkspaceTaskWorktreeDir, chatInFlightReferenceMs } from "@fusion/core";
 /* RUFU-200: holder-side checkout-emptiness proof for dormant file-scope lease classification. */
 import { taskHoldsUnmergedCheckout, type CheckoutEmptinessProofMap } from "@fusion/core";
 import { proveDormantCheckoutEmptiness } from "./worktree/checkout-emptiness.js";
@@ -170,14 +179,21 @@ import {
 import { classifyForeignOnlyContamination, deriveTaskIdFromFusionBranch, inspectBranchConflict, listUniqueBranchCommits, taskWorktreeCheckoutIsClean } from "./execution/branch-conflicts.js";
 import { preserveWorktreeChanges, preserveWorktreeChangesIncludingUntracked } from "./execution/worktree-change-preservation.js";
 import { createRunAuditor, generateSyntheticRunId, type DatabaseMutationType, type RunAuditor } from "./util/run-audit.js";
+import {
+  createUnmergedCommitProbe,
+  detectVanishedTaskDirs,
+  type VanishedTaskDetectionSummary,
+} from "./notification/vanished-task-detection.js";
 import { finalizeProvenAutoMergeTask, validateWorkflowDoneMergeProof } from "./merge/auto-merge-finalization.js";
 import { captureMergeContentDescriptor } from "./merge/merge-content-capture.js";
 import { rerouteSingularStaleContentToReview } from "./merge/stale-content-review-reroute.js";
 import {
+  classifyUnrunGatePark,
   isFailedNoVerdictPreMergeReviewResult,
   isRecoverableUnrunGatePark,
   rerouteFailedNoVerdictPreMergeGateToReview,
   rerouteUnrunPreMergeGateToReview,
+  type UnrunGateParkShape,
 } from "./merge/pre-merge-gate-reseed.js";
 import { cleanupLandedTaskWorktree, removeEmptyWorkspaceTaskDirectory } from "./merge/post-landing-worktree-cleanup.js";
 import { cleanupDeletedTaskWorktrees } from "./worktree/deleted-task-worktree-cleanup.js";
@@ -196,7 +212,7 @@ import {
 } from "./planning-handoff-recovery.js";
 import { getPromptPath } from "./execution/spec-staleness.js";
 import { evaluateStrandedHoldContinuation, seedPreReleasePlanReviewContinuation } from "./plan-review-continuation.js";
-import { evaluateStrandedContinuationReclaim, RECLAIM_RETIRED_STATE } from "./workflows/stranded-continuation-reclaim.js";
+import { evaluateStrandedContinuationReclaim, strandedHoldConditionKey, RECLAIM_RETIRED_STATE } from "./workflows/stranded-continuation-reclaim.js";
 /*
 FNXC:Workspace 2026-06-22-14:10 (Phase D review G — cycle dissolved):
 `isRepoLanded` is the CANONICAL per-repo landed predicate (Phase C, exported A6). It now lives in
@@ -1143,6 +1159,22 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
    */
   private strandedHoldContinuationNoActionAudited = new Set<string>();
   private principalHeldPlanningNoActionAudited = new Set<string>();
+  /*
+  FNXC:StrandedContinuationReclaim 2026-09-22-14:21 (RUFU-263):
+  Two memos bound the stranded-reclaim noise per (taskId, nodeId, state, blockedReason) CONDITION, keyed
+  through `strandedHoldConditionKey`, instead of per maintenance pass:
+
+  - `strandedContinuationAnnounced` remembers that the card already got its `[recovery]` task-log line and
+    re-queue event row for this exact condition, so an unchanged condition is announced once. It is set
+    only after the log write lands, matching the house convention below.
+  - `strandedContinuationNoActionAudited` records the sustained condition once in the event store.
+
+  Restart costs one extra announcement per condition, which is what the house convention accepts; the
+  DURABLE bound is the `retryAfter` deferral the classifier stamps on the row itself, which survives a
+  restart because it is the same due-gate every reader honours.
+  */
+  private strandedContinuationAnnounced = new Set<string>();
+  private strandedContinuationNoActionAudited = new Set<string>();
   /* FNXC:SymbolLock 2026-07-30-14:20: idle symbol-lock sweeps emit one no-action audit until a stale lock re-arms the diagnostic. */
   private symbolLockNoActionAudited = false;
   /*
@@ -1169,6 +1201,16 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   */
   private readonly verdictlessGateParkRecoveryAttempts = new Map<string, number>();
   private readonly verdictlessGateParkRecoveryBudgetLogged = new Set<string>();
+  /*
+  FNXC:PreMergeApproval 2026-09-22-22:40 (RUFU-276, AC2):
+  Episode-bound recovery budget for the never-ran-gate terminal park loop, mirroring the
+  stale-content and verdict-less pairs above: the budget belongs to one continuous park, and it is
+  SEPARATE from those two because a card can legitimately carry each of those parks at different
+  times and must get a fresh bounded window for the third class.
+  */
+  private readonly unrunGateParkRecoveryAttempts = new Map<string, number>();
+  private readonly unrunGateParkRecoveryBudgetLogged = new Set<string>();
+  private readonly unrunGateParkAuditKeys = new Set<string>();
   /*
   FNXC:SelfHealingReclaim 2026-09-15-19:20:
   FN-429. Dedup keys for the pending-overlap-evidence withholding diagnostic below, so a wait that survives
@@ -3196,6 +3238,32 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
               log.warn(`Maintenance batch 1 step "reconcile-orphaned-task-dirs" recovered=${result.recovered.length} skipped=${result.skipped.length}`);
             }
             return result;
+          },
+        },
+        {
+          /*
+           * FNXC:VanishedTaskDetection 2026-09-24-00:40:
+           * Report-only detection for work that is off every board read (RUFU-225). It sits right
+           * after `reconcile-orphaned-task-dirs` because that sweep is the reason this one exists:
+           * its silent skips (`id-exists-anywhere` for a tombstone, `stale-beyond-window` for an
+           * aged orphan) are exactly the states that leave a card on disk and off the board, and it
+           * is the natural place a reader would look for the inverse check.
+           *
+           * It shares `cleanup-orphans`' git-churn gate: classification needs one `git rev-list`
+           * probe per candidate, so running it on every maintenance tick would put shellout cost on
+           * the same cadence as pruning work without being pruning work. A gated tick simply reports
+           * nothing; the next due tick re-derives findings from disk, so no state is lost.
+           */
+          name: "reconcile-vanished-task-dirs",
+          fn: async () => {
+            if (maintenancePaused || !gitWorktreeChurnDue) return 0;
+            const result = await this.detectVanishedTaskDirsForMaintenance();
+            if (result.findings.length > 0) {
+              log.warn(
+                `Maintenance batch 1 step "reconcile-vanished-task-dirs" findings=${result.findings.length} alerted=${result.alerted} suppressed=${result.suppressed}`,
+              );
+            }
+            return result.findings.length;
           },
         },
         {
@@ -7976,16 +8044,17 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
    * snapshot's `startedAt` when it parses as a finite ISO time, otherwise the
    * session's `updated_at` (pre-fix legacy rows lack `startedAt`), otherwise null
    * (unknown age — the caller must skip the row rather than clear it).
+   *
+   * FNXC:ChatSidebarLiveness 2026-09-24-05:55 (RUFU-220):
+   * The body moved to core's `chatInFlightReferenceMs` and this method now delegates, so the
+   * sidebar tag and this sweep provably share ONE reference resolver instead of two bodies that
+   * could drift. Behaviour is unchanged: the unknown-age → skip-the-row rule stays here.
    */
   private chatInFlightGenerationReferenceMs(
     inFlight: ChatInFlightGenerationState,
     sessionUpdatedAt: string,
   ): number | null {
-    const startedMs = Date.parse(inFlight.startedAt ?? "");
-    if (Number.isFinite(startedMs)) return startedMs;
-    const updatedAtMs = Date.parse(sessionUpdatedAt);
-    if (Number.isFinite(updatedAtMs)) return updatedAtMs;
-    return null;
+    return chatInFlightReferenceMs(inFlight, sessionUpdatedAt);
   }
 
   async reconcileDependencyBlockingLeases(): Promise<number> {
@@ -8899,6 +8968,31 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     }
   }
 
+  /*
+  FNXC:VanishedTaskDetection 2026-09-24-00:40 (RUFU-283):
+  Thin wrapper over the detector module: it resolves the project's integration base so the branch
+  probe measures "unmerged relative to where this project lands", not a hardcoded `main`, and it
+  swallows its own failures because a report-only sweep must never turn into a maintenance-batch
+  failure that masks the repairs around it. The base resolution has its own fallback because an
+  unresolvable base would otherwise skip detection entirely, which is the silence this sweep exists
+  to remove.
+  */
+  async detectVanishedTaskDirsForMaintenance(): Promise<VanishedTaskDetectionSummary> {
+    try {
+      const settings = await this.store.getSettings();
+      const base = await resolveIntegrationBranch(this.options.rootDir, settings).catch(() => "main");
+      return await detectVanishedTaskDirs({
+        store: this.store,
+        messageStore: this.options.messageStore,
+        rootDir: this.options.rootDir,
+        probe: createUnmergedCommitProbe(this.options.rootDir, base),
+      });
+    } catch (error) {
+      log.warn(`reconcile-vanished-task-dirs failed: ${error instanceof Error ? error.message : String(error)}`);
+      return { scanned: 0, candidates: 0, probed: 0, findings: [], alerted: 0, suppressed: 0 };
+    }
+  }
+
   async reconcileStaleDuplicateDecisionPause(): Promise<number> {
     try {
       const tasks = await this.store.listTasks({ slim: true, includeArchived: false, limit: 500 });
@@ -9503,6 +9597,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         states: [...ACTIVE_WORKFLOW_WORK_ITEM_STATES],
       });
       let repaired = 0;
+      /* FNXC:StrandedContinuationReclaim 2026-09-22-14:21 (RUFU-263): holds whose wait is real are deferred on a ladder, counted separately from reclaims. */
+      let deferredCount = 0;
       for (const item of due) {
         try {
           /*
@@ -9514,6 +9610,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           const terminalColumns = await resolveTaskLifecycleColumns(this.store, item.taskId).catch(() => undefined);
           const doneColumn = terminalColumns?.complete ?? "done";
           const livenessSignal = liveness(item.taskId);
+          /* One signature per (taskId, nodeId, state, blockedReason) condition, shared by the two noise memos. */
+          const conditionKey = strandedHoldConditionKey(item, item.blockedReason);
           const verdict = evaluateStrandedContinuationReclaim({
             item,
             taskMissing: !task,
@@ -9530,8 +9628,65 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             stalenessMs: Math.max(0, now - new Date(item.updatedAt).getTime()),
             graceMs,
             now,
+            /*
+            FNXC:StrandedContinuationReclaim 2026-09-22-14:21 (RUFU-263):
+            The task-level evidence that says whether a hold's stated blocker is still real. Both fields are
+            already hydrated on the `Task` row (the FN-178 overlap re-check and the scheduler's dependency
+            release read the same two), so validation costs no extra query.
+            */
+            taskBlockedBy: task?.blockedBy ?? null,
+            taskOverlapBlockedBy: task?.overlapBlockedBy ?? null,
+            alreadyAnnounced: this.strandedContinuationAnnounced.has(conditionKey),
           });
+          /* A wait an owning seam can re-take or release: the caller writes NOTHING at all. */
           if (verdict.action === "none") continue;
+          const audit = async (
+            type: "workflowWorkItem:reconcile-stranded-requeued" | "workflowWorkItem:reconcile-stranded-retired" | "workflowWorkItem:reconcile-stranded-no-action",
+            metadata: Record<string, unknown>,
+          ): Promise<void> => {
+            // House convention: a no-action finding is deduped per condition and marked only after the write lands.
+            if (type.endsWith("no-action") && this.strandedContinuationNoActionAudited.has(conditionKey)) return;
+            await createRunAuditor(this.store, {
+              runId: generateSyntheticRunId("reconcile-stranded-continuation", item.taskId),
+              agentId: "self-healing",
+              taskId: item.taskId,
+              taskLineageId: task?.lineageId,
+              phase: "reconcile-stranded-continuation",
+            }).database({ type: type as DatabaseMutationType, target: item.id, metadata });
+            // FNXC:StrandedContinuationReclaim 2026-09-22-14:21: a failed audit write stays unmarked so the next pass can still record it.
+            if (type.endsWith("no-action")) this.strandedContinuationNoActionAudited.add(conditionKey);
+          };
+          const rowMetadata = {
+            /* Ids/counts/outcomes only — never `lastError` prose or node config. */
+            taskId: item.taskId,
+            workItemId: item.id,
+            nodeId: item.nodeId,
+            kind: item.kind,
+            priorState: item.state,
+            reason: verdict.reason,
+            stalenessMs: Math.max(0, now - new Date(item.updatedAt).getTime()),
+          };
+          /*
+          FNXC:StrandedContinuationReclaim 2026-09-22-14:21 (RUFU-263):
+          A sustained hold is DEFERRED, not re-queued: the row keeps its state and its `blockedReason` (the
+          reason is the evidence the next pass re-reads) and gains a durable `retryAfter`, so the due-gate
+          hides it from this sweep until the ladder says it is worth another look. The same gate is what
+          makes the bound survive a restart. No task-log line and no re-queue event row are written here;
+          the condition is recorded once, deduped, as the no-action row below.
+          */
+          if (verdict.action === "defer") {
+            const deferred = await this.store.transitionWorkflowWorkItem(item.id, item.state, {
+              expectedState: item.state,
+              retryAfter: new Date(verdict.retryAfterMs).toISOString(),
+            });
+            if (deferred.state !== item.state) continue;
+            deferredCount += 1;
+            await audit("workflowWorkItem:reconcile-stranded-no-action", {
+              ...rowMetadata,
+              nextCheckAt: new Date(verdict.retryAfterMs).toISOString(),
+            });
+            continue;
+          }
           const target = verdict.action === "retire" ? RECLAIM_RETIRED_STATE : "runnable";
           const written = await this.store.transitionWorkflowWorkItem(item.id, target, {
             /*
@@ -9544,44 +9699,51 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             leaseOwner: null,
             leaseExpiresAt: null,
             blockedReason: null,
+            /*
+            FNXC:StrandedContinuationReclaim 2026-09-22-14:21 (RUFU-263): a reclaim also clears any deferral
+            this sweep stamped earlier — otherwise a row whose wait has just genuinely cleared would stay
+            invisible to the dispatcher until its old `retryAfter` expired, turning the bound into a freeze.
+            */
+            retryAfter: null,
             expectedState: item.state,
           });
           // CAS lost: another writer moved the row between the scan and this write. Leave it to them.
           if (written.state !== target) continue;
           repaired += 1;
           if (verdict.action === "requeue") {
-            await this.store.logEntry(
-              item.taskId,
-              `[recovery] workflow continuation re-queued — ${item.nodeId} was stranded in '${item.state}' (${verdict.reason})`,
-            ).catch(() => undefined);
+            /*
+            One card-history note per condition, not per pass: an unchanged condition that this sweep already
+            announced stays out of the log, because the RUFU-220 card carried 782 identical `[recovery]`
+            lines while the card itself never moved. The marker is set after the log write lands, so a failed
+            write re-announces on the next pass instead of silently dropping the operator's only evidence.
+            */
+            if (verdict.announceRecovery && !this.strandedContinuationAnnounced.has(conditionKey)) {
+              const announced = await this.store.logEntry(
+                item.taskId,
+                `[recovery] workflow continuation re-queued — ${item.nodeId} was stranded in '${item.state}' (${verdict.reason})`,
+              ).then(() => true).catch(() => false);
+              // FNXC:StrandedContinuationReclaim 2026-09-22-14:21: marked only when the write landed (FN-8600 convention).
+              if (announced) this.strandedContinuationAnnounced.add(conditionKey);
+            }
           }
-          await createRunAuditor(this.store, {
-            runId: generateSyntheticRunId("reconcile-stranded-continuation", item.taskId),
-            agentId: "self-healing",
-            taskId: item.taskId,
-            taskLineageId: task?.lineageId,
-            phase: "reconcile-stranded-continuation",
-          }).database({
-            type: (verdict.action === "retire"
+          await audit(
+            verdict.action === "retire"
               ? "workflowWorkItem:reconcile-stranded-retired"
-              : "workflowWorkItem:reconcile-stranded-requeued") as DatabaseMutationType,
-            target: item.id,
-            /* Ids/counts/outcomes only — never `lastError` prose or node config. */
-            metadata: {
-              taskId: item.taskId,
-              workItemId: item.id,
-              nodeId: item.nodeId,
-              kind: item.kind,
-              priorState: item.state,
-              reason: verdict.reason,
-              stalenessMs: Math.max(0, now - new Date(item.updatedAt).getTime()),
-            },
-          });
+              : "workflowWorkItem:reconcile-stranded-requeued",
+            rowMetadata,
+          );
         } catch (error) {
           log.warn(`reconcileStrandedWorkflowContinuations: failed for ${item.id}: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
-      if (repaired > 0) log.log(`Reclaimed ${repaired} stranded workflow continuation(s)`);
+      if (repaired > 0 || deferredCount > 0) {
+        // Two numbers, because they are two different promises: a reclaim makes the row runnable now, a
+        // deferral leaves a real wait in place and schedules the next look.
+        log.log(
+          `Reclaimed ${repaired} stranded workflow continuation(s)`
+          + (deferredCount > 0 ? `; left ${deferredCount} hold(s) in place on the re-check ladder` : ""),
+        );
+      }
       return repaired;
     } catch (error) {
       log.warn(`reconcileStrandedWorkflowContinuations failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -10943,6 +11105,99 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
     return reroute.rerouted;
   }
 
+  /*
+  FNXC:PreMergeApproval 2026-09-22-22:40 (RUFU-276, AC2 / Step 4):
+  Fourth hidden-park family in this sweep: a review-lane card already terminalized over a required
+  gate that has NO result row at all. Repair order follows the RUFU-217 precedent exactly — seed
+  FIRST through the SAME `rerouteUnrunPreMergeGateToReview` call the visible FN-9243 lane uses (one
+  gate resolution and one content capture per candidate, so seed and admission never disagree), then
+  clear `status`/`error`/`mergeRetries` only under `updateTaskAtomic` re-deriving the identical live
+  signature from the classifier. All-or-nothing by construction: a refused seed (operator hold,
+  non-singular content, an active continuation) or a live row that no longer shows the same park
+  leaves the terminal state byte-identical and the next pass decides again. Nothing here fabricates a
+  verdict or deletes a `pending` row (FN-7720 / FN-8492), and the card never leaves its review lane —
+  the seed enters the gate in place (FN-207/FN-217 lifecycle containment).
+
+  Telemetry: the seed keeps FN-9243's `task:merge-unrun-pre-merge-gate-rerouted` event with its
+  registered key set untouched — a seed attempt IS that event — under a park-namespaced dedupe key so
+  a decline here cannot swallow that lane's own row. The park outcome itself gets the new
+  `task:merge-unrun-gate-park-repaired` event with ids/counts/fixed enums only; blocker prose, review
+  findings and errors never enter run-audit. Idempotence: after a successful repair the row is no
+  longer `status:"failed"`, so the classifier stops admitting it and the budget prunes itself.
+  */
+  private async routeUnrunGateParkBackToReview(
+    task: Task,
+    mergeGate: ResolvedMergeRecoveryGate,
+    mergeContent: CapturedMergeRecoveryContent,
+    park: { shape: UnrunGateParkShape; missingGateIds: string[] },
+  ): Promise<void> {
+    const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
+      requiredPreMergeStepIds: mergeGate.requiredPreMergeStepIds,
+      mergeContent,
+    }).catch(() => ({
+      rerouted: false as const,
+      reason: "no-unrun-gate" as const,
+      nodeId: undefined,
+      workflowStepId: undefined,
+    }));
+    let parkCleared = false;
+    if (reroute.rerouted) {
+      await this.store.updateTaskAtomic(task.id, (live) => {
+        if (classifyUnrunGatePark(live, mergeGate.requiredPreMergeStepIds)?.shape !== park.shape) return null;
+        parkCleared = true;
+        return { status: null, error: null, mergeRetries: 0 };
+      });
+      const gateId = reroute.workflowStepId ?? park.missingGateIds[0] ?? "unknown";
+      await this.store.logEntry(task.id, `[pre-merge] Self-healing re-seeded the workflow graph at the never-ran pre-merge gate '${gateId}' that had parked this card.`);
+      if (parkCleared) {
+        await this.store.logEntry(task.id, `[pre-merge] Cleared the ${park.shape} merge park after re-seeding a fresh run of the never-ran gate '${gateId}'.`);
+      }
+      log.warn(`Never-ran pre-merge gate park for ${task.id} re-seeded at ${reroute.nodeId ?? "unknown"} (park cleared: ${parkCleared})`);
+    }
+
+    const seedAuditKey = `${task.id}:unrun-gate-park:${reroute.reason}:${reroute.nodeId ?? ""}:${park.shape}`;
+    if (!this.unrunPreMergeGateRerouteAuditKeys.has(seedAuditKey)) {
+      this.unrunPreMergeGateRerouteAuditKeys.add(seedAuditKey);
+      await emitBoundedRunAudit(this.store, {
+        taskId: task.id,
+        agentId: "self-healing",
+        runId: generateSyntheticRunId("self-healing", task.id),
+        domain: "database",
+        mutationType: "task:merge-unrun-pre-merge-gate-rerouted",
+        target: task.id,
+        metadata: {
+          taskId: task.id,
+          nodeId: reroute.nodeId,
+          workflowStepId: reroute.workflowStepId,
+          reason: reroute.reason,
+          source: "self-healing",
+          missingGateCount: mergeGate.requiredPreMergeStepIds.size,
+        },
+      });
+    }
+
+    const outcome = !reroute.rerouted ? "seed-refused" as const : parkCleared ? "repaired" as const : "signature-drift" as const;
+    const repairAuditKey = `${task.id}:unrun-gate-park:${outcome}:${reroute.workflowStepId ?? park.missingGateIds[0] ?? ""}`;
+    if (!this.unrunGateParkAuditKeys.has(repairAuditKey)) {
+      this.unrunGateParkAuditKeys.add(repairAuditKey);
+      await emitBoundedRunAudit(this.store, {
+        taskId: task.id,
+        agentId: "self-healing",
+        runId: generateSyntheticRunId("self-healing", task.id),
+        domain: "database",
+        mutationType: "task:merge-unrun-gate-park-repaired",
+        target: task.id,
+        metadata: {
+          taskId: task.id,
+          workflowStepId: reroute.workflowStepId ?? park.missingGateIds[0] ?? null,
+          missingGateCount: park.missingGateIds.length,
+          source: "self-healing",
+          outcome,
+        },
+      });
+    }
+  }
+
   /**
    * Recover `in-review` tasks that are fully mergeable but never had
    * `mergeTask()` invoked.
@@ -11257,6 +11512,72 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
         if (!hiddenVerdictlessParkCandidateIds.has(taskId)) {
           this.verdictlessGateParkRecoveryAttempts.delete(taskId);
           this.verdictlessGateParkRecoveryBudgetLogged.delete(taskId);
+        }
+      }
+
+      /*
+      FNXC:PreMergeApproval 2026-09-22-22:40 (RUFU-276, AC2 / Step 4):
+      Third hidden arm for a never-ran gate, the shape the two above structurally cannot see: a
+      `status:"failed"` card whose error embeds the canonical never-ran sentence while the named gate
+      has ZERO result rows. It is invisible to the visible candidate filter (`status !== "failed"` and
+      a retry budget below the cap, both of which the retry-exhaustion park fails), to the stale-content
+      arm (different sentence) and to the verdict-less arm (a missing row is not verdict-less). RUFU-225
+      proved a card can live in it indefinitely with no producer and no notification.
+
+      This loop needs the gate ids to classify, so it resolves the workflow gate BEFORE classifying;
+      an unresolvable or default-provenance gate skips without spending a starvation attempt, so the
+      budget counts only real episodes (same rule as the loops above). `mergeAdmissionByTaskId` carries
+      the `autoMerge:false` / PR-based refusal (and deliberately NOT the merge-retry budget: spending
+      merge retries is what terminalized the card, so a spent budget cannot also disqualify the one
+      repair that does not retry the merge), and executing cards are skipped so a live run's own
+      transition always wins.
+      */
+      const hiddenUnrunGateParkCandidateIds = new Set<string>();
+      for (const task of tasks) {
+        if (mergeable.includes(task)) continue;
+        if (mergeAdmissionByTaskId.get(task.id) !== true || executingIds.has(task.id)
+          || task.status === "merging" || task.status === "merging-pr") continue;
+        const reviewColumns = await ownReviewLanesFor(task);
+        if (!reviewColumns.has(task.column)) continue;
+        let mergeGate: ResolvedMergeRecoveryGate;
+        try {
+          mergeGate = await resolvePreMergeGateForTask(this.store, task.id, task.enabledWorkflowSteps, task);
+        } catch {
+          continue;
+        }
+        if (mergeGate.provenance === "default" && !mergeGate.selectionAbsent) continue;
+        const park = classifyUnrunGatePark(task, mergeGate.requiredPreMergeStepIds);
+        if (!park) continue;
+        /*
+        FNXC:SyncMerge0924 2026-09-24-14:05 (merge main → production line):
+        RUFU-276's park release shares the two admission invariants of the RUFU-217/RUFU-225 lane:
+        a live continuation owns the next attempt, and a review gate never jumps ahead of unfinished
+        implementation. Without these, this sweep re-seeded over a running continuation and cleared
+        the failed park of a card whose Implement step never completed.
+        */
+        const liveItems = await this.store.listWorkflowWorkItemsForTask(task.id).catch(() => []);
+        if (liveItems.some((item) => ACTIVE_WORKFLOW_WORK_ITEM_STATES.has(item.state as (typeof ACTIVE_WORKFLOW_WORK_ITEM_STATES)[number]))) continue;
+        if (task.steps?.some((step) => step.status === "pending" || step.status === "in-progress")) continue;
+        hiddenUnrunGateParkCandidateIds.add(task.id);
+        const attempts = (this.unrunGateParkRecoveryAttempts.get(task.id) ?? 0) + 1;
+        this.unrunGateParkRecoveryAttempts.set(task.id, attempts);
+        if (attempts === MAX_STARVATION_DROPS && !this.unrunGateParkRecoveryBudgetLogged.has(task.id)) {
+          this.unrunGateParkRecoveryBudgetLogged.add(task.id);
+          await this.store.logEntry(task.id, `[pre-merge] Stopped never-ran gate park recovery after ${MAX_STARVATION_DROPS} attempts; operator attention is required.`);
+        }
+        if (attempts > MAX_STARVATION_DROPS) continue;
+        const mergeContent = await captureMergeContentDescriptor(task, { workspaceRootDir: this.options.rootDir, settings });
+        await this.routeUnrunGateParkBackToReview(task, mergeGate, mergeContent, park);
+      }
+      /*
+      FNXC:PreMergeApproval 2026-09-22-22:40 (RUFU-276):
+      Same episode-bound budget rule as the two loops above: prune when the precise candidate
+      signature disappears so a later independent park gets its own bounded window.
+      */
+      for (const taskId of this.unrunGateParkRecoveryAttempts.keys()) {
+        if (!hiddenUnrunGateParkCandidateIds.has(taskId)) {
+          this.unrunGateParkRecoveryAttempts.delete(taskId);
+          this.unrunGateParkRecoveryBudgetLogged.delete(taskId);
         }
       }
 

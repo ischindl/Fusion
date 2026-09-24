@@ -264,6 +264,47 @@ html[data-viewport-mode="tablet"] .chat-view--docked-list .chat-sidebar--docked 
   font-size: var(--font-size-xs);
 }
 
+/*
+FNXC:ChatSidebarLiveness 2026-09-24-05:55 (RUFU-220):
+The liveness tag is the same chip as the window-state badge, so it reuses that rule's structure
+rather than forking a parallel badge variant (I-2). Two rules is the whole budget: this one carries
+structure for both class names, the next carries the semantic colour of the one state that must
+stand out. `generating` keeps the existing neutral chip colour on purpose — the operator asked for
+information, not another alarm.
+*/
+.chat-session-window-state,
+.chat-session-liveness {
+  display: inline-flex;
+  inline-size: max-content;
+  align-items: center;
+  margin-block: var(--space-xs);
+  margin-inline-end: var(--space-3xs);
+  padding: var(--space-3xs) var(--space-xs);
+  border: var(--btn-border-width) solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  /*
+  FNXC:ChatSidebarLiveness 2026-09-24-07:31 (RUFU-220):
+  One line, always. A rendered probe at the sidebar's minimum 220px width showed the longer
+  reclaim-pending copy wrapping to two lines, which made that row visibly taller than its
+  neighbours — a status chip must never resize the row it labels. The meta row already truncates
+  its model span this way (`.chat-session-meta-model` above), so the chip reuses that idiom and
+  the full sentence stays available in the tooltip rather than being shortened in copy.
+  */
+  max-inline-size: 100%;
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Reclaim-pending is the state that must read as attention-worthy, in the shared warning semantic. `--generating` deliberately gets no rule of its own: it is a static chip, not a pulse. */
+.chat-session-liveness--stale {
+  color: var(--color-warning);
+  border-color: color-mix(in oklab, var(--color-warning) 55%, var(--border-color));
+}
+
 .chat-session-preview {
   font-size: 12px;
   color: var(--text-muted);

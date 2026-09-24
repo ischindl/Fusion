@@ -13,6 +13,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { QUESTION_ANSWER_METADATA_KEY, readQuestionAnswerLink } from "../shared/chat-question-link.js";
 import {
   ChatManager,
   __setBuildAgentChatPrompt,
@@ -709,6 +710,202 @@ describe("ChatManager.sendMessage", () => {
     await chatManager.sendMessage("chat-001", "Hello");
 
     expect(mockChatStore.recordTokenUsage).not.toHaveBeenCalled();
+  });
+
+  /*
+  FNXC:ChatQuestionAnswerLink 2026-09-23-13:59:
+  RUFU-258: `ChatManager.sendMessage` is the single writer of the durable question-answer link. These
+  cases pin the rules every client reader depends on: an operator send whose transcript tail is an
+  awaiting question row is stamped; system-originated sends are never stamped; a non-question tail is
+  never stamped; and the stamp merges into (never replaces) the metadata the mention/caller spread
+  already built. This file's shared store fake ignores filters by default, so each case installs a
+  fake that honours `order`/`limit` - otherwise a whole-history read would look identical to a
+  bounded tail read and the read-cost guard could not fail.
+  */
+  describe("durable question-answer link stamping", () => {
+    type StoredRow = { id: string; role: string; content?: string; metadata?: Record<string, unknown> | null };
+
+    /** Store fake that honours the `order`/`limit` filter the bounded tail read relies on. */
+    function seedTranscript(rows: StoredRow[]) {
+      mockChatStore.getMessages.mockImplementation(
+        (_sessionId: string, filter?: { order?: "asc" | "desc"; limit?: number }) => {
+          const ordered = filter?.order === "desc" ? [...rows].reverse() : [...rows];
+          return Promise.resolve(typeof filter?.limit === "number" ? ordered.slice(0, filter.limit) : ordered);
+        },
+      );
+    }
+
+    function questionAssistantRow(id: string): StoredRow {
+      const call = {
+        toolName: "fn_ask_question",
+        args: { questions: [{ id: "q1", type: "text", question: "Which branch?" }] },
+        isError: false,
+        status: "completed",
+      };
+      return { id, role: "assistant", content: "Which branch should I use?", metadata: { toolCalls: [call] } };
+    }
+
+    function plainAssistantRow(id: string): StoredRow {
+      return { id, role: "assistant", content: "Here is the summary.", metadata: { model: "test" } };
+    }
+
+    function stubModelLoop() {
+      const session = {
+        prompt: vi.fn().mockResolvedValue(undefined),
+        dispose: vi.fn(),
+        state: { messages: [{ role: "assistant", content: "ok" }] },
+      };
+      __setCreateResolvedAgentSession(async () => ({ session }) as any);
+    }
+
+    /*
+    A DESC-ordered bounded page is the stamp read's signature. The send path legitimately reads the
+    ascending handoff-primer page, so `getMessages` itself is not the proof - only a DESC page is.
+    */
+    function descTailReads(): unknown[] {
+      return mockChatStore.getMessages.mock.calls.filter(
+        (c) => (c[1] as { order?: string } | undefined)?.order === "desc",
+      );
+    }
+
+    function persistedUserRow(): { metadata?: Record<string, unknown> } | undefined {
+      const call = mockChatStore.addMessage.mock.calls.find(
+        (c) => (c[1] as { role?: string } | undefined)?.role === "user",
+      );
+      return call ? (call[1] as { metadata?: Record<string, unknown> }) : undefined;
+    }
+
+    beforeEach(() => {
+      stubModelLoop();
+      mockChatStore.addMessage.mockImplementation((_sessionId: string, input: { role: string }) => ({
+        id: input.role === "user" ? "user-row" : "assistant-row",
+        sessionId: "chat-001",
+        role: input.role,
+        content: "",
+        createdAt: "2026-09-23T00:00:00.000Z",
+      }));
+    });
+
+    it("stamps metadata.questionAnswer.questionMessageId on the operator answer row", async () => {
+      seedTranscript([
+        { id: "u-1", role: "user", content: "start the refactor" },
+        questionAssistantRow("a-question"),
+      ]);
+
+      await createChatManager().sendMessage("chat-001", "Use the feature branch");
+
+      const metadata = persistedUserRow()?.metadata;
+      expect((metadata?.[QUESTION_ANSWER_METADATA_KEY] as { questionMessageId?: string } | undefined)?.questionMessageId)
+        .toBe("a-question");
+      expect(readQuestionAnswerLink(metadata)).toBe("a-question");
+    });
+
+    it("never stamps an auto-retry send", async () => {
+      seedTranscript([questionAssistantRow("a-question")]);
+      const manager = createChatManager();
+
+      await manager.sendMessage("chat-001", "System auto-retry: resume", undefined, undefined, undefined, {
+        autoRetry: true,
+        userMessageMetadata: { autoRetry: true, reason: "empty" },
+      });
+
+      expect(readQuestionAnswerLink(persistedUserRow()?.metadata)).toBeNull();
+      expect(descTailReads()).toEqual([]);
+    });
+
+    it("never stamps a system-reason send even when a question is awaiting", async () => {
+      seedTranscript([questionAssistantRow("a-question")]);
+      const manager = createChatManager();
+
+      await manager.sendMessage("chat-001", "Continue after restart", undefined, undefined, undefined, {
+        userMessageMetadata: { reason: "restart-recovery" },
+      });
+
+      expect(readQuestionAnswerLink(persistedUserRow()?.metadata)).toBeNull();
+      expect(descTailReads()).toEqual([]);
+    });
+
+    it("does not stamp when the transcript tail is not an awaiting question", async () => {
+      seedTranscript([
+        questionAssistantRow("a-question"),
+        { id: "u-2", role: "user", content: "earlier answer" },
+        plainAssistantRow("a-later"),
+      ]);
+
+      await createChatManager().sendMessage("chat-001", "Unrelated later request");
+
+      expect(readQuestionAnswerLink(persistedUserRow()?.metadata)).toBeNull();
+    });
+
+    it("preserves coexisting mentions metadata in the stamped row", async () => {
+      seedTranscript([questionAssistantRow("a-question")]);
+      mockAgentStore.listAgents.mockResolvedValue([
+        {
+          id: "agent-001",
+          name: "Alpha",
+          role: "executor",
+          state: "idle",
+          createdAt: "2026-04-08T00:00:00.000Z",
+          updatedAt: "2026-04-08T00:00:00.000Z",
+          metadata: {},
+        },
+      ]);
+
+      await createChatManager().sendMessage("chat-001", "@Alpha use the feature branch");
+
+      const metadata = persistedUserRow()?.metadata;
+      expect(metadata?.mentions).toEqual([{ agentId: "agent-001", agentName: "Alpha" }]);
+      expect(readQuestionAnswerLink(metadata)).toBe("a-question");
+    });
+
+    it("reads a bounded DESC tail instead of the whole transcript", async () => {
+      seedTranscript([questionAssistantRow("a-question")]);
+
+      await createChatManager().sendMessage("chat-001", "The answer");
+
+      const tailRead = mockChatStore.getMessages.mock.calls.find(
+        (c) => (c[1] as { order?: string } | undefined)?.order === "desc",
+      );
+      expect(tailRead).toBeTruthy();
+      const filter = tailRead?.[1] as { order?: string; limit?: number };
+      expect(filter.order).toBe("desc");
+      expect(typeof filter.limit).toBe("number");
+      expect(filter.limit).toBeGreaterThan(0);
+      expect(filter.limit!).toBeLessThanOrEqual(10);
+    });
+
+    it("keeps the send working when the tail read fails", async () => {
+      mockChatStore.getMessages.mockRejectedValue(new Error("store unavailable"));
+
+      await expect(createChatManager().sendMessage("chat-001", "The answer")).resolves.not.toThrow();
+
+      expect(readQuestionAnswerLink(persistedUserRow()?.metadata)).toBeNull();
+    });
+
+    it("does not stamp CLI-agent-backed chat whose runner persists the row", async () => {
+      __setCreateResolvedAgentSession(vi.fn() as any);
+      mockChatStore.getSession.mockReturnValue({
+        id: "chat-001",
+        agentId: "agent-001",
+        status: "active",
+        projectId: "project-a",
+        cliExecutorAdapterId: "adapter-1",
+      });
+      seedTranscript([questionAssistantRow("a-question")]);
+      const runner = {
+        ensureSession: vi.fn().mockResolvedValue("cli-session-1"),
+        send: vi.fn().mockResolvedValue("sent"),
+        getTokenUsageSnapshot: vi.fn().mockResolvedValue(undefined),
+        getSessionStats: vi.fn().mockResolvedValue(undefined),
+      };
+
+      const manager = createChatManagerWithSettings({ defaultThinkingLevel: "low" });
+      manager.setCliChatRunner(runner as any, "project-a");
+      await manager.sendMessage("chat-001", "Hello CLI");
+
+      expect(runner.send).toHaveBeenCalledWith("chat-001", "Hello CLI");
+      expect(descTailReads()).toEqual([]);
+    });
   });
 
   describe("mention parsing and context", () => {
@@ -4033,6 +4230,14 @@ describe("ChatManager.sendMessage", () => {
       // The summarizer always sees the raw first message, never the provisional title.
       // Sync-merge note (FN-505 vs our unique-tmp harness): the assertion must follow the
       // manager's actual rootDir (TEST_ROOT), which the parallel-safe harness mkdtemps per run.
+      /*
+      FNXC:ChatTitleGeneration 2026-09-17-23:50 (RUFU-255 stale-seam repair):
+      FN-505's original expectation hardcoded "/tmp/test" as the rootDir argument, but the
+      suite's manager root is the mkdtemp TEST_ROOT (line 41, a375f402d46), so the assertion
+      was unsatisfiable on any host. The sibling assertion in this file already passes
+      TEST_ROOT; this one now states the same truth — the summarizer receives the manager's
+      rootDir. Deterministic failure proven on base 7f052a59 and on origin/main.
+      */
       expect(mockSummarizeTitle).toHaveBeenCalledWith(
         "Please triage the merge queue for me",
         TEST_ROOT,

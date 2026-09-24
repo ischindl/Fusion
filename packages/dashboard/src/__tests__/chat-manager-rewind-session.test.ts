@@ -31,6 +31,7 @@ import {
 } from "../chat.js";
 import type { ChatMessage, ChatSession } from "@fusion/core";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { readQuestionAnswerLink } from "../shared/chat-question-link.js";
 
 function makeAssistantMessage(text: string) {
   return {
@@ -128,8 +129,19 @@ class FakeChatStore {
     return this.messages.find((m) => m.id === id);
   }
 
-  async getMessages(sessionId: string): Promise<ChatMessage[]> {
-    return this.messages.filter((m) => m.sessionId === sessionId);
+  /*
+  FNXC:ChatQuestionAnswerLink 2026-09-23-14:21:
+  RUFU-258: the durable question-answer stamp reads a bounded NEWEST-FIRST page, so the fake has to
+  honour `order`/`limit` the way the real backends do (chronological by createdAt with an id tie-break,
+  `desc` reversing that page). Callers that pass no filter keep getting the whole ascending transcript.
+  */
+  async getMessages(
+    sessionId: string,
+    filter?: { order?: "asc" | "desc"; limit?: number },
+  ): Promise<ChatMessage[]> {
+    const inSession = this.messages.filter((m) => m.sessionId === sessionId);
+    const ordered = filter?.order === "desc" ? [...inSession].reverse() : inSession;
+    return typeof filter?.limit === "number" ? ordered.slice(0, filter.limit) : ordered;
   }
 
   async updateMessageMetadata(
@@ -393,5 +405,59 @@ describe("ChatManager.rewindSessionForEdit — pi session context seam (real Ses
     } finally {
       chatManager.cancelGeneration(session.id);
     }
+  });
+
+  /*
+  FNXC:ChatQuestionAnswerLink 2026-09-23-14:21:
+  RUFU-258: edit-and-resend must not need a special case in the stamping rule. `prepareReplacement`
+  rewinds the transcript from the edited user row onward, which leaves the awaiting question row as the
+  newest row again, so the replacement send re-derives the SAME question from the ordinary tail rule.
+  This is the proof that the single writer stays single: the replacement row is stamped by the send path
+  itself, not by a second edit-specific writer.
+  */
+  it("stamps the durable question-answer link onto an edit-and-resend replacement row", async () => {
+    __resetChatState();
+    __setCreateResolvedAgentSession(async () => ({
+      session: {
+        prompt: vi.fn().mockResolvedValue(undefined),
+        dispose: vi.fn(),
+        state: { messages: [] },
+      },
+    }) as any);
+
+    const session = chatStore.createSession({ agentId: "agent-001" });
+    const seedManager = SessionManager.create(tmpDir);
+    await chatStore.setCliSessionFile(session.id, seedManager.getSessionFile()!);
+
+    const firstTurn = await chatStore.addMessage(session.id, { role: "user", content: "start the refactor" });
+    const questionRow = await chatStore.addMessage(session.id, {
+      role: "assistant",
+      content: "Which branch should I use?",
+      metadata: {
+        toolCalls: [{
+          toolName: "fn_ask_question",
+          args: { questions: [{ id: "q1", type: "text", question: "Which branch?" }] },
+          isError: false,
+          status: "completed",
+        }],
+      },
+    });
+    const editedAnswer = await chatStore.addMessage(session.id, { role: "user", content: "the wrong branch" });
+    await chatStore.addMessage(session.id, { role: "assistant", content: "Noted." });
+
+    const { retained, generationId } = await chatManager.prepareReplacement(session.id, editedAnswer.id);
+    expect(retained.map((message) => message.id)).toEqual([firstTurn.id, questionRow.id]);
+
+    // The replacement POST hands the prepared generation to the send, exactly as the route does.
+    await chatManager.sendMessage(session.id, "the feature branch", undefined, undefined, undefined, { generationId });
+
+    const rows = await chatStore.getMessages(session.id);
+    // The completed model loop also persists its assistant reply, so select the replacement user row.
+    const replacementRow = [...rows].reverse().find((message) => message.role === "user")!;
+    expect(replacementRow.role).toBe("user");
+    expect(replacementRow.content).toBe("the feature branch");
+    expect(readQuestionAnswerLink(replacementRow.metadata)).toBe(questionRow.id);
+
+    __resetChatState();
   });
 });

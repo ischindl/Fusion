@@ -136,6 +136,16 @@ interface SystemJob {
 
 let activeJob: SystemJob | null = null;
 let lastJob: SystemJob | null = null;
+/*
+FNXC:RetentionCensus 2026-09-23-09:35 (RUFU-257):
+System jobs are kept for the dashboard's recent-job panel only, so the panel's own retention bound is
+the map's ceiling: past `SYSTEM_JOB_HISTORY_MAX` entries the oldest job is dropped at insert time. The
+cap used to be the literal `5` repeated at three insert sites, which a ratchet cannot name or verify.
+*/
+// retention-bounded: SYSTEM_JOB_HISTORY_MAX
+/** How many recent system jobs the dashboard job panel can list; also the map's ceiling. */
+const SYSTEM_JOB_HISTORY_MAX = 5;
+
 const jobsById = new Map<string, SystemJob>();
 
 /** Test-only: clear module-level job state between tests. */
@@ -424,7 +434,7 @@ export function registerSystemRoutes(ctx: ApiRoutesContext, deps: SystemRouteDep
     activeJob = job;
     jobsById.set(job.id, job);
     // Bound the job registry — keep only the most recent handful.
-    if (jobsById.size > 5) {
+    if (jobsById.size > SYSTEM_JOB_HISTORY_MAX) {
       const oldest = jobsById.keys().next().value;
       if (oldest && oldest !== job.id) jobsById.delete(oldest);
     }
@@ -638,7 +648,7 @@ export function registerSystemRoutes(ctx: ApiRoutesContext, deps: SystemRouteDep
     };
     activeJob = job;
     jobsById.set(job.id, job);
-    if (jobsById.size > 5) {
+    if (jobsById.size > SYSTEM_JOB_HISTORY_MAX) {
       const oldest = jobsById.keys().next().value;
       if (oldest && oldest !== job.id) jobsById.delete(oldest);
     }
@@ -945,7 +955,7 @@ export function registerSystemRoutes(ctx: ApiRoutesContext, deps: SystemRouteDep
     };
     activeJob = job;
     jobsById.set(job.id, job);
-    if (jobsById.size > 5) {
+    if (jobsById.size > SYSTEM_JOB_HISTORY_MAX) {
       const oldest = jobsById.keys().next().value;
       if (oldest && oldest !== job.id) jobsById.delete(oldest);
     }

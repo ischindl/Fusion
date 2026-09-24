@@ -612,6 +612,8 @@ export default defineConfig({
       */
       "@fusion/core/task-delete-attribution": resolve(__dirname, "../core/src/task-delete-attribution.ts"),
       "@fusion/core/column-roles": resolve(__dirname, "../core/src/column-roles.ts"),
+      // FNXC:ChatSidebarLiveness 2026-09-24-05:55 (RUFU-220): Mirror vite.config.ts so the sidebar classifier resolves identically under Vitest and the browser bundle; the root `@fusion/core` alias here points at the full index, so leaving the subpath unaliased would test a different module than production ships. Ordered before the broader alias because Vite matches in order.
+      "@fusion/core/chat-liveness": resolve(__dirname, "../core/src/chat/chat-liveness.ts"),
       // FNXC:MemoryMcp 2026-08-11-00:19: Route tests use the Node-only factory subpath; browser components remain on the pure descriptor barrel.
       "@fusion/core/mcp-builtin-servers": resolve(__dirname, "../core/src/config/mcp-builtin-servers.ts"),
       "@fusion/core": resolve(__dirname, "../core/src/index.ts"),

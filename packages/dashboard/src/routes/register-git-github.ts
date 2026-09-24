@@ -70,6 +70,7 @@ import {
 import type { ApiRoutesContext } from "./types.js";
 import { runGitCommand } from "./resolve-diff-base.js";
 import { assertWorktreePathSafe, isPathWithin, listRegisteredWorktreePaths } from "../git-worktree-safety.js";
+import { registerBoundedWindowMap } from "../lib/retention/bounded-window-map.js";
 
 const execAsync = promisify(execCb);
 const PR_ROUTE_MAX_BUFFER_BYTES = 10 * 1024 * 1024;
@@ -203,6 +204,7 @@ const RECENT_ISSUES_CACHE_TTL_MS = 60_000;
 
 // Intentionally module-scoped and TTL-only. We do not proactively invalidate on remote
 // changes because the 60s window is short and keeps per-keystroke chat lookups cheap.
+// One entry per distinct search query, TTL-bounded but previously uncounted: see the registration below.
 const recentIssuesCache = new Map<string, { fetchedAt: number; items: Array<{
   number: number;
   title: string;
@@ -211,6 +213,34 @@ const recentIssuesCache = new Map<string, { fetchedAt: number; items: Array<{
   repository: string;
   updatedAt?: string;
 }> }>();
+
+/*
+FNXC:RetentionCensus 2026-09-23-09:45 (RUFU-257):
+This cache was TTL-bounded but uncounted, and TTL-only is exactly the shape RUFU-257 found leaking: the
+key is a search query, so a chat surface doing per-keystroke lookups grows the map with query variety
+faster than any of it matters. The window registration reclaims entries with the SAME comparison the
+read path uses (`now - fetchedAt > RECENT_ISSUES_CACHE_TTL_MS`, i.e. live at the expiry instant, the
+helper's default rule) and adds the count ceiling the TTL could not provide. `evictLiveEntries: false`
+keeps the promise the comment above makes — a 60s-window hit is never traded away; the ceiling then
+reports pressure instead of deleting, and a query-cardinality burst becomes visible on `/metrics`
+instead of only as an out-of-memory crash.
+*/
+const RECENT_ISSUES_CACHE_MAX = 200;
+
+/** Rough weight of one issue row in a cached result (number, title, urls, repo, timestamp). */
+const RECENT_ISSUE_APPROX_BYTES = 240;
+
+registerBoundedWindowMap({
+  map: recentIssuesCache,
+  id: "github_recent_issues",
+  ceiling: RECENT_ISSUES_CACHE_MAX,
+  ceilingConstant: "RECENT_ISSUES_CACHE_MAX",
+  kind: "cache",
+  keys: "ttl",
+  expiryOf: (entry) => entry.fetchedAt + RECENT_ISSUES_CACHE_TTL_MS,
+  valueBytes: (entry) => entry.items.length * RECENT_ISSUE_APPROX_BYTES,
+  evictLiveEntries: false,
+});
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;

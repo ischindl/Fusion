@@ -25,6 +25,7 @@ export const COMPACT_QUESTION_TOOL_NAMES = [
   "fn_ask_question",
 ] as const;
 
+// retention-allowlist: derived once at module load from the static COMPACT_QUESTION_TOOL_NAMES list and never mutated afterwards
 const COMPACT_QUESTION_TOOL_NAME_SET = new Set(COMPACT_QUESTION_TOOL_NAMES.map((name) => name.toLowerCase()));
 
 /** Case-insensitive check for the interactive question tools (mirrors the app-side QUESTION_TOOL_NAMES parity list). */

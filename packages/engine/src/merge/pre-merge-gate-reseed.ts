@@ -28,7 +28,10 @@ import {
   computeWorkflowIrPin,
   PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
   evaluatePreMergeApprovals,
+  findUnrunRequiredPreMergeStepIds,
   IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON,
+  isPreMergeStepsNotRunRefusal,
+  isWorkspaceTask,
   resolveWorkflowIrForTask,
   type MergeContentDescriptor,
   type Task,
@@ -36,6 +39,7 @@ import {
   type TaskLogEntry,
   type TaskStore,
 } from "@fusion/core";
+import { AUTO_MERGE_RETRY_REJECTED_PREFIX } from "./stale-content-park.js";
 
 export type UnrunPreMergeGateRerouteReason =
   | "seeded"
@@ -285,4 +289,42 @@ export async function rerouteFailedNoVerdictPreMergeGateToReview(
     .filter((result) => isFailedNoVerdictPreMergeReviewResult(result, options.requiredPreMergeStepIds))
     .map((result) => result.workflowStepId));
   return seedPreMergeReviewIfIdle(store, task, options, candidates, "no-failed-no-verdict-gate", "failed-no-verdict-pre-merge-gate");
+}
+
+/*
+FNXC:PreMergeApproval 2026-09-22-22:40 (RUFU-276, AC2):
+A card can already stand terminalized over a never-ran gate, because before RUFU-276 the bounded
+auto-merge retry seam terminalized this refusal class like any other: `status:"failed"` plus
+`AUTO_MERGE_RETRY_REJECTED: Cannot merge <id>: task has enabled pre-merge workflow steps that never
+ran`. That park is invisible to every existing owner: the visible recovery candidate requires
+`status !== "failed"` and a retry budget below the cap, `classifyStaleContentPark` needs the
+stale-content sentence, and `classifyVerdictlessGatePark` needs a gate-named refusal whose latest row
+is verdict-less — a gate with ZERO rows is `missing`, not verdict-less. RUFU-225 sat 5.3 days that way.
+
+Conjunction-heavy on purpose, mirroring `classifyStaleContentPark`'s purity: a failed status AND a
+not-run refusal in the error (wrap-aware, so the queue prefix and the raw blocker both count) AND at
+least one required gate that has produced NO row at all. A `pending` row is PRESENT (FN-8492 owns
+it), a verdict-less or authored row belongs to RUFU-217 / the remediation lane, and a stale-content or
+gate-approval wrap fails the not-run classifier outright. Paused, operator-held, deleted and workspace
+cards are refused here rather than inside the seed, so an inadmissible card never spends a starvation
+attempt. `autoMerge:false` / PR-based holds are refused by the caller's merge admission.
+*/
+/** Which terminal-park producer embedded the not-run refusal. */
+export type UnrunGateParkShape = "retry-rejected" | "raw-blocker";
+
+export function classifyUnrunGatePark(
+  task: Task,
+  requiredPreMergeStepIds: ReadonlySet<string>,
+): { shape: UnrunGateParkShape; missingGateIds: string[] } | undefined {
+  if (task.status !== "failed") return undefined;
+  if (task.paused === true || task.userPaused === true || task.deletedAt) return undefined;
+  if (isWorkspaceTask(task)) return undefined;
+  const error = typeof task.error === "string" && task.error.length > 0 ? task.error : undefined;
+  if (error === undefined || !isPreMergeStepsNotRunRefusal(error)) return undefined;
+  const missingGateIds = findUnrunRequiredPreMergeStepIds(task, { requiredPreMergeStepIds });
+  if (missingGateIds.length === 0) return undefined;
+  return {
+    shape: error.startsWith(AUTO_MERGE_RETRY_REJECTED_PREFIX) ? "retry-rejected" : "raw-blocker",
+    missingGateIds,
+  };
 }

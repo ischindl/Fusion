@@ -39,6 +39,18 @@ import type { AiSessionStore, AiSessionRow } from "./ai-session-store.js";
 import { SessionEventBuffer, type SessionBufferedEvent } from "./sse-buffer.js";
 import { registerBeforeExitCleanup } from "./process-lifecycle.js";
 import {
+  HISTORY_ENTRY_BYTES,
+  RATE_LIMIT_ENTRY_BYTES,
+  SESSION_RECORD_BYTES,
+  STRING_BYTES_PER_CHAR,
+} from "./lib/retention-census.js";
+import {
+  clampEntryCeilingWithCleanup,
+  enforceEntryCeiling,
+  registerBoundedRegistryMap,
+  registerBoundedWindowMap,
+} from "./lib/retention/bounded-window-map.js";
+import {
   createSessionDiagnostics,
   resetDiagnosticsSink,
   nonfatal,
@@ -370,6 +382,32 @@ const MAX_SESSIONS_PER_IP_PER_HOUR = 1000;
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
 
 /*
+FNXC:RetentionCensus 2026-09-21-21:40 (RUFU-257):
+planning.ts holds seven module-scope structures, and before this change only `liveStreams` was capped.
+`cleanupExpiredSessions` already deletes expired sessions and stale rate windows on a five-minute
+timer, so expiry has one owner; what nothing bounded was the *count* inside a TTL window — planning
+sessions carry a seven-day TTL, so a long-lived dashboard retained every session ever started.
+PLANNING_SESSION_MAX is therefore clamped inside that same sweep through `cleanupInMemorySession`, the
+owner that also disposes the session agent and its stream buffer. The per-session promise maps
+(reservations, settling operations, persistence queues) are keyed by session id and delete themselves
+when their promise settles, so their ceilings are reporting thresholds: deleting a row whose promise is
+still in flight would drop turn-admission or write-ordering state, which is a correctness bug the leak
+fix must not introduce.
+*/
+
+/** Ceiling on planning sessions retained in memory. */
+export const PLANNING_SESSION_MAX = 5_000;
+
+/** Ceiling on distinct client addresses holding a planning-session window. */
+export const PLANNING_RATE_LIMIT_IP_MAX = 10_000;
+
+/** Reporting ceiling on simultaneously in-flight planning generations. */
+export const PLANNING_ACTIVE_GENERATION_MAX = 500;
+
+/** Reporting ceiling on sessions holding a turn reservation, settling operation, or persist queue. */
+export const PLANNING_PER_SESSION_OPERATION_MAX = 5_000;
+
+/*
 FNXC:PlanningLiveness 2026-06-24-00:00:
 Planning Mode must allow long-running reasoning when the agent is producing new thinking/text, because a fixed wall-clock cap incorrectly fails legitimate sessions. The watchdog is scoped to Planning Mode and treats this value as an inactivity window: non-empty, materially new output refreshes liveness; repeated identical output is counted separately and stopped as a loop so stuck sessions still fail deterministically without changing subtask, mission, milestone, or onboarding timeout semantics.
 */
@@ -675,6 +713,68 @@ async function waitForPlanningTurnRelease(sessionId: string, timeoutMs = 2000): 
 let _aiSessionStore: AiSessionStore | undefined;
 let _aiSessionDeletedListener: ((sessionId: string) => void) | undefined;
 const sessionPersistenceQueues = new Map<string, Promise<void>>();
+
+// Census rows for the module-scope planning structures. `sweptElsewhere` marks the two maps whose
+// expiry deleter stays `cleanupExpiredSessions`; the operation maps report pressure only.
+registerBoundedWindowMap<string, Session>({
+  id: "planning_sessions",
+  map: sessions,
+  ceiling: PLANNING_SESSION_MAX,
+  ceilingConstant: "PLANNING_SESSION_MAX",
+  kind: "session",
+  expiryOf: (session) => session.updatedAt.getTime() + SESSION_TTL_MS,
+  sweptElsewhere: true,
+  valueBytes: (session) =>
+    SESSION_RECORD_BYTES
+    + session.thinkingOutput.length * STRING_BYTES_PER_CHAR
+    + session.history.length * HISTORY_ENTRY_BYTES,
+});
+
+registerBoundedWindowMap<string, RateLimitEntry>({
+  id: "planning_rate_limits",
+  map: rateLimits,
+  ceiling: PLANNING_RATE_LIMIT_IP_MAX,
+  ceilingConstant: "PLANNING_RATE_LIMIT_IP_MAX",
+  expiryOf: (entry) => entry.firstRequestAt.getTime() + RATE_LIMIT_WINDOW_MS,
+  sweptElsewhere: true,
+  valueBytes: () => RATE_LIMIT_ENTRY_BYTES,
+});
+
+registerBoundedRegistryMap<string, ActivePlanningGeneration>({
+  id: "planning_active_generations",
+  map: activeGenerations,
+  ceiling: PLANNING_ACTIVE_GENERATION_MAX,
+  ceilingConstant: "PLANNING_ACTIVE_GENERATION_MAX",
+  evictLiveEntries: false,
+  valueBytes: () => SESSION_RECORD_BYTES,
+});
+
+registerBoundedRegistryMap<string, PlanningTurnReservation>({
+  id: "planning_turn_reservations",
+  map: pendingTurnReservations,
+  ceiling: PLANNING_PER_SESSION_OPERATION_MAX,
+  ceilingConstant: "PLANNING_PER_SESSION_OPERATION_MAX",
+  evictLiveEntries: false,
+  valueBytes: () => SESSION_RECORD_BYTES,
+});
+
+registerBoundedRegistryMap<string, Promise<void>>({
+  id: "planning_settling_turn_operations",
+  map: settlingTurnOperations,
+  ceiling: PLANNING_PER_SESSION_OPERATION_MAX,
+  ceilingConstant: "PLANNING_PER_SESSION_OPERATION_MAX",
+  evictLiveEntries: false,
+  valueBytes: () => SESSION_RECORD_BYTES,
+});
+
+registerBoundedRegistryMap<string, Promise<void>>({
+  id: "planning_persistence_queues",
+  map: sessionPersistenceQueues,
+  ceiling: PLANNING_PER_SESSION_OPERATION_MAX,
+  ceilingConstant: "PLANNING_PER_SESSION_OPERATION_MAX",
+  evictLiveEntries: false,
+  valueBytes: () => SESSION_RECORD_BYTES,
+});
 
 function normalizeStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) {
@@ -1108,6 +1208,13 @@ function cleanupExpiredSessions(): void {
     }
   }
 
+  // Count ceiling, enforced through the same owner so an over-ceiling session releases its agent and
+  // stream buffer exactly like an expired one.
+  clampEntryCeilingWithCleanup(
+    sessions,
+    PLANNING_SESSION_MAX,
+    (id) => { cleanupInMemorySession(id); },
+  );
   // Clean up stale rate limit entries
   for (const [ip, entry] of rateLimits) {
     if (now - entry.firstRequestAt.getTime() > RATE_LIMIT_WINDOW_MS) {
@@ -1122,6 +1229,18 @@ function cleanupExpiredSessions(): void {
       { cleanedSessions, cleanedRateLimits, operation: "cleanup-expired" }
     );
   }
+}
+
+/*
+FNXC:RetentionCensus 2026-09-21-22:50 (RUFU-257):
+Synchronous seam over `cleanupExpiredSessions` — the single reclamation owner for the planning session
+map and its IP window (the census deliberately registers those rows `sweptElsewhere`). A test on a
+faked clock cannot fire the import-armed interval, so it invokes the owner through this seam. Mirrors
+`__runAgentGenerationCleanupForTests`.
+*/
+/** @internal Run the periodic session/rate-window reclamation immediately; test-only seam. */
+export function __runPlanningCleanupForTests(): void {
+  cleanupExpiredSessions();
 }
 
 // Start cleanup interval
@@ -1294,6 +1413,7 @@ export function checkRateLimit(ip: string): boolean {
       count: 1,
       firstRequestAt: new Date(),
     });
+    enforceEntryCeiling(rateLimits, PLANNING_RATE_LIMIT_IP_MAX);
     return true;
   }
 
@@ -1304,6 +1424,7 @@ export function checkRateLimit(ip: string): boolean {
       count: 1,
       firstRequestAt: new Date(),
     });
+    enforceEntryCeiling(rateLimits, PLANNING_RATE_LIMIT_IP_MAX);
     return true;
   }
 

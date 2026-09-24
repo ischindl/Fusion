@@ -13,7 +13,7 @@ import { createInterface } from "node:readline/promises";
 import type { PlanningQuestion, PlanningSummary } from "@fusion/core";
 import { createSession, createTaskFromPlanSession, ensureDurablePlanningSessionStore, getSession as getPlanningSession, submitResponse, validateSession, RateLimitError, SessionNotFoundError, InvalidSessionStateError } from "@fusion/dashboard/planning";
 import { watchFile, unwatchFile, statSync, existsSync, readFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import * as dashboard from "@fusion/dashboard";
 import {
   getGhErrorMessage,
@@ -21,8 +21,26 @@ import {
   isGhAvailable,
   runGhJsonAsync,
 } from "@fusion/core/gh-cli";
-import { resolveProject, createLocalStore, closeProjectStore, type ProjectContext } from "../project-context.js";
-import { promptOutputStream, result as outputResult } from "../output.js";
+import {
+  resolveProject,
+  createLocalStore,
+  closeProjectStore,
+  asLocalProjectContext,
+  type ProjectContext,
+} from "../project-context.js";
+import { isQuietMode, promptOutputStream, result as outputResult } from "../output.js";
+/*
+FNXC:ProjectRoutingVisibility 2026-09-22-23:26 (RUFU-269): the card-minting commands must print where a
+card actually went. The decision itself lives in the pure `project-routing` module so the whole acceptance
+matrix is unit-testable; this file owns only the printing and the prompting.
+*/
+import {
+  cardDirectoryPath,
+  crossProjectConfirmQuestion,
+  declinedCrossProjectNotice,
+  evaluateProjectRouting,
+  unregisteredCwdProjectWarning,
+} from "../project-routing.js";
 import { findNodeByNameOrId } from "./node.js";
 import { retryOnLock, LockRetryExhaustedError } from "../lock-retry.js";
 
@@ -169,16 +187,15 @@ function formatTaskSource(task: {
 // `withBoardWrite`/`resolveBoardContext` below, which always resolve a full
 // `ProjectContext` and close/evict it on every exit path. Removed here
 // rather than left as an unused dead path.
-function asLocalProjectContext(store: TaskStore): ProjectContext {
-  const cwd = process.cwd();
-  return {
-    projectId: cwd,
-    projectPath: cwd,
-    projectName: basename(cwd) || "current-project",
-    isRegistered: false,
-    store,
-  };
-}
+//
+/*
+FNXC:ProjectRoutingVisibility 2026-09-23-00:04 (RUFU-269): this file used to keep a PRIVATE copy of
+`asLocalProjectContext` that built the unregistered-cwd fallback context by hand. RUFU-269 added routing
+provenance (`resolvedFrom: "cwd-fallback"` + the cwd snapshot) to the shared `project-context.ts`
+definition, which every other CLI command file (pr/backup/memory-backup/branch-group/mcp) already uses;
+a second copy here would have kept `fn task *` minting fallback contexts that the routing reporter cannot
+identify. One definition, in `project-context.ts`.
+*/
 
 /**
  * FNXC:CliBoardMutation 2026-07-09-00:00:
@@ -211,7 +228,18 @@ async function getBoardCommandContext(projectName?: string): Promise<ProjectCont
     // FNXC:PostgresCutover 2026-07-05-12:00: the cwd fallback must boot through
     // the PostgreSQL startup factory (createLocalStore); a bare `new TaskStore`
     // resolves to the removed SQLite runtime, which throws on first DB access.
-    const store = await createLocalStore(process.cwd());
+    /*
+    FNXC:ProjectRoutingVisibility 2026-09-23-00:04 (RUFU-269): the fallback stays usable — turning it into an
+    error would break `fn task list`/`show`/`create` in an unregistered folder — but it is no longer silent.
+    Before this, a card minted from an unregistered folder was written under `<cwd>/.fusion/` while the output
+    named no project at all, indistinguishable from a registered target. The sentence goes to stderr so
+    `--quiet`/machine mode keeps its stdout contract, and it is printed HERE rather than left to
+    `evaluateProjectRouting` because a fallback context has nothing to compare against: its cwd IS its
+    target, so the mismatch classifier can only ever be quiet for it.
+    */
+    const cwd = process.cwd();
+    console.error(unregisteredCwdProjectWarning(cwd, cwd));
+    const store = await createLocalStore(cwd);
     const context = asLocalProjectContext(store);
     return context;
   }
@@ -310,6 +338,31 @@ async function retryBoardCall<T>(context: ProjectContext, id: string, action: st
 async function closeBoardContextAndExit(context: ProjectContext, code: number): Promise<never> {
   await closeProjectStore(context).catch(() => {});
   process.exit(code);
+}
+
+/*
+FNXC:ProjectRoutingVisibility 2026-09-23-00:04 (RUFU-269): warn-only routing report for the card-minting
+commands that are NOT `fn task create`. `duplicate` and `refine` mint a NEW card in the resolved project
+from an id the operator typed, so a central-default target that is not the cwd project still files a card
+somewhere the operator may not expect — but they already name a specific card (which only exists in the
+project it lives in) and carry no `--yes` of their own, so per spec they announce rather than block.
+`isTty: false` here is not a claim about the terminal, it is the instruction "never wait on an answer on
+this surface". The target line is returned for the caller's success block so all three commands print one
+`Project:` format from one formatter and cannot drift.
+*/
+function reportCardRouting(context: ProjectContext): string {
+  const decision = evaluateProjectRouting({
+    projectName: context.projectName,
+    projectPath: context.projectPath,
+    resolvedFrom: context.resolvedFrom,
+    cwdProject: context.cwdProject,
+    cwd: process.cwd(),
+    isTty: false,
+  });
+  if (decision.warning) {
+    console.error(decision.warning);
+  }
+  return decision.targetLine;
 }
 
 async function resolveNodeByNameOrId(nodeNameOrId: string): Promise<{ id: string; name?: string }> {
@@ -454,7 +507,33 @@ async function runCliNearDuplicateCheck(args: {
   process.exit(0);
 }
 
-export async function runTaskCreate(descriptionArg?: string, attachFiles?: string[], depends?: string[], projectName?: string, nodeName?: string, noDedup = false, githubOpts?: { github?: boolean; githubRepo?: string }) {
+/**
+ * Ask a yes/no question on the terminal and report whether the answer was affirmative.
+ *
+ * FNXC:ProjectRoutingVisibility 2026-09-22-23:26 (RUFU-269): the prompt writes to the un-gated output
+ * stream, matching the near-duplicate confirm above, so a question stays visible even when informational
+ * stdout is suppressed. Whether asking is allowed at all (TTY, not quiet, no `--yes`) is the caller's call.
+ *
+ * @param {string} question - Question to display, including the `[y/N]` affordance
+ * @returns {Promise<boolean>} True when the answer was `y` or `yes` (case-insensitive)
+ */
+async function confirmOnTerminal(question: string): Promise<boolean> {
+  const rl = createInterface({ input: process.stdin, output: promptOutputStream() });
+  try {
+    const answer = (await rl.question(question)).trim().toLowerCase();
+    return answer === "y" || answer === "yes";
+  } finally {
+    rl.close();
+  }
+}
+
+/*
+FNXC:ProjectRoutingVisibility 2026-09-22-23:26 (RUFU-269): `yes` is the CLI `--yes` flag, threaded through
+from `parseTaskCreateArgs` in `bin.ts`. It answers an affirmative cross-project routing confirmation
+without asking, which is what lets a script target the default project deliberately. It has NO effect on
+precedence — `--project` still wins, an invalid one still throws.
+*/
+export async function runTaskCreate(descriptionArg?: string, attachFiles?: string[], depends?: string[], projectName?: string, nodeName?: string, noDedup = false, githubOpts?: { github?: boolean; githubRepo?: string }, yes = false) {
   let description = descriptionArg;
 
   /*
@@ -497,6 +576,33 @@ export async function runTaskCreate(descriptionArg?: string, attachFiles?: strin
   const context = await resolveBoardContext(projectName, "create", "resolve project");
   const store = context.store;
   try {
+    /*
+    FNXC:ProjectRoutingVisibility 2026-09-22-23:26 (RUFU-269): report the routing BEFORE the write and ask
+    before an irreversible one. An explicit `--project` or a cwd-derived target is what the operator already
+    expects, so it stays silent; a DEFAULT project that is not the one the shell sits in is RUFU-242's
+    accident (10 cards filed into GEDA) and must be announced, plus confirmed on a terminal, even though
+    precedence itself does not change. The check runs after context resolution — an invalid `--project` must
+    still throw out of resolution and write nothing rather than being asked about a project that does not
+    exist — and before the duplicate guard, so a declined answer writes no card and releases no lock it
+    never took. Quiet mode counts as non-interactive: an agent lane must never block on an answer nobody
+    will type.
+    */
+    const routing = evaluateProjectRouting({
+      projectName: context.projectName,
+      projectPath: context.projectPath,
+      resolvedFrom: context.resolvedFrom,
+      cwdProject: context.cwdProject,
+      cwd: process.cwd(),
+      isTty: Boolean(process.stdin.isTTY && process.stdout.isTTY) && !isQuietMode(),
+      yes,
+    });
+    if (routing.warning) {
+      console.error(routing.warning);
+    }
+    if (routing.requiresConfirm && !(await confirmOnTerminal(crossProjectConfirmQuestion(context.projectName)))) {
+      console.error(declinedCrossProjectNotice(context.projectName));
+      return;
+    }
     const task = await retryBoardCall(context, "create", "create task", async () => {
       const guard = await runDeterministicDuplicateGuard(
         store,
@@ -629,7 +735,7 @@ export async function runTaskCreate(descriptionArg?: string, attachFiles?: strin
 
     console.log();
     if (context.projectName) {
-      console.log(`  Project: ${context.projectName}`);
+      console.log(routing.targetLine);
     }
     if (linkedExisting) {
       outputResult(`  ✓ Linked existing ${resolvedTask.id}: ${label}\n`);
@@ -643,7 +749,7 @@ export async function runTaskCreate(descriptionArg?: string, attachFiles?: strin
     if (resolvedNode) {
       console.log(`    Node: ${resolvedNode.name || resolvedNode.id}`);
     }
-    console.log(`    Path:   .fusion/tasks/${resolvedTask.id}/`);
+    console.log(`    Path:   ${cardDirectoryPath(context.projectPath, resolvedTask.id)}`);
 
     /*
     FNXC:GithubTracking 2026-08-15-04:50:
@@ -1602,11 +1708,15 @@ export async function runTaskMove(id: string, column: string, projectName?: stri
 export async function runTaskDuplicate(id: string, projectName?: string) {
   // FNXC:CliBoardMutation 2026-07-09-00:00 (FN-7734): single board write.
   await withBoardWrite(projectName, { id, action: "duplicate task" }, async (context) => {
+    // Routing is evaluated and announced BEFORE the write; the warning is the only
+    // thing this changes about the command's behavior when it fires.
+    const targetLine = reportCardRouting(context);
     const newTask = await context.store.duplicateTask(id);
 
     console.log();
     console.log(`  ✓ Duplicated ${id} → ${newTask.id}`);
-    console.log(`    Path: .fusion/tasks/${newTask.id}/`);
+    console.log(targetLine);
+    console.log(`    Path: ${cardDirectoryPath(context.projectPath, newTask.id)}`);
     console.log();
   });
 }
@@ -1634,13 +1744,16 @@ export async function runTaskRefine(id: string, feedbackArg?: string, projectNam
 
   // FNXC:CliBoardMutation 2026-07-09-00:00 (FN-7734): single board write.
   await withBoardWrite(projectName, { id, action: "refine task" }, async (context) => {
+    // See `runTaskDuplicate`: announce the target project before minting the follow-up card.
+    const targetLine = reportCardRouting(context);
     const newTask = await context.store.refineTask(id, trimmedFeedback);
 
     console.log();
     console.log(`  ✓ Created refinement ${newTask.id} for ${id}`);
+    console.log(targetLine);
     console.log(`    Column: ${newTask.column}`);
     console.log(`    Dependency: ${id}`);
-    console.log(`    Path: .fusion/tasks/${newTask.id}/`);
+    console.log(`    Path: ${cardDirectoryPath(context.projectPath, newTask.id)}`);
     console.log();
   });
 }
@@ -1779,8 +1892,18 @@ export async function runTaskRetry(id: string, projectName?: string) {
     // FNXC:TaskWedgeNotifications 2026-08-10-20:15: a human Retry proves intervention and mints a fresh bounded terminal-failure budget.
     await context.store.resetTerminalFailureAutoRecoveryBudget(id);
 
+    /*
+    FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261):
+    All three `fn task retry` re-queues below carry `parkOnHold: false` — the explicit RELEASE
+    statement at the hold-lane park seam. On HEAD these moves derive `moveSource: "engine"`
+    (moves.ts default) and therefore already do not park, but the published CLI surface reproduced
+    the retry-parked-card failure on-board (RUFU-196); stating release intent here makes the
+    guarantee explicit and regression-proof should the source attribution ever mirror the
+    extension tool's `moveSource: "user"` (FNXC:ToolPermissionGates symmetry). `fn task move`
+    (a genuine manual gesture) deliberately keeps parking.
+    */
     if (isMissingWorktreeSessionRetry) {
-      await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, retryHoldColumn as never, { preserveProgress: true }));
+      await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, retryHoldColumn as never, { preserveProgress: true, parkOnHold: false }));
       await retryBoardCall(context, id, "update task", () => context.store.updateTask(id, {
         status: null,
         error: null,
@@ -1802,7 +1925,7 @@ export async function runTaskRetry(id: string, projectName?: string) {
     // and merge failures (all steps done).
     if (isInReviewRetry) {
       if (isExecutionFailureInReview) {
-        await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, retryHoldColumn as never, { preserveProgress: true }));
+        await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, retryHoldColumn as never, { preserveProgress: true, parkOnHold: false }));
         await retryBoardCall(context, id, "update task", () => context.store.updateTask(id, {
           status: null,
           error: null,
@@ -1849,7 +1972,7 @@ export async function runTaskRetry(id: string, projectName?: string) {
     crashing. Found by review, not by me, and not by any tool: the census counts comparisons and sees
     none of these, and a same-file grep for the double-quoted form reports clean.
     */
-    await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, retryHoldColumn as never));
+    await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, retryHoldColumn as never, { parkOnHold: false }));
 
     // Clear failure state and stale branch refs so retry can choose a fresh base.
     await retryBoardCall(context, id, "update task", () => context.store.updateTask(id, {

@@ -1266,6 +1266,7 @@ export {
   collectLandedMemberReviewAdvisories,
   getTaskMergeBlocker,
   isPreMergeStepsNotRunBlocker,
+  isPreMergeStepsNotRunRefusal,
   isStaleContentApprovalBlocker,
   PreMergeStepsNotRunError,
   PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
@@ -1300,6 +1301,7 @@ export {
   AUTOMATED_BYPASS_ACTORS,
   evaluatePreMergeApprovals,
   isAuditedOperatorBypass,
+  findUnrunRequiredPreMergeStepIds,
   requiresAuthoredReviewVerdict,
   requiresContentReviewProof,
   resolveCollateralArchivedReviewGate,
@@ -2588,6 +2590,19 @@ export type {
 } from "./chat/chat-types.js";
 export { ChatStore } from "./chat/chat-store.js";
 export type { ChatStoreEvents } from "./chat/chat-store.js";
+/*
+FNXC:ChatSidebarLiveness 2026-09-24-05:55 (RUFU-220):
+Mirrored from `index.ts` per this file's maintenance rule. This is NOT barrel growth the gate never
+touches: `SelfHealingManager.reconcileStaleInFlightChatGenerations` now resolves a claim's
+staleness reference through `chatInFlightReferenceMs`, so the gate's own transitive closure
+reaches this module and narrowing it out would fail the bundle at import time.
+*/
+export {
+  CHAT_IN_FLIGHT_GENERATION_STALE_MS,
+  chatInFlightReferenceMs,
+  classifyChatInFlightLiveness,
+} from "./chat/chat-liveness.js";
+export type { ChatInFlightLiveness, ChatLivenessInput, ChatLivenessResult } from "./chat/chat-liveness.js";
 export {
   CLI_AGENT_STATES,
   CLI_TERMINATION_REASONS,

@@ -254,6 +254,12 @@ export class DevServerStore {
   }
 }
 
+/*
+FNXC:RetentionCensus 2026-09-23-09:35 (RUFU-257):
+`storeInstances` memoises the parsed dev-server store per project dir so repeated route reads do not
+re-parse the file. The value is live parsed state with no partial-eviction meaning; cardinality is roots.
+*/
+// retention-config-keyed: keyed by resolved project dir — one live DevServerStore per configured root, shared by every reader
 const storeInstances = new Map<string, DevServerStore>();
 
 export async function loadDevServerStore(projectDir: string): Promise<DevServerStore> {

@@ -7,6 +7,7 @@
  */
 import {
   allowsAutoMergeProcessing,
+  isPreMergeStepsNotRunRefusal,
   PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
   type TaskDetail,
   type TaskStore,
@@ -21,6 +22,8 @@ import { MERGE_BOUNDARY_RECOVERY_VALUE, MERGE_BOUNDARY_UNPROVEN_VALUE } from "..
 import { emitMergeBoundaryUnprovenParked } from "./emit-merge-boundary-unproven-audit.js";
 import type { MergeBoundaryRecoveryEvidence, MergeBoundaryUnprovenReasonCode } from "./workflow-merge-boundary.js";
 import { AUTO_MERGE_RETRY_REJECTED_PREFIX } from "../merge/stale-content-park.js";
+import { emitBoundedRunAudit } from "./emit-bounded-run-audit.js";
+import { generateSyntheticRunId } from "../util/run-audit.js";
 
 export type RouteGraphMergeFailureToRetryDeps = {
   store: TaskStore;
@@ -362,12 +365,57 @@ export async function routeGraphMergeFailureToRetry(
     unconditionally with its own bounded retry.
     */
     const reason = mergeRequestRejection instanceof Error ? mergeRequestRejection.message : String(mergeRequestRejection);
-    // An unrun gate is a deferral. The graph owner or periodic review recovery
-    // must run it; a terminal park would hide the card from that recovery.
-    if (reason.endsWith(PRE_MERGE_STEPS_NOT_RUN_BLOCKER)) {
+
+    /*
+    FNXC:MergeRetryReliability 2026-09-22-22:12 (RUFU-276):
+    A not-run refusal is a DEFERRAL, not a rejection. The merge door refuses with
+    `PreMergeStepsNotRunError` (`Cannot merge <id>: task has enabled pre-merge workflow steps that
+    never ran`) precisely because the FN-9191 contract wants the gate to run first — ProjectEngine's
+    queue arm `continue`s for the same error. Terminalizing it here contradicted that contract and
+    produced an immortal card: the `AUTO_MERGE_RETRY_REJECTED:` + `status:"failed"` park is invisible
+    to every repair lane, because the visible recovery candidate requires `status != failed` and the
+    stall projection reads the composed `task is marked 'failed': …` blocker as a generic
+    `merge-blocker`. Field evidence: RUFU-225 sat 5.3 days in review with a fingerprint-backed
+    reviewer APPROVE, zero repair rows and zero notifications.
+
+    Deferring writes nothing to `status`/`error`/`mergeRetries` and burns no retry budget: the card
+    stays review-lane, status-null, where `classifyMergeSweepAdmission`'s gates fence keeps it out of
+    the queue and the unrun-gate reroute lane (`routeUnrunPreMergeGateBackToReview`, which admits the
+    exact-equality canonical blocker) owns the next attempt. Both rejection arms land here — the
+    thrown `PreMergeStepsNotRunError` and the fulfilled-but-not-admitted arm that rethrows the queue's
+    `error`/`reason` string — so one wrap-aware classification covers both; the exact-equality
+    predicate would miss both spellings. Generic rejections keep the GDPR-053 visible park verbatim.
+    Telemetry is the bounded FN-9175 seam with ids/counts/fixed enums only; no blocker prose.
+    */
+    if (isPreMergeStepsNotRunRefusal(reason)) {
+      try {
+        await deps.store.logEntry(
+          live.id,
+          `Bounded auto-merge retry deferred: an enabled required pre-merge gate has no result (${reason}). No terminal park is written; the unrun-gate reroute lane owns the next attempt.`,
+          undefined,
+          deps.getRunContextFor(live.id),
+        );
+      } catch {
+        // best-effort telemetry; writing no task-row state is the whole point of this branch.
+      }
+      await emitBoundedRunAudit(deps.store, {
+        taskId: live.id,
+        agentId: "executor",
+        runId: deps.getRunContextFor(live.id)?.runId ?? generateSyntheticRunId("merge-unrun-gate-retry-deferred", live.id),
+        domain: "database",
+        mutationType: "task:merge-unrun-gate-retry-deferred",
+        target: live.id,
+        metadata: {
+          taskId: live.id,
+          nodeId: failedNode,
+          source: "merge-retry",
+          outcome: "deferred",
+        },
+      });
       await persistTokenUsageBestEffort(deps.persistTokenUsage, live.id);
       return true;
     }
+
     try {
       await deps.store.logEntry(
         live.id,

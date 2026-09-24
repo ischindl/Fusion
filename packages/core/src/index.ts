@@ -1110,6 +1110,9 @@ export {
   TaskNotFoundError,
   isTaskNotFoundError,
   TombstonedTaskResurrectionError,
+  // FNXC:TombstonePurgeAudit 2026-09-23-21:28: typed refusal when the tombstone purge's
+  // mandatory audit row cannot land, i.e. the row was preserved rather than removed.
+  TombstonePurgeUnauditedError,
   MergeQueueTaskNotFoundError,
   MergeQueueInvalidColumnError,
   MergeQueueLeaseOwnershipError,
@@ -1117,6 +1120,9 @@ export {
   HandoffInvariantViolationError,
   TransitionRejectionError,
   type LegacyAutoMergeStampReconcileResult,
+  // FNXC:VanishedTaskDetection 2026-09-23-21:28: the orphan re-import window, exported so the
+  // engine-side vanished-artifact detector classifies against the same bound the sweep enforces.
+  RECONCILE_ORPHAN_TASK_DIR_MAX_AGE_MS,
   type MoveTaskOptions,
   /*
   FNXC:TaskArchiveRemoval 2026-09-19-21:45 (merge rebuild 0919):
@@ -1201,6 +1207,26 @@ export {
   type DeterministicGuardOutcome,
 } from "./duplicates/duplicate-guard.js";
 export type { TaskDependencyMutation } from "./store.js";
+// FNXC:VanishedTaskDetection 2026-09-23-21:28: presence shape (live / tombstone / archive).
+export type { TaskIdPresence } from "./task-store/task-id-integrity.js";
+/*
+FNXC:VanishedTaskDetection 2026-09-24-00:12:
+The vanished-work taxonomy lives in core as a pure module so the read authority (row presence) and
+the verdict (which reason an orphan directory earns) cannot drift apart, and so the classifier is
+unit-testable without a database. The engine sweep imports these five symbols and nothing else.
+*/
+export {
+  classifyVanishedTaskDir,
+  buildVanishedTaskNotice,
+  buildVanishedTaskNoticeTitle,
+  taskBranchRefFor,
+  type VanishedTaskGateRow,
+  type VanishedTaskDirInput,
+  type VanishedTaskDirReason,
+  type VanishedTaskFinding,
+  type VanishedTaskRowPresence,
+  type VanishedTaskSalvage,
+} from "./task-store/vanished-task-detection.js";
 export type { ListTasksOptions } from "./task-store/reads.js";
 export {
   findSameAgentDuplicates,
@@ -1484,6 +1510,7 @@ export {
   collectLandedMemberReviewAdvisories,
   getTaskMergeBlocker,
   isPreMergeStepsNotRunBlocker,
+  isPreMergeStepsNotRunRefusal,
   isStaleContentApprovalBlocker,
   PreMergeStepsNotRunError,
   PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
@@ -1529,6 +1556,7 @@ export {
   isAuditedOperatorBypass,
   isVerdictLessFailedGateRow,
   findVerdictLessFailedRequiredGates,
+  findUnrunRequiredPreMergeStepIds,
   requiresAuthoredReviewVerdict,
   requiresContentReviewProof,
   resolveCollateralArchivedReviewGate,
@@ -2939,6 +2967,19 @@ export type {
 } from "./chat/chat-types.js";
 export { ChatStore } from "./chat/chat-store.js";
 export type { ChatStoreEvents } from "./chat/chat-store.js";
+/*
+FNXC:ChatSidebarLiveness 2026-09-24-05:55 (RUFU-220):
+The shared generation-liveness classifier (floor constant + reference resolver + derivation).
+Re-exported from the barrel so every Node-side consumer (engine sweep, dashboard server) reads the
+same floor the dashboard sidebar renders; the browser reaches it through the `@fusion/core/chat-liveness`
+subpath because the dashboard's root-barrel alias resolves to the types-only leaf.
+*/
+export {
+  CHAT_IN_FLIGHT_GENERATION_STALE_MS,
+  chatInFlightReferenceMs,
+  classifyChatInFlightLiveness,
+} from "./chat/chat-liveness.js";
+export type { ChatInFlightLiveness, ChatLivenessInput, ChatLivenessResult } from "./chat/chat-liveness.js";
 export {
   CLI_AGENT_STATES,
   CLI_TERMINATION_REASONS,

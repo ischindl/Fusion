@@ -564,7 +564,21 @@ export async function reconcileOrphanedTaskDirsImpl(store: TaskStore, opts: { ig
       let recovered = false;
       let skipReason: string | undefined;
       try {
-                if (await store.taskIdExistsAnywhere(id)) {
+                /*
+                FNXC:OrphanTaskDirReconcile 2026-09-24-00:57:
+        This guard is why RUFU-225's disappearance produced no report. `taskIdExistsAnywhere` is one
+        boolean for live row, soft-delete tombstone, and archive snapshot, so this skip cannot say
+        which of the three it met, and the skip is recorded as `skipped`, never as an anomaly. RUFU-225
+        provably missed the window — its mirror was 6.4 days old against the 2-7 day candidate bound — and
+        a tombstone is the only read-consistent explanation for the id staying reserved while every read
+        path resolved it as absent, though the live store was never readable from this investigation to
+        prove it. Either branch silences the same way. The re-import behavior here is
+        unchanged — re-importing over a tombstone would be wrong — but the state this guard cannot
+        name is now named by `TaskStore.resolveTaskIdPresence`, and the disk-side half of the gap is
+        reported by the engine's `reconcile-vanished-task-dirs` sweep. See
+        `docs/solutions/reliability/vanished-task-directory-rufu-225.md`.
+        */
+        if (await store.taskIdExistsAnywhere(id)) {
           skipReason = "id-exists-anywhere";
         } else {
           try {

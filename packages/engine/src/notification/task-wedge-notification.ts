@@ -1,4 +1,13 @@
-import { buildTaskExternalBlockReport, classifyTerminalFailureAutoRecovery, type TaskExternalBlockReport, type TaskStallReasonCode, type TerminalFailureAutoRecoveryDecision, type Task } from "@fusion/core";
+import {
+  buildTaskExternalBlockReport,
+  classifyTerminalFailureAutoRecovery,
+  isPreMergeStepsNotRunRefusal,
+  PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
+  type TaskExternalBlockReport,
+  type TaskStallReasonCode,
+  type TerminalFailureAutoRecoveryDecision,
+  type Task,
+} from "@fusion/core";
 import { hasTransientMergeRecoveryOwner } from "../errors/transient-merge-error-classifier.js";
 import { NO_PROGRESS_REQUEUE_BUDGET_EXHAUSTED_PREFIX } from "../healing/no-progress-requeue-budget.js";
 
@@ -234,6 +243,32 @@ export function describeTaskWedge(task: Task): TaskWedgeDescriptor | null {
   */
   if (error.startsWith(NO_PROGRESS_REQUEUE_BUDGET_EXHAUSTED_PREFIX)) {
     return { reasonKey: "no-progress-requeue-budget-exhausted", reason: "Self-healing exhausted its no-progress requeue budget.", action: "Repair the environment or task, then retry the task." };
+  }
+  /*
+  FNXC:TaskWedgeNotifications 2026-09-22-23:05 (RUFU-276, AC4):
+  A review-lane card terminalized by the pre-RUFU-276 auto-merge retry seam carried
+  `AUTO_MERGE_RETRY_REJECTED: Cannot merge <id>: task has enabled pre-merge workflow steps that never
+  ran` and fell through every matcher above into the generic `terminal-failed` park. That cost two
+  things: the operator read "terminal failed, inspect the error" for a condition with a named remedy,
+  and — because `classifyTerminalFailureAutoRecoveryForTask` derives `isGenericTerminalFailure` from
+  exactly this reason key — automatic recovery claimed ownership of a card it can never advance, so
+  `shouldWithholdWedgeAlertForAutoRecovery` withheld the alert for a recovery that never came
+  (measured on RUFU-225: the RUFU-180 sweep selected the card and the service answered `unavailable`).
+
+  The key deliberately equals `describeTaskWedgeFromStallReason`'s stall key: the same card is
+  described by the stall arm once the repair lane clears its failed status, and one episode identity
+  across that transition is what keeps storm control intact — the per-reason cooldown cannot dedupe
+  two names for one condition. The recovery-owner veto below is preserved from the generic fallback so
+  a genuinely scheduled retry stays silent. The action copy is shared with `STALL_WEDGE_ACTIONS` so
+  the board chip, the menu, and this alert never disagree.
+  */
+  if (isPreMergeStepsNotRunRefusal(error)) {
+    if (describeTaskRecoveryOwner(task)) return null;
+    return {
+      reasonKey: "stall:pre-merge-gate-pending",
+      reason: PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
+      action: STALL_WEDGE_ACTIONS["pre-merge-gate-pending"],
+    };
   }
   if (error.includes("tool failure") || error.includes("Tool failure")) {
     return { reasonKey: "tool-failure-retry-exhausted", reason: "Execution tool-failure retries were exhausted.", action: "Inspect the failing tool and retry the task." };

@@ -2972,7 +2972,19 @@ export function useChat(
       FNXC:ChatRemoteGenerationMirror 2026-09-17-18:57:
       An older server (or any emit path that bypasses the SSE enrichment) delivers the raw store
       row: `inFlightGeneration` present, `isGenerating` absent. Deriving the flag here keeps the
-      remote-generation attach and the list spinner working across the wire upgrade boundary.
+      remote-generation transcript attach working across the wire upgrade boundary. The flag's
+      only consumer here is the attach below: no chat sidebar row renders a generating indicator
+      (`chat-session-item` shows pin / unread / window / preview only), so nothing in this handler
+      feeds a session-list spinner — that indicator is a deliberate follow-up, not this contract.
+
+      FNXC:ChatSidebarLiveness 2026-09-24-07:07 (RUFU-220):
+      The sidebar chip from that follow-up exists now, but it is still NOT a consumer of this flag,
+      and this handler must stay as it is. The chip classifies the raw `inFlightGeneration` claim
+      through core's shared liveness classifier — the one the engine's reclaim sweep delegates to —
+      because a flag derived here can only ever say "generating" and could never name a claim old
+      enough to be reclaimed. Note that this line also repairs the flag for SSE-delivered rows,
+      which is why the chip must not read `isGenerating`: a row patched here would look live even
+      when its claim's age says the sweep already considers it reclaimable.
       */
       const derivedGenerating = rawSession.isGenerating ?? rawSession.inFlightGeneration?.status === "generating";
       const updatedSession: ChatSessionInfo = { ...rawSession, isGenerating: derivedGenerating };

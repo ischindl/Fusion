@@ -4,7 +4,9 @@ import { fileURLToPath } from "node:url";
 
 const CLI_PACKAGE_NAME = "@runfusion/fusion";
 const DESKTOP_PACKAGE_NAME = "@fusion/desktop";
+// retention-allowlist: one-entry name table over the package-name constants above; never mutated at runtime
 const CLI_PACKAGE_NAMES = new Set([CLI_PACKAGE_NAME]);
+// retention-allowlist: one-entry name table over the package-name constants above; never mutated at runtime
 const DESKTOP_PACKAGE_NAMES = new Set([DESKTOP_PACKAGE_NAME]);
 
 export interface CliPackageVersionInfo {

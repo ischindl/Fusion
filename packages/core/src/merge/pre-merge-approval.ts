@@ -98,6 +98,27 @@ export function findVerdictLessFailedRequiredGates(
 }
 
 /*
+FNXC:PreMergeApproval 2026-09-22-21:42 (RUFU-276):
+The other half of the RUFU-276 admission test: which required gates have NEVER reported. Only
+`state: "missing"` qualifies — a `pending` row is a present gate (FN-8492 rewrites it, never
+deletes it), a verdict-less failed row is RUFU-217's lane, an authored REVISE is the remediation
+lane, and a stale-content row is the stale lane. Recovery lanes use this to prove the wedge
+sentence they are repairing still matches the row they are repairing, so a card that gained a
+result row between the sweep read and the repair write is left to its new owner.
+*/
+
+/** Required pre-merge gates with no result row at all, in the same latest-row resolution the merge door uses. */
+export function findUnrunRequiredPreMergeStepIds(
+  task: Pick<Task, "workflowStepResults" | "repositoryScope">,
+  options: { requiredPreMergeStepIds?: ReadonlySet<string> } = {},
+): string[] {
+  if (!options.requiredPreMergeStepIds?.size) return [];
+  return evaluatePreMergeApprovals(task, options)
+    .filter((approval) => approval.state === "missing")
+    .map((approval) => approval.workflowStepId);
+}
+
+/*
 FNXC:PreMergeApproval 2026-09-01-11:28:
 Content binding prevents an automated approval from being reused against different source, while an
 audited human waiver is not a source approval at all: FN-7720 promises to clear the failed gate, but

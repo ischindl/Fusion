@@ -47,7 +47,17 @@ import {
   CHAT_FOCUS_FLAG,
 } from "@fusion/core";
 import { EventEmitter } from "node:events";
+import { RATE_LIMIT_ENTRY_BYTES } from "./lib/retention-census.js";
+import {
+  enforceEntryCeiling,
+  registerBoundedWindowMap,
+} from "./lib/retention/bounded-window-map.js";
 import { isQuestionToolName } from "./shared/chat-toolcall-compact.js";
+import {
+  findAwaitingQuestionMessageId,
+  QUESTION_ANSWER_TAIL_LIMIT,
+  withQuestionAnswerLink,
+} from "./shared/chat-question-link.js";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join, resolve, relative } from "node:path";
@@ -377,6 +387,18 @@ const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 
 /** Max messages per IP per minute */
 const MAX_MESSAGES_PER_IP_PER_MINUTE = 30;
+
+/**
+ * Ceiling on distinct client addresses holding an in-window chat counter.
+ *
+ * FNXC:RetentionCensus 2026-09-21-21:40 (RUFU-257): the window is 60 seconds but nothing ever
+ * deleted expired chat counters, so the map grew one row per distinct address for the life of the
+ * process. The retention census now reclaims expired windows every sample; this ceiling is the
+ * backstop for a burst of distinct addresses inside a single window. Eviction order is oldest
+ * insertion, so a counter can only be lost after more distinct clients have appeared than any real
+ * deployment produces — and losing one resets that address's 60-second window, never another's.
+ */
+export const CHAT_RATE_LIMIT_IP_MAX = 10_000;
 
 /** Maximum file size for # mentions (50KB). Files larger than this are skipped. */
 const MAX_REFERENCED_FILE_SIZE = 50 * 1024;
@@ -1567,6 +1589,18 @@ interface RateLimitEntry {
 /** Rate limiting state indexed by IP */
 const rateLimits = new Map<string, RateLimitEntry>();
 
+// Census registration is the reclamation owner for this map: no sweep existed before RUFU-257, so
+// expiry deletion and the ceiling clamp both run from the census sample. Limit, window, and the
+// reset time reported to clients are unchanged.
+registerBoundedWindowMap<string, RateLimitEntry>({
+  id: "chat_rate_limits",
+  map: rateLimits,
+  ceiling: CHAT_RATE_LIMIT_IP_MAX,
+  ceilingConstant: "CHAT_RATE_LIMIT_IP_MAX",
+  expiryOf: (entry) => entry.firstRequestAt.getTime() + RATE_LIMIT_WINDOW_MS,
+  valueBytes: () => RATE_LIMIT_ENTRY_BYTES,
+});
+
 // ── File Reference Resolution ───────────────────────────────────────────────
 
 /**
@@ -1823,6 +1857,9 @@ export function checkRateLimit(ip: string): boolean {
       count: 1,
       firstRequestAt: new Date(),
     });
+    // Ceiling is enforced at the insert site so a burst of distinct addresses inside one census
+    // interval cannot outrun the bound; expired-window deletion is the census sweep's job.
+    enforceEntryCeiling(rateLimits, CHAT_RATE_LIMIT_IP_MAX);
     return true;
   }
 
@@ -1833,6 +1870,7 @@ export function checkRateLimit(ip: string): boolean {
       count: 1,
       firstRequestAt: new Date(),
     });
+    enforceEntryCeiling(rateLimits, CHAT_RATE_LIMIT_IP_MAX);
     return true;
   }
 
@@ -3269,6 +3307,36 @@ export class ChatManager {
     return title === null || title === undefined || title.trim() === "";
   }
 
+  /*
+  FNXC:ChatQuestionAnswerLink 2026-09-23-13:59:
+  RUFU-258: the single writer for the durable question→answer link. Returns the id of the assistant
+  row whose `fn_ask_question` is awaiting input, so the caller stamps the user row it is about to
+  persist. System sends are excluded before any read: an auto-retry or restart-recovery message is
+  machine text, never an operator answer, and stamping it would make a question card quote a
+  "System auto-retry…" paragraph as its submitted answer.
+
+  The read is bounded (DESC, QUESTION_ANSWER_TAIL_LIMIT) — this sits on every chat send, so a
+  whole-history read would be a latency regression — and its failure is swallowed to `null`: a
+  telemetry-quality derivation must never reject the send that carries the operator's message.
+  */
+  private async resolveOutgoingQuestionAnswerLink(
+    sessionId: string,
+    options?: { autoRetry?: boolean; userMessageMetadata?: Record<string, unknown> },
+  ): Promise<string | null> {
+    if (options?.autoRetry === true) return null;
+    const systemReason = options?.userMessageMetadata?.reason;
+    if (typeof systemReason === "string" && systemReason.trim().length > 0) return null;
+    try {
+      const newestFirst = await this.chatStore.getMessages(sessionId, {
+        order: "desc",
+        limit: QUESTION_ANSWER_TAIL_LIMIT,
+      });
+      return findAwaitingQuestionMessageId([...newestFirst].reverse());
+    } catch {
+      return null;
+    }
+  }
+
   async sendMessage(
     sessionId: string,
     content: string,
@@ -3473,15 +3541,29 @@ export class ChatManager {
       const mentionAgents = hasMentionCandidates ? await this.listAgentsForMentions() : [];
       const mentions = hasMentionCandidates ? await this.parseMentions(content, mentionAgents) : [];
 
+      /*
+      FNXC:ChatQuestionAnswerLink 2026-09-23-13:59:
+      RUFU-258: resolve the link BEFORE the insert, while the transcript still ends at the question
+      row the operator is answering. The stamped key is merged into the same object the mention and
+      caller-metadata spread already build, so `mentions` and any caller metadata survive — the merge
+      never replaces the object. An edit-and-resend needs no branch here: `prepareReplacement` has
+      already rewound the transcript, so this read sees the post-rewind tail and re-stamps correctly.
+      */
+      const baseUserMetadata: Record<string, unknown> = {
+        ...(mentions.length > 0 ? { mentions } : {}),
+        ...(options?.userMessageMetadata ?? {}),
+      };
+      const questionAnswerMessageId = await this.resolveOutgoingQuestionAnswerLink(sessionId, options);
+
       // Persist user message
       let persistedUserMessageId: string | undefined;
       try {
         const persistedUserMessage = await this.chatStore.addMessage(sessionId, {
           role: "user",
           content,
-          metadata: (mentions.length > 0 || options?.userMessageMetadata)
-            ? { ...(mentions.length > 0 ? { mentions } : {}), ...(options?.userMessageMetadata ?? {}) }
-            : undefined,
+          metadata: questionAnswerMessageId
+            ? withQuestionAnswerLink(baseUserMetadata, questionAnswerMessageId)
+            : (Object.keys(baseUserMetadata).length > 0 ? baseUserMetadata : undefined),
           attachments,
         });
         persistedUserMessageId = persistedUserMessage.id;

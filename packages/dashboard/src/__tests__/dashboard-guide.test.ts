@@ -93,7 +93,14 @@ describe("dashboard guide coverage for lazy-loaded views", () => {
      * FN-469 moved Settings out of the far-right group: it is now an icon-only action beside the capacity counter and
      * the last entry of the More menu, so Terminal is the last right-hand action instead of Settings' left neighbour.
      */
-    expect(guide).toContain("**Terminal** as the last action at the far right");
+    /*
+    FNXC:ChatRemoteGenerationMirror 2026-09-21-11:52:
+    Stale guide literal, repaired incidentally while this task edited the same document: the footer copy
+    now reads "the **fifth** occupies the far-right slot … followed by **Terminal** as the last action", so
+    the old "as the last action at the far right" wording no longer exists. The assertion tracks the
+    documented contract (Terminal is the last right-hand action) without asserting removed prose.
+    */
+    expect(guide).toContain("**Terminal** as the last action");
     expect(guide).toContain("icon-only **Settings** action sits immediately to its right");
     expect(guide).toContain("last entry of the **More** menu");
     expect(guide).toContain("Tablet retains its sidebar, compact Header, standard right dock, ordinary page routing, and no Alpha desktop windows or guards");

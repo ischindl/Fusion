@@ -438,6 +438,12 @@ function parseCommand(rawCommand: string): { command: string; args: string[] } {
   return { command, args: rest };
 }
 
+/*
+FNXC:RetentionCensus 2026-09-23-09:35 (RUFU-257):
+`managerInstances` is the per-root singleton registry for the dev-server process manager. Values own
+live child processes, so eviction would strand a running server; the cardinality owner is roots opened.
+*/
+// retention-config-keyed: keyed by resolved project root — one live DevServerManager per configured root
 const managerInstances = new Map<string, DevServerManager>();
 
 export function getDevServerManager(projectRoot: string): DevServerManager {

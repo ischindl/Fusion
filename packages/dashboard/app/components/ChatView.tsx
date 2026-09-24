@@ -43,6 +43,7 @@ import { PendingChatMessageQueue } from "./PendingChatMessageQueue";
 import { ChatFocusSelector } from "./ChatFocusSelector";
 import { ChatPresentationToggle } from "./ChatPresentationToggle";
 import { useChatPresentation } from "./ChatPresentationContext";
+import { chatLivenessLabel, chatSessionLiveness } from "./chat/chatLiveness";
 import { AgentMentionPopup } from "./AgentMentionPopup";
 import { ProviderIcon } from "./ProviderIcon";
 import { FileMentionPopup } from "./FileMentionPopup";
@@ -66,7 +67,7 @@ import { resolveChatHandoffUiSettings } from "../utils/chatHandoff";
 import { copyTextToClipboard } from "../utils/copyToClipboard";
 import { buildChatQuotePrefill } from "../utils/chatQuotePrefill";
 /* FNXC:ChatQuestionLiveness 2026-09-17-19:30: shared liveness predicate + answer-echo lookup for question cards. */
-import { findSubmittedQuestionAnswer, isLiveQuestionAwaitingAnswer } from "../utils/parseQuestionToolCall";
+import { findSubmittedQuestionAnswer, indexDurableQuestionAnswers, isLiveQuestionAwaitingAnswer } from "../utils/parseQuestionToolCall";
 import {
   clearPersistedChatOpenSession,
   getPersistedChatOpenSession,
@@ -230,6 +231,51 @@ function formatRelativeTime(dateStr: string, t: TFunction<"app">): string {
   if (diffHours < 24) return t("chat.relativeTimeHours", "{{count}}h ago", { count: diffHours });
   if (diffDays < 7) return t("chat.relativeTimeDays", "{{count}}d ago", { count: diffDays });
   return date.toLocaleDateString();
+}
+
+/*
+FNXC:ChatSidebarLiveness 2026-09-24-06:21 (RUFU-220):
+The sidebar tag is the visible twin of the engine's stale-in-flight reclaim sweep: both read one
+`inFlightGeneration` claim, one reference-timestamp chain and one 30-minute floor, so the operator
+can see which generations the sweeper considers reclaimable instead of inferring it from silence.
+That coupling is why the label comes from core's `classifyChatInFlightLiveness` through the
+`@fusion/core/chat-liveness` subpath rather than a dashboard-side rule — two rules would drift, and
+the drift would be invisible because the wrong answer still renders plausible text.
+
+Boundaries this renderer must keep:
+- It renders nothing when the classifier declines the row, so an idle conversation (the overwhelming
+  majority of rows) is byte-identical to the pre-change sidebar.
+- It is presentational: no click target of its own, inheriting the row's existing selection handler.
+- Only the conversation LIST gets the tag. The transcript/streaming path and the composer stay
+  driven by `isStreaming`/`isGenerating` on purpose — while the operator is reading the transcript,
+  the streamed deltas and the send affordance are the real liveness, and a second badge there would
+  contradict a path that is already honest about its own state.
+- The tag disappearing after reclaim is the sweeper's event (it clears the claim, the list re-syncs
+  and the classifier sees no claim). No client-side clear exists, and none may be added.
+*/
+
+/**
+ * The one sidebar liveness renderer.
+ *
+ * A lowercase render function rather than a component: it returns elements without introducing a
+ * new element type, so a row's subtree reconciles in place across re-renders (see the
+ * `fusion-react/no-nested-component-definitions` rule). It returns `null` whenever
+ * `chatSessionLiveness` declines to classify the row, which keeps the pre-change sidebar rendering
+ * byte-identical for every session without an in-flight claim.
+ */
+function renderChatSessionLiveness(session: ChatSessionInfo, t: TFunction<"app">) {
+  const liveness = chatSessionLiveness(session, undefined, t);
+  if (!liveness) return null;
+  const stale = liveness.kind === "stale-pending-reclaim";
+  return (
+    <span
+      className={`chat-session-liveness chat-session-liveness--${stale ? "stale" : "generating"}`}
+      data-testid={`chat-session-liveness-${session.id}`}
+      title={liveness.title}
+    >
+      {chatLivenessLabel(liveness.kind, t)}
+    </span>
+  );
 }
 
 const CHAT_DRAFT_STORAGE_PREFIX = "fusion:chat-draft:";
@@ -838,6 +884,14 @@ function ChatViewContent({ projectId, addToast, floating = false, compactLayout 
     () => [...messages.map((message) => message.id), ...(isStreaming ? ["__streaming__"] : [])],
     [isStreaming, messages],
   );
+  /*
+  FNXC:ChatQuestionAnswerLink 2026-09-23-14:21:
+  RUFU-258: the durable question-answer link (stamped server-side on the answer row) is the
+  authoritative answered-state source, so the transcript is indexed by question row id ONCE per
+  messages change — never per rendered row — and against the FULL loaded `messages`, never the
+  virtualizer's visible window, so a question row scrolled out of view keeps its answered state.
+  */
+  const durableQuestionAnswers = useMemo(() => indexDurableQuestionAnswers(messages), [messages]);
   const virtualTranscript = useVirtualizedChatTranscript({
     transcriptKey: activeSession?.id ?? null,
     keys: transcriptKeys,
@@ -3499,6 +3553,7 @@ function ChatViewContent({ projectId, addToast, floating = false, compactLayout 
             const index = messages.findIndex((message) => message.id === key);
             const message = messages[index];
             if (!message) return null;
+            const durableQuestionAnswer = durableQuestionAnswers.get(message.id);
             const identity = resolveMessageAssistantIdentity(message);
             return <div key={key} ref={virtualTranscript.measureRow(key)} className="chat-transcript-row">
               <StandardChatMessageItem
@@ -3517,14 +3572,24 @@ function ChatViewContent({ projectId, addToast, floating = false, compactLayout 
                 onQuoteMessage={handleQuoteMessage}
                 onScrollToTop={handleScrollMessageToTop}
                 isTopClipped={topClippedMessageIds.has(message.id)}
-                isAwaitingQuestionAnswer={isLiveQuestionAwaitingAnswer({
-                  role: message.role,
-                  isLastMessage: index === messages.length - 1,
-                  isStreaming,
-                  isSessionGenerating: activeSession?.isGenerating === true,
-                  interrupted: message.metadata?.interrupted === true,
-                })}
-                submittedQuestionAnswer={findSubmittedQuestionAnswer(messages, index)}
+                /*
+                FNXC:ChatQuestionAnswerLink 2026-09-23-14:21:
+                RUFU-258 render precedence: durable link first, then the live-turn await, then the legacy
+                positional echo. A linked card is answered with the linked row's content and is not
+                actionable even while the session is generating; an UNLINKED card keeps exactly the old
+                inputs, so pre-feature rows and a send still in flight (whose answer row has not reached
+                this client yet) are unaffected.
+                */
+                isAwaitingQuestionAnswer={durableQuestionAnswer
+                  ? false
+                  : isLiveQuestionAwaitingAnswer({
+                    role: message.role,
+                    isLastMessage: index === messages.length - 1,
+                    isStreaming,
+                    isSessionGenerating: activeSession?.isGenerating === true,
+                    interrupted: message.metadata?.interrupted === true,
+                  })}
+                submittedQuestionAnswer={durableQuestionAnswer?.content ?? findSubmittedQuestionAnswer(messages, index)}
                 onQuestionSubmit={handleQuestionSubmit}
                 onRetryTurn={handleRetryTurn}
                 loadToolCallFull={loadFullToolCall}
@@ -4149,6 +4214,7 @@ function ChatViewContent({ projectId, addToast, floating = false, compactLayout 
                           <span>{agentsMap.get(session.agentId)?.name || (session.agentId === FN_AGENT_ID ? "Fusion" : session.agentId.slice(0, 30))}</span>
                           <span data-testid={`chat-session-model-tag-${session.id}`}>{sessionModelTag || "Fusion"}</span>
                         </span>
+                        {renderChatSessionLiveness(session, t)}
                         <span>{session.updatedAt ? formatRelativeTime(session.updatedAt, t) : ""}</span>
                       </div>
                     </div>

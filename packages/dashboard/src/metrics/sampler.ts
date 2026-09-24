@@ -2,8 +2,9 @@
  * RUFU-081 sampler orchestrator for the dashboard `/metrics` endpoint.
  *
  * Composes the runtime sampler (request-latency recorder, process CPU/memory,
- * spawn-count hook, git-subprocess gauge) and the domain sampler (PostgreSQL
- * query rate + project/agent/board-column gauges) behind one handle:
+ * spawn-count hook, git-subprocess gauge), the domain sampler (PostgreSQL
+ * query rate + project/agent/board-column gauges), and the RUFU-257 retention
+ * sampler (in-process cache/buffer entry + byte attribution) behind one handle:
  *
  *   - `start()`  — installs the spawn-count hook once and starts both samplers'
  *                  unref'd tick timers (runtime ~5s, process ~5s, git ~15s,
@@ -33,11 +34,18 @@ import {
   type RuntimeSamplerInit,
 } from "./runtime-sampler.js";
 import { createDomainSampler, type DomainSampler, type DomainSamplerInit } from "./domain-sampler.js";
+import {
+  createRetentionSampler,
+  type RetentionSampler,
+  type RetentionSamplerInit,
+} from "./retention-sampler.js";
 
 /** The orchestrator's public handle. */
 export interface MetricsSampler {
   readonly runtime: RuntimeSampler;
   readonly domain: DomainSampler;
+  /** RUFU-257 in-process retention census (per-cache entry/byte attribution). */
+  readonly retention: RetentionSampler;
   /** True while the sampler timers + spawn hook are active. */
   readonly started: boolean;
   /**
@@ -57,12 +65,14 @@ export interface MetricsSampler {
 export interface MetricsSamplerInit {
   runtime?: RuntimeSamplerInit;
   domain?: DomainSamplerInit;
+  retention?: RetentionSamplerInit;
 }
 
 /** Create an orchestrator. No side effects until {@link MetricsSampler.start}. */
 export function createMetricsSampler(init: MetricsSamplerInit = {}): MetricsSampler {
   const runtime = createRuntimeSampler(init.runtime);
   const domain = createDomainSampler(init.domain);
+  const retention = createRetentionSampler(init.retention);
   let started = false;
 
   function start(): void {
@@ -73,6 +83,7 @@ export function createMetricsSampler(init: MetricsSamplerInit = {}): MetricsSamp
     runtime.installSpawnHook();
     runtime.start();
     domain.start();
+    retention.start();
   }
 
   function stop(): void {
@@ -80,19 +91,25 @@ export function createMetricsSampler(init: MetricsSamplerInit = {}): MetricsSamp
     started = false;
     runtime.stopTimers();
     domain.stopTimers();
+    retention.stopTimers();
     runtime.removeSpawnHook();
   }
 
   function render(nowMs?: number): string {
     // Synchronous render from pre-read gauges only — no awaits here.
     const now = nowMs ?? Date.now();
-    const families: MetricFamily[] = [...runtime.buildSnapshot(now), ...domain.buildSnapshot(now)];
+    const families: MetricFamily[] = [
+      ...runtime.buildSnapshot(now),
+      ...domain.buildSnapshot(now),
+      ...retention.buildSnapshot(now),
+    ];
     return serializeMetrics({ families });
   }
 
   return {
     runtime,
     domain,
+    retention,
     get started() {
       return started;
     },

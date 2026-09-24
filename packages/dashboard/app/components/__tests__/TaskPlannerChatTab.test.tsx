@@ -2056,6 +2056,65 @@ describe("TaskPlannerChatTab", () => {
     expect(screen.queryByTestId("chat-question-response-option-q-0-opt-1")).not.toBeInTheDocument();
   });
 
+  /*
+  FNXC:ChatQuestionAnswerLink 2026-09-23-14:21:
+  RUFU-258 symptom verification for Planner Chat. The operator answering a planner question by typing
+  plain text (never re-echoing `> Q: …`) used to leave the card live forever, because the only answer
+  signal was the echo-containment scan. The durable link written by ChatManager.sendMessage is now the
+  authoritative signal, so a plain-text answer renders the card read-only with the operator's own words.
+  */
+  it("renders a plain-text durable answer read-only without the legacy question echo", async () => {
+    mockFetchChatMessages.mockResolvedValue({
+      messages: [
+        plannerQuestionMessage("assistant-question", { question: "Pick a path", options: ["Conservative", "Aggressive"] }),
+        {
+          id: "user-plain-answer",
+          sessionId: "chat-planner",
+          role: "user",
+          content: "go conservative, we ship friday",
+          thinkingOutput: null,
+          metadata: { questionAnswer: { questionMessageId: "assistant-question" } },
+          createdAt: "2026-06-30T00:03:00.000Z",
+        },
+      ],
+    });
+    renderPlannerChat();
+
+    expect(await screen.findByTestId("chat-question-response-submitted-answer")).toHaveTextContent("go conservative, we ship friday");
+    expect(screen.getByText("Answered")).toBeInTheDocument();
+    expect(screen.queryByTestId("chat-question-response-submit")).not.toBeInTheDocument();
+  });
+
+  /*
+  FNXC:ChatQuestionAnswerLink 2026-09-23-14:21:
+  RUFU-258: the pending-duplicate suppression exists to stop TWO live submit affordances competing. A
+  durably answered card has no affordance to compete, so it must never be hidden as a duplicate of a
+  later re-ask — hiding it would erase the record of what the operator actually answered.
+  */
+  it("keeps a durably answered question visible when the same question is re-asked pending", async () => {
+    mockFetchChatMessages.mockResolvedValue({
+      messages: [
+        plannerQuestionMessage("assistant-question-answered", { question: "Pick a path", options: ["Conservative", "Aggressive"] }, "2026-06-30T00:02:00.000Z"),
+        {
+          id: "user-plain-answer",
+          sessionId: "chat-planner",
+          role: "user",
+          content: "conservative",
+          thinkingOutput: null,
+          metadata: { questionAnswer: { questionMessageId: "assistant-question-answered" } },
+          createdAt: "2026-06-30T00:03:00.000Z",
+        },
+        plannerQuestionMessage("assistant-question-reask", { question: "Pick a path", options: ["Conservative", "Aggressive"] }, "2026-06-30T00:04:00.000Z"),
+      ],
+    });
+    renderPlannerChat();
+
+    expect(await screen.findByTestId("chat-question-response-submitted-answer")).toHaveTextContent("conservative");
+    expect(screen.getAllByTestId("chat-question-response")).toHaveLength(2);
+    // Exactly one live affordance: the re-ask, never the answered card.
+    expect(screen.getAllByTestId("chat-question-response-submit")).toHaveLength(1);
+  });
+
   it("hides older duplicate pending planner questions after a refetch", async () => {
     mockFetchChatMessages.mockResolvedValue({
       messages: [

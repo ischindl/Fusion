@@ -6,6 +6,7 @@ import { EventEmitter } from "node:events";
  * Command validation patterns for the allowlist.
  * These are the base commands that users are allowed to execute.
  */
+// retention-allowlist: executable-name allow-list (security policy, see the doc comment above); fixed table, never grown at runtime
 export const ALLOWED_COMMANDS = new Set([
   // Version control
   "git",

@@ -14,7 +14,7 @@ import { MicButton } from "./MicButton";
 import type { ChatEnginePhase, ChatMessageInfo, ToolCallInfo } from "../hooks/chatTypes";
 import { isPersistedChatMessageId } from "../hooks/chatTypes";
 import { attachChatStream, cancelChatResponse, ensureTaskPlannerChatSession, fetchChatMessages, fetchChatSession, fetchChatToolCallBody, fetchSettings, fetchTaskDetail, fetchTaskPlannerChatSession, streamChatResponse, updateChatSession, type ChatFailureInfo, type ChatStreamErrorMeta } from "../api";
-import { parseQuestionToolCall, isPlannerQuestionAwaitingAnswer, findSubmittedQuestionAnswer, type ParsedQuestionToolCall } from "../utils/parseQuestionToolCall";
+import { parseQuestionToolCall, isPlannerQuestionAwaitingAnswer, findSubmittedQuestionAnswer, indexDurableQuestionAnswers, type ParsedQuestionToolCall } from "../utils/parseQuestionToolCall";
 import { ChatQuestionResponse } from "./ChatQuestionResponse";
 import { PendingChatMessageQueue } from "./PendingChatMessageQueue";
 import { ProviderIcon } from "./ProviderIcon";
@@ -32,6 +32,9 @@ import {
 } from "../utils/chatInputAutosize";
 import { ChatFocusSelector } from "./ChatFocusSelector";
 import { useStickyBottomFollow } from "../hooks/useStickyBottomFollow";
+import { subscribeSse } from "../sse-bus";
+import { createResyncRetryRunner } from "../hooks/resyncRetry";
+import { useTabVisibilitySuspension } from "../hooks/visibilitySuspension";
 import "./TaskPlannerChatTab.css";
 
 interface TaskPlannerChatTabProps {
@@ -172,6 +175,36 @@ function mergePlannerTranscriptWithOptimistic(current: ChatMessage[], refreshed:
     next = [...next, persisted];
   }
   return sortMessages(next);
+}
+
+/*
+FNXC:ChatRemoteGenerationMirror 2026-09-21-11:08:
+The `chat:session:updated` frame that reaches `/api/events` clients is the persisted session row
+plus one derived boolean, so the planner mirror reads exactly these fields and nothing else. There
+is no generation identifier on the wire — `ChatInFlightGenerationState` carries status, streaming
+carriers, the `replayFromEventId` replay cursor and timestamps only — so a mirror cannot compare
+"is this the generation I already follow?" by payload id. Suppression is carried by the client's own
+live stream state plus the `(sessionId, replayFromEventId)` cursor marker below.
+*/
+type PlannerChatSessionFrame = {
+  id?: string;
+  isGenerating?: boolean;
+  inFlightGeneration?: ChatInFlightGenerationState | null;
+};
+
+/**
+ * Same wire-compat expression `useChat`'s `handleChatSessionUpdated` derives with: `sse.ts` enriches
+ * the frame at the bus boundary, but an older or unenriched payload still carries the status, so the
+ * mirror must not depend on the derived flag being present.
+ */
+function plannerFrameIsGenerating(frame: PlannerChatSessionFrame): boolean {
+  return frame.isGenerating ?? frame.inFlightGeneration?.status === "generating";
+}
+
+/** Replay position for `attachChatStream`, or `null` when the frame carries no numeric cursor. */
+function plannerFrameReplayCursor(frame: PlannerChatSessionFrame): number | null {
+  const cursor = frame.inFlightGeneration?.replayFromEventId;
+  return typeof cursor === "number" ? cursor : null;
 }
 
 function makeStreamingAssistantMessage(sessionId: string, content: string, toolCalls: ToolCallInfo[] = [], thinkingOutput = ""): ChatMessage {
@@ -335,17 +368,33 @@ function toStandardChatMessage(message: ChatMessage): ChatMessageInfo {
   };
 }
 
+/*
+FNXC:ChatQuestionAnswerLink 2026-09-23-14:21:
+RUFU-258: a durably linked answer (`metadata.questionAnswer.questionMessageId`, written by
+ChatManager.sendMessage) is authoritative here and beats both legacy planner heuristics — the
+`> Q:` echo containment and the pending-duplicate pairing. A linked answer is often PLAIN text (the
+operator just types "yes, the feature branch"), which the containment scan could never match, and a
+linked card must never be flipped back to pending by a later pending card of the same question.
+Unlinked rows keep the legacy pair exactly as before.
+*/
 function buildPlannerQuestionRenderStates(messages: readonly ChatMessage[]): Map<string, PlannerQuestionRenderState> {
   const states = new Map<string, PlannerQuestionRenderState>();
   const latestUnansweredByQuestion = new Map<string, string>();
+  const durableAnswers = indexDurableQuestionAnswers(messages);
 
   messages.forEach((message, messageIndex) => {
     if (message.role !== "assistant") return;
+    const durableAnswer = durableAnswers.get(message.id);
     extractToolCalls(message).forEach((toolCall, toolCallIndex) => {
       const parsed = parseQuestionToolCall(toolCall);
       if (!parsed) return;
       const stateKey = `${message.id}:${toolCallIndex}`;
       const questionKey = getPlannerQuestionKey(parsed);
+      if (durableAnswer) {
+        // Every question call on a linked row resolves to the same answer, and a linked card is never pending.
+        states.set(stateKey, { parsed, answered: true, submittedAnswer: durableAnswer.content, hiddenDuplicate: false });
+        return;
+      }
       const nextUserAnswer = messages.slice(messageIndex + 1).find((candidate) => isQuestionAnswerFor(candidate, parsed));
       const answered = Boolean(nextUserAnswer);
       if (!answered) {
@@ -410,6 +459,36 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const streamRef = useRef<{ close: () => void } | null>(null);
+  /*
+  FNXC:ChatRemoteGenerationMirror 2026-09-21-11:08:
+  Per-session-incarnation record of the replay cursor this tab already attached for, shaped exactly
+  like `useChat`'s `lastAttachedGenerationRef`. The cursor is a replay position, not an identity, so
+  this marker is only ever consulted by the frame path — the authoritative reconnect/visibility
+  reconcile re-attaches on the fetched session row instead.
+
+  FNXC:ChatRemoteGenerationMirror 2026-09-21-19:19:
+  RUFU-252 (Code Review remediation): the marker is retired together with the stream it recorded — see
+  `clearPlannerMirrorAttachment`. It cannot outlive that stream, because `beginGeneration` stamps
+  `replayFromEventId: 0` on the in-flight row that OPENS every generation and a generation with no
+  >=200 ms delta gap publishes nothing but that cursor-0 frame plus its terminal frame (the debounced
+  checkpoint queue is cancelled by the completion flush). A retained cursor-0 marker therefore
+  suppressed every later foreign generation in the same open tab: the idle-looking-tab symptom this
+  mirror exists to kill. Duplicates of the generation that is CURRENT are suppressed by the live
+  `streamRef` guard instead, which cannot outlive its own generation.
+  */
+  const lastAttachedGenerationRef = useRef<{ sessionId: string; replayFromEventId: number | null } | null>(null);
+  /*
+  FNXC:ChatRemoteGenerationMirror 2026-09-21-19:19:
+  RUFU-252 (Code Review remediation, P1): session id of the stream the *mirror* opened (an attach),
+  or `null` when the live stream is a send this tab started itself. The server flushes the cleared
+  in-flight row — which emits `chat:session:updated` — BEFORE it broadcasts `done`, so a terminal
+  frame routinely reaches the tab while its own send is still finishing. Closing that stream from the
+  frame path would bump `streamRequestRef` out from under the send's own `onDone`, skipping its
+  queued-message dispatch and replacing the persisted-row append with a transcript reload. Only the
+  authoritative reconcile (which has fetched the row and proven the server idle) may close a
+  locally-owned transport, exactly as `useChat` does.
+  */
+  const mirrorOwnedStreamSessionRef = useRef<string | null>(null);
   const pendingMessagesRef = useRef<string[]>([]);
   const sessionIdRef = useRef<string | null>(null);
   /*
@@ -450,6 +529,17 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
   const previousActiveRef = useRef(false);
   const loadRequestRef = useRef(0);
   const streamRequestRef = useRef(0);
+  /*
+  FNXC:ChatRemoteGenerationMirror 2026-09-21-19:19:
+  RUFU-252: single owner of the mirror's memory of its attach. Call it wherever the tab's stream
+  dies (stream `onDone`/`onError`, mirror detach, Stop/cancel, task or project change, unmount) — a
+  marker or an ownership flag that survives its stream mis-describes a generation that has not
+  started yet.
+  */
+  const clearPlannerMirrorAttachment = useCallback(() => {
+    lastAttachedGenerationRef.current = null;
+    mirrorOwnedStreamSessionRef.current = null;
+  }, []);
   const addToastRef = useRef(addToast);
   const onTaskUpdatedRef = useRef(onTaskUpdated);
   const taskChatModelRef = useRef(taskChatModel);
@@ -844,6 +934,9 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
         setStreamingPhase(null);
         streamSnapshotRef.current = null;
         streamRef.current = null;
+        // FNXC:ChatRemoteGenerationMirror 2026-09-21-19:19: RUFU-252 — a dead stream must not keep
+        // its cursor or its mirror ownership alive; see `clearPlannerMirrorAttachment`.
+        clearPlannerMirrorAttachment();
         if (data.message) {
           setMessages((current) => {
             const withoutTemporary = current.filter((message) => message.id !== "streaming-assistant");
@@ -864,6 +957,8 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
         setStreamingPhase(null);
         streamSnapshotRef.current = null;
         streamRef.current = null;
+        // FNXC:ChatRemoteGenerationMirror 2026-09-21-19:19: RUFU-252 — see `clearPlannerMirrorAttachment`.
+        clearPlannerMirrorAttachment();
         setMessages((current) => {
           const withoutStreaming = current.filter((candidate) => candidate.id !== "streaming-assistant");
           if (meta?.requestAccepted === false && content) {
@@ -901,7 +996,155 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
             ...(replacementMessageId ? { replacementMessageId } : {}),
           },
         );
-  }, [applyStreamingSnapshot, projectId, refreshMessagesForSession, refreshTaskAfterSteering, restorePendingQueueReservation, task.id, t]);
+    // Recorded at the one place the transport is created, so mirror ownership cannot drift from it.
+    mirrorOwnedStreamSessionRef.current = attach ? resolvedSessionId : null;
+  }, [applyStreamingSnapshot, clearPlannerMirrorAttachment, projectId, refreshMessagesForSession, refreshTaskAfterSteering, restorePendingQueueReservation, task.id, t]);
+
+  /*
+  FNXC:ChatRemoteGenerationMirror 2026-09-21-11:08:
+  RUFU-252 (Gap A): a planner generation that this tab did not start — a second window on the same
+  planner chat, a direct API call, or an engine auto-retry — was invisible here until the tab
+  remounted, because `loadSession()` probed generation state exactly once per activation. The tab now
+  mirrors the `chat:session:updated` frames its own session emits on `/api/events` and re-enters the
+  SAME `startPlannerStream({ attach: true })` path that `loadSession()` already uses, so there is
+  still one streaming client and one transcript owner (`streamRef`) per session.
+
+  De-duplication carrier: the wire never sends a generation identifier — `ChatInFlightGenerationState`
+  exposes status, streaming carriers, the `replayFromEventId` replay cursor, and timestamps — so
+  suppression is carried by the client's own state: the live `streamRef` is the anti-double-attach rule
+  for the bounded per-event fan-out and for advancing cursors within one generation, and the
+  `lastAttachedGenerationRef` cursor marker only records the attach that live stream belongs to. Both
+  die with that stream (`clearPlannerMirrorAttachment`), because every NEW generation re-opens at
+  cursor 0 and must be able to attach again. A future author must not reach for a payload id to solve
+  this, and must not let the marker outlive its transport.
+  */
+  const detachPlannerMirrorStream = useCallback((sessionId: string) => {
+    if (streamRef.current) {
+      /*
+      Retire the stream's callbacks before its transient carriers disappear, so a close that lands
+      after the authoritative probe cannot re-light the working state of a generation the server
+      already finished.
+      */
+      streamRequestRef.current += 1;
+      streamRef.current.close();
+      streamRef.current = null;
+      /*
+      FNXC:ChatRemoteGenerationMirror 2026-09-21-19:19:
+      RUFU-252 — the next generation re-opens at cursor 0, so the retired attach's cursor must not
+      survive to suppress it, and a stream that no longer exists owns nothing.
+      */
+      clearPlannerMirrorAttachment();
+    }
+    composerStateRef.current = "idle";
+    setComposerState("idle");
+    setStreamingThinking("");
+    setStreamingPhase(null);
+    streamSnapshotRef.current = null;
+    // `mergePlannerTranscriptWithOptimistic` drops the `streaming-assistant` placeholder, so the
+    // working state cannot outlive the detach even when the transcript reload is superseded.
+    void refreshMessagesForSession(sessionId, () => sessionIdRef.current === sessionId);
+  }, [clearPlannerMirrorAttachment, refreshMessagesForSession]);
+
+  const attachPlannerMirrorGeneration = useCallback((
+    sessionId: string,
+    inFlightGeneration: ChatInFlightGenerationState | null | undefined,
+  ) => {
+    const cursor = typeof inFlightGeneration?.replayFromEventId === "number"
+      ? inFlightGeneration.replayFromEventId
+      : null;
+    lastAttachedGenerationRef.current = { sessionId, replayFromEventId: cursor };
+    const requestId = streamRequestRef.current + 1;
+    streamRequestRef.current = requestId;
+    startPlannerStream({ resolvedSessionId: sessionId, inFlightGeneration, requestId, attach: true });
+  }, [startPlannerStream]);
+
+  const mirrorRemoteChatSessionFrame = useCallback((event: MessageEvent) => {
+    let frame: PlannerChatSessionFrame;
+    try {
+      const parsed: unknown = JSON.parse(event.data);
+      if (typeof parsed !== "object" || parsed === null) return;
+      frame = parsed as PlannerChatSessionFrame;
+    } catch {
+      return;
+    }
+    const sessionId = sessionIdRef.current;
+    if (!sessionId || frame.id !== sessionId) return;
+    if (plannerFrameIsGenerating(frame)) {
+      // Live-stream guard first: an already-attached generation ignores both the identical frame
+      // replayed by the fan-out and a second frame whose replay cursor has advanced.
+      if (streamRef.current) return;
+      const cursor = plannerFrameReplayCursor(frame);
+      const lastAttached = lastAttachedGenerationRef.current;
+      if (lastAttached?.sessionId === sessionId && lastAttached.replayFromEventId === cursor) return;
+      attachPlannerMirrorGeneration(sessionId, frame.inFlightGeneration);
+      return;
+    }
+    /*
+    Terminal frame for the generation this tab was mirroring: close the dead transport, drop the
+    working state, and reload the transcript so the finished answer renders. A stream this tab started
+    itself is left to its own `onDone`/`onError` — the frame arrives before `done` is broadcast, and
+    closing it here would cancel that send's queued-message dispatch. The authoritative reconcile
+    below keeps the unconditional close, because there the row has been fetched and proves the server
+    idle.
+    */
+    if (streamRef.current && mirrorOwnedStreamSessionRef.current === sessionId) {
+      detachPlannerMirrorStream(sessionId);
+    }
+  }, [attachPlannerMirrorGeneration, detachPlannerMirrorStream]);
+
+  const reconcilePlannerMirrorGeneration = useCallback(async () => {
+    const sessionId = sessionIdRef.current;
+    const scopeKeyAtProbe = plannerChatScopeKey;
+    if (!sessionId) return;
+    const { session } = await fetchChatSession(sessionId, projectId);
+    // The tab switched task/project/session mid-probe; the row no longer describes what is on screen.
+    if (!session || sessionIdRef.current !== sessionId || plannerChatScopeKeyRef.current !== scopeKeyAtProbe) return;
+    if (plannerFrameIsGenerating(session)) {
+      /*
+      Deliberately NOT marker-gated: an authoritative row that says "generating" while `streamRef` is
+      empty means the previous transport died, which is exactly the case re-attaching exists for.
+      Mirrors `useChat`'s `reconcileAttachedStream`, where only the frame path consults the cursor.
+      */
+      if (!streamRef.current) attachPlannerMirrorGeneration(sessionId, session.inFlightGeneration);
+      return;
+    }
+    // Server is provably idle while a stream is still open here: that transport is dead.
+    if (streamRef.current) detachPlannerMirrorStream(sessionId);
+  }, [attachPlannerMirrorGeneration, detachPlannerMirrorStream, plannerChatScopeKey, projectId]);
+
+  const plannerChatScopeKeyRef = useRef(plannerChatScopeKey);
+  plannerChatScopeKeyRef.current = plannerChatScopeKey;
+  const mirrorFrameHandlerRef = useRef(mirrorRemoteChatSessionFrame);
+  mirrorFrameHandlerRef.current = mirrorRemoteChatSessionFrame;
+  const mirrorReconcileRef = useRef(reconcilePlannerMirrorGeneration);
+  mirrorReconcileRef.current = reconcilePlannerMirrorGeneration;
+  const mirrorVisibilitySuspension = useTabVisibilitySuspension();
+
+  useEffect(() => {
+    if (!active) return;
+    // The cursor marker belongs to this task/project incarnation, not to the component's lifetime.
+    lastAttachedGenerationRef.current = null;
+    const mirrorResync = createResyncRetryRunner({ run: () => mirrorReconcileRef.current() });
+    /*
+    FNXC:ChatRemoteGenerationMirror 2026-09-21-11:08:
+    The bus suspends hidden tabs and `/api/events` keeps no replay buffer, so becoming visible again
+    is a resume edge equal to a reconnect: re-probe the session authoritatively instead of trusting
+    the last frame seen before the gap.
+    */
+    const offBecameVisible = mirrorVisibilitySuspension.onBecameVisible(() => mirrorResync.trigger());
+    const query = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
+    const unsubscribe = subscribeSse(`/api/events${query}`, {
+      onReconnect: () => mirrorResync.trigger(),
+      events: {
+        "chat:session:updated": (event: MessageEvent) => { mirrorFrameHandlerRef.current(event); },
+      },
+    });
+    return () => {
+      unsubscribe();
+      offBecameVisible();
+      mirrorResync.dispose();
+    };
+  }, [active, mirrorVisibilitySuspension, plannerChatScopeKey, projectId]);
 
   const loadSession = useCallback(async () => {
     const requestId = loadRequestRef.current + 1;
@@ -946,14 +1189,9 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
       setHasMoreHistory(loadedMessages.length >= 50);
       setHistoryLoaded(true);
       if (resolvedSession.isGenerating || resolvedSession.inFlightGeneration) {
-        const streamRequestId = streamRequestRef.current + 1;
-        streamRequestRef.current = streamRequestId;
-        startPlannerStream({
-          resolvedSessionId: lookupSession.id,
-          inFlightGeneration: resolvedSession.inFlightGeneration,
-          requestId: streamRequestId,
-          attach: true,
-        });
+        // FNXC:ChatRemoteGenerationMirror 2026-09-21-11:08: RUFU-252 — every attach records its replay
+        // cursor, so the frame path below cannot double-attach the generation this load already adopted.
+        attachPlannerMirrorGeneration(lookupSession.id, resolvedSession.inFlightGeneration);
       } else {
         queueDispatchRef.current?.(lookupSession.id);
       }
@@ -967,13 +1205,16 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
         setLoading(false);
       }
     }
-  }, [projectId, replacePendingMessages, startPlannerStream, task.id, t]);
+  }, [attachPlannerMirrorGeneration, projectId, replacePendingMessages, startPlannerStream, task.id, t]);
 
   useEffect(() => {
     loadRequestRef.current += 1;
     streamRequestRef.current += 1;
     streamRef.current?.close();
     streamRef.current = null;
+    // FNXC:ChatRemoteGenerationMirror 2026-09-21-11:08: RUFU-252 — the cursor marker is per session
+    // incarnation, and so is the record of which stream the mirror opened; both die with this scope.
+    clearPlannerMirrorAttachment();
     sessionIdRef.current = null;
     setSessionId(null);
     hasLocalTargetOverrideRef.current = false;
@@ -993,7 +1234,7 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
     setLoading(false);
     setHistoryLoaded(false);
     setError(null);
-  }, [plannerChatScopeKey]);
+  }, [clearPlannerMirrorAttachment, plannerChatScopeKey]);
 
   useEffect(() => {
     if (!active) return;
@@ -1008,8 +1249,11 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
       streamRequestRef.current += 1;
       streamRef.current?.close();
       streamRef.current = null;
+      // FNXC:ChatRemoteGenerationMirror 2026-09-21-19:19: RUFU-252 — remount-safe: a marker kept past
+      // this unmount would describe a stream that no longer exists, and re-activation would inherit it.
+      clearPlannerMirrorAttachment();
     };
-  }, []);
+  }, [clearPlannerMirrorAttachment]);
 
   /*
   FNXC:StickyBottomScroll 2026-09-14-20:19:
@@ -1481,6 +1725,9 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
     streamRequestRef.current += 1;
     streamRef.current?.close();
     streamRef.current = null;
+    // FNXC:ChatRemoteGenerationMirror 2026-09-21-19:19: RUFU-252 — Stop ends the generation the cursor
+    // marker belongs to; keeping it would suppress the next generation, which opens at cursor 0 again.
+    clearPlannerMirrorAttachment();
     composerStateRef.current = "idle";
     setComposerState("idle");
     setStreamingThinking("");
@@ -1558,7 +1805,7 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
         setQueueActionPending(false);
       });
     cancellationInProgressRef.current = cancellation;
-  }, [projectId, t]);
+  }, [clearPlannerMirrorAttachment, projectId, t]);
 
   const stopPlannerStreaming = useCallback(() => {
     const snapshot = streamSnapshotRef.current;
@@ -1657,6 +1904,13 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
   const canSend = draft.trim().length > 0 && composerState !== "sending";
   const showEmptyState = historyLoaded && !loading && !error && messages.length === 0;
   const questionRenderStates = useMemo(() => buildPlannerQuestionRenderStates(messages), [messages]);
+  /*
+  FNXC:ChatQuestionAnswerLink 2026-09-23-14:21:
+  RUFU-258: durable question-answer index for the transcript rows, built once per `messages` change
+  (the row renderer must not re-scan the transcript per row). Shared by the card renderer and the
+  message-item liveness props so both surfaces agree on which questions are already answered.
+  */
+  const durableQuestionAnswers = useMemo(() => indexDurableQuestionAnswers(messages), [messages]);
   const starterPrompts = useMemo(() => {
     const seenLabels = new Set<string>();
     return TASK_PLANNER_CHAT_STARTER_PROMPTS.flatMap((prompt) => {
@@ -1889,14 +2143,23 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
                   activeModelProvider={displayedModelProvider ?? null}
                   activeSessionId={sessionId}
                   projectId={projectId}
-                  /* FNXC:ChatQuestionLiveness 2026-09-17-19:30: liveness parity with ChatView — only a last, live, non-interrupted row is awaiting. */
-                  isAwaitingQuestionAnswer={isPlannerQuestionAwaitingAnswer({
-                    role: message.role,
-                    isLastMessage: messages[messages.length - 1]?.id === message.id,
-                    isSending: composerState === "sending",
-                    interrupted: message.metadata?.interrupted === true,
-                  })}
-                  submittedQuestionAnswer={(() => {
+                  /*
+                  FNXC:ChatQuestionLiveness 2026-09-17-19:30: liveness parity with ChatView — only a last, live, non-interrupted row is awaiting.
+
+                  FNXC:ChatQuestionAnswerLink 2026-09-23-14:21:
+                  RUFU-258 render precedence: a durably linked answer wins and is shown verbatim; the liveness
+                  await only applies to unlinked rows, so an answered card cannot flip back to pending while a
+                  generation is in flight. Pre-feature rows keep the legacy positional echo untouched.
+                  */
+                  isAwaitingQuestionAnswer={durableQuestionAnswers.has(message.id)
+                    ? false
+                    : isPlannerQuestionAwaitingAnswer({
+                      role: message.role,
+                      isLastMessage: messages[messages.length - 1]?.id === message.id,
+                      isSending: composerState === "sending",
+                      interrupted: message.metadata?.interrupted === true,
+                    })}
+                  submittedQuestionAnswer={durableQuestionAnswers.get(message.id)?.content ?? (() => {
                     const selfIndex = messages.findIndex((m) => m.id === message.id);
                     return selfIndex >= 0 ? findSubmittedQuestionAnswer(messages, selfIndex) : undefined;
                   })()}

@@ -688,8 +688,8 @@ Prompt candidate rendering uses:
 When an identity-bearing, non-ephemeral agent wakes with no assigned task and `runtimeConfig.autoClaimRelevantTasks !== false`, the heartbeat monitor scans open todo tasks and may claim one before constructing the prompt run.
 
 Guardrails:
-- Only unpaused, unassigned, unchecked-out todo tasks with satisfied dependencies are considered
-- Claims are rejected for terminal/paused/owned/conflicting tasks
+- Only unpaused, unassigned, unchecked-out todo tasks with satisfied dependencies are considered. "Unpaused" means **neither** park flag is set: a legacy engine park (`paused: true`) and an operator hard-cancel (`userPaused: true` with `paused` unset, e.g. a Move-Task cancel) are both excluded from the candidate list and the claim path (RUFU-264; see *Manual cancel park* in `docs/task-management.md`)
+- Claims are rejected for terminal/paused/owned/conflicting tasks; an operator-parked card is refused by the claim primitive with `reason: "user_paused"`
 - Implementation-task backlog pickup is executor-only by default. Engineer-role agents may opt in through **Settings → Scheduling & Capacity → "Let engineer agents auto-claim backlog tasks"** (`settings.engineerBacklogAutoClaim`) or **Agents → Agent Detail → Settings → Heartbeat Settings → "Engineer Backlog Auto-Claim"** (`runtimeConfig.engineerBacklogAutoClaim`); the per-agent value overrides the project default in both directions. If a no-task engineer wake shows compatible backlog while this is disabled, delegate the work or create a coordination follow-up instead of treating the board as empty.
 - Explicit task routing/delegation is not affected by the backlog auto-claim opt-in gate.
 - Checkout safety is preserved (`checkout_conflict` paths are non-fatal skips)
@@ -1689,6 +1689,9 @@ The pi extension ships as part of `@runfusion/fusion` and provides tools + a `/f
 **Don't add tools for engine-internal operations** (move, step updates, logging, merge) — those are owned by the engine's own agents.
 
 The extension has no skills — tool descriptions give the LLM everything it needs.
+
+<!-- FNXC:SkillCatalogDrift 2026-09-22-15:34: RUFU-265 — the shipped `fusion` operator skill's tool catalog is GENERATED from these registrations, so authors must regenerate after editing them; `packages/cli` no longer has a doc-writing `prebuild`, so a build will not do it for you. -->
+**After changing tool registrations, run `pnpm sync:fusion-skill`.** The published package also ships the `fusion` operator skill, whose tool catalog (`packages/cli/skill/fusion/SKILL.md`, `references/extension-tools.md`, and the `references/fusion-capabilities.md` tool table) is generated from these registrations — never hand-edit inside those files' `BEGIN`/`END` marker blocks. Drift is measured by `pnpm sync:fusion-skill:check` and enforced by the blocking `check-fusion-skill-sync` gate validator; `pnpm build` no longer rewrites these tracked docs.
 
 Published SDK surface: `@runfusion/fusion/plugin-sdk` now ships as a public subpath export from the CLI package, exposing `definePlugin`, `validatePluginManifest`, and the plugin type surface for external plugin authors without depending on private `@fusion/*` workspace packages.
 

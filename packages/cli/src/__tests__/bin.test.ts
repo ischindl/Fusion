@@ -393,15 +393,12 @@ async function runBin(args: string[]) {
  * FNXC:CloudLink 2026-09-04-03:44:
  * Synthesize fixture credentials so code scanning does not treat test data as a
  * hardcoded credential and a real value cannot be pasted in as a fixture.
- */
-function fixtureSecret(label: string): string {
-  return ["fixture", label, "value"].join("-");
-}
-
-/*
- * FNXC:CloudLink 2026-09-04-03:44:
- * Synthesize fixture credentials so code scanning does not treat test data as a
- * hardcoded credential and a real value cannot be pasted in as a fixture.
+ *
+ * FNXC:SyncMergeRepair 2026-09-23-00:12 (RUFU-269 verification): this declaration existed TWICE,
+ * byte-identical, after the 2026-09-21 cross-lineage sync merge 2c09516986 kept both parents' copies.
+ * A duplicate `function` in one module scope is a parse error, so esbuild refused the whole file and
+ * every test in it silently stopped running — including the global-flag parser cases RUFU-269 needed as
+ * evidence. Repaired because it blocks verification of this change, not as cleanup; delete one copy only.
  */
 function fixtureSecret(label: string): string {
   return ["fixture", label, "value"].join("-");

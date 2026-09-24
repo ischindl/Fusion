@@ -151,6 +151,13 @@ export const DASHBOARD_VIEWS: readonly DashboardViewMetadata[] = [
 
 // Indexed by canonical id and every legacy alias (e.g. "devserver" -> dev-server)
 // so lookups tolerate a persisted BuiltInTaskView value, not just canonical ids.
+/*
+FNXC:RetentionCensus 2026-09-23-09:35 (RUFU-257):
+`DASHBOARD_VIEW_BY_ID` is the view-registry index. It is filled once at module init from the curated
+`DASHBOARD_VIEWS` table (id plus each alias) and is never written again, so its size is a property of the
+codebase — which is exactly what the ratchet's fixed-table exemption covers.
+*/
+// retention-allowlist: populated once at module init from the static DASHBOARD_VIEWS table (ids + aliases) and never mutated afterwards
 const DASHBOARD_VIEW_BY_ID = new Map<string, DashboardViewMetadata>();
 for (const view of DASHBOARD_VIEWS) {
   DASHBOARD_VIEW_BY_ID.set(view.id, view);

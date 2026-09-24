@@ -107,6 +107,55 @@ When `--project` is not supplied, Fusion resolves project context in this order:
 2. Default project (set via `fn project set-default <name>`)
 3. Current-directory auto-detection (`.fusion/project.json` lookup upward; legacy `fusion.db` is recognized only for migration)
 
+### Project routing visibility
+
+<!--
+FNXC:ProjectRoutingVisibility 2026-09-23-00:12:
+RUFU-269: the precedence above silently moved cards in practice — an operator stood in project A with a
+project-B default set, ran `fn task create`, and the card landed in B because the confirmation printed
+nothing about the target. Every card-creating command now names its landing target, and the one route
+where the decision is not obvious (a default project other than the current directory's project) asks for
+confirmation before any row is written. Documented precedence itself is unchanged.
+-->
+
+The resolution itself is silent when it is what the operator already asked for: an explicit `--project` and a current-directory match are never second-guessed. What gets announced is the target and, in one case, the mismatch.
+
+**The target is always printed.** `fn task create`, `fn task duplicate`, and `fn task refine` state where the card landed, before the write happens:
+
+```bash
+$ cd ~/code/Fusion && fn task create "Fix checkout button"
+
+  Project: gedapp  /home/me/code/gedapp  (resolved via the central default project)
+  ✓ Created FN-042: Fix checkout button
+    Column: triage
+    Path:   /home/me/code/gedapp/.fusion/tasks/FN-042/
+```
+
+- The `Project:` line carries the **absolute project path** plus its resolution source: `(resolved via the --project flag)`, `(resolved via the central default project)`, `(resolved via current-directory detection)`, or `(resolved via an unregistered local project in the current directory)`. A hand-built or plugin-supplied context with no recorded source prints the bare `Project: <name>` line, exactly as before.
+- `Path:` is the **absolute** card directory (`<projectPath>/.fusion/tasks/<id>/`), so it can be pasted into another shell; it used to be the cwd-relative `.fusion/tasks/<id>/`, which was simply false for a card filed into another project.
+- An invalid `--project` value is an error and creates **nothing** — routing is evaluated while resolving the project, before any row is written.
+
+**Cross-project confirmation (`fn task create` only).** When the *default project* wins while the current directory belongs to a **different** registered project, the CLI prints the mismatch on stderr and asks before writing:
+
+```
+⚠ Project routing: the current directory (/home/me/code/Fusion) belongs to project "Fusion" (/home/me/code/Fusion), but this card would be created in project "gedapp" (/home/me/code/gedapp) resolved via the central default project. Pass `--project Fusion` to target the project you are standing in, or run `fn project set-default <name>` to change which project is default.
+Create this card in project "gedapp" anyway? [y/N]:
+```
+
+Answering no exits 0 and writes **nothing** — no task row, no card directory — and prints where it *would* have gone plus how to make that routing permanent (`--project <name>`, `fn project set-default <name>`, or the `defaultProjectId` global setting).
+
+The prompt is skipped — the card is created with the warning still shown — whenever an answer cannot be typed:
+
+| Case | Behavior |
+|---|---|
+| `--yes` | Skips the prompt; warning still printed. The scripted escape hatch — a flag for the risky case, never a silent default. |
+| `--quiet` / `FUSION_QUIET=1` | Never prompts; warning on stderr, then proceeds. |
+| Piped or non-TTY stdin/stdout (`fn task create … \| jq`) | Never prompts; warning on stderr, then proceeds, so pipelines cannot hang. |
+
+`fn task duplicate` and `fn task refine` print the same warning and target line but **never block** — they already name a specific card and carry no `--yes`.
+
+All three commands build the `Project:` line through one shared routing module, so the wording cannot drift between them, and every `fn` command resolves its project through the one `resolveProject()` helper in `packages/cli/src/project-context.ts` — precedence is decided in exactly one place. The pi extension's `fn_task_create` tool is unchanged: it opens the store for the session's own working directory, so the central-default route that caused the mis-routing is not on its path and there is nothing to confirm there.
+
 ---
 
 ## `fn init`
@@ -565,8 +614,11 @@ fn task create "Fix login race condition"
 fn task create "Fix bug" --attach screenshot.png --depends FN-010
 fn task create "Investigate flaky runner" --node edge-runner
 fn task create "Fix workspace revert" --github --github-repo acme/kb
+fn task create "Sweep stale branches" --project ./gedapp --yes
 fn task plan "Design a new authentication flow"
 ```
+
+`--yes` skips the [cross-project confirmation](#project-routing-visibility) when the central default project routes the card somewhere other than the current directory's project; the warning is still printed. Every create prints the resolved project (with its source) and the absolute card path — see [Project routing visibility](#project-routing-visibility).
 
 For AI-guided task specification, see [Planning mode](#planning-mode).
 
@@ -1357,7 +1409,7 @@ Subcommands: `search`, `install`, `get`.
 | `--github` / `--no-github` | `fn task create` (per-task GitHub issue tracking override; default comes from project/global settings) |
 | `--github-repo` | `fn task create` (`owner/repo` override for the tracking issue) |
 | `--feedback` | `fn task refine` |
-| `--yes` | confirmation-skipping flows (`task plan`, `settings import`, git pull/push, etc.) |
+| `--yes` | confirmation-skipping flows (`task create` cross-project routing confirm, `task plan`, `settings import`, git pull/push, etc.) |
 | `--limit`, `-l` | `fn task import`, `fn task import-gitlab` (default: 30, max: 100), `fn skills search` (default: 10, max: 50) |
 | `--labels`, `-L` | `fn task import`, `fn task import-gitlab` |
 | `--resource`, `-r` | `fn task import-gitlab` (`project-issues`, `group-issues`, or `merge-requests`) |

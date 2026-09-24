@@ -88,4 +88,30 @@ describe("compactChatMessagesForFeed", () => {
     expect(new Set(COMPACT_QUESTION_TOOL_NAMES.map((name) => name.toLowerCase())))
       .toEqual(new Set(QUESTION_TOOL_NAMES.map((name) => name.toLowerCase())));
   });
+
+  /*
+  FNXC:ChatQuestionAnswerLink 2026-09-23-13:59:
+  RUFU-258: the durable question-answer link rides in `metadata.questionAnswer` on a USER row that has
+  no `toolCalls` at all. The thread feed compaction must pass it through byte-identically, otherwise
+  every answered card would lose its authoritative link on the way to the client.
+  */
+  it("passes a durable question-answer link through untouched", () => {
+    const link = { questionMessageId: "msg-question" };
+    const userRow = {
+      id: "msg-answer",
+      sessionId: "chat-1",
+      role: "user",
+      content: "the feature branch",
+      createdAt: "2026-09-17T00:00:00.000Z",
+      metadata: { questionAnswer: link, mentions: [{ agentId: "agent-1", agentName: "Alpha" }] },
+    } as never;
+
+    const [compacted] = compactChatMessagesForFeed([userRow]) as [{ metadata: Record<string, unknown> }];
+    // Untouched means untouched: a row with no tool-call body is returned as the same object.
+    expect(compacted).toBe(userRow);
+    expect(compacted.metadata.questionAnswer).toEqual(link);
+    expect(compacted.metadata.mentions).toEqual([{ agentId: "agent-1", agentName: "Alpha" }]);
+    expect("toolCalls" in compacted.metadata).toBe(false);
+    expect("compacted" in compacted.metadata).toBe(false);
+  });
 });

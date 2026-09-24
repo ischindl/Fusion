@@ -5,6 +5,13 @@ import { createVoiceModelManager } from "../stt/model-manager.js";
 import { createParakeetService, VoiceInputError } from "../stt/parakeet-service.js";
 import { DEFAULT_VOICE_LANGUAGE, DEFAULT_VOICE_MODEL_ID, resolveVoiceLanguage, resolveVoiceModelId } from "../stt/types.js";
 import type { ApiRouteRegistrar } from "./types.js";
+import {
+  approxStringBytes,
+  MAP_ENTRY_OVERHEAD_BYTES,
+  RECOGNIZER_HANDLE_BYTES,
+  STRING_BYTES_PER_CHAR,
+  registerRetentionSource,
+} from "../lib/retention-census.js";
 
 const defaultManager = createVoiceModelManager();
 const defaultService = createParakeetService({ manager: defaultManager });
@@ -12,6 +19,70 @@ type Session = { projectId?: string; recognizer: Awaited<ReturnType<typeof defau
 const sessions = new Map<string, Session>();
 // Session creation awaits native initialization; reservations close the await-window race.
 const pendingSessionReservations = new Map<string | undefined, number>();
+
+/**
+ * Reporting ceiling for simultaneously open voice sessions.
+ *
+ * FNXC:RetentionCensus 2026-09-21-21:40 (RUFU-257): open sessions are bounded by construction — the
+ * create route refuses past 8 per project — but a *closed* session is only removed by `sweep()`,
+ * which runs on later request traffic. A dashboard that stopped receiving voice requests therefore
+ * kept every closed session row (and its tombstone) forever. The census sample now reclaims
+ * tombstone-elapsed rows with no traffic, and this ceiling reports pressure rather than evicting:
+ * an open row owns a native recognizer, and dropping it without `recognizer.close()` would trade a
+ * JS heap leak for a native one, so deletion of live rows stays with `sweep()` alone.
+ */
+export const VOICE_SESSION_MAX = 256;
+
+/** Ceiling on distinct project keys holding a pending session-creation reservation. */
+export const VOICE_PENDING_RESERVATION_PROJECTS_MAX = 500;
+
+// Accounting + no-traffic tombstone reclamation. `expiryOf` semantics are the module's own: a closed
+// row dies at its tombstone; an open row is never a census deletion candidate (Infinity).
+registerRetentionSource({
+  id: "voice_sessions",
+  kind: "registry",
+  keys: "load",
+  ceiling: VOICE_SESSION_MAX,
+  ceilingConstant: "VOICE_SESSION_MAX",
+  sweep: () => {
+    const nowMs = Date.now();
+    let reclaimed = 0;
+    for (const [id, session] of sessions) {
+      if (session.closed && (session.tombstone ?? 0) <= nowMs) {
+        sessions.delete(id);
+        reclaimed++;
+      }
+    }
+    return reclaimed;
+  },
+  probe: () => {
+    const nowMs = Date.now();
+    let approxBytes = 0;
+    let expiredEntries = 0;
+    for (const [id, session] of sessions) {
+      approxBytes += MAP_ENTRY_OVERHEAD_BYTES + approxStringBytes(id) + RECOGNIZER_HANDLE_BYTES
+        + session.bytes + STRING_BYTES_PER_CHAR;
+      if (session.closed && (session.tombstone ?? 0) <= nowMs) expiredEntries++;
+    }
+    return { entries: sessions.size, approxBytes, expiredEntries };
+  },
+});
+
+registerRetentionSource({
+  id: "voice_pending_session_reservations",
+  kind: "counter",
+  // Key class `load`: the key space is the deployment's project count, which never expires.
+  keys: "load",
+  ceiling: VOICE_PENDING_RESERVATION_PROJECTS_MAX,
+  ceilingConstant: "VOICE_PENDING_RESERVATION_PROJECTS_MAX",
+  probe: () => {
+    let approxBytes = 0;
+    for (const key of pendingSessionReservations.keys()) {
+      approxBytes += MAP_ENTRY_OVERHEAD_BYTES + (key ? approxStringBytes(key) : STRING_BYTES_PER_CHAR);
+    }
+    return { entries: pendingSessionReservations.size, approxBytes, expiredEntries: 0 };
+  },
+});
 
 /**
  * FNXC:VoiceInput 2026-07-21-21:10:

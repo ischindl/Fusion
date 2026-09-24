@@ -101,6 +101,20 @@ export class TombstonedTaskResurrectionError extends Error {
   }
 }
 
+/*
+FNXC:TombstonePurgeAudit 2026-09-23-21:28:
+Raised when the resurrection purge cannot write its mandatory audit row. The purge is
+audit-and-delete in one transaction, so this error means the transaction rolled back: the tombstone
+is intact and its id stays reserved. Callers (createTask/duplicateTask/refineTask) must treat it as
+"the id is still taken", not as "the row was removed".
+*/
+export class TombstonePurgeUnauditedError extends Error {
+  constructor(public readonly taskId: string, options?: ErrorOptions) {
+    super(`Tombstone purge for ${taskId} refused: its audit row could not be written.`, options);
+    this.name = "TombstonePurgeUnauditedError";
+  }
+}
+
 export class TaskHasLineageChildrenError extends Error {
   readonly taskId: string;
   readonly childIds: string[];

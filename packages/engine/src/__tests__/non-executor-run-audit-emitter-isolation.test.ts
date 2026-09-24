@@ -20,6 +20,8 @@ const modules = [
   "runtimes/in-process-runtime.ts",
   "credential-instance-rotation.ts",
   "workflow-column-boundary-hooks.ts",
+  /* RUFU-251: the Plan Review session-failure budget is a planning-lane emitter, so the routing ratchet covers it too. */
+  "executor/plan-review-session-failure-budget.ts",
 ] as const;
 
 /**

@@ -41,7 +41,7 @@ import {
   evictAllProjectStores,
   setOnProjectFirstCreated,
 } from "./project-store-resolver.js";
-import { getOrCreateScopedChatManager, getOrCreateScopedChatStore, listLiveScopedChatStores } from "./chat-project-services.js";
+import { getOrCreateScopedChatManager, getOrCreateScopedChatStore, listLiveScopedChatStores, onScopedChatStoreCreated } from "./chat-project-services.js";
 import { MAX_FILE_SIZE } from "./file-service.js";
 import { TerminalViewportRegistry } from "./terminal-viewport.js";
 import { getTerminalService, STALE_SESSION_THRESHOLD_MS } from "./terminal-service.js";
@@ -52,6 +52,7 @@ import { WebSocketManager, type BadgeSnapshot } from "./websocket.js";
 import type { BadgePubSub } from "./badge-pubsub.js";
 import { createBadgePubSub, type BadgePubSubMessage } from "./badge-pubsub.js";
 import { createRuntimeLogger, type RuntimeLogger } from "./runtime-logger.js";
+import { createRetentionPressureNotifier } from "./retention-pressure-notice.js";
 import { registerGithubTrackingHook } from "./github-tracking-hook.js";
 import { registerBeforeExitCleanup } from "./process-lifecycle.js";
 import { createTerminalWebSocketDiagnostics } from "./terminal-websocket-diagnostics.js";
@@ -1039,8 +1040,22 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
   headless and non-headless servers. Its latency-recorder middleware is mounted
   below, before route handlers, so it times the LIVE serving path.
   */
-  const metricsSampler = createMetricsSampler();
+  /*
+  FNXC:RetentionPressureNotice 2026-09-23-18:55:
+  RUFU-257: the pressure decision is made in the retention sampler's tick; this is where it becomes
+  operator-visible. The sink writes the dashboard runtime log plus the operator mailbox (through the
+  engine's existing one-shot `MessageStore` seam — no new channel), so a heap pile-up is announced before
+  the process dies instead of after. The mailbox lookup is lazy because `options.engine` may attach its
+  store after `createServer()` returns; the sink itself never awaits and never throws, so census
+  reporting cannot be blocked by mailbox health. Declared above the sampler because the sampler takes it
+  at construction time.
+  */
   const runtimeLogger = options?.runtimeLogger ?? createRuntimeLogger("server");
+  const retentionPressureNotifier = createRetentionPressureNotifier({
+    logger: runtimeLogger.child("retention-pressure"),
+    resolveMailbox: () => options?.engine?.getMessageStore(),
+  });
+  const metricsSampler = createMetricsSampler({ retention: { onPressure: retentionPressureNotifier } });
   const mutationRateLimit = rateLimit(RATE_LIMITS.mutation);
   const setupRateLimit = rateLimit(RATE_LIMITS.api);
   const setupReadRateLimit = rateLimit(RATE_LIMITS.api);
@@ -1323,13 +1338,19 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
       A connection without a projectId previously bridged only the default ChatStore, leaving an
       open global chat view deaf to every scoped project's generations. Bridge the default store
       plus every live scoped store; createSSE dedupes by identity so a shared instance fires once.
+
+      FNXC:ChatRemoteGenerationMirror 2026-09-21-10:45:
+      RUFU-252: the set above is a snapshot taken when the browser opened the stream, so it is
+      paired with the registry's creation publisher. Without it a project whose chat had not been
+      touched yet produced an emitter no open tab was subscribed to, and its generations stayed
+      invisible in already-open tabs until a remount.
       */
       createSSE(
         store,
         safeGetMissionStore(store),
         aiSessionStore!,
         store.getPluginStore(),
-        undefined,
+        { liveChatStores: { onCreated: onScopedChatStoreCreated } },
         defaultAgentStore,
         defaultMessageStore,
         [chatStore, ...listLiveScopedChatStores()],
