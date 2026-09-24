@@ -875,7 +875,15 @@ function extractProductionDeclaration(rule: string, property: string): string {
 
 function installProductionAlphaReserveRule(): HTMLStyleElement {
   const css = readAppFile("components/MobileNavBar.css");
-  const selector = 'html[data-viewport-mode="mobile"] .project-content--with-mobile-nav';
+  /*
+  FNXC:MobileShellBoundary 2026-09-24-17:45:
+  FN-468 widened the shipped reserve rule to the whole mobile shell — `MobileNavBar.css` now keys it on
+  `html:is([data-viewport-mode="mobile"], [data-viewport-mode="tablet"])` because the tablet band reserves the pill's height
+  too. This helper extracts the rule BY LITERAL SELECTOR and re-installs it into jsdom to simulate the box layout jsdom
+  does not perform, so the string has to name the rule as it actually ships: the pre-FN-467 single-mode spelling threw
+  `Production rule is missing` before any measurement ran.
+  */
+  const selector = 'html:is([data-viewport-mode="mobile"], [data-viewport-mode="tablet"]) .project-content--with-mobile-nav';
   const boardSelector = '.board';
   const boardCss = readAppFile("components/Board.css");
   const style = document.createElement("style");
@@ -958,9 +966,17 @@ function expectSingleDrawerHeader(dialog: HTMLElement, headerSelector: string): 
   expect(dialog.querySelectorAll(".mobile-drawer__handle-target")).toHaveLength(1);
 }
 
-function dismissAlphaDrawerByHandle(drawer: Element): void {
-  const handle = drawer.querySelector(".mobile-drawer__handle-target");
-  if (!handle) throw new Error("Alpha drawer handle is missing");
+/*
+FNXC:MobileShellBoundary 2026-09-24-19:05:
+Drag-to-dismiss is the ONE shared drawer affordance, but two production hosts publish it under different class
+names: `MobileDrawer` owns `.mobile-nav-bar`-adjacent `.mobile-drawer__handle-target`, while a `FloatingWindow` in its
+mobile-drawer presentation publishes `.floating-window__drawer-handle-target` and ships no header or close control at
+all. The selector is therefore a parameter with the historical default, so every existing caller keeps its behaviour and
+FloatingWindow-hosted destinations can dismiss through the same pointer sequence.
+*/
+function dismissAlphaDrawerByHandle(drawer: Element, handleSelector = ".mobile-drawer__handle-target"): void {
+  const handle = drawer.querySelector(handleSelector);
+  if (!handle) throw new Error(`Drawer handle is missing: ${handleSelector}`);
   fireEvent.pointerDown(handle, { pointerId: 1, clientY: 0, button: 0, isPrimary: true });
   fireEvent.pointerMove(handle, { pointerId: 1, clientY: 1000 });
   fireEvent.pointerUp(handle, { pointerId: 1, clientY: 1000 });
@@ -1054,15 +1070,60 @@ function configureProductionAppChat(): void {
 async function waitForAppShell(): Promise<void> {
   await waitFor(() => {
     expect(fetchSettings).toHaveBeenCalled();
-    if (mockUseViewportMode() === "mobile") {
+    if (isMobileShellTier()) {
+      expect(document.querySelector(".mobile-nav-bar")).not.toBeNull();
       expect(screen.getByTestId("mobile-nav-tab-command-center")).toBeTruthy();
-      expect(screen.getByTestId("mobile-nav-tab-planning")).toBeTruthy();
       return;
     }
     const footer = screen.queryByTestId("desktop-action-bar");
     const sidebar = screen.queryByTestId("left-sidebar-nav");
     expect(Boolean(footer) !== Boolean(sidebar)).toBe(true);
   });
+}
+
+/*
+ * FNXC:MobileShellBoundary 2026-09-24-17:45:
+ * FN-468's boundary is the predicate below, not the `"mobile"` literal. Production decides every
+ * shell-level mount through `isMobileShellMode()`, which is true for BOTH `mobile` and `tablet`, so a
+ * readiness helper that branched only on `mobile` treated the tablet tier as a wide shell and waited for a
+ * wide navigation surface that can never mount there — the grouped `expected false to be true` failures
+ * this file is being ported away from.
+ */
+function isMobileShellTier(): boolean {
+  const mode = mockUseViewportMode();
+  return mode === "mobile" || mode === "tablet";
+}
+
+/*
+ * FNXC:MobileShellBoundary 2026-09-24-17:45:
+ * Shared non-vacuous exclusivity assertion for the MOBILE shell. A bare `queryByTestId(...) === null` over a
+ * tier where the surface can never mount is vacuously green, so the pill's POSITIVE presence is asserted
+ * first and only then the wide tiers' absence. Both mobile-shell tiers share this shape — FN-468's whole
+ * point is that the tablet band stopped being a wide surface.
+ */
+function expectMobileShellOwnsNavigation(): void {
+  expect(document.querySelector(".mobile-nav-bar")).not.toBeNull();
+  expect(screen.getByTestId("mobile-menu-trigger")).toBeInTheDocument();
+  expect(screen.queryByTestId("left-sidebar-nav")).toBeNull();
+  expect(screen.queryByTestId("desktop-action-bar")).toBeNull();
+  expect(screen.queryByTestId("right-dock")).toBeNull();
+  expect(document.querySelector(".project-content--with-footer")).toBeNull();
+}
+
+/*
+ * FNXC:MobileShellBoundary 2026-09-24-17:45:
+ * Shared non-vacuous exclusivity assertion for the DESKTOP shell: exactly one primary navigation surface
+ * chosen by `navigationPlacement` (FN-419), and no mobile pill beside it. Desktop is the only tier where the
+ * placement setting is consulted at all, so the wide spellings `footer`/`sidebar` belong to this helper
+ * alone.
+ */
+function expectWideShellOwnsNavigation(expected: "footer" | "sidebar"): void {
+  const footer = screen.queryByTestId("desktop-action-bar");
+  const sidebar = screen.queryByTestId("left-sidebar-nav");
+  expect([footer, sidebar].filter(Boolean)).toHaveLength(1);
+  expect(expected === "footer" ? footer : sidebar).not.toBeNull();
+  expect(expected === "footer" ? sidebar : footer).toBeNull();
+  expect(document.querySelector(".mobile-nav-bar")).toBeNull();
 }
 
 function expectBoardToBeInactive(): void {
@@ -1386,7 +1447,19 @@ beforeEach(() => {
     keyboardOpen: false,
   });
   mockUseViewportMode.mockReset();
-  mockUseViewportMode.mockReturnValue("tablet");
+  /*
+  FNXC:MobileShellBoundary 2026-09-24-17:45:
+  FN-468 moved the `tablet` tier across the shell boundary: `isMobileShellMode()` now returns true for
+  `mobile` AND `tablet`, so at tablet the App mounts `MobileNavBar` + `MobileDrawer` and
+  `computeNavigationPlacementActive` reports `wideShell:false` — `LeftSidebarNav`, `DesktopActionBar` and
+  `RightDock` do not mount there at all. This fixture default predated that boundary, so every case that
+  never sets its own tier was silently switched into the phone-grade shell and could no longer find a
+  wide-only test id. The file's stated intent (see the comment above this block) was always desktop; the
+  default is now desktop, and the two spellings are disjoint because `navigationPlacement` is only
+  consulted at desktop. Cases whose SUBJECT is the mobile shell state their tier explicitly instead of
+  inheriting it.
+  */
+  mockUseViewportMode.mockReturnValue("desktop");
   /* Reset alongside the mode: it is a SEPARATE predicate, so a suite that sets it must not leak. */
   mockIsShortViewport.mockReset();
   mockIsShortViewport.mockReturnValue(false);
@@ -1422,18 +1495,33 @@ describe("placement du menu de navigation", () => {
     sidebar: screen.queryByTestId("left-sidebar-nav"),
   });
 
-  const expectExactlyOneSurface = (expected: "footer" | "sidebar") => {
+  /*
+  FNXC:MobileShellBoundary 2026-09-24-17:45:
+  The FN-419 bug was "the primary menu appears TWICE at one screen size", and this helper is the count that proves it
+  cannot come back. FN-468 moved `tablet` across the shell boundary, so the wide pair it counted is no longer the whole
+  answer: at a mobile-shell tier `computeNavigationPlacementActive` reports `wideShell:false` and NEITHER wide surface
+  mounts, which would make the original `[footer, sidebar]` count pass VACUOUSLY (0 is not 2). The `"mobile-shell"`
+  spelling therefore asserts the positive owner — the pill with its overflow drawer — before the wide absence, so every
+  tier still proves exactly one primary navigation surface.
+  */
+  const expectExactlyOneSurface = (expected: "footer" | "sidebar" | "mobile-shell") => {
     const { footer, sidebar } = mountedPrimarySurfaces();
-    expect([footer, sidebar].filter(Boolean)).toHaveLength(1);
-    if (expected === "footer") {
-      expect(footer).not.toBeNull();
+    if (expected === "mobile-shell") {
+      expectMobileShellOwnsNavigation();
+      expect(footer).toBeNull();
       expect(sidebar).toBeNull();
     } else {
-      expect(sidebar).not.toBeNull();
-      expect(footer).toBeNull();
-      expect(document.querySelector(".executor-status-bar")).toBeNull();
+      expect([footer, sidebar].filter(Boolean)).toHaveLength(1);
+      if (expected === "footer") {
+        expect(footer).not.toBeNull();
+        expect(sidebar).toBeNull();
+      } else {
+        expect(sidebar).not.toBeNull();
+        expect(footer).toBeNull();
+        expect(document.querySelector(".executor-status-bar")).toBeNull();
+      }
     }
-    // Neither placement may let the Header re-add a third navigation.
+    // No tier or placement may let the Header re-add a third navigation.
     expect(screen.queryByTitle("Board view")).toBeNull();
     expect(screen.queryByTestId("view-toggle-overflow-trigger")).toBeNull();
   };
@@ -1446,8 +1534,20 @@ describe("placement du menu de navigation", () => {
 
       render(<App />);
 
-      expect(await screen.findByTestId("desktop-action-bar")).toBeInTheDocument();
-      expectExactlyOneSurface("footer");
+      /*
+      FNXC:MobileShellBoundary 2026-09-24-17:45:
+      FN-468 moved `tablet` into the mobile shell, so the shipped default no longer resolves to the footer there —
+      `computeNavigationPlacementActive` never reaches `navigationPlacement` and mounts the pill instead. Both legs keep
+      the FN-419 invariant (exactly ONE primary navigation surface, never sidebar + footer together); each states the
+      owner its shell actually produces.
+      */
+      if (mode === "tablet") {
+        await waitFor(() => expect(document.querySelector(".mobile-nav-bar")).not.toBeNull());
+        expectExactlyOneSurface("mobile-shell");
+      } else {
+        expect(await screen.findByTestId("desktop-action-bar")).toBeInTheDocument();
+        expectExactlyOneSurface("footer");
+      }
     },
   );
 
@@ -1459,8 +1559,19 @@ describe("placement du menu de navigation", () => {
 
       render(<App />);
 
-      expect(await screen.findByTestId("desktop-action-bar")).toBeInTheDocument();
-      expectExactlyOneSurface("footer");
+      /*
+      FNXC:MobileShellBoundary 2026-09-24-17:45:
+      "A persisted value the shipped default cannot use falls back to that default" is the contract; the default's OWNER
+      is tier-dependent. At `tablet` an invalid placement and a valid one produce the same mobile shell — the pill, with
+      no wide surface for the bad value to duplicate — while at `desktop` the fallback is still the footer.
+      */
+      if (mode === "tablet") {
+        await waitFor(() => expect(document.querySelector(".mobile-nav-bar")).not.toBeNull());
+        expectExactlyOneSurface("mobile-shell");
+      } else {
+        expect(await screen.findByTestId("desktop-action-bar")).toBeInTheDocument();
+        expectExactlyOneSurface("footer");
+      }
     },
   );
 
@@ -1472,6 +1583,21 @@ describe("placement du menu de navigation", () => {
       vi.mocked(fetchSettings).mockResolvedValue(settingsWith({ navigationPlacement: "sidebar" }));
 
       render(<App />);
+
+      /*
+      FNXC:MobileShellBoundary 2026-09-24-17:45:
+      "Sidebar placement mounts the left column and reserves the executor footer height nowhere" is a wide-shell
+      contract: `tablet` no longer consults `navigationPlacement` at all, so its leg pins what the placement CANNOT do
+      there — no left column, no dock (FN-468 removed the tablet dock), and no bottom reservation except the pill's own
+      content padding. The desktop leg keeps the full wide assertion unchanged.
+      */
+      if (mode === "tablet") {
+        await waitFor(() => expect(document.querySelector(".mobile-nav-bar")).not.toBeNull());
+        expectExactlyOneSurface("mobile-shell");
+        expect(screen.queryByTestId("right-dock")).toBeNull();
+        expect(screen.getByTestId("dashboard-project-shell")).not.toHaveClass("dashboard-project-shell--with-sidebar");
+        return;
+      }
 
       const sidebar = await screen.findByTestId("left-sidebar-nav");
       expectExactlyOneSurface("sidebar");
@@ -1486,8 +1612,16 @@ describe("placement du menu de navigation", () => {
     },
   );
 
+  /*
+  FNXC:MobileShellBoundary 2026-09-24-17:45:
+  FN-468 removed the tablet band's right dock and its left column, so the tier these four cases pinned no longer has a
+  wide primary navigation surface at all — the pill owns navigation there. Their subject is what `navigationPlacement:
+  "sidebar"` and its legacy opt-out flag do to the wide column, which is a DESKTOP-only behaviour, so the tier moves to
+  `desktop` where the contract still exists. The mobile-shell counterpart (the pill is the only owner at `tablet`) is
+  pinned by `mobile-shell-breakpoint.test.tsx`.
+  */
   it("monte quand même la sidebar avec un drapeau hérité leftSidebarNav à false", async () => {
-    mockUseViewportMode.mockReturnValue("tablet");
+    mockUseViewportMode.mockReturnValue("desktop");
     vi.mocked(fetchSettings).mockResolvedValue(
       settingsWith({
         navigationPlacement: "sidebar",
@@ -1502,8 +1636,9 @@ describe("placement du menu de navigation", () => {
     expectExactlyOneSurface("sidebar");
   });
 
+  /* FNXC:MobileShellBoundary 2026-09-24-17:45: sidebar-placement subject → desktop tier (see the note above). */
   it("donne à la sidebar le contrôle moteur et Terminal, sans le bouton de visibilité des fenêtres", async () => {
-    mockUseViewportMode.mockReturnValue("tablet");
+    mockUseViewportMode.mockReturnValue("desktop");
     terminalLifecycle.reset();
     vi.mocked(fetchSettings).mockResolvedValue(settingsWith({ navigationPlacement: "sidebar" }));
 
@@ -1518,8 +1653,9 @@ describe("placement du menu de navigation", () => {
     expect(terminal).toHaveAttribute("data-footer-visible", "false");
   });
 
+  /* FNXC:MobileShellBoundary 2026-09-24-17:45: sidebar-placement Chat host subject → desktop tier. */
   it("ouvre le Chat en page principale depuis le menu de gauche, sans ouvrir le dock", async () => {
-    mockUseViewportMode.mockReturnValue("tablet");
+    mockUseViewportMode.mockReturnValue("desktop");
     vi.mocked(fetchSettings).mockResolvedValue(settingsWith({ navigationPlacement: "sidebar" }));
 
     render(<App />);
@@ -1542,8 +1678,9 @@ describe("placement du menu de navigation", () => {
   "chat" stored from a previous `footer` session. The main page owning Chat must re-point that stored selection, never
   close the dock: closing it on every render made the Header toggle look dead and hid the tab strip.
   */
+  /* FNXC:MobileShellBoundary 2026-09-24-17:45: sidebar-placement dock subject → desktop tier (the tablet band has no dock). */
   it("garde le dock ouvrable en placement sidebar malgré une vue « chat » persistée", async () => {
-    mockUseViewportMode.mockReturnValue("tablet");
+    mockUseViewportMode.mockReturnValue("desktop");
     localStorage.setItem("fusion:right-dock-view", "chat");
     vi.mocked(fetchSettings).mockResolvedValue(settingsWith({ navigationPlacement: "sidebar" }));
 
@@ -1723,6 +1860,31 @@ describe("official dashboard design production wiring", () => {
     expect(document.querySelector(".executor-status-bar")).toBeNull();
     const shell = screen.getByTestId("dashboard-project-shell");
     const content = shell.querySelector(".project-content");
+    expect(screen.queryByTestId("left-sidebar-nav")).toBeNull();
+    expect(shell).not.toHaveClass("dashboard-project-shell--with-sidebar");
+    expect(document.querySelector("header.header")).toBeInTheDocument();
+    expect(screen.queryByTestId("executor-terminal-launcher-segment")).toBeNull();
+
+    /*
+    FNXC:MobileShellBoundary 2026-09-24-17:45:
+    This case pairs a tier with a task state, and the tier pairing is now shell-dependent. FN-468 took the tablet band's
+    footer, More menu and dock away — its overflow is the drawer behind the pill — so the tablet leg states the
+    mobile-shell truth (pill is the ONLY navigation, the content reserves the pill's height, no dock) while keeping its
+    real task state. The footer + More + dock choreography the case was written for is asserted where it still ships:
+    the desktop tier.
+    */
+    if (mode === "tablet") {
+      await waitFor(() => expect(document.querySelector(".mobile-nav-bar")).not.toBeNull());
+      expectMobileShellOwnsNavigation();
+      expect(content).toHaveClass("project-content--with-mobile-nav");
+      expect(content).not.toHaveClass("project-content--with-footer");
+      expect(screen.queryByTestId("desktop-action-bar")).toBeNull();
+      expect(screen.queryByTestId("desktop-nav-more")).toBeNull();
+      expect(screen.queryByTestId("right-dock")).toBeNull();
+      expect(shell).not.toHaveClass("dashboard-project-shell--with-right-dock");
+      return;
+    }
+
     const rightDock = await waitFor(() => {
       const dock = document.querySelector(".right-dock");
       expect(dock).not.toBeNull();
@@ -1736,12 +1898,8 @@ describe("official dashboard design production wiring", () => {
     fireEvent.pointerEnter(moreTrigger);
     expect(screen.getByRole("menu")).toBeInTheDocument();
     expect(moreTrigger).toHaveAttribute("aria-expanded", "true");
-    expect(screen.queryByTestId("left-sidebar-nav")).toBeNull();
-    expect(shell).not.toHaveClass("dashboard-project-shell--with-sidebar");
-    if (mode === "tablet") expect(document.querySelector("header.header")).toBeInTheDocument();
     expect(rightDock).toHaveClass("right-dock--with-footer");
     expect(shell).toHaveClass("dashboard-project-shell--with-right-dock");
-    expect(screen.queryByTestId("executor-terminal-launcher-segment")).toBeNull();
     expect(document.querySelector(".mobile-nav-bar")).toBeNull();
   });
 
@@ -1754,6 +1912,26 @@ describe("official dashboard design production wiring", () => {
 
     render(<App />);
 
+    /*
+    FNXC:MobileShellBoundary 2026-09-24-17:45:
+    Opening Terminal from the wide footer is a desktop-only interaction: FN-468 made `tablet` the mobile shell, whose
+    primary navigation set is CLOSED (MobileNavBar/MobileDrawer expose board, list, command-center, planning, settings —
+    no Terminal row), and `mobile-shell-breakpoint.test.tsx` ratchets that set. The tablet leg therefore pins the other
+    half of the same invariant: at the mobile shell there is no footer Terminal entry to click, so the Terminal never
+    mounts, and the pill is the only navigation. The desktop leg keeps the full mount/unmount lifecycle.
+    */
+    if (mode === "tablet") {
+      await waitFor(() => expect(document.querySelector(".mobile-nav-bar")).not.toBeNull());
+      expectMobileShellOwnsNavigation();
+      expect(screen.queryByTestId("desktop-nav-terminal")).toBeNull();
+      expect(screen.queryByTestId("terminal-modal")).toBeNull();
+      expect(terminalLifecycle.mounts).toBe(0);
+      expect(screen.queryByTestId("left-sidebar-nav")).toBeNull();
+      expect(screen.getByTestId("dashboard-project-shell")).not.toHaveClass("dashboard-project-shell--with-sidebar");
+      expect(document.querySelector("[data-testid^='floating-window-overlay-']")).toBeNull();
+      return;
+    }
+
     const terminal = await screen.findByTestId("desktop-nav-terminal");
     expect(screen.queryByTestId("terminal-modal")).toBeNull();
     expect(terminalLifecycle.mounts).toBe(0);
@@ -1763,14 +1941,6 @@ describe("official dashboard design production wiring", () => {
     fireEvent.click(screen.getByTestId("terminal-close-btn"));
     await waitFor(() => expect(screen.queryByTestId("terminal-modal")).toBeNull());
     expect(terminalLifecycle.unmounts).toBe(1);
-
-    if (mode === "tablet") {
-      // FN-419: the footer placement owns navigation on both wide tiers, so no sidebar accompanies it.
-      expect(screen.getByTestId("dashboard-project-shell")).not.toHaveClass("dashboard-project-shell--with-sidebar");
-      expect(screen.queryByTestId("left-sidebar-nav")).toBeNull();
-      expect(document.querySelector(".right-dock")).toBeInTheDocument();
-      expect(document.querySelector("[data-testid^='floating-window-overlay-']")).toBeNull();
-    }
   });
 
   /*
@@ -1793,8 +1963,29 @@ describe("official dashboard design production wiring", () => {
 
     const shell = await screen.findByTestId("dashboard-project-shell");
     const content = shell.querySelector(".project-content")!;
-    const dock = await screen.findByTestId("right-dock");
     expect(screen.queryByTestId("left-sidebar-nav")).toBeNull();
+
+    /*
+    FNXC:MobileShellBoundary 2026-09-24-17:45:
+    FN-409's "the bottom bar's height is reserved EXACTLY ONCE" invariant has a second shell to respect: at `tablet` the
+    fixed bottom element is the navigation pill, so the only reservation in the shell is the pill's own and the dock that
+    used to share the contract does not mount. The tablet leg proves the single-reservation half directly (pill height
+    reserved, footer reservation absent); the pinned-terminal flip-flop is asserted at the desktop tier, the only tier
+    still shipping a footer Terminal control and a dock.
+    */
+    if (mode === "tablet") {
+      await waitFor(() => expect(document.querySelector(".mobile-nav-bar")).not.toBeNull());
+      expectMobileShellOwnsNavigation();
+      expect(content).toHaveClass("project-content--with-mobile-nav");
+      expect(content).not.toHaveClass("project-content--with-footer");
+      expect(screen.queryByTestId("right-dock")).toBeNull();
+      expect(screen.queryByTestId("desktop-nav-terminal")).toBeNull();
+      expect(screen.queryByTestId("terminal-modal")).toBeNull();
+      expect(terminalLifecycle.mounts).toBe(0);
+      return;
+    }
+
+    const dock = await screen.findByTestId("right-dock");
 
     // Terminal closed: the shell owns the reservation.
     expect(content).toHaveClass("project-content--with-footer");
@@ -1834,8 +2025,18 @@ describe("official dashboard design production wiring", () => {
     ["absente", undefined],
     ["fausse", false],
     ["vraie", true],
-  ] as const)("conserve le shell tablette et Chat quand la valeur Alpha historique est %s", async (_label, alphaUpdates) => {
-    mockUseViewportMode.mockReturnValue("tablet");
+  ] as const)("conserve le shell large et Chat quand la valeur Alpha historique est %s", async (_label, alphaUpdates) => {
+    /*
+    FNXC:MobileShellBoundary 2026-09-24-17:45:
+    The contract is "a legacy `alphaUpdates` value — absent, false, or true — must not break the shell or the Chat
+    surface", and every assertion below is the DOCK Chat hand-off (the four dock tabs, the inline Chat list, the floating
+    window on click). FN-468 removed the tablet band's dock: at `tablet` the Chat surface is a main-lane page and there
+    is no panel to hand off to, so the wide tier carrying this contract is `desktop` — the only tier that still mounts
+    the dock. The three legacy-value legs and all assertions are unchanged; the mobile-shell counterpart of the same
+    legacy flag is pinned by "removes the Alpha footer and all footer reservations only on mobile", so no coverage is
+    lost by naming the wide tier here.
+    */
+    mockUseViewportMode.mockReturnValue("desktop");
     configureProductionAppChat();
     localStorage.setItem("fusion:right-dock-open", "true");
     const experimentalFeatures = { ...defaultSettings.experimentalFeatures };
@@ -2157,14 +2358,25 @@ describe("official dashboard design production wiring", () => {
     const shell = screen.getByTestId("dashboard-project-shell");
     const content = shell.querySelector(".project-content");
     expect(document.querySelector(".executor-status-bar")).toBeNull();
-    expect(content).toHaveClass(mode === "mobile" ? "project-content--with-mobile-nav" : "project-content--with-footer");
+    /*
+    FNXC:MobileShellBoundary 2026-09-24-17:45:
+    This matrix already said "the phone tier reserves the pill's height, the wide tiers reserve the footer's", which was
+    the boundary before FN-468 moved `tablet` into the mobile shell. The predicate is now the shell itself: `tablet`
+    reserves the pill and mounts no footer, so `navigationPlacement: "footer"` is only honoured where a wide shell mounts
+    at all. The `--native` modifier stays asserted on the phone leg — the shipped native inset handling is what that
+    measurement covers — while both mobile-shell legs prove the pill is the only navigation.
+    */
+    const mobileShell = mode !== "desktop";
+    expect(content).toHaveClass(mobileShell ? "project-content--with-mobile-nav" : "project-content--with-footer");
     // The left sidebar never mounts under the footer placement, on any tier.
     expect(screen.queryByTestId("left-sidebar-nav")).toBeNull();
-    if (mode === "mobile") {
-      expect(document.querySelector(".mobile-nav-bar")).toHaveClass("mobile-nav-bar--native");
+    if (mobileShell) {
+      expectMobileShellOwnsNavigation();
       expect(screen.queryByTestId("desktop-action-bar")).toBeNull();
+      expect(shell).not.toHaveClass("dashboard-project-shell--with-right-dock");
+      if (mode === "mobile") expect(document.querySelector(".mobile-nav-bar")).toHaveClass("mobile-nav-bar--native");
     } else {
-      expect(screen.getByTestId("desktop-action-bar")).toBeInTheDocument();
+      expectWideShellOwnsNavigation("footer");
     }
   });
 
@@ -3063,7 +3275,30 @@ describe("official dashboard design production wiring", () => {
       expect(document.querySelector(".board")).toBe(boardBefore);
       expect(Array.from(document.querySelectorAll(".board > .column"))).toEqual(columnsBefore);
 
-      fireEvent.click(within(historyDialog).getByRole("button", { name: "Close History" }));
+      /*
+      FNXC:MobileShellBoundary 2026-09-24-18:52:
+      FN-406 made the phone drawer expose exactly one shared `ViewDrawerHandle` and NO close control, so the History
+      surface's dismissal affordance is presentation-dependent: the phone dismisses through the drag handle while the
+      wide surfaces (tablet band and desktop, which host History in the wide content area) keep the canonical
+      "Close History" button. The old single spelling asked every tier for that button, so the phone legs failed with
+      `Unable to find an accessible element with the role "button" and name "Close History"` after their content
+      assertions had already passed. The positive drawer-conformance shape (no close control, one handle) is asserted on
+      the phone leg, so this branch cannot pass vacuously by merely skipping the close.
+      */
+      if (viewport === "mobile") {
+        /*
+        FNXC:MobileShellBoundary 2026-09-24-19:05:
+        The phone presents History as `FloatingWindow` in its mobile-drawer presentation
+        (`floating-window-overlay--mobile-drawer`), which is headerless: it publishes NO close control and one
+        `ViewDrawerHandle` under `.floating-window__drawer-handle-target`. Asserting that positive shape first keeps the
+        dismissal branch honest instead of letting it pass by simply looking for nothing.
+        */
+        expect(historyDialog.querySelectorAll("[data-testid^='floating-window-close-']")).toHaveLength(0);
+        expect(historyDialog.querySelectorAll(".floating-window__drawer-handle-target")).toHaveLength(1);
+        dismissAlphaDrawerByHandle(historyDialog, ".floating-window__drawer-handle-target");
+      } else {
+        fireEvent.click(within(historyDialog).getByRole("button", { name: "Close History" }));
+      }
       await waitFor(() => expect(document.querySelectorAll('[data-testid="patchnode-view"]')).toHaveLength(0));
       expect(document.querySelector(".board")).toBe(boardBefore);
     } finally {
@@ -3314,6 +3549,16 @@ describe("FN-4250 FileBrowserProvider coverage", () => {
 
   it("FN-4250: ChatView branch is inside FileBrowserProvider", async () => {
     localStorage.setItem(taskViewStorageKey(), "chat");
+
+    /*
+    FNXC:MobileShellBoundary 2026-09-24-17:45:
+    This coverage pin needs a ChatView to actually MOUNT, and `resolveChatHost` only answers with a Chat PAGE host on
+    the mobile shell: on the desktop tier a restored `chat` selection is consumed into the right dock (FN-392), which
+    stays closed here, so no ChatView renders at all. Before this file's default tier flipped, `tablet` answered
+    "mobile-page" and the pin worked; the tier is now stated explicitly as the phone shell so the pin keeps exercising
+    the same ChatView branch of `App`.
+    */
+    mockUseViewportMode.mockReturnValue("mobile");
 
     render(<App />);
 
@@ -4967,8 +5212,14 @@ describe("App view switching", () => {
     FNXC:RoadmapsNavigation 2026-07-19-12:00:
     Roadmap-item previews open through the restored hosted roadmaps destination, so plugin
     dashboard rows must remain visible rather than being filtered as legacy navigation.
+
+    FNXC:MobileShellBoundary 2026-09-24-19:12:
+    The destinations this case proves visible are the wide left column's (`sidebar-nav-missions` plus the plugin row), and
+    FN-468 removed that column from the tablet band — the pill replaced it. The case stated `tablet` only as an arbitrary
+    non-phone tier, so it is retargeted to `desktop`, the one tier where the left column exists; the navigation-content
+    assertions are unchanged.
     */
-    mockUseViewportMode.mockReturnValue("tablet");
+    mockUseViewportMode.mockReturnValue("desktop");
     (fetchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ...defaultSettings,
       experimentalFeatures: { ...defaultSettings.experimentalFeatures, roadmap: true },
@@ -5298,6 +5549,25 @@ describe("App view switching", () => {
   restored, and no expand modal is ever created for Chat.
   */
   it("project switch consumes a restored wide Chat selection and restores ordinary page views", async () => {
+    /*
+    FNXC:MobileShellBoundary 2026-09-24-19:40:
+    "Wide" here means the footer placement's right dock, and FN-468 moved the tablet band into the mobile shell, so the
+    dock — like every other wide surface — now exists at `desktop` only. The case previously inherited the old `tablet`
+    default tier and therefore asked a mobile-shell tier for a surface the shell no longer owns.
+
+    FNXC:ChatSurfaceUnification 2026-09-24-19:40:
+    The dock is an operator opt-in surface — closed by default since the 2026-07-03 first-run change
+    (`readStoredRightDockOpen` returns false with no stored preference) and showing its last-used tool
+    (`fusion:right-dock-view`). With neither preference stored, the dock is not yet a resolvable host on the first render
+    pass, so the hostless Chat snap (`App.tsx`, FNXC:ChatPresentationToggle 2026-09-17-01:10) writes the restored `chat`
+    page selection back to `board` before the dock host exists, and the dock never reaches the Chat tool. This case
+    therefore states the preferences its scenario always assumed: an open dock whose tool is Chat. That makes the
+    consumption observable without weakening it — every assertion below is unchanged: the dock body owns Chat, no expand
+    modal is created, no parallel `chat-keep-alive` PAGE host appears, and the page selection settles on `board`.
+    */
+    mockUseViewportMode.mockReturnValue("desktop");
+    localStorage.setItem("fusion:right-dock-open", "true");
+    localStorage.setItem("fusion:right-dock-view", "chat");
     /* FN-419: the dock consumes a restored wide `chat` selection only in the footer placement. */
     vi.mocked(fetchSettings).mockResolvedValue({ ...defaultSettings, navigationPlacement: "footer" });
     const projectA = { id: "proj_a", name: "Project A", path: "/a", status: "active" as const, isolationMode: "in-process" as const, createdAt: "", updatedAt: "" };
@@ -6042,7 +6312,16 @@ describe("App node mode switching", () => {
     mockNotesApi.updateNote.mockResolvedValue({ ...note, content: "Sale après transition", revision: 2 });
 
     const view = render(<App />);
-    mockUseViewportMode.mockReturnValue("tablet");
+    /*
+    FNXC:MobileShellBoundary 2026-09-24-20:22:
+    This case drives the Notes PAGE host (`.notes-view:not(--compact)`), and the case itself already pins the placement
+    that produces it (`navigationPlacement: "sidebar"`). It ran at `tablet` only because the tablet band used to keep the
+    wide surfaces; FN-468 moved that band into the mobile shell, where Notes is reachable as the header popover or the
+    pill's More entry and this case's own companion (the tablet More-menu inventory case) pins that the pill deliberately
+    omits Notes at tablet. The tier therefore becomes `desktop`, the placement the case declares keeps the left column as
+    the Notes owner, and every assertion — full-page editor, autosave on project switch, no discard dialog — is unchanged.
+    */
+    mockUseViewportMode.mockReturnValue("desktop");
     view.rerender(<App />);
 
     fireEvent.click(await screen.findByTestId("sidebar-nav-notes"));
@@ -6414,6 +6693,19 @@ describe("App search query propagation to remote mode", () => {
     // Set project mode
     localStorage.setItem("kb-dashboard-view-mode", "project");
 
+    /*
+    FNXC:MobileShellBoundary 2026-09-24-17:45:
+    These two cases pin the App→`useRemoteNodeData` searchQuery hand-off, and that hand-off is driven only by a
+    search surface bound to the App-owned `searchQuery` state. FN-494 made the DESKTOP header search an inline
+    combobox whose query is transient by design (`showDesktopInlineSearch` → `setInlineSearchQuery`, never
+    `onSearchChange`), so at the desktop tier there is no header surface left to type into. The same header keeps the
+    App-bound floating panel on the tablet band (`canShowNonMobileSearch` is keyed on `!isMobile`, and
+    `desktop-header-search-btn` is its collapsed trigger), which is exactly the surface these cases drive. Before this
+    file's default tier flipped, the stale `tablet` default supplied that tier implicitly; it is now stated so the
+    pinned contract stays reachable.
+    */
+    mockUseViewportMode.mockReturnValue("tablet");
+
     render(<App />);
 
     await waitFor(() => {
@@ -6471,6 +6763,10 @@ describe("App search query propagation to remote mode", () => {
 
     // Set project mode
     localStorage.setItem("kb-dashboard-view-mode", "project");
+
+    /* FNXC:MobileShellBoundary 2026-09-24-17:45: same tier statement as the paired case above — the App-bound
+    floating search panel these cases type into exists on the tablet band, not on the inline-search desktop tier. */
+    mockUseViewportMode.mockReturnValue("tablet");
 
     render(<App />);
 
@@ -7284,7 +7580,7 @@ describe("App task search suggestions", () => {
 });
 
 describe("FN-5817 mobile auto-merge toggle stability", () => {
-  it("keeps app shell mounted when toggling auto-merge on mobile", async () => {
+  it("keeps app shell mounted with an in-review card on mobile", async () => {
     mockUseViewportMode.mockReturnValue("mobile");
 
     const updateSettingsSpy = vi.mocked(updateSettings);
@@ -7326,28 +7622,44 @@ describe("FN-5817 mobile auto-merge toggle stability", () => {
 
     render(<App />);
 
-    const toggle = await screen.findByRole("checkbox", { name: "Auto-merge" });
+    /*
+    FNXC:HumanMergeApproval 2026-09-24-21:10:
+    FN-514 (2026-09-17) removed the review lane's header Auto-merge control — `Column.test.tsx` pins that removal today
+    ("no input, label or shell survives it") — so this case could no longer reach the mutation it used to click, and the
+    checkbox it waited for exists on no surface at any tier. What FN-5817 actually guarded is the crash class, not the
+    button: an `in-review` card on the phone must render the shell (navigation pill, board, card) without tripping the
+    error boundary or logging a React error. That half is kept, is still the only phone-level guard for that crash, and
+    now also pins that the deleted lane-header control stays deleted here rather than reappearing as a stray producer.
+    The settings-write resilience FN-514 left behind (`useAppSettings.toggleAutoMerge`, still owned by the App) has no UI
+    producer to drive it from, so it is exercised where it is owned, not from this shell case.
+    */
+    expect(screen.queryByRole("checkbox", { name: "Auto-merge" })).toBeNull();
+    expect(document.querySelector(".auto-merge-toggle")).toBeNull();
     expect(screen.getByTestId("mobile-nav-tab-command-center")).toBeInTheDocument();
     expect(screen.getByTestId("mobile-nav-tab-planning")).toBeInTheDocument();
     expect(document.querySelector("main.board")).not.toBeNull();
-    expect(screen.getByText("In review task")).toBeInTheDocument();
+    /*
+    FNXC:MobileShellBoundary 2026-09-24-21:25:
+    On the phone the mobile shell's card surface is the List destination — the Board stays the mounted background and is
+    not the foreground browsing host, so the in-review card is reached the way a phone user reaches it (the persisted
+    quick-access `tasks` slot, FN-480). This is also why FN-5817's original crash had a phone reproduction at all: the
+    card row, not the settings write, is what stress-tested the shell.
+    */
+    fireEvent.click(screen.getByTestId("mobile-nav-tab-tasks"));
+    const listDrawer = await screen.findByTestId("mobile-drawer-list");
+    expect(within(listDrawer).getByText("In review task")).toBeInTheDocument();
     expect(screen.queryByText("Something went wrong")).toBeNull();
 
-    fireEvent.click(toggle);
-
     await waitFor(() => {
-      expect(updateSettingsSpy).toHaveBeenCalledWith(
-        expect.objectContaining({ autoMerge: expect.any(Boolean) }),
-        DEFAULT_PROJECT_ID,
-      );
       expect(screen.getByTestId("mobile-nav-tab-command-center")).toBeInTheDocument();
       expect(screen.getByTestId("mobile-nav-tab-planning")).toBeInTheDocument();
-      expect(screen.getByRole("checkbox", { name: "Auto-merge" })).toBeInTheDocument();
       expect(document.querySelector("main.board")).not.toBeNull();
-      expect(screen.getByText("In review task")).toBeInTheDocument();
+      expect(within(listDrawer).getByText("In review task")).toBeInTheDocument();
     });
 
     expect(screen.queryByText("Something went wrong")).toBeNull();
+    /* With no lane-header control left to click, mounting the phone shell must not write project settings on its own. */
+    expect(updateSettingsSpy).not.toHaveBeenCalled();
     expect(consoleErrorSpy).not.toHaveBeenCalled();
     consoleErrorSpy.mockRestore();
   });
@@ -7525,17 +7837,33 @@ describe("FN-426 tool surfaces without the right sidebar", () => {
     ...overrides,
   });
 
+  /*
+  FNXC:MobileShellBoundary 2026-09-24-21:32:
+  FN-468 moved tablet into the mobile shell, so the tablet leg can no longer wait for `desktop-action-bar` — the wide
+  action bar exists only at desktop, and tablet is hydrated through the persistent navigation pill. The FN-426 invariant
+  this case owns is tier-independent (a project with the panel off mounts no right-dock shell at all), so both legs still
+  assert the identical absence set and the shell-class clause; only the readiness anchor and the non-vacuity proof differ.
+  */
   it.each(["tablet", "desktop"] as const)("mounts no right sidebar shell at all by default on %s", async (mode) => {
     mockUseViewportMode.mockReturnValue(mode);
     vi.mocked(fetchSettings).mockResolvedValue(toolSettings());
 
     render(<App />);
 
-    await screen.findByTestId("desktop-action-bar");
+    if (mode === "tablet") {
+      await waitFor(() => expect(document.querySelector(".mobile-nav-bar")).not.toBeNull());
+    } else {
+      await screen.findByTestId("desktop-action-bar");
+    }
     expect(screen.queryByTestId("right-dock")).toBeNull();
     expect(screen.queryByTestId("right-dock-body")).toBeNull();
     expect(screen.queryByTestId("header-right-dock-toggle")).toBeNull();
-    expect(screen.getByTestId("dashboard-project-shell")).not.toHaveClass("dashboard-project-shell--with-right-dock");
+    const shell = screen.getByTestId("dashboard-project-shell");
+    expect(shell).not.toHaveClass("dashboard-project-shell--with-right-dock");
+    if (mode === "tablet") {
+      /* Non-vacuity: tablet really is on the mobile shell, so the absence above is not an empty-hydration artifact. */
+      expectMobileShellOwnsNavigation();
+    }
   });
 
   /*
