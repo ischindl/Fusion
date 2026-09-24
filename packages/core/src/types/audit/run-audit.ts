@@ -20,6 +20,27 @@ export type RunAuditMutationType =
   | "task:handoff"
   | "task:handoff-invariant-violation"
   | "overseer:intervention"
+  /*
+  FNXC:VanishedTaskDetection 2026-09-24-00:40 (RUFU-283):
+  `task:vanished-approved-work` is emitted once per operator-visible finding by the
+  `reconcile-vanished-task-dirs` sweep. Metadata: { taskId, reason, branchRef, unmergedCommitCount,
+  gateApproved, salvageTarget } — ids, a fixed reason enum, counts and one derived ref; never mirror
+  content, prompt text, log prose or error text.
+
+  The literal names the class the operator must never lose silently (approved work with an unmerged
+  branch), which is why it stays even though the sweep also reports the neighbouring classes: `reason`
+  carries the taxonomy (`row-missing|row-tombstoned` × `branch-unmerged|branch-missing`, plus
+  `state-unresolved` when the branch could not be probed) and `gateApproved` says whether a gate
+  actually approved the card. Do not read a row with `gateApproved: false` as a false positive — it is
+  the same disappearance, just not yet an approved one.
+
+  `task:row-purged-for-resurrection` is the mandatory pre-write for a tombstone hard-delete on the
+  resurrection path, so a purged id is always attributable. Metadata: { taskId, operation,
+  allowResurrection, forceResurrect, deletedAtPresent, purgedWorkflowStepCount }. Both are written
+  transactionally with the mutation they describe, which is what makes the purge fail closed.
+  */
+  | "task:vanished-approved-work"
+  | "task:row-purged-for-resurrection"
   | (string & {});
 
 /** Input for recording a run-audit event. */

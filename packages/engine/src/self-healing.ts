@@ -166,6 +166,11 @@ import {
 import { classifyForeignOnlyContamination, deriveTaskIdFromFusionBranch, inspectBranchConflict, listUniqueBranchCommits, taskWorktreeCheckoutIsClean } from "./execution/branch-conflicts.js";
 import { preserveWorktreeChanges, preserveWorktreeChangesIncludingUntracked } from "./execution/worktree-change-preservation.js";
 import { createRunAuditor, generateSyntheticRunId, type DatabaseMutationType, type RunAuditor } from "./util/run-audit.js";
+import {
+  createUnmergedCommitProbe,
+  detectVanishedTaskDirs,
+  type VanishedTaskDetectionSummary,
+} from "./notification/vanished-task-detection.js";
 import { finalizeProvenAutoMergeTask, validateWorkflowDoneMergeProof } from "./merge/auto-merge-finalization.js";
 import { captureMergeContentDescriptor } from "./merge/merge-content-capture.js";
 import { rerouteSingularStaleContentToReview } from "./merge/stale-content-review-reroute.js";
@@ -3205,6 +3210,32 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
               log.warn(`Maintenance batch 1 step "reconcile-orphaned-task-dirs" recovered=${result.recovered.length} skipped=${result.skipped.length}`);
             }
             return result;
+          },
+        },
+        {
+          /*
+           * FNXC:VanishedTaskDetection 2026-09-24-00:40:
+           * Report-only detection for work that is off every board read (RUFU-225). It sits right
+           * after `reconcile-orphaned-task-dirs` because that sweep is the reason this one exists:
+           * its silent skips (`id-exists-anywhere` for a tombstone, `stale-beyond-window` for an
+           * aged orphan) are exactly the states that leave a card on disk and off the board, and it
+           * is the natural place a reader would look for the inverse check.
+           *
+           * It shares `cleanup-orphans`' git-churn gate: classification needs one `git rev-list`
+           * probe per candidate, so running it on every maintenance tick would put shellout cost on
+           * the same cadence as pruning work without being pruning work. A gated tick simply reports
+           * nothing; the next due tick re-derives findings from disk, so no state is lost.
+           */
+          name: "reconcile-vanished-task-dirs",
+          fn: async () => {
+            if (maintenancePaused || !gitWorktreeChurnDue) return 0;
+            const result = await this.detectVanishedTaskDirsForMaintenance();
+            if (result.findings.length > 0) {
+              log.warn(
+                `Maintenance batch 1 step "reconcile-vanished-task-dirs" findings=${result.findings.length} alerted=${result.alerted} suppressed=${result.suppressed}`,
+              );
+            }
+            return result.findings.length;
           },
         },
         {
@@ -8729,6 +8760,31 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     } catch (error) {
       log.warn(`reconcileReviewStallWedgeNotifications failed: ${error instanceof Error ? error.message : String(error)}`);
       return 0;
+    }
+  }
+
+  /*
+  FNXC:VanishedTaskDetection 2026-09-24-00:40 (RUFU-283):
+  Thin wrapper over the detector module: it resolves the project's integration base so the branch
+  probe measures "unmerged relative to where this project lands", not a hardcoded `main`, and it
+  swallows its own failures because a report-only sweep must never turn into a maintenance-batch
+  failure that masks the repairs around it. The base resolution has its own fallback because an
+  unresolvable base would otherwise skip detection entirely, which is the silence this sweep exists
+  to remove.
+  */
+  async detectVanishedTaskDirsForMaintenance(): Promise<VanishedTaskDetectionSummary> {
+    try {
+      const settings = await this.store.getSettings();
+      const base = await resolveIntegrationBranch(this.options.rootDir, settings).catch(() => "main");
+      return await detectVanishedTaskDirs({
+        store: this.store,
+        messageStore: this.options.messageStore,
+        rootDir: this.options.rootDir,
+        probe: createUnmergedCommitProbe(this.options.rootDir, base),
+      });
+    } catch (error) {
+      log.warn(`reconcile-vanished-task-dirs failed: ${error instanceof Error ? error.message : String(error)}`);
+      return { scanned: 0, candidates: 0, probed: 0, findings: [], alerted: 0, suppressed: 0 };
     }
   }
 

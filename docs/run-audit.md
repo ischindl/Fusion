@@ -83,6 +83,20 @@ RUFU-263 made the sweep read the row's `blockedReason` before acting, because `h
 
 `worktree:orphaned-git-child-reap-no-action` is the deduped sibling: emitted once per manager lifetime (re-armed after any reap row) when the sweep ran on a probeable host and found no candidates, with `target: "orphaned-git-children"` and metadata `{ count: 0, outcome: "no-action" }`. Both writes use the FN-9175 bounded best-effort seam and are intentionally outside the curated delivery-pipeline event catalogue.
 
+### Vanished task-directory detection
+
+`task:vanished-approved-work` records one finding from `reconcile-vanished-task-dirs` (RUFU-283): a `.fusion/tasks/<ID>/task.json` mirror whose id resolves on **no** board read. It exists because RUFU-225 kept its mirror, its `in-review` column, an `APPROVE_WITH_NOTES` code-review verdict and 3 unmerged commits while resolving on no board read, and the board's silence was the only report — the integrity report is row-only (`status: "ok"` was correct), and FN-6783's orphan re-import needs a fully absent id plus a 7-day window the mirror never reached.
+
+The literal names the class the operator must never lose silently — approved work with an unmerged branch — and it is emitted for every vanished-directory finding, because the disappearance is the event and `reason` says which neighbourhood it is: `row-missing-branch-unmerged` / `row-tombstoned-branch-unmerged` (work still reachable), `row-missing-branch-missing` / `row-tombstoned-branch-missing` (work already lost), and `state-unresolved` when the branch could not be probed.
+
+Metadata is ids/counts/fixed enums only: `taskId`, `reason`, `branchRef`, `unmergedCommitCount`, `gateApproved` (whether a gate actually approved the card — `false` is a still-live card that vanished, not a false positive), and `salvageTarget`. Mirror prose, status text, step results, and error strings are never recorded — the mirror is read defensively for `column`/gate rows and discarded. `target` is `task:<ID>` and `agentId` is `self-healing`. The row is written before the mailbox notice, so a mailbox outage still leaves a queryable record; `unmergedCommitCount: null` is the honest "unknown", never a zero.
+
+The matching operator notice is a `system:vanished-work:<taskId>:<reason>:<bucket>` mailbox message (`sendMessageOnce`, 6-hour bucket), not a `NotificationService` wedge: wedge dedupe and cooldown hang off the task row, which by definition does not exist here. See [`docs/solutions/reliability/vanished-task-directory-rufu-225.md`](solutions/reliability/vanished-task-directory-rufu-225.md).
+
+`task:row-purged-for-resurrection` is the purge half of the same defect. `deleteTask(id, { allowResurrection: true })` physically removes a soft-delete tombstone, which is the only path that can reuse a vanished id, and it used to delete the `task_workflow_selection` / `workflow_steps` children first and the parent second with no audit row at all. The audit write now shares the parent-delete transaction (`emitBoundedRunAudit` is not usable there — a rolled-back delete must not leave its forensic row behind), so an unaudited removal is unreachable by ordering and a failed audit write raises `TombstonePurgeUnauditedError` with the tombstone intact. Metadata is `taskId`, `operation` (`createTask`/`duplicateTask`/`refineTask`), `allowResurrection`, `forceResurrect`, `deletedAtPresent`, and `purgedWorkflowStepCount`. This is an intentionally **awaited, unbounded** transactional writer (class C), not the bounded best-effort seam.
+
+Both events are deliberately outside the curated delivery-pipeline event catalogue above: neither is a delivery-pipeline step, and `reconcile-vanished-task-dirs` repairs nothing. Their shape is pinned by `packages/core/src/__tests__/vanished-task-detection.test.ts`, `packages/engine/src/__tests__/vanished-task-detection-sweep.test.ts`, and `packages/core/src/__tests__/tombstone-purge-audit.test.ts` instead.
+
 ## Durable-agent error-state
 
 Events that make durable-agent error states and their recovery inspectable.
