@@ -5798,7 +5798,7 @@ export function createAgentDeleteTool(
       try {
         await agentStore.deleteAgent(params.agent_id, { force: params.force === true, reassignTo: params.reassign_to });
       } catch (error) {
-          return storeErrorResult("agent deletion", error);
+        return storeErrorResult("agent deletion", error);
       }
 
       await options?.runAuditor?.database({ type: "agent:delete:approved", target: target.id, metadata: { policy, autoApproved: true } });
