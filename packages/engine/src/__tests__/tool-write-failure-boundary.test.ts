@@ -170,7 +170,11 @@ function failureReturns(segment: Segment): FailureReturn[] {
     if (!RETURN_START.test(segment.lines[index])) continue;
     const objectText = returnObject(segment.lines, index);
     if (!/content:/.test(objectText)) continue; // not a tool result
-    const nearbyCatch = segment.lines.slice(Math.max(0, index - 12), index).some((line) => /\bcatch\b/.test(line));
+    /*
+     * A generic fallback often sits under a typed-error branch inside the same catch, so "am I in a catch?"
+     * has to look back further than the previous statement — 12 lines missed exactly that shape.
+     */
+    const nearbyCatch = segment.lines.slice(Math.max(0, index - 40), index).some((line) => /\bcatch\b/.test(line));
     const interpolations = objectText.match(/\$\{[^}]*\}/g) ?? [];
     const forwardsError =
       interpolations.some((interpolation) => /\.error\b/.test(interpolation)) ||
