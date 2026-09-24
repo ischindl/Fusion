@@ -42,7 +42,7 @@ pgDescribe("TaskStore.bypassFailedPreMergeReviewStep", () => {
   */
   const h: SharedPgTaskStoreHarness = createSharedPgTaskStoreTestHarness({
     prefix: "fusion_bypass_review",
-    projectId: "proj_bypass_review",
+    projectId: "core-store-bypass-review",
   });
 
   beforeAll(h.beforeAll);
@@ -145,6 +145,29 @@ pgDescribe("TaskStore.bypassFailedPreMergeReviewStep", () => {
     expect(result?.bypassedFromVerdict).toBe("REVISE");
     expect(result?.bypassedFromStatus).toBe("failed");
     expect(result?.bypassedBy).toBe("operator-2");
+  });
+
+  it("refuses to bypass the FN-9372 no-verdict shape when it carries an open finding", async () => {
+    await seedInReviewTask("FN-BYP-FINDING", {
+      workflowStepResults: [failedStep({
+        findings: [{
+          id: "fn-9372-unfixed-pipeline-smoke",
+          title: "Pipeline smoke remains unfixed",
+          body: "The review must be re-run after the smoke fix.",
+          severity: "critical",
+          resolution: "open",
+        }],
+      })],
+    });
+
+    await expect(store().bypassFailedPreMergeReviewStep("FN-BYP-FINDING", {
+      reason: "dispatch defect",
+      actor: "operator-1",
+    })).rejects.toThrow("failed review has open findings");
+    const task = await store().getTask("FN-BYP-FINDING");
+    expect(task.workflowStepResults?.[0]?.status).toBe("failed");
+    expect(task.workflowStepResults?.[0]?.verdict).toBeUndefined();
+    expect(task.workflowStepResults?.[0]?.bypassedBy).toBeUndefined();
   });
 
   it("records a run-audit event for the bypass", async () => {

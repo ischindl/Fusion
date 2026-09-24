@@ -100,6 +100,7 @@ export async function createProjectScopedChatManager(options: {
   messageStore?: MessageStore;
   isMergePending?: (taskId: string) => boolean | Promise<boolean>;
   resetInReviewMergeRetry?: (task: import("@fusion/core").Task) => Promise<"reset" | "pending" | "changed" | "unavailable">;
+  rerouteFailedNoVerdictPreMergeReview?: (task: import("@fusion/core").Task) => Promise<"rerouted" | "pending" | "changed" | "unavailable" | "not-applicable">;
 }): Promise<ChatManager> {
   const agentStore = new AgentStore({ rootDir: options.store.getFusionDir(), asyncLayer: options.store.getAsyncLayer() ?? undefined });
   return new ChatManager(
@@ -112,6 +113,7 @@ export async function createProjectScopedChatManager(options: {
     options.store,
     options.isMergePending,
     options.resetInReviewMergeRetry,
+    options.rerouteFailedNoVerdictPreMergeReview,
   );
 }
 
@@ -129,6 +131,7 @@ export function getOrCreateScopedChatManager(
   messageStore?: MessageStore,
   isMergePending?: (taskId: string) => boolean | Promise<boolean>,
   resetInReviewMergeRetry?: (task: import("@fusion/core").Task) => Promise<"reset" | "pending" | "changed" | "unavailable">,
+  rerouteFailedNoVerdictPreMergeReview?: (task: import("@fusion/core").Task) => Promise<"rerouted" | "pending" | "changed" | "unavailable" | "not-applicable">,
 ): ChatManager {
   const key = store.getFusionDir();
   const cached = scopedChatManagerCache.get(key);
@@ -144,6 +147,9 @@ export function getOrCreateScopedChatManager(
     }
     if (resetInReviewMergeRetry) {
       cached.setMergeRetryResetProvider(resetInReviewMergeRetry);
+    }
+    if (rerouteFailedNoVerdictPreMergeReview) {
+      cached.setFailedNoVerdictReviewRecoveryProvider(rerouteFailedNoVerdictPreMergeReview);
     }
     return cached;
   }
@@ -164,6 +170,7 @@ export function getOrCreateScopedChatManager(
     store,
     isMergePending,
     resetInReviewMergeRetry,
+    rerouteFailedNoVerdictPreMergeReview,
   );
   scopedChatManagerCache.set(key, manager);
   return manager;

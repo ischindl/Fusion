@@ -179,6 +179,7 @@ export function buildHandleGraphFailureDeps(host: any): any {
       "executing", "resumingUnpaused", "activeSessions", "activeStepExecutors",
       "deferredTerminalParksInFlight",
       "activeWorkflowStepSessions", "activeCliTaskSessions", "activeWorkflowGraphAbortControllers",
+      "rerouteFailedNoVerdictPreMergeReview",
     ]),
     ...facadeMethods(host, [
       "getRunContextFor", "clearCompletedTaskWatchdog", "clearPausedAborted", "execute",

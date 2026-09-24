@@ -59,6 +59,7 @@ vi.mock("@fusion/dashboard", () => ({
 }));
 
 vi.mock("@fusion/engine", () => ({
+  isFailedNoVerdictPreMergeReviewResult: vi.fn(() => false),
   createFnAgent: vi.fn(),
   SelfHealingManager: vi.fn(),
   runAiMerge: vi.fn(),

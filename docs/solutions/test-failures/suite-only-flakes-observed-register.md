@@ -19,11 +19,7 @@ tags:
 
 # Observed suite-only flakes register
 
-
-This register has **2 active observation records** (entries 2 and 13), both **active first sightings**. Entries 1 and 15 closed after structural fixes with recorded verification, and stay in place below for campaign and first-sighting evidence. Entries 7 and 14 below are closed and retained for cross-reference only. It also has **1 merge-gate eviction record** (entry 6) and **9 archived closed records**. Only the active section drives quarantine and escalation decisions; the other sections preserve historical evidence.
-This register has **2 active observation records** (entries 2 and 13), both **active first sightings**. Entry 1 closed on 2026-09-12: FN-9131's structural harness connection-budget fix (merged 2026-08-16 as `ae507afc37`) resolved its reproduced timeout, and no sighting has occurred since the fix landed; the record stays in place below for its campaign evidence. Entry 14 was closed 2026-09-09 by FN-9283 (diagnosed and deleted under the deletion ratchet). Entries 7 and 15 are closed and retained for cross-reference only. It also has **1 merge-gate eviction record** (entry 6) and **9 archived closed records**. Only the active section drives quarantine and escalation decisions; the other sections preserve historical evidence.
-This register has **2 active observation records** (entries 2 and 13), both **active first sightings**. Entry 1 closed on 2026-09-12: FN-9131's structural harness connection-budget fix (merged 2026-08-16 as `ae507afc37`) resolved its reproduced timeout, and no sighting has occurred since the fix landed; the record stays in place below for its campaign evidence. Entries 7 and 14 below are closed and retained for cross-reference only. It also has **1 merge-gate eviction record** (entry 6) and **9 archived closed records**. Only the active section drives quarantine and escalation decisions; the other sections preserve historical evidence.
-igin/main
+This register has **3 active observation records** (entries 2, 13, and 16), all **active first sightings**. Entries 1 and 15 closed after structural fixes with recorded verification, and stay in place below for campaign and first-sighting evidence. Entries 7 and 14 below are closed and retained for cross-reference only. It also has **1 merge-gate eviction record** (entry 6) and **9 archived closed records**. Only the active section drives quarantine and escalation decisions; the other sections preserve historical evidence.
 
 <!--
 FNXC:TestFlakeRegister 2026-08-19-11:14:
@@ -243,6 +239,23 @@ This is the same mode already characterized by entry 6 and by entry 7's A02 lane
 Quarantine was not available as an alternative. Core PostgreSQL files cannot be quarantined inline — the gate-policy assertion requires `quarantinedCoreTests` to remain empty — and a merge-gate eviction of a transactional-invariant file is the owner-escalated decision described in the policy section below. The file carries only 4 tests, which is thin against the usual first-sighting coverage argument, but they are the atomicity invariant for handoff-to-review and one of just two files in the blocking PG lane; recording preserves that rather than trading it away over a single unreproduced cold-start abort. A **second sighting** follows normal escalation.
 
 
+<!--
+FNXC:UpdaterSuiteFlake 2026-09-24-04:54:
+FN-9375 records the first hosted-only updater observation instead of weakening the setup assertions or
+quarantining a high-coverage native suite. A second artifact-backed sighting must exclude the complete
+file through the ledger/config lockstep policy, not add timing tolerance or retries.
+-->
+### 16. Native updater setup mock lifecycle
+
+- **Status:** Active first sighting — recorded 2026-09-24, pending next artifact-backed sighting.
+- **File:** `packages/desktop/src/__tests__/native.test.ts`
+- **Exact tests:** `native integrations > setupAutoUpdater > registers updater listeners and checks for updates`; `native integrations > setupAutoUpdater > sets updater download and install flags`.
+- **Observed tree/SHA:** GitHub Actions Full Suite push run [35920595803](https://github.com/Runfusion/Fusion/actions/runs/35920595803), `2ed9b65c116cf85e19f2428832a335fc56b0fa09`.
+- **Artifact provenance:** complete, unexpired `test-timings-shard-4` artifact `10777232469`, created `2026-09-23T21:18:59Z`; normalized Vitest reporter records identify both exact names.
+- **Local reproduction:** `pnpm --filter @fusion/desktop exec vitest run src/__tests__/native.test.ts --silent=passed-only --reporter=dot` passed, including both subjects.
+- **Coverage rationale:** the file retains broad native integration coverage, including ten updater setup scenarios plus save/open dialogs, notifications, and window-state behavior. A first sighting does not justify removing that coverage.
+- **Next-sighting action:** on a second eligible Full Suite push artifact observation, quarantine the whole file in the same commit by adding its ledger row and matching `packages/desktop/vitest.config.ts` literal exclude, then validate lockstep. Do not widen timeouts, add retries, or weaken assertions.
+
 
 ### 15. Workflow-results preserved-column selector mock ordering
 
@@ -314,7 +327,6 @@ Never run the whole file unbounded on a shared host. The host-safe bounded repro
 **Symptom-gate evidence (host-bounded: `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0` + `NODE_OPTIONS=--max-old-space-size=4096` + `timeout`).** Bounded whole-file runs 32/32 green ×3 consecutively, cgroup peaks 548/557/549 MB (the pre-fix shape climbs ~350 MB/s from the same ~550 MB plateau to a kill at ~15 s; A/B on the identical pair command: unfixed 5,503 MB/6 MB-heap kill vs fixed flat ≤300 MB green in 5.8 s). The three `-t` per-describe commands stay green (20 / 3 / 9); the scoped `src/notification/__tests__` suite is 113/113 green; the file now collects **32** cases (the new guard case joined describe 2). **Lockstep:** register intro 5→4 active, `scripts/__tests__/observed-flake-register.test.mjs` drops entry 15 from its pinned `deepEqual` list in this same commit, `scripts/lib/test-quarantine.json` is untouched (lockstep count 0 → 0) — the fix-landed branch retires the record without the quarantine that a second sighting would otherwise have forced. Profiling method and the safe bounded-run recipe are durable in [`vitest-worker-allocation-storm-profiling.md`](vitest-worker-allocation-storm-profiling.md).
 
 
-igin/main
 ### Common shape and investigated result
 
 FN-9125 established that former entry 3 was not PostgreSQL-suite-adjacent: `plugin-runner.test.ts` used an in-memory mocked TaskStore and had no PostgreSQL/harness import. FN-9135 did not identify a root cause, but FN-9141's completed shuffled worker-reuse campaign reproduced and structurally fixed the logger mock-history fixture defect; the suite and its renamed-complete-lane dispatch coverage remain active. Entries 2 and 13 remain active, unreproduced PostgreSQL observations; entry 7 was closed on 2026-08-23 when the whole file was quarantined on a second sighting of a different test; entry 14 was closed on 2026-09-09 after deterministic diagnosis showed its assertions encoded FN-217-removed lifecycle behavior (see the archived record below). FN-9146 completed the later A×4/B×3/C×3 campaign without the entry 2 or entry 13 exact identities failing. Entry 1 reproduced under FN-9126 and again under FN-9146's A02–A04 lanes, then FN-9131 attributed the mechanism (harness demand scales with fan-out against a fixed cluster supply; the first test in a file eats the 15s budget) and shipped the structural queueing-admission fix, closing the record on 2026-09-12. The golden-template/advisory-lock lifecycle and schema-applier's inline baseline path are concrete architecture facts, not a demonstrated cause of these assertions. Core policy forbids inline PG quarantine: FN-9146's retained evidence for entries 2 and 13 is durable, but FN-9146 was archived on 2026-09-03 without a named successor, so those records are presently unowned; the next sighting follows normal escalation from an unowned state. entry 7 was closed on 2026-08-23 (see above). No source or fan-out change is justified before a diagnostic names a causal lifecycle seam. Entry 13 is a further unreproduced instance of that same 15s setup-hook mode, narrowed to the capped four-fork gate lane on a cold cluster. Entry 6 instead records a merge-gate eviction after a loaded-lane setup-hook timeout; `FNXC:PgTestTemplateDb 2026-07-19-17:20` and `FNXC:PgTestWorkerCap 2026-07-18-18:00` are already-landed mitigations for that mode, not new diagnoses to re-open. The Planning Mode entries are separate frontend timing observations.

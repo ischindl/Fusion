@@ -3851,6 +3851,27 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       established recovery classifier below.
       */
       /*
+      FNXC:NoVerdictReviewRecovery 2026-09-23-19:58:
+      A completed status-none review card can be a lost review dispatch rather than a lost merge.
+      Ask ProjectEngine to hold merge admission and arm the exact failed gate before the general stage
+      restart or merge-reset paths; this preserves the failed evidence for the replacement review.
+      */
+      if (isInReviewMergeRetryStall && typeof engine?.rerouteFailedNoVerdictPreMergeReview === "function") {
+        const noVerdictOutcome = await engine.rerouteFailedNoVerdictPreMergeReview(task);
+        if (noVerdictOutcome === "rerouted") {
+          await scopedStore.logEntry(req.params.id, "Retry requested from dashboard (failed no-verdict review re-seeded)");
+          res.json(await scopedStore.getTask(req.params.id));
+          return;
+        }
+        if (noVerdictOutcome === "pending") {
+          throw conflict("Retry is unavailable while a merge is queued or active");
+        }
+        if (noVerdictOutcome === "unavailable") {
+          throw conflict("Retry is unavailable because review recovery ownership is unavailable");
+        }
+      }
+
+      /*
       FNXC:ColumnRestart 2026-09-17-09:16:
       FN-499: `preserveWork` is an explicit opt-in read from the request body. An absent body, a
       non-boolean value, and every existing caller therefore keep today's destructive restart, so no

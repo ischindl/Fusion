@@ -23,6 +23,7 @@ vi.mock("@fusion/engine", () => ({
   isFirstPlanningToWipAdmission: vi.fn(),
   isInReviewMissingWorktreeSessionStartFailure: vi.fn(),
   planTaskWorktreePath: vi.fn(),
+  isFailedNoVerdictPreMergeReviewResult: vi.fn(() => false),
   runAiMerge: vi.fn(),
   landWorkspaceTask: vi.fn(),
   withWorkspaceMergeDispatchLease: vi.fn(),

@@ -24,6 +24,7 @@
 import {
   applyWorkflowSettingsOverlay,
   resolveEffectiveSettingsDetailed,
+  type EffectiveSettingsResult,
   type Settings,
   type TaskStore,
 } from "@fusion/core";
@@ -39,6 +40,37 @@ export interface EffectiveSettingsTask {
  * (stored overrides; default-only fills only-absent). Returns a NEW object; `base`
  * is not mutated. Degrades to returning `base` unchanged on any resolver error.
  */
+export interface EffectiveSettingsWithProvenance<T> {
+  settings: T;
+  storedKeys: ReadonlySet<string>;
+}
+
+/** Resolve one workflow-settings snapshot for consumers that need stored-value provenance. */
+export async function mergeEffectiveSettingsWithProvenance<T extends Partial<Settings>>(
+  store: Pick<
+    TaskStore,
+    | "getDefaultWorkflowId"
+    | "getTaskWorkflowSelection"
+    | "getTaskWorkflowSelectionAsync"
+    | "getWorkflowDefinition"
+    | "getWorkflowSettingValues"
+    | "getWorkflowSettingsProjectId"
+  >,
+  task: EffectiveSettingsTask,
+  base: T,
+): Promise<EffectiveSettingsWithProvenance<T>> {
+  try {
+    const detailed: EffectiveSettingsResult = await resolveEffectiveSettingsDetailed(
+      store as Parameters<typeof resolveEffectiveSettingsDetailed>[0],
+      task,
+    );
+    return { settings: applyWorkflowSettingsOverlay(base, detailed), storedKeys: detailed.storedKeys };
+  } catch {
+    return { settings: base, storedKeys: new Set() };
+  }
+}
+
+/** Merge settings while preserving the legacy flattened-only API for existing callers. */
 export async function mergeEffectiveSettings<T extends Partial<Settings>>(
   store: Pick<
     TaskStore,
@@ -51,13 +83,5 @@ export async function mergeEffectiveSettings<T extends Partial<Settings>>(
   task: EffectiveSettingsTask,
   base: T,
 ): Promise<T> {
-  try {
-    const detailed = await resolveEffectiveSettingsDetailed(
-      store as Parameters<typeof resolveEffectiveSettingsDetailed>[0],
-      task,
-    );
-    return applyWorkflowSettingsOverlay(base, detailed);
-  } catch {
-    return base;
-  }
+  return (await mergeEffectiveSettingsWithProvenance(store, task, base)).settings;
 }

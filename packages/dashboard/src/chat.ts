@@ -592,6 +592,8 @@ export interface ChatFusionToolsetOptions {
   isMergePending?: (taskId: string) => boolean | Promise<boolean>;
   /** ProjectEngine-owned fence that serializes a retry reset with merge admission. */
   resetInReviewMergeRetry?: (task: import("@fusion/core").Task) => Promise<"reset" | "pending" | "changed" | "unavailable">;
+  /** ProjectEngine-owned fence that re-seeds a lost no-verdict review without resetting merge state. */
+  rerouteFailedNoVerdictPreMergeReview?: (task: import("@fusion/core").Task) => Promise<"rerouted" | "pending" | "changed" | "unavailable" | "not-applicable">;
 }
 
 const CHAT_MISSION_READ_TOOL_NAMES = new Set(["fn_mission_list", "fn_mission_show"]);
@@ -761,6 +763,7 @@ export async function createChatFusionToolset(options: ChatFusionToolsetOptions)
     currentProjectId,
     isMergePending,
     resetInReviewMergeRetry,
+    rerouteFailedNoVerdictPreMergeReview,
   } = options;
   const tools: ChatCustomTool[] = [];
 
@@ -801,7 +804,7 @@ export async function createChatFusionToolset(options: ChatFusionToolsetOptions)
     if (actionGateContext) {
       tools.push(
         createTaskDeleteTool(taskStore),
-        createTaskRetryTool(taskStore, { isMergePending, resetInReviewMergeRetry }),
+        createTaskRetryTool(taskStore, { isMergePending, resetInReviewMergeRetry, rerouteFailedNoVerdictPreMergeReview }),
         createTaskPauseTool(taskStore),
         createTaskUnpauseTool(taskStore),
         createTaskDuplicateTool(taskStore),
@@ -1920,6 +1923,7 @@ export class ChatManager {
     private taskStore?: TaskStore,
     private isMergePending?: (taskId: string) => boolean | Promise<boolean>,
     private resetInReviewMergeRetry?: (task: import("@fusion/core").Task) => Promise<"reset" | "pending" | "changed" | "unavailable">,
+    private rerouteFailedNoVerdictPreMergeReview?: (task: import("@fusion/core").Task) => Promise<"rerouted" | "pending" | "changed" | "unavailable" | "not-applicable">,
   ) {}
 
   /**
@@ -1949,6 +1953,10 @@ export class ChatManager {
 
   setMergeRetryResetProvider(resetInReviewMergeRetry: ChatManager["resetInReviewMergeRetry"]): void {
     this.resetInReviewMergeRetry = resetInReviewMergeRetry;
+  }
+
+  setFailedNoVerdictReviewRecoveryProvider(reroute: ChatManager["rerouteFailedNoVerdictPreMergeReview"]): void {
+    this.rerouteFailedNoVerdictPreMergeReview = reroute;
   }
 
   private getPluginRunnerForSkillSelection(): Parameters<typeof buildSessionSkillContextSync>[3] {
@@ -2810,6 +2818,7 @@ export class ChatManager {
       actionGateContext: missionGateContexts.actionGateContext,
       isMergePending: this.isMergePending,
       resetInReviewMergeRetry: this.resetInReviewMergeRetry,
+      rerouteFailedNoVerdictPreMergeReview: this.rerouteFailedNoVerdictPreMergeReview,
     });
 
     const roomCustomTools = dedupeChatTools([...workflowTools, ...chatFusionTools]);
@@ -3888,6 +3897,7 @@ export class ChatManager {
         currentProjectId: session?.projectId ?? null,
         isMergePending: this.isMergePending,
         resetInReviewMergeRetry: this.resetInReviewMergeRetry,
+        rerouteFailedNoVerdictPreMergeReview: this.rerouteFailedNoVerdictPreMergeReview,
       });
       const customTools = dedupeChatTools([
         createAskQuestionTool(),
