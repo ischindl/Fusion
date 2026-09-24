@@ -3441,11 +3441,8 @@ export function createTaskPromoteTool(store: TaskStore, currentTaskId: string): 
 /*
 FNXC:ChatTaskMutationTools 2026-07-26-12:00:
 Chat permission-parity (#2376) adds these lifecycle tools so permanent-agent chat can archive/delete/retry/etc under the same task_agent_mutation gate as heartbeat/executor.
-Keep catch blocks typed as unknown (no-explicit-any) and surface err.message via instanceof — the PR lint gate fails bare `any` here even though older factories still use the disable-comment pattern.
+Keep catch blocks typed as unknown (no-explicit-any); their failure text formats through the shared store-result composer, which owns the Error-or-string decision these catches used to repeat.
 */
-function toolErrorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 export function createTaskDeleteTool(store: TaskStore): ToolDefinition {
   return {
