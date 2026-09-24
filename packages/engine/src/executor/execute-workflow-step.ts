@@ -82,7 +82,7 @@ import {
   filterCustomToolsForReadonly,
 } from "../workflows/workflow-step-tool-policy.js";
 import { executorLog } from "../logger.js";
-import { mergeEffectiveSettingsWithProvenance } from "../project/effective-settings.js";
+import { mergeEffectiveSettings, mergeEffectiveSettingsWithProvenance } from "../project/effective-settings.js";
 import { injectReviewAdvisoryNotes } from "./workflow-step-failure-injection.js";
 import { parseAwaitInputQuestionToolCall } from "./await-input-parse.js";
 import {

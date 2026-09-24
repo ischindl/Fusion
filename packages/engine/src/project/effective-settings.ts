@@ -76,6 +76,7 @@ export async function mergeEffectiveSettings<T extends Partial<Settings>>(
     TaskStore,
     | "getTaskWorkflowSelection"
     | "getTaskWorkflowSelectionAsync"
+    | "getDefaultWorkflowId"
     | "getWorkflowDefinition"
     | "getWorkflowSettingValues"
     | "getWorkflowSettingsProjectId"

@@ -1374,7 +1374,6 @@ export class WorkflowGraphExecutor {
           const authoritativeResult = terminalPersistence.persistedResult;
           const effectiveStepStatus = authoritativeResult?.status ?? stepStatus;
           const effectiveVerdict = authoritativeResult ? authoritativeResult.verdict : verdict;
-          const verdictRequired = false;
           /*
           FNXC:PostMergeEvidenceFence 2026-09-23-07:48:
           An enabled gate-mode post-merge group is a required follow-up, not an advisory

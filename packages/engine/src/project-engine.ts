@@ -3097,13 +3097,14 @@ export class ProjectEngine {
       requiredPreMergeStepIds: mergeGate.requiredPreMergeStepIds,
       mergeContent,
     });
-    if (mergeContent.kind === "singular" && !await this.isMergePending(task.id)) {
-      // Use the same in-memory admission fence as every other no-verdict recovery owner.
-      const reroute = await this.rerouteFailedNoVerdictPreMergeReview(task);
-      if (reroute === "rerouted") {
-        await store.logEntry(task.id, "[pre-merge] The workflow graph was re-seeded at a failed no-verdict pre-merge review gate.");
-      }
-    }
+    /*
+    FNXC:SyncMerge0924 2026-09-24-06:55 (merge origin/main 67c7d80531 → main):
+    FN-9373 also added a queue-admission no-verdict re-seed here. Dropped: this line owns verdict-less
+    gate re-seeding through the RUFU-217 sink lane (persisted three-strike budget + fixed-marker
+    counting) and the deferral arm below; an unbudgeted queue seed would restart a crashed gate forever.
+    The human-initiated routes (dashboard Retry → rerouteFailedNoVerdictPreMergeReview) stay: an
+    operator click intentionally outranks the automatic budget.
+    */
     /*
     FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217, AC2):
     The queue's in-place re-seed deferral widens from the literal not-run sentence to
