@@ -56,6 +56,11 @@ const NON_COLUMN_RECEIVERS: ReadonlySet<string> = new Set([
   "agent",
   "purpose",
   "lane",
+  // FNXC:SyncMerge0924 2026-09-24-14:20: RUFU-287's `AssignedTaskRankRoles.wip`/`hold` are ROLE SLOTS
+  // whose legacy-default ids are defined once (LEGACY_RANK_ROLES) and meant to be overridden by
+  // caller-resolved roles. A default-table property assignment is not a lifecycle guard; comparing
+  // against it happens in resolved ids, not here.
+  "wip",
 ]);
 
 /**

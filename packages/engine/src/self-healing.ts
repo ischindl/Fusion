@@ -11556,8 +11556,8 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
         the failed park of a card whose Implement step never completed.
         */
         const liveItems = await this.store.listWorkflowWorkItemsForTask(task.id).catch(() => []);
-        if (liveItems.some((item) => ACTIVE_WORKFLOW_WORK_ITEM_STATES.has(item.state as (typeof ACTIVE_WORKFLOW_WORK_ITEM_STATES)[number]))) continue;
-        if (task.steps?.some((step) => step.status === "pending" || step.status === "in-progress")) continue;
+        if (liveItems.some((item) => ACTIVE_WORKFLOW_WORK_ITEM_STATES.includes(item.state))) continue;
+        if (task.steps?.some((step) => step.status !== "done" && step.status !== "skipped")) continue;
         hiddenUnrunGateParkCandidateIds.add(task.id);
         const attempts = (this.unrunGateParkRecoveryAttempts.get(task.id) ?? 0) + 1;
         this.unrunGateParkRecoveryAttempts.set(task.id, attempts);
