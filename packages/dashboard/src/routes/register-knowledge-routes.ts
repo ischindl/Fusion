@@ -49,9 +49,20 @@ import {
 const VALID_SOURCE_KINDS: ReadonlySet<string> = new Set<KnowledgeSourceKind>(["task", "pr"]);
 const KNOWLEDGE_GRAPH_NODE_PAGE_MAX = 200;
 const KNOWLEDGE_GRAPH_EDGE_PAGE_MAX = 200;
+/*
+FNXC:RetentionCensus 2026-09-23-10:05 (RUFU-257):
+These four sets are the graph query's enum domains, mirrored from the knowledge-graph schema, and they
+are handed to `enumValues(…)` as a parameter — so the ratchet cannot prove from a `NAME.add(` scan that
+nothing mutates them, and the exemption is written here instead. They are lookup tables for validating
+request parameters, not caches: no query result, row, or user data is retained in them.
+*/
+// retention-allowlist: request-parameter enum domain, fixed by the graph schema
 const GRAPH_NODE_KINDS = new Set<GraphNodeKind>(["file", "module", "symbol", "doc-concept", "rationale"]);
+// retention-allowlist: request-parameter enum domain, fixed by the graph schema
 const GRAPH_EDGE_KINDS = new Set<EdgeKind>(["contains", "imports", "re-exports", "relates-to", "rationale-supports"]);
+// retention-allowlist: request-parameter enum domain, fixed by the graph schema
 const GRAPH_SYMBOL_KINDS = new Set<SymbolKind>(["function", "class", "interface", "type-alias", "enum", "variable", "namespace", "alias"]);
+// retention-allowlist: request-parameter enum domain, fixed by the graph schema
 const GRAPH_OWNERS = new Set<GraphOwner>(["file", "derived"]);
 
 function queryValues(value: unknown): string[] {

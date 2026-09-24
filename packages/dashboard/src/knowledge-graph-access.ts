@@ -10,11 +10,22 @@ import {
   type KnowledgeGraph,
   type TaskStore,
 } from "@fusion/core";
+import { registerRetentionSource } from "./lib/retention-census.js";
+import { registerBoundedRegistryMap } from "./lib/retention/bounded-window-map.js";
 
 export const KNOWLEDGE_GRAPH_PATH_MAX_HOPS = 10;
 export const KNOWLEDGE_GRAPH_PATH_DEFAULT_HOPS = 6;
 export const KNOWLEDGE_GRAPH_PATH_MAX_EXPANSIONS = 20_000;
-const CACHE_SIZE = 4;
+export const CACHE_SIZE = 4;
+
+/*
+FNXC:RetentionCensus 2026-09-21-23:45 (RUFU-257):
+The in-flight rebuild map was the one module-scope collection in this file with no named ceiling: its
+entries are dropped in a `finally`, so it self-limits to concurrent rebuilds in practice, but "no
+entries survive" is a behavioural argument, not a bound. `KG_REBUILD_TRACKER_MAX` names one, far above
+any real concurrency, so the census can report pressure instead of reporting nothing.
+*/
+export const KG_REBUILD_TRACKER_MAX = 64;
 
 type CacheEntry = {
   result: ArtifactLoadResult;
@@ -23,6 +34,55 @@ type CacheEntry = {
 };
 const cache = new Map<string, CacheEntry>();
 const rebuilds = new Map<string, Promise<RebuildKnowledgeGraphResult>>();
+
+/*
+FNXC:RetentionCensus 2026-09-21-10:49:
+The knowledge-graph artifact cache is already COUNT-bounded (`CACHE_SIZE`, LRU-evicted above), but its
+values are whole node/edge sets — multi-megabyte for a repo this size — so a count ceiling alone cannot
+answer "which cache holds my heap?" (RUFU-257: 7 OOM crashes with no per-cache accounting). These two
+sources are registered for BYTE attribution: the probe reads `nodes.length`/`edges.length` (O(1)) and
+applies the documented per-node/per-edge weights below, so the scrape path never walks an edge set.
+`knowledge_graph_rebuilds` is registered too: its entries are dropped in a `finally`, so its count is
+self-limiting to in-flight rebuilds, but "how much is held right now" is still an operator question.
+*/
+/** Estimated bytes per cached graph node (id/path strings + edge index arrays). */
+const KG_NODE_APPROX_BYTES = 256;
+/** Estimated bytes per cached graph edge (endpoint ids + kind/line fields). */
+const KG_EDGE_APPROX_BYTES = 192;
+
+/** Shallow byte attribution for one loaded artifact result; O(1) in graph size. */
+function artifactApproxBytes(result: ArtifactLoadResult | undefined): number {
+  if (!result || result.ok !== true) return 0;
+  return (
+    result.graph.nodes.length * KG_NODE_APPROX_BYTES + result.graph.edges.length * KG_EDGE_APPROX_BYTES
+  );
+}
+
+registerRetentionSource({
+  id: "knowledge_graph_artifacts",
+  kind: "cache",
+  // Keyed per project graph directory and invalidated by manifest mtime/size, i.e. staleness-keyed.
+  keys: "ttl",
+  ceiling: CACHE_SIZE,
+  ceilingConstant: "CACHE_SIZE",
+  probe: () => {
+    let approxBytes = 0;
+    for (const entry of cache.values()) approxBytes += artifactApproxBytes(entry.result);
+    return { entries: cache.size, approxBytes, expiredEntries: 0 };
+  },
+});
+
+// One entry per in-flight rebuild; the `finally` in rebuildProjectKnowledgeGraph is the normal deletion
+// owner. The ceiling is the backstop for the pathological case (stuck rebuilds piling up): losing a
+// tracked promise costs dedup — a second rebuild may start — never correctness, so it may evict.
+registerBoundedRegistryMap<string, Promise<RebuildKnowledgeGraphResult>>({
+  id: "knowledge_graph_rebuilds",
+  map: rebuilds,
+  ceiling: KG_REBUILD_TRACKER_MAX,
+  ceilingConstant: "KG_REBUILD_TRACKER_MAX",
+  kind: "cache",
+  keys: "load",
+});
 
 export type BoundedPathResult =
   | { outcome: "found"; path: { nodes: GraphNode[]; edges: GraphEdge[] }; hops: number; maxHops: number; expansions: number; truncated: false }

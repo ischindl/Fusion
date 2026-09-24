@@ -19,6 +19,16 @@ import type { Settings, Task, TaskStore } from "@fusion/core";
 import { resolveFastCheapSettingsModel, resolveFastCheapThinkingLevel } from "@fusion/core";
 import { randomUUID } from "node:crypto";
 import { createSessionDiagnostics } from "./ai-session-diagnostics.js";
+import {
+  AGGREGATE_RECORD_BYTES,
+  RATE_LIMIT_ENTRY_BYTES,
+} from "./lib/retention-census.js";
+import {
+  enforceEntryCeiling,
+  expiryAtOrBefore,
+  registerBoundedRegistryMap,
+  registerBoundedWindowMap,
+} from "./lib/retention/bounded-window-map.js";
 import { createAbortError, GenerationGuard, isAbortError } from "./ai-session-timeout.js";
 import {
   AI_TASK_SEARCH_CANDIDATE_PAGE_LIMIT,
@@ -56,9 +66,53 @@ interface RateWindow {
   resetAt: number;
 }
 
+/**
+ * Ceiling on distinct (project, client) budget windows held at once.
+ *
+ * FNXC:RetentionCensus 2026-09-21-21:40 (RUFU-257): the window map is keyed by a per-client address
+ * and had no sweeper, so every address that ever searched kept a row. The census sample now deletes
+ * expired windows and clamps the remainder; the 60/hour budget and its reset semantics are unchanged.
+ */
+export const AI_TASK_SEARCH_RATE_WINDOW_IP_MAX = 10_000;
+
+/**
+ * Reporting threshold for concurrently tracked projects. A project row is deleted the moment its
+ * last in-flight search releases its slot, so a live row is always a real request; the census row
+ * exists to make that visible and to alarm, never to evict an in-flight counter.
+ */
+export const AI_TASK_SEARCH_PROJECT_CONCURRENCY_MAX = 500;
+
 const rateWindows = new Map<string, RateWindow>();
 let processConcurrency = 0;
 const projectConcurrency = new Map<string, number>();
+
+registerBoundedWindowMap<string, RateWindow>({
+  id: "ai_task_search_rate_windows",
+  map: rateWindows,
+  ceiling: AI_TASK_SEARCH_RATE_WINDOW_IP_MAX,
+  ceilingConstant: "AI_TASK_SEARCH_RATE_WINDOW_IP_MAX",
+  expiryOf: (window) => window.resetAt,
+  /*
+  FNXC:RetentionCensus 2026-09-21-23:20 (RUFU-257):
+  The guard bypasses a window at `now >= resetAt`, so a window is already dead at its own expiry instant.
+  Reclaiming on the same comparison keeps the census from disagreeing with the code that serves the data;
+  the helper's default strict rule would hold each row one tick longer than any reader honours it.
+  */
+  isExpired: expiryAtOrBefore,
+  valueBytes: () => RATE_LIMIT_ENTRY_BYTES,
+});
+
+registerBoundedRegistryMap<string, number>({
+  id: "ai_task_search_project_concurrency",
+  map: projectConcurrency,
+  ceiling: AI_TASK_SEARCH_PROJECT_CONCURRENCY_MAX,
+  ceilingConstant: "AI_TASK_SEARCH_PROJECT_CONCURRENCY_MAX",
+  kind: "counter",
+  // Evicting a live project row would discard an in-flight concurrency credit, so the ceiling is
+  // a reporting threshold only — the release path owns every deletion.
+  evictLiveEntries: false,
+  valueBytes: () => AGGREGATE_RECORD_BYTES,
+});
 
 function budgetKey(projectKey: string, ip: string): string {
   return `${projectKey}\u0000${ip}`;
@@ -75,6 +129,7 @@ export function checkAiTaskSearchRateLimit(projectKey: string, ip: string, now =
   const window = rateWindows.get(key);
   if (!window || now >= window.resetAt) {
     rateWindows.set(key, { count: 1, resetAt: now + AI_TASK_SEARCH_RATE_LIMIT_WINDOW_MS });
+    enforceEntryCeiling(rateWindows, AI_TASK_SEARCH_RATE_WINDOW_IP_MAX);
     return true;
   }
   if (window.count >= AI_TASK_SEARCH_MAX_REQUESTS_PER_HOUR) return false;

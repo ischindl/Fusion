@@ -19,6 +19,12 @@ import { randomUUID } from "node:crypto";
 
 type SkillPluginRunner = Parameters<typeof import("@fusion/engine").buildSessionSkillContextSync>[3];
 
+/*
+FNXC:RetentionCensus 2026-09-23-09:35 (RUFU-257):
+`planningCreateLocks` serialises subtask creation per planning session. The stored value is the queue's
+tail promise, removed as soon as it settles, so cardinality is sessions with a create in flight.
+*/
+// retention-owner-deleted: per-session create-queue tail — deleted when the tail settles, behind an identity check
 const planningCreateLocks = new Map<string, Promise<void>>();
 
 /**

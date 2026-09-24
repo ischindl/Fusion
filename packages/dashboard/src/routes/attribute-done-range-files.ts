@@ -49,7 +49,21 @@ interface OwnFilesCacheEntry {
   at: number;
 }
 
+/*
+FNXC:RetentionCensus 2026-09-23-09:35 (RUFU-257):
+`ownFilesByCommitSet` is TTL- AND count-bounded: past `OWN_FILES_CACHE_MAX` keys the oldest insertion is
+dropped, and an expired key is removed on read, so neither a long-lived server nor a burst of distinct
+commit-set keys can grow it.
+*/
+// retention-bounded: OWN_FILES_CACHE_MAX
 const ownFilesByCommitSet = new Map<string, OwnFilesCacheEntry>();
+/*
+FNXC:RetentionCensus 2026-09-23-09:35 (RUFU-257):
+`inFlightAttribution` coalesces a concurrent /diff + /file-diffs pair for one card into a single git
+enumeration. The flight is deleted on settle — rejection included — so a transient git failure is never
+coalesced past its own lifetime and the map holds only requests in flight.
+*/
+// retention-owner-deleted: single-flight attribution lease — deleted on settle, including rejection
 const inFlightAttribution = new Map<string, Promise<DoneRangeAttributionResult>>();
 let attributionClock: () => number = Date.now;
 

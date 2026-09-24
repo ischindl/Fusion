@@ -52,6 +52,7 @@ import { WebSocketManager, type BadgeSnapshot } from "./websocket.js";
 import type { BadgePubSub } from "./badge-pubsub.js";
 import { createBadgePubSub, type BadgePubSubMessage } from "./badge-pubsub.js";
 import { createRuntimeLogger, type RuntimeLogger } from "./runtime-logger.js";
+import { createRetentionPressureNotifier } from "./retention-pressure-notice.js";
 import { registerGithubTrackingHook } from "./github-tracking-hook.js";
 import { registerBeforeExitCleanup } from "./process-lifecycle.js";
 import { createTerminalWebSocketDiagnostics } from "./terminal-websocket-diagnostics.js";
@@ -1039,8 +1040,22 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
   headless and non-headless servers. Its latency-recorder middleware is mounted
   below, before route handlers, so it times the LIVE serving path.
   */
-  const metricsSampler = createMetricsSampler();
+  /*
+  FNXC:RetentionPressureNotice 2026-09-23-18:55:
+  RUFU-257: the pressure decision is made in the retention sampler's tick; this is where it becomes
+  operator-visible. The sink writes the dashboard runtime log plus the operator mailbox (through the
+  engine's existing one-shot `MessageStore` seam — no new channel), so a heap pile-up is announced before
+  the process dies instead of after. The mailbox lookup is lazy because `options.engine` may attach its
+  store after `createServer()` returns; the sink itself never awaits and never throws, so census
+  reporting cannot be blocked by mailbox health. Declared above the sampler because the sampler takes it
+  at construction time.
+  */
   const runtimeLogger = options?.runtimeLogger ?? createRuntimeLogger("server");
+  const retentionPressureNotifier = createRetentionPressureNotifier({
+    logger: runtimeLogger.child("retention-pressure"),
+    resolveMailbox: () => options?.engine?.getMessageStore(),
+  });
+  const metricsSampler = createMetricsSampler({ retention: { onPressure: retentionPressureNotifier } });
   const mutationRateLimit = rateLimit(RATE_LIMITS.mutation);
   const setupRateLimit = rateLimit(RATE_LIMITS.api);
   const setupReadRateLimit = rateLimit(RATE_LIMITS.api);

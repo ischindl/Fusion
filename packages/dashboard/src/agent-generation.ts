@@ -15,6 +15,16 @@
 import { randomUUID } from "node:crypto";
 import { THINKING_LEVELS, type TaskStore, type ThinkingLevel } from "@fusion/core";
 import { createSessionDiagnostics, nonfatal } from "./ai-session-diagnostics.js";
+import {
+  RATE_LIMIT_ENTRY_BYTES,
+  SESSION_RECORD_BYTES,
+  STRING_BYTES_PER_CHAR,
+} from "./lib/retention-census.js";
+import {
+  clampEntryCeilingWithCleanup,
+  enforceEntryCeiling,
+  registerBoundedWindowMap,
+} from "./lib/retention/bounded-window-map.js";
 import { registerBeforeExitCleanup } from "./process-lifecycle.js";
 import { laneModelOptions, resolveLaneSessionModel } from "./lane-session-model.js";
 
@@ -124,6 +134,19 @@ const MAX_SESSIONS_PER_IP_PER_HOUR = 10;
 /** Rate limiting window in milliseconds (1 hour) */
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
 
+/**
+ * Ceiling on concurrently retained generation sessions.
+ *
+ * FNXC:RetentionCensus 2026-09-21-21:40 (RUFU-257): `cleanupExpiredSessions` already deletes expired
+ * sessions on a timer, so expiry has one owner; this ceiling bounds the case where more sessions are
+ * created than expire inside one interval. Oldest-insertion eviction is safe here because a session
+ * row holds no dependent handle — the map row is the whole record.
+ */
+export const AGENT_GENERATION_SESSION_MAX = 5_000;
+
+/** Ceiling on distinct client addresses holding a session-creation window (see the note above). */
+export const AGENT_GENERATION_RATE_LIMIT_IP_MAX = 10_000;
+
 // ── Types ───────────────────────────────────────────────────────────────────
 
 /** Generated agent specification returned by the AI */
@@ -176,6 +199,29 @@ const sessions = new Map<string, Session>();
 
 /** Rate limiting state indexed by IP */
 const rateLimits = new Map<string, RateLimitEntry>();
+
+// Accounting rows: `cleanupExpiredSessions` stays the single expiry deleter for both maps.
+registerBoundedWindowMap<string, Session>({
+  id: "agent_generation_sessions",
+  map: sessions,
+  ceiling: AGENT_GENERATION_SESSION_MAX,
+  ceilingConstant: "AGENT_GENERATION_SESSION_MAX",
+  kind: "session",
+  expiryOf: (session) => session.updatedAt.getTime() + SESSION_TTL_MS,
+  sweptElsewhere: true,
+  valueBytes: (session) =>
+    SESSION_RECORD_BYTES + session.roleDescription.length * STRING_BYTES_PER_CHAR,
+});
+
+registerBoundedWindowMap<string, RateLimitEntry>({
+  id: "agent_generation_rate_limits",
+  map: rateLimits,
+  ceiling: AGENT_GENERATION_RATE_LIMIT_IP_MAX,
+  ceilingConstant: "AGENT_GENERATION_RATE_LIMIT_IP_MAX",
+  expiryOf: (entry) => entry.firstRequestAt.getTime() + RATE_LIMIT_WINDOW_MS,
+  sweptElsewhere: true,
+  valueBytes: () => RATE_LIMIT_ENTRY_BYTES,
+});
 
 /** Shared diagnostics helper for structured agent-generation telemetry. */
 const diagnostics = createSessionDiagnostics("agent-generation");
@@ -242,11 +288,13 @@ export function checkRateLimit(ip: string): boolean {
 
   if (!entry) {
     rateLimits.set(ip, { count: 1, firstRequestAt: new Date() });
+    enforceEntryCeiling(rateLimits, AGENT_GENERATION_RATE_LIMIT_IP_MAX);
     return true;
   }
 
   if (now - entry.firstRequestAt.getTime() > RATE_LIMIT_WINDOW_MS) {
     rateLimits.set(ip, { count: 1, firstRequestAt: new Date() });
+    enforceEntryCeiling(rateLimits, AGENT_GENERATION_RATE_LIMIT_IP_MAX);
     return true;
   }
 
@@ -449,6 +497,8 @@ export async function startAgentGeneration(
   };
 
   sessions.set(sessionId, session);
+  // Bounded through the module's own deletion path so a future dependent structure is cleaned too.
+  clampEntryCeilingWithCleanup(sessions, AGENT_GENERATION_SESSION_MAX, (id) => sessions.delete(id));
 
   return toPublicSession(session);
 }

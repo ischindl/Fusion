@@ -21,6 +21,13 @@ import { buildConsumerId, countRunningAgentTasks, enrichRunningAgentTaskShape, r
  * Keyed by projectId (not project path) because the dashboard server
  * routes identify projects by their central-registry ID.
  */
+/*
+FNXC:RetentionCensus 2026-09-23-09:35 (RUFU-257):
+`storeCache` holds one live TaskStore per project the server currently serves. Its deletion owner is the
+project-eviction path (and the shutdown path), which closes the store and removes the entry in the same
+transaction of events, so a project the server stops serving stops costing memory.
+*/
+// retention-owner-deleted: one TaskStore per opened project — dropped by the eviction and shutdown paths that close that store
 const storeCache = new Map<string, TaskStore>();
 
 /**
@@ -28,6 +35,12 @@ const storeCache = new Map<string, TaskStore>();
  * Prevents concurrent requests from creating duplicate store instances
  * before the first creation completes and is added to storeCache.
  */
+/*
+FNXC:RetentionCensus 2026-09-23-09:35 (RUFU-257):
+`pendingCreations` is a single-flight lease, not a cache: the entry is deleted in the creation's
+`finally`, so it cannot outlive the request that asked for the store.
+*/
+// retention-owner-deleted: single-flight store-creation lease — the entry is deleted in the creation's finally block
 const pendingCreations = new Map<string, Promise<TaskStore>>();
 
 /**
@@ -35,6 +48,12 @@ const pendingCreations = new Map<string, Promise<TaskStore>>();
  * (watcher started). This prevents duplicate watch() calls on repeated
  * lookups.
  */
+/*
+FNXC:RetentionCensus 2026-09-23-09:35 (RUFU-257):
+`initializedProjects` is the migration-run-once flag that pairs 1:1 with a `storeCache` entry, and the
+eviction path removes both, so its cardinality is opened projects.
+*/
+// retention-owner-deleted: one flag per opened project — cleared together with its storeCache entry by eviction/shutdown
 const initializedProjects = new Set<string>();
 /**
  * FNXC:RuntimeStartupWiring 2026-06-24-10:10:
@@ -44,13 +63,32 @@ const initializedProjects = new Set<string>();
  * call in evictProjectStore already closes the AsyncDataLayer pool; this map
  * adds the embedded-cluster teardown that the layer does not own.
  */
+/*
+FNXC:RetentionCensus 2026-09-23-09:35 (RUFU-257):
+`backendShutdowns` remembers how to stop the engine/worker backends that came up with a project's
+store; the eviction and shutdown paths delete the entry once those backends are stopped, so its
+cardinality is projects currently being served.
+*/
+// retention-owner-deleted: one shutdown hook per booted backend — removed when that project's store is evicted or shut down
 const backendShutdowns = new Map<string, () => Promise<void>>();
 /*
 FNXC:PostgresResourceLifecycle 2026-07-14-21:35:
 Eviction barriers carry cleanup ownership instead of only recording boolean state. Concurrent project or global eviction callers must share and await the same promise so no caller can reopen store creation while an earlier backend shutdown is still pending.
 */
+/*
+FNXC:RetentionCensus 2026-09-23-09:35 (RUFU-257):
+`pendingEvictions` is a barrier so concurrent evictions of one project wait on the same teardown instead
+of racing a second one. Its entry is deleted when the barrier settles.
+*/
+// retention-owner-deleted: one eviction barrier per in-flight eviction — deleted when the barrier settles
 const pendingEvictions = new Map<string, Promise<void>>();
 let pendingGlobalEviction: Promise<void> | undefined;
+/*
+FNXC:RetentionCensus 2026-09-23-09:35 (RUFU-257):
+`projectRegisteredListeners` is a subscription registry: `onProjectRegistered` returns an unsubscribe
+that removes the listener, so cardinality is live subscribers rather than accumulated registrations.
+*/
+// retention-owner-deleted: subscriber set — every add returns an unsubscribe that deletes the listener
 const projectRegisteredListeners = new Set<(projectId: string, store: TaskStore) => void>();
 
 /**

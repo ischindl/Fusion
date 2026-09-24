@@ -10,6 +10,7 @@ import {
   type MetricsSampler,
   type RuntimeSamplerInit,
 } from "../index.js";
+import { listRetentionSourceIds, registerRetentionSource } from "../../lib/retention-census.js";
 
 /**
  * RUFU-081 endpoint integration tests.
@@ -168,6 +169,34 @@ describe("GET /metrics (app-level route)", () => {
     const ageMatch = body.match(/^fusion_system_last_request_age_ms (\d+)$/m);
     expect(ageMatch).not.toBeNull();
     expect(Number(ageMatch![1])).toBeLessThan(5000);
+  });
+
+  it("serves a retention line for EVERY registered census source, including one at zero entries (RUFU-257)", async () => {
+    // A cache that is registered but currently empty must still appear. The 2026-09-17 OOM crash
+    // loop was unattributable precisely because an absent series and an empty cache look the same
+    // on a scrape, so "not registered" must never be readable as "nothing is held here".
+    registerRetentionSource({
+      id: "metrics_endpoint_zero_entry_probe",
+      kind: "cache",
+      keys: "load",
+      ceiling: 10,
+      probe: () => ({ entries: 0, approxBytes: 0, expiredEntries: 0 }),
+    });
+
+    const app = createApp();
+    const res = await request(app, "GET", "/metrics");
+    expect(res.status).toBe(200);
+    const body = String(res.body);
+
+    const registered = ["metrics_endpoint_zero_entry_probe", ...listRetentionSourceIds()];
+    expect(registered.length).toBeGreaterThan(1);
+    for (const id of registered) {
+      expect(body).toContain(`fusion_retention_source_entries{source="${id}"}`);
+      expect(body).toContain(`fusion_retention_source_bytes{source="${id}"}`);
+    }
+    // The zero-entry source renders as an explicit 0, which is the point of the assertion.
+    expect(body).toContain('fusion_retention_source_bytes{source="metrics_endpoint_zero_entry_probe"} 0');
+    expect(body).toContain("fusion_retention_coverage_ratio ");
   });
 
   it("is available in headless mode too (API/websocket-only server)", async () => {

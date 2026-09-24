@@ -4,6 +4,16 @@ import type { AgentCapability, PlanningQuestion, TaskStore, ThinkingLevel } from
 import { resolvePrompt, type PromptOverrideMap } from "@fusion/core";
 import { buildSessionSkillContextSync, createFnAgent as engineCreateFnAgent, resolveMcpServersForStore } from "@fusion/engine";
 import { SessionEventBuffer, type SessionBufferedEvent } from "./sse-buffer.js";
+import {
+  HISTORY_ENTRY_BYTES,
+  SESSION_RECORD_BYTES,
+  STRING_BYTES_PER_CHAR,
+} from "./lib/retention-census.js";
+import {
+  clampEntryCeilingWithCleanup,
+  registerBoundedRegistryMap,
+  registerBoundedWindowMap,
+} from "./lib/retention/bounded-window-map.js";
 
 export interface AgentOnboardingSummary {
   name: string;
@@ -63,6 +73,26 @@ export type AgentOnboardingStreamCallback = (event: AgentOnboardingStreamEvent, 
 const createFnAgent: typeof engineCreateFnAgent = engineCreateFnAgent;
 type SkillSelectionPluginRunner = Parameters<typeof buildSessionSkillContextSync>[3];
 const SESSION_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * Ceiling on onboarding sessions retained in memory.
+ *
+ * FNXC:RetentionCensus 2026-09-21-21:40 (RUFU-257): the TTL sweep only deletes a session once it has
+ * been idle for half an hour, so an operator who keeps a session open holds its whole Q&A history
+ * indefinitely and every abandoned-but-recently-touched session adds to the same map. The five-minute
+ * sweep now also clamps to this ceiling through `cancelAgentOnboardingSession`, which is the owner
+ * that disposes the agent session and frees the stream buffer.
+ */
+export const AGENT_ONBOARDING_SESSION_MAX = 2_000;
+
+/**
+ * Reporting ceiling on simultaneously in-flight generations.
+ *
+ * A live generation row owns an AbortController, a watchdog timer, and a reject handle; dropping the
+ * row would leave the prompt running with no way to stop it, so this ceiling reports pressure and the
+ * generation's own terminal path stays the only deleter.
+ */
+export const AGENT_ONBOARDING_ACTIVE_GENERATION_MAX = 500;
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 const GENERATION_TIMEOUT_MS = 120_000;
 class AgentOnboardingGenerationTimeoutError extends Error {
@@ -138,6 +168,30 @@ type ActiveGeneration = {
   reject: (reason?: unknown) => void;
 };
 const activeGenerations = new Map<string, ActiveGeneration>();
+
+// Accounting rows: the module's own sweep and terminal generation paths remain the only deleters.
+registerBoundedWindowMap<string, Session>({
+  id: "agent_onboarding_sessions",
+  map: sessions,
+  ceiling: AGENT_ONBOARDING_SESSION_MAX,
+  ceilingConstant: "AGENT_ONBOARDING_SESSION_MAX",
+  kind: "session",
+  expiryOf: (session) => session.updatedAt.getTime() + SESSION_TTL_MS,
+  sweptElsewhere: true,
+  valueBytes: (session) =>
+    SESSION_RECORD_BYTES
+    + (session.contextPrompt.length + session.thinkingOutput.length) * STRING_BYTES_PER_CHAR
+    + session.history.length * HISTORY_ENTRY_BYTES,
+});
+
+registerBoundedRegistryMap<string, ActiveGeneration>({
+  id: "agent_onboarding_active_generations",
+  map: activeGenerations,
+  ceiling: AGENT_ONBOARDING_ACTIVE_GENERATION_MAX,
+  ceilingConstant: "AGENT_ONBOARDING_ACTIVE_GENERATION_MAX",
+  evictLiveEntries: false,
+  valueBytes: () => SESSION_RECORD_BYTES,
+});
 
 export class AgentOnboardingStreamManager extends EventEmitter {
   private readonly sessions = new Map<string, Set<AgentOnboardingStreamCallback>>();
@@ -650,14 +704,31 @@ export function __resetAgentOnboardingState(): void {
   activeGenerations.clear();
 }
 
-setInterval(() => {
+/*
+FNXC:RetentionCensus 2026-09-21-22:50 (RUFU-257):
+The sweep is named (it was an anonymous interval body) because it is the single reclamation owner for
+`sessions`, which the census registers `sweptElsewhere`. Naming it also gives a faked-clock test a
+synchronous way to prove the TTL disposal and ceiling clamp run.
+*/
+function cleanupExpiredOnboardingSessions(): void {
   const now = Date.now();
   for (const [id, session] of sessions) {
     if (now - session.updatedAt.getTime() > SESSION_TTL_MS) {
       void cancelAgentOnboardingSession(id).catch(() => {});
     }
   }
-}, CLEANUP_INTERVAL_MS).unref?.();
+  // Count ceiling through the same owner, so a clamped session is disposed rather than orphaned.
+  clampEntryCeilingWithCleanup(sessions, AGENT_ONBOARDING_SESSION_MAX, (id) => {
+    void cancelAgentOnboardingSession(id).catch(() => {});
+  });
+}
+
+/** @internal Run the periodic session reclamation immediately; test-only seam for a faked clock. */
+export function __runAgentOnboardingCleanupForTests(): void {
+  cleanupExpiredOnboardingSessions();
+}
+
+setInterval(cleanupExpiredOnboardingSessions, CLEANUP_INTERVAL_MS).unref?.();
 
 export class SessionNotFoundError extends Error {
   constructor(message: string) {

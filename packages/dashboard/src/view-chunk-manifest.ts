@@ -1,4 +1,5 @@
 import { createLogger } from "@fusion/core";
+import { registerBoundedRegistryMap } from "./lib/retention/bounded-window-map.js";
 
 const severityAuditLog = createLogger("dashboard-view-chunk-manifest");
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -49,12 +50,55 @@ type ManifestCacheEntry = {
 };
 
 const manifestCache = new Map<string, ManifestCacheEntry>();
+/*
+FNXC:RetentionCensus 2026-09-23-09:35 (RUFU-257):
+The warn-once tables are keyed by client dir / view id — traffic-shaped, and nothing removed a key once
+warned. `warnOnce` now resets the table at `WARN_ONCE_KEYS_MAX` distinct keys: the honest trade is that
+after 200 distinct missing-manifest keys a warning may repeat once per key, instead of a long-lived
+server accumulating keys forever.
+*/
+// retention-bounded: WARN_ONCE_KEYS_MAX
 const warnedMissingManifest = new Set<string>();
+// retention-bounded: WARN_ONCE_KEYS_MAX
 const warnedMissingEntries = new Set<string>();
+
+/*
+FNXC:RetentionCensus 2026-09-23-09:45 (RUFU-257):
+The manifest cache is keyed by resolved client dir and self-invalidates on the manifest's mtime, so it
+is freshness-owned rather than TTL-owned — but "one entry per client dir" was still a claim with no
+ceiling behind it, and an entry holds the whole resolved view map. The registration publishes that
+footprint on `/metrics` and makes the ceiling real: past `MANIFEST_CACHE_MAX` client dirs the oldest
+parsed manifest is dropped, which costs one re-read of `manifest.json` and can never hand out a stale
+chunk path, because a surviving entry is still revalidated against mtime on every read.
+*/
+const MANIFEST_CACHE_MAX = 16;
+
+/** Rough weight of one resolved view entry (chunk path plus a couple of css paths). */
+const MANIFEST_ENTRY_APPROX_BYTES = 192;
+
+registerBoundedRegistryMap({
+  map: manifestCache,
+  id: "dashboard_view_chunk_manifest",
+  ceiling: MANIFEST_CACHE_MAX,
+  ceilingConstant: "MANIFEST_CACHE_MAX",
+  kind: "cache",
+  keys: "load",
+  valueBytes: (entry) => Object.keys(entry.entries).length * MANIFEST_ENTRY_APPROX_BYTES,
+});
+
+/**
+ * Distinct-key ceiling for the warn-once tables (FNXC:RetentionCensus note above the declarations).
+ * At the ceiling the table resets, so a long-lived server caps its footprint instead of remembering
+ * every missing-manifest key it has ever seen.
+ */
+const WARN_ONCE_KEYS_MAX = 200;
 
 function warnOnce(set: Set<string>, key: string, message: string): void {
   if (set.has(key)) {
     return;
+  }
+  if (set.size >= WARN_ONCE_KEYS_MAX) {
+    set.clear();
   }
   set.add(key);
   severityAuditLog.warn(message);

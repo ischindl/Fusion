@@ -167,6 +167,13 @@ FNXC:GitHubPlanningSourceIssue 2026-08-09-05:36:
 Create-time serialization narrows same-process races, but shared database nodes can still race.
 Source adoption rechecks after linking and deterministically suppresses the loser so one issue has one tracker.
 */
+/*
+FNXC:RetentionCensus 2026-09-23-09:35 (RUFU-257):
+`planningSourceIssueLocks` is a serialization queue, not a cache: each key holds the tail promise of that
+issue's queue and is deleted when it settles (guarded by an identity check so a newer tail is never
+dropped by an older one). Cardinality is concurrent planning-source issue operations.
+*/
+// retention-owner-deleted: per-source-issue serialization queue — the queued tail is deleted once it settles and is owner-checked before deletion
 const planningSourceIssueLocks = new Map<string, Promise<unknown>>();
 function sourceIssueKey(store: TaskStore, issue: { owner: string; repo: string; number: number }): string {
   return `github-source-tracking:${(store as unknown as { projectId?: string }).projectId ?? "__legacy_unscoped__"}:${issue.owner.toLowerCase()}/${issue.repo.toLowerCase()}#${issue.number}`;

@@ -23,6 +23,7 @@
  */
 
 import { discoverAntigravityCliModels } from "./runtime-provider-probes.js";
+import { registerBoundedWindowMap } from "./lib/retention/bounded-window-map.js";
 
 /** Stable model-picker row shape emitted for a Antigravity-discovered model. */
 export interface AntigravityPickerModel {
@@ -99,7 +100,41 @@ interface CacheEntry {
 const cache = new Map<string, CacheEntry>();
 
 /** Per-binaryPath in-flight fetch promise, for single-flight de-duplication. */
+/*
+FNXC:RetentionCensus 2026-09-23-09:25 (RUFU-257):
+`inFlight` is a single-flight lease, not a cache: every `set` is matched by a `delete` in the fetch's
+`finally` block, so its cardinality is concurrent `/api/models` fetches for the antigravity CLI (at
+most one per binary path), never cumulative traffic. The retention ratchet classifies it as
+owner-deleted.
+*/
+// retention-owner-deleted: single-flight fetch lease — inFlight.delete(binaryPath) runs in the fetch's 'finally' block, so an entry cannot outlive its request.
 const inFlight = new Map<string, Promise<AntigravityPickerModel[]>>();
+
+/*
+FNXC:RetentionCensus 2026-09-23-09:25 (RUFU-257):
+This picker cache expires per entry but carried no count ceiling and no byte attribution, so its
+footprint was invisible on `/metrics` — one of the seven OOM crashes had no attribution to read.
+Registering it supplies a reclamation owner for entries the read path ALREADY treats as stale
+(`now - fetchedAt >= ttlMs`, including the short negative TTL for empty results) while
+`evictLiveEntries: false` guarantees no hit a `/api/models` caller would still be served is dropped.
+The ceiling names the key space: one entry per resolved CLI binary path, which grows when an operator
+configures more binaries or credential instances, not with request traffic.
+*/
+const MAX_CACHED_PICKER_BINARIES = 32;
+
+/** Approximate bytes of one picker row (`provider`/`id`/`name` plus two numerics). */
+const PICKER_MODEL_APPROX_BYTES = 200;
+
+registerBoundedWindowMap<string, CacheEntry>({
+  id: "antigravity_picker_models",
+  map: cache,
+  ceiling: MAX_CACHED_PICKER_BINARIES,
+  ceilingConstant: "MAX_CACHED_PICKER_BINARIES",
+  expiryOf: (entry) => entry.fetchedAt + entry.ttlMs,
+  valueBytes: (entry) => entry.models.length * PICKER_MODEL_APPROX_BYTES,
+  evictLiveEntries: false,
+});
+
 
 /**
  * Reset all cached/in-flight state. Test-only escape hatch — production code

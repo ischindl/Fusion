@@ -372,6 +372,13 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
+/*
+FNXC:RetentionCensus 2026-09-23-09:35 (RUFU-257):
+`managerInstances` is the per-root singleton registry for dev-server managers: one entry per workspace
+root the operator has opened. Values own live child processes, so entry eviction would strand a running
+server; the deletion owner is the module-level reset used by shutdown/tests.
+*/
+// retention-config-keyed: keyed by resolved project root — one live DevServerManager per configured root, shared by every request for that root
 const managerInstances = new Map<string, DevServerManager>();
 
 export async function loadDevServerManager(rootDir: string): Promise<DevServerManager> {

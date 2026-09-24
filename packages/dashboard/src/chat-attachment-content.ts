@@ -45,6 +45,12 @@ const IMAGE_MIME_TYPES = new Set([
   "image/webp",
 ]);
 
+/*
+FNXC:RetentionCensus 2026-09-23-09:35 (RUFU-257):
+`TEXT_MIME_TYPES` is a lookup table derived from the module's own static MIME constants, not a traffic
+store. The allowlist records that so the ratchet does not ask a static table for a bound.
+*/
+// retention-allowlist: derived once at module load from the static text-MIME table and never mutated afterwards; size is the table's row count
 const TEXT_MIME_TYPES = new Set(
   [...CHAT_ALLOWED_MIME_TYPES].filter(
     (mimeType) => !IMAGE_MIME_TYPES.has(mimeType) && !mimeType.startsWith("video/"),

@@ -3,6 +3,13 @@ import type { ProjectEngineManager } from "@fusion/engine";
 import { ChatManager } from "./chat.js";
 import { requireAsyncLayer } from "./require-async-layer.js";
 
+/*
+FNXC:RetentionCensus 2026-09-23-09:35 (RUFU-257):
+`scopedChatStoreCache` resolves one ChatStore per configured project (the key is derived from the store's
+own identity). Entries are live connection-bearing stores with no deletion owner by design: dropping one
+would orphan its subscribers rather than free memory, and the cardinality owner is the project count.
+*/
+// retention-config-keyed: keyed by the resolved TaskStore of a configured project — the value is that project's live ChatStore, so eviction would destroy live state
 const scopedChatStoreCache = new Map<string, ChatStore>();
 
 /*
@@ -17,6 +24,7 @@ already existed when the connection opened arrives through the snapshot.
 */
 export type ScopedChatStoreListener = (chatStore: ChatStore) => void;
 
+// retention-owner-deleted: subscriber set — every add returns an unsubscribe that deletes the listener
 const scopedChatStoreListeners = new Set<ScopedChatStoreListener>();
 
 /** Subscribe to chat stores created after this call. Returned function unsubscribes. */
@@ -164,6 +172,7 @@ export function __resetScopedChatStoreCache(): void {
   scopedChatStoreListeners.clear();
 }
 
+// retention-config-keyed: keyed by the resolved ChatStore of a configured project — the value is that project's live ChatManager
 const scopedChatManagerCache = new Map<string, ChatManager>();
 
 export function getOrCreateScopedChatManager(

@@ -107,6 +107,17 @@ export { parseTargetInterviewResponseImpl as parseTargetInterviewResponse };
 import { buildSessionSkillContextSync, createResolvedAgentSession, promptWithFallback as enginePromptWithFallback, resolveMcpServersForStore } from "@fusion/engine";
 import { createPlanningBoardTools } from "./planning-board-tools.js";
 import { laneModelOptions, resolveLaneSessionModel } from "./lane-session-model.js";
+import {
+  HISTORY_ENTRY_BYTES,
+  RATE_LIMIT_ENTRY_BYTES,
+  SESSION_RECORD_BYTES,
+  STRING_BYTES_PER_CHAR,
+} from "./lib/retention-census.js";
+import {
+  clampEntryCeilingWithCleanup,
+  enforceEntryCeiling,
+  registerBoundedWindowMap,
+} from "./lib/retention/bounded-window-map.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AgentResult = any;
@@ -144,6 +155,20 @@ const MAX_SESSIONS_PER_IP_PER_HOUR = 5;
 
 /** Rate limiting window in milliseconds (1 hour) */
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * Ceiling on milestone/slice interview sessions retained in memory.
+ *
+ * FNXC:RetentionCensus 2026-09-21-21:40 (RUFU-257): same seven-day-TTL shape as the mission
+ * interview — expiry reclamation alone cannot bound this map on a long-lived dashboard, so the
+ * existing five-minute sweep also clamps to this ceiling through `cleanupInMemorySession`, the same
+ * owner that frees the stream manager's per-session buffer. Raw `Map.delete` clamping would move the
+ * leak rather than remove it.
+ */
+export const MILESTONE_INTERVIEW_SESSION_MAX = 2_000;
+
+/** Ceiling on distinct client addresses holding an interview-creation window. */
+export const MILESTONE_INTERVIEW_RATE_LIMIT_IP_MAX = 10_000;
 
 /** Max number of retry attempts when AI returns unparseable output */
 const MAX_PARSE_RETRIES = 1;
@@ -355,6 +380,31 @@ interface RateLimitEntry {
 const sessions = new Map<string, TargetInterviewSession>();
 const rateLimits = new Map<string, RateLimitEntry>();
 
+// Accounting rows: `cleanupExpiredSessions` remains the sole deleter for both maps.
+registerBoundedWindowMap<string, TargetInterviewSession>({
+  id: "milestone_interview_sessions",
+  map: sessions,
+  ceiling: MILESTONE_INTERVIEW_SESSION_MAX,
+  ceilingConstant: "MILESTONE_INTERVIEW_SESSION_MAX",
+  kind: "session",
+  expiryOf: (session) => session.updatedAt.getTime() + SESSION_TTL_MS,
+  sweptElsewhere: true,
+  valueBytes: (session) =>
+    SESSION_RECORD_BYTES
+    + (session.thinkingOutput.length + session.lastGeneratedThinking.length + session.targetTitle.length) * STRING_BYTES_PER_CHAR
+    + session.history.length * HISTORY_ENTRY_BYTES,
+});
+
+registerBoundedWindowMap<string, RateLimitEntry>({
+  id: "milestone_interview_rate_limits",
+  map: rateLimits,
+  ceiling: MILESTONE_INTERVIEW_RATE_LIMIT_IP_MAX,
+  ceilingConstant: "MILESTONE_INTERVIEW_RATE_LIMIT_IP_MAX",
+  expiryOf: (entry) => entry.firstRequestAt.getTime() + RATE_LIMIT_WINDOW_MS,
+  sweptElsewhere: true,
+  valueBytes: () => RATE_LIMIT_ENTRY_BYTES,
+});
+
 // ── AI Session Persistence ────────────────────────────────────────────────
 
 let _aiSessionStore: AiSessionStore | undefined;
@@ -557,11 +607,29 @@ function cleanupExpiredSessions(): void {
       cleanupInMemorySession(id);
     }
   }
+  // Count ceiling through the same owner, so an evicted session releases its stream buffer exactly
+  // like an expired one.
+  clampEntryCeilingWithCleanup(
+    sessions,
+    MILESTONE_INTERVIEW_SESSION_MAX,
+    (id) => { cleanupInMemorySession(id); },
+  );
   for (const [ip, entry] of rateLimits) {
     if (now - entry.firstRequestAt.getTime() > RATE_LIMIT_WINDOW_MS) {
       rateLimits.delete(ip);
     }
   }
+}
+
+/*
+FNXC:RetentionCensus 2026-09-21-22:50 (RUFU-257):
+Synchronous seam over the timer-driven reclamation owner, so a test on a faked clock can prove the
+session TTL and IP-window deletions actually run (the interval itself is armed with real timers at
+import). Mirrors `__runAgentGenerationCleanupForTests`.
+*/
+/** @internal Run the periodic session/rate-window reclamation immediately; test-only seam. */
+export function __runMilestoneInterviewCleanupForTests(): void {
+  cleanupExpiredSessions();
 }
 
 const cleanupInterval = setInterval(cleanupExpiredSessions, CLEANUP_INTERVAL_MS);
@@ -654,11 +722,13 @@ export function checkRateLimit(ip: string): boolean {
 
   if (!entry) {
     rateLimits.set(ip, { count: 1, firstRequestAt: new Date() });
+    enforceEntryCeiling(rateLimits, MILESTONE_INTERVIEW_RATE_LIMIT_IP_MAX);
     return true;
   }
 
   if (now - entry.firstRequestAt.getTime() > RATE_LIMIT_WINDOW_MS) {
     rateLimits.set(ip, { count: 1, firstRequestAt: new Date() });
+    enforceEntryCeiling(rateLimits, MILESTONE_INTERVIEW_RATE_LIMIT_IP_MAX);
     return true;
   }
 

@@ -18,10 +18,18 @@ import { stat } from "node:fs/promises";
 import { describePtyLoadFailure, loadPtyModule } from "@fusion/engine";
 import { createLogger } from "@fusion/core";
 import { isAuthorizedProjectOrRegisteredWorktreePath, isPathWithin } from "./git-worktree-safety.js";
+import {
+  AGGREGATE_RECORD_BYTES,
+  STRING_BYTES_PER_CHAR,
+  registerRetentionSource,
+} from "./lib/retention-census.js";
+import { registerBoundedRegistryMap } from "./lib/retention/bounded-window-map.js";
 
 // Maximum scrollback buffer size (characters)
 const terminalLog = createLogger("dashboard-terminal");
-const MAX_SCROLLBACK_SIZE = 50000; // ~50KB per terminal
+// Exported so the retention inventory and its regression lock name the ceiling this buffer already
+// had before RUFU-257 (the classifying assertion must not hard-code the literal).
+export const MAX_SCROLLBACK_SIZE = 50000; // ~50KB per terminal
 
 // Session limit constants
 const MIN_MAX_SESSIONS = 1;
@@ -34,6 +42,53 @@ const DEFAULT_MAX_SESSIONS = 10;
 // floods from generating thousands of timer-driven micro-flushes.
 const OUTPUT_THROTTLE_MS = 16;
 const OUTPUT_BATCH_SIZE = 64 * 1024; // 64KB per WebSocket frame
+
+/*
+FNXC:RetentionCensus 2026-09-21-22:05 (RUFU-257):
+Per-session ceilings on the PTY→client backlog. `scrollbackBuffer` already had a named bound
+(MAX_SCROLLBACK_SIZE), but the two *delivery queues* did not: `outputChunks` is drained by a
+16 ms-throttled flush, and `resizeSuppressedChunks` is only moved into it when the resize debounce
+fires. Any consumer that stops draining — a browser tab backgrounded against its WebSocket
+backpressure, a viewer attach that never finishes, a debounce timer that never completes — leaves
+the queue growing at PTY output rate with nothing to stop it, which is the unbounded-per-session
+half of this task's leak class. Both queues now drop OLDEST bytes when they hit their ceiling and
+count every drop, because silently discarding the oldest PTY output is what a bounded scrollback
+already does on the read path; silently retaining an entire session's output until the process OOMs
+kills every other terminal in the dashboard.
+*/
+/** Ceiling on chunks queued for one session's throttled delivery. */
+export const TERMINAL_OUTPUT_CHUNKS_MAX = 4_096;
+/** Ceiling on bytes queued for one session's throttled delivery (4 flush frames of 64 KB). */
+export const TERMINAL_OUTPUT_BYTES_MAX = 256 * 1024;
+/** Ceiling on chunks queued for one session while resize suppression is active. */
+export const TERMINAL_RESIZE_SUPPRESSED_CHUNKS_MAX = 1_024;
+/*
+FNXC:RetentionCensus 2026-09-21-23:05 (RUFU-257):
+The suppressed queue needs a BYTE ceiling next to the chunk ceiling. A PTY emits whatever the program
+writes — an `ls` of a wide directory or a build log arrives as a few very large chunks — so a
+count-only bound still admits an unbounded number of bytes per session (measured: 1 000 × 4 KiB
+chunks = 4 MiB inside a 1 024-chunk ceiling), and the queue is per session across every project
+root the process serves. The byte ceiling is the same 256 KiB the delivery queue holds, because the
+suppressed queue drains into that queue the moment the debounce fires.
+*/
+/** Ceiling on bytes queued for one session while resize suppression is active. */
+export const TERMINAL_RESIZE_SUPPRESSED_BYTES_MAX = 256 * 1024;
+
+/**
+ * Ceiling on distinct project roots holding a memoized `TerminalService`.
+ *
+ * The registry is memoization, not state: a service with live PTYs must never be dropped (that
+ * would kill the shell), so this ceiling reports pressure instead of evicting.
+ */
+export const TERMINAL_SERVICE_ROOTS_MAX = 256;
+
+/*
+The census row's `entries` counts terminal sessions, so its ceiling must be counted in sessions
+too — a byte ceiling against a session count makes `at_ceiling` unreadable. This is the derived
+fleet-wide bound: every root the registry may hold × that service's default session cap. A caller
+that passes a larger `maxSessions` can exceed it, which is exactly what the pressure signal is for.
+*/
+export const TERMINAL_SESSIONS_TRACKED_MAX = TERMINAL_SERVICE_ROOTS_MAX * DEFAULT_MAX_SESSIONS;
 
 /*
 FNXC:TerminalReadiness 2026-06-17-17:38:
@@ -130,6 +185,18 @@ export interface TerminalSession {
    * when it falls inside the 150 ms resize-suppression window.
    */
   resizeSuppressedChunks: string[];
+  /** Running byte total of {@link resizeSuppressedChunks}, maintained at every mutation site so the
+   *  ceiling check stays O(1) per PTY chunk instead of re-summing a bounded-but-large array. */
+  resizeSuppressedBytes: number;
+  /**
+   * Output discarded by {@link TERMINAL_OUTPUT_CHUNKS_MAX} / {@link TERMINAL_OUTPUT_BYTES_MAX}
+   * (oldest-first), and the same count for the resize-suppression queue. Cumulative for this
+   * session's life — the operator-facing proof that a ceiling, not a producer bug, explains a
+   * truncated terminal.
+   */
+  droppedOutputChunks: number;
+  droppedOutputBytes: number;
+  droppedResizeSuppressedChunks: number;
   ready: boolean;
   firstOutputSeen: boolean;
   lastOutputAt: number | null;
@@ -152,6 +219,17 @@ export interface TerminalSession {
   */
   spawnStartedAt: number;
   loginProfileHintLogged: boolean;
+}
+
+/**
+ * Per-service retention reading: session count plus the characters held in the two delivery
+ * queues and the bounded scrollback window. Characters, not bytes — see
+ * {@link TerminalService.retentionReading}.
+ */
+export interface TerminalRetentionReading {
+  sessions: number;
+  pendingChars: number;
+  scrollbackChars: number;
 }
 
 export interface TerminalOptions {
@@ -662,6 +740,10 @@ export class TerminalService extends EventEmitter {
       resizeInProgress: false,
       resizeDebounceTimeout: null,
       resizeSuppressedChunks: [],
+      resizeSuppressedBytes: 0,
+      droppedOutputChunks: 0,
+      droppedOutputBytes: 0,
+      droppedResizeSuppressedChunks: 0,
       ready: false,
       firstOutputSeen: false,
       lastOutputAt: null,
@@ -760,12 +842,15 @@ export class TerminalService extends EventEmitter {
       // clients once the resize debounce completes (no data loss).
       if (session.resizeInProgress) {
         session.resizeSuppressedChunks.push(data);
+        session.resizeSuppressedBytes += data.length;
+        capResizeSuppressedBacklog(session);
         return;
       }
 
       // Buffer output for throttled delivery
       session.outputChunks.push(data);
       session.outputBytes += data.length;
+      capOutputBacklog(session);
 
       if (!session.flushTimeout) {
         session.flushTimeout = setTimeout(flushOutput, OUTPUT_THROTTLE_MS);
@@ -787,6 +872,7 @@ export class TerminalService extends EventEmitter {
       this.resolveReady(session);
       session._flushOutput = null;
       session.resizeSuppressedChunks.length = 0;
+      session.resizeSuppressedBytes = 0;
       session.outputChunks.length = 0;
       session.outputBytes = 0;
       this.sessions.delete(id);
@@ -887,7 +973,10 @@ export class TerminalService extends EventEmitter {
               session.outputChunks.push(chunk);
               session.outputBytes += chunk.length;
             }
+            // The suppressed queue just became the delivery queue, so it inherits the same bound.
+            capOutputBacklog(session);
             session.resizeSuppressedChunks.length = 0;
+            session.resizeSuppressedBytes = 0;
             if (!session.flushTimeout && session._flushOutput) {
               session.flushTimeout = setTimeout(session._flushOutput, OUTPUT_THROTTLE_MS);
             }
@@ -1010,6 +1099,26 @@ export class TerminalService extends EventEmitter {
   }
 
   /**
+   * Read-only retention aggregate for the census row (see `terminal_output_buffers`).
+   *
+   * FNXC:RetentionCensus 2026-09-21-22:05 (RUFU-257):
+   * The census row is module-scope — one row for every project root — while the queues it measures
+   * are per-session state, so the row needs a read path that does not hand out sessions or expose
+   * `sessions`/`projectRoot` as public state. Chars are reported un-multiplied so the byte weight
+   * stays in one place (the census).
+   */
+  retentionReading(): TerminalRetentionReading {
+    let pendingChars = 0;
+    let scrollbackChars = 0;
+    for (const session of this.sessions.values()) {
+      pendingChars += session.outputBytes + session.resizeSuppressedBytes;
+      scrollbackChars += session.scrollbackBuffer.length;
+    }
+
+    return { sessions: this.sessions.size, pendingChars, scrollbackChars };
+  }
+
+  /**
    * Get scrollback and clear pending output buffer
    *
    * FNXC:TerminalSharing 2026-08-19-03:05:
@@ -1117,6 +1226,170 @@ export class TerminalService extends EventEmitter {
 
 // Per-project service instances (keyed by resolved project root)
 const terminalServices: Map<string, TerminalService> = new Map();
+
+/*
+FNXC:RetentionCensus 2026-09-21-22:05 (RUFU-257):
+Drop totals are module-scope cumulative counters rather than something the probe recomputes: the
+queues are per-session and drain constantly, so a probe that measured drops by diffing snapshots
+would have to remember every session it had ever seen — a second leak inside the telemetry meant to
+catch the first. Totals are monotonic numbers, so they are bounded by construction and the
+`dashboard_retention_*` gauges read them in O(1).
+*/
+let terminalDroppedOutputChunks = 0;
+let terminalDroppedOutputBytes = 0;
+let terminalDroppedResizeSuppressedChunks = 0;
+
+/*
+FNXC:Terminal 2026-09-23-22:43 (RUFU-257 code review, finding `terminal-cap-overdrop`):
+The byte disjunct in each ceiling loop must become false *inside* the loop, so both caps decrement
+`session.outputBytes` / `session.resizeSuppressedBytes` per dropped chunk instead of accumulating a
+local total and applying it afterwards. Real PTY chunks are ~4 KiB, so the 256 KiB byte ceiling
+binds after ~64 chunks — far below the 4 096 / 1 024 chunk ceilings — which means the byte-triggered
+trim was the NORMAL path, not the rare one. With a deferred decrement the loop condition never
+changed truthiness, so it `shift()`ed until the queue was empty and the drift-resync branch reset
+the counter to 0: every byte-triggered trim discarded 100 % of pending output instead of the oldest
+chunks, so a client attached to a busy PTY (the `pnpm test` flood this module's own comment names)
+received nothing at all, and the resize-suppression "no data loss" promise was void because the
+hand-off at the debounce boundary moved an already-empty queue.
+
+Consequence for the drift branch: because the counter now tracks the queue exactly, `dropped ===
+undefined` is genuine drift (a counter that has outrun its own queue) and nothing else, which is what
+that branch was written to survive.
+*/
+/**
+ * Enforce one session's pending-delivery ceiling, oldest chunks first.
+ *
+ * Called on every append, so the ceiling holds between census samples even under a producer that
+ * outruns the 5 s tick. Returns the bytes discarded (0 in the common case).
+ */
+export function capOutputBacklog(session: TerminalSession): number {
+  let droppedBytes = 0;
+  let droppedChunks = 0;
+  while (
+    session.outputChunks.length > TERMINAL_OUTPUT_CHUNKS_MAX
+    || session.outputBytes > TERMINAL_OUTPUT_BYTES_MAX
+  ) {
+    const dropped = session.outputChunks.shift();
+    if (dropped === undefined) {
+      // Byte counter drifted ahead of the queue; resync rather than spin.
+      session.outputBytes = 0;
+      break;
+    }
+
+    // Decrement as we drop, otherwise the byte disjunct can never turn false (see FNXC above).
+    session.outputBytes = Math.max(0, session.outputBytes - dropped.length);
+    droppedBytes += dropped.length;
+    droppedChunks += 1;
+  }
+
+  if (droppedChunks > 0) {
+    session.droppedOutputChunks += droppedChunks;
+    session.droppedOutputBytes += droppedBytes;
+    terminalDroppedOutputChunks += droppedChunks;
+    terminalDroppedOutputBytes += droppedBytes;
+  }
+
+  return droppedBytes;
+}
+
+/**
+ * Enforce one session's resize-suppression ceiling, oldest chunks first.
+ *
+ * Suppressed chunks are the PTY output a client has not been shown yet; dropping the oldest keeps
+ * the newest prompt visible (what a resize actually needs) instead of retaining an unbounded queue
+ * behind a debounce timer that may never fire.
+ */
+export function capResizeSuppressedBacklog(session: TerminalSession): number {
+  let dropped = 0;
+  while (
+    session.resizeSuppressedChunks.length > TERMINAL_RESIZE_SUPPRESSED_CHUNKS_MAX ||
+    session.resizeSuppressedBytes > TERMINAL_RESIZE_SUPPRESSED_BYTES_MAX
+  ) {
+    const droppedChunk = session.resizeSuppressedChunks.shift();
+    if (droppedChunk === undefined) {
+      // Byte counter drifted ahead of the queue; resync rather than spin (mirrors capOutputBacklog).
+      session.resizeSuppressedBytes = 0;
+      break;
+    }
+    // Decrement as we drop, otherwise the byte disjunct can never turn false (see FNXC above).
+    session.resizeSuppressedBytes = Math.max(0, session.resizeSuppressedBytes - droppedChunk.length);
+    dropped += 1;
+  }
+
+  if (dropped > 0) {
+    session.droppedResizeSuppressedChunks += dropped;
+    terminalDroppedResizeSuppressedChunks += dropped;
+  }
+
+  return dropped;
+}
+
+/**
+ * Cumulative output this module discarded to hold the per-session ceilings.
+ *
+ * Monotonic, so it is bounded by construction; the pressure signal and the bound tests read drops
+ * here instead of inflating the retained-byte census gauge with bytes that are no longer held.
+ */
+export function terminalOutputDropTotals(): {
+  outputChunks: number;
+  outputBytes: number;
+  resizeSuppressedChunks: number;
+} {
+  return {
+    outputChunks: terminalDroppedOutputChunks,
+    outputBytes: terminalDroppedOutputBytes,
+    resizeSuppressedChunks: terminalDroppedResizeSuppressedChunks,
+  };
+}
+
+registerBoundedRegistryMap<string, TerminalService>({
+  id: "terminal_service_registry",
+  map: terminalServices,
+  ceiling: TERMINAL_SERVICE_ROOTS_MAX,
+  ceilingConstant: "TERMINAL_SERVICE_ROOTS_MAX",
+  kind: "registry",
+  keys: "load",
+  // A live PTY must not be dropped to relieve pressure, so this ceiling only ever reports.
+  evictLiveEntries: false,
+  // The project root is the map key, so the shared probe already attributes its bytes.
+  valueBytes: () => AGGREGATE_RECORD_BYTES,
+});
+
+/*
+One row for both delivery queues: they share a producer (PTY output) and a failure mode (a client
+that stops draining), so splitting them would split the diagnosis. `approxBytes` counts the
+scrollback window too, because for a dashboard that keeps 10+ terminals open the scrollback is
+usually the larger share of the same retained budget.
+
+The row reports RETAINED bytes only. Bytes this module already dropped are gone from the heap, so
+adding them would make a gauge named "retained" grow monotonically and eventually dominate the
+census — the instrument would misattribute memory to the very queue that is behaving correctly.
+Cumulative drop totals are therefore read through {@link terminalOutputDropTotals} (pressure signal
++ tests) and `expired_entries` stays 0, because these queues have no expiry semantics at all.
+*/
+registerRetentionSource({
+  id: "terminal_output_buffers",
+  kind: "output-buffer",
+  keys: "load",
+  ceiling: TERMINAL_SESSIONS_TRACKED_MAX,
+  ceilingConstant: "TERMINAL_SESSIONS_TRACKED_MAX",
+  probe: () => {
+    let entries = 0;
+    let approxBytes = 0;
+    for (const service of terminalServices.values()) {
+      const reading = service.retentionReading();
+      entries += reading.sessions;
+      approxBytes += (reading.pendingChars + reading.scrollbackChars) * STRING_BYTES_PER_CHAR;
+    }
+
+    return {
+      entries,
+      approxBytes,
+      // No expiry semantics: reclamation here is inline oldest-first dropping, counted separately.
+      expiredEntries: 0,
+    };
+  },
+});
 
 export function getTerminalService(projectRoot?: string, maxSessions?: number): TerminalService {
   if (!projectRoot) {

@@ -47,6 +47,11 @@ import {
   CHAT_FOCUS_FLAG,
 } from "@fusion/core";
 import { EventEmitter } from "node:events";
+import { RATE_LIMIT_ENTRY_BYTES } from "./lib/retention-census.js";
+import {
+  enforceEntryCeiling,
+  registerBoundedWindowMap,
+} from "./lib/retention/bounded-window-map.js";
 import { isQuestionToolName } from "./shared/chat-toolcall-compact.js";
 import {
   findAwaitingQuestionMessageId,
@@ -382,6 +387,18 @@ const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 
 /** Max messages per IP per minute */
 const MAX_MESSAGES_PER_IP_PER_MINUTE = 30;
+
+/**
+ * Ceiling on distinct client addresses holding an in-window chat counter.
+ *
+ * FNXC:RetentionCensus 2026-09-21-21:40 (RUFU-257): the window is 60 seconds but nothing ever
+ * deleted expired chat counters, so the map grew one row per distinct address for the life of the
+ * process. The retention census now reclaims expired windows every sample; this ceiling is the
+ * backstop for a burst of distinct addresses inside a single window. Eviction order is oldest
+ * insertion, so a counter can only be lost after more distinct clients have appeared than any real
+ * deployment produces — and losing one resets that address's 60-second window, never another's.
+ */
+export const CHAT_RATE_LIMIT_IP_MAX = 10_000;
 
 /** Maximum file size for # mentions (50KB). Files larger than this are skipped. */
 const MAX_REFERENCED_FILE_SIZE = 50 * 1024;
@@ -1522,6 +1539,18 @@ interface RateLimitEntry {
 /** Rate limiting state indexed by IP */
 const rateLimits = new Map<string, RateLimitEntry>();
 
+// Census registration is the reclamation owner for this map: no sweep existed before RUFU-257, so
+// expiry deletion and the ceiling clamp both run from the census sample. Limit, window, and the
+// reset time reported to clients are unchanged.
+registerBoundedWindowMap<string, RateLimitEntry>({
+  id: "chat_rate_limits",
+  map: rateLimits,
+  ceiling: CHAT_RATE_LIMIT_IP_MAX,
+  ceilingConstant: "CHAT_RATE_LIMIT_IP_MAX",
+  expiryOf: (entry) => entry.firstRequestAt.getTime() + RATE_LIMIT_WINDOW_MS,
+  valueBytes: () => RATE_LIMIT_ENTRY_BYTES,
+});
+
 // ── File Reference Resolution ───────────────────────────────────────────────
 
 /**
@@ -1778,6 +1807,9 @@ export function checkRateLimit(ip: string): boolean {
       count: 1,
       firstRequestAt: new Date(),
     });
+    // Ceiling is enforced at the insert site so a burst of distinct addresses inside one census
+    // interval cannot outrun the bound; expired-window deletion is the census sweep's job.
+    enforceEntryCeiling(rateLimits, CHAT_RATE_LIMIT_IP_MAX);
     return true;
   }
 
@@ -1788,6 +1820,7 @@ export function checkRateLimit(ip: string): boolean {
       count: 1,
       firstRequestAt: new Date(),
     });
+    enforceEntryCeiling(rateLimits, CHAT_RATE_LIMIT_IP_MAX);
     return true;
   }
 

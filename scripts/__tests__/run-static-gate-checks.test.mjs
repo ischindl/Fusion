@@ -39,6 +39,14 @@ globs and one against pnpm-lock.yaml. It belongs in the blocking chain because a
 drifted committed lockfile is not discoverable from a task worktree: the dependency
 auto-heal silently repairs it locally, and the resulting out-of-scope diff fails
 unrelated cards' squash merges.
+
+FNXC:RetentionCensus 2026-09-23-10:20 (RUFU-257):
+RUFU-257 appends the 19th validator, check-retention-coverage, at the end of the chain. A dashboard
+killed by its own heap looks like an infrastructure failure and costs hours of forensics, which is how
+RUFU-249's death was finally explained; the census only prevents a recurrence while the ratchet that
+forces every new module-scope cache to declare its bound stays in the BLOCKING chain. It runs there
+rather than as an extra Lint step because `pnpm test:gate` already invokes every `check-*.mjs` in this
+list through `run-static-gate-checks.mjs`, and Gate is one of the four required checks.
 */
 const EXPECTED_GATE_CHECKS = [
   check(["no-", ["no", "hup"].join("")].join("")),
@@ -59,6 +67,7 @@ const EXPECTED_GATE_CHECKS = [
   check("inert-sync-lane-conversions"),
   check("runtime-skill-loader-drift"),
   check("fusion-skill-sync"),
+  check("retention-coverage"),
 ];
 
 function createFixture() {
@@ -113,6 +122,22 @@ test("blocking gate chain enforces lockfile/importer parity", () => {
   assert.ok(
     checks.includes(check("lockfile-importers")),
     "scripts/check-lockfile-importers.mjs must stay in the contiguous blocking validator prefix of test:gate:static",
+  );
+});
+
+/*
+FNXC:RetentionCensus 2026-09-23-12:15 (RUFU-257):
+Same reasoning RUFU-266 applied to lockfile parity: the mirror list above would be updated by the very
+refactor that dropped the validator, so membership in the blocking prefix is pinned on its own. This is
+the check that keeps a future chain reshuffle from quietly downgrading the retention ratchet to a
+non-blocking step, which is the failure mode that let seven heap deaths accumulate before RUFU-249 was
+explained.
+*/
+test("blocking gate chain enforces module-scope retention coverage", () => {
+  const checks = readStaticGateChecks();
+  assert.ok(
+    checks.includes(check("retention-coverage")),
+    "scripts/check-retention-coverage.mjs must stay in the contiguous blocking validator prefix of test:gate:static",
   );
 });
 

@@ -128,6 +128,12 @@ interface ManagedSSEConnection {
   markAlive?: () => void;
 }
 
+/*
+FNXC:RetentionCensus 2026-09-23-09:35 (RUFU-257):
+`managedConnections` is the write-serialization registry for currently-open SSE streams. Each connection
+registers on accept and is removed by its close/error handler, so the map is sized by live connections.
+*/
+// retention-owner-deleted: one entry per live SSE connection — removed by the connection's close/error handler
 const managedConnections = new Map<number, ManagedSSEConnection>();
 
 function normalizeSSEClientId(value: unknown): string | undefined {
@@ -375,6 +381,7 @@ export type ApprovalSseEventType = "approval:requested" | "approval:updated" | "
 
 type ApprovalSseListener = (event: ApprovalSseEventType, payload: unknown, projectId?: string) => void;
 
+// retention-owner-deleted: one listener set per SSE stream — every add is paired with a delete in the unsubscribe path, so cardinality is live streams, not traffic
 const approvalSseListeners = new Set<ApprovalSseListener>();
 
 export function emitApprovalSseEvent(event: ApprovalSseEventType, payload: unknown, projectId?: string): void {
@@ -394,6 +401,7 @@ export type WorkflowSseEventType = "workflow:created" | "workflow:updated" | "wo
 
 type WorkflowSseListener = (event: WorkflowSseEventType, payload: unknown, projectId?: string) => void;
 
+// retention-owner-deleted: one listener set per SSE stream — every add is paired with a delete in the unsubscribe path, so cardinality is live streams, not traffic
 const workflowSseListeners = new Set<WorkflowSseListener>();
 
 export function emitWorkflowSseEvent(event: WorkflowSseEventType, payload: unknown, projectId?: string): void {
@@ -422,6 +430,7 @@ export interface ChatSnippetsSsePayload {
 
 type ChatSnippetsSseListener = (payload: ChatSnippetsSsePayload) => void;
 
+// retention-owner-deleted: one listener set per SSE stream — every add is paired with a delete in the unsubscribe path, so cardinality is live streams, not traffic
 const chatSnippetsSseListeners = new Set<ChatSnippetsSseListener>();
 
 export function emitChatSnippetsUpdatedSseEvent(at: string = new Date().toISOString()): void {
@@ -450,6 +459,7 @@ export type PluginCustomSseListener = (
   projectId?: string,
 ) => void;
 
+// retention-owner-deleted: one listener set per SSE stream — every add is paired with a delete in the unsubscribe path, so cardinality is live streams, not traffic
 const pluginCustomSseListeners = new Set<PluginCustomSseListener>();
 
 export function emitPluginCustomSseEvent(
@@ -492,6 +502,7 @@ type CliSessionStateSseListener = (
   projectId?: string,
 ) => void;
 
+// retention-owner-deleted: one listener set per SSE stream — every add is paired with a delete in the unsubscribe path, so cardinality is live streams, not traffic
 const cliSessionStateSseListeners = new Set<CliSessionStateSseListener>();
 
 /** Module-level ring buffer of cli-session-state events for lastEventId replay. */

@@ -13,6 +13,17 @@ import { isTaskLookupMiss, rethrowTaskApiError } from "./task-lookup-error.js";
 import { resolveDiffBase, runGitCommand } from "./resolve-diff-base.js";
 import { countPatchLines, parseNumstatOutput, type DiffLineCounts } from "./diff-counts.js";
 import { filterFilesToOwnTaskCommits } from "./attribute-done-range-files.js";
+import {
+  MAP_ENTRY_OVERHEAD_BYTES,
+  approxStringBytes,
+  registerRetentionSource,
+} from "../lib/retention-census.js";
+import {
+  approxStringListBytes,
+  createBoundedTtlCache,
+  finishRetentionOp,
+  startRetentionOp,
+} from "../lib/bounded-ttl-cache.js";
 import type { ProjectContext } from "./types.js";
 
 export interface SessionDiffRouteDeps {
@@ -43,14 +54,68 @@ async function worktreeStillBelongsToTask(
   }
 }
 
-const sessionFilesCache = new Map<string, { files: string[]; expiresAt: number }>();
-const fileDiffsCache = new Map<
-  string,
-  {
-    files: Array<{ path: string; status: "added" | "modified" | "deleted" | "renamed"; diff: string; oldPath?: string }>;
-    expiresAt: number;
-  }
->();
+/*
+FNXC:RetentionCensus 2026-09-21-10:49 (RUFU-257):
+These two maps are the load-keyed leak that produced the 2026-09-17 crash loop. Both were keyed one
+entry per TASK and both retained the whole answer: `session_files` a full path list, `file_diffs` the
+full unified-diff strings for every changed file. Their `expiresAt` only made a stale entry be
+IGNORED on read — the entry itself stayed in the map, so a board that touched N tasks held N entries
+forever, and the heavy one held N × (files per task × patch text).
+
+They are now bounded TTL caches: the TTL is unchanged (the 10 s the literal already carried), plus a
+count ceiling with oldest-insertion eviction and delete-on-expire on the read path, and each carries
+its own census row so `/metrics` names it when it grows.
+
+`FILE_DIFFS_CACHE_MAX` sits far below the file-list ceiling because the two values are not the same
+size: a diff entry holds one full patch per changed file. 100 tasks' worth of patches is already the
+largest single retention this lane may hold.
+*/
+type SessionFileDiffs = Array<{
+  path: string;
+  status: "added" | "modified" | "deleted" | "renamed";
+  diff: string;
+  oldPath?: string;
+}>;
+
+const SESSION_FILES_CACHE_TTL_MS = 10_000;
+const SESSION_FILES_CACHE_MAX = 500;
+const FILE_DIFFS_CACHE_TTL_MS = 10_000;
+const FILE_DIFFS_CACHE_MAX = 100;
+
+const sessionFilesCache = createBoundedTtlCache<string[]>({
+  id: "session_files",
+  keys: "ttl",
+  ttlMs: SESSION_FILES_CACHE_TTL_MS,
+  max: SESSION_FILES_CACHE_MAX,
+  ceilingConstant: "SESSION_FILES_CACHE_MAX",
+  valueBytes: (files) => approxStringListBytes(files),
+});
+
+const fileDiffsCache = createBoundedTtlCache<SessionFileDiffs>({
+  id: "file_diffs",
+  keys: "ttl",
+  ttlMs: FILE_DIFFS_CACHE_TTL_MS,
+  max: FILE_DIFFS_CACHE_MAX,
+  ceilingConstant: "FILE_DIFFS_CACHE_MAX",
+  // The value IS the heap: one unified-diff string per changed file. The estimate is deliberately
+  // shallow (string lengths, no object walk) so a scrape stays O(ceiling).
+  valueBytes: (files) => {
+    let bytes = MAP_ENTRY_OVERHEAD_BYTES;
+    for (const file of files) {
+      bytes += approxStringBytes(file.path) + approxStringBytes(file.diff) + approxStringBytes(file.oldPath ?? "");
+    }
+    return bytes;
+  },
+});
+
+/*
+Test-only seam (RUFU-257). Clears both diff-lane caches and optionally installs a fake clock, so a
+TTL expiry or a ceiling eviction is assertable without a real time wait.
+*/
+export function __resetDiffLaneCachesForTests(now?: () => number): void {
+  sessionFilesCache.resetForTests(now);
+  fileDiffsCache.resetForTests(now);
+}
 
 /*
 FNXC:TaskDiffStats 2026-09-10-05:23:
@@ -69,27 +134,71 @@ full-detail /diff response is untouched by this cache and keeps its verified beh
 const TASK_DIFF_STATS_CACHE_TTL_MS = 10_000;
 const TASK_DIFF_STATS_CACHE_MAX = 500;
 
+/*
+FNXC:RetentionCensus 2026-09-23-22:43 (RUFU-257 code review):
+The census id is spelled as the literal `"task_diff_stats"` at its `registerRetentionSource` site and
+at each op-lane call below — it is deliberately NOT hoisted into a shared constant. The retention
+coverage scanner resolves a source's id from the registration's literal, so an `id: SOME_CONST`
+reference scans as an unnamed source and the source silently drops out of the coverage snapshot (the
+`retention-coverage-ratchet` test fails on `task_diff_stats -> ""`). "Deduplicating" this string would
+therefore un-name a classified source in the ratchet.
+*/
+
 type DiffStatsTriple = { filesChanged: number; additions: number; deletions: number };
 
 const taskDiffStatsCache = new Map<string, { stats: DiffStatsTriple; expiresAt: number }>();
 let taskDiffStatsNow: () => number = () => Date.now();
 
 function readTaskDiffStatsCache(key: string): DiffStatsTriple | undefined {
+  const startedAt = startRetentionOp();
   const hit = taskDiffStatsCache.get(key);
-  if (!hit) return undefined;
-  if (hit.expiresAt <= taskDiffStatsNow()) {
-    taskDiffStatsCache.delete(key);
-    return undefined;
+  let stats: DiffStatsTriple | undefined;
+  if (hit) {
+    if (hit.expiresAt <= taskDiffStatsNow()) {
+      taskDiffStatsCache.delete(key);
+    } else {
+      stats = hit.stats;
+    }
   }
-  return hit.stats;
+  finishRetentionOp("task_diff_stats", startedAt);
+  return stats;
 }
 
+/*
+FNXC:RetentionCensus 2026-09-21-10:49:
+The stats cache already enforced `TASK_DIFF_STATS_CACHE_MAX`, but a count ceiling alone does not answer
+"which cache holds my heap?" (RUFU-257). It is now census-registered so the `/metrics` retention family
+reports its entries, its attributed bytes, and — the part that used to be invisible — how many of its
+entries are PAST their 10s TTL but still sitting in the map because nothing reads them until the next
+poll. The probe is a shallow sum over at most `TASK_DIFF_STATS_CACHE_MAX` keys, so it stays O(ceiling)
+on the scrape path.
+*/
+registerRetentionSource({
+  id: "task_diff_stats",
+  kind: "cache",
+  keys: "ttl",
+  ceiling: TASK_DIFF_STATS_CACHE_MAX,
+  ceilingConstant: "TASK_DIFF_STATS_CACHE_MAX",
+  probe: () => {
+    let approxBytes = 0;
+    let expiredEntries = 0;
+    const nowMs = taskDiffStatsNow();
+    for (const [key, entry] of taskDiffStatsCache) {
+      approxBytes += MAP_ENTRY_OVERHEAD_BYTES + approxStringBytes(key);
+      if (entry.expiresAt <= nowMs) expiredEntries++;
+    }
+    return { entries: taskDiffStatsCache.size, approxBytes, expiredEntries };
+  },
+});
+
 function writeTaskDiffStatsCache(key: string, stats: DiffStatsTriple): void {
+  const startedAt = startRetentionOp();
   if (taskDiffStatsCache.size >= TASK_DIFF_STATS_CACHE_MAX) {
     const oldestKey = taskDiffStatsCache.keys().next().value;
     if (oldestKey !== undefined) taskDiffStatsCache.delete(oldestKey);
   }
   taskDiffStatsCache.set(key, { stats, expiresAt: taskDiffStatsNow() + TASK_DIFF_STATS_CACHE_TTL_MS });
+  finishRetentionOp("task_diff_stats", startedAt);
 }
 
 /*
@@ -1041,10 +1150,7 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
 
       if (!task.worktree) {
         const files = await tryBranchRefFallbackFiles(task, scopedStore.getRootDir(), derivedBranchHint);
-        sessionFilesCache.set(task.id, {
-          files,
-          expiresAt: Date.now() + 10000,
-        });
+        sessionFilesCache.set(task.id, files);
         res.json(files);
         return;
       }
@@ -1059,10 +1165,7 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
 
       if (!worktreeExists) {
         const files = await tryBranchRefFallbackFiles(task, scopedStore.getRootDir(), derivedBranchHint);
-        sessionFilesCache.set(task.id, {
-          files,
-          expiresAt: Date.now() + 10000,
-        });
+        sessionFilesCache.set(task.id, files);
         res.json(files);
         return;
       }
@@ -1070,16 +1173,13 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
       const worktree = task.worktree;
       if (!(await worktreeStillBelongsToTask(worktree, task.branch))) {
         const files = await tryBranchRefFallbackFiles(task, scopedStore.getRootDir(), derivedBranchHint);
-        sessionFilesCache.set(task.id, {
-          files,
-          expiresAt: Date.now() + 10000,
-        });
+        sessionFilesCache.set(task.id, files);
         res.json(files);
         return;
       }
-      const cached = sessionFilesCache.get(task.id);
-      if (cached && cached.expiresAt > Date.now()) {
-        res.json(cached.files);
+      const cachedFiles = sessionFilesCache.get(task.id);
+      if (cachedFiles) {
+        res.json(cachedFiles);
         return;
       }
 
@@ -1115,10 +1215,7 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
         files = [];
       }
 
-      sessionFilesCache.set(task.id, {
-        files,
-        expiresAt: Date.now() + 10000,
-      });
+      sessionFilesCache.set(task.id, files);
 
       res.json(files);
     } catch (err: unknown) {
@@ -1513,10 +1610,7 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
 
       if (!task.worktree) {
         const fallbackFiles = await tryBranchRefFallbackFileDiffs(task, scopedStore.getRootDir(), derivedBranchHint);
-        fileDiffsCache.set(task.id, {
-          files: fallbackFiles,
-          expiresAt: Date.now() + 10000,
-        });
+        fileDiffsCache.set(task.id, fallbackFiles);
         res.json(fallbackFiles);
         return;
       }
@@ -1531,10 +1625,7 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
 
       if (!worktreeExists) {
         const fallbackFiles = await tryBranchRefFallbackFileDiffs(task, scopedStore.getRootDir(), derivedBranchHint);
-        fileDiffsCache.set(task.id, {
-          files: fallbackFiles,
-          expiresAt: Date.now() + 10000,
-        });
+        fileDiffsCache.set(task.id, fallbackFiles);
         res.json(fallbackFiles);
         return;
       }
@@ -1542,16 +1633,13 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
       const worktree = task.worktree;
       if (!(await worktreeStillBelongsToTask(worktree, task.branch))) {
         const fallbackFiles = await tryBranchRefFallbackFileDiffs(task, scopedStore.getRootDir(), derivedBranchHint);
-        fileDiffsCache.set(task.id, {
-          files: fallbackFiles,
-          expiresAt: Date.now() + 10000,
-        });
+        fileDiffsCache.set(task.id, fallbackFiles);
         res.json(fallbackFiles);
         return;
       }
-      const cached = fileDiffsCache.get(task.id);
-      if (cached && cached.expiresAt > Date.now()) {
-        res.json(cached.files);
+      const cachedDiffs = fileDiffsCache.get(task.id);
+      if (cachedDiffs) {
+        res.json(cachedDiffs);
         return;
       }
 
@@ -1568,10 +1656,7 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
           ? { path: file.path, status: file.status, diff: file.patch, oldPath: file.oldPath }
           : { path: file.path, status: file.status, diff: file.patch }));
 
-      fileDiffsCache.set(task.id, {
-        files,
-        expiresAt: Date.now() + 10000,
-      });
+      fileDiffsCache.set(task.id, files);
 
       res.json(files);
     } catch (err: unknown) {

@@ -9,6 +9,12 @@ import { vi, type Mock } from "vitest";
 type AnyModule = Record<string, unknown>;
 type AnyMock = Mock;
 
+/*
+FNXC:RetentionCensus 2026-09-23-09:35 (RUFU-257):
+`fallbackFns` is the auto-mock table of the test double for the engine; its keys come from the mocked
+tool surface rather than anything a caller can influence.
+*/
+// retention-allowlist: test-only mock engine: keys are the fixed fn_* tool names of the mocked surface, never request-derived
 const fallbackFns = new Map<string, AnyMock>();
 
 const DEFAULT_MODEL_REGISTRY_REFRESH_TIMEOUT_MS = 15_000;
