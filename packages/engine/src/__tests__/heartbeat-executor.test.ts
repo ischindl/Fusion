@@ -4145,6 +4145,17 @@ describe("executeHeartbeat", () => {
     FNXC:EngineTests 2026-09-20-05:15:
     Autonomous no-task heartbeat creation must accept ordinary work without mission lineage and preserve normal agent-heartbeat provenance.
     */
+    /*
+    FNXC:TaskQueueOrder 2026-09-24-01:27 (RUFU-287):
+    FN-509 deleted the task `priority` levels, and with them this tool's `priority` parameter —
+    `taskCreateParams` declares only `description`, `dependencies`, `workflow_id` and `mission_lineage`,
+    and `createTaskCreateTool.execute` reads exactly those, so a legacy caller's `priority` is dropped
+    before `store.createTask` and queue position comes from arrival plus an explicit operator Boost.
+    Both cases below asserted the deleted contract, so they are re-derived from the current parameter
+    list rather than kept as a tombstone. `expect.objectContaining` requires a KEY to exist, so
+    `priority: undefined` could never express "the product omits it" — the omission is asserted on the
+    captured input, which is the same idiom the lineage assertions in these cases already use.
+    */
     it("creates a lineage-free task from an autonomous no-task heartbeat", async () => {
       const store = createStoreWithAgentForExec({ taskId: undefined, soul: "I am a coordinator" });
       let capturedCreateTool: any;
@@ -4167,7 +4178,6 @@ describe("executeHeartbeat", () => {
       expect(mockTaskStore.createTask).toHaveBeenCalledWith(expect.objectContaining({
         description: "Follow-up task",
         dependencies: undefined,
-        priority: undefined,
         source: expect.objectContaining({
           sourceType: "agent_heartbeat",
           sourceAgentId: "agent-001",
@@ -4180,9 +4190,11 @@ describe("executeHeartbeat", () => {
       const createInput = vi.mocked(mockTaskStore.createTask).mock.calls[0]?.[0];
       expect(createInput).not.toHaveProperty("missionId");
       expect(createInput).not.toHaveProperty("sliceId");
+      // FN-509: there is no priority level to store, and the key must be absent rather than undefined.
+      expect(createInput).not.toHaveProperty("priority");
     });
 
-    it("forwards explicit priority when fn_task_create tool is called", async () => {
+    it("drops a legacy priority argument while forwarding mission lineage", async () => {
       const store = createStoreWithAgentForExec();
       let capturedCreateTool: any;
       const mockSession = createMockAgentSession();
@@ -4198,9 +4210,17 @@ describe("executeHeartbeat", () => {
       const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
       await monitor.executeHeartbeat({ agentId: "agent-001", source: "on_demand" });
 
-      expect(mockTaskStore.createTask).toHaveBeenCalledWith(expect.objectContaining({
-        priority: "high",
-      }), expect.any(Object));
+      const createInput = vi.mocked(mockTaskStore.createTask).mock.calls[0]?.[0] as Record<string, any>;
+      // The deletion's guarantee: the stale key never reaches the store…
+      expect(createInput).not.toHaveProperty("priority");
+      // …while the axes the tool DOES declare still flow, so nothing was dropped along with it.
+      expect(createInput).toMatchObject({ description: "Follow-up task", missionId: "M-001", sliceId: "SL-001" });
+      expect(createInput.source.sourceMetadata.missionLineage).toEqual({
+        missionId: "M-001",
+        sliceId: "SL-001",
+        featureId: "F-001",
+      });
+      expect(createInput.source.sourceParentTaskId).toBe("FN-001");
     });
   });
 
