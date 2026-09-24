@@ -9,7 +9,8 @@ keeps, so a newly registered write handler is covered the moment it is registere
    (AgentLogger.onToolEnd), so a missing flag is not a style miss: the agent's own `fn_task_logs_read` shows a
    `tool_result` row for a write that landed nothing.
 2. Single-shape scan — a hand-composed store-outage message ("Failed to <op>: <error>", "Could not …") must
-   compose through storeErrorResult instead. A site that forwards a *typed* failure (its own `code`, or an
+   compose through the shared store-result composer (storeErrorResult, or storeWriteFailure where the store can
+   answer with a genuine miss). A site that forwards a *typed* failure (its own `code`, or an
    `instanceof <SpecificError>` predicate) keeps its own text: relabelling a validation refusal or a
    state-precondition miss as STORE_UNAVAILABLE would be a different lie.
 
@@ -228,14 +229,14 @@ describe("STAS-258 write-failure boundary (CI-pinned scans over the tool registr
       expect(violations, violations.join(" | ")).toEqual([]);
     });
 
-    it("a hand-composed store-outage message composes through storeErrorResult instead", () => {
+    it("a hand-composed store-outage message composes through the shared store-result composer instead", () => {
       const violations: string[] = [];
       for (const { segment, failures } of perTool) {
         if (storeWritesAwaited(segment).length === 0) continue;
         for (const returned of failures) {
           if (!STORE_OUTAGE_PHRASE.test(returned.textValue)) continue; // a specific reason, not an outage claim
           if (READ_FAILURE_PHRASE.test(returned.textValue)) continue; // the read card's half
-          if (/storeErrorResult\s*\(/.test(returned.objectText)) continue;
+          if (/store(WriteFailure|ErrorResult)\s*\(/.test(returned.objectText)) continue;
           const before = segment.lines
             .slice(Math.max(0, returned.line - segment.startLine - 15), returned.line - segment.startLine)
             .join("\n");

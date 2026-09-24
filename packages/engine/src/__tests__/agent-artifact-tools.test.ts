@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Artifact, ArtifactType, ArtifactWithTask, MessageStore, TaskStore } from "@fusion/core";
+import { STORE_RETRY_GUIDANCE } from "../tool-store-errors.js";
 import {
   createArtifactListTool,
   createArtifactRegisterTool,
@@ -220,8 +221,9 @@ describe("artifact register tool", () => {
     });
 
     expect(registerArtifact).not.toHaveBeenCalled();
-    expect(getText(result)).toContain("ERROR: Failed to register artifact");
+    expect(getText(result)).toContain("artifact not registered");
     expect(getText(result)).toContain("dataBase64 must be valid base64");
+    expect(result.isError).toBe(true);
   });
 
   it("requires an image MIME type for base64 image registration", async () => {
@@ -313,8 +315,10 @@ describe("artifact register tool", () => {
       content: "body",
     });
 
-    expect(getText(result)).toContain("ERROR: Failed to register artifact");
+    expect(getText(result)).toContain('the artifact "Broken artifact" did not reach the task store');
     expect(getText(result)).toContain("database temporarily unavailable");
+    expect(getText(result)).toContain(STORE_RETRY_GUIDANCE);
+    expect(result.isError).toBe(true);
   });
 });
 
@@ -873,8 +877,9 @@ describe("chat artifact tools", () => {
       content: "body",
     });
 
-    expect(getText(result)).toContain("ERROR: Failed to register artifact \"No target\"");
+    expect(getText(result)).toContain('the artifact "No target" refused by the task store');
     expect(getText(result)).toContain("Task FN-404 not found");
+    expect(result.isError).toBe(true);
   });
 
   it("returns clean errors for non-existent explicit task list", async () => {

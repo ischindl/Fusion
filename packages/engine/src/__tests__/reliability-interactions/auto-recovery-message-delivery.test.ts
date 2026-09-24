@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createPostRoomMessageTool, createSendMessageTool } from "../../agent-tools.js";
+import { STORE_RETRY_GUIDANCE } from "../../tool-store-errors.js";
 
 function firstText(result: { content: Array<{ type: string; text?: string }> }): string {
   const first = result.content[0];
@@ -42,7 +43,9 @@ describe("reliability interaction: message delivery auto-recovery", () => {
     const tool = createSendMessageTool(messageStore, "agent-a", { autoRecovery: { mode: "programmatic", maxRetries: 3 } as any });
 
     const result = await tool.execute("1", { to_id: "agent-b", content: "hello" } as any, undefined, undefined, {} as any);
-    expect(firstText(result as any)).toBe("ERROR: Failed to send message: recipient not found");
+    // A recipient the board does not have is a refusal on the merits, not an outage to retry.
+    expect(firstText(result as any)).toContain("message delivery refused by the task store: recipient not found");
+    expect((result as any).isError).toBe(true);
   });
 
   it("mode off preserves first-throw ERROR contract", async () => {
@@ -54,6 +57,8 @@ describe("reliability interaction: message delivery auto-recovery", () => {
 
     const result = await tool.execute("1", { to_id: "agent-b", content: "hello" } as any, undefined, undefined, {} as any);
     expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(firstText(result as any)).toBe("ERROR: Failed to send message: SQLITE_BUSY");
+    expect(firstText(result as any)).toContain("message delivery did not reach the task store: SQLITE_BUSY");
+    expect(firstText(result as any)).toContain(STORE_RETRY_GUIDANCE);
+    expect((result as any).isError).toBe(true);
   });
 });

@@ -157,7 +157,8 @@ describe("fn_spawn_agent capacity", () => {
       vi.fn(async () => { throw new Error("agent store unavailable"); });
 
     const result = await trySpawn(executor, "FN-1", 4);
-    expect(result.content[0]?.text).toContain("Failed to spawn agent");
+    expect(result.content[0]?.text).toContain("agent spawn did not reach the task store");
+    expect(result.isError).toBe(true);
 
     // A failed spawn must not permanently consume capacity.
     expect((executor as unknown as { totalSpawnedCount: number }).totalSpawnedCount).toBe(0);
