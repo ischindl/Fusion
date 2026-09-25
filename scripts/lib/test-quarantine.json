@@ -10,6 +10,11 @@
       "file": "packages/dashboard/app/components/__tests__/TaskPlannerChatTab.virtualization.test.tsx",
       "reason": "First on-sight quarantine: upstream FN-304 test captured no IntersectionObserver callback under components-dir load (assertion at :164 `expected undefined to be type of 'function'`), passes isolated 5/5. Coverage is 5 load-sensitive tests, so the register's substantial-coverage exception does not apply.",
       "quarantinedAt": "2026-09-07"
+    },
+    {
+      "file": "packages/desktop/src/__tests__/native.test.ts",
+      "reason": "Second sightings: https://github.com/Runfusion/Fusion/actions/runs/35959852349, https://github.com/Runfusion/Fusion/actions/runs/35965109937, https://github.com/Runfusion/Fusion/actions/runs/35965648898; doubled vi.fn() timeout and STACK_TRACE_ERROR.",
+      "quarantinedAt": "2026-09-24"
     }
   ]
 }
