@@ -4,9 +4,10 @@
  * declaration tool; confirm=true aborts the active session for re-planning.
  */
 import { Type, type Static } from "@earendil-works/pi-ai";
-import type { Task, TaskStore } from "@fusion/core";
+import { isTaskNotFoundError, type Task, type TaskStore } from "@fusion/core";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { executorLog } from "../logger.js";
+import { storeErrorResult } from "../tool-store-errors.js";
 
 const taskAddDepParams = Type.Object({
   task_id: Type.String({ description: "The ID of the task to depend on (e.g. \"KB-001\")" }),
@@ -50,7 +51,14 @@ export function createTaskAddDepTool(deps: TaskAddDepToolDeps, taskId: string): 
       let targetTask: Task;
       try {
         targetTask = await store.getTask(targetId);
-      } catch {
+      } catch (error) {
+        /* FNXC:ReadFailureSurfacing 2026-09-25-05:45: STAS-259. A bare catch used to turn every failed lookup —
+        boot stall, closed pool, timeout — into "Task X not found", reporting a dependency the agent just created
+        as gone. Only the store's typed not-found may name a missing card; the outage half answers in the shared
+        shape, as the engine lane's add-dependency catch already does. */
+        if (!isTaskNotFoundError(error)) {
+          return storeErrorResult(`dependency target ${targetId}`, error);
+        }
         return {
           content: [{
             type: "text" as const,

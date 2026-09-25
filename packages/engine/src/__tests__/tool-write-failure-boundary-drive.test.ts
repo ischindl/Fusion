@@ -106,12 +106,19 @@ describe("every registered handler that reports a store write failure answers in
     The handlers whose refused write arrives as an agent-actionable store failure: flagged, carrying the composer's
     code, and carrying the retry guidance. This is the reach pin for the composed lane — a converted site that
     regresses to hand-composed text drops out of this list and fails here, which is the behavioural counterpart of
-    the source scan. The mission, feature, slice and ideation lanes answer loudly but outside this list on purpose:
+    the source scan.
+
+    `fn_read_messages` enters this list from STAS-259, and it shows how far this drive's read stance reaches: its
+    proxy answers a read verb with `null` in the "no such row" stance rather than refusing, so the read half lands
+    here only because the handler treats a broken read as the board being unavailable. Widening this drive to refuse
+    reads as well would need every one of the 88 exercised tools reclassified — many legitimately answer "nothing
+    found" — so the read lane is pinned per-site in `read-path-store-failure.test.ts` instead. See the
+    read-surface-map task document for that decision. The mission, feature, slice and ideation lanes answer loudly but outside this list on purpose:
     their catch wraps the whole handler (`agent-tools.ts:4915`), so labelling every throw a store outage would
     mislabel a parameter error; see the write-surface-map task document.
     */
     expect(sharedShapeTools(driven)).toEqual([
-      "fn_artifact_list", "fn_post_room_message", "fn_send_message", "fn_spawn_agent", "fn_task_add_dep",
+      "fn_artifact_list", "fn_post_room_message", "fn_read_messages", "fn_send_message", "fn_spawn_agent", "fn_task_add_dep",
       "fn_task_assign", "fn_task_delete", "fn_task_document_write", "fn_task_duplicate", "fn_task_file_scope_add",
       "fn_task_logs_read", "fn_task_merge", "fn_task_pause", "fn_task_prompt_write", "fn_task_retry",
       "fn_task_unpause", "fn_task_update", "fn_workflow_create", "fn_workflow_delete", "fn_workflow_select",

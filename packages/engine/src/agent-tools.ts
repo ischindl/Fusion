@@ -6753,11 +6753,10 @@ export function createReadMessagesTool(messageStore: MessageStore, agentId: stri
           },
         };
       } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Failed to read messages: ${errorMessage}` }],
-          details: {},
-        };
+        /* FNXC:ReadFailureSurfacing 2026-09-25-05:45: STAS-259. This catch covered the inbox read and the
+        reply-context read, so a stall answered as payload text and an unreachable inbox looked empty; the flag
+        is what makes the agent log say tool_error. "No messages" stays unflagged — that half is a fact. */
+        return storeErrorResult("your inbox messages", err);
       }
     },
   };
