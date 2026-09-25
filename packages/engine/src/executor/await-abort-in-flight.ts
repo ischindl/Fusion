@@ -44,14 +44,43 @@ export type AwaitAbortInFlightTaskWorkDeps = {
   safeLogEntry: (taskId: string, message: string) => void;
 };
 
+/*
+FNXC:AssigneeTransferAtomicity 2026-09-21-20:36 (RUFU-260):
+The abort seam now REPORTS what it found. The assignee-transfer listener must record an honest
+run-audit outcome (`aborted` vs `no-live-surface`) instead of claiming a teardown that touched
+nothing, and the barrier's release posture depends on the same truth. Additive: existing callers
+`await` the call and ignore the value.
+
+FNXC:AssigneeTransferAtomicity 2026-09-22-16:10 (RUFU-260):
+`preserveWorkflowStepSession` scopes the blast radius. An ownership transfer stops the PREVIOUS
+OWNER's implementation surfaces; it must never abort a live prompt-lane (workflow-step) session,
+because killing an in-flight Code/Plan Review leaves a required pre-merge gate with no verdict —
+the FN-8492 `pending` → `failed` wedge that needs an operator bypass to clear. A transfer is not a
+card-level stop, so the caller declares which surface it must leave standing, and the summary
+reports it in `preservedSurfaces` so the audit row can state the truth.
+*/
+export interface AbortInFlightSummary {
+  hadActiveSurface: boolean;
+  abortedSurfaces: string[];
+  /** Surfaces deliberately left running (never aborted/deleted) by an option on this call. */
+  preservedSurfaces: string[];
+}
+
 export interface PreparedAbortInFlightTaskWork {
-  complete(): Promise<void>;
+  complete(): Promise<AbortInFlightSummary>;
 }
 
 type AbortOptions = {
   userCanceled?: boolean;
   /** Forced replacement reserves the execution FIFO before deferring task-keyed claims. */
   deferTaskKeyedClaims?: boolean;
+  /**
+   * FNXC:AssigneeTransferAtomicity 2026-09-22-16:10 (RUFU-260): leave the task's live workflow-step
+   * (prompt-lane) session claimed-by-nobody: not aborted, not disposed, not unregistered. Used only
+   * by the assignee-transfer teardown, which owns the previous owner's write surfaces and not the
+   * review gate's session.
+   */
+  preserveWorkflowStepSession?: boolean;
 };
 
 function promiseFromSignal(signal: () => Promise<void>, warning: string): Promise<void> {
@@ -76,7 +105,12 @@ export function prepareAbortInFlightTaskWork(
 
   const claimedSession = deps.activeSessions.get(taskId);
   const claimedStepExecutor = deps.activeStepExecutors.get(taskId);
-  const claimedWorkflowSession = deps.activeWorkflowStepSessions.get(taskId);
+  // RUFU-260: the transfer caller preserves the prompt-lane session by not claiming it at all, so
+  // every downstream guard (`claimTaskKeyedState`, the abort, the dispose) stays unchanged.
+  const workflowStepSessionEntry = deps.activeWorkflowStepSessions.get(taskId);
+  const claimedWorkflowSession = options.preserveWorkflowStepSession ? undefined : workflowStepSessionEntry;
+  const preservedSurfaces: string[] =
+    options.preserveWorkflowStepSession && workflowStepSessionEntry ? ["workflow-step-session"] : [];
   const claimedConfiguredCommands = deps.activeConfiguredCommandControllers.get(taskId);
   const claimedWorkflowGraphController = deps.activeWorkflowGraphAbortControllers.get(taskId);
   const claimedSubagents = deps.activeSubagentSessions.has(taskId);
@@ -162,8 +196,8 @@ export function prepareAbortInFlightTaskWork(
 
   let completed = false;
   return {
-    async complete(): Promise<void> {
-      if (completed) return;
+    async complete(): Promise<AbortInFlightSummary> {
+      if (completed) return { hadActiveSurface, abortedSurfaces: [...abortedSurfaces], preservedSurfaces: [...preservedSurfaces] };
       completed = true;
       if (options.deferTaskKeyedClaims) claimTaskKeyedState();
 
@@ -194,9 +228,12 @@ export function prepareAbortInFlightTaskWork(
         executorLog.log(`${taskId}: awaited abort of in-flight work — ${reason}`);
         deps.safeLogEntry(
           taskId,
-          `Pause abort cleanup completed: reason=${reason}; surfaces=${abortedSurfaces.join(", ") || "none"}`,
+          `Pause abort cleanup completed: reason=${reason}; surfaces=${abortedSurfaces.join(", ") || "none"}`
+            // RUFU-260: a preserved surface is a deliberate scope decision, so name it in the log.
+            + (preservedSurfaces.length ? `; preserved=${preservedSurfaces.join(", ")}` : ""),
         );
       }
+      return { hadActiveSurface, abortedSurfaces: [...abortedSurfaces], preservedSurfaces: [...preservedSurfaces] };
     },
   };
 }
@@ -205,7 +242,7 @@ export async function awaitAbortInFlightTaskWork(
   deps: AwaitAbortInFlightTaskWorkDeps,
   taskId: string,
   reason: string,
-  options: { userCanceled?: boolean } = {},
-): Promise<void> {
-  await prepareAbortInFlightTaskWork(deps, taskId, reason, options).complete();
+  options: AbortOptions = {},
+): Promise<AbortInFlightSummary> {
+  return prepareAbortInFlightTaskWork(deps, taskId, reason, options).complete();
 }

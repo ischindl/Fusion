@@ -1124,6 +1124,8 @@ export {
   // engine-side vanished-artifact detector classifies against the same bound the sweep enforces.
   RECONCILE_ORPHAN_TASK_DIR_MAX_AGE_MS,
   type MoveTaskOptions,
+  // FNXC:AssigneeTransferAtomicity 2026-09-21-20:36 (RUFU-260): typed ownership-transfer event.
+  type TaskAssigneeChangedEvent,
   /*
   FNXC:TaskArchiveRemoval 2026-09-19-21:45 (merge rebuild 0919):
   `ArchiveAllDoneResult` / `ArchiveAllDoneSkip` / `ArchiveAllDoneSkipReason` are deliberately absent.

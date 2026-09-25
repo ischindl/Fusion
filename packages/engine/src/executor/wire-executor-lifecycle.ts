@@ -15,7 +15,10 @@ import type { Task, TaskStore, TaskMoveLanes, RunMutationContext } from "@fusion
 import {
   registerTaskMoveDisposer,
   resolveEffectiveAgent,
+  resolveReviewColumns,
+  resolveWorkflowIrForTask,
 } from "@fusion/core";
+import type { WorkflowIrResolverStore } from "@fusion/core";
 import { activeSessionRegistry } from "../agents/active-session-registry.js";
 import { resolveExecutorSessionModel } from "../agents/agent-session-helpers.js";
 import { executorLog } from "../logger.js";
@@ -29,6 +32,9 @@ import { detectReviewHandoffIntent } from "./pseudo-pause.js";
 import { createSeenSteeringIds } from "./task-predicates.js";
 import { facadeFields, facadeMethods } from "./facade-methods.js";
 import { WorkflowAgentCapacity } from "../agents/workflow-agent-capacity.js";
+import { emitBoundedRunAudit } from "./emit-bounded-run-audit.js";
+import { generateSyntheticRunId } from "../util/run-audit.js";
+import type { AbortInFlightSummary } from "./await-abort-in-flight.js";
 
 /**
  * FNXC:WorkspaceWorktree 2026-08-23-06:25:
@@ -103,7 +109,7 @@ export type WireExecutorLifecycleDeps = {
   workflowLifecycleMovesInFlight: Set<string>;
   // Methods
    
-  awaitAbortInFlightTaskWork: (...args: any[]) => Promise<void>;
+  awaitAbortInFlightTaskWork: (...args: any[]) => Promise<AbortInFlightSummary>;
   clearWorkflowRerunWatchdog: (taskId: string) => void;
   deleteActiveWorkflowStepSession: (taskId: string) => void;
   dispatchUnpauseResume: (task: Task) => Promise<boolean>;
@@ -147,6 +153,57 @@ export function buildWireExecutorLifecycleDeps(host: object): WireExecutorLifecy
     ...facadeFields(host, WIRE_LIFECYCLE_FIELDS),
     ...facadeMethods(host, WIRE_LIFECYCLE_METHODS),
   } as WireExecutorLifecycleDeps;
+}
+
+/**
+ * FNXC:AssigneeTransferAtomicity 2026-09-21-20:36 (RUFU-260):
+ * One bounded audit row per transfer teardown, ids/outcomes only. Queryable by task AND by
+ * previous owner (`agentId`), so operator support can answer "why did this agent's session die
+ * mid-task?" from the audit feed alone. A deferred or no-live-surface teardown records the same
+ * row — it is a completed outcome, not a failure. The bounded seam absorbs absent/throwing/hanging
+ * sinks so telemetry can never stall the teardown or its barrier release.
+ */
+async function reportAssigneeTransferAbort(
+  deps: WireExecutorLifecycleDeps,
+  taskId: string,
+  previousOwnerId: string,
+  newOwnerId: string | undefined,
+  outcome: "aborted" | "column-binding-deferred" | "no-live-surface",
+  reviewLaneSessionPreserved = false,
+): Promise<void> {
+  await emitBoundedRunAudit(deps.store, {
+    taskId,
+    agentId: previousOwnerId,
+    runId: generateSyntheticRunId("assignee-transfer-abort", taskId),
+    domain: "database",
+    mutationType: "task:assignee-transfer-abort",
+    target: taskId,
+    metadata: { outcome, previousOwnerId, newOwnerId: newOwnerId ?? null, reviewLaneSessionPreserved },
+  });
+}
+
+/*
+FNXC:AssigneeTransferAtomicity 2026-09-22-16:10 (RUFU-260):
+Is this card sitting in a review-role lane right now? Resolved from the workflow IR's review traits
+(`resolveReviewColumns` — the mergeOrchestration ∪ mergeBlocker ∪ humanReview union), never by
+comparing the column to a literal, so a renamed review lane resolves identically; the `in-review`
+id is only the no-metadata fallback, matching the established idiom in notification-service.
+UNKNOWN answers `true`: the choice is between leaving one session running (recoverable — the step's
+own timeout or its next dispatch bounds it) and destroying a live review gate (unrecoverable — the
+required pre-merge step result goes `pending` → `failed` with no verdict and needs an operator
+bypass), so an unresolvable lane preserves the prompt-lane session.
+*/
+async function taskSitsInReviewLane(deps: WireExecutorLifecycleDeps, taskId: string): Promise<boolean> {
+  try {
+    const task = await deps.store.getTask(taskId);
+    if (!task) return true;
+    const ir = await resolveWorkflowIrForTask(deps.store as WorkflowIrResolverStore, taskId);
+    const lanes = resolveReviewColumns(ir);
+    if (lanes.length === 0) return true;
+    return lanes.includes(task.column);
+  } catch {
+    return true;
+  }
 }
 
 export function wireExecutorLifecycle(deps: WireExecutorLifecycleDeps): WireExecutorLifecycleResult {
@@ -262,6 +319,67 @@ export function wireExecutorLifecycle(deps: WireExecutorLifecycleDeps): WireExec
         }).then(() => releaseWorkspaceAcquireClaims(deps.store, task.id)),
       );
     }
+  });
+
+  /*
+  FNXC:AssigneeTransferAtomicity 2026-09-21-20:36 (RUFU-260):
+  An ownership transfer must not leave the previous owner writing. The incident shape: a card
+  moved from agent A to agent B while A's session was still live — A kept writing to the worktree
+  while B's heartbeat woke and acquired, two writers on one checkout, last-writer-wins. This
+  listener makes the transfer atomic from the engine's side by:
+    1. aborting A's in-flight surfaces through the SINGLE existing abort seam, engine-abort
+       provenance (`abort-in-flight:assignee-transfer`, no `userCanceled` — this is not a
+       hard-cancel and must not touch `userCanceledTaskIds`);
+    2. publishing the teardown through `trackTaskDisposal`, which mirrors it into the per-task
+       disposal barrier so the new owner's heartbeat blocks at its acquisition seam until the
+       teardown settles (see task-disposal-barrier.ts).
+  Column-binding exception: when the live session is staffed by a column-agent PRINCIPAL that is
+  this same agent (`lastEffectiveColumnAgentId`), the binding — not the stale assignee field —
+  governs the session, so the abort is DEFERRED; the existing column-agent watcher owns that
+  session's lifecycle. Every outcome is recorded as one bounded run-audit row; a hostile audit
+  sink can never block the teardown or the barrier release.
+
+  FNXC:AssigneeTransferAtomicity 2026-09-22-16:10 (RUFU-260) blast-radius scope: a transfer is an
+  ownership change, NOT a card-level stop like a user move or a delete, so it must not abort the
+  task's prompt-lane (workflow-step) session while the card sits in a review lane. That session is
+  the Code/Plan Review gate, staffed by the reviewer lane rather than the assignee; killing it mid
+  -flight produced the exact "failed before producing a verdict" no-verdict wedge this board has
+  escalated repeatedly. The previous owner's write surfaces (agent session, step sessions, CLI,
+  subagents, configured commands, graph controller) are still torn down unconditionally.
+  */
+  deps.store.on("task:assignee-changed", ({ taskId, previousOwnerId, newOwnerId }) => {
+    // First assignment (no previous owner) has no session to tear down; claim paths land here.
+    if (!previousOwnerId) return;
+    const activeEntry = deps.activeSessions.get(taskId);
+    if (activeEntry && (activeEntry.lastEffectiveColumnAgentId ?? null) === previousOwnerId) {
+      executorLog.log(`${taskId}: assignee transfer ${previousOwnerId} → ${newOwnerId ?? "none"} deferred to column-agent binding (session stays)`);
+      void reportAssigneeTransferAbort(deps, taskId, previousOwnerId, newOwnerId, "column-binding-deferred");
+      return;
+    }
+    executorLog.log(`${taskId}: assignee transfer ${previousOwnerId} → ${newOwnerId ?? "none"} — aborting previous owner's in-flight work`);
+    deps.trackTaskDisposal(
+      taskId,
+      (async () => {
+        // Only a live prompt-lane session can be the thing we would destroy, so the lane question is
+        // asked (two store reads) exactly when it can change the outcome.
+        const inReviewLane = deps.activeWorkflowStepSessions.has(taskId)
+          ? await taskSitsInReviewLane(deps, taskId)
+          : false;
+        const summary = await deps.awaitAbortInFlightTaskWork(taskId, "assignee-transfer", {
+          preserveWorkflowStepSession: inReviewLane,
+        });
+        await reportAssigneeTransferAbort(
+          deps,
+          taskId,
+          previousOwnerId,
+          newOwnerId,
+          summary.hadActiveSurface ? "aborted" : "no-live-surface",
+          // Optional-chain: the deps bag is injectable, so a double may return a pre-RUFU-260
+          // summary shape. Absent means "nothing was preserved", which is the honest default.
+          summary.preservedSurfaces?.includes("workflow-step-session") ?? false,
+        );
+      })(),
+    );
   });
 
   deps.store.on("task:deleted", (task) => {

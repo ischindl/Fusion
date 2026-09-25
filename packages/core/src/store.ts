@@ -214,6 +214,25 @@ import type { BranchGroupRow, PrEntityRow, TaskDocumentRow, ArtifactRow, TaskDoc
 
 /** Database row shape for the tasks table (all columns). */
 
+/*
+FNXC:AssigneeTransferAtomicity 2026-09-21-20:36 (RUFU-260):
+Typed announcement of an OWNERSHIP TRANSFER on the store bus. Before this event, `assignedAgentId`
+reassignments had no typed signal: the engine could not tell a real ownership transfer from any
+other `task:updated`, so a transferred card kept its previous owner's live session running while
+its heartbeat woke the new owner — two writers against one worktree (the incident behind this
+task). EVERY durable transfer surface (dashboard PATCH /tasks/:id/assign, agent tools, CLI,
+claimTask) funnels through `TaskStore.updateTask`, which is the sole emitter; surfaces must not
+add a second write path or re-emit this event themselves. Creation-time assignment is not a
+transfer and never emits it. Payload is ids-only (the same discipline run-audit metadata follows).
+*/
+export interface TaskAssigneeChangedEvent {
+  taskId: string;
+  /** Previous owner; absent means the card had no owner before this update. */
+  previousOwnerId?: string;
+  /** New owner; absent means the card was unassigned. */
+  newOwnerId?: string;
+}
+
 export interface TaskStoreEvents {
   "agent:activity": [event: AgentActivityEvent];
   /*
@@ -270,6 +289,14 @@ export interface TaskStoreEvents {
   unchanged; absent metadata is unknown, never a legacy-lane claim.
   */
   "task:updated": [task: Task, meta?: { lanes?: TaskMoveLanes; failedTransition?: boolean }];
+  /*
+  FNXC:AssigneeTransferAtomicity 2026-09-21-20:36 (RUFU-260):
+  Emitted by `updateTask` only, after the write committed, exactly when `assignedAgentId`
+  actually changed. Listeners run synchronously (EventEmitter); the emitter isolates a throwing
+  listener so a subscriber failure can never undo the durable write — same posture as the safe
+  lifecycle emit. The engine's assignee-transfer teardown listener is the primary consumer.
+  */
+  "task:assignee-changed": [event: TaskAssigneeChangedEvent];
   /*
   FNXC:CrossProcessDeleteObservation 2026-08-01-11:39:
   Observed outbox delivery is at-least-once, including a crash-window duplicate. The explicit

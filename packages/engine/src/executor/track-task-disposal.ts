@@ -6,6 +6,7 @@
  * before acquiring/creating a worktree. Errors are swallowed into the executor log.
  */
 import { executorLog } from "../logger.js";
+import { registerTaskDisposal } from "./task-disposal-barrier.js";
 
 export type TrackTaskDisposalDeps = {
   pendingTaskDisposals: Map<string, Promise<void>>;
@@ -26,4 +27,13 @@ export function trackTaskDisposal(
       }
     });
   deps.pendingTaskDisposals.set(taskId, wrapped);
+  /*
+  FNXC:AssigneeTransferAtomicity 2026-09-21-20:36 (RUFU-260):
+  Mirror the same wrapped promise into the per-task disposal barrier so hosts WITHOUT executor
+  lifecycle authority (the heartbeat monitor) can await teardown at their one acquisition seam.
+  Publishing here — the single registration point — means every teardown branch (assignee
+  transfer, user move, delete) is observable to the barrier for free; readers use
+  `awaitTaskDisposalBarrier`, never the executor host field.
+  */
+  registerTaskDisposal(taskId, wrapped);
 }

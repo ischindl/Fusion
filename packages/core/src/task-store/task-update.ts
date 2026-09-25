@@ -6,7 +6,7 @@
  * behavior-preserving refactor. Each function receives the TaskStore
  * instance as its first parameter and performs byte-identical work.
  */
-import {type TaskStore, storeLog} from "../store.js";
+import {type TaskStore, type TaskAssigneeChangedEvent, storeLog} from "../store.js";
 import {
   resolveDependencyReplanTarget,
   resolveLifecycleColumns,
@@ -1531,6 +1531,27 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
         task,
         failedTransition ? { failedTransition: true } : undefined,
       ]);
+      /*
+      FNXC:AssigneeTransferAtomicity 2026-09-21-20:36 (RUFU-260):
+      ONE typed transfer announcement, post-write, guarded by `assignmentChanged` (same-value
+      writes and creation paths stay silent). The engine tears the previous owner's in-flight
+      session down off this event; without it the old owner kept writing while the new owner's
+      heartbeat woke — the two-writers-on-one-worktree incident. A throwing listener must never
+      resurrect a committed write, so the synchronous dispatch is isolated here exactly like
+      `emitTaskLifecycleEventSafely` isolates the lifecycle trio.
+      */
+      if (assignmentChanged) {
+        const assigneeEvent: TaskAssigneeChangedEvent = {
+          taskId: task.id,
+          previousOwnerId: previousAssignedAgentId,
+          newOwnerId: task.assignedAgentId,
+        };
+        try {
+          store.emit("task:assignee-changed", assigneeEvent);
+        } catch (err) {
+          storeLog.warn(`[task-detail] task:assignee-changed listener failed for ${task.id}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
       return task;
     }
   }
