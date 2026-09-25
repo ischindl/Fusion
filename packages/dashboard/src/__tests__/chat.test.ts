@@ -59,6 +59,13 @@ FNXC:DashboardChatTests 2026-07-15-16:15:
 chat.ts now has 25 named runtime imports plus `import * as engineModule` from @fusion/engine. Keep this isolated mock complete as chat gains tool factories so the Gate's mock-completeness invariant does not regress.
 */
 vi.mock("@fusion/engine", () => ({
+  // STAS-258: the lane imports this composer to format attempted-write failures, so the isolated mock must export
+  // the name too. The contract (text, code, flag) lives in packages/engine/src/tool-store-errors.ts.
+  storeErrorResult: vi.fn((what: string, error: unknown) => ({
+    content: [{ type: "text", text: `ERROR: ${what} did not reach the task store: ${String(error)}` }],
+    details: { code: "STORE_UNAVAILABLE" },
+    isError: true,
+  })),
   createFnAgent: vi.fn(),
   createResolvedAgentSession: vi.fn(),
   promptWithFallback: vi.fn(),

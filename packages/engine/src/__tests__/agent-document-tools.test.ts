@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TaskDocumentPreconditionFailedError, type TaskDocument, type TaskStore } from "@fusion/core";
+import { STORE_RETRY_GUIDANCE } from "../tool-store-errors.js";
 
 const { loadWorkspaceConfig } = vi.hoisted(() => ({
   loadWorkspaceConfig: vi.fn(),
@@ -152,8 +153,9 @@ describe("task_document_write tool", () => {
       author: "agent",
     });
 
-    expect(getText(result)).toContain("ERROR: Failed to save document");
+    expect(getText(result)).toContain("did not reach the task store");
     expect(getText(result)).toContain("Invalid document key");
+    expect(result.isError).toBe(true);
   });
 
   it("returns a user-facing error message for store errors", async () => {
@@ -167,8 +169,10 @@ describe("task_document_write tool", () => {
       author: "agent",
     });
 
-    expect(getText(result)).toContain("ERROR: Failed to save document");
+    expect(getText(result)).toContain("did not reach the task store");
     expect(getText(result)).toContain("database temporarily unavailable");
+    expect(getText(result)).toContain(STORE_RETRY_GUIDANCE);
+    expect(result.isError).toBe(true);
   });
 
   it("returns deleted-or-historical read-only details when document writes are blocked", async () => {
@@ -182,8 +186,9 @@ describe("task_document_write tool", () => {
       author: "agent",
     });
 
-    expect(getText(result)).toContain("ERROR: Failed to save document");
+    expect(getText(result)).toContain("refused by the task store");
     expect(getText(result)).toContain("deleted or historical");
+    expect(result.isError).toBe(true);
   });
 });
 
@@ -444,7 +449,8 @@ describe("task_document_read tool", () => {
     const tool = createTaskDocumentReadTool(store, TASK_ID);
     const result = await runTool(tool, "call-9", {});
 
-    expect(getText(result)).toContain("ERROR: Failed to read task documents");
+    expect(result.isError).toBe(true);
+    expect(getText(result)).toContain("did not reach the task store");
     expect(getText(result)).toContain("read timeout");
   });
 });
@@ -567,8 +573,9 @@ describe("chat task document tools", () => {
       content: "No target",
     });
 
-    expect(getText(result)).toContain("ERROR: Failed to save document \"plan\" for task FN-404");
+    expect(getText(result)).toContain('the document "plan" for task FN-404 refused by the task store');
     expect(getText(result)).toContain("Task FN-404 not found");
+    expect(result.isError).toBe(true);
   });
 
   it("returns clean errors for non-existent explicit task reads", async () => {
@@ -578,7 +585,8 @@ describe("chat task document tools", () => {
     const tool = findChatTool("fn_task_document_read", store);
     const result = await runTool(tool, "call-chat-read-error", { task_id: "FN-405" });
 
-    expect(getText(result)).toContain("ERROR: Failed to read task documents for task FN-405");
+    expect(result.isError).toBe(true);
+    expect(getText(result)).toContain("the task documents for task FN-405 did not reach the task store");
     expect(getText(result)).toContain("Task FN-405 not found");
   });
 });

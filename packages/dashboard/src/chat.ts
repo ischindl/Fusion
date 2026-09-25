@@ -122,6 +122,7 @@ import {
   createTraitListTool,
   createReadEvaluationsTool,
   createUpdateIdentityTool,
+  storeErrorResult,
 } from "@fusion/engine";
 import * as engineModule from "@fusion/engine";
 
@@ -1029,12 +1030,7 @@ function createTaskPlannerRefinementTool(taskStore: TaskStore, taskId: string) {
           },
         };
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Could not create a refinement for the current task ${taskId}: ${message}` }],
-          details: { sourceTaskId: taskId, error: message },
-          isError: true,
-        };
+        return storeErrorResult(`refinement task for ${taskId}`, err);
       }
     },
   };

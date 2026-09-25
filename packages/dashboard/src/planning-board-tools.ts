@@ -1,4 +1,5 @@
 import * as fusionCore from "@fusion/core";
+import { storeErrorResult } from "@fusion/engine";
 import { MAX_TASK_LIST_TEXT_CHARS, type TaskStore } from "@fusion/core";
 import { completeColumnsForTask } from "./task-lifecycle-lanes.js";
 import type { WorkflowIr } from "@fusion/core";
@@ -126,7 +127,11 @@ export function createPlanningBoardTools(store: TaskStore): ToolDefinition[] {
           content: [{ type: "text" as const, text: parts.join("\n") }],
           details: {},
         };
-      } catch {
+      } catch (err: unknown) {
+        // A store outage is not a missing card: only the store's own not-found may say so.
+        if (!fusionCore.isTaskNotFoundError(err)) {
+          return storeErrorResult(`Task ${params.id} could not be read`, err);
+        }
         return {
           content: [{ type: "text" as const, text: `Task ${params.id} not found.` }],
           details: {},

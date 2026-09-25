@@ -505,6 +505,7 @@ async function bootSchemaBackendOnce(
     log.log(describeBackendForLog(resolvedBackend));
   }
   let connections: PostgresConnections | undefined;
+  const openT0 = Date.now();
   try {
     connections = resolvedBackend.mode === "external"
       ? await createConnectionSet(env, {
@@ -517,7 +518,17 @@ async function bootSchemaBackendOnce(
           env,
           bypassProjectIsolation,
         });
+    /*
+    FNXC:BootPhaseAttribution 2026-09-23-06:55:
+    STAS-251. Opening the pool and applying the schema have opposite failure signatures — a
+    pool that cannot connect waits on the server, a schema apply waits on the cluster-wide
+    advisory lock — and one combined number could not tell those apart. Measured separately so
+    a future stall names its own phase.
+    */
+    log.log(`startup phase backend.connect: ${Date.now() - openT0}ms`);
+    const applyT0 = Date.now();
     await applySchemaBaseline(connections.migration);
+    log.log(`startup phase backend.applySchema: ${Date.now() - applyT0}ms`);
     return {
       backend: resolvedBackend,
       connections,
@@ -527,6 +538,14 @@ async function bootSchemaBackendOnce(
       embeddedOwnsProcess,
     };
   } catch (error) {
+    /*
+    FNXC:BootPhaseAttribution 2026-09-23-06:55:
+    STAS-251. Until now only the successful path was timed, so every boot that ended in a
+    throw left no elapsed time and no reason in the log — which is exactly the boot an operator
+    has to diagnose. Whether the pool or the schema apply is on screen is already known here.
+    */
+    const failedPhase = connections ? "applySchema" : "connect";
+    log.warn(`startup-factory: backend.${failedPhase} FAILED after ${Date.now() - openT0}ms: ${describeErrorChain(error)}`);
     /*
     FNXC:PostgresEmbedded 2026-07-18-01:10:
     Classify the #2286 non-UTF-8-cluster state while the connection is still
@@ -876,11 +895,12 @@ export async function createTaskStoreForBackend(
   */
   const factoryT0 = Date.now();
   let boot: SchemaBackendBootResult;
+  const schemaT0 = Date.now();
   try {
-    const schemaT0 = Date.now();
     boot = await bootSchemaBackend(effectiveOptions);
     log.log(`startup phase backend.schemaBackend: ${Date.now() - schemaT0}ms`);
   } catch (err) {
+    log.warn(`startup-factory: backend.schemaBackend FAILED after ${Date.now() - schemaT0}ms: ${describeErrorChain(err)}`);
     /*
     FNXC:PostgresEmbedded 2026-08-20-01:11:
     Issue #3489 uses the same outer boot mapper as #2286's encoding guidance.
@@ -1259,8 +1279,8 @@ export async function createTaskStoreForBackend(
   the stale stub and pinned every card "unplanned" forever (never dispatched).
   */
   let taskStore: TaskStore;
+  const constructT0 = Date.now();
   try {
-    const constructT0 = Date.now();
     if (options.projectId && !options.rootDir) {
       taskStore = await TaskStore.getOrCreateForProject(
         options.projectId,
@@ -1278,6 +1298,7 @@ export async function createTaskStoreForBackend(
     }
     log.log(`startup phase backend.taskStore.construct: ${Date.now() - constructT0}ms`);
   } catch (err) {
+    log.warn(`startup-factory: backend.taskStore.construct FAILED after ${Date.now() - constructT0}ms: ${describeErrorChain(err)}`);
     await asyncLayer.close().catch(() => undefined);
     await stopEmbeddedRuntime(
       embeddedLifecycle,
@@ -1296,10 +1317,12 @@ export async function createTaskStoreForBackend(
   the bound AsyncDataLayer provides central marker/lock access; schema bootstrap
   has neither capability and must not attempt this cross-storage migration.
   */
+  const backupMigrationT0 = Date.now();
   await (await import("../backup/backup-settings-migration.js")).migrateBackupSettingsToGlobalOnce(
     taskStore.getAsyncLayer(),
     taskStore.getGlobalSettingsStore(),
   );
+  log.log(`startup phase backend.backupSettingsMigration: ${Date.now() - backupMigrationT0}ms`);
   log.log(`startup phase backend.factory.total: ${Date.now() - factoryT0}ms`);
 
   /*

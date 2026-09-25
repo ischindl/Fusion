@@ -9,6 +9,7 @@ import { createFnAgent } from "../pi.js";
 import { reviewStep as mockedReviewStepFn } from "../execution/reviewer.js";
 import { execSync } from "node:child_process";
 import { findWorktreeUser, aiMergeTask } from "../merger.js";
+import { TaskNotFoundError } from "@fusion/core";
 import type { Task, TaskDetail } from "@fusion/core";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { StepSessionExecutor } from "../execution/step-session-executor.js";
@@ -722,7 +723,12 @@ describe("fn_task_add_dep tool", () => {
     } else {
       const baseGetTask = store.getTask.bind(store);
       store.getTask.mockImplementation(async (id: string) => {
-        if (id === "FN-OTHER") throw new Error(`Task ${id} not found`);
+        /*
+        STAS-259: this fixture means "the target card is genuinely absent", so it must throw what the real
+        store throws for an absent card (task-store/reads.ts). A plain Error is the other statement — the
+        board being unreachable — and fn_task_add_dep now answers that as a store failure, not as a miss.
+        */
+        if (id === "FN-OTHER") throw new TaskNotFoundError(id);
         return baseGetTask(id);
       });
     }

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { AgentLogger, summarizeToolArgs } from "../agents/agent-logger.js";
+import { createArtifactListTool, createTaskDocumentReadTool } from "../agent-tools.js";
 import { DEFAULT_GLOBAL_SETTINGS, type TaskStore } from "@fusion/core";
 
 const loggerWarnSpy = vi.hoisted(() => vi.fn());
@@ -952,5 +953,50 @@ describe("AgentLogger", () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(loggerWarnSpy).toHaveBeenCalledWith(expect.stringContaining("Failed to emit usage event"));
     });
+  });
+});
+
+/*
+STAS-256: `isError` exists because of the seam below — `onToolEnd` picks `tool_error` vs
+`tool_result` from that flag alone. A read whose store call failed must therefore land in the
+board's own history as a failure, and a read that legitimately found nothing must not, so the task
+log, the automated review, and replay cannot record a read that never produced data.
+*/
+describe("a failed agent-tool read is recorded as tool_error (STAS-256)", () => {
+  const OUTAGE = "connection terminated unexpectedly";
+
+  function logStore(overrides: Record<string, unknown>) {
+    return {
+      appendAgentLog: vi.fn().mockResolvedValue(undefined),
+      ...overrides,
+    } as unknown as TaskStore;
+  }
+
+  it("records a store-outage read result as a tool_error row", async () => {
+    const store = logStore({
+      getTaskDocuments: vi.fn().mockRejectedValue(new Error(OUTAGE)),
+    });
+    const result = await createTaskDocumentReadTool(store, "FN-256-SEAM").execute("call-1", {});
+    const logger = new AgentLogger({ store, taskId: "FN-256-SEAM" });
+
+    logger.onToolEnd("fn_task_document_read", result.isError === true, result);
+    await logger.flush();
+
+    const types = (store.appendAgentLog as ReturnType<typeof vi.fn>).mock.calls.map((call) => call[2]);
+    expect(types).toContain("tool_error");
+    expect(types).not.toContain("tool_result");
+  });
+
+  it("records a legitimately empty read as a tool_result row", async () => {
+    const store = logStore({ listArtifacts: vi.fn().mockResolvedValue([]) });
+    const result = await createArtifactListTool(store).execute("call-1", {});
+    const logger = new AgentLogger({ store, taskId: "FN-256-SEAM-EMPTY" });
+
+    logger.onToolEnd("fn_artifact_list", result.isError === true, result);
+    await logger.flush();
+
+    const types = (store.appendAgentLog as ReturnType<typeof vi.fn>).mock.calls.map((call) => call[2]);
+    expect(types).toContain("tool_result");
+    expect(types).not.toContain("tool_error");
   });
 });

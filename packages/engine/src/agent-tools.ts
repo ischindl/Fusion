@@ -14,8 +14,9 @@ import { tmpdir } from "node:os";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import * as fusionCore from "@fusion/core";
 import type { AgentState, AgentCapability, AgentUpdateInput, AgentLogEntry, Artifact, ArtifactCreateInput, ArtifactWithTask, Task, TaskDocument, TaskDocumentCreateInput, TaskStore, RunMutationContext, MessageStore, Message, SourceType, Settings, ResearchRun, ResearchRunStatus, TaskCreateInput, ReflectionStore, ApprovalRequestStore, ProjectSettings, ChatStore, WorkflowSettingDefinition, GoalStatus, WorkflowIrNode, IdeationCandidate, MissionWithHierarchy, DbTransaction } from "@fusion/core";
-import { listTraits, isBuiltinWorkflowId, AgentStore, validateColumnAgentBindings, ColumnAgentBindingError, stripApprovalBypassFlags, WorkflowSettingRejectionError, resolveEffectiveSettingsById, resolveWorkflowIrById, findOrphanedSettingValues, BUILTIN_WORKFLOW_SETTINGS, MAX_TASK_LIST_TEXT_CHARS, formatCurrentTaskLine, normalizeWorkflowIcon, parseWorkflowIr, WorkflowIrError, assertColumnTraitsValid, ColumnTraitValidationError } from "@fusion/core";
+import { listTraits, isBuiltinWorkflowId, isTaskNotFoundError, AgentStore, validateColumnAgentBindings, ColumnAgentBindingError, stripApprovalBypassFlags, WorkflowSettingRejectionError, resolveEffectiveSettingsById, resolveWorkflowIrById, findOrphanedSettingValues, BUILTIN_WORKFLOW_SETTINGS, MAX_TASK_LIST_TEXT_CHARS, formatCurrentTaskLine, normalizeWorkflowIcon, parseWorkflowIr, WorkflowIrError, assertColumnTraitsValid, ColumnTraitValidationError } from "@fusion/core";
 import { promoteHeldTask } from "./execution/hold-release.js";
+import { stepLifecycleNoopResult, storeErrorResult, storeWriteFailure } from "./tool-store-errors.js";
 import { computeCrossParentDiagnosticClaim, computeCrossParentDiagnosticClaimId, computeParentIntentClaimId, DASHBOARD_USER_ID, dailyMemoryPath, ensureOpenClawMemoryFiles, evaluateImplementationTaskBind, extractAgentProvisioningRequest, findSameAgentDuplicates, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveMemorySearchTopic, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh } from "@fusion/core";
 import { ResearchOrchestrator } from "./research/research-orchestrator.js";
 import { ResearchProviderRegistry } from "./research/provider-registry.js";
@@ -1918,38 +1919,50 @@ export function createTaskShowTool(store: TaskStore): ToolDefinition {
     description: "Show full details for a task including its PROMPT.md content.",
     parameters: taskShowParams,
     execute: async (_id: string, params: Static<typeof taskShowParams>) => {
+      /*
+      FNXC:StoreErrorShape 2026-09-23-06:00:
+      STAS-251. The lookup used to share one catch with the whole render block, so during the
+      2026-09-23 boot stall a slow pool answered as `Task STAS-250 not found.` — and the agent
+      rebuilt a card that was alive the whole time. Only the store's typed not-found may name a
+      missing card; anything else the board could not answer is reported as the board being
+      unavailable, because "absent" and "unreachable" send an agent in opposite directions.
+      */
+      let task: Task;
       try {
-        const task = await store.getTask(params.id);
-        const parts = [
-          `ID: ${task.id}`,
-          task.title ? `Title: ${task.title}` : null,
-          `Column: ${task.column}`,
-          `Status: ${task.status ?? task.column}`,
-          `Description: ${task.description || "(no description)"}`,
-          task.dependencies.length ? `Dependencies: ${task.dependencies.join(", ")}` : null,
-          Array.isArray(task.steps) && task.steps.length
-            ? `Steps:\n${task.steps.map((step, index) => `  ${index}. ${step.name} — ${step.status}`).join("\n")}`
-            : null,
-          "",
-          "PROMPT.md:",
-          task.prompt || "(not yet specified)",
-        ].filter((part): part is string => typeof part === "string");
-        return {
-          content: [{
-            type: "text" as const,
-            text: trimSemanticToolRead(
-              parts.join("\n") || `Task ${params.id} has no details.`,
-              "use fn_task_document_read or a focused task query for more",
-            ),
-          }],
-          details: { taskId: task.id },
-        };
-      } catch {
+        task = await store.getTask(params.id);
+      } catch (error) {
+        if (!isTaskNotFoundError(error)) {
+          return storeErrorResult(`Task ${params.id} could not be read`, error);
+        }
         return {
           content: [{ type: "text" as const, text: `Task ${params.id} not found.` }],
           details: {},
         };
       }
+      const parts = [
+        `ID: ${task.id}`,
+        task.title ? `Title: ${task.title}` : null,
+        `Column: ${task.column}`,
+        `Status: ${task.status ?? task.column}`,
+        `Description: ${task.description || "(no description)"}`,
+        task.dependencies.length ? `Dependencies: ${task.dependencies.join(", ")}` : null,
+        Array.isArray(task.steps) && task.steps.length
+          ? `Steps:\n${task.steps.map((step, index) => `  ${index}. ${step.name} — ${step.status}`).join("\n")}`
+          : null,
+        "",
+        "PROMPT.md:",
+        task.prompt || "(not yet specified)",
+      ].filter((part): part is string => typeof part === "string");
+      return {
+        content: [{
+          type: "text" as const,
+          text: trimSemanticToolRead(
+            parts.join("\n") || `Task ${params.id} has no details.`,
+            "use fn_task_document_read or a focused task query for more",
+          ),
+        }],
+        details: { taskId: task.id },
+      };
     },
   };
 }
@@ -2092,6 +2105,15 @@ export function buildTaskAgentLogReadText(entries: AgentLogEntry[], options: Tas
   return trimSemanticToolRead(rendered, "use a smaller limit, offset, or type filter for more");
 }
 
+/*
+FNXC:ReadFailureSurfacing 2026-09-23-17:10:
+STAS-256 is the read half of FNXC:WriteFailureSurfacing (see `taskDocumentWriteError` in this file).
+`AgentLogger.onToolEnd` records `tool_error` only when the result carries `isError`, so a read that
+asked the store and got no answer must fail at the protocol boundary too — otherwise the task log,
+the automated review, and replay all record a successful read that never produced data. Every read
+helper below therefore composes its failure through the one shared `storeErrorResult` shape, while a
+genuine typed miss or an empty result stays an informative success text.
+*/
 async function readTaskAgentLogs(
   store: TaskStore,
   taskId: string,
@@ -2116,7 +2138,7 @@ async function readTaskAgentLogs(
     };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } catch (err: any) {
-    return { content: [{ type: "text" as const, text: `ERROR: Failed to read agent log for task ${taskId}: ${err.message}` }], details: {} };
+    return storeErrorResult(`the agent log for task ${taskId}`, err);
   }
 }
 
@@ -2207,6 +2229,15 @@ function taskDocumentWriteResult(document: TaskDocument) {
   };
 }
 
+/*
+FNXC:WriteFailureSurfacing 2026-09-23-06:50:
+STAS-251. AgentLogger.onToolEnd records a call as `tool_error` only when the result carries
+isError; without it the task log — and every automated reader of it, including review and
+replay — records a row that was never written. A mutating tool whose write did not commit
+therefore has to fail at the protocol boundary, not merely in prose. The same rule applies to
+every other failed-write branch in these tools (prompt write, file-scope add, artifact
+register, agent delete, task assign, message send).
+*/
 function taskDocumentWriteError(error: unknown, key: string, taskId?: string) {
   if (error instanceof fusionCore.TaskDocumentPreconditionFailedError) {
     return {
@@ -2215,11 +2246,7 @@ function taskDocumentWriteError(error: unknown, key: string, taskId?: string) {
       isError: true,
     };
   }
-  const message = error instanceof Error ? error.message : String(error);
-  return {
-    content: [{ type: "text" as const, text: `ERROR: Failed to save document "${key}"${taskId ? ` for task ${taskId}` : ""}: ${message}` }],
-    details: {},
-  };
+  return storeWriteFailure(`the document "${key}"${taskId ? ` for task ${taskId}` : ""}`, error);
 }
 
 /**
@@ -2501,13 +2528,7 @@ export function createTaskPromptWriteTool(
         };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (err: any) {
-        return {
-          content: [{
-            type: "text" as const,
-            text: `ERROR: Failed to update PROMPT.md for ${taskId}: ${err.message}`,
-          }],
-          details: {},
-        };
+        return storeErrorResult(`PROMPT.md plan mirror for ${taskId}`, err);
       }
     },
   };
@@ -2528,7 +2549,12 @@ export function createTaskFileScopeAddTool(store: TaskStore, taskId: string, run
       "Paths are repo-relative (no leading slash, no `..`).",
     parameters: taskFileScopeAddParams,
     execute: async (_id: string, params: Static<typeof taskFileScopeAddParams>) => {
-      const errorContent = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
+      /* Every use of this helper refuses or fails the scope write, so all of them are tool errors. */
+      const errorContent = (text: string) => ({
+        content: [{ type: "text" as const, text }],
+        details: {},
+        isError: true as const,
+      });
       try {
         const requested = params.files.map((f) => f.trim()).filter((f) => f.length > 0);
         const rejected = requested.filter((f) => !fusionCore.isValidFileScopeEntry(f));
@@ -2580,7 +2606,7 @@ export function createTaskFileScopeAddTool(store: TaskStore, taskId: string, run
         return { content: [{ type: "text" as const, text: parts.join(" ") }], details: { added: toAdd } };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (err: any) {
-        return errorContent(`ERROR: Failed to update File Scope for ${taskId}: ${err.message}`);
+        return storeErrorResult(`File Scope update for ${taskId}`, err);
       }
     },
   };
@@ -2750,6 +2776,7 @@ async function registerArtifactForAgent(
   messageStore?: MessageStore,
   options?: ArtifactRegisterToolOptions,
 ) {
+  let storeWriteAttempted = false;
   try {
     /*
     FNXC:ArtifactRegistry 2026-07-11-09:40:
@@ -2781,6 +2808,7 @@ async function registerArtifactForAgent(
       taskId: params.taskId ?? options?.defaultTaskId,
     };
 
+    storeWriteAttempted = true;
     const artifact: Artifact = await store.registerArtifact(input);
     return {
       content: [{
@@ -2791,13 +2819,15 @@ async function registerArtifactForAgent(
     };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } catch (err: any) {
-    return {
-      content: [{
-        type: "text" as const,
-        text: `ERROR: Failed to register artifact "${params.title}": ${err.message}`,
-      }],
-      details: {},
-    };
+    /* A payload or eligibility refusal happens before the write, so it is a fact about the request, not an outage. */
+    if (!storeWriteAttempted) {
+      return {
+        content: [{ type: "text" as const, text: `ERROR: ${err?.message ?? err} — artifact not registered` }],
+        details: {},
+        isError: true,
+      };
+    }
+    return storeWriteFailure(`the artifact "${params.title}"`, err);
   }
 }
 
@@ -3090,13 +3120,7 @@ async function listArtifactsForAgent(store: TaskStore, params: Static<typeof art
     };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } catch (err: any) {
-    return {
-      content: [{
-        type: "text" as const,
-        text: `ERROR: Failed to list artifacts: ${err.message}`,
-      }],
-      details: {},
-    };
+    return storeErrorResult("the artifact list", err);
   }
 }
 
@@ -3134,13 +3158,7 @@ async function viewArtifactForAgent(store: TaskStore, id: string) {
     };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } catch (err: any) {
-    return {
-      content: [{
-        type: "text" as const,
-        text: `ERROR: Failed to view artifact "${id}": ${err.message}`,
-      }],
-      details: {},
-    };
+    return storeErrorResult(`the artifact "${id}"`, err);
   }
 }
 
@@ -3188,13 +3206,7 @@ async function readTaskDocuments(store: TaskStore, taskId: string, key?: string)
     };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } catch (err: any) {
-    return {
-      content: [{
-        type: "text" as const,
-        text: `ERROR: Failed to read task documents for task ${taskId}: ${err.message}`,
-      }],
-      details: {},
-    };
+    return storeErrorResult(`the task documents for task ${taskId}`, err);
   }
 }
 
@@ -3364,11 +3376,7 @@ export function createWorkflowSelectTool(store: TaskStore, currentTaskId: string
             isError: true,
           };
         }
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Failed to select workflow: ${err?.message ?? err}` }],
-          details: {},
-          isError: true,
-        };
+        return storeErrorResult("workflow selection", err);
       }
     },
   };
@@ -3424,11 +3432,7 @@ export function createTaskPromoteTool(store: TaskStore, currentTaskId: string): 
         };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (err: any) {
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Failed to promote task: ${err?.message ?? err}` }],
-          details: {},
-          isError: true,
-        };
+        return storeErrorResult("task promotion", err);
       }
     },
   };
@@ -3437,11 +3441,8 @@ export function createTaskPromoteTool(store: TaskStore, currentTaskId: string): 
 /*
 FNXC:ChatTaskMutationTools 2026-07-26-12:00:
 Chat permission-parity (#2376) adds these lifecycle tools so permanent-agent chat can archive/delete/retry/etc under the same task_agent_mutation gate as heartbeat/executor.
-Keep catch blocks typed as unknown (no-explicit-any) and surface err.message via instanceof — the PR lint gate fails bare `any` here even though older factories still use the disable-comment pattern.
+Keep catch blocks typed as unknown (no-explicit-any); their failure text formats through the shared store-result composer, which owns the Error-or-string decision these catches used to repeat.
 */
-function toolErrorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 export function createTaskDeleteTool(store: TaskStore): ToolDefinition {
   return {
@@ -3461,7 +3462,7 @@ export function createTaskDeleteTool(store: TaskStore): ToolDefinition {
         });
         return { content: [{ type: "text" as const, text: `Deleted ${task.id}` }], details: { taskId: task.id } };
       } catch (err: unknown) {
-        return { content: [{ type: "text" as const, text: `ERROR: Failed to delete task: ${toolErrorMessage(err)}` }], details: {}, isError: true };
+        return storeErrorResult("task deletion", err);
       }
     },
   };
@@ -3596,7 +3597,7 @@ export function createTaskRetryTool(store: TaskStore, options: TaskRetryToolOpti
         await store.logEntry(params.id, "Retry requested via chat tool", `Task reset to ${retryTarget} for retry`);
         return { content: [{ type: "text" as const, text: `Retried ${params.id} → ${retryTarget}` }], details: { taskId: params.id, newColumn: retryTarget } };
       } catch (err: unknown) {
-        return { content: [{ type: "text" as const, text: `ERROR: Failed to retry task: ${toolErrorMessage(err)}` }], details: {}, isError: true };
+        return storeErrorResult("task retry", err);
       }
     },
   };
@@ -3613,7 +3614,7 @@ export function createTaskPauseTool(store: TaskStore): ToolDefinition {
         const task = await store.pauseTask(params.id, true);
         return { content: [{ type: "text" as const, text: `Paused ${task.id}` }], details: { taskId: task.id, column: task.column } };
       } catch (err: unknown) {
-        return { content: [{ type: "text" as const, text: `ERROR: Failed to pause task: ${toolErrorMessage(err)}` }], details: {}, isError: true };
+        return storeErrorResult("task pause", err);
       }
     },
   };
@@ -3630,7 +3631,7 @@ export function createTaskUnpauseTool(store: TaskStore): ToolDefinition {
         const task = await store.pauseTask(params.id, false);
         return { content: [{ type: "text" as const, text: `Unpaused ${task.id}` }], details: { taskId: task.id, column: task.column } };
       } catch (err: unknown) {
-        return { content: [{ type: "text" as const, text: `ERROR: Failed to unpause task: ${toolErrorMessage(err)}` }], details: {}, isError: true };
+        return storeErrorResult("task unpause", err);
       }
     },
   };
@@ -3647,7 +3648,7 @@ export function createTaskDuplicateTool(store: TaskStore): ToolDefinition {
         const task = await store.duplicateTask(params.id);
         return { content: [{ type: "text" as const, text: `Duplicated to ${task.id}` }], details: { taskId: task.id } };
       } catch (err: unknown) {
-        return { content: [{ type: "text" as const, text: `ERROR: Failed to duplicate task: ${toolErrorMessage(err)}` }], details: {}, isError: true };
+        return storeErrorResult("task duplication", err);
       }
     },
   };
@@ -3673,7 +3674,7 @@ export function createTaskMergeTool(store: TaskStore, _currentTaskId: string): T
         const mergedInto = result?.task?.id ?? targetId;
         return { content: [{ type: "text" as const, text: `Merged ${targetId} into ${mergedInto}` }], details: { targetId, mergedInto } };
       } catch (err: unknown) {
-        return { content: [{ type: "text" as const, text: `ERROR: Failed to merge task: ${toolErrorMessage(err)}` }], details: {}, isError: true };
+        return storeErrorResult("task merge", err);
       }
     },
   };
@@ -3714,20 +3715,56 @@ export function createTaskUpdateTool(store: TaskStore, taskId: string): ToolDefi
           await store.updateTask(taskId, { dependencies: params.dependencies });
         }
         if (params.step !== undefined && params.status !== undefined) {
-          const task = params.summary === undefined
-            ? await store.updateStep(taskId, params.step, params.status)
-            : await store.updateStep(taskId, params.step, params.status, { summary: params.summary });
+          let stepWrite: Task;
+          try {
+            stepWrite = params.summary === undefined
+              ? await store.updateStep(taskId, params.step, params.status)
+              : await store.updateStep(taskId, params.step, params.status, { summary: params.summary });
+          } catch (error) {
+            return storeErrorResult(`step ${params.step} → ${params.status} on ${taskId}`, error);
+          }
+          /*
+          FNXC:StepClosureTruthful 2026-09-23-05:40:
+          STAS-251. `updateStep` refuses a transition its lifecycle disallows by returning the task
+          unchanged, and this copy read only `task.id`, so it announced "step 7 → done" from the
+          REQUESTED value while the board still held `pending` — the same divergence the executor
+          copy already guards against, on the surface a permanent agent reports its own progress
+          from. The status the store returned is the only thing this tool may say.
+          */
+          const persistedStep = stepWrite.steps?.[params.step];
+          if (!persistedStep) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `Step ${params.step} does not exist on ${taskId} — it has ${stepWrite.steps?.length ?? 0} step(s), 0-indexed. Nothing was persisted.`,
+              }],
+              details: { taskId, step: params.step, code: "STEP_OUT_OF_RANGE" },
+              isError: true,
+            };
+          }
+          if (persistedStep.status !== params.status) {
+            return stepLifecycleNoopResult({
+              stepIndex: params.step,
+              stepName: persistedStep.name,
+              requested: params.status,
+              persisted: persistedStep.status,
+              progress: { done: stepWrite.steps.filter((s) => s.status === "done").length, total: stepWrite.steps.length },
+            });
+          }
           const reminder = params.status === "done" && !params.summary?.trim()
             ? " No step summary recorded — call fn_task_update again for this step with `summary` to record what it delivered."
             : "";
-          return { content: [{ type: "text" as const, text: `Updated ${taskId}: step ${params.step} → ${params.status}.${reminder}` }], details: { taskId: task.id, step: params.step, status: params.status } };
+          return {
+            content: [{ type: "text" as const, text: `Updated ${taskId}: step ${params.step} → ${persistedStep.status}.${reminder}` }],
+            details: { taskId: stepWrite.id, step: params.step, status: persistedStep.status },
+          };
         }
         if (params.custom_fields !== undefined || params.dependencies !== undefined) {
           return { content: [{ type: "text" as const, text: "Updated." }], details: {} };
         }
         return { content: [{ type: "text" as const, text: "No-op: provide step+status, dependencies, or custom_fields." }], details: {} };
       } catch (err: unknown) {
-        return { content: [{ type: "text" as const, text: `ERROR: ${toolErrorMessage(err)}` }], details: {}, isError: true };
+        return storeErrorResult("task update", err);
       }
     },
   };
@@ -3773,7 +3810,7 @@ export function createTaskAddDepTool(store: TaskStore, taskId: string): ToolDefi
         await store.updateTask(taskId, { dependencies: [...(task.dependencies || []), depId] });
         return { content: [{ type: "text" as const, text: `Added dependency ${depId} to ${taskId}` }], details: { taskId, dependency: depId } };
       } catch (err: unknown) {
-        return { content: [{ type: "text" as const, text: `ERROR: Failed to add dependency: ${toolErrorMessage(err)}` }], details: {}, isError: true };
+        return storeErrorResult("dependency declaration", err);
       }
     },
   };
@@ -4003,11 +4040,7 @@ export function createWorkflowCreateTool(
         if (err instanceof ColumnAgentBindingError) {
           return columnAgentBindingErrorResult(err);
         }
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Failed to create workflow: ${err?.message ?? err}` }],
-          details: {},
-          isError: true,
-        };
+        return storeErrorResult("workflow creation", err);
       }
     },
   };
@@ -4088,11 +4121,7 @@ export function createWorkflowUpdateTool(
             isError: true,
           };
         }
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Failed to update workflow: ${err?.message ?? err}` }],
-          details: {},
-          isError: true,
-        };
+        return storeErrorResult("workflow update", err);
       }
     },
   };
@@ -4134,11 +4163,7 @@ export function createWorkflowDeleteTool(store: TaskStore): ToolDefinition {
             isError: true,
           };
         }
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Failed to delete workflow: ${err?.message ?? err}` }],
-          details: {},
-          isError: true,
-        };
+        return storeErrorResult("workflow deletion", err);
       }
     },
   };
@@ -4281,11 +4306,7 @@ export function createWorkflowSettingsTool(store: TaskStore): ToolDefinition {
             isError: true,
           };
         }
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Failed to write workflow settings: ${err?.message ?? err}` }],
-          details: {},
-          isError: true,
-        };
+        return storeErrorResult("workflow settings write", err);
       }
     },
   };
@@ -5802,8 +5823,7 @@ export function createAgentDeleteTool(
       try {
         await agentStore.deleteAgent(params.agent_id, { force: params.force === true, reassignTo: params.reassign_to });
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return { content: [{ type: "text" as const, text: `ERROR: ${message}` }], details: {} };
+        return storeErrorResult("agent deletion", error);
       }
 
       await options?.runAuditor?.database({ type: "agent:delete:approved", target: target.id, metadata: { policy, autoApproved: true } });
@@ -6021,8 +6041,19 @@ export function createTaskAssignTool(
       let task: Task;
       try {
         task = await taskStore.getTask(params.task_id);
-      } catch {
-        return { content: [{ type: "text" as const, text: `ERROR: Task ${params.task_id} not found` }], details: {} };
+      } catch (error) {
+        /*
+        FNXC:StoreErrorShape 2026-09-23-06:00:
+        STAS-251. This catch used to name every lookup failure "not found", so a board the agent
+        simply could not reach read as a card that had vanished, and the fix agents reach for is
+        to re-create it. A failed assignment against an unreachable board is an outage with a
+        retry, not a missing card.
+        */
+        if (!isTaskNotFoundError(error)) {
+          return storeErrorResult(`task ${params.task_id} could not be read before assignment`, error);
+        }
+        /* The task is unknown, so the assignment cannot happen — a failed write, not advice. */
+        return { content: [{ type: "text" as const, text: `ERROR: Task ${params.task_id} not found` }], details: {}, isError: true };
       }
 
       const verdict = evaluateImplementationTaskBind(agent, task, {
@@ -6223,12 +6254,14 @@ export function createSendMessageTool(
             return {
               content: [{ type: "text" as const, text: `ERROR: Recipient agent '${recipient.id}' could not be validated — message not sent` }],
               details: {},
+              isError: true,
             };
           }
           if (resolvedRecipient == null) {
             return {
               content: [{ type: "text" as const, text: `ERROR: Recipient agent '${recipient.id}' does not exist — message not sent` }],
               details: {},
+              isError: true,
             };
           }
         }
@@ -6263,10 +6296,7 @@ export function createSendMessageTool(
         });
 
         if (result.outcome === "parked") {
-          return {
-            content: [{ type: "text" as const, text: `ERROR: Failed to send message: ${result.error.message}` }],
-            details: {},
-          };
+          return storeWriteFailure("message delivery", result.error.message);
         }
 
         return {
@@ -6277,11 +6307,7 @@ export function createSendMessageTool(
           details: { messageId: result.value.id },
         };
       } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Failed to send message: ${errorMessage}` }],
-          details: {},
-        };
+        return storeWriteFailure("message delivery", err);
       }
     },
   };
@@ -6627,11 +6653,7 @@ export function createPostRoomMessageTool(
         });
 
         if (result.outcome === "parked") {
-          return {
-            content: [{ type: "text" as const, text: `ERROR: Failed to post room message: ${result.error.message}` }],
-            details: {},
-            isError: true,
-          };
+          return storeWriteFailure("room message delivery", result.error.message);
         }
 
         return {
@@ -6639,12 +6661,7 @@ export function createPostRoomMessageTool(
           details: { messageId: result.value.id },
         };
       } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Failed to post room message: ${errorMessage}` }],
-          details: {},
-          isError: true,
-        };
+        return storeWriteFailure("room message delivery", err);
       }
     },
   };
@@ -6761,11 +6778,10 @@ export function createReadMessagesTool(messageStore: MessageStore, agentId: stri
           },
         };
       } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Failed to read messages: ${errorMessage}` }],
-          details: {},
-        };
+        /* FNXC:ReadFailureSurfacing 2026-09-25-05:45: STAS-259. This catch covered the inbox read and the
+        reply-context read, so a stall answered as payload text and an unreachable inbox looked empty; the flag
+        is what makes the agent log say tool_error. "No messages" stays unflagged — that half is a fact. */
+        return storeErrorResult("your inbox messages", err);
       }
     },
   };

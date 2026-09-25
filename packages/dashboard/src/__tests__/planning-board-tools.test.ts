@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { MAX_TASK_LIST_TEXT_CHARS, type TaskStore } from "@fusion/core";
+import { MAX_TASK_LIST_TEXT_CHARS, TaskNotFoundError, type TaskStore } from "@fusion/core";
 import { createPlanningBoardTools, resolveTaskListFormatter } from "../planning-board-tools.js";
 
 function createStoreMock(overrides?: {
@@ -8,8 +8,9 @@ function createStoreMock(overrides?: {
 }): TaskStore {
   return {
     listTasks: overrides?.listTasks ?? vi.fn(async () => []),
-    getTask: overrides?.getTask ?? vi.fn(async () => {
-      throw new Error("not found");
+    getTask: overrides?.getTask ?? vi.fn(async (id: string) => {
+      // A genuine miss surfaces as the store's typed not-found, not a generic throw.
+      throw new TaskNotFoundError(id);
     }),
   } as unknown as TaskStore;
 }
@@ -142,5 +143,24 @@ describe("createPlanningBoardTools", () => {
       .find((tool) => tool.name === "fn_task_show")!
       .execute("c4", { id: "FN-404" });
     expect(missingResult.content[0]?.text).toBe("Task FN-404 not found.");
+  });
+
+  it("fn_task_show reports a store outage as a tool error, not a missing card (STAS-256)", async () => {
+    /*
+    A store that could not answer must fail the tool boundary (isError) so the planner's own
+    log records tool_error, and must never claim the card does not exist — the mistake that
+    once made an agent rebuild a card that was actually still there.
+    */
+    const outageStore = createStoreMock({
+      getTask: vi.fn(async () => {
+        throw new Error("connection terminated unexpectedly");
+      }) as TaskStore["getTask"],
+    });
+    const result = await createPlanningBoardTools(outageStore)
+      .find((tool) => tool.name === "fn_task_show")!
+      .execute("c5", { id: "FN-500" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain("connection terminated unexpectedly");
+    expect(result.content[0]?.text).not.toContain("not found");
   });
 });

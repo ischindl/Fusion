@@ -23,6 +23,7 @@
 
 import { describe, it, expect, afterEach, beforeAll } from "vitest";
 import postgres from "postgres";
+import { SchemaMutationLockTimeoutError } from "../../postgres/advisory-locks.js";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { sql } from "drizzle-orm";
 import { readFileSync } from "node:fs";
@@ -2159,7 +2160,6 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       max: 1,
       prepare: false,
       onnotice: () => {},
-      connection: { lock_timeout: 100 },
     });
     const schemaDb = drizzle(schemaSql);
     let releaseMigration!: () => void;
@@ -2175,14 +2175,22 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
     try {
       await acquired;
       try {
+        /*
+        FNXC:SchemaLockDeadline 2026-09-23-07:20:
+        STAS-251 moved the queueing bound out of this test's connection options and into the
+        production lock acquisition, so the apply now fails on its own declared budget and names
+        the lock it is stuck behind. Previously the only bound was supplied from here and the
+        failure was an anonymous 55P03 that said nothing about which lock was held.
+        */
         let lockError: unknown;
         try {
-          await applySchemaBaseline(schemaDb, { pluginHooks: [] });
+          await applySchemaBaseline(schemaDb, { pluginHooks: [], schemaMutationLockTimeoutMs: 300 });
         } catch (error) {
           lockError = error;
         }
-        expect(lockError).toBeInstanceOf(Error);
-        expect((lockError as Error & { cause?: { code?: string } }).cause?.code).toBe("55P03");
+        expect(lockError).toBeInstanceOf(SchemaMutationLockTimeoutError);
+        expect(String(lockError)).toContain("fusion:sqlite-migration-state");
+        expect((lockError as Error & { cause?: { code?: string } }).cause?.cause?.code).toBe("55P03");
       } finally {
         releaseMigration();
         await holder;
