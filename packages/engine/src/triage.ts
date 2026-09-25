@@ -3209,7 +3209,25 @@ export class TriageProcessor {
             } catch (error) {
               await this.workflowAgentCapacity.release(workflowCapacityAttemptId, workflowCapacityProjectId);
               workflowCapacityAttemptId = undefined;
-              throw new Error(`workflow-principal-fence-unavailable:triage`, { cause: error });
+              /*
+              FNXC:WorkflowPrincipalFenceDiagnostics 2026-09-25-23:59:
+              This wrapper swallowed WHY it failed. The guarded block installs the planning continuation
+              under the per-task planning lifecycle lock (`installPlanningContinuationUnlessDispatchClaimed`
+              -> `store.withPlanningLifecycleLock`, advisory-locks.ts
+              DEFAULT_PLANNING_LIFECYCLE_LOCK_TIMEOUT_MS = 5_000), so a 5 s lock timeout surfaced as
+              `workflow-principal-fence-unavailable` — a sentence about principal routing. Operators read
+              it as a routing defect and could not triage it from the board, while the same lock timeout
+              in the plan-review node surfaced under yet another name (`gate-persistence-unavailable`).
+              Carrying the cause in the message keeps the stable `workflow-principal-fence-unavailable:triage`
+              prefix greppable (prefix matchers and `startsWith` guards are unaffected) and makes the
+              existing `[plan] planning failed:` line name the resource that actually failed. `cause` is
+              preserved for programmatic consumers. RUFU-318 owns this naming side; RUFU-321 owns the
+              bounded-reseed recovery side.
+              */
+              const fenceFailureDetail = error instanceof Error && error.message.trim().length > 0
+                ? ` (${error.message.trim()})`
+                : "";
+              throw new Error(`workflow-principal-fence-unavailable:triage${fenceFailureDetail}`, { cause: error });
             }
           }
           }
