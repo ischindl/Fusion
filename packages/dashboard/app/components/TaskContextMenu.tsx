@@ -3,10 +3,9 @@ import { UiMenu, UiMenuItem } from "./ui";
 import type { KeyboardEvent, PointerEvent as ReactPointerEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { TFunction } from "i18next";
-import type { ColumnId, Task, TaskDetail, WorkflowStepResult } from "@fusion/core";
+import type { ColumnId, Task, TaskDetail } from "@fusion/core";
 /* FNXC:TaskFollowUp 2026-09-17-18:10: FN-513's eligibility rule is a PURE core helper reachable through the barrel. */
 import { isFollowUpEligible } from "@fusion/core";
-import { isReviewColumnRole } from "../utils/columnRoles";
 
 
 /*

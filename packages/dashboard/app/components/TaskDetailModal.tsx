@@ -23,7 +23,7 @@ import { TaskResetDialog } from "./TaskResetDialog";
 import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
 
 import { useMobileKeyboard } from "../hooks/useMobileKeyboard";
-import { useModalDismissPreference, useOverlayDismiss } from "../hooks/useOverlayDismiss";
+import { useModalDismissPreference } from "../hooks/useOverlayDismiss";
 import { useColumnLabel } from "../i18n/labels";
 import type { DetailTaskTab } from "../hooks/useModalManager";
 import type { TaskDetailDefaultTab } from "../hooks/useAppSettings";

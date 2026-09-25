@@ -8,7 +8,6 @@
 import {
   allowsAutoMergeProcessing,
   isPreMergeStepsNotRunRefusal,
-  PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
   type TaskDetail,
   type TaskStore,
 } from "@fusion/core";
