@@ -14,6 +14,7 @@ import {
   canonicalizePath,
   classifyTaskWorktree,
   getRegisteredWorktreeBranches,
+  defensiveRemovalWouldPreserve,
   isInsideWorktreesDir,
   isRepoRootPath,
   removeWorktree,
@@ -1174,7 +1175,25 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
           const preserveAsOrphanDirectory = !classification.ok
             && (classification.classification === "incomplete" || classification.classification === "unregistered")
             && !activeSessionRegistry.isPathActive(pinnedPath);
-          if (preserveAsOrphanDirectory) {
+          /*
+           * FNXC:WorktreeCleanup 2026-09-25-19:30:
+           * RUFU-278: the reclaim used to have exactly two outcomes — remove the stale checkout, or throw and
+           * terminalize the card. When the content-preservation policy refused the removal, throwing was the only
+           * remaining action, so a policy no-op decided the card's life: RUFU-260 parked with
+           * "preserving <path>: uncommitted or ignored content present" over two generated directories and its
+           * retained checkout head-of-line blocked 14 RunFusion cards at the file-scope dispatch gate. The pinned
+           * path must still be vacated (recreation happens at the SAME path and `git worktree add` rejects an
+           * occupied one after sessionFile is cleared), so the third outcome is the orphan preserve this branch
+           * already implements: move the checkout aside under the recovery root, delete nothing, keep the card.
+           * The liveness recheck stays inside the preserve routine, so a newly registered owner still fails closed.
+           */
+          const preserveForContentPolicy = !preserveAsOrphanDirectory
+            && (await defensiveRemovalWouldPreserve(rootDir, pinnedPath))
+            && !activeSessionRegistry.isPathActive(pinnedPath);
+          if (preserveForContentPolicy) {
+            logger?.warn(`${task.id}: pinned worktree ${pinnedPath} holds content the preservation policy will not delete; preserving it aside to reclaim the path`);
+          }
+          if (preserveAsOrphanDirectory || preserveForContentPolicy) {
             const canonicalRoot = await realpath(rootDir);
             /*
              * FNXC:TaskPinnedWorktrees 2026-08-10-01:12:
@@ -1214,7 +1233,14 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
                 target: preservedPath,
                 metadata: {
                   taskId: task.id,
-                  classification: classification.classification,
+                  // "not-applicable" is unreachable: the orphan branch requires !classification.ok and the
+                  // content-policy branch sets "content-preservation". It exists because widening the guard
+                  // above removed TypeScript's aliased-condition narrowing on the discriminated union.
+                  classification: preserveForContentPolicy
+                    ? "content-preservation"
+                    : classification.ok
+                      ? "not-applicable"
+                      : classification.classification,
                   reason: "task-pinned-orphan-preserved",
                   sourcePath: pinnedPath,
                 },
@@ -1225,7 +1251,11 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
             try {
               await store.logEntry(
                 task.id,
-                `Preserved orphaned task-pinned directory ${pinnedPath} before recreation`,
+                `Preserved orphaned task-pinned directory ${pinnedPath} before recreation${
+                  preserveForContentPolicy
+                    ? " — removal refused: the checkout holds content the preservation policy will not delete"
+                    : ""
+                }`,
                 preservedPath,
                 runContext,
               );

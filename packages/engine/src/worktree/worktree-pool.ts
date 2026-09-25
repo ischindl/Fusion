@@ -22,6 +22,7 @@ export {
   NativeWorktreeBackend,
   WorktrunkOperationError,
   WorktrunkWorktreeBackend,
+  defensiveRemovalWouldPreserve,
   removeWorktree,
   resolveWorktreeBackend,
 } from "./worktree-backend.js";

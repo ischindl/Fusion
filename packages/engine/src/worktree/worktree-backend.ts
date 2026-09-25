@@ -1178,6 +1178,24 @@ export class ActiveSessionWorktreeRemovalError extends Error {
 }
 
 /*
+FNXC:WorktreeCleanup 2026-09-25-19:30:
+A preservation refusal is a deliberate policy outcome, not a removal failure — but while both surface as a
+bare `Error` no caller can tell them apart. RUFU-278 measured the cost: pinned-worktree reclaim terminalised
+RUFU-260 over two *generated* git-ignored directories (`packages/core/.gate-bundle`,
+`packages/dashboard/app/locales`), and that card's retained checkout then head-of-line blocked 14 other
+RunFusion cards through the file-scope dispatch gate. The cap-enforcement sweep already treats the identical
+condition as a no-op (`FNXC:WorktreeCleanup 2026-09-08-06:13`), so the policy was right and only the missing
+type distinction was wrong. Callers that own a safe preserve path must discriminate by type: matching the
+message would stop working the moment the wording changes, so the message text is preserved verbatim.
+*/
+export class WorktreeContentPreservationError extends Error {
+  constructor(public readonly worktreePath: string) {
+    super(`preserving ${worktreePath}: uncommitted or ignored content present`);
+    this.name = "WorktreeContentPreservationError";
+  }
+}
+
+/*
 FNXC:WorktreeCleanup 2026-09-01-06:09:
 FN-9233 permits automatic cleanup of only well-known regenerable dependency and build directories.
 Ignored paths outside this narrow allowlist can contain operator-owned local content and retain FN-251's
@@ -1271,12 +1289,29 @@ async function assertCleanForDefensiveRemoval(rootDir: string, worktreePath: str
   }));
   const classification = classifyWorktreeRemovalContent(stdout, { provenScratchRootEntries });
   if (classification === "deliverable") {
-    throw new Error(`preserving ${worktreePath}: uncommitted or ignored content present`);
+    throw new WorktreeContentPreservationError(worktreePath);
   }
   return {
     classification,
     entryCount: stdout.split(/\r?\n/).filter((line) => line.trim().length > 0).length,
   };
+}
+
+/*
+FNXC:WorktreeCleanup 2026-09-25-19:30:
+RUFU-278: a caller that can safely *vacate* a checkout instead of deleting it needs to know whether a
+defensive removal would refuse, before it picks a strategy. This is the same predicate `removeWorktree`
+applies to its defensive reasons (probe classification plus the `ignored-only`-without-landing-proof
+refusal), reused rather than re-derived so the two cannot drift. It mutates nothing: `true` means
+"do not attempt the removal, vacate the checkout by another means", never "delete it carefully".
+*/
+export async function defensiveRemovalWouldPreserve(rootDir: string, worktreePath: string): Promise<boolean> {
+  try {
+    const probe = await assertCleanForDefensiveRemoval(rootDir, worktreePath);
+    return probe.classification === "ignored-only";
+  } catch (error) {
+    return error instanceof WorktreeContentPreservationError;
+  }
 }
 
 /**
@@ -1356,7 +1391,7 @@ export async function removeWorktree(input: {
           hasPostLandingProof: false,
         },
       }).catch(() => undefined);
-      throw new Error(`preserving ${input.worktreePath}: uncommitted or ignored content present`);
+      throw new WorktreeContentPreservationError(input.worktreePath);
     }
   }
 
