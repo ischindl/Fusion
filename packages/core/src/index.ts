@@ -1563,8 +1563,8 @@ export {
   resolveUnprovenReviewApproval,
   COLLATERAL_ARCHIVED_REVIEW_GATE_DIAGNOSTIC,
 } from "./merge/pre-merge-approval.js";
-export { getPostMergeFinalizeBlocker, getRequiredPostMergeEvidenceBlocker, planConfirmedMergeChecklistReconciliation } from "./merge/confirmed-merge-reconciliation.js";
-export type { ConfirmedMergeChecklistReconciliation } from "./merge/confirmed-merge-reconciliation.js";
+export { getPostMergeFinalizeBlocker, getRequiredPostMergeEvidenceBlocker, getPostMergeEvidenceGateStatuses, resolveRequiredPostMergeGateIds, planConfirmedMergeChecklistReconciliation } from "./merge/confirmed-merge-reconciliation.js";
+export type { ConfirmedMergeChecklistReconciliation, PostMergeEvidenceGateState, PostMergeEvidenceGateStatus } from "./merge/confirmed-merge-reconciliation.js";
 export type { PreMergeApproval, PreMergeApprovalState } from "./merge/pre-merge-approval.js";
 export {
   isBranchGroupMemberLanded,

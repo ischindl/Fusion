@@ -1,6 +1,7 @@
 import type { Task, WorkflowStepResult } from "../types.js";
 import { resolveWorkflowIrForTask, type WorkflowIrResolverStore } from "../workflows/workflow-ir-resolver.js";
 import { isWorkflowOptionalGroupEnabled } from "../workflows/workflow-optional-steps.js";
+import type { WorkflowIr } from "../workflows/workflow-ir-types.js";
 import { BLOCKING_TASK_STATUSES, clearMergeConfirmedTransientStatus } from "./task-merge.js";
 
 export type ConfirmedMergeChecklistReconciliation = {
@@ -37,6 +38,54 @@ self-healing share this resolver-backed decision so absent, pending, skipped, or
 keeps the task outside completion until the durable gate result approves it. Explicitly disabled
 and advisory groups retain their intentional non-blocking behavior.
 */
+
+/** The enabled gate-mode post-merge groups a task must still satisfy, in IR order. */
+export function resolveRequiredPostMergeGateIds(
+  task: Pick<Task, "enabledWorkflowSteps">,
+  ir: WorkflowIr,
+): string[] {
+  if (ir.version !== "v2") return [];
+  return ir.nodes.flatMap((node) => {
+    if (node.kind !== "optional-group" || node.config?.phase !== "post-merge") return [];
+    const template = node.config.template as { nodes?: Array<{ config?: { gateMode?: unknown } }> } | undefined;
+    const gateMode = template?.nodes?.some((inner) => inner.config?.gateMode === "gate");
+    return gateMode && isWorkflowOptionalGroupEnabled(task.enabledWorkflowSteps, node.id, node.config.defaultOn === true)
+      ? [node.id]
+      : [];
+  });
+}
+
+/*
+FNXC:UnrunPostMergeGateRecovery 2026-09-25-15:35 (RUFU-306):
+Two states hide behind the one blocker sentence, and only one of them is repairable by re-running
+the gate. `missing` means the node never reported at all — nothing was ever evaluated, so the graph
+can still be seeded with it. `not-approved` means a verdict exists and was negative: that is a
+review decision, and re-seeding it would be a machine overruling a gate. The engine's recovery
+route is allowed to see this distinction; the blocker TEXT deliberately stays the single sentence
+operators already recognise, so no consumer changes shape.
+*/
+export type PostMergeEvidenceGateState = "missing" | "not-approved";
+
+export interface PostMergeEvidenceGateStatus {
+  gateId: string;
+  state: PostMergeEvidenceGateState;
+}
+
+/** Per-gate evidence state for every required post-merge gate, in IR order. */
+export function getPostMergeEvidenceGateStatuses(
+  task: Pick<Task, "enabledWorkflowSteps" | "workflowStepResults">,
+  ir: WorkflowIr,
+): PostMergeEvidenceGateStatus[] {
+  return resolveRequiredPostMergeGateIds(task, ir).flatMap((gateId): PostMergeEvidenceGateStatus[] => {
+    const result = (task.workflowStepResults ?? []).find((entry) => entry.workflowStepId === gateId);
+    if (!result) return [{ gateId, state: "missing" as const }];
+    if (result.status !== "passed" || (result.verdict !== "APPROVE" && result.verdict !== "APPROVE_WITH_NOTES")) {
+      return [{ gateId, state: "not-approved" as const }];
+    }
+    return [];
+  });
+}
+
 export async function getRequiredPostMergeEvidenceBlocker(
   store: WorkflowIrResolverStore,
   task: Pick<Task, "id" | "enabledWorkflowSteps" | "workflowStepResults">,
@@ -45,23 +94,10 @@ export async function getRequiredPostMergeEvidenceBlocker(
   if (typeof reader.getTaskWorkflowSelection !== "function") return undefined;
 
   const ir = await resolveWorkflowIrForTask(store, task.id);
-  const requiredGateIds = ir.version === "v2"
-    ? ir.nodes.flatMap((node) => {
-      if (node.kind !== "optional-group" || node.config?.phase !== "post-merge") return [];
-      const template = node.config.template as { nodes?: Array<{ config?: { gateMode?: unknown } }> } | undefined;
-      const gateMode = template?.nodes?.some((inner) => inner.config?.gateMode === "gate");
-      return gateMode && isWorkflowOptionalGroupEnabled(task.enabledWorkflowSteps, node.id, node.config.defaultOn === true)
-        ? [node.id]
-        : [];
-    })
-    : [];
-
-  for (const gateId of requiredGateIds) {
-    const result = (task.workflowStepResults ?? []).find((entry) => entry.workflowStepId === gateId);
-    if (!result) return `required post-merge evidence gate '${gateId}' has not reported`;
-    if (result.status !== "passed" || (result.verdict !== "APPROVE" && result.verdict !== "APPROVE_WITH_NOTES")) {
-      return `required post-merge evidence gate '${gateId}' is not approved`;
-    }
+  for (const { gateId, state } of getPostMergeEvidenceGateStatuses(task, ir)) {
+    return state === "missing"
+      ? `required post-merge evidence gate '${gateId}' has not reported`
+      : `required post-merge evidence gate '${gateId}' is not approved`;
   }
   return undefined;
 }

@@ -11,6 +11,7 @@ import {
   type Task,
   type TaskStore,
 } from "@fusion/core";
+import { reseedUnrunPostMergeGate } from "./post-merge-gate-reseed.js";
 import { createRunAuditor, generateSyntheticRunId, type DatabaseMutationType, type RunAuditor } from "../util/run-audit.js";
 import { cleanupLandedTaskWorktree } from "./post-landing-worktree-cleanup.js";
 import type { MergeWriteFence } from "./merge-write-fence.js";
@@ -250,6 +251,17 @@ export async function finalizeProvenAutoMergeTask({
 
   const evidenceBlocker = await getRequiredPostMergeEvidenceBlocker(store, latest);
   if (evidenceBlocker) {
+    /*
+    FNXC:UnrunPostMergeGateRecovery 2026-09-25-15:35 (RUFU-306):
+    This is the loop production showed all day: `Auto-merge finalization deferred for DGXS-313 /
+    ROZV-290: required post-merge evidence gate 'post-merge-verification' has not reported`, retried
+    forever, deferring forever, because nothing ever put the card back in front of that node. The
+    deferral now tries the seed itself, so the next finalize pass can find real evidence instead of
+    the same absence. A refused seed is reported by reason (budget, active continuation, operator
+    hold) rather than as an unexplained deferral, and the blocker still stands — seeding is not a
+    verdict, and this path never completes a card on its own authority.
+    */
+    const reseed = await reseedUnrunPostMergeGate(store, latest, { source: "auto-merge" });
     await recordFinalizationAudit({
       store,
       audit,
@@ -259,7 +271,8 @@ export async function finalizeProvenAutoMergeTask({
       auditAgentId,
       auditPhase,
     });
-    await log?.(`Auto-merge finalization deferred for ${taskId}: ${evidenceBlocker}`);
+    await log?.(`Auto-merge finalization deferred for ${taskId}: ${evidenceBlocker}`
+      + ` [post-merge gate reseed: ${reseed.seeded ? `seeded '${reseed.workflowStepId}'` : reseed.reason}]`);
     return { outcome: "blocked", task: latest, previousColumn: latest.column, reason: evidenceBlocker };
   }
 

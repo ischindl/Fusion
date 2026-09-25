@@ -1397,7 +1397,23 @@ export async function runTaskReconcile(id: string, projectName?: string) {
       return;
     }
     if (result.outcome === "already-complete") {
+      /*
+      FNXC:UnrunPostMergeGateRecovery 2026-09-25-15:35 (RUFU-306):
+      "already complete" is only true when nothing is outstanding. A merge-confirmed card still in
+      the review lane with an unreported required gate is NOT complete, and saying otherwise sent the
+      operator away from the real blocker — RUFU-220 had 1561 insertions on `main`, its row still
+      `in-review/failed`, and two CLI runs both reporting there was nothing to do.
+      */
+      if (result.postMergeEvidence?.pending) {
+        console.error(`${id} is NOT complete: the merge is confirmed but its required post-merge evidence gate has not reported (${result.postMergeEvidence.reason}). The card stays in review until that gate runs.`);
+        await closeBoardContextAndExit(context, 1);
+        return;
+      }
       console.log(`${id} is already complete; no reconciliation was needed.`);
+      return;
+    }
+    if (result.outcome === "post-merge-gate-reseeded") {
+      console.log(`${id}: merge confirmed and landed — re-seeded the unreported post-merge evidence gate '${result.workflowStepId}' (attempt ${result.attempt}); the card finalizes once that gate reports.`);
       return;
     }
     if (result.outcome === "not-landed") {

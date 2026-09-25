@@ -196,6 +196,10 @@ import {
   rerouteUnrunPreMergeGateToReview,
   type UnrunGateParkShape,
 } from "./merge/pre-merge-gate-reseed.js";
+import {
+  reseedUnrunPostMergeGate,
+  type PostMergeGateReseedReason,
+} from "./merge/post-merge-gate-reseed.js";
 import { cleanupLandedTaskWorktree, removeEmptyWorkspaceTaskDirectory } from "./merge/post-landing-worktree-cleanup.js";
 import { cleanupDeletedTaskWorktrees } from "./worktree/deleted-task-worktree-cleanup.js";
 import { AutoRecoveryDispatcher } from "./healing/auto-recovery.js";
@@ -1073,7 +1077,16 @@ liveness/eligibility fence blocked reconciliation so an operator retry has a con
 */
 export type LandedReviewReconcileResult =
   | { outcome: "reconciled"; sha: string; strategy: string; baseBranch: string }
-  | { outcome: "already-complete" }
+  /*
+  FNXC:UnrunPostMergeGateRecovery 2026-09-25-15:35 (RUFU-306):
+  `postMergeEvidence` is what makes the sentence honest. A merge-confirmed card that still stands in
+  the review lane with a required post-merge gate unreported is NOT complete, and printing "already
+  complete" there told the operator the opposite of the truth while the card kept holding its slot.
+  RUFU-220 and ROZV-286 measured exactly this on 2026-09-25: commits proven on the base branch, row
+  still `in-review`, and a reconciliation that reported success. Absent means nothing is outstanding.
+  */
+  | { outcome: "already-complete"; postMergeEvidence?: { pending: boolean; reason: PostMergeGateReseedReason } }
+  | { outcome: "post-merge-gate-reseeded"; workflowStepId: string; attempt: number }
   | { outcome: "not-landed"; baseBranch: string }
   | { outcome: "raced"; reason: string }
   | { outcome: "ineligible"; reason: "workspace" | "not-in-review" | "paused" | "user-paused" | "executing" | "live-session" | "checkout-leased" | "auto-merge-off" | "no-branch-recorded" | "branch-present" | "branch-has-unlanded-content" | "foreign-ownership" | "workflow-approval-blocked" | "engine-paused" };
@@ -15779,7 +15792,30 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
     if (!reviewColumns.has(task.column)) {
       return task.mergeDetails?.mergeConfirmed ? { outcome: "already-complete" } : { outcome: "ineligible", reason: "not-in-review" };
     }
-    if (task.mergeDetails?.mergeConfirmed) return { outcome: "already-complete" };
+    if (task.mergeDetails?.mergeConfirmed) {
+      /*
+      FNXC:UnrunPostMergeGateRecovery 2026-09-25-15:35 (RUFU-306):
+      Landed proof is no longer the END of this decision. A card that is merge-confirmed and still
+      standing in the review lane has one thing left: the enabled gate-mode post-merge group that the
+      graph never visited. That gate is now seeded in place — never a fabricated verdict, never a
+      lifecycle move — and when even the seed is refused, the result carries the reason instead of
+      claiming completeness.
+      */
+      const reseed = await reseedUnrunPostMergeGate(this.store, task, { source: "self-healing" });
+      if (reseed.seeded) {
+        return {
+          outcome: "post-merge-gate-reseeded",
+          workflowStepId: reseed.workflowStepId ?? "post-merge-verification",
+          attempt: (reseed.priorAttemptCount ?? 0) + 1,
+        };
+      }
+      // Absent means genuinely nothing is outstanding, which is the honest old shape; the field only
+      // appears when something real is still owed, so callers never see `pending: false` noise.
+      if (reseed.reason === "no-merge-proof" || reseed.reason === "no-missing-gate") {
+        return { outcome: "already-complete" };
+      }
+      return { outcome: "already-complete", postMergeEvidence: { pending: true, reason: reseed.reason } };
+    }
     /*
     FNXC:LandedReviewReconciliation 2026-09-20-03:09:
     External landing proves content reachability, not workflow approval. Reconciliation must retain
@@ -15941,7 +15977,13 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             */
             const result = await this.reconcileLandedReviewTask(task.id, { source: "self-healing", requireAutoMergeEligible: true });
             if (result.outcome === "reconciled") recovered++;
-            else if (result.outcome !== "already-complete") {
+            /*
+            FNXC:UnrunPostMergeGateRecovery 2026-09-25-15:35 (RUFU-306): a re-seeded post-merge gate is
+            an ACTION taken on the card, not an unproven refusal, and it already carries its own audit
+            event. Classifying it as `reconcile-absent-branch-unproven` would make the sweep look like
+            it is failing on cards it actually repaired.
+            */
+            else if (result.outcome !== "already-complete" && result.outcome !== "post-merge-gate-reseeded") {
               const reason = result.outcome === "not-landed" ? "not-landed" : result.reason;
               const key = `${task.id}:${reason}`;
               if (!this.absentBranchUnprovenAuditKeys.has(key)) {
