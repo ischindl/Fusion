@@ -139,6 +139,7 @@ import { finalizePlanningSegment, isLegacyWorkspaceWorktreeLayout, resolveWorksp
 import { taskHoldsUnmergedCheckout, type CheckoutEmptinessProofMap } from "@fusion/core";
 import { proveDormantCheckoutEmptiness } from "./worktree/checkout-emptiness.js";
 import type { WorkspaceLandIntent } from "@fusion/core";
+import { prefetchWorkflowSelections, type WorkflowSelectionCache } from "@fusion/core";
 import { AUTO_MERGE_RETRY_REJECTED_PREFIX, classifyStaleContentPark } from "./merge/stale-content-park.js";
 import type { MeshLeaseManager } from "./project/mesh-lease-manager.js";
 import { createLogger, schedulerLog } from "./logger.js";
@@ -1285,10 +1286,11 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   private async resolvePauseAbortColumnsFor(
     taskId: string,
     cache: Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>,
+    selectionCache?: WorkflowSelectionCache,
   ): Promise<{ review: ReadonlySet<string>; activeWork: ReadonlySet<string> }> {
     return {
-      review: await this.resolveReviewColumnsFor(taskId, cache),
-      activeWork: await this.resolveActiveWorkColumnsFor(taskId, cache),
+      review: await this.resolveReviewColumnsFor(taskId, cache, selectionCache),
+      activeWork: await this.resolveActiveWorkColumnsFor(taskId, cache, selectionCache),
     };
   }
 
@@ -3852,9 +3854,10 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   private async resolvePreWipColumns(
     taskId: string,
     cache: Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>,
+    selectionCache?: WorkflowSelectionCache,
   ): Promise<{ intake: string; hold: string }> {
     try {
-      const lifecycle = resolveLifecycleColumns(await resolveWorkflowIrForTask(this.store, taskId, cache));
+      const lifecycle = resolveLifecycleColumns(await resolveWorkflowIrForTask(this.store, taskId, cache, selectionCache));
       return { intake: lifecycle?.intake ?? "triage", hold: lifecycle?.hold ?? "todo" };
     } catch {
       return { intake: "triage", hold: "todo" };
@@ -3878,10 +3881,11 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   private async resolveReviewColumnsFor(
     taskId: string,
     cache: Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>,
+    selectionCache?: WorkflowSelectionCache,
   ): Promise<ReadonlySet<string>> {
     const columns = new Set<string>(["in-review"]);
     try {
-      const ir = await resolveWorkflowIrForTask(this.store, taskId, cache);
+      const ir = await resolveWorkflowIrForTask(this.store, taskId, cache, selectionCache);
       if (ir) {
         for (const id of columnsWithFlag(ir, "mergeOrchestration")) columns.add(id);
         for (const id of columnsWithFlag(ir, "mergeBlocker")) columns.add(id);
@@ -3910,10 +3914,11 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   private async resolveActiveWorkColumnsFor(
     taskId: string,
     cache: Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>,
+    selectionCache?: WorkflowSelectionCache,
   ): Promise<ReadonlySet<string>> {
     const columns = new Set<string>(["todo", "in-progress"]);
     try {
-      const ir = await resolveWorkflowIrForTask(this.store, taskId, cache);
+      const ir = await resolveWorkflowIrForTask(this.store, taskId, cache, selectionCache);
       if (ir) {
         const lifecycle = resolveLifecycleColumns(ir);
         if (lifecycle?.hold) columns.add(lifecycle.hold);
@@ -3925,11 +3930,33 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     return columns;
   }
 
+  /*
+  FNXC:SelfHealingReadShape 2026-09-25-13:27 (RUFU-312 step 2):
+  A sweep-scoped `task_workflow_selection` cache, hydrated by ONE batched read.
+
+  Why this exists: the IR cache passed to `resolveWorkflowIrForTask` does NOT short-circuit the
+  selection read — `resolveWorkflowIrForTaskWithProvenance` reads the selection FIRST and only then
+  consults workflow definitions, so a sweep that iterates N cards issues N selection SELECTs even when
+  every IR is cached. Measured on the production board 2026-09-25: 82-131 concurrent identical
+  `select "workflow_id", "step_ids" from "project"."task_workflow_selection" …` at all times, with 0
+  tasks executing, from 24 project engines each running sweeps with 68 resolver sites.
+
+  Per-sweep (not longer-lived) is a deliberate contract, not an oversight: see the 2026-08-09 note in
+  `workflow-ir-resolver.ts` — selection writes invalidate lane state, so the NEXT pass must observe
+  them. A cached `undefined` is intentional and keeps cards without a selection row out of the N+1.
+  */
+  private async newSelectionCache(taskIds: readonly string[]): Promise<WorkflowSelectionCache> {
+    const cache: WorkflowSelectionCache = new Map();
+    await prefetchWorkflowSelections(this.store, taskIds, cache);
+    return cache;
+  }
+
   /** True when the task's own column fills its workflow's intake or hold role. */
-  private async isPreWipColumn(task: Task): Promise<boolean> {
+  private async isPreWipColumn(task: Task, selectionCache?: WorkflowSelectionCache): Promise<boolean> {
     const columns = await this.resolvePreWipColumns(
       task.id,
       new Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>(),
+      selectionCache,
     );
     return task.column === columns.intake || task.column === columns.hold;
   }
@@ -3939,10 +3966,18 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     tasks: Task[],
     roles: Array<"intake" | "hold">,
     cache: Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>,
+    selectionCache?: WorkflowSelectionCache,
   ): Promise<Task[]> {
     const kept: Task[] = [];
+    /*
+    FNXC:SelfHealingReadShape 2026-09-25-13:27 (RUFU-312 step 2): this filter runs once per sweep over
+    the WHOLE board, so it owns the selection cache when the caller has none: N cards used to mean N
+    selection SELECTs, now one batched read regardless of board size. Callers that already hold a
+    sweep cache pass it and this prefetch is a no-op (`prefetchWorkflowSelections` skips warm ids).
+    */
+    const cacheToUse = selectionCache ?? await this.newSelectionCache(tasks.map((task) => task.id));
     for (const task of tasks) {
-      const columns = await this.resolvePreWipColumns(task.id, cache);
+      const columns = await this.resolvePreWipColumns(task.id, cache, cacheToUse);
       if (roles.some((role) => task.column === columns[role])) kept.push(task);
     }
     return kept;
@@ -3997,6 +4032,13 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         && this.options.getActiveMergeTaskId?.() !== task.id
         && !hasForeignPathOwner(task),
       );
+      /*
+      FNXC:SelfHealingReadShape 2026-09-25-13:27 (RUFU-312 step 2): the re-verify loop below resolves
+      the intake/hold role for every candidate again, so the selection cache is hydrated once for the
+      candidate set instead of once per card. `preWipCache` only reuses the built IR; it does not stop
+      the per-task selection read (see `newSelectionCache`).
+      */
+      const preWipSelection = await this.newSelectionCache(candidates.map((task) => task.id));
 
       let recovered = 0;
       for (const snapshot of candidates) {
@@ -4004,7 +4046,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         if (this.options.reserveAdvancedTriageRecovery && !releaseReservation) continue;
         try {
           const live = await this.store.getTask(snapshot.id);
-          const liveColumns = await this.resolvePreWipColumns(live.id, preWipCache);
+          const liveColumns = await this.resolvePreWipColumns(live.id, preWipCache, preWipSelection);
           if (
             live.column !== liveColumns.intake
             || live.status != null
@@ -16172,11 +16214,20 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
       said before this conversion.
       */
       const columnCache = new Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>();
+      /*
+      FNXC:SelfHealingReadShape 2026-09-25-13:27 (RUFU-312 step 2): `resolvePauseAbortColumnsFor` resolves
+      TWO column sets per card, so before this each marker-passing row cost two selection SELECTs and a
+      pause-heavy board multiplied that across 24 project engines. One batched read for the prefiltered
+      set; the marker prefilter itself stays synchronous and untouched above.
+      */
+      const pauseAbortSelection = await this.newSelectionCache(
+        tasks.filter((task) => !isTaskExternallyBlocked(task) && this.isPauseAbortParkCandidate(task)).map((task) => task.id),
+      );
       const parked: Task[] = [];
       for (const t of tasks) {
         if (isTaskExternallyBlocked(t)) continue;
         if (!this.isPauseAbortParkCandidate(t)) continue;
-        const columns = await this.resolvePauseAbortColumnsFor(t.id, columnCache);
+        const columns = await this.resolvePauseAbortColumnsFor(t.id, columnCache, pauseAbortSelection);
         if ((await this.classifyPausedAbortWorkflowRecovery(t, settings, executingIds.has(t.id), columns)).kind !== "no-action") {
           parked.push(t);
         }
@@ -16216,7 +16267,7 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             log.debug(`[self-healing] deferring pause-abort recovery for ${fresh.id}: a live session surface is registered`);
             continue;
           }
-          const freshColumns = await this.resolvePauseAbortColumnsFor(fresh.id, columnCache);
+          const freshColumns = await this.resolvePauseAbortColumnsFor(fresh.id, columnCache, pauseAbortSelection);
           const route = await this.classifyPausedAbortWorkflowRecovery(fresh, settings, latestExecutingIds.has(fresh.id), freshColumns);
           if (route.kind === "no-action") {
             continue;
@@ -16455,6 +16506,12 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
     const executingIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
     const now = Date.now();
     const reaperCache = new Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>();
+    /*
+    FNXC:SelfHealingReadShape 2026-09-25-13:27 (RUFU-312 step 2): leaked-slot reaping walks every lock
+    holder and resolves an intake-or-hold role per holder card — one batched selection read for the
+    holder set instead of one SELECT each.
+    */
+    const reaperSelection = await this.newSelectionCache(holders.map((holder) => holder.taskId));
     let reaped = 0;
 
     for (const { taskId } of holders) {
@@ -16483,7 +16540,7 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
         own commit; this one is vocabulary only.
         */
         const preWip = task
-          ? await this.resolvePreWipColumns(task.id, reaperCache)
+          ? await this.resolvePreWipColumns(task.id, reaperCache, reaperSelection)
           : { intake: "triage", hold: "todo" };
         const reapableColumn = !task || task.column === preWip.hold || task.column === preWip.intake;
         if (!reapableColumn) continue;
