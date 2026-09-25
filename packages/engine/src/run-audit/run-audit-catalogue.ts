@@ -64,6 +64,7 @@ export const DELIVERY_PIPELINE_RUN_AUDIT_EVENTS_LITERALS = [
   "task:reconcile-orphaned-pending-step-results",
   "task:reconcile-unproven-review-approval",
   "task:reconcile-stale-duplicate-decision",
+  "task:reconcile-orphaned-non-convergence-hold",
   "task:reconcile-stale-agent-assignment",
   "task:reconcile-engine-downtime-active-timing",
   "task:reconcile-engine-downtime-active-timing-no-action",
@@ -149,6 +150,8 @@ export const DELIVERY_PIPELINE_RUN_AUDIT_EVENT_NOTES: Readonly<Record<DeliveryPi
     "Self-healing rewrites orphaned 'pending' workflow-step results (no live session) to 'failed'.",
   "task:reconcile-unproven-review-approval":
     "Self-healing rewrites singular content-review approvals without input proof to recoverable failed results.",
+  "task:reconcile-orphaned-non-convergence-hold":
+    "Self-healing clears a code-review-non-convergence approval hold whose failed-review evidence no longer exists, in place and without a lifecycle move.",
   "task:reconcile-stale-duplicate-decision":
     "Self-healing clears a recurring duplicate-decision pause with no canonical target.",
   "task:reconcile-stale-agent-assignment":

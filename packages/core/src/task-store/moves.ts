@@ -46,7 +46,9 @@ import {projectOwnershipPartition, type DbTransaction} from "../postgres/data-la
 import {acquireTaskAdvisoryXactLock} from "./task-advisory-lock.js";
 import "../builtin-traits.js";
 import {recordRunAuditEventWithinTransaction} from "../postgres/data-layer.js";
-import {getTaskMergeBlocker} from "../merge/task-merge.js";
+import {getTaskMergeBlocker, isTaskBlockedOnApproval, AWAITING_APPROVAL_PAUSE_REASON} from "../merge/task-merge.js";
+import {applyPauseAccounting} from "../tasks/task-pause-accounting.js";
+import {emitBoundedRunAudit} from "../run-audit/emit-bounded-run-audit.js";
 import {resolveRequiredPreMergeStepIds} from "../merge/required-pre-merge-steps.js";
 import {__setTaskActivityLogLimitsForTesting} from "../task-store/comments.js";
 import {readTaskRow as readTaskRowAsync, readTaskRowInTransaction, upsertTaskRowInTransaction} from "./async/async-persistence.js";
@@ -1048,6 +1050,25 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
       const preserveStepProgress =
         options?.preserveResumeState ||
         (options?.preserveProgress === true && hasNonPendingStepProgress);
+      /*
+      FNXC:ApprovalHoldMoveClear 2026-09-25-11:12 (RUFU-297 defect A):
+      Entry snapshot for the approval-hold clear below, taken BEFORE the hooks run because
+      `applyResetOnEntryEffects` mutates status/pause fields on planning reopens and the clear
+      policy must reason about what the card carried on entry, not on what the hooks left behind.
+      `hadStepResults` is the wipe witness: the reopen hooks DELETE `workflowStepResults` on a
+      user-driven review exit, and the step-bound reason codes below may only be dropped when that
+      deletion actually fired this move (see the clear block for the full contract).
+      */
+      const approvalHoldEntry = isTaskBlockedOnApproval(task)
+        ? {
+            status: task.status,
+            awaitingApprovalReason: task.awaitingApprovalReason,
+            paused: task.paused,
+            pausedReason: task.pausedReason,
+            userPaused: task.userPaused,
+            hadStepResults: (task.workflowStepResults?.length ?? 0) > 0,
+          }
+        : undefined;
       const { warnings } = applyDefaultWorkflowMoveEffects(ctx);
       for (const warning of warnings) {
         storeLog.warn("Default-workflow trait hook degraded to no-op", {
@@ -1063,6 +1084,91 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
       }
       if (isReopenToTodoOrTriage && !preserveStepProgress) {
         await store.resetPromptCheckboxes(dir);
+      }
+
+      /*
+      FNXC:ApprovalHoldMoveClear 2026-09-25-11:12 (RUFU-297 defect A):
+      A user-move out of a review lane that DESTROYS the evidence an approval hold was parked on
+      must clear that hold in the SAME move, or the card becomes permanently unmergeable:
+      `isTaskBlockedOnApproval` keeps the merge blocker open on `status: "awaiting-approval"` while
+      the reopen hooks (`applyReopenFieldClears`) have already wiped the `workflowStepResults` the
+      hold referred to, and no recovery lane will ever re-derive it. The pair invariant — a hold
+      survives exactly as long as the evidence/reason that produced it — is enforced here, at the
+      only seam that sees both the hooks' wipe and the hold.
+
+      WHY THE CANDIDACY GATE LOOKS LIKE THIS:
+      - `moveSource === "user"` — only a human move supersedes a human decision; engine/graph
+        moves are owned by their lanes' park/clear logic (a wrong clear here would launder a
+        rejected plan or an unbypassed escalation past its gate).
+      - `options?.preserveStatus !== true` — the plan-approval approve/reject routes move WITH the
+        hold deliberately (FNXC:PlanReviewApproval 2026-08-04-05:35: the hold must survive the
+        release move until the graph re-seeds planning); a reason-agnostic clear would break that
+        carve-out, so `preserveStatus` refuses this block outright.
+      - source column ∈ the board's review lanes (broad `resolveReviewColumns`, legacy `in-review`
+        fallback when no IR resolves) — holds parked elsewhere (e.g. the `merge-blocked-by-policy`
+        park that lives wherever the merge door found the card) are not review-lane evidence and
+        this move does not own them.
+      - `userPaused !== true` — an operator pause is an explicit human freeze; a drag must not
+        silently resume it.
+
+      REASON-CODE POLICY (keys on the wipe WITNESS, never on the reason alone — the hooks, not this
+      block, are the only wipe authority, so graph-remediation / plan-approval / same-lane moves
+      that skip `applyReopenFieldClears` can never lose step-bound holds):
+      - `code-review-non-convergence`, `plan-review-replan-cap` — clear only when the reopen wipe
+        actually fired this move. A drifted card (hold present, step results already absent BEFORE
+        this move) is NOT cleared here: that is defect B's territory and belongs to the bounded,
+        audited self-healing sweep, not to an opportunistic move-side guess. Clearing a
+        `plan-review-replan-cap` hold on a human review-exit INTENTIONALLY restarts the plan-review
+        revision budget (`countPlanReviewRevisionAttempts` recounts from zero) — the operator's move
+        is the intent signal that the capped loop should get a fresh run, the re-entered review
+        repopulates the rows, and the absolute review backstop still bounds the total.
+      - absent/null marker, `release-authorization` — the hold referred to a tool/authorization
+        gate the human move supersedes; clear.
+      - `human-plan-approval`, `merge-blocked-by-policy` — NEVER cleared by this block: the first
+        is FN-408's deliberate episode-bound hold, the second is a policy park whose remedy is the
+        policy change itself (its `task.error` sentence names the flip; clearing the hold without
+        it would strand the card unexplained).
+      - pause shape (`paused + pausedReason === AWAITING_APPROVAL_PAUSE_REASON`, never on top of
+        `userPaused`) — the gated tool session a user move hard-cancels; cleared with pause
+        accounting so the paused interval is banked, mirroring the reopen hook.
+      `error` and the convergence-ladder counters are deliberately untouched — this clears the
+      hold, not the history.
+      */
+      let clearedApprovalHold: {
+        awaitingApprovalReason: Task["awaitingApprovalReason"];
+        clearedStatus: boolean;
+        clearedPause: boolean;
+      } | undefined;
+      if (
+        approvalHoldEntry
+        && approvalHoldEntry.userPaused !== true
+        && moveSource === "user"
+        && options?.preserveStatus !== true
+        && (moveReviewColumns ? moveReviewColumns.has(fromColumn) : fromColumn === "in-review")
+      ) {
+        const wipedDuringMove = approvalHoldEntry.hadStepResults && task.workflowStepResults === undefined;
+        const holdReason = approvalHoldEntry.awaitingApprovalReason;
+        const clearsStatus =
+          holdReason === "human-plan-approval" || holdReason === "merge-blocked-by-policy"
+            ? false
+            : holdReason === "code-review-non-convergence" || holdReason === "plan-review-replan-cap"
+              ? wipedDuringMove
+              : true;
+        const clearsPause =
+          approvalHoldEntry.paused === true && approvalHoldEntry.pausedReason === AWAITING_APPROVAL_PAUSE_REASON;
+        if (clearsStatus || clearsPause) {
+          if (clearsStatus) {
+            task.status = undefined;
+            task.awaitingApprovalReason = undefined;
+          }
+          if (clearsPause) {
+            task.paused = undefined;
+            task.pausedReason = undefined;
+            applyPauseAccounting(task, false, movedAt, false);
+          }
+          // The marker records which shapes were cleared (pair invariant vs superseded pause).
+          clearedApprovalHold = { awaitingApprovalReason: holdReason, clearedStatus: clearsStatus, clearedPause: clearsPause };
+        }
       }
 
     if (toColumn === (moveLifecycle?.wip ?? "in-progress") && !task.worktree && options?.allocateWorktree) {
@@ -1640,6 +1746,47 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
         */
         ...(workflowSelectionForMove?.workflowId ? { workflowId: workflowSelectionForMove.workflowId } : {}),
       });
+    }
+    if (clearedApprovalHold) {
+      /*
+      FNXC:ApprovalHoldMoveClear 2026-09-25-11:12 (RUFU-297 defect A):
+      Post-commit notice pair for the hold clear: one task-log line and one bounded run-audit
+      line, both best-effort. `store.logEntry` re-enters the per-task lock the move still holds,
+      so it is fire-and-forget (the entry queues behind the move's release); the audit goes
+      through the core bounded seam (FN-9177) so a hostile sink cannot fail a committed move.
+      Metadata is columns/ids/fixed values only — never reason prose.
+      */
+      const holdReasonLabel = clearedApprovalHold.awaitingApprovalReason ?? "none";
+      const clearedShape = [clearedApprovalHold.clearedStatus ? "status" : null, clearedApprovalHold.clearedPause ? "pause" : null].filter(Boolean).join("+");
+      void store
+        .logEntry(id, `Approval hold cleared on move out of review: ${holdReasonLabel} → ${toColumn}`, `cleared: ${clearedShape}`)
+        .catch((err: unknown) => {
+          storeLog.warn("Failed to record approval-hold clear log entry (degraded)", {
+            phase: "moveTaskInternal:approval-hold-clear",
+            taskId: id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      void emitBoundedRunAudit(
+        store,
+        {
+          taskId: id,
+          agentId: internal.runContext?.agentId ?? "system",
+          runId: internal.runContext?.runId ?? `move-cleared-approval-hold:${id}`,
+          domain: "database",
+          mutationType: "task:move-cleared-approval-hold",
+          target: id,
+          metadata: {
+            priorStatus: approvalHoldEntry?.status ?? "none",
+            awaitingApprovalReason: holdReasonLabel,
+            fromColumn,
+            toColumn,
+            moveSource,
+            outcome: "cleared",
+          },
+        },
+        { log: { warn: (detail) => storeLog.warn("approval-hold clear audit write failed", { taskId: id, detail }) } },
+      );
     }
     if (toColumn === (moveLifecycle?.complete ?? "done")) {
       /* FNXC:WorkflowResolvedColumns 2026-07-31-04:20 (#2823 review): the sibling of the call above —

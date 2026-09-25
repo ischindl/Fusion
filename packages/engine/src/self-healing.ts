@@ -104,7 +104,7 @@ import { PRE_MERGE_STEPS_NOT_RUN_BLOCKER, loadWorkspaceConfig, type TaskMoveLane
   /* FNXC:SelfHealing 2026-09-06-09:47 (merge origin/main dd808ed2c6): FN-295 collateral-archive restore helpers + stale-content predicate — the auto-merged sweep bodies call all three. */
   resolveCollateralArchivedReviewGate,
   COLLATERAL_ARCHIVED_REVIEW_GATE_DIAGNOSTIC,
-  isStaleContentApprovalBlocker, isPreMergeStepsNotRunBlocker, isPreMergeGateFailedBlocker, parsePreMergeGateApprovalBlocker, parseEmbeddedPreMergeGateApprovalBlocker, findVerdictLessFailedRequiredGates, IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON, namesVerdictLessFailedGate, hasFailedPreMergeWorkflowStepRow, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isLiveSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, resolveExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveRequiredPreMergeStepIds, resolveReboundTarget, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, isWipColumnRole, isReviewColumnRole, isTerminalColumnRole, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, resolveUnprovenReviewApproval, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type MoveTaskOptions, type Settings, type Task, type MergeDetails, type MergeResult, type WorkflowStepResult, type WorkflowIr, type WorkflowIrV2, type ChatSession, type ChatInFlightGenerationState,
+  isStaleContentApprovalBlocker, isPreMergeStepsNotRunBlocker, isPreMergeGateFailedBlocker, parsePreMergeGateApprovalBlocker, parseEmbeddedPreMergeGateApprovalBlocker, findVerdictLessFailedRequiredGates, IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON, namesVerdictLessFailedGate, hasFailedPreMergeWorkflowStepRow, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isLiveSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, resolveExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveRequiredPreMergeStepIds, resolveReboundTarget, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, isWipColumnRole, isReviewColumnRole, isTerminalColumnRole, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, resolveUnprovenReviewApproval, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, /* FNXC:ApprovalHoldMoveClear 2026-09-25-11:12 (RUFU-297): the drifted-hold sweep consumes the single hold authority + honest pause accounting. */ isTaskBlockedOnApproval, computePauseAccountingPatch, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type MoveTaskOptions, type Settings, type Task, type MergeDetails, type MergeResult, type WorkflowStepResult, type WorkflowIr, type WorkflowIrV2, type ChatSession, type ChatInFlightGenerationState,
   resolveNearDuplicateCanonicalFlags,
   LEGACY_COLUMN_IDS_BY_ROLE,
   TERMINAL_ROLES,
@@ -2250,6 +2250,15 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       { name: "reconcile-unproven-review-approvals", fn: () => this.reconcileUnprovenReviewApprovals().then(() => undefined) },
       { name: "reconcile-merge-boundary-evidence-gaps", fn: () => this.reconcileMergeBoundaryEvidenceGaps().then(() => undefined) },
       /*
+      FNXC:ApprovalHoldMoveClear 2026-09-25-11:12 (RUFU-297 defect B):
+      Runs AFTER `reconcile-orphaned-pending-step-results` — that sweep produces the `failed` rows
+      that make a non-convergence hold LEGITIMATE, so the hold-clear must never observe a step list
+      still carrying an orphaned `pending` gate. Startup + steady state both need it: the drift is
+      written by pre-fix moves, and a restart must not leave the unanchored hold starving the
+      review-stall notification chain registered further down this list.
+      */
+      { name: "reconcile-orphaned-non-convergence-holds", fn: () => this.reconcileOrphanedNonConvergenceHolds().then(() => undefined) },
+      /*
       FNXC:PreMergeApproval 2026-09-05-22:11:
       Runs AFTER the orphaned-step sweep, because that sweep is what produces the `failed` row this
       defect archives, and BEFORE failed-step recovery, so the restored gate is visible to it in the
@@ -3463,6 +3472,9 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           { name: "reconcile-unproven-review-approvals", fn: () => this.reconcileUnprovenReviewApprovals() },
           { name: "reconcile-collateral-archived-review-gates", fn: () => this.reconcileCollateralArchivedReviewGates() },
           { name: "reconcile-merge-boundary-evidence-gaps", fn: () => this.reconcileMergeBoundaryEvidenceGaps() },
+          // FNXC:ApprovalHoldMoveClear 2026-09-25-11:12 (RUFU-297 defect B): steady-state twin of the
+          // startup registration above; same load-bearing ordering after the orphaned-pending sweep.
+          { name: "reconcile-orphaned-non-convergence-holds", fn: () => this.reconcileOrphanedNonConvergenceHolds() },
           { name: "recover-failed-pre-merge-steps", fn: () => this.recoverReviewTasksWithFailedPreMergeSteps() },
           { name: "recover-missing-worktree-review-failures", fn: () => this.recoverMissingWorktreeReviewFailures() },
           { name: "recover-interrupted-merging", fn: () => this.recoverInterruptedMergingTasks() },
@@ -9125,6 +9137,142 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       return cleared;
     } catch (error) {
       log.error(`reconcileStaleDuplicateDecisionPause failed: ${error instanceof Error ? error.message : String(error)}`);
+      return 0;
+    }
+  }
+
+  /*
+  FNXC:ApprovalHoldMoveClear 2026-09-25-11:12 (RUFU-297 defect B):
+  `code-review-non-convergence` is the review-convergence ladder's terminal escalation hold:
+  remediation budget exhausted, the ladder parks the card `status: "awaiting-approval"` +
+  `awaitingApprovalReason: "code-review-non-convergence"` beside the failed pre-merge Code Review
+  result, and the only intended exit is a human decision. The hold and its step-result evidence are
+  a PAIR. Pre-RUFU-297 builds broke the pair: a stage-rebuild/rehome move ran the reopen hooks that
+  wipe `workflowStepResults` while the hold survived — leaving an unanchored hold whose evidence no
+  longer exists, whose only pre-existing exit (status-wins merge) is exactly what the escalation was
+  meant to defer, and which starves the RUFU-281 notification chain because the stall authority
+  short-circuits on the hold first. This sweep clears that drifted shape IN PLACE (no column move,
+  per lifecycle containment — an automatic move may never leave or enter review lanes):
+  candidacy requires the exact pair (approval-blocked + this reason code) AND the absence of any
+  `failed`/`advisory_failure` result on a required pre-merge gate — while that evidence survives,
+  the hold is legitimate and the human-decision contract holds. Skips follow the FN-8356 rule set:
+  user pauses, live sessions (FN-8492's canonical triple), and merge-active work are untouched.
+  Ordering is load-bearing: runs AFTER `reconcile-orphaned-pending-step-results`, because that sweep
+  is what turns an orphaned `pending` gate into a `failed` row — evidence that makes a hold
+  legitimate, which must never be cleared against a half-updated step list. The other two ladder
+  reasons are NOT this sweep's case: `human-plan-approval` is a decision pause owned by the
+  decision-marker reconciler, and `restart-stage-publishing` is a Restart-stage fence, not a hold.
+  Metadata: { taskId, column, priorStatus, reasonCode, outcome } — ids/counts/fixed enums only,
+  never hold prose or reviewer text.
+  */
+  async reconcileOrphanedNonConvergenceHolds(): Promise<number> {
+    try {
+      const pageSize = 500;
+      let offset = 0;
+      let cleared = 0;
+      /* Resolved once per card per sweep, outside the paging loop, like every IR-consuming sweep. */
+      const irCache = new Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>();
+
+      const isSessionLive = (taskId: string): boolean => {
+        const livePaths = activeSessionRegistry.pathsForTask(taskId);
+        return livePaths.some((path) => activeSessionRegistry.isPathActive(path))
+          || executingTaskLock.has(taskId)
+          || this.options.isTaskActive?.(taskId) === true;
+      };
+
+      for (;;) {
+        const tasks = await this.store.listTasks({ slim: true, includeArchived: false, limit: pageSize, offset });
+        for (const task of tasks) {
+          // Page-cheap pre-filter of the hold shape (either arm of isTaskBlockedOnApproval);
+          // the full candidacy is re-derived from a fresh read — the page can be stale.
+          const holdShapeOnPage = task.status === "awaiting-approval"
+            || (task.paused === true && task.pausedReason === AWAITING_APPROVAL_PAUSE_REASON);
+          if (!holdShapeOnPage) continue;
+          // An operator park is authoritative; this sweep never reaches through it (FN-8356 rule).
+          if (task.userPaused === true) continue;
+          if (isSessionLive(task.id)) continue;
+
+          // Re-read the live row before mutating: a planner/merger may have written a fresh
+          // step-result row or cleared the hold entirely after the page was fetched.
+          const fresh = await this.store.getTask(task.id);
+          if (!fresh || fresh.userPaused === true) continue;
+          if (!isTaskBlockedOnApproval(fresh)) continue;
+          if (fresh.awaitingApprovalReason !== "code-review-non-convergence") continue;
+          // A gated `paused` row whose pausedReason belongs to another owner is not this hold.
+          if (fresh.paused === true && fresh.pausedReason !== AWAITING_APPROVAL_PAUSE_REASON) continue;
+          if (isSessionLive(fresh.id)) continue;
+
+          /*
+          Evidence test: the hold is legitimate only while its evidence exists. Resolve the task's
+          own required pre-merge gates; the drifted shape is a hold with NO `failed`/`advisory_failure`
+          result among them. When the IR cannot resolve, fail SAFE: any failed/advisory row anywhere
+          keeps the hold (the human-decision contract outranks a sweep's eagerness).
+          */
+          const ir = await resolveWorkflowIrForTask(this.store, fresh.id, irCache).catch(() => undefined);
+          const requiredPreMergeIds = ir ? resolveRequiredPreMergeStepIds(ir, fresh.enabledWorkflowSteps, fresh) : undefined;
+          const evidenceSurvives = (fresh.workflowStepResults ?? []).some((result) =>
+            (result.status === "failed" || result.status === "advisory_failure")
+            && (requiredPreMergeIds ? requiredPreMergeIds.has(result.workflowStepId) : true),
+          );
+          if (evidenceSurvives) continue;
+
+          // In-place repair: clear the pair, plus the gated-session pause shape (the same clear
+          // RUFU-297's move seam applies), with honest pause accounting. No column move.
+          const nowIso = new Date().toISOString();
+          const clearsPauseShape = fresh.paused === true && fresh.pausedReason === AWAITING_APPROVAL_PAUSE_REASON;
+          /*
+          FNXC:ApprovalHoldMoveClear 2026-09-25-14:53 (RUFU-297): the WIP-lane argument is deliberately a
+          literal `false`, mirroring RUFU-297's own move seam and every other un-pause site
+          (`moves.ts`, `task-update.ts`, `reset-lifecycle.ts`, `default-workflow-hooks.ts`):
+          `applyPauseAccounting` reads `isWipLane` only on the PAUSE transition, and this is an
+          un-pause, so the argument cannot affect the banking. Naming a lane here would also add a
+          73rd hardcoded `"in-progress"` guard and trip the lifecycle-column literal ratchet for a
+          value that is provably dead.
+          */
+          const pausePatch = clearsPauseShape
+            ? { paused: false as const, pausedReason: null, ...computePauseAccountingPatch(fresh, false, nowIso, false) }
+            : {};
+          try {
+            await this.store.updateTask(fresh.id, { status: null, awaitingApprovalReason: null, ...pausePatch });
+            await this.store.logEntry(
+              fresh.id,
+              "Cleared drifted code-review-non-convergence approval hold: no required pre-merge step carries a failed result any more. The card is no longer held.",
+            );
+          } catch (error) {
+            log.warn(`reconcileOrphanedNonConvergenceHolds: failed for ${fresh.id}: ${error instanceof Error ? error.message : String(error)}`);
+            continue;
+          }
+          cleared += 1;
+          try {
+            await createRunAuditor(this.store, {
+              runId: generateSyntheticRunId("reconcile-orphaned-non-convergence-holds", fresh.id),
+              agentId: "self-healing",
+              taskId: fresh.id,
+              taskLineageId: fresh.lineageId,
+              phase: "reconcile-orphaned-non-convergence-holds",
+            }).database({
+              type: "task:reconcile-orphaned-non-convergence-hold",
+              target: fresh.id,
+              // ids/counts/fixed enums only — never hold prose or reviewer text.
+              metadata: {
+                taskId: fresh.id,
+                column: fresh.column,
+                priorStatus: fresh.status ?? null,
+                reasonCode: fresh.awaitingApprovalReason,
+                outcome: "cleared",
+              },
+            });
+          } catch (error) {
+            log.warn(`reconcileOrphanedNonConvergenceHolds: audit emit failed for ${fresh.id}: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        if (tasks.length < pageSize) break;
+        offset += tasks.length;
+      }
+      if (cleared > 0) log.log(`Cleared drifted code-review-non-convergence approval holds on ${cleared} task(s)`);
+      return cleared;
+    } catch (error) {
+      log.error(`reconcileOrphanedNonConvergenceHolds failed: ${error instanceof Error ? error.message : String(error)}`);
       return 0;
     }
   }

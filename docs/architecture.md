@@ -1973,6 +1973,59 @@ racy `updateTask` call; unpausing (`pauseTask(id, false)`, used by the approval-
 the caller-supplied `pausedReason` the same way it already clears `pausedByAgentId`/`userPaused`, so the
 hold is not sticky once the operator decides.
 
+#### Approval-hold / gate-evidence pair invariant (RUFU-297)
+
+An approval hold and the workflow evidence that produced it are a PAIR, and the invariant binds in both
+directions:
+
+- **Hold ⇒ its gate evidence survives.** `status: "awaiting-approval"` (with or without an
+  `awaitingApprovalReason` code) asserts "a human must decide about this specific gate"; that assertion
+  is only meaningful while the gate's `workflowStepResults` rows are on the row.
+- **A user move that destroys that evidence clears the hold atomically.** The reopen hooks wipe
+  `workflowStepResults` on a review-lane exit; pre-RUFU-297 the hold survived the wipe, leaving an
+  unanchored `awaiting-approval` whose only pre-existing exit was the very merge the hold defers
+  (permanent merge block). The move implementation now derives the clear from the **wipe actually
+  witnessed during the move** (`hadStepResults && task.workflowStepResults === undefined`), never from
+  the reason alone, so provenance carve-outs (`workflowMoveSource: "plan-approval" |
+  "workflow-graph" | "workflow-remediation"`, `preserveStatus: true`) can never lose a step-bound hold.
+
+Clear candidacy requires ALL of: hold present at entry (`isTaskBlockedOnApproval`), `moveSource ===
+"user"`, `preserveStatus !== true`, source column ∈ the board's review lanes (the broad review-set
+resolution, so renamed custom lanes count — not the literal `in-review` id), and `userPaused !== true`.
+Engine/scheduler moves are exempt by design — their lanes own their parks.
+
+Reason-code verdict table (binding evidence decides, never a blanket clear):
+
+| `awaitingApprovalReason` | binds to | plain user review-exit | verdict |
+|---|---|---|---|
+| `code-review-non-convergence` | the review step-result rows the convergence ladder escalated from | wiped | **clear** (wipe-witness-gated) |
+| `plan-review-replan-cap` | plan-review revision rows counted by `countPlanReviewRevisionAttempts` | wiped | **clear** — deliberately restarts the revision budget; the operator's move IS the intent signal, the re-run repopulates rows, the absolute review backstop still bounds the total |
+| *(absent / `null`)* | nothing — the predicate fires on `status` alone (defect A's shape) | — | **clear** |
+| `release-authorization` | nothing — writer and approve-plan guard deleted | — | **clear** (pure orphan; readable, never re-parked) |
+| `human-plan-approval` | `task.humanPlanApproval` proof state + `approvedPlanFingerprint`, which the move does NOT wipe | yes | **preserve** — FN-408 owns its proof model (`clearHumanPlanApprovalDecision` / reset-lifecycle) |
+| `merge-blocked-by-policy` | external branch-protection diagnosis + `task.error`; re-fires on the next merge attempt | yes | **preserve** — operator remedy stays the merge-policy resume path |
+| *(pause arm)* | the abandoned gated-tool session the human move supersedes | n/a | **clear** only when `pausedReason === AWAITING_APPROVAL_PAUSE_REASON` and `userPaused !== true`, with pause accounting so the interval is banked |
+
+A card already drifted BEFORE the move (hold present, results already absent) is NOT cleared by the
+move — there is no wipe witness, and an opportunistic move-side guess would misread engine-owned
+holds. That shape belongs to the bounded, audited self-healing sweep
+`reconcile-orphaned-non-convergence-holds` (scoped to `code-review-non-convergence` alone, in-place,
+lifecycle-contained: no column move; skips live sessions, user pauses, and surviving failed/advisory
+pre-merge evidence).
+
+Full clear-path inventory for approval holds:
+
+1. **User review-lane exit** (RUFU-297, this section) — `task:move-cleared-approval-hold`.
+2. **Review-lane Retry** (`task-restart-stage.ts`) — Restart-stage fence, not an approval reason.
+3. **Manual merge clear / approve-plan / reject-plan routes** — decision surfaces that resolve the hold.
+4. **FN-7720 operator bypass** (`bypassFailedPreMergeReviewStep`) — clears the failed gate the hold anchors to.
+5. **Self-healing sweep** (RUFU-297, defect B) — `task:reconcile-orphaned-non-convergence-hold`.
+6. **Dependency respecify** — the replan path re-seeds planning and clears its own parks.
+
+Every clear records a task-log entry plus a bounded run-audit row (ids/counts/fixed enums only, never
+prose); the move-side clear commits with the column move in one transaction, so a committed move NEVER
+leaves a hold behind its destroyed evidence.
+
 ### Planner overseer runtime-state exposure (FN-7531)
 
 /*

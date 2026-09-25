@@ -744,6 +744,15 @@ export type DatabaseMutationType =
   /** Metadata: { taskId, canonicalId, canonicalColumn, canonicalDeleted, priorPausedReason } */
   | "task:reconcile-stale-duplicate-decision"
   /*
+  FNXC:ApprovalHoldMoveClear 2026-09-25-11:12 (RUFU-297 defect B):
+  `reconcile-orphaned-non-convergence-holds` clears a drifted `code-review-non-convergence`
+  approval hold in place when no pre-merge step result carries the `failed`/`advisory_failure`
+  evidence the escalation was parked on. Metadata: { taskId, column, priorStatus, reasonCode,
+  outcome } — ids, the lane, the cleared status, the fixed reason code, and a fixed outcome;
+  never hold prose or reviewer text.
+  */
+  | "task:reconcile-orphaned-non-convergence-hold"
+  /*
   FNXC:LegacyAdoption 2026-07-19-04:30 (U9b / R10 / KTD-8):
   Startup legacy-row adoption through the KTD-8 adoption table. Metadata is
   ids/counts/outcomes-only: { taskId, action, priorStatus, column, backfilledStepCount,

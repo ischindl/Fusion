@@ -19,6 +19,18 @@ export type RunAuditMutationType =
   | "mergeQueue:lease-expired"
   | "task:handoff"
   | "task:handoff-invariant-violation"
+  /*
+  FNXC:ApprovalHoldMoveClear 2026-09-25-11:12 (RUFU-297 defect A):
+  `task:move-cleared-approval-hold` is emitted post-commit by `moveTaskInternal` when a user-driven
+  move out of a review lane clears an approval hold whose evidence the reopen hooks just destroyed
+  (or the gated-session pause shape that move supersedes). Metadata: { priorStatus, awaitingApprovalReason
+  (the reason-code enum, or "none" for the bare marker), fromColumn, toColumn, moveSource, outcome:
+  "cleared" } — status, a fixed code, columns, and a fixed outcome; never hold prose or error text. The row is
+  the audit proof of the hold/evidence pair invariant at the move seam; its ABSENCE next to a
+  step-wiping review exit is what distinguishes defect A from a legitimate hold-preserving move
+  (plan-approval release, graph remediation, preserveStatus, userPaused).
+  */
+  | "task:move-cleared-approval-hold"
   | "overseer:intervention"
   /*
   FNXC:VanishedTaskDetection 2026-09-24-00:40 (RUFU-283):

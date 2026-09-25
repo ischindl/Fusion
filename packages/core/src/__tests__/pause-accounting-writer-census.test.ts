@@ -32,6 +32,15 @@ const DIRECT_PAUSE_MUTATORS = [
      the in-review stall observer only ever patches a REVIEW-lane card and never un-pauses, so it
      has no segment to open and none to bank. */
   "packages/core/src/task-store/task-mutation-ops.ts",
+  /*
+  FNXC:ApprovalHoldMoveClear 2026-09-25-14:47 (RUFU-297):
+  The move seam clears the gated-session pause shape (`paused` + `pausedReason ===
+  AWAITING_APPROVAL_PAUSE_REASON`) when a user move out of a review lane supersedes it, so it
+  writes pause state in place. Routed through `applyPauseAccounting(task, false, movedAt, …)`,
+  which banks the open interval into `cumulativePausedMs` before clearing the anchor — mirroring
+  the reopen hook this clear parallels — so the card's clock chip keeps counting the paused span.
+  */
+  "packages/core/src/task-store/moves.ts",
 ] as const;
 
 /*
