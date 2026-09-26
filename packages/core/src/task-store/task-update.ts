@@ -27,6 +27,7 @@ import {validateNodeOverrideChange, resolveNodeOverrideLanes} from "../mesh/node
 import {shouldInvalidateEffectiveRoute} from "../mesh/effective-route-invalidation.js";
 import {isTaskTerminalNodeIdAsync} from "../workflows/workflow-ir-resolver.js";
 import {extractTaskIdTokens, normalizeTitleForTaskId} from "../tasks/task-title-id-drift.js";
+import {resolveTaskTitleWrite} from "../ai/ai-summarize.js";
 import {buildBootstrapPrompt} from "../mesh/mesh-task-replication.js";
 import {validateFileScopeInPromptContent} from "../task-store/file-scope.js";
 import {__setTaskActivityLogLimitsForTesting, isBootstrapPromptStub, rewriteHeadingLine} from "../task-store/comments.js";
@@ -277,7 +278,17 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
 
       let titleNormalized = false;
       if (updates.title !== undefined) {
-        task.title = updates.title;
+        /*
+        FNXC:TaskTitleDerivation 2026-09-26-01:32:
+        RUFU-295: the persisted-title write guard runs here too, so a rename that arrives as
+        `## Symptom (…)` or as a pasted multi-line spec body is stored as the canonical derived
+        label of the effective description instead of verbatim. Blank still means "clear the title"
+        (`undefined`), which is what the existing null-normalization path below already tolerates.
+        */
+        task.title = resolveTaskTitleWrite({
+          title: updates.title,
+          description: updates.description ?? task.description,
+        });
         // FN-5077: load-time repair tolerates null normalized titles (title cleared instead of fragment persisted).
         const normalizedTitle = normalizeTitleForTaskId(task.title, id);
         if (normalizedTitle.changed) {

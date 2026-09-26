@@ -48,6 +48,7 @@ import type {
 } from "@fusion/core";
 import {
   ApprovalRequestStore,
+  deriveTaskLabelFromDescription,
   buildTaskExternalBlockPatch,
   buildTaskExternalBlockReport,
   DEFAULT_PROVIDER_INSTANCE_ID,
@@ -544,7 +545,10 @@ export async function runImplementation(
       return;
     }
 
-    executorLog.log(`Starting ${task.id}: ${task.title || task.description.slice(0, 60)}`);
+    // FNXC:TaskTitleDerivation 2026-09-26-02:43: RUFU-295 — the executor's own start line names the card
+    // with the canonical markdown-aware label instead of the raw first 60 characters, so a spec-shaped
+    // description no longer prints `## Pôvodný popis` into the engine log as if it were a title.
+    executorLog.log(`Starting ${task.id}: ${task.title?.trim() || deriveTaskLabelFromDescription(task.description, 60)}`);
 
     // Fetch settings early — needed for worktree naming and later configuration.
     // Merge per-task effective workflow settings (U3, KTD-3) OVER the project/global

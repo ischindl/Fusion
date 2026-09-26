@@ -21,7 +21,7 @@ All skill/extension tool invocations in this catalog use the public `fn_*` names
 | `fn_workflow_settings` | Agent sessions | Read or write per-project values for a workflow's declared settings. |
 | `fn_trait_list` | Agent sessions | List column traits available when authoring Fusion workflow IR columns. |
 | `fn_workflow_select` | Agent sessions | Assign a workflow definition to a task by workflow ID. |
-| `fn_task_create` | Agent sessions | Create a new task on the Fusion task board. The task enters the planning column where the AI planning agent will plan it into a full prompt with steps, file scope, and acceptance criteria. Optionally pass workflow_id to select a workflow at creation time; use fn_workflow_list to discover valid IDs. |
+| `fn_task_create` | Agent sessions | Create a new task on the Fusion task board. The task enters the planning column where the AI planning agent will plan it into a full prompt with steps, file scope, and acceptance criteria. Optionally pass workflow_id to select a workflow at creation time; use fn_workflow_list to discover valid IDs. Optionally pass title to name the card in your own words; omitted, the label is derived from the first sentence of the description. |
 | `fn_task_update` | Agent sessions | Update fields on an existing task. Supports modifying the title, description, dependencies, assigned agent, and workflow_id after task creation. Set workflow_id to a workflow ID to select it, or null to clear the workflow selection. |
 | `fn_task_list` | Agent sessions | List all tasks on the Fusion board, grouped by column. |
 | `fn_task_show` | Agent sessions | Show full details for a task including steps, progress, and log entries. |

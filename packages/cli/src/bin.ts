@@ -128,7 +128,7 @@ async function loadCommandHandlers() {
   This line retired task archiving (only `fn goals archive` remains), and `commands/task.ts` exports neither handler,
   so keeping canonical's names would destructure `undefined` and re-add a dead dispatch. Ours + canonical's addition.
   */
-  const { runTaskCreate, runTaskList, runTaskMove, runTaskMerge, runTaskReconcile, runTaskUpdate, runTaskDeps, runTaskLog, runTaskLogs, runTaskShow, runTaskAttach, runTaskPause, runTaskUnpause, runTaskImportFromGitHub, runTaskImportFromGitLab, runTaskDuplicate, runTaskRefine, runTaskPlan, runTaskDelete, runTaskRetry, runTaskComment, runTaskComments, runTaskSteer, runTaskSetNode, runTaskClearNode } = await import("./commands/task.js");
+  const { runTaskCreate, runTaskList, runTaskMove, runTaskRename, runTaskMerge, runTaskReconcile, runTaskUpdate, runTaskDeps, runTaskLog, runTaskLogs, runTaskShow, runTaskAttach, runTaskPause, runTaskUnpause, runTaskImportFromGitHub, runTaskImportFromGitLab, runTaskDuplicate, runTaskRefine, runTaskPlan, runTaskDelete, runTaskRetry, runTaskComment, runTaskComments, runTaskSteer, runTaskSetNode, runTaskClearNode } = await import("./commands/task.js");
   const { runPrCreate, runPrShow, runPrList, runPrRespond, runPrApprove, runPrRetry, runPrMerge, runPrClose, runPrAutomerge, runPrAutomergeCleanup } = await import("./commands/pr.js");
   const { runSettingsShow, runSettingsSet } = await import("./commands/settings.js");
   const { runSettingsExport } = await import("./commands/settings-export.js");
@@ -179,6 +179,7 @@ async function loadCommandHandlers() {
     runTaskCreate,
     runTaskList,
     runTaskMove,
+    runTaskRename,
     runTaskMerge,
     runTaskReconcile,
     runTaskUpdate,
@@ -339,13 +340,14 @@ Usage:
   fn update [--check] [--global] [--json] [--channel <stable|beta>] [--force]
                                        Update Fusion on the selected release channel
   fn upgrade                           Alias for fn update
-  fn task create [desc] [opts]         Create a new task (goes to triage; supports --node <name>, --no-dedup, --yes)
+  fn task create [desc] [opts]         Create a new task (goes to triage; supports --title <text>, --node <name>, --no-dedup, --yes)
   fn task plan [description] [opts]    Create task via AI-guided planning (--resume <sessionId> continues a plan to create another task)
   fn task list                        List all tasks
   fn task show <id>                   Show task details, steps, log
   fn task logs <id> [--follow] [--limit <n>] [--type <type>]
                                       Show task agent execution logs
   fn task move <id> <col>             Move a task to a column
+  fn task rename <id> <title>         Rename a card's title (one line; markdown headings and multi-line text are refused)
   fn task update <id> <step> <status> Update step status (pending|in-progress|done|skipped)
   fn task deps <op> <id> ...        Add/remove/replace/set task dependencies
   fn task log <id> <message>          Add a log entry
@@ -632,8 +634,26 @@ function getFlagValueNumber(args: string[], flag: string): number | undefined {
  * Parsed `fn task create [opts] <description>` arguments (everything after `task create`).
  */
 export interface TaskCreateArgs {
-  /** Positional description text joined with spaces; empty when only flags were given. */
+  /**
+   * Positional description text joined with spaces; empty when only flags were given.
+   *
+   * FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): this key is misnamed — it has always carried
+   * the *description* positional, and `runTaskCreate` receives it as `descriptionArg`. It is kept
+   * under its historical name because `parseTaskCreateArgs`'s shape is a tested contract
+   * (`project-routing.test.ts` asserts `args.title` is the joined positional). `--title` therefore
+   * gets its OWN key (`explicitTitle`) below: routing `--title` into this field would make a short
+   * title silently become the whole card description, which is the exact overload
+   * RUFU-269's FNXC note at the parser warns about.
+   */
   title: string;
+  /**
+   * `--title <text>` — an explicit card label that never touches the description.
+   *
+   * FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): before this flag the CLI could not name a
+   * card at all; the label was whatever the shared derivation made of the first prose line, so a
+   * card that began with `## Description` was titled with the heading text.
+   */
+  explicitTitle?: string;
   /** `--attach` values. */
   attachFiles: string[];
   /** `--depends` values. */
@@ -670,6 +690,7 @@ export function parseTaskCreateArgs(createArgs: string[]): TaskCreateArgs {
   let noDedup = false;
   let github: boolean | undefined;
   let githubRepo: string | undefined;
+  let explicitTitle: string | undefined;
   let yes = false;
 
   for (let i = 0; i < createArgs.length; i++) {
@@ -691,6 +712,9 @@ export function parseTaskCreateArgs(createArgs: string[]): TaskCreateArgs {
     } else if (createArgs[i] === "--github-repo" && i + 1 < createArgs.length) {
       githubRepo = createArgs[i + 1];
       i++; // skip the value
+    } else if (createArgs[i] === "--title" && i + 1 < createArgs.length) {
+      explicitTitle = createArgs[i + 1];
+      i++; // skip the value
     } else if (createArgs[i] === "--yes") {
       yes = true;
     } else {
@@ -700,6 +724,7 @@ export function parseTaskCreateArgs(createArgs: string[]): TaskCreateArgs {
 
   return {
     title: descParts.join(" "),
+    ...(explicitTitle?.trim() ? { explicitTitle: explicitTitle.trim() } : {}),
     attachFiles,
     depends: dependsIds,
     nodeName,
@@ -785,6 +810,7 @@ async function main() {
     runTaskCreate,
     runTaskList,
     runTaskMove,
+    runTaskRename,
     runTaskMerge,
     runTaskReconcile,
     runTaskUpdate,
@@ -1346,6 +1372,7 @@ async function main() {
                 ? { github: create.github, githubRepo: create.githubRepo }
                 : undefined,
               create.yes,
+              create.explicitTitle,
             );
             break;
           }
@@ -1621,9 +1648,19 @@ async function main() {
             }
             break;
           }
+          case "rename": {
+            const id = args[2];
+            const title = args.slice(3).join(" ");
+            if (!id || !title.trim()) {
+              console.error("Usage: fn task rename <id> \"<one-line title>\"");
+              process.exit(1);
+            }
+            await runTaskRename(id, title, projectName);
+            break;
+          }
           default:
             console.error(`Unknown subcommand: task ${subcommand || ""}`);
-            console.log("Try: fn task create | list | move | set-node | clear-node");
+            console.log("Try: fn task create | list | move | rename | set-node | clear-node");
             process.exit(1);
         }
         break;

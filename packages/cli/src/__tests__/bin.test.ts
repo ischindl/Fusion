@@ -15,6 +15,7 @@ const commandMocks = vi.hoisted(() => ({
   runTaskCreate: vi.fn(),
   runTaskList: vi.fn(),
   runTaskMove: vi.fn(),
+  runTaskRename: vi.fn(),
   runTaskMerge: vi.fn(),
   runTaskReconcile: vi.fn(),
   runTaskUpdate: vi.fn(),
@@ -213,6 +214,7 @@ vi.mock("../commands/task.js", () => ({
   runTaskCreate: commandMocks.runTaskCreate,
   runTaskList: commandMocks.runTaskList,
   runTaskMove: commandMocks.runTaskMove,
+  runTaskRename: commandMocks.runTaskRename,
   runTaskMerge: commandMocks.runTaskMerge,
   runTaskReconcile: commandMocks.runTaskReconcile,
   runTaskUpdate: commandMocks.runTaskUpdate,
@@ -687,6 +689,27 @@ describe("bin command routing and fallbacks", () => {
       ["FN-191"],
       "atlas-notes",
     );
+  });
+
+  /*
+  FNXC:TaskTitleHygiene 2026-09-26-04:45 (RUFU-295): `fn task rename` is the agent-reachable rename edge —
+  the CLI process is where a fixer session lives, and until now renaming required either the operator or a
+  card deletion the card's own creator is refused. These two cases pin that the subcommand actually
+  dispatches (a `case` added to the wrong switch would otherwise fall through to "Unknown subcommand") and
+  that an argument-less call exits non-zero instead of renaming nothing silently.
+  */
+  it("routes task rename with the joined title and project", async () => {
+    await runBin(["task", "rename", "FN-155", "Authored", "REVISE", "must", "not", "deadlock", "--project", "atlas-notes"]);
+    expect(commandMocks.runTaskRename).toHaveBeenCalledWith(
+      "FN-155",
+      "Authored REVISE must not deadlock",
+      "atlas-notes",
+    );
+  });
+
+  it("errors for task rename without a title", async () => {
+    await expect(runBin(["task", "rename", "FN-155"])).rejects.toThrow("process.exit:1");
+    expect(errorSpy).toHaveBeenCalledWith('Usage: fn task rename <id> "<one-line title>"');
   });
 
   it("errors for task deps missing operation", async () => {

@@ -1,4 +1,5 @@
 import type { Task } from "@fusion/core";
+import { deriveTaskLabelDetails } from "./taskTitleDerivation";
 
 export type TaskTitleDisplaySource = "title" | "description" | "id";
 
@@ -10,7 +11,15 @@ export interface TaskTitleDisplay {
 }
 
 /**
- * Exact number of description characters used as a card label when no title is stored.
+ * Budget for the description-derived card label when no title is stored.
+ *
+ * FNXC:TaskTitleDerivation 2026-09-26-02:28:
+ * RUFU-295 keeps the 220-character BUDGET and changes its CONTENT: the label is now
+ * `deriveTaskLabelDetails(description, 220)` instead of the first 220 raw characters. A heading-first
+ * or multi-line description used to render `## Pôvodný popis` or a whole markdown body as the card
+ * label; it now renders the first real sentence, single-line and marker-free. The FN-391 "no suffix,
+ * bounded to exactly 220" contract survives because the derivation hard-truncates at EXACTLY the
+ * budget when the content offers no whitespace boundary.
  *
  * FNXC:TaskTitleDisplay 2026-09-14-16:55:
  * FN-391 fixes this at 220 characters taken EXACTLY — no ellipsis, no suffix, no word-boundary
@@ -46,11 +55,13 @@ export type TaskTitleDisplayInput =
  * selectors. Precedence is fixed:
  *   1. a non-blank stored title, rendered IN FULL (never truncated here — an explicit title is the
  *      operator's own words and clamping it belongs to the component's geometry);
- *   2. otherwise the first {@link MAX_DESCRIPTION_FALLBACK_LENGTH} characters of the description,
- *      exactly;
+ *   2. otherwise the label derived from the description — its first real sentence, markdown-free and
+ *      single-line — bounded at {@link MAX_DESCRIPTION_FALLBACK_LENGTH};
  *   3. otherwise the task ID, so two tasks sharing one description are still distinguishable.
- * `fullText` carries the untruncated source for tooltips; `isBoundedDescription` is true only when
- * a description was actually longer than the bound. Nothing here is ever persisted.
+ * `fullText` always carries the untruncated description for tooltips; `isBoundedDescription` is true
+ * when the rendered label is a derived SUBSET of the description — either the budget cut it, or the
+ * derivation dropped markdown structure or later lines the raw description carried. Nothing here is
+ * ever persisted.
  */
 export function getTaskTitleDisplay(task: TaskTitleDisplayInput): TaskTitleDisplay {
   if (typeof task.title === "string" && task.title.trim().length > 0) {
@@ -63,14 +74,12 @@ export function getTaskTitleDisplay(task: TaskTitleDisplayInput): TaskTitleDispl
   }
 
   if (typeof task.description === "string" && task.description.trim().length > 0) {
-    const isBoundedDescription = task.description.length > MAX_DESCRIPTION_FALLBACK_LENGTH;
+    const derivation = deriveTaskLabelDetails(task.description, MAX_DESCRIPTION_FALLBACK_LENGTH);
     return {
       source: "description",
-      text: isBoundedDescription
-        ? task.description.slice(0, MAX_DESCRIPTION_FALLBACK_LENGTH)
-        : task.description,
+      text: derivation.label,
       fullText: task.description,
-      isBoundedDescription,
+      isBoundedDescription: derivation.truncated || derivation.label !== task.description.trim(),
     };
   }
 

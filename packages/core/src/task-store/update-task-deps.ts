@@ -79,8 +79,10 @@ export async function refineTaskImpl(store: TaskStore, id: string, feedback: str
     `task_refine` source chip on the card, the parent link in the detail view, and the
     `Refines: <id>` line kept in the description plus the real `dependencies` edge.
     `deriveFallbackTaskTitle` is the same deterministic, never-LLM derivation other titleless
-    rows use (first meaningful line, markdown stripped, truncated at a word boundary), so a
-    refinement reads like any other card rather than inventing its own truncation rule.
+    rows use (markdown-aware first real sentence of the first meaningful line, truncated at a word
+    boundary), so a refinement reads like any other card rather than inventing its own truncation
+    rule. RUFU-295 changed that rule from "first line" to "first sentence", so a feedback note that
+    opens on a markdown heading no longer titles its card with the heading.
     */
     const refinementTitle = deriveFallbackTaskTitle(feedback.trim());
 

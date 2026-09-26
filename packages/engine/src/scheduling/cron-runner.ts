@@ -1,6 +1,7 @@
 import { exec } from "node:child_process";
 
 import {
+  deriveTaskLabelFromDescription,
   resolveExecutionSettingsModel,
   runScheduledEvalBatch,
   resolveTaskEvaluationSettings,
@@ -1002,7 +1003,9 @@ export class CronRunner {
     try {
       const task = await this.store.createTask(taskInput);
 
-      const output = `Created task ${task.id}: ${task.title || task.description.slice(0, 80)}`;
+      // FNXC:TaskTitleDerivation 2026-09-26-02:28: RUFU-295 — the run log names the card with the same
+      // markdown-aware label the board shows, not the raw first 80 characters of the description.
+      const output = `Created task ${task.id}: ${task.title?.trim() || deriveTaskLabelFromDescription(task.description, 80)}`;
       log.log(`    ✓ Create-task step "${step.name}" created task ${task.id}`);
 
       return {

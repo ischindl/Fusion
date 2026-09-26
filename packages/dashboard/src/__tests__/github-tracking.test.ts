@@ -85,15 +85,24 @@ describe("deriveTitleFromDescription", () => {
     );
   });
 
-  it("truncates long derived titles with an ellipsis", () => {
-    expect(deriveTitleFromDescription("abcdefghijk", 8)).toBe("abcdefg…");
+  /*
+  FNXC:TaskTitleDerivation 2026-09-26-02:43:
+  RUFU-295 routed the GitHub title candidate through the canonical core derivation instead of this
+  module's own truncate-with-ellipsis copy, so the bound is now exact and suffix-free — the same
+  contract the board card, the CLI listing, and the Patchnode ledger already pinned. A local ellipsis
+  here was precisely the second-authority drift this task removes, so these expectations record the
+  new truth rather than the old suffix.
+  */
+  it("bounds a long derived title at exactly the budget with no suffix", () => {
+    expect(deriveTitleFromDescription("abcdefghijk", 8)).toBe("abcdefgh");
   });
 
   it.each([
-    ["Sentence one. Sentence two", "Sentence one."],
-    ["Ship it! Then celebrate", "Ship it!"],
-    ["Question first? Answer later", "Question first?"],
-  ])("truncates at the first sentence terminator for %s", (input, expected) => {
+    ["Sentence one. Sentence two", "Sentence one"],
+    ["Ship it! Then celebrate", "Ship it"],
+    ["Question first? Answer later", "Question first"],
+  ])("cuts at the first sentence terminator for %s", (input, expected) => {
+    // `sanitizeTitle`'s drop-trailing-punctuation rule is what removes the terminator itself.
     expect(deriveTitleFromDescription(input, 80)).toBe(expected);
   });
 });
@@ -760,7 +769,9 @@ describe("maybeCreateTrackingIssue", () => {
 
     expect(result.created).toBe(true);
     expect(updateTask).not.toHaveBeenCalled();
-    expect(createIssueMock).toHaveBeenCalledWith(expect.objectContaining({ title: "[FN-1] Derived fallback title." }));
+    // RUFU-295: the canonical derivation cuts at the first sentence terminator and drops the trailing
+    // period, so the fallback issue title no longer carries it.
+    expect(createIssueMock).toHaveBeenCalledWith(expect.objectContaining({ title: "[FN-1] Derived fallback title" }));
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("AI title summarizer failed"));
   });
 
@@ -822,7 +833,7 @@ describe("maybeCreateTrackingIssue", () => {
     });
 
     expect(result.created).toBe(true);
-    expect(createIssueMock).toHaveBeenCalledWith(expect.objectContaining({ title: "[FN-1] Derived fallback title." }));
+    expect(createIssueMock).toHaveBeenCalledWith(expect.objectContaining({ title: "[FN-1] Derived fallback title" }));
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("AI title summarizer failed"));
   });
 
@@ -853,7 +864,7 @@ describe("maybeCreateTrackingIssue", () => {
     });
 
     expect(summarizeTitleMock).not.toHaveBeenCalled();
-    expect(createIssueMock).toHaveBeenCalledWith(expect.objectContaining({ title: "[FN-1] Derived fallback title." }));
+    expect(createIssueMock).toHaveBeenCalledWith(expect.objectContaining({ title: "[FN-1] Derived fallback title" }));
   });
 
   it("does not invoke the summarizer when a non-empty title is already present", async () => {

@@ -652,7 +652,15 @@ describe("buildSpecificationPrompt", () => {
       expect(prompt).not.toContain("- **Title:** (none)");
     });
 
-    it("uses the helper-safe first meaningful line for markdown and multiline text", () => {
+    /*
+    FNXC:TaskTitleDerivation 2026-09-26-01:32 (RUFU-295):
+    This fixture used to pin the OLD "first non-empty line, markers stripped" contract, which is the
+    exact behavior RUFU-295 removed: `### Restore the short task title` is section furniture while
+    prose exists below it, so the derived prompt title is now that prose sentence. The assertion the
+    test exists for is unchanged — a titleless task gets the deterministic single-line label, never
+    "(none)".
+    */
+    it("uses the helper-safe derived sentence for markdown and multiline text", () => {
       const description = "\n### Restore the short task title\n\nAdditional details stay in the description.";
       const prompt = buildSpecificationPrompt(
         { ...baseTask, title: undefined, description },
@@ -660,7 +668,7 @@ describe("buildSpecificationPrompt", () => {
       );
       const fallbackTitle = deriveFallbackTaskTitle(description);
 
-      expect(fallbackTitle).toBe("Restore the short task title");
+      expect(fallbackTitle).toBe("Additional details stay in the description");
       expect(prompt).toContain(`- **Title:** ${fallbackTitle}`);
       expect(prompt).not.toContain("- **Title:** (none)");
     });

@@ -7,7 +7,7 @@ Import union for this line: ours adds `isFollowUpTask`, `resolveWorkflowIrForTas
 but the merged body has no call site, so keeping them would be dead references. Engine side keeps ours
 (`admitTaskToWip`/`isFirstPlanningToWipAdmission`/`planTaskWorktreePath`) and `SelfHealingManager`, which both lines need.
 */
-import { TaskStore, COLUMNS, COLUMN_LABELS, isFollowUpTask, MAX_TASK_MESSAGE_LENGTH, resolveProjectColumnsForRoles, TERMINAL_ROLES, resolveReviewColumns, resolveTaskLifecycleColumns, resolveWorkflowIrForTask, resolvePreMergeGateForTask, resolveWorkflowIrForTaskWithProvenance, workflowHasColumn, resolveEffectiveAutoMerge, CentralCore, buildAutoPauseClearPatch, buildManualRetryResetPatch, extractIntentSignature, findNearDuplicates, getTaskDuplicateLineage, isValidRepoSlug, isWorkspaceTask, reconcileDeterministicDuplicate, resolveTaskGithubTracking, runDeterministicDuplicateGuard, type Settings, type Column, type ColumnId, type StepStatus, type AgentLogType, type AgentLogEntry, type IntentSignature, type NearDuplicateCandidate, type NearDuplicateMatch, type TaskDependencyMutation } from "@fusion/core";
+import { TaskStore, COLUMNS, COLUMN_LABELS, deriveTaskLabelFromDescription, describeTaskTitleRejection, isFollowUpTask, MAX_TASK_MESSAGE_LENGTH, resolveProjectColumnsForRoles, TERMINAL_ROLES, resolveReviewColumns, resolveTaskLifecycleColumns, resolveWorkflowIrForTask, resolvePreMergeGateForTask, resolveWorkflowIrForTaskWithProvenance, workflowHasColumn, resolveEffectiveAutoMerge, CentralCore, buildAutoPauseClearPatch, buildManualRetryResetPatch, extractIntentSignature, findNearDuplicates, getTaskDuplicateLineage, isValidRepoSlug, isWorkspaceTask, reconcileDeterministicDuplicate, resolveTaskGithubTracking, runDeterministicDuplicateGuard, type Settings, type Column, type ColumnId, type StepStatus, type AgentLogType, type AgentLogEntry, type IntentSignature, type NearDuplicateCandidate, type NearDuplicateMatch, type TaskDependencyMutation } from "@fusion/core";
 import { isFailedNoVerdictPreMergeReviewResult, admitTaskToWip, isFirstPlanningToWipAdmission, isInReviewMissingWorktreeSessionStartFailure, planTaskWorktreePath, runAiMerge, landWorkspaceTask, withWorkspaceMergeDispatchLease, clearOwnedMergeStamp, reconcileUnownedStaleMergeStamp, SelfHealingManager } from "@fusion/engine";
 import { createInterface } from "node:readline/promises";
 import type { PlanningQuestion, PlanningSummary } from "@fusion/core";
@@ -54,6 +54,20 @@ composers, so pasted operator instructions are admitted consistently on every ta
 
 /** #1403: display a column's label, falling back to the raw id for
  *  workflow-defined custom columns that have no legacy label. */
+/**
+ * One card label for every CLI listing, echo, and confirmation line.
+ *
+ * FNXC:TaskTitleDerivation 2026-09-26-02:43:
+ * RUFU-295: the CLI used to print `task.title || description.slice(0, 60) + "…"`, so a titleless card
+ * whose description begins with a markdown heading or PREMISA line displayed as that junk on
+ * `fn task list`/`fn task show`/create echoes. The fallback now goes through the same core derivation
+ * the dashboard and the Patchnode ledger use, and the hand-rolled ellipsis is gone — the canonical
+ * label is bounded with no suffix.
+ */
+function cliTaskLabel(task: { title?: string | null; description?: string | null }, maxLength = 60): string {
+  return task.title?.trim() || deriveTaskLabelFromDescription(task.description ?? "", maxLength);
+}
+
 function columnLabel(column: ColumnId): string {
   return (COLUMN_LABELS as Record<string, string>)[column] ?? column;
 }
@@ -533,8 +547,17 @@ from `parseTaskCreateArgs` in `bin.ts`. It answers an affirmative cross-project 
 without asking, which is what lets a script target the default project deliberately. It has NO effect on
 precedence — `--project` still wins, an invalid one still throws.
 */
-export async function runTaskCreate(descriptionArg?: string, attachFiles?: string[], depends?: string[], projectName?: string, nodeName?: string, noDedup = false, githubOpts?: { github?: boolean; githubRepo?: string }, yes = false) {
+/*
+FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): `titleArg` is `fn task create --title <text>`, threaded
+through `parseTaskCreateArgs` in `bin.ts`. It is appended as the last positional because the eight
+positional parameters before it are a tested call shape (`commands/__tests__/task.test.ts` calls
+`runTaskCreate` positionally ~30 times); inserting the new label anywhere else would have rewired every
+one of those calls for no behavioural gain. An explicit title reaches `store.createTask` verbatim, so the
+board stores the name the operator chose and the shared derivation never runs for that card.
+*/
+export async function runTaskCreate(descriptionArg?: string, attachFiles?: string[], depends?: string[], projectName?: string, nodeName?: string, noDedup = false, githubOpts?: { github?: boolean; githubRepo?: string }, yes = false, titleArg?: string) {
   let description = descriptionArg;
+  const explicitTitle = titleArg?.trim() || undefined;
 
   /*
   FNXC:GithubTracking 2026-08-15-03:50:
@@ -687,6 +710,12 @@ export async function runTaskCreate(descriptionArg?: string, attachFiles?: strin
           const created = await store.createTask({
             description: trimmedDescription,
             dependencies: depends,
+            /*
+            FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): an explicit `--title` is written as the
+            operator's own words — the store's write guard still sanitises and bounds it, but no
+            description-derived text is substituted for a deliberate name.
+            */
+            ...(explicitTitle ? { title: explicitTitle } : {}),
             ...(originWorkflowId ? { workflowId: originWorkflowId } : {}),
             ...(githubTracking ? { githubTracking } : {}),
             source: {
@@ -729,9 +758,9 @@ export async function runTaskCreate(descriptionArg?: string, attachFiles?: strin
       }
     }
 
-    const label = resolvedTask.description.length > 60
-      ? resolvedTask.description.slice(0, 60) + "…"
-      : resolvedTask.description;
+    // RUFU-295: this echo previously ignored the stored title entirely and printed a raw description
+    // prefix; it now reads the same label the board shows.
+    const label = cliTaskLabel(resolvedTask);
 
     console.log();
     if (context.projectName) {
@@ -932,7 +961,7 @@ export async function buildTaskListBoardLines(
     lines.push(`  ${dot} ${label} (${colTasks.length})`);
     for (const t of colTasks) {
       const deps = t.dependencies.length ? ` [deps: ${t.dependencies.join(", ")}]` : "";
-      const label = t.title || t.description.slice(0, 60) + (t.description.length > 60 ? "…" : "");
+      const label = cliTaskLabel(t);
       lines.push(`    ${t.id}  ${label}${deps}`);
     }
     lines.push("");
@@ -1001,6 +1030,44 @@ export async function runTaskDeps(
       console.log(`    Blocked by: ${task.blockedBy}`);
     } else {
       console.log("    Blocked by: none");
+    }
+    console.log();
+  });
+}
+
+/*
+FNXC:TaskTitleDerivation 2026-09-26-04:45:
+RUFU-295 ships the rename path the request asked for. Before it, a card whose title came out as its
+description's first markdown line had exactly one remedy — an operator editing it in the dashboard:
+`fn task` exposed no title edit, and `deleteTask` on one's own card is refused (measured on RUFU-294),
+so the junk titles on RUFU-280/284/285/292/294 were un-fixable by the agent that created them.
+
+Validation runs HERE rather than relying on the store's `resolveTaskTitleWrite` guard: that guard is the
+last line of defence and repairs junk by substituting the derived label, which is right for a write seam
+but wrong for a caller that just typed a title — it must hear why its words were refused (AXI:
+actionable message, non-zero exit, no stack trace) instead of watching a different string on the card.
+The shape list lives in core (`describeTaskTitleRejection`) so this edge and `fn_task_update` cannot drift.
+
+Persisting through `store.updateTask` is deliberate: the update seam keeps the card's PROMPT.md heading
+in sync (`task-store/task-update.ts`), so board label and spec heading cannot disagree afterwards.
+*/
+export async function runTaskRename(id: string, title: string, projectName?: string) {
+  const rejection = describeTaskTitleRejection(title);
+  if (rejection) {
+    throw new Error(`Cannot rename ${id}: ${rejection}.`);
+  }
+  const trimmed = title.trim();
+
+  // FNXC:CliBoardMutation 2026-07-09-00:00 (FN-7734): single board write.
+  await withBoardWrite(projectName, { id, action: "rename task" }, async (context) => {
+    const current = await context.store.getTask(id);
+    if (!current) throw new Error(`Task not found: ${id}`);
+    const task = await context.store.updateTask(id, { title: trimmed });
+
+    console.log();
+    console.log(`  ✓ ${task.id}: title → ${task.title}`);
+    if (current.title?.trim()) {
+      console.log(`    was: ${current.title}`);
     }
     console.log();
   });
@@ -2238,7 +2305,7 @@ export async function runTaskImportGitHubInteractive(
         ...(importedIssueGithubTracking ? { githubTracking: importedIssueGithubTracking } : {}),
       }));
 
-      const label = task.title || task.description.slice(0, 60) + (task.description.length > 60 ? "…" : "");
+      const label = cliTaskLabel(task);
       outputResult(`  ✓ Created ${task.id}: ${label}\n`);
       existingTasks.push(task);
       created++;
@@ -2414,7 +2481,7 @@ export async function runTaskImportFromGitHub(
         ...(importedIssueGithubTracking ? { githubTracking: importedIssueGithubTracking } : {}),
       }));
 
-      const label = task.title || task.description.slice(0, 60) + (task.description.length > 60 ? "…" : "");
+      const label = cliTaskLabel(task);
       outputResult(`  ✓ Created ${task.id}: ${label}\n`);
       existingTasks.push(task);
       created++;
@@ -3069,7 +3136,7 @@ export async function runTaskPlan(
             createTaskFromPlanSession(sessionId, store, { baseBranch: baseBranch?.trim() || undefined }));
 
           console.log();
-          outputResult(`  ${alreadyCreated ? "✓ Task already created from this plan:" : "✓ Created"} ${task.id}: ${task.title || task.description.slice(0, 60)}${task.description.length > 60 ? "…" : ""}\n`);
+          outputResult(`  ${alreadyCreated ? "✓ Task already created from this plan:" : "✓ Created"} ${task.id}: ${cliTaskLabel(task)}\n`);
           console.log(`    Column: ${task.column ?? "triage"}`);
           if (task.dependencies.length > 0) {
             console.log(`    Dependencies: ${task.dependencies.join(", ")}`);

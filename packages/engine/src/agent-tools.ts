@@ -64,7 +64,17 @@ const missionLineageParams = Type.Object(
   },
 );
 
+/*
+FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295):
+Every task-creation surface takes an optional explicit `title`. Before it, an agent that knew exactly what
+a card should be called had no way to say so: the label came from the first prose line of `description`, so
+a description opening on a markdown heading titled the card with the heading text. Omitted, the shared
+sentence-first derivation still fills the label, so the parameter is additive on every surface.
+*/
 export const taskCreateParams = Type.Object({
+  title: Type.Optional(Type.String({
+    description: "Short card label (e.g. 'Fix lockfile drift in plugin workspaces'). Omitted, the label is derived from the first sentence of description.",
+  })),
   description: Type.String({ description: "What needs to be done" }),
   dependencies: Type.Optional(
     Type.Array(Type.String(), { description: "Task IDs this new task depends on (e.g. [\"KB-001\"])" }),
@@ -325,6 +335,20 @@ export const taskUpdateParams = Type.Object({
     { description: "New status: pending, in-progress, done, or skipped. Required when step is set." },
   )),
   summary: Type.Optional(Type.String({ description: "2-4 plain-language sentences describing what THIS step actually delivered (files/behavior changed, verification run). Required when status is 'done'. Shown to the operator in the task History tab." })),
+  /*
+  FNXC:TaskTitleDerivation 2026-09-26-04:45:
+  RUFU-295: this parameter is the agent-reachable rename. Before it, a card mis-titled by its own creator
+  (`## Pôvodný popis`, a whole pasted markdown body) had exactly one remedy — an operator editing the card in
+  the dashboard — because the CLI exposed no title edit and `deleteTask` refuses a creator's own card. Junk
+  shapes are refused by core's `describeTaskTitleRejection`, shared with `fn task rename`, so the two edges
+  cannot disagree about what counts as a title.
+  */
+  title: Type.Optional(Type.String({
+    description:
+      "Optional one-line card title — the remediation path for a card whose title came out as markdown " +
+      "boilerplate or a multi-line body. Must be a single non-empty line, never a `## …` heading, and at most " +
+      "220 characters. The store keeps the card's PROMPT.md heading in sync with the new title.",
+  })),
   dependencies: Type.Optional(Type.Array(Type.String(), {
     description: "Optional task dependency array. Replaces existing dependencies. Pass ['FN-001', 'FN-002'] to set dependencies. Pass [] to clear all dependencies. Omit parameter to preserve existing dependencies.",
   })),
@@ -491,6 +515,13 @@ export const delegateTaskParams = Type.Object({
         "Omit to inherit the project default workflow. Use fn_workflow_list to discover valid IDs.",
     }),
   ),
+  /*
+  FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): delegation names its card like every other create
+  surface; omitted keeps the sentence-first derivation from the description.
+  */
+  title: Type.Optional(Type.String({
+    description: "Short card label for the delegated task. Omitted, the label is derived from the first sentence of description.",
+  })),
   /*
   FNXC:MissionAdmission 2026-09-20-05:15:
   Delegation uses the same optional-lineage contract as direct creation on every surface.
@@ -1628,6 +1659,8 @@ export function createTaskCreateTool(
       "or the current task should wait for the new one). " +
       "Optionally pass workflow_id to select a workflow at creation time; use " +
       "fn_workflow_list to discover valid IDs. " +
+      "Pass title to name the card in your own words; omitted, the label is derived from the first " +
+      "sentence of the description. " +
       "mission_lineage is optional on every surface; pass it only when linking to an " +
       "approved Feature → Slice → Mission.",
     parameters: taskCreateParams,
@@ -1651,7 +1684,15 @@ export function createTaskCreateTool(
               const message = "Task proposal validation is configured but the mailbox is unavailable; no task was created.";
               return { content: [{ type: "text" as const, text: `ERROR: ${message}` }], details: { error: message, rule: "ephemeral-agents-cannot-create-tasks" }, isError: true };
             }
-            const title = params.description.split(/\r?\n/, 1)[0]?.trim().slice(0, 80) || "Follow-up task";
+            /*
+            FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): this operator-facing proposal line used the
+            raw first line of the description, so a proposal raised from a markdown-first description read
+            as the heading text. An explicit agent-supplied title wins; otherwise the shared derivation
+            labels it, so the line the operator reviews matches the card title they would get on approval.
+            */
+            const derivedLabel = fusionCore.deriveTaskLabelFromDescription(params.description, 80);
+            const title = params.title?.trim()
+              || (derivedLabel === fusionCore.FALLBACK_TASK_TITLE ? "Follow-up task" : derivedLabel);
             await options.messageStore.sendMessage({
               fromId: options.sourceAgentId ?? provenance?.sourceAgentId ?? "ephemeral-worker", fromType: "agent", toId: DASHBOARD_USER_ID, toType: "user", type: "agent-to-user",
               content: `Task proposal awaiting validation: ${title}`,
@@ -1686,6 +1727,8 @@ export function createTaskCreateTool(
         still resolves to "triage" (byte-identical prior behavior).
         */
         const { task, wasDuplicate } = await createAgentTask(store, {
+          // FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): an explicit title is the caller's own words.
+          ...(params.title?.trim() ? { title: params.title.trim() } : {}),
           description: params.description,
           dependencies: params.dependencies,
           ...(workflowId ? { workflowId } : {}),
@@ -1702,10 +1745,18 @@ export function createTaskCreateTool(
         }, options);
         const deps = task.dependencies.length ? ` (depends on: ${task.dependencies.join(", ")})` : "";
         const workflow = workflowId ? ` (workflow: ${workflowId})` : "";
+        /*
+        FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): the create confirmation echoes the card's LABEL,
+        not the raw description. Echoing the whole description meant an agent that passed `title` never saw
+        its own title land (so it could not tell a stored title from a derived one), and a caller that
+        passed no title saw a wall of prose where the board shows one line.
+        */
+        const echoedLabel = task.title?.trim()
+          || fusionCore.deriveTaskLabelFromDescription(task.description, 80);
         return {
           content: [{
             type: "text" as const,
-            text: `${wasDuplicate ? "Linked existing" : "Created"} ${task.id}: ${params.description}${deps}${workflow}`,
+            text: `${wasDuplicate ? "Linked existing" : "Created"} ${task.id}: ${echoedLabel}${deps}${workflow}`,
           }],
           details: { taskId: task.id, wasDuplicate },
         };
@@ -1783,8 +1834,17 @@ function trimSemanticToolRead(text: string, hint: string): string {
   return text.slice(0, Math.max(0, SEMANTIC_TOOL_READ_MAX_CHARS - marker.length)) + marker;
 }
 
+/*
+FNXC:TaskTitleDerivation 2026-09-26-02:43:
+RUFU-295: the one label projection for agent-facing task lines. A titleless card used to be shown as
+the raw first 80 characters of its description, so a spec-shaped card read to the agent as
+`## Pôvodný popis\n\n- bullet`. It now gets the same markdown-aware first sentence the board renders,
+so an agent reasons about the same label a human reads. A genuinely blank description keeps its
+explicit `(no description)` sentinel rather than the generic untitled label.
+*/
 function formatTaskSummaryLine(task: { id: string; column: string; title?: string | null; description: string; dependencies: string[] }): string {
-  const desc = task.title || task.description.slice(0, 80) || "(no description)";
+  const desc = task.title?.trim()
+    || (task.description.trim() ? fusionCore.deriveTaskLabelFromDescription(task.description, 80) : "(no description)");
   const deps = task.dependencies.length ? ` [deps: ${task.dependencies.join(", ")}]` : "";
   return `${task.id} (${task.column}): ${desc}${deps}`;
 }
@@ -3683,13 +3743,39 @@ export function createTaskMergeTool(store: TaskStore, _currentTaskId: string): T
 export function createTaskUpdateTool(store: TaskStore, taskId: string): ToolDefinition {
   return {
     name: "fn_task_update",
-    label: "Update Step / Custom Fields / Dependencies",
+    label: "Update Step / Title / Custom Fields / Dependencies",
     description:
-      "Update a task step status, dependencies, or workflow custom fields without leaving chat. " +
-      "Use step+status to report progress, dependencies to rewire blockers, or custom_fields to set workflow-defined fields.",
+      "Update a task step status, title, dependencies, or workflow custom fields without leaving chat. " +
+      "Use step+status to report progress, dependencies to rewire blockers, or custom_fields to set workflow-defined fields. " +
+      "Pass `title` to rename the card — that is the remediation path when a card you created got a junk title " +
+      "(a markdown heading or a multi-line description slice) instead of a real one.",
     parameters: taskUpdateParams,
     execute: async (_id: string, params: Static<typeof taskUpdateParams>) => {
       try {
+        /*
+        FNXC:TaskTitleDerivation 2026-09-26-04:45:
+        RUFU-295: a rename is applied FIRST, so a combined call (`title` + `step/status`) reports each
+        outcome separately: the title write is durable even when a later step transition is refused by
+        lifecycle rules, and a refused title persists nothing.
+        */
+        let titleNote = "";
+        if (params.title !== undefined) {
+          const rejection = fusionCore.describeTaskTitleRejection(params.title);
+          if (rejection) {
+            return {
+              content: [{ type: "text" as const, text: `ERROR: title rejected (${rejection}). Nothing was persisted.` }],
+              details: { taskId, code: "TITLE_REJECTED" },
+              isError: true,
+            };
+          }
+          const trimmedTitle = params.title.trim();
+          try {
+            await store.updateTask(taskId, { title: trimmedTitle });
+          } catch (error) {
+            return storeErrorResult(`title rename on ${taskId}`, error);
+          }
+          titleNote = ` Title → "${trimmedTitle}".`;
+        }
         if (params.custom_fields !== undefined) {
           const res = await store.updateTaskCustomFields(taskId, params.custom_fields);
           if (!res.ok) {
@@ -3743,26 +3829,33 @@ export function createTaskUpdateTool(store: TaskStore, taskId: string): ToolDefi
             };
           }
           if (persistedStep.status !== params.status) {
-            return stepLifecycleNoopResult({
+            const lifecycleNoop = stepLifecycleNoopResult({
               stepIndex: params.step,
               stepName: persistedStep.name,
               requested: params.status,
               persisted: persistedStep.status,
               progress: { done: stepWrite.steps.filter((s) => s.status === "done").length, total: stepWrite.steps.length },
             });
+            // A rename applied earlier in this same call DID persist; the refusal has to say so,
+            // matching the executor copy so neither lane reports a half-written call as nothing.
+            if (titleNote) lifecycleNoop.content[0].text += titleNote;
+            return lifecycleNoop;
           }
           const reminder = params.status === "done" && !params.summary?.trim()
             ? " No step summary recorded — call fn_task_update again for this step with `summary` to record what it delivered."
             : "";
           return {
-            content: [{ type: "text" as const, text: `Updated ${taskId}: step ${params.step} → ${persistedStep.status}.${reminder}` }],
+            content: [{ type: "text" as const, text: `Updated ${taskId}: step ${params.step} → ${persistedStep.status}.${reminder}${titleNote}` }],
             details: { taskId: stepWrite.id, step: params.step, status: persistedStep.status },
           };
         }
         if (params.custom_fields !== undefined || params.dependencies !== undefined) {
-          return { content: [{ type: "text" as const, text: "Updated." }], details: {} };
+          return { content: [{ type: "text" as const, text: `Updated.${titleNote}` }], details: {} };
         }
-        return { content: [{ type: "text" as const, text: "No-op: provide step+status, dependencies, or custom_fields." }], details: {} };
+        if (titleNote) {
+          return { content: [{ type: "text" as const, text: `Renamed ${taskId}:${titleNote.trimStart()}` }], details: { taskId, title: params.title?.trim() } };
+        }
+        return { content: [{ type: "text" as const, text: "No-op: provide step+status, title, dependencies, or custom_fields." }], details: {} };
       } catch (err: unknown) {
         return storeErrorResult("task update", err);
       }
@@ -5883,7 +5976,9 @@ export function createDelegateTaskTool(
       "selected workflow's ready lane and will be picked up by the target agent on their next heartbeat cycle. " +
       "Use fn_list_agents first to find available agents and their capabilities. " +
       "Optionally pass workflow_id to select a workflow at creation time; use " +
-      "fn_workflow_list to discover valid IDs.",
+      "fn_workflow_list to discover valid IDs. " +
+      "Pass title to name the delegated card in your own words; omitted, the label is derived from " +
+      "the first sentence of the description.",
     parameters: delegateTaskParams,
     execute: async (_id: string, params: Static<typeof delegateTaskParams>) => {
       /*
@@ -5961,6 +6056,8 @@ export function createDelegateTaskTool(
         }
         const readyColumn = await resolveDelegationReadyColumn(taskStore, workflowId);
         const { task, wasDuplicate } = await createAgentTask(taskStore, {
+          // FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): an explicit title is the caller's own words.
+          ...(params.title?.trim() ? { title: params.title.trim() } : {}),
           description: params.description,
           dependencies: params.dependencies,
           column: readyColumn,
@@ -5987,11 +6084,18 @@ export function createDelegateTaskTool(
         */
         const assignedToRequestedAgent = !wasDuplicate || task.assignedAgentId === agent.id;
         const actualOwner = task.assignedAgentId ? `agent ${task.assignedAgentId}` : "no agent";
+        /*
+        FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): the delegation confirmation named only the ID, so a
+        delegating agent could not see the label its card actually carries — an explicit `title` was invisible
+        and a derived one unverifiable. The label the board renders is now echoed alongside the ID.
+        */
+        const label = task.title?.trim()
+          || fusionCore.deriveTaskLabelFromDescription(task.description, 80);
         const action = wasDuplicate
           ? assignedToRequestedAgent
-            ? `Linked existing ${task.id} and assigned it to ${agent.name}`
-            : `Linked existing ${task.id}; it remains assigned to ${actualOwner}`
-          : `Created ${task.id}`;
+            ? `Linked existing ${task.id}: ${label} and assigned it to ${agent.name}`
+            : `Linked existing ${task.id}: ${label}; it remains assigned to ${actualOwner}`
+          : `Created ${task.id}: ${label}`;
         const pickup = assignedToRequestedAgent
           ? ` The task will be picked up by ${agent.name} on their next heartbeat cycle.`
           : "";

@@ -78,7 +78,9 @@ export function createPlanningBoardTools(store: TaskStore): ToolDefinition[] {
         };
       }
       const lines = active.map((t) => {
-        const desc = t.title || t.description.slice(0, 80);
+        // FNXC:TaskTitleDerivation 2026-09-26-02:43: RUFU-295 — planning-board task listings show the
+        // canonical derived label instead of a raw 80-character description prefix.
+        const desc = t.title?.trim() || fusionCore.deriveTaskLabelFromDescription(t.description, 80);
         const deps = t.dependencies.length ? ` [deps: ${t.dependencies.join(", ")}]` : "";
         return `${t.id} (${t.column}): ${desc}${deps}`;
       });

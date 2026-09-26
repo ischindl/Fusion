@@ -1,5 +1,5 @@
 import type { TaskStore } from "@fusion/core";
-import { AUTOMATION_SELECTABLE_TOOLS, THINKING_LEVELS, resolveExecutionSettingsModel } from "@fusion/core";
+import { AUTOMATION_SELECTABLE_TOOLS, THINKING_LEVELS, deriveTaskLabelFromDescription, resolveExecutionSettingsModel } from "@fusion/core";
 import { createFnAgent as engineCreateFnAgentForRefine, promptWithFallback as enginePromptWithFallback, resolveMcpServersForStore, isInProcessBackupCommand, isInProcessMemoryBackupCommand, formatInProcessBackupError } from "@fusion/engine";
 import { ApiError } from "../api-error.js";
 import { AUTOMATION_MAX_BUFFER, AUTOMATION_MAX_OUTPUT, DEFAULT_AUTOMATION_TIMEOUT_MS, MANUAL_RUN_AI_SYSTEM_PROMPT, type AutomationLiveRunCallbacks } from "./automation-live-run.js";
@@ -340,7 +340,9 @@ async function executeCreateTaskStep(
       stepName: step.name,
       stepIndex: 0,
       success: true,
-      output: `Created task ${task.id}: ${task.title || task.description.slice(0, 80)}`,
+      // FNXC:TaskTitleDerivation 2026-09-26-02:43: RUFU-295 — the automation run log names the created
+      // card with the canonical derived label, not a raw 80-character markdown prefix of its description.
+      output: `Created task ${task.id}: ${task.title?.trim() || deriveTaskLabelFromDescription(task.description, 80)}`,
       startedAt,
       completedAt: new Date().toISOString(),
     };

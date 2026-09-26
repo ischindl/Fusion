@@ -5772,6 +5772,12 @@ describe("ListView - Bulk Selection", () => {
 FNXC:TaskTitleDisplay 2026-09-14-17:35:
 FN-391: the desktop table and mobile card render the EXACT 220-character description prefix, with no
 ellipsis. Inverted from the FN-044 197+"..." contract rather than relaxed.
+
+FNXC:TaskTitleDerivation 2026-09-26-06:07:
+RUFU-295 supersedes the CONTENT half of that rule and keeps the bound: the label is now the shared
+markdown-aware derivation capped at 220 with no suffix. These fixtures are whitespace-free blobs, on
+which a derived label hard-truncates to the same 220 characters, so the assertions below remain
+truthful; the derived-content dimension is pinned by the describe block that follows.
 */
 describe("ListView titleless display fallback (FN-391)", () => {
   const description220 = "d".repeat(220);
@@ -5832,6 +5838,45 @@ describe("ListView titleless display fallback (FN-391)", () => {
       expect(container.querySelector(".list-card-title")?.textContent).toBe(description220);
     } finally {
       viewportSpy.mockRestore();
+    }
+  });
+});
+
+/*
+FNXC:TaskTitleDerivation 2026-09-26-06:07:
+RUFU-295: the reported junk label was a PROMPT.md section heading rendered as the card title. The
+list surfaces must therefore agree with the board card on the derived label, on BOTH viewports, so a
+heading-first description never reaches the desktop table or the mobile card as `## …`.
+*/
+describe("ListView titleless display renders the derived label (RUFU-295)", () => {
+  const headingDescription = "## Pôvodný popis\n\nUvítali by sme možnosť premenovať kartu.";
+
+  it("renders the derived sentence in the desktop table and the mobile card", () => {
+    const desktop = mockDesktopViewport();
+    try {
+      const { container, unmount } = renderListView(
+        { tasks: [createMockTask({ id: "RUFU-295-desktop", title: undefined, description: headingDescription })] },
+        { openViewOptions: false },
+      );
+      const text = container.querySelector(".list-title-text")?.textContent;
+      expect(text).toBe("Uvítali by sme možnosť premenovať kartu");
+      expect(text).not.toContain("#");
+      unmount();
+    } finally {
+      desktop.mockRestore();
+    }
+
+    const mobile = mockMobileViewport();
+    try {
+      const { container } = renderListView(
+        { tasks: [createMockTask({ id: "RUFU-295-mobile", title: undefined, description: headingDescription })] },
+        { openViewOptions: false },
+      );
+      const text = container.querySelector(".list-card-title")?.textContent;
+      expect(text).toBe("Uvítali by sme možnosť premenovať kartu");
+      expect(text).not.toContain("\n");
+    } finally {
+      mobile.mockRestore();
     }
   });
 });

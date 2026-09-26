@@ -2984,7 +2984,9 @@ export class TriageProcessor {
     let sessionTextTail = "";
 
     planLog.log(
-      `Specifying ${task.id}: ${task.title || task.description.slice(0, 60)}`,
+      // FNXC:TaskTitleDerivation 2026-09-26-02:43: RUFU-295 — plan-log lines name the card with the
+      // canonical markdown-aware label, not a raw 60-character slice of its markdown body.
+      `Specifying ${task.id}: ${task.title?.trim() || fusionCore.deriveTaskLabelFromDescription(task.description, 60)}`,
     );
     this.options.onSpecifyStart?.(task);
 
@@ -4688,7 +4690,8 @@ export class TriageProcessor {
           };
         }
         const lines = active.map((t) => {
-          const desc = t.title || t.description.slice(0, 80);
+          // RUFU-295: task-list tool output uses the canonical derived label (see formatTaskSummaryLine).
+          const desc = t.title?.trim() || fusionCore.deriveTaskLabelFromDescription(t.description, 80);
           const deps = t.dependencies.length
             ? ` [deps: ${t.dependencies.join(", ")}]`
             : "";
@@ -4747,7 +4750,8 @@ export class TriageProcessor {
           };
         }
         const lines = filtered.map((t) => {
-          const desc = t.title || t.description.slice(0, 80);
+          // RUFU-295: same canonical derived label as the active-task list above.
+          const desc = t.title?.trim() || fusionCore.deriveTaskLabelFromDescription(t.description, 80);
           const deps = t.dependencies.length
             ? ` [deps: ${t.dependencies.join(", ")}]`
             : "";
@@ -4826,7 +4830,15 @@ export class TriageProcessor {
             noCommitsExpected: params.noCommitsExpected,
             source: { sourceType: "agent_heartbeat", sourceParentTaskId: options.parentTaskId },
           }, { rootDir: this.rootDir });
-          return { content: [{ type: "text" as const, text: `${wasDuplicate ? "Linked existing task" : "Created independent task"} ${newTask.id}: ${params.title || params.description.slice(0, 60)}` }], details: { taskId: newTask.id } };
+          /*
+          FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): the planner's create confirmation echoed a raw
+          60-character slice of the description, so a card whose description opens on a markdown heading was
+          reported back to the planner as `## …` — the same junk the board would have shown. Echo the stored
+          title when there is one, otherwise the shared derivation at this site's existing 60-char length.
+          */
+          const createdLabel = newTask.title?.trim()
+            || fusionCore.deriveTaskLabelFromDescription(newTask.description, 60);
+          return { content: [{ type: "text" as const, text: `${wasDuplicate ? "Linked existing task" : "Created independent task"} ${newTask.id}: ${createdLabel}` }], details: { taskId: newTask.id } };
         } catch (err: unknown) {
           return storeErrorResult("task creation", err);
         }

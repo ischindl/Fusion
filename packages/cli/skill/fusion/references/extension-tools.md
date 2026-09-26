@@ -10,7 +10,7 @@ All tools are registered via the Fusion extension. They are available in any age
 
 ### fn_task_create
 
-Create a new task on the Fusion task board. The task enters the planning column where the AI planning agent will plan it into a full prompt with steps, file scope, and acceptance criteria. Optionally pass workflow_id to select a workflow at creation time; use fn_workflow_list to discover valid IDs.
+Create a new task on the Fusion task board. The task enters the planning column where the AI planning agent will plan it into a full prompt with steps, file scope, and acceptance criteria. Optionally pass workflow_id to select a workflow at creation time; use fn_workflow_list to discover valid IDs. Optionally pass title to name the card in your own words; omitted, the label is derived from the first sentence of the description.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

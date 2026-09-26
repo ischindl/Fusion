@@ -1,7 +1,9 @@
 import {
   AiServiceError,
+  FALLBACK_TASK_TITLE,
   columnsWithFlag,
   createLogger,
+  deriveTaskLabelFromDescription,
   declaresAnyLifecycleTrait,
   parseRepoSlug,
   resolveTaskGithubTracking,
@@ -41,55 +43,30 @@ function truncateWithEllipsis(value: string, maxLength: number): string {
   return `${value.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }
 
+/**
+ * Title candidate for a tracking issue derived from a task description.
+ *
+ * FNXC:GithubTracking 2026-09-08-00:00:
+ * GitHub issue titles must be one line, must not carry markdown structure, and must stay under the
+ * provider length cap; an undescribable description returns null so the caller falls back to the task
+ * id rather than a generic label.
+ *
+ * FNXC:TaskTitleDerivation 2026-09-26-02:43:
+ * RUFU-295 deleted this file's local markdown-stripping / sentence-cutting copy. It was a second
+ * authority for one rule and already disagreed on one dimension: it truncated with a "…" suffix while
+ * the canonical derivation hard-truncates with no suffix. The sentence now comes from core's
+ * `deriveTaskLabelFromDescription`, so a tracking issue and the card it tracks cannot describe
+ * different things. Only GitHub-specific presentation stays here: the null-for-undescribable contract
+ * (the caller's fallback is the task id, which is the honest identifier when the description says
+ * nothing describable) and the caller-side `[…id] ` prefix budget.
+ */
 export function deriveTitleFromDescription(description: string | undefined, maxLength: number): string | null {
   if (!description || !description.trim()) {
     return null;
   }
 
-  const lines = description.split(/\r?\n/);
-  const cleanedLines: string[] = [];
-  let inCodeFence = false;
-
-  for (const line of lines) {
-    if (/^\s*```/.test(line)) {
-      inCodeFence = !inCodeFence;
-      continue;
-    }
-    if (inCodeFence) {
-      continue;
-    }
-
-    let cleaned = line.trim();
-    while (cleaned) {
-      const next = cleaned
-        .replace(/^>\s*/, "")
-        .replace(/^#{1,6}\s+/, "")
-        .replace(/^(?:[-*+]\s+|\d+\.\s+)/, "");
-      if (next === cleaned) {
-        break;
-      }
-      cleaned = next.trimStart();
-    }
-
-    cleanedLines.push(cleaned);
-  }
-
-  const firstLine = cleanedLines.find((line) => line.trim().length > 0);
-  if (!firstLine) {
-    return null;
-  }
-
-  const terminatorMatch = /[.!?](?=\s|$)/.exec(firstLine);
-  const candidate = terminatorMatch
-    ? firstLine.slice(0, terminatorMatch.index + 1)
-    : firstLine;
-  const collapsed = collapseWhitespace(candidate);
-
-  if (!collapsed) {
-    return null;
-  }
-
-  return truncateWithEllipsis(collapsed, maxLength);
+  const derived = deriveTaskLabelFromDescription(description, maxLength);
+  return derived === FALLBACK_TASK_TITLE ? null : derived;
 }
 
 function firstNonEmptyParagraph(value: string | undefined): string | null {

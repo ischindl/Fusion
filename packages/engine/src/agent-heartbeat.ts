@@ -17,7 +17,7 @@
  * - onTerminated: Called when a heartbeat run is terminated
  */
 
-import { DEFAULT_PROVIDER_INSTANCE_ID, type AgentStore, type AgentHeartbeatRun, type HeartbeatInvocationSource, type AgentHeartbeatConfig, type AgentBudgetStatus, type Message, type MessageStore, type TaskStore, type TaskDetail, type AgentRole, type Agent, type InboxTask, type RunMutationContext, type Settings, type AgentConfigRevision, type ReflectionStore, type ChatStore, type ChatRoom, type ChatRoomMessage, type AgentMemoryInclusionMode } from "@fusion/core";
+import { DEFAULT_PROVIDER_INSTANCE_ID, deriveTaskLabelFromDescription, type AgentStore, type AgentHeartbeatRun, type HeartbeatInvocationSource, type AgentHeartbeatConfig, type AgentBudgetStatus, type Message, type MessageStore, type TaskStore, type TaskDetail, type AgentRole, type Agent, type InboxTask, type RunMutationContext, type Settings, type AgentConfigRevision, type ReflectionStore, type ChatStore, type ChatRoom, type ChatRoomMessage, type AgentMemoryInclusionMode } from "@fusion/core";
 import { AutoClaimSnapshotManager, resolveFreshAutoClaimCandidates, type AutoClaimCandidate } from "./scheduling/auto-claim-snapshot.js";
 import { emitBoundedRunAudit } from "./util/emit-bounded-run-audit.js";
 import {
@@ -3945,7 +3945,10 @@ export class HeartbeatMonitor {
             heartbeatLog.log(`[auto-claim-prompt] agent=${agentId} chars=${executionPrompt.length} count=${Math.min(promptCandidateLimit, autoClaimCandidates.length)}`);
           } else {
             // Task-scoped heartbeat: agent has an assigned task
-            const taskTitle = taskDetail!.title ?? taskDetail!.description.slice(0, 100);
+            // FNXC:TaskTitleDerivation 2026-09-26-02:43: RUFU-295 — the heartbeat prompt header is a task
+            // label, so a titleless card gets the canonical derived label rather than a raw 100-character
+            // markdown prefix that reads as `## Pôvodný popis` to the agent.
+            const taskTitle = taskDetail!.title?.trim() || deriveTaskLabelFromDescription(taskDetail!.description ?? "", 100);
 
             const triggeringCommentLines: string[] = [];
             if (effectiveTriggeringCommentIds && effectiveTriggeringCommentIds.length > 0) {

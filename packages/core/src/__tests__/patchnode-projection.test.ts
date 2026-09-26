@@ -4,6 +4,7 @@ import {
   buildPatchnodeEntryInput,
   buildPatchnodeSnapshotLabel,
   groupPatchnodeEntriesByDay,
+  isPatchnodeJunkLabel,
   matchesPatchnodeQuery,
   PATCHNODE_DESCRIPTION_LABEL_LENGTH,
   toPatchnodeDay,
@@ -122,6 +123,31 @@ describe("Patchnode projection", () => {
     expect(buildPatchnodeSnapshotLabel({ id: "FN-3" })).toBe("FN-3");
   });
 
+  /*
+  FNXC:TaskTitleDerivation 2026-09-26-02:43:
+  RUFU-295 replaced the ledger's raw description prefix with the canonical description→label
+  derivation. Before this, a spec-shaped description froze `## Pôvodný popis` — the description's raw
+  first line — into a permanent delivery row, and a multi-line description froze a label containing a
+  line break, which no other surface can render.
+  */
+  it("derives the ledger label instead of copying the description's raw first line", () => {
+    expect(
+      buildPatchnodeSnapshotLabel({ id: "RUFU-295", title: null, description: "## Pôvodný popis\n\nUvítali by sme možnosť premenovať kartu." }),
+    ).toBe("Uvítali by sme možnosť premenovať kartu");
+    expect(buildPatchnodeSnapshotLabel({ id: "RUFU-295", title: null, description: "First line\nSecond line" })).toBe("First line");
+  });
+
+  it("classifies durable junk labels for the widened repair admission", () => {
+    expect(isPatchnodeJunkLabel("## Pôvodný popis")).toBe(true);
+    expect(isPatchnodeJunkLabel("First line\nSecond line")).toBe(true);
+    expect(isPatchnodeJunkLabel("First line\rSecond line")).toBe(true);
+    // A clean label that merely differs from today's derivation is point-in-time history, not junk.
+    expect(isPatchnodeJunkLabel("Shipped label from August")).toBe(false);
+    expect(isPatchnodeJunkLabel("Corriger le rendu de l'historique")).toBe(false);
+    expect(isPatchnodeJunkLabel(undefined)).toBe(false);
+    expect(isPatchnodeJunkLabel(null)).toBe(false);
+  });
+
   it("still falls back to the task id when neither a title nor a description exists", () => {
     expect(buildPatchnodeEntryInput({ id: "FN-2", title: "  ", description: "" }, "completed", "2026-08-28T00:00:00Z")).toMatchObject({ title: "FN-2", body: "" });
   });
@@ -185,6 +211,34 @@ describe("Patchnode projection", () => {
       const task = { id: "FN-2", title: undefined, description: "Corriger le rendu" };
       const repaired = planPatchnodeLabelRepair(degenerate(), task)!;
       expect(planPatchnodeLabelRepair({ taskId: "FN-2", ...repaired }, task)).toBeNull();
+    });
+
+    /*
+    FNXC:TaskTitleDerivation 2026-09-26-02:43:
+    RUFU-295 widened the admission from `label === taskId` to any label the old raw-prefix projection
+    could have frozen (heading-shaped or line-break-containing), because those rows are junk on every
+    surface and — unlike a task id — they are what operators actually complained about. Idempotence is
+    now carried by an explicit equality check rather than by the admission itself: the canonical label
+    of a healthy row never re-enters the planner as a change.
+    */
+    it("repairs a durable heading-shaped label from the live description", () => {
+      const junk = entry({ taskId: "FN-2", title: "## Pôvodný popis", body: "Shipped search" });
+      expect(planPatchnodeLabelRepair(junk, { id: "FN-2", title: undefined, description: "## Pôvodný popis\n\nShip the rename rule." }))
+        .toEqual({ title: "Ship the rename rule", body: "Shipped search" });
+    });
+
+    it("repairs a durable label that froze a multi-line description slice", () => {
+      const junk = entry({ taskId: "FN-2", title: "First line\nSecond line", body: "Shipped search" });
+      expect(planPatchnodeLabelRepair(junk, { id: "FN-2", title: undefined, description: "First line\nSecond line" }))
+        .toEqual({ title: "First line", body: "Shipped search" });
+    });
+
+    it("leaves a clean label that is merely not today's derivation untouched", () => {
+      expect(planPatchnodeLabelRepair(entry({ taskId: "FN-2", title: "Shipped label from August" }), {
+        id: "FN-2",
+        title: undefined,
+        description: "A different description today",
+      })).toBeNull();
     });
   });
 

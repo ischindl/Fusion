@@ -50,7 +50,19 @@
 import { exec } from "node:child_process";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { isWorkspaceTask, type Settings, type Task, type TaskCommitAssociation, type TaskCreateInput, type TaskStore } from "@fusion/core";
+import { deriveTaskLabelFromDescription, isWorkspaceTask, type Settings, type Task, type TaskCommitAssociation, type TaskCreateInput, type TaskStore } from "@fusion/core";
+
+/*
+FNXC:TaskTitleDerivation 2026-09-26-02:43:
+RUFU-295: an Undo/Restore card names the card it is undoing inside its own title. The old composition
+fell back to `sourceTask.description.slice(0, 80)`, so a spec-shaped source produced
+`Undo FN-1: ## Pôvodný popis` — markdown punctuation baked into a title that the durable write guard
+itself refuses. The fallback now goes through the canonical derivation, so the composed title reads
+like the label the operator saw on the source card.
+*/
+function undoRestoreSourceLabel(task: Pick<Task, "title" | "description">): string {
+  return task.title?.trim() || deriveTaskLabelFromDescription(task.description ?? "", 80);
+}
 import { collectOwnTaskCommitsForRange } from "./branch-attribution.js";
 import { type IntegrationBranchSettings } from "../merge/integration-branch.js";
 import { recordWorkspaceBaseBranchDecision, resolveWorkspaceRepoBaseBranch } from "../worktree/workspace-base-branch.js";
@@ -1751,7 +1763,7 @@ export async function createAiUndoTask(deps: CreateAiUndoTaskDeps): Promise<AiUn
   // `createTask` inherits the project default (never pass `null`/"" through).
   const workflowId = deps.workflowId && deps.workflowId.trim() !== "" ? deps.workflowId : undefined;
   const created = await deps.createTask({
-    title: `Undo ${sourceTask.id}: ${sourceTask.title ?? sourceTask.description.slice(0, 80)}`,
+    title: `Undo ${sourceTask.id}: ${undoRestoreSourceLabel(sourceTask)}`,
     description,
     dependencies: [],
     source: {
@@ -2081,7 +2093,7 @@ export async function createAiRestoreTask(deps: CreateAiRestoreTaskDeps): Promis
   const description = buildAiRestoreTaskDescription({ task: sourceTask });
   const workflowId = deps.workflowId && deps.workflowId.trim() !== "" ? deps.workflowId : undefined;
   const created = await deps.createTask({
-    title: `Restore ${sourceTask.id}: ${sourceTask.title ?? sourceTask.description.slice(0, 80)}`,
+    title: `Restore ${sourceTask.id}: ${undoRestoreSourceLabel(sourceTask)}`,
     description,
     dependencies: [],
     source: {

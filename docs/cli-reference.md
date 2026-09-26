@@ -615,12 +615,46 @@ fn task create "Fix bug" --attach screenshot.png --depends FN-010
 fn task create "Investigate flaky runner" --node edge-runner
 fn task create "Fix workspace revert" --github --github-repo acme/kb
 fn task create "Sweep stale branches" --project ./gedapp --yes
+fn task create "$(cat spec.md)" --title "Rename affordance must reach board cards"
 fn task plan "Design a new authentication flow"
 ```
 
 `--yes` skips the [cross-project confirmation](#project-routing-visibility) when the central default project routes the card somewhere other than the current directory's project; the warning is still printed. Every create prints the resolved project (with its source) and the absolute card path — see [Project routing visibility](#project-routing-visibility).
 
 For AI-guided task specification, see [Planning mode](#planning-mode).
+
+**A card's one-line label is either the title you give it or one derivation from the description.** The
+derivation skips fenced code blocks, table rows, thematic breaks and frontmatter delimiters; a line that
+is only a markdown heading is section furniture, so the prose under it becomes the label and the heading
+text is used only when it is all the card contains; blockquote, list, and task-list markers are stripped;
+the label stops at the first sentence terminator (`.`, `!`, `?`, `…` followed by a space or the end, with
+`e.g.`/`i.e.`-style abbreviations and single-letter initials exempted); and it is capped on a word
+boundary at 220 characters, hard-truncated with no ellipsis when the text offers no boundary at all. This
+replaces the older "first line, or first 220 raw characters" slicing, which is why a spec-shaped
+description used to freeze `## Pôvodný popis` — the PROMPT.md section heading — onto the board card.
+
+| Option | Description |
+|---|---|
+| `--title <text>` | Set the card's explicit one-line label. The positional argument stays the description — which is what the duplicate-detection fingerprint is computed from — so `--title` never rewrites it. |
+
+A title is validated on every creation path (CLI, `fn_task_create`, `fn_delegate_task`, the REST routes):
+blank, markdown-heading, multi-line, or over-220-character input is refused with an actionable message
+instead of being silently replaced by a derived label.
+
+### Renaming a card
+
+```bash
+fn task rename FN-001 "Authored code-review REVISE must not become a stall deadlock park"
+fn task rename RUFU-042 "Stranded-continuation reclaim must sustain-defer" --project ./gedapp
+```
+
+Renames an existing card's label. The description is never touched, and the card's `PROMPT.md` first line
+is rewritten to match so the spec heading and the board label stay consistent. The multi-line positional
+form is accepted the way `fn task log` accepts it — remaining arguments are joined — so a title with
+spaces needs quotes, not escaping. The same validation as `--title` applies: a blank, markdown-heading,
+multi-line, or over-220-character title exits non-zero naming the reason and leaves the card unchanged.
+Agents reach the identical rule from `fn_task_update`'s optional `title` parameter, where a blank value
+clears the title as it did before this command existed.
 
 ### Planning mode
 
@@ -1406,6 +1440,7 @@ Subcommands: `search`, `install`, `get`.
 | `--attach` | `fn task create` |
 | `--depends` | `fn task create` |
 | `--node` | `fn task create` |
+| `--title` | `fn task create` (explicit one-line card label; the positional description stays the description) |
 | `--github` / `--no-github` | `fn task create` (per-task GitHub issue tracking override; default comes from project/global settings) |
 | `--github-repo` | `fn task create` (`owner/repo` override for the tracking issue) |
 | `--feedback` | `fn task refine` |

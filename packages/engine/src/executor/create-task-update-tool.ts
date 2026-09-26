@@ -12,6 +12,7 @@
  * Persisted-status mismatch is a deterministic churn signal after loop recovery.
  */
 import { Type, type Static } from "@earendil-works/pi-ai";
+import { describeTaskTitleRejection } from "@fusion/core";
 import type { StepStatus, TaskStore, WorkflowFieldDefinition } from "@fusion/core";
 import type { ToolDefinition, AgentSession } from "@earendil-works/pi-coding-agent";
 import type { ReviewVerdict } from "../execution/reviewer.js";
@@ -28,6 +29,20 @@ const taskUpdateParams = Type.Object({
     { description: "New status: pending, in-progress, done, or skipped. Required when step is set." },
   )),
   summary: Type.Optional(Type.String({ description: "2-4 plain-language sentences describing what THIS step actually delivered (files/behavior changed, verification run). Required when status is 'done'. Shown to the operator in the task History tab." })),
+  /*
+  FNXC:TaskTitleHygiene 2026-09-26-04:45 (RUFU-295): the executor lane is the one that discovers a
+  mis-titled card — its own — and until now had no way to fix it: `fn task rename` exists only in the
+  CLI process, and the executor's write path had no title parameter at all. So a card whose title had
+  become `## Original Description` stayed wrong for the rest of its life and in history, and the next
+  person reading the board read a section heading as the task's name.
+  */
+  title: Type.Optional(Type.String({
+    description:
+      "Optional new card title. Must be ONE non-empty line of plain prose (a markdown `## …` heading, " +
+      "a pasted multi-line description, or a value over 220 characters is refused with nothing persisted). " +
+      "Use it to repair a title that came from a description slice or heading; it is safe to combine with " +
+      "step/status, dependencies, or custom_fields.",
+  })),
   dependencies: Type.Optional(Type.Array(Type.String(), {
     description: "Optional task dependency array. Replaces existing dependencies. Pass ['FN-001', 'FN-002'] to set dependencies. Pass [] to clear all dependencies. Omit parameter to preserve existing dependencies.",
   })),
@@ -61,34 +76,65 @@ export function createTaskUpdateTool(
     const store = deps.store;
     return {
       name: "fn_task_update",
-      label: "Update Step",
+      label: "Update Step / Title",
       description:
         "Update a step's status. Call before starting a step (in-progress), " +
         "after completing it (done), or to skip it (skipped). " +
+        "Optionally rename the card by passing a one-line `title` (use it when this task's title is a " +
+        "markdown heading or a pasted description slice rather than a summary of the work). " +
         "Optionally update task dependencies by passing a dependencies array. " +
         "Optionally set workflow-defined custom field values by passing a custom_fields patch " +
         "(keyed by field id; validated against the workflow's field schema; pass null to clear a field). " +
-        "step/status may be omitted to update only custom_fields or dependencies. " +
+        "step/status may be omitted to update only a title, custom_fields, or dependencies. " +
         "The board updates in real-time.",
       parameters: taskUpdateParams,
       execute: async (_id: string, params: Static<typeof taskUpdateParams>) => {
-        const { step, status, summary, dependencies, custom_fields } = params;
+        const { step, status, summary, dependencies, custom_fields, title } = params;
 
         // Bare-call guard (P1 api-contract): a call with none of
-        // step/status/dependencies/custom_fields silently no-op'd, which the
+        // title/step/status/dependencies/custom_fields silently no-op'd, which the
         // agent cannot observe. Reject it up front so the failure is visible and
         // self-describing. The legacy no-op text is preserved as the detail.
-        if (step === undefined && status === undefined && dependencies === undefined && custom_fields === undefined) {
+        if (title === undefined && step === undefined && status === undefined && dependencies === undefined && custom_fields === undefined) {
           return {
             content: [{
               type: "text" as const,
-              text: "ERROR: fn_task_update requires at least one of: step+status (report step progress), " +
+              text: "ERROR: fn_task_update requires at least one of: title (rename the card), step+status (report step progress), " +
                 "dependencies (array of task ids), or custom_fields (workflow-defined field patch). " +
-                "No-op: provide a step+status, dependencies, or custom_fields to update.",
+                "No-op: provide a title, step+status, dependencies, or custom_fields to update.",
             }],
             details: {},
             isError: true,
           };
+        }
+
+        /*
+        FNXC:TaskTitleHygiene 2026-09-26-04:45 (RUFU-295): a rename is applied FIRST and through
+        `store.updateTask`, so the durable card, its title-derived fields, and its PROMPT.md heading all
+        move together. Junk shapes are refused by the same core validator the CLI uses rather than being
+        quietly repaired by the store's write guard — an agent that meant to rename must hear why its
+        words were not used, and must never find a step transition half-applied behind a title that was
+        silently rewritten. A refusal therefore stops the call before any other write runs.
+        */
+        let titleNote = "";
+        if (title !== undefined) {
+          const trimmedTitle = title.trim();
+          const rejection = describeTaskTitleRejection(trimmedTitle);
+          if (rejection) {
+            return {
+              content: [{ type: "text" as const, text: `ERROR: title rejected (${rejection}). Nothing was persisted.` }],
+              details: { taskId, code: "TITLE_REJECTED" },
+              isError: true,
+            };
+          }
+          await store.updateTask(taskId, { title: trimmedTitle });
+          titleNote = ` Title → "${trimmedTitle}".`;
+          if (step === undefined && status === undefined && dependencies === undefined && custom_fields === undefined) {
+            return {
+              content: [{ type: "text" as const, text: `Renamed ${taskId}:${titleNote}` }],
+              details: { renamed: true, title: trimmedTitle },
+            };
+          }
         }
 
         // Custom-field patch (KTD-13): routed through the store's single write
@@ -133,7 +179,7 @@ export function createTaskUpdateTool(
             return {
               content: [{
                 type: "text" as const,
-                text: `Updated custom field(s): ${updatedKeys.join(", ")}.`,
+                text: `Updated custom field(s): ${updatedKeys.join(", ")}.${titleNote}`,
               }],
               details: { updatedFields: updatedKeys },
             };
@@ -179,19 +225,19 @@ export function createTaskUpdateTool(
             }
             await store.updateTask(taskId, { dependencies });
             return {
-              content: [{ type: "text" as const, text: `Dependencies updated.` }],
+              content: [{ type: "text" as const, text: `Dependencies updated.${titleNote}` }],
               details: {},
             };
           }
           return {
-            content: [{ type: "text" as const, text: `No-op: provide a step+status, dependencies, or custom_fields to update.` }],
+            content: [{ type: "text" as const, text: `No-op: provide a title, step+status, dependencies, or custom_fields to update.${titleNote}` }],
             details: {},
           };
         }
 
         if (status === undefined) {
           return {
-            content: [{ type: "text" as const, text: `Step ${step} provided without a status. Pass status (pending/in-progress/done/skipped).` }],
+            content: [{ type: "text" as const, text: `Step ${step} provided without a status. Pass status (pending/in-progress/done/skipped).${titleNote}` }],
             details: {},
           };
         }
@@ -200,7 +246,7 @@ export function createTaskUpdateTool(
           return {
             content: [{
               type: "text" as const,
-              text: `Invalid step number: ${step}. Steps are 0-indexed; Step 0 is Preflight.`,
+              text: `Invalid step number: ${step}. Steps are 0-indexed; Step 0 is Preflight.${titleNote}`,
             }],
             details: {},
           };
@@ -286,7 +332,11 @@ export function createTaskUpdateTool(
             ? await store.updateStep(taskId, stepIndex, status as StepStatus)
             : await store.updateStep(taskId, stepIndex, status as StepStatus, { summary });
         } catch (error) {
-          return storeErrorResult(`step ${step} → ${status}`, error);
+          const stepWriteFailed = storeErrorResult(`step ${step} → ${status}`, error);
+          // The rename commits before the step write, so the refusal must say the title moved —
+          // otherwise the agent retries the whole call and cannot tell what already persisted.
+          if (titleNote) stepWriteFailed.content[0].text += titleNote;
+          return stepWriteFailed;
         }
         const stepInfo = task.steps[stepIndex];
         if (!stepInfo) {
@@ -300,7 +350,7 @@ export function createTaskUpdateTool(
           return {
             content: [{
               type: "text" as const,
-              text: `Invalid step number: ${step}. This task has ${task.steps.length} step(s) (0-indexed; valid range 0-${Math.max(0, task.steps.length - 1)}). Nothing was persisted.`,
+              text: `Invalid step number: ${step}. This task has ${task.steps.length} step(s) (0-indexed; valid range 0-${Math.max(0, task.steps.length - 1)}). Nothing was persisted.${titleNote}`,
             }],
             details: { stepIndex: step, code: "STEP_OUT_OF_RANGE" },
             isError: true,
@@ -341,13 +391,15 @@ export function createTaskUpdateTool(
           the agent reported done, the board stayed `pending`). The refusal is a protocol failure,
           so it now fails at the tool-result boundary while the churn accounting above stands.
           */
-          return stepLifecycleNoopResult({
+          const lifecycleNoop = stepLifecycleNoopResult({
             stepIndex: step,
             stepName: stepInfo.name,
             requested: status,
             persisted: persistedStatus,
             progress: { done: progress, total: task.steps.length },
           });
+          if (titleNote) lifecycleNoop.content[0].text += titleNote;
+          return lifecycleNoop;
         }
 
         return {
@@ -356,7 +408,8 @@ export function createTaskUpdateTool(
             text: `Step ${step} (${stepInfo.name}) → ${persistedStatus}. Progress: ${progress}/${task.steps.length} done.` +
               (status === "done" && !summary?.trim()
                 ? " No step summary recorded — call fn_task_update again for this step with `summary` to record what it delivered."
-                : ""),
+                : "") +
+              titleNote,
           }],
           details: {},
         };

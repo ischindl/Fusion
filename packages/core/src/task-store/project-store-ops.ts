@@ -11,6 +11,7 @@
 import {TaskStore, storeLog, WORKFLOW_COMPILED_STEP_TEMPLATE_PREFIX, WORKFLOW_MOVE_POLICY_TIMEOUT_MS} from "../store.js";
 import { resolveCapacityPoolId } from "../workflows/workflow-capacity.js";
 import {resolveWorkflowIntakeFacts} from "./task-creation.js";
+import {resolveTaskTitleWrite} from "../ai/ai-summarize.js";
 import {TransitionRejectionError} from "./errors.js";
 import * as schema from "../postgres/schema/index.js";
 import {and, eq, inArray, isNull, ne, or, sql} from "drizzle-orm";
@@ -369,10 +370,18 @@ export async function duplicateTaskImpl(
           const removed = extractTaskIdTokens(sourceTask.title ?? "").filter((token) => token !== newId.toUpperCase());
           storeLog.log(`[title-id-drift] normalized title for ${newId}: removed=[${removed.join(",")}]`);
         }
+        /*
+        FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): duplication inherits the source card's label, and
+        this path builds the row directly instead of going through `createTask`, so it never met Step 1's write
+        guard. Duplicating a card whose title predates that guard (`## Pôvodný popis`, a whole pasted markdown
+        body) would therefore re-mint the exact junk the guard exists to refuse, through the one door the fix
+        did not close. A healthy one-line title passes the guard untouched; a heading-shaped or multi-line one
+        is replaced by the derived label of the source description.
+        */
         const newTask: Task = {
           id: newId,
           lineageId: generateTaskLineageId(),
-          title: normalizedTitle.title ?? undefined,
+          title: resolveTaskTitleWrite({ title: normalizedTitle.title, description: sourceTask.description }),
           description: `${sourceTask.description}\n\n(Duplicated from ${id})`,
           column: duplicateIntakeColumn as Task["column"],
           modelPresetId: sourceTask.modelPresetId,

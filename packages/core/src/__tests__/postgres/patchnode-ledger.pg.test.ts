@@ -528,6 +528,24 @@ pgDescribe("Patchnode ledger (PostgreSQL)", () => {
     expect(await ledgerRows(task.id)).toMatchObject([{ title: "Corriger le rendu de l'historique", body: productBody("Libelle repare") }]);
   });
 
+  /*
+  FNXC:TaskTitleDerivation 2026-09-26-02:43:
+  The insert-path half of the ledger convergence: before RUFU-295 a spec-shaped description was sliced
+  raw, so this exact delivery froze the section heading into a permanent History row. The write guard
+  keeps such a heading out of `tasks.title`, and the ledger now derives its fallback from the same
+  rule, so neither branch of the precedence can reproduce the reported junk.
+  */
+  it("persists a derived label (never a heading) for a delivered card whose description starts with a heading", async () => {
+    const store = h.store();
+    const task = await store.createTask({ description: "## Pôvodný popis\n\nUvítali by sme možnosť premenovať kartu." });
+    await deliver(task.id);
+
+    const row = (await ledgerRows(task.id))[0]!;
+    expect(row.title).toBe("Uvítali by sme možnosť premenovať kartu");
+    expect(row.title).not.toMatch(/^\s{0,3}#/);
+    expect(row.title).not.toContain("\n");
+  });
+
   it("bounds a very long description label to exactly 220 characters with no suffix", async () => {
     const store = h.store();
     const description = "z".repeat(400);
@@ -578,6 +596,62 @@ pgDescribe("Patchnode ledger (PostgreSQL)", () => {
     const second = await store.reconcilePatchnodeLedger({ force: true });
     expect(second.labelsRepaired).toBe(0);
     expect(await ledgerRows(task.id)).toMatchObject([{ title: "Corriger le rendu", body: "" }]);
+  });
+
+  /*
+  FNXC:TaskTitleDerivation 2026-09-26-02:43:
+  RUFU-295 widened the durable label repair beyond `label === taskId`. An entry written before the
+  derivation existed can carry the description's RAW first line — a heading marker (`## Pôvodný popis`)
+  or, for a multi-line description, a label containing a line break. Those labels are junk on every
+  surface, so reconcile now re-derives them from the live task and the SQL candidate predicate mirrors
+  the same shape classes. A clean label is still point-in-time history and must never be rewritten.
+  */
+  it("repairs a durable heading-shaped label once and leaves it stable", async () => {
+    const store = h.store();
+    const description = "## Pôvodný popis\n\nUvítali by sme možnosť premenovať kartu.";
+    const task = await createWithSummary({ description, summary: "Shipped rename rule" });
+    await deliver(task.id);
+    // Rewrite the row into the pre-derivation shape: the description's raw first line.
+    await h.adminDb().update(schema.project.patchnodeEntries).set({ title: "## Pôvodný popis" }).where(and(
+      eq(schema.project.patchnodeEntries.projectId, h.layer().projectId!),
+      eq(schema.project.patchnodeEntries.taskId, task.id),
+    ));
+
+    const first = await store.reconcilePatchnodeLedger({ force: true });
+    expect(first.labelsRepaired).toBe(1);
+    expect(await ledgerRows(task.id)).toMatchObject([{ title: "Uvítali by sme možnosť premenovať kartu" }]);
+
+    const second = await store.reconcilePatchnodeLedger({ force: true });
+    expect(second.labelsRepaired).toBe(0);
+    expect(await ledgerRows(task.id)).toMatchObject([{ title: "Uvítali by sme možnosť premenovať kartu" }]);
+  });
+
+  it("repairs a durable label that froze a multi-line description slice", async () => {
+    const store = h.store();
+    const task = await createWithSummary({ description: "First line\nSecond line", summary: "Shipped lines" });
+    await deliver(task.id);
+    await h.adminDb().update(schema.project.patchnodeEntries).set({ title: "First line\nSecond line" }).where(and(
+      eq(schema.project.patchnodeEntries.projectId, h.layer().projectId!),
+      eq(schema.project.patchnodeEntries.taskId, task.id),
+    ));
+
+    expect((await store.reconcilePatchnodeLedger({ force: true })).labelsRepaired).toBe(1);
+    const repaired = (await ledgerRows(task.id))[0]!;
+    expect(repaired.title).toBe("First line");
+    expect(repaired.title).not.toContain("\n");
+  });
+
+  it("never rewrites a clean durable label that merely differs from today's derivation", async () => {
+    const store = h.store();
+    const task = await createWithSummary({ description: "Current description sentence", summary: "Shipped thing" });
+    await deliver(task.id);
+    await h.adminDb().update(schema.project.patchnodeEntries).set({ title: "Label frozen in August" }).where(and(
+      eq(schema.project.patchnodeEntries.projectId, h.layer().projectId!),
+      eq(schema.project.patchnodeEntries.taskId, task.id),
+    ));
+
+    expect((await store.reconcilePatchnodeLedger({ force: true })).labelsRepaired).toBe(0);
+    expect(await ledgerRows(task.id)).toMatchObject([{ title: "Label frozen in August" }]);
   });
 
   it("never rewrites a real point-in-time summary while repairing a legacy label", async () => {

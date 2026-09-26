@@ -1478,8 +1478,11 @@ function formatDuplicateLineageLine(task: Task): string | null {
 }
 
 export function formatTaskLine(t: Task): string {
-  const label =
-    t.title || t.description.slice(0, 60) + (t.description.length > 60 ? "…" : "");
+  // FNXC:TaskTitleDerivation 2026-09-26-02:43: RUFU-295 — the pi-extension listing used to show a raw
+  // 60-character description prefix (plus a hand-rolled ellipsis) for a titleless card, so a
+  // spec-shaped description surfaced as `## Pôvodný popis` or `PREMISA: …`. Same derivation as the
+  // board, same no-suffix bound.
+  const label = t.title?.trim() || fusionCore.deriveTaskLabelFromDescription(t.description, 60);
   const source = getTaskSourceLabel(t);
   const sourceSuffix = source ? ` [via: ${source}]` : "";
   const deps = t.dependencies.length ? ` [deps: ${t.dependencies.join(", ")}]` : "";
@@ -1762,13 +1765,25 @@ export default function kbExtension(pi: ExtensionAPI) {
       "Create a new task on the Fusion task board. The task enters the planning column " +
       "where the AI planning agent will plan it into a full prompt with steps, " +
       "file scope, and acceptance criteria. Optionally pass workflow_id to select " +
-      "a workflow at creation time; use fn_workflow_list to discover valid IDs.",
+      "a workflow at creation time; use fn_workflow_list to discover valid IDs. " +
+      "Optionally pass title to name the card in your own words; omitted, the label is derived from " +
+      "the first sentence of the description.",
     promptSnippet: "Create a task on the Fusion AI-orchestrated task board",
     promptGuidelines: [
       "Use fn_task_create for task tracking — be descriptive so the planning agent can write a good plan.",
       "Include the problem AND desired outcome. For bugs, describe current vs expected behavior.",
     ],
     parameters: Type.Object({
+      /*
+      FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): pi's create tool gained the same optional explicit
+      title the other create surfaces have. It was the one agent-reachable create route with no way to name a
+      card, so a session that knew the right label still got a first-line-derived one.
+      */
+      title: Type.Optional(
+        Type.String({
+          description: "Short card label (e.g. 'Fix lockfile drift in plugin workspaces'). Omitted, the label is derived from the first sentence of description.",
+        }),
+      ),
       description: Type.String({ description: "What needs to be done — be descriptive" }),
       depends: Type.Optional(
         Type.Array(Type.String(), {
@@ -1849,7 +1864,14 @@ export default function kbExtension(pi: ExtensionAPI) {
           const messageStore = layer
             ? new fusionCore.MessageStore(null, { asyncLayer: layer })
             : new fusionCore.MessageStore(store.getDatabase());
-          const title = params.description.split(/\r?\n/, 1)[0]?.trim().slice(0, 80) || "Follow-up task";
+          /*
+          FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): the proposal line the operator approves used the
+          raw first line of the description, so a markdown-first description proposed a card titled with its
+          heading. An explicit title wins, otherwise the shared derivation labels it.
+          */
+          const derivedLabel = fusionCore.deriveTaskLabelFromDescription(params.description, 80);
+          const title = params.title?.trim()
+            || (derivedLabel === fusionCore.FALLBACK_TASK_TITLE ? "Follow-up task" : derivedLabel);
           await messageStore.sendMessage({ fromId: fnCtx.agentId ?? "ephemeral-worker", fromType: "agent", toId: fusionCore.DASHBOARD_USER_ID, toType: "user", type: "agent-to-user", content: `Task proposal awaiting validation: ${title}`, metadata: { kind: "task-proposal", proposalStatus: "pending", proposalIdempotencyKey: randomUUID(), proposedTask: { title, description: params.description, workflowId: params.workflow_id, dependencies: params.depends } } });
           return { content: [{ type: "text", text: "Task proposal submitted to the operator for validation; no task was created." }], details: { proposed: true } };
         }
@@ -1912,6 +1934,8 @@ export default function kbExtension(pi: ExtensionAPI) {
           || (await store.resolveOriginWorkflowOverrideId("task-create"));
 
         const { task, wasDuplicate } = await createAgentTask(store, {
+          // FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): an explicit title is the caller's own words.
+          ...(params.title?.trim() ? { title: params.title.trim() } : {}),
           description: params.description.trim(),
           dependencies: params.depends,
           assignedAgentId: normalizedAgentId === null ? undefined : normalizedAgentId,
@@ -1929,10 +1953,13 @@ export default function kbExtension(pi: ExtensionAPI) {
               : undefined,
         }, { rootDir: ctx.cwd, sourceAgentId: fnCtx.agentId, sourceTaskId: fnCtx.taskId });
 
-        const label =
-          task.description.length > 80
-            ? task.description.slice(0, 80) + "…"
-            : task.description;
+        /*
+        FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): the confirmation echoed a raw 80-char slice of the
+        description, so a caller that passed `title` still saw prose (and a markdown-first description echoed
+        its heading). The card's own label is what the board shows, so that is what this reports.
+        */
+        const label = task.title?.trim()
+          || fusionCore.deriveTaskLabelFromDescription(task.description, 80);
 
         /*
         FNXC:Workflows 2026-07-05-00:00:
@@ -2048,7 +2075,21 @@ export default function kbExtension(pi: ExtensionAPI) {
       const updatedFields: string[] = [];
 
       if (params.title !== undefined) {
-        updates.title = params.title.trim();
+        /*
+        FNXC:TaskTitleHygiene 2026-09-26-04:45 (RUFU-295): rename is now an agent-reachable operation on
+        every edge, so this one refuses the same junk shapes (`## heading`, a pasted multi-line body, an
+        over-budget wall of text) as `fn task rename` and the engine's `fn_task_update` instead of letting
+        the store write guard quietly substitute a derived label for the caller's words. A blank value is
+        still accepted: for this tool blank means "clear the title", which is the pre-existing contract.
+        */
+        const trimmedTitle = params.title.trim();
+        if (trimmedTitle.length > 0) {
+          const rejection = fusionCore.describeTaskTitleRejection(trimmedTitle);
+          if (rejection) {
+            return { content: [{ type: "text", text: `ERROR: title rejected (${rejection}). Nothing was persisted.` }], isError: true, details: { code: "TITLE_REJECTED" } };
+          }
+        }
+        updates.title = trimmedTitle;
         updatedFields.push("title");
       }
       if (params.description !== undefined) {

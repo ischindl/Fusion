@@ -1,6 +1,7 @@
 import type { Task } from "../types/task/task-core.js";
 import type { PatchnodeDay, PatchnodeEntry, PatchnodeEntryKind } from "../types/task/patchnode.js";
 import { extractPatchnodeProductSummary } from "./patchnode-product-summary.js";
+import { deriveTaskLabelFromDescription, isHeadingShapedTaskTitle, MAX_TASK_LABEL_LENGTH } from "../ai/ai-summarize.js";
 
 /*
 FNXC:PatchnodeLedger 2026-08-28-12:16:
@@ -26,14 +27,19 @@ export function buildPatchnodeEntryId(kind: PatchnodeEntryKind, taskId: string, 
 }
 
 /**
- * Exact number of description characters used as a ledger label when no title is stored.
+ * Budget for the ledger label derived from a description when no title is stored.
  *
  * FNXC:PatchnodeLedger 2026-09-15-23:26:
  * FN-444 mirrors `MAX_DESCRIPTION_FALLBACK_LENGTH` from the dashboard's FN-391 projection
- * (`packages/dashboard/app/utils/taskTitleDisplay.ts`): the first 220 description characters taken
- * EXACTLY, with no ellipsis, suffix, or word-boundary rounding.
+ * (`packages/dashboard/app/utils/taskTitleDisplay.ts`): 220 characters, no ellipsis and no suffix.
+ *
+ * FNXC:TaskTitleDerivation 2026-09-26-02:28:
+ * RUFU-295 keeps the budget and stops sourcing it from a raw slice: it is now core's
+ * `MAX_TASK_LABEL_LENGTH`, the same budget the durable title write guard collapses into, so the
+ * ledger, the persisted title fallback, and the dashboard card cannot disagree about what a
+ * description "says".
  */
-export const PATCHNODE_DESCRIPTION_LABEL_LENGTH = 220;
+export const PATCHNODE_DESCRIPTION_LABEL_LENGTH = MAX_TASK_LABEL_LENGTH;
 
 type PatchnodeLabelInput = { id: string; title?: string | null; description?: string | null };
 
@@ -43,23 +49,42 @@ type PatchnodeLabelInput = { id: string; title?: string | null; description?: st
  * FNXC:PatchnodeLedger 2026-09-15-23:26:
  * FN-444: `Task.title` is OPTIONAL and FN-391 deliberately removed every title backfill, so an
  * ordinary Fusion task stores no title at all and its on-screen label is derived by
- * `getTaskTitleDisplay` (title -> first 220 description characters -> id). The ledger previously
- * fell straight from a blank title to the task id, so every titleless delivery persisted
- * `title === taskId` and the History card rendered the identifier twice (metadata chip + bold
- * line). This helper applies the same precedence so the durable snapshot carries the label an
- * operator actually recognises.
+ * `getTaskTitleDisplay`. The ledger previously fell straight from a blank title to the task id, so
+ * every titleless delivery persisted `title === taskId` and the History card rendered the identifier
+ * twice (metadata chip + bold line). This helper applies the same precedence so the durable snapshot
+ * carries the label an operator actually recognises.
  *
- * The rule is DUPLICATED rather than imported because `@fusion/core` cannot depend on the
- * dashboard package, and the dashboard's browser bundle aliases `@fusion/core` to `types.ts`, so
- * neither side can import the other's runtime helper. `PATCHNODE_DESCRIPTION_LABEL_LENGTH` and the
- * precedence order are pinned by tests on both sides to keep the two mirrors converged.
+ * FNXC:TaskTitleDerivation 2026-09-26-02:28:
+ * This replaces the old note that said the rule was "DUPLICATED rather than imported" because core
+ * cannot depend on the dashboard. That package-boundary fact still explains why the dashboard keeps
+ * its own copy of the derivation (`packages/dashboard/app/utils/taskTitleDerivation.ts`, pinned by a
+ * three-way parity test), but it never justified what happened HERE: this builder sliced the raw
+ * first 220 characters off the description, so a spec-shaped description froze `## Pôvodný popis` —
+ * or a whole multi-line markdown body — into a permanent History row that no repair pass could reach
+ * (its admission was `title = task_id`). The ledger now runs the description through core's canonical
+ * derivation, so the durable row agrees with the persisted title fallback by construction instead of
+ * by convention. Precedence is unchanged: non-blank stored title → derived label → task id.
  */
 export function buildPatchnodeSnapshotLabel(task: PatchnodeLabelInput): string {
   if (typeof task.title === "string" && task.title.trim().length > 0) return task.title;
   if (typeof task.description === "string" && task.description.trim().length > 0) {
-    return task.description.slice(0, PATCHNODE_DESCRIPTION_LABEL_LENGTH);
+    return deriveTaskLabelFromDescription(task.description, PATCHNODE_DESCRIPTION_LABEL_LENGTH);
   }
   return task.id.trim();
+}
+
+/*
+FNXC:TaskTitleDerivation 2026-09-26-02:28:
+Shapes the ledger must never carry as a label, exported as the admission rule for repairing rows that
+are already persisted. FN-444's `title === task_id` missing-label marker is only ONE of them: a row
+written before the derivation landed carries the raw first line of a spec, so a heading-shaped or
+multi-line label is equally junk and equally permanent without a repair route. Anything else — a clean
+one-line label, even one a later upstream reword has since superseded — is point-in-time history and
+stays untouched.
+*/
+export function isPatchnodeJunkLabel(title: string | undefined | null): boolean {
+  if (typeof title !== "string") return false;
+  return isHeadingShapedTaskTitle(title) || /[\r\n]/.test(title.trim());
 }
 
 type PatchnodeTaskSnapshot = Pick<Task, "id" | "title" | "description" | "prompt">;

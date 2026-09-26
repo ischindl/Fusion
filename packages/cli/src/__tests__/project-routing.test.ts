@@ -272,4 +272,42 @@ describe("fn task create argument parsing", () => {
     });
     expect(args.attachFiles).toEqual(["a.png"]);
   });
+
+  /*
+  FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): `--title` is the explicit card label, and `TaskCreateArgs`
+  keeps its pre-existing (misnamed) `title` key for the joined positional DESCRIPTION. These cases pin the
+  separation: the two must never be confused, because the overload is what previously let a short title become
+  the whole card description (and, per RUFU-269, let an unparsed flag become a stored title and poison the
+  duplicate fingerprint).
+  */
+  it("keeps --title as the explicit label and the positional as the description", async () => {
+    const parse = await loadParser();
+    const args = parse(["Fix the lockfile so plugin workspaces install", "--title", "Fix lockfile drift"]);
+
+    expect(args.explicitTitle).toBe("Fix lockfile drift");
+    // The description keeps its full text: a title never replaces it.
+    expect(args.title).toBe("Fix the lockfile so plugin workspaces install");
+    expect(args.title).not.toContain("--title");
+  });
+
+  it("records --title wherever it sits in the argument order", async () => {
+    const parse = await loadParser();
+
+    expect(parse(["--title", "Rename on start", "desc text"]).explicitTitle).toBe("Rename on start");
+    expect(parse(["--title", "Rename on start", "desc text"]).title).toBe("desc text");
+  });
+
+  it("treats a blank --title as no title at all so the derivation still runs", async () => {
+    const parse = await loadParser();
+    const args = parse(["desc text", "--title", "   "]);
+
+    expect(args.explicitTitle).toBeUndefined();
+    expect(args.title).toBe("desc text");
+  });
+
+  it("leaves no explicit title when --title is not passed", async () => {
+    const parse = await loadParser();
+
+    expect(parse(["desc text"]).explicitTitle).toBeUndefined();
+  });
 });

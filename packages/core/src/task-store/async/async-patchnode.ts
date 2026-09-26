@@ -1,5 +1,5 @@
 import { and, desc, eq, gt, gte, ilike, inArray, isNotNull, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
-import { buildPatchnodeEntryId, buildPatchnodeEntryInput, buildPatchnodeSnapshotLabel } from "../../board/patchnode.js";
+import { buildPatchnodeEntryId, buildPatchnodeEntryInput, buildPatchnodeSnapshotLabel, isPatchnodeJunkLabel } from "../../board/patchnode.js";
 import { extractPatchnodeProductSummary } from "../../board/patchnode-product-summary.js";
 import { storeLog } from "../../store.js";
 import * as schema from "../../postgres/schema/index.js";
@@ -291,9 +291,16 @@ function revertedMarker(metadata: unknown): { revertedAt: string; revertedCommit
 /*
 FNXC:PatchnodeLedger 2026-09-15-23:26:
 FN-444: a degenerate entry is one whose stored label is EXACTLY its own task id, the marker the old
-builder wrote whenever a task had no stored title. That equality is the whole admission rule: a
-legitimate label can never be repaired away, and a task whose canonical label really is its id
-(neither title nor description) yields no repair at all. `body` is only reset when it too was the
+builder wrote whenever a task had no stored title. A task whose canonical label really is its id
+(neither title nor description) yields no repair at all.
+
+FNXC:TaskTitleDerivation 2026-09-26-02:28:
+RUFU-295 widens the admission beyond FN-444's equality: `title = task_id` is no longer the only junk
+that builder could produce, because the same pre-derivation code also wrote the RAW first 220
+characters of the description. A label that is an ATX heading (`## Pôvodný popis`) or that carries a
+newline is therefore equally junk and equally permanent without a repair route. A clean one-line label
+that is NOT the canonical derivation stays exactly as it is: it is what the operator saw at delivery
+ time, and rewriting history to match today's description would be a different kind of lie. `body` is only reset when it too was the
 copied id; a genuine point-in-time summary is never rewritten, because the ledger records what was
 delivered, not what the task says today.
 */
@@ -301,9 +308,12 @@ export function planPatchnodeLabelRepair(
   entry: Pick<PatchnodeEntry, "taskId" | "title" | "body">,
   task: { id: string; title?: string | null; description?: string | null },
 ): { title: string; body: string } | null {
-  if (entry.title !== entry.taskId) return null;
+  if (entry.title !== entry.taskId && !isPatchnodeJunkLabel(entry.title)) return null;
   const title = buildPatchnodeSnapshotLabel({ ...task, id: entry.taskId });
   if (title === entry.taskId) return null;
+  // Idempotence for the widened admission: a row whose label already IS the canonical derivation is
+  // history, not junk, and must not be rewritten on every reconcile pass.
+  if (title === entry.title) return null;
   return { title, body: entry.body === entry.taskId ? "" : entry.body };
 }
 
@@ -452,11 +462,14 @@ export async function reconcilePatchnodeFromLiveTasks(
   FN-444: this fourth pass is the only non-insert write reconciliation performs, and it does not
   break the insert-only guarantee the other passes exist to protect. It invents no delivery, no
   occurrence, no lane and no point-in-time summary: it replaces a MISSING-label marker
-  (`title = task_id`, written by the pre-FN-444 builder for every titleless task) with the canonical
-  label of the task that is still live. Entries whose task is gone or soft-deleted are left exactly
-  as they are — the read surfaces render those degenerate rows without repeating the identifier.
-  The pass is bounded by the same page size and page cap as the others and is idempotent, because a
-  repaired row no longer matches `title = task_id`.
+  (`title = task_id`, written by the pre-FN-444 builder for every titleless task) or a junk label the
+  pre-RUFU-295 builder wrote from a raw description slice (heading-shaped, or multi-line) with the
+  canonical label of the task that is still live. Entries whose task is gone or soft-deleted are left
+  exactly as they are — the read surfaces render those degenerate rows without repeating the
+  identifier. The pass is bounded by the same page size and page cap as the others and stays
+  idempotent: an FN-444 row no longer matches `title = task_id`, and a RUFU-295 junk row stops being a
+  candidate once its label equals the canonical derivation (the planner's own equality guard, which is
+  what the widened SQL admission depends on).
   */
   let repairCursor = "";
   for (let page = 0; page < RECONCILE_MAX_PAGES; page += 1) {
@@ -474,7 +487,23 @@ export async function reconcilePatchnodeFromLiveTasks(
       isNull(tasks.deletedAt),
     )).where(and(
       eq(entries.projectId, projectId),
-      eq(entries.title, entries.taskId),
+      /*
+      FNXC:TaskTitleDerivation 2026-09-26-02:28:
+      RUFU-295 widens this admission from FN-444's `title = task_id` marker alone to the two durable
+      junk shapes that builder could also write: a heading-shaped label (`## Pôvodný popis`) and a
+      label containing a newline (a pasted multi-line body). Those rows were written by the pre-
+      derivation builder and are permanent unless a pass reaches them, because the ledger row is a
+      snapshot and no other pass rewrites a title. The SQL mirrors `isPatchnodeJunkLabel` exactly
+      (ATX heading prefix, or an embedded LF/CR); a candidate the planner then finds already canonical
+      is skipped there, which is what keeps the pass idempotent. `labelsRepaired` counts exactly these
+      writes.
+      */
+      or(
+        eq(entries.title, entries.taskId),
+        sql`${entries.title} ~ '^[[:space:]]{0,3}#{1,6}([[:space:]]|$)'`,
+        sql`${entries.title} like '%' || chr(10) || '%'`,
+        sql`${entries.title} like '%' || chr(13) || '%'`,
+      ),
       repairCursor ? gt(entries.entryId, repairCursor) : undefined,
     )).orderBy(entries.entryId).limit(RECONCILE_PAGE_SIZE);
     for (const row of rows) {

@@ -8598,6 +8598,13 @@ FN-391 replaces the FN-044 200-characters-with-ellipsis fallback with an EXACT 2
 description prefix. The assertions below are inverted rather than relaxed: the old suffix contract
 is now asserted absent, because a suffix made the rendered label a different string from the
 description prefix it claims to show.
+
+FNXC:TaskTitleDerivation 2026-09-26-06:07:
+RUFU-295 supersedes the CONTENT half of that rule while keeping its bound: the 220-character limit and
+the no-suffix guarantee still hold, but the rendered text is the markdown-aware derived label rather
+than the raw prefix. These fixtures are whitespace-free blobs, where a derived label hard-truncates to
+exactly the same 220 characters, so the assertions below stay truthful; the derived-content dimension
+is pinned by the describe block that follows.
 */
 describe("TaskCard titleless display fallback (FN-391)", () => {
   const description220 = "d".repeat(220);
@@ -8654,6 +8661,36 @@ describe("TaskCard titleless display fallback (FN-391)", () => {
     expect(title).toHaveAttribute("title", explicitTitle);
     expect(title).not.toHaveClass("card-title--bounded-description");
     expect(title.textContent).not.toContain("...");
+  });
+});
+
+/*
+FNXC:TaskTitleDerivation 2026-09-26-06:07:
+RUFU-295's reported junk was a board card whose label was the PROMPT.md section heading, because the
+titleless fallback sliced the description's raw first 220 characters. The card now renders the shared
+markdown-aware derivation, so a heading-first or multi-line description yields one plain sentence while
+FN-391's tooltip keeps the full untruncated body.
+*/
+describe("TaskCard titleless display renders the derived label (RUFU-295)", () => {
+  function renderTitlelessCard(description: string) {
+    return render(<TaskCard task={makeTask({ id: "RUFU-295-card", title: undefined, description })} onOpenDetail={noop} addToast={noop} />);
+  }
+
+  it("renders the sentence after a section heading instead of the heading itself", () => {
+    const { container } = renderTitlelessCard("## Pôvodný popis\n\nUvítali by sme možnosť premenovať kartu.");
+    const title = container.querySelector(".card-title") as HTMLDivElement;
+    expect(title.textContent).toBe("Uvítali by sme možnosť premenovať kartu");
+    expect(title.textContent).not.toContain("#");
+    expect(title).toHaveClass("card-title--bounded-description");
+    expect(title).toHaveAttribute("title", "## Pôvodný popis\n\nUvítali by sme možnosť premenovať kartu.");
+  });
+
+  it("collapses a multi-line body to one sentence rather than wrapping the card title", () => {
+    const { container } = renderTitlelessCard("Prvá veta končí bodkou.\nDruhá veta nasleduje.\nTretia veta");
+    const title = container.querySelector(".card-title") as HTMLDivElement;
+    // The derivation keeps the first sentence's text and drops the terminator mark.
+    expect(title.textContent).toBe("Prvá veta končí bodkou");
+    expect(title.textContent).not.toContain("\n");
   });
 });
 

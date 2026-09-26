@@ -20,7 +20,7 @@ import {buildHumanPlanApprovalCreationState, resolveHumanPlanApprovalExecutionMo
 /* FNXC:HumanMergeApproval 2026-09-17-18:09: FN-514 arms the per-card DELIVERY lock from a boolean only; the builder drops any client-supplied decision, candidate or receipt so creation can never forge delivery proof. */
 import {buildHumanMergeApprovalCreationState} from "../merge/human-merge-approval.js";
 import {PLAN_REVIEW_GROUP_ID} from "../workflows/builtin-plan-review-group.js";
-import {sanitizeTitle, summarizeTitle} from "../ai/ai-summarize.js";
+import {resolveTaskTitleWrite, sanitizeTitle, summarizeTitle} from "../ai/ai-summarize.js";
 import {resolveTaskOutputLanguage} from "../ai/ai-output-language.js";
 import {extractTaskIdTokens, normalizeTitleForTaskId} from "../tasks/task-title-id-drift.js";
 import {resolveTitleSummarizerSettingsModel} from "../ai/model-resolution.js";
@@ -335,7 +335,14 @@ export async function createTaskBackendImpl(store: TaskStore, input: TaskCreateI
       }
     }
 
-    const title = input.title?.trim() || undefined;
+    /*
+    FNXC:TaskTitleDerivation 2026-09-26-01:32:
+    RUFU-295: the create seam runs the persisted-title write guard instead of a bare trim, so a
+    heading-shaped (`## Pôvodný popis`) or multi-line (whole pasted spec) explicit title is replaced
+    by the canonical derived label instead of being stored verbatim. A blank explicit title still
+    means "untitled" so the deferred title-summarizer lane below keeps filling it.
+    */
+    const title = resolveTaskTitleWrite({ title: input.title, description: input.description });
     /*
     FNXC:TitleSummarization 2026-08-19-13:43:
     The project-scoped autoSummarizeTitles snapshot is the sole automatic eligibility policy.
@@ -1126,7 +1133,8 @@ export async function createTaskWithReservedIdImpl(store: TaskStore, input: Task
     await store.maybeResolveTombstonedTaskId(id, input, "createTask");
     await store.assertTaskIdAvailable(id);
 
-    const title = input.title?.trim() || undefined;
+    // RUFU-295: same write guard as createTaskBackendImpl (`resolveTaskTitleWrite` carries the rule).
+    const title = resolveTaskTitleWrite({ title: input.title, description: input.description });
     let resolvedWorkflowSteps: string[] | undefined = input.enabledWorkflowSteps?.length
       ? await store.resolveEnabledWorkflowSteps(
           input.enabledWorkflowSteps,

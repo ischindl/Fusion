@@ -90,8 +90,30 @@ describe("getTaskTitleDisplay", () => {
     expect(getTaskTitleDisplayText({ id: "FN-8", description: "" })).toBe("FN-8");
   });
 
-  it("handles multiline descriptions without collapsing them", () => {
+  /*
+  FNXC:TaskTitleDerivation 2026-09-26-02:43:
+  RUFU-295 replaced this seam's raw 220-character prefix with the canonical description→label
+  derivation, so a multi-line description renders as ONE derived line while `fullText` keeps the raw
+  body for tooltips and the detail view. The previous expectation ("without collapsing them") was a
+  consequence of raw slicing, not a requirement: putting the raw first line in the title slot is
+  exactly how `## Pôvodný popis` and `PREMISA: …` reached the board.
+  */
+  it("renders a multi-line description as one derived label and keeps the raw body as tooltip text", () => {
     const description = "First line\nSecond line";
-    expect(getTaskTitleDisplayText({ id: "FN-9", description })).toBe(description);
+    const display = getTaskTitleDisplay({ id: "FN-9", description });
+
+    expect(display.text).toBe("First line");
+    expect(display.text).not.toContain("\n");
+    expect(display.fullText).toBe(description);
+    expect(display.isBoundedDescription).toBe(true);
+  });
+
+  it("derives past a leading markdown heading instead of rendering it", () => {
+    const description = "## Pôvodný popis\n\nUvítali by sme možnosť premenovať kartu.";
+    const display = getTaskTitleDisplay({ id: "FN-10", description });
+
+    expect(display.text).toBe("Uvítali by sme možnosť premenovať kartu");
+    expect(display.fullText).toBe(description);
+    expect(display.isBoundedDescription).toBe(true);
   });
 });
