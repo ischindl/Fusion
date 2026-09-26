@@ -204,6 +204,7 @@ import { cleanupLandedTaskWorktree, removeEmptyWorkspaceTaskDirectory } from "./
 import { cleanupDeletedTaskWorktrees } from "./worktree/deleted-task-worktree-cleanup.js";
 import { AutoRecoveryDispatcher } from "./healing/auto-recovery.js";
 import { reconcileReleasedOverlapWaits } from "./self-healing/released-overlap-waits.js";
+import { reconcileLaneCapabilityMisbinds } from "./self-healing/lane-capability-reconciliation.js";
 import { activeSessionRegistry, executingTaskLock } from "./agents/active-session-registry.js";
 import {
   getTaskPlanningOrExecutionLivenessSignal,
@@ -2388,6 +2389,9 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       },
       { name: "recover-running-on-inactive-tasks", fn: () => this.recoverAgentsRunningOnInactiveTasks().then(() => undefined) },
       { name: "recover-drifted-agent-task-links", fn: () => this.recoverDriftedAgentTaskLinks().then(() => undefined) },
+      // RUFU-272: runs AFTER the two mirror sweeps so a link they re-created (or cleared) is seen
+      // at its final state; this sweep is the only writer of the OWNER half for this defect class.
+      { name: "reconcile-lane-capability-misbind", fn: () => this.reconcileLaneCapabilityMisbinds().then(() => undefined) },
       { name: "reconcile-soft-delete-column-drift", fn: () => this.reconcileSoftDeletedColumnDrift().then(() => undefined) },
       { name: "clear-stale-blocked-by", fn: () => this.clearStaleBlockedBy().then(() => undefined) },
       { name: "reconcile-released-overlap-waits", fn: () => this.reconcileReleasedOverlapWaits().then(() => undefined) },
@@ -3575,6 +3579,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           { name: "reattach-orphaned-assigned-executions", fn: () => this.reattachOrphanedAssignedExecutions() },
           { name: "recover-running-on-inactive-tasks", fn: () => this.recoverAgentsRunningOnInactiveTasks() },
           { name: "recover-drifted-agent-task-links", fn: () => this.recoverDriftedAgentTaskLinks() },
+          // RUFU-272 startup leg — same ordering rule as the maintenance batch above.
+          { name: "reconcile-lane-capability-misbind", fn: () => this.reconcileLaneCapabilityMisbinds() },
           { name: "reconcile-soft-delete-column-drift", fn: () => this.reconcileSoftDeletedColumnDrift() },
           { name: "clear-stale-blocked-by", fn: () => this.clearStaleBlockedBy() },
           { name: "reconcile-released-overlap-waits", fn: () => this.reconcileReleasedOverlapWaits() },
@@ -7438,6 +7444,25 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     return reconcileReleasedOverlapWaits(this.store, (task) => this.isWorkspaceTaskLive(task).live
       || this.options.hasLiveSessionSurface?.(task.id) === true
       || this.options.getExecutingTaskIds?.().has(task.id) === true, this.options.onOverlapBlockersReleased);
+  }
+
+  /*
+  FNXC:LaneCapabilityReconciliation 2026-09-26-19:40 (RUFU-272 Step 4):
+  Wrapper for the lane-capability misbind sweep — the sole mutation owner that moves the card OWNER
+  (via TaskStore.updateTask's assignment seam) when a durable owner lane cannot execute the card it
+  owns. Composes the canonical liveness triple exactly like its neighbors; bails without an
+  agentStore because eligibility is a lane property.
+  */
+  async reconcileLaneCapabilityMisbinds(): Promise<number> {
+    const agentStore = this.options.agentStore;
+    if (!agentStore) return 0;
+    return reconcileLaneCapabilityMisbinds(
+      this.store,
+      agentStore,
+      (task) => this.isWorkspaceTaskLive(task).live
+        || this.options.hasLiveSessionSurface?.(task.id) === true
+        || this.options.getExecutingTaskIds?.().has(task.id) === true,
+    );
   }
 
   async clearStaleBlockedBy(): Promise<number> {

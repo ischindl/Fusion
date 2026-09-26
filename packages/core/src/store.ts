@@ -2178,7 +2178,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   async renewCheckoutLease( taskId: string, update: { checkoutRunId: string | null; checkoutLeaseRenewedAt: string; }, ): Promise<Task> {
     return renewCheckoutLeaseImpl(this, taskId, update);
   }
-  async selectNextTaskForAgent( agentId: string, agent?: Pick<Agent, "id" | "role"> & Partial<Pick<Agent, "runtimeConfig">>, ): Promise<InboxTask | null> {
+  async selectNextTaskForAgent( agentId: string, agent?: Pick<Agent, "id" | "role"> & Partial<Pick<Agent, "runtimeConfig" | "roles">>, ): Promise<InboxTask | null> {
     return selectNextTaskForAgentImpl(this, agentId, agent);
   }
   public areAllDependenciesDone(dependencies: string[], tasksById: Map<string, Task>, satisfiedColumns?: ReadonlySet<string>): boolean {

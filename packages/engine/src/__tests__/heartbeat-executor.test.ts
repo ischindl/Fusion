@@ -4739,6 +4739,186 @@ describe("executeHeartbeat", () => {
       expect(mockedCreateFnAgent).toHaveBeenCalledTimes(3);
     });
   });
+
+  /*
+  FNXC:LaneCapabilityWake 2026-09-26-18:46 (RUFU-272):
+  A wake on `agent.taskId` never re-ran the bind policy, so an implementation-class card bound to a
+  capability-ineligible lane (assignmentPolicy "none"/"explicit-only" without a durable-owner witness)
+  executed on that lane forever — the RUFU-222 wedge. These legs pin the wake-path revalidation:
+  ineligible durable binds are declined with a named reason (log + `task:lane-capability-declined`
+  audit row), the wake still falls through to inbox/auto-claim, and every capable-lane behavior
+  (explicit-owner assignment, auto executor pickup, live-session immunity) is unchanged.
+
+  The four decline legs shipped as `it.fails` defect pins while the fix landed (measured red
+  pre-fix: the mis-bound card executed on the audit-only lane, the inbox was never offered, and the
+  inbox projection carried no `roles`); the wake revalidation commit flipped them back to plain `it`.
+  */
+  describe("lane-capability wake revalidation", () => {
+    function createLaneCapTaskStore(overrides: Partial<TaskStore> = {}): TaskStore {
+      return createMockTaskStore({
+        recordRunAuditEvent: vi.fn().mockResolvedValue(undefined),
+        ...overrides,
+      });
+    }
+
+    function boundTaskRow(id: string, overrides: Record<string, unknown> = {}): TaskDetail {
+      return {
+        id,
+        title: "Bound card",
+        description: "implementation card",
+        prompt: "# Test PROMPT.md\nSome content",
+        steps: [],
+        column: "in-progress",
+        assignedAgentId: "agent-001",
+        worktree: "/tmp/worktree-fn-001",
+        branch: "fusion/fn-001",
+        dependencies: [],
+        log: [],
+        attachments: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        ...overrides,
+      } as unknown as TaskDetail;
+    }
+
+    it("declines a policy-none lane holding a durable-owned implementation card, without executing it", async () => {
+      const store = createStoreWithAgentForExec({
+        taskId: "FN-WEDGE",
+        runtimeConfig: { assignmentPolicy: "none" } as Agent["runtimeConfig"],
+      });
+      const taskStore = createLaneCapTaskStore({
+        getTask: vi.fn().mockResolvedValue(boundTaskRow("FN-WEDGE")),
+      });
+      mockedCreateFnAgent.mockResolvedValue({ session: createMockAgentSession() as any });
+      const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: "/tmp" });
+
+      await monitor.executeHeartbeat({ agentId: "agent-001", source: "automation" });
+
+      expect(mockedCreateFnAgent).not.toHaveBeenCalled();
+      expect(heartbeatLog.warn).toHaveBeenCalledWith(expect.stringContaining('has assignmentPolicy "none"'));
+      expect(taskStore.recordRunAuditEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mutationType: "task:lane-capability-declined",
+          taskId: "FN-WEDGE",
+          agentId: "agent-001",
+        }),
+      );
+    });
+
+    it("still offers the inbox after a wake decline", async () => {
+      const store = createStoreWithAgentForExec({
+        taskId: "FN-WEDGE",
+        runtimeConfig: { assignmentPolicy: "none" } as Agent["runtimeConfig"],
+      });
+      const selectNextTaskForAgent = vi.fn().mockResolvedValue(null);
+      const taskStore = createLaneCapTaskStore({
+        getTask: vi.fn().mockResolvedValue(boundTaskRow("FN-WEDGE")),
+        selectNextTaskForAgent,
+      });
+      mockedCreateFnAgent.mockResolvedValue({ session: createMockAgentSession() as any });
+      const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: "/tmp" });
+
+      await monitor.executeHeartbeat({ agentId: "agent-001", source: "automation" });
+
+      expect(mockedCreateFnAgent).not.toHaveBeenCalled();
+      expect(selectNextTaskForAgent).toHaveBeenCalled();
+    });
+
+    it("lets an explicit-only lane execute the card it durably owns (liaison explicit assignment unchanged)", async () => {
+      const store = createStoreWithAgentForExec({
+        taskId: "FN-OWNED",
+        runtimeConfig: { assignmentPolicy: "explicit-only" } as Agent["runtimeConfig"],
+        roles: ["executor"],
+      });
+      const taskStore = createLaneCapTaskStore({
+        getTask: vi.fn().mockResolvedValue(boundTaskRow("FN-OWNED")),
+      });
+      mockedCreateFnAgent.mockResolvedValue({ session: createMockAgentSession() as any });
+      const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: "/tmp" });
+
+      await monitor.executeHeartbeat({ agentId: "agent-001", source: "automation" });
+
+      expect(mockedCreateFnAgent).toHaveBeenCalledOnce();
+      expect(taskStore.recordRunAuditEvent).not.toHaveBeenCalledWith(
+        expect.objectContaining({ mutationType: "task:lane-capability-declined" }),
+      );
+    });
+
+    it("holds a non-owner explicit wake on the auto bar when the lane is explicit-only", async () => {
+      const store = createStoreWithAgentForExec({
+        taskId: "FN-MIRROR",
+        runtimeConfig: { assignmentPolicy: "explicit-only" } as Agent["runtimeConfig"],
+        roles: ["executor"],
+      });
+      const taskStore = createLaneCapTaskStore({
+        getTask: vi.fn().mockResolvedValue(boundTaskRow("FN-MIRROR", { assignedAgentId: "agent-999" })),
+      });
+      mockedCreateFnAgent.mockResolvedValue({ session: createMockAgentSession() as any });
+      const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: "/tmp" });
+
+      await monitor.executeHeartbeat({ agentId: "agent-001", source: "automation" });
+
+      expect(mockedCreateFnAgent).not.toHaveBeenCalled();
+      expect(taskStore.recordRunAuditEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mutationType: "task:lane-capability-declined",
+          taskId: "FN-MIRROR",
+        }),
+      );
+    });
+
+    it("projects the full role set into the inbox selector so multi-role lanes are not misjudged", async () => {
+      const store = createStoreWithAgentForExec({
+        taskId: undefined,
+        role: "reviewer",
+        roles: ["reviewer", "executor"],
+      });
+      const selectNextTaskForAgent = vi.fn().mockResolvedValue(null);
+      const taskStore = createLaneCapTaskStore({ selectNextTaskForAgent });
+      const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: "/tmp" });
+
+      await monitor.executeHeartbeat({ agentId: "agent-001", source: "automation" });
+
+      expect(selectNextTaskForAgent).toHaveBeenCalledWith(
+        "agent-001",
+        expect.objectContaining({ roles: expect.arrayContaining(["reviewer", "executor"]) }),
+      );
+    });
+
+    it("never declines a card whose own heartbeat run is live", async () => {
+      const store = createStoreWithAgentForExec({
+        taskId: "FN-LIVE",
+        runtimeConfig: { assignmentPolicy: "none" } as Agent["runtimeConfig"],
+      });
+      (store.getActiveHeartbeatRun as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: "run-live-1",
+        agentId: "agent-001",
+        contextSnapshot: { taskId: "FN-LIVE" },
+      });
+      const taskStore = createLaneCapTaskStore({
+        getTask: vi.fn().mockResolvedValue(boundTaskRow("FN-LIVE")),
+      });
+      mockedCreateFnAgent.mockResolvedValue({ session: createMockAgentSession() as any });
+      const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: "/tmp" });
+
+      await monitor.executeHeartbeat({ agentId: "agent-001", source: "automation" });
+
+      expect(taskStore.recordRunAuditEvent).not.toHaveBeenCalledWith(
+        expect.objectContaining({ mutationType: "task:lane-capability-declined" }),
+      );
+      expect(mockedCreateFnAgent).toHaveBeenCalledOnce();
+    });
+
+    it("regression floor: a default auto-policy executor lane still executes its bound card", async () => {
+      const store = createStoreWithAgentForExec();
+      mockedCreateFnAgent.mockResolvedValue({ session: createMockAgentSession() as any });
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+
+      await monitor.executeHeartbeat({ agentId: "agent-001", source: "automation" });
+
+      expect(mockedCreateFnAgent).toHaveBeenCalledOnce();
+    });
+  });
 });
 
 // ── Task Creation Tracking Tests ──────────────────────────────────────

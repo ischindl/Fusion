@@ -194,6 +194,72 @@ export function resolveReviewColumns(ir: WorkflowIr): string[] {
   ])];
 }
 
+/*
+FNXC:LaneCapabilityVocabulary 2026-09-26-18:46 (RUFU-272 — closes the FLAGGED renamed-board no-op in agent-role-policy.ts):
+IMPLEMENTATION-CLASS LANES AS A MEMBERSHIP SET, resolved from traits.
+
+The role-routing admission predicate classified a card as implementation-class by Set membership in
+four hardcoded legacy ids, so on a board whose lanes carry other names EVERY agent read as
+bind-compatible with EVERY task — the renamed-board hole the NEXT-871 liaison guard exists to close.
+This is the missing set the predicate needed; the consumer threads it as an OPTIONAL argument, so the
+sync default stays legacy-only and only callers holding the task's resolved IR widen the vocabulary.
+
+MEMBERSHIP, not first-per-role: every column carrying any of the six work-class traits counts, per
+the standing rule that `resolveLifecycleColumns` fields answer "where should a card go", never "is a
+card already there`. `complete` is deliberately EXCLUDED — a terminal card is not waiting for
+implementation admission (the legacy set likewise never contained `done`).
+
+Union-with-legacy at the consumer is what keeps the v1-upgrade trap inert: a synthesized v1 IR
+carries `traits: []` on every column and resolves EMPTY (see `columnsWithFlag`'s note); unioning with
+the legacy four leaves such a board classified exactly as it was before this helper existed.
+*/
+export function implementationColumns(ir: WorkflowIr): string[] {
+  return [...new Set([
+    ...columnsWithFlag(ir, "intake"),
+    ...columnsWithFlag(ir, "hold"),
+    ...columnsWithFlag(ir, "countsTowardWip"),
+    ...columnsWithFlag(ir, "mergeOrchestration"),
+    ...columnsWithFlag(ir, "mergeBlocker"),
+    ...columnsWithFlag(ir, "humanReview"),
+  ])];
+}
+
+/**
+ * Store-aware form: the implementation-class lane set for a TASK's selected workflow.
+ *
+ * Unlike `resolveTaskLifecycleColumns`' conservative `undefined`, this NEVER answers "nothing": the
+ * consumer unions it with the static legacy set, so a resolved-but-empty answer must never shrink
+ * what today's policy already treats as implementation-class. Measured fallback semantics:
+ * - trait-less v1-upgraded IR (`declaresAnyLifecycleTrait` false) and any hard resolver failure →
+ *   the legacy four (`LIFECYCLE_FALLBACK_IMPLEMENTATION_COLUMNS`);
+ * - missing/unreadable selection or definition → `resolveWorkflowIrForTask`'s OWN default-workflow IR,
+ *   which is contained inside the legacy four — pinned by property, not by that IR's shape.
+ * Either way a caller's union-with-legacy can only ADD a renamed board's lanes, never remove one.
+ */
+export async function resolveTaskImplementationColumns(
+  store: WorkflowIrResolverStore,
+  taskId: string,
+  cache?: Map<string, WorkflowIr>,
+  selectionCache?: WorkflowSelectionCache,
+): Promise<ReadonlySet<string>> {
+  try {
+    const ir = await resolveWorkflowIrForTask(store, taskId, cache, selectionCache);
+    if (ir && declaresAnyLifecycleTrait(ir)) return new Set(implementationColumns(ir));
+  } catch {
+    /* fall through to the legacy floor below */
+  }
+  return new Set(LIFECYCLE_FALLBACK_IMPLEMENTATION_COLUMNS);
+}
+
+/** The legacy implementation-class ids, mirrored here so the resolver floor and the
+ *  admission predicate's static set stay one greppable pair. */
+export const LIFECYCLE_FALLBACK_IMPLEMENTATION_COLUMNS: readonly string[] = [
+  "triage",
+  "todo",
+  "in-progress",
+  "in-review",
+];
+
 /**
  * U7 — the workflow's MERGE-ORCHESTRATION column: the first column carrying the
  * `mergeOrchestration` trait (where the merge-gate node lives). Merge-failure

@@ -177,3 +177,51 @@ describe("agent assignment policy (issue #2015)", () => {
     expect(formatRoleMismatchReason(explicitOnly, todoTask)).toContain("explicit routing only");
   });
 });
+
+/*
+FNXC:LaneCapabilityVocabulary 2026-09-26-18:46 (RUFU-272):
+The renamed-board no-op closure at the predicate level. The defect: `isImplementationTask` answered by
+legacy-id membership alone, so on a board naming its lanes `backlog`/`building` every agent read as
+bind-compatible with every task. The fix threads an OPTIONAL caller-resolved lane set through every
+policy surface. These cases pin the three contract properties: (1) omitted = legacy behavior unchanged,
+(2) supplied = the renamed lane becomes admission-bearing, (3) supplied NEVER SUBTRACTS — the legacy
+four stay implementation-class regardless of what the resolved set contains.
+*/
+describe("resolved implementation-column vocabulary (RUFU-272)", () => {
+  const executor = { id: "a-exec", role: "executor" as const };
+  const custom = { id: "a-custom", role: "custom" as const };
+  const renamedTask = { id: "FN-9", column: "building" as const };
+  const legacyTask = { id: "FN-1", column: "todo" as const };
+  const resolved = new Set(["backlog", "building"]);
+
+  it("omitting the resolved set keeps legacy-only classification byte-for-byte", () => {
+    expect(isImplementationTask(renamedTask)).toBe(false);
+    expect(evaluateImplementationTaskBind(custom, renamedTask, { explicitRouting: true }).allowed).toBe(true);
+    expect(canAgentTakeImplementationTaskForExplicitRouting(custom, renamedTask)).toBe(true);
+    expect(canAgentTakeImplementationTaskForBacklogPickup(custom, renamedTask)).toBe(true);
+  });
+
+  it("a supplied set makes the renamed lane admission-bearing", () => {
+    expect(isImplementationTask(renamedTask, resolved)).toBe(true);
+    expect(evaluateImplementationTaskBind(custom, renamedTask, { explicitRouting: true, implementationColumns: resolved }).allowed).toBe(false);
+    expect(canAgentTakeImplementationTaskForExplicitRouting(custom, renamedTask, resolved)).toBe(false);
+    expect(canAgentTakeImplementationTaskForBacklogPickup(custom, renamedTask, { implementationColumns: resolved })).toBe(false);
+    // A capable agent still passes on the renamed lane.
+    expect(evaluateImplementationTaskBind(executor, renamedTask, { explicitRouting: true, implementationColumns: resolved }).allowed).toBe(true);
+  });
+
+  it("the supplied set never subtracts legacy columns (union-with-legacy contract)", () => {
+    // Resolved set deliberately OMITS `todo` (e.g. an IR whose hold lane is named differently).
+    expect(isImplementationTask(legacyTask, resolved)).toBe(true);
+    expect(evaluateImplementationTaskBind(custom, legacyTask, { explicitRouting: true, implementationColumns: resolved }).allowed).toBe(false);
+    // And an empty resolved set (trait-less v1-upgrade IR) behaves exactly like omitting it.
+    expect(isImplementationTask(legacyTask, new Set())).toBe(true);
+    expect(isImplementationTask(renamedTask, new Set())).toBe(false);
+  });
+
+  it("policy 'none' still refuses on a renamed lane once the vocabulary is resolved", () => {
+    const liaisonNone = { id: "a-liaison", role: "executor" as const, runtimeConfig: { assignmentPolicy: "none" } };
+    expect(evaluateImplementationTaskBind(liaisonNone, renamedTask, { explicitRouting: true, implementationColumns: resolved }).allowed).toBe(false);
+    expect(evaluateImplementationTaskBind(liaisonNone, renamedTask, { explicitRouting: true }).allowed).toBe(true);
+  });
+});

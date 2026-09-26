@@ -29,6 +29,11 @@ import {
   resolveEffectiveAgentPermissionPolicy,
   canAgentTakeImplementationTask,
   evaluateImplementationTaskBind,
+  resolveTaskImplementationColumns,
+  formatLaneCapabilityDeclineReason,
+  laneCapabilityDeclinePolicy,
+  LANE_CAPABILITY_DECLINE_CODE,
+  type WorkflowIr,
   resolvePersistAgentThinkingLog,
   resolveAgentMemoryInclusionMode,
   resolvePermanentAgentEffectiveThinkingLevel,
@@ -52,6 +57,7 @@ import { Type, type Static } from "@earendil-works/pi-ai";
 import { createHash } from "node:crypto";
 import { createTaskCreateTool, createTaskLogToolWithContext, createTaskLogsReadTool, createTaskDocumentWriteTool, createTaskDocumentReadTool, createTaskReadTools, createArtifactRegisterTool, createArtifactListTool, createArtifactViewTool, createListAgentsTool, createDelegateTaskTool, createTaskAssignTool, createGetAgentConfigTool, createUpdateAgentConfigTool, createAgentCreateTool, createAgentDeleteTool, createSendMessageTool, createReadMessagesTool, createPostRoomMessageTool, createMemoryTools, createGoalRetrievalTools, createMissionTools, createIdeationTools, createReadEvaluationsTool, createUpdateIdentityTool, createReflectOnPerformanceTool, createWebFetchTool, createWorkflowListTool, createWorkflowGetTool, createWorkflowValidateTool, createWorkflowSelectTool, createTaskPromoteTool, createWorkflowCreateTool, createWorkflowUpdateTool, createWorkflowDeleteTool, createWorkflowSettingsTool, createTraitListTool, createAskQuestionTool, createResearchTools, readAgentMemoryWorkspaceLongTerm, taskCreateParams } from "./agent-tools.js";
 import { AgentLogger } from "./agents/agent-logger.js";
+import { isTaskPlanningOrExecutionLive } from "./agents/planning-execution-liveness.js";
 import { attachAgentUsageTelemetry, emitAgentSessionStart } from "./agents/agent-usage-telemetry.js";
 import { emitApprovalMail } from "./agents/approval-mail.js";
 import {
@@ -2715,15 +2721,76 @@ export class HeartbeatMonitor {
         let taskId = explicitTaskId ?? agent.taskId;
         let inboxSelection: InboxTask | null = null;
 
+        /*
+        FNXC:LaneCapabilityRevalidation 2026-09-26-19:40 (RUFU-272 Step 2):
+        A wake on `explicitTaskId ?? agent.taskId` never re-ran the bind policy, so an
+        implementation-class card bound to a capability-ineligible lane (audit-only roles, or
+        `assignmentPolicy: "none"`/`"explicit-only"` without the durable-owner witness) executed on
+        that lane every heartbeat forever — the RUFU-222/254/256/257 wedge, with no named decline
+        anywhere. The claim-time gates (`claimTaskForAgent` witness, auto-claim filter) were right;
+        the wake path simply re-trusted the stored binding.
+
+        The revalidation now runs the SAME verdict as every bind surface, with the durable-owner
+        witness (`task.assignedAgentId === agent.id`, not the presence of an explicitTaskId) and the
+        card's workflow-resolved implementation lanes. A refusal declines ONLY for this wake: the
+        binding is never mutated here (the `reconcile-lane-capability-misbind` sweep is the single
+        mutation owner), and the wake falls through to inbox/auto-claim exactly as an unbound lane
+        does, so the lane stays useful. Suppressions are absolute: paused/user-paused cards
+        (RUFU-260 pause constraint), cards carried by a live session or a live heartbeat run other
+        than this tick (a running card is never declined out from under itself), and any unreadable
+        or absent task row — the gate fails OPEN to the pre-existing behavior.
+        */
+        if (taskId) {
+          const wakeTaskId = taskId;
+          // Fail-open: an unreadable (or absent, in reduced fakes) bound row keeps the pre-existing
+          // wake behavior; the deeper task_not_found handling stays the authority for missing cards.
+          const boundTask = await Promise.resolve().then(() => taskStore.getTask(wakeTaskId)).catch(() => null);
+          const declineable = boundTask
+            && !boundTask.paused && !boundTask.userPaused
+            && !isTaskPlanningOrExecutionLive(wakeTaskId);
+          if (declineable) {
+            // Liveness of the carrying run: an active heartbeat run OTHER than this tick whose
+            // snapshot names this card. This tick's own run may hold a stale snapshot from the
+            // previous wake, so its id is explicitly excluded — otherwise the first decline would
+            // erase itself on the second wake.
+            const activeRun = await Promise.resolve().then(() => this.store.getActiveHeartbeatRun(agentId)).catch(() => null);
+            const liveCarried = Boolean(activeRun)
+              && activeRun!.id !== run.id
+              && activeRun!.contextSnapshot?.taskId === wakeTaskId;
+            if (!liveCarried) {
+              const wakeBindVerdict = evaluateImplementationTaskBind(agent, boundTask, {
+                explicitRouting: boundTask.assignedAgentId === agent.id,
+                executorRoleOverride: boundTask.sourceMetadata?.executorRoleOverride === true,
+                implementationColumns: await resolveTaskImplementationColumns(taskStore, wakeTaskId),
+              });
+              if (!wakeBindVerdict.allowed) {
+                heartbeatLog.warn(`Agent ${agentId} declined bound task ${wakeTaskId}: ${formatLaneCapabilityDeclineReason(agent, boundTask)}`);
+                await this.auditLaneCapabilityDecline(agentId, boundTask.id, boundTask.column, agent, run.id);
+                // Decline ≠ unbind: fall through to inbox/auto-claim without touching the binding.
+                taskId = undefined;
+              }
+            }
+          }
+        }
+
         if (!taskId) {
-          // FNXC:AgentRouting 2026-07-12-12:10: pass runtimeConfig so the inbox selector can enforce per-agent assignmentPolicy (issue #2015).
-          inboxSelection = await taskStore.selectNextTaskForAgent(agentId, { id: agent.id, role: agent.role, runtimeConfig: agent.runtimeConfig });
+          /*
+          FNXC:AgentRouting 2026-07-12-12:10: pass runtimeConfig so the inbox selector can enforce per-agent assignmentPolicy (issue #2015).
+
+          FNXC:LaneCapabilityVocabulary 2026-09-26-19:40 (RUFU-272 Step 2):
+          The projection carried only the deprecated singular `role`, so a multi-role lane (e.g.
+          ["reviewer","executor"]) read to the selector's bind evaluator as reviewer-only and its
+          implementation work vanished from the offer list. `agentRoles()` prefers the full `roles`
+          array — project it and every tag becomes visible; the singular field stays for legacy lanes.
+          */
+          inboxSelection = await taskStore.selectNextTaskForAgent(agentId, { id: agent.id, role: agent.role, roles: agent.roles, runtimeConfig: agent.runtimeConfig });
           if (inboxSelection) {
             // Defense-in-depth re-check with the shared evaluator: executorRoleOverride bypasses the role
             // check only — assignmentPolicy "none" is never overridable (issue #2015).
             const bindVerdict = evaluateImplementationTaskBind(agent, inboxSelection.task, {
               explicitRouting: true,
               executorRoleOverride: inboxSelection.task.sourceMetadata?.executorRoleOverride === true,
+              implementationColumns: await resolveTaskImplementationColumns(taskStore, inboxSelection.task.id),
             });
             if (!bindVerdict.allowed) {
               heartbeatLog.log(
@@ -2792,7 +2859,22 @@ export class HeartbeatMonitor {
             const freshCandidates = await resolveFreshAutoClaimCandidates(taskStore, snapshot.tasks);
             autoClaimSnapshotCandidateCount = freshCandidates.length;
             autoClaimPromptCandidates = freshCandidates;
-            const roleCompatibleCandidates = freshCandidates.filter((candidate) => canAgentTakeImplementationTask(agent, candidate, { allowEngineer: engineerBacklogAutoClaim }));
+            /*
+            FNXC:LaneCapabilityVocabulary 2026-09-26-19:40 (RUFU-272 Step 2):
+            The auto-claim filter judged candidates with the LEGACY column vocabulary, so on a
+            renamed board no candidate ever read as implementation work — the filter vacuously
+            passed (harmless) while the wake gate and dispatcher disagreed about what implementation
+            work IS. Candidates are now evaluated over legacy ∪ workflow-resolved lanes, with ONE
+            shared IR cache across the whole candidate list (resolution dedupes per workflow).
+            */
+            const autoClaimIrCache = new Map<string, WorkflowIr>();
+            const roleCompatibleCandidates: AutoClaimCandidate[] = [];
+            for (const candidate of freshCandidates) {
+              const implementationColumns = await resolveTaskImplementationColumns(taskStore, candidate.id, autoClaimIrCache);
+              if (canAgentTakeImplementationTask(agent, candidate, { allowEngineer: engineerBacklogAutoClaim, implementationColumns })) {
+                roleCompatibleCandidates.push(candidate);
+              }
+            }
             const skippedIncompatibleCount = freshCandidates.length - roleCompatibleCandidates.length;
             autoClaimRoleFilteredCount = skippedIncompatibleCount;
             if (skippedIncompatibleCount > 0) {
@@ -4826,6 +4908,42 @@ export class HeartbeatMonitor {
    *
    * FNXC:AssigneeTransferAtomicity 2026-09-15-05:05 (RUFU-260)
    */
+  /*
+  FNXC:LaneCapabilityDecline 2026-09-26-19:40 (RUFU-272 Step 2):
+  Wake declines repeat every heartbeat cadence while the misbind stands, so the audit row is
+  deduped per (lane, card, policy-signature) on a cooldown — the operator sees the named decline
+  once per episode, not every 30 seconds. The bounded seam keeps a stalled audit sink from ever
+  turning the decline itself into a lifecycle failure (FN-9175).
+  */
+  private static readonly LANE_CAPABILITY_DECLINE_AUDIT_COOLDOWN_MS = 10 * 60 * 1000;
+  private readonly laneCapabilityDeclineAuditAt = new Map<string, number>();
+
+  private async auditLaneCapabilityDecline(
+    agentId: string,
+    taskId: string,
+    column: string,
+    agent: Agent,
+    runId: string,
+  ): Promise<void> {
+    const key = `${agentId}:${taskId}:${laneCapabilityDeclinePolicy(agent)}`;
+    const now = Date.now();
+    const prior = this.laneCapabilityDeclineAuditAt.get(key);
+    if (prior !== undefined && now - prior < HeartbeatMonitor.LANE_CAPABILITY_DECLINE_AUDIT_COOLDOWN_MS) return;
+    this.laneCapabilityDeclineAuditAt.set(key, now);
+    if (this.laneCapabilityDeclineAuditAt.size > 512) {
+      for (const oldestKey of [...this.laneCapabilityDeclineAuditAt.keys()].slice(0, 256)) this.laneCapabilityDeclineAuditAt.delete(oldestKey);
+    }
+    await emitBoundedRunAudit(this.taskStore, {
+      taskId,
+      agentId,
+      runId,
+      domain: "database",
+      mutationType: "task:lane-capability-declined",
+      target: taskId,
+      metadata: { outcome: "declined", taskId, agentId, column, code: LANE_CAPABILITY_DECLINE_CODE },
+    });
+  }
+
   private async auditWakeDeduped(agentId: string, taskId: string, runId: string): Promise<void> {
     heartbeatLog.debug(`Heartbeat wake for ${agentId} deduped against in-flight run ${runId} on ${taskId}`);
     // The TaskStore is the run-audit sink; the AgentStore has no audit surface. An absent TaskStore is

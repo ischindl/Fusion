@@ -9,7 +9,7 @@ import { emitBoundedRunAudit } from "../run-audit/emit-bounded-run-audit.js";
  * instance as its first parameter and performs byte-identical work.
  */
 import {TaskStore} from "../store.js";
-import {resolveTaskLifecycleColumns, columnsWithFlag} from "../workflows/workflow-lifecycle-traits.js";
+import {resolveTaskLifecycleColumns, resolveTaskImplementationColumns, columnsWithFlag} from "../workflows/workflow-lifecycle-traits.js";
 import {applyPauseAccounting, LEGACY_WIP_COLUMN_FALLBACK} from "../tasks/task-pause-accounting.js";
 import { compareTasksByQueueOrder } from "../tasks/task-queue-order.js";
 import {resolveWorkflowIrForTask} from "../workflows/workflow-ir-resolver.js";
@@ -127,7 +127,14 @@ export async function clearNearDuplicateReferencesToImpl(store: TaskStore, canon
     return updatedTasks;
 }
 
-export async function selectNextTaskForAgentImpl(store: TaskStore, agentId: string, agent?: Pick<Agent, "id" | "role"> & Partial<Pick<Agent, "runtimeConfig">>,): Promise<InboxTask | null> {
+/*
+FNXC:LaneCapabilityVocabulary 2026-09-26-19:40 (RUFU-272 Step 2):
+The projection widened to carry the canonical `roles` array: the heartbeat passed only the deprecated
+singular `role`, so a multi-role lane (e.g. ["reviewer","executor"]) read as reviewer-only here and
+its implementation offers vanished. The bind evaluator's `agentRoles()` prefers `roles`; `role` stays
+for legacy lanes.
+*/
+export async function selectNextTaskForAgentImpl(store: TaskStore, agentId: string, agent?: Pick<Agent, "id" | "role"> & Partial<Pick<Agent, "runtimeConfig" | "roles">>,): Promise<InboxTask | null> {
     const hasExecutorRoleOverride = (task: Task): boolean => task.sourceMetadata?.executorRoleOverride === true;
     const tasks = await store.listTasks({ slim: true });
     if (tasks.length === 0) {
@@ -156,11 +163,24 @@ export async function selectNextTaskForAgentImpl(store: TaskStore, agentId: stri
     loop). Route BOTH branches through the shared bind evaluator. executorRoleOverride still bypasses the role
     check but never assignmentPolicy "none" — that is the hard liaison guarantee.
     */
+    /*
+    FNXC:LaneCapabilityVocabulary 2026-09-26-18:46 (RUFU-272 — flips the documented defect pin):
+    The bind evaluator ran with the LEGACY column vocabulary, so on a renamed board
+    `isImplementationTask` returned false for every card and EVERY agent read as bind-compatible — the
+    liaison guard (FN-7851 / NEXT-871) silently not applying, which `agent-dispatch-renamed-lanes.test.ts`
+    documented as a defect. The selector below already resolves each owned card's IR for its lane
+    filters; the bind check now consumes the same resolution's implementation-lane set (unioned with
+    legacy inside the predicate, so the default lineage stays byte-identical). One map, filled in the
+    same loop as `lifecycleByTaskId` over the same shared `lifecycleIrCache` — every `isBindCompatible`
+    call site in this function ranges over `assignedTasks`, which that loop covers.
+    */
+    const implementationColumnsByTaskId = new Map<string, ReadonlySet<string>>();
     const isBindCompatible = (task: Task): boolean => {
       if (!agent) return true;
       return evaluateImplementationTaskBind(agent, task, {
         explicitRouting: true,
         executorRoleOverride: hasExecutorRoleOverride(task),
+        implementationColumns: implementationColumnsByTaskId.get(task.id),
       }).allowed;
     };
 
@@ -186,6 +206,10 @@ export async function selectNextTaskForAgentImpl(store: TaskStore, agentId: stri
     for (const task of assignedTasks) {
       if (lifecycleByTaskId.has(task.id)) continue;
       lifecycleByTaskId.set(task.id, await resolveTaskLifecycleColumns(store, task.id, lifecycleIrCache));
+      implementationColumnsByTaskId.set(
+        task.id,
+        await resolveTaskImplementationColumns(store, task.id, lifecycleIrCache),
+      );
     }
     const isWipTask = (task: Task) => task.column === (lifecycleByTaskId.get(task.id)?.wip ?? "in-progress");
     const isHoldTask = (task: Task) => task.column === (lifecycleByTaskId.get(task.id)?.hold ?? "todo");
