@@ -5379,7 +5379,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
                   target: branchName,
                   metadata: {
                     taskId: task.id,
-                    branch: task.branch,
+                    branch: branchName,
                     worktreePath: inspection.livePath,
                     existingTipSha: inspection.tipSha,
                     integrationRef: inspection.integrationRef,
