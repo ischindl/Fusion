@@ -13,12 +13,9 @@ import {
 } from "./worktrunk-installer.js";
 import {
   RemovalReason,
-  WorktreeCardOwnershipError,
   removeWorktree as removeWorktreeViaBackend,
 } from "./worktree-backend.js";
 import { pruneWorktreeAdminEntries } from "./worktree-prune.js";
-import { cardWorkspaceReleasable, findCardOwningArtifact, gateCardOwnedRemoval } from "./card-ownership.js";
-import { createRunAuditor, generateSyntheticRunId } from "../util/run-audit.js";
 import { resolveWorkflowIrForTask, columnsWithFlag } from "@fusion/core";
 
 export {
@@ -573,32 +570,10 @@ export async function scanIdleWorktrees(
     }
   }
 
-  /*
-  FNXC:CardOwnershipGuard 2026-09-26-05:10 (STAS-273):
-  Metadata drift may only ADD protection, never remove it. The ACTIVE set above is keyed on the
-  `task.worktree` column, so a card whose metadata was nulled or moved — the exact residue a prior
-  destructive reclaim writes — had its directory classified idle while the card was still in `todo`.
-  A directory named after a card that has no release authority is therefore never idle, whatever its
-  metadata row says.
-  */
-  const cardByDirName = new Map<string, typeof tasks[number]>();
-  for (const task of tasks) {
-    const slug = task.id.toLowerCase();
-    if (!cardByDirName.has(slug)) cardByDirName.set(slug, task);
-  }
-  const protectedByCardName = new Set<string>();
-  for (const dir of registeredDirs) {
-    const owner = cardByDirName.get(basename(dir).toLowerCase());
-    if (!owner || activeWorktrees.has(resolve(dir))) continue;
-    if (await cardWorkspaceReleasable(store, owner, reclaimIrCache)) continue;
-    protectedByCardName.add(resolve(dir));
-    worktreePoolLog.debug(`Preserving worktree ${dir}: named after card ${owner.id}, which is still in non-terminal lane "${owner.column}" (metadata worktree=${owner.worktree ?? "null"})`);
-  }
-
   // Return registered worktrees on disk that are NOT active. Unregistered
   // directories are intentionally excluded here so recycle mode never adds a
   // broken directory to the warm pool; cleanup handles those separately.
-  const idle = registeredDirs.filter((dir) => !activeWorktrees.has(resolve(dir)) && !protectedByCardName.has(resolve(dir)));
+  const idle = registeredDirs.filter((dir) => !activeWorktrees.has(resolve(dir)));
   if (!options?.isPathLive) return idle;
   const liveness = await Promise.all(idle.map(async (dir) => ({ dir, live: await options.isPathLive!(dir) })));
   return liveness.filter(({ live }) => !live).map(({ dir }) => dir);
@@ -648,51 +623,18 @@ export async function cleanupOrphanedWorktrees(
   ))).filter((dir): dir is string => dir !== null);
   const unregistered = ownedDirs.filter((dir) => !registeredWorktrees.has(resolve(dir)));
   const candidates = [...new Map([...orphaned, ...unregistered].map((path) => [resolve(path), path])).values()];
-  /*
-  FNXC:CardOwnershipGuard 2026-09-26-05:10 (STAS-273):
-  Registered directories are removed through the funnel, which now owns the ownership decision; the
-  unregistered branch below cannot reach the funnel (its `rmdirSync` is deliberately non-recursive and
-  fail-closed), so that branch consults the same guard directly. Either way the decision and its
-  evidence come from one implementation, and a card without release authority keeps its checkout.
-  */
-  const ownershipTasks = await store.listTasks({ slim: true, includeArchived: true });
-  const ownershipIrCache = new Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>();
-  const poolAuditFor = (taskId: string | undefined) => taskId
-    ? createRunAuditor(store, {
-        runId: generateSyntheticRunId("pool-prune", taskId),
-        agentId: "worktree-pool",
-        taskId,
-        phase: "pool-prune",
-      })
-    : undefined;
   let cleaned = 0;
 
   for (const worktreePath of candidates) {
-    const owner = findCardOwningArtifact(ownershipTasks, { worktreePath });
     try {
       if (registeredWorktrees.has(resolve(worktreePath))) {
         await removeWorktreeViaBackend({
           rootDir,
           worktreePath,
           settings: settings ?? {},
-          taskId: owner?.id,
-          store,
-          triggeredBy: "worktree-pool.cleanupOrphanedWorktrees",
-          audit: poolAuditFor(owner?.id),
           reason: RemovalReason.PoolPrune,
         });
       } else {
-        const gate = await gateCardOwnedRemoval({
-          store,
-          tasks: ownershipTasks,
-          artifact: { worktreePath },
-          reason: RemovalReason.PoolPrune,
-          triggeredBy: "worktree-pool.cleanupOrphanedWorktrees",
-          irCache: ownershipIrCache,
-          logger: worktreePoolLog,
-          audit: poolAuditFor(owner?.id),
-        });
-        if (gate.refuse) continue;
         if (!isInsideWorktreesDir(rootDir, worktreePath, settings)) {
           throw new Error(`Refusing to remove path outside .worktrees: ${worktreePath}`);
         }
@@ -710,10 +652,6 @@ export async function cleanupOrphanedWorktrees(
       cleaned++;
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err);
-      if (err instanceof WorktreeCardOwnershipError) {
-        worktreePoolLog.debug?.(`Preserved orphan-sweep candidate ${worktreePath}: ${errorMessage}`);
-        continue;
-      }
       worktreePoolLog.log(`Failed to remove orphaned worktree ${worktreePath}: ${errorMessage}`);
     }
   }
