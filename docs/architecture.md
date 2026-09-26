@@ -2092,6 +2092,7 @@ Multi-project orchestration spans core + engine.
 - `HybridExecutor` (`packages/engine/src/hybrid-executor.ts`) is the top-level orchestrator
 - `ProjectManager` instantiates per-project runtimes and forwards events with project attribution
 - Runtime startup/update resolves `ProjectRuntimeConfig.workingDirectory` through `CentralCore.resolveLocalProjectWorkingDirectory()` / `resolveProjectWorkingDirectory(projectId,nodeId)` using exact `projectNodePathMappings` rows for the active node; missing mappings are hard failures (no fallback to `RegisteredProject.path`).
+- **Boot invariant:** HTTP listen never waits for `HybridExecutor.initialize()`. Project runtime loading is per-project work that scales with the registry, so all three boot surfaces (`fn dashboard`, `fn serve`, `fn daemon`) background it and release the migration holding server on schedule — a held holding server answers every non-health `/api/*` request with `503`, so awaiting the boot would pin board writes to database latency. Consumers ask instead of assuming: `whenReady()` (shared with `initialize()`), a bounded per-project capacity probe, and a self-bounded `shutdown()` that aborts an in-flight boot rather than leaking runtimes. See "Boot lifecycle" in `docs/multi-project.md`.
 
 ### Runtime abstraction
 Defined in `project-runtime.ts`:

@@ -244,6 +244,15 @@ export interface ServerOptions {
   engineManager?: import("@fusion/engine").ProjectEngineManager;
   /** Optional HybridExecutor orchestration context for multi-project runtime plumbing. */
   hybridExecutor?: import("@fusion/engine").HybridExecutor;
+  /*
+  FNXC:HybridExecutorBoot 2026-09-26-03:10:
+  RUFU-322: upper bound on how long PATCH /api/projects/:id waits for HybridExecutor project-runtime
+  readiness before answering 503 `hybrid_executor_starting`. The boot no longer blocks HTTP listen, so
+  an isolation transition can arrive while runtimes are still loading; this keeps that window honest
+  and bounded instead of holding the request open. Injectable for tests; defaults to
+  DEFAULT_HYBRID_EXECUTOR_READY_WAIT_MS.
+  */
+  hybridExecutorReadyWaitMs?: number;
   /**
    * Resolver for the engine-held CLI-agent telemetry hub (U17 hook route).
    * Given a request's projectId (if any) and the target session id, returns the

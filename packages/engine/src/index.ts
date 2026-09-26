@@ -1146,6 +1146,9 @@ export {
 export { NodeHealthMonitor } from "./project/node-health-monitor.js";
 export {
   HybridExecutor,
+  DEFAULT_HYBRID_EXECUTOR_READY_WAIT_MS,
+  resolveHybridExecutorReadiness,
+  type HybridExecutorReadiness,
   type HybridExecutorOptions,
   type HybridExecutorEvents,
 } from "./concurrency/hybrid-executor.js";

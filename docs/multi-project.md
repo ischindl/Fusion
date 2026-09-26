@@ -379,6 +379,31 @@ Gate policy is centralized in `shouldUseHybridExecutor(centralCore)` and evaluat
 
 When enabled, shutdown ordering is deterministic: `hybridExecutor.shutdown()` runs before `engineManager.stopAll()` so runtime orchestration services (including node health monitoring) tear down before project engines.
 
+### Boot lifecycle: background init, bounded shutdown, readiness gate
+
+`HybridExecutor.initialize()` loads one project runtime per registered project, and each load boots a project store to read that project's concurrency settings. On a 24-project deployment that loop is tens of seconds and is coupled to database latency, so **no boot surface awaits it any more**. `fn dashboard`, `fn serve`, and `fn daemon` construct the executor, start the boot in the background, and go straight to releasing the migration holding server and binding the real HTTP listener — the same pattern `engineManager.startAll()` already uses. Before this, the awaited boot kept the holding server bound, and the holding server answers every non-health `/api/*` request with `503 "Fusion is starting (database migration may be in progress)"`, which froze the board for writing for as long as the boot took.
+
+What that guarantees, and what replaces the old implicit "HTTP is up ⇒ the executor is up" assumption:
+
+- **Observable completion.** When the loop finishes, the log carries one greppable marker: `HybridExecutor initialized: <N> project runtimes in <X>ms`. Projects that fail to load are counted into a separate warning, so the marker's count is the number of runtimes actually serving.
+- **Bounded per-project probing.** The concurrency probe is capped by `startupCapacityProbeTimeoutMs` (default `2500` ms). A project whose probe times out or throws falls back to the registry concurrency snapshot and logs the project plus the reason, so one slow or broken project cannot stretch the boot.
+- **Self-contained shutdown bound.** `shutdown()` waits at most `shutdownInitWaitTimeoutMs` (default `5000` ms) for an in-flight boot, then aborts it, tears down every runtime that did load (including ones that finish later), names the projects still loading in a warning, and rejects with `HybridExecutor shutdown incomplete: …`. `serve`/`daemon` have no shutdown-step timeout wrapper to lean on, so the bound lives inside the executor and every call site turns that rejection into a warning — an incomplete stop is reported, and the teardown queued behind it still runs.
+- **Readiness is asked, never assumed.** `whenReady()` resolves when project runtime loading is complete, shares the in-flight boot with `initialize()`, and rejects when no boot has completed. A failed boot is not cached: a later `initialize()` starts a fresh attempt.
+
+The one route that genuinely needs loaded runtimes is the live isolation-mode transition, `PATCH /api/projects/:id`. It now waits for readiness under a bounded, injectable window (`ServerOptions.hybridExecutorReadyWaitMs`, default `DEFAULT_HYBRID_EXECUTOR_READY_WAIT_MS = 5000` ms) and answers honestly instead of running the transition against a half-built executor:
+
+| State | Answer |
+| --- | --- |
+| Runtimes loaded | unchanged `200`, or `409 active_tasks` when the project is busy |
+| Still loading when the window expires | `503 hybrid_executor_starting` — retry shortly |
+| Boot never completed / last attempt failed | `503 hybrid_executor_failed` — waiting will not help |
+
+Both refusals leave the stored `isolationMode` untouched, which is the same consistency guarantee the pre-existing `503 isolation_transition_unavailable` (no executor at all) already gave. The wait is floored at 1 ms, so a mis-set knob produces a retryable `503` instead of a request that hangs — the hang being the failure mode this whole change removes.
+
+Note the wiring asymmetry: only `fn dashboard` passes `hybridExecutor` into its HTTP server, so the readiness branch is reachable there; `serve` and `daemon` construct and background the executor without exposing it to their routers, and that route keeps its existing `isolation_transition_unavailable` answer on those surfaces.
+
+Guarded by `packages/engine/src/__tests__/hybrid-executor-boot-lifecycle.test.ts` (lifecycle, probing bound, shutdown drain, marker, readiness classification), `packages/cli/src/commands/__tests__/serve.test.ts` and `daemon.test.ts` (the real listener is reached while `initialize()` is still pending), and `packages/dashboard/src/__tests__/routes-project-isolation-transition.test.ts` (the transition refusals).
+
 ### Distributed claim mutex
 
 Task checkout now uses an atomic claim path (`TaskStore.tryClaimCheckout`) keyed by a precondition on `(checkedOutBy, checkoutNodeId, checkoutLeaseEpoch)`.

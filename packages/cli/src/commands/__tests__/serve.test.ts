@@ -20,15 +20,25 @@ function makeConstructibleMock<T extends (...args: any[]) => unknown>(impl?: T) 
   return mock;
 }
 
-const { mockSyncStartupModels, mockShouldUseHybridExecutor, mockHybridExecutorCtor, mockHybridExecutorInitialize, mockHybridExecutorShutdown } = vi.hoisted(() => ({
+const { mockSyncStartupModels, mockShouldUseHybridExecutor, mockHybridExecutorCtor, mockHybridExecutorInitialize, mockHybridExecutorShutdown, mockHybridExecutorWhenReady } = vi.hoisted(() => ({
   mockSyncStartupModels: vi.fn().mockResolvedValue(undefined),
   mockShouldUseHybridExecutor: vi.fn().mockResolvedValue({ enabled: false, reason: "single-project-local-only" }),
   mockHybridExecutorInitialize: vi.fn().mockResolvedValue(undefined),
   mockHybridExecutorShutdown: vi.fn().mockResolvedValue(undefined),
+  /*
+  FNXC:HybridExecutorBoot 2026-09-26-02:14:
+  RUFU-322 gives HybridExecutor a readiness promise (`whenReady()`) that the isolation-transition
+  route awaits while boot runs `initialize()` in the background. The boot fixture must expose the
+  same surface the real class does, otherwise a fixture-only green run hides a route that would
+  call an undefined method in production.
+  */
+  mockHybridExecutorWhenReady: vi.fn().mockResolvedValue(undefined),
   mockHybridExecutorCtor: vi.fn().mockImplementation(function () {
     return {
       initialize: mockHybridExecutorInitialize,
       shutdown: mockHybridExecutorShutdown,
+      whenReady: mockHybridExecutorWhenReady,
+      isInitialized: () => true,
     };
   }),
 }));
@@ -1172,6 +1182,50 @@ describe("runServe", () => {
     ];
     expect(shutdownOrder[0]).toBeLessThan(shutdownOrder[1]);
     delete process.env.FUSION_HYBRID_EXECUTOR;
+  });
+
+  /*
+  FNXC:HybridExecutorBoot 2026-09-26-02:14:
+  RUFU-322 symptom invariant. With FUSION_HYBRID_EXECUTOR=1 the boot path awaited
+  `HybridExecutor.initialize()` before `migrationHoldingServer?.close()` and `app.listen()`, and
+  that call boots a scoped TaskStore per registered project. While it was pending the holding
+  server still owned the port and answered every `/api/` route — reads included — with
+  503 "Fusion is starting (database migration may be in progress)", so no operator mutation could
+  reach the dashboard even though no migration was running.
+  The invariant: a pending `initialize()` must never delay the real listener. `app.listen()` firing
+  is the proof the holding server was released, because boot closes the holder immediately before
+  binding the real server on the same port.
+  */
+  it("binds the real server and releases the holding page while HybridExecutor.initialize is still pending", async () => {
+    process.env.FUSION_HYBRID_EXECUTOR = "1";
+    mockShouldUseHybridExecutor.mockResolvedValue({ enabled: true, reason: "env-override" });
+    let releaseInitialize: () => void = () => {};
+    mockHybridExecutorInitialize.mockImplementation(
+      () => new Promise<void>((resolve) => { releaseInitialize = resolve; }),
+    );
+
+    const boot = runServe(0, {});
+    try {
+      await vi.waitFor(() => expect(mockHybridExecutorInitialize).toHaveBeenCalledTimes(1));
+      // Give every other boot phase a chance to run: only an awaited initialize() can stop listen.
+      await new Promise((resolve) => setTimeout(resolve, 25));
+
+      expect(mocks.listenCalls.length).toBeGreaterThan(0);
+
+      await boot;
+      await triggerSignal("SIGTERM");
+    } finally {
+      /*
+      FNXC:HybridExecutorBoot 2026-09-26-02:14:
+      Drain the boot this test started even when its assertion failed, so a late `app.listen()`
+      cannot land in a sibling test's freshly reset `listenCalls` fixture. Bounded: the drain is
+      evidence-gathering, never a wait that can hang the file.
+      */
+      releaseInitialize();
+      await Promise.race([boot.catch(() => {}), new Promise((resolve) => setTimeout(resolve, 250))]);
+      mockHybridExecutorInitialize.mockResolvedValue(undefined);
+      delete process.env.FUSION_HYBRID_EXECUTOR;
+    }
   });
 
   it("listens on 127.0.0.1 by default and respects a custom host", async () => {

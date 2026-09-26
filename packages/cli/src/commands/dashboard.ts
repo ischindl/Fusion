@@ -2338,20 +2338,34 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
       "dashboard",
     );
 
-    // HybridExecutor init: keep awaited (only runs when hybridGate.enabled,
-    // which now requires multi-node — rare on local-only setups).
+    /*
+    FNXC:HybridExecutorBoot 2026-09-26-02:49:
+    RUFU-322: this awaited `initialize()` used to be the release blocker for the migration holding
+    server. Its rationale — "only runs when hybridGate.enabled, which requires multi-node, so it is
+    rare" — is false for an operator who force-enables the executor with FUSION_HYBRID_EXECUTOR=1:
+    `initialize()` walks every registered project serially and boots a scoped TaskStore per project,
+    and it sat above the `migrationHoldingServer.close()` + `app.listen()` boundary, so the holding
+    server kept the operator's port and answered every `/api/` route with 503 "Fusion is starting
+    (database migration may be in progress)" while no migration ran.
+
+    Shipped shape: construct the executor synchronously and assign it here, so `createServer` wires it
+    and the isolation-transition route can gate on readiness, then background the boot exactly like
+    `engineManager.startAll()` above. Port release no longer depends on per-project runtime boot;
+    `HybridExecutor.whenReady()` carries the one consumer that needs loaded runtimes.
+    */
     if (hybridGate.enabled) {
-      try {
-        const he = await phaseTime("engine: HybridExecutor.initialize", async () => {
-          const x = new HybridExecutor(centralCoreForEngine);
-          await x.initialize();
-          return x;
-        }, logPhase);
-        hybridExecutor = he;
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        logSink.warn(`HybridExecutor initialization failed: ${message}`, "engine");
-      }
+      hybridExecutor = new HybridExecutor(centralCoreForEngine);
+      const bootedExecutor = hybridExecutor;
+      void (async () => {
+        try {
+          await phaseTime("engine: HybridExecutor.initialize (background)", async () => {
+            await bootedExecutor.initialize();
+          }, logPhase);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          logSink.warn(`HybridExecutor initialization failed: ${message}`, "engine");
+        }
+      })();
     }
 
     // cwd engine warmup: must complete before createServer.
@@ -2447,7 +2461,19 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
 
     disposeCallbacks.push(async () => {
       if (hybridExecutor) {
-        await hybridExecutor.shutdown();
+        /*
+        FNXC:HybridExecutorBoot 2026-09-26-02:49:
+        RUFU-322: `shutdown()` self-bounds its wait for an in-flight project boot
+        (`shutdownInitWaitTimeoutMs`, default 5s) and rejects when a boot is still running after that,
+        so it can report an incomplete stop but never a hang. This callback must not forward that
+        rejection: it would skip the engine and central-core teardown queued behind it.
+        */
+        try {
+          await hybridExecutor.shutdown();
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          logSink.warn(`HybridExecutor shutdown incomplete: ${message}`, "engine");
+        }
       }
       /*
       FNXC:RemoteAccess 2026-09-01-02:54:

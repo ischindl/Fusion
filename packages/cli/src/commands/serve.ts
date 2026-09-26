@@ -480,9 +480,29 @@ export async function runServe(
   let hybridExecutor: HybridExecutor | null = null;
   const hybridGate = await shouldUseHybridExecutor(sharedCentralCore);
   console.log(`[serve] hybrid executor gate: enabled=${hybridGate.enabled} reason=${hybridGate.reason}`);
+  /*
+  FNXC:HybridExecutorBoot 2026-09-26-02:49:
+  RUFU-322: `initialize()` used to be awaited here, between boot start and
+  `migrationHoldingServer?.close()` + `app.listen()`. It walks every registered project serially,
+  booting a scoped TaskStore per project for the concurrency settings read, and while it was pending
+  the holding server still owned the operator's port and answered every `/api/` route — reads and
+  mutations alike — with 503 "Fusion is starting (database migration may be in progress)", even though
+  no migration was running. Port release no longer depends on it: the boot is backgrounded below and
+  readiness for isolation transitions is carried separately by `whenReady()`.
+  */
   if (hybridGate.enabled) {
     hybridExecutor = new HybridExecutor(sharedCentralCore);
-    await hybridExecutor.initialize();
+    /*
+    FNXC:HybridExecutorBoot 2026-09-26-02:26:
+    RUFU-322: backgrounded on the same contract as `engineManager.startAll()` above — HTTP readiness
+    must not depend on per-project runtime boot. A rejected boot is now a warning instead of a boot
+    crash: one unreachable project's settings used to take `serve` down with it, and the isolation
+    transition route already reports executor readiness honestly.
+    */
+    void hybridExecutor.initialize().catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[serve] Background HybridExecutor.initialize failed: ${message}`);
+    });
   }
 
   // Backfill Claude Code skills for any registered project that's missing
@@ -1271,6 +1291,13 @@ export async function runServe(
       // Ignore errors getting handle types
     }
 
+    /*
+    FNXC:HybridExecutorBoot 2026-09-26-02:26:
+    RUFU-322: serve has no shutdown-step timeout wrapper (unlike dashboard's `timeShutdownStep`), so the
+    bound on waiting for an in-flight project boot lives inside `HybridExecutor.shutdown()`
+    (`shutdownInitWaitTimeoutMs`, default 5s). It rejects rather than report a clean stop when a boot
+    is still running; that is a warning here, never a hang.
+    */
     if (hybridExecutor) await hybridExecutor.shutdown().catch((error) => {
       console.warn(`[serve] Hybrid executor shutdown failed: ${error instanceof Error ? error.message : String(error)}`);
     });

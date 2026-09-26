@@ -17,6 +17,10 @@ import {
   resolveEffectiveConcurrency,
 } from "@fusion/core";
 import type { CentralCore as CentralCoreApi, WorkflowIr } from "@fusion/core";
+import {
+  DEFAULT_HYBRID_EXECUTOR_READY_WAIT_MS,
+  resolveHybridExecutorReadiness,
+} from "@fusion/engine";
 import { ApiError, badRequest, notFound } from "../api-error.js";
 import { execFileAsync } from "../exec-file.js";
 import { getOrCreateProjectStore, evictProjectStore } from "../project-store-resolver.js";
@@ -821,6 +825,32 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
 
         if (isolationChanged) {
           if (options?.hybridExecutor) {
+            /*
+            FNXC:HybridExecutorBoot 2026-09-26-03:10:
+            RUFU-322: a live isolation transition is the one route that needs loaded project runtimes,
+            and since the boot no longer awaits `HybridExecutor.initialize()` before HTTP listen, a
+            transition can now arrive while runtimes are still loading. Wait for readiness under a
+            bounded, injectable window (`hybridExecutorReadyWaitMs`) and answer honestly instead of
+            running the transition against a half-built executor or hanging the request: `starting` is
+            retryable, `failed` is not. Both refuse the write, so the stored isolationMode stays
+            consistent with the live runtime (the same guarantee as `isolation_transition_unavailable`).
+            When already initialized this resolves immediately and adds no latency to the common case.
+            */
+            const readiness = await resolveHybridExecutorReadiness(
+              options.hybridExecutor,
+              options?.hybridExecutorReadyWaitMs ?? DEFAULT_HYBRID_EXECUTOR_READY_WAIT_MS,
+            );
+            if (readiness !== "ready") {
+              const code = readiness === "failed" ? "hybrid_executor_failed" : "hybrid_executor_starting";
+              throw new ApiError(503, code, {
+                error: code,
+                message:
+                  readiness === "failed"
+                    ? "Live isolation mode transition is unavailable: HybridExecutor failed to load its project runtimes. Fix the reported startup error or restart the dashboard, then retry."
+                    : "Live isolation mode transition is unavailable: HybridExecutor is still loading project runtimes. Retry shortly.",
+                readyWaitMs: options?.hybridExecutorReadyWaitMs ?? DEFAULT_HYBRID_EXECUTOR_READY_WAIT_MS,
+              });
+            }
             const transition = await options.hybridExecutor.transitionProjectIsolation(
               req.params.id,
               isolationMode as "in-process" | "child-process",

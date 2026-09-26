@@ -5,15 +5,20 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { installShippedSkillsIntoProject, SHIPPED_SKILL_NAMES, type ShippedSkillName } from "../claude-skills.js";
 
-const { mockSyncStartupModels, mockShouldUseHybridExecutor, mockHybridExecutorCtor, mockHybridExecutorInitialize, mockHybridExecutorShutdown } = vi.hoisted(() => ({
+const { mockSyncStartupModels, mockShouldUseHybridExecutor, mockHybridExecutorCtor, mockHybridExecutorInitialize, mockHybridExecutorShutdown, mockHybridExecutorWhenReady } = vi.hoisted(() => ({
   mockSyncStartupModels: vi.fn().mockResolvedValue(undefined),
   mockShouldUseHybridExecutor: vi.fn().mockResolvedValue({ enabled: false, reason: "single-project-local-only" }),
   mockHybridExecutorInitialize: vi.fn().mockResolvedValue(undefined),
   mockHybridExecutorShutdown: vi.fn().mockResolvedValue(undefined),
+  mockHybridExecutorWhenReady: vi.fn().mockResolvedValue(undefined),
   mockHybridExecutorCtor: vi.fn().mockImplementation(function () {
     return {
       initialize: mockHybridExecutorInitialize,
       shutdown: mockHybridExecutorShutdown,
+      // RUFU-322: keep the fixture shaped like the real executor -- the isolation-transition route
+      // gates on whenReady(), so a fixture without it would pass while the route broke.
+      whenReady: mockHybridExecutorWhenReady,
+      isInitialized: () => true,
     };
   }),
 }));
@@ -1133,6 +1138,47 @@ describe("runDaemon", () => {
       mocks.projectEngineInstances[0].stop.mock.invocationCallOrder[0],
     );
     delete process.env.FUSION_HYBRID_EXECUTOR;
+  });
+
+  /*
+  FNXC:HybridExecutorBoot 2026-09-26-02:49:
+  RUFU-322 symptom invariant for the `fn daemon` surface. `await hybridExecutor.initialize()` sat
+  above `releaseHoldingServer()`, so an FUSION_HYBRID_EXECUTOR=1 boot answered every `/api/` call with
+  503 "Fusion is starting (database migration may be in progress)" until the last project runtime
+  loaded -- and `fn daemon` boots a scoped TaskStore per project, so that window is unbounded.
+  The invariant: a pending `initialize()` must never delay the real listener. `listen()` firing is the
+  proof the holding server released the port, because boot closes the holder immediately before
+  binding the real server.
+  */
+  it("binds the real server while HybridExecutor.initialize is still pending", async () => {
+    process.env.FUSION_HYBRID_EXECUTOR = "1";
+    mockShouldUseHybridExecutor.mockResolvedValue({ enabled: true, reason: "env-override" });
+    let releaseInitialize: () => void = () => {};
+    mockHybridExecutorInitialize.mockImplementation(
+      () => new Promise<void>((resolve) => { releaseInitialize = resolve; }),
+    );
+
+    const boot = runDaemon({});
+    try {
+      await vi.waitFor(() => expect(mockHybridExecutorInitialize).toHaveBeenCalledTimes(1));
+      // Give every other boot phase a chance to run: only an awaited initialize() can stop listen.
+      await new Promise((resolve) => setTimeout(resolve, 25));
+
+      expect(mocks.listenCalls.length).toBeGreaterThan(0);
+
+      await boot;
+      await triggerSignal("SIGTERM");
+    } finally {
+      /*
+      Drain the boot this test started even when its assertion failed, so a late `listen()` cannot
+      land in a sibling test's freshly reset `listenCalls` fixture. Bounded: the drain is
+      evidence-gathering, never a wait that can hang the file.
+      */
+      releaseInitialize();
+      await Promise.race([boot.catch(() => {}), new Promise((resolve) => setTimeout(resolve, 250))]);
+      mockHybridExecutorInitialize.mockResolvedValue(undefined);
+      delete process.env.FUSION_HYBRID_EXECUTOR;
+    }
   });
 });
 

@@ -38,6 +38,19 @@ function createStore(): TaskStore {
   } as unknown as TaskStore;
 }
 
+/**
+ * FNXC:HybridExecutorBoot 2026-09-26-03:10:
+ * RUFU-322: the isolation route now gates on `HybridExecutor.whenReady()` before touching runtime
+ * state, so every fixture that means "the executor is up and running" must state it. A fixture without
+ * `whenReady` is a fixture for a broken executor — the route answers 500, which is the honest outcome
+ * of calling a method the real class guarantees.
+ */
+function readyExecutor(
+  transitionProjectIsolation = vi.fn().mockResolvedValue({ ok: true }),
+): { transitionProjectIsolation: ReturnType<typeof vi.fn>; whenReady: ReturnType<typeof vi.fn> } {
+  return { transitionProjectIsolation, whenReady: vi.fn().mockResolvedValue(undefined) };
+}
+
 function createApp(options?: Parameters<typeof createApiRoutes>[1]) {
   const app = express();
   app.use(express.json());
@@ -53,7 +66,7 @@ describe("project isolation transition route", () => {
   });
 
   it("uses hybrid executor transition path when available", async () => {
-    const hybridExecutor = { transitionProjectIsolation: vi.fn().mockResolvedValue({ ok: true }) };
+    const hybridExecutor = readyExecutor();
     const res = await request(
       createApp({ hybridExecutor: hybridExecutor as any }),
       "PATCH",
@@ -85,12 +98,12 @@ describe("project isolation transition route", () => {
   });
 
   it("returns 409 on active_tasks without force and succeeds with force", async () => {
-    const hybridExecutor = {
-      transitionProjectIsolation: vi
+    const hybridExecutor = readyExecutor(
+      vi
         .fn()
         .mockResolvedValueOnce({ ok: false, reason: "active_tasks", activeTaskCount: 2 })
         .mockResolvedValueOnce({ ok: true }),
-    };
+    );
 
     const blocked = await request(
       createApp({ hybridExecutor: hybridExecutor as any }),
@@ -110,5 +123,70 @@ describe("project isolation transition route", () => {
     );
     expect(forced.status).toBe(200);
     expect(hybridExecutor.transitionProjectIsolation).toHaveBeenLastCalledWith("proj_1", "child-process", { force: true });
+  });
+
+  /*
+  FNXC:HybridExecutorBoot 2026-09-26-03:10:
+  RUFU-322: because HTTP listen no longer waits for `HybridExecutor.initialize()`, a transition request
+  can reach the route while project runtimes are still loading. The route must then answer with a
+  bounded, retryable 503 naming the state truthfully, and must not persist the new isolationMode —
+  otherwise the stored mode would disagree with the live runtime, which is the exact confusion the
+  pre-existing `isolation_transition_unavailable` branch was added to remove.
+  */
+  it("answers 503 hybrid_executor_starting while project runtimes are still loading", async () => {
+    const hybridExecutor = readyExecutor();
+    hybridExecutor.whenReady.mockImplementation(() => new Promise(() => {}));
+
+    const res = await request(
+      createApp({ hybridExecutor: hybridExecutor as any, hybridExecutorReadyWaitMs: 20 }),
+      "PATCH",
+      "/api/projects/proj_1",
+      JSON.stringify({ isolationMode: "child-process" }),
+      { "content-type": "application/json" },
+    );
+
+    expect(res.status).toBe(503);
+    expect((res.body as { error?: string }).error).toBe("hybrid_executor_starting");
+    expect(hybridExecutor.transitionProjectIsolation).not.toHaveBeenCalled();
+    // The transition was refused, so nothing may have been persisted about it.
+    expect(central.updateProject).not.toHaveBeenCalled();
+  });
+
+  it("answers 503 hybrid_executor_failed when the executor boot never succeeded", async () => {
+    const hybridExecutor = readyExecutor();
+    hybridExecutor.whenReady.mockRejectedValue(new Error("project runtime loading has not completed"));
+
+    const res = await request(
+      createApp({ hybridExecutor: hybridExecutor as any, hybridExecutorReadyWaitMs: 20 }),
+      "PATCH",
+      "/api/projects/proj_1",
+      JSON.stringify({ isolationMode: "child-process" }),
+      { "content-type": "application/json" },
+    );
+
+    expect(res.status).toBe(503);
+    expect((res.body as { error?: string }).error).toBe("hybrid_executor_failed");
+    expect(hybridExecutor.transitionProjectIsolation).not.toHaveBeenCalled();
+    expect(central.updateProject).not.toHaveBeenCalled();
+  });
+
+  it("transitions without a readiness delay when the executor is already initialized", async () => {
+    const hybridExecutor = readyExecutor();
+
+    // A generous bound proves the fast path returns from `whenReady()` itself rather than from the
+    // deadline: a route that always waited the bound would take >= the bound here.
+    const startedAt = Date.now();
+    const res = await request(
+      createApp({ hybridExecutor: hybridExecutor as any, hybridExecutorReadyWaitMs: 5_000 }),
+      "PATCH",
+      "/api/projects/proj_1",
+      JSON.stringify({ isolationMode: "child-process" }),
+      { "content-type": "application/json" },
+    );
+
+    expect(res.status).toBe(200);
+    expect(hybridExecutor.whenReady).toHaveBeenCalledTimes(1);
+    expect(hybridExecutor.transitionProjectIsolation).toHaveBeenCalledTimes(1);
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
   });
 });
