@@ -815,14 +815,41 @@ export async function recoverExpiredMergeQueueLeases(
   });
 }
 
+/*
+FNXC:TaskQueueOrder 2026-09-26-21:42:
+The invariant above was broken HERE: this read selected only `mergeQueue` while ordering by the
+`tasks`-built expression, so Postgres raised `missing FROM-clause entry for table "tasks"` and
+`TaskStore.peekMergeQueue()` threw on EVERY call. Its one production caller,
+`SelfHealingManager.isMergeLaneOwned()`, collapsed into its catch and answered "nobody owns the merge
+lane" for every card — 301 occurrences in the single log after the 2026-09-26 production restart, 401
+in the log it replaced, and all six self-healing call sites that ask that question (double-drive guard,
+eligibility gate, three skip-on-owned guards) decided on an exception instead of on the queue.
+
+LEFT join, not inner, mirroring `peekMergeQueueHead`: the two reads walk the same rows in the same
+order and must therefore agree on which rows exist. This read feeds a decision surface (may recovery
+touch this card?), so a queued card silently dropped from the answer is a wrong answer, not a smaller one.
+*/
 /**
  * Peek at the full merge queue in the shared FN-509 queue order.
  * Read-only; does not take a lease.
  */
 export async function peekMergeQueue(layer: AsyncDataLayer): Promise<MergeQueueEntry[]> {
   const rows = await layer.db
-    .select()
+    .select({
+      taskId: schema.project.mergeQueue.taskId,
+      enqueuedAt: schema.project.mergeQueue.enqueuedAt,
+      priority: schema.project.mergeQueue.priority,
+      leasedBy: schema.project.mergeQueue.leasedBy,
+      leasedAt: schema.project.mergeQueue.leasedAt,
+      leaseExpiresAt: schema.project.mergeQueue.leaseExpiresAt,
+      attemptCount: schema.project.mergeQueue.attemptCount,
+      lastError: schema.project.mergeQueue.lastError,
+    })
     .from(schema.project.mergeQueue)
+    .leftJoin(
+      schema.project.tasks,
+      eq(schema.project.tasks.id, schema.project.mergeQueue.taskId),
+    )
     .orderBy(...MERGE_QUEUE_ORDER_BY);
   return rows.map((row) => rowToMergeQueueEntry(row as MergeQueueRow));
 }
