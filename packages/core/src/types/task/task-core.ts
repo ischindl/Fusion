@@ -489,6 +489,71 @@ export interface PlanPremiseRejectionEpisode {
   detailHash: string;
 }
 
+/*
+FNXC:PlanningAdmissionStall 2026-09-25-17:48 (RUFU-273):
+The planning lane could not say why an aged card had never been admitted. `deriveTaskStallReason`
+(RUFU-174) only ever spoke for the delivery lanes, and FN-8600's `task:plan-admission-throttled`
+row — the one existing record of a planning refusal — is reachable only by direct DB query under a
+synthetic `agentId:"triage"` run, so the board stayed silent while a card sat in `todo` for days.
+
+The episode lives on the same `sourceMetadata` JSONB carrier as the RUFU-246 premise episode (no new
+`tasks` column) under the key below, written ONLY through `updateTaskAtomic`'s key-preserving
+`sourceMetadataPatch` channel so `duplicateOfTaskIds`/`handoffFrom`/`contentFingerprint` survive an
+admission-stall write. Two writers own it: triage at its FN-8600 throttle site, and the
+`reconcile-planning-admission-stall` self-healing sweep for everything triage structurally cannot
+observe (aged cards that never reach the eligible set, unreadable specs, lanes with no planning
+node, off-default-branch recoverable work).
+
+Why a persisted episode rather than pure derivation: the capacity-throttle observation and the git
+probe outcome are not re-derivable at read time — a task read cannot ask the scheduler semaphore
+why it declined, and it must never shell out to `git`. Every other planning stall code is derived
+fresh from already-persisted state (`planPremiseRejection`, `nextRecoveryAt`), so this key carries
+exactly the residue and nothing else.
+
+The field is diagnostic-only: it must never gate admission, release, or merge. It is cleared with a
+`null` patch value by the sweep when a card stops being a candidate, and by an operator Retry.
+*/
+export const PLAN_ADMISSION_STALL_METADATA_KEY = "planAdmissionStall" as const;
+
+/** Which planning-lane gate the row was last observed behind. A fixed union: no prose, no free text. */
+export type TaskPlanAdmissionStallCode =
+  /** Triage withheld admission because no top-level planning slot was reservable (FN-8600's gate). */
+  | "plan-admission-throttled"
+  /** The card's workflow declares a planning lane, but this card is excluded from being planned. */
+  | "plan-lane-ineligible"
+  /** The card's spec artifact exists but could not be read (a non-`ENOENT` failure). */
+  | "plan-spec-unreadable"
+  /** Aged, eligible, and nothing refuses it — no admission and no gate that can be named. */
+  | "plan-no-admission"
+  /** The row claims a branch with commits that are not on the default branch, and no worktree to build on. */
+  | "recoverable-work";
+
+/**
+ * Durable admission-stall episode for one planning-lane card (RUFU-273). Nullable: an absent or
+ * `null` value means "no admission stall observed", which is the state a freshly created, admitted,
+ * paused, or moved card must return to.
+ */
+export interface TaskPlanAdmissionStallEpisode {
+  /** The gate named at write time. `deriveTaskStallReason` maps this 1:1 onto a stall code. */
+  code: TaskPlanAdmissionStallCode;
+  /** ISO timestamp of the most recent observation of this gate. */
+  lastAt: string;
+  /** ISO timestamp of the FIRST observation at this gate; preserved across refreshes so the
+   *  operator can see how long the stall has run, not just when it was last seen. */
+  firstAt: string;
+  /** How many times this gate was observed (1-based; resets when `code` changes). */
+  stallCount: number;
+  /** Stable identity of the observed condition (e.g. the throttle gate signature), so a sustained
+   *  stall refreshes rather than restarts its count. Optional: codes with no composite identity
+   *  (a missing spec, an aged lane) carry none. */
+  signature?: string;
+  /** Age of the card in ms at the observation that wrote this episode. */
+  ageMs?: number;
+  /** Commits on the claimed branch that are absent from the default branch. Present ONLY for
+   *  `recoverable-work`; counts, never a tip SHA. */
+  uniqueCommitCount?: number;
+}
+
 /** One cross-project handoff pointer record (see the FNXC block above). */
 export interface TaskHandoffPointer {
   /** Registry id of the project the pointer references. */
@@ -522,6 +587,9 @@ export interface TaskSource {
    *   the source card).
    * - plan-premise refusal episode (RUFU-246): `planPremiseRejection`
    *   ({@link PlanPremiseRejectionEpisode}) tracks the release-gate escalation ladder.
+   * - planning-admission stall episode (RUFU-273): `planAdmissionStall`
+   *   ({@link TaskPlanAdmissionStallEpisode}, nullable) names the planning gate an aged card is
+   *   behind so the stall authority can render it. Diagnostic-only; never gates admission.
    * - `followUp: { version: number }` (FNXC:TaskFollowUp 2026-09-17-15:55) marks FN-513's
    *   FOLLOW-UP sub-type of `task_refine`: a child prepared from a still-running parent's plan and
    *   in-flight implementation. It is a versioned marker rather than a new `SourceType` because a

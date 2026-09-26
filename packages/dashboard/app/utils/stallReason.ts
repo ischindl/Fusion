@@ -76,7 +76,24 @@ export type StallReasonCode =
   */
   | "dependency-blocker"
   | "pre-merge-gate-pending"
-  | "held-human-review";
+  | "held-human-review"
+  /*
+  FNXC:PlanningAdmissionStall 2026-09-25-19:31 (RUFU-273):
+  The seven planning-lane codes, carried VERBATIM from `TaskStallReasonCode` for the same reason RUFU-177
+  carried the three review-lane ones: the code identity is what a surface branches on and what
+  `data-stall-code` reports, so folding them into a client code would erase which authority spoke.
+  Unlike `pre-merge-gate-pending` / `held-human-review` — the ORDINARY resting states of a review lane,
+  detail-only by the 2026-09-02-22:01 note below — every one of these names a card that is not moving for
+  a reason its workflow cannot resolve by itself, which is precisely the fault class the card face exists
+  to name. They are face-visible; see `stallReasonVisibleOnFace`.
+  */
+  | "plan-admission-throttled"
+  | "plan-lane-ineligible"
+  | "plan-premise-held"
+  | "plan-spec-unreadable"
+  | "plan-recovery-backoff"
+  | "plan-no-admission"
+  | "recoverable-work";
 
 export interface StallReason {
   code: StallReasonCode;
@@ -426,6 +443,9 @@ localized copy wins and the server prose is dropped.
 function serverStallReason(subject: StallSubject, context: StallContext): StallReason | undefined {
   const server = subject.stallReason;
   if (!server) return undefined;
+  // Planning-lane codes are dispatched by the shared list rather than per-code `case` labels, so the
+  // dispatch and the face-visibility rule below can never disagree about which codes belong to the lane.
+  if (isPlanningAdmissionStallCode(server.code)) return planAdmissionReason(server.code, context);
   switch (server.code) {
     case "merge-blocker":
     // fallthrough: an enabled gate that has not run yet genuinely blocks the merge, so it shares the merge-blocker copy group; only its code (and therefore its test/data attribute) differs.
@@ -485,6 +505,102 @@ function heldHumanReviewReason(context: StallContext): StallReason {
     headline,
     description: t("stall.held-human-review.description", "Nothing is refusing this card: automatic merge processing is withheld for it, so finishing the review does not merge it."),
     suggestedAction: t("stall.held-human-review.suggestedAction", "Merge the card yourself, or turn automatic merge processing back on."),
+  };
+}
+
+/*
+FNXC:PlanningAdmissionStall 2026-09-25-19:31 (RUFU-273):
+The planning-lane answers the server may name. The list is the single source of truth for three things: the
+parameter type, the server-code dispatch, and face visibility — so adding an eighth code cannot map it in
+one place while a surface silently keeps ignoring it.
+*/
+const PLAN_ADMISSION_CODES = [
+  "plan-admission-throttled",
+  "plan-lane-ineligible",
+  "plan-premise-held",
+  "plan-spec-unreadable",
+  "plan-recovery-backoff",
+  "plan-no-admission",
+  "recoverable-work",
+] as const;
+
+type PlanningAdmissionStallCode = (typeof PLAN_ADMISSION_CODES)[number];
+
+function isPlanningAdmissionStallCode(code: string): code is PlanningAdmissionStallCode {
+  return (PLAN_ADMISSION_CODES as readonly string[]).includes(code);
+}
+
+/*
+FNXC:PlanningAdmissionStall 2026-09-25-19:31 (RUFU-273):
+The seven planning-lane answers, each with its OWN copy group. A single shared "waiting to be planned"
+sentence would have reproduced the defect this task exists to remove: before it, every aged silent
+planning card looked identical, which is why "why hasn't this been planned?" could only be answered from
+engine logs. The badge wording is deliberately short enough for a card chip, and no label pairs "plan"
+with "failed" — a held plan is a hold, not a failure, and the copy must not send the operator to the
+delivery lane for an answer about the planning lane.
+
+Why `description` is localized prose rather than the server sentence (unlike `merge-blocker`, which passes
+the blocker text through): a planning sentence is a fixed statement of policy, not a per-card diagnostic, so
+rendering the engine's English text would make it untranslatable and would re-word itself every time that
+authority is reworded. Every code reads its own `stall.<code>.*` group and none reads `server.reason`.
+*/
+function planAdmissionReason(
+  code: PlanningAdmissionStallCode,
+  context: StallContext,
+): StallReason {
+  const { t } = context;
+  // One lookup table over the shared `stall.<code>.*` shape, so a code cannot be added without its copy.
+  const copy: Record<PlanningAdmissionStallCode, { badge: string; headline: string; description: string; action: string }> = {
+    "plan-admission-throttled": {
+      badge: t("stall.plan-admission-throttled.badgeLabel", "Queued for planning"),
+      headline: t("stall.plan-admission-throttled.headline", "Waiting for a planner slot"),
+      description: t("stall.plan-admission-throttled.description", "The planner is at capacity with other cards, so it has not taken this one yet. It will when a slot frees."),
+      action: t("stall.plan-admission-throttled.suggestedAction", "Wait for a planner slot to free, or start planning from the card now."),
+    },
+    "plan-lane-ineligible": {
+      badge: t("stall.plan-lane-ineligible.badgeLabel", "Needs a person"),
+      headline: t("stall.plan-lane-ineligible.headline", "This lane does not plan cards automatically"),
+      description: t("stall.plan-lane-ineligible.description", "Nothing is refusing this card: the planning lane it sits in is not configured to plan cards of this kind."),
+      action: t("stall.plan-lane-ineligible.suggestedAction", "Start planning from the card, or move it to a lane that plans automatically."),
+    },
+    "plan-premise-held": {
+      badge: t("stall.plan-premise-held.badgeLabel", "Plan held"),
+      headline: t("stall.plan-premise-held.headline", "Planning is held by a rejected plan"),
+      description: t("stall.plan-premise-held.description", "The last plan was refused for contradicting its own stated premises, so planning waits for a corrected one."),
+      action: t("stall.plan-premise-held.suggestedAction", "Correct the plan's premises, then request planning again from the card."),
+    },
+    "plan-spec-unreadable": {
+      badge: t("stall.plan-spec-unreadable.badgeLabel", "Plan unreadable"),
+      headline: t("stall.plan-spec-unreadable.headline", "The written plan cannot be read"),
+      description: t("stall.plan-spec-unreadable.description", "The plan exists in task storage but cannot be read from it, so planning cannot start."),
+      action: t("stall.plan-spec-unreadable.suggestedAction", "Re-save the plan from the card, or request a new one."),
+    },
+    "plan-recovery-backoff": {
+      badge: t("stall.plan-recovery-backoff.badgeLabel", "Waiting to retry"),
+      headline: t("stall.plan-recovery-backoff.headline", "Waiting out a scheduled retry"),
+      description: t("stall.plan-recovery-backoff.description", "Planning failed earlier and is parked until its scheduled retry time."),
+      action: t("stall.plan-recovery-backoff.suggestedAction", "Nothing to do until the retry time, or start planning from the card now."),
+    },
+    "plan-no-admission": {
+      badge: t("stall.plan-no-admission.badgeLabel", "Planning not started"),
+      headline: t("stall.plan-no-admission.headline", "Planning has not started, and no gate refuses it"),
+      description: t("stall.plan-no-admission.description", "This card has waited past the planning age with no admission recorded and no gate that can be named as the reason."),
+      action: t("stall.plan-no-admission.suggestedAction", "Open the card and request planning again."),
+    },
+    "recoverable-work": {
+      badge: t("stall.recoverable-work.badgeLabel", "Unmerged work"),
+      headline: t("stall.recoverable-work.headline", "This card's branch holds commits that are not merged"),
+      description: t("stall.recoverable-work.description", "Work exists on the branch this card claims that the card itself does not show."),
+      action: t("stall.recoverable-work.suggestedAction", "Open the branch to recover the commits, then retry or re-plan the card."),
+    },
+  };
+  const entry = copy[code];
+  return {
+    code,
+    badgeLabel: entry.badge,
+    headline: entry.headline,
+    description: entry.description,
+    suggestedAction: entry.action,
   };
 }
 
@@ -720,6 +836,17 @@ export function stallReasonVisibleOnFace(
   if (!stall) return false;
   // The ExternalBlockNotice owns this cause on every surface, whatever code the classifier settled on.
   if (isTaskExternallyBlocked(subject)) return false;
+  /*
+  FNXC:PlanningAdmissionStall 2026-09-25-19:31 (RUFU-273):
+  Every planning-lane code earns the card face. The whole point of RUFU-273 is that an aged planning card
+  explained itself with nothing at all, so a reason that reached only the detail banner would leave the
+  reported symptom — "why hasn't this card been planned?" at a glance, on a board full of cards — exactly
+  as unfixed as it was. These are NOT the two ordinary-wait codes below: none of them is the normal resting
+  state of a healthy lane. A card waiting on a planner slot, a lane that will not plan it, a held premise, an
+  unreadable plan, a backoff, an unexplained non-admission, or a branch of unmerged work is each a card an
+  operator has to know about without opening it.
+  */
+  if (isPlanningAdmissionStallCode(stall.code)) return true;
   switch (stall.code) {
     case "wedge":
     case "dependency-block":
@@ -733,6 +860,7 @@ export function stallReasonVisibleOnFace(
     case "user-paused":
     case "engine-paused":
       return Boolean(subject.pausedReason);
+    // Detail-only by the 2026-09-02-22:01 note above — deliberately NOT widened to the planning codes.
     case "pre-merge-gate-pending":
     case "held-human-review":
       return options?.allowDetailOnlyCodes === true;

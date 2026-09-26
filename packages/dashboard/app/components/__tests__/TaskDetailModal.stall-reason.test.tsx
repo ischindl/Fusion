@@ -183,3 +183,82 @@ describe("TaskDetailModal server-backed stallReason", () => {
     expect(banner.querySelector(".task-stall-reason-description")?.textContent).toBe("code-review has not run");
   });
 });
+
+/*
+FNXC:PlanningAdmissionStall 2026-09-25-21:17 (RUFU-273):
+The detail banner is where an aged planning card finally answers "why isn't this card being planned?".
+Each of the seven planning codes must render ITS OWN copy group — headline, description, and a concrete
+next step — and must keep the server's code verbatim, because seven codes collapsing into one sentence is
+the exact symptom this feature removes. Unlike `merge-blocker`, a planning code's description row is the
+catalog description, not the server's sentence: every planning code has complete localized copy, so
+nothing untranslatable reaches the screen. `recoverable-work` is the one code whose subject is branch
+work, so it is allowed branch wording while still never reading as a delivery failure. A landed card
+shows none of them, matching the card and list surfaces.
+
+The no-failure-language guard is scoped to the headline, not the whole banner: `plan-recovery-backoff`'s
+description honestly reports that planning failed earlier, which is the reason for the scheduled retry —
+naming that in prose is information, while headlining it would mislabel a wait as a fault.
+*/
+describe("TaskDetailModal planning-admission stallReason", () => {
+  const observedAt = "2026-09-25T00:00:00.000Z";
+
+  it.each([
+    ["plan-admission-throttled", "Waiting for a planner slot"],
+    ["plan-lane-ineligible", "This lane does not plan cards automatically"],
+    ["plan-premise-held", "Planning is held by a rejected plan"],
+    ["plan-spec-unreadable", "The written plan cannot be read"],
+    ["plan-recovery-backoff", "Waiting out a scheduled retry"],
+    ["plan-no-admission", "Planning has not started, and no gate refuses it"],
+    ["recoverable-work", "This card's branch holds commits that are not merged"],
+  ] as const)("names planning stall %s with its own headline, description, and next step", (code, headline) => {
+    const id = `FN-PLAN-${code.toUpperCase()}`;
+    renderDetail(
+      makeTask({
+        id,
+        column: "hold",
+        status: "pending",
+        stallReason: { code, reason: `engine sentence for ${code}`, observedAt },
+      }),
+    );
+    const banner = screen.getByTestId(`task-detail-stall-reason-${id}`);
+    expect(banner.getAttribute("data-stall-code")).toBe(code);
+    expect(banner).toHaveTextContent(headline);
+    const description = banner.querySelector(".task-stall-reason-description")?.textContent ?? "";
+    expect(description.trim().length).toBeGreaterThan(0);
+    expect(description).not.toContain(`engine sentence for ${code}`);
+    // A planning stall always leaves the operator a concrete next step, never a bare fault.
+    expect(banner.querySelector(".task-stall-reason-action")?.textContent?.trim().length).toBeGreaterThan(0);
+    /*
+    The no-failure-language guard binds the HEADLINE — the glance surface — not the description, which
+    legitimately says "planning failed earlier" for `plan-recovery-backoff`. A planning stall is a wait
+    with a next step, so it must never be headlined as a failure.
+    */
+    expect(banner.querySelector(".task-stall-reason-headline")?.textContent).not.toMatch(/\bfail(ed)?\b/i);
+  });
+
+  it("names unmerged branch work without reading as a delivery failure", () => {
+    renderDetail(
+      makeTask({
+        id: "FN-PLANWORK",
+        column: "hold",
+        status: "pending",
+        stallReason: { code: "recoverable-work", reason: "2 unique commits on fusion/RUFU-000", observedAt },
+      }),
+    );
+    const banner = screen.getByTestId("task-detail-stall-reason-FN-PLANWORK");
+    expect(banner).toHaveTextContent("This card's branch holds commits that are not merged");
+    expect(banner.textContent).not.toMatch(/\bblocked\b/i);
+  });
+
+  it("shows no planning stall banner on a landed card", () => {
+    renderDetail(
+      makeTask({
+        id: "FN-PLANDONE",
+        column: "done",
+        status: "done",
+        stallReason: { code: "plan-no-admission", reason: "stale episode on a landed row", observedAt },
+      }),
+    );
+    expect(screen.queryByTestId("task-detail-stall-reason-FN-PLANDONE")).toBeNull();
+  });
+});

@@ -3484,10 +3484,10 @@ describe("runTaskRetry", () => {
       /*
       FNXC:PlanPremises 2026-09-16-04:08:
       RUFU-246: manual Retry is the sanctioned un-park for a plan-premise terminal park, so the
-      reset patch clears the refusal episode at the key level (never the whole sourceMetadata
+      reset patch clears the plan-premise refusal and planning-admission episodes at the key level (never the whole sourceMetadata
       field). Keep both retry-status assertions aligned with buildManualRetryResetPatch.
       */
-      sourceMetadataPatch: { planPremiseRejection: null },
+      sourceMetadataPatch: { planPremiseRejection: null, planAdmissionStall: null },
     });
     // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): the CLI retry re-queue must state release intent — without parkOnHold:false the rebound parks the card it was asked to run.
     expect(mockMoveTask).toHaveBeenCalledWith("FN-001", "todo", { parkOnHold: false });
@@ -3587,10 +3587,10 @@ describe("runTaskRetry", () => {
       /*
       FNXC:PlanPremises 2026-09-16-04:08:
       RUFU-246: manual Retry is the sanctioned un-park for a plan-premise terminal park, so the
-      reset patch clears the refusal episode at the key level (never the whole sourceMetadata
+      reset patch clears the plan-premise refusal and planning-admission episodes at the key level (never the whole sourceMetadata
       field). Keep both retry-status assertions aligned with buildManualRetryResetPatch.
       */
-      sourceMetadataPatch: { planPremiseRejection: null },
+      sourceMetadataPatch: { planPremiseRejection: null, planAdmissionStall: null },
     });
     // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): release intent pinned on the retry move args.
     expect(mockMoveTask).toHaveBeenCalledWith("FN-001", "todo", { parkOnHold: false });

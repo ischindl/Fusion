@@ -103,6 +103,29 @@ describe("describeTaskWedgeFromStallReason", () => {
     }))).toBeNull();
   });
 
+  /*
+  FNXC:PlanningAdmissionStall 2026-09-25-17:48 (RUFU-273):
+  The planning-lane codes are visible-but-not-alertable. RUFU-273 routes them to the card face and the
+  detail banner, never to the mailbox, so this is the pair assertion that makes the design a tested
+  contract rather than a comment: the same hydrated field that makes the three review-lane codes
+  announce itself must leave every planning code silent. Each sentence is arbitrary here on purpose —
+  the classifier must not alert on a planning code no matter what the server sentence says.
+  */
+  it.each([
+    "plan-admission-throttled",
+    "plan-lane-ineligible",
+    "plan-premise-held",
+    "plan-spec-unreadable",
+    "plan-recovery-backoff",
+    "plan-no-admission",
+    "recoverable-work",
+  ] as TaskStallReasonCode[])("stays silent for the planning-lane code %s: the card names the cause, the mailbox does not re-ask for a human", (code) => {
+    expect(describeTaskWedgeFromStallReason(task({
+      column: "hold",
+      stallReason: stall(code, "Planning-lane sentence under test."),
+    }))).toBeNull();
+  });
+
   it("stays silent for any non-empty string status, which its own notification world already owns", () => {
     for (const status of ["failed", "paused", "merging", "merging-pr", "merged", "reviewing", "landing", "awaiting-approval", "awaiting-user-review", "queued", "stuck-killed", "needs-replan"]) {
       expect(

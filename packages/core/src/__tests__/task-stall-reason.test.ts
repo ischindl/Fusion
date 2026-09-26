@@ -10,6 +10,14 @@ import { describe, expect, it, vi } from "vitest";
 import {
   deriveTaskStallReason,
   HELD_HUMAN_REVIEW_STALL_REASON,
+  readPlanAdmissionStallEpisode,
+  PLAN_ADMISSION_THROTTLED_STALL_REASON,
+  PLAN_LANE_INELIGIBLE_STALL_REASON,
+  PLAN_NO_ADMISSION_STALL_REASON,
+  PLAN_PREMISE_HELD_STALL_REASON,
+  PLAN_RECOVERY_BACKOFF_STALL_REASON,
+  PLAN_SPEC_UNREADABLE_STALL_REASON,
+  RECOVERABLE_WORK_STALL_REASON,
   type TaskStallReasonContext,
 } from "../tasks/task-stall-reason.js";
 import { PRE_MERGE_STEPS_NOT_RUN_BLOCKER, STALE_CONTENT_APPROVAL_BLOCKER } from "../merge/task-merge.js";
@@ -363,5 +371,198 @@ describe("deriveTaskStallReason — dependency branch", () => {
     );
     expect(stall?.code).toBe("dependency-blocker");
     expect(stall?.reason).not.toContain("must be in");
+  });
+});
+
+/*
+FNXC:PlanningAdmissionStall 2026-09-25-17:48 (RUFU-273):
+Planning-lane coverage. The reported failure this branch answers is an aged card in the planning lane
+with `status: null` and `paused: false` that reported NOTHING, so the assertions come in pairs: the
+card names its gate, or a card that must stay silent stays silent. The silent set is what keeps the
+chip honest, so it is covered as densely as the naming set.
+*/
+const PLANNING_LANES = new Set(["hold", "todo"]);
+
+function planningTask(overrides: Partial<Task> = {}): Task {
+  return makeTask({ column: "hold", status: undefined, paused: false, ...overrides });
+}
+
+function planningCtx(overrides: Partial<TaskStallReasonContext> = {}): TaskStallReasonContext {
+  return ctx({ planningColumns: PLANNING_LANES, ...overrides });
+}
+
+function episode(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    planAdmissionStall: {
+      code: "plan-admission-throttled",
+      lastAt: new Date(NOW - 60_000).toISOString(),
+      firstAt: new Date(NOW - 86_400_000).toISOString(),
+      stallCount: 3,
+      ...overrides,
+    },
+  };
+}
+
+const EPISODE_SENTENCES = {
+  "plan-admission-throttled": PLAN_ADMISSION_THROTTLED_STALL_REASON,
+  "plan-lane-ineligible": PLAN_LANE_INELIGIBLE_STALL_REASON,
+  "plan-spec-unreadable": PLAN_SPEC_UNREADABLE_STALL_REASON,
+  "plan-no-admission": PLAN_NO_ADMISSION_STALL_REASON,
+  "recoverable-work": RECOVERABLE_WORK_STALL_REASON,
+} as const;
+
+describe("deriveTaskStallReason — planning admission lane", () => {
+  it.each(Object.entries(EPISODE_SENTENCES))("episode code %s maps 1:1 onto its exported sentence", async (code, sentence) => {
+    const stall = await deriveTaskStallReason(
+      planningTask({ sourceMetadata: episode({ code }) }),
+      planningCtx(),
+    );
+    expect(stall).toEqual({ code, reason: sentence, observedAt: isoNow });
+    // Planning copy must never borrow delivery vocabulary.
+    expect(stall!.reason.toLowerCase()).not.toContain("merge");
+  });
+
+  it("a plan-premise episode outranks an admission episode naming a different gate", async () => {
+    const stall = await deriveTaskStallReason(
+      planningTask({
+        sourceMetadata: {
+          ...episode({ code: "plan-admission-throttled" }),
+          planPremiseRejection: { signature: "abc", refusalCount: 1 },
+        },
+      }),
+      planningCtx(),
+    );
+    expect(stall).toEqual({ code: "plan-premise-held", reason: PLAN_PREMISE_HELD_STALL_REASON, observedAt: isoNow });
+  });
+
+  it("a future nextRecoveryAt names the recovery backoff when no episode was written", async () => {
+    const stall = await deriveTaskStallReason(
+      planningTask({ nextRecoveryAt: new Date(NOW + 600_000).toISOString() }),
+      planningCtx(),
+    );
+    expect(stall).toEqual({ code: "plan-recovery-backoff", reason: PLAN_RECOVERY_BACKOFF_STALL_REASON, observedAt: isoNow });
+  });
+
+  it("a past or unparseable nextRecoveryAt names nothing", async () => {
+    await expect(
+      deriveTaskStallReason(planningTask({ nextRecoveryAt: new Date(NOW - 1).toISOString() }), planningCtx()),
+    ).resolves.toBeUndefined();
+    await expect(
+      deriveTaskStallReason(planningTask({ nextRecoveryAt: "not-a-date" }), planningCtx()),
+    ).resolves.toBeUndefined();
+  });
+
+  it("an aged card with nothing written anywhere stays silent — residual codes are written, not invented", async () => {
+    await expect(deriveTaskStallReason(planningTask(), planningCtx())).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ["engine pause", { paused: true }],
+    ["operator pause", { userPaused: true }],
+    ["queued dispatch transient", { status: "queued" }],
+    ["live planning status", { status: "planning" }],
+  ])("%s is in the silent set", async (_label, overrides) => {
+    await expect(
+      deriveTaskStallReason(
+        planningTask({ ...overrides, sourceMetadata: episode({ code: "plan-no-admission" }) }),
+        planningCtx(),
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it("an empty status is treated as absent, not as a live status", async () => {
+    const stall = await deriveTaskStallReason(
+      planningTask({ status: "" as Task["status"], sourceMetadata: episode({ code: "plan-no-admission" }) }),
+      planningCtx(),
+    );
+    expect(stall?.code).toBe("plan-no-admission");
+  });
+
+  it("a card outside its workflow's planning lane receives no planning code", async () => {
+    await expect(
+      deriveTaskStallReason(
+        makeTask({ column: "in-review", sourceMetadata: episode({ code: "plan-no-admission" }) }),
+        planningCtx(),
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it("an unresolved planning lane never guesses from the legacy todo literal", async () => {
+    await expect(
+      deriveTaskStallReason(planningTask({ sourceMetadata: episode({ code: "plan-no-admission" }) }), ctx()),
+    ).resolves.toBeUndefined();
+    await expect(
+      deriveTaskStallReason(
+        planningTask({ sourceMetadata: episode({ code: "plan-no-admission" }) }),
+        ctx({ planningColumns: new Set<string>() }),
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it("a live dependency outranks every planning answer", async () => {
+    const stall = await deriveTaskStallReason(
+      planningTask({ dependencies: ["DEP-1"], sourceMetadata: episode({ code: "plan-no-admission" }) }),
+      planningCtx({ resolveDependency: async (id) => ({ id, column: "in-progress" }) }),
+    );
+    expect(stall?.code).toBe("dependency-blocker");
+  });
+
+  it("a dependency that resolves into a terminal lane is proven clear, so the planning answer comes through", async () => {
+    const stall = await deriveTaskStallReason(
+      planningTask({ dependencies: ["DEP-1"], sourceMetadata: episode({ code: "plan-admission-throttled" }) }),
+      planningCtx({
+        resolveDependency: async (id) => ({ id, column: "done" }),
+        satisfactionColumnsByTaskId: new Map([
+          ["DEP-1", { terminal: new Set(["done"]), review: new Set(["in-review"]) }],
+        ]),
+      }),
+    );
+    expect(stall?.code).toBe("plan-admission-throttled");
+  });
+
+  it("a throwing dependency probe fails open instead of falling through to a planning code", async () => {
+    await expect(
+      deriveTaskStallReason(
+        planningTask({ dependencies: ["DEP-1"], sourceMetadata: episode({ code: "plan-no-admission" }) }),
+        planningCtx({
+          resolveDependency: async () => {
+            throw new Error("resolver exploded");
+          },
+        }),
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it("suppression wins over the planning lane", async () => {
+    await expect(
+      deriveTaskStallReason(
+        planningTask({ sourceMetadata: episode({ code: "plan-no-admission" }) }),
+        planningCtx({ suppressed: true }),
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ["null episode", { planAdmissionStall: null }],
+    ["array episode", { planAdmissionStall: ["plan-no-admission"] }],
+    ["bare string episode", { planAdmissionStall: "plan-no-admission" }],
+    ["code outside the union", { planAdmissionStall: { code: "totally-made-up", lastAt: isoNow, firstAt: isoNow, stallCount: 1 } }],
+    ["missing timestamps", { planAdmissionStall: { code: "plan-no-admission", stallCount: 1 } }],
+    ["non-numeric stallCount", { planAdmissionStall: { code: "plan-no-admission", lastAt: isoNow, firstAt: isoNow, stallCount: "3" } }],
+  ])("a malformed stored episode (%s) is treated as no episode at all", async (_label, sourceMetadata) => {
+    await expect(deriveTaskStallReason(planningTask({ sourceMetadata }), planningCtx())).resolves.toBeUndefined();
+  });
+
+  it("readPlanAdmissionStallEpisode accepts a well-formed episode carrying the optional fields", () => {
+    const read = readPlanAdmissionStallEpisode(
+      episode({ code: "recoverable-work", signature: "sha256:x", ageMs: 123, uniqueCommitCount: 2 }),
+    );
+    expect(read?.code).toBe("recoverable-work");
+    expect(read?.uniqueCommitCount).toBe(2);
+  });
+
+  it("readPlanAdmissionStallEpisode reads no episode from absent or unrelated metadata", () => {
+    expect(readPlanAdmissionStallEpisode(undefined)).toBeUndefined();
+    expect(readPlanAdmissionStallEpisode({ duplicateOfTaskIds: ["A-1"] })).toBeUndefined();
   });
 });

@@ -1334,6 +1334,54 @@ describe("ListView", () => {
       expect(document.querySelector('[data-task-stall-reason="dependency-blocker"]')).not.toBeNull();
       matchMediaSpy.mockRestore();
     });
+
+    /*
+    FNXC:PlanningAdmissionStall 2026-09-25-21:17 (RUFU-273):
+    An aged planning card is exactly the list surface's blind spot: before this change a planning-lane row
+    rendered only its status badge, so "why isn't this being planned?" was unanswerable from the board.
+    Both layout branches are covered — the desktop table row and the grouped mobile card — because the
+    affordance is new rather than shared logic, and each viewport carries a DIFFERENT planning code so a
+    fold of the seven codes into one label cannot pass by accident. The row root keeps the server's code
+    verbatim.
+    */
+    it("names a planning-admission stall on the desktop table row face", () => {
+      setScopedItem("kb-dashboard-list-columns", JSON.stringify(["title", "status"]), TEST_PROJECT_ID);
+      const tasks = [
+        createMockTask({
+          id: "FN-PLANTHROTTLE",
+          column: "hold",
+          title: "Aged queued card",
+          status: "pending",
+          stallReason: { code: "plan-admission-throttled", reason: "planner at capacity", observedAt: "2026-09-25T00:00:00.000Z" },
+        }),
+      ];
+      renderListView({ tasks });
+      const chips = screen.getAllByTestId("list-stall-reason-FN-PLANTHROTTLE");
+      expect(chips).toHaveLength(1);
+      expect(chips[0]).toHaveTextContent("Waiting for a planner slot");
+      expect(chips[0].getAttribute("data-stall-code")).toBe("plan-admission-throttled");
+      expect(document.querySelector('[data-task-stall-reason="plan-admission-throttled"]')).not.toBeNull();
+    });
+
+    it("names a planning-recovery backoff on the grouped mobile card face", () => {
+      const matchMediaSpy = mockMobileViewport();
+      const tasks = [
+        createMockTask({
+          id: "FN-PLANBACKOFF",
+          column: "hold",
+          title: "Card parked for a retry",
+          status: "needs-replan",
+          stallReason: { code: "plan-recovery-backoff", reason: "retry scheduled", observedAt: "2026-09-25T00:00:00.000Z" },
+        }),
+      ];
+      renderListView({ tasks });
+      const chips = screen.getAllByTestId("list-stall-reason-FN-PLANBACKOFF");
+      expect(chips).toHaveLength(1);
+      expect(chips[0]).toHaveTextContent("Waiting out a scheduled retry");
+      expect(chips[0].getAttribute("data-stall-code")).toBe("plan-recovery-backoff");
+      expect(document.querySelector('[data-task-stall-reason="plan-recovery-backoff"]')).not.toBeNull();
+      matchMediaSpy.mockRestore();
+    });
   });
 
   it("shows empty state when no tasks", () => {

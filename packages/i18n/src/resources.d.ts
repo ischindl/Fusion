@@ -9142,9 +9142,51 @@ export default interface Resources {
           "headline": "Recovered from a terminated runtime"
         }
       },
+      "plan-admission-throttled": {
+        "badgeLabel": "Queued for planning",
+        "description": "The planner is at capacity with other cards, so it has not taken this one yet. It will when a slot frees.",
+        "headline": "Waiting for a planner slot",
+        "suggestedAction": "Wait for a planner slot to free, or start planning from the card now."
+      },
+      "plan-lane-ineligible": {
+        "badgeLabel": "Needs a person",
+        "description": "Nothing is refusing this card: the planning lane it sits in is not configured to plan cards of this kind.",
+        "headline": "This lane does not plan cards automatically",
+        "suggestedAction": "Start planning from the card, or move it to a lane that plans automatically."
+      },
+      "plan-no-admission": {
+        "badgeLabel": "Planning not started",
+        "description": "This card has waited past the planning age with no admission recorded and no gate that can be named as the reason.",
+        "headline": "Planning has not started, and no gate refuses it",
+        "suggestedAction": "Open the card and request planning again."
+      },
+      "plan-premise-held": {
+        "badgeLabel": "Plan held",
+        "description": "The last plan was refused for contradicting its own stated premises, so planning waits for a corrected one.",
+        "headline": "Planning is held by a rejected plan",
+        "suggestedAction": "Correct the plan's premises, then request planning again from the card."
+      },
+      "plan-recovery-backoff": {
+        "badgeLabel": "Waiting to retry",
+        "description": "Planning failed earlier and is parked until its scheduled retry time.",
+        "headline": "Waiting out a scheduled retry",
+        "suggestedAction": "Nothing to do until the retry time, or start planning from the card now."
+      },
+      "plan-spec-unreadable": {
+        "badgeLabel": "Plan unreadable",
+        "description": "The plan exists in task storage but cannot be read from it, so planning cannot start.",
+        "headline": "The written plan cannot be read",
+        "suggestedAction": "Re-save the plan from the card, or request a new one."
+      },
       "queued": {
         "headline": "Waiting to be picked up",
         "suggestedAction": "No action needed; reorder or assign the card if a different one should run first."
+      },
+      "recoverable-work": {
+        "badgeLabel": "Unmerged work",
+        "description": "Work exists on the branch this card claims that the card itself does not show.",
+        "headline": "This card's branch holds commits that are not merged",
+        "suggestedAction": "Open the branch to recover the commits, then retry or re-plan the card."
       },
       "stalled-review": {
         "badgeLabel": "Stalled review",

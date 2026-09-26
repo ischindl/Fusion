@@ -7808,6 +7808,48 @@
     "nousResearchLogoAlt": "Nous Research"
   },
   "stall": {
+    "plan-admission-throttled": {
+      "badgeLabel": "Queued for planning",
+      "headline": "Waiting for a planner slot",
+      "description": "The planner is at capacity with other cards, so it has not taken this one yet. It will when a slot frees.",
+      "suggestedAction": "Wait for a planner slot to free, or start planning from the card now."
+    },
+    "plan-lane-ineligible": {
+      "badgeLabel": "Needs a person",
+      "headline": "This lane does not plan cards automatically",
+      "description": "Nothing is refusing this card: the planning lane it sits in is not configured to plan cards of this kind.",
+      "suggestedAction": "Start planning from the card, or move it to a lane that plans automatically."
+    },
+    "plan-premise-held": {
+      "badgeLabel": "Plan held",
+      "headline": "Planning is held by a rejected plan",
+      "description": "The last plan was refused for contradicting its own stated premises, so planning waits for a corrected one.",
+      "suggestedAction": "Correct the plan's premises, then request planning again from the card."
+    },
+    "plan-spec-unreadable": {
+      "badgeLabel": "Plan unreadable",
+      "headline": "The written plan cannot be read",
+      "description": "The plan exists in task storage but cannot be read from it, so planning cannot start.",
+      "suggestedAction": "Re-save the plan from the card, or request a new one."
+    },
+    "plan-recovery-backoff": {
+      "badgeLabel": "Waiting to retry",
+      "headline": "Waiting out a scheduled retry",
+      "description": "Planning failed earlier and is parked until its scheduled retry time.",
+      "suggestedAction": "Nothing to do until the retry time, or start planning from the card now."
+    },
+    "plan-no-admission": {
+      "badgeLabel": "Planning not started",
+      "headline": "Planning has not started, and no gate refuses it",
+      "description": "This card has waited past the planning age with no admission recorded and no gate that can be named as the reason.",
+      "suggestedAction": "Open the card and request planning again."
+    },
+    "recoverable-work": {
+      "badgeLabel": "Unmerged work",
+      "headline": "This card's branch holds commits that are not merged",
+      "description": "Work exists on the branch this card claims that the card itself does not show.",
+      "suggestedAction": "Open the branch to recover the commits, then retry or re-plan the card."
+    },
     "dependency-block": {
       "badgeLabel": "Blocked",
       "headline": "Waiting on dependency {{taskId}}",

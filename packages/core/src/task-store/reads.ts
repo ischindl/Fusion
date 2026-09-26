@@ -20,7 +20,7 @@ import {getAgentLogFilePath} from "../agents/agent-log-file-store.js";
 import {getInReviewStalledSignal, type InReviewStalledContext} from "../tasks/in-review-stalled.js";
 import {getStalePausedReviewSignal, type StalePausedReviewContext} from "../tasks/stale-paused-review.js";
 import {getStalePausedTodoSignal} from "../tasks/stale-paused-todo.js";
-import {resolveLifecycleColumns, resolveReviewColumns, type LifecycleColumns} from "../workflows/workflow-lifecycle-traits.js";
+import {columnsWithFlag, resolveLifecycleColumns, resolveReviewColumns, type LifecycleColumns} from "../workflows/workflow-lifecycle-traits.js";
 import {prefetchWorkflowIrs, prefetchWorkflowSelections, resolveWorkflowIrForTask, type WorkflowDefinitionReadTally, type WorkflowSelectionCache, type WorkflowSelectionReadTally} from "../workflows/workflow-ir-resolver.js";
 import type {WorkflowIr} from "../workflows/workflow-ir-types.js";
 
@@ -326,10 +326,27 @@ async function hydrateTaskStallReason(
     }
   };
   let requiredPreMergeStepIds: ReadonlySet<string> | undefined;
+  /*
+  FNXC:PlanningAdmissionStall 2026-09-25-17:48 (RUFU-273):
+  The planning lane is the union of the `intake` and `hold` trait columns. FN-302 merged intake into
+  the hold column, so a card can stand in a column that answers BOTH, and a merged column can answer
+  neither while its sibling does — hence the union rather than one flag. It is resolved from the SAME
+  already-cached IR as the required-gate ids above, so naming a planning stall costs no additional
+  workflow read, and the list pass still performs zero singular selection reads per row.
+
+  An unresolvable IR leaves this `undefined`, and the derivation stays silent: `todo`/`triage` literals
+  are deliberately NOT a fallback here, because stamping "planning is waiting" on a card whose workflow
+  has no resolvable planning lane is the lie the fail-open contract forbids.
+  */
+  let planningColumns: ReadonlySet<string> | undefined;
   try {
     // Cache-shared with the site's review-lane resolution, so this is a struct build, not a read.
     const ir = await resolveWorkflowIrForTask(store, task.id, options.irCache, options.selectionCache);
-    if (ir) requiredPreMergeStepIds = resolveRequiredPreMergeStepIds(ir, task.enabledWorkflowSteps, task);
+    if (ir) {
+      requiredPreMergeStepIds = resolveRequiredPreMergeStepIds(ir, task.enabledWorkflowSteps, task);
+      const lanes = new Set([...columnsWithFlag(ir, "intake"), ...columnsWithFlag(ir, "hold")]);
+      if (lanes.size > 0) planningColumns = lanes;
+    }
   } catch {
     /* No gate answer: the merge probe keeps the legacy results-only semantics. */
   }
@@ -339,6 +356,7 @@ async function hydrateTaskStallReason(
     lifecycleColumns: options.lifecycle,
     requiredPreMergeStepIds,
     autoMergeAllowed: allowsAutoMergeProcessing(task, options.settings),
+    planningColumns,
     suppressed: options.suppressed,
     resolveDependency,
     satisfactionColumnsByTaskId,

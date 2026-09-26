@@ -51,6 +51,19 @@ export type RunAuditMutationType =
   allowResurrection, forceResurrect, deletedAtPresent, purgedWorkflowStepCount }. Both are written
   transactionally with the mutation they describe, which is what makes the purge fail closed.
   */
+  /*
+  FNXC:PlanningAdmissionStall 2026-09-25-19:31 (RUFU-273 Step 3):
+  The planning-admission stall pair, one row per outcome of a `reconcile-planning-admission-stall` pass.
+  `stalled` NOMINATES a card (its row now carries an episode code); `stalled-no-action` is a candidate the
+  pass examined and deliberately left alone, with `outcome` naming why (`premise-held`,
+  `recovery-backoff`, `triage-owned`, `already-named`). Without the second row "the sweep ran and had
+  nothing to say" is indistinguishable from "the sweep never ran" — the same ambiguity RUFU-297 removed
+  for approval holds. Metadata is ids/counts/fixed codes only: `taskId`, `column`, `code`, `ageMs`,
+  `staleBranchCommitCount`, `outcome`, `scannedCount`. The branch is represented by its COMMIT COUNT,
+  never a tip sha, and no spec text or blocker prose enters either row.
+  */
+  | "task:planning-admission-stalled"
+  | "task:planning-admission-stalled-no-action"
   | "task:vanished-approved-work"
   | "task:row-purged-for-resurrection"
   | (string & {});

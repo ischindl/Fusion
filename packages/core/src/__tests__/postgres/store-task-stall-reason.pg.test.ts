@@ -19,7 +19,7 @@ import {
   type SharedPgTaskStoreHarness,
 } from "../../__test-utils__/pg-test-harness.js";
 import * as schema from "../../postgres/schema/index.js";
-import { HELD_HUMAN_REVIEW_STALL_REASON, type TaskStallReason } from "../../tasks/task-stall-reason.js";
+import { HELD_HUMAN_REVIEW_STALL_REASON, PLAN_ADMISSION_THROTTLED_STALL_REASON, type TaskStallReason } from "../../tasks/task-stall-reason.js";
 import { PRE_MERGE_STEPS_NOT_RUN_BLOCKER } from "../../merge/task-merge.js";
 import type { TaskStore } from "../../store.js";
 
@@ -160,6 +160,87 @@ pgTest("TaskStore stallReason hydration parity (PostgreSQL)", () => {
     expectSitesAgree(sites);
     expect(sites.detail?.code).toBe("dependency-blocker");
     expect(sites.detail?.reason).toBe("task has unresolved dependencies: STLR-DEP");
+  });
+
+  /*
+  FNXC:PlanningAdmissionStall 2026-09-25-17:48 (RUFU-273):
+  Read-site parity for the planning lane, the same contract this file exists to pin. The planning arm
+  reaches the derivation through context that the review arms never needed — `planningColumns` resolved
+  from the workflow IR — so the four sites are exactly where that resolution could drift: the slim board
+  row and the modified-since prelude build their context once for the whole page, `getTask` per row, and
+  search builds its own column maps. `builtin:coding` resolves its planning lane as `triage` (intake)
+  ∪ `hold` (hold), so these `todo`-column cards must receive the code from every site.
+  */
+  it("reports the identical planning-admission throttle code on all four read sites", async () => {
+    await seedTask("STLR-PLANHOLD", {
+      column: "todo",
+      description: "stallreasonplanfixture aged planning card",
+      set: {
+        status: null,
+        sourceMetadata: {
+          planAdmissionStall: {
+            code: "plan-admission-throttled",
+            lastAt: new Date(Date.now() - 60_000).toISOString(),
+            firstAt: new Date(Date.now() - 86_400_000).toISOString(),
+            stallCount: 4,
+            signature: "running-agent cap|3|0|0",
+          },
+        },
+      },
+    });
+    const store = h.store();
+
+    const sites = await readAllSites(store, "STLR-PLANHOLD", "stallreasonplanfixture");
+    expectSitesAgree(sites);
+    expect(sites.detail?.code).toBe("plan-admission-throttled");
+    // The slim board row is the reported failure surface: the chip's absence there was the bug.
+    expect(sites.slim?.code).toBe("plan-admission-throttled");
+    expect(sites.detail?.reason).toBe(PLAN_ADMISSION_THROTTLED_STALL_REASON);
+  });
+
+  it("reports the recovery backoff on all four sites for a planning card parked on a future retry", async () => {
+    await seedTask("STLR-PLANBACKOFF", {
+      column: "todo",
+      description: "stallreasonbackofffixture backed-off planning card",
+      set: {
+        status: null,
+        nextRecoveryAt: new Date(Date.now() + 900_000).toISOString(),
+      },
+    });
+    const store = h.store();
+
+    const sites = await readAllSites(store, "STLR-PLANBACKOFF", "stallreasonbackofffixture");
+    expectSitesAgree(sites);
+    expect(sites.detail?.code).toBe("plan-recovery-backoff");
+  });
+
+  it("names nothing on any site for a fresh planning card, a paused one, or one mid-planning", async () => {
+    await seedTask("STLR-PLANFRESH", { column: "todo", description: "stallreasonplanfreshfixture untouched card", set: { status: null } });
+    await seedTask("STLR-PLANPAUSED", {
+      column: "todo",
+      description: "stallreasonplanpausedfixture paused card",
+      set: { status: null, paused: 1 },
+    });
+    await seedTask("STLR-PLANLIVE", {
+      column: "todo",
+      description: "stallreasonplanlivefixture planning now",
+      set: { status: "planning" },
+    });
+    const store = h.store();
+
+    for (const [id, query] of [
+      ["STLR-PLANFRESH", "stallreasonplanfreshfixture"],
+      ["STLR-PLANPAUSED", "stallreasonplanpausedfixture"],
+      ["STLR-PLANLIVE", "stallreasonplanlivefixture"],
+    ] as const) {
+      const sites = await readAllSites(store, id, query);
+      expect(sites, `${id} must speak for none of these states`).toEqual({
+        detail: undefined,
+        slim: undefined,
+        modified: undefined,
+        searched: undefined,
+      });
+    }
   });
 
   it("reports held-human-review on all four sites while the board withholds auto-merge processing", async () => {

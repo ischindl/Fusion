@@ -19,6 +19,11 @@ import {
   hasConfiguredFallbackLane,
   PLAN_REVIEW_GROUP_ID,
   TaskDeletedError,
+  /* FNXC:PlanningAdmissionStall 2026-09-25-18:20 (RUFU-273): the episode writers, shared with the
+  reconciliation sweep so one rule decides what a sustained planning stall looks like on the row. */
+  PLAN_ADMISSION_STALL_METADATA_KEY,
+  planAdmissionStallWrite,
+  readPlanAdmissionStallEpisode,
   buildTriageMemoryInstructions,
   isUnplannedSeedPrompt,
   // FNXC:TaskFollowUp 2026-09-17-16:10: FN-513's shared sub-type test; never re-derived here.
@@ -187,6 +192,9 @@ import {
   resolvePlanningThinkingLevel,
 } from "./agents/agent-session-helpers.js";
 import { mergeEffectiveSettings } from "./project/effective-settings.js";
+/* FNXC:PlanningAdmissionStall 2026-09-25-18:20 (RUFU-273): the shared planning-lane age rule, so the
+throttle site and the reconciliation sweep cannot disagree about how old a waiting card is. */
+import { planningAdmissionAgeMs } from "./planning-admission-stall.js";
 import { detectDanglingTaskDocReferences, formatDanglingDiagnostic } from "./spec-validation/task-document-references.js";
 import { buildSessionSkillContext } from "./cli-runtime/session-skill-context.js";
 import {
@@ -2551,7 +2559,8 @@ export class TriageProcessor {
 
       if (projectRoom <= 0 && triageTasks.length > 0) {
         const processingIds = [...this.processing].slice(0, 5);
-        const eligibleIds = triageTasks.slice(0, 5).map((t) => t.id);
+        const eligibleTasks = triageTasks.slice(0, 5);
+        const eligibleIds = eligibleTasks.map((t) => t.id);
         /*
         FNXC:CapacityModel 2026-07-29-10:20 (drop the cross-project cap — throttle payload):
         `blockedBy` was a DISCRIMINATOR between two gates: "running-agent cap" and
@@ -2573,6 +2582,36 @@ export class TriageProcessor {
           `maxConcurrent=${maxConcurrent}, claimed=${claimed}, processing=${this.processing.size}` +
           `${processingIds.length > 0 ? ` [${processingIds.join(", ")}]` : ""}`,
         );
+        /*
+        FNXC:PlanningAdmissionStall 2026-09-25-18:20 (RUFU-273):
+        The row-side counterpart to the log line and the run-audit row above. FN-8600 made the gate
+        answerable AFTER the fact; an operator standing at the board still saw a silent card, because
+        every one of those three surfaces is a query the card itself never carries. Writing the episode
+        here is what puts "waiting for a planner slot" on the card while it is waiting.
+
+        Three boundaries keep this cheap enough to sit in a 15 s poll:
+        - Population: exactly `eligibleTasks` — the same named set the audit row reports. A card the
+          throttle did not refuse is never stamped, so the episode can never appear on an admitted card.
+          Cards behind the 5-id reporting cap stay unnamed here; the reconciliation sweep names them.
+        - Write cadence: `planAdmissionStallWrite` returns nothing inside the refresh floor for a
+          same-code stall, so a sustained stall writes at most once per floor instead of once per poll,
+          and the poll still never awaits these writes.
+        - Telemetry is untouched: the audit event, its dedupe signature, and this log line stay exactly
+          as they were. This adds a row field, it does not move or rename anything.
+        */
+        void Promise.all(eligibleTasks.map(async (task) => {
+          const episode = planAdmissionStallWrite(readPlanAdmissionStallEpisode(task.sourceMetadata), {
+            code: "plan-admission-throttled",
+            signature: [blockedBy, maxConcurrent, claimed, triageTasks.length].join("|"),
+            ageMs: planningAdmissionAgeMs(task),
+          });
+          if (!episode) return;
+          await this.store.updateTask(task.id, {
+            sourceMetadataPatch: { [PLAN_ADMISSION_STALL_METADATA_KEY]: episode },
+          });
+        })).catch((episodeErr: unknown) => {
+          planLog.warn(`Failed to record planning-admission stall episode: ${episodeErr instanceof Error ? episodeErr.message : String(episodeErr)}`);
+        });
         /*
         FNXC:ConcurrencyAdmission 2026-07-26-09:30:
         Durable counterpart to the log line above. Requirement from a real incident (FN-8600,

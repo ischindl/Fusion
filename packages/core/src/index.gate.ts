@@ -1364,8 +1364,35 @@ export {
 } from "./tasks/in-review-stall.js";
 export type { ExecutorEscalationTarget, InReviewStallSignal, InReviewStallCode, ProviderErrorClassification } from "./tasks/in-review-stall.js";
 /* FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174): canonical read-derived stall/hold reason. */
-export { deriveTaskStallReason, HELD_HUMAN_REVIEW_STALL_REASON } from "./tasks/task-stall-reason.js";
-export type { TaskStallReason, TaskStallReasonCode, StallableTask, TaskStallReasonContext } from "./tasks/task-stall-reason.js";
+export {
+  deriveTaskStallReason,
+  HELD_HUMAN_REVIEW_STALL_REASON,
+  readPlanAdmissionStallEpisode,
+  planAdmissionStallWrite,
+  clearPlanAdmissionStallPatch,
+  PLAN_ADMISSION_STALL_REFRESH_FLOOR_MS,
+  PLAN_ADMISSION_THROTTLED_STALL_REASON,
+  PLAN_LANE_INELIGIBLE_STALL_REASON,
+  PLAN_PREMISE_HELD_STALL_REASON,
+  PLAN_SPEC_UNREADABLE_STALL_REASON,
+  PLAN_RECOVERY_BACKOFF_STALL_REASON,
+  PLAN_NO_ADMISSION_STALL_REASON,
+  RECOVERABLE_WORK_STALL_REASON,
+} from "./tasks/task-stall-reason.js";
+export type { TaskStallReason, TaskStallReasonCode, StallableTask, TaskStallReasonContext, PlanAdmissionStallObservation } from "./tasks/task-stall-reason.js";
+/*
+FNXC:PlanningAdmissionStall 2026-09-25-17:48 (RUFU-273):
+Planning-lane episode surface. `PLAN_ADMISSION_STALL_METADATA_KEY` is exported from both barrels for
+the same reason RUFU-246's premise key is: the value is a runtime string shared by writers and readers
+across package boundaries, so an inlined literal at a call site could drift silently.
+
+The write-side helpers (`planAdmissionStallWrite`, `clearPlanAdmissionStallPatch`,
+`PLAN_ADMISSION_STALL_REFRESH_FLOOR_MS`) are exported for the same reason: triage and the reconciliation
+sweep are separate writers of one key, and the refresh/firstAt/stallCount discipline must be decided in
+one place or the two lanes will disagree about what a sustained stall looks like.
+*/
+export { PLAN_ADMISSION_STALL_METADATA_KEY } from "./types.js";
+export type { TaskPlanAdmissionStallCode, TaskPlanAdmissionStallEpisode } from "./types.js";
 export {
   getStalePausedReviewSignal,
   DEFAULT_STALE_PAUSED_REVIEW_THRESHOLD_MS,

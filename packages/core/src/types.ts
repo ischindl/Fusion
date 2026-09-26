@@ -606,6 +606,7 @@ import {
   HANDOFF_FROM_METADATA_KEY,
   TRANSFERRED_TO_METADATA_KEY,
   PLAN_PREMISE_REJECTION_METADATA_KEY,
+  PLAN_ADMISSION_STALL_METADATA_KEY,
   WEDGE_RENOTIFY_COOLDOWN_MS,
 } from "./types/task/task-core.js";
 export {
@@ -617,9 +618,11 @@ export {
   HANDOFF_FROM_METADATA_KEY,
   TRANSFERRED_TO_METADATA_KEY,
   PLAN_PREMISE_REJECTION_METADATA_KEY,
+  PLAN_ADMISSION_STALL_METADATA_KEY,
   WEDGE_RENOTIFY_COOLDOWN_MS,
 };
 export type { PlanPremiseRejectionEpisode } from "./types/task/task-core.js";
+export type { TaskPlanAdmissionStallCode, TaskPlanAdmissionStallEpisode } from "./types/task/task-core.js";
 
 import type {
   SourceType,

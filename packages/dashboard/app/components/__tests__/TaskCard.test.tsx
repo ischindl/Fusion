@@ -8970,6 +8970,81 @@ describe("TaskCard stall-reason wiring", () => {
 });
 
 /*
+FNXC:PlanningAdmissionStall 2026-09-25-21:17 (RUFU-273):
+The planning lane's seven stall codes are face-visible on the card, so the card must render every one of
+them rather than only the review-lane pair. These pin three things the shared predicate alone cannot:
+(1) each code reaches the chip with its OWN localized headline and keeps its server code verbatim (a
+fold of seven codes into one label is the failure mode this whole feature exists to prevent); (2) the
+server's diagnostic sentence rides only the tooltip, never the visible chip; (3) the complete-lane gate
+applies to planning codes exactly as it does to review codes, and a card the server never named stays
+flowing — the chip is proof of the server authority, not a client-side guess. The last case pins the
+mobile breakpoint: the ≤768px rules restyle `.card-stall-reason` rather than hide it, so a planning
+stall is still named on a phone.
+*/
+describe("TaskCard planning-admission stall wiring (RUFU-273)", () => {
+  const observedAt = "2026-09-25T00:00:00.000Z";
+  const planningStall = (code: string, reason: string) => ({ code, reason, observedAt });
+
+  it.each([
+    ["plan-admission-throttled", "Waiting for a planner slot"],
+    ["plan-lane-ineligible", "This lane does not plan cards automatically"],
+    ["plan-premise-held", "Planning is held by a rejected plan"],
+    ["plan-spec-unreadable", "The written plan cannot be read"],
+    ["plan-recovery-backoff", "Waiting out a scheduled retry"],
+    ["plan-no-admission", "Planning has not started, and no gate refuses it"],
+    ["recoverable-work", "This card's branch holds commits that are not merged"],
+  ] as const)("names planning stall %s on the card face with its own headline", (code, headline) => {
+    render(
+      <TaskCard
+        task={makeTask({ column: "hold", status: "pending", stallReason: planningStall(code, `engine sentence for ${code}`) })}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
+    const chip = screen.getByTestId("card-stall-reason-FN-001");
+    expect(chip.textContent).toContain(headline);
+    expect(chip.getAttribute("data-stall-code")).toBe(code);
+    /*
+    A planning stall's tooltip is the code's localized description, NOT the server's sentence: unlike
+    `merge-blocker` (whose server prose names a verification refusal no catalog copy could phrase), each
+    planning code has a complete copy group, so rendering its own description keeps the whole affordance
+    translatable. The server sentence must appear nowhere on the chip.
+    */
+    expect(chip.getAttribute("title")).toBeTruthy();
+    expect(chip.getAttribute("title") ?? "").not.toContain(`engine sentence for ${code}`);
+    const card = document.querySelector(".card") as HTMLElement;
+    expect(card.getAttribute("data-task-stall-reason")).toBe(code);
+  });
+
+  it("keeps every planning stall off a landed card", () => {
+    render(
+      <TaskCard
+        task={makeTask({ column: "done", status: "done", stallReason: planningStall("plan-no-admission", "stale episode on a landed row") })}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
+    expect(screen.queryByTestId("card-stall-reason-FN-001")).toBeNull();
+  });
+
+  it("leaves an aged-looking planning card flowing when the server names no stall", () => {
+    render(<TaskCard task={makeTask({ column: "hold", status: "pending" })} onOpenDetail={noop} addToast={noop} />);
+    expect(screen.queryByTestId("card-stall-reason-FN-001")).toBeNull();
+    const card = document.querySelector(".card") as HTMLElement;
+    expect(card.hasAttribute("data-task-stall-reason")).toBe(false);
+  });
+
+  it("keeps the stall reason readable at mobile width instead of hiding it", () => {
+    const fullCss = loadAllAppCss();
+    expect(fullCss).toMatch(/@media[^{]*\(max-width:\s*768px\)[^{]*\{[\s\S]*?\.card-stall-reason\s*\{[^}]*font-size:\s*0\.625rem;[^}]*\}/);
+    // No rule anywhere hides the chip; only font-size/clamp restyles exist for it.
+    const stallRules = fullCss.match(/\.card-stall-reason\s*\{[^}]*\}/g) ?? [];
+    expect(stallRules.length).toBeGreaterThan(0);
+    for (const rule of stallRules) expect(rule).not.toMatch(/display:\s*none/);
+  });
+});
+
+/*
 FNXC:PlanningFailureClear 2026-09-12-13:50 (RUFU-228):
 Render-shape coverage for the stale-planning-failure fix. RUFU-225 rendered one
 live in-progress card as TWO stacked cards: the card plus the red `.card-error`

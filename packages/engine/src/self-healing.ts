@@ -104,7 +104,7 @@ import { PRE_MERGE_STEPS_NOT_RUN_BLOCKER, loadWorkspaceConfig, type TaskMoveLane
   /* FNXC:SelfHealing 2026-09-06-09:47 (merge origin/main dd808ed2c6): FN-295 collateral-archive restore helpers + stale-content predicate — the auto-merged sweep bodies call all three. */
   resolveCollateralArchivedReviewGate,
   COLLATERAL_ARCHIVED_REVIEW_GATE_DIAGNOSTIC,
-  isStaleContentApprovalBlocker, isPreMergeStepsNotRunBlocker, isPreMergeGateFailedBlocker, parsePreMergeGateApprovalBlocker, parseEmbeddedPreMergeGateApprovalBlocker, findVerdictLessFailedRequiredGates, IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON, namesVerdictLessFailedGate, hasFailedPreMergeWorkflowStepRow, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isLiveSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, resolveExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveRequiredPreMergeStepIds, resolveReboundTarget, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, isWipColumnRole, isReviewColumnRole, isTerminalColumnRole, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, resolveUnprovenReviewApproval, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, /* FNXC:ApprovalHoldMoveClear 2026-09-25-11:12 (RUFU-297): the drifted-hold sweep consumes the single hold authority + honest pause accounting. */ isTaskBlockedOnApproval, computePauseAccountingPatch, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type MoveTaskOptions, type Settings, type Task, type MergeDetails, type MergeResult, type WorkflowStepResult, type WorkflowIr, type WorkflowIrV2, type ChatSession, type ChatInFlightGenerationState,
+  isStaleContentApprovalBlocker, isPreMergeStepsNotRunBlocker, isPreMergeGateFailedBlocker, parsePreMergeGateApprovalBlocker, parseEmbeddedPreMergeGateApprovalBlocker, findVerdictLessFailedRequiredGates, IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON, namesVerdictLessFailedGate, hasFailedPreMergeWorkflowStepRow, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isLiveSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, resolveExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveRequiredPreMergeStepIds, resolveReboundTarget, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, isWipColumnRole, isReviewColumnRole, isTerminalColumnRole, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, resolveUnprovenReviewApproval, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, /* FNXC:ApprovalHoldMoveClear 2026-09-25-11:12 (RUFU-297): the drifted-hold sweep consumes the single hold authority + honest pause accounting. */ isTaskBlockedOnApproval, computePauseAccountingPatch, /* FNXC:PlanningAdmissionStall 2026-09-25-19:31 (RUFU-273 Step 3): the sweep reads/writes the planning-admission episode through the SAME core helpers triage uses, and reads RUFU-246's premise episode to stand down in front of it. */ PLAN_ADMISSION_STALL_METADATA_KEY, PLAN_PREMISE_REJECTION_METADATA_KEY, planAdmissionStallWrite, readPlanAdmissionStallEpisode, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type MoveTaskOptions, type Settings, type Task, type MergeDetails, type MergeResult, type WorkflowStepResult, type WorkflowIr, type WorkflowIrV2, type ChatSession, type ChatInFlightGenerationState,
   resolveNearDuplicateCanonicalFlags,
   LEGACY_COLUMN_IDS_BY_ROLE,
   TERMINAL_ROLES,
@@ -271,6 +271,25 @@ import {
 } from "./util/notifier.js";
 import { classifyFileScopeLease, clearBlockedStatusOnly, filterPathsByIgnoreList, getUnmetSchedulingDependencies, isCoordinationOnlyTask, pathsOverlap, resolveDependencySatisfactionColumns } from "./scheduler.js";
 import { runSurfacingSweep, hours, type SurfacingCycle } from "./surfacing-sweeps.js";
+/*
+FNXC:PlanningAdmissionStall 2026-09-25-19:31 (RUFU-273 Step 3):
+The sweep below keeps only the store/git/IR plumbing; the age rule, the classification ladder, and the
+cost caps live in `planning-admission-stall.ts` so the ordering that decides an operator-visible badge is
+testable without a store, a poll, or a git subprocess.
+*/
+import {
+  PLANNING_ADMISSION_STALL_MAX_BRANCH_PROBES,
+  PLANNING_ADMISSION_STALL_MAX_CANDIDATES,
+  decidePlanningAdmissionStall,
+  isPlanningLaneIneligible,
+  planningAdmissionAgeMs,
+  probeTaskSpecReadable,
+  resolvePlanningLanes,
+  resolvePlanningStallThresholdMs,
+  PLANNING_ADMISSION_PASS_NOOP,
+  type PlanningAdmissionBranchEvidence,
+  type PlanningAdmissionPassResult,
+} from "./planning-admission-stall.js";
 /* U4 substrate PR1: the git-evidence readers and their helpers now live in
    self-healing-git-evidence.ts. Imported back here because call sites remain. */
 import { SelfHealingGitEvidence, execAsync, shellQuote } from "./self-healing-git-evidence.js";
@@ -2399,6 +2418,14 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       { name: "surface-in-review-stalled", fn: () => this.surfaceInReviewStalled(startupSurfacing()).then(() => undefined) },
       { name: "surface-stale-paused-reviews", fn: () => this.surfaceStalePausedReviews(startupSurfacing()).then(() => undefined) },
       { name: "surface-stale-paused-todos", fn: () => this.surfaceStalePausedTodos(startupSurfacing()).then(() => undefined) },
+      /*
+      FNXC:PlanningAdmissionStall 2026-09-25-19:31 (RUFU-273 Step 3):
+      Runs with the surfacing family because it consumes the SAME one board snapshot, IR cache, and cycle
+      clock, and after the reconciliations above so a card that a repair legitimately re-queued is
+      already re-queued before this pass asks why nothing has planned it. Unlike its neighbours it writes
+      a row field, which is why it is not a SurfacingSpec — see `reconcilePlanningAdmissionStalls`.
+      */
+      { name: "reconcile-planning-admission-stall", fn: () => this.reconcilePlanningAdmissionStalls(startupSurfacing()).then(() => undefined) },
       { name: "audit-no-commits-expected-candidates", fn: () => this.auditNoCommitsExpectedCandidates().then(() => undefined) },
     ];
 
@@ -3589,6 +3616,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           { name: "surface-in-review-stalled", fn: () => this.surfaceInReviewStalled(maintenanceSurfacing()) },
           { name: "surface-stale-paused-reviews", fn: () => this.surfaceStalePausedReviews(maintenanceSurfacing()) },
           { name: "surface-stale-paused-todos", fn: () => this.surfaceStalePausedTodos(maintenanceSurfacing()) },
+          // RUFU-273: shares the family's cycle; self-gates its git probing on the churn cadence.
+          { name: "reconcile-planning-admission-stall", fn: () => this.reconcilePlanningAdmissionStalls(maintenanceSurfacing()) },
           { name: "surface-db-corruption", fn: () => this.surfaceDbCorruption() },
           { name: "audit-no-commits-expected-candidates", fn: () => this.auditNoCommitsExpectedCandidates() },
         ];
@@ -12719,6 +12748,409 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
       "In-review stalled surfacing",
       cycle,
     );
+  }
+
+  /*
+  FNXC:PlanningAdmissionStall 2026-09-25-19:31 (RUFU-273 Step 3):
+  Name the planning-admission stall on an aged planning card that triage cannot see.
+
+  WHY A SWEEP AT ALL. Triage can only report the gate it is standing at: `task:plan-admission-throttled`
+  is emitted from inside the throttle branch, so it describes a card that reached the admit/no-admit
+  decision this tick and was refused there. A card that never reaches that decision — parked behind a
+  manual intake, on a board whose workflow has no planning node, on a spec that cannot be read, with a
+  branch full of work and an unusable worktree — emits nothing ever, at any age, and the board says
+  nothing about it either. "Why hasn't this card been planned for three days?" was only answerable by
+  reading engine logs; this sweep answers it by writing the reason onto the card, where the derivation
+  (RUFU-273 Step 1) turns it into the badge an operator actually sees.
+
+  WHAT THIS IS NOT: it is not a second triage. It admits nothing, plans nothing, and moves nothing — it
+  writes ONE metadata key and emits one audit row per card. Lifecycle containment holds: no `column`,
+  `status`, `paused`, `userPaused`, `worktree`, or `branch` write happens on any path here.
+
+  WHY IT IS NOT A SurfacingSpec. The surfacing runner is observational BY CONTRACT — it appends a
+  task-log entry and mutates no row, which is precisely why it may report on user-paused cards without
+  the pause safeguard. This sweep writes a row field, so borrowing the runner would import a mutating
+  action into a runner documented as mutation-free. It shares the runner's CYCLE instead (one board
+  snapshot, one IR cache, one cycle clock), which is what the family's `surfacingCycleMemo` is for.
+
+  COST. One pass over the shared snapshot plus one project-vocabulary read, then per-candidate work bounded
+  to 8 in flight (triage's window) and gated on the hourly git-churn cadence for the branch probe — the only
+  part that costs subprocess I/O, capped at `PLANNING_ADMISSION_STALL_MAX_BRANCH_PROBES` per pass. Two gates
+  run before any per-card work: the age threshold (48 h) and the project's `intake`/`hold` column vocabulary,
+  so a healthy board — and a board full of merged cards whose status has been cleared back to null — resolves
+  zero candidates.
+  */
+  async reconcilePlanningAdmissionStalls(
+    cycle?: SurfacingCycle | null | Promise<SurfacingCycle | null>,
+  ): Promise<number> {
+    try {
+      const active = cycle !== undefined ? await cycle : await this.openSurfacingCycle();
+      // A paused engine returns no cycle: a paused board is not an unexplained silence.
+      if (!active) return 0;
+      const { tasks, irCache, cycleStartMs } = active;
+
+      /*
+      Population: every guard here is "something else already owns or explains this card", and each is
+      cheap enough to run before any workflow resolution. Terminal-ness gets no guard of its own: a merged
+      card usually carries a named `status`, and on the boards where the merge clears it back to null the
+      column bound just below is what keeps the card out of the naming population.
+      */
+      const silentAged = tasks.filter((task) => {
+        if (task.paused === true || task.userPaused === true) return false;
+        // A non-empty status is already a named state the board renders (awaiting-approval, failed, …).
+        if (typeof task.status === "string" && task.status !== "") return false;
+        // A live dependency edge is named LIVE by the derivation, so it is never an admission stall.
+        if (typeof task.blockedBy === "string" && task.blockedBy.trim() !== "") return false;
+        return planningAdmissionAgeMs(task, cycleStartMs) !== undefined;
+      });
+      /*
+      FNXC:PlanningAdmissionStall 2026-09-26-00:22 (RUFU-273 code review P0 — the cap was starved by cards
+      that can never be named): planning-lane membership used to be consulted only INSIDE the per-candidate
+      pass, i.e. AFTER the oldest-first `MAX_CANDIDATES` slice. On the motivating board the merge lane clears
+      `status` back to null, so every merged card passes the cheap guards above and is older than the planning
+      cards; the slice filled with `done` cards and the aged `todo` cards the operator is asking about were
+      never reached — the feature was a no-op on precisely the board it was written for.
+
+      The bound is the PROJECT vocabulary (`intake` ∪ `hold`, the same trait union the other sweeps resolve
+      rather than a literal column id), applied before the sort and the cap. It is a bound, not a verdict:
+      per-card `resolvePlanningLanes(ir)` is a subset of it (a card's own workflow is one of the definitions
+      the union iterates), so nothing nameable is dropped, while a card the vocabulary already excludes costs
+      this pass nothing at all — no IR resolution, no spec stat, no probe.
+
+      The vocabulary cannot un-name anything. A card it excludes stays in `agedIds`, so the whole-board retract
+      pass below never sees it, and a stored claim on it is retracted only through the per-card pass, where the
+      card's OWN IR is the authority — the same three-state rule that stops a v1 or trait-less graph from
+      reading as "this lane is not for planning". That is why a project whose definitions list cannot be read
+      (the helper then answers with its legacy floor alone) degrades to under-naming rather than to erasing
+      episodes named in an earlier healthy cycle.
+      */
+      const plannableColumns = await resolveProjectColumnsForRoles(this.store, ["intake", "hold"]);
+      const nameable = silentAged.filter((task) => plannableColumns.has(task.column));
+
+      /*
+      The clear half of the same contract. An episode is a claim that this card is *now* an aged, silent,
+      planning-lane card, so the moment the card stops being one — it was admitted (a `status` appeared), it
+      was planned and left the lane, its row was touched so the age no longer qualifies — the claim is false
+      and must be retracted, or the board keeps rendering a reason that stopped being true. A pause is NOT
+      such a moment: a paused card's badge belongs to the pause family, its operator-authored row stays
+      byte-identical under this sweep, and the derivation already suppresses a planning code while paused.
+      */
+      const agedIds = new Set(silentAged.map((task) => task.id));
+      const retracted = await this.retractPlanningAdmissionStallEpisodes(
+        tasks.filter((task) =>
+          !agedIds.has(task.id)
+          && task.paused !== true
+          && task.userPaused !== true
+          && readPlanAdmissionStallEpisode(task.sourceMetadata) !== undefined),
+        "no-longer-a-candidate",
+      );
+
+      /*
+      A card the project vocabulary excludes is not nameable, but it is not the whole-board pass's business
+      either: only its own IR may prove it left a planning lane. The cards worth that per-card read are the
+      ones carrying a claim to retract — a merged card with no episode needs neither half, which is what keeps
+      a board of null-status `done` cards free instead of costing 1,500 IR resolutions.
+      */
+      const storedClaimsOutsideVocabulary = silentAged.filter(
+        (task) => !plannableColumns.has(task.column)
+          && readPlanAdmissionStallEpisode(task.sourceMetadata) !== undefined);
+      // A healthy board pays nothing further: no nameable card and no stored claim left to clear.
+      if (nameable.length === 0 && storedClaimsOutsideVocabulary.length === 0) return retracted;
+
+      const selectionCache: WorkflowSelectionCache = new Map();
+      /*
+      The probe's base is the integration branch, with `main` as the fallback — and the fallback is
+      taken LOCALLY rather than by letting the read fail the pass. A host where one git read fails still
+      has aged cards whose silence needs a name, and every other rung of the ladder needs no git at all.
+      */
+      const probeBase = await resolveIntegrationBranch(this.options.rootDir, await this.store.getSettings(), {
+        logger: { warn: (message: string) => log.debug(message) },
+      }).catch(() => "main");
+      const probeUnmerged = createUnmergedCommitProbe(this.options.rootDir, probeBase);
+      const churnDue = this.isGitWorktreeChurnDue();
+      let probesRun = 0;
+      let named = 0;
+      /*
+      Oldest first, EXPLICITLY: when the population exceeds the per-pass cap, the cards that have been
+      silent longest are the ones an operator is asking about, and `listTasks` makes no ordering promise
+      that would guarantee them a slot. The sort is over the already-filtered set, so a healthy board
+      (zero candidates) pays nothing.
+      */
+      const candidates = [
+        ...nameable
+          .slice()
+          .sort((a, b) => (planningAdmissionAgeMs(a, cycleStartMs) ?? 0) >= (planningAdmissionAgeMs(b, cycleStartMs) ?? 0) ? -1 : 1)
+          .slice(0, PLANNING_ADMISSION_STALL_MAX_CANDIDATES),
+        /*
+        Retract-only pass-through: these cards can produce a clear, never a naming, so they are bounded
+        defensively by the same constant instead of competing for the naming cap. In steady state the set is
+        empty — it holds exactly the cards this sweep named and that have since left the vocabulary's lanes.
+        */
+        ...storedClaimsOutsideVocabulary.slice(0, PLANNING_ADMISSION_STALL_MAX_CANDIDATES),
+      ];
+
+      // Bounded window rather than one long serial chain: per-card work is an IR read plus at most one probe.
+      const RESOLUTION_CONCURRENCY = 8;
+      /*
+      A card can also leave the population in a way only the IR can prove — it moved to a lane its own
+      workflow does not plan in. Those retracts run through the same per-card pass below, which already
+      holds the resolved IR, rather than through a second scan that would resolve the IR twice.
+      */
+      let retractedInLane = 0;
+      for (let offset = 0; offset < candidates.length; offset += RESOLUTION_CONCURRENCY) {
+        const window = candidates.slice(offset, offset + RESOLUTION_CONCURRENCY);
+        const results = await Promise.all(
+          window.map(async (task) => {
+            try {
+              return await this.classifyPlanningAdmissionStall(task, {
+                now: cycleStartMs,
+                irCache,
+                selectionCache,
+                probeUnmerged,
+                probeBudgetAvailable: () => churnDue && probesRun < PLANNING_ADMISSION_STALL_MAX_BRANCH_PROBES,
+                claimProbe: () => {
+                  probesRun += 1;
+                },
+              });
+            } catch (err: unknown) {
+              // One unreadable card must not cost the pass its other candidates.
+              log.debug(`Planning-admission stall classification skipped for ${task.id}: ${err instanceof Error ? err.message : String(err)}`);
+              return PLANNING_ADMISSION_PASS_NOOP;
+            }
+          }),
+        );
+        for (const result of results) {
+          named += result.named;
+          retractedInLane += result.retracted;
+        }
+        await yieldEventLoop();
+      }
+      return named + retracted + retractedInLane;
+    } catch (err: unknown) {
+      log.error(`Planning-admission stall reconciliation failed: ${err instanceof Error ? err.message : String(err)}`);
+      return 0;
+    }
+  }
+
+  /**
+   * Gather one aged card's evidence, run the ladder, and apply its verdict.
+   *
+   * Returns what the pass did to the row: a naming, a retraction, or neither. Naming and retracting are
+   * reported as separate counters rather than one signed number because they are different facts an
+   * operator reads differently — "we found a cause" vs "the cause we named earlier is gone".
+   *
+   * It never throws for an unreadable input: this sweep exists to remove silence, so an input it cannot
+   * read costs a candidate, never the pass.
+   */
+  private async classifyPlanningAdmissionStall(
+    task: Task,
+    ctx: {
+      now: number;
+      irCache: Map<string, WorkflowIr>;
+      selectionCache: WorkflowSelectionCache;
+      probeUnmerged: (branchRef: string) => Promise<number | null>;
+      probeBudgetAvailable: () => boolean;
+      claimProbe: () => void;
+    },
+  ): Promise<PlanningAdmissionPassResult> {
+    const ir = await resolveWorkflowIrForTask(this.store, task.id, ctx.irCache, ctx.selectionCache).catch(() => undefined);
+    /*
+    Planning-lane membership is IR TRAITS (`intake` ∪ `hold`) resolved by `resolvePlanningLanes`, never a
+    workflow vocabulary: a renamed board ("Backlog", "Inbox", "Queued") is included exactly as `intake` is.
+    The helper's THIRD outcome — an IR that cannot answer the placement question — is what keeps this sweep
+    from eating its own feature: a v1 graph, or one upgraded by `synthesizeDefaultColumns` whose columns
+    carry no trait at all, yields `undefined` rather than an empty set, so naming refuses to name AND
+    retracting refuses to retract. Absent evidence is not proof that the card left the lane, and clearing an
+    episode because the workflow was unreadable would un-name the very cards this feature exists to name —
+    the analysis-safety rule cuts both ways: skip rather than throw, stay quiet rather than retract. Where
+    the IR DOES answer and does not place the card in an intake/hold lane, that is a real answer, and both
+    directions consult the same authority: the naming side skips such a card, so the retract side must not
+    keep a claim nothing corroborates.
+    */
+    const planningColumns = resolvePlanningLanes(ir);
+    if (!planningColumns?.has(task.column)) {
+      /*
+      Two different outsides, and only one of them is evidence. An IR that ANSWERS and excludes this column
+      proves the card left the planning lanes, so a stored claim about it is false and gets retracted. An IR
+      that cannot answer proves nothing — the card may sit in a perfectly good intake lane the workflow has
+      no vocabulary to describe — so the sweep neither names it (the naming side has always required positive
+      membership) nor un-names it.
+      */
+      return {
+        named: 0,
+        retracted: planningColumns
+          ? await this.retractPlanningAdmissionStallEpisodes([task], "left-planning-lane")
+          : 0,
+      };
+    }
+
+    const ageMs = planningAdmissionAgeMs(task, ctx.now) ?? 0;
+    const thresholdMs = resolvePlanningStallThresholdMs(ir, task.column);
+    if (ageMs < thresholdMs) {
+      // The row was touched since it was named: the age claim expired, so retract it.
+      return { named: 0, retracted: await this.retractPlanningAdmissionStallEpisodes([task], "no-longer-aged") };
+    }
+
+    const specProbe = await probeTaskSpecReadable(this.options.rootDir, task.id);
+    const laneIneligible = isPlanningLaneIneligible(task, ir);
+
+    // The branch probe is the only I/O-heavy step: claim budget per pass, and only for a card that has a branch.
+    let branch: PlanningAdmissionBranchEvidence = { branchClaimed: false, worktreeUsable: true, uniqueCommitCount: undefined };
+    if (typeof task.branch === "string" && task.branch.trim() !== "") {
+      /*
+      FNXC:PlanningAdmissionStall 2026-09-26-00:22 (RUFU-273 code review P1 — an unrecorded worktree read as
+      usable): a bare `branch` with no `worktree` is the REPORTED shape — the executor's checkout is cleaned
+      up and only the branch claim survives. Initializing `worktreeUsable` to `true` and only revising it for
+      a recorded path left that card looking usable, so the probe was never consulted and the
+      `recoverable-work` rung — whose whole question is "is there work no checkout can show?" — could not fire
+      for the population it was written for. An absent path is therefore `false` (no usable checkout exists to
+      show the work); only a RECORDED path can earn `true` by resolving.
+      */
+      const recordedWorktree = typeof task.worktree === "string" ? task.worktree.trim() : "";
+      branch = {
+        branchClaimed: true,
+        worktreeUsable: recordedWorktree === ""
+          ? false
+          : await isUsableTaskWorktree(this.options.rootDir, recordedWorktree).catch(() => true),
+        uniqueCommitCount: undefined,
+      };
+      // A recorded-but-unreadable path keeps the conservative `true` (a host git hiccup is not lost work).
+      if (!branch.worktreeUsable && ctx.probeBudgetAvailable()) {
+        ctx.claimProbe();
+        branch.uniqueCommitCount = (await ctx.probeUnmerged(task.branch)) ?? undefined;
+      }
+    }
+
+    const decision = decidePlanningAdmissionStall({
+      ageMs,
+      premiseEpisodePresent: task.sourceMetadata?.[PLAN_PREMISE_REJECTION_METADATA_KEY] != null,
+      recoveryBackoffActive: typeof task.nextRecoveryAt === "string" && Date.parse(task.nextRecoveryAt) > ctx.now,
+      specUnreadable: specProbe === "unreadable",
+      laneIneligible,
+      branch,
+      episode: readPlanAdmissionStallEpisode(task.sourceMetadata),
+    }, ctx.now);
+
+    if (decision.outcome === "skip") {
+      await this.emitPlanningAdmissionStallAudit("task:planning-admission-stalled-no-action", task, {
+        column: task.column,
+        outcome: decision.reason,
+        ageMs,
+        scannedCount: 1,
+      });
+      return PLANNING_ADMISSION_PASS_NOOP;
+    }
+
+    const episode = planAdmissionStallWrite(
+      readPlanAdmissionStallEpisode(task.sourceMetadata),
+      {
+        code: decision.code,
+        // Names the writer and the gate it reached, so a reader can tell a sweep episode from a triage one.
+        signature: `sweep:${decision.code}`,
+        ageMs,
+        uniqueCommitCount: decision.uniqueCommitCount,
+      },
+      ctx.now,
+    );
+    // The shared write decider owns the refresh floor; a refused write is a card that is already named.
+    if (!episode) {
+      await this.emitPlanningAdmissionStallAudit("task:planning-admission-stalled-no-action", task, {
+        column: task.column,
+        outcome: "already-named",
+        ageMs,
+        scannedCount: 1,
+      });
+      return PLANNING_ADMISSION_PASS_NOOP;
+    }
+
+    // Key-level patch, never a whole-object write: a full `sourceMetadata` write from this lane would
+    // erase RUFU-246's premise episode and any provenance key written by another lane.
+    await this.store.updateTask(task.id, {
+      sourceMetadataPatch: { [PLAN_ADMISSION_STALL_METADATA_KEY]: episode },
+    });
+    await this.emitPlanningAdmissionStallAudit("task:planning-admission-stalled", task, {
+      column: task.column,
+      code: decision.code,
+      ageMs,
+      staleBranchCommitCount: decision.uniqueCommitCount,
+      outcome: "named",
+      scannedCount: 1,
+    });
+    log.warn(
+      `Aged planning card ${task.id} named ${decision.code} (age ${hours(ageMs)}h, threshold ${hours(thresholdMs)}h)`,
+    );
+    return { named: 1, retracted: 0 };
+  }
+
+  /**
+   * Emit one bounded planning-admission stall row.
+   *
+   * The bounded seam is load-bearing: telemetry must never become a lifecycle dependency, so an
+   * absent, throwing, or hanging sink is absorbed and the sweep continues with its next candidate.
+   * Metadata is ids/counts/fixed codes only — the branch is represented by its COMMIT COUNT, never by
+   * a sha, and spec text never enters run-audit.
+   */
+  private async emitPlanningAdmissionStallAudit(
+    type: "task:planning-admission-stalled" | "task:planning-admission-stalled-no-action",
+    task: Task,
+    metadata: Record<string, unknown>,
+  ): Promise<void> {
+    const clean: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(metadata)) {
+      if (value !== undefined) clean[key] = value;
+    }
+    await emitBoundedRunAudit(this.store, {
+      taskId: task.id,
+      agentId: "self-healing",
+      runId: generateSyntheticRunId("reconcile-planning-admission-stall", task.id),
+      domain: "database",
+      mutationType: type as DatabaseMutationType,
+      target: task.id,
+      metadata: clean,
+    }, { log });
+  }
+
+  /**
+   * Retract an episode whose claim has become false, key-level and idempotently.
+   *
+   * FNXC:PlanningAdmissionStall 2026-09-25-20:59:
+   * Naming without retracting leaves a card explaining itself with a reason that stopped being true — the
+   * board keeps saying "waiting for a planner slot" about a card that was admitted two days ago. The clear
+   * is therefore part of the feature, not a follow-up: it writes `null` for ONE key (never a whole-object
+   * `sourceMetadata`, which would erase other lanes' episodes), skips a card with nothing stored so a
+   * whole-board pass stays write-free on a healthy board, and never runs for a paused card, whose row is
+   * operator-authored and whose badge the pause family already owns.
+   *
+   * Returns the number of rows actually rewritten, so a pass reports one honest count. A card with no
+   * stored episode costs no write and no audit row, which is what makes this safe to run every cycle
+   * over the whole board. The cap is the candidate cap: a mass transition (a fleet admitted at once)
+   * must not hand the engine an unbounded write burst.
+   */
+  private async retractPlanningAdmissionStallEpisodes(
+    tasks: readonly Task[],
+    outcome: "no-longer-a-candidate" | "left-planning-lane" | "no-longer-aged",
+  ): Promise<number> {
+    let retracted = 0;
+    for (const task of tasks.slice(0, PLANNING_ADMISSION_STALL_MAX_CANDIDATES)) {
+      // Nothing stored means nothing to retract: the guard here (not at each caller) is what makes a
+      // whole-board pass write-free on a healthy board, where no card carries an episode at all.
+      if (readPlanAdmissionStallEpisode(task.sourceMetadata) === undefined) continue;
+      try {
+        // `null` at KEY level, the same idiom the manual-retry reset uses: siblings survive.
+        await this.store.updateTask(task.id, {
+          sourceMetadataPatch: { [PLAN_ADMISSION_STALL_METADATA_KEY]: null },
+        });
+        retracted += 1;
+        await this.emitPlanningAdmissionStallAudit("task:planning-admission-stalled-no-action", task, {
+          column: task.column,
+          outcome,
+          scannedCount: 1,
+        });
+      } catch (err: unknown) {
+        log.debug(`Planning-admission stall retract skipped for ${task.id}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return retracted;
   }
 
 

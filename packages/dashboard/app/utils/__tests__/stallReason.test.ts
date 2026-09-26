@@ -726,6 +726,76 @@ describe("resolveStallReason — the server field outranks the client classifier
     expect(resolveStallReason(afterClear, { t })?.code).toBe("dependency-block");
   });
 
+  /*
+  FNXC:PlanningAdmissionStall 2026-09-25-19:31 (RUFU-273):
+  The seven planning answers, asserted as a family rather than one at a time. The symptom this task removes
+  is that an aged planning card said NOTHING, so a test that only proved "some planning copy appears" would
+  pass even if all seven codes rendered the identical sentence — which is the failure mode worth guarding,
+  because it is the cheap way to implement the feature. Each assertion below therefore has a non-vacuous
+  control: the code stays distinct, the copy is distinct per code, the authority's English sentence is never
+  rendered verbatim, and no label pairs "plan" with "failed".
+  */
+  const planningCodes = [
+    "plan-admission-throttled",
+    "plan-lane-ineligible",
+    "plan-premise-held",
+    "plan-spec-unreadable",
+    "plan-recovery-backoff",
+    "plan-no-admission",
+    "recoverable-work",
+  ] as const;
+
+  it.each(planningCodes)("maps the server's %s answer onto its own copy group under its own code", (code) => {
+    const { t, call } = makeT();
+    const result = resolveStallReason(subject({ column: "backlog", stallReason: serverStall(code) }), { t });
+    // The code is carried verbatim: no folding into a client code, so `data-stall-code` stays exact.
+    expect(result?.code).toBe(code);
+    // Copy comes from THIS code's group, and its fallback is real English (an empty default would render
+    // a bare key and would be indistinguishable from an unmapped code at a glance).
+    expect(call(`stall.${code}.headline`)!.fallback.length).toBeGreaterThan(0);
+    expect(call(`stall.${code}.badgeLabel`)!.fallback.length).toBeGreaterThan(0);
+    // The authority's English diagnostic is policy prose the translator owns, never rendered verbatim.
+    expect(result?.description).not.toContain("canonical blocker sentence");
+    // A planning hold is a hold, not a failure: the chip must not send the operator to the failure lane.
+    expect(`${result?.badgeLabel} ${result?.headline}`).not.toMatch(/fail/i);
+    const faceCopy = `${result?.badgeLabel} ${result?.headline} ${result?.suggestedAction}`;
+    if (code === "recoverable-work") {
+      // Honest exception: this one IS about commits that never reached the default branch — naming that is
+      // its whole content. What it must never do is borrow the merge-lane's refusal wording, because the
+      // remedy is "recover the work", not "clear a merge blocker".
+      expect(faceCopy).not.toMatch(/blocked/i);
+      expect(call(`stall.${code}.headline`)!.fallback).toMatch(/not/i);
+    } else {
+      // The other six are planning-lane causes; sending the operator to the delivery lane to fix one is
+      // the wording defect the `held-human-review` test above already refuses for the review lane.
+      expect(faceCopy).not.toMatch(/merge/i);
+    }
+  });
+
+  it("gives each planning cause different words, which is the whole point of naming seven of them", () => {
+    const { t } = makeT();
+    const headlines = planningCodes.map((code) => resolveStallReason(subject({ stallReason: serverStall(code) }), { t })?.headline);
+    const badges = planningCodes.map((code) => resolveStallReason(subject({ stallReason: serverStall(code) }), { t })?.badgeLabel);
+    // Seven distinct causes must produce seven distinct headlines and seven distinct chips; two codes
+    // sharing a sentence would leave the operator asking the same question they asked before this feature.
+    expect(new Set(headlines).size).toBe(planningCodes.length);
+    expect(new Set(badges).size).toBe(planningCodes.length);
+  });
+
+  it("lets the server's planning answer outrank the client chain, which cannot name a planning cause", () => {
+    const { t } = makeT();
+    // An aged silent card with no client-side signal at all: the client chain has nothing to say about it.
+    const bare = subject({ column: "backlog" });
+    expect(resolveStallReason(bare, { t })).toBeUndefined();
+    expect(resolveStallReason({ ...bare, stallReason: serverStall("plan-admission-throttled") }, { t })?.code)
+      .toBe("plan-admission-throttled");
+    // And when the client WOULD have guessed something, the server's planning answer still wins: it read
+    // the episode, the client is inferring from a column name.
+    const withClientCause = { ...bare, blockedBy: "FN-9", stallReason: serverStall("recoverable-work") };
+    expect(resolveStallReason({ ...bare, blockedBy: "FN-9" }, { t })?.code).toBe("dependency-block");
+    expect(resolveStallReason(withClientCause, { t })?.code).toBe("recoverable-work");
+  });
+
   it("fails open to the client chain for a server code it does not know", () => {
     const { t } = makeT();
     const result = resolveStallReason(
@@ -780,6 +850,20 @@ const faceExpectations: Record<StallReasonCode, readonly [boolean, boolean, bool
   // Ordinary review-lane waits: named by the detail banner, never presented as a face-level fault.
   "pre-merge-gate-pending": [false, false, true],
   "held-human-review": [false, false, true],
+  /*
+  FNXC:PlanningAdmissionStall 2026-09-25-19:31 (RUFU-273):
+  Every planning-lane code is face-visible in all three modes. This row is the acceptance for the reported
+  symptom — an aged planning card that explained itself with nothing — so unlike the two ordinary waits
+  directly above, none of these may be detail-only. They also do not depend on a `pausedReason`: a planning
+  stall is named by the server's episode, not by a pause the card may not have.
+  */
+  "plan-admission-throttled": [true, true, true],
+  "plan-lane-ineligible": [true, true, true],
+  "plan-premise-held": [true, true, true],
+  "plan-spec-unreadable": [true, true, true],
+  "plan-recovery-backoff": [true, true, true],
+  "plan-no-admission": [true, true, true],
+  "recoverable-work": [true, true, true],
 };
 
 describe("stallReasonVisibleOnFace — exhaustive per-code matrix", () => {

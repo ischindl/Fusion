@@ -267,7 +267,7 @@ export function describeTaskWedge(task: Task): TaskWedgeDescriptor | null {
     return {
       reasonKey: "stall:pre-merge-gate-pending",
       reason: PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
-      action: STALL_WEDGE_ACTIONS["pre-merge-gate-pending"],
+      action: PRE_MERGE_GATE_PENDING_WEDGE_ACTION,
     };
   }
   if (error.includes("tool failure") || error.includes("Tool failure")) {
@@ -309,14 +309,47 @@ export function describeTaskWedge(task: Task): TaskWedgeDescriptor | null {
   };
 }
 
+/*
+FNXC:TaskWedgeNotifications 2026-09-25-17:48 (RUFU-273):
+Operator next-step copy for every stall code, spelled as an exhaustive table over the WHOLE
+`TaskStallReasonCode` union with `null` meaning "this code never alerts". The table used to be
+`Record<Exclude<TaskStallReasonCode, "dependency-blocker">, string>`, which made "a new code was added
+to the union" a silent non-event: the compiler only complained if someone happened to index the table
+with it. RUFU-273 adds seven planning-lane codes and every one of them is deliberately silent here, so
+the union-wide table with an explicit `null` arm is what forces a future author to decide — adding a
+code without stating whether it alerts is now a compile error, which is the strictest form of the
+fail-closed rule this file already documented for unknown codes.
+
+Why each planning code is `null`: the wedge alert is a mailbox message saying "a human must act on this
+card now", and none of these meet that bar. The card already names its cause on its face and in the
+detail banner (RUFU-273's surface rule: the face names the cause, the body never re-asks for a human).
+The capacity throttle is engine-owned and self-clears the moment a slot frees; the premise hold is
+already announced by the plan-review path that wrote the episode; the recovery backoff is a scheduled
+engine wait; `recoverable-work` is reported by the FN-283 vanished-work notice; and `plan-no-admission`
+is a residual with no operator action to name. Alerting here would double-announce a cause that already
+has an owner, which is the exact defect the `dependency-blocker` exclusion was written for.
+*/
 /**
- * Operator next-step copy for each alertable review-lane stall code. Every sentence names a
- * concrete action the operator can take from the card, never an internal state or enum name.
+ * The one action sentence shared by the legacy not-run-refusal arm above and the stall-code table
+ * below, so the board chip, the menu, and this alert can never disagree. A named const rather than a
+ * table index because the table is nullable (`null` = never alerts) and this arm always alerts.
  */
-const STALL_WEDGE_ACTIONS: Record<Exclude<TaskStallReasonCode, "dependency-blocker">, string> = {
+const PRE_MERGE_GATE_PENDING_WEDGE_ACTION = "Run the pending review gate from the card, or reset the card to todo so the pipeline runs the gate again.";
+
+const STALL_WEDGE_ACTIONS: Record<TaskStallReasonCode, string | null> = {
   "merge-blocker": "Open the card and clear the blocker: re-run the review gate, bypass a failed pre-merge review step, or reset the card to todo.",
-  "pre-merge-gate-pending": "Run the pending review gate from the card, or reset the card to todo so the pipeline runs the gate again.",
+  "pre-merge-gate-pending": PRE_MERGE_GATE_PENDING_WEDGE_ACTION,
   "held-human-review": "Merge the card by hand, or turn automatic merge processing back on.",
+  // Already announced elsewhere: normal queueing, and the blocking card announces its own stall.
+  "dependency-blocker": null,
+  // Planning-lane codes (RUFU-273) — the card names the cause itself, so a wedge alert would double-announce.
+  "plan-admission-throttled": null,
+  "plan-lane-ineligible": null,
+  "plan-premise-held": null,
+  "plan-spec-unreadable": null,
+  "plan-recovery-backoff": null,
+  "plan-no-admission": null,
+  "recoverable-work": null,
 };
 
 /**
@@ -352,8 +385,9 @@ export function describeTaskWedgeFromStallReason(task: Task): TaskWedgeDescripto
   if (typeof task.status === "string" && task.status.length > 0) return null;
   if (task.paused === true || task.userPaused === true) return null;
   if (isTaskProgressing(task)) return null;
+  // The exhaustive table decides silence; the literal guard stays so this arm is unchanged byte-for-byte.
   if (stall.code === "dependency-blocker") return null;
-  const action = STALL_WEDGE_ACTIONS[stall.code as Exclude<TaskStallReasonCode, "dependency-blocker">];
+  const action = STALL_WEDGE_ACTIONS[stall.code];
   if (!action) return null;
   // The reason stays the canonical server sentence so the notifier and the board chip never drift.
   return { reasonKey: `stall:${stall.code}`, reason: stall.reason, action };
