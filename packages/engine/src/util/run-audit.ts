@@ -188,6 +188,8 @@ export type GitMutationType =
   | "worktree:post-landing-ignored-content-discarded"
   | "worktree:removal-discarded-regenerable-content"
   | "worktree:removal-preserved"
+  /** STAS-273: a workspace that names a card was released; metadata names the card, lane, reason, and code path. */
+  | "worktree:removed-card-owned"
   | "worktree:active-session-reconciled"
   | "worktree:stale-lock-detected"
   | "worktree:stale-lock-recovered"
