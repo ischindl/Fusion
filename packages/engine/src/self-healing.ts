@@ -157,6 +157,12 @@ import {
 } from "./duplicate-marker-clear.js";
 import { mergeEffectiveSettings } from "./project/effective-settings.js";
 import { RemovalReason, canonicalizePath, classifyTaskWorktree, getRegisteredWorktreeBranchMap, getRegisteredWorktreePaths, isUsableTaskWorktree, relocateReclaimableWorktreeIntoRoot, removeWorktree, resolveWorktreeBackend, scanIdleWorktrees, scanOrphanedBranches } from "./worktree/worktree-pool.js";
+/*
+FNXC:CardOwnershipGuard 2026-09-26-05:10 (STAS-273):
+Imported from the backend module rather than the pool re-export so a unit test that replaces the pool
+module still gets the real error type this file discriminates on.
+*/
+import { WorktreeCardOwnershipError } from "./worktree/worktree-backend.js";
 import {
   isMissingWorktreeSessionStartFailure,
   isMergeActiveMissingWorktreeSessionStartFailure,
@@ -3112,6 +3118,9 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           worktreePath: task.worktree,
           settings,
           taskId: task.id,
+          store: this.store,
+          branch: task.branch,
+          triggeredBy: "self-healing.selfHealingReclaim",
           reason: RemovalReason.SelfHealingReclaim,
         });
       } catch (err: unknown) {
@@ -3132,6 +3141,9 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           worktreePath: task.worktree,
           settings,
           taskId: task.id,
+          store: this.store,
+          branch: task.branch,
+          triggeredBy: "self-healing.selfHealingReclaim",
           reason: RemovalReason.SelfHealingReclaim,
         });
       } catch (err: unknown) {
@@ -4615,7 +4627,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         const ownedByOtherInProgressTask = Boolean(activeOwner && activeOwner !== task.id);
         const canAutoReclaimLiveZero = branchOwnerTaskId !== null && branchOwnerTaskId === taskIdUpper && !ownedByOtherInProgressTask;
         if (canAutoReclaimLiveZero) {
-          await removeWorktree({ rootDir: this.options.rootDir, worktreePath: inspection.livePath, settings, taskId: task.id, reason: RemovalReason.SelfHealingBranchConflict });
+          await removeWorktree({ rootDir: this.options.rootDir, worktreePath: inspection.livePath, settings, taskId: task.id, store: this.store, branch: task.branch, triggeredBy: "self-healing.reclaimPrConflicts:fully-subsumed", audit: auditor, reason: RemovalReason.SelfHealingBranchConflict });
           await execAsync("git worktree prune", { cwd: this.options.rootDir, timeout: 120_000, maxBuffer: 10 * 1024 * 1024 });
           if (isFusionDeletableBranch(task, task.branch)) {
             await execAsync(`git branch -D ${JSON.stringify(task.branch)}`, { cwd: this.options.rootDir, timeout: 120_000, maxBuffer: 10 * 1024 * 1024 });
@@ -5297,6 +5309,9 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
                   worktreePath: inspection.livePath,
                   settings,
                   taskId: task.id,
+                  store: this.store,
+                  branch: branchName,
+                  triggeredBy: "self-healing.sweepGhostConflict",
                   reason: RemovalReason.SelfHealingBranchConflict,
                 });
               }
@@ -5364,7 +5379,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
                   target: branchName,
                   metadata: {
                     taskId: task.id,
-                    branch: branchName,
+                    branch: task.branch,
                     worktreePath: inspection.livePath,
                     existingTipSha: inspection.tipSha,
                     integrationRef: inspection.integrationRef,
@@ -5428,6 +5443,9 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
                   worktreePath: inspection.livePath,
                   settings,
                   taskId: task.id,
+                  store: this.store,
+                  branch: task.branch,
+                  triggeredBy: "self-healing.sweepGhostConflict",
                   reason: RemovalReason.SelfHealingBranchConflict,
                 });
                 // Branch-level reclaim remains active in worktrunk mode; this is
@@ -5503,6 +5521,10 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
                 reclaimedCleanly = true;
               } catch (reclaimErr: unknown) {
                 const reclaimMessage = reclaimErr instanceof Error ? reclaimErr.message : String(reclaimErr);
+                if (reclaimErr instanceof WorktreeCardOwnershipError) {
+                  log.debug(`[self-healing] preserved ${task.id} checkout and branch: ${reclaimMessage}`);
+                  continue;
+                }
                 await this.store.logEntry(task.id, `Auto-recovery warning: reclaim-live-zero-commits failed — ${reclaimMessage}`);
                 log.warn(`Failed reclaim-live-zero-commits for ${task.id}: ${reclaimMessage}`);
               }
@@ -6618,6 +6640,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
               worktreePath: completionCleanupPath,
               settings,
               taskId,
+              store: this.store,
+              triggeredBy: "self-healing.staleActiveBranch",
               reason: RemovalReason.SelfHealingStaleActiveBranch,
             });
             result.worktreeRemoved = removal.removed;
@@ -19221,6 +19245,8 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             rootDir: this.options.rootDir,
             worktreePath,
             settings,
+            store: this.store,
+            triggeredBy: "self-healing.idleSweep",
             reason: RemovalReason.SelfHealingIdleSweep,
           });
           cleaned++;
@@ -19745,6 +19771,8 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             rootDir: this.options.rootDir,
             worktreePath,
             settings,
+            store: this.store,
+            triggeredBy: "self-healing.idleSweep",
             reason: RemovalReason.SelfHealingIdleSweep,
           });
           removed++;

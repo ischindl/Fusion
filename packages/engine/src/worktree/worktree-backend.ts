@@ -3,7 +3,8 @@ import { existsSync } from "node:fs";
 import { access, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { basename, isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
-import type { Settings } from "@fusion/core";
+import type { Settings, TaskStore } from "@fusion/core";
+import { gateCardOwnedRemoval, type CardReleaseAuthorization } from "./card-ownership.js";
 import {
   activeSessionRegistry,
   reconcileSelfOwnedActiveSessionForRemoval,
@@ -1150,6 +1151,23 @@ const POST_LANDING_PROOF_REASONS = new Set<RemovalReason>([
   RemovalReason.CompletionLandedCleanup,
 ]);
 
+/*
+FNXC:CardOwnershipGuard 2026-09-26-05:10 (STAS-273):
+Reasons chosen by an unattended sweep rather than by a card's own lifecycle. Each one must prove the
+workspace it is destroying is not a live card's, so they are the reasons the card-ownership gate is
+applied inside this funnel. The other reasons are card-initiated or merger-initiated retirement of a
+workspace (executor teardown, task deletion/reset, hard cancel, merger landing, acquire rollback) and
+keep their existing authority.
+*/
+const CARD_GATED_REMOVAL_REASONS = new Set<RemovalReason>([
+  RemovalReason.PoolPrune,
+  RemovalReason.StepSessionCleanup,
+  RemovalReason.SelfHealingReclaim,
+  RemovalReason.SelfHealingStaleActiveBranch,
+  RemovalReason.SelfHealingBranchConflict,
+  RemovalReason.SelfHealingIdleSweep,
+]);
+
 export class InvalidForceUsageError extends Error {
   constructor(reason: RemovalReason) {
     super(`force=true is not allowed for removal reason '${reason}'`);
@@ -1192,6 +1210,25 @@ export class WorktreeContentPreservationError extends Error {
   constructor(public readonly worktreePath: string) {
     super(`preserving ${worktreePath}: uncommitted or ignored content present`);
     this.name = "WorktreeContentPreservationError";
+  }
+}
+
+/*
+FNXC:CardOwnershipGuard 2026-09-26-05:10 (STAS-273):
+A sweep whose release proof was ancestry against an integration ref reached this funnel for a card that
+was still in `todo` — the project's local trunk was sitting on that card's own unmerged tip — and
+destroyed its checkout and branch four times in eight hours. Discriminate by type, as with content
+preservation: a caller that could delete the branch next must skip that too, and matching the wording
+would break the moment the wording changes.
+*/
+export class WorktreeCardOwnershipError extends Error {
+  constructor(
+    public readonly worktreePath: string,
+    public readonly taskId: string,
+    public readonly lane: string | undefined,
+  ) {
+    super(`preserving ${worktreePath}: card ${taskId} is still in non-terminal lane "${lane ?? "(none)"}`);
+    this.name = "WorktreeCardOwnershipError";
   }
 }
 
@@ -1326,6 +1363,18 @@ export async function removeWorktree(input: {
   reason: RemovalReason;
   taskId?: string;
   audit?: RunAuditor;
+  /*
+  FNXC:CardOwnershipGuard 2026-09-26-05:10 (STAS-273):
+  Board access is what makes ownership checkable, so an automatic reason that arrives without it is
+  refused rather than trusted: a sweep that cannot say whose workspace it is holding may not destroy it.
+  */
+  store?: TaskStore;
+  /** The branch this removal is paired with, when it is. */
+  branch?: string;
+  /** Which code path is asking, so the evidence row names a real path. */
+  triggeredBy?: string;
+  /** Explicit release authority from a caller that retired the workspace outside a terminal lane. */
+  cardReleaseAuthorization?: CardReleaseAuthorization;
   /** Durable landing proof permits ignored-only content, never force removal. */
   postLandingProof?: { landedSha?: string; source: string };
   force?: boolean;
@@ -1348,6 +1397,41 @@ export async function removeWorktree(input: {
   }
 
   const requiresCleanWorktree = DEFENSIVE_REMOVAL_REASONS.has(input.reason);
+
+  /*
+  FNXC:CardOwnershipGuard 2026-09-26-05:10 (STAS-273):
+  The single ownership gate for every automatic removal lane. Refusal throws, so a caller cannot step
+  past it by ignoring a return value, and the guard has already written the preserved-audit row and the
+  debug line naming the card, lane, reason, and code path.
+  */
+  if (CARD_GATED_REMOVAL_REASONS.has(input.reason)) {
+    if (!input.store) {
+      /*
+      FNXC:CardOwnershipGuard 2026-09-26-05:10 (STAS-273):
+      Without board access ownership is unknowable, so this lane cannot decide. It records that on every
+      removal until its caller is wired up, so an unwired automatic lane stays visible in the audit trail
+      instead of being silently trusted.
+      */
+      await input.audit?.git({
+        type: "worktree:card-ownership-gate-skipped",
+        target: input.worktreePath,
+        metadata: { taskId: input.taskId, reason: input.reason, triggeredBy: input.triggeredBy },
+      }).catch(() => undefined);
+    } else {
+      const gate = await gateCardOwnedRemoval({
+        store: input.store,
+        tasks: await input.store.listTasks({ slim: true, includeArchived: true }),
+        artifact: { worktreePath: input.worktreePath, branch: input.branch },
+        reason: input.reason,
+        triggeredBy: input.triggeredBy ?? "worktree-backend.removeWorktree",
+        authorization: input.cardReleaseAuthorization,
+        audit: input.audit,
+      });
+      if (gate.refuse) {
+        throw new WorktreeCardOwnershipError(input.worktreePath, gate.taskId ?? "unknown", gate.lane);
+      }
+    }
+  }
 
   /*
   FNXC:WorktreeCleanup 2026-09-01-06:09:

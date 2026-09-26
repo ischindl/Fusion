@@ -13,6 +13,7 @@ import {
 } from "./worktrunk-installer.js";
 import {
   RemovalReason,
+  WorktreeCardOwnershipError,
   removeWorktree as removeWorktreeViaBackend,
 } from "./worktree-backend.js";
 import { pruneWorktreeAdminEntries } from "./worktree-prune.js";
@@ -649,43 +650,49 @@ export async function cleanupOrphanedWorktrees(
   const candidates = [...new Map([...orphaned, ...unregistered].map((path) => [resolve(path), path])).values()];
   /*
   FNXC:CardOwnershipGuard 2026-09-26-05:10 (STAS-273):
-  Defense-in-depth at the remove seam: the scan above already refuses card-owned directories, and a
-  caller that reaches this sweep by any other route still cannot destroy the workspace of a card
-  that has not reached release authority. Archived and terminal cards are released by this path
-  exactly as before, now with an evidence row naming the card.
+  Registered directories are removed through the funnel, which now owns the ownership decision; the
+  unregistered branch below cannot reach the funnel (its `rmdirSync` is deliberately non-recursive and
+  fail-closed), so that branch consults the same guard directly. Either way the decision and its
+  evidence come from one implementation, and a card without release authority keeps its checkout.
   */
   const ownershipTasks = await store.listTasks({ slim: true, includeArchived: true });
   const ownershipIrCache = new Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>();
+  const poolAuditFor = (taskId: string | undefined) => taskId
+    ? createRunAuditor(store, {
+        runId: generateSyntheticRunId("pool-prune", taskId),
+        agentId: "worktree-pool",
+        taskId,
+        phase: "pool-prune",
+      })
+    : undefined;
   let cleaned = 0;
 
   for (const worktreePath of candidates) {
+    const owner = findCardOwningArtifact(ownershipTasks, { worktreePath });
     try {
-      const owner = findCardOwningArtifact(ownershipTasks, { worktreePath });
-      const gate = await gateCardOwnedRemoval({
-        store,
-        tasks: ownershipTasks,
-        artifact: { worktreePath },
-        reason: RemovalReason.PoolPrune,
-        triggeredBy: "worktree-pool.cleanupOrphanedWorktrees",
-        irCache: ownershipIrCache,
-        logger: worktreePoolLog,
-        audit: owner ? createRunAuditor(store, {
-          runId: generateSyntheticRunId("pool-prune", owner.id),
-          agentId: "worktree-pool",
-          taskId: owner.id,
-          phase: "pool-prune",
-        }) : undefined,
-      });
-      if (gate.refuse) continue;
       if (registeredWorktrees.has(resolve(worktreePath))) {
         await removeWorktreeViaBackend({
           rootDir,
           worktreePath,
           settings: settings ?? {},
-          taskId: gate.taskId,
+          taskId: owner?.id,
+          store,
+          triggeredBy: "worktree-pool.cleanupOrphanedWorktrees",
+          audit: poolAuditFor(owner?.id),
           reason: RemovalReason.PoolPrune,
         });
       } else {
+        const gate = await gateCardOwnedRemoval({
+          store,
+          tasks: ownershipTasks,
+          artifact: { worktreePath },
+          reason: RemovalReason.PoolPrune,
+          triggeredBy: "worktree-pool.cleanupOrphanedWorktrees",
+          irCache: ownershipIrCache,
+          logger: worktreePoolLog,
+          audit: poolAuditFor(owner?.id),
+        });
+        if (gate.refuse) continue;
         if (!isInsideWorktreesDir(rootDir, worktreePath, settings)) {
           throw new Error(`Refusing to remove path outside .worktrees: ${worktreePath}`);
         }
@@ -703,6 +710,10 @@ export async function cleanupOrphanedWorktrees(
       cleaned++;
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err);
+      if (err instanceof WorktreeCardOwnershipError) {
+        worktreePoolLog.debug?.(`Preserved orphan-sweep candidate ${worktreePath}: ${errorMessage}`);
+        continue;
+      }
       worktreePoolLog.log(`Failed to remove orphaned worktree ${worktreePath}: ${errorMessage}`);
     }
   }

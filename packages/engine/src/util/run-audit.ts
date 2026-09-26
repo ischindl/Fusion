@@ -190,6 +190,8 @@ export type GitMutationType =
   | "worktree:removal-preserved"
   /** STAS-273: a workspace that names a card was released; metadata names the card, lane, reason, and code path. */
   | "worktree:removed-card-owned"
+  /** STAS-273: an automatic removal reached the funnel without board access, so ownership could not be checked. */
+  | "worktree:card-ownership-gate-skipped"
   | "worktree:active-session-reconciled"
   | "worktree:stale-lock-detected"
   | "worktree:stale-lock-recovered"
