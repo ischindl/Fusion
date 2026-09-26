@@ -2320,13 +2320,25 @@ const { tasks, isStale, isBoardRefreshInFlight, createTask, moveTask, boostTask,
     if (taskView === "chat") handleChangeTaskView("board");
     openToolPanel("chat", readShortcutAnchorRect("desktop-nav-chat-panel"));
   }, [chatDockHostOpen, closeToolPanel, handleChangeTaskView, openToolPanel, rightDock, setChatLaunchModePersisted, taskView]);
-  const openChatFromLaunchMode = useCallback((anchorRect: DOMRect | null) => {
+  /*
+  FNXC:ChatPresentationToggle 2026-09-26-01:24:
+  This launcher is the SINGLE owner of the launch-mode branch for the desktop Chat entry, so it takes
+  no arguments: the navigation registry types an entry callback as zero-arg (`onOpenChatPanel?: () => void`),
+  which means a launcher that required an anchor rect could never be passed as the direct reference below.
+  It therefore reads its own popover anchor with `readShortcutAnchorRect("desktop-nav-chat-panel")` in the
+  `popup` branch — the same anchor the keyboard shortcut and the previous inline closure used, so the
+  popover geometry (FN-433/FN-436 placement) is unchanged. `view` keeps closing the tool panel and routing
+  to the Chat page. RUFU-303: the regression was an inline `openToolPanel("chat", …)` closure at the call
+  site, which hard-coded the popover and made the stored `view` preference unreachable from the action bar;
+  deleting this callback to silence the unused-variable lint error would erase the branch instead of fixing it.
+  */
+  const openChatFromLaunchMode = useCallback(() => {
     if (chatLaunchMode === "view") {
       closeToolPanel();
       if (taskView !== "chat") handleChangeTaskView("chat");
       return;
     }
-    openToolPanel("chat", anchorRect);
+    openToolPanel("chat", readShortcutAnchorRect("desktop-nav-chat-panel"));
   }, [chatLaunchMode, closeToolPanel, handleChangeTaskView, openToolPanel, taskView]);
   /*
   FNXC:ChatPresentationToggle 2026-09-16-23:35:
@@ -2735,7 +2747,7 @@ const { tasks, isStale, isBoardRefreshInFlight, createTask, moveTask, boostTask,
     donc le même propriétaire de popover qu'avant, où que l'hôte rende le bouton (piste de droite, rangée directe ou
     menu « More »). Sans projet courant l'option est omise, donc aucune entrée n'est construite.
     */
-    onOpenChatPanel: currentProject ? () => openToolPanel("chat", readShortcutAnchorRect("desktop-nav-chat-panel")) : undefined,
+    onOpenChatPanel: currentProject ? openChatFromLaunchMode : undefined,
     chatPanelOpen: toolPanel?.kind === "chat",
     chatPanelId: CHAT_TOOL_PANEL_ID,
     planningNeedsInput,

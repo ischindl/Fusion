@@ -1449,7 +1449,8 @@ Direct Chat captures each assistant text and thinking block exactly once even wh
 ## Chat modal and mobile drawer
 
 <!-- FNXC:UnifiedChatDocs 2026-09-14-10:42: FN-390 removes the separate compact chat product surface; the footer Chat action now opens the shared Chat experience as a managed desktop modal or mobile drawer. -->
-The footer **Chat** action opens the same project-scoped Chat experience used by the main view and right dock. On desktop and tablet it opens a movable, resizable managed modal; on mobile it opens a navigation drawer rather than a floating window. Chat has no separate compact launcher, dedicated shortcut, or outside-click preference.
+<!-- FNXC:ChatPresentationToggle 2026-09-26-02:22: RUFU-303 corrects this sentence's host list after measuring the shipped desktop surface: the bottom-bar Chat entry opens the anchored popover or the full page according to the stored per-browser launch mode (see "Chat display mode" below), and a movable managed modal is what **Open in new window** produces. FN-390's guarantees — one shared experience, no compact launcher, no dedicated shortcut, no outside-click preference — are unchanged. -->
+The footer **Chat** action opens the same project-scoped Chat experience used by the main view and right dock. Which desktop host presents it follows the stored **Chat display mode** below; on mobile it opens a navigation drawer rather than a floating window. Chat has no separate compact launcher, dedicated shortcut, or outside-click preference.
 
 - Every presentation uses the same list-first conversation flow, model/provider resolution, mentions, attachments, commands, streamed response contract, question cards, and per-session queued follow-ups.
 - Desktop modal geometry is remembered and constrained to the live usable shell rectangle. The mobile drawer does not read or overwrite that desktop geometry.
@@ -1458,6 +1459,16 @@ The footer **Chat** action opens the same project-scoped Chat experience used by
 - Pointer hosts focus a ready composer when a conversation opens. Touch hosts do not summon the software keyboard until the user enters the composer.
 - Narrow Chat containers use full-width message bubbles and compact, single-line tool summaries. The mobile drawer follows the visual viewport so its composer remains above the software keyboard.
 - Scrolling away from the newest message stops automatic following and exposes **Latest**. Returning to the bottom resumes following.
+
+<!-- FNXC:ChatPresentationToggle 2026-09-26-02:22: RUFU-303 documents which Chat entry obeys the stored launch mode after a wiring regression made the **Open chat as view** choice unreachable from the desktop bottom bar. The preference is per browser, and the surfaces listed below deliberately keep their own presentation. -->
+### Chat display mode: popover or full page
+
+Chat's header carries a two-segment display-mode control: **Open chat as popup** and **Open chat as view**. Choosing a segment stores the preference for the current browser and re-presents Chat in that host immediately, so the control is both a preference and an instant switch. A missing or unreadable stored value means **popup**.
+
+- The desktop bottom-bar **Chat** entry is the surface that follows this preference. **Popup** opens the conversation list as a panel anchored to that entry; **view** opens the classic full-page Chat — conversation list on the left, conversation on the right — in the main panel and closes the popover. Clicking the entry again while the page is open keeps you on the page instead of bouncing back to the Board.
+- **View** means the classic full-page Chat, not the right dock. Choosing it never opens the dock and never overwrites what the dock has selected, and the dock's **Chat** tab stays openable while the page is the active view.
+- Surfaces that keep their own presentation and ignore the preference: the **Open Chat List** shortcut (`Ctrl+Shift+L`), which always opens the anchored list on the surface your screen width already uses; the right dock's **Chat** tab; the separate conversation windows opened with **Open in new window**; and every phone and tablet host, where the wide footer does not exist below 1024 pixels and Chat stays a full-screen drawer or page.
+
 ## Quick Chat
 
 Quick Chat is an optional fast, project-scoped assistant surface for conversations without leaving your current view. Depending on the project launcher setting, desktop and tablet can access it from the footer status bar beside Terminal, while mobile continues to use the compact Quick Chat panel behavior. The launcher and the Quick Chat keyboard shortcut are one shared visibility control: with no floating chat open they open Quick Chat, with any visible chat they minimize every floating chat together, and with all chats minimized they restore the same windows at their previous positions. Because minimized windows remain mounted, their conversation, size, stacking order, scroll position, and typed draft remain intact.

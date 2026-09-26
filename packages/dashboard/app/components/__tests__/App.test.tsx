@@ -8187,6 +8187,223 @@ describe("FN-426 tool surfaces without the right sidebar", () => {
 });
 
 /*
+RUFU-303 — THE PERSISTED CHAT LAUNCH MODE, NOT THE CALL SITE, DECIDES WHICH CHAT SURFACE OPENS.
+
+Original state: the bottom-bar Chat entry carried an inline `openToolPanel("chat", …)` closure, so an
+operator who chose the classic full-page Chat layout (`fusion:chat-launch-mode = "view"`) still got the
+anchored popover from the desktop action bar: the launch-mode launcher that owns the `view` branch had no
+caller at all. Every case below mounts the real `<App />` and asserts WHICH surface appears — never the
+identity of a callback — because the defect was wiring, not logic. The `popup` control case is what proves
+the unchanged default and the unchanged anchor path.
+*/
+describe("RUFU-303 stored Chat launch mode owns the Chat entry surfaces", () => {
+  const toolSettings = (overrides: Record<string, unknown> = {}) => ({
+    ...defaultSettings,
+    navigationPlacement: "footer" as const,
+    /* The shipped default: the footer Chat button is the subject, the panel stays off unless a case opts in. */
+    rightSidebarEnabled: false,
+    ...overrides,
+  });
+
+  /*
+   * The symptom case. `aria-hidden` is the assertion that matters: the keep-alive tree HIDES an inactive
+   * entry rather than unmounting it, so merely finding `chat-keep-alive` would also pass when the route
+   * bounced back to the Board. Absent `aria-hidden` means the Chat page is the active surface.
+   */
+  it("opens the Chat page instead of the popover when the operator stored the view launch mode", async () => {
+    mockUseViewportMode.mockReturnValue("desktop");
+    localStorage.setItem("fusion:chat-launch-mode", "view");
+    vi.mocked(fetchSettings).mockResolvedValue(toolSettings());
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByTestId("desktop-nav-chat-panel"));
+
+    const chatHost = await screen.findByTestId("chat-keep-alive");
+    expect(chatHost).toBeInTheDocument();
+    expect(chatHost).not.toHaveAttribute("aria-hidden");
+    const chatSurfaces = await screen.findAllByTestId("canonical-chat-host");
+    expect(chatSurfaces).toHaveLength(1);
+    expect(chatHost.contains(chatSurfaces[0])).toBe(true);
+    // The popover the entry used to open unconditionally must stay unmounted.
+    expect(screen.queryByTestId("chat-tool-popover")).toBeNull();
+    // No right-dock shell exists in this configuration, so the page cannot have been hijacked into one.
+    expect(screen.queryByTestId("right-dock-body")).toBeNull();
+    // No leftover shell: the registry still renders the Chat entry exactly once, still enabled and named.
+    const chatEntries = screen.getAllByTestId("desktop-nav-chat-panel");
+    expect(chatEntries).toHaveLength(1);
+    expect(chatEntries[0]).toBeEnabled();
+    expect(chatEntries[0]).toHaveAccessibleName("Chat");
+  });
+
+  /* Control: with no stored preference the entry keeps the pre-feature popover, anchor and all. */
+  it("keeps opening the anchored popover when no launch mode is stored", async () => {
+    mockUseViewportMode.mockReturnValue("desktop");
+    vi.mocked(fetchSettings).mockResolvedValue(toolSettings());
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByTestId("desktop-nav-chat-panel"));
+
+    expect(await screen.findByTestId("chat-tool-popover")).toBeInTheDocument();
+    expect(screen.queryByTestId("chat-keep-alive")).toBeNull();
+    expect(screen.queryByTestId("right-dock-body")).toBeNull();
+  });
+
+  /*
+   * A stored preference that is not exactly "view" (garbage, an empty string) must not open the page: the
+   * read helper falls back to "popup" and the popover path is unchanged.
+   */
+  it.each([["garbage"], [""]])("falls back to the popover for the unreadable stored value %j", async (stored) => {
+    mockUseViewportMode.mockReturnValue("desktop");
+    localStorage.setItem("fusion:chat-launch-mode", stored);
+    vi.mocked(fetchSettings).mockResolvedValue(toolSettings());
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByTestId("desktop-nav-chat-panel"));
+
+    expect(await screen.findByTestId("chat-tool-popover")).toBeInTheDocument();
+    expect(screen.queryByTestId("chat-keep-alive")).toBeNull();
+  });
+
+  /*
+   * View mode with the right dock opted back in: the Chat page host is FORCED (App derives
+   * `chatPageHost: "sidebar-page"` for view mode) so the page must mount, the dock must not be what the
+   * entry opened, and the ChatSurfaceUnification snap-backs must not eject the operator to the Board —
+   * both snap branches already exclude `chatLaunchMode === "view"`.
+   */
+  it("opens the Chat page and keeps the dock closed in view mode when the right dock is enabled", async () => {
+    mockUseViewportMode.mockReturnValue("desktop");
+    localStorage.setItem("fusion:chat-launch-mode", "view");
+    vi.mocked(fetchSettings).mockResolvedValue(toolSettings({ rightSidebarEnabled: true }));
+
+    render(<App />);
+
+    await screen.findByTestId("header-right-dock-toggle");
+    fireEvent.click(screen.getByTestId("desktop-nav-chat-panel"));
+
+    const chatHost = await screen.findByTestId("chat-keep-alive");
+    expect(chatHost).not.toHaveAttribute("aria-hidden");
+    expect(await screen.findAllByTestId("canonical-chat-host")).toHaveLength(1);
+    expect(screen.queryByTestId("chat-tool-popover")).toBeNull();
+    // The Chat entry opens a page, never the dock: no dock body is mounted by this click.
+    expect(screen.queryByTestId("right-dock-body")).toBeNull();
+    // Non-vacuity for the no-eject claim: a settle pass would have restored the Board as the active view.
+    await waitFor(() => expect(screen.getByTestId("chat-keep-alive")).not.toHaveAttribute("aria-hidden"));
+    expect(screen.getByTestId("chat-keep-alive")).toBeVisible();
+  });
+
+  /*
+   * The operator's last dock tab was Chat. The entry must still route to the page and must NOT resolve the
+   * conflict by closing the dock — FN-419 proved that made the Header dock toggle look dead. The dock stays
+   * openable and navigable afterwards.
+   */
+  it("routes to the Chat page in view mode while keeping the dock openable with a persisted chat selection", async () => {
+    mockUseViewportMode.mockReturnValue("desktop");
+    localStorage.setItem("fusion:chat-launch-mode", "view");
+    localStorage.setItem("fusion:right-dock-view", "chat");
+    vi.mocked(fetchSettings).mockResolvedValue(toolSettings({ rightSidebarEnabled: true }));
+
+    render(<App />);
+
+    await screen.findByTestId("header-right-dock-toggle");
+    fireEvent.click(screen.getByTestId("desktop-nav-chat-panel"));
+
+    const chatHost = await screen.findByTestId("chat-keep-alive");
+    expect(chatHost).not.toHaveAttribute("aria-hidden");
+    expect(screen.queryByTestId("chat-tool-popover")).toBeNull();
+    expect(screen.queryByTestId("right-dock-body")).toBeNull();
+
+    // The dock control is not dead: opening it still yields its body and tab strip, and the page stays active.
+    fireEvent.click(screen.getByTestId("header-right-dock-toggle"));
+    expect(await screen.findByTestId("right-dock-body")).toBeInTheDocument();
+    expect(await screen.findByTestId("right-dock-tab-chat")).toBeInTheDocument();
+    /*
+    RUFU-303 measured boundary (deliberately NOT asserted): once the dock is opened with a persisted "chat"
+    selection, this configuration resolves to TWO `canonical-chat-host` surfaces. The re-point effect in
+    ChatSurfaceUnification keys on the RAW resolved host (`chatPageHostKind`, which is "dock" here because the
+    dock is enabled in footer placement), while the page host is only FORCED to a page by App's view-mode
+    override, so the dock keeps its inline Chat list too. That state was already reachable before this task
+    through the header presentation toggle — `switchChatPresentation("view")` performs the same
+    `closeToolPanel(); handleChangeTaskView("chat")` — and repairing it means changing the handoff rules,
+    which RUFU-303 explicitly keeps out of scope. This case therefore pins what the Chat entry is on the hook
+    for (page opens, dock is not hijacked, the dock stays openable) and leaves the host-count invariant to
+    whoever owns the handoff rules.
+    */
+    expect(screen.getByTestId("chat-keep-alive")).not.toHaveAttribute("aria-hidden");
+  });
+
+  /*
+   * Second click in view mode: `openToolPanel` toggles, so the view branch must be idempotent — it must not
+   * eject to the Board, open the popover, or mount a second Chat host.
+   */
+  it("does not eject to the Board or open the popover when the Chat entry is clicked twice in view mode", async () => {
+    mockUseViewportMode.mockReturnValue("desktop");
+    localStorage.setItem("fusion:chat-launch-mode", "view");
+    vi.mocked(fetchSettings).mockResolvedValue(toolSettings());
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByTestId("desktop-nav-chat-panel"));
+    expect(await screen.findByTestId("chat-keep-alive")).not.toHaveAttribute("aria-hidden");
+
+    fireEvent.click(screen.getByTestId("desktop-nav-chat-panel"));
+
+    expect(screen.getByTestId("chat-keep-alive")).not.toHaveAttribute("aria-hidden");
+    expect(screen.getAllByTestId("canonical-chat-host")).toHaveLength(1);
+    expect(screen.queryByTestId("chat-tool-popover")).toBeNull();
+  });
+
+  /*
+   * Mobile is launch-mode-independent: `resolveChatHost` answers "mobile-page" before placement or dock
+   * state, so a stored "view" must still reach the mobile Chat host and must never mount the desktop popover.
+   */
+  it("reaches the mobile Chat host with no popover in view mode", async () => {
+    mockUseViewportMode.mockReturnValue("mobile");
+    localStorage.setItem("fusion:chat-launch-mode", "view");
+    vi.mocked(fetchSettings).mockResolvedValue(toolSettings());
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByTestId("mobile-nav-tab-chat"));
+
+    const dialog = await screen.findByRole("dialog", { name: "Chat" });
+    expect(dialog).toBeInTheDocument();
+    expect(screen.getByTestId("canonical-chat-host")).toBeInTheDocument();
+    expect(screen.queryByTestId("chat-tool-popover")).toBeNull();
+    expect(screen.queryByTestId("desktop-action-bar")).toBeNull();
+  });
+
+  /*
+   * Sidebar placement never used the footer launcher, and it must stay that way: its Chat destination is an
+   * ordinary main-page route owned by `LeftSidebarNav`, so a stored "view" changes nothing there.
+   */
+  it("keeps the sidebar Chat destination on exactly one page host in view mode", async () => {
+    mockUseViewportMode.mockReturnValue("desktop");
+    localStorage.setItem("fusion:chat-launch-mode", "view");
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      navigationPlacement: "sidebar" as const,
+      rightSidebarEnabled: false,
+    });
+
+    render(<App />);
+
+    await screen.findByTestId("left-sidebar-nav");
+    expect(screen.queryByTestId("desktop-nav-chat-panel")).toBeNull();
+
+    fireEvent.click(await screen.findByTestId("sidebar-nav-chat"));
+
+    const chatHost = await screen.findByTestId("chat-keep-alive");
+    expect(chatHost).not.toHaveAttribute("aria-hidden");
+    expect(await screen.findAllByTestId("canonical-chat-host")).toHaveLength(1);
+    expect(screen.queryByTestId("chat-tool-popover")).toBeNull();
+    expect(screen.queryByTestId("right-dock-body")).toBeNull();
+  });
+});
+
+/*
 FN-435 — L'HÔTE DES SURFACES ACTIVITY ET NOTES EST RÉSOLU PAR LE POINT DE RUPTURE MESURÉ.
 
 État initial : les deux outils s'ouvraient dans la MÊME popover ancrée à l'en-tête quel que soit le format d'écran ;
